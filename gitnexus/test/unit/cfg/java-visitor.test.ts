@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { createRequire } from 'node:module';
 import { createJavaCfgVisitor } from '../../../src/core/ingestion/cfg/visitors/java.js';
-import type { FunctionCfg, SiteRecord } from '../../../src/core/ingestion/cfg/types.js';
+import type { FunctionCfg } from '../../../src/core/ingestion/cfg/types.js';
 import {
   makeCfgHarness,
   type CfgHarness,
@@ -143,9 +143,7 @@ describe('Java CfgVisitor — loops', () => {
   });
 
   it('enhanced for (for-each): header + body + loop-back + exit; loop var is a def', () => {
-    const cfg = java.cfgOf(
-      `class C { void m(int[] xs) { for (int v : xs) { use(v); } done(); } }`,
-    );
+    const cfg = java.cfgOf(`class C { void m(int[] xs) { for (int v : xs) { use(v); } done(); } }`);
     const body = block(cfg, 'use(v);');
     expect(edgeKinds(cfg).has('cond-true')).toBe(true);
     expect(edgeKinds(cfg).has('loop-back')).toBe(true);
@@ -417,7 +415,9 @@ describe('Java CfgVisitor — synchronized (deterministic finalizer)', () => {
   });
 
   it('a return inside synchronized crosses the release (finally-return)', () => {
-    const cfg = java.cfgOf(`class C { int m(Object lock) { synchronized (lock) { return get(); } } }`);
+    const cfg = java.cfgOf(
+      `class C { int m(Object lock) { synchronized (lock) { return get(); } } }`,
+    );
     expect(edgeKinds(cfg).has('finally-return')).toBe(true);
   });
 });
@@ -439,13 +439,17 @@ describe('Java CfgVisitor — def/use harvest', () => {
   });
 
   it('a && (x = g()) records x as a may-def inside the short-circuit', () => {
-    const cfg = java.cfgOf(`class C { void m(boolean a) { int x = 0; if (a && (x = g()) > 0) h(x); } }`);
+    const cfg = java.cfgOf(
+      `class C { void m(boolean a) { int x = 0; if (a && (x = g()) > 0) h(x); } }`,
+    );
     const x = bindingIdx(cfg, 'x');
     expect(hasMayDef(cfg, x)).toBe(true);
   });
 
   it('ternary arms record their writes as may-defs', () => {
-    const cfg = java.cfgOf(`class C { void m(int a) { int x = 0; int y = a > 0 ? (x = 1) : (x = 2); use(y); } }`);
+    const cfg = java.cfgOf(
+      `class C { void m(int a) { int x = 0; int y = a > 0 ? (x = 1) : (x = 2); use(y); } }`,
+    );
     const x = bindingIdx(cfg, 'x');
     expect(hasMayDef(cfg, x)).toBe(true);
   });

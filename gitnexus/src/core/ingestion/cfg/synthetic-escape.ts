@@ -79,10 +79,7 @@
  * is the documented, intentional trade-off: recover the common goto-cycle case;
  * surface anything with a genuine residual anomaly rather than guess.
  */
-import {
-  isExitReachableFromAllBlocks,
-  type PostDomTree,
-} from './post-dominators.js';
+import { isExitReachableFromAllBlocks, type PostDomTree } from './post-dominators.js';
 import type { CfgEdgeData, FunctionCfg } from './types.js';
 
 /**
@@ -285,8 +282,7 @@ export function augmentForPostDom(cfg: FunctionCfg): FunctionCfg {
     // acyclic block (ENTRY / the spine) that is exit-unreachable only because it
     // FEEDS a trap downstream; it gets its path to EXIT for free once the trap is
     // bridged, so it is never bridged on its own.
-    const isCycle =
-      comp.length > 1 || cfg.edges.some((e) => e.from === rep && e.to === rep);
+    const isCycle = comp.length > 1 || cfg.edges.some((e) => e.from === rep && e.to === rep);
     if (!isCycle) continue;
 
     // Controlling representative: the entry-reachable member with a branch

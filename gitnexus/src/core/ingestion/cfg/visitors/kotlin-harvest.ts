@@ -151,7 +151,8 @@ export class KotlinHarvester {
         if (vd.type === 'variable_declaration') this.declareVariableDeclaration(vd, 'param');
         else if (vd.type === 'multi_variable_declaration') {
           for (const inner of vd.namedChildren) {
-            if (inner.type === 'variable_declaration') this.declareVariableDeclaration(inner, 'param');
+            if (inner.type === 'variable_declaration')
+              this.declareVariableDeclaration(inner, 'param');
           }
         }
       }

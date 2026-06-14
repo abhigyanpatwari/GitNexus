@@ -146,9 +146,7 @@ export class PythonHarvester {
   private declareParams(fnNode: SyntaxNode): void {
     const params =
       fnNode.childForFieldName('parameters') ??
-      fnNode.namedChildren.find(
-        (c) => c.type === 'parameters' || c.type === 'lambda_parameters',
-      );
+      fnNode.namedChildren.find((c) => c.type === 'parameters' || c.type === 'lambda_parameters');
     if (!params) return;
     for (let i = 0; i < params.namedChildCount; i++) {
       const p = params.namedChild(i);

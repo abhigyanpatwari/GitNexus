@@ -403,7 +403,12 @@ function canonicalizeCfg(cfg) {
 }
 
 function fingerprint(tk, scenario) {
-  const out = collectFunctionCfgs(tk.parse(scenario.gen(FP_SIZE)).rootNode, tk.visitor, 'fp', NO_CAP);
+  const out = collectFunctionCfgs(
+    tk.parse(scenario.gen(FP_SIZE)).rootNode,
+    tk.visitor,
+    'fp',
+    NO_CAP,
+  );
   const canon = out.cfgs.map(canonicalizeCfg).sort().join('\n====\n');
   return {
     fingerprint: crypto.createHash('sha256').update(canon).digest('hex'),

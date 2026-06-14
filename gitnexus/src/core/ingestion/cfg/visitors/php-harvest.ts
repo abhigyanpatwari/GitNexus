@@ -625,7 +625,10 @@ export class PhpHarvester {
     const accesses: string[] = [];
     let cur: SyntaxNode = this.unwrapParen(node);
     for (;;) {
-      if (cur.type === 'member_access_expression' || cur.type === 'nullsafe_member_access_expression') {
+      if (
+        cur.type === 'member_access_expression' ||
+        cur.type === 'nullsafe_member_access_expression'
+      ) {
         const field = cur.childForFieldName('name');
         accesses.unshift(field?.text ?? '');
         const obj = cur.childForFieldName('object');

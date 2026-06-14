@@ -542,8 +542,7 @@ export class GoHarvester extends ScopeTreeHarvester {
     for (const target of targets) {
       // A `var_spec` carries its name(s) as children; an identifier resolves
       // directly. Skip the blank identifier (`_`), which binds nothing.
-      const names =
-        target.type === 'identifier' ? [target] : this.listIdentifiers(target);
+      const names = target.type === 'identifier' ? [target] : this.listIdentifiers(target);
       for (const n of names) {
         if (n.text === '_') continue;
         defs.push(this.resolve(n));

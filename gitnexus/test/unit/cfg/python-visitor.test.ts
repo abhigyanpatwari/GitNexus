@@ -160,7 +160,9 @@ describe('Python CfgVisitor — for / while with the loop else', () => {
   });
 
   it('continue re-tests the loop header', () => {
-    const cfg = py.cfgOf(`def f(xs):\n    for i in xs:\n        if i:\n            continue\n        use(i)\n`);
+    const cfg = py.cfgOf(
+      `def f(xs):\n    for i in xs:\n        if i:\n            continue\n        use(i)\n`,
+    );
     const header = cfg.blocks.find((b) => b.text.startsWith('for '))!.index;
     expect(edgeKinds(cfg).has('continue')).toBe(true);
     expect(reaches(cfg, block(cfg, 'continue'), header)).toBe(true);

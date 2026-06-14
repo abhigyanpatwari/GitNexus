@@ -186,9 +186,7 @@ class RustCfgWalk {
         dangling = [...res.exits];
       } else {
         const idx =
-          openSimple === undefined
-            ? this.openBlock(stmt)
-            : this.extendOpen(openSimple, stmt);
+          openSimple === undefined ? this.openBlock(stmt) : this.extendOpen(openSimple, stmt);
         if (openSimple === undefined) {
           if (entry === undefined) entry = idx;
           else this.builder.connect(dangling, idx, 'seq');

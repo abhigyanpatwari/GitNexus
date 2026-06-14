@@ -211,7 +211,12 @@ class PhpCfgWalk {
           openSimple = idx;
           dangling = [idx];
         } else {
-          this.builder.extendBlock(openSimple, endLineOf(stmt), stmt.text, this.harvest.facts(stmt));
+          this.builder.extendBlock(
+            openSimple,
+            endLineOf(stmt),
+            stmt.text,
+            this.harvest.facts(stmt),
+          );
         }
       }
     }

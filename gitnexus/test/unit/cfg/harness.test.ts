@@ -44,9 +44,11 @@ describe('makeCfgHarness — language-parameterized CFG harness (#2195 U1)', () 
         };
       },
     };
-    const code = ['function fd() { return 1; }', 'const a = () => 2;', 'const b = (x) => x + 1;'].join(
-      '\n',
-    );
+    const code = [
+      'function fd() { return 1; }',
+      'const a = () => 2;',
+      'const b = (x) => x + 1;',
+    ].join('\n');
     const cfgs = makeCfgHarness(TypeScript.typescript, stub, 'stub.ts').cfgsOf(code);
     expect(cfgs).toHaveLength(2); // the two arrows; the function_declaration is ignored
     expect(built).toEqual(['arrow_function', 'arrow_function']);

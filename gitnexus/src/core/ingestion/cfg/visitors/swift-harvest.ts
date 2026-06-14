@@ -115,7 +115,9 @@ export class SwiftHarvester {
    * `lambda_literal` carries the `statements` directly.
    */
   private bodyOf(fnNode: SyntaxNode): SyntaxNode | undefined {
-    const fb = fnNode.childForFieldName('body') ?? fnNode.namedChildren.find((c) => c.type === 'function_body');
+    const fb =
+      fnNode.childForFieldName('body') ??
+      fnNode.namedChildren.find((c) => c.type === 'function_body');
     if (fb && fb.type === 'function_body') {
       return fb.namedChildren.find((c) => c.type === 'statements') ?? fb;
     }
@@ -156,7 +158,9 @@ export class SwiftHarvester {
       for (const id of params.namedChildren) {
         if (id.type === 'simple_identifier') this.declare(id, 'param');
         else if (id.type === 'lambda_parameter') {
-          const name = id.childForFieldName('name') ?? id.namedChildren.find((c) => c.type === 'simple_identifier');
+          const name =
+            id.childForFieldName('name') ??
+            id.namedChildren.find((c) => c.type === 'simple_identifier');
           if (name) this.declare(name, 'param');
         }
       }
@@ -319,7 +323,9 @@ export class SwiftHarvester {
         for (const id of params.namedChildren) {
           if (id.type === 'simple_identifier') this.def(id, acc);
           else if (id.type === 'lambda_parameter') {
-            const name = id.childForFieldName('name') ?? id.namedChildren.find((c) => c.type === 'simple_identifier');
+            const name =
+              id.childForFieldName('name') ??
+              id.namedChildren.find((c) => c.type === 'simple_identifier');
             if (name) this.def(name, acc);
           }
         }
@@ -447,10 +453,11 @@ export class SwiftHarvester {
         // `try expr` / `try? expr` / `try! expr` — the wrapped expression's uses.
         const expr = node.childForFieldName('expr');
         if (expr) this.walkValue(expr, acc);
-        else for (let i = 0; i < node.namedChildCount; i++) {
-          const c = node.namedChild(i);
-          if (c && c.type !== 'try_operator') this.walkValue(c, acc);
-        }
+        else
+          for (let i = 0; i < node.namedChildCount; i++) {
+            const c = node.namedChild(i);
+            if (c && c.type !== 'try_operator') this.walkValue(c, acc);
+          }
         return;
       }
       case 'conjunction_expression':

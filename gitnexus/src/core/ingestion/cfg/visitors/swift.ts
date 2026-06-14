@@ -162,7 +162,9 @@ class SwiftCfgWalk {
 
   /** Statements of a `statements` node, ignoring comments. */
   private statementsOf(block: SyntaxNode): SyntaxNode[] {
-    return block.namedChildren.filter((c) => c.type !== 'comment' && c.type !== 'multiline_comment');
+    return block.namedChildren.filter(
+      (c) => c.type !== 'comment' && c.type !== 'multiline_comment',
+    );
   }
 
   /** The body `statements` of a loop/branch node (the LAST `statements` child). */
@@ -206,7 +208,12 @@ class SwiftCfgWalk {
           openSimple = idx;
           dangling = [idx];
         } else {
-          this.builder.extendBlock(openSimple, endLineOf(stmt), stmt.text, this.harvest.facts(stmt));
+          this.builder.extendBlock(
+            openSimple,
+            endLineOf(stmt),
+            stmt.text,
+            this.harvest.facts(stmt),
+          );
         }
         // A straight-line statement may contain a `try` — it can error-return.
         this.wireTryExits(stmt, openSimple);
@@ -661,8 +668,10 @@ class SwiftCfgWalk {
   }
 
   private entryIsDefault(entry: SyntaxNode): boolean {
-    return entry.namedChildren.some((c) => c.type === 'default_keyword') ||
-      entry.children.some((c) => c.type === 'default_keyword');
+    return (
+      entry.namedChildren.some((c) => c.type === 'default_keyword') ||
+      entry.children.some((c) => c.type === 'default_keyword')
+    );
   }
 
   /** A `switch_entry` ends in an explicit `fallthrough` keyword child. */
@@ -701,7 +710,13 @@ class SwiftCfgWalk {
       }
       const errFacts = this.harvest.catchErrorFacts(clause);
       if (errFacts) {
-        const errBlock = this.builder.newBlock(startLineOf(clause), startLineOf(clause), '', 'normal', errFacts);
+        const errBlock = this.builder.newBlock(
+          startLineOf(clause),
+          startLineOf(clause),
+          '',
+          'normal',
+          errFacts,
+        );
         this.builder.edge(errBlock, res.entry, 'seq');
         res = { entry: errBlock, exits: res.exits };
       }
@@ -896,7 +911,8 @@ function buildFunctionCfg(fnNode: SyntaxNode, filePath: string): FunctionCfg | u
  */
 function bodyStatementsOf(fnNode: SyntaxNode): SyntaxNode | undefined {
   const fb =
-    fnNode.childForFieldName('body') ?? fnNode.namedChildren.find((c) => c.type === 'function_body');
+    fnNode.childForFieldName('body') ??
+    fnNode.namedChildren.find((c) => c.type === 'function_body');
   if (fb && fb.type === 'function_body') {
     return fb.namedChildren.find((c) => c.type === 'statements');
   }

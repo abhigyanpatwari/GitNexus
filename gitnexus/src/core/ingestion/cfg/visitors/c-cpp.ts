@@ -193,7 +193,12 @@ class CCfgWalk {
           openSimple = idx;
           dangling = [idx];
         } else {
-          this.builder.extendBlock(openSimple, endLineOf(stmt), stmt.text, this.harvest.facts(stmt));
+          this.builder.extendBlock(
+            openSimple,
+            endLineOf(stmt),
+            stmt.text,
+            this.harvest.facts(stmt),
+          );
         }
       }
     }
@@ -561,7 +566,9 @@ class CCfgWalk {
   finishGotos(): void {
     for (const [label, froms] of this.pendingGotos) {
       // eslint-disable-next-line no-console
-      console.warn(`[cfg] unresolved goto label "${label}" routed to EXIT (${froms.length} site(s))`);
+      console.warn(
+        `[cfg] unresolved goto label "${label}" routed to EXIT (${froms.length} site(s))`,
+      );
       for (const from of froms) this.builder.edge(from, this.builder.exitIndex, 'seq');
     }
     this.pendingGotos.clear();

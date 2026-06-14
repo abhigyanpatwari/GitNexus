@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { createRequire } from 'node:module';
 import { createPhpCfgVisitor } from '../../../src/core/ingestion/cfg/visitors/php.js';
-import type { FunctionCfg, SiteRecord } from '../../../src/core/ingestion/cfg/types.js';
+import type { FunctionCfg } from '../../../src/core/ingestion/cfg/types.js';
 import {
   makeCfgHarness,
   type CfgHarness,
@@ -169,7 +169,9 @@ describe('PHP CfgVisitor — loops', () => {
 describe('PHP CfgVisitor — switch / match', () => {
   it('switch: C-style FALLTHROUGH (a case with no break flows to the next)', () => {
     const cfg = php.cfgOf(
-      wrap(`switch ($x) { case 1: a(); break; case 2: b(); case 3: c(); break; default: d(); } e();`),
+      wrap(
+        `switch ($x) { case 1: a(); break; case 2: b(); case 3: c(); break; default: d(); } e();`,
+      ),
     );
     const kinds = edgeKinds(cfg);
     expect(kinds.has('switch-case')).toBe(true);
@@ -334,7 +336,9 @@ describe('PHP CfgVisitor — def/use harvest', () => {
   });
 
   it('closure use ($b, &$c) captures bind in the closure body', () => {
-    const cfgs = php.cfgsOf(`<?php function outer($b) { return function ($a) use ($b, &$c) { return $a + $b + $c; }; }`);
+    const cfgs = php.cfgsOf(
+      `<?php function outer($b) { return function ($a) use ($b, &$c) { return $a + $b + $c; }; }`,
+    );
     const closure = cfgs.find((c) => (c.bindings ?? []).some((bd) => bd.name === '$a'));
     expect(closure).toBeDefined();
     expect((closure!.bindings ?? []).some((bd) => bd.name === '$b')).toBe(true);

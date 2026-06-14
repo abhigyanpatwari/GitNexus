@@ -17,11 +17,7 @@ import { emitTsScopeCaptures } from '../../src/core/ingestion/languages/typescri
 import { interpretTsImport } from '../../src/core/ingestion/languages/typescript/interpret.js';
 import { makeCfgHarness } from './cfg-harness.js';
 
-const harness = makeCfgHarness(
-  TypeScript.typescript,
-  createTypeScriptCfgVisitor(),
-  'fixture.ts',
-);
+const harness = makeCfgHarness(TypeScript.typescript, createTypeScriptCfgVisitor(), 'fixture.ts');
 
 export const parse = harness.parse;
 export const collectFunctions = harness.collectFunctions;

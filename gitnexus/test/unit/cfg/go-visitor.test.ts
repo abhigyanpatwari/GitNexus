@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { createRequire } from 'node:module';
 import { createGoCfgVisitor } from '../../../src/core/ingestion/cfg/visitors/go.js';
-import type { FunctionCfg, SiteRecord } from '../../../src/core/ingestion/cfg/types.js';
+import type { FunctionCfg } from '../../../src/core/ingestion/cfg/types.js';
 import {
   makeCfgHarness,
   type CfgHarness,
@@ -73,9 +73,7 @@ describe('Go CfgVisitor — structure', () => {
 
 describe('Go CfgVisitor — if', () => {
   it('if with initializer: init+cond on the header, both arms reach the join', () => {
-    const cfg = go.cfgOf(
-      pkg(`func f() { if v := compute(); v > 0 { a() } else { b() }; c() }`),
-    );
+    const cfg = go.cfgOf(pkg(`func f() { if v := compute(); v > 0 { a() } else { b() }; c() }`));
     const kinds = edgeKinds(cfg);
     expect(kinds.has('cond-true')).toBe(true);
     expect(kinds.has('cond-false')).toBe(true);
@@ -254,7 +252,9 @@ describe('Go CfgVisitor — defer (LIFO completion legs)', () => {
   });
 
   it('defer runs on a return path too (return threads through the defer)', () => {
-    const cfg = go.cfgOf(pkg(`func f(x bool) int { defer cleanup(); if x { return 1 }; return 2 }`));
+    const cfg = go.cfgOf(
+      pkg(`func f(x bool) int { defer cleanup(); if x { return 1 }; return 2 }`),
+    );
     const cleanup = block(cfg, 'defer cleanup()');
     expect(reaches(cfg, block(cfg, 'return 1'), cleanup)).toBe(true);
     expect(reaches(cfg, block(cfg, 'return 2'), cleanup)).toBe(true);

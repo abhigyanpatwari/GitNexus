@@ -246,9 +246,7 @@ describe('Ruby CfgVisitor — begin / rescue / else / ensure', () => {
   });
 
   it('method-level implicit begin: a bare def + rescue/ensure threads correctly', () => {
-    const cfg = rb.cfgOf(
-      `def f\n  risky()\nrescue => e\n  handle()\nensure\n  done()\nend\n`,
-    );
+    const cfg = rb.cfgOf(`def f\n  risky()\nrescue => e\n  handle()\nensure\n  done()\nend\n`);
     const ensureB = block(cfg, 'done()');
     expect(reaches(cfg, block(cfg, 'risky()'), block(cfg, 'handle()'))).toBe(true);
     expect(reaches(cfg, block(cfg, 'handle()'), ensureB)).toBe(true);
@@ -275,9 +273,7 @@ describe('Ruby CfgVisitor — begin / rescue / else / ensure', () => {
   });
 
   it('retry re-enters the begin protected body (loop-back)', () => {
-    const cfg = rb.cfgOf(
-      `def f\n  begin\n    risky()\n  rescue\n    retry\n  end\nend\n`,
-    );
+    const cfg = rb.cfgOf(`def f\n  begin\n    risky()\n  rescue\n    retry\n  end\nend\n`);
     expect(edgeKinds(cfg).has('loop-back')).toBe(true);
     const retryB = block(cfg, 'retry');
     const bodyB = block(cfg, 'risky()');

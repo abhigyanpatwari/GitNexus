@@ -104,9 +104,7 @@ describe('Rust CfgVisitor — if / else / if let', () => {
   });
 
   it('if let with a let-chain (let PAT = e && cond) still binds + branches', () => {
-    const cfg = rust.cfgOf(
-      `fn f(opt: Option<i32>) { if let Some(n) = opt && n > 0 { both(); } }`,
-    );
+    const cfg = rust.cfgOf(`fn f(opt: Option<i32>) { if let Some(n) = opt && n > 0 { both(); } }`);
     expect(edgeKinds(cfg).has('cond-true')).toBe(true);
     expect(hasDef(cfg, bindingIdx(cfg, 'n'))).toBe(true);
     expect(reaches(cfg, block(cfg, 'both()'), cfg.exitIndex)).toBe(true);
@@ -221,9 +219,7 @@ describe('Rust CfgVisitor — match (no fallthrough) + guards', () => {
   });
 
   it('a match with NO `_` arm keeps a no-match path to the exit', () => {
-    const cfg = rust.cfgOf(
-      `fn f(x: i32) { match x { 1 => a(), 2 => b(), } after(); }`,
-    );
+    const cfg = rust.cfgOf(`fn f(x: i32) { match x { 1 => a(), 2 => b(), } after(); }`);
     expect(reaches(cfg, cfg.entryIndex, block(cfg, 'after()'))).toBe(true);
     expect(isExitReachableFromAllBlocks(cfg)).toBe(true);
   });
@@ -262,7 +258,7 @@ describe('Rust CfgVisitor — labeled break / continue', () => {
     expect(reaches(cfg, block(cfg, "continue 'outer"), outerHeader)).toBe(true);
   });
 
-  it("a plain (unlabeled) break exits the INNER loop only", () => {
+  it('a plain (unlabeled) break exits the INNER loop only', () => {
     const cfg = rust.cfgOf(
       `fn f() {
         for i in 0..10 {
@@ -281,9 +277,7 @@ describe('Rust CfgVisitor — labeled break / continue', () => {
 
 describe('Rust CfgVisitor — return and the ? operator', () => {
   it('return Some(n) flows directly to EXIT (return edge)', () => {
-    const cfg = rust.cfgOf(
-      `fn f(n: i32) -> Option<i32> { if n > 0 { return Some(n); } Some(0) }`,
-    );
+    const cfg = rust.cfgOf(`fn f(n: i32) -> Option<i32> { if n > 0 { return Some(n); } Some(0) }`);
     expect(edgeKinds(cfg).has('return')).toBe(true);
     expect(reaches(cfg, block(cfg, 'return Some(n)'), cfg.exitIndex)).toBe(true);
   });
@@ -324,7 +318,9 @@ describe('Rust CfgVisitor — def/use harvest (patterns)', () => {
   });
 
   it('let Some(n) = opt() in a let_else defines n (the tuple-struct inner binds, not the path)', () => {
-    const cfg = rust.cfgOf(`fn f(opt: Option<i32>) { let Some(n) = opt() else { return; }; use_n(n); }`);
+    const cfg = rust.cfgOf(
+      `fn f(opt: Option<i32>) { let Some(n) = opt() else { return; }; use_n(n); }`,
+    );
     expect(hasDef(cfg, bindingIdx(cfg, 'n'))).toBe(true);
     expect(hasUse(cfg, bindingIdx(cfg, 'n'))).toBe(true);
     // the let_else `else { return; }` jumps to EXIT.
@@ -339,7 +335,9 @@ describe('Rust CfgVisitor — def/use harvest (patterns)', () => {
   });
 
   it('plain assignment (x = p) defines x; a field write (obj.f = …) is NOT a scalar def', () => {
-    const cfg = rust.cfgOf(`fn f(p: i32, obj: T) { let mut x = 0; x = p; obj.field = 1; use_x(x); }`);
+    const cfg = rust.cfgOf(
+      `fn f(p: i32, obj: T) { let mut x = 0; x = p; obj.field = 1; use_x(x); }`,
+    );
     expect(hasDef(cfg, bindingIdx(cfg, 'x'))).toBe(true);
     // `obj` is used (its field is written), never a scalar def for `field`.
     expect(hasUse(cfg, bindingIdx(cfg, 'obj'))).toBe(true);
@@ -351,7 +349,9 @@ describe('Rust CfgVisitor — def/use harvest (patterns)', () => {
   });
 
   it('a closure body is opaque to the enclosing function harvest (own CFG)', () => {
-    const cfgs = rust.cfgsOf(`fn f() { let cb = || { let inner = 1; use_inner(inner); }; call(cb); }`);
+    const cfgs = rust.cfgsOf(
+      `fn f() { let cb = || { let inner = 1; use_inner(inner); }; call(cb); }`,
+    );
     // The OUTER fn has a `cb` binding but NOT `inner` (the closure body is opaque).
     const outer = cfgs.find((c) => (c.bindings ?? []).some((b) => b.name === 'cb'));
     expect(outer).toBeDefined();

@@ -167,7 +167,8 @@ export class RubyHarvester {
       return;
     }
     if (NAMED_PARAM_TYPES.has(p.type)) {
-      const name = p.childForFieldName('name') ?? p.namedChildren.find((c) => c.type === 'identifier');
+      const name =
+        p.childForFieldName('name') ?? p.namedChildren.find((c) => c.type === 'identifier');
       if (name) this.declare(name, 'param');
       return;
     }
@@ -319,7 +320,8 @@ export class RubyHarvester {
       return;
     }
     if (NAMED_PARAM_TYPES.has(p.type)) {
-      const name = p.childForFieldName('name') ?? p.namedChildren.find((c) => c.type === 'identifier');
+      const name =
+        p.childForFieldName('name') ?? p.namedChildren.find((c) => c.type === 'identifier');
       if (name) this.def(name, acc);
       return;
     }

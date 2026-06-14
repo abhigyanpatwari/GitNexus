@@ -101,7 +101,6 @@ import {
   drainFinalizerPending,
   wireJumpThroughFinalizers,
 } from '../control-flow-context.js';
-import type { FinalizerFrame } from '../control-flow-context.js';
 import type { TraversalResult } from '../traversal-result.js';
 import type { CfgVisitor, FunctionCfg } from '../types.js';
 import { PythonHarvester } from './python-harvest.js';
@@ -191,7 +190,12 @@ class PythonCfgWalk {
           openSimple = idx;
           dangling = [idx];
         } else {
-          this.builder.extendBlock(openSimple, endLineOf(stmt), stmt.text, this.harvest.facts(stmt));
+          this.builder.extendBlock(
+            openSimple,
+            endLineOf(stmt),
+            stmt.text,
+            this.harvest.facts(stmt),
+          );
         }
       }
     }
@@ -461,7 +465,11 @@ class PythonCfgWalk {
     return alt?.type === 'else_clause' ? alt : undefined;
   }
 
-  private loopHeaderText(stmt: SyntaxNode, left: SyntaxNode | null, right: SyntaxNode | null): string {
+  private loopHeaderText(
+    stmt: SyntaxNode,
+    left: SyntaxNode | null,
+    right: SyntaxNode | null,
+  ): string {
     const l = left?.text ?? '';
     const r = right?.text ?? '';
     return l || r ? `for ${l} in ${r}` : stmt.text.split('\n')[0];
@@ -550,7 +558,8 @@ class PythonCfgWalk {
     // runs OUTSIDE this try's finalizer frame (a return inside finally threads
     // only OUTER finallys).
     const finallyBlock = finallyClause
-      ? this.bodyBlockOf(finallyClause) ?? finallyClause.namedChildren.find((c) => c.type === 'block')
+      ? (this.bodyBlockOf(finallyClause) ??
+        finallyClause.namedChildren.find((c) => c.type === 'block'))
       : undefined;
     const finallyRes = finallyBlock ? this.visitSeq(this.statementsOf(finallyBlock)) : null;
     const finFrame = finallyRes ? this.cfc.pushFinalizer(finallyRes.entry) : null;
@@ -565,7 +574,13 @@ class PythonCfgWalk {
       // The `except E as e:` header binds `e` — its own facts-only block in front
       // of the handler body (the binding happens once, on handler entry).
       const headFacts = this.harvest.exceptHeadFacts(clause);
-      const headBlock = this.builder.newBlock(startLineOf(clause), startLineOf(clause), '', 'normal', headFacts);
+      const headBlock = this.builder.newBlock(
+        startLineOf(clause),
+        startLineOf(clause),
+        '',
+        'normal',
+        headFacts,
+      );
       const bodyRes = handlerBlock ? this.visitSeq(this.statementsOf(handlerBlock)) : null;
       if (bodyRes) {
         this.builder.edge(headBlock, bodyRes.entry, 'seq');
@@ -650,7 +665,8 @@ class PythonCfgWalk {
     );
     const matchExit = this.builder.newBlock(endLineOf(stmt), endLineOf(stmt), '');
 
-    const body = stmt.childForFieldName('body') ?? stmt.namedChildren.find((c) => c.type === 'block');
+    const body =
+      stmt.childForFieldName('body') ?? stmt.namedChildren.find((c) => c.type === 'block');
     const cases = body ? body.namedChildren.filter((c) => c.type === 'case_clause') : [];
 
     // A case guard (`case P if g:`) evaluates conditionally — harvest its uses

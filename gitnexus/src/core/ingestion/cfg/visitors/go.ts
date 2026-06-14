@@ -112,11 +112,7 @@ import type { CfgVisitor, FunctionCfg } from '../types.js';
 import { GoHarvester } from './go-harvest.js';
 
 /** Go node types that own a CFG-bearing function body. */
-const GO_FUNCTION_TYPES = new Set([
-  'function_declaration',
-  'method_declaration',
-  'func_literal',
-]);
+const GO_FUNCTION_TYPES = new Set(['function_declaration', 'method_declaration', 'func_literal']);
 
 /** Statement node types that break a basic block (everything else coalesces). */
 const CONTROL_FLOW_TYPES = new Set([
@@ -212,7 +208,12 @@ class GoCfgWalk {
           openSimple = idx;
           dangling = [idx];
         } else {
-          this.builder.extendBlock(openSimple, endLineOf(stmt), stmt.text, this.harvest.facts(stmt));
+          this.builder.extendBlock(
+            openSimple,
+            endLineOf(stmt),
+            stmt.text,
+            this.harvest.facts(stmt),
+          );
         }
       }
     }
@@ -347,7 +348,8 @@ class GoCfgWalk {
   private visitLabeled(stmt: SyntaxNode): SeqResult {
     const labelNode = stmt.childForFieldName('label');
     const label = labelNode?.text;
-    const body = stmt.namedChildren.find((c) => c.id !== labelNode?.id && c.type !== 'comment') ?? null;
+    const body =
+      stmt.namedChildren.find((c) => c.id !== labelNode?.id && c.type !== 'comment') ?? null;
 
     if (label !== undefined && body && this.isBreakableStatement(body)) {
       // Forward the label to the loop/switch/select frame this statement pushes.
@@ -699,9 +701,7 @@ class GoCfgWalk {
       if (test) this.builder.attachFacts(dispatch, this.harvest.factsConditional(test));
     }
 
-    const result = this.buildCases(dispatch, switchExit, cases, (c) =>
-      this.exprCaseBody(c),
-    );
+    const result = this.buildCases(dispatch, switchExit, cases, (c) => this.exprCaseBody(c));
     this.cfc.pop();
     return result;
   }
@@ -721,20 +721,14 @@ class GoCfgWalk {
     const cases = stmt.namedChildren.filter(
       (c) => c.type === 'type_case' || c.type === 'default_case',
     );
-    const result = this.buildCases(dispatch, switchExit, cases, (c) =>
-      this.typeCaseBody(c),
-    );
+    const result = this.buildCases(dispatch, switchExit, cases, (c) => this.typeCaseBody(c));
     this.cfc.pop();
     return result;
   }
 
   private visitSelect(stmt: SyntaxNode): TraversalResult {
     const labels = this.takeLabels();
-    const dispatch = this.builder.newBlock(
-      startLineOf(stmt),
-      startLineOf(stmt),
-      'select',
-    );
+    const dispatch = this.builder.newBlock(startLineOf(stmt), startLineOf(stmt), 'select');
     const selectExit = this.builder.newBlock(endLineOf(stmt), endLineOf(stmt), '');
 
     this.cfc.pushSwitch(selectExit, labels);
@@ -751,9 +745,7 @@ class GoCfgWalk {
     }
 
     const hasDefault = cases.some((c) => c.type === 'default_case');
-    const result = this.buildCases(dispatch, selectExit, cases, (c) =>
-      this.commCaseBody(c),
-    );
+    const result = this.buildCases(dispatch, selectExit, cases, (c) => this.commCaseBody(c));
 
     // A `select` with NO default BLOCKS until a case is ready — and a `select {}`
     // with no cases at all blocks forever. Either way EXIT must stay

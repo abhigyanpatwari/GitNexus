@@ -5,7 +5,6 @@ import {
   createCCfgVisitor,
   createCppCfgVisitor,
 } from '../../../src/core/ingestion/cfg/visitors/c-cpp.js';
-import type { FunctionCfg, SiteRecord } from '../../../src/core/ingestion/cfg/types.js';
 import {
   makeCfgHarness,
   type CfgHarness,
@@ -158,7 +157,9 @@ describe('C CfgVisitor — switch (C-style fallthrough)', () => {
 
 describe('C CfgVisitor — goto / labels', () => {
   it('backward goto wires to an already-seen label block', () => {
-    const cfg = c.cfgOf(`void f() { int i = 0; loop: work(); i++; if (i < 10) goto loop; done(); }`);
+    const cfg = c.cfgOf(
+      `void f() { int i = 0; loop: work(); i++; if (i < 10) goto loop; done(); }`,
+    );
     const gotoB = block(cfg, 'goto loop;');
     const label = block(cfg, 'work();');
     expect(reaches(cfg, gotoB, label)).toBe(true);

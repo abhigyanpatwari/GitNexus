@@ -1,7 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { requireVendoredGrammar } from '../../../src/core/tree-sitter/vendored-grammars.js';
 import { createSwiftCfgVisitor } from '../../../src/core/ingestion/cfg/visitors/swift.js';
-import type { FunctionCfg } from '../../../src/core/ingestion/cfg/types.js';
 import {
   makeCfgHarness,
   type CfgHarness,
@@ -74,7 +73,9 @@ describe('Swift CfgVisitor — branching', () => {
   });
 
   it('else-if chain branches each condition', () => {
-    const cfg = swift.cfgOf(`func f(x: Int) { if x == 1 { a() } else if x == 2 { b() } else { c() } ; d() }`);
+    const cfg = swift.cfgOf(
+      `func f(x: Int) { if x == 1 { a() } else if x == 2 { b() } else { c() } ; d() }`,
+    );
     const join = block(cfg, 'd()');
     expect(reaches(cfg, block(cfg, 'a()'), join)).toBe(true);
     expect(reaches(cfg, block(cfg, 'b()'), join)).toBe(true);
@@ -95,7 +96,9 @@ describe('Swift CfgVisitor — branching', () => {
 
 describe('Swift CfgVisitor — guard', () => {
   it('guard let ... else { return }: the else DIVERGES, the body CONTINUES', () => {
-    const cfg = swift.cfgOf(`func f(opt: Int?) -> Int { guard let y = opt else { return 0 } ; use(y) ; return y }`);
+    const cfg = swift.cfgOf(
+      `func f(opt: Int?) -> Int { guard let y = opt else { return 0 } ; use(y) ; return y }`,
+    );
     const header = block(cfg, 'guard');
     const elseBlk = block(cfg, 'return 0');
     // The else is the cond-false (diverging) arm and returns.

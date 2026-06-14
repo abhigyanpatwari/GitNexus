@@ -152,13 +152,11 @@ const isComment = (n: SyntaxNode): boolean => COMMENT_TYPES.has(n.type);
 
 /** Whether an `expression_statement` is a bare `throw …;`. */
 const isThrowStatement = (n: SyntaxNode): boolean =>
-  n.type === 'expression_statement' &&
-  n.namedChildren.some((c) => c.type === 'throw_expression');
+  n.type === 'expression_statement' && n.namedChildren.some((c) => c.type === 'throw_expression');
 
 /** Whether an `expression_statement` is a bare `rethrow;`. */
 const isRethrowStatement = (n: SyntaxNode): boolean =>
-  n.type === 'expression_statement' &&
-  n.namedChildren.some((c) => c.type === 'rethrow_expression');
+  n.type === 'expression_statement' && n.namedChildren.some((c) => c.type === 'rethrow_expression');
 
 /** A statement sequence that produced no blocks (empty body) is "transparent". */
 type SeqResult = TraversalResult | null;
@@ -221,7 +219,12 @@ class DartCfgWalk {
           openSimple = idx;
           dangling = [idx];
         } else {
-          this.builder.extendBlock(openSimple, endLineOf(stmt), stmt.text, this.harvest.facts(stmt));
+          this.builder.extendBlock(
+            openSimple,
+            endLineOf(stmt),
+            stmt.text,
+            this.harvest.facts(stmt),
+          );
         }
       }
     }
@@ -630,7 +633,11 @@ class DartCfgWalk {
       const contLabel = this.caseContinueLabel(cases[i]);
       if (!res) {
         // Empty case — spill to the next case (or switchExit).
-        this.builder.edge(dispatch, i + 1 < cases.length ? entryOf[i + 1] : switchExit, 'fallthrough');
+        this.builder.edge(
+          dispatch,
+          i + 1 < cases.length ? entryOf[i + 1] : switchExit,
+          'fallthrough',
+        );
         continue;
       }
       if (contLabel) {
@@ -887,9 +894,7 @@ function buildFunctionCfg(fnNode: SyntaxNode, filePath: string): FunctionCfg | u
     }
 
     const walk = new DartCfgWalk(builder, harvest);
-    const res = block
-      ? walk.visitSeq(block.namedChildren.filter((c) => !isComment(c)))
-      : null;
+    const res = block ? walk.visitSeq(block.namedChildren.filter((c) => !isComment(c))) : null;
 
     if (!res) {
       builder.edge(builder.entryIndex, builder.exitIndex, 'seq'); // empty body

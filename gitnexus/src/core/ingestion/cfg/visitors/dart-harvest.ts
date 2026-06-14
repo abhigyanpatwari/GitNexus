@@ -159,7 +159,8 @@ export class DartHarvester {
     const names: SyntaxNode[] = [];
     for (const p of list.namedChildren) {
       if (p.type !== 'formal_parameter') continue;
-      const name = p.childForFieldName('name') ?? p.namedChildren.find((c) => c.type === 'identifier');
+      const name =
+        p.childForFieldName('name') ?? p.namedChildren.find((c) => c.type === 'identifier');
       if (name) names.push(name);
     }
     return names;
@@ -427,7 +428,10 @@ export class DartHarvester {
         // `.name` / `(...args)` — a member-access suffix name is not a scalar
         // binding; walk the argument part for uses but skip the bare property id.
         for (const c of node.namedChildren) {
-          if (c.type === 'unconditional_assignable_selector' || c.type === 'conditional_assignable_selector') {
+          if (
+            c.type === 'unconditional_assignable_selector' ||
+            c.type === 'conditional_assignable_selector'
+          ) {
             continue; // `.name` — property name is not a use
           }
           this.walkValue(c, acc);

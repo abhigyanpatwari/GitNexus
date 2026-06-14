@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { createRequire } from 'node:module';
 import { createCsharpCfgVisitor } from '../../../src/core/ingestion/cfg/visitors/csharp.js';
-import type { FunctionCfg, SiteRecord } from '../../../src/core/ingestion/cfg/types.js';
+import type { FunctionCfg } from '../../../src/core/ingestion/cfg/types.js';
 import {
   makeCfgHarness,
   type CfgHarness,
@@ -61,7 +61,9 @@ describe('C# CfgVisitor — structure', () => {
   });
 
   it('constructor and local function are CFG-bearing functions', () => {
-    const cfgs = cs.cfgsOf(`class C { C(int a) { x = a; } void Outer() { int L(int z) { return z; } L(1); } }`);
+    const cfgs = cs.cfgsOf(
+      `class C { C(int a) { x = a; } void Outer() { int L(int z) { return z; } L(1); } }`,
+    );
     // constructor C, Outer, and the local function L = 3 CFGs.
     expect(cfgs.length).toBeGreaterThanOrEqual(3);
     for (const cfg of cfgs) expect(reaches(cfg, cfg.entryIndex, cfg.exitIndex)).toBe(true);
@@ -121,7 +123,9 @@ describe('C# CfgVisitor — loops', () => {
   });
 
   it('C-style for: init once, condition header, back-edge through update', () => {
-    const cfg = cs.cfgOf(`class C { void M(int n) { for (int i = 0; i < n; i++) { step(); } done(); } }`);
+    const cfg = cs.cfgOf(
+      `class C { void M(int n) { for (int i = 0; i < n; i++) { step(); } done(); } }`,
+    );
     const init = block(cfg, 'int i = 0');
     const header = block(cfg, 'i < n');
     const incr = block(cfg, 'i++');
@@ -133,7 +137,9 @@ describe('C# CfgVisitor — loops', () => {
   });
 
   it('foreach: header + body + loop-back + exit; loop var is a def, source a use', () => {
-    const cfg = cs.cfgOf(`class C { void M(int[] xs) { foreach (var x in xs) { use(x); } done(); } }`);
+    const cfg = cs.cfgOf(
+      `class C { void M(int[] xs) { foreach (var x in xs) { use(x); } done(); } }`,
+    );
     const body = block(cfg, 'use(x);');
     expect(edgeKinds(cfg).has('cond-true')).toBe(true);
     expect(edgeKinds(cfg).has('loop-back')).toBe(true);
@@ -191,7 +197,9 @@ describe('C# CfgVisitor — switch', () => {
   });
 
   it('switch_expression arms each dispatch as a guarded branch (switch-case)', () => {
-    const cfg = cs.cfgOf(`class C { int M(int x) { return x switch { 1 => a(), 2 => b(), _ => c() }; } }`);
+    const cfg = cs.cfgOf(
+      `class C { int M(int x) { return x switch { 1 => a(), 2 => b(), _ => c() }; } }`,
+    );
     // The switch-expression lives inside the return block — it does not break a
     // basic block, but the function still has a well-formed single-exit CFG.
     expect(reaches(cfg, cfg.entryIndex, cfg.exitIndex)).toBe(true);
@@ -275,7 +283,9 @@ describe('C# CfgVisitor — try/catch/finally completion edges', () => {
 
 describe('C# CfgVisitor — goto / labels', () => {
   it('backward goto wires to an already-seen label block', () => {
-    const cfg = cs.cfgOf(`class C { void M() { int i = 0; top: work(); i++; if (i < 10) goto top; done(); } }`);
+    const cfg = cs.cfgOf(
+      `class C { void M() { int i = 0; top: work(); i++; if (i < 10) goto top; done(); } }`,
+    );
     const gotoB = block(cfg, 'goto top;');
     const label = block(cfg, 'work();');
     expect(reaches(cfg, gotoB, label)).toBe(true);
@@ -382,7 +392,8 @@ describe('C# CfgVisitor — does not throw on exotic shapes', () => {
 // is registered, so these sites produce zero TAINTED edges; they only give the
 // deferred per-language source/sink model something to match against.
 describe('C# CfgVisitor — call-site sites[] substrate', () => {
-  const cfgOf = (body: string): FunctionCfg => cs.cfgOf(`class C { void f(int cmd, int x, int a) { ${body} } }`);
+  const cfgOf = (body: string): FunctionCfg =>
+    cs.cfgOf(`class C { void f(int cmd, int x, int a) { ${body} } }`);
 
   it('a bare invocation records a `call` site with callee name + arg occurrence', () => {
     const cfg = cfgOf(`Exec(cmd);`);

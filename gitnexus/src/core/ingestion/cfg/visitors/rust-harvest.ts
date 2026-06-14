@@ -137,9 +137,7 @@ export class RustHarvester {
   private declareParams(fnNode: SyntaxNode): void {
     const params =
       fnNode.childForFieldName('parameters') ??
-      fnNode.namedChildren.find(
-        (c) => c.type === 'parameters' || c.type === 'closure_parameters',
-      );
+      fnNode.namedChildren.find((c) => c.type === 'parameters' || c.type === 'closure_parameters');
     if (!params) return;
     for (let i = 0; i < params.namedChildCount; i++) {
       const p = params.namedChild(i);
@@ -292,7 +290,8 @@ export class RustHarvester {
     // Fallback: declare any identifier / shorthand leaf.
     for (let i = 0; i < field.namedChildCount; i++) {
       const c = field.namedChild(i);
-      if (c?.type === 'shorthand_field_identifier' || c?.type === 'identifier') this.declare(c, kind);
+      if (c?.type === 'shorthand_field_identifier' || c?.type === 'identifier')
+        this.declare(c, kind);
     }
   }
 

@@ -108,19 +108,12 @@ import {
   drainFinalizerPending,
   wireJumpThroughFinalizers,
 } from '../control-flow-context.js';
-import type { FinalizerFrame } from '../control-flow-context.js';
 import type { TraversalResult } from '../traversal-result.js';
 import type { CfgVisitor, FunctionCfg } from '../types.js';
 import { RubyHarvester } from './ruby-harvest.js';
 
 /** Ruby node types that own a CFG-bearing function/closure body. */
-const RUBY_FUNCTION_TYPES = new Set([
-  'method',
-  'singleton_method',
-  'do_block',
-  'block',
-  'lambda',
-]);
+const RUBY_FUNCTION_TYPES = new Set(['method', 'singleton_method', 'do_block', 'block', 'lambda']);
 
 /** Statement node types that break a basic block (everything else coalesces). */
 const CONTROL_FLOW_TYPES = new Set([
@@ -230,7 +223,12 @@ class RubyCfgWalk {
           openSimple = idx;
           dangling = [idx];
         } else {
-          this.builder.extendBlock(openSimple, endLineOf(stmt), stmt.text, this.harvest.facts(stmt));
+          this.builder.extendBlock(
+            openSimple,
+            endLineOf(stmt),
+            stmt.text,
+            this.harvest.facts(stmt),
+          );
         }
       }
     }
@@ -666,7 +664,8 @@ class RubyCfgWalk {
     const caseExit = this.builder.newBlock(endLineOf(stmt), endLineOf(stmt), '');
 
     const clauses = stmt.namedChildren.filter((c) => c.type === 'in_clause');
-    const elseClause = stmt.childForFieldName('else') ?? stmt.namedChildren.find((c) => c.type === 'else');
+    const elseClause =
+      stmt.childForFieldName('else') ?? stmt.namedChildren.find((c) => c.type === 'else');
 
     // An `in`-clause guard (`in P if g`) evaluates conditionally on the dispatch.
     for (const c of clauses) {

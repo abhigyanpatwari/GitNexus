@@ -224,7 +224,12 @@ class KotlinCfgWalk {
           openSimple = idx;
           dangling = [idx];
         } else {
-          this.builder.extendBlock(openSimple, endLineOf(stmt), stmt.text, this.harvest.facts(stmt));
+          this.builder.extendBlock(
+            openSimple,
+            endLineOf(stmt),
+            stmt.text,
+            this.harvest.facts(stmt),
+          );
         }
       }
     }
@@ -835,9 +840,7 @@ function buildFunctionCfg(fnNode: SyntaxNode, filePath: string): FunctionCfg | u
     }
 
     const walk = new KotlinCfgWalk(builder, harvest);
-    const res = body
-      ? walk.visitSeq(body.namedChildren.filter((c) => !isComment(c)))
-      : null;
+    const res = body ? walk.visitSeq(body.namedChildren.filter((c) => !isComment(c))) : null;
 
     if (!res) {
       builder.edge(builder.entryIndex, builder.exitIndex, 'seq'); // empty body

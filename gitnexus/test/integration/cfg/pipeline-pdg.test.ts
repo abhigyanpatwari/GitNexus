@@ -447,8 +447,7 @@ describe('U7 — C-family worker-mode --pdg pipeline', () => {
       // pdg:false ≡ pdg-absent — the dominant existing-user path is untouched.
       expect(offDigest).toEqual(defaultDigest);
       // None of the PDG node/rel types leak into the flag-off graph.
-      for (const t of ['BasicBlock'] as const)
-        expect(defaultDigest.byType[t]).toBeUndefined();
+      for (const t of ['BasicBlock'] as const) expect(defaultDigest.byType[t]).toBeUndefined();
       for (const t of ['CFG', 'REACHING_DEF', 'CDG', 'TAINTED', 'SANITIZES'] as const)
         expect(defaultDigest.byRelType[t]).toBeUndefined();
       // Committed golden: the flag-off graph is pinned by snapshot so a future
@@ -470,69 +469,77 @@ describe('U7 — remaining languages worker-mode --pdg pipeline (#2195 capstone)
       !vendored || isLanguageAvailable(SupportedLanguages[lang as keyof typeof SupportedLanguages])
         ? it
         : it.skip;
-    testFn(`${lang}: --pdg on emits BasicBlock + CFG + REACHING_DEF + CDG (> 0) via the worker`, async () => {
-      const result = await runPipelineFromRepo(freshLangRepo(fixture), () => {}, WORKER_PDG);
-      // The CFG is built in the worker — a stale dist silently zeros this.
-      expect(result.usedWorkerPool, `${lang} used the worker pool`).toBe(true);
-      const { basicBlocks, cfgEdges, reachingDefs, cdg } = counts(result);
-      expect(basicBlocks, `${lang} BasicBlock count`).toBeGreaterThan(0);
-      expect(cfgEdges, `${lang} CFG edge count`).toBeGreaterThan(0);
-      // def/use harvest populated the data-dependence layer.
-      expect(reachingDefs, `${lang} REACHING_DEF count`).toBeGreaterThan(0);
-      // CDG > 0 proves the post-dom/CDG pass ran for SOME function in the fixture.
-      expect(cdg, `${lang} CDG count`).toBeGreaterThan(0);
-      // The load-bearing claim (#2197 U3): ≥1 CDG edge is sourced INSIDE the
-      // non-terminating-loop function itself — so the post-dom/CDG pass was NOT
-      // skipped for the function whose loop traps EXIT, i.e. EXIT stays
-      // reverse-reachable end-to-end through the worker even with that loop. The
-      // whole-fixture aggregate above would pass on any branching function; this
-      // pins it to the hazard.
-      if (hazard !== undefined) {
-        expect(
-          cdgSourcedInHazardFunction(result, hazard),
-          `${lang} CDG edge sourced inside the non-terminating-loop function (marker ${JSON.stringify(hazard)})`,
-        ).toBe(true);
-      }
-
-      // Both CFG and CDG endpoints are persisted BasicBlocks; CDG carries a T/F.
-      const blockIds = new Set<string>();
-      result.graph.forEachNode((n) => {
-        if (n.label === 'BasicBlock') blockIds.add(n.id);
-      });
-      for (const rel of result.graph.iterRelationships()) {
-        if (rel.type === 'CFG' || rel.type === 'REACHING_DEF' || rel.type === 'CDG') {
-          expect(blockIds.has(rel.sourceId), `${lang} ${rel.type} source is a BasicBlock`).toBe(
-            true,
-          );
-          expect(blockIds.has(rel.targetId), `${lang} ${rel.type} target is a BasicBlock`).toBe(
-            true,
-          );
+    testFn(
+      `${lang}: --pdg on emits BasicBlock + CFG + REACHING_DEF + CDG (> 0) via the worker`,
+      async () => {
+        const result = await runPipelineFromRepo(freshLangRepo(fixture), () => {}, WORKER_PDG);
+        // The CFG is built in the worker — a stale dist silently zeros this.
+        expect(result.usedWorkerPool, `${lang} used the worker pool`).toBe(true);
+        const { basicBlocks, cfgEdges, reachingDefs, cdg } = counts(result);
+        expect(basicBlocks, `${lang} BasicBlock count`).toBeGreaterThan(0);
+        expect(cfgEdges, `${lang} CFG edge count`).toBeGreaterThan(0);
+        // def/use harvest populated the data-dependence layer.
+        expect(reachingDefs, `${lang} REACHING_DEF count`).toBeGreaterThan(0);
+        // CDG > 0 proves the post-dom/CDG pass ran for SOME function in the fixture.
+        expect(cdg, `${lang} CDG count`).toBeGreaterThan(0);
+        // The load-bearing claim (#2197 U3): ≥1 CDG edge is sourced INSIDE the
+        // non-terminating-loop function itself — so the post-dom/CDG pass was NOT
+        // skipped for the function whose loop traps EXIT, i.e. EXIT stays
+        // reverse-reachable end-to-end through the worker even with that loop. The
+        // whole-fixture aggregate above would pass on any branching function; this
+        // pins it to the hazard.
+        if (hazard !== undefined) {
+          expect(
+            cdgSourcedInHazardFunction(result, hazard),
+            `${lang} CDG edge sourced inside the non-terminating-loop function (marker ${JSON.stringify(hazard)})`,
+          ).toBe(true);
         }
-        if (rel.type === 'CDG') expect(['T', 'F']).toContain(rel.reason);
-      }
-    }, 60000);
 
-    testFn(`${lang}: --pdg off emits zero PDG nodes/edges (the R3 flag-off gate)`, async () => {
-      // Default (no pdg flag) and explicit pdg:false must both produce a graph
-      // with NO PDG layer — the existing-user path stays untouched.
-      const defaultRun = await runPipelineFromRepo(freshLangRepo(fixture), () => {}, WORKER_OFF);
-      const offRun = await runPipelineFromRepo(freshLangRepo(fixture), () => {}, {
-        ...WORKER_OFF,
-        pdg: false,
-      });
+        // Both CFG and CDG endpoints are persisted BasicBlocks; CDG carries a T/F.
+        const blockIds = new Set<string>();
+        result.graph.forEachNode((n) => {
+          if (n.label === 'BasicBlock') blockIds.add(n.id);
+        });
+        for (const rel of result.graph.iterRelationships()) {
+          if (rel.type === 'CFG' || rel.type === 'REACHING_DEF' || rel.type === 'CDG') {
+            expect(blockIds.has(rel.sourceId), `${lang} ${rel.type} source is a BasicBlock`).toBe(
+              true,
+            );
+            expect(blockIds.has(rel.targetId), `${lang} ${rel.type} target is a BasicBlock`).toBe(
+              true,
+            );
+          }
+          if (rel.type === 'CDG') expect(['T', 'F']).toContain(rel.reason);
+        }
+      },
+      60000,
+    );
 
-      for (const r of [defaultRun, offRun]) {
-        const { basicBlocks, cfgEdges, reachingDefs, tainted, sanitizes, cdg } = counts(r);
-        expect(basicBlocks).toBe(0);
-        expect(cfgEdges).toBe(0);
-        expect(reachingDefs).toBe(0);
-        expect(tainted).toBe(0);
-        expect(sanitizes).toBe(0);
-        expect(cdg).toBe(0);
-      }
+    testFn(
+      `${lang}: --pdg off emits zero PDG nodes/edges (the R3 flag-off gate)`,
+      async () => {
+        // Default (no pdg flag) and explicit pdg:false must both produce a graph
+        // with NO PDG layer — the existing-user path stays untouched.
+        const defaultRun = await runPipelineFromRepo(freshLangRepo(fixture), () => {}, WORKER_OFF);
+        const offRun = await runPipelineFromRepo(freshLangRepo(fixture), () => {}, {
+          ...WORKER_OFF,
+          pdg: false,
+        });
 
-      // pdg:false ≡ pdg-absent — the symbolic graph digest is identical.
-      expect(graphDigest(offRun)).toEqual(graphDigest(defaultRun));
-    }, 90000);
+        for (const r of [defaultRun, offRun]) {
+          const { basicBlocks, cfgEdges, reachingDefs, tainted, sanitizes, cdg } = counts(r);
+          expect(basicBlocks).toBe(0);
+          expect(cfgEdges).toBe(0);
+          expect(reachingDefs).toBe(0);
+          expect(tainted).toBe(0);
+          expect(sanitizes).toBe(0);
+          expect(cdg).toBe(0);
+        }
+
+        // pdg:false ≡ pdg-absent — the symbolic graph digest is identical.
+        expect(graphDigest(offRun)).toEqual(graphDigest(defaultRun));
+      },
+      90000,
+    );
   }
 });

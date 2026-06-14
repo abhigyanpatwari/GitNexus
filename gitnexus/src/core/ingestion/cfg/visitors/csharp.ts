@@ -183,7 +183,12 @@ class CsharpCfgWalk {
           openSimple = idx;
           dangling = [idx];
         } else {
-          this.builder.extendBlock(openSimple, endLineOf(stmt), stmt.text, this.harvest.facts(stmt));
+          this.builder.extendBlock(
+            openSimple,
+            endLineOf(stmt),
+            stmt.text,
+            this.harvest.facts(stmt),
+          );
         }
       }
     }
@@ -555,9 +560,7 @@ class CsharpCfgWalk {
 
     this.cfc.pushSwitch(switchExit);
     const body = stmt.childForFieldName('body');
-    const sections = body
-      ? body.namedChildren.filter((c) => c.type === 'switch_section')
-      : [];
+    const sections = body ? body.namedChildren.filter((c) => c.type === 'switch_section') : [];
 
     // Each `switch_section`'s case-test patterns/`when` clauses evaluate before
     // the body runs — harvest their uses (and any pattern binding as a may-def)
@@ -599,9 +602,7 @@ class CsharpCfgWalk {
 
   /** A switch_section's body statements (everything but its case labels/patterns). */
   private sectionStatements(section: SyntaxNode): SyntaxNode[] {
-    return section.namedChildren.filter(
-      (c) => this.isStatementLike(c) && c.type !== 'comment',
-    );
+    return section.namedChildren.filter((c) => this.isStatementLike(c) && c.type !== 'comment');
   }
 
   /** The case-test expressions of a section (constant patterns + when clauses). */
@@ -655,13 +656,7 @@ class CsharpCfgWalk {
     // The resource (declaration or expression) is the named child before `body`.
     const resource = this.usingResource(stmt);
     const disposeFacts = resource ? this.harvest.facts(resource) : undefined;
-    return this.buildProtectedSynthetic(
-      bodyNode,
-      stmt,
-      'dispose',
-      disposeFacts,
-      resource ?? stmt,
-    );
+    return this.buildProtectedSynthetic(bodyNode, stmt, 'dispose', disposeFacts, resource ?? stmt);
   }
 
   /**
@@ -704,9 +699,7 @@ class CsharpCfgWalk {
     for (const clause of catchClauses) {
       const clauseBody = clause.childForFieldName('body');
       if (finallyRes) this.handlers.push(finallyRes.entry);
-      let res: SeqResult = clauseBody
-        ? this.visitSeq(this.statementsOf(clauseBody))
-        : null;
+      let res: SeqResult = clauseBody ? this.visitSeq(this.statementsOf(clauseBody)) : null;
       if (finallyRes) this.handlers.pop();
       if (res === null) {
         // Empty `catch {}` still catches — synthesize one block so exception
@@ -851,8 +844,7 @@ function buildFunctionCfg(fnNode: SyntaxNode, filePath: string): FunctionCfg | u
     // The body is a `block` (field `body`) OR an `arrow_expression_clause`
     // (expression-bodied member) OR an expression (single-expression lambda).
     const body =
-      fnNode.childForFieldName('body') ??
-      fnNode.namedChildren.find((c) => c.type === 'block');
+      fnNode.childForFieldName('body') ?? fnNode.namedChildren.find((c) => c.type === 'block');
     if (!body) return undefined; // abstract / partial / interface member — no body
 
     const builder = new CfgBuilder(filePath, startLine, endLine, startColumn);
@@ -864,8 +856,7 @@ function buildFunctionCfg(fnNode: SyntaxNode, filePath: string): FunctionCfg | u
     if (body.type === 'arrow_expression_clause' || body.type !== 'block') {
       // Expression-bodied member / single-expression lambda: one block whose
       // value is returned. For an arrow clause the value is its inner expression.
-      const expr =
-        body.type === 'arrow_expression_clause' ? (body.namedChild(0) ?? body) : body;
+      const expr = body.type === 'arrow_expression_clause' ? (body.namedChild(0) ?? body) : body;
       const blk = builder.newBlock(
         startLineOf(expr),
         endLineOf(expr),
