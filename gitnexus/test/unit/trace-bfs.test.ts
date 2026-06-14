@@ -368,6 +368,46 @@ describe('trace: BFS core', () => {
     expect(included.hops.map((h: any) => h.name)).toEqual(['A', 'M', 'B']);
   });
 
+  it('caps the per-level query with a LIMIT and does not truncate a normal trace', async () => {
+    (executeParameterized as any).mockImplementation(
+      makeResolveMock([SYMBOL_A], [SYMBOL_B], {
+        'func:A': [{
+          sourceId: 'func:A', id: 'func:B', name: 'B', type: 'Function',
+          filePath: 'src/b.ts', startLine: 1, edgeType: 'CALLS', confidence: 1.0,
+        }],
+      }),
+    );
+
+    const result = await backend.callTool('trace', { from: 'A', to: 'B' });
+
+    expect(result.status).toBe('ok');
+    expect(result.truncated).toBeUndefined();
+    const bfsQueries = ((executeParameterized as any).mock.calls as Array<[string, string, any]>)
+      .map(([, cypher]) => cypher)
+      .filter((c) => c.includes('r:CodeRelation'));
+    expect(bfsQueries.length).toBeGreaterThan(0);
+    expect(bfsQueries.every((c) => /LIMIT\s+\d+/.test(c))).toBe(true);
+  });
+
+  it('flags truncated when a frontier level hits the per-node row cap', async () => {
+    // _traceImpl caps a single-node frontier at PER_NODE_FANOUT_CAP (200) rows;
+    // returning exactly that many (none being the target) trips the cap.
+    const ROW_CAP = 200;
+    const hubRows = Array.from({ length: ROW_CAP }, (_, i) => ({
+      sourceId: 'func:A', id: `func:N${i}`, name: `N${i}`, type: 'Function',
+      filePath: 'src/n.ts', startLine: 1, edgeType: 'CALLS', confidence: 1.0,
+    }));
+    const SYMBOL_Z = { id: 'func:Z', name: 'Z', type: 'Function', filePath: 'src/z.ts', startLine: 1, endLine: 5 };
+    (executeParameterized as any).mockImplementation(
+      makeResolveMock([SYMBOL_A], [SYMBOL_Z], { 'func:A': hubRows }),
+    );
+
+    const result = await backend.callTool('trace', { from: 'A', to: 'Z' });
+
+    expect(result.status).toBe('no_path');
+    expect(result.truncated).toBe(true);
+  });
+
   it('resolves from_uid/to_uid without name-based lookup', async () => {
     (executeParameterized as any).mockImplementation(
       (_db: string, query: string, params: any) => {

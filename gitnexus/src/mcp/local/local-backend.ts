@@ -4054,6 +4054,15 @@ export class LocalBackend {
     const includeTests = params.includeTests ?? false;
     const EDGE_TYPES = ['CALLS', 'HAS_METHOD'];
 
+    // Bound the traversal so a high-fanout hub (a logger/util reached by many
+    // symbols) can't materialize an unbounded frontier. Per-level rows are
+    // capped and the total visited set is capped; either cap sets `truncated`
+    // so a resulting no_path is never reported as if the graph was exhausted.
+    const PER_NODE_FANOUT_CAP = 200;
+    const ABS_ROW_CAP = 5000;
+    const MAX_VISITED = 50000;
+    let truncated = false;
+
     const visited = new Set<string>([fromSym.id]);
     let frontier = [fromSym.id];
     const parent = new Map<
@@ -4079,6 +4088,9 @@ export class LocalBackend {
 
     for (let depth = 1; depth <= maxDepth && frontier.length > 0 && !found; depth++) {
       const nextFrontier: string[] = [];
+      // LadybugDB/Kuzu does not support a parameterized LIMIT, so the cap is
+      // interpolated (it is a derived integer, not user input).
+      const rowCap = Math.min(frontier.length * PER_NODE_FANOUT_CAP, ABS_ROW_CAP);
 
       const rows = await executeParameterized(
         repo.lbugPath,
@@ -4086,9 +4098,14 @@ export class LocalBackend {
          WHERE n.id IN $frontierIds AND r.type IN $edgeTypes
          RETURN n.id AS sourceId, m.id AS id, m.name AS name, labels(m)[0] AS type,
                 m.filePath AS filePath, m.startLine AS startLine,
-                r.type AS edgeType, r.confidence AS confidence`,
+                r.type AS edgeType, r.confidence AS confidence
+         LIMIT ${rowCap}`,
         { frontierIds: frontier, edgeTypes: EDGE_TYPES },
       );
+
+      // A clipped level may have dropped a node that lies on the only shortest
+      // path, so any subsequent no_path is not authoritative.
+      if (rows.length >= rowCap) truncated = true;
 
       for (const row of rows) {
         const nodeId = (row.id ?? row[1]) as string;
@@ -4141,6 +4158,10 @@ export class LocalBackend {
       }
 
       frontier = nextFrontier;
+      if (visited.size >= MAX_VISITED) {
+        truncated = true;
+        break;
+      }
     }
 
     if (found) {
@@ -4171,10 +4192,14 @@ export class LocalBackend {
       from: { name: fromSym.name, filePath: fromSym.filePath, startLine: fromSym.startLine },
       to: { name: toSym.name, filePath: toSym.filePath, startLine: toSym.startLine },
       furthest: deepestInfo ? { ...deepestInfo, depth: reachedDepth } : null,
-      suggestion:
-        'No directed path found. The call chain likely breaks at dynamic dispatch, ' +
-        'reflection, or an external API boundary. Try gitnexus context <symbol> to see ' +
-        "both symbols' connections, or check if an interface/abstraction bridges them.",
+      ...(truncated ? { truncated: true } : {}),
+      suggestion: truncated
+        ? 'Search was truncated at a traversal cap before exhausting the graph — a path ' +
+          'may still exist. Narrow the search (a lower --depth, or trace from a more ' +
+          'specific symbol), or use gitnexus context <symbol> to inspect connections.'
+        : 'No directed path found. The call chain likely breaks at dynamic dispatch, ' +
+          'reflection, or an external API boundary. Try gitnexus context <symbol> to see ' +
+          "both symbols' connections, or check if an interface/abstraction bridges them.",
     };
   }
 
