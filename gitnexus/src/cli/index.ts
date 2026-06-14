@@ -355,7 +355,7 @@ program
 
 program
   .command('trace <from> <to>')
-  .description('Find the shortest directed call path between two symbols')
+  .description('Find the shortest directed path between two symbols (call + class-member edges)')
   .option('--from-uid <uid>', 'Source symbol UID (zero-ambiguity)')
   .option('--from-file <path>', 'Source file path hint')
   .option('--to-uid <uid>', 'Target symbol UID (zero-ambiguity)')

@@ -140,7 +140,7 @@ export const zhCN = {
   'help.command.query.description': '搜索知识图谱中与概念相关的执行流程',
   'help.command.context.description': '查看代码符号的 360 度视图：调用者、被调用者、流程',
   'help.command.impact.description': '影响面分析：修改符号会影响什么',
-  'help.command.trace.description': '查找两个符号之间的最短有向调用路径',
+  'help.command.trace.description': '查找两个符号之间的最短有向路径（调用与类成员边）',
   'help.command.cypher.description': '对知识图谱执行原始 Cypher 查询',
   'help.command.detectChanges.description': '将 git diff hunk 映射到已索引符号和受影响执行流程',
   'help.command.check.description': '对已索引图谱运行结构检查',

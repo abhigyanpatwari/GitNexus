@@ -4052,7 +4052,10 @@ export class LocalBackend {
         : DEFAULT_TRACE_DEPTH;
     const maxDepth = Math.min(requestedDepth, MAX_TRACE_DEPTH);
     const includeTests = params.includeTests ?? false;
-    const EDGE_TYPES = ['CALLS', 'HAS_METHOD'];
+    // Traversal vocabulary: CALLS for actual calls, HAS_METHOD so a class-rooted
+    // trace can descend into its methods. Not "calls only" — per-hop edge type is
+    // surfaced in edges[] so containment hops stay distinguishable.
+    const TRAVERSAL_EDGE_TYPES = ['CALLS', 'HAS_METHOD'];
 
     // Bound the traversal so a high-fanout hub (a logger/util reached by many
     // symbols) can't materialize an unbounded frontier. Per-level rows are
@@ -4100,7 +4103,7 @@ export class LocalBackend {
                 m.filePath AS filePath, m.startLine AS startLine,
                 r.type AS edgeType, r.confidence AS confidence
          LIMIT ${rowCap}`,
-        { frontierIds: frontier, edgeTypes: EDGE_TYPES },
+        { frontierIds: frontier, edgeTypes: TRAVERSAL_EDGE_TYPES },
       );
 
       // A clipped level may have dropped a node that lies on the only shortest

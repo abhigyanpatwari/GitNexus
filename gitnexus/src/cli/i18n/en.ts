@@ -144,7 +144,7 @@ export const en = {
     '360-degree view of a code symbol: callers, callees, processes',
   'help.command.impact.description': 'Blast radius analysis: what breaks if you change a symbol',
   'help.command.trace.description':
-    'Find the shortest directed call path between two symbols',
+    'Find the shortest directed path between two symbols (call + class-member edges)',
   'help.command.cypher.description': 'Execute raw Cypher query against the knowledge graph',
   'help.command.detectChanges.description':
     'Map git diff hunks to indexed symbols and affected execution flows',

@@ -762,11 +762,13 @@ WHEN TO USE: After changing group.yaml or re-indexing member repos.`,
   },
   {
     name: 'trace',
-    description: `Find the shortest directed call path between two symbols.
+    description: `Find the shortest directed path between two symbols over call and class-member edges.
 
-WHEN TO USE: Debugging "how does A reach B?" — answers in one call what would take 3-8 manual context/impact hops. Shows the exact chain of function calls with file:line positions and edge confidence.
+WHEN TO USE: Debugging "how does A reach B?" — answers in one call what would take 3-8 manual context/impact hops. Shows the exact chain with file:line positions plus a per-hop edge type and confidence.
 
-Returns: ordered hops with file:line, edge type, and confidence. When no path exists, reports the furthest reachable node so you know exactly where the chain breaks.`,
+Traverses CALLS edges plus HAS_METHOD (class → member) edges, so a trace can descend from a class into its methods. Each hop's edge type is reported in edges[], so call hops and containment hops remain distinguishable.
+
+Returns: ordered hops with file:line, and an aligned edges[] of edge type + confidence. When no path exists, reports the furthest reachable node so you know where the chain breaks (and truncated: true if a traversal cap was hit first).`,
     annotations: READ_ONLY_TOOL_ANNOTATIONS,
     inputSchema: {
       type: 'object',
