@@ -65,8 +65,12 @@ jobs:
               - 'gitnexus/src/core/parsing/**/parser.js'
               # Test fixtures are intentionally synthetic inputs (broken/unused
               # code, malformed samples) used to exercise the analyzer. CodeQL
-              # findings here are noise, not real bugs.
+              # findings here are noise, not real bugs. The second glob also
+              # covers fixtures nested deeper in the test tree, e.g.
+              # test/integration/cfg/fixtures/ (the CFG/PDG hazard inputs that
+              # deliberately contain use-before-init / unused-variable shapes).
               - '**/test/fixtures/**'
+              - '**/test/**/fixtures/**'
 
       - name: Perform CodeQL Analysis
         uses: github/codeql-action/analyze@7211b7c8077ea37d8641b6271f6a365a22a5fbfa # v4.36.0
