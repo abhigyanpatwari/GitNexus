@@ -18,6 +18,25 @@ import { generateFiles } from './ci-setup/templates.js';
 import type { CiSetupOptions, CiSetupResult, GeneratedFile } from './ci-setup/types.js';
 import type { CiSystem, DeployTarget, AuthMode, BranchStrategy } from './ci-setup/types.js';
 
+const CI_SYSTEMS: readonly CiSystem[] = ['github-actions', 'azure-devops', 'both'];
+const DEPLOY_TARGETS: readonly DeployTarget[] = ['docker', 'azure-container-app', 'both'];
+const AUTH_MODES: readonly AuthMode[] = ['token', 'none'];
+const BRANCH_STRATEGIES: readonly BranchStrategy[] = ['pr-scoped', 'main-only'];
+
+/**
+ * Exact, case-sensitive membership check for an enum flag. Exits non-zero on an
+ * unrecognized value rather than letting a typo (e.g. `--auth toekn`) fall
+ * through to a downstream default — which for `--auth` would silently select the
+ * insecure no-auth deployment. No trim/lowercase normalization: `NONE` exits.
+ */
+function requireEnum<T extends string>(value: string, allowed: readonly T[], flagName: string): T {
+  if (!(allowed as readonly string[]).includes(value)) {
+    console.log(`✗ Invalid ${flagName}: "${value}". Must be one of: ${allowed.join(', ')}.`);
+    process.exit(1);
+  }
+  return value as T;
+}
+
 export const ciSetupCommand = async (options?: {
   ci?: string;
   deploy?: string;
@@ -54,10 +73,12 @@ export const ciSetupCommand = async (options?: {
   );
   console.log('   ⚠ License: PolyForm-Noncommercial — confirm non-commercial use\n');
 
-  // Parse and validate options from commander flags
+  // Parse and validate options from commander flags. An explicitly-passed but
+  // unrecognized value exits here; an omitted flag (undefined) is skipped by the
+  // guard and resolves via resolveOptions' prompt/fallback.
   const partial: Partial<CiSetupOptions> = {};
-  if (options?.ci) partial.ci = options.ci as CiSystem;
-  if (options?.deploy) partial.deploy = options.deploy as DeployTarget;
+  if (options?.ci) partial.ci = requireEnum(options.ci, CI_SYSTEMS, '--ci');
+  if (options?.deploy) partial.deploy = requireEnum(options.deploy, DEPLOY_TARGETS, '--deploy');
   if (options?.port) {
     const portNum = parseInt(options.port as string, 10);
     if (isNaN(portNum) || portNum < 1 || portNum > 65534) {
@@ -66,8 +87,13 @@ export const ciSetupCommand = async (options?: {
     }
     partial.port = portNum;
   }
-  if (options?.auth) partial.auth = options.auth as AuthMode;
-  if (options?.branchStrategy) partial.branchStrategy = options.branchStrategy as BranchStrategy;
+  if (options?.auth) partial.auth = requireEnum(options.auth, AUTH_MODES, '--auth');
+  if (options?.branchStrategy)
+    partial.branchStrategy = requireEnum(
+      options.branchStrategy,
+      BRANCH_STRATEGIES,
+      '--branch-strategy',
+    );
   if (options?.dryRun !== undefined) partial.dryRun = options.dryRun;
   if (options?.apply !== undefined) partial.apply = options.apply;
   if (options?.yes !== undefined) partial.yes = options.yes;

@@ -144,6 +144,49 @@ describe('ciSetupCommand', () => {
     expect(exitSpy).toHaveBeenCalledWith(1);
   });
 
+  it('rejects an invalid --auth value (no insecure no-auth fallthrough)', async () => {
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation((_code?: number) => {
+      throw new Error('process.exit called');
+    });
+    const { ciSetupCommand } = await import('../../src/cli/ci-setup.js');
+    await expect(
+      ciSetupCommand({
+        ci: 'github-actions',
+        deploy: 'docker',
+        auth: 'toekn', // typo
+        apply: true,
+        yes: true,
+        outputDir: tempDir,
+      }),
+    ).rejects.toThrow('process.exit called');
+    expect(exitSpy).toHaveBeenCalledWith(1);
+    // Nothing was generated — specifically no no-auth docker-compose.
+    const entries = await fs.readdir(tempDir);
+    expect(entries).toHaveLength(0);
+  });
+
+  it('rejects a wrong-case --auth value (no normalization into no-auth)', async () => {
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation((_code?: number) => {
+      throw new Error('process.exit called');
+    });
+    const { ciSetupCommand } = await import('../../src/cli/ci-setup.js');
+    await expect(
+      ciSetupCommand({ ci: 'github-actions', deploy: 'docker', auth: 'NONE', outputDir: tempDir }),
+    ).rejects.toThrow('process.exit called');
+    expect(exitSpy).toHaveBeenCalledWith(1);
+  });
+
+  it('rejects an invalid --ci value', async () => {
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation((_code?: number) => {
+      throw new Error('process.exit called');
+    });
+    const { ciSetupCommand } = await import('../../src/cli/ci-setup.js');
+    await expect(
+      ciSetupCommand({ ci: 'githubactions', deploy: 'docker', outputDir: tempDir }),
+    ).rejects.toThrow('process.exit called');
+    expect(exitSpy).toHaveBeenCalledWith(1);
+  });
+
   it('--auth none generates no Caddyfile', async () => {
     const { ciSetupCommand } = await import('../../src/cli/ci-setup.js');
     await ciSetupCommand({
