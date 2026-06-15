@@ -198,6 +198,15 @@ if (!CHECK) {
         `(${SMALL}->${LARGE} entities, ms ${result.elapsed_ms_small}->${result.elapsed_ms_large})`,
     );
   }
+  // Absolute backstop: the scaling ratio alone passes a uniform Nx slowdown (it
+  // only compares large/small). A generous, host-noise-tolerant ceiling catches
+  // a gross absolute regression. Opt-in (only enforced when max_ms_large is set).
+  if (base.max_ms_large !== undefined && result.elapsed_ms_large >= base.max_ms_large) {
+    failures.push(
+      `absolute wall-time regression: elapsed_ms_large ${result.elapsed_ms_large}ms >= budget ` +
+        `${base.max_ms_large}ms (coarse backstop, not a tight SLA)`,
+    );
+  }
   process.stdout.write(JSON.stringify(result) + '\n');
   if (failures.length > 0) {
     for (const f of failures) process.stderr.write(`[emit-persistence --check] FAIL: ${f}\n`);
