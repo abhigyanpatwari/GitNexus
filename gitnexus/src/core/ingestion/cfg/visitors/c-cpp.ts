@@ -653,9 +653,9 @@ class CppCfgWalk extends CCfgWalk {
    * block created while walking the protected body edges to the (first) catch
    * handler — an exception may fire mid-block, and a branched body must still
    * reach the handler from any interior block (matching the TS visitTry
-   * over-approximation). Multiple `catch` clauses chain: the body's throw routes
-   * to the first handler; each handler's normal completion joins the post-try
-   * continuation.
+   * over-approximation). Multiple `catch` clauses: a body throw routes to EVERY
+   * handler (the runtime type match is dynamic), and each handler's normal
+   * completion joins the post-try continuation.
    */
   private visitTry(stmt: SyntaxNode): SeqResult {
     const bodyNode = stmt.childForFieldName('body');
@@ -702,10 +702,15 @@ class CppCfgWalk extends CCfgWalk {
     const bodyRes = bodyNode ? this.visitSeq(this.statementsOf(bodyNode)) : null;
     this.handlers.pop();
 
-    // Conservative exceptional edges: every protected-region block → the handler.
+    // Conservative exceptional edges: every protected-region block → EVERY handler
+    // entry. The runtime catch that matches a thrown type is not statically known,
+    // so over-approximate to ALL clauses — wiring only the first (tryHandler)
+    // orphaned `catch` clauses 2..N, dropping their control/data flow entirely
+    // (the binding `catch(T2 e)` and the handler body became unreachable). Mirrors
+    // the Swift multi-catch handling.
     if (catchClauses.length > 0) {
       for (let b = protectedStart; b < this.builder.blockCount; b++) {
-        this.builder.edge(b, tryHandler, 'throw');
+        for (const handler of handlerEntries) this.builder.edge(b, handler, 'throw');
       }
     }
 

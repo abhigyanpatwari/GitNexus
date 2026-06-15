@@ -289,6 +289,22 @@ describe('C++ CfgVisitor — exceptions', () => {
     expect(reachable(cfg, block(cfg, 'after();'))).toBe(true);
   });
 
+  it('multi-catch: a body throw reaches EVERY handler (clauses 2..N not orphaned)', () => {
+    const cfg = cpp.cfgOf(`void f() {
+      try { risky(); } catch (int e) { a(e); } catch (double d) { b(d); } catch (...) { c(); }
+      after();
+    }`);
+    const risky = block(cfg, 'risky();');
+    // The matching catch is dynamic, so the body throw must reach all three handlers.
+    expect(reaches(cfg, risky, block(cfg, 'a(e);'))).toBe(true);
+    expect(reaches(cfg, risky, block(cfg, 'b(d);'))).toBe(true);
+    expect(reaches(cfg, risky, block(cfg, 'c();'))).toBe(true);
+    // none of the later handlers is orphaned (all reachable from ENTRY); the
+    // post-try continuation still rejoins.
+    expect(reachable(cfg, block(cfg, 'b(d);'))).toBe(true);
+    expect(reachable(cfg, block(cfg, 'after();'))).toBe(true);
+  });
+
   it('throw inside a branched try body reaches the handler from the interior block', () => {
     const cfg = cpp.cfgOf(`void f(int x) {
       try { guard(); if (x) { deep(); } } catch (int e) { onErr(); }
