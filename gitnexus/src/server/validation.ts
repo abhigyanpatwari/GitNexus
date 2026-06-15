@@ -93,9 +93,26 @@ export function assertSafePath(rawPath: string, root: string): string {
  * Escape regex metacharacters in a user-supplied string so it can be safely
  * embedded as a literal in `new RegExp(...)`. Used by /api/grep's literal mode
  * and any future endpoint that constructs a regex from caller input.
+ *
+ * Security: enforces maximum length to prevent ReDoS via pathological patterns.
+ * @throws BadRequestError if input exceeds maxLength
  */
-export function escapeRegExp(input: string): string {
-  return input.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+export function escapeRegExp(input: string, maxLength = 1000): string {
+  if (input.length > maxLength) {
+    throw new BadRequestError(`Pattern too long (max ${maxLength} characters)`);
+  }
+
+  const MAX_REPLACEMENTS = 10000;
+  let replacementCount = 0;
+
+  const result = input.replace(/[.*+?^${}()|[\]\\]/g, (match) => {
+    if (++replacementCount > MAX_REPLACEMENTS) {
+      throw new BadRequestError('Pattern too complex');
+    }
+    return '\\' + match;
+  });
+
+  return result;
 }
 
 /**

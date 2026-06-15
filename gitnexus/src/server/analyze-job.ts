@@ -12,6 +12,54 @@
 import { randomUUID } from 'crypto';
 import { EventEmitter } from 'events';
 import type { ChildProcess } from 'child_process';
+import { logger } from '../core/logger.js';
+
+/**
+ * Dangerous keys that could lead to prototype pollution
+ */
+const DANGEROUS_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
+
+/**
+ * Allowed keys for job updates - all other keys are rejected
+ */
+const ALLOWED_UPDATE_KEYS = new Set([
+  'status',
+  'progress',
+  'error',
+  'repoPath',
+  'repoName',
+  'completedAt',
+]);
+
+/**
+ * Sanitize update object to prevent prototype pollution
+ * - Rejects dangerous keys (__proto__, constructor, prototype)
+ * - Rejects keys not in the allowed whitelist
+ */
+function sanitizeUpdateObject<T extends Record<string, any>>(
+  obj: T,
+  allowedKeys: Set<string>,
+): Partial<T> {
+  const result: Partial<T> = {};
+
+  for (const [key, value] of Object.entries(obj)) {
+    // Reject dangerous keys that could cause prototype pollution
+    if (DANGEROUS_KEYS.has(key)) {
+      logger.warn({ key }, 'Security: Rejected dangerous key in update object');
+      continue;
+    }
+
+    // Reject keys not in the whitelist
+    if (!allowedKeys.has(key)) {
+      logger.debug({ key }, 'Security: Rejected unknown key in update object');
+      continue;
+    }
+
+    (result as any)[key] = value;
+  }
+
+  return result;
+}
 
 export interface AnalyzeJobProgress {
   phase: string;
@@ -101,7 +149,10 @@ export class JobManager {
     const job = this.jobs.get(id);
     if (!job) return;
 
-    Object.assign(job, update);
+    // Security: sanitize update to prevent prototype pollution
+    const safeUpdate = sanitizeUpdateObject(update, ALLOWED_UPDATE_KEYS);
+
+    Object.assign(job, safeUpdate);
 
     if (this.isTerminal(job.status)) {
       job.completedAt = job.completedAt ?? Date.now();
