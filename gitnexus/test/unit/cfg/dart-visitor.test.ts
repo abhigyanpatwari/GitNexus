@@ -240,6 +240,24 @@ describe('Dart CfgVisitor — switch', () => {
     expect(reachable(cfg, block(cfg, 'after();'))).toBe(true);
   });
 
+  it('a BARE `continue;` in a case targets the loop — no false case→default fall-through', () => {
+    // `continue;` (no label) jumps to the for-loop header. The bug DROPPED it,
+    // fabricating a DIRECT case-1 → default fall-through edge. With the continue
+    // modeled, no such direct edge exists (the only path from tainted() to sink()
+    // is the legitimate loop back-edge, i.e. a later iteration).
+    const cfg = dart.cfgOf(`void f(List xs) {
+      for (var x in xs) {
+        switch (x) {
+          case 1: tainted(); continue;
+          default: sink();
+        }
+      }
+    }`);
+    const tainted = block(cfg, 'tainted();');
+    const sink = block(cfg, 'sink();');
+    expect(cfg.edges.some((e) => e.from === tainted && e.to === sink)).toBe(false);
+  });
+
   it('a switch EXPRESSION used as a value stays inline (no branch edges)', () => {
     const cfg = dart.cfgOf(`void f(int x) {
       var y = switch (x) { 1 => one(), 2 => two(), _ => other() };

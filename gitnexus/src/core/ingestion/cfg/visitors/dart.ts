@@ -158,6 +158,14 @@ const isThrowStatement = (n: SyntaxNode): boolean =>
 const isRethrowStatement = (n: SyntaxNode): boolean =>
   n.type === 'expression_statement' && n.namedChildren.some((c) => c.type === 'rethrow_expression');
 
+/**
+ * Whether a node is a LABELED `continue LABEL;` (a switch fallthrough-spill),
+ * vs a bare `continue;` (which targets the enclosing loop). Only the labeled form
+ * is stripped from a case body and handled via {@link caseContinueLabel}.
+ */
+const isLabeledContinue = (n: SyntaxNode): boolean =>
+  n.type === 'continue_statement' && n.namedChildren.some((c) => c.type === 'identifier');
+
 /** A statement sequence that produced no blocks (empty body) is "transparent". */
 type SeqResult = TraversalResult | null;
 
@@ -679,17 +687,19 @@ class DartCfgWalk {
   /** Body statements of a switch case/default (skip the case keyword/pattern/label). */
   private caseStatements(c: SyntaxNode): SyntaxNode[] {
     const NON_BODY = new Set(['case_builtin', 'label', 'constant_pattern']);
-    // A `continue LABEL` at a case's tail is its terminator, not a body statement
-    // whose target falls through — but it IS still a statement for harvesting; we
-    // drop it from the body here and handle it via `caseContinueLabel`.
+    // A LABELED `continue LABEL;` at a case tail is a fallthrough-spill, handled
+    // via caseContinueLabel — drop it from the body. But a BARE `continue;` targets
+    // the ENCLOSING LOOP (valid Dart) and MUST stay in the body: dropping it
+    // silently removes the jump and fabricates a false case→next-statement
+    // fall-through path. Only drop the labeled form.
     return c.namedChildren.filter(
-      (ch) => !isComment(ch) && !NON_BODY.has(ch.type) && ch.type !== 'continue_statement',
+      (ch) => !isComment(ch) && !NON_BODY.has(ch.type) && !isLabeledContinue(ch),
     );
   }
 
   /** A trailing `continue LABEL;` in a case spills to the labeled case. */
   private caseContinueLabel(c: SyntaxNode): string | undefined {
-    const cont = c.namedChildren.find((ch) => ch.type === 'continue_statement');
+    const cont = c.namedChildren.find((ch) => isLabeledContinue(ch));
     if (!cont) return undefined;
     const id = cont.namedChildren.find((ch) => ch.type === 'identifier');
     return id?.text || undefined;
