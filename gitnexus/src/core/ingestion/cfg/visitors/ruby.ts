@@ -82,10 +82,12 @@
  *  - `redo` re-runs the current loop/block body without re-testing the condition
  *    — modeled as a `loop-back` to the loop's continue target.
  *  - `if`/`case`/`begin` are EXPRESSIONS in Ruby (they have a value); as
- *    STATEMENTS they are modeled as control constructs. Used in expression
- *    position (`x = if c then 1 else 2 end`) the construct's arms are left INLINE
- *    inside the owning statement's block (the value flows to the assignment) —
- *    documented gap, mirroring the Java inline-value-switch handling.
+ *    STATEMENTS they are modeled as control constructs. As an `assignment` RHS
+ *    (`x = if c then 1 else 2 end` / `x = case k … end`) they are ALSO modeled as
+ *    control flow now — the arms branch and the LHS binds at the rejoin (#2205,
+ *    see {@link visitBindBranch}). Remaining inline (the same gap Java still has):
+ *    a branch nested deeper in an expression (`x = f(if c …)`, `x = (if c …) + 1`)
+ *    and an `operator_assignment` RHS (`x ||= if c …`).
  *
  * Known limitations:
  *  - `yield` is a normal expression here (no suspend/resume edge to the block
@@ -137,6 +139,14 @@ const CONTROL_FLOW_TYPES = new Set([
   'body_statement',
   'block_body',
 ]);
+
+/**
+ * Value-position branch constructs (#2205). When one of these is an `assignment`
+ * RHS (`x = if … / case …`) or a `return` value, it is modeled as control flow
+ * (its arms carry control dependence) instead of coalescing inline. `if`/`unless`
+ * always branch (the condition gates the then-arm even without `else`).
+ */
+const VALUE_BRANCH_EXPR_TYPES = new Set(['if', 'unless', 'case', 'case_match']);
 
 const startLineOf = (n: SyntaxNode): number => n.startPosition.row + 1;
 const endLineOf = (n: SyntaxNode): number => n.endPosition.row + 1;
@@ -205,7 +215,10 @@ class RubyCfgWalk {
       let openSimple: number | undefined;
 
       for (const stmt of stmts) {
-        if (CONTROL_FLOW_TYPES.has(stmt.type)) {
+        // A value-position branch on an assignment RHS (`x = if …`) is NOT in
+        // CONTROL_FLOW_TYPES (its node is `assignment`), so route it out of the
+        // coalescing path explicitly so visitStmt models its arms (#2205).
+        if (CONTROL_FLOW_TYPES.has(stmt.type) || this.isValueBranchAssignment(stmt)) {
           openSimple = undefined; // close any open straight-line block
           const res = this.visitStmt(stmt);
           if (res === null) continue; // transparent (empty nested block)
@@ -278,6 +291,13 @@ class RubyCfgWalk {
         return this.visitImplicitBegin(stmt);
       case 'block_body':
         return this.visitSeq(this.statementsOf(stmt));
+      case 'assignment': {
+        // `x = if c then a else b end` / `x = case … end` (#2205): model the RHS
+        // branch as control flow and bind the LHS on the rejoin.
+        const branch = this.assignmentBranch(stmt);
+        if (branch) return this.visitBindBranch(stmt, branch);
+        return this.visitSimple(stmt);
+      }
       default:
         return this.visitSimple(stmt);
     }
@@ -294,7 +314,14 @@ class RubyCfgWalk {
     return { entry: idx, exits: [idx] };
   }
 
-  /** `return [expr]` — threads through EVERY active `ensure` before EXIT. */
+  /**
+   * `return [expr]` — threads through EVERY active `ensure` before EXIT.
+   * (A value-position branch RETURN is handled the idiomatic Ruby way already:
+   * `def f; if c then a else b end; end` is the implicit last-expression and is
+   * modeled as statement position. Bare `return if … end` is not a clean
+   * grammar shape — tree-sitter-ruby drops the value — so it stays a plain
+   * return; the assignment carrier is the value-branch fix here, #2205.)
+   */
   private visitReturn(stmt: SyntaxNode): TraversalResult {
     const idx = this.builder.newBlock(
       startLineOf(stmt),
@@ -385,6 +412,56 @@ class RubyCfgWalk {
    * condition/consequence/alternative) or a trailing `else`. `unless` inverts the
    * sense — its consequence is the cond-FALSE arm.
    */
+  /** The value-position branch on an `assignment` RHS (`x = if … / case …`), or
+   *  undefined when the RHS is anything else (#2205). */
+  private assignmentBranch(stmt: SyntaxNode): SyntaxNode | undefined {
+    if (stmt.type !== 'assignment') return undefined;
+    const right = stmt.childForFieldName('right');
+    return right && VALUE_BRANCH_EXPR_TYPES.has(right.type) ? right : undefined;
+  }
+
+  /** Whether a statement is an `assignment` with a value-position-branch RHS —
+   *  routes it out of `visitSeq`'s coalescing path so its arms are modeled. */
+  private isValueBranchAssignment(stmt: SyntaxNode): boolean {
+    return this.assignmentBranch(stmt) !== undefined;
+  }
+
+  /** Model a value-position `if`/`unless`/`case`/`case_match` as control flow,
+   *  bypassing the statement/value-position distinction (#2205). */
+  private visitBranchExpr(node: SyntaxNode): TraversalResult {
+    switch (node.type) {
+      case 'if':
+      case 'unless':
+        return this.visitIf(node);
+      case 'case':
+        return this.visitCase(node);
+      case 'case_match':
+        return this.visitCaseMatch(node);
+      default:
+        return this.visitSimple(node); // unreachable — guarded by VALUE_BRANCH_EXPR_TYPES
+    }
+  }
+
+  /**
+   * `x = if … / case …` (#2205): visit the RHS branch as control flow, then rejoin
+   * its arms at a facts-only continuation carrying ONLY the LHS target def (the
+   * condition + arm-value uses are already harvested onto the branch's blocks).
+   * The arms are now control-dependent on the branch condition, and `x` is defined
+   * at the join — mirrors the Rust visitor's value-position `let` handling.
+   */
+  private visitBindBranch(stmt: SyntaxNode, branch: SyntaxNode): TraversalResult {
+    const res = this.visitBranchExpr(branch);
+    const cont = this.builder.newBlock(
+      startLineOf(stmt),
+      startLineOf(stmt),
+      '',
+      'normal',
+      this.harvest.assignmentDefFacts(stmt),
+    );
+    this.builder.connect(res.exits, cont, 'seq');
+    return { entry: res.entry, exits: [cont] };
+  }
+
   private visitIf(stmt: SyntaxNode): TraversalResult {
     const inverted = stmt.type === 'unless';
     const cond = stmt.childForFieldName('condition') ?? stmt;

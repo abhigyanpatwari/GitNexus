@@ -283,6 +283,19 @@ export class RubyHarvester {
     return acc.finish();
   }
 
+  /**
+   * Def-ONLY facts for a value-position assignment (`x = if … / case …`, #2205):
+   * just the LHS target(s), attached to the continuation block the branch arms
+   * rejoin. The branch condition + arm-value USES are harvested onto the branch's
+   * own blocks (visitIf / visitCase), so this must not re-walk the RHS.
+   */
+  assignmentDefFacts(stmt: SyntaxNode): StatementFacts | undefined {
+    const acc = new FactAccumulator(stmt.startPosition.row + 1);
+    const left = stmt.childForFieldName('left');
+    if (left) this.defTargets(left, acc);
+    return acc.defCount() ? acc.finish() : undefined;
+  }
+
   /** Facts for a `rescue [Exc] => e` header: `e` is a def, the exception list a use. */
   rescueHeadFacts(clause: SyntaxNode): StatementFacts {
     const acc = new FactAccumulator(clause.startPosition.row + 1);

@@ -354,6 +354,47 @@ describe('Ruby CfgVisitor — def/use harvest', () => {
   });
 });
 
+describe('Ruby CfgVisitor — value-position branches (#2205)', () => {
+  it('x = if c then a else b end models both arms (cond-true/cond-false), binds x', () => {
+    const cfg = rb.cfgOf(`def f(c)\n  x = if c then a() else b() end\n  use(x)\nend\n`);
+    expect(edgeKinds(cfg).has('cond-true')).toBe(true);
+    expect(edgeKinds(cfg).has('cond-false')).toBe(true);
+    expect(computeControlDependence(cfg).edges.length).toBeGreaterThan(0);
+    expect(hasDef(cfg, bindingIdx(cfg, 'x'))).toBe(true);
+    expect(hasUse(cfg, bindingIdx(cfg, 'x'))).toBe(true);
+  });
+
+  it('x = case k when ... end models each arm (switch-case), binds x', () => {
+    const cfg = rb.cfgOf(
+      `def f(k)\n  x = case k\n  when 1 then a()\n  else b()\n  end\n  use(x)\nend\n`,
+    );
+    expect(edgeKinds(cfg).has('switch-case')).toBe(true);
+    expect(computeControlDependence(cfg).edges.length).toBeGreaterThan(0);
+    expect(hasDef(cfg, bindingIdx(cfg, 'x'))).toBe(true);
+  });
+
+  it('implicit return of a bare if (last expression) is modeled as a branch', () => {
+    // The idiomatic Ruby "return a conditional" — a bare if/case as the method's
+    // last expression — is statement position and already branches.
+    const cfg = rb.cfgOf(`def f(c)\n  if c then a() else b() end\nend\n`);
+    expect(edgeKinds(cfg).has('cond-true')).toBe(true);
+    expect(edgeKinds(cfg).has('cond-false')).toBe(true);
+    expect(computeControlDependence(cfg).edges.length).toBeGreaterThan(0);
+  });
+
+  it('x = if c then a end (no else) still branches — the then is control-dependent on c', () => {
+    const cfg = rb.cfgOf(`def f(c)\n  x = if c then a() end\n  use(x)\nend\n`);
+    expect(edgeKinds(cfg).has('cond-true')).toBe(true);
+    expect(computeControlDependence(cfg).edges.length).toBeGreaterThan(0);
+  });
+
+  it('a plain assignment (no branch RHS) still coalesces — no branch edges', () => {
+    const cfg = rb.cfgOf(`def f\n  x = foo()\n  use(x)\nend\n`);
+    expect(edgeKinds(cfg).has('cond-true')).toBe(false);
+    expect(edgeKinds(cfg).has('switch-case')).toBe(false);
+  });
+});
+
 describe('Ruby CfgVisitor — functionStartColumn', () => {
   it('two same-line blocks get distinct functionStartColumn', () => {
     const cfgs = rb.cfgsOf(`a.map { |x| x() }; b.map { |y| y() }\n`);
