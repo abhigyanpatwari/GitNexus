@@ -19,6 +19,7 @@ import {
   NodeTableName,
 } from './schema.js';
 import { streamAllCSVsToDisk } from './csv-generator.js';
+import type { PdgEmitManifest } from './pdg-emit-sink.js';
 import { getNodeLabel as deriveNodeLabel } from './rel-pair-routing.js';
 import type { CachedEmbedding } from '../embeddings/types.js';
 import { extensionManager, type ExtensionEnsureOptions } from './extension-loader.js';
@@ -872,6 +873,15 @@ export const loadGraphToLbug = async (
   repoPath: string,
   storagePath: string,
   onProgress?: LbugProgressCallback,
+  /**
+   * Streamed PDG-emit manifest (#2202). When present (streaming was on, full
+   * rebuild), the BasicBlock node CSV + per-pair PDG-edge CSVs it points at
+   * were already flushed to disk during the emit loop; they are merged into the
+   * COPY plan below so they load alongside the structural CSVs. When streaming
+   * was on the in-memory `graph` holds zero BasicBlocks, so `streamAllCSVsToDisk`
+   * emits none — the manifest is the sole source and there is no double-COPY.
+   */
+  pdgEmitManifest?: PdgEmitManifest,
 ) => {
   if (!conn) {
     throw new Error('LadybugDB not initialized. Call initLbug first.');
@@ -900,6 +910,22 @@ export const loadGraphToLbug = async (
 
   log('Streaming CSVs to disk...');
   const csvResult = await streamAllCSVsToDisk(graph, repoPath, csvDir);
+
+  // Merge the streamed PDG-emit CSVs (#2202) into the COPY plan so the
+  // BasicBlock node table + per-pair PDG edges (CFG / REACHING_DEF / CDG /
+  // POST_DOMINATE / TAINTED / SANITIZES) load through the SAME node + per-pair
+  // COPY loops as the structural CSVs. The graph held zero BasicBlocks when
+  // streaming, so `streamAllCSVsToDisk` produced none of these — the manifest
+  // is the sole source and there is no double-COPY. Absent ⇒ no-op.
+  if (pdgEmitManifest) {
+    for (const [table, meta] of pdgEmitManifest.nodeFiles) {
+      csvResult.nodeFiles.set(table, meta);
+    }
+    for (const [pairKey, meta] of pdgEmitManifest.relsByPair) {
+      csvResult.relsByPair.set(pairKey, meta);
+      csvResult.totalValidRels += meta.rows;
+    }
+  }
   const tCsv = mark();
 
   const validTables = new Set<string>(NODE_TABLES as readonly string[]);

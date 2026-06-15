@@ -1117,11 +1117,21 @@ export async function runFullAnalysis(
       });
     } else {
       // ── Full rebuild ───────────────────────────────────────────────
-      await loadGraphToLbug(pipelineResult.graph, pipelineResult.repoPath, storagePath, (msg) => {
-        lbugMsgCount++;
-        const pct = Math.min(84, 60 + Math.round((lbugMsgCount / (lbugMsgCount + 10)) * 24));
-        progress('lbug', pct, msg);
-      });
+      // Pass the streamed PDG-emit manifest (#2202) so the BasicBlock layer that
+      // was flushed to CSV during the emit loop is COPY'd alongside the
+      // structural CSVs. Only ever set on a full rebuild (streaming is
+      // force-gated), so the incremental branch above never carries it.
+      await loadGraphToLbug(
+        pipelineResult.graph,
+        pipelineResult.repoPath,
+        storagePath,
+        (msg) => {
+          lbugMsgCount++;
+          const pct = Math.min(84, 60 + Math.round((lbugMsgCount / (lbugMsgCount + 10)) * 24));
+          progress('lbug', pct, msg);
+        },
+        pipelineResult.pdgEmitManifest,
+      );
     }
 
     // ── Phase 3: FTS (85–90%) ─────────────────────────────────────────
