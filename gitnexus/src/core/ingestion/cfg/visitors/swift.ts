@@ -88,6 +88,12 @@
  *    trailing closure, which is unwrapped to model scope-exit flow.
  *
  * Known limitations:
+ *  - a value-position `if`/`switch` (Swift 5.9) IS modeled as control flow in two
+ *    carriers (#2207): a `let x = if … else … / switch … {…}` binding (arms rejoin
+ *    at a binding continuation) and `return if … / switch …` (each arm returns).
+ *    tree-sitter-swift reuses `if_statement` / `switch_statement` for the value
+ *    form. A value branch in any OTHER position (an argument, an interpolation)
+ *    stays inline; the ternary `?:` / `??` are excluded by design.
  *  - computed properties (`var y: Int { get { … } set { … } }`) have their bodies
  *    inside `computed_getter` / `computed_setter` rather than a function node; v1
  *    does NOT build a CFG for them (documented gap, not faked).
@@ -232,6 +238,12 @@ class SwiftCfgWalk {
   private isControlFlow(stmt: SyntaxNode): boolean {
     if (stmt.type === 'statement_label') return true; // queue label, emit no block
     if (this.isDeferCall(stmt)) return true;
+    // `let x = if … / switch …` (Swift 5.9, #2207): a value-position branch breaks
+    // so `visitStmt` models the arms as control flow instead of coalescing.
+    if (stmt.type === 'property_declaration') {
+      const v = this.directValue(stmt);
+      return v !== undefined && this.isModelableValueBranch(v);
+    }
     return CONTROL_FLOW_TYPES.has(stmt.type);
   }
 
@@ -245,6 +257,13 @@ class SwiftCfgWalk {
     }
     if (this.isDeferCall(stmt)) return this.visitDefer(stmt);
     switch (stmt.type) {
+      case 'property_declaration': {
+        // `let x = if … / switch …` (Swift 5.9, #2207): the value is a value-
+        // position branch — model it as control flow and bind on the rejoin.
+        const value = this.directValue(stmt);
+        if (value && this.isModelableValueBranch(value)) return this.visitBindBranch(stmt, value);
+        return this.visitSimple(stmt);
+      }
       case 'if_statement':
         return this.visitIf(stmt);
       case 'guard_statement':
@@ -308,6 +327,20 @@ class SwiftCfgWalk {
 
   /** `return [expr]` — threads through every active `defer` (LIFO) before EXIT. */
   private visitReturn(stmt: SyntaxNode): TraversalResult {
+    // `return if … / switch …` (Swift 5.9, #2207): the returned value is a value-
+    // position branch — model it as control flow, with each arm returning (its
+    // value IS the function result), threading every active finalizer per arm.
+    const branch = stmt.namedChildren.find(
+      (c) => c.type === 'if_statement' || c.type === 'switch_statement',
+    );
+    if (branch && this.isModelableValueBranch(branch)) {
+      const res = this.visitBranchExpr(branch);
+      const finalizers = this.cfc.finalizersForReturn();
+      for (const ex of res.exits) {
+        wireJumpThroughFinalizers(this.builder, ex, finalizers, this.builder.exitIndex, 'return');
+      }
+      return { entry: res.entry, exits: [] };
+    }
     const idx = this.builder.newBlock(
       startLineOf(stmt),
       endLineOf(stmt),
@@ -382,6 +415,58 @@ class SwiftCfgWalk {
     const labels = this.pendingLabels;
     this.pendingLabels = [];
     return labels;
+  }
+
+  // ── value-position branches (#2207) ─────────────────────────────────────────
+
+  /**
+   * The value-position branch of a `property_declaration` (`let x = if … / switch
+   * …`, Swift 5.9): the direct `if_statement` / `switch_statement` child (the value
+   * after `=`), or undefined. tree-sitter-swift reuses the statement nodes for the
+   * value form — there is no separate `if_expression` / `switch_expression`.
+   */
+  private directValue(stmt: SyntaxNode): SyntaxNode | undefined {
+    return stmt.namedChildren.find(
+      (c) => c.type === 'if_statement' || c.type === 'switch_statement',
+    );
+  }
+
+  /**
+   * Whether `node` is a value-position branch worth modeling as control flow
+   * (#2207): an `if` with an `else` (a value-position `if` always has one), or a
+   * `switch` with ≥2 entries — a real dispatch. The ternary `?:` and `??` are
+   * excluded by design (micro-branches, like the Kotlin elvis).
+   */
+  private isModelableValueBranch(node: SyntaxNode): boolean {
+    if (node.type === 'if_statement') return this.elseNodeOf(node) !== undefined;
+    if (node.type === 'switch_statement') {
+      return node.namedChildren.filter((c) => c.type === 'switch_entry').length >= 2;
+    }
+    return false;
+  }
+
+  /** Model a value-position `if`/`switch` as control flow, bypassing position. */
+  private visitBranchExpr(node: SyntaxNode): TraversalResult {
+    return node.type === 'switch_statement' ? this.visitSwitch(node) : this.visitIf(node);
+  }
+
+  /**
+   * `let x = if … / switch …` (#2207): visit the branch as control flow, then
+   * rejoin its arms at a facts-only continuation carrying ONLY the bound name's
+   * def (the condition + arm-value uses are already on the branch's blocks). The
+   * arms are now control-dependent on the branch — mirrors Kotlin / Rust.
+   */
+  private visitBindBranch(stmt: SyntaxNode, branch: SyntaxNode): TraversalResult {
+    const res = this.visitBranchExpr(branch);
+    const cont = this.builder.newBlock(
+      startLineOf(stmt),
+      startLineOf(stmt),
+      '',
+      'normal',
+      this.harvest.bindingDefFacts(stmt),
+    );
+    this.builder.connect(res.exits, cont, 'seq');
+    return { entry: res.entry, exits: [cont] };
   }
 
   // ── branches ──────────────────────────────────────────────────────────────

@@ -280,6 +280,24 @@ export class SwiftHarvester {
   }
 
   /**
+   * Def-ONLY facts for a value-position binding carrier (`let x = if … / switch …`,
+   * #2207): just the declared name pattern's leaves, attached to the continuation
+   * block the branch arms rejoin. The condition + arm-value USES are already
+   * harvested onto the branch's own blocks (visitIf / visitSwitch), so this must
+   * NOT re-walk the value — only the `name`-field pattern leaves are defs here.
+   */
+  bindingDefFacts(stmt: SyntaxNode): StatementFacts | undefined {
+    const acc = new FactAccumulator(stmt.startPosition.row + 1);
+    for (let i = 0; i < stmt.childCount; i++) {
+      if (stmt.fieldNameForChild(i) === 'name') {
+        const pat = stmt.child(i);
+        if (pat) this.defPattern(pat, acc);
+      }
+    }
+    return acc.defCount() ? acc.finish() : undefined;
+  }
+
+  /**
    * MAY-def facts for a `switch_pattern`'s value bindings (`case let n` /
    * `case .some(let v)`). The binding only takes effect when the case matches,
    * so it is a may-def on the dispatch block — propagated into the case body
