@@ -572,6 +572,12 @@ export const streamAllCSVsToDisk = async (
                     : []),
                 ].join(','),
               );
+            } else {
+              // Unknown label: not in codeWriterMap or multiLangWriters, so there
+              // is no CSV table for it and it is intentionally NOT persisted —
+              // `pending` stays undefined, so the loop awaits nothing. Made
+              // explicit so a future node type isn't silently dropped here: wire
+              // it into one of the writer maps above (or this branch).
             }
           }
           break;
