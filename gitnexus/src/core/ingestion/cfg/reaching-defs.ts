@@ -103,6 +103,19 @@ export interface ReachingDefsLimits {
    * a per-function budget).
    */
   readonly maxBlockVisits?: number;
+  /**
+   * Memory bound on the SSA-sparse solver's value-graph construction (#2201
+   * review R1). `maxFacts` bounds fact MATERIALIZATION (sweepFacts) but nothing
+   * bounds the φ/value-graph the sparse path builds first; a high-binding-density
+   * deep loop routed to SSA (≥ SSA_MIN_BLOCKS blocks + a reachable loop) builds an
+   * O(blocks×bindings) graph the dense path would have truncated at the
+   * `maxBlockVisits` ceiling (~1.5 GB measured on a 3000-block × 300-binding
+   * function). When the projected node count would exceed this, the sparse solver
+   * falls back to the dense oracle (byte-identical, and bounded — dense honors
+   * `maxBlockVisits`). Honored ONLY by the sparse path; the dense solver ignores
+   * it. `undefined`/0 ⇒ {@link DEFAULT_MAX_SSA_VALUE_GRAPH_NODES}.
+   */
+  readonly maxSsaValueGraphNodes?: number;
 }
 
 export interface FunctionDefUse {
@@ -664,6 +677,25 @@ function computeInSetsSparse(
     }
   }
 
+  // ── memory bound (#2201 review R1): cap the value graph, else fall back ──
+  // After φ-placement, nodeKeys.length == the φ-node count — the term that grows
+  // superlinearly with the input on the deep-loop / dense-binding pathology.
+  // Renaming below adds at most ~2 nodes per gen entry (already bounded by the
+  // def-site universe the STMT_STRIDE overflow guard caps). If the projected
+  // total would exceed the budget, fall back to the dense oracle here — BEFORE
+  // paying for renaming + Tarjan SCC on a blown-up graph. Byte-identical (dense
+  // is the equivalence oracle) and bounded (dense honors maxBlockVisits). Mirrors
+  // the throw-edge / unreachable / OOB-binding gates at the top of this function.
+  const nodeBudget =
+    limits?.maxSsaValueGraphNodes && limits.maxSsaValueGraphNodes > 0
+      ? limits.maxSsaValueGraphNodes
+      : DEFAULT_MAX_SSA_VALUE_GRAPH_NODES;
+  let projectedRenameNodes = 0;
+  for (let b = 0; b < n; b++) projectedRenameNodes += (gen[b]?.size ?? 0) * 2;
+  if (nodeKeys.length + projectedRenameNodes > nodeBudget) {
+    return computeInSetsDense(cfg, n, h, adj, limits);
+  }
+
   // ── renaming (iterative dominator-tree DFS, per-binding value stacks) ──
   const domChildren: number[][] = Array.from({ length: nx }, () => []);
   for (let b = 0; b < nx; b++) if (b !== S && idom[b] !== -1) domChildren[idom[b]].push(b);
@@ -824,6 +856,21 @@ function computeInSetsSparse(
  * always take the cheaper dense path regardless of size.
  */
 const SSA_MIN_BLOCKS = 16;
+
+/**
+ * Default ceiling on the SSA-sparse solver's value-graph node count (#2201
+ * review R1). Above this the sparse path falls back to the dense oracle (which
+ * bounds its own work via `maxBlockVisits`), trading the deep-loop full-facts
+ * win for bounded memory on pathological inputs. Sized FAR above any real or
+ * benchmarked function: the suite's densest SSA scenarios (`dense-bindings`,
+ * `deep-nest`) build well under 10⁴ nodes, while the pathology this guards
+ * (thousands of blocks × hundreds of bindings) builds 10⁶–10⁷. The
+ * `dense-bindings` / `deep-nest` `rd_scaling_budget` gates in
+ * bench/cfg/baselines.json fail if this is set so low it forces those scenarios
+ * onto the dense path. Overridable per-call via
+ * {@link ReachingDefsLimits.maxSsaValueGraphNodes}.
+ */
+const DEFAULT_MAX_SSA_VALUE_GRAPH_NODES = 1_000_000;
 
 /**
  * True iff a cycle is reachable from `entry` (the CFG has a loop). Iterative DFS

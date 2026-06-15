@@ -425,6 +425,63 @@ describe('computeReachingDefs — determinism and convergence', () => {
     expect(prod!.status).toBe(dense.status);
     expect(render(prod!.facts)).toEqual(render(dense.facts)); // byte-identical to the tolerant dense path
   });
+
+  it('#2201 R1: an oversized SSA value graph falls back to the dense oracle (byte-identical)', () => {
+    // A ≥16-block looping multi-binding CFG → the production dispatcher routes it
+    // to the SSA-sparse path. `maxFacts` bounds only fact materialization, not the
+    // φ/value-graph the sparse path builds first; `maxSsaValueGraphNodes` caps that
+    // graph and falls back to the dense oracle when it would be too large. Because
+    // the fallback is byte-identical to dense, the routing flip is made OBSERVABLE
+    // via a tight `maxBlockVisits`: dense honors the ceiling (truncates), the SSA
+    // path ignores it (computes) — so the same budget yields different statuses
+    // depending on which solver ran.
+    const K = 4; // bindings
+    const blocks: BlockSpec[] = [{}, {}]; // 0 entry, 1 exit
+    const edges: [number, number][] = [[0, 2]];
+    const BODY = 18; // body blocks 2..19 → 20 blocks total (≥ SSA_MIN_BLOCKS)
+    for (let i = 0; i < BODY; i++) {
+      const b = 2 + i;
+      blocks[b] = { stmts: [stmt(b * 10, [i % K], [(i + 1) % K])] };
+      if (i < BODY - 1) edges.push([b, b + 1]);
+    }
+    edges.push([2 + BODY - 1, 2]); // back-edge → reachable loop (forces SSA dispatch)
+    edges.push([2, 1]); // exit
+    const bindings = Array.from({ length: K }, (_, i) => `v${i}`);
+    const mk = () => mkCfg(blocks, edges, bindings);
+    expect(mk().blocks.length).toBeGreaterThanOrEqual(16);
+
+    const denseFull = computeReachingDefsDense(mk());
+    expect(denseFull.status).toBe('computed');
+    expect(denseFull.facts.length).toBeGreaterThan(0);
+
+    // Tiny node cap, unbounded visits → falls back to dense → byte-identical.
+    const cappedUnbounded = computeReachingDefs(mk(), { maxSsaValueGraphNodes: 1 });
+    expect(cappedUnbounded.status).toBe(denseFull.status);
+    expect(render(cappedUnbounded.facts)).toEqual(render(denseFull.facts));
+
+    // Tiny node cap + tight block-visit budget → fallback to dense, whose ceiling
+    // then fires (truncated, empty). This is the observable proof the cap diverted
+    // the solve to the dense path.
+    const cappedBudgeted = computeReachingDefs(mk(), {
+      maxSsaValueGraphNodes: 1,
+      maxBlockVisits: 1,
+    });
+    expect(cappedBudgeted.status).toBe('truncated');
+    expect(cappedBudgeted.facts).toEqual([]);
+
+    // Default (huge) cap + the SAME tight budget → SSA path runs (no fixpoint
+    // iteration → ceiling never fires) and computes the full facts.
+    const uncapped = computeReachingDefs(mk(), { maxBlockVisits: 1 });
+    expect(uncapped.status).toBe('computed');
+    expect(render(uncapped.facts)).toEqual(render(denseFull.facts));
+
+    // Boundary monotonicity: a cap well above the graph stays on SSA (computes
+    // under the tight budget), a cap well below falls back (truncates).
+    const above = computeReachingDefs(mk(), { maxSsaValueGraphNodes: 100_000, maxBlockVisits: 1 });
+    expect(above.status).toBe('computed');
+    const below = computeReachingDefs(mk(), { maxSsaValueGraphNodes: 5, maxBlockVisits: 1 });
+    expect(below.status).toBe('truncated');
+  });
 });
 
 describe('computeReachingDefs — parser-direct acceptance (with U1/U2)', () => {
