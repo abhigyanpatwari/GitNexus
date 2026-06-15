@@ -164,7 +164,28 @@ class CsharpCfgWalk {
       let dangling: number[] = [];
       let openSimple: number | undefined;
 
-      for (const stmt of stmts) {
+      for (let i = 0; i < stmts.length; i++) {
+        const stmt = stmts[i];
+        if (this.isUsingLocalDecl(stmt)) {
+          // `using var f = e;` (C# 8 declaration form): the dispose runs at the END
+          // of the enclosing scope, so the REST of this sequence is the protected
+          // body. The acquisition (`var f = e`) is a normal block OUTSIDE the dispose
+          // region (if it throws, the resource was never acquired) (#2206).
+          openSimple = undefined;
+          const acq = this.builder.newBlock(
+            startLineOf(stmt),
+            endLineOf(stmt),
+            stmt.text,
+            'normal',
+            this.harvest.facts(stmt),
+          );
+          if (entry === undefined) entry = acq;
+          else this.builder.connect(dangling, acq, 'seq');
+          const scope = this.buildUsingDeclScope(stmt, stmts.slice(i + 1));
+          this.builder.connect([acq], scope.entry, 'seq');
+          dangling = [...scope.exits];
+          break; // the rest of the sequence is consumed by the dispose scope
+        }
         if (CONTROL_FLOW_TYPES.has(stmt.type)) {
           openSimple = undefined; // close any open straight-line block
           const res = this.visitStmt(stmt);
@@ -678,6 +699,48 @@ class CsharpCfgWalk {
   private usingResource(stmt: SyntaxNode): SyntaxNode | undefined {
     const body = stmt.childForFieldName('body');
     return stmt.namedChildren.find((c) => c.id !== body?.id && c.type !== 'comment');
+  }
+
+  /**
+   * Whether `stmt` is a C# 8 `using var f = …;` declaration (a
+   * `local_declaration_statement` with a leading `using` keyword) — the dispose
+   * runs at enclosing-scope exit, NOT a delimited block (#2206).
+   */
+  private isUsingLocalDecl(stmt: SyntaxNode): boolean {
+    if (stmt.type !== 'local_declaration_statement') return false;
+    for (let i = 0; i < stmt.childCount; i++) {
+      if (stmt.child(i)?.type === 'using') return true;
+    }
+    return false;
+  }
+
+  /**
+   * Build the dispose scope for a `using var f = …;` declaration: `restStmts` (the
+   * rest of the enclosing block) is the protected body, and a synthetic `dispose`
+   * finalizer runs on normal exit AND on exception, with a `return`/`break`/
+   * `continue` crossing it threading through (finally-* completion edges). Mirrors
+   * {@link buildProtectedSynthetic}, but the body is a statement LIST (#2206).
+   */
+  private buildUsingDeclScope(declStmt: SyntaxNode, restStmts: SyntaxNode[]): SeqResult {
+    const disposeBlock = this.builder.newBlock(endLineOf(declStmt), endLineOf(declStmt), 'dispose');
+    const finFrame = this.cfc.pushFinalizer(disposeBlock);
+
+    const protectedStart = this.builder.blockCount;
+    this.handlers.push(disposeBlock);
+    const bodyRes = this.visitSeq(restStmts);
+    this.handlers.pop();
+
+    for (let b = protectedStart; b < this.builder.blockCount; b++) {
+      this.builder.edge(b, disposeBlock, 'throw');
+    }
+
+    this.cfc.pop();
+    drainFinalizerPending(this.builder, finFrame, [disposeBlock]);
+
+    if (bodyRes) this.builder.connect(bodyRes.exits, disposeBlock, 'seq');
+    this.builder.connect([disposeBlock], this.currentHandler(), 'throw');
+
+    return { entry: bodyRes?.entry ?? disposeBlock, exits: [disposeBlock] };
   }
 
   /**

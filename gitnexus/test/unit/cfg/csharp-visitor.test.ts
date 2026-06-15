@@ -231,6 +231,21 @@ describe('C# CfgVisitor — using / lock (deterministic finalizer)', () => {
     expect(edgeKinds(cfg).has('finally-return')).toBe(true);
   });
 
+  it('using var (C# 8 declaration form) disposes at enclosing-scope exit (#2206)', () => {
+    const cfg = cs.cfgOf(`class C { void M() { using var f = Open(); read(f); } }`);
+    const dispose = block(cfg, 'dispose');
+    // the rest of the scope (read(f)) is protected; dispose runs at the end and on
+    // the exception path.
+    expect(reaches(cfg, block(cfg, 'read(f);'), dispose)).toBe(true);
+    expect(edgeKinds(cfg).has('throw')).toBe(true);
+  });
+
+  it('a return after a using var declaration crosses the dispose (finally-return, #2206)', () => {
+    const cfg = cs.cfgOf(`class C { int M() { using var f = Open(); return read(f); } }`);
+    expect(block(cfg, 'dispose')).toBeGreaterThanOrEqual(0);
+    expect(edgeKinds(cfg).has('finally-return')).toBe(true);
+  });
+
   it('lock body runs then releases the monitor (finalizer semantics)', () => {
     const cfg = cs.cfgOf(`class C { void M(object sync) { lock (sync) { touch(); } after(); } }`);
     const body = block(cfg, 'touch();');
