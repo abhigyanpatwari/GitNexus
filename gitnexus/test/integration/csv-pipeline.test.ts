@@ -253,6 +253,27 @@ describe('streamAllCSVsToDisk', () => {
     expect(fileCsv).toBeDefined();
     expect(fileCsv!.rows).toBe(1);
   });
+
+  it('crosses the BufferedCSVWriter FLUSH_EVERY boundary without losing rows', async () => {
+    // FLUSH_EVERY=500; a >500-node graph forces ≥1 mid-stream flush, exercising
+    // addRow's flush-promise return + the loop's `if (pending) await pending`
+    // path that the small fixtures above never reach (only the bench did).
+    const N = 600;
+    const nodes = Array.from({ length: N }, (_, i) => ({
+      id: `File:src/f${i}.ts`,
+      label: 'File' as const,
+      name: `f${i}.ts`,
+      filePath: `src/f${i}.ts`,
+    }));
+    const result = await streamAllCSVsToDisk(buildTestGraph(nodes), repoDir, csvDir);
+
+    const fileCsv = result.nodeFiles.get('File');
+    expect(fileCsv).toBeDefined();
+    expect(fileCsv!.rows).toBe(N); // no rows dropped/duplicated at the flush boundary
+    const dataRows = dataRowsOf(await fs.readFile(fileCsv!.csvPath, 'utf-8'));
+    expect(dataRows).toHaveLength(N);
+    expect(new Set(dataRows).size).toBe(N); // all distinct — no flush-boundary corruption
+  });
 });
 
 /**
