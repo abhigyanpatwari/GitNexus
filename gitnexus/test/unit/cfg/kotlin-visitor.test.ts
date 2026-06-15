@@ -152,6 +152,20 @@ describe('Kotlin CfgVisitor — when (no fallthrough)', () => {
     // the dispatch can reach after() without entering arm 1 (no-match path).
     expect(reachable(cfg, block(cfg, 'after()'))).toBe(true);
   });
+
+  it('all-empty arms WITH else still dispatch (no orphaned join, EXIT reverse-reachable)', () => {
+    // `when(k){0->{};else->{}}`: every arm body is empty and the `else` suppresses
+    // the no-match edge — the dispatch must still reach the join, else EXIT is not
+    // reverse-reachable and the whole function's CDG is dropped (was a real bug).
+    const cfg = kotlin.cfgOf(`fun f(k: Int) { when (k) { 0 -> {}; else -> {} }; after() }`);
+    expect(isExitReachableFromAllBlocks(cfg)).toBe(true);
+    expect(reaches(cfg, cfg.entryIndex, block(cfg, 'after()'))).toBe(true);
+  });
+
+  it('all-empty arms in value position (val x = when) stay EXIT reverse-reachable', () => {
+    const cfg = kotlin.cfgOf(`fun f(k: Int) { val x = when (k) { 0 -> {}; else -> {} }; use(x) }`);
+    expect(isExitReachableFromAllBlocks(cfg)).toBe(true);
+  });
 });
 
 describe('Kotlin CfgVisitor — value-position branches (#2205)', () => {

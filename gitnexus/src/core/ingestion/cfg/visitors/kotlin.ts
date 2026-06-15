@@ -628,16 +628,22 @@ class KotlinCfgWalk {
     const hasElse = entries.some((e) => this.entryIsElse(e));
 
     for (const res of entryResults) {
-      if (!res) continue;
-      this.builder.edge(dispatch, res.entry, 'switch-case');
+      // An EMPTY-body arm still dispatches — it falls straight to the join. Wiring
+      // it (rather than skipping) keeps the dispatch from ending up with ZERO
+      // successors, which would orphan whenExit and break EXIT reverse-reachability
+      // (so the whole function's CDG gets dropped). The canonical trigger is an
+      // all-empty `when` with an `else` arm — `when(k){0->{};else->{}}` — where the
+      // no-match edge below is suppressed. The builder dedups, so this coexists
+      // with the no-match edge.
+      this.builder.edge(dispatch, res ? res.entry : whenExit, 'switch-case');
     }
     // A `when` with no `else` (statement position) may match no arm — the no-match
     // path falls straight to the join.
     if (!hasElse) this.builder.edge(dispatch, whenExit, 'switch-case');
 
     const exits: number[] = [whenExit];
-    // Each arm rejoins after the when (no fallthrough); an empty-body entry's
-    // dispatch edge already targets whenExit via the no-match path below.
+    // Each non-empty arm rejoins after the when (no fallthrough); an empty arm's
+    // dispatch edge already targets whenExit above.
     for (const res of entryResults) {
       if (!res) continue;
       this.builder.connect(res.exits, whenExit, 'seq');
