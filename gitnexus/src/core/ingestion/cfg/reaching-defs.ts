@@ -823,8 +823,42 @@ function computeInSetsSparse(
   }
   const reachByScc: DefSet[] = new Array(sccMembers.length);
   for (let s = 0; s < sccMembers.length; s++) {
+    const members = sccMembers[s];
+    // Alias fast path (#2201 review R2): an SCC with NO own leaf keys whose
+    // cross-SCC operands all resolve to a SINGLE source SCC has exactly that
+    // source's reaching set — share it BY REFERENCE instead of copying it
+    // element-by-element. This is the common shape (a pass-through φ / single-
+    // operand value node), and the copy it avoids is the O(defs²) cost at
+    // wide-fan-in merges (a φ over many predecessors each carrying a large set).
+    // Contents are identical, and reachByScc sets are read-only after this pass
+    // (operand SCCs are numbered before s — Tarjan's reverse-topo order — and
+    // are only iterated, never mutated), so sharing is safe.
+    let aliasTarget = -1; // the unique cross-SCC source SCC, or -1 if none/many
+    let hasOwnKeys = false;
+    let multiSource = false;
+    for (const node of members) {
+      if (nodeKeys[node]) {
+        hasOwnKeys = true;
+        break;
+      }
+      for (const w of nodeOps[node]) {
+        const ws = sccOf[w];
+        if (ws === s) continue; // intra-SCC operand: same set being built, adds nothing
+        if (aliasTarget === -1) aliasTarget = ws;
+        else if (aliasTarget !== ws) {
+          multiSource = true;
+          break;
+        }
+      }
+      if (multiSource) break;
+    }
+    if (!hasOwnKeys && !multiSource && aliasTarget !== -1) {
+      reachByScc[s] = reachByScc[aliasTarget]; // zero-copy share
+      continue;
+    }
+    // General case: union own leaf keys + every distinct cross-SCC operand set.
     const set: DefSet = new Set();
-    for (const node of sccMembers[s]) {
+    for (const node of members) {
       const keys = nodeKeys[node];
       if (keys) for (const k of keys) set.add(k);
       for (const w of nodeOps[node]) {
