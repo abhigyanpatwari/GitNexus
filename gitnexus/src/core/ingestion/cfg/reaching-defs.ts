@@ -576,10 +576,21 @@ function computeInSetsSparse(
   succsX[S] = [entry];
   const dPredsX: number[][] = new Array(nx);
   for (let b = 0; b < n; b++) {
-    const set = new Set<number>();
-    for (const p of preds[b]) set.add(p.from);
-    if (b === entry) set.add(S);
-    dPredsX[b] = [...set].sort((a, c) => a - c);
+    // preds[b] is pre-sorted by `from` (buildAdjacency), so duplicate `from`
+    // values (a throw + non-throw edge to the same handler, or parallel edges)
+    // are ADJACENT — dedup by skipping consecutive equals instead of a per-block
+    // Set + spread + sort (#2201 review R9). S = n exceeds every block index, so
+    // appending it for the entry keeps the list ascending without a re-sort.
+    const list: number[] = [];
+    let last = -1;
+    for (const p of preds[b]) {
+      if (p.from !== last) {
+        list.push(p.from);
+        last = p.from;
+      }
+    }
+    if (b === entry) list.push(S);
+    dPredsX[b] = list;
   }
   dPredsX[S] = [];
 
@@ -968,6 +979,10 @@ function sweepFacts(
 ): { facts: DefUseFact[]; truncated: boolean } {
   const facts: DefUseFact[] = [];
   let truncated = false;
+  // Scratch buffer for one use's reaching def-keys, reused across every use to
+  // avoid a per-use array allocation (#2201 review R9). Cleared per use; the
+  // KTD6 sort below operates on it in place.
+  const useKeys: number[] = [];
 
   outer: for (const b of blocks) {
     const stmts = b.statements;
@@ -988,16 +1003,21 @@ function sweepFacts(
       // self-fact on compound assignments is harmless; missing the
       // assign-and-test def→use (the most common JS idiom) would be a taint
       // false negative. May-defs join the self-key set the same way.
-      const sameStmtDefs =
-        s.defs.length > 0 || s.mayDefs?.length ? new Set([...s.defs, ...(s.mayDefs ?? [])]) : null;
+      // def/mayDef arrays are tiny (1–3 entries), so a membership scan over them
+      // is cheaper than the old per-statement `new Set([...defs, ...mayDefs])`
+      // (#2201 review R9). `hasSelfDefs` short-circuits pure-use statements.
+      const hasSelfDefs = s.defs.length > 0 || (s.mayDefs?.length ?? 0) > 0;
       for (const u of s.uses) {
         const reaching = overlay.get(u) ?? reachingAt(b.index, u);
-        const selfKey = sameStmtDefs?.has(u) ? defKey(b.index, i) : undefined;
+        const selfKey =
+          hasSelfDefs && (s.defs.includes(u) || (s.mayDefs?.includes(u) ?? false))
+            ? defKey(b.index, i)
+            : undefined;
         if (!reaching && selfKey === undefined) continue;
-        const keys =
-          selfKey !== undefined && !reaching?.has(selfKey)
-            ? [...(reaching ?? []), selfKey]
-            : [...(reaching ?? [])];
+        // Reuse the scratch buffer instead of spreading a fresh array per use.
+        useKeys.length = 0;
+        if (reaching) for (const k of reaching) useKeys.push(k);
+        if (selfKey !== undefined && !reaching?.has(selfKey)) useKeys.push(selfKey);
         // Canonical emission order (#2201 KTD6): sort each use's reaching
         // def-sites by defKey (= def block, then def stmt) BEFORE the maxFacts
         // cutoff. The full (untruncated) fact array is re-sorted identically at
@@ -1007,8 +1027,8 @@ function sweepFacts(
         // bindings (dense RPO vs sparse change-driven seed different keys
         // first), so a pre-sort cutoff is what keeps the two solvers'
         // truncated results byte-identical.
-        keys.sort((a, b) => a - b);
-        for (const key of keys) {
+        useKeys.sort((a, b) => a - b);
+        for (const key of useKeys) {
           if (facts.length >= maxFacts) {
             truncated = true;
             break outer;
