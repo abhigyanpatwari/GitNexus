@@ -26,15 +26,21 @@
  * Byte-identity (issue acceptance): the sink reuses the SAME shared row
  * builders (`buildBasicBlockRow`, `buildRelRow`) and label derivation
  * (`getNodeLabel`) as `streamAllCSVsToDisk`, so the streamed CSV line SET is
- * identical to the whole-graph emit's. Under `GITNEXUS_SORT_GRAPH_OUTPUT`
- * (order-independent) the persisted graph is byte-identical regardless of the
- * order rows were streamed in. The sink keeps per-id seen-sets that mirror the
- * in-memory graph's first-writer-wins Map idempotency — load-bearing because a
- * file can be PDG-emitted in more than one language pass (a `.ts` module
- * imported by a `.vue` SFC is emitted in both the TypeScript and Vue context
- * passes over the same worker-built CFG), and the graph dedups those by id
- * where a dedup-free sink would double the rows. The differential fingerprint
- * test (issue #2202 U6) and the duplicate-id unit test guard byte-identity.
+ * identical to the whole-graph emit's, and the bulk COPY loads the same rows →
+ * the persisted graph is SET-identical and DB-identical. The guarantee is
+ * set-level, not byte-level on the CSV file: the sink streams rows in emit
+ * order and does NOT re-sort them under `GITNEXUS_SORT_GRAPH_OUTPUT`, so a
+ * streamed CSV file is not necessarily byte-for-byte equal to the sorted
+ * whole-graph CSV — but the row set, and therefore the DB outcome, is. (The
+ * streamed CSVs are deleted right after the COPY, so their on-disk byte order
+ * is never observed.) Cross-pass dedup is done upstream, per FILE, in the emit
+ * loop (`run.ts` skips a file whose PDG already streamed) rather than in the
+ * sink, because a file can be PDG-emitted in more than one language pass (a
+ * `.ts` module imported by a `.vue` SFC is emitted in both the TypeScript and
+ * Vue context passes over the same worker-built CFG) and a sink-level per-id
+ * dedup set would retain every id → O(total ids) memory, defeating the
+ * O(chunk) RSS bound (#2202 review #1). The differential fingerprint test
+ * (issue #2202 U6) and the Vue+TS cross-pass integration test guard the set.
  */
 
 import fs from 'fs';
