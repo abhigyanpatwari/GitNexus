@@ -22,6 +22,7 @@ import { dartExportChecker } from '../export-detection.js';
 import { createImportResolver } from '../import-resolvers/resolver-factory.js';
 import { dartImportConfig } from '../import-resolvers/configs/dart.js';
 import { DART_QUERIES } from '../tree-sitter-queries.js';
+import { createDartCfgVisitor } from '../cfg/visitors/dart.js';
 import { createFieldExtractor } from '../field-extractors/generic.js';
 import { dartConfig as dartFieldConfig } from '../field-extractors/configs/dart.js';
 import { createMethodExtractor } from '../method-extractors/generic.js';
@@ -131,6 +132,7 @@ export const dartProvider = defineLanguage({
   // emit-side `ScopeResolver` lives in `dart/scope-resolver.ts`; the same
   // function references flow through both interfaces.
   emitScopeCaptures: emitDartScopeCaptures,
+  cfgVisitor: createDartCfgVisitor(),
   interpretImport: interpretDartImport,
   interpretTypeBinding: interpretDartTypeBinding,
   bindingScopeFor: dartBindingScopeFor,

@@ -6,8 +6,10 @@ import {
 } from '../../../src/core/ingestion/cfg/control-dependence.js';
 import {
   computePostDominators,
+  isExitReachableFromAllBlocks,
   postDominates,
 } from '../../../src/core/ingestion/cfg/post-dominators.js';
+import { augmentForPostDom } from '../../../src/core/ingestion/cfg/synthetic-escape.js';
 import type {
   BasicBlockData,
   CfgEdgeData,
@@ -76,8 +78,10 @@ function succsOf(cfg: FunctionCfg): number[][] {
  * post-dominates `b` iff every path from `b` to EXIT passes through `p`:
  * reflexive (`p === b`), else true exactly when EXIT is unreachable from `b`
  * once `p` is removed (AND `b` can reach EXIT at all). Defined only for the
- * exit-reachable fixtures used below — the exit-unreachable case is the known
- * unsound region (#2188 F2) and is deliberately excluded from the AC2 set.
+ * exit-reachable fixtures used below. A raw exit-unreachable cycle (#2188 F2)
+ * would be unsound, so the AC2 set now feeds the synthetic-escape pass's
+ * AUGMENTED view of every goto-cycle fixture (#2197 U1) — once bridged it IS
+ * exit-reachable and the Ferrante walk must equal this independent reference.
  */
 function independentPostDom(cfg: FunctionCfg, succs: number[][], p: number, b: number): boolean {
   if (p === b) return true;
@@ -255,10 +259,42 @@ describe('computeControlDependence — Ferrante §3.1.1', () => {
         [2, 1, 'loop-back'],
         [1, 3, 'cond-false'],
       ]),
-      // NOTE: the exit-unreachable case is deliberately NOT an AC2 fixture — its
-      // dependence set is unsound (#2188 F2), so asserting walk == independent
-      // reference would (correctly) fail. It has its own characterization test
-      // above that documents the degenerate behavior.
+      // Escaped `goto`-cycle (#2197 U1): after the synthetic-escape pass the
+      // exit-unreachable cycle is bridged and the dependence set becomes a SOUND
+      // over-approximation, so it now joins the AC2 set (the obsolete
+      // exit-unreachable exclusion is lifted — see the AUGMENTED-view note below).
+      // Repro shape: ENTRY=0, EXIT=1, b2=`(a>0)` predicate, b3=`work()`,
+      // b4=`goto start`; the `if` predicate (b2) is the only control point.
+      gotoCycle: augmentForPostDom(
+        mkCfg(
+          5,
+          [
+            [0, 2, 'seq'],
+            [2, 3, 'cond-true'],
+            [2, 4, 'seq'],
+            [3, 4, 'seq'],
+            [4, 2, 'seq'],
+          ],
+          { entry: 0, exit: 1 },
+        ),
+      ),
+      // Spine before the goto label — ENTRY + straight-line stmts are in the
+      // exit-unreachable closure but must reach EXIT after the bridge.
+      gotoCycleSpine: augmentForPostDom(
+        mkCfg(
+          7,
+          [
+            [0, 2, 'seq'],
+            [2, 3, 'seq'],
+            [3, 4, 'seq'],
+            [4, 5, 'cond-true'],
+            [4, 6, 'seq'],
+            [5, 6, 'seq'],
+            [6, 4, 'seq'],
+          ],
+          { entry: 0, exit: 1 },
+        ),
+      ),
       // nested if: outer branch (0) → inner branch (1) or outer-else (5);
       // inner branch → 2/3 → inner join (4); 4 and 5 → outer join (6, exit).
       nestedIf: mkCfg(
@@ -285,6 +321,15 @@ describe('computeControlDependence — Ferrante §3.1.1', () => {
         [4, 5, 'break'],
       ]),
     };
+
+    it.each(Object.keys(fixtures))(
+      '%s: is exit-reachable from all blocks (the AC2 reference is well-defined)',
+      (name) => {
+        // Every AC2 fixture — including the AUGMENTED goto-cycle ones (#2197 U1)
+        // — must be exit-reachable, else the node-removal reference is undefined.
+        expect(isExitReachableFromAllBlocks(fixtures[name])).toBe(true);
+      },
+    );
 
     it.each(Object.keys(fixtures))(
       '%s: tree-walk pair set equals the brute-force reference',
@@ -354,6 +399,84 @@ describe('computeControlDependence — maxEdges materialization ceiling (#2188)'
     const r = computeControlDependence(switchCfg(), undefined, 3);
     expect(r.truncated).toBe(false);
     expect(r.edges).toHaveLength(3);
+  });
+});
+
+describe('computeControlDependence — reverse-DF formulation regressions (#2195)', () => {
+  // The Ferrante up-walk was replaced by the reverse-CFG post-dominance frontier
+  // (Cytron/CFRWZ 1991; LLVM ReverseIDFCalculator / Joern CdgPass). These pin the
+  // three invariants the rewrite must preserve: multi-label-per-pair, the
+  // self-edge / NO_IPDOM seed guard, and linear (not quadratic) scaling.
+
+  it('keeps BOTH senses when one controller reaches a dependent via opposite arms', () => {
+    // Minimised goto-cycle shape: A (block 1) reaches X (block 2) by BOTH its true
+    // arm and its false arm, with a third escape (1→3) so X does NOT post-dominate
+    // A (else it would be a plain diamond join controlling nothing). The PDF must
+    // union the label SET — the old (a, cur, label) dedup kept both rows — not
+    // collapse the pair to a single sense.
+    const cfg = mkCfg(
+      4,
+      [
+        [0, 1, 'seq'],
+        [1, 2, 'cond-true'],
+        [1, 2, 'cond-false'],
+        [1, 3, 'seq'], // escape so X(2) is not a post-dominator of A(1)
+        [2, 3, 'seq'],
+      ],
+      { entry: 0, exit: 3 },
+    );
+    const { edges } = computeControlDependence(cfg);
+    expect(serAll(edges).sort()).toEqual(['1->2:F', '1->2:T']);
+  });
+
+  it('a literal self-edge never invents a self control-dependence (PDF_local a!==x guard)', () => {
+    // Standard while loop (header 1, body 2) PLUS a spurious LITERAL self-edge
+    // 1→1. The header legitimately depends on itself via the body back-edge
+    // (1->1:T is inherited through PDF_up), but the literal self in-edge must
+    // contribute NOTHING: without the `a !== x` PDF_local guard it would seed a
+    // bogus 1->1:F (the loop-back complement of the header's true arm).
+    const cfg = mkCfg(4, [
+      [0, 1, 'seq'],
+      [1, 2, 'cond-true'],
+      [2, 1, 'loop-back'],
+      [1, 1, 'loop-back'], // spurious literal self-edge — must be ignored
+      [1, 3, 'cond-false'],
+    ]);
+    const { edges } = computeControlDependence(cfg);
+    expect(serAll(edges).sort()).toEqual(['1->1:T', '1->2:T']);
+    expect(edges.some((e) => ser(e) === '1->1:F')).toBe(false);
+  });
+
+  it('scales linearly on a fan-into-chain (perf tripwire: was a Θ(N²) up-walk)', () => {
+    // fanChain(N): block 0 fans one edge to every node of a length-(N-2) spine
+    // whose ipdom chain tops out at EXIT. The old Ferrante up-walk re-climbed the
+    // shared spine once per fan edge → Θ(N²) (~7.1s at N=16k); the reverse-DF form
+    // is O(N+E+output) (~13ms). Coarse wall-clock tripwire, not a microbenchmark:
+    // a revert to quadratic blows past the ceiling by >5×. post-dom is built
+    // outside the timed region so this isolates the rewritten function.
+    const N = 16000;
+    const M = N - 2; // chain blocks 1..M; block 0 = fan source; block N-1 = EXIT
+    const exit = N - 1;
+    const edges: [number, number, CfgEdgeKind][] = [];
+    for (let i = 1; i <= M; i++) {
+      edges.push([0, i, 'switch-case']); // fan: 0 → every chain node
+      edges.push([i, i === M ? exit : i + 1, 'seq']); // spine: i → i+1 (→ EXIT)
+    }
+    const cfg = mkCfg(N, edges, { entry: 0, exit });
+    const postDom = computePostDominators(cfg); // built OUTSIDE the timed region
+    const t0 = performance.now();
+    const { edges: cdg } = computeControlDependence(cfg, postDom);
+    const ms = performance.now() - t0;
+    // Block 0 controls every chain node EXCEPT the last (M): the sole edge into
+    // EXIT is M→exit, so M post-dominates the whole fan (ipdom[0]===M) and is
+    // controlled by nothing. The other M-1 spine nodes are each 0-controlled.
+    // Assert IDENTITY too (not just count) so a fast-but-wrong reimplementation
+    // emitting M-1 mis-attributed edges can't pass on length alone.
+    expect(cdg).toHaveLength(M - 1);
+    expect(cdg.every((e) => e.controllerBlock === 0)).toBe(true);
+    expect(cdg.every((e) => e.dependentBlock >= 1 && e.dependentBlock < M)).toBe(true);
+    expect(new Set(cdg.map((e) => e.dependentBlock)).size).toBe(M - 1); // all distinct
+    expect(ms).toBeLessThan(1000);
   });
 });
 

@@ -27,6 +27,7 @@ import { createVariableExtractor } from '../variable-extractors/generic.js';
 import { pythonVariableConfig } from '../variable-extractors/configs/python.js';
 import { createCallExtractor } from '../call-extractors/generic.js';
 import { pythonCallConfig } from '../call-extractors/configs/python.js';
+import { createPythonCfgVisitor } from '../cfg/visitors/python.js';
 import type { CaptureMap } from '../language-provider.js';
 import type { SyntaxNode } from '../utils/ast-helpers.js';
 import {
@@ -137,6 +138,7 @@ export const pythonProvider = defineLanguage({
   // full per-hook rationale and the canonical capture vocabulary in
   // ./python/query.ts (PYTHON_SCOPE_QUERY constant).
   emitScopeCaptures: emitPythonScopeCaptures,
+  cfgVisitor: createPythonCfgVisitor(),
   interpretImport: interpretPythonImport,
   interpretTypeBinding: interpretPythonTypeBinding,
   bindingScopeFor: pythonBindingScopeFor,

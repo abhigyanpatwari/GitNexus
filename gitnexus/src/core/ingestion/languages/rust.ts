@@ -28,6 +28,7 @@ import { createVariableExtractor } from '../variable-extractors/generic.js';
 import { rustVariableConfig } from '../variable-extractors/configs/rust.js';
 import { createCallExtractor } from '../call-extractors/generic.js';
 import { rustCallConfig } from '../call-extractors/configs/rust.js';
+import { createRustCfgVisitor } from '../cfg/visitors/rust.js';
 import {
   emitRustScopeCaptures,
   rustArityCompatibility,
@@ -178,6 +179,7 @@ export const rustProvider = defineLanguage({
   builtInNames: BUILT_INS,
   // ── RFC #909 Ring 3: scope-based resolution hooks ──────────
   emitScopeCaptures: emitRustScopeCaptures,
+  cfgVisitor: createRustCfgVisitor(),
   interpretImport: interpretRustImport,
   interpretTypeBinding: interpretRustTypeBinding,
   bindingScopeFor: rustBindingScopeFor,

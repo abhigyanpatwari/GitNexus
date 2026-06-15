@@ -126,6 +126,18 @@ export class ControlFlowContext {
     );
   }
 
+  /**
+   * Resolve a Java `yield e` (switch-EXPRESSION arm exit): the nearest enclosing
+   * SWITCH frame's exit, threading the finalizers stacked above it. Unlike a
+   * `break`, a `yield` ALWAYS targets the switch — never an intervening loop — so
+   * it cannot match a loop frame (a `yield` inside a loop inside a switch arm
+   * still exits the whole switch). Returns `undefined` when there is no enclosing
+   * switch (malformed input); the caller falls back to its conservative routing.
+   */
+  resolveYield(): JumpResolution | undefined {
+    return this.resolve((f) => f.kind === 'switch');
+  }
+
   /** Every active finalizer, innermost first — what a `return` must cross. */
   finalizersForReturn(): readonly FinalizerFrame[] {
     const fins: FinalizerFrame[] = [];
