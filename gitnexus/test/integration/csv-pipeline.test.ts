@@ -382,6 +382,8 @@ describe('streamAllCSVsToDisk — direct per-pair emit matches the split oracle'
         { sourceId: 'proc_1', targetId: 'proc_2', type: 'CONTAINS' },
         // Invalid FROM label ('Bogus' ∉ NODE_TABLES) — skipped by both paths.
         { sourceId: 'Bogus:x', targetId: 'File:a.ts', type: 'CONTAINS' },
+        // Invalid TO label — exercises the OTHER branch of the skip condition.
+        { sourceId: 'File:a.ts', targetId: 'Bogus:y', type: 'CONTAINS' },
       ],
     );
 
@@ -416,7 +418,7 @@ describe('streamAllCSVsToDisk — direct per-pair emit matches the split oracle'
     expect(direct.totalValidRels).toBe(split.totalValidRels);
     expect(direct.totalValidRels).toBe(5);
     expect(direct.skippedRels).toBe(split.skippedRels);
-    expect(direct.skippedRels).toBe(1);
+    expect(direct.skippedRels).toBe(2); // invalid-FROM + invalid-TO, both skipped
     expect(direct.relHeader).toBe(split.relHeader);
 
     // Identical pair set.

@@ -110,9 +110,10 @@ describe('RelPairRouter', () => {
     await route('File:a', 'Function:a:g:2'); // same pair
     await route('Function:a:f:1', 'Function:a:g:2'); // different pair
     await route('Bogus:x', 'File:a'); // invalid FROM label → skipped
+    await route('File:a', 'Bogus:y'); // invalid TO label → skipped (other branch)
     await router.close();
 
-    expect(router.skipped).toBe(1);
+    expect(router.skipped).toBe(2);
     expect(router.total).toBe(3);
     expect([...router.byPair.keys()].sort()).toEqual(['File|Function', 'Function|Function']);
     expect(router.byPair.get('File|Function')!.rows).toBe(2);
