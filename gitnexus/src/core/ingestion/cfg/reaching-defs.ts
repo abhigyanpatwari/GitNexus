@@ -166,11 +166,21 @@ interface Adjacency {
 }
 
 /**
- * The swappable stage: per-block entry reaching lattices, or a non-convergence
- * signal (maxBlockVisits exceeded ⇒ sound empty `truncated`). The two
- * implementations MUST agree byte-for-byte, including set insertion order.
+ * Block-entry reaching-set accessor: the set of def-site keys of `binding`
+ * reaching `blockIndex`'s entry, or undefined when none reach. Both solvers
+ * expose their result through this accessor so the sweep is solver-agnostic;
+ * the dense oracle backs it with precomputed per-block lattices, the sparse
+ * solver computes it lazily from the SSA def-use graph. Because {@link
+ * sweepFacts} sorts each use's reaching keys before the maxFacts cutoff, only
+ * the set CONTENTS need to match across solvers — not iteration order.
  */
-type InSetsResult = { converged: true; inSets: Lattice[] } | { converged: false };
+type ReachingAt = (blockIndex: number, binding: number) => DefSet | undefined;
+
+/**
+ * The swappable stage: a block-entry reaching-set accessor, or a non-
+ * convergence signal (the work budget exceeded ⇒ sound empty `truncated`).
+ */
+type InSetsResult = { converged: true; reachingAt: ReachingAt } | { converged: false };
 
 type InSetsComputer = (
   cfg: FunctionCfg,
@@ -191,10 +201,13 @@ type InSetsComputer = (
  * MUST be byte-identical (status, bindings, sorted facts, def/use telemetry).
  */
 export function computeReachingDefs(cfg: FunctionCfg, limits?: ReachingDefsLimits): FunctionDefUse {
-  // #2201 U5: production runs the sparse, change-driven solver. The dense
-  // worklist ({@link computeReachingDefsDense}) is retained as the differential
-  // equivalence oracle the fuzz suite holds this byte-identical to.
-  return solveReachingDefs(cfg, limits, computeInSetsSparse);
+  // #2201: production auto-selects the solver per function (see
+  // {@link computeInSetsAuto}) — the SSA solver where it pays off (looping
+  // functions large enough to amortize construction, incl. the deep nests the
+  // dense ceiling used to truncate), the dense worklist everywhere else (small
+  // or loop-free functions, where it is faster). Both are held byte-identical
+  // by the equivalence fuzz, so the choice is a pure performance heuristic.
+  return solveReachingDefs(cfg, limits, computeInSetsAuto);
 }
 
 /**
@@ -274,7 +287,7 @@ function solveReachingDefs(
   }
 
   const maxFacts = limits?.maxFacts && limits.maxFacts > 0 ? limits.maxFacts : Infinity;
-  const { facts, truncated } = sweepFacts(blocks, solved.inSets, h.defLine, maxFacts);
+  const { facts, truncated } = sweepFacts(blocks, solved.reachingAt, h.defLine, maxFacts);
 
   return {
     status: truncated ? 'truncated' : 'computed',
@@ -451,38 +464,38 @@ function computeInSetsDense(
     }
   }
 
-  return { converged: true, inSets };
+  return { converged: true, reachingAt: (blockIndex, binding) => inSets[blockIndex]?.get(binding) };
 }
 
 /**
- * SPARSE IN-set computer (#2201) — the production solver. Computes the SAME
- * per-block entry reaching lattices as {@link computeInSetsDense}, but via a
- * change-driven worklist over (block, binding) PAIRS instead of dense per-block
- * lattice merges over a multi-pass fixpoint. Reaching-defs is component-wise
- * independent per binding (a binding's transfer never reads another binding's
- * set), so the product-lattice least fixed point equals the product of the
- * per-binding least fixed points — this solve is provably equal to the dense
- * one, and the perf win is that a binding is only ever (re)visited when one of
- * its own predecessors' contributions changed (no dense per-block spine copy,
- * no re-merge of unrelated bindings, no loop-depth pass multiplier on the
- * shallow/loop-local variables that dominate real code).
+ * SPARSE IN-set computer (#2201) — the production solver. Instead of the dense
+ * GEN/KILL worklist's per-block lattice fixpoint, it builds pruned SSA for the
+ * function (Cooper-Harvey-Kennedy dominators → Cytron dominance frontiers and
+ * φ-placement → stack-based renaming) and answers block-entry reaching-def
+ * queries by walking the SSA def-use graph. φ-nodes statically capture loop
+ * merges, so a use's reaching set is recovered without iterating the loop
+ * (depth-independent), and pass-through blocks carry the dominating definition
+ * via the rename stack rather than re-materializing a dense lattice at every
+ * block — the two effects that make it faster than the dense solver on the
+ * deep-nest and dense-bindings pathologies.
  *
- * BYTE-IDENTICAL DISCIPLINE: each visit RECOMPUTES in_v[b] from scratch using
- * the exact dense merge order (sorted predecessors, first contributor shared,
- * copy-on-extend) — see {@link mergePreds}. Because the merge rebuilds from the
- * converged predecessor sets, the final set's INSERTION order is independent of
- * worklist visit order and matches the dense solver, which is what makes a
- * maxFacts-TRUNCATED result (whose surviving subset depends on the sweep's
- * pre-sort emission order) byte-identical too.
+ * BYTE-IDENTICAL CONTRACT: it computes the same may-reaching-definition SET at
+ * each block entry as {@link computeInSetsDense}. Order does not matter — {@link
+ * sweepFacts} sorts each use's reaching keys before the maxFacts cutoff (#2201
+ * KTD6) — so only set CONTENTS must match; the equivalence fuzz holds the line.
  *
- * BUDGET (KTD5): the dense ceiling counts block dequeues; this counts (block,
- * binding) dequeues. The budget is scaled by the binding count so it NEVER
- * trips on a function the dense solver computes (no coverage regression) while
- * still bounding the one adversarial residual — a single variable threaded
- * through every level of a pathologically deep nest, which stays O(depth²) here
- * (a documented full-SSA follow-up). On realistic deep nests the change-driven
- * solve completes far under budget, so the dense ceiling effectively never
- * fires (#2201 acceptance).
+ * SCOPE (KTD4): the SSA path covers fully-reachable CFGs with kill/may-def
+ * transfers, reducible AND irreducible (CHK + Cytron are correct on irreducible
+ * graphs). It does NOT model throw edges' IN∪allDefs handler semantics or
+ * propagation among unreachable blocks; functions with either are routed to the
+ * dense oracle — byte-identical and correct, just not asymptotically faster.
+ * These are not the perf pathologies (deep nests / dense-bindings are
+ * throw-free and fully reachable), so the win lands where it matters.
+ *
+ * No fixpoint iteration ⇒ the solve always converges in O(program); the
+ * `maxBlockVisits` ceiling that fired on the dense worklist's deep nests never
+ * fires here (#2201 acceptance). The bound is honored only on the dense
+ * fallback path.
  *
  * @internal
  */
@@ -493,132 +506,332 @@ function computeInSetsSparse(
   adj: Adjacency,
   limits: ReachingDefsLimits | undefined,
 ): InSetsResult {
-  const { gen, allDefsGen } = h;
-  const { preds, succs, throwSuccs } = adj;
   const nBindings = cfg.bindings?.length ?? 0;
-  if (nBindings === 0) {
-    return { converged: true, inSets: new Array(n).fill(EMPTY_LATTICE) };
+  if (nBindings === 0) return { converged: true, reachingAt: () => undefined };
+
+  const { gen } = h;
+  const { preds, succs, throwSuccs } = adj;
+  const entry = cfg.entryIndex;
+
+  // Gate to the dense oracle for the two shapes the SSA path does not model.
+  for (const list of throwSuccs) if (list.length) return computeInSetsDense(cfg, n, h, adj, limits);
+  const reachable = new Array<boolean>(n).fill(false);
+  {
+    const q = [entry];
+    reachable[entry] = true;
+    while (q.length) {
+      const x = q.pop()!;
+      for (const s of succs[x]) if (!reachable[s]) ((reachable[s] = true), q.push(s));
+    }
+  }
+  for (let b = 0; b < n; b++) if (!reachable[b]) return computeInSetsDense(cfg, n, h, adj, limits);
+
+  // Synthetic pre-entry block (#2201): textbook SSA construction assumes the
+  // entry has no predecessors. A loop back-edge into the entry — or a self-loop
+  // on it — makes the entry a merge that needs a φ, and the dominance-frontier
+  // walk degenerates when idom[entry] === entry (it never lands the entry in its
+  // own frontier). A virtual start node S → entry (S itself has no preds)
+  // restores the invariant: idom[entry] = S, the entry joins {start ⊔
+  // back-edges}, and the implicit start operand contributes ⊥ (an empty rename
+  // stack). S carries no statements, gen, or uses and is never queried.
+  const S = n;
+  const nx = n + 1;
+  const succsX: number[][] = new Array(nx);
+  for (let b = 0; b < n; b++) succsX[b] = succs[b] as number[];
+  succsX[S] = [entry];
+  const dPredsX: number[][] = new Array(nx);
+  for (let b = 0; b < n; b++) {
+    const set = new Set<number>();
+    for (const p of preds[b]) set.add(p.from);
+    if (b === entry) set.add(S);
+    dPredsX[b] = [...set].sort((a, c) => a - c);
+  }
+  dPredsX[S] = [];
+
+  // ── dominators (Cooper-Harvey-Kennedy; correct on irreducible CFGs) ──
+  const rpo = reversePostOrder(S, succsX, nx); // rooted at the synthetic entry
+  const rpoIdx = new Array<number>(nx);
+  rpo.forEach((b, i) => (rpoIdx[b] = i));
+  const idom = new Array<number>(nx).fill(-1);
+  idom[S] = S;
+  const intersect = (a: number, b: number): number => {
+    while (a !== b) {
+      while (rpoIdx[a] > rpoIdx[b]) a = idom[a];
+      while (rpoIdx[b] > rpoIdx[a]) b = idom[b];
+    }
+    return a;
+  };
+  for (let changed = true; changed; ) {
+    changed = false;
+    for (const b of rpo) {
+      if (b === S) continue;
+      let nd = -1;
+      for (const p of dPredsX[b]) if (idom[p] !== -1) nd = nd === -1 ? p : intersect(nd, p);
+      if (nd !== -1 && idom[b] !== nd) {
+        idom[b] = nd;
+        changed = true;
+      }
+    }
   }
 
-  // Per-block IN/OUT lattices, populated incrementally per binding. Sets are
-  // either nonempty or absent (never empty), mirroring the dense maps so the
-  // sweep's `.get(u)` sees identical undefined-vs-set results.
-  const inSets: Lattice[] = Array.from({ length: n }, () => new Map());
-  const outSets: Lattice[] = Array.from({ length: n }, () => new Map());
-
-  // Budget scaled by binding count — never trips where dense converges (no
-  // regression), still bounds the single-deeply-carried-variable adversarial
-  // case. undefined/0 ⇒ unlimited.
-  const base =
-    limits?.maxBlockVisits && limits.maxBlockVisits > 0 ? limits.maxBlockVisits : Infinity;
-  const maxUpdates = base === Infinity ? Infinity : base * nBindings;
-  let updates = 0;
-
-  // (block, binding) worklist, deduped via a flat pending bitmap. Visit order
-  // does not affect the result (each visit recomputes from current state), so
-  // a LIFO stack is used to avoid O(n) array shifts.
-  const encode = (b: number, v: number): number => b * nBindings + v;
-  const pending = new Uint8Array(n * nBindings);
-  const stack: number[] = [];
-  const enqueue = (b: number, v: number): void => {
-    const k = encode(b, v);
-    if (!pending[k]) {
-      pending[k] = 1;
-      stack.push(k);
+  // ── dominance frontiers (Cytron) ──
+  const df: Set<number>[] = Array.from({ length: nx }, () => new Set<number>());
+  for (let b = 0; b < nx; b++) {
+    const dp = dPredsX[b];
+    if (dp.length < 2) continue;
+    for (const p of dp) {
+      let runner = p;
+      while (runner !== idom[b] && runner !== -1) {
+        df[runner].add(b);
+        runner = idom[runner];
+      }
     }
-  };
+  }
 
-  // Seed: every binding genned in a block (its OUT becomes nonempty), plus the
-  // THROW successors of every gen block — a throwing block delivers allDefs(v)
-  // to its handler even when the block's own IN of v never changes (so the
-  // inChanged-driven throw requeue below would otherwise miss the first, static
-  // allDefs contribution).
+  // ── per-binding def blocks (must- or may-def ⇒ block transfer touches v) ──
+  const defBlocks: number[][] = Array.from({ length: nBindings }, () => []);
   for (let b = 0; b < n; b++) {
     const g = gen[b];
-    if (!g) continue;
-    for (const v of g.keys()) {
-      enqueue(b, v);
-      for (const s of throwSuccs[b]) enqueue(s, v);
-    }
+    if (g) for (const v of g.keys()) defBlocks[v].push(b);
   }
 
-  // Recompute IN(v) at block b from scratch, in the exact dense merge order
-  // (sorted predecessors; first contributor's set shared; copy-on-extend on
-  // subsequent contributors — never mutate a shared set). Returns the set or
-  // undefined when nothing reaches.
-  const computeIn = (b: number, v: number): DefSet | undefined => {
-    const p = preds[b];
-    if (p.length === 0) return undefined;
-    if (p.length === 1 && !p[0].viaThrow) return outSets[p[0].from].get(v);
-    let merged: DefSet | undefined;
-    let owned = false; // true once `merged` is our private (mutable) copy
-    const mergeOne = (src: DefSet | undefined): void => {
-      if (!src || src.size === 0) return;
-      if (merged === undefined) {
-        merged = src; // share the first contributor's set
-        owned = false;
-        return;
-      }
-      if (merged === src) return;
-      for (const key of src) {
-        if (!merged.has(key)) {
-          if (!owned) {
-            merged = new Set(merged);
-            owned = true;
-          }
-          merged.add(key);
+  // ── value-graph nodes: leaves carry def-site keys; internal nodes (φ /
+  //    may-def union) carry operand node ids. reachingSet(node) = union of all
+  //    leaf keys reachable through operands (computed once, cycle-safe, below).
+  const nodeKeys: (DefSet | null)[] = [];
+  const nodeOps: number[][] = [];
+  const newLeaf = (keys: DefSet): number => (
+    nodeKeys.push(keys),
+    nodeOps.push([]),
+    nodeKeys.length - 1
+  );
+  const newInternal = (): number => (nodeKeys.push(null), nodeOps.push([]), nodeKeys.length - 1);
+
+  // ── φ-placement: φ for v at the iterated dominance frontier of v's defs ──
+  const phiNode: (Map<number, number> | null)[] = new Array(nx).fill(null);
+  for (let v = 0; v < nBindings; v++) {
+    const dB = defBlocks[v];
+    if (dB.length === 0) continue;
+    const placed = new Set<number>();
+    const inWork = new Set<number>(dB);
+    const work = [...dB];
+    while (work.length) {
+      const x = work.pop()!;
+      for (const y of df[x]) {
+        if (placed.has(y)) continue;
+        placed.add(y);
+        let m = phiNode[y];
+        if (!m) phiNode[y] = m = new Map();
+        m.set(v, newInternal());
+        if (!inWork.has(y)) {
+          inWork.add(y);
+          work.push(y);
         }
       }
-    };
-    for (const pe of p) {
-      if (pe.viaThrow) {
-        mergeOne(inSets[pe.from].get(v)); // exception may fire pre-defs…
-        mergeOne(allDefsGen[pe.from]?.get(v)); // …or after ANY of the block's defs
-      } else {
-        mergeOne(outSets[pe.from].get(v));
-      }
     }
-    return merged;
-  };
-
-  // OUT(v) at b = overlay(IN): a killing gen replaces the set; a may-def-only
-  // gen unions without killing; no gen ⇒ OUT aliases IN.
-  const computeOut = (b: number, v: number, inV: DefSet | undefined): DefSet | undefined => {
-    const entry = gen[b]?.get(v);
-    if (!entry) return inV;
-    if (entry.kills) return entry.set;
-    return inV ? unionSets(inV, entry.set) : entry.set;
-  };
-
-  const setEq = (a: DefSet | undefined, b: DefSet | undefined): boolean => {
-    if (a === b) return true;
-    if (!a || !b || a.size !== b.size) return false;
-    for (const v of b) if (!a.has(v)) return false;
-    return true;
-  };
-
-  while (stack.length > 0) {
-    if (++updates > maxUpdates) return { converged: false };
-    const k = stack.pop()!;
-    pending[k] = 0;
-    const b = (k / nBindings) | 0;
-    const v = k - b * nBindings;
-
-    const newIn = computeIn(b, v);
-    const oldIn = inSets[b].get(v);
-    const inChanged = !setEq(oldIn, newIn);
-    if (newIn !== undefined) inSets[b].set(v, newIn);
-
-    const newOut = computeOut(b, v, newIn);
-    const oldOut = outSets[b].get(v);
-    const outChanged = !setEq(oldOut, newOut);
-    if (newOut !== undefined) outSets[b].set(v, newOut);
-
-    if (outChanged) for (const s of succs[b]) enqueue(s, v);
-    if (inChanged) for (const s of throwSuccs[b]) enqueue(s, v);
   }
 
-  return { converged: true, inSets };
+  // ── renaming (iterative dominator-tree DFS, per-binding value stacks) ──
+  const domChildren: number[][] = Array.from({ length: nx }, () => []);
+  for (let b = 0; b < nx; b++) if (b !== S && idom[b] !== -1) domChildren[idom[b]].push(b);
+  for (const list of domChildren) list.sort((a, b) => a - b);
+
+  const stacks: number[][] = Array.from({ length: nBindings }, () => []);
+  const entryValue: (Map<number, number> | null)[] = new Array(nx).fill(null);
+
+  const enterBlock = (b: number): number[] => {
+    const pushed: number[] = [];
+    const pm = phiNode[b];
+    if (pm)
+      for (const [v, node] of pm) {
+        stacks[v].push(node);
+        pushed.push(v);
+      }
+    // record block-entry (IN) value for each binding USED here — after φ push,
+    // before this block's own gen (the sweep applies intra-block defs itself).
+    // The synthetic entry S has no block ⇒ no statements/gen/uses.
+    const stmts = cfg.blocks[b]?.statements;
+    if (stmts) {
+      let ev: Map<number, number> | null = null;
+      for (const s of stmts)
+        for (const u of s.uses) {
+          const st = stacks[u];
+          if (st.length) {
+            if (!ev) ev = new Map();
+            ev.set(u, st[st.length - 1]);
+          }
+        }
+      entryValue[b] = ev;
+    }
+    // apply block gen ⇒ OUT values that flow to successors
+    const g = gen[b];
+    if (g)
+      for (const [v, ge] of g) {
+        const st = stacks[v];
+        let node: number;
+        if (ge.kills) {
+          node = newLeaf(ge.set);
+        } else {
+          node = newInternal();
+          if (st.length) nodeOps[node].push(st[st.length - 1]); // prior reaching (may-def keeps it)
+          nodeOps[node].push(newLeaf(ge.set));
+        }
+        st.push(node);
+        pushed.push(v);
+      }
+    // fill successor φ operands with this block's current OUT for each φ binding
+    for (const s of succsX[b]) {
+      const sm = phiNode[s];
+      if (!sm) continue;
+      for (const [v, phi] of sm) {
+        const st = stacks[v];
+        if (st.length) nodeOps[phi].push(st[st.length - 1]);
+      }
+    }
+    return pushed;
+  };
+
+  const frames: { b: number; ci: number; pushed: number[] }[] = [
+    { b: S, ci: 0, pushed: enterBlock(S) },
+  ];
+  while (frames.length) {
+    const f = frames[frames.length - 1];
+    const kids = domChildren[f.b];
+    if (f.ci < kids.length) {
+      const c = kids[f.ci++];
+      frames.push({ b: c, ci: 0, pushed: enterBlock(c) });
+    } else {
+      for (const v of f.pushed) stacks[v].pop();
+      frames.pop();
+    }
+  }
+
+  // ── reaching sets per node via SCC condensation (cycle-safe union) ──
+  // Tarjan emits SCCs in reverse topological order, so an SCC's operand SCCs
+  // are numbered before it ⇒ a single forward pass over SCCs resolves unions.
+  const N = nodeKeys.length;
+  const sccOf = new Array<number>(N).fill(-1);
+  const sccMembers: number[][] = [];
+  const index = new Array<number>(N).fill(-1);
+  const low = new Array<number>(N).fill(0);
+  const onStk = new Array<boolean>(N).fill(false);
+  const tarjanStk: number[] = [];
+  let counter = 0;
+  for (let start = 0; start < N; start++) {
+    if (index[start] !== -1) continue;
+    const work: { node: number; oi: number }[] = [{ node: start, oi: 0 }];
+    index[start] = low[start] = counter++;
+    tarjanStk.push(start);
+    onStk[start] = true;
+    while (work.length) {
+      const top = work[work.length - 1];
+      const ops = nodeOps[top.node];
+      if (top.oi < ops.length) {
+        const w = ops[top.oi++];
+        if (index[w] === -1) {
+          index[w] = low[w] = counter++;
+          tarjanStk.push(w);
+          onStk[w] = true;
+          work.push({ node: w, oi: 0 });
+        } else if (onStk[w] && index[w] < low[top.node]) {
+          low[top.node] = index[w];
+        }
+      } else {
+        if (low[top.node] === index[top.node]) {
+          const members: number[] = [];
+          let w: number;
+          do {
+            w = tarjanStk.pop()!;
+            onStk[w] = false;
+            sccOf[w] = sccMembers.length;
+            members.push(w);
+          } while (w !== top.node);
+          sccMembers.push(members);
+        }
+        work.pop();
+        if (work.length) {
+          const par = work[work.length - 1].node;
+          if (low[top.node] < low[par]) low[par] = low[top.node];
+        }
+      }
+    }
+  }
+  const reachByScc: DefSet[] = new Array(sccMembers.length);
+  for (let s = 0; s < sccMembers.length; s++) {
+    const set: DefSet = new Set();
+    for (const node of sccMembers[s]) {
+      const keys = nodeKeys[node];
+      if (keys) for (const k of keys) set.add(k);
+      for (const w of nodeOps[node]) {
+        const ws = sccOf[w];
+        if (ws !== s) for (const k of reachByScc[ws]) set.add(k);
+      }
+    }
+    reachByScc[s] = set;
+  }
+
+  return {
+    converged: true,
+    reachingAt: (blockIndex, binding) => {
+      const node = entryValue[blockIndex]?.get(binding);
+      if (node === undefined) return undefined;
+      const set = reachByScc[sccOf[node]];
+      return set.size ? set : undefined;
+    },
+  };
+}
+
+/** Minimum block count below which SSA construction does not amortize. */
+const SSA_MIN_BLOCKS = 16;
+
+/**
+ * True iff a cycle is reachable from `entry` (the CFG has a loop). Iterative DFS
+ * with a gray/black coloring; a gray successor is a back-edge. O(V+E).
+ */
+function hasReachableLoop(entry: number, succs: readonly number[][], n: number): boolean {
+  const color = new Uint8Array(n); // 0 white, 1 gray, 2 black
+  const stack: { node: number; i: number }[] = [{ node: entry, i: 0 }];
+  color[entry] = 1;
+  while (stack.length) {
+    const top = stack[stack.length - 1];
+    const ss = succs[top.node];
+    if (top.i < ss.length) {
+      const nx = ss[top.i++];
+      if (color[nx] === 1) return true;
+      if (color[nx] === 0) {
+        color[nx] = 1;
+        stack.push({ node: nx, i: 0 });
+      }
+    } else {
+      color[top.node] = 2;
+      stack.pop();
+    }
+  }
+  return false;
+}
+
+/**
+ * Production solver dispatcher (#2201). The SSA solver beats the dense worklist
+ * only when there is enough work to amortize SSA construction — a loop (so the
+ * dense fixpoint pays the loop-depth pass multiplier, or truncates at the
+ * ceiling) AND a non-trivial block count. Small or loop-free functions, which
+ * dense solves in one or two cheap aliasing passes, stay on the dense path.
+ * Because the two solvers are byte-identical (held by the equivalence fuzz),
+ * this is a pure performance heuristic with no effect on results.
+ *
+ * @internal
+ */
+function computeInSetsAuto(
+  cfg: FunctionCfg,
+  n: number,
+  h: Harvest,
+  adj: Adjacency,
+  limits: ReachingDefsLimits | undefined,
+): InSetsResult {
+  if (n >= SSA_MIN_BLOCKS && hasReachableLoop(cfg.entryIndex, adj.succs, n)) {
+    return computeInSetsSparse(cfg, n, h, adj, limits);
+  }
+  return computeInSetsDense(cfg, n, h, adj, limits);
 }
 
 /**
@@ -631,7 +844,7 @@ function computeInSetsSparse(
  */
 function sweepFacts(
   blocks: FunctionCfg['blocks'],
-  inSets: readonly Lattice[],
+  reachingAt: ReachingAt,
   defLine: ReadonlyMap<number, number>,
   maxFacts: number,
 ): { facts: DefUseFact[]; truncated: boolean } {
@@ -641,9 +854,12 @@ function sweepFacts(
   outer: for (const b of blocks) {
     const stmts = b.statements;
     if (!stmts || stmts.length === 0) continue;
-    // Lazy overlay of IN — entries are replaced (never mutated) on def, so the
-    // shared sets stay intact.
-    let reach: Lattice | null = null;
+    // Sparse intra-block overlay: only the bindings REDEFINED within this block
+    // so far. A use's reaching set is the overlay's override if present, else
+    // the block-entry reaching set (reachingAt). This never materializes the
+    // full block lattice — the dense O(live-vars) per-block copy the sparse
+    // solver exists to avoid.
+    const overlay = new Map<number, DefSet>();
     for (let i = 0; i < stmts.length; i++) {
       const s = stmts[i];
       // A use's binding that the SAME statement also defines could be a
@@ -657,7 +873,7 @@ function sweepFacts(
       const sameStmtDefs =
         s.defs.length > 0 || s.mayDefs?.length ? new Set([...s.defs, ...(s.mayDefs ?? [])]) : null;
       for (const u of s.uses) {
-        const reaching = (reach ?? inSets[b.index]).get(u);
+        const reaching = overlay.get(u) ?? reachingAt(b.index, u);
         const selfKey = sameStmtDefs?.has(u) ? defKey(b.index, i) : undefined;
         if (!reaching && selfKey === undefined) continue;
         const keys =
@@ -690,16 +906,14 @@ function sweepFacts(
       }
       if (s.mayDefs?.length) {
         // Gen WITHOUT kill: the conditional def joins the binding's set.
-        if (!reach) reach = new Map(inSets[b.index]);
         const key = defKey(b.index, i);
         for (const d of s.mayDefs) {
-          const prior = reach.get(d);
-          reach.set(d, prior ? unionSets(prior, new Set([key])) : new Set([key]));
+          const prior = overlay.get(d) ?? reachingAt(b.index, d);
+          overlay.set(d, prior ? unionSets(prior, new Set([key])) : new Set([key]));
         }
       }
       if (s.defs.length > 0) {
-        if (!reach) reach = new Map(inSets[b.index]);
-        for (const d of s.defs) reach.set(d, new Set([defKey(b.index, i)])); // kill + gen
+        for (const d of s.defs) overlay.set(d, new Set([defKey(b.index, i)])); // kill + gen
       }
     }
   }
