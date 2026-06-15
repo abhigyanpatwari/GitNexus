@@ -175,17 +175,27 @@ describe('PdgEmitSink — bounded retention', () => {
   it('flushes incrementally so the graph never holds the PDG layer', async () => {
     const real = createKnowledgeGraph();
     const pdgDir = path.join(tmpRoot, 'pdg-csv');
-    const sink = new PdgEmitSink(real, pdgDir, 2); // tiny chunk to force flushes
+    const CHUNK = 2;
+    const sink = new PdgEmitSink(real, pdgDir, CHUNK); // tiny chunk to force flushes
 
-    const TOTAL = 50;
+    // TOTAL is intentionally NOT a multiple of CHUNK so the final partial chunk
+    // is genuinely still buffered (unflushed) at the mid-stream read. With a
+    // multiple (e.g. 50 % 2 === 0) the last addRow's flush would have written
+    // every row and the "mid-stream" assertion would prove nothing (#2202
+    // review #7).
+    const TOTAL = 51;
+    const REMAINDER = TOTAL % CHUNK; // 1 — must be non-zero
+    expect(REMAINDER).toBeGreaterThan(0);
     for (let i = 0; i < TOTAL; i++) sink.addNode(bbNode('a.ts', i, i));
 
-    // Mid-stream (before finalize): rows have already been flushed to disk,
-    // proving the writer is not buffering the whole layer in memory.
+    // Mid-stream (before finalize): exactly the whole flushed chunks are on
+    // disk; the partial last chunk (REMAINDER rows) is still buffered in memory,
+    // proving the writer streams to the OS and never buffers the whole layer.
     const midText = fs.readFileSync(path.join(pdgDir, 'basicblock.csv'), 'utf8');
     const midDataRows = midText.split('\n').filter((l) => l.length > 0).length - 1; // minus header
-    expect(midDataRows).toBeGreaterThan(0);
-    expect(midDataRows).toBeLessThanOrEqual(TOTAL);
+    expect(midDataRows).toBe(TOTAL - REMAINDER); // 50 flushed, 1 still buffered
+    expect(TOTAL - midDataRows).toBe(REMAINDER); // exactly the unflushed remainder
+    expect(TOTAL - midDataRows).toBeLessThanOrEqual(CHUNK); // unflushed is bounded by one chunk
 
     // The in-memory graph never received a single BasicBlock.
     expect(real.nodeCount).toBe(0);
@@ -193,7 +203,7 @@ describe('PdgEmitSink — bounded retention', () => {
     const manifest = sink.finalize();
     expect(manifest.nodeFiles.get('BasicBlock')?.rows).toBe(TOTAL);
     const finalRows = (await sortedLines(path.join(pdgDir, 'basicblock.csv'))).length - 1;
-    expect(finalRows).toBe(TOTAL);
+    expect(finalRows).toBe(TOTAL); // finalize flushed the buffered remainder
   });
 
   it('finalize twice throws', () => {
