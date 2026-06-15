@@ -292,6 +292,25 @@ export class KotlinHarvester {
     return acc.defCount() ? acc.finish() : undefined;
   }
 
+  /**
+   * Def-ONLY facts for a value-position assignment carrier (`x = when (k) {…}`,
+   * #2205): just the LHS target, attached to the continuation block the branch
+   * arms rejoin. The branch subject + arm-value USES are already harvested onto
+   * the branch's own blocks, so this must NOT re-walk the RHS — only a plain `=`
+   * to a simple-identifier lvalue defines (a member / index target is not a
+   * scalar def; a compound `+=` is not a value-branch carrier).
+   */
+  assignmentDefFacts(node: SyntaxNode): StatementFacts | undefined {
+    if (this.assignmentOperator(node) !== '=') return undefined;
+    const acc = new FactAccumulator(node.startPosition.row + 1);
+    const lvalue = node.namedChildren.find((c) => c.type === 'directly_assignable_expression');
+    if (lvalue) {
+      const lv = this.unwrapAssignable(lvalue);
+      if (lv.type === 'simple_identifier') this.def(lv, acc);
+    }
+    return acc.defCount() ? acc.finish() : undefined;
+  }
+
   /** ENTRY-block facts for the parameters (defs only). */
   paramFacts(): StatementFacts | undefined {
     const acc = new FactAccumulator(this.fnNode.startPosition.row + 1);
