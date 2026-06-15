@@ -483,4 +483,62 @@ describe('streamAllCSVsToDisk — direct per-pair emit matches the split oracle'
     expect(split.totalValidRels).toBeLessThan(direct.totalValidRels);
     expect(split.skippedRels).toBeGreaterThan(direct.skippedRels);
   });
+
+  it('sorted path (GITNEXUS_SORT_GRAPH_OUTPUT=1): per-pair files byte-identical to the oracle', async () => {
+    // The earlier differential test covers the default (insertion-order) path.
+    // Here the sorted emit path must also match the oracle — fed the SAME
+    // id-sorted order orderedRelationships() uses (sort by rel.id).
+    process.env.GITNEXUS_SORT_GRAPH_OUTPUT = '1';
+    try {
+      const graph = buildTestGraph(
+        [
+          { id: 'File:a.ts', label: 'File', name: 'a.ts', filePath: 'a.ts' },
+          { id: 'Function:a.ts:f:1', label: 'Function', name: 'f', filePath: 'a.ts' },
+          { id: 'Function:a.ts:g:5', label: 'Function', name: 'g', filePath: 'a.ts' },
+        ],
+        // Deliberately NOT in id-sorted order so the sort actually reorders rows.
+        [
+          { sourceId: 'Function:a.ts:f:1', targetId: 'Function:a.ts:g:5', type: 'CALLS' },
+          { sourceId: 'File:a.ts', targetId: 'Function:a.ts:g:5', type: 'CONTAINS' },
+          { sourceId: 'File:a.ts', targetId: 'Function:a.ts:f:1', type: 'CONTAINS' },
+        ],
+      );
+
+      const directDir = path.join(csvDir, 'sorted-direct');
+      const oracleDir = path.join(csvDir, 'sorted-oracle');
+      await fs.mkdir(oracleDir, { recursive: true });
+
+      const direct = await streamAllCSVsToDisk(graph, repoDir, directDir);
+
+      // Oracle fed the same id-sorted order the sorted emit produces.
+      const sortedRels = [...graph.iterRelationships()].sort((a, b) =>
+        a.id < b.id ? -1 : a.id > b.id ? 1 : 0,
+      );
+      const relCsv = path.join(oracleDir, 'relations.csv');
+      const lines = [REL_CSV_HEADER];
+      for (const rel of sortedRels) lines.push(buildRelRow(rel));
+      await fs.writeFile(relCsv, lines.join('\n') + '\n', 'utf-8');
+      const split = await splitRelCsvByLabelPair(
+        relCsv,
+        oracleDir,
+        new Set<string>(NODE_TABLES),
+        getNodeLabel,
+      );
+      await Promise.all(
+        Array.from(split.pairWriteStreams.values()).map(async (ws) => {
+          ws.end();
+          await finished(ws);
+        }),
+      );
+
+      expect([...direct.relsByPair.keys()].sort()).toEqual([...split.relsByPairMeta.keys()].sort());
+      for (const key of direct.relsByPair.keys()) {
+        const directContent = await fs.readFile(direct.relsByPair.get(key)!.csvPath, 'utf-8');
+        const oracleContent = await fs.readFile(split.relsByPairMeta.get(key)!.csvPath, 'utf-8');
+        expect(directContent, `pair ${key} (sorted)`).toBe(oracleContent);
+      }
+    } finally {
+      delete process.env.GITNEXUS_SORT_GRAPH_OUTPUT;
+    }
+  });
 });
