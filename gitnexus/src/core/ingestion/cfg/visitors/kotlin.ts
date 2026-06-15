@@ -483,8 +483,10 @@ class KotlinCfgWalk {
       return node.namedChildren.filter((c) => c.type === 'when_entry').length >= 2;
     }
     if (node.type === 'if_expression') return this.elseNodeOf(node) !== undefined;
-    // `val x = try { … } catch { … }` (#2205): a value-position `try` is a real
-    // branch (the body's value, or a catch's value) — model it as control flow.
+    // `val x = try { … } catch { … }` / `try { … } finally { … }` (#2205): a
+    // value-position `try` with a `catch` OR a `finally` is a real branch — its
+    // value is the body's value, a catch's value, or the body's value threaded
+    // through a finalizer — so model it as control flow.
     if (node.type === 'try_expression') {
       return node.namedChildren.some((c) => c.type === 'catch_block' || c.type === 'finally_block');
     }
