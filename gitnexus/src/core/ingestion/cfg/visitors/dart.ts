@@ -763,12 +763,15 @@ class DartCfgWalk {
   }
 
   /**
-   * Model a value-position `switch (v) { p => e, _ => e }` (Dart 3) as a CFG
-   * dispatch: a discriminant block, each arm's value a block reached by a
-   * `switch-case` edge, all arms rejoining at one exit (no fallthrough). Arm
-   * patterns are harvested as conditional uses on the dispatch. A Dart call value
-   * parses as `identifier` + `selector` (multiple children), so the arm-value
-   * facts come from {@link DartHarvester.switchExprArmValueFacts}.
+   * Model a value-position `switch (v) { p [when g] => e, _ => e }` (Dart 3) as a
+   * CFG dispatch: a discriminant block, each arm's value a block reached by a
+   * `switch-case` edge, all arms rejoining at one exit (no fallthrough). The arm
+   * PATTERN and any `when` GUARD are harvested as conditional uses on the dispatch
+   * (they evaluate before the body, only when earlier arms missed); a Dart call
+   * value parses as `identifier` + `selector` (multiple children), so the arm-value
+   * facts come from each post-`=>` child. Only an UNGUARDED `_` arm is the
+   * exhaustive catch-all — a guarded `_ when …` is NOT (the no-match path still
+   * needs the conservative edge), mirroring the C# `visitSwitchExpr`.
    */
   private visitSwitchExpr(node: SyntaxNode): TraversalResult {
     const condRaw = node.childForFieldName('condition');
@@ -785,19 +788,22 @@ class DartCfgWalk {
     const arms = node.namedChildren.filter((c) => c.type === 'switch_expression_case');
     let hasCatchAll = false;
     for (const arm of arms) {
-      const pattern = arm.namedChild(0);
-      this.builder.attachFacts(dispatch, this.harvest.switchExprArmPatternFacts(arm));
-      if (pattern && pattern.text === '_') hasCatchAll = true;
-      const valueChildren = arm.namedChildren.filter((c) => c.id !== pattern?.id && !isComment(c));
-      const first = valueChildren[0] ?? arm;
-      const last = valueChildren[valueChildren.length - 1] ?? arm;
+      const { pattern, guards, values } = this.armParts(arm);
+      // The pattern + `when` guard are conditional dispatch tests, NOT arm-value
+      // uses — harvest them onto the dispatch (mirrors casePatterns for switch_statement).
+      if (pattern) this.builder.attachFacts(dispatch, this.harvest.factsConditional(pattern));
+      for (const g of guards) this.builder.attachFacts(dispatch, this.harvest.factsConditional(g));
+      if (pattern && pattern.text === '_' && guards.length === 0) hasCatchAll = true;
+      const first = values[0] ?? arm;
+      const last = values[values.length - 1] ?? arm;
       const armBlock = this.builder.newBlock(
         startLineOf(first),
         endLineOf(last),
-        valueChildren.map((c) => c.text).join('') || arm.text,
+        values.map((c) => c.text).join('') || arm.text,
         'normal',
-        this.harvest.switchExprArmValueFacts(arm),
+        undefined,
       );
+      for (const v of values) this.builder.attachFacts(armBlock, this.harvest.facts(v));
       this.builder.edge(dispatch, armBlock, 'switch-case');
       this.builder.edge(armBlock, switchExit, 'seq');
     }
@@ -806,6 +812,34 @@ class DartCfgWalk {
     if (!hasCatchAll) this.builder.edge(dispatch, switchExit, 'switch-case');
 
     return { entry: dispatch, exits: [switchExit] };
+  }
+
+  /**
+   * Split a `switch_expression_case` at the `=>` token: the PATTERN (first named
+   * child before `=>`), any `when` GUARD (named children between the pattern and
+   * `=>` — tree-sitter-dart parses the guard as a bare sibling, not a wrapper),
+   * and the VALUE expression (named children after `=>` — a Dart call is split
+   * across `identifier` + `selector`, hence an array).
+   */
+  private armParts(arm: SyntaxNode): {
+    pattern: SyntaxNode | undefined;
+    guards: SyntaxNode[];
+    values: SyntaxNode[];
+  } {
+    const before: SyntaxNode[] = [];
+    const values: SyntaxNode[] = [];
+    let seenArrow = false;
+    for (let i = 0; i < arm.childCount; i++) {
+      const c = arm.child(i);
+      if (!c) continue;
+      if (!c.isNamed) {
+        if (c.text === '=>') seenArrow = true;
+        continue;
+      }
+      if (isComment(c)) continue;
+      (seenArrow ? values : before).push(c);
+    }
+    return { pattern: before[0], guards: before.slice(1), values };
   }
 
   /** Strip a `parenthesized_expression` wrapper (a switch/if condition). */

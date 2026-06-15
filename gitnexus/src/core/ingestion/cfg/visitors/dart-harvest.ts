@@ -304,30 +304,6 @@ export class DartHarvester {
   }
 
   /**
-   * Facts for a `switch_expression_case` VALUE (the expression children after the
-   * pattern, #2207) — Dart parses a call value as `identifier` + `selector`, so the
-   * value is multiple children, not one node. Uses only; attached to the arm block.
-   */
-  switchExprArmValueFacts(arm: SyntaxNode): StatementFacts {
-    const acc = new FactAccumulator(arm.startPosition.row + 1);
-    const pattern = arm.namedChild(0);
-    for (let i = 0; i < arm.namedChildCount; i++) {
-      const c = arm.namedChild(i);
-      if (!c || c.id === pattern?.id) continue;
-      this.walkValue(c, acc);
-    }
-    return acc.finish();
-  }
-
-  /** Conditional facts for a `switch_expression_case` PATTERN (the dispatch test). */
-  switchExprArmPatternFacts(arm: SyntaxNode): StatementFacts {
-    const acc = new FactAccumulator(arm.startPosition.row + 1);
-    const pattern = arm.namedChild(0);
-    if (pattern) this.conditional(() => this.walkValue(pattern, acc));
-    return acc.finish();
-  }
-
-  /**
    * Facts for a `for` head. For-in: the loop var name is a def, the collection a
    * use. C-style: the init/condition/update sub-expressions are walked for
    * defs/uses (the init `local_variable_declaration` defines, the condition reads,

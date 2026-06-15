@@ -311,6 +311,36 @@ describe('Dart CfgVisitor — switch', () => {
       true,
     );
   });
+
+  it('value switch without an unguarded `_` keeps the no-match edge (EXIT stays reachable) (#2211)', () => {
+    // A guarded `_ when …` is NOT an exhaustive catch-all — the conservative
+    // no-match path must remain (Dart throws at runtime if no arm + guard matches).
+    const cfg = dart.cfgOf(`int f(int v) {
+      return switch (v) { int n when n > 0 => a(n), _ when v < 0 => b() };
+    }`);
+    expect(edgeKinds(cfg).has('switch-case')).toBe(true);
+    expect(isExitReachableFromAllBlocks(cfg)).toBe(true);
+    // the dispatch must reach the join WITHOUT going through an arm (the no-match edge).
+    const dispatchIdx = block(cfg, 'switch v');
+    const dispatchSucc = cfg.edges.filter(
+      (e) => e.from === dispatchIdx && e.kind === 'switch-case',
+    );
+    // dispatch fans to 2 arms + the no-match join = 3 switch-case successors.
+    expect(dispatchSucc.length).toBe(3);
+  });
+
+  it('a value-switch `when` guard is a conditional dispatch use, not an arm-value use (#2211)', () => {
+    const cfg = dart.cfgOf(`int f(int v) {
+      var x = switch (v) { int n when guardOk(v) => a(n), _ => b() };
+      use(x);
+    }`);
+    const vIdx = bindingIdx(cfg, 'v');
+    // `v` (used by the guard `guardOk(v)`) is recorded as a use on the dispatch
+    // block (text `switch v`), not buried in an arm-value block.
+    const dispatch = cfg.blocks.find((b) => b.text === 'switch v')!;
+    expect(dispatch.statements?.some((s) => s.uses.includes(vIdx))).toBe(true);
+    expect(isExitReachableFromAllBlocks(cfg)).toBe(true);
+  });
 });
 
 describe('Dart CfgVisitor — try/on/catch/finally', () => {
