@@ -108,10 +108,16 @@ export const DEFAULT_PDG_MAX_REACHING_DEF_FACTS_PER_FUNCTION =
  * never fires). Truncation degrades to a sound empty REACHING_DEF for that one
  * function (status `truncated`), never wrong facts.
  *
- * This ceiling is the SOUND backstop, not a perf fix: WTO / loop-aware iteration
- * ordering was benchmarked and rejected (0% faster — the cost is dense-set
- * propagation, not visitation order; see the no-go note in reaching-defs.ts at
- * the RPO-order site). SSA-sparse reaching-defs is the deferred real fix.
+ * As of #2201 this ceiling is an adversarial-only backstop that effectively
+ * never fires on real code: the production solver auto-selects the SSA-sparse
+ * path for the looping functions that would breach it, and the SSA path has no
+ * fixpoint iteration (it answers reaching queries from the def-use graph in one
+ * pass) so it computes the full facts where the dense worklist would have
+ * truncated. The budget is still consulted on the dense fallback path (small /
+ * loop-free functions, and throw-edge / unreachable-block functions the SSA path
+ * does not model). WTO / loop-aware iteration ordering was benchmarked and
+ * rejected (0% faster — the cost was dense-set propagation, not visitation
+ * order); SSA-sparse was the real fix. See reaching-defs.ts.
  */
 export const DEFAULT_PDG_MAX_REACHING_DEF_BLOCK_REVISITS = 64;
 

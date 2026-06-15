@@ -194,6 +194,19 @@ export interface RepoMeta {
      * without `--force`. Optional: absent on pre-M3 stamps.
      */
     taintModelVersion?: string;
+    /**
+     * Identity of the reaching-definitions solver the persisted REACHING_DEF
+     * rows were produced under (#2201 review R3). The SSA-sparse rewrite computes
+     * FULL facts for deep-loop functions the old dense worklist truncated to
+     * empty (the blocks×64 ceiling no longer fires) — but an existing `--pdg`
+     * index built under the old solver carries those truncated rows. ABSENT on
+     * any pre-#2201 stamp, so that absence trips `pdgModeMismatch` on the first
+     * upgraded run and forces the full writeback that recomputes the now-fuller
+     * REACHING_DEF coverage without `--force`. Bump the tag on any future change
+     * that alters which facts the solver emits. Optional for that upgrade reason;
+     * resolved (always present) on every post-#2201 write.
+     */
+    reachingDefSolver?: string;
   };
 }
 
