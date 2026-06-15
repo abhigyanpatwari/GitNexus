@@ -227,6 +227,17 @@ describe('PHP CfgVisitor — switch / match', () => {
     expect(edgeKinds(ternary).has('switch-case')).toBe(false);
     expect(isExitReachableFromAllBlocks(ternary)).toBe(true);
   });
+
+  it('match without `default` keeps a no-match (UnhandledMatchError) edge; EXIT reachable (#2211)', () => {
+    const cfg = php.cfgOf(wrap(`$r = match ($x) { 1 => a($x), 2 => b() }; use_it($r);`));
+    expect(edgeKinds(cfg).has('switch-case')).toBe(true);
+    expect(isExitReachableFromAllBlocks(cfg)).toBe(true);
+    // 2 arms + the conservative no-match path = 3 switch-case successors from the dispatch.
+    const dispatchIdx = block(cfg, '$x');
+    expect(cfg.edges.filter((e) => e.from === dispatchIdx && e.kind === 'switch-case').length).toBe(
+      3,
+    );
+  });
 });
 
 describe('PHP CfgVisitor — try / catch / finally', () => {

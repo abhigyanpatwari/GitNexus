@@ -245,6 +245,19 @@ describe('C# CfgVisitor — switch', () => {
     const oneArm = cs.cfgOf(`class C { int M(int x) { var y = x switch { _ => 0 }; return y; } }`);
     expect(edgeKinds(oneArm).has('switch-case')).toBe(false);
   });
+
+  it('non-exhaustive switch expression (no `_` arm) keeps a no-match edge (EXIT reachable) (#2211)', () => {
+    const cfg = cs.cfgOf(
+      `class C { int M(int x) { var y = x switch { 1 => a(), 2 => b() }; return y; } }`,
+    );
+    expect(edgeKinds(cfg).has('switch-case')).toBe(true);
+    expect(isExitReachableFromAllBlocks(cfg)).toBe(true);
+    // 2 arms + the conservative no-match path = 3 switch-case successors from the dispatch.
+    const dispatchIdx = block(cfg, 'x');
+    expect(cfg.edges.filter((e) => e.from === dispatchIdx && e.kind === 'switch-case').length).toBe(
+      3,
+    );
+  });
 });
 
 describe('C# CfgVisitor — using / lock (deterministic finalizer)', () => {
