@@ -878,6 +878,17 @@ export const loadGraphToLbug = async (
 
   const log = onProgress || (() => {});
 
+  // ── #2203 persistence-path profiling ──────────────────────────────────
+  // Mirrors the PROF_SCOPE_RESOLUTION pattern (scope-resolution/pipeline/
+  // run.ts): zero-cost when off — process.hrtime.bigint() is only read under
+  // PROF_LBUG_LOAD=1, and the summary is logged behind the same gate. Fills
+  // the gap that the DB-persistence path is un-timed today (the analyze
+  // "emit" number is the scope-resolution emit bucket, not this COPY path).
+  const PROF = process.env.PROF_LBUG_LOAD === '1';
+  const mark = (): bigint => (PROF ? process.hrtime.bigint() : 0n);
+  const span = (a: bigint, b: bigint): string => (Number(b - a) / 1e6).toFixed(1);
+  const tStart = mark();
+
   let csvDir: string;
   if (process.platform === 'win32' && /[^\x00-\x7F]/.test(storagePath)) {
     const hash = crypto.createHash('sha256').update(storagePath).digest('hex').slice(0, 16);
@@ -888,6 +899,7 @@ export const loadGraphToLbug = async (
 
   log('Streaming CSVs to disk...');
   const csvResult = await streamAllCSVsToDisk(graph, repoPath, csvDir);
+  const tCsv = mark();
 
   const validTables = new Set<string>(NODE_TABLES as readonly string[]);
   const getNodeLabel = (nodeId: string): string => {
@@ -924,6 +936,8 @@ export const loadGraphToLbug = async (
     }
   }
 
+  const tCopyNodes = mark();
+
   // Bulk COPY relationships — split by FROM→TO label pair (LadybugDB requires it)
   const { relHeader, relsByPairMeta, pairWriteStreams, skippedRels, totalValidRels } =
     await splitRelCsvByLabelPair(csvResult.relCsvPath, csvDir, validTables, getNodeLabel);
@@ -937,6 +951,9 @@ export const loadGraphToLbug = async (
       await finished(ws);
     }),
   );
+  const tSplit = mark();
+  let tCopyRels = tSplit;
+  let tFallback = tSplit;
 
   const insertedRels = totalValidRels;
   const warnings: string[] = [];
@@ -980,6 +997,7 @@ export const loadGraphToLbug = async (
         } catch {}
       }
     }
+    tCopyRels = mark();
 
     if (failedPairCsvPaths.size > 0) {
       log(`Inserting ${failedPairEdges} edges individually (missing schema pairs)`);
@@ -1002,6 +1020,7 @@ export const loadGraphToLbug = async (
         await fallbackRelationshipInserts(allLines, validTables, getNodeLabel);
       }
     }
+    tFallback = mark();
   }
 
   // Cleanup all CSVs
@@ -1024,6 +1043,18 @@ export const loadGraphToLbug = async (
   try {
     await fs.rmdir(csvDir);
   } catch {}
+
+  if (PROF) {
+    const tEnd = mark();
+    let totalNodeRows = 0;
+    for (const [, { rows }] of csvResult.nodeFiles) totalNodeRows += rows;
+    logger.warn(
+      `[lbug-load prof] csv-emit=${span(tStart, tCsv)}ms ` +
+        `copy-nodes=${span(tCsv, tCopyNodes)}ms rel-split=${span(tCopyNodes, tSplit)}ms ` +
+        `copy-rels=${span(tSplit, tCopyRels)}ms fallback=${span(tCopyRels, tFallback)}ms ` +
+        `total=${span(tStart, tEnd)}ms (${totalNodeRows} nodes, ${insertedRels} rels)`,
+    );
+  }
 
   return { success: true, insertedRels, skippedRels, warnings };
 };
