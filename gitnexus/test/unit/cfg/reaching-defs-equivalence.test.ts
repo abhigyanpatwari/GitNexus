@@ -317,6 +317,25 @@ function canonicalHardCfgs(): FunctionCfg[] {
     ),
   );
 
+  // (7) Malformed input: an OUT-OF-RANGE binding index (≥ nBindings, e.g. from a
+  // corrupted/stale durable store) in a looping CFG. The dense solver tolerates
+  // it (its lattice is a Map keyed by index); the SSA path must fall back to
+  // dense rather than crash its nBindings-sized arrays. Asserting byte-identity
+  // here pins that gate — without it, the SSA path throws and the differential
+  // comparison can never reach this divergent input (the generator only ever
+  // emits in-range indices).
+  out.push(
+    mk(
+      [blk(0, [st(1, [0], [])]), blk(1, [st(2, [3], [3])]), blk(2, [st(3, [], [0])])],
+      [
+        { from: 0, to: 1, kind: 'seq' },
+        { from: 1, to: 1, kind: 'loop-back' },
+        { from: 1, to: 2, kind: 'cond-false' },
+      ],
+      [bind('x', 1)], // nBindings = 1, so binding index 3 in block 1 is out of range
+    ),
+  );
+
   return out;
 }
 

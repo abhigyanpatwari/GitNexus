@@ -400,6 +400,31 @@ describe('computeReachingDefs — determinism and convergence', () => {
     expect(sparse.status).toBe('computed'); // SSA ignores the ceiling — it never fires
     expect(render(sparse.facts)).toEqual(render(denseFull.facts)); // and the facts match
   });
+
+  it('#2201: an out-of-range binding index in a ≥16-block loop does NOT crash the SSA path', () => {
+    // A corrupted/stale store can carry a binding index ≥ nBindings. The dense
+    // solver tolerates it (Map-keyed lattice); the SSA path's nBindings-sized
+    // arrays would throw. The production dispatcher routes ≥16-block looping
+    // functions to SSA, so without the malformed-input gate the throw would
+    // escape the (unguarded) taint/harvest callers and lose a whole file's taint
+    // layer. The gate falls back to dense — no throw, byte-identical to dense.
+    const blocks: BlockSpec[] = [{ stmts: [stmt(1, [0], [])] }];
+    const edges: [number, number][] = [];
+    for (let i = 1; i <= 18; i++) {
+      blocks.push({ stmts: [stmt(i + 1, i === 1 ? [5] : [0], [i === 1 ? 5 : 0])] }); // block 1 uses/defs OOB index 5
+      edges.push([i - 1, i]);
+    }
+    edges.push([18, 1]); // back-edge → loop; 19 blocks total, ≥16 → SSA dispatch
+    const cfg = mkCfg(blocks, edges, ['x']); // nBindings = 1; index 5 is out of range
+    expect(cfg.blocks.length).toBeGreaterThanOrEqual(16);
+    let prod: ReturnType<typeof computeReachingDefs> | undefined;
+    expect(() => {
+      prod = computeReachingDefs(cfg); // must NOT throw (gate → dense fallback)
+    }).not.toThrow();
+    const dense = computeReachingDefsDense(cfg);
+    expect(prod!.status).toBe(dense.status);
+    expect(render(prod!.facts)).toEqual(render(dense.facts)); // byte-identical to the tolerant dense path
+  });
 });
 
 describe('computeReachingDefs — parser-direct acceptance (with U1/U2)', () => {

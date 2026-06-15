@@ -526,8 +526,28 @@ function computeInSetsSparse(
   const { preds, succs, throwSuccs } = adj;
   const entry = cfg.entryIndex;
 
-  // Gate to the dense oracle for the two shapes the SSA path does not model.
+  // Gate to the dense oracle for the shapes the SSA path does not model.
   for (const list of throwSuccs) if (list.length) return computeInSetsDense(cfg, n, h, adj, limits);
+  // Malformed-input guard: an out-of-range binding index (negative or
+  // ≥ nBindings — a corrupted/stale durable parsedfile store) would crash the
+  // SSA path's nBindings-sized arrays (defBlocks[v]/stacks[u]). The dense solver
+  // tolerates any index (its lattice is a Map), so fall back — keeping the two
+  // byte-identical AND preserving the graceful per-function degradation the
+  // dense path gave (a throw here would escape the unguarded taint/harvest call
+  // sites and lose the whole file's taint layer). See hasEmitSafeFacts (emit.ts).
+  for (const b of cfg.blocks) {
+    const stmts = b.statements;
+    if (!stmts) continue;
+    for (const s of stmts) {
+      for (const d of s.defs)
+        if (d < 0 || d >= nBindings) return computeInSetsDense(cfg, n, h, adj, limits);
+      for (const u of s.uses)
+        if (u < 0 || u >= nBindings) return computeInSetsDense(cfg, n, h, adj, limits);
+      if (s.mayDefs)
+        for (const d of s.mayDefs)
+          if (d < 0 || d >= nBindings) return computeInSetsDense(cfg, n, h, adj, limits);
+    }
+  }
   const reachable = new Array<boolean>(n).fill(false);
   {
     const q = [entry];
