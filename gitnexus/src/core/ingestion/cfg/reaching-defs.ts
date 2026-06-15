@@ -5,16 +5,22 @@
  * coalesced blocks WITHOUT re-splitting the CFG.
  *
  * ARCHITECTURE (#2201): the analysis is split into solver-INDEPENDENT stages
- * (shared by both solvers, so the byte-identical surface is maximal) and a
+ * (shared by every path, so the byte-identical surface is maximal) and a
  * swappable IN-set computation:
  *   - {@link harvestStatementFacts} — per-block GEN/allDefs + def/use telemetry.
  *   - {@link buildAdjacency} — throw-aware predecessor/successor adjacency.
- *   - the IN-set computer — produces per-block entry reaching lattices. Two
- *     exist: {@link computeInSetsSparse} (production, change-driven per binding)
- *     and {@link computeInSetsDense} (the original GEN/KILL worklist, RETAINED
- *     as the differential equivalence oracle). They MUST produce identical
- *     inSets, including set INSERTION order (the maxFacts-truncated subset
- *     depends on the sweep's pre-sort emission order — see {@link sweepFacts}).
+ *   - the IN-set computer — answers block-entry reaching-set queries. Two
+ *     implementations: {@link computeInSetsSparse} (SSA — CHK dominators →
+ *     Cytron dominance frontiers + φ-placement → stack renaming over a
+ *     synthetic entry, walked SCC-condensed) and {@link computeInSetsDense}
+ *     (the original GEN/KILL worklist). Production runs {@link
+ *     computeInSetsAuto}, which picks the SSA solver for looping functions large
+ *     enough to amortize construction (where it is asymptotically faster and
+ *     never hits the dense ceiling) and the dense worklist everywhere else; the
+ *     dense path also serves the throw-edge / unreachable-block cases the SSA
+ *     path does not model. The two are held byte-identical by the equivalence
+ *     fuzz — only set CONTENTS must match (the sweep sorts each use's keys
+ *     before the maxFacts cutoff, so iteration order is irrelevant).
  *   - {@link sweepFacts} — statement sweep + sort + maxFacts truncation.
  *
  * PURE AND DETERMINISTIC (load-bearing contract):
@@ -74,26 +80,27 @@ export interface ReachingDefsLimits {
    */
   readonly maxFacts?: number;
   /**
-   * Adversarial-only safety bound on solver work.
+   * Adversarial-only safety bound on the DENSE worklist's iteration.
    *
-   * The DENSE oracle reads this as a ceiling on total block dequeues: iterative
-   * reaching-defs on a reducible CFG converges in O(loop-nesting-depth) passes,
-   * but a pathologically deep loop nest drives the visit total — and thus the
-   * solver — to O(blocks²), seconds + GB of heap (`maxFacts` does not help: fact
-   * count stays linear).
+   * The dense GEN/KILL solver reads this as a ceiling on total block dequeues:
+   * iterative reaching-defs on a reducible CFG converges in O(loop-nesting-depth)
+   * passes, but a pathologically deep loop nest drives the visit total — and thus
+   * the solver — to O(blocks²), seconds + GB of heap (`maxFacts` does not help:
+   * fact count stays linear). Exceeding the budget means the fixpoint has NOT
+   * converged, so any facts would be unsound — the dense solver bails to a sound
+   * empty `status: 'truncated'` (like the `overflow` guard).
    *
-   * The SPARSE solver (#2201) reads it as a ceiling on total (block, binding)
-   * dequeues. Because the sparse solve is change-driven per binding, realistic
-   * deep nests (loop-local / shallow variables) cost ~O(blocks) and complete far
-   * under this budget — the ceiling that fired on the dense worklist effectively
-   * never fires on real code. A single variable threaded through every level of
-   * an adversarial deep nest is the one residual O(depth²) shape (a documented
-   * SSA follow-up); it still bails soundly here.
+   * The SSA solver (#2201) has NO fixpoint iteration — it answers reaching
+   * queries from the def-use graph in one pass — so it always converges and this
+   * budget never trips it. The production dispatcher ({@link computeInSetsAuto})
+   * routes the deep nests that would breach the dense ceiling to the SSA solver,
+   * which computes their full facts: the ceiling that fired on the dense worklist
+   * effectively never fires on real code (#2201 acceptance). The budget is still
+   * honored on the dense fallback path (small / loop-free functions, and the
+   * throw-edge / unreachable-block cases the SSA path does not model).
    *
-   * On either solver, exceeding the budget means the fixpoint has NOT converged,
-   * so any facts would be unsound — the solver bails to a sound empty
-   * `status: 'truncated'` (like the `overflow` guard). `undefined`/0 ⇒ unlimited
-   * (the default for direct callers; the emit path sets a per-function budget).
+   * `undefined`/0 ⇒ unlimited (the default for direct callers; the emit path sets
+   * a per-function budget).
    */
   readonly maxBlockVisits?: number;
 }
@@ -389,9 +396,9 @@ function buildAdjacency(cfg: FunctionCfg, n: number): Adjacency {
  * O(blocks²) deep-loop-nest blow-up and REJECTED (#2195): on the dense-loop
  * benchmark a faithful weak-topological-order solver was 104/104 byte-identical
  * but 0% faster — the cost is inherent to dense-set propagation + lattice
- * merges, not visitation order. The asymptotic fix is the sparse, change-driven
- * solver ({@link computeInSetsSparse}); this dense version is retained only as
- * the differential equivalence oracle.
+ * merges, not visitation order. The asymptotic fix shipped in #2201: the
+ * SSA-sparse solver ({@link computeInSetsSparse}). This dense version is retained
+ * only as the differential equivalence oracle the fuzz checks SSA against.
  *
  * @internal
  */
