@@ -24,6 +24,9 @@ import { loadParseCache } from '../../../src/storage/parse-cache.js';
 import type { PipelineResult } from '../../../src/types/pipeline.js';
 
 const FIXTURE = path.join(__dirname, 'fixtures', 'pdg-repo');
+// A `.vue` SFC importing a `.ts` module: the TS module is PDG-emitted in BOTH
+// the TypeScript pass and the Vue context pass (review #8a, cross-pass dedup).
+const VUE_TS_FIXTURE = path.join(__dirname, 'fixtures', 'vue-ts-pdg');
 const PDG_EDGE_TYPES = new Set([
   'CFG',
   'REACHING_DEF',
@@ -34,9 +37,9 @@ const PDG_EDGE_TYPES = new Set([
 ]);
 
 const tmpDirs: string[] = [];
-function freshRepo(): string {
+function freshRepo(fixture: string = FIXTURE): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-pdg-stream-'));
-  fs.cpSync(FIXTURE, dir, { recursive: true });
+  fs.cpSync(fixture, dir, { recursive: true });
   tmpDirs.push(dir);
   return dir;
 }
@@ -102,5 +105,63 @@ describe('#2202 — streaming PDG emit end-to-end', () => {
     const bbCsv = manifest!.nodeFiles.get('BasicBlock')?.csvPath;
     expect(bbCsv).toBeDefined();
     expect(fs.existsSync(bbCsv!)).toBe(true);
+  });
+
+  it('collapses the real Vue+TS cross-pass double-emit to one streamed copy (review #8a)', async () => {
+    // A `.ts` module imported by a `.vue` SFC is PDG-emitted in BOTH the
+    // TypeScript pass and the Vue context pass (the Vue provider's
+    // `collectScopeContextPaths` follows the import) over the same worker-built
+    // `cfgSideChannel` → identical ids. The in-memory graph dedups those by id
+    // (Map first-writer-wins); the streaming sink is dedup-free, so the emit
+    // loop dedups per FILE via `pdgEmittedFiles`. Without that dedup the streamed
+    // manifest would carry shared.ts's blocks TWICE (verified out-of-band: 33 →
+    // 61 BasicBlock rows). This asserts the streamed SET equals the Map-deduped
+    // baseline — the load-bearing dedup regression guard.
+    const baseStorage = freshStorage();
+    const baseline = await runPipelineFromRepo(freshRepo(VUE_TS_FIXTURE), () => {}, {
+      pdg: true,
+      parseCache: await loadParseCache(baseStorage),
+    });
+    const base = pdgCounts(baseline);
+    // Both files contribute blocks — the cross-pass case is actually present.
+    expect(base.basicBlocks).toBeGreaterThan(0);
+    expect(base.pdgEdges).toBeGreaterThan(0);
+
+    const streamStorage = freshStorage();
+    const streamed = await runPipelineFromRepo(freshRepo(VUE_TS_FIXTURE), () => {}, {
+      pdg: true,
+      streamPdgEmit: true,
+      parseCache: await loadParseCache(streamStorage),
+    });
+    // Streamed graph holds none of the PDG layer.
+    const streamedCounts = pdgCounts(streamed);
+    expect(streamedCounts.basicBlocks).toBe(0);
+    expect(streamedCounts.pdgEdges).toBe(0);
+
+    // The streamed manifest carries each file's PDG layer EXACTLY ONCE — equal
+    // to the Map-deduped baseline. A broken per-file dedup would double the
+    // shared module's rows and fail here.
+    const manifest = streamed.pdgEmitManifest;
+    expect(manifest).toBeDefined();
+    expect(manifest!.nodeFiles.get('BasicBlock')?.rows ?? 0).toBe(base.basicBlocks);
+    let manifestEdgeRows = 0;
+    for (const [, meta] of manifest!.relsByPair) manifestEdgeRows += meta.rows;
+    expect(manifestEdgeRows).toBe(base.pdgEdges);
+  });
+
+  it('falls back to in-memory emit when streaming is on but no storage path exists', async () => {
+    // `streamPdgEmit: true` with NO parse cache → `parsedFileStorePath` is
+    // undefined, so phase.ts cannot place the streamed CSV dir and falls back to
+    // the in-memory whole-graph emit (the `else` branch that warns). The PDG
+    // layer must still land in the graph and NO manifest is produced.
+    const fellBack = await runPipelineFromRepo(freshRepo(VUE_TS_FIXTURE), () => {}, {
+      pdg: true,
+      streamPdgEmit: true,
+      // intentionally no parseCache → no storagePath
+    });
+    const counts = pdgCounts(fellBack);
+    expect(counts.basicBlocks).toBeGreaterThan(0); // emitted in-memory, not streamed
+    expect(counts.pdgEdges).toBeGreaterThan(0);
+    expect(fellBack.pdgEmitManifest).toBeUndefined(); // no streaming happened
   });
 });
