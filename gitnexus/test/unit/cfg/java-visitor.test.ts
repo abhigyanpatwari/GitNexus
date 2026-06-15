@@ -294,13 +294,58 @@ describe('Java CfgVisitor — switch', () => {
     expect(hasUse(cfg, x)).toBe(true);
   });
 
-  it('switch EXPRESSION value with yield stays inline; method has a single-exit CFG', () => {
+  it('value-position switch declaration is modeled as a dispatch, def bound at the join (#2207)', () => {
     const cfg = java.cfgOf(`class C { int m(int x) {
       int r = switch (x) { case 1 -> 10; default -> { yield 20; } };
-      return r;
+      use(r);
     } }`);
+    // The arms are now real CFG blocks reached by switch-case dispatch edges.
+    expect(edgeKinds(cfg).has('switch-case')).toBe(true);
+    // Each arm rejoins and reaches the use of the bound result.
+    expect(reaches(cfg, block(cfg, '10'), block(cfg, 'use(r);'))).toBe(true);
+    expect(reaches(cfg, block(cfg, 'yield 20;'), block(cfg, 'use(r);'))).toBe(true);
+    // `r` is defined (at the continuation) and used downstream — the chain is live.
+    const r = bindingIdx(cfg, 'r');
+    expect(hasDef(cfg, r)).toBe(true);
+    expect(hasUse(cfg, r)).toBe(true);
+    // Modeling the arms yields control dependence (the whole point of #2207).
+    expect(computeControlDependence(cfg).edges.length).toBeGreaterThan(0);
+    expect(isExitReachableFromAllBlocks(cfg)).toBe(true);
     expect(reaches(cfg, cfg.entryIndex, cfg.exitIndex)).toBe(true);
+  });
+
+  it('return switch (…) {…} models each arm as returning the function result (#2207)', () => {
+    const cfg = java.cfgOf(`class C { int m(int x) {
+      return switch (x) { case 1 -> a(); case 2 -> b(); default -> c(); };
+    } }`);
+    expect(edgeKinds(cfg).has('switch-case')).toBe(true);
     expect(edgeKinds(cfg).has('return')).toBe(true);
+    // every arm reaches EXIT (its value IS the returned result).
+    expect(reaches(cfg, block(cfg, 'a()'), cfg.exitIndex)).toBe(true);
+    expect(reaches(cfg, block(cfg, 'c()'), cfg.exitIndex)).toBe(true);
+    expect(computeControlDependence(cfg).edges.length).toBeGreaterThan(0);
+    expect(isExitReachableFromAllBlocks(cfg)).toBe(true);
+  });
+
+  it('value-position switch with ONE group stays inline (no real control dependence)', () => {
+    const cfg = java.cfgOf(`class C { int m(int x) {
+      int r = switch (x) { default -> 0; };
+      use(r);
+    } }`);
+    // A single-arm switch carries no branch — it coalesces into the declaration block.
+    expect(edgeKinds(cfg).has('switch-case')).toBe(false);
+    expect(reaches(cfg, cfg.entryIndex, cfg.exitIndex)).toBe(true);
+  });
+
+  it('assignment-RHS value switch stays inline (documented remaining gap)', () => {
+    const cfg = java.cfgOf(`class C { int m(int x) {
+      int r = 0;
+      r = switch (x) { case 1 -> 10; default -> 20; };
+      use(r);
+    } }`);
+    // Only declaration / return carriers are modeled; an assignment RHS coalesces.
+    expect(edgeKinds(cfg).has('switch-case')).toBe(false);
+    expect(reaches(cfg, cfg.entryIndex, cfg.exitIndex)).toBe(true);
   });
 
   it('statement switch with a yield arm builds a dispatch with a yield block', () => {
