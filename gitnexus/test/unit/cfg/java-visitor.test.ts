@@ -294,13 +294,58 @@ describe('Java CfgVisitor — switch', () => {
     expect(hasUse(cfg, x)).toBe(true);
   });
 
-  it('switch EXPRESSION value with yield stays inline; method has a single-exit CFG', () => {
+  it('value-position switch declaration is modeled as a dispatch, def bound at the join (#2207)', () => {
     const cfg = java.cfgOf(`class C { int m(int x) {
       int r = switch (x) { case 1 -> 10; default -> { yield 20; } };
-      return r;
+      use(r);
     } }`);
+    // The arms are now real CFG blocks reached by switch-case dispatch edges.
+    expect(edgeKinds(cfg).has('switch-case')).toBe(true);
+    // Each arm rejoins and reaches the use of the bound result.
+    expect(reaches(cfg, block(cfg, '10'), block(cfg, 'use(r);'))).toBe(true);
+    expect(reaches(cfg, block(cfg, 'yield 20;'), block(cfg, 'use(r);'))).toBe(true);
+    // `r` is defined (at the continuation) and used downstream — the chain is live.
+    const r = bindingIdx(cfg, 'r');
+    expect(hasDef(cfg, r)).toBe(true);
+    expect(hasUse(cfg, r)).toBe(true);
+    // Modeling the arms yields control dependence (the whole point of #2207).
+    expect(computeControlDependence(cfg).edges.length).toBeGreaterThan(0);
+    expect(isExitReachableFromAllBlocks(cfg)).toBe(true);
     expect(reaches(cfg, cfg.entryIndex, cfg.exitIndex)).toBe(true);
+  });
+
+  it('return switch (…) {…} models each arm as returning the function result (#2207)', () => {
+    const cfg = java.cfgOf(`class C { int m(int x) {
+      return switch (x) { case 1 -> a(); case 2 -> b(); default -> c(); };
+    } }`);
+    expect(edgeKinds(cfg).has('switch-case')).toBe(true);
     expect(edgeKinds(cfg).has('return')).toBe(true);
+    // every arm reaches EXIT (its value IS the returned result).
+    expect(reaches(cfg, block(cfg, 'a()'), cfg.exitIndex)).toBe(true);
+    expect(reaches(cfg, block(cfg, 'c()'), cfg.exitIndex)).toBe(true);
+    expect(computeControlDependence(cfg).edges.length).toBeGreaterThan(0);
+    expect(isExitReachableFromAllBlocks(cfg)).toBe(true);
+  });
+
+  it('value-position switch with ONE group stays inline (no real control dependence)', () => {
+    const cfg = java.cfgOf(`class C { int m(int x) {
+      int r = switch (x) { default -> 0; };
+      use(r);
+    } }`);
+    // A single-arm switch carries no branch — it coalesces into the declaration block.
+    expect(edgeKinds(cfg).has('switch-case')).toBe(false);
+    expect(reaches(cfg, cfg.entryIndex, cfg.exitIndex)).toBe(true);
+  });
+
+  it('assignment-RHS value switch stays inline (documented remaining gap)', () => {
+    const cfg = java.cfgOf(`class C { int m(int x) {
+      int r = 0;
+      r = switch (x) { case 1 -> 10; default -> 20; };
+      use(r);
+    } }`);
+    // Only declaration / return carriers are modeled; an assignment RHS coalesces.
+    expect(edgeKinds(cfg).has('switch-case')).toBe(false);
+    expect(reaches(cfg, cfg.entryIndex, cfg.exitIndex)).toBe(true);
   });
 
   it('statement switch with a yield arm builds a dispatch with a yield block', () => {
@@ -312,6 +357,48 @@ describe('Java CfgVisitor — switch', () => {
     } }`);
     // statement-position switch breaks a block → switch-case dispatch edges.
     expect(edgeKinds(cfg).has('switch-case')).toBe(true);
+  });
+
+  it('colon-form value switch: yield ends the arm, NO fallthrough; every arm is CDG-dependent (#2211)', () => {
+    const cfg = java.cfgOf(`class C { int m(int k) {
+      int x = switch (k) { case 1: yield one(); case 2: yield two(); default: yield zero(); };
+      use(x);
+    } }`);
+    expect(edgeKinds(cfg).has('switch-case')).toBe(true);
+    // a `yield` exits the switch — it does NOT fall through to the next colon group.
+    expect(edgeKinds(cfg).has('fallthrough')).toBe(false);
+    expect(reaches(cfg, block(cfg, 'one()'), block(cfg, 'two()'))).toBe(false);
+    // every arm rejoins and reaches the downstream use of the bound result.
+    expect(reaches(cfg, block(cfg, 'one()'), block(cfg, 'use(x);'))).toBe(true);
+    expect(reaches(cfg, block(cfg, 'two()'), block(cfg, 'use(x);'))).toBe(true);
+    // each arm is control-dependent on the dispatch — pin the SPECIFIC pairs.
+    const dispatch = block(cfg, 'k');
+    const cdg = computeControlDependence(cfg);
+    expect(
+      cdg.edges.some(
+        (e) => e.controllerBlock === dispatch && e.dependentBlock === block(cfg, 'one()'),
+      ),
+    ).toBe(true);
+    expect(
+      cdg.edges.some(
+        (e) => e.controllerBlock === dispatch && e.dependentBlock === block(cfg, 'two()'),
+      ),
+    ).toBe(true);
+    expect(isExitReachableFromAllBlocks(cfg)).toBe(true);
+  });
+
+  it('return switch (…) inside try/finally threads the finalizer per arm (#2211)', () => {
+    const cfg = java.cfgOf(`class C { int m(int k) {
+      try {
+        return switch (k) { case 1 -> a(); default -> b(); };
+      } finally { cleanup(); }
+    } }`);
+    expect(edgeKinds(cfg).has('switch-case')).toBe(true);
+    // each arm's return threads the finally before EXIT.
+    expect(edgeKinds(cfg).has('finally-return')).toBe(true);
+    expect(reaches(cfg, block(cfg, 'a()'), block(cfg, 'cleanup();'))).toBe(true);
+    expect(reaches(cfg, block(cfg, 'b()'), block(cfg, 'cleanup();'))).toBe(true);
+    expect(isExitReachableFromAllBlocks(cfg)).toBe(true);
   });
 });
 
@@ -490,6 +577,18 @@ describe('Java CfgVisitor — does not throw on exotic shapes', () => {
       } }`);
       expect(cfgs.length).toBeGreaterThanOrEqual(3); // m, lambda block, lambda expr
       for (const cfg of cfgs) expect(reaches(cfg, cfg.entryIndex, cfg.exitIndex)).toBe(true);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('a truncated value-position switch never throws out of the carrier path (R4) (#2211)', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const root = java.parse(`class C { int m(int k){ int x = switch (k) { case 1 -> a(`);
+      for (const fn of java.collectFunctions(root)) {
+        expect(() => createJavaCfgVisitor().buildFunctionCfg(fn, 'f.java')).not.toThrow();
+      }
     } finally {
       warn.mockRestore();
     }

@@ -66,6 +66,12 @@
  *    unresolved label.
  *  - Async/await suspension points are modeled as straight-line (the awaited
  *    continuation is not a separate flow), consistent with the TS visitor.
+ *  - A value-position `switch_expression` (`k switch {…}`) with ≥2 arms IS modeled
+ *    as a `switch-case` dispatch in three carriers (#2207): a single-declarator
+ *    `var x = k switch {…}` (arms rejoin at a binding continuation), `return k
+ *    switch {…}`, and an `=> k switch {…}` expression body (each arm returns).
+ *    A value switch in any OTHER position — an assignment RHS (`x = k switch …`),
+ *    a call argument, or a multi-declarator decl — stays INLINE (one block).
  *  - Def/use harvest scope: see `csharp-harvest.ts` — member/element writes are
  *    not scalar defs; nested-function bodies are opaque in both directions.
  *
@@ -186,7 +192,7 @@ class CsharpCfgWalk {
           dangling = [...scope.exits];
           break; // the rest of the sequence is consumed by the dispose scope
         }
-        if (CONTROL_FLOW_TYPES.has(stmt.type)) {
+        if (this.breaksBlock(stmt)) {
           openSimple = undefined; // close any open straight-line block
           const res = this.visitStmt(stmt);
           if (res === null) continue; // transparent (empty nested block)
@@ -222,9 +228,28 @@ class CsharpCfgWalk {
     });
   }
 
+  /**
+   * Whether a statement breaks the current straight-line block. Adds the
+   * value-position switch carrier to the base {@link CONTROL_FLOW_TYPES} set: a
+   * `local_declaration_statement` whose single initializer is a modelable
+   * `switch_expression` (`var x = k switch {…}`, #2207) breaks so `visitStmt`
+   * models the arms as control flow instead of collapsing the decl to one block.
+   */
+  private breaksBlock(stmt: SyntaxNode): boolean {
+    if (this.isValueSwitchDecl(stmt)) return true;
+    return CONTROL_FLOW_TYPES.has(stmt.type);
+  }
+
   /** Dispatch one statement to its handler. Non-null except for empty blocks. */
   visitStmt(stmt: SyntaxNode): SeqResult {
     switch (stmt.type) {
+      case 'local_declaration_statement': {
+        // `var x = k switch { … }` (#2207): the initializer is a value-position
+        // branch — model it as control flow and bind the result on the rejoin.
+        const branch = this.declValueSwitch(stmt);
+        if (branch) return this.visitBindBranch(stmt, branch);
+        return this.visitSimple(stmt);
+      }
       case 'if_statement':
         return this.visitIf(stmt);
       case 'while_statement':
@@ -276,6 +301,18 @@ class CsharpCfgWalk {
   }
 
   private visitReturn(stmt: SyntaxNode): TraversalResult {
+    // `return k switch { … };` (#2207): the returned value is a value-position
+    // branch — model it as control flow, with each arm returning (its value IS
+    // the function result), threading every active finalizer per arm.
+    const branch = stmt.namedChildren.find((c) => c.type !== 'comment');
+    if (branch && this.isModelableValueBranch(branch)) {
+      const res = this.visitBranchExpr(branch);
+      const finalizers = this.cfc.finalizersForReturn();
+      for (const ex of res.exits) {
+        wireJumpThroughFinalizers(this.builder, ex, finalizers, this.builder.exitIndex, 'return');
+      }
+      return { entry: res.entry, exits: [] };
+    }
     const idx = this.builder.newBlock(
       startLineOf(stmt),
       endLineOf(stmt),
@@ -656,6 +693,147 @@ class CsharpCfgWalk {
     return node.type.endsWith('_statement') || node.type === 'block';
   }
 
+  // ── value-position switch expression (#2207) ────────────────────────────────
+
+  /**
+   * The `switch_expression` initializer of a single-declarator
+   * `local_declaration_statement` (`var x = k switch {…}`) when it is a modelable
+   * value branch, else undefined. A `using` decl and a multi-declarator decl are
+   * excluded (the `using` dispose path / multi-declarator stay inline).
+   */
+  private declValueSwitch(stmt: SyntaxNode): SyntaxNode | undefined {
+    if (stmt.type !== 'local_declaration_statement') return undefined;
+    if (this.isUsingLocalDecl(stmt)) return undefined;
+    const decl = stmt.namedChildren.find((c) => c.type === 'variable_declaration');
+    if (!decl) return undefined;
+    const declarators = decl.namedChildren.filter((c) => c.type === 'variable_declarator');
+    if (declarators.length !== 1) return undefined;
+    const init = this.declaratorInit(declarators[0]);
+    return init && this.isModelableValueBranch(init) ? init : undefined;
+  }
+
+  private isValueSwitchDecl(stmt: SyntaxNode): boolean {
+    return this.declValueSwitch(stmt) !== undefined;
+  }
+
+  /**
+   * The initializer of a `variable_declarator` — its named child after `name`.
+   * NOTE: deliberately duplicated in `csharp-harvest.ts` (the harvester is a
+   * standalone class with no shared base — repo convention). The two copies must
+   * stay in sync; there is no C#-specific shared module to host it, and the only
+   * module both files share is the generic `utils/ast-helpers` (types only).
+   */
+  private declaratorInit(declarator: SyntaxNode): SyntaxNode | undefined {
+    const name = declarator.childForFieldName('name');
+    for (let i = 0; i < declarator.namedChildCount; i++) {
+      const c = declarator.namedChild(i);
+      if (c && c.id !== name?.id) return c;
+    }
+    return undefined;
+  }
+
+  /**
+   * Whether `node` is a value-position branch worth modeling as control flow
+   * (#2207): a `switch_expression` (`k switch {…}`) with ≥2 arms — a real
+   * dispatch. C# value-position `if` does not exist (the ternary `?:` is excluded,
+   * like elvis in Kotlin).
+   */
+  private isModelableValueBranch(node: SyntaxNode): boolean {
+    if (node.type !== 'switch_expression') return false;
+    return node.namedChildren.filter((c) => c.type === 'switch_expression_arm').length >= 2;
+  }
+
+  /**
+   * Model a value-position `switch_expression` (`k switch { p => v, … }`) as a CFG
+   * dispatch: a discriminant block, each arm's value expression a block reached by
+   * a `switch-case` edge, all arms rejoining at a single exit. The arm patterns /
+   * `when` guards are harvested as conditional uses on the dispatch (a later arm
+   * test runs only when earlier arms didn't match), mirroring {@link visitSwitch}.
+   */
+  private visitSwitchExpr(node: SyntaxNode): TraversalResult {
+    const arms = node.namedChildren.filter((c) => c.type === 'switch_expression_arm');
+    const discriminant = node.namedChildren.find((c) => c.type !== 'switch_expression_arm') ?? node;
+    const dispatch = this.builder.newBlock(
+      startLineOf(node),
+      endLineOf(discriminant),
+      discriminant.text,
+      'normal',
+      this.harvest.facts(discriminant),
+    );
+    const switchExit = this.builder.newBlock(endLineOf(node), endLineOf(node), '');
+
+    let hasCatchAll = false;
+    for (const arm of arms) {
+      const pattern = arm.namedChild(0);
+      const guard = arm.namedChildren.find((c) => c.type === 'when_clause');
+      if (pattern) this.builder.attachFacts(dispatch, this.harvest.factsConditional(pattern));
+      if (guard) {
+        const inner = guard.namedChild(0);
+        if (inner) this.builder.attachFacts(dispatch, this.harvest.factsConditional(inner));
+      }
+      // An unguarded `_`/`var` arm matches everything — the exhaustive default.
+      if (!guard && pattern && (pattern.type === 'discard' || pattern.type === 'var_pattern')) {
+        hasCatchAll = true;
+      }
+      const value = this.armValue(arm);
+      const armBlock = this.builder.newBlock(
+        startLineOf(value ?? arm),
+        endLineOf(value ?? arm),
+        (value ?? arm).text,
+        'normal',
+        value ? this.harvest.facts(value) : undefined,
+      );
+      this.builder.edge(dispatch, armBlock, 'switch-case');
+      this.builder.edge(armBlock, switchExit, 'seq');
+    }
+    // A non-exhaustive switch throws at runtime; conservatively keep EXIT directly
+    // reachable from the dispatch when no catch-all arm covers the no-match path.
+    if (!hasCatchAll) this.builder.edge(dispatch, switchExit, 'switch-case');
+
+    return { entry: dispatch, exits: [switchExit] };
+  }
+
+  /** The value expression of a `switch_expression_arm` (the child after `=>`). */
+  private armValue(arm: SyntaxNode): SyntaxNode | undefined {
+    // pattern [when_clause] => value — the value is the LAST named child.
+    return arm.namedChild(arm.namedChildCount - 1) ?? undefined;
+  }
+
+  /** Model a value-position branch as control flow (only `switch_expression`). */
+  private visitBranchExpr(node: SyntaxNode): TraversalResult {
+    return this.visitSwitchExpr(node);
+  }
+
+  /**
+   * An expression-bodied member's value (`=> k switch {…}`, #2207): if it is a
+   * modelable value branch, model its arms as control flow (each arm returns the
+   * function result); otherwise return null so the caller falls back to a single
+   * inline block.
+   */
+  tryVisitValueBranchBody(expr: SyntaxNode): TraversalResult | null {
+    return this.isModelableValueBranch(expr) ? this.visitBranchExpr(expr) : null;
+  }
+
+  /**
+   * `var x = k switch { … }` (#2207): visit the switch as control flow, then
+   * rejoin its arms at a facts-only continuation carrying ONLY the bound name's
+   * def (the discriminant + arm-value uses are already on the switch's blocks).
+   * The arms are now control-dependent on the dispatch, and `x` is defined at the
+   * join — mirrors the Java / Kotlin / Rust value-position binding.
+   */
+  private visitBindBranch(stmt: SyntaxNode, branch: SyntaxNode): TraversalResult {
+    const res = this.visitBranchExpr(branch);
+    const cont = this.builder.newBlock(
+      startLineOf(stmt),
+      startLineOf(stmt),
+      '',
+      'normal',
+      this.harvest.bindingDefFacts(stmt),
+    );
+    this.builder.connect(res.exits, cont, 'seq');
+    return { entry: res.entry, exits: [cont] };
+  }
+
   private visitTry(stmt: SyntaxNode): SeqResult {
     const bodyNode = stmt.childForFieldName('body');
     const catchClauses: SyntaxNode[] = [];
@@ -924,6 +1102,14 @@ function buildFunctionCfg(fnNode: SyntaxNode, filePath: string): FunctionCfg | u
       // Expression-bodied member / single-expression lambda: one block whose
       // value is returned. For an arrow clause the value is its inner expression.
       const expr = body.type === 'arrow_expression_clause' ? (body.namedChild(0) ?? body) : body;
+      // `=> k switch { … }` (#2207): model the arms as control flow, each arm
+      // returning the function result, instead of one inline block.
+      const branchRes = new CsharpCfgWalk(builder, harvest).tryVisitValueBranchBody(expr);
+      if (branchRes) {
+        builder.edge(builder.entryIndex, branchRes.entry, 'seq');
+        builder.connect(branchRes.exits, builder.exitIndex, 'return');
+        return builder.finish(harvest.bindingTable());
+      }
       const blk = builder.newBlock(
         startLineOf(expr),
         endLineOf(expr),

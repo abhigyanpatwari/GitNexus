@@ -196,14 +196,67 @@ describe('C# CfgVisitor — switch', () => {
     expect(edgeKinds(cfg).has('switch-case')).toBe(true);
   });
 
-  it('switch_expression arms each dispatch as a guarded branch (switch-case)', () => {
+  it('return switch_expression: each arm dispatches and returns the result (#2207)', () => {
     const cfg = cs.cfgOf(
       `class C { int M(int x) { return x switch { 1 => a(), 2 => b(), _ => c() }; } }`,
     );
-    // The switch-expression lives inside the return block — it does not break a
-    // basic block, but the function still has a well-formed single-exit CFG.
-    expect(reaches(cfg, cfg.entryIndex, cfg.exitIndex)).toBe(true);
+    expect(edgeKinds(cfg).has('switch-case')).toBe(true);
     expect(edgeKinds(cfg).has('return')).toBe(true);
+    // every arm reaches EXIT (its value IS the returned result).
+    expect(reaches(cfg, block(cfg, 'a()'), cfg.exitIndex)).toBe(true);
+    expect(reaches(cfg, block(cfg, 'c()'), cfg.exitIndex)).toBe(true);
+    // a() does NOT fall into b() (arms never fall through).
+    expect(reaches(cfg, block(cfg, 'a()'), block(cfg, 'b()'))).toBe(false);
+    expect(computeControlDependence(cfg).edges.length).toBeGreaterThan(0);
+    expect(isExitReachableFromAllBlocks(cfg)).toBe(true);
+  });
+
+  it('value-position switch declaration is modeled, def bound at the join (#2207)', () => {
+    const cfg = cs.cfgOf(
+      `class C { int M(int x) { var y = x switch { 1 => a(), _ => b() }; use(y); return 0; } }`,
+    );
+    expect(edgeKinds(cfg).has('switch-case')).toBe(true);
+    // each arm rejoins and reaches the downstream use of the bound result.
+    expect(reaches(cfg, block(cfg, 'a()'), block(cfg, 'use(y);'))).toBe(true);
+    expect(reaches(cfg, block(cfg, 'b()'), block(cfg, 'use(y);'))).toBe(true);
+    const y = bindingIdx(cfg, 'y');
+    expect(hasDef(cfg, y)).toBe(true);
+    expect(hasUse(cfg, y)).toBe(true);
+    expect(computeControlDependence(cfg).edges.length).toBeGreaterThan(0);
+    expect(isExitReachableFromAllBlocks(cfg)).toBe(true);
+  });
+
+  it('expression-bodied member `=> k switch {…}` models the arms (#2207)', () => {
+    const cfg = cs.cfgOf(`class C { int G(int x) => x switch { 1 => a(), _ => b() }; }`);
+    expect(edgeKinds(cfg).has('switch-case')).toBe(true);
+    expect(edgeKinds(cfg).has('return')).toBe(true);
+    expect(reaches(cfg, block(cfg, 'a()'), cfg.exitIndex)).toBe(true);
+    expect(computeControlDependence(cfg).edges.length).toBeGreaterThan(0);
+    expect(isExitReachableFromAllBlocks(cfg)).toBe(true);
+  });
+
+  it('assignment-RHS / single-arm value switch stays inline (documented gap)', () => {
+    const assign = cs.cfgOf(
+      `class C { int M(int x) { int y = 0; y = x switch { 1 => 1, _ => 2 }; return y; } }`,
+    );
+    expect(edgeKinds(assign).has('switch-case')).toBe(false);
+    expect(reaches(assign, assign.entryIndex, assign.exitIndex)).toBe(true);
+
+    const oneArm = cs.cfgOf(`class C { int M(int x) { var y = x switch { _ => 0 }; return y; } }`);
+    expect(edgeKinds(oneArm).has('switch-case')).toBe(false);
+  });
+
+  it('non-exhaustive switch expression (no `_` arm) keeps a no-match edge (EXIT reachable) (#2211)', () => {
+    const cfg = cs.cfgOf(
+      `class C { int M(int x) { var y = x switch { 1 => a(), 2 => b() }; return y; } }`,
+    );
+    expect(edgeKinds(cfg).has('switch-case')).toBe(true);
+    expect(isExitReachableFromAllBlocks(cfg)).toBe(true);
+    // 2 arms + the conservative no-match path = 3 switch-case successors from the dispatch.
+    const dispatchIdx = block(cfg, 'x');
+    expect(cfg.edges.filter((e) => e.from === dispatchIdx && e.kind === 'switch-case').length).toBe(
+      3,
+    );
   });
 });
 
@@ -410,6 +463,18 @@ describe('C# CfgVisitor — does not throw on exotic shapes', () => {
       } }`);
       expect(cfgs.length).toBeGreaterThanOrEqual(3); // M, lambda, anon method
       for (const cfg of cfgs) expect(reaches(cfg, cfg.entryIndex, cfg.exitIndex)).toBe(true);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('a truncated value-position switch never throws out of the carrier path (R4) (#2211)', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const root = cs.parse(`class C { int M(int x) { var y = x switch { 1 => a(`);
+      for (const fn of cs.collectFunctions(root)) {
+        expect(() => createCsharpCfgVisitor().buildFunctionCfg(fn, 'f.cs')).not.toThrow();
+      }
     } finally {
       warn.mockRestore();
     }

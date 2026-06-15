@@ -67,6 +67,13 @@ describe('Kotlin CfgVisitor — structure', () => {
     expect(reaches(cfg, cfg.entryIndex, cfg.exitIndex)).toBe(true);
   });
 
+  it('a truncated value-position when never throws out of the carrier path (R4) (#2211)', () => {
+    const root = kotlin.parse(`fun f(k: Int) { val x = when (k) { 0 ->`);
+    for (const fn of kotlin.collectFunctions(root)) {
+      expect(() => createKotlinCfgVisitor().buildFunctionCfg(fn, 'p.kt')).not.toThrow();
+    }
+  });
+
   it('a class method is a CFG-bearing function', () => {
     const cfg = kotlin.cfgOf(`class C { fun m(a: Int) { g(a) } }`);
     expect(reaches(cfg, cfg.entryIndex, cfg.exitIndex)).toBe(true);
@@ -216,6 +223,78 @@ describe('Kotlin CfgVisitor — value-position branches (#2205)', () => {
   it('single-arm when in value position stays inline (no real control dependence)', () => {
     const cfg = kotlin.cfgOf(`fun f(k: Int) { val x = when (k) { else -> a() }; use(x) }`);
     expect(edgeKinds(cfg).has('switch-case')).toBe(false);
+  });
+
+  it('x = when (...) assignment RHS models the arms; binds the target (#2205)', () => {
+    const cfg = kotlin.cfgOf(
+      `fun f(k: Int) { var x = 0; x = when (k) { 0 -> a(); else -> b() }; use(x) }`,
+    );
+    expect(edgeKinds(cfg).has('switch-case')).toBe(true);
+    expect(reaches(cfg, block(cfg, 'a()'), block(cfg, 'use(x)'))).toBe(true);
+    expect(computeControlDependence(cfg).edges.length).toBeGreaterThan(0);
+    expect(definesBinding(cfg, bindingIdx(cfg, 'x'))).toBe(true);
+    expect(usesBinding(cfg, bindingIdx(cfg, 'x'))).toBe(true);
+  });
+
+  it('x = if (c) ... else ... assignment RHS models both arms (#2205)', () => {
+    const cfg = kotlin.cfgOf(`fun f(c: Boolean) { var x = 0; x = if (c) a() else b(); use(x) }`);
+    expect(edgeKinds(cfg).has('cond-true')).toBe(true);
+    expect(edgeKinds(cfg).has('cond-false')).toBe(true);
+    expect(computeControlDependence(cfg).edges.length).toBeGreaterThan(0);
+    expect(definesBinding(cfg, bindingIdx(cfg, 'x'))).toBe(true);
+  });
+
+  it('val x = try { ... } catch { ... } models the value-position try (#2205)', () => {
+    const cfg = kotlin.cfgOf(
+      `fun f() { val x = try { risky() } catch (e: Exception) { fallback() }; use(x) }`,
+    );
+    // the try/catch is modeled as control flow (a throw edge to the handler)…
+    expect(edgeKinds(cfg).has('throw')).toBe(true);
+    // …and is CDG-bearing, with x bound at the rejoin and used downstream.
+    expect(computeControlDependence(cfg).edges.length).toBeGreaterThan(0);
+    expect(definesBinding(cfg, bindingIdx(cfg, 'x'))).toBe(true);
+    expect(usesBinding(cfg, bindingIdx(cfg, 'x'))).toBe(true);
+    expect(isExitReachableFromAllBlocks(cfg)).toBe(true);
+  });
+
+  it('x = try { ... } catch { ... } assignment RHS models the value-position try (#2205)', () => {
+    const cfg = kotlin.cfgOf(
+      `fun f() { var x = 0; x = try { risky() } catch (e: Exception) { fallback() }; use(x) }`,
+    );
+    expect(edgeKinds(cfg).has('throw')).toBe(true);
+    expect(computeControlDependence(cfg).edges.length).toBeGreaterThan(0);
+    expect(definesBinding(cfg, bindingIdx(cfg, 'x'))).toBe(true);
+    expect(usesBinding(cfg, bindingIdx(cfg, 'x'))).toBe(true);
+    expect(isExitReachableFromAllBlocks(cfg)).toBe(true);
+  });
+
+  it('return try { ... } catch { ... } models the value-position try; each arm returns (#2205, #2211)', () => {
+    const cfg = kotlin.cfgOf(
+      `fun f(): Int { return try { risky() } catch (e: Exception) { fallback() } }`,
+    );
+    // the value-position try is modeled as control flow (throw edge to the handler)…
+    expect(edgeKinds(cfg).has('throw')).toBe(true);
+    expect(edgeKinds(cfg).has('return')).toBe(true);
+    expect(computeControlDependence(cfg).edges.length).toBeGreaterThan(0);
+    expect(isExitReachableFromAllBlocks(cfg)).toBe(true);
+  });
+
+  it('fun f() = try { ... } catch { ... } expression body models the value-position try (#2205, #2211)', () => {
+    const cfg = kotlin.cfgOf(`fun f(): Int = try { risky() } catch (e: Exception) { fallback() }`);
+    // visitExprBody routes the value-position try through control flow (throw edge),
+    // each arm yielding the function result (return), CDG-bearing.
+    expect(edgeKinds(cfg).has('throw')).toBe(true);
+    expect(edgeKinds(cfg).has('return')).toBe(true);
+    expect(computeControlDependence(cfg).edges.length).toBeGreaterThan(0);
+    expect(isExitReachableFromAllBlocks(cfg)).toBe(true);
+  });
+
+  it('a compound `x += ...` / a plain call RHS stays inline (not a value-branch carrier)', () => {
+    const compound = kotlin.cfgOf(`fun f(k: Int) { var x = 0; x += k; use(x) }`);
+    expect(edgeKinds(compound).has('switch-case')).toBe(false);
+    const call = kotlin.cfgOf(`fun f(k: Int) { var x = 0; x = compute(k); use(x) }`);
+    expect(edgeKinds(call).has('switch-case')).toBe(false);
+    expect(edgeKinds(call).has('cond-true')).toBe(false);
   });
 });
 

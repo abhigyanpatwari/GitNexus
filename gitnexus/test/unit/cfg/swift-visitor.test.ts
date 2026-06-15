@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { requireVendoredGrammar } from '../../../src/core/tree-sitter/vendored-grammars.js';
 import { createSwiftCfgVisitor } from '../../../src/core/ingestion/cfg/visitors/swift.js';
+import type { FunctionCfg } from '../../../src/core/ingestion/cfg/types.js';
 import {
   makeCfgHarness,
   type CfgHarness,
@@ -52,6 +53,13 @@ describe('Swift CfgVisitor — structure', () => {
     // A normal function still builds a well-formed CFG.
     const cfg = swift.cfgOf(`func g() { x() }`);
     expect(reaches(cfg, cfg.entryIndex, cfg.exitIndex)).toBe(true);
+  });
+
+  it('a truncated value-position if never throws out of the carrier path (R4) (#2211)', () => {
+    const root = swift.parse(`func f(v: Int) { let x = if v > 0 {`);
+    for (const fn of swift.collectFunctions(root)) {
+      expect(() => createSwiftCfgVisitor().buildFunctionCfg(fn, 'f.swift')).not.toThrow();
+    }
   });
 
   it('init and deinit are CFG-bearing functions', () => {
@@ -226,6 +234,70 @@ describe('Swift CfgVisitor — switch (no implicit fallthrough)', () => {
     expect(edgeKinds(cfg).has('switch-case')).toBe(true);
     expect(reachable(cfg, block(cfg, 'pos()'))).toBe(true);
     expect(reachable(cfg, block(cfg, 'other()'))).toBe(true);
+  });
+});
+
+describe('Swift CfgVisitor — value-position if/switch (Swift 5.9, #2207)', () => {
+  const hasDef = (cfg: FunctionCfg, idx: number): boolean =>
+    cfg.blocks.some((bl) => bl.statements?.some((s) => s.defs.includes(idx)));
+  const hasUse = (cfg: FunctionCfg, idx: number): boolean =>
+    cfg.blocks.some((bl) => bl.statements?.some((s) => s.uses.includes(idx)));
+
+  it('`let x = if … else …` is modeled as a branch; def bound at the join', () => {
+    const cfg = swift.cfgOf(`func f(v: Int) {
+      let x = if v > 0 { hi() } else { lo() }
+      use(x)
+    }`);
+    expect(edgeKinds(cfg).has('cond-true')).toBe(true);
+    expect(edgeKinds(cfg).has('cond-false')).toBe(true);
+    expect(reaches(cfg, block(cfg, 'hi()'), block(cfg, 'use(x)'))).toBe(true);
+    expect(reaches(cfg, block(cfg, 'lo()'), block(cfg, 'use(x)'))).toBe(true);
+    const x = bindingIdx(cfg, 'x');
+    expect(hasDef(cfg, x)).toBe(true);
+    expect(hasUse(cfg, x)).toBe(true);
+    expect(computeControlDependence(cfg).edges.length).toBeGreaterThan(0);
+    expect(isExitReachableFromAllBlocks(cfg)).toBe(true);
+  });
+
+  it('`let y = switch v { … }` is modeled as a dispatch', () => {
+    const cfg = swift.cfgOf(`func f(v: Int) {
+      let y = switch v { case 1: one() ; default: other() }
+      use(y)
+    }`);
+    expect(edgeKinds(cfg).has('switch-case')).toBe(true);
+    expect(reaches(cfg, block(cfg, 'one()'), block(cfg, 'use(y)'))).toBe(true);
+    const y = bindingIdx(cfg, 'y');
+    expect(hasDef(cfg, y)).toBe(true);
+    expect(computeControlDependence(cfg).edges.length).toBeGreaterThan(0);
+    expect(isExitReachableFromAllBlocks(cfg)).toBe(true);
+  });
+
+  it('`return if … else …` models each arm as returning the result', () => {
+    const cfg = swift.cfgOf(`func f(v: Int) -> Int {
+      return if v > 0 { a() } else { b() }
+    }`);
+    expect(edgeKinds(cfg).has('cond-true')).toBe(true);
+    expect(edgeKinds(cfg).has('return')).toBe(true);
+    expect(reaches(cfg, block(cfg, 'a()'), cfg.exitIndex)).toBe(true);
+    expect(reaches(cfg, block(cfg, 'b()'), cfg.exitIndex)).toBe(true);
+    expect(computeControlDependence(cfg).edges.length).toBeGreaterThan(0);
+    expect(isExitReachableFromAllBlocks(cfg)).toBe(true);
+  });
+
+  it('an else-less `if` value / plain binding stays inline (no real control dependence)', () => {
+    // `let x = g()` is a plain binding — no branch.
+    const cfg = swift.cfgOf(`func f(v: Int) { let x = g()\n use(x) }`);
+    expect(edgeKinds(cfg).has('cond-true')).toBe(false);
+    expect(edgeKinds(cfg).has('switch-case')).toBe(false);
+    expect(isExitReachableFromAllBlocks(cfg)).toBe(true);
+  });
+
+  it('a single-entry value switch stays inline (below the >= 2 modeling threshold) (#2211)', () => {
+    // `isModelableValueBranch` requires >= 2 `switch_entry`; a one-entry value
+    // switch carries no real control dependence, so the decl coalesces inline.
+    const cfg = swift.cfgOf(`func f(v: Int) { let x = switch v { default: g() }\n use(x) }`);
+    expect(edgeKinds(cfg).has('switch-case')).toBe(false);
+    expect(isExitReachableFromAllBlocks(cfg)).toBe(true);
   });
 });
 

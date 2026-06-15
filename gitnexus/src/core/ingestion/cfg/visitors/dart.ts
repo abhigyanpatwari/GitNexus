@@ -88,10 +88,13 @@
  *  - a closure (`function_expression`) is collected as its OWN function by
  *    `isFunction`, so its body gets a standalone CFG; in the ENCLOSING function it
  *    is an opaque straight-line value (its body is not followed inline).
- *  - `switch_expression` / `if`-as-expression / `?:` / `??` / `?.` used as a VALUE
- *    are left INLINE inside their owning statement's block — their conditional
- *    sub-evaluation is a HARVEST may-def concern (see dart-harvest.ts), not a CFG
- *    split (consistent with the TS `&&`/`??` treatment).
+ *  - a value-position `switch_expression` (Dart 3) with ≥2 arms IS modeled as a
+ *    `switch-case` dispatch in two carriers (#2207): a single-binding `var x =
+ *    switch (v) {…}` (arms rejoin at a binding continuation) and `return switch
+ *    (v) {…}` (each arm returns). A `switch_expression` in any OTHER position — a
+ *    call argument, a multi-binding decl — stays INLINE (its conditional arm
+ *    sub-evaluation is a HARVEST may-def concern, see dart-harvest.ts). `?:` /
+ *    `??` / `?.` micro-branches are excluded by design (like the TS treatment).
  *
  * Known limitations:
  *  - block-scope shadowing in the harvest is flattened to one function table (see
@@ -249,6 +252,12 @@ class DartCfgWalk {
   private isControlFlow(stmt: SyntaxNode): boolean {
     if (this.isLabelError(stmt)) return true; // a stray label sibling — queue it
     if (isThrowStatement(stmt) || isRethrowStatement(stmt)) return true;
+    // `var x = switch (v) { … }` (#2207): a value-position switch breaks so
+    // `visitStmt` models the arms as control flow instead of coalescing.
+    if (stmt.type === 'local_variable_declaration') {
+      const v = this.directValue(stmt);
+      return v !== undefined && this.isModelableValueBranch(v);
+    }
     return CONTROL_FLOW_TYPES.has(stmt.type);
   }
 
@@ -273,6 +282,13 @@ class DartCfgWalk {
     if (isThrowStatement(stmt)) return this.visitThrow(stmt);
     if (isRethrowStatement(stmt)) return this.visitRethrow(stmt);
     switch (stmt.type) {
+      case 'local_variable_declaration': {
+        // `var x = switch (v) { … }` (#2207): the value is a value-position
+        // branch — model it as control flow and bind the result on the rejoin.
+        const value = this.directValue(stmt);
+        if (value && this.isModelableValueBranch(value)) return this.visitBindBranch(stmt, value);
+        return this.visitSimple(stmt);
+      }
       case 'if_statement':
         return this.visitIf(stmt);
       case 'for_statement':
@@ -322,6 +338,18 @@ class DartCfgWalk {
 
   /** `return [expr];` — threads through every active finalizer before EXIT. */
   private visitReturn(stmt: SyntaxNode): TraversalResult {
+    // `return switch (v) { … };` (#2207): the returned value is a value-position
+    // branch — model it as control flow, with each arm returning (its value IS
+    // the function result), threading every active finalizer per arm.
+    const branch = stmt.namedChildren.find((c) => !isComment(c));
+    if (branch && this.isModelableValueBranch(branch)) {
+      const res = this.visitBranchExpr(branch);
+      const finalizers = this.cfc.finalizersForReturn();
+      for (const ex of res.exits) {
+        wireJumpThroughFinalizers(this.builder, ex, finalizers, this.builder.exitIndex, 'return');
+      }
+      return { entry: res.entry, exits: [] };
+    }
     const idx = this.builder.newBlock(
       startLineOf(stmt),
       endLineOf(stmt),
@@ -579,7 +607,12 @@ class DartCfgWalk {
    */
   private visitSwitch(stmt: SyntaxNode): TraversalResult {
     const labels = this.takeLabels();
-    const value = stmt.childForFieldName('condition');
+    // The `condition` field is a `parenthesized_expression` (verified) — unwrap it
+    // so the dispatch text/discriminant matches the value-position `visitSwitchExpr`
+    // form (`switch x`, not `switch (x)`). The harvest walks into the paren either
+    // way, so the def/use facts are unchanged — only the block text normalizes.
+    const condRaw = stmt.childForFieldName('condition');
+    const value = condRaw ? this.unwrapParen(condRaw) : undefined;
     const dispatch = this.builder.newBlock(
       startLineOf(stmt),
       value ? endLineOf(value) : startLineOf(stmt),
@@ -703,6 +736,143 @@ class DartCfgWalk {
     if (!cont) return undefined;
     const id = cont.namedChildren.find((ch) => ch.type === 'identifier');
     return id?.text || undefined;
+  }
+
+  // ── value-position switch expression (#2207) ────────────────────────────────
+
+  /**
+   * The direct value of a `local_variable_declaration` with a SINGLE
+   * `initialized_variable_definition` (`var x = <value>`): its `value` field.
+   * Returns undefined for a multi-binding decl (`var a = …, b = …`) — modeling
+   * those arm-by-arm is out of scope, so they coalesce inline.
+   */
+  private directValue(stmt: SyntaxNode): SyntaxNode | undefined {
+    const defs = stmt.namedChildren.filter((c) => c.type === 'initialized_variable_definition');
+    if (defs.length !== 1) return undefined;
+    return defs[0].childForFieldName('value') ?? undefined;
+  }
+
+  /**
+   * Whether `node` is a value-position branch worth modeling as control flow
+   * (#2207): a `switch_expression` (Dart 3) with ≥2 arms — a real dispatch. Dart's
+   * value-position `if` does not exist; the ternary `?:` is excluded by design.
+   */
+  private isModelableValueBranch(node: SyntaxNode): boolean {
+    if (node.type !== 'switch_expression') return false;
+    return node.namedChildren.filter((c) => c.type === 'switch_expression_case').length >= 2;
+  }
+
+  /** Model a value-position branch as control flow (only `switch_expression`). */
+  private visitBranchExpr(node: SyntaxNode): TraversalResult {
+    return this.visitSwitchExpr(node);
+  }
+
+  /**
+   * Model a value-position `switch (v) { p [when g] => e, _ => e }` (Dart 3) as a
+   * CFG dispatch: a discriminant block, each arm's value a block reached by a
+   * `switch-case` edge, all arms rejoining at one exit (no fallthrough). The arm
+   * PATTERN and any `when` GUARD are harvested as conditional uses on the dispatch
+   * (they evaluate before the body, only when earlier arms missed); a Dart call
+   * value parses as `identifier` + `selector` (multiple children), so the arm-value
+   * facts come from each post-`=>` child. Only an UNGUARDED `_` arm is the
+   * exhaustive catch-all — a guarded `_ when …` is NOT (the no-match path still
+   * needs the conservative edge), mirroring the C# `visitSwitchExpr`.
+   */
+  private visitSwitchExpr(node: SyntaxNode): TraversalResult {
+    const condRaw = node.childForFieldName('condition');
+    const cond = condRaw ? this.unwrapParen(condRaw) : node;
+    const dispatch = this.builder.newBlock(
+      startLineOf(node),
+      endLineOf(cond),
+      `switch ${cond.text}`,
+      'normal',
+      this.harvest.facts(cond),
+    );
+    const switchExit = this.builder.newBlock(endLineOf(node), endLineOf(node), '');
+
+    const arms = node.namedChildren.filter((c) => c.type === 'switch_expression_case');
+    let hasCatchAll = false;
+    for (const arm of arms) {
+      const { pattern, guards, values } = this.armParts(arm);
+      // The pattern + `when` guard are conditional dispatch tests, NOT arm-value
+      // uses — harvest them onto the dispatch (mirrors casePatterns for switch_statement).
+      if (pattern) this.builder.attachFacts(dispatch, this.harvest.factsConditional(pattern));
+      for (const g of guards) this.builder.attachFacts(dispatch, this.harvest.factsConditional(g));
+      if (pattern && pattern.text === '_' && guards.length === 0) hasCatchAll = true;
+      const first = values[0] ?? arm;
+      const last = values[values.length - 1] ?? arm;
+      const armBlock = this.builder.newBlock(
+        startLineOf(first),
+        endLineOf(last),
+        values.map((c) => c.text).join('') || arm.text,
+        'normal',
+        undefined,
+      );
+      for (const v of values) this.builder.attachFacts(armBlock, this.harvest.facts(v));
+      this.builder.edge(dispatch, armBlock, 'switch-case');
+      this.builder.edge(armBlock, switchExit, 'seq');
+    }
+    // A non-exhaustive Dart switch expression throws at runtime; conservatively
+    // keep EXIT reachable via a no-match edge when no `_` catch-all arm exists.
+    if (!hasCatchAll) this.builder.edge(dispatch, switchExit, 'switch-case');
+
+    return { entry: dispatch, exits: [switchExit] };
+  }
+
+  /**
+   * Split a `switch_expression_case` at the `=>` token: the PATTERN (first named
+   * child before `=>`), any `when` GUARD (named children between the pattern and
+   * `=>` — tree-sitter-dart parses the guard as a bare sibling, not a wrapper),
+   * and the VALUE expression (named children after `=>` — a Dart call is split
+   * across `identifier` + `selector`, hence an array).
+   */
+  private armParts(arm: SyntaxNode): {
+    pattern: SyntaxNode | undefined;
+    guards: SyntaxNode[];
+    values: SyntaxNode[];
+  } {
+    const before: SyntaxNode[] = [];
+    const values: SyntaxNode[] = [];
+    let seenArrow = false;
+    for (let i = 0; i < arm.childCount; i++) {
+      const c = arm.child(i);
+      if (!c) continue;
+      if (!c.isNamed) {
+        if (c.text === '=>') seenArrow = true;
+        continue;
+      }
+      if (isComment(c)) continue;
+      (seenArrow ? values : before).push(c);
+    }
+    return { pattern: before[0], guards: before.slice(1), values };
+  }
+
+  /** Strip a `parenthesized_expression` wrapper (a switch/if condition). */
+  private unwrapParen(node: SyntaxNode): SyntaxNode {
+    if (node.type === 'parenthesized_expression') {
+      const inner = node.namedChildren.find((c) => !isComment(c));
+      if (inner) return inner;
+    }
+    return node;
+  }
+
+  /**
+   * `var x = switch (v) { … }` (#2207): visit the switch as control flow, then
+   * rejoin its arms at a facts-only continuation carrying ONLY the declared name's
+   * def (the subject + arm-value uses are already on the switch's blocks). The
+   * arms are now control-dependent on the dispatch — mirrors Java / Kotlin / Rust.
+   */
+  private visitBindBranch(stmt: SyntaxNode, branch: SyntaxNode): TraversalResult {
+    const res = this.visitBranchExpr(branch);
+    const cont = this.builder.newBlock(
+      startLineOf(stmt),
+      startLineOf(stmt),
+      '',
+      'normal',
+      this.harvest.bindingDefFacts(stmt),
+    );
+    this.builder.connect(res.exits, cont, 'seq');
+    return { entry: res.entry, exits: [cont] };
   }
 
   // ── try / on / catch / finally ─────────────────────────────────────────────

@@ -220,6 +220,27 @@ export class CsharpHarvester extends ScopeTreeHarvester {
     return acc.finish();
   }
 
+  /**
+   * Def-ONLY facts for a value-position binding carrier (`var x = k switch {…}`,
+   * #2207): just the declared name(s)' def, attached to the continuation block the
+   * switch arms rejoin. The discriminant + arm-value USES are already harvested
+   * onto the branch's own blocks ({@link facts} on each arm), so this must NOT
+   * re-walk the initializer — only each `variable_declarator`'s name is a def here.
+   */
+  bindingDefFacts(stmt: SyntaxNode): StatementFacts | undefined {
+    const acc = new FactAccumulator(stmt.startPosition.row + 1);
+    const decl = stmt.namedChildren.find((c) => c.type === 'variable_declaration');
+    if (decl) {
+      for (let i = 0; i < decl.namedChildCount; i++) {
+        const d = decl.namedChild(i);
+        if (d?.type !== 'variable_declarator') continue;
+        const name = d.childForFieldName('name');
+        if (name) this.def(name, acc);
+      }
+    }
+    return acc.defCount() ? acc.finish() : undefined;
+  }
+
   /** Facts for a `foreach (decl in right)` head: decl binds, right is used. */
   forEachHeadFacts(stmt: SyntaxNode): StatementFacts {
     const acc = new FactAccumulator(stmt.startPosition.row + 1);
@@ -548,7 +569,13 @@ export class CsharpHarvester extends ScopeTreeHarvester {
     return { path, rootIdx };
   }
 
-  /** The initializer value of a `variable_declarator` — the named child after `name`. */
+  /**
+   * The initializer value of a `variable_declarator` — the named child after
+   * `name`. NOTE: deliberately duplicated in `csharp.ts` (the visitor is a
+   * standalone class with no shared base — repo convention). The two copies must
+   * stay in sync; there is no C#-specific shared module to host it, and the only
+   * module both files share is the generic `utils/ast-helpers` (types only).
+   */
   private declaratorInit(declarator: SyntaxNode): SyntaxNode | undefined {
     const name = declarator.childForFieldName('name');
     for (let i = 0; i < declarator.namedChildCount; i++) {

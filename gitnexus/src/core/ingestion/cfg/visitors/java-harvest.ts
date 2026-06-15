@@ -196,6 +196,24 @@ export class JavaHarvester extends ScopeTreeHarvester {
     return acc.finish();
   }
 
+  /**
+   * Def-ONLY facts for a value-position binding carrier (`var x = switch (…) {…}`,
+   * #2207): just the declared name(s)' def, attached to the continuation block the
+   * switch arms rejoin. The switch subject + arm-value USES are already harvested
+   * onto the branch's own blocks ({@link facts} on each arm), so this must NOT
+   * re-walk the value — only each `variable_declarator`'s `name` is a def here.
+   */
+  bindingDefFacts(stmt: SyntaxNode): StatementFacts | undefined {
+    const acc = new FactAccumulator(stmt.startPosition.row + 1);
+    for (let i = 0; i < stmt.namedChildCount; i++) {
+      const d = stmt.namedChild(i);
+      if (d?.type !== 'variable_declarator') continue;
+      const name = d.childForFieldName('name');
+      if (name) this.def(name, acc);
+    }
+    return acc.defCount() ? acc.finish() : undefined;
+  }
+
   /** Facts for a `for (T name : value)` head: name binds, value is used. */
   forEachHeadFacts(stmt: SyntaxNode): StatementFacts {
     const acc = new FactAccumulator(stmt.startPosition.row + 1);

@@ -281,6 +281,29 @@ export class DartHarvester {
   }
 
   /**
+   * Def-ONLY facts for a value-position binding carrier (`var x = switch (…) {…}`,
+   * #2207): just the declared name(s)' def, attached to the continuation block the
+   * switch arms rejoin. The subject + arm-value USES are already harvested onto
+   * the branch's own blocks, so this must NOT re-walk the value — only each
+   * `initialized_variable_definition`'s `name` (and trailing binders) is a def.
+   */
+  bindingDefFacts(stmt: SyntaxNode): StatementFacts | undefined {
+    const acc = new FactAccumulator(stmt.startPosition.row + 1);
+    for (const def of stmt.namedChildren) {
+      if (def.type !== 'initialized_variable_definition') continue;
+      const name = def.childForFieldName('name');
+      if (name) this.def(name, acc);
+      for (let i = 0; i < def.namedChildCount; i++) {
+        const c = def.namedChild(i);
+        if (c?.type !== 'initialized_identifier') continue;
+        const id = c.namedChildren.find((g) => g.type === 'identifier');
+        if (id) this.def(id, acc);
+      }
+    }
+    return acc.defCount() ? acc.finish() : undefined;
+  }
+
+  /**
    * Facts for a `for` head. For-in: the loop var name is a def, the collection a
    * use. C-style: the init/condition/update sub-expressions are walked for
    * defs/uses (the init `local_variable_declaration` defines, the condition reads,

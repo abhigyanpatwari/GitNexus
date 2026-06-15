@@ -71,6 +71,13 @@ describe('Dart CfgVisitor — structure', () => {
     expect(reaches(cfg, cfg.entryIndex, cfg.exitIndex)).toBe(true);
   });
 
+  it('a truncated value-position switch never throws out of the carrier path (R4) (#2211)', () => {
+    const root = dart.parse(`int f(int v){ var x = switch (v) { 1 => a(`);
+    for (const fn of dart.collectFunctions(root)) {
+      expect(() => createDartCfgVisitor().buildFunctionCfg(fn, 'f.dart')).not.toThrow();
+    }
+  });
+
   it('a class method is a CFG-bearing function and binds its params', () => {
     const cfg = dart.cfgOf(`class C { void m(int a) { g(a); } }`);
     expect(reaches(cfg, cfg.entryIndex, cfg.exitIndex)).toBe(true);
@@ -258,29 +265,88 @@ describe('Dart CfgVisitor — switch', () => {
     expect(cfg.edges.some((e) => e.from === tainted && e.to === sink)).toBe(false);
   });
 
-  it('a switch EXPRESSION used as a value stays inline (no branch edges)', () => {
+  it('value-position switch declaration is modeled as a dispatch, def bound at the join (#2207)', () => {
     const cfg = dart.cfgOf(`void f(int x) {
-      var y = switch (x) { 1 => one(), 2 => two(), _ => other() };
+      var y = switch (x) { 1 => one(x), 2 => two(), _ => other() };
       use(y);
     }`);
-    // The value-position switch expression coalesces; no switch-case edges.
-    expect(edgeKinds(cfg).has('switch-case')).toBe(false);
-    expect(reaches(cfg, cfg.entryIndex, cfg.exitIndex)).toBe(true);
-    expect(definesBinding(cfg, bindingIdx(cfg, 'y'))).toBe(true);
+    expect(edgeKinds(cfg).has('switch-case')).toBe(true);
+    // each arm rejoins and reaches the downstream use of the bound result.
+    expect(reaches(cfg, block(cfg, 'one(x)'), block(cfg, 'use(y);'))).toBe(true);
+    expect(reaches(cfg, block(cfg, 'other()'), block(cfg, 'use(y);'))).toBe(true);
+    const y = bindingIdx(cfg, 'y');
+    expect(definesBinding(cfg, y)).toBe(true);
+    expect(usesBinding(cfg, y)).toBe(true);
+    expect(computeControlDependence(cfg).edges.length).toBeGreaterThan(0);
+    expect(isExitReachableFromAllBlocks(cfg)).toBe(true);
   });
 
-  it('a switch-EXPRESSION arm write is a may-def, not a hard kill of the prior def (#2206)', () => {
+  it('return switch (…) models each arm as returning the result (#2207)', () => {
+    const cfg = dart.cfgOf(`int f(int x) {
+      return switch (x) { 1 => a(x), 2 => b(), _ => c() };
+    }`);
+    expect(edgeKinds(cfg).has('switch-case')).toBe(true);
+    expect(edgeKinds(cfg).has('return')).toBe(true);
+    expect(reaches(cfg, block(cfg, 'a(x)'), cfg.exitIndex)).toBe(true);
+    expect(reaches(cfg, block(cfg, 'c()'), cfg.exitIndex)).toBe(true);
+    expect(computeControlDependence(cfg).edges.length).toBeGreaterThan(0);
+    expect(isExitReachableFromAllBlocks(cfg)).toBe(true);
+  });
+
+  it('a multi-binding decl with a switch-EXPRESSION value stays inline', () => {
+    const cfg = dart.cfgOf(`void f(int x) {
+      var y = switch (x) { _ => 0 }, z = 2;
+      use(y + z);
+    }`);
+    // Modeling a multi-binding decl arm-by-arm is out of scope — it coalesces.
+    expect(edgeKinds(cfg).has('switch-case')).toBe(false);
+    expect(reaches(cfg, cfg.entryIndex, cfg.exitIndex)).toBe(true);
+  });
+
+  it('an INLINE switch-EXPRESSION arm write is a may-def, not a hard kill (#2206)', () => {
+    // An argument-position switch expression is NOT a modeled value-branch carrier
+    // (#2207 models only declaration / return), so it coalesces — and the harvest
+    // must still treat each arm write as a MAY-def (only one arm runs).
     const cfg = dart.cfgOf(`void f(int x) {
       int z = 0;
-      var y = switch (x) { 1 => z = 10, _ => z = 20 };
-      use(z);
+      use(switch (x) { 1 => z = 10, _ => z = 20 });
+      sink(z);
     }`);
     const z = bindingIdx(cfg, 'z');
-    // only one arm runs, so the arm writes (z=10 / z=20) are MAY-defs — they must
-    // not unconditionally KILL the prior `int z = 0`.
+    expect(edgeKinds(cfg).has('switch-case')).toBe(false);
     expect(cfg.blocks.some((bl) => bl.statements?.some((s) => (s.mayDefs ?? []).includes(z)))).toBe(
       true,
     );
+  });
+
+  it('value switch without an unguarded `_` keeps the no-match edge (EXIT stays reachable) (#2211)', () => {
+    // A guarded `_ when …` is NOT an exhaustive catch-all — the conservative
+    // no-match path must remain (Dart throws at runtime if no arm + guard matches).
+    const cfg = dart.cfgOf(`int f(int v) {
+      return switch (v) { int n when n > 0 => a(n), _ when v < 0 => b() };
+    }`);
+    expect(edgeKinds(cfg).has('switch-case')).toBe(true);
+    expect(isExitReachableFromAllBlocks(cfg)).toBe(true);
+    // the dispatch must reach the join WITHOUT going through an arm (the no-match edge).
+    const dispatchIdx = block(cfg, 'switch v');
+    const dispatchSucc = cfg.edges.filter(
+      (e) => e.from === dispatchIdx && e.kind === 'switch-case',
+    );
+    // dispatch fans to 2 arms + the no-match join = 3 switch-case successors.
+    expect(dispatchSucc.length).toBe(3);
+  });
+
+  it('a value-switch `when` guard is a conditional dispatch use, not an arm-value use (#2211)', () => {
+    const cfg = dart.cfgOf(`int f(int v) {
+      var x = switch (v) { int n when guardOk(v) => a(n), _ => b() };
+      use(x);
+    }`);
+    const vIdx = bindingIdx(cfg, 'v');
+    // `v` (used by the guard `guardOk(v)`) is recorded as a use on the dispatch
+    // block (text `switch v`), not buried in an arm-value block.
+    const dispatch = cfg.blocks.find((b) => b.text === 'switch v')!;
+    expect(dispatch.statements?.some((s) => s.uses.includes(vIdx))).toBe(true);
+    expect(isExitReachableFromAllBlocks(cfg)).toBe(true);
   });
 });
 

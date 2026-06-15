@@ -80,12 +80,14 @@
  *    Java/C#/TS over-approximation.
  *
  * Kotlin-specific modeling decisions (documented approximations):
- *  - `if` / `when` / `try` used as an EXPRESSION VALUE (assigned, returned inline,
- *    passed as an argument) is left INLINE inside its owning statement's block —
- *    its arms are not modeled as separate CFG blocks (the value flows to the
- *    consumer). Only a STATEMENT-position construct (a direct `statements` child)
- *    becomes a dispatch/branch construct. This mirrors the Java inline-value-switch
- *    gap — documented, not faked.
+ *  - a value-position `if` (with `else`) / `when` (≥2 arms) / `try` IS modeled as
+ *    control flow (#2205) in four carriers: a `val/var x = <branch>` binding, an
+ *    `x = <branch>` assignment, a `return <branch>`, and a `fun f() = <branch>`
+ *    expression body — its arms become separate CFG blocks that rejoin at a
+ *    binding/return continuation. A branch in any OTHER value position — nested in
+ *    a call argument (`f(when …)`), a deeper subexpression — is left INLINE (the
+ *    value flows to the consumer in one block). The ternary-like `?:` (elvis) and
+ *    `?.` micro-branches are excluded by design.
  *  - a `lambda_literal` / nested `anonymous_function` / nested
  *    `function_declaration` is collected as its OWN function by `isFunction`, so
  *    its body gets a standalone CFG; in the ENCLOSING function it is an opaque
@@ -246,9 +248,10 @@ class KotlinCfgWalk {
    * Whether a statement breaks the current straight-line block. `if` / `when` /
    * `try` are EXPRESSIONS in Kotlin — they break a block when used as a STATEMENT
    * (a direct child of a `statements` list), OR when they are the value of a
-   * `val/var x = <branch>` binding (#2205) — `visitStmt`'s `property_declaration`
-   * case then models the arms as control flow. Other value positions (an
-   * assignment RHS, a call argument) still coalesce — a remaining gap.
+   * `val/var x = <branch>` binding or an `x = <branch>` assignment (#2205) —
+   * `visitStmt`'s `property_declaration` / `assignment` case then models the arms
+   * as control flow. A call argument value position still coalesces (a remaining
+   * gap — the branch is nested in a call, harder to bind).
    */
   private isControlFlow(stmt: SyntaxNode): boolean {
     if (stmt.type === 'label') return true; // queue label, emit no block
@@ -256,6 +259,7 @@ class KotlinCfgWalk {
       const v = this.directValue(stmt);
       return v !== undefined && this.isModelableValueBranch(v);
     }
+    if (stmt.type === 'assignment') return this.assignmentBranch(stmt) !== undefined;
     if (!CONTROL_FLOW_TYPES.has(stmt.type)) return false;
     if (this.isExpressionConstruct(stmt.type)) return this.isStatementPosition(stmt);
     return true;
@@ -309,6 +313,13 @@ class KotlinCfgWalk {
         if (value && this.isModelableValueBranch(value)) return this.visitBindBranch(stmt, value);
         return this.visitSimple(stmt);
       }
+      case 'assignment': {
+        // `x = when (k) { … }` / `x = if (c) a else b` / `x = try { … }` (#2205):
+        // model the RHS branch as control flow and bind the target on the rejoin.
+        const branch = this.assignmentBranch(stmt);
+        if (branch) return this.visitBindAssign(stmt, branch);
+        return this.visitSimple(stmt);
+      }
       default:
         return this.visitSimple(stmt);
     }
@@ -345,11 +356,13 @@ class KotlinCfgWalk {
 
   /** `return [expr]` / `return@label` — threads through every active finalizer. */
   private visitReturn(stmt: SyntaxNode): TraversalResult {
-    // `return when (k) { … }` / `return if (c) a else b` (#2205): the returned
-    // value is a value-position branch — model it as control flow, with each arm
-    // returning (its value IS the function result), threading finalizers per arm.
+    // `return when (k) { … }` / `return if (c) a else b` / `return try { … }`
+    // (#2205): the returned value is a value-position branch — model it as control
+    // flow, with each arm returning (its value IS the function result), threading
+    // finalizers per arm.
     const branch = stmt.namedChildren.find(
-      (c) => c.type === 'when_expression' || c.type === 'if_expression',
+      (c) =>
+        c.type === 'when_expression' || c.type === 'if_expression' || c.type === 'try_expression',
     );
     if (branch && this.isModelableValueBranch(branch)) {
       const res = this.visitBranchExpr(branch);
@@ -470,16 +483,25 @@ class KotlinCfgWalk {
       return node.namedChildren.filter((c) => c.type === 'when_entry').length >= 2;
     }
     if (node.type === 'if_expression') return this.elseNodeOf(node) !== undefined;
+    // `val x = try { … } catch { … }` / `try { … } finally { … }` (#2205): a
+    // value-position `try` with a `catch` OR a `finally` is a real branch — its
+    // value is the body's value, a catch's value, or the body's value threaded
+    // through a finalizer — so model it as control flow.
+    if (node.type === 'try_expression') {
+      return node.namedChildren.some((c) => c.type === 'catch_block' || c.type === 'finally_block');
+    }
     return false;
   }
 
   /**
-   * Model a value-position `when`/`if` as control flow regardless of its
+   * Model a value-position `when`/`if`/`try` as control flow regardless of its
    * statement/value position — {@link visitStmt}'s `isStatementPosition` gate keeps
    * value-position branches inline, so call the branch handlers directly here.
    */
   private visitBranchExpr(node: SyntaxNode): TraversalResult {
-    return node.type === 'when_expression' ? this.visitWhen(node) : this.visitIf(node);
+    if (node.type === 'when_expression') return this.visitWhen(node);
+    if (node.type === 'try_expression') return this.visitTry(node) ?? this.visitSimple(node);
+    return this.visitIf(node);
   }
 
   /**
@@ -497,6 +519,40 @@ class KotlinCfgWalk {
       '',
       'normal',
       this.harvest.bindingDefFacts(stmt),
+    );
+    this.builder.connect(res.exits, cont, 'seq');
+    return { entry: res.entry, exits: [cont] };
+  }
+
+  /**
+   * The value-position branch on a plain `=` assignment RHS (`x = when (k) {…}` /
+   * `x = if (c) a else b` / `x = try {…}`, #2205), or undefined. Only a plain `=`
+   * (not a compound `+=`) with a modelable-branch RHS qualifies.
+   */
+  private assignmentBranch(stmt: SyntaxNode): SyntaxNode | undefined {
+    if (stmt.type !== 'assignment') return undefined;
+    const eq = stmt.children.find((c) => !c.isNamed && c.text === '=');
+    if (!eq) return undefined; // compound assignment (`+=` etc.) is not a carrier
+    const rhs = stmt.namedChildren.find(
+      (c) => c.type !== 'directly_assignable_expression' && !isComment(c),
+    );
+    return rhs && this.isModelableValueBranch(rhs) ? rhs : undefined;
+  }
+
+  /**
+   * `x = <branch>` (#2205): visit the RHS branch as control flow, then rejoin its
+   * arms at a facts-only continuation carrying ONLY the LHS target def (the branch
+   * subject + arm-value uses are already on the branch's blocks). The arms are now
+   * control-dependent on the branch — mirrors the Ruby value-branch assignment.
+   */
+  private visitBindAssign(stmt: SyntaxNode, branch: SyntaxNode): TraversalResult {
+    const res = this.visitBranchExpr(branch);
+    const cont = this.builder.newBlock(
+      startLineOf(stmt),
+      startLineOf(stmt),
+      '',
+      'normal',
+      this.harvest.assignmentDefFacts(stmt),
     );
     this.builder.connect(res.exits, cont, 'seq');
     return { entry: res.entry, exits: [cont] };

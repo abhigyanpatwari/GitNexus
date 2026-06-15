@@ -74,11 +74,12 @@
  *    TS `visitTry` over-approximation.
  *
  * Known limitations:
- *  - `switch` as an EXPRESSION value (`int r = switch (x) { … };`) is left INLINE
- *    inside its owning statement's block — its arms are not modeled as separate
- *    CFG blocks (the value flows to the assignment). Only a `switch` used as a
- *    STATEMENT (a direct statement child) is modeled as a dispatch construct.
- *    This mirrors the C# `switch_expression`-in-return handling — documented gap.
+ *  - A value-position `switch` with ≥2 arms is modeled as control flow in the two
+ *    highest-value carriers (#2207): a single-declarator `var x = switch (…) {…}`
+ *    (arms rejoin at a binding continuation) and `return switch (…) {…}` (each arm
+ *    returns). A value-position `switch` in any OTHER position — an assignment RHS
+ *    (`x = switch …`), a call argument, or a multi-declarator decl — is still left
+ *    INLINE inside its owning block (the value flows to one coalesced block).
  *  - `yield` (in a switch expression) continues to the next statement (it yields
  *    one value to the enclosing switch and the arm ends); the switch-expression
  *    state machine is not modeled, consistent with the inline-value-switch gap.
@@ -197,12 +198,7 @@ class JavaCfgWalk {
       let openSimple: number | undefined;
 
       for (const stmt of stmts) {
-        // A `switch_expression` only breaks a block when it is a STATEMENT switch.
-        // Used as a value (inside a declaration / return) it coalesces normally.
-        const breaks =
-          CONTROL_FLOW_TYPES.has(stmt.type) &&
-          (stmt.type !== 'switch_expression' || this.isStatementSwitch(stmt));
-        if (breaks) {
+        if (this.breaksBlock(stmt)) {
           openSimple = undefined; // close any open straight-line block
           const res = this.visitStmt(stmt);
           if (res === null) continue; // transparent (empty nested block)
@@ -238,9 +234,35 @@ class JavaCfgWalk {
     });
   }
 
+  /**
+   * Whether a statement breaks the current straight-line block. A
+   * `switch_expression` breaks only when it is a STATEMENT switch (a value-
+   * position switch used directly inside a `block` coalesces). A
+   * `local_variable_declaration` whose value is a modelable value-position switch
+   * (`var x = switch (…) {…}`, #2207) also breaks — `visitStmt` then models the
+   * arms as control flow instead of collapsing the decl to one inline block.
+   */
+  private breaksBlock(stmt: SyntaxNode): boolean {
+    if (stmt.type === 'local_variable_declaration') {
+      const v = this.directValue(stmt);
+      return v !== undefined && this.isModelableValueBranch(v);
+    }
+    if (!CONTROL_FLOW_TYPES.has(stmt.type)) return false;
+    if (stmt.type === 'switch_expression') return this.isStatementSwitch(stmt);
+    return true;
+  }
+
   /** Dispatch one statement to its handler. Non-null except for empty blocks. */
   visitStmt(stmt: SyntaxNode): SeqResult {
     switch (stmt.type) {
+      case 'local_variable_declaration': {
+        // `var x = switch (k) { … }` (#2207): the value is a value-position
+        // branch — model it as control flow and bind the result on the rejoin,
+        // instead of collapsing the whole decl to one block.
+        const value = this.directValue(stmt);
+        if (value && this.isModelableValueBranch(value)) return this.visitBindBranch(stmt, value);
+        return this.visitSimple(stmt);
+      }
       case 'if_statement':
         return this.visitIf(stmt);
       case 'while_statement':
@@ -289,6 +311,18 @@ class JavaCfgWalk {
   }
 
   private visitReturn(stmt: SyntaxNode): TraversalResult {
+    // `return switch (k) { … };` (#2207): the returned value is a value-position
+    // branch — model it as control flow, with each arm returning (its value IS
+    // the function result), threading every active finalizer per arm.
+    const branch = stmt.namedChildren.find((c) => !isComment(c));
+    if (branch && this.isModelableValueBranch(branch)) {
+      const res = this.visitBranchExpr(branch);
+      const finalizers = this.cfc.finalizersForReturn();
+      for (const ex of res.exits) {
+        wireJumpThroughFinalizers(this.builder, ex, finalizers, this.builder.exitIndex, 'return');
+      }
+      return { entry: res.entry, exits: [] };
+    }
     const idx = this.builder.newBlock(
       startLineOf(stmt),
       endLineOf(stmt),
@@ -321,10 +355,13 @@ class JavaCfgWalk {
   }
 
   /**
-   * `yield e;` (switch-expression arm value) — yields one value to the enclosing
-   * switch and the arm ends; modeled as a block that continues to whatever
-   * follows (the switch-expression state machine is not modeled, see the visitor
-   * limitations). It carries the yielded value's def/use facts.
+   * `yield e;` (switch-expression arm value) — produces the switch-expression's
+   * value and EXITS the enclosing switch (it does NOT fall through to the next
+   * colon group). Modeled as a terminator that jumps to the switch exit, threading
+   * any finalizer it crosses — exactly like a `break` out of the switch but
+   * carrying the yielded value's def/use facts. (Reusing the statement `visitSwitch`
+   * for a value-position colon switch would otherwise wire a spurious `fallthrough`
+   * edge between yield-terminated arms — #2211 review.)
    */
   private visitYield(stmt: SyntaxNode): TraversalResult {
     const idx = this.builder.newBlock(
@@ -334,7 +371,13 @@ class JavaCfgWalk {
       'normal',
       this.harvest.facts(stmt),
     );
-    return { entry: idx, exits: [idx] };
+    const res = this.cfc.resolveYield();
+    const { target, finalizers } = res ?? {
+      target: this.builder.exitIndex,
+      finalizers: this.cfc.finalizersForReturn(),
+    };
+    wireJumpThroughFinalizers(this.builder, idx, finalizers, target, 'break');
+    return { entry: idx, exits: [] };
   }
 
   private visitBreak(stmt: SyntaxNode): TraversalResult {
@@ -715,6 +758,67 @@ class JavaCfgWalk {
     const label = group.namedChildren.find((c) => c.type === 'switch_label');
     if (!label) return false;
     return label.namedChildren.filter((c) => !isComment(c)).length === 0;
+  }
+
+  // ── value-position branches (#2207) ─────────────────────────────────────────
+
+  /**
+   * The direct value of a `local_variable_declaration` with a SINGLE declarator:
+   * its `variable_declarator`'s `value` field (`var x = <value>`). Returns
+   * undefined for a multi-declarator decl (`int a = …, b = …;`) — modeling those
+   * arm-by-arm is out of scope, so they coalesce inline. The DIRECT value only:
+   * `var x = f(switch …)` yields the call, not the nested switch, so an
+   * argument-position switch stays inline.
+   */
+  private directValue(stmt: SyntaxNode): SyntaxNode | undefined {
+    const declarators = stmt.namedChildren.filter((c) => c.type === 'variable_declarator');
+    if (declarators.length !== 1) return undefined;
+    return declarators[0].childForFieldName('value') ?? undefined;
+  }
+
+  /**
+   * Whether `node` is a value-position branch worth modeling as control flow
+   * (#2207): a `switch_expression` with ≥2 case groups (a real dispatch). Java has
+   * no value-position `if` (the ternary `?:` is deliberately excluded, like elvis
+   * in Kotlin), so `switch` is the only carrier.
+   */
+  private isModelableValueBranch(node: SyntaxNode): boolean {
+    if (node.type !== 'switch_expression') return false;
+    const body = node.childForFieldName('body');
+    if (!body) return false;
+    const groups = body.namedChildren.filter(
+      (c) => c.type === 'switch_block_statement_group' || c.type === 'switch_rule',
+    );
+    return groups.length >= 2;
+  }
+
+  /**
+   * Model a value-position `switch` as control flow regardless of position —
+   * {@link visitSeq}'s `isStatementSwitch` gate keeps value-position switches
+   * inline, so call {@link visitSwitch} directly here.
+   */
+  private visitBranchExpr(node: SyntaxNode): TraversalResult {
+    return this.visitSwitch(node);
+  }
+
+  /**
+   * `var x = switch (k) { … }` (#2207): visit the switch as control flow, then
+   * rejoin its arms at a facts-only continuation carrying ONLY the bound name's
+   * def (the subject + arm-value uses are already harvested onto the switch's
+   * blocks). The arms are now control-dependent on the dispatch, and `x` is
+   * defined at the join — mirrors the Kotlin / Rust value-position binding.
+   */
+  private visitBindBranch(stmt: SyntaxNode, branch: SyntaxNode): TraversalResult {
+    const res = this.visitBranchExpr(branch);
+    const cont = this.builder.newBlock(
+      startLineOf(stmt),
+      startLineOf(stmt),
+      '',
+      'normal',
+      this.harvest.bindingDefFacts(stmt),
+    );
+    this.builder.connect(res.exits, cont, 'seq');
+    return { entry: res.entry, exits: [cont] };
   }
 
   /**

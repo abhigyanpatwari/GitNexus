@@ -44,8 +44,8 @@
  *  - loops (for / foreach / while / do-while) → `cond-true` / `loop-back` /
  *    `cond-false`
  *  - switch → `switch-case` / `fallthrough` (a `case` with no `break`/`return`
- *    falls through to the next case); `match` is left INLINE as a value
- *    (no fallthrough — see the limitations).
+ *    falls through to the next case); a value-position `match` with ≥2 arms also
+ *    dispatches as `switch-case` (no fallthrough), see the limitations.
  *  - try/catch → `throw` (every protected-region block → the handler); a
  *    `finally` runs on normal AND exception exit, so a `return`/`break`/`continue`
  *    crossing it gets a `finally-*` completion edge.
@@ -68,10 +68,12 @@
  *    region edges to the handler (an exception may fire mid-block).
  *
  * Known limitations:
- *  - `match` is a value-position EXPRESSION (`$r = match($x) { … }`), kept INLINE
- *    inside its owning statement's block — its arms are not modeled as separate
- *    CFG blocks (the value flows to the assignment). Documented gap, mirroring the
- *    Java inline-value-switch handling.
+ *  - A value-position `match($x) { … }` with ≥2 arms IS modeled as a `switch-case`
+ *    dispatch in two carriers (#2207): an `$x = match(…) {…}` assignment (arms
+ *    rejoin at a binding continuation) and `return match(…) {…}` (each arm
+ *    returns). A `match` in any OTHER position — a call argument, a nested
+ *    subexpression — stays INLINE inside its owning block. The ternary `?:` is
+ *    excluded by design (a micro-branch, like elvis in Kotlin).
  *  - context-manager-style suppression and PHP's exception-from-mid-call outside
  *    any `try` are not modeled (no edge), matching the other visitors.
  *  - `goto` / named labels are modeled as straight-line blocks (the label is a
@@ -192,7 +194,11 @@ class PhpCfgWalk {
       for (const stmt of stmts) {
         // An `expression_statement` wrapping a bare `throw_expression` is a
         // terminator (PHP has no `throw_statement` node), so it breaks the block.
-        const breaks = CONTROL_FLOW_TYPES.has(stmt.type) || this.isThrowStatement(stmt);
+        // An `$x = match($v) {…}` value-position assignment breaks too (#2207).
+        const breaks =
+          CONTROL_FLOW_TYPES.has(stmt.type) ||
+          this.isThrowStatement(stmt) ||
+          this.isValueBranchAssignment(stmt);
         if (breaks) {
           openSimple = undefined; // close any open straight-line block
           const res = this.visitStmt(stmt);
@@ -232,6 +238,10 @@ class PhpCfgWalk {
   /** Dispatch one statement to its handler. Non-null except for empty blocks. */
   visitStmt(stmt: SyntaxNode): SeqResult {
     if (this.isThrowStatement(stmt)) return this.visitThrow(stmt);
+    // `$x = match($v) { … };` (#2207): model the match arms as control flow and
+    // bind the assignment target on the rejoin.
+    const assign = this.assignmentBranch(stmt);
+    if (assign) return this.visitBindAssign(stmt, assign.expr, assign.match);
     switch (stmt.type) {
       case 'if_statement':
         return this.visitIf(stmt);
@@ -285,6 +295,18 @@ class PhpCfgWalk {
   }
 
   private visitReturn(stmt: SyntaxNode): TraversalResult {
+    // `return match($v) { … };` (#2207): the returned value is a value-position
+    // branch — model it as control flow, with each arm returning (its value IS
+    // the function result), threading every active finally per arm.
+    const branch = stmt.namedChildren.find((c) => !isComment(c));
+    if (branch && this.isModelableValueBranch(branch)) {
+      const res = this.visitBranchExpr(branch);
+      const finalizers = this.cfc.finalizersForReturn();
+      for (const ex of res.exits) {
+        wireJumpThroughFinalizers(this.builder, ex, finalizers, this.builder.exitIndex, 'return');
+      }
+      return { entry: res.entry, exits: [] };
+    }
     const idx = this.builder.newBlock(
       startLineOf(stmt),
       endLineOf(stmt),
@@ -668,6 +690,126 @@ class PhpCfgWalk {
   /** The case-test value expression of a `case_statement` (default has none). */
   private caseTest(group: SyntaxNode): SyntaxNode | undefined {
     return group.childForFieldName('value') ?? undefined;
+  }
+
+  // ── value-position match expression (#2207) ─────────────────────────────────
+
+  /**
+   * The `{expr, match}` of an `$x = match($v) {…}` value-position assignment
+   * carrier, or undefined. `expr` is the `assignment_expression` (for the target
+   * def); `match` is the modelable `match_expression` RHS. Only a plain `=`
+   * assignment qualifies (an augmented `??=` etc. is not a value-branch bind).
+   */
+  private assignmentBranch(stmt: SyntaxNode): { expr: SyntaxNode; match: SyntaxNode } | undefined {
+    if (stmt.type !== 'expression_statement') return undefined;
+    const expr = stmt.namedChildren.find((c) => !isComment(c));
+    if (!expr || expr.type !== 'assignment_expression') return undefined;
+    const right = expr.childForFieldName('right');
+    return right && this.isModelableValueBranch(right) ? { expr, match: right } : undefined;
+  }
+
+  /** Whether a statement is an `$x = match(…) {…}` value-branch assignment. */
+  private isValueBranchAssignment(stmt: SyntaxNode): boolean {
+    return this.assignmentBranch(stmt) !== undefined;
+  }
+
+  /**
+   * Whether `node` is a value-position branch worth modeling as control flow
+   * (#2207): a `match_expression` with ≥2 arms — a real dispatch. PHP `match` is
+   * the only value-position branch (there is no `if`-expression); the ternary
+   * `?:` is deliberately excluded, like elvis in Kotlin.
+   */
+  private isModelableValueBranch(node: SyntaxNode): boolean {
+    if (node.type !== 'match_expression') return false;
+    const block = node.childForFieldName('body');
+    if (!block) return false;
+    return (
+      block.namedChildren.filter(
+        (c) => c.type === 'match_conditional_expression' || c.type === 'match_default_expression',
+      ).length >= 2
+    );
+  }
+
+  /** Model a value-position branch as control flow (only `match_expression`). */
+  private visitBranchExpr(node: SyntaxNode): TraversalResult {
+    return this.visitMatch(node);
+  }
+
+  /**
+   * Model a value-position `match($v) { c => v, default => v }` as a CFG dispatch:
+   * a discriminant block, each arm's value expression a block reached by a
+   * `switch-case` edge, all arms rejoining at one exit (no fallthrough — `match`
+   * never falls through). The arm condition lists are harvested as conditional
+   * uses on the dispatch (a later arm test runs only when earlier arms missed).
+   */
+  private visitMatch(node: SyntaxNode): TraversalResult {
+    const condRaw = node.childForFieldName('condition');
+    const cond = condRaw ? this.unwrapParen(condRaw) : node;
+    const dispatch = this.builder.newBlock(
+      startLineOf(node),
+      endLineOf(cond),
+      cond.text,
+      'normal',
+      this.harvest.facts(cond),
+    );
+    const matchExit = this.builder.newBlock(endLineOf(node), endLineOf(node), '');
+
+    const block = node.childForFieldName('body');
+    const arms = block
+      ? block.namedChildren.filter(
+          (c) => c.type === 'match_conditional_expression' || c.type === 'match_default_expression',
+        )
+      : [];
+    let hasDefault = false;
+    for (const arm of arms) {
+      const condList = arm.namedChildren.find((c) => c.type === 'match_condition_list');
+      if (condList) this.builder.attachFacts(dispatch, this.harvest.factsConditional(condList));
+      if (arm.type === 'match_default_expression') hasDefault = true;
+      const value = this.matchArmValue(arm);
+      const armBlock = this.builder.newBlock(
+        startLineOf(value ?? arm),
+        endLineOf(value ?? arm),
+        (value ?? arm).text,
+        'normal',
+        value ? this.harvest.facts(value) : undefined,
+      );
+      this.builder.edge(dispatch, armBlock, 'switch-case');
+      this.builder.edge(armBlock, matchExit, 'seq');
+    }
+    // `match` with no `default` throws `\UnhandledMatchError` on no match; keep
+    // EXIT reachable via a conservative no-match edge when no default arm exists.
+    if (!hasDefault) this.builder.edge(dispatch, matchExit, 'switch-case');
+
+    return { entry: dispatch, exits: [matchExit] };
+  }
+
+  /** The value (result) expression of a match arm — its LAST named child. */
+  private matchArmValue(arm: SyntaxNode): SyntaxNode | undefined {
+    const named = arm.namedChildren.filter((c) => !isComment(c));
+    return named[named.length - 1];
+  }
+
+  /**
+   * `$x = match($v) { … }` (#2207): visit the match as control flow, then rejoin
+   * its arms at a facts-only continuation carrying ONLY the LHS target def (the
+   * condition + arm-value uses are already on the match's blocks). The arms are
+   * now control-dependent on the dispatch — mirrors the Ruby value-branch assign.
+   */
+  private visitBindAssign(
+    stmt: SyntaxNode,
+    assignExpr: SyntaxNode,
+    branch: SyntaxNode,
+  ): TraversalResult {
+    const res = this.visitBranchExpr(branch);
+    const cont = this.builder.newBlock(
+      startLineOf(stmt),
+      startLineOf(stmt),
+      '',
+      'normal',
+      this.harvest.assignmentDefFacts(assignExpr),
+    );
+    this.builder.connect(res.exits, cont, 'seq');
+    return { entry: res.entry, exits: [cont] };
   }
 
   /**
