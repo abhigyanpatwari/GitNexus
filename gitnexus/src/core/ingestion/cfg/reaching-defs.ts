@@ -985,4 +985,3 @@ function mergePreds(
   }
   return merged;
 }
-
