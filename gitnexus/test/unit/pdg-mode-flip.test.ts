@@ -176,6 +176,42 @@ describe('pdgModeMismatch — pre-M5→M5 CDG-cap stamp upgrade (#2085 M5, pure)
   });
 });
 
+describe('pdgModeMismatch — pre-#2201→SSA reaching-defs solver upgrade (#2201 review R3, pure)', () => {
+  it('resolvePdgConfig stamps the reaching-defs solver identity', async () => {
+    const { resolvePdgConfig } = await import('../../src/core/run-analyze.js');
+    const stamp = resolvePdgConfig({ pdg: true });
+    expect(stamp?.reachingDefSolver).toBe('ssa-sparse-v1');
+  });
+
+  it('a pre-#2201 stamp (no solver key) mismatches the SSA request — upgrade recomputes truncated deep-loop facts', async () => {
+    const { pdgModeMismatch } = await import('../../src/core/run-analyze.js');
+    // What a pre-#2201 (M5-era) run wrote: every cap + model digest, but NO
+    // reachingDefSolver. The key-union comparator sees 'ssa-sparse-v1' !==
+    // undefined and trips the full writeback that recomputes the now-fuller
+    // REACHING_DEF coverage — the deep-loop functions the dense worklist
+    // truncated to empty at the blocks×64 ceiling now compute full facts.
+    const m5Stamp = {
+      maxFunctionLines: 2000,
+      maxEdgesPerFunction: 5000,
+      maxReachingDefEdgesPerFunction: 4000,
+      maxCdgEdgesPerFunction: 5000,
+      maxTaintFindingsPerFunction: 200,
+      maxTaintHops: 32,
+      maxInterprocFindings: 2000,
+      maxInterprocHops: 32,
+      maxInterprocEdges: 1000,
+      taintModelVersion,
+    };
+    expect(pdgModeMismatch(m5Stamp, { pdg: true })).toBe(true);
+  });
+
+  it('an identical post-#2201 stamp compares equal (no spurious re-analysis churn)', async () => {
+    const { pdgModeMismatch, resolvePdgConfig } = await import('../../src/core/run-analyze.js');
+    const stamp = resolvePdgConfig({ pdg: true });
+    expect(pdgModeMismatch(stamp, { pdg: true })).toBe(false);
+  });
+});
+
 describe('detect_changes BasicBlock exclusion (#2082 U7)', () => {
   it('the symbol-overlap id-prefix filter excludes exactly the BasicBlock rows', async () => {
     const repo = await setupMiniRepo();
@@ -258,6 +294,7 @@ describe('runFullAnalysis — pdg-mode flip (#2099 F1)', () => {
         maxInterprocHops: 32,
         maxInterprocEdges: 1000,
         taintModelVersion,
+        reachingDefSolver: 'ssa-sparse-v1',
       });
       expect(stamped!.incrementalInProgress).toBeUndefined(); // cleared on success
 
@@ -314,6 +351,7 @@ describe('runFullAnalysis — pdg-mode flip (#2099 F1)', () => {
         maxInterprocHops: 32,
         maxInterprocEdges: 1000,
         taintModelVersion,
+        reachingDefSolver: 'ssa-sparse-v1',
       });
       // The CFG layer survives a rebuild under a tighter edge cap (blocks are
       // never capped, only edges).

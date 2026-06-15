@@ -349,6 +349,10 @@ describe('pdgModeMismatch / resolvePdgConfig (#2099 F1)', () => {
     // Content digest, not a tunable cap — pinned via the exported constant
     // (its VALUE changes whenever the built-in model changes, by design).
     taintModelVersion,
+    // Solver identity, not a tunable cap — always stamped on a pdg-on run
+    // (#2201 review R3). Bumps when the reaching-defs solver's emitted facts
+    // change; absence on a pre-#2201 stamp forces a re-analysis.
+    reachingDefSolver: 'ssa-sparse-v1',
   };
 
   it('resolvePdgConfig: pdg-off run resolves to undefined (the meta field is omitted)', async () => {
@@ -384,6 +388,7 @@ describe('pdgModeMismatch / resolvePdgConfig (#2099 F1)', () => {
       maxInterprocHops: 0,
       maxInterprocEdges: 0,
       taintModelVersion, // not a cap — always stamped on a pdg-on run
+      reachingDefSolver: 'ssa-sparse-v1', // solver identity — always stamped (#2201 R3)
     });
   });
 
