@@ -6,7 +6,6 @@
  */
 import { describe, it, expect } from 'vitest';
 import path from 'path';
-import os from 'os';
 import {
   toNativeSafePath,
   cleanupNativePathJunctions,
@@ -91,17 +90,28 @@ describe('resolveNativeSafeStorageDir (#2202)', () => {
   }
 
   if (process.platform === 'win32') {
-    it('relocates a non-ASCII storage path to a distinct hashed os.tmpdir() dir per subdir', () => {
+    it('relocates a non-ASCII storage path to a unique mkdtemp os.tmpdir() dir per subdir', () => {
+      const fs = require('fs');
       const storage = 'C:\\Project\\中文\\.gitnexus';
+      // mkdtemp creates the dirs — track + clean them up.
       const csv = resolveNativeSafeStorageDir(storage, 'csv');
       const pdg = resolveNativeSafeStorageDir(storage, 'pdg-csv');
-      const tmp = os.tmpdir();
-      // Both relocated under os.tmpdir(), ASCII-prefixed, and distinct.
-      expect(csv.startsWith(tmp) || csv.includes('gitnexus-csv-')).toBe(true);
-      expect(pdg.includes('gitnexus-pdg-csv-')).toBe(true);
-      expect(csv).not.toBe(pdg);
-      // The relocated paths are not under the original non-ASCII storage path.
-      expect(pdg.includes('中文')).toBe(false);
+      try {
+        // Both relocated under os.tmpdir(), ASCII-prefixed, and distinct (each
+        // mkdtemp call returns a fresh random suffix — never a predictable name).
+        expect(pdg.includes('gitnexus-pdg-csv-')).toBe(true);
+        expect(csv.includes('gitnexus-csv-')).toBe(true);
+        expect(csv).not.toBe(pdg);
+        // Two calls for the same (storage, subdir) yield DIFFERENT dirs (random).
+        const csv2 = resolveNativeSafeStorageDir(storage, 'csv');
+        expect(csv2).not.toBe(csv);
+        // The relocated paths are not under the original non-ASCII storage path.
+        expect(pdg.includes('中文')).toBe(false);
+        fs.rmSync(csv2, { recursive: true, force: true });
+      } finally {
+        fs.rmSync(csv, { recursive: true, force: true });
+        fs.rmSync(pdg, { recursive: true, force: true });
+      }
     });
   }
 });
