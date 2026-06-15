@@ -626,6 +626,15 @@ if (!CHECK) {
           (r.rd_all_computed ? '' : ` [status != computed]`),
       );
     }
+    // Independent of the fact-count floor: under the production budget every
+    // function in a facts_large_min scenario must report status 'computed'. This
+    // catches a partial-truncation regression that still clears the count floor.
+    if (base.facts_large_min !== undefined && r.rd_all_computed === false) {
+      failures.push(
+        `${r.scenario}: a function did not reach status 'computed' under the production ` +
+          `block-visit budget — the SSA solver truncated where it must compute`,
+      );
+    }
     if (base.disk_bytes_large_max !== undefined && r.disk_bytes_large > base.disk_bytes_large_max) {
       failures.push(
         `${r.scenario}: cfgSideChannel absolute size ${r.disk_bytes_large} > ceiling ` +

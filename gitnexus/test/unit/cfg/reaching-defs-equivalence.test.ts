@@ -76,7 +76,13 @@ interface GenOpts {
 }
 
 const DEFAULT_GEN: GenOpts = {
-  maxBlocks: 14,
+  // Span both sides of the production SSA dispatch threshold (SSA_MIN_BLOCKS=16):
+  // CFGs below it route the auto-dispatcher (computeReachingDefs) to dense, those
+  // above with a reachable loop route it to the SSA path — so the corpus
+  // differentially exercises BOTH branches of computeInSetsAuto, not just the
+  // forced-SSA computeReachingDefsSparse entry. See the hadLargeLoop coverage
+  // guard below.
+  maxBlocks: 36,
   maxBindings: 8,
   maxStmtsPerBlock: 4,
   pNoBindings: 0.03,
@@ -295,6 +301,22 @@ function canonicalHardCfgs(): FunctionCfg[] {
     ),
   );
 
+  // (6) Back-edge into the ENTRY block: 0 (def+use x) → 1 (def+use x) → 0 (loop
+  // back to entry) and 1 → 2 (exit, use x). The SSA solver's synthetic pre-entry
+  // node exists precisely for this — the entry is a loop header, so x's loop-
+  // carried def must reach the entry's own use. Pins that path deterministically.
+  out.push(
+    mk(
+      [blk(0, [st(1, [0], [0])]), blk(1, [st(2, [0], [0])]), blk(2, [st(3, [], [0])])],
+      [
+        { from: 0, to: 1, kind: 'seq' },
+        { from: 1, to: 0, kind: 'loop-back' },
+        { from: 1, to: 2, kind: 'cond-false' },
+      ],
+      [bind('x', 1)],
+    ),
+  );
+
   return out;
 }
 
@@ -333,6 +355,10 @@ interface ShapeFlags {
   hasShadow: boolean;
   hasMultiPred: boolean;
   hasUnreachable: boolean;
+  // ≥16-block CFG (SSA_MIN_BLOCKS) with a loop reachable from entry — the exact
+  // shape the production dispatcher (computeInSetsAuto) sends to the SSA solver.
+  // Asserting it proves the auto-dispatcher's SSA branch is differentially fuzzed.
+  hadLargeLoop: boolean;
   hadComputed: boolean;
   hadTruncated: boolean;
   hadNoFacts: boolean;
@@ -385,6 +411,22 @@ function classify(cfg: FunctionCfg, flags: ShapeFlags): void {
     for (const y of succ[x]) if (!seen[y]) ((seen[y] = true), q.push(y));
   }
   if (seen.some((v, i) => !v && i < n)) flags.hasUnreachable = true;
+
+  // loop reachable from entry (matches the dispatcher's hasReachableLoop) +
+  // ≥16 blocks ⇒ the production auto-dispatcher routes this CFG to the SSA path.
+  const c2 = new Array(n).fill(0);
+  let entryLoop = false;
+  const st2: { node: number; idx: number }[] = [{ node: cfg.entryIndex, idx: 0 }];
+  c2[cfg.entryIndex] = 1;
+  while (st2.length && !entryLoop) {
+    const top = st2[st2.length - 1];
+    if (top.idx < succ[top.node].length) {
+      const v = succ[top.node][top.idx++];
+      if (c2[v] === 1) entryLoop = true;
+      else if (c2[v] === 0) ((c2[v] = 1), st2.push({ node: v, idx: 0 }));
+    } else ((c2[top.node] = 2), st2.pop());
+  }
+  if (n >= 16 && entryLoop) flags.hadLargeLoop = true;
 }
 
 // ── corpus runner ──────────────────────────────────────────────────────────
@@ -399,11 +441,13 @@ function runCorpus(
   right: Solver,
   count: number,
   baseSeed: number,
-  // maxBlockVisits has DIFFERENT (intentional) semantics across the dense and
-  // sparse solvers — dense counts block dequeues, sparse counts (block,binding)
-  // dequeues — so a small budget truncates them at different points. Perturb it
-  // only when comparing a solver against ITSELF (same semantics); cross-solver
-  // byte-identity is asserted with the budget unlimited (both fully converge).
+  // maxBlockVisits has DIFFERENT (intentional) semantics across the solvers: the
+  // dense worklist counts block dequeues against it; the SSA solver has no
+  // fixpoint iteration and ignores it in its main path (it only flows through to
+  // the dense fallback for throw-edge/unreachable functions). So a tight budget
+  // truncates them at different points. Perturb it only when comparing a solver
+  // against ITSELF (same semantics); cross-solver byte-identity is asserted with
+  // the budget unlimited (both fully converge).
   perturbBlockVisits = true,
 ): CorpusResult {
   const flags: ShapeFlags = {
@@ -411,6 +455,7 @@ function runCorpus(
     hasThrow: false,
     hasMayDef: false,
     hasShadow: false,
+    hadLargeLoop: false,
     hasMultiPred: false,
     hasUnreachable: false,
     hadComputed: false,
@@ -476,6 +521,7 @@ describe('#2201 reaching-defs differential equivalence', () => {
     expect(f.hasShadow, 'shadowed bindings').toBe(true);
     expect(f.hasMultiPred, 'multi-pred joins').toBe(true);
     expect(f.hasUnreachable, 'unreachable blocks').toBe(true);
+    expect(f.hadLargeLoop, '≥16-block looping CFGs (production SSA dispatch path)').toBe(true);
     expect(f.hadComputed, 'computed results').toBe(true);
     expect(f.hadTruncated, 'truncated results').toBe(true);
     expect(f.hadNoFacts, 'no-facts results').toBe(true);

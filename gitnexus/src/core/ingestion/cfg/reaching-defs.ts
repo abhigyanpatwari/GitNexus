@@ -201,11 +201,14 @@ type InSetsComputer = (
  * Compute reaching definitions for one function. See the module doc for the
  * purity/determinism/sharing contract.
  *
- * This is the production entry point. As of #2201 it runs the sparse, change-
- * driven solver ({@link computeInSetsSparse}); the dense GEN/KILL worklist
- * ({@link computeReachingDefsDense}) is retained as the differential
- * equivalence oracle the fuzz suite checks the sparse path against — the two
- * MUST be byte-identical (status, bindings, sorted facts, def/use telemetry).
+ * This is the production entry point. As of #2201 it auto-dispatches via
+ * {@link computeInSetsAuto} — the SSA-sparse solver ({@link computeInSetsSparse})
+ * for looping functions large enough to amortize construction, the dense
+ * GEN/KILL worklist ({@link computeInSetsDense}) everywhere else (and for the
+ * throw-edge / unreachable-block functions the SSA path does not model). The two
+ * solvers are held byte-identical by the equivalence fuzz (status, bindings,
+ * sorted facts, def/use telemetry), so the dispatch is a pure performance
+ * heuristic; the dense solver doubles as that differential oracle.
  */
 export function computeReachingDefs(cfg: FunctionCfg, limits?: ReachingDefsLimits): FunctionDefUse {
   // #2201: production auto-selects the solver per function (see
@@ -219,12 +222,14 @@ export function computeReachingDefs(cfg: FunctionCfg, limits?: ReachingDefsLimit
 
 /**
  * Dense GEN/KILL monotone worklist — the original (#2082 M2) reaching-defs
- * solver. As of #2201 this is RETAINED AS A TEST/BENCH-ONLY DIFFERENTIAL
- * ORACLE, not a production code path: {@link computeReachingDefs} runs the
- * sparse solver, and the equivalence fuzz asserts the two are byte-identical
- * across a random-CFG corpus. Keep it behavior-frozen — it is the ground truth.
+ * solver. As of #2201 it plays two roles: (1) the production dispatcher
+ * ({@link computeInSetsAuto}) routes small / loop-free functions, and the
+ * throw-edge / unreachable-block functions the SSA path does not model, to this
+ * dense solver; (2) it is the differential equivalence ORACLE the fuzz checks
+ * the SSA path against. Keep it behavior-frozen — it is the ground truth.
  *
- * @internal exported only for the equivalence fuzz harness and the cfg bench.
+ * @internal exported for the equivalence fuzz harness (direct dense-vs-sparse
+ * comparison); the bench drives the production {@link computeReachingDefs}.
  */
 export function computeReachingDefsDense(
   cfg: FunctionCfg,
@@ -234,12 +239,13 @@ export function computeReachingDefsDense(
 }
 
 /**
- * Sparse, change-driven reaching-defs (#2201) — the production solve, exposed
- * directly so the equivalence fuzz can gate it against the dense oracle before
- * {@link computeReachingDefs} is switched over to it (U5). See
- * {@link computeInSetsSparse} for the algorithm and byte-identical contract.
+ * SSA-sparse reaching-defs (#2201) — exposed directly so the equivalence fuzz
+ * can drive the SSA solver on every eligible CFG (bypassing the production
+ * size/loop dispatch heuristic in {@link computeInSetsAuto}) and assert
+ * byte-identity against the dense oracle. See {@link computeInSetsSparse} for
+ * the algorithm and byte-identical contract.
  *
- * @internal exported only for the equivalence fuzz harness and the cfg bench.
+ * @internal exported only for the equivalence fuzz harness.
  */
 export function computeReachingDefsSparse(
   cfg: FunctionCfg,
@@ -788,7 +794,15 @@ function computeInSetsSparse(
   };
 }
 
-/** Minimum block count below which SSA construction does not amortize. */
+/**
+ * Minimum block count below which SSA construction (dominators + dominance
+ * frontiers + φ-placement + renaming + SCC) does not amortize over the dense
+ * worklist's single-pass aliasing. Calibrated empirically (~14-block crossover
+ * for loop-heavy functions; 16 leaves headroom); the dense-bindings
+ * `rd_scaling_budget` gate in bench/cfg/baselines.json catches a regression if
+ * this is mistuned. Paired with a reachable-loop check — loop-free functions
+ * always take the cheaper dense path regardless of size.
+ */
 const SSA_MIN_BLOCKS = 16;
 
 /**
@@ -803,11 +817,11 @@ function hasReachableLoop(entry: number, succs: readonly number[][], n: number):
     const top = stack[stack.length - 1];
     const ss = succs[top.node];
     if (top.i < ss.length) {
-      const nx = ss[top.i++];
-      if (color[nx] === 1) return true;
-      if (color[nx] === 0) {
-        color[nx] = 1;
-        stack.push({ node: nx, i: 0 });
+      const next = ss[top.i++];
+      if (color[next] === 1) return true;
+      if (color[next] === 0) {
+        color[next] = 1;
+        stack.push({ node: next, i: 0 });
       }
     } else {
       color[top.node] = 2;
