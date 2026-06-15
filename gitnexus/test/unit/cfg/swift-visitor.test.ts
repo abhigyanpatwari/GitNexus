@@ -284,6 +284,14 @@ describe('Swift CfgVisitor — value-position if/switch (Swift 5.9, #2207)', () 
     expect(edgeKinds(cfg).has('switch-case')).toBe(false);
     expect(isExitReachableFromAllBlocks(cfg)).toBe(true);
   });
+
+  it('a single-entry value switch stays inline (below the >= 2 modeling threshold) (#2211)', () => {
+    // `isModelableValueBranch` requires >= 2 `switch_entry`; a one-entry value
+    // switch carries no real control dependence, so the decl coalesces inline.
+    const cfg = swift.cfgOf(`func f(v: Int) { let x = switch v { default: g() }\n use(x) }`);
+    expect(edgeKinds(cfg).has('switch-case')).toBe(false);
+    expect(isExitReachableFromAllBlocks(cfg)).toBe(true);
+  });
 });
 
 describe('Swift CfgVisitor — do/catch (error handling)', () => {
