@@ -285,6 +285,15 @@ jobs:
         run: node --import tsx bench/emit-persistence/measure.mjs --check
         working-directory: gitnexus
 
+      - name: Streaming PDG-emit byte-identity / bounded-RSS guards (#2202)
+        # Build-free: asserts the streaming PdgEmitSink emits a CSV row SET
+        # byte-identical to the whole-graph streamAllCSVsToDisk emit, AND that
+        # the in-memory graph retains zero BasicBlock nodes (the O(chunk) peak-RSS
+        # bound that unblocks full-kernel-scale repos). Fails on fingerprint drift
+        # or any resident BasicBlock.
+        run: node --import tsx bench/emit-persistence/measure-streaming.mjs --check
+        working-directory: gitnexus
+
       - name: Cross-language pipeline benchmarks (GITNEXUS_BENCH, serial)
         env:
           GITNEXUS_BENCH: '1'

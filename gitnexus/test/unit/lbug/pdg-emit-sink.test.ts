@@ -202,3 +202,73 @@ describe('PdgEmitSink — bounded retention', () => {
     expect(() => sink.finalize()).toThrow(/twice/);
   });
 });
+
+describe('PdgEmitSink — dedup parity with the in-memory graph Map', () => {
+  // A file PDG-emitted in two language passes (e.g. a .ts module imported by a
+  // .vue SFC) replays identical BasicBlock + PDG-edge ids. The in-memory graph
+  // dedups by id (first-writer-wins); the sink must too, or it writes duplicate
+  // rows → byte-identity drift + a BasicBlock PK conflict at COPY (#2202 review).
+  it('writes a BasicBlock id only once even when added twice', async () => {
+    const pdgDir = path.join(tmpRoot, 'pdg-csv');
+    const sink = new PdgEmitSink(createKnowledgeGraph(), pdgDir);
+    const n = bbNode('a.ts', 0, 1);
+    sink.addNode(n);
+    sink.addNode(n); // duplicate (second language pass)
+    const manifest = sink.finalize();
+    expect(manifest.nodeFiles.get('BasicBlock')?.rows).toBe(1);
+    expect((await sortedLines(path.join(pdgDir, 'basicblock.csv'))).length - 1).toBe(1);
+  });
+
+  it('writes a PDG edge id only once even when added twice', async () => {
+    const pdgDir = path.join(tmpRoot, 'pdg-csv');
+    const sink = new PdgEmitSink(createKnowledgeGraph(), pdgDir);
+    const e = pdgEdge('a.ts', 0, 1, 'CFG', 'seq');
+    sink.addRelationship(e);
+    sink.addRelationship(e); // duplicate
+    const manifest = sink.finalize();
+    expect(manifest.relsByPair.get('BasicBlock|BasicBlock')?.rows).toBe(1);
+  });
+
+  it('matches whole-graph emit under duplicate emission (byte-identical)', async () => {
+    const fp = 'a.ts';
+    const nodes = [bbNode(fp, 0, 1), bbNode(fp, 1, 5)];
+    const edges = [pdgEdge(fp, 0, 1, 'CFG', 'seq'), pdgEdge(fp, 0, 1, 'REACHING_DEF', 'x:1:0')];
+
+    // Whole-graph: add each twice — the Map dedups to one.
+    const whole = createKnowledgeGraph();
+    for (const n of [...nodes, ...nodes]) whole.addNode(n);
+    for (const e of [...edges, ...edges]) whole.addRelationship(e);
+    const wholeDir = path.join(tmpRoot, 'csv');
+    await streamAllCSVsToDisk(whole, path.join(tmpRoot, 'no-repo'), wholeDir);
+
+    // Streamed: add each twice — the sink dedups to one.
+    const pdgDir = path.join(tmpRoot, 'pdg-csv');
+    const sink = new PdgEmitSink(createKnowledgeGraph(), pdgDir);
+    for (const n of [...nodes, ...nodes]) sink.addNode(n);
+    for (const e of [...edges, ...edges]) sink.addRelationship(e);
+    sink.finalize();
+
+    expect(await sortedLines(path.join(pdgDir, 'basicblock.csv'))).toEqual(
+      await sortedLines(path.join(wholeDir, 'basicblock.csv')),
+    );
+    expect(await sortedLines(path.join(pdgDir, 'rel_BasicBlock_BasicBlock.csv'))).toEqual(
+      await sortedLines(path.join(wholeDir, 'rel_BasicBlock_BasicBlock.csv')),
+    );
+  });
+
+  it('skips a PDG edge whose endpoint label is not a node table', () => {
+    const pdgDir = path.join(tmpRoot, 'pdg-csv');
+    const sink = new PdgEmitSink(createKnowledgeGraph(), pdgDir);
+    // sourceId prefix "Bogus" is not in NODE_TABLES → skipped (mirrors RelPairRouter).
+    sink.addRelationship({
+      id: 'CFG:bogus',
+      sourceId: 'Bogus:a.ts:0',
+      targetId: 'BasicBlock:a.ts:1:0:1',
+      type: 'CFG',
+      confidence: 1,
+      reason: 'seq',
+    });
+    const manifest = sink.finalize();
+    expect(manifest.relsByPair.size).toBe(0);
+  });
+});

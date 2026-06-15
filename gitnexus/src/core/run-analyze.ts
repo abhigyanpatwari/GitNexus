@@ -466,8 +466,13 @@ export const resolveStreamPdgEmit = (options: {
  */
 export const resolvePdgEmitChunkSize = (options: {
   pdgEmitChunkSize?: number;
-}): number | undefined =>
-  options.pdgEmitChunkSize ?? parsePositiveIntEnv(process.env.GITNEXUS_PDG_EMIT_CHUNK_SIZE);
+}): number | undefined => {
+  // Only honor a positive-integer explicit option; `0`/negative is NOT nullish
+  // so `?? env` would pass it through and make the sink flush every row.
+  const opt = options.pdgEmitChunkSize;
+  if (opt !== undefined && Number.isInteger(opt) && opt > 0) return opt;
+  return parsePositiveIntEnv(process.env.GITNEXUS_PDG_EMIT_CHUNK_SIZE);
+};
 
 /**
  * Whether the requested `--pdg` configuration differs from the one the

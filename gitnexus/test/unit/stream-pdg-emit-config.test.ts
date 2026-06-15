@@ -66,6 +66,14 @@ describe('resolvePdgEmitChunkSize', () => {
       expect(resolvePdgEmitChunkSize({})).toBeUndefined();
     }
   });
+
+  it('rejects an explicit non-positive option (0/negative is not nullish — would defeat buffering)', () => {
+    expect(resolvePdgEmitChunkSize({ pdgEmitChunkSize: 0 })).toBeUndefined();
+    expect(resolvePdgEmitChunkSize({ pdgEmitChunkSize: -10 })).toBeUndefined();
+    // ...but an explicit 0 still falls back to a valid env value when present.
+    vi.stubEnv('GITNEXUS_PDG_EMIT_CHUNK_SIZE', '256');
+    expect(resolvePdgEmitChunkSize({ pdgEmitChunkSize: 0 })).toBe(256);
+  });
 });
 
 describe('streaming knobs are NOT emit-affecting (no pdgModeMismatch)', () => {

@@ -28,10 +28,13 @@
  * (`getNodeLabel`) as `streamAllCSVsToDisk`, so the streamed CSV line SET is
  * identical to the whole-graph emit's. Under `GITNEXUS_SORT_GRAPH_OUTPUT`
  * (order-independent) the persisted graph is byte-identical regardless of the
- * order rows were streamed in. No global dedup set is kept: BasicBlock ids are
- * unique by construction and REACHING_DEF facts are deduped before emit, so the
- * graph's Map-idempotency never actually drops a PDG row — the differential
- * fingerprint test (issue #2202 U6) is the byte-identity guard.
+ * order rows were streamed in. The sink keeps per-id seen-sets that mirror the
+ * in-memory graph's first-writer-wins Map idempotency — load-bearing because a
+ * file can be PDG-emitted in more than one language pass (a `.ts` module
+ * imported by a `.vue` SFC is emitted in both the TypeScript and Vue context
+ * passes over the same worker-built CFG), and the graph dedups those by id
+ * where a dedup-free sink would double the rows. The differential fingerprint
+ * test (issue #2202 U6) and the duplicate-id unit test guard byte-identity.
  */
 
 import fs from 'fs';
@@ -76,13 +79,17 @@ export const DEFAULT_PDG_EMIT_CHUNK_ROWS = 500;
 class SyncCsvWriter {
   private fd: number;
   private buf: string[] = [];
+  private readonly chunkRows: number;
   rows = 0;
 
   constructor(
     readonly csvPath: string,
     header: string,
-    private readonly chunkRows: number,
+    chunkRows: number,
   ) {
+    // Guard a 0/negative buffer: the flush modulo would never fire and `buf`
+    // would grow unbounded, defeating the whole point of streaming.
+    this.chunkRows = Math.max(1, chunkRows);
     this.fd = fs.openSync(csvPath, 'w');
     this.buf.push(header);
   }
@@ -90,18 +97,33 @@ class SyncCsvWriter {
   addRow(row: string): void {
     this.buf.push(row);
     this.rows++;
-    if (this.buf.length >= this.chunkRows) this.flush();
+    // Flush on DATA-row count, not buffer length: the header occupies buf[0]
+    // until the first flush, so a `buf.length >= chunkRows` test would fire one
+    // row early on the first chunk. Counting rows makes every flush exactly
+    // `chunkRows` rows.
+    if (this.rows % this.chunkRows === 0) this.flush();
   }
 
   private flush(): void {
     if (this.buf.length === 0) return;
-    fs.writeSync(this.fd, this.buf.join('\n') + '\n');
+    const data = Buffer.from(this.buf.join('\n') + '\n', 'utf8');
+    // fs.writeSync can return a short byte count; loop until the whole buffer
+    // lands so a partial write never truncates a CSV row mid-field.
+    let offset = 0;
+    while (offset < data.length) {
+      offset += fs.writeSync(this.fd, data, offset, data.length - offset);
+    }
     this.buf.length = 0;
   }
 
+  /** Flush remaining rows and close the fd. The fd is closed even when the
+   *  final flush throws (e.g. disk-full), so a write error never leaks it. */
   close(): void {
-    this.flush();
-    fs.closeSync(this.fd);
+    try {
+      this.flush();
+    } finally {
+      fs.closeSync(this.fd);
+    }
   }
 }
 
@@ -116,8 +138,6 @@ export interface PdgEmitManifest {
   readonly nodeFiles: Map<NodeTableName, { csvPath: string; rows: number }>;
   /** pairKey (`From|To`) → per-pair edge CSV. */
   readonly relsByPair: Map<string, { csvPath: string; rows: number }>;
-  /** Header shared by every per-pair file (matches the whole-graph emit). */
-  readonly relHeader: string;
 }
 
 /**
@@ -131,6 +151,21 @@ export class PdgEmitSink implements KnowledgeGraph {
   /** pairKey (`From|To`) → writer. PDG edges are all `BasicBlock|BasicBlock`,
    *  but the map keeps the sink general and the manifest pair-keyed. */
   private readonly relWriters = new Map<string, SyncCsvWriter>();
+  /**
+   * Per-id seen-sets mirroring the in-memory graph's first-writer-wins Map
+   * idempotency (`graph.ts` addNode/addRelationship skip a duplicate id). They
+   * are LOAD-BEARING for byte-identity: the same file can be PDG-emitted in more
+   * than one language pass (e.g. a `.ts` module imported by a `.vue` SFC is
+   * emitted in both the TypeScript pass and the Vue context pass — both share
+   * the worker-built `cfgSideChannel`, so both produce identical BasicBlock +
+   * PDG-edge ids). The in-memory graph dedups those; a dedup-free sink would
+   * write each row twice → byte-identity drift + a BasicBlock PRIMARY KEY
+   * conflict at COPY (masked by IGNORE_ERRORS into nondeterministic row loss).
+   * The sets hold ids only (not block text), so peak memory is the id set, far
+   * below the streamed-out block payload that the whole point is to offload.
+   */
+  private readonly seenNodeIds = new Set<string>();
+  private readonly seenRelIds = new Set<string>();
   private finalized = false;
 
   constructor(
@@ -149,6 +184,9 @@ export class PdgEmitSink implements KnowledgeGraph {
 
   addNode(node: GraphNode): void {
     if (node.label === 'BasicBlock') {
+      // Mirror graph.addNode's first-writer-wins dedup (graph.ts:78).
+      if (this.seenNodeIds.has(node.id)) return;
+      this.seenNodeIds.add(node.id);
       if (this.bbWriter === undefined) {
         this.bbWriter = new SyncCsvWriter(
           path.join(this.pdgCsvDir, 'basicblock.csv'),
@@ -164,6 +202,11 @@ export class PdgEmitSink implements KnowledgeGraph {
 
   addRelationship(relationship: GraphRelationship): void {
     if (PDG_EDGE_TYPES.has(relationship.type)) {
+      // Mirror graph.addRelationship's first-writer-wins dedup (graph.ts:87).
+      // Dedup by id BEFORE the validity check, matching the in-memory Map which
+      // is keyed on id regardless of endpoint validity.
+      if (this.seenRelIds.has(relationship.id)) return;
+      this.seenRelIds.add(relationship.id);
       const fromLabel = getNodeLabel(relationship.sourceId);
       const toLabel = getNodeLabel(relationship.targetId);
       // Skip edges whose endpoint labels are not valid node tables — mirrors
@@ -185,14 +228,21 @@ export class PdgEmitSink implements KnowledgeGraph {
     this.real.addRelationship(relationship);
   }
 
-  /** Flush + close every streamed writer and return the COPY manifest. */
+  /** Flush + close every streamed writer and return the COPY manifest. Every
+   *  fd is closed even if a flush throws; a flush failure is surfaced after all
+   *  writers are closed so a disk-full never COPYs a truncated CSV silently. */
   finalize(): PdgEmitManifest {
     if (this.finalized) throw new Error('PdgEmitSink.finalize() called twice');
     this.finalized = true;
 
+    const errors: unknown[] = [];
     const nodeFiles = new Map<NodeTableName, { csvPath: string; rows: number }>();
     if (this.bbWriter !== undefined) {
-      this.bbWriter.close();
+      try {
+        this.bbWriter.close();
+      } catch (e) {
+        errors.push(e);
+      }
       nodeFiles.set('BasicBlock' as NodeTableName, {
         csvPath: this.bbWriter.csvPath,
         rows: this.bbWriter.rows,
@@ -201,11 +251,48 @@ export class PdgEmitSink implements KnowledgeGraph {
 
     const relsByPair = new Map<string, { csvPath: string; rows: number }>();
     for (const [pairKey, writer] of this.relWriters) {
-      writer.close();
+      try {
+        writer.close();
+      } catch (e) {
+        errors.push(e);
+      }
       relsByPair.set(pairKey, { csvPath: writer.csvPath, rows: writer.rows });
     }
 
-    return { nodeFiles, relsByPair, relHeader: REL_CSV_HEADER };
+    if (errors.length > 0) {
+      const first = errors[0];
+      throw new Error(
+        `PdgEmitSink: ${errors.length} CSV writer(s) failed to flush: ${
+          first instanceof Error ? first.message : String(first)
+        }`,
+      );
+    }
+
+    return { nodeFiles, relsByPair };
+  }
+
+  /**
+   * Best-effort fd release for the error path — when a language pass throws
+   * before {@link finalize} runs, the caller's `finally` calls this so the
+   * BasicBlock + per-pair fds never leak. Idempotent with finalize via the
+   * `finalized` flag; close errors are swallowed because the run is already
+   * failing.
+   */
+  close(): void {
+    if (this.finalized) return;
+    this.finalized = true;
+    try {
+      this.bbWriter?.close();
+    } catch {
+      /* best-effort */
+    }
+    for (const writer of this.relWriters.values()) {
+      try {
+        writer.close();
+      } catch {
+        /* best-effort */
+      }
+    }
   }
 
   // ── delegated reads / non-PDG mutations ─────────────────────────────────────
