@@ -607,7 +607,12 @@ class DartCfgWalk {
    */
   private visitSwitch(stmt: SyntaxNode): TraversalResult {
     const labels = this.takeLabels();
-    const value = stmt.childForFieldName('condition');
+    // The `condition` field is a `parenthesized_expression` (verified) — unwrap it
+    // so the dispatch text/discriminant matches the value-position `visitSwitchExpr`
+    // form (`switch x`, not `switch (x)`). The harvest walks into the paren either
+    // way, so the def/use facts are unchanged — only the block text normalizes.
+    const condRaw = stmt.childForFieldName('condition');
+    const value = condRaw ? this.unwrapParen(condRaw) : undefined;
     const dispatch = this.builder.newBlock(
       startLineOf(stmt),
       value ? endLineOf(value) : startLineOf(stmt),
