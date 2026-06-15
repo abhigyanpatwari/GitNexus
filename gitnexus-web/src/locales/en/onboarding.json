@@ -31,7 +31,7 @@
   },
   "analyzeFirst": {
     "title": "Analyze your first repository",
-    "description": "Paste a GitHub URL and GitNexus will clone it, parse the code, and build a live knowledge graph — right in your browser.",
+    "description": "Paste a repository URL and GitNexus will clone it, parse the code, and build a live knowledge graph — right in your browser.",
     "footer": "Public repos only · Cloned locally by the server · No data leaves your machine"
   },
   "landing": {

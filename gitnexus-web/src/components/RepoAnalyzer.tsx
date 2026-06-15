@@ -10,6 +10,7 @@ import { useState, useRef, useEffect, useId } from 'react';
 import {
   Github,
   Gitlab,
+  AzureDevops,
   FolderOpen,
   Loader2,
   Check,
@@ -30,10 +31,11 @@ import { useTranslation } from 'react-i18next';
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
-type InputMode = 'github' | 'gitlab' | 'local';
+type InputMode = 'github' | 'gitlab' | 'azure' | 'local';
 
 const GITHUB_RE = /^https?:\/\/(www\.)?github\.com\/[^/\s]+\/[^/\s]+/i;
 const GITLAB_RE = /^https?:\/\/[^/\s]+\/[^/\s]+\/[^/\s]+(\/.*)?$/i;
+const AZURE_RE = /^https?:\/\/[^/\s]+\/[^/\s]+\/[^/\s]+\/_git\/[^/\s]+/i;
 const IS_WINDOWS = navigator.userAgent.toLowerCase().includes('win');
 
 function isValidGithubUrl(value: string): boolean {
@@ -42,6 +44,10 @@ function isValidGithubUrl(value: string): boolean {
 
 function isValidGitlabUrl(value: string): boolean {
   return GITLAB_RE.test(value.trim());
+}
+
+function isValidAzureUrl(value: string): boolean {
+  return AZURE_RE.test(value.trim());
 }
 
 // ── Mode tabs ────────────────────────────────────────────────────────────────
@@ -80,6 +86,19 @@ function ModeTabs({ mode, onChange }: { mode: InputMode; onChange: (m: InputMode
       >
         <Gitlab className="h-3 w-3" />
         {t('repoAnalyzer.gitlabUrl')}
+      </button>
+      <button
+        role="tab"
+        aria-selected={mode === 'azure'}
+        onClick={() => onChange('azure')}
+        className={`flex flex-1 cursor-pointer items-center justify-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition-all duration-150 ${
+          mode === 'azure'
+            ? 'bg-accent text-white shadow-sm'
+            : 'text-text-muted hover:text-text-secondary'
+        } `}
+      >
+        <AzureDevops className="h-3 w-3" />
+        {t('repoAnalyzer.azureDevOpsUrl')}
       </button>
       <button
         role="tab"
@@ -174,6 +193,7 @@ export const RepoAnalyzer = ({ variant, onComplete, onCancel }: RepoAnalyzerProp
   );
   const [githubUrl, setGithubUrl] = useState('');
   const [gitlabUrl, setGitlabUrl] = useState('');
+  const [azureUrl, setAzureUrl] = useState('');
   const [localPath, setLocalPath] = useState('');
   const [phase, setPhase] = useState<InternalPhase>('input');
   const [validationError, setValidationError] = useState<string | null>(null);
@@ -240,6 +260,7 @@ export const RepoAnalyzer = ({ variant, onComplete, onCancel }: RepoAnalyzerProp
     setMode(m);
     setGithubUrl('');
     setGitlabUrl('');
+    setAzureUrl('');
     setLocalPath('');
     setValidationError(null);
     setUploadSummary(null);
@@ -259,7 +280,9 @@ export const RepoAnalyzer = ({ variant, onComplete, onCancel }: RepoAnalyzerProp
       ? isValidGithubUrl(githubUrl) && (phase === 'input' || phase === 'error')
       : mode === 'gitlab'
         ? isValidGitlabUrl(gitlabUrl) && (phase === 'input' || phase === 'error')
-        : localPath.trim().length > 1 && (phase === 'input' || phase === 'error');
+        : mode === 'azure'
+          ? isValidAzureUrl(azureUrl) && (phase === 'input' || phase === 'error')
+          : localPath.trim().length > 1 && (phase === 'input' || phase === 'error');
 
   const handleAnalyze = async () => {
     if (mode === 'github' && !isValidGithubUrl(githubUrl)) {
@@ -268,6 +291,10 @@ export const RepoAnalyzer = ({ variant, onComplete, onCancel }: RepoAnalyzerProp
     }
     if (mode === 'gitlab' && !isValidGitlabUrl(gitlabUrl)) {
       setValidationError('Please enter a valid GitLab repository URL.');
+      return;
+    }
+    if (mode === 'azure' && !isValidAzureUrl(azureUrl)) {
+      setValidationError(t('errors:invalidAzureDevOpsUrl'));
       return;
     }
     if (mode === 'local' && localPath.trim().length < 2) {
@@ -288,7 +315,9 @@ export const RepoAnalyzer = ({ variant, onComplete, onCancel }: RepoAnalyzerProp
           ? { url: githubUrl.trim() }
           : mode === 'gitlab'
             ? { url: gitlabUrl.trim() }
-            : { path: localPath.trim() };
+            : mode === 'azure'
+              ? { url: azureUrl.trim() }
+              : { path: localPath.trim() };
       const { jobId } = await startAnalyze(request);
       // Stale resolution: return without cancelling — URL jobIds may be
       // dedup-aliased to a job another session owns (see cancelStaleUploadJob).
@@ -299,7 +328,9 @@ export const RepoAnalyzer = ({ variant, onComplete, onCancel }: RepoAnalyzerProp
           ? githubUrl.trim()
           : mode === 'gitlab'
             ? gitlabUrl.trim()
-            : localPath.trim();
+            : mode === 'azure'
+              ? azureUrl.trim()
+              : localPath.trim();
       trackJob(jobId, nameSource);
     } catch (err) {
       // Unmount aborts the controller, so this also covers the unmounted case.
@@ -513,6 +544,59 @@ export const RepoAnalyzer = ({ variant, onComplete, onCancel }: RepoAnalyzerProp
             )}
           </div>
           <p className="text-xs text-text-muted">{t('onboarding:repoAnalyzer.gitlabSupported')}</p>
+        </div>
+      )}
+
+      {/* Azure DevOps URL input */}
+      {showInput && mode === 'azure' && (
+        <div className="space-y-2">
+          <label
+            htmlFor={inputId}
+            className="block text-xs font-medium tracking-wider text-text-secondary uppercase"
+          >
+            {t('onboarding:repoAnalyzer.azureDevOpsRepositoryUrl')}
+          </label>
+          <div
+            className={`flex items-center gap-3 rounded-xl border bg-void px-4 py-3.5 transition-all duration-200 ${
+              validationError && phase === 'error'
+                ? 'border-red-500/50'
+                : isValidAzureUrl(azureUrl)
+                  ? 'border-accent/50 shadow-[0_0_0_3px_rgba(124,58,237,0.08)]'
+                  : 'border-border-default focus-within:border-accent/40'
+            } `}
+          >
+            <AzureDevops className="h-4 w-4 shrink-0 text-text-muted" />
+            <input
+              id={inputId}
+              type="url"
+              value={azureUrl}
+              onChange={(e) => {
+                setAzureUrl(e.target.value);
+                if (validationError) setValidationError(null);
+              }}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && canSubmit && !isLoading) {
+                  e.preventDefault();
+                  handleAnalyze();
+                }
+              }}
+              disabled={isLoading}
+              placeholder="http://azuredevops.example.com/Collection/Project/_git/Repo"
+              autoComplete="url"
+              spellCheck={false}
+              className="flex-1 border-none bg-transparent font-mono text-sm text-text-primary outline-none placeholder:text-text-muted disabled:opacity-50"
+            />
+            {azureUrl.length > 10 && (
+              <div className="shrink-0">
+                {isValidAzureUrl(azureUrl) ? (
+                  <Check className="h-3.5 w-3.5 text-emerald-400" />
+                ) : (
+                  <AlertCircle className="h-3.5 w-3.5 text-text-muted" />
+                )}
+              </div>
+            )}
+          </div>
+          <p className="text-xs text-text-muted">{t('onboarding:repoAnalyzer.azureDevOpsSupported')}</p>
         </div>
       )}
 

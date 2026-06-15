@@ -7,6 +7,7 @@ import {
   buildCloneArgs,
   normalizeGitUrlForCompare,
   assertRemoteMatchesRequestedUrl,
+  isAzureDevOpsUrl,
 } from '../../src/server/git-clone.js';
 import path from 'node:path';
 import os from 'node:os';
@@ -371,6 +372,58 @@ describe('git-clone', () => {
       await expect(cloneOrPull('file:///etc/passwd', fakeTarget)).rejects.toThrow(
         'Only https:// and http://',
       );
+    });
+  });
+
+  describe('isAzureDevOpsUrl', () => {
+    it('recognizes dev.azure.com (cloud)', () => {
+      expect(isAzureDevOpsUrl('https://dev.azure.com/org/project/_git/repo')).toBe(true);
+    });
+
+    it('recognizes *.visualstudio.com (cloud legacy)', () => {
+      expect(isAzureDevOpsUrl('https://myorg.visualstudio.com/project/_git/repo')).toBe(true);
+    });
+
+    it('returns false for github.com', () => {
+      expect(isAzureDevOpsUrl('https://github.com/user/repo')).toBe(false);
+    });
+
+    it('returns false for gitlab.com', () => {
+      expect(isAzureDevOpsUrl('https://gitlab.com/user/repo')).toBe(false);
+    });
+
+    it('returns false for invalid URL', () => {
+      expect(isAzureDevOpsUrl('not-a-url')).toBe(false);
+    });
+  });
+
+  describe('extractRepoName — Azure DevOps URLs', () => {
+    it('extracts name from self-hosted Azure DevOps URL', () => {
+      expect(
+        extractRepoName('http://azuredevops.example.com/DefaultCollection/MyProject/_git/MyRepo'),
+      ).toBe('MyRepo');
+    });
+
+    it('extracts name from dev.azure.com URL', () => {
+      expect(extractRepoName('https://dev.azure.com/org/project/_git/myrepo')).toBe('myrepo');
+    });
+
+    it('extracts name from visualstudio.com URL', () => {
+      expect(extractRepoName('https://myorg.visualstudio.com/project/_git/myrepo')).toBe('myrepo');
+    });
+  });
+
+  describe('validateGitUrl — Azure DevOps URLs', () => {
+    it('allows self-hosted Azure DevOps Server URLs', () => {
+      expect(() =>
+        validateGitUrl('http://azuredevops.example.com/DefaultCollection/Project/_git/Repo'),
+      ).not.toThrow();
+    });
+
+    it('allows dev.azure.com URLs', () => {
+      expect(() =>
+        validateGitUrl('https://dev.azure.com/org/project/_git/repo'),
+      ).not.toThrow();
     });
   });
 

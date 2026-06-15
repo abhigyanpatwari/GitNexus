@@ -185,6 +185,41 @@ export const Gitlab = forwardRef<SVGSVGElement, LucideProps>(function Gitlab(
   );
 });
 
+/**
+ * Azure DevOps mark — SVG path data from simple-icons (CC0-1.0).
+ *
+ * The Azure DevOps logo is a registered trademark of Microsoft Corporation.
+ * We use it here only to indicate Azure DevOps source-repo integration.
+ *
+ * API-compatible with `lucide-react` icons (`LucideProps`).
+ */
+export const AzureDevops = forwardRef<SVGSVGElement, LucideProps>(function AzureDevops(
+  {
+    size = 24,
+    color = 'currentColor',
+    className,
+    strokeWidth: _strokeWidth,
+    absoluteStrokeWidth: _absoluteStrokeWidth,
+    ...rest
+  },
+  ref,
+) {
+  return (
+    <svg
+      ref={ref}
+      xmlns="http://www.w3.org/2000/svg"
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill={color}
+      className={className}
+      {...rest}
+    >
+      <path d="M0 8.877L2.247 5.91l8.405-3.416V.022l7.37 5.393L2.966 8.338v8.225L0 15.707zm24-4.45v14.651l-5.753 4.9-9.303-3.057v3.056l-5.978-7.416 15.057 1.798V5.415z" />
+    </svg>
+  );
+});
+
 export const Github = forwardRef<SVGSVGElement, LucideProps>(function Github(
   {
     size = 24,

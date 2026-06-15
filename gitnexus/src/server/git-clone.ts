@@ -236,6 +236,55 @@ export interface CloneProgress {
  *
  * Exported so the separator placement is testable without mocking spawn.
  */
+/**
+ * Detect Azure DevOps URLs — both self-hosted (via AZURE_DEVOPS_URL env)
+ * and cloud (dev.azure.com / *.visualstudio.com).
+ *
+ * Self-hosted Azure DevOps Server instances use arbitrary hostnames
+ * (e.g. `http://tfs.corp.example/Collection/Project/_git/Repo`), so the
+ * function checks `AZURE_DEVOPS_URL` first. Cloud addresses are a
+ * hardcoded fallback so PAT injection works out-of-the-box for
+ * dev.azure.com without extra configuration.
+ */
+export function isAzureDevOpsUrl(url: string): boolean {
+  try {
+    const host = new URL(url).hostname.toLowerCase();
+
+    // Self-hosted: match against the configured base URL.
+    const configuredBase = process.env.AZURE_DEVOPS_URL;
+    if (configuredBase) {
+      try {
+        const baseHost = new URL(configuredBase).hostname.toLowerCase();
+        if (host === baseHost) return true;
+      } catch {
+        /* invalid AZURE_DEVOPS_URL — fall through to cloud check */
+      }
+    }
+
+    // Cloud fallback.
+    return host === 'dev.azure.com' || host.endsWith('.visualstudio.com');
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Build git `-c http.extraHeader=...` arguments that inject a Basic Auth
+ * header when the URL targets an Azure DevOps instance and
+ * `AZURE_DEVOPS_PAT` is set.  Returns an empty array otherwise.
+ *
+ * The `-c` args are prepended to the git command so they appear before
+ * the `--` separator (option territory), and the PAT is never written to
+ * `.git/config` — it is scoped to the single git invocation.
+ */
+function buildAuthArgs(url: string): string[] {
+  if (!isAzureDevOpsUrl(url)) return [];
+  const pat = process.env.AZURE_DEVOPS_PAT;
+  if (!pat) return [];
+  const base64 = Buffer.from(`:${pat}`).toString('base64');
+  return ['-c', `http.extraHeader=Authorization: Basic ${base64}`];
+}
+
 export function buildCloneArgs(url: string, targetDir: string): string[] {
   return ['clone', '--depth', '1', '--', url, targetDir];
 }
@@ -413,19 +462,20 @@ export async function cloneOrPull(
     // whatever remote the dir was originally cloned from.
     await assertRemoteMatchesRequestedUrl(safeTarget, url);
     onProgress?.({ phase: 'pulling', message: 'Pulling latest changes...' });
-    await runGit(['pull', '--ff-only'], safeTarget);
+    await runGit(['pull', '--ff-only'], safeTarget, url);
   } else {
     await fs.mkdir(path.dirname(safeTarget), { recursive: true });
     onProgress?.({ phase: 'cloning', message: `Cloning ${url}...` });
-    await runGit(buildCloneArgs(url, safeTarget));
+    await runGit(buildCloneArgs(url, safeTarget), undefined, url);
   }
 
   return safeTarget;
 }
 
-function runGit(args: string[], cwd?: string): Promise<void> {
+function runGit(args: string[], cwd?: string, url?: string): Promise<void> {
   return new Promise((resolve, reject) => {
-    const proc = spawn('git', args, {
+    const authArgs = url ? buildAuthArgs(url) : [];
+    const proc = spawn('git', [...authArgs, ...args], {
       cwd,
       stdio: ['ignore', 'pipe', 'pipe'],
       windowsHide: true,
