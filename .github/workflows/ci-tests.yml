@@ -276,6 +276,15 @@ jobs:
         run: node --expose-gc --import tsx bench/cfg/measure.mjs --check
         working-directory: gitnexus
 
+      - name: Emit-persistence throughput / byte-identity guards (#2203)
+        # Build-free: asserts streamAllCSVsToDisk output is byte-identical
+        # (order-independent CSV-line fingerprint — the #2203 U2/U3 emit
+        # optimisations must not change graph content) and that emit wall-time
+        # stays linear in node+edge count. The LadybugDB COPY half needs a real
+        # DB, so its timing lives in the runtime PROF_LBUG_LOAD breakdown.
+        run: node --import tsx bench/emit-persistence/measure.mjs --check
+        working-directory: gitnexus
+
       - name: Cross-language pipeline benchmarks (GITNEXUS_BENCH, serial)
         env:
           GITNEXUS_BENCH: '1'
