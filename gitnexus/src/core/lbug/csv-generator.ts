@@ -245,7 +245,7 @@ export const buildRelRow = (rel: GraphRelationship): string =>
     escapeCSVField(rel.type),
     escapeCSVNumber(rel.confidence, 1.0),
     escapeCSVField(rel.reason),
-    escapeCSVNumber((rel as { step?: number }).step, 0),
+    escapeCSVNumber(rel.step, 0),
   ].join(',');
 
 export interface StreamedCSVResult {
