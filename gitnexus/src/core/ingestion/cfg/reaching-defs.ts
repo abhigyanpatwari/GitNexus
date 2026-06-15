@@ -191,9 +191,10 @@ type InSetsComputer = (
  * MUST be byte-identical (status, bindings, sorted facts, def/use telemetry).
  */
 export function computeReachingDefs(cfg: FunctionCfg, limits?: ReachingDefsLimits): FunctionDefUse {
-  // #2201: production still runs the dense solver until U5 flips this to
-  // computeInSetsSparse (once the differential fuzz is byte-identical green).
-  return solveReachingDefs(cfg, limits, computeInSetsDense);
+  // #2201 U5: production runs the sparse, change-driven solver. The dense
+  // worklist ({@link computeReachingDefsDense}) is retained as the differential
+  // equivalence oracle the fuzz suite holds this byte-identical to.
+  return solveReachingDefs(cfg, limits, computeInSetsSparse);
 }
 
 /**
