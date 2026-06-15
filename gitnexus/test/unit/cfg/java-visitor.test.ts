@@ -358,6 +358,48 @@ describe('Java CfgVisitor — switch', () => {
     // statement-position switch breaks a block → switch-case dispatch edges.
     expect(edgeKinds(cfg).has('switch-case')).toBe(true);
   });
+
+  it('colon-form value switch: yield ends the arm, NO fallthrough; every arm is CDG-dependent (#2211)', () => {
+    const cfg = java.cfgOf(`class C { int m(int k) {
+      int x = switch (k) { case 1: yield one(); case 2: yield two(); default: yield zero(); };
+      use(x);
+    } }`);
+    expect(edgeKinds(cfg).has('switch-case')).toBe(true);
+    // a `yield` exits the switch — it does NOT fall through to the next colon group.
+    expect(edgeKinds(cfg).has('fallthrough')).toBe(false);
+    expect(reaches(cfg, block(cfg, 'one()'), block(cfg, 'two()'))).toBe(false);
+    // every arm rejoins and reaches the downstream use of the bound result.
+    expect(reaches(cfg, block(cfg, 'one()'), block(cfg, 'use(x);'))).toBe(true);
+    expect(reaches(cfg, block(cfg, 'two()'), block(cfg, 'use(x);'))).toBe(true);
+    // each arm is control-dependent on the dispatch — pin the SPECIFIC pairs.
+    const dispatch = block(cfg, 'k');
+    const cdg = computeControlDependence(cfg);
+    expect(
+      cdg.edges.some(
+        (e) => e.controllerBlock === dispatch && e.dependentBlock === block(cfg, 'one()'),
+      ),
+    ).toBe(true);
+    expect(
+      cdg.edges.some(
+        (e) => e.controllerBlock === dispatch && e.dependentBlock === block(cfg, 'two()'),
+      ),
+    ).toBe(true);
+    expect(isExitReachableFromAllBlocks(cfg)).toBe(true);
+  });
+
+  it('return switch (…) inside try/finally threads the finalizer per arm (#2211)', () => {
+    const cfg = java.cfgOf(`class C { int m(int k) {
+      try {
+        return switch (k) { case 1 -> a(); default -> b(); };
+      } finally { cleanup(); }
+    } }`);
+    expect(edgeKinds(cfg).has('switch-case')).toBe(true);
+    // each arm's return threads the finally before EXIT.
+    expect(edgeKinds(cfg).has('finally-return')).toBe(true);
+    expect(reaches(cfg, block(cfg, 'a()'), block(cfg, 'cleanup();'))).toBe(true);
+    expect(reaches(cfg, block(cfg, 'b()'), block(cfg, 'cleanup();'))).toBe(true);
+    expect(isExitReachableFromAllBlocks(cfg)).toBe(true);
+  });
 });
 
 describe('Java CfgVisitor — try / catch / finally / try-with-resources', () => {

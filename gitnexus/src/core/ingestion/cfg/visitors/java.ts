@@ -355,10 +355,13 @@ class JavaCfgWalk {
   }
 
   /**
-   * `yield e;` (switch-expression arm value) — yields one value to the enclosing
-   * switch and the arm ends; modeled as a block that continues to whatever
-   * follows (the switch-expression state machine is not modeled, see the visitor
-   * limitations). It carries the yielded value's def/use facts.
+   * `yield e;` (switch-expression arm value) — produces the switch-expression's
+   * value and EXITS the enclosing switch (it does NOT fall through to the next
+   * colon group). Modeled as a terminator that jumps to the switch exit, threading
+   * any finalizer it crosses — exactly like a `break` out of the switch but
+   * carrying the yielded value's def/use facts. (Reusing the statement `visitSwitch`
+   * for a value-position colon switch would otherwise wire a spurious `fallthrough`
+   * edge between yield-terminated arms — #2211 review.)
    */
   private visitYield(stmt: SyntaxNode): TraversalResult {
     const idx = this.builder.newBlock(
@@ -368,7 +371,13 @@ class JavaCfgWalk {
       'normal',
       this.harvest.facts(stmt),
     );
-    return { entry: idx, exits: [idx] };
+    const res = this.cfc.resolveYield();
+    const { target, finalizers } = res ?? {
+      target: this.builder.exitIndex,
+      finalizers: this.cfc.finalizersForReturn(),
+    };
+    wireJumpThroughFinalizers(this.builder, idx, finalizers, target, 'break');
+    return { entry: idx, exits: [] };
   }
 
   private visitBreak(stmt: SyntaxNode): TraversalResult {
