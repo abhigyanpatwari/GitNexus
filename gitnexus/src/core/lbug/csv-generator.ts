@@ -248,6 +248,24 @@ export const buildRelRow = (rel: GraphRelationship): string =>
     escapeCSVNumber((rel as { step?: number }).step, 0),
   ].join(',');
 
+/** Canonical BasicBlock node CSV header — taint/PDG substrate (issue #2080).
+ * No `name` column; blocks are identified by id + source span. Shared by the
+ * whole-graph emit pass and the streaming PDG emit sink (issue #2202) so the
+ * two paths produce byte-identical BasicBlock rows by construction. */
+export const BASICBLOCK_CSV_HEADER = 'id,filePath,startLine,endLine,text';
+
+/** Build the escaped CSV row (no trailing newline) for one BasicBlock node.
+ * Single source of the BasicBlock row bytes — used by `streamAllCSVsToDisk`
+ * and by the streaming `PdgEmitSink` (issue #2202). */
+export const buildBasicBlockRow = (node: GraphNode): string =>
+  [
+    escapeCSVField(node.id),
+    escapeCSVField(node.properties.filePath || ''),
+    escapeCSVNumber(node.properties.startLine, -1),
+    escapeCSVNumber(node.properties.endLine, -1),
+    escapeCSVField(node.properties.text || ''),
+  ].join(',');
+
 export interface StreamedCSVResult {
   nodeFiles: Map<NodeTableName, { csvPath: string; rows: number }>;
   /** pairKey (`From|To`) → per-FROM→TO-label-pair CSV file. */
@@ -340,7 +358,7 @@ export const streamAllCSVsToDisk = async (
   // blocks are identified by id + source span. Emitted by no phase yet.
   const basicBlockWriter = new BufferedCSVWriter(
     path.join(csvDir, 'basicblock.csv'),
-    'id,filePath,startLine,endLine,text',
+    BASICBLOCK_CSV_HEADER,
   );
 
   // Multi-language node types share the same CSV shape (no isExported column)
@@ -521,15 +539,7 @@ export const streamAllCSVsToDisk = async (
         );
         break;
       case 'BasicBlock':
-        pending = basicBlockWriter.addRow(
-          [
-            escapeCSVField(node.id),
-            escapeCSVField(node.properties.filePath || ''),
-            escapeCSVNumber(node.properties.startLine, -1),
-            escapeCSVNumber(node.properties.endLine, -1),
-            escapeCSVField(node.properties.text || ''),
-          ].join(','),
-        );
+        pending = basicBlockWriter.addRow(buildBasicBlockRow(node));
         break;
       default: {
         // Code element nodes (Function, Class, Interface, CodeElement)
