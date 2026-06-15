@@ -966,10 +966,17 @@ function computeInSetsAuto(
 /**
  * Statement sweep — recover statement-granular def→use facts from the per-block
  * entry reaching lattices, sort them, and apply the maxFacts truncation. SHARED
- * by both solvers: the truncated SUBSET depends on the pre-sort emission order
- * here (block index, then statement index, then use order, then the reaching
- * set's INSERTION order), so producing identical inSets — insertion order
- * included — is what makes a truncated result byte-identical across solvers.
+ * by both solvers, and the maxFacts cutoff is where their (intentionally
+ * different) reaching-set INSERTION orders would otherwise leak into the output:
+ * the dense worklist seeds keys in RPO fixpoint order, the SSA solver in
+ * renaming/SCC order, so a loop-carried use's reaching set is the same SET in a
+ * different order. The byte-identity of a TRUNCATED result therefore does NOT
+ * come from matching insertion orders — it comes from the KTD6 per-use
+ * `useKeys.sort()` BELOW, which canonicalizes each use's keys by defKey before
+ * the cutoff. (The full, untruncated fact array is re-sorted at the end, so the
+ * pre-sort is a no-op there; its whole purpose is the truncated prefix.) Outer
+ * emission order — block index, then statement index, then use order — is shared
+ * structurally and needs no canonicalization.
  */
 function sweepFacts(
   blocks: FunctionCfg['blocks'],
