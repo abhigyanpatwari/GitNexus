@@ -44,7 +44,10 @@ import { fileURLToPath } from 'node:url';
 import Parser from 'tree-sitter';
 import { collectFunctionCfgs } from '../../src/core/ingestion/cfg/collect.ts';
 import { computeReachingDefs } from '../../src/core/ingestion/cfg/reaching-defs.ts';
-import { DEFAULT_PDG_MAX_REACHING_DEF_FACTS_PER_FUNCTION } from '../../src/core/ingestion/cfg/emit.ts';
+import {
+  DEFAULT_PDG_MAX_REACHING_DEF_FACTS_PER_FUNCTION,
+  DEFAULT_PDG_MAX_REACHING_DEF_BLOCK_REVISITS,
+} from '../../src/core/ingestion/cfg/emit.ts';
 import { getTreeSitterBufferSize } from '../../src/core/ingestion/constants.ts';
 import { getLanguageGrammar } from '../../src/core/tree-sitter/parser-loader.ts';
 import { getProvider } from '../../src/core/ingestion/languages/index.ts';
@@ -173,6 +176,56 @@ const SCENARIOS = [
     },
   },
   {
+    name: 'deep-nest',
+    // #2201: N nested loops carrying one variable end-to-end — the pathology the
+    // dense GEN/KILL worklist is superlinear on and that drives its block-visit
+    // total past the blocks×64 ceiling (it would truncate to an empty result).
+    // The production SSA solver is depth-INDEPENDENT (φ-nodes capture the loop
+    // merges statically; no fixpoint iteration), so rd time scales ~linearly
+    // with depth and the ceiling never fires. Two gates: rd_scaling_budget
+    // catches a regression back to superlinear, and facts_large_min asserts the
+    // solver still COMPUTES full facts under the PRODUCTION blocks×64 budget
+    // (rdProductionBudget) — a dense worklist would report zero facts here.
+    small: 40,
+    large: 160, // 4×, well under the visitor's recursive-nesting depth guard
+    rdMaxFacts: 0, // measure the algorithm, not the cap
+    rdProductionBudget: true, // pass blocks×64 — the SSA solver must still compute
+    gen: (n) => {
+      let s = 'function f(c: number) {\n  let x = 0;\n';
+      for (let i = 0; i < n; i++) s += '  '.repeat(i + 1) + `while (c > ${i}) {\n`;
+      s += '  '.repeat(n + 1) + 'x = x + 1;\n';
+      for (let i = n - 1; i >= 0; i--) s += '  '.repeat(i + 1) + '}\n';
+      return s + '  return x;\n}\n';
+    },
+  },
+  {
+    name: 'wide-merge',
+    // #2201 review R7: N bindings, each assigned in a 3-way branch (a WIDE φ
+    // merge per binding) inside a loop, then all used after the merge. Unlike
+    // dense-bindings (one chained redef per `if`), every binding here fans into
+    // its own multi-operand φ — so the scenario stresses φ-placement + renaming +
+    // the reachByScc condensation across MANY independent wide merges. N bindings
+    // × constant arms ⇒ O(N) facts, so the gate is rd_scaling LINEARITY: a
+    // regression to the per-binding-rescan class (O(N²), the recurring solver
+    // antipattern reachByScc's alias fast path guards against) blows the ratio.
+    // >=16 blocks + a reachable loop ⇒ the production SSA path.
+    rdMaxFacts: 0, // measure the algorithm, not the cap
+    rdProductionBudget: true, // prove the SSA path computes under blocks×64
+    gen: (n) => {
+      let s = 'function f(c: number) {\n';
+      for (let i = 0; i < n; i++) s += `  let v${i} = ${i};\n`;
+      s += '  while (c > 0) {\n';
+      for (let i = 0; i < n; i++) {
+        s +=
+          `    if (c > ${i}) { v${i} = ${i} + c; }` +
+          ` else if (c < ${i}) { v${i} = ${i} - c; }` +
+          ` else { v${i} = c; }\n`;
+      }
+      for (let i = 0; i < n; i++) s += `    use(v${i});\n`;
+      return s + '    c = c - 1;\n  }\n  return v0;\n}\n';
+    },
+  },
+  {
     name: 'fact-fanout',
     // #2082 M2: N parallel case-arm defs of one variable + N later uses —
     // facts are O(defs×uses) BY SPEC, so a linearity ratio gate is the wrong
@@ -296,17 +349,32 @@ function measureCollect(tk, src, file, reps) {
 // the scope-resolution emit loop adds per file on a --pdg run). `maxFacts`
 // mirrors the per-scenario production posture: 0 (unlimited) measures the
 // algorithm; the production default exercises the boundedness contract.
-function measureReachingDefs(cfgs, reps, maxFacts) {
-  for (const c of cfgs) computeReachingDefs(c, { maxFacts }); // warm JIT
+// When `blockVisitsMul` > 0 each call also passes the PRODUCTION per-function
+// maxBlockVisits budget (blocks × mul). On the deep-nest scenario this is how
+// "the ceiling stops firing" (#2201) is measured: the dense worklist would
+// truncate to an empty result under this budget, whereas the production SSA
+// solver computes the full facts — so a nonzero `facts` under the budget is the
+// gate (see facts_large_min in baselines.json).
+function measureReachingDefs(cfgs, reps, maxFacts, blockVisitsMul = 0) {
+  const limitsFor = (c) =>
+    blockVisitsMul > 0
+      ? { maxFacts, maxBlockVisits: c.blocks.length * blockVisitsMul }
+      : { maxFacts };
+  for (const c of cfgs) computeReachingDefs(c, limitsFor(c)); // warm JIT
   const samples = [];
   let facts = 0;
+  let allComputed = true;
   for (let i = 0; i < reps; i++) {
     const start = process.hrtime.bigint();
     facts = 0;
-    for (const c of cfgs) facts += computeReachingDefs(c, { maxFacts }).facts.length;
+    for (const c of cfgs) {
+      const r = computeReachingDefs(c, limitsFor(c));
+      facts += r.facts.length;
+      if (r.status !== 'computed') allComputed = false;
+    }
     samples.push(Number(process.hrtime.bigint() - start) / 1e6);
   }
-  return { ms: median(samples), facts };
+  return { ms: median(samples), facts, allComputed };
 }
 
 // ---- taint pass cost (#2083 M3 U7) ----
@@ -441,10 +509,14 @@ function measureScenario(scenario) {
       ? heapLarge / heapSmall / sizeRatio
       : null;
 
-  // #2082 M2: reaching-defs solve cost over the same CFGs.
+  // #2082 M2: reaching-defs solve cost over the same CFGs. #2201: scenarios
+  // marked `rdProductionBudget` also pass the per-function blocks×64 ceiling, to
+  // prove the production SSA solver still COMPUTES where the dense worklist would
+  // truncate (the deep-nest ceiling-stops-firing acceptance).
   const rdMaxFacts = scenario.rdMaxFacts ?? 0;
-  const rdSmall = measureReachingDefs(small.cfgs, REPS, rdMaxFacts);
-  const rdLarge = measureReachingDefs(large.cfgs, REPS, rdMaxFacts);
+  const rdBudgetMul = scenario.rdProductionBudget ? DEFAULT_PDG_MAX_REACHING_DEF_BLOCK_REVISITS : 0;
+  const rdSmall = measureReachingDefs(small.cfgs, REPS, rdMaxFacts, rdBudgetMul);
+  const rdLarge = measureReachingDefs(large.cfgs, REPS, rdMaxFacts, rdBudgetMul);
   // Clamp the denominator: a 0.000ms small-N median would otherwise yield
   // ratio 0 and the gate would self-disable exactly when the solver is fast.
   const rdRatio = rdLarge.ms / Math.max(rdSmall.ms, 0.001) / sizeRatio;
@@ -506,6 +578,7 @@ function measureScenario(scenario) {
     rd_scaling_ratio: Number(rdRatio.toFixed(3)),
     facts_small: rdSmall.facts,
     facts_large: rdLarge.facts,
+    rd_all_computed: rdLarge.allComputed,
     ...fingerprint(tk, scenario),
   };
 }
@@ -568,6 +641,25 @@ if (!CHECK) {
       failures.push(
         `${r.scenario}: fact materialization ${r.facts_large} > bound ${base.facts_large_max} ` +
           `(the maxFacts early-stop is the boundedness contract)`,
+      );
+    }
+    // #2201 deep-nest: under the PRODUCTION blocks×64 budget the SSA solver must
+    // still COMPUTE full facts (a nonzero floor) where the dense worklist would
+    // truncate to empty — "the ceiling stops firing".
+    if (base.facts_large_min !== undefined && r.facts_large < base.facts_large_min) {
+      failures.push(
+        `${r.scenario}: only ${r.facts_large} facts < floor ${base.facts_large_min} under the ` +
+          `production block-visit budget — the ceiling fired (SSA should not truncate here)` +
+          (r.rd_all_computed ? '' : ` [status != computed]`),
+      );
+    }
+    // Independent of the fact-count floor: under the production budget every
+    // function in a facts_large_min scenario must report status 'computed'. This
+    // catches a partial-truncation regression that still clears the count floor.
+    if (base.facts_large_min !== undefined && r.rd_all_computed === false) {
+      failures.push(
+        `${r.scenario}: a function did not reach status 'computed' under the production ` +
+          `block-visit budget — the SSA solver truncated where it must compute`,
       );
     }
     if (base.disk_bytes_large_max !== undefined && r.disk_bytes_large > base.disk_bytes_large_max) {
