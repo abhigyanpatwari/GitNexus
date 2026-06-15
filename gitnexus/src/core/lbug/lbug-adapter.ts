@@ -921,9 +921,26 @@ export const loadGraphToLbug = async (
   // is the sole source and there is no double-COPY. Absent ⇒ no-op.
   if (pdgEmitManifest) {
     for (const [table, meta] of pdgEmitManifest.nodeFiles) {
+      // A collision means a BasicBlock leaked into the in-memory graph during a
+      // streamed run (streamAllCSVsToDisk then emitted a structural basicblock.csv).
+      // That is a streaming-invariant violation — fail loudly rather than
+      // silently overwrite one CSV with the other and drop its rows (#2202 review #3).
+      if (csvResult.nodeFiles.has(table)) {
+        throw new Error(
+          `Streaming PDG manifest collides with a structural node CSV for "${table}" — ` +
+            `the in-memory graph should hold zero ${table} nodes when streaming. ` +
+            `A ${table} node leaked into the graph during a streamed emit.`,
+        );
+      }
       csvResult.nodeFiles.set(table, meta);
     }
     for (const [pairKey, meta] of pdgEmitManifest.relsByPair) {
+      if (csvResult.relsByPair.has(pairKey)) {
+        throw new Error(
+          `Streaming PDG manifest collides with a structural relationship CSV for pair ` +
+            `"${pairKey}" — a PDG edge leaked into the in-memory graph during a streamed emit.`,
+        );
+      }
       csvResult.relsByPair.set(pairKey, meta);
       csvResult.totalValidRels += meta.rows;
     }

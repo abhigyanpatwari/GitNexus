@@ -137,3 +137,45 @@ describe('streamed PDG manifest → bulk COPY (#2202 U5)', () => {
     expect(rows[0].to).toBe(BB(1));
   });
 });
+
+describe('streamed PDG manifest → disjoint-key merge guard (#2202 review #3)', () => {
+  // The merge in loadGraphToLbug assumes the streamed manifest and the
+  // structural csvResult are disjoint: when streaming is on the in-memory graph
+  // holds ZERO BasicBlocks, so streamAllCSVsToDisk emits no basicblock.csv and
+  // the manifest is the sole source. A future BasicBlock-leak-into-graph would
+  // make both sides carry a "BasicBlock" entry; silently overwriting one CSV
+  // with the other would drop its rows. The guard fails loudly instead.
+
+  it('throws when the manifest collides with a structural node CSV', async () => {
+    const adapter = await import('../../src/core/lbug/lbug-adapter.js');
+
+    // A graph that DOES contain a BasicBlock → streamAllCSVsToDisk emits a
+    // structural basicblock.csv (the invariant-violation scenario).
+    const leakyGraph = createKnowledgeGraph();
+    leakyGraph.addNode({
+      id: BB(0),
+      label: 'BasicBlock',
+      properties: { name: '', filePath: 'src/a.ts', startLine: 1, endLine: 2, text: 'leak' },
+    });
+
+    // A manifest that ALSO declares a BasicBlock node CSV → disjoint-key clash.
+    const collideBase = await fs.mkdtemp(path.join(os.tmpdir(), 'gitnexus-pdg-collide-'));
+    const collideStorage = path.join(collideBase, '.gitnexus');
+    await fs.mkdir(collideStorage, { recursive: true });
+    const sink = new PdgEmitSink(createKnowledgeGraph(), path.join(collideStorage, 'pdg-csv'));
+    sink.addNode({
+      id: BB(1),
+      label: 'BasicBlock',
+      properties: { name: '', filePath: 'src/a.ts', startLine: 3, endLine: 4, text: 'm' },
+    });
+    const manifest = sink.finalize();
+
+    try {
+      await expect(
+        adapter.loadGraphToLbug(leakyGraph, collideBase, collideStorage, undefined, manifest),
+      ).rejects.toThrow(/collides with a structural node CSV for "BasicBlock"/);
+    } finally {
+      await fs.rm(collideBase, { recursive: true, force: true });
+    }
+  });
+});
