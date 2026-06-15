@@ -430,7 +430,7 @@ function computeInSetsDense(
 ): InSetsResult {
   const { gen, allDefsGen } = h;
   const { preds, succs, throwSuccs } = adj;
-  const order = reversePostOrder(cfg.entryIndex, succs, n);
+  const { order } = reversePostOrder(cfg.entryIndex, succs, n);
 
   const inSets: Lattice[] = new Array(n).fill(EMPTY_LATTICE);
   const outSets: Lattice[] = new Array(n).fill(EMPTY_LATTICE);
@@ -561,17 +561,6 @@ function computeInSetsSparse(
           if (d < 0 || d >= nBindings) return computeInSetsDense(cfg, n, h, adj, limits);
     }
   }
-  const reachable = new Array<boolean>(n).fill(false);
-  {
-    const q = [entry];
-    reachable[entry] = true;
-    while (q.length) {
-      const x = q.pop()!;
-      for (const s of succs[x]) if (!reachable[s]) ((reachable[s] = true), q.push(s));
-    }
-  }
-  for (let b = 0; b < n; b++) if (!reachable[b]) return computeInSetsDense(cfg, n, h, adj, limits);
-
   // Synthetic pre-entry block (#2201): textbook SSA construction assumes the
   // entry has no predecessors. A loop back-edge into the entry — or a self-loop
   // on it — makes the entry a merge that needs a φ, and the dominance-frontier
@@ -595,7 +584,14 @@ function computeInSetsSparse(
   dPredsX[S] = [];
 
   // ── dominators (Cooper-Harvey-Kennedy; correct on irreducible CFGs) ──
-  const rpo = reversePostOrder(S, succsX, nx); // rooted at the synthetic entry
+  // RPO rooted at the synthetic entry. `reachX` is the reachability the DFS
+  // already computed — reused for the unreachable-block gate below instead of a
+  // separate BFS (#2201 review R8). Because S→entry is S's only edge, reachX[b]
+  // (b<n) is exactly "reachable from entry", identical to the old BFS gate.
+  const { order: rpo, visited: reachX } = reversePostOrder(S, succsX, nx);
+  // The SSA path does not model propagation among unreachable blocks (KTD4) —
+  // fall back to the dense oracle if any block is unreachable from the entry.
+  for (let b = 0; b < n; b++) if (!reachX[b]) return computeInSetsDense(cfg, n, h, adj, limits);
   const rpoIdx = new Array<number>(nx);
   rpo.forEach((b, i) => (rpoIdx[b] = i));
   const idom = new Array<number>(nx).fill(-1);
@@ -1052,8 +1048,17 @@ function sweepFacts(
   return { facts, truncated };
 }
 
-/** RPO over blocks reachable from `entry`; unreachable blocks appended by index. */
-function reversePostOrder(entry: number, succs: readonly number[][], n: number): number[] {
+/**
+ * RPO over blocks reachable from `entry`; unreachable blocks appended by index.
+ * Returns the order AND the reachability bitmap the DFS already computed, so a
+ * caller needing "is every block reachable?" reuses this pass instead of a
+ * separate BFS (#2201 review R8 — the SSA path's reachability gate).
+ */
+function reversePostOrder(
+  entry: number,
+  succs: readonly number[][],
+  n: number,
+): { order: number[]; visited: boolean[] } {
   const visited = new Array<boolean>(n).fill(false);
   const post: number[] = [];
   // Iterative DFS with an explicit phase stack (children pushed in reverse so
@@ -1077,7 +1082,7 @@ function reversePostOrder(entry: number, succs: readonly number[][], n: number):
   }
   const order = post.reverse();
   for (let b = 0; b < n; b++) if (!visited[b]) order.push(b);
-  return order;
+  return { order, visited };
 }
 
 /**
