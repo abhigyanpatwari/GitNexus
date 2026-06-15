@@ -250,6 +250,28 @@ describe('Kotlin CfgVisitor — value-position branches (#2205)', () => {
     expect(isExitReachableFromAllBlocks(cfg)).toBe(true);
   });
 
+  it('x = try { ... } catch { ... } assignment RHS models the value-position try (#2205)', () => {
+    const cfg = kotlin.cfgOf(
+      `fun f() { var x = 0; x = try { risky() } catch (e: Exception) { fallback() }; use(x) }`,
+    );
+    expect(edgeKinds(cfg).has('throw')).toBe(true);
+    expect(computeControlDependence(cfg).edges.length).toBeGreaterThan(0);
+    expect(definesBinding(cfg, bindingIdx(cfg, 'x'))).toBe(true);
+    expect(usesBinding(cfg, bindingIdx(cfg, 'x'))).toBe(true);
+    expect(isExitReachableFromAllBlocks(cfg)).toBe(true);
+  });
+
+  it('return try { ... } catch { ... } models the value-position try; each arm returns (#2205, #2211)', () => {
+    const cfg = kotlin.cfgOf(
+      `fun f(): Int { return try { risky() } catch (e: Exception) { fallback() } }`,
+    );
+    // the value-position try is modeled as control flow (throw edge to the handler)…
+    expect(edgeKinds(cfg).has('throw')).toBe(true);
+    expect(edgeKinds(cfg).has('return')).toBe(true);
+    expect(computeControlDependence(cfg).edges.length).toBeGreaterThan(0);
+    expect(isExitReachableFromAllBlocks(cfg)).toBe(true);
+  });
+
   it('a compound `x += ...` / a plain call RHS stays inline (not a value-branch carrier)', () => {
     const compound = kotlin.cfgOf(`fun f(k: Int) { var x = 0; x += k; use(x) }`);
     expect(edgeKinds(compound).has('switch-case')).toBe(false);

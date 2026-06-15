@@ -356,11 +356,13 @@ class KotlinCfgWalk {
 
   /** `return [expr]` / `return@label` — threads through every active finalizer. */
   private visitReturn(stmt: SyntaxNode): TraversalResult {
-    // `return when (k) { … }` / `return if (c) a else b` (#2205): the returned
-    // value is a value-position branch — model it as control flow, with each arm
-    // returning (its value IS the function result), threading finalizers per arm.
+    // `return when (k) { … }` / `return if (c) a else b` / `return try { … }`
+    // (#2205): the returned value is a value-position branch — model it as control
+    // flow, with each arm returning (its value IS the function result), threading
+    // finalizers per arm.
     const branch = stmt.namedChildren.find(
-      (c) => c.type === 'when_expression' || c.type === 'if_expression',
+      (c) =>
+        c.type === 'when_expression' || c.type === 'if_expression' || c.type === 'try_expression',
     );
     if (branch && this.isModelableValueBranch(branch)) {
       const res = this.visitBranchExpr(branch);
