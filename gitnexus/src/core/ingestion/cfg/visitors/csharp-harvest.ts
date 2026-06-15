@@ -569,7 +569,13 @@ export class CsharpHarvester extends ScopeTreeHarvester {
     return { path, rootIdx };
   }
 
-  /** The initializer value of a `variable_declarator` — the named child after `name`. */
+  /**
+   * The initializer value of a `variable_declarator` — the named child after
+   * `name`. NOTE: deliberately duplicated in `csharp.ts` (the visitor is a
+   * standalone class with no shared base — repo convention). The two copies must
+   * stay in sync; there is no C#-specific shared module to host it, and the only
+   * module both files share is the generic `utils/ast-helpers` (types only).
+   */
   private declaratorInit(declarator: SyntaxNode): SyntaxNode | undefined {
     const name = declarator.childForFieldName('name');
     for (let i = 0; i < declarator.namedChildCount; i++) {

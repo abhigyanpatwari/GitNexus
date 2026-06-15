@@ -716,7 +716,13 @@ class CsharpCfgWalk {
     return this.declValueSwitch(stmt) !== undefined;
   }
 
-  /** The initializer of a `variable_declarator` — its named child after `name`. */
+  /**
+   * The initializer of a `variable_declarator` — its named child after `name`.
+   * NOTE: deliberately duplicated in `csharp-harvest.ts` (the harvester is a
+   * standalone class with no shared base — repo convention). The two copies must
+   * stay in sync; there is no C#-specific shared module to host it, and the only
+   * module both files share is the generic `utils/ast-helpers` (types only).
+   */
   private declaratorInit(declarator: SyntaxNode): SyntaxNode | undefined {
     const name = declarator.childForFieldName('name');
     for (let i = 0; i < declarator.namedChildCount; i++) {
