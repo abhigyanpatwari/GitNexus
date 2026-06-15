@@ -4,8 +4,6 @@ import { createInterface } from 'readline';
 import { once } from 'events';
 import { finished } from 'stream/promises';
 import path from 'path';
-import os from 'os';
-import crypto from 'crypto';
 import lbug from '@ladybugdb/core';
 import { closeQueryResults } from './query-result-utils.js';
 import { KnowledgeGraph } from '../graph/types.js';
@@ -30,6 +28,7 @@ import {
   isWalCorruptionError,
   openLbugConnection,
   toNativeSafePath,
+  resolveNativeSafeStorageDir,
   WAL_RECOVERY_SUGGESTION,
   waitForWindowsHandleRelease,
   type LbugConnectionHandle,
@@ -909,13 +908,7 @@ export const loadGraphToLbug = async (
   const span = (a: bigint, b: bigint): string => (Number(b - a) / 1e6).toFixed(1);
   const tStart = mark();
 
-  let csvDir: string;
-  if (process.platform === 'win32' && /[^\x00-\x7F]/.test(storagePath)) {
-    const hash = crypto.createHash('sha256').update(storagePath).digest('hex').slice(0, 16);
-    csvDir = toNativeSafePath(path.join(os.tmpdir(), `gitnexus-csv-${hash}`));
-  } else {
-    csvDir = path.join(storagePath, 'csv');
-  }
+  const csvDir = resolveNativeSafeStorageDir(storagePath, 'csv');
 
   log('Streaming CSVs to disk...');
   const csvResult = await streamAllCSVsToDisk(graph, repoPath, csvDir);

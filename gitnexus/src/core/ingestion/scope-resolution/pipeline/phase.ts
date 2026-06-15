@@ -45,7 +45,7 @@ import type { ResolutionOutcome } from '../resolution-outcome.js';
 import type { FunctionSummary } from '../../taint/summary-model.js';
 import { buildFunctionNodeIndex } from '../../taint/summary-harvest-driver.js';
 import { PdgEmitSink, type PdgEmitManifest } from '../../../lbug/pdg-emit-sink.js';
-import path from 'node:path';
+import { resolveNativeSafeStorageDir } from '../../../lbug/lbug-config.js';
 
 import { logger } from '../../../logger.js';
 export interface ScopeResolutionOutput {
@@ -264,7 +264,10 @@ export const scopeResolutionPhase: PipelinePhase<ScopeResolutionOutput> = {
       if (parsedFileStorePath) {
         pdgEmitSink = new PdgEmitSink(
           ctx.graph,
-          path.join(parsedFileStorePath, 'pdg-csv'),
+          // Same ASCII-safe relocation the structural CSVs get (#2202 review #2):
+          // on Windows non-ASCII storage paths the COPY can't open files under
+          // the native path, so the dir is relocated to a hashed os.tmpdir().
+          resolveNativeSafeStorageDir(parsedFileStorePath, 'pdg-csv'),
           ctx.options?.pdgEmitChunkSize,
         );
       } else {

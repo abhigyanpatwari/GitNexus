@@ -190,6 +190,23 @@ export function toNativeSafePath(p: string): string {
 }
 
 /**
+ * Resolve the on-disk CSV staging dir for `<storagePath>/<subdir>`, applying the
+ * same ASCII-safe relocation `toNativeSafePath` enables: on Windows with a
+ * non-ASCII storage path, LadybugDB's bulk COPY cannot open files under that
+ * path, so the dir is relocated to a hashed `os.tmpdir()` location. Shared by
+ * the structural `csv/` dir and the streaming `pdg-csv/` dir (#2202) so the two
+ * can never diverge on platform handling; `subdir` keeps their tmp locations
+ * distinct (`gitnexus-csv-<hash>` vs `gitnexus-pdg-csv-<hash>`).
+ */
+export function resolveNativeSafeStorageDir(storagePath: string, subdir: string): string {
+  if (process.platform === 'win32' && NON_ASCII_RE.test(storagePath)) {
+    const hash = crypto.createHash('sha256').update(storagePath).digest('hex').slice(0, 16);
+    return toNativeSafePath(path.join(os.tmpdir(), `gitnexus-${subdir}-${hash}`));
+  }
+  return path.join(storagePath, subdir);
+}
+
+/**
  * Shared configuration for `@ladybugdb/core` `Database` construction.
  *
  * Two values changed meaningfully in `@ladybugdb/core` 0.16.0 and need to be
