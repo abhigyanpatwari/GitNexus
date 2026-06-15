@@ -183,13 +183,20 @@ class BufferedCSVWriter {
     this.buffer.push(header);
   }
 
-  addRow(row: string) {
+  /**
+   * Buffer a row. Returns a promise ONLY when the buffer crossed FLUSH_EVERY
+   * and a disk write was issued; otherwise returns `undefined` so the caller
+   * can skip awaiting (#2203 U3) — avoiding a microtask tick on every buffered
+   * row (millions at scale). The flush promise still resolves on drain, so
+   * backpressure is preserved on the rows that actually write.
+   */
+  addRow(row: string): Promise<void> | undefined {
     this.buffer.push(row);
     this.rows++;
     if (this.buffer.length >= FLUSH_EVERY) {
       return this.flush();
     }
-    return Promise.resolve();
+    return undefined;
   }
 
   flush(): Promise<void> {
@@ -388,10 +395,14 @@ export const streamAllCSVsToDisk = async (
     if (seenNodeIds.has(node.id)) continue;
     seenNodeIds.add(node.id);
 
+    // addRow returns a promise only when it flushes; awaiting it once after the
+    // switch (instead of `await`-ing every addRow) skips a per-row microtask
+    // tick on the ~FLUSH_EVERY-1 buffered rows between flushes (#2203 U3).
+    let pending: Promise<void> | undefined;
     switch (node.label) {
       case 'File': {
         const content = await extractContent(node, contentCache);
-        await fileWriter.addRow(
+        pending = fileWriter.addRow(
           [
             escapeCSVField(node.id),
             escapeCSVField(node.properties.name || ''),
@@ -402,7 +413,7 @@ export const streamAllCSVsToDisk = async (
         break;
       }
       case 'Folder':
-        await folderWriter.addRow(
+        pending = folderWriter.addRow(
           [
             escapeCSVField(node.id),
             escapeCSVField(node.properties.name || ''),
@@ -413,7 +424,7 @@ export const streamAllCSVsToDisk = async (
       case 'Community': {
         const keywords = node.properties.keywords || [];
         const keywordsStr = `[${keywords.map((k: string) => `'${k.replace(/\\/g, '\\\\').replace(/'/g, "''").replace(/,/g, '\\,')}'`).join(',')}]`;
-        await communityWriter.addRow(
+        pending = communityWriter.addRow(
           [
             escapeCSVField(node.id),
             escapeCSVField(node.properties.name || ''),
@@ -430,7 +441,7 @@ export const streamAllCSVsToDisk = async (
       case 'Process': {
         const communities = node.properties.communities || [];
         const communitiesStr = `[${communities.map((c: string) => `'${c.replace(/'/g, "''")}'`).join(',')}]`;
-        await processWriter.addRow(
+        pending = processWriter.addRow(
           [
             escapeCSVField(node.id),
             escapeCSVField(node.properties.name || ''),
@@ -446,7 +457,7 @@ export const streamAllCSVsToDisk = async (
       }
       case 'Method': {
         const content = await extractContent(node, contentCache);
-        await methodWriter.addRow(
+        pending = methodWriter.addRow(
           [
             escapeCSVField(node.id),
             escapeCSVField(node.properties.name || ''),
@@ -464,7 +475,7 @@ export const streamAllCSVsToDisk = async (
       }
       case 'Section': {
         const content = await extractContent(node, contentCache);
-        await sectionWriter.addRow(
+        pending = sectionWriter.addRow(
           [
             escapeCSVField(node.id),
             escapeCSVField(node.properties.name || ''),
@@ -487,7 +498,7 @@ export const streamAllCSVsToDisk = async (
         const errorKeysStr = `[${errorKeys.map((k: string) => `'${k.replace(/'/g, "''")}'`).join(',')}]`;
         const middleware = node.properties.middleware || [];
         const middlewareStr = `[${middleware.map((m: string) => `'${m.replace(/'/g, "''")}'`).join(',')}]`;
-        await routeWriter.addRow(
+        pending = routeWriter.addRow(
           [
             escapeCSVField(node.id),
             escapeCSVField(node.properties.name || ''),
@@ -500,7 +511,7 @@ export const streamAllCSVsToDisk = async (
         break;
       }
       case 'Tool':
-        await toolWriter.addRow(
+        pending = toolWriter.addRow(
           [
             escapeCSVField(node.id),
             escapeCSVField(node.properties.name || ''),
@@ -510,7 +521,7 @@ export const streamAllCSVsToDisk = async (
         );
         break;
       case 'BasicBlock':
-        await basicBlockWriter.addRow(
+        pending = basicBlockWriter.addRow(
           [
             escapeCSVField(node.id),
             escapeCSVField(node.properties.filePath || ''),
@@ -525,7 +536,7 @@ export const streamAllCSVsToDisk = async (
         const writer = codeWriterMap[node.label];
         if (writer) {
           const content = await extractContent(node, contentCache);
-          await writer.addRow(
+          pending = writer.addRow(
             [
               escapeCSVField(node.id),
               escapeCSVField(node.properties.name || ''),
@@ -542,7 +553,7 @@ export const streamAllCSVsToDisk = async (
           const mlWriter = multiLangWriters.get(node.label);
           if (mlWriter) {
             const content = await extractContent(node, contentCache);
-            await mlWriter.addRow(
+            pending = mlWriter.addRow(
               [
                 escapeCSVField(node.id),
                 escapeCSVField(node.properties.name || ''),
@@ -561,6 +572,7 @@ export const streamAllCSVsToDisk = async (
         break;
       }
     }
+    if (pending) await pending;
   }
 
   // Finish all node writers
