@@ -29,8 +29,16 @@
     "scaling_budget": 1.8,
     "disk_bytes_budget": 1.2,
     "heap_budget": 1.3,
-    "rd_scaling_budget": 10.0,
-    "_note": "#2082 M2: N bindings live across ~N blocks in one loop -- bindings x blocks scale JOINTLY (the solver-lattice stressor). The overlay design measures rd ~5.2 normalized: the OUT spine copy on genning blocks is O(V) per block, which is quadratic when V scales with B (bounded in prod by maxFunctionLines; real functions have V~10-40). Budget 10 deliberately tolerates that known shape and exists to catch the repo's recurring per-item-rescan class (a per-use scan over all defs is O(n^3) here, ratio >=16). If rd drops well below 5, tighten."
+    "rd_scaling_budget": 2.0,
+    "_note": "#2082 M2 / #2201 SSA: N bindings live across ~N blocks in one loop -- bindings x blocks scale JOINTLY (the solver-lattice stressor). The dense GEN/KILL worklist measured rd ~5.2 normalized here (the OUT spine copy is O(V) per block, quadratic when V scales with B). The #2201 SSA-sparse solver answers each use's reaching set from the def-use graph WITHOUT a per-block dense lattice, dropping rd to ~0.86 (linear; measured 5-23x faster absolute). Budget tightened 10->2: still absorbs noise + catches a regression to the per-item-rescan class (a per-use scan over all defs is O(n^3) here, ratio >=16), but now also catches a fall-back to the dense quadratic. Fingerprint unchanged -- CFG construction is untouched."
+  },
+  "deep-nest": {
+    "fingerprint": "c0ca870487abc6ff379304c3162003e9e4f9b44aeb2fc29adfcf8d2179c7613a",
+    "scaling_budget": 1.8,
+    "disk_bytes_budget": 1.2,
+    "rd_scaling_budget": 2.0,
+    "facts_large_min": 100,
+    "_note": "#2201: N nested loops carrying ONE variable end-to-end (depth 40->160) -- the pathology the dense worklist is superlinear on and whose block-visit total drives it past the blocks×64 ceiling (it would TRUNCATE to empty). rd is measured under the PRODUCTION blocks×64 budget (rdProductionBudget) to prove the ceiling stops firing: the depth-INDEPENDENT SSA solver (phi-nodes capture loop merges statically; no fixpoint iteration) computes the full facts (164 at large; floor 100 catches a regression to truncation/zero) with rd_scaling ~0.90 (linear in depth; measured ~0.42ms at depth 160). rd_scaling_budget 2.0 catches a regression back to superlinear. No heap_budget -- the deep-nest CFG payload is tiny and the retained-heap delta is GC-noise-dominated. Re-baseline the fingerprint only on an intentional CFG/visitor change."
   },
   "fact-fanout": {
     "fingerprint": "83a8243a8aff117f69aeecb39d02a483e6cca70439d75f63e433f4e4ac85578f",
