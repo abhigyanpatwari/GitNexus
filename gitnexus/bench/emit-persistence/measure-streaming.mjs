@@ -63,7 +63,13 @@ function buildSet() {
       bbNodes.push({
         id: `BasicBlock:${fp}:1:0:${f}_${b}`,
         label: 'BasicBlock',
-        properties: { name: '', filePath: fp, startLine: b * 3, endLine: b * 3 + 2, text: `f${f}b${b}` },
+        properties: {
+          name: '',
+          filePath: fp,
+          startLine: b * 3,
+          endLine: b * 3 + 2,
+          text: `f${f}b${b}`,
+        },
       });
     }
     for (let b = 0; b < BLOCKS - 1; b++) {
@@ -140,7 +146,9 @@ async function measure() {
     const wholeBb = await dataRows(path.join(wholeDir, 'basicblock.csv'));
     const streamedBb = await dataRows(path.join(tmpRoot, 'pdg-csv', 'basicblock.csv'));
     const wholeRel = await dataRows(path.join(wholeDir, 'rel_BasicBlock_BasicBlock.csv'));
-    const streamedRel = await dataRows(path.join(tmpRoot, 'pdg-csv', 'rel_BasicBlock_BasicBlock.csv'));
+    const streamedRel = await dataRows(
+      path.join(tmpRoot, 'pdg-csv', 'rel_BasicBlock_BasicBlock.csv'),
+    );
 
     const bbIdentical = sha(wholeBb) === sha(streamedBb);
     const relIdentical = sha(wholeRel) === sha(streamedRel);
@@ -170,8 +178,10 @@ if (!CHECK) {
 } else {
   const base = JSON.parse(fs.readFileSync(BASELINE_PATH, 'utf8'));
   const failures = [];
-  if (!result.byte_identical_nodes) failures.push('streamed BasicBlock rows differ from whole-graph emit');
-  if (!result.byte_identical_edges) failures.push('streamed PDG-edge rows differ from whole-graph emit');
+  if (!result.byte_identical_nodes)
+    failures.push('streamed BasicBlock rows differ from whole-graph emit');
+  if (!result.byte_identical_edges)
+    failures.push('streamed PDG-edge rows differ from whole-graph emit');
   if (result.resident_basic_blocks !== 0) {
     failures.push(
       `RSS bound violated: ${result.resident_basic_blocks} BasicBlock node(s) retained in the in-memory graph (expected 0)`,

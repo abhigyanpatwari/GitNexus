@@ -23,14 +23,7 @@ let storagePath: string;
 
 const FILE_ID = 'File:src/a.ts';
 const BB = (i: number) => `BasicBlock:src/a.ts:1:0:${i}`;
-const PDG_TYPES = [
-  'CFG',
-  'REACHING_DEF',
-  'CDG',
-  'POST_DOMINATE',
-  'TAINTED',
-  'SANITIZES',
-] as const;
+const PDG_TYPES = ['CFG', 'REACHING_DEF', 'CDG', 'POST_DOMINATE', 'TAINTED', 'SANITIZES'] as const;
 
 beforeAll(async () => {
   // mkdtemp (unpredictable, unique) — not a predictable os-temp path.
@@ -55,7 +48,13 @@ beforeAll(async () => {
     const node: GraphNode = {
       id: BB(i),
       label: 'BasicBlock',
-      properties: { name: '', filePath: 'src/a.ts', startLine: i + 1, endLine: i + 2, text: `b${i}` },
+      properties: {
+        name: '',
+        filePath: 'src/a.ts',
+        startLine: i + 1,
+        endLine: i + 2,
+        text: `b${i}`,
+      },
     };
     sink.addNode(node);
   }

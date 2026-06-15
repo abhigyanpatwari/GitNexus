@@ -24,7 +24,14 @@ import { loadParseCache } from '../../../src/storage/parse-cache.js';
 import type { PipelineResult } from '../../../src/types/pipeline.js';
 
 const FIXTURE = path.join(__dirname, 'fixtures', 'pdg-repo');
-const PDG_EDGE_TYPES = new Set(['CFG', 'REACHING_DEF', 'CDG', 'POST_DOMINATE', 'TAINTED', 'SANITIZES']);
+const PDG_EDGE_TYPES = new Set([
+  'CFG',
+  'REACHING_DEF',
+  'CDG',
+  'POST_DOMINATE',
+  'TAINTED',
+  'SANITIZES',
+]);
 
 const tmpDirs: string[] = [];
 function freshRepo(): string {
