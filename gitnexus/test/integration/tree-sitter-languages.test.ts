@@ -288,6 +288,21 @@ describe('Tree-sitter multi-language parsing', () => {
       expect(names).toContain('helper');
     });
 
+    it('treats CUDA .cu and .cuh files as C++ for definition extraction', async () => {
+      expect(getLanguageFromFilename('src/kernels/force.cu')).toBe(SupportedLanguages.CPlusPlus);
+      expect(getLanguageFromFilename('src/force/nep.cuh')).toBe(SupportedLanguages.CPlusPlus);
+
+      await loadLanguage(SupportedLanguages.CPlusPlus, 'src/kernels/force.cu');
+      const code = `class Force { public: void apply(); };\nvoid launchKernel() {}`;
+      const provider = getProvider(SupportedLanguages.CPlusPlus);
+      const { matches } = parseAndQuery(parser, code, provider.treeSitterQueries);
+      const defs = extractDefinitions(matches);
+      const names = defs.map((d) => d.name);
+
+      expect(defs.some((d) => d.type === 'definition.class' && d.name === 'Force')).toBe(true);
+      expect(names).toContain('launchKernel');
+    });
+
     it('captures C++ typedef anonymous structs, enums, and enumerators', async () => {
       await loadLanguage(SupportedLanguages.CPlusPlus);
       const code = `

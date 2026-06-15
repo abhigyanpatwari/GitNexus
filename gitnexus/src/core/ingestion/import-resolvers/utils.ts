@@ -36,6 +36,8 @@ export const EXTENSIONS = [
   '.cxx',
   '.hxx',
   '.hh',
+  '.cu',
+  '.cuh',
   // C#
   '.cs',
   // Go
