@@ -192,4 +192,39 @@ describe('IncludeExtractor → syncGroup integration (finding #7)', () => {
       fs.rmSync(consumerDir, { recursive: true, force: true });
     }
   });
+
+  it('suppresses extensionless local includes that resolve to .cuh headers', async () => {
+    const repoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-include-cuh-'));
+    try {
+      fs.mkdirSync(path.join(repoDir, 'include'), { recursive: true });
+      fs.mkdirSync(path.join(repoDir, 'src'), { recursive: true });
+      fs.writeFileSync(
+        path.join(repoDir, 'include/kernel.cuh'),
+        '#pragma once\n__global__ void kernel();',
+      );
+      fs.writeFileSync(
+        path.join(repoDir, 'src/main.cu'),
+        '#include "include/kernel"\nvoid host() {}',
+      );
+
+      const extractor = new IncludeExtractor();
+      const contracts = await extractor.extract(null, repoDir, {
+        id: 'cuda-repo',
+        path: 'app/cuda-repo',
+        repoPath: repoDir,
+        storagePath: path.join(repoDir, '.gitnexus'),
+      });
+
+      expect(
+        contracts.some(
+          (c) => c.role === 'provider' && c.contractId === 'include::include/kernel.cuh',
+        ),
+      ).toBe(true);
+      expect(
+        contracts.some((c) => c.role === 'consumer' && c.contractId === 'include::include/kernel'),
+      ).toBe(false);
+    } finally {
+      fs.rmSync(repoDir, { recursive: true, force: true });
+    }
+  });
 });

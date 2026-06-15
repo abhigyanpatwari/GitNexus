@@ -30,7 +30,7 @@ import { logger } from '../../logger.js';
 /**
  * Cross-repo C/C++ `#include` dependency extractor.
  *
- * **Provider side:** registers every `.h/.hpp/.hxx/.hh` file in the repo
+ * **Provider side:** registers every `.h/.hpp/.hxx/.hh/.cuh` file in the repo
  * as a provider contract with `include::<relative-path>`.
  *
  * **Consumer side:** parses all C/C++ source/header files for `#include "…"`
@@ -307,7 +307,7 @@ function getLanguageForFile(filePath: string): unknown | null {
 function isLocalInclude(cleaned: string, suffixIndex: SuffixIndex): boolean {
   const candidates = [cleaned];
   if (!/\.[a-zA-Z0-9]+$/.test(cleaned)) {
-    for (const ext of ['.h', '.hpp', '.hxx', '.hh', '.cuh']) candidates.push(cleaned + ext);
+    for (const ext of HEADER_EXTENSIONS) candidates.push(cleaned + ext);
   }
   for (const c of candidates) {
     if (suffixIndex.get(c) || suffixIndex.getInsensitive(c)) return true;
