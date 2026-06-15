@@ -199,6 +199,33 @@ const SCENARIOS = [
     },
   },
   {
+    name: 'wide-merge',
+    // #2201 review R7: N bindings, each assigned in a 3-way branch (a WIDE φ
+    // merge per binding) inside a loop, then all used after the merge. Unlike
+    // dense-bindings (one chained redef per `if`), every binding here fans into
+    // its own multi-operand φ — so the scenario stresses φ-placement + renaming +
+    // the reachByScc condensation across MANY independent wide merges. N bindings
+    // × constant arms ⇒ O(N) facts, so the gate is rd_scaling LINEARITY: a
+    // regression to the per-binding-rescan class (O(N²), the recurring solver
+    // antipattern reachByScc's alias fast path guards against) blows the ratio.
+    // >=16 blocks + a reachable loop ⇒ the production SSA path.
+    rdMaxFacts: 0, // measure the algorithm, not the cap
+    rdProductionBudget: true, // prove the SSA path computes under blocks×64
+    gen: (n) => {
+      let s = 'function f(c: number) {\n';
+      for (let i = 0; i < n; i++) s += `  let v${i} = ${i};\n`;
+      s += '  while (c > 0) {\n';
+      for (let i = 0; i < n; i++) {
+        s +=
+          `    if (c > ${i}) { v${i} = ${i} + c; }` +
+          ` else if (c < ${i}) { v${i} = ${i} - c; }` +
+          ` else { v${i} = c; }\n`;
+      }
+      for (let i = 0; i < n; i++) s += `    use(v${i});\n`;
+      return s + '    c = c - 1;\n  }\n  return v0;\n}\n';
+    },
+  },
+  {
     name: 'fact-fanout',
     // #2082 M2: N parallel case-arm defs of one variable + N later uses —
     // facts are O(defs×uses) BY SPEC, so a linearity ratio gate is the wrong
