@@ -218,12 +218,20 @@ export class SwiftHarvester {
     }
   }
 
-  /** Declare the `bound_identifier` of each optional binding in a condition. */
+  /** Declare the bindings of each optional binding in a condition. */
   private declareOptionalBindings(node: SyntaxNode): void {
     for (let i = 0; i < node.childCount; i++) {
+      const child = node.child(i);
+      if (!child) continue;
+      // `if/guard let v = e` — a direct `bound_identifier` field.
       if (node.fieldNameForChild(i) === 'bound_identifier') {
-        const id = node.child(i);
-        if (id) this.declare(id, 'let');
+        this.declare(child, 'let');
+      } else if (child.type === 'pattern') {
+        // `if/guard case PAT = e` (e.g. `case .some(let v)`): the binder is nested
+        // in a `pattern` condition child, not a direct `bound_identifier`, so it
+        // was missed and resolved to a synthetic global. declarePattern finds its
+        // bound leaves (#2206).
+        this.declarePattern(child);
       }
     }
   }
@@ -318,7 +326,12 @@ export class SwiftHarvester {
           // `value_binding_pattern` (`let`) and the `=` operator carry no uses.
           if (child.type === 'value_binding_pattern') continue;
           if (!child.isNamed) continue;
-          this.walkValue(child, acc);
+          // `if/guard case PAT = e` (e.g. `case .some(let v)`): the `pattern` child
+          // BINDS — its leaves are defs (a may-def when conditional), not uses, so
+          // a tainted subject propagates to the binding (#2206). The matched
+          // subject and any other condition child are uses.
+          if (child.type === 'pattern') this.defPattern(child, acc);
+          else this.walkValue(child, acc);
         }
       }
     };

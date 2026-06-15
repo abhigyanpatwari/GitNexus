@@ -111,6 +111,21 @@ describe('Swift CfgVisitor — guard', () => {
     expect(cfg.blocks.some((bl) => bl.statements?.some((s) => s.defs.includes(y)))).toBe(true);
     expect(cfg.blocks.some((bl) => bl.statements?.some((s) => s.uses.includes(y)))).toBe(true);
   });
+
+  it('guard case .some(let v) binds v as a real local def, not a synthetic global (#2206)', () => {
+    const cfg = swift.cfgOf(
+      `func f(e: E) { guard case .some(let v) = e else { return } ; use(v) }`,
+    );
+    const v = bindingIdx(cfg, 'v');
+    // The case-pattern binder must be a real local with a def (or may-def) from
+    // the matched subject — previously it resolved to a synthetic global with only
+    // a use, which silently breaks taint propagation from the subject.
+    const defined = cfg.blocks.some((bl) =>
+      bl.statements?.some((s) => s.defs.includes(v) || (s.mayDefs ?? []).includes(v)),
+    );
+    expect(defined).toBe(true);
+    expect(cfg.blocks.some((bl) => bl.statements?.some((s) => s.uses.includes(v)))).toBe(true);
+  });
 });
 
 describe('Swift CfgVisitor — loops', () => {
