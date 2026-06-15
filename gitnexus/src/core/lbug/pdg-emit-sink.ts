@@ -90,7 +90,11 @@ class SyncCsvWriter {
     // Guard a 0/negative buffer: the flush modulo would never fire and `buf`
     // would grow unbounded, defeating the whole point of streaming.
     this.chunkRows = Math.max(1, chunkRows);
-    this.fd = fs.openSync(csvPath, 'w');
+    // Exclusive create (O_EXCL): the streamed-CSV dir is wiped + recreated fresh
+    // by the PdgEmitSink constructor before any writer opens a file, so the path
+    // never pre-exists — 'wx' both matches that invariant and refuses to follow
+    // a pre-planted symlink at the path (CWE-377 / CodeQL js/insecure-temporary-file).
+    this.fd = fs.openSync(csvPath, 'wx');
     this.buf.push(header);
   }
 

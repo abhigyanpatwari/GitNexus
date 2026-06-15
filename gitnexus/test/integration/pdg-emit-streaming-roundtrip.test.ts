@@ -33,7 +33,8 @@ const PDG_TYPES = [
 ] as const;
 
 beforeAll(async () => {
-  tmpBase = path.join(os.tmpdir(), `gitnexus-pdg-stream-rt-${Date.now()}-${process.pid}`);
+  // mkdtemp (unpredictable, unique) — not a predictable os-temp path.
+  tmpBase = await fs.mkdtemp(path.join(os.tmpdir(), 'gitnexus-pdg-stream-rt-'));
   storagePath = path.join(tmpBase, '.gitnexus');
   await fs.mkdir(path.join(storagePath, 'lbug'), { recursive: true });
 

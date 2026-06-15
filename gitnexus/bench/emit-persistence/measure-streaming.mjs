@@ -107,8 +107,8 @@ async function dataRows(csvPath) {
 const sha = (rows) => crypto.createHash('sha256').update(rows.join('\n')).digest('hex');
 
 async function measure() {
-  const tmpRoot = path.join(os.tmpdir(), `gitnexus-stream-bench-${process.pid}`);
-  await fsp.mkdir(tmpRoot, { recursive: true });
+  // mkdtemp (unpredictable, unique) rather than a predictable pid-based tmp path.
+  const tmpRoot = await fsp.mkdtemp(path.join(os.tmpdir(), 'gitnexus-stream-bench-'));
   try {
     const { structuralNodes, structuralRels, bbNodes, pdgEdges } = buildSet();
 
