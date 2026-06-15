@@ -9,11 +9,15 @@
  *
  * This router lets the single emit pass route each edge to its per-pair file
  * directly, so the monolithic write + re-read + per-edge regex are all gone.
- * The label-derivation + validTables filtering + per-pair-file format here are
- * the SAME ones the legacy `splitRelCsvByLabelPair` applies, so the per-pair
- * files are byte-identical — see the differential test in
- * `test/integration/csv-pipeline.test.ts`. `splitRelCsvByLabelPair` is retained
- * as the differential oracle.
+ * The label-derivation + validTables filtering + per-pair-file format here match
+ * the legacy `splitRelCsvByLabelPair`, so the per-pair files are byte-identical
+ * for all quote-free ids — see the differential test in
+ * `test/integration/csv-pipeline.test.ts`. ONE intentional divergence: this
+ * router derives the label from the RAW id, while the oracle re-derives it via a
+ * regex over the ESCAPED row — so for an id containing a `"` the router is the
+ * more-correct path (it routes the edge to the right pair; the oracle's regex
+ * mis-buckets or drops it). `splitRelCsvByLabelPair` is retained as the
+ * differential oracle (the quote-in-id divergence is asserted explicitly).
  *
  * Backpressure: at most one stream is awaited at a time (the caller routes
  * edges sequentially and awaits the returned drain promise before the next),

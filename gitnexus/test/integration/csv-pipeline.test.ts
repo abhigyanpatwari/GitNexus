@@ -344,10 +344,13 @@ describe('streamAllCSVsToDisk — deterministic output ordering', () => {
 });
 
 /**
- * #2203 U2 byte-identity: the direct per-pair emit must produce per-pair files
- * byte-for-byte identical to the legacy splitRelCsvByLabelPair oracle run over
- * an equivalent monolithic relations.csv from the same graph. This is the
- * load-bearing guard for "byte-identical graph content" (issue acceptance).
+ * #2203 U2 byte-identity: for all quote-free ids the direct per-pair emit must
+ * produce per-pair files byte-for-byte identical to the legacy
+ * splitRelCsvByLabelPair oracle run over an equivalent monolithic relations.csv
+ * from the same graph. This is the load-bearing guard for "byte-identical graph
+ * content" (issue acceptance). The ONE intentional divergence — ids containing a
+ * double-quote, where the router (raw-id label) is more correct than the oracle
+ * (regex over the escaped row) — is asserted explicitly in its own test below.
  */
 describe('streamAllCSVsToDisk — direct per-pair emit matches the split oracle', () => {
   // The oracle always emits in graph.iterRelationships() (unsorted) order; the
@@ -425,5 +428,59 @@ describe('streamAllCSVsToDisk — direct per-pair emit matches the split oracle'
       const oracleContent = await fs.readFile(split.relsByPairMeta.get(key)!.csvPath, 'utf-8');
       expect(directContent, `pair ${key}`).toBe(oracleContent);
     }
+  });
+
+  it('quote-in-id edge: router routes it (raw-id label) while the oracle drops it — intended divergence', async () => {
+    // A node id with an embedded double-quote (legal in a POSIX filePath). The
+    // router derives the label from the RAW id (`File`), so it routes the edge;
+    // the oracle re-derives the label via /"([^"]*)","([^"]*)"/ over the ESCAPED
+    // row (`"File:a""b.ts",...`), mis-reads the field, and drops it. This locks
+    // the intended divergence so a future change can't silently revert the
+    // router to the buggy regex semantics.
+    const graph = buildTestGraph(
+      [
+        { id: 'File:clean.ts', label: 'File', name: 'clean.ts', filePath: 'clean.ts' },
+        { id: 'File:a"b.ts', label: 'File', name: 'a"b.ts', filePath: 'a"b.ts' },
+        { id: 'Function:a.ts:f:1', label: 'Function', name: 'f', filePath: 'a.ts' },
+      ],
+      [
+        { sourceId: 'File:clean.ts', targetId: 'Function:a.ts:f:1', type: 'CONTAINS' },
+        { sourceId: 'File:a"b.ts', targetId: 'Function:a.ts:f:1', type: 'CONTAINS' },
+      ],
+    );
+
+    const directDir = path.join(csvDir, 'qd-direct');
+    const oracleDir = path.join(csvDir, 'qd-oracle');
+    await fs.mkdir(oracleDir, { recursive: true });
+
+    const direct = await streamAllCSVsToDisk(graph, repoDir, directDir);
+
+    const relCsv = path.join(oracleDir, 'relations.csv');
+    const lines = [REL_CSV_HEADER];
+    for (const rel of graph.iterRelationships()) lines.push(buildRelRow(rel));
+    await fs.writeFile(relCsv, lines.join('\n') + '\n', 'utf-8');
+    const split = await splitRelCsvByLabelPair(
+      relCsv,
+      oracleDir,
+      new Set<string>(NODE_TABLES),
+      getNodeLabel,
+    );
+    await Promise.all(
+      Array.from(split.pairWriteStreams.values()).map(async (ws) => {
+        ws.end();
+        await finished(ws);
+      }),
+    );
+
+    // Router routes BOTH edges — the raw-id label `File` is valid for both.
+    expect(direct.totalValidRels).toBe(2);
+    expect(direct.skippedRels).toBe(0);
+    expect(direct.relsByPair.get('File|Function')!.rows).toBe(2);
+
+    // Oracle DIVERGES: its regex mis-reads the quote-in-id row and drops that
+    // edge, so it routes strictly fewer edges. Asserted robustly — we do NOT
+    // pin the oracle's exact mis-derived label.
+    expect(split.totalValidRels).toBeLessThan(direct.totalValidRels);
+    expect(split.skippedRels).toBeGreaterThan(direct.skippedRels);
   });
 });
