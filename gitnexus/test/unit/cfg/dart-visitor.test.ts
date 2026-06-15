@@ -258,26 +258,55 @@ describe('Dart CfgVisitor — switch', () => {
     expect(cfg.edges.some((e) => e.from === tainted && e.to === sink)).toBe(false);
   });
 
-  it('a switch EXPRESSION used as a value stays inline (no branch edges)', () => {
+  it('value-position switch declaration is modeled as a dispatch, def bound at the join (#2207)', () => {
     const cfg = dart.cfgOf(`void f(int x) {
-      var y = switch (x) { 1 => one(), 2 => two(), _ => other() };
+      var y = switch (x) { 1 => one(x), 2 => two(), _ => other() };
       use(y);
     }`);
-    // The value-position switch expression coalesces; no switch-case edges.
-    expect(edgeKinds(cfg).has('switch-case')).toBe(false);
-    expect(reaches(cfg, cfg.entryIndex, cfg.exitIndex)).toBe(true);
-    expect(definesBinding(cfg, bindingIdx(cfg, 'y'))).toBe(true);
+    expect(edgeKinds(cfg).has('switch-case')).toBe(true);
+    // each arm rejoins and reaches the downstream use of the bound result.
+    expect(reaches(cfg, block(cfg, 'one(x)'), block(cfg, 'use(y);'))).toBe(true);
+    expect(reaches(cfg, block(cfg, 'other()'), block(cfg, 'use(y);'))).toBe(true);
+    const y = bindingIdx(cfg, 'y');
+    expect(definesBinding(cfg, y)).toBe(true);
+    expect(usesBinding(cfg, y)).toBe(true);
+    expect(computeControlDependence(cfg).edges.length).toBeGreaterThan(0);
+    expect(isExitReachableFromAllBlocks(cfg)).toBe(true);
   });
 
-  it('a switch-EXPRESSION arm write is a may-def, not a hard kill of the prior def (#2206)', () => {
+  it('return switch (…) models each arm as returning the result (#2207)', () => {
+    const cfg = dart.cfgOf(`int f(int x) {
+      return switch (x) { 1 => a(x), 2 => b(), _ => c() };
+    }`);
+    expect(edgeKinds(cfg).has('switch-case')).toBe(true);
+    expect(edgeKinds(cfg).has('return')).toBe(true);
+    expect(reaches(cfg, block(cfg, 'a(x)'), cfg.exitIndex)).toBe(true);
+    expect(reaches(cfg, block(cfg, 'c()'), cfg.exitIndex)).toBe(true);
+    expect(computeControlDependence(cfg).edges.length).toBeGreaterThan(0);
+    expect(isExitReachableFromAllBlocks(cfg)).toBe(true);
+  });
+
+  it('a multi-binding decl with a switch-EXPRESSION value stays inline', () => {
+    const cfg = dart.cfgOf(`void f(int x) {
+      var y = switch (x) { _ => 0 }, z = 2;
+      use(y + z);
+    }`);
+    // Modeling a multi-binding decl arm-by-arm is out of scope — it coalesces.
+    expect(edgeKinds(cfg).has('switch-case')).toBe(false);
+    expect(reaches(cfg, cfg.entryIndex, cfg.exitIndex)).toBe(true);
+  });
+
+  it('an INLINE switch-EXPRESSION arm write is a may-def, not a hard kill (#2206)', () => {
+    // An argument-position switch expression is NOT a modeled value-branch carrier
+    // (#2207 models only declaration / return), so it coalesces — and the harvest
+    // must still treat each arm write as a MAY-def (only one arm runs).
     const cfg = dart.cfgOf(`void f(int x) {
       int z = 0;
-      var y = switch (x) { 1 => z = 10, _ => z = 20 };
-      use(z);
+      use(switch (x) { 1 => z = 10, _ => z = 20 });
+      sink(z);
     }`);
     const z = bindingIdx(cfg, 'z');
-    // only one arm runs, so the arm writes (z=10 / z=20) are MAY-defs — they must
-    // not unconditionally KILL the prior `int z = 0`.
+    expect(edgeKinds(cfg).has('switch-case')).toBe(false);
     expect(cfg.blocks.some((bl) => bl.statements?.some((s) => (s.mayDefs ?? []).includes(z)))).toBe(
       true,
     );
