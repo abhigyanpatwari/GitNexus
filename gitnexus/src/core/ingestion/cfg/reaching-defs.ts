@@ -1,8 +1,21 @@
 /**
- * Reaching definitions (#2082 M2 U3) — classic GEN/KILL monotone fixpoint over
- * one function's CFG, plus the canonical intra-block statement sweep that
- * recovers statement-granular def→use facts from M1's coalesced blocks
- * WITHOUT re-splitting the CFG.
+ * Reaching definitions (#2082 M2 U3, SSA-sparse rewrite #2201) — per-function
+ * intraprocedural may-reaching-definitions, plus the canonical intra-block
+ * statement sweep that recovers statement-granular def→use facts from M1's
+ * coalesced blocks WITHOUT re-splitting the CFG.
+ *
+ * ARCHITECTURE (#2201): the analysis is split into solver-INDEPENDENT stages
+ * (shared by both solvers, so the byte-identical surface is maximal) and a
+ * swappable IN-set computation:
+ *   - {@link harvestStatementFacts} — per-block GEN/allDefs + def/use telemetry.
+ *   - {@link buildAdjacency} — throw-aware predecessor/successor adjacency.
+ *   - the IN-set computer — produces per-block entry reaching lattices. Two
+ *     exist: {@link computeInSetsSparse} (production, change-driven per binding)
+ *     and {@link computeInSetsDense} (the original GEN/KILL worklist, RETAINED
+ *     as the differential equivalence oracle). They MUST produce identical
+ *     inSets, including set INSERTION order (the maxFacts-truncated subset
+ *     depends on the sweep's pre-sort emission order — see {@link sweepFacts}).
+ *   - {@link sweepFacts} — statement sweep + sort + maxFacts truncation.
  *
  * PURE AND DETERMINISTIC (load-bearing contract):
  *  - Pure function of its inputs — no graph, no logger (warnings are the
@@ -14,17 +27,10 @@
  *    insertion-ordered Maps/Sets throughout, and the output fact array is
  *    explicitly sorted. Snapshot tests and content-derived edge ids rely on it.
  *
- * COMPLEXITY DISCIPLINE (the four-times-repeated repo bug shape is per-item
- * re-derivation inside the loop): def-sets are SHARED BY REFERENCE, never
- * deep-copied — a MUST def's kill is total per binding, so a transfer either
- * aliases the incoming set or replaces it; a MAY def (conditional context —
- * see StatementFacts.mayDefs) unions WITHOUT killing via a copy-on-extend.
- * Single-predecessor blocks alias the predecessor's OUT map outright;
- * multi-pred merges union only bindings whose incoming sets differ by
- * reference. Iteration is reverse post-order, seeded with every block
- * (unreachable blocks keep ⊥ IN — correct, their defs reach nothing).
- * Convergence: sets grow monotonically within the finite def-site universe ⇒
- * ≤ loop-depth+1 passes in practice.
+ * COMPLEXITY DISCIPLINE: def-sets are SHARED BY REFERENCE, never deep-copied —
+ * a MUST def's kill is total per binding, so a transfer either aliases the
+ * incoming set or replaces it; a MAY def (conditional context — see
+ * StatementFacts.mayDefs) unions WITHOUT killing via a copy-on-extend.
  *
  * `limits.maxFacts` bounds materialization: facts are O(defs×uses) BY SPEC in
  * merge-heavy code (N branch-arm defs × N later uses = N² facts), and a
@@ -68,14 +74,24 @@ export interface ReachingDefsLimits {
    */
   readonly maxFacts?: number;
   /**
-   * Maximum total block dequeues in the dataflow fixpoint. Iterative
+   * Adversarial-only safety bound on solver work.
+   *
+   * The DENSE oracle reads this as a ceiling on total block dequeues: iterative
    * reaching-defs on a reducible CFG converges in O(loop-nesting-depth) passes,
-   * so a worklist visits each block a small multiple of times for real code; a
-   * pathologically deep loop nest (machine-generated / obfuscated) drives the
-   * pass count — and thus the visit total — to O(blocks²) and the solver to
-   * seconds + GB of heap (`maxFacts` does not help: fact count stays linear).
-   * When the visit total exceeds this budget the fixpoint has NOT converged, so
-   * any facts would be unsound — the solver bails to a sound empty
+   * but a pathologically deep loop nest drives the visit total — and thus the
+   * solver — to O(blocks²), seconds + GB of heap (`maxFacts` does not help: fact
+   * count stays linear).
+   *
+   * The SPARSE solver (#2201) reads it as a ceiling on total (block, binding)
+   * dequeues. Because the sparse solve is change-driven per binding, realistic
+   * deep nests (loop-local / shallow variables) cost ~O(blocks) and complete far
+   * under this budget — the ceiling that fired on the dense worklist effectively
+   * never fires on real code. A single variable threaded through every level of
+   * an adversarial deep nest is the one residual O(depth²) shape (a documented
+   * SSA follow-up); it still bails soundly here.
+   *
+   * On either solver, exceeding the budget means the fixpoint has NOT converged,
+   * so any facts would be unsound — the solver bails to a sound empty
    * `status: 'truncated'` (like the `overflow` guard). `undefined`/0 ⇒ unlimited
    * (the default for direct callers; the emit path sets a per-function budget).
    */
@@ -111,7 +127,7 @@ export interface FunctionDefUse {
  * statements into one block, so an overflow would silently alias
  * (block b, stmt STRIDE+k) with (block b+1, stmt k) and fabricate wrong-block
  * facts. computeReachingDefs therefore range-checks up front and bails to a
- * sound empty `truncated` result instead of ever letting a key alias.
+ * sound empty `overflow` result instead of ever letting a key alias.
  * 2^21 statements per block × blocks ≤ 2^32 stays inside Number's 2^53.
  */
 const STMT_STRIDE = 1 << 21;
@@ -124,27 +140,67 @@ type Lattice = Map<number, DefSet>;
 
 const EMPTY_LATTICE: Lattice = new Map();
 
+/** A block's GEN entry for one binding: the genned set + whether it kills. */
+interface GenEntry {
+  set: DefSet;
+  kills: boolean;
+}
+
+/** Solver-independent per-block facts (shared by both IN-set computers). */
+interface Harvest {
+  /** gen[b]: bindingIdx → { set, kills }. A MUST def kills; a MAY def adds. */
+  readonly gen: readonly (Map<number, GenEntry> | null)[];
+  /** allDefsGen[b]: bindingIdx → EVERY def-site key in the block (throw edges). */
+  readonly allDefsGen: readonly (Lattice | null)[];
+  readonly defLine: ReadonlyMap<number, number>;
+  readonly defCount: number;
+  readonly useCount: number;
+}
+
+/** Throw-aware adjacency (shared by both IN-set computers). */
+interface Adjacency {
+  readonly preds: readonly { from: number; viaThrow: boolean }[][];
+  readonly succs: readonly number[][];
+  /** Handlers whose IN depends on a block's IN (throw edges). */
+  readonly throwSuccs: readonly number[][];
+}
+
+/**
+ * The swappable stage: per-block entry reaching lattices, or a non-convergence
+ * signal (maxBlockVisits exceeded ⇒ sound empty `truncated`). The two
+ * implementations MUST agree byte-for-byte, including set insertion order.
+ */
+type InSetsResult = { converged: true; inSets: Lattice[] } | { converged: false };
+
+type InSetsComputer = (
+  cfg: FunctionCfg,
+  n: number,
+  h: Harvest,
+  adj: Adjacency,
+  limits: ReachingDefsLimits | undefined,
+) => InSetsResult;
+
 /**
  * Compute reaching definitions for one function. See the module doc for the
  * purity/determinism/sharing contract.
  *
- * This is the production entry point. As of #2201 it delegates to the
- * SSA-sparse solver ({@link computeReachingDefsSparse}); the dense GEN/KILL
- * worklist ({@link computeReachingDefsDense}) is retained as the differential
+ * This is the production entry point. As of #2201 it runs the sparse, change-
+ * driven solver ({@link computeInSetsSparse}); the dense GEN/KILL worklist
+ * ({@link computeReachingDefsDense}) is retained as the differential
  * equivalence oracle the fuzz suite checks the sparse path against — the two
  * MUST be byte-identical (status, bindings, sorted facts, def/use telemetry).
  */
 export function computeReachingDefs(cfg: FunctionCfg, limits?: ReachingDefsLimits): FunctionDefUse {
-  // #2201 U1: production still runs the dense solver; the swap to sparse lands
-  // in U5 once the differential fuzz is byte-identical green.
-  return computeReachingDefsDense(cfg, limits);
+  // #2201: production still runs the dense solver until U5 flips this to
+  // computeInSetsSparse (once the differential fuzz is byte-identical green).
+  return solveReachingDefs(cfg, limits, computeInSetsDense);
 }
 
 /**
  * Dense GEN/KILL monotone worklist — the original (#2082 M2) reaching-defs
  * solver. As of #2201 this is RETAINED AS A TEST/BENCH-ONLY DIFFERENTIAL
  * ORACLE, not a production code path: {@link computeReachingDefs} runs the
- * SSA-sparse solver, and the equivalence fuzz asserts the two are byte-identical
+ * sparse solver, and the equivalence fuzz asserts the two are byte-identical
  * across a random-CFG corpus. Keep it behavior-frozen — it is the ground truth.
  *
  * @internal exported only for the equivalence fuzz harness and the cfg bench.
@@ -152,6 +208,21 @@ export function computeReachingDefs(cfg: FunctionCfg, limits?: ReachingDefsLimit
 export function computeReachingDefsDense(
   cfg: FunctionCfg,
   limits?: ReachingDefsLimits,
+): FunctionDefUse {
+  return solveReachingDefs(cfg, limits, computeInSetsDense);
+}
+
+/**
+ * Shared orchestrator: the no-facts / overflow guards, the harvest, the
+ * adjacency build, the swappable IN-set computation, and the statement sweep.
+ * Only `computeInSets` differs between the production (sparse) and oracle
+ * (dense) paths — everything else is identical, which is what makes the two
+ * byte-identical by construction.
+ */
+function solveReachingDefs(
+  cfg: FunctionCfg,
+  limits: ReachingDefsLimits | undefined,
+  computeInSets: InSetsComputer,
 ): FunctionDefUse {
   if (!cfg.bindings) {
     return { status: 'no-facts', bindings: [], facts: [], defCount: 0, useCount: 0 };
@@ -170,51 +241,46 @@ export function computeReachingDefsDense(
     }
   }
 
-  // ── adjacency (sorted for deterministic merges) ─────────────────────────
-  // A `throw` edge contributes IN(from) ∪ allDefs(from) to its handler, not
-  // OUT: an exception can fire BEFORE the block's defs complete (the seed def
-  // in `let x = seed(); try { x = risky(); } catch { sink(x) }` must reach the
-  // sink) AND between any two defs of a multi-def coalesced block (the parse
-  // def in `x = parse(a); x = normalize(x);` is live exactly when normalize
-  // throws — OUT's last-def-wins misses it). Sound over-approximation;
-  // monotone, so the fixpoint absorbs it. See mergePreds.
-  const preds: { from: number; viaThrow: boolean }[][] = Array.from({ length: n }, () => []);
-  const succs: number[][] = Array.from({ length: n }, () => []);
-  // Handlers whose IN depends on this block's IN (throw edges) — requeued on
-  // IN change, since a genned binding can absorb IN growth without changing
-  // OUT, which would otherwise leave the handler stale.
-  const throwSuccs: number[][] = Array.from({ length: n }, () => []);
-  for (const e of cfg.edges) {
-    // Optional-chained pushes drop out-of-range endpoints defensively — the
-    // emit path validates via isEmitSafeCfg, but this pure function also runs
-    // on hand-built CFGs.
-    succs[e.from]?.push(e.to);
-    preds[e.to]?.push({ from: e.from, viaThrow: e.kind === 'throw' });
-    if (e.kind === 'throw') throwSuccs[e.from]?.push(e.to);
+  const h = harvestStatementFacts(blocks, n);
+  const adj = buildAdjacency(cfg, n);
+  const solved = computeInSets(cfg, n, h, adj, limits);
+  if (!solved.converged) {
+    // Did NOT converge within the budget — the in-sets are not at the fixpoint,
+    // so any facts would be unsound. Bail to a sound empty `truncated` result
+    // (a coverage gap, not an error), carrying the def/use telemetry gathered.
+    return {
+      status: 'truncated',
+      bindings: cfg.bindings,
+      facts: [],
+      defCount: h.defCount,
+      useCount: h.useCount,
+    };
   }
-  for (const list of preds) {
-    list.sort((a, b) => a.from - b.from || Number(a.viaThrow) - Number(b.viaThrow));
-    // duplicate (from, throw+non-throw) pairs both survive — the throw leg
-    // adds IN(from); the merge dedups set-wise.
-  }
-  for (const list of succs) list.sort((a, b) => a - b);
 
-  // ── per-block GEN + def/use telemetry ────────────────────────────────────
-  // gen[b]: bindingIdx → { set, kills }. A MUST def resets the accumulated
-  // set (kill is total); a MAY def (conditionally-evaluated context — see
-  // StatementFacts.mayDefs) only ADDS: the binding's incoming defs survive,
-  // so the transfer is out[x] = kills ? set : in[x] ∪ set.
-  interface GenEntry {
-    set: DefSet;
-    kills: boolean;
-  }
+  const maxFacts = limits?.maxFacts && limits.maxFacts > 0 ? limits.maxFacts : Infinity;
+  const { facts, truncated } = sweepFacts(blocks, solved.inSets, h.defLine, maxFacts);
+
+  return {
+    status: truncated ? 'truncated' : 'computed',
+    bindings: cfg.bindings,
+    facts,
+    defCount: h.defCount,
+    useCount: h.useCount,
+  };
+}
+
+/**
+ * Per-block GEN + def/use telemetry. gen[b]: bindingIdx → { set, kills }. A
+ * MUST def resets the accumulated set (kill is total); a MAY def (conditionally-
+ * evaluated context — see StatementFacts.mayDefs) only ADDS: the binding's
+ * incoming defs survive, so the transfer is out[x] = kills ? set : in[x] ∪ set.
+ * allDefsGen[b] is what a throw edge delivers to its handler: an exception can
+ * fire between any two statements, so every intermediate def may be the live one
+ * at the handler — IN∪OUT alone misses defs overwritten later in the same
+ * coalesced block.
+ */
+function harvestStatementFacts(blocks: FunctionCfg['blocks'], n: number): Harvest {
   const gen: (Map<number, GenEntry> | null)[] = new Array(n).fill(null);
-  // allDefsGen[b]: bindingIdx → EVERY def-site key in the block (must + may).
-  // This is what a throw edge delivers to its handler: an exception can fire
-  // between any two statements, so every intermediate def may be the live one
-  // at the handler — IN∪OUT alone misses defs overwritten later in the same
-  // coalesced block (`try { x = parse(a); x = normalize(x); } catch { sink(x) }`
-  // — parse's value is exactly what sink sees when normalize throws).
   const allDefsGen: (Lattice | null)[] = new Array(n).fill(null);
   const defLine = new Map<number, number>(); // defKey → source line
   let defCount = 0;
@@ -249,31 +315,73 @@ export function computeReachingDefsDense(
     gen[b.index] = g;
     allDefsGen[b.index] = all;
   }
+  return { gen, allDefsGen, defLine, defCount, useCount };
+}
 
-  // ── iteration order: RPO over reachable blocks, then the rest by index ──
-  // WTO / loop-aware iteration (Bourdoncle 1993) was evaluated as a fix for the
-  // O(blocks²) deep-loop-nest blow-up and REJECTED: on the dense-loop benchmark a
-  // faithful weak-topological-order solver was 104/104 byte-identical to this RPO
-  // worklist but 0% faster. The cost is inherent to dense-set propagation +
-  // lattice merges on the iterated dominance frontier, not to visitation order, so
-  // re-ordering passes buys nothing; the "skip re-evaluating a loop body once its
-  // header stabilises" shortcut is additionally unsound on irreducible (goto)
-  // CFGs. The sound, shipped backstop is the maxBlockVisits ceiling below (a
-  // blocks×64 budget — see emit.ts DEFAULT_PDG_MAX_REACHING_DEF_BLOCK_REVISITS),
-  // which truncates the pathological nest to a sound-empty result. The only real
-  // asymptotic fix is SSA-sparse reaching-defs (propagate along def-use chains, not
-  // dense block sets) — deferred to a tracked follow-up, not a reordering tweak.
+/**
+ * Throw-aware predecessor/successor adjacency, sorted for deterministic merges.
+ * A `throw` edge contributes IN(from) ∪ allDefs(from) to its handler, not OUT:
+ * an exception may fire BEFORE the block's defs complete (the seed def in
+ * `let x = seed(); try { x = risky(); } catch { sink(x) }` must reach the sink)
+ * AND between any two defs of a multi-def coalesced block. Sound over-
+ * approximation; monotone, so the fixpoint absorbs it. See mergePreds.
+ */
+function buildAdjacency(cfg: FunctionCfg, n: number): Adjacency {
+  const preds: { from: number; viaThrow: boolean }[][] = Array.from({ length: n }, () => []);
+  const succs: number[][] = Array.from({ length: n }, () => []);
+  // Handlers whose IN depends on this block's IN (throw edges) — requeued on
+  // IN change, since a genned binding can absorb IN growth without changing
+  // OUT, which would otherwise leave the handler stale.
+  const throwSuccs: number[][] = Array.from({ length: n }, () => []);
+  for (const e of cfg.edges) {
+    // Optional-chained pushes drop out-of-range endpoints defensively — the
+    // emit path validates via isEmitSafeCfg, but this pure function also runs
+    // on hand-built CFGs.
+    succs[e.from]?.push(e.to);
+    preds[e.to]?.push({ from: e.from, viaThrow: e.kind === 'throw' });
+    if (e.kind === 'throw') throwSuccs[e.from]?.push(e.to);
+  }
+  for (const list of preds) {
+    list.sort((a, b) => a.from - b.from || Number(a.viaThrow) - Number(b.viaThrow));
+    // duplicate (from, throw+non-throw) pairs both survive — the throw leg
+    // adds IN(from); the merge dedups set-wise.
+  }
+  for (const list of succs) list.sort((a, b) => a - b);
+  return { preds, succs, throwSuccs };
+}
+
+/**
+ * DENSE IN-set computer — the original monotone GEN/KILL worklist. Iterates in
+ * reverse post-order, seeded with every block (unreachable blocks keep ⊥ IN —
+ * correct, their defs reach nothing). Convergence: sets grow monotonically
+ * within the finite def-site universe ⇒ ≤ loop-depth+1 passes in practice.
+ *
+ * WTO / loop-aware iteration (Bourdoncle 1993) was evaluated as a fix for the
+ * O(blocks²) deep-loop-nest blow-up and REJECTED (#2195): on the dense-loop
+ * benchmark a faithful weak-topological-order solver was 104/104 byte-identical
+ * but 0% faster — the cost is inherent to dense-set propagation + lattice
+ * merges, not visitation order. The asymptotic fix is the sparse, change-driven
+ * solver ({@link computeInSetsSparse}); this dense version is retained only as
+ * the differential equivalence oracle.
+ *
+ * @internal
+ */
+function computeInSetsDense(
+  cfg: FunctionCfg,
+  n: number,
+  h: Harvest,
+  adj: Adjacency,
+  limits: ReachingDefsLimits | undefined,
+): InSetsResult {
+  const { gen, allDefsGen } = h;
+  const { preds, succs, throwSuccs } = adj;
   const order = reversePostOrder(cfg.entryIndex, succs, n);
 
-  // ── fixpoint ────────────────────────────────────────────────────────────
   const inSets: Lattice[] = new Array(n).fill(EMPTY_LATTICE);
   const outSets: Lattice[] = new Array(n).fill(EMPTY_LATTICE);
 
   const inWorklist = new Array(n).fill(true);
   let pending = n;
-  // Fixpoint-iteration ceiling (see ReachingDefsLimits.maxBlockVisits): bound the
-  // total block dequeues so a pathologically deep loop nest can't drive the
-  // worklist to O(blocks²). undefined/0 ⇒ unlimited.
   const maxBlockVisits =
     limits?.maxBlockVisits && limits.maxBlockVisits > 0 ? limits.maxBlockVisits : Infinity;
   let blockVisits = 0;
@@ -282,13 +390,7 @@ export function computeReachingDefsDense(
       if (!inWorklist[b]) continue;
       inWorklist[b] = false;
       pending -= 1;
-      if (++blockVisits > maxBlockVisits) {
-        // Did NOT converge within the budget — the in/out sets are not at the
-        // fixpoint, so any facts would be unsound. Bail to a sound empty
-        // `truncated` result (a coverage gap, not an error), carrying the def/use
-        // telemetry already gathered.
-        return { status: 'truncated', bindings: cfg.bindings, facts: [], defCount, useCount };
-      }
+      if (++blockVisits > maxBlockVisits) return { converged: false };
 
       const p = preds[b];
       const inB: Lattice =
@@ -333,8 +435,23 @@ export function computeReachingDefsDense(
     }
   }
 
-  // ── statement sweep: recover statement-granular def→use facts ───────────
-  const maxFacts = limits?.maxFacts && limits.maxFacts > 0 ? limits.maxFacts : Infinity;
+  return { converged: true, inSets };
+}
+
+/**
+ * Statement sweep — recover statement-granular def→use facts from the per-block
+ * entry reaching lattices, sort them, and apply the maxFacts truncation. SHARED
+ * by both solvers: the truncated SUBSET depends on the pre-sort emission order
+ * here (block index, then statement index, then use order, then the reaching
+ * set's INSERTION order), so producing identical inSets — insertion order
+ * included — is what makes a truncated result byte-identical across solvers.
+ */
+function sweepFacts(
+  blocks: FunctionCfg['blocks'],
+  inSets: readonly Lattice[],
+  defLine: ReadonlyMap<number, number>,
+  maxFacts: number,
+): { facts: DefUseFact[]; truncated: boolean } {
   const facts: DefUseFact[] = [];
   let truncated = false;
 
@@ -403,13 +520,7 @@ export function computeReachingDefsDense(
       a.bindingIdx - b.bindingIdx,
   );
 
-  return {
-    status: truncated ? 'truncated' : 'computed',
-    bindings: cfg.bindings,
-    facts,
-    defCount,
-    useCount,
-  };
+  return { facts, truncated };
 }
 
 /** RPO over blocks reachable from `entry`; unreachable blocks appended by index. */
