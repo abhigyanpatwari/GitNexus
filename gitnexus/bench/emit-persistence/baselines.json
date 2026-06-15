@@ -1,5 +1,5 @@
 {
-  "fingerprint": "04096714dae58fd363fa6cdbd535bcb6ba4db058b8b84d6fde504a150efaf015",
+  "fingerprint": "1b9dd0b783899b47067c36511d241860f291ac736e57682b0ece14148e3958ff",
   "scaling_budget": 1.8,
-  "_note": "fingerprint = order-independent sha256 of every emitted CSV line (byte-identity gate for #2203 U2/U3). scaling_budget bounds (t_large/t_small)/(LARGE/SMALL): observed ~0.95-1.05 (linear); 1.8 tolerates disk-I/O timing noise on CI while still catching an O(n^2) re-regression (~4x). Regenerate via `node --import tsx bench/emit-persistence/measure.mjs`."
+  "_note": "fingerprint = sha256 over per-file digests (filename + sha256(file bytes)), entry list sorted — binds each emitted line to its file so a row routed to the WRONG pair file changes the hash, AND catches within-file row reordering (file bytes hashed as-written). Byte-identity gate for #2203 U2/U3. NOTE: a future change that legitimately reorders emit (without changing the node/edge SET) will trip --check; regenerate then. scaling_budget bounds (t_large/t_small)/(LARGE/SMALL): observed ~0.95-1.05 (linear); 1.8 tolerates disk-I/O timing noise on CI while still catching an O(n^2) re-regression (~4x). Regenerate via `node --import tsx bench/emit-persistence/measure.mjs`."
 }
