@@ -279,6 +279,19 @@ export class KotlinHarvester {
     return acc.finish();
   }
 
+  /**
+   * Def-ONLY facts for a value-position binding carrier (`val x = <branch>`,
+   * #2205): just the bound name's def, attached to the continuation block the
+   * branch arms rejoin. The branch subject + arm-value USES are already harvested
+   * onto the branch's own blocks (visitWhen / visitIf), so this must not re-walk
+   * them — only the `variable_declaration` leaves are defs here.
+   */
+  bindingDefFacts(stmt: SyntaxNode): StatementFacts | undefined {
+    const acc = new FactAccumulator(stmt.startPosition.row + 1);
+    this.defForPattern(stmt, acc);
+    return acc.defCount() ? acc.finish() : undefined;
+  }
+
   /** ENTRY-block facts for the parameters (defs only). */
   paramFacts(): StatementFacts | undefined {
     const acc = new FactAccumulator(this.fnNode.startPosition.row + 1);

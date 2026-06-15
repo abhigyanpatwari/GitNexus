@@ -102,9 +102,12 @@ describe('Kotlin CfgVisitor — branching (if/else)', () => {
     expect(reaches(cfg, block(cfg, 'a()'), block(cfg, 'c()'))).toBe(true);
   });
 
-  it('an if used as an expression VALUE stays inline (not modeled as a branch)', () => {
+  it('an if as a binding VALUE is modeled as a branch with literal arms (#2205)', () => {
     const cfg = kotlin.cfgOf(`fun f(x: Int) { val y = if (x > 0) 1 else 2; use(y) }`);
-    // The value-position if has no branch edges; the assignment coalesces.
+    // value-position `if` (with else) IS modeled now: both arms branch, y binds
+    // at the rejoin (previously this whole decl coalesced into one block).
+    expect(edgeKinds(cfg).has('cond-true')).toBe(true);
+    expect(edgeKinds(cfg).has('cond-false')).toBe(true);
     expect(reaches(cfg, cfg.entryIndex, cfg.exitIndex)).toBe(true);
     expect(definesBinding(cfg, bindingIdx(cfg, 'y'))).toBe(true);
   });
@@ -148,6 +151,57 @@ describe('Kotlin CfgVisitor — when (no fallthrough)', () => {
     expect(edgeKinds(cfg).has('switch-case')).toBe(true);
     // the dispatch can reach after() without entering arm 1 (no-match path).
     expect(reachable(cfg, block(cfg, 'after()'))).toBe(true);
+  });
+});
+
+describe('Kotlin CfgVisitor — value-position branches (#2205)', () => {
+  it('val x = when (...) models the arms as control flow (CDG-bearing), binds x at the join', () => {
+    const cfg = kotlin.cfgOf(
+      `fun f(k: Int) { val x = when (k) { 0 -> a(); 1 -> b(); else -> c() }; use(x) }`,
+    );
+    // Arms are modeled (not collapsed into one straight-line block)…
+    expect(edgeKinds(cfg).has('switch-case')).toBe(true);
+    expect(block(cfg, 'a()')).toBeGreaterThanOrEqual(0);
+    expect(block(cfg, 'c()')).toBeGreaterThanOrEqual(0);
+    // …each arm is control-dependent on the dispatch…
+    expect(computeControlDependence(cfg).edges.length).toBeGreaterThan(0);
+    // …and x is defined at the rejoin and used downstream.
+    expect(definesBinding(cfg, bindingIdx(cfg, 'x'))).toBe(true);
+    expect(usesBinding(cfg, bindingIdx(cfg, 'x'))).toBe(true);
+  });
+
+  it('val r = if (c) ... else ... models both arms (cond-true/cond-false), binds r', () => {
+    const cfg = kotlin.cfgOf(`fun f(c: Boolean) { val r = if (c) x() else y(); use(r) }`);
+    expect(edgeKinds(cfg).has('cond-true')).toBe(true);
+    expect(edgeKinds(cfg).has('cond-false')).toBe(true);
+    expect(computeControlDependence(cfg).edges.length).toBeGreaterThan(0);
+    expect(definesBinding(cfg, bindingIdx(cfg, 'r'))).toBe(true);
+  });
+
+  it('return when (...) models the arms; each arm returns', () => {
+    const cfg = kotlin.cfgOf(`fun f(k: Int): Int { return when (k) { 0 -> a(); else -> b() } }`);
+    expect(edgeKinds(cfg).has('switch-case')).toBe(true);
+    expect(edgeKinds(cfg).has('return')).toBe(true);
+    expect(computeControlDependence(cfg).edges.length).toBeGreaterThan(0);
+  });
+
+  it('expression-body fun f() = when (...) models the arms (CDG-bearing)', () => {
+    const cfg = kotlin.cfgOf(`fun f(k: Int): Int = when (k) { 0 -> a(); 1 -> b(); else -> c() }`);
+    expect(edgeKinds(cfg).has('switch-case')).toBe(true);
+    expect(edgeKinds(cfg).has('return')).toBe(true);
+    expect(computeControlDependence(cfg).edges.length).toBeGreaterThan(0);
+  });
+
+  it('argument-position when stays inline — val x = f(when (...)) is NOT split', () => {
+    // The DIRECT value is the call `f(...)`, not the nested `when`, so it is a
+    // single straight-line block (no switch-case from a top-level dispatch).
+    const cfg = kotlin.cfgOf(`fun g(k: Int) { val x = f(when (k) { 0 -> 1; else -> 2 }) }`);
+    expect(edgeKinds(cfg).has('switch-case')).toBe(false);
+  });
+
+  it('single-arm when in value position stays inline (no real control dependence)', () => {
+    const cfg = kotlin.cfgOf(`fun f(k: Int) { val x = when (k) { else -> a() }; use(x) }`);
+    expect(edgeKinds(cfg).has('switch-case')).toBe(false);
   });
 });
 

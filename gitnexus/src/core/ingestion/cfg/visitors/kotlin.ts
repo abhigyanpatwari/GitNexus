@@ -244,12 +244,18 @@ class KotlinCfgWalk {
 
   /**
    * Whether a statement breaks the current straight-line block. `if` / `when` /
-   * `try` are EXPRESSIONS in Kotlin — they only break a block when used as a
-   * STATEMENT (a direct child of a `statements` list); nested in a value they
-   * coalesce (their arms are not modeled — documented gap).
+   * `try` are EXPRESSIONS in Kotlin — they break a block when used as a STATEMENT
+   * (a direct child of a `statements` list), OR when they are the value of a
+   * `val/var x = <branch>` binding (#2205) — `visitStmt`'s `property_declaration`
+   * case then models the arms as control flow. Other value positions (an
+   * assignment RHS, a call argument) still coalesce — a remaining gap.
    */
   private isControlFlow(stmt: SyntaxNode): boolean {
     if (stmt.type === 'label') return true; // queue label, emit no block
+    if (stmt.type === 'property_declaration') {
+      const v = this.directValue(stmt);
+      return v !== undefined && this.isModelableValueBranch(v);
+    }
     if (!CONTROL_FLOW_TYPES.has(stmt.type)) return false;
     if (this.isExpressionConstruct(stmt.type)) return this.isStatementPosition(stmt);
     return true;
@@ -295,6 +301,14 @@ class KotlinCfgWalk {
         return this.visitDoWhile(stmt);
       case 'jump_expression':
         return this.visitJump(stmt);
+      case 'property_declaration': {
+        // `val x = when (k) { … }` / `val x = if (c) a else b` (#2205): the value
+        // is a value-position branch — model it as control flow and bind the
+        // result on the rejoin, instead of collapsing the whole decl to one block.
+        const value = this.directValue(stmt);
+        if (value && this.isModelableValueBranch(value)) return this.visitBindBranch(stmt, value);
+        return this.visitSimple(stmt);
+      }
       default:
         return this.visitSimple(stmt);
     }
@@ -331,6 +345,20 @@ class KotlinCfgWalk {
 
   /** `return [expr]` / `return@label` — threads through every active finalizer. */
   private visitReturn(stmt: SyntaxNode): TraversalResult {
+    // `return when (k) { … }` / `return if (c) a else b` (#2205): the returned
+    // value is a value-position branch — model it as control flow, with each arm
+    // returning (its value IS the function result), threading finalizers per arm.
+    const branch = stmt.namedChildren.find(
+      (c) => c.type === 'when_expression' || c.type === 'if_expression',
+    );
+    if (branch && this.isModelableValueBranch(branch)) {
+      const res = this.visitBranchExpr(branch);
+      const finalizers = this.cfc.finalizersForReturn();
+      for (const ex of res.exits) {
+        wireJumpThroughFinalizers(this.builder, ex, finalizers, this.builder.exitIndex, 'return');
+      }
+      return { entry: res.entry, exits: [] };
+    }
     const idx = this.builder.newBlock(
       startLineOf(stmt),
       endLineOf(stmt),
@@ -410,6 +438,87 @@ class KotlinCfgWalk {
   }
 
   // ── branches ──────────────────────────────────────────────────────────────
+
+  /**
+   * The direct value expression of a `= VALUE` carrier (`property_declaration`,
+   * a `function_body` expression body): the first named child after the `=`
+   * token. Returns the DIRECT value only — `val x = f(when …)` yields the call,
+   * not the nested `when`, so an argument-position branch is left inline (#2205).
+   */
+  private directValue(stmt: SyntaxNode): SyntaxNode | undefined {
+    let sawEq = false;
+    for (let i = 0; i < stmt.childCount; i++) {
+      const c = stmt.child(i);
+      if (!c) continue;
+      if (c.type === '=') {
+        sawEq = true;
+        continue;
+      }
+      if (sawEq && c.isNamed && !isComment(c)) return c;
+    }
+    return undefined;
+  }
+
+  /**
+   * Whether `node` is a value-position branch worth modeling as control flow
+   * (#2205): a `when` with ≥2 arms, or an `if` that has an `else` (a value-position
+   * `if` always does). A single-arm `when` / else-less `if` carries no real
+   * control dependence, so it stays an inline {@link visitSimple} block.
+   */
+  private isModelableValueBranch(node: SyntaxNode): boolean {
+    if (node.type === 'when_expression') {
+      return node.namedChildren.filter((c) => c.type === 'when_entry').length >= 2;
+    }
+    if (node.type === 'if_expression') return this.elseNodeOf(node) !== undefined;
+    return false;
+  }
+
+  /**
+   * Model a value-position `when`/`if` as control flow regardless of its
+   * statement/value position — {@link visitStmt}'s `isStatementPosition` gate keeps
+   * value-position branches inline, so call the branch handlers directly here.
+   */
+  private visitBranchExpr(node: SyntaxNode): TraversalResult {
+    return node.type === 'when_expression' ? this.visitWhen(node) : this.visitIf(node);
+  }
+
+  /**
+   * `val x = <branch>` (#2205): visit the branch as control flow, then rejoin its
+   * arms at a facts-only continuation carrying ONLY the bound name's def (the
+   * subject + arm-value uses are already harvested onto the branch's blocks). The
+   * arms are now control-dependent on the branch condition, and `x` is defined at
+   * the join — mirrors the Rust visitor's value-position `let` handling.
+   */
+  private visitBindBranch(stmt: SyntaxNode, branch: SyntaxNode): TraversalResult {
+    const res = this.visitBranchExpr(branch);
+    const cont = this.builder.newBlock(
+      startLineOf(stmt),
+      startLineOf(stmt),
+      '',
+      'normal',
+      this.harvest.bindingDefFacts(stmt),
+    );
+    this.builder.connect(res.exits, cont, 'seq');
+    return { entry: res.entry, exits: [cont] };
+  }
+
+  /**
+   * A `fun f() = EXPR` expression body (#2205). A value-position branch is modeled
+   * as control flow (each arm yields the returned function result); any other
+   * expression stays one block. The caller wires entry ← ENTRY and exits → EXIT
+   * with a `return` edge (the body's value is the function's result).
+   */
+  visitExprBody(expr: SyntaxNode): TraversalResult {
+    if (this.isModelableValueBranch(expr)) return this.visitBranchExpr(expr);
+    const blk = this.builder.newBlock(
+      startLineOf(expr),
+      endLineOf(expr),
+      expr.text,
+      'normal',
+      this.harvest.facts(expr),
+    );
+    return { entry: blk, exits: [blk] };
+  }
 
   /**
    * `if ( COND ) control_structure_body [ else (control_structure_body |
@@ -832,20 +941,16 @@ function buildFunctionCfg(fnNode: SyntaxNode, filePath: string): FunctionCfg | u
     const paramFacts = harvest.paramFacts();
     if (paramFacts) builder.attachFacts(builder.entryIndex, paramFacts);
 
-    // Expression body (`fun f() = expr` / a `function_body` that is `= expr`): one
-    // block whose value is returned.
+    // Expression body (`fun f() = expr` / a `function_body` that is `= expr`):
+    // the body's value is returned. A value-position branch (`= when (k) { … }`)
+    // is modeled as control flow so each arm is control-dependent on the
+    // condition (#2205); any other expression is one block.
     if (body && body.type === 'function_body') {
       const expr = body.namedChildren.find((c) => !isComment(c) && c.type !== 'statements');
       if (expr) {
-        const blk = builder.newBlock(
-          startLineOf(expr),
-          endLineOf(expr),
-          expr.text,
-          'normal',
-          harvest.facts(expr),
-        );
-        builder.edge(builder.entryIndex, blk, 'seq');
-        builder.edge(blk, builder.exitIndex, 'return');
+        const res = new KotlinCfgWalk(builder, harvest).visitExprBody(expr);
+        builder.edge(builder.entryIndex, res.entry, 'seq');
+        builder.connect(res.exits, builder.exitIndex, 'return');
         return builder.finish(harvest.bindingTable());
       }
       // `function_body` with neither statements nor an expression — empty.
