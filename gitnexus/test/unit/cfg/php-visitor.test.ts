@@ -420,4 +420,11 @@ describe('PHP CfgVisitor — robustness', () => {
     expect(reachable(cfg, block(cfg, 'done()'))).toBe(true);
     expect(isExitReachableFromAllBlocks(cfg)).toBe(true);
   });
+
+  it('a truncated value-position match never throws out of the carrier path (R4) (#2211)', () => {
+    const root = php.parse(`<?php function f($x){ $r = match ($x) { 1 => a(`);
+    for (const fn of php.collectFunctions(root)) {
+      expect(() => createPhpCfgVisitor().buildFunctionCfg(fn, 'x.php')).not.toThrow();
+    }
+  });
 });

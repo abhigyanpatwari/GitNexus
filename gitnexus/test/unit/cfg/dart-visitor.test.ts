@@ -71,6 +71,13 @@ describe('Dart CfgVisitor — structure', () => {
     expect(reaches(cfg, cfg.entryIndex, cfg.exitIndex)).toBe(true);
   });
 
+  it('a truncated value-position switch never throws out of the carrier path (R4) (#2211)', () => {
+    const root = dart.parse(`int f(int v){ var x = switch (v) { 1 => a(`);
+    for (const fn of dart.collectFunctions(root)) {
+      expect(() => createDartCfgVisitor().buildFunctionCfg(fn, 'f.dart')).not.toThrow();
+    }
+  });
+
   it('a class method is a CFG-bearing function and binds its params', () => {
     const cfg = dart.cfgOf(`class C { void m(int a) { g(a); } }`);
     expect(reaches(cfg, cfg.entryIndex, cfg.exitIndex)).toBe(true);

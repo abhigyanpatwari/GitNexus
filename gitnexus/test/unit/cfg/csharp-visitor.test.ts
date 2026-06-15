@@ -467,6 +467,18 @@ describe('C# CfgVisitor — does not throw on exotic shapes', () => {
       warn.mockRestore();
     }
   });
+
+  it('a truncated value-position switch never throws out of the carrier path (R4) (#2211)', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const root = cs.parse(`class C { int M(int x) { var y = x switch { 1 => a(`);
+      for (const fn of cs.collectFunctions(root)) {
+        expect(() => createCsharpCfgVisitor().buildFunctionCfg(fn, 'f.cs')).not.toThrow();
+      }
+    } finally {
+      warn.mockRestore();
+    }
+  });
 });
 
 // U6 — call-site `sites[]` taint substrate. INERT BY DESIGN: no C# taint model

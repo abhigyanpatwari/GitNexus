@@ -55,6 +55,13 @@ describe('Swift CfgVisitor — structure', () => {
     expect(reaches(cfg, cfg.entryIndex, cfg.exitIndex)).toBe(true);
   });
 
+  it('a truncated value-position if never throws out of the carrier path (R4) (#2211)', () => {
+    const root = swift.parse(`func f(v: Int) { let x = if v > 0 {`);
+    for (const fn of swift.collectFunctions(root)) {
+      expect(() => createSwiftCfgVisitor().buildFunctionCfg(fn, 'f.swift')).not.toThrow();
+    }
+  });
+
   it('init and deinit are CFG-bearing functions', () => {
     const cfgs = swift.cfgsOf(`class C { init(x: Int) { self.x = x } ; deinit { cleanup() } }`);
     expect(cfgs).toHaveLength(2);

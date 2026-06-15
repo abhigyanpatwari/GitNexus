@@ -581,6 +581,18 @@ describe('Java CfgVisitor — does not throw on exotic shapes', () => {
       warn.mockRestore();
     }
   });
+
+  it('a truncated value-position switch never throws out of the carrier path (R4) (#2211)', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const root = java.parse(`class C { int m(int k){ int x = switch (k) { case 1 -> a(`);
+      for (const fn of java.collectFunctions(root)) {
+        expect(() => createJavaCfgVisitor().buildFunctionCfg(fn, 'f.java')).not.toThrow();
+      }
+    } finally {
+      warn.mockRestore();
+    }
+  });
 });
 
 // U6 — call-site `sites[]` taint substrate. INERT BY DESIGN: no Java taint model

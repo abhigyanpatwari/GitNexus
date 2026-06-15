@@ -67,6 +67,13 @@ describe('Kotlin CfgVisitor — structure', () => {
     expect(reaches(cfg, cfg.entryIndex, cfg.exitIndex)).toBe(true);
   });
 
+  it('a truncated value-position when never throws out of the carrier path (R4) (#2211)', () => {
+    const root = kotlin.parse(`fun f(k: Int) { val x = when (k) { 0 ->`);
+    for (const fn of kotlin.collectFunctions(root)) {
+      expect(() => createKotlinCfgVisitor().buildFunctionCfg(fn, 'p.kt')).not.toThrow();
+    }
+  });
+
   it('a class method is a CFG-bearing function', () => {
     const cfg = kotlin.cfgOf(`class C { fun m(a: Int) { g(a) } }`);
     expect(reaches(cfg, cfg.entryIndex, cfg.exitIndex)).toBe(true);
