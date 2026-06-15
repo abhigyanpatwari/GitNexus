@@ -81,6 +81,16 @@ class SyncCsvWriter {
   private buf: string[] = [];
   private readonly chunkRows: number;
   rows = 0;
+  /**
+   * First IO error this writer hit (a `fs.writeSync` short-write loop throwing
+   * on e.g. disk-full). Once poisoned the writer refuses further rows and
+   * skips its final flush; the sink surfaces it from {@link PdgEmitSink.finalize}
+   * so a truncated CSV is never handed to the bulk COPY (#2202 review #4). A
+   * streamed-write failure is an IO fault, not the CFG-logic error that the
+   * emit loop's per-file try/catch is built to swallow — poisoning routes it
+   * past that catch to a loud failure.
+   */
+  poison: unknown | undefined = undefined;
 
   constructor(
     readonly csvPath: string,
@@ -99,13 +109,29 @@ class SyncCsvWriter {
   }
 
   addRow(row: string): void {
+    // A poisoned writer is dead — stop buffering so memory can't grow on a
+    // writer whose fd is already in a bad state; finalize will report the fault.
+    if (this.poison !== undefined) return;
     this.buf.push(row);
     this.rows++;
     // Flush on DATA-row count, not buffer length: the header occupies buf[0]
     // until the first flush, so a `buf.length >= chunkRows` test would fire one
     // row early on the first chunk. Counting rows makes every flush exactly
     // `chunkRows` rows.
-    if (this.rows % this.chunkRows === 0) this.flush();
+    if (this.rows % this.chunkRows === 0) this.flushOrPoison();
+  }
+
+  /** Flush, recording (and re-throwing) any IO error as poison. Re-throwing
+   *  lets the immediate caller log the per-file failure; the persisted `poison`
+   *  is the backstop that makes finalize fail loudly even when that throw is
+   *  swallowed by the emit loop's CFG try/catch. */
+  private flushOrPoison(): void {
+    try {
+      this.flush();
+    } catch (e) {
+      this.poison ??= e;
+      throw e;
+    }
   }
 
   private flush(): void {
@@ -120,13 +146,21 @@ class SyncCsvWriter {
     this.buf.length = 0;
   }
 
-  /** Flush remaining rows and close the fd. The fd is closed even when the
-   *  final flush throws (e.g. disk-full), so a write error never leaks it. */
+  /** Flush remaining rows (unless already poisoned) and close the fd. Never
+   *  throws: a final-flush IO error is recorded as poison and the fd is still
+   *  closed, so a write error neither leaks an fd nor escapes here — the sink
+   *  reads {@link poison} after closing every writer and fails loudly then. */
   close(): void {
     try {
-      this.flush();
+      if (this.poison === undefined) this.flush();
+    } catch (e) {
+      this.poison ??= e;
     } finally {
-      fs.closeSync(this.fd);
+      try {
+        fs.closeSync(this.fd);
+      } catch {
+        /* fd may already be invalid after an IO fault — nothing to recover */
+      }
     }
   }
 }
@@ -156,6 +190,16 @@ export class PdgEmitSink implements KnowledgeGraph {
    *  but the map keeps the sink general and the manifest pair-keyed. */
   private readonly relWriters = new Map<string, SyncCsvWriter>();
   private finalized = false;
+  /**
+   * First writer-construction failure (a `fs.openSync` throwing on e.g. EMFILE
+   * — out of file descriptors). The failure happens inside the `SyncCsvWriter`
+   * constructor before a writer object exists to carry poison, so it is held
+   * here at the sink level and folded into the {@link finalize} error check.
+   * Like an in-flight write fault, an open failure mid-emit would otherwise be
+   * swallowed by the emit loop's per-file try/catch and silently drop the rest
+   * of that file's rows (#2202 review #4/#6).
+   */
+  private openFailure: unknown | undefined = undefined;
   // NOTE on dedup: the same file can be PDG-emitted in more than one language
   // pass (e.g. a `.ts` module imported by a `.vue` SFC is emitted in both the
   // TypeScript pass and the Vue context pass over the same worker-built
@@ -183,11 +227,16 @@ export class PdgEmitSink implements KnowledgeGraph {
   addNode(node: GraphNode): void {
     if (node.label === 'BasicBlock') {
       if (this.bbWriter === undefined) {
-        this.bbWriter = new SyncCsvWriter(
-          path.join(this.pdgCsvDir, 'basicblock.csv'),
-          BASICBLOCK_CSV_HEADER,
-          this.chunkRows,
-        );
+        try {
+          this.bbWriter = new SyncCsvWriter(
+            path.join(this.pdgCsvDir, 'basicblock.csv'),
+            BASICBLOCK_CSV_HEADER,
+            this.chunkRows,
+          );
+        } catch (e) {
+          this.openFailure ??= e;
+          throw e;
+        }
       }
       this.bbWriter.addRow(buildBasicBlockRow(node));
       return;
@@ -205,11 +254,16 @@ export class PdgEmitSink implements KnowledgeGraph {
       const pairKey = `${fromLabel}|${toLabel}`;
       let writer = this.relWriters.get(pairKey);
       if (writer === undefined) {
-        writer = new SyncCsvWriter(
-          path.join(this.pdgCsvDir, `rel_${fromLabel}_${toLabel}.csv`),
-          REL_CSV_HEADER,
-          this.chunkRows,
-        );
+        try {
+          writer = new SyncCsvWriter(
+            path.join(this.pdgCsvDir, `rel_${fromLabel}_${toLabel}.csv`),
+            REL_CSV_HEADER,
+            this.chunkRows,
+          );
+        } catch (e) {
+          this.openFailure ??= e;
+          throw e;
+        }
         this.relWriters.set(pairKey, writer);
       }
       writer.addRow(buildRelRow(relationship));
@@ -219,20 +273,24 @@ export class PdgEmitSink implements KnowledgeGraph {
   }
 
   /** Flush + close every streamed writer and return the COPY manifest. Every
-   *  fd is closed even if a flush throws; a flush failure is surfaced after all
-   *  writers are closed so a disk-full never COPYs a truncated CSV silently. */
+   *  fd is closed even when a writer is poisoned (its `close` never throws); any
+   *  IO fault — an in-flight write that poisoned a writer, a final-flush failure,
+   *  or a writer-open failure (EMFILE) — is surfaced loudly here so a disk-full
+   *  / out-of-fds run never hands a truncated CSV to the bulk COPY (#2202 review
+   *  #4). The emit loop's per-file try/catch swallows the synchronous throw, so
+   *  this poison check is the backstop that turns a silent partial manifest into
+   *  a hard failure. */
   finalize(): PdgEmitManifest {
     if (this.finalized) throw new Error('PdgEmitSink.finalize() called twice');
     this.finalized = true;
 
     const errors: unknown[] = [];
+    if (this.openFailure !== undefined) errors.push(this.openFailure);
+
     const nodeFiles = new Map<NodeTableName, { csvPath: string; rows: number }>();
     if (this.bbWriter !== undefined) {
-      try {
-        this.bbWriter.close();
-      } catch (e) {
-        errors.push(e);
-      }
+      this.bbWriter.close();
+      if (this.bbWriter.poison !== undefined) errors.push(this.bbWriter.poison);
       nodeFiles.set('BasicBlock' as NodeTableName, {
         csvPath: this.bbWriter.csvPath,
         rows: this.bbWriter.rows,
@@ -241,20 +299,19 @@ export class PdgEmitSink implements KnowledgeGraph {
 
     const relsByPair = new Map<string, { csvPath: string; rows: number }>();
     for (const [pairKey, writer] of this.relWriters) {
-      try {
-        writer.close();
-      } catch (e) {
-        errors.push(e);
-      }
+      writer.close();
+      if (writer.poison !== undefined) errors.push(writer.poison);
       relsByPair.set(pairKey, { csvPath: writer.csvPath, rows: writer.rows });
     }
 
     if (errors.length > 0) {
       const first = errors[0];
       throw new Error(
-        `PdgEmitSink: ${errors.length} CSV writer(s) failed to flush: ${
-          first instanceof Error ? first.message : String(first)
-        }`,
+        `PdgEmitSink: ${errors.length} streamed CSV writer(s) hit an IO error ` +
+          `(disk-full / out-of-fds) during the emit — the persisted graph would ` +
+          `be truncated, so the run is failed rather than COPYing a partial CSV: ${
+            first instanceof Error ? first.message : String(first)
+          }`,
       );
     }
 

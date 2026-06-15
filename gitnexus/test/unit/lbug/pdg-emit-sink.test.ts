@@ -9,7 +9,7 @@
  *    emit for the same node/edge set (the issue's byte-identity acceptance);
  *  - never accumulates the PDG layer in the in-memory graph (the RSS bound).
  */
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import os from 'node:os';
@@ -245,5 +245,77 @@ describe('PdgEmitSink — pass-through contract (dedup is the caller’s)', () =
     });
     const manifest = sink.finalize();
     expect(manifest.relsByPair.size).toBe(0);
+  });
+});
+
+describe('PdgEmitSink — IO failure poisoning (#2202 review #4/#6)', () => {
+  // A streamed-write failure is an IO fault, not the CFG-logic error the emit
+  // loop's per-file try/catch is built to swallow. The sink poisons the failing
+  // writer (or records an open failure) so finalize fails loudly instead of
+  // returning a truncated manifest that the bulk COPY would silently load.
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('poisons the writer on a mid-stream write failure (disk-full) → finalize throws', () => {
+    const pdgDir = path.join(tmpRoot, 'pdg-csv');
+    const sink = new PdgEmitSink(createKnowledgeGraph(), pdgDir, 1); // flush every row
+
+    // The writer opens fine (real openSync); the flush's writeSync fails.
+    const spy = vi.spyOn(fs, 'writeSync').mockImplementation(() => {
+      throw new Error('ENOSPC: no space left on device');
+    });
+    // The throw propagates to the immediate caller (the emit loop, which would
+    // swallow it as a per-file CFG error) — that is exactly why finalize must
+    // re-check poison below.
+    expect(() => sink.addNode(bbNode('a.ts', 0, 1))).toThrow(/ENOSPC/);
+    spy.mockRestore();
+
+    expect(() => sink.finalize()).toThrow(/IO error|ENOSPC/);
+  });
+
+  it('records an openSync failure (EMFILE) → finalize throws even if the caller swallowed it', () => {
+    const pdgDir = path.join(tmpRoot, 'pdg-csv'); // ctor mkdir/rm run before the spy
+    const sink = new PdgEmitSink(createKnowledgeGraph(), pdgDir);
+
+    const spy = vi.spyOn(fs, 'openSync').mockImplementation(() => {
+      throw new Error('EMFILE: too many open files');
+    });
+    expect(() => sink.addNode(bbNode('a.ts', 0, 1))).toThrow(/EMFILE/);
+    spy.mockRestore();
+
+    expect(() => sink.finalize()).toThrow(/IO error|EMFILE/);
+  });
+
+  it('surfaces a final-flush IO failure from finalize (rows buffered, never mid-flushed)', () => {
+    const pdgDir = path.join(tmpRoot, 'pdg-csv');
+    const sink = new PdgEmitSink(createKnowledgeGraph(), pdgDir, 1000); // big chunk → no mid flush
+    sink.addNode(bbNode('a.ts', 0, 1)); // buffered only (1 < 1000)
+
+    // The only writeSync happens during the final flush inside finalize → close.
+    const spy = vi.spyOn(fs, 'writeSync').mockImplementation(() => {
+      throw new Error('ENOSPC: disk full at close');
+    });
+    // close() never throws (it records poison); finalize reports it.
+    expect(() => sink.finalize()).toThrow(/IO error|ENOSPC/);
+    spy.mockRestore();
+  });
+
+  it('a poisoned writer stops accepting rows (no unbounded buffering on a dead fd)', () => {
+    const pdgDir = path.join(tmpRoot, 'pdg-csv');
+    const sink = new PdgEmitSink(createKnowledgeGraph(), pdgDir, 1);
+
+    const spy = vi.spyOn(fs, 'writeSync').mockImplementation(() => {
+      throw new Error('ENOSPC');
+    });
+    expect(() => sink.addNode(bbNode('a.ts', 0, 1))).toThrow(/ENOSPC/); // poisons the writer
+    // Subsequent rows are dropped silently at the writer (it is dead) — they do
+    // not re-throw and do not accumulate; the run still fails at finalize.
+    expect(() => sink.addNode(bbNode('a.ts', 1, 2))).not.toThrow();
+    expect(() => sink.addNode(bbNode('a.ts', 2, 3))).not.toThrow();
+    spy.mockRestore();
+
+    expect(() => sink.finalize()).toThrow(/IO error|ENOSPC/);
   });
 });
