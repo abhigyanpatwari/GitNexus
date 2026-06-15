@@ -49,11 +49,9 @@ import { logger } from '../logger.js';
 // ---------------------------------------------------------------------------
 // Relationship CSV splitting — extracted for testability (PR #818)
 // ---------------------------------------------------------------------------
-
-/** Factory for creating WriteStreams — injectable for testing. Canonical
- * definition lives in rel-pair-routing.ts (imported above for local use by
- * splitRelCsvByLabelPair); re-exported here to preserve this module's surface. */
-export type { WriteStreamFactory };
+// WriteStreamFactory is imported above from rel-pair-routing.ts (its canonical
+// home) for splitRelCsvByLabelPair's signature; no external code imports it from
+// here, so it is not re-exported.
 
 /** Result of splitting the relationship CSV into per-label-pair files. */
 export interface RelCsvSplitResult {
