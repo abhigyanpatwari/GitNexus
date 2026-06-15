@@ -25,7 +25,9 @@ scales:
   CSVs + per-FROM→TO-label-pair rel CSVs). This is the **byte-identity gate**:
   the U2 (direct per-pair routing) and U3 (per-row microtask elimination)
   optimisations must not change graph content, and any future change that does
-  fails `--check`.
+  fails `--check`. Byte-identity holds for all quote-free ids; for an id
+  containing a `"` the router intentionally diverges from — and is more correct
+  than — the legacy regex oracle (see `src/core/lbug/rel-pair-routing.ts`).
 
 ## What it does NOT measure
 

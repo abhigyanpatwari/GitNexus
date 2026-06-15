@@ -4,7 +4,7 @@
  * Tests: streamAllCSVsToDisk with real graph data.
  * Covers hardening fixes: LRU cache (#24), BufferedCSVWriter flush
  */
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'vitest';
 import fs from 'fs/promises';
 import { finished } from 'stream/promises';
 import path from 'path';
@@ -253,6 +253,27 @@ describe('streamAllCSVsToDisk', () => {
     expect(fileCsv).toBeDefined();
     expect(fileCsv!.rows).toBe(1);
   });
+
+  it('crosses the BufferedCSVWriter FLUSH_EVERY boundary without losing rows', async () => {
+    // FLUSH_EVERY=500; a >500-node graph forces ≥1 mid-stream flush, exercising
+    // addRow's flush-promise return + the loop's `if (pending) await pending`
+    // path that the small fixtures above never reach (only the bench did).
+    const N = 600;
+    const nodes = Array.from({ length: N }, (_, i) => ({
+      id: `File:src/f${i}.ts`,
+      label: 'File' as const,
+      name: `f${i}.ts`,
+      filePath: `src/f${i}.ts`,
+    }));
+    const result = await streamAllCSVsToDisk(buildTestGraph(nodes), repoDir, csvDir);
+
+    const fileCsv = result.nodeFiles.get('File');
+    expect(fileCsv).toBeDefined();
+    expect(fileCsv!.rows).toBe(N); // no rows dropped/duplicated at the flush boundary
+    const dataRows = dataRowsOf(await fs.readFile(fileCsv!.csvPath, 'utf-8'));
+    expect(dataRows).toHaveLength(N);
+    expect(new Set(dataRows).size).toBe(N); // all distinct — no flush-boundary corruption
+  });
 });
 
 /**
@@ -344,15 +365,25 @@ describe('streamAllCSVsToDisk — deterministic output ordering', () => {
 });
 
 /**
- * #2203 U2 byte-identity: the direct per-pair emit must produce per-pair files
- * byte-for-byte identical to the legacy splitRelCsvByLabelPair oracle run over
- * an equivalent monolithic relations.csv from the same graph. This is the
- * load-bearing guard for "byte-identical graph content" (issue acceptance).
+ * #2203 U2 byte-identity: for all quote-free ids the direct per-pair emit must
+ * produce per-pair files byte-for-byte identical to the legacy
+ * splitRelCsvByLabelPair oracle run over an equivalent monolithic relations.csv
+ * from the same graph. This is the load-bearing guard for "byte-identical graph
+ * content" (issue acceptance). The ONE intentional divergence — ids containing a
+ * double-quote, where the router (raw-id label) is more correct than the oracle
+ * (regex over the escaped row) — is asserted explicitly in its own test below.
  */
 describe('streamAllCSVsToDisk — direct per-pair emit matches the split oracle', () => {
+  // The oracle always emits in graph.iterRelationships() (unsorted) order; the
+  // production path honours GITNEXUS_SORT_GRAPH_OUTPUT. Clear it so a value
+  // leaked from a prior test can't desync the two and produce a spurious diff.
+  beforeEach(() => {
+    delete process.env.GITNEXUS_SORT_GRAPH_OUTPUT;
+  });
+
   it('produces byte-identical per-pair files + identical skip/total accounting', async () => {
-    // Multiple valid pairs, getNodeLabel special prefixes (comm_/proc_), and one
-    // invalid-label edge that BOTH paths must skip identically.
+    // Multiple valid pairs, getNodeLabel special prefixes (comm_ AND proc_), and
+    // one invalid-label edge that BOTH paths must skip identically.
     const graph = buildTestGraph(
       [
         { id: 'File:a.ts', label: 'File', name: 'a.ts', filePath: 'a.ts' },
@@ -360,14 +391,20 @@ describe('streamAllCSVsToDisk — direct per-pair emit matches the split oracle'
         { id: 'Function:a.ts:g:5', label: 'Function', name: 'g', filePath: 'a.ts' },
         { id: 'comm_1', label: 'Community' as never, name: 'c1', filePath: '' },
         { id: 'comm_2', label: 'Community' as never, name: 'c2', filePath: '' },
+        { id: 'proc_1', label: 'Process' as never, name: 'p1', filePath: '' },
+        { id: 'proc_2', label: 'Process' as never, name: 'p2', filePath: '' },
       ],
       [
         { sourceId: 'File:a.ts', targetId: 'Function:a.ts:f:1', type: 'CONTAINS' },
         { sourceId: 'File:a.ts', targetId: 'Function:a.ts:g:5', type: 'CONTAINS' },
         { sourceId: 'Function:a.ts:f:1', targetId: 'Function:a.ts:g:5', type: 'CALLS' },
         { sourceId: 'comm_1', targetId: 'comm_2', type: 'CONTAINS' },
+        // proc_ prefix → Process label (getNodeLabel special case).
+        { sourceId: 'proc_1', targetId: 'proc_2', type: 'CONTAINS' },
         // Invalid FROM label ('Bogus' ∉ NODE_TABLES) — skipped by both paths.
         { sourceId: 'Bogus:x', targetId: 'File:a.ts', type: 'CONTAINS' },
+        // Invalid TO label — exercises the OTHER branch of the skip condition.
+        { sourceId: 'File:a.ts', targetId: 'Bogus:y', type: 'CONTAINS' },
       ],
     );
 
@@ -400,9 +437,9 @@ describe('streamAllCSVsToDisk — direct per-pair emit matches the split oracle'
 
     // Identical accounting.
     expect(direct.totalValidRels).toBe(split.totalValidRels);
-    expect(direct.totalValidRels).toBe(4);
+    expect(direct.totalValidRels).toBe(5);
     expect(direct.skippedRels).toBe(split.skippedRels);
-    expect(direct.skippedRels).toBe(1);
+    expect(direct.skippedRels).toBe(2); // invalid-FROM + invalid-TO, both skipped
     expect(direct.relHeader).toBe(split.relHeader);
 
     // Identical pair set.
@@ -413,6 +450,118 @@ describe('streamAllCSVsToDisk — direct per-pair emit matches the split oracle'
       const directContent = await fs.readFile(direct.relsByPair.get(key)!.csvPath, 'utf-8');
       const oracleContent = await fs.readFile(split.relsByPairMeta.get(key)!.csvPath, 'utf-8');
       expect(directContent, `pair ${key}`).toBe(oracleContent);
+    }
+  });
+
+  it('quote-in-id edge: router routes it (raw-id label) while the oracle drops it — intended divergence', async () => {
+    // A node id with an embedded double-quote (legal in a POSIX filePath). The
+    // router derives the label from the RAW id (`File`), so it routes the edge;
+    // the oracle re-derives the label via /"([^"]*)","([^"]*)"/ over the ESCAPED
+    // row (`"File:a""b.ts",...`), mis-reads the field, and drops it. This locks
+    // the intended divergence so a future change can't silently revert the
+    // router to the buggy regex semantics.
+    const graph = buildTestGraph(
+      [
+        { id: 'File:clean.ts', label: 'File', name: 'clean.ts', filePath: 'clean.ts' },
+        { id: 'File:a"b.ts', label: 'File', name: 'a"b.ts', filePath: 'a"b.ts' },
+        { id: 'Function:a.ts:f:1', label: 'Function', name: 'f', filePath: 'a.ts' },
+      ],
+      [
+        { sourceId: 'File:clean.ts', targetId: 'Function:a.ts:f:1', type: 'CONTAINS' },
+        { sourceId: 'File:a"b.ts', targetId: 'Function:a.ts:f:1', type: 'CONTAINS' },
+      ],
+    );
+
+    const directDir = path.join(csvDir, 'qd-direct');
+    const oracleDir = path.join(csvDir, 'qd-oracle');
+    await fs.mkdir(oracleDir, { recursive: true });
+
+    const direct = await streamAllCSVsToDisk(graph, repoDir, directDir);
+
+    const relCsv = path.join(oracleDir, 'relations.csv');
+    const lines = [REL_CSV_HEADER];
+    for (const rel of graph.iterRelationships()) lines.push(buildRelRow(rel));
+    await fs.writeFile(relCsv, lines.join('\n') + '\n', 'utf-8');
+    const split = await splitRelCsvByLabelPair(
+      relCsv,
+      oracleDir,
+      new Set<string>(NODE_TABLES),
+      getNodeLabel,
+    );
+    await Promise.all(
+      Array.from(split.pairWriteStreams.values()).map(async (ws) => {
+        ws.end();
+        await finished(ws);
+      }),
+    );
+
+    // Router routes BOTH edges — the raw-id label `File` is valid for both.
+    expect(direct.totalValidRels).toBe(2);
+    expect(direct.skippedRels).toBe(0);
+    expect(direct.relsByPair.get('File|Function')!.rows).toBe(2);
+
+    // Oracle DIVERGES: its regex mis-reads the quote-in-id row and drops that
+    // edge, so it routes strictly fewer edges. Asserted robustly — we do NOT
+    // pin the oracle's exact mis-derived label.
+    expect(split.totalValidRels).toBeLessThan(direct.totalValidRels);
+    expect(split.skippedRels).toBeGreaterThan(direct.skippedRels);
+  });
+
+  it('sorted path (GITNEXUS_SORT_GRAPH_OUTPUT=1): per-pair files byte-identical to the oracle', async () => {
+    // The earlier differential test covers the default (insertion-order) path.
+    // Here the sorted emit path must also match the oracle — fed the SAME
+    // id-sorted order orderedRelationships() uses (sort by rel.id).
+    process.env.GITNEXUS_SORT_GRAPH_OUTPUT = '1';
+    try {
+      const graph = buildTestGraph(
+        [
+          { id: 'File:a.ts', label: 'File', name: 'a.ts', filePath: 'a.ts' },
+          { id: 'Function:a.ts:f:1', label: 'Function', name: 'f', filePath: 'a.ts' },
+          { id: 'Function:a.ts:g:5', label: 'Function', name: 'g', filePath: 'a.ts' },
+        ],
+        // Deliberately NOT in id-sorted order so the sort actually reorders rows.
+        [
+          { sourceId: 'Function:a.ts:f:1', targetId: 'Function:a.ts:g:5', type: 'CALLS' },
+          { sourceId: 'File:a.ts', targetId: 'Function:a.ts:g:5', type: 'CONTAINS' },
+          { sourceId: 'File:a.ts', targetId: 'Function:a.ts:f:1', type: 'CONTAINS' },
+        ],
+      );
+
+      const directDir = path.join(csvDir, 'sorted-direct');
+      const oracleDir = path.join(csvDir, 'sorted-oracle');
+      await fs.mkdir(oracleDir, { recursive: true });
+
+      const direct = await streamAllCSVsToDisk(graph, repoDir, directDir);
+
+      // Oracle fed the same id-sorted order the sorted emit produces.
+      const sortedRels = [...graph.iterRelationships()].sort((a, b) =>
+        a.id < b.id ? -1 : a.id > b.id ? 1 : 0,
+      );
+      const relCsv = path.join(oracleDir, 'relations.csv');
+      const lines = [REL_CSV_HEADER];
+      for (const rel of sortedRels) lines.push(buildRelRow(rel));
+      await fs.writeFile(relCsv, lines.join('\n') + '\n', 'utf-8');
+      const split = await splitRelCsvByLabelPair(
+        relCsv,
+        oracleDir,
+        new Set<string>(NODE_TABLES),
+        getNodeLabel,
+      );
+      await Promise.all(
+        Array.from(split.pairWriteStreams.values()).map(async (ws) => {
+          ws.end();
+          await finished(ws);
+        }),
+      );
+
+      expect([...direct.relsByPair.keys()].sort()).toEqual([...split.relsByPairMeta.keys()].sort());
+      for (const key of direct.relsByPair.keys()) {
+        const directContent = await fs.readFile(direct.relsByPair.get(key)!.csvPath, 'utf-8');
+        const oracleContent = await fs.readFile(split.relsByPairMeta.get(key)!.csvPath, 'utf-8');
+        expect(directContent, `pair ${key} (sorted)`).toBe(oracleContent);
+      }
+    } finally {
+      delete process.env.GITNEXUS_SORT_GRAPH_OUTPUT;
     }
   });
 });

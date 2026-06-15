@@ -245,7 +245,7 @@ export const buildRelRow = (rel: GraphRelationship): string =>
     escapeCSVField(rel.type),
     escapeCSVNumber(rel.confidence, 1.0),
     escapeCSVField(rel.reason),
-    escapeCSVNumber((rel as { step?: number }).step, 0),
+    escapeCSVNumber(rel.step, 0),
   ].join(',');
 
 /** Canonical BasicBlock node CSV header — taint/PDG substrate (issue #2080).
@@ -302,251 +302,185 @@ export const streamAllCSVsToDisk = async (
   const prevMax = process.getMaxListeners();
   process.setMaxListeners(prevMax + 40);
 
-  const contentCache = new FileContentCache(repoPath);
+  // try/finally so the listener bump is ALWAYS restored — including the
+  // rel-routing throw path (#2203 U2) and any node-writer finish() rejection,
+  // not just the success path (avoids leaking +40 listeners across failed runs
+  // in long-lived hosts / the test suite).
+  try {
+    const contentCache = new FileContentCache(repoPath);
 
-  // Create writers for every node type up-front
-  const fileWriter = new BufferedCSVWriter(
-    path.join(csvDir, 'file.csv'),
-    'id,name,filePath,content',
-  );
-  const folderWriter = new BufferedCSVWriter(path.join(csvDir, 'folder.csv'), 'id,name,filePath');
-  const codeElementHeader = 'id,name,filePath,startLine,endLine,isExported,content,description';
-  const functionWriter = new BufferedCSVWriter(
-    path.join(csvDir, 'function.csv'),
-    codeElementHeader,
-  );
-  const classWriter = new BufferedCSVWriter(path.join(csvDir, 'class.csv'), codeElementHeader);
-  const interfaceWriter = new BufferedCSVWriter(
-    path.join(csvDir, 'interface.csv'),
-    codeElementHeader,
-  );
-  const methodHeader =
-    'id,name,filePath,startLine,endLine,isExported,content,description,parameterCount,returnType';
-  const methodWriter = new BufferedCSVWriter(path.join(csvDir, 'method.csv'), methodHeader);
-  const codeElemWriter = new BufferedCSVWriter(
-    path.join(csvDir, 'codeelement.csv'),
-    codeElementHeader,
-  );
-  const communityWriter = new BufferedCSVWriter(
-    path.join(csvDir, 'community.csv'),
-    'id,label,heuristicLabel,keywords,description,enrichedBy,cohesion,symbolCount',
-  );
-  const processWriter = new BufferedCSVWriter(
-    path.join(csvDir, 'process.csv'),
-    'id,label,heuristicLabel,processType,stepCount,communities,entryPointId,terminalId',
-  );
-
-  // Section nodes have an extra 'level' column
-  const sectionWriter = new BufferedCSVWriter(
-    path.join(csvDir, 'section.csv'),
-    'id,name,filePath,startLine,endLine,level,content,description',
-  );
-
-  // Route nodes for API endpoint mapping
-  const routeWriter = new BufferedCSVWriter(
-    path.join(csvDir, 'route.csv'),
-    'id,name,filePath,responseKeys,errorKeys,middleware',
-  );
-
-  // Tool nodes for MCP tool definitions
-  const toolWriter = new BufferedCSVWriter(
-    path.join(csvDir, 'tool.csv'),
-    'id,name,filePath,description',
-  );
-
-  // BasicBlock nodes — taint/PDG substrate (issue #2080). No `name` column;
-  // blocks are identified by id + source span. Emitted by no phase yet.
-  const basicBlockWriter = new BufferedCSVWriter(
-    path.join(csvDir, 'basicblock.csv'),
-    BASICBLOCK_CSV_HEADER,
-  );
-
-  // Multi-language node types share the same CSV shape (no isExported column)
-  const multiLangHeader = 'id,name,filePath,startLine,endLine,content,description';
-  const MULTI_LANG_TYPES = [
-    'Struct',
-    'Enum',
-    'Macro',
-    'Typedef',
-    'Union',
-    'Namespace',
-    'Trait',
-    'Impl',
-    'TypeAlias',
-    'Const',
-    'Static',
-    'Variable',
-    'Property',
-    'Record',
-    'Delegate',
-    'Annotation',
-    'Constructor',
-    'Template',
-    'Module',
-  ] as const;
-  const propertyHeader = 'id,name,filePath,startLine,endLine,content,description,declaredType';
-  const multiLangWriters = new Map<string, BufferedCSVWriter>();
-  for (const t of MULTI_LANG_TYPES) {
-    multiLangWriters.set(
-      t,
-      new BufferedCSVWriter(
-        path.join(csvDir, `${t.toLowerCase()}.csv`),
-        t === 'Property' ? propertyHeader : multiLangHeader,
-      ),
+    // Create writers for every node type up-front
+    const fileWriter = new BufferedCSVWriter(
+      path.join(csvDir, 'file.csv'),
+      'id,name,filePath,content',
     );
-  }
+    const folderWriter = new BufferedCSVWriter(path.join(csvDir, 'folder.csv'), 'id,name,filePath');
+    const codeElementHeader = 'id,name,filePath,startLine,endLine,isExported,content,description';
+    const functionWriter = new BufferedCSVWriter(
+      path.join(csvDir, 'function.csv'),
+      codeElementHeader,
+    );
+    const classWriter = new BufferedCSVWriter(path.join(csvDir, 'class.csv'), codeElementHeader);
+    const interfaceWriter = new BufferedCSVWriter(
+      path.join(csvDir, 'interface.csv'),
+      codeElementHeader,
+    );
+    const methodHeader =
+      'id,name,filePath,startLine,endLine,isExported,content,description,parameterCount,returnType';
+    const methodWriter = new BufferedCSVWriter(path.join(csvDir, 'method.csv'), methodHeader);
+    const codeElemWriter = new BufferedCSVWriter(
+      path.join(csvDir, 'codeelement.csv'),
+      codeElementHeader,
+    );
+    const communityWriter = new BufferedCSVWriter(
+      path.join(csvDir, 'community.csv'),
+      'id,label,heuristicLabel,keywords,description,enrichedBy,cohesion,symbolCount',
+    );
+    const processWriter = new BufferedCSVWriter(
+      path.join(csvDir, 'process.csv'),
+      'id,label,heuristicLabel,processType,stepCount,communities,entryPointId,terminalId',
+    );
 
-  const codeWriterMap: Record<string, BufferedCSVWriter> = {
-    Function: functionWriter,
-    Class: classWriter,
-    Interface: interfaceWriter,
-    CodeElement: codeElemWriter,
-  };
+    // Section nodes have an extra 'level' column
+    const sectionWriter = new BufferedCSVWriter(
+      path.join(csvDir, 'section.csv'),
+      'id,name,filePath,startLine,endLine,level,content,description',
+    );
 
-  // Deduplicate all node types — the pipeline can produce duplicate IDs across
-  // all symbol types (Class, Method, Function, etc.), not just File nodes.
-  // A single Set covering every label prevents PK violations on COPY.
-  const seenNodeIds = new Set<string>();
+    // Route nodes for API endpoint mapping
+    const routeWriter = new BufferedCSVWriter(
+      path.join(csvDir, 'route.csv'),
+      'id,name,filePath,responseKeys,errorKeys,middleware',
+    );
 
-  // --- SINGLE PASS over all nodes ---
-  for (const node of orderedNodes(graph, sortOutput)) {
-    if (seenNodeIds.has(node.id)) continue;
-    seenNodeIds.add(node.id);
+    // Tool nodes for MCP tool definitions
+    const toolWriter = new BufferedCSVWriter(
+      path.join(csvDir, 'tool.csv'),
+      'id,name,filePath,description',
+    );
 
-    // addRow returns a promise only when it flushes; awaiting it once after the
-    // switch (instead of `await`-ing every addRow) skips a per-row microtask
-    // tick on the ~FLUSH_EVERY-1 buffered rows between flushes (#2203 U3).
-    let pending: Promise<void> | undefined;
-    switch (node.label) {
-      case 'File': {
-        const content = await extractContent(node, contentCache);
-        pending = fileWriter.addRow(
-          [
-            escapeCSVField(node.id),
-            escapeCSVField(node.properties.name || ''),
-            escapeCSVField(node.properties.filePath || ''),
-            escapeCSVField(content),
-          ].join(','),
-        );
-        break;
-      }
-      case 'Folder':
-        pending = folderWriter.addRow(
-          [
-            escapeCSVField(node.id),
-            escapeCSVField(node.properties.name || ''),
-            escapeCSVField(node.properties.filePath || ''),
-          ].join(','),
-        );
-        break;
-      case 'Community': {
-        const keywords = node.properties.keywords || [];
-        const keywordsStr = `[${keywords.map((k: string) => `'${k.replace(/\\/g, '\\\\').replace(/'/g, "''").replace(/,/g, '\\,')}'`).join(',')}]`;
-        pending = communityWriter.addRow(
-          [
-            escapeCSVField(node.id),
-            escapeCSVField(node.properties.name || ''),
-            escapeCSVField(node.properties.heuristicLabel || ''),
-            keywordsStr,
-            escapeCSVField(node.properties.description || ''),
-            escapeCSVField(node.properties.enrichedBy || 'heuristic'),
-            escapeCSVNumber(node.properties.cohesion, 0),
-            escapeCSVNumber(node.properties.symbolCount, 0),
-          ].join(','),
-        );
-        break;
-      }
-      case 'Process': {
-        const communities = node.properties.communities || [];
-        const communitiesStr = `[${communities.map((c: string) => `'${c.replace(/'/g, "''")}'`).join(',')}]`;
-        pending = processWriter.addRow(
-          [
-            escapeCSVField(node.id),
-            escapeCSVField(node.properties.name || ''),
-            escapeCSVField(node.properties.heuristicLabel || ''),
-            escapeCSVField(node.properties.processType || ''),
-            escapeCSVNumber(node.properties.stepCount, 0),
-            escapeCSVField(communitiesStr),
-            escapeCSVField(node.properties.entryPointId || ''),
-            escapeCSVField(node.properties.terminalId || ''),
-          ].join(','),
-        );
-        break;
-      }
-      case 'Method': {
-        const content = await extractContent(node, contentCache);
-        pending = methodWriter.addRow(
-          [
-            escapeCSVField(node.id),
-            escapeCSVField(node.properties.name || ''),
-            escapeCSVField(node.properties.filePath || ''),
-            escapeCSVNumber(node.properties.startLine, -1),
-            escapeCSVNumber(node.properties.endLine, -1),
-            node.properties.isExported ? 'true' : 'false',
-            escapeCSVField(content),
-            escapeCSVField(node.properties.description || ''),
-            escapeCSVNumber(node.properties.parameterCount, 0),
-            escapeCSVField(node.properties.returnType || ''),
-          ].join(','),
-        );
-        break;
-      }
-      case 'Section': {
-        const content = await extractContent(node, contentCache);
-        pending = sectionWriter.addRow(
-          [
-            escapeCSVField(node.id),
-            escapeCSVField(node.properties.name || ''),
-            escapeCSVField(node.properties.filePath || ''),
-            escapeCSVNumber(node.properties.startLine, -1),
-            escapeCSVNumber(node.properties.endLine, -1),
-            escapeCSVNumber(node.properties.level, 1),
-            escapeCSVField(content),
-            escapeCSVField(node.properties.description || ''),
-          ].join(','),
-        );
-        break;
-      }
-      case 'Route': {
-        const responseKeys = node.properties.responseKeys || [];
-        // LadybugDB array literal inside a quoted CSV field: escapeCSVField wraps in "..."
-        // and the array uses single-quoted elements
-        const keysStr = `[${responseKeys.map((k: string) => `'${k.replace(/'/g, "''")}'`).join(',')}]`;
-        const errorKeys = node.properties.errorKeys || [];
-        const errorKeysStr = `[${errorKeys.map((k: string) => `'${k.replace(/'/g, "''")}'`).join(',')}]`;
-        const middleware = node.properties.middleware || [];
-        const middlewareStr = `[${middleware.map((m: string) => `'${m.replace(/'/g, "''")}'`).join(',')}]`;
-        pending = routeWriter.addRow(
-          [
-            escapeCSVField(node.id),
-            escapeCSVField(node.properties.name || ''),
-            escapeCSVField(node.properties.filePath || ''),
-            escapeCSVField(keysStr),
-            escapeCSVField(errorKeysStr),
-            escapeCSVField(middlewareStr),
-          ].join(','),
-        );
-        break;
-      }
-      case 'Tool':
-        pending = toolWriter.addRow(
-          [
-            escapeCSVField(node.id),
-            escapeCSVField(node.properties.name || ''),
-            escapeCSVField(node.properties.filePath || ''),
-            escapeCSVField(node.properties.description || ''),
-          ].join(','),
-        );
-        break;
-      case 'BasicBlock':
-        pending = basicBlockWriter.addRow(buildBasicBlockRow(node));
-        break;
-      default: {
-        // Code element nodes (Function, Class, Interface, CodeElement)
-        const writer = codeWriterMap[node.label];
-        if (writer) {
+    // BasicBlock nodes — taint/PDG substrate (issue #2080). No `name` column;
+    // blocks are identified by id + source span. Emitted by no phase yet.
+    const basicBlockWriter = new BufferedCSVWriter(
+      path.join(csvDir, 'basicblock.csv'),
+      BASICBLOCK_CSV_HEADER,
+    );
+
+    // Multi-language node types share the same CSV shape (no isExported column)
+    const multiLangHeader = 'id,name,filePath,startLine,endLine,content,description';
+    const MULTI_LANG_TYPES = [
+      'Struct',
+      'Enum',
+      'Macro',
+      'Typedef',
+      'Union',
+      'Namespace',
+      'Trait',
+      'Impl',
+      'TypeAlias',
+      'Const',
+      'Static',
+      'Variable',
+      'Property',
+      'Record',
+      'Delegate',
+      'Annotation',
+      'Constructor',
+      'Template',
+      'Module',
+    ] as const;
+    const propertyHeader = 'id,name,filePath,startLine,endLine,content,description,declaredType';
+    const multiLangWriters = new Map<string, BufferedCSVWriter>();
+    for (const t of MULTI_LANG_TYPES) {
+      multiLangWriters.set(
+        t,
+        new BufferedCSVWriter(
+          path.join(csvDir, `${t.toLowerCase()}.csv`),
+          t === 'Property' ? propertyHeader : multiLangHeader,
+        ),
+      );
+    }
+
+    const codeWriterMap: Record<string, BufferedCSVWriter> = {
+      Function: functionWriter,
+      Class: classWriter,
+      Interface: interfaceWriter,
+      CodeElement: codeElemWriter,
+    };
+
+    // Deduplicate all node types — the pipeline can produce duplicate IDs across
+    // all symbol types (Class, Method, Function, etc.), not just File nodes.
+    // A single Set covering every label prevents PK violations on COPY.
+    const seenNodeIds = new Set<string>();
+
+    // --- SINGLE PASS over all nodes ---
+    for (const node of orderedNodes(graph, sortOutput)) {
+      if (seenNodeIds.has(node.id)) continue;
+      seenNodeIds.add(node.id);
+
+      // addRow returns a promise only when it flushes; awaiting it once after the
+      // switch (instead of `await`-ing every addRow) skips a per-row microtask
+      // tick on the ~FLUSH_EVERY-1 buffered rows between flushes (#2203 U3).
+      let pending: Promise<void> | undefined;
+      switch (node.label) {
+        case 'File': {
           const content = await extractContent(node, contentCache);
-          pending = writer.addRow(
+          pending = fileWriter.addRow(
+            [
+              escapeCSVField(node.id),
+              escapeCSVField(node.properties.name || ''),
+              escapeCSVField(node.properties.filePath || ''),
+              escapeCSVField(content),
+            ].join(','),
+          );
+          break;
+        }
+        case 'Folder':
+          pending = folderWriter.addRow(
+            [
+              escapeCSVField(node.id),
+              escapeCSVField(node.properties.name || ''),
+              escapeCSVField(node.properties.filePath || ''),
+            ].join(','),
+          );
+          break;
+        case 'Community': {
+          const keywords = node.properties.keywords || [];
+          const keywordsStr = `[${keywords.map((k: string) => `'${k.replace(/\\/g, '\\\\').replace(/'/g, "''").replace(/,/g, '\\,')}'`).join(',')}]`;
+          pending = communityWriter.addRow(
+            [
+              escapeCSVField(node.id),
+              escapeCSVField(node.properties.name || ''),
+              escapeCSVField(node.properties.heuristicLabel || ''),
+              keywordsStr,
+              escapeCSVField(node.properties.description || ''),
+              escapeCSVField(node.properties.enrichedBy || 'heuristic'),
+              escapeCSVNumber(node.properties.cohesion, 0),
+              escapeCSVNumber(node.properties.symbolCount, 0),
+            ].join(','),
+          );
+          break;
+        }
+        case 'Process': {
+          const communities = node.properties.communities || [];
+          const communitiesStr = `[${communities.map((c: string) => `'${c.replace(/'/g, "''")}'`).join(',')}]`;
+          pending = processWriter.addRow(
+            [
+              escapeCSVField(node.id),
+              escapeCSVField(node.properties.name || ''),
+              escapeCSVField(node.properties.heuristicLabel || ''),
+              escapeCSVField(node.properties.processType || ''),
+              escapeCSVNumber(node.properties.stepCount, 0),
+              escapeCSVField(communitiesStr),
+              escapeCSVField(node.properties.entryPointId || ''),
+              escapeCSVField(node.properties.terminalId || ''),
+            ].join(','),
+          );
+          break;
+        }
+        case 'Method': {
+          const content = await extractContent(node, contentCache);
+          pending = methodWriter.addRow(
             [
               escapeCSVField(node.id),
               escapeCSVField(node.properties.name || ''),
@@ -556,110 +490,191 @@ export const streamAllCSVsToDisk = async (
               node.properties.isExported ? 'true' : 'false',
               escapeCSVField(content),
               escapeCSVField(node.properties.description || ''),
+              escapeCSVNumber(node.properties.parameterCount, 0),
+              escapeCSVField(node.properties.returnType || ''),
             ].join(','),
           );
-        } else {
-          // Multi-language node types (Struct, Impl, Trait, Macro, etc.)
-          const mlWriter = multiLangWriters.get(node.label);
-          if (mlWriter) {
+          break;
+        }
+        case 'Section': {
+          const content = await extractContent(node, contentCache);
+          pending = sectionWriter.addRow(
+            [
+              escapeCSVField(node.id),
+              escapeCSVField(node.properties.name || ''),
+              escapeCSVField(node.properties.filePath || ''),
+              escapeCSVNumber(node.properties.startLine, -1),
+              escapeCSVNumber(node.properties.endLine, -1),
+              escapeCSVNumber(node.properties.level, 1),
+              escapeCSVField(content),
+              escapeCSVField(node.properties.description || ''),
+            ].join(','),
+          );
+          break;
+        }
+        case 'Route': {
+          const responseKeys = node.properties.responseKeys || [];
+          // LadybugDB array literal inside a quoted CSV field: escapeCSVField wraps in "..."
+          // and the array uses single-quoted elements
+          const keysStr = `[${responseKeys.map((k: string) => `'${k.replace(/'/g, "''")}'`).join(',')}]`;
+          const errorKeys = node.properties.errorKeys || [];
+          const errorKeysStr = `[${errorKeys.map((k: string) => `'${k.replace(/'/g, "''")}'`).join(',')}]`;
+          const middleware = node.properties.middleware || [];
+          const middlewareStr = `[${middleware.map((m: string) => `'${m.replace(/'/g, "''")}'`).join(',')}]`;
+          pending = routeWriter.addRow(
+            [
+              escapeCSVField(node.id),
+              escapeCSVField(node.properties.name || ''),
+              escapeCSVField(node.properties.filePath || ''),
+              escapeCSVField(keysStr),
+              escapeCSVField(errorKeysStr),
+              escapeCSVField(middlewareStr),
+            ].join(','),
+          );
+          break;
+        }
+        case 'Tool':
+          pending = toolWriter.addRow(
+            [
+              escapeCSVField(node.id),
+              escapeCSVField(node.properties.name || ''),
+              escapeCSVField(node.properties.filePath || ''),
+              escapeCSVField(node.properties.description || ''),
+            ].join(','),
+          );
+          break;
+        case 'BasicBlock':
+          pending = basicBlockWriter.addRow(buildBasicBlockRow(node));
+          break;
+        default: {
+          // Code element nodes (Function, Class, Interface, CodeElement)
+          const writer = codeWriterMap[node.label];
+          if (writer) {
             const content = await extractContent(node, contentCache);
-            pending = mlWriter.addRow(
+            pending = writer.addRow(
               [
                 escapeCSVField(node.id),
                 escapeCSVField(node.properties.name || ''),
                 escapeCSVField(node.properties.filePath || ''),
                 escapeCSVNumber(node.properties.startLine, -1),
                 escapeCSVNumber(node.properties.endLine, -1),
+                node.properties.isExported ? 'true' : 'false',
                 escapeCSVField(content),
                 escapeCSVField(node.properties.description || ''),
-                ...(node.label === 'Property'
-                  ? [escapeCSVField(node.properties.declaredType || '')]
-                  : []),
               ].join(','),
             );
+          } else {
+            // Multi-language node types (Struct, Impl, Trait, Macro, etc.)
+            const mlWriter = multiLangWriters.get(node.label);
+            if (mlWriter) {
+              const content = await extractContent(node, contentCache);
+              pending = mlWriter.addRow(
+                [
+                  escapeCSVField(node.id),
+                  escapeCSVField(node.properties.name || ''),
+                  escapeCSVField(node.properties.filePath || ''),
+                  escapeCSVNumber(node.properties.startLine, -1),
+                  escapeCSVNumber(node.properties.endLine, -1),
+                  escapeCSVField(content),
+                  escapeCSVField(node.properties.description || ''),
+                  ...(node.label === 'Property'
+                    ? [escapeCSVField(node.properties.declaredType || '')]
+                    : []),
+                ].join(','),
+              );
+            } else {
+              // Unknown label: not in codeWriterMap or multiLangWriters, so there
+              // is no CSV table for it and it is intentionally NOT persisted —
+              // `pending` stays undefined, so the loop awaits nothing. Made
+              // explicit so a future node type isn't silently dropped here: wire
+              // it into one of the writer maps above (or this branch).
+            }
           }
+          break;
         }
-        break;
       }
-    }
-    if (pending) await pending;
-  }
-
-  // Finish all node writers
-  const allWriters = [
-    fileWriter,
-    folderWriter,
-    functionWriter,
-    classWriter,
-    interfaceWriter,
-    methodWriter,
-    codeElemWriter,
-    communityWriter,
-    processWriter,
-    sectionWriter,
-    routeWriter,
-    toolWriter,
-    basicBlockWriter,
-    ...multiLangWriters.values(),
-  ];
-  await Promise.all(allWriters.map((w) => w.finish()));
-
-  // --- Stream relationships directly to per-FROM→TO-label-pair files ---
-  // (#2203 U2) Route every edge to its pair file in this single pass. The old
-  // monolithic relations.csv — and its line-by-line re-read + per-edge regex
-  // re-split in loadGraphToLbug — are gone, so the ~1M-edge set is written and
-  // read once instead of twice. The router applies the SAME label-derivation +
-  // validTables filter as the legacy splitRelCsvByLabelPair, so the per-pair
-  // files are byte-identical (asserted by the differential test).
-  const relRouter = new RelPairRouter(csvDir, REL_CSV_HEADER, new Set<string>(NODE_TABLES));
-  try {
-    for (const rel of orderedRelationships(graph, sortOutput)) {
-      const pending = relRouter.route(rel.sourceId, rel.targetId, buildRelRow(rel));
       if (pending) await pending;
     }
-    await relRouter.close();
-  } catch (err) {
-    relRouter.destroy();
-    throw err;
-  }
 
-  // Build result map — only include tables that have rows
-  const nodeFiles = new Map<NodeTableName, { csvPath: string; rows: number }>();
-  const tableMap: [NodeTableName, BufferedCSVWriter][] = [
-    ['File', fileWriter],
-    ['Folder', folderWriter],
-    ['Function', functionWriter],
-    ['Class', classWriter],
-    ['Interface', interfaceWriter],
-    ['Method', methodWriter],
-    ['CodeElement', codeElemWriter],
-    ['Community', communityWriter],
-    ['Process', processWriter],
-    ['Section' as NodeTableName, sectionWriter],
-    ['Route' as NodeTableName, routeWriter],
-    ['Tool' as NodeTableName, toolWriter],
-    ['BasicBlock' as NodeTableName, basicBlockWriter],
-    ...Array.from(multiLangWriters.entries()).map(
-      ([name, w]) => [name as NodeTableName, w] as [NodeTableName, BufferedCSVWriter],
-    ),
-  ];
-  for (const [name, writer] of tableMap) {
-    if (writer.rows > 0) {
-      nodeFiles.set(name, {
-        csvPath: path.join(csvDir, `${name.toLowerCase()}.csv`),
-        rows: writer.rows,
-      });
+    // Finish all node writers
+    const allWriters = [
+      fileWriter,
+      folderWriter,
+      functionWriter,
+      classWriter,
+      interfaceWriter,
+      methodWriter,
+      codeElemWriter,
+      communityWriter,
+      processWriter,
+      sectionWriter,
+      routeWriter,
+      toolWriter,
+      basicBlockWriter,
+      ...multiLangWriters.values(),
+    ];
+    await Promise.all(allWriters.map((w) => w.finish()));
+
+    // --- Stream relationships directly to per-FROM→TO-label-pair files ---
+    // (#2203 U2) Route every edge to its pair file in this single pass. The old
+    // monolithic relations.csv — and its line-by-line re-read + per-edge regex
+    // re-split in loadGraphToLbug — are gone, so the ~1M-edge set is written and
+    // read once instead of twice. The router applies the SAME label-derivation +
+    // validTables filter as the legacy splitRelCsvByLabelPair, so the per-pair
+    // files are byte-identical (asserted by the differential test).
+    const relRouter = new RelPairRouter(csvDir, REL_CSV_HEADER, new Set<string>(NODE_TABLES));
+    try {
+      for (const rel of orderedRelationships(graph, sortOutput)) {
+        const pending = relRouter.route(rel.sourceId, rel.targetId, buildRelRow(rel));
+        if (pending) await pending;
+      }
+      await relRouter.close();
+    } catch (err) {
+      relRouter.destroy();
+      // Rethrow the real stream error (EMFILE / disk-full) rather than the generic
+      // AbortError a pending drain-await rejects with — mirrors the retained
+      // splitRelCsvByLabelPair's `throw streamError ?? err`.
+      throw relRouter.lastError ?? err;
     }
+
+    // Build result map — only include tables that have rows
+    const nodeFiles = new Map<NodeTableName, { csvPath: string; rows: number }>();
+    const tableMap: [NodeTableName, BufferedCSVWriter][] = [
+      ['File', fileWriter],
+      ['Folder', folderWriter],
+      ['Function', functionWriter],
+      ['Class', classWriter],
+      ['Interface', interfaceWriter],
+      ['Method', methodWriter],
+      ['CodeElement', codeElemWriter],
+      ['Community', communityWriter],
+      ['Process', processWriter],
+      ['Section' as NodeTableName, sectionWriter],
+      ['Route' as NodeTableName, routeWriter],
+      ['Tool' as NodeTableName, toolWriter],
+      ['BasicBlock' as NodeTableName, basicBlockWriter],
+      ...Array.from(multiLangWriters.entries()).map(
+        ([name, w]) => [name as NodeTableName, w] as [NodeTableName, BufferedCSVWriter],
+      ),
+    ];
+    for (const [name, writer] of tableMap) {
+      if (writer.rows > 0) {
+        nodeFiles.set(name, {
+          csvPath: path.join(csvDir, `${name.toLowerCase()}.csv`),
+          rows: writer.rows,
+        });
+      }
+    }
+
+    return {
+      nodeFiles,
+      relsByPair: relRouter.byPair,
+      relHeader: REL_CSV_HEADER,
+      skippedRels: relRouter.skipped,
+      totalValidRels: relRouter.total,
+    };
+  } finally {
+    // Restore original process listener limit on every path (success or throw).
+    process.setMaxListeners(prevMax);
   }
-
-  // Restore original process listener limit
-  process.setMaxListeners(prevMax);
-
-  return {
-    nodeFiles,
-    relsByPair: relRouter.byPair,
-    relHeader: REL_CSV_HEADER,
-    skippedRels: relRouter.skipped,
-    totalValidRels: relRouter.total,
-  };
 };

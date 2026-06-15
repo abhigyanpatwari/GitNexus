@@ -112,13 +112,18 @@ function generateGraph(entityCount) {
  * digest is a pure function of the emitted line SET (insertion-order agnostic). */
 async function fingerprintEmit(graph, dir) {
   await streamAllCSVsToDisk(graph, path.join(dir, 'no-such-repo'), dir);
-  const lines = [];
+  // Per-file digest bound to the filename: a row routed to the WRONG pair file
+  // (or a header written to the wrong file) changes the fingerprint — a global
+  // line-flatten could not catch that. File bytes are hashed as-written (so it
+  // also catches within-file row reordering); the entry list is sorted so
+  // readdir order doesn't matter.
+  const entries = [];
   for (const name of fs.readdirSync(dir)) {
     if (!name.endsWith('.csv')) continue;
-    const text = await fsp.readFile(path.join(dir, name), 'utf8');
-    for (const l of text.split('\n')) if (l.length > 0) lines.push(l);
+    const bytes = await fsp.readFile(path.join(dir, name));
+    entries.push(`${name}\n${crypto.createHash('sha256').update(bytes).digest('hex')}`);
   }
-  return crypto.createHash('sha256').update(lines.sort().join('\n')).digest('hex');
+  return crypto.createHash('sha256').update(entries.sort().join('\n')).digest('hex');
 }
 
 // ---- timing ----
@@ -191,6 +196,15 @@ if (!CHECK) {
     failures.push(
       `scaling ratio ${result.scaling_ratio} >= budget ${base.scaling_budget} ` +
         `(${SMALL}->${LARGE} entities, ms ${result.elapsed_ms_small}->${result.elapsed_ms_large})`,
+    );
+  }
+  // Absolute backstop: the scaling ratio alone passes a uniform Nx slowdown (it
+  // only compares large/small). A generous, host-noise-tolerant ceiling catches
+  // a gross absolute regression. Opt-in (only enforced when max_ms_large is set).
+  if (base.max_ms_large !== undefined && result.elapsed_ms_large >= base.max_ms_large) {
+    failures.push(
+      `absolute wall-time regression: elapsed_ms_large ${result.elapsed_ms_large}ms >= budget ` +
+        `${base.max_ms_large}ms (coarse backstop, not a tight SLA)`,
     );
   }
   process.stdout.write(JSON.stringify(result) + '\n');
