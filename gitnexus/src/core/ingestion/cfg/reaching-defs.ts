@@ -127,8 +127,32 @@ const EMPTY_LATTICE: Lattice = new Map();
 /**
  * Compute reaching definitions for one function. See the module doc for the
  * purity/determinism/sharing contract.
+ *
+ * This is the production entry point. As of #2201 it delegates to the
+ * SSA-sparse solver ({@link computeReachingDefsSparse}); the dense GEN/KILL
+ * worklist ({@link computeReachingDefsDense}) is retained as the differential
+ * equivalence oracle the fuzz suite checks the sparse path against — the two
+ * MUST be byte-identical (status, bindings, sorted facts, def/use telemetry).
  */
 export function computeReachingDefs(cfg: FunctionCfg, limits?: ReachingDefsLimits): FunctionDefUse {
+  // #2201 U1: production still runs the dense solver; the swap to sparse lands
+  // in U5 once the differential fuzz is byte-identical green.
+  return computeReachingDefsDense(cfg, limits);
+}
+
+/**
+ * Dense GEN/KILL monotone worklist — the original (#2082 M2) reaching-defs
+ * solver. As of #2201 this is RETAINED AS A TEST/BENCH-ONLY DIFFERENTIAL
+ * ORACLE, not a production code path: {@link computeReachingDefs} runs the
+ * SSA-sparse solver, and the equivalence fuzz asserts the two are byte-identical
+ * across a random-CFG corpus. Keep it behavior-frozen — it is the ground truth.
+ *
+ * @internal exported only for the equivalence fuzz harness and the cfg bench.
+ */
+export function computeReachingDefsDense(
+  cfg: FunctionCfg,
+  limits?: ReachingDefsLimits,
+): FunctionDefUse {
   if (!cfg.bindings) {
     return { status: 'no-facts', bindings: [], facts: [], defCount: 0, useCount: 0 };
   }
