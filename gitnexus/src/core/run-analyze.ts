@@ -415,6 +415,14 @@ export const resolvePdgConfig = (options: PdgOptions): RepoMeta['pdg'] =>
         // outlive the model that produced them — ANY model-content change
         // ships as a new digest and repopulates the taint edges.
         taintModelVersion,
+        // #2201 review R3: reaching-defs solver identity. The SSA-sparse rewrite
+        // computes full facts for deep-loop functions the dense worklist used to
+        // truncate to empty, so an existing `--pdg` index carries stale-truncated
+        // REACHING_DEF rows. Absent on any pre-#2201 stamp → the key-union
+        // pdgModeMismatch trips on the first upgraded run and forces the full
+        // writeback that recomputes the fuller coverage (no `--force` needed).
+        // Bump this tag on any future change to which facts the solver emits.
+        reachingDefSolver: 'ssa-sparse-v1',
       }
     : undefined;
 
