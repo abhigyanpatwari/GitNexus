@@ -193,14 +193,39 @@ describe('PHP CfgVisitor — switch / match', () => {
     expect(isExitReachableFromAllBlocks(cfg)).toBe(true);
   });
 
-  it('match is a value expression (no fallthrough), kept inline — value flows to the assign', () => {
-    const cfg = php.cfgOf(wrap(`$r = match ($x) { 1, 2 => "low", default => "high" }; return $r;`));
-    // match arms are NOT separate dispatch blocks (documented inline-value gap).
+  it('value-position match assignment dispatches; target bound at the join (#2207)', () => {
+    const cfg = php.cfgOf(
+      wrap(`$r = match ($x) { 1, 2 => low($x), default => high() }; use_it($r);`),
+    );
+    // arms dispatch as switch-case, never fall through.
+    expect(edgeKinds(cfg).has('switch-case')).toBe(true);
     expect(edgeKinds(cfg).has('fallthrough')).toBe(false);
-    expect(edgeKinds(cfg).has('switch-case')).toBe(false);
-    // The match value and the return both reach EXIT.
-    expect(reaches(cfg, block(cfg, 'match ($x)'), cfg.exitIndex)).toBe(true);
+    // each arm rejoins and reaches the downstream use of the bound result.
+    expect(reaches(cfg, block(cfg, 'low($x)'), block(cfg, 'use_it($r)'))).toBe(true);
+    expect(reaches(cfg, block(cfg, 'high()'), block(cfg, 'use_it($r)'))).toBe(true);
+    const r = bindingIdx(cfg, '$r');
+    expect(hasDef(cfg, r)).toBe(true);
+    expect(hasUse(cfg, r)).toBe(true);
+    expect(computeControlDependence(cfg).edges.length).toBeGreaterThan(0);
     expect(isExitReachableFromAllBlocks(cfg)).toBe(true);
+  });
+
+  it('return match (…) models each arm as returning the result (#2207)', () => {
+    const cfg = php.cfgOf(wrap(`return match ($x) { 1 => a($x), 2 => b(), default => c() };`));
+    expect(edgeKinds(cfg).has('switch-case')).toBe(true);
+    expect(edgeKinds(cfg).has('return')).toBe(true);
+    expect(reaches(cfg, block(cfg, 'a($x)'), cfg.exitIndex)).toBe(true);
+    expect(reaches(cfg, block(cfg, 'c()'), cfg.exitIndex)).toBe(true);
+    expect(computeControlDependence(cfg).edges.length).toBeGreaterThan(0);
+    expect(isExitReachableFromAllBlocks(cfg)).toBe(true);
+  });
+
+  it('single-arm match / ternary stays inline (no real control dependence)', () => {
+    const oneArm = php.cfgOf(wrap(`$r = match ($x) { default => 0 }; return $r;`));
+    expect(edgeKinds(oneArm).has('switch-case')).toBe(false);
+    const ternary = php.cfgOf(wrap(`$r = $x > 0 ? a() : b(); return $r;`));
+    expect(edgeKinds(ternary).has('switch-case')).toBe(false);
+    expect(isExitReachableFromAllBlocks(ternary)).toBe(true);
   });
 });
 

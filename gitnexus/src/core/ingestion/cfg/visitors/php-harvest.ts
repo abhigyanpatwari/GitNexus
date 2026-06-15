@@ -303,6 +303,24 @@ export class PhpHarvester {
     return acc.finish();
   }
 
+  /**
+   * Def-ONLY facts for a value-position assignment carrier (`$x = match($v) {…}`,
+   * #2207): just the LHS target(s), attached to the continuation block the match
+   * arms rejoin. The match condition + arm-value USES are already harvested onto
+   * the branch's own blocks (visitMatch), so this must NOT re-walk the RHS. A
+   * member/subscript target (`$this->x = match …`) has no scalar def → undefined.
+   */
+  assignmentDefFacts(assignExpr: SyntaxNode): StatementFacts | undefined {
+    const acc = new FactAccumulator(assignExpr.startPosition.row + 1);
+    const left = assignExpr.childForFieldName('left');
+    if (left) {
+      const lv = this.unwrapParen(left);
+      if (lv.type === 'variable_name') this.def(lv, acc);
+      else if (lv.type === 'list_literal') for (const v of this.listTargets(lv)) this.def(v, acc);
+    }
+    return acc.defCount() ? acc.finish() : undefined;
+  }
+
   /** Facts for a `foreach ($it as [$k =>] $v)` head: targets bind, iterable used. */
   foreachHeadFacts(stmt: SyntaxNode): StatementFacts {
     const acc = new FactAccumulator(stmt.startPosition.row + 1);
