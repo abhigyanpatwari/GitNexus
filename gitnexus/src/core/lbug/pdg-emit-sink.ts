@@ -155,22 +155,16 @@ export class PdgEmitSink implements KnowledgeGraph {
   /** pairKey (`From|To`) → writer. PDG edges are all `BasicBlock|BasicBlock`,
    *  but the map keeps the sink general and the manifest pair-keyed. */
   private readonly relWriters = new Map<string, SyncCsvWriter>();
-  /**
-   * Per-id seen-sets mirroring the in-memory graph's first-writer-wins Map
-   * idempotency (`graph.ts` addNode/addRelationship skip a duplicate id). They
-   * are LOAD-BEARING for byte-identity: the same file can be PDG-emitted in more
-   * than one language pass (e.g. a `.ts` module imported by a `.vue` SFC is
-   * emitted in both the TypeScript pass and the Vue context pass — both share
-   * the worker-built `cfgSideChannel`, so both produce identical BasicBlock +
-   * PDG-edge ids). The in-memory graph dedups those; a dedup-free sink would
-   * write each row twice → byte-identity drift + a BasicBlock PRIMARY KEY
-   * conflict at COPY (masked by IGNORE_ERRORS into nondeterministic row loss).
-   * The sets hold ids only (not block text), so peak memory is the id set, far
-   * below the streamed-out block payload that the whole point is to offload.
-   */
-  private readonly seenNodeIds = new Set<string>();
-  private readonly seenRelIds = new Set<string>();
   private finalized = false;
+  // NOTE on dedup: the same file can be PDG-emitted in more than one language
+  // pass (e.g. a `.ts` module imported by a `.vue` SFC is emitted in both the
+  // TypeScript pass and the Vue context pass over the same worker-built
+  // `cfgSideChannel`). The in-memory graph dedups that by id (first-writer-wins);
+  // this sink does NOT — to keep peak memory O(write buffer) rather than
+  // O(total ids), cross-pass dedup is done upstream, per FILE, in the emit loop
+  // (`run.ts` skips a file whose PDG already streamed via `pdgEmittedFiles`).
+  // The sink therefore receives each id exactly once and is a faithful
+  // pass-through; it must not be fed duplicate ids.
 
   constructor(
     private readonly real: KnowledgeGraph,
@@ -188,9 +182,6 @@ export class PdgEmitSink implements KnowledgeGraph {
 
   addNode(node: GraphNode): void {
     if (node.label === 'BasicBlock') {
-      // Mirror graph.addNode's first-writer-wins dedup (graph.ts:78).
-      if (this.seenNodeIds.has(node.id)) return;
-      this.seenNodeIds.add(node.id);
       if (this.bbWriter === undefined) {
         this.bbWriter = new SyncCsvWriter(
           path.join(this.pdgCsvDir, 'basicblock.csv'),
@@ -206,11 +197,6 @@ export class PdgEmitSink implements KnowledgeGraph {
 
   addRelationship(relationship: GraphRelationship): void {
     if (PDG_EDGE_TYPES.has(relationship.type)) {
-      // Mirror graph.addRelationship's first-writer-wins dedup (graph.ts:87).
-      // Dedup by id BEFORE the validity check, matching the in-memory Map which
-      // is keyed on id regardless of endpoint validity.
-      if (this.seenRelIds.has(relationship.id)) return;
-      this.seenRelIds.add(relationship.id);
       const fromLabel = getNodeLabel(relationship.sourceId);
       const toLabel = getNodeLabel(relationship.targetId);
       // Skip edges whose endpoint labels are not valid node tables — mirrors

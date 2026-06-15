@@ -274,6 +274,11 @@ export const scopeResolutionPhase: PipelinePhase<ScopeResolutionOutput> = {
         );
       }
     }
+    // Cross-pass per-file dedup set for the streaming sink (#2202): one set
+    // shared across every language pass so a file emitted in two passes (e.g. a
+    // `.ts` module pulled into the Vue context pass) streams its PDG layer once.
+    // Only created when streaming — the in-memory-graph path dedups via its Map.
+    const pdgEmittedFiles = pdgEmitSink !== undefined ? new Set<string>() : undefined;
 
     // Stream the PDG layer with guaranteed writer cleanup: a throw escaping the
     // per-language loop (outside run.ts's per-file try/catch — e.g. from
@@ -421,6 +426,8 @@ export const scopeResolutionPhase: PipelinePhase<ScopeResolutionOutput> = {
             pdgMaxTaintHops: ctx.options?.pdgMaxTaintHops,
             // Streaming PDG-emit sink (#2202) — undefined ⇒ emit to the in-memory graph.
             pdgEmitSink,
+            // Cross-pass per-file dedup set (#2202) — undefined when not streaming.
+            pdgEmittedFiles,
             recordResolutionOutcome: (outcome) => {
               resolutionOutcomes.push(outcome);
             },

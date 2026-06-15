@@ -314,6 +314,19 @@ interface RunScopeResolutionInput {
    */
   readonly pdgEmitSink?: KnowledgeGraph;
   /**
+   * Cross-pass per-file dedup set for streaming PDG emit (#2202). Shared across
+   * every language pass (owned by the scope-resolution phase). A file imported
+   * by more than one language (e.g. a `.ts` module pulled into the Vue context
+   * pass) is PDG-emitted in each pass over the same `cfgSideChannel`, producing
+   * identical ids; the in-memory graph dedups that by id, but the streaming sink
+   * is dedup-free (to stay O(write buffer), not O(total ids)). So when present
+   * (streaming on), the emit loop skips a file whose PDG already streamed and
+   * records the rest — keeping the streamed set byte-identical to the
+   * Map-deduped whole-graph emit, for any language-pass order. Absent ⇒ no skip
+   * (the graph Map dedups), so the default path is unchanged.
+   */
+  readonly pdgEmittedFiles?: Set<string>;
+  /**
    * Optional graph-node lookup built ONCE by the caller and shared across
    * every language pass. `buildGraphNodeLookup` scans the whole graph and is
    * language-agnostic, so rebuilding it per language wastes both CPU and ~GBs
@@ -851,6 +864,15 @@ export function runScopeResolution(
       // shard that slipped the version gate) must skip emission, not throw a
       // TypeError mid-graph-build and abort scope-resolution for the language.
       if (!Array.isArray(cfgs) || cfgs.length === 0) continue;
+      // Cross-pass per-file dedup (#2202): when streaming, a file whose PDG
+      // already streamed in a prior language pass (e.g. a `.ts` module pulled
+      // into the Vue context pass) would re-emit identical ids from the same
+      // cfgSideChannel — the dedup-free streaming sink would double the rows.
+      // Skip it here; the in-memory-graph path needs no skip (its Map dedups).
+      if (input.pdgEmittedFiles !== undefined) {
+        if (input.pdgEmittedFiles.has(pf.filePath)) continue;
+        input.pdgEmittedFiles.add(pf.filePath);
+      }
       try {
         // Per-element emit-safety filter (mirrors the parsedfile-store
         // reviver's POLICY: valid elements in a mixed array still emit; junk
