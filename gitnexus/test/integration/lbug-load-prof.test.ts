@@ -130,14 +130,9 @@ describe('PROF_LBUG_LOAD persistence-path profiling (#2203 U1)', () => {
     expect(lines).toHaveLength(1);
 
     const line = lines[0];
-    for (const key of [
-      'csv-emit=',
-      'copy-nodes=',
-      'rel-split=',
-      'copy-rels=',
-      'fallback=',
-      'total=',
-    ]) {
+    // Relationships are routed to per-pair files during csv-emit (#2203 U2),
+    // so there is no separate rel-split stage.
+    for (const key of ['csv-emit=', 'copy-nodes=', 'copy-rels=', 'fallback=', 'total=']) {
       expect(line).toContain(key);
     }
     // 3 node rows (File, Function, Class), 2 valid rels emitted.

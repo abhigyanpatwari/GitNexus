@@ -17,7 +17,8 @@ import { createWriteStream, WriteStream } from 'fs';
 import path from 'path';
 import type { GraphNode, GraphRelationship } from 'gitnexus-shared';
 import { KnowledgeGraph } from '../graph/types.js';
-import { NodeTableName } from './schema.js';
+import { NodeTableName, NODE_TABLES } from './schema.js';
+import { RelPairRouter } from './rel-pair-routing.js';
 import { parseTruthyEnv } from '../ingestion/utils/env.js';
 
 /**
@@ -223,10 +224,33 @@ class BufferedCSVWriter {
 // STREAMING CSV GENERATION — SINGLE PASS
 // ============================================================================
 
+/** Canonical relationship CSV header — shared by the emit pass and the
+ * `splitRelCsvByLabelPair` differential oracle. */
+export const REL_CSV_HEADER = 'from,to,type,confidence,reason,step';
+
+/** Build the escaped CSV row (no trailing newline) for one relationship.
+ * Single source of the relationship row bytes — used by the emit pass and by
+ * the byte-identity differential test that feeds the legacy split oracle. */
+export const buildRelRow = (rel: GraphRelationship): string =>
+  [
+    escapeCSVField(rel.sourceId),
+    escapeCSVField(rel.targetId),
+    escapeCSVField(rel.type),
+    escapeCSVNumber(rel.confidence, 1.0),
+    escapeCSVField(rel.reason),
+    escapeCSVNumber((rel as { step?: number }).step, 0),
+  ].join(',');
+
 export interface StreamedCSVResult {
   nodeFiles: Map<NodeTableName, { csvPath: string; rows: number }>;
-  relCsvPath: string;
-  relRows: number;
+  /** pairKey (`From|To`) → per-FROM→TO-label-pair CSV file. */
+  relsByPair: Map<string, { csvPath: string; rows: number }>;
+  /** Header line shared by every per-pair file. */
+  relHeader: string;
+  /** Edges skipped because an endpoint label is not a valid node table. */
+  skippedRels: number;
+  /** Edges routed to a per-pair file. */
+  totalValidRels: number;
 }
 
 /**
@@ -558,22 +582,24 @@ export const streamAllCSVsToDisk = async (
   ];
   await Promise.all(allWriters.map((w) => w.finish()));
 
-  // --- Stream relationship CSV ---
-  const relCsvPath = path.join(csvDir, 'relations.csv');
-  const relWriter = new BufferedCSVWriter(relCsvPath, 'from,to,type,confidence,reason,step');
-  for (const rel of orderedRelationships(graph, sortOutput)) {
-    await relWriter.addRow(
-      [
-        escapeCSVField(rel.sourceId),
-        escapeCSVField(rel.targetId),
-        escapeCSVField(rel.type),
-        escapeCSVNumber(rel.confidence, 1.0),
-        escapeCSVField(rel.reason),
-        escapeCSVNumber((rel as any).step, 0),
-      ].join(','),
-    );
+  // --- Stream relationships directly to per-FROM→TO-label-pair files ---
+  // (#2203 U2) Route every edge to its pair file in this single pass. The old
+  // monolithic relations.csv — and its line-by-line re-read + per-edge regex
+  // re-split in loadGraphToLbug — are gone, so the ~1M-edge set is written and
+  // read once instead of twice. The router applies the SAME label-derivation +
+  // validTables filter as the legacy splitRelCsvByLabelPair, so the per-pair
+  // files are byte-identical (asserted by the differential test).
+  const relRouter = new RelPairRouter(csvDir, REL_CSV_HEADER, new Set<string>(NODE_TABLES));
+  try {
+    for (const rel of orderedRelationships(graph, sortOutput)) {
+      const pending = relRouter.route(rel.sourceId, rel.targetId, buildRelRow(rel));
+      if (pending) await pending;
+    }
+    await relRouter.close();
+  } catch (err) {
+    relRouter.destroy();
+    throw err;
   }
-  await relWriter.finish();
 
   // Build result map — only include tables that have rows
   const nodeFiles = new Map<NodeTableName, { csvPath: string; rows: number }>();
@@ -607,5 +633,11 @@ export const streamAllCSVsToDisk = async (
   // Restore original process listener limit
   process.setMaxListeners(prevMax);
 
-  return { nodeFiles, relCsvPath, relRows: relWriter.rows };
+  return {
+    nodeFiles,
+    relsByPair: relRouter.byPair,
+    relHeader: REL_CSV_HEADER,
+    skippedRels: relRouter.skipped,
+    totalValidRels: relRouter.total,
+  };
 };

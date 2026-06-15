@@ -19,6 +19,7 @@ import {
   NodeTableName,
 } from './schema.js';
 import { streamAllCSVsToDisk } from './csv-generator.js';
+import { getNodeLabel as deriveNodeLabel } from './rel-pair-routing.js';
 import type { CachedEmbedding } from '../embeddings/types.js';
 import { extensionManager, type ExtensionEnsureOptions } from './extension-loader.js';
 import {
@@ -902,11 +903,6 @@ export const loadGraphToLbug = async (
   const tCsv = mark();
 
   const validTables = new Set<string>(NODE_TABLES as readonly string[]);
-  const getNodeLabel = (nodeId: string): string => {
-    if (nodeId.startsWith('comm_')) return 'Community';
-    if (nodeId.startsWith('proc_')) return 'Process';
-    return nodeId.split(':')[0];
-  };
 
   // Bulk COPY all node CSVs (sequential — LadybugDB allows only one write txn at a time)
   const nodeFiles = [...csvResult.nodeFiles.entries()];
@@ -938,40 +934,30 @@ export const loadGraphToLbug = async (
 
   const tCopyNodes = mark();
 
-  // Bulk COPY relationships — split by FROM→TO label pair (LadybugDB requires it)
-  const { relHeader, relsByPairMeta, pairWriteStreams, skippedRels, totalValidRels } =
-    await splitRelCsvByLabelPair(csvResult.relCsvPath, csvDir, validTables, getNodeLabel);
-
-  // Close all per-pair write streams before COPY. `stream/promises.finished`
-  // resolves on the stream's 'finish' event and rejects on 'error' — replaces
-  // a hand-rolled promisification with the stdlib primitive.
-  await Promise.all(
-    Array.from(pairWriteStreams.values()).map(async (ws) => {
-      ws.end();
-      await finished(ws);
-    }),
-  );
-  const tSplit = mark();
-  let tCopyRels = tSplit;
-  let tFallback = tSplit;
+  // Bulk COPY relationships. They were already routed to per-FROM→TO-label-pair
+  // files during the emit pass (#2203 U2) — there is no monolithic relations.csv
+  // to re-read/re-split here; we COPY each pair file directly.
+  const { relsByPair, relHeader, skippedRels, totalValidRels } = csvResult;
+  let tCopyRels = tCopyNodes;
+  let tFallback = tCopyNodes;
 
   const insertedRels = totalValidRels;
   const warnings: string[] = [];
   if (insertedRels > 0) {
-    log(`Loading edges: ${insertedRels.toLocaleString()} across ${relsByPairMeta.size} types`);
+    log(`Loading edges: ${insertedRels.toLocaleString()} across ${relsByPair.size} types`);
 
     let pairIdx = 0;
     let failedPairEdges = 0;
     const failedPairCsvPaths = new Set<string>();
 
-    for (const [pairKey, { csvPath: pairCsvPath, rows }] of relsByPairMeta) {
+    for (const [pairKey, { csvPath: pairCsvPath, rows }] of relsByPair) {
       pairIdx++;
       const [fromLabel, toLabel] = pairKey.split('|');
       const normalizedPath = normalizeCopyPath(pairCsvPath);
       const copyQuery = `COPY ${REL_TABLE_NAME} FROM "${normalizedPath}" (from="${fromLabel}", to="${toLabel}", HEADER=true, ESCAPE='"', DELIM=',', QUOTE='"', PARALLEL=false, auto_detect=false)`;
 
       if (pairIdx % 5 === 0 || rows > 1000) {
-        log(`Loading edges: ${pairIdx}/${relsByPairMeta.size} types (${fromLabel} -> ${toLabel})`);
+        log(`Loading edges: ${pairIdx}/${relsByPair.size} types (${fromLabel} -> ${toLabel})`);
       }
 
       try {
@@ -1017,16 +1003,14 @@ export const loadGraphToLbug = async (
         } catch {}
       }
       if (allLines.length > 1) {
-        await fallbackRelationshipInserts(allLines, validTables, getNodeLabel);
+        await fallbackRelationshipInserts(allLines, validTables, deriveNodeLabel);
       }
     }
     tFallback = mark();
   }
 
-  // Cleanup all CSVs
-  try {
-    await fs.unlink(csvResult.relCsvPath);
-  } catch {}
+  // Cleanup all CSVs (per-pair rel files are unlinked in the COPY loop above;
+  // the remaining sweep below catches node CSVs + any leftover pair files).
   for (const [, { csvPath }] of csvResult.nodeFiles) {
     try {
       await fs.unlink(csvPath);
@@ -1050,9 +1034,9 @@ export const loadGraphToLbug = async (
     for (const [, { rows }] of csvResult.nodeFiles) totalNodeRows += rows;
     logger.warn(
       `[lbug-load prof] csv-emit=${span(tStart, tCsv)}ms ` +
-        `copy-nodes=${span(tCsv, tCopyNodes)}ms rel-split=${span(tCopyNodes, tSplit)}ms ` +
-        `copy-rels=${span(tSplit, tCopyRels)}ms fallback=${span(tCopyRels, tFallback)}ms ` +
-        `total=${span(tStart, tEnd)}ms (${totalNodeRows} nodes, ${insertedRels} rels)`,
+        `copy-nodes=${span(tCsv, tCopyNodes)}ms copy-rels=${span(tCopyNodes, tCopyRels)}ms ` +
+        `fallback=${span(tCopyRels, tFallback)}ms total=${span(tStart, tEnd)}ms ` +
+        `(${totalNodeRows} nodes, ${insertedRels} rels)`,
     );
   }
 

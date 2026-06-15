@@ -6,14 +6,42 @@
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import fs from 'fs/promises';
+import { finished } from 'stream/promises';
 import path from 'path';
 import { createTempDir, type TestDBHandle } from '../helpers/test-db.js';
 import { buildTestGraph, type TestNodeInput, type TestRelInput } from '../helpers/test-graph.js';
-import { streamAllCSVsToDisk } from '../../src/core/lbug/csv-generator.js';
+import {
+  streamAllCSVsToDisk,
+  buildRelRow,
+  REL_CSV_HEADER,
+} from '../../src/core/lbug/csv-generator.js';
+import { splitRelCsvByLabelPair } from '../../src/core/lbug/lbug-adapter.js';
+import { getNodeLabel } from '../../src/core/lbug/rel-pair-routing.js';
+import { NODE_TABLES } from '../../src/core/lbug/schema.js';
 
 let tmpHandle: TestDBHandle;
 let csvDir: string;
 let repoDir: string;
+
+/** Data rows (header dropped) of one CSV file's text. */
+const dataRowsOf = (csv: string): string[] =>
+  csv
+    .trim()
+    .split('\n')
+    .slice(1)
+    .filter((l) => l.length > 0);
+
+/** Concatenate data rows from every per-pair rel file (#2203 U2), pair keys
+ * sorted so the concatenation order is deterministic regardless of map order. */
+const readAllRelRows = async (
+  relsByPair: Map<string, { csvPath: string; rows: number }>,
+): Promise<string[]> => {
+  const rows: string[] = [];
+  for (const key of [...relsByPair.keys()].sort()) {
+    rows.push(...dataRowsOf(await fs.readFile(relsByPair.get(key)!.csvPath, 'utf-8')));
+  }
+  return rows;
+};
 
 beforeAll(async () => {
   tmpHandle = await createTempDir('csv-pipeline-test-');
@@ -76,9 +104,9 @@ describe('streamAllCSVsToDisk', () => {
         { id: 'folder:src', label: 'Folder', name: 'src', filePath: 'src' },
       ],
       [
-        { sourceId: 'func:main', targetId: 'func:helper', type: 'CALLS' },
-        { sourceId: 'file:src/index.ts', targetId: 'func:main', type: 'CONTAINS' },
-        { sourceId: 'file:src/utils.ts', targetId: 'func:helper', type: 'CONTAINS' },
+        { sourceId: 'Function:main', targetId: 'Function:helper', type: 'CALLS' },
+        { sourceId: 'File:src/index.ts', targetId: 'Function:main', type: 'CONTAINS' },
+        { sourceId: 'File:src/utils.ts', targetId: 'Function:helper', type: 'CONTAINS' },
       ],
     );
 
@@ -86,7 +114,8 @@ describe('streamAllCSVsToDisk', () => {
 
     // Check that CSV files were created
     expect(result.nodeFiles.size).toBeGreaterThan(0);
-    expect(result.relRows).toBe(3);
+    expect(result.totalValidRels).toBe(3);
+    expect(result.skippedRels).toBe(0);
 
     // Verify File CSV
     const fileCsv = result.nodeFiles.get('File');
@@ -108,10 +137,12 @@ describe('streamAllCSVsToDisk', () => {
     expect(folderCsv).toBeDefined();
     expect(folderCsv!.rows).toBe(1);
 
-    // Verify relations CSV exists
-    const relContent = await fs.readFile(result.relCsvPath, 'utf-8');
-    const relLines = relContent.trim().split('\n');
-    expect(relLines.length).toBe(4); // header + 3 relationships
+    // Relationships are routed to per-FROM→TO-label-pair files (#2203 U2):
+    // Function→Function (CALLS) + File→Function (2× CONTAINS).
+    expect(result.relsByPair.has('Function|Function')).toBe(true);
+    expect(result.relsByPair.has('File|Function')).toBe(true);
+    expect(result.relsByPair.get('File|Function')!.rows).toBe(2);
+    expect(await readAllRelRows(result.relsByPair)).toHaveLength(3);
   });
 
   it('CSV content is properly escaped', async () => {
@@ -210,7 +241,8 @@ describe('streamAllCSVsToDisk', () => {
     const graph = buildTestGraph([], []);
     const result = await streamAllCSVsToDisk(graph, repoDir, csvDir);
     expect(result.nodeFiles.size).toBe(0);
-    expect(result.relRows).toBe(0);
+    expect(result.totalValidRels).toBe(0);
+    expect(result.relsByPair.size).toBe(0);
   });
 
   it('handles node with empty string properties', async () => {
@@ -234,15 +266,18 @@ describe('streamAllCSVsToDisk — deterministic output ordering', () => {
   // Folder nodes: single-line CSV rows (no multi-line `content` column), so the
   // id is the first comma-separated field and split('\n') is safe. ids are
   // deliberately NOT in insertion order (c, a, b).
+  // ids use the `Folder:` prefix so getNodeLabel derives the valid `Folder`
+  // table — edges route to rel_Folder_Folder.csv (#2203 U2). Deliberately NOT
+  // in insertion order (c, a, b).
   const NODES: TestNodeInput[] = [
-    { id: 'folder:c', label: 'Folder', name: 'c', filePath: 'c' },
-    { id: 'folder:a', label: 'Folder', name: 'a', filePath: 'a' },
-    { id: 'folder:b', label: 'Folder', name: 'b', filePath: 'b' },
+    { id: 'Folder:c', label: 'Folder', name: 'c', filePath: 'c' },
+    { id: 'Folder:a', label: 'Folder', name: 'a', filePath: 'a' },
+    { id: 'Folder:b', label: 'Folder', name: 'b', filePath: 'b' },
   ];
   const RELS: TestRelInput[] = [
-    { sourceId: 'folder:c', targetId: 'folder:a', type: 'CONTAINS' },
-    { sourceId: 'folder:a', targetId: 'folder:b', type: 'CONTAINS' },
-    { sourceId: 'folder:b', targetId: 'folder:c', type: 'CONTAINS' },
+    { sourceId: 'Folder:c', targetId: 'Folder:a', type: 'CONTAINS' },
+    { sourceId: 'Folder:a', targetId: 'Folder:b', type: 'CONTAINS' },
+    { sourceId: 'Folder:b', targetId: 'Folder:c', type: 'CONTAINS' },
   ];
   const dataRows = (csv: string): string[] =>
     csv
@@ -270,7 +305,7 @@ describe('streamAllCSVsToDisk — deterministic output ordering', () => {
       const folderIds = folderCsv
         ? dataRows(await fs.readFile(folderCsv.csvPath, 'utf-8')).map(firstCol)
         : [];
-      const relRows = dataRows(await fs.readFile(result.relCsvPath, 'utf-8'));
+      const relRows = await readAllRelRows(result.relsByPair);
       return { folderIds, relRows };
     } finally {
       delete process.env.GITNEXUS_SORT_GRAPH_OUTPUT;
@@ -305,5 +340,79 @@ describe('streamAllCSVsToDisk — deterministic output ordering', () => {
     // SAME node/edge SET in both modes — sorting reorders rows, never adds/drops.
     expect([...onFwd.folderIds].sort()).toEqual([...offFwd.folderIds].sort());
     expect([...onFwd.relRows].sort()).toEqual([...offFwd.relRows].sort());
+  });
+});
+
+/**
+ * #2203 U2 byte-identity: the direct per-pair emit must produce per-pair files
+ * byte-for-byte identical to the legacy splitRelCsvByLabelPair oracle run over
+ * an equivalent monolithic relations.csv from the same graph. This is the
+ * load-bearing guard for "byte-identical graph content" (issue acceptance).
+ */
+describe('streamAllCSVsToDisk — direct per-pair emit matches the split oracle', () => {
+  it('produces byte-identical per-pair files + identical skip/total accounting', async () => {
+    // Multiple valid pairs, getNodeLabel special prefixes (comm_/proc_), and one
+    // invalid-label edge that BOTH paths must skip identically.
+    const graph = buildTestGraph(
+      [
+        { id: 'File:a.ts', label: 'File', name: 'a.ts', filePath: 'a.ts' },
+        { id: 'Function:a.ts:f:1', label: 'Function', name: 'f', filePath: 'a.ts' },
+        { id: 'Function:a.ts:g:5', label: 'Function', name: 'g', filePath: 'a.ts' },
+        { id: 'comm_1', label: 'Community' as never, name: 'c1', filePath: '' },
+        { id: 'comm_2', label: 'Community' as never, name: 'c2', filePath: '' },
+      ],
+      [
+        { sourceId: 'File:a.ts', targetId: 'Function:a.ts:f:1', type: 'CONTAINS' },
+        { sourceId: 'File:a.ts', targetId: 'Function:a.ts:g:5', type: 'CONTAINS' },
+        { sourceId: 'Function:a.ts:f:1', targetId: 'Function:a.ts:g:5', type: 'CALLS' },
+        { sourceId: 'comm_1', targetId: 'comm_2', type: 'CONTAINS' },
+        // Invalid FROM label ('Bogus' ∉ NODE_TABLES) — skipped by both paths.
+        { sourceId: 'Bogus:x', targetId: 'File:a.ts', type: 'CONTAINS' },
+      ],
+    );
+
+    const directDir = path.join(csvDir, 'diff-direct');
+    const oracleDir = path.join(csvDir, 'diff-oracle');
+    await fs.mkdir(oracleDir, { recursive: true });
+
+    // Direct emit (production path).
+    const direct = await streamAllCSVsToDisk(graph, repoDir, directDir);
+
+    // Oracle: build the monolithic relations.csv this graph would have produced
+    // (same insertion order, same row bytes via buildRelRow), then split it.
+    const relCsv = path.join(oracleDir, 'relations.csv');
+    const lines = [REL_CSV_HEADER];
+    for (const rel of graph.iterRelationships()) lines.push(buildRelRow(rel));
+    await fs.writeFile(relCsv, lines.join('\n') + '\n', 'utf-8');
+
+    const split = await splitRelCsvByLabelPair(
+      relCsv,
+      oracleDir,
+      new Set<string>(NODE_TABLES),
+      getNodeLabel,
+    );
+    await Promise.all(
+      Array.from(split.pairWriteStreams.values()).map(async (ws) => {
+        ws.end();
+        await finished(ws);
+      }),
+    );
+
+    // Identical accounting.
+    expect(direct.totalValidRels).toBe(split.totalValidRels);
+    expect(direct.totalValidRels).toBe(4);
+    expect(direct.skippedRels).toBe(split.skippedRels);
+    expect(direct.skippedRels).toBe(1);
+    expect(direct.relHeader).toBe(split.relHeader);
+
+    // Identical pair set.
+    expect([...direct.relsByPair.keys()].sort()).toEqual([...split.relsByPairMeta.keys()].sort());
+
+    // Byte-identical per-pair file contents.
+    for (const key of direct.relsByPair.keys()) {
+      const directContent = await fs.readFile(direct.relsByPair.get(key)!.csvPath, 'utf-8');
+      const oracleContent = await fs.readFile(split.relsByPairMeta.get(key)!.csvPath, 'utf-8');
+      expect(directContent, `pair ${key}`).toBe(oracleContent);
+    }
   });
 });
