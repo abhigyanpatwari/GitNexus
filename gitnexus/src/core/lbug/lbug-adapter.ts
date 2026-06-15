@@ -19,7 +19,7 @@ import {
   NodeTableName,
 } from './schema.js';
 import { streamAllCSVsToDisk } from './csv-generator.js';
-import { getNodeLabel as deriveNodeLabel } from './rel-pair-routing.js';
+import { getNodeLabel as deriveNodeLabel, type WriteStreamFactory } from './rel-pair-routing.js';
 import type { CachedEmbedding } from '../embeddings/types.js';
 import { extensionManager, type ExtensionEnsureOptions } from './extension-loader.js';
 import {
@@ -50,8 +50,10 @@ import { logger } from '../logger.js';
 // Relationship CSV splitting — extracted for testability (PR #818)
 // ---------------------------------------------------------------------------
 
-/** Factory for creating WriteStreams — injectable for testing. */
-export type WriteStreamFactory = (filePath: string) => import('fs').WriteStream;
+/** Factory for creating WriteStreams — injectable for testing. Canonical
+ * definition lives in rel-pair-routing.ts (imported above for local use by
+ * splitRelCsvByLabelPair); re-exported here to preserve this module's surface. */
+export type { WriteStreamFactory };
 
 /** Result of splitting the relationship CSV into per-label-pair files. */
 export interface RelCsvSplitResult {
@@ -64,6 +66,15 @@ export interface RelCsvSplitResult {
 
 /**
  * Split a relationship CSV into per-label-pair files on disk.
+ *
+ * @internal RETAINED AS A DIFFERENTIAL ORACLE. As of #2203 U2, production emit
+ * routes relationships to per-pair files directly during the single pass (see
+ * RelPairRouter in `rel-pair-routing.ts`), so this function has NO production
+ * callers — it is kept ONLY so the byte-identity test in
+ * `test/integration/csv-pipeline.test.ts` ("direct per-pair emit matches the
+ * split oracle") can diff the direct-emit output against this proven path. Do
+ * NOT delete it as dead code without also removing that test and accepting the
+ * loss of the byte-identity guard (and likewise `test/unit/rel-csv-split.test.ts`).
  *
  * Streams the CSV line-by-line, routing each relationship to a file named
  * `rel_{fromLabel}_{toLabel}.csv`. Handles backpressure correctly: only one

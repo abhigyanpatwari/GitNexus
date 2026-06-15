@@ -4,7 +4,7 @@
  * Tests: streamAllCSVsToDisk with real graph data.
  * Covers hardening fixes: LRU cache (#24), BufferedCSVWriter flush
  */
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'vitest';
 import fs from 'fs/promises';
 import { finished } from 'stream/promises';
 import path from 'path';
@@ -350,9 +350,16 @@ describe('streamAllCSVsToDisk — deterministic output ordering', () => {
  * load-bearing guard for "byte-identical graph content" (issue acceptance).
  */
 describe('streamAllCSVsToDisk — direct per-pair emit matches the split oracle', () => {
+  // The oracle always emits in graph.iterRelationships() (unsorted) order; the
+  // production path honours GITNEXUS_SORT_GRAPH_OUTPUT. Clear it so a value
+  // leaked from a prior test can't desync the two and produce a spurious diff.
+  beforeEach(() => {
+    delete process.env.GITNEXUS_SORT_GRAPH_OUTPUT;
+  });
+
   it('produces byte-identical per-pair files + identical skip/total accounting', async () => {
-    // Multiple valid pairs, getNodeLabel special prefixes (comm_/proc_), and one
-    // invalid-label edge that BOTH paths must skip identically.
+    // Multiple valid pairs, getNodeLabel special prefixes (comm_ AND proc_), and
+    // one invalid-label edge that BOTH paths must skip identically.
     const graph = buildTestGraph(
       [
         { id: 'File:a.ts', label: 'File', name: 'a.ts', filePath: 'a.ts' },
@@ -360,12 +367,16 @@ describe('streamAllCSVsToDisk — direct per-pair emit matches the split oracle'
         { id: 'Function:a.ts:g:5', label: 'Function', name: 'g', filePath: 'a.ts' },
         { id: 'comm_1', label: 'Community' as never, name: 'c1', filePath: '' },
         { id: 'comm_2', label: 'Community' as never, name: 'c2', filePath: '' },
+        { id: 'proc_1', label: 'Process' as never, name: 'p1', filePath: '' },
+        { id: 'proc_2', label: 'Process' as never, name: 'p2', filePath: '' },
       ],
       [
         { sourceId: 'File:a.ts', targetId: 'Function:a.ts:f:1', type: 'CONTAINS' },
         { sourceId: 'File:a.ts', targetId: 'Function:a.ts:g:5', type: 'CONTAINS' },
         { sourceId: 'Function:a.ts:f:1', targetId: 'Function:a.ts:g:5', type: 'CALLS' },
         { sourceId: 'comm_1', targetId: 'comm_2', type: 'CONTAINS' },
+        // proc_ prefix → Process label (getNodeLabel special case).
+        { sourceId: 'proc_1', targetId: 'proc_2', type: 'CONTAINS' },
         // Invalid FROM label ('Bogus' ∉ NODE_TABLES) — skipped by both paths.
         { sourceId: 'Bogus:x', targetId: 'File:a.ts', type: 'CONTAINS' },
       ],
@@ -400,7 +411,7 @@ describe('streamAllCSVsToDisk — direct per-pair emit matches the split oracle'
 
     // Identical accounting.
     expect(direct.totalValidRels).toBe(split.totalValidRels);
-    expect(direct.totalValidRels).toBe(4);
+    expect(direct.totalValidRels).toBe(5);
     expect(direct.skippedRels).toBe(split.skippedRels);
     expect(direct.skippedRels).toBe(1);
     expect(direct.relHeader).toBe(split.relHeader);

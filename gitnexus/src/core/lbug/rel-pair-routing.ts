@@ -74,6 +74,16 @@ export class RelPairRouter {
   };
 
   /**
+   * The first stream error observed, if any. Lets the emit caller rethrow the
+   * real error (EMFILE / disk-full) instead of the generic `AbortError` that a
+   * pending `once(ws,'drain',{signal})` rejects with when the abort fires —
+   * mirroring the retained `splitRelCsvByLabelPair`'s `throw streamError ?? err`.
+   */
+  get lastError(): Error | null {
+    return this.streamError;
+  }
+
+  /**
    * Route one already-escaped CSV row (no trailing newline) to its pair file.
    * Returns `void` on the synchronous hot path; a `Promise<void>` only when a
    * stream signals backpressure (or a new pair's header does) — the caller
