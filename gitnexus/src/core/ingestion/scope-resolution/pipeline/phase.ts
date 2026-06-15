@@ -44,6 +44,8 @@ import {
 import type { ResolutionOutcome } from '../resolution-outcome.js';
 import type { FunctionSummary } from '../../taint/summary-model.js';
 import { buildFunctionNodeIndex } from '../../taint/summary-harvest-driver.js';
+import { PdgEmitSink, type PdgEmitManifest } from '../../../lbug/pdg-emit-sink.js';
+import path from 'node:path';
 
 import { logger } from '../../../logger.js';
 export interface ScopeResolutionOutput {
@@ -72,6 +74,14 @@ export interface ScopeResolutionOutput {
    * The `taintSummaries` phase composes these over the `CALLS` graph.
    */
   readonly functionSummaries: readonly FunctionSummary[];
+  /**
+   * Streamed PDG-emit COPY manifest (#2202). Present only when streaming was on
+   * (full rebuild + `--pdg` + enabled): the BasicBlock node CSV + per-pair PDG
+   * edge CSVs that were flushed to disk during the emit loop, for the persistence
+   * step to COPY alongside the structural CSVs. Absent ⇒ the PDG layer (if any)
+   * is in the in-memory graph and persists via the normal whole-graph emit.
+   */
+  readonly pdgEmitManifest?: PdgEmitManifest;
 }
 
 const NOOP_OUTPUT: ScopeResolutionOutput = Object.freeze({
@@ -242,6 +252,29 @@ export const scopeResolutionPhase: PipelinePhase<ScopeResolutionOutput> = {
         ? buildFunctionNodeIndex(ctx.graph)
         : undefined;
 
+    // Streaming/chunked PDG emit (#2202): when enabled (the caller has already
+    // gated this to full-rebuild + `--pdg`), route the BasicBlock + intra-file
+    // PDG-edge layer to CSV-on-disk through one sink shared across every
+    // language pass, so it never accumulates in `ctx.graph` (peak RSS O(chunk)).
+    // Needs the storage dir (the parse-cache store path, the same `.gitnexus`
+    // dir loadGraphToLbug COPYs from); if that is somehow absent we skip
+    // streaming and fall back to the in-memory whole-graph emit.
+    let pdgEmitSink: PdgEmitSink | undefined;
+    if (ctx.options?.streamPdgEmit === true && totalScopeFiles > 0) {
+      if (parsedFileStorePath) {
+        pdgEmitSink = new PdgEmitSink(
+          ctx.graph,
+          path.join(parsedFileStorePath, 'pdg-csv'),
+          ctx.options?.pdgEmitChunkSize,
+        );
+      } else {
+        logger.warn(
+          '[scope-resolution] streaming PDG emit requested but no storage path is ' +
+            'available; falling back to in-memory whole-graph emit',
+        );
+      }
+    }
+
     for (const [lang, provider] of SCOPE_RESOLVERS) {
       // Standalone providers (COBOL, JCL) don't emit graph edges yet
       // through the scope-resolution path. This is the canonical guard:
@@ -378,6 +411,8 @@ export const scopeResolutionPhase: PipelinePhase<ScopeResolutionOutput> = {
           pdgMaxCdgEdgesPerFunction: ctx.options?.pdgMaxCdgEdgesPerFunction,
           pdgMaxTaintFindingsPerFunction: ctx.options?.pdgMaxTaintFindingsPerFunction,
           pdgMaxTaintHops: ctx.options?.pdgMaxTaintHops,
+          // Streaming PDG-emit sink (#2202) — undefined ⇒ emit to the in-memory graph.
+          pdgEmitSink,
           recordResolutionOutcome: (outcome) => {
             resolutionOutcomes.push(outcome);
           },
@@ -473,6 +508,14 @@ export const scopeResolutionPhase: PipelinePhase<ScopeResolutionOutput> = {
       }
     }
 
+    // Finalize the streaming PDG sink (#2202) once after the last language:
+    // flush + close its CSV writers and capture the COPY manifest. forceGc at
+    // the boundary reclaims transient write buffers (mirrors the per-language
+    // release below). Done before the `!anyRan` early return so the fds always
+    // close, even on the (degenerate) no-language-ran path.
+    const pdgEmitManifest = pdgEmitSink?.finalize();
+    if (pdgEmitSink !== undefined) forceGc();
+
     if (totalScopeFiles > 0 && anyRan) {
       ctx.onProgress({
         phase: 'scopeResolution',
@@ -504,6 +547,7 @@ export const scopeResolutionPhase: PipelinePhase<ScopeResolutionOutput> = {
       resolutionOutcomes,
       perLanguage,
       functionSummaries,
+      pdgEmitManifest,
     };
   },
 };

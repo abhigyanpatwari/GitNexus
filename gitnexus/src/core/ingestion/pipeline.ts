@@ -304,10 +304,10 @@ export const runPipelineFromRepo = async (
 
   let communityResult: CommunitiesOutput['communityResult'] | undefined;
   let processResult: ProcessesOutput['processResult'] | undefined;
-  const resolutionOutcomes = getPhaseOutput<ScopeResolutionOutput>(
-    results,
-    'scopeResolution',
-  ).resolutionOutcomes;
+  const scopeResolutionOutput = getPhaseOutput<ScopeResolutionOutput>(results, 'scopeResolution');
+  const resolutionOutcomes = scopeResolutionOutput.resolutionOutcomes;
+  // Streamed PDG-emit manifest (#2202): present only when streaming was on.
+  const pdgEmitManifest = scopeResolutionOutput.pdgEmitManifest;
 
   if (!options?.skipGraphPhases) {
     communityResult = getPhaseOutput<CommunitiesOutput>(results, 'communities').communityResult;
@@ -336,5 +336,6 @@ export const runPipelineFromRepo = async (
     processResult,
     resolutionOutcomes,
     usedWorkerPool,
+    pdgEmitManifest,
   };
 };
