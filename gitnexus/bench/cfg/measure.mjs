@@ -42,12 +42,13 @@ import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 
 import Parser from 'tree-sitter';
-import TypeScript from 'tree-sitter-typescript';
 import { collectFunctionCfgs } from '../../src/core/ingestion/cfg/collect.ts';
 import { computeReachingDefs } from '../../src/core/ingestion/cfg/reaching-defs.ts';
 import { DEFAULT_PDG_MAX_REACHING_DEF_FACTS_PER_FUNCTION } from '../../src/core/ingestion/cfg/emit.ts';
-import { createTypeScriptCfgVisitor } from '../../src/core/ingestion/cfg/visitors/typescript.ts';
 import { getTreeSitterBufferSize } from '../../src/core/ingestion/constants.ts';
+import { getLanguageGrammar } from '../../src/core/tree-sitter/parser-loader.ts';
+import { getProvider } from '../../src/core/ingestion/languages/index.ts';
+import { SupportedLanguages } from '../../src/config/supported-languages.ts';
 import { buildTaintImportIndex, matchFunctionSites } from '../../src/core/ingestion/taint/match.ts';
 import { TS_JS_TAINT_MODEL } from '../../src/core/ingestion/taint/typescript-model.ts';
 import {
@@ -59,12 +60,53 @@ import { encodeTaintPath } from '../../src/core/ingestion/taint/path-codec.ts';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const BASELINE_PATH = path.resolve(__dirname, 'baselines.json');
 
-const visitor = createTypeScriptCfgVisitor();
-const parser = new Parser();
-parser.setLanguage(TypeScript.typescript);
-// Large synthetic sources exceed tree-sitter's default read buffer; size it
-// from the content exactly as the parse worker does (getTreeSitterBufferSize).
-const parse = (src) => parser.parse(src, undefined, { bufferSize: getTreeSitterBufferSize(src) });
+// ---- per-language registry (the U1 parameterization, #2195) ----
+//
+// A scenario names a `lang` (default 'ts'); the registry resolves its grammar,
+// CFG visitor, and (optional) taint model GENERICALLY — the grammar via the
+// production `getLanguageGrammar` loader and the visitor via the provider's
+// `cfgVisitor` hook (the same seam `cfg-snapshot.test.ts` uses). No language is
+// named in the bench logic itself: adding a language is one row here, not a new
+// static grammar import (the language-naming anti-pattern). Lazy by design —
+// only languages actually referenced by a scenario are loaded, so a missing
+// optional grammar never breaks an unrelated run.
+//
+//   - `grammar`     — SupportedLanguages enum value for `getLanguageGrammar`.
+//   - `taintModel`  — source/sink config threaded into the taint pass. ONLY the
+//                     TS row carries `TS_JS_TAINT_MODEL`; C-family rows have no
+//                     model (matching prod: `getSourceSinkConfig(<c-lang>)` is
+//                     `undefined`), so the TS model never runs against a
+//                     C-family CFG.
+const LANGS = {
+  ts: { grammar: SupportedLanguages.TypeScript, taintModel: TS_JS_TAINT_MODEL },
+  go: { grammar: SupportedLanguages.Go, taintModel: null },
+  java: { grammar: SupportedLanguages.Java, taintModel: null },
+  c: { grammar: SupportedLanguages.C, taintModel: null },
+  cpp: { grammar: SupportedLanguages.CPlusPlus, taintModel: null },
+  csharp: { grammar: SupportedLanguages.CSharp, taintModel: null },
+};
+
+// Lazily build + cache one { parser, visitor, parse, taintModel } toolkit per
+// language id. The parser is created once and reused across parses/reps for that
+// language (parse cost is isolated from CFG-build cost by reusing the tree).
+const langToolkitCache = new Map();
+function langToolkit(langId) {
+  const cached = langToolkitCache.get(langId);
+  if (cached) return cached;
+  const spec = LANGS[langId];
+  if (!spec) throw new Error(`bench: unknown lang '${langId}' (add a row to LANGS)`);
+  const visitor = getProvider(spec.grammar).cfgVisitor;
+  if (!visitor)
+    throw new Error(`bench: provider for '${langId}' has no cfgVisitor (visitor not wired?)`);
+  const parser = new Parser();
+  parser.setLanguage(getLanguageGrammar(spec.grammar));
+  // Large synthetic sources exceed tree-sitter's default read buffer; size it
+  // from the content exactly as the parse worker does (getTreeSitterBufferSize).
+  const parse = (src) => parser.parse(src, undefined, { bufferSize: getTreeSitterBufferSize(src) });
+  const toolkit = { visitor, parse, taintModel: spec.taintModel };
+  langToolkitCache.set(langId, toolkit);
+  return toolkit;
+}
 
 // ---- synthetic generators (one cost dimension each) ----
 
@@ -166,9 +208,27 @@ const SCENARIOS = [
     // cost ~nothing (no solver call), gated as zero-time/dense-time ratio.
     small: 125,
     large: 500, // 4x, like the global sizes — per-fn bodies are ~30 lines
+    lang: 'ts', // taint model is TS-only; never run TS_JS_TAINT_MODEL on a C-family CFG
     taint: { cap: 8 },
     gen: (n) => genTaintFunctions(n, false),
     genZero: (n) => genTaintFunctions(n, true),
+  },
+  {
+    name: 'go:branchy',
+    // #2195 U7: the first NON-TS scaling scenario — the C-family analogue of the
+    // TS `branchy` stressor, run through the Go grammar + Go CFG visitor. ONE Go
+    // function with N sequential `if`s → N condition blocks + 2N+ edges in a
+    // single CFG; stresses block/edge growth and the namedChildren walk on the
+    // Go body. The `go:` namespace keys it out of the TS baseline keyspace so a
+    // C-family entry can never collide with (or silently re-baseline) a TS
+    // scenario. CFG-only (Go has no registered taint model — see LANGS), so the
+    // gated metrics are the time/disk/heap/rd scaling ratios + the fingerprint.
+    lang: 'go',
+    gen: (n) => {
+      let s = 'package p\nfunc f(x int) {\n';
+      for (let i = 0; i < n; i++) s += `\tif x > ${i} {\n\t\ts${i}()\n\t}\n`;
+      return s + '}\n';
+    },
   },
 ];
 
@@ -207,14 +267,14 @@ function median(xs) {
   return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
 }
 
-function measureCollect(src, file, reps) {
-  const root = parse(src).rootNode; // parse ONCE; reuse across reps
-  collectFunctionCfgs(root, visitor, `warmup-${file}`, NO_CAP); // warm JIT (uncounted)
+function measureCollect(tk, src, file, reps) {
+  const root = tk.parse(src).rootNode; // parse ONCE; reuse across reps
+  collectFunctionCfgs(root, tk.visitor, `warmup-${file}`, NO_CAP); // warm JIT (uncounted)
   const samples = [];
   let out;
   for (let i = 0; i < reps; i++) {
     const start = process.hrtime.bigint();
-    out = collectFunctionCfgs(root, visitor, file, NO_CAP);
+    out = collectFunctionCfgs(root, tk.visitor, file, NO_CAP);
     samples.push(Number(process.hrtime.bigint() - start) / 1e6);
   }
   return {
@@ -257,7 +317,7 @@ function measureReachingDefs(cfgs, reps, maxFacts) {
 // maxFindingsPerFunction (deliberately small so the cap BINDS on the dense
 // generator). Also sums the encoded TAINTED `reason` bytes for the kept
 // findings — the persisted-taint disk posture (R10).
-function measureTaint(cfgs, reps, cap) {
+function measureTaint(cfgs, reps, cap, taintModel) {
   const importIndex = buildTaintImportIndex([]); // bench callees are globals
   const pass = () => {
     let analyzed = 0;
@@ -265,7 +325,7 @@ function measureTaint(cfgs, reps, cap) {
     let dropped = 0;
     let reasonBytes = 0;
     for (const c of cfgs) {
-      const matches = matchFunctionSites(c, TS_JS_TAINT_MODEL, importIndex);
+      const matches = matchFunctionSites(c, taintModel, importIndex);
       if (!matches.hasSource || !matches.hasSink) continue;
       const du = computeReachingDefs(c, {
         maxFacts: DEFAULT_PDG_MAX_REACHING_DEF_FACTS_PER_FUNCTION,
@@ -307,7 +367,7 @@ function measureTaint(cfgs, reps, cap) {
 // run without the flag still works).
 const GC = typeof global.gc === 'function' ? () => (global.gc(), global.gc()) : null;
 
-function retainedHeapBytes(src, file) {
+function retainedHeapBytes(tk, src, file) {
   if (!GC) return null;
   // Retained-size-by-RELEASE: measure the heap with the CFGs held, drop them,
   // GC, measure again. The drop isolates exactly the JS heap the cfgSideChannel
@@ -315,7 +375,7 @@ function retainedHeapBytes(src, file) {
   // is flushed) — robust to pre-existing garbage, which is constant across both
   // measurements. The parse tree is a temporary (its native memory isn't on the
   // JS heap); block text strings are fresh copies, so they count here.
-  let cfgs = collectFunctionCfgs(parse(src).rootNode, visitor, file, NO_CAP).cfgs;
+  let cfgs = collectFunctionCfgs(tk.parse(src).rootNode, tk.visitor, file, NO_CAP).cfgs;
   GC();
   const withCfgs = process.memoryUsage().heapUsed;
   if (cfgs.length < 0) throw new Error('unreachable'); // keep cfgs live past withCfgs
@@ -342,8 +402,13 @@ function canonicalizeCfg(cfg) {
   return `${cfg.functionStartLine}:${cfg.functionStartColumn}\n${bindings}\n${blocks.join('\n')}\n${edges.join('\n')}`;
 }
 
-function fingerprint(scenario) {
-  const out = collectFunctionCfgs(parse(scenario.gen(FP_SIZE)).rootNode, visitor, 'fp.ts', NO_CAP);
+function fingerprint(tk, scenario) {
+  const out = collectFunctionCfgs(
+    tk.parse(scenario.gen(FP_SIZE)).rootNode,
+    tk.visitor,
+    'fp',
+    NO_CAP,
+  );
   const canon = out.cfgs.map(canonicalizeCfg).sort().join('\n====\n');
   return {
     fingerprint: crypto.createHash('sha256').update(canon).digest('hex'),
@@ -354,19 +419,23 @@ function fingerprint(scenario) {
 }
 
 function measureScenario(scenario) {
+  // Resolve the scenario's language toolkit ONCE (default 'ts' keeps every
+  // pre-existing TS scenario on the exact same grammar+visitor+model path it
+  // used before the U1 parameterization → byte-identical baselines).
+  const tk = langToolkit(scenario.lang ?? 'ts');
   // Per-scenario sizes (straight-line needs larger N to separate a concat
   // quadratic from noise — see its comment); the rest default to the globals.
   const nSmall = scenario.small ?? SMALL;
   const nLarge = scenario.large ?? LARGE;
-  const small = measureCollect(scenario.gen(nSmall), `${scenario.name}.ts`, REPS);
-  const large = measureCollect(scenario.gen(nLarge), `${scenario.name}.ts`, REPS);
+  const small = measureCollect(tk, scenario.gen(nSmall), `${scenario.name}.src`, REPS);
+  const large = measureCollect(tk, scenario.gen(nLarge), `${scenario.name}.src`, REPS);
   const sizeRatio = nLarge / nSmall;
   const scalingRatio = small.ms > 0 ? large.ms / small.ms / sizeRatio : 0;
   const diskRatio = small.diskBytes > 0 ? large.diskBytes / small.diskBytes / sizeRatio : 0;
 
   // Memory growth (only when --expose-gc gave us a forced GC).
-  const heapSmall = retainedHeapBytes(scenario.gen(nSmall), `${scenario.name}.ts`);
-  const heapLarge = retainedHeapBytes(scenario.gen(nLarge), `${scenario.name}.ts`);
+  const heapSmall = retainedHeapBytes(tk, scenario.gen(nSmall), `${scenario.name}.src`);
+  const heapLarge = retainedHeapBytes(tk, scenario.gen(nLarge), `${scenario.name}.src`);
   const heapRatio =
     heapSmall !== null && heapLarge !== null && heapSmall > 0
       ? heapLarge / heapSmall / sizeRatio
@@ -380,22 +449,28 @@ function measureScenario(scenario) {
   // ratio 0 and the gate would self-disable exactly when the solver is fast.
   const rdRatio = rdLarge.ms / Math.max(rdSmall.ms, 0.001) / sizeRatio;
 
-  // #2083 M3 U7: taint pass cost + boundedness on taint-bearing scenarios.
+  // #2083 M3 U7: taint pass cost + boundedness on taint-bearing scenarios. The
+  // taint model is the scenario's language model (TS_JS_TAINT_MODEL for the TS
+  // taint-dense scenario; a taint scenario requires a model-bearing language).
   let taintMetrics = {};
   if (scenario.taint !== undefined) {
+    if (!tk.taintModel)
+      throw new Error(
+        `bench: scenario '${scenario.name}' has a taint config but lang '${scenario.lang ?? 'ts'}' has no taint model`,
+      );
     const cap = scenario.taint.cap;
-    const tSmall = measureTaint(small.cfgs, REPS, cap);
-    const tLarge = measureTaint(large.cfgs, REPS, cap);
+    const tSmall = measureTaint(small.cfgs, REPS, cap, tk.taintModel);
+    const tLarge = measureTaint(large.cfgs, REPS, cap, tk.taintModel);
     const tRatio = tLarge.ms / Math.max(tSmall.ms, 0.001) / sizeRatio;
     // Zero-match control: identical CFG shape, no model hits — measures the
     // match-gate overhead unmatched functions pay on a real --pdg repo.
     const zeroCfgs = collectFunctionCfgs(
-      parse(scenario.genZero(nLarge)).rootNode,
-      visitor,
-      `${scenario.name}-zero.ts`,
+      tk.parse(scenario.genZero(nLarge)).rootNode,
+      tk.visitor,
+      `${scenario.name}-zero.src`,
       NO_CAP,
     ).cfgs;
-    const tZero = measureTaint(zeroCfgs, REPS, cap);
+    const tZero = measureTaint(zeroCfgs, REPS, cap, tk.taintModel);
     taintMetrics = {
       taint_ms_small: Number(tSmall.ms.toFixed(3)),
       taint_ms_large: Number(tLarge.ms.toFixed(3)),
@@ -431,7 +506,7 @@ function measureScenario(scenario) {
     rd_scaling_ratio: Number(rdRatio.toFixed(3)),
     facts_small: rdSmall.facts,
     facts_large: rdLarge.facts,
-    ...fingerprint(scenario),
+    ...fingerprint(tk, scenario),
   };
 }
 

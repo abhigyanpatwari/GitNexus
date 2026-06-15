@@ -22,6 +22,7 @@ import type { AstFrameworkPatternConfig } from '../language-provider.js';
 import type { SyntaxNode } from '../utils/ast-helpers.js';
 import { createCallExtractor } from '../call-extractors/generic.js';
 import { kotlinCallConfig } from '../call-extractors/configs/jvm.js';
+import { createKotlinCfgVisitor } from '../cfg/visitors/kotlin.js';
 import { createFieldExtractor } from '../field-extractors/generic.js';
 import { kotlinConfig } from '../field-extractors/configs/jvm.js';
 import { createMethodExtractor } from '../method-extractors/generic.js';
@@ -177,6 +178,8 @@ export const kotlinProvider = defineLanguage({
 
   // ── RFC #909 Ring 3: scope-based resolution hooks ──
   emitScopeCaptures: emitKotlinScopeCaptures,
+  // ── #2195 PDG layer: Kotlin CFG visitor (vendored grammar) ──
+  cfgVisitor: createKotlinCfgVisitor(),
   // Worker-side: snapshot the module-level companion-scope marks
   // `emitKotlinScopeCaptures` just populated for this file (`markCompanionScope`
   // → `companionScopesByFile`) into plain data on `ParsedFile.captureSideChannel`,

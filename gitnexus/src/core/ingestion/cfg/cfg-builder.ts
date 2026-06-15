@@ -42,10 +42,40 @@ interface MutableBlock {
   statements: StatementFacts[];
 }
 
+/**
+ * Hard ceiling on CFG recursive-descent scope-entry depth (#2195). A language
+ * `CfgVisitor` wraps each nested block scope in {@link CfgBuilder.withNesting} (its
+ * `visitBody` / `visitSeq` choke points), so the live count tracks scope entries,
+ * not statement width. NOTE the count is ~2× LEXICAL nesting for block-bodied
+ * constructs (visitBody → visitSeq both enter), so the effective lexical ceiling
+ * is ~250 levels for block bodies (~500 for single-statement bodies / bare
+ * blocks). Real source nests ≤ ~50 deep, so this fires only on machine-generated
+ * / adversarial input. Both effective ceilings sit far below the engine's native
+ * stack limit (~1.2k+ nesting even on the raised worker `stackSizeMb`), so the
+ * bail is a DETERMINISTIC, language-independent {@link CfgNestingDepthError}
+ * rather than a nondeterministic `RangeError` thrown somewhere mid-walk.
+ */
+export const MAX_CFG_NESTING_DEPTH = 500;
+
+/**
+ * Thrown by the visitor nesting-depth guard ({@link CfgBuilder.enterNesting})
+ * when lexical nesting exceeds {@link MAX_CFG_NESTING_DEPTH}. `collectFunctionCfgs`
+ * catches it and counts the function under `skipped.tooDeeplyNested`, isolating
+ * the bail to one function instead of risking a worker-wide stack overflow.
+ */
+export class CfgNestingDepthError extends Error {
+  constructor(readonly limit: number) {
+    super(`CFG nesting depth exceeded ${limit}`);
+    this.name = 'CfgNestingDepthError';
+  }
+}
+
 export class CfgBuilder {
   private readonly blocks: MutableBlock[] = [];
   private readonly edges: CfgEdgeData[] = [];
   private readonly edgeKeys = new Set<string>();
+  /** Live recursive-descent nesting depth — see {@link enterNesting}. */
+  private nesting = 0;
   readonly entryIndex: number;
   readonly exitIndex: number;
 
@@ -117,6 +147,45 @@ export class CfgBuilder {
 
   get blockCount(): number {
     return this.blocks.length;
+  }
+
+  /**
+   * Run `fn` inside ONE nested block scope (#2195) — the single choke every
+   * visitor's `visitBody` / `visitSeq` funnels through. Enters on the way in and
+   * exits in a `finally`, so the live depth is balanced on every return AND every
+   * throw and the enter/exit can never drift out of pair (the reason this is one
+   * helper, not 24 hand-paired call sites). Throws {@link CfgNestingDepthError}
+   * when nesting exceeds {@link MAX_CFG_NESTING_DEPTH} — a proactive, deterministic
+   * bail before the native stack can overflow on a pathologically nested function.
+   *
+   * A block-bodied construct passes through BOTH visitBody and visitSeq, so it
+   * costs TWO scopes per lexical level: the effective structural ceiling is
+   * ~MAX_CFG_NESTING_DEPTH/2 (~250) lexical levels for block bodies (~500 for
+   * single-statement bodies / bare blocks, which hit only one of the two). Still
+   * an order of magnitude below the native limit and far above real code (≤ ~50).
+   */
+  withNesting<T>(fn: () => T): T {
+    this.enterNesting();
+    try {
+      return fn();
+    } finally {
+      this.exitNesting();
+    }
+  }
+
+  /**
+   * Increment the nesting counter, throwing {@link CfgNestingDepthError} past the
+   * cap. Prefer {@link withNesting}, which pairs the exit in a `finally`; this is
+   * exposed for direct depth-accounting tests only.
+   */
+  enterNesting(): void {
+    if (++this.nesting > MAX_CFG_NESTING_DEPTH)
+      throw new CfgNestingDepthError(MAX_CFG_NESTING_DEPTH);
+  }
+
+  /** Decrement the nesting counter — the partner of {@link enterNesting}. */
+  exitNesting(): void {
+    this.nesting--;
   }
 
   /** Produce the serializable CFG. Caller is responsible for having wired the

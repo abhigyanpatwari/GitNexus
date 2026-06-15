@@ -347,6 +347,30 @@ describe('computeReachingDefs — determinism and convergence', () => {
     expect(capped.defCount).toBe(full.defCount);
     expect(capped.useCount).toBe(full.useCount);
   });
+
+  it('maxBlockVisits ceiling: a budget below convergence bails to a sound empty truncated', () => {
+    // entry → body (self-loop, forces re-processing) → exit; body defs+uses x.
+    const blocks: BlockSpec[] = [{}, {}, { stmts: [stmt(3, [0], [0])] }];
+    const edges: [number, number][] = [
+      [0, 2],
+      [2, 2], // self-loop → the fixpoint re-visits block 2
+      [2, 1],
+    ];
+    // Unbounded (and a generous budget) converge with the loop-carried fact.
+    const full = computeReachingDefs(mkCfg(blocks, edges, ['x']));
+    expect(full.status).toBe('computed');
+    expect(full.facts.length).toBeGreaterThan(0);
+    const budgeted = computeReachingDefs(mkCfg(blocks, edges, ['x']), { maxBlockVisits: 1000 });
+    expect(budgeted.status).toBe('computed');
+    expect(render(budgeted.facts)).toEqual(render(full.facts)); // byte-identical for normal code
+
+    // A budget below convergence cannot reach the fixpoint, so facts would be
+    // unsound → return NONE (sound), status 'truncated', telemetry preserved.
+    const capped = computeReachingDefs(mkCfg(blocks, edges, ['x']), { maxBlockVisits: 1 });
+    expect(capped.status).toBe('truncated');
+    expect(capped.facts).toEqual([]);
+    expect(capped.defCount).toBe(full.defCount);
+  });
 });
 
 describe('computeReachingDefs — parser-direct acceptance (with U1/U2)', () => {

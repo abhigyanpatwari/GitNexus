@@ -139,6 +139,17 @@ function fileLanguages(relPath: string): SupportedLanguages[] {
   }
   const base = relPath.replace(/\.ts$/, '').split('/').pop() ?? '';
   if (BASENAME_LANGS[base]) return BASENAME_LANGS[base];
+  // A `<lang>-harvest.ts` CFG def/use harvester is validated against the SAME
+  // grammar(s) as its `<lang>.ts` CFG visitor (go-harvest → Go, c-cpp-harvest →
+  // C+C++, typescript-harvest → TS, …) — strip the suffix and reuse the visitor
+  // basename map. The two genuinely language-agnostic harvesters —
+  // call-site-harvest.ts (pure taint-site mechanism) and scope-tree-harvest.ts
+  // (shared lexical-scope substrate) — name no grammar, so their stripped base
+  // (`call-site`, `scope-tree`) misses BASENAME_LANGS and they fall through to
+  // the valid-if-any ALL_LANGS bucket below (correct: they pin no per-grammar
+  // literal).
+  const harvestBase = base.replace(/-harvest$/, '');
+  if (harvestBase !== base && BASENAME_LANGS[harvestBase]) return BASENAME_LANGS[harvestBase];
   // generic / shared / cross-language helpers → any grammar (valid-if-any)
   return [...ALL_LANGS];
 }
@@ -183,6 +194,17 @@ function mode2Files(): string[] {
       if (existsSync(cap)) files.push(cap);
     }
   }
+  // CFG visitors (cfg/visitors/<lang>.ts) AND their def/use harvesters
+  // (cfg/visitors/<lang>-harvest.ts) hard-code tree-sitter node-type and field
+  // literals directly; include them so the gate validates per-language CFG
+  // literals against the right grammar (basename → grammar via `fileLanguages`:
+  // c-cpp[-harvest] → C+C++, csharp[-harvest] → C#, go[-harvest] → Go,
+  // typescript[-harvest] → TS, …; the language-agnostic call-site-harvest.ts and
+  // scope-tree-harvest.ts carry no grammar literal and stay valid-if-any).
+  // Without this, the gate stays green on a dead literal in a new visitor or
+  // harvester — the exact failure KTD5 warns about.
+  const cfgVisitorsDir = join(INGESTION_DIR, 'cfg', 'visitors');
+  if (existsSync(cfgVisitorsDir)) walkTs(cfgVisitorsDir, files);
   const exportDetection = join(INGESTION_DIR, 'export-detection.ts');
   if (existsSync(exportDetection)) files.push(exportDetection);
   return files;

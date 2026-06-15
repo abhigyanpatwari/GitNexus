@@ -778,6 +778,7 @@ export function runScopeResolution(
     let rdTruncated = 0;
     let cdgEdges = 0;
     let cdgDropped = 0;
+    let cdgSkippedUnsound = 0;
     // ── M3 taint setup (#2083 U4) ────────────────────────────────────────
     // Explicit model-registration seam (idempotent, cheap) — the registry
     // stays empty on non-pdg runs, preserving default-run parity. The
@@ -899,6 +900,7 @@ export function runScopeResolution(
         if (PROF) pdgMs += performance.now() - tCdg;
         cdgEdges += cdg.edges;
         cdgDropped += cdg.droppedEdges;
+        cdgSkippedUnsound += cdg.skippedUnsoundFunctions;
 
         // M3 (#2083 U4): taint over the SAME validated CFGs, inside the SAME
         // per-file try (a taint throw costs this file's taint layer only —
@@ -975,6 +977,9 @@ export function runScopeResolution(
           (rdTruncated > 0 ? `, ${rdTruncated} function(s) hit the fact limit` : '') +
           `; ${cdgEdges} CDG edges` +
           (cdgDropped > 0 ? `, ${cdgDropped} CDG edges dropped (per-function cap)` : '') +
+          (cdgSkippedUnsound > 0
+            ? `, ${cdgSkippedUnsound} function(s) CDG-skipped (EXIT not reachable from all blocks)`
+            : '') +
           // M3 volume telemetry — only for languages with a registered model.
           (taintSpec !== undefined
             ? `; taint: ${taintTotals.findings} TAINTED, ${taintTotals.kills} SANITIZES ` +
@@ -985,6 +990,20 @@ export function runScopeResolution(
                 : '') +
               `)`
             : ''),
+      );
+    }
+    // R8 (#2195): CDG soundness skips surface UNCONDITIONALLY (parity with the
+    // taint/RD gap warns) — not buried in the logger.debug stats line above. A
+    // function whose EXIT is not reverse-reachable from every block gets NO
+    // control dependence (an unmodeled non-terminating / multi-terminal CFG
+    // shape the synthetic-escape pass could not bridge). Withholding CDG
+    // silently would let a language's control dependence erode unnoticed; CFG
+    // and REACHING_DEF do not depend on post-dominance and are unaffected.
+    if (cdgSkippedUnsound > 0) {
+      logger.warn(
+        `[cfg] lang=${provider.language}: ${cdgSkippedUnsound} function(s) had control ` +
+          `dependence skipped (EXIT not reverse-reachable from all blocks); ` +
+          `CFG and REACHING_DEF are unaffected`,
       );
     }
     // R4: taint coverage gaps and cap drops surface UNCONDITIONALLY (never

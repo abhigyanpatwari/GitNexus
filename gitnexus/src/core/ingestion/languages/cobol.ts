@@ -34,6 +34,11 @@ export const cobolProvider = defineLanguage({
   exportChecker: () => false,
   importResolver: () => null,
 
+  // No `cfgVisitor`: COBOL is the deliberate non-goal of the PDG-language
+  // rollout (#2195). There is no installed tree-sitter grammar and COBOL's
+  // PERFORM / GO-TO control flow is exotic; the worker's `provider.cfgVisitor &&`
+  // gate therefore emits no CFG/PDG layer for COBOL (see worker-roundtrip.test.ts).
+
   // ── Scope-resolution hooks ───────────────────────────────────────
   emitScopeCaptures: emitCobolScopeCaptures,
   interpretImport: interpretCobolImport,
