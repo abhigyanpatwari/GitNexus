@@ -610,10 +610,14 @@ class RustCfgWalk {
       stmt.childForFieldName('body') ?? stmt.namedChildren.find((c) => c.type === 'match_block');
     const arms = body ? body.namedChildren.filter((c) => c.type === 'match_arm') : [];
 
-    // A guarded arm (`PAT if g`) evaluates `g` conditionally — harvest its uses
-    // onto the dispatch block (a later arm tests only when earlier ones didn't
-    // match; any def there is a may-def).
+    // Each arm's pattern bindings (`Some(n) =>`) are MAY-defs from the matched
+    // subject, and a guarded arm (`PAT if g`) evaluates `g` conditionally — both
+    // are harvested onto the dispatch block (co-located with the subject's use, so
+    // a tainted subject reaches the binding), as may-defs (a later arm binds/tests
+    // only when earlier ones didn't match). #2206.
     for (const arm of arms) {
+      const patFacts = this.harvest.matchArmPatternFacts(arm);
+      if (patFacts) this.builder.attachFacts(dispatch, patFacts);
       const guard = this.armGuard(arm);
       if (guard) this.builder.attachFacts(dispatch, this.harvest.factsConditional(guard));
     }
@@ -621,8 +625,8 @@ class RustCfgWalk {
     this.cfc.pushSwitch(matchExit, []);
     let hasIrrefutable = false;
     for (const arm of arms) {
-      // The arm-pattern bindings are defs that happen on dispatch into the arm —
-      // attach them to the arm body's entry. The arm body may be an expr or block.
+      // The arm body may be an expr or block; its pattern bindings were harvested
+      // onto the dispatch above (#2206).
       const armBody = this.visitBody(arm.childForFieldName('value'));
       const entry = armBody?.entry ?? matchExit;
       this.builder.edge(dispatch, entry, 'switch-case');

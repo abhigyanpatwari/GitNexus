@@ -218,6 +218,21 @@ describe('Rust CfgVisitor — match (no fallthrough) + guards', () => {
     expect(reaches(cfg, block(cfg, 'pos(n)'), block(cfg, 'after()'))).toBe(true);
   });
 
+  it('a match-arm pattern binding is harvested as a (may-)def from the subject (#2206)', () => {
+    const cfg = rust.cfgOf(
+      `fn f(x: E) {
+        match x {
+          Some(n) => use_n(n),
+          _ => z(),
+        }
+      }`,
+    );
+    // `n` binds from the matched subject, so it must be a (may-)def, not only a
+    // use — else taint cannot propagate from the subject into the arm body.
+    expect(hasMayDef(cfg, bindingIdx(cfg, 'n'))).toBe(true);
+    expect(hasUse(cfg, bindingIdx(cfg, 'n'))).toBe(true);
+  });
+
   it('a match with NO `_` arm keeps a no-match path to the exit', () => {
     const cfg = rust.cfgOf(`fn f(x: i32) { match x { 1 => a(), 2 => b(), } after(); }`);
     expect(reaches(cfg, cfg.entryIndex, block(cfg, 'after()'))).toBe(true);

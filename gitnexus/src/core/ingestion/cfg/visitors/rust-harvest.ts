@@ -355,6 +355,22 @@ export class RustHarvester {
     return acc.finish();
   }
 
+  /**
+   * Facts for a `match` arm's PATTERN bindings (#2206): `Some(n) => …` binds `n`
+   * from the matched subject. The bindings are MAY-defs (only the arm that
+   * actually matches binds; a later arm tests only when earlier ones didn't) and
+   * are attached to the dispatch block, co-located with the subject's use, so a
+   * tainted subject can propagate to the arm binding. The guard is skipped by
+   * {@link defPattern}'s `match_pattern` handling. `undefined` when the pattern
+   * binds nothing (`_`, a literal, a unit variant).
+   */
+  matchArmPatternFacts(arm: SyntaxNode): StatementFacts | undefined {
+    const acc = new FactAccumulator(arm.startPosition.row + 1);
+    const pat = arm.childForFieldName('pattern');
+    if (pat) this.conditional(() => this.defPattern(pat, acc));
+    return acc.defCount() ? acc.finish() : undefined;
+  }
+
   /** ENTRY-block facts for the parameters (defs only — incl. default-position uses). */
   paramFacts(): StatementFacts | undefined {
     const params =
