@@ -22,6 +22,8 @@ import { markCppInlineNamespaceRange } from './inline-namespaces.js';
 import { extractCppTemplateConstraints } from './constraint-extractor.js';
 import { captureCppMemberLookupFacts } from './member-lookup.js';
 
+const CPP_BRACED_INIT_TYPE_PREFIX = 'braced-init:';
+
 export function emitCppScopeCaptures(
   sourceText: string,
   filePath: string,
@@ -1022,6 +1024,8 @@ function unknownTypeClass(base: string): ParameterTypeClass {
  */
 function inferCppLiteralType(node: SyntaxNode): string {
   switch (node.type) {
+    case 'initializer_list':
+      return inferCppBracedInitType(node);
     case 'number_literal': {
       const text = node.text;
       // Floating-point literals contain '.', 'e', 'E', or end with 'f'/'F'
@@ -1051,6 +1055,25 @@ function inferCppLiteralType(node: SyntaxNode): string {
     default:
       return '';
   }
+}
+
+function inferCppBracedInitType(node: SyntaxNode): string {
+  const elementTypes: string[] = [];
+  for (let i = 0; i < node.childCount; i++) {
+    const child = node.child(i);
+    if (child === null) continue;
+    if (child.type === ',' || child.type === '{' || child.type === '}') continue;
+    const elementType = inferCppLiteralType(child);
+    if (elementType === '' || elementType.startsWith(CPP_BRACED_INIT_TYPE_PREFIX)) {
+      return `${CPP_BRACED_INIT_TYPE_PREFIX}unknown`;
+    }
+    elementTypes.push(elementType);
+  }
+  if (elementTypes.length === 0) return `${CPP_BRACED_INIT_TYPE_PREFIX}unknown`;
+  const first = elementTypes[0];
+  return elementTypes.every((type) => type === first)
+    ? `${CPP_BRACED_INIT_TYPE_PREFIX}${first}`
+    : `${CPP_BRACED_INIT_TYPE_PREFIX}unknown`;
 }
 
 /**

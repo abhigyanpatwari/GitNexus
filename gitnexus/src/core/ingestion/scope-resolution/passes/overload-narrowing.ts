@@ -51,6 +51,8 @@ import type {
   SymbolDefinition,
 } from 'gitnexus-shared';
 
+const CONVERSION_ONLY_ARG_TYPE_PREFIXES = ['braced-init:'];
+
 /**
  * Per-slot conversion-rank function. Returns a numeric cost for
  * converting `argType` to `paramType`:
@@ -176,6 +178,7 @@ export function narrowOverloadCandidates(
         hookCtx.argumentTypeClasses,
       );
       if (ranked.length > 0) result = ranked;
+      else if (hasConversionOnlyArgType(argTypes)) result = [];
     }
   }
 
@@ -220,6 +223,12 @@ export function narrowOverloadCandidates(
   }
 
   return result;
+}
+
+function hasConversionOnlyArgType(argTypes: readonly string[]): boolean {
+  return argTypes.some((type) =>
+    CONVERSION_ONLY_ARG_TYPE_PREFIXES.some((prefix) => type.startsWith(prefix)),
+  );
 }
 
 function exactTypeSlotMatches(

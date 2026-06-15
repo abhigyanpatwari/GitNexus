@@ -32,6 +32,22 @@ const INTEGRAL_PROMOTION = new Map([
   ['bool', 'int'],
 ]);
 
+const BRACED_INIT_TYPE_PREFIX = 'braced-init:';
+const BRACED_INIT_CONTAINER_TYPES = new Set([
+  'array',
+  'deque',
+  'list',
+  'set',
+  'std::array',
+  'std::deque',
+  'std::list',
+  'std::set',
+  'std::unordered_set',
+  'std::vector',
+  'unordered_set',
+  'vector',
+]);
+
 /**
  * Return the conversion rank from `argType` to `paramType`.
  *
@@ -46,6 +62,11 @@ export function cppConversionRank(
   argTypeClass?: ParameterTypeClass,
   paramTypeClass?: ParameterTypeClass,
 ): number {
+  const bracedInitElementType = parseBracedInitElementType(argType);
+  if (bracedInitElementType !== undefined) {
+    if (bracedInitElementType === 'unknown') return Infinity;
+    return bracedInitConversionRank(paramType);
+  }
   if (argType === paramType) {
     return exactShapeCompatible(argTypeClass, paramTypeClass) ? 0 : Infinity;
   }
@@ -58,6 +79,32 @@ export function cppConversionRank(
   if (isPointer(argTypeClass) && isPointer(paramTypeClass) && paramType === 'void') return 2;
   if (hasCppUserDefinedConversion(argType, paramType)) return 4;
   return Infinity;
+}
+
+function parseBracedInitElementType(argType: string): string | undefined {
+  const elementType = argType.slice(BRACED_INIT_TYPE_PREFIX.length);
+  return argType.startsWith(BRACED_INIT_TYPE_PREFIX) && elementType !== ''
+    ? elementType
+    : undefined;
+}
+
+function bracedInitConversionRank(paramType: string): number {
+  const targetBase = bracedInitTargetBase(paramType);
+  if (targetBase === 'initializer_list' || targetBase === 'std::initializer_list') return 0;
+  if (BRACED_INIT_CONTAINER_TYPES.has(targetBase)) return 1;
+  return Infinity;
+}
+
+function bracedInitTargetBase(paramType: string): string {
+  let type = paramType.trim();
+  type = type.replace(/\b(const|volatile|restrict|mutable|constexpr)\b/g, '').trim();
+  type = type.replace(/[&*]+\s*$/, '').trim();
+  while (type.includes('<')) {
+    const stripped = type.replace(/<[^<>]*>/g, '');
+    if (stripped === type) break;
+    type = stripped;
+  }
+  return type.trim();
 }
 
 function isPointer(typeClass: ParameterTypeClass | undefined): boolean {

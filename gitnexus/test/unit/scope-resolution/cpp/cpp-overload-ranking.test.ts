@@ -102,6 +102,34 @@ describe('cppConversionRank user-defined conversion ranks (#1631)', () => {
   });
 });
 
+describe('cppConversionRank braced-init-list ranks (#1899)', () => {
+  it('ranks homogeneous braced-init lists toward initializer_list and containers', () => {
+    expect(cppConversionRank('braced-init:int', 'std::initializer_list<int>')).toBe(0);
+    expect(cppConversionRank('braced-init:int', 'std::vector<int>')).toBe(1);
+    expect(cppConversionRank('braced-init:int', 'int')).toBe(Infinity);
+  });
+
+  it('suppresses unknown braced-init lists when conversion ranking finds no viable target', () => {
+    const byIntList = mkDef(
+      'f:int-list',
+      ['std::initializer_list<int>'],
+      [value('std::initializer_list')],
+    );
+    const byDoubleList = mkDef(
+      'f:double-list',
+      ['std::initializer_list<double>'],
+      [value('std::initializer_list')],
+    );
+
+    const result = narrowOverloadCandidates([byIntList, byDoubleList], 1, ['braced-init:unknown'], {
+      argumentTypeClasses: [value('braced-init:unknown')],
+      conversionRankFn: cppConversionRank,
+    });
+
+    expect(result).toEqual([]);
+  });
+});
+
 describe('narrowOverloadCandidates with C++ pointer-rank sidecars (#1637)', () => {
   it('selects pointer overload for nullptr over bool overload', () => {
     const byPointer = mkDef('f:intptr', ['int'], [pointer('int')]);
