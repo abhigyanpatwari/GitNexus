@@ -121,6 +121,10 @@ function buildAdjacency(graph: KnowledgeGraph) {
 type MethodDef = { classId: string; className: string; methodId: string };
 type Resolution = { resolvedTo: string | null; reason: string; confidence: number };
 
+/** Confidence for a single-ancestor override edge (a subclass overriding one parent
+ *  method via class inheritance) — same tier as MRO-ordered resolution. */
+const SINGLE_ANCESTOR_OVERRIDE_CONFIDENCE = 0.9;
+
 /** Resolve by MRO order — first ancestor in linearized order wins. */
 function resolveByMroOrder(
   methodName: string,
@@ -340,6 +344,117 @@ export function computeMRO(graph: KnowledgeGraph): MROResult {
       mro: mroNames,
       ambiguities,
     });
+  }
+
+  // ── Single-ancestor override detection ──────────────────────────────────
+  // The collision loop above only emits when a method is defined in 2+ ancestors
+  // (defs.length < 2 is skipped). A subclass overriding a single parent method via
+  // class inheritance is the common case. Applicability is derived automatically from
+  // the language's existing MRO strategy — no separate per-language flag: every
+  // strategy resolves overrides by inheritance order EXCEPT `qualified-syntax` (Rust),
+  // where a same-named method is a trait implementation (METHOD_IMPLEMENTS), not an
+  // override. The EXTENDS-only walk below reinforces this structurally.
+  const emittedOverrideEdgeIds = new Set<string>();
+  // Follow only EXTENDS (class-inheritance) parents and skip Interface/Trait ancestors:
+  // satisfying an interface/trait default method is a METHOD_IMPLEMENTS relationship
+  // (handled by emitMethodImplementsEdges), not an override. This also structurally
+  // excludes languages without class inheritance (e.g. Rust traits use IMPLEMENTS).
+  const extendsParentsOf = (nodeId: string): string[] =>
+    (parentMap.get(nodeId) ?? []).filter((pid) => {
+      if (parentEdgeType.get(nodeId)?.get(pid) !== 'EXTENDS') return false;
+      const pn = graph.getNode(pid);
+      return !!pn && pn.label !== 'Interface' && pn.label !== 'Trait';
+    });
+  for (const classId of parentMap.keys()) {
+    const classNode = graph.getNode(classId);
+    const language = classNode?.properties.language as SupportedLanguages | undefined;
+    if (!language) continue;
+    // Language-aware gate, reusing the MRO model we already maintain (not a new flag).
+    if (getProvider(language).mroStrategy === 'qualified-syntax') continue;
+
+    const ownMethods = methodMap.get(classId) ?? [];
+    const extendsParents = extendsParentsOf(classId);
+    if (extendsParents.length === 0 || ownMethods.length === 0) continue;
+
+    // Walk the EXTENDS ancestor chain ONCE per class (BFS, nearest first) and group
+    // each ancestor's methods by name. Own methods then resolve via map lookups
+    // instead of re-walking the hierarchy (and re-reading every ancestor method node)
+    // once per own method.
+    type AncestorMethod = { methodId: string; paramTypes: string[]; paramCount?: number };
+    type AncestorLevel = { className: string; methodsByName: Map<string, AncestorMethod[]> };
+    const orderedAncestorMethods: AncestorLevel[] = [];
+    {
+      const visited = new Set<string>();
+      const queue = [...extendsParents];
+      while (queue.length > 0) {
+        const ancestorId = queue.shift()!;
+        if (visited.has(ancestorId)) continue;
+        visited.add(ancestorId);
+
+        const ancestorName = graph.getNode(ancestorId)?.properties.name;
+        const methodsByName = new Map<string, AncestorMethod[]>();
+        for (const mid of methodMap.get(ancestorId) ?? []) {
+          const mn = graph.getNode(mid);
+          if (!mn || mn.label === 'Property' || typeof mn.properties.name !== 'string') continue;
+          const entry: AncestorMethod = {
+            methodId: mid,
+            paramTypes: (mn.properties.parameterTypes as string[] | undefined) ?? [],
+            paramCount: mn.properties.parameterCount as number | undefined,
+          };
+          const bucket = methodsByName.get(mn.properties.name);
+          if (bucket) bucket.push(entry);
+          else methodsByName.set(mn.properties.name, [entry]);
+        }
+        orderedAncestorMethods.push({
+          className: typeof ancestorName === 'string' ? ancestorName : '<anonymous>',
+          methodsByName,
+        });
+        queue.push(...extendsParentsOf(ancestorId));
+      }
+    }
+
+    for (const methodId of ownMethods) {
+      const methodNode = graph.getNode(methodId);
+      if (!methodNode || methodNode.label === 'Property' || !methodNode.properties.name) continue;
+      const methodName = methodNode.properties.name;
+      const ownParamTypes = (methodNode.properties.parameterTypes as string[] | undefined) ?? [];
+      const ownParamCount = methodNode.properties.parameterCount as number | undefined;
+
+      // Nearest ancestor (BFS order) defining this method by name AND signature, so a
+      // same-named overload (e.g. foo(int) vs foo()) is not mistaken for an override.
+      for (const { className, methodsByName } of orderedAncestorMethods) {
+        const sameName = methodsByName.get(methodName);
+        if (!sameName) continue;
+        const matches = sameName.filter(
+          (m) =>
+            parameterTypesMatch(ownParamTypes, m.paramTypes, ownParamCount, m.paramCount).match,
+        );
+        if (matches.length === 0) continue; // name present but no signature match — look deeper
+        // Emit only when the match is unambiguous (exactly one candidate); >1 means the
+        // override target cannot be pinned, so emit nothing. Either way stop — a closer
+        // ancestor shadows anything deeper.
+        if (matches.length === 1) {
+          const matchingMethodId = matches[0].methodId;
+          // Target the ancestor METHOD node (not the class), key the id on the method
+          // so distinct overrides stay distinct, and count only edges actually added
+          // (addRelationship is first-writer-wins, so a duplicate id is dropped).
+          const overrideId = generateId('METHOD_OVERRIDES', `${classId}->${matchingMethodId}`);
+          if (!emittedOverrideEdgeIds.has(overrideId)) {
+            emittedOverrideEdgeIds.add(overrideId);
+            graph.addRelationship({
+              id: overrideId,
+              sourceId: classId,
+              targetId: matchingMethodId,
+              type: 'METHOD_OVERRIDES',
+              confidence: SINGLE_ANCESTOR_OVERRIDE_CONFIDENCE,
+              reason: `single-ancestor override: ${className}::${methodName}()`,
+            });
+            overrideEdges++;
+          }
+        }
+        break; // nearest ancestor shadows deeper ones
+      }
+    }
   }
 
   const methodImplementsEdges = emitMethodImplementsEdges(
