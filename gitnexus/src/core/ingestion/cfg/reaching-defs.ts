@@ -213,6 +213,21 @@ export function computeReachingDefsDense(
 }
 
 /**
+ * Sparse, change-driven reaching-defs (#2201) — the production solve, exposed
+ * directly so the equivalence fuzz can gate it against the dense oracle before
+ * {@link computeReachingDefs} is switched over to it (U5). See
+ * {@link computeInSetsSparse} for the algorithm and byte-identical contract.
+ *
+ * @internal exported only for the equivalence fuzz harness and the cfg bench.
+ */
+export function computeReachingDefsSparse(
+  cfg: FunctionCfg,
+  limits?: ReachingDefsLimits,
+): FunctionDefUse {
+  return solveReachingDefs(cfg, limits, computeInSetsSparse);
+}
+
+/**
  * Shared orchestrator: the no-facts / overflow guards, the harvest, the
  * adjacency build, the swappable IN-set computation, and the statement sweep.
  * Only `computeInSets` differs between the production (sparse) and oracle
@@ -439,6 +454,173 @@ function computeInSetsDense(
 }
 
 /**
+ * SPARSE IN-set computer (#2201) — the production solver. Computes the SAME
+ * per-block entry reaching lattices as {@link computeInSetsDense}, but via a
+ * change-driven worklist over (block, binding) PAIRS instead of dense per-block
+ * lattice merges over a multi-pass fixpoint. Reaching-defs is component-wise
+ * independent per binding (a binding's transfer never reads another binding's
+ * set), so the product-lattice least fixed point equals the product of the
+ * per-binding least fixed points — this solve is provably equal to the dense
+ * one, and the perf win is that a binding is only ever (re)visited when one of
+ * its own predecessors' contributions changed (no dense per-block spine copy,
+ * no re-merge of unrelated bindings, no loop-depth pass multiplier on the
+ * shallow/loop-local variables that dominate real code).
+ *
+ * BYTE-IDENTICAL DISCIPLINE: each visit RECOMPUTES in_v[b] from scratch using
+ * the exact dense merge order (sorted predecessors, first contributor shared,
+ * copy-on-extend) — see {@link mergePreds}. Because the merge rebuilds from the
+ * converged predecessor sets, the final set's INSERTION order is independent of
+ * worklist visit order and matches the dense solver, which is what makes a
+ * maxFacts-TRUNCATED result (whose surviving subset depends on the sweep's
+ * pre-sort emission order) byte-identical too.
+ *
+ * BUDGET (KTD5): the dense ceiling counts block dequeues; this counts (block,
+ * binding) dequeues. The budget is scaled by the binding count so it NEVER
+ * trips on a function the dense solver computes (no coverage regression) while
+ * still bounding the one adversarial residual — a single variable threaded
+ * through every level of a pathologically deep nest, which stays O(depth²) here
+ * (a documented full-SSA follow-up). On realistic deep nests the change-driven
+ * solve completes far under budget, so the dense ceiling effectively never
+ * fires (#2201 acceptance).
+ *
+ * @internal
+ */
+function computeInSetsSparse(
+  cfg: FunctionCfg,
+  n: number,
+  h: Harvest,
+  adj: Adjacency,
+  limits: ReachingDefsLimits | undefined,
+): InSetsResult {
+  const { gen, allDefsGen } = h;
+  const { preds, succs, throwSuccs } = adj;
+  const nBindings = cfg.bindings?.length ?? 0;
+  if (nBindings === 0) {
+    return { converged: true, inSets: new Array(n).fill(EMPTY_LATTICE) };
+  }
+
+  // Per-block IN/OUT lattices, populated incrementally per binding. Sets are
+  // either nonempty or absent (never empty), mirroring the dense maps so the
+  // sweep's `.get(u)` sees identical undefined-vs-set results.
+  const inSets: Lattice[] = Array.from({ length: n }, () => new Map());
+  const outSets: Lattice[] = Array.from({ length: n }, () => new Map());
+
+  // Budget scaled by binding count — never trips where dense converges (no
+  // regression), still bounds the single-deeply-carried-variable adversarial
+  // case. undefined/0 ⇒ unlimited.
+  const base =
+    limits?.maxBlockVisits && limits.maxBlockVisits > 0 ? limits.maxBlockVisits : Infinity;
+  const maxUpdates = base === Infinity ? Infinity : base * nBindings;
+  let updates = 0;
+
+  // (block, binding) worklist, deduped via a flat pending bitmap. Visit order
+  // does not affect the result (each visit recomputes from current state), so
+  // a LIFO stack is used to avoid O(n) array shifts.
+  const encode = (b: number, v: number): number => b * nBindings + v;
+  const pending = new Uint8Array(n * nBindings);
+  const stack: number[] = [];
+  const enqueue = (b: number, v: number): void => {
+    const k = encode(b, v);
+    if (!pending[k]) {
+      pending[k] = 1;
+      stack.push(k);
+    }
+  };
+
+  // Seed: every binding genned in a block (its OUT becomes nonempty), plus the
+  // THROW successors of every gen block — a throwing block delivers allDefs(v)
+  // to its handler even when the block's own IN of v never changes (so the
+  // inChanged-driven throw requeue below would otherwise miss the first, static
+  // allDefs contribution).
+  for (let b = 0; b < n; b++) {
+    const g = gen[b];
+    if (!g) continue;
+    for (const v of g.keys()) {
+      enqueue(b, v);
+      for (const s of throwSuccs[b]) enqueue(s, v);
+    }
+  }
+
+  // Recompute IN(v) at block b from scratch, in the exact dense merge order
+  // (sorted predecessors; first contributor's set shared; copy-on-extend on
+  // subsequent contributors — never mutate a shared set). Returns the set or
+  // undefined when nothing reaches.
+  const computeIn = (b: number, v: number): DefSet | undefined => {
+    const p = preds[b];
+    if (p.length === 0) return undefined;
+    if (p.length === 1 && !p[0].viaThrow) return outSets[p[0].from].get(v);
+    let merged: DefSet | undefined;
+    let owned = false; // true once `merged` is our private (mutable) copy
+    const mergeOne = (src: DefSet | undefined): void => {
+      if (!src || src.size === 0) return;
+      if (merged === undefined) {
+        merged = src; // share the first contributor's set
+        owned = false;
+        return;
+      }
+      if (merged === src) return;
+      for (const key of src) {
+        if (!merged.has(key)) {
+          if (!owned) {
+            merged = new Set(merged);
+            owned = true;
+          }
+          merged.add(key);
+        }
+      }
+    };
+    for (const pe of p) {
+      if (pe.viaThrow) {
+        mergeOne(inSets[pe.from].get(v)); // exception may fire pre-defs…
+        mergeOne(allDefsGen[pe.from]?.get(v)); // …or after ANY of the block's defs
+      } else {
+        mergeOne(outSets[pe.from].get(v));
+      }
+    }
+    return merged;
+  };
+
+  // OUT(v) at b = overlay(IN): a killing gen replaces the set; a may-def-only
+  // gen unions without killing; no gen ⇒ OUT aliases IN.
+  const computeOut = (b: number, v: number, inV: DefSet | undefined): DefSet | undefined => {
+    const entry = gen[b]?.get(v);
+    if (!entry) return inV;
+    if (entry.kills) return entry.set;
+    return inV ? unionSets(inV, entry.set) : entry.set;
+  };
+
+  const setEq = (a: DefSet | undefined, b: DefSet | undefined): boolean => {
+    if (a === b) return true;
+    if (!a || !b || a.size !== b.size) return false;
+    for (const v of b) if (!a.has(v)) return false;
+    return true;
+  };
+
+  while (stack.length > 0) {
+    if (++updates > maxUpdates) return { converged: false };
+    const k = stack.pop()!;
+    pending[k] = 0;
+    const b = (k / nBindings) | 0;
+    const v = k - b * nBindings;
+
+    const newIn = computeIn(b, v);
+    const oldIn = inSets[b].get(v);
+    const inChanged = !setEq(oldIn, newIn);
+    if (newIn !== undefined) inSets[b].set(v, newIn);
+
+    const newOut = computeOut(b, v, newIn);
+    const oldOut = outSets[b].get(v);
+    const outChanged = !setEq(oldOut, newOut);
+    if (newOut !== undefined) outSets[b].set(v, newOut);
+
+    if (outChanged) for (const s of succs[b]) enqueue(s, v);
+    if (inChanged) for (const s of throwSuccs[b]) enqueue(s, v);
+  }
+
+  return { converged: true, inSets };
+}
+
+/**
  * Statement sweep — recover statement-granular def→use facts from the per-block
  * entry reaching lattices, sort them, and apply the maxFacts truncation. SHARED
  * by both solvers: the truncated SUBSET depends on the pre-sort emission order
@@ -481,6 +663,16 @@ function sweepFacts(
           selfKey !== undefined && !reaching?.has(selfKey)
             ? [...(reaching ?? []), selfKey]
             : [...(reaching ?? [])];
+        // Canonical emission order (#2201 KTD6): sort each use's reaching
+        // def-sites by defKey (= def block, then def stmt) BEFORE the maxFacts
+        // cutoff. The full (untruncated) fact array is re-sorted identically at
+        // the end, so this is a no-op there; its purpose is to make the
+        // TRUNCATED subset schedule-independent — the reaching SET's insertion
+        // order is fixpoint-evaluation-order-dependent for loop-carried
+        // bindings (dense RPO vs sparse change-driven seed different keys
+        // first), so a pre-sort cutoff is what keeps the two solvers'
+        // truncated results byte-identical.
+        keys.sort((a, b) => a - b);
         for (const key of keys) {
           if (facts.length >= maxFacts) {
             truncated = true;

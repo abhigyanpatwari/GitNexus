@@ -24,6 +24,7 @@ import { describe, it, expect } from 'vitest';
 import {
   computeReachingDefs,
   computeReachingDefsDense,
+  computeReachingDefsSparse,
   type FunctionDefUse,
   type ReachingDefsLimits,
 } from '../../../src/core/ingestion/cfg/reaching-defs.js';
@@ -393,7 +394,18 @@ interface CorpusResult {
   firstFailure: string | null;
 }
 
-function runCorpus(left: Solver, right: Solver, count: number, baseSeed: number): CorpusResult {
+function runCorpus(
+  left: Solver,
+  right: Solver,
+  count: number,
+  baseSeed: number,
+  // maxBlockVisits has DIFFERENT (intentional) semantics across the dense and
+  // sparse solvers — dense counts block dequeues, sparse counts (block,binding)
+  // dequeues — so a small budget truncates them at different points. Perturb it
+  // only when comparing a solver against ITSELF (same semantics); cross-solver
+  // byte-identity is asserted with the budget unlimited (both fully converge).
+  perturbBlockVisits = true,
+): CorpusResult {
   const flags: ShapeFlags = {
     hasLoop: false,
     hasThrow: false,
@@ -425,7 +437,7 @@ function runCorpus(left: Solver, right: Solver, count: number, baseSeed: number)
     check(cfg, undefined, `canon[${i}]`);
     check(cfg, { maxFacts: 1 }, `canon[${i}]/maxFacts=1`);
     check(cfg, { maxFacts: 2 }, `canon[${i}]/maxFacts=2`);
-    check(cfg, { maxBlockVisits: 2 }, `canon[${i}]/maxBlockVisits=2`);
+    if (perturbBlockVisits) check(cfg, { maxBlockVisits: 2 }, `canon[${i}]/maxBlockVisits=2`);
   }
 
   // random corpus
@@ -437,7 +449,9 @@ function runCorpus(left: Solver, right: Solver, count: number, baseSeed: number)
     // exercise truncation on ~1/4 of cases (small maxFacts) and the block-visit
     // ceiling on ~1/8 — both must match byte-for-byte (KTD6).
     if (i % 4 === 0) check(cfg, { maxFacts: 1 + (i % 3) }, `seed=${seed}/maxFacts`);
-    if (i % 8 === 0) check(cfg, { maxBlockVisits: 1 + (i % 4) }, `seed=${seed}/maxBlockVisits`);
+    if (perturbBlockVisits && i % 8 === 0) {
+      check(cfg, { maxBlockVisits: 1 + (i % 4) }, `seed=${seed}/maxBlockVisits`);
+    }
   }
 
   return { checked, flags, firstFailure };
@@ -474,11 +488,58 @@ describe('#2201 reaching-defs differential equivalence', () => {
     expect(a.flags).toEqual(b.flags);
   });
 
-  it('PRODUCTION computeReachingDefs is byte-identical to the dense oracle', () => {
-    // U1: computeReachingDefs still delegates to dense, so this is trivially
-    // green. U5 swaps it to the sparse solver — this becomes the real gate.
-    const r = runCorpus(computeReachingDefs, computeReachingDefsDense, CORPUS_N, 0x5eed);
+  it('the SPARSE solver is byte-identical to the dense oracle (#2201 gate)', () => {
+    // The load-bearing equivalence gate: sparse vs dense across the full corpus,
+    // budget unlimited so both fully converge. maxFacts truncation IS compared
+    // (it must match byte-for-byte — KTD6); maxBlockVisits is not (the two count
+    // different things on purpose — that contrast is the no-regression test).
+    const r = runCorpus(
+      computeReachingDefsSparse,
+      computeReachingDefsDense,
+      CORPUS_N,
+      0x2201,
+      /* perturbBlockVisits */ false,
+    );
     expect(r.firstFailure).toBeNull();
+    expect(r.flags.hadComputed && r.flags.hadTruncated).toBe(true);
+  });
+
+  it('PRODUCTION computeReachingDefs is byte-identical to the dense oracle', () => {
+    // U1: computeReachingDefs delegates to dense (trivially green). U5 swaps it
+    // to the sparse solver — this stays the production-entry gate.
+    const r = runCorpus(
+      computeReachingDefs,
+      computeReachingDefsDense,
+      CORPUS_N,
+      0x5eed,
+      /* perturbBlockVisits */ false,
+    );
+    expect(r.firstFailure).toBeNull();
+  });
+
+  it('sparse never regresses coverage under the production block-visit budget', () => {
+    // Production posture: emit passes maxBlockVisits = blocks × 64. The contract
+    // is one-directional — wherever the dense solver COMPUTES, the sparse solver
+    // must also compute and produce identical facts (no lost REACHING_DEF
+    // coverage). The reverse is allowed and desired: sparse may compute deep
+    // nests the dense solver truncates (the #2201 ceiling-stops-firing win).
+    let regressions = 0;
+    let firstRegression: string | null = null;
+    for (let i = 0; i < CORPUS_N; i++) {
+      const cfg = genCfg(0xc0de + i);
+      const budget = { maxBlockVisits: cfg.blocks.length * 64 };
+      const dense = computeReachingDefsDense(cfg, budget);
+      const sparse = computeReachingDefsSparse(cfg, budget);
+      if (dense.status === 'computed') {
+        const d = diffDefUse(dense, sparse);
+        if (d) {
+          regressions++;
+          if (!firstRegression) firstRegression = `seed=${0xc0de + i}: ${d}`;
+        }
+      }
+    }
+    expect(firstRegression).toBeNull();
+    expect(regressions).toBe(0);
   });
 });
 
