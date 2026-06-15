@@ -487,6 +487,20 @@ export class DartHarvester {
         }
         return;
       }
+      case 'switch_expression': {
+        // `switch (x) { p1 => a, p2 => b }` (Dart 3): the subject runs always;
+        // each arm (pattern + value) is conditional, so a def inside an arm value
+        // (`z = 1`) is a MAY-def, not an unconditional KILL of the prior `z`
+        // (#2206). Mirrors conditional_expression.
+        const subject = node.childForFieldName('condition');
+        if (subject) this.walkValue(subject, acc);
+        for (const c of node.namedChildren) {
+          if (c.type === 'switch_expression_case') {
+            this.conditional(() => this.walkValue(c, acc));
+          }
+        }
+        return;
+      }
       case 'inferred_type':
       case 'final_builtin':
       case 'type_identifier':

@@ -268,6 +268,20 @@ describe('Dart CfgVisitor — switch', () => {
     expect(reaches(cfg, cfg.entryIndex, cfg.exitIndex)).toBe(true);
     expect(definesBinding(cfg, bindingIdx(cfg, 'y'))).toBe(true);
   });
+
+  it('a switch-EXPRESSION arm write is a may-def, not a hard kill of the prior def (#2206)', () => {
+    const cfg = dart.cfgOf(`void f(int x) {
+      int z = 0;
+      var y = switch (x) { 1 => z = 10, _ => z = 20 };
+      use(z);
+    }`);
+    const z = bindingIdx(cfg, 'z');
+    // only one arm runs, so the arm writes (z=10 / z=20) are MAY-defs — they must
+    // not unconditionally KILL the prior `int z = 0`.
+    expect(cfg.blocks.some((bl) => bl.statements?.some((s) => (s.mayDefs ?? []).includes(z)))).toBe(
+      true,
+    );
+  });
 });
 
 describe('Dart CfgVisitor — try/on/catch/finally', () => {
