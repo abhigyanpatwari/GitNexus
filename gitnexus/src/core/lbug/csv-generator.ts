@@ -47,6 +47,15 @@ const orderedRelationships = (
 /** Flush buffered rows to disk every N rows */
 const FLUSH_EVERY = 500;
 
+/**
+ * Yield the event loop every N relationship rows during the emit pass (#2226 F4)
+ * so a concurrent node COPY (the overlap in loadGraphToLbug) and write-stream
+ * drain callbacks get scheduling time during long synchronous emit stretches.
+ * Scheduling-only — never changes row content or order (byte-identical). Tuning
+ * constant, not load-bearing.
+ */
+const REL_YIELD_EVERY = 5000;
+
 // ============================================================================
 // CSV ESCAPE UTILITIES
 // ============================================================================
@@ -676,9 +685,14 @@ export const streamAllCSVsToDisk = async (
     // files are byte-identical (asserted by the differential test).
     const relRouter = new RelPairRouter(csvDir, REL_CSV_HEADER, new Set<string>(NODE_TABLES));
     try {
+      let emitted = 0;
       for (const rel of orderedRelationships(graph, sortOutput)) {
         const pending = relRouter.route(rel.sourceId, rel.targetId, buildRelRow(rel));
         if (pending) await pending;
+        // Periodically hand the event loop back so the overlapped node COPY and
+        // write-stream drains run instead of starving behind this synchronous
+        // loop (#2226 F4). No effect on emitted bytes — pure scheduling.
+        if (++emitted % REL_YIELD_EVERY === 0) await new Promise((r) => setImmediate(r));
       }
       await relRouter.close();
     } catch (err) {
