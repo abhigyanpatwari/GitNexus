@@ -6,6 +6,7 @@
  */
 import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'vitest';
 import fs from 'fs/promises';
+import { readdirSync } from 'node:fs';
 import { finished } from 'stream/promises';
 import path from 'path';
 import { createTempDir, type TestDBHandle } from '../helpers/test-db.js';
@@ -563,5 +564,71 @@ describe('streamAllCSVsToDisk — direct per-pair emit matches the split oracle'
     } finally {
       delete process.env.GITNEXUS_SORT_GRAPH_OUTPUT;
     }
+  });
+});
+
+// The overlap leg (#2203) needs to start COPY-ing nodes while relationship CSVs
+// are still being written. streamAllCSVsToDisk exposes that boundary via an
+// onNodePhaseComplete callback. These tests pin the contract: it fires once,
+// after node CSVs exist and before any rel CSV does, and supplying it does not
+// change the emitted output.
+describe('onNodePhaseComplete hook (#2203 overlap boundary)', () => {
+  const hookGraph = () =>
+    buildTestGraph(
+      [
+        { id: 'File:src/index.ts', label: 'File', name: 'index.ts', filePath: 'src/index.ts' },
+        {
+          id: 'Function:src/index.ts:main:1',
+          label: 'Function',
+          name: 'main',
+          filePath: 'src/index.ts',
+          startLine: 1,
+          endLine: 3,
+        },
+      ],
+      [
+        {
+          sourceId: 'File:src/index.ts',
+          targetId: 'Function:src/index.ts:main:1',
+          type: 'DEFINES',
+        },
+      ],
+    );
+
+  it('fires exactly once, after node CSVs are flushed and before any rel CSV exists', async () => {
+    const hookCsvDir = path.join(tmpHandle.dbPath, 'csv-hook-timing');
+    let calls = 0;
+    let nodeCsvsPresent = false;
+    let relCsvsPresent = true;
+    let handedKeys: string[] = [];
+
+    const result = await streamAllCSVsToDisk(hookGraph(), repoDir, hookCsvDir, (nodeFiles) => {
+      calls++;
+      handedKeys = [...nodeFiles.keys()].sort();
+      const entries = readdirSync(hookCsvDir);
+      nodeCsvsPresent = entries.includes('file.csv') && entries.includes('function.csv');
+      relCsvsPresent = entries.some((f) => f.startsWith('rel_'));
+    });
+
+    expect(calls).toBe(1);
+    expect(nodeCsvsPresent).toBe(true);
+    // No relationship CSV may exist yet — the rel pass starts after the hook.
+    expect(relCsvsPresent).toBe(false);
+    // The manifest handed to the callback is the one returned to the caller.
+    expect(handedKeys).toEqual([...result.nodeFiles.keys()].sort());
+    expect(result.totalValidRels).toBe(1);
+  });
+
+  it('supplying the callback does not change the node manifest (no behavior change)', async () => {
+    const withDir = path.join(tmpHandle.dbPath, 'csv-hook-with');
+    const withoutDir = path.join(tmpHandle.dbPath, 'csv-hook-without');
+    const withCb = await streamAllCSVsToDisk(hookGraph(), repoDir, withDir, () => {});
+    const without = await streamAllCSVsToDisk(hookGraph(), repoDir, withoutDir);
+
+    const manifest = (r: typeof withCb) =>
+      [...r.nodeFiles.entries()].map(([k, v]) => `${k}:${v.rows}`).sort();
+    expect(manifest(withCb)).toEqual(manifest(without));
+    expect(withCb.totalValidRels).toBe(without.totalValidRels);
+    expect(withCb.skippedRels).toBe(without.skippedRels);
   });
 });

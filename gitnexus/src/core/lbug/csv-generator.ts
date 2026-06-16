@@ -47,6 +47,15 @@ const orderedRelationships = (
 /** Flush buffered rows to disk every N rows */
 const FLUSH_EVERY = 500;
 
+/**
+ * Yield the event loop every N relationship rows during the emit pass (#2226 F4)
+ * so a concurrent node COPY (the overlap in loadGraphToLbug) and write-stream
+ * drain callbacks get scheduling time during long synchronous emit stretches.
+ * Scheduling-only — never changes row content or order (byte-identical). Tuning
+ * constant, not load-bearing.
+ */
+const REL_YIELD_EVERY = 5000;
+
 // ============================================================================
 // CSV ESCAPE UTILITIES
 // ============================================================================
@@ -282,11 +291,26 @@ export interface StreamedCSVResult {
  * Stream all CSV data directly to disk files.
  * Iterates graph nodes exactly ONCE — routes each node to the right writer.
  * File contents are lazy-read from disk with a generous LRU cache.
+ *
+ * `onNodePhaseComplete` (optional, #2203 parallelism leg): fired exactly once,
+ * right after every node CSV is fully flushed to disk and BEFORE the
+ * relationship pass starts writing any `rel_*.csv`. It receives the finished
+ * node-file manifest so the caller can begin `COPY`-ing nodes while this
+ * function keeps generating relationship CSVs (the only single-writer-safe
+ * overlap — node `COPY` ‖ relationship emit). It is intentionally NOT awaited:
+ * the relationship pass proceeds concurrently with whatever the caller
+ * schedules. A synchronous throw from the callback is allowed and propagates out
+ * of this function (rejecting the returned promise) — it is raised before the
+ * relationship pass begins, so no `rel_*.csv` is written; `loadGraphToLbug` uses
+ * this to surface its PDG-manifest collision guard. The callback must NOT, however,
+ * schedule un-awaited async work that can reject unobserved. Absent ⇒ today's
+ * behavior, byte-for-byte.
  */
 export const streamAllCSVsToDisk = async (
   graph: KnowledgeGraph,
   repoPath: string,
   csvDir: string,
+  onNodePhaseComplete?: (nodeFiles: Map<NodeTableName, { csvPath: string; rows: number }>) => void,
 ): Promise<StreamedCSVResult> => {
   // Deterministic (id-sorted) node/relationship row order when enabled;
   // default off = today's graph-insertion order (byte-identical).
@@ -615,29 +639,11 @@ export const streamAllCSVsToDisk = async (
     ];
     await Promise.all(allWriters.map((w) => w.finish()));
 
-    // --- Stream relationships directly to per-FROM→TO-label-pair files ---
-    // (#2203 U2) Route every edge to its pair file in this single pass. The old
-    // monolithic relations.csv — and its line-by-line re-read + per-edge regex
-    // re-split in loadGraphToLbug — are gone, so the ~1M-edge set is written and
-    // read once instead of twice. The router applies the SAME label-derivation +
-    // validTables filter as the legacy splitRelCsvByLabelPair, so the per-pair
-    // files are byte-identical (asserted by the differential test).
-    const relRouter = new RelPairRouter(csvDir, REL_CSV_HEADER, new Set<string>(NODE_TABLES));
-    try {
-      for (const rel of orderedRelationships(graph, sortOutput)) {
-        const pending = relRouter.route(rel.sourceId, rel.targetId, buildRelRow(rel));
-        if (pending) await pending;
-      }
-      await relRouter.close();
-    } catch (err) {
-      relRouter.destroy();
-      // Rethrow the real stream error (EMFILE / disk-full) rather than the generic
-      // AbortError a pending drain-await rejects with — mirrors the retained
-      // splitRelCsvByLabelPair's `throw streamError ?? err`.
-      throw relRouter.lastError ?? err;
-    }
-
-    // Build result map — only include tables that have rows
+    // Build the node-file manifest now (all writers are flushed; `.rows` is
+    // final). Hoisted above the relationship pass so `onNodePhaseComplete` can
+    // hand the caller a complete node manifest to start COPY-ing while we keep
+    // generating relationship CSVs below (#2203 overlap). The same map is
+    // returned, so the result is unchanged when no callback is supplied.
     const nodeFiles = new Map<NodeTableName, { csvPath: string; rows: number }>();
     const tableMap: [NodeTableName, BufferedCSVWriter][] = [
       ['File', fileWriter],
@@ -664,6 +670,37 @@ export const streamAllCSVsToDisk = async (
           rows: writer.rows,
         });
       }
+    }
+
+    // Node CSVs are on disk; relationship CSVs have not been touched yet. Hand
+    // the manifest to the caller (not awaited — the rel pass runs concurrently).
+    onNodePhaseComplete?.(nodeFiles);
+
+    // --- Stream relationships directly to per-FROM→TO-label-pair files ---
+    // (#2203 U2) Route every edge to its pair file in this single pass. The old
+    // monolithic relations.csv — and its line-by-line re-read + per-edge regex
+    // re-split in loadGraphToLbug — are gone, so the ~1M-edge set is written and
+    // read once instead of twice. The router applies the SAME label-derivation +
+    // validTables filter as the legacy splitRelCsvByLabelPair, so the per-pair
+    // files are byte-identical (asserted by the differential test).
+    const relRouter = new RelPairRouter(csvDir, REL_CSV_HEADER, new Set<string>(NODE_TABLES));
+    try {
+      let emitted = 0;
+      for (const rel of orderedRelationships(graph, sortOutput)) {
+        const pending = relRouter.route(rel.sourceId, rel.targetId, buildRelRow(rel));
+        if (pending) await pending;
+        // Periodically hand the event loop back so the overlapped node COPY and
+        // write-stream drains run instead of starving behind this synchronous
+        // loop (#2226 F4). No effect on emitted bytes — pure scheduling.
+        if (++emitted % REL_YIELD_EVERY === 0) await new Promise((r) => setImmediate(r));
+      }
+      await relRouter.close();
+    } catch (err) {
+      relRouter.destroy();
+      // Rethrow the real stream error (EMFILE / disk-full) rather than the generic
+      // AbortError a pending drain-await rejects with — mirrors the retained
+      // splitRelCsvByLabelPair's `throw streamError ?? err`.
+      throw relRouter.lastError ?? err;
     }
 
     return {

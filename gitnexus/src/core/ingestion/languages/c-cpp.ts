@@ -427,7 +427,9 @@ export const cProvider = defineLanguage({
 
 export const cppProvider = defineLanguage({
   id: SupportedLanguages.CPlusPlus,
-  extensions: ['.cpp', '.cc', '.cxx', '.h', '.hpp', '.hxx', '.hh'],
+  // CUDA files route through tree-sitter-cpp as a conservative C++-subset parser:
+  // definitions still extract, but CUDA launch syntax (`<<< >>>`) is not modeled as calls.
+  extensions: ['.cpp', '.cc', '.cxx', '.h', '.hpp', '.hxx', '.hh', '.cu', '.cuh'],
   entryPointPatterns: [
     /^main$/,
     /^init_/,

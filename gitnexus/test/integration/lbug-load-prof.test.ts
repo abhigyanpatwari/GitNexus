@@ -135,6 +135,9 @@ describe('PROF_LBUG_LOAD persistence-path profiling (#2203 U1)', () => {
     for (const key of ['csv-emit=', 'copy-nodes=', 'copy-rels=', 'fallback=', 'total=']) {
       expect(line).toContain(key);
     }
+    // Default load path is the node-COPY ‖ rel-emit overlap (#2203); the prof
+    // line records which path ran. GITNEXUS_SERIAL_LBUG_LOAD is unset here.
+    expect(line).toContain('mode=overlap');
     // 3 node rows (File, Function, Class), 2 valid rels emitted.
     expect(line).toContain('(3 nodes, 2 rels)');
   });

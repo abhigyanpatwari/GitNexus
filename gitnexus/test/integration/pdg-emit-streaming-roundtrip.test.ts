@@ -179,3 +179,67 @@ describe('streamed PDG manifest → disjoint-key merge guard (#2202 review #3)',
     }
   });
 });
+
+describe('streamed PDG manifest → rel-pair collision guard (#2226 F3)', () => {
+  // The rel-pair analogue of the node-CSV guard above, for the case Codex
+  // flagged on PR #2226. The collision check was moved ahead of node COPY so the
+  // serial escape hatch detects it before committing node rows; this asserts the
+  // guard fires in BOTH the overlap (default) and serial paths.
+
+  // A leaky graph carrying a structural BasicBlock→BasicBlock EDGE but NO
+  // BasicBlock nodes: RelPairRouter derives the label from the `BasicBlock:` id
+  // prefix, so the structural relsByPair gets a `BasicBlock|BasicBlock` pair
+  // while nodeFiles stays empty — isolating the REL-pair collision from the
+  // node-CSV one. The manifest declares the same pair via PdgEmitSink.
+  const buildRelCollision = async (label: string) => {
+    const leakyGraph = createKnowledgeGraph();
+    leakyGraph.addRelationship({
+      id: 'CFG:0->1-structural',
+      sourceId: BB(0),
+      targetId: BB(1),
+      type: 'CFG',
+      confidence: 1,
+      reason: 'leak',
+    });
+    const base = await fs.mkdtemp(path.join(os.tmpdir(), `gitnexus-lbug-relcollide-${label}-`));
+    const storage = path.join(base, '.gitnexus');
+    await fs.mkdir(storage, { recursive: true });
+    const sink = new PdgEmitSink(createKnowledgeGraph(), path.join(storage, 'pdg-csv'));
+    sink.addRelationship({
+      id: 'CFG:0->1-manifest',
+      sourceId: BB(0),
+      targetId: BB(1),
+      type: 'CFG',
+      confidence: 1,
+      reason: 'manifest',
+    });
+    const manifest = sink.finalize();
+    return { leakyGraph, base, storage, manifest };
+  };
+
+  it('throws on a rel-pair collision in the overlap (default) path', async () => {
+    const adapter = await import('../../src/core/lbug/lbug-adapter.js');
+    const { leakyGraph, base, storage, manifest } = await buildRelCollision('overlap');
+    try {
+      await expect(
+        adapter.loadGraphToLbug(leakyGraph, base, storage, undefined, manifest),
+      ).rejects.toThrow(/collides with a structural relationship CSV for pair/);
+    } finally {
+      await fs.rm(base, { recursive: true, force: true });
+    }
+  });
+
+  it('throws on a rel-pair collision in the serial (GITNEXUS_SERIAL_LBUG_LOAD=1) path', async () => {
+    const adapter = await import('../../src/core/lbug/lbug-adapter.js');
+    const { leakyGraph, base, storage, manifest } = await buildRelCollision('serial');
+    process.env.GITNEXUS_SERIAL_LBUG_LOAD = '1';
+    try {
+      await expect(
+        adapter.loadGraphToLbug(leakyGraph, base, storage, undefined, manifest),
+      ).rejects.toThrow(/collides with a structural relationship CSV for pair/);
+    } finally {
+      delete process.env.GITNEXUS_SERIAL_LBUG_LOAD;
+      await fs.rm(base, { recursive: true, force: true });
+    }
+  });
+});

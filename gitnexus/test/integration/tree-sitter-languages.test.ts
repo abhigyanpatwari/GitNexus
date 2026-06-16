@@ -36,6 +36,16 @@ function extractDefinitions(matches: any[]) {
   return defs;
 }
 
+function extractCapturedCallNames(matches: any[]) {
+  const names: string[] = [];
+  for (const match of matches) {
+    if (!match.captures.some((c: any) => c.name === 'call')) continue;
+    const nameCapture = match.captures.find((c: any) => c.name === 'call.name');
+    if (nameCapture) names.push(nameCapture.node.text);
+  }
+  return names;
+}
+
 describe('Tree-sitter multi-language parsing', () => {
   let parser: Parser;
 
@@ -286,6 +296,48 @@ describe('Tree-sitter multi-language parsing', () => {
       const names = defs.map((d) => d.name);
       expect(names).toContain('utils');
       expect(names).toContain('helper');
+    });
+
+    it('treats CUDA .cu and .cuh files as C++ for definition extraction', async () => {
+      expect(getLanguageFromFilename('src/kernels/force.cu')).toBe(SupportedLanguages.CPlusPlus);
+      expect(getLanguageFromFilename('src/force/nep.cuh')).toBe(SupportedLanguages.CPlusPlus);
+
+      await loadLanguage(SupportedLanguages.CPlusPlus, 'src/kernels/force.cu');
+      const code = `class Force { public: void apply(); };\nvoid launchKernel() {}`;
+      const provider = getProvider(SupportedLanguages.CPlusPlus);
+      const { matches } = parseAndQuery(parser, code, provider.treeSitterQueries);
+      const defs = extractDefinitions(matches);
+      const names = defs.map((d) => d.name);
+
+      expect(defs.some((d) => d.type === 'definition.class' && d.name === 'Force')).toBe(true);
+      expect(names).toContain('launchKernel');
+    });
+
+    it('characterizes CUDA syntax when routed through the C++ parser', async () => {
+      await loadLanguage(SupportedLanguages.CPlusPlus, 'src/kernels/force.cu');
+      const code = `
+        __global__ void axpy(float *x) { x[0] = 1.0f; }
+        void host() {
+          axpy<<<1, 32>>>(nullptr);
+          cudaDeviceSynchronize();
+        }
+      `;
+      const provider = getProvider(SupportedLanguages.CPlusPlus);
+      const { tree, matches } = parseAndQuery(parser, code, provider.treeSitterQueries);
+      const defs = extractDefinitions(matches);
+      const callNames = extractCapturedCallNames(matches);
+      const ordinaryCalls = extractCapturedCallNames(
+        parseAndQuery(
+          parser,
+          'void host() { cudaDeviceSynchronize(); }',
+          provider.treeSitterQueries,
+        ).matches,
+      );
+
+      expect(tree.rootNode.hasError).toBe(true);
+      expect(defs.some((d) => d.name === 'axpy')).toBe(true);
+      expect(ordinaryCalls).toContain('cudaDeviceSynchronize');
+      expect(callNames).not.toContain('axpy');
     });
 
     it('captures C++ typedef anonymous structs, enums, and enumerators', async () => {
