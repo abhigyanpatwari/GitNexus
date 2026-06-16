@@ -290,8 +290,12 @@ export interface StreamedCSVResult {
  * function keeps generating relationship CSVs (the only single-writer-safe
  * overlap — node `COPY` ‖ relationship emit). It is intentionally NOT awaited:
  * the relationship pass proceeds concurrently with whatever the caller
- * schedules. The callback must not throw synchronously (kick off async work and
- * keep its promise instead). Absent ⇒ today's behavior, byte-for-byte.
+ * schedules. A synchronous throw from the callback is allowed and propagates out
+ * of this function (rejecting the returned promise) — it is raised before the
+ * relationship pass begins, so no `rel_*.csv` is written; `loadGraphToLbug` uses
+ * this to surface its PDG-manifest collision guard. The callback must NOT, however,
+ * schedule un-awaited async work that can reject unobserved. Absent ⇒ today's
+ * behavior, byte-for-byte.
  */
 export const streamAllCSVsToDisk = async (
   graph: KnowledgeGraph,

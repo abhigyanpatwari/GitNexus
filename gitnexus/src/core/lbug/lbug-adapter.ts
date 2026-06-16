@@ -995,9 +995,12 @@ export const loadGraphToLbug = async (
   ): void => {
     mergeManifestNodeFiles(nodeFilesMap);
     const entries = [...nodeFilesMap.entries()];
+    // copyNodeCSVs logs node progress as step/total; it processes only node
+    // tables (the rel COPY has its own "Loading edges" progress line), so the
+    // denominator is the node-table count — not +1 reserving a rel step.
     // .catch captures the failure so an overlapped (mid-emit) rejection cannot
     // surface as an unhandled rejection; it is rethrown at the FK barrier below.
-    nodeCopyPromise = copyNodeCSVs(writeConn, entries, log, entries.length + 1).catch((e) => {
+    nodeCopyPromise = copyNodeCSVs(writeConn, entries, log, entries.length).catch((e) => {
       nodeCopyError = e;
     });
   };
@@ -1013,6 +1016,14 @@ export const loadGraphToLbug = async (
     // settle it (the .catch above means this never rejects) before rethrowing so
     // it cannot leak as an unhandled rejection.
     if (nodeCopyPromise) await nodeCopyPromise;
+    // If node COPY ALSO failed, emitErr wins the throw — log the swallowed node
+    // error so a half-loaded DB isn't misattributed to the emit failure alone.
+    if (nodeCopyError) {
+      logger.warn(
+        { err: nodeCopyError },
+        '[lbug-load] node COPY also failed while relationship emit was failing',
+      );
+    }
     throw emitErr;
   }
   const tCsv = mark();
