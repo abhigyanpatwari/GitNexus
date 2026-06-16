@@ -999,6 +999,7 @@ export const loadGraphToLbug = async (
       pairIdx++;
       const [fromLabel, toLabel] = pairKey.split('|');
       const normalizedPath = normalizeCopyPath(pairCsvPath);
+      // PARALLEL=false is load-bearing here too — see COPY_CSV_OPTS (#2203 / kuzudb/kuzu#5778).
       const copyQuery = `COPY ${REL_TABLE_NAME} FROM "${normalizedPath}" (from="${fromLabel}", to="${toLabel}", HEADER=true, ESCAPE='"', DELIM=',', QUOTE='"', PARALLEL=false, auto_detect=false)`;
 
       if (pairIdx % 5 === 0 || rows > 1000) {
@@ -1092,7 +1093,18 @@ export const loadGraphToLbug = async (
 // Source code content is full of backslashes which confuse the auto-detection.
 // We MUST explicitly set ESCAPE='"' to use RFC 4180 escaping, and disable auto_detect to prevent
 // LadybugDB from overriding our settings based on sample rows.
-const COPY_CSV_OPTS = `(HEADER=true, ESCAPE='"', DELIM=',', QUOTE='"', PARALLEL=false, auto_detect=false)`;
+//
+// PARALLEL=false IS LOAD-BEARING FOR CORRECTNESS — DO NOT FLIP IT (#2203).
+// LadybugDB's parallel CSV reader (Kuzu-derived; default PARALLEL=true) splits the
+// file into byte ranges parsed concurrently, and CANNOT determine line boundaries
+// when a quoted field contains an embedded newline — it errors with "Quoted newlines
+// are not supported in parallel CSV reader. Please specify PARALLEL=FALSE", or worse,
+// mis-parses silently (upstream kuzudb/kuzu#5778, still open). Our `content`/`text`
+// columns hold source code, so quoted multiline fields are guaranteed. PARALLEL=false
+// is therefore required, not conservative. The multiline-quoted round-trip in
+// test/integration/copy-parallel-invariant.test.ts fails loudly if this is ever flipped.
+// Exported so that test asserts the invariant statically as well.
+export const COPY_CSV_OPTS = `(HEADER=true, ESCAPE='"', DELIM=',', QUOTE='"', PARALLEL=false, auto_detect=false)`;
 
 // Multi-language table names that were created with backticks in CODE_ELEMENT_BASE
 // and must always be referenced with backticks in queries
@@ -1170,7 +1182,7 @@ const TABLES_WITH_EXPORTED = new Set<string>([
   'CodeElement',
 ]);
 
-const getCopyQuery = (table: NodeTableName, filePath: string): string => {
+export const getCopyQuery = (table: NodeTableName, filePath: string): string => {
   const t = escapeTableName(table);
   if (table === 'File') {
     return `COPY ${t}(id, name, filePath, content) FROM "${filePath}" ${COPY_CSV_OPTS}`;
