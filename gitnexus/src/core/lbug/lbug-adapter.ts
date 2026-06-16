@@ -931,6 +931,18 @@ const copyNodeCSVs = async (
   }
 };
 
+/**
+ * Persist a KnowledgeGraph: stream CSVs, then bulk-COPY nodes (overlapped with
+ * relationship emit — see the body) and relationships.
+ *
+ * NOT TRANSACTIONAL (#2226). Each `COPY` commits independently and there is no
+ * surrounding transaction, so a failure partway through — a node `COPY` that
+ * throws at the FK barrier, a relationship `COPY` failure, or a `pdgEmitManifest`
+ * collision raised after node rows have already committed in the overlap path —
+ * leaves a partially-loaded DB. The caller surfaces the error; recovery is a
+ * `--force` re-analyze (a full rebuild), not a partial retry. Callers must not
+ * assume the DB is either fully loaded or untouched after a rejection.
+ */
 export const loadGraphToLbug = async (
   graph: KnowledgeGraph,
   repoPath: string,
