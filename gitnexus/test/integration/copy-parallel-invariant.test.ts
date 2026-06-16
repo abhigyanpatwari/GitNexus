@@ -41,7 +41,9 @@ const BB1 = 'BasicBlock:src/hazard.ts:0';
 const BB2 = 'BasicBlock:src/hazard.ts:1';
 
 beforeAll(async () => {
-  tmpBase = path.join(os.tmpdir(), `gitnexus-copy-parallel-${Date.now()}-${process.pid}`);
+  // mkdtemp (not a predictable os.tmpdir join) + the `gitnexus-lbug-` prefix
+  // that TEST_FIXTURE_PREFIXES recognizes for the stale-sidecar sweep.
+  tmpBase = await fs.mkdtemp(path.join(os.tmpdir(), 'gitnexus-lbug-copy-parallel-'));
   storagePath = path.join(tmpBase, '.gitnexus');
   dbPath = path.join(storagePath, 'lbug');
   await fs.mkdir(dbPath, { recursive: true });

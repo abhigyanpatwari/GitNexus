@@ -142,7 +142,10 @@ let overlapSnap: Snapshot;
 let serialSnap: Snapshot;
 
 beforeAll(async () => {
-  tmpBase = path.join(os.tmpdir(), `gitnexus-load-overlap-${Date.now()}-${process.pid}`);
+  // mkdtemp (not a predictable os.tmpdir join) — secure unique dir, and the
+  // `gitnexus-lbug-` prefix is in TEST_FIXTURE_PREFIXES so the stale-sidecar
+  // sweep recognizes it on Windows (lbug-config.ts).
+  tmpBase = await fs.mkdtemp(path.join(os.tmpdir(), 'gitnexus-lbug-overlap-'));
   repoDir = path.join(tmpBase, 'repo');
   await fs.mkdir(path.join(repoDir, 'src'), { recursive: true });
   await fs.writeFile(path.join(repoDir, 'src', 'a.ts'), FILE_SRC);
