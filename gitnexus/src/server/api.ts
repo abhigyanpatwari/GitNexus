@@ -33,7 +33,13 @@ import { mountMCPEndpoints } from './mcp-http.js';
 import { fileURLToPath } from 'url';
 import { JobManager } from './analyze-job.js';
 import { assertString, escapeRegExp, BadRequestError, createRouteLimiter } from './validation.js';
-import { extractRepoName, getCloneDir, cloneOrPull } from './git-clone.js';
+import {
+  extractRepoName,
+  getCloneDir,
+  cloneOrPull,
+  warnIfInsecureAzureConfig,
+  GITHUB_TOKEN_HOSTS,
+} from './git-clone.js';
 import { createAnalyzeUploadHandler } from './analyze-upload.js';
 import { createLocalhostOriginGuard, normalizeBoundHost } from './middleware.js';
 import { createLaunchAnalysisWorker } from './analyze-launch.js';
@@ -673,7 +679,47 @@ export const handleQueryRequest = async (
   }
 };
 
+/**
+ * Validate the optional `token` field of POST /api/analyze. Returns an
+ * { status, error } to send, or null when the token is absent or valid.
+ *
+ * The token is a GitHub PAT: charset-restricted (blocks CRLF header
+ * smuggling), length-bounded (1–256), and bound to github.com using the SAME
+ * GITHUB_TOKEN_HOSTS allowlist + hostname parse as resolveGitCredential, so a
+ * token the API accepts is exactly the one buildGitEnv will inject — and one
+ * it rejects is never sent off github.com.
+ *
+ * Exported for unit tests (the route validation is otherwise only reachable
+ * by booting the server).
+ */
+export function validateAnalyzeToken(
+  repoToken: unknown,
+  repoUrl: unknown,
+): { status: number; error: string } | null {
+  if (repoToken === undefined) return null;
+  if (typeof repoToken !== 'string') return { status: 400, error: '"token" must be a string' };
+  if (repoToken.length === 0 || repoToken.length > 256)
+    return { status: 400, error: '"token" length must be between 1 and 256' };
+  if (!/^[A-Za-z0-9._~+/=-]+$/.test(repoToken))
+    return { status: 400, error: '"token" contains invalid characters' };
+  if (!repoUrl || typeof repoUrl !== 'string')
+    return { status: 400, error: '"token" requires "url"' };
+  let tokenHost: string;
+  try {
+    tokenHost = new URL(repoUrl).hostname.toLowerCase();
+  } catch {
+    return { status: 400, error: '"url" must be a valid URL when "token" is provided' };
+  }
+  if (!GITHUB_TOKEN_HOSTS.has(tokenHost))
+    return { status: 400, error: '"token" is only supported for github.com URLs' };
+  return null;
+}
+
 export const createServer = async (port: number, host: string = '127.0.0.1') => {
+  // Surface a cleartext Azure DevOps PAT config at boot (operators rarely
+  // read per-request logs). Warn-only — http:// self-hosted stays supported.
+  warnIfInsecureAzureConfig();
+
   const app = express();
   app.disable('x-powered-by');
 
@@ -1461,7 +1507,14 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
     requireLocalhostOrigin,
     async (req, res) => {
       try {
-        const { url: repoUrl, path: repoLocalPath, force, embeddings, dropEmbeddings } = req.body;
+        const {
+          url: repoUrl,
+          path: repoLocalPath,
+          force,
+          embeddings,
+          dropEmbeddings,
+          token: repoToken,
+        } = req.body;
 
         // Input type validation
         if (repoUrl !== undefined && typeof repoUrl !== 'string') {
@@ -1475,6 +1528,14 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
 
         if (!repoUrl && !repoLocalPath) {
           res.status(400).json({ error: 'Provide "url" (git URL) or "path" (local path)' });
+          return;
+        }
+
+        // Token: optional, restricted charset to prevent header smuggling
+        // (CRLF), bound length, and bound to github.com (see validateAnalyzeToken).
+        const tokenError = validateAnalyzeToken(repoToken, repoUrl);
+        if (tokenError) {
+          res.status(tokenError.status).json({ error: tokenError.error });
           return;
         }
 
@@ -1496,9 +1557,19 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
 
         const job = jobManager.createJob({ repoUrl, repoPath: repoLocalPath });
 
-        // If job was already running (dedup), just return its id
+        // If job was already running (dedup), just return its id. The token is
+        // not part of the dedup identity and is never stored on the job, so a
+        // token on THIS request had no effect — the existing job already
+        // cloned (or is cloning) with whatever credentials its originating
+        // request supplied. Surface `tokenIgnored` so an authenticated caller
+        // isn't misled into thinking their PAT took effect on a reused job.
         if (job.status !== 'queued') {
-          res.status(202).json({ jobId: job.id, status: job.status });
+          const body: { jobId: string; status: string; tokenIgnored?: boolean } = {
+            jobId: job.id,
+            status: job.status,
+          };
+          if (repoToken !== undefined) body.tokenIgnored = true;
+          res.status(202).json(body);
           return;
         }
 
@@ -1520,11 +1591,16 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
                 progress: { phase: 'cloning', percent: 0, message: `Cloning ${repoUrl}...` },
               });
 
-              await cloneOrPull(repoUrl, targetPath, (progress) => {
-                jobManager.updateJob(job.id, {
-                  progress: { phase: progress.phase, percent: 5, message: progress.message },
-                });
-              });
+              await cloneOrPull(
+                repoUrl,
+                targetPath,
+                (progress) => {
+                  jobManager.updateJob(job.id, {
+                    progress: { phase: progress.phase, percent: 5, message: progress.message },
+                  });
+                },
+                repoToken ? { token: repoToken } : undefined,
+              );
             }
 
             if (!targetPath) {

@@ -6,6 +6,7 @@
   "analysisFailed": "Analysis failed. Check server logs.",
   "startAnalysisFailed": "Failed to start analysis",
   "invalidGithubUrl": "Please enter a valid GitHub repository URL.",
+  "invalidAzureDevOpsUrl": "Please enter a valid Azure DevOps repository URL.",
   "missingFolderPath": "Please enter a folder path.",
   "backend": {
     "reconnecting": "Server connection lost. Reconnecting…",

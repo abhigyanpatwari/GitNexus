@@ -854,6 +854,7 @@ export const startAnalyze = async (request: {
   path?: string;
   force?: boolean;
   embeddings?: boolean;
+  token?: string;
 }): Promise<{ jobId: string; status: string }> => {
   const response = await fetchWithTimeout(
     `${_backendUrl}/api/analyze`,
