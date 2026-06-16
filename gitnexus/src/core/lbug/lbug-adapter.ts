@@ -1028,21 +1028,13 @@ export const loadGraphToLbug = async (
   }
   const tCsv = mark();
 
-  // Serial path: all CSVs are on disk and node COPY has not started — start it
-  // here so the barrier below blocks on it exactly as the legacy path did.
-  if (SERIAL) beginNodeCopy(csvResult.nodeFiles);
-
-  // FK barrier: node rows must exist before the relationship COPY resolves their
-  // endpoints. In overlap mode most of node COPY was hidden behind rel emit, so
-  // this await is the *residual* node-COPY time (≈0 when fully overlapped).
-  if (nodeCopyPromise) await nodeCopyPromise;
-  if (nodeCopyError) {
-    throw nodeCopyError instanceof Error ? nodeCopyError : new Error(String(nodeCopyError));
-  }
-  const tCopyNodes = mark();
-
-  // Merge the streamed PDG-emit per-pair rel CSVs (#2202) — collision-guarded,
-  // before the relationship COPY consumes relsByPair.
+  // Merge the streamed PDG-emit per-pair rel CSVs (#2202) into the COPY plan —
+  // collision-guarded. Done BEFORE node COPY so the serial escape hatch detects a
+  // manifest/structural pair collision before committing any node rows (legacy
+  // parity with the pre-overlap path), and the overlap path detects it as early
+  // as csvResult is available. When a manifest is present, streaming was on and
+  // the in-memory graph held zero BasicBlocks, so a structural collision means a
+  // streaming-invariant violation — fail loudly rather than load corrupt data.
   if (pdgEmitManifest) {
     for (const [pairKey, meta] of pdgEmitManifest.relsByPair) {
       if (csvResult.relsByPair.has(pairKey)) {
@@ -1055,6 +1047,19 @@ export const loadGraphToLbug = async (
       csvResult.totalValidRels += meta.rows;
     }
   }
+
+  // Serial path: all CSVs are on disk and node COPY has not started — start it
+  // here so the barrier below blocks on it exactly as the legacy path did.
+  if (SERIAL) beginNodeCopy(csvResult.nodeFiles);
+
+  // FK barrier: node rows must exist before the relationship COPY resolves their
+  // endpoints. In overlap mode most of node COPY was hidden behind rel emit, so
+  // this await is the *residual* node-COPY time (≈0 when fully overlapped).
+  if (nodeCopyPromise) await nodeCopyPromise;
+  if (nodeCopyError) {
+    throw nodeCopyError instanceof Error ? nodeCopyError : new Error(String(nodeCopyError));
+  }
+  const tCopyNodes = mark();
 
   // Bulk COPY relationships. They were already routed to per-FROM→TO-label-pair
   // files during the emit pass (#2203 U2) — there is no monolithic relations.csv
