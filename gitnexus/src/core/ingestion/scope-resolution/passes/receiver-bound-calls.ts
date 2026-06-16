@@ -85,6 +85,7 @@ type ReceiverBoundProviderSubset = Pick<
   | 'resolveReceiverMember'
   | 'resolveThisViaEnclosingClass'
   | 'conversionRankFn'
+  | 'conversionOnlyArgTypePrefixes'
   | 'constraintCompatibility'
   | 'isStaticOnly'
 >;
@@ -519,6 +520,7 @@ export function emitReceiverBoundCalls(
                 {
                   argumentTypeClasses: site.argumentTypeClasses,
                   conversionRankFn: provider.conversionRankFn,
+                  conversionOnlyArgTypePrefixes: provider.conversionOnlyArgTypePrefixes,
                   constraintCompatibility: provider.constraintCompatibility,
                 },
               );
@@ -1275,6 +1277,7 @@ function pickOverload(
   const candidates = narrowOverloadCandidates(overloads, site.arity, site.argumentTypes, {
     argumentTypeClasses: site.argumentTypeClasses,
     conversionRankFn: provider.conversionRankFn,
+    conversionOnlyArgTypePrefixes: provider.conversionOnlyArgTypePrefixes,
     constraintCompatibility: provider.constraintCompatibility,
   });
   // When narrowing leaves >1 candidate that share identical normalized
@@ -1382,6 +1385,7 @@ function pickFirstNonStaticOnly(
   const candidates = narrowOverloadCandidates(overloads, site.arity, site.argumentTypes, {
     argumentTypeClasses: site.argumentTypeClasses,
     conversionRankFn: provider.conversionRankFn,
+    conversionOnlyArgTypePrefixes: provider.conversionOnlyArgTypePrefixes,
     constraintCompatibility: provider.constraintCompatibility,
   });
   // Same ambiguity handling as `pickOverload`: when normalization
@@ -1427,6 +1431,7 @@ function recordReceiverOverloadSuppression(
   const candidates = narrowOverloadCandidates(overloads, site.arity, site.argumentTypes, {
     argumentTypeClasses: site.argumentTypeClasses,
     conversionRankFn: provider.conversionRankFn,
+    conversionOnlyArgTypePrefixes: provider.conversionOnlyArgTypePrefixes,
     constraintCompatibility: provider.constraintCompatibility,
   });
   const reason: ResolutionSuppressionReason = isOverloadAmbiguousAfterNormalization(

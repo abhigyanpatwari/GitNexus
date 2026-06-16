@@ -1267,12 +1267,30 @@ describe('C++ braced-init-list overload disambiguation (#1899 A8 conservative)',
     ]);
   });
 
+  it('prefers a scalar overload for single-element braced-init lists', () => {
+    expect(singleTargetParameterTypes('callSingleElementScalar', 'consumeScalarOrVector')).toEqual([
+      'int',
+    ]);
+  });
+
+  it('rejects container overloads whose value type cannot accept the braced elements', () => {
+    expect(callsFrom('callStringVectorMismatch', 'consumeStringVectorMismatch')).toHaveLength(0);
+  });
+
   it('suppresses heterogeneous braced-init lists instead of guessing an element type', () => {
     expect(callsFrom('callHeterogeneousInitList', 'consumeMixed')).toHaveLength(0);
   });
 
   it('suppresses empty braced-init lists instead of guessing an element type', () => {
     expect(callsFrom('callEmptyInitList', 'consumeEmpty')).toHaveLength(0);
+  });
+
+  it('preserves single-overload heterogeneous braced-init recall', () => {
+    expect(callsFrom('callSingleHeterogeneousInitList', 'consumeSingleMixed')).toHaveLength(1);
+  });
+
+  it('preserves single-overload empty braced-init recall', () => {
+    expect(callsFrom('callSingleEmptyInitList', 'consumeSingleEmpty')).toHaveLength(1);
   });
 });
 

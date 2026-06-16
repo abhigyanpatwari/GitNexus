@@ -21,8 +21,7 @@ import { markCppAdlSiteArgs, markCppAdlSiteNoAdl, type CppAdlArgInfo } from './a
 import { markCppInlineNamespaceRange } from './inline-namespaces.js';
 import { extractCppTemplateConstraints } from './constraint-extractor.js';
 import { captureCppMemberLookupFacts } from './member-lookup.js';
-
-const CPP_BRACED_INIT_TYPE_PREFIX = 'braced-init:';
+import { CPP_BRACED_INIT_TYPE_PREFIX } from './conversion-rank.js';
 
 export function emitCppScopeCaptures(
   sourceText: string,
@@ -1065,15 +1064,15 @@ function inferCppBracedInitType(node: SyntaxNode): string {
     if (child.type === ',' || child.type === '{' || child.type === '}') continue;
     const elementType = inferCppLiteralType(child);
     if (elementType === '' || elementType.startsWith(CPP_BRACED_INIT_TYPE_PREFIX)) {
-      return `${CPP_BRACED_INIT_TYPE_PREFIX}unknown`;
+      return `${CPP_BRACED_INIT_TYPE_PREFIX}unknown:${elementTypes.length + 1}`;
     }
     elementTypes.push(elementType);
   }
-  if (elementTypes.length === 0) return `${CPP_BRACED_INIT_TYPE_PREFIX}unknown`;
+  if (elementTypes.length === 0) return `${CPP_BRACED_INIT_TYPE_PREFIX}unknown:0`;
   const first = elementTypes[0];
   return elementTypes.every((type) => type === first)
-    ? `${CPP_BRACED_INIT_TYPE_PREFIX}${first}`
-    : `${CPP_BRACED_INIT_TYPE_PREFIX}unknown`;
+    ? `${CPP_BRACED_INIT_TYPE_PREFIX}${first}:${elementTypes.length}`
+    : `${CPP_BRACED_INIT_TYPE_PREFIX}unknown:${elementTypes.length}`;
 }
 
 /**

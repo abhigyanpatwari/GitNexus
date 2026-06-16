@@ -21,6 +21,7 @@
  */
 
 import type { ParameterTypeClass } from 'gitnexus-shared';
+import { normalizeCppParamType } from './arity-metadata.js';
 import { hasCppUserDefinedConversion } from './user-defined-conversions.js';
 
 /** Set of normalized arithmetic types that support implicit conversion. */
@@ -32,7 +33,9 @@ const INTEGRAL_PROMOTION = new Map([
   ['bool', 'int'],
 ]);
 
-const BRACED_INIT_TYPE_PREFIX = 'braced-init:';
+export const CPP_BRACED_INIT_TYPE_PREFIX = 'braced-init:';
+export const CPP_CONVERSION_ONLY_ARG_TYPE_PREFIXES = [CPP_BRACED_INIT_TYPE_PREFIX] as const;
+
 const BRACED_INIT_CONTAINER_TYPES = new Set([
   'array',
   'deque',
@@ -48,6 +51,11 @@ const BRACED_INIT_CONTAINER_TYPES = new Set([
   'vector',
 ]);
 
+interface BracedInitArgType {
+  elementType: string;
+  elementCount?: number;
+}
+
 /**
  * Return the conversion rank from `argType` to `paramType`.
  *
@@ -62,10 +70,19 @@ export function cppConversionRank(
   argTypeClass?: ParameterTypeClass,
   paramTypeClass?: ParameterTypeClass,
 ): number {
-  const bracedInitElementType = parseBracedInitElementType(argType);
-  if (bracedInitElementType !== undefined) {
-    if (bracedInitElementType === 'unknown') return Infinity;
-    return bracedInitConversionRank(paramType);
+  const bracedInitType = parseBracedInitArgType(argType);
+  if (bracedInitType !== undefined) {
+    if (bracedInitType.elementType === 'unknown') return Infinity;
+    if (bracedInitType.elementCount === 1) {
+      const scalarRank = cppConversionRank(
+        bracedInitType.elementType,
+        paramType,
+        undefined,
+        paramTypeClass,
+      );
+      if (isFinite(scalarRank)) return scalarRank;
+    }
+    return bracedInitConversionRank(paramType, bracedInitType, paramTypeClass);
   }
   if (argType === paramType) {
     return exactShapeCompatible(argTypeClass, paramTypeClass) ? 0 : Infinity;
@@ -81,30 +98,77 @@ export function cppConversionRank(
   return Infinity;
 }
 
-function parseBracedInitElementType(argType: string): string | undefined {
-  const elementType = argType.slice(BRACED_INIT_TYPE_PREFIX.length);
-  return argType.startsWith(BRACED_INIT_TYPE_PREFIX) && elementType !== ''
-    ? elementType
-    : undefined;
+function parseBracedInitArgType(argType: string): BracedInitArgType | undefined {
+  if (!argType.startsWith(CPP_BRACED_INIT_TYPE_PREFIX)) return undefined;
+  const payload = argType.slice(CPP_BRACED_INIT_TYPE_PREFIX.length);
+  if (payload === '') return undefined;
+  const separator = payload.lastIndexOf(':');
+  if (separator > 0) {
+    const countText = payload.slice(separator + 1);
+    if (/^\d+$/.test(countText)) {
+      return {
+        elementType: payload.slice(0, separator),
+        elementCount: Number(countText),
+      };
+    }
+  }
+  return { elementType: payload };
 }
 
-function bracedInitConversionRank(paramType: string): number {
+function bracedInitConversionRank(
+  paramType: string,
+  argType: BracedInitArgType,
+  paramTypeClass?: ParameterTypeClass,
+): number {
   const targetBase = bracedInitTargetBase(paramType);
-  if (targetBase === 'initializer_list' || targetBase === 'std::initializer_list') return 0;
-  if (BRACED_INIT_CONTAINER_TYPES.has(targetBase)) return 1;
+  if (targetBase === 'initializer_list' || targetBase === 'std::initializer_list') {
+    return bracedInitValueTypeMatches(paramType, argType, paramTypeClass) ? 0 : Infinity;
+  }
+  if (BRACED_INIT_CONTAINER_TYPES.has(targetBase)) {
+    return bracedInitValueTypeMatches(paramType, argType, paramTypeClass) ? 4 : Infinity;
+  }
   return Infinity;
 }
 
-function bracedInitTargetBase(paramType: string): string {
-  let type = paramType.trim();
-  type = type.replace(/\b(const|volatile|restrict|mutable|constexpr)\b/g, '').trim();
-  type = type.replace(/[&*]+\s*$/, '').trim();
-  while (type.includes('<')) {
-    const stripped = type.replace(/<[^<>]*>/g, '');
-    if (stripped === type) break;
-    type = stripped;
+function bracedInitValueTypeMatches(
+  paramType: string,
+  argType: BracedInitArgType,
+  paramTypeClass?: ParameterTypeClass,
+): boolean {
+  const valueType = bracedInitTargetValueType(paramType, paramTypeClass);
+  if (valueType === undefined) return false;
+  return isFinite(cppConversionRank(argType.elementType, valueType));
+}
+
+function bracedInitTargetValueType(
+  paramType: string,
+  paramTypeClass?: ParameterTypeClass,
+): string | undefined {
+  return firstTemplateArgument(paramType) ?? paramTypeClass?.templateArguments?.[0];
+}
+
+function firstTemplateArgument(rawType: string): string | undefined {
+  const start = rawType.indexOf('<');
+  if (start < 0) return undefined;
+
+  let depth = 0;
+  for (let i = start + 1; i < rawType.length; i++) {
+    const ch = rawType[i];
+    if (ch === '<') {
+      depth++;
+    } else if (ch === '>') {
+      if (depth === 0) return bracedInitTargetBase(rawType.slice(start + 1, i));
+      depth--;
+    } else if (ch === ',' && depth === 0) {
+      return bracedInitTargetBase(rawType.slice(start + 1, i));
+    }
   }
-  return type.trim();
+
+  return undefined;
+}
+
+function bracedInitTargetBase(paramType: string): string {
+  return normalizeCppParamType(paramType);
 }
 
 function isPointer(typeClass: ParameterTypeClass | undefined): boolean {

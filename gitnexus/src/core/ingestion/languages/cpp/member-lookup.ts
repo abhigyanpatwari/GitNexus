@@ -13,7 +13,7 @@ import {
 import { isClassLike } from '../../scope-resolution/scope/walkers.js';
 import type { SyntaxNode } from '../../utils/ast-helpers.js';
 import { cppConstraintCompatibility } from './constraint-filter.js';
-import { cppConversionRank } from './conversion-rank.js';
+import { CPP_CONVERSION_ONLY_ARG_TYPE_PREFIXES, cppConversionRank } from './conversion-rank.js';
 
 interface CapturedBaseEdge {
   readonly childName: string;
@@ -309,6 +309,7 @@ function chooseOverload(
   const narrowed = narrowOverloadCandidates(candidates, callsite.arity, callsite.argumentTypes, {
     argumentTypeClasses: callsite.argumentTypeClasses,
     conversionRankFn: cppConversionRank,
+    conversionOnlyArgTypePrefixes: CPP_CONVERSION_ONLY_ARG_TYPE_PREFIXES,
     constraintCompatibility: cppConstraintCompatibility,
   });
   if (narrowed.length === 1) return { kind: 'resolved', definition: narrowed[0]! };

@@ -1,6 +1,9 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import type { ParameterTypeClass, SymbolDefinition } from 'gitnexus-shared';
-import { cppConversionRank } from '../../../../src/core/ingestion/languages/cpp/conversion-rank.js';
+import {
+  CPP_CONVERSION_ONLY_ARG_TYPE_PREFIXES,
+  cppConversionRank,
+} from '../../../../src/core/ingestion/languages/cpp/conversion-rank.js';
 import {
   clearCppUserDefinedConversions,
   registerCppUserDefinedConversion,
@@ -104,9 +107,21 @@ describe('cppConversionRank user-defined conversion ranks (#1631)', () => {
 
 describe('cppConversionRank braced-init-list ranks (#1899)', () => {
   it('ranks homogeneous braced-init lists toward initializer_list and containers', () => {
-    expect(cppConversionRank('braced-init:int', 'std::initializer_list<int>')).toBe(0);
-    expect(cppConversionRank('braced-init:int', 'std::vector<int>')).toBe(1);
+    expect(cppConversionRank('braced-init:int:3', 'std::initializer_list<int>')).toBe(0);
+    expect(cppConversionRank('braced-init:int:3', 'std::vector<int>')).toBe(4);
     expect(cppConversionRank('braced-init:int', 'int')).toBe(Infinity);
+  });
+
+  it('uses element count and type before ranking container targets', () => {
+    expect(cppConversionRank('braced-init:int:1', 'int')).toBe(0);
+    expect(cppConversionRank('braced-init:int:1', 'std::vector<int>')).toBe(4);
+    expect(cppConversionRank('braced-init:string:2', 'std::vector<int>')).toBe(Infinity);
+    expect(
+      cppConversionRank('braced-init:int:3', 'std::vector', value('braced-init:int:3'), {
+        ...value('std::vector'),
+        templateArguments: ['int'],
+      }),
+    ).toBe(4);
   });
 
   it('suppresses unknown braced-init lists when conversion ranking finds no viable target', () => {
@@ -121,12 +136,34 @@ describe('cppConversionRank braced-init-list ranks (#1899)', () => {
       [value('std::initializer_list')],
     );
 
-    const result = narrowOverloadCandidates([byIntList, byDoubleList], 1, ['braced-init:unknown'], {
-      argumentTypeClasses: [value('braced-init:unknown')],
-      conversionRankFn: cppConversionRank,
-    });
+    const result = narrowOverloadCandidates(
+      [byIntList, byDoubleList],
+      1,
+      ['braced-init:unknown:2'],
+      {
+        argumentTypeClasses: [value('braced-init:unknown:2')],
+        conversionRankFn: cppConversionRank,
+        conversionOnlyArgTypePrefixes: CPP_CONVERSION_ONLY_ARG_TYPE_PREFIXES,
+      },
+    );
 
     expect(result).toEqual([]);
+  });
+
+  it('preserves single-candidate recall for unrankable braced-init lists', () => {
+    const byIntList = mkDef(
+      'f:int-list',
+      ['std::initializer_list<int>'],
+      [value('std::initializer_list')],
+    );
+
+    const result = narrowOverloadCandidates([byIntList], 1, ['braced-init:unknown:2'], {
+      argumentTypeClasses: [value('braced-init:unknown:2')],
+      conversionRankFn: cppConversionRank,
+      conversionOnlyArgTypePrefixes: CPP_CONVERSION_ONLY_ARG_TYPE_PREFIXES,
+    });
+
+    expect(result.map((d) => d.nodeId)).toEqual(['f:int-list']);
   });
 });
 
