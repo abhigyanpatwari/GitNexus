@@ -177,5 +177,35 @@ describe('loadGraphToLbug overlap error paths (#2226 F1)', () => {
   });
 });
 
-// U2 (node-COPY hard-failure rethrow) is appended in a separate commit.
-export {};
+describe('loadGraphToLbug overlap error paths (#2226 F2)', () => {
+  it('a node-COPY hard failure is rethrown at the FK barrier', async () => {
+    const adapter = await import('../../src/core/lbug/lbug-adapter.js');
+    const graph = buildTestGraph(
+      [{ id: 'File:src/u2.ts', label: 'File', name: 'u2.ts', filePath: 'src/u2.ts' }],
+      [],
+    );
+
+    // Node COPY targets a MISSING csv → COPY fails at bind time ("No file
+    // found …"), which IGNORE_ERRORS does NOT suppress (it only skips row-level
+    // errors), so copyNodeCSVs throws. Emit otherwise "succeeds" (returns an
+    // empty result), so the only failure is the node COPY captured in
+    // nodeCopyError and rethrown at the FK barrier.
+    emitMock.mockImplementation(
+      async (
+        _g: unknown,
+        _r: unknown,
+        dir: string,
+        onNodePhaseComplete?: (n: NodeFiles) => void,
+      ) => {
+        onNodePhaseComplete?.(
+          new Map([['File', { csvPath: path.join(dir, 'missing-u2.csv'), rows: 1 }]]) as NodeFiles,
+        );
+        return emptyResult();
+      },
+    );
+
+    await expect(adapter.loadGraphToLbug(graph, tmpBase, storagePath)).rejects.toThrow(
+      /COPY failed for File/,
+    );
+  });
+});
