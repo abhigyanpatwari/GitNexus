@@ -122,6 +122,23 @@ export interface PipelineOptions {
    *  `DEFAULT_PDG_MAX_INTERPROC_EDGES` (1000); `0` ⇒ no cap. */
   pdgMaxInterprocEdges?: number;
   /**
+   * Streaming/chunked PDG graph emit (#2202). When true, the BasicBlock +
+   * intra-file PDG-edge layer (CFG / REACHING_DEF / CDG / POST_DOMINATE /
+   * TAINTED / SANITIZES) is streamed to CSV-on-disk during the scope-resolution
+   * emit loop instead of being materialized in the in-memory graph, bounding
+   * peak RSS to O(chunk) rather than O(graph) at full-kernel scale. Already
+   * gated by the caller to full-rebuild runs only (the incremental writeback
+   * reads BasicBlocks back from the in-memory graph). Memory-only — produces a
+   * byte-identical persisted graph and is NOT part of `RepoMeta.pdg`, so
+   * toggling it never trips `pdgModeMismatch`. Default/false ⇒ today's
+   * whole-graph emit.
+   */
+  streamPdgEmit?: boolean;
+  /** Streamed PDG-emit write buffer (rows) when `streamPdgEmit` is on (#2202).
+   *  `undefined` ⇒ `DEFAULT_PDG_EMIT_CHUNK_ROWS`. Memory-only; does not affect
+   *  emitted bytes. */
+  pdgEmitChunkSize?: number;
+  /**
    * Request parsing with the worker pool disabled. The sequential parser was
    * removed — the worker pool is the sole parse path — so setting this now
    * makes the parse phase throw a `WorkerPoolDisabledError` (equivalent to
@@ -287,10 +304,10 @@ export const runPipelineFromRepo = async (
 
   let communityResult: CommunitiesOutput['communityResult'] | undefined;
   let processResult: ProcessesOutput['processResult'] | undefined;
-  const resolutionOutcomes = getPhaseOutput<ScopeResolutionOutput>(
-    results,
-    'scopeResolution',
-  ).resolutionOutcomes;
+  const scopeResolutionOutput = getPhaseOutput<ScopeResolutionOutput>(results, 'scopeResolution');
+  const resolutionOutcomes = scopeResolutionOutput.resolutionOutcomes;
+  // Streamed PDG-emit manifest (#2202): present only when streaming was on.
+  const pdgEmitManifest = scopeResolutionOutput.pdgEmitManifest;
 
   if (!options?.skipGraphPhases) {
     communityResult = getPhaseOutput<CommunitiesOutput>(results, 'communities').communityResult;
@@ -319,5 +336,6 @@ export const runPipelineFromRepo = async (
     processResult,
     resolutionOutcomes,
     usedWorkerPool,
+    pdgEmitManifest,
   };
 };

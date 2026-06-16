@@ -61,6 +61,7 @@ import {
 } from './ingestion/taint/interproc-solver.js';
 import { DEFAULT_PDG_MAX_INTERPROC_EDGES } from './ingestion/taint/interproc-emit.js';
 import { taintModelVersion } from './ingestion/taint/typescript-model.js';
+import { parseTruthyEnv, parsePositiveIntEnv } from './ingestion/utils/env.js';
 import { computeFileHashes, diffFileHashes } from '../storage/file-hash.js';
 import {
   extractChangedSubgraph,
@@ -170,6 +171,19 @@ export interface AnalyzeOptions {
   pdgMaxInterprocFindings?: number;
   pdgMaxInterprocHops?: number;
   pdgMaxInterprocEdges?: number;
+  /**
+   * Stream the BasicBlock + intra-file PDG-edge layer to CSV-on-disk during the
+   * emit loop instead of materializing it in the in-memory graph, bounding peak
+   * RSS to O(chunk) for full-kernel-scale repos (#2202). Only engages on a full
+   * rebuild — `resolveStreamPdgEmit` additionally requires `force === true`
+   * (the pre-pipeline guarantee of a full rebuild). May also be enabled via
+   * `GITNEXUS_STREAM_PDG_EMIT`. Memory-only; byte-identical output; not stamped
+   * into `RepoMeta.pdg`. */
+  streamPdgEmit?: boolean;
+  /** Streamed PDG-emit write buffer (rows). `undefined` ⇒
+   *  `DEFAULT_PDG_EMIT_CHUNK_ROWS`. May also be set via
+   *  `GITNEXUS_PDG_EMIT_CHUNK_SIZE`. Memory-only (#2202). */
+  pdgEmitChunkSize?: number;
   /**
    * Default branch threaded into generated AGENTS.md / CLAUDE.md so the
    * regression-compare example uses the configured branch instead of a
@@ -425,6 +439,48 @@ export const resolvePdgConfig = (options: PdgOptions): RepoMeta['pdg'] =>
         reachingDefSolver: 'ssa-sparse-v1',
       }
     : undefined;
+
+/**
+ * Whether streaming/chunked PDG graph emit (#2202) engages this run.
+ *
+ * Streaming flushes the BasicBlock + intra-file PDG-edge layer to CSV-on-disk
+ * during the emit loop and never lands it in the in-memory graph, bounding peak
+ * RSS to O(chunk). It is sound ONLY on a full rebuild: the incremental
+ * writeback (`extractChangedSubgraph`) reads BasicBlock nodes back out of the
+ * in-memory graph, which streaming has already offloaded. `force === true` is
+ * the pre-pipeline guarantee of a full rebuild — `isIncremental` has
+ * `!force` as a necessary condition — so gating on it avoids the deliberately
+ * absent pre-pipeline incremental prediction (see the `isIncremental` note).
+ *
+ * Requires `pdg === true` (nothing to stream otherwise). Enabled by either the
+ * explicit `streamPdgEmit` option or the `GITNEXUS_STREAM_PDG_EMIT` env toggle.
+ * Memory-only — NOT part of {@link resolvePdgConfig}, so toggling it never
+ * trips `pdgModeMismatch`. Read every call (not memoized) so `vi.stubEnv`
+ * works in tests. Pure + exported for testing.
+ */
+export const resolveStreamPdgEmit = (options: {
+  pdg?: boolean;
+  force?: boolean;
+  streamPdgEmit?: boolean;
+}): boolean =>
+  options.pdg === true &&
+  options.force === true &&
+  (options.streamPdgEmit === true || parseTruthyEnv(process.env.GITNEXUS_STREAM_PDG_EMIT));
+
+/**
+ * Resolve the streamed PDG-emit write-buffer size (#2202). Explicit option wins
+ * over `GITNEXUS_PDG_EMIT_CHUNK_SIZE`; `undefined` ⇒ the sink's
+ * `DEFAULT_PDG_EMIT_CHUNK_ROWS`. Memory-only; does not affect emitted bytes.
+ */
+export const resolvePdgEmitChunkSize = (options: {
+  pdgEmitChunkSize?: number;
+}): number | undefined => {
+  // Only honor a positive-integer explicit option; `0`/negative is NOT nullish
+  // so `?? env` would pass it through and make the sink flush every row.
+  const opt = options.pdgEmitChunkSize;
+  if (opt !== undefined && Number.isInteger(opt) && opt > 0) return opt;
+  return parsePositiveIntEnv(process.env.GITNEXUS_PDG_EMIT_CHUNK_SIZE);
+};
 
 /**
  * Whether the requested `--pdg` configuration differs from the one the
@@ -828,6 +884,11 @@ export async function runFullAnalysis(
       pdgMaxInterprocFindings: options.pdgMaxInterprocFindings,
       pdgMaxInterprocHops: options.pdgMaxInterprocHops,
       pdgMaxInterprocEdges: options.pdgMaxInterprocEdges,
+      // Streaming/chunked PDG emit (#2202) — gated to full-rebuild runs
+      // (force === true) so the incremental writeback never reads back an
+      // offloaded BasicBlock layer. Memory-only; byte-identical output.
+      streamPdgEmit: resolveStreamPdgEmit(options),
+      pdgEmitChunkSize: resolvePdgEmitChunkSize(options),
       fetchWrappers: options.fetchWrappers,
     },
   );
@@ -1069,11 +1130,21 @@ export async function runFullAnalysis(
       });
     } else {
       // ── Full rebuild ───────────────────────────────────────────────
-      await loadGraphToLbug(pipelineResult.graph, pipelineResult.repoPath, storagePath, (msg) => {
-        lbugMsgCount++;
-        const pct = Math.min(84, 60 + Math.round((lbugMsgCount / (lbugMsgCount + 10)) * 24));
-        progress('lbug', pct, msg);
-      });
+      // Pass the streamed PDG-emit manifest (#2202) so the BasicBlock layer that
+      // was flushed to CSV during the emit loop is COPY'd alongside the
+      // structural CSVs. Only ever set on a full rebuild (streaming is
+      // force-gated), so the incremental branch above never carries it.
+      await loadGraphToLbug(
+        pipelineResult.graph,
+        pipelineResult.repoPath,
+        storagePath,
+        (msg) => {
+          lbugMsgCount++;
+          const pct = Math.min(84, 60 + Math.round((lbugMsgCount / (lbugMsgCount + 10)) * 24));
+          progress('lbug', pct, msg);
+        },
+        pipelineResult.pdgEmitManifest,
+      );
     }
 
     // ── Phase 3: FTS (85–90%) ─────────────────────────────────────────

@@ -1,12 +1,30 @@
-import { afterAll, beforeAll, describe, it, expect } from 'vitest';
+import { afterAll, beforeAll, describe, it, expect, vi } from 'vitest';
+
+// The logger is a Proxy with no `set` trap, so vi.spyOn can't patch it.
+// Mock the module and expose `warn` as a countable spy (other levels no-op).
+const warnSpy = vi.fn();
+vi.mock('../../src/core/logger.js', () => ({
+  logger: {
+    debug: () => {},
+    info: () => {},
+    warn: (...args: unknown[]) => warnSpy(...args),
+    error: () => {},
+    trace: () => {},
+    fatal: () => {},
+  },
+}));
+
 import {
   extractRepoName,
   getCloneDir,
   validateGitUrl,
   cloneOrPull,
   buildCloneArgs,
+  buildGitEnv,
   normalizeGitUrlForCompare,
   assertRemoteMatchesRequestedUrl,
+  isAzureDevOpsUrl,
+  warnIfInsecureAzureConfig,
 } from '../../src/server/git-clone.js';
 import path from 'node:path';
 import os from 'node:os';
@@ -311,6 +329,142 @@ describe('git-clone', () => {
       // --depth must be before the `--` separator (it's an option, not a positional).
       expect(depthIdx).toBeLessThan(args.indexOf('--'));
     });
+
+    it('never embeds a token in argv: credentials travel through env, not URL', () => {
+      // buildCloneArgs is URL-only; the credential must travel through env
+      // (buildGitEnv) so it cannot appear in `ps auxww` or in command logs.
+      const args = buildCloneArgs('https://github.com/owner/repo.git', '/safe/target');
+      // No credential material in argv — assert on the credential markers
+      // directly rather than substring-matching the host (which CodeQL flags
+      // as incomplete URL sanitization, js/incomplete-url-substring).
+      expect(args.some((a) => a.includes('ghp_'))).toBe(false);
+      expect(args.some((a) => a.toLowerCase().includes('authorization'))).toBe(false);
+      expect(args.some((a) => a.includes('extraHeader'))).toBe(false);
+    });
+  });
+
+  describe('buildGitEnv — token injection', () => {
+    // The token MUST travel via GIT_CONFIG_* env vars (git ≥2.31), not via
+    // argv or URL. This keeps it out of `ps`, shell history, and stderr.
+
+    it('passes through base env and sets prompt-suppression env vars', () => {
+      const env = buildGitEnv({ FOO: 'bar' });
+      expect(env.FOO).toBe('bar');
+      expect(env.GIT_TERMINAL_PROMPT).toBe('0');
+      expect(env.GIT_ASKPASS).toBeDefined();
+    });
+
+    it('scrubs inherited git trace vars that would log the Authorization header', () => {
+      const env = buildGitEnv({
+        GIT_TRACE: '1',
+        GIT_TRACE_CURL: '1',
+        GIT_TRACE_PACKET: '1',
+        GIT_CURL_VERBOSE: '1',
+      });
+      expect(env.GIT_TRACE).toBeUndefined();
+      expect(env.GIT_TRACE_CURL).toBeUndefined();
+      expect(env.GIT_TRACE_PACKET).toBeUndefined();
+      expect(env.GIT_CURL_VERBOSE).toBeUndefined();
+    });
+
+    it('does not set GIT_CONFIG_* env vars when no token is provided', () => {
+      const env = buildGitEnv({});
+      expect(env.GIT_CONFIG_COUNT).toBeUndefined();
+      expect(env.GIT_CONFIG_KEY_0).toBeUndefined();
+      expect(env.GIT_CONFIG_VALUE_0).toBeUndefined();
+    });
+
+    it('also leaves GIT_CONFIG_* unset when token is empty string', () => {
+      const env = buildGitEnv({}, { token: '' });
+      expect(env.GIT_CONFIG_COUNT).toBeUndefined();
+      expect(env.GIT_CONFIG_KEY_0).toBeUndefined();
+      expect(env.GIT_CONFIG_VALUE_0).toBeUndefined();
+    });
+
+    it('injects a host-scoped Basic-auth header when a github.com token is provided', () => {
+      const env = buildGitEnv({}, { token: 'ghp_secret123', url: 'https://github.com/owner/repo' });
+      expect(env.GIT_CONFIG_COUNT).toBe('1');
+      // Host-scoped key: the header attaches only to this origin's requests.
+      expect(env.GIT_CONFIG_KEY_0).toBe('http.https://github.com/owner/repo.extraHeader');
+      const expected =
+        'Authorization: Basic ' + Buffer.from('x-access-token:ghp_secret123').toString('base64');
+      expect(env.GIT_CONFIG_VALUE_0).toBe(expected);
+    });
+
+    it('does not inject a token for a non-github host (defense-in-depth host bind)', () => {
+      const env = buildGitEnv({}, { token: 'ghp_secret123', url: 'https://gitlab.com/owner/repo' });
+      expect(env.GIT_CONFIG_COUNT).toBeUndefined();
+    });
+
+    it('never includes the raw token value in any env entry', () => {
+      // Defence-in-depth: token must only appear inside the base64 of the
+      // Authorization header, never as a plain substring of any env var.
+      const token = 'ghp_uniqueRawSecret_98765';
+      const env = buildGitEnv({ EXISTING: 'value' }, { token, url: 'https://github.com/o/r' });
+      for (const [key, value] of Object.entries(env)) {
+        if (key === 'GIT_CONFIG_VALUE_0') continue;
+        expect(String(value)).not.toContain(token);
+      }
+    });
+
+    it('injects the server Azure PAT (host-scoped) for an Azure URL', () => {
+      const prev = process.env.AZURE_DEVOPS_PAT;
+      process.env.AZURE_DEVOPS_PAT = 'azure-pat-xyz';
+      try {
+        const env = buildGitEnv({}, { url: 'https://dev.azure.com/org/proj/_git/repo' });
+        expect(env.GIT_CONFIG_COUNT).toBe('1');
+        expect(env.GIT_CONFIG_KEY_0).toBe(
+          'http.https://dev.azure.com/org/proj/_git/repo.extraHeader',
+        );
+        const expected = 'Authorization: Basic ' + Buffer.from(':azure-pat-xyz').toString('base64');
+        expect(env.GIT_CONFIG_VALUE_0).toBe(expected);
+      } finally {
+        if (prev === undefined) delete process.env.AZURE_DEVOPS_PAT;
+        else process.env.AZURE_DEVOPS_PAT = prev;
+      }
+    });
+
+    it('emits EXACTLY ONE header when a github token and an Azure PAT could both apply', () => {
+      // A token only injects for github.com (where isAzureDevOpsUrl is false),
+      // so the two never collide — guard the resolver directly anyway.
+      const prev = process.env.AZURE_DEVOPS_PAT;
+      process.env.AZURE_DEVOPS_PAT = 'azure-pat-xyz';
+      try {
+        const env = buildGitEnv({}, { token: 'ghp_secret123', url: 'https://github.com/o/r' });
+        expect(env.GIT_CONFIG_COUNT).toBe('1');
+        expect(env.GIT_CONFIG_VALUE_1).toBeUndefined();
+        for (const value of Object.values(env)) {
+          expect(String(value)).not.toContain('azure-pat-xyz');
+        }
+      } finally {
+        if (prev === undefined) delete process.env.AZURE_DEVOPS_PAT;
+        else process.env.AZURE_DEVOPS_PAT = prev;
+      }
+    });
+
+    it('appends after an existing GIT_CONFIG_COUNT instead of overwriting it', () => {
+      const env = buildGitEnv(
+        { GIT_CONFIG_COUNT: '1', GIT_CONFIG_KEY_0: 'http.sslVerify', GIT_CONFIG_VALUE_0: 'true' },
+        { token: 'ghp_secret123', url: 'https://github.com/o/r' },
+      );
+      expect(env.GIT_CONFIG_COUNT).toBe('2');
+      // Operator's pre-existing config is preserved at index 0.
+      expect(env.GIT_CONFIG_KEY_0).toBe('http.sslVerify');
+      expect(env.GIT_CONFIG_VALUE_0).toBe('true');
+      // Our credential is appended at index 1.
+      expect(env.GIT_CONFIG_KEY_1).toBe('http.https://github.com/o/r.extraHeader');
+      expect(env.GIT_CONFIG_VALUE_1).toContain('Authorization: Basic ');
+    });
+
+    it('strips control characters from the config key (no key injection)', () => {
+      const env = buildGitEnv(
+        {},
+        { token: 'ghp_secret123', url: 'https://github.com/o/r%0Anewline' },
+      );
+      const key = env.GIT_CONFIG_KEY_0 ?? '';
+      expect(key).not.toContain('\n');
+      expect(key).not.toContain('\r');
+    });
   });
 
   describe('cloneOrPull — containment barrier', () => {
@@ -371,6 +525,128 @@ describe('git-clone', () => {
       await expect(cloneOrPull('file:///etc/passwd', fakeTarget)).rejects.toThrow(
         'Only https:// and http://',
       );
+    });
+  });
+
+  describe('isAzureDevOpsUrl', () => {
+    it('recognizes dev.azure.com (cloud)', () => {
+      expect(isAzureDevOpsUrl('https://dev.azure.com/org/project/_git/repo')).toBe(true);
+    });
+
+    it('recognizes *.visualstudio.com (cloud legacy)', () => {
+      expect(isAzureDevOpsUrl('https://myorg.visualstudio.com/project/_git/repo')).toBe(true);
+    });
+
+    it('returns false for github.com', () => {
+      expect(isAzureDevOpsUrl('https://github.com/user/repo')).toBe(false);
+    });
+
+    it('returns false for gitlab.com', () => {
+      expect(isAzureDevOpsUrl('https://gitlab.com/user/repo')).toBe(false);
+    });
+
+    it('returns false for invalid URL', () => {
+      expect(isAzureDevOpsUrl('not-a-url')).toBe(false);
+    });
+
+    it('normalizes a trailing-dot FQDN (dev.azure.com.)', () => {
+      expect(isAzureDevOpsUrl('https://dev.azure.com./org/proj/_git/repo')).toBe(true);
+      expect(isAzureDevOpsUrl('https://myorg.visualstudio.com./project/_git/repo')).toBe(true);
+    });
+
+    it('does not over-match a lookalike host with a trailing label', () => {
+      expect(isAzureDevOpsUrl('https://dev.azure.com.evil.com/org/proj/_git/repo')).toBe(false);
+      expect(isAzureDevOpsUrl('https://evilvisualstudio.com/project/_git/repo')).toBe(false);
+    });
+
+    it('recognizes a self-hosted host configured via AZURE_DEVOPS_URL', () => {
+      const prev = process.env.AZURE_DEVOPS_URL;
+      try {
+        process.env.AZURE_DEVOPS_URL = 'http://tfs.corp.example';
+        expect(isAzureDevOpsUrl('http://tfs.corp.example/Coll/Proj/_git/Repo')).toBe(true);
+        expect(isAzureDevOpsUrl('https://other.host.example/Coll/Proj/_git/Repo')).toBe(false);
+      } finally {
+        if (prev === undefined) delete process.env.AZURE_DEVOPS_URL;
+        else process.env.AZURE_DEVOPS_URL = prev;
+      }
+    });
+
+    it('falls through to the cloud check when AZURE_DEVOPS_URL is invalid', () => {
+      const prev = process.env.AZURE_DEVOPS_URL;
+      try {
+        process.env.AZURE_DEVOPS_URL = 'not-a-url';
+        expect(isAzureDevOpsUrl('https://dev.azure.com/org/proj/_git/repo')).toBe(true);
+      } finally {
+        if (prev === undefined) delete process.env.AZURE_DEVOPS_URL;
+        else process.env.AZURE_DEVOPS_URL = prev;
+      }
+    });
+  });
+
+  describe('cleartext-credential warnings', () => {
+    it('warns when injecting a credential over cleartext http://', () => {
+      warnSpy.mockClear();
+      buildGitEnv({}, { token: 'ghp_x', url: 'http://github.com/o/r' });
+      expect(warnSpy).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not warn when injecting over https://', () => {
+      warnSpy.mockClear();
+      buildGitEnv({}, { token: 'ghp_x', url: 'https://github.com/o/r' });
+      expect(warnSpy).not.toHaveBeenCalled();
+    });
+
+    it('does not warn over http:// when no credential is injected', () => {
+      warnSpy.mockClear();
+      // gitlab host is not in the token allowlist and no Azure PAT is set,
+      // so nothing is injected — and nothing is warned about.
+      buildGitEnv({}, { token: 'ghp_x', url: 'http://gitlab.com/o/r' });
+      expect(warnSpy).not.toHaveBeenCalled();
+    });
+
+    it('warnIfInsecureAzureConfig warns for http AZURE_DEVOPS_URL, not https', () => {
+      const prev = process.env.AZURE_DEVOPS_URL;
+      warnSpy.mockClear();
+      try {
+        process.env.AZURE_DEVOPS_URL = 'http://tfs.corp.example';
+        warnIfInsecureAzureConfig();
+        expect(warnSpy).toHaveBeenCalledTimes(1);
+        warnSpy.mockClear();
+        process.env.AZURE_DEVOPS_URL = 'https://tfs.corp.example';
+        warnIfInsecureAzureConfig();
+        expect(warnSpy).not.toHaveBeenCalled();
+      } finally {
+        if (prev === undefined) delete process.env.AZURE_DEVOPS_URL;
+        else process.env.AZURE_DEVOPS_URL = prev;
+      }
+    });
+  });
+
+  describe('extractRepoName — Azure DevOps URLs', () => {
+    it('extracts name from self-hosted Azure DevOps URL', () => {
+      expect(
+        extractRepoName('http://azuredevops.example.com/DefaultCollection/MyProject/_git/MyRepo'),
+      ).toBe('MyRepo');
+    });
+
+    it('extracts name from dev.azure.com URL', () => {
+      expect(extractRepoName('https://dev.azure.com/org/project/_git/myrepo')).toBe('myrepo');
+    });
+
+    it('extracts name from visualstudio.com URL', () => {
+      expect(extractRepoName('https://myorg.visualstudio.com/project/_git/myrepo')).toBe('myrepo');
+    });
+  });
+
+  describe('validateGitUrl — Azure DevOps URLs', () => {
+    it('allows self-hosted Azure DevOps Server URLs', () => {
+      expect(() =>
+        validateGitUrl('http://azuredevops.example.com/DefaultCollection/Project/_git/Repo'),
+      ).not.toThrow();
+    });
+
+    it('allows dev.azure.com URLs', () => {
+      expect(() => validateGitUrl('https://dev.azure.com/org/project/_git/repo')).not.toThrow();
     });
   });
 

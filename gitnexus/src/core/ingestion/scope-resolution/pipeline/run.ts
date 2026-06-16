@@ -303,6 +303,30 @@ interface RunScopeResolutionInput {
    *  `DEFAULT_PDG_MAX_TAINT_HOPS` (32); `0` ⇒ no cap. */
   readonly pdgMaxTaintHops?: number;
   /**
+   * Streaming PDG-emit sink (#2202). When present (streaming on, full rebuild),
+   * the `--pdg` emit routes BasicBlock nodes + intra-file PDG edges to THIS
+   * graph-shaped target instead of the in-memory `graph`, so the bulky PDG
+   * layer never accumulates in memory (peak RSS O(chunk)). Typed as a plain
+   * `KnowledgeGraph` so this module stays decoupled from the persistence layer;
+   * the caller (the scope-resolution phase) owns its lifecycle and finalizes it
+   * after the last language. Absent ⇒ the emit writes to `graph` as before
+   * (byte-identical default).
+   */
+  readonly pdgEmitSink?: KnowledgeGraph;
+  /**
+   * Cross-pass per-file dedup set for streaming PDG emit (#2202). Shared across
+   * every language pass (owned by the scope-resolution phase). A file imported
+   * by more than one language (e.g. a `.ts` module pulled into the Vue context
+   * pass) is PDG-emitted in each pass over the same `cfgSideChannel`, producing
+   * identical ids; the in-memory graph dedups that by id, but the streaming sink
+   * is dedup-free (to stay O(write buffer), not O(total ids)). So when present
+   * (streaming on), the emit loop skips a file whose PDG already streamed and
+   * records the rest — keeping the streamed set byte-identical to the
+   * Map-deduped whole-graph emit, for any language-pass order. Absent ⇒ no skip
+   * (the graph Map dedups), so the default path is unchanged.
+   */
+  readonly pdgEmittedFiles?: Set<string>;
+  /**
    * Optional graph-node lookup built ONCE by the caller and shared across
    * every language pass. `buildGraphNodeLookup` scans the whole graph and is
    * language-agnostic, so rebuilding it per language wastes both CPU and ~GBs
@@ -769,6 +793,11 @@ export function runScopeResolution(
   // can bracket it. Printed as the PROF `taint=` segment.
   let taintMs = 0;
   if (input.pdg === true) {
+    // Streaming target (#2202): when a sink is provided, BasicBlock nodes +
+    // intra-file PDG edges are routed to CSV-on-disk through it instead of
+    // accumulating in `graph`. The function-node index below is still built
+    // from the real `graph` (Function/Method nodes live there, never the sink).
+    const pdgTarget: KnowledgeGraph = input.pdgEmitSink ?? graph;
     let cfgBlocks = 0;
     let cfgEdges = 0;
     let cfgDroppedEdges = 0;
@@ -835,6 +864,15 @@ export function runScopeResolution(
       // shard that slipped the version gate) must skip emission, not throw a
       // TypeError mid-graph-build and abort scope-resolution for the language.
       if (!Array.isArray(cfgs) || cfgs.length === 0) continue;
+      // Cross-pass per-file dedup (#2202): when streaming, a file whose PDG
+      // already streamed in a prior language pass (e.g. a `.ts` module pulled
+      // into the Vue context pass) would re-emit identical ids from the same
+      // cfgSideChannel — the dedup-free streaming sink would double the rows.
+      // Skip it here; the in-memory-graph path needs no skip (its Map dedups).
+      if (input.pdgEmittedFiles !== undefined) {
+        if (input.pdgEmittedFiles.has(pf.filePath)) continue;
+        input.pdgEmittedFiles.add(pf.filePath);
+      }
       try {
         // Per-element emit-safety filter (mirrors the parsedfile-store
         // reviver's POLICY: valid elements in a mixed array still emit; junk
@@ -854,7 +892,7 @@ export function runScopeResolution(
         }
         if (wellFormed.length === 0) continue;
         const emitted = emitFileCfgs(
-          graph,
+          pdgTarget,
           wellFormed,
           input.pdgMaxEdgesPerFunction ?? DEFAULT_MAX_CFG_EDGES_PER_FUNCTION,
           // Log cap-overflow drops UNCONDITIONALLY (not via input.onWarn, which is
@@ -873,7 +911,7 @@ export function runScopeResolution(
         // PROF-gated like every other checkpoint here (zero cost when off).
         const t0 = PROF ? performance.now() : 0;
         const rd = emitFileReachingDefs(
-          graph,
+          pdgTarget,
           wellFormed,
           input.pdgMaxReachingDefEdgesPerFunction ??
             DEFAULT_PDG_MAX_REACHING_DEF_EDGES_PER_FUNCTION,
@@ -892,7 +930,7 @@ export function runScopeResolution(
         // persisted and its time folds into the `pdg=` PROF segment next to RD.
         const tCdg = PROF ? performance.now() : 0;
         const cdg = emitFileCdg(
-          graph,
+          pdgTarget,
           wellFormed,
           input.pdgMaxCdgEdgesPerFunction ?? DEFAULT_PDG_MAX_CDG_EDGES_PER_FUNCTION,
           (message) => logger.warn(message), // unconditional — R6, no silent truncation
@@ -909,7 +947,7 @@ export function runScopeResolution(
         if (taintSpec !== undefined) {
           const t1 = PROF ? performance.now() : 0;
           const taint = emitFileTaint(
-            graph,
+            pdgTarget,
             wellFormed,
             pf.parsedImports,
             taintSpec,
