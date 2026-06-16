@@ -877,6 +877,34 @@ const doInitLbug = async (dbPath: string, readOnly: boolean = false) => {
 export type LbugProgressCallback = (message: string) => void;
 
 /**
+ * Run a COPY, retrying once with IGNORE_ERRORS=true (which skips row-level
+ * errors) on first failure. On a second failure, hand the RAW retry error to
+ * `onError` — each call site formats + slices its own message (#2226 F5: node
+ * COPY slices to 200 chars and throws; relationship COPY slices to 80 and warns,
+ * so the helper must not pre-format and lose that distinction). `onError` may
+ * throw to propagate the failure.
+ */
+const copyCsvWithRetry = async (
+  targetConn: lbug.Connection,
+  copyQuery: string,
+  onError: (retryErr: unknown) => void,
+): Promise<void> => {
+  try {
+    await queryAndDrain(targetConn, copyQuery);
+  } catch {
+    try {
+      const retryQuery = copyQuery.replace(
+        'auto_detect=false)',
+        'auto_detect=false, IGNORE_ERRORS=true)',
+      );
+      await queryAndDrain(targetConn, retryQuery);
+    } catch (retryErr) {
+      onError(retryErr);
+    }
+  }
+};
+
+/**
  * Bulk-COPY every node CSV sequentially on the single writable connection
  * (LadybugDB allows one write txn at a time). Extracted from loadGraphToLbug so
  * it can run either at the node-phase boundary — overlapping the relationship
@@ -895,23 +923,11 @@ const copyNodeCSVs = async (
     stepsDone++;
     log(`Loading nodes ${stepsDone}/${totalSteps}: ${table} (${rows.toLocaleString()} rows)`);
 
-    const normalizedPath = normalizeCopyPath(csvPath);
-    const copyQuery = getCopyQuery(table, normalizedPath);
-
-    try {
-      await queryAndDrain(targetConn, copyQuery);
-    } catch (err) {
-      try {
-        const retryQuery = copyQuery.replace(
-          'auto_detect=false)',
-          'auto_detect=false, IGNORE_ERRORS=true)',
-        );
-        await queryAndDrain(targetConn, retryQuery);
-      } catch (retryErr) {
-        const retryMsg = retryErr instanceof Error ? retryErr.message : String(retryErr);
-        throw new Error(`COPY failed for ${table}: ${retryMsg.slice(0, 200)}`);
-      }
-    }
+    const copyQuery = getCopyQuery(table, normalizeCopyPath(csvPath));
+    await copyCsvWithRetry(targetConn, copyQuery, (retryErr) => {
+      const retryMsg = retryErr instanceof Error ? retryErr.message : String(retryErr);
+      throw new Error(`COPY failed for ${table}: ${retryMsg.slice(0, 200)}`);
+    });
   }
 };
 
@@ -1088,22 +1104,12 @@ export const loadGraphToLbug = async (
         log(`Loading edges: ${pairIdx}/${relsByPair.size} types (${fromLabel} -> ${toLabel})`);
       }
 
-      try {
-        await queryAndDrain(conn, copyQuery);
-      } catch (err) {
-        try {
-          const retryQuery = copyQuery.replace(
-            'auto_detect=false)',
-            'auto_detect=false, IGNORE_ERRORS=true)',
-          );
-          await queryAndDrain(conn, retryQuery);
-        } catch (retryErr) {
-          const retryMsg = retryErr instanceof Error ? retryErr.message : String(retryErr);
-          warnings.push(`${fromLabel}->${toLabel} (${rows} edges): ${retryMsg.slice(0, 80)}`);
-          failedPairEdges += rows;
-          failedPairCsvPaths.add(pairCsvPath);
-        }
-      }
+      await copyCsvWithRetry(conn, copyQuery, (retryErr) => {
+        const retryMsg = retryErr instanceof Error ? retryErr.message : String(retryErr);
+        warnings.push(`${fromLabel}->${toLabel} (${rows} edges): ${retryMsg.slice(0, 80)}`);
+        failedPairEdges += rows;
+        failedPairCsvPaths.add(pairCsvPath);
+      });
       // Only delete if not in failedPairCsvPaths (needed for fallback)
       if (!failedPairCsvPaths.has(pairCsvPath)) {
         try {
