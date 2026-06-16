@@ -190,6 +190,36 @@ export function toNativeSafePath(p: string): string {
 }
 
 /**
+ * Resolve the on-disk CSV staging dir for `<storagePath>/<subdir>`, applying the
+ * same ASCII-safe relocation `toNativeSafePath` enables: on Windows with a
+ * non-ASCII storage path, LadybugDB's bulk COPY cannot open files under that
+ * path, so the dir is relocated under `os.tmpdir()`. Shared by the structural
+ * `csv/` dir and the streaming `pdg-csv/` dir (#2202) so the two can never
+ * diverge on platform handling; the `gitnexus-<subdir>-` prefix keeps their tmp
+ * locations distinct and recognizable.
+ *
+ * The relocated dir is created with `fs.mkdtempSync` (a unique, mode-0700,
+ * guaranteed-not-pre-existing suffix) rather than a deterministic
+ * `gitnexus-<subdir>-<hash>` name. A predictable name in the world-readable OS
+ * temp dir is information-disclosure-prone and pre-plantable
+ * (CWE-377/378 / CodeQL `js/insecure-temporary-file`); mkdtemp's random suffix
+ * is the documented mitigation and is what reaches the streaming sink's
+ * `fs.openSync`. The non-Windows / ASCII path stays a pure `path.join` (no dir
+ * created) and is byte-identical to before.
+ */
+export function resolveNativeSafeStorageDir(storagePath: string, subdir: string): string {
+  if (process.platform === 'win32' && NON_ASCII_RE.test(storagePath)) {
+    // 8.3-shorten the tmpdir base first (a non-ASCII Windows *profile* path can
+    // make os.tmpdir() itself non-ASCII), THEN mkdtemp so the returned path —
+    // the one that flows into fs.openSync — is provably mkdtemp-sourced (random,
+    // exclusive) and clears the insecure-temp-file dataflow.
+    const base = toNativeSafePath(os.tmpdir());
+    return fsSync.mkdtempSync(path.join(base, `gitnexus-${subdir}-`));
+  }
+  return path.join(storagePath, subdir);
+}
+
+/**
  * Shared configuration for `@ladybugdb/core` `Database` construction.
  *
  * Two values changed meaningfully in `@ladybugdb/core` 0.16.0 and need to be
