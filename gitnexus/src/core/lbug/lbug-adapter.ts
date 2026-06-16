@@ -16,7 +16,7 @@ import {
   STALE_HASH_SENTINEL,
   NodeTableName,
 } from './schema.js';
-import { streamAllCSVsToDisk } from './csv-generator.js';
+import { streamAllCSVsToDisk, type StreamedCSVResult } from './csv-generator.js';
 import type { PdgEmitManifest } from './pdg-emit-sink.js';
 import { getNodeLabel as deriveNodeLabel, type WriteStreamFactory } from './rel-pair-routing.js';
 import type { CachedEmbedding } from '../embeddings/types.js';
@@ -876,6 +876,45 @@ const doInitLbug = async (dbPath: string, readOnly: boolean = false) => {
 
 export type LbugProgressCallback = (message: string) => void;
 
+/**
+ * Bulk-COPY every node CSV sequentially on the single writable connection
+ * (LadybugDB allows one write txn at a time). Extracted from loadGraphToLbug so
+ * it can run either at the node-phase boundary — overlapping the relationship
+ * emit pass (#2203) — or after emit in the serial escape-hatch path. Each COPY
+ * keeps the IGNORE_ERRORS=true retry; a hard failure throws (no node rows ⇒ the
+ * relationship COPY would dangle on missing endpoints).
+ */
+const copyNodeCSVs = async (
+  targetConn: lbug.Connection,
+  nodeFileEntries: [NodeTableName, { csvPath: string; rows: number }][],
+  log: (message: string) => void,
+  totalSteps: number,
+): Promise<void> => {
+  let stepsDone = 0;
+  for (const [table, { csvPath, rows }] of nodeFileEntries) {
+    stepsDone++;
+    log(`Loading nodes ${stepsDone}/${totalSteps}: ${table} (${rows.toLocaleString()} rows)`);
+
+    const normalizedPath = normalizeCopyPath(csvPath);
+    const copyQuery = getCopyQuery(table, normalizedPath);
+
+    try {
+      await queryAndDrain(targetConn, copyQuery);
+    } catch (err) {
+      try {
+        const retryQuery = copyQuery.replace(
+          'auto_detect=false)',
+          'auto_detect=false, IGNORE_ERRORS=true)',
+        );
+        await queryAndDrain(targetConn, retryQuery);
+      } catch (retryErr) {
+        const retryMsg = retryErr instanceof Error ? retryErr.message : String(retryErr);
+        throw new Error(`COPY failed for ${table}: ${retryMsg.slice(0, 200)}`);
+      }
+    }
+  }
+};
+
 export const loadGraphToLbug = async (
   graph: KnowledgeGraph,
   repoPath: string,
@@ -904,36 +943,96 @@ export const loadGraphToLbug = async (
   // the gap that the DB-persistence path is un-timed today (the analyze
   // "emit" number is the scope-resolution emit bucket, not this COPY path).
   const PROF = process.env.PROF_LBUG_LOAD === '1';
+  // Escape hatch / differential oracle (#2203): force the legacy strictly-serial
+  // load order (emit everything, THEN COPY nodes, THEN COPY rels) instead of the
+  // default node-COPY ‖ rel-emit overlap. Lets an operator revert the behavior at
+  // runtime, and lets a test load the same graph both ways and assert identical
+  // persisted content.
+  const SERIAL = process.env.GITNEXUS_SERIAL_LBUG_LOAD === '1';
   const mark = (): bigint => (PROF ? process.hrtime.bigint() : 0n);
   const span = (a: bigint, b: bigint): string => (Number(b - a) / 1e6).toFixed(1);
   const tStart = mark();
 
   const csvDir = resolveNativeSafeStorageDir(storagePath, 'csv');
 
-  log('Streaming CSVs to disk...');
-  const csvResult = await streamAllCSVsToDisk(graph, repoPath, csvDir);
+  // The single writable connection (LadybugDB is single-writer). Captured as a
+  // const so the node-COPY closure has a non-null reference — TS cannot narrow
+  // the reassignable module-level `conn` across the callback boundary.
+  const writeConn = conn;
+  const validTables = new Set<string>(NODE_TABLES as readonly string[]);
 
-  // Merge the streamed PDG-emit CSVs (#2202) into the COPY plan so the
-  // BasicBlock node table + per-pair PDG edges (CFG / REACHING_DEF / CDG /
-  // POST_DOMINATE / TAINTED / SANITIZES) load through the SAME node + per-pair
-  // COPY loops as the structural CSVs. The graph held zero BasicBlocks when
-  // streaming, so `streamAllCSVsToDisk` produced none of these — the manifest
-  // is the sole source and there is no double-COPY. Absent ⇒ no-op.
-  if (pdgEmitManifest) {
+  // Merge the streamed PDG-emit node CSVs (#2202) into a node-file map. Collision
+  // guard: a BasicBlock in the in-memory graph during a streamed run is an
+  // invariant violation (streamAllCSVsToDisk would also emit basicblock.csv), so
+  // fail loudly rather than drop rows (#2202 review #3). Runs at the node-phase
+  // boundary so the manifest BasicBlock table COPYs with the structural CSVs.
+  const mergeManifestNodeFiles = (
+    nodeFilesMap: Map<NodeTableName, { csvPath: string; rows: number }>,
+  ): void => {
+    if (!pdgEmitManifest) return;
     for (const [table, meta] of pdgEmitManifest.nodeFiles) {
-      // A collision means a BasicBlock leaked into the in-memory graph during a
-      // streamed run (streamAllCSVsToDisk then emitted a structural basicblock.csv).
-      // That is a streaming-invariant violation — fail loudly rather than
-      // silently overwrite one CSV with the other and drop its rows (#2202 review #3).
-      if (csvResult.nodeFiles.has(table)) {
+      if (nodeFilesMap.has(table)) {
         throw new Error(
           `Streaming PDG manifest collides with a structural node CSV for "${table}" — ` +
             `the in-memory graph should hold zero ${table} nodes when streaming. ` +
             `A ${table} node leaked into the graph during a streamed emit.`,
         );
       }
-      csvResult.nodeFiles.set(table, meta);
+      nodeFilesMap.set(table, meta);
     }
+  };
+
+  // Node COPY is the only DB write that can overlap relationship CSV emit: the
+  // rel pass writes new rel_*.csv files and never touches `conn`, while node COPY
+  // uses `conn` and never touches the rel files. We start node COPY at the
+  // node-phase boundary and let the rel pass run concurrently — the only
+  // single-writer-safe parallelism (#2203). The rel COPY still waits for node
+  // COPY (FK precondition), so the DB load order is unchanged.
+  let nodeCopyPromise: Promise<void> | undefined;
+  let nodeCopyError: unknown;
+  const beginNodeCopy = (
+    nodeFilesMap: Map<NodeTableName, { csvPath: string; rows: number }>,
+  ): void => {
+    mergeManifestNodeFiles(nodeFilesMap);
+    const entries = [...nodeFilesMap.entries()];
+    // .catch captures the failure so an overlapped (mid-emit) rejection cannot
+    // surface as an unhandled rejection; it is rethrown at the FK barrier below.
+    nodeCopyPromise = copyNodeCSVs(writeConn, entries, log, entries.length + 1).catch((e) => {
+      nodeCopyError = e;
+    });
+  };
+
+  log('Streaming CSVs to disk...');
+  let csvResult: StreamedCSVResult;
+  try {
+    csvResult = SERIAL
+      ? await streamAllCSVsToDisk(graph, repoPath, csvDir)
+      : await streamAllCSVsToDisk(graph, repoPath, csvDir, beginNodeCopy);
+  } catch (emitErr) {
+    // Relationship emit failed. In overlap mode a node COPY may be in flight —
+    // settle it (the .catch above means this never rejects) before rethrowing so
+    // it cannot leak as an unhandled rejection.
+    if (nodeCopyPromise) await nodeCopyPromise;
+    throw emitErr;
+  }
+  const tCsv = mark();
+
+  // Serial path: all CSVs are on disk and node COPY has not started — start it
+  // here so the barrier below blocks on it exactly as the legacy path did.
+  if (SERIAL) beginNodeCopy(csvResult.nodeFiles);
+
+  // FK barrier: node rows must exist before the relationship COPY resolves their
+  // endpoints. In overlap mode most of node COPY was hidden behind rel emit, so
+  // this await is the *residual* node-COPY time (≈0 when fully overlapped).
+  if (nodeCopyPromise) await nodeCopyPromise;
+  if (nodeCopyError) {
+    throw nodeCopyError instanceof Error ? nodeCopyError : new Error(String(nodeCopyError));
+  }
+  const tCopyNodes = mark();
+
+  // Merge the streamed PDG-emit per-pair rel CSVs (#2202) — collision-guarded,
+  // before the relationship COPY consumes relsByPair.
+  if (pdgEmitManifest) {
     for (const [pairKey, meta] of pdgEmitManifest.relsByPair) {
       if (csvResult.relsByPair.has(pairKey)) {
         throw new Error(
@@ -945,39 +1044,6 @@ export const loadGraphToLbug = async (
       csvResult.totalValidRels += meta.rows;
     }
   }
-  const tCsv = mark();
-
-  const validTables = new Set<string>(NODE_TABLES as readonly string[]);
-
-  // Bulk COPY all node CSVs (sequential — LadybugDB allows only one write txn at a time)
-  const nodeFiles = [...csvResult.nodeFiles.entries()];
-  const totalSteps = nodeFiles.length + 1; // +1 for relationships
-  let stepsDone = 0;
-
-  for (const [table, { csvPath, rows }] of nodeFiles) {
-    stepsDone++;
-    log(`Loading nodes ${stepsDone}/${totalSteps}: ${table} (${rows.toLocaleString()} rows)`);
-
-    const normalizedPath = normalizeCopyPath(csvPath);
-    const copyQuery = getCopyQuery(table, normalizedPath);
-
-    try {
-      await queryAndDrain(conn, copyQuery);
-    } catch (err) {
-      try {
-        const retryQuery = copyQuery.replace(
-          'auto_detect=false)',
-          'auto_detect=false, IGNORE_ERRORS=true)',
-        );
-        await queryAndDrain(conn, retryQuery);
-      } catch (retryErr) {
-        const retryMsg = retryErr instanceof Error ? retryErr.message : String(retryErr);
-        throw new Error(`COPY failed for ${table}: ${retryMsg.slice(0, 200)}`);
-      }
-    }
-  }
-
-  const tCopyNodes = mark();
 
   // Bulk COPY relationships. They were already routed to per-FROM→TO-label-pair
   // files during the emit pass (#2203 U2) — there is no monolithic relations.csv
@@ -1078,8 +1144,13 @@ export const loadGraphToLbug = async (
     const tEnd = mark();
     let totalNodeRows = 0;
     for (const [, { rows }] of csvResult.nodeFiles) totalNodeRows += rows;
+    // `mode` records which load path ran. In overlap mode `csv-emit` is the wall
+    // to streamAllCSVsToDisk's return (node COPY overlapped part of it) and
+    // `copy-nodes` is the RESIDUAL node-COPY await after emit returned — it
+    // trends to 0 as the overlap hides node COPY behind relationship emit. In
+    // serial mode the buckets carry their legacy, disjoint meaning.
     logger.warn(
-      `[lbug-load prof] csv-emit=${span(tStart, tCsv)}ms ` +
+      `[lbug-load prof] mode=${SERIAL ? 'serial' : 'overlap'} csv-emit=${span(tStart, tCsv)}ms ` +
         `copy-nodes=${span(tCsv, tCopyNodes)}ms copy-rels=${span(tCopyNodes, tCopyRels)}ms ` +
         `fallback=${span(tCopyRels, tFallback)}ms total=${span(tStart, tEnd)}ms ` +
         `(${totalNodeRows} nodes, ${insertedRels} rels)`,
