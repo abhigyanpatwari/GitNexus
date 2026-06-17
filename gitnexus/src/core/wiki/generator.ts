@@ -18,6 +18,7 @@ import {
   initWikiDb,
   closeWikiDb,
   touchWikiDb,
+  pinWikiDb,
   getFilesWithExports,
   getAllFiles,
   getIntraModuleCallEdges,
@@ -292,6 +293,7 @@ export class WikiGenerator {
     // Init graph
     this.onProgress('init', 2, 'Connecting to knowledge graph...');
     await initWikiDb(this.lbugPath);
+    const releaseWikiDbPin = pinWikiDb();
 
     let result: WikiRunResult;
     try {
@@ -310,6 +312,7 @@ export class WikiGenerator {
         result = await this.fullGeneration(currentCommit);
       }
     } finally {
+      releaseWikiDbPin();
       await closeWikiDb();
     }
 
