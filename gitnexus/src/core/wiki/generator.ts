@@ -292,8 +292,8 @@ export class WikiGenerator {
 
     // Init graph
     this.onProgress('init', 2, 'Connecting to knowledge graph...');
-    await initWikiDb(this.lbugPath);
     const releaseWikiDbPin = pinWikiDb();
+    await initWikiDb(this.lbugPath);
 
     let result: WikiRunResult;
     try {
