@@ -44,6 +44,7 @@ const HANDLES_ROUTE_QUERY = `
 MATCH (handlerFile:File)-[r:CodeRelation {type: 'HANDLES_ROUTE'}]->(route:Route)
 RETURN handlerFile.id AS fileId, handlerFile.filePath AS filePath,
        route.name AS routePath, route.id AS routeId,
+       route.method AS routeMethod,
        route.responseKeys AS responseKeys,
        r.reason AS routeSource`;
 
@@ -332,7 +333,14 @@ export class HttpRouteExtractor implements ContractExtractor {
       const filePath = String(row.filePath ?? '');
       const routePath = String(row.routePath ?? '');
       const routeSource = String(row.routeSource ?? row.routeReason ?? '');
-      let method = methodFromRouteReason(routeSource);
+      // Prefer the HTTP verb persisted on the Route node by the ingestion
+      // routes phase (Spring/Laravel framework routes and decorator routes
+      // carry it). Fall back to parsing it out of the edge reason for
+      // older indexes or filesystem routes that never stored a method.
+      const graphMethod = String(row.routeMethod ?? '')
+        .trim()
+        .toUpperCase();
+      let method = (graphMethod || null) ?? methodFromRouteReason(routeSource);
 
       // Look up handler name (and backfill method if missing) from the
       // plugin's scan of the handler file. This replaces the old

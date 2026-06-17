@@ -42,6 +42,15 @@ const EXPO_NAV_PATTERNS = [
 export interface RouteEntry {
   filePath: string;
   source: string;
+  /**
+   * HTTP verb for this route when ingestion knows it structurally
+   * (Spring/Laravel framework routes and decorator routes carry
+   * `httpMethod`; filesystem-derived routes — Next.js/Expo/PHP file
+   * routes — do not, so this stays undefined for them). Persisted onto
+   * the Route node so downstream contract extraction can read the verb
+   * from the graph instead of re-parsing the handler source.
+   */
+  method?: string;
 }
 
 export interface RoutesOutput {
@@ -213,6 +222,7 @@ export const routesPhase: PipelinePhase<RoutesOutput> = {
       addRoute(routeUrl, {
         filePath: route.filePath,
         source: 'framework-route',
+        method: route.httpMethod,
       });
       if (route.routeName && !namedRouteRegistry.has(route.routeName)) {
         namedRouteRegistry.set(route.routeName, routeUrl);
@@ -223,6 +233,7 @@ export const routesPhase: PipelinePhase<RoutesOutput> = {
       addRoute(url, {
         filePath: dr.filePath,
         source: `decorator-${dr.decoratorName}`,
+        method: dr.httpMethod,
       });
     }
 
@@ -232,7 +243,7 @@ export const routesPhase: PipelinePhase<RoutesOutput> = {
       handlerContents = await readFileContents(ctx.repoPath, handlerPaths);
 
       for (const [routeURL, entry] of routeRegistry) {
-        const { filePath: handlerPath, source: routeSource } = entry;
+        const { filePath: handlerPath, source: routeSource, method: routeMethod } = entry;
         const content = handlerContents.get(handlerPath);
 
         const { responseKeys, errorKeys } = content
@@ -251,6 +262,7 @@ export const routesPhase: PipelinePhase<RoutesOutput> = {
           properties: {
             name: routeURL,
             filePath: handlerPath,
+            ...(routeMethod ? { method: routeMethod } : {}),
             ...(responseKeys ? { responseKeys } : {}),
             ...(errorKeys ? { errorKeys } : {}),
             ...(middleware && middleware.length > 0 ? { middleware } : {}),
