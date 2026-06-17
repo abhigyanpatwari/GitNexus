@@ -62,9 +62,7 @@ vi.mock('../../src/core/lbug/sidecar-recovery.js', () => ({
 
 const { initLbug, closeLbug, isLbugReady, pinRepo, unpinRepo } =
   await import('../../src/core/lbug/pool-adapter.js');
-const { initWikiDb, closeWikiDb, pinWikiDb } = await import(
-  '../../src/core/wiki/graph-queries.js'
-);
+const { initWikiDb, closeWikiDb, pinWikiDb } = await import('../../src/core/wiki/graph-queries.js');
 
 describe('pool-adapter repo pinning (issue #2189)', () => {
   let tmpDir: string;
