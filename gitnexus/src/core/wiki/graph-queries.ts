@@ -5,7 +5,7 @@
  * Uses the MCP-style pooled lbug-adapter for connection management.
  */
 
-import { initLbug, executeQuery, closeLbug, touchRepo } from '../lbug/pool-adapter.js';
+import { initLbug, executeQuery, closeLbug, touchRepo, pinRepo } from '../lbug/pool-adapter.js';
 
 const REPO_ID = '__wiki__';
 
@@ -14,6 +14,15 @@ const REPO_ID = '__wiki__';
  */
 export function touchWikiDb(): void {
   touchRepo(REPO_ID);
+}
+
+/**
+ * Keep the wiki DB resident for a full generation run. Wiki generation can spend
+ * minutes inside LLM calls, and the pooled DB must survive both idle cleanup and
+ * unrelated LRU pressure until the run reaches its final graph queries.
+ */
+export function pinWikiDb(): () => void {
+  return pinRepo(REPO_ID);
 }
 
 export interface FileWithExports {
