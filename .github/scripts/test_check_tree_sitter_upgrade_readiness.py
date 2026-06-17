@@ -303,9 +303,8 @@ class ReportRendering(TestCase):
         blockers = _ISSUE_BLOCKER_RE.search(self.report)
         self.assertIsNotNone(ready)
         self.assertIsNotNone(blockers)
-        self.assertNotEqual(ready.group(1), "?")
-        self.assertNotEqual(ready.group(2), "?")
-        self.assertNotEqual(blockers.group(1), "?")
+        self.assertEqual(ready.groups(), ("9", "10"))
+        self.assertEqual(blockers.group(1), "2")
 
     def _matrix_row(self, name: str) -> str:
         for line in self.report.splitlines():
