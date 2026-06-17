@@ -741,6 +741,7 @@ export function runScopeResolution(
       isCallableVisibleFromCaller: provider.isCallableVisibleFromCaller,
       resolveAdlCandidates: provider.resolveAdlCandidates,
       conversionRankFn: provider.conversionRankFn,
+      conversionOnlyArgTypePrefixes: provider.conversionOnlyArgTypePrefixes,
       constraintCompatibility: provider.constraintCompatibility,
       recordResolutionOutcome,
     },

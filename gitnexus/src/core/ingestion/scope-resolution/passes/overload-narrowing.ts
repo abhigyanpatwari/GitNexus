@@ -83,6 +83,10 @@ export interface OverloadNarrowingHookCtx {
   /** Conversion-rank scoring fallback (step 4b). Engages when the
    *  exact-type filter rejects every candidate. */
   readonly conversionRankFn?: ConversionRankFn;
+  /** Per-language argument-type prefixes whose conversion-rank failures
+   *  should suppress genuinely ambiguous multi-overload sets instead of
+   *  falling back to arity-only candidates. */
+  readonly conversionOnlyArgTypePrefixes?: readonly string[];
   /** Constraint filter (step 4c). Drops candidates whose template
    *  guards (SFINAE `enable_if_t`, C++20 `requires`, future Rust
    *  trait bounds, etc.) provably fail at the call site. Three-valued
@@ -176,6 +180,12 @@ export function narrowOverloadCandidates(
         hookCtx.argumentTypeClasses,
       );
       if (ranked.length > 0) result = ranked;
+      else if (
+        candidates.length > 1 &&
+        hasConversionOnlyArgType(argTypes, hookCtx.conversionOnlyArgTypePrefixes)
+      ) {
+        result = [];
+      }
     }
   }
 
@@ -220,6 +230,14 @@ export function narrowOverloadCandidates(
   }
 
   return result;
+}
+
+function hasConversionOnlyArgType(
+  argTypes: readonly string[],
+  prefixes: readonly string[] | undefined,
+): boolean {
+  if (prefixes === undefined || prefixes.length === 0) return false;
+  return argTypes.some((type) => prefixes.some((prefix) => type.startsWith(prefix)));
 }
 
 function exactTypeSlotMatches(

@@ -20,6 +20,8 @@ export interface ParameterTypeClass {
   indirection: 'value' | 'lvalue-ref' | 'rvalue-ref' | 'pointer' | 'unknown';
   /** Number of pointer markers when indirection is `pointer`; otherwise 0. */
   pointerDepth: number;
+  /** Normalized top-level template arguments, when a language preserves them. */
+  templateArguments?: string[];
 }
 
 export interface SymbolDefinition {
