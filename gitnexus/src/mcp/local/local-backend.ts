@@ -17,6 +17,7 @@ import {
   isLbugReady,
 } from '../../core/lbug/pool-adapter.js';
 import { isValidQueryParams } from '../../core/lbug/query-params.js';
+import { CALLEES_TRUNCATED_SENTINEL } from '../../core/ingestion/cfg/emit.js';
 import { isWalCorruptionError, WAL_RECOVERY_SUGGESTION } from '../../core/lbug/lbug-config.js';
 // Embedding imports are lazy (dynamic import) to avoid loading onnxruntime-node
 // at MCP server startup — crashes on unsupported Node ABI versions (#89)
@@ -271,7 +272,7 @@ interface PdgBridgeOptions {
   sliceCalleeNames?: ReadonlySet<string>;
 }
 
-function pdgBridgeEvidenceForImpact(input: {
+export function pdgBridgeEvidenceForImpact(input: {
   bridge: PdgBridgeOptions;
   depth: number;
   calleeName: unknown;
@@ -292,6 +293,16 @@ function pdgBridgeEvidenceForImpact(input: {
     return {
       evidence: 'callgraph-bridge',
       basis: 'whole-symbol PDG result uses symbol graph as compatibility bridge',
+    };
+  }
+
+  // A slice block whose call sites were truncated at the per-statement cap has an
+  // INCOMPLETE callee list, so absence from the set does not prove absence from
+  // the slice. Keep such reach callgraph-equal rather than under-proving.
+  if (sliceCalleeNames.has(CALLEES_TRUNCATED_SENTINEL)) {
+    return {
+      evidence: 'callgraph-bridge',
+      basis: 'a slice block truncated its call sites — callee set is incomplete (callee-unknown)',
     };
   }
 

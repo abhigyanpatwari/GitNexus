@@ -105,7 +105,9 @@ import {
   REPO_ID_HASH_LENGTH,
   parseListReposPagination,
   betterBridgeEvidence,
+  pdgBridgeEvidenceForImpact,
 } from '../../src/mcp/local/local-backend.js';
+import { CALLEES_TRUNCATED_SENTINEL } from '../../src/core/ingestion/cfg/emit.js';
 import {
   listRegisteredRepos,
   cleanupOldKuzuFiles,
@@ -1716,6 +1718,25 @@ describe('LocalBackend impact mode (KTD1/KTD5/KTD12)', () => {
     // First verdict wins when neither is stronger; undefined existing takes the candidate.
     expect(betterBridgeEvidence(undefined, unproven).evidence).toBe('unproven-bridge');
     expect(betterBridgeEvidence(unproven, unproven).evidence).toBe('unproven-bridge');
+  });
+
+  it('pdgBridgeEvidenceForImpact treats a truncated-slice (sentinel) as callee-unknown → proven', () => {
+    // A slice block that hit the per-statement site cap has an incomplete callee
+    // list; the sentinel forces callgraph-equal so an absent-but-real callee is
+    // not under-proven.
+    const truncated = pdgBridgeEvidenceForImpact({
+      bridge: { sliceCalleeNames: new Set([CALLEES_TRUNCATED_SENTINEL, 'foo']) },
+      depth: 1,
+      calleeName: 'unrelatedNotInSlice',
+    });
+    expect(truncated.evidence).toBe('callgraph-bridge');
+    // Without the sentinel, a callee not in the slice is unproven.
+    const notTruncated = pdgBridgeEvidenceForImpact({
+      bridge: { sliceCalleeNames: new Set(['foo']) },
+      depth: 1,
+      calleeName: 'unrelatedNotInSlice',
+    });
+    expect(notTruncated.evidence).toBe('unproven-bridge');
   });
 
   it("mode:'pdg' degrades gracefully when the slice-callees query fails (no bridge, no throw)", async () => {

@@ -28,7 +28,19 @@ import {
   NO_IPDOM,
 } from './post-dominators.js';
 import { augmentForPostDom } from './synthetic-escape.js';
+import { DEFAULT_PDG_MAX_SITES_PER_STATEMENT } from './visitors/call-site-harvest.js';
 import type { BasicBlockData, BindingEntry, FunctionCfg } from './types.js';
+
+/**
+ * Reserved token placed in `BasicBlock.callees` when a statement's call sites
+ * were truncated at {@link DEFAULT_PDG_MAX_SITES_PER_STATEMENT}: the recorded
+ * callee list is then INCOMPLETE, so over-cap callees are absent. `*` is not a
+ * valid identifier leaf, so it cannot collide with a real callee name. The
+ * impact bridge treats a slice containing this sentinel as "callees unknown" and
+ * keeps reach callgraph-equal (proven), rather than falsely labeling an
+ * absent-but-real callee `unproven-bridge`.
+ */
+export const CALLEES_TRUNCATED_SENTINEL = '*';
 
 /**
  * Default per-function CFG edge cap. A pathological generated function could
@@ -269,6 +281,13 @@ export const hasEmitSafeFacts = (cfg: FunctionCfg): boolean => {
 export function calleesOfBlock(block: BasicBlockData): string {
   const names = new Set<string>();
   for (const stmt of block.statements ?? []) {
+    // A statement whose recorded sites reached the per-statement cap may have
+    // dropped over-cap callees (the harvester stops at the cap). Flag the block
+    // callee-unknown so the impact bridge keeps it callgraph-equal rather than
+    // under-proving an absent-but-real callee.
+    if ((stmt.sites?.length ?? 0) >= DEFAULT_PDG_MAX_SITES_PER_STATEMENT) {
+      names.add(CALLEES_TRUNCATED_SENTINEL);
+    }
     for (const site of stmt.sites ?? []) {
       if (site.kind === 'member-read') continue;
       const callee = site.callee;
