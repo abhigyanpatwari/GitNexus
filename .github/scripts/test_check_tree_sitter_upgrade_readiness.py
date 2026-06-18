@@ -360,6 +360,14 @@ class ReportRendering(TestCase):
         blockers = _ISSUE_BLOCKER_RE.search(self.report)
         self.assertIsNotNone(ready)
         self.assertIsNotNone(blockers)
+        # Counts are derived from _render_report()'s mock corpus (all npm peer
+        # deps mocked permissive): of the 10 npm-installed grammars, 9 render
+        # Ready and 1 — tree-sitter-cpp — is the intentional pin (#1242), so it is
+        # not counted ready. The 2 blockers are that same pinned tree-sitter-cpp
+        # plus the vendored, ABI-held tree-sitter-c (the only out-of-range
+        # vendored grammar). If a grammar is added/removed or a pin/hold changes,
+        # update _render_report()'s mock AND these expected counts together; a
+        # mismatch here means the report prose drifted, not the regex.
         self.assertEqual(ready.groups(), ("9", "10"))
         self.assertEqual(blockers.group(1), "2")
 
