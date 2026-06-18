@@ -13,6 +13,7 @@ issue). stdlib-only — runs on any vanilla runner.
 
 from __future__ import annotations
 
+import http.client
 import json
 import os
 import pathlib
@@ -179,7 +180,20 @@ def npm_view_json(pkg: str) -> dict | None:
         req = urllib.request.Request(url, headers={"Accept": "application/json"})
         with urllib.request.urlopen(req, timeout=8) as resp:
             return json.loads(resp.read().decode("utf-8"))
-    except (urllib.error.URLError, urllib.error.HTTPError, json.JSONDecodeError):
+    # OSError covers read-phase transport failures (ConnectionResetError,
+    # ssl.SSLError, socket.timeout) that escape resp.read() AFTER urlopen
+    # returns — urllib only wraps connect-phase OSErrors into URLError, so these
+    # are not URLError subclasses. http.client.IncompleteRead is an HTTPException,
+    # not an OSError, so it must be named explicitly. Returning None routes the
+    # grammar to the fetch_failed blocker bucket (a complete report) instead of
+    # crashing main() to empty stdout.
+    except (
+        urllib.error.URLError,
+        urllib.error.HTTPError,
+        OSError,
+        http.client.IncompleteRead,
+        json.JSONDecodeError,
+    ):
         return None
 
 
@@ -249,7 +263,16 @@ def fetch_text(url: str, timeout: int = 8) -> str | None:
         req = urllib.request.Request(url, headers=headers)
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             return resp.read().decode("utf-8", errors="ignore")
-    except (urllib.error.URLError, urllib.error.HTTPError):
+    # See npm_view_json: OSError + http.client.IncompleteRead catch read-phase
+    # transport failures that escape resp.read() and are not URLError subclasses,
+    # so a transient network blip yields None (→ fetch_failed) rather than
+    # crashing the report to empty stdout.
+    except (
+        urllib.error.URLError,
+        urllib.error.HTTPError,
+        OSError,
+        http.client.IncompleteRead,
+    ):
         return None
 
 
