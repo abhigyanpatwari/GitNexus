@@ -46,6 +46,9 @@ describe('impact-pdg blast-radius metric helpers', () => {
         bodyBlocks: 20,
         sliceBlocks: 4,
         ratio: 0.2,
+        callgraphSymbols: 6,
+        statementPreciseSymbols: 3,
+        statementPrecision: 0.5,
         pdgOnly: 0,
         cgOnly: 0,
         callgraphMs: 100,
@@ -55,6 +58,9 @@ describe('impact-pdg blast-radius metric helpers', () => {
         bodyBlocks: 16,
         sliceBlocks: 8,
         ratio: 0.5,
+        callgraphSymbols: 4,
+        statementPreciseSymbols: 4,
+        statementPrecision: 1,
         pdgOnly: 0,
         cgOnly: 0,
         callgraphMs: 80,
@@ -64,6 +70,9 @@ describe('impact-pdg blast-radius metric helpers', () => {
         bodyBlocks: 10,
         sliceBlocks: 10,
         ratio: 1,
+        callgraphSymbols: 3,
+        statementPreciseSymbols: 1,
+        statementPrecision: 0.333,
         pdgOnly: 2,
         cgOnly: 1,
         callgraphMs: 60,
@@ -90,6 +99,13 @@ describe('impact-pdg blast-radius metric helpers', () => {
       medianCallgraphMs: 80,
       medianPdgMs: 120,
       medianPdgOverCallgraph: 1.5,
+    });
+    expect(summary.statementPrecise).toMatchObject({
+      casesWithSlice: 3,
+      casesTighterThanCallgraph: 2, // 3<6 and 1<3; the 4==4 case does not narrow
+      medianStatementPrecision: 0.5,
+      medianPreciseSymbols: 3,
+      medianCallgraphSymbols: 4,
     });
   });
 

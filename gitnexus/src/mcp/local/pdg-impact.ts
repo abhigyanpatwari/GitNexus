@@ -322,6 +322,16 @@ export interface PdgInterproceduralImpact {
   byDepthCounts: Record<number, number>;
   byDepth: Record<number, unknown[]>;
   evidenceCounts?: Partial<Record<PdgImpactEvidence, number>>;
+  /**
+   * Statement-precise (proven) subset of `byDepth` — additive. Tighter than
+   * `byDepth` for a line-seeded downstream slice (drops `unproven-bridge`
+   * symbols not invoked from the dependence slice), equal to it otherwise.
+   * `statementPrecision` = |proven| / |reach| (null when there is no reach).
+   */
+  statementPreciseByDepth?: Record<number, unknown[]>;
+  statementPreciseByDepthCounts?: Record<number, number>;
+  statementPreciseImpactedCount?: number;
+  statementPrecision?: number | null;
   partial: boolean;
 }
 
@@ -338,6 +348,12 @@ export interface PdgImpactBaseResult extends PdgImpactParityFields {
   interproceduralEpistemic?: string;
   interproceduralBoundaries?: unknown[];
   interproceduralError?: string;
+  // Statement-precise (proven) inter-procedural reach, surfaced at the top level
+  // alongside interproceduralByDepth (also nested under pdgInterprocedural).
+  statementPreciseByDepth?: Record<number, unknown[]>;
+  statementPreciseByDepthCounts?: Record<number, number>;
+  statementPreciseImpactedCount?: number;
+  statementPrecision?: number | null;
   pdgInterprocedural?: PdgInterproceduralImpact;
   pdgEvidence?: PdgImpactEvidenceSummary;
 }

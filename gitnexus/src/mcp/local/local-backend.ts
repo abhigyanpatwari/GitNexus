@@ -256,45 +256,28 @@ type PdgBridgeEvidence = Extract<PdgImpactEvidence, 'callgraph-bridge' | 'unprov
 interface PdgBridgeEvidenceInfo {
   evidence: PdgBridgeEvidence;
   basis: string;
-  site?: { filePath: string; line: number };
 }
 
 interface PdgBridgeOptions {
-  /** Line keys (`<filePath>:<line>`) proven reachable by the local PDG slice. */
-  firstHopLineKeys?: ReadonlySet<string>;
-  /** File containing the first-hop call sites for a line-seeded downstream slice. */
-  targetFilePath?: string;
-}
-
-function parseRelationSiteLine(relationId: unknown): number | undefined {
-  const id = String(relationId ?? '');
-  if (!id) return undefined;
-  const parts = id.split(':');
-  const maybeLine = Number(parts[parts.length - 2]);
-  const maybeCol = Number(parts[parts.length - 1]);
-  if (Number.isInteger(maybeLine) && maybeLine >= 1 && Number.isInteger(maybeCol)) {
-    return maybeLine;
-  }
-  const cobolLine = id.match(/:L(\d+)(?::|$)/i);
-  if (cobolLine) {
-    const line = Number(cobolLine[1]);
-    if (Number.isInteger(line) && line >= 1) return line;
-  }
-  return undefined;
-}
-
-function lineKey(filePath: string | undefined, line: number | undefined): string | undefined {
-  if (!filePath || !Number.isInteger(line) || (line as number) < 1) return undefined;
-  return `${filePath}:${line}`;
+  /**
+   * Leaf callee names invoked in the criterion's dependence-slice blocks
+   * (`BasicBlock.callees`). A first-hop callee is "proven" statement-precise iff
+   * its name is in this set — i.e. it is actually called from a statement the
+   * changed line reaches, not merely somewhere in the whole function. Empty/absent
+   * ⇒ no statement slice to discriminate (upstream or whole-symbol) ⇒ the symbol
+   * graph is used as a compatibility bridge (all callgraph-bridge), preserving
+   * callgraph reach.
+   */
+  sliceCalleeNames?: ReadonlySet<string>;
 }
 
 function pdgBridgeEvidenceForImpact(input: {
   bridge: PdgBridgeOptions;
   depth: number;
-  relationId: unknown;
+  calleeName: unknown;
   inherited?: PdgBridgeEvidenceInfo;
 }): PdgBridgeEvidenceInfo {
-  const { bridge, depth, relationId, inherited } = input;
+  const { bridge, depth, calleeName, inherited } = input;
   if (depth > 1) {
     return (
       inherited ?? {
@@ -304,32 +287,25 @@ function pdgBridgeEvidenceForImpact(input: {
     );
   }
 
-  const firstHopLineKeys = bridge.firstHopLineKeys;
-  if (!firstHopLineKeys || firstHopLineKeys.size === 0) {
+  const sliceCalleeNames = bridge.sliceCalleeNames;
+  if (!sliceCalleeNames || sliceCalleeNames.size === 0) {
     return {
       evidence: 'callgraph-bridge',
       basis: 'whole-symbol PDG result uses symbol graph as compatibility bridge',
     };
   }
 
-  const siteLine = parseRelationSiteLine(relationId);
-  const siteKey = lineKey(bridge.targetFilePath, siteLine);
-  if (siteKey && firstHopLineKeys.has(siteKey)) {
+  const name = typeof calleeName === 'string' ? calleeName : '';
+  if (name && sliceCalleeNames.has(name)) {
     return {
       evidence: 'callgraph-bridge',
-      basis: 'first-hop call site is in the local PDG statement slice',
-      site: { filePath: bridge.targetFilePath!, line: siteLine! },
+      basis: 'callee is invoked in a block of the local PDG dependence slice',
     };
   }
 
   return {
     evidence: 'unproven-bridge',
-    basis: siteLine
-      ? 'first-hop call site is not in the local PDG statement slice'
-      : 'first-hop call-site line is unavailable on the existing graph edge',
-    ...(siteLine && bridge.targetFilePath
-      ? { site: { filePath: bridge.targetFilePath, line: siteLine } }
-      : {}),
+    basis: 'callee is not invoked in any block of the local PDG dependence slice',
   };
 }
 
@@ -384,6 +360,37 @@ function dominantInterproceduralEvidence(
   if ((counts['unproven-bridge'] ?? 0) > 0) return 'unproven-bridge';
   if ((counts['callgraph-bridge'] ?? 0) > 0) return 'callgraph-bridge';
   return undefined;
+}
+
+/**
+ * Statement-precise projection of the inter-procedural bridge: the subset PROVEN
+ * to be invoked from the criterion's dependence slice (`callgraph-bridge`),
+ * dropping `unproven-bridge` symbols — reachable in the call graph but only from
+ * statements the changed line does not reach. Additive: the full
+ * `interproceduralByDepth` is unchanged and still preserves callgraph reach; this
+ * answers the tighter "which other functions does changing THIS line affect?".
+ * For an upstream / whole-symbol seed there is no discriminating slice, so every
+ * symbol is `callgraph-bridge` and the projection equals the full reach
+ * (`statementPrecision` = 1). Name-based matching (a callee invoked from both an
+ * in-slice and out-of-slice site resolves to proven) makes the projected set a
+ * conservative SUPERSET of the strictly-proven subset.
+ */
+function projectStatementPreciseByDepth(
+  byDepth: Record<number, unknown[]>,
+): Record<number, unknown[]> {
+  const out: Record<number, unknown[]> = {};
+  for (const [depthKey, items] of Object.entries(byDepth ?? {})) {
+    const depth = Number(depthKey);
+    if (!Number.isFinite(depth) || !Array.isArray(items)) continue;
+    const proven = items.filter(
+      (item) =>
+        item &&
+        typeof item === 'object' &&
+        (item as { pdgEvidence?: unknown }).pdgEvidence !== 'unproven-bridge',
+    );
+    if (proven.length > 0) out[depth] = proven;
+  }
+  return out;
 }
 
 /** Structured error logging for query failures — replaces empty catch blocks */
@@ -4764,21 +4771,18 @@ export class LocalBackend {
         executeParameterized,
       });
 
-      const firstHopLineKeys = new Set<string>();
-      if (typeof (pdgResult as any).criterionLine === 'number') {
-        firstHopLineKeys.add(`${sym.filePath}:${(pdgResult as any).criterionLine}`);
-      }
-      for (const stmt of ((pdgResult as any).affectedStatements ?? []) as Array<{
-        filePath?: string;
-        line?: number;
-      }>) {
-        const key = lineKey(stmt.filePath, stmt.line);
-        if (key) firstHopLineKeys.add(key);
-      }
-      const pdgBridge =
-        direction === 'downstream' && firstHopLineKeys.size > 0
-          ? { firstHopLineKeys, targetFilePath: sym.filePath }
-          : undefined;
+      // Statement-precise inter-procedural reach: a first-hop callee is "proven"
+      // iff it is invoked in a block of the criterion's dependence slice. The
+      // slice blocks carry the leaf callee names they call (`BasicBlock.callees`);
+      // upstream/whole-symbol seeds have no discriminating slice, so the bridge
+      // falls back to preserving callgraph reach.
+      const reachableBlocks = ((pdgResult as any).reachableBlocks ?? []) as string[];
+      const sliceCalleeNames =
+        direction === 'downstream' && reachableBlocks.length > 0
+          ? await this.calleesOfBlocks(repo, reachableBlocks)
+          : new Set<string>();
+      const pdgBridge: PdgBridgeOptions | undefined =
+        sliceCalleeNames.size > 0 ? { sliceCalleeNames } : undefined;
 
       try {
         const interproceduralResult = await this._runImpactBFS(repo, sym, symType, direction, {
@@ -4806,6 +4810,35 @@ export class LocalBackend {
       offset: Number.isFinite(params.offset) ? params.offset : 0,
       summaryOnly: params.summaryOnly,
     });
+  }
+
+  /**
+   * Union of the leaf callee names invoked across a set of dependence-slice
+   * blocks (`BasicBlock.callees`, space-joined at emit). Drives statement-precise
+   * inter-procedural evidence: a first-hop callee reached from the criterion is
+   * "proven" (callgraph-bridge) iff its name is in this set, else unproven-bridge.
+   * Empty when the slice blocks call nothing or carry no harvested callees
+   * (non-TS/JS or synthetic ENTRY/EXIT blocks) — the bridge then preserves
+   * callgraph reach. A query failure is logged and degrades to empty (no proof),
+   * never throws (the inter-procedural reach is still returned).
+   */
+  private async calleesOfBlocks(repo: RepoHandle, blockIds: string[]): Promise<Set<string>> {
+    const names = new Set<string>();
+    if (blockIds.length === 0) return names;
+    try {
+      const rows = await executeParameterized(
+        repo.lbugPath,
+        `MATCH (b:BasicBlock) WHERE b.id IN $ids RETURN b.callees AS callees`,
+        { ids: blockIds },
+      );
+      for (const r of rows as any[]) {
+        const raw = String(r.callees ?? r[0] ?? '');
+        for (const n of raw.split(' ')) if (n) names.add(n);
+      }
+    } catch (e) {
+      logQueryError('impact:pdg-slice-callees', e);
+    }
+    return names;
   }
 
   /**
@@ -4855,6 +4888,20 @@ export class LocalBackend {
     const interproceduralByDepthCounts = interproceduralResult?.byDepthCounts ?? {};
     const interproceduralEvidenceCounts = countPdgEvidence(interproceduralByDepth);
     const interproceduralEvidence = dominantInterproceduralEvidence(interproceduralEvidenceCounts);
+    // Additive statement-precise projection (see projectStatementPreciseByDepth):
+    // the proven subset of the inter-procedural reach. `interproceduralByDepth`
+    // above is unchanged and still preserves full callgraph reach.
+    const statementPreciseByDepth = projectStatementPreciseByDepth(interproceduralByDepth);
+    const statementPreciseByDepthCounts: Record<number, number> = {};
+    for (const [depthKey, items] of Object.entries(statementPreciseByDepth)) {
+      statementPreciseByDepthCounts[Number(depthKey)] = (items as unknown[]).length;
+    }
+    const provenBridgeCount = interproceduralEvidenceCounts['callgraph-bridge'] ?? 0;
+    const unprovenBridgeCount = interproceduralEvidenceCounts['unproven-bridge'] ?? 0;
+    const statementPrecision =
+      provenBridgeCount + unprovenBridgeCount > 0
+        ? provenBridgeCount / (provenBridgeCount + unprovenBridgeCount)
+        : null;
     const byDepth: Record<number, unknown[]> = {};
     const byDepthCounts: Record<number, number> = {};
     const depthKeys = Array.from(
@@ -4952,6 +4999,13 @@ export class LocalBackend {
       byDepthCounts,
       interproceduralByDepth,
       interproceduralByDepthCounts,
+      // Statement-precise (proven) inter-procedural reach — additive; tighter than
+      // `interproceduralByDepth` for a line-seeded downstream slice, equal to it
+      // otherwise. `statementPrecision` = |proven| / |proven + unproven|.
+      statementPreciseByDepth,
+      statementPreciseByDepthCounts,
+      statementPreciseImpactedCount: provenBridgeCount,
+      statementPrecision,
       affected_processes: affectedProcesses,
       affected_modules: affectedModules,
       byDepth,
@@ -4975,6 +5029,10 @@ export class LocalBackend {
         byDepthCounts: interproceduralByDepthCounts,
         byDepth: interproceduralByDepth,
         evidenceCounts: interproceduralEvidenceCounts,
+        statementPreciseByDepth,
+        statementPreciseByDepthCounts,
+        statementPreciseImpactedCount: provenBridgeCount,
+        statementPrecision,
         partial,
       },
     };
@@ -5281,12 +5339,12 @@ export class LocalBackend {
             nextFrontier.push(relId);
             const storedConfidence = rel.confidence ?? rel[6];
             const relationType = rel.relType || rel[5];
-            const relationId = rel.relationId ?? rel[7];
+            const calleeName = rel.name || rel[2];
             const bridgeEvidence = opts.pdgBridge
               ? pdgBridgeEvidenceForImpact({
                   bridge: opts.pdgBridge,
                   depth,
-                  relationId,
+                  calleeName,
                   inherited: pdgBridgeEvidenceById.get(sourceId),
                 })
               : undefined;
@@ -5309,7 +5367,6 @@ export class LocalBackend {
                 ? {
                     pdgEvidence: bridgeEvidence.evidence,
                     pdgBridgeBasis: bridgeEvidence.basis,
-                    ...(bridgeEvidence.site ? { pdgBridgeSite: bridgeEvidence.site } : {}),
                   }
                 : {}),
             });

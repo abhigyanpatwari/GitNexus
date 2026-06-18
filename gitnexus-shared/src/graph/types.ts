@@ -94,6 +94,9 @@ export type NodeProperties = {
   middleware?: string[];
   // BasicBlock (taint/PDG substrate, issue #2080) — reuses filePath/startLine/endLine.
   text?: string;
+  /** BasicBlock: space-joined leaf callee names invoked in the block — the
+   *  statement-precise inter-procedural reach substrate for impact mode. */
+  callees?: string;
   // Extensible
   [key: string]: unknown;
 };

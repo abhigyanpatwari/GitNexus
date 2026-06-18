@@ -1311,8 +1311,9 @@ export const getCopyQuery = (table: NodeTableName, filePath: string): string => 
     return `COPY ${t}(id, name, filePath, description) FROM "${filePath}" ${COPY_CSV_OPTS}`;
   }
   if (table === 'BasicBlock') {
-    // Taint/PDG substrate (issue #2080) — no name column.
-    return `COPY ${t}(id, filePath, startLine, endLine, text) FROM "${filePath}" ${COPY_CSV_OPTS}`;
+    // Taint/PDG substrate (issue #2080) — no name column. `callees` is the
+    // statement-precise inter-procedural reach substrate (space-joined leaf names).
+    return `COPY ${t}(id, filePath, startLine, endLine, text, callees) FROM "${filePath}" ${COPY_CSV_OPTS}`;
   }
   if (table === 'Method') {
     return `COPY ${t}(id, name, filePath, startLine, endLine, isExported, content, description, parameterCount, returnType) FROM "${filePath}" ${COPY_CSV_OPTS}`;
@@ -1368,7 +1369,7 @@ export const insertNodeToLbug = async (
       query = `CREATE (n:Section {id: ${escapeValue(properties.id)}, name: ${escapeValue(properties.name)}, filePath: ${escapeValue(properties.filePath)}, startLine: ${properties.startLine || 0}, endLine: ${properties.endLine || 0}, level: ${properties.level || 1}, content: ${escapeValue(properties.content || '')}${descPart}})`;
     } else if (label === 'BasicBlock') {
       // Taint/PDG substrate (issue #2080) — no name column.
-      query = `CREATE (n:BasicBlock {id: ${escapeValue(properties.id)}, filePath: ${escapeValue(properties.filePath)}, startLine: ${properties.startLine || 0}, endLine: ${properties.endLine || 0}, text: ${escapeValue(properties.text || '')}})`;
+      query = `CREATE (n:BasicBlock {id: ${escapeValue(properties.id)}, filePath: ${escapeValue(properties.filePath)}, startLine: ${properties.startLine || 0}, endLine: ${properties.endLine || 0}, text: ${escapeValue(properties.text || '')}, callees: ${escapeValue(properties.callees || '')}})`;
     } else if (TABLES_WITH_EXPORTED.has(label)) {
       const descPart = properties.description
         ? `, description: ${escapeValue(properties.description)}`
@@ -1454,7 +1455,7 @@ export const batchInsertNodesToLbug = async (
           query = `MERGE (n:Section {id: ${escapeValue(properties.id)}}) SET n.name = ${escapeValue(properties.name)}, n.filePath = ${escapeValue(properties.filePath)}, n.startLine = ${properties.startLine || 0}, n.endLine = ${properties.endLine || 0}, n.level = ${properties.level || 1}, n.content = ${escapeValue(properties.content || '')}${descPart}`;
         } else if (label === 'BasicBlock') {
           // Taint/PDG substrate (issue #2080) — no name column.
-          query = `MERGE (n:BasicBlock {id: ${escapeValue(properties.id)}}) SET n.filePath = ${escapeValue(properties.filePath)}, n.startLine = ${properties.startLine || 0}, n.endLine = ${properties.endLine || 0}, n.text = ${escapeValue(properties.text || '')}`;
+          query = `MERGE (n:BasicBlock {id: ${escapeValue(properties.id)}}) SET n.filePath = ${escapeValue(properties.filePath)}, n.startLine = ${properties.startLine || 0}, n.endLine = ${properties.endLine || 0}, n.text = ${escapeValue(properties.text || '')}, n.callees = ${escapeValue(properties.callees || '')}`;
         } else if (TABLES_WITH_EXPORTED.has(label)) {
           const descPart = properties.description
             ? `, n.description = ${escapeValue(properties.description)}`

@@ -486,17 +486,21 @@ blocks).
 |---|---|---|
 | **Tighter / fewer false alarms** | ✅ strongly confirmed | *Correctness:* the line-seeded slice equals the curated intra dependence exactly — intra & mixed PDG F1 = 1.000, FPIS = FNIS = 0. *Magnitude:* the slice is a median **0.30** (downstream) / **0.22** (upstream) of the function body; **240/240** functions localize below whole-body — a ~70–78% cut in the intra-procedural inspection set, with no proven dropped dependency. |
 | **Catches impact callgraph misses** | ✅ confirmed (new axis) | Callgraph emits *no* statement-level output (unified intra-line CIS = 0, recall 0 on every fixture); PDG recovers every true dependent statement (intra recall = 1.000). PDG answers a def→use / control-dependence question callgraph cannot represent at all. |
-| **Finds more callers/callees** | ❌ refuted (tie by design) | The PDG inter-procedural symbol set is **identical** to callgraph on 240/240 real functions (0 pdg-only, 0 callgraph-only) and recall = precision = 1.000 vs callgraph in the 5-case probe. PDG bridges inter-procedural reach *through* the call graph — same set, plus proven/unproven labels. |
-| **Faster / cheaper** | ❌ refuted | PDG carries ~**1.2–1.6×** callgraph latency (the slice query + bridge labeling). It buys precision, not speed. |
+| **Finds *more* callers/callees** | ❌ refuted (tie, by design) | Full PDG inter-procedural reach is **identical** to callgraph on 240/240 real functions (0 pdg-only, 0 callgraph-only). PDG bridges inter-procedural reach *through* the call graph, so it never finds reach the call graph misses. |
+| **Tighter cross-function reach (statement-precise)** | ✅ confirmed (precision, additive) | `mode:'pdg'` now also exposes `statementPreciseByDepth` — the callees actually invoked from the changed line's dependence slice (`BasicBlock.callees`), dropping symbols only reachable from independent statements. Strictly tighter than callgraph on **43/90** with-slice functions (median proven **1** vs callgraph **2** symbols); the full reach stays available alongside it. `statementPrecision` reports the cut. |
+| **Faster / cheaper** | ❌ refuted | PDG carries ~**1.2–1.6×** callgraph latency (the slice query + the slice-callees lookup). It buys precision, not speed. |
 
 **Headline.** PDG makes `impact` *much* better at the localization/precision
-question — *"what exactly does changing **this** statement affect?"* — narrowing
-the intra-procedural blast radius to roughly a quarter-to-a-third of the function
-body with ground-truth-proven correctness, and adding a statement-level
-dependence axis callgraph has no answer for. It is deliberately **not** a wider or
-faster cross-function reach; for cross-symbol blast radius, `mode:'callgraph'`
-remains the comparator. The two compose — that is the whole point of the unified
-result, not a default switch.
+question — *"what exactly does changing **this** statement affect?"* It narrows the
+intra-procedural blast radius to roughly a quarter-to-a-third of the function body
+with ground-truth-proven correctness, adds a statement-level dependence axis
+callgraph has no answer for, and — via the persisted `BasicBlock.callees` substrate
+— now also reports a **statement-precise** cross-function reach (only the callees
+the changed line actually reaches), strictly tighter than callgraph on roughly half
+of with-slice functions. It is deliberately **not** a *wider* or *faster*
+cross-function reach: the full callgraph reach is preserved alongside the precise
+view, and `mode:'callgraph'` remains the comparator for raw blast radius. The
+surfaces compose — that is the point of the unified result, not a default switch.
 
 Reproduce the verdict:
 

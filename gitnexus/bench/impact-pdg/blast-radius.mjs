@@ -132,6 +132,20 @@ export function summarizeBlastRadius(cases) {
       totalPdgOnlySymbols: cases.reduce((a, c) => a + c.pdgOnly, 0),
       totalCgOnlySymbols: cases.reduce((a, c) => a + c.cgOnly, 0),
     },
+    // Statement-precise inter-procedural reach (the axis-3 precision win): the
+    // proven subset invoked from the changed line's slice, vs the full callgraph
+    // reach. Only the with-slice cases can discriminate; empty-slice/upstream
+    // cases preserve full reach (precision 1) and are reported separately.
+    statementPrecise: {
+      casesWithSlice: cases.filter((c) => c.sliceBlocks > 0).length,
+      casesTighterThanCallgraph: cases.filter((c) => c.statementPreciseSymbols < c.callgraphSymbols)
+        .length,
+      medianStatementPrecision: round(
+        median(cases.map((c) => c.statementPrecision).filter((v) => v !== null && v !== undefined)),
+      ),
+      medianPreciseSymbols: median(cases.map((c) => c.statementPreciseSymbols)),
+      medianCallgraphSymbols: median(cases.map((c) => c.callgraphSymbols)),
+    },
     latency: {
       medianCallgraphMs: round(median(cases.map((c) => c.callgraphMs))),
       medianPdgMs: round(median(cases.map((c) => c.pdgMs))),
@@ -245,6 +259,12 @@ async function run() {
       const pdgSyms = symbolSetFromByDepth(
         pdg?.interproceduralByDepth ?? pdg?.pdgInterprocedural?.byDepth ?? {},
       );
+      // Statement-precise (proven) inter-procedural reach: the subset invoked
+      // from the criterion's dependence slice. Tighter than callgraph when the
+      // changed line reaches only some of the function's callees.
+      const preciseSyms = symbolSetFromByDepth(
+        pdg?.statementPreciseByDepth ?? pdg?.pdgInterprocedural?.statementPreciseByDepth ?? {},
+      );
       const pdgOnly = [...pdgSyms].filter((x) => !cgSyms.has(x)).length;
       const cgOnly = [...cgSyms].filter((x) => !pdgSyms.has(x)).length;
 
@@ -258,6 +278,9 @@ async function run() {
         ratio: bodyBlocks ? round(sliceBlocks / bodyBlocks) : null,
         callgraphSymbols: cgSyms.size,
         pdgSymbols: pdgSyms.size,
+        statementPreciseSymbols: preciseSyms.size,
+        statementPrecision:
+          typeof pdg?.statementPrecision === 'number' ? round(pdg.statementPrecision) : null,
         pdgOnly,
         cgOnly,
         epistemic: pdg?.epistemic ?? null,
@@ -286,6 +309,7 @@ async function run() {
 
     const loc = summary.localization;
     const inter = summary.interSymbol;
+    const prec = summary.statementPrecise;
     const lat = summary.latency;
     const lines = [];
     lines.push('=== impact-PDG real-code blast-radius / localization probe ===');
@@ -300,9 +324,15 @@ async function run() {
         `functions localized below whole-body.`,
     );
     lines.push(
-      `Inter-symbol reach (axis: more callers/callees): identical to callgraph on ` +
+      `Inter-symbol reach (axis: more callers/callees): full reach identical to callgraph on ` +
         `${inter.casesIdentical}/${cases.length} functions ` +
         `(pdg-only ${inter.totalPdgOnlySymbols}, callgraph-only ${inter.totalCgOnlySymbols}).`,
+    );
+    lines.push(
+      `Statement-precise reach (axis: tighter cross-function): ${prec.casesTighterThanCallgraph}/` +
+        `${prec.casesWithSlice} with-slice functions narrow below full callgraph reach; median ` +
+        `statement-precision ${fmt(prec.medianStatementPrecision)} (proven median ` +
+        `${prec.medianPreciseSymbols} vs callgraph ${prec.medianCallgraphSymbols} symbols).`,
     );
     lines.push(
       `Latency (axis: faster): callgraph median ${fmt(lat.medianCallgraphMs, 1)}ms, ` +

@@ -212,8 +212,11 @@ export interface RepoMeta {
 
 /**
  * Bumped whenever incremental-indexing invariants change incompatibly.
+ * v2: `BasicBlock.callees` column added (statement-precise inter-procedural
+ * reach substrate) — an index built before this lacks the column, so a full
+ * re-analyze is required rather than an incremental top-up.
  */
-export const INCREMENTAL_SCHEMA_VERSION = 1;
+export const INCREMENTAL_SCHEMA_VERSION = 2;
 
 export interface IndexedRepo {
   repoPath: string;

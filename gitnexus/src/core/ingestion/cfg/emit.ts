@@ -28,7 +28,7 @@ import {
   NO_IPDOM,
 } from './post-dominators.js';
 import { augmentForPostDom } from './synthetic-escape.js';
-import type { BindingEntry, FunctionCfg } from './types.js';
+import type { BasicBlockData, BindingEntry, FunctionCfg } from './types.js';
 
 /**
  * Default per-function CFG edge cap. A pathological generated function could
@@ -255,6 +255,31 @@ export const hasEmitSafeFacts = (cfg: FunctionCfg): boolean => {
  * no silent truncation (KTD6/R6). Block nodes are always fully emitted (their
  * count is bounded by the function's statement count); only edges are capped.
  */
+/**
+ * Space-joined, sorted, de-duplicated leaf callee names invoked directly in a
+ * block (`call`/`new` sites; the leaf of a dotted path — `child_process.exec` ⇒
+ * `exec`). This is the persisted substrate for statement-precise inter-procedural
+ * impact: a callee reached from a function is "proven" to be impacted by a
+ * changed statement iff its name appears in the callees of a block in that
+ * statement's dependence slice. `sites` is harvested only for TS/JS under `--pdg`
+ * (and absent on synthetic ENTRY/EXIT), so the field is empty elsewhere and the
+ * bridge degrades to the prior (callgraph-equal) behavior. Space-joined because
+ * leaf names are identifiers (no spaces) and the field is itself one CSV cell.
+ */
+export function calleesOfBlock(block: BasicBlockData): string {
+  const names = new Set<string>();
+  for (const stmt of block.statements ?? []) {
+    for (const site of stmt.sites ?? []) {
+      if (site.kind === 'member-read') continue;
+      const callee = site.callee;
+      if (!callee) continue;
+      const leaf = callee.slice(callee.lastIndexOf('.') + 1);
+      if (leaf) names.add(leaf);
+    }
+  }
+  return [...names].sort().join(' ');
+}
+
 export function emitFileCfgs(
   graph: KnowledgeGraph,
   cfgs: readonly FunctionCfg[],
@@ -277,6 +302,11 @@ export function emitFileCfgs(
           startLine: b.startLine,
           endLine: b.endLine,
           text: b.text,
+          // Space-joined leaf callee names invoked in this block — the
+          // statement-precise inter-procedural reach substrate. Harvested from
+          // the per-statement `sites` (already on the side channel); dropping
+          // them here is what made the impact-mode bridge labeling degenerate.
+          callees: calleesOfBlock(b),
         },
       });
       result.blocks++;

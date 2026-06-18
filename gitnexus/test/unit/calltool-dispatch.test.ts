@@ -1612,8 +1612,34 @@ describe('LocalBackend impact mode (KTD1/KTD5/KTD12)', () => {
 
   it("mode:'pdg' + downstream line:8 routes to the PDG traversal and seeds bridge evidence", async () => {
     resolveSingleTarget();
+    // The target-resolution row doubles as the calleesOfBlocks row: `callees`
+    // ('callee') is the leaf name persisted on the slice's BasicBlock, the
+    // statement-precise substrate the bridge keys on.
+    (executeParameterized as any).mockResolvedValue([
+      {
+        id: 'func:main',
+        name: 'main',
+        type: 'Function',
+        filePath: 'src/index.ts',
+        callees: 'callee',
+      },
+    ]);
+    // A line-seeded downstream slice with one reachable block → the dispatch
+    // queries that block's callees and seeds the bridge with them.
+    const pdgSpy = vi.spyOn(backend as any, '_runImpactPDG').mockResolvedValueOnce({
+      mode: 'pdg',
+      target: { id: 'func:main', name: 'main', type: 'Function', filePath: 'src/index.ts' },
+      direction: 'downstream',
+      risk: 'UNKNOWN',
+      impactedCount: 0,
+      epistemic: 'pdg-intra-procedural',
+      reachableBlocks: ['BasicBlock:src/index.ts:8:0:1'],
+      blockCount: 1,
+      affectedStatements: [{ line: 8, filePath: 'src/index.ts', text: 'callee()' }],
+      affectedStatementCount: 1,
+      criterionLine: 8,
+    });
     const bfsSpy = vi.spyOn(backend as any, '_runImpactBFS');
-    const pdgSpy = vi.spyOn(backend as any, '_runImpactPDG');
     const result = await backend.callTool('impact', {
       target: 'main',
       direction: 'downstream',
@@ -1626,8 +1652,10 @@ describe('LocalBackend impact mode (KTD1/KTD5/KTD12)', () => {
     expect(pdgSpy).toHaveBeenCalledTimes(1);
     expect(bfsSpy).toHaveBeenCalledTimes(1);
     const bridge = bfsSpy.mock.calls[0][4].pdgBridge;
-    expect(bridge.targetFilePath).toBe('src/index.ts');
-    expect([...bridge.firstHopLineKeys]).toContain('src/index.ts:8');
+    // The bridge now carries the slice's callee names (statement-precise reach),
+    // resolved from BasicBlock.callees — not the dead call-site-line keys.
+    expect(bridge).toBeDefined();
+    expect([...bridge.sliceCalleeNames]).toContain('callee');
     expect(result.pdgInterprocedural).toBeDefined();
   });
 
