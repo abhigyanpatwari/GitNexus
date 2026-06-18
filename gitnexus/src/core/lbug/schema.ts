@@ -236,6 +236,7 @@ CREATE NODE TABLE BasicBlock (
   endLine INT64,
   text STRING,
   callees STRING,
+  calleeIds STRING,
   PRIMARY KEY (id)
 )`;
 

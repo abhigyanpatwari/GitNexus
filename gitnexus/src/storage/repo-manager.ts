@@ -215,8 +215,11 @@ export interface RepoMeta {
  * v2: `BasicBlock.callees` column added (statement-precise inter-procedural
  * reach substrate) — an index built before this lacks the column, so a full
  * re-analyze is required rather than an incremental top-up.
+ * v3: `BasicBlock.calleeIds` column added (sound resolved-callee-id parallel
+ * to `callees`, #2227) — same contract: an index built before this lacks the
+ * column, so a full re-analyze is forced rather than an incremental top-up.
  */
-export const INCREMENTAL_SCHEMA_VERSION = 2;
+export const INCREMENTAL_SCHEMA_VERSION = 3;
 
 export interface IndexedRepo {
   repoPath: string;
