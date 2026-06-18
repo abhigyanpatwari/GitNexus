@@ -4323,25 +4323,18 @@ export class LocalBackend {
     }
 
     if (mode === 'pdg') {
-      // KTD12 — param-compatibility hard rejections (decided as errors, NOT
-      // silent ignores and NOT an `ignoredParams` echo). Each names a symbol-
-      // graph / cross-repo concept the PDG engine cannot honor:
-      //   relationTypes → names symbol edges (PDG walks BasicBlock edges).
-      //   crossDepth    → cross-repo hops (PDG is single-repo intra-procedural).
-      //   minConfidence → CDG/RD edges may carry no confidence → would drop all.
-      // A loud failure beats a quietly-wrong result. (@group targets are
-      // rejected at the group-forward boundary in callToolAtGroupRepo before
-      // they ever reach here; see KTD12.)
+      // PDG mode is now unified inside a single repo: it combines the local
+      // CDG/RD statement slice with the same inter-symbol reach used for the
+      // option-driven comparison path. Cross-repo fan-out remains a callgraph
+      // feature, so crossDepth is still a loud error rather than a silent ignore.
       const incompatible: string[] = [];
-      if (params.relationTypes !== undefined) incompatible.push('relationTypes');
       if (params.crossDepth !== undefined) incompatible.push('crossDepth');
-      if (params.minConfidence !== undefined) incompatible.push('minConfidence');
       if (incompatible.length > 0) {
         return makePdgImpactErrorResult({
           mode: 'pdg',
           error:
             `Parameter(s) ${incompatible.join(', ')} are not supported with mode:'pdg' ` +
-            `(intra-procedural, single-repo, dependence-edge based). Remove them or use mode:'callgraph'.`,
+            `(single-repo PDG impact). Remove them or use mode:'callgraph' for cross-repo fan-out.`,
           target: { name: target },
           direction,
         });
@@ -4612,11 +4605,16 @@ export class LocalBackend {
       }
     }
 
+    const effectiveRelationTypes =
+      (symType === 'Class' || symType === 'Interface') &&
+      !hasExplicitRelationTypes &&
+      !relationTypes.includes('ACCESSES')
+        ? [...relationTypes, 'ACCESSES']
+        : relationTypes;
+
     // (4) single → route the resolved symbol to the engine selected by `mode`.
-    // The PDG engine does NOT touch `_runImpactBFS`, so a `pdg` call never runs
-    // callgraph.
     if (mode === 'pdg') {
-      return this._runImpactPDG({
+      const pdgResult = await this._runImpactPDG({
         repo,
         sym,
         symType,
@@ -4629,14 +4627,22 @@ export class LocalBackend {
         // lifecycle; `pdg-impact.ts` owns traversal/projection.
         executeParameterized,
       });
-    }
 
-    const effectiveRelationTypes =
-      (symType === 'Class' || symType === 'Interface') &&
-      !hasExplicitRelationTypes &&
-      !relationTypes.includes('ACCESSES')
-        ? [...relationTypes, 'ACCESSES']
-        : relationTypes;
+      try {
+        const interproceduralResult = await this._runImpactBFS(repo, sym, symType, direction, {
+          maxDepth,
+          relationTypes: effectiveRelationTypes,
+          includeTests,
+          minConfidence,
+          limit: Number.isFinite(params.limit) ? params.limit : 100,
+          offset: Number.isFinite(params.offset) ? params.offset : 0,
+        });
+        return this.composeUnifiedPdgImpactResult(pdgResult, interproceduralResult);
+      } catch (e) {
+        logQueryError('impact:pdg-interprocedural-reach', e);
+        return this.composeUnifiedPdgImpactResult(pdgResult, null, e);
+      }
+    }
 
     return this._runImpactBFS(repo, sym, symType, direction, {
       maxDepth,
@@ -4653,9 +4659,10 @@ export class LocalBackend {
    * Delegates the PDG impact engine to `pdg-impact.ts`.
    *
    * The private method remains as the LocalBackend dispatch seam so existing
-   * tests can keep asserting that `mode:'pdg'` routes here and never falls back
-   * to `_runImpactBFS`. The traversal/projection/result assembly lives in the
-   * extracted helper module.
+   * tests can keep asserting that `mode:'pdg'` routes through the PDG
+   * statement engine before LocalBackend attaches interprocedural symbol reach.
+   * The traversal/projection/result assembly lives in the extracted helper
+   * module.
    */
   private async _runImpactPDG(deps: {
     repo: RepoHandle;
@@ -4668,6 +4675,139 @@ export class LocalBackend {
     executeParameterized: typeof executeParameterized;
   }): Promise<PdgImpactResult> {
     return runImpactPDG(deps);
+  }
+
+  /**
+   * Compose `mode:'pdg'` into one user-facing impact result:
+   *
+   * - `affectedStatements` / `reachableBlocks` stay owned by the persisted PDG
+   *   layer (CDG + REACHING_DEF), preserving the statement-level intra result.
+   * - `interproceduralByDepth` / `pdgInterprocedural` expose the symbol reach;
+   *   `byDepth` stays as the compatibility symbol bucket so existing consumers
+   *   still see one PDG result shape.
+   *
+   * The callgraph option remains available as the comparator/default path; this
+   * helper only changes the `pdg` result contract from intra-only to unified.
+   */
+  private composeUnifiedPdgImpactResult(
+    pdgResult: PdgImpactResult,
+    interproceduralResult: any | null,
+    interproceduralError?: unknown,
+  ): PdgImpactResult {
+    if ('error' in pdgResult || 'pdgLayer' in pdgResult) return pdgResult;
+
+    const localByDepth = pdgResult.byDepth ?? {};
+    const localByDepthCounts = pdgResult.byDepthCounts ?? {};
+    const interproceduralByDepth = interproceduralResult?.byDepth ?? {};
+    const interproceduralByDepthCounts = interproceduralResult?.byDepthCounts ?? {};
+    const byDepth: Record<number, unknown[]> = {};
+    const byDepthCounts: Record<number, number> = {};
+    const depthKeys = Array.from(
+      new Set([
+        ...Object.keys(localByDepth),
+        ...Object.keys(interproceduralByDepth),
+        ...Object.keys(localByDepthCounts),
+        ...Object.keys(interproceduralByDepthCounts),
+      ]),
+    )
+      .map((d) => Number(d))
+      .filter((d) => Number.isFinite(d))
+      .sort((a, b) => a - b);
+    for (const depth of depthKeys) {
+      const localItems = localByDepth[depth] ?? localByDepth[String(depth)] ?? [];
+      const interItems =
+        interproceduralByDepth[depth] ?? interproceduralByDepth[String(depth)] ?? [];
+      const items = [...localItems, ...interItems];
+      if (items.length > 0) byDepth[depth] = items;
+      const localCount =
+        localByDepthCounts[depth] ?? localByDepthCounts[String(depth)] ?? localItems.length;
+      const interCount =
+        interproceduralByDepthCounts[depth] ??
+        interproceduralByDepthCounts[String(depth)] ??
+        interItems.length;
+      const totalCount = localCount + interCount;
+      if (totalCount > 0) byDepthCounts[depth] = totalCount;
+    }
+
+    if (Object.keys(byDepthCounts).length === 0) {
+      const localZero = localByDepthCounts[1] ?? localByDepthCounts['1'];
+      const interZero = interproceduralByDepthCounts[1] ?? interproceduralByDepthCounts['1'];
+      if (typeof localZero === 'number' || typeof interZero === 'number') {
+        byDepthCounts[1] =
+          (typeof localZero === 'number' ? localZero : 0) +
+          (typeof interZero === 'number' ? interZero : 0);
+      }
+    }
+
+    const localImpactedCount =
+      typeof pdgResult.impactedCount === 'number' ? pdgResult.impactedCount : 0;
+    const interproceduralImpactedCount =
+      typeof interproceduralResult?.impactedCount === 'number'
+        ? interproceduralResult.impactedCount
+        : 0;
+    const impactedCount = localImpactedCount + interproceduralImpactedCount;
+    const summary = interproceduralResult?.summary
+      ? {
+          ...interproceduralResult.summary,
+          direct: (pdgResult.summary?.direct ?? 0) + (interproceduralResult.summary.direct ?? 0),
+        }
+      : {
+          direct: pdgResult.summary?.direct ?? localImpactedCount,
+          processes_affected: 0,
+          modules_affected: 0,
+        };
+    const affectedProcesses = interproceduralResult?.affected_processes ?? [];
+    const affectedModules = interproceduralResult?.affected_modules ?? [];
+    const partial = Boolean(interproceduralResult?.partial || interproceduralError);
+    const errorMessage =
+      interproceduralError instanceof Error
+        ? interproceduralError.message
+        : interproceduralError
+          ? String(interproceduralError)
+          : undefined;
+
+    const noteParts = [
+      pdgResult.note,
+      `Inter-procedural symbol reach is included using the resolved symbol graph; ` +
+        `statement-level PDG reach remains in affectedStatements.`,
+    ];
+    if (errorMessage) {
+      noteParts.push(
+        `Inter-procedural symbol reach failed (${errorMessage}); byDepth is therefore a lower bound.`,
+      );
+    } else if (interproceduralResult?.epistemic === 'lower-bound') {
+      noteParts.push(
+        `The inter-procedural symbol reach is a lower bound because unresolved indirection was detected.`,
+      );
+    }
+
+    return {
+      ...pdgResult,
+      impactedCount,
+      note: noteParts.filter(Boolean).join(' '),
+      summary,
+      byDepthCounts,
+      interproceduralByDepth,
+      interproceduralByDepthCounts,
+      affected_processes: affectedProcesses,
+      affected_modules: affectedModules,
+      byDepth,
+      ...(partial ? { partial: true } : {}),
+      ...(interproceduralResult?.epistemic
+        ? { interproceduralEpistemic: interproceduralResult.epistemic }
+        : {}),
+      ...(interproceduralResult?.boundaries
+        ? { interproceduralBoundaries: interproceduralResult.boundaries }
+        : {}),
+      ...(errorMessage ? { interproceduralError: errorMessage } : {}),
+      pdgInterprocedural: {
+        engine: 'symbol-graph',
+        impactedCount: interproceduralImpactedCount,
+        byDepthCounts: interproceduralByDepthCounts,
+        byDepth: interproceduralByDepth,
+        partial,
+      },
+    };
   }
 
   /**

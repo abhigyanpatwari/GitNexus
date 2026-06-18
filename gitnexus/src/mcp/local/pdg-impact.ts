@@ -298,6 +298,14 @@ export interface PdgImpactParityFields {
   affected_modules: unknown[];
 }
 
+export interface PdgInterproceduralImpact {
+  engine: 'symbol-graph';
+  impactedCount: number;
+  byDepthCounts: Record<number, number>;
+  byDepth: Record<number, unknown[]>;
+  partial: boolean;
+}
+
 export interface PdgImpactBaseResult extends PdgImpactParityFields {
   mode: 'pdg';
   target: PdgImpactTarget;
@@ -305,6 +313,13 @@ export interface PdgImpactBaseResult extends PdgImpactParityFields {
   impactedCount: number;
   risk: 'UNKNOWN';
   note?: string;
+  partial?: boolean;
+  interproceduralByDepth?: Record<number, unknown[]>;
+  interproceduralByDepthCounts?: Record<number, number>;
+  interproceduralEpistemic?: string;
+  interproceduralBoundaries?: unknown[];
+  interproceduralError?: string;
+  pdgInterprocedural?: PdgInterproceduralImpact;
 }
 
 export interface PdgImpactSuccessResult extends PdgImpactBaseResult {
@@ -494,15 +509,15 @@ function assemblePdgImpactResult(input: {
         `mode:'pdg' — intra-procedural slice from line ${input.criterionLine} of ` +
           `'${target.name}'. ${affectedStatements.length} ` +
           `${affectedStatements.length === 1 ? 'statement is' : 'statements are'} ${direction}-` +
-          `dependent on it (over CDG + REACHING_DEF). Cross-function (inter-procedural) impact ` +
-          `is NOT modeled in this mode — use mode:'callgraph' for the call-graph blast radius.`,
+          `dependent on it (over CDG + REACHING_DEF). Inter-procedural symbol reach ` +
+          `is attached by impact mode's unified PDG dispatcher in interproceduralByDepth/byDepth.`,
       ]
     : [
         `mode:'pdg' — intra-procedural Program Dependence Graph. ${impactedCount} owning ` +
           `${impactedCount === 1 ? 'symbol' : 'symbols'} reached via ${reachableBlocks.length} ` +
           `dependence ${reachableBlocks.length === 1 ? 'block' : 'blocks'} ` +
-          `(${direction} over CDG + REACHING_DEF). Cross-function (inter-procedural) impact is ` +
-          `NOT modeled in this mode — use mode:'callgraph' for the call-graph blast radius.`,
+          `(${direction} over CDG + REACHING_DEF). Inter-procedural symbol reach ` +
+          `is attached by impact mode's unified PDG dispatcher in interproceduralByDepth/byDepth.`,
       ];
   if (ambiguousCount > 0) {
     noteParts.push(
@@ -952,9 +967,8 @@ export async function runImpactPDG(deps: RunPdgImpactDeps): Promise<PdgImpactRes
         : `'${sym.name}' has no PDG body — no BasicBlocks / control- or data-dependence ` +
           `edges exist for this symbol (e.g. an interface, type alias, abstract/ambient ` +
           `member, or a one-line declaration with no CFG). This is NOT a confident ` +
-          `"no impact": the intra-procedural PDG mode cannot model this symbol kind. ` +
-          `Pass line:<N> to slice from a statement, or use mode:'callgraph' for the ` +
-          `inter-procedural blast radius.`,
+          `"no impact": the local PDG statement slice cannot model this symbol kind. ` +
+          `Inter-procedural symbol reach may still be attached by the unified impact dispatcher.`,
       impactedCount: 0,
       risk: 'UNKNOWN',
       // KTD8 parity fields so a consumer iterating byDepth / reading the
@@ -1061,8 +1075,8 @@ export async function runImpactPDG(deps: RunPdgImpactDeps): Promise<PdgImpactRes
         : `'${sym.name}' has a PDG body but a WHOLE-SYMBOL ${direction} slice is empty: ` +
           `intra-procedural dependence stays inside the function, so every reachable block ` +
           `is already part of the seed. Pass line:<N> to slice from a specific statement ` +
-          `(what depends on the code at that line), or use mode:'callgraph' for the ` +
-          `inter-procedural blast radius.`,
+          `(what depends on the code at that line). Inter-procedural symbol reach is attached ` +
+          `separately by the unified impact dispatcher.`,
       reachableBlocks: [] as string[],
       blockCount: 0,
       affectedStatements: [],

@@ -31,10 +31,10 @@
  *    `inter_AIS` symbol set (via `aisByScope`). This is the unit at which the
  *    call-graph blast radius is meaningful.
  *
- * Neither is a strict refinement of the other: PDG resolves the dependent
- * statements WITHIN a function but cannot cross a call boundary; call-graph
- * resolves the cross-function symbol reach but cannot see below function
- * granularity. The harness reports both, side by side, per locus stratum.
+ * Neither native row is a strict refinement of the other: the PDG native
+ * metric resolves dependent statements WITHIN a function, while call-graph
+ * resolves cross-function symbol reach. The unified axes report checks whether
+ * mode:'pdg' carries both outputs without blending their granularities.
  *
  * `partitionCisByScope`/`aisByScope` (symbol-level) remain for the call-graph
  * path; `pdgLineCis`/`intraLineAis` (line-level) drive the PDG path.
@@ -284,9 +284,19 @@ export function callgraphUnifiedCis(gt, symbolCisKeys) {
   return { intraLine: new Set(), interSymbol: tagSymbolKeys(inter) };
 }
 
-/** Current PDG unified CIS: intra-line axis only. */
-export function pdgUnifiedCis(lineCisKeys) {
-  return { intraLine: tagLineKeys(lineCisKeys), interSymbol: new Set() };
+/**
+ * Unified PDG CIS: statement axis from affectedStatements plus, once runtime
+ * mode:'pdg' composes interprocedural reach, symbol axis from byDepth. The
+ * criterion symbol is filtered because inter_AIS is cross-function by
+ * construction. Passing only lineCisKeys preserves the old intra-only shape for
+ * focused metric tests.
+ */
+export function pdgUnifiedCis(lineCisKeys, symbolCisKeys = new Set(), gt = null) {
+  const { criterionKey } = gt ? aisByScope(gt) : { criterionKey: null };
+  const inter = criterionKey
+    ? new Set([...symbolCisKeys].filter((k) => k !== criterionKey))
+    : new Set(symbolCisKeys);
+  return { intraLine: tagLineKeys(lineCisKeys), interSymbol: tagSymbolKeys(inter) };
 }
 
 /** Evaluation-only composed baseline: callgraph inter-symbol + PDG intra-line. */

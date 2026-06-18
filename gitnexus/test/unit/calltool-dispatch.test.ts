@@ -1402,8 +1402,9 @@ describe('LocalBackend.callTool', () => {
 // The MCP JSON-schema enum is advisory only (server forwards args
 // unvalidated, callTool is reachable directly), so the backend `mode`
 // validation is load-bearing. These tests pin: callgraph is the unchanged
-// default, pdg routes to the extracted traversal and NEVER the callgraph BFS,
-// invalid modes hard-error, and the KTD12 incompatible params / @group targets are rejected.
+// default, pdg routes to the extracted traversal plus interprocedural symbol
+// reach, invalid modes hard-error, and the remaining incompatible params /
+// @group targets are rejected.
 
 describe('LocalBackend impact mode (KTD1/KTD5/KTD12)', () => {
   let backend: LocalBackend;
@@ -1461,7 +1462,7 @@ describe('LocalBackend impact mode (KTD1/KTD5/KTD12)', () => {
     expect(undef).toEqual(absent);
   });
 
-  it("mode:'pdg' routes to the PDG traversal and NEVER runs the callgraph BFS (KTD5)", async () => {
+  it("mode:'pdg' routes to the PDG traversal and attaches interprocedural symbol reach", async () => {
     resolveSingleTarget();
     const bfsSpy = vi.spyOn(backend as any, '_runImpactBFS');
     const result = await backend.callTool('impact', {
@@ -1469,14 +1470,13 @@ describe('LocalBackend impact mode (KTD1/KTD5/KTD12)', () => {
       direction: 'upstream',
       mode: 'pdg',
     });
-    // U3 landed — the call reaches the real `_runImpactPDG` traversal, not the
-    // old "not yet implemented" stub. It returns a pdg-shaped payload.
+    // The call reaches the real `_runImpactPDG` traversal, then composes the
+    // interprocedural symbol reach into the same pdg result.
     expect(result.error).toBeUndefined();
     expect(result.mode).toBe('pdg');
     expect(Array.isArray(result.reachableBlocks)).toBe(true);
-    // The load-bearing KTD5 invariant: the callgraph engine must NEVER be
-    // invoked under a pdg call (no silent fallback).
-    expect(bfsSpy).not.toHaveBeenCalled();
+    expect(result.pdgInterprocedural).toBeDefined();
+    expect(bfsSpy).toHaveBeenCalledTimes(1);
   });
 
   it.each([['PDG'], ['pgd'], [''], [0], [null]])(
@@ -1532,7 +1532,7 @@ describe('LocalBackend impact mode (KTD1/KTD5/KTD12)', () => {
     },
   );
 
-  it("mode:'pdg' + line:8 routes to the PDG traversal (no validation error, never the BFS)", async () => {
+  it("mode:'pdg' + line:8 routes to the PDG traversal and interprocedural reach", async () => {
     resolveSingleTarget();
     const bfsSpy = vi.spyOn(backend as any, '_runImpactBFS');
     const pdgSpy = vi.spyOn(backend as any, '_runImpactPDG');
@@ -1546,30 +1546,53 @@ describe('LocalBackend impact mode (KTD1/KTD5/KTD12)', () => {
     expect(result.error).toBeUndefined();
     expect(result.mode).toBe('pdg');
     expect(pdgSpy).toHaveBeenCalledTimes(1);
-    // KTD5: the callgraph engine never runs under a pdg + line call.
-    expect(bfsSpy).not.toHaveBeenCalled();
+    expect(bfsSpy).toHaveBeenCalledTimes(1);
+    expect(result.pdgInterprocedural).toBeDefined();
   });
 
-  it.each([
-    ['relationTypes', { relationTypes: ['CALLS'] }],
-    ['crossDepth', { crossDepth: 2 }],
-    ['minConfidence', { minConfidence: 0.5 }],
-  ])("mode:'pdg' + %s → hard {error} (KTD12, not a silent ignore)", async (_label, extra) => {
+  it("mode:'pdg' + crossDepth → hard {error} (single-repo PDG impact)", async () => {
     resolveSingleTarget();
     const bfsSpy = vi.spyOn(backend as any, '_runImpactBFS');
     const result = await backend.callTool('impact', {
       target: 'main',
       direction: 'upstream',
       mode: 'pdg',
-      ...extra,
+      crossDepth: 2,
     });
     expect(result.error).toMatch(/not supported with mode:'pdg'/);
-    expect(result.error).toContain(_label);
-    // Hard error — never silently ignored, never the callgraph fan-out.
+    expect(result.error).toContain('crossDepth');
     expect(bfsSpy).not.toHaveBeenCalled();
   });
 
-  it("ambiguous target under mode:'pdg' never invokes the callgraph fan-out (KTD5 ambiguous trap)", async () => {
+  it.each([
+    ['relationTypes', { relationTypes: ['CALLS'] }, (opts: any) => opts.relationTypes],
+    ['minConfidence', { minConfidence: 0.5 }, (opts: any) => opts.minConfidence],
+  ])("mode:'pdg' + %s feeds the interprocedural symbol reach", async (_label, extra, readOpt) => {
+    resolveSingleTarget();
+    const bfsSpy = vi.spyOn(backend as any, '_runImpactBFS').mockResolvedValueOnce({
+      target: { id: 'func:main', name: 'main', type: 'Function', filePath: 'src/index.ts' },
+      direction: 'upstream',
+      impactedCount: 0,
+      risk: 'LOW',
+      summary: { direct: 0, processes_affected: 0, modules_affected: 0 },
+      byDepthCounts: {},
+      affected_processes: [],
+      affected_modules: [],
+      byDepth: {},
+    });
+    const result = await backend.callTool('impact', {
+      target: 'main',
+      direction: 'upstream',
+      mode: 'pdg',
+      ...extra,
+    });
+    expect(result.error).toBeUndefined();
+    expect(result.mode).toBe('pdg');
+    expect(bfsSpy).toHaveBeenCalledTimes(1);
+    expect(readOpt(bfsSpy.mock.calls[0][4])).toBeDefined();
+  });
+
+  it("ambiguous target under mode:'pdg' never invokes interprocedural fan-out (KTD5 ambiguous trap)", async () => {
     // Two same-name Functions → resolver returns ambiguous.
     (executeParameterized as any).mockResolvedValue([
       {

@@ -209,14 +209,19 @@ function callgraphCisFromResult(res) {
  * U7-rework CIS: the dependent STATEMENTS the change at `criterion.line` reaches.
  */
 function pdgCisFromResult(res) {
+  const inter = callgraphCisFromResult({
+    byDepth: res?.interproceduralByDepth ?? res?.pdgInterprocedural?.byDepth ?? {},
+  });
   return {
-    keys: pdgLineCis(res?.affectedStatements),
+    lineKeys: pdgLineCis(res?.affectedStatements),
+    symbolKeys: inter.keys,
     meta: {
       affectedStatementCount: res?.affectedStatementCount ?? 0,
       blockCount: res?.blockCount ?? null,
       criterionLine: res?.criterionLine ?? null,
       epistemic: res?.epistemic ?? null,
       note: res?.note ?? null,
+      interprocedural: res?.pdgInterprocedural ?? null,
     },
   };
 }
@@ -429,10 +434,9 @@ function decisionRecommendation(strata, unified, underpowered, exclusions) {
   // Inter-scope: the cross-function blast radius — the question call-graph answers.
   lines.push(
     `On INTER-scope (symbol granularity), call-graph scores R=${fmt(cgInterR)} F1=${fmt(cgInterF1)} ` +
-      `against inter_AIS: it recovers the cross-function callees exactly. PDG mode is ` +
-      `intra-procedural, so on a pure-inter fixture it returns only the router's own ` +
-      `control-dependent statements (FPIS against the empty intra_AIS — recall n/a). Call-graph is ` +
-      `the engine for "what else calls/uses this?".`,
+      `against inter_AIS: it recovers the cross-function callees exactly. Unified PDG mode now ` +
+      `attaches the same inter-symbol reach in interproceduralByDepth/byDepth while keeping statement reach in ` +
+      `affectedStatements, so the symbol axis can be compared directly against callgraph.`,
   );
 
   // Mixed-scope: both engines contribute, each in its own scope.
@@ -446,25 +450,22 @@ function decisionRecommendation(strata, unified, underpowered, exclusions) {
 
   if (unified) {
     lines.push(
-      `Unified-axis check: current callgraph leaves the intra-line axis empty, and current PDG leaves ` +
-        `the inter-symbol axis empty. The evaluation-only composed-current baseline combines both current ` +
-        `outputs and reaches min defined recall=${fmt(unified['composed-current'].minRecall)} with ` +
-        `FPIS=${unified['composed-current'].fpis} and FNIS=${unified['composed-current'].fnis}. ` +
-        `A future PDG-only/SDG candidate must match or exceed that recall while reducing or ` +
-        `bounding FPIS before any default switch.`,
+      `Unified-axis check: current callgraph leaves the intra-line axis empty. Unified PDG now ` +
+        `covers both axes, while composed-current remains the control baseline that combines the ` +
+        `standalone callgraph symbol reach with PDG statement reach. composed-current reaches min ` +
+        `defined recall=${fmt(unified['composed-current'].minRecall)} with ` +
+        `FPIS=${unified['composed-current'].fpis} and FNIS=${unified['composed-current'].fnis}; ` +
+        `pdg should match that recall before any default-switch discussion.`,
     );
   }
 
   lines.push(
-    `VERDICT: the two engines answer DIFFERENT questions at DIFFERENT granularities, and NEITHER ` +
-      `dominates. mode:'callgraph' (the default) is the correct engine for the inter-procedural ` +
-      `safety question — "what else depends on / calls this symbol?" — carrying the cross-function ` +
-      `reach the blast radius needs. mode:'pdg' (opt-in, seeded with line:N, where analyze --pdg ` +
-      `persisted the layer) is PRECISE at intra-procedural STATEMENT granularity — "which statements ` +
-      `inside this function does changing line N affect?" — a question call-graph cannot answer at ` +
-      `all. Use call-graph for cross-symbol impact; reach for line-seeded PDG when you need ` +
-      `statement-level dependence INSIDE a function. They compose: a full mixed-locus blast radius ` +
-      `is the UNION of call-graph's inter-symbol reach and PDG's intra-statement slice.`,
+    `VERDICT: keep option-driven comparison, but mode:'pdg' is now the unified PDG-facing ` +
+      `answer: statement-level affectedStatements come from the persisted CDG/REACHING_DEF slice, ` +
+      `and inter-procedural symbol reach is carried in interproceduralByDepth/byDepth. mode:'callgraph' remains the ` +
+      `default/comparator for the established symbol-only traversal. The accuracy decision should be ` +
+      `made from the unified axes: pdg must preserve statement recall while matching the composed ` +
+      `inter-symbol baseline and bounding FPIS.`,
   );
   if (exclusions.length > 0) {
     lines.push(
@@ -546,11 +547,11 @@ async function run() {
           const cg = callgraphCisFromResult(results.callgraph);
           const pdg = pdgCisFromResult(results.pdg);
           const cgScore = scoreCallgraph(fx.gt, cg.keys); // symbol/inter
-          const pdgScore = scorePdg(fx.gt, pdg.keys); // line/intra
+          const pdgScore = scorePdg(fx.gt, pdg.lineKeys); // line/intra
 
           const unifiedTruth = unifiedAis(fx.gt);
           const cgUnified = callgraphUnifiedCis(fx.gt, cg.keys);
-          const pdgUnified = pdgUnifiedCis(pdg.keys);
+          const pdgUnified = pdgUnifiedCis(pdg.lineKeys, pdg.symbolKeys, fx.gt);
           const composedUnified = composeUnifiedCis(cgUnified, pdgUnified);
           const unifiedScores = {
             callgraph: scoreUnifiedAxes(cgUnified, unifiedTruth),
@@ -584,7 +585,8 @@ async function run() {
                 affectedStatementCount: pdg.meta.affectedStatementCount,
                 blockCount: pdg.meta.blockCount,
                 criterionLine: pdg.meta.criterionLine,
-                lines: [...pdg.keys].sort(),
+                lines: [...pdg.lineKeys].sort(),
+                symbols: [...pdg.symbolKeys].sort(),
                 score: pdgScore, // vs intra_AIS (line)
               },
               unified: unifiedScores,

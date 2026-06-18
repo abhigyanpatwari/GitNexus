@@ -2,9 +2,8 @@
  * U5 — CLI / consumer rendering for PDG (`mode:'pdg'`) impact results.
  *
  * Guards the KTD8 presentation contract: PDG results must render HONESTLY —
- *  - findings under a "PDG-dependent symbols" heading, NOT "depth N"
- *    (block-hops are not call-hops);
- *  - the intra-procedural caveat ("cross-function impact not modeled");
+ *  - inter-procedural symbol reach under a neutral heading, NOT callgraph severity labels;
+ *  - the unified PDG caveat (statement reach in affectedStatements, symbol reach in interproceduralByDepth/byDepth);
  *  - degradation → the "run analyze --pdg" remediation, NOT a zero blast radius;
  *  - no-body (KTD6) → the "not applicable to this symbol kind" caveat, NOT
  *    "isolated / no dependencies";
@@ -51,8 +50,8 @@ function pdgFindings(overrides: Record<string, unknown> = {}): Record<string, un
     epistemic: 'pdg-intra-procedural',
     note:
       "mode:'pdg' — intra-procedural Program Dependence Graph. 2 owning symbols reached via 4 " +
-      'dependence blocks (downstream over CDG + REACHING_DEF). Cross-function (inter-procedural) ' +
-      "impact is NOT modeled in this mode — use mode:'callgraph' for the call-graph blast radius.",
+      'dependence blocks (downstream over CDG + REACHING_DEF). Inter-procedural symbol reach ' +
+      'is included using the resolved symbol graph; statement-level PDG reach remains in affectedStatements.',
     reachableBlocks: ['b1', 'b2', 'b3', 'b4'],
     blockCount: 4,
     depthReached: 2,
@@ -106,12 +105,12 @@ describe('formatImpactResult — PDG (mode:pdg) rendering', () => {
     expect(out).not.toContain('[0 upstream');
   });
 
-  it('renders findings under PDG-dependent framing, not "depth N"', () => {
+  it('renders unified PDG symbol reach without callgraph severity labels', () => {
     const out = formatImpactResult(pdgFindings());
 
     // PDG framing — NOT the callgraph "depth N / WILL BREAK (direct)" labels.
-    expect(out).toContain('PDG-dependent symbols');
-    expect(out).not.toMatch(/d=\d/);
+    expect(out).toContain('Inter-procedural symbol reach');
+    expect(out).toContain('d=1 (2)');
     expect(out).not.toContain('WILL BREAK (direct)');
     expect(out).not.toContain('LIKELY AFFECTED');
     expect(out).not.toContain('MAY NEED TESTING');
@@ -124,9 +123,8 @@ describe('formatImpactResult — PDG (mode:pdg) rendering', () => {
     expect(out).toContain('finalizeTotal');
     expect(out).toContain('src/svc.ts');
 
-    // The intra-procedural caveat is present (cross-function not modeled).
-    expect(out.toLowerCase()).toContain('cross-function');
-    expect(out.toLowerCase()).toContain('not modeled');
+    // The unified contract is present.
+    expect(out).toContain('statement-level PDG reach remains in affectedStatements');
 
     // The callgraph DI / dynamic-dispatch lower-bound copy must NEVER appear.
     expect(out).not.toContain('dynamic dispatch');
@@ -243,8 +241,8 @@ describe('formatImpactResult — PDG (mode:pdg) rendering', () => {
       note:
         "'Card' has no PDG body — no BasicBlocks / control- or data-dependence edges exist for " +
         'this symbol (e.g. an interface, type alias, abstract/ambient member, or a one-line ' +
-        'declaration with no CFG). This is NOT a confident "no impact": the intra-procedural PDG ' +
-        "mode cannot model this symbol kind. Use mode:'callgraph' for its inter-procedural blast radius.",
+        'declaration with no CFG). This is NOT a confident "no impact": the local PDG ' +
+        'statement slice cannot model this symbol kind. Inter-procedural symbol reach may still be attached.',
       impactedCount: 0,
       risk: 'UNKNOWN',
       byDepth: {},
@@ -284,8 +282,8 @@ describe('formatImpactResult — PDG (mode:pdg) rendering', () => {
         "'noop' has a PDG body but a WHOLE-SYMBOL downstream slice is empty: " +
         'intra-procedural dependence stays inside the function, so every reachable block ' +
         'is already part of the seed. Pass line:<N> to slice from a specific statement ' +
-        "(what depends on the code at that line), or use mode:'callgraph' for the " +
-        'inter-procedural blast radius.',
+        '(what depends on the code at that line). Inter-procedural symbol reach is attached ' +
+        'separately by the unified impact dispatcher.',
       reachableBlocks: [],
       blockCount: 0,
       affectedStatements: [],
@@ -299,7 +297,7 @@ describe('formatImpactResult — PDG (mode:pdg) rendering', () => {
       affected_processes: [],
       affected_modules: [],
     });
-    expect(out).toContain('no intra-procedural PDG-dependent symbols');
+    expect(out).toContain('no inter-procedural symbols reached');
     // The new note steers to the statement-anchored mode.
     expect(out).toContain('WHOLE-SYMBOL');
     expect(out).toMatch(/line:<N>/);
@@ -307,7 +305,7 @@ describe('formatImpactResult — PDG (mode:pdg) rendering', () => {
     // confident callgraph "appears isolated." headline must be absent.
     expect(out).not.toContain('appears isolated');
     expect(out).not.toContain('No downstream dependencies found');
-    expect(out.toLowerCase()).toContain('cross-function');
+    expect(out).toContain('Inter-procedural symbol reach is attached');
   });
 
   // ── Statement-anchored (mode:'pdg' + line) rendering ──────────────────────
@@ -329,23 +327,23 @@ describe('formatImpactResult — PDG (mode:pdg) rendering', () => {
         { line: 12, filePath: 'src/svc.ts', text: 'return sum;' },
       ],
       affectedStatementCount: 2,
-      impactedCount: 1,
+      impactedCount: 0,
       risk: 'UNKNOWN',
       epistemic: 'pdg-intra-procedural',
       note:
         "mode:'pdg' — intra-procedural slice from line 8 of 'accum'. 2 statements are " +
-        'downstream-dependent on it (over CDG + REACHING_DEF). Cross-function (inter-procedural) ' +
-        "impact is NOT modeled in this mode — use mode:'callgraph' for the call-graph blast radius.",
+        'downstream-dependent on it (over CDG + REACHING_DEF). Inter-procedural symbol reach ' +
+        'is attached separately by the unified impact dispatcher.',
       reachableBlocks: ['b1', 'b2'],
       blockCount: 2,
       depthReached: 2,
       unresolvedBlockCount: 0,
       ambiguousProjectionCount: 0,
-      summary: { direct: 1, processes_affected: 0, modules_affected: 0 },
-      byDepthCounts: { 1: 1 },
+      summary: { direct: 0, processes_affected: 0, modules_affected: 0 },
+      byDepthCounts: {},
       affected_processes: [],
       affected_modules: [],
-      byDepth: { 1: [] },
+      byDepth: {},
       ...overrides,
     };
   }
@@ -357,11 +355,37 @@ describe('formatImpactResult — PDG (mode:pdg) rendering', () => {
     // Each dependent statement renders as `  L<line>: <text>`.
     expect(out).toContain('  L10: sum = sum + x;');
     expect(out).toContain('  L12: return sum;');
-    // It is the statement list — NOT the symbol-projection "PDG-dependent symbols"
-    // heading (that is the whole-symbol render path).
-    expect(out).not.toContain('PDG-dependent symbols');
-    // The intra-procedural caveat note still surfaces.
-    expect(out.toLowerCase()).toContain('cross-function');
+    // It is the statement list; no inter-symbol section appears without byDepth reach.
+    expect(out).not.toContain('Inter-procedural symbol reach (');
+    // The unified PDG note still surfaces.
+    expect(out).toContain('Inter-procedural symbol reach is attached');
+  });
+
+  it('renders statement slices with inter-procedural symbol reach when present', () => {
+    const out = formatImpactResult(
+      pdgStatementSlice({
+        impactedCount: 1,
+        summary: { direct: 1, processes_affected: 0, modules_affected: 0 },
+        byDepthCounts: { 1: 1 },
+        byDepth: {
+          1: [
+            {
+              depth: 1,
+              id: 'Function:src/caller.ts:caller',
+              name: 'caller',
+              type: 'Function',
+              filePath: 'src/caller.ts',
+              processes: [],
+            },
+          ],
+        },
+        pdgInterprocedural: { engine: 'symbol-graph', impactedCount: 1, byDepthCounts: { 1: 1 } },
+      }),
+    );
+
+    expect(out).toContain('Statements downstream-dependent on src/svc.ts:8 (2):');
+    expect(out).toContain('Inter-procedural symbol reach (1):');
+    expect(out).toContain('Function caller → src/caller.ts');
   });
 
   it('flags slice truncation honestly', () => {

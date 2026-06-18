@@ -9,11 +9,11 @@
 > — prints a stratified P/R/F1 table + a plain-language decision recommendation,
 > and gates regressions with `--check`. It now also prints an additive **unified
 > impact axes** table that keeps line-level and symbol-level truth separate while
-> comparing current `callgraph`, current `pdg`, and the evaluation-only
-> `composed-current` baseline. The measured native result remains: **PDG is exact
-> at intra-procedural statement granularity; call-graph is exact at
-> inter-procedural symbol granularity; the two answer different questions and
-> neither dominates.**
+> comparing `callgraph`, unified `pdg`, and the evaluation-only
+> `composed-current` control baseline. The measured native result remains:
+> **PDG is exact at intra-procedural statement granularity; call-graph remains
+> the comparator for inter-procedural symbol granularity; unified PDG must match
+> that composed baseline before any default-switch decision.**
 
 ## What this measures
 
@@ -23,12 +23,13 @@ granularities**:
 - `mode: 'callgraph'` (the default) — inter-procedural BFS over symbol→symbol
   edges. It answers *"what other symbols depend on / are called by this one?"* at
   **symbol granularity**, scored against `inter_AIS`.
-- `mode: 'pdg'` (opt-in) — a **statement-anchored** intra-procedural dependence
-  slice from the persisted CDG + REACHING_DEF Program Dependence Graph. Seeded
-  with `line: N` (`impact({mode:'pdg', line:N})`), it returns
+- `mode: 'pdg'` (opt-in) — the unified PDG-facing result. Its local
+  statement slice comes from the persisted CDG + REACHING_DEF Program Dependence
+  Graph. Seeded with `line: N` (`impact({mode:'pdg', line:N})`), it returns
   `affectedStatements: {line, filePath, text}[]` — the dependent **statements** of
-  the changed line N. It answers *"which statements inside this function does
-  changing line N affect?"* at **line granularity**, scored against `intra_AIS`.
+  the changed line N — and also attaches inter-procedural symbol reach in
+  `interproceduralByDepth`/`byDepth` for the same target. The native PDG row is still scored against
+  `intra_AIS`; the unified axes score its statement and symbol outputs together.
 
 They measure **different scopes**, so the harness scores each at its native
 granularity against its native ground truth and reports both side by side. The
@@ -39,8 +40,7 @@ neither strictly dominates*.
 ## Unified impact axes
 
 The harness also reports a separate unified comparison that is designed for the
-next architecture question: *could a future PDG-only / SDG-like impact engine
-replace the composition of today's engines?* This report is additive. It does not
+current architecture question: *does unified `mode:'pdg'` match the composition of today's engines?* This report is additive. It does not
 replace the native table above, and it does not change `baselines.json` gating.
 
 Unified AIS has two namespaces:
@@ -51,17 +51,17 @@ Unified AIS has two namespaces:
 Each engine is adapted onto those axes without lossy projection:
 
 - `callgraph` contributes only the `symbol` axis.
-- `pdg` contributes only the `statement` axis.
-- `composed-current` is an evaluation-only control row that unions current
-  callgraph symbols with current PDG statements.
+- `pdg` contributes the `statement` axis from `affectedStatements` and the
+  `symbol` axis from its unified `interproceduralByDepth`/`byDepth` inter-procedural reach.
+- `composed-current` remains an evaluation-only control row that unions standalone
+  callgraph symbols with PDG statements.
 
-The report intentionally has no single blended unified F1. A future
-`pdg-interproc` or SDG candidate must be judged axis-by-axis against
-`composed-current` so line precision cannot hide inter-symbol misses, and
-symbol recall cannot hide statement-level blindness. The control row is a recall
-baseline, not a perfection claim: current PDG can still contribute intra-line
-noise on pure-inter fixtures, so a future SDG candidate should match or exceed
-recall while reducing or bounding FPIS.
+The report intentionally has no single blended unified F1. `pdg` is now judged
+axis-by-axis against `composed-current` so line precision cannot hide
+inter-symbol misses, and symbol recall cannot hide statement-level blindness. The
+control row is a recall baseline, not a perfection claim: PDG can still
+contribute intra-line noise on pure-inter fixtures, so default-switch decisions
+should require matching recall while reducing or bounding FPIS.
 
 > **A note on `line`.** A whole-symbol PDG slice (no `line`) is empty by design:
 > intra-procedural dependence stays inside the function, so every reachable block
@@ -75,11 +75,10 @@ recall while reducing or bounding FPIS.
 
 `impact({mode:'pdg', line:N})` success results carry a target envelope
 (`id`, `name`, `type`, `filePath`), `risk: 'UNKNOWN'`, `affectedStatements`,
-`affectedStatementCount`, and the same empty-safe parity fields used by callgraph
-consumers (`byDepth`, `byDepthCounts`, `summary`, `affected_processes`,
-`affected_modules`). The risk stays UNKNOWN because a statement slice is
-intra-procedural; it is precise for the function body but not a whole-program
-safety verdict.
+`affectedStatementCount`, and callgraph-compatible parity fields (`byDepth`,
+`byDepthCounts`, `summary`, `affected_processes`, `affected_modules`).
+`affectedStatements` is the statement-level PDG slice; `interproceduralByDepth` is the explicit cross-function reach; `byDepth` remains the
+compatibility symbol bucket attached by unified PDG mode.
 
 Degraded PDG results are explicit, not empty successes. `no-layer`,
 `sub-layer-missing`, and `unknown` responses keep `mode:'pdg'`, target metadata
@@ -206,10 +205,10 @@ call-graph row is symbol-vs-`inter_AIS`:
 - On a **mixed** fixture, both rows are real: PDG resolves the intra statement
   set, call-graph reaches the callee(s).
 
-**PDG cannot cross a function boundary; call-graph cannot see below function
-granularity.** Neither is a refinement of the other — they compose. A full
-mixed-locus blast radius is the *union* of call-graph's inter-symbol reach and
-PDG's intra-statement slice.
+**The native rows still measure different units.** The PDG native row scores
+statement reach, while the callgraph native row scores symbol reach. The unified
+axes table is where `pdg` is judged as the composed result: statement reach in
+`affectedStatements`, inter-symbol reach in `byDepth`.
 
 ## Substrate (the load-bearing mechanism — R8)
 
@@ -308,9 +307,9 @@ Read it honestly:
   pure-inter router has an empty `intra_AIS`, and the line-seeded slice returns the
   router's *own* control-dependent routing returns — FPIS against the empty truth
   (precision 0, recall `n/a`). These are **symmetric**: each engine is blind to
-  the other's scope. PDG cannot cross a call boundary; call-graph cannot see below
-  a function. The per-case lines surface each slice (`pdg line/intra: …`) and each
-  callee set (`cg symbol/inter: …`) so this is visible, not hidden.
+  the other's native scope. The per-case lines surface each statement slice (`pdg
+  line/intra: …`) and each callee set (`cg symbol/inter: …`), while the unified
+  table verifies whether `pdg` now carries both axes.
 
 ## Decision recommendation (the verdict — F2)
 
@@ -329,10 +328,11 @@ Read it honestly:
 >   (intra & mixed PDG F1 = 1.0, FPIS = FNIS = 0). This is a question call-graph
 >   **cannot answer at all** (it has no notion of a statement).
 >
-> They **compose**: a full mixed-locus blast radius is the *union* of
-> call-graph's inter-symbol reach and PDG's intra-statement slice. The unified
-> axes table makes that composition explicit through the `composed-current` row,
-> which is the recall baseline a future SDG / `pdg-interproc` candidate must
+> `mode:'pdg'` now composes those surfaces in one result: `affectedStatements`
+> carries statement-level dependence and `interproceduralByDepth`/`byDepth` carries
+> inter-procedural symbols. `mode:'callgraph'` remains the option-driven comparator/default. The
+> unified axes table keeps `composed-current` as the control baseline that PDG
+> must match or beat before any default-switch decision.
 > match or exceed while reducing or bounding FPIS. Reach for the line-seeded
 > PDG when you need statement-level dependence *inside* a function; reach for
 > call-graph when you need

@@ -266,6 +266,34 @@ describe('impact-pdg metric math — unified axes', () => {
     expect([...pdg.interSymbol]).toEqual([]);
   });
 
+  it('adapts unified PDG onto both statement and inter-symbol axes', () => {
+    const pdg = M.pdgUnifiedCis(
+      M.pdgLineCis([
+        { line: 16, filePath: 'src/mixed.ts' },
+        { line: 18, filePath: 'src/mixed.ts' },
+      ]),
+      M.toKeySet([
+        M.symbolKey('route', 'src/mixed.ts'),
+        M.symbolKey('fast', 'src/mixed.ts'),
+        M.symbolKey('slow', 'src/mixed.ts'),
+      ]),
+      gt,
+    );
+
+    expect([...pdg.intraLine].sort()).toEqual([
+      'statement:src/mixed.ts:16',
+      'statement:src/mixed.ts:18',
+    ]);
+    expect([...pdg.interSymbol].sort()).toEqual([
+      'symbol:fast@src/mixed.ts',
+      'symbol:slow@src/mixed.ts',
+    ]);
+
+    const scored = M.scoreUnifiedAxes(pdg, M.unifiedAis(gt));
+    expect(scored.intraLine.f1).toBe(1);
+    expect(scored.interSymbol.f1).toBe(1);
+  });
+
   it('scores composed-current as exact on both axes without a blended F1', () => {
     const ais = M.unifiedAis(gt);
     const cg = M.callgraphUnifiedCis(

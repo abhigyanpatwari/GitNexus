@@ -267,6 +267,49 @@ export function formatImpactResult(result: any): string {
   // reach here.
   if (result.mode === 'pdg') {
     const name = target?.name || '?';
+    const appendPdgInterproceduralSymbols = (lines: string[]): boolean => {
+      const byDepth =
+        result.interproceduralByDepth || result.pdgInterprocedural?.byDepth || result.byDepth || {};
+      const byDepthCounts =
+        result.interproceduralByDepthCounts ||
+        result.pdgInterprocedural?.byDepthCounts ||
+        result.byDepthCounts ||
+        {};
+      const depthKeys = Array.from(
+        new Set([...Object.keys(byDepthCounts), ...Object.keys(byDepth)]),
+      )
+        .map((d) => Number(d))
+        .filter((d) => Number.isFinite(d))
+        .sort((a, b) => a - b);
+      const hasReach = depthKeys.some((depth) => {
+        const items = byDepth[depth] || byDepth[String(depth)] || [];
+        const count = byDepthCounts[depth] ?? byDepthCounts[String(depth)] ?? items.length;
+        return count > 0;
+      });
+      if (!hasReach) return false;
+
+      const totalSymbols =
+        result.pdgInterprocedural?.impactedCount ??
+        (typeof result.impactedCount === 'number' ? result.impactedCount : 0);
+      lines.push('');
+      lines.push(`Inter-procedural symbol reach (${totalSymbols}):`);
+      for (const depth of depthKeys) {
+        const items = byDepth[depth] || byDepth[String(depth)] || [];
+        const count = byDepthCounts[depth] ?? byDepthCounts[String(depth)] ?? items.length;
+        if (count <= 0) continue;
+        lines.push(`  d=${depth} (${count})`);
+        const shown = Math.min(items.length, 12);
+        for (const item of items.slice(0, shown)) {
+          const flags: string[] = [];
+          if (item.unresolved) flags.push('unresolved');
+          if (item.ambiguous) flags.push('ambiguous');
+          const flagStr = flags.length ? ` [${flags.join(', ')}]` : '';
+          lines.push(`    ${item.type || ''} ${item.name} → ${item.filePath}${flagStr}`);
+        }
+        if (count > shown) lines.push(`    ... and ${count - shown} more`);
+      }
+      return true;
+    };
 
     // (1) Degradation — the PDG layer (or a sub-layer) is absent/unreadable.
     // `pdgLayer` is the non-'ready' state from `pdgLayerStatus`. Print the
@@ -288,14 +331,15 @@ export function formatImpactResult(result: any): string {
     // member / one-line declaration with no CFG. Show the caveat, never
     // "isolated / no dependencies".
     if (result.epistemic === 'no-pdg-body') {
-      return (
-        `${name}: PDG mode not applicable to this symbol — it has no PDG body ` +
-        `(no control/data dependence edges; e.g. an interface, type alias, ` +
-        `abstract/ambient member, or a one-line declaration). This is NOT a ` +
-        `confident "no impact". Use \`--mode callgraph\` for its inter-procedural ` +
-        `blast radius.` +
-        (result.note ? `\n${result.note}` : '')
-      );
+      const noBodyLines = [
+        `${name}: local PDG slice not applicable to this symbol — it has no PDG body ` +
+          `(no control/data dependence edges; e.g. an interface, type alias, ` +
+          `abstract/ambient member, or a one-line declaration). This is NOT a ` +
+          `confident "no impact".`,
+      ];
+      appendPdgInterproceduralSymbols(noBodyLines);
+      if (result.note) noBodyLines.push(result.note);
+      return noBodyLines.join('\n');
     }
 
     // (2b) STATEMENT-ANCHORED SLICE (mode:'pdg' + line). When `criterionLine` is
@@ -333,6 +377,7 @@ export function formatImpactResult(result: any): string {
             `⚠️  Truncated${by} — the dependence slice was bounded; deeper PDG-dependent statements may exist.`,
           );
         }
+        appendPdgInterproceduralSymbols(emptySliceLines);
         if (result.note) emptySliceLines.push(result.note);
         return emptySliceLines.join('\n');
       }
@@ -353,6 +398,7 @@ export function formatImpactResult(result: any): string {
           `⚠️  Truncated${by} — the dependence slice was bounded; deeper PDG-dependent statements may exist.`,
         );
       }
+      appendPdgInterproceduralSymbols(slLines);
       if (result.note) {
         slLines.push('');
         slLines.push(`ℹ️  ${result.note}`);
@@ -360,57 +406,25 @@ export function formatImpactResult(result: any): string {
       return slLines.join('\n').trim();
     }
 
-    const items: any[] = (result.byDepth && result.byDepth[1]) || [];
-    const bucketCount = result.byDepthCounts?.[1] ?? items.length;
     const pdgLines: string[] = [];
 
-    // (3) Has a body but no intra-procedural dependence reachability.
-    // `impactedCount === 0` with no findings — still NOT "isolated": the count
-    // is a per-function lower bound, and inter-procedural impact is unmodeled.
-    if (total === 0 && bucketCount === 0) {
+    if (!appendPdgInterproceduralSymbols(pdgLines)) {
       pdgLines.push(
-        `${name} (${direction}): no intra-procedural PDG-dependent symbols found. ` +
-          `This is NOT a confident "isolated / no dependencies" — cross-function ` +
-          `(inter-procedural) impact is not modeled in PDG mode. Use \`--mode callgraph\` ` +
-          `for the call-graph blast radius.`,
+        `${name} (${direction}): no inter-procedural symbols reached. ` +
+          `The local PDG statement slice may still report affectedStatements when seeded with line:<N>.`,
       );
-    } else {
-      // (4) Findings — render the collapsed bucket under a "PDG-dependent
-      // symbols" heading (NOT "depth N"). `total` (impactedCount) is distinct
-      // owning SYMBOLS; `bucketCount` includes any `unresolved` shadow rows.
-      const dirLabel =
-        direction === 'upstream'
-          ? 'this depends on (intra-procedural)'
-          : 'depend on this (intra-procedural)';
-      pdgLines.push(
-        `PDG-dependent symbols for ${target?.kind || ''} ${name} (${direction}): ` +
-          `${total} symbol(s) ${dirLabel}`,
-      );
-      pdgLines.push('');
-      const shown = Math.min(items.length, 12);
-      for (const item of items.slice(0, shown)) {
-        const flags: string[] = [];
-        if (item.unresolved) flags.push('unresolved');
-        if (item.ambiguous) flags.push('ambiguous');
-        const flagStr = flags.length ? ` [${flags.join(', ')}]` : '';
-        pdgLines.push(`  ${item.type || ''} ${item.name} → ${item.filePath}${flagStr}`);
-      }
-      if (bucketCount > shown) {
-        pdgLines.push(`  ... and ${bucketCount - shown} more`);
-      }
     }
 
-    // Intra-procedural caveat — always present for a non-degraded PDG result.
-    // The assembled `note` already carries the cross-function caveat + the
-    // ambiguous/unresolved breakdown; surface it verbatim so the CLI reader
-    // sees the same honesty the JSON consumer does.
+    // The assembled note carries the local-PDG framing plus the unified
+    // inter-procedural symbol-reach contract; surface it verbatim so the CLI
+    // reader sees the same honesty the JSON consumer does.
     if (result.note) {
       pdgLines.push('');
       pdgLines.push(`ℹ️  ${result.note}`);
     } else {
       pdgLines.push('');
       pdgLines.push(
-        'ℹ️  Intra-procedural Program Dependence Graph — cross-function impact is not modeled in this mode.',
+        'ℹ️  Program Dependence Graph result — statement reach is reported in affectedStatements and inter-procedural symbol reach in interproceduralByDepth/byDepth.',
       );
     }
 

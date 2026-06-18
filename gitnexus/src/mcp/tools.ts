@@ -413,11 +413,11 @@ Each edit is tagged with confidence:
     description: `Analyze the blast radius of changing a code symbol.
 Returns affected symbols grouped by depth, plus risk assessment, affected execution flows, and affected modules.
 
-MODE (opt-in): "callgraph" (default) walks symbol→symbol edges (CALLS/IMPORTS/EXTENDS/IMPLEMENTS) — inter-procedural, the established behavior. "pdg" computes the blast radius from the persisted Program Dependence Graph (control + data dependence) — finer-grained WITHIN a function but intra-procedural, and requires an index built with \`gitnexus analyze --pdg\`. The two modes answer the same question with different engines; pdg is incompatible with relationTypes/crossDepth/minConfidence and with @group targets (each rejected).
+MODE (opt-in): "callgraph" (default) walks symbol→symbol edges (CALLS/IMPORTS/EXTENDS/IMPLEMENTS) — inter-procedural, the established comparator/default behavior. "pdg" requires an index built with \`gitnexus analyze --pdg\` and returns one unified PDG-facing result: statement-level control/data dependence from the persisted PDG plus inter-procedural symbol reach. The explicit interprocedural surface is interproceduralByDepth/pdgInterprocedural; byDepth remains the compatibility symbol bucket. pdg remains incompatible with crossDepth and @group targets; relationTypes/minConfidence filter the inter-symbol reach.
 
-STATEMENT-ANCHORED PDG SLICE: with mode:'pdg', pass "line" (1-based source line within the target symbol) to seed the dependence slice on the statement at that line and return what depends on it — the dependent statements (line + text), not the whole-symbol set. Without "line", a whole-symbol pdg slice is structurally empty (intra-procedural reach stays inside the function), so "line" is what makes pdg mode useful.
+STATEMENT-ANCHORED PDG SLICE: with mode:'pdg', pass "line" (1-based source line within the target symbol) to seed the dependence slice on the statement at that line and return what depends on it in affectedStatements (line + text). Inter-procedural symbols are still reported through interproceduralByDepth/pdgInterprocedural and the compatibility byDepth bucket. Without "line", pdg returns whole-symbol inter-procedural reach plus local whole-symbol PDG diagnostics.
 
-PDG OUTPUT CONTRACT: successful PDG slices include mode:'pdg', a full target envelope (id/name/type/filePath), affectedStatements, affectedStatementCount, byDepth/byDepthCounts parity fields, risk:'UNKNOWN', and an intra-procedural note. Degraded PDG results (no-layer, sub-layer-missing, unknown) keep mode:'pdg', target metadata when the target resolves, risk:'UNKNOWN', note/remediation, and empty byDepth parity fields — never a false-safe zero. If depth and limit both bound the slice, truncatedByReasons reports both causes while truncatedBy remains scalar.
+PDG OUTPUT CONTRACT: successful PDG results include mode:'pdg', a full target envelope (id/name/type/filePath), affectedStatements, affectedStatementCount, interproceduralByDepth/pdgInterprocedural for cross-function reach, compatibility byDepth/byDepthCounts, risk:'UNKNOWN', and a note describing the unified contract. Degraded PDG results (no-layer, sub-layer-missing, unknown) keep mode:'pdg', target metadata when the target resolves, risk:'UNKNOWN', note/remediation, and empty byDepth parity fields — never a false-safe zero. If depth and limit both bound the slice, truncatedByReasons reports both causes while truncatedBy remains scalar.
 
 WHEN TO USE: Before making code changes — especially refactoring, renaming, or modifying shared code. Shows what would break.
 AFTER THIS: Review d=1 items (WILL BREAK). Use context() on high-risk symbols.
@@ -465,13 +465,13 @@ SERVICE: optional monorepo path prefix (case-sensitive path segments). When "rep
           enum: ['callgraph', 'pdg'],
           default: 'callgraph',
           description:
-            "Blast-radius engine. 'callgraph' (default) = inter-procedural symbol→symbol traversal (current behavior). 'pdg' = opt-in, intra-procedural Program Dependence Graph traversal (control + data dependence); requires an index built with `gitnexus analyze --pdg`. PDG success returns affectedStatements, while degraded/no-layer results return a structured UNKNOWN-risk note with target metadata when resolved. The pdg mode is incompatible with relationTypes/crossDepth/minConfidence and with @group targets — each is rejected, not silently ignored.",
+            "Blast-radius engine. 'callgraph' (default) = inter-procedural symbol→symbol traversal (established comparator). 'pdg' = unified PDG-facing impact: statement-level affectedStatements from the persisted control/data dependence layer plus inter-procedural symbols in interproceduralByDepth/pdgInterprocedural and the compatibility byDepth bucket; requires `gitnexus analyze --pdg`. PDG is incompatible with crossDepth and @group targets; relationTypes/minConfidence filter the inter-symbol reach.",
         },
         line: {
           type: 'integer',
           minimum: 1,
           description:
-            "1-based source line — PDG-only statement anchor (mode:'pdg'). Seeds the dependence slice on the statement at this line and returns what depends on it. Without it, a whole-symbol pdg slice is empty (intra-procedural reach stays inside the function).",
+            "1-based source line — PDG statement anchor (mode:'pdg'). Seeds affectedStatements on the statement at this line; inter-procedural symbols are still returned in interproceduralByDepth/pdgInterprocedural and the compatibility byDepth bucket.",
         },
         file_path: {
           type: 'string',

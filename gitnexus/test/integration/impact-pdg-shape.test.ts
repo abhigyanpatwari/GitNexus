@@ -288,12 +288,12 @@ withTestLbugDB(
       });
     });
 
-    // ── KTD5 ambiguous trap: pdg+ambiguous never runs the callgraph fan-out ───
-    describe('KTD5 ambiguous target never invokes the callgraph BFS', () => {
+    // ── KTD5 ambiguous trap: pdg+ambiguous never runs interprocedural fan-out ──
+    describe('KTD5 ambiguous target never invokes the interprocedural BFS', () => {
       it("mode:'pdg' on an ambiguous target returns candidates, never calls _runImpactBFS", async () => {
-        // Spy on the private callgraph BFS; if the pdg ambiguous path leaked into
-        // the callgraph fan-out, this spy would fire (the silent-fallback KTD5
-        // forbids). `dupTarget` collides across dupA/dupB by NAME.
+        // Spy on the private interprocedural BFS; ambiguous PDG has no single
+        // resolved symbol, so it must not run the composed symbol-reach pass.
+        // `dupTarget` collides across dupA/dupB by NAME.
         const bfsSpy = vi.spyOn(backend as any, '_runImpactBFS');
         try {
           const result = await backend.callTool('impact', {
@@ -303,7 +303,7 @@ withTestLbugDB(
           });
           expect(result.status).toBe('ambiguous');
           expect(result.mode).toBe('pdg');
-          // No callgraph engine ran under the pdg call.
+          // No interprocedural symbol-reach pass ran without a resolved target.
           expect(bfsSpy).not.toHaveBeenCalled();
           // And it surfaces the candidate list (no silent zero blast radius).
           expect(Array.isArray(result.candidates)).toBe(true);
@@ -321,8 +321,8 @@ withTestLbugDB(
     // (that would re-ambiguate a file_path/uid-disambiguated name, or anchor on a
     // DIFFERENT same-name symbol → wrong-symbol blast radius). With two functions
     // named `sameName` in different files, disambiguating by file_path/target_uid
-    // must (a) produce the CORRECT file's blast radius, and (b) NEVER fall into
-    // the callgraph `_runImpactBFS` fan-out.
+    // must produce the CORRECT local PDG blast radius before the composed
+    // interprocedural `_runImpactBFS` pass runs for the resolved symbol.
     describe('seed anchors on the resolved (disambiguated) symbol, not a name re-resolution', () => {
       it('file_path disambiguation reaches the right file’s downstream owner (not the other same-name fn)', async () => {
         const bfsSpy = vi.spyOn(backend as any, '_runImpactBFS');
@@ -348,8 +348,9 @@ withTestLbugDB(
           );
           expect(names.has('onlyB')).toBe(true);
           expect(names.has('onlyA')).toBe(false);
-          // KTD5: no callgraph engine ran under the pdg call.
-          expect(bfsSpy).not.toHaveBeenCalled();
+          // Unified PDG now composes interprocedural symbol reach after the local
+          // PDG slice anchors on the resolved symbol.
+          expect(bfsSpy).toHaveBeenCalledTimes(1);
         } finally {
           bfsSpy.mockRestore();
         }
@@ -375,7 +376,7 @@ withTestLbugDB(
           );
           expect(names.has('onlyA')).toBe(true);
           expect(names.has('onlyB')).toBe(false);
-          expect(bfsSpy).not.toHaveBeenCalled();
+          expect(bfsSpy).toHaveBeenCalledTimes(1);
         } finally {
           bfsSpy.mockRestore();
         }
