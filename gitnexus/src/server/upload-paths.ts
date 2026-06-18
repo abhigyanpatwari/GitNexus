@@ -1,7 +1,7 @@
 /**
  * Upload working-directory paths.
  *
- * Browser folder uploads are written into ~/.gitnexus/uploads/{name}/ — a
+ * Browser folder uploads are written into getGlobalDir()/uploads/{name}/ — a
  * sibling of the clone root (git-clone.ts CLONE_ROOT) — so an uploaded repo
  * persists and behaves like a cloned one (the graph UI's /api/file reads its
  * files after analysis, and DELETE /api/repo removes it). Staging happens in
@@ -12,12 +12,18 @@
  */
 
 import path from 'path';
-import os from 'os';
 import { sanitizeRepoName } from '../storage/git.js';
 import { REPO_NAME_PATTERN } from './git-clone.js';
+import { getGlobalDir } from '../storage/repo-manager.js';
 
-/** Root directory for all uploaded repositories. Targets must resolve inside this. */
-export const UPLOAD_ROOT = path.resolve(path.join(os.homedir(), '.gitnexus', 'uploads'));
+/**
+ * Root directory for all uploaded repositories. Targets must resolve inside this.
+ *
+ * Sourced from getGlobalDir() so it honors GITNEXUS_HOME and stays a sibling of
+ * the clone root on the same (in Docker, persistent) volume. Falls back to
+ * ~/.gitnexus when the env var is unset.
+ */
+export const UPLOAD_ROOT = path.resolve(path.join(getGlobalDir(), 'uploads'));
 
 /** Prefix for per-upload staging directories created under UPLOAD_ROOT. */
 export const STAGING_PREFIX = '.staging-';
