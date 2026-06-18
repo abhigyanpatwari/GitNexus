@@ -145,8 +145,11 @@ describe('GITNEXUS_TOOLS', () => {
     // The description names the mode:'pdg' statement-anchor semantics.
     expect(line.description).toMatch(/statement anchor/i);
     expect(line.description).toMatch(/pdg/i);
-    // The top-level description mentions the statement-anchored slice.
+    // The top-level description mentions the statement-anchored slice and result shape.
     expect(impactTool.description).toMatch(/statement-anchored|STATEMENT-ANCHORED/);
+    expect(impactTool.description).toContain('affectedStatements');
+    expect(impactTool.description).toContain('target metadata');
+    expect(impactTool.description).toContain('truncatedBy');
   });
 
   it('rename tool requires new_name', () => {
@@ -304,6 +307,8 @@ describe('GITNEXUS_TOOLS', () => {
     expect(modeProp.description).toContain('pdg');
     expect(modeProp.description).toContain('--pdg');
     expect(modeProp.description.toLowerCase()).toContain('intra-procedural');
+    expect(modeProp.description).toContain('affectedStatements');
+    expect(modeProp.description).toContain('UNKNOWN-risk');
     // The tool-level description must mention the mode so an LLM discovers it.
     expect(impactTool.description.toLowerCase()).toContain('mode');
     expect(impactTool.description).toContain('pdg');

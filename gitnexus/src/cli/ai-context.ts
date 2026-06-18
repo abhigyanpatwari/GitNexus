@@ -201,7 +201,7 @@ This project is indexed by GitNexus as **${projectName}**${noStats ? '' : ` (${s
 
 - **MUST run impact analysis before editing any symbol.** Before modifying a function, class, or method, run \`impact({target: "symbolName", direction: "upstream"})\` and report the blast radius (direct callers, affected processes, risk level) to the user.${
     hasPdg
-      ? ` For finer, intra-procedural precision within a function, add \`mode: "pdg"\` — it traces control/data dependence (CDG + REACHING_DEF) instead of call-graph reachability, but does NOT model cross-function impact (\`--pdg\` layer).`
+      ? ` For finer, intra-procedural precision within a function, add \`mode: "pdg"\` with \`line: <N>\` — it returns statement-level \`affectedStatements\` over CDG + REACHING_DEF, but does NOT model cross-function impact; no-layer/degraded PDG results are UNKNOWN-risk notes (\`--pdg\` layer).`
       : ''
   }
 - **MUST run \`detect_changes()\` before committing** to verify your changes only affect expected symbols and execution flows. For regression review, compare against the default branch: \`detect_changes({scope: "compare", base_ref: ${JSON.stringify(markdownSafeBranch(defaultBranch))}})\`.

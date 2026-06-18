@@ -77,6 +77,10 @@ export const EXPLAIN_MAX_LIMIT = 200;
 export const PDG_QUERY_DEFAULT_LIMIT = 50;
 export const PDG_QUERY_MAX_LIMIT = 200;
 
+// Shared impact traversal depth cap. The MCP schema advertises this bound;
+// PDG direct backend callers also enforce it before running traversal.
+export const IMPACT_MAX_DEPTH = 32;
+
 export const GITNEXUS_TOOLS: ToolDefinition[] = [
   {
     name: 'list_repos',
@@ -413,11 +417,13 @@ MODE (opt-in): "callgraph" (default) walks symbol→symbol edges (CALLS/IMPORTS/
 
 STATEMENT-ANCHORED PDG SLICE: with mode:'pdg', pass "line" (1-based source line within the target symbol) to seed the dependence slice on the statement at that line and return what depends on it — the dependent statements (line + text), not the whole-symbol set. Without "line", a whole-symbol pdg slice is structurally empty (intra-procedural reach stays inside the function), so "line" is what makes pdg mode useful.
 
+PDG OUTPUT CONTRACT: successful PDG slices include mode:'pdg', a full target envelope (id/name/type/filePath), affectedStatements, affectedStatementCount, byDepth/byDepthCounts parity fields, risk:'UNKNOWN', and an intra-procedural note. Degraded PDG results (no-layer, sub-layer-missing, unknown) keep mode:'pdg', target metadata when the target resolves, risk:'UNKNOWN', note/remediation, and empty byDepth parity fields — never a false-safe zero. If depth and limit both bound the slice, truncatedByReasons reports both causes while truncatedBy remains scalar.
+
 WHEN TO USE: Before making code changes — especially refactoring, renaming, or modifying shared code. Shows what would break.
 AFTER THIS: Review d=1 items (WILL BREAK). Use context() on high-risk symbols.
 
 Output includes:
-- risk: LOW / MEDIUM / HIGH / CRITICAL
+- risk: LOW / MEDIUM / HIGH / CRITICAL / UNKNOWN
 - summary: direct callers, processes affected, modules affected
 - affected_processes: which execution flows break and at which step
 - affected_modules: which functional areas are hit (direct vs indirect)
@@ -459,7 +465,7 @@ SERVICE: optional monorepo path prefix (case-sensitive path segments). When "rep
           enum: ['callgraph', 'pdg'],
           default: 'callgraph',
           description:
-            "Blast-radius engine. 'callgraph' (default) = inter-procedural symbol→symbol traversal (current behavior). 'pdg' = opt-in, intra-procedural Program Dependence Graph traversal (control + data dependence); requires an index built with `gitnexus analyze --pdg`. The pdg mode is incompatible with relationTypes/crossDepth/minConfidence and with @group targets — each is rejected, not silently ignored.",
+            "Blast-radius engine. 'callgraph' (default) = inter-procedural symbol→symbol traversal (current behavior). 'pdg' = opt-in, intra-procedural Program Dependence Graph traversal (control + data dependence); requires an index built with `gitnexus analyze --pdg`. PDG success returns affectedStatements, while degraded/no-layer results return a structured UNKNOWN-risk note with target metadata when resolved. The pdg mode is incompatible with relationTypes/crossDepth/minConfidence and with @group targets — each is rejected, not silently ignored.",
         },
         line: {
           type: 'integer',
@@ -481,7 +487,7 @@ SERVICE: optional monorepo path prefix (case-sensitive path segments). When "rep
           description: 'Max relationship depth (default: 3, server clamps to 1–32)',
           default: 3,
           minimum: 1,
-          maximum: 32,
+          maximum: IMPACT_MAX_DEPTH,
         },
         crossDepth: {
           type: 'number',

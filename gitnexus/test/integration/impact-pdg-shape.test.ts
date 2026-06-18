@@ -25,10 +25,11 @@
  *   - `ctl`     fn at [29,31] ⇒ blocks K1@31, K2@32 (CDG dependents of S).
  *   - `dupA` AND `dupB`, BOTH at 0-based [40,42] (SAME (filePath,startLine)) —
  *     a CDG-reachable block T@41 maps to BOTH (ambiguous-projection).
- *   - a free/top-level block U@99 owned by NO Function (downstream of K2) — the
+ *   - `FlowThing.constructor` at 0-based [55,55] owns CT@56 (constructor projection).
+ *   - a free/top-level block U@99 owned by NO symbol (downstream of K2) — the
  *     `unresolved` shadow path.
  *
- *   Downstream from S:  RD → {D1,D2}; CDG → {K1,K2} → T(@41) → U(@99 top-level).
+ *   Downstream from S:  RD → {D1,D2,CT}; CDG → {K1,K2} → T(@41) → U(@99 top-level).
  *
  * `loadMeta` is mocked to stamp BOTH caps so `pdgLayerStatus` returns `ready`.
  */
@@ -63,6 +64,7 @@ const D2 = `BasicBlock:${F}:20:0:1`; // down@[19,21]
 const K1 = `BasicBlock:${F}:30:0:0`; // ctl@[29,31]
 const K2 = `BasicBlock:${F}:30:0:1`; // ctl@[29,31]
 const T = `BasicBlock:${F}:41:0:0`; // dupA AND dupB BOTH @[40,42] → ambiguous
+const CT = `BasicBlock:${F}:56:0:0`; // Constructor FlowThing.constructor@[55,55]
 const U = `BasicBlock:${F}:99:0:0`; // top-level / no owning symbol → unresolved
 
 withTestLbugDB(
@@ -103,10 +105,20 @@ withTestLbugDB(
         expect(down.filePath).toBe(F);
       });
 
+      it('maps a reachable constructor block to its owning Constructor symbol', async () => {
+        const result = await downstream();
+        const items = Object.values(result.byDepth as Record<number, any[]>).flat();
+        const ctor = items.find((i: any) => i.id === 'ctor:FlowThing');
+        expect(ctor).toBeDefined();
+        expect(ctor.name).toBe('FlowThing.constructor');
+        expect(ctor.type).toBe('Constructor');
+        expect(ctor.filePath).toBe(F);
+      });
+
       it('a reachable block owning NO symbol is reported as unresolved, never dropped (R9 shadow path)', async () => {
         const result = await downstream();
         const items = Object.values(result.byDepth as Record<number, any[]>).flat();
-        // U@99 has no owning Function/Method → an explicit unresolved entry.
+        // U@99 has no owning Function/Method/Constructor → an explicit unresolved entry.
         const unresolved = items.filter((i: any) => i.id === null || i.type === 'unresolved');
         expect(unresolved.length).toBeGreaterThanOrEqual(1);
         expect(unresolved[0].filePath).toBe(F);
@@ -186,9 +198,9 @@ withTestLbugDB(
       it("risk is the existing 'UNKNOWN' sentinel, not a minted PDG label", async () => {
         const result = await downstream();
         expect(result.risk).toBe('UNKNOWN');
-        // impactedCount = distinct owning SYMBOLS (down, ctl, dupA, dupB) — the
-        // meaningful unit; unresolved blocks do not inflate it.
-        expect(result.impactedCount).toBe(4);
+        // impactedCount = distinct owning SYMBOLS (down, ctl, dupA, dupB, ctor) —
+        // the meaningful unit; unresolved blocks do not inflate it.
+        expect(result.impactedCount).toBe(5);
         // blockCount is the raw reachable-block count, retained separately.
         expect(result.blockCount).toBeGreaterThanOrEqual(result.impactedCount);
       });
@@ -257,6 +269,7 @@ withTestLbugDB(
         expect(uids).toContain('func:target'); // from target.id
         expect(uids).toContain('func:down');
         expect(uids).toContain('func:ctl');
+        expect(uids).toContain('ctor:FlowThing');
         expect(uids).not.toContain('null');
         expect(uids).not.toContain('');
         expect(targetFilePath).toBe(F);
@@ -425,12 +438,19 @@ withTestLbugDB(
         name: string,
         startLine: number,
         endLine: number,
-        type: 'Function' | 'Interface' = 'Function',
-      ) =>
-        adapter.executePrepared(
+        type: 'Function' | 'Interface' | 'Constructor' = 'Function',
+      ) => {
+        if (type === 'Constructor') {
+          return adapter.executePrepared(
+            `CREATE (n:Constructor {id: $id, name: $name, filePath: $filePath, startLine: $startLine, endLine: $endLine, content: 'x', description: 'shape fixture'})`,
+            { id, name, filePath: F, startLine, endLine },
+          );
+        }
+        return adapter.executePrepared(
           `CREATE (n:${type} {id: $id, name: $name, filePath: $filePath, startLine: $startLine, endLine: $endLine, isExported: true, content: 'x', description: 'shape fixture'})`,
           { id, name, filePath: F, startLine, endLine },
         );
+      };
       const block = (id: string, startLine: number, text: string) =>
         adapter.executePrepared(
           `CREATE (b:BasicBlock {id: $id, filePath: $filePath, startLine: $startLine, endLine: $startLine, text: $text})`,
@@ -453,6 +473,8 @@ withTestLbugDB(
       await fn('func:dupB', 'dupTarget', 40, 42);
       // No-body interface (no blocks).
       await fn('func:IShape', 'IShape', 50, 52, 'Interface');
+      // Constructor owner projection.
+      await fn('ctor:FlowThing', 'FlowThing.constructor', 55, 55, 'Constructor');
 
       // Blocks.
       await block(S, 11, 'const x = compute();');
@@ -462,12 +484,14 @@ withTestLbugDB(
       await block(K1, 31, 'doA();');
       await block(K2, 32, 'doB();');
       await block(T, 41, 'dispatch();'); // owned by BOTH dupA & dupB
+      await block(CT, 56, 'this.value = x;'); // owned by Constructor
       await block(U, 99, 'top-level-side-effect();'); // owned by NO symbol
 
       // RD chain (def→use): P → S → D1 → D2
       await edge('REACHING_DEF', P, S, 'seed');
       await edge('REACHING_DEF', S, D1, 'x');
       await edge('REACHING_DEF', D1, D2, 'x');
+      await edge('REACHING_DEF', S, CT, 'ctor');
       // CDG chain: P(controller) → S → K1 → K2 → T(@dup line) → U(top-level)
       await edge('CDG', P, S, 'T');
       await edge('CDG', S, K1, 'T');
@@ -572,7 +596,7 @@ withTestLbugDB(
           storagePath: handle.tmpHandle.dbPath,
           indexedAt: new Date().toISOString(),
           lastCommit: 'shape123',
-          stats: { files: 1, nodes: 16, communities: 0, processes: 0 },
+          stats: { files: 1, nodes: 18, communities: 0, processes: 0 },
         },
       ]);
       const backend = new LocalBackend();

@@ -178,6 +178,18 @@ export function formatContextResult(result: any): string {
   return lines.join('\n').trim();
 }
 
+function formatTruncationSuffix(result: {
+  truncatedBy?: unknown;
+  truncatedByReasons?: unknown;
+}): string {
+  const label = Array.isArray(result.truncatedByReasons)
+    ? result.truncatedByReasons.join(', ')
+    : typeof result.truncatedBy === 'string'
+      ? result.truncatedBy
+      : '';
+  return label ? ` (by ${label})` : '';
+}
+
 export function formatImpactResult(result: any): string {
   if (result.error) {
     const suggestion = result.suggestion ? `\nSuggestion: ${result.suggestion}` : '';
@@ -194,6 +206,28 @@ export function formatImpactResult(result: any): string {
   // mirroring formatContextResult, so the real impact under whichever symbol the
   // caller meant is visible on the text surface, not just in the JSON.
   if (result.status === 'ambiguous') {
+    if (result.mode === 'pdg') {
+      const shown = result.candidates?.length ?? 0;
+      const totalCandidates = result.totalCandidates ?? shown;
+      const countPhrase =
+        totalCandidates > shown
+          ? `${totalCandidates} symbols (showing ${shown})`
+          : `${totalCandidates} symbols`;
+      const lines = [
+        `${target?.name || '?'}: AMBIGUOUS — ${countPhrase} share this name. ` +
+          `PDG impact was not computed until the target is disambiguated. ` +
+          `Use --uid, file_path, or kind for one authoritative PDG result.`,
+      ];
+      if (result.message) lines.push(String(result.message));
+      for (const c of result.candidates || []) {
+        const score = typeof c.score === 'number' ? ` score ${c.score}` : '';
+        lines.push(
+          `  ${c.kind} ${c.name} → ${c.filePath}:${c.line || '?'}${score}  (uid: ${c.uid})`,
+        );
+      }
+      return lines.join('\n');
+    }
+
     // #2129 review F11 — report the FULL match count (`totalCandidates`), not the
     // truncated `candidates[]` length; note when the candidate list is capped.
     const shown = result.candidates?.length ?? 0;
@@ -307,7 +341,7 @@ export function formatImpactResult(result: any): string {
       // Truncation honesty — the slice may be a lower bound (depth or per-step
       // LIMIT bound). Surface it the same way the symbol render does.
       if (result.truncated) {
-        const by = result.truncatedBy ? ` (by ${result.truncatedBy})` : '';
+        const by = formatTruncationSuffix(result);
         slLines.push(
           `⚠️  Truncated${by} — the dependence slice was bounded; deeper PDG-dependent statements may exist.`,
         );
@@ -383,11 +417,11 @@ export function formatImpactResult(result: any): string {
     if (result.unresolvedBlockCount > 0) {
       pdgLines.push(
         `⚠️  ${result.unresolvedBlockCount} dependence block(s) map to no owning ` +
-          `Function/Method (top-level statement / closure) — surfaced under their file.`,
+          `Function/Method/Constructor (top-level statement / closure) — surfaced under their file.`,
       );
     }
     if (result.truncated) {
-      const by = result.truncatedBy ? ` (by ${result.truncatedBy})` : '';
+      const by = formatTruncationSuffix(result);
       pdgLines.push(
         `⚠️  Truncated${by} — the dependence traversal was bounded; deeper PDG impacts may exist.`,
       );

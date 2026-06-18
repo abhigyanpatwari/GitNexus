@@ -17,7 +17,7 @@ import { describe, expect, it } from 'vitest';
 import { formatImpactResult } from '../../src/cli/eval-server.js';
 
 // A representative PDG findings result, shaped exactly like
-// `assemblePdgImpactResult` (local-backend.ts) emits.
+// `assemblePdgImpactResult` (pdg-impact.ts) emits.
 function pdgFindings(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   const items = [
     {
@@ -68,6 +68,44 @@ function pdgFindings(overrides: Record<string, unknown> = {}): Record<string, un
 }
 
 describe('formatImpactResult — PDG (mode:pdg) rendering', () => {
+  it('renders a PDG ambiguous target without fabricated zero blast-radius counts', () => {
+    const out = formatImpactResult({
+      status: 'ambiguous',
+      mode: 'pdg',
+      message:
+        "Found 2 symbols matching 'login'. Disambiguate with target_uid for a single authoritative PDG result.",
+      target: { name: 'login' },
+      direction: 'upstream',
+      totalCandidates: 2,
+      impactedCount: 0,
+      risk: 'UNKNOWN',
+      candidates: [
+        {
+          uid: 'func:login:1',
+          name: 'login',
+          kind: 'Function',
+          filePath: 'src/auth.ts',
+          line: 5,
+          score: 1,
+        },
+        {
+          uid: 'func:login:2',
+          name: 'login',
+          kind: 'Function',
+          filePath: 'src/admin/login.ts',
+          line: 8,
+          score: 0.91,
+        },
+      ],
+    });
+
+    expect(out).toContain('login: AMBIGUOUS');
+    expect(out).toContain('PDG impact was not computed');
+    expect(out).toContain('func:login:1');
+    expect(out).not.toContain('Max blast radius 0');
+    expect(out).not.toContain('[0 upstream');
+  });
+
   it('renders findings under PDG-dependent framing, not "depth N"', () => {
     const out = formatImpactResult(pdgFindings());
 
@@ -137,6 +175,18 @@ describe('formatImpactResult — PDG (mode:pdg) rendering', () => {
     expect(out).toContain('Truncated');
     expect(out).toContain('by depth');
     expect(out).toContain('deeper PDG impacts may exist');
+  });
+
+  it('renders multiple truncation causes honestly', () => {
+    const out = formatImpactResult(
+      pdgFindings({
+        truncated: true,
+        truncatedBy: 'depth',
+        truncatedByReasons: ['depth', 'limit'],
+      }),
+    );
+    expect(out).toContain('Truncated');
+    expect(out).toContain('by depth, limit');
   });
 
   it('renders the degradation note as remediation, not a zero/empty blast radius', () => {

@@ -4,28 +4,25 @@
  * End-to-end against a REAL LadybugDB, through the full `callTool('impact', …)`
  * dispatch. Exercises the four-state PDG-layer presence/degradation check
  * (`pdgLayerStatus`) wired into `_impactImpl`'s PDG branch — the check that
- * fires BEFORE symbol resolution / traversal so a missing or partial `--pdg`
- * layer returns a distinct guidance note instead of a confusing empty blast
- * radius (or the U2-era `_runImpactPDG` "not yet implemented" stub error).
+ * fires after symbol resolution but before traversal so a missing or partial
+ * `--pdg` layer returns a distinct target-aware guidance note instead of a
+ * confusing empty blast radius.
  *
  * The four states (KTD7) are driven by what the (mocked) `loadMeta` returns —
  * matching the seeded-DB reality that there is no on-disk `meta.json`:
  *   - no-layer          : meta readable, no `pdg` stamp        → run analyze --pdg
  *   - sub-layer-missing : exactly one cap stamped (CDG xor RD) → names the missing one
- *   - ready             : both caps stamped                    → falls through to the stub
+ *   - ready             : both caps stamped                    → falls through to traversal
  *   - unknown           : meta unreadable (null)               → inconclusive, via 1 LIMIT 1 probe
  *
- * The `_runImpactPDG` traversal is still a stub in U2, so the `ready` case
- * asserts the layer check let it THROUGH (the stub's "not yet implemented"
- * sentinel), proving the check is ordered before the stub for the degraded
- * states and falls through only when the layer is complete.
+ * The `ready` case asserts the layer check lets the call THROUGH to the real
+ * traversal, while degraded states return before `_runImpactPDG`.
  */
 import { describe, it, expect, beforeAll, beforeEach, vi } from 'vitest';
 import type { RepoMeta } from '../../src/storage/repo-manager.js';
 import { LocalBackend } from '../../src/mcp/local/local-backend.js';
 import { listRegisteredRepos, loadMeta } from '../../src/storage/repo-manager.js';
 import { withTestLbugDB } from '../helpers/test-indexed-db.js';
-import * as poolAdapter from '../../src/core/lbug/pool-adapter.js';
 
 vi.mock('../../src/storage/repo-manager.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../src/storage/repo-manager.js')>();
@@ -54,6 +51,18 @@ const SEED_EDGE = `MATCH (a:BasicBlock {id: 'BasicBlock:src/hot.ts:1:0:0'}), (b:
 
 const META = (pdg?: RepoMeta['pdg']): RepoMeta => ({ pdg }) as unknown as RepoMeta;
 
+function expectEmptyPdgParity(result: any): void {
+  expect(result.mode).toBe('pdg');
+  expect(result.direction).toBe('downstream');
+  expect(result.impactedCount).toBe(0);
+  expect(result.risk).toBe('UNKNOWN');
+  expect(result.byDepth).toEqual({});
+  expect(result.byDepthCounts).toEqual({ 1: 0 });
+  expect(result.summary).toEqual({ direct: 0, processes_affected: 0, modules_affected: 0 });
+  expect(result.affected_processes).toEqual([]);
+  expect(result.affected_modules).toEqual([]);
+}
+
 withTestLbugDB(
   'impact-pdg-degradation',
   (handle) => {
@@ -72,34 +81,30 @@ withTestLbugDB(
     });
 
     describe('no-layer (meta readable, no pdg stamp)', () => {
-      it('returns the definitive "run analyze --pdg" note — and does NOT scan the DB', async () => {
+      it('returns the definitive target-aware "run analyze --pdg" note', async () => {
         // Readable meta with no `pdg` key ⇒ the layer was never recorded.
         vi.mocked(loadMeta).mockResolvedValueOnce(META(undefined));
-        const spy = vi.spyOn(poolAdapter, 'executeParameterized');
-        spy.mockClear();
-
         const result = await backend.callTool('impact', {
           target: 'hot',
           direction: 'downstream',
           mode: 'pdg',
         });
 
-        // Definitive, meta-derived: no DB probe ran, so executeParameterized was
-        // never called between the spy clear and here (the no-layer branch
-        // returns before the probe AND before resolveSymbolCandidates).
-        expect(spy).not.toHaveBeenCalled();
-        spy.mockRestore();
-
         expect(result.mode).toBe('pdg');
         expect(result.pdgLayer).toBe('no-layer');
+        expect(result.target).toEqual({
+          id: 'func:hot',
+          name: 'hot',
+          type: 'Function',
+          filePath: 'src/hot.ts',
+        });
         expect(result.note).toMatch(/no PDG layer/i);
         expect(result.note).toContain('--pdg');
-        // Not the stub, not a status-unknown note, not a confident LOW.
+        // Not a status-unknown note, not a confident LOW.
         expect(result.error).toBeUndefined();
         expect(result.note).not.toMatch(/status unknown/i);
         expect(result.note).not.toMatch(/not yet implemented/i);
-        expect(result.risk).toBe('UNKNOWN');
-        expect(result.impactedCount).toBe(0);
+        expectEmptyPdgParity(result);
       });
     });
 
@@ -112,11 +117,13 @@ withTestLbugDB(
           mode: 'pdg',
         });
         expect(result.pdgLayer).toBe('sub-layer-missing');
+        expect(result.target.filePath).toBe('src/hot.ts');
+        expect(result.target.type).toBe('Function');
         expect(result.missingSubLayer).toBe('REACHING_DEF');
         expect(result.note).toMatch(/REACHING_DEF/);
-        // Partial layer must NOT be reported as complete (not the stub, no LOW).
+        // Partial layer must NOT be reported as complete (no LOW).
         expect(result.note).not.toMatch(/not yet implemented/i);
-        expect(result.risk).toBe('UNKNOWN');
+        expectEmptyPdgParity(result);
       });
 
       it('RD present, CDG absent → names CDG as missing', async () => {
@@ -132,7 +139,7 @@ withTestLbugDB(
         expect(result.missingSubLayer).toBe('CDG');
         expect(result.note).toMatch(/\bCDG\b/);
         expect(result.note).not.toMatch(/not yet implemented/i);
-        expect(result.risk).toBe('UNKNOWN');
+        expectEmptyPdgParity(result);
       });
     });
 
@@ -149,12 +156,12 @@ withTestLbugDB(
         // The layer is complete, so the check did NOT short-circuit: there is no
         // degradation note / pdgLayer marker — the call reached the traversal.
         expect(result.pdgLayer).toBeUndefined();
-        // U3 landed: the stub "not yet implemented" error is gone. `hot` has a
+        // `hot` has a
         // PDG body (blocks B0→B1) but the only dependent (B1) is itself a seed
         // block of the symbol, so the intra-procedural downstream reachable set
         // is empty — and that is signalled as a real traversal result with the
         // distinct "has a body but no dependence" note, NOT the no-body /
-        // degradation path, NOT the old stub error. The load-bearing U2 fact —
+        // degradation path. The load-bearing U2 fact —
         // `ready` does NOT return a degradation note — still holds.
         expect(result.mode).toBe('pdg');
         expect(result.error).toBeUndefined();
@@ -177,13 +184,14 @@ withTestLbugDB(
           mode: 'pdg',
         });
         expect(result.pdgLayer).toBe('unknown');
+        expect(result.target.filePath).toBe('src/hot.ts');
+        expect(result.target.type).toBe('Function');
         expect(result.note).toMatch(/status unknown/i);
         expect(result.note).toContain('--pdg');
         // Inconclusive ≠ definitive no-layer wording.
         expect(result.note).not.toMatch(/no PDG layer/i);
         expect(result.note).not.toMatch(/not yet implemented/i);
-        expect(result.risk).toBe('UNKNOWN');
-        expect(result.impactedCount).toBe(0);
+        expectEmptyPdgParity(result);
       });
     });
 

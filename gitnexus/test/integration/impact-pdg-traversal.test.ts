@@ -6,9 +6,9 @@
  * bounded BFS over CDG + REACHING_DEF block edges — the correctness keystone of
  * the feature (the KTD4 direction × edge-type truth table).
  *
- * The intermediate U3 payload exposes the reachable BasicBlock set:
- *   { mode:'pdg', target, reachableBlocks:[...ids], truncated, depthReached, note? }
- * (U4 reshapes this into the consumer-safe impact result; U3 is the traversal.)
+ * The result exposes the consumer-safe impact shape plus traversal details
+ * (`reachableBlocks`, `truncated`, `depthReached`) so this suite can pin the
+ * graph algorithm without bypassing the public `impact` tool contract.
  *
  * ── Fixture graph (hand-seeded, no parser; controlled line numbers) ──────────
  * One file `src/flow.ts`. The TARGET symbol `target` is a one-line function at
@@ -274,6 +274,20 @@ withTestLbugDB(
         expect(result.truncated).toBeFalsy();
       });
 
+      it('an exact limit-sized seed/step is not flagged truncated without an extra row', async () => {
+        const result = await backend.callTool('impact', {
+          target: 'target',
+          direction: 'upstream',
+          mode: 'pdg',
+          maxDepth: 10,
+          limit: 1,
+        });
+        expect(reachable(result)).toEqual([P]);
+        expect(result.truncated).toBeFalsy();
+        expect(result.truncatedBy).toBeUndefined();
+        expect(result.truncatedByReasons).toBeUndefined();
+      });
+
       it('limit truncation bounds the reachable set and flags truncated', async () => {
         const result = await backend.callTool('impact', {
           target: 'target',
@@ -286,6 +300,19 @@ withTestLbugDB(
         // flagged so a caller never reads the clipped set as the whole radius.
         expect(reachable(result).length).toBeLessThan(4);
         expect(result.truncated).toBe(true);
+      });
+
+      it('reports both depth and limit when both bounds truncate the slice', async () => {
+        const result = await backend.callTool('impact', {
+          target: 'target',
+          direction: 'downstream',
+          mode: 'pdg',
+          maxDepth: 1,
+          limit: 1,
+        });
+        expect(result.truncated).toBe(true);
+        expect(result.truncatedBy).toBe('depth');
+        expect(result.truncatedByReasons).toEqual(['depth', 'limit']);
       });
 
       it('rejects or clamps a negative / huge / NaN limit (validated int interpolation)', async () => {

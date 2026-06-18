@@ -40,6 +40,28 @@ neither strictly dominates*.
 > measures; the earlier "PDG is empty / callgraph wins" verdict was an artifact of
 > the whole-symbol seed, now replaced.
 
+## Runtime result contract
+
+`impact({mode:'pdg', line:N})` success results carry a target envelope
+(`id`, `name`, `type`, `filePath`), `risk: 'UNKNOWN'`, `affectedStatements`,
+`affectedStatementCount`, and the same empty-safe parity fields used by callgraph
+consumers (`byDepth`, `byDepthCounts`, `summary`, `affected_processes`,
+`affected_modules`). The risk stays UNKNOWN because a statement slice is
+intra-procedural; it is precise for the function body but not a whole-program
+safety verdict.
+
+Degraded PDG results are explicit, not empty successes. `no-layer`,
+`sub-layer-missing`, and `unknown` responses keep `mode:'pdg'`, target metadata
+when the target resolves, `risk:'UNKNOWN'`, a remediation note, and empty parity
+fields. Truncation is also explicit: when both depth and per-step limit bounds
+fire, `truncatedByReasons` reports both causes.
+
+Deferred architecture remains out of scope for this harness: explicit
+`Function|Method -> BasicBlock` containment (`CONTAINS_BLOCK`), inter-procedural
+summary edges / realizable call-return paths, mutation-derived AIS, and a hybrid
+callgraph+PDG impact mode are follow-up features, not assumptions of the current
+statement-level benchmark.
+
 ## The corpus
 
 Each case is a tiny self-contained TypeScript source repo plus a

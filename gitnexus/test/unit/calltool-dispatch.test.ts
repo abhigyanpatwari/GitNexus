@@ -51,7 +51,7 @@ vi.mock('../../src/storage/repo-manager.js', async (importOriginal) => {
     // default (so branch-scope resolution, #2106, is unaffected). The
     // impact-mode block overrides it per-test to stamp a READY PDG layer, so the
     // U2 layer-presence probe falls THROUGH to the post-check surface (the
-    // `_runImpactPDG` stub / ambiguous fan-out) those tests assert. The
+    // `_runImpactPDG` delegate / ambiguous fan-out) those tests assert. The
     // four-state degradation contract itself is covered in
     // test/integration/impact-pdg-degradation.test.ts.
     loadMeta: vi.fn(actual.loadMeta),
@@ -1402,15 +1402,15 @@ describe('LocalBackend.callTool', () => {
 // The MCP JSON-schema enum is advisory only (server forwards args
 // unvalidated, callTool is reachable directly), so the backend `mode`
 // validation is load-bearing. These tests pin: callgraph is the unchanged
-// default, pdg routes to the stub and NEVER the callgraph BFS, invalid modes
-// hard-error, and the KTD12 incompatible params / @group targets are rejected.
+// default, pdg routes to the extracted traversal and NEVER the callgraph BFS,
+// invalid modes hard-error, and the KTD12 incompatible params / @group targets are rejected.
 
 describe('LocalBackend impact mode (KTD1/KTD5/KTD12)', () => {
   let backend: LocalBackend;
 
   // Resolve the target to a single Function so impact reaches the single-branch
-  // dispatch (callgraph BFS or the pdg stub). The callgraph BFS then issues
-  // executeQuery for its frontier; the pdg stub does not.
+  // dispatch (callgraph BFS or the PDG traversal). The callgraph BFS then issues
+  // executeQuery for its frontier; the PDG path delegates to runImpactPDG.
   function resolveSingleTarget() {
     (executeParameterized as any).mockResolvedValue([
       { id: 'func:main', name: 'main', type: 'Function', filePath: 'src/index.ts' },
@@ -1423,7 +1423,7 @@ describe('LocalBackend impact mode (KTD1/KTD5/KTD12)', () => {
     platformMocks.isVectorExtensionSupportedByPlatform.mockReturnValue(true);
     // U2: stamp a READY PDG layer (both caps) so the layer-presence probe in
     // `_impactImpl` falls THROUGH to the mode-dispatch surface these tests pin
-    // (the `_runImpactPDG` stub / the ambiguous fan-out under `mode:'pdg'`).
+    // (the `_runImpactPDG` delegate / the ambiguous fan-out under `mode:'pdg'`).
     // Degraded-layer behavior is owned by the integration degradation suite.
     vi.mocked(loadMeta).mockResolvedValue({
       pdg: { maxCdgEdgesPerFunction: 0, maxReachingDefEdgesPerFunction: 0 },
@@ -1437,7 +1437,7 @@ describe('LocalBackend impact mode (KTD1/KTD5/KTD12)', () => {
     resolveSingleTarget();
     const bfsSpy = vi.spyOn(backend as any, '_runImpactBFS');
     const result = await backend.callTool('impact', { target: 'main', direction: 'upstream' });
-    // A clean callgraph result carries no mode/stub error and runs the BFS.
+    // A clean callgraph result carries no mode error and runs the BFS.
     expect(result.error ?? '').not.toMatch(/Invalid "mode"/);
     expect(result.error ?? '').not.toMatch(/not yet implemented/);
     expect(result.target).toBeDefined();
@@ -1607,6 +1607,39 @@ describe('LocalBackend impact mode (KTD1/KTD5/KTD12)', () => {
     }
   });
 
+  it("unknown target with mode:'pdg' returns the normalized PDG error envelope", async () => {
+    (executeParameterized as any).mockResolvedValue([]);
+    const result = await backend.callTool('impact', {
+      target: 'missingSymbol',
+      direction: 'upstream',
+      mode: 'pdg',
+    });
+    expect(result.error).toMatch(/not found/);
+    expect(result.mode).toBe('pdg');
+    expect(result.target).toEqual({ name: 'missingSymbol' });
+    expect(result.direction).toBe('upstream');
+    expect(result.impactedCount).toBe(0);
+    expect(result.risk).toBe('UNKNOWN');
+  });
+
+  it("runtime failures with mode:'pdg' return the normalized PDG error envelope", async () => {
+    const failing = new Error('pdg query failed');
+    const implSpy = vi.spyOn(backend as any, '_impactImpl').mockRejectedValueOnce(failing);
+    const result = await backend.callTool('impact', {
+      target: 'main',
+      direction: 'downstream',
+      mode: 'pdg',
+    });
+    expect(result.error).toBe('pdg query failed');
+    expect(result.mode).toBe('pdg');
+    expect(result.target).toEqual({ name: 'main' });
+    expect(result.direction).toBe('downstream');
+    expect(result.impactedCount).toBe(0);
+    expect(result.risk).toBe('UNKNOWN');
+    expect(result.suggestion).toMatch(/context/);
+    implSpy.mockRestore();
+  });
+
   it("@group target with mode:'pdg' is rejected (KTD12 — PDG is single-repo)", async () => {
     resolveAtMemberMock.mockResolvedValue({ ok: true, repoPath: '/tmp/test-project' });
     const result = await backend.callTool('impact', {
@@ -1616,6 +1649,11 @@ describe('LocalBackend impact mode (KTD1/KTD5/KTD12)', () => {
       repo: '@grp',
     });
     expect(result.error).toMatch(/not supported for @group targets/);
+    expect(result.mode).toBe('pdg');
+    expect(result.target).toEqual({ name: 'main' });
+    expect(result.direction).toBe('upstream');
+    expect(result.impactedCount).toBe(0);
+    expect(result.risk).toBe('UNKNOWN');
   });
 
   it("@group target with mode:'callgraph' still forwards to group impact (unchanged)", async () => {
