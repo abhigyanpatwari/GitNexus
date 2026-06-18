@@ -416,7 +416,57 @@ node --import tsx bench/impact-pdg/measure.mjs                 # print the strat
 node --import tsx bench/impact-pdg/measure.mjs --json          # machine report (for re-baselining)
 node --import tsx bench/impact-pdg/measure.mjs --check          # gate against baselines.json (exit non-zero on regression)
 node --import tsx bench/impact-pdg/measure.mjs --only=a,b,c     # fast subset (substrate smoke)
+node --import tsx bench/impact-pdg/real-code.mjs                # latency + quality-proxy probe on indexed GitNexus
+node --import tsx bench/impact-pdg/real-code.mjs --json --check # machine report + broad real-code gates
 ```
+
+### Real-code performance and quality proxy probe
+
+`real-code.mjs` complements the AIS-backed fixture harness. It runs direct
+`LocalBackend.callTool("impact", ...)` calls against an already-indexed real
+repository (default `--repo GitNexus`) and measures:
+
+- callgraph vs PDG median/p95 latency over `--repeat` samples;
+- whether unified PDG's inter-procedural symbol reach preserves the callgraph
+  symbol set for the same target/direction;
+- degraded, partial, no-block-at-line, and PDG bridge evidence counts.
+
+This is a quality proxy, not an accuracy score: a real repo has no curated AIS,
+so the probe cannot prove correctness. Use it to catch performance regressions,
+degraded indexes, symbol-reach drift, and excessive `unproven-bridge` evidence on
+real code. Use `measure.mjs` for the ground-truth precision/recall/F1 gate.
+
+The default cases are statement-anchored at a CFG **block-start** line. The CFG
+coalesces straight-line statements into one `BasicBlock`, so a mid-block anchor
+resolves to no block start and degrades to `pdg-no-block-at-line` — honest, but it
+then exercises only the symbol axis. The harness still detects and counts that
+degradation; the curated anchors avoid it so every case also exercises a real
+intra-procedural slice. (This is the same statement-anchoring discipline the
+fixture corpus uses, applied to real code.)
+
+A representative run on the indexed GitNexus tree (~17.5k symbols, PDG layer
+persisted via `analyze --pdg` with ~171k `BasicBlock`s) — read it *directionally*,
+not as a baseline, since wall-clock latency is host- and noise-dependent:
+
+- **Symbol reach is preserved exactly.** Unified `mode:'pdg'` reproduces the
+  `mode:'callgraph'` inter-procedural symbol set on every case — mean and min
+  recall = precision = **1.000**. This is the load-bearing check: the PDG-facing
+  result must not silently drop or invent cross-function reach.
+- **Each case carries a real statement slice** (`affectedStatements` non-empty,
+  2–27 statements here), so the intra axis is genuinely exercised.
+- **Latency overhead is modest** — PDG median ≈ **1.2–1.4×** the callgraph median
+  (callgraph ≈ 90–250 ms/case, PDG ≈ 150–280 ms/case). The first call of a fresh
+  backend carries a one-time DB-warmup spike the p95 reflects.
+- **Bridge evidence is direction-shaped, by design.** Downstream
+  statement-anchored seeds label most inter-procedural reach `unproven-bridge`
+  (the symbol's first-hop call site sits in a *different* statement than the
+  seeded one, so the local slice does not prove the dependence); upstream and
+  whole-symbol reach is `callgraph-bridge`. So `unprovenBridgeRatio ≈ 0.7` is the
+  *expected* shape for statement-anchored downstream seeds — a faithful
+  proven-vs-reachable signal, **not** a regression.
+- **No degraded / error / partial / no-block-at-line cases**, and `--check` is
+  green. Default gates: min symbol recall ≥ 0.95, PDG median ≤ 5000 ms (override
+  via `GN_REAL_CODE_PDG_MIN_SYMBOL_RECALL` / `GN_REAL_CODE_PDG_MAX_MEDIAN_MS`).
 
 ### Re-baseline (after a reviewed accuracy or ground-truth change)
 
