@@ -918,6 +918,11 @@ export function runScopeResolution(
           // gated behind the semantic-model validator and silent in production) so
           // the per-function edge cap never truncates the CFG silently (R6/KTD6).
           (message) => logger.warn(message),
+          // U3 (#2227): the resolved-callee-id map for this file (captured at the
+          // three CALLS emit paths in U2), joined by exact call-site position to
+          // emit `BasicBlock.calleeIds`. `undefined` when pdg is off (the
+          // accumulator is only created under `input.pdg === true`).
+          calleeIdAccumulator?.get(pf.filePath),
         );
         cfgBlocks += emitted.blocks;
         cfgEdges += emitted.edges;

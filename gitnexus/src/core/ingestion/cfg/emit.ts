@@ -29,6 +29,7 @@ import {
 } from './post-dominators.js';
 import { augmentForPostDom } from './synthetic-escape.js';
 import { DEFAULT_PDG_MAX_SITES_PER_STATEMENT } from './visitors/call-site-harvest.js';
+import { calleeIdPosKey } from '../scope-resolution/graph-bridge/callee-id-sink.js';
 import type { BasicBlockData, BindingEntry, FunctionCfg } from './types.js';
 
 /**
@@ -299,11 +300,62 @@ export function calleesOfBlock(block: BasicBlockData): string {
   return [...names].sort().join(' ');
 }
 
+/**
+ * Space-joined, sorted, de-duplicated RESOLVED callee symbol ids invoked
+ * directly in a block — the SOUND parallel to {@link calleesOfBlock}'s leaf
+ * names (#2227 follow-up plan U3, KTD1/KTD2/KTD7). Each block site's call-site
+ * anchor `at` (U1) is joined by EXACT position to the per-file resolved-id map
+ * `fileMap` (U2's `(line,col) → Set<calleeId>`), so a callee reached from a
+ * function is proven impacted by a changed statement iff its resolved id — not
+ * just its leaf NAME — appears in a slice block's `calleeIds`. This eliminates
+ * the same-leaf-name collision (false-proven) and import-alias (false-unproven)
+ * the name predicate suffers on overloading languages.
+ *
+ * The site partitioning is inherited verbatim from {@link calleesOfBlock}: the
+ * SAME `member-read`-skip and the SAME per-statement site cap (R7) — a capped
+ * statement adds {@link CALLEES_TRUNCATED_SENTINEL} so the bridge keeps the
+ * block callee-unknown for ids too (callgraph-equal rather than under-proving).
+ * Because `at` is the SAME anchor the CALLS resolution keyed `atRange` on
+ * (KTD7), the join lands on exactly the sites the name harvest partitioned,
+ * including the nested-function exclusion (so a single-line inline closure's
+ * inner call never leaks its id into the outer block).
+ *
+ * `fileMap` is the resolved-id map for THIS file (`calleeIdAccumulator.get(
+ * filePath)` in run.ts). Absent (pdg off, or a file with no captured CALLS) ⇒
+ * `''` — the bridge then degrades to the leaf-name fallback (R3). A site whose
+ * `at` is absent (pre-U1 channel) or whose position is not in the map
+ * contributes no id (graceful, never throws).
+ */
+export function calleeIdsOfBlock(
+  block: BasicBlockData,
+  fileMap: ReadonlyMap<string, ReadonlySet<string>> | undefined,
+): string {
+  if (fileMap === undefined) return '';
+  const ids = new Set<string>();
+  for (const stmt of block.statements ?? []) {
+    // Mirror calleesOfBlock's cap signal: an over-cap statement dropped sites,
+    // so the id list is INCOMPLETE — flag the block callee-unknown (R7).
+    if ((stmt.sites?.length ?? 0) >= DEFAULT_PDG_MAX_SITES_PER_STATEMENT) {
+      ids.add(CALLEES_TRUNCATED_SENTINEL);
+    }
+    for (const site of stmt.sites ?? []) {
+      if (site.kind === 'member-read') continue;
+      const at = site.at;
+      if (!at) continue;
+      const resolved = fileMap.get(calleeIdPosKey(at[0], at[1]));
+      if (resolved === undefined) continue;
+      for (const id of resolved) ids.add(id);
+    }
+  }
+  return [...ids].sort().join(' ');
+}
+
 export function emitFileCfgs(
   graph: KnowledgeGraph,
   cfgs: readonly FunctionCfg[],
   maxEdgesPerFunction: number = DEFAULT_MAX_CFG_EDGES_PER_FUNCTION,
   onWarn?: (message: string) => void,
+  calleeIdMap?: ReadonlyMap<string, ReadonlySet<string>>,
 ): CfgEmitResult {
   const result: CfgEmitResult = { blocks: 0, edges: 0, droppedEdges: 0, cappedFunctions: 0 };
   const cap = maxEdgesPerFunction > 0 ? maxEdgesPerFunction : Infinity;
@@ -326,6 +378,11 @@ export function emitFileCfgs(
           // the per-statement `sites` (already on the side channel); dropping
           // them here is what made the impact-mode bridge labeling degenerate.
           callees: calleesOfBlock(b),
+          // Space-joined RESOLVED callee symbol ids — the SOUND parallel to
+          // `callees`, joined from the U2 map by each site's exact `at`
+          // position (#2227 follow-up U3). Absent map (pdg off / no captures)
+          // ⇒ `''`, and the bridge falls back to the leaf-name match (R3).
+          calleeIds: calleeIdsOfBlock(b, calleeIdMap),
         },
       });
       result.blocks++;
