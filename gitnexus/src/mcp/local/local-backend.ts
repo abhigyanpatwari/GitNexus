@@ -4798,8 +4798,13 @@ export class LocalBackend {
       // yet `reachableBlocks` excludes the seed by the seed-minus-reachable
       // convention. Upstream seeds carry no discriminating slice, so the bridge
       // falls back to preserving callgraph reach.
-      const reachableBlocks = ((pdgResult as any).reachableBlocks ?? []) as string[];
-      const seedBlocks = ((pdgResult as any).seedBlocks ?? []) as string[];
+      // `_runImpactPDG` returns the PdgImpactResult union; only the success/empty
+      // slice results carry reachableBlocks/seedBlocks (degraded and error results
+      // do not). Narrow via the same discriminant the composer uses, then read the
+      // typed string[] slices — no `as any`.
+      const sliceResult = 'error' in pdgResult || 'pdgLayer' in pdgResult ? null : pdgResult;
+      const reachableBlocks: string[] = sliceResult?.reachableBlocks ?? [];
+      const seedBlocks: string[] = sliceResult?.seedBlocks ?? [];
       const sliceBlocks = [...seedBlocks, ...reachableBlocks];
       const sliceCalleeNames =
         direction === 'downstream' && sliceBlocks.length > 0
@@ -5042,7 +5047,10 @@ export class LocalBackend {
         : {}),
       ...(errorMessage ? { interproceduralError: errorMessage } : {}),
       pdgEvidence: {
-        ...((pdgResult as any).pdgEvidence ?? {}),
+        // pdgResult is narrowed to the success/empty slice result by the
+        // `'error' in / 'pdgLayer' in` guard at the top of this method, so
+        // `pdgEvidence` is typed (optional) — no `as any`.
+        ...(pdgResult.pdgEvidence ?? {}),
         ...(interproceduralEvidence ? { interprocedural: interproceduralEvidence } : {}),
         interproceduralEvidenceCounts,
       },
