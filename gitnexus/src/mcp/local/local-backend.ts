@@ -4773,13 +4773,19 @@ export class LocalBackend {
 
       // Statement-precise inter-procedural reach: a first-hop callee is "proven"
       // iff it is invoked in a block of the criterion's dependence slice. The
-      // slice blocks carry the leaf callee names they call (`BasicBlock.callees`);
-      // upstream/whole-symbol seeds have no discriminating slice, so the bridge
+      // slice = the seed block(s) (the changed line itself) UNION the dependent
+      // reachable blocks — both carry the leaf callee names they call
+      // (`BasicBlock.callees`). The seed block is included because a callee
+      // invoked directly on the changed line is the most-directly-impacted one,
+      // yet `reachableBlocks` excludes the seed by the seed-minus-reachable
+      // convention. Upstream seeds carry no discriminating slice, so the bridge
       // falls back to preserving callgraph reach.
       const reachableBlocks = ((pdgResult as any).reachableBlocks ?? []) as string[];
+      const seedBlocks = ((pdgResult as any).seedBlocks ?? []) as string[];
+      const sliceBlocks = [...seedBlocks, ...reachableBlocks];
       const sliceCalleeNames =
-        direction === 'downstream' && reachableBlocks.length > 0
-          ? await this.calleesOfBlocks(repo, reachableBlocks)
+        direction === 'downstream' && sliceBlocks.length > 0
+          ? await this.calleesOfBlocks(repo, sliceBlocks)
           : new Set<string>();
       const pdgBridge: PdgBridgeOptions | undefined =
         sliceCalleeNames.size > 0 ? { sliceCalleeNames } : undefined;

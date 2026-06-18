@@ -362,6 +362,8 @@ export interface PdgImpactSuccessResult extends PdgImpactBaseResult {
   target: Required<PdgImpactTarget>;
   epistemic: 'pdg-intra-procedural';
   reachableBlocks: string[];
+  /** The criterion's own seed blocks (changed statement / whole-symbol body). */
+  seedBlocks: string[];
   blockCount: number;
   affectedStatements: PdgStatement[];
   affectedStatementCount: number;
@@ -378,6 +380,8 @@ export interface PdgImpactEmptyResult extends PdgImpactBaseResult {
   target: Required<PdgImpactTarget>;
   epistemic: 'no-pdg-body' | 'pdg-no-block-at-line' | 'pdg-intra-procedural';
   reachableBlocks: string[];
+  /** The criterion's own seed blocks (changed statement / whole-symbol body). */
+  seedBlocks: string[];
   blockCount: number;
   affectedStatements: PdgStatement[];
   affectedStatementCount: number;
@@ -500,6 +504,13 @@ function assemblePdgImpactResult(input: {
   target: { id: string; name: string; type: string; filePath: string };
   direction: 'upstream' | 'downstream';
   reachableBlocks: string[];
+  /**
+   * The criterion's own seed blocks (the changed statement / whole-symbol body).
+   * Surfaced so the dispatcher can prove inter-procedural callees invoked
+   * directly on the changed line, which are NOT in `reachableBlocks` (the
+   * seed-minus-reachable convention — seeds are the target, not dependents).
+   */
+  seedBlocks: string[];
   /** Reachable blocks resolved to source statements (the useful slice output). */
   affectedStatements?: PdgStatement[];
   /** The 1-based source line the slice was seeded on (statement mode only). */
@@ -604,6 +615,7 @@ function assemblePdgImpactResult(input: {
     // Raw block-level detail retained alongside the symbol projection (U3 tests
     // and the accuracy harness read these).
     reachableBlocks,
+    seedBlocks: input.seedBlocks,
     blockCount: reachableBlocks.length,
     depthReached: input.depthReached,
     unresolvedBlockCount: unresolvedCount,
@@ -999,6 +1011,7 @@ export async function runImpactPDG(deps: RunPdgImpactDeps): Promise<PdgImpactRes
       direction,
       ...(statementMode ? { criterionLine: line } : {}),
       reachableBlocks: [],
+      seedBlocks: [],
       blockCount: 0,
       affectedStatements: [],
       affectedStatementCount: 0,
@@ -1126,6 +1139,11 @@ export async function runImpactPDG(deps: RunPdgImpactDeps): Promise<PdgImpactRes
           `(what depends on the code at that line). Inter-procedural symbol reach is attached ` +
           `separately by the unified impact dispatcher.`,
       reachableBlocks: [] as string[],
+      // Carry the real seed blocks (non-empty here — the function HAS blocks, they
+      // are all seeds): a callee invoked directly on the seeded line must still be
+      // provable even when the line has no downstream dependents (the seed-line FN
+      // the tri-review found). Empty reachableBlocks must NOT zero the seed callees.
+      seedBlocks,
       blockCount: 0,
       affectedStatements: [],
       affectedStatementCount: 0,
@@ -1155,6 +1173,7 @@ export async function runImpactPDG(deps: RunPdgImpactDeps): Promise<PdgImpactRes
     },
     direction,
     reachableBlocks,
+    seedBlocks,
     affectedStatements,
     criterionLine: statementMode ? (line as number) : undefined,
     projection,

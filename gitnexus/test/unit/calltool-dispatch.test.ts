@@ -1659,6 +1659,52 @@ describe('LocalBackend impact mode (KTD1/KTD5/KTD12)', () => {
     expect(result.pdgInterprocedural).toBeDefined();
   });
 
+  it("mode:'pdg' downstream: a callee invoked ON the seeded line is proven even with no downstream dependents", async () => {
+    // Regression for the PR #2227 tri-review P2: the seed block is excluded from
+    // `reachableBlocks` (seed-minus-reachable convention), so a callee called
+    // directly on the changed line — with NO downstream-dependent block — used to
+    // be dropped from the statement-precise set. The dispatch now unions the seed
+    // block's callees, so it must be proven.
+    resolveSingleTarget();
+    (executeParameterized as any).mockResolvedValue([
+      {
+        id: 'func:main',
+        name: 'main',
+        type: 'Function',
+        filePath: 'src/index.ts',
+        callees: 'seedCallee',
+      },
+    ]);
+    // reachableBlocks EMPTY (line N has no downstream dependents) but seedBlocks
+    // carries the changed line's own block — the case that regressed.
+    vi.spyOn(backend as any, '_runImpactPDG').mockResolvedValueOnce({
+      mode: 'pdg',
+      target: { id: 'func:main', name: 'main', type: 'Function', filePath: 'src/index.ts' },
+      direction: 'downstream',
+      risk: 'UNKNOWN',
+      impactedCount: 0,
+      epistemic: 'pdg-intra-procedural',
+      reachableBlocks: [],
+      seedBlocks: ['BasicBlock:src/index.ts:8:0:0'],
+      blockCount: 0,
+      affectedStatements: [],
+      affectedStatementCount: 0,
+      criterionLine: 8,
+    });
+    const bfsSpy = vi.spyOn(backend as any, '_runImpactBFS');
+    await backend.callTool('impact', {
+      target: 'main',
+      direction: 'downstream',
+      mode: 'pdg',
+      line: 8,
+    });
+    const bridge = bfsSpy.mock.calls[0][4].pdgBridge;
+    // The bridge is seeded from the seed block (not just reachableBlocks), so the
+    // seed-line callee is provable.
+    expect(bridge).toBeDefined();
+    expect([...bridge.sliceCalleeNames]).toContain('seedCallee');
+  });
+
   it("mode:'pdg' + crossDepth → hard {error} (single-repo PDG impact)", async () => {
     resolveSingleTarget();
     const bfsSpy = vi.spyOn(backend as any, '_runImpactBFS');
