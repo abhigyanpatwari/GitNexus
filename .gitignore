@@ -107,3 +107,6 @@ local_docs/
 .tmp/
 .agents/
 .context/
+
+# Local IDE hooks (installed from ~/Dev workspace)
+.cursor/

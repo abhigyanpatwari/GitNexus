@@ -5,6 +5,15 @@ Last reviewed: 2026-04-23
 
 **Project:** GitNexus · **Environment:** dev · **Maintainer:** repository maintainers (see GitHub)
 
+## Dev-root boundary
+
+This file is project-local. `~/Dev` is only the workspace container; once a session is inside this repo, use this file plus `CLAUDE.md`, `GUARDRAILS.md`, and project docs as the active rules.
+
+- Scope searches, build commands, tests, and index work to this repository unless a sibling repo is explicitly named.
+- Load project-specific code intelligence, schema checks, MCP tooling, and CI checks from this repo's docs only.
+- If work touches another folder inside `~/Dev`, switch to that folder's own `AGENTS.md` before editing there.
+- Do not refresh or rely on a `~/Dev`-wide index as the source of truth for this project.
+
 ## Scope
 
 | Boundary | Rule |
