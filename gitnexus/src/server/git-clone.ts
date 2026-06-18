@@ -1,20 +1,29 @@
 /**
  * Git Clone Utility
  *
- * Shallow-clones repositories into ~/.gitnexus/repos/{name}/.
+ * Shallow-clones repositories into the clone root (getGlobalDir()/repos/{name}/).
  * If already cloned, does git pull instead.
  */
 
 import { spawn } from 'child_process';
 import path from 'path';
-import os from 'os';
 import fs from 'fs/promises';
 import { isIP } from 'net';
 import { logger } from '../core/logger.js';
 import { parseRepoNameFromUrl } from '../storage/git.js';
+import { getGlobalDir } from '../storage/repo-manager.js';
 
-/** Root directory for all cloned repositories. Targets must resolve inside this. */
-const CLONE_ROOT = path.resolve(path.join(os.homedir(), '.gitnexus', 'repos'));
+/**
+ * Root directory for all cloned repositories. Targets must resolve inside this.
+ *
+ * Sourced from getGlobalDir() so it honors GITNEXUS_HOME — the Docker image sets
+ * GITNEXUS_HOME=/data/gitnexus, the persistent volume that also holds the
+ * registry and indexes. Without this, clones landed in the container's
+ * ephemeral ~/.gitnexus/repos and were lost on container recreation while the
+ * registry still pointed at the dead path. Falls back to ~/.gitnexus when the
+ * env var is unset (CLI / local installs), matching the prior behavior exactly.
+ */
+const CLONE_ROOT = path.resolve(path.join(getGlobalDir(), 'repos'));
 
 // A valid git repository name is filesystem-safe: alphanumerics plus `. _ -`.
 // Rejecting anything else (including `..`, `/`, `\`, shell metacharacters)

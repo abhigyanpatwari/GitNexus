@@ -141,6 +141,34 @@ function resolveHostGuardForReapingTests(): string | null {
 
 // ─── Test fixtures: temporary .gitnexus directory ───────────────────
 
+function writeSelfTestingGuardWithMarkers(
+  guardPath: string,
+  markers: { lsof?: string; ps?: string },
+) {
+  fs.writeFileSync(
+    guardPath,
+    `#!/usr/bin/env node
+const fs = require('fs');
+const { spawnSync } = require('child_process');
+const args = process.argv.slice(2);
+const lsofMarker = ${JSON.stringify(markers.lsof ?? '')};
+const psMarker = ${JSON.stringify(markers.ps ?? '')};
+if (args.includes('exit 42')) process.exit(42);
+if (lsofMarker && args.includes('-nP')) fs.writeFileSync(lsofMarker, 'called');
+if (psMarker && args.includes('-p')) fs.writeFileSync(psMarker, 'called');
+const child = spawnSync(args[3], args.slice(4), {
+  encoding: 'utf-8',
+  stdio: ['ignore', 'pipe', 'pipe'],
+});
+if (child.stdout) process.stdout.write(child.stdout);
+if (child.stderr) process.stderr.write(child.stderr);
+if (child.error) process.exit(127);
+process.exit(child.status ?? 0);
+`,
+    { mode: 0o755 },
+  );
+}
+
 let tmpDir: string;
 let gitNexusDir: string;
 
@@ -2030,19 +2058,35 @@ describe.skipIf(SKIP_LSOF_PATH)(
 
       it(`${label}: ENOENT lsof → augment still runs (fail-open)`, () => {
         const markerPath = path.join(os.tmpdir(), `gn-hook-enoent-${process.pid}-${label}`);
+        const lsofWrapMarkerPath = path.join(
+          os.tmpdir(),
+          `gn-hook-enoent-lsofwrap-${process.pid}-${label}`,
+        );
+        const psWrapMarkerPath = path.join(
+          os.tmpdir(),
+          `gn-hook-enoent-pswrap-${process.pid}-${label}`,
+        );
         const lbugPath = path.join(gitNexusDir, 'lbug');
         fs.writeFileSync(lbugPath, '');
         fs.rmSync(markerPath, { force: true });
+        fs.rmSync(lsofWrapMarkerPath, { force: true });
+        fs.rmSync(psWrapMarkerPath, { force: true });
         const binDir = createHookToolDir({
           gitnexusMarkerPath: markerPath,
           gitnexusStderr: '[GitNexus] 1 related symbol found:\n\nvalidateUser (src/auth.ts)\n',
           lsofOutput: '',
           psOutput: '',
         });
+        const guardPath = path.join(binDir, 'marker-guard');
+        writeSelfTestingGuardWithMarkers(guardPath, {
+          lsof: lsofWrapMarkerPath,
+          ps: psWrapMarkerPath,
+        });
         try {
           const env = {
             ...hookEnv(binDir),
             GITNEXUS_HOOK_LSOF_PATH: path.join(binDir, '__missing_lsof__'),
+            GITNEXUS_HOOK_TIMEOUT_PATH: guardPath,
           };
           const result = runHook(
             hookPath,
@@ -2058,8 +2102,12 @@ describe.skipIf(SKIP_LSOF_PATH)(
           const output = parseHookOutput(result.stdout);
           expect(output).not.toBeNull();
           expect(fs.existsSync(markerPath)).toBe(true);
+          expect(fs.existsSync(lsofWrapMarkerPath)).toBe(false);
+          expect(fs.existsSync(psWrapMarkerPath)).toBe(false);
         } finally {
           fs.rmSync(markerPath, { force: true });
+          fs.rmSync(lsofWrapMarkerPath, { force: true });
+          fs.rmSync(psWrapMarkerPath, { force: true });
           fs.rmSync(binDir, { recursive: true, force: true });
         }
       });
@@ -2472,19 +2520,37 @@ describe.skipIf(SKIP_LSOF_PATH)(
 
       it(`${label}: ps ENOENT → augment runs (ignore that PID)`, () => {
         const markerPath = path.join(os.tmpdir(), `gn-hook-pseno-${process.pid}-${label}`);
+        const lsofWrapMarkerPath = path.join(
+          os.tmpdir(),
+          `gn-hook-pseno-lsofwrap-${process.pid}-${label}`,
+        );
+        const psWrapMarkerPath = path.join(
+          os.tmpdir(),
+          `gn-hook-pseno-pswrap-${process.pid}-${label}`,
+        );
         const lbugPath = path.join(gitNexusDir, 'lbug');
         fs.writeFileSync(lbugPath, '');
         fs.rmSync(markerPath, { force: true });
+        fs.rmSync(lsofWrapMarkerPath, { force: true });
+        fs.rmSync(psWrapMarkerPath, { force: true });
         const binDir = createHookToolDir({
           gitnexusMarkerPath: markerPath,
           gitnexusStderr: '[GitNexus] 1 related symbol found:\n\nvalidateUser (src/auth.ts)\n',
           lsofOutput: '99905\n',
-          psOutput: '',
+          psOutputByPid: {
+            '99905': 'node /x/node_modules/gitnexus/dist/cli/index.js mcp\n',
+          },
+        });
+        const guardPath = path.join(binDir, 'marker-guard');
+        writeSelfTestingGuardWithMarkers(guardPath, {
+          lsof: lsofWrapMarkerPath,
+          ps: psWrapMarkerPath,
         });
         try {
           const env = {
             ...hookEnv(binDir),
             GITNEXUS_HOOK_PS_PATH: path.join(binDir, '__missing_ps__'),
+            GITNEXUS_HOOK_TIMEOUT_PATH: guardPath,
           };
           const result = runHook(
             hookPath,
@@ -2500,8 +2566,12 @@ describe.skipIf(SKIP_LSOF_PATH)(
           const output = parseHookOutput(result.stdout);
           expect(output).not.toBeNull();
           expect(fs.existsSync(markerPath)).toBe(true);
+          expect(fs.existsSync(lsofWrapMarkerPath)).toBe(true);
+          expect(fs.existsSync(psWrapMarkerPath)).toBe(false);
         } finally {
           fs.rmSync(markerPath, { force: true });
+          fs.rmSync(lsofWrapMarkerPath, { force: true });
+          fs.rmSync(psWrapMarkerPath, { force: true });
           fs.rmSync(binDir, { recursive: true, force: true });
         }
       });
