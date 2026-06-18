@@ -1,0 +1,4750 @@
+{
+  "version": 1,
+  "lastScanned": "2026-06-04T20:42:36.813Z",
+  "shapes": {
+    "b2abbcb190a747e264d6407d981d3b038cea62a7b83504ff655388ae4c786455": [
+      {
+        "name": "RepoStats",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/cli/ai-context.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.751Z",
+        "lastSeen": "2026-06-04T20:42:36.751Z"
+      }
+    ],
+    "4b29d4d03d523eba4b1ae187bfb028d228c1ef8255afb819c3bf25e82538e62a": [
+      {
+        "name": "AIContextOptions",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/cli/ai-context.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.751Z",
+        "lastSeen": "2026-06-04T20:42:36.751Z"
+      }
+    ],
+    "4ae58c835653277f7a62a6e062f87d518fde30463258be5dc58de5d1a3a5c96d": [
+      {
+        "name": "KeySpec",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/cli/analyze-config.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.751Z",
+        "lastSeen": "2026-06-04T20:42:36.751Z"
+      }
+    ],
+    "35795231642eda63283a14b9395f098505d4c63e98c98024179672280882f481": [
+      {
+        "name": "GitNexusRcError",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/cli/analyze-config.ts",
+        "language": "typescript",
+        "kind": "class",
+        "firstSeen": "2026-06-04T20:42:36.751Z",
+        "lastSeen": "2026-06-04T20:42:36.751Z"
+      },
+      {
+        "name": "GroupNotFoundError",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/group/config-parser.ts",
+        "language": "typescript",
+        "kind": "class",
+        "firstSeen": "2026-06-04T20:42:36.762Z",
+        "lastSeen": "2026-06-04T20:42:36.762Z"
+      },
+      {
+        "name": "DispatchLabel",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/model/registration-table.ts",
+        "language": "typescript",
+        "kind": "type",
+        "firstSeen": "2026-06-04T20:42:36.790Z",
+        "lastSeen": "2026-06-04T20:42:36.790Z"
+      },
+      {
+        "name": "ClassNameLookup",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/type-extractors/types.ts",
+        "language": "typescript",
+        "kind": "type",
+        "firstSeen": "2026-06-04T20:42:36.798Z",
+        "lastSeen": "2026-06-04T20:42:36.798Z"
+      },
+      {
+        "name": "ClientDisconnectedError",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/server/api.ts",
+        "language": "typescript",
+        "kind": "class",
+        "firstSeen": "2026-06-04T20:42:36.812Z",
+        "lastSeen": "2026-06-04T20:42:36.812Z"
+      },
+      {
+        "name": "ForbiddenError",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/server/validation.ts",
+        "language": "typescript",
+        "kind": "class",
+        "firstSeen": "2026-06-04T20:42:36.813Z",
+        "lastSeen": "2026-06-04T20:42:36.813Z"
+      }
+    ],
+    "003db8e5dbe2251d1810505f0371259571b088f7530912ac7564543480c7451b": [
+      {
+        "name": "CliProgressTerminal",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/cli/analyze.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.755Z",
+        "lastSeen": "2026-06-04T20:42:36.755Z"
+      }
+    ],
+    "27a91b296505c48e5109db20013e357900b2b4b6e792c85678c43c8f559407c7": [
+      {
+        "name": "IntlSegmenterLike",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/cli/analyze.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.755Z",
+        "lastSeen": "2026-06-04T20:42:36.755Z"
+      }
+    ],
+    "b23df36fe6a186a104d797f50b436059e73d26d3c5d17a375d176187c32b1e74": [
+      {
+        "name": "RespawnExit",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/cli/analyze.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.755Z",
+        "lastSeen": "2026-06-04T20:42:36.755Z"
+      }
+    ],
+    "b79767a48b778061077c8fee8e14b61f267f80ab3408e3ed2fd0984d1e0cb046": [
+      {
+        "name": "AnalyzeOptions",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/cli/analyze.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.755Z",
+        "lastSeen": "2026-06-04T20:42:36.755Z"
+      }
+    ],
+    "c96480a0a3d5fb6126a345b96662e391037c9e3d223c1275c51f62686c8a6314": [
+      {
+        "name": "CliMessageFields",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/cli/cli-message.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.756Z",
+        "lastSeen": "2026-06-04T20:42:36.756Z"
+      }
+    ],
+    "6012e789eebdde1cc99fbfcf12dfa66c91b77eba4ba9a0c5a85009939b7eff9d": [
+      {
+        "name": "DetectChangesSummary",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/cli/detect-changes-format.ts",
+        "language": "typescript",
+        "kind": "type",
+        "firstSeen": "2026-06-04T20:42:36.756Z",
+        "lastSeen": "2026-06-04T20:42:36.756Z"
+      }
+    ],
+    "f581d9205ca9b2ff8f4a503b041510e0c7dc20c95f7fa50412985369f9501d1e": [
+      {
+        "name": "ChangedSymbol",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/cli/detect-changes-format.ts",
+        "language": "typescript",
+        "kind": "type",
+        "firstSeen": "2026-06-04T20:42:36.756Z",
+        "lastSeen": "2026-06-04T20:42:36.756Z"
+      },
+      {
+        "name": "ClusterMemberInfo",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/cluster-enricher.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.771Z",
+        "lastSeen": "2026-06-04T20:42:36.771Z"
+      }
+    ],
+    "1c230e32c0b3bad2c5a7d48ae85419ecf02d1c312122153aa51a6972c7a5cdf9": [
+      {
+        "name": "ChangedStep",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/cli/detect-changes-format.ts",
+        "language": "typescript",
+        "kind": "type",
+        "firstSeen": "2026-06-04T20:42:36.756Z",
+        "lastSeen": "2026-06-04T20:42:36.756Z"
+      }
+    ],
+    "48e4dcf1ba9249be1af2f11d285506cfc19152da7769da84aaa51e6ff9f5d6b0": [
+      {
+        "name": "AffectedProcess",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/cli/detect-changes-format.ts",
+        "language": "typescript",
+        "kind": "type",
+        "firstSeen": "2026-06-04T20:42:36.756Z",
+        "lastSeen": "2026-06-04T20:42:36.756Z"
+      }
+    ],
+    "46672e3493185474a7dbed1b2658fb8ad9462b48363b6db217d1dcb6a0e6225f": [
+      {
+        "name": "DetectChangesResult",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/cli/detect-changes-format.ts",
+        "language": "typescript",
+        "kind": "type",
+        "firstSeen": "2026-06-04T20:42:36.756Z",
+        "lastSeen": "2026-06-04T20:42:36.756Z"
+      }
+    ],
+    "2697b40ede560e3a4e88bf3cd61e2620763017e345181a9b8b21e11e0a9308ea": [
+      {
+        "name": "EvalServerOptions",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/cli/eval-server.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.756Z",
+        "lastSeen": "2026-06-04T20:42:36.756Z"
+      }
+    ],
+    "9c281c5d529cf54a86d8dbcd38e3ba729a41b430c4178df7f2e47cebcced53f9": [
+      {
+        "name": "IndexOptions",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/cli/index-repo.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.757Z",
+        "lastSeen": "2026-06-04T20:42:36.757Z"
+      }
+    ],
+    "478bf30f8c01f21d86249b84709a9339a2b600f3e30a52cdb0d22172e0c1b561": [
+      {
+        "name": "OptionalGrammar",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/cli/optional-grammars.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.757Z",
+        "lastSeen": "2026-06-04T20:42:36.757Z"
+      }
+    ],
+    "b63f09135d792ffc2ed449020301eb9931ee1360a233e2a4824b5e0034b0dc7c": [
+      {
+        "name": "MissingGrammar",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/cli/optional-grammars.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.757Z",
+        "lastSeen": "2026-06-04T20:42:36.757Z"
+      }
+    ],
+    "ba060454523bf01886b73a0c25d39e816132e4a3bf476a986c4bed95a96ab354": [
+      {
+        "name": "PublishOptions",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/cli/publish.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.757Z",
+        "lastSeen": "2026-06-04T20:42:36.757Z"
+      }
+    ],
+    "2f817672ce356cd590a2329069a8f4e2ee35a8e2ab95c8cd517c3e8b250d5ce0": [
+      {
+        "name": "InvocationResolver",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/cli/resolve-invocation.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.758Z",
+        "lastSeen": "2026-06-04T20:42:36.758Z"
+      }
+    ],
+    "aabc2077d02d8dc27aaa93169bdfc22c9639a001141b6d35a66ab6db5776fc83": [
+      {
+        "name": "GeneratedSkillInfo",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/cli/skill-gen.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.759Z",
+        "lastSeen": "2026-06-04T20:42:36.759Z"
+      }
+    ],
+    "a66a368841ef3f1c0f7a23f61816adcf0dfb5ac8599174896f9ee9fe651eacfd": [
+      {
+        "name": "AggregatedCommunity",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/cli/skill-gen.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.759Z",
+        "lastSeen": "2026-06-04T20:42:36.759Z"
+      }
+    ],
+    "dc34c1807098eebdd0752af1a012cb97f3f9a85bd98c5ef1e000aed7b5394de0": [
+      {
+        "name": "MemberSymbol",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/cli/skill-gen.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.759Z",
+        "lastSeen": "2026-06-04T20:42:36.759Z"
+      }
+    ],
+    "af48ab4bc3d455648d3bbaa5b6d1340c47956b358d79e3f833cdd61ed08caa90": [
+      {
+        "name": "FileInfo",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/cli/skill-gen.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.759Z",
+        "lastSeen": "2026-06-04T20:42:36.759Z"
+      }
+    ],
+    "5c37b25d82ac4db8903999a06188dd13096ceafb55d7d5dfcadbb8b8e9ec53d1": [
+      {
+        "name": "CrossConnection",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/cli/skill-gen.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.759Z",
+        "lastSeen": "2026-06-04T20:42:36.759Z"
+      }
+    ],
+    "1750bd255b21bd52a278db1584fd04886d3e300e400564419129d6d2b992b101": [
+      {
+        "name": "WikiCommandOptions",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/cli/wiki.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.759Z",
+        "lastSeen": "2026-06-04T20:42:36.759Z"
+      }
+    ],
+    "d13ec234bec275365d0ba101ee91a0e6401ab29bd1292442c4d94816a7717c1d": [
+      {
+        "name": "IgnoreOptions",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/config/ignore-service.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.759Z",
+        "lastSeen": "2026-06-04T20:42:36.759Z"
+      }
+    ],
+    "9d67bb7db70fbe5707a3e4d69a6b2aa7952de05d7bbc87261fe4c59c2961ff54": [
+      {
+        "name": "EmbeddingModeInput",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/embedding-mode.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.760Z",
+        "lastSeen": "2026-06-04T20:42:36.760Z"
+      }
+    ],
+    "51413f8012ad254e98be1d8e0662bccaf7faad0a058c6add5f779b564d6f0f36": [
+      {
+        "name": "EmbeddingMode",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/embedding-mode.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.760Z",
+        "lastSeen": "2026-06-04T20:42:36.760Z"
+      }
+    ],
+    "942a4c958974e37899586cff26d15551087abe23fcbfe01c671afd6f31a1c60c": [
+      {
+        "name": "EmbeddingCapDecision",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/embedding-mode.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.760Z",
+        "lastSeen": "2026-06-04T20:42:36.760Z"
+      }
+    ],
+    "0987abf9e7868c1734976a25042451695ea6d06efef9badaa0a2ca01c5482992": [
+      {
+        "name": "Chunk",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/embeddings/character-chunk.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.760Z",
+        "lastSeen": "2026-06-04T20:42:36.760Z"
+      }
+    ],
+    "05916e7443a7bc48315654daf812ec4c60f4ef0462b67a5df2a6f356bc1d7fe3": [
+      {
+        "name": "EmbeddingPipelineResult",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/embeddings/embedding-pipeline.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.760Z",
+        "lastSeen": "2026-06-04T20:42:36.760Z"
+      }
+    ],
+    "373012a5679f2a9f6266ea2eb560b5184b91aa15bb598e908f87f639df1742a9": [
+      {
+        "name": "ExactEmbeddingRow",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/embeddings/exact-search.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.760Z",
+        "lastSeen": "2026-06-04T20:42:36.760Z"
+      }
+    ],
+    "28ec74462ee8952a9fe6b8ff513cf1df8c47409f0a1e33f83d82ead6483c41fe": [
+      {
+        "name": "ExactSearchChunk",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/embeddings/exact-search.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.760Z",
+        "lastSeen": "2026-06-04T20:42:36.760Z"
+      },
+      {
+        "name": "ChunkSearchRow",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/embeddings/types.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.761Z",
+        "lastSeen": "2026-06-04T20:42:36.761Z"
+      }
+    ],
+    "d0ea2b6e4706b924fb805357d57bc425402728170c03dedf8c2caf8d416727e1": [
+      {
+        "name": "HfEnvSubset",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/embeddings/hf-env.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.760Z",
+        "lastSeen": "2026-06-04T20:42:36.760Z"
+      }
+    ],
+    "6f5cc5f0bd50bc213df9cac869466981f51f9eba3b3141eb9444b9fd3c16c29e": [
+      {
+        "name": "HfRetryOptions",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/embeddings/hf-env.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.760Z",
+        "lastSeen": "2026-06-04T20:42:36.760Z"
+      }
+    ],
+    "3c77bf883795a1cfcb5f554ebc7a89c3bfeff3f2bd4fc0c38909265d12e4b689": [
+      {
+        "name": "HttpConfig",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/embeddings/http-client.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.760Z",
+        "lastSeen": "2026-06-04T20:42:36.760Z"
+      }
+    ],
+    "77f137dcdc42f43d4ec976dc189a77702845ae5dfa5de344a1eeff5b7921151c": [
+      {
+        "name": "EmbeddingItem",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/embeddings/http-client.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.760Z",
+        "lastSeen": "2026-06-04T20:42:36.760Z"
+      }
+    ],
+    "d6f261daa1015cc3068951f8e90dc42bebfe9bf869b0208e479e138222a3aeeb": [
+      {
+        "name": "ResolvedLineRange",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/embeddings/line-index.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.761Z",
+        "lastSeen": "2026-06-04T20:42:36.761Z"
+      },
+      {
+        "name": "DiffHunk",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/storage/git.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.813Z",
+        "lastSeen": "2026-06-04T20:42:36.813Z"
+      }
+    ],
+    "0c2810d37179da7f2962a96160ca0bee9437c6604d7a12a958191bcdb7ebc83b": [
+      {
+        "name": "LocalEmbeddingRuntimeOptions",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/embeddings/runtime-support.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.761Z",
+        "lastSeen": "2026-06-04T20:42:36.761Z"
+      }
+    ],
+    "d96f1a716bb7cf6a9cd7f813753ea6adf4aaecb4b7f1d47d173f1cbd9928fdd3": [
+      {
+        "name": "StructuralNames",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/embeddings/structural-extractor.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.761Z",
+        "lastSeen": "2026-06-04T20:42:36.761Z"
+      }
+    ],
+    "7c77fad05c1a40d9690413fb3723250b3f8260be1f4a5be8d1be68ba051f6e45": [
+      {
+        "name": "ChunkingRule",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/embeddings/types.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.761Z",
+        "lastSeen": "2026-06-04T20:42:36.761Z"
+      }
+    ],
+    "6e9e8f80ac00d1b859a4516f7400a26b353b9f4e68e855698016935df9598a3e": [
+      {
+        "name": "EmbeddingProgress",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/embeddings/types.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.761Z",
+        "lastSeen": "2026-06-04T20:42:36.761Z"
+      }
+    ],
+    "41256011faf4a49c4c2961719499f2c83022f1350b8ffc07e87325e54962c846": [
+      {
+        "name": "EmbeddingConfig",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/embeddings/types.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.761Z",
+        "lastSeen": "2026-06-04T20:42:36.761Z"
+      }
+    ],
+    "78aee92bf0cbe3633acff0425700e355c1ae23a0bc7d31e390ee3a2150362580": [
+      {
+        "name": "SemanticSearchResult",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/embeddings/types.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.761Z",
+        "lastSeen": "2026-06-04T20:42:36.761Z"
+      }
+    ],
+    "b65e3a9db75e2c89473ab0fd82eb76f13ac976ac55718df778f447a6d0744929": [
+      {
+        "name": "EmbeddableNode",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/embeddings/types.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.761Z",
+        "lastSeen": "2026-06-04T20:42:36.761Z"
+      }
+    ],
+    "80e3c8c23e97cb43c86775ae9f8c5983975e43dc31f7d18e44c0cfae89f6c606": [
+      {
+        "name": "CachedEmbedding",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/embeddings/types.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.761Z",
+        "lastSeen": "2026-06-04T20:42:36.761Z"
+      }
+    ],
+    "784fc05d40f6a776f5eb333a469dd9939e55cfd7a6e61fffc26fe6587960dfaa": [
+      {
+        "name": "EmbeddingContext",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/embeddings/types.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.761Z",
+        "lastSeen": "2026-06-04T20:42:36.761Z"
+      }
+    ],
+    "af3a0bf37e688f853848d204425980f2aaa4a185313b3f3f3dc1b5240542945c": [
+      {
+        "name": "ModelProgress",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/embeddings/types.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.761Z",
+        "lastSeen": "2026-06-04T20:42:36.761Z"
+      }
+    ],
+    "9c35b11648afc6708dcb8878f78cccb4bcd20527cbeb4cae9d863dc860ec0489": [
+      {
+        "name": "BestChunkMatch",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/embeddings/types.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.761Z",
+        "lastSeen": "2026-06-04T20:42:36.761Z"
+      }
+    ],
+    "30f45c2604cfdf4cf29f9b859863963c43171eb7c14c651b3fbc7e8eacf6e7aa": [
+      {
+        "name": "StalenessInfo",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/git-staleness.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.761Z",
+        "lastSeen": "2026-06-04T20:42:36.761Z"
+      }
+    ],
+    "7163dd58bad5179bb3babc381b9409e91bb68593dc60ceae0a06a62ecb06e764": [
+      {
+        "name": "KnowledgeGraph",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/graph/types.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.762Z",
+        "lastSeen": "2026-06-04T20:42:36.762Z"
+      }
+    ],
+    "53a9d797c916d2a53187f261ced4d93c6d2c380dccb8f7c583270e8da14a96fc": [
+      {
+        "name": "ContractLookupIndex",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/group/bridge-db.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.762Z",
+        "lastSeen": "2026-06-04T20:42:36.762Z"
+      }
+    ],
+    "0e8de65d835fe05218964a45cf7da99fb8e976a8c8e89ae5c43af4dc0642adf4": [
+      {
+        "name": "WriteBridgeInput",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/group/bridge-db.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.762Z",
+        "lastSeen": "2026-06-04T20:42:36.762Z"
+      }
+    ],
+    "e16b11f58484a43ad4ee21cf955d70f95a5b1ad612ff2218e7e6dd9ea5168529": [
+      {
+        "name": "WriteBridgeReport",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/group/bridge-db.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.762Z",
+        "lastSeen": "2026-06-04T20:42:36.762Z"
+      }
+    ],
+    "3014b03e0fb13be617cfb56694804106203fa455cf79d83949a259e613e94772": [
+      {
+        "name": "ContractExtractor",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/group/contract-extractor.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.762Z",
+        "lastSeen": "2026-06-04T20:42:36.762Z"
+      }
+    ],
+    "b07f92aa37dd40d2968b1cfdccfe9721c53cfe497a6792df943cc1805ba87c24": [
+      {
+        "name": "RunGroupImpactDeps",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/group/cross-impact.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.762Z",
+        "lastSeen": "2026-06-04T20:42:36.762Z"
+      }
+    ],
+    "722d5cc51e5025fd6b784f36bc11da9b4af6ca5130519253bad7f77e4619b193": [
+      {
+        "name": "BridgeNeighborRow",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/group/cross-impact.ts",
+        "language": "typescript",
+        "kind": "type",
+        "firstSeen": "2026-06-04T20:42:36.762Z",
+        "lastSeen": "2026-06-04T20:42:36.762Z"
+      }
+    ],
+    "9d6ed7f3f075d4a8c4b7b1b5c91b711bb9f31a9e7985e844b6f56850ff324451": [
+      {
+        "name": "ElixirAppMeta",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/group/extractors/elixir-workspace-extractor.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.762Z",
+        "lastSeen": "2026-06-04T20:42:36.762Z"
+      }
+    ],
+    "bb486ad62621aa95c04c62a09cd948eda1f0b82b7104ad2db6563d07b6cd33cf": [
+      {
+        "name": "ImportedModule",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/group/extractors/elixir-workspace-extractor.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.762Z",
+        "lastSeen": "2026-06-04T20:42:36.762Z"
+      }
+    ],
+    "f8109d09934b1ccd58a97e4b47f52a925ea0848231cf2b95ad22cfbe060f9526": [
+      {
+        "name": "GoModuleMeta",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/group/extractors/go-workspace-extractor.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.763Z",
+        "lastSeen": "2026-06-04T20:42:36.763Z"
+      }
+    ],
+    "a08f3d07ca1860697d84f91103c0c0cb874e6b5aeb25dbd5f06e36284178444b": [
+      {
+        "name": "ImportedSymbol",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/group/extractors/go-workspace-extractor.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.763Z",
+        "lastSeen": "2026-06-04T20:42:36.763Z"
+      }
+    ],
+    "3693506bd798adbbea4f28dd1d918ac2bfdd6b35d6e2d10592b6b4aaf6584854": [
+      {
+        "name": "ProtoServiceInfo",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/group/extractors/grpc-extractor.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.763Z",
+        "lastSeen": "2026-06-04T20:42:36.763Z"
+      }
+    ],
+    "65e5d9b55eaa0a8ec586cdd7f71d7f97d514187b941f58ddb8d4cfb8def206c0": [
+      {
+        "name": "NodeGrpcPatternBundle",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/group/extractors/grpc-patterns/node.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.763Z",
+        "lastSeen": "2026-06-04T20:42:36.763Z"
+      }
+    ],
+    "00254f6ed101a5c1bce25fa6411b2d8df0afe52220fdaf76e8b00ffd6690829d": [
+      {
+        "name": "GrpcDetection",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/group/extractors/grpc-patterns/types.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.764Z",
+        "lastSeen": "2026-06-04T20:42:36.764Z"
+      }
+    ],
+    "35daee17dad7aa6543b21c40f505f09c714948f08a26421c41afa2786845d7c3": [
+      {
+        "name": "GrpcLanguagePlugin",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/group/extractors/grpc-patterns/types.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.764Z",
+        "lastSeen": "2026-06-04T20:42:36.764Z"
+      },
+      {
+        "name": "ThriftLanguagePlugin",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/group/extractors/thrift-patterns/types.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.768Z",
+        "lastSeen": "2026-06-04T20:42:36.768Z"
+      }
+    ],
+    "e8743a034c6d74e891b58a87ff97bc3199e3835f4187caa5207dfcca61c42cb3": [
+      {
+        "name": "SpringRouteBinding",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/group/extractors/http-patterns/java.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.764Z",
+        "lastSeen": "2026-06-04T20:42:36.764Z"
+      }
+    ],
+    "48f462ba0b49c2da544ac96698ab5c9e96c38627ac099ce8781e3bf1a71c1383": [
+      {
+        "name": "SpringMethodInfo",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/group/extractors/http-patterns/java.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.764Z",
+        "lastSeen": "2026-06-04T20:42:36.764Z"
+      }
+    ],
+    "711b4ce1eb8fdb86faac35af5f7aa930ba21c43043fbfd2dfc1deb317b85462b": [
+      {
+        "name": "SpringTypeInfo",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/group/extractors/http-patterns/java.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.764Z",
+        "lastSeen": "2026-06-04T20:42:36.764Z"
+      }
+    ],
+    "701105bd75193b529290deb1bfd9887a51ac6d90e24ed9deafaebdb63e1306c1": [
+      {
+        "name": "RestTemplateMeta",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/group/extractors/http-patterns/java.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.764Z",
+        "lastSeen": "2026-06-04T20:42:36.764Z"
+      }
+    ],
+    "2b88a4a357e86debcfc6788f8c9146a0f9dea000d987503b6d10d4e6ad2b24a7": [
+      {
+        "name": "MethodRouteAnnotation",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/group/extractors/http-patterns/java.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.764Z",
+        "lastSeen": "2026-06-04T20:42:36.764Z"
+      }
+    ],
+    "bdeff5fdcf8c95c84ee63a82c234f74f43e6c164d44d46c4dc81aa682aa5b409": [
+      {
+        "name": "RequestLineAnnotation",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/group/extractors/http-patterns/java.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.764Z",
+        "lastSeen": "2026-06-04T20:42:36.764Z"
+      }
+    ],
+    "7c8924f68eb2458a3519c2d51552fe72038ea171ec013eebeac59b4467d41a1d": [
+      {
+        "name": "RouteAnnotationScan",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/group/extractors/http-patterns/java.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.764Z",
+        "lastSeen": "2026-06-04T20:42:36.764Z"
+      }
+    ],
+    "7631f22d8a533c443c819c33a8fc7b0f7b73c34f0b53b00ac0808b1c0616f297": [
+      {
+        "name": "NodePatternBundle",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/group/extractors/http-patterns/node.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.764Z",
+        "lastSeen": "2026-06-04T20:42:36.764Z"
+      }
+    ],
+    "370289171026fd6d9a1dffa61408b93220b5b376c615eecc9f480ba7359ce97f": [
+      {
+        "name": "PhpPatternBundle",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/group/extractors/http-patterns/php.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.764Z",
+        "lastSeen": "2026-06-04T20:42:36.764Z"
+      }
+    ],
+    "5bdfa80c1011ac1195866d8d4410d7380c232bf1d9453091cabba2c714782fa9": [
+      {
+        "name": "PythonRepoContext",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/group/extractors/http-patterns/python.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.765Z",
+        "lastSeen": "2026-06-04T20:42:36.765Z"
+      }
+    ],
+    "399e1f2c079020704a6ca2933ddce32d49127409dded5a44fcda232974762ce5": [
+      {
+        "name": "LocalImport",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/group/extractors/http-patterns/python.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.765Z",
+        "lastSeen": "2026-06-04T20:42:36.765Z"
+      }
+    ],
+    "df278da2f0aa43d51ca027bb900357a7b2ebb7f2164e65cfe83d46a09811834b": [
+      {
+        "name": "HttpDetection",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/group/extractors/http-patterns/types.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.765Z",
+        "lastSeen": "2026-06-04T20:42:36.765Z"
+      }
+    ],
+    "af2af3896f9b37b7c558edffdca3b93c4433b81bb68ff999712ab4d7bd767b00": [
+      {
+        "name": "HttpScanInput",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/group/extractors/http-patterns/types.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.765Z",
+        "lastSeen": "2026-06-04T20:42:36.765Z"
+      }
+    ],
+    "5b8f556533654db81daf8c00bfa6d38915d1844c960ff086bba571d1674274f8": [
+      {
+        "name": "HttpFileDetections",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/group/extractors/http-patterns/types.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.765Z",
+        "lastSeen": "2026-06-04T20:42:36.765Z"
+      }
+    ],
+    "0a3147165c64982e861c64100a16fb589fe6346b26917a67d9af71a12b4a50f4": [
+      {
+        "name": "HttpLanguagePlugin",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/group/extractors/http-patterns/types.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.765Z",
+        "lastSeen": "2026-06-04T20:42:36.765Z"
+      }
+    ],
+    "297768845bb1906f807f193670ddfd8feeda7438161991edb035775da8523fcc": [
+      {
+        "name": "HttpRouteExtractor",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/group/extractors/http-route-extractor.ts",
+        "language": "typescript",
+        "kind": "class",
+        "firstSeen": "2026-06-04T20:42:36.766Z",
+        "lastSeen": "2026-06-04T20:42:36.766Z"
+      }
+    ],
+    "18869783fbc36b3ce02b6664087d961fa48893b96ce517377b249d5326095502": [
+      {
+        "name": "JavaProjectMeta",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/group/extractors/java-workspace-extractor.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.767Z",
+        "lastSeen": "2026-06-04T20:42:36.767Z"
+      }
+    ],
+    "db6151ccb3cfadc0d42fb44060a62f9b091768231f7c2946f8738597d5ddcf47": [
+      {
+        "name": "ImportedSymbol",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/group/extractors/java-workspace-extractor.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.767Z",
+        "lastSeen": "2026-06-04T20:42:36.767Z"
+      }
+    ],
+    "b0ac8147ec9d6f6fe5e6eb5aa9e934cabca8507047fcee43de6c93ce6bfc5005": [
+      {
+        "name": "JavaWorkspaceResult",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/group/extractors/java-workspace-extractor.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.767Z",
+        "lastSeen": "2026-06-04T20:42:36.767Z"
+      }
+    ],
+    "6303ec99ab513c76eae024af6e86d7e637064b09571c269265a7db1fa876056f": [
+      {
+        "name": "ManifestExtractResult",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/group/extractors/manifest-extractor.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.767Z",
+        "lastSeen": "2026-06-04T20:42:36.767Z"
+      }
+    ],
+    "1888d32c35ee6e45a8384e2ebcd1d7ff02e655835447f8d1bca2fb50ea40d2eb": [
+      {
+        "name": "ResolvedSymbol",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/group/extractors/manifest-extractor.ts",
+        "language": "typescript",
+        "kind": "type",
+        "firstSeen": "2026-06-04T20:42:36.767Z",
+        "lastSeen": "2026-06-04T20:42:36.767Z"
+      }
+    ],
+    "5db56aeddbb7468189d6a03b383ab794dc7b23317629426dd92c2ad2d2ca4a64": [
+      {
+        "name": "ManifestExtractor",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/group/extractors/manifest-extractor.ts",
+        "language": "typescript",
+        "kind": "class",
+        "firstSeen": "2026-06-04T20:42:36.767Z",
+        "lastSeen": "2026-06-04T20:42:36.767Z"
+      }
+    ],
+    "c8649e9608110c1dd47437a7a460cdcf3d57df6a01ba8038cbfdb105f895ebce": [
+      {
+        "name": "PackageMeta",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/group/extractors/node-workspace-extractor.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.767Z",
+        "lastSeen": "2026-06-04T20:42:36.767Z"
+      },
+      {
+        "name": "CrateMeta",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/group/extractors/rust-workspace-extractor.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.768Z",
+        "lastSeen": "2026-06-04T20:42:36.768Z"
+      }
+    ],
+    "9498e09aa1a3561ff4d0ff1516ec2d782fcdcf7b5e984b204500b48397891a96": [
+      {
+        "name": "ImportedSymbol",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/group/extractors/node-workspace-extractor.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.767Z",
+        "lastSeen": "2026-06-04T20:42:36.767Z"
+      },
+      {
+        "name": "ImportedSymbol",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/group/extractors/python-workspace-extractor.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.767Z",
+        "lastSeen": "2026-06-04T20:42:36.767Z"
+      }
+    ],
+    "858ce26bd1fb4e97d4756bdb392e8283ed865f1cbf60b2773e2185e6b1643098": [
+      {
+        "name": "NodeWorkspaceResult",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/group/extractors/node-workspace-extractor.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.767Z",
+        "lastSeen": "2026-06-04T20:42:36.767Z"
+      }
+    ],
+    "524dd8554195e7ae7a7abbaa03c8544f0948e93b3e9e99c3abf818ffc22ef83e": [
+      {
+        "name": "PythonPackageMeta",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/group/extractors/python-workspace-extractor.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.767Z",
+        "lastSeen": "2026-06-04T20:42:36.767Z"
+      }
+    ],
+    "5a0fbb5d410f3b37a1f76ce062a510d9325d44fcd5a4377fe6f0330cfa884697": [
+      {
+        "name": "ImportedSymbol",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/group/extractors/rust-workspace-extractor.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.768Z",
+        "lastSeen": "2026-06-04T20:42:36.768Z"
+      }
+    ],
+    "d1d1e86ed14427169c13acdcbb9dbf436aaa075c0c298e9e8e6ca0ea114bf106": [
+      {
+        "name": "RustWorkspaceResult",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/group/extractors/rust-workspace-extractor.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.768Z",
+        "lastSeen": "2026-06-04T20:42:36.768Z"
+      }
+    ],
+    "2f0d95968dc85d9bfcaa15ff993fcf9d6381ca437f6d4417ece5116455c1bb79": [
+      {
+        "name": "ThriftServiceInfo",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/group/extractors/thrift-extractor.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.768Z",
+        "lastSeen": "2026-06-04T20:42:36.768Z"
+      }
+    ],
+    "b8d27a42e9822836716dc2382e39fcaa6c2c825bfdbad79e5c62043569134392": [
+      {
+        "name": "ThriftContext",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/group/extractors/thrift-extractor.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.768Z",
+        "lastSeen": "2026-06-04T20:42:36.768Z"
+      }
+    ],
+    "9d913d07d00bf1ed52b42ceda4e91a1a448d1133e84966e5ab3d2fd640d8b9ef": [
+      {
+        "name": "ThriftExtractor",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/group/extractors/thrift-extractor.ts",
+        "language": "typescript",
+        "kind": "class",
+        "firstSeen": "2026-06-04T20:42:36.768Z",
+        "lastSeen": "2026-06-04T20:42:36.768Z"
+      }
+    ],
+    "5ebe34945cee8eabbd27fef4d4963a228c01292b7cccda18b1019d680d42d380": [
+      {
+        "name": "VariableBinding",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/group/extractors/thrift-patterns/java.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.768Z",
+        "lastSeen": "2026-06-04T20:42:36.768Z"
+      }
+    ],
+    "db6bba470bd8fe32492492dfd8ded17866edfe959a0e747978cfd8e4f9e1632f": [
+      {
+        "name": "ServiceTypeMatch",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/group/extractors/thrift-patterns/java.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.768Z",
+        "lastSeen": "2026-06-04T20:42:36.768Z"
+      }
+    ],
+    "64585b680d63bdbc9fbab6d667b5686ddd635d7c8354b6cfe9cdd7a7d73b0c73": [
+      {
+        "name": "ThriftDetection",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/group/extractors/thrift-patterns/types.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.768Z",
+        "lastSeen": "2026-06-04T20:42:36.768Z"
+      }
+    ],
+    "2d67e0d982a5898f66afe63a1d3e0d3219121d4b266277a3754b6bfd51e199ca": [
+      {
+        "name": "TopicExtractor",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/group/extractors/topic-extractor.ts",
+        "language": "typescript",
+        "kind": "class",
+        "firstSeen": "2026-06-04T20:42:36.768Z",
+        "lastSeen": "2026-06-04T20:42:36.768Z"
+      }
+    ],
+    "b87941c7c5be2bdf9fc0701d363405c996d0f69c8d24b8fa6de0dd0165c5dbc7": [
+      {
+        "name": "TopicMeta",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/group/extractors/topic-patterns/types.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.768Z",
+        "lastSeen": "2026-06-04T20:42:36.768Z"
+      }
+    ],
+    "824a70eb8f7ea980552edf1e798f2c0cd3daa2de0a1dce48f3ec3414773c1cc6": [
+      {
+        "name": "PatternSpec",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/group/extractors/tree-sitter-scanner.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.768Z",
+        "lastSeen": "2026-06-04T20:42:36.768Z"
+      }
+    ],
+    "bfa620e046bf68d92fe184520e3028ee30551a42adb8950ca2abdd94300bda9f": [
+      {
+        "name": "LanguagePatterns",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/group/extractors/tree-sitter-scanner.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.768Z",
+        "lastSeen": "2026-06-04T20:42:36.768Z"
+      }
+    ],
+    "f595ed14428fd15bd5af89ff27370a00b620a1cc019aaadf184119593e4479c8": [
+      {
+        "name": "CompiledPatterns",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/group/extractors/tree-sitter-scanner.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.768Z",
+        "lastSeen": "2026-06-04T20:42:36.768Z"
+      }
+    ],
+    "fe7ef36248bd88185a96a28e24a72dc8b136ec4cb2ce1ff1da58cef83ffe2aea": [
+      {
+        "name": "CompiledPattern",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/group/extractors/tree-sitter-scanner.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.768Z",
+        "lastSeen": "2026-06-04T20:42:36.768Z"
+      }
+    ],
+    "163967e0473493be9799b0a341f6fe068ec93532c9cb1ba1f5ebb460721097ef": [
+      {
+        "name": "ScanMatch",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/group/extractors/tree-sitter-scanner.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.768Z",
+        "lastSeen": "2026-06-04T20:42:36.768Z"
+      }
+    ],
+    "43946ba761c6947d8e4996639e2dc18e72813f5eac9ab39c4450ed97823c0d9f": [
+      {
+        "name": "WorkspaceDiscoveryResult",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/group/extractors/workspace-extractor.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.768Z",
+        "lastSeen": "2026-06-04T20:42:36.768Z"
+      }
+    ],
+    "599fb1b77bacb22f15e49028d3efc09f275ff0a3de7208602feae5fec7207f3e": [
+      {
+        "name": "WorkspaceExtractorStats",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/group/extractors/workspace-extractor.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.768Z",
+        "lastSeen": "2026-06-04T20:42:36.768Z"
+      }
+    ],
+    "89744f6e1da6c4109a45f3e60a7a61fbc759cf5589c151986b83d645b010caf1": [
+      {
+        "name": "MatchResult",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/group/matching.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.769Z",
+        "lastSeen": "2026-06-04T20:42:36.769Z"
+      }
+    ],
+    "0cdd09656c6426f9da20b4fc555506cd29702ef5052121d08e31de6bc1b5a344": [
+      {
+        "name": "WildcardMatchResult",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/group/matching.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.769Z",
+        "lastSeen": "2026-06-04T20:42:36.769Z"
+      }
+    ],
+    "31baef68e6fa9532e5dd70ec7fc75eeef2ac9860a255c67f2fac9ded150f4e29": [
+      {
+        "name": "ServiceBoundary",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/group/service-boundary-detector.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.769Z",
+        "lastSeen": "2026-06-04T20:42:36.769Z"
+      }
+    ],
+    "09b5076e977427697f896ef2bc375793a87fc640f396e8709807c3fd4c35c527": [
+      {
+        "name": "GroupRepoHandle",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/group/service.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.769Z",
+        "lastSeen": "2026-06-04T20:42:36.769Z"
+      }
+    ],
+    "14ff60ba0d7bab91953fc567333e494f53a488d7197895ab8f64ffb60b027219": [
+      {
+        "name": "GroupToolPort",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/group/service.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.769Z",
+        "lastSeen": "2026-06-04T20:42:36.769Z"
+      }
+    ],
+    "43057f585b4507a7381ea1fc8bfe17bd8a84d56606d2ed94e5e04fc0ce15a421": [
+      {
+        "name": "GroupService",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/group/service.ts",
+        "language": "typescript",
+        "kind": "class",
+        "firstSeen": "2026-06-04T20:42:36.769Z",
+        "lastSeen": "2026-06-04T20:42:36.769Z"
+      }
+    ],
+    "268a13f5a52633744beb01bf370a24bb26eeaf02b715f95d22cafda99cc92a6e": [
+      {
+        "name": "SyncOptions",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/group/sync.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.770Z",
+        "lastSeen": "2026-06-04T20:42:36.770Z"
+      }
+    ],
+    "ae86510987ed2b80082b154aa1eb8516e90d82e8e91d884f8bbdc9f4ef072707": [
+      {
+        "name": "SyncResult",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/group/sync.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.770Z",
+        "lastSeen": "2026-06-04T20:42:36.770Z"
+      }
+    ],
+    "38f850dd8f150a5efb35ba046acc595d6bbc4274bfcf1d89030b8325f1ab4493": [
+      {
+        "name": "GroupConfig",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/group/types.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.770Z",
+        "lastSeen": "2026-06-04T20:42:36.770Z"
+      }
+    ],
+    "e976b35cf84635ff20afa8811e4b763fdb1c9b3baa9bf353a84d4b3eb8006a13": [
+      {
+        "name": "GroupManifestLink",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/group/types.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.770Z",
+        "lastSeen": "2026-06-04T20:42:36.770Z"
+      }
+    ],
+    "8d55c96b70346b592b852a850e202f2bf92897f64259187af12c2ea58d04bf73": [
+      {
+        "name": "DetectConfig",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/group/types.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.770Z",
+        "lastSeen": "2026-06-04T20:42:36.770Z"
+      }
+    ],
+    "b8834201348788aba8afde7fbeec308f6a072ef55b759ae31f29714032e69ed6": [
+      {
+        "name": "MatchingConfig",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/group/types.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.770Z",
+        "lastSeen": "2026-06-04T20:42:36.770Z"
+      }
+    ],
+    "acc3d5b0a9e28dddba6e62874d8da0d05613b3deb3a86f1d6c148b35e256a08e": [
+      {
+        "name": "SymbolRef",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/group/types.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.770Z",
+        "lastSeen": "2026-06-04T20:42:36.770Z"
+      }
+    ],
+    "0ed1605bd30d5538b85d7f862025d4ef03371175cb6b332ce449c9e8e61af3b7": [
+      {
+        "name": "ExtractedContract",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/group/types.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.770Z",
+        "lastSeen": "2026-06-04T20:42:36.770Z"
+      }
+    ],
+    "d6c12b0a065d0a416b52bd9c6601c3834b4c596fd236170b9ede6148f6c5241b": [
+      {
+        "name": "CrossLinkEndpoint",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/group/types.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.770Z",
+        "lastSeen": "2026-06-04T20:42:36.770Z"
+      }
+    ],
+    "28c77c4fb591fe851c37d942dc5df1520147b266478d7dfdeeea9c373365d48b": [
+      {
+        "name": "CrossLink",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/group/types.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.770Z",
+        "lastSeen": "2026-06-04T20:42:36.770Z"
+      }
+    ],
+    "b45ca2eccc3539e7a8c6fb28db15ce0920c1e5d173c74093f0e0dec46851f8c1": [
+      {
+        "name": "RepoSnapshot",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/group/types.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.770Z",
+        "lastSeen": "2026-06-04T20:42:36.770Z"
+      }
+    ],
+    "6ce0997bf22d2a1bd573c02cd6dd855408f0732c8c734803b37f1f7115f12e03": [
+      {
+        "name": "ContractRegistry",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/group/types.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.770Z",
+        "lastSeen": "2026-06-04T20:42:36.770Z"
+      }
+    ],
+    "7475f9fa7a26389af929a2d226349427da96a53608768028025664793c433aa7": [
+      {
+        "name": "StoredContract",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/group/types.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.770Z",
+        "lastSeen": "2026-06-04T20:42:36.770Z"
+      }
+    ],
+    "1a030700ac7bab5f329246c7eea7f2ebd1ef873822966d5e81ec6968677af197": [
+      {
+        "name": "RepoHandle",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/group/types.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.770Z",
+        "lastSeen": "2026-06-04T20:42:36.770Z"
+      }
+    ],
+    "e9e1ee4fa6fb67fdf466ef36f91efe099d88d8ede9f9753abefc02034d68f032": [
+      {
+        "name": "GroupImpactResult",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/group/types.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.770Z",
+        "lastSeen": "2026-06-04T20:42:36.770Z"
+      }
+    ],
+    "d012152d2902eb95144bdb567caefdc7e93f586273bed6b765afb0f7f2581e08": [
+      {
+        "name": "GroupContextRepoEntry",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/group/types.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.770Z",
+        "lastSeen": "2026-06-04T20:42:36.770Z"
+      }
+    ],
+    "92fa2bb8880507bd3eb4d1c587623ef32308e8c00fc0e3e4c614fb95aaffe8c6": [
+      {
+        "name": "GroupContextResult",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/group/types.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.770Z",
+        "lastSeen": "2026-06-04T20:42:36.770Z"
+      }
+    ],
+    "4d2c50a4513df4971c4100e8203fb9d625e377e4b89a372a2cbedf40c406fa0e": [
+      {
+        "name": "CrossRepoImpact",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/group/types.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.770Z",
+        "lastSeen": "2026-06-04T20:42:36.770Z"
+      }
+    ],
+    "58de7ae41154b37c413e9fa2794989c6d279cce378b7db1bf2dc9c06b74f28d4": [
+      {
+        "name": "OutOfScopeLink",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/group/types.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.770Z",
+        "lastSeen": "2026-06-04T20:42:36.770Z"
+      }
+    ],
+    "3b10d0981ac1ac00b55e62b5e0cc081028b728055b7c225743d2c28590ee4e79": [
+      {
+        "name": "BridgeHandle",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/group/types.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.770Z",
+        "lastSeen": "2026-06-04T20:42:36.770Z"
+      }
+    ],
+    "d17bf90783bff62e7bdd169c772d06f89eaa3322aac5c2e172fb74d7ec09fe0d": [
+      {
+        "name": "BridgeMeta",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/group/types.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.770Z",
+        "lastSeen": "2026-06-04T20:42:36.770Z"
+      }
+    ],
+    "e8e63383806f67a43b0d273509d3eee4fbf0281d0c3442099f9e95db0a6bc033": [
+      {
+        "name": "ASTCacheReader",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/ast-cache.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.770Z",
+        "lastSeen": "2026-06-04T20:42:36.770Z"
+      }
+    ],
+    "c8a560169da978f7ceb037de265d83ff5e9a03785179fd65682e7c4fdaa2a5bc": [
+      {
+        "name": "ASTCache",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/ast-cache.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.770Z",
+        "lastSeen": "2026-06-04T20:42:36.770Z"
+      }
+    ],
+    "0514c0eb0245778d015c2bdef6ec27ae2fd54622a22c26bd84b2c84d64b5a09b": [
+      {
+        "name": "BindingEntry",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/binding-accumulator.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.770Z",
+        "lastSeen": "2026-06-04T20:42:36.770Z"
+      }
+    ],
+    "d442f6af48161cc69bd96e89f90022a956f716ded4944c6ea64ef5348e538467": [
+      {
+        "name": "EnrichmentGraphNode",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/binding-accumulator.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.770Z",
+        "lastSeen": "2026-06-04T20:42:36.770Z"
+      }
+    ],
+    "65cdbf037e46c3197233e41a81574d91bf687f762339f528c3d4f2a4cc4712d1": [
+      {
+        "name": "EnrichmentGraphLookup",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/binding-accumulator.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.770Z",
+        "lastSeen": "2026-06-04T20:42:36.770Z"
+      }
+    ],
+    "c046ef854f51181c67a0338e71eec219c9bb18b469a31848f6b09cb85077fb94": [
+      {
+        "name": "BindingAccumulator",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/binding-accumulator.ts",
+        "language": "typescript",
+        "kind": "class",
+        "firstSeen": "2026-06-04T20:42:36.770Z",
+        "lastSeen": "2026-06-04T20:42:36.770Z"
+      }
+    ],
+    "1c676523b87e8c67895c21444be73f208ac65593e116cc93d227fa02441024ca": [
+      {
+        "name": "RubyPropertyItem",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/call-routing.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.771Z",
+        "lastSeen": "2026-06-04T20:42:36.771Z"
+      }
+    ],
+    "c28dd72f38cf57e20a3b99e02c5a7dd1eea1699d4561810a9d28a26a97288929": [
+      {
+        "name": "ExtractedCallSite",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/call-types.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.771Z",
+        "lastSeen": "2026-06-04T20:42:36.771Z"
+      }
+    ],
+    "2ab174defa4c2faec0a0256597e9007f59543c1877b4fdfefc21ca8db20c4f72": [
+      {
+        "name": "CallExtractor",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/call-types.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.771Z",
+        "lastSeen": "2026-06-04T20:42:36.771Z"
+      }
+    ],
+    "cdcad5324a112be09ea9c610decab926528e19726549cf114eca464a5e435690": [
+      {
+        "name": "CallExtractionConfig",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/call-types.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.771Z",
+        "lastSeen": "2026-06-04T20:42:36.771Z"
+      }
+    ],
+    "78c8f6571dc31d0fca1e7048ff726e17c4bc02ea668442054af1493eecfdf790": [
+      {
+        "name": "ExtractedClassSymbol",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/class-types.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.771Z",
+        "lastSeen": "2026-06-04T20:42:36.771Z"
+      }
+    ],
+    "3f951d799850a57427a3a18f2cc578fce296cd1343b4ef6d0a24ad4b38021396": [
+      {
+        "name": "ClassCaptureContext",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/class-types.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.771Z",
+        "lastSeen": "2026-06-04T20:42:36.771Z"
+      }
+    ],
+    "d87f5f214377522c7c82ecf40a7f9907a7341407f95318fcc48b40cb218fe1f0": [
+      {
+        "name": "ClassExtractor",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/class-types.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.771Z",
+        "lastSeen": "2026-06-04T20:42:36.771Z"
+      }
+    ],
+    "0ae3c712304a7bbef2edf21df4561372382d7a3d1cbed28ec2fa679a81ca9c46": [
+      {
+        "name": "ClassExtractionConfig",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/class-types.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.771Z",
+        "lastSeen": "2026-06-04T20:42:36.771Z"
+      }
+    ],
+    "c5fcd04361657fb9e4ba2d7cb6f473df3586c202a987e3e10378f8f134103338": [
+      {
+        "name": "ClusterEnrichment",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/cluster-enricher.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.771Z",
+        "lastSeen": "2026-06-04T20:42:36.771Z"
+      }
+    ],
+    "b48b93fe8823ed1675e901c247e2ca768bcc347def9d153d2cd9b87274c6c1db": [
+      {
+        "name": "EnrichmentResult",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/cluster-enricher.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.771Z",
+        "lastSeen": "2026-06-04T20:42:36.771Z"
+      }
+    ],
+    "fa3f4d30e532a525bbae67678b6e9f4e2f2487a388e3142bc2fc5f5677fb91ec": [
+      {
+        "name": "LLMClient",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/cluster-enricher.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.771Z",
+        "lastSeen": "2026-06-04T20:42:36.771Z"
+      }
+    ],
+    "208fa6192fd78d78aeda171209fda7eded3dfc545d1ea587a21c68e0e5b901b9": [
+      {
+        "name": "CopyReplacing",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/cobol/cobol-copy-expander.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.771Z",
+        "lastSeen": "2026-06-04T20:42:36.771Z"
+      }
+    ],
+    "a4f74657b8ecffc32f4614d87fad811ced506681d09b66d9757904a5f8e248e9": [
+      {
+        "name": "CopyResolution",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/cobol/cobol-copy-expander.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.771Z",
+        "lastSeen": "2026-06-04T20:42:36.771Z"
+      }
+    ],
+    "0c88343d6d18cc7226f4e59c20e5da98500bec3dad1441ca78932549386a5ee9": [
+      {
+        "name": "CopyExpansionResult",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/cobol/cobol-copy-expander.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.771Z",
+        "lastSeen": "2026-06-04T20:42:36.771Z"
+      }
+    ],
+    "03f07c7bb0f228b445584249b1d76db6e45717d20754673fa45e203b87f9c004": [
+      {
+        "name": "ParsedCopyStatement",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/cobol/cobol-copy-expander.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.771Z",
+        "lastSeen": "2026-06-04T20:42:36.771Z"
+      }
+    ],
+    "7184ab50732e724ac21879eda6a4a151f7c88e5084c5e66cb3f872634cfd7694": [
+      {
+        "name": "TokenInfo",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/cobol/cobol-copy-expander.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.771Z",
+        "lastSeen": "2026-06-04T20:42:36.771Z"
+      }
+    ],
+    "f934f0fba48fbd0f009a0c4204674643e6dae3cde3990c8095bc3cc63bbe79db": [
+      {
+        "name": "CobolRegexResults",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/cobol/cobol-preprocessor.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.772Z",
+        "lastSeen": "2026-06-04T20:42:36.772Z"
+      }
+    ],
+    "eb3c8cf43cc6ba99bc36ffc9b4e798021c74424dcc24240c040ab8a1ed3b6132": [
+      {
+        "name": "JclParseResults",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/cobol/jcl-parser.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.772Z",
+        "lastSeen": "2026-06-04T20:42:36.772Z"
+      }
+    ],
+    "b208ce7b10bddda56073356a95dfd35c0406bb0990168690572104e76079fcbe": [
+      {
+        "name": "JclProcessResult",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/cobol/jcl-processor.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.772Z",
+        "lastSeen": "2026-06-04T20:42:36.772Z"
+      }
+    ],
+    "521235831b48e7483693f82080f54a37f6ac86a613ab31b6f84dd8528ff7134e": [
+      {
+        "name": "CobolFile",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/cobol-processor.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.773Z",
+        "lastSeen": "2026-06-04T20:42:36.773Z"
+      },
+      {
+        "name": "FileEntry",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/filesystem-walker.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.774Z",
+        "lastSeen": "2026-06-04T20:42:36.774Z"
+      },
+      {
+        "name": "MdFile",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/markdown-processor.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.788Z",
+        "lastSeen": "2026-06-04T20:42:36.788Z"
+      },
+      {
+        "name": "ParseWorkerInput",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/workers/parse-worker.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.800Z",
+        "lastSeen": "2026-06-04T20:42:36.800Z"
+      },
+      {
+        "name": "ParseWorkerItem",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/workers/worker-pool.ts",
+        "language": "typescript",
+        "kind": "type",
+        "firstSeen": "2026-06-04T20:42:36.800Z",
+        "lastSeen": "2026-06-04T20:42:36.800Z"
+      }
+    ],
+    "237f6e8d8dc0dd666affaafba5f6be1e9d6d302aefe156ed8d129ba8c80d00ee": [
+      {
+        "name": "CobolProcessResult",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/cobol-processor.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.773Z",
+        "lastSeen": "2026-06-04T20:42:36.773Z"
+      }
+    ],
+    "4781e27f03c0237096bc39f7df62bb2d743adc48e658997e5ebc6613adf7f7ab": [
+      {
+        "name": "LeidenModule",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/community-processor.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.773Z",
+        "lastSeen": "2026-06-04T20:42:36.773Z"
+      }
+    ],
+    "543c4e3f615a7693f5c1c42978a7ae4013a4a8d66e717dababad4c75691c3b3f": [
+      {
+        "name": "LeidenDetailedResult",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/community-processor.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.773Z",
+        "lastSeen": "2026-06-04T20:42:36.773Z"
+      }
+    ],
+    "fcbefb153765b39de91f2e6f0f46b139bac426116250b109582fb465ccbbbf91": [
+      {
+        "name": "CommunityNode",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/community-processor.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.773Z",
+        "lastSeen": "2026-06-04T20:42:36.773Z"
+      }
+    ],
+    "f1b750c1172ee440849097f1a1eaa60169176413bd239901315eede371b4dd31": [
+      {
+        "name": "CommunityMembership",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/community-processor.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.773Z",
+        "lastSeen": "2026-06-04T20:42:36.773Z"
+      }
+    ],
+    "76e2aea11bdc60d476f4fac5c2be7a054066a334ea15f32cea44edfd25c351ce": [
+      {
+        "name": "CommunityDetectionResult",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/community-processor.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.773Z",
+        "lastSeen": "2026-06-04T20:42:36.773Z"
+      }
+    ],
+    "9016cf36eff681c8191b8266b867ec49e22f49bdb46ab39b8637dfb9f345a748": [
+      {
+        "name": "EmitStats",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/emit-references.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.773Z",
+        "lastSeen": "2026-06-04T20:42:36.773Z"
+      }
+    ],
+    "ac2e7dd8759057323b323b7804ec04a0f94ce8e68ee8f9e6b973cf923f1082d7": [
+      {
+        "name": "EmitReferencesInput",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/emit-references.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.773Z",
+        "lastSeen": "2026-06-04T20:42:36.773Z"
+      }
+    ],
+    "796cd56a566d990a2375f64476c359215d7c6dd62176f692a19126a56697005a": [
+      {
+        "name": "EntryPointScoreResult",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/entry-point-scoring.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.773Z",
+        "lastSeen": "2026-06-04T20:42:36.773Z"
+      }
+    ],
+    "8dbb847fa66dca1fc3457a2983eb9862449eaff677cf7190795ed6956e89cb18": [
+      {
+        "name": "FieldExtractor",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/field-extractor.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.773Z",
+        "lastSeen": "2026-06-04T20:42:36.773Z"
+      }
+    ],
+    "6c2ba7d5758495980a26670c32995d4213a8ffaa27c1d79ed3bde676cfdee86c": [
+      {
+        "name": "BaseFieldExtractor",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/field-extractor.ts",
+        "language": "typescript",
+        "kind": "class",
+        "firstSeen": "2026-06-04T20:42:36.773Z",
+        "lastSeen": "2026-06-04T20:42:36.773Z"
+      }
+    ],
+    "3fbec459aeed52bfee39a211c130205369b6181ad06fc7c395ddd1c90712e796": [
+      {
+        "name": "FieldExtractionConfig",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/field-extractors/generic.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.773Z",
+        "lastSeen": "2026-06-04T20:42:36.773Z"
+      }
+    ],
+    "e04bc4d6efaa06a581a7422286a80b28dfe61cda856a066313311d878a6395a9": [
+      {
+        "name": "GenericFieldExtractor",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/field-extractors/generic.ts",
+        "language": "typescript",
+        "kind": "class",
+        "firstSeen": "2026-06-04T20:42:36.773Z",
+        "lastSeen": "2026-06-04T20:42:36.773Z"
+      }
+    ],
+    "d7a6bccc432f60890f1e5464e8e63adaaf77a8b79a2543cacb6dd1e7a4c67ad5": [
+      {
+        "name": "TypeScriptFieldExtractor",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/field-extractors/typescript.ts",
+        "language": "typescript",
+        "kind": "class",
+        "firstSeen": "2026-06-04T20:42:36.774Z",
+        "lastSeen": "2026-06-04T20:42:36.774Z"
+      }
+    ],
+    "d0cc2c8c5cd593a1ceb19fe53c5a595f1509bac290eb18c6ec08471a1d66b54c": [
+      {
+        "name": "FieldInfo",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/field-types.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.774Z",
+        "lastSeen": "2026-06-04T20:42:36.774Z"
+      }
+    ],
+    "bef4caf5eb87072b08f0aa5e9442d78d3308e036fc054081e0f83fe62fe9a81f": [
+      {
+        "name": "FieldExtractorContext",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/field-types.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.774Z",
+        "lastSeen": "2026-06-04T20:42:36.774Z"
+      }
+    ],
+    "08c8cf509a3680da9e3fb05fe2cac6cf671af41eed8f00b3a4349bdeddf934ec": [
+      {
+        "name": "ExtractedFields",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/field-types.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.774Z",
+        "lastSeen": "2026-06-04T20:42:36.774Z"
+      }
+    ],
+    "3f35450d685d34f7eb464467dcd0b6d7286396c984f1ffb6808c35519b27977e": [
+      {
+        "name": "ScannedFile",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/filesystem-walker.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.774Z",
+        "lastSeen": "2026-06-04T20:42:36.774Z"
+      },
+      {
+        "name": "ScannedFile",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/pipeline-phases/parse-impl.ts",
+        "language": "typescript",
+        "kind": "type",
+        "firstSeen": "2026-06-04T20:42:36.791Z",
+        "lastSeen": "2026-06-04T20:42:36.791Z"
+      }
+    ],
+    "42c09fa0a6dc2f01091c390f5d5f5804d052d40c4aa5e3ff192358e4348f96c0": [
+      {
+        "name": "FilePath",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/filesystem-walker.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.774Z",
+        "lastSeen": "2026-06-04T20:42:36.774Z"
+      }
+    ],
+    "151e50b6675b10995d67a233f4a7f159afe223b7c1a82993fe627994c0be61bd": [
+      {
+        "name": "FinalizeOrchestratorOptions",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/finalize-orchestrator.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.774Z",
+        "lastSeen": "2026-06-04T20:42:36.774Z"
+      }
+    ],
+    "a3791583259a27f9eeed26a0b938c60c015f4a9dbeeea07911172bb568abd0fa": [
+      {
+        "name": "FrameworkHint",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/framework-detection.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.774Z",
+        "lastSeen": "2026-06-04T20:42:36.774Z"
+      }
+    ],
+    "7d0d024dc681c20d3a9fa622e964e0b432b91605f603cf95af9e083b5b270026": [
+      {
+        "name": "SwiftTargetIndex",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/import-resolvers/configs/swift.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.774Z",
+        "lastSeen": "2026-06-04T20:42:36.774Z"
+      }
+    ],
+    "b00793d51cfefcbb146c9a0dc8300fbd637f505e6811978590eb325b25304f4a": [
+      {
+        "name": "ImportConfigs",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/import-resolvers/types.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.775Z",
+        "lastSeen": "2026-06-04T20:42:36.775Z"
+      }
+    ],
+    "5b9ef03c7a961eaa48a0a434eb3ad7df0bdd6ab0a24fe28f9f203da1a9f0a5af": [
+      {
+        "name": "ImportResolutionContext",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/import-resolvers/types.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.775Z",
+        "lastSeen": "2026-06-04T20:42:36.775Z"
+      }
+    ],
+    "1b8b9c3eb3d077d6df1ab86ea1dd8130add2a7ed197428f2b685a09c6a2828c7": [
+      {
+        "name": "ResolveCtx",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/import-resolvers/types.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.775Z",
+        "lastSeen": "2026-06-04T20:42:36.775Z"
+      }
+    ],
+    "1cbff1a6a768e4c5e09c95f87419d532f6196bc6e637d023c3271a13ebcbd579": [
+      {
+        "name": "ImportResolutionConfig",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/import-resolvers/types.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.775Z",
+        "lastSeen": "2026-06-04T20:42:36.775Z"
+      }
+    ],
+    "a34031a643c6480b6c26bdb43a13167e85947cefa39d09b83f2b0c4aaa661c78": [
+      {
+        "name": "SuffixIndex",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/import-resolvers/utils.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.775Z",
+        "lastSeen": "2026-06-04T20:42:36.775Z"
+      }
+    ],
+    "e89effdaa4a70a98a79b20e21aba89258f6ded2a8749aae21c16af28d9784331": [
+      {
+        "name": "LanguageResolverEntry",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/import-target-adapter.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.775Z",
+        "lastSeen": "2026-06-04T20:42:36.775Z"
+      }
+    ],
+    "6cb7d0c9ba437c4d86bfd89abbea3894da95be2c62230bc6f06998aea7b9ef20": [
+      {
+        "name": "ImportTargetWorkspace",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/import-target-adapter.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.775Z",
+        "lastSeen": "2026-06-04T20:42:36.775Z"
+      }
+    ],
+    "876bfbfcc6317c4fceeb13856300198b83b859a752f26827aca0cad8a37c4a5d": [
+      {
+        "name": "TsconfigPaths",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/language-config.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.775Z",
+        "lastSeen": "2026-06-04T20:42:36.775Z"
+      }
+    ],
+    "68ee50b5c99daac8778fd35c254f71504e9caf233565f293b3d6aaf4e8ca15a7": [
+      {
+        "name": "GoModuleConfig",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/language-config.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.775Z",
+        "lastSeen": "2026-06-04T20:42:36.775Z"
+      }
+    ],
+    "de53d7fb40dbd7255254a8c260072cec297b942be5d1c234567994111d4ac41a": [
+      {
+        "name": "ComposerConfig",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/language-config.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.775Z",
+        "lastSeen": "2026-06-04T20:42:36.775Z"
+      }
+    ],
+    "3c2031540ef963bf0c959d8911141c4e39e92674f6f96a251f4c5c7755952fa6": [
+      {
+        "name": "CSharpProjectConfig",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/language-config.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.775Z",
+        "lastSeen": "2026-06-04T20:42:36.775Z"
+      }
+    ],
+    "55ef09e7c3ad61975716b25e771c5ac0d9b6891c20074e3a681af6bcc07e568d": [
+      {
+        "name": "CSharpNamespaceEvidence",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/language-config.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.775Z",
+        "lastSeen": "2026-06-04T20:42:36.775Z"
+      }
+    ],
+    "f59c048b7df69437bc84d7e962ba751b24fd135af18487dc90e346e87a302814": [
+      {
+        "name": "CSharpProjectScan",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/language-config.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.775Z",
+        "lastSeen": "2026-06-04T20:42:36.775Z"
+      }
+    ],
+    "c96c93c957de7845e4bf8bab4a2638721981c07918abaeae2d2977aeb12e8d6c": [
+      {
+        "name": "SwiftPackageConfig",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/language-config.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.775Z",
+        "lastSeen": "2026-06-04T20:42:36.775Z"
+      }
+    ],
+    "ed762432aa80def58ef63d4aa7677b7223652e2bbc9a81fd515d4b8ac7410e4e": [
+      {
+        "name": "AstFrameworkPatternConfig",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/language-provider.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.775Z",
+        "lastSeen": "2026-06-04T20:42:36.775Z"
+      }
+    ],
+    "eab0e9b22920c6dfc05f6912817c58c6c34d46dc6bb918901f692596625bb5bf": [
+      {
+        "name": "LanguageProviderConfig",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/language-provider.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.775Z",
+        "lastSeen": "2026-06-04T20:42:36.775Z"
+      }
+    ],
+    "a2e3fbdf437b2f564ad38d856cca71a298e6dd9c714627f95ef0532212e11cb5": [
+      {
+        "name": "LanguageProvider",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/language-provider.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.775Z",
+        "lastSeen": "2026-06-04T20:42:36.775Z"
+      }
+    ],
+    "3c2f12ab476606b92626c19215464724ca160204dad2f1bfb282201f9e19abc3": [
+      {
+        "name": "CArityInfo",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/languages/c/arity-metadata.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.776Z",
+        "lastSeen": "2026-06-04T20:42:36.776Z"
+      }
+    ],
+    "879b7057375b038feae055b280e912874d74853892ae897e3c40575554183fe9": [
+      {
+        "name": "CppAdlArgInfo",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/languages/cpp/adl.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.776Z",
+        "lastSeen": "2026-06-04T20:42:36.776Z"
+      }
+    ],
+    "181c3f58a4cbc6820563255d998c5a67339679d20bf73f49cdde63c736b52c9b": [
+      {
+        "name": "AdlCandidateIndex",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/languages/cpp/adl.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.776Z",
+        "lastSeen": "2026-06-04T20:42:36.776Z"
+      }
+    ],
+    "6730a14df9f52eeaaf57b04119041e23c3e1eb0c7d9c7649bb001c7cc422d96c": [
+      {
+        "name": "CppArityInfo",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/languages/cpp/arity-metadata.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.776Z",
+        "lastSeen": "2026-06-04T20:42:36.776Z"
+      }
+    ],
+    "226def707444f6ce3e4ae4b34214aa6c6a99721eaec5b818be887605361bab04": [
+      {
+        "name": "CppBaseClassEntry",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/languages/cpp/captures.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.777Z",
+        "lastSeen": "2026-06-04T20:42:36.777Z"
+      }
+    ],
+    "d247ba0171893d52c46e77674672a23e7e94707d1de0915bb925fa70e50dd579": [
+      {
+        "name": "CppConstraintPayload",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/languages/cpp/constraint-extractor.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.777Z",
+        "lastSeen": "2026-06-04T20:42:36.777Z"
+      }
+    ],
+    "861ce10c355e0bfee3988a4672af4886da734edc87423429dc1ff7d9e187ee76": [
+      {
+        "name": "ConstraintArgClass",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/languages/cpp/constraint-filter.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.777Z",
+        "lastSeen": "2026-06-04T20:42:36.777Z"
+      }
+    ],
+    "acc0e015a872992466b940551e93d63cacf445d2eadbcdd7cd6d5365c9187b67": [
+      {
+        "name": "RangeKeyShape",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/languages/cpp/file-local-linkage.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.777Z",
+        "lastSeen": "2026-06-04T20:42:36.777Z"
+      },
+      {
+        "name": "RangeKey",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/languages/cpp/inline-namespaces.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.777Z",
+        "lastSeen": "2026-06-04T20:42:36.777Z"
+      }
+    ],
+    "115ffbf86f1d43130cdd0e09b12b834cb2620dbd3bb49c6de8d617e3606ebf03": [
+      {
+        "name": "TsNode",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/languages/cpp/range-bindings.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.777Z",
+        "lastSeen": "2026-06-04T20:42:36.777Z"
+      }
+    ],
+    "5688ed252643d6868359ab74be912da6f44945d8f6ee3ae3947b5299215bc743": [
+      {
+        "name": "PendingUserDefinedConversion",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/languages/cpp/user-defined-conversions.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.777Z",
+        "lastSeen": "2026-06-04T20:42:36.777Z"
+      }
+    ],
+    "a1aaa5b6e492d72a72c45d436c2f2c50cc8b503957144a38454f515b3a3be2fa": [
+      {
+        "name": "CsharpArityMetadata",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/languages/csharp/arity-metadata.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.777Z",
+        "lastSeen": "2026-06-04T20:42:36.777Z"
+      },
+      {
+        "name": "DartArityMetadata",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/languages/dart/arity-metadata.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.778Z",
+        "lastSeen": "2026-06-04T20:42:36.778Z"
+      },
+      {
+        "name": "JavaArityMetadata",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/languages/java/arity-metadata.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.779Z",
+        "lastSeen": "2026-06-04T20:42:36.779Z"
+      },
+      {
+        "name": "KotlinArityMetadata",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/languages/kotlin/arity-metadata.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.781Z",
+        "lastSeen": "2026-06-04T20:42:36.781Z"
+      },
+      {
+        "name": "PhpArityMetadata",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/languages/php/arity-metadata.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.782Z",
+        "lastSeen": "2026-06-04T20:42:36.782Z"
+      },
+      {
+        "name": "PythonArityMetadata",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/languages/python/arity-metadata.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.783Z",
+        "lastSeen": "2026-06-04T20:42:36.783Z"
+      },
+      {
+        "name": "SwiftArityMetadata",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/languages/swift/arity-metadata.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.786Z",
+        "lastSeen": "2026-06-04T20:42:36.786Z"
+      },
+      {
+        "name": "TsArityMetadata",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/languages/typescript/arity-metadata.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.787Z",
+        "lastSeen": "2026-06-04T20:42:36.787Z"
+      }
+    ],
+    "407ce4d22d5578cc3e58a78ebc76a5facb831539ecea7dfda08d9fb46f22d63a": [
+      {
+        "name": "ImportSpec",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/languages/csharp/import-decomposer.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.778Z",
+        "lastSeen": "2026-06-04T20:42:36.778Z"
+      },
+      {
+        "name": "ImportSpec",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/languages/python/import-decomposer.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.783Z",
+        "lastSeen": "2026-06-04T20:42:36.783Z"
+      }
+    ],
+    "25a9fd45ad48d17345d771a05b5599104d74dac47b6dc5cd4138f373ae4514c5": [
+      {
+        "name": "CsharpResolveContext",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/languages/csharp/import-target.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.778Z",
+        "lastSeen": "2026-06-04T20:42:36.778Z"
+      }
+    ],
+    "2c4430d009ccae94a8312d9334013049de3af1afa61eda1c5d37c7c9944e29e9": [
+      {
+        "name": "WorkspaceFileIndex",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/languages/csharp/import-target.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.778Z",
+        "lastSeen": "2026-06-04T20:42:36.778Z"
+      }
+    ],
+    "cc1bad8c641cafe3ef35d92f7ca5b2c787267e66d6c001e91e8cb124bb20e9cb": [
+      {
+        "name": "CsharpFileStructure",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/languages/csharp/namespace-siblings.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.778Z",
+        "lastSeen": "2026-06-04T20:42:36.778Z"
+      }
+    ],
+    "72f512913d9edacbf81a70384a67cd3f685ddd71bfb25bc106c0d4c60d86304b": [
+      {
+        "name": "CsharpStructureLineScanner",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/languages/csharp/namespace-siblings.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.778Z",
+        "lastSeen": "2026-06-04T20:42:36.778Z"
+      }
+    ],
+    "44b0b64aaf9dfd492312675bf1fb8144a07e65ed7ff602eb9f22087ce5275a18": [
+      {
+        "name": "CsharpSiblingInputs",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/languages/csharp/namespace-siblings.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.778Z",
+        "lastSeen": "2026-06-04T20:42:36.778Z"
+      },
+      {
+        "name": "PhpSiblingInputs",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/languages/php/namespace-siblings.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.782Z",
+        "lastSeen": "2026-06-04T20:42:36.782Z"
+      }
+    ],
+    "7c8acae510929f7c120644d17c0c586e1b82a58b83e80788f9792114959d551a": [
+      {
+        "name": "NamespaceBucket",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/languages/csharp/namespace-siblings.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.778Z",
+        "lastSeen": "2026-06-04T20:42:36.778Z"
+      },
+      {
+        "name": "NamespaceBucket",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/languages/php/namespace-siblings.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.782Z",
+        "lastSeen": "2026-06-04T20:42:36.782Z"
+      }
+    ],
+    "966c8e66e8dca37d41e594b07e027af0fc533285b8ff1782c881fd03ee181499": [
+      {
+        "name": "CsharpResolutionConfig",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/languages/csharp/resolution-config.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.778Z",
+        "lastSeen": "2026-06-04T20:42:36.778Z"
+      }
+    ],
+    "e60702e6de732dfa8723173d649b466ea131a303b50820e89f6d44d45c4b677d": [
+      {
+        "name": "ClassDefRef",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/languages/dart/scope-resolver.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.779Z",
+        "lastSeen": "2026-06-04T20:42:36.779Z"
+      }
+    ],
+    "35c8822a52e60e28e649173927865453b97d8b65018265a9d71407f5f8c20a15": [
+      {
+        "name": "GoArityMetadata",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/languages/go/arity-metadata.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.779Z",
+        "lastSeen": "2026-06-04T20:42:36.779Z"
+      }
+    ],
+    "fe17269c7c9b44a9b9992d4375abfcb46ff987878857e665a0bcdc751237bf79": [
+      {
+        "name": "GoResolveContext",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/languages/go/import-target.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.779Z",
+        "lastSeen": "2026-06-04T20:42:36.779Z"
+      }
+    ],
+    "652e9896ef469206fed9278ce8c765fa24a6efa3554a0379c4eb77e494492b93": [
+      {
+        "name": "MethodSetEntry",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/languages/go/interface-impls.ts",
+        "language": "typescript",
+        "kind": "type",
+        "firstSeen": "2026-06-04T20:42:36.779Z",
+        "lastSeen": "2026-06-04T20:42:36.779Z"
+      }
+    ],
+    "0d72ff99d82126c49020c53bfa4201d0db06f7351a2c67fa20ee29b80dd5736e": [
+      {
+        "name": "SignatureContext",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/languages/go/interface-impls.ts",
+        "language": "typescript",
+        "kind": "type",
+        "firstSeen": "2026-06-04T20:42:36.779Z",
+        "lastSeen": "2026-06-04T20:42:36.779Z"
+      }
+    ],
+    "07ae25e5c97c760f986c0bf25bc44f42e0238d06daeb19c82cf4d206093dd2bb": [
+      {
+        "name": "DetectionIndexes",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/languages/go/interface-impls.ts",
+        "language": "typescript",
+        "kind": "type",
+        "firstSeen": "2026-06-04T20:42:36.779Z",
+        "lastSeen": "2026-06-04T20:42:36.779Z"
+      }
+    ],
+    "65cb205e82001bd0d1124d030eec5004b384f511f790e7890616ac6f16b273cb": [
+      {
+        "name": "ImportSpec",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/languages/java/import-decomposer.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.780Z",
+        "lastSeen": "2026-06-04T20:42:36.780Z"
+      }
+    ],
+    "6dbd6918e4624b4de7627e54155c3b69afba77b050715a3d8d49d98ca59a7f95": [
+      {
+        "name": "JavaResolveContext",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/languages/java/import-target.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.780Z",
+        "lastSeen": "2026-06-04T20:42:36.780Z"
+      },
+      {
+        "name": "KotlinResolveContext",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/languages/kotlin/import-target.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.781Z",
+        "lastSeen": "2026-06-04T20:42:36.781Z"
+      },
+      {
+        "name": "PhpResolveContext",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/languages/php/import-target.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.782Z",
+        "lastSeen": "2026-06-04T20:42:36.782Z"
+      },
+      {
+        "name": "PythonResolveContext",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/languages/python/import-target.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.783Z",
+        "lastSeen": "2026-06-04T20:42:36.783Z"
+      },
+      {
+        "name": "RubyResolveContext",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/languages/ruby/import-target.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.784Z",
+        "lastSeen": "2026-06-04T20:42:36.784Z"
+      },
+      {
+        "name": "RustResolveContext",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/languages/rust/import-target.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.785Z",
+        "lastSeen": "2026-06-04T20:42:36.785Z"
+      },
+      {
+        "name": "SwiftResolveContext",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/languages/swift/import-target.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.786Z",
+        "lastSeen": "2026-06-04T20:42:36.786Z"
+      }
+    ],
+    "ab77e9458799208250eae9b1a9b7bd4c8adb2cc78f89d0a2b52083f9f3d54c91": [
+      {
+        "name": "PackageBucket",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/languages/java/package-siblings.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.780Z",
+        "lastSeen": "2026-06-04T20:42:36.780Z"
+      }
+    ],
+    "c0350d9f82cb6c747d5a9f740382b709da7e0f64d37fbbb5ceb13d1df1163247": [
+      {
+        "name": "JsDocParam",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/languages/javascript/captures.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.780Z",
+        "lastSeen": "2026-06-04T20:42:36.780Z"
+      }
+    ],
+    "a5738d746230d3d5b52080a70d794032f0fd6348d0f47c7c2ffcc29257e4e169": [
+      {
+        "name": "PassCache",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/languages/javascript/import-target.ts",
+        "language": "typescript",
+        "kind": "type",
+        "firstSeen": "2026-06-04T20:42:36.780Z",
+        "lastSeen": "2026-06-04T20:42:36.780Z"
+      }
+    ],
+    "b4a3af6160b1bead3659d1e2d49a40b5b0dbc0c1c79aaecc560cf8c09a73b56f": [
+      {
+        "name": "KotlinClassMembers",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/languages/kotlin/captures.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.781Z",
+        "lastSeen": "2026-06-04T20:42:36.781Z"
+      }
+    ],
+    "09451ac68ffaba67d33f02b6481122a9b2f50129e64825f86fb28b8db190548c": [
+      {
+        "name": "KotlinImportSpec",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/languages/kotlin/import-decomposer.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.781Z",
+        "lastSeen": "2026-06-04T20:42:36.781Z"
+      }
+    ],
+    "07fd821b3001ec1731283be4f694286c67a96397e927a6e6c71a1d27def7eb57": [
+      {
+        "name": "PhpImportSpec",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/languages/php/import-decomposer.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.782Z",
+        "lastSeen": "2026-06-04T20:42:36.782Z"
+      }
+    ],
+    "1b24d30978cc3530c6da1f38e82cc6ce21d2f4e058adba1eb802c2803ef26826": [
+      {
+        "name": "PhpFileStructure",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/languages/php/namespace-siblings.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.782Z",
+        "lastSeen": "2026-06-04T20:42:36.782Z"
+      }
+    ],
+    "097b92b5032187468af97c2b17f1b11ae03c7e0249da6c51abbeb50492050509": [
+      {
+        "name": "PythonFileIndex",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/languages/python/import-target.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.783Z",
+        "lastSeen": "2026-06-04T20:42:36.783Z"
+      }
+    ],
+    "73ad7d46dc7c215458dcbc8fa163c7994939d340573c4e61ee173f5daa8efbeb": [
+      {
+        "name": "SwiftImportSpec",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/languages/swift/import-decomposer.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.786Z",
+        "lastSeen": "2026-06-04T20:42:36.786Z"
+      }
+    ],
+    "93379d03c5e82022a091291ae93315a0432b4e0e238604b7e0fe6dd3368a6e7d": [
+      {
+        "name": "SwiftModuleIndex",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/languages/swift/import-target.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.786Z",
+        "lastSeen": "2026-06-04T20:42:36.786Z"
+      }
+    ],
+    "95bfd76ef5cd40c36af783c79266d5faabf8d6f30f07f31153f7a79faf94aad2": [
+      {
+        "name": "ImportSpec",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/languages/typescript/import-decomposer.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.787Z",
+        "lastSeen": "2026-06-04T20:42:36.787Z"
+      }
+    ],
+    "957123ceac6f3a3b473ee0b1b3321d3f61fc0679b337e221232558594d4bd063": [
+      {
+        "name": "TsResolveContext",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/languages/typescript/import-target.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.787Z",
+        "lastSeen": "2026-06-04T20:42:36.787Z"
+      }
+    ],
+    "a053d0cc28287bfffad0cd8d7a8be56fc78215675cf695dfd085af8b0b1811fc": [
+      {
+        "name": "FunctionRole",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/languages/typescript/receiver-binding.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.787Z",
+        "lastSeen": "2026-06-04T20:42:36.787Z"
+      }
+    ],
+    "1e46b0ec49991ead8c7f9c3f23f8157ac971ac5351c272ebe9991fae1c7381a3": [
+      {
+        "name": "TypescriptResolutionConfig",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/languages/typescript/scope-resolver.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.788Z",
+        "lastSeen": "2026-06-04T20:42:36.788Z"
+      },
+      {
+        "name": "VueResolutionConfig",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/languages/vue/import-target.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.788Z",
+        "lastSeen": "2026-06-04T20:42:36.788Z"
+      }
+    ],
+    "483a62d0649855e3222b9180f072595127a5a356d01d4d2518a2b46e87b5b6d0": [
+      {
+        "name": "PassCache",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/languages/typescript/scope-resolver.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.788Z",
+        "lastSeen": "2026-06-04T20:42:36.788Z"
+      },
+      {
+        "name": "PassCache",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/languages/vue/import-target.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.788Z",
+        "lastSeen": "2026-06-04T20:42:36.788Z"
+      }
+    ],
+    "b71eed255eee32eff0137147623fe3542a4e2ab820ac8e970bf0ad529a8c79f8": [
+      {
+        "name": "ParameterInfo",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/method-types.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.789Z",
+        "lastSeen": "2026-06-04T20:42:36.789Z"
+      }
+    ],
+    "4f2ffdb6e3a2ca2b37e9b6c64e374b23799a60a25e426f3327090a65acbcdd31": [
+      {
+        "name": "MethodInfo",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/method-types.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.789Z",
+        "lastSeen": "2026-06-04T20:42:36.789Z"
+      }
+    ],
+    "9948a62ae733887cc795c563c1e945e2fd3382a7866027bbc00c375755b737e3": [
+      {
+        "name": "MethodExtractorContext",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/method-types.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.789Z",
+        "lastSeen": "2026-06-04T20:42:36.789Z"
+      },
+      {
+        "name": "VariableExtractorContext",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/variable-types.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.799Z",
+        "lastSeen": "2026-06-04T20:42:36.799Z"
+      }
+    ],
+    "48bf8f5b2314e594cf398a0670feda54ae73a4e542bec12eba201daeb04bb67c": [
+      {
+        "name": "ExtractedMethods",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/method-types.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.789Z",
+        "lastSeen": "2026-06-04T20:42:36.789Z"
+      }
+    ],
+    "b04e71c48dbcf7bb6abe11f73a5b9705cbd632fcac93048bc24efa31bbd19346": [
+      {
+        "name": "MethodExtractor",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/method-types.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.789Z",
+        "lastSeen": "2026-06-04T20:42:36.789Z"
+      }
+    ],
+    "15bd36c4d813967f247764155f0702f4405d41dcd3f0085c833c9660e5671623": [
+      {
+        "name": "MethodExtractionConfig",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/method-types.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.789Z",
+        "lastSeen": "2026-06-04T20:42:36.789Z"
+      }
+    ],
+    "8a48e889ceb344126d6c5da268d0090f886afdc03ca26ba14e1e84e1640cdf24": [
+      {
+        "name": "FieldRegistry",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/model/field-registry.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.789Z",
+        "lastSeen": "2026-06-04T20:42:36.789Z"
+      }
+    ],
+    "560e7e487115dae582bb9959cdcce65ba19e72f96f1fd36e02945ecd827583bb": [
+      {
+        "name": "MutableFieldRegistry",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/model/field-registry.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.789Z",
+        "lastSeen": "2026-06-04T20:42:36.789Z"
+      },
+      {
+        "name": "MutableMethodRegistry",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/model/method-registry.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.790Z",
+        "lastSeen": "2026-06-04T20:42:36.790Z"
+      }
+    ],
+    "96ef271abe0b7aa7a983811baaf380fed1cb40899d97a71acece57b57356bb04": [
+      {
+        "name": "MethodRegistry",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/model/method-registry.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.790Z",
+        "lastSeen": "2026-06-04T20:42:36.790Z"
+      }
+    ],
+    "571fc2a7459663188376fd06c3f7a19ab323519d6ab902faeb8a13d68b687185": [
+      {
+        "name": "RegistrationTableDeps",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/model/registration-table.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.790Z",
+        "lastSeen": "2026-06-04T20:42:36.790Z"
+      }
+    ],
+    "410517139f00cbc6a14ded7ca0f7379cf72df29213e42d9a877dbb8f34788e12": [
+      {
+        "name": "ScopeResolutionIndexes",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/model/scope-resolution-indexes.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.790Z",
+        "lastSeen": "2026-06-04T20:42:36.790Z"
+      }
+    ],
+    "0815017c1fdc13044843bb8c70d755869db5c8ffa3b5a00f580c584182d4b10e": [
+      {
+        "name": "SemanticModel",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/model/semantic-model.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.790Z",
+        "lastSeen": "2026-06-04T20:42:36.790Z"
+      }
+    ],
+    "f14a970a2929c832c76ba1abbbc5d2705b65c9f0517243ff9f3b1cab7fad1d28": [
+      {
+        "name": "MutableSemanticModel",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/model/semantic-model.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.790Z",
+        "lastSeen": "2026-06-04T20:42:36.790Z"
+      }
+    ],
+    "0b04fdfe3e20d3cb7831c6f1ef5a8d93826d3ff0450c387b37450f1b5fc9e072": [
+      {
+        "name": "AddMetadata",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/model/symbol-table.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.790Z",
+        "lastSeen": "2026-06-04T20:42:36.790Z"
+      }
+    ],
+    "f9f09ddb353a5747238255f41ce467dd827e446f310c8dd5cadfe8bfd008dcb8": [
+      {
+        "name": "SymbolTableReader",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/model/symbol-table.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.790Z",
+        "lastSeen": "2026-06-04T20:42:36.790Z"
+      }
+    ],
+    "331eb692dda86b1e1c558f7ed7b8db8c638cbd6c60e6c195db45d255c49ecb7b": [
+      {
+        "name": "SymbolTableWriter",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/model/symbol-table.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.790Z",
+        "lastSeen": "2026-06-04T20:42:36.790Z"
+      }
+    ],
+    "56650055e7604763076add9b63165ed4bfe48b37958398db0ae343200872e860": [
+      {
+        "name": "InternalSymbolTable",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/model/symbol-table.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.790Z",
+        "lastSeen": "2026-06-04T20:42:36.790Z"
+      }
+    ],
+    "896a2b848670635978649eed93bebcda2c9354af636380443bc4266df6db996d": [
+      {
+        "name": "TypeRegistry",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/model/type-registry.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.790Z",
+        "lastSeen": "2026-06-04T20:42:36.790Z"
+      }
+    ],
+    "cd7ce88525dbcb5a968336aa4757c0273470bdf630749cd8fce80adfc7d9c0b6": [
+      {
+        "name": "MutableTypeRegistry",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/model/type-registry.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.790Z",
+        "lastSeen": "2026-06-04T20:42:36.790Z"
+      }
+    ],
+    "6bb08ef7fe9268b71142d5733b9c8e75cff4a1d705a67f43da5a96b6b776a204": [
+      {
+        "name": "MROEntry",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/mro-processor.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.791Z",
+        "lastSeen": "2026-06-04T20:42:36.791Z"
+      }
+    ],
+    "49a8059c740f9f6eaf1fe8c964dbe87f5745b0bb83b29f06bfa19ad260979171": [
+      {
+        "name": "MethodAmbiguity",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/mro-processor.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.791Z",
+        "lastSeen": "2026-06-04T20:42:36.791Z"
+      }
+    ],
+    "1e44c923f4277c835a4db7b38dc4e76a04df7d566772221666bd8eb918c4a051": [
+      {
+        "name": "MROResult",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/mro-processor.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.791Z",
+        "lastSeen": "2026-06-04T20:42:36.791Z"
+      }
+    ],
+    "00204b3ed16b372b265f90ad16f07280ef8bd3401bb9f6176b6d7ad703fc2510": [
+      {
+        "name": "MethodDef",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/mro-processor.ts",
+        "language": "typescript",
+        "kind": "type",
+        "firstSeen": "2026-06-04T20:42:36.791Z",
+        "lastSeen": "2026-06-04T20:42:36.791Z"
+      }
+    ],
+    "f8010084eb691f2ad87996f276941461475b480f43bdf3a51064558028d12e02": [
+      {
+        "name": "Resolution",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/mro-processor.ts",
+        "language": "typescript",
+        "kind": "type",
+        "firstSeen": "2026-06-04T20:42:36.791Z",
+        "lastSeen": "2026-06-04T20:42:36.791Z"
+      }
+    ],
+    "a9a207c14c013c5e89168c3ffba247c1f1fa8efd8b462a30bee568a8948b1270": [
+      {
+        "name": "WorkerExtractedData",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/parsing-processor.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.791Z",
+        "lastSeen": "2026-06-04T20:42:36.791Z"
+      }
+    ],
+    "b8e3a1fc2027f83abaa9f5541cced2a6bbccc4d22edbf4b5a0dbcd4777feea22": [
+      {
+        "name": "CobolOutput",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/pipeline-phases/cobol.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.791Z",
+        "lastSeen": "2026-06-04T20:42:36.791Z"
+      }
+    ],
+    "56c1a09417886e20197054327c2b2239259958d114ba0cc4fc2d8f330e49d937": [
+      {
+        "name": "CommunitiesOutput",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/pipeline-phases/communities.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.791Z",
+        "lastSeen": "2026-06-04T20:42:36.791Z"
+      }
+    ],
+    "bb3e1fbaa8369fd42c071c3b7e055565efb18b8de36ca555b597bc3adb72cc59": [
+      {
+        "name": "CrossFileOutput",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/pipeline-phases/cross-file.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.791Z",
+        "lastSeen": "2026-06-04T20:42:36.791Z"
+      }
+    ],
+    "71ded113102114874f6dff49425d0b6ac32f0f961b84da418b5f989419574b28": [
+      {
+        "name": "MarkdownOutput",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/pipeline-phases/markdown.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.791Z",
+        "lastSeen": "2026-06-04T20:42:36.791Z"
+      }
+    ],
+    "850e96bf53a2a36073fd846c0c9233893a21fbd8f67fc3a01905a56c41d8bee6": [
+      {
+        "name": "MROOutput",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/pipeline-phases/mro.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.791Z",
+        "lastSeen": "2026-06-04T20:42:36.791Z"
+      }
+    ],
+    "36192faf59764e1e29661b4dcc7c3c7d77192ca70271a5f7d00825a05aa8b88c": [
+      {
+        "name": "ORMOutput",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/pipeline-phases/orm.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.791Z",
+        "lastSeen": "2026-06-04T20:42:36.791Z"
+      }
+    ],
+    "c83bb7d343e469a86f59f22e9baf0d2201c21fcb54422ac6f107139751b67c1e": [
+      {
+        "name": "LocalImport",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/pipeline-phases/parse-impl.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.791Z",
+        "lastSeen": "2026-06-04T20:42:36.791Z"
+      }
+    ],
+    "a2884f31d8cbc401a4671b4a0e2ee6fb9786965cdc8f3ab33049aa5e5a75bcee": [
+      {
+        "name": "ParseOutput",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/pipeline-phases/parse.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.791Z",
+        "lastSeen": "2026-06-04T20:42:36.791Z"
+      }
+    ],
+    "37c011108a0ba04955f9429519f1986393d2e3f999db09c45c13f8180cf3474c": [
+      {
+        "name": "ProcessesOutput",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/pipeline-phases/processes.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.791Z",
+        "lastSeen": "2026-06-04T20:42:36.791Z"
+      }
+    ],
+    "b944c4ece78329715cd16b2033ea319dc61245139be7715d49e9ef7e55b0d6c6": [
+      {
+        "name": "ScanOutput",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/pipeline-phases/scan.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.792Z",
+        "lastSeen": "2026-06-04T20:42:36.792Z"
+      }
+    ],
+    "8ce672aa767d9d58b51679272b7fbf3c9a90d45c216275c258651206ff0aa6fb": [
+      {
+        "name": "StructureOutput",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/pipeline-phases/structure.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.792Z",
+        "lastSeen": "2026-06-04T20:42:36.792Z"
+      }
+    ],
+    "02454080cefab8dd1804527be390cc3184ce9368e454cfeebeb8761a3874f359": [
+      {
+        "name": "ToolDef",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/pipeline-phases/tools.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.792Z",
+        "lastSeen": "2026-06-04T20:42:36.792Z"
+      }
+    ],
+    "3c5ab3e268fcd9e2edf8bababfd01fc5fe0a5a0ffa9856bd17945333cec2e8b8": [
+      {
+        "name": "ToolsOutput",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/pipeline-phases/tools.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.792Z",
+        "lastSeen": "2026-06-04T20:42:36.792Z"
+      }
+    ],
+    "c7e49ca683c59a32dff9cbfc07c482f80e78e20cd6d9ca7dc2832667dac7bd60": [
+      {
+        "name": "PipelineContext",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/pipeline-phases/types.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.792Z",
+        "lastSeen": "2026-06-04T20:42:36.792Z"
+      }
+    ],
+    "b7a7c8f18132f56b7a60b499d3447899344843b630ecb34e5722454b9780f229": [
+      {
+        "name": "PhaseResult",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/pipeline-phases/types.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.792Z",
+        "lastSeen": "2026-06-04T20:42:36.792Z"
+      }
+    ],
+    "e3ae9c128c40566857572dbfb02155115c9b175899f8a506ed80fcfa2c8d2953": [
+      {
+        "name": "PipelinePhase",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/pipeline-phases/types.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.792Z",
+        "lastSeen": "2026-06-04T20:42:36.792Z"
+      }
+    ],
+    "2e75d8a861d8b07aff0430bb8de4bd36ea8dfc2c6432310ffddabb93519b0fcc": [
+      {
+        "name": "PipelineOptions",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/pipeline.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.792Z",
+        "lastSeen": "2026-06-04T20:42:36.792Z"
+      }
+    ],
+    "d616fd09ef5a8b7997cb9081aa672f072066f3bf3753c706edb4a05b1950936b": [
+      {
+        "name": "ProcessDetectionConfig",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/process-processor.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.792Z",
+        "lastSeen": "2026-06-04T20:42:36.792Z"
+      }
+    ],
+    "20b7c3744cb01b9e6030b4b698bc9a7951020ffdb32dcd169d257198d774690e": [
+      {
+        "name": "ProcessNode",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/process-processor.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.792Z",
+        "lastSeen": "2026-06-04T20:42:36.792Z"
+      }
+    ],
+    "3ad839913ad8a3ef9b0613bfe1239178b456577ed4ecc74d3a793a16a8faa5ea": [
+      {
+        "name": "ProcessStep",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/process-processor.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.792Z",
+        "lastSeen": "2026-06-04T20:42:36.792Z"
+      }
+    ],
+    "35b4dde15093ee3c7f0e92e6cc4d6d83b7122024e99855a83605db7bf578fa2c": [
+      {
+        "name": "ProcessDetectionResult",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/process-processor.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.792Z",
+        "lastSeen": "2026-06-04T20:42:36.792Z"
+      }
+    ],
+    "8dd1b8fae5d7825a0bd87773c2c63926ea5861bdba59c2a64b64b5edeb224149": [
+      {
+        "name": "ResolveReferencesInput",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/resolve-references.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.792Z",
+        "lastSeen": "2026-06-04T20:42:36.792Z"
+      }
+    ],
+    "57d8ac17b711b55c3c7e6847fb28bbd9ccf48002650ce145ef1de42bf874c00c": [
+      {
+        "name": "ResolveStats",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/resolve-references.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.792Z",
+        "lastSeen": "2026-06-04T20:42:36.792Z"
+      }
+    ],
+    "03f7aa9de46b8ab53244a515fd50335e13ec20f5bcab2d99ffc5dd6e05888a00": [
+      {
+        "name": "ResolveReferencesOutput",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/resolve-references.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.792Z",
+        "lastSeen": "2026-06-04T20:42:36.792Z"
+      }
+    ],
+    "c9fdc351de2b8285c09936739523fd89cf8555b7802629b220412f2c126d4ef1": [
+      {
+        "name": "ExtractedRouterInclude",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/route-extractors/fastapi-router-bindings.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.792Z",
+        "lastSeen": "2026-06-04T20:42:36.792Z"
+      }
+    ],
+    "bca6c5b47846b21de6afac167f3685b03ce49e7f9c40bbfeaf1c497cb1af19ab": [
+      {
+        "name": "ExtractedRouterImport",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/route-extractors/fastapi-router-bindings.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.792Z",
+        "lastSeen": "2026-06-04T20:42:36.792Z"
+      }
+    ],
+    "ea3474f0541ca31c99e3c9538cfd0023ef30d7886f6405237fda976f01f79bbd": [
+      {
+        "name": "ExtractedRouterModuleAlias",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/route-extractors/fastapi-router-bindings.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.792Z",
+        "lastSeen": "2026-06-04T20:42:36.792Z"
+      }
+    ],
+    "1f557d68ffad64b75207f20f62a6ec4d766ff1d610c8a2ab2b101902a289f9de": [
+      {
+        "name": "ExtractedRoute",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/route-extractors/laravel.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.793Z",
+        "lastSeen": "2026-06-04T20:42:36.793Z"
+      }
+    ],
+    "792d92ef66d7fb2aa04b938a6c8cfc779bc7071c82732bbed7c25670bffbae4d": [
+      {
+        "name": "RouteGroupContext",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/route-extractors/laravel.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.793Z",
+        "lastSeen": "2026-06-04T20:42:36.793Z"
+      }
+    ],
+    "a540693da2521533809d89ec14e7091eef268313bb1bfcd920ffbad180f44051": [
+      {
+        "name": "ChainedRouteCall",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/route-extractors/laravel.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.793Z",
+        "lastSeen": "2026-06-04T20:42:36.793Z"
+      }
+    ],
+    "c7af60a6c283e05db9d4d9c1e02b862e8e97017351db5dabbab7926bd74899c3": [
+      {
+        "name": "WalkFrame",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/route-extractors/laravel.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.793Z",
+        "lastSeen": "2026-06-04T20:42:36.793Z"
+      }
+    ],
+    "4c9493fd5d25f5213db6b4d3540aa81312d823fe4f8ca94b2c378e65013d8ed7": [
+      {
+        "name": "NextjsMiddlewareConfig",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/route-extractors/middleware.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.793Z",
+        "lastSeen": "2026-06-04T20:42:36.793Z"
+      }
+    ],
+    "cdc4cea1db3d4adeb0523d53e3701e993924fdf3a30b0ac5e55337df3d399860": [
+      {
+        "name": "Partitioned",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/scope-extractor.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.793Z",
+        "lastSeen": "2026-06-04T20:42:36.793Z"
+      }
+    ],
+    "d6bf09e59ffcc7851eb0b6a9b80bbc897dba6d4523eeb93e93b2c5e4ab3ec3ef": [
+      {
+        "name": "ScopeDraft",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/scope-extractor.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.793Z",
+        "lastSeen": "2026-06-04T20:42:36.793Z"
+      }
+    ],
+    "502a9720b61eca291ab1dc65e9c988dacc3d05701c1e7fa39d436c574fae032d": [
+      {
+        "name": "Candidate",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/scope-extractor.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.793Z",
+        "lastSeen": "2026-06-04T20:42:36.793Z"
+      }
+    ],
+    "bf59f03dd90cd27da7d9933ad7d777844fbab109300862c781c0ae846582a883": [
+      {
+        "name": "ScopeResolver",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/scope-resolution/contract/scope-resolver.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.793Z",
+        "lastSeen": "2026-06-04T20:42:36.793Z"
+      }
+    ],
+    "103abdde135dca2caa0b47e51d2073b65feb48de3f72d22db99aa2d2723e514d": [
+      {
+        "name": "ResolveCompoundReceiverOptions",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/scope-resolution/passes/compound-receiver.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.794Z",
+        "lastSeen": "2026-06-04T20:42:36.794Z"
+      }
+    ],
+    "10dd2f8d4004f00f4e9188d68336dbf6da9b587f9f9deac26603ea2a5a0acc76": [
+      {
+        "name": "OverloadNarrowingHookCtx",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/scope-resolution/passes/overload-narrowing.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.794Z",
+        "lastSeen": "2026-06-04T20:42:36.794Z"
+      }
+    ],
+    "4e03e6cfaaa954e838b62e89ab324d0d8c8faa7bec1c2e4d953a1c4af83aba10": [
+      {
+        "name": "ScopeResolutionOutput",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/scope-resolution/pipeline/phase.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.794Z",
+        "lastSeen": "2026-06-04T20:42:36.794Z"
+      }
+    ],
+    "725426cfae151333eeaa04d946e86e9a495e32a0e05f09eff44d161525a3488c": [
+      {
+        "name": "ReconcileStats",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/scope-resolution/pipeline/reconcile-ownership.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.794Z",
+        "lastSeen": "2026-06-04T20:42:36.794Z"
+      }
+    ],
+    "6ace6a7c056c0a5b3b745dd53fa1fc93c0529244789f151951ae518935720923": [
+      {
+        "name": "RunScopeResolutionInput",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/scope-resolution/pipeline/run.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.795Z",
+        "lastSeen": "2026-06-04T20:42:36.795Z"
+      }
+    ],
+    "be5431b3641b6d1de7f882dc66f55f96fd54399dba522ea83685056bf617d222": [
+      {
+        "name": "RunScopeResolutionStats",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/scope-resolution/pipeline/run.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.795Z",
+        "lastSeen": "2026-06-04T20:42:36.795Z"
+      }
+    ],
+    "d2d2b63e0330f7984b3fe8b06ccc7943ec898257f7854d2960bd194946de009d": [
+      {
+        "name": "WorkspaceResolutionIndex",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/scope-resolution/workspace-index.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.795Z",
+        "lastSeen": "2026-06-04T20:42:36.795Z"
+      }
+    ],
+    "94f08b22b6955f290e8369707100de5c361ace92170342af5253ac5f1004150f": [
+      {
+        "name": "TypeEnvironment",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/type-env.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.796Z",
+        "lastSeen": "2026-06-04T20:42:36.796Z"
+      }
+    ],
+    "9a2b3aed2a9364cba45c98eec79bf1a1f0b6f5695b613477cf2e57e8369009b3": [
+      {
+        "name": "PatternOverride",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/type-env.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.796Z",
+        "lastSeen": "2026-06-04T20:42:36.796Z"
+      }
+    ],
+    "d7f5c034049c608fab54dc17c18d9af200e2fbf755673b68309e04d0bfada169": [
+      {
+        "name": "BuildTypeEnvOptions",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/type-env.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.796Z",
+        "lastSeen": "2026-06-04T20:42:36.796Z"
+      }
+    ],
+    "c5c46f984f82a2122472077f67a19081f0ca620937b29db2560427f484d4cd28": [
+      {
+        "name": "ConstructorBinding",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/type-env.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.796Z",
+        "lastSeen": "2026-06-04T20:42:36.796Z"
+      }
+    ],
+    "0e69b47f13a60e89a61e622d57ce362525b43210bdd5512231b4ee3e581c6b34": [
+      {
+        "name": "ClassDefRef",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/type-env.ts",
+        "language": "typescript",
+        "kind": "type",
+        "firstSeen": "2026-06-04T20:42:36.796Z",
+        "lastSeen": "2026-06-04T20:42:36.796Z"
+      }
+    ],
+    "5b3e00acbc624576710ae2b77b9292469348c105e4db9db53a690b4aec245b65": [
+      {
+        "name": "DartRHS",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/type-extractors/dart.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.796Z",
+        "lastSeen": "2026-06-04T20:42:36.796Z"
+      }
+    ],
+    "16d56651ddaab96081fb5e7f46b109ca7568ec8941f123035360478b5218ca85": [
+      {
+        "name": "ContainerDescriptor",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/type-extractors/shared.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.797Z",
+        "lastSeen": "2026-06-04T20:42:36.797Z"
+      }
+    ],
+    "c3c914491d4e2ab699a7f467bf7f33e0e6275fd098fcad90d6a89aa3d4a7cee5": [
+      {
+        "name": "ReturnTypeLookup",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/type-extractors/types.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.798Z",
+        "lastSeen": "2026-06-04T20:42:36.798Z"
+      }
+    ],
+    "a0da4689ddbb76dc22adc2961f58a974ec22f2a71bd5ed97aefec28d99042fec": [
+      {
+        "name": "ForLoopExtractorContext",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/type-extractors/types.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.798Z",
+        "lastSeen": "2026-06-04T20:42:36.798Z"
+      }
+    ],
+    "d4825273c0dfa41f511f7ad17093c928c049d199be46637844bf4ee324981176": [
+      {
+        "name": "PatternBindingResult",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/type-extractors/types.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.798Z",
+        "lastSeen": "2026-06-04T20:42:36.798Z"
+      }
+    ],
+    "6be6e72201da85a7e1e3cf0f5d34474d28d111cf3a678ccc5418efb6cba6f4b3": [
+      {
+        "name": "LanguageTypeConfig",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/type-extractors/types.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.798Z",
+        "lastSeen": "2026-06-04T20:42:36.798Z"
+      }
+    ],
+    "7031d8fda2073a309cb80551568eff9775fa24b6c6e8b89a8ffa020f8a5ce765": [
+      {
+        "name": "EnclosingClassInfo",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/utils/ast-helpers.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.798Z",
+        "lastSeen": "2026-06-04T20:42:36.798Z"
+      }
+    ],
+    "f597f5857844c65c9bcb8bfff5a8166993fc7bd390d1c8f1548b597a0dc40224": [
+      {
+        "name": "ObjectLiteralBindingInfo",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/utils/ast-helpers.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.798Z",
+        "lastSeen": "2026-06-04T20:42:36.798Z"
+      }
+    ],
+    "7a9a280b03c85bb1bfc3ea78994b7222b7cd928daea03b188145d1e54cdd1d62": [
+      {
+        "name": "QueryMatchLike",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/utils/ast-helpers.ts",
+        "language": "typescript",
+        "kind": "type",
+        "firstSeen": "2026-06-04T20:42:36.798Z",
+        "lastSeen": "2026-06-04T20:42:36.798Z"
+      }
+    ],
+    "59da41e782e36dfa178d6f565ad01eb59d5b43afa14b4847a3b0be61650a7a8e": [
+      {
+        "name": "MixedChainStep",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/utils/call-analysis.ts",
+        "language": "typescript",
+        "kind": "type",
+        "firstSeen": "2026-06-04T20:42:36.798Z",
+        "lastSeen": "2026-06-04T20:42:36.798Z"
+      }
+    ],
+    "c2693b728cc54236dd81c22adde5987a13e1f906270e43a142c8bc658491cbfc": [
+      {
+        "name": "VariableInfo",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/variable-types.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.799Z",
+        "lastSeen": "2026-06-04T20:42:36.799Z"
+      }
+    ],
+    "20bae2b843733243f0f06f5e69eda7527201205bbb451081fadde59bdd8e3597": [
+      {
+        "name": "VariableExtractor",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/variable-types.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.799Z",
+        "lastSeen": "2026-06-04T20:42:36.799Z"
+      }
+    ],
+    "e2f954146ffcf990819f1c28f711370e0d7925cf317beba353e791f990d44816": [
+      {
+        "name": "VariableExtractionConfig",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/variable-types.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.799Z",
+        "lastSeen": "2026-06-04T20:42:36.799Z"
+      }
+    ],
+    "22f3e39423e6065be2ac93140ca381bb145597d486a672b39e3ba0c8c39d529d": [
+      {
+        "name": "VueScriptExtraction",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/vue-sfc-extractor.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.799Z",
+        "lastSeen": "2026-06-04T20:42:36.799Z"
+      }
+    ],
+    "2913012d9aa31e6f75406659e0de65fb0a91f36f9791ef8f62b66808d8757443": [
+      {
+        "name": "ScriptBlock",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/vue-sfc-extractor.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.799Z",
+        "lastSeen": "2026-06-04T20:42:36.799Z"
+      }
+    ],
+    "76ff8a2a33c8cdcb044be162509764889007e7318e8b066e470d78bdf3c328e3": [
+      {
+        "name": "ParsedNode",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/workers/parse-worker.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.800Z",
+        "lastSeen": "2026-06-04T20:42:36.800Z"
+      }
+    ],
+    "509dc50af23b6fcfdc803cdcd0353726c2d7efa5930116ffd528f63715e447ae": [
+      {
+        "name": "ParsedRelationship",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/workers/parse-worker.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.800Z",
+        "lastSeen": "2026-06-04T20:42:36.800Z"
+      }
+    ],
+    "033502922deecf7bbceb38ee34f6ac3b2787776f9a3bb3db8be8ebcb81a64c16": [
+      {
+        "name": "ParsedSymbol",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/workers/parse-worker.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.800Z",
+        "lastSeen": "2026-06-04T20:42:36.800Z"
+      }
+    ],
+    "21be50941302c5681a813ad4cd8c7851130debb03edbb26a70cd888ae4fc7e60": [
+      {
+        "name": "ExtractedCall",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/workers/parse-worker.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.800Z",
+        "lastSeen": "2026-06-04T20:42:36.800Z"
+      }
+    ],
+    "3e130ebb64f4052a9df8d4cb01ee5135faad6df4e67620bfccc3df09474575a2": [
+      {
+        "name": "ExtractedAssignment",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/workers/parse-worker.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.800Z",
+        "lastSeen": "2026-06-04T20:42:36.800Z"
+      }
+    ],
+    "f97c5951916813f6c3c67857305db504c8cd7672e5b48410df97d833a99b0045": [
+      {
+        "name": "ExtractedFetchCall",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/workers/parse-worker.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.800Z",
+        "lastSeen": "2026-06-04T20:42:36.800Z"
+      }
+    ],
+    "e1fdd26a5899a95d6b9f6cadf41548d832f068ffa74e2092e24a52aba8278e08": [
+      {
+        "name": "FetchWrapperDef",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/workers/parse-worker.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.800Z",
+        "lastSeen": "2026-06-04T20:42:36.800Z"
+      }
+    ],
+    "0899b3e3c39bc4a997dab732be99b71e9e5fae3fd7d8d2bb2b972da149d54049": [
+      {
+        "name": "ExtractedDecoratorRoute",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/workers/parse-worker.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.800Z",
+        "lastSeen": "2026-06-04T20:42:36.800Z"
+      }
+    ],
+    "37e64998e3ab4dec922e18342090521b3f7e6b2a3e34b32b2a15c150b515a188": [
+      {
+        "name": "ExtractedToolDef",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/workers/parse-worker.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.800Z",
+        "lastSeen": "2026-06-04T20:42:36.800Z"
+      }
+    ],
+    "6a9613ae1cd64700ff38c4cd3eaab1f39b3a5565f321c0c049ec900f358bf608": [
+      {
+        "name": "ExtractedORMQuery",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/workers/parse-worker.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.800Z",
+        "lastSeen": "2026-06-04T20:42:36.800Z"
+      }
+    ],
+    "e0704bfd5e1d0ed051ad25dff3bcf1d96acca197f1b90d661dbd7ca3bf738085": [
+      {
+        "name": "FileConstructorBindings",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/workers/parse-worker.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.800Z",
+        "lastSeen": "2026-06-04T20:42:36.800Z"
+      }
+    ],
+    "08e95d07c7152a72c65fc3f300882b0a540dbf39277b736dd94230b891097ea4": [
+      {
+        "name": "FileScopeBindings",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/workers/parse-worker.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.800Z",
+        "lastSeen": "2026-06-04T20:42:36.800Z"
+      }
+    ],
+    "67349990b4539c49a509ff110aede64f37f1f8eae017e1fd62f0bb5748f80475": [
+      {
+        "name": "ParseWorkerResult",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/workers/parse-worker.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.800Z",
+        "lastSeen": "2026-06-04T20:42:36.800Z"
+      }
+    ],
+    "ab0f1f706134883a2ebd5f5d32a7fe42720a8195a4298aac14dc10702c33a84d": [
+      {
+        "name": "WorkerIncomingMessage",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/workers/parse-worker.ts",
+        "language": "typescript",
+        "kind": "type",
+        "firstSeen": "2026-06-04T20:42:36.800Z",
+        "lastSeen": "2026-06-04T20:42:36.800Z"
+      }
+    ],
+    "ac69082ba15e57dc50d3cfbef705a2b7782f45c71e3d889a7635477d53535dc4": [
+      {
+        "name": "Quarantine",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/workers/quarantine.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.800Z",
+        "lastSeen": "2026-06-04T20:42:36.800Z"
+      }
+    ],
+    "6313106b507726da6f9fa2f46d48df60e60ff65aeca0a0f979ac56e603994f5d": [
+      {
+        "name": "WorkerPool",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/workers/worker-pool.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.800Z",
+        "lastSeen": "2026-06-04T20:42:36.800Z"
+      }
+    ],
+    "7fafd08dd20ca556e0d9be89b7539de5a23e91fd5152c3cc25f1fa8ec1f26e8a": [
+      {
+        "name": "WorkerPoolStats",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/workers/worker-pool.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.800Z",
+        "lastSeen": "2026-06-04T20:42:36.800Z"
+      }
+    ],
+    "8a652dbe8ae9f0fdcecc1103f8f3fbfb772fd2cb95a59759d1efb09a3b66a321": [
+      {
+        "name": "WorkerPoolOptions",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/workers/worker-pool.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.800Z",
+        "lastSeen": "2026-06-04T20:42:36.800Z"
+      }
+    ],
+    "54a756941f787fa87d2a0bb2953b0868b3c2a333e2ea266d12ecb212005f0598": [
+      {
+        "name": "WorkerJob",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/workers/worker-pool.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.800Z",
+        "lastSeen": "2026-06-04T20:42:36.800Z"
+      }
+    ],
+    "bb9455d4519c9247b121780c049c65ac87529e6306da504b363c868ec9096604": [
+      {
+        "name": "WorkerJobResult",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/workers/worker-pool.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.800Z",
+        "lastSeen": "2026-06-04T20:42:36.800Z"
+      }
+    ],
+    "6b02f292489855bf915a0eaf68762bfeb72cf890a2f1d021c4920285e85cdf01": [
+      {
+        "name": "WorkerPoolDispatchError",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/workers/worker-pool.ts",
+        "language": "typescript",
+        "kind": "class",
+        "firstSeen": "2026-06-04T20:42:36.800Z",
+        "lastSeen": "2026-06-04T20:42:36.800Z"
+      }
+    ],
+    "8db65194e60f108d0ff18b0b2d196ef0268af9fcb3e8292e8a87482845748908": [
+      {
+        "name": "WorkerPoolInitializationError",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/ingestion/workers/worker-pool.ts",
+        "language": "typescript",
+        "kind": "class",
+        "firstSeen": "2026-06-04T20:42:36.800Z",
+        "lastSeen": "2026-06-04T20:42:36.800Z"
+      }
+    ],
+    "53ffbb83926d18574b263d3662cb25895e52534360ebd037c31aa2c83580bd87": [
+      {
+        "name": "StreamedCSVResult",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/lbug/csv-generator.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.800Z",
+        "lastSeen": "2026-06-04T20:42:36.800Z"
+      }
+    ],
+    "a26e6b80d5696e3f79ba245e08b8d4357f1cf2d2f5c80090b92742d368360c7d": [
+      {
+        "name": "FileContentCache",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/lbug/csv-generator.ts",
+        "language": "typescript",
+        "kind": "class",
+        "firstSeen": "2026-06-04T20:42:36.800Z",
+        "lastSeen": "2026-06-04T20:42:36.800Z"
+      }
+    ],
+    "6e91f40acacee13470dcafb1d9633132c6aa20f08ff2aee1c5d35fac1aaea1b6": [
+      {
+        "name": "BufferedCSVWriter",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/lbug/csv-generator.ts",
+        "language": "typescript",
+        "kind": "class",
+        "firstSeen": "2026-06-04T20:42:36.800Z",
+        "lastSeen": "2026-06-04T20:42:36.800Z"
+      }
+    ],
+    "303b0c34fa8fb88813df578fd468c501b4f41ba2d70400a545e7f0b37e0b530c": [
+      {
+        "name": "ExtensionInstallResult",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/lbug/extension-loader.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.800Z",
+        "lastSeen": "2026-06-04T20:42:36.800Z"
+      }
+    ],
+    "bee4b9e9b29ed4aaada721f377449c973d8e362829f2723673a91bfdb01df2b0": [
+      {
+        "name": "ExtensionCapability",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/lbug/extension-loader.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.800Z",
+        "lastSeen": "2026-06-04T20:42:36.800Z"
+      }
+    ],
+    "0223cfb17bdfa3d364345e4303159c334fd75ed35bd56bea852827341f7ddb1a": [
+      {
+        "name": "ExtensionEnsureOptions",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/lbug/extension-loader.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.800Z",
+        "lastSeen": "2026-06-04T20:42:36.800Z"
+      }
+    ],
+    "f7e96bbc8be401f0594918beab9059cb75cae055fd2ce3a125126e3a80ba15b9": [
+      {
+        "name": "ExtensionManagerOptions",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/lbug/extension-loader.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.800Z",
+        "lastSeen": "2026-06-04T20:42:36.800Z"
+      }
+    ],
+    "1114e9cb3466a60c5637797308ce633e7072b3a3a6383769d235b24a5c1f7eb2": [
+      {
+        "name": "ExtensionManager",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/lbug/extension-loader.ts",
+        "language": "typescript",
+        "kind": "class",
+        "firstSeen": "2026-06-04T20:42:36.800Z",
+        "lastSeen": "2026-06-04T20:42:36.800Z"
+      }
+    ],
+    "65d05489cad745f831e7d1b7eece129b02612fd7981949566c998f01a4a81eb3": [
+      {
+        "name": "RelCsvSplitResult",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/lbug/lbug-adapter.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.801Z",
+        "lastSeen": "2026-06-04T20:42:36.801Z"
+      }
+    ],
+    "955efe5a48276a567fe19f5514636e60623bee36106cebf31216fc8ea36b5850": [
+      {
+        "name": "LbugDatabaseOptions",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/lbug/lbug-config.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.801Z",
+        "lastSeen": "2026-06-04T20:42:36.801Z"
+      }
+    ],
+    "9d2435a55c0e89247a278826426b062333d28199ce5ab55ccfd9b14b6b0ead62": [
+      {
+        "name": "LbugConnectionHandle",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/lbug/lbug-config.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.801Z",
+        "lastSeen": "2026-06-04T20:42:36.801Z"
+      }
+    ],
+    "4f99def96ff585e8348d68021121230f547986793b794864fbdf4f3ceb458648": [
+      {
+        "name": "NativeCheckResult",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/lbug/native-check.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.801Z",
+        "lastSeen": "2026-06-04T20:42:36.801Z"
+      }
+    ],
+    "71e8dc1a2334066c67285b435969ac9c057d068e085d625dccb228f1677433e8": [
+      {
+        "name": "PoolEntry",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/lbug/pool-adapter.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.801Z",
+        "lastSeen": "2026-06-04T20:42:36.801Z"
+      }
+    ],
+    "e090e337d8dce920e6d4755283eaf19f48f7c04706b592ee23ca14388fd567ec": [
+      {
+        "name": "SharedDB",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/lbug/pool-adapter.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.801Z",
+        "lastSeen": "2026-06-04T20:42:36.801Z"
+      }
+    ],
+    "f3a0ae0cdfe63b061931db50e43e5c9a29f2b74003b22f0d60557e6154609586": [
+      {
+        "name": "TryQuarantineResult",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/lbug/pool-adapter.ts",
+        "language": "typescript",
+        "kind": "type",
+        "firstSeen": "2026-06-04T20:42:36.801Z",
+        "lastSeen": "2026-06-04T20:42:36.801Z"
+      }
+    ],
+    "88ddbfd81273c3cfa2219b269a1393d517ac2387e082c230cefbfcf97b2f82f6": [
+      {
+        "name": "SidecarRecoveryLogger",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/lbug/sidecar-recovery.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.801Z",
+        "lastSeen": "2026-06-04T20:42:36.801Z"
+      }
+    ],
+    "53ffc8cc040fceee6e72c0fa681d2495ec9308e61b0115f66e442b309c372665": [
+      {
+        "name": "WalCheckpointDriver",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/lbug/wal-checkpoint-driver.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.801Z",
+        "lastSeen": "2026-06-04T20:42:36.801Z"
+      }
+    ],
+    "a461b3143ff95162677fd66bedb1814146b716820846395292e40bc113dcb5c9": [
+      {
+        "name": "CreateLoggerOptions",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/logger.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.801Z",
+        "lastSeen": "2026-06-04T20:42:36.801Z"
+      }
+    ],
+    "6680425f7d29808f0fa6bed8a583f4786736081815660b883b813376e338be94": [
+      {
+        "name": "PinoLogRecord",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/logger.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.801Z",
+        "lastSeen": "2026-06-04T20:42:36.801Z"
+      }
+    ],
+    "51f3c72597d462b3f2f2022d5c779a74900bcac54ba72b4689bfaaf199d910b2": [
+      {
+        "name": "LoggerCapture",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/logger.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.801Z",
+        "lastSeen": "2026-06-04T20:42:36.801Z"
+      }
+    ],
+    "63975002e66a8499b886c24abc014b9c0ef5681544db17bc548b82c5bb3d71d8": [
+      {
+        "name": "MemoryWritable",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/logger.ts",
+        "language": "typescript",
+        "kind": "class",
+        "firstSeen": "2026-06-04T20:42:36.801Z",
+        "lastSeen": "2026-06-04T20:42:36.801Z"
+      }
+    ],
+    "b9dd4b57f62a70f75d03962e84bb257534f03c9b6fa5c293215723e6c42b7e67": [
+      {
+        "name": "RuntimeFingerprint",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/platform/capabilities.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.801Z",
+        "lastSeen": "2026-06-04T20:42:36.801Z"
+      }
+    ],
+    "564392cb3c1a37a718016229039526c378962bfd6981af0c9fb29094e2223fdb": [
+      {
+        "name": "RuntimeCapabilities",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/platform/capabilities.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.801Z",
+        "lastSeen": "2026-06-04T20:42:36.801Z"
+      }
+    ],
+    "d7537e03f1ef57976f7ae2a843aeafa089c5d5450eaad77d6276a6633c7baf9f": [
+      {
+        "name": "AnalyzeCallbacks",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/run-analyze.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.802Z",
+        "lastSeen": "2026-06-04T20:42:36.802Z"
+      }
+    ],
+    "86aa54aedcf548e193ec2dde718a65076e7312f49c7c10c2e031d941bac1f781": [
+      {
+        "name": "AnalyzeOptions",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/run-analyze.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.802Z",
+        "lastSeen": "2026-06-04T20:42:36.802Z"
+      }
+    ],
+    "f5b1a5abd402bc96925efc6842b793c4a40fe14e1a8191261c3d78ce46beddf5": [
+      {
+        "name": "AnalyzeResult",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/run-analyze.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.802Z",
+        "lastSeen": "2026-06-04T20:42:36.802Z"
+      }
+    ],
+    "2c511ba64a8afd51a3a0368c962c7eae1d044d0ed271516a70c1eb7363122054": [
+      {
+        "name": "BM25SearchResult",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/search/bm25-index.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.802Z",
+        "lastSeen": "2026-06-04T20:42:36.802Z"
+      }
+    ],
+    "b6b20a13051bd38d2b4cbe1948233997d2b1be862f6c06299f58db9d1f968fa5": [
+      {
+        "name": "FTSSearchResponse",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/search/bm25-index.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.802Z",
+        "lastSeen": "2026-06-04T20:42:36.802Z"
+      }
+    ],
+    "f5abeced7082e9333f24caf128b64e2ca90a4a1f07da23f20a1cfeffa6d5d1e2": [
+      {
+        "name": "CreateSearchFTSIndexesOptions",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/search/fts-indexes.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.802Z",
+        "lastSeen": "2026-06-04T20:42:36.802Z"
+      }
+    ],
+    "6b0439709351ee2ebe8be786d370b11280ce7cfacfedd467be72ec0dfe28a0e8": [
+      {
+        "name": "FTSIndexDefinition",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/search/fts-schema.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.802Z",
+        "lastSeen": "2026-06-04T20:42:36.802Z"
+      }
+    ],
+    "c8b3c4d5d8a6b88fcef168dfaed032bfe13eac0ad2eef4ed1a488b73bfbcf1d2": [
+      {
+        "name": "HybridSearchResult",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/search/hybrid-search.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.802Z",
+        "lastSeen": "2026-06-04T20:42:36.802Z"
+      }
+    ],
+    "938fe44c295b959043074785907bb078662a10d7c166ac80cbf665f5263a3a25": [
+      {
+        "name": "PhaseTimer",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/search/phase-timer.ts",
+        "language": "typescript",
+        "kind": "class",
+        "firstSeen": "2026-06-04T20:42:36.802Z",
+        "lastSeen": "2026-06-04T20:42:36.802Z"
+      }
+    ],
+    "73c1f39d64a46175767504e3c19d3ec9c55a2ffe7f2dd988a7be9de779b11ca5": [
+      {
+        "name": "GrammarSource",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/tree-sitter/parser-loader.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.802Z",
+        "lastSeen": "2026-06-04T20:42:36.802Z"
+      }
+    ],
+    "0c7a15c06ba8164d8342bd3f6076e49a996953793194a9b2721c05703fafd15f": [
+      {
+        "name": "GrammarSourceDescriptor",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/tree-sitter/parser-loader.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.802Z",
+        "lastSeen": "2026-06-04T20:42:36.802Z"
+      }
+    ],
+    "e56ef03664e6cc48a696292dde2f6c85ed58553bcf8cbd8aae5e7cde8dc3b8b9": [
+      {
+        "name": "TimeoutCapableParser",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/tree-sitter/safe-parse.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.802Z",
+        "lastSeen": "2026-06-04T20:42:36.802Z"
+      }
+    ],
+    "d80e40f20028a4fce68edf25dbd88f780594a3677d74602ef4d36946236d0f3c": [
+      {
+        "name": "ParseTimeoutError",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/tree-sitter/safe-parse.ts",
+        "language": "typescript",
+        "kind": "class",
+        "firstSeen": "2026-06-04T20:42:36.802Z",
+        "lastSeen": "2026-06-04T20:42:36.802Z"
+      }
+    ],
+    "b4926f0ea320891bbcc35d180b0588f9fd15c43eff6f9b093be9cf6f665c0464": [
+      {
+        "name": "CursorConfig",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/wiki/cursor-client.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.802Z",
+        "lastSeen": "2026-06-04T20:42:36.802Z"
+      }
+    ],
+    "a5fa8a39aadb611f3f8011db3177725318f7165e4964079dec7e6ba3f569c092": [
+      {
+        "name": "WikiOptions",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/wiki/generator.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.804Z",
+        "lastSeen": "2026-06-04T20:42:36.804Z"
+      }
+    ],
+    "8e7b68882b9dfeba4f758a909b66e05b6bf150dab2333df157cdb099eb064c5d": [
+      {
+        "name": "WikiMeta",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/wiki/generator.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.804Z",
+        "lastSeen": "2026-06-04T20:42:36.804Z"
+      }
+    ],
+    "9e46dd9c1fa139fac03dc4a066922aaca16c8f20737e796fe6207ba9b6defbfb": [
+      {
+        "name": "ModuleTreeNode",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/wiki/generator.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.804Z",
+        "lastSeen": "2026-06-04T20:42:36.804Z"
+      },
+      {
+        "name": "ModuleTreeNode",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/wiki/html-viewer.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.805Z",
+        "lastSeen": "2026-06-04T20:42:36.805Z"
+      }
+    ],
+    "ee102f7c2420a7ba398c4e8cf50b051ac2714893382316393136f9daa84b8f45": [
+      {
+        "name": "WikiRunResult",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/wiki/generator.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.804Z",
+        "lastSeen": "2026-06-04T20:42:36.804Z"
+      }
+    ],
+    "6b1efbbd0b64f51e665a5fcc82571a594ec0c6ba346a0ebd0210ba3527bca024": [
+      {
+        "name": "WikiGenerator",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/wiki/generator.ts",
+        "language": "typescript",
+        "kind": "class",
+        "firstSeen": "2026-06-04T20:42:36.805Z",
+        "lastSeen": "2026-06-04T20:42:36.805Z"
+      }
+    ],
+    "d742a61c812ecc0198b997d139f3922099904fcb595bc1d5281a782c9b05e999": [
+      {
+        "name": "FileWithExports",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/wiki/graph-queries.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.805Z",
+        "lastSeen": "2026-06-04T20:42:36.805Z"
+      }
+    ],
+    "b4c5b74313716d5c36c23f5266e5379ede78d2524e3741019ba1a433393d3054": [
+      {
+        "name": "CallEdge",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/wiki/graph-queries.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.805Z",
+        "lastSeen": "2026-06-04T20:42:36.805Z"
+      }
+    ],
+    "45f8e1a3858d635c369719e22f9128ac3a874e18540e23290a88156ea25a06f8": [
+      {
+        "name": "ProcessInfo",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/wiki/graph-queries.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.805Z",
+        "lastSeen": "2026-06-04T20:42:36.805Z"
+      }
+    ],
+    "b609a78ae27e69c6662af8be8dba2f56cb09ad817b5153f792f490338f486454": [
+      {
+        "name": "LLMConfig",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/wiki/llm-client.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.805Z",
+        "lastSeen": "2026-06-04T20:42:36.805Z"
+      }
+    ],
+    "827b142d427ebb0fbb42236a422846e01382612a7b8c7a698991dcf6134751e2": [
+      {
+        "name": "LLMResponse",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/wiki/llm-client.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.805Z",
+        "lastSeen": "2026-06-04T20:42:36.805Z"
+      }
+    ],
+    "5ef3a80c8541851bf421506e12d2d2cd94b784e5018a80aa7cac33b86e353024": [
+      {
+        "name": "CallLLMOptions",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/wiki/llm-client.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.805Z",
+        "lastSeen": "2026-06-04T20:42:36.805Z"
+      }
+    ],
+    "7bd0c72e825905eb09a6cc7425e97019e7e2b4ac65227b347521783c32ed8cee": [
+      {
+        "name": "LocalCLIConfig",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/wiki/local-cli-client.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.805Z",
+        "lastSeen": "2026-06-04T20:42:36.805Z"
+      }
+    ],
+    "83754bd265faaaf0d938c35da316ad40e6dae0b682ad7b447f5a4626435c8e4e": [
+      {
+        "name": "LocalCommand",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/core/wiki/local-cli-client.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.805Z",
+        "lastSeen": "2026-06-04T20:42:36.805Z"
+      }
+    ],
+    "ace09c70653628b657bcc7d7bf5756ab24cf1621e992351f38e11d2ecf791ab5": [
+      {
+        "name": "CompatibleStdioServerTransport",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/mcp/compatible-stdio-transport.ts",
+        "language": "typescript",
+        "kind": "class",
+        "firstSeen": "2026-06-04T20:42:36.805Z",
+        "lastSeen": "2026-06-04T20:42:36.805Z"
+      }
+    ],
+    "1862b83fc617e547de425cf24636798cb63a9f5c9201e9dedfe59bd10cbc268d": [
+      {
+        "name": "CodebaseContext",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/mcp/local/local-backend.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.811Z",
+        "lastSeen": "2026-06-04T20:42:36.811Z"
+      }
+    ],
+    "028cefac6c0d34c69b83847a023de4b5581e9fe4ed6246cd36b4209846562da7": [
+      {
+        "name": "RepoHandle",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/mcp/local/local-backend.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.811Z",
+        "lastSeen": "2026-06-04T20:42:36.811Z"
+      }
+    ],
+    "d15d2ff3c32b980de738cebb4b455f90b0b6c4b7df51e20da9699b8307a8645d": [
+      {
+        "name": "ImpactParams",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/mcp/local/local-backend.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.811Z",
+        "lastSeen": "2026-06-04T20:42:36.811Z"
+      }
+    ],
+    "0f2046b169ec5a974261cd208c0a0f9c26588df89216e563ce9c55cf2f53d09a": [
+      {
+        "name": "LocalBackend",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/mcp/local/local-backend.ts",
+        "language": "typescript",
+        "kind": "class",
+        "firstSeen": "2026-06-04T20:42:36.811Z",
+        "lastSeen": "2026-06-04T20:42:36.811Z"
+      }
+    ],
+    "664960f754ac9ae6e2bdb0706d3c344da4b82806ccbcf4127f210adb89e0eb8b": [
+      {
+        "name": "ResourceDefinition",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/mcp/resources.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.811Z",
+        "lastSeen": "2026-06-04T20:42:36.811Z"
+      }
+    ],
+    "6892903fcda629ee38ebfafdb3d89abc8eb7454ace5d6058d906ec42499bef11": [
+      {
+        "name": "ResourceTemplate",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/mcp/resources.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.811Z",
+        "lastSeen": "2026-06-04T20:42:36.811Z"
+      }
+    ],
+    "32eff1ebf20b6bdf772b49229a21cd5913e27520e46cac4d9098ecf47b16539c": [
+      {
+        "name": "GroupContractsResourceFilter",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/mcp/resources.ts",
+        "language": "typescript",
+        "kind": "type",
+        "firstSeen": "2026-06-04T20:42:36.811Z",
+        "lastSeen": "2026-06-04T20:42:36.811Z"
+      }
+    ],
+    "b77fa8b8aa1da8b0cb9a639621ea7221394b96d4630816be7e0ab9230dc02db6": [
+      {
+        "name": "McpWriteContext",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/mcp/stdio-context.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.811Z",
+        "lastSeen": "2026-06-04T20:42:36.811Z"
+      }
+    ],
+    "ee894c28b506755c45fed02503d90780414cfdeee0cf298d63f258ee6530eb7d": [
+      {
+        "name": "SentinelOptions",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/mcp/stdio-context.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.811Z",
+        "lastSeen": "2026-06-04T20:42:36.811Z"
+      }
+    ],
+    "3d311cba59b568e3a218bf237ba434e4708e4c31e47f2b9b945517e1a8a4bc78": [
+      {
+        "name": "SentinelStats",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/mcp/stdio-context.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.811Z",
+        "lastSeen": "2026-06-04T20:42:36.811Z"
+      }
+    ],
+    "e780bff64d9940154918628ae3eb661f1e42be543a942c9acbf6d4b02363bb53": [
+      {
+        "name": "Sentinel",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/mcp/stdio-context.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.811Z",
+        "lastSeen": "2026-06-04T20:42:36.811Z"
+      }
+    ],
+    "e9177949d8ea937bd880f18352b681cdff5833c2df3e1649200cda9ea61e126b": [
+      {
+        "name": "ToolDefinition",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/mcp/tools.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.811Z",
+        "lastSeen": "2026-06-04T20:42:36.811Z"
+      }
+    ],
+    "2cfa763bd7da00a9dc504c4fd7b93d0773d37f8a96ba64b69b4a48a23728b9de": [
+      {
+        "name": "AnalyzeJobProgress",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/server/analyze-job.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.812Z",
+        "lastSeen": "2026-06-04T20:42:36.812Z"
+      }
+    ],
+    "db3fc61305f669ce4b48c04b1cd7886cbea98f7475b00d66e46b5ab1c016d10f": [
+      {
+        "name": "AnalyzeJob",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/server/analyze-job.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.812Z",
+        "lastSeen": "2026-06-04T20:42:36.812Z"
+      }
+    ],
+    "f4c9478cfe36eecde7ce119e4231a574f0642d0081fa92eea5c5a28d574f0036": [
+      {
+        "name": "JobManager",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/server/analyze-job.ts",
+        "language": "typescript",
+        "kind": "class",
+        "firstSeen": "2026-06-04T20:42:36.812Z",
+        "lastSeen": "2026-06-04T20:42:36.812Z"
+      }
+    ],
+    "41aa67df5697cbbaf60991cd927a99ebaaefc708382e2f79a3113db89c66b171": [
+      {
+        "name": "StartMessage",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/server/analyze-worker.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.812Z",
+        "lastSeen": "2026-06-04T20:42:36.812Z"
+      }
+    ],
+    "098580c7ce2bc87fd7c8cc10d17bd0a5f270b5a18ff538a9d3319ebaf73c2b41": [
+      {
+        "name": "ProgressMessage",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/server/analyze-worker.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.812Z",
+        "lastSeen": "2026-06-04T20:42:36.812Z"
+      }
+    ],
+    "2aac37a71ba22268f82f9b2ce99591415c8600d9ecafd7ba9f6777a0a6524d58": [
+      {
+        "name": "CompleteMessage",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/server/analyze-worker.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.812Z",
+        "lastSeen": "2026-06-04T20:42:36.812Z"
+      }
+    ],
+    "3d239ec453a88e8ee1fc0edc177b24530555082521a403eab71ac8e75c6cadfd": [
+      {
+        "name": "ErrorMessage",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/server/analyze-worker.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.812Z",
+        "lastSeen": "2026-06-04T20:42:36.812Z"
+      }
+    ],
+    "7067bf440acd0c133c5b9efaac3c34f1e84a394ab674056ec71869a33ee0f277": [
+      {
+        "name": "CloneProgress",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/server/git-clone.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.812Z",
+        "lastSeen": "2026-06-04T20:42:36.812Z"
+      }
+    ],
+    "551dd636df5fd0c429430ea8232b66e1fb3a89c43bb67361e0ea22da87390893": [
+      {
+        "name": "MCPSession",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/server/mcp-http.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.813Z",
+        "lastSeen": "2026-06-04T20:42:36.813Z"
+      }
+    ],
+    "90f0b46d0a36d72efa612671151548a31c57ed259007c8433d722b948c75394f": [
+      {
+        "name": "RouteLimiterOverrides",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/server/validation.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.813Z",
+        "lastSeen": "2026-06-04T20:42:36.813Z"
+      }
+    ],
+    "7381ca02c27a2e8de1838df30f0ae377bd1e28ef6e305519a03beb3cb657fd7d": [
+      {
+        "name": "BadRequestError",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/server/validation.ts",
+        "language": "typescript",
+        "kind": "class",
+        "firstSeen": "2026-06-04T20:42:36.813Z",
+        "lastSeen": "2026-06-04T20:42:36.813Z"
+      }
+    ],
+    "47b5c8f6785a91f7b29dbc615c0d2986b82dab05ad780a3fc669a58f1fb9d945": [
+      {
+        "name": "FileHashDiff",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/storage/file-hash.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.813Z",
+        "lastSeen": "2026-06-04T20:42:36.813Z"
+      }
+    ],
+    "7983a8e995abfadd6a70b3eecb1af840b70415d3b7f4221d3cf885d2772ca453": [
+      {
+        "name": "FileDiff",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/storage/git.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.813Z",
+        "lastSeen": "2026-06-04T20:42:36.813Z"
+      }
+    ],
+    "ece54203d80e5dd0e71d85329cd9025b287e16d2255606869e2f92d2de6c1ce0": [
+      {
+        "name": "ParseCacheFile",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/storage/parse-cache.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.813Z",
+        "lastSeen": "2026-06-04T20:42:36.813Z"
+      }
+    ],
+    "b9cc562eca9db7bac7976ec330ee0ee16eaf92e213c86ea67b1d758dee9331ba": [
+      {
+        "name": "ShardedParseCacheIndex",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/storage/parse-cache.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.813Z",
+        "lastSeen": "2026-06-04T20:42:36.813Z"
+      }
+    ],
+    "7870b6f16f0e79870169d5e48d038b25e82283baf9b64b319570235aa9ef641c": [
+      {
+        "name": "ParseCache",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/storage/parse-cache.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.813Z",
+        "lastSeen": "2026-06-04T20:42:36.813Z"
+      }
+    ],
+    "9897aa96cd391b8a8f089cbf0e4888b1c5617a6a0e22d2304e2d9b65f55f65dd": [
+      {
+        "name": "RepoMeta",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/storage/repo-manager.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.813Z",
+        "lastSeen": "2026-06-04T20:42:36.813Z"
+      }
+    ],
+    "496d44ac2414c4265290cf5713f54713702e7d27c7c185ed448b611183f92f2f": [
+      {
+        "name": "IndexedRepo",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/storage/repo-manager.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.813Z",
+        "lastSeen": "2026-06-04T20:42:36.813Z"
+      }
+    ],
+    "882ee41daf5469b58c285366143f1d47e7fd1c138df2cd7e2808dbaada677e6d": [
+      {
+        "name": "RegistryEntry",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/storage/repo-manager.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.813Z",
+        "lastSeen": "2026-06-04T20:42:36.813Z"
+      }
+    ],
+    "3161af4f7cbdb81ad3c8af0b3ec3b755885b5ab707afa7f8183ed96fa3f98385": [
+      {
+        "name": "RegisterRepoOptions",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/storage/repo-manager.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.813Z",
+        "lastSeen": "2026-06-04T20:42:36.813Z"
+      }
+    ],
+    "bafedda8f0b8e88dbff2275dda131d2105c8259458c8a34303e565f6fd6e366d": [
+      {
+        "name": "CLIConfig",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/storage/repo-manager.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.813Z",
+        "lastSeen": "2026-06-04T20:42:36.813Z"
+      }
+    ],
+    "6ecbf3bcfed6111461512465f5eeeb7c3bccf2afbbbe4b8685ba3137c60e836e": [
+      {
+        "name": "CwdMatch",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/storage/repo-manager.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.813Z",
+        "lastSeen": "2026-06-04T20:42:36.813Z"
+      }
+    ],
+    "99d415b871d44d67f648c2ea3780ffd6d54befa740fc0928d852ac61a0565f85": [
+      {
+        "name": "RegistryNameCollisionError",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/storage/repo-manager.ts",
+        "language": "typescript",
+        "kind": "class",
+        "firstSeen": "2026-06-04T20:42:36.813Z",
+        "lastSeen": "2026-06-04T20:42:36.813Z"
+      }
+    ],
+    "e7157892df58ca8679ff8f8e1e09f3b93078c068c323f5ebbc574189a2ae4cd7": [
+      {
+        "name": "RegistryNotFoundError",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/storage/repo-manager.ts",
+        "language": "typescript",
+        "kind": "class",
+        "firstSeen": "2026-06-04T20:42:36.813Z",
+        "lastSeen": "2026-06-04T20:42:36.813Z"
+      }
+    ],
+    "d1aa9af5a9e3d7fc518e153c0a552bd115c494a12339e136201f7479baffe7eb": [
+      {
+        "name": "RegistryAmbiguousTargetError",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/storage/repo-manager.ts",
+        "language": "typescript",
+        "kind": "class",
+        "firstSeen": "2026-06-04T20:42:36.813Z",
+        "lastSeen": "2026-06-04T20:42:36.813Z"
+      }
+    ],
+    "2b4faa54705ef28c0ec2e0a2d23fc8292ea1026b4bfb3872dedb8d3216276dcb": [
+      {
+        "name": "AnalysisNotFinalizedError",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/storage/repo-manager.ts",
+        "language": "typescript",
+        "kind": "class",
+        "firstSeen": "2026-06-04T20:42:36.813Z",
+        "lastSeen": "2026-06-04T20:42:36.813Z"
+      }
+    ],
+    "809912a61d6f148f3cacf9057ea4ac45e37061c3de1181befcf7531428d1e954": [
+      {
+        "name": "UnsafeStoragePathError",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/storage/repo-manager.ts",
+        "language": "typescript",
+        "kind": "class",
+        "firstSeen": "2026-06-04T20:42:36.813Z",
+        "lastSeen": "2026-06-04T20:42:36.813Z"
+      }
+    ],
+    "4055311794d81380aa469e38ece04c70a18db980e1a8c9eb607e0582bafc09d2": [
+      {
+        "name": "PipelineResult",
+        "file": "/home/ozzy/dev/GitNexus/gitnexus/src/types/pipeline.ts",
+        "language": "typescript",
+        "kind": "interface",
+        "firstSeen": "2026-06-04T20:42:36.813Z",
+        "lastSeen": "2026-06-04T20:42:36.813Z"
+      }
+    ]
+  }
+}
