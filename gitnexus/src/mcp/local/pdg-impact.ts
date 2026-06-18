@@ -348,12 +348,8 @@ export interface PdgImpactBaseResult extends PdgImpactParityFields {
   interproceduralEpistemic?: string;
   interproceduralBoundaries?: unknown[];
   interproceduralError?: string;
-  // Statement-precise (proven) inter-procedural reach, surfaced at the top level
-  // alongside interproceduralByDepth (also nested under pdgInterprocedural).
-  statementPreciseByDepth?: Record<number, unknown[]>;
-  statementPreciseByDepthCounts?: Record<number, number>;
-  statementPreciseImpactedCount?: number;
-  statementPrecision?: number | null;
+  // Statement-precise (proven) inter-procedural reach lives ONLY under
+  // `pdgInterprocedural` (the scoped namespace) — see PdgInterproceduralImpact.
   pdgInterprocedural?: PdgInterproceduralImpact;
   pdgEvidence?: PdgImpactEvidenceSummary;
 }

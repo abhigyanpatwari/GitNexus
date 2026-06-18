@@ -5028,13 +5028,8 @@ export class LocalBackend {
       byDepthCounts,
       interproceduralByDepth,
       interproceduralByDepthCounts,
-      // Statement-precise (proven) inter-procedural reach — additive; tighter than
-      // `interproceduralByDepth` for a line-seeded downstream slice, equal to it
-      // otherwise. `statementPrecision` = |proven| / |proven + unproven|.
-      statementPreciseByDepth,
-      statementPreciseByDepthCounts,
-      statementPreciseImpactedCount: provenBridgeCount,
-      statementPrecision,
+      // Statement-precise (proven) inter-procedural reach is emitted ONLY under
+      // `pdgInterprocedural` below — a single source, no top-level duplicate.
       affected_processes: affectedProcesses,
       affected_modules: affectedModules,
       byDepth,

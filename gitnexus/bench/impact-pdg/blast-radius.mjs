@@ -263,7 +263,7 @@ async function run() {
       // from the criterion's dependence slice. Tighter than callgraph when the
       // changed line reaches only some of the function's callees.
       const preciseSyms = symbolSetFromByDepth(
-        pdg?.statementPreciseByDepth ?? pdg?.pdgInterprocedural?.statementPreciseByDepth ?? {},
+        pdg?.pdgInterprocedural?.statementPreciseByDepth ?? {},
       );
       const pdgOnly = [...pdgSyms].filter((x) => !cgSyms.has(x)).length;
       const cgOnly = [...cgSyms].filter((x) => !pdgSyms.has(x)).length;
@@ -280,7 +280,9 @@ async function run() {
         pdgSymbols: pdgSyms.size,
         statementPreciseSymbols: preciseSyms.size,
         statementPrecision:
-          typeof pdg?.statementPrecision === 'number' ? round(pdg.statementPrecision) : null,
+          typeof pdg?.pdgInterprocedural?.statementPrecision === 'number'
+            ? round(pdg.pdgInterprocedural.statementPrecision)
+            : null,
         pdgOnly,
         cgOnly,
         epistemic: pdg?.epistemic ?? null,
