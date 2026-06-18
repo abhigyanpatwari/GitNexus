@@ -24,7 +24,7 @@ void foldAmbiguous(Ts... xs) {
 }
 
 template <class... B>
-struct Mix : B... {
+struct Mix : B /*pack*/ ... {
   void run() {
     inherited();
     helper();
