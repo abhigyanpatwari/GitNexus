@@ -716,7 +716,9 @@ export class TsHarvester {
   private visitCall(node: SyntaxNode, acc: FactAccumulator, kind: 'call' | 'new'): void {
     const calleeNode = node.childForFieldName(kind === 'new' ? 'constructor' : 'function');
     const argsNode = node.childForFieldName('arguments');
-    const siteIdx = acc.openCallSite(kind);
+    // `node` IS the call_expression/new_expression — the SAME node the
+    // scope-extractor anchors `@reference.call.*` (its `atRange`) on (KTD7).
+    const siteIdx = acc.openCallSite(kind, [node.startPosition.row + 1, node.startPosition.column]);
     acc.pushFrame(siteIdx);
     let calleePath: string | undefined;
     if (calleeNode) {
@@ -862,6 +864,8 @@ interface MutableSite {
   requireArg?: string;
   object?: number;
   property?: string;
+  /** Call-site anchor position — see {@link SiteRecord.at}. Call/new only. */
+  at?: [number, number];
 }
 
 /**
@@ -945,11 +949,17 @@ class FactAccumulator {
     return [...this.defs.slice(snap[0]), ...this.mayDefs.slice(snap[1])];
   }
 
-  /** Open a call/new site; parent = innermost enclosing argument position. */
-  openCallSite(kind: 'call' | 'new'): number {
+  /**
+   * Open a call/new site; parent = innermost enclosing argument position. `at`
+   * is the call/new node's anchor position `[line (1-based), col (0-based)]` —
+   * the SAME position the CALLS-edge resolution keys on (KTD7; see
+   * {@link SiteRecord.at}).
+   */
+  openCallSite(kind: 'call' | 'new', at?: readonly [number, number]): number {
     const site: MutableSite = { kind };
     const parent = this.innermostArgPosition();
     if (parent) site.parent = parent;
+    if (at) site.at = [at[0], at[1]];
     this.sites.push(site);
     return this.sites.length - 1;
   }

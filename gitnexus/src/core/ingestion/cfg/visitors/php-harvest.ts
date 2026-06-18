@@ -553,7 +553,12 @@ export class PhpHarvester {
     shape: 'function' | 'member' | 'scoped',
   ): void {
     const argsNode = node.childForFieldName('arguments');
-    const siteIdx = acc.openCallSite('call');
+    // `node` IS the call expression — the SAME node the scope-extractor anchors
+    // `@reference.call.*` (its `atRange`) on (KTD7).
+    const siteIdx = acc.openCallSite('call', [
+      node.startPosition.row + 1,
+      node.startPosition.column,
+    ]);
     acc.pushFrame(siteIdx);
 
     if (shape === 'function') {
@@ -603,7 +608,12 @@ export class PhpHarvester {
   /** Explicit `object_creation_expression` (`new Foo($x)`) handler. */
   private visitNew(node: SyntaxNode, acc: FactAccumulator): void {
     const argsNode = node.childForFieldName('arguments');
-    const siteIdx = acc.openCallSite('new');
+    // `node` IS the object_creation_expression — the SAME node the
+    // scope-extractor anchors `@reference.call.constructor` (its `atRange`) on.
+    const siteIdx = acc.openCallSite('new', [
+      node.startPosition.row + 1,
+      node.startPosition.column,
+    ]);
     acc.pushFrame(siteIdx);
     // The class name is the first `name`/`qualified_name` child (not a binding).
     const className = node.namedChildren.find(

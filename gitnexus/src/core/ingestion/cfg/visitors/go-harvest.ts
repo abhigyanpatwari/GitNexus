@@ -571,7 +571,12 @@ export class GoHarvester extends ScopeTreeHarvester {
   private visitCall(node: SyntaxNode, acc: FactAccumulator): void {
     const calleeNode = node.childForFieldName('function');
     const argsNode = node.childForFieldName('arguments');
-    const siteIdx = acc.openCallSite('call');
+    // `node` IS the call_expression — the SAME node the scope-extractor anchors
+    // `@reference.call.*` (its `atRange`) on (KTD7).
+    const siteIdx = acc.openCallSite('call', [
+      node.startPosition.row + 1,
+      node.startPosition.column,
+    ]);
     acc.pushFrame(siteIdx);
     let calleePath: string | undefined;
     if (calleeNode) {

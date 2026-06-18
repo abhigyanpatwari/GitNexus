@@ -44,6 +44,8 @@ interface MutableSite {
   requireArg?: string;
   object?: number;
   property?: string;
+  /** Call-site anchor position — see {@link SiteRecord.at}. Call/new only. */
+  at?: [number, number];
 }
 
 /**
@@ -214,8 +216,14 @@ export class CallSiteFactAccumulator {
    * Returns the new site index, or -1 when the per-statement site cap is hit
    * (the caller threads -1 through `pushFrame`/`setSite*`, all of which no-op on
    * a sentinel index — see {@link DEFAULT_PDG_MAX_SITES_PER_STATEMENT}).
+   *
+   * `at` is the call/new node's anchor position `[line (1-based), col (0-based)]`
+   * — the SAME position the CALLS-edge resolution keys on (see
+   * {@link SiteRecord.at} for the KTD7 alignment); the harvester passes its
+   * `visitCall`/`visitNew` node's `startPosition` so the downstream resolved-id
+   * join lands by exact position.
    */
-  openCallSite(kind: 'call' | 'new'): number {
+  openCallSite(kind: 'call' | 'new', at?: readonly [number, number]): number {
     if (this.sites.length >= DEFAULT_PDG_MAX_SITES_PER_STATEMENT) {
       this._sitesTruncated = true;
       return -1;
@@ -223,6 +231,7 @@ export class CallSiteFactAccumulator {
     const site: MutableSite = { kind };
     const parent = this.innermostArgPosition();
     if (parent) site.parent = parent;
+    if (at) site.at = [at[0], at[1]];
     this.sites.push(site);
     return this.sites.length - 1;
   }
