@@ -1718,6 +1718,44 @@ describe('LocalBackend impact mode (KTD1/KTD5/KTD12)', () => {
     expect(betterBridgeEvidence(unproven, unproven).evidence).toBe('unproven-bridge');
   });
 
+  it("mode:'pdg' degrades gracefully when the slice-callees query fails (no bridge, no throw)", async () => {
+    // calleesOfBlocks swallows a DB error and returns an empty set, so the bridge
+    // is not built and the inter-procedural reach falls back to callgraph-equal —
+    // never surfacing the error or producing a partial proven/unproven labeling.
+    resolveSingleTarget();
+    // The slice-callees query (RETURN b.callees) throws; every other query (target
+    // resolution) returns the resolved symbol row.
+    vi.mocked(executeParameterized).mockImplementation(async (_repo, query) => {
+      if (query.includes('RETURN b.callees')) throw new Error('slice-callees query failed');
+      return [{ id: 'func:main', name: 'main', type: 'Function', filePath: 'src/index.ts' }];
+    });
+    // A line-seeded downstream slice so calleesOfBlocks is attempted.
+    vi.spyOn(backend as any, '_runImpactPDG').mockResolvedValueOnce({
+      mode: 'pdg',
+      target: { id: 'func:main', name: 'main', type: 'Function', filePath: 'src/index.ts' },
+      direction: 'downstream',
+      risk: 'UNKNOWN',
+      impactedCount: 0,
+      epistemic: 'pdg-intra-procedural',
+      reachableBlocks: ['BasicBlock:src/index.ts:8:0:1'],
+      seedBlocks: ['BasicBlock:src/index.ts:8:0:0'],
+      blockCount: 1,
+      affectedStatements: [{ line: 8, filePath: 'src/index.ts', text: 'callee()' }],
+      affectedStatementCount: 1,
+      criterionLine: 8,
+    });
+    const bfsSpy = vi.spyOn(backend as any, '_runImpactBFS');
+    const result = await backend.callTool('impact', {
+      target: 'main',
+      direction: 'downstream',
+      mode: 'pdg',
+      line: 8,
+    });
+    // The error was swallowed: no bridge passed to the BFS, and no error surfaced.
+    expect(result.error).toBeUndefined();
+    expect(bfsSpy.mock.calls[0][4].pdgBridge).toBeUndefined();
+  });
+
   it("mode:'pdg' + crossDepth → hard {error} (single-repo PDG impact)", async () => {
     resolveSingleTarget();
     const bfsSpy = vi.spyOn(backend as any, '_runImpactBFS');
