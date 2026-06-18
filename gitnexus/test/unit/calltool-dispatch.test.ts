@@ -104,9 +104,11 @@ import {
   LocalBackend,
   REPO_ID_HASH_LENGTH,
   parseListReposPagination,
+} from '../../src/mcp/local/local-backend.js';
+import {
   betterBridgeEvidence,
   pdgBridgeEvidenceForImpact,
-} from '../../src/mcp/local/local-backend.js';
+} from '../../src/mcp/local/pdg-impact.js';
 import { CALLEES_TRUNCATED_SENTINEL } from '../../src/core/ingestion/cfg/emit.js';
 import {
   listRegisteredRepos,

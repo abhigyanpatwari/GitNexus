@@ -17,7 +17,6 @@ import {
   isLbugReady,
 } from '../../core/lbug/pool-adapter.js';
 import { isValidQueryParams } from '../../core/lbug/query-params.js';
-import { CALLEES_TRUNCATED_SENTINEL } from '../../core/ingestion/cfg/emit.js';
 import { isWalCorruptionError, WAL_RECOVERY_SUGGESTION } from '../../core/lbug/lbug-config.js';
 // Embedding imports are lazy (dynamic import) to avoid loading onnxruntime-node
 // at MCP server startup — crashes on unsupported Node ABI versions (#89)
@@ -75,9 +74,13 @@ import {
   pdgStampForMode,
   runImpactPDG,
   validateImpactMode,
+  pdgBridgeEvidenceForImpact,
+  betterBridgeEvidence,
+  composeUnifiedPdgImpactResult,
   type ImpactMode,
-  type PdgImpactEvidence,
   type PdgImpactResult,
+  type PdgBridgeOptions,
+  type PdgBridgeEvidenceInfo,
 } from './pdg-impact.js';
 
 /** Real source-file extensions (`.ts`, `.py`, …) from the resolver's list,
@@ -251,176 +254,6 @@ export const IMPACT_RELATION_CONFIDENCE: Readonly<Record<string, number>> = {
  */
 const confidenceForRelType = (relType: string | undefined): number =>
   IMPACT_RELATION_CONFIDENCE[relType ?? ''] ?? 0.5;
-
-type PdgBridgeEvidence = Extract<PdgImpactEvidence, 'callgraph-bridge' | 'unproven-bridge'>;
-
-interface PdgBridgeEvidenceInfo {
-  evidence: PdgBridgeEvidence;
-  basis: string;
-}
-
-interface PdgBridgeOptions {
-  /**
-   * Leaf callee names invoked in the criterion's dependence-slice blocks
-   * (`BasicBlock.callees`). A first-hop callee is "proven" statement-precise iff
-   * its name is in this set — i.e. it is actually called from a statement the
-   * changed line reaches, not merely somewhere in the whole function. Empty/absent
-   * ⇒ no statement slice to discriminate (upstream or whole-symbol) ⇒ the symbol
-   * graph is used as a compatibility bridge (all callgraph-bridge), preserving
-   * callgraph reach.
-   */
-  sliceCalleeNames?: ReadonlySet<string>;
-}
-
-export function pdgBridgeEvidenceForImpact(input: {
-  bridge: PdgBridgeOptions;
-  depth: number;
-  calleeName: unknown;
-  inherited?: PdgBridgeEvidenceInfo;
-}): PdgBridgeEvidenceInfo {
-  const { bridge, depth, calleeName, inherited } = input;
-  if (depth > 1) {
-    return (
-      inherited ?? {
-        evidence: 'unproven-bridge',
-        basis: 'first-hop evidence unavailable for inherited symbol-graph reach',
-      }
-    );
-  }
-
-  const sliceCalleeNames = bridge.sliceCalleeNames;
-  if (!sliceCalleeNames || sliceCalleeNames.size === 0) {
-    return {
-      evidence: 'callgraph-bridge',
-      basis: 'whole-symbol PDG result uses symbol graph as compatibility bridge',
-    };
-  }
-
-  // A slice block whose call sites were truncated at the per-statement cap has an
-  // INCOMPLETE callee list, so absence from the set does not prove absence from
-  // the slice. Keep such reach callgraph-equal rather than under-proving.
-  if (sliceCalleeNames.has(CALLEES_TRUNCATED_SENTINEL)) {
-    return {
-      evidence: 'callgraph-bridge',
-      basis: 'a slice block truncated its call sites — callee set is incomplete (callee-unknown)',
-    };
-  }
-
-  const name = typeof calleeName === 'string' ? calleeName : '';
-  if (name && sliceCalleeNames.has(name)) {
-    return {
-      evidence: 'callgraph-bridge',
-      basis: 'callee is invoked in a block of the local PDG dependence slice',
-    };
-  }
-
-  return {
-    evidence: 'unproven-bridge',
-    basis: 'callee is not invoked in any block of the local PDG dependence slice',
-  };
-}
-
-/**
- * Pick the stronger of two bridge-evidence verdicts for the same reached symbol.
- * `callgraph-bridge` (proven) beats `unproven-bridge`, so a node reachable from
- * multiple parents is proven if ANY parent proves it. This makes the
- * proven/unproven label order-independent of DB row iteration — a diamond-reached
- * symbol gets the same label regardless of which parent the BFS visits first
- * (PR #2227 tri-review, P3).
- */
-export function betterBridgeEvidence(
-  existing: PdgBridgeEvidenceInfo | undefined,
-  candidate: PdgBridgeEvidenceInfo,
-): PdgBridgeEvidenceInfo {
-  if (!existing) return candidate;
-  if (existing.evidence === 'callgraph-bridge') return existing;
-  if (candidate.evidence === 'callgraph-bridge') return candidate;
-  return existing;
-}
-
-function normalizePdgBridgeByDepth(byDepth: Record<number, unknown[]>): Record<number, unknown[]> {
-  const normalized: Record<number, unknown[]> = {};
-  for (const [depthKey, items] of Object.entries(byDepth ?? {})) {
-    const depth = Number(depthKey);
-    if (!Number.isFinite(depth) || !Array.isArray(items)) continue;
-    normalized[depth] = items.map((item) => {
-      if (!item || typeof item !== 'object') return item;
-      const record = item as Record<string, unknown>;
-      const evidence =
-        typeof record.pdgEvidence === 'string'
-          ? (record.pdgEvidence as PdgImpactEvidence)
-          : 'callgraph-bridge';
-      return {
-        ...record,
-        pdgEvidence: evidence,
-        ...(record.pdgEvidenceReason
-          ? {}
-          : {
-              pdgEvidenceReason:
-                evidence === 'unproven-bridge'
-                  ? 'symbol reached through the resolved symbol graph, but the existing graph did not prove the first-hop call site is in the local PDG slice'
-                  : 'symbol reached through the resolved symbol graph compatibility bridge',
-            }),
-      };
-    });
-  }
-  return normalized;
-}
-
-function countPdgEvidence(
-  byDepth: Record<number, unknown[]>,
-): Partial<Record<PdgImpactEvidence, number>> {
-  const counts: Partial<Record<PdgImpactEvidence, number>> = {};
-  for (const items of Object.values(byDepth ?? {})) {
-    if (!Array.isArray(items)) continue;
-    for (const item of items) {
-      if (!item || typeof item !== 'object') continue;
-      const evidence = (item as { pdgEvidence?: unknown }).pdgEvidence;
-      if (typeof evidence !== 'string') continue;
-      counts[evidence as PdgImpactEvidence] = (counts[evidence as PdgImpactEvidence] ?? 0) + 1;
-    }
-  }
-  return counts;
-}
-
-function dominantInterproceduralEvidence(
-  counts: Partial<Record<PdgImpactEvidence, number>>,
-): PdgBridgeEvidence | undefined {
-  if ((counts['unproven-bridge'] ?? 0) > 0) return 'unproven-bridge';
-  if ((counts['callgraph-bridge'] ?? 0) > 0) return 'callgraph-bridge';
-  return undefined;
-}
-
-/**
- * Statement-precise projection of the inter-procedural bridge: the subset PROVEN
- * to be invoked from the criterion's dependence slice (`callgraph-bridge`),
- * dropping `unproven-bridge` symbols — reachable in the call graph but only from
- * statements the changed line does not reach. Additive: the full
- * `interproceduralByDepth` is unchanged and still preserves callgraph reach; this
- * answers the tighter "which other functions does changing THIS line affect?".
- * For an upstream / whole-symbol seed there is no discriminating slice, so every
- * symbol is `callgraph-bridge` and the projection equals the full reach
- * (`statementPrecision` = 1). Name-based matching (a callee invoked from both an
- * in-slice and out-of-slice site resolves to proven) makes the projected set a
- * conservative SUPERSET of the strictly-proven subset.
- */
-function projectStatementPreciseByDepth(
-  byDepth: Record<number, unknown[]>,
-): Record<number, unknown[]> {
-  const out: Record<number, unknown[]> = {};
-  for (const [depthKey, items] of Object.entries(byDepth ?? {})) {
-    const depth = Number(depthKey);
-    if (!Number.isFinite(depth) || !Array.isArray(items)) continue;
-    const proven = items.filter(
-      (item) =>
-        item &&
-        typeof item === 'object' &&
-        (item as { pdgEvidence?: unknown }).pdgEvidence !== 'unproven-bridge',
-    );
-    if (proven.length > 0) out[depth] = proven;
-  }
-  return out;
-}
 
 /** Structured error logging for query failures — replaces empty catch blocks */
 function logQueryError(context: string, err: unknown): void {
@@ -4834,10 +4667,10 @@ export class LocalBackend {
           offset: Number.isFinite(params.offset) ? params.offset : 0,
           pdgBridge,
         });
-        return this.composeUnifiedPdgImpactResult(pdgResult, interproceduralResult);
+        return composeUnifiedPdgImpactResult(pdgResult, interproceduralResult);
       } catch (e) {
         logQueryError('impact:pdg-interprocedural-reach', e);
-        return this.composeUnifiedPdgImpactResult(pdgResult, null, e);
+        return composeUnifiedPdgImpactResult(pdgResult, null, e);
       }
     }
 
@@ -4901,179 +4734,6 @@ export class LocalBackend {
     executeParameterized: typeof executeParameterized;
   }): Promise<PdgImpactResult> {
     return runImpactPDG(deps);
-  }
-
-  /**
-   * Compose `mode:'pdg'` into one user-facing impact result:
-   *
-   * - `affectedStatements` / `reachableBlocks` stay owned by the persisted PDG
-   *   layer (CDG + REACHING_DEF), preserving the statement-level intra result.
-   * - `interproceduralByDepth` / `pdgInterprocedural` expose the symbol reach;
-   *   `byDepth` stays as the compatibility symbol bucket so existing consumers
-   *   still see one PDG result shape.
-   *
-   * The callgraph option remains available as the comparator/default path; this
-   * helper only changes the `pdg` result contract from intra-only to unified.
-   */
-  private composeUnifiedPdgImpactResult(
-    pdgResult: PdgImpactResult,
-    interproceduralResult: any | null,
-    interproceduralError?: unknown,
-  ): PdgImpactResult {
-    if ('error' in pdgResult || 'pdgLayer' in pdgResult) return pdgResult;
-
-    const localByDepth = pdgResult.byDepth ?? {};
-    const localByDepthCounts = pdgResult.byDepthCounts ?? {};
-    const interproceduralByDepth = normalizePdgBridgeByDepth(interproceduralResult?.byDepth ?? {});
-    const interproceduralByDepthCounts = interproceduralResult?.byDepthCounts ?? {};
-    const interproceduralEvidenceCounts = countPdgEvidence(interproceduralByDepth);
-    const interproceduralEvidence = dominantInterproceduralEvidence(interproceduralEvidenceCounts);
-    // Additive statement-precise projection (see projectStatementPreciseByDepth):
-    // the proven subset of the inter-procedural reach. `interproceduralByDepth`
-    // above is unchanged and still preserves full callgraph reach.
-    const statementPreciseByDepth = projectStatementPreciseByDepth(interproceduralByDepth);
-    const statementPreciseByDepthCounts: Record<number, number> = {};
-    for (const [depthKey, items] of Object.entries(statementPreciseByDepth)) {
-      statementPreciseByDepthCounts[Number(depthKey)] = (items as unknown[]).length;
-    }
-    const provenBridgeCount = interproceduralEvidenceCounts['callgraph-bridge'] ?? 0;
-    const unprovenBridgeCount = interproceduralEvidenceCounts['unproven-bridge'] ?? 0;
-    const statementPrecision =
-      provenBridgeCount + unprovenBridgeCount > 0
-        ? provenBridgeCount / (provenBridgeCount + unprovenBridgeCount)
-        : null;
-    const byDepth: Record<number, unknown[]> = {};
-    const byDepthCounts: Record<number, number> = {};
-    const depthKeys = Array.from(
-      new Set([
-        ...Object.keys(localByDepth),
-        ...Object.keys(interproceduralByDepth),
-        ...Object.keys(localByDepthCounts),
-        ...Object.keys(interproceduralByDepthCounts),
-      ]),
-    )
-      .map((d) => Number(d))
-      .filter((d) => Number.isFinite(d))
-      .sort((a, b) => a - b);
-    for (const depth of depthKeys) {
-      const localItems = localByDepth[depth] ?? localByDepth[String(depth)] ?? [];
-      const interItems =
-        interproceduralByDepth[depth] ?? interproceduralByDepth[String(depth)] ?? [];
-      const items = [...localItems, ...interItems];
-      if (items.length > 0) byDepth[depth] = items;
-      const localCount =
-        localByDepthCounts[depth] ?? localByDepthCounts[String(depth)] ?? localItems.length;
-      const interCount =
-        interproceduralByDepthCounts[depth] ??
-        interproceduralByDepthCounts[String(depth)] ??
-        interItems.length;
-      const totalCount = localCount + interCount;
-      if (totalCount > 0) byDepthCounts[depth] = totalCount;
-    }
-
-    if (Object.keys(byDepthCounts).length === 0) {
-      const localZero = localByDepthCounts[1] ?? localByDepthCounts['1'];
-      const interZero = interproceduralByDepthCounts[1] ?? interproceduralByDepthCounts['1'];
-      if (typeof localZero === 'number' || typeof interZero === 'number') {
-        byDepthCounts[1] =
-          (typeof localZero === 'number' ? localZero : 0) +
-          (typeof interZero === 'number' ? interZero : 0);
-      }
-    }
-
-    const localImpactedCount =
-      typeof pdgResult.impactedCount === 'number' ? pdgResult.impactedCount : 0;
-    const interproceduralImpactedCount =
-      typeof interproceduralResult?.impactedCount === 'number'
-        ? interproceduralResult.impactedCount
-        : 0;
-    const impactedCount = localImpactedCount + interproceduralImpactedCount;
-    const summary = interproceduralResult?.summary
-      ? {
-          ...interproceduralResult.summary,
-          direct: (pdgResult.summary?.direct ?? 0) + (interproceduralResult.summary.direct ?? 0),
-        }
-      : {
-          direct: pdgResult.summary?.direct ?? localImpactedCount,
-          processes_affected: 0,
-          modules_affected: 0,
-        };
-    const affectedProcesses = interproceduralResult?.affected_processes ?? [];
-    const affectedModules = interproceduralResult?.affected_modules ?? [];
-    const partial = Boolean(interproceduralResult?.partial || interproceduralError);
-    const errorMessage =
-      interproceduralError instanceof Error
-        ? interproceduralError.message
-        : interproceduralError
-          ? String(interproceduralError)
-          : undefined;
-
-    const noteParts = [
-      pdgResult.note,
-      `Inter-procedural symbol reach is included using the resolved symbol graph; ` +
-        `statement-level PDG reach remains in affectedStatements. The symbol reach is ` +
-        `labeled as a PDG evidence bridge, not as pure statement-level dependence.`,
-    ];
-    if (errorMessage) {
-      noteParts.push(
-        `Inter-procedural symbol reach failed (${errorMessage}); byDepth is therefore a lower bound.`,
-      );
-    } else if (interproceduralResult?.epistemic === 'lower-bound') {
-      noteParts.push(
-        `The inter-procedural symbol reach is a lower bound because unresolved indirection was detected.`,
-      );
-    }
-    if ((interproceduralEvidenceCounts['unproven-bridge'] ?? 0) > 0) {
-      noteParts.push(
-        `${interproceduralEvidenceCounts['unproven-bridge']} inter-procedural ` +
-          `symbol(s) are labeled unproven-bridge: the resolved symbol graph reaches them, ` +
-          `but the current graph did not prove their first-hop call site is in the local PDG slice.`,
-      );
-    }
-
-    return {
-      ...pdgResult,
-      impactedCount,
-      note: noteParts.filter(Boolean).join(' '),
-      summary,
-      byDepthCounts,
-      interproceduralByDepth,
-      interproceduralByDepthCounts,
-      // Statement-precise (proven) inter-procedural reach is emitted ONLY under
-      // `pdgInterprocedural` below — a single source, no top-level duplicate.
-      affected_processes: affectedProcesses,
-      affected_modules: affectedModules,
-      byDepth,
-      ...(partial ? { partial: true } : {}),
-      ...(interproceduralResult?.epistemic
-        ? { interproceduralEpistemic: interproceduralResult.epistemic }
-        : {}),
-      ...(interproceduralResult?.boundaries
-        ? { interproceduralBoundaries: interproceduralResult.boundaries }
-        : {}),
-      ...(errorMessage ? { interproceduralError: errorMessage } : {}),
-      pdgEvidence: {
-        // pdgResult is narrowed to the success/empty slice result by the
-        // `'error' in / 'pdgLayer' in` guard at the top of this method, so
-        // `pdgEvidence` is typed (optional) — no `as any`.
-        ...(pdgResult.pdgEvidence ?? {}),
-        ...(interproceduralEvidence ? { interprocedural: interproceduralEvidence } : {}),
-        interproceduralEvidenceCounts,
-      },
-      pdgInterprocedural: {
-        engine: 'symbol-graph',
-        evidence: interproceduralEvidence ?? 'callgraph-bridge',
-        impactedCount: interproceduralImpactedCount,
-        byDepthCounts: interproceduralByDepthCounts,
-        byDepth: interproceduralByDepth,
-        evidenceCounts: interproceduralEvidenceCounts,
-        statementPreciseByDepth,
-        statementPreciseByDepthCounts,
-        statementPreciseImpactedCount: provenBridgeCount,
-        statementPrecision,
-        partial,
-      },
-    };
   }
 
   /**
