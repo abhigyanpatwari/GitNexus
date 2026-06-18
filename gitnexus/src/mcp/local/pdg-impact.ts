@@ -345,6 +345,8 @@ export type PdgDegradedLayerStatus = PdgLayerStatus & { state: PdgDegradedLayerS
 export interface PdgImpactDegradedResult extends PdgImpactBaseResult {
   pdgLayer: PdgDegradedLayerState;
   missingSubLayer?: PdgSubLayer;
+  probeError?: string;
+  recoverySuggestion?: string;
 }
 
 export interface PdgImpactErrorResult {
@@ -398,6 +400,10 @@ export function makePdgLayerDegradedResult(input: {
     mode: input.mode,
     pdgLayer: input.layer.state,
     ...(input.layer.missingSubLayer ? { missingSubLayer: input.layer.missingSubLayer } : {}),
+    ...(input.layer.probeError ? { probeError: input.layer.probeError } : {}),
+    ...(input.layer.recoverySuggestion
+      ? { recoverySuggestion: input.layer.recoverySuggestion }
+      : {}),
     note: input.layer.note,
     target: input.target,
     direction: input.direction,
@@ -606,6 +612,10 @@ export interface PdgLayerStatus {
   missingSubLayer?: PdgSubLayer;
   /** Human-readable guidance for the degraded states (absent for `'ready'`). */
   note?: string;
+  /** Set when an unknown-state probe failed before it could inspect PDG rows. */
+  probeError?: string;
+  /** Optional operator-facing recovery hint for probe failures. */
+  recoverySuggestion?: string;
 }
 
 /**
@@ -730,6 +740,7 @@ export async function pdgLayerStatus(deps: {
   // `'unknown'` (inconclusive), but the note distinguishes them so the operator
   // gets the more useful hint.
   let edgesVisible = false;
+  let probeError: string | undefined;
   try {
     const rows = await deps.executeParameterized(
       deps.lbugPath,
@@ -737,10 +748,23 @@ export async function pdgLayerStatus(deps: {
       {},
     );
     edgesVisible = Array.isArray(rows) && rows.length > 0;
-  } catch {
+  } catch (err) {
     // db-lock / missing-path / corrupt probe — fall through as not-visible, but
-    // keep the `'unknown'` signal (a probe failure must not lose it).
+    // keep the `'unknown'` signal AND preserve the probe failure. Reporting the
+    // failed probe as "no edges visible" hides a DB-health problem from operators.
+    probeError = err instanceof Error ? err.message : String(err);
     edgesVisible = false;
+  }
+  if (probeError) {
+    return {
+      state: 'unknown',
+      probeError,
+      recoverySuggestion:
+        'Check for a LadybugDB lock/corruption or missing index path. Stop overlapping GitNexus processes, retry, or re-run gitnexus analyze --pdg.',
+      note:
+        `PDG layer status unknown — CDG/REACHING_DEF probe failed: ${probeError}. ` +
+        `The layer cannot be confirmed complete; this is distinct from "no edges visible".`,
+    };
   }
   return {
     state: 'unknown',

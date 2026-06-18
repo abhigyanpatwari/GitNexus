@@ -324,10 +324,17 @@ export function formatImpactResult(result: any): string {
         // No statement block at the line, or no dependents in this direction.
         // Print the honest note (pdg-no-block-at-line or the no-dependence note)
         // verbatim — never an empty "isolated" headline.
-        return (
-          `No statements ${direction}-dependent on ${anchorFile}:${result.criterionLine}.` +
-          (result.note ? `\n${result.note}` : '')
-        );
+        const emptySliceLines = [
+          `No statements ${direction}-dependent on ${anchorFile}:${result.criterionLine}.`,
+        ];
+        if (result.truncated) {
+          const by = formatTruncationSuffix(result);
+          emptySliceLines.push(
+            `⚠️  Truncated${by} — the dependence slice was bounded; deeper PDG-dependent statements may exist.`,
+          );
+        }
+        if (result.note) emptySliceLines.push(result.note);
+        return emptySliceLines.join('\n');
       }
 
       const slLines: string[] = [];
@@ -587,7 +594,7 @@ function formatToolResult(toolName: string, result: any): string {
 // Guide the agent to the logical next tool call.
 // Critical for tool chaining: query → context → impact → fix.
 
-function getNextStepHint(toolName: string): string {
+export function getNextStepHint(toolName: string, result?: any): string {
   switch (toolName) {
     case 'query':
       return '\n---\nNext: Pick a symbol above and run gitnexus-context "<name>" to see all its callers, callees, and execution flows.';
@@ -596,6 +603,15 @@ function getNextStepHint(toolName: string): string {
       return '\n---\nNext: To check what breaks if you change this, run gitnexus-impact "<name>" upstream';
 
     case 'impact':
+      if (
+        result?.error ||
+        result?.status === 'ambiguous' ||
+        result?.mode === 'pdg' ||
+        result?.pdgLayer ||
+        typeof result?.criterionLine === 'number'
+      ) {
+        return '';
+      }
       return '\n---\nNext: Review d=1 items first (WILL BREAK). Read the source with cat to understand the code, then make your fix.';
 
     case 'cypher':
@@ -711,7 +727,7 @@ export async function evalServerCommand(options?: EvalServerOptions): Promise<vo
         // Call tool, format result as text, append next-step hint
         const result = await backend.callTool(toolName, args);
         const formatted = formatToolResult(toolName, result);
-        const hint = getNextStepHint(toolName);
+        const hint = getNextStepHint(toolName, result);
 
         res.setHeader('Content-Type', 'text/plain');
         res.writeHead(200);

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { IMPACT_MAX_DEPTH } from '../../src/mcp/tools.js';
-import { runImpactPDG } from '../../src/mcp/local/pdg-impact.js';
+import { pdgLayerStatus, runImpactPDG } from '../../src/mcp/local/pdg-impact.js';
 
 describe('runImpactPDG', () => {
   it('clamps huge maxDepth values to the documented impact traversal cap', async () => {
@@ -72,5 +72,52 @@ describe('runImpactPDG', () => {
     expect((result as any).affectedStatementCount).toBe(2);
     expect((result as any).affectedStatements.map((s: any) => s.line)).toEqual([2, 2]);
     expect((result as any).affectedStatements.map((s: any) => s.text)).toEqual(['a();', 'b();']);
+  });
+});
+
+describe('pdgLayerStatus', () => {
+  const unreadableMeta = async () => null as any;
+
+  it('reports visible PDG edges as unknown without a probe error when meta is unreadable', async () => {
+    const result = await pdgLayerStatus({
+      lbugPath: 'repo/.gitnexus/lbug',
+      loadMetaFn: unreadableMeta,
+      executeParameterized: (async (_repo: string, query: string) => {
+        expect(query).toContain('LIMIT 1');
+        return [{ type: 'CDG' }];
+      }) as any,
+    });
+
+    expect(result.state).toBe('unknown');
+    expect(result.note).toContain('edges ARE visible');
+    expect(result.probeError).toBeUndefined();
+  });
+
+  it('reports no visible PDG edges separately from probe failures', async () => {
+    const result = await pdgLayerStatus({
+      lbugPath: 'repo/.gitnexus/lbug',
+      loadMetaFn: unreadableMeta,
+      executeParameterized: (async () => []) as any,
+    });
+
+    expect(result.state).toBe('unknown');
+    expect(result.note).toContain('no CDG/REACHING_DEF edges visible');
+    expect(result.probeError).toBeUndefined();
+  });
+
+  it('preserves probe failures instead of reporting a false no-edge signal', async () => {
+    const result = await pdgLayerStatus({
+      lbugPath: 'repo/.gitnexus/lbug',
+      loadMetaFn: unreadableMeta,
+      executeParameterized: (async () => {
+        throw new Error('database busy');
+      }) as any,
+    });
+
+    expect(result.state).toBe('unknown');
+    expect(result.probeError).toBe('database busy');
+    expect(result.note).toContain('probe failed');
+    expect(result.note).not.toContain('no CDG/REACHING_DEF edges visible');
+    expect(result.recoverySuggestion).toContain('LadybugDB');
   });
 });

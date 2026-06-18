@@ -559,6 +559,9 @@ async function run() {
           skipped: pdgRes.pdgLayer !== undefined && pdgRes.pdgLayer !== 'ready',
         };
       } finally {
+        const lbugPath = path.join(work, '.gitnexus', 'lbug');
+        await closeLbug(lbugPath).catch(() => {});
+        initialised.delete(lbugPath);
         fs.rmSync(work, { recursive: true, force: true });
       }
     }

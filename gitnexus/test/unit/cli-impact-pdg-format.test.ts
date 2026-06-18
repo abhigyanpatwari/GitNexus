@@ -14,7 +14,7 @@
  * rendering stays byte-identical (regression guard).
  */
 import { describe, expect, it } from 'vitest';
-import { formatImpactResult } from '../../src/cli/eval-server.js';
+import { formatImpactResult, getNextStepHint } from '../../src/cli/eval-server.js';
 
 // A representative PDG findings result, shaped exactly like
 // `assemblePdgImpactResult` (pdg-impact.ts) emits.
@@ -370,6 +370,23 @@ describe('formatImpactResult — PDG (mode:pdg) rendering', () => {
     expect(out).toContain('by depth');
   });
 
+  it('flags truncated empty statement slices honestly', () => {
+    const out = formatImpactResult(
+      pdgStatementSlice({
+        affectedStatements: [],
+        affectedStatementCount: 0,
+        truncated: true,
+        truncatedBy: 'limit',
+        note: 'Statement slice stopped at the configured result limit.',
+      }),
+    );
+
+    expect(out).toContain('No statements downstream-dependent on src/svc.ts:8');
+    expect(out).toContain('Truncated');
+    expect(out).toContain('by limit');
+    expect(out).toContain('Statement slice stopped at the configured result limit.');
+  });
+
   it('renders a no-block-at-line result as the steering note, never an empty isolated headline', () => {
     // `_runImpactPDG` seedBlocks.length === 0 in statement mode.
     const out = formatImpactResult({
@@ -407,6 +424,14 @@ describe('formatImpactResult — PDG (mode:pdg) rendering', () => {
     expect(out).toContain('No PDG statement block starts at line 9');
     expect(out).not.toContain('appears isolated');
     expect(out).not.toContain('PDG-dependent symbols');
+  });
+
+  it('suppresses callgraph next-step hints for PDG and failed impact results', () => {
+    expect(getNextStepHint('impact')).toContain('Review d=1 items first');
+    expect(getNextStepHint('impact', pdgStatementSlice())).toBe('');
+    expect(getNextStepHint('impact', { mode: 'pdg', pdgLayer: 'no-layer' })).toBe('');
+    expect(getNextStepHint('impact', { mode: 'pdg', status: 'ambiguous' })).toBe('');
+    expect(getNextStepHint('impact', { error: 'Target not found' })).toBe('');
   });
 });
 
