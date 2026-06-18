@@ -62,6 +62,12 @@ import {
   score,
   aggregate,
   aisByScope,
+  unifiedAis,
+  callgraphUnifiedCis,
+  pdgUnifiedCis,
+  composeUnifiedCis,
+  scoreUnifiedAxes,
+  aggregateUnifiedScores,
   fingerprintAnnotationSet,
   median,
 } from './metrics.mjs';
@@ -74,6 +80,7 @@ const CLI_ENTRY = path.join(REPO_ROOT, 'src', 'cli', 'index.ts');
 
 const SCOPES = ['intra', 'inter', 'mixed'];
 const MODES = ['callgraph', 'pdg'];
+const UNIFIED_MODES = ['callgraph', 'pdg', 'composed-current'];
 
 // ── F3 minimum-corpus floor (KTD9): below this the harness reports DIRECTION
 // only, never a headline decimal verdict. Mirrors the U6 schema test's floor.
@@ -355,6 +362,35 @@ function renderTable(strata) {
   return lines.join('\n');
 }
 
+function renderUnifiedTable(unified) {
+  const head =
+    `${pad('Mode', 17)} ${pad('Axis', 13)} ${lpad('P', 7)} ${lpad('R', 7)} ${lpad('F1', 7)} ` +
+    `${lpad('|CIS|/|AIS|', 11)} ${lpad('FPIS', 6)} ${lpad('FNIS', 6)} ${lpad('n', 4)}`;
+  const lines = [head, '-'.repeat(head.length)];
+  const axes = [
+    ['intraLine', 'line/intra'],
+    ['interSymbol', 'symbol/inter'],
+  ];
+  for (const mode of UNIFIED_MODES) {
+    for (const [axis, label] of axes) {
+      const a = unified[mode][axis];
+      lines.push(
+        `${pad(mode, 17)} ${pad(label, 13)} ${lpad(fmt(a.precision), 7)} ${lpad(fmt(a.recall), 7)} ` +
+          `${lpad(fmt(a.f1), 7)} ${lpad(fmt(a.cisAisRatio), 11)} ${lpad(a.fpis, 6)} ${lpad(a.fnis, 6)} ` +
+          `${lpad(a.nCases, 4)}`,
+      );
+    }
+  }
+  lines.push('');
+  lines.push('Unified verdict guard: compare axes separately; do not blend line and symbol F1.');
+  for (const mode of UNIFIED_MODES) {
+    lines.push(
+      `  ${mode}: min defined recall=${fmt(unified[mode].minRecall)} FPIS=${unified[mode].fpis} FNIS=${unified[mode].fnis}`,
+    );
+  }
+  return lines.join('\n');
+}
+
 /**
  * Plain-language DECISION RECOMMENDATION (F2 — the deliverable that answers
  * "which is more accurate" as a verdict, not just a table). Derived from the
@@ -362,7 +398,7 @@ function renderTable(strata) {
  * is built to compute) and call-graph's inter-procedural SYMBOL-granularity F1
  * (the cross-function reach it is built to compute).
  */
-function decisionRecommendation(strata, underpowered, exclusions) {
+function decisionRecommendation(strata, unified, underpowered, exclusions) {
   // PDG is precise at intra LINE granularity; callgraph covers inter SYMBOL reach.
   const pdgIntraF1 = strata.intra.pdg.f1;
   const pdgIntraP = strata.intra.pdg.precision;
@@ -405,6 +441,17 @@ function decisionRecommendation(strata, underpowered, exclusions) {
       `On MIXED-scope, the two are COMPLEMENTARY: PDG resolves the intra statement set ` +
         `(F1=${fmt(pdgMixedF1)} vs intra_AIS) while call-graph reaches the callee(s) ` +
         `(F1=${fmt(cgMixedF1)} vs inter_AIS). Neither alone covers the full mixed blast radius.`,
+    );
+  }
+
+  if (unified) {
+    lines.push(
+      `Unified-axis check: current callgraph leaves the intra-line axis empty, and current PDG leaves ` +
+        `the inter-symbol axis empty. The evaluation-only composed-current baseline combines both current ` +
+        `outputs and reaches min defined recall=${fmt(unified['composed-current'].minRecall)} with ` +
+        `FPIS=${unified['composed-current'].fpis} and FNIS=${unified['composed-current'].fnis}. ` +
+        `A future PDG-only/SDG candidate must match or exceed that recall while reducing or ` +
+        `bounding FPIS before any default switch.`,
     );
   }
 
@@ -464,6 +511,7 @@ async function run() {
 
   const exclusions = [];
   const perRunStrata = []; // K runs × { scope: { mode: aggregate } }
+  const perRunUnified = []; // K runs × { mode: { intraLine, interSymbol } }
   let perCaseDetail = null; // last run's per-case detail for the report
   let degradedCheck = null;
 
@@ -476,6 +524,8 @@ async function run() {
         for (const m of MODES) perScopeMode[s][m] = [];
       }
       const detail = [];
+      const perUnifiedMode = {};
+      for (const m of UNIFIED_MODES) perUnifiedMode[m] = [];
 
       for (const fx of fixtures) {
         if (fx.excluded) {
@@ -497,6 +547,17 @@ async function run() {
           const pdg = pdgCisFromResult(results.pdg);
           const cgScore = scoreCallgraph(fx.gt, cg.keys); // symbol/inter
           const pdgScore = scorePdg(fx.gt, pdg.keys); // line/intra
+
+          const unifiedTruth = unifiedAis(fx.gt);
+          const cgUnified = callgraphUnifiedCis(fx.gt, cg.keys);
+          const pdgUnified = pdgUnifiedCis(pdg.keys);
+          const composedUnified = composeUnifiedCis(cgUnified, pdgUnified);
+          const unifiedScores = {
+            callgraph: scoreUnifiedAxes(cgUnified, unifiedTruth),
+            pdg: scoreUnifiedAxes(pdgUnified, unifiedTruth),
+            'composed-current': scoreUnifiedAxes(composedUnified, unifiedTruth),
+          };
+          for (const m of UNIFIED_MODES) perUnifiedMode[m].push(unifiedScores[m]);
 
           const locusScope = fx.gt.locus; // the stratum this fixture belongs to
           // A fixture is scored in its OWN locus stratum (intra/inter/mixed),
@@ -526,6 +587,7 @@ async function run() {
                 lines: [...pdg.keys].sort(),
                 score: pdgScore, // vs intra_AIS (line)
               },
+              unified: unifiedScores,
             });
           }
         } finally {
@@ -535,13 +597,16 @@ async function run() {
         }
       }
 
-      // Aggregate this run's strata.
+      // Aggregate this run's native strata and unified two-axis comparison.
       const strata = {};
       for (const s of SCOPES) {
         strata[s] = {};
         for (const m of MODES) strata[s][m] = aggregate(perScopeMode[s][m]);
       }
+      const unified = {};
+      for (const m of UNIFIED_MODES) unified[m] = aggregateUnifiedScores(perUnifiedMode[m]);
       perRunStrata.push(strata);
+      perRunUnified.push(unified);
       if (runIdx === 0) perCaseDetail = detail;
     }
 
@@ -592,6 +657,33 @@ async function run() {
     }
   }
 
+  const unified0 = perRunUnified[0];
+  const unifiedReport = {};
+  for (const mode of UNIFIED_MODES) {
+    unifiedReport[mode] = { ...unified0[mode] };
+    for (const axis of ['intraLine', 'interSymbol']) {
+      const f1s = perRunUnified
+        .map((r) => r[mode][axis].f1)
+        .filter((v) => v !== null && v !== undefined);
+      const pmeds = perRunUnified
+        .map((r) => r[mode][axis].precision)
+        .filter((v) => v !== null && v !== undefined);
+      const rmeds = perRunUnified
+        .map((r) => r[mode][axis].recall)
+        .filter((v) => v !== null && v !== undefined);
+      unifiedReport[mode][axis] = {
+        ...unified0[mode][axis],
+        f1: f1s.length ? median(f1s) : null,
+        precision: pmeds.length ? median(pmeds) : null,
+        recall: rmeds.length ? median(rmeds) : null,
+      };
+    }
+    const minRecalls = perRunUnified
+      .map((r) => r[mode].minRecall)
+      .filter((v) => v !== null && v !== undefined);
+    unifiedReport[mode].minRecall = minRecalls.length ? median(minRecalls) : null;
+  }
+
   // Underpowered floor (F3): measured cases per stratum after exclusions.
   const measurableTotal = SCOPES.reduce(
     (a, s) => a + Math.max(report[s].callgraph.nCases, report[s].pdg.nCases),
@@ -612,6 +704,7 @@ async function run() {
     underpowered,
     floor: { perStratum: FLOOR_PER_STRATUM, total: FLOOR_TOTAL },
     strata: report,
+    unified: unifiedReport,
     perCase: perCaseDetail,
     degradedCheck,
     annotationFingerprint,
@@ -633,6 +726,9 @@ async function run() {
       'Stratified P/R/F1 (PDG: line granularity vs intra_AIS; callgraph: symbol vs inter_AIS):',
     );
     out.push(renderTable(report));
+    out.push('');
+    out.push('Unified impact axes (additive; native table above is unchanged):');
+    out.push(renderUnifiedTable(unifiedReport));
     out.push('');
     out.push(
       'Per-case: PDG slice (line/intra) and callgraph reach (symbol/inter), with FPIS/FNIS:',
@@ -669,7 +765,7 @@ async function run() {
     }
     out.push(`Annotation fingerprint: ${annotationFingerprint}`);
     out.push('');
-    out.push(decisionRecommendation(report, underpowered, exclusions));
+    out.push(decisionRecommendation(report, unifiedReport, underpowered, exclusions));
     process.stdout.write(out.join('\n') + '\n');
   }
 

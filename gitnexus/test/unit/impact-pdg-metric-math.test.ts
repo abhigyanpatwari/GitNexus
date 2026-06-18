@@ -213,6 +213,102 @@ describe('impact-pdg metric math — partitionCisByScope() / aisByScope()', () =
   });
 });
 
+describe('impact-pdg metric math — unified axes', () => {
+  const gt = {
+    criterion: { name: 'route', filePath: 'src/mixed.ts', direction: 'downstream' },
+    intra_AIS: [
+      { symbol: 'route', filePath: 'src/mixed.ts', line: 16 },
+      { symbol: 'route', filePath: 'src/mixed.ts', line: 18 },
+    ],
+    inter_AIS: [
+      { symbol: 'fast', filePath: 'src/mixed.ts' },
+      { symbol: 'slow', filePath: 'src/mixed.ts' },
+    ],
+  };
+
+  it('builds tagged unified AIS without mixing line and symbol keys', () => {
+    const ais = M.unifiedAis(gt);
+    expect([...ais.intraLine].sort()).toEqual([
+      'statement:src/mixed.ts:16',
+      'statement:src/mixed.ts:18',
+    ]);
+    expect([...ais.interSymbol].sort()).toEqual([
+      'symbol:fast@src/mixed.ts',
+      'symbol:slow@src/mixed.ts',
+    ]);
+  });
+
+  it('adapts current engines onto separate unified axes', () => {
+    const cg = M.callgraphUnifiedCis(
+      gt,
+      M.toKeySet([
+        M.symbolKey('route', 'src/mixed.ts'),
+        M.symbolKey('fast', 'src/mixed.ts'),
+        M.symbolKey('slow', 'src/mixed.ts'),
+      ]),
+    );
+    const pdg = M.pdgUnifiedCis(
+      M.pdgLineCis([
+        { line: 16, filePath: 'src/mixed.ts' },
+        { line: 18, filePath: 'src/mixed.ts' },
+      ]),
+    );
+
+    expect([...cg.intraLine]).toEqual([]);
+    expect([...cg.interSymbol].sort()).toEqual([
+      'symbol:fast@src/mixed.ts',
+      'symbol:slow@src/mixed.ts',
+    ]);
+    expect([...pdg.intraLine].sort()).toEqual([
+      'statement:src/mixed.ts:16',
+      'statement:src/mixed.ts:18',
+    ]);
+    expect([...pdg.interSymbol]).toEqual([]);
+  });
+
+  it('scores composed-current as exact on both axes without a blended F1', () => {
+    const ais = M.unifiedAis(gt);
+    const cg = M.callgraphUnifiedCis(
+      gt,
+      M.toKeySet([M.symbolKey('fast', 'src/mixed.ts'), M.symbolKey('slow', 'src/mixed.ts')]),
+    );
+    const pdg = M.pdgUnifiedCis(
+      M.pdgLineCis([
+        { line: 16, filePath: 'src/mixed.ts' },
+        { line: 18, filePath: 'src/mixed.ts' },
+      ]),
+    );
+
+    const composed = M.composeUnifiedCis(cg, pdg);
+    const scored = M.scoreUnifiedAxes(composed, ais);
+
+    expect(scored.intraLine.f1).toBe(1);
+    expect(scored.interSymbol.f1).toBe(1);
+
+    const agg = M.aggregateUnifiedScores([scored]);
+    expect(agg.intraLine.f1).toBe(1);
+    expect(agg.interSymbol.f1).toBe(1);
+    expect(agg.minRecall).toBe(1);
+    expect(agg.fpis).toBe(0);
+    expect(agg.fnis).toBe(0);
+    expect(agg).not.toHaveProperty('f1');
+  });
+
+  it('makes current standalone engines visibly incomplete on one unified axis', () => {
+    const ais = M.unifiedAis(gt);
+    const cg = M.callgraphUnifiedCis(gt, M.toKeySet([M.symbolKey('fast', 'src/mixed.ts')]));
+    const pdg = M.pdgUnifiedCis(M.pdgLineCis([{ line: 16, filePath: 'src/mixed.ts' }]));
+
+    const cgScore = M.scoreUnifiedAxes(cg, ais);
+    const pdgScore = M.scoreUnifiedAxes(pdg, ais);
+
+    expect(cgScore.intraLine.recall).toBe(0);
+    expect(cgScore.interSymbol.recall).toBe(0.5);
+    expect(pdgScore.intraLine.recall).toBe(0.5);
+    expect(pdgScore.interSymbol.recall).toBe(0);
+  });
+});
+
 describe('impact-pdg metric math — aggregate()', () => {
   it('macro-averages defined metrics, EXCLUDING nulls (not folding as 0)', () => {
     const per = [

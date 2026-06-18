@@ -57,6 +57,19 @@ export function lineKey(filePath, line) {
   return `${filePath}:${line}`;
 }
 
+/**
+ * Unified-impact key spaces keep the two granularities explicit. A tagged key
+ * is never compared across axes: `statement:src/a.ts:10` and
+ * `symbol:handler@src/a.ts` are different measurement units by design.
+ */
+export function unifiedLineKey(filePath, line) {
+  return `statement:${lineKey(filePath, line)}`;
+}
+
+export function unifiedSymbolKey(symbol, filePath) {
+  return `symbol:${symbolKey(symbol, filePath)}`;
+}
+
 /** CIS_pdg = the set of affected-statement LINE keys from an impact pdg result. */
 export function pdgLineCis(affectedStatements) {
   const out = new Set();
@@ -77,6 +90,25 @@ export function intraLineAis(gt) {
     }
   }
   return out;
+}
+
+/** Unified AIS = two explicit axes, never one blended line+symbol set. */
+export function unifiedAis(gt) {
+  const intraLine = new Set();
+  for (const e of gt.intra_AIS ?? []) {
+    if (e && typeof e.line === 'number' && typeof e.filePath === 'string') {
+      intraLine.add(unifiedLineKey(e.filePath, e.line));
+    }
+  }
+
+  const interSymbol = new Set();
+  for (const e of gt.inter_AIS ?? []) {
+    if (e && typeof e.symbol === 'string' && typeof e.filePath === 'string') {
+      interSymbol.add(unifiedSymbolKey(e.symbol, e.filePath));
+    }
+  }
+
+  return { intraLine, interSymbol };
 }
 
 /** Canonicalize an iterable of {symbol,filePath} (or pre-made keys) → a Set. */
@@ -237,6 +269,58 @@ export function aisByScope(gt) {
     (gt.inter_AIS ?? []).map((e) => ({ symbol: e.symbol, filePath: e.filePath })),
   );
   return { criterionKey: critKey, intra, inter, mixed: new Set([...intra, ...inter]) };
+}
+
+const tagSymbolKeys = (keys) => new Set([...keys].map((k) => `symbol:${k}`));
+const tagLineKeys = (keys) => new Set([...keys].map((k) => `statement:${k}`));
+
+/**
+ * Current callgraph unified CIS: inter-symbol axis only. The seed/criterion
+ * symbol is filtered because `inter_AIS` is cross-function by construction.
+ */
+export function callgraphUnifiedCis(gt, symbolCisKeys) {
+  const { criterionKey } = aisByScope(gt);
+  const inter = new Set([...symbolCisKeys].filter((k) => k !== criterionKey));
+  return { intraLine: new Set(), interSymbol: tagSymbolKeys(inter) };
+}
+
+/** Current PDG unified CIS: intra-line axis only. */
+export function pdgUnifiedCis(lineCisKeys) {
+  return { intraLine: tagLineKeys(lineCisKeys), interSymbol: new Set() };
+}
+
+/** Evaluation-only composed baseline: callgraph inter-symbol + PDG intra-line. */
+export function composeUnifiedCis(...parts) {
+  const intraLine = new Set();
+  const interSymbol = new Set();
+  for (const part of parts) {
+    for (const k of part.intraLine ?? []) intraLine.add(k);
+    for (const k of part.interSymbol ?? []) interSymbol.add(k);
+  }
+  return { intraLine, interSymbol };
+}
+
+/** Score one engine/candidate against unified AIS without blending axes. */
+export function scoreUnifiedAxes(cis, ais) {
+  return {
+    intraLine: score(cis.intraLine ?? new Set(), ais.intraLine ?? new Set()),
+    interSymbol: score(cis.interSymbol ?? new Set(), ais.interSymbol ?? new Set()),
+  };
+}
+
+export function aggregateUnifiedScores(perCaseScores) {
+  const intraLine = aggregate(perCaseScores.map((s) => s.intraLine));
+  const interSymbol = aggregate(perCaseScores.map((s) => s.interSymbol));
+  const definedRecalls = [intraLine.recall, interSymbol.recall].filter(
+    (v) => v !== null && v !== undefined,
+  );
+  return {
+    intraLine,
+    interSymbol,
+    minRecall: definedRecalls.length ? Math.min(...definedRecalls) : null,
+    fpis: (intraLine.fpis ?? 0) + (interSymbol.fpis ?? 0),
+    fnis: (intraLine.fnis ?? 0) + (interSymbol.fnis ?? 0),
+  };
 }
 
 /**

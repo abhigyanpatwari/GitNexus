@@ -7,9 +7,13 @@
 > to run*). The harness drives both `impact` engines over the fixtures — PDG
 > **seeded on the criterion's statement line** so it returns the dependence slice
 > — prints a stratified P/R/F1 table + a plain-language decision recommendation,
-> and gates regressions with `--check`. The measured result: **PDG is exact at
-> intra-procedural statement granularity; call-graph is exact at inter-procedural
-> symbol granularity; the two answer different questions and neither dominates.**
+> and gates regressions with `--check`. It now also prints an additive **unified
+> impact axes** table that keeps line-level and symbol-level truth separate while
+> comparing current `callgraph`, current `pdg`, and the evaluation-only
+> `composed-current` baseline. The measured native result remains: **PDG is exact
+> at intra-procedural statement granularity; call-graph is exact at
+> inter-procedural symbol granularity; the two answer different questions and
+> neither dominates.**
 
 ## What this measures
 
@@ -31,6 +35,33 @@ granularity against its native ground truth and reports both side by side. The
 "which is more accurate?" question gets an honest, per-scope answer rather than a
 single blended number — and the answer is *they answer different questions;
 neither strictly dominates*.
+
+## Unified impact axes
+
+The harness also reports a separate unified comparison that is designed for the
+next architecture question: *could a future PDG-only / SDG-like impact engine
+replace the composition of today's engines?* This report is additive. It does not
+replace the native table above, and it does not change `baselines.json` gating.
+
+Unified AIS has two namespaces:
+
+- `statement:<filePath>:<line>` for intra-procedural line truth from `intra_AIS`
+- `symbol:<symbol>@<filePath>` for inter-procedural symbol truth from `inter_AIS`
+
+Each engine is adapted onto those axes without lossy projection:
+
+- `callgraph` contributes only the `symbol` axis.
+- `pdg` contributes only the `statement` axis.
+- `composed-current` is an evaluation-only control row that unions current
+  callgraph symbols with current PDG statements.
+
+The report intentionally has no single blended unified F1. A future
+`pdg-interproc` or SDG candidate must be judged axis-by-axis against
+`composed-current` so line precision cannot hide inter-symbol misses, and
+symbol recall cannot hide statement-level blindness. The control row is a recall
+baseline, not a perfection claim: current PDG can still contribute intra-line
+noise on pure-inter fixtures, so a future SDG candidate should match or exceed
+recall while reducing or bounding FPIS.
 
 > **A note on `line`.** A whole-symbol PDG slice (no `line`) is empty by design:
 > intra-procedural dependence stays inside the function, so every reachable block
@@ -299,9 +330,13 @@ Read it honestly:
 >   **cannot answer at all** (it has no notion of a statement).
 >
 > They **compose**: a full mixed-locus blast radius is the *union* of
-> call-graph's inter-symbol reach and PDG's intra-statement slice. Reach for the
-> line-seeded PDG when you need statement-level dependence *inside* a function;
-> reach for call-graph when you need *cross-function* reach. The earlier verdict
+> call-graph's inter-symbol reach and PDG's intra-statement slice. The unified
+> axes table makes that composition explicit through the `composed-current` row,
+> which is the recall baseline a future SDG / `pdg-interproc` candidate must
+> match or exceed while reducing or bounding FPIS. Reach for the line-seeded
+> PDG when you need statement-level dependence *inside* a function; reach for
+> call-graph when you need
+> *cross-function* reach. The earlier verdict
 > ("PDG is empty / call-graph wins") was an artifact of the **whole-symbol** seed
 > — a whole-symbol slice has nothing to report because intra-procedural dependence
 > never leaves the function. Seeding the changed *statement* is what makes PDG's
