@@ -170,6 +170,32 @@ withTestLbugDB(
         // Distinct from KTD6 "no PDG body": this symbol HAS a body.
         expect(result.epistemic).not.toBe('no-pdg-body');
       });
+
+      it('a line-seeded slice over callee-less blocks degrades gracefully (real-DB calleesOfBlocks)', async () => {
+        // The seeded BasicBlocks carry no `callees` data (created without the
+        // property — the pre-v2 / no-calls reality). A downstream line seed at
+        // B0 reaches B1 via the CDG edge, so calleesOfBlocks runs over real
+        // seed+reachable blocks; with no callee data it must yield an empty set
+        // and degrade to callgraph-equal — no throw, no partial precision.
+        vi.mocked(loadMeta).mockResolvedValueOnce(
+          META({ maxCdgEdgesPerFunction: 0, maxReachingDefEdgesPerFunction: 0 } as any),
+        );
+        const result = await backend.callTool('impact', {
+          target: 'hot',
+          direction: 'downstream',
+          mode: 'pdg',
+          line: 2,
+        });
+        // The slice resolved (B1 is downstream-dependent on the line-2 seed) and
+        // the call completed without surfacing a callees-query failure.
+        expect(result.error).toBeUndefined();
+        expect(result.epistemic).toBe('pdg-intra-procedural');
+        expect(result.affectedStatementCount).toBeGreaterThanOrEqual(1);
+        // No CALLS edge in the fixture and no callee data on the blocks, so the
+        // statement-precise inter-procedural reach is empty — precision is null
+        // (no reach), never a partial value, and nothing threw.
+        expect(result.pdgInterprocedural.statementPrecision).toBeNull();
+      });
     });
 
     describe('unknown (meta unreadable)', () => {
