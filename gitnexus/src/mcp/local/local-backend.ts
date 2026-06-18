@@ -75,6 +75,7 @@ import {
   runImpactPDG,
   validateImpactMode,
   type ImpactMode,
+  type PdgImpactEvidence,
   type PdgImpactResult,
 } from './pdg-impact.js';
 
@@ -249,6 +250,141 @@ export const IMPACT_RELATION_CONFIDENCE: Readonly<Record<string, number>> = {
  */
 const confidenceForRelType = (relType: string | undefined): number =>
   IMPACT_RELATION_CONFIDENCE[relType ?? ''] ?? 0.5;
+
+type PdgBridgeEvidence = Extract<PdgImpactEvidence, 'callgraph-bridge' | 'unproven-bridge'>;
+
+interface PdgBridgeEvidenceInfo {
+  evidence: PdgBridgeEvidence;
+  basis: string;
+  site?: { filePath: string; line: number };
+}
+
+interface PdgBridgeOptions {
+  /** Line keys (`<filePath>:<line>`) proven reachable by the local PDG slice. */
+  firstHopLineKeys?: ReadonlySet<string>;
+  /** File containing the first-hop call sites for a line-seeded downstream slice. */
+  targetFilePath?: string;
+}
+
+function parseRelationSiteLine(relationId: unknown): number | undefined {
+  const id = String(relationId ?? '');
+  if (!id) return undefined;
+  const parts = id.split(':');
+  const maybeLine = Number(parts[parts.length - 2]);
+  const maybeCol = Number(parts[parts.length - 1]);
+  if (Number.isInteger(maybeLine) && maybeLine >= 1 && Number.isInteger(maybeCol)) {
+    return maybeLine;
+  }
+  const cobolLine = id.match(/:L(\d+)(?::|$)/i);
+  if (cobolLine) {
+    const line = Number(cobolLine[1]);
+    if (Number.isInteger(line) && line >= 1) return line;
+  }
+  return undefined;
+}
+
+function lineKey(filePath: string | undefined, line: number | undefined): string | undefined {
+  if (!filePath || !Number.isInteger(line) || (line as number) < 1) return undefined;
+  return `${filePath}:${line}`;
+}
+
+function pdgBridgeEvidenceForImpact(input: {
+  bridge: PdgBridgeOptions;
+  depth: number;
+  relationId: unknown;
+  inherited?: PdgBridgeEvidenceInfo;
+}): PdgBridgeEvidenceInfo {
+  const { bridge, depth, relationId, inherited } = input;
+  if (depth > 1) {
+    return (
+      inherited ?? {
+        evidence: 'unproven-bridge',
+        basis: 'first-hop evidence unavailable for inherited symbol-graph reach',
+      }
+    );
+  }
+
+  const firstHopLineKeys = bridge.firstHopLineKeys;
+  if (!firstHopLineKeys || firstHopLineKeys.size === 0) {
+    return {
+      evidence: 'callgraph-bridge',
+      basis: 'whole-symbol PDG result uses symbol graph as compatibility bridge',
+    };
+  }
+
+  const siteLine = parseRelationSiteLine(relationId);
+  const siteKey = lineKey(bridge.targetFilePath, siteLine);
+  if (siteKey && firstHopLineKeys.has(siteKey)) {
+    return {
+      evidence: 'callgraph-bridge',
+      basis: 'first-hop call site is in the local PDG statement slice',
+      site: { filePath: bridge.targetFilePath!, line: siteLine! },
+    };
+  }
+
+  return {
+    evidence: 'unproven-bridge',
+    basis: siteLine
+      ? 'first-hop call site is not in the local PDG statement slice'
+      : 'first-hop call-site line is unavailable on the existing graph edge',
+    ...(siteLine && bridge.targetFilePath
+      ? { site: { filePath: bridge.targetFilePath, line: siteLine } }
+      : {}),
+  };
+}
+
+function normalizePdgBridgeByDepth(byDepth: Record<number, unknown[]>): Record<number, unknown[]> {
+  const normalized: Record<number, unknown[]> = {};
+  for (const [depthKey, items] of Object.entries(byDepth ?? {})) {
+    const depth = Number(depthKey);
+    if (!Number.isFinite(depth) || !Array.isArray(items)) continue;
+    normalized[depth] = items.map((item) => {
+      if (!item || typeof item !== 'object') return item;
+      const record = item as Record<string, unknown>;
+      const evidence =
+        typeof record.pdgEvidence === 'string'
+          ? (record.pdgEvidence as PdgImpactEvidence)
+          : 'callgraph-bridge';
+      return {
+        ...record,
+        pdgEvidence: evidence,
+        ...(record.pdgEvidenceReason
+          ? {}
+          : {
+              pdgEvidenceReason:
+                evidence === 'unproven-bridge'
+                  ? 'symbol reached through the resolved symbol graph, but the existing graph did not prove the first-hop call site is in the local PDG slice'
+                  : 'symbol reached through the resolved symbol graph compatibility bridge',
+            }),
+      };
+    });
+  }
+  return normalized;
+}
+
+function countPdgEvidence(
+  byDepth: Record<number, unknown[]>,
+): Partial<Record<PdgImpactEvidence, number>> {
+  const counts: Partial<Record<PdgImpactEvidence, number>> = {};
+  for (const items of Object.values(byDepth ?? {})) {
+    if (!Array.isArray(items)) continue;
+    for (const item of items) {
+      if (!item || typeof item !== 'object') continue;
+      const evidence = (item as { pdgEvidence?: unknown }).pdgEvidence;
+      if (typeof evidence !== 'string') continue;
+      counts[evidence as PdgImpactEvidence] = (counts[evidence as PdgImpactEvidence] ?? 0) + 1;
+    }
+  }
+  return counts;
+}
+
+function dominantInterproceduralEvidence(
+  counts: Partial<Record<PdgImpactEvidence, number>>,
+): PdgBridgeEvidence | undefined {
+  if ((counts['unproven-bridge'] ?? 0) > 0) return 'unproven-bridge';
+  if ((counts['callgraph-bridge'] ?? 0) > 0) return 'callgraph-bridge';
+  return undefined;
+}
 
 /** Structured error logging for query failures — replaces empty catch blocks */
 function logQueryError(context: string, err: unknown): void {
@@ -4628,6 +4764,22 @@ export class LocalBackend {
         executeParameterized,
       });
 
+      const firstHopLineKeys = new Set<string>();
+      if (typeof (pdgResult as any).criterionLine === 'number') {
+        firstHopLineKeys.add(`${sym.filePath}:${(pdgResult as any).criterionLine}`);
+      }
+      for (const stmt of ((pdgResult as any).affectedStatements ?? []) as Array<{
+        filePath?: string;
+        line?: number;
+      }>) {
+        const key = lineKey(stmt.filePath, stmt.line);
+        if (key) firstHopLineKeys.add(key);
+      }
+      const pdgBridge =
+        direction === 'downstream' && firstHopLineKeys.size > 0
+          ? { firstHopLineKeys, targetFilePath: sym.filePath }
+          : undefined;
+
       try {
         const interproceduralResult = await this._runImpactBFS(repo, sym, symType, direction, {
           maxDepth,
@@ -4636,6 +4788,7 @@ export class LocalBackend {
           minConfidence,
           limit: Number.isFinite(params.limit) ? params.limit : 100,
           offset: Number.isFinite(params.offset) ? params.offset : 0,
+          pdgBridge,
         });
         return this.composeUnifiedPdgImpactResult(pdgResult, interproceduralResult);
       } catch (e) {
@@ -4698,8 +4851,10 @@ export class LocalBackend {
 
     const localByDepth = pdgResult.byDepth ?? {};
     const localByDepthCounts = pdgResult.byDepthCounts ?? {};
-    const interproceduralByDepth = interproceduralResult?.byDepth ?? {};
+    const interproceduralByDepth = normalizePdgBridgeByDepth(interproceduralResult?.byDepth ?? {});
     const interproceduralByDepthCounts = interproceduralResult?.byDepthCounts ?? {};
+    const interproceduralEvidenceCounts = countPdgEvidence(interproceduralByDepth);
+    const interproceduralEvidence = dominantInterproceduralEvidence(interproceduralEvidenceCounts);
     const byDepth: Record<number, unknown[]> = {};
     const byDepthCounts: Record<number, number> = {};
     const depthKeys = Array.from(
@@ -4769,7 +4924,8 @@ export class LocalBackend {
     const noteParts = [
       pdgResult.note,
       `Inter-procedural symbol reach is included using the resolved symbol graph; ` +
-        `statement-level PDG reach remains in affectedStatements.`,
+        `statement-level PDG reach remains in affectedStatements. The symbol reach is ` +
+        `labeled as a PDG evidence bridge, not as pure statement-level dependence.`,
     ];
     if (errorMessage) {
       noteParts.push(
@@ -4778,6 +4934,13 @@ export class LocalBackend {
     } else if (interproceduralResult?.epistemic === 'lower-bound') {
       noteParts.push(
         `The inter-procedural symbol reach is a lower bound because unresolved indirection was detected.`,
+      );
+    }
+    if ((interproceduralEvidenceCounts['unproven-bridge'] ?? 0) > 0) {
+      noteParts.push(
+        `${interproceduralEvidenceCounts['unproven-bridge']} inter-procedural ` +
+          `symbol(s) are labeled unproven-bridge: the resolved symbol graph reaches them, ` +
+          `but the current graph did not prove their first-hop call site is in the local PDG slice.`,
       );
     }
 
@@ -4800,11 +4963,18 @@ export class LocalBackend {
         ? { interproceduralBoundaries: interproceduralResult.boundaries }
         : {}),
       ...(errorMessage ? { interproceduralError: errorMessage } : {}),
+      pdgEvidence: {
+        ...((pdgResult as any).pdgEvidence ?? {}),
+        ...(interproceduralEvidence ? { interprocedural: interproceduralEvidence } : {}),
+        interproceduralEvidenceCounts,
+      },
       pdgInterprocedural: {
         engine: 'symbol-graph',
+        evidence: interproceduralEvidence ?? 'callgraph-bridge',
         impactedCount: interproceduralImpactedCount,
         byDepthCounts: interproceduralByDepthCounts,
         byDepth: interproceduralByDepth,
+        evidenceCounts: interproceduralEvidenceCounts,
         partial,
       },
     };
@@ -4959,6 +5129,7 @@ export class LocalBackend {
       skipPerSymbolEnrichment?: boolean;
       skipEpistemic?: boolean;
       skipEnrichment?: boolean;
+      pdgBridge?: PdgBridgeOptions;
     },
   ): Promise<any> {
     const { maxDepth, relationTypes, includeTests, minConfidence } = opts;
@@ -5001,6 +5172,7 @@ export class LocalBackend {
 
     const impacted: any[] = [];
     const visited = new Set<string>([symId]);
+    const pdgBridgeEvidenceById = new Map<string, PdgBridgeEvidenceInfo>();
     let frontier = [symId];
     let traversalComplete = true;
 
@@ -5087,8 +5259,8 @@ export class LocalBackend {
       // ids/types/confidence are bound parameters (see above) — no interpolation.
       const query =
         direction === 'upstream'
-          ? `MATCH (caller)-[r:CodeRelation]->(n) WHERE n.id IN $frontierIds AND r.type IN $relTypes${confidenceFilter} RETURN n.id AS sourceId, caller.id AS id, caller.name AS name, labels(caller)[0] AS type, caller.filePath AS filePath, r.type AS relType, r.confidence AS confidence`
-          : `MATCH (n)-[r:CodeRelation]->(callee) WHERE n.id IN $frontierIds AND r.type IN $relTypes${confidenceFilter} RETURN n.id AS sourceId, callee.id AS id, callee.name AS name, labels(callee)[0] AS type, callee.filePath AS filePath, r.type AS relType, r.confidence AS confidence`;
+          ? `MATCH (caller)-[r:CodeRelation]->(n) WHERE n.id IN $frontierIds AND r.type IN $relTypes${confidenceFilter} RETURN n.id AS sourceId, caller.id AS id, caller.name AS name, labels(caller)[0] AS type, caller.filePath AS filePath, r.type AS relType, r.confidence AS confidence, r.reason AS relationReason`
+          : `MATCH (n)-[r:CodeRelation]->(callee) WHERE n.id IN $frontierIds AND r.type IN $relTypes${confidenceFilter} RETURN n.id AS sourceId, callee.id AS id, callee.name AS name, labels(callee)[0] AS type, callee.filePath AS filePath, r.type AS relType, r.confidence AS confidence, r.reason AS relationReason`;
 
       try {
         const related = await executeParameterized(repo.lbugPath, query, {
@@ -5098,6 +5270,7 @@ export class LocalBackend {
         });
 
         for (const rel of related) {
+          const sourceId = String(rel.sourceId ?? rel[0] ?? '');
           const relId = rel.id || rel[1];
           const filePath = rel.filePath || rel[4] || '';
 
@@ -5108,6 +5281,16 @@ export class LocalBackend {
             nextFrontier.push(relId);
             const storedConfidence = rel.confidence ?? rel[6];
             const relationType = rel.relType || rel[5];
+            const relationId = rel.relationId ?? rel[7];
+            const bridgeEvidence = opts.pdgBridge
+              ? pdgBridgeEvidenceForImpact({
+                  bridge: opts.pdgBridge,
+                  depth,
+                  relationId,
+                  inherited: pdgBridgeEvidenceById.get(sourceId),
+                })
+              : undefined;
+            if (bridgeEvidence) pdgBridgeEvidenceById.set(String(relId), bridgeEvidence);
             // Prefer the stored confidence from the graph (set at analysis time);
             // fall back to the per-type floor for edges without a stored value.
             const effectiveConfidence =
@@ -5122,6 +5305,13 @@ export class LocalBackend {
               filePath,
               relationType,
               confidence: effectiveConfidence,
+              ...(bridgeEvidence
+                ? {
+                    pdgEvidence: bridgeEvidence.evidence,
+                    pdgBridgeBasis: bridgeEvidence.basis,
+                    ...(bridgeEvidence.site ? { pdgBridgeSite: bridgeEvidence.site } : {}),
+                  }
+                : {}),
             });
           }
         }

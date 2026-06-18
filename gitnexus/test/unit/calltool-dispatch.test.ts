@@ -1479,6 +1479,84 @@ describe('LocalBackend impact mode (KTD1/KTD5/KTD12)', () => {
     expect(bfsSpy).toHaveBeenCalledTimes(1);
   });
 
+  it("mode:'pdg' labels interprocedural symbols as a callgraph bridge", async () => {
+    resolveSingleTarget();
+    vi.spyOn(backend as any, '_runImpactBFS').mockResolvedValueOnce({
+      target: { id: 'func:main', name: 'main', type: 'Function', filePath: 'src/index.ts' },
+      direction: 'downstream',
+      impactedCount: 1,
+      risk: 'LOW',
+      summary: { direct: 1, processes_affected: 0, modules_affected: 0 },
+      byDepthCounts: { 1: 1 },
+      affected_processes: [],
+      affected_modules: [],
+      byDepth: {
+        1: [
+          {
+            depth: 1,
+            id: 'func:callee',
+            name: 'callee',
+            type: 'Function',
+            filePath: 'src/callee.ts',
+          },
+        ],
+      },
+    });
+
+    const result = await backend.callTool('impact', {
+      target: 'main',
+      direction: 'downstream',
+      mode: 'pdg',
+    });
+
+    expect(result.error).toBeUndefined();
+    expect(result.mode).toBe('pdg');
+    expect(result.pdgInterprocedural.evidence).toBe('callgraph-bridge');
+    expect(result.pdgInterprocedural.evidenceCounts['callgraph-bridge']).toBe(1);
+    expect(result.pdgEvidence.interprocedural).toBe('callgraph-bridge');
+    expect(result.interproceduralByDepth[1][0].pdgEvidence).toBe('callgraph-bridge');
+    expect(result.note).toContain('labeled as a PDG evidence bridge');
+  });
+
+  it("mode:'pdg' preserves unproven bridge evidence when call-site proof is unavailable", async () => {
+    resolveSingleTarget();
+    vi.spyOn(backend as any, '_runImpactBFS').mockResolvedValueOnce({
+      target: { id: 'func:main', name: 'main', type: 'Function', filePath: 'src/index.ts' },
+      direction: 'downstream',
+      impactedCount: 1,
+      risk: 'LOW',
+      summary: { direct: 1, processes_affected: 0, modules_affected: 0 },
+      byDepthCounts: { 1: 1 },
+      affected_processes: [],
+      affected_modules: [],
+      byDepth: {
+        1: [
+          {
+            depth: 1,
+            id: 'func:callee',
+            name: 'callee',
+            type: 'Function',
+            filePath: 'src/callee.ts',
+            pdgEvidence: 'unproven-bridge',
+          },
+        ],
+      },
+    });
+
+    const result = await backend.callTool('impact', {
+      target: 'main',
+      direction: 'downstream',
+      mode: 'pdg',
+    });
+
+    expect(result.error).toBeUndefined();
+    expect(result.mode).toBe('pdg');
+    expect(result.pdgInterprocedural.evidence).toBe('unproven-bridge');
+    expect(result.pdgInterprocedural.evidenceCounts['unproven-bridge']).toBe(1);
+    expect(result.pdgEvidence.interprocedural).toBe('unproven-bridge');
+    expect(result.note).toContain('labeled unproven-bridge');
+  });
+
   it.each([['PDG'], ['pgd'], [''], [0], [null]])(
     'invalid mode %j → structured {error}, never a callgraph result (KTD5 anti-silent-fallback)',
     async (bad) => {
@@ -1532,13 +1610,13 @@ describe('LocalBackend impact mode (KTD1/KTD5/KTD12)', () => {
     },
   );
 
-  it("mode:'pdg' + line:8 routes to the PDG traversal and interprocedural reach", async () => {
+  it("mode:'pdg' + downstream line:8 routes to the PDG traversal and seeds bridge evidence", async () => {
     resolveSingleTarget();
     const bfsSpy = vi.spyOn(backend as any, '_runImpactBFS');
     const pdgSpy = vi.spyOn(backend as any, '_runImpactPDG');
     const result = await backend.callTool('impact', {
       target: 'main',
-      direction: 'upstream',
+      direction: 'downstream',
       mode: 'pdg',
       line: 8,
     });
@@ -1547,6 +1625,9 @@ describe('LocalBackend impact mode (KTD1/KTD5/KTD12)', () => {
     expect(result.mode).toBe('pdg');
     expect(pdgSpy).toHaveBeenCalledTimes(1);
     expect(bfsSpy).toHaveBeenCalledTimes(1);
+    const bridge = bfsSpy.mock.calls[0][4].pdgBridge;
+    expect(bridge.targetFilePath).toBe('src/index.ts');
+    expect([...bridge.firstHopLineKeys]).toContain('src/index.ts:8');
     expect(result.pdgInterprocedural).toBeDefined();
   });
 

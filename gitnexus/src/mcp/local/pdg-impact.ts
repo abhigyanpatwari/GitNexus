@@ -298,11 +298,30 @@ export interface PdgImpactParityFields {
   affected_modules: unknown[];
 }
 
+export type PdgImpactEvidence =
+  | 'local-dependence'
+  | 'owner-projection'
+  | 'callgraph-bridge'
+  | 'unproven-bridge'
+  | 'degraded';
+
+export interface PdgImpactEvidenceSummary {
+  statements?: PdgImpactEvidence;
+  localSymbols?: PdgImpactEvidence;
+  interprocedural?: PdgImpactEvidence;
+  localSymbolCount?: number;
+  unresolvedBlockCount?: number;
+  ambiguousProjectionCount?: number;
+  interproceduralEvidenceCounts?: Partial<Record<PdgImpactEvidence, number>>;
+}
+
 export interface PdgInterproceduralImpact {
   engine: 'symbol-graph';
+  evidence: Extract<PdgImpactEvidence, 'callgraph-bridge' | 'unproven-bridge'>;
   impactedCount: number;
   byDepthCounts: Record<number, number>;
   byDepth: Record<number, unknown[]>;
+  evidenceCounts?: Partial<Record<PdgImpactEvidence, number>>;
   partial: boolean;
 }
 
@@ -320,6 +339,7 @@ export interface PdgImpactBaseResult extends PdgImpactParityFields {
   interproceduralBoundaries?: unknown[];
   interproceduralError?: string;
   pdgInterprocedural?: PdgInterproceduralImpact;
+  pdgEvidence?: PdgImpactEvidenceSummary;
 }
 
 export interface PdgImpactSuccessResult extends PdgImpactBaseResult {
@@ -493,6 +513,11 @@ function assemblePdgImpactResult(input: {
     ...(s.startLine !== undefined ? { startLine: s.startLine } : {}),
     ...(s.ambiguous ? { ambiguous: true } : {}),
     ...(s.id === null ? { unresolved: true } : {}),
+    pdgEvidence: (s.id === null ? 'degraded' : 'owner-projection') as PdgImpactEvidence,
+    pdgEvidenceReason:
+      s.id === null
+        ? 'reachable BasicBlock has no owning Function/Method/Constructor projection'
+        : 'reachable BasicBlock projected to its owning symbol',
     processes: [] as unknown[],
   }));
 
@@ -547,6 +572,13 @@ function assemblePdgImpactResult(input: {
     // PDG-specific epistemic marker — NOT the callgraph 'lower-bound'/DI copy.
     epistemic: 'pdg-intra-procedural',
     note: noteParts.join(' '),
+    pdgEvidence: {
+      statements: 'local-dependence',
+      localSymbols: unresolvedCount > 0 ? 'degraded' : 'owner-projection',
+      localSymbolCount: impactedCount,
+      unresolvedBlockCount: unresolvedCount,
+      ambiguousProjectionCount: ambiguousCount,
+    },
     // Statement-level slice: the dependent source statements (line + text) the
     // change reaches. This is the primary useful output of statement mode; the
     // accuracy harness scores against these lines.

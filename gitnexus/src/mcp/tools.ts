@@ -465,7 +465,7 @@ SERVICE: optional monorepo path prefix (case-sensitive path segments). When "rep
           enum: ['callgraph', 'pdg'],
           default: 'callgraph',
           description:
-            "Blast-radius engine. 'callgraph' (default) = inter-procedural symbol→symbol traversal (established comparator). 'pdg' = unified PDG-facing impact: statement-level affectedStatements from the persisted control/data dependence layer plus inter-procedural symbols in interproceduralByDepth/pdgInterprocedural and the compatibility byDepth bucket; requires `gitnexus analyze --pdg`. PDG is incompatible with crossDepth and @group targets; relationTypes/minConfidence filter the inter-symbol reach.",
+            "Blast-radius engine. 'callgraph' (default) = inter-procedural symbol→symbol traversal (established comparator). 'pdg' = unified PDG-facing impact: intra-procedural statement-level affectedStatements from the persisted control/data dependence layer plus inter-procedural symbols in interproceduralByDepth/pdgInterprocedural and the compatibility byDepth bucket; requires `gitnexus analyze --pdg`. PDG symbol reach is labeled as a PDG evidence bridge, not pure statement-level dependence, and successful PDG results are UNKNOWN-risk. PDG is incompatible with crossDepth and @group targets; relationTypes/minConfidence filter the inter-symbol reach.",
         },
         line: {
           type: 'integer',

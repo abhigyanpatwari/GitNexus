@@ -72,6 +72,9 @@ describe('runImpactPDG', () => {
     expect((result as any).affectedStatementCount).toBe(2);
     expect((result as any).affectedStatements.map((s: any) => s.line)).toEqual([2, 2]);
     expect((result as any).affectedStatements.map((s: any) => s.text)).toEqual(['a();', 'b();']);
+    expect((result as any).pdgEvidence.statements).toBe('local-dependence');
+    expect((result as any).pdgEvidence.localSymbols).toBe('owner-projection');
+    expect((result as any).byDepth[1][0].pdgEvidence).toBe('owner-projection');
   });
 });
 
