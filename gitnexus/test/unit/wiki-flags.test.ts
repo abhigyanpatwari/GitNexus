@@ -323,6 +323,7 @@ describe('WikiGenerator --review mode', () => {
       initWikiDb: vi.fn().mockResolvedValue(undefined),
       closeWikiDb: vi.fn().mockResolvedValue(undefined),
       touchWikiDb: vi.fn(),
+      pinWikiDb: vi.fn(() => vi.fn()),
       getFilesWithExports: vi
         .fn()
         .mockResolvedValue(fakeFiles.map((f) => ({ filePath: f, symbols: [] }))),
@@ -1762,6 +1763,7 @@ describe('WikiGenerator grouping prompt isolation', () => {
       initWikiDb: vi.fn().mockResolvedValue(undefined),
       closeWikiDb: vi.fn().mockResolvedValue(undefined),
       touchWikiDb: vi.fn(),
+      pinWikiDb: vi.fn(() => vi.fn()),
       getFilesWithExports: vi.fn().mockResolvedValue([{ filePath: 'src/auth.ts', symbols: [] }]),
       getAllFiles: vi.fn().mockResolvedValue(['src/auth.ts']),
       getIntraModuleCallEdges: vi.fn().mockResolvedValue([]),

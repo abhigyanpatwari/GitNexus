@@ -133,8 +133,8 @@ jobs:
             const existing = open.find(i => i.title === title);
             if (existing) {
               // Extract ready/total count for the changelog comment.
-              const readyMatch = report.match(/\*\*(\d+)\/(\d+)\*\* grammars ready/);
-              const blockerMatch = report.match(/\*\*(\d+) blocker/);
+              const readyMatch = report.match(/- (\d+)\/(\d+) npm-installed grammars already accept tree-sitter@/);
+              const blockerMatch = report.match(/\*\*Blocked\*\* — (\d+) grammars? /);
               const ready = readyMatch ? readyMatch[1] : '?';
               const total = readyMatch ? readyMatch[2] : '?';
               const blockers = blockerMatch ? blockerMatch[1] : '?';
@@ -165,7 +165,7 @@ jobs:
               }
 
               const today = new Date().toISOString().slice(0, 10);
-              let comment = `**${today}:** ${ready}/${total} ready. ${blockers} blocker(s) remaining.`;
+              let comment = `**${today}:** ${ready}/${total} npm-installed ready. ${blockers} blocker(s) remaining.`;
               if (changes.length > 0) {
                 comment += '\n\nChanges:\n' + changes.map(c => `- ${c}`).join('\n');
               } else {
