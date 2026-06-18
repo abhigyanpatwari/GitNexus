@@ -988,9 +988,22 @@ export async function runImpactPDG(deps: RunPdgImpactDeps): Promise<PdgImpactRes
     queryParams,
   );
   const seedRows = rawSeedRows.slice(0, stepLimit);
-  const seedBlocks: string[] = seedRows
+  let seedBlocks: string[] = seedRows
     .map((r: any) => String(r.id ?? r[0] ?? ''))
     .filter((id: string) => id.length > 0);
+  // Pin the OWNING function for a statement seed: a closure body block that
+  // starts on the SAME source line as the seeded statement satisfies the
+  // (forgiving) symbol-span window but belongs to a different function, so its
+  // intra slice would leak in. The block id encodes the 1-based function start
+  // line, and a block of THIS symbol has fnLine === sym.startLine + 1 (block
+  // lines 1-based, symbol startLine 0-based). Drop foreign-fn seed blocks —
+  // defensively: only when it leaves ≥1 seed, so a kind whose fnLine convention
+  // differs never loses a real seed (it keeps the prior, slightly-loose set).
+  if (statementMode && typeof sym.startLine === 'number') {
+    const ownerFnLine = sym.startLine + 1;
+    const owned = seedBlocks.filter((id) => fnLineOf(id) === ownerFnLine);
+    if (owned.length > 0) seedBlocks = owned;
+  }
   // FIX 7: the seed query probes one row past `stepLimit`, then processes at
   // most `stepLimit` rows like every BFS step. A function with more seed blocks
   // than `stepLimit` would silently under-seed (and thus under-report) — flag

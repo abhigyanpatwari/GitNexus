@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import { IMPACT_MAX_DEPTH } from '../../src/mcp/tools.js';
-import { pdgLayerStatus, runImpactPDG } from '../../src/mcp/local/pdg-impact.js';
+import {
+  pdgLayerStatus,
+  runImpactPDG,
+  type RunPdgImpactDeps,
+} from '../../src/mcp/local/pdg-impact.js';
 
 describe('runImpactPDG', () => {
   it('clamps huge maxDepth values to the documented impact traversal cap', async () => {
@@ -75,6 +79,41 @@ describe('runImpactPDG', () => {
     expect((result as any).pdgEvidence.statements).toBe('local-dependence');
     expect((result as any).pdgEvidence.localSymbols).toBe('owner-projection');
     expect((result as any).byDepth[1][0].pdgEvidence).toBe('owner-projection');
+  });
+
+  it('pins the owning function: a same-source-line closure block does not leak into the seed', async () => {
+    // Symbol starts at 0 → owning fnLine === 1. The seed query (a forgiving
+    // startLine-within-window match) returns BOTH the symbol's own block at the
+    // seeded line AND a closure body block that happens to start on the same
+    // source line but is owned by a function starting at line 5 (fnLine 5).
+    const owned = 'BasicBlock:src/hot.ts:1:0:3'; // fnLine 1 === sym.startLine + 1
+    const closureLeak = 'BasicBlock:src/hot.ts:5:10:0'; // fnLine 5 — a nested closure
+    const exec: RunPdgImpactDeps['executeParameterized'] = async (_repo, query) => {
+      if (query.includes('MATCH (a:BasicBlock) WHERE')) {
+        return [{ id: owned }, { id: closureLeak }];
+      }
+      // No downstream reachability — exercises the seedBlocks-carrying branch.
+      if (query.includes('MATCH (a:BasicBlock)-[r:CodeRelation]->(b:BasicBlock)')) return [];
+      if (query.includes('MATCH (b:BasicBlock) WHERE b.id IN $ids')) return [];
+      if (query.includes('MATCH (s:`Function`)')) return [];
+      return [];
+    };
+
+    const result = await runImpactPDG({
+      repo: { lbugPath: 'repo' },
+      sym: { id: 'func:hot', name: 'hot', filePath: 'src/hot.ts', startLine: 0, endLine: 20 },
+      symType: 'Function',
+      direction: 'downstream',
+      maxDepth: 2,
+      limit: 50,
+      line: 7,
+      executeParameterized: exec,
+    });
+
+    // Only the owning-function block survives; the closure block is dropped.
+    // Unconditional match: fails if `seedBlocks` is absent, has the wrong
+    // length, or contains the closure block — no vacuous branch.
+    expect(result).toMatchObject({ seedBlocks: [owned] });
   });
 });
 
