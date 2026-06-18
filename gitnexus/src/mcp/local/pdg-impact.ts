@@ -1217,15 +1217,26 @@ export interface PdgBridgeOptions {
    * callgraph reach.
    */
   sliceCalleeNames?: ReadonlySet<string>;
+  /**
+   * Resolved callee symbol ids invoked in the criterion's dependence-slice blocks
+   * (`BasicBlock.calleeIds`). This is the SOUND primary key: a first-hop callee is
+   * "proven" statement-precise iff its resolved symbol id is in this set, which
+   * eliminates same-leaf-name collision (false-positive) and import-alias/rename
+   * (false-negative) — failure modes the name set cannot distinguish. Empty/absent
+   * ⇒ no captured ids (pre-v3 index / upstream / whole-symbol) ⇒ fall back to the
+   * leaf-name match (`sliceCalleeNames`).
+   */
+  sliceCalleeIds?: ReadonlySet<string>;
 }
 
 export function pdgBridgeEvidenceForImpact(input: {
   bridge: PdgBridgeOptions;
   depth: number;
   calleeName: unknown;
+  calleeId?: unknown;
   inherited?: PdgBridgeEvidenceInfo;
 }): PdgBridgeEvidenceInfo {
-  const { bridge, depth, calleeName, inherited } = input;
+  const { bridge, depth, calleeName, calleeId, inherited } = input;
   if (depth > 1) {
     return (
       inherited ?? {
@@ -1253,6 +1264,29 @@ export function pdgBridgeEvidenceForImpact(input: {
     };
   }
 
+  // Sound primary key (KTD3): when the slice carries resolved callee ids and the
+  // block is not capped (sentinel handled above), prove by exact symbol-id match.
+  // An id that is NOT in the present set is a real proof failure (`unproven-bridge`),
+  // NOT a fall-through to the name predicate — the name path would re-leak the
+  // same-name collision this key exists to eliminate.
+  const sliceCalleeIds = bridge.sliceCalleeIds;
+  if (sliceCalleeIds && sliceCalleeIds.size > 0) {
+    const id = typeof calleeId === 'string' ? calleeId : '';
+    if (id && sliceCalleeIds.has(id)) {
+      return {
+        evidence: 'callgraph-bridge',
+        basis:
+          'callee id is invoked in a block of the local PDG dependence slice (resolved-symbol match)',
+      };
+    }
+    return {
+      evidence: 'unproven-bridge',
+      basis: 'callee id is not invoked in any block of the local PDG dependence slice',
+    };
+  }
+
+  // R3 graceful fallback: no captured ids (pre-v3 index / upstream / whole-symbol)
+  // ⇒ use the leaf-name match.
   const name = typeof calleeName === 'string' ? calleeName : '';
   if (name && sliceCalleeNames.has(name)) {
     return {
@@ -1347,9 +1381,13 @@ function dominantInterproceduralEvidence(
  * answers the tighter "which other functions does changing THIS line affect?".
  * For an upstream / whole-symbol seed there is no discriminating slice, so every
  * symbol is `callgraph-bridge` and the projection equals the full reach
- * (`statementPrecision` = 1). Name-based matching (a callee invoked from both an
- * in-slice and out-of-slice site resolves to proven) makes the projected set a
- * conservative SUPERSET of the strictly-proven subset.
+ * (`statementPrecision` = 1). When the slice carries resolved callee ids the
+ * projection is SOUND — a reached symbol is proven iff its resolved id matches a
+ * slice-block id (resolved-symbol match), so neither a same-named out-of-slice
+ * callee nor an aliased import perturbs the set. The leaf-name match is the
+ * documented fallback (pre-v3 index / no captured ids), and only in that
+ * name-fallback path is the projection a conservative SUPERSET (a callee invoked
+ * from both an in-slice and out-of-slice site resolves to proven).
  */
 function projectStatementPreciseByDepth(
   byDepth: Record<number, unknown[]>,
