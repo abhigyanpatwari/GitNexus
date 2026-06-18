@@ -33,7 +33,7 @@ import {
   isOverloadAmbiguousAfterNormalization,
   narrowOverloadCandidates,
 } from '../../scope-resolution/passes/overload-narrowing.js';
-import { cppConversionRank } from './conversion-rank.js';
+import { CPP_CONVERSION_ONLY_ARG_TYPE_PREFIXES, cppConversionRank } from './conversion-rank.js';
 
 interface RangeKey {
   readonly startLine: number;
@@ -167,7 +167,12 @@ export function resolveCppQualifiedNamespaceMember(
     allHits,
     callsite?.arity,
     callsite?.argumentTypes,
-    callsite !== undefined ? { conversionRankFn: cppConversionRank } : undefined,
+    callsite !== undefined
+      ? {
+          conversionRankFn: cppConversionRank,
+          conversionOnlyArgTypePrefixes: CPP_CONVERSION_ONLY_ARG_TYPE_PREFIXES,
+        }
+      : undefined,
   );
   if (narrowed.length === 1) return narrowed[0];
   if (narrowed.length === 0) return undefined;

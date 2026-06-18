@@ -76,8 +76,6 @@ const TS_FUNCTION_TYPES = new Set([
   'method_definition',
   'generator_function_declaration',
   'generator_function',
-  'async_function_declaration',
-  'async_arrow_function',
 ]);
 
 /** Statement node types that break a basic block (everything else coalesces). */
@@ -87,7 +85,6 @@ const CONTROL_FLOW_TYPES = new Set([
   'do_statement',
   'for_statement',
   'for_in_statement',
-  'for_of_statement',
   'switch_statement',
   'try_statement',
   'return_statement',
@@ -103,7 +100,6 @@ const LOOP_OR_SWITCH_TYPES = new Set([
   'do_statement',
   'for_statement',
   'for_in_statement',
-  'for_of_statement',
   'switch_statement',
 ]);
 
@@ -146,52 +142,56 @@ class TsCfgWalk {
 
   /** Visit a body that may be a `statement_block` or a single statement. */
   private visitBody(node: SyntaxNode | undefined | null): SeqResult {
-    if (!node) return null;
-    if (node.type === 'statement_block') return this.visitSeq(this.statementsOf(node));
-    return this.visitStmt(node);
+    return this.builder.withNesting(() => {
+      if (!node) return null;
+      if (node.type === 'statement_block') return this.visitSeq(this.statementsOf(node));
+      return this.visitStmt(node);
+    });
   }
 
   /** Wire a sequence of statements, coalescing straight-line runs into blocks. */
   visitSeq(stmts: SyntaxNode[]): SeqResult {
-    let entry: number | undefined;
-    let dangling: number[] = [];
-    let openSimple: number | undefined;
+    return this.builder.withNesting(() => {
+      let entry: number | undefined;
+      let dangling: number[] = [];
+      let openSimple: number | undefined;
 
-    for (const stmt of stmts) {
-      if (CONTROL_FLOW_TYPES.has(stmt.type)) {
-        openSimple = undefined; // close any open straight-line block
-        const res = this.visitStmt(stmt);
-        if (res === null) continue; // transparent (empty nested block)
-        if (entry === undefined) entry = res.entry;
-        else this.builder.connect(dangling, res.entry, 'seq');
-        dangling = [...res.exits];
-      } else {
-        // Simple statement — coalesce into the current straight-line block.
-        if (openSimple === undefined) {
-          const idx = this.builder.newBlock(
-            startLineOf(stmt),
-            endLineOf(stmt),
-            stmt.text,
-            'normal',
-            this.harvest.facts(stmt),
-          );
-          if (entry === undefined) entry = idx;
-          else this.builder.connect(dangling, idx, 'seq');
-          openSimple = idx;
-          dangling = [idx];
+      for (const stmt of stmts) {
+        if (CONTROL_FLOW_TYPES.has(stmt.type)) {
+          openSimple = undefined; // close any open straight-line block
+          const res = this.visitStmt(stmt);
+          if (res === null) continue; // transparent (empty nested block)
+          if (entry === undefined) entry = res.entry;
+          else this.builder.connect(dangling, res.entry, 'seq');
+          dangling = [...res.exits];
         } else {
-          this.builder.extendBlock(
-            openSimple,
-            endLineOf(stmt),
-            stmt.text,
-            this.harvest.facts(stmt),
-          );
+          // Simple statement — coalesce into the current straight-line block.
+          if (openSimple === undefined) {
+            const idx = this.builder.newBlock(
+              startLineOf(stmt),
+              endLineOf(stmt),
+              stmt.text,
+              'normal',
+              this.harvest.facts(stmt),
+            );
+            if (entry === undefined) entry = idx;
+            else this.builder.connect(dangling, idx, 'seq');
+            openSimple = idx;
+            dangling = [idx];
+          } else {
+            this.builder.extendBlock(
+              openSimple,
+              endLineOf(stmt),
+              stmt.text,
+              this.harvest.facts(stmt),
+            );
+          }
         }
       }
-    }
 
-    if (entry === undefined) return null;
-    return { entry, exits: dangling };
+      if (entry === undefined) return null;
+      return { entry, exits: dangling };
+    });
   }
 
   /** Dispatch one statement to its handler. Non-null except for empty blocks. */
@@ -206,7 +206,6 @@ class TsCfgWalk {
       case 'for_statement':
         return this.visitFor(stmt);
       case 'for_in_statement':
-      case 'for_of_statement':
         return this.visitForIn(stmt);
       case 'switch_statement':
         return this.visitSwitch(stmt);

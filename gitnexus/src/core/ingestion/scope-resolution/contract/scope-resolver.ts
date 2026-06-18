@@ -707,6 +707,16 @@ export interface ScopeResolver {
   readonly conversionRankFn?: ConversionRankFn;
 
   /**
+   * Optional per-language argument-type prefixes for conversion-only
+   * argument sentinels. When ranking cannot find any viable candidate
+   * for a multi-overload set containing one of these sentinels, shared
+   * narrowing suppresses the ambiguous set instead of falling back to
+   * arity-only candidates. Languages without such sentinels leave this
+   * undefined.
+   */
+  readonly conversionOnlyArgTypePrefixes?: readonly string[];
+
+  /**
    * Optional predicate to identify definitions with file-local linkage
    * (e.g. C `static` functions). When provided, `pickUniqueGlobalCallable`
    * excludes defs where `isFileLocalDef(def) === true` and the def lives

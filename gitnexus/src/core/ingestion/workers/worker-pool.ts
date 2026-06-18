@@ -912,6 +912,16 @@ export const createWorkerPool = (
       new Worker(url, {
         stderr: true,
         workerData: workerStoreData,
+        // The CFG visitors build per-function control-flow graphs by RECURSIVE
+        // descent over the tree-sitter AST, so deeply-nested source overflows
+        // the worker thread's call stack. A worker's stack is governed by
+        // `resourceLimits.stackSizeMb` (Node default 4 MB) — the main process's
+        // `--stack-size` flag does NOT propagate to worker threads — so raise it
+        // here. This pushes the overflow threshold from ~1.5k to several-k
+        // nesting levels (far beyond any hand-written code); a deeper machine-
+        // generated nest is still caught per-function (buildFunctionCfg's R4
+        // try/catch) and only that function's PDG is skipped, never a crash.
+        resourceLimits: { stackSizeMb: 16 },
       }));
   /** Spawn + wire stderr capture in one step (used by all spawn sites). */
   const spawnAndCapture = (url: URL): Worker => {

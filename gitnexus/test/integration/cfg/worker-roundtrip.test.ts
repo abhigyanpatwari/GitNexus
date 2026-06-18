@@ -27,15 +27,17 @@ const tsVisitor = (): CfgVisitor<SyntaxNode> => {
   return v;
 };
 
-describe('U3 — TS/JS provider exposes a cfgVisitor; others do not (worker gate)', () => {
+describe('CFG provider gate — a cfgVisitor enables the worker CFG path', () => {
   it('TS and JS providers carry a cfgVisitor', () => {
     expect(getProvider(SupportedLanguages.TypeScript).cfgVisitor).toBeDefined();
     expect(getProvider(SupportedLanguages.JavaScript).cfgVisitor).toBeDefined();
   });
 
-  it('a non-CFG language (Python) has no cfgVisitor ⇒ worker emits no cfgSideChannel', () => {
+  it('a non-CFG language (COBOL) has no cfgVisitor ⇒ worker emits no cfgSideChannel', () => {
     // `provider.cfgVisitor &&` short-circuits in the worker → no CFG, no field.
-    expect(getProvider(SupportedLanguages.Python).cfgVisitor).toBeUndefined();
+    // COBOL is the deliberate non-goal of the PDG-language rollout (#2195) —
+    // every other supported language now carries a cfgVisitor.
+    expect(getProvider(SupportedLanguages.Cobol).cfgVisitor).toBeUndefined();
   });
 });
 
@@ -46,7 +48,7 @@ describe('U3 — collectFunctionCfgs', () => {
       function b() { return 1; }
     `);
     const { cfgs, skipped } = collectFunctionCfgs(root, tsVisitor(), 'a.ts');
-    expect(skipped).toBe(0);
+    expect(skipped).toEqual({ tooManyLines: 0, tooDeeplyNested: 0, buildError: 0 });
     expect(cfgs).toHaveLength(2);
     const a = cfgs.find((c) => c.blocks.some((bl) => bl.text.includes('p();')));
     expect(a).toBeDefined();
@@ -64,17 +66,55 @@ describe('U3 — collectFunctionCfgs', () => {
       'x.ts',
     );
     expect(cfgs).toHaveLength(0);
-    expect(skipped).toBe(0);
+    expect(skipped).toEqual({ tooManyLines: 0, tooDeeplyNested: 0, buildError: 0 });
   });
 
   it('maxFunctionLines skips an over-cap function and counts the skip', () => {
     const big = `function big() {\n${'  step();\n'.repeat(20)}}`;
     const root = tsRoot(`${big}\nfunction small() { ok(); }`);
     const { cfgs, skipped } = collectFunctionCfgs(root, tsVisitor(), 'f.ts', 5);
-    expect(skipped).toBe(1); // big() exceeds the 5-line cap
+    expect(skipped.tooManyLines).toBe(1); // big() exceeds the 5-line cap
+    expect(skipped.tooDeeplyNested).toBe(0);
+    expect(skipped.buildError).toBe(0);
     // small() is still built
     expect(cfgs.some((c) => c.blocks.some((bl) => bl.text.includes('ok();')))).toBe(true);
     expect(cfgs.some((c) => c.blocks.some((bl) => bl.text.includes('step();')))).toBe(false);
+  });
+
+  it('a pathologically deep nest is bailed proactively and counted (#2195)', () => {
+    // A function nested far past MAX_CFG_NESTING_DEPTH (real code is ≤ ~50 deep).
+    // The visitor's proactive guard throws CfgNestingDepthError; collect counts
+    // it under tooDeeplyNested and ISOLATES it — the sibling function still
+    // builds (the bail must not drop the whole file's CFGs).
+    const deep = `function deep() { ${'if (c) {'.repeat(1200)} leaf(); ${'}'.repeat(1200)} }`;
+    const root = tsRoot(`${deep}\nfunction sibling() { ok(); }`);
+    const { cfgs, skipped } = collectFunctionCfgs(root, tsVisitor(), 'deep.ts');
+    expect(skipped.tooDeeplyNested).toBe(1);
+    expect(skipped.tooManyLines).toBe(0);
+    expect(skipped.buildError).toBe(0);
+    // sibling() survives the bail
+    expect(cfgs.some((c) => c.blocks.some((bl) => bl.text.includes('ok();')))).toBe(true);
+    expect(cfgs.some((c) => c.blocks.some((bl) => bl.text.includes('leaf();')))).toBe(false);
+  });
+
+  it('isolates a generic build error to one function and counts it (buildError, #2195)', () => {
+    // A non-CfgNestingDepthError throw from buildFunctionCfg used to escape to the
+    // worker language-group catch and drop EVERY remaining file's CFG. It must now
+    // be caught per function, counted under buildError, and NOT stop the sibling.
+    const real = tsVisitor();
+    const flaky: CfgVisitor<SyntaxNode> = {
+      isFunction: (n) => real.isFunction(n),
+      buildFunctionCfg: (n, fp) => {
+        if (n.text.includes('boom()')) throw new Error('synthetic build failure');
+        return real.buildFunctionCfg(n, fp);
+      },
+    };
+    const root = tsRoot(`function bad() { boom(); }\nfunction good() { ok(); }`);
+    const { cfgs, skipped } = collectFunctionCfgs(root, flaky, 'be.ts');
+    expect(skipped).toEqual({ tooManyLines: 0, tooDeeplyNested: 0, buildError: 1 });
+    // good() still builds — the throw didn't drop the file's other CFGs
+    expect(cfgs.some((c) => c.blocks.some((bl) => bl.text.includes('ok();')))).toBe(true);
+    expect(cfgs.some((c) => c.blocks.some((bl) => bl.text.includes('boom();')))).toBe(false);
   });
 });
 

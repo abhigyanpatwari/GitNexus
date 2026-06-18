@@ -39,6 +39,13 @@ _spec.loader.exec_module(readiness)  # type: ignore[union-attr]
 # format change that would silently break change-detection fails here. Group 2 is
 # ONLY the Status cell ([^|]+? before the final `|$`).
 _ROW_DIFF_RE = re.compile(r"\| `(tree-sitter-[^`]+)` \|.*\| ([^|]+?) \|$", re.M)
+# Mirrors the scheduled issue-update summary extraction in
+# tree-sitter-upgrade-readiness.yml. If the report prose changes again, the issue
+# comment should not silently degrade to "?/? ready. ? blocker(s)".
+_ISSUE_READY_RE = re.compile(
+    r"- (\d+)/(\d+) npm-installed grammars already accept tree-sitter@"
+)
+_ISSUE_BLOCKER_RE = re.compile(r"\*\*Blocked\*\* — (\d+) grammars? ")
 
 
 def _physical_vendor_grammars() -> set[str]:
@@ -290,6 +297,14 @@ class ReportRendering(TestCase):
         self.assertEqual(self.rows["tree-sitter-c"], "Vendored — held")
         for status in self.rows.values():
             self.assertNotIn("|", status)
+
+    def test_issue_update_summary_regex_matches_current_report(self):
+        ready = _ISSUE_READY_RE.search(self.report)
+        blockers = _ISSUE_BLOCKER_RE.search(self.report)
+        self.assertIsNotNone(ready)
+        self.assertIsNotNone(blockers)
+        self.assertEqual(ready.groups(), ("9", "10"))
+        self.assertEqual(blockers.group(1), "2")
 
     def _matrix_row(self, name: str) -> str:
         for line in self.report.splitlines():

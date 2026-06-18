@@ -80,6 +80,7 @@ export function emitFreeCallFallback(
       parsedFiles: readonly ParsedFile[],
     ) => readonly SymbolDefinition[] | undefined;
     readonly conversionRankFn?: ConversionRankFn;
+    readonly conversionOnlyArgTypePrefixes?: readonly string[];
     /** Optional per-language constraint hook threaded into
      *  `narrowOverloadCandidates`. Drops candidates whose template
      *  constraints (e.g. C++ `enable_if_t`, C++20 `requires`) provably
@@ -164,6 +165,7 @@ export function emitFreeCallFallback(
       if (fnDef === undefined) {
         fnDef = pickImplicitThisOverload(site, scopes, workspaceIndex, model, {
           conversionRankFn: options.conversionRankFn,
+          conversionOnlyArgTypePrefixes: options.conversionOnlyArgTypePrefixes,
           constraintCompatibility: options.constraintCompatibility,
         });
         fnDefFromImplicitThis = fnDef !== undefined;
@@ -191,6 +193,7 @@ export function emitFreeCallFallback(
                 {
                   argumentTypeClasses: site.argumentTypeClasses,
                   conversionRankFn: options.conversionRankFn,
+                  conversionOnlyArgTypePrefixes: options.conversionOnlyArgTypePrefixes,
                   constraintCompatibility: options.constraintCompatibility,
                 },
               );
@@ -277,6 +280,7 @@ export function emitFreeCallFallback(
               const narrowed = narrowOverloadCandidates(ordinary, site.arity, site.argumentTypes, {
                 argumentTypeClasses: site.argumentTypeClasses,
                 conversionRankFn: options.conversionRankFn,
+                conversionOnlyArgTypePrefixes: options.conversionOnlyArgTypePrefixes,
                 constraintCompatibility: options.constraintCompatibility,
               });
               if (narrowed.length === 1) {
@@ -324,6 +328,7 @@ export function emitFreeCallFallback(
             const narrowed = narrowOverloadCandidates(merged, site.arity, site.argumentTypes, {
               argumentTypeClasses: site.argumentTypeClasses,
               conversionRankFn: options.conversionRankFn,
+              conversionOnlyArgTypePrefixes: options.conversionOnlyArgTypePrefixes,
               constraintCompatibility: options.constraintCompatibility,
             });
             if (narrowed.length === 1) {
@@ -380,6 +385,7 @@ export function emitFreeCallFallback(
           site.argumentTypeClasses,
           options.conversionRankFn,
           scopeDefsCache,
+          options.conversionOnlyArgTypePrefixes,
         );
       }
       if (fnDef === undefined) continue;
@@ -576,6 +582,7 @@ export function pickUniqueGlobalCallable(
   callArgTypeClasses?: readonly ParameterTypeClass[],
   conversionRankFn?: ConversionRankFn,
   scopeDefsCache?: Map<string, readonly SymbolDefinition[]>,
+  conversionOnlyArgTypePrefixes?: readonly string[],
 ): SymbolDefinition | undefined {
   // The scope-index candidate list is a pure function of (name, callerFilePath):
   // the same-name bucket is fixed for the pass, the file-local filter depends
@@ -637,6 +644,7 @@ export function pickUniqueGlobalCallable(
     const narrowed = narrowOverloadCandidates(scopeDefs, callArity, callArgTypes, {
       argumentTypeClasses: callArgTypeClasses,
       conversionRankFn,
+      conversionOnlyArgTypePrefixes,
     });
     if (narrowed.length === 1) return narrowed[0];
   }
@@ -678,6 +686,7 @@ export function pickUniqueGlobalCallable(
     const narrowed = narrowOverloadCandidates(defs, callArity, callArgTypes, {
       argumentTypeClasses: callArgTypeClasses,
       conversionRankFn,
+      conversionOnlyArgTypePrefixes,
     });
     if (narrowed.length === 1) return narrowed[0];
   }
@@ -808,6 +817,7 @@ export function pickImplicitThisOverload(
   model: SemanticModel,
   hookCtx?: {
     readonly conversionRankFn?: ConversionRankFn;
+    readonly conversionOnlyArgTypePrefixes?: readonly string[];
     readonly constraintCompatibility?: ScopeResolver['constraintCompatibility'];
   },
 ): SymbolDefinition | undefined {
@@ -840,6 +850,7 @@ export function pickImplicitThisOverload(
   const candidates = narrowOverloadCandidates(overloads, site.arity, site.argumentTypes, {
     argumentTypeClasses: site.argumentTypeClasses,
     conversionRankFn: hookCtx?.conversionRankFn,
+    conversionOnlyArgTypePrefixes: hookCtx?.conversionOnlyArgTypePrefixes,
     constraintCompatibility: hookCtx?.constraintCompatibility,
   });
   if (candidates.length !== 1) return undefined;

@@ -67,6 +67,16 @@ describe('IncludeExtractor', () => {
       expect(providers[0].contractId).toBe('include::utils/helper.hpp');
     });
 
+    it('registers .cuh CUDA headers as providers', async () => {
+      writeFile('src/force/nep.cuh', '#pragma once\nclass NEP {};');
+
+      const contracts = await extractor.extract(null, tmpDir, makeRepo(tmpDir));
+      const providers = contracts.filter((c) => c.role === 'provider');
+
+      expect(providers).toHaveLength(1);
+      expect(providers[0].contractId).toBe('include::src/force/nep.cuh');
+    });
+
     it('does not register .cpp files as providers', async () => {
       writeFile('src/main.cpp', 'int main() { return 0; }');
       writeFile('src/utils.h', '#pragma once');
@@ -235,6 +245,22 @@ int main() { return 0; }`,
       const consumers = contracts.filter((c) => c.role === 'consumer');
 
       expect(consumers).toHaveLength(0);
+    });
+
+    it('scans .cu files for includes and resolves local .cuh headers', async () => {
+      writeFile('include/kernel.cuh', '#pragma once\nvoid launchKernel();');
+      writeFile(
+        'src/main.cu',
+        `#include "include/kernel.cuh"
+#include "external/gpu_runtime.cuh"
+void launch() { launchKernel(); }`,
+      );
+
+      const contracts = await extractor.extract(null, tmpDir, makeRepo(tmpDir));
+      const consumers = contracts.filter((c) => c.role === 'consumer');
+
+      expect(consumers).toHaveLength(1);
+      expect(consumers[0].contractId).toBe('include::external/gpu_runtime.cuh');
     });
 
     it('resolves locally when include omits extension and a matching .h exists', async () => {
