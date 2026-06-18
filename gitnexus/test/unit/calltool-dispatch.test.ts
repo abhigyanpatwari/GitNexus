@@ -104,6 +104,7 @@ import {
   LocalBackend,
   REPO_ID_HASH_LENGTH,
   parseListReposPagination,
+  betterBridgeEvidence,
 } from '../../src/mcp/local/local-backend.js';
 import {
   listRegisteredRepos,
@@ -1703,6 +1704,18 @@ describe('LocalBackend impact mode (KTD1/KTD5/KTD12)', () => {
     // seed-line callee is provable.
     expect(bridge).toBeDefined();
     expect([...bridge.sliceCalleeNames]).toContain('seedCallee');
+  });
+
+  it('betterBridgeEvidence keeps callgraph-bridge regardless of parent order (U3 order-independence)', () => {
+    const proven = { evidence: 'callgraph-bridge' as const, basis: 'in slice' };
+    const unproven = { evidence: 'unproven-bridge' as const, basis: 'not in slice' };
+    // A node reached from a proven and an unproven parent is proven either way —
+    // the diamond label does not depend on which edge the BFS visits first.
+    expect(betterBridgeEvidence(unproven, proven).evidence).toBe('callgraph-bridge');
+    expect(betterBridgeEvidence(proven, unproven).evidence).toBe('callgraph-bridge');
+    // First verdict wins when neither is stronger; undefined existing takes the candidate.
+    expect(betterBridgeEvidence(undefined, unproven).evidence).toBe('unproven-bridge');
+    expect(betterBridgeEvidence(unproven, unproven).evidence).toBe('unproven-bridge');
   });
 
   it("mode:'pdg' + crossDepth → hard {error} (single-repo PDG impact)", async () => {

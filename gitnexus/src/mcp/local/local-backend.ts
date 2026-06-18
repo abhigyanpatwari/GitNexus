@@ -309,6 +309,24 @@ function pdgBridgeEvidenceForImpact(input: {
   };
 }
 
+/**
+ * Pick the stronger of two bridge-evidence verdicts for the same reached symbol.
+ * `callgraph-bridge` (proven) beats `unproven-bridge`, so a node reachable from
+ * multiple parents is proven if ANY parent proves it. This makes the
+ * proven/unproven label order-independent of DB row iteration — a diamond-reached
+ * symbol gets the same label regardless of which parent the BFS visits first
+ * (PR #2227 tri-review, P3).
+ */
+export function betterBridgeEvidence(
+  existing: PdgBridgeEvidenceInfo | undefined,
+  candidate: PdgBridgeEvidenceInfo,
+): PdgBridgeEvidenceInfo {
+  if (!existing) return candidate;
+  if (existing.evidence === 'callgraph-bridge') return existing;
+  if (candidate.evidence === 'callgraph-bridge') return candidate;
+  return existing;
+}
+
 function normalizePdgBridgeByDepth(byDepth: Record<number, unknown[]>): Record<number, unknown[]> {
   const normalized: Record<number, unknown[]> = {};
   for (const [depthKey, items] of Object.entries(byDepth ?? {})) {
@@ -5340,27 +5358,37 @@ export class LocalBackend {
 
           if (!includeTests && isTestFilePath(filePath)) continue;
 
+          // Bridge evidence is computed for EVERY edge (not just the first to
+          // reach a node) and the strongest verdict across all parents is kept
+          // (`callgraph-bridge` wins). This makes a diamond-reachable node's
+          // proven/unproven label order-independent of DB row iteration; the
+          // final label is stamped onto the impacted items after the depth loop.
+          if (opts.pdgBridge) {
+            const ev = pdgBridgeEvidenceForImpact({
+              bridge: opts.pdgBridge,
+              depth,
+              calleeName: rel.name || rel[2],
+              inherited: pdgBridgeEvidenceById.get(sourceId),
+            });
+            pdgBridgeEvidenceById.set(
+              String(relId),
+              betterBridgeEvidence(pdgBridgeEvidenceById.get(String(relId)), ev),
+            );
+          }
+
           if (!visited.has(relId)) {
             visited.add(relId);
             nextFrontier.push(relId);
             const storedConfidence = rel.confidence ?? rel[6];
             const relationType = rel.relType || rel[5];
-            const calleeName = rel.name || rel[2];
-            const bridgeEvidence = opts.pdgBridge
-              ? pdgBridgeEvidenceForImpact({
-                  bridge: opts.pdgBridge,
-                  depth,
-                  calleeName,
-                  inherited: pdgBridgeEvidenceById.get(sourceId),
-                })
-              : undefined;
-            if (bridgeEvidence) pdgBridgeEvidenceById.set(String(relId), bridgeEvidence);
             // Prefer the stored confidence from the graph (set at analysis time);
             // fall back to the per-type floor for edges without a stored value.
             const effectiveConfidence =
               typeof storedConfidence === 'number' && storedConfidence > 0
                 ? storedConfidence
                 : confidenceForRelType(relationType);
+            // pdgEvidence is stamped after the depth loop from the finalized,
+            // order-independent pdgBridgeEvidenceById map.
             impacted.push({
               depth,
               id: relId,
@@ -5369,12 +5397,6 @@ export class LocalBackend {
               filePath,
               relationType,
               confidence: effectiveConfidence,
-              ...(bridgeEvidence
-                ? {
-                    pdgEvidence: bridgeEvidence.evidence,
-                    pdgBridgeBasis: bridgeEvidence.basis,
-                  }
-                : {}),
             });
           }
         }
@@ -5387,6 +5409,19 @@ export class LocalBackend {
       }
 
       frontier = nextFrontier;
+    }
+
+    // Stamp the finalized, order-independent bridge evidence (strongest across
+    // all parents) onto each impacted item. Deferred from the BFS loop so a
+    // diamond-reachable node reflects a proven parent regardless of visit order.
+    if (opts.pdgBridge) {
+      for (const item of impacted as Array<Record<string, unknown>>) {
+        const ev = pdgBridgeEvidenceById.get(String(item.id));
+        if (ev) {
+          item.pdgEvidence = ev.evidence;
+          item.pdgBridgeBasis = ev.basis;
+        }
+      }
     }
 
     const grouped: Record<number, any[]> = {};
