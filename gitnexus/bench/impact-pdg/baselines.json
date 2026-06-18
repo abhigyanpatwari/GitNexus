@@ -2,7 +2,7 @@
   "_doc": "U7 impact-PDG accuracy baselines. Two NON-byte-identity gates (KTD10): (1) annotationFingerprint — an order-independent digest over the curated ground-truth set (now INCLUDING criterion.line, the PDG slice seed); any unreviewed edit to a ground-truth.json trips it (re-baseline deliberately after review). (2) f1Bands — a ONE-SIDED F1 regression band per mode per scope: a DROP below (band - epsilon) fails; improvements pass freely. A `null` band means F1 is genuinely undefined for that (scope,mode) on this corpus — the gate skips it (nothing to regress against). measure.mjs --check applies median-of-K across GN_IMPACT_PDG_K runs before comparing, so substrate flakiness (the real-analyze lane, F5) cannot trip the band. Re-baseline: `node --import tsx bench/impact-pdg/measure.mjs --json` → copy annotationFingerprint and strata[scope][mode].f1 here, bump analyzerVersion if the analyzer moved.",
   "analyzerVersion": "1.6.7",
   "epsilon": 0.05,
-  "annotationFingerprint": "3f4a66dc201e5ea7629c0f3ee0117a4a14a5c7e25c27372ee9618e7839e1c433",
+  "annotationFingerprint": "39ae25c74922932d309d02342224057c782d2cc75d1d5e7a05fb292227c8a88f",
   "f1Bands": {
     "intra": {
       "callgraph": null,

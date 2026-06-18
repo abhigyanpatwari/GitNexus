@@ -117,7 +117,7 @@ mature CFG/PDG support in this codebase.
 | `nobody-interface-excluded` | n/a | — | no-body symbols (KTD6); **excluded** from PDG scoring |
 
 **Minimum corpus floor (KTD9/F3):** ≥ 3 cases per locus stratum, ≥ 12 total
-measurable cases. Current: intra = 6, inter = 3, mixed = 3 → 12 measurable
+measurable cases. Current: intra = 7, inter = 3, mixed = 3 → 13 measurable
 (+1 excluded no-body case). Below this floor the U7 harness must print
 "underpowered — directional only" instead of a verdict.
 
@@ -276,7 +276,7 @@ After reconciliation, the line-seeded slice reproduces each corrected `intra_AIS
 exactly (FPIS = FNIS = 0 on all 6 intra and all 3 mixed fixtures). Call-graph gets
 no such home-field annotation, so the comparison is not rigged toward PDG.
 
-## Measured results (analyzer 1.6.7, 12 measurable + 1 excluded)
+## Measured results (analyzer 1.6.7, 13 measurable + 1 excluded)
 
 Each engine scored at its **native granularity** against its **native ground
 truth** — PDG at line vs `intra_AIS`, call-graph at symbol vs `inter_AIS`:
@@ -361,7 +361,7 @@ Read it honestly:
 ## Underpowered-corpus rule (F3)
 
 **Minimum corpus floor: ≥ 3 measurable cases per locus stratum, ≥ 12 total.**
-Current corpus is exactly at the floor (intra 6, inter 3, mixed 3 = 12
+Current corpus is above the floor (intra 7, inter 3, mixed 3 = 13
 measurable; +1 excluded no-body) — so the harness prints headline decimals. When
 the measurable count after exclusions drops below the floor, it instead prints
 **"underpowered — directional only"** and reports the DIRECTION ("PDG exact at
