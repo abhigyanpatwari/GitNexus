@@ -66,6 +66,10 @@ import { propagateImportedReturnTypes } from '../passes/imported-return-types.js
 import { emitReceiverBoundCalls } from '../passes/receiver-bound-calls.js';
 import { emitFreeCallFallback } from '../passes/free-call-fallback.js';
 import { emitReferencesViaLookup } from '../graph-bridge/references-to-edges.js';
+import {
+  createCalleeIdAccumulator,
+  type CalleeIdAccumulator,
+} from '../graph-bridge/callee-id-sink.js';
 import { emitImportEdges } from '../graph-bridge/imports-to-edges.js';
 import type { ScopeResolver } from '../contract/scope-resolver.js';
 import { findEnclosingClassDef, resolveInheritanceBaseInScope } from '../scope/walkers.js';
@@ -701,6 +705,13 @@ export function runScopeResolution(
   // ── Phase 4: emit graph edges (LOAD-BEARING ORDER — see I1) ────────────
   input.onProgress?.('linking symbols', files.length, files.length);
   const handledSites = new Set<string>(preEmittedInheritanceSites);
+  // Resolved-callee-id capture accumulator (#2227 U2). Created ONLY under
+  // `--pdg` — `undefined` otherwise so the three emitters do zero work and emit
+  // byte-identical output (R4). Populated below at all three CALLS emit paths
+  // (each before its dedup, KTD6/R8); consumed by the CFG-emit join (U3) at
+  // `emitFileCfgs` below to produce `BasicBlock.calleeIds`.
+  const calleeIdAccumulator: CalleeIdAccumulator | undefined =
+    input.pdg === true ? createCalleeIdAccumulator() : undefined;
   const receiverExtras = emitReceiverBoundCalls(
     graph,
     indexes,
@@ -712,6 +723,7 @@ export function runScopeResolution(
     readonlyModel,
     {
       recordResolutionOutcome,
+      calleeIdSink: calleeIdAccumulator,
     },
   );
   const unresolvedReceiverExtras =
@@ -744,6 +756,7 @@ export function runScopeResolution(
       conversionOnlyArgTypePrefixes: provider.conversionOnlyArgTypePrefixes,
       constraintCompatibility: provider.constraintCompatibility,
       recordResolutionOutcome,
+      calleeIdSink: calleeIdAccumulator,
     },
   );
   const { emitted, skipped } = emitReferencesViaLookup(
@@ -752,6 +765,7 @@ export function runScopeResolution(
     referenceIndex,
     postHeritageNodeLookup,
     handledSites,
+    calleeIdAccumulator,
   );
   const importsEmitted = emitImportEdges(
     graph,
@@ -892,6 +906,10 @@ export function runScopeResolution(
           );
         }
         if (wellFormed.length === 0) continue;
+        // U3 hook (#2227): the resolved-callee-id map for this file is
+        // `calleeIdAccumulator?.get(pf.filePath)` — joined here by exact
+        // call-site position to emit `BasicBlock.calleeIds`. Captured above at
+        // the three CALLS emit paths (U2); wired into `emitFileCfgs` by U3.
         const emitted = emitFileCfgs(
           pdgTarget,
           wellFormed,
