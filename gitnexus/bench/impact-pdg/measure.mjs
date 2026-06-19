@@ -232,6 +232,11 @@ function pdgCisFromResult(res) {
   });
   return {
     lineKeys: pdgLineCis(res?.affectedStatements),
+    // FU-A: the intra-line axis is scored against intra-tagged statements only,
+    // so U1's cross-function (inter) reach is no longer counted as intra FPIS.
+    // The full `lineKeys` stays for diagnostics; inter reach lives on the
+    // separate symbol axis (`symbolKeys` / `interproceduralByDepth`).
+    intraLineKeys: pdgLineCis(res?.affectedStatements, 'intra'),
     symbolKeys: inter.keys,
     meta: {
       affectedStatementCount: res?.affectedStatementCount ?? 0,
@@ -823,11 +828,11 @@ async function run() {
           const cg = callgraphCisFromResult(results.callgraph);
           const pdg = pdgCisFromResult(results.pdg);
           const cgScore = scoreCallgraph(fx.gt, cg.keys); // symbol/inter
-          const pdgScore = scorePdg(fx.gt, pdg.lineKeys); // line/intra
+          const pdgScore = scorePdg(fx.gt, pdg.intraLineKeys); // line/intra (FU-A: intra-tagged only)
 
           const unifiedTruth = unifiedAis(fx.gt);
           const cgUnified = callgraphUnifiedCis(fx.gt, cg.keys);
-          const pdgUnified = pdgUnifiedCis(pdg.lineKeys, pdg.symbolKeys, fx.gt);
+          const pdgUnified = pdgUnifiedCis(pdg.intraLineKeys, pdg.symbolKeys, fx.gt);
           const composedUnified = composeUnifiedCis(cgUnified, pdgUnified);
           const unifiedScores = {
             callgraph: scoreUnifiedAxes(cgUnified, unifiedTruth),

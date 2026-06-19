@@ -87,6 +87,17 @@ export interface PdgStatement {
   filePath: string;
   /** The statement's source text (BasicBlock.text), trimmed. */
   text: string;
+  /**
+   * Whether the statement belongs to the criterion's OWN function (`'intra'`)
+   * or was reached across a call boundary (`'inter'`). A block is `'intra'`
+   * iff its owning-fn file AND 1-based owning-fn start line both match the
+   * criterion's — `fnFileOf(id) === criterionFile && fnLineOf(id) === ownerFnLine`.
+   * Projection-only tag (FU-A): NOT persisted, NOT a schema field. The bench
+   * intra axis scopes to `'intra'` statements so U1's cross-function reach
+   * stops being counted as intra-axis false positives; existing consumers
+   * ignore it.
+   */
+  scope: 'intra' | 'inter';
 }
 
 /**
@@ -100,6 +111,8 @@ async function pdgStatementsForBlocks(
   lbugPath: string,
   blockIds: string[],
   exec: typeof executeParameterized,
+  criterionFile: string,
+  ownerFnLine: number,
 ): Promise<PdgStatement[]> {
   if (blockIds.length === 0) return [];
   const rows = await exec(
@@ -115,8 +128,13 @@ async function pdgStatementsForBlocks(
     if (!id || !Number.isFinite(line) || line <= 0) continue;
     const filePath = fnFileOf(id);
     const text = String(r.text ?? r[2] ?? '').trim();
+    // INTRA iff this block's owning function (file + 1-based start line) is the
+    // criterion's own function; otherwise it was reached across a call boundary
+    // (INTER). Pure key comparison parsed from the block id — no extra DB query.
+    const scope: 'intra' | 'inter' =
+      filePath === criterionFile && fnLineOf(id) === ownerFnLine ? 'intra' : 'inter';
     const key = `${filePath}:${line}:${id}`;
-    if (!byKey.has(key)) byKey.set(key, { line, filePath, text });
+    if (!byKey.has(key)) byKey.set(key, { line, filePath, text, scope });
   }
   return [...byKey.values()].sort((a, b) => {
     if (a.filePath !== b.filePath) return a.filePath < b.filePath ? -1 : 1;
@@ -1552,7 +1570,20 @@ export async function runImpactPDG(deps: RunPdgImpactDeps): Promise<PdgImpactRes
   // change at `line` reaches. Fetched once for the whole reachable set; sorted
   // by line. Failure surfaces (no `.catch` swallow) rather than masquerading
   // as "no affected statements".
-  const affectedStatements = await pdgStatementsForBlocks(repo.lbugPath, reachableBlocks, exec);
+  // Scope tag (FU-A): the criterion's OWN function is (sym.filePath, fnLine),
+  // where fnLine follows the BasicBlock 1-based convention sym.startLine + 1
+  // (the same window used to anchor the seed above). A symbol without a numeric
+  // startLine has no owning-fn line to match, so `ownerFnLine` is NaN and every
+  // statement tags as 'inter' (no false intra claim).
+  const criterionFile = sym.filePath;
+  const ownerFnLine = typeof sym.startLine === 'number' ? sym.startLine + 1 : Number.NaN;
+  const affectedStatements = await pdgStatementsForBlocks(
+    repo.lbugPath,
+    reachableBlocks,
+    exec,
+    criterionFile,
+    ownerFnLine,
+  );
 
   // ── Has a PDG body but no intra-procedural dependence reachability ─────────
   // Distinct from "no PDG body": the function exists and has blocks, but no

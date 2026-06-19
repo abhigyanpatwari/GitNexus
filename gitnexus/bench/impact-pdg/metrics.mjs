@@ -70,10 +70,19 @@ export function unifiedSymbolKey(symbol, filePath) {
   return `symbol:${symbolKey(symbol, filePath)}`;
 }
 
-/** CIS_pdg = the set of affected-statement LINE keys from an impact pdg result. */
-export function pdgLineCis(affectedStatements) {
+/**
+ * CIS_pdg = the set of affected-statement LINE keys from an impact pdg result.
+ *
+ * `scope` (FU-A) ∈ `undefined | 'intra' | 'inter'`:
+ *   - `undefined` → the all-union over the full slice (back-compat; the
+ *     metric-math unit test and the U2 mutation-oracle rely on this form).
+ *   - `'intra'` / `'inter'` → keep only statements carrying that `scope` tag, so
+ *     U1's cross-function reach stops landing on the intra-line axis as FPIS.
+ */
+export function pdgLineCis(affectedStatements, scope) {
   const out = new Set();
   for (const s of affectedStatements ?? []) {
+    if (scope !== undefined && s?.scope !== scope) continue;
     if (s && typeof s.line === 'number' && typeof s.filePath === 'string') {
       out.add(lineKey(s.filePath, s.line));
     }
