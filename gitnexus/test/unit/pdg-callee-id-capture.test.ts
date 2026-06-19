@@ -601,3 +601,24 @@ describe('callee-id capture — emitFreeCallFallback (inline addRelationship)', 
     });
   });
 });
+
+describe('callee-id accumulator — delete (R6 per-file release)', () => {
+  it('delete(file) frees that file map and leaves other files intact', () => {
+    const acc = createCalleeIdAccumulator();
+    acc.add('a.ts', 2, 4, 'fn:a');
+    acc.add('b.ts', 5, 0, 'fn:b');
+    expect(snapshot(acc, 'a.ts')).toEqual({ [calleeIdPosKey(2, 4)]: ['fn:a'] });
+
+    acc.delete('a.ts');
+
+    expect(acc.get('a.ts')).toBeUndefined();
+    expect(snapshot(acc, 'b.ts')).toEqual({ [calleeIdPosKey(5, 0)]: ['fn:b'] });
+  });
+
+  it('delete of an absent file is a no-op', () => {
+    const acc = createCalleeIdAccumulator();
+    acc.add('b.ts', 5, 0, 'fn:b');
+    acc.delete('missing.ts');
+    expect(snapshot(acc, 'b.ts')).toEqual({ [calleeIdPosKey(5, 0)]: ['fn:b'] });
+  });
+});

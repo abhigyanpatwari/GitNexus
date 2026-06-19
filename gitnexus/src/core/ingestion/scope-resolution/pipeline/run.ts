@@ -927,6 +927,11 @@ export function runScopeResolution(
         cfgBlocks += emitted.blocks;
         cfgEdges += emitted.edges;
         cfgDroppedEdges += emitted.droppedEdges;
+        // R6 (#2227 tri-review-2): release this file's captured id map now that
+        // emitFileCfgs has consumed it — the CALLS passes fully precede this loop
+        // and each file is read exactly once, so this bounds the accumulator to one
+        // file's call sites instead of holding the whole repo's for the phase.
+        calleeIdAccumulator?.delete(pf.filePath);
 
         // M2 (#2082 U4): reaching definitions over the same validated CFGs.
         // In-memory facts are computed per function and dropped after the

@@ -62,6 +62,13 @@ export interface CalleeIdSink {
 export interface CalleeIdMapView {
   /** Per-file position→ids map, or `undefined` if nothing was captured for it. */
   get(filePath: string): ReadonlyMap<CalleeIdPosKey, ReadonlySet<string>> | undefined;
+  /**
+   * Release a file's captured map once its CFG emit has consumed it (R6). The
+   * three CALLS passes fully precede the CFG-emit loop and each file is read
+   * exactly once, so releasing after consumption bounds the accumulator to one
+   * file's call sites instead of holding the whole repo's for the full phase.
+   */
+  delete(filePath: string): void;
 }
 
 /** The concrete accumulator: a write sink that also exposes the read view. */
@@ -91,6 +98,9 @@ export function createCalleeIdAccumulator(): CalleeIdAccumulator {
     },
     get(filePath: string): ReadonlyMap<CalleeIdPosKey, ReadonlySet<string>> | undefined {
       return byFile.get(filePath);
+    },
+    delete(filePath: string): void {
+      byFile.delete(filePath);
     },
   };
 }
