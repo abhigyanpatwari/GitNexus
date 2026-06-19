@@ -262,7 +262,14 @@ describe('U6 — impact-PDG fixture ground-truth schema', () => {
       });
 
       it('matches its locus to its AIS shape', () => {
-        if (gt.locus === 'inter') {
+        if (fx.excluded) {
+          // Excluded strata: the KTD6 no-body case (locus n/a) AND the resolved-id
+          // soundness-gate fixture (locus inter) both carry empty AIS — their scoring
+          // lives on the dedicated id-bridge axis in measure.mjs, not the F1 strata bands,
+          // so neither intra_AIS nor inter_AIS is the measured quantity.
+          expect(gt.intra_AIS.length).toBe(0);
+          expect(gt.inter_AIS.length).toBe(0);
+        } else if (gt.locus === 'inter') {
           // Inter cases: PDG intra-AIS is empty by design; the impact is cross-function.
           expect(gt.intra_AIS.length).toBe(0);
           expect(gt.inter_AIS.length).toBeGreaterThan(0);
@@ -270,15 +277,11 @@ describe('U6 — impact-PDG fixture ground-truth schema', () => {
           // Intra cases: the truly-affected set is within the function.
           expect(gt.intra_AIS.length).toBeGreaterThan(0);
           expect(gt.inter_AIS.length).toBe(0);
-        } else if (gt.locus === 'mixed') {
-          // Mixed cases: both loci carry genuine impact.
+        } else {
+          // Mixed cases: both loci carry genuine impact. (n/a never reaches here — a
+          // no-body fixture is always pdgScoring:"exclude" and handled above.)
           expect(gt.intra_AIS.length).toBeGreaterThan(0);
           expect(gt.inter_AIS.length).toBeGreaterThan(0);
-        } else {
-          // n/a: only the excluded no-body case; both AIS empty.
-          expect(fx.excluded).toBe(true);
-          expect(gt.intra_AIS.length).toBe(0);
-          expect(gt.inter_AIS.length).toBe(0);
         }
       });
     });
@@ -308,10 +311,14 @@ describe('U6 — impact-PDG fixture ground-truth schema', () => {
     expect(declared.has('CDG')).toBe(true);
   });
 
-  it('has exactly one excluded no-body case (the KTD6 case)', () => {
-    const excluded = FIXTURES.filter((fx) => fx.excluded);
-    expect(excluded.length).toBe(1);
-    expect(excluded[0].gt.locus).toBe('n/a');
+  it('has exactly one no-body case (the KTD6 case) and it is excluded', () => {
+    // The no-body KTD6 case is identified by locus 'n/a' (no CFG body). It is a STRICT
+    // subset of pdgScoring:"exclude" — the resolved-id soundness-gate fixture is also
+    // excluded but DOES have a body (locus 'inter'), so we count no-body cases, not all
+    // excluded cases.
+    const noBody = FIXTURES.filter((fx) => fx.gt.locus === 'n/a');
+    expect(noBody.length).toBe(1);
+    expect(noBody[0].excluded).toBe(true);
   });
 });
 
@@ -321,15 +328,29 @@ describe('U6 — impact-PDG fixtures analyze under {pdg:true} with measurable cr
   });
 
   for (const fx of FIXTURES) {
-    if (fx.excluded) {
-      // The intentional no-body case: its criterion must produce ZERO PDG edges
-      // (KTD6) — a confident zero is the whole point of tagging it for exclusion.
+    if (fx.gt.locus === 'n/a') {
+      // The intentional no-body case (KTD6): no function bodies, so its criterion must
+      // produce ZERO PDG edges — a confident zero is the whole point of the exclusion.
       it(`${fx.name}: no-body criterion produces ZERO PDG edges (KTD6 exclusion)`, async () => {
         const result = await runPipelineFromRepo(freshRepo(fx.dir), () => {}, { pdg: true });
         // The fixture has no function bodies at all, so the whole-repo PDG layer
         // is empty too — but the load-bearing claim is the criterion symbol.
         const { basicBlocks } = counts(result);
         expect(basicBlocks, `${fx.name} no-body fixture should emit no BasicBlocks`).toBe(0);
+      }, 60000);
+      continue;
+    }
+
+    if (fx.excluded) {
+      // A resolved-id soundness-gate fixture (e.g. intra-overloaded-callee): excluded from
+      // the F1 strata bands and scored on the dedicated id-bridge axis in measure.mjs, but it
+      // DOES have function bodies, so it emits a real PDG layer. Assert it analyzes cleanly and
+      // produces that layer; the F1 criterion-edge checks below intentionally do not apply.
+      it(`${fx.name}: analyzes under --pdg with a PDG layer (id-bridge soundness gate)`, async () => {
+        const result = await runPipelineFromRepo(freshRepo(fx.dir), () => {}, { pdg: true });
+        const total = counts(result);
+        expect(total.basicBlocks, `${fx.name} BasicBlock count`).toBeGreaterThan(0);
+        expect(total.reachingDefs, `${fx.name} REACHING_DEF count`).toBeGreaterThan(0);
       }, 60000);
       continue;
     }
