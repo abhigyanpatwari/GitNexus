@@ -511,6 +511,68 @@ node --import tsx bench/impact-pdg/blast-radius.mjs --direction upstream
 node --import tsx bench/impact-pdg/real-code.mjs                      # symbol-reach preservation + latency
 ```
 
+### Resolved-symbol-id soundness (the `calleeIds` upgrade)
+
+The statement-precise cross-function bridge originally matched callgraph-reached
+callees to the slice by **leaf name** (`BasicBlock.callees`). That is a heuristic
+with two failure modes: same-leaf-name **collision** (two distinct `get`s both
+proven — a false positive) and import-alias/rename (call-site leaf ≠ resolved name
+— a false negative). The bridge now matches the **resolved callee symbol-id**
+(`BasicBlock.calleeIds`, the per-block union of resolved ids joined to each call
+site by exact position), which is sound by construction; the leaf-name match
+remains the graceful fallback for pre-v3 indexes, blocks with no captured ids, and
+truncation-capped blocks. `name-collision.mjs` diffs the two on the same real
+slices (`fpEliminated` = collision FPs the id bridge removes; `fnRecovered` =
+alias FNs it recovers).
+
+Realized effect on a random single-statement sample (per language, exact
+seed∪reachable slice):
+
+| Language | repo | fpEliminated | fnRecovered | name-collision ambiguity |
+|---|---|---:|---:|---:|
+| Java | commons-lang | 2.1% | 0% | 3.9% |
+| PHP  | monolog      | 2.6% | 1.8% | 12.2% |
+| C#   | commandline  | 0%   | 4.8% | 0% |
+| TS   | ky           | 0%   | 0%  | 0% (no regression) |
+
+Honest reading of these numbers:
+
+- **The aggregate effect on a *median* edit is modest (≈0–3%).** This matches the
+  pre-build measurement: realized name-collision concentrates in the small tail of
+  high-fan-out delegating functions, not the typical single-statement slice (the
+  per-function reach is usually 1–2 callees, where a same-name collision is
+  impossible). The win is **soundness**, gated cleanly by the
+  `intra-overloaded-callee` fixture (id proves exactly the one called overload;
+  name-match over-attributes both — `measure.mjs --check` Gate 3), not a large
+  aggregate FP cut.
+- **It is bidirectional.** The id key also *recovers* alias/rename false negatives
+  the name match can never prove (C# 4.8%, PHP 1.8%) — callees invoked under a
+  name that differs from their resolved symbol name.
+- **The id bridge is exactly as precise as GitNexus's call resolver — no more, no
+  less.** Where the resolver emits a *multi-candidate* set for one ambiguous call
+  (e.g. `printer.getX()` on a typed field resolving to `getX` on **both** the field
+  type and the enclosing class), the bridge faithfully proves the whole candidate
+  set (sound — it never drops a real target). The residual "ambiguity" on the
+  worst-case tail is therefore the **resolver's** receiver-type precision, not a
+  name-matching artifact; improving it is a resolver-precision follow-up (sibling
+  to the C++ overload under-resolution follow-up).
+
+**Language scope.** The id bridge — like the name bridge before it — only applies
+to the languages that harvest call sites into the CFG: **TS/JS, Java, C#, Go,
+C/C++, PHP**. Kotlin, Swift, Dart, Ruby, Rust, and Python use the no-site
+def/use accumulator, so their BasicBlocks carry **no** `callees` *or* `calleeIds`
+and the statement-precise callee bridge is inert there (it falls back to
+whole-symbol reach). Those languages have a high CALLS-graph collision tail in the
+universe sweep but cannot benefit from the id (or name) bridge until call-site
+harvesting is extended to them — a documented follow-up, distinct from this change.
+
+Reproduce (needs a `--pdg` index of the target repo built under schema v3):
+
+```sh
+node --import tsx bench/impact-pdg/name-collision.mjs --repo commons-lang --src 'src/main/java/'
+node --import tsx bench/impact-pdg/name-collision.mjs --repo monolog --src 'src/Monolog/'
+```
+
 ### Re-baseline (after a reviewed accuracy or ground-truth change)
 
 1. `node --import tsx bench/impact-pdg/measure.mjs --json` and read
