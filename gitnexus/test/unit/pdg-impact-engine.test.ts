@@ -168,6 +168,133 @@ describe('runImpactPDG', () => {
     // length, or contains the closure block — no vacuous branch.
     expect(result).toMatchObject({ seedBlocks: [owned] });
   });
+
+  it('U-C4: ascends a return-flowing callee result into the coalesced caller call block (interior lines surface)', async () => {
+    // The inter-pipeline-stages shape: the criterion fn (fnLine 1) seeds at line
+    // 2; its dependence reaches ONE coalesced call block spanning source lines
+    // 4-6 (`acc = stage(acc)` ×3) that invokes a callee with a return-flow
+    // CALL_SUMMARY (`r:1` ⇒ formal[0] → return). Without ascent the block projects
+    // to its startLine (4) only; the ascent surfaces interior lines 5 and 6.
+    const seed = 'BasicBlock:src/p.ts:1:0:0'; // criterion fn, fnLine 1, seeded line 2
+    const callBlock = 'BasicBlock:src/p.ts:1:0:5'; // coalesced 3-call block, lines 4-6
+    let bfsCalls = 0;
+    const exec: RunPdgImpactDeps['executeParameterized'] = async (_repo, query, _params) => {
+      // Seed anchor → the criterion's seed block.
+      if (query.includes('MATCH (a:BasicBlock) WHERE')) return [{ id: seed }];
+      // Intra BFS: hop 1 reaches the call block; subsequent hops (incl. the
+      // ascent re-seed FROM the call block) find nothing new.
+      if (query.includes('MATCH (a:BasicBlock)-[r:CodeRelation]->(b:BasicBlock)')) {
+        bfsCalls += 1;
+        return bfsCalls === 1 ? [{ id: callBlock }] : [];
+      }
+      // Per-block calleeIds (descent's block→callee map): the call block invokes
+      // one resolved callee.
+      if (query.includes('RETURN b.id AS id, b.calleeIds AS calleeIds')) {
+        return [{ id: callBlock, calleeIds: 'Function:src/p.ts:stage' }];
+      }
+      // CALL_SUMMARY self-loop: stage has a non-empty return-flow (`r:1`).
+      if (query.includes("r.type = 'CALL_SUMMARY'")) {
+        return [{ id: 'Function:src/p.ts:stage', reason: '1|r:1' }];
+      }
+      // Callee span resolution: stage has no CFG body here (no callee blocks to
+      // descend into — the ascent, not the descent, is under test).
+      if (query.includes('MATCH (s:`Function`)')) return [];
+      // Statement projection over the reachable set (the call block only — the
+      // seed is excluded by the seed-minus-reachable convention).
+      if (query.includes('RETURN b.id AS id, b.startLine AS line, b.endLine AS endLine')) {
+        return [
+          {
+            id: callBlock,
+            line: 4,
+            endLine: 6,
+            text: 'acc = stageA(acc);\nacc = stageB(acc);\nacc = stageC(acc);',
+          },
+        ];
+      }
+      return [];
+    };
+
+    const result = await runImpactPDG({
+      repo: { lbugPath: 'repo' },
+      sym: {
+        id: 'Function:src/p.ts:run',
+        name: 'run',
+        filePath: 'src/p.ts',
+        startLine: 0,
+        endLine: 7,
+      },
+      symType: 'Function',
+      direction: 'downstream',
+      maxDepth: 3,
+      limit: 50,
+      line: 2,
+      executeParameterized: exec,
+      callSummaryAvailable: true,
+    });
+
+    expect('affectedStatements' in result).toBe(true);
+    const statements = 'affectedStatements' in result ? result.affectedStatements : [];
+    // The coalesced call block expands to ALL THREE interior lines (4,5,6) with
+    // their own text — the ascent win. Without U-C4 only line 4 would appear.
+    expect(statements).toMatchObject([
+      { line: 4, filePath: 'src/p.ts', scope: 'intra', text: 'acc = stageA(acc);' },
+      { line: 5, filePath: 'src/p.ts', scope: 'intra', text: 'acc = stageB(acc);' },
+      { line: 6, filePath: 'src/p.ts', scope: 'intra', text: 'acc = stageC(acc);' },
+    ]);
+  });
+
+  it('U-C4: an EMPTY (r:0) call summary does NOT ascend — the call block stays single-line (sound default)', async () => {
+    // Same shape, but stage's CALL_SUMMARY records NO return-flow (`r:0`): the
+    // call result does NOT depend on the slice, so the coalesced block must NOT
+    // expand — it projects to its startLine only (no false ascent).
+    const seed = 'BasicBlock:src/p.ts:1:0:0';
+    const callBlock = 'BasicBlock:src/p.ts:1:0:5';
+    let bfsCalls = 0;
+    const exec: RunPdgImpactDeps['executeParameterized'] = async (_repo, query) => {
+      if (query.includes('MATCH (a:BasicBlock) WHERE')) return [{ id: seed }];
+      if (query.includes('MATCH (a:BasicBlock)-[r:CodeRelation]->(b:BasicBlock)')) {
+        bfsCalls += 1;
+        return bfsCalls === 1 ? [{ id: callBlock }] : [];
+      }
+      if (query.includes('RETURN b.id AS id, b.calleeIds AS calleeIds')) {
+        return [{ id: callBlock, calleeIds: 'Function:src/p.ts:stage' }];
+      }
+      // Empty return-flow → calleesWithReturnFlow yields NO entry.
+      if (query.includes("r.type = 'CALL_SUMMARY'")) {
+        return [{ id: 'Function:src/p.ts:stage', reason: '1|r:0' }];
+      }
+      if (query.includes('MATCH (s:`Function`)')) return [];
+      if (query.includes('RETURN b.id AS id, b.startLine AS line, b.endLine AS endLine')) {
+        return [
+          { id: callBlock, line: 4, endLine: 6, text: 'acc = stageA(acc);\nacc = stageB(acc);' },
+        ];
+      }
+      return [];
+    };
+
+    const result = await runImpactPDG({
+      repo: { lbugPath: 'repo' },
+      sym: {
+        id: 'Function:src/p.ts:run',
+        name: 'run',
+        filePath: 'src/p.ts',
+        startLine: 0,
+        endLine: 7,
+      },
+      symType: 'Function',
+      direction: 'downstream',
+      maxDepth: 3,
+      limit: 50,
+      line: 2,
+      executeParameterized: exec,
+      callSummaryAvailable: true,
+    });
+
+    const statements = 'affectedStatements' in result ? result.affectedStatements : [];
+    // Only the block's startLine (4) — no interior expansion (empty summary).
+    expect(statements).toMatchObject([{ line: 4, filePath: 'src/p.ts', scope: 'intra' }]);
+    expect(statements.map((s) => s.line)).toEqual([4]);
+  });
 });
 
 describe('pdgLayerStatus', () => {

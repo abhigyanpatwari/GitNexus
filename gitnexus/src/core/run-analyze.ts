@@ -438,6 +438,13 @@ export const resolvePdgConfig = (options: PdgOptions): RepoMeta['pdg'] =>
         // writeback that recomputes the fuller coverage (no `--force` needed).
         // Bump this tag on any future change to which facts the solver emits.
         reachingDefSolver: 'ssa-sparse-v1',
+        // PDG FU-C: this run records CALL_SUMMARY return-value-ascent edges.
+        // Absent on any pre-FU-C (v3) stamp → the key-union pdgModeMismatch trips
+        // the first FU-C-aware run over an existing `--pdg` index and forces the
+        // full writeback that materialises CALL_SUMMARY edges without `--force`;
+        // and `impact`'s PDG mode reads its absence to note "no return-value
+        // ascent (re-index for CALL_SUMMARY)" on a v3 index (intra slice intact).
+        hasCallSummary: true,
       }
     : undefined;
 

@@ -11,6 +11,7 @@ import type { executeParameterized } from '../../core/lbug/pool-adapter.js';
 import { loadMeta } from '../../storage/repo-manager.js';
 import { IMPACT_MAX_DEPTH, PDG_QUERY_DEFAULT_LIMIT, PDG_QUERY_MAX_LIMIT } from '../tools.js';
 import { CALLEES_TRUNCATED_SENTINEL } from '../../core/ingestion/cfg/emit.js';
+import { decodeCallSummary } from '../../core/ingestion/taint/call-summary-codec.js';
 
 /**
  * Parse the `<fnLine>` segment out of a `BasicBlock` id (1-based function start
@@ -113,26 +114,70 @@ async function pdgStatementsForBlocks(
   exec: typeof executeParameterized,
   criterionFile: string,
   ownerFnLine: number,
+  /**
+   * U-C4 ascent-confirmed CALL blocks: blocks whose callee's CALL_SUMMARY
+   * licensed a return-value ascent. A coalesced straight-line call block spans
+   * several call statements (`acc = f(acc); acc = g(acc); …`) on consecutive
+   * source lines but is projected to a SINGLE `startLine` by default — under-
+   * reporting the interior lines whose call results chain through the block. For
+   * an ascent block we emit one statement PER source line in `[startLine,
+   * endLine]` (each line's own text), so the dependent call statements the
+   * ascent proves are surfaced at statement granularity. Empty/absent ⇒ the
+   * established single-startLine projection (byte-identical).
+   */
+  ascentBlocks: ReadonlySet<string> = new Set(),
 ): Promise<PdgStatement[]> {
   if (blockIds.length === 0) return [];
   const rows = await exec(
     lbugPath,
     `MATCH (b:BasicBlock) WHERE b.id IN $ids
-     RETURN b.id AS id, b.startLine AS line, b.text AS text`,
+     RETURN b.id AS id, b.startLine AS line, b.endLine AS endLine, b.text AS text`,
     { ids: blockIds },
   );
   const byKey = new Map<string, PdgStatement>();
-  for (const r of rows as any[]) {
-    const id = String(r.id ?? r[0] ?? '');
-    const line = Number(r.line ?? r[1] ?? 0);
+  // Narrow the awaited rows ONCE at the boundary to a typed record shape; read
+  // the aliased cells via bracket access with String()/Number() coercion.
+  for (const r of rows as Array<Record<string, unknown>>) {
+    const id = String(r['id'] ?? '');
+    const line = Number(r['line'] ?? 0);
     if (!id || !Number.isFinite(line) || line <= 0) continue;
     const filePath = fnFileOf(id);
-    const text = String(r.text ?? r[2] ?? '').trim();
+    const text = String(r['text'] ?? '').trim();
     // INTRA iff this block's owning function (file + 1-based start line) is the
     // criterion's own function; otherwise it was reached across a call boundary
     // (INTER). Pure key comparison parsed from the block id — no extra DB query.
     const scope: 'intra' | 'inter' =
       filePath === criterionFile && fnLineOf(id) === ownerFnLine ? 'intra' : 'inter';
+    // ── U-C4 ascent block: expand to its interior source lines ──────────────
+    // A return-flow-confirmed coalesced call block spans `[startLine, endLine]`;
+    // each interior line is a call statement whose result chains through the
+    // block (the ascent the CALL_SUMMARY licensed). Emit one statement per line
+    // with that line's own source text, so the dependent statements surface at
+    // statement granularity (not just the block's `startLine`).
+    //
+    // Iterate the ACTUAL physical lines of the block text (`BasicBlock.text` is
+    // `textParts.join('\n')`), assigning consecutive 1-based line numbers from
+    // `startLine`. We do NOT map `[startLine..endLine]` positionally into the
+    // text array: `endLine` is the LAST statement's line, so a coalesced block
+    // containing a multi-physical-line statement breaks the positional invariant
+    // (`endLine !== startLine + textLines.length - 1`) and the index goes
+    // wrong/out-of-bounds. Splitting `b.text` and iterating its own indices is
+    // bounds-safe by construction and gives each physical line its correct text.
+    // Over-including the physical lines of a multi-line statement is acceptable
+    // (those lines ARE part of an affected statement). This interior-line
+    // expansion is a block-granularity stop-gap that FU-B-2 (statement-granular
+    // RD) will supersede with true per-statement boundaries.
+    const endLine = Number(r['endLine']);
+    if (ascentBlocks.has(id) && Number.isFinite(endLine) && endLine > line) {
+      const textLines = String(r['text'] ?? '').split('\n');
+      for (let i = 0; i < textLines.length; i++) {
+        const ln = line + i;
+        const lineText = textLines[i].trim();
+        const key = `${filePath}:${ln}:${id}`;
+        if (!byKey.has(key)) byKey.set(key, { line: ln, filePath, text: lineText, scope });
+      }
+      continue;
+    }
     const key = `${filePath}:${line}:${id}`;
     if (!byKey.has(key)) byKey.set(key, { line, filePath, text, scope });
   }
@@ -597,6 +642,13 @@ function assemblePdgImpactResult(input: {
    * caveats of the context-insensitive descent.
    */
   interproceduralHops?: number;
+  /**
+   * FU-C: whether the index carries CALL_SUMMARY (return-value ascent). When
+   * `false` AND the slice crossed ≥1 inter-procedural hop, the note flags that a
+   * PRE-FU-C (v3) index served only the intra slice with no return-value ascent
+   * and steers to a re-index. `true` ⇒ ascent active (no extra note).
+   */
+  callSummaryAvailable?: boolean;
 }): PdgImpactSuccessResult {
   const { target, direction, reachableBlocks, projection } = input;
   const { symbols, unresolvedCount, ambiguousCount } = projection;
@@ -656,16 +708,28 @@ function assemblePdgImpactResult(input: {
         `sites (HRB context-insensitive forward closure, downstream). SOUNDNESS CAVEATS: ` +
         `(1) context-insensitive — a dependence may be attributed to a callee only reachable ` +
         `from a DIFFERENT call site of the same function (bounded over-inclusion, the same ` +
-        `imprecision callgraph mode has); (2) NO ascent of ANY callee effect into the caller's ` +
-        `post-call continuation — a caller statement that depends on a callee's effects ` +
-        `(return-value ascent, out-parameters / mutated arguments, callee-written shared / ` +
-        `captured variables, or an exception the callee throws that the caller catches) is NOT ` +
-        `captured without summary edges (the principal soundness gap, fixed by the deferred ` +
-        `CALL_SUMMARY upgrade); (3) no cross-boundary alias ` +
+        `imprecision callgraph mode has); (2) return-value ascent IS captured (via ` +
+        `CALL_SUMMARY): a caller statement that depends on a callee's RETURN value is in the ` +
+        `slice when the callee has a persisted return-flow summary. Out-parameter / mutated-` +
+        `argument ascent, callee-written shared / captured variables, and exception ascent (a ` +
+        `throw the caller catches) remain deferred (they need an alias / try-catch model). A ` +
+        `PRE-FU-C (v3) --pdg index has no CALL_SUMMARY edges, so return-value ascent is absent ` +
+        `there until a re-index; (3) no cross-boundary alias ` +
         `model; (4) precision is bounded by the call RESOLVER's precision (multi-candidate ` +
         `dispatch / C++ overload under-resolution flow through faithfully — sound, never drops a ` +
         `real target).`,
     );
+    // FU-C degradation: the slice crossed a call boundary but this index predates
+    // CALL_SUMMARY (a v3 `--pdg` index). The intra slice is served, but no
+    // return-value ascent ran — steer to a re-index.
+    if (input.callSummaryAvailable === false) {
+      noteParts.push(
+        `no return-value ascent (re-index for CALL_SUMMARY): this --pdg index predates the ` +
+          `FU-C return-value-ascent layer, so a caller statement depending on a callee's ` +
+          `RETURN value is NOT in the slice. Re-run gitnexus analyze --pdg to record ` +
+          `CALL_SUMMARY edges and enable it.`,
+      );
+    }
   }
   if (ambiguousCount > 0) {
     noteParts.push(
@@ -788,6 +852,16 @@ export interface PdgLayerStatus {
   probeError?: string;
   /** Optional operator-facing recovery hint for probe failures. */
   recoverySuggestion?: string;
+  /**
+   * FU-C return-value-ascent layer presence (read from `meta.pdg.hasCallSummary`).
+   * `true` ⇒ CALL_SUMMARY edges exist, so return-value ascent is active. `false`
+   * ⇒ a PRE-FU-C (v3) `--pdg` index — the intra slice is unaffected, but the
+   * result should NOTE "no return-value ascent (re-index for CALL_SUMMARY)".
+   * Meaningful only for the meta-readable states (`'ready'` / `'sub-layer-missing'`
+   * / `'no-layer'`); `undefined` for `'unknown'` (meta unreadable). Deliberately
+   * NOT part of the `'ready'` gate — a v3 index is still `'ready'` for the slice.
+   */
+  hasCallSummary?: boolean;
 }
 
 /**
@@ -803,6 +877,14 @@ interface PdgMetaCaps {
   cdg: boolean;
   /** `maxReachingDefEdgesPerFunction !== undefined` (only meaningful when metaReadable). */
   rd: boolean;
+  /**
+   * `pdg.hasCallSummary === true` (only meaningful when metaReadable). The FU-C
+   * return-value-ascent layer is OPTIONAL — its absence does NOT degrade
+   * `pdgLayerStatus` below `'ready'` (a v3 index still serves the intra slice);
+   * it only suppresses (and flags) the ascent. Read here so the impact note can
+   * steer a pre-FU-C index to re-index without a separate meta probe.
+   */
+  callSummary: boolean;
 }
 
 /**
@@ -818,15 +900,16 @@ async function readPdgMetaCaps(
 ): Promise<PdgMetaCaps> {
   try {
     const meta = await loadMetaFn(path.dirname(lbugPath));
-    if (!meta) return { metaReadable: false, cdg: false, rd: false };
+    if (!meta) return { metaReadable: false, cdg: false, rd: false, callSummary: false };
     return {
       metaReadable: true,
       cdg: meta.pdg?.maxCdgEdgesPerFunction !== undefined,
       rd: meta.pdg?.maxReachingDefEdgesPerFunction !== undefined,
+      callSummary: meta.pdg?.hasCallSummary === true,
     };
   } catch {
     // Meta unreadable — the caller decides from the DB (the `'unknown'` state).
-    return { metaReadable: false, cdg: false, rd: false };
+    return { metaReadable: false, cdg: false, rd: false, callSummary: false };
   }
 }
 
@@ -874,13 +957,16 @@ export async function pdgLayerStatus(deps: {
 
   if (caps.metaReadable) {
     // Meta is readable — the stamp is authoritative, no DB scan needed.
-    if (caps.cdg && caps.rd) return { state: 'ready' };
+    // `hasCallSummary` rides on every meta-readable state (it is NOT part of the
+    // `'ready'` gate — a v3 index without it is still ready for the intra slice).
+    if (caps.cdg && caps.rd) return { state: 'ready', hasCallSummary: caps.callSummary };
     if (caps.cdg !== caps.rd) {
       // Exactly one sub-layer stamped (XOR) — partial layer; impact needs both.
       const missingSubLayer: PdgSubLayer = caps.cdg ? 'REACHING_DEF' : 'CDG';
       return {
         state: 'sub-layer-missing',
         missingSubLayer,
+        hasCallSummary: caps.callSummary,
         note:
           `PDG layer is incomplete — the ${missingSubLayer} sub-layer is missing ` +
           `(impact's PDG mode needs both CDG and REACHING_DEF). ` +
@@ -891,6 +977,7 @@ export async function pdgLayerStatus(deps: {
     // was never recorded. Definitive, no DB scan.
     return {
       state: 'no-layer',
+      hasCallSummary: caps.callSummary,
       note: 'no PDG layer — run gitnexus analyze --pdg to record CDG + REACHING_DEF edges for this repo',
     };
   }
@@ -1117,18 +1204,95 @@ async function calleeIdsFromBlocks(
   exec: typeof executeParameterized,
 ): Promise<Set<string>> {
   const ids = new Set<string>();
-  if (blockIds.length === 0) return ids;
-  const rows = await exec(
-    lbugPath,
-    `MATCH (b:BasicBlock) WHERE b.id IN $ids RETURN b.calleeIds AS calleeIds`,
-    { ids: blockIds },
-  );
-  // Narrow the awaited rows ONCE at the boundary to a typed record shape; read
-  // the aliased `calleeIds` cell via bracket access — no per-field `as any`.
-  for (const r of rows as Array<Record<string, unknown>>) {
-    for (const id of splitCalleeIds(r['calleeIds'])) ids.add(id);
+  for (const { calleeIds } of await calleeIdsByBlock(lbugPath, blockIds, exec)) {
+    for (const id of calleeIds) ids.add(id);
   }
   return ids;
+}
+
+/** One slice block paired with the resolved callee ids it invokes. */
+interface BlockCallees {
+  blockId: string;
+  calleeIds: string[];
+}
+
+/**
+ * Per-block variant of {@link calleeIdsFromBlocks}: keep the CALL block → its
+ * `calleeIds` mapping rather than flattening it. The return-value ascent (U-C4)
+ * needs this association — it re-seeds the caller's intra closure FROM the
+ * specific call block whose callee's `CALL_SUMMARY` licenses the ascent, so the
+ * flattened id-only set is insufficient. Reuses the SHARED `splitCalleeIds` so
+ * the split/drop-sentinel logic cannot diverge from the flattening caller. A
+ * block with no callee ids (empty/whitespace cell, or a pre-v4 index with no
+ * `calleeIds` column) yields an empty `calleeIds` — skipped by the consumer.
+ */
+async function calleeIdsByBlock(
+  lbugPath: string,
+  blockIds: string[],
+  exec: typeof executeParameterized,
+): Promise<BlockCallees[]> {
+  if (blockIds.length === 0) return [];
+  const rows = await exec(
+    lbugPath,
+    `MATCH (b:BasicBlock) WHERE b.id IN $ids RETURN b.id AS id, b.calleeIds AS calleeIds`,
+    { ids: blockIds },
+  );
+  const out: BlockCallees[] = [];
+  // Narrow the awaited rows ONCE at the boundary to a typed record shape; read
+  // the aliased cells via bracket access — no per-field `as any`.
+  for (const r of rows as Array<Record<string, unknown>>) {
+    const blockId = String(r['id'] ?? '');
+    if (!blockId) continue;
+    const calleeIds = splitCalleeIds(r['calleeIds']);
+    if (calleeIds.length > 0) out.push({ blockId, calleeIds });
+  }
+  return out;
+}
+
+/**
+ * Of a set of resolved callee symbol ids, which ones have a persisted
+ * `CALL_SUMMARY` self-loop edge recording a NON-EMPTY return-value ascent
+ * (≥1 formal parameter flows to the callee's return). This is the FU-C consumer
+ * side of the producer's per-callee summary (see `call-summary-codec.ts`).
+ *
+ * The summary is a self-loop on the Function/Method/Constructor node:
+ * `(c)-[r:CodeRelation {type:'CALL_SUMMARY'}]->(c) WHERE c.id IN $ids`. The
+ * `reason` carries the param→return bitset; `decodeCallSummary` unpacks it and
+ * NEVER throws — a malformed / absent / empty (`r:0`) summary yields NO entry
+ * (the sound default: never claim a false return-flow). A PRE-FU-C (v3) `--pdg`
+ * index has NO `CALL_SUMMARY` edges, so this returns the empty set and the
+ * ascent is a clean no-op (the intra slice is unchanged — the documented
+ * "re-index for CALL_SUMMARY" degradation).
+ */
+async function calleesWithReturnFlow(
+  lbugPath: string,
+  calleeIds: string[],
+  exec: typeof executeParameterized,
+): Promise<Set<string>> {
+  const out = new Set<string>();
+  if (calleeIds.length === 0) return out;
+  const rows = await exec(
+    lbugPath,
+    `MATCH (c)-[r:CodeRelation]->(c)
+       WHERE r.type = 'CALL_SUMMARY' AND c.id IN $ids
+       RETURN c.id AS id, r.reason AS reason`,
+    { ids: calleeIds },
+  );
+  for (const r of rows as Array<Record<string, unknown>>) {
+    const id = String(r['id'] ?? '');
+    if (!id) continue;
+    const decoded = decodeCallSummary(r['reason']);
+    // ARG→FORMAL trace precision: the conservative-but-sound default — ascend if
+    // ANY formal is return-flowing (the call site's argument is, by construction
+    // of the descent, in the slice: the call block is itself a slice block). A
+    // specific positional arg↔formal mapping is not cleanly recoverable at the
+    // coalesced call block (`BasicBlock.calleeIds` is an unordered set, not a
+    // per-arg list), so this never drops a real ascent; it may over-include
+    // (bounded — the result still flows to a slice statement). See the descent
+    // doc-comment + the result `note` caveat.
+    if (decoded.ok && decoded.returnFlowParams.length > 0) out.add(id);
+  }
+  return out;
 }
 
 /**
@@ -1188,12 +1352,13 @@ async function resolveCalleeSpans(
  *  (1) context-insensitive — a dependence may be attributed to a callee only
  *      reachable from a DIFFERENT call site of the same function (bounded
  *      over-inclusion, the same imprecision callgraph mode already has);
- *  (2) NO ascent of ANY callee effect into the caller's post-call continuation —
- *      a caller statement depending on a callee's effects (return-value ascent,
- *      out-parameters / mutated arguments, callee-written shared/captured
- *      variables, or an exception the callee throws that the caller catches) is
- *      NOT captured without summary edges (the principal soundness gap, fixed by
- *      the deferred CALL_SUMMARY upgrade);
+ *  (2) return-value ascent IS captured (via CALL_SUMMARY, U-C4): a caller
+ *      statement that depends on a callee's RETURN value is re-seeded into the
+ *      caller's continuation when the callee carries a persisted return-flow
+ *      summary. Out-parameter / mutated-argument ascent, callee-written shared /
+ *      captured variables, and exception ascent (a throw the caller catches)
+ *      remain deferred (they need an alias / try-catch model). A pre-FU-C (v3)
+ *      --pdg index has no CALL_SUMMARY edges → no return-value ascent there;
  *  (3) no cross-boundary alias model;
  *  (4) precision is bounded by the call RESOLVER's precision (multi-candidate
  *      dispatch / C++ overload under-resolution flow through faithfully — sound,
@@ -1233,6 +1398,17 @@ async function interproceduralDescent(input: {
   truncatedByDepth: boolean;
   truncatedByLimit: boolean;
   truncatedByNodeCap: boolean;
+  /**
+   * CALL blocks whose callee's `CALL_SUMMARY` licensed a RETURN-VALUE ascent
+   * (U-C4): the call's RESULT depends on the slice (the call block is a slice
+   * block), so the caller's intra closure continues THROUGH the result. The
+   * caller surfaces these blocks' interior source lines (a coalesced call block
+   * spans the call statements whose results chain through it) — the
+   * statement-granularity realisation of the ascent. The downstream re-seed from
+   * the block is already unioned into `reachable`; this set additionally records
+   * WHICH blocks got the ascent so the statement projection can expand them.
+   */
+  ascentBlocks: Set<string>;
 }> {
   const {
     lbugPath,
@@ -1255,10 +1431,62 @@ async function interproceduralDescent(input: {
   // Guard against re-seeding the same callee function across hops. Pre-seeded
   // with the statement seed's owner function so recursion never re-broadens it.
   const seededCalleeIds = new Set<string>(input.preSeededCalleeIds ?? []);
+  // U-C4 return-value ascent: CALL blocks whose callee has a non-empty
+  // CALL_SUMMARY return-flow → the call's result depends on the slice.
+  const ascentBlocks = new Set<string>();
 
   hopLoop: for (let hop = 0; hop < depthBudget; hop++) {
     if (sliceBlocks.length === 0) break;
-    const calleeIds = await calleeIdsFromBlocks(lbugPath, sliceBlocks, exec);
+    // Keep the CALL block → callee association (U-C4 needs it to re-seed the
+    // caller's intra closure FROM the specific call block the ascent licenses);
+    // the flattened id set still drives the descent's fresh-callee bookkeeping.
+    const blockCallees = await calleeIdsByBlock(lbugPath, sliceBlocks, exec);
+    const calleeIds = new Set<string>();
+    for (const { calleeIds: ids } of blockCallees) for (const id of ids) calleeIds.add(id);
+
+    // ── U-C4 ascent: re-seed the caller's intra closure THROUGH call results ──
+    // For each call block in THIS hop's slice, if ANY of its callees' return
+    // values flow back (a non-empty CALL_SUMMARY), the call result is
+    // slice-dependent (the call block is itself a slice block). Re-seed a
+    // BOUNDED downstream BFS FROM the call block so the caller's continuation
+    // that consumes the result is captured. Monotone: only ADDS to `reachable`,
+    // reusing the shared `visited` set, so it stays bounded + terminating. A
+    // pre-v4 index (no CALL_SUMMARY) yields no return-flowing callees → no-op.
+    const returnFlowing = await calleesWithReturnFlow(lbugPath, [...calleeIds], exec);
+    if (returnFlowing.size > 0) {
+      for (const { blockId, calleeIds: ids } of blockCallees) {
+        // Bound the ascent re-seeds the same way the descent bounds its per-span
+        // BFS (line ~1496): a wide fan-out of return-flowing call blocks must not
+        // run unbounded re-seeds inside a single hop. Mirror the descent's
+        // node-cap short-circuit at the TOP of the loop, stamping the same flag.
+        if (reachable.size > nodeBudget) {
+          truncatedByNodeCap = true;
+          break hopLoop;
+        }
+        if (!ids.some((id) => returnFlowing.has(id))) continue;
+        // The call block is in the slice by construction; record it so the
+        // statement projection surfaces the call statements whose results chain
+        // through it (a coalesced call block spans several call lines).
+        ascentBlocks.add(blockId);
+        // Continue the caller's intra closure from the call block. The block is
+        // already in `visited` (it is a slice block), so the shared-visited BFS
+        // only adds genuinely-new downstream caller blocks (e.g. a SEPARATE
+        // statement that uses the call result), never re-expanding the seed.
+        const ascent = await bfsReachableBlocks({
+          lbugPath,
+          exec,
+          seedBlocks: [blockId],
+          visited,
+          direction: 'downstream',
+          depthBudget: intraDepthBudget,
+          stepLimit,
+          probeLimit,
+        });
+        if (ascent.truncatedByLimit) truncatedByLimit = true;
+        for (const id of ascent.reachable) reachable.add(id);
+      }
+    }
+
     const freshIds = [...calleeIds].filter((id) => !seededCalleeIds.has(id));
     if (freshIds.length === 0) break;
     for (const id of freshIds) seededCalleeIds.add(id);
@@ -1331,7 +1559,14 @@ async function interproceduralDescent(input: {
   // deeper callees may exist.)
   if (hopsReached >= depthBudget && sliceBlocks.length > 0) truncatedByDepth = true;
 
-  return { reachable, hopsReached, truncatedByDepth, truncatedByLimit, truncatedByNodeCap };
+  return {
+    reachable,
+    hopsReached,
+    truncatedByDepth,
+    truncatedByLimit,
+    truncatedByNodeCap,
+    ascentBlocks,
+  };
 }
 
 export interface RunPdgImpactDeps {
@@ -1344,10 +1579,20 @@ export interface RunPdgImpactDeps {
   /** Statement anchor (1-based source line). */
   line?: number;
   executeParameterized: typeof executeParameterized;
+  /**
+   * Whether this index carries the FU-C `CALL_SUMMARY` return-value-ascent layer
+   * (from `meta.pdg.hasCallSummary`, read by the caller's `pdgLayerStatus`).
+   * `false`/`undefined` ⇒ a PRE-FU-C (v3) `--pdg` index: the intra slice is
+   * served unchanged, but the result `note` flags "no return-value ascent
+   * (re-index for CALL_SUMMARY)". Defaults to a sound `false` (no false ascent
+   * claim) when the caller omits it.
+   */
+  callSummaryAvailable?: boolean;
 }
 
 export async function runImpactPDG(deps: RunPdgImpactDeps): Promise<PdgImpactResult> {
   const { repo, sym, direction, maxDepth, line, executeParameterized: exec } = deps;
+  const callSummaryAvailable = deps.callSummaryAvailable === true;
   // `line` present ⇒ statement-anchored slice (the useful mode); absent ⇒
   // whole-symbol seed (intra-procedural reach collapses to empty for a
   // function — kept for back-compat, with a note steering the caller to `line`).
@@ -1512,6 +1757,12 @@ export async function runImpactPDG(deps: RunPdgImpactDeps): Promise<PdgImpactRes
   // every byDepth consumer iterates generically, so deepening the statement slice
   // — not the bucket count — is the correctness-preserving surface).
   let interproceduralHops = 0;
+  // U-C4: CALL blocks whose callee's CALL_SUMMARY licensed a return-value ascent
+  // (empty for an upstream slice, a pre-FU-C v3 index, or no return-flowing
+  // callee). The statement projection expands these blocks to their interior
+  // call lines (a coalesced call block spans several statements whose results
+  // chain through it — the statement-granularity realisation of the ascent).
+  let ascentBlocks = new Set<string>();
   if (direction === 'downstream') {
     const interproc = await interproceduralDescent({
       lbugPath: repo.lbugPath,
@@ -1537,6 +1788,7 @@ export async function runImpactPDG(deps: RunPdgImpactDeps): Promise<PdgImpactRes
       preSeededCalleeIds: statementMode ? [sym.id] : [],
     });
     interproceduralHops = interproc.hopsReached;
+    ascentBlocks = interproc.ascentBlocks;
     for (const id of interproc.reachable) reachable.add(id);
     if (interproc.truncatedByDepth) truncatedByDepth = true;
     if (interproc.truncatedByLimit) truncatedByLimit = true;
@@ -1583,6 +1835,7 @@ export async function runImpactPDG(deps: RunPdgImpactDeps): Promise<PdgImpactRes
     exec,
     criterionFile,
     ownerFnLine,
+    ascentBlocks,
   );
 
   // ── Has a PDG body but no intra-procedural dependence reachability ─────────
@@ -1658,6 +1911,7 @@ export async function runImpactPDG(deps: RunPdgImpactDeps): Promise<PdgImpactRes
     truncatedBy,
     truncatedByReasons,
     interproceduralHops,
+    callSummaryAvailable,
   });
 }
 

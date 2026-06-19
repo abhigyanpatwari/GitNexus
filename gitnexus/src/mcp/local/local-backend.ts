@@ -84,6 +84,7 @@ import {
   type PdgImpactTarget,
   type PdgBridgeOptions,
   type PdgBridgeEvidenceInfo,
+  type PdgLayerStatus,
 } from './pdg-impact.js';
 
 /** Real source-file extensions (`.ts`, `.py`, …) from the resolver's list,
@@ -4609,8 +4610,12 @@ export class LocalBackend {
     // confusing empty blast radius. Resolve first so target-known degraded
     // responses keep the same id/type/filePath envelope as successful PDG
     // responses; only `ready` falls through to traversal.
+    // Hoisted so the (4) traversal branch can read `layer.hasCallSummary` (FU-C):
+    // the same single meta-stamp probe serves both the degradation gate and the
+    // ascent-availability note — no second probe.
+    let layer: PdgLayerStatus | undefined;
     if (mode === 'pdg') {
-      const layer = await pdgLayerStatus({
+      layer = await pdgLayerStatus({
         lbugPath: repo.lbugPath,
         executeParameterized,
       });
@@ -4654,6 +4659,10 @@ export class LocalBackend {
         // explicitly rather than `this.`-binding it. LocalBackend owns repo
         // lifecycle; `pdg-impact.ts` owns traversal/projection.
         executeParameterized,
+        // FU-C: thread the CALL_SUMMARY layer presence read above (meta stamp) so
+        // the engine notes "no return-value ascent (re-index)" on a pre-FU-C (v3)
+        // index. `layer.hasCallSummary` is set on every meta-readable state.
+        callSummaryAvailable: layer?.hasCallSummary === true,
       });
 
       // Statement-precise inter-procedural reach: a first-hop callee is "proven"
@@ -4809,6 +4818,7 @@ export class LocalBackend {
     limit: number;
     line?: number;
     executeParameterized: typeof executeParameterized;
+    callSummaryAvailable?: boolean;
   }): Promise<PdgImpactResult> {
     return runImpactPDG(deps);
   }

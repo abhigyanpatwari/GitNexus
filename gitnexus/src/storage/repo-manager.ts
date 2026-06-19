@@ -207,6 +207,18 @@ export interface RepoMeta {
      * resolved (always present) on every post-#2201 write.
      */
     reachingDefSolver?: string;
+    /**
+     * Whether this `--pdg` index recorded the FU-C `CALL_SUMMARY` return-value
+     * ascent layer (per-callee param→return summary edges). `true` on every
+     * FU-C+ (v4) write. ABSENT on any pre-FU-C (v3) `--pdg` stamp — that absence
+     * is what tells `impact`'s PDG mode the index predates CALL_SUMMARY, so it
+     * surfaces a "no return-value ascent (re-index for CALL_SUMMARY)" note while
+     * STILL serving the intra slice. CALL_SUMMARY is deliberately NOT a required
+     * sub-layer for `pdgLayerStatus` to report `'ready'`: a v3 index stays fully
+     * usable for the intra-procedural statement slice; only the ascent upgrade is
+     * unavailable. Optional for that back-compat reason.
+     */
+    hasCallSummary?: boolean;
   };
 }
 
