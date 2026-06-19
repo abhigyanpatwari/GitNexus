@@ -1391,3 +1391,186 @@ describe('Ruby call-site harvest', () => {
     expect(usesOf(blk)).toContain(item);
   });
 });
+
+// ── Swift call-site harvest ──────────────────────────────────────────────────
+// Drives the REAL Swift CFG visitor (SwiftHarvester) against real source via the
+// language-agnostic harness, mirroring the Kotlin / Dart site tests above. A
+// Swift call is a `call_expression` whose last child is a `call_suffix` (holding
+// `value_arguments` / a trailing closure `lambda_literal`); the callee is the
+// preceding `simple_identifier` (free / init) or `navigation_expression` (member
+// / chained / optional-chain). Swift has no `new` — an init call `Foo(...)` is an
+// ordinary `call_expression` (`kind: 'call'`). The `at` anchor is byte-aligned
+// with the Swift `@reference.call.free/.member/.constructor` CALLS anchor, which
+// the scope query places on the WHOLE `call_expression` node (the Kotlin/Go/
+// Python whole-call model, NOT Dart's callee-name model) — so for a member /
+// chained call `at` starts at the RECEIVER, exactly where the CALLS anchor
+// starts. The grammar is VENDORED (loaded from vendor/ like the Dart/Kotlin
+// tests). Each `at` below was confirmed byte-equal to the real
+// `getSwiftScopeQuery` `@reference.call.*` atRange.
+
+import { createSwiftCfgVisitor } from '../../../src/core/ingestion/cfg/visitors/swift.js';
+
+const swiftGrammar = requireVendoredGrammar('tree-sitter-swift') as Parameters<
+  typeof makeCfgHarness
+>[0];
+const swift: CfgHarness = makeCfgHarness(swiftGrammar, createSwiftCfgVisitor(), 'fixture.swift');
+
+describe('Swift call-site harvest', () => {
+  it('foo(a, b) → one call site, positions 0→[a], 1→[b], at the call_expression line/col', () => {
+    const cfg = swift.cfgOf(`func f(a: Int, b: Int) {\n    foo(a, b)\n}\n`);
+    const sites = siteFact(cfg, 2).sites!;
+    expect(sites).toHaveLength(1);
+    const s = sites[0];
+    expect(s.kind).toBe('call');
+    expect(s.callee).toBe('foo');
+    expect(s.receiver).toBeUndefined();
+    expect(s.args).toEqual([[bindingIdx(cfg, 'a')], [bindingIdx(cfg, 'b')]]);
+    expect(s.parent).toBeUndefined();
+    // `at` is the `call_expression` node start: line 2 (1-based), col 4 (indent).
+    expect(s.at).toEqual([2, 4]);
+  });
+
+  it('obj.method(x) → dotted callee path + receiver = obj, at the call_expression start', () => {
+    const cfg = swift.cfgOf(`func f(obj: Foo, x: Int) {\n    obj.method(x)\n}\n`);
+    const sites = siteFact(cfg, 2).sites!;
+    expect(sites).toHaveLength(1);
+    const s = sites[0];
+    expect(s.callee).toBe('obj.method');
+    expect(s.receiver).toBe(bindingIdx(cfg, 'obj'));
+    expect(s.args).toEqual([[bindingIdx(cfg, 'x')]]);
+    // chain-length-1 callee: the access IS the callee — no member-read site, and
+    // the receiver use is recorded exactly once.
+    expect(siteFact(cfg, 2).uses.filter((u) => u === bindingIdx(cfg, 'obj'))).toHaveLength(1);
+    // `at` is the call_expression start (the receiver `obj`), col 4 — NOT the
+    // method name. The Swift CALLS anchor keys on the same call_expression node.
+    expect(s.at).toEqual([2, 4]);
+  });
+
+  it('a.b.c() → callee path a.b.c, receiver = root a, plus a mid-chain member read', () => {
+    const cfg = swift.cfgOf(`func f(a: Foo) {\n    a.b.c()\n}\n`);
+    const sites = siteFact(cfg, 2).sites!;
+    const call = sites.find((s) => s.kind === 'call')!;
+    expect(call.callee).toBe('a.b.c');
+    expect(call.receiver).toBe(bindingIdx(cfg, 'a'));
+    // `at` is the whole call_expression start (the root `a`), col 4.
+    expect(call.at).toEqual([2, 4]);
+    // the innermost access `a.b` (the non-callee load) is a member read.
+    const read = sites.find((s) => s.kind === 'member-read')!;
+    expect(read.object).toBe(bindingIdx(cfg, 'a'));
+    expect(read.property).toBe('b');
+  });
+
+  it('a?.b() optional-chain call → still a call site (callee a.b, receiver = a)', () => {
+    const cfg = swift.cfgOf(`func f(a: Foo?) {\n    a?.b()\n}\n`);
+    const sites = siteFact(cfg, 2).sites!;
+    const call = sites.find((s) => s.kind === 'call')!;
+    expect(call.kind).toBe('call');
+    expect(call.callee).toBe('a.b');
+    expect(call.receiver).toBe(bindingIdx(cfg, 'a'));
+    expect(call.at).toEqual([2, 4]);
+  });
+
+  it('trailing closure xs.map { … } → one site for xs.map; the closure body is not an arg', () => {
+    const cfg = swift.cfgOf(`func f(xs: [Int]) {\n    xs.map { x in x + 1 }\n}\n`);
+    const sites = siteFact(cfg, 2).sites!;
+    const call = sites.find((s) => s.kind === 'call')!;
+    expect(call.callee).toBe('xs.map');
+    expect(call.receiver).toBe(bindingIdx(cfg, 'xs'));
+    // The trailing closure is a nested function body (opaque) — NOT an argument
+    // occurrence, so the site records no args.
+    expect(call.args).toBeUndefined();
+    expect(call.at).toEqual([2, 4]);
+    // the closure param `x` is invisible here (opaque nested scope).
+    expect(bindingIdxs(cfg, 'x')).toHaveLength(0);
+  });
+
+  it("multi-line call → the site's `at` line is the call_expression's start line", () => {
+    const cfg = swift.cfgOf(
+      `func f(a: Int, b: Int) {\n    foo(\n        a,\n        b\n    )\n}\n`,
+    );
+    const s = siteFact(cfg).sites![0];
+    expect(s.callee).toBe('foo');
+    // `call_expression` starts on line 2 even though the args span lines 3-4.
+    expect(s.at![0]).toBe(2);
+    expect(s.at![1]).toBe(4);
+    expect(s.args).toEqual([[bindingIdx(cfg, 'a')], [bindingIdx(cfg, 'b')]]);
+  });
+
+  it('two calls in one function → two distinct call sites', () => {
+    const cfg = swift.cfgOf(`func f(a: Int, b: Int) {\n    foo(a)\n    bar(b)\n}\n`);
+    const calls = allSites(cfg).filter((s) => s.kind === 'call');
+    expect(calls.map((s) => s.callee).sort()).toEqual(['bar', 'foo']);
+  });
+
+  it('let x = g(y) → resultDefs carries x; arg y occurs at position 0', () => {
+    const cfg = swift.cfgOf(`func f(y: Int) {\n    let x = g(y)\n}\n`);
+    const s = siteFact(cfg, 2).sites![0];
+    expect(s.callee).toBe('g');
+    expect(s.resultDefs).toEqual([bindingIdx(cfg, 'x')]);
+    expect(s.args).toEqual([[bindingIdx(cfg, 'y')]]);
+    // `at` is the call_expression start `g` (col 12, after `    let x = `).
+    expect(s.at).toEqual([2, 12]);
+  });
+
+  it('x = g(y) assignment → resultDefs carries x (plain = scalar lvalue)', () => {
+    const cfg = swift.cfgOf(`func f(y: Int) {\n    var x = 0\n    x = g(y)\n}\n`);
+    const s = siteFact(cfg, 3).sites![0];
+    expect(s.callee).toBe('g');
+    expect(s.resultDefs).toEqual([bindingIdx(cfg, 'x')]);
+    expect(s.args).toEqual([[bindingIdx(cfg, 'y')]]);
+  });
+
+  it('init call let u = User(name: n) → kind call (Swift has no `new`)', () => {
+    const cfg = swift.cfgOf(`func f(n: String) {\n    let u = User(name: n)\n}\n`);
+    const s = siteFact(cfg, 2).sites![0];
+    expect(s.kind).toBe('call');
+    expect(s.callee).toBe('User');
+    expect(s.resultDefs).toEqual([bindingIdx(cfg, 'u')]);
+    // the labeled value `n` occurs at position 0 (the `name:` label is dropped).
+    expect(s.args).toEqual([[bindingIdx(cfg, 'n')]]);
+    // anchored on the call_expression start `User` (col 12) — matches the Swift
+    // `@reference.call.constructor` anchor on the same node.
+    expect(s.at).toEqual([2, 12]);
+  });
+
+  it('nested call exec(escape(x)) → inner site parent-linked, occurrence via-tagged', () => {
+    const cfg = swift.cfgOf(`func f(x: Int) {\n    exec(escape(x))\n}\n`);
+    const sites = siteFact(cfg, 2).sites!;
+    expect(sites).toHaveLength(2);
+    const execIdx = sites.findIndex((s) => s.callee === 'exec');
+    const escapeIdx = sites.findIndex((s) => s.callee === 'escape');
+    const x = bindingIdx(cfg, 'x');
+    expect(sites[escapeIdx].args).toEqual([[x]]);
+    expect(sites[escapeIdx].parent).toEqual([execIdx, 0]);
+    expect(sites[execIdx].args).toEqual([[[x, escapeIdx]]]);
+  });
+
+  it('labeled argument foo(name: v) → only the value v is an occurrence (label is not a use)', () => {
+    const cfg = swift.cfgOf(`func f(v: Int) {\n    foo(name: v)\n}\n`);
+    const s = siteFact(cfg, 2).sites![0];
+    expect(s.callee).toBe('foo');
+    // `name` mints no binding; `v` occurs at position 0.
+    expect(bindingIdxs(cfg, 'name')).toHaveLength(0);
+    expect(s.args).toEqual([[bindingIdx(cfg, 'v')]]);
+  });
+
+  it('let b = req.body value read → a member-read site (no call), object = req', () => {
+    const cfg = swift.cfgOf(`func f(req: Req) {\n    let b = req.body\n}\n`);
+    const sites = siteFact(cfg, 2).sites!;
+    const read = sites.find((s) => s.kind === 'member-read')!;
+    expect(read.object).toBe(bindingIdx(cfg, 'req'));
+    expect(read.property).toBe('body');
+    expect(sites.filter((s) => s.kind === 'call')).toHaveLength(0);
+  });
+
+  it('def/use facts stay intact alongside the new sites (regression guard)', () => {
+    const cfg = swift.cfgOf(`func f(y: Int) {\n    let x = g(y)\n    use(x)\n}\n`);
+    const x = bindingIdx(cfg, 'x');
+    const y = bindingIdx(cfg, 'y');
+    // the binding table + def/use are coherent: x is defined, y and x are used.
+    expect(defsOf(cfg)).toContain(x);
+    expect(usesOf(cfg)).toContain(y);
+    expect(usesOf(cfg)).toContain(x);
+    expect(cfg.bindings![y].kind).toBe('param');
+  });
+});
