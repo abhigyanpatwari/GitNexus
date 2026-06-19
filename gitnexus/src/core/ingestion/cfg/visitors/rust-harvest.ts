@@ -34,6 +34,22 @@
  * A `try_expression` (`foo()?`) wraps a `call_expression` — the inner call walks
  * normally.
  *
+ * STRUCT LITERALS ARE HARVESTED AS `kind: 'new'` (U4). A struct-literal
+ * expression `Point { x: 1 }` is a `struct_expression { name, body }`, NOT a
+ * `call_expression`. The Rust CALLS query tags it `@reference.call.constructor`
+ * (resolving to a constructor id), so `visitStruct` opens a `kind: 'new'` site
+ * whose callee path is the struct TYPE name (`mymod::Point` ⇒ dotted `mymod.Point`
+ * ⇒ leaf `Point`, the SAME tail the `@reference.name` capture resolves) and whose
+ * `at` is the `struct_expression` start (== the broadest-span
+ * `@reference.call.constructor` anchor — verified byte-equal for plain / scoped /
+ * turbofish / scoped+turbofish forms). The `name` field shapes are
+ * `type_identifier` (`Point`), `scoped_type_identifier` (`mymod::Point`), and
+ * `generic_type_with_turbofish` (`Foo::<T>` / `mymod::Bar::<T>`); all start at the
+ * same column as the `struct_expression`, so the anchor aligns. The struct's
+ * type/module head is no value binding ⇒ no receiver. Field-init VALUES
+ * (`field_initializer` `value`, shorthand `y`, base `..rest`) walk for
+ * uses/occurrences; field NAMES are not uses.
+ *
  * MACROS ARE NOT HARVESTED. `println!(...)` / `vec!(...)` are `macro_invocation`
  * nodes (a `macro` ident + a `token_tree`), NOT `call_expression`s. The Rust
  * CALLS query tags them `@reference.macro` (a DISJOINT namespace resolved via the
@@ -651,6 +667,14 @@ export class RustHarvester {
         // has no `new` — every site is `kind: 'call'`.
         this.visitCall(node, acc);
         return;
+      case 'struct_expression':
+        // A Rust struct literal (`Point { x: 1 }`, `mymod::Point { .. }`,
+        // `Foo::<T> { .. }`). The Rust CALLS query tags it
+        // `@reference.call.constructor`, so it resolves to a constructor id — we
+        // record a `kind: 'new'` site (callee = the struct type path) so that id
+        // joins into `calleeIds`. Field-init VALUES walk for uses/occurrences.
+        this.visitStruct(node, acc);
+        return;
       case 'field_expression': {
         // `a.b` value read — the chain-root identifier is a use plus at most one
         // member-read site (the innermost access); the field name is not a scalar
@@ -703,7 +727,8 @@ export class RustHarvester {
    * Open + populate a call site for a Rust `call_expression`. `node` IS the
    * `call_expression` — the SAME node the scope query anchors `@reference.call.*`
    * on (its `atRange`), so the resolved-id join lands by exact position (see file
-   * header ANCHOR ALIGNMENT). Rust has no `new`, so every site is `kind: 'call'`.
+   * header ANCHOR ALIGNMENT). A `call_expression` is always `kind: 'call'`; struct
+   * literals (`kind: 'new'`) are harvested separately by {@link visitStruct}.
    */
   private visitCall(node: SyntaxNode, acc: FactAccumulator): void {
     const calleeNode = node.childForFieldName('function');
@@ -727,6 +752,111 @@ export class RustHarvester {
       }
     }
     acc.popFrame();
+  }
+
+  /**
+   * Open + populate a `kind: 'new'` site for a Rust `struct_expression`
+   * (`Point { x: 1 }`, `mymod::Point { .. }`, `Foo::<T> { .. }`). `node` IS the
+   * `struct_expression` — the SAME node the Rust scope query anchors
+   * `@reference.call.constructor` on (its `atRange`), so the resolved
+   * constructor-id join lands by exact position. The `name` field of a
+   * `struct_expression` is a `type_identifier` (`Point`), a
+   * `scoped_type_identifier` (`mymod::Point`), or a `generic_type_with_turbofish`
+   * (`Foo::<T>` / `mymod::Bar::<T>`); all three start at the SAME column as the
+   * enclosing `struct_expression` (verified by a real parse), so the broadest-span
+   * `@reference.call.constructor` anchor == the `struct_expression` start.
+   *
+   * The callee path joins the `::`-segments of the type with `.` (NOT `::`) so the
+   * LEAF after the last separator is the tail (`mymod::Point` ⇒ `mymod.Point` ⇒
+   * leaf `Point`), exactly the tail the CALLS query's `@reference.name` capture
+   * resolves and the tail {@link import('../emit.js').calleesOfBlock} extracts via
+   * `lastIndexOf('.')`. A type/module path head is never a value binding, so no
+   * receiver (mirrors {@link harvestScopedCallee}). The field-init VALUES
+   * (`field_initializer` `value`, shorthand `y`, base `..rest`) walk for
+   * uses/occurrences; field NAMES are not uses.
+   */
+  private visitStruct(node: SyntaxNode, acc: FactAccumulator): void {
+    const nameNode = node.childForFieldName('name');
+    const bodyNode = node.childForFieldName('body');
+    const siteIdx = acc.openCallSite('new', [
+      node.startPosition.row + 1,
+      node.startPosition.column,
+    ]);
+    acc.pushFrame(siteIdx);
+    const path = nameNode ? this.structTypePath(nameNode) : undefined;
+    if (path !== undefined) acc.setSiteCallee(siteIdx, path);
+    if (bodyNode) {
+      let pos = 0;
+      for (let i = 0; i < bodyNode.namedChildCount; i++) {
+        const field = bodyNode.namedChild(i);
+        if (!field) continue;
+        if (field.type === 'field_initializer') {
+          // `x: VALUE` — the field NAME is not a use; only VALUE is walked.
+          const value = field.childForFieldName('value');
+          if (value) {
+            acc.setFrameArg(pos);
+            this.walkValue(value, acc);
+            pos++;
+          }
+        } else if (field.type === 'shorthand_field_initializer') {
+          // `y` shorthand — the identifier IS a value use of the local `y`.
+          const id = field.namedChild(0);
+          if (id) {
+            acc.setFrameArg(pos);
+            this.walkValue(id, acc);
+            pos++;
+          }
+        } else if (field.type === 'base_field_initializer') {
+          // `..rest` functional-update base — `rest` is a value use.
+          const baseExpr = field.namedChild(0);
+          if (baseExpr) {
+            acc.setFrameArg(pos);
+            this.walkValue(baseExpr, acc);
+            pos++;
+          }
+        }
+      }
+    }
+    acc.popFrame();
+  }
+
+  /**
+   * Build the dotted type path of a `struct_expression`'s `name` field. The name
+   * is a `type_identifier` (`Point`), a `scoped_type_identifier`
+   * (`mymod::Point` — `path` + tail `name` type_identifier), or a
+   * `generic_type_with_turbofish` (`Foo::<T>` / `mymod::Bar::<T>` — its `type`
+   * field is a `type_identifier` or a `scoped_identifier`; the turbofish
+   * `type_arguments` are dropped). Segments join with `.` so the leaf is the type
+   * tail (matching the CALLS `@reference.name` tail capture). Returns `undefined`
+   * when no segments could be read (defensive — keeps a mis-anchored site from
+   * carrying a bogus callee).
+   */
+  private structTypePath(nameNode: SyntaxNode): string | undefined {
+    const segments: string[] = [];
+    const collect = (n: SyntaxNode): void => {
+      const t = n.type;
+      if (t === 'type_identifier' || t === 'identifier') {
+        segments.push(n.text);
+        return;
+      }
+      if (t === 'generic_type_with_turbofish') {
+        // `Foo::<T>` / `mymod::Bar::<T>` — descend the `type` field; the
+        // `type_arguments` are not part of the resolved type path.
+        const typeNode = n.childForFieldName('type');
+        if (typeNode) collect(typeNode);
+        return;
+      }
+      if (t === 'scoped_type_identifier' || t === 'scoped_identifier') {
+        // `mymod::Point` / `mymod::Bar` — head `path` then the tail `name`.
+        const pathNode = n.childForFieldName('path');
+        if (pathNode) collect(pathNode);
+        const tail = n.childForFieldName('name');
+        if (tail) collect(tail);
+        return;
+      }
+    };
+    collect(nameNode);
+    return segments.length > 0 && segments.every((s) => s !== '') ? segments.join('.') : undefined;
   }
 
   /**

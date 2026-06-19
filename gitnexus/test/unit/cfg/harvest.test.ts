@@ -1789,4 +1789,74 @@ describe('Rust call-site harvest', () => {
     expect(usesOf(cfg)).toContain(x);
     expect(cfg.bindings![y].kind).toBe('param');
   });
+
+  // ── struct-literal constructors (U4) ──────────────────────────────────────
+  // A struct literal `Point { x: 1 }` is a `struct_expression`, NOT a
+  // `call_expression`; the Rust CALLS query tags it `@reference.call.constructor`,
+  // so the harvester records a `kind: 'new'` site whose callee leaf is the struct
+  // TYPE tail (so the resolved constructor id joins into `calleeIds`). The `at` is
+  // the `struct_expression` start — byte-equal to the
+  // `@reference.call.constructor` atRange (verified byte-exact for plain / scoped /
+  // turbofish forms; all anchor on col 12 after `    let p = `).
+
+  it('let p = Point { x: 1, y: 2 } → one kind:new site, callee Point, at the struct_expression start', () => {
+    const cfg = rust.cfgOf(`fn f() {\n    let p = Point { x: 1, y: 2 };\n}\n`);
+    const sites = siteFact(cfg, 2).sites!;
+    const newSites = sites.filter((s) => s.kind === 'new');
+    expect(newSites).toHaveLength(1);
+    const s = newSites[0];
+    expect(s.kind).toBe('new');
+    expect(s.callee).toBe('Point');
+    // a bare type head is no value binding ⇒ no receiver.
+    expect(s.receiver).toBeUndefined();
+    // `at` is the `struct_expression` start (col 12, after `    let p = `), byte-equal
+    // to the Rust `@reference.call.constructor` atRange [2,12].
+    expect(s.at).toEqual([2, 12]);
+  });
+
+  it('scoped mymod::Point { x: 1 } → callee path mymod.Point whose leaf is Point', () => {
+    const cfg = rust.cfgOf(`fn f() {\n    let p = mymod::Point { x: 1 };\n}\n`);
+    const s = siteFact(cfg, 2).sites!.find((x) => x.kind === 'new')!;
+    // `::` joined with `.` so the leaf (after last `.`) is the tail `Point` — the
+    // SAME tail the CALLS `@reference.name` capture resolves, so calleesOfBlock's
+    // `lastIndexOf('.')` slice yields `Point`.
+    expect(s.callee).toBe('mymod.Point');
+    expect(s.callee!.slice(s.callee!.lastIndexOf('.') + 1)).toBe('Point');
+    expect(s.receiver).toBeUndefined();
+    expect(s.at).toEqual([2, 12]);
+  });
+
+  it('turbofish Foo::<i32> { x: 1 } → callee Foo (turbofish args dropped), at the struct start', () => {
+    const cfg = rust.cfgOf(`fn f() {\n    let p = Foo::<i32> { x: 1 };\n}\n`);
+    const s = siteFact(cfg, 2).sites!.find((x) => x.kind === 'new')!;
+    expect(s.callee).toBe('Foo');
+    expect(s.at).toEqual([2, 12]);
+  });
+
+  it('Point { x: f() } → the struct site PLUS the inner f() call site, x value recorded', () => {
+    const cfg = rust.cfgOf(`fn f(y: i32) {\n    let p = Point { x: f(), y };\n}\n`);
+    const sites = siteFact(cfg, 2).sites!;
+    const structSite = sites.find((s) => s.kind === 'new')!;
+    const callSite = sites.find((s) => s.kind === 'call')!;
+    // the struct site is recorded as a constructor, the inner `f()` as its own call.
+    expect(structSite.callee).toBe('Point');
+    expect(callSite.callee).toBe('f');
+    // the inner `f()` is the value of field `x` (position 0) — parent-linked to the
+    // struct site, so the field value is tracked, not the field NAME.
+    const structIdx = sites.indexOf(structSite);
+    expect(callSite.parent).toEqual([structIdx, 0]);
+    // the shorthand field `y` (position 1) records the local `y` as a value use.
+    expect(structSite.args).toEqual([[], [bindingIdx(cfg, 'y')]]);
+    expect(usesOf(cfg)).toContain(bindingIdx(cfg, 'y'));
+  });
+
+  it('struct literal def/use facts stay intact (regression guard)', () => {
+    const cfg = rust.cfgOf(`fn f(a: i32) {\n    let p = Point { x: a };\n}\n`);
+    const a = bindingIdx(cfg, 'a');
+    const p = bindingIdx(cfg, 'p');
+    // `p` is defined by the `let`; `a` (the field value) is used; field name `x` is not.
+    expect(defsOf(cfg)).toContain(p);
+    expect(usesOf(cfg)).toContain(a);
+    expect(cfg.bindings!.map((b) => b.name)).not.toContain('x');
+  });
 });
