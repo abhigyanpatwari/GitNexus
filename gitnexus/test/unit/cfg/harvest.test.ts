@@ -1198,3 +1198,196 @@ describe('Kotlin call-site harvest', () => {
     expect(cfg.bindings![y].kind).toBe('param');
   });
 });
+
+// ── Ruby call-site harvest ───────────────────────────────────────────────────
+// Drives the REAL Ruby CFG visitor (RubyHarvester) against real source via the
+// language-agnostic harness, mirroring the Python / Kotlin site tests above.
+// EVERY Ruby call is a single `call` node (fields receiver?/method/arguments?):
+// a free call `foo(a)`, an implicit-receiver paren-less command `puts x` /
+// `attr_accessor :x`, a member call `obj.method(x)`, a safe-call `obj&.m()`, and
+// a chained `a.b.c` (nested `call` receivers) are all `call` nodes — there is NO
+// `command` node in this grammar. Ruby has no `new` (`Foo.new` is a member call),
+// so every site is `kind: 'call'`. A receiver-only no-args `call` (`obj.field`)
+// is grammatically a member call and the CALLS query tags it
+// `@reference.call.member`, so it is a call site (NOT a member-read). The `at`
+// anchor is byte-aligned with the Ruby `@reference.call.free/.member` CALLS
+// anchor, which the scope query places on the WHOLE `call` node (the Go/Python/
+// Kotlin whole-call model) — so for a member/chained call `at` starts at the
+// RECEIVER. The grammar is loaded via `require` (like Python).
+
+import { createRubyCfgVisitor } from '../../../src/core/ingestion/cfg/visitors/ruby.js';
+
+const rubyGrammar = createRequire(import.meta.url)('tree-sitter-ruby') as Parameters<
+  typeof makeCfgHarness
+>[0];
+const ruby: CfgHarness = makeCfgHarness(rubyGrammar, createRubyCfgVisitor(), 'fixture.rb');
+
+describe('Ruby call-site harvest', () => {
+  it('foo(a, b) → one call site, positions 0→[a], 1→[b], at the call node line/col', () => {
+    const cfg = ruby.cfgOf(`def f(a, b)\n  foo(a, b)\nend\n`);
+    const sites = siteFact(cfg, 2).sites!;
+    expect(sites).toHaveLength(1);
+    const s = sites[0];
+    expect(s.kind).toBe('call');
+    expect(s.callee).toBe('foo');
+    expect(s.receiver).toBeUndefined();
+    expect(s.args).toEqual([[bindingIdx(cfg, 'a')], [bindingIdx(cfg, 'b')]]);
+    expect(s.parent).toBeUndefined();
+    // `at` is the `call` node start: line 2 (1-based), col 2 (after `  ` indent).
+    expect(s.at).toEqual([2, 2]);
+  });
+
+  it('obj.method(x) → dotted callee path + receiver = obj, at the call node start', () => {
+    const cfg = ruby.cfgOf(`def f(obj, x)\n  obj.method(x)\nend\n`);
+    const sites = siteFact(cfg, 2).sites!;
+    expect(sites).toHaveLength(1);
+    const s = sites[0];
+    expect(s.callee).toBe('obj.method');
+    expect(s.receiver).toBe(bindingIdx(cfg, 'obj'));
+    expect(s.args).toEqual([[bindingIdx(cfg, 'x')]]);
+    // the receiver use is recorded exactly once (no double-record).
+    expect(siteFact(cfg, 2).uses.filter((u) => u === bindingIdx(cfg, 'obj'))).toHaveLength(1);
+    // `at` is the call node start (the receiver `obj`), col 2 — NOT the method
+    // name. The Ruby CALLS anchor keys on the same whole `call` node.
+    expect(s.at).toEqual([2, 2]);
+  });
+
+  it('a.b.c chained → callee path a.b.c, receiver = root a, plus a mid-chain member read', () => {
+    const cfg = ruby.cfgOf(`def f(a)\n  a.b.c\nend\n`);
+    const sites = siteFact(cfg, 2).sites!;
+    const call = sites.find((s) => s.kind === 'call')!;
+    expect(call.callee).toBe('a.b.c');
+    expect(call.receiver).toBe(bindingIdx(cfg, 'a'));
+    // `at` is the whole `call` node start (the root `a`), col 2.
+    expect(call.at).toEqual([2, 2]);
+    // the innermost access `a.b` (the non-callee load) is a member read.
+    const read = sites.find((s) => s.kind === 'member-read')!;
+    expect(read.object).toBe(bindingIdx(cfg, 'a'));
+    expect(read.property).toBe('b');
+  });
+
+  it('implicit-receiver paren-less command puts x → site callee `puts`, arg x at position 0', () => {
+    const cfg = ruby.cfgOf(`def f(x)\n  puts x\nend\n`);
+    const sites = siteFact(cfg, 2).sites!;
+    expect(sites).toHaveLength(1);
+    const s = sites[0];
+    expect(s.kind).toBe('call');
+    expect(s.callee).toBe('puts');
+    expect(s.receiver).toBeUndefined();
+    expect(s.args).toEqual([[bindingIdx(cfg, 'x')]]);
+    expect(s.at).toEqual([2, 2]);
+  });
+
+  it('attr_accessor :x command → site callee `attr_accessor` (symbol key is not an occurrence)', () => {
+    const cfg = ruby.cfgOf(`def f\n  attr_accessor :x\nend\n`);
+    const s = siteFact(cfg, 2).sites![0];
+    expect(s.callee).toBe('attr_accessor');
+    // the `:x` symbol argument mints no binding and is not a value occurrence.
+    expect(bindingIdxs(cfg, 'x')).toHaveLength(0);
+    expect(s.args).toBeUndefined();
+  });
+
+  it('obj&.m() safe-navigation → still a call site (callee obj.m, receiver = obj)', () => {
+    const cfg = ruby.cfgOf(`def f(obj)\n  obj&.m()\nend\n`);
+    const s = siteFact(cfg, 2).sites!.find((x) => x.kind === 'call')!;
+    expect(s.kind).toBe('call');
+    expect(s.callee).toBe('obj.m');
+    expect(s.receiver).toBe(bindingIdx(cfg, 'obj'));
+    expect(s.at).toEqual([2, 2]);
+  });
+
+  it('obj.field (no-arg member) → harvested as a call site (matches @reference.call.member)', () => {
+    const cfg = ruby.cfgOf(`def f(obj)\n  y = obj.field\nend\n`);
+    const sites = siteFact(cfg, 2).sites!;
+    const call = sites.find((s) => s.kind === 'call')!;
+    expect(call.callee).toBe('obj.field');
+    expect(call.receiver).toBe(bindingIdx(cfg, 'obj'));
+    // a single-access receiver is the callee itself — no separate member-read.
+    expect(sites.filter((s) => s.kind === 'member-read')).toHaveLength(0);
+  });
+
+  it("multi-line call → the site's `at` line is the call node's start line", () => {
+    const cfg = ruby.cfgOf(`def f(a, b)\n  foo(\n    a,\n    b,\n  )\nend\n`);
+    const s = siteFact(cfg).sites![0];
+    expect(s.callee).toBe('foo');
+    // `call` starts on line 2 even though the args span lines 3-4.
+    expect(s.at![0]).toBe(2);
+    expect(s.at![1]).toBe(2);
+    expect(s.args).toEqual([[bindingIdx(cfg, 'a')], [bindingIdx(cfg, 'b')]]);
+  });
+
+  it('two calls in one function → two distinct call sites', () => {
+    const cfg = ruby.cfgOf(`def f(a, b)\n  foo(a)\n  bar(b)\nend\n`);
+    const calls = allSites(cfg).filter((s) => s.kind === 'call');
+    expect(calls.map((s) => s.callee).sort()).toEqual(['bar', 'foo']);
+  });
+
+  it('x = g(y) → resultDefs carries x; arg y occurs at position 0', () => {
+    const cfg = ruby.cfgOf(`def f(y)\n  x = g(y)\nend\n`);
+    const s = siteFact(cfg, 2).sites![0];
+    expect(s.callee).toBe('g');
+    expect(s.resultDefs).toEqual([bindingIdx(cfg, 'x')]);
+    expect(s.args).toEqual([[bindingIdx(cfg, 'y')]]);
+    // `at` is the `call` node start `g` (col 6, after `  x = `).
+    expect(s.at).toEqual([2, 6]);
+  });
+
+  it('nested call exec(escape(x)) → inner site parent-linked, occurrence via-tagged', () => {
+    const cfg = ruby.cfgOf(`def f(x)\n  exec(escape(x))\nend\n`);
+    const sites = siteFact(cfg, 2).sites!;
+    expect(sites).toHaveLength(2);
+    const execIdx = sites.findIndex((s) => s.callee === 'exec');
+    const escapeIdx = sites.findIndex((s) => s.callee === 'escape');
+    const x = bindingIdx(cfg, 'x');
+    expect(sites[escapeIdx].args).toEqual([[x]]);
+    expect(sites[escapeIdx].parent).toEqual([execIdx, 0]);
+    expect(sites[execIdx].args).toEqual([[[x, escapeIdx]]]);
+  });
+
+  it('exec(*xs) → spread index recorded, xs binding occurs at the position', () => {
+    const cfg = ruby.cfgOf(`def f(xs)\n  exec(*xs)\nend\n`);
+    const s = siteFact(cfg, 2).sites![0];
+    expect(s.callee).toBe('exec');
+    expect(s.spread).toBe(0);
+    expect(s.args).toEqual([[bindingIdx(cfg, 'xs')]]);
+  });
+
+  it('keyword argument foo(k: v) → only the value v is an occurrence (key is not a use)', () => {
+    const cfg = ruby.cfgOf(`def f(v)\n  foo(k: v)\nend\n`);
+    const s = siteFact(cfg, 2).sites![0];
+    expect(s.callee).toBe('foo');
+    // `k` mints no binding; `v` occurs at position 0.
+    expect(bindingIdxs(cfg, 'k')).toHaveLength(0);
+    expect(s.args).toEqual([[bindingIdx(cfg, 'v')]]);
+  });
+
+  it('a do/{} block argument is opaque — not an arg occurrence (one site for the call)', () => {
+    const cfg = ruby.cfgOf(`def f(xs)\n  xs.map { |i| g(i) }\nend\n`);
+    // the outer `xs.map` is one call site anchored on line 2; the block body's
+    // `g(i)` is the block's OWN CFG (opaque), so it is NOT an argument occurrence
+    // of `xs.map` (filter by the call's `at` line, not the function-relative one).
+    const onLine2 = allSites(cfg).filter((s) => (s.at?.[0] ?? -1) === 2);
+    expect(onLine2).toHaveLength(1);
+    expect(onLine2[0].callee).toBe('xs.map');
+    expect(onLine2[0].receiver).toBe(bindingIdx(cfg, 'xs'));
+    expect(onLine2[0].args).toBeUndefined();
+  });
+
+  it('def/use facts stay intact alongside the new sites (regression guard)', () => {
+    const cfg = ruby.cfgOf(`def f(y)\n  x = g(y)\n  use(x)\nend\n`);
+    const x = bindingIdx(cfg, 'x');
+    const y = bindingIdx(cfg, 'y');
+    // the binding table + def/use are coherent: x is defined, y and x are used.
+    expect(defsOf(cfg)).toContain(x);
+    expect(usesOf(cfg)).toContain(y);
+    expect(usesOf(cfg)).toContain(x);
+    expect(cfg.bindings![y].kind).toBe('param');
+  });
+
+  it('block param def/use are unchanged by the site harvest (block-handling regression)', () => {
+    const blk = ruby.cfgsOf(`def f(xs)\n  xs.map { |item| item * 2 }\nend\n`)[1];
+    const item = bindingIdx(blk, 'item');
+    expect(defsOf(blk)).toContain(item);
+    expect(usesOf(blk)).toContain(item);
+  });
+});
