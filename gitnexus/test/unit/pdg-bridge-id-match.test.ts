@@ -108,6 +108,53 @@ describe('pdgBridgeEvidenceForImpact — U5 resolved-id match (KTD3)', () => {
     expect(result).toMatchObject({ evidence: 'callgraph-bridge' });
   });
 
+  // PR #2227 tri-review-2 headline: an id-only slice (sliceCalleeNames empty/absent,
+  // sliceCalleeIds present) must id-DISCRIMINATE, not short-circuit to "prove
+  // everything" via the whole-symbol guard. The `basis` distinguishes the id-match
+  // path from the whole-symbol short-circuit.
+  it('id-only slice, id IN set → proven via the id path (not whole-symbol)', () => {
+    const result = pdgBridgeEvidenceForImpact({
+      bridge: { sliceCalleeIds: new Set(['idA']) }, // names absent
+      depth: 1,
+      calleeName: 'get',
+      calleeId: 'idA',
+    });
+    expect(result).toMatchObject({
+      evidence: 'callgraph-bridge',
+      basis:
+        'callee id is invoked in a block of the local PDG dependence slice (resolved-symbol match)',
+    });
+  });
+
+  it('id-only slice, id NOT in set → unproven-bridge (the over-prove bug) and does not throw', () => {
+    // Before the fix this returned callgraph-bridge (over-prove): the empty-names
+    // guard short-circuited before the id branch. It must now id-discriminate, and
+    // the null-guarded sentinel/name reads must not throw on absent names.
+    const result = pdgBridgeEvidenceForImpact({
+      bridge: { sliceCalleeIds: new Set(['idA']) }, // names absent
+      depth: 1,
+      calleeName: 'get',
+      calleeId: 'idZ',
+    });
+    expect(result).toMatchObject({
+      evidence: 'unproven-bridge',
+      basis: 'callee id is not invoked in any block of the local PDG dependence slice',
+    });
+  });
+
+  it('both keys empty → whole-symbol compatibility bridge (unchanged)', () => {
+    const result = pdgBridgeEvidenceForImpact({
+      bridge: { sliceCalleeNames: new Set(), sliceCalleeIds: new Set() },
+      depth: 1,
+      calleeName: 'get',
+      calleeId: 'idZ',
+    });
+    expect(result).toMatchObject({
+      evidence: 'callgraph-bridge',
+      basis: 'whole-symbol PDG result uses symbol graph as compatibility bridge',
+    });
+  });
+
   it('depth>1 inherited evidence is unchanged by the id path', () => {
     const inherited = { evidence: 'callgraph-bridge' as const, basis: 'inherited proven' };
     const result = pdgBridgeEvidenceForImpact({

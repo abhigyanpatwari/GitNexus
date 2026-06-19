@@ -1247,7 +1247,16 @@ export function pdgBridgeEvidenceForImpact(input: {
   }
 
   const sliceCalleeNames = bridge.sliceCalleeNames;
-  if (!sliceCalleeNames || sliceCalleeNames.size === 0) {
+  // Whole-symbol compatibility bridge ONLY when NEITHER key discriminates. The
+  // empty-names guard must also require empty ids: `local-backend` builds the
+  // bridge when names OR ids have signal, so an id-only slice (names empty/absent,
+  // ids present — e.g. a block whose calls resolve to ids but carry no static leaf
+  // name) must fall through to the resolved-id branch, not short-circuit to
+  // "prove everything". (PR #2227 tri-review-2 headline.)
+  if (
+    (!sliceCalleeNames || sliceCalleeNames.size === 0) &&
+    (!bridge.sliceCalleeIds || bridge.sliceCalleeIds.size === 0)
+  ) {
     return {
       evidence: 'callgraph-bridge',
       basis: 'whole-symbol PDG result uses symbol graph as compatibility bridge',
@@ -1256,8 +1265,11 @@ export function pdgBridgeEvidenceForImpact(input: {
 
   // A slice block whose call sites were truncated at the per-statement cap has an
   // INCOMPLETE callee list, so absence from the set does not prove absence from
-  // the slice. Keep such reach callgraph-equal rather than under-proving.
-  if (sliceCalleeNames.has(CALLEES_TRUNCATED_SENTINEL)) {
+  // the slice. Keep such reach callgraph-equal rather than under-proving. (A capped
+  // block always carries the sentinel in `callees`/names — the per-statement cap is
+  // name-agnostic — so checking names suffices; `?.` guards the id-only path where
+  // `sliceCalleeNames` is absent, which is never a capped block.)
+  if (sliceCalleeNames?.has(CALLEES_TRUNCATED_SENTINEL)) {
     return {
       evidence: 'callgraph-bridge',
       basis: 'a slice block truncated its call sites — callee set is incomplete (callee-unknown)',
@@ -1288,7 +1300,7 @@ export function pdgBridgeEvidenceForImpact(input: {
   // R3 graceful fallback: no captured ids (pre-v3 index / upstream / whole-symbol)
   // ⇒ use the leaf-name match.
   const name = typeof calleeName === 'string' ? calleeName : '';
-  if (name && sliceCalleeNames.has(name)) {
+  if (name && sliceCalleeNames?.has(name)) {
     return {
       evidence: 'callgraph-bridge',
       basis: 'callee is invoked in a block of the local PDG dependence slice',
