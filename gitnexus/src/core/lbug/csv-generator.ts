@@ -553,7 +553,7 @@ export const streamAllCSVsToDisk = async (
               escapeCSVField(keysStr),
               escapeCSVField(errorKeysStr),
               escapeCSVField(middlewareStr),
-              escapeCSVField(node.properties.method || ''),
+              escapeCSVField(String(node.properties.method ?? '')),
             ].join(','),
           );
           break;
