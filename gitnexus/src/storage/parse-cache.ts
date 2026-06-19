@@ -185,15 +185,20 @@ export const computeChunkHash = (
   // default-cap runs share a key. The emit-time edge cap is deliberately
   // absent — see the PdgCacheKey doc comment.
   //
-  // NAMESPACE VERSION (`pdg:2`): bumped when the worker-emitted
+  // NAMESPACE VERSION (`pdg:3`): bumped when the worker-emitted
   // `cfgSideChannel` SHAPE changes for pdg-mode runs only — pdg:1→2 in #2083
-  // M3 U1 (TsHarvester emits taint `sites` on StatementFacts). Invalidates
-  // pdg-mode chunks and their durable parsedfile-cache entries; flag-off
-  // chunk keys never reach this line and stay byte-identical, so non-pdg
-  // users pay nothing. Deliberately NOT a SCHEMA_BUMP — that gates the whole
-  // cache version and would force a full cold re-parse on EVERY user (the M1
-  // bump comment above records that cost).
-  const ns = `pdg:2;maxFn=${opts.maxFunctionLines ?? 'def'}`;
+  // M3 U1 (TsHarvester emits taint `sites` on StatementFacts); pdg:2→3 in the
+  // #2227 follow-up U1 (every C-family / TS harvester now stamps the call-site
+  // anchor `SiteRecord.at`, which the U3 resolved-callee-id join reads). A warm
+  // chunk built by a pre-U1 worker carries `sites` WITHOUT `at`, so the join
+  // skips every site and `BasicBlock.calleeIds` is silently empty even though
+  // `callees` is populated — exactly the #2225-class shape skew this version
+  // token exists to prevent. Invalidates pdg-mode chunks and their durable
+  // parsedfile-cache entries; flag-off chunk keys never reach this line and
+  // stay byte-identical, so non-pdg users pay nothing. Deliberately NOT a
+  // SCHEMA_BUMP — that gates the whole cache version and would force a full
+  // cold re-parse on EVERY user (the M1 bump comment above records that cost).
+  const ns = `pdg:3;maxFn=${opts.maxFunctionLines ?? 'def'}`;
   return sha256Hex(`${ns}\n${joined}`);
 };
 
