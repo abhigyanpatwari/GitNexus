@@ -75,6 +75,17 @@ def f(request):
     expect(allSinks(m).map((s) => s.entry.name)).toEqual(['run']);
   });
 
+  it('does not guess positional sink slots for keyword arguments', () => {
+    const m = matchesOf(`
+import subprocess as sp
+
+def f(request):
+    sp.run(shell=request.args, args="safe")
+`);
+    expect(allSinks(m)).toHaveLength(0);
+    expect(allSources(m)).toHaveLength(1);
+  });
+
   it('matches conventional database execute/query calls as SQL sinks', () => {
     const m = matchesOf(`
 def f(request, cursor, db):
@@ -93,6 +104,31 @@ def f(request):
     def system(value):
         return value
     system(request.args)
+`);
+    expect(allSinks(m)).toHaveLength(0);
+    expect(allSources(m)).toHaveLength(1);
+  });
+
+  it('does not let methods in a nested class shadow an enclosing import', () => {
+    const m = matchesOf(`
+from os import system
+
+def f(request):
+    class Helpers:
+        def system(self, value):
+            return value
+    system(request.args)
+`);
+    expect(allSinks(m)).toHaveLength(1);
+    expect(allSources(m)).toHaveLength(1);
+  });
+
+  it('treats a nested class declaration as a local sink-name binding', () => {
+    const m = matchesOf(`
+def f(request):
+    class open:
+        pass
+    open(request.args)
 `);
     expect(allSinks(m)).toHaveLength(0);
     expect(allSources(m)).toHaveLength(1);

@@ -224,6 +224,11 @@ export class PythonHarvester {
       }
       return;
     }
+    if (t === 'class_definition') {
+      const name = node.childForFieldName('name');
+      if (name?.type === 'identifier') this.declare(name, 'class');
+      return;
+    }
 
     switch (t) {
       case 'global_statement':
@@ -727,28 +732,32 @@ export class PythonHarvester {
     acc.popFrame();
   }
 
-  /** Walk positional and keyword arguments while assigning value occurrences to argument slots. */
+  /** Walk arguments, assigning only positional values to positional sink slots. */
   private walkArgs(args: SyntaxNode | null, acc: FactAccumulator, siteIdx: number): void {
     if (!args) return;
     let pos = 0;
     for (let i = 0; i < args.namedChildCount; i++) {
       const arg = args.namedChild(i);
       if (!arg || arg.type === 'comment') continue;
-      acc.setFrameArg(pos);
       if (arg.type === 'keyword_argument') {
         const value = arg.childForFieldName('value');
-        if (value) this.walkValue(value, acc);
+        // SiteRecord has no keyword-name metadata. Keep the value's ordinary
+        // uses/sources, but do not guess a positional sink slot from source order.
+        if (value) acc.suppressOccurrences(() => this.walkValue(value, acc));
       } else if (arg.type === 'list_splat') {
+        acc.setFrameArg(pos);
         acc.setSiteSpread(siteIdx, pos);
         const inner = arg.namedChild(0);
         if (inner) this.walkValue(inner, acc);
+        pos++;
       } else if (arg.type === 'dictionary_splat') {
         const inner = arg.namedChild(0);
-        if (inner) this.walkValue(inner, acc);
+        if (inner) acc.suppressOccurrences(() => this.walkValue(inner, acc));
       } else {
+        acc.setFrameArg(pos);
         this.walkValue(arg, acc);
+        pos++;
       }
-      pos++;
     }
   }
 
