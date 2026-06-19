@@ -151,7 +151,7 @@
  */
 import type { SyntaxNode } from '../../utils/ast-helpers.js';
 import type { BindingEntry, StatementFacts } from '../types.js';
-import { CallSiteFactAccumulator as FactAccumulator } from './call-site-harvest.js';
+import { CallSiteFactAccumulator as FactAccumulator, finalizeChain } from './call-site-harvest.js';
 
 /** Node types that own a nested CFG — their subtrees are opaque to harvesting. */
 const NESTED_FUNCTION_TYPES = new Set(['function_item', 'closure_expression']);
@@ -968,24 +968,12 @@ export class RustHarvester {
         break;
       }
     }
-    let rootIdx: number | undefined;
-    let rootSegment: string | undefined;
-    if (cur.type === 'identifier' && cur.text !== '_') {
-      rootIdx = this.resolve(cur);
-      acc.addUse(rootIdx);
-      rootSegment = cur.text;
-    } else {
-      // `self.x.f()`, `foo().bar`, a tuple index — walk for uses + nested sites.
-      this.walkValue(cur, acc);
-    }
-    const innermost = accesses[0];
-    if (rootIdx !== undefined && innermost && !(skipFinalRead && accesses.length === 1)) {
-      acc.addMemberRead(rootIdx, innermost);
-    }
-    const path =
-      rootSegment !== undefined && accesses.every((a) => a !== '')
-        ? [rootSegment, ...accesses].join('.')
-        : undefined;
-    return { path, rootIdx };
+    // The shared terminal: root-use record + innermost member-read + path-join.
+    // The non-identifier root (`self.x.f()`, `foo().bar`, a tuple index) walks for
+    // uses + nested sites.
+    return finalizeChain(acc, cur, accesses, skipFinalRead, (t) => t === 'identifier', {
+      resolve: (n) => this.resolve(n),
+      walkRoot: (n) => this.walkValue(n, acc),
+    });
   }
 }

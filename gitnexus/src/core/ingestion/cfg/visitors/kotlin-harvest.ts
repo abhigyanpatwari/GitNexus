@@ -110,7 +110,7 @@
  */
 import type { SyntaxNode } from '../../utils/ast-helpers.js';
 import type { BindingEntry, StatementFacts } from '../types.js';
-import { CallSiteFactAccumulator as FactAccumulator } from './call-site-harvest.js';
+import { CallSiteFactAccumulator as FactAccumulator, finalizeChain } from './call-site-harvest.js';
 
 /** Node types that own a nested CFG — their subtrees are opaque to harvesting. */
 const NESTED_FUNCTION_TYPES = new Set([
@@ -801,23 +801,10 @@ export class KotlinHarvester {
         break;
       }
     }
-    let rootIdx: number | undefined;
-    let rootSegment: string | undefined;
-    if (cur.type === 'simple_identifier' && cur.text !== '_') {
-      rootIdx = this.resolve(cur);
-      acc.addUse(rootIdx);
-      rootSegment = cur.text;
-    } else {
-      this.walkValue(cur, acc);
-    }
-    const innermost = accesses[0];
-    if (rootIdx !== undefined && innermost && !(skipFinalRead && accesses.length === 1)) {
-      acc.addMemberRead(rootIdx, innermost);
-    }
-    const path =
-      rootSegment !== undefined && accesses.every((a) => a !== '')
-        ? [rootSegment, ...accesses].join('.')
-        : undefined;
-    return { path, rootIdx };
+    // The shared terminal: root-use record + innermost member-read + path-join.
+    return finalizeChain(acc, cur, accesses, skipFinalRead, (t) => t === 'simple_identifier', {
+      resolve: (n) => this.resolve(n),
+      walkRoot: (n) => this.walkValue(n, acc),
+    });
   }
 }

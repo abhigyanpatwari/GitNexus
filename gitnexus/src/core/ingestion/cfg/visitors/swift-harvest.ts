@@ -115,7 +115,7 @@
  */
 import type { SyntaxNode } from '../../utils/ast-helpers.js';
 import type { BindingEntry, StatementFacts } from '../types.js';
-import { CallSiteFactAccumulator as FactAccumulator } from './call-site-harvest.js';
+import { CallSiteFactAccumulator as FactAccumulator, finalizeChain } from './call-site-harvest.js';
 
 /** Node types that own a nested CFG — their subtrees are opaque to harvesting. */
 const NESTED_FUNCTION_TYPES = new Set([
@@ -690,7 +690,7 @@ export class SwiftHarvester {
     const resultDefs = this.resultDefTargets.get(node.id);
     if (resultDefs !== undefined) acc.setSiteResultDefs(siteIdx, resultDefs);
     const suffix = node.namedChildren.find((c) => c.type === 'call_suffix');
-    if (suffix) this.walkArguments(suffix, siteIdx, acc);
+    if (suffix) this.walkArguments(suffix, acc);
     acc.popFrame();
   }
 
@@ -700,7 +700,7 @@ export class SwiftHarvester {
    * nested function body — opaque (excluded by {@link NESTED_FUNCTION_TYPES}), so
    * it is not an argument occurrence here.
    */
-  private walkArguments(suffix: SyntaxNode, _siteIdx: number, acc: FactAccumulator): void {
+  private walkArguments(suffix: SyntaxNode, acc: FactAccumulator): void {
     const args = suffix.namedChildren.find((c) => c.type === 'value_arguments');
     if (!args) return;
     let pos = 0;
@@ -744,23 +744,10 @@ export class SwiftHarvester {
         break;
       }
     }
-    let rootIdx: number | undefined;
-    let rootSegment: string | undefined;
-    if (cur.type === 'simple_identifier' && cur.text !== '_') {
-      rootIdx = this.resolve(cur);
-      acc.addUse(rootIdx);
-      rootSegment = cur.text;
-    } else {
-      this.walkValue(cur, acc);
-    }
-    const innermost = accesses[0];
-    if (rootIdx !== undefined && innermost && !(skipFinalRead && accesses.length === 1)) {
-      acc.addMemberRead(rootIdx, innermost);
-    }
-    const path =
-      rootSegment !== undefined && accesses.every((a) => a !== '')
-        ? [rootSegment, ...accesses].join('.')
-        : undefined;
-    return { path, rootIdx };
+    // The shared terminal: root-use record + innermost member-read + path-join.
+    return finalizeChain(acc, cur, accesses, skipFinalRead, (t) => t === 'simple_identifier', {
+      resolve: (n) => this.resolve(n),
+      walkRoot: (n) => this.walkValue(n, acc),
+    });
   }
 }
