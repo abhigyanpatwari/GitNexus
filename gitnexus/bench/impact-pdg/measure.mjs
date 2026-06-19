@@ -53,7 +53,7 @@ import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { spawnSync } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import {
   symbolKey,
@@ -1364,7 +1364,14 @@ async function run() {
   }
 }
 
-run().catch((err) => {
-  process.stderr.write(`[impact-pdg] ERROR: ${err?.stack || err}\n`);
-  process.exit(1);
-});
+// Only execute the harness when invoked as the CLI entrypoint — NOT when this
+// module is imported (e.g. impact-pdg-id-bridge-gate.test.ts imports the exported
+// pure helpers). Importing must be side-effect-free: an unguarded run() kicks off
+// the full real-analyze report in the background, which under the full vitest
+// suite leaks an unhandled error that Vitest attributes to the importing file.
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  run().catch((err) => {
+    process.stderr.write(`[impact-pdg] ERROR: ${err?.stack || err}\n`);
+    process.exit(1);
+  });
+}
