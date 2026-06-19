@@ -11,9 +11,11 @@
 > impact axes** table that keeps line-level and symbol-level truth separate while
 > comparing `callgraph`, unified `pdg`, and the evaluation-only
 > `composed-current` control baseline. The measured native result remains:
-> **PDG is exact at intra-procedural statement granularity; call-graph remains
-> the comparator for inter-procedural symbol granularity; unified PDG must match
-> that composed baseline before any default-switch decision.**
+> **PDG is precise at intra-procedural statement granularity (exact on the intra
+> fixtures; on mixed it adds cross-function reach as FPIS, and the U2 oracle flags a
+> block-coalescing recall caveat); call-graph remains the comparator for
+> inter-procedural symbol granularity; unified PDG must match that composed baseline
+> before any default-switch decision.**
 
 ## What this measures
 
@@ -273,31 +275,54 @@ traversal, the **annotation** was corrected (documented in each
   lines the original annotation missed.
 
 After reconciliation, the line-seeded slice reproduces each corrected `intra_AIS`
-exactly (FPIS = FNIS = 0 on all 6 intra and all 3 mixed fixtures). Call-graph gets
-no such home-field annotation, so the comparison is not rigged toward PDG.
+exactly (FPIS = FNIS = 0) on all 7 intra fixtures; on the 3 mixed fixtures recall
+stays 1.000 (FNIS = 0) but precision is 0.468 post-U1, because the inter-procedural
+slice now unions cross-function callee lines into the result. The U2 value-diff oracle
+independently flags that this reconciliation shares a block-coalescing blind spot
+(statement-level recall 0.333 on `intra-dataflow-chain`). Call-graph gets no such
+home-field annotation, so the comparison is not rigged toward PDG.
 
-## Measured results (analyzer 1.6.7, 13 measurable + 1 excluded)
+## Measured results (analyzer 1.6.7, 13 measurable + 2 excluded; post-U1 + U2)
 
 Each engine scored at its **native granularity** against its **native ground
 truth** — PDG at line vs `intra_AIS`, call-graph at symbol vs `inter_AIS`:
 
 | Scope | Mode | Granularity | P | R | F1 | \|CIS\|/\|AIS\| | FPIS | FNIS | n |
 |---|---|---|---|---|---|---|---|---|---|
-| intra | callgraph | symbol/inter | n/a | n/a | n/a | n/a | 0 | 0 | 6 |
-| intra | **pdg** | **line/intra** | **1.000** | **1.000** | **1.000** | 1.000 | 0 | 0 | 6 |
+| intra | callgraph | symbol/inter | n/a | n/a | n/a | n/a | 0 | 0 | 7 |
+| intra | **pdg** | **line/intra** | **1.000** | **1.000** | **1.000** | 1.000 | 0 | 0 | 7 |
 | inter | **callgraph** | **symbol/inter** | **1.000** | **1.000** | **1.000** | 1.000 | 0 | 0 | 3 |
-| inter | pdg | line/intra | 0.000 | n/a | n/a | n/a | 10 | 0 | 3 |
+| inter | pdg | line/intra | 0.000 | n/a | n/a | n/a | 37 | 0 | 3 |
 | mixed | **callgraph** | **symbol/inter** | **1.000** | **1.000** | **1.000** | 1.000 | 0 | 0 | 3 |
-| mixed | **pdg** | **line/intra** | **1.000** | **1.000** | **1.000** | 1.000 | 0 | 0 | 3 |
+| mixed | **pdg** | **line/intra** | 0.468 | **1.000** | 0.631 | 2.250 | 12 | 0 | 3 |
+
+> **Post-U1 / U2 correction.** Earlier snapshots of this table reported intra & mixed
+> pdg at F1 = 1.000, FPIS = 0. Two things changed and the numbers above are the honest
+> current state: (1) the **U1 inter-procedural slice** now unions cross-function callee
+> statements into `affectedStatements`, so on **mixed** fixtures those lines count as
+> FPIS against the intra-only `intra_AIS` → mixed/pdg precision 0.468, F1 0.631 (and
+> inter/pdg FPIS 10→37). **Recall stays 1.000 (FNIS = 0) everywhere** — this is added
+> cross-function reach (precision/noise on the intra axis), never a missed dependence.
+> (2) The **U2 value-diff oracle** (`--mutation`) independently shows the intra F1 = 1.000
+> is partly *correlated error*: on `intra-dataflow-chain` it proves a statement-level
+> recall of **0.333** on lines (`chain.ts:8,9`) the hand annotation ALSO missed — the
+> documented block-coalescing limitation. So "exact intra F1" means "agrees with a hand
+> annotation that shares PDG's block-granularity blind spot," not "statement-sound."
 
 Read it honestly:
 
-- **PDG mode is exact at intra-procedural statement granularity.** On all 6 intra
-  fixtures and all 3 mixed fixtures, the line-seeded slice returns *exactly* the
-  reconciled `intra_AIS` — F1 = 1.000, FPIS = FNIS = 0. It precisely identifies
-  the dependent statements of the changed line (def→use chains, control-dependent
-  arms, reaching defs). This is the question PDG was built to answer, and the
-  earlier "empty / no signal" result was purely the whole-symbol-seed artifact.
+- **PDG mode is precise at intra-procedural statement granularity — exact on the 7
+  intra fixtures.** There the line-seeded slice returns *exactly* the reconciled
+  `intra_AIS` (F1 = 1.000, FPIS = FNIS = 0). On the 3 **mixed** fixtures recall stays
+  full (FNIS = 0) but precision is 0.468 (F1 0.631): the U1 inter-procedural slice now
+  unions the cross-function callee statements it reaches into `affectedStatements`, and
+  those count as FPIS against the intra-only `intra_AIS`. It precisely identifies the
+  dependent statements of the changed line (def→use chains, control-dependent arms,
+  reaching defs); the earlier "empty / no signal" result was the whole-symbol-seed
+  artifact. **Caveat (U2):** the intra F1 = 1.000 is partly *correlated error* — the
+  value-diff oracle proves statement-level recall down to **0.333** on
+  `intra-dataflow-chain` (lines the hand annotation also missed). PDG is sound at BLOCK
+  granularity but under-reports interior statements of coalesced straight-line blocks.
 - **Call-graph mode is exact on the cross-function questions.** On all 3 inter
   fixtures and all 3 mixed fixtures it recovers every callee — F1 = 1.000. It is
   the engine for "what else calls/uses this?".
@@ -324,9 +349,12 @@ Read it honestly:
 > - **`mode:'pdg'` (opt-in, seeded with `line:N`, where `analyze --pdg` persisted
 >   the layer)** is **precise at intra-procedural *statement* granularity** —
 >   *"which statements inside this function does changing line N affect?"* On the
->   intra and mixed fixtures it reproduces the dependent-statement set exactly
->   (intra & mixed PDG F1 = 1.0, FPIS = FNIS = 0). This is a question call-graph
->   **cannot answer at all** (it has no notion of a statement).
+>   7 intra fixtures it reproduces the dependent-statement set exactly (intra PDG
+>   F1 = 1.0, FPIS = FNIS = 0); on mixed fixtures recall stays full (FNIS = 0) but it
+>   over-includes the cross-function statements U1 now reaches (mixed PDG precision
+>   0.468, F1 0.631), and the U2 oracle shows the intra exactness shares the hand
+>   annotation's block-coalescing blind spot (recall 0.333 on one chain fixture). This
+>   is still a question call-graph **cannot answer at all** (it has no notion of a statement).
 >
 > `mode:'pdg'` now composes those surfaces in one result: `affectedStatements`
 > carries statement-level dependence and `interproceduralByDepth`/`byDepth` carries
@@ -484,7 +512,7 @@ blocks).
 
 | Claim | Verdict | Evidence |
 |---|---|---|
-| **Tighter / fewer false alarms** | ✅ strongly confirmed | *Correctness:* the line-seeded slice equals the curated intra dependence exactly — intra & mixed PDG F1 = 1.000, FPIS = FNIS = 0. *Magnitude:* the slice is a median **0.26** (downstream) / **0.21** (upstream) of the function body; **240/240** functions localize below whole-body — a ~74–79% cut in the intra-procedural inspection set, with no proven dropped dependency. |
+| **Tighter / fewer false alarms** | ✅ confirmed for localization; ⚠️ correctness caveated | *Correctness:* the line-seeded slice equals the curated intra dependence exactly on the 7 **intra** fixtures (F1 = 1.000, FPIS = FNIS = 0); on **mixed** fixtures recall stays 1.000 but precision is 0.468 post-U1 (it unions the cross-function statements it now reaches). The U2 value-diff oracle further shows the intra exactness shares a block-coalescing blind spot (statement-level recall 0.333 on one chain fixture). *Magnitude (RECORDED, not re-run this session):* the slice is a median **0.26** (downstream) / **0.21** (upstream) of the function body; **240/240** functions localized below whole-body — a ~74–79% cut in the intra-procedural inspection set, with no proven dropped dependency. |
 | **Catches impact callgraph misses** | ✅ confirmed (new axis) | Callgraph emits *no* statement-level output (unified intra-line CIS = 0, recall 0 on every fixture); PDG recovers every true dependent statement (intra recall = 1.000). PDG answers a def→use / control-dependence question callgraph cannot represent at all. |
 | **Finds *more* callers/callees** | ❌ refuted (tie, by design) | Full PDG inter-procedural reach is **identical** to callgraph on 240/240 real functions (0 pdg-only, 0 callgraph-only). PDG bridges inter-procedural reach *through* the call graph, so it never finds reach the call graph misses. |
 | **Tighter cross-function reach (statement-precise)** | ✅ confirmed (precision, additive) | `mode:'pdg'` now also exposes `statementPreciseByDepth` — the callees actually invoked from the changed line's dependence slice (`BasicBlock.callees`), dropping symbols only reachable from independent statements. Strictly tighter than callgraph on **52/90** with-slice functions (median proven **1** vs callgraph **2** symbols, median statement-precision **0.67**); the full reach stays available alongside it. `statementPrecision` reports the cut. Upstream seeds have no statement discriminator, so they stay all-proven (callgraph-equal) by design. |
