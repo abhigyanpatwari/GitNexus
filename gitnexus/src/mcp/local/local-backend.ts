@@ -80,6 +80,8 @@ import {
   splitCalleeIds,
   type ImpactMode,
   type PdgImpactResult,
+  type PdgImpactErrorResult,
+  type PdgImpactTarget,
   type PdgBridgeOptions,
   type PdgBridgeEvidenceInfo,
 } from './pdg-impact.js';
@@ -4253,14 +4255,20 @@ export class LocalBackend {
       const suggestion = 'The graph query failed — try gitnexus context <symbol> as a fallback';
       const recoverySuggestion = isWalCorruptionError(err) ? WAL_RECOVERY_SUGGESTION : undefined;
       if (params.mode === 'pdg') {
-        return makePdgImpactErrorResult({
+        // Symbol resolution never reached the catch with a resolved symbol (the
+        // throw can originate before/within resolution), so the envelope carries
+        // the partial-but-typed target — typed as PdgImpactTarget so the partial
+        // is type-checked, not an inline literal in a Promise<any> hole.
+        const target: PdgImpactTarget = { name: params.target };
+        const pdgErr: PdgImpactErrorResult = makePdgImpactErrorResult({
           mode: 'pdg',
           error: message,
-          target: { name: params.target },
+          target,
           direction: params.direction,
           suggestion,
           recoverySuggestion,
         });
+        return pdgErr;
       }
       return {
         error: message,
@@ -4312,11 +4320,14 @@ export class LocalBackend {
       params.line !== undefined &&
       (!Number.isInteger(params.line) || (params.line as number) < 1)
     ) {
+      // Line param fails validation before target resolution → partial-but-typed
+      // target on the pdg path (typed PdgImpactTarget, not an inline literal).
+      const badLineTarget: PdgImpactTarget = { name: params.target };
       return mode === 'pdg'
         ? makePdgImpactErrorResult({
             mode: 'pdg',
             error: `Parameter 'line' must be a positive integer (1-based source line), got ${JSON.stringify(params.line)}.`,
-            target: { name: params.target },
+            target: badLineTarget,
             direction: params.direction,
           })
         : {
@@ -4336,14 +4347,18 @@ export class LocalBackend {
       const incompatible: string[] = [];
       if (params.crossDepth !== undefined) incompatible.push('crossDepth');
       if (incompatible.length > 0) {
-        return makePdgImpactErrorResult({
+        // crossDepth is rejected before target resolution → partial-but-typed
+        // target (typed PdgImpactTarget).
+        const crossDepthTarget: PdgImpactTarget = { name: target };
+        const pdgErr: PdgImpactErrorResult = makePdgImpactErrorResult({
           mode: 'pdg',
           error:
             `Parameter(s) ${incompatible.join(', ')} are not supported with mode:'pdg' ` +
             `(single-repo PDG impact). Remove them or use mode:'callgraph' for cross-repo fan-out.`,
-          target: { name: target },
+          target: crossDepthTarget,
           direction,
         });
+        return pdgErr;
       }
     }
 
@@ -4399,11 +4414,14 @@ export class LocalBackend {
 
     if (outcome.kind === 'not_found') {
       const missing = params.target_uid ?? target;
+      // not_found = no resolved symbol, so the envelope keeps the partial-but-
+      // typed target (typed PdgImpactTarget — there is no id/type/filePath yet).
+      const notFoundTarget: PdgImpactTarget = { name: target };
       return mode === 'pdg'
         ? makePdgImpactErrorResult({
             mode: 'pdg',
             error: `Target '${missing}' not found`,
-            target: { name: target },
+            target: notFoundTarget,
             direction,
           })
         : {
@@ -4597,15 +4615,19 @@ export class LocalBackend {
         executeParameterized,
       });
       if (isPdgDegradedLayerStatus(layer)) {
+        // Degradation occurs AFTER target resolution → thread the FULL typed
+        // envelope ({ id, name, type, filePath }) so degraded responses keep the
+        // same target shape as a successful PDG result (typed PdgImpactTarget).
+        const degradedTarget: PdgImpactTarget = {
+          id: sym.id,
+          name: sym.name,
+          type: symType || 'Function',
+          filePath: sym.filePath,
+        };
         return makePdgLayerDegradedResult({
           mode,
           layer,
-          target: {
-            id: sym.id,
-            name: sym.name,
-            type: symType || 'Function',
-            filePath: sym.filePath,
-          },
+          target: degradedTarget,
           direction,
         });
       }
@@ -5746,17 +5768,23 @@ export class LocalBackend {
       const groupModeResult = validateImpactMode(params.mode);
       if ('error' in groupModeResult) return { error: groupModeResult.error };
       if (groupModeResult.mode === 'pdg') {
-        return makePdgImpactErrorResult({
+        // @group reject: no single-repo symbol is ever resolved on the group path,
+        // so the envelope carries the partial-but-typed target (PdgImpactTarget).
+        // Routed through the typed builder so this exit is a PdgImpactResult union
+        // member, never a bare { error } object.
+        const groupRejectTarget: PdgImpactTarget = { name: String(params.target ?? '') };
+        const pdgErr: PdgImpactErrorResult = makePdgImpactErrorResult({
           mode: 'pdg',
           error:
             "mode:'pdg' is not supported for @group targets — PDG impact is " +
             'single-repo and intra-procedural. Run pdg impact against an ' +
             'individual indexed repository instead.',
-          target: { name: String(params.target ?? '') },
+          target: groupRejectTarget,
           direction: (params.direction === 'downstream' ? 'downstream' : 'upstream') as
             | 'upstream'
             | 'downstream',
         });
+        return pdgErr;
       }
       const impactArgs: Record<string, unknown> = {
         name: groupName,

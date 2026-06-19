@@ -1532,6 +1532,13 @@ export async function runImpactPDG(deps: RunPdgImpactDeps): Promise<PdgImpactRes
 
   const reachableBlocks = [...reachable].sort();
   const truncated = truncatedByDepth || truncatedByLimit;
+  // truncatedBy PRECEDENCE (U3): when BOTH depth and limit truncation fire, the
+  // scalar `truncatedBy` reports 'depth' (the depth ternary is tested first), while
+  // `truncatedByReasons` lists BOTH ['depth','limit']. Depth wins the scalar slot
+  // because dependence-level exhaustion is the stronger "the slice is incomplete"
+  // signal; the reasons array preserves that a size/limit cap also fired. This is a
+  // standing precedence contract — keep the depth-first ternary and the both-fire
+  // reasons array consistent.
   const truncatedBy: 'depth' | 'limit' | undefined = truncatedByDepth
     ? 'depth'
     : truncatedByLimit
