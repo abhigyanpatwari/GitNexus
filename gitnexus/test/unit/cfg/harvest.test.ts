@@ -1574,3 +1574,219 @@ describe('Swift call-site harvest', () => {
     expect(cfg.bindings![y].kind).toBe('param');
   });
 });
+
+// ── Rust call-site harvest ───────────────────────────────────────────────────
+// Drives the REAL Rust CFG visitor (RustHarvester) against real source via the
+// language-agnostic harness, mirroring the Swift / Kotlin / Python site tests
+// above. Rust has ONE call node, `call_expression { function, arguments }`, whose
+// `function` takes three shapes: a bare `identifier` (free `foo(x)`), a
+// `field_expression` (method `a.method(x)` — `.` access, dotted callee + root
+// receiver), and a `scoped_identifier` (path `Foo::bar(x)` / `a::b::c(x)` — the
+// `::` segments joined with `.` so the LEAF is the tail, `Foo::bar` ⇒ leaf
+// `bar`, matching the CALLS `@reference.name` tail capture AND calleesOfBlock's
+// `lastIndexOf('.')` leaf rule). The turbofish `foo::<T>(x)` (`generic_function`)
+// unwraps to the same site as `foo(x)`. Macros (`println!(…)`) are
+// `macro_invocation`, NOT `call_expression`, and are tagged `@reference.macro`
+// (a disjoint namespace) — NOT a call — so the harvester records NO site for
+// them (its arg idents still walk for uses). Rust has no `new` — every site is
+// `kind: 'call'`. The `at` anchor is byte-aligned with the Rust
+// `@reference.call.free/.member/.constructor` CALLS anchor, which the scope query
+// (captures.ts) places on the WHOLE `call_expression` node (the Swift/Go/Python/
+// Kotlin whole-call model, NOT Dart's callee-name model) — so for a member /
+// chained / path call `at` starts at the call's head segment (the receiver
+// `a` / the path head `Foo`), exactly where the CALLS anchor starts. Each `at`
+// below was confirmed byte-equal to the real `emitRustScopeCaptures`
+// `@reference.call.*` atRange. The grammar is loaded the same way the Rust
+// visitor test loads it (createRequire('tree-sitter-rust')).
+
+import { createRustCfgVisitor } from '../../../src/core/ingestion/cfg/visitors/rust.js';
+
+const rustGrammar = createRequire(import.meta.url)('tree-sitter-rust') as Parameters<
+  typeof makeCfgHarness
+>[0];
+const rust: CfgHarness = makeCfgHarness(rustGrammar, createRustCfgVisitor(), 'fixture.rs');
+
+describe('Rust call-site harvest', () => {
+  it('foo(a, b) → one call site, positions 0→[a], 1→[b], at the call_expression line/col', () => {
+    const cfg = rust.cfgOf(`fn f(a: i32, b: i32) {\n    foo(a, b);\n}\n`);
+    const sites = siteFact(cfg, 2).sites!;
+    expect(sites).toHaveLength(1);
+    const s = sites[0];
+    expect(s.kind).toBe('call');
+    expect(s.callee).toBe('foo');
+    expect(s.receiver).toBeUndefined();
+    expect(s.args).toEqual([[bindingIdx(cfg, 'a')], [bindingIdx(cfg, 'b')]]);
+    expect(s.parent).toBeUndefined();
+    // `at` is the `call_expression` node start: line 2 (1-based), col 4 (indent),
+    // byte-equal to the Rust `@reference.call.free` atRange [2,4].
+    expect(s.at).toEqual([2, 4]);
+  });
+
+  it('a.method(x) → dotted callee path + receiver = a, at the call_expression start', () => {
+    const cfg = rust.cfgOf(`fn f(a: Foo, x: i32) {\n    a.method(x);\n}\n`);
+    const sites = siteFact(cfg, 2).sites!;
+    expect(sites).toHaveLength(1);
+    const s = sites[0];
+    expect(s.callee).toBe('a.method');
+    expect(s.receiver).toBe(bindingIdx(cfg, 'a'));
+    expect(s.args).toEqual([[bindingIdx(cfg, 'x')]]);
+    // chain-length-1 callee: the access IS the callee — no member-read site, and
+    // the receiver use is recorded exactly once.
+    expect(siteFact(cfg, 2).uses.filter((u) => u === bindingIdx(cfg, 'a'))).toHaveLength(1);
+    // `at` is the call_expression start (the receiver `a`), col 4 — NOT the method
+    // name. The Rust `@reference.call.member` anchor keys on the same node ([2,4]).
+    expect(s.at).toEqual([2, 4]);
+  });
+
+  it('a.b.c() → callee path a.b.c, receiver = root a, plus a mid-chain member read', () => {
+    const cfg = rust.cfgOf(`fn f(a: Foo) {\n    a.b.c();\n}\n`);
+    const sites = siteFact(cfg, 2).sites!;
+    const call = sites.find((s) => s.kind === 'call')!;
+    expect(call.callee).toBe('a.b.c');
+    expect(call.receiver).toBe(bindingIdx(cfg, 'a'));
+    // `at` is the whole call_expression start (the root `a`), col 4.
+    expect(call.at).toEqual([2, 4]);
+    // the innermost access `a.b` (the non-callee load) is a member read.
+    const read = sites.find((s) => s.kind === 'member-read')!;
+    expect(read.object).toBe(bindingIdx(cfg, 'a'));
+    expect(read.property).toBe('b');
+  });
+
+  it('Foo::bar(x) path call → callee Foo.bar (leaf bar), no receiver (Foo is a type)', () => {
+    const cfg = rust.cfgOf(`fn f(x: i32) {\n    Foo::bar(x);\n}\n`);
+    const sites = siteFact(cfg, 2).sites!;
+    expect(sites).toHaveLength(1);
+    const s = sites[0];
+    expect(s.kind).toBe('call');
+    // `::` joined with `.` so the leaf (after last `.`) is the tail `bar` — the
+    // SAME leaf the CALLS `@reference.name` tail-identifier capture produces, so
+    // calleesOfBlock's `lastIndexOf('.')` slice yields `bar` and the name-fallback
+    // stays correct.
+    expect(s.callee).toBe('Foo.bar');
+    expect(s.callee!.slice(s.callee!.lastIndexOf('.') + 1)).toBe('bar');
+    // `Foo` is a type/module head — no value binding — so no receiver.
+    expect(s.receiver).toBeUndefined();
+    expect(s.args).toEqual([[bindingIdx(cfg, 'x')]]);
+    // anchored on the call_expression start (`Foo`, col 4) — matches the Rust
+    // `@reference.call.free` atRange [2,4] for the scoped form.
+    expect(s.at).toEqual([2, 4]);
+  });
+
+  it('a::b::c(x) path call with a LOCAL head → callee a.b.c (leaf c), receiver = a', () => {
+    const cfg = rust.cfgOf(`fn f(a: A, x: i32) {\n    a::b::c(x);\n}\n`);
+    const s = siteFact(cfg, 2).sites![0];
+    // multi-segment scoped path → joined with `.`; leaf after last `.` is `c`.
+    expect(s.callee).toBe('a.b.c');
+    expect(s.callee!.slice(s.callee!.lastIndexOf('.') + 1)).toBe('c');
+    // the head segment `a` IS a bound local (a param), so it is the receiver.
+    expect(s.receiver).toBe(bindingIdx(cfg, 'a'));
+    expect(s.args).toEqual([[bindingIdx(cfg, 'x')]]);
+    expect(s.at).toEqual([2, 4]);
+  });
+
+  it('turbofish foo::<T>(x) → unwraps generic_function to the same site as foo(x)', () => {
+    const cfg = rust.cfgOf(`fn f(x: i32) {\n    foo::<T>(x);\n}\n`);
+    const s = siteFact(cfg, 2).sites![0];
+    expect(s.callee).toBe('foo');
+    expect(s.args).toEqual([[bindingIdx(cfg, 'x')]]);
+    expect(s.at).toEqual([2, 4]);
+  });
+
+  it('chained a.b().c() → two distinct call sites (inner a.b, outer call-rooted)', () => {
+    const cfg = rust.cfgOf(`fn f(a: Foo) {\n    a.b().c();\n}\n`);
+    const calls = siteFact(cfg, 2).sites!.filter((s) => s.kind === 'call');
+    expect(calls).toHaveLength(2);
+    // the inner `a.b()` is a member call with receiver = root a.
+    const inner = calls.find((s) => s.callee === 'a.b')!;
+    expect(inner.receiver).toBe(bindingIdx(cfg, 'a'));
+    // the outer `(a.b()).c()` is rooted on a CALL result — no static callee path /
+    // receiver — but it is still its own call site, anchored on the same line.
+    const outer = calls.find((s) => s.callee === undefined)!;
+    expect(outer.kind).toBe('call');
+    expect(outer.receiver).toBeUndefined();
+    expect(outer.at).toEqual([2, 4]);
+  });
+
+  it("multi-line call → the site's `at` line is the call_expression's start line", () => {
+    const cfg = rust.cfgOf(`fn f(a: i32, b: i32) {\n    foo(\n        a,\n        b,\n    );\n}\n`);
+    const s = siteFact(cfg).sites![0];
+    expect(s.callee).toBe('foo');
+    // `call_expression` starts on line 2 even though the args span lines 3-4.
+    expect(s.at![0]).toBe(2);
+    expect(s.at![1]).toBe(4);
+    expect(s.args).toEqual([[bindingIdx(cfg, 'a')], [bindingIdx(cfg, 'b')]]);
+  });
+
+  it('two calls in one function → two distinct call sites', () => {
+    const cfg = rust.cfgOf(`fn f(a: i32, b: i32) {\n    foo(a);\n    bar(b);\n}\n`);
+    const calls = allSites(cfg).filter((s) => s.kind === 'call');
+    expect(calls.map((s) => s.callee).sort()).toEqual(['bar', 'foo']);
+  });
+
+  it('let r = g(x) → resultDefs carries r; arg x occurs at position 0', () => {
+    const cfg = rust.cfgOf(`fn f(x: i32) {\n    let r = g(x);\n}\n`);
+    const s = siteFact(cfg, 2).sites![0];
+    expect(s.callee).toBe('g');
+    expect(s.resultDefs).toEqual([bindingIdx(cfg, 'r')]);
+    expect(s.args).toEqual([[bindingIdx(cfg, 'x')]]);
+    // `at` is the call_expression start `g` (col 12, after `    let r = `).
+    expect(s.at).toEqual([2, 12]);
+  });
+
+  it('r = g(x) plain assignment → resultDefs carries r (scalar lvalue)', () => {
+    const cfg = rust.cfgOf(`fn f(x: i32) {\n    let mut r = 0;\n    r = g(x);\n}\n`);
+    const s = siteFact(cfg, 3).sites![0];
+    expect(s.callee).toBe('g');
+    expect(s.resultDefs).toEqual([bindingIdx(cfg, 'r')]);
+    expect(s.args).toEqual([[bindingIdx(cfg, 'x')]]);
+  });
+
+  it('foo(x)? try-call → still one call site (the ? wraps the call_expression)', () => {
+    const cfg = rust.cfgOf(`fn f(x: i32) -> Result<(), ()> {\n    foo(x)?;\n    Ok(())\n}\n`);
+    const s = siteFact(cfg, 2).sites![0];
+    expect(s.callee).toBe('foo');
+    expect(s.args).toEqual([[bindingIdx(cfg, 'x')]]);
+    expect(s.at).toEqual([2, 4]);
+  });
+
+  it('nested call exec(escape(x)) → inner site parent-linked, occurrence via-tagged', () => {
+    const cfg = rust.cfgOf(`fn f(x: i32) {\n    exec(escape(x));\n}\n`);
+    const sites = siteFact(cfg, 2).sites!;
+    expect(sites).toHaveLength(2);
+    const execIdx = sites.findIndex((s) => s.callee === 'exec');
+    const escapeIdx = sites.findIndex((s) => s.callee === 'escape');
+    const x = bindingIdx(cfg, 'x');
+    expect(sites[escapeIdx].args).toEqual([[x]]);
+    expect(sites[escapeIdx].parent).toEqual([execIdx, 0]);
+    expect(sites[execIdx].args).toEqual([[[x, escapeIdx]]]);
+  });
+
+  it('println!(...) macro → NO call site recorded (disjoint @reference.macro namespace)', () => {
+    const cfg = rust.cfgOf(`fn f(x: i32) {\n    println!("{}", x);\n}\n`);
+    // A macro is not a call_expression and is resolved via the MacroRegistry, NOT
+    // CALLS — so the harvester records no site (no spurious `println` callee), but
+    // the macro's argument identifier `x` still walks for a use.
+    expect(allSites(cfg)).toHaveLength(0);
+    expect(usesOf(cfg)).toContain(bindingIdx(cfg, 'x'));
+  });
+
+  it('a.b field read (no call) → a member-read site, object = a', () => {
+    const cfg = rust.cfgOf(`fn f(a: Foo) {\n    let _v = a.b;\n}\n`);
+    const sites = siteFact(cfg, 2).sites!;
+    const read = sites.find((s) => s.kind === 'member-read')!;
+    expect(read.object).toBe(bindingIdx(cfg, 'a'));
+    expect(read.property).toBe('b');
+    expect(sites.filter((s) => s.kind === 'call')).toHaveLength(0);
+  });
+
+  it('def/use facts stay intact alongside the new sites (regression guard)', () => {
+    const cfg = rust.cfgOf(`fn f(y: i32) {\n    let x = g(y);\n    use(x);\n}\n`);
+    const x = bindingIdx(cfg, 'x');
+    const y = bindingIdx(cfg, 'y');
+    // the binding table + def/use are coherent: x is defined, y and x are used.
+    expect(defsOf(cfg)).toContain(x);
+    expect(usesOf(cfg)).toContain(y);
+    expect(usesOf(cfg)).toContain(x);
+    expect(cfg.bindings![y].kind).toBe('param');
+  });
+});
