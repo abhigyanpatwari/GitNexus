@@ -146,7 +146,7 @@ describe('Blade/template static route extraction', () => {
       expect(output.routeRegistry.get('/admin/orders')).toEqual({
         filePath: 'routes/web.php',
         source: 'framework-route',
-        method: 'post',
+        method: 'POST',
       });
 
       const fetchEdges = graph.relationships.filter((rel) => rel.type === 'FETCHES');
