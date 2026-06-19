@@ -11,6 +11,19 @@ import {
   isRouteMemberKey,
   findEnclosingClass,
 } from '../../../ingestion/route-extractors/spring-shared.js';
+import {
+  REST_TEMPLATE_TO_HTTP,
+  WEB_CLIENT_SHORT_TO_HTTP,
+  EXCHANGE_ANNOTATION_TO_HTTP,
+  parseRequestLine,
+  joinPath,
+  joinInheritedSpringPath,
+  OPENFEIGN_FRAMEWORK,
+  HTTP_INTERFACE_FRAMEWORK,
+  FEIGN_CONFIDENCE,
+  REQUEST_LINE_CONFIDENCE,
+  EXCHANGE_CONFIDENCE,
+} from './spring-consumer-shared.js';
 import type {
   HttpDetection,
   HttpFileDetections,
@@ -64,7 +77,8 @@ interface SpringTypeInfo {
   filePath: string;
   kind: 'class' | 'interface';
   name: string;
-  classPrefix: string;
+  /** Class-level `@RequestMapping` prefixes — one per array element (`{"/a","/b"}` → two). */
+  classPrefixes: string[];
   implementedInterfaces: string[];
   isController: boolean;
   methods: SpringMethodInfo[];
@@ -72,15 +86,16 @@ interface SpringTypeInfo {
 
 // ─── Route-defining annotations (one generic query, one pass) ─────────
 // Every Java route-mapper annotation shares one shape: an annotation carrying a
-// single string argument — positional `"..."` or named `key = "..."` — on a
-// class, interface, or method. This SINGLE query matches that shape generically;
-// `scanRouteAnnotations` then reads the annotation NAME (`@ann`) and declaration
-// kind (`@node.type`) in its for-loop to decide what each match means. Adding a
-// new framework annotation that follows this single-string-argument shape is a
-// change to that loop (and the lookup maps), not to this query. Annotations with
-// a different argument shape — e.g. an array value `@RequestMapping({"/a","/b"})`
-// — are out of scope here (as they were for the prior queries) and would need a
-// new branch.
+// string argument — positional `"..."` or named `key = "..."`, each also in its
+// array form `{"..."}` / `key = {"..."}` (Spring's `path`/`value` are
+// `String[]`) — on a class, interface, or method. This SINGLE query matches that
+// shape generically; the `@value` capture is an alternation over a bare
+// `string_literal` and one nested in an `element_value_array_initializer`, so a
+// single-element array yields the same `@value` (a multi-element array yields one
+// match per element). `scanRouteAnnotations` then reads the annotation NAME
+// (`@ann`) and declaration kind (`@node.type`) in its for-loop to decide what
+// each match means. Adding a new framework annotation that follows this shape is
+// a change to that loop (and the lookup maps), not to this query.
 //
 // Captures (shared across all branches; intentionally framework-agnostic):
 //   @ann    → the annotation name identifier (RequestMapping, GetMapping, RequestLine, …)
@@ -108,12 +123,12 @@ const JAVA_ROUTE_ANNOTATION_PATTERNS = compilePatterns({
             (modifiers
               (annotation
                 name: (identifier) @ann
-                arguments: (annotation_argument_list (string_literal) @value)))) @node
+                arguments: (annotation_argument_list [(string_literal) @value (element_value_array_initializer (string_literal) @value)])))) @node
           (interface_declaration
             (modifiers
               (annotation
                 name: (identifier) @ann
-                arguments: (annotation_argument_list (string_literal) @value)))) @node
+                arguments: (annotation_argument_list [(string_literal) @value (element_value_array_initializer (string_literal) @value)])))) @node
           (class_declaration
             (modifiers
               (annotation
@@ -121,7 +136,7 @@ const JAVA_ROUTE_ANNOTATION_PATTERNS = compilePatterns({
                 arguments: (annotation_argument_list
                   (element_value_pair
                     key: (identifier) @key
-                    value: (string_literal) @value))))) @node
+                    value: [(string_literal) @value (element_value_array_initializer (string_literal) @value)]))))) @node
           (interface_declaration
             (modifiers
               (annotation
@@ -129,12 +144,12 @@ const JAVA_ROUTE_ANNOTATION_PATTERNS = compilePatterns({
                 arguments: (annotation_argument_list
                   (element_value_pair
                     key: (identifier) @key
-                    value: (string_literal) @value))))) @node
+                    value: [(string_literal) @value (element_value_array_initializer (string_literal) @value)]))))) @node
           (method_declaration
             (modifiers
               (annotation
                 name: (identifier) @ann
-                arguments: (annotation_argument_list (string_literal) @value)))
+                arguments: (annotation_argument_list [(string_literal) @value (element_value_array_initializer (string_literal) @value)])))
             name: (identifier) @member) @node
           (method_declaration
             (modifiers
@@ -143,7 +158,7 @@ const JAVA_ROUTE_ANNOTATION_PATTERNS = compilePatterns({
                 arguments: (annotation_argument_list
                   (element_value_pair
                     key: (identifier) @key
-                    value: (string_literal) @value))))
+                    value: [(string_literal) @value (element_value_array_initializer (string_literal) @value)]))))
             name: (identifier) @member) @node
         ]
       `,
@@ -167,59 +182,10 @@ const SPRING_TYPE_DECLARATION_PATTERNS = compilePatterns({
   ],
 } satisfies LanguagePatterns<Record<string, never>>);
 
-// ─── Consumer: OpenFeign `@RequestLine("METHOD /path")` parsing ───────
-// OpenFeign's native annotation pairs an HTTP method and path in a single
-// string literal — see https://github.com/OpenFeign/feign#interface-annotations.
-// It is method-level only and is mutually exclusive with Spring MVC
-// `@GetMapping` / `@PostMapping` etc. on the same method (mixing them
-// requires a different Feign Contract — they are not combined). The match
-// itself comes from `JAVA_ROUTE_ANNOTATION_PATTERNS`; this regex splits the
-// verb from the path of the captured literal.
-//
-// Examples:
-//   @RequestLine("GET /users/{id}")
-//   @RequestLine("POST /users?status=active")
-const REQUEST_LINE_VERB_RE = /^\s*(GET|POST|PUT|DELETE|PATCH|HEAD|OPTIONS)\s+(\S.*?)\s*$/i;
-
-/**
- * Parse a Feign `@RequestLine` value into a method + path pair.
- *
- * `@RequestLine("METHOD /path[?query]")` packs both fields in one string;
- * the query portion is dropped because contract IDs are method+path only
- * (consistent with how other consumers like RestTemplate/WebClient drop
- * query strings when their values are inline literals).
- *
- * Returns null if the value is not a recognized HTTP verb followed by a
- * path beginning with `/`.
- */
-function parseRequestLine(raw: string): { method: string; path: string } | null {
-  const match = REQUEST_LINE_VERB_RE.exec(raw);
-  if (!match) return null;
-  const [, verb, rest] = match;
-  if (typeof verb !== 'string' || typeof rest !== 'string') return null;
-  const queryIdx = rest.indexOf('?');
-  const pathOnly = (queryIdx >= 0 ? rest.slice(0, queryIdx) : rest).trim();
-  if (!pathOnly.startsWith('/')) return null;
-  return { method: verb.toUpperCase(), path: pathOnly };
-}
-
-// ─── Consumer: Spring RestTemplate (object-named + method-named) ──────
-// RestTemplate.getForObject / getForEntity → GET
-// RestTemplate.postForObject / postForEntity → POST
-// RestTemplate.put → PUT
-// RestTemplate.delete → DELETE
-// RestTemplate.patchForObject → PATCH
-// Source-scan only: receiver must be named exactly `restTemplate`.
-// Fields, `this.restTemplate`, aliases, and other injection names are deferred.
-const REST_TEMPLATE_TO_HTTP: Record<string, string> = {
-  getForObject: 'GET',
-  getForEntity: 'GET',
-  postForObject: 'POST',
-  postForEntity: 'POST',
-  put: 'PUT',
-  delete: 'DELETE',
-  patchForObject: 'PATCH',
-};
+// OpenFeign `@RequestLine` parsing (`parseRequestLine`), the RestTemplate and
+// WebClient short-form verb maps, the `@*Exchange` verb map, `joinPath`, and the
+// shared confidence/framework constants live in `spring-consumer-shared.ts` so
+// the Java and Kotlin plugins emit identical contract IDs.
 
 interface RestTemplateMeta {
   framework: 'spring-rest-template';
@@ -260,14 +226,6 @@ const REST_TEMPLATE_EXCHANGE_PATTERNS = compilePatterns({
     },
   ],
 } satisfies LanguagePatterns<RestTemplateMeta>);
-
-const WEB_CLIENT_SHORT_TO_HTTP: Record<string, string> = {
-  get: 'GET',
-  post: 'POST',
-  put: 'PUT',
-  delete: 'DELETE',
-  patch: 'PATCH',
-};
 
 const WEB_CLIENT_SHORT_FORM_PATTERNS = compilePatterns({
   name: 'java-web-client-short-form',
@@ -370,38 +328,6 @@ function findEnclosingInterface(node: Parser.SyntaxNode): Parser.SyntaxNode | nu
   return null;
 }
 
-/**
- * Join a class-level prefix and a method-level path into a single URL
- * path. Mirrors the semantics of the original regex implementation:
- * strip trailing slashes on the prefix, then ensure a single slash
- * between prefix and method path.
- */
-function joinPath(prefix: string, methodPath: string): string {
-  const cleanPrefix = prefix.replace(/^\/+/, '').replace(/\/+$/, '');
-  const cleanSub = methodPath.replace(/^\/+/, '');
-  if (!cleanPrefix) return `/${cleanSub}`;
-  return `/${cleanPrefix}/${cleanSub}`;
-}
-
-function joinInheritedSpringPath(
-  controllerPrefix: string,
-  inheritedPath: string,
-  inheritedOwnerPrefix = '',
-): string {
-  const joined = joinPath(controllerPrefix, inheritedPath);
-  const cleanPrefix = controllerPrefix.replace(/^\/+/, '').replace(/\/+$/, '');
-  const cleanOwnerPrefix = inheritedOwnerPrefix.replace(/^\/+/, '').replace(/\/+$/, '');
-  const cleanInherited = inheritedPath.replace(/^\/+/, '');
-  if (!cleanPrefix) return joined;
-  if (
-    cleanPrefix === cleanOwnerPrefix &&
-    (cleanInherited === cleanPrefix || cleanInherited.startsWith(`${cleanPrefix}/`))
-  ) {
-    return `/${cleanInherited}`;
-  }
-  return joined;
-}
-
 function getNodeName(node: Parser.SyntaxNode): string | null {
   return node.childForFieldName('name')?.text ?? null;
 }
@@ -440,14 +366,18 @@ interface RequestLineAnnotation {
 }
 
 interface RouteAnnotationScan {
-  /** Spring `@RequestMapping` URL prefix per class/interface node id (last write wins). */
-  prefixByTypeId: Map<number, string>;
-  /** OpenFeign interface prefix per interface node id; `@FeignClient(path)` wins over `@RequestMapping`. */
-  feignPrefixByInterfaceId: Map<number, string>;
+  /** Spring `@RequestMapping` URL prefixes per class/interface node id (one per array element). */
+  prefixByTypeId: Map<number, string[]>;
+  /** OpenFeign interface prefixes per interface node id; `@FeignClient(path)` wins over `@RequestMapping`. */
+  feignPrefixByInterfaceId: Map<number, string[]>;
+  /** Spring HTTP Interface `@HttpExchange(url|value)` type-level prefixes per class/interface node id. */
+  httpExchangePrefixByTypeId: Map<number, string[]>;
   /** One entry per resolved Spring `@(Get|...)Mapping` route — a method with N mappings yields N entries. */
   methodRoutes: MethodRouteAnnotation[];
   /** One entry per OpenFeign `@RequestLine` whose value parses to a verb + path. */
   requestLines: RequestLineAnnotation[];
+  /** One entry per Spring HTTP Interface `@(Get|...)Exchange` method — always a consumer. */
+  exchangeRoutes: MethodRouteAnnotation[];
 }
 
 /**
@@ -468,13 +398,22 @@ function scanRouteAnnotations(tree: Parser.Tree): RouteAnnotationScan {
   // collectSpringTypes cross-file inheritance), while `feignPrefixByInterfaceId`
   // feeds the OpenFeign *consumer* path in scan(). An interface carrying both
   // `@RequestMapping` and `@FeignClient(path)` lands a different value in each.
-  const prefixByTypeId = new Map<number, string>();
-  const feignPrefixByInterfaceId = new Map<number, string>();
+  const prefixByTypeId = new Map<number, string[]>();
+  const feignPrefixByInterfaceId = new Map<number, string[]>();
+  const httpExchangePrefixByTypeId = new Map<number, string[]>();
   const methodRoutes: MethodRouteAnnotation[] = [];
   const requestLines: RequestLineAnnotation[] = [];
+  const exchangeRoutes: MethodRouteAnnotation[] = [];
   // Interface `@RequestMapping` prefixes rank below `@FeignClient(path)`;
   // collect them and apply only after the FeignClient pass below.
   const interfaceRequestMappingPrefixes: Array<{ id: number; prefix: string }> = [];
+  // A route attribute is `String[]`; a multi-element array yields one match per
+  // element, so prefixes accumulate (de-duped) rather than overwrite.
+  const pushPrefix = (map: Map<number, string[]>, id: number, prefix: string): void => {
+    const arr = map.get(id) ?? [];
+    if (!arr.includes(prefix)) arr.push(prefix);
+    map.set(id, arr);
+  };
 
   for (const { captures } of matches) {
     const annNode = captures.ann;
@@ -510,6 +449,20 @@ function scanRouteAnnotations(tree: Parser.Tree): RouteAnnotationScan {
             parsed,
           });
         }
+      } else if (EXCHANGE_ANNOTATION_TO_HTTP[ann]) {
+        // Spring 6 HTTP Interface `@(Get|...)Exchange` — the path lives in the
+        // `url` or `value` attribute (or positionally); other attributes
+        // (`accept`, `contentType`, …) are not routes.
+        if (keyNode && keyNode.text !== 'url' && keyNode.text !== 'value') continue;
+        const rawPath = unquoteLiteral(valueNode.text);
+        if (rawPath !== null) {
+          exchangeRoutes.push({
+            methodNode: node,
+            methodName: captures.member?.text ?? null,
+            httpMethod: EXCHANGE_ANNOTATION_TO_HTTP[ann],
+            rawPath,
+          });
+        }
       }
       continue;
     }
@@ -520,7 +473,7 @@ function scanRouteAnnotations(tree: Parser.Tree): RouteAnnotationScan {
       if (!isRouteMemberKey(keyNode)) continue;
       const prefix = unquoteLiteral(valueNode.text);
       if (prefix !== null) {
-        prefixByTypeId.set(node.id, prefix);
+        pushPrefix(prefixByTypeId, node.id, prefix);
         if (node.type === 'interface_declaration') {
           interfaceRequestMappingPrefixes.push({ id: node.id, prefix });
         }
@@ -529,17 +482,30 @@ function scanRouteAnnotations(tree: Parser.Tree): RouteAnnotationScan {
       // Feign's `name`/`value` identify a service, not a path — only `path` is a prefix.
       if (!keyNode || keyNode.text !== 'path') continue;
       const prefix = unquoteLiteral(valueNode.text);
-      if (prefix !== null && !feignPrefixByInterfaceId.has(node.id)) {
-        feignPrefixByInterfaceId.set(node.id, prefix);
-      }
+      if (prefix !== null) pushPrefix(feignPrefixByInterfaceId, node.id, prefix);
+    } else if (ann === 'HttpExchange') {
+      // Spring HTTP Interface type-level prefix: the path lives in `url`/`value`
+      // (or positionally). Applies to its `@(Get|...)Exchange` consumer methods.
+      if (keyNode && keyNode.text !== 'url' && keyNode.text !== 'value') continue;
+      const prefix = unquoteLiteral(valueNode.text);
+      if (prefix !== null) pushPrefix(httpExchangePrefixByTypeId, node.id, prefix);
     }
   }
 
+  // `@RequestMapping` on a Feign interface is the fallback prefix, but only when
+  // the interface has no `@FeignClient(path)` of its own (path wins).
   for (const { id, prefix } of interfaceRequestMappingPrefixes) {
-    if (!feignPrefixByInterfaceId.has(id)) feignPrefixByInterfaceId.set(id, prefix);
+    if (!feignPrefixByInterfaceId.has(id)) pushPrefix(feignPrefixByInterfaceId, id, prefix);
   }
 
-  return { prefixByTypeId, feignPrefixByInterfaceId, methodRoutes, requestLines };
+  return {
+    prefixByTypeId,
+    feignPrefixByInterfaceId,
+    httpExchangePrefixByTypeId,
+    methodRoutes,
+    requestLines,
+    exchangeRoutes,
+  };
 }
 
 function collectDirectMethods(typeNode: Parser.SyntaxNode): Parser.SyntaxNode[] {
@@ -604,7 +570,7 @@ function collectSpringTypes(filePath: string, tree: Parser.Tree): SpringTypeInfo
       filePath,
       kind,
       name: typeNameNode.text,
-      classPrefix: prefixByTypeId.get(typeNode.id) ?? '',
+      classPrefixes: prefixByTypeId.get(typeNode.id) ?? [],
       implementedInterfaces: kind === 'class' ? collectImplementedInterfaces(typeNode) : [],
       isController: kind === 'class' && hasAnnotation(typeNode, ['RestController', 'Controller']),
       methods,
@@ -624,13 +590,18 @@ function scanSpringProject(files: readonly HttpScanInput[]): HttpFileDetections[
       interfaceRoutes.set(type.name, null);
       continue;
     }
+    const prefixes = type.classPrefixes.length ? type.classPrefixes : [''];
     const methodMap = new Map<string, SpringRouteBinding[]>();
     for (const method of type.methods) {
-      const routes = method.routes.map((route) => ({
-        method: route.method,
-        path: type.classPrefix ? joinPath(type.classPrefix, route.path) : route.path,
-        ownerPrefix: type.classPrefix,
-      }));
+      // Cross-product the interface's class prefixes with each method route, so a
+      // multi-element `@RequestMapping({"/a","/b"})` interface yields N bindings.
+      const routes = method.routes.flatMap((route) =>
+        prefixes.map((prefix) => ({
+          method: route.method,
+          path: prefix ? joinPath(prefix, route.path) : route.path,
+          ownerPrefix: prefix,
+        })),
+      );
       if (routes.length > 0) methodMap.set(method.name, routes);
     }
     interfaceRoutes.set(type.name, methodMap);
@@ -639,19 +610,27 @@ function scanSpringProject(files: readonly HttpScanInput[]): HttpFileDetections[
   const detectionsByFile = new Map<string, HttpDetection[]>();
   for (const type of types) {
     if (type.kind !== 'class' || !type.isController) continue;
+    const controllerPrefixes = type.classPrefixes.length ? type.classPrefixes : [''];
     for (const method of type.methods) {
       if (method.routes.length > 0) continue;
       const inheritedRoutes = type.implementedInterfaces.flatMap((interfaceName) => {
         const routeMap = interfaceRoutes.get(interfaceName);
         if (!routeMap) return [];
         const routes = routeMap.get(method.name) ?? [];
-        return routes.map((route) => ({
-          method: route.method,
-          path: joinInheritedSpringPath(type.classPrefix, route.path, route.ownerPrefix),
-        }));
+        // Cross-product the controller's own class prefixes with each inherited route.
+        return routes.flatMap((route) =>
+          controllerPrefixes.map((controllerPrefix) => ({
+            method: route.method,
+            path: joinInheritedSpringPath(controllerPrefix, route.path, route.ownerPrefix),
+          })),
+        );
       });
 
+      const seen = new Set<string>();
       for (const route of inheritedRoutes) {
+        const key = `${route.method} ${route.path}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
         const detections = detectionsByFile.get(type.filePath) ?? [];
         detections.push({
           role: 'provider',
@@ -682,8 +661,14 @@ export const JAVA_HTTP_PLUGIN: HttpLanguagePlugin = {
     // `scanRouteAnnotations` resolves every route-defining annotation —
     // class/interface prefixes, method `@(Get|...)Mapping`s and native
     // `@RequestLine`s — from a single `matches()` pass over the tree.
-    const { prefixByTypeId, feignPrefixByInterfaceId, methodRoutes, requestLines } =
-      scanRouteAnnotations(tree);
+    const {
+      prefixByTypeId,
+      feignPrefixByInterfaceId,
+      httpExchangePrefixByTypeId,
+      methodRoutes,
+      requestLines,
+      exchangeRoutes,
+    } = scanRouteAnnotations(tree);
 
     // A `@(Get|...)Mapping` inside a `@FeignClient` interface is an OpenFeign
     // *consumer* (it describes a remote call); the same annotation inside a
@@ -693,28 +678,34 @@ export const JAVA_HTTP_PLUGIN: HttpLanguagePlugin = {
     for (const route of methodRoutes) {
       const enclosingInterface = findEnclosingInterface(route.methodNode);
       if (enclosingInterface && hasAnnotation(enclosingInterface, 'FeignClient')) {
-        const prefix = feignPrefixByInterfaceId.get(enclosingInterface.id) ?? '';
-        out.push({
-          role: 'consumer',
-          framework: 'openfeign',
-          method: route.httpMethod,
-          path: joinPath(prefix, route.rawPath),
-          name: route.methodName,
-          confidence: 0.7,
-        });
+        const prefixes = feignPrefixByInterfaceId.get(enclosingInterface.id) ?? [''];
+        for (const prefix of prefixes) {
+          out.push({
+            role: 'consumer',
+            framework: OPENFEIGN_FRAMEWORK,
+            method: route.httpMethod,
+            path: joinPath(prefix, route.rawPath),
+            name: route.methodName,
+            confidence: FEIGN_CONFIDENCE,
+          });
+        }
         continue;
       }
       const enclosingClass = findEnclosingClass(route.methodNode);
       if (!enclosingClass) continue;
-      const prefix = prefixByTypeId.get(enclosingClass.id) ?? '';
-      out.push({
-        role: 'provider',
-        framework: 'spring',
-        method: route.httpMethod,
-        path: joinPath(prefix, route.rawPath),
-        name: route.methodName,
-        confidence: 0.8,
-      });
+      // A multi-element class `@RequestMapping({"/a","/b"})` registers the method
+      // under each prefix — emit one provider per (prefix × this route).
+      const prefixes = prefixByTypeId.get(enclosingClass.id) ?? [''];
+      for (const prefix of prefixes) {
+        out.push({
+          role: 'provider',
+          framework: 'spring',
+          method: route.httpMethod,
+          path: joinPath(prefix, route.rawPath),
+          name: route.methodName,
+          confidence: 0.8,
+        });
+      }
     }
 
     // Native OpenFeign `@RequestLine("METHOD /path")`. Method-level only and
@@ -730,15 +721,38 @@ export const JAVA_HTTP_PLUGIN: HttpLanguagePlugin = {
     for (const requestLine of requestLines) {
       const enclosingInterface = findEnclosingInterface(requestLine.methodNode);
       if (!enclosingInterface) continue;
-      const prefix = feignPrefixByInterfaceId.get(enclosingInterface.id) ?? '';
-      out.push({
-        role: 'consumer',
-        framework: 'openfeign',
-        method: requestLine.parsed.method,
-        path: joinPath(prefix, requestLine.parsed.path),
-        name: requestLine.methodName,
-        confidence: 0.75,
-      });
+      const prefixes = feignPrefixByInterfaceId.get(enclosingInterface.id) ?? [''];
+      for (const prefix of prefixes) {
+        out.push({
+          role: 'consumer',
+          framework: OPENFEIGN_FRAMEWORK,
+          method: requestLine.parsed.method,
+          path: joinPath(prefix, requestLine.parsed.path),
+          name: requestLine.methodName,
+          confidence: REQUEST_LINE_CONFIDENCE,
+        });
+      }
+    }
+
+    // ─── Consumers: Spring HTTP Interface @(Get|...)Exchange ────────
+    // Declarative client interfaces proxied by `HttpServiceProxyFactory`
+    // (over RestClient / WebClient / RestTemplate). Always a consumer — no
+    // provider ambiguity — with an optional type-level `@HttpExchange(url)`
+    // prefix. The verb comes from the annotation name (`@GetExchange` → GET).
+    for (const route of exchangeRoutes) {
+      const enclosing =
+        findEnclosingInterface(route.methodNode) ?? findEnclosingClass(route.methodNode);
+      const prefixes = enclosing ? (httpExchangePrefixByTypeId.get(enclosing.id) ?? ['']) : [''];
+      for (const prefix of prefixes) {
+        out.push({
+          role: 'consumer',
+          framework: HTTP_INTERFACE_FRAMEWORK,
+          method: route.httpMethod,
+          path: joinPath(prefix, route.rawPath),
+          name: route.methodName,
+          confidence: EXCHANGE_CONFIDENCE,
+        });
+      }
     }
 
     // ─── Consumers: RestTemplate ────────────────────────────────────

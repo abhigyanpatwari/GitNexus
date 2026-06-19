@@ -1763,6 +1763,56 @@ class LongFormClient {
       ).toBeUndefined();
     });
 
+    it('handles Java array-form annotation paths ({"/x"}, key = {"/x"})', async () => {
+      const dir = path.join(tmpDir, 'java-array-paths');
+      fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+      // Provider: array class prefix + array method path.
+      fs.writeFileSync(
+        path.join(dir, 'src', 'ProductController.java'),
+        `
+import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.GetMapping;
+
+@RestController
+@RequestMapping({"/api/products"})
+class ProductController {
+  @GetMapping(path = {"/{id}"})
+  Product get(Integer id) { return null; }
+}
+`,
+      );
+      // OpenFeign consumer with array positional path.
+      fs.writeFileSync(
+        path.join(dir, 'src', 'OrdersClient.java'),
+        `
+import org.springframework.cloud.openfeign.FeignClient;
+import org.springframework.web.bind.annotation.PostMapping;
+
+@FeignClient(name = "orders")
+interface OrdersClient {
+  @PostMapping({"/orders/search"})
+  Object search();
+}
+`,
+      );
+
+      const contracts = await extractor.extract(null, dir, makeRepo(dir));
+      const providers = contracts.filter((c) => c.role === 'provider');
+      const consumers = contracts.filter((c) => c.role === 'consumer');
+
+      // Array class prefix + array method path → provider.
+      expect(
+        providers.find((c) => c.contractId === 'http::GET::/api/products/{param}'),
+      ).toBeDefined();
+      // @FeignClient with array positional path → consumer.
+      expect(
+        consumers.find(
+          (c) => c.contractId === 'http::POST::/orders/search' && c.meta.framework === 'openfeign',
+        ),
+      ).toBeDefined();
+    });
+
     it('extracts OpenFeign clients as consumers, not providers', async () => {
       const dir = path.join(tmpDir, 'java-openfeign-consumer');
       fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
@@ -1802,6 +1852,46 @@ interface OrderClient {
       ).toBeDefined();
       expect(
         providers.find((c) => c.symbolRef.filePath.endsWith('OrderClient.java')),
+      ).toBeUndefined();
+    });
+
+    it('extracts Spring HTTP Interface @(Get|...)Exchange clients as consumers', async () => {
+      const dir = path.join(tmpDir, 'java-http-exchange-consumer');
+      fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'src', 'InventoryApi.java'),
+        `
+import org.springframework.web.service.annotation.HttpExchange;
+import org.springframework.web.service.annotation.GetExchange;
+import org.springframework.web.service.annotation.PostExchange;
+
+@HttpExchange(url = "/items")
+interface InventoryApi {
+  @GetExchange(url = "/{id}")
+  Item getItem(Integer id);
+
+  @PostExchange("/search")
+  Page<Item> search(ItemFilter query);
+}
+`,
+      );
+
+      const contracts = await extractor.extract(null, dir, makeRepo(dir));
+      const consumers = contracts.filter((c) => c.role === 'consumer');
+      const providers = contracts.filter((c) => c.role === 'provider');
+
+      expect(
+        consumers.find(
+          (c) =>
+            c.contractId === 'http::GET::/items/{param}' &&
+            c.meta.framework === 'spring-http-interface' &&
+            c.confidence === 0.75,
+        ),
+      ).toBeDefined();
+      expect(consumers.find((c) => c.contractId === 'http::POST::/items/search')).toBeDefined();
+      // Declarative HTTP-interface methods are consumers, never providers.
+      expect(
+        providers.find((c) => c.symbolRef.filePath.endsWith('InventoryApi.java')),
       ).toBeUndefined();
     });
 
@@ -2685,6 +2775,837 @@ class CacheClient(private val cacheClient: SomeCache) {
         expect(consumers.find((c) => c.contractId === 'http::GET::/cache/key')).toBeUndefined();
         const fromCache = consumers.filter((c) => c.symbolRef.filePath.endsWith('CacheClient.kt'));
         expect(fromCache).toHaveLength(0);
+      },
+    );
+
+    // ─── Kotlin OpenFeign + Spring HTTP Interface consumers ──────────────
+    // `@FeignClient` interfaces (Spring MVC `@*Mapping` methods) and Spring 6
+    // declarative HTTP Interfaces (`@(Get|...)Exchange`) are the dominant
+    // outbound-call patterns in Kotlin+Spring services. In tree-sitter-kotlin
+    // an `interface` is a `class_declaration`, so without a `@FeignClient`
+    // gate the `@*Mapping` methods would mis-classify as providers.
+    itKotlinConsumer(
+      'extracts Kotlin @FeignClient methods as consumers, not providers',
+      async () => {
+        const dir = path.join(tmpDir, 'kotlin-feign-consumer');
+        fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+        fs.writeFileSync(
+          path.join(dir, 'src', 'InventoryClient.kt'),
+          `package com.example
+import org.springframework.cloud.openfeign.FeignClient
+import org.springframework.web.bind.annotation.GetMapping
+import org.springframework.web.bind.annotation.PostMapping
+
+@FeignClient(name = "inventory-service", configuration = [InventoryFeignClientConfig::class])
+interface InventoryClient {
+    @GetMapping("items/{itemId}", consumes = [MediaType.APPLICATION_JSON_VALUE], produces = [MediaType.APPLICATION_JSON_VALUE])
+    fun getItem(@PathVariable("itemId") itemId: Int): ItemDto
+
+    @PostMapping("items/search", consumes = [MediaType.APPLICATION_JSON_VALUE])
+    fun getItems(@RequestBody query: ItemFilter): Page<ItemDto>
+}
+`,
+        );
+
+        const contracts = await extractor.extract(null, dir, makeRepo(dir));
+        const consumers = contracts.filter((c) => c.role === 'consumer');
+        const providers = contracts.filter((c) => c.role === 'provider');
+
+        expect(
+          consumers.find(
+            (c) =>
+              c.contractId === 'http::GET::/items/{param}' &&
+              c.meta.framework === 'openfeign' &&
+              c.confidence === 0.7,
+          ),
+        ).toBeDefined();
+        expect(consumers.find((c) => c.contractId === 'http::POST::/items/search')).toBeDefined();
+        // The Feign interface methods must NOT leak into providers.
+        expect(
+          providers.find((c) => c.symbolRef.filePath.endsWith('InventoryClient.kt')),
+        ).toBeUndefined();
+      },
+    );
+
+    itKotlinConsumer('applies @FeignClient(path) and @RequestMapping prefixes', async () => {
+      // One interface per file — the real-world layout (e.g. InventoryClient.kt).
+      const dir = path.join(tmpDir, 'kotlin-feign-prefix');
+      fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'src', 'PrecedenceClient.kt'),
+        `package com.example
+import org.springframework.cloud.openfeign.FeignClient
+import org.springframework.web.bind.annotation.GetMapping
+import org.springframework.web.bind.annotation.RequestMapping
+
+@FeignClient(name = "a", path = "/feign-path")
+@RequestMapping("/rm-path")
+interface PrecedenceClient {
+    @GetMapping("/orders")
+    fun getOrders(): Any
+}
+`,
+      );
+      fs.writeFileSync(
+        path.join(dir, 'src', 'InventoryClient.kt'),
+        `package com.example
+import org.springframework.cloud.openfeign.FeignClient
+import org.springframework.web.bind.annotation.GetMapping
+import org.springframework.web.bind.annotation.RequestMapping
+
+@FeignClient(name = "b")
+@RequestMapping(path = "/api")
+interface InventoryClient {
+    @GetMapping("/inventory/{id}")
+    fun getInventory(id: String): Any
+}
+`,
+      );
+
+      const contracts = await extractor.extract(null, dir, makeRepo(dir));
+      const consumers = contracts.filter((c) => c.role === 'consumer');
+
+      // @FeignClient(path) wins over @RequestMapping.
+      expect(consumers.find((c) => c.contractId === 'http::GET::/feign-path/orders')).toBeDefined();
+      expect(consumers.find((c) => c.contractId === 'http::GET::/rm-path/orders')).toBeUndefined();
+      // @RequestMapping is the fallback prefix when there is no @FeignClient(path).
+      expect(
+        consumers.find((c) => c.contractId === 'http::GET::/api/inventory/{param}'),
+      ).toBeDefined();
+    });
+
+    itKotlinConsumer(
+      'extracts Kotlin Spring HTTP Interface @(Get|...)Exchange consumers',
+      async () => {
+        const dir = path.join(tmpDir, 'kotlin-http-exchange');
+        fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+        fs.writeFileSync(
+          path.join(dir, 'src', 'InventoryApi.kt'),
+          `package com.example
+import org.springframework.web.service.annotation.GetExchange
+import org.springframework.web.service.annotation.PostExchange
+import org.springframework.web.service.annotation.PutExchange
+import org.springframework.web.service.annotation.PatchExchange
+import org.springframework.web.service.annotation.DeleteExchange
+
+interface InventoryApi {
+    @GetExchange(url = "/items/{itemId}", accept = [MediaType.APPLICATION_JSON_VALUE])
+    fun obtainItem(@PathVariable itemId: Int): Any
+
+    @PostExchange(url = "/items/search")
+    fun search(): Any
+
+    @PutExchange(url = "/items")
+    fun create(): Any
+
+    @PatchExchange(url = "/items/update/{itemId}")
+    fun update(@PathVariable itemId: Int): Any
+
+    @DeleteExchange(url = "/items/{itemId}")
+    fun remove(@PathVariable itemId: Int): Any
+}
+`,
+        );
+
+        const contracts = await extractor.extract(null, dir, makeRepo(dir));
+        const consumers = contracts.filter((c) => c.role === 'consumer');
+        const providers = contracts.filter((c) => c.role === 'provider');
+
+        expect(
+          consumers.find(
+            (c) =>
+              c.contractId === 'http::GET::/items/{param}' &&
+              c.meta.framework === 'spring-http-interface' &&
+              c.confidence === 0.75,
+          ),
+        ).toBeDefined();
+        expect(consumers.find((c) => c.contractId === 'http::POST::/items/search')).toBeDefined();
+        expect(consumers.find((c) => c.contractId === 'http::PUT::/items')).toBeDefined();
+        expect(
+          consumers.find((c) => c.contractId === 'http::PATCH::/items/update/{param}'),
+        ).toBeDefined();
+        expect(
+          consumers.find((c) => c.contractId === 'http::DELETE::/items/{param}'),
+        ).toBeDefined();
+        // Declarative HTTP-interface methods are consumers, never providers.
+        expect(
+          providers.find((c) => c.symbolRef.filePath.endsWith('InventoryApi.kt')),
+        ).toBeUndefined();
+      },
+    );
+
+    itKotlinConsumer(
+      'applies class-level @HttpExchange(url) prefix and a positional @GetExchange',
+      async () => {
+        const dir = path.join(tmpDir, 'kotlin-http-exchange-prefix');
+        fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+        fs.writeFileSync(
+          path.join(dir, 'src', 'ProductApi.kt'),
+          `package com.example
+import org.springframework.web.service.annotation.HttpExchange
+import org.springframework.web.service.annotation.GetExchange
+
+@HttpExchange(url = "/products")
+interface ProductApi {
+    @GetExchange("/{id}")
+    fun get(@PathVariable id: Int): Any
+}
+`,
+        );
+
+        const contracts = await extractor.extract(null, dir, makeRepo(dir));
+        const consumers = contracts.filter((c) => c.role === 'consumer');
+
+        expect(
+          consumers.find(
+            (c) =>
+              c.contractId === 'http::GET::/products/{param}' &&
+              c.meta.framework === 'spring-http-interface',
+          ),
+        ).toBeDefined();
+      },
+    );
+
+    itKotlinConsumer('extracts Kotlin OpenFeign native @RequestLine consumers', async () => {
+      const dir = path.join(tmpDir, 'kotlin-feign-request-line');
+      fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'src', 'AiClient.kt'),
+        `package com.example
+import org.springframework.cloud.openfeign.FeignClient
+import feign.RequestLine
+
+@FeignClient(name = "ai-backend")
+interface AiClient {
+    @RequestLine("POST /ai/summarize")
+    fun summarize(): String
+
+    @RequestLine("GET /ai/health")
+    fun health(): String
+}
+`,
+      );
+
+      const contracts = await extractor.extract(null, dir, makeRepo(dir));
+      const consumers = contracts.filter((c) => c.role === 'consumer');
+
+      expect(
+        consumers.find(
+          (c) =>
+            c.contractId === 'http::POST::/ai/summarize' &&
+            c.meta.framework === 'openfeign' &&
+            c.confidence === 0.75,
+        ),
+      ).toBeDefined();
+      expect(consumers.find((c) => c.contractId === 'http::GET::/ai/health')).toBeDefined();
+    });
+
+    itKotlinConsumer(
+      'classifies a @RestController class as provider and a @FeignClient interface as consumer',
+      async () => {
+        const dir = path.join(tmpDir, 'kotlin-controller-vs-feign');
+        fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+        fs.writeFileSync(
+          path.join(dir, 'src', 'Mixed.kt'),
+          `package com.example
+import org.springframework.web.bind.annotation.RestController
+import org.springframework.web.bind.annotation.GetMapping
+import org.springframework.cloud.openfeign.FeignClient
+
+@RestController
+class OrdersController {
+    @GetMapping("/orders/{id}")
+    fun getOrder(@PathVariable id: Int): Any = TODO()
+}
+
+@FeignClient(name = "pricing")
+interface PricingClient {
+    @GetMapping("/prices/{id}")
+    fun getPrice(id: Int): Any
+}
+`,
+        );
+
+        const contracts = await extractor.extract(null, dir, makeRepo(dir));
+        const providers = contracts.filter((c) => c.role === 'provider');
+        const consumers = contracts.filter((c) => c.role === 'consumer');
+
+        // Controller method → provider (not a consumer).
+        expect(
+          providers.find(
+            (c) => c.contractId === 'http::GET::/orders/{param}' && c.meta.framework === 'spring',
+          ),
+        ).toBeDefined();
+        expect(
+          consumers.find((c) => c.contractId === 'http::GET::/orders/{param}'),
+        ).toBeUndefined();
+        // Feign interface method → consumer (not a provider).
+        expect(
+          consumers.find(
+            (c) =>
+              c.contractId === 'http::GET::/prices/{param}' && c.meta.framework === 'openfeign',
+          ),
+        ).toBeDefined();
+        expect(
+          providers.find((c) => c.contractId === 'http::GET::/prices/{param}'),
+        ).toBeUndefined();
+      },
+    );
+
+    itKotlinConsumer(
+      'emits a provider for a class implementing a route interface (interface-based controller)',
+      async () => {
+        // One interface per file (real layout). Routes live on the interface; the
+        // @RestController override carries none → inherited via scanProject.
+        const dir = path.join(tmpDir, 'kotlin-interface-based-controller');
+        fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+        fs.writeFileSync(
+          path.join(dir, 'src', 'WarehouseApi.kt'),
+          `package com.example
+import org.springframework.web.bind.annotation.RequestMapping
+import org.springframework.web.bind.annotation.GetMapping
+
+@RequestMapping("/warehouses")
+interface WarehouseApi {
+    @GetMapping("/{id}/stock")
+    fun listStock(id: String): Any
+}
+`,
+        );
+        fs.writeFileSync(
+          path.join(dir, 'src', 'WarehouseController.kt'),
+          `package com.example
+import org.springframework.web.bind.annotation.RestController
+
+@RestController
+class WarehouseController(private val svc: Svc) : WarehouseApi {
+    override fun listStock(id: String): Any = TODO()
+}
+`,
+        );
+
+        const contracts = await extractor.extract(null, dir, makeRepo(dir));
+        const providers = contracts.filter((c) => c.role === 'provider');
+
+        // The controller inherits the route declared on WarehouseApi → provider.
+        expect(
+          providers.find(
+            (c) =>
+              c.contractId === 'http::GET::/warehouses/{param}/stock' &&
+              c.symbolRef.filePath.endsWith('WarehouseController.kt'),
+          ),
+        ).toBeDefined();
+      },
+    );
+
+    itKotlinConsumer(
+      'a @FeignClient API interface implemented by a controller yields both a consumer and a provider',
+      async () => {
+        // catalog-service pattern: an `api` module publishes a @FeignClient contract that
+        // the service's own @RestController implements. The interface is the
+        // client SDK (consumer); the implementing controller is the provider.
+        const dir = path.join(tmpDir, 'kotlin-feign-api-implemented');
+        fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+        fs.writeFileSync(
+          path.join(dir, 'src', 'WarehouseApi.kt'),
+          `package com.example
+import org.springframework.cloud.openfeign.FeignClient
+import org.springframework.web.bind.annotation.RequestMapping
+import org.springframework.web.bind.annotation.GetMapping
+
+@FeignClient(name = "catalog-service")
+@RequestMapping("/warehouses")
+interface WarehouseApi {
+    @GetMapping("/{id}/stock")
+    fun listStock(id: String): Any
+}
+`,
+        );
+        fs.writeFileSync(
+          path.join(dir, 'src', 'WarehouseController.kt'),
+          `package com.example
+import org.springframework.web.bind.annotation.RestController
+
+@RestController
+class WarehouseController(private val svc: Svc) : WarehouseApi {
+    override fun listStock(id: String): Any = TODO()
+}
+`,
+        );
+
+        const contracts = await extractor.extract(null, dir, makeRepo(dir));
+        const providers = contracts.filter((c) => c.role === 'provider');
+        const consumers = contracts.filter((c) => c.role === 'consumer');
+
+        // Interface (published @FeignClient client SDK) → consumer.
+        expect(
+          consumers.find(
+            (c) =>
+              c.contractId === 'http::GET::/warehouses/{param}/stock' &&
+              c.meta.framework === 'openfeign',
+          ),
+        ).toBeDefined();
+        // Implementing @RestController → provider (route inherited from the interface).
+        expect(
+          providers.find(
+            (c) =>
+              c.contractId === 'http::GET::/warehouses/{param}/stock' &&
+              c.symbolRef.filePath.endsWith('WarehouseController.kt'),
+          ),
+        ).toBeDefined();
+      },
+    );
+
+    itKotlinConsumer(
+      'handles Kotlin array-form paths (["/x"], value = ["/x"]) for providers and consumers',
+      async () => {
+        // Spring path/value attributes are Array<String>; the array literal form
+        // is common in Kotlin. Each route-bearing annotation must accept both a
+        // bare string and a single-element array (collection_literal).
+        const dir = path.join(tmpDir, 'kotlin-array-paths');
+        fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+        // Provider: array class prefix + array method path.
+        fs.writeFileSync(
+          path.join(dir, 'src', 'ProductsController.kt'),
+          `package com.example
+import org.springframework.web.bind.annotation.RestController
+import org.springframework.web.bind.annotation.RequestMapping
+import org.springframework.web.bind.annotation.GetMapping
+
+@RestController
+@RequestMapping(["/api/products"])
+class ProductsController {
+    @GetMapping(value = ["/{id}"])
+    fun get(id: Int): Any = TODO()
+}
+`,
+        );
+        // OpenFeign consumer: positional array path.
+        fs.writeFileSync(
+          path.join(dir, 'src', 'OrdersClient.kt'),
+          `package com.example
+import org.springframework.cloud.openfeign.FeignClient
+import org.springframework.web.bind.annotation.PostMapping
+
+@FeignClient(name = "orders")
+interface OrdersClient {
+    @PostMapping(["/orders/search"])
+    fun search(): Any
+}
+`,
+        );
+        // Spring HTTP Interface consumer: named array url.
+        fs.writeFileSync(
+          path.join(dir, 'src', 'PricingApi.kt'),
+          `package com.example
+import org.springframework.web.service.annotation.GetExchange
+
+interface PricingApi {
+    @GetExchange(url = ["/pricing/{id}"])
+    fun price(id: Int): Any
+}
+`,
+        );
+
+        const contracts = await extractor.extract(null, dir, makeRepo(dir));
+        const providers = contracts.filter((c) => c.role === 'provider');
+        const consumers = contracts.filter((c) => c.role === 'consumer');
+
+        // Array class prefix + array method path → provider.
+        expect(
+          providers.find((c) => c.contractId === 'http::GET::/api/products/{param}'),
+        ).toBeDefined();
+        // @FeignClient positional array path → consumer.
+        expect(
+          consumers.find(
+            (c) =>
+              c.contractId === 'http::POST::/orders/search' && c.meta.framework === 'openfeign',
+          ),
+        ).toBeDefined();
+        // @GetExchange(url = [...]) array → consumer.
+        expect(
+          consumers.find(
+            (c) =>
+              c.contractId === 'http::GET::/pricing/{param}' &&
+              c.meta.framework === 'spring-http-interface',
+          ),
+        ).toBeDefined();
+      },
+    );
+
+    itKotlinConsumer(
+      'does not extract @RequestLine on a Kotlin class method (Feign proxies are interfaces only)',
+      async () => {
+        // Feign builds its proxy from an interface; a @RequestLine on a concrete
+        // class is not a client call. Anti-overreach guard, parity with java.ts.
+        const dir = path.join(tmpDir, 'kotlin-request-line-class');
+        fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+        fs.writeFileSync(
+          path.join(dir, 'src', 'AiClientImpl.kt'),
+          `package com.example
+import feign.RequestLine
+
+class AiClientImpl {
+    @RequestLine("GET /should-not-extract")
+    fun health(): String = TODO()
+}
+`,
+        );
+
+        const contracts = await extractor.extract(null, dir, makeRepo(dir));
+        expect(
+          contracts.find((c) => c.contractId === 'http::GET::/should-not-extract'),
+        ).toBeUndefined();
+      },
+    );
+
+    itKotlinConsumer(
+      'extracts Kotlin @RequestLine on a plain interface without @FeignClient (Feign.builder())',
+      async () => {
+        // Core-Feign usage: a plain interface with @RequestLine wired via
+        // Feign.builder() — no @FeignClient. The structural interface check
+        // (not a @FeignClient gate) admits it, matching the Java plugin.
+        const dir = path.join(tmpDir, 'kotlin-request-line-plain-interface');
+        fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+        fs.writeFileSync(
+          path.join(dir, 'src', 'AiClient.kt'),
+          `package com.example
+import feign.RequestLine
+
+interface AiClient {
+    @RequestLine("POST /ai/summarize")
+    fun summarize(): String
+
+    @RequestLine("GET /ai/health")
+    fun health(): String
+}
+`,
+        );
+
+        const contracts = await extractor.extract(null, dir, makeRepo(dir));
+        const consumers = contracts.filter((c) => c.role === 'consumer');
+        expect(
+          consumers.find(
+            (c) =>
+              c.contractId === 'http::POST::/ai/summarize' &&
+              c.meta.framework === 'openfeign' &&
+              c.confidence === 0.75,
+          ),
+        ).toBeDefined();
+        expect(
+          consumers.find(
+            (c) => c.contractId === 'http::GET::/ai/health' && c.meta.framework === 'openfeign',
+          ),
+        ).toBeDefined();
+      },
+    );
+
+    itKotlinConsumer(
+      'does not emit a provider for a non-controller class implementing a route interface',
+      async () => {
+        // Only a @RestController/@Controller implementer serves the interface's
+        // routes. A plain service/adapter implementing the same interface must
+        // NOT emit phantom providers (parity with Java's isController gate).
+        const dir = path.join(tmpDir, 'kotlin-noncontroller-impl');
+        fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+        fs.writeFileSync(
+          path.join(dir, 'src', 'WarehouseApi.kt'),
+          `package com.example
+import org.springframework.web.bind.annotation.RequestMapping
+import org.springframework.web.bind.annotation.GetMapping
+
+@RequestMapping("/warehouses")
+interface WarehouseApi {
+    @GetMapping("/{id}/stock")
+    fun listStock(id: String): Any
+}
+`,
+        );
+        fs.writeFileSync(
+          path.join(dir, 'src', 'WarehouseServiceImpl.kt'),
+          `package com.example
+
+class WarehouseServiceImpl(private val svc: Svc) : WarehouseApi {
+    override fun listStock(id: String): Any = TODO()
+}
+`,
+        );
+
+        const contracts = await extractor.extract(null, dir, makeRepo(dir));
+        const providers = contracts.filter((c) => c.role === 'provider');
+        expect(
+          providers.find((c) => c.contractId === 'http::GET::/warehouses/{param}/stock'),
+        ).toBeUndefined();
+      },
+    );
+
+    itKotlinConsumer(
+      'detects a controller whose leading arg-form @RestController("bean") detaches in the AST',
+      async () => {
+        // A lone leading annotation with parenthesized args parses as a sibling
+        // prefix_expression (not under the class `modifiers`). The controller
+        // gate must still recognise it so the inherited route is emitted.
+        const dir = path.join(tmpDir, 'kotlin-detached-restcontroller');
+        fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+        fs.writeFileSync(
+          path.join(dir, 'src', 'WarehouseApi.kt'),
+          `package com.example
+import org.springframework.web.bind.annotation.RequestMapping
+import org.springframework.web.bind.annotation.GetMapping
+
+@RequestMapping("/warehouses")
+interface WarehouseApi {
+    @GetMapping("/{id}/stock")
+    fun listStock(id: String): Any
+}
+`,
+        );
+        fs.writeFileSync(
+          path.join(dir, 'src', 'WarehouseController.kt'),
+          `package com.example
+import org.springframework.web.bind.annotation.RestController
+
+@RestController("warehouseController")
+class WarehouseController(private val svc: Svc) : WarehouseApi {
+    override fun listStock(id: String): Any = TODO()
+}
+`,
+        );
+
+        const contracts = await extractor.extract(null, dir, makeRepo(dir));
+        const providers = contracts.filter((c) => c.role === 'provider');
+        expect(
+          providers.find(
+            (c) =>
+              c.contractId === 'http::GET::/warehouses/{param}/stock' &&
+              c.symbolRef.filePath.endsWith('WarehouseController.kt'),
+          ),
+        ).toBeDefined();
+      },
+    );
+
+    itKotlinConsumer(
+      'treats @(Get|...)Exchange as a consumer even on a concrete class (parity with Java)',
+      async () => {
+        // @(Get|...)Exchange is definitionally a client (HttpServiceProxyFactory)
+        // annotation. Like java.ts, the extractor classifies it as a consumer
+        // regardless of the enclosing type — so even a (mis-)use on a concrete
+        // class yields a consumer, never a provider. Pins the accepted behavior.
+        const dir = path.join(tmpDir, 'kotlin-exchange-on-class');
+        fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+        fs.writeFileSync(
+          path.join(dir, 'src', 'ReportClient.kt'),
+          `package com.example
+import org.springframework.stereotype.Component
+import org.springframework.web.service.annotation.GetExchange
+
+@Component
+class ReportClient {
+    @GetExchange("/reports/{id}")
+    fun report(id: Int): Any = TODO()
+}
+`,
+        );
+
+        const contracts = await extractor.extract(null, dir, makeRepo(dir));
+        expect(
+          contracts.find(
+            (c) =>
+              c.role === 'consumer' &&
+              c.contractId === 'http::GET::/reports/{param}' &&
+              c.meta.framework === 'spring-http-interface',
+          ),
+        ).toBeDefined();
+        // Never a provider.
+        expect(
+          contracts.find(
+            (c) => c.role === 'provider' && c.contractId === 'http::GET::/reports/{param}',
+          ),
+        ).toBeUndefined();
+      },
+    );
+
+    itKotlinConsumer(
+      'emits one contract per element of a multi-element method-level path array',
+      async () => {
+        // Spring registers `@GetMapping(["/a", "/b"])` under BOTH paths, so the
+        // extractor must emit N contracts (one per array element), not just one.
+        const dir = path.join(tmpDir, 'kotlin-multi-method-array');
+        fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+        fs.writeFileSync(
+          path.join(dir, 'src', 'AliasController.kt'),
+          `package com.example
+import org.springframework.web.bind.annotation.RestController
+import org.springframework.web.bind.annotation.RequestMapping
+import org.springframework.web.bind.annotation.GetMapping
+
+@RestController
+@RequestMapping("/api")
+class AliasController {
+    @GetMapping(value = ["/primary", "/alias"])
+    fun get(): Any = TODO()
+}
+`,
+        );
+
+        const contracts = await extractor.extract(null, dir, makeRepo(dir));
+        const providers = contracts.filter((c) => c.role === 'provider');
+        expect(providers.find((c) => c.contractId === 'http::GET::/api/primary')).toBeDefined();
+        expect(providers.find((c) => c.contractId === 'http::GET::/api/alias')).toBeDefined();
+      },
+    );
+
+    itKotlinConsumer(
+      'emits one contract per element of a multi-element class-level prefix array',
+      async () => {
+        // Spring registers a method under EVERY class-level prefix, so a
+        // `@RequestMapping(["/api/v1", "/api/v2"])` controller must yield a
+        // contract per (prefix × method-path) combination, not just the last prefix.
+        const dir = path.join(tmpDir, 'kotlin-multi-prefix-array');
+        fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+        fs.writeFileSync(
+          path.join(dir, 'src', 'VersionedController.kt'),
+          `package com.example
+import org.springframework.web.bind.annotation.RestController
+import org.springframework.web.bind.annotation.RequestMapping
+import org.springframework.web.bind.annotation.GetMapping
+
+@RestController
+@RequestMapping(["/base/one", "/base/two"])
+class VersionedController {
+    @GetMapping("/items")
+    fun get(): Any = TODO()
+}
+`,
+        );
+
+        const contracts = await extractor.extract(null, dir, makeRepo(dir));
+        const providers = contracts.filter((c) => c.role === 'provider');
+        expect(providers.find((c) => c.contractId === 'http::GET::/base/one/items')).toBeDefined();
+        expect(providers.find((c) => c.contractId === 'http::GET::/base/two/items')).toBeDefined();
+      },
+    );
+
+    it('emits one contract per element of a multi-element Java path array', async () => {
+      // Java parity: @GetMapping({"/a", "/b"}) method array and a multi-element
+      // class-level @RequestMapping must both expand to N contracts.
+      const dir = path.join(tmpDir, 'java-multi-array');
+      fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'src', 'AliasController.java'),
+        `package com.example;
+import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.GetMapping;
+
+@RestController
+@RequestMapping({"/base/one", "/base/two"})
+public class AliasController {
+    @GetMapping({"/primary", "/alias"})
+    public Object get() { return null; }
+}
+`,
+      );
+
+      const contracts = await extractor.extract(null, dir, makeRepo(dir));
+      const providers = contracts.filter((c) => c.role === 'provider');
+      for (const id of [
+        'http::GET::/base/one/primary',
+        'http::GET::/base/one/alias',
+        'http::GET::/base/two/primary',
+        'http::GET::/base/two/alias',
+      ]) {
+        expect(providers.find((c) => c.contractId === id)).toBeDefined();
+      }
+    });
+
+    itKotlinConsumer(
+      'combines a Kotlin controller class prefix with an inherited interface prefix',
+      async () => {
+        // Interface-based controller where BOTH the controller and the interface
+        // carry a class-level @RequestMapping: the inherited route must be prefixed
+        // by the controller prefix too (parity with java.ts joinInheritedSpringPath).
+        const dir = path.join(tmpDir, 'kotlin-controller-prefix-inherit');
+        fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+        fs.writeFileSync(
+          path.join(dir, 'src', 'WidgetApi.kt'),
+          `package com.example
+import org.springframework.web.bind.annotation.RequestMapping
+import org.springframework.web.bind.annotation.GetMapping
+
+@RequestMapping("/v1")
+interface WidgetApi {
+    @GetMapping("/{id}")
+    fun fetch(id: String): Any
+}
+`,
+        );
+        fs.writeFileSync(
+          path.join(dir, 'src', 'WidgetController.kt'),
+          `package com.example
+import org.springframework.web.bind.annotation.RestController
+import org.springframework.web.bind.annotation.RequestMapping
+
+@RestController
+@RequestMapping("/api")
+class WidgetController : WidgetApi {
+    override fun fetch(id: String): Any = TODO()
+}
+`,
+        );
+
+        const contracts = await extractor.extract(null, dir, makeRepo(dir));
+        const providers = contracts.filter((c) => c.role === 'provider');
+        expect(
+          providers.find(
+            (c) =>
+              c.contractId === 'http::GET::/api/v1/{param}' &&
+              c.symbolRef.filePath.endsWith('WidgetController.kt'),
+          ),
+        ).toBeDefined();
+      },
+    );
+
+    itKotlinConsumer(
+      'does not double a shared prefix when a Kotlin controller repeats the interface prefix',
+      async () => {
+        // #2057 parity: controller prefix == interface prefix must not be prepended
+        // twice (no /shared/shared/...).
+        const dir = path.join(tmpDir, 'kotlin-controller-prefix-dedup');
+        fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+        fs.writeFileSync(
+          path.join(dir, 'src', 'LedgerApi.kt'),
+          `package com.example
+import org.springframework.web.bind.annotation.RequestMapping
+import org.springframework.web.bind.annotation.GetMapping
+
+@RequestMapping("/shared")
+interface LedgerApi {
+    @GetMapping("/entries")
+    fun entries(): Any
+}
+`,
+        );
+        fs.writeFileSync(
+          path.join(dir, 'src', 'LedgerController.kt'),
+          `package com.example
+import org.springframework.web.bind.annotation.RestController
+import org.springframework.web.bind.annotation.RequestMapping
+
+@RestController
+@RequestMapping("/shared")
+class LedgerController : LedgerApi {
+    override fun entries(): Any = TODO()
+}
+`,
+        );
+
+        const contracts = await extractor.extract(null, dir, makeRepo(dir));
+        const providers = contracts.filter((c) => c.role === 'provider');
+        expect(providers.find((c) => c.contractId === 'http::GET::/shared/entries')).toBeDefined();
+        expect(
+          providers.find((c) => c.contractId === 'http::GET::/shared/shared/entries'),
+        ).toBeUndefined();
       },
     );
 
