@@ -557,14 +557,18 @@ Honest reading of these numbers:
   name-matching artifact; improving it is a resolver-precision follow-up (sibling
   to the C++ overload under-resolution follow-up).
 
-**Language scope.** The id bridge — like the name bridge before it — only applies
-to the languages that harvest call sites into the CFG: **TS/JS, Java, C#, Go,
-C/C++, PHP**. Kotlin, Swift, Dart, Ruby, Rust, and Python use the no-site
-def/use accumulator, so their BasicBlocks carry **no** `callees` *or* `calleeIds`
-and the statement-precise callee bridge is inert there (it falls back to
-whole-symbol reach). Those languages have a high CALLS-graph collision tail in the
-universe sweep but cannot benefit from the id (or name) bridge until call-site
-harvesting is extended to them — a documented follow-up, distinct from this change.
+**Language scope.** The id bridge (and the name bridge) applies wherever the CFG
+harvests call sites. As of the call-site-harvesting extension this is **all 12
+supported languages** — the original six (TS/JS, Java, C#, Go, C/C++, PHP) plus
+Kotlin, Swift, Dart, Ruby, Rust, and Python, which were migrated from the no-site
+def/use accumulator to the shared `CallSiteFactAccumulator` (each verified that its
+`SiteRecord.at` anchor matches that language's `@reference.call` resolution anchor
+byte-exact, so the resolved-id join lands). Their BasicBlocks now carry `callees`
+*and* `calleeIds`. Realized benefit still tracks each language's collision tail and
+its call-resolver precision (e.g. Python/Ruby route most calls to stdlib/builtins,
+which carry no in-repo id), but the substrate is uniform. The one remaining
+language-shaped gap is **C++ overload under-resolution** (a resolver issue, not a
+harvesting one — see the C++ caveat above).
 
 Reproduce (needs a `--pdg` index of the target repo built under schema v3):
 
