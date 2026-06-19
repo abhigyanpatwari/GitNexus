@@ -71,6 +71,11 @@ import {
   fingerprintAnnotationSet,
   median,
 } from './metrics.mjs';
+// U9 resolved-id soundness axis: reuse the U8 PURE bridge-predicate replica
+// (`bridgeProvenSets`) and the id-vs-name set diff (`scoreIdVsName`) so the gate
+// computes the NAME-match counterfactual the exact same way the realized-FP
+// harness does — one source of truth for "what name-match would prove".
+import { bridgeProvenSets, scoreIdVsName, reachedItemKey } from './name-collision.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, '..', '..'); // gitnexus/
@@ -226,6 +231,78 @@ function pdgCisFromResult(res) {
   };
 }
 
+/**
+ * Callee NAME set + resolved-ID set for an EXACT dependence slice (seed ∪
+ * reachable blocks), read off the persisted `BasicBlock.callees` / `.calleeIds`
+ * via the raw pool `exec` — exactly the two sets the bridge unions over the slice
+ * in `local-backend.ts`. Mirrors `sliceCalleeSetsOf` in name-collision.mjs but
+ * runs through `exec` (the harness already holds the pool open for Step 0), so
+ * the name counterfactual is computed from the SAME persisted data the live
+ * bridge proved against. On a pre-v3 index the `calleeIds` column is absent →
+ * the id query throws → ids stay empty (graceful degrade).
+ */
+async function sliceCalleeSetsOf(lbugPath, blockIds, exec) {
+  const names = new Set();
+  const ids = new Set();
+  if (!Array.isArray(blockIds) || blockIds.length === 0) return { names, ids };
+  const nameRows = await exec(
+    lbugPath,
+    `MATCH (b:BasicBlock) WHERE b.id IN $ids RETURN b.callees AS callees`,
+    { ids: blockIds },
+  );
+  for (const r of nameRows) {
+    for (const n of String(r.callees ?? r[0] ?? '').split(' ')) if (n) names.add(n);
+  }
+  const idRows = await exec(
+    lbugPath,
+    `MATCH (b:BasicBlock) WHERE b.id IN $ids RETURN b.calleeIds AS calleeIds`,
+    { ids: blockIds },
+  ).catch(() => []);
+  for (const r of idRows) {
+    for (const i of String(r.calleeIds ?? r[0] ?? '').split(' ')) if (i && i !== '*') ids.add(i);
+  }
+  return { names, ids };
+}
+
+/**
+ * U9 axis — run the resolved-id soundness gate on ONE fixture that carries an
+ * `idBridge` ground-truth block. Seeds `impact(mode:'pdg', line: idBridge.seedLine)`,
+ * extracts the id-proven statement-precise set, computes the leaf-NAME match
+ * counterfactual over the SAME reached depth-1 callees + the SAME exact slice
+ * (via the U8 `bridgeProvenSets`), and evaluates both against ground truth with
+ * the pure `evaluateIdBridge`. Returns the gate verdict + the realized numbers
+ * the report/README record (id-proven == 1 correct id; name-match == 2 = the
+ * over-attribution baseline).
+ */
+async function idBridgeAxisFor(fx, work, results, exec) {
+  const lbugPath = path.join(work, '.gitnexus', 'lbug');
+  const pdg = results.pdg;
+  const idProven = idProvenIdsFromResult(pdg);
+
+  // Name counterfactual: same depth-1 reached callees, same exact slice sets.
+  const reachedD1 =
+    pdg?.pdgInterprocedural?.byDepth?.[1] ?? pdg?.pdgInterprocedural?.byDepth?.['1'] ?? [];
+  const exactSlice = [
+    ...(Array.isArray(pdg?.seedBlocks) ? pdg.seedBlocks : []),
+    ...(Array.isArray(pdg?.reachableBlocks) ? pdg.reachableBlocks : []),
+  ];
+  const { names, ids } = await sliceCalleeSetsOf(lbugPath, exactSlice, exec);
+  const proven = bridgeProvenSets(reachedD1, names, ids);
+  const nameWouldProve = proven.nameProven.map(reachedItemKey).filter(Boolean);
+  const idVsName = scoreIdVsName(proven.nameProven, proven.idProven);
+
+  const verdict = evaluateIdBridge(idProven, nameWouldProve, fx.gt.idBridge);
+  return {
+    name: fx.name,
+    seedLine: fx.gt.idBridge?.seedLine ?? null,
+    discriminating: proven.discriminating === true,
+    ...verdict,
+    idProvenCount: verdict.idProven.length,
+    nameProvenCount: verdict.nameProven.length,
+    fpEliminatedCount: idVsName.fpEliminated,
+  };
+}
+
 // ── Step 0: fixture AIS validation (gated on the live traversal; KTD9
 // circularity guard) ───────────────────────────────────────────────────────
 
@@ -338,6 +415,86 @@ function scoreCallgraph(gt, symbolCisKeys) {
  */
 function scorePdg(gt, lineCisKeys) {
   return score(lineCisKeys, intraLineAis(gt));
+}
+
+// ── U9: resolved-symbol-id soundness axis (plan 2026-06-18-001 U9; R1, R5) ────
+
+/**
+ * Flatten the proven (statement-precise) reach of a `pdg` impact result into a
+ * sorted, de-duplicated id list. `pdgInterprocedural.statementPreciseByDepth`
+ * already holds ONLY the `callgraph-bridge` (id-proven) items across depths —
+ * the `unproven-bridge` callees (reached but NOT on the dependence slice) are
+ * dropped by `projectStatementPreciseByDepth`. So this is exactly the set the
+ * RESOLVED-ID bridge proves. Items without an `id` fall back to `reachedItemKey`
+ * (mirroring the U8 harness) so a dynamic/unresolved callee is never silently
+ * dropped from the gate.
+ */
+export function idProvenIdsFromResult(res) {
+  const byDepth = res?.pdgInterprocedural?.statementPreciseByDepth ?? {};
+  const out = new Set();
+  for (const items of Object.values(byDepth)) {
+    for (const it of Array.isArray(items) ? items : []) out.add(reachedItemKey(it));
+  }
+  return [...out].filter(Boolean).sort();
+}
+
+/**
+ * PURE gate scorer for the resolved-id soundness fixture (no DB / analyze / Date /
+ * random — the deterministic unit test asserts this arithmetic directly).
+ *
+ * Inputs are three plain id lists derived from ONE `pdg` impact result on the
+ * fixture's seed line:
+ *   - `idProven`     — what the resolved-id bridge proved (statement-precise set);
+ *   - `nameWouldProve` — what the leaf-NAME bridge would prove over the SAME
+ *     reached items + the SAME slice (the over-attribution counterfactual);
+ *   - `expected`     — the ground-truth `idBridge` block.
+ *
+ * The gate PASSES iff the id-proven set equals `expected.idProven` EXACTLY and
+ * the name counterfactual strictly over-attributes (proves a superset that
+ * includes every `expected.fpEliminated` id). `over` is the realized
+ * over-attribution count the README records (= |name ∖ id|). Returns
+ * `{ ok, problems, idProven, nameProven, fpEliminated, over }`.
+ */
+export function evaluateIdBridge(idProven, nameWouldProve, expected) {
+  const idSet = [...new Set(idProven)].sort();
+  const nameSet = [...new Set(nameWouldProve)].sort();
+  const expId = [...new Set(expected?.idProven ?? [])].sort();
+  const expFp = [...new Set(expected?.fpEliminated ?? [])].sort();
+  const idKeys = new Set(idSet);
+  const over = nameSet.filter((k) => !idKeys.has(k)).sort();
+
+  const problems = [];
+  const sameSet = (a, b) => a.length === b.length && a.every((v, i) => v === b[i]);
+  problems.push(
+    ...(sameSet(idSet, expId)
+      ? []
+      : [`id-proven set ${JSON.stringify(idSet)} != ground-truth ${JSON.stringify(expId)}`]),
+  );
+  // The whole point: the NAME match must over-attribute (prove the collision
+  // callee the id match correctly drops). A name set that did NOT over-attribute
+  // would mean the fixture lost its discriminating power — fail loudly.
+  problems.push(
+    ...(over.length > 0
+      ? []
+      : ['name-match did NOT over-attribute — the fixture lost its discriminating power']),
+  );
+  const missingFp = expFp.filter((k) => !over.includes(k));
+  problems.push(
+    ...(missingFp.length === 0
+      ? []
+      : [
+          `name-match did not over-attribute the expected collision id(s) ${JSON.stringify(missingFp)}`,
+        ]),
+  );
+
+  return {
+    ok: problems.length === 0,
+    problems,
+    idProven: idSet,
+    nameProven: nameSet,
+    fpEliminated: over,
+    over: over.length,
+  };
 }
 
 // ── reporting helpers ────────────────────────────────────────────────────────
@@ -515,6 +672,7 @@ async function run() {
   const perRunUnified = []; // K runs × { mode: { intraLine, interSymbol } }
   let perCaseDetail = null; // last run's per-case detail for the report
   let degradedCheck = null;
+  const idBridgeChecks = []; // U9 resolved-id soundness axis (one per idBridge fixture)
 
   try {
     for (let runIdx = 0; runIdx < K; runIdx++) {
@@ -632,6 +790,24 @@ async function run() {
         fs.rmSync(work, { recursive: true, force: true });
       }
     }
+
+    // ── U9 resolved-id soundness axis (R1, R5): for each fixture carrying an
+    // `idBridge` ground-truth block, prove that the resolved-ID bridge labels
+    // EXACTLY the right callee statement-precise while the leaf-NAME bridge would
+    // over-attribute the same-named collision callee. analyzeAndImpact already
+    // seeds `results.pdg` on `criterion.line` (== idBridge.seedLine), so the
+    // statement-precise set is the id-proven set for the seed line directly.
+    for (const fx of fixtures.filter((f) => f.gt.idBridge)) {
+      const { work, results } = await analyzeAndImpact(fx, home, { pdgOn: true });
+      try {
+        idBridgeChecks.push(await idBridgeAxisFor(fx, work, results, exec));
+      } finally {
+        const lbugPath = path.join(work, '.gitnexus', 'lbug');
+        await closeLbug(lbugPath).catch(() => {});
+        initialised.delete(lbugPath);
+        fs.rmSync(work, { recursive: true, force: true });
+      }
+    }
   } finally {
     fs.rmSync(home, { recursive: true, force: true });
   }
@@ -709,6 +885,7 @@ async function run() {
     unified: unifiedReport,
     perCase: perCaseDetail,
     degradedCheck,
+    idBridgeChecks,
     annotationFingerprint,
     runsK: K,
   };
@@ -765,6 +942,21 @@ async function run() {
       out.push(`  note: ${degradedCheck.note}`);
       out.push('');
     }
+    if (idBridgeChecks.length > 0) {
+      out.push('Resolved-id soundness axis (U9 — R1/R5): id-match proves the right callee,');
+      out.push('name-match over-attributes the same-leaf-name collision callee:');
+      for (const c of idBridgeChecks) {
+        out.push(
+          `  ${pad(c.name, 28)} seed=${lpad(c.seedLine ?? '-', 3)} ` +
+            `id-proven=${c.idProvenCount} name-would-prove=${c.nameProvenCount} ` +
+            `(over-attribution=${c.over}) ${c.ok ? 'PASS' : 'FAIL'}`,
+        );
+        out.push(`      id-proven : ${c.idProven.join(', ') || '(none)'}`);
+        out.push(`      eliminated: ${c.fpEliminated.join(', ') || '(none)'}`);
+        out.push(...(c.problems.length > 0 ? [`      problems  : ${c.problems.join('; ')}`] : []));
+      }
+      out.push('');
+    }
     out.push(`Annotation fingerprint: ${annotationFingerprint}`);
     out.push('');
     out.push(decisionRecommendation(report, unifiedReport, underpowered, exclusions));
@@ -815,13 +1007,35 @@ async function run() {
       }
     }
 
+    // Gate 3 — resolved-id soundness axis (U9, R1/R5): every fixture carrying an
+    // `idBridge` block must PASS its gate (id-proven == the single correct id AND
+    // the name match strictly over-attributes the eliminated collision id). The
+    // expected sets live in the ground-truth `idBridge` block (covered by Gate 1's
+    // fingerprint), so this gate has no separate baseline number to drift.
+    const idBridgeFixtureCount = fixtures.filter((f) => f.gt.idBridge).length;
+    for (const c of idBridgeChecks) {
+      failures.push(
+        ...(c.ok ? [] : [`id-bridge ${c.name} (seed ${c.seedLine}): ${c.problems.join('; ')}`]),
+      );
+    }
+    // A declared idBridge fixture that produced NO check (analyze/seed dropout)
+    // must fail loudly — never let the soundness gate silently vanish.
+    failures.push(
+      ...(idBridgeChecks.length === idBridgeFixtureCount
+        ? []
+        : [
+            `id-bridge axis ran ${idBridgeChecks.length} of ${idBridgeFixtureCount} declared ` +
+              `idBridge fixtures (a fixture dropped out of the gate)`,
+          ]),
+    );
+
     if (failures.length > 0) {
       for (const f of failures) process.stderr.write(`[impact-pdg --check] FAIL: ${f}\n`);
       process.exit(1);
     }
     process.stderr.write(
       `[impact-pdg --check] PASS (${SCOPES.length} scopes × ${MODES.length} modes, ` +
-        `fingerprint OK, K=${K})\n`,
+        `fingerprint OK, ${idBridgeChecks.length} id-bridge fixture(s) sound, K=${K})\n`,
     );
   }
 }

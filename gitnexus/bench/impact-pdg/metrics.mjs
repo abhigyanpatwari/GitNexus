@@ -350,6 +350,17 @@ export function canonicalizeAnnotationSet(fixtures) {
       .map((e) => `${e.symbol}|${e.filePath}|${e.line ?? '-'}`)
       .sort()
       .join(';');
+  // U9 resolved-id soundness block (optional): the expected id-proven set, the
+  // name-match over-attribution set, and the eliminated collision id(s). It is
+  // part of the ground truth — an unreviewed edit changes the gate, so it MUST
+  // trip the fingerprint. Sorted so the digest is order-independent; absent on
+  // fixtures without an `idBridge` block (canonicalized as `-`).
+  const canonIdBridge = (b) => {
+    const sorted = (xs) => [...(xs ?? [])].sort().join(',');
+    return b
+      ? `${b.seedLine ?? '-'}|${sorted(b.idProven)}|${sorted(b.nameWouldProve)}|${sorted(b.fpEliminated)}`
+      : '-';
+  };
   const lines = fixtures
     .map((fx) => {
       const c = fx.gt.criterion;
@@ -367,6 +378,7 @@ export function canonicalizeAnnotationSet(fixtures) {
         `provenance=${fx.gt.provenance}`,
         `intra=${canonAis(fx.gt.intra_AIS)}`,
         `inter=${canonAis(fx.gt.inter_AIS)}`,
+        `idBridge=${canonIdBridge(fx.gt.idBridge)}`,
       ].join('\n');
     })
     .sort()
