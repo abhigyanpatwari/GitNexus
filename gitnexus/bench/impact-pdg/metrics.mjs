@@ -391,6 +391,95 @@ export function fingerprintAnnotationSet(fixtures, sha256Hex) {
   return sha256Hex(canonicalizeAnnotationSet(fixtures));
 }
 
+// ── U2: mutation/dynamic-oracle PURE scorers (dependency-free, unit-testable) ─
+//
+// `behavioralAis` (B) is the dynamic forward slice the oracle PROVED by value-diff;
+// `slice` is the SAME live static PDG slice the F1 metric scores (pdgLineCis of
+// `affectedStatements`); `manualAis` (M) is the manual `intra_AIS` line set. All
+// three are plain string Sets of `<filePath>:<line>` keys. These functions are
+// pure math over those sets, so `test/unit/impact-pdg-metric-math.test.ts` asserts
+// them deterministically (no DB / analyze / Babel / random).
+
+/**
+ * mutation_recall = |B ∩ slice| / |B|. A recall < 1.0 means B ∖ slice is a
+ * statement the dynamic oracle PROVED depends on the criterion that the static
+ * slice MISSED — a real recall hole (or a known U1 ascent gap). |B|=0 ⇒ recall
+ * is `null` (the oracle proved nothing to find — equivalent mutants only, or an
+ * oracle-excluded fixture), never 0. `missing` = B ∖ slice (the dangerous miss),
+ * `extra` = slice ∖ B (sound static over-approximation; reported, NOT gated).
+ */
+export function mutationRecall(behavioralAis, slice) {
+  const B = behavioralAis instanceof Set ? behavioralAis : new Set(behavioralAis);
+  const S = slice instanceof Set ? slice : new Set(slice);
+  const tp = intersectionSize(B, S);
+  const recall = B.size === 0 ? null : tp / B.size;
+  return {
+    recall,
+    bSize: B.size,
+    sliceSize: S.size,
+    intersection: tp,
+    missing: difference(B, S), // B ∖ slice — recall hole (sorted)
+    extra: difference(S, B), // slice ∖ B — sound over-approximation (informational)
+  };
+}
+
+/**
+ * Circularity cross-check: B ∖ M. A NON-EMPTY result means the manual annotation
+ * MISSED a real dependence the dynamic oracle proved — the headline independent
+ * evidence U2 exists to produce. Reported as a WARN with the specific lines; it
+ * is NOT a failure (the corpus documents annotation incompleteness as threat #1).
+ * `confirmed` = B ∩ M (the manual lines the oracle independently re-derived).
+ */
+export function circularityDiff(behavioralAis, manualAis) {
+  const B = behavioralAis instanceof Set ? behavioralAis : new Set(behavioralAis);
+  const M = manualAis instanceof Set ? manualAis : new Set(manualAis);
+  return {
+    beyondManual: difference(B, M), // B ∖ M — manual missed these (WARN)
+    confirmed: [...B].filter((k) => M.has(k)).sort(), // B ∩ M
+    manualOnly: difference(M, B), // M ∖ B — manual claimed, oracle did not prove
+  };
+}
+
+/**
+ * A mutant is EQUIVALENT iff its behavioral AIS is empty (it changed no observed
+ * value at any non-criterion line on any input). Equivalent mutants are discarded
+ * from the union (they carry no dependence signal). Accepts the oracle's per-mutant
+ * `{ diffLines }` record or a bare line array/Set.
+ */
+export function isEquivalentMutant(behavioralAis) {
+  const lines = Array.isArray(behavioralAis?.diffLines) ? behavioralAis.diffLines : behavioralAis;
+  const set = lines instanceof Set ? lines : new Set(lines ?? []);
+  return set.size === 0;
+}
+
+/**
+ * Order-independent canonical string over the mutation-oracle output set (one
+ * entry per fixture: criterion key + sorted behavioral AIS + sorted non-equivalent
+ * mutant ops). Mirrors the annotation-fingerprint TECHNIQUE so a CHANGE in what the
+ * oracle proves is detectable. `hash` is injected (node:crypto in the harness; a
+ * stub in the unit test) so this module pulls no node-only deps.
+ */
+export function canonicalizeMutationSet(perFixture) {
+  return perFixture
+    .map((f) => {
+      const ais = [...(f.behavioralAis ?? [])].sort().join(',');
+      const ops = [...(f.mutants ?? [])]
+        .filter((m) => !isEquivalentMutant(m))
+        .map((m) => m.op)
+        .sort()
+        .join(',');
+      return [`case=${f.name}`, `crit=${f.criterionKey ?? '-'}`, `ais=${ais}`, `ops=${ops}`].join(
+        '\n',
+      );
+    })
+    .sort()
+    .join('\n====\n');
+}
+
+export function fingerprintMutationSet(perFixture, sha256Hex) {
+  return sha256Hex(canonicalizeMutationSet(perFixture));
+}
+
 /** median of a numeric array (substrate-stability gate, F5). */
 export function median(xs) {
   if (xs.length === 0) return null;

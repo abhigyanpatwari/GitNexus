@@ -500,3 +500,118 @@ describe('impact-pdg metric math — median (substrate-stability gate F5)', () =
     expect(M.median([])).toBe(null);
   });
 });
+
+describe('impact-pdg metric math — U2 mutation/dynamic-oracle scorers', () => {
+  const lk = (line: number, file = 'src/a.ts'): string => `${file}:${line}`;
+
+  it('mutationRecall = |B ∩ slice| / |B|, with missing (B∖slice) and extra (slice∖B)', () => {
+    // B (dynamic AIS the oracle proved) = {8,9,10}; slice (static PDG) = {9,10,11}.
+    // ∩ = {9,10} = 2. recall = 2/3. missing = {8} (a static recall hole). extra = {11}.
+    const B = new Set([lk(8), lk(9), lk(10)]);
+    const slice = new Set([lk(9), lk(10), lk(11)]);
+    const r = M.mutationRecall(B, slice);
+    expect(r.recall).toBeCloseTo(2 / 3, 12);
+    expect(r.bSize).toBe(3);
+    expect(r.sliceSize).toBe(3);
+    expect(r.intersection).toBe(2);
+    expect(r.missing).toEqual([lk(8)]); // B ∖ slice — the dangerous miss
+    expect(r.extra).toEqual([lk(11)]); // slice ∖ B — sound over-approximation
+  });
+
+  it('mutationRecall = 1.0 when the static slice covers every proven line', () => {
+    const r = M.mutationRecall(new Set([lk(10), lk(12)]), new Set([lk(10), lk(11), lk(12)]));
+    expect(r.recall).toBe(1);
+    expect(r.missing).toEqual([]);
+    expect(r.extra).toEqual([lk(11)]); // extra is informational, not gated
+  });
+
+  it('mutationRecall on empty B ⇒ recall null (nothing proven to find), never 0', () => {
+    const r = M.mutationRecall(new Set<string>(), new Set([lk(10)]));
+    expect(r.recall).toBe(null);
+    expect(r.bSize).toBe(0);
+    expect(r.missing).toEqual([]);
+  });
+
+  it('mutationRecall accepts plain arrays as well as Sets', () => {
+    const r = M.mutationRecall([lk(1), lk(2)], [lk(2)]);
+    expect(r.recall).toBe(0.5);
+    expect(r.missing).toEqual([lk(1)]);
+  });
+
+  it('circularityDiff: beyondManual (B∖M) is the independent annotation-gap evidence', () => {
+    // Oracle proved {8,9,10}; manual intra_AIS = {9,10}. B∖M = {8} ⇒ the manual
+    // annotation missed line 8 (the headline circularity signal). confirmed = {9,10}.
+    const c = M.circularityDiff(new Set([lk(8), lk(9), lk(10)]), new Set([lk(9), lk(10)]));
+    expect(c.beyondManual).toEqual([lk(8)]);
+    // confirmed (B ∩ M) is lexically sorted: "src/a.ts:10" sorts before "src/a.ts:9".
+    expect(c.confirmed).toEqual([lk(10), lk(9)]);
+    expect(c.manualOnly).toEqual([]);
+  });
+
+  it('circularityDiff: empty beyondManual ⇒ the annotation independently confirmed', () => {
+    const c = M.circularityDiff(new Set([lk(9), lk(10)]), new Set([lk(9), lk(10), lk(11)]));
+    expect(c.beyondManual).toEqual([]);
+    expect(c.confirmed).toEqual([lk(10), lk(9)]); // lexically sorted
+    expect(c.manualOnly).toEqual([lk(11)]); // manual claimed 11; oracle did not prove it
+  });
+
+  it('isEquivalentMutant: empty behavioral set ⇒ equivalent (discarded from the union)', () => {
+    expect(M.isEquivalentMutant({ diffLines: [] })).toBe(true);
+    expect(M.isEquivalentMutant({ diffLines: [lk(9)] })).toBe(false);
+    expect(M.isEquivalentMutant([])).toBe(true);
+    expect(M.isEquivalentMutant([lk(9)])).toBe(false);
+    expect(M.isEquivalentMutant(new Set<string>())).toBe(true);
+  });
+
+  it('mutation fingerprint is order-independent over fixtures and trips on a proven-set change', () => {
+    const fakeHash = (s: string): string => {
+      let h = 5381;
+      for (let i = 0; i < s.length; i++) h = ((h << 5) + h + s.charCodeAt(i)) >>> 0;
+      return h.toString(16);
+    };
+    const fA = {
+      name: 'a',
+      criterionKey: 'src/a.ts:7',
+      behavioralAis: [lk(8), lk(9)],
+      mutants: [{ op: 'AOR', diffLines: [lk(8)] }],
+    };
+    const fB = {
+      name: 'b',
+      criterionKey: 'src/b.ts:5',
+      behavioralAis: [lk(6, 'src/b.ts')],
+      mutants: [{ op: 'ROR', diffLines: [lk(6, 'src/b.ts')] }],
+    };
+    const fwd = M.fingerprintMutationSet([fA, fB], fakeHash);
+    const rev = M.fingerprintMutationSet([fB, fA], fakeHash);
+    expect(fwd).toBe(rev); // order-independent over the fixture list
+    const changed = M.fingerprintMutationSet(
+      [{ ...fA, behavioralAis: [lk(8), lk(9), lk(99)] }, fB],
+      fakeHash,
+    );
+    expect(changed).not.toBe(fwd); // a change in what the oracle proves trips it
+  });
+
+  it('mutation fingerprint ignores EQUIVALENT mutants (empty diffLines carry no signal)', () => {
+    const fakeHash = (s: string): string => String(s.length);
+    const base = M.canonicalizeMutationSet([
+      {
+        name: 'a',
+        criterionKey: 'src/a.ts:7',
+        behavioralAis: [lk(8)],
+        mutants: [{ op: 'AOR', diffLines: [lk(8)] }],
+      },
+    ]);
+    const withEquiv = M.canonicalizeMutationSet([
+      {
+        name: 'a',
+        criterionKey: 'src/a.ts:7',
+        behavioralAis: [lk(8)],
+        mutants: [
+          { op: 'AOR', diffLines: [lk(8)] },
+          { op: 'CRP', diffLines: [] }, // equivalent — must not change the canonical op set
+        ],
+      },
+    ]);
+    expect(withEquiv).toBe(base);
+  });
+});

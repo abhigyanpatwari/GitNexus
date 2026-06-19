@@ -69,8 +69,17 @@ import {
   scoreUnifiedAxes,
   aggregateUnifiedScores,
   fingerprintAnnotationSet,
+  mutationRecall,
+  circularityDiff,
+  isEquivalentMutant,
+  fingerprintMutationSet,
   median,
 } from './metrics.mjs';
+// U2 dynamic-oracle substrate: regex-mutate the criterion line, Babel-instrument
+// the original TS AST, run original + mutants on type-driven inputs via tsx
+// dynamic-import, value-diff into a behavioral (dynamic forward slice) AIS. Gated
+// behind --mutation; the default report run never imports/touches it at runtime.
+import { deriveBehavioralAis, writeMutationSidecar } from './mutation-oracle.mjs';
 // U9 resolved-id soundness axis: reuse the U8 PURE bridge-predicate replica
 // (`bridgeProvenSets`) and the id-vs-name set diff (`scoreIdVsName`) so the gate
 // computes the NAME-match counterfactual the exact same way the realized-FP
@@ -497,6 +506,105 @@ export function evaluateIdBridge(idProven, nameWouldProve, expected) {
   };
 }
 
+// ── U2 mutation-oracle reporting + recall-hole classification ────────────────
+
+/**
+ * Classify a single B∖slice recall-hole line into one honest bucket so a reader is
+ * not misled (R2). These are NOT all "noise" — only the last is a genuine slicer
+ * bug, but two of the others are REAL, DOCUMENTED limitations the oracle exists to
+ * surface (not dismiss):
+ *   (a) known-U1-no-ascent-gap — the missed line is the criterion function's
+ *       continuation AFTER a call: it depends on a callee RETURN/out-param/throw
+ *       effect the intra slice cannot ascend into without CALL_SUMMARY. A REAL,
+ *       DOCUMENTED U1 limitation (genuinely affected, genuinely missed).
+ *   (b) block-granularity-limit — the missed line genuinely depends on the
+ *       criterion but is an INTERIOR statement of a coalesced straight-line CFG
+ *       BasicBlock whose representative line already appears in the slice. The
+ *       slice is sound at BLOCK granularity but cannot pinpoint interior statements
+ *       at STATEMENT granularity. This is the PR's declared #1 validity threat
+ *       (annotation-circularity / block reconciliation), here INDEPENDENTLY
+ *       QUANTIFIED — a real limitation, not measurement noise.
+ *   (c) oracle-direction-scope — an UPSTREAM-annotated fixture: the forward value-
+ *       diff oracle runs in its native DOWNSTREAM sense (R1), so it cannot validate
+ *       the reverse slice. A scope limit of the ORACLE, not a slicer property.
+ *   (d) novel-recall-hole — anything else: a dependence the static slice missed
+ *       that is NOT explained by (a)/(b)/(c). The strongest "real bug" signal;
+ *       when unsure we fall back HERE (flag, never silently dismiss).
+ * Heuristic, line-based, conservative.
+ */
+function classifyRecallHole(missLine, check) {
+  const manual = new Set(check.manualAis ?? []);
+  const file = missLine.slice(0, missLine.lastIndexOf(':'));
+  const missNum = Number(missLine.slice(missLine.lastIndexOf(':') + 1));
+  const critNum = check.criterionLine ?? null;
+  const sliceNums = (check.sliceLines ?? [])
+    .filter((k) => k.slice(0, k.lastIndexOf(':')) === file)
+    .map((k) => Number(k.slice(k.lastIndexOf(':') + 1)))
+    .filter((n) => Number.isFinite(n));
+
+  // (c — oracle scope limit, upstream-direction): on an UPSTREAM fixture the oracle
+  // runs in its native DOWNSTREAM sense (R1), so any B∖slice line is a forward-oracle
+  // vs reverse-slice direction mismatch — the ORACLE cannot validate this fixture,
+  // it is NOT a slicer recall bug.
+  if (check.direction === 'upstream') {
+    return {
+      bucket: 'oracle-direction-scope',
+      line: missLine,
+      reason: 'upstream fixture: forward oracle cannot validate the reverse slice',
+    };
+  }
+
+  // (b — real block-granularity limitation): the missed line sits BETWEEN a
+  // block-start that IS in the slice (or the criterion line) and the NEXT slice
+  // line — i.e. inside a coalesced CFG BasicBlock whose start line already appears
+  // in the slice. The CFG merges consecutive straight-line statements into one
+  // block, so an interior line can never surface as a DISTINCT slice statement even
+  // though it genuinely depends on the criterion. The dynamic oracle observes it at
+  // statement granularity, so this is the documented block-granularity limitation
+  // (the #1 validity threat), independently quantified — NOT measurement noise.
+  // Coalescing is a phenomenon of consecutive STRAIGHT-LINE statements inside one
+  // function (the intra stratum); on inter/mixed fixtures a "between two slice
+  // lines" miss is more likely a cross-function caller-continuation gap (U1), so
+  // restrict this classification to the intra stratum.
+  const blockStarts = [...sliceNums, ...(critNum !== null ? [critNum] : [])].sort((a, b) => a - b);
+  const startBelow = blockStarts.filter((n) => n < missNum).sort((a, b) => b - a)[0];
+  const startOrSliceAtOrAbove = blockStarts.filter((n) => n >= missNum).sort((a, b) => a - b)[0];
+  const shadowedByCoalescedBlock =
+    check.locus === 'intra' &&
+    startBelow !== undefined &&
+    // missLine is strictly inside [startBelow+1, nextStart-1] and the slice/criterion
+    // already represents that block at startBelow.
+    (startOrSliceAtOrAbove === undefined || startOrSliceAtOrAbove > missNum);
+  if (shadowedByCoalescedBlock) {
+    return {
+      bucket: 'block-granularity-limit',
+      line: missLine,
+      reason:
+        'interior of a coalesced straight-line block (sound at block granularity, under-reports at statement granularity)',
+    };
+  }
+
+  // (a — known U1 no-ascent gap): on an inter/mixed fixture, a missed dependent line
+  // the slice did not reach is the classic caller-continuation-after-call gap (a
+  // return-value / out-param / throw effect not ascended without CALL_SUMMARY).
+  if (check.locus === 'inter' || check.locus === 'mixed') {
+    return {
+      bucket: 'known-U1-no-ascent-gap',
+      line: missLine,
+      reason: 'caller continuation depends on callee effect',
+    };
+  }
+
+  // (d — novel hole): a genuine intra dependence the static slice missed that none
+  // of the documented buckets explains. A miss that is ALSO a manual intra_AIS line
+  // is the strongest signal, but ANY unexplained intra-downstream miss is flagged
+  // here rather than dismissed — honesty over a clean gate.
+  const reason = manual.has(missLine)
+    ? 'manual intra_AIS line not in slice'
+    : 'intra dependence missed, unexplained by U1/block/direction';
+  return { bucket: 'novel-recall-hole', line: missLine, reason };
+}
+
 // ── reporting helpers ────────────────────────────────────────────────────────
 
 const fmt = (v) => (v === null || v === undefined ? 'n/a' : Number(v).toFixed(3));
@@ -637,6 +745,11 @@ function decisionRecommendation(strata, unified, underpowered, exclusions) {
 async function run() {
   const CHECK = process.argv.includes('--check');
   const JSON_OUT = process.argv.includes('--json');
+  // U2 dynamic-oracle (opt-in, BENCH-ADDITIVE). --mutation runs the value-diff
+  // forward-slice oracle and prints per-fixture recall + circularity rows;
+  // --mutation-strict would later flip Gate 4 to a hard exit (report-only now).
+  const MUTATION = process.argv.includes('--mutation');
+  const MUTATION_STRICT = process.argv.includes('--mutation-strict');
   // Optional subset for a fast substrate proof: --only=a,b,c or GN_IMPACT_PDG_ONLY=a,b
   const onlyArg = process.argv.find((a) => a.startsWith('--only='));
   const onlyEnv = process.env.GN_IMPACT_PDG_ONLY;
@@ -673,6 +786,7 @@ async function run() {
   let perCaseDetail = null; // last run's per-case detail for the report
   let degradedCheck = null;
   const idBridgeChecks = []; // U9 resolved-id soundness axis (one per idBridge fixture)
+  const mutationChecks = []; // U2 dynamic-oracle rows (one per measurable fixture, --mutation only)
 
   try {
     for (let runIdx = 0; runIdx < K; runIdx++) {
@@ -808,6 +922,96 @@ async function run() {
         fs.rmSync(work, { recursive: true, force: true });
       }
     }
+
+    // ── U2 dynamic-oracle mutation pass (opt-in --mutation; BENCH-ADDITIVE) ──
+    // For each fixture: re-analyze into the SAME temp working copy, take the SAME
+    // live static PDG slice the F1 metric scores, derive the behavioral (dynamic
+    // forward) AIS by value-diff over line-scoped mutants on the criterion line,
+    // then score mutation_recall vs the slice and the circularity diff vs the
+    // manual intra_AIS. Runs ONCE (not K times) — the oracle is deterministic and
+    // the value-diff is the load-bearing signal, not substrate-noise-prone like F1.
+    if (MUTATION) {
+      for (const fx of fixtures) {
+        // nobody-interface-excluded has NO body → no statement to seed/mutate →
+        // oracle-excluded (not a silent skip; printed in the row).
+        const noBody = fx.gt.locus === 'n/a' || !fx.gt.criterion.line;
+        // R1: the two direction:'upstream' fixtures are a forward-oracle mismatch.
+        // Run the oracle in its native downstream sense + the circularity cross-
+        // check, but DO NOT apply the recall gate to them (oracle-direction-excluded).
+        const upstream = fx.gt.criterion.direction === 'upstream';
+        // intra-overloaded-callee (pdgScoring:exclude, has a body) is corroboration
+        // for the id-discrimination axis, NOT an AIS recall case.
+        const idCorroboration = fx.gt.pdgScoring === 'exclude' && !noBody;
+
+        if (noBody) {
+          mutationChecks.push({
+            name: fx.name,
+            locus: fx.gt.locus,
+            direction: fx.gt.criterion.direction,
+            criterionKey: null,
+            behavioralAis: [],
+            sliceLines: [],
+            manualAis: [],
+            recall: null,
+            recallGated: false,
+            scopeNote: 'oracle-excluded: no body (no statement to mutate)',
+            mutants: [],
+            circularity: { beyondManual: [], confirmed: [], manualOnly: [] },
+            skipped: 'no-body',
+          });
+          continue;
+        }
+
+        const { work, results } = await analyzeAndImpact(fx, home, { pdgOn: true });
+        try {
+          // The SAME live static slice the F1 metric scores.
+          const slice = pdgLineCis(results.pdg?.affectedStatements);
+          const manualAis = intraLineAis(fx.gt);
+          const derived = await deriveBehavioralAis(fx, work);
+          writeMutationSidecar(fx, derived);
+
+          const B = new Set(derived.behavioralAis);
+          const rec = mutationRecall(B, slice);
+          const circ = circularityDiff(B, manualAis);
+          // The recall gate applies to DOWNSTREAM, non-corroboration fixtures only.
+          const recallGated = !upstream && !idCorroboration;
+          const scopeNote = idCorroboration
+            ? 'id-discrimination corroboration (excluded from recall gate)'
+            : upstream
+              ? 'oracle-direction-excluded: upstream fixture (forward-oracle native downstream)'
+              : null;
+
+          mutationChecks.push({
+            name: fx.name,
+            locus: fx.gt.locus,
+            direction: fx.gt.criterion.direction,
+            criterionKey: derived.criterionKey,
+            criterionLine: derived.criterionLine,
+            behavioralAis: derived.behavioralAis,
+            sliceLines: [...slice].sort(),
+            manualAis: [...manualAis].sort(),
+            recall: rec.recall,
+            recallGated,
+            intersection: rec.intersection,
+            bSize: rec.bSize,
+            sliceSize: rec.sliceSize,
+            missing: rec.missing, // B ∖ slice — recall hole
+            extra: rec.extra, // slice ∖ B — sound over-approx (informational)
+            circularity: circ,
+            scopeNote,
+            paramTypes: derived.paramTypes,
+            inputs: derived.inputs,
+            mutants: derived.mutants,
+            skipped: derived.skipped,
+          });
+        } finally {
+          const lbugPath = path.join(work, '.gitnexus', 'lbug');
+          await closeLbug(lbugPath).catch(() => {});
+          initialised.delete(lbugPath);
+          fs.rmSync(work, { recursive: true, force: true });
+        }
+      }
+    }
   } finally {
     fs.rmSync(home, { recursive: true, force: true });
   }
@@ -886,6 +1090,12 @@ async function run() {
     perCase: perCaseDetail,
     degradedCheck,
     idBridgeChecks,
+    mutation: MUTATION
+      ? {
+          fingerprint: fingerprintMutationSet(mutationChecks, sha256),
+          checks: mutationChecks,
+        }
+      : null,
     annotationFingerprint,
     runsK: K,
   };
@@ -955,6 +1165,77 @@ async function run() {
         out.push(`      eliminated: ${c.fpEliminated.join(', ') || '(none)'}`);
         out.push(...(c.problems.length > 0 ? [`      problems  : ${c.problems.join('; ')}`] : []));
       }
+      out.push('');
+    }
+    if (MUTATION) {
+      out.push(
+        'U2 dynamic-oracle (value-diff forward slice; Agrawal-Horgan/Tip/Voas): mutation_recall =',
+      );
+      out.push(
+        '|B ∩ slice|/|B| (B = dynamic AIS the oracle PROVED). circularity = B ∖ manual_intra_AIS',
+      );
+      out.push(
+        '(non-empty ⇒ the manual annotation MISSED a real dependence — independent evidence):',
+      );
+      const head =
+        `  ${pad('Case', 28)} ${pad('locus', 6)} ${pad('dir', 10)} ${lpad('|B|', 4)} ` +
+        `${lpad('|slice|', 8)} ${lpad('recall', 7)} ${lpad('gated', 6)} ${lpad('circ', 5)}`;
+      out.push(head);
+      out.push('  ' + '-'.repeat(head.length - 2));
+      for (const c of mutationChecks) {
+        out.push(
+          `  ${pad(c.name, 28)} ${pad(c.locus, 6)} ${pad(c.direction, 10)} ${lpad(c.bSize ?? 0, 4)} ` +
+            `${lpad(c.sliceSize ?? 0, 8)} ${lpad(fmt(c.recall), 7)} ${lpad(c.recallGated ? 'yes' : 'no', 6)} ` +
+            `${lpad((c.circularity?.beyondManual ?? []).length, 5)}`,
+        );
+        out.push(...(c.scopeNote ? [`        scope: ${c.scopeNote}`] : []));
+        out.push(...(c.skipped ? [`        oracle-skipped: ${c.skipped}`] : []));
+        out.push(
+          ...((c.missing ?? []).length > 0
+            ? [`        B∖slice (recall hole): ${c.missing.join(', ')}`]
+            : []),
+        );
+        // B∖manual is only a circularity SIGNAL on intra fixtures (whose intra_AIS
+        // claims completeness). On inter/mixed fixtures intra_AIS deliberately omits
+        // cross-function lines, so B∖manual there is EXPECTED (callee-body lines),
+        // not an annotation miss — labelled accordingly so it is not misread.
+        const circMeaningful = c.locus === 'intra';
+        out.push(
+          ...((c.circularity?.beyondManual ?? []).length > 0
+            ? [
+                `        B∖manual (${circMeaningful ? 'WARN — intra annotation missed' : 'expected: cross-function, intra_AIS empty-by-design'}): ${c.circularity.beyondManual.join(', ')}`,
+              ]
+            : []),
+        );
+      }
+      out.push('');
+      // Classify EVERY recall<1.0 (R2) so a reader is not misled.
+      const holes = [];
+      for (const c of mutationChecks) {
+        for (const miss of c.missing ?? [])
+          holes.push({ ...classifyRecallHole(miss, c), case: c.name });
+      }
+      out.push('Recall-hole classification (R2 — every B∖slice line):');
+      if (holes.length === 0) {
+        out.push('  (none — every gated fixture has mutation_recall == 1.0)');
+      } else {
+        for (const h of holes) out.push(`  [${h.bucket}] ${h.case}: ${h.line} — ${h.reason}`);
+      }
+      // Corpus circularity headline — meaningful ONLY on intra fixtures (whose
+      // intra_AIS claims completeness). A non-empty B∖manual there would be the
+      // headline independent evidence that the hand annotation is incomplete.
+      const intraCirc = mutationChecks.filter(
+        (c) => c.locus === 'intra' && (c.circularity?.beyondManual ?? []).length > 0,
+      );
+      out.push(
+        intraCirc.length > 0
+          ? `CIRCULARITY: on ${intraCirc.length} intra fixture(s) the oracle proved a dependence the ` +
+              `manual intra_AIS missed: ${intraCirc.map((c) => `${c.name} [${c.circularity.beyondManual.join(', ')}]`).join('; ')}. ` +
+              `Classify each (block-granularity reconciliation vs genuine annotation gap) before acting.`
+          : 'CIRCULARITY: clean on the intra stratum — the dynamic oracle proved no INTRA dependence the ' +
+              'manual intra_AIS missed (inter/mixed B∖manual is expected cross-function reach, not a miss).',
+      );
+      out.push(`Mutation fingerprint: ${fingerprintMutationSet(mutationChecks, sha256)}`);
       out.push('');
     }
     out.push(`Annotation fingerprint: ${annotationFingerprint}`);
@@ -1028,6 +1309,49 @@ async function run() {
               `idBridge fixtures (a fixture dropped out of the gate)`,
           ]),
     );
+
+    // Gate 4 — U2 mutation recall (REPORT-ONLY this landing; --mutation only).
+    // mutation_recall < 1.0 on a GATED (downstream, non-corroboration) fixture
+    // means the dynamic oracle proved a dependence the static slice missed. We
+    // PRINT the gate line + the numbers but DO NOT process.exit(1) yet — flipping
+    // to a hard gate later is a one-flag change (--mutation-strict already wired).
+    if (MUTATION) {
+      const gatedHoles = mutationChecks.filter(
+        (c) => c.recallGated && c.recall !== null && c.recall < 1,
+      );
+      const gatedCount = mutationChecks.filter((c) => c.recallGated).length;
+      // A future hard gate should fire only on NOVEL holes. The documented,
+      // expected buckets are excluded: known-U1-no-ascent-gap (return/effect ascent
+      // U1 lacks), block-granularity-limit (interior of a coalesced block — the
+      // slice is sound at block granularity), and oracle-direction-scope (upstream
+      // fixture the forward oracle cannot validate). Compute the novel subset via
+      // the same classifier the report uses.
+      const novelHoles = [];
+      for (const c of gatedHoles) {
+        for (const miss of c.missing ?? []) {
+          const cls = classifyRecallHole(miss, c);
+          if (cls.bucket === 'novel-recall-hole') novelHoles.push(`${c.name}:${miss}`);
+        }
+      }
+      const allRecall1 =
+        gatedHoles.length === 0
+          ? 'all gated recall==1.0'
+          : gatedHoles
+              .map((c) => `${c.name} recall=${fmt(c.recall)} (B∖slice: ${c.missing.join(', ')})`)
+              .join('; ');
+      process.stderr.write(
+        `[impact-pdg --check] Gate 4 (mutation recall, REPORT-ONLY): ` +
+          `${gatedCount} gated fixture(s), ${gatedHoles.length} below 1.0 ` +
+          `(${novelHoles.length} NOVEL after classification) — ${allRecall1}\n`,
+      );
+      // --mutation-strict opt-in: flip the report-only gate to a hard failure on
+      // NOVEL holes only (one-flag change to make this the live gate later).
+      failures.push(
+        ...(MUTATION_STRICT && novelHoles.length > 0
+          ? [`mutation recall: NOVEL hole(s) (--mutation-strict): ${novelHoles.join(', ')}`]
+          : []),
+      );
+    }
 
     if (failures.length > 0) {
       for (const f of failures) process.stderr.write(`[impact-pdg --check] FAIL: ${f}\n`);

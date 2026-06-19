@@ -616,6 +616,121 @@ slice crosses a hop):
    descent is sound (it never drops a real target), but it inherits exactly the
    resolver's precision, no more and no less.
 
+### U2 — dynamic mutation oracle (independent ground-truth cross-check)
+
+The PR's **#1 declared validity threat is annotation circularity** (the manual
+`intra_AIS` risks being reconciled against the very traversal it scores). U2 adds
+an **independent, CI-runnable check**: a real **dynamic forward slice** computed
+by **value-diff**, not by reading the static slice. It lives in
+`mutation-oracle.mjs` (substrate) + the pure scorers in `metrics.mjs`, gated
+behind a new `--mutation` flag. **It is bench-additive: no `src/` change, no
+schema change; the default report run + its F1 `--check` gate + fingerprints are
+byte-identical without `--mutation`.**
+
+**Why value-diff, not coverage.** Per Voas's PIE model (TSE'92), an observable
+fault needs **P**ropagation + **I**nfection + **E**xecution. Coverage is only E;
+*dependence* requires I+P = an actual VALUE CHANGE at a downstream point. So the
+oracle's `behavioral_AIS` is the set of statements whose **observed value
+changed** when the criterion line was mutated — a genuine
+[Agrawal-Horgan PLDI'90](https://doi.org/10.1145/93542.93576) **dynamic slice**,
+not a coverage trace. The static⊇dynamic soundness relation (Tip'95) then says a
+sound static slicer must contain the dynamic slice on the executed paths, so
+`B ⊆ slice` is the recall expectation.
+
+**Per fixture, the oracle:**
+
+1. **Mutates the criterion line only** (≤ 4 mutants, line-scoped regex operators:
+   AOR `+ - * / %`, ROR `> < <= >= === !==`, LCR `|| && !`, CRP numeric-literal →
+   `k+1`/`0`, UOI negate-RHS when no operator is flippable). EQUIVALENT mutants
+   (empty `behavioral_AIS`) and syntactically-invalid mutants are discarded.
+2. **Derives inputs** with a tiny TYPE-DRIVEN generator from the criterion fn's
+   params — `number → [5,-3,0]`, `number[] → [[1,2,3],[-1,-2],[]]`, `boolean →
+   [true,false]`, `string → ['a','b','z']` (multi-input covers both branch arms).
+   The tuples used are recorded in the sidecar.
+3. **Instruments the ORIGINAL TS AST** with Babel (`@babel/parser` + `traverse` +
+   `generator`, `retainLines:true` so loc lines stay 1-based `filePath:line` — the
+   SAME space as the slice, no source-map needed): a value-transparent
+   `__trace(EXPR, line, filePath, occ)` wraps VariableDeclarator init /
+   AssignmentExpression RHS / ReturnStatement arg / CallExpression and returns
+   `EXPR` unchanged. Runs original + each mutant via **tsx dynamic-import** on the
+   SAME inputs from the SAME temp working copy the analyze step used.
+4. `behavioral_AIS = { filePath:line where serialize(orig) != serialize(mut) }`
+   for some input/occurrence (value changed / appeared / disappeared), **EXCLUDING
+   the criterion line**, unioned over inputs then over non-equivalent mutants. A
+   deterministic serializer handles `undefined`/`NaN`/`±Infinity`/stable object key
+   order.
+
+**The metric (`--mutation`, report-only this landing).** Let `slice =
+pdgLineCis(results.pdg.affectedStatements)` (the SAME live static slice the F1
+metric scores), `B = behavioral_AIS`, `M = intra_AIS`:
+
+- **`mutation_recall = |B ∩ slice| / |B|`** (pure `mutationRecall` in
+  `metrics.mjs`). `recall < 1.0` ⇒ `B ∖ slice` is a statement the oracle PROVED
+  depends on the criterion that the static slice MISSED. `B ∖ slice` is printed
+  explicitly and **every** such line is classified as **(a) known-U1-no-ascent-gap**,
+  **(b) driver/model artifact** (block-coalescing interior of a coalesced
+  BasicBlock, or the upstream-fixture oracle-direction mismatch), or **(c) novel
+  recall hole** — so a reader is never misled (see *Caveats* below).
+- **Circularity cross-check: `B ∖ M`** (pure `circularityDiff`). Non-empty on an
+  **intra** fixture ⇒ the manual annotation missed a real dependence — the headline
+  independent evidence U2 exists to produce. Reported as a **WARN with the lines**;
+  it does **not** fail. (On inter/mixed fixtures `intra_AIS` is empty-by-design, so
+  `B ∖ M` there is expected cross-function reach, labelled as such, not a miss.)
+- **Precision is NOT gated.** `slice ∖ B` is expected sound over-approximation
+  (the static slice legitimately over-includes); `|slice ∖ B|` is reported
+  informationally only.
+
+**Phasing — report-then-gate.** `measure.mjs --mutation --check` prints a
+`Gate 4 (mutation recall, REPORT-ONLY)` line + the numbers but **does NOT
+`process.exit(1)`** on `recall < 1.0` this landing. Flipping it to a hard gate is a
+one-flag change: `--mutation-strict` already fails the build on **NOVEL** holes
+only (block-coalescing artifacts and documented U1 gaps are excluded by the same
+classifier the report uses).
+
+**Caveats handled.**
+
+- **R1 — the two `upstream` fixtures** (`reassignSum`, `filterPositive`) are a
+  forward-oracle mismatch. The oracle runs in its native downstream sense and does
+  the circularity cross-check, but the recall **gate is NOT applied** to them; this
+  is **printed** as `oracle-direction-excluded`, never a silent skip.
+- **R2 — U1's DOCUMENTED no-ascent gap.** A caller statement depending on a callee
+  RETURN/out-param/thrown-exception is not in the intra slice without
+  `CALL_SUMMARY`. A `recall < 1.0` from callee-effect ascent into the caller
+  continuation is a **KNOWN gap**, not a novel bug — the report classifies it
+  `known-U1-no-ascent-gap` with the lines. `nobody-interface-excluded` (no body)
+  stays oracle-excluded; `intra-overloaded-callee` runs as **id-discrimination
+  corroboration** (mutating the alpha arm changes `Alpha.process`'s output, not
+  `Beta.process`'s), included as corroboration — **not** an AIS recall case.
+
+**Artifacts.** All instrumented mutants are generated under an `os.tmpdir()` dir
+(`gn-impact-pdg-mut-*`), **never inside `fixtures/`**. The only persisted new file
+per fixture is `mutation-ground-truth.json` (a regenerated audit cache;
+`provenance:'mutation'`; **separate from the manual `ground-truth.json`, never
+overwriting it**). It is data, matched by no vitest project (the default glob is
+`test/**/*.test.ts`); the integration test carries a **tripwire** asserting no
+`*.test.ts` ever appears under `bench/impact-pdg/`.
+
+**Runtime.** Each fixture costs one extra `analyze --pdg` child process (the same
+substrate the F1 loop uses) plus a handful of in-process tsx dynamic-imports
+(original + ≤ 4 mutants × the input tuples), all on tiny fixtures — roughly
+**4–7 s/fixture**, so the full `--mutation` pass adds on the order of a minute over
+the base run. The oracle runs **once** (not median-of-K): the value-diff is the
+load-bearing signal, deterministic, not substrate-noise-prone like F1.
+
+**Cross-language sweep is a separate task.** The fixtures are TypeScript (the
+maturest CFG/PDG support here) and the instrumenter is TS-AST-based. Extending the
+oracle to the other languages requires re-indexing per-language fixture corpora
+under `--pdg` and a per-language instrumenter — a separate re-indexing task, out of
+scope for this landing.
+
+**Reproduce:**
+
+```sh
+node --import tsx bench/impact-pdg/measure.mjs --mutation          # per-fixture recall + circularity rows
+node --import tsx bench/impact-pdg/measure.mjs --mutation --check   # + report-only Gate 4
+node --import tsx bench/impact-pdg/measure.mjs --mutation --check --mutation-strict  # hard-fail on NOVEL holes
+```
+
 ### Re-baseline (after a reviewed accuracy or ground-truth change)
 
 1. `node --import tsx bench/impact-pdg/measure.mjs --json` and read

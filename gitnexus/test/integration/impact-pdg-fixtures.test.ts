@@ -311,6 +311,26 @@ describe('U6 — impact-PDG fixture ground-truth schema', () => {
     expect(declared.has('CDG')).toBe(true);
   });
 
+  it('TRIPWIRE: no *.test.ts exists anywhere under bench/impact-pdg/ (cannot inflate npm test)', () => {
+    // The bench harness (measure.mjs, metrics.mjs, mutation-oracle.mjs) is run
+    // manually, never by `npm test`. The U2 dynamic-oracle generates instrumented
+    // mutants in os.tmpdir(), never inside the repo. This tripwire guarantees a
+    // future probe can never silently drop a `*.test.ts` under bench/impact-pdg/
+    // and have it picked up by the default vitest glob — which would inflate the
+    // suite with a flaky full-pipeline lane the harness is designed to stay out of.
+    const benchRoot = path.join(__dirname, '..', '..', 'bench', 'impact-pdg');
+    const collect = (dir: string): string[] =>
+      fs.readdirSync(dir, { withFileTypes: true }).flatMap((ent) => {
+        const full = path.join(dir, ent.name);
+        return ent.isDirectory() ? collect(full) : ent.name.endsWith('.test.ts') ? [full] : [];
+      });
+    const offenders = collect(benchRoot);
+    expect(
+      offenders,
+      `unexpected *.test.ts under bench/impact-pdg/: ${offenders.join(', ')}`,
+    ).toEqual([]);
+  });
+
   it('has exactly one no-body case (the KTD6 case) and it is excluded', () => {
     // The no-body KTD6 case is identified by locus 'n/a' (no CFG body). It is a STRICT
     // subset of pdgScoring:"exclude" — the resolved-id soundness-gate fixture is also
