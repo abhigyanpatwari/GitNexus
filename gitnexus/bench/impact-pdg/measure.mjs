@@ -78,8 +78,12 @@ import {
 // U2 dynamic-oracle substrate: regex-mutate the criterion line, Babel-instrument
 // the original TS AST, run original + mutants on type-driven inputs via tsx
 // dynamic-import, value-diff into a behavioral (dynamic forward slice) AIS. Gated
-// behind --mutation; the default report run never imports/touches it at runtime.
-import { deriveBehavioralAis, writeMutationSidecar } from './mutation-oracle.mjs';
+// behind --mutation. `deriveBehavioralAis` / `writeMutationSidecar` (and their heavy
+// @babel/* deps) are LAZY dynamic-imported inside run()'s --mutation branch, NOT
+// statically here: a top-level import pulls Babel into this module's graph, and a
+// test that imports measure.mjs for its pure helpers (impact-pdg-id-bridge-gate.test.ts)
+// then crashes the vitest worker under full-suite memory pressure (the documented
+// static-heavy-import-crashes-module-load pattern). The default report never loads it.
 // U9 resolved-id soundness axis: reuse the U8 PURE bridge-predicate replica
 // (`bridgeProvenSets`) and the id-vs-name set diff (`scoreIdVsName`) so the gate
 // computes the NAME-match counterfactual the exact same way the realized-FP
@@ -931,6 +935,10 @@ async function run() {
     // manual intra_AIS. Runs ONCE (not K times) — the oracle is deterministic and
     // the value-diff is the load-bearing signal, not substrate-noise-prone like F1.
     if (MUTATION) {
+      // LAZY-load the oracle (+ its heavy @babel/* deps) only when --mutation is
+      // actually requested — see the import-block note above for why this must NOT
+      // be a static top-level import.
+      const { deriveBehavioralAis, writeMutationSidecar } = await import('./mutation-oracle.mjs');
       for (const fx of fixtures) {
         // nobody-interface-excluded has NO body → no statement to seed/mutate →
         // oracle-excluded (not a silent skip; printed in the row).
