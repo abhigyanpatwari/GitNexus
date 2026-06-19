@@ -896,3 +896,144 @@ describe('Python call-site harvest', () => {
     expect(usesOf(cfg)).toContain(x);
   });
 });
+
+// ── Dart call-site harvest ──────────────────────────────────────────────────
+// Drives the REAL Dart CFG visitor (DartHarvester) against real source via the
+// language-agnostic harness, mirroring the Python site tests above. Dart has NO
+// `call_expression` node — a call is a FLAT SIBLING RUN (`identifier` +
+// `selector*`); a `selector(argument_part)` is the call marker. The `at` anchor
+// is byte-aligned with the Dart `@reference.call.*` CALLS anchor, which the
+// scope-extractor places on the callee NAME identifier: the callee identifier
+// for a free / implicit-constructor call (`foo`/`Foo`), and the METHOD-name
+// identifier for a member call (`.method`'s `method`, NOT the receiver). The
+// grammar is VENDORED (loaded from vendor/ like the Kotlin/Swift tests).
+
+import { requireVendoredGrammar } from '../../../src/core/tree-sitter/vendored-grammars.js';
+import { createDartCfgVisitor } from '../../../src/core/ingestion/cfg/visitors/dart.js';
+
+const dartGrammar = requireVendoredGrammar('tree-sitter-dart') as Parameters<
+  typeof makeCfgHarness
+>[0];
+const dart: CfgHarness = makeCfgHarness(dartGrammar, createDartCfgVisitor(), 'fixture.dart');
+
+describe('Dart call-site harvest', () => {
+  it('foo(a, b) → one call site, positions 0→[a], 1→[b], at the callee id line/col', () => {
+    const cfg = dart.cfgOf(`void f(a, b) {\n  foo(a, b);\n}\n`);
+    const sites = siteFact(cfg, 2).sites!;
+    expect(sites).toHaveLength(1);
+    const s = sites[0];
+    expect(s.kind).toBe('call');
+    expect(s.callee).toBe('foo');
+    expect(s.receiver).toBeUndefined();
+    expect(s.args).toEqual([[bindingIdx(cfg, 'a')], [bindingIdx(cfg, 'b')]]);
+    expect(s.parent).toBeUndefined();
+    // `at` is the callee identifier `foo`: line 2 (1-based), col 2 (after indent).
+    expect(s.at).toEqual([2, 2]);
+  });
+
+  it('obj.method(x) → dotted callee path + receiver = obj, at the METHOD name', () => {
+    const cfg = dart.cfgOf(`void f(obj, x) {\n  obj.method(x);\n}\n`);
+    const sites = siteFact(cfg, 2).sites!;
+    expect(sites).toHaveLength(1);
+    const s = sites[0];
+    expect(s.callee).toBe('obj.method');
+    expect(s.receiver).toBe(bindingIdx(cfg, 'obj'));
+    expect(s.args).toEqual([[bindingIdx(cfg, 'x')]]);
+    // chain-length-1 callee: the access IS the callee — no member-read site.
+    expect(siteFact(cfg, 2).uses.filter((u) => u === bindingIdx(cfg, 'obj'))).toHaveLength(1);
+    // `at` is the method-name identifier `method` (col 6), NOT the receiver `obj`.
+    expect(s.at).toEqual([2, 6]);
+  });
+
+  it('a.b.c() → callee path a.b.c, receiver = root a, plus a mid-chain member read', () => {
+    const cfg = dart.cfgOf(`void f(a) {\n  a.b.c();\n}\n`);
+    const sites = siteFact(cfg, 2).sites!;
+    const call = sites.find((s) => s.kind === 'call')!;
+    expect(call.callee).toBe('a.b.c');
+    expect(call.receiver).toBe(bindingIdx(cfg, 'a'));
+    // `at` is the call-name identifier `c` (col 6).
+    expect(call.at).toEqual([2, 6]);
+    // the innermost access `a.b` (the non-callee load) is a member read.
+    const read = sites.find((s) => s.kind === 'member-read')!;
+    expect(read.object).toBe(bindingIdx(cfg, 'a'));
+    expect(read.property).toBe('b');
+  });
+
+  it("multi-line call → the site's `at` line is the callee identifier's line", () => {
+    const cfg = dart.cfgOf(`void f(a, b) {\n  foo(\n    a,\n    b,\n  );\n}\n`);
+    const s = siteFact(cfg).sites![0];
+    expect(s.callee).toBe('foo');
+    // `foo` is on line 2 even though the args span lines 3-4.
+    expect(s.at![0]).toBe(2);
+    expect(s.args).toEqual([[bindingIdx(cfg, 'a')], [bindingIdx(cfg, 'b')]]);
+  });
+
+  it('two calls in one function → two distinct call sites', () => {
+    const cfg = dart.cfgOf(`void f(a, b) {\n  foo(a);\n  bar(b);\n}\n`);
+    const calls = allSites(cfg).filter((s) => s.kind === 'call');
+    expect(calls.map((s) => s.callee).sort()).toEqual(['bar', 'foo']);
+  });
+
+  it('var x = g(y) → resultDefs carries x; arg y occurs at position 0', () => {
+    const cfg = dart.cfgOf(`void f(y) {\n  var x = g(y);\n}\n`);
+    const s = siteFact(cfg, 2).sites![0];
+    expect(s.callee).toBe('g');
+    expect(s.resultDefs).toEqual([bindingIdx(cfg, 'x')]);
+    expect(s.args).toEqual([[bindingIdx(cfg, 'y')]]);
+    // `at` is the callee identifier `g` (col 10, after `  var x = `).
+    expect(s.at).toEqual([2, 10]);
+  });
+
+  it('nested call exec(escape(x)) → inner site parent-linked, occurrence via-tagged', () => {
+    const cfg = dart.cfgOf(`void f(x) {\n  exec(escape(x));\n}\n`);
+    const sites = siteFact(cfg, 2).sites!;
+    expect(sites).toHaveLength(2);
+    const execIdx = sites.findIndex((s) => s.callee === 'exec');
+    const escapeIdx = sites.findIndex((s) => s.callee === 'escape');
+    const x = bindingIdx(cfg, 'x');
+    expect(sites[escapeIdx].args).toEqual([[x]]);
+    expect(sites[escapeIdx].parent).toEqual([execIdx, 0]);
+    expect(sites[execIdx].args).toEqual([[[x, escapeIdx]]]);
+  });
+
+  it('implicit constructor Foo(1) → kind call (Dart-2 implicit, structurally a free call)', () => {
+    const cfg = dart.cfgOf(`void f() {\n  var x = Foo(1);\n}\n`);
+    const s = siteFact(cfg, 2).sites![0];
+    expect(s.kind).toBe('call');
+    expect(s.callee).toBe('Foo');
+    expect(s.resultDefs).toEqual([bindingIdx(cfg, 'x')]);
+    // anchored on the callee identifier `Foo` (col 10) — matches
+    // `@reference.call.constructor`, which the resolution keys on the same node.
+    expect(s.at).toEqual([2, 10]);
+  });
+
+  it('new Foo(1) → kind new (the only single-node call shape Dart has)', () => {
+    const cfg = dart.cfgOf(`void f() {\n  var x = new Foo(1);\n}\n`);
+    const s = siteFact(cfg, 2).sites![0];
+    expect(s.kind).toBe('new');
+    expect(s.callee).toBe('Foo');
+    expect(s.resultDefs).toEqual([bindingIdx(cfg, 'x')]);
+    // the type identifier `Foo` is a type, not a scalar binding — no use of it.
+    expect(bindingIdxs(cfg, 'Foo')).toHaveLength(0);
+  });
+
+  it('named argument foo(k: v) → only the value v is an occurrence (key is not a use)', () => {
+    const cfg = dart.cfgOf(`void f(v) {\n  foo(k: v);\n}\n`);
+    const s = siteFact(cfg, 2).sites![0];
+    expect(s.callee).toBe('foo');
+    // `k` mints no binding; `v` occurs at position 0.
+    expect(bindingIdxs(cfg, 'k')).toHaveLength(0);
+    expect(s.args).toEqual([[bindingIdx(cfg, 'v')]]);
+  });
+
+  it('def/use facts stay intact alongside the new sites (regression guard)', () => {
+    const cfg = dart.cfgOf(`void f(y) {\n  var x = g(y);\n  use(x);\n}\n`);
+    const x = bindingIdx(cfg, 'x');
+    const y = bindingIdx(cfg, 'y');
+    // the binding table + def/use are coherent: x is defined, y and x are used.
+    expect(defsOf(cfg)).toContain(x);
+    expect(usesOf(cfg)).toContain(y);
+    expect(usesOf(cfg)).toContain(x);
+    expect(cfg.bindings![y].kind).toBe('param');
+  });
+});
