@@ -380,12 +380,13 @@ describe('Python CfgVisitor — production CDG probe (plan-required)', () => {
   });
 });
 
-describe('Python CfgVisitor — no taint sites harvested (this unit)', () => {
-  it('statements carry NO sites key (taint substrate is a later step)', () => {
+describe('Python CfgVisitor — taint call sites harvested (this unit)', () => {
+  it('call statements now carry harvested call sites (callee path recorded)', () => {
     const cfg = py.cfgOf(`def f(cmd):\n    exec(cmd)\n    x = escape(cmd)\n    use(x)\n`);
-    const anySites = cfg.blocks.some((b) =>
-      (b.statements ?? []).some((s) => (s as { sites?: unknown }).sites !== undefined),
-    );
-    expect(anySites).toBe(false);
+    const callees = cfg.blocks
+      .flatMap((b) => b.statements ?? [])
+      .flatMap((s) => s.sites ?? [])
+      .map((site) => site.callee);
+    expect(callees).toEqual(expect.arrayContaining(['exec', 'escape', 'use']));
   });
 });

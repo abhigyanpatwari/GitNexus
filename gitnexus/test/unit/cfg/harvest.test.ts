@@ -778,3 +778,121 @@ describe('U11 — per-statement site cap (defensive bound on harvested sites[])'
     expect(flat.some((e) => Array.isArray(e) && e[1] === -1)).toBe(false);
   });
 });
+
+// ── #2227 follow-up — Python call-site harvest (pilot language) ──────────────
+// Drives the REAL Python CFG visitor (PythonHarvester) against real source via
+// the language-agnostic harness, mirroring the TS site tests above. The `at`
+// anchor is the `call` node's start position (byte-aligned with the
+// `@reference.call.*` CALLS anchor so the resolved-id join lands).
+
+import { createRequire } from 'node:module';
+import { makeCfgHarness, type CfgHarness } from '../../helpers/cfg-harness.js';
+import { createPythonCfgVisitor } from '../../../src/core/ingestion/cfg/visitors/python.js';
+
+const pyGrammar = createRequire(import.meta.url)('tree-sitter-python') as Parameters<
+  typeof makeCfgHarness
+>[0];
+const py: CfgHarness = makeCfgHarness(pyGrammar, createPythonCfgVisitor(), 'fixture.py');
+
+describe('Python call-site harvest', () => {
+  it('foo(a, b) → one call site, positions 0→[a], 1→[b], at the call node line/col', () => {
+    const cfg = py.cfgOf(`def f(a, b):\n    foo(a, b)\n`);
+    const sites = siteFact(cfg, 2).sites!;
+    expect(sites).toHaveLength(1);
+    const s = sites[0];
+    expect(s.kind).toBe('call');
+    expect(s.callee).toBe('foo');
+    expect(s.receiver).toBeUndefined();
+    expect(s.args).toEqual([[bindingIdx(cfg, 'a')], [bindingIdx(cfg, 'b')]]);
+    expect(s.parent).toBeUndefined();
+    // `at` is the `call` node start: line 2 (1-based), col 4 (after indent).
+    expect(s.at).toEqual([2, 4]);
+  });
+
+  it('obj.method(x) → dotted callee path + receiver = obj', () => {
+    const cfg = py.cfgOf(`def f(obj, x):\n    obj.method(x)\n`);
+    const s = siteFact(cfg, 2).sites![0];
+    expect(s.callee).toBe('obj.method');
+    expect(s.receiver).toBe(bindingIdx(cfg, 'obj'));
+    expect(s.args).toEqual([[bindingIdx(cfg, 'x')]]);
+    // chain-length-1 callee: the access IS the callee — no member-read site
+    expect(siteFact(cfg, 2).sites).toHaveLength(1);
+    // and the receiver use is recorded exactly once (no double-record)
+    expect(siteFact(cfg, 2).uses.filter((u) => u === bindingIdx(cfg, 'obj'))).toHaveLength(1);
+    // `at` is the call node start (the receiver `obj`), col 4.
+    expect(s.at).toEqual([2, 4]);
+  });
+
+  it('a.b.c() → callee path a.b.c, receiver = root a, plus a mid-chain member read', () => {
+    const cfg = py.cfgOf(`def f(a):\n    a.b.c()\n`);
+    const sites = siteFact(cfg, 2).sites!;
+    const call = sites.find((s) => s.kind === 'call')!;
+    expect(call.callee).toBe('a.b.c');
+    expect(call.receiver).toBe(bindingIdx(cfg, 'a'));
+    // the innermost access `a.b` (the non-callee load) is a member read
+    const read = sites.find((s) => s.kind === 'member-read')!;
+    expect(read.object).toBe(bindingIdx(cfg, 'a'));
+    expect(read.property).toBe('b');
+  });
+
+  it("multi-line call → the site's `at` line is the call node's start line", () => {
+    const cfg = py.cfgOf(`def f(a, b):\n    foo(\n        a,\n        b,\n    )\n`);
+    const s = siteFact(cfg).sites![0];
+    expect(s.callee).toBe('foo');
+    // `call` starts on line 2 even though args span lines 3-4.
+    expect(s.at![0]).toBe(2);
+    expect(s.args).toEqual([[bindingIdx(cfg, 'a')], [bindingIdx(cfg, 'b')]]);
+  });
+
+  it('exec(*args) → spread index recorded, args binding occurs at the position', () => {
+    const cfg = py.cfgOf(`def f(*args):\n    exec(*args)\n`);
+    const s = siteFact(cfg, 2).sites![0];
+    expect(s.callee).toBe('exec');
+    expect(s.spread).toBe(0);
+    expect(s.args).toEqual([[bindingIdx(cfg, 'args')]]);
+  });
+
+  it('two calls in one function → two distinct call sites', () => {
+    const cfg = py.cfgOf(`def f(a, b):\n    foo(a)\n    bar(b)\n`);
+    const calls = allSites(cfg).filter((s) => s.kind === 'call');
+    expect(calls.map((s) => s.callee).sort()).toEqual(['bar', 'foo']);
+  });
+
+  it('x = f(y) → resultDefs carries x; nested escape(req.body) tags + member read', () => {
+    const cfg = py.cfgOf(`def f(y):\n    x = g(y)\n`);
+    const s = siteFact(cfg, 2).sites![0];
+    expect(s.callee).toBe('g');
+    expect(s.resultDefs).toEqual([bindingIdx(cfg, 'x')]);
+    expect(s.args).toEqual([[bindingIdx(cfg, 'y')]]);
+  });
+
+  it('nested call exec(escape(x)) → inner site parent-linked, occurrence via-tagged', () => {
+    const cfg = py.cfgOf(`def f(x):\n    exec(escape(x))\n`);
+    const sites = siteFact(cfg, 2).sites!;
+    expect(sites).toHaveLength(2);
+    const execIdx = sites.findIndex((s) => s.callee === 'exec');
+    const escapeIdx = sites.findIndex((s) => s.callee === 'escape');
+    const x = bindingIdx(cfg, 'x');
+    expect(sites[escapeIdx].args).toEqual([[x]]);
+    expect(sites[escapeIdx].parent).toEqual([execIdx, 0]);
+    expect(sites[execIdx].args).toEqual([[[x, escapeIdx]]]);
+  });
+
+  it('keyword argument f(k=v) → only the value v is an occurrence (key is not a use)', () => {
+    const cfg = py.cfgOf(`def f(v):\n    foo(k=v)\n`);
+    const s = siteFact(cfg, 2).sites![0];
+    expect(s.callee).toBe('foo');
+    // `k` mints no binding; `v` occurs at position 0.
+    expect(bindingIdxs(cfg, 'k')).toHaveLength(0);
+    expect(s.args).toEqual([[bindingIdx(cfg, 'v')]]);
+  });
+
+  it('def/use facts stay intact alongside the new sites (regression guard)', () => {
+    const cfg = py.cfgOf(`def f(y):\n    x = g(y)\n    use(x)\n`);
+    const x = bindingIdx(cfg, 'x');
+    const y = bindingIdx(cfg, 'y');
+    expect(defsOf(cfg)).toContain(x);
+    expect(usesOf(cfg)).toContain(y);
+    expect(usesOf(cfg)).toContain(x);
+  });
+});
