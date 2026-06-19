@@ -310,21 +310,21 @@ describe('#2083 M3 U1 — pdg chunk-key namespace version (flag-off keys untouch
     );
   });
 
-  it('pdg-mode keys CHANGED from the pdg:2 namespace AND pin the current pdg:3 (#2227 SiteRecord.at)', () => {
-    // #2227 U1 added the worker-emitted `SiteRecord.at` — a pdg-mode output shape
-    // change that bumped the cache namespace pdg:2 → pdg:3. A stale pdg:2 shard
-    // lacks `at`, so `calleeIds` is empty on a warm cache (the exact bug that
-    // shipped once). Assert a pdg:2 chunk is NOT served, and PIN the current
-    // pdg:3 namespace so an accidental revert of the token re-introduces the
-    // empty-calleeIds bug with a failing test.
+  it('pdg-mode keys CHANGED from prior namespaces AND pin the current pdg:4 (#2227 SiteRecord.at + Rust struct sites)', () => {
+    // The pdg namespace bumps whenever the worker `cfgSideChannel` site shape
+    // changes: U1 added `SiteRecord.at` (pdg:2→3), U4 added the Rust struct-literal
+    // `kind:'new'` site (pdg:3→4). A stale prior shard lacks the new site, so
+    // `calleeIds` is empty/missing on a warm cache (the bug that shipped once).
+    // Assert prior chunks are NOT served, and PIN the current pdg:4 namespace so an
+    // accidental revert of the token re-introduces the empty-calleeIds bug.
     const joined = 'a.ts:h1\nb.ts:h2';
-    const pdg2Key = createHash('sha256')
-      .update(Buffer.from(`pdg:2;maxFn=def\n${joined}`))
-      .digest('hex');
-    const pdg3Key = createHash('sha256')
-      .update(Buffer.from(`pdg:3;maxFn=def\n${joined}`))
-      .digest('hex');
-    expect(computeChunkHash(entries, { pdg: true })).not.toBe(pdg2Key);
-    expect(computeChunkHash(entries, { pdg: true })).toBe(pdg3Key);
+    const keyOf = (token: string) =>
+      createHash('sha256')
+        .update(Buffer.from(`${token};maxFn=def\n${joined}`))
+        .digest('hex');
+    const current = computeChunkHash(entries, { pdg: true });
+    expect(current).not.toBe(keyOf('pdg:2'));
+    expect(current).not.toBe(keyOf('pdg:3'));
+    expect(current).toBe(keyOf('pdg:4'));
   });
 });
