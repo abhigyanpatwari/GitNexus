@@ -125,8 +125,11 @@ describe('BasicBlock calleeIds — schema DDL + version bump', () => {
     expect(BASICBLOCK_SCHEMA).toContain('calleeIds STRING');
   });
 
-  it('INCREMENTAL_SCHEMA_VERSION bumped to 3 for the new column (KTD5)', () => {
-    expect(INCREMENTAL_SCHEMA_VERSION).toBe(3);
+  it('INCREMENTAL_SCHEMA_VERSION is at least 3 (calleeIds column bump, KTD5)', () => {
+    // The exact value advances as later milestones add re-index-forcing changes
+    // (v4 = CALL_SUMMARY, PDG FU-C). This guard pins the floor the calleeIds
+    // column established; the v3→4 reuse-gate guard lives in its own test.
+    expect(INCREMENTAL_SCHEMA_VERSION).toBeGreaterThanOrEqual(3);
   });
 });
 

@@ -58,7 +58,9 @@ import {
   harvestFileSummaries,
   type FunctionNodeIndex,
 } from '../../taint/summary-harvest-driver.js';
+import { harvestFileCallSummaries } from '../../taint/summary-harvest-driver.js';
 import type { FunctionSummary } from '../../taint/summary-model.js';
+import type { CallSummary } from '../../taint/call-summary-model.js';
 import type { FunctionCfg } from '../../cfg/types.js';
 import { resolveDefGraphId } from '../graph-bridge/ids.js';
 import { buildPopulatedMethodDispatch } from '../graph-bridge/method-dispatch.js';
@@ -415,6 +417,15 @@ interface RunScopeResolutionStats {
    * fixpoint phase composes them over the complete `CALLS` graph.
    */
   readonly functionSummaries: readonly FunctionSummary[];
+  /**
+   * Per-function RETURN-VALUE ASCENT summaries harvested in the pdg window
+   * (PDG FU-C, U-C2). Empty unless `input.pdg === true`. Keyed by resolved
+   * `Function`/`Method`/`Constructor` node id; the whole-program CALL_SUMMARY
+   * emit phase materialises one self-loop edge per entry once the call graph is
+   * known. Unlike {@link functionSummaries} this needs NO taint model — it is
+   * pure data-dependence — so it is harvested for every `--pdg` language.
+   */
+  readonly callSummaries: readonly CallSummary[];
 }
 
 export function runScopeResolution(
@@ -533,6 +544,7 @@ export function runScopeResolution(
       referenceSkipped: 0,
       resolutionOutcomes,
       functionSummaries: [],
+      callSummaries: [],
     };
   }
 
@@ -802,6 +814,11 @@ export function runScopeResolution(
   // so the return (below the pdg block) can read it; empty on non-pdg runs.
   const harvestedSummaries: FunctionSummary[] = [];
   let summaryUnresolved = 0;
+  // FU-C (U-C2): per-function RETURN-VALUE ASCENT summaries harvested in the
+  // pdg window for the whole-program CALL_SUMMARY emit phase. Function-scoped
+  // (read by the return below the pdg block); empty on non-pdg runs.
+  const harvestedCallSummaries: CallSummary[] = [];
+  let callSummaryUnresolved = 0;
   // M3 (#2083 U4): accumulated taint time (match + taint-side solve +
   // propagate + TAINTED/SANITIZES emit), a sibling of `pdgMs` for the same
   // reason — it interleaves per file inside `emit=`, so only an accumulator
@@ -868,10 +885,10 @@ export function runScopeResolution(
     // is built ONCE (whole-graph scan) and reused across every file; summaries
     // accumulate here and ride out on the stats for the cross-function fixpoint
     // phase. Only built when the language has a registered taint model.
-    const fnNodeIndex =
-      taintSpec !== undefined
-        ? (input.prebuiltFunctionNodeIndex ?? buildFunctionNodeIndex(graph))
-        : undefined;
+    // Built whenever pdg is on (NOT gated on taintSpec): the FU-C call-summary
+    // harvest needs it for EVERY language (it is pure data-dependence, no taint
+    // model), and the taint summary harvest reuses it when taintSpec is present.
+    const fnNodeIndex = input.prebuiltFunctionNodeIndex ?? buildFunctionNodeIndex(graph);
     for (const pf of emitParsedFiles) {
       const cfgs = pf.cfgSideChannel;
       // Defensive: cfgSideChannel is opaque (`unknown`) and crosses the cache /
@@ -968,6 +985,20 @@ export function runScopeResolution(
         cdgEdges += cdg.edges;
         cdgDropped += cdg.droppedEdges;
         cdgSkippedUnsound += cdg.skippedUnsoundFunctions;
+
+        // FU-C (U-C2): RETURN-VALUE ASCENT summaries over the SAME validated
+        // CFGs, inside the SAME per-file try. Independent of taint — runs for
+        // EVERY `--pdg` language (pure data-dependence, no source/sink model).
+        // Reuses the same RD fact cap the RD/taint solves use (coverage parity).
+        const callHarvest = harvestFileCallSummaries(
+          fnNodeIndex,
+          wellFormed,
+          taintLimits.maxFacts && taintLimits.maxFacts > 0
+            ? taintLimits.maxFacts
+            : DEFAULT_PDG_MAX_REACHING_DEF_FACTS_PER_FUNCTION,
+        );
+        harvestedCallSummaries.push(...callHarvest.summaries);
+        callSummaryUnresolved += callHarvest.unresolved;
 
         // M3 (#2083 U4): taint over the SAME validated CFGs, inside the SAME
         // per-file try (a taint throw costs this file's taint layer only —
@@ -1118,6 +1149,16 @@ export function runScopeResolution(
             : ''),
       );
     }
+    // FU-C (U-C2): call-summary harvest volume + anchor-resolution diagnostics.
+    if (harvestedCallSummaries.length > 0 || callSummaryUnresolved > 0) {
+      logger.debug(
+        `[call-summary] lang=${provider.language}: ${harvestedCallSummaries.length} function ` +
+          `return-ascent summary/summaries harvested` +
+          (callSummaryUnresolved > 0
+            ? `, ${callSummaryUnresolved} CFG anchor(s) unresolved (same-line collision or missing node)`
+            : ''),
+      );
+    }
   }
 
   if (PROF) {
@@ -1148,5 +1189,6 @@ export function runScopeResolution(
     referenceSkipped: skipped,
     resolutionOutcomes,
     functionSummaries: harvestedSummaries,
+    callSummaries: harvestedCallSummaries,
   };
 }

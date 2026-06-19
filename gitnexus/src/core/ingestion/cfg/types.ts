@@ -40,6 +40,20 @@ export interface BindingEntry {
    * `name@module` in edge ids instead of `name:line:col`.
    */
   readonly synthetic?: boolean;
+  /**
+   * For `kind: 'param'` bindings only: the 0-based ENCLOSING TOP-LEVEL FORMAL
+   * position this binding belongs to — the index a call site's argument position
+   * joins against (PDG FU-C). For a simple identifier formal this equals the
+   * param's ordinal; for a DESTRUCTURED/REST formal every inner name carries the
+   * SAME formal index (`function f({a, b}, c)` ⇒ a:0, b:0, c:1), so a downstream
+   * positional consumer never mistakes the destructured-object formal for a later
+   * simple formal. Set by the per-language `declareParams`; OMITTED when the
+   * producer does not (yet) supply it — a consumer that needs a sound formal
+   * position MUST treat a param binding without `formalIndex` as unknown and fall
+   * back conservatively (never attribute a flattened ordinal to a formal slot).
+   * Omit-when-absent (pre-upgrade durable channels stay valid; JSON-plain).
+   */
+  readonly formalIndex?: number;
 }
 
 /**

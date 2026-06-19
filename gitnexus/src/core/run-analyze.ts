@@ -25,6 +25,7 @@ import {
   deleteNodesForFile,
   deleteAllCommunitiesAndProcesses,
   deleteAllInterprocTaintPaths,
+  deleteAllCallSummaries,
   queryImporters,
   loadFTSExtension,
 } from './lbug/lbug-adapter.js';
@@ -1116,6 +1117,12 @@ export async function runFullAnalysis(
       //     graph (isGraphWideRelType), mirroring Community/Process.
       if (options.pdg === true) {
         await deleteAllInterprocTaintPaths();
+        // 2c. Drop CALL_SUMMARY edges (PDG FU-C) on an incremental `--pdg`
+        //     writeback. They are re-included from the FULL fresh graph
+        //     (isGraphWideRelType) and the callSummaries phase recomputes every
+        //     summary each run, so delete-all-then-rebuild keeps an unchanged
+        //     function's summary from being lost — same contract as TAINT_PATH.
+        await deleteAllCallSummaries();
       }
 
       // 3. Extract the changed subgraph from the FULL ctx.graph and write

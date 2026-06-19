@@ -37,6 +37,8 @@ import { buildTaintImportIndex, matchFunctionSites } from './match.js';
 import type { SourceSinkSanitizerSpec } from './source-sink-config.js';
 import { harvestFunctionSummary } from './summary-harvest.js';
 import { ownFactsDigest, summaryVersion, type FunctionSummary } from './summary-model.js';
+import { harvestCallSummary } from './call-summary-harvest.js';
+import type { CallSummary } from './call-summary-model.js';
 
 /** `cfg.functionStartLine` (1-based) − this = the node's 0-based `startLine`. */
 export const NODE_TO_CFG_LINE_OFFSET = 1;
@@ -140,6 +142,67 @@ export function harvestFileSummaries(
       // Provisional own-only version; the fixpoint recomputes with callee
       // versions once the call graph is condensed.
       version: summaryVersion(digest, []),
+    });
+  }
+
+  return { summaries, unresolved, gaps };
+}
+
+export interface FileCallSummaryResult {
+  readonly summaries: readonly CallSummary[];
+  /** CFGs whose anchor resolved to no unique graph node (collision / missing). */
+  readonly unresolved: number;
+  /** CFGs whose reaching-defs were not `computed` (no summary produced). */
+  readonly gaps: number;
+}
+
+/**
+ * Harvest per-function RETURN-VALUE ASCENT summaries (PDG FU-C, U-C2) for one
+ * file's emit-safe CFGs — the dependence-engine SIBLING of
+ * {@link harvestFileSummaries}. `cfgs` MUST already be `isEmitSafeCfg`-filtered.
+ * Pure aside from the read-only graph lookup; never throws on valid input.
+ *
+ * Unlike the taint harvest, this needs NO source/sink model — return-value
+ * ascent is purely data-dependence over the RD facts — so it runs for every
+ * `--pdg` language (not just those with a registered taint spec). It reuses the
+ * SAME per-function RD facts (recomputed via the same pure solver + cap the RD
+ * emit used; the persisted REACHING_DEF projection is a lossy subset, so the
+ * harvest re-derives in-phase exactly as the taint harvest does — no new
+ * worker/CFG work, no parse-cache bump).
+ */
+export function harvestFileCallSummaries(
+  fnIndex: FunctionNodeIndex,
+  cfgs: readonly FunctionCfg[],
+  maxFacts: number = DEFAULT_PDG_MAX_REACHING_DEF_FACTS_PER_FUNCTION,
+): FileCallSummaryResult {
+  const summaries: CallSummary[] = [];
+  let unresolved = 0;
+  let gaps = 0;
+
+  for (const cfg of cfgs) {
+    const fnId = resolveFnId(fnIndex, cfg);
+    if (fnId === undefined) {
+      unresolved++;
+      continue;
+    }
+    const defUse = computeReachingDefs(cfg, { maxFacts });
+    const harvested = harvestCallSummary(cfg, defUse);
+    if (harvested.status !== 'computed') {
+      gaps++;
+      continue;
+    }
+    const facts = harvested.facts;
+    // Skip functions with NO return-flow at all — an empty summary records no
+    // ascent fact, so persisting it would only bloat the edge set. (The consumer
+    // treats an absent CALL_SUMMARY as "no known ascent", identical to an empty
+    // one.) A 0-param function or a void function therefore emits no edge.
+    if (facts.returnFlowParams.length === 0) continue;
+    summaries.push({
+      fnId,
+      filePath: cfg.filePath,
+      startLine: cfg.functionStartLine,
+      paramCount: facts.paramCount,
+      returnFlowParams: facts.returnFlowParams,
     });
   }
 

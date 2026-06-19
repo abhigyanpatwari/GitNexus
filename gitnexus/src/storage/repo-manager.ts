@@ -218,8 +218,13 @@ export interface RepoMeta {
  * v3: `BasicBlock.calleeIds` column added (sound resolved-callee-id parallel
  * to `callees`, #2227) — same contract: an index built before this lacks the
  * column, so a full re-analyze is forced rather than an incremental top-up.
+ * v4: `CALL_SUMMARY` relation type added (per-callee RETURN-VALUE ASCENT
+ * summary edges, PDG FU-C). A pre-v4 `--pdg` index has NO CALL_SUMMARY edges,
+ * so the engine would silently UNDER-REPORT return-value ascent on an
+ * incremental top-up; force a full re-analyze instead (same contract as v2/v3).
+ * This single bump covers the whole FU-C re-index window (and the later FU-B-2).
  */
-export const INCREMENTAL_SCHEMA_VERSION = 3;
+export const INCREMENTAL_SCHEMA_VERSION = 4;
 
 export interface IndexedRepo {
   repoPath: string;

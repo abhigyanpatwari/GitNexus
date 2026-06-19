@@ -186,6 +186,7 @@ export class TsHarvester {
     kind: BindingEntry['kind'],
     scope: Scope,
     hoistToRoot: boolean,
+    formalIndex?: number,
   ): void {
     const target = hoistToRoot ? this.root : scope;
     const name = nameNode.text;
@@ -200,6 +201,10 @@ export class TsHarvester {
       declLine: nameNode.startPosition.row + 1,
       declColumn: nameNode.startPosition.column,
       kind,
+      // Carry the enclosing formal position for params so the PDG call-summary
+      // consumer joins by FORMAL slot, never the flattened binding ordinal. A
+      // destructured/rest formal hands the SAME index to every inner name.
+      ...(formalIndex !== undefined ? { formalIndex } : {}),
     });
   }
 
@@ -207,48 +212,60 @@ export class TsHarvester {
     const params = fnNode.childForFieldName('parameters') ?? fnNode.childForFieldName('parameter');
     if (!params) return;
     if (params.type === 'identifier') {
-      this.declare(params, 'param', this.root, true); // `x => …` single-param arrow
+      this.declare(params, 'param', this.root, true, 0); // `x => …` single-param arrow ⇒ formal 0
       return;
     }
+    // Each NAMED child of the parameter list is one top-level formal — its index
+    // here is the 0-based formal position. Destructured/rest formals fan out to
+    // several inner names, but ALL inherit this one formal index, so the PDG
+    // call-summary never misattributes an inner name to a later formal's slot.
+    let formalIndex = 0;
     for (let i = 0; i < params.namedChildCount; i++) {
       const p = params.namedChild(i);
       if (!p) continue;
       // TS wraps each param (required_parameter/optional_parameter, field
       // `pattern`); plain JS puts the pattern directly in formal_parameters.
       const pattern = p.childForFieldName('pattern') ?? p;
-      this.declarePattern(pattern, 'param', this.root, true);
+      this.declarePattern(pattern, 'param', this.root, true, formalIndex);
+      formalIndex++;
     }
   }
 
-  /** Declare every name bound by a (possibly destructuring) pattern. */
+  /**
+   * Declare every name bound by a (possibly destructuring) pattern. When
+   * `formalIndex` is supplied (param patterns), EVERY name the pattern binds
+   * carries that one enclosing-formal position (the recursion never reassigns
+   * it), so `function f({a, b}, c)` records a:0, b:0, c:1.
+   */
   private declarePattern(
     node: SyntaxNode,
     kind: BindingEntry['kind'],
     scope: Scope,
     hoistToRoot: boolean,
+    formalIndex?: number,
   ): void {
     switch (node.type) {
       case 'identifier':
       case 'shorthand_property_identifier_pattern':
-        this.declare(node, kind, scope, hoistToRoot);
+        this.declare(node, kind, scope, hoistToRoot, formalIndex);
         return;
       case 'rest_pattern':
       case 'object_pattern':
       case 'array_pattern':
         for (let i = 0; i < node.namedChildCount; i++) {
           const c = node.namedChild(i);
-          if (c) this.declarePattern(c, kind, scope, hoistToRoot);
+          if (c) this.declarePattern(c, kind, scope, hoistToRoot, formalIndex);
         }
         return;
       case 'pair_pattern': {
         const value = node.childForFieldName('value');
-        if (value) this.declarePattern(value, kind, scope, hoistToRoot);
+        if (value) this.declarePattern(value, kind, scope, hoistToRoot, formalIndex);
         return;
       }
       case 'assignment_pattern':
       case 'object_assignment_pattern': {
         const left = node.childForFieldName('left');
-        if (left) this.declarePattern(left, kind, scope, hoistToRoot);
+        if (left) this.declarePattern(left, kind, scope, hoistToRoot, formalIndex);
         return;
       }
       default:
@@ -256,7 +273,7 @@ export class TsHarvester {
         for (let i = 0; i < node.namedChildCount; i++) {
           const c = node.namedChild(i);
           if (c && !TYPE_CONTEXT_TYPES.has(c.type)) {
-            this.declarePattern(c, kind, scope, hoistToRoot);
+            this.declarePattern(c, kind, scope, hoistToRoot, formalIndex);
           }
         }
     }
