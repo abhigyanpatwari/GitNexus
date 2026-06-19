@@ -257,4 +257,38 @@ describe('LocalBackend PDG impact — resolved-callee-id bridge (U6)', () => {
     expect(byId.get('func:callee-A')).toBe('callgraph-bridge');
     expect(byId.get('func:callee-B')).toBe('unproven-bridge');
   });
+
+  it('drops the truncation sentinel from the slice id set (R7 — never matched as an id)', async () => {
+    vi.spyOn(
+      backend as unknown as { _runImpactPDG: () => Promise<unknown> },
+      '_runImpactPDG',
+    ).mockResolvedValueOnce({ ...PDG_SLICE_RESULT });
+
+    // calleeIds carries the sentinel '*' alongside a real id; callees has NO sentinel
+    // (so the names-sentinel short-circuit does not fire and the id path runs). A
+    // reached callee whose id is literally '*' must be UNPROVEN — the sentinel was
+    // filtered out of the id set, so it can never false-match.
+    vi.mocked(executeParameterized).mockImplementation(async (_repo, query) => {
+      if (query.includes('RETURN b.calleeIds')) return [{ calleeIds: 'func:callee-A *' }];
+      if (query.includes('RETURN b.callees')) return [{ callees: 'callee' }];
+      if (query.includes('r.type IN $relTypes') && !query.includes('STEP_IN_PROCESS')) {
+        return [frontierRow('func:callee-A', 'callee'), frontierRow('*', 'callee')];
+      }
+      if (query.includes('COUNT(DISTINCT s.id)') || query.includes('RETURN s.id AS sid')) return [];
+      return [TARGET_ROW];
+    });
+
+    const result = await backend.callTool('impact', {
+      target: 'main',
+      direction: 'downstream',
+      mode: 'pdg',
+      line: 8,
+    });
+
+    expect(result.error).toBeUndefined();
+    const items = result.interproceduralByDepth[1] as Array<{ id: string; pdgEvidence: string }>;
+    const byId = new Map(items.map((i) => [i.id, i.pdgEvidence]));
+    expect(byId.get('func:callee-A')).toBe('callgraph-bridge');
+    expect(byId.get('*')).toBe('unproven-bridge');
+  });
 });

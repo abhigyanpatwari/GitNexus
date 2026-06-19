@@ -64,6 +64,7 @@ import {
 } from '../tools.js';
 import { findImportCycles } from '../../core/graph/import-cycles.js';
 import { decodeTaintPath } from '../../core/ingestion/taint/path-codec.js';
+import { CALLEES_TRUNCATED_SENTINEL } from '../../core/ingestion/cfg/emit.js';
 import { EXTENSIONS } from '../../core/ingestion/import-resolvers/utils.js';
 import {
   fnLineOf,
@@ -4750,7 +4751,10 @@ export class LocalBackend {
       );
       for (const r of rows) {
         const raw = String(r.calleeIds ?? r[0] ?? '');
-        for (const id of raw.split(' ')) if (id) ids.add(id);
+        // Drop the truncation sentinel — it marks a capped block (handled by the
+        // names-sentinel check in the bridge) and is not a resolved symbol id, so
+        // it must not enter the id set used for `has(realId)` matching.
+        for (const id of raw.split(' ')) if (id && id !== CALLEES_TRUNCATED_SENTINEL) ids.add(id);
       }
     } catch (e) {
       logQueryError('impact:pdg-slice-callee-ids', e);
