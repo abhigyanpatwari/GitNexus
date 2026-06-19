@@ -44,6 +44,41 @@ function fnFileOf(id: string): string {
   return parts.slice(1, parts.length - 3).join(':');
 }
 
+/**
+ * Default inter-procedural FUNCTION-hop budget for the U1 forward closure (the
+ * number of call boundaries the slice descends through). Distinct from the per-
+ * hop intra-callee step/edge budget (which reuses `stepLimit`). Kept small (3)
+ * because context-insensitive descent over-includes with depth.
+ */
+const INTERPROC_DEPTH_BUDGET = 3;
+
+/**
+ * Total newly-reached-block cap across all inter-procedural hops — the secondary
+ * termination guard against a pathological fan-out inside the depth budget.
+ * Stamps `truncated` with the `'limit'` reason when it fires (it is a SIZE/budget
+ * cap, not dependence-level depth exhaustion — FIX 7).
+ */
+const INTERPROC_NODE_BUDGET = 5000;
+
+/**
+ * Split a space-joined `BasicBlock.calleeIds` cell into its resolved callee
+ * symbol ids, dropping the truncation sentinel (a capped block carries the
+ * sentinel to mark an incomplete call-site list; it is NOT a resolved symbol id
+ * and must never enter a `has(realId)` set). Empty/whitespace cells yield no ids.
+ *
+ * Extracted here (U1) so the two callers — `LocalBackend.calleeIdsOfBlocks` (the
+ * statement-precise bridge key) and the inter-procedural descent's
+ * `calleeIdsFromCalleeRows` — cannot diverge on the split-and-drop-sentinel
+ * logic. Both consume rows of `BasicBlock.calleeIds`; this is the single source.
+ */
+export function splitCalleeIds(raw: unknown): string[] {
+  const out: string[] = [];
+  for (const id of String(raw ?? '').split(' ')) {
+    if (id && id !== CALLEES_TRUNCATED_SENTINEL) out.push(id);
+  }
+  return out;
+}
+
 /** A reachable dependence block resolved to its source statement. */
 export interface PdgStatement {
   /** 1-based source line where the statement's block starts. */
@@ -359,6 +394,14 @@ export interface PdgImpactSuccessResult extends PdgImpactBaseResult {
   target: Required<PdgImpactTarget>;
   epistemic: 'pdg-intra-procedural';
   reachableBlocks: string[];
+  /**
+   * INTRA-procedural reachable subset of `reachableBlocks` (the original
+   * statement slice, BEFORE the U1 inter-procedural descent expanded it). The
+   * callgraph bridge keys its "first-hop proven" set on this, NOT the interproc-
+   * expanded `reachableBlocks` superset, so statementPrecision keeps its
+   * first-hop meaning (FIX 6). Equals `reachableBlocks` when no hop crossed.
+   */
+  intraReachableBlocks: string[];
   /** The criterion's own seed blocks (changed statement / whole-symbol body). */
   seedBlocks: string[];
   blockCount: number;
@@ -377,6 +420,12 @@ export interface PdgImpactEmptyResult extends PdgImpactBaseResult {
   target: Required<PdgImpactTarget>;
   epistemic: 'no-pdg-body' | 'pdg-no-block-at-line' | 'pdg-intra-procedural';
   reachableBlocks: string[];
+  /**
+   * INTRA-procedural reachable subset of `reachableBlocks` (empty here for the
+   * no-body / no-block-at-line returns; the whole-symbol empty-slice return also
+   * has no intra reach). Surfaced for bridge-key parity with the success result.
+   */
+  intraReachableBlocks: string[];
   /** The criterion's own seed blocks (changed statement / whole-symbol body). */
   seedBlocks: string[];
   blockCount: number;
@@ -502,6 +551,12 @@ function assemblePdgImpactResult(input: {
   direction: 'upstream' | 'downstream';
   reachableBlocks: string[];
   /**
+   * INTRA-procedural reachable subset (before the U1 descent). Surfaced verbatim
+   * so the callgraph bridge keys its "first-hop proven" set on the original
+   * statement slice, not the interproc-expanded superset (FIX 6).
+   */
+  intraReachableBlocks: string[];
+  /**
    * The criterion's own seed blocks (the changed statement / whole-symbol body).
    * Surfaced so the dispatcher can prove inter-procedural callees invoked
    * directly on the changed line, which are NOT in `reachableBlocks` (the
@@ -517,6 +572,13 @@ function assemblePdgImpactResult(input: {
   truncated: boolean;
   truncatedBy?: 'depth' | 'limit';
   truncatedByReasons?: readonly ('depth' | 'limit')[];
+  /**
+   * Number of inter-procedural FUNCTION hops the U1 forward closure descended
+   * (0 ⇒ intra-only, e.g. a pre-namespace-v4 index or a leaf statement). When >0
+   * the slice crossed function boundaries, so the note documents the 4 soundness
+   * caveats of the context-insensitive descent.
+   */
+  interproceduralHops?: number;
 }): PdgImpactSuccessResult {
   const { target, direction, reachableBlocks, projection } = input;
   const { symbols, unresolvedCount, ambiguousCount } = projection;
@@ -568,6 +630,25 @@ function assemblePdgImpactResult(input: {
           `(${direction} over CDG + REACHING_DEF). Inter-procedural symbol reach ` +
           `is attached by impact mode's unified PDG dispatcher in interproceduralByDepth/byDepth.`,
       ];
+  const interproceduralHops = input.interproceduralHops ?? 0;
+  if (interproceduralHops > 0) {
+    noteParts.push(
+      `The statement slice (affectedStatements) crosses ${interproceduralHops} ` +
+        `inter-procedural ${interproceduralHops === 1 ? 'hop' : 'hops'} via resolved call ` +
+        `sites (HRB context-insensitive forward closure, downstream). SOUNDNESS CAVEATS: ` +
+        `(1) context-insensitive — a dependence may be attributed to a callee only reachable ` +
+        `from a DIFFERENT call site of the same function (bounded over-inclusion, the same ` +
+        `imprecision callgraph mode has); (2) NO ascent of ANY callee effect into the caller's ` +
+        `post-call continuation — a caller statement that depends on a callee's effects ` +
+        `(return-value ascent, out-parameters / mutated arguments, callee-written shared / ` +
+        `captured variables, or an exception the callee throws that the caller catches) is NOT ` +
+        `captured without summary edges (the principal soundness gap, fixed by the deferred ` +
+        `CALL_SUMMARY upgrade); (3) no cross-boundary alias ` +
+        `model; (4) precision is bounded by the call RESOLVER's precision (multi-candidate ` +
+        `dispatch / C++ overload under-resolution flow through faithfully — sound, never drops a ` +
+        `real target).`,
+    );
+  }
   if (ambiguousCount > 0) {
     noteParts.push(
       `${ambiguousCount} owning-symbol ${ambiguousCount === 1 ? 'projection is' : 'projections are'} ` +
@@ -612,6 +693,7 @@ function assemblePdgImpactResult(input: {
     // Raw block-level detail retained alongside the symbol projection (U3 tests
     // and the accuracy harness read these).
     reachableBlocks,
+    intraReachableBlocks: input.intraReachableBlocks,
     seedBlocks: input.seedBlocks,
     blockCount: reachableBlocks.length,
     depthReached: input.depthReached,
@@ -921,6 +1003,319 @@ function blockAnchorForStatement(
   };
 }
 
+/**
+ * One bounded, direction-aware BFS over CDG + REACHING_DEF starting from a set
+ * of seed blocks. Extracted (U1) from `runImpactPDG`'s intra loop so the
+ * inter-procedural descent reuses the EXACT same edge query and step/limit
+ * semantics — no reimplementation. The query, the one-past-`stepLimit` probe,
+ * the per-step truncation flag, and the depth-exhaustion flag are byte-identical
+ * to the original inline loop.
+ *
+ * `visited` is the caller's shared cycle/recursion guard: seeds are pre-added so
+ * they are never re-collected (the seed-minus-reachable convention), and any
+ * block already visited (a prior callee's seed, or already-reached) is skipped.
+ * Newly-discovered blocks are added to `visited` AND returned in `reachable`.
+ */
+async function bfsReachableBlocks(input: {
+  lbugPath: string;
+  exec: typeof executeParameterized;
+  seedBlocks: string[];
+  visited: Set<string>;
+  direction: 'upstream' | 'downstream';
+  depthBudget: number;
+  stepLimit: number;
+  probeLimit: number;
+}): Promise<{
+  reachable: Set<string>;
+  depthReached: number;
+  truncatedByDepth: boolean;
+  truncatedByLimit: boolean;
+}> {
+  const { lbugPath, exec, seedBlocks, visited, direction, depthBudget, stepLimit, probeLimit } =
+    input;
+  const reachable = new Set<string>();
+  // Seeds are pre-added to `visited` so they are never re-COLLECTED (the
+  // seed-minus-reachable convention), but the seed list still drives the first
+  // step's frontier — the guard blocks re-collection, not seed re-expansion.
+  for (const id of seedBlocks) visited.add(id);
+  let frontier = [...seedBlocks];
+  let depthReached = 0;
+  let truncatedByDepth = false;
+  let truncatedByLimit = false;
+
+  const matchEndpoint = direction === 'downstream' ? 'a' : 'b';
+  const collectEndpoint = direction === 'downstream' ? 'b' : 'a';
+
+  for (let depth = 0; depth < depthBudget; depth++) {
+    if (frontier.length === 0) break;
+    const rawRows = await exec(
+      lbugPath,
+      `MATCH (a:BasicBlock)-[r:CodeRelation]->(b:BasicBlock)
+         WHERE r.type IN ['CDG', 'REACHING_DEF'] AND ${matchEndpoint}.id IN $frontier
+         RETURN DISTINCT ${collectEndpoint}.id AS id
+         LIMIT ${probeLimit}`,
+      { frontier },
+    );
+    // Narrow the awaited rows ONCE at the boundary (executeParameterized returns
+    // any[]) to a typed record shape, then read the aliased `id` via bracket
+    // access — no `as any` sprayed per field.
+    const rows = rawRows.slice(0, stepLimit) as Array<Record<string, unknown>>;
+    depthReached = depth + 1;
+    if (rawRows.length > stepLimit) truncatedByLimit = true;
+
+    const next: string[] = [];
+    for (const r of rows) {
+      const id = String(r['id'] ?? '');
+      if (!id || visited.has(id)) continue;
+      visited.add(id);
+      reachable.add(id);
+      next.push(id);
+    }
+    frontier = next;
+  }
+  if (frontier.length > 0) truncatedByDepth = true;
+
+  return { reachable, depthReached, truncatedByDepth, truncatedByLimit };
+}
+
+/** A resolved callee symbol span — the seed window for an inter-procedural hop. */
+interface CalleeSpan {
+  id: string;
+  filePath: string;
+  startLine: number;
+  endLine: number;
+}
+
+/**
+ * Gather the resolved callee symbol ids invoked across a set of slice blocks
+ * (`BasicBlock.calleeIds`). Reuses the SHARED `splitCalleeIds` so the descent
+ * cannot diverge from `LocalBackend.calleeIdsOfBlocks` on the split/drop-sentinel
+ * logic. A pre-namespace-v4 index (no `calleeIds` column → empty cells) yields no
+ * ids, so the descent degrades cleanly to intra-only (no inter-procedural hop).
+ */
+async function calleeIdsFromBlocks(
+  lbugPath: string,
+  blockIds: string[],
+  exec: typeof executeParameterized,
+): Promise<Set<string>> {
+  const ids = new Set<string>();
+  if (blockIds.length === 0) return ids;
+  const rows = await exec(
+    lbugPath,
+    `MATCH (b:BasicBlock) WHERE b.id IN $ids RETURN b.calleeIds AS calleeIds`,
+    { ids: blockIds },
+  );
+  // Narrow the awaited rows ONCE at the boundary to a typed record shape; read
+  // the aliased `calleeIds` cell via bracket access — no per-field `as any`.
+  for (const r of rows as Array<Record<string, unknown>>) {
+    for (const id of splitCalleeIds(r['calleeIds'])) ids.add(id);
+  }
+  return ids;
+}
+
+/**
+ * Batch-resolve resolved callee symbol ids → their `{id,filePath,startLine,endLine}`
+ * spans via ONE `s.id IN $ids` UNION-ALL query over Function/Method/Constructor —
+ * the SAME query shape as `projectBlocksToSymbols`, but keyed on the RESOLVED
+ * `s.id` (no same-line ambiguity, unlike the reverse block-to-symbol join). Ids
+ * with no matching symbol (a callee resolved to a node kind without a CFG body,
+ * or an out-of-repo id) simply produce no span and are skipped — never an error.
+ */
+async function resolveCalleeSpans(
+  lbugPath: string,
+  calleeIds: string[],
+  exec: typeof executeParameterized,
+): Promise<CalleeSpan[]> {
+  if (calleeIds.length === 0) return [];
+  const rows = await exec(
+    lbugPath,
+    `MATCH (s:\`Function\`) WHERE s.id IN $ids
+       RETURN s.id AS id, s.filePath AS filePath, s.startLine AS startLine, s.endLine AS endLine
+     UNION ALL
+     MATCH (s:\`Method\`) WHERE s.id IN $ids
+       RETURN s.id AS id, s.filePath AS filePath, s.startLine AS startLine, s.endLine AS endLine
+     UNION ALL
+     MATCH (s:\`Constructor\`) WHERE s.id IN $ids
+       RETURN s.id AS id, s.filePath AS filePath, s.startLine AS startLine, s.endLine AS endLine`,
+    { ids: calleeIds },
+  );
+  const spans: CalleeSpan[] = [];
+  // Narrow the awaited rows ONCE at the boundary to a typed record shape; read
+  // the aliased columns via bracket access with Number()/String() coercion —
+  // no per-field `as any` (the same boundary-narrowing the typed helpers use).
+  for (const r of rows as Array<Record<string, unknown>>) {
+    const id = String(r['id'] ?? '');
+    const filePath = String(r['filePath'] ?? '');
+    const startLine = Number(r['startLine']);
+    const endLine = Number(r['endLine']);
+    if (!id || !filePath || !Number.isFinite(startLine) || !Number.isFinite(endLine)) continue;
+    spans.push({ id, filePath, startLine, endLine });
+  }
+  return spans;
+}
+
+/**
+ * Bounded inter-procedural forward closure (U1) — HRB context-INSENSITIVE
+ * forward slicing, the shipped Joern approach. Starting from the intra-procedural
+ * slice blocks, descend DOWNSTREAM through resolved call sites: per hop, gather
+ * the slice blocks' `calleeIds`, resolve them to callee spans, seed each callee's
+ * blocks, run the SAME CDG+REACHING_DEF BFS within the callee, and union the
+ * newly-reachable blocks into the slice. Recurses to `depthBudget` FUNCTION hops.
+ *
+ * Termination is guaranteed by the shared `visited` set (a block is expanded at
+ * most once across all hops) plus the depth cap. A total node cap (`nodeBudget`)
+ * is the secondary guard against a pathological fan-out within the budget.
+ *
+ * Caveats (documented in the result note + bench/impact-pdg/README.md):
+ *  (1) context-insensitive — a dependence may be attributed to a callee only
+ *      reachable from a DIFFERENT call site of the same function (bounded
+ *      over-inclusion, the same imprecision callgraph mode already has);
+ *  (2) NO ascent of ANY callee effect into the caller's post-call continuation —
+ *      a caller statement depending on a callee's effects (return-value ascent,
+ *      out-parameters / mutated arguments, callee-written shared/captured
+ *      variables, or an exception the callee throws that the caller catches) is
+ *      NOT captured without summary edges (the principal soundness gap, fixed by
+ *      the deferred CALL_SUMMARY upgrade);
+ *  (3) no cross-boundary alias model;
+ *  (4) precision is bounded by the call RESOLVER's precision (multi-candidate
+ *      dispatch / C++ overload under-resolution flow through faithfully — sound,
+ *      never drops a real target).
+ */
+async function interproceduralDescent(input: {
+  lbugPath: string;
+  exec: typeof executeParameterized;
+  /** The intra-procedural slice = seed blocks ∪ intra-reachable blocks. */
+  initialSliceBlocks: string[];
+  /** Shared cycle/recursion guard (already contains the intra seeds + reach). */
+  visited: Set<string>;
+  /** FUNCTION-hop budget — how many call boundaries the closure descends. */
+  depthBudget: number;
+  /**
+   * Per-callee intra BFS DEPTH budget (dependence-levels within one callee). The
+   * SAME `Math.min(maxDepth, IMPACT_MAX_DEPTH)` clamp the top-level intra BFS
+   * applies — NOT `stepLimit` (a row/probe budget): a callee must not be
+   * traversable up to `PDG_QUERY_MAX_LIMIT` dependence-levels deep, one
+   * sequential DB query per level.
+   */
+  intraDepthBudget: number;
+  stepLimit: number;
+  probeLimit: number;
+  /** Total newly-reached-block cap across all hops (secondary guard). */
+  nodeBudget: number;
+  /**
+   * Callee symbol ids to treat as ALREADY seeded before the first hop — chiefly
+   * the statement seed's OWNER FUNCTION, so direct/mutual recursion back to it
+   * never re-seeds the whole-function span the statement slice deliberately
+   * excluded (the statement-precision pin would otherwise be re-broadened).
+   */
+  preSeededCalleeIds?: Iterable<string>;
+}): Promise<{
+  reachable: Set<string>;
+  hopsReached: number;
+  truncatedByDepth: boolean;
+  truncatedByLimit: boolean;
+  truncatedByNodeCap: boolean;
+}> {
+  const {
+    lbugPath,
+    exec,
+    visited,
+    depthBudget,
+    intraDepthBudget,
+    stepLimit,
+    probeLimit,
+    nodeBudget,
+  } = input;
+  const reachable = new Set<string>();
+  let truncatedByDepth = false;
+  let truncatedByLimit = false;
+  let truncatedByNodeCap = false;
+  let hopsReached = 0;
+  // The slice the next hop gathers callees FROM — starts as the intra slice, then
+  // becomes each hop's newly-reached callee blocks.
+  let sliceBlocks = [...input.initialSliceBlocks];
+  // Guard against re-seeding the same callee function across hops. Pre-seeded
+  // with the statement seed's owner function so recursion never re-broadens it.
+  const seededCalleeIds = new Set<string>(input.preSeededCalleeIds ?? []);
+
+  hopLoop: for (let hop = 0; hop < depthBudget; hop++) {
+    if (sliceBlocks.length === 0) break;
+    const calleeIds = await calleeIdsFromBlocks(lbugPath, sliceBlocks, exec);
+    const freshIds = [...calleeIds].filter((id) => !seededCalleeIds.has(id));
+    if (freshIds.length === 0) break;
+    for (const id of freshIds) seededCalleeIds.add(id);
+
+    const spans = await resolveCalleeSpans(lbugPath, freshIds, exec);
+    if (spans.length === 0) break;
+    hopsReached = hop + 1;
+
+    const hopReached = new Set<string>();
+    for (const span of spans) {
+      // Node budget is checked INSIDE the per-span loop (not only after a full
+      // hop) so a hub/dispatcher slice that invokes many distinct callees does
+      // bounded work per hop — it short-circuits mid-hop rather than running
+      // O(distinctCallees × per-callee-BFS) sequential queries before the guard.
+      if (reachable.size > nodeBudget) {
+        truncatedByNodeCap = true;
+        break hopLoop;
+      }
+      // Seed the callee's blocks from the resolved span (same window helper the
+      // intra seed uses), then run the SAME intra BFS within the callee — always
+      // DOWNSTREAM (forward closure), mirroring the dispatcher's direction gate.
+      const { anchorClause, queryParams } = blockAnchorForResolvedSymbol(span);
+      const rawSeedRows = await exec(
+        lbugPath,
+        `MATCH (a:BasicBlock) WHERE ${anchorClause} RETURN a.id AS id LIMIT ${probeLimit}`,
+        queryParams,
+      );
+      if (rawSeedRows.length > stepLimit) truncatedByLimit = true;
+      const calleeSeeds = rawSeedRows
+        .slice(0, stepLimit)
+        .map((r: Record<string, unknown>) => String(r['id'] ?? ''))
+        .filter((id: string) => id.length > 0);
+      if (calleeSeeds.length === 0) continue;
+      // A callee seed block IS reachable (the callee is invoked from the slice),
+      // unlike the top-level seed which is the target itself.
+      for (const id of calleeSeeds) {
+        if (!visited.has(id)) {
+          visited.add(id);
+          reachable.add(id);
+          hopReached.add(id);
+        }
+      }
+      const bfs = await bfsReachableBlocks({
+        lbugPath,
+        exec,
+        seedBlocks: calleeSeeds,
+        visited,
+        direction: 'downstream',
+        // Per-callee intra DEPTH clamp (block-hops within the callee), NOT the row
+        // budget — mirrors the top-level intra BFS depth clamp exactly.
+        depthBudget: intraDepthBudget,
+        stepLimit,
+        probeLimit,
+      });
+      if (bfs.truncatedByLimit) truncatedByLimit = true;
+      for (const id of bfs.reachable) {
+        reachable.add(id);
+        hopReached.add(id);
+      }
+    }
+
+    if (reachable.size > nodeBudget) {
+      truncatedByNodeCap = true;
+      break;
+    }
+    sliceBlocks = [...hopReached];
+  }
+  // Frontier of callees still expandable after the hop budget ⇒ depth truncation.
+  // (Conservative: if the last hop reached blocks AND we used the full budget,
+  // deeper callees may exist.)
+  if (hopsReached >= depthBudget && sliceBlocks.length > 0) truncatedByDepth = true;
+
+  return { reachable, hopsReached, truncatedByDepth, truncatedByLimit, truncatedByNodeCap };
+}
+
 export interface RunPdgImpactDeps {
   repo: { lbugPath: string };
   sym: { id: string; name: string; filePath: string; startLine?: number; endLine?: number };
@@ -984,9 +1379,9 @@ export async function runImpactPDG(deps: RunPdgImpactDeps): Promise<PdgImpactRes
     `MATCH (a:BasicBlock) WHERE ${anchorClause} RETURN a.id AS id LIMIT ${probeLimit}`,
     queryParams,
   );
-  const seedRows = rawSeedRows.slice(0, stepLimit);
+  const seedRows = rawSeedRows.slice(0, stepLimit) as Array<Record<string, unknown>>;
   let seedBlocks: string[] = seedRows
-    .map((r: any) => String(r.id ?? r[0] ?? ''))
+    .map((r) => String(r['id'] ?? ''))
     .filter((id: string) => id.length > 0);
   // Pin the OWNING function for a statement seed: a closure body block that
   // starts on the SAME source line as the seeded statement satisfies the
@@ -1021,6 +1416,7 @@ export async function runImpactPDG(deps: RunPdgImpactDeps): Promise<PdgImpactRes
       direction,
       ...(statementMode ? { criterionLine: line } : {}),
       reachableBlocks: [],
+      intraReachableBlocks: [],
       seedBlocks: [],
       blockCount: 0,
       affectedStatements: [],
@@ -1054,58 +1450,85 @@ export async function runImpactPDG(deps: RunPdgImpactDeps): Promise<PdgImpactRes
   // ── Bounded direction-aware BFS over CDG + REACHING_DEF (KTD4, KTD11) ──────
   // Seed blocks are NOT counted as reachable (they ARE the target); the
   // reachable set is everything the BFS discovers from them. Visited tracks
-  // BOTH seeds and discovered blocks so a cycle never re-expands.
+  // BOTH seeds and discovered blocks so a cycle never re-expands. The traversal
+  // is the shared `bfsReachableBlocks` — the SAME edge query / step-limit / probe
+  // semantics the inter-procedural descent (U1) reuses, so the two cannot diverge.
   const visited = new Set<string>(seedBlocks);
-  const reachable = new Set<string>();
-  let frontier = [...seedBlocks];
-  let depthReached = 0;
+  const intra = await bfsReachableBlocks({
+    lbugPath: repo.lbugPath,
+    exec,
+    seedBlocks,
+    visited,
+    direction,
+    depthBudget,
+    stepLimit,
+    probeLimit,
+  });
+  const reachable = intra.reachable;
+  // FIX 6: snapshot the INTRA-procedural reachable set BEFORE the U1 descent
+  // expands `reachable` with inter-procedurally-reached callee blocks. The
+  // callgraph bridge keys its "first-hop proven" set on seed ∪ intra-reachable
+  // (the original statement slice) — feeding it the interproc-expanded superset
+  // would mark transitively-reached (2+ hop) callgraph targets as first-hop
+  // proven, silently shifting the established statementPrecision semantics.
+  const intraReachableBlocks = [...reachable].sort();
+  const depthReached = intra.depthReached;
   // `truncatedByDepth`: the BFS still had a non-empty frontier when the depth
   // budget ran out (more reachable blocks exist past `maxDepth`).
-  // `truncatedByLimit`: a single step's neighbour query hit the one-past
-  // LIMIT probe, so that step's expansion is a lower bound. The SEED query is
-  // one-past-probed too, so `seedTruncated` seeds this flag — a partial seed is
-  // a lower-bound expansion just like a partial step. Either flags `truncated`.
-  let truncatedByDepth = false;
-  let truncatedByLimit = seedTruncated;
+  // `truncatedByLimit`: a step's neighbour query hit the one-past LIMIT probe.
+  // The SEED query is one-past-probed too, so `seedTruncated` seeds the flag — a
+  // partial seed is a lower-bound expansion just like a partial step.
+  let truncatedByDepth = intra.truncatedByDepth;
+  let truncatedByLimit = seedTruncated || intra.truncatedByLimit;
 
-  // The endpoint the frontier is matched on, and the endpoint collected, flip
-  // by direction — but the SAME sense applies to BOTH edge types (KTD4).
-  //   downstream: frontier = source `a`, collect target `b`  (forward)
-  //   upstream:   frontier = target `b`, collect source `a`  (reverse)
-  const matchEndpoint = direction === 'downstream' ? 'a' : 'b';
-  const collectEndpoint = direction === 'downstream' ? 'b' : 'a';
-
-  for (let depth = 0; depth < depthBudget; depth++) {
-    if (frontier.length === 0) break;
-    // Anchored on exact frontier ids (bound as a param — KTD11). The edge-type
-    // discriminator is a hardcoded literal list (never user input). `LIMIT` is
-    // the validated integer `probeLimit` (one row past the processed page).
-    const rawRows = await exec(
-      repo.lbugPath,
-      `MATCH (a:BasicBlock)-[r:CodeRelation]->(b:BasicBlock)
-         WHERE r.type IN ['CDG', 'REACHING_DEF'] AND ${matchEndpoint}.id IN $frontier
-         RETURN DISTINCT ${collectEndpoint}.id AS id
-         LIMIT ${probeLimit}`,
-      { frontier },
-    );
-    const rows = rawRows.slice(0, stepLimit);
-    depthReached = depth + 1;
-    if (rawRows.length > stepLimit) truncatedByLimit = true;
-
-    const next: string[] = [];
-    for (const r of rows) {
-      const id = String((r as any).id ?? (r as any)[0] ?? '');
-      if (!id || visited.has(id)) continue;
-      visited.add(id);
-      reachable.add(id);
-      next.push(id);
-    }
-    frontier = next;
+  // ── U1: bounded inter-procedural forward closure (DOWNSTREAM only) ──────────
+  // After the intra slice completes and BEFORE block→symbol projection, descend
+  // through resolved call sites so the slice crosses function boundaries (HRB
+  // context-insensitive forward closure — Joern's shipped approach). Gated to
+  // downstream (the dispatcher's direction gate mirrors this): forward closure is
+  // only meaningful when following calls forward. A pre-namespace-v4 index (no
+  // `calleeIds`) yields no callee ids → the descent is a no-op → byte-identical
+  // intra-only behavior. The inter-procedural reach DEEPENS `reachableBlocks`
+  // (and thus `affectedStatements`); the owning-symbol `byDepth` stays a single
+  // collapsed bucket (block-hops are not call-hops — the standing KTD8 contract;
+  // every byDepth consumer iterates generically, so deepening the statement slice
+  // — not the bucket count — is the correctness-preserving surface).
+  let interproceduralHops = 0;
+  if (direction === 'downstream') {
+    const interproc = await interproceduralDescent({
+      lbugPath: repo.lbugPath,
+      exec,
+      // The slice the first hop gathers callees from = seeds ∪ intra reach. The
+      // seed block(s) are included because a callee invoked directly on the
+      // changed line is the most-directly-impacted one (seed-minus-reachable
+      // excludes seeds from `reachable`, but they still call out to callees).
+      initialSliceBlocks: [...seedBlocks, ...reachable],
+      visited,
+      depthBudget: INTERPROC_DEPTH_BUDGET,
+      // FIX 1: the per-callee intra BFS depth is the SAME depth clamp the
+      // top-level intra BFS uses — NOT `stepLimit` (a row/probe budget). A callee
+      // must not be traversable up to PDG_QUERY_MAX_LIMIT dependence-levels deep.
+      intraDepthBudget: depthBudget,
+      stepLimit,
+      probeLimit,
+      nodeBudget: INTERPROC_NODE_BUDGET,
+      // FIX 3: pre-seed the descent with the statement seed's OWNER FUNCTION so
+      // direct/mutual recursion back to it never re-seeds the whole-function span
+      // the statement slice deliberately excluded. The resolved target symbol id
+      // (`sym.id`) is exactly that owner — `_impactImpl` already resolved it.
+      preSeededCalleeIds: statementMode ? [sym.id] : [],
+    });
+    interproceduralHops = interproc.hopsReached;
+    for (const id of interproc.reachable) reachable.add(id);
+    if (interproc.truncatedByDepth) truncatedByDepth = true;
+    if (interproc.truncatedByLimit) truncatedByLimit = true;
+    // FIX 7: the node cap is a SIZE/budget limit, semantically 'limit' — NOT
+    // 'depth' (which means dependence-level exhaustion). Map it to truncatedByLimit.
+    if (interproc.truncatedByNodeCap) truncatedByLimit = true;
+    // FIX 5: do NOT fold the inter-procedural FUNCTION-hop count into
+    // `depthReached` (which means intra BLOCK-hop depth — a different unit). The
+    // function-hop count is plumbed separately via `interproceduralHops`.
   }
-  // Frontier still non-empty after exhausting the depth budget ⇒ more blocks
-  // are reachable beyond `maxDepth` (depth truncation, distinct from natural
-  // completion where the frontier drains to empty inside the loop).
-  if (frontier.length > 0) truncatedByDepth = true;
 
   const reachableBlocks = [...reachable].sort();
   const truncated = truncatedByDepth || truncatedByLimit;
@@ -1149,6 +1572,10 @@ export async function runImpactPDG(deps: RunPdgImpactDeps): Promise<PdgImpactRes
           `(what depends on the code at that line). Inter-procedural symbol reach is attached ` +
           `separately by the unified impact dispatcher.`,
       reachableBlocks: [] as string[],
+      // Empty intra reach (reachableBlocks is empty here) — the bridge keys on
+      // seed ∪ intra-reachable, so an empty intra slice leaves the bridge to seed
+      // from the seed blocks alone (FIX 6 parity field).
+      intraReachableBlocks: [] as string[],
       // Carry the real seed blocks (non-empty here — the function HAS blocks, they
       // are all seeds): a callee invoked directly on the seeded line must still be
       // provable even when the line has no downstream dependents (the seed-line FN
@@ -1183,6 +1610,7 @@ export async function runImpactPDG(deps: RunPdgImpactDeps): Promise<PdgImpactRes
     },
     direction,
     reachableBlocks,
+    intraReachableBlocks,
     seedBlocks,
     affectedStatements,
     criterionLine: statementMode ? (line as number) : undefined,
@@ -1191,6 +1619,7 @@ export async function runImpactPDG(deps: RunPdgImpactDeps): Promise<PdgImpactRes
     truncated,
     truncatedBy,
     truncatedByReasons,
+    interproceduralHops,
   });
 }
 

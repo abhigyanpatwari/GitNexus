@@ -117,6 +117,9 @@ const PDG_SLICE_RESULT = {
   impactedCount: 0,
   epistemic: 'pdg-intra-procedural',
   reachableBlocks: ['BasicBlock:src/index.ts:8:0:1'],
+  // Intra-only slice ⇒ the intra reach the bridge keys on equals reachableBlocks
+  // (FIX 6: bridge keys its first-hop-proven set on intraReachableBlocks).
+  intraReachableBlocks: ['BasicBlock:src/index.ts:8:0:1'],
   seedBlocks: ['BasicBlock:src/index.ts:8:0:0'],
   blockCount: 1,
   affectedStatements: [{ line: 8, filePath: 'src/index.ts', text: 'callee()' }],

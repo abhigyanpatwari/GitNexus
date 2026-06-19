@@ -577,6 +577,45 @@ node --import tsx bench/impact-pdg/name-collision.mjs --repo commons-lang --src 
 node --import tsx bench/impact-pdg/name-collision.mjs --repo monolog --src 'src/Monolog/'
 ```
 
+### Inter-procedural forward slice (U1 — `calleeIds` descent)
+
+The `mode:'pdg'` slice was originally **intra-procedural**: the CDG +
+REACHING_DEF traversal stayed inside the seeded function, and cross-function
+reach was bolted on only through the call-graph bridge. U1 makes the statement
+slice itself cross function boundaries: after the intra slice completes (and
+before block→symbol projection), a bounded **DOWNSTREAM-only** descent gathers
+the slice blocks' resolved `calleeIds`, batch-resolves them to callee spans
+(one `s.id IN $ids` UNION-ALL over Function/Method/Constructor — keyed on the
+*resolved* id, so no same-line ambiguity), seeds each callee, and runs the SAME
+intra BFS within it, unioning the newly-reachable blocks into the slice. This is
+**HRB context-insensitive forward closure** — the approach Joern ships (no full
+SDG). Bounds: a default **3 inter-procedural function hops** (`maxDepth` caps the
+per-hop intra step budget), a total node cap, and a shared `visited` set that
+guarantees termination over recursion/cycles. The cross-function reach **deepens
+`affectedStatements`** (the statement-level slice); the owning-symbol `byDepth`
+stays a single collapsed bucket (block-hops are not call-hops). A pre-namespace-v4
+index (no `calleeIds` column) yields no callee ids, so the descent is a no-op and
+the result degrades cleanly to the prior intra-only behavior.
+
+**Soundness caveats** (also stamped verbatim into the result `note` whenever the
+slice crosses a hop):
+
+1. **Context-insensitive.** A dependence may be attributed to a callee only
+   reachable from a *different* call site of the same function (bounded
+   over-inclusion — the same imprecision the call-graph mode already has).
+2. **No ascent of ANY callee effect into the caller's post-call continuation.**
+   A caller statement that depends on a callee's effects — return-value ascent,
+   out-parameters / mutated arguments, callee-written shared / captured
+   variables, or an exception the callee throws that the caller catches — is
+   **NOT** captured without summary edges. This is the principal soundness gap;
+   the deferred `CALL_SUMMARY` upgrade fixes it.
+3. **No cross-boundary alias model.** Aliasing of arguments/heap across the call
+   boundary is not modeled.
+4. **Precision is bounded by the call RESOLVER's precision.** Multi-candidate
+   dispatch and C++ overload under-resolution flow through faithfully — the
+   descent is sound (it never drops a real target), but it inherits exactly the
+   resolver's precision, no more and no less.
+
 ### Re-baseline (after a reviewed accuracy or ground-truth change)
 
 1. `node --import tsx bench/impact-pdg/measure.mjs --json` and read

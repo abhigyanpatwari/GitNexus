@@ -64,7 +64,6 @@ import {
 } from '../tools.js';
 import { findImportCycles } from '../../core/graph/import-cycles.js';
 import { decodeTaintPath } from '../../core/ingestion/taint/path-codec.js';
-import { CALLEES_TRUNCATED_SENTINEL } from '../../core/ingestion/cfg/emit.js';
 import { EXTENSIONS } from '../../core/ingestion/import-resolvers/utils.js';
 import {
   fnLineOf,
@@ -78,6 +77,7 @@ import {
   pdgBridgeEvidenceForImpact,
   betterBridgeEvidence,
   composeUnifiedPdgImpactResult,
+  splitCalleeIds,
   type ImpactMode,
   type PdgImpactResult,
   type PdgBridgeOptions,
@@ -4644,13 +4644,20 @@ export class LocalBackend {
       // convention. Upstream seeds carry no discriminating slice, so the bridge
       // falls back to preserving callgraph reach.
       // `_runImpactPDG` returns the PdgImpactResult union; only the success/empty
-      // slice results carry reachableBlocks/seedBlocks (degraded and error results
-      // do not). Narrow via the same discriminant the composer uses, then read the
-      // typed string[] slices — no `as any`.
+      // slice results carry intraReachableBlocks/seedBlocks (degraded and error
+      // results do not). Narrow via the same discriminant the composer uses, then
+      // read the typed string[] slices — no `as any`.
       const sliceResult = 'error' in pdgResult || 'pdgLayer' in pdgResult ? null : pdgResult;
-      const reachableBlocks: string[] = sliceResult?.reachableBlocks ?? [];
+      // FIX 6: key the "first-hop proven" set on the INTRA-procedural slice only
+      // (seed ∪ intra-reachable), NOT `reachableBlocks` — which the U1 descent now
+      // EXPANDS with inter-procedurally-reached callee blocks. Using the expanded
+      // superset would mark transitively-reached (2+ hop) callgraph targets as
+      // first-hop "proven", silently shifting the established statementPrecision
+      // semantics. The interproc-reached blocks are routed into the statement
+      // slice / block→symbol projection inside `_runImpactPDG` only.
+      const intraReachableBlocks: string[] = sliceResult?.intraReachableBlocks ?? [];
       const seedBlocks: string[] = sliceResult?.seedBlocks ?? [];
-      const sliceBlocks = [...seedBlocks, ...reachableBlocks];
+      const sliceBlocks = [...seedBlocks, ...intraReachableBlocks];
       const sliceCalleeNames =
         direction === 'downstream' && sliceBlocks.length > 0
           ? await this.calleesOfBlocks(repo, sliceBlocks)
@@ -4750,11 +4757,11 @@ export class LocalBackend {
         { ids: blockIds },
       );
       for (const r of rows) {
-        const raw = String(r.calleeIds ?? r[0] ?? '');
-        // Drop the truncation sentinel — it marks a capped block (handled by the
-        // names-sentinel check in the bridge) and is not a resolved symbol id, so
-        // it must not enter the id set used for `has(realId)` matching.
-        for (const id of raw.split(' ')) if (id && id !== CALLEES_TRUNCATED_SENTINEL) ids.add(id);
+        // Shared split-and-drop-sentinel logic (`splitCalleeIds`) so this bridge
+        // key and the inter-procedural descent cannot diverge. The sentinel marks
+        // a capped block (handled by the names-sentinel check in the bridge) and
+        // is not a resolved symbol id, so it never enters the `has(realId)` set.
+        for (const id of splitCalleeIds(r.calleeIds ?? r[0])) ids.add(id);
       }
     } catch (e) {
       logQueryError('impact:pdg-slice-callee-ids', e);

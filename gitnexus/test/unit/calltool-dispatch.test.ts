@@ -1639,6 +1639,9 @@ describe('LocalBackend impact mode (KTD1/KTD5/KTD12)', () => {
       impactedCount: 0,
       epistemic: 'pdg-intra-procedural',
       reachableBlocks: ['BasicBlock:src/index.ts:8:0:1'],
+      // Intra-only slice (no inter-procedural hop) ⇒ the intra reach the bridge
+      // keys on equals reachableBlocks (FIX 6: bridge keys on intraReachableBlocks).
+      intraReachableBlocks: ['BasicBlock:src/index.ts:8:0:1'],
       blockCount: 1,
       affectedStatements: [{ line: 8, filePath: 'src/index.ts', text: 'callee()' }],
       affectedStatementCount: 1,
@@ -1690,6 +1693,7 @@ describe('LocalBackend impact mode (KTD1/KTD5/KTD12)', () => {
       impactedCount: 0,
       epistemic: 'pdg-intra-procedural',
       reachableBlocks: [],
+      intraReachableBlocks: [],
       seedBlocks: ['BasicBlock:src/index.ts:8:0:0'],
       blockCount: 0,
       affectedStatements: [],
@@ -1761,6 +1765,7 @@ describe('LocalBackend impact mode (KTD1/KTD5/KTD12)', () => {
       impactedCount: 0,
       epistemic: 'pdg-intra-procedural',
       reachableBlocks: ['BasicBlock:src/index.ts:8:0:1'],
+      intraReachableBlocks: ['BasicBlock:src/index.ts:8:0:1'],
       seedBlocks: ['BasicBlock:src/index.ts:8:0:0'],
       blockCount: 1,
       affectedStatements: [{ line: 8, filePath: 'src/index.ts', text: 'callee()' }],
