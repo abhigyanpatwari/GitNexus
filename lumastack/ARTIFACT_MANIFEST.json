@@ -1,0 +1,20 @@
+{
+  "artifactName": "LumaStack_v3_scaffold.zip",
+  "artifactType": "application/zip",
+  "driveFileId": "1K5RFtSrct9VFwMNqGFyKNNvZxaUsELOx",
+  "driveSizeBytes": 15371,
+  "driveShared": false,
+  "generatedBy": "LumaStack v3 CONTROLLER",
+  "mode": "safeInterpretiveController",
+  "verifiedFromZip": false,
+  "externalAutonomy": false,
+  "state": "artifactUploadedToDrive",
+  "source": "generatedScaffold",
+  "createdDate": "2026-06-19",
+  "branch": "luma-full-power-scaffold-20260619",
+  "notes": [
+    "ZIP exists in Google Drive.",
+    "This manifest does not claim verification from LumaStack_v2.zip.",
+    "No merge was performed."
+  ]
+}
