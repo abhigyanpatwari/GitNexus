@@ -99,6 +99,17 @@ function resolveHookBinary(tool) {
   return tool;
 }
 
+function hasMissingHookBinaryOverride(tool) {
+  const envKey = tool === 'lsof' ? 'GITNEXUS_HOOK_LSOF_PATH' : 'GITNEXUS_HOOK_PS_PATH';
+  const fromEnv = process.env[envKey];
+  if (!fromEnv || !String(fromEnv).trim()) return false;
+  try {
+    return !fs.existsSync(String(fromEnv).trim());
+  } catch {
+    return true;
+  }
+}
+
 // Sentinel:
 //   undefined = not resolved yet (resolve lazily, on first lsof/ps fallback)
 //   string    = self-tested coreutils timeout/gtimeout path (use as wrapper)
@@ -597,6 +608,9 @@ function linuxProcScanFindGitNexusServer(dbPathAbs, myPid) {
 
 function unixLsofPsFindGitNexusServer(dbPathAbs, myPid) {
   const guard = resolveUnixGuardTimeout();
+  // An explicit missing override models ENOENT and must fail open instead of
+  // falling through to a host binary with different process-table visibility.
+  if (hasMissingHookBinaryOverride('lsof')) return false;
   const lsofPath = resolveHookBinary('lsof');
   // The spawnSync timeouts below (lsof 1000ms / ps 500ms) are deliberately
   // SHORTER than the wrapper budgets (2s / 1s): on the supervised path Node's
@@ -629,9 +643,12 @@ function unixLsofPsFindGitNexusServer(dbPathAbs, myPid) {
   if (guard && (lsof.status === 124 || lsof.status === 137)) return true;
 
   const pids = (lsof.stdout || '').split(/\s+/).filter(Boolean);
+  const psMissing = hasMissingHookBinaryOverride('ps');
   const psPath = resolveHookBinary('ps');
   for (const pid of pids) {
     if (Number(pid) === myPid) continue;
+    // Missing ps means we cannot verify that this pid is a GitNexus server.
+    if (psMissing) continue;
     const [psCmd, psArgs] = guard
       ? [guard, ['-k', '1', '1', psPath, '-p', pid, '-o', 'command=']]
       : [psPath, ['-p', pid, '-o', 'command=']];

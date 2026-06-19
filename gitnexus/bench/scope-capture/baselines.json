@@ -18,8 +18,9 @@
     "_rebaselined": "#1919 open-language coverage: new lang-resolution fixtures + intended capture additions (F5/F9 c-cpp, F26/F28/F29 dart, F47/F48/F49/F51/F52 kotlin, F75/F79 swift). Fingerprint-only drift; scaling_ratio ~1.0 (linear, no perf regression)."
   },
   "cpp": {
-    "fingerprint": "5ef259c2cf9c4804bc83c41d25a3141d1a2cc57ce46485cce09013cf6f5e725e",
+    "fingerprint": "6ab657c8f9bfe988a3759098c2cffdcc0443def75ff263f1282b82c21d96e931",
     "scaling_budget": 1.5,
+    "_note_1909_p3_followup": "#1909 P3 follow-up: cpp-variadic-dependent-resolution covers a comment between a pack-expanded base and `...`; review follow-up restores a separate plain `B...` fixture path too. Capture ranges intentionally drift while scaling remains linear (1.116 < 1.5).",
     "_note_1899_followup": "#1899 follow-up: braced-init metadata now carries element count, intentionally changing C++ capture output; CI benchmark scaling remains linear (1.129 < 1.5).",
     "_added": "#1956: cpp added to the scope-capture bench (was UNBENCHED). Heritage-bearing scale source (: public Base, public Mixin) drives emitCppInheritanceCaptures at scale. Adding it exposed + fixed a pre-existing O(n^2) findNodeAtRange root-walk in cpp/captures.ts (~12 sites, threaded c.node, byte-identical over 263 cpp-* fixtures); scaling 2.30 -> 1.12.",
     "_rebaselined": "#1919 open-language coverage: new lang-resolution fixtures + intended capture additions (F5/F9 c-cpp, F26/F28/F29 dart, F47/F48/F49/F51/F52 kotlin, F75/F79 swift). Fingerprint-only drift; scaling_ratio ~1.0 (linear, no perf regression). #2094: deleted C++ declarations retain @declaration.is-deleted metadata; deleted operator and pointer-return shapes plus the expanded deleted-overload fixture are included. Intended capture drift; scaling remains linear (1.139 < 1.5).",
