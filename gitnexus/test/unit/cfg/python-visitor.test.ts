@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { createRequire } from 'node:module';
 import { createPythonCfgVisitor } from '../../../src/core/ingestion/cfg/visitors/python.js';
-import type { FunctionCfg } from '../../../src/core/ingestion/cfg/types.js';
+import type { FunctionCfg, SiteRecord } from '../../../src/core/ingestion/cfg/types.js';
 import {
   makeCfgHarness,
   type CfgHarness,
@@ -380,12 +380,27 @@ describe('Python CfgVisitor — production CDG probe (plan-required)', () => {
   });
 });
 
-describe('Python CfgVisitor — no taint sites harvested (this unit)', () => {
-  it('statements carry NO sites key (taint substrate is a later step)', () => {
-    const cfg = py.cfgOf(`def f(cmd):\n    exec(cmd)\n    x = escape(cmd)\n    use(x)\n`);
-    const anySites = cfg.blocks.some((b) =>
-      (b.statements ?? []).some((s) => (s as { sites?: unknown }).sites !== undefined),
+describe('Python CfgVisitor — taint-site substrate', () => {
+  it('harvests call, member-read, argument, receiver, and result-def sites', () => {
+    const cfg = py.cfgOf(
+      `def f(request, db):\n    db.query(request.args)\n    value = sanitize(request.form)\n`,
     );
-    expect(anySites).toBe(false);
+    const request = bindingIdx(cfg, 'request');
+    const db = bindingIdx(cfg, 'db');
+    const value = bindingIdx(cfg, 'value');
+    const sites: SiteRecord[] = cfg.blocks.flatMap((b) =>
+      (b.statements ?? []).flatMap((s) => [...(s.sites ?? [])]),
+    );
+
+    const query = sites.find((s) => s.kind === 'call' && s.callee === 'db.query');
+    expect(query?.receiver).toBe(db);
+    expect(query?.args?.[0]).toContain(request);
+
+    expect(
+      sites.some((s) => s.kind === 'member-read' && s.object === request && s.property === 'args'),
+    ).toBe(true);
+
+    const sanitize = sites.find((s) => s.kind === 'call' && s.callee === 'sanitize');
+    expect(sanitize?.resultDefs).toEqual([value]);
   });
 });

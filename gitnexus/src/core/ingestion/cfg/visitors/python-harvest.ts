@@ -92,7 +92,7 @@
  */
 import type { SyntaxNode } from '../../utils/ast-helpers.js';
 import type { BindingEntry, StatementFacts } from '../types.js';
-import { DefUseAccumulator as FactAccumulator } from './call-site-harvest.js';
+import { CallSiteFactAccumulator as FactAccumulator } from './call-site-harvest.js';
 
 /** Node types that own a nested CFG — their subtrees are opaque to harvesting. */
 const NESTED_FUNCTION_TYPES = new Set(['function_definition', 'lambda']);
@@ -110,6 +110,8 @@ export class PythonHarvester {
   private readonly fnId: number;
   /** >0 while walking a conditionally-evaluated subexpression — defs become may-defs. */
   private conditionalDepth = 0;
+  /** Call node id -> bindings whose assignment value is exactly that call. */
+  private readonly resultDefTargets = new Map<number, number[]>();
 
   constructor(private readonly fnNode: SyntaxNode) {
     this.fnId = fnNode.id;
@@ -215,7 +217,13 @@ export class PythonHarvester {
    */
   private prescan(node: SyntaxNode): void {
     const t = node.type;
-    if (NESTED_FUNCTION_TYPES.has(t) && node.id !== this.fnId) return;
+    if (NESTED_FUNCTION_TYPES.has(t) && node.id !== this.fnId) {
+      if (t === 'function_definition') {
+        const name = node.childForFieldName('name');
+        if (name?.type === 'identifier') this.declare(name, 'function');
+      }
+      return;
+    }
 
     switch (t) {
       case 'global_statement':
@@ -542,6 +550,7 @@ export class PythonHarvester {
       case 'assignment': {
         const left = node.childForFieldName('left');
         const right = node.childForFieldName('right');
+        if (left && right) this.registerResultDefs(right, this.targetDefIndices(left));
         if (right) this.walkValue(right, acc);
         if (left) this.defTargets(left, acc);
         return;
@@ -591,8 +600,7 @@ export class PythonHarvester {
       case 'attribute': {
         // `a.b` — value read of the operand root only; the attribute name is not
         // a scalar binding.
-        const obj = node.childForFieldName('object');
-        if (obj) this.walkValue(obj, acc);
+        this.walkChain(node, acc, false);
         return;
       }
       case 'subscript': {
@@ -604,12 +612,9 @@ export class PythonHarvester {
         return;
       }
       case 'call': {
-        // Reproduce default-descent uses: callee chain + arguments. No site
-        // record (taint substrate is a later step).
-        const fn = node.childForFieldName('function');
-        const args = node.childForFieldName('arguments');
-        if (fn) this.walkValue(fn, acc);
-        if (args) this.walkValue(args, acc);
+        // Same uses as the previous default descent, plus call-site metadata for
+        // the taint matcher.
+        this.visitCall(node, acc);
         return;
       }
       case 'list_comprehension':
@@ -656,5 +661,135 @@ export class PythonHarvester {
       }
     }
     if (body) this.walkValue(body, acc);
+  }
+
+  /** Binding indices assigned by a target pattern, without mutating statement facts. */
+  private targetDefIndices(target: SyntaxNode): number[] {
+    if (target.type === 'identifier') return target.text === '_' ? [] : [this.resolve(target)];
+    if (PATTERN_LIST_TYPES.has(target.type)) {
+      const out: number[] = [];
+      for (let i = 0; i < target.namedChildCount; i++) {
+        const c = target.namedChild(i);
+        if (c) out.push(...this.targetDefIndices(c));
+      }
+      return out;
+    }
+    if (target.type === 'list_splat_pattern') {
+      const id = target.namedChild(0);
+      return id ? this.targetDefIndices(id) : [];
+    }
+    return [];
+  }
+  /** Strip value-transparent wrappers around a Python expression. */
+  private unwrapValue(node: SyntaxNode): SyntaxNode {
+    let cur = node;
+    while (cur.type === 'parenthesized_expression') {
+      const inner = cur.namedChild(0);
+      if (!inner) break;
+      cur = inner;
+    }
+    return cur;
+  }
+
+  /** Record result defs for `x = call(...)`; ambiguous multi-target forms stay unannotated. */
+  private registerResultDefs(value: SyntaxNode, defs: readonly number[]): void {
+    if (defs.length === 0) return;
+    const root = this.unwrapValue(value);
+    if (root.type === 'call') this.resultDefTargets.set(root.id, [...defs]);
+  }
+
+  /** Explicit call handler: callee path, receiver, positional arg occurrences, and result defs. */
+  private visitCall(node: SyntaxNode, acc: FactAccumulator): void {
+    const fn = node.childForFieldName('function');
+    const args = node.childForFieldName('arguments');
+    const siteIdx = acc.openCallSite('call');
+    acc.pushFrame(siteIdx);
+
+    let calleePath: string | undefined;
+    if (fn) {
+      const callee = this.unwrapValue(fn);
+      if (callee.type === 'identifier') {
+        acc.addUseWithoutOccurrence(this.resolve(callee));
+        calleePath = callee.text;
+      } else if (callee.type === 'attribute') {
+        const chain = this.walkChain(callee, acc, true);
+        calleePath = chain.path;
+        if (chain.rootIdx !== undefined) acc.setSiteReceiver(siteIdx, chain.rootIdx);
+      } else {
+        this.walkValue(callee, acc);
+      }
+      if (calleePath !== undefined) acc.setSiteCallee(siteIdx, calleePath);
+    }
+
+    const resultDefs = this.resultDefTargets.get(node.id);
+    if (resultDefs !== undefined) acc.setSiteResultDefs(siteIdx, resultDefs);
+    this.walkArgs(args, acc, siteIdx);
+    acc.popFrame();
+  }
+
+  /** Walk positional and keyword arguments while assigning value occurrences to argument slots. */
+  private walkArgs(args: SyntaxNode | null, acc: FactAccumulator, siteIdx: number): void {
+    if (!args) return;
+    let pos = 0;
+    for (let i = 0; i < args.namedChildCount; i++) {
+      const arg = args.namedChild(i);
+      if (!arg || arg.type === 'comment') continue;
+      acc.setFrameArg(pos);
+      if (arg.type === 'keyword_argument') {
+        const value = arg.childForFieldName('value');
+        if (value) this.walkValue(value, acc);
+      } else if (arg.type === 'list_splat') {
+        acc.setSiteSpread(siteIdx, pos);
+        const inner = arg.namedChild(0);
+        if (inner) this.walkValue(inner, acc);
+      } else if (arg.type === 'dictionary_splat') {
+        const inner = arg.namedChild(0);
+        if (inner) this.walkValue(inner, acc);
+      } else {
+        this.walkValue(arg, acc);
+      }
+      pos++;
+    }
+  }
+
+  /**
+   * Attribute-chain walk shared by value reads and method callees. It records the
+   * identifier root as a use and emits one member-read site for the innermost
+   * attribute unless that attribute is the callee itself.
+   */
+  private walkChain(
+    node: SyntaxNode,
+    acc: FactAccumulator,
+    skipFinalRead: boolean,
+  ): { path?: string; rootIdx?: number } {
+    const accesses: string[] = [];
+    let cur: SyntaxNode = this.unwrapValue(node);
+    while (cur.type === 'attribute') {
+      const field = cur.childForFieldName('attribute');
+      accesses.unshift(field?.text ?? '');
+      const obj = cur.childForFieldName('object');
+      if (!obj) break;
+      cur = this.unwrapValue(obj);
+    }
+
+    let rootIdx: number | undefined;
+    let rootSegment: string | undefined;
+    if (cur.type === 'identifier' && cur.text !== '_') {
+      rootIdx = this.resolve(cur);
+      acc.addUse(rootIdx);
+      rootSegment = cur.text;
+    } else {
+      this.walkValue(cur, acc);
+    }
+
+    const innermost = accesses[0];
+    if (rootIdx !== undefined && innermost && !(skipFinalRead && accesses.length === 1)) {
+      acc.addMemberRead(rootIdx, innermost);
+    }
+    const path =
+      rootSegment !== undefined && accesses.every((a) => a !== '')
+        ? [rootSegment, ...accesses].join('.')
+        : undefined;
+    return { path, rootIdx };
   }
 }
