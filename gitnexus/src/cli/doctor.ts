@@ -1,3 +1,6 @@
+import { execFile } from 'node:child_process';
+import path from 'node:path';
+import { promisify } from 'node:util';
 import { getRuntimeCapabilities, getRuntimeFingerprint } from '../core/platform/capabilities.js';
 import { resolveEmbeddingConfig } from '../core/embeddings/config.js';
 import { isHttpMode } from '../core/embeddings/http-client.js';
@@ -5,6 +8,8 @@ import { getLocalEmbeddingRuntimeBlocker } from '../core/embeddings/runtime-supp
 import { checkLbugNative } from '../core/lbug/native-check.js';
 import { getExtensionInstallPolicy } from '../core/lbug/extension-loader.js';
 import { t } from './i18n/index.js';
+
+const execFileAsync = promisify(execFile);
 
 function isCombiningMark(codePoint: number): boolean {
   return (
@@ -78,6 +83,114 @@ export function localEmbeddingDoctorStatus(opts: {
   return { status: '✓ local embeddings supported', detail: null };
 }
 
+export type WindowsGitNexusMcpProcess = {
+  pid: number;
+  commandLine: string;
+};
+
+export type WindowsGitNexusMcpStatus = {
+  status: string;
+  detail: string | null;
+};
+
+function normalizePathForMatch(value: string): string {
+  return value.replace(/\\/g, '/').toLowerCase();
+}
+
+function currentPackageRootFromArgv(argv1: string | undefined): string | null {
+  if (!argv1) return null;
+  const normalized = path.resolve(argv1);
+  const parts = normalized.split(path.sep);
+  const packageIndex = parts.map((part) => part.toLowerCase()).lastIndexOf('gitnexus');
+  if (packageIndex < 0) return null;
+  return parts.slice(0, packageIndex + 1).join(path.sep);
+}
+
+function parseWindowsProcessJson(stdout: string): WindowsGitNexusMcpProcess[] {
+  const trimmed = stdout.trim();
+  if (!trimmed) return [];
+  const parsed = JSON.parse(trimmed) as
+    | { pid?: number; ProcessId?: number; commandLine?: string; CommandLine?: string }
+    | Array<{ pid?: number; ProcessId?: number; commandLine?: string; CommandLine?: string }>;
+  const rows = Array.isArray(parsed) ? parsed : [parsed];
+  return rows
+    .map((row) => ({
+      pid: Number(row.pid ?? row.ProcessId),
+      commandLine: String(row.commandLine ?? row.CommandLine ?? ''),
+    }))
+    .filter((row) => Number.isFinite(row.pid) && row.commandLine.length > 0);
+}
+
+export async function listWindowsGitNexusMcpProcesses(
+  opts: {
+    platform?: NodeJS.Platform;
+  } = {},
+): Promise<WindowsGitNexusMcpProcess[]> {
+  if ((opts.platform ?? process.platform) !== 'win32') return [];
+
+  const script = [
+    "$ErrorActionPreference = 'Stop'",
+    'Get-CimInstance Win32_Process -Filter "name = \'node.exe\'"',
+    "  | Where-Object { $_.CommandLine -match 'gitnexus' -and $_.CommandLine -match '\\bmcp\\b' }",
+    '  | Select-Object @{Name="pid";Expression={$_.ProcessId}}, @{Name="commandLine";Expression={$_.CommandLine}}',
+    '  | ConvertTo-Json -Compress',
+  ].join('\n');
+
+  try {
+    const { stdout } = await execFileAsync(
+      'powershell.exe',
+      ['-NoProfile', '-NonInteractive', '-Command', script],
+      { timeout: 1500, windowsHide: true, maxBuffer: 1024 * 1024 },
+    );
+    return parseWindowsProcessJson(stdout);
+  } catch {
+    return [];
+  }
+}
+
+export function windowsGitNexusMcpDoctorStatus(opts: {
+  processes: WindowsGitNexusMcpProcess[];
+  currentPackageRoot?: string | null;
+}): WindowsGitNexusMcpStatus {
+  if (opts.processes.length === 0) {
+    return { status: 'none running', detail: null };
+  }
+
+  const currentRoot = opts.currentPackageRoot
+    ? normalizePathForMatch(opts.currentPackageRoot)
+    : null;
+  let currentInstall = 0;
+  let npxCache = 0;
+  let otherInstall = 0;
+
+  for (const proc of opts.processes) {
+    const command = normalizePathForMatch(proc.commandLine);
+    if (currentRoot && command.includes(currentRoot)) {
+      currentInstall += 1;
+    } else if (command.includes('/_npx/') || command.includes('/npx-cli.js')) {
+      npxCache += 1;
+    } else {
+      otherInstall += 1;
+    }
+  }
+
+  const launchers = [
+    currentInstall > 0 ? `${currentInstall} current` : null,
+    npxCache > 0 ? `${npxCache} npx-cache` : null,
+    otherInstall > 0 ? `${otherInstall} other` : null,
+  ].filter(Boolean);
+
+  const detail =
+    npxCache > 0 || otherInstall > 0
+      ? 'Restart editors/agents after updating GitNexus so MCP servers reload the same package version.'
+      : 'Stop running MCP servers before npm updates if cleanup reports locked native files.';
+
+  return {
+    status: `${opts.processes.length} running (${launchers.join(', ')})`,
+    detail,
+  };
+}
+
 export const doctorCommand = async () => {
   const fingerprint = getRuntimeFingerprint();
   const capabilities = getRuntimeCapabilities();
@@ -138,5 +251,18 @@ export const doctorCommand = async () => {
   console.log(`  ${padDisplayEnd('Support:', 12)}${support.status}`);
   if (support.detail) {
     process.stderr.write(`\n${support.detail.replace(/^/gm, '  ')}\n\n`);
+  }
+  if (process.platform === 'win32') {
+    const mcpProcesses = await listWindowsGitNexusMcpProcesses();
+    const mcpStatus = windowsGitNexusMcpDoctorStatus({
+      processes: mcpProcesses,
+      currentPackageRoot: currentPackageRootFromArgv(process.argv[1]),
+    });
+    console.log('');
+    console.log('Windows MCP');
+    console.log(`  ${padDisplayEnd('Processes:', 18)}${mcpStatus.status}`);
+    if (mcpStatus.detail) {
+      console.log(`  ${padDisplayEnd('Note:', 18)}${mcpStatus.detail}`);
+    }
   }
 };

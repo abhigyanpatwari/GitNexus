@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { displayWidth, localEmbeddingDoctorStatus, padDisplayEnd } from '../../src/cli/doctor.js';
+import {
+  displayWidth,
+  localEmbeddingDoctorStatus,
+  padDisplayEnd,
+  windowsGitNexusMcpDoctorStatus,
+} from '../../src/cli/doctor.js';
 
 describe('doctor output formatting', () => {
   it('keeps ASCII padding equivalent to String.padEnd', () => {
@@ -53,5 +58,52 @@ describe('doctor embedding-runtime support status', () => {
     });
     expect(status).toBe('✓ http endpoint configured');
     expect(detail).toBeNull();
+  });
+});
+
+describe('doctor Windows GitNexus MCP process status', () => {
+  it('reports no running processes without extra guidance', () => {
+    const status = windowsGitNexusMcpDoctorStatus({ processes: [] });
+
+    expect(status).toEqual({ status: 'none running', detail: null });
+  });
+
+  it('recognizes current-install MCP processes and warns about update locks', () => {
+    const status = windowsGitNexusMcpDoctorStatus({
+      currentPackageRoot: 'D:\\home\\jonkomet\\npm-global\\node_modules\\gitnexus',
+      processes: [
+        {
+          pid: 1234,
+          commandLine:
+            '"C:\\Program Files\\nodejs\\node.exe" D:\\home\\jonkomet\\npm-global\\node_modules\\gitnexus\\dist\\cli\\index.js mcp',
+        },
+      ],
+    });
+
+    expect(status.status).toBe('1 running (1 current)');
+    expect(status.detail).toMatch(/Stop running MCP servers/);
+    expect(status.detail).toMatch(/locked native files/);
+  });
+
+  it('flags mixed current and npx-cache launchers after updates', () => {
+    const status = windowsGitNexusMcpDoctorStatus({
+      currentPackageRoot: 'D:\\home\\jonkomet\\npm-global\\node_modules\\gitnexus',
+      processes: [
+        {
+          pid: 1234,
+          commandLine:
+            '"C:\\Program Files\\nodejs\\node.exe" D:\\home\\jonkomet\\npm-global\\node_modules\\gitnexus\\dist\\cli\\index.js mcp',
+        },
+        {
+          pid: 5678,
+          commandLine:
+            '"node" "C:\\Users\\Jaybo\\AppData\\Local\\npm-cache\\_npx\\abc\\node_modules\\.bin\\..\\gitnexus\\dist\\cli\\index.js" mcp',
+        },
+      ],
+    });
+
+    expect(status.status).toBe('2 running (1 current, 1 npx-cache)');
+    expect(status.detail).toMatch(/Restart editors\/agents/);
+    expect(status.detail).toMatch(/same package version/);
   });
 });
