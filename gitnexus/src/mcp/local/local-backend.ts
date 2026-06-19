@@ -4654,8 +4654,20 @@ export class LocalBackend {
         direction === 'downstream' && sliceBlocks.length > 0
           ? await this.calleesOfBlocks(repo, sliceBlocks)
           : new Set<string>();
+      // Resolved-id slice set (sound primary key, KTD3): unioned from the SAME
+      // seed ∪ reachable block set as the names — so a callee invoked only on the
+      // seeded line is still provable by id. Absent on a pre-v3 index (no
+      // `calleeIds` column) → empty → the bridge falls back to the leaf-name match.
+      const sliceCalleeIds =
+        direction === 'downstream' && sliceBlocks.length > 0
+          ? await this.calleeIdsOfBlocks(repo, sliceBlocks)
+          : new Set<string>();
+      // Build the bridge when EITHER the name fallback or the id key has signal —
+      // an id-only index (names empty but ids present) must still seed the bridge.
       const pdgBridge: PdgBridgeOptions | undefined =
-        sliceCalleeNames.size > 0 ? { sliceCalleeNames } : undefined;
+        sliceCalleeNames.size > 0 || sliceCalleeIds.size > 0
+          ? { sliceCalleeNames, sliceCalleeIds }
+          : undefined;
 
       try {
         const interproceduralResult = await this._runImpactBFS(repo, sym, symType, direction, {
@@ -4712,6 +4724,38 @@ export class LocalBackend {
       logQueryError('impact:pdg-slice-callees', e);
     }
     return names;
+  }
+
+  /**
+   * Union of the RESOLVED callee symbol ids invoked across a set of
+   * dependence-slice blocks (`BasicBlock.calleeIds`, space-joined at emit —
+   * sibling of `callees`). This is the SOUND key the bridge prefers: a first-hop
+   * callee is proven statement-precise iff its resolved id is in this set, which
+   * eliminates the same-leaf-name collision (false-positive) and import-alias
+   * (false-negative) the name set cannot distinguish. Empty when the slice blocks
+   * carry no captured ids (pre-v3 index without the `calleeIds` column, or
+   * non-overloading/synthetic blocks) — the bridge then falls back to the
+   * leaf-name match per U5. A query failure is logged and degrades to empty (no
+   * proof), never throws (the inter-procedural reach is still returned). Mirrors
+   * `calleesOfBlocks` exactly — same shape, same swallow-on-error contract.
+   */
+  private async calleeIdsOfBlocks(repo: RepoHandle, blockIds: string[]): Promise<Set<string>> {
+    const ids = new Set<string>();
+    if (blockIds.length === 0) return ids;
+    try {
+      const rows = await executeParameterized(
+        repo.lbugPath,
+        `MATCH (b:BasicBlock) WHERE b.id IN $ids RETURN b.calleeIds AS calleeIds`,
+        { ids: blockIds },
+      );
+      for (const r of rows) {
+        const raw = String(r.calleeIds ?? r[0] ?? '');
+        for (const id of raw.split(' ')) if (id) ids.add(id);
+      }
+    } catch (e) {
+      logQueryError('impact:pdg-slice-callee-ids', e);
+    }
+    return ids;
   }
 
   /**
@@ -5042,6 +5086,12 @@ export class LocalBackend {
               bridge: opts.pdgBridge,
               depth,
               calleeName: rel.name || rel[2],
+              // Sound primary key (KTD3): the reached callee's RESOLVED id — the
+              // same `relId` (`rel.id`) the BFS keys its visited/frontier sets on,
+              // which equals the CALLS targetId captured into `BasicBlock.calleeIds`.
+              // The bridge proves by id ∈ `sliceCalleeIds` first, falling back to
+              // `calleeName` only when ids are absent or the block is capped.
+              calleeId: relId,
               inherited: pdgBridgeEvidenceById.get(sourceId),
             });
             pdgBridgeEvidenceById.set(
