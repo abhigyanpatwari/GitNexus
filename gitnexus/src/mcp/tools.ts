@@ -77,6 +77,10 @@ export const EXPLAIN_MAX_LIMIT = 200;
 export const PDG_QUERY_DEFAULT_LIMIT = 50;
 export const PDG_QUERY_MAX_LIMIT = 200;
 
+// Shared impact traversal depth cap. The MCP schema advertises this bound;
+// PDG direct backend callers also enforce it before running traversal.
+export const IMPACT_MAX_DEPTH = 32;
+
 export const GITNEXUS_TOOLS: ToolDefinition[] = [
   {
     name: 'list_repos',
@@ -409,11 +413,17 @@ Each edit is tagged with confidence:
     description: `Analyze the blast radius of changing a code symbol.
 Returns affected symbols grouped by depth, plus risk assessment, affected execution flows, and affected modules.
 
+MODE (opt-in): "callgraph" (default) walks symbol→symbol edges (CALLS/IMPORTS/EXTENDS/IMPLEMENTS) — inter-procedural, the established comparator/default behavior. "pdg" requires an index built with \`gitnexus analyze --pdg\` and returns one unified PDG-facing result: statement-level control/data dependence from the persisted PDG plus inter-procedural symbol reach. The explicit interprocedural surface is interproceduralByDepth/pdgInterprocedural; byDepth remains the compatibility symbol bucket. pdg remains incompatible with crossDepth and @group targets; relationTypes/minConfidence filter the inter-symbol reach.
+
+STATEMENT-ANCHORED PDG SLICE: with mode:'pdg', pass "line" (1-based source line within the target symbol) to seed the dependence slice on the statement at that line and return what depends on it in affectedStatements (line + text). Inter-procedural symbols are still reported through interproceduralByDepth/pdgInterprocedural and the compatibility byDepth bucket. Without "line", pdg returns whole-symbol inter-procedural reach plus local whole-symbol PDG diagnostics.
+
+PDG OUTPUT CONTRACT: every mode:'pdg' result (success, empty, degraded, or error) carries pdgResultVersion:1 — a stable discriminator for external consumers that bumps on any breaking change to the PDG result shape (distinct from the DB schema version). Successful PDG results include mode:'pdg', a full target envelope (id/name/type/filePath), affectedStatements, affectedStatementCount, interproceduralByDepth/pdgInterprocedural for cross-function reach, compatibility byDepth/byDepthCounts, risk:'UNKNOWN', and a note describing the unified contract. Degraded PDG results (no-layer, sub-layer-missing, unknown) keep mode:'pdg', pdgResultVersion:1, target metadata when the target resolves, risk:'UNKNOWN', note/remediation, and empty byDepth parity fields — never a false-safe zero. If depth and limit both bound the slice, truncatedByReasons reports both causes while truncatedBy remains scalar.
+
 WHEN TO USE: Before making code changes — especially refactoring, renaming, or modifying shared code. Shows what would break.
 AFTER THIS: Review d=1 items (WILL BREAK). Use context() on high-risk symbols.
 
 Output includes:
-- risk: LOW / MEDIUM / HIGH / CRITICAL
+- risk: LOW / MEDIUM / HIGH / CRITICAL / UNKNOWN
 - summary: direct callers, processes affected, modules affected
 - affected_processes: which execution flows break and at which step
 - affected_modules: which functional areas are hit (direct vs indirect)
@@ -450,6 +460,19 @@ SERVICE: optional monorepo path prefix (case-sensitive path segments). When "rep
           type: 'string',
           description: 'upstream (what depends on this) or downstream (what this depends on)',
         },
+        mode: {
+          type: 'string',
+          enum: ['callgraph', 'pdg'],
+          default: 'callgraph',
+          description:
+            "Blast-radius engine. 'callgraph' (default) = inter-procedural symbol→symbol traversal (established comparator). 'pdg' = unified PDG-facing impact: intra-procedural statement-level affectedStatements from the persisted control/data dependence layer plus inter-procedural symbols in interproceduralByDepth/pdgInterprocedural and the compatibility byDepth bucket; requires `gitnexus analyze --pdg`. PDG symbol reach is labeled as a PDG evidence bridge, not pure statement-level dependence, and successful PDG results are UNKNOWN-risk. PDG is incompatible with crossDepth and @group targets; relationTypes/minConfidence filter the inter-symbol reach.",
+        },
+        line: {
+          type: 'integer',
+          minimum: 1,
+          description:
+            "1-based source line — PDG statement anchor (mode:'pdg'). Seeds affectedStatements on the statement at this line; inter-procedural symbols are still returned in interproceduralByDepth/pdgInterprocedural and the compatibility byDepth bucket.",
+        },
         file_path: {
           type: 'string',
           description: 'File path hint to disambiguate common names',
@@ -464,7 +487,7 @@ SERVICE: optional monorepo path prefix (case-sensitive path segments). When "rep
           description: 'Max relationship depth (default: 3, server clamps to 1–32)',
           default: 3,
           minimum: 1,
-          maximum: 32,
+          maximum: IMPACT_MAX_DEPTH,
         },
         crossDepth: {
           type: 'number',

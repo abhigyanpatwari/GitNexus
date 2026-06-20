@@ -3,11 +3,46 @@
  * {@link import('./python-harvest.js').PythonHarvester} (the closest structural
  * sibling: implicit/keyword-delimited blocks, statement-modifier forms, a
  * begin/rescue/else/ensure exception model, and `case`/`when` + `case`/`in`
- * pattern matching). Like the Python harvester, this unit emits ONLY the
+ * pattern matching). Like the Python / Kotlin harvesters, this unit emits the
  * per-function binding table ({@link BindingEntry}[]) plus {@link StatementFacts}
- * (defs / uses / mayDefs) — NO call-site `sites[]` are harvested (the taint
- * substrate is a later step), so it uses a local {@link FactAccumulator} with no
- * site machinery at all and the emitted facts carry no `sites` key.
+ * (defs / uses / mayDefs) AND a taint {@link import('../types.js').SiteRecord}
+ * per call (callee path, receiver, per-arg occurrence entries, result defs,
+ * spread marker, and an `at` anchor) via the shared
+ * {@link CallSiteFactAccumulator} — the same site substrate the C-family / Go /
+ * TS / Python / Kotlin / Dart harvesters emit.
+ *
+ * RUBY CALL SHAPE (verified by a real parse — see below). EVERY call in Ruby is
+ * a single `call` node (fields `receiver`?/`method`/`arguments`?): a free call
+ * `foo(a)`, an implicit-receiver paren-less command `puts x` / `attr_accessor :x`,
+ * a member call `obj.method(x)`, a safe-navigation call `obj&.m()`, AND a chained
+ * `a.b.c` (nested `call` receivers) are all `call` nodes. There is NO separate
+ * `command` / `command_call` node in this vendored grammar — paren-less commands
+ * normalize to `call` with a `method` + `arguments` and no `receiver`. Ruby has
+ * NO `new` keyword (`Foo.new` is an ordinary member `call` with method `new`), so
+ * every site is `kind: 'call'`. A receiver-only no-args `call` (`obj.field`,
+ * `a.b`) is grammatically INDISTINGUISHABLE from a paren-less zero-arg member
+ * call, and the Ruby CALLS query tags it `@reference.call.member` too — so it is
+ * harvested as a `kind: 'call'` site (NOT a member-read), keeping the harvest
+ * byte-aligned with what the resolver assigns a callee id. Named (symbol-keyed)
+ * args (`f(k: v)` ⇒ a `pair` of `hash_key_symbol` + value) record the VALUE
+ * occurrence and drop the key (like Python / Kotlin / Dart). A `do … end` / `{ }`
+ * block is a nested function (opaque) — it is NOT an argument occurrence (the
+ * `block` field is never walked here).
+ *
+ * ANCHOR ALIGNMENT (plan KTD7 — load-bearing): a call site's `at` MUST be the
+ * SAME `[line (1-based), col (0-based)]` the Ruby CALLS resolution keys its
+ * `atRange` on, because a downstream unit joins the two by EXACT position. The
+ * Ruby scope query (query.ts) anchors `@reference.call.free` and
+ * `@reference.call.member` on the WHOLE `call` node (the `@reference.name` method
+ * identifier and `@reference.receiver` are SUB-tags, excluded from the anchor by
+ * `KNOWN_SUB_TAGS` + the broadest-span rule in `anchorCaptureFor`). So for a free
+ * call `foo(x)`, an implicit command `puts x`, a member call `obj.method(x)`, and
+ * a chained call `a.b.c` alike, `at` is the start of the `call` node — which, for
+ * a member/chained call, starts at the RECEIVER (`obj`/`a`), exactly where the
+ * CALLS anchor starts too. This is the Go/Python/Kotlin whole-call-node model,
+ * NOT the Dart callee-name model. The harvester records
+ * `[node.startPosition.row + 1, node.startPosition.column]` of the `call` node.
+ * (Verified byte-exact against the real Ruby query for every shape above.)
  *
  * Runs in the parse worker next to the Ruby CFG visitor.
  *
@@ -76,7 +111,7 @@
  */
 import type { SyntaxNode } from '../../utils/ast-helpers.js';
 import type { BindingEntry, StatementFacts } from '../types.js';
-import { DefUseAccumulator as FactAccumulator } from './call-site-harvest.js';
+import { CallSiteFactAccumulator as FactAccumulator } from './call-site-harvest.js';
 
 /** Node types that own a nested CFG — their subtrees are opaque to harvesting. */
 const NESTED_FUNCTION_TYPES = new Set([
@@ -111,6 +146,13 @@ export class RubyHarvester {
   private readonly fnId: number;
   /** >0 while walking a conditionally-evaluated subexpression — defs become may-defs. */
   private conditionalDepth = 0;
+  /**
+   * `call` node id → binding indices its single-target result is assigned to
+   * (`x = f()` ⇒ `[x]`). Populated just before the value walk reaches the call
+   * (see {@link registerResultDefs}) and consumed by {@link visitCall}. Mirrors
+   * the Python / Kotlin / Go harvesters' `resultDefTargets`.
+   */
+  private readonly resultDefTargets = new Map<number, number[]>();
 
   constructor(private readonly fnNode: SyntaxNode) {
     this.fnId = fnNode.id;
@@ -428,6 +470,11 @@ export class RubyHarvester {
       case 'assignment': {
         const left = node.childForFieldName('left');
         const right = node.childForFieldName('right');
+        // Register result-defs BEFORE walking the value so the nested call site
+        // (reached during the value walk) carries them — single plain-identifier
+        // target only (`x = f()`); a multi-target / `@ivar` / index LHS attaches
+        // nothing (the per-target mapping is ambiguous).
+        if (left?.type === 'identifier' && right) this.registerResultDefs(right, [left]);
         if (right) this.walkValue(right, acc);
         if (left) this.defTargets(left, acc);
         return;
@@ -462,21 +509,170 @@ export class RubyHarvester {
         }
         return;
       }
-      case 'call': {
-        // `recv.meth(args)` / `meth(args)` — the receiver root + arguments are
-        // uses (the method name is not a scalar binding). A nested block child is
-        // its OWN function CFG (opaque here).
-        const receiver = node.childForFieldName('receiver');
-        const args = node.childForFieldName('arguments');
-        if (receiver) this.walkValue(receiver, acc);
-        if (args) this.walkValue(args, acc);
+      case 'call':
+        // `recv.meth(args)` / `meth(args)` / `puts x` / `obj.field` — every Ruby
+        // call shape. Records a taint site (callee path, receiver, per-arg
+        // occurrences, result defs, spread) plus the SAME uses the old default
+        // descent recorded (receiver chain root + arguments). A nested block
+        // child is its OWN function CFG (opaque — the `block` field is not walked).
+        this.visitCall(node, acc);
         return;
-      }
       default:
         for (let i = 0; i < node.namedChildCount; i++) {
           const c = node.namedChild(i);
           if (c) this.walkValue(c, acc);
         }
+    }
+  }
+
+  // ── taint-site harvest ────────────────────────────────────────────────────
+
+  /**
+   * When `value` is a `call`, remember that call site should carry `resultDefs`
+   * — the binding indices of `targets` (def-position identifiers). Consumed by
+   * {@link visitCall} once the value walk reaches the node. Single plain-identifier
+   * target only (the caller restricts to it); the blank target (`_`) binds nothing
+   * and is skipped.
+   */
+  private registerResultDefs(value: SyntaxNode, targets: readonly SyntaxNode[]): void {
+    if (value.type !== 'call') return;
+    const defs: number[] = [];
+    for (const target of targets) {
+      if (target.type !== 'identifier' || target.text === '_') continue;
+      defs.push(this.resolve(target));
+    }
+    if (defs.length > 0) this.resultDefTargets.set(value.id, defs);
+  }
+
+  /**
+   * Explicit `call` handler. Records a call site (callee path, receiver, per-arg
+   * occurrence entries, result defs, spread marker) while reproducing EXACTLY the
+   * uses the old default descent recorded (receiver chain root + arguments). Ruby
+   * has no `new` — every site is `kind: 'call'`. The `at` anchor is the `call`
+   * node's start, byte-aligned with the `@reference.call.free/.member` CALLS
+   * anchor (which captures the whole `call` node), so the resolved-id join lands
+   * by exact position (see file header ANCHOR ALIGNMENT).
+   */
+  private visitCall(node: SyntaxNode, acc: FactAccumulator): void {
+    const receiver = node.childForFieldName('receiver');
+    const method = node.childForFieldName('method');
+    const args = node.childForFieldName('arguments');
+    const siteIdx = acc.openCallSite('call', [
+      node.startPosition.row + 1,
+      node.startPosition.column,
+    ]);
+    acc.pushFrame(siteIdx);
+    if (receiver) {
+      // Member / chained call (`obj.method`, `a.b.c`, `obj&.m`). Walk the receiver
+      // chain to its root binding (the receiver use + any mid-chain member reads)
+      // and build the dotted callee path `root.…​.method`.
+      const chain = this.walkReceiverChain(receiver, acc);
+      if (chain.rootIdx !== undefined) acc.setSiteReceiver(siteIdx, chain.rootIdx);
+      const path = this.calleePath(chain.path, method);
+      if (path !== undefined) acc.setSiteCallee(siteIdx, path);
+    } else if (method) {
+      // Free / implicit-receiver call (`foo(a)`, `puts x`, `attr_accessor :x`).
+      // The method NAME is a statement-level use (a known local resolves to its
+      // binding, an unknown method to a `module` synthetic) but NOT a value
+      // occurrence in any enclosing argument.
+      if (method.text !== '_') acc.addUseWithoutOccurrence(this.resolve(method));
+      acc.setSiteCallee(siteIdx, method.text);
+    }
+    const resultDefs = this.resultDefTargets.get(node.id);
+    if (resultDefs !== undefined) acc.setSiteResultDefs(siteIdx, resultDefs);
+    if (args) this.walkArguments(args, siteIdx, acc);
+    acc.popFrame();
+  }
+
+  /**
+   * Walk a member-call receiver, returning the chain ROOT binding (recorded as a
+   * use) and the dotted prefix path (`a.b` in `a.b.c()`), plus a member-read site
+   * for each NON-final access in the chain. A receiver that is itself a `call`
+   * (Ruby nests `a.b.c` as `call(call(a,b),c)`) recurses; a bare identifier root
+   * is the receiver binding; a `self` / non-identifier root has no static path.
+   */
+  private walkReceiverChain(
+    receiver: SyntaxNode,
+    acc: FactAccumulator,
+  ): { rootIdx?: number; path?: string } {
+    // Collect the access names along the receiver chain (outermost-last), and the
+    // chain root node, by unwinding nested `call` receivers.
+    const accesses: string[] = [];
+    let cur = receiver;
+    for (;;) {
+      if (cur.type === 'call' && cur.childForFieldName('arguments') === null) {
+        // A no-args member `call` in receiver position is a member ACCESS
+        // (`a.b` in `a.b.c`) — its method name extends the path; recurse on its
+        // own receiver. A receiver `call` WITH arguments is an opaque call result
+        // (`foo(a).bar` — handled by the `else` below as a nested call site).
+        const m = cur.childForFieldName('method');
+        const inner = cur.childForFieldName('receiver');
+        accesses.unshift(m?.text ?? '');
+        if (!inner) break;
+        cur = inner;
+        continue;
+      }
+      break;
+    }
+    let rootIdx: number | undefined;
+    let rootSegment: string | undefined;
+    if (cur.type === 'identifier' && cur.text !== '_') {
+      rootIdx = this.resolve(cur);
+      acc.addUse(rootIdx);
+      rootSegment = cur.text;
+    } else {
+      // `self` / `@ivar` / a call-rooted receiver (`foo(a).bar`) / literal — walk
+      // for uses + nested sites; no static root segment.
+      this.walkValue(cur, acc);
+    }
+    // The INNERMOST access (`a.b` in `a.b.c()`) is a value-position member read;
+    // the trailing access (the receiver's own method) is part of the callee path,
+    // not a separate read.
+    if (rootIdx !== undefined && accesses.length >= 1) {
+      acc.addMemberRead(rootIdx, accesses[0]);
+    }
+    const path =
+      rootSegment !== undefined && accesses.every((a) => a !== '')
+        ? [rootSegment, ...accesses].join('.')
+        : undefined;
+    return { rootIdx, path };
+  }
+
+  /** Dotted callee path `prefix.method` (or undefined when the prefix is opaque). */
+  private calleePath(prefix: string | undefined, method: SyntaxNode | null): string | undefined {
+    const m = method?.text;
+    if (m === undefined || m.length === 0) return undefined;
+    if (prefix === undefined) return undefined;
+    return `${prefix}.${m}`;
+  }
+
+  /**
+   * Walk an `argument_list`, tagging each positional / keyword / splat argument's
+   * occurrence position. A `pair` (`k: v`) records only the VALUE occurrence (the
+   * `hash_key_symbol` key is not a use). A `splat_argument` (`*xs`) /
+   * `hash_splat_argument` (`**kw`) marks the first spread position so the matcher
+   * degrades soundly; its inner value still walks. A `block_argument` (`&blk`)
+   * passes a block — its inner value is a use occurrence.
+   */
+  private walkArguments(args: SyntaxNode, siteIdx: number, acc: FactAccumulator): void {
+    let pos = 0;
+    for (let i = 0; i < args.namedChildCount; i++) {
+      const arg = args.namedChild(i);
+      if (!arg || arg.type === 'comment') continue;
+      acc.setFrameArg(pos);
+      if (arg.type === 'splat_argument' || arg.type === 'hash_splat_argument') {
+        acc.setSiteSpread(siteIdx, pos);
+        const inner = arg.namedChild(0);
+        if (inner) this.walkValue(inner, acc);
+      } else if (arg.type === 'pair') {
+        // `k: v` — only the value is an occurrence; the symbol key is not a use.
+        const value = arg.childForFieldName('value') ?? arg.namedChild(arg.namedChildCount - 1);
+        if (value) this.walkValue(value, acc);
+      } else {
+        // Positional arg, `block_argument` (`&blk`), or a nested expression.
+        this.walkValue(arg, acc);
+      }
+      pos++;
     }
   }
 }

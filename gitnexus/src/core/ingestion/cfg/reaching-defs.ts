@@ -243,6 +243,37 @@ export function computeReachingDefs(cfg: FunctionCfg, limits?: ReachingDefsLimit
   return solveReachingDefs(cfg, limits, computeInSetsAuto);
 }
 
+/** A reaching-defs solver — {@link computeReachingDefs} or a memoized wrapper. */
+export type ReachingDefsSolver = (cfg: FunctionCfg, limits?: ReachingDefsLimits) => FunctionDefUse;
+
+/**
+ * Per-file memoized reaching-defs solver (#2227 tri-review, U12). Under `--pdg`
+ * the SAME per-function RD fixpoint was solved 3–4× per analyze (RD emit +
+ * call-summary harvest + taint + summary harvest). Cache by (cfg identity,
+ * limits) so each DISTINCT solve runs once: the RD-emit bucket (passes
+ * `maxBlockVisits`) and the harvest/taint bucket (does not) stay byte-identical
+ * to their inline solves because the limits are part of the key. Lazy — solves
+ * on first request, so the taint zero-match fast path still skips its solve.
+ * Create one per FILE and drop it after the file to bound the per-function
+ * `facts` arrays (100k+ objects on a huge function) from going whole-repo.
+ */
+export function createMemoizedReachingDefs(): ReachingDefsSolver {
+  const cache = new Map<FunctionCfg, Map<string, FunctionDefUse>>();
+  return (cfg, limits) => {
+    const key = `${limits?.maxFacts ?? ''}|${limits?.maxBlockVisits ?? ''}`;
+    let byKey = cache.get(cfg);
+    if (byKey === undefined) {
+      byKey = new Map();
+      cache.set(cfg, byKey);
+    }
+    const hit = byKey.get(key);
+    if (hit !== undefined) return hit;
+    const result = computeReachingDefs(cfg, limits);
+    byKey.set(key, result);
+    return result;
+  };
+}
+
 /**
  * Dense GEN/KILL monotone worklist — the original (#2082 M2) reaching-defs
  * solver. As of #2201 it plays two roles: (1) the production dispatcher

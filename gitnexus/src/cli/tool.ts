@@ -124,6 +124,8 @@ export async function impactCommand(
   target?: string,
   options?: {
     direction?: string;
+    mode?: string;
+    line?: string;
     repo?: string;
     branch?: string;
     uid?: string;
@@ -162,12 +164,23 @@ export async function impactCommand(
     const rawOffset = parseInt(options?.offset ?? '', 10);
     const parsedLimit = Number.isFinite(rawLimit) ? rawLimit : undefined;
     const parsedOffset = Number.isFinite(rawOffset) ? rawOffset : undefined;
+    // `--line` is a PDG-only statement anchor (1-based source line). Parse it to
+    // an integer when provided and thread it ONLY when present, so the backend's
+    // line-without-pdg / non-positive-integer validation fires on the real value
+    // rather than on a silently-dropped flag. A non-numeric `--line` parses to
+    // NaN, which the backend rejects as a non-positive integer (loud, not silent).
+    const parsedLine = options?.line !== undefined ? parseInt(options.line, 10) : undefined;
     const result = await backend.callTool('impact', {
       target: target || undefined,
       target_uid: options?.uid,
       file_path: options?.file,
       kind: options?.kind,
       direction: options?.direction || 'upstream',
+      // Forward the engine selector; backend validates the enum (callgraph/pdg)
+      // and treats the default 'callgraph' identically to an omitted mode.
+      mode: options?.mode,
+      // PDG-only statement anchor — forwarded only when --line was given.
+      ...(parsedLine !== undefined ? { line: parsedLine } : {}),
       maxDepth: options?.depth ? parseInt(options.depth, 10) : undefined,
       includeTests: options?.includeTests ?? false,
       repo: options?.repo,

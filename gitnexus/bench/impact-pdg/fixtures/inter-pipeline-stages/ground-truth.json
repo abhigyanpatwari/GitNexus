@@ -1,0 +1,33 @@
+{
+  "schemaVersion": 1,
+  "criterion": {
+    "name": "runPipeline",
+    "filePath": "src/pipeline.ts",
+    "direction": "downstream",
+    "line": 20,
+    "marker": "stageTransform(acc)",
+    "pdgEdgeKinds": ["REACHING_DEF", "CDG"]
+  },
+  "locus": "inter",
+  "provenance": "manual",
+  "analyzerVersion": "1.6.7",
+  "intra_AIS": [],
+  "inter_AIS": [
+    {
+      "symbol": "stageParse",
+      "filePath": "src/pipeline.ts",
+      "note": "first pipeline stage runPipeline invokes; its output feeds the next"
+    },
+    {
+      "symbol": "stageTransform",
+      "filePath": "src/pipeline.ts",
+      "note": "second stage; depends on stageParse's output threaded through `acc`"
+    },
+    {
+      "symbol": "stageEmit",
+      "filePath": "src/pipeline.ts",
+      "note": "terminal stage"
+    }
+  ],
+  "rationale": "criterion.line=20 — the driver's first body statement `let acc = seed` (source semantics: the pipeline's threading begins here). Direction is DOWNSTREAM (dependencies): changing `runPipeline` affects the callees it invokes. In GitNexus `impact` vocabulary, downstream = dependencies/callees; the stages are what the driver CALLS, so the correct tag is downstream (an earlier draft mislabeled this `upstream`, conflating the English 'upstream sources' with GitNexus's caller-direction — corrected after the harness surfaced a direction-vs-AIS contradiction). intra_AIS is EMPTY BY DESIGN: the driver threads `acc` through three stage calls (stageParse->stageTransform->stageEmit); the dependencies that matter cross function boundaries — the three stage functions — so inter_AIS holds them. The `acc` reassignments only carry delegate results, no independent computation, so there is no meaningful intra ground truth. Step-0 reconciliation: the statement-anchored PDG slice from line 20 returns the intra `acc` def->use / guard statements, but those are noise relative to the (empty) intra ground truth — PDG is intra-procedural and cannot reach the cross-function stages. The call-graph mode (downstream) reaches the three stages exactly. The `enabled` guard (added so the driver carries a CDG edge) keeps the criterion measurable for the smoke test without changing the cross-function locus. Distinct from the dispatcher (branch-routed) and facade (guarded-sequence) shapes — this is a straight pipeline driver."
+}

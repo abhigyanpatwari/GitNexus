@@ -390,6 +390,18 @@ describe('C++ variadic packs and dependent-name resolution (#1894)', () => {
     expect(extendsEdges).toHaveLength(0);
   });
 
+  it('keeps the comment-free pack-expanded base path covered', () => {
+    const extendsEdges = getRelationships(result, 'EXTENDS').filter(
+      (e) => e.source === 'PlainMix' && e.target === 'B',
+    );
+    const inheritedCalls = getRelationships(result, 'CALLS').filter(
+      (c) => c.source === 'plainRun' && c.target === 'inherited',
+    );
+
+    expect(extendsEdges).toHaveLength(0);
+    expect(inheritedCalls).toHaveLength(0);
+  });
+
   it('does not bind unqualified member lookup through a pack-expanded dependent base', () => {
     const calls = getRelationships(result, 'CALLS').filter(
       (c) => c.source === 'run' && c.target === 'inherited',

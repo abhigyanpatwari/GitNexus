@@ -671,6 +671,7 @@ function isFollowedByPackExpansion(baseClause: SyntaxNode, childIndex: number): 
     if (sibling === null) continue;
     if (sibling.type === '...' || (!sibling.isNamed && sibling.text === '...')) return true;
     if (sibling.type === ',' || sibling.type === 'access_specifier') return false;
+    if (sibling.type === 'comment') continue;
     if (sibling.isNamed) return false;
   }
   return false;
