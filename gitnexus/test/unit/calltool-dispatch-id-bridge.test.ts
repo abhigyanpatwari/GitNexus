@@ -270,9 +270,10 @@ describe('LocalBackend PDG impact — resolved-callee-id bridge (U6)', () => {
     // calleeIds carries the sentinel '*' alongside a real id; callees has NO sentinel
     // (so the names-sentinel short-circuit does not fire and the id path runs). A
     // reached callee whose id is literally '*' must be UNPROVEN — the sentinel was
-    // filtered out of the id set, so it can never false-match.
+    // filtered out of the id set, so it can never false-match. (TAB-joined per the
+    // CALLEE_ID_SEP delimiter — ids can contain spaces, so the cell is not space-joined.)
     vi.mocked(executeParameterized).mockImplementation(async (_repo, query) => {
-      if (query.includes('RETURN b.calleeIds')) return [{ calleeIds: 'func:callee-A *' }];
+      if (query.includes('RETURN b.calleeIds')) return [{ calleeIds: 'func:callee-A\t*' }];
       if (query.includes('RETURN b.callees')) return [{ callees: 'callee' }];
       if (query.includes('r.type IN $relTypes') && !query.includes('STEP_IN_PROCESS')) {
         return [frontierRow('func:callee-A', 'callee'), frontierRow('*', 'callee')];
