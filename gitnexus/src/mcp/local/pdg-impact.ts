@@ -10,7 +10,7 @@ import path from 'path';
 import type { executeParameterized } from '../../core/lbug/pool-adapter.js';
 import { loadMeta } from '../../storage/repo-manager.js';
 import { IMPACT_MAX_DEPTH, PDG_QUERY_DEFAULT_LIMIT, PDG_QUERY_MAX_LIMIT } from '../tools.js';
-import { CALLEES_TRUNCATED_SENTINEL } from '../../core/ingestion/cfg/emit.js';
+import { CALLEES_TRUNCATED_SENTINEL, CALLEE_ID_SEP } from '../../core/ingestion/cfg/emit.js';
 import { decodeCallSummary } from '../../core/ingestion/taint/call-summary-codec.js';
 import { decodeReachingDefReason } from '../../core/ingestion/cfg/reaching-def-reason-codec.js';
 
@@ -63,7 +63,7 @@ const INTERPROC_DEPTH_BUDGET = 3;
 const INTERPROC_NODE_BUDGET = 5000;
 
 /**
- * Split a space-joined `BasicBlock.calleeIds` cell into its resolved callee
+ * Split a tab-joined ({@link CALLEE_ID_SEP}) `BasicBlock.calleeIds` cell into its resolved callee
  * symbol ids, dropping the truncation sentinel (a capped block carries the
  * sentinel to mark an incomplete call-site list; it is NOT a resolved symbol id
  * and must never enter a `has(realId)` set). Empty/whitespace cells yield no ids.
@@ -75,7 +75,10 @@ const INTERPROC_NODE_BUDGET = 5000;
  */
 export function splitCalleeIds(raw: unknown): string[] {
   const out: string[] = [];
-  for (const id of String(raw ?? '').split(' ')) {
+  // Split on the SHARED CALLEE_ID_SEP (tab) — ids embed file paths / multi-word
+  // C++ type tokens that can contain a space, so a space split would fragment
+  // them. Producer (calleeIdsOfBlock) joins with the same constant.
+  for (const id of String(raw ?? '').split(CALLEE_ID_SEP)) {
     if (id && id !== CALLEES_TRUNCATED_SENTINEL) out.push(id);
   }
   return out;

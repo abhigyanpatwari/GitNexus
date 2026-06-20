@@ -1,12 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import {
   CALLEES_TRUNCATED_SENTINEL,
+  CALLEE_ID_SEP,
   calleeIdsOfBlock,
   calleesOfBlock,
   emitFileCfgs,
 } from '../../src/core/ingestion/cfg/emit.js';
 import { DEFAULT_PDG_MAX_SITES_PER_STATEMENT } from '../../src/core/ingestion/cfg/visitors/call-site-harvest.js';
 import { calleeIdPosKey } from '../../src/core/ingestion/scope-resolution/graph-bridge/callee-id-sink.js';
+import { splitCalleeIds } from '../../src/mcp/local/pdg-impact.js';
 import { cfgOf } from '../helpers/ts-cfg-harness.js';
 import { allSites } from '../helpers/cfg-harness.js';
 import { createKnowledgeGraph } from '../../src/core/graph/graph.js';
@@ -59,7 +61,7 @@ describe('calleeIdsOfBlock', () => {
       block([{ line: 1, defs: [], uses: [], sites: [s2, s1] }]),
       fileMap,
     );
-    expect(result).toBe('idA idB');
+    expect(result).toBe('idA\tidB');
   });
 
   it('unions multi-target dispatch ids at one position (KTD8/R2)', () => {
@@ -70,7 +72,30 @@ describe('calleeIdsOfBlock', () => {
       block([{ line: 3, defs: [], uses: [], sites: [callSite('dispatch', [3, 2])] }]),
       fileMap,
     );
-    expect(result).toBe('idX idY');
+    expect(result).toBe('idX\tidY');
+  });
+
+  it('a resolved id containing a space round-trips through calleeIdsOfBlock + splitCalleeIds (#2227)', () => {
+    // C++ overload ids embed multi-word primitives (`unsigned char`) and file
+    // paths can contain spaces, so a resolved id can legitimately hold a space.
+    // The TAB delimiter keeps it in ONE field; a space-join would fragment it
+    // and silently drop inter-procedural reach to that callee.
+    const spaceId = 'Method:src/my file.cpp:S::f~shape:unsigned char:none:pointer:1';
+    const fileMap = new Map<string, ReadonlySet<string>>([
+      [calleeIdPosKey(1, 0), new Set([spaceId])],
+      [calleeIdPosKey(2, 4), new Set(['idPlain'])],
+    ]);
+    const cell = calleeIdsOfBlock(
+      block([
+        { line: 1, defs: [], uses: [], sites: [callSite('f', [1, 0]), callSite('g', [2, 4])] },
+      ]),
+      fileMap,
+    );
+    // Tab-joined: the space-id keeps its internal spaces inside one field.
+    expect(cell).toContain(CALLEE_ID_SEP);
+    expect(cell).toContain('unsigned char');
+    // splitCalleeIds recovers BOTH ids WHOLE — the space-id is not fragmented.
+    expect([...splitCalleeIds(cell)].sort()).toEqual([spaceId, 'idPlain'].sort());
   });
 
   it('carries the resolved id even when the leaf name differs from the call-site leaf (alias, R1)', () => {
@@ -122,8 +147,8 @@ describe('calleeIdsOfBlock', () => {
       fileMap,
     );
     // The sentinel sorts first ('*' < letters) and rides alongside the real ids.
-    expect(result.split(' ')).toContain(CALLEES_TRUNCATED_SENTINEL);
-    expect(result.split(' ')).toContain('idFoo');
+    expect(result.split(CALLEE_ID_SEP)).toContain(CALLEES_TRUNCATED_SENTINEL);
+    expect(result.split(CALLEE_ID_SEP)).toContain('idFoo');
   });
 
   it('returns an empty string when the map is absent (pdg off / degraded — R3)', () => {
@@ -184,7 +209,7 @@ describe('emitFileCfgs — calleeIds property', () => {
     );
     expect(callBlock).toMatchObject({
       callees: 'bar map', // leaf names, sorted — UNCHANGED by the id wiring
-      calleeIds: 'id:bar id:map', // resolved ids, sorted
+      calleeIds: 'id:bar\tid:map', // resolved ids, sorted (TAB-joined, CALLEE_ID_SEP)
     });
   });
 });
@@ -222,7 +247,7 @@ function syntheticMapFromSites(cfg: FunctionCfg): {
 /** Leaf names of `calleeIds`, recovered through the synthetic id→callee map. */
 function calleeNamesViaIds(calleeIds: string, idToCallee: Map<string, string>): string {
   const names = calleeIds
-    .split(' ')
+    .split(CALLEE_ID_SEP)
     .filter((tok) => tok.length > 0)
     .map((id) => {
       const name = idToCallee.get(id);
@@ -301,11 +326,11 @@ describe('KTD7 characterization — at ↔ calleeIdPosKey round-trip', () => {
     expect(callBlock).toBeDefined();
     const calleeIds = calleeIdsOfBlock(callBlock as BasicBlockData, fileMap);
 
-    const idSet = new Set(calleeIds.split(' ').filter((t) => t.length > 0));
+    const idSet = new Set(calleeIds.split(CALLEE_ID_SEP).filter((t) => t.length > 0));
     expect(idSet.has('id:map')).toBe(true);
     expect(idSet.has('id:bar')).toBe(true);
     expect(idSet.has('id:foo')).toBe(false);
-    // Sorted, exact set.
-    expect(calleeIds).toBe('id:bar id:map');
+    // Sorted, exact set (TAB-joined, CALLEE_ID_SEP).
+    expect(calleeIds).toBe('id:bar\tid:map');
   });
 });

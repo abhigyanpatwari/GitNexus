@@ -45,6 +45,22 @@ import type { BasicBlockData, BindingEntry, FunctionCfg } from './types.js';
 export const CALLEES_TRUNCATED_SENTINEL = '*';
 
 /**
+ * Inner separator for the `BasicBlock.calleeIds` cell (resolved callee symbol
+ * ids). A TAB is used — NOT a space — because resolved ids embed `filePath` and
+ * C++ overload shape tags with multi-word primitive types (e.g. `unsigned char`,
+ * `long double`), so an id can legitimately contain a space; a space-joined cell
+ * then fragments on read and silently drops inter-procedural reach to that
+ * callee (#2227 tri-review). A tab cannot appear in a tree-sitter-derived id
+ * token (paths/identifiers/type tokens are tab-free) and round-trips intact
+ * through `escapeCSVField` (tab is in its preserved set) and the RFC-4180 COPY
+ * reader (every cell is quoted). Producer ({@link calleeIdsOfBlock}) and
+ * consumer (`splitCalleeIds`) import this single constant so they cannot drift.
+ * The sibling `callees` (leaf-name) cell stays space-joined — leaf names are
+ * bare identifiers and never contain a space.
+ */
+export const CALLEE_ID_SEP = '\t';
+
+/**
  * Default per-function CFG edge cap. A pathological generated function could
  * otherwise emit an unbounded edge set; the cap bounds graph growth and is
  * overridable via `--pdg` options. `0` (in options) means no cap (unlimited
@@ -302,7 +318,7 @@ export function calleesOfBlock(block: BasicBlockData): string {
 }
 
 /**
- * Space-joined, sorted, de-duplicated RESOLVED callee symbol ids invoked
+ * Tab-joined ({@link CALLEE_ID_SEP}), sorted, de-duplicated RESOLVED callee symbol ids invoked
  * directly in a block — the SOUND parallel to {@link calleesOfBlock}'s leaf
  * names (#2227 follow-up plan U3, KTD1/KTD2/KTD7). Each block site's call-site
  * anchor `at` (U1) is joined by EXACT position to the per-file resolved-id map
@@ -348,7 +364,7 @@ export function calleeIdsOfBlock(
       for (const id of resolved) ids.add(id);
     }
   }
-  return [...ids].sort().join(' ');
+  return [...ids].sort().join(CALLEE_ID_SEP);
 }
 
 export function emitFileCfgs(
