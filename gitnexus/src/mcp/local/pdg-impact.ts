@@ -81,6 +81,13 @@ export function splitCalleeIds(raw: unknown): string[] {
   return out;
 }
 
+/**
+ * Contract version of the mode:'pdg' impact result shape. A stable discriminator
+ * for external MCP/agent consumers — distinct from the DB INCREMENTAL_SCHEMA_VERSION.
+ * Bump on any breaking change to the PDG result fields.
+ */
+export const PDG_RESULT_VERSION = 1 as const;
+
 /** A reachable dependence block resolved to its source statement. */
 export interface PdgStatement {
   /** 1-based source line where the statement's block starts. */
@@ -565,6 +572,8 @@ export interface PdgInterproceduralImpact {
 
 export interface PdgImpactBaseResult extends PdgImpactParityFields {
   mode: 'pdg';
+  /** Contract version of the mode:'pdg' impact result shape; bump on any breaking change to the PDG result fields. */
+  pdgResultVersion: 1;
   target: PdgImpactTarget;
   direction: 'upstream' | 'downstream';
   impactedCount: number;
@@ -644,6 +653,8 @@ export interface PdgImpactDegradedResult extends PdgImpactBaseResult {
 
 export interface PdgImpactErrorResult {
   mode?: 'pdg';
+  /** Contract version of the mode:'pdg' impact result shape; bump on any breaking change to the PDG result fields. */
+  pdgResultVersion: 1;
   error: string;
   target: PdgImpactTarget;
   direction: 'upstream' | 'downstream';
@@ -669,6 +680,7 @@ export function makePdgImpactErrorResult(input: {
 }): PdgImpactErrorResult {
   return {
     ...(input.mode ? { mode: input.mode } : {}),
+    pdgResultVersion: PDG_RESULT_VERSION,
     error: input.error,
     target: input.target,
     direction: input.direction,
@@ -691,6 +703,7 @@ export function makePdgLayerDegradedResult(input: {
 }): PdgImpactDegradedResult {
   return {
     mode: input.mode,
+    pdgResultVersion: PDG_RESULT_VERSION,
     pdgLayer: input.layer.state,
     ...(input.layer.missingSubLayer ? { missingSubLayer: input.layer.missingSubLayer } : {}),
     ...(input.layer.probeError ? { probeError: input.layer.probeError } : {}),
@@ -877,6 +890,7 @@ function assemblePdgImpactResult(input: {
 
   return {
     mode: 'pdg',
+    pdgResultVersion: PDG_RESULT_VERSION,
     target,
     direction,
     impactedCount,
@@ -1804,6 +1818,7 @@ export async function runImpactPDG(deps: RunPdgImpactDeps): Promise<PdgImpactRes
   if (seedBlocks.length === 0) {
     return {
       mode: 'pdg',
+      pdgResultVersion: PDG_RESULT_VERSION,
       target,
       direction,
       ...(statementMode ? { criterionLine: line } : {}),
@@ -2018,6 +2033,7 @@ export async function runImpactPDG(deps: RunPdgImpactDeps): Promise<PdgImpactRes
   if (reachableBlocks.length === 0) {
     return {
       mode: 'pdg',
+      pdgResultVersion: PDG_RESULT_VERSION,
       target,
       direction,
       ...(statementMode ? { criterionLine: line } : {}),
@@ -2441,6 +2457,9 @@ export function composeUnifiedPdgImpactResult(
 
   return {
     ...pdgResult,
+    // Explicit (also carried by the `...pdgResult` spread) so the unified
+    // mode:'pdg' exit always advertises the contract version.
+    pdgResultVersion: PDG_RESULT_VERSION,
     impactedCount,
     note: noteParts.filter(Boolean).join(' '),
     summary,

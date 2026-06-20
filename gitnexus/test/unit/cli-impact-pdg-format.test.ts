@@ -38,6 +38,7 @@ function pdgFindings(overrides: Record<string, unknown> = {}): Record<string, un
   ];
   return {
     mode: 'pdg',
+    pdgResultVersion: 1,
     target: {
       id: 'Function:src/svc.ts:computeTotal',
       name: 'computeTotal',
@@ -129,6 +130,13 @@ describe('formatImpactResult — PDG (mode:pdg) rendering', () => {
     // The callgraph DI / dynamic-dispatch lower-bound copy must NEVER appear.
     expect(out).not.toContain('dynamic dispatch');
     expect(out).not.toContain('binding via DI');
+  });
+
+  it('carries the stable pdgResultVersion discriminator on the findings result', () => {
+    // The PDG result family advertises a contract version (FIX #2) so external
+    // MCP/agent consumers can version against future shape evolution. It is a
+    // mode:'pdg'-only field — never on the default callgraph result.
+    expect(pdgFindings()).toMatchObject({ mode: 'pdg', pdgResultVersion: 1 });
   });
 
   it('surfaces ambiguous-projection and unresolved block counts honestly', () => {
