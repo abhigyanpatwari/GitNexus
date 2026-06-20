@@ -13,6 +13,8 @@ import { IMPACT_MAX_DEPTH, PDG_QUERY_DEFAULT_LIMIT, PDG_QUERY_MAX_LIMIT } from '
 import { CALLEES_TRUNCATED_SENTINEL, CALLEE_ID_SEP } from '../../core/ingestion/cfg/emit.js';
 import { decodeCallSummary } from '../../core/ingestion/taint/call-summary-codec.js';
 import { decodeReachingDefReason } from '../../core/ingestion/cfg/reaching-def-reason-codec.js';
+import { getProviderForFile } from '../../core/ingestion/languages/index.js';
+import { SupportedLanguages } from 'gitnexus-shared';
 
 /**
  * Parse the `<fnLine>` segment out of a `BasicBlock` id (1-based function start
@@ -870,6 +872,24 @@ function assemblePdgImpactResult(input: {
           `RETURN value is NOT in the slice. Re-run gitnexus analyze --pdg to record ` +
           `CALL_SUMMARY edges and enable it.`,
       );
+    } else if (input.callSummaryAvailable === true) {
+      // The CALL_SUMMARY layer is present, but return-value ascent is populated
+      // ONLY for TypeScript/JavaScript today (the formal-index it needs is set
+      // solely by the TS/JS harvester). For a criterion in any other language the
+      // ascent is structurally empty, so say so rather than letting the omission
+      // read as "ascent ran and found nothing". Sound — never claims ascent fired.
+      // Language is derived HERE in mcp/local, which may name languages; the
+      // shared core/ingestion pipeline must not.
+      const lang = getProviderForFile(target.filePath)?.id;
+      const ascentLanguage =
+        lang === SupportedLanguages.TypeScript || lang === SupportedLanguages.JavaScript;
+      if (!ascentLanguage) {
+        noteParts.push(
+          `return-value ascent is currently TypeScript/JavaScript-only (only the TS/JS harvester ` +
+            `records the formal-index it needs), so a caller statement depending on a non-TS/JS ` +
+            `callee's RETURN value is not in the slice. Descent and the intra slice are unaffected.`,
+        );
+      }
     }
   }
   if (ambiguousCount > 0) {

@@ -513,6 +513,14 @@ export const pdgModeMismatch = (recorded: RepoMeta['pdg'], options: PdgOptions):
   // a full writeback that populates REACHING_DEF rows without `--force`.
   const reqRecord = requested as Record<string, unknown>;
   const recRecord = recorded as Record<string, unknown>;
+  // INVARIANT: every value stamped by resolvePdgConfig MUST be a SCALAR (string /
+  // number / boolean). This comparison is a shallow `!==`, so an OBJECT or ARRAY
+  // value would compare by REFERENCE — two structurally-equal values from
+  // different runs would always be `!==`, tripping pdgModeMismatch on every
+  // re-analyze and forcing a needless full writeback. e.g. do NOT change
+  // `hasCallSummary: true` to a per-language object like `{ ts: true, ... }`; keep
+  // the diagnostic per-language refinement in the impact CONSUMER (see
+  // pdg-impact.ts assemblePdgImpactResult), not in this version discriminator.
   for (const key of new Set([...Object.keys(reqRecord), ...Object.keys(recRecord)])) {
     if (reqRecord[key] !== recRecord[key]) return true;
   }
