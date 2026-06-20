@@ -1,0 +1,36 @@
+{
+  "schemaVersion": 1,
+  "criterion": {
+    "name": "reassignSum",
+    "filePath": "src/reassign.ts",
+    "direction": "upstream",
+    "line": 9,
+    "marker": "total + b",
+    "pdgEdgeKinds": ["REACHING_DEF"]
+  },
+  "locus": "intra",
+  "provenance": "manual",
+  "analyzerVersion": "1.6.7",
+  "intra_AIS": [
+    {
+      "symbol": "reassignSum",
+      "filePath": "src/reassign.ts",
+      "line": 6,
+      "note": "the function-signature/parameter block defines `a`, whose value flows into `total = a`; it is a genuine reaching def upstream of the criterion use"
+    },
+    {
+      "symbol": "reassignSum",
+      "filePath": "src/reassign.ts",
+      "line": 7,
+      "note": "the coalesced def block `let total = a; total = total + b;` (lines 7-8) — block-start representative; `let total = a` is a reaching def of the criterion use `return total`"
+    },
+    {
+      "symbol": "reassignSum",
+      "filePath": "src/reassign.ts",
+      "line": 8,
+      "note": "`total = total + b` is the immediately-reaching def of the criterion use (interior of the coalesced 7-8 def block; recovered statement-granular by FU-B-2 walking the `total@7->total@8` self-edge in the reached def block)"
+    }
+  ],
+  "inter_AIS": [],
+  "rationale": "criterion.line=9 — the `return total` use (source semantics: UPSTREAM asks which definitions reach this use of `total`). CORRECTION (FU-B-2 re-reconciliation): the CFG COALESCES the two consecutive defs `let total = a` and `total = total + b` into ONE BasicBlock starting at line 7, and REACHING_DEF also reaches the parameter block (line 6, defining `a`). BEFORE FU-B-2 the block-granular slice could not pinpoint the interior line 8, so the measurable set was {6, 7}. FU-B-2 makes the slice STATEMENT-granular: the reached def block (7-8) is walked over its self REACHING_DEF def->use lines (`total@7->total@8`, decoded from the FU-B-2 `reason` annotation), surfacing line 8. So the measurable upstream slice is now {6 (param def of `a`), 7 (coalesced block start), 8 (the interior reassign)} — the slice from line 9 returns exactly that, restoring the ORIGINAL source-derived belief {7,8} plus the param def 6 (the block-coalescing under-count is repaired, not a metric re-fit). The intra-block forward def->use walk is direction-agnostic by design; here line 8 IS upstream-relevant (it is the immediately-reaching def of the criterion use). All intra-procedural; inter_AIS empty. Isolates the RD-reverse arm of the KTD4 truth table over a reassigned variable, with FU-B-2 interior recovery on the reached coalesced def block."
+}

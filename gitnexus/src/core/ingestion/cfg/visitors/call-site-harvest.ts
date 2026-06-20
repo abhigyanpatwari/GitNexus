@@ -29,6 +29,7 @@
  * NOTE: nothing serialized here may carry a field named `nodeId` — the durable
  * parsedfile-store reviver dedups objects keyed on that field name.
  */
+import type { SyntaxNode } from '../../utils/ast-helpers.js';
 import type { SiteArgOccurrence, SiteRecord, StatementFacts } from '../types.js';
 
 /** Mutable build-time view of a {@link SiteRecord}. */
@@ -44,6 +45,8 @@ interface MutableSite {
   requireArg?: string;
   object?: number;
   property?: string;
+  /** Call-site anchor position — see {@link SiteRecord.at}. Call/new only. */
+  at?: [number, number];
 }
 
 /**
@@ -214,8 +217,14 @@ export class CallSiteFactAccumulator {
    * Returns the new site index, or -1 when the per-statement site cap is hit
    * (the caller threads -1 through `pushFrame`/`setSite*`, all of which no-op on
    * a sentinel index — see {@link DEFAULT_PDG_MAX_SITES_PER_STATEMENT}).
+   *
+   * `at` is the call/new node's anchor position `[line (1-based), col (0-based)]`
+   * — the SAME position the CALLS-edge resolution keys on (see
+   * {@link SiteRecord.at} for the KTD7 alignment); the harvester passes its
+   * `visitCall`/`visitNew` node's `startPosition` so the downstream resolved-id
+   * join lands by exact position.
    */
-  openCallSite(kind: 'call' | 'new'): number {
+  openCallSite(kind: 'call' | 'new', at?: readonly [number, number]): number {
     if (this.sites.length >= DEFAULT_PDG_MAX_SITES_PER_STATEMENT) {
       this._sitesTruncated = true;
       return -1;
@@ -223,6 +232,7 @@ export class CallSiteFactAccumulator {
     const site: MutableSite = { kind };
     const parent = this.innermostArgPosition();
     if (parent) site.parent = parent;
+    if (at) site.at = [at[0], at[1]];
     this.sites.push(site);
     return this.sites.length - 1;
   }
@@ -372,3 +382,64 @@ const finalizeSite = (site: MutableSite): SiteRecord => {
   }
   return site as SiteRecord;
 };
+
+/**
+ * Per-grammar hooks the shared {@link finalizeChain} terminal needs but cannot
+ * name itself (it carries no tree-sitter literals — see the file header). Each
+ * harvester supplies the two callbacks bound to its own `this`.
+ */
+export interface ChainTerminalHooks {
+  /** Resolve a binding-target node to its function-table binding index. */
+  resolve(node: SyntaxNode): number;
+  /**
+   * Walk a NON-identifier chain root for its uses + nested sites (the terminal's
+   * `else` branch — `self.x.f()`, `foo().bar`, a tuple index, etc.).
+   */
+  walkRoot(node: SyntaxNode): void;
+}
+
+/**
+ * Shared `walkChain` TERMINAL (#2227 follow-up, plan KTD5/U8) — the byte-identical
+ * post-unwind block the Go / Kotlin / Swift / Rust / Python harvesters all ran
+ * after walking their grammar-specific access chain (`selector_expression` /
+ * `navigation_expression` / `field_expression` / `attribute`) into an
+ * `accesses: string[]` list and a resolved root node `cur`.
+ *
+ * It records the chain-root identifier as a use, emits at most ONE member-read
+ * site — the INNERMOST access — when the root is an identifier (suppressed by
+ * `skipFinalRead` when that access IS the callee, carried by the dotted path
+ * instead), and builds the dotted path `[root, ...accesses].join('.')`. The only
+ * per-grammar bit is the root identifier node type, supplied via `isRootIdType`
+ * (`'identifier'` for Go/Rust/Python, `'simple_identifier'` for Kotlin/Swift);
+ * the `resolve` / `walkRoot` callbacks bind the harvester's own methods. The
+ * `addUse` / `addMemberRead` machinery is on the accumulator itself, so it is
+ * called directly (no callback). Behavior is identical to the inlined terminals
+ * this replaces — the per-language harvest tests are the characterization lock.
+ */
+export function finalizeChain(
+  acc: CallSiteFactAccumulator,
+  cur: SyntaxNode,
+  accesses: readonly string[],
+  skipFinalRead: boolean,
+  isRootIdType: (type: string) => boolean,
+  hooks: ChainTerminalHooks,
+): { path?: string; rootIdx?: number } {
+  let rootIdx: number | undefined;
+  let rootSegment: string | undefined;
+  if (isRootIdType(cur.type) && cur.text !== '_') {
+    rootIdx = hooks.resolve(cur);
+    acc.addUse(rootIdx);
+    rootSegment = cur.text;
+  } else {
+    hooks.walkRoot(cur);
+  }
+  const innermost = accesses[0];
+  if (rootIdx !== undefined && innermost && !(skipFinalRead && accesses.length === 1)) {
+    acc.addMemberRead(rootIdx, innermost);
+  }
+  const path =
+    rootSegment !== undefined && accesses.every((a) => a !== '')
+      ? [rootSegment, ...accesses].join('.')
+      : undefined;
+  return { path, rootIdx };
+}

@@ -25,6 +25,7 @@ import {
   deleteNodesForFile,
   deleteAllCommunitiesAndProcesses,
   deleteAllInterprocTaintPaths,
+  deleteAllCallSummaries,
   queryImporters,
   loadFTSExtension,
 } from './lbug/lbug-adapter.js';
@@ -437,6 +438,13 @@ export const resolvePdgConfig = (options: PdgOptions): RepoMeta['pdg'] =>
         // writeback that recomputes the fuller coverage (no `--force` needed).
         // Bump this tag on any future change to which facts the solver emits.
         reachingDefSolver: 'ssa-sparse-v1',
+        // PDG FU-C: this run records CALL_SUMMARY return-value-ascent edges.
+        // Absent on any pre-FU-C (v3) stamp → the key-union pdgModeMismatch trips
+        // the first FU-C-aware run over an existing `--pdg` index and forces the
+        // full writeback that materialises CALL_SUMMARY edges without `--force`;
+        // and `impact`'s PDG mode reads its absence to note "no return-value
+        // ascent (re-index for CALL_SUMMARY)" on a v3 index (intra slice intact).
+        hasCallSummary: true,
       }
     : undefined;
 
@@ -505,6 +513,14 @@ export const pdgModeMismatch = (recorded: RepoMeta['pdg'], options: PdgOptions):
   // a full writeback that populates REACHING_DEF rows without `--force`.
   const reqRecord = requested as Record<string, unknown>;
   const recRecord = recorded as Record<string, unknown>;
+  // INVARIANT: every value stamped by resolvePdgConfig MUST be a SCALAR (string /
+  // number / boolean). This comparison is a shallow `!==`, so an OBJECT or ARRAY
+  // value would compare by REFERENCE — two structurally-equal values from
+  // different runs would always be `!==`, tripping pdgModeMismatch on every
+  // re-analyze and forcing a needless full writeback. e.g. do NOT change
+  // `hasCallSummary: true` to a per-language object like `{ ts: true, ... }`; keep
+  // the diagnostic per-language refinement in the impact CONSUMER (see
+  // pdg-impact.ts assemblePdgImpactResult), not in this version discriminator.
   for (const key of new Set([...Object.keys(reqRecord), ...Object.keys(recRecord)])) {
     if (reqRecord[key] !== recRecord[key]) return true;
   }
@@ -1116,6 +1132,12 @@ export async function runFullAnalysis(
       //     graph (isGraphWideRelType), mirroring Community/Process.
       if (options.pdg === true) {
         await deleteAllInterprocTaintPaths();
+        // 2c. Drop CALL_SUMMARY edges (PDG FU-C) on an incremental `--pdg`
+        //     writeback. They are re-included from the FULL fresh graph
+        //     (isGraphWideRelType) and the callSummaries phase recomputes every
+        //     summary each run, so delete-all-then-rebuild keeps an unchanged
+        //     function's summary from being lost — same contract as TAINT_PATH.
+        await deleteAllCallSummaries();
       }
 
       // 3. Extract the changed subgraph from the FULL ctx.graph and write

@@ -155,6 +155,9 @@ describe('generateAIContextFiles', () => {
     const withPdg = generateGitNexusContent('PdgProject', stats, { hasPdg: true });
     expect(withPdg).toContain('pdg_query');
     expect(withPdg).toContain('under what condition does X run');
+    expect(withPdg).toContain('line: <N>');
+    expect(withPdg).toContain('affectedStatements');
+    expect(withPdg).toContain('byDepth');
     // hasPdg omitted (default false) → no pdg_query line; a non-pdg index must
     // not advertise a tool that only returns a "no PDG layer" note.
     const withoutPdg = generateGitNexusContent('PlainProject', stats);

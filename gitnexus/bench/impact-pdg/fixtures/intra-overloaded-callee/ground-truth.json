@@ -1,0 +1,24 @@
+{
+  "schemaVersion": 1,
+  "criterion": {
+    "name": "route",
+    "filePath": "src/route.ts",
+    "direction": "downstream",
+    "line": 32,
+    "marker": "alpha.process(x)",
+    "pdgEdgeKinds": ["REACHING_DEF", "CDG"]
+  },
+  "locus": "inter",
+  "pdgScoring": "exclude",
+  "provenance": "manual",
+  "analyzerVersion": "1.6.7",
+  "intra_AIS": [],
+  "inter_AIS": [],
+  "idBridge": {
+    "seedLine": 32,
+    "idProven": ["Method:src/route.ts:Alpha.process#1"],
+    "nameWouldProve": ["Method:src/route.ts:Alpha.process#1", "Method:src/route.ts:Beta.process#1"],
+    "fpEliminated": ["Method:src/route.ts:Beta.process#1"]
+  },
+  "rationale": "RESOLVED-SYMBOL-ID SOUNDNESS gate (plan 2026-06-18-001 U9; Covers R1, R5). Two methods share the LEAF name `process` but resolve to DISTINCT ids — `Method:src/route.ts:Alpha.process#1` and `Method:src/route.ts:Beta.process#1`. `route` invokes BOTH (one in each `if` arm), so the symbol-graph BFS reaches both as depth-1 direct callees. criterion.line=32 is `out = alpha.process(x)` — its block calls ONLY `alpha.process`, so the dependence slice's `BasicBlock.calleeIds` carries `Alpha.process#1` alone (verified: `calleeIds = 'Method:src/route.ts:Alpha.process#1'`). The RESOLVED-ID bridge therefore proves EXACTLY `Alpha.process#1` (`pdgInterprocedural.statementPreciseByDepth[1]` = that single id; `Beta.process#1` is reached but `unproven-bridge`). The leaf-NAME bridge over the SAME reached items + the SAME slice would prove BOTH (the slice `callees` = {process}; both callees share that leaf), over-attributing `Beta.process#1` — the collision false-positive (`fpEliminated`). `idBridge` records the gate: id-proven == the single correct id; name-match proves 2. `pdgScoring:\"exclude\"` keeps this fixture OUT of the intra/inter strata F1 bands (its locus is genuinely cross-function and its intra_AIS/inter_AIS are not the measured quantity — the id-vs-name soundness diff is); the dedicated id-bridge axis in measure.mjs scores it and `--check` gates the statement-precise id set against `idBridge.idProven`. inter_AIS is intentionally empty: this fixture exists to gate the id-vs-name discrimination, not the cross-function recall the sibling inter fixtures already cover. The ids embed the repo-relative `src/route.ts` path (stable: the harness analyzes a temp copy whose repo-relative paths match)."
+}

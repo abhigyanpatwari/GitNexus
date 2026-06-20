@@ -395,6 +395,7 @@ describe('Python CfgVisitor — taint-site substrate', () => {
     const query = sites.find((s) => s.kind === 'call' && s.callee === 'db.query');
     expect(query?.receiver).toBe(db);
     expect(query?.args?.[0]).toContain(request);
+    expect(query?.at).toEqual([2, 4]);
 
     expect(
       sites.some((s) => s.kind === 'member-read' && s.object === request && s.property === 'args'),
@@ -402,5 +403,6 @@ describe('Python CfgVisitor — taint-site substrate', () => {
 
     const sanitize = sites.find((s) => s.kind === 'call' && s.callee === 'sanitize');
     expect(sanitize?.resultDefs).toEqual([value]);
+    expect(sanitize?.at).toEqual([3, 12]);
   });
 });

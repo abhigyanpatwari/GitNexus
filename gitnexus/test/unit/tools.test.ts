@@ -134,6 +134,24 @@ describe('GITNEXUS_TOOLS', () => {
     expect(impactTool.inputSchema.required).toContain('direction');
   });
 
+  it('impact tool advertises the PDG-only `line` statement anchor (integer, min 1, not required)', () => {
+    const impactTool = GITNEXUS_TOOLS.find((t) => t.name === 'impact')!;
+    const line = (impactTool.inputSchema.properties as Record<string, any>).line;
+    expect(line).toBeDefined();
+    expect(line.type).toBe('integer');
+    expect(line.minimum).toBe(1);
+    // Statement-anchored slice is optional — never required.
+    expect(impactTool.inputSchema.required).not.toContain('line');
+    // The description names the mode:'pdg' statement-anchor semantics.
+    expect(line.description).toMatch(/statement anchor/i);
+    expect(line.description).toMatch(/pdg/i);
+    // The top-level description mentions the statement-anchored slice and result shape.
+    expect(impactTool.description).toMatch(/statement-anchored|STATEMENT-ANCHORED/);
+    expect(impactTool.description).toContain('affectedStatements');
+    expect(impactTool.description).toContain('target metadata');
+    expect(impactTool.description).toContain('truncatedBy');
+  });
+
   it('rename tool requires new_name', () => {
     const renameTool = GITNEXUS_TOOLS.find((t) => t.name === 'rename')!;
     expect(renameTool.inputSchema.required).toContain('new_name');
@@ -274,6 +292,26 @@ describe('GITNEXUS_TOOLS', () => {
     const relProp = impactTool.inputSchema.properties.relationTypes;
     expect(relProp.type).toBe('array');
     expect(relProp.items).toEqual({ type: 'string' });
+  });
+
+  it('impact advertises a mode param (callgraph default; pdg opt-in) — not a new tool (KTD1)', () => {
+    // KTD1: pdg impact ships as a PARAM on the existing tool, so the tool count
+    // must NOT change (asserted at 17 above) and `impact` must expose `mode`.
+    const impactTool = GITNEXUS_TOOLS.find((t) => t.name === 'impact')!;
+    const modeProp = impactTool.inputSchema.properties.mode;
+    expect(modeProp).toBeDefined();
+    expect(modeProp.type).toBe('string');
+    expect(modeProp.enum).toEqual(['callgraph', 'pdg']);
+    expect(modeProp.default).toBe('callgraph');
+    // The description must teach the opt-in / intra-procedural / --pdg contract.
+    expect(modeProp.description).toContain('pdg');
+    expect(modeProp.description).toContain('--pdg');
+    expect(modeProp.description.toLowerCase()).toContain('intra-procedural');
+    expect(modeProp.description).toContain('affectedStatements');
+    expect(modeProp.description).toContain('UNKNOWN-risk');
+    // The tool-level description must mention the mode so an LLM discovers it.
+    expect(impactTool.description.toLowerCase()).toContain('mode');
+    expect(impactTool.description).toContain('pdg');
   });
 
   it('route_map description defers to api_impact for pre-change analysis', () => {
