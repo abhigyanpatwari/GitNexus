@@ -1,12 +1,49 @@
 /**
  * Swift def/use harvester (#2195) — the Swift analogue of
  * {@link import('./typescript-harvest.js').TsHarvester} and the C-family / Go /
- * Rust / Python harvesters. Like the Python / Rust harvesters it harvests NO
- * call-site `sites[]` (the call-site taint substrate is a later step): it emits
- * only the per-function binding table ({@link BindingEntry}[]) plus
- * {@link StatementFacts} (defs / uses / mayDefs) via a local
- * {@link FactAccumulator} with no site machinery, so the produced facts never
- * carry a `sites` key.
+ * Rust / Kotlin / Python harvesters. Like the Kotlin / Go / Python / Dart
+ * harvesters it harvests the per-function binding table ({@link BindingEntry}[])
+ * plus {@link StatementFacts} (defs / uses / mayDefs) AND a taint
+ * {@link import('../types.js').SiteRecord} per call (callee path, receiver,
+ * per-arg occurrence entries, result defs, and an `at` anchor) via the shared
+ * {@link CallSiteFactAccumulator} — the same site substrate the C-family / Go /
+ * TS / Kotlin / Python / Dart harvesters emit.
+ *
+ * SWIFT CALL SHAPE (verified by a real parse — see below; structurally identical
+ * to Kotlin). A call is a `call_expression` whose LAST child is a `call_suffix`
+ * (holding the `value_arguments` and/or a trailing closure `lambda_literal`); the
+ * callee is the preceding expression — a bare `simple_identifier` (`foo(...)`)
+ * for a FREE call, or a `navigation_expression` (`obj.method` / `a?.b`, fields
+ * `target`/`suffix`→`navigation_suffix`→`suffix`:`simple_identifier`) for a
+ * MEMBER call. A chained call `a.b.c()` nests `navigation_expression`s; the
+ * receiver is the chain ROOT binding (`self`/literal roots launder no taint —
+ * no receiver). Swift has no `new` — an init call `Foo(...)` is an ordinary
+ * `call_expression` with a `simple_identifier` callee, so every site is
+ * `kind: 'call'` (the CALLS query re-tags an UpperCamelCase callee
+ * `@reference.call.constructor`, but the harvester only needs callee + receiver
+ * + `at` right — `kind` is not joined). A `value_argument` carries its value in
+ * the `value` field; a labeled arg's `value_argument_label` (`name:`) is dropped,
+ * so only the value occurrence is recorded (an `&inout` value walks its target
+ * for the use). Trailing closures (`xs.map { … }`) are a nested `lambda_literal`
+ * — opaque (in {@link NESTED_FUNCTION_TYPES}), NOT an argument occurrence.
+ *
+ * ANCHOR ALIGNMENT (plan KTD7 — load-bearing): a call site's `at` MUST be the
+ * SAME `[line (1-based), col (0-based)]` the Swift CALLS resolution keys its
+ * `atRange` on, because a downstream unit joins the two by EXACT position. The
+ * Swift scope query (query.ts) anchors `@reference.call.free`,
+ * `@reference.call.member`, and `@reference.call.constructor` on the WHOLE
+ * `call_expression` node (the `@reference.name` simple_identifier and the
+ * `@reference.receiver` are SUB-tags, excluded from the anchor by
+ * `KNOWN_SUB_TAGS` + the broadest-span rule in `anchorCaptureFor`; the
+ * constructor re-tag at `captures.ts` reuses the same call_expression node, and
+ * `atRange: anchor.range` at scope-extractor.ts:1030). So for a free call
+ * `foo(x)`, a member call `obj.method(x)`, a chained call `a.b.c(x)`, and an init
+ * call `Foo(x)` alike, `at` is the start of the enclosing `call_expression` node
+ * — which, for a member/chained call, starts at the RECEIVER (`obj`/`a`), exactly
+ * where the CALLS anchor starts too. This is the Kotlin/Go/Python whole-call-node
+ * model, NOT the Dart callee-name model. `visitCall` receives exactly the
+ * `call_expression` node and records `[node.startPosition.row + 1,
+ * node.startPosition.column]`.
  *
  * Runs in the parse worker next to the Swift CFG visitor. Output is the binding
  * table the {@link import('../cfg-builder.js').CfgBuilder} stamps onto the CFG,
@@ -78,7 +115,7 @@
  */
 import type { SyntaxNode } from '../../utils/ast-helpers.js';
 import type { BindingEntry, StatementFacts } from '../types.js';
-import { DefUseAccumulator as FactAccumulator } from './call-site-harvest.js';
+import { CallSiteFactAccumulator as FactAccumulator, finalizeChain } from './call-site-harvest.js';
 
 /** Node types that own a nested CFG — their subtrees are opaque to harvesting. */
 const NESTED_FUNCTION_TYPES = new Set([
@@ -96,6 +133,13 @@ export class SwiftHarvester {
   private readonly fnId: number;
   /** >0 while walking a conditionally-evaluated subexpression — defs become may-defs. */
   private conditionalDepth = 0;
+  /**
+   * `call_expression` node id → binding indices its single-target result is
+   * assigned to (`let x = f()` / `x = g()` ⇒ `[x]`). Populated just before the
+   * value walk reaches the call (see {@link registerResultDefs}) and consumed by
+   * {@link visitCall}. Mirrors the Kotlin / Go / Python harvesters' map.
+   */
+  private readonly resultDefTargets = new Map<number, number[]>();
 
   constructor(private readonly fnNode: SyntaxNode) {
     this.fnId = fnNode.id;
@@ -465,14 +509,20 @@ export class SwiftHarvester {
       case 'property_declaration': {
         // Walk each `value` for uses, then def each `name` pattern's leaves.
         const names: SyntaxNode[] = [];
+        const values: SyntaxNode[] = [];
         for (let i = 0; i < node.childCount; i++) {
           const field = node.fieldNameForChild(i);
           const child = node.child(i);
           if (!child) continue;
-          if (field === 'value') this.walkValue(child, acc);
+          if (field === 'value' || field === 'computed_value') values.push(child);
           else if (field === 'name') names.push(child);
-          else if (field === 'computed_value') this.walkValue(child, acc);
         }
+        // Register result-defs BEFORE the value walk so the call the walk reaches
+        // carries them — single-name `let x = f()` only (a destructuring or
+        // multi-binder `let (a, b) = …` / `let p = 1, q = 2` attaches nothing).
+        const single = this.singlePatternBinder(names);
+        if (single && values.length === 1) this.registerResultDefs(values[0], [single]);
+        for (const value of values) this.walkValue(value, acc);
         for (const pat of names) this.defPattern(pat, acc);
         return;
       }
@@ -480,12 +530,16 @@ export class SwiftHarvester {
         const target = node.childForFieldName('target');
         const result = node.childForFieldName('result');
         const op = node.childForFieldName('operator')?.text ?? '=';
+        const lv = target ? this.unwrapAssignable(target) : undefined;
+        const scalar = lv && lv.type === 'simple_identifier' ? lv : undefined;
+        // A plain `x = <call>` attaches `resultDefs: [x]`; a compound `+=` does
+        // not (the prior value flows in too).
+        if (scalar && op === '=' && result) this.registerResultDefs(result, [scalar]);
         if (result) this.walkValue(result, acc);
-        if (target) {
-          const lv = this.unwrapAssignable(target);
-          if (lv.type === 'simple_identifier') {
-            this.def(lv, acc);
-            if (op !== '=') this.use(lv, acc); // compound assign reads too
+        if (lv) {
+          if (scalar) {
+            this.def(scalar, acc);
+            if (op !== '=') this.use(scalar, acc); // compound assign reads too
           } else {
             // `self.x = …`, `a[i] = …` — root is a use only (not a scalar def).
             this.walkValue(lv, acc);
@@ -493,11 +547,18 @@ export class SwiftHarvester {
         }
         return;
       }
+      case 'call_expression':
+        // A Swift call (`foo(a)`, `obj.method(x)`, `a.b.c()`, `Foo(...)`). Records
+        // a taint site (callee path, receiver, per-arg occurrences, result defs)
+        // while reproducing the uses the old default descent recorded. Swift has
+        // no `new` — every site is `kind: 'call'`.
+        this.visitCall(node, acc);
+        return;
       case 'navigation_expression': {
-        // `a.b` — value read of the chain root only; the suffix name is not a
-        // scalar binding.
-        const target = node.childForFieldName('target');
-        if (target) this.walkValue(target, acc);
+        // `a.b` value read — the chain-root identifier is a use plus at most one
+        // member-read site (the innermost access); the suffix name is not a scalar
+        // binding. Mirrors the Kotlin / Go value-position member-read semantics.
+        this.walkChain(node, acc, false);
         return;
       }
       case 'try_expression': {
@@ -547,5 +608,146 @@ export class SwiftHarvester {
       n = inner;
     }
     return n;
+  }
+
+  // ── taint-site harvest ───────────────────────────────────────────────────
+
+  /**
+   * The sole `bound_identifier` binder of a single `name` pattern, or undefined
+   * when there are multiple `name` patterns or the pattern is a tuple / wildcard
+   * destructuring (`let (a, b) = …`). Used to gate single-target result-defs.
+   */
+  private singlePatternBinder(names: readonly SyntaxNode[]): SyntaxNode | undefined {
+    if (names.length !== 1) return undefined;
+    const pat = names[0];
+    const bound = pat.childForFieldName?.('bound_identifier');
+    if (bound && bound.type === 'simple_identifier' && bound.text !== '_') return bound;
+    if (pat.type === 'simple_identifier' && pat.text !== '_') return pat;
+    return undefined;
+  }
+
+  /**
+   * When `value`'s root (after unwrapping) is a `call_expression`, remember that
+   * call site should carry `resultDefs` — the binding indices of `targets`
+   * (def-position identifiers). Consumed by {@link visitCall} once the value walk
+   * reaches the node. Single-target only; the blank target (`_`) binds nothing.
+   */
+  private registerResultDefs(value: SyntaxNode, targets: readonly SyntaxNode[]): void {
+    const root = this.unwrapAssignable(value);
+    if (root.type !== 'call_expression') return;
+    const defs: number[] = [];
+    for (const target of targets) {
+      if (target.type !== 'simple_identifier' || target.text === '_') continue;
+      defs.push(this.resolve(target));
+    }
+    if (defs.length > 0) this.resultDefTargets.set(root.id, defs);
+  }
+
+  /**
+   * The callee node of a `call_expression` — the first named child that is NOT
+   * the trailing `call_suffix` (a bare `simple_identifier` for a free / init
+   * call, or a `navigation_expression` for a member / chained call).
+   */
+  private calleeOf(call: SyntaxNode): SyntaxNode | undefined {
+    for (let i = 0; i < call.namedChildCount; i++) {
+      const c = call.namedChild(i);
+      if (c && c.type !== 'call_suffix') return c;
+    }
+    return undefined;
+  }
+
+  /**
+   * Open + populate a call site for a Swift `call_expression`. `node` IS the
+   * `call_expression` — the SAME node the scope query anchors `@reference.call.*`
+   * on (its `atRange`), so the resolved-id join lands by exact position (see file
+   * header ANCHOR ALIGNMENT). Swift has no `new`, so every site is `kind: 'call'`.
+   */
+  private visitCall(node: SyntaxNode, acc: FactAccumulator): void {
+    const calleeNode = this.calleeOf(node);
+    const siteIdx = acc.openCallSite('call', [
+      node.startPosition.row + 1,
+      node.startPosition.column,
+    ]);
+    acc.pushFrame(siteIdx);
+    if (calleeNode) {
+      const callee = this.unwrapAssignable(calleeNode);
+      if (callee.type === 'simple_identifier') {
+        // A bare free / init call — the callee NAME is a statement-level use but
+        // NOT a value occurrence in any enclosing argument.
+        if (callee.text !== '_') acc.addUseWithoutOccurrence(this.resolve(callee));
+        acc.setSiteCallee(siteIdx, callee.text);
+      } else if (callee.type === 'navigation_expression') {
+        // skipFinalRead: the final `.name` IS the callee, carried by the path.
+        const chain = this.walkChain(callee, acc, true);
+        if (chain.path !== undefined) acc.setSiteCallee(siteIdx, chain.path);
+        if (chain.rootIdx !== undefined) acc.setSiteReceiver(siteIdx, chain.rootIdx);
+      } else {
+        // Call-rooted chains (`f()()`), parenthesized callables, `self.x`-rooted —
+        // the walk still records uses and nested sites; no static callee path.
+        this.walkValue(callee, acc);
+      }
+    }
+    const resultDefs = this.resultDefTargets.get(node.id);
+    if (resultDefs !== undefined) acc.setSiteResultDefs(siteIdx, resultDefs);
+    const suffix = node.namedChildren.find((c) => c.type === 'call_suffix');
+    if (suffix) this.walkArguments(suffix, acc);
+    acc.popFrame();
+  }
+
+  /**
+   * Walk a `call_suffix`'s `value_arguments`, tagging each positional / labeled
+   * argument's occurrence position. A trailing closure (`lambda_literal`) is a
+   * nested function body — opaque (excluded by {@link NESTED_FUNCTION_TYPES}), so
+   * it is not an argument occurrence here.
+   */
+  private walkArguments(suffix: SyntaxNode, acc: FactAccumulator): void {
+    const args = suffix.namedChildren.find((c) => c.type === 'value_arguments');
+    if (!args) return;
+    let pos = 0;
+    for (let i = 0; i < args.namedChildCount; i++) {
+      const arg = args.namedChild(i);
+      if (!arg || arg.type !== 'value_argument') continue;
+      acc.setFrameArg(pos);
+      // A labeled arg (`name: value`) records only the VALUE occurrence — the
+      // `value_argument_label` is dropped. An `&inout` value walks its `target`
+      // identifier for the use. Swift has no call-site spread operator.
+      const value = arg.childForFieldName('value');
+      if (value) this.walkValue(value, acc);
+      pos++;
+    }
+  }
+
+  /**
+   * `navigation_expression` chain walk shared by value position and callee
+   * position. Records the chain-root identifier as a use plus at most ONE
+   * member-read site — the INNERMOST access — when the root is an identifier;
+   * `skipFinalRead` suppresses it when that access is the callee (carried by the
+   * dotted path instead). Mirrors the Kotlin / Go / Python harvesters' walkChain.
+   * A non-identifier root (`self`/literal/call) launders no static path/receiver.
+   */
+  private walkChain(
+    node: SyntaxNode,
+    acc: FactAccumulator,
+    skipFinalRead: boolean,
+  ): { path?: string; rootIdx?: number } {
+    const accesses: string[] = [];
+    let cur: SyntaxNode = this.unwrapAssignable(node);
+    for (;;) {
+      if (cur.type === 'navigation_expression') {
+        const suffix = cur.childForFieldName('suffix');
+        const name = suffix?.childForFieldName('suffix');
+        accesses.unshift(name?.text ?? '');
+        const operand = cur.childForFieldName('target');
+        if (!operand) break;
+        cur = this.unwrapAssignable(operand);
+      } else {
+        break;
+      }
+    }
+    // The shared terminal: root-use record + innermost member-read + path-join.
+    return finalizeChain(acc, cur, accesses, skipFinalRead, (t) => t === 'simple_identifier', {
+      resolve: (n) => this.resolve(n),
+      walkRoot: (n) => this.walkValue(n, acc),
+    });
   }
 }

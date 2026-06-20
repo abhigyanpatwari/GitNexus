@@ -309,4 +309,26 @@ describe('#2083 M3 U1 — pdg chunk-key namespace version (flag-off keys untouch
       computeChunkHash(entries, { pdg: true }),
     );
   });
+
+  it('pdg-mode keys CHANGED from prior namespaces AND pin the current pdg:5 (FU-C BindingEntry.formalIndex)', () => {
+    // The pdg namespace bumps whenever the worker `cfgSideChannel` SHAPE changes:
+    // U1 added `SiteRecord.at` (pdg:2→3), U4 added the Rust struct-literal
+    // `kind:'new'` site (pdg:3→4), and the FU-C call-summary soundness fix added
+    // `BindingEntry.formalIndex` on param bindings (pdg:4→5) so return-flow keys on
+    // the enclosing formal position, not the flattened binding ordinal. A stale
+    // prior shard lacks the new field, so the call-summary harvest would route to
+    // its conservative empty-summary fallback on a warm cache. Assert prior chunks
+    // are NOT served, and PIN the current pdg:5 namespace so an accidental revert
+    // of the token re-introduces the stale-shape bug.
+    const joined = 'a.ts:h1\nb.ts:h2';
+    const keyOf = (token: string) =>
+      createHash('sha256')
+        .update(Buffer.from(`${token};maxFn=def\n${joined}`))
+        .digest('hex');
+    const current = computeChunkHash(entries, { pdg: true });
+    expect(current).not.toBe(keyOf('pdg:2'));
+    expect(current).not.toBe(keyOf('pdg:3'));
+    expect(current).not.toBe(keyOf('pdg:4'));
+    expect(current).toBe(keyOf('pdg:5'));
+  });
 });

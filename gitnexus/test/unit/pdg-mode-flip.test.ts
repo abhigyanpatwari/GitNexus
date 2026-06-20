@@ -295,6 +295,7 @@ describe('runFullAnalysis — pdg-mode flip (#2099 F1)', () => {
         maxInterprocEdges: 1000,
         taintModelVersion,
         reachingDefSolver: 'ssa-sparse-v1',
+        hasCallSummary: true,
       });
       expect(stamped!.incrementalInProgress).toBeUndefined(); // cleared on success
 
@@ -352,6 +353,7 @@ describe('runFullAnalysis — pdg-mode flip (#2099 F1)', () => {
         maxInterprocEdges: 1000,
         taintModelVersion,
         reachingDefSolver: 'ssa-sparse-v1',
+        hasCallSummary: true,
       });
       // The CFG layer survives a rebuild under a tighter edge cap (blocks are
       // never capped, only edges).

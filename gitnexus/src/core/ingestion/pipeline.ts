@@ -33,6 +33,7 @@ import {
   scopeResolutionPhase,
   pruneLocalSymbolsPhase,
   taintSummariesPhase,
+  callSummariesPhase,
   mroPhase,
   communitiesPhase,
   processesPhase,
@@ -121,6 +122,11 @@ export interface PipelineOptions {
   /** Per-run `TAINT_PATH` edge cap (#2084 review P1-3). `undefined` ⇒
    *  `DEFAULT_PDG_MAX_INTERPROC_EDGES` (1000); `0` ⇒ no cap. */
   pdgMaxInterprocEdges?: number;
+  /** Per-run `CALL_SUMMARY` edge cap (PDG FU-C, U-C3). `undefined` ⇒
+   *  `DEFAULT_PDG_MAX_CALL_SUMMARY_EDGES` (0 = unlimited); `0` ⇒ no cap.
+   *  Programmatic only, no CLI flag (KTD8) — same discipline as the other
+   *  pdg caps. */
+  pdgMaxCallSummaryEdges?: number;
   /**
    * Streaming/chunked PDG graph emit (#2202). When true, the BasicBlock +
    * intra-file PDG-edge layer (CFG / REACHING_DEF / CDG / POST_DOMINATE /
@@ -267,6 +273,7 @@ export function buildPhaseList(options?: PipelineOptions): PipelinePhase[] {
       // pdg-gated phase. Off ⇒ absent ⇒ byte-identical graph. No always-on
       // phase depends on it (a filtered-out dep would throw in getPhaseOutput).
       .register(taintSummariesPhase, { enabledWhen: (o) => o.pdg === true })
+      .register(callSummariesPhase, { enabledWhen: (o) => o.pdg === true })
       .register(mroPhase, { enabledWhen: (o) => !o.skipGraphPhases })
       .register(communitiesPhase, { enabledWhen: (o) => !o.skipGraphPhases })
       .register(processesPhase, { enabledWhen: (o) => !o.skipGraphPhases })

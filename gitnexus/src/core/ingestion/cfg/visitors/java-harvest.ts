@@ -414,7 +414,12 @@ export class JavaHarvester extends ScopeTreeHarvester {
     const objectNode = node.childForFieldName('object');
     const nameNode = node.childForFieldName('name');
     const argsNode = node.childForFieldName('arguments');
-    const siteIdx = acc.openCallSite('call');
+    // `node` IS the method_invocation — the SAME node the scope-extractor
+    // anchors `@reference.call.*` (its `atRange`) on (KTD7).
+    const siteIdx = acc.openCallSite('call', [
+      node.startPosition.row + 1,
+      node.startPosition.column,
+    ]);
     acc.pushFrame(siteIdx);
     let receiverPath: string | undefined;
     if (objectNode) {
@@ -444,7 +449,12 @@ export class JavaHarvester extends ScopeTreeHarvester {
   private visitNew(node: SyntaxNode, acc: FactAccumulator): void {
     const typeNode = node.childForFieldName('type');
     const argsNode = node.childForFieldName('arguments');
-    const siteIdx = acc.openCallSite('new');
+    // `node` IS the object_creation_expression — the SAME node the
+    // scope-extractor anchors `@reference.call.constructor` (its `atRange`) on.
+    const siteIdx = acc.openCallSite('new', [
+      node.startPosition.row + 1,
+      node.startPosition.column,
+    ]);
     acc.pushFrame(siteIdx);
     if (typeNode) {
       // The type name is not a scalar binding — record it only as the callee

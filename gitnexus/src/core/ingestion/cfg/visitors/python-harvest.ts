@@ -11,9 +11,14 @@
  * per-statement variable definition/use facts that ride the side channel for the
  * reaching-defs / CDG solvers. Output is the per-function binding table
  * ({@link BindingEntry}[]) plus {@link StatementFacts} the visitor attaches to
- * blocks as it walks. NO `sites[]` are harvested here — the call-site taint
- * substrate is a later step (this unit emits only bindings + defs/uses + mayDefs
- * via the local {@link FactAccumulator}, which has no site machinery at all).
+ * blocks as it walks. Each `call` ALSO records a taint {@link SiteRecord} (callee
+ * path, receiver, per-arg occurrence entries, result defs, spread marker, and an
+ * `at` anchor) via the shared {@link CallSiteFactAccumulator} — the same site
+ * substrate the C-family / Go / TS harvesters emit. Python has NO `new`
+ * expression (constructors are plain `call`s), so every site is `kind: 'call'`.
+ * The `at` anchor is the `call` node's start position, byte-aligned with the
+ * `@reference.call.*` CALLS-edge anchor (which also captures the whole `call`
+ * node), so the downstream resolved-callee-id join lands by exact position.
  *
  * Every node type and field literal below was grammar-validated against
  * tree-sitter-python (0.23.x) via the introspection probe before use (mandatory
@@ -92,7 +97,7 @@
  */
 import type { SyntaxNode } from '../../utils/ast-helpers.js';
 import type { BindingEntry, StatementFacts } from '../types.js';
-import { DefUseAccumulator as FactAccumulator } from './call-site-harvest.js';
+import { CallSiteFactAccumulator as FactAccumulator, finalizeChain } from './call-site-harvest.js';
 
 /** Node types that own a nested CFG — their subtrees are opaque to harvesting. */
 const NESTED_FUNCTION_TYPES = new Set(['function_definition', 'lambda']);
@@ -110,6 +115,13 @@ export class PythonHarvester {
   private readonly fnId: number;
   /** >0 while walking a conditionally-evaluated subexpression — defs become may-defs. */
   private conditionalDepth = 0;
+  /**
+   * `call` node id → binding indices its single-target result is assigned to
+   * (`x = f()` ⇒ `[x]`). Populated just before the value walk reaches the call
+   * (see {@link registerResultDefs}) and consumed by {@link visitCall}. Mirrors
+   * the Go harvester's `resultDefTargets`.
+   */
+  private readonly resultDefTargets = new Map<number, number[]>();
 
   constructor(private readonly fnNode: SyntaxNode) {
     this.fnId = fnNode.id;
@@ -542,6 +554,10 @@ export class PythonHarvester {
       case 'assignment': {
         const left = node.childForFieldName('left');
         const right = node.childForFieldName('right');
+        // Register result-defs BEFORE walking the value so the nested call site
+        // (reached during the value walk) carries them — single identifier
+        // target only (`x = f()`); a tuple/attribute LHS attaches nothing.
+        if (left?.type === 'identifier' && right) this.registerResultDefs(right, [left]);
         if (right) this.walkValue(right, acc);
         if (left) this.defTargets(left, acc);
         return;
@@ -565,6 +581,7 @@ export class PythonHarvester {
         // walrus `(n := v)` — `n` is a def, `v` a use.
         const name = node.childForFieldName('name');
         const value = node.childForFieldName('value');
+        if (name?.type === 'identifier' && value) this.registerResultDefs(value, [name]);
         if (value) this.walkValue(value, acc);
         if (name?.type === 'identifier') this.def(name, acc);
         return;
@@ -590,9 +607,10 @@ export class PythonHarvester {
       }
       case 'attribute': {
         // `a.b` — value read of the operand root only; the attribute name is not
-        // a scalar binding.
-        const obj = node.childForFieldName('object');
-        if (obj) this.walkValue(obj, acc);
+        // a scalar binding. Records the chain-root use plus at most ONE
+        // member-read site (the innermost identifier-rooted access), mirroring
+        // the Go harvester's value-position `walkChain`.
+        this.walkChain(node, acc, false);
         return;
       }
       case 'subscript': {
@@ -603,15 +621,12 @@ export class PythonHarvester {
         if (sub) this.walkValue(sub, acc);
         return;
       }
-      case 'call': {
-        // Reproduce default-descent uses: callee chain + arguments. No site
-        // record (taint substrate is a later step).
-        const fn = node.childForFieldName('function');
-        const args = node.childForFieldName('arguments');
-        if (fn) this.walkValue(fn, acc);
-        if (args) this.walkValue(args, acc);
+      case 'call':
+        // #2227 follow-up: explicit case (previously default-descended) — same
+        // uses, plus a taint-site record. Python has no `new` (constructor calls
+        // are plain `call`s). Defs/uses stay byte-identical.
+        this.visitCall(node, acc);
         return;
-      }
       case 'list_comprehension':
       case 'set_comprehension':
       case 'dictionary_comprehension':
@@ -656,5 +671,128 @@ export class PythonHarvester {
       }
     }
     if (body) this.walkValue(body, acc);
+  }
+
+  // ── taint-site harvest (#2227 follow-up) ─────────────────────────────────
+
+  /**
+   * When `value`'s root (after stripping parens) is a `call`, remember that
+   * call site should carry `resultDefs` — the binding indices of `targets`
+   * (def-position identifiers). Consumed by {@link visitCall} once the value
+   * walk reaches the node. Single-target only (the caller restricts to a plain
+   * identifier LHS); the blank identifier (`_`) binds nothing and is skipped.
+   */
+  private registerResultDefs(value: SyntaxNode, targets: readonly SyntaxNode[]): void {
+    const root = this.unwrapValue(value);
+    if (root.type !== 'call') return;
+    const defs: number[] = [];
+    for (const target of targets) {
+      if (target.type !== 'identifier' || target.text === '_') continue;
+      defs.push(this.resolve(target));
+    }
+    if (defs.length > 0) this.resultDefTargets.set(root.id, defs);
+  }
+
+  /** Strip `parenthesized_expression` wrappers around a value (`(f())`). */
+  private unwrapValue(node: SyntaxNode): SyntaxNode {
+    let n = node;
+    let hops = 8;
+    while (n.type === 'parenthesized_expression' && hops-- > 0) {
+      const inner = n.namedChild(0);
+      if (!inner) break;
+      n = inner;
+    }
+    return n;
+  }
+
+  /**
+   * Explicit `call` handler. Records a call site (callee path, receiver, per-arg
+   * occurrence entries, result defs, spread marker) while reproducing EXACTLY
+   * the uses the old default descent recorded (callee chain root + arguments).
+   * Python has no `new` — every site is `kind: 'call'`.
+   */
+  private visitCall(node: SyntaxNode, acc: FactAccumulator): void {
+    const calleeNode = node.childForFieldName('function');
+    const argsNode = node.childForFieldName('arguments');
+    // `node` IS the `call` — the SAME node the scope-extractor anchors
+    // `@reference.call.free/.member` on (its `atRange`), so the resolved-id join
+    // lands by exact position.
+    const siteIdx = acc.openCallSite('call', [
+      node.startPosition.row + 1,
+      node.startPosition.column,
+    ]);
+    acc.pushFrame(siteIdx);
+    if (calleeNode) {
+      const callee = this.unwrapValue(calleeNode);
+      if (callee.type === 'identifier') {
+        if (callee.text !== '_') acc.addUseWithoutOccurrence(this.resolve(callee));
+        acc.setSiteCallee(siteIdx, callee.text);
+      } else if (callee.type === 'attribute') {
+        // skipFinalRead: the final `.attr` IS the callee, carried by the path.
+        const chain = this.walkChain(callee, acc, true);
+        if (chain.path !== undefined) acc.setSiteCallee(siteIdx, chain.path);
+        if (chain.rootIdx !== undefined) acc.setSiteReceiver(siteIdx, chain.rootIdx);
+      } else {
+        // Call-rooted chains (`a().b()`), subscripts (`d[k]()`) — the walk still
+        // records uses and nested sites; the callee path is not statically known.
+        this.walkValue(callee, acc);
+      }
+    }
+    const resultDefs = this.resultDefTargets.get(node.id);
+    if (resultDefs !== undefined) acc.setSiteResultDefs(siteIdx, resultDefs);
+    if (argsNode) {
+      let pos = 0;
+      for (let i = 0; i < argsNode.namedChildCount; i++) {
+        const arg = argsNode.namedChild(i);
+        if (!arg || arg.type === 'comment') continue;
+        if (arg.type === 'list_splat' || arg.type === 'dictionary_splat') {
+          // `f(*args)` / `f(**kw)` — a spread. Mark the first spread position so
+          // the matcher degrades soundly; the inner value still walks.
+          acc.setFrameArg(pos);
+          acc.setSiteSpread(siteIdx, pos);
+          const inner = arg.namedChild(0);
+          if (inner) this.walkValue(inner, acc);
+        } else {
+          // Positional or `keyword_argument` — the `keyword_argument` case in
+          // `walkValue` walks only its `value`, so the key name is not a use.
+          acc.setFrameArg(pos);
+          this.walkValue(arg, acc);
+        }
+        pos++;
+      }
+    }
+    acc.popFrame();
+  }
+
+  /**
+   * `attribute` chain walk shared by value position and callee position. Records
+   * the chain-root identifier as a use (identical to the old default descent)
+   * plus at most ONE member-read site — the INNERMOST access — when the root is
+   * an identifier; `skipFinalRead` suppresses it when that access is the callee
+   * (carried by the dotted path instead). Mirrors the Go harvester's `walkChain`.
+   */
+  private walkChain(
+    node: SyntaxNode,
+    acc: FactAccumulator,
+    skipFinalRead: boolean,
+  ): { path?: string; rootIdx?: number } {
+    const accesses: string[] = [];
+    let cur: SyntaxNode = this.unwrapValue(node);
+    for (;;) {
+      if (cur.type === 'attribute') {
+        const field = cur.childForFieldName('attribute');
+        accesses.unshift(field?.text ?? '');
+        const operand = cur.childForFieldName('object');
+        if (!operand) break;
+        cur = this.unwrapValue(operand);
+      } else {
+        break;
+      }
+    }
+    // The shared terminal: root-use record + innermost member-read + path-join.
+    return finalizeChain(acc, cur, accesses, skipFinalRead, (t) => t === 'identifier', {
+      resolve: (n) => this.resolve(n),
+      walkRoot: (n) => this.walkValue(n, acc),
+    });
   }
 }

@@ -1,0 +1,48 @@
+{
+  "schemaVersion": 1,
+  "criterion": {
+    "name": "handleRequest",
+    "filePath": "src/mixed.ts",
+    "direction": "downstream",
+    "line": 13,
+    "marker": "normalized + 1",
+    "pdgEdgeKinds": ["REACHING_DEF", "CDG"]
+  },
+  "locus": "mixed",
+  "provenance": "manual",
+  "analyzerVersion": "1.6.7",
+  "intra_AIS": [
+    {
+      "symbol": "handleRequest",
+      "filePath": "src/mixed.ts",
+      "line": 14,
+      "note": "the guard `if (normalized < 0)` is data-dependent on `normalized` and controls the arms"
+    },
+    {
+      "symbol": "handleRequest",
+      "filePath": "src/mixed.ts",
+      "line": 16,
+      "note": "`return -1` is control-dependent on the guard"
+    },
+    {
+      "symbol": "handleRequest",
+      "filePath": "src/mixed.ts",
+      "line": 18,
+      "note": "`const adjusted = normalized + 1` is data-dependent on `normalized`"
+    },
+    {
+      "symbol": "handleRequest",
+      "filePath": "src/mixed.ts",
+      "line": 19,
+      "note": "the `persist(adjusted)` arg is data-dependent on `adjusted`/`normalized`; the return is control-dependent on the guard"
+    }
+  ],
+  "inter_AIS": [
+    {
+      "symbol": "persist",
+      "filePath": "src/mixed.ts",
+      "note": "called with the adjusted value; cross-function reach"
+    }
+  ],
+  "rationale": "criterion.line=13 — the `normalized` def `const normalized = raw * 2` (source semantics: `normalized` seeds both the data chain and the guard). Criterion `handleRequest` is mixed-locus. DOWNSTREAM from line 13, the `normalized` def drives BOTH a data chain (guard test line 14, `adjusted` line 18, the call arg line 19) and a control structure (the guard controls lines 16 and 19). So intra_AIS holds the four control/data-dependent statements within the function. Separately, `handleRequest` calls `persist` — a genuine cross-function reach — so inter_AIS holds `persist`. Step-0 reconciliation: the statement-anchored PDG slice from line 13 returns {14, 16, 18, 19} — an EXACT match to this source-derived intra_AIS; call-graph reaches {persist} exactly. This is the case where the two modes are complementary: PDG resolves the intra statement set precisely, call-graph reaches the callee. intra_AIS and inter_AIS are disjoint by construction (one is lines within `handleRequest`, the other is a different symbol `persist`)."
+}

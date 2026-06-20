@@ -73,6 +73,10 @@ describe('VALID_RELATION_TYPES', () => {
     // types" sweep can't drag them in, mirroring the TAINTED/TAINT_PATH pins.
     expect(VALID_RELATION_TYPES.has('CDG')).toBe(false);
     expect(VALID_RELATION_TYPES.has('POST_DOMINATE')).toBe(false);
+    // REACHING_DEF is the other BasicBlock→BasicBlock PDG edge (#2086 impact
+    // PDG mode traverses it directly, never through impact's symbol-space BFS).
+    // Pinned alongside CDG/POST_DOMINATE so an allow-all sweep can't drag it in.
+    expect(VALID_RELATION_TYPES.has('REACHING_DEF')).toBe(false);
   });
 });
 

@@ -45,6 +45,7 @@ import {
   DEFAULT_PDG_MAX_CDG_EDGES_PER_FUNCTION,
   REACHING_DEF_FACTS_PER_EDGE_CAP,
 } from '../../cfg/emit.js';
+import { createMemoizedReachingDefs } from '../../cfg/reaching-defs.js';
 import {
   emitFileTaint,
   DEFAULT_PDG_MAX_TAINT_FINDINGS_PER_FUNCTION,
@@ -58,7 +59,9 @@ import {
   harvestFileSummaries,
   type FunctionNodeIndex,
 } from '../../taint/summary-harvest-driver.js';
+import { harvestFileCallSummaries } from '../../taint/summary-harvest-driver.js';
 import type { FunctionSummary } from '../../taint/summary-model.js';
+import type { CallSummary } from '../../taint/call-summary-model.js';
 import type { FunctionCfg } from '../../cfg/types.js';
 import { resolveDefGraphId } from '../graph-bridge/ids.js';
 import { buildPopulatedMethodDispatch } from '../graph-bridge/method-dispatch.js';
@@ -66,6 +69,10 @@ import { propagateImportedReturnTypes } from '../passes/imported-return-types.js
 import { emitReceiverBoundCalls } from '../passes/receiver-bound-calls.js';
 import { emitFreeCallFallback } from '../passes/free-call-fallback.js';
 import { emitReferencesViaLookup } from '../graph-bridge/references-to-edges.js';
+import {
+  createCalleeIdAccumulator,
+  type CalleeIdAccumulator,
+} from '../graph-bridge/callee-id-sink.js';
 import { emitImportEdges } from '../graph-bridge/imports-to-edges.js';
 import type { ScopeResolver } from '../contract/scope-resolver.js';
 import { findEnclosingClassDef, resolveInheritanceBaseInScope } from '../scope/walkers.js';
@@ -411,6 +418,15 @@ interface RunScopeResolutionStats {
    * fixpoint phase composes them over the complete `CALLS` graph.
    */
   readonly functionSummaries: readonly FunctionSummary[];
+  /**
+   * Per-function RETURN-VALUE ASCENT summaries harvested in the pdg window
+   * (PDG FU-C, U-C2). Empty unless `input.pdg === true`. Keyed by resolved
+   * `Function`/`Method`/`Constructor` node id; the whole-program CALL_SUMMARY
+   * emit phase materialises one self-loop edge per entry once the call graph is
+   * known. Unlike {@link functionSummaries} this needs NO taint model — it is
+   * pure data-dependence — so it is harvested for every `--pdg` language.
+   */
+  readonly callSummaries: readonly CallSummary[];
 }
 
 export function runScopeResolution(
@@ -529,6 +545,7 @@ export function runScopeResolution(
       referenceSkipped: 0,
       resolutionOutcomes,
       functionSummaries: [],
+      callSummaries: [],
     };
   }
 
@@ -701,6 +718,13 @@ export function runScopeResolution(
   // ── Phase 4: emit graph edges (LOAD-BEARING ORDER — see I1) ────────────
   input.onProgress?.('linking symbols', files.length, files.length);
   const handledSites = new Set<string>(preEmittedInheritanceSites);
+  // Resolved-callee-id capture accumulator (#2227 U2). Created ONLY under
+  // `--pdg` — `undefined` otherwise so the three emitters do zero work and emit
+  // byte-identical output (R4). Populated below at all three CALLS emit paths
+  // (each before its dedup, KTD6/R8); consumed by the CFG-emit join (U3) at
+  // `emitFileCfgs` below to produce `BasicBlock.calleeIds`.
+  const calleeIdAccumulator: CalleeIdAccumulator | undefined =
+    input.pdg === true ? createCalleeIdAccumulator() : undefined;
   const receiverExtras = emitReceiverBoundCalls(
     graph,
     indexes,
@@ -712,6 +736,7 @@ export function runScopeResolution(
     readonlyModel,
     {
       recordResolutionOutcome,
+      calleeIdSink: calleeIdAccumulator,
     },
   );
   const unresolvedReceiverExtras =
@@ -744,6 +769,7 @@ export function runScopeResolution(
       conversionOnlyArgTypePrefixes: provider.conversionOnlyArgTypePrefixes,
       constraintCompatibility: provider.constraintCompatibility,
       recordResolutionOutcome,
+      calleeIdSink: calleeIdAccumulator,
     },
   );
   const { emitted, skipped } = emitReferencesViaLookup(
@@ -752,6 +778,7 @@ export function runScopeResolution(
     referenceIndex,
     postHeritageNodeLookup,
     handledSites,
+    calleeIdAccumulator,
   );
   const importsEmitted = emitImportEdges(
     graph,
@@ -788,6 +815,11 @@ export function runScopeResolution(
   // so the return (below the pdg block) can read it; empty on non-pdg runs.
   const harvestedSummaries: FunctionSummary[] = [];
   let summaryUnresolved = 0;
+  // FU-C (U-C2): per-function RETURN-VALUE ASCENT summaries harvested in the
+  // pdg window for the whole-program CALL_SUMMARY emit phase. Function-scoped
+  // (read by the return below the pdg block); empty on non-pdg runs.
+  const harvestedCallSummaries: CallSummary[] = [];
+  let callSummaryUnresolved = 0;
   // M3 (#2083 U4): accumulated taint time (match + taint-side solve +
   // propagate + TAINTED/SANITIZES emit), a sibling of `pdgMs` for the same
   // reason — it interleaves per file inside `emit=`, so only an accumulator
@@ -854,10 +886,10 @@ export function runScopeResolution(
     // is built ONCE (whole-graph scan) and reused across every file; summaries
     // accumulate here and ride out on the stats for the cross-function fixpoint
     // phase. Only built when the language has a registered taint model.
-    const fnNodeIndex =
-      taintSpec !== undefined
-        ? (input.prebuiltFunctionNodeIndex ?? buildFunctionNodeIndex(graph))
-        : undefined;
+    // Built whenever pdg is on (NOT gated on taintSpec): the FU-C call-summary
+    // harvest needs it for EVERY language (it is pure data-dependence, no taint
+    // model), and the taint summary harvest reuses it when taintSpec is present.
+    const fnNodeIndex = input.prebuiltFunctionNodeIndex ?? buildFunctionNodeIndex(graph);
     for (const pf of emitParsedFiles) {
       const cfgs = pf.cfgSideChannel;
       // Defensive: cfgSideChannel is opaque (`unknown`) and crosses the cache /
@@ -892,6 +924,10 @@ export function runScopeResolution(
           );
         }
         if (wellFormed.length === 0) continue;
+        // U3 hook (#2227): the resolved-callee-id map for this file is
+        // `calleeIdAccumulator?.get(pf.filePath)` — joined here by exact
+        // call-site position to emit `BasicBlock.calleeIds`. Captured above at
+        // the three CALLS emit paths (U2); wired into `emitFileCfgs` by U3.
         const emitted = emitFileCfgs(
           pdgTarget,
           wellFormed,
@@ -900,16 +936,31 @@ export function runScopeResolution(
           // gated behind the semantic-model validator and silent in production) so
           // the per-function edge cap never truncates the CFG silently (R6/KTD6).
           (message) => logger.warn(message),
+          // U3 (#2227): the resolved-callee-id map for this file (captured at the
+          // three CALLS emit paths in U2), joined by exact call-site position to
+          // emit `BasicBlock.calleeIds`. `undefined` when pdg is off (the
+          // accumulator is only created under `input.pdg === true`).
+          calleeIdAccumulator?.get(pf.filePath),
         );
         cfgBlocks += emitted.blocks;
         cfgEdges += emitted.edges;
         cfgDroppedEdges += emitted.droppedEdges;
+        // R6 (#2227 tri-review-2): release this file's captured id map now that
+        // emitFileCfgs has consumed it — the CALLS passes fully precede this loop
+        // and each file is read exactly once, so this bounds the accumulator to one
+        // file's call sites instead of holding the whole repo's for the phase.
+        calleeIdAccumulator?.delete(pf.filePath);
 
         // M2 (#2082 U4): reaching definitions over the same validated CFGs.
         // In-memory facts are computed per function and dropped after the
         // bounded (defBlock, useBlock, binding) projection is persisted —
         // M3 recomputes via the same pure solver in-phase (KTD8). Timing is
         // PROF-gated like every other checkpoint here (zero cost when off).
+        // U12: one memoized RD solver per file, shared by the RD-emit + call-
+        // summary + taint + summary passes, so the per-function fixpoint runs once
+        // per (limits) bucket instead of 3–4× (#2227 tri-review). File-scoped: it
+        // is re-created each iteration, so its per-function facts drop with the file.
+        const rdSolve = createMemoizedReachingDefs();
         const t0 = PROF ? performance.now() : 0;
         const rd = emitFileReachingDefs(
           pdgTarget,
@@ -917,6 +968,7 @@ export function runScopeResolution(
           input.pdgMaxReachingDefEdgesPerFunction ??
             DEFAULT_PDG_MAX_REACHING_DEF_EDGES_PER_FUNCTION,
           (message) => logger.warn(message), // unconditional — R7, both layers
+          rdSolve,
         );
         if (PROF) pdgMs += performance.now() - t0;
         rdEdges += rd.edges;
@@ -941,6 +993,21 @@ export function runScopeResolution(
         cdgDropped += cdg.droppedEdges;
         cdgSkippedUnsound += cdg.skippedUnsoundFunctions;
 
+        // FU-C (U-C2): RETURN-VALUE ASCENT summaries over the SAME validated
+        // CFGs, inside the SAME per-file try. Independent of taint — runs for
+        // EVERY `--pdg` language (pure data-dependence, no source/sink model).
+        // Reuses the same RD fact cap the RD/taint solves use (coverage parity).
+        const callHarvest = harvestFileCallSummaries(
+          fnNodeIndex,
+          wellFormed,
+          taintLimits.maxFacts && taintLimits.maxFacts > 0
+            ? taintLimits.maxFacts
+            : DEFAULT_PDG_MAX_REACHING_DEF_FACTS_PER_FUNCTION,
+          rdSolve,
+        );
+        harvestedCallSummaries.push(...callHarvest.summaries);
+        callSummaryUnresolved += callHarvest.unresolved;
+
         // M3 (#2083 U4): taint over the SAME validated CFGs, inside the SAME
         // per-file try (a taint throw costs this file's taint layer only —
         // its CFG/REACHING_DEF edges above are already in the graph). Skipped
@@ -954,6 +1021,7 @@ export function runScopeResolution(
             taintSpec,
             taintLimits,
             (message) => logger.warn(message), // unconditional — R4/R6
+            rdSolve,
           );
           if (PROF) taintMs += performance.now() - t1;
           taintTotals.analyzed += taint.functionsAnalyzed;
@@ -987,6 +1055,7 @@ export function runScopeResolution(
               taintLimits.maxFacts && taintLimits.maxFacts > 0
                 ? taintLimits.maxFacts
                 : DEFAULT_PDG_MAX_REACHING_DEF_FACTS_PER_FUNCTION,
+              rdSolve,
             );
             harvestedSummaries.push(...harvest.summaries);
             summaryUnresolved += harvest.unresolved;
@@ -1090,6 +1159,16 @@ export function runScopeResolution(
             : ''),
       );
     }
+    // FU-C (U-C2): call-summary harvest volume + anchor-resolution diagnostics.
+    if (harvestedCallSummaries.length > 0 || callSummaryUnresolved > 0) {
+      logger.debug(
+        `[call-summary] lang=${provider.language}: ${harvestedCallSummaries.length} function ` +
+          `return-ascent summary/summaries harvested` +
+          (callSummaryUnresolved > 0
+            ? `, ${callSummaryUnresolved} CFG anchor(s) unresolved (same-line collision or missing node)`
+            : ''),
+      );
+    }
   }
 
   if (PROF) {
@@ -1120,5 +1199,6 @@ export function runScopeResolution(
     referenceSkipped: skipped,
     resolutionOutcomes,
     functionSummaries: harvestedSummaries,
+    callSummaries: harvestedCallSummaries,
   };
 }

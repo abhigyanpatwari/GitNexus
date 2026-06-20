@@ -412,12 +412,17 @@ describe('Ruby CfgVisitor — production CDG probe (plan-required)', () => {
   });
 });
 
-describe('Ruby CfgVisitor — no taint sites harvested (this unit)', () => {
-  it('statements carry NO sites key (taint substrate is a later step)', () => {
+describe('Ruby CfgVisitor — call sites ARE harvested (this unit)', () => {
+  it('statements carry a sites key for each call (see harvest.test.ts for the shapes)', () => {
     const cfg = rb.cfgOf(`def f(cmd)\n  exec(cmd)\n  x = escape(cmd)\n  use(x)\nend\n`);
-    const anySites = cfg.blocks.some((b) =>
-      (b.statements ?? []).some((s) => (s as { sites?: unknown }).sites !== undefined),
-    );
-    expect(anySites).toBe(false);
+    const callees = cfg.blocks
+      .flatMap((b) => b.statements ?? [])
+      .flatMap((s) => s.sites ?? [])
+      .filter((site) => site.kind === 'call')
+      .map((site) => site.callee);
+    // `exec`, `escape`, and `use` each open a call site (the taint substrate).
+    expect(callees).toContain('exec');
+    expect(callees).toContain('escape');
+    expect(callees).toContain('use');
   });
 });

@@ -94,6 +94,9 @@ export type NodeProperties = {
   middleware?: string[];
   // BasicBlock (taint/PDG substrate, issue #2080) — reuses filePath/startLine/endLine.
   text?: string;
+  /** BasicBlock: space-joined leaf callee names invoked in the block — the
+   *  statement-precise inter-procedural reach substrate for impact mode. */
+  callees?: string;
   // Extensible
   [key: string]: unknown;
 };
@@ -171,7 +174,20 @@ export type RelationshipType =
    *  removing it later is a breaking schema change — and it is deliberately
    *  excluded from `VALID_RELATION_TYPES` so it never enters impact-style
    *  symbol-space traversal (same posture as the taint substrate edges). */
-  | 'POST_DOMINATE';
+  | 'POST_DOMINATE'
+  /** Per-callee dependence SUMMARY edge (PDG FU-C): a self-loop on a
+   *  Function/Method/Constructor node carrying that callee's RETURN-VALUE
+   *  ASCENT — which formal-parameter indices flow to the function's return
+   *  value, encoded as a versioned bitset in the relation's existing `reason`
+   *  column (the same single-channel pattern `CFG`/`REACHING_DEF`/`CDG` use,
+   *  since the lone `CodeRelation` table has no dedicated label column). A
+   *  later consumer phase lets an interprocedural slice ascend a callee's
+   *  return effect into the caller continuation. Like the taint substrate
+   *  edges it is an internal PDG-engine edge: deliberately EXCLUDED from
+   *  `VALID_RELATION_TYPES` and the web schema so it never leaks into
+   *  callgraph-style impact/relationship surfaces. Emitted only under `--pdg`;
+   *  a default analyze emits zero. */
+  | 'CALL_SUMMARY';
 
 export interface GraphNode {
   id: string;
