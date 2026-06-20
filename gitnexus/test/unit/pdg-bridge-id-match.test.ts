@@ -64,7 +64,7 @@ describe('pdgBridgeEvidenceForImpact — U5 resolved-id match (KTD3)', () => {
 
   it('falls back to the name path when ids are absent (R3) — current behavior preserved', () => {
     const result = pdgBridgeEvidenceForImpact({
-      bridge: { sliceCalleeNames: new Set(['get']) },
+      bridge: { sliceCalleeNames: new Set(['get']), sliceCalleeIds: new Set() },
       depth: 1,
       calleeName: 'get',
     });
@@ -100,7 +100,7 @@ describe('pdgBridgeEvidenceForImpact — U5 resolved-id match (KTD3)', () => {
 
   it('multi-target dispatch: a reached id in a multi-id set is proven (R2)', () => {
     const result = pdgBridgeEvidenceForImpact({
-      bridge: { sliceCalleeIds: new Set(['idA', 'idB']) },
+      bridge: { sliceCalleeIds: new Set(['idA', 'idB']), sliceCalleeNames: new Set() },
       depth: 1,
       calleeName: 'dispatch',
       calleeId: 'idB',
@@ -114,7 +114,7 @@ describe('pdgBridgeEvidenceForImpact — U5 resolved-id match (KTD3)', () => {
   // path from the whole-symbol short-circuit.
   it('id-only slice, id IN set → proven via the id path (not whole-symbol)', () => {
     const result = pdgBridgeEvidenceForImpact({
-      bridge: { sliceCalleeIds: new Set(['idA']) }, // names absent
+      bridge: { sliceCalleeIds: new Set(['idA']), sliceCalleeNames: new Set() }, // names empty (id-only index)
       depth: 1,
       calleeName: 'get',
       calleeId: 'idA',
@@ -129,9 +129,9 @@ describe('pdgBridgeEvidenceForImpact — U5 resolved-id match (KTD3)', () => {
   it('id-only slice, id NOT in set → unproven-bridge (the over-prove bug) and does not throw', () => {
     // Before the fix this returned callgraph-bridge (over-prove): the empty-names
     // guard short-circuited before the id branch. It must now id-discriminate, and
-    // the null-guarded sentinel/name reads must not throw on absent names.
+    // the sentinel/name reads operate on an empty names set without throwing.
     const result = pdgBridgeEvidenceForImpact({
-      bridge: { sliceCalleeIds: new Set(['idA']) }, // names absent
+      bridge: { sliceCalleeIds: new Set(['idA']), sliceCalleeNames: new Set() }, // names empty (id-only index)
       depth: 1,
       calleeName: 'get',
       calleeId: 'idZ',
@@ -167,7 +167,7 @@ describe('pdgBridgeEvidenceForImpact — U5 resolved-id match (KTD3)', () => {
     expect(result).toMatchObject(inherited);
     // No inherited supplied → the documented depth>1 default, not an id verdict.
     const fallback = pdgBridgeEvidenceForImpact({
-      bridge: { sliceCalleeIds: new Set(['idA']) },
+      bridge: { sliceCalleeIds: new Set(['idA']), sliceCalleeNames: new Set() },
       depth: 2,
       calleeName: 'get',
       calleeId: 'idZ',

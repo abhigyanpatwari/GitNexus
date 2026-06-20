@@ -2120,8 +2120,14 @@ export interface PdgBridgeOptions {
    * ⇒ no statement slice to discriminate (upstream or whole-symbol) ⇒ the symbol
    * graph is used as a compatibility bridge (all callgraph-bridge), preserving
    * callgraph reach.
+   *
+   * REQUIRED (co-populated with {@link sliceCalleeIds}): `local-backend` builds
+   * the bridge by reading BOTH cells from the same slice blocks, so a missing
+   * key is an EMPTY set, never `undefined`. Keeping both non-optional is what
+   * lets the capped-block sentinel guard below read `sliceCalleeNames` directly
+   * (the cap is name-agnostic — a capped block always carries the sentinel here).
    */
-  sliceCalleeNames?: ReadonlySet<string>;
+  sliceCalleeNames: ReadonlySet<string>;
   /**
    * Resolved callee symbol ids invoked in the criterion's dependence-slice blocks
    * (`BasicBlock.calleeIds`). This is the SOUND primary key: a first-hop callee is
@@ -2129,9 +2135,10 @@ export interface PdgBridgeOptions {
    * eliminates same-leaf-name collision (false-positive) and import-alias/rename
    * (false-negative) — failure modes the name set cannot distinguish. Empty/absent
    * ⇒ no captured ids (pre-v3 index / upstream / whole-symbol) ⇒ fall back to the
-   * leaf-name match (`sliceCalleeNames`).
+   * leaf-name match (`sliceCalleeNames`). REQUIRED (co-populated with
+   * {@link sliceCalleeNames}) — an empty set means "no ids", never `undefined`.
    */
-  sliceCalleeIds?: ReadonlySet<string>;
+  sliceCalleeIds: ReadonlySet<string>;
 }
 
 export function pdgBridgeEvidenceForImpact(input: {
@@ -2158,10 +2165,7 @@ export function pdgBridgeEvidenceForImpact(input: {
   // ids present — e.g. a block whose calls resolve to ids but carry no static leaf
   // name) must fall through to the resolved-id branch, not short-circuit to
   // "prove everything". (PR #2227 tri-review-2 headline.)
-  if (
-    (!sliceCalleeNames || sliceCalleeNames.size === 0) &&
-    (!bridge.sliceCalleeIds || bridge.sliceCalleeIds.size === 0)
-  ) {
+  if (sliceCalleeNames.size === 0 && bridge.sliceCalleeIds.size === 0) {
     return {
       evidence: 'callgraph-bridge',
       basis: 'whole-symbol PDG result uses symbol graph as compatibility bridge',
@@ -2172,9 +2176,10 @@ export function pdgBridgeEvidenceForImpact(input: {
   // INCOMPLETE callee list, so absence from the set does not prove absence from
   // the slice. Keep such reach callgraph-equal rather than under-proving. (A capped
   // block always carries the sentinel in `callees`/names — the per-statement cap is
-  // name-agnostic — so checking names suffices; `?.` guards the id-only path where
-  // `sliceCalleeNames` is absent, which is never a capped block.)
-  if (sliceCalleeNames?.has(CALLEES_TRUNCATED_SENTINEL)) {
+  // name-agnostic — so checking names suffices. `sliceCalleeNames` is always
+  // present now (an id-only slice has it as an empty set, never capped), so the
+  // direct `.has` is sound.)
+  if (sliceCalleeNames.has(CALLEES_TRUNCATED_SENTINEL)) {
     return {
       evidence: 'callgraph-bridge',
       basis: 'a slice block truncated its call sites — callee set is incomplete (callee-unknown)',
@@ -2187,7 +2192,7 @@ export function pdgBridgeEvidenceForImpact(input: {
   // NOT a fall-through to the name predicate — the name path would re-leak the
   // same-name collision this key exists to eliminate.
   const sliceCalleeIds = bridge.sliceCalleeIds;
-  if (sliceCalleeIds && sliceCalleeIds.size > 0) {
+  if (sliceCalleeIds.size > 0) {
     const id = typeof calleeId === 'string' ? calleeId : '';
     if (id && sliceCalleeIds.has(id)) {
       return {
@@ -2205,7 +2210,7 @@ export function pdgBridgeEvidenceForImpact(input: {
   // R3 graceful fallback: no captured ids (pre-v3 index / upstream / whole-symbol)
   // ⇒ use the leaf-name match.
   const name = typeof calleeName === 'string' ? calleeName : '';
-  if (name && sliceCalleeNames?.has(name)) {
+  if (name && sliceCalleeNames.has(name)) {
     return {
       evidence: 'callgraph-bridge',
       basis: 'callee is invoked in a block of the local PDG dependence slice',

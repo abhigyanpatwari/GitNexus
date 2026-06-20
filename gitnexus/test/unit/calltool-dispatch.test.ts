@@ -1731,14 +1731,17 @@ describe('LocalBackend impact mode (KTD1/KTD5/KTD12)', () => {
     // list; the sentinel forces callgraph-equal so an absent-but-real callee is
     // not under-proven.
     const truncated = pdgBridgeEvidenceForImpact({
-      bridge: { sliceCalleeNames: new Set([CALLEES_TRUNCATED_SENTINEL, 'foo']) },
+      bridge: {
+        sliceCalleeNames: new Set([CALLEES_TRUNCATED_SENTINEL, 'foo']),
+        sliceCalleeIds: new Set(),
+      },
       depth: 1,
       calleeName: 'unrelatedNotInSlice',
     });
     expect(truncated.evidence).toBe('callgraph-bridge');
     // Without the sentinel, a callee not in the slice is unproven.
     const notTruncated = pdgBridgeEvidenceForImpact({
-      bridge: { sliceCalleeNames: new Set(['foo']) },
+      bridge: { sliceCalleeNames: new Set(['foo']), sliceCalleeIds: new Set() },
       depth: 1,
       calleeName: 'unrelatedNotInSlice',
     });
