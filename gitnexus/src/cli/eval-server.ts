@@ -30,6 +30,7 @@
  */
 
 import http from 'http';
+import crypto from 'node:crypto';
 import { isIPv4, isIPv6 } from 'node:net';
 import { writeSync } from 'node:fs';
 import {
@@ -695,6 +696,14 @@ export async function evalServerCommand(options?: EvalServerOptions): Promise<vo
     }, idleTimeoutSec * 1000);
   }
 
+  // Startup-generated shutdown token: a `POST /shutdown` must present it in the
+  // X-Shutdown-Token header. The local agent that launches the server reads it
+  // from the GITNEXUS_EVAL_SERVER_SHUTDOWN_TOKEN line on fd 1 (next to the READY
+  // signal); a client on another VM under `--host 0.0.0.0` cannot guess it, so it
+  // can no longer kill the server. (SIGINT/SIGTERM and the idle timeout still
+  // shut down locally without a token.)
+  const shutdownToken = crypto.randomBytes(24).toString('hex');
+
   const server = http.createServer(async (req, res) => {
     resetIdleTimer();
 
@@ -709,6 +718,12 @@ export async function evalServerCommand(options?: EvalServerOptions): Promise<vo
 
       // Shutdown
       if (req.method === 'POST' && req.url === '/shutdown') {
+        if (req.headers['x-shutdown-token'] !== shutdownToken) {
+          res.setHeader('Content-Type', 'application/json');
+          res.writeHead(403);
+          res.end(JSON.stringify({ error: 'forbidden: missing or invalid X-Shutdown-Token' }));
+          return;
+        }
         res.setHeader('Content-Type', 'application/json');
         res.writeHead(200);
         res.end(JSON.stringify({ status: 'shutting_down' }));
@@ -724,6 +739,14 @@ export async function evalServerCommand(options?: EvalServerOptions): Promise<vo
       const toolMatch = req.url?.match(/^\/tool\/(\w+)$/);
       if (req.method === 'POST' && toolMatch) {
         const toolName = toolMatch[1];
+        if (!EVAL_SERVER_TOOLS.has(toolName)) {
+          res.setHeader('Content-Type', 'text/plain');
+          res.writeHead(400);
+          res.end(
+            `Error: unsupported tool '${toolName}'. Supported: ${[...EVAL_SERVER_TOOLS].sort().join(', ')}`,
+          );
+          return;
+        }
 
         const body = await readBody(req);
         let args: Record<string, any> = {};
@@ -852,6 +875,8 @@ export async function evalServerCommand(options?: EvalServerOptions): Promise<vo
     try {
       // Use fd 1 directly — LadybugDB captures process.stdout (#324)
       writeSync(1, `GITNEXUS_EVAL_SERVER_READY:${displayHost}:${boundPort}\n`);
+      // The launching agent reads this to authorize POST /shutdown.
+      writeSync(1, `GITNEXUS_EVAL_SERVER_SHUTDOWN_TOKEN:${shutdownToken}\n`);
     } catch {
       // stdout may not be available (e.g., broken pipe)
     }
@@ -869,6 +894,21 @@ export async function evalServerCommand(options?: EvalServerOptions): Promise<vo
   process.on('SIGINT', shutdown);
   process.on('SIGTERM', shutdown);
 }
+
+/**
+ * Tools the eval-server exposes over HTTP — the read-only query surface the
+ * banner advertises. `LocalBackend.callTool` ALSO dispatches write-side / heavier
+ * tools (rename, shape_check, tool_map, …); the allowlist keeps a stray
+ * `POST /tool/<name>` from reaching those through this Docker/eval-harness server.
+ */
+export const EVAL_SERVER_TOOLS: ReadonlySet<string> = new Set([
+  'query',
+  'context',
+  'impact',
+  'cypher',
+  'detect_changes',
+  'list_repos',
+]);
 
 export const MAX_BODY_SIZE = 1024 * 1024; // 1MB
 
