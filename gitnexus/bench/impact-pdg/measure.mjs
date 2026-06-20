@@ -25,11 +25,16 @@
  *      `repo-manager.getGlobalDir()` — it roots the registry; the per-repo DB
  *      lands in `<fixtureCopy>/.gitnexus/`, so fixtures are copied to a temp
  *      working dir to keep the source tree clean);
- *   2. SHELL OUT to the real CLI as a child process:
- *        node --import tsx src/cli/index.ts analyze <copy> --pdg --skip-git --index-only
- *      (child-process isolation sidesteps `process.exit`; real `saveMeta` +
- *      `registerRepo` land in the temp home; workers spawn from `dist/`, so the
- *      harness builds `dist/` first — run `node scripts/build.js`);
+ *   2. SHELL OUT to the real CLI as a child process (see `cliChildArgs`):
+ *        node dist/cli/index.js analyze <copy> --pdg --skip-git --index-only
+ *      preferring the BUILT `dist/` CLI when present — plain JS, no tsx, and the
+ *      parse workers it spawns also load from `dist/`. The mutation workflow
+ *      builds `dist/` first (`node scripts/build.js`); `node --import tsx
+ *      src/cli/index.ts` is NOT used because Node >=22.18 native type-stripping
+ *      breaks the `.js`->`.ts` entry resolution (ERR_MODULE_NOT_FOUND on
+ *      `lazy-action.js`). Build-free runs fall back to tsx's own CLI over src.
+ *      (Child-process isolation sidesteps `process.exit`; real `saveMeta` +
+ *      `registerRepo` land in the temp home);
  *   3. `new LocalBackend(); await init()` resolves the fixture via the REAL
  *      registry (the parent process ALSO sets `GITNEXUS_HOME` so init reads the
  *      temp registry, not the user's ~/.gitnexus);
@@ -53,6 +58,7 @@ import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { spawnSync } from 'node:child_process';
+import { createRequire } from 'node:module';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import {
@@ -95,6 +101,33 @@ const REPO_ROOT = path.resolve(__dirname, '..', '..'); // gitnexus/
 const FIXTURES_DIR = path.join(__dirname, 'fixtures');
 const BASELINE_PATH = path.join(__dirname, 'baselines.json');
 const CLI_ENTRY = path.join(REPO_ROOT, 'src', 'cli', 'index.ts');
+// Shipped CLI entry (package.json `bin`). PREFERRED for the child analyze: it's
+// plain compiled JS, so the analyze process — AND the parse workers it spawns,
+// which resolve relative to the running entry — load from `dist/` with no tsx in
+// the loop. The build-free path below stays as a fallback.
+const DIST_CLI = path.join(REPO_ROOT, 'dist', 'cli', 'index.js');
+// Build-free fallback: tsx's OWN cli entry (resolved from this package), NOT
+// `node --import tsx <entry>.ts`. On Node >=22.18 native TypeScript type-
+// stripping is enabled by default and intercepts the `.ts` entry before tsx's
+// `--import` resolve hook applies; native stripping does NOT remap `./foo.js`
+// specifiers to `foo.ts` (tsx does), so `node --import tsx src/cli/index.ts`
+// crashes resolving `./lazy-action.js` (ERR_MODULE_NOT_FOUND) on newer Node.
+// The tsx CLI takes over module loading and is version-agnostic across the
+// declared engines range (node >=22.0, where `--no-experimental-strip-types`
+// is not a universally-recognized flag). Workers still spawn from src via tsx on
+// this path, so it is only robust on the older Node devs run locally.
+const TSX_CLI = createRequire(import.meta.url).resolve('tsx/cli');
+
+/**
+ * Build the argv that runs the real CLI as a child of `process.execPath`.
+ * Prefers the built `dist/` CLI (production-faithful, no tsx, dist workers) when
+ * present — this is what the mutation workflow uses (it builds dist first). Falls
+ * back to the tsx CLI over src for build-free local runs. Returns the args AFTER
+ * the node binary, i.e. ready for `spawnSync(process.execPath, [...args])`.
+ */
+function cliChildArgs(rest) {
+  return fs.existsSync(DIST_CLI) ? [DIST_CLI, ...rest] : [TSX_CLI, CLI_ENTRY, ...rest];
+}
 
 const SCOPES = ['intra', 'inter', 'mixed'];
 const MODES = ['callgraph', 'pdg'];
@@ -138,7 +171,7 @@ async function analyzeAndImpact(fx, home, { pdgOn = true } = {}) {
   fs.cpSync(path.join(fx.dir, 'src'), path.join(work, 'src'), { recursive: true });
 
   const env = { ...process.env, GITNEXUS_HOME: home };
-  const args = ['--import', 'tsx', CLI_ENTRY, 'analyze', work, '--skip-git', '--index-only'];
+  const args = cliChildArgs(['analyze', work, '--skip-git', '--index-only']);
   if (pdgOn) args.push('--pdg');
   const an = spawnSync(process.execPath, args, {
     env,
