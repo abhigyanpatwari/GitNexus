@@ -194,6 +194,7 @@ CREATE NODE TABLE Route (
   responseKeys STRING[],
   errorKeys STRING[],
   middleware STRING[],
+  method STRING,
   PRIMARY KEY (id)
 )`;
 
@@ -235,6 +236,8 @@ CREATE NODE TABLE BasicBlock (
   startLine INT64,
   endLine INT64,
   text STRING,
+  callees STRING,
+  calleeIds STRING,
   PRIMARY KEY (id)
 )`;
 

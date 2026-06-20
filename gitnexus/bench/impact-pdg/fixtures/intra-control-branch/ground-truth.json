@@ -1,0 +1,42 @@
+{
+  "schemaVersion": 1,
+  "criterion": {
+    "name": "classify",
+    "filePath": "src/branch.ts",
+    "direction": "downstream",
+    "line": 7,
+    "marker": "'zero'",
+    "pdgEdgeKinds": ["REACHING_DEF", "CDG"]
+  },
+  "locus": "intra",
+  "provenance": "manual",
+  "analyzerVersion": "1.6.7",
+  "intra_AIS": [
+    {
+      "symbol": "classify",
+      "filePath": "src/branch.ts",
+      "line": 9,
+      "note": "`return 'pos'` is control-dependent on the `x > 0` arm"
+    },
+    {
+      "symbol": "classify",
+      "filePath": "src/branch.ts",
+      "line": 10,
+      "note": "the `else if (x < 0)` predicate is itself control-dependent on the outer `x > 0` branch (it runs only on the false arm)"
+    },
+    {
+      "symbol": "classify",
+      "filePath": "src/branch.ts",
+      "line": 11,
+      "note": "`return 'neg'` is control-dependent on the `x < 0` else-if arm"
+    },
+    {
+      "symbol": "classify",
+      "filePath": "src/branch.ts",
+      "line": 13,
+      "note": "`return 'zero'` is control-dependent on the fallthrough arm"
+    }
+  ],
+  "inter_AIS": [],
+  "rationale": "criterion.line=7 — the if predicate `if (x > 0)`, the branch whose change propagates (source semantics: the predicate controls which arm runs). DOWNSTREAM CDG controller->dependent edges reach the arm returns (lines 9, 11, 13) AND the nested `else if (x < 0)` test (line 10). CORRECTION (Step-0 reconciliation): the source-derived belief was intra_AIS={9,11,13} (the three returns only), but the `else if` predicate on line 10 is ITSELF control-dependent on the outer branch — it executes only on the `x > 0` false arm — so line 10 is a genuine CDG dependent the original annotation omitted. The CFG models it as its own predicate BasicBlock (`(x < 0)`), and the slice from line 7 returns {9, 10, 11, 13} exactly. The rationale's own note already flagged line 10 as nested control flow; this corrects it from out-of-set to in-set. All dependents intra-procedural; inter_AIS empty. Exercises CDG-forward over a multi-arm branch."
+}

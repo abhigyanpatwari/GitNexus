@@ -6,6 +6,7 @@ import type { ContractExtractor, CypherExecutor } from '../contract-extractor.js
 import type { ExtractedContract, RepoHandle } from '../types.js';
 import { readSafe } from './fs-utils.js';
 import { parseSourceSafe } from '../../tree-sitter/safe-parse.js';
+import { logger } from '../../logger.js';
 import {
   getPluginForFile,
   HTTP_SCAN_GLOB,
@@ -40,13 +41,16 @@ import {
 
 // ─── Graph-assisted queries ──────────────────────────────────────────
 
-const HANDLES_ROUTE_QUERY = `
+// Exported so integration tests can run the exact production query against a
+// real LadybugDB (guards the Route.method column contract — see
+// route-method-roundtrip.test.ts).
+export const HANDLES_ROUTE_QUERY = `
 MATCH (handlerFile:File)-[r:CodeRelation {type: 'HANDLES_ROUTE'}]->(route:Route)
 RETURN handlerFile.id AS fileId, handlerFile.filePath AS filePath,
        route.name AS routePath, route.id AS routeId,
+       route.method AS routeMethod,
        route.responseKeys AS responseKeys,
        r.reason AS routeSource`;
-
 const FETCHES_QUERY = `
 MATCH (callerFile:File)-[r:CodeRelation {type: 'FETCHES'}]->(route:Route)
 RETURN callerFile.id AS fileId, callerFile.filePath AS filePath,
@@ -324,7 +328,16 @@ export class HttpRouteExtractor implements ContractExtractor {
     let rows: Record<string, unknown>[];
     try {
       rows = await db(HANDLES_ROUTE_QUERY);
-    } catch {
+    } catch (err) {
+      // A failure here silently disables the entire graph-assisted HTTP
+      // provider path (the source-scan fallback still runs and masks most
+      // of the damage), so surface it at debug level to make a total
+      // outage observable instead of invisible.
+      logger.debug(
+        `[http-route-extractor] HANDLES_ROUTE query failed; graph providers skipped: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
       return [];
     }
 
@@ -332,7 +345,14 @@ export class HttpRouteExtractor implements ContractExtractor {
       const filePath = String(row.filePath ?? '');
       const routePath = String(row.routePath ?? '');
       const routeSource = String(row.routeSource ?? row.routeReason ?? '');
-      let method = methodFromRouteReason(routeSource);
+      // Prefer the HTTP verb persisted on the Route node by the ingestion
+      // routes phase (Spring/Laravel framework routes and decorator routes
+      // carry it). Fall back to parsing it out of the edge reason for
+      // older indexes or filesystem routes that never stored a method.
+      const graphMethod = String(row.routeMethod ?? '')
+        .trim()
+        .toUpperCase();
+      let method = (graphMethod || null) ?? methodFromRouteReason(routeSource);
 
       // Look up handler name (and backfill method if missing) from the
       // plugin's scan of the handler file. This replaces the old
@@ -458,7 +478,12 @@ export class HttpRouteExtractor implements ContractExtractor {
     let rows: Record<string, unknown>[];
     try {
       rows = await db(FETCHES_QUERY);
-    } catch {
+    } catch (err) {
+      logger.debug(
+        `[http-route-extractor] FETCHES query failed; graph consumers skipped: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
       return [];
     }
     for (const row of rows) {

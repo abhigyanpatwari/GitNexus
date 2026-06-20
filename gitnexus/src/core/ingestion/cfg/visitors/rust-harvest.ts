@@ -1,11 +1,82 @@
 /**
  * Rust def/use harvester (#2195 U7) — the Rust analogue of
  * {@link import('./typescript-harvest.js').TsHarvester} and the C-family /
- * Go / Python harvesters. Like the Python harvester it harvests NO call-site
- * `sites[]` (the call-site taint substrate is a later step): it emits only the
- * per-function binding table ({@link BindingEntry}[]) plus {@link StatementFacts}
- * (defs / uses / mayDefs) via a local {@link FactAccumulator} with no site
- * machinery, so the produced facts never carry a `sites` key.
+ * Go / Python / Swift / Kotlin / Dart harvesters. Like the Swift / Kotlin / Go /
+ * Python / Dart harvesters it harvests the per-function binding table
+ * ({@link BindingEntry}[]) plus {@link StatementFacts} (defs / uses / mayDefs)
+ * AND a taint {@link import('../types.js').SiteRecord} per call (callee path,
+ * receiver, per-arg occurrence entries, result defs, and an `at` anchor) via the
+ * shared {@link CallSiteFactAccumulator} — the same site substrate the
+ * C-family / Go / TS / Kotlin / Python / Dart / Swift harvesters emit, so Rust
+ * BasicBlocks get `callees` + `calleeIds`.
+ *
+ * RUST CALL SHAPE (verified by a real parse — see the probe table below). Rust
+ * has ONE call node, `call_expression { function, arguments }`, whose `function`
+ * field takes three shapes:
+ *  1. a bare `identifier` (`foo(x)`) — a FREE call; callee path = the name.
+ *  2. a `field_expression { value, field }` (`a.method(x)`) — a METHOD call
+ *     (the `.` access). The dotted path is `a.method` (leaf `method`); the
+ *     receiver is the chain ROOT binding (`a`). Chained `a.b.c()` nests
+ *     `field_expression`s (path `a.b.c`, root `a`, mid-chain read `a.b`).
+ *  3. a `scoped_identifier { path, name }` (`Foo::bar(x)` / `a::b::c(x)`) — an
+ *     associated-fn / path call. The path is joined with `.` (NOT `::`) so the
+ *     LEAF after the last separator is the tail (`Foo::bar` ⇒ `Foo.bar` ⇒ leaf
+ *     `bar`), exactly matching the Rust CALLS query, which tags this
+ *     `@reference.call.free` with `@reference.name` = the tail `name:
+ *     (identifier)` (`bar`), and matching how {@link
+ *     import('../emit.js').calleesOfBlock} extracts the leaf via
+ *     `callee.slice(callee.lastIndexOf('.') + 1)`. The receiver is set only when
+ *     the path ROOT is a bound local (`a::b::c` with `a` a local ⇒ receiver `a`);
+ *     a type/module root (`Foo`, `crate`) is not a value binding, so no receiver.
+ *  4. a `generic_function { function, type_arguments }` (`foo::<T>(x)`) — the
+ *     turbofish form; `visitCall` unwraps the `function` field and recurses, so
+ *     `foo::<T>(x)` records the same site as `foo(x)`.
+ * A `try_expression` (`foo()?`) wraps a `call_expression` — the inner call walks
+ * normally.
+ *
+ * STRUCT LITERALS ARE HARVESTED AS `kind: 'new'` (U4). A struct-literal
+ * expression `Point { x: 1 }` is a `struct_expression { name, body }`, NOT a
+ * `call_expression`. The Rust CALLS query tags it `@reference.call.constructor`
+ * (resolving to a constructor id), so `visitStruct` opens a `kind: 'new'` site
+ * whose callee path is the struct TYPE name (`mymod::Point` ⇒ dotted `mymod.Point`
+ * ⇒ leaf `Point`, the SAME tail the `@reference.name` capture resolves) and whose
+ * `at` is the `struct_expression` start (== the broadest-span
+ * `@reference.call.constructor` anchor — verified byte-equal for plain / scoped /
+ * turbofish / scoped+turbofish forms). The `name` field shapes are
+ * `type_identifier` (`Point`), `scoped_type_identifier` (`mymod::Point`), and
+ * `generic_type_with_turbofish` (`Foo::<T>` / `mymod::Bar::<T>`); all start at the
+ * same column as the `struct_expression`, so the anchor aligns. The struct's
+ * type/module head is no value binding ⇒ no receiver. Field-init VALUES
+ * (`field_initializer` `value`, shorthand `y`, base `..rest`) walk for
+ * uses/occurrences; field NAMES are not uses.
+ *
+ * MACROS ARE NOT HARVESTED. `println!(...)` / `vec!(...)` are `macro_invocation`
+ * nodes (a `macro` ident + a `token_tree`), NOT `call_expression`s. The Rust
+ * CALLS query tags them `@reference.macro` (a DISJOINT namespace resolved via the
+ * MacroRegistry to Macro defs, never a fn of the same name) — NOT
+ * `@reference.call.*`. So no resolved callee-id is keyed at a macro's position,
+ * and opening a call site there would put a leaf (`println`) into `callees` that
+ * the resolution side never produces — a spurious, unjoinable callee. We
+ * therefore record NO site for a macro (its argument identifiers still walk for
+ * uses via the default token-tree descent), keeping `callees` aligned with the
+ * CALLS resolution.
+ *
+ * ANCHOR ALIGNMENT (plan KTD7 — load-bearing): a call site's `at` MUST be the
+ * SAME `[line (1-based), col (0-based)]` the Rust CALLS resolution keys its
+ * `atRange` on, because a downstream unit joins the two by EXACT position. The
+ * Rust scope query (captures.ts) anchors `@reference.call.free` (free + scoped),
+ * `@reference.call.member`, and `@reference.call.constructor` on the WHOLE
+ * `call_expression` node (the `@reference.name` identifier / `field_identifier`
+ * and the `@reference.receiver` are SUB-tags in `KNOWN_SUB_TAGS`, excluded by the
+ * broadest-span rule in `anchorCaptureFor`; `atRange: anchor.range` at
+ * scope-extractor.ts:1030). So for a free call `foo(x)`, a method call
+ * `a.method(x)`, a path call `Foo::bar(x)`, and a chained call `a.b.c(x)` alike,
+ * `at` is the start of the enclosing `call_expression` node — which, for a
+ * method/chained call, starts at the RECEIVER (`a`), and for a path call at the
+ * head segment (`Foo`), exactly where the CALLS anchor starts too. This is the
+ * Swift / Go / Python / Kotlin whole-call-node model, NOT the Dart callee-name
+ * model. `visitCall` receives exactly the `call_expression` node and records
+ * `[node.startPosition.row + 1, node.startPosition.column]`.
  *
  * Runs in the parse worker next to the Rust CFG visitor. Output is the binding
  * table the {@link import('../cfg-builder.js').CfgBuilder} stamps onto the CFG,
@@ -80,7 +151,7 @@
  */
 import type { SyntaxNode } from '../../utils/ast-helpers.js';
 import type { BindingEntry, StatementFacts } from '../types.js';
-import { DefUseAccumulator as FactAccumulator } from './call-site-harvest.js';
+import { CallSiteFactAccumulator as FactAccumulator, finalizeChain } from './call-site-harvest.js';
 
 /** Node types that own a nested CFG — their subtrees are opaque to harvesting. */
 const NESTED_FUNCTION_TYPES = new Set(['function_item', 'closure_expression']);
@@ -101,6 +172,13 @@ export class RustHarvester {
   private readonly fnId: number;
   /** >0 while walking a conditionally-evaluated subexpression — defs become may-defs. */
   private conditionalDepth = 0;
+  /**
+   * `call_expression` node id → binding indices its single-target result is
+   * assigned to (`let x = f()` / `x = g()` ⇒ `[x]`). Populated just before the
+   * value walk reaches the call (see {@link registerResultDefs}) and consumed by
+   * {@link visitCall}. Mirrors the Swift / Kotlin / Go / Python harvesters' map.
+   */
+  private readonly resultDefTargets = new Map<number, number[]>();
 
   constructor(private readonly fnNode: SyntaxNode) {
     this.fnId = fnNode.id;
@@ -524,6 +602,10 @@ export class RustHarvester {
         const value = node.childForFieldName('value');
         const pat = node.childForFieldName('pattern');
         const alt = node.childForFieldName('alternative'); // `let … else { … }`
+        // Register result-defs BEFORE the value walk so the call the walk reaches
+        // carries them — single plain-identifier pattern only (`let x = f()`); a
+        // destructuring `let (a, b) = …` attaches nothing (ambiguous mapping).
+        if (value && pat && pat.type === 'identifier') this.registerResultDefs(value, [pat]);
         if (value) this.walkValue(value, acc);
         if (alt) this.walkValue(alt, acc);
         if (pat) this.defPattern(pat, acc);
@@ -539,6 +621,9 @@ export class RustHarvester {
       case 'assignment_expression': {
         const left = node.childForFieldName('left');
         const right = node.childForFieldName('right');
+        // A plain `x = f(a)` attaches `resultDefs: [x]`; a field/index lvalue does
+        // not (no scalar target).
+        if (right && left && left.type === 'identifier') this.registerResultDefs(right, [left]);
         if (right) this.walkValue(right, acc);
         if (left) {
           if (left.type === 'identifier') {
@@ -575,11 +660,27 @@ export class RustHarvester {
         }
         return;
       }
+      case 'call_expression':
+        // A Rust call (`foo(a)`, `a.method(x)`, `Foo::bar(x)`, `foo::<T>(x)`).
+        // Records a taint site (callee path, receiver, per-arg occurrences, result
+        // defs) while reproducing the uses the old default descent recorded. Rust
+        // has no `new` — every site is `kind: 'call'`.
+        this.visitCall(node, acc);
+        return;
+      case 'struct_expression':
+        // A Rust struct literal (`Point { x: 1 }`, `mymod::Point { .. }`,
+        // `Foo::<T> { .. }`). The Rust CALLS query tags it
+        // `@reference.call.constructor`, so it resolves to a constructor id — we
+        // record a `kind: 'new'` site (callee = the struct type path) so that id
+        // joins into `calleeIds`. Field-init VALUES walk for uses/occurrences.
+        this.visitStruct(node, acc);
+        return;
       case 'field_expression': {
-        // `a.b` — value read of the chain root only; the field name is not a
-        // scalar binding.
-        const value = node.childForFieldName('value');
-        if (value) this.walkValue(value, acc);
+        // `a.b` value read — the chain-root identifier is a use plus at most one
+        // member-read site (the innermost access); the field name is not a scalar
+        // binding. Mirrors the Swift / Kotlin / Go value-position member-read
+        // semantics.
+        this.walkChain(node, acc, false);
         return;
       }
       default:
@@ -588,5 +689,291 @@ export class RustHarvester {
           if (c) this.walkValue(c, acc);
         }
     }
+  }
+
+  // ── taint-site harvest ───────────────────────────────────────────────────
+
+  /**
+   * When `value`'s root (after unwrapping a `try_expression`) is a
+   * `call_expression`, remember that call site should carry `resultDefs` — the
+   * binding indices of `targets` (def-position identifiers). Consumed by
+   * {@link visitCall} once the value walk reaches the node. Single-target only;
+   * the blank target (`_`) binds nothing.
+   */
+  private registerResultDefs(value: SyntaxNode, targets: readonly SyntaxNode[]): void {
+    const root = this.unwrapValue(value);
+    if (root.type !== 'call_expression') return;
+    const defs: number[] = [];
+    for (const target of targets) {
+      if (target.type !== 'identifier' || target.text === '_') continue;
+      defs.push(this.resolve(target));
+    }
+    if (defs.length > 0) this.resultDefTargets.set(root.id, defs);
+  }
+
+  /** Strip a `try_expression` (`expr?`) / `await_expression` wrapper around a value. */
+  private unwrapValue(node: SyntaxNode): SyntaxNode {
+    let n = node;
+    let hops = 4;
+    while ((n.type === 'try_expression' || n.type === 'await_expression') && hops-- > 0) {
+      const inner = n.namedChild(0);
+      if (!inner) break;
+      n = inner;
+    }
+    return n;
+  }
+
+  /**
+   * Open + populate a call site for a Rust `call_expression`. `node` IS the
+   * `call_expression` — the SAME node the scope query anchors `@reference.call.*`
+   * on (its `atRange`), so the resolved-id join lands by exact position (see file
+   * header ANCHOR ALIGNMENT). A `call_expression` is always `kind: 'call'`; struct
+   * literals (`kind: 'new'`) are harvested separately by {@link visitStruct}.
+   */
+  private visitCall(node: SyntaxNode, acc: FactAccumulator): void {
+    const calleeNode = node.childForFieldName('function');
+    const argsNode = node.childForFieldName('arguments');
+    const siteIdx = acc.openCallSite('call', [
+      node.startPosition.row + 1,
+      node.startPosition.column,
+    ]);
+    acc.pushFrame(siteIdx);
+    if (calleeNode) this.harvestCallee(calleeNode, siteIdx, acc);
+    const resultDefs = this.resultDefTargets.get(node.id);
+    if (resultDefs !== undefined) acc.setSiteResultDefs(siteIdx, resultDefs);
+    if (argsNode) {
+      let pos = 0;
+      for (let i = 0; i < argsNode.namedChildCount; i++) {
+        const arg = argsNode.namedChild(i);
+        if (!arg || arg.type === 'line_comment' || arg.type === 'block_comment') continue;
+        acc.setFrameArg(pos);
+        this.walkValue(arg, acc);
+        pos++;
+      }
+    }
+    acc.popFrame();
+  }
+
+  /**
+   * Open + populate a `kind: 'new'` site for a Rust `struct_expression`
+   * (`Point { x: 1 }`, `mymod::Point { .. }`, `Foo::<T> { .. }`). `node` IS the
+   * `struct_expression` — the SAME node the Rust scope query anchors
+   * `@reference.call.constructor` on (its `atRange`), so the resolved
+   * constructor-id join lands by exact position. The `name` field of a
+   * `struct_expression` is a `type_identifier` (`Point`), a
+   * `scoped_type_identifier` (`mymod::Point`), or a `generic_type_with_turbofish`
+   * (`Foo::<T>` / `mymod::Bar::<T>`); all three start at the SAME column as the
+   * enclosing `struct_expression` (verified by a real parse), so the broadest-span
+   * `@reference.call.constructor` anchor == the `struct_expression` start.
+   *
+   * The callee path joins the `::`-segments of the type with `.` (NOT `::`) so the
+   * LEAF after the last separator is the tail (`mymod::Point` ⇒ `mymod.Point` ⇒
+   * leaf `Point`), exactly the tail the CALLS query's `@reference.name` capture
+   * resolves and the tail {@link import('../emit.js').calleesOfBlock} extracts via
+   * `lastIndexOf('.')`. A type/module path head is never a value binding, so no
+   * receiver (mirrors {@link harvestScopedCallee}). The field-init VALUES
+   * (`field_initializer` `value`, shorthand `y`, base `..rest`) walk for
+   * uses/occurrences; field NAMES are not uses.
+   */
+  private visitStruct(node: SyntaxNode, acc: FactAccumulator): void {
+    const nameNode = node.childForFieldName('name');
+    const bodyNode = node.childForFieldName('body');
+    const siteIdx = acc.openCallSite('new', [
+      node.startPosition.row + 1,
+      node.startPosition.column,
+    ]);
+    acc.pushFrame(siteIdx);
+    const path = nameNode ? this.structTypePath(nameNode) : undefined;
+    if (path !== undefined) acc.setSiteCallee(siteIdx, path);
+    if (bodyNode) {
+      let pos = 0;
+      for (let i = 0; i < bodyNode.namedChildCount; i++) {
+        const field = bodyNode.namedChild(i);
+        if (!field) continue;
+        if (field.type === 'field_initializer') {
+          // `x: VALUE` — the field NAME is not a use; only VALUE is walked.
+          const value = field.childForFieldName('value');
+          if (value) {
+            acc.setFrameArg(pos);
+            this.walkValue(value, acc);
+            pos++;
+          }
+        } else if (field.type === 'shorthand_field_initializer') {
+          // `y` shorthand — the identifier IS a value use of the local `y`.
+          const id = field.namedChild(0);
+          if (id) {
+            acc.setFrameArg(pos);
+            this.walkValue(id, acc);
+            pos++;
+          }
+        } else if (field.type === 'base_field_initializer') {
+          // `..rest` functional-update base — `rest` is a value use.
+          const baseExpr = field.namedChild(0);
+          if (baseExpr) {
+            acc.setFrameArg(pos);
+            this.walkValue(baseExpr, acc);
+            pos++;
+          }
+        }
+      }
+    }
+    acc.popFrame();
+  }
+
+  /**
+   * Build the dotted type path of a `struct_expression`'s `name` field. The name
+   * is a `type_identifier` (`Point`), a `scoped_type_identifier`
+   * (`mymod::Point` — `path` + tail `name` type_identifier), or a
+   * `generic_type_with_turbofish` (`Foo::<T>` / `mymod::Bar::<T>` — its `type`
+   * field is a `type_identifier` or a `scoped_identifier`; the turbofish
+   * `type_arguments` are dropped). Segments join with `.` so the leaf is the type
+   * tail (matching the CALLS `@reference.name` tail capture). Returns `undefined`
+   * when no segments could be read (defensive — keeps a mis-anchored site from
+   * carrying a bogus callee).
+   */
+  private structTypePath(nameNode: SyntaxNode): string | undefined {
+    const segments: string[] = [];
+    const collect = (n: SyntaxNode): void => {
+      const t = n.type;
+      if (t === 'type_identifier' || t === 'identifier') {
+        segments.push(n.text);
+        return;
+      }
+      if (t === 'generic_type_with_turbofish') {
+        // `Foo::<T>` / `mymod::Bar::<T>` — descend the `type` field; the
+        // `type_arguments` are not part of the resolved type path.
+        const typeNode = n.childForFieldName('type');
+        if (typeNode) collect(typeNode);
+        return;
+      }
+      if (t === 'scoped_type_identifier' || t === 'scoped_identifier') {
+        // `mymod::Point` / `mymod::Bar` — head `path` then the tail `name`.
+        const pathNode = n.childForFieldName('path');
+        if (pathNode) collect(pathNode);
+        const tail = n.childForFieldName('name');
+        if (tail) collect(tail);
+        return;
+      }
+    };
+    collect(nameNode);
+    return segments.length > 0 && segments.every((s) => s !== '') ? segments.join('.') : undefined;
+  }
+
+  /**
+   * Record the callee path + receiver for a `call_expression`'s `function` node.
+   * Free `identifier` (`foo`), method `field_expression` (`a.method`, receiver
+   * root `a`), path `scoped_identifier` (`Foo::bar` ⇒ dotted `Foo.bar`, leaf
+   * `bar`), and the turbofish `generic_function` (`foo::<T>` — unwrap the
+   * `function` field and recurse). Anything else (a call-rooted chain `f()()`,
+   * a parenthesized callable) walks for uses with no static callee path.
+   */
+  private harvestCallee(calleeNode: SyntaxNode, siteIdx: number, acc: FactAccumulator): void {
+    const callee = this.unwrapValue(calleeNode);
+    if (callee.type === 'identifier') {
+      // A bare free call — the callee NAME is a statement-level use but NOT a
+      // value occurrence in any enclosing argument.
+      if (callee.text !== '_') acc.addUseWithoutOccurrence(this.resolve(callee));
+      acc.setSiteCallee(siteIdx, callee.text);
+      return;
+    }
+    if (callee.type === 'field_expression') {
+      // skipFinalRead: the final `.field` IS the callee, carried by the path.
+      const chain = this.walkChain(callee, acc, true);
+      if (chain.path !== undefined) acc.setSiteCallee(siteIdx, chain.path);
+      if (chain.rootIdx !== undefined) acc.setSiteReceiver(siteIdx, chain.rootIdx);
+      return;
+    }
+    if (callee.type === 'scoped_identifier') {
+      const scoped = this.harvestScopedCallee(callee, acc);
+      if (scoped.path !== undefined) acc.setSiteCallee(siteIdx, scoped.path);
+      if (scoped.rootIdx !== undefined) acc.setSiteReceiver(siteIdx, scoped.rootIdx);
+      return;
+    }
+    if (callee.type === 'generic_function') {
+      // `foo::<T>(x)` — the turbofish wraps the real callee in `function`.
+      const inner = callee.childForFieldName('function');
+      if (inner) this.harvestCallee(inner, siteIdx, acc);
+      else this.walkValue(callee, acc);
+      return;
+    }
+    // Call-rooted chains (`f()()`), parenthesized callables — walk for uses; no
+    // static callee path.
+    this.walkValue(callee, acc);
+  }
+
+  /**
+   * Walk a `scoped_identifier` (`Foo::bar`, `a::b::c`) callee. The `::`-segments
+   * are joined with `.` (NOT `::`) so the LEAF after the last separator is the
+   * tail (`Foo::bar` ⇒ `Foo.bar` ⇒ leaf `bar`), matching the Rust CALLS query's
+   * `@reference.name` tail capture and {@link
+   * import('../emit.js').calleesOfBlock}'s `lastIndexOf('.')` leaf rule. The
+   * receiver is set only when the head segment is a bound LOCAL (`a::b::c` with
+   * `a` a local); a type / module head (`Foo`, `crate`) is no value binding.
+   */
+  private harvestScopedCallee(
+    node: SyntaxNode,
+    acc: FactAccumulator,
+  ): { path?: string; rootIdx?: number } {
+    const segments: string[] = [];
+    let cur: SyntaxNode = node;
+    for (;;) {
+      if (cur.type === 'scoped_identifier') {
+        const name = cur.childForFieldName('name');
+        segments.unshift(name?.text ?? '');
+        const path = cur.childForFieldName('path');
+        if (!path) break;
+        cur = path;
+      } else {
+        // The head segment — a bare `identifier` (`a` / `Foo` / `crate`) or a
+        // `crate`/`self`/`super`/`metavariable` keyword node.
+        segments.unshift(cur.text);
+        break;
+      }
+    }
+    let rootIdx: number | undefined;
+    // Only a head segment that is a bound LOCAL is a receiver (taint substrate);
+    // a type / module path head launders no value.
+    if (cur.type === 'identifier' && cur.text !== '_' && this.table.has(cur.text)) {
+      rootIdx = this.resolve(cur);
+      acc.addUse(rootIdx);
+    }
+    const path = segments.every((s) => s !== '') ? segments.join('.') : undefined;
+    return { path, rootIdx };
+  }
+
+  /**
+   * `field_expression` chain walk shared by value position and callee position.
+   * Records the chain-root identifier as a use plus at most ONE member-read site
+   * — the INNERMOST access — when the root is an identifier; `skipFinalRead`
+   * suppresses it when that access is the callee (carried by the dotted path
+   * instead). Mirrors the Swift / Kotlin / Go / Python harvesters' walkChain. A
+   * non-identifier root (`self`/literal/call) launders no static path/receiver
+   * but its uses + nested sites are still walked.
+   */
+  private walkChain(
+    node: SyntaxNode,
+    acc: FactAccumulator,
+    skipFinalRead: boolean,
+  ): { path?: string; rootIdx?: number } {
+    const accesses: string[] = [];
+    let cur: SyntaxNode = node;
+    for (;;) {
+      if (cur.type === 'field_expression') {
+        const field = cur.childForFieldName('field');
+        accesses.unshift(field?.text ?? '');
+        const value = cur.childForFieldName('value');
+        if (!value) break;
+        cur = value;
+      } else {
+        break;
+      }
+    }
+    // The shared terminal: root-use record + innermost member-read + path-join.
+    // The non-identifier root (`self.x.f()`, `foo().bar`, a tuple index) walks for
+    // uses + nested sites.
+    return finalizeChain(acc, cur, accesses, skipFinalRead, (t) => t === 'identifier', {
+      resolve: (n) => this.resolve(n),
+      walkRoot: (n) => this.walkValue(n, acc),
+    });
   }
 }

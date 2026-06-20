@@ -1,0 +1,47 @@
+{
+  "schemaVersion": 1,
+  "criterion": {
+    "name": "route",
+    "filePath": "src/mixed.ts",
+    "direction": "downstream",
+    "line": 15,
+    "marker": "key === 0",
+    "pdgEdgeKinds": ["REACHING_DEF", "CDG"]
+  },
+  "locus": "mixed",
+  "provenance": "manual",
+  "analyzerVersion": "1.6.7",
+  "intra_AIS": [
+    {
+      "symbol": "route",
+      "filePath": "src/mixed.ts",
+      "line": 16,
+      "note": "the guard `if (urgent || key === 0)` is data-dependent on `key` and controls the arms"
+    },
+    {
+      "symbol": "route",
+      "filePath": "src/mixed.ts",
+      "line": 18,
+      "note": "`return fast(n)` is control-dependent on the guard's true arm"
+    },
+    {
+      "symbol": "route",
+      "filePath": "src/mixed.ts",
+      "line": 20,
+      "note": "`return slow(n)` is control-dependent on the complementary arm"
+    }
+  ],
+  "inter_AIS": [
+    {
+      "symbol": "fast",
+      "filePath": "src/mixed.ts",
+      "note": "callee on the urgent/even route; cross-function reach"
+    },
+    {
+      "symbol": "slow",
+      "filePath": "src/mixed.ts",
+      "note": "callee on the fallthrough route; cross-function reach"
+    }
+  ],
+  "rationale": "criterion.line=15 — the `key` def `const key = n % 2` (source semantics: `key` feeds the guard predicate below). Criterion `route` is mixed-locus with BOTH a guard whose predicate reads the intra def `key` (line 15 -> line 16) and control-gates both return arms (lines 18, 20), AND two cross-function reaches (fast, slow). DOWNSTREAM from line 15: intra_AIS holds the guard (16) + the two control-dependent return statements (18, 20); inter_AIS holds the two callees. Disjoint by construction (lines within `route` vs distinct symbols). Step-0 reconciliation: the statement-anchored PDG slice from line 15 returns {16, 18, 20} — an EXACT match to this source-derived intra_AIS; call-graph reaches {fast, slow} exactly. This mixed case combines control AND data dependence intra-procedurally with branching cross-function reach — the richest mixed shape, complementing the data-dominated and guard-dominated mixed cases."
+}

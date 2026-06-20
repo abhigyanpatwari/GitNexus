@@ -47,6 +47,14 @@ vi.mock('../../src/storage/repo-manager.js', async (importOriginal) => {
     listRegisteredRepos: vi.fn().mockResolvedValue([]),
     cleanupOldKuzuFiles: vi.fn().mockResolvedValue({ found: false, needsReindex: false }),
     findSiblingClones: vi.fn().mockResolvedValue([]),
+    // U2: expose loadMeta as a spy that delegates to the REAL implementation by
+    // default (so branch-scope resolution, #2106, is unaffected). The
+    // impact-mode block overrides it per-test to stamp a READY PDG layer, so the
+    // U2 layer-presence probe falls THROUGH to the post-check surface (the
+    // `_runImpactPDG` delegate / ambiguous fan-out) those tests assert. The
+    // four-state degradation contract itself is covered in
+    // test/integration/impact-pdg-degradation.test.ts.
+    loadMeta: vi.fn(actual.loadMeta),
   };
 });
 
@@ -97,7 +105,16 @@ import {
   REPO_ID_HASH_LENGTH,
   parseListReposPagination,
 } from '../../src/mcp/local/local-backend.js';
-import { listRegisteredRepos, cleanupOldKuzuFiles } from '../../src/storage/repo-manager.js';
+import {
+  betterBridgeEvidence,
+  pdgBridgeEvidenceForImpact,
+} from '../../src/mcp/local/pdg-impact.js';
+import { CALLEES_TRUNCATED_SENTINEL } from '../../src/core/ingestion/cfg/emit.js';
+import {
+  listRegisteredRepos,
+  cleanupOldKuzuFiles,
+  loadMeta,
+} from '../../src/storage/repo-manager.js';
 import { getGitRoot } from '../../src/storage/git.js';
 import { _captureLogger } from '../../src/core/logger.js';
 import {
@@ -1382,6 +1399,535 @@ describe('LocalBackend.callTool', () => {
     // explore calls context — which may return found or ambiguous depending on mock
     expect(result).toBeDefined();
     expect(result.status === 'found' || result.symbol || result.error === undefined).toBeTruthy();
+  });
+});
+
+// ─── impact mode param (KTD1/KTD5/KTD12 — U1) ───────────────────────
+//
+// The MCP JSON-schema enum is advisory only (server forwards args
+// unvalidated, callTool is reachable directly), so the backend `mode`
+// validation is load-bearing. These tests pin: callgraph is the unchanged
+// default, pdg routes to the extracted traversal plus interprocedural symbol
+// reach, invalid modes hard-error, and the remaining incompatible params /
+// @group targets are rejected.
+
+describe('LocalBackend impact mode (KTD1/KTD5/KTD12)', () => {
+  let backend: LocalBackend;
+
+  // Resolve the target to a single Function so impact reaches the single-branch
+  // dispatch (callgraph BFS or the PDG traversal). The callgraph BFS then issues
+  // executeQuery for its frontier; the PDG path delegates to runImpactPDG.
+  function resolveSingleTarget() {
+    (executeParameterized as any).mockResolvedValue([
+      { id: 'func:main', name: 'main', type: 'Function', filePath: 'src/index.ts' },
+    ]);
+    (executeQuery as any).mockResolvedValue([]);
+  }
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    platformMocks.isVectorExtensionSupportedByPlatform.mockReturnValue(true);
+    // U2: stamp a READY PDG layer (both caps) so the layer-presence probe in
+    // `_impactImpl` falls THROUGH to the mode-dispatch surface these tests pin
+    // (the `_runImpactPDG` delegate / the ambiguous fan-out under `mode:'pdg'`).
+    // Degraded-layer behavior is owned by the integration degradation suite.
+    vi.mocked(loadMeta).mockResolvedValue({
+      pdg: { maxCdgEdgesPerFunction: 0, maxReachingDefEdgesPerFunction: 0 },
+    } as any);
+    backend = new LocalBackend();
+    setupSingleRepo();
+    await backend.init();
+  });
+
+  it('mode absent → callgraph result (target populated, no mode-error, BFS runs)', async () => {
+    resolveSingleTarget();
+    const bfsSpy = vi.spyOn(backend as any, '_runImpactBFS');
+    const result = await backend.callTool('impact', { target: 'main', direction: 'upstream' });
+    // A clean callgraph result carries no mode error and runs the BFS.
+    expect(result.error ?? '').not.toMatch(/Invalid "mode"/);
+    expect(result.error ?? '').not.toMatch(/not yet implemented/);
+    expect(result.target).toBeDefined();
+    expect(bfsSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("mode:'callgraph' and mode:undefined are byte-identical to absent (regression guard)", async () => {
+    resolveSingleTarget();
+    const absent = await backend.callTool('impact', { target: 'main', direction: 'upstream' });
+    const callgraph = await backend.callTool('impact', {
+      target: 'main',
+      direction: 'upstream',
+      mode: 'callgraph',
+    });
+    const undef = await backend.callTool('impact', {
+      target: 'main',
+      direction: 'upstream',
+      mode: undefined,
+    });
+    expect(callgraph).toEqual(absent);
+    expect(undef).toEqual(absent);
+  });
+
+  it("mode:'pdg' routes to the PDG traversal and attaches interprocedural symbol reach", async () => {
+    resolveSingleTarget();
+    const bfsSpy = vi.spyOn(backend as any, '_runImpactBFS');
+    const result = await backend.callTool('impact', {
+      target: 'main',
+      direction: 'upstream',
+      mode: 'pdg',
+    });
+    // The call reaches the real `_runImpactPDG` traversal, then composes the
+    // interprocedural symbol reach into the same pdg result.
+    expect(result.error).toBeUndefined();
+    expect(result.mode).toBe('pdg');
+    expect(Array.isArray(result.reachableBlocks)).toBe(true);
+    expect(result.pdgInterprocedural).toBeDefined();
+    expect(bfsSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("mode:'pdg' labels interprocedural symbols as a callgraph bridge", async () => {
+    resolveSingleTarget();
+    vi.spyOn(backend as any, '_runImpactBFS').mockResolvedValueOnce({
+      target: { id: 'func:main', name: 'main', type: 'Function', filePath: 'src/index.ts' },
+      direction: 'downstream',
+      impactedCount: 1,
+      risk: 'LOW',
+      summary: { direct: 1, processes_affected: 0, modules_affected: 0 },
+      byDepthCounts: { 1: 1 },
+      affected_processes: [],
+      affected_modules: [],
+      byDepth: {
+        1: [
+          {
+            depth: 1,
+            id: 'func:callee',
+            name: 'callee',
+            type: 'Function',
+            filePath: 'src/callee.ts',
+          },
+        ],
+      },
+    });
+
+    const result = await backend.callTool('impact', {
+      target: 'main',
+      direction: 'downstream',
+      mode: 'pdg',
+    });
+
+    expect(result.error).toBeUndefined();
+    expect(result.mode).toBe('pdg');
+    expect(result.pdgInterprocedural.evidence).toBe('callgraph-bridge');
+    expect(result.pdgInterprocedural.evidenceCounts['callgraph-bridge']).toBe(1);
+    expect(result.pdgEvidence.interprocedural).toBe('callgraph-bridge');
+    expect(result.interproceduralByDepth[1][0].pdgEvidence).toBe('callgraph-bridge');
+    expect(result.note).toContain('labeled as a PDG evidence bridge');
+  });
+
+  it("mode:'pdg' preserves unproven bridge evidence when call-site proof is unavailable", async () => {
+    resolveSingleTarget();
+    vi.spyOn(backend as any, '_runImpactBFS').mockResolvedValueOnce({
+      target: { id: 'func:main', name: 'main', type: 'Function', filePath: 'src/index.ts' },
+      direction: 'downstream',
+      impactedCount: 1,
+      risk: 'LOW',
+      summary: { direct: 1, processes_affected: 0, modules_affected: 0 },
+      byDepthCounts: { 1: 1 },
+      affected_processes: [],
+      affected_modules: [],
+      byDepth: {
+        1: [
+          {
+            depth: 1,
+            id: 'func:callee',
+            name: 'callee',
+            type: 'Function',
+            filePath: 'src/callee.ts',
+            pdgEvidence: 'unproven-bridge',
+          },
+        ],
+      },
+    });
+
+    const result = await backend.callTool('impact', {
+      target: 'main',
+      direction: 'downstream',
+      mode: 'pdg',
+    });
+
+    expect(result.error).toBeUndefined();
+    expect(result.mode).toBe('pdg');
+    expect(result.pdgInterprocedural.evidence).toBe('unproven-bridge');
+    expect(result.pdgInterprocedural.evidenceCounts['unproven-bridge']).toBe(1);
+    expect(result.pdgEvidence.interprocedural).toBe('unproven-bridge');
+    expect(result.note).toContain('labeled unproven-bridge');
+  });
+
+  it.each([['PDG'], ['pgd'], [''], [0], [null]])(
+    'invalid mode %j → structured {error}, never a callgraph result (KTD5 anti-silent-fallback)',
+    async (bad) => {
+      resolveSingleTarget();
+      const bfsSpy = vi.spyOn(backend as any, '_runImpactBFS');
+      const result = await backend.callTool('impact', {
+        target: 'main',
+        direction: 'upstream',
+        mode: bad as any,
+      });
+      expect(result.error).toMatch(/Invalid "mode"/);
+      expect(result.risk).toBe('UNKNOWN');
+      // A typo'd mode must NEVER quietly run callgraph.
+      expect(bfsSpy).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([['callgraph'], [undefined]])(
+    'line param with mode:%j → structured {error} (line is PDG-only), never a callgraph result',
+    async (mode) => {
+      resolveSingleTarget();
+      const bfsSpy = vi.spyOn(backend as any, '_runImpactBFS');
+      const result = await backend.callTool('impact', {
+        target: 'main',
+        direction: 'upstream',
+        mode: mode as any,
+        line: 8,
+      });
+      expect(result.error).toMatch(/'line' is only supported with mode:'pdg'/);
+      expect(result.risk).toBe('UNKNOWN');
+      // A PDG-only param on the callgraph path must NOT silently run the BFS.
+      expect(bfsSpy).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([[0], [-1], [1.5]])(
+    "mode:'pdg' + non-positive-integer line %j → structured {error}, never routed to traversal",
+    async (badLine) => {
+      resolveSingleTarget();
+      const pdgSpy = vi.spyOn(backend as any, '_runImpactPDG');
+      const result = await backend.callTool('impact', {
+        target: 'main',
+        direction: 'upstream',
+        mode: 'pdg',
+        line: badLine as any,
+      });
+      expect(result.error).toMatch(/'line' must be a positive integer/);
+      expect(result.risk).toBe('UNKNOWN');
+      // The validation fires BEFORE the traversal — a bad line never seeds a slice.
+      expect(pdgSpy).not.toHaveBeenCalled();
+    },
+  );
+
+  it("mode:'pdg' + downstream line:8 routes to the PDG traversal and seeds bridge evidence", async () => {
+    resolveSingleTarget();
+    // The target-resolution row doubles as the calleesOfBlocks row: `callees`
+    // ('callee') is the leaf name persisted on the slice's BasicBlock, the
+    // statement-precise substrate the bridge keys on.
+    (executeParameterized as any).mockResolvedValue([
+      {
+        id: 'func:main',
+        name: 'main',
+        type: 'Function',
+        filePath: 'src/index.ts',
+        callees: 'callee',
+      },
+    ]);
+    // A line-seeded downstream slice with one reachable block → the dispatch
+    // queries that block's callees and seeds the bridge with them.
+    const pdgSpy = vi.spyOn(backend as any, '_runImpactPDG').mockResolvedValueOnce({
+      mode: 'pdg',
+      target: { id: 'func:main', name: 'main', type: 'Function', filePath: 'src/index.ts' },
+      direction: 'downstream',
+      risk: 'UNKNOWN',
+      impactedCount: 0,
+      epistemic: 'pdg-intra-procedural',
+      reachableBlocks: ['BasicBlock:src/index.ts:8:0:1'],
+      // Intra-only slice (no inter-procedural hop) ⇒ the intra reach the bridge
+      // keys on equals reachableBlocks (FIX 6: bridge keys on intraReachableBlocks).
+      intraReachableBlocks: ['BasicBlock:src/index.ts:8:0:1'],
+      blockCount: 1,
+      affectedStatements: [{ line: 8, filePath: 'src/index.ts', text: 'callee()' }],
+      affectedStatementCount: 1,
+      criterionLine: 8,
+    });
+    const bfsSpy = vi.spyOn(backend as any, '_runImpactBFS');
+    const result = await backend.callTool('impact', {
+      target: 'main',
+      direction: 'downstream',
+      mode: 'pdg',
+      line: 8,
+    });
+    // A valid line routes cleanly into the PDG engine — no line/mode error.
+    expect(result.error).toBeUndefined();
+    expect(result.mode).toBe('pdg');
+    expect(pdgSpy).toHaveBeenCalledTimes(1);
+    expect(bfsSpy).toHaveBeenCalledTimes(1);
+    const bridge = bfsSpy.mock.calls[0][4].pdgBridge;
+    // The bridge now carries the slice's callee names (statement-precise reach),
+    // resolved from BasicBlock.callees — not the dead call-site-line keys.
+    expect(bridge).toBeDefined();
+    expect([...bridge.sliceCalleeNames]).toContain('callee');
+    expect(result.pdgInterprocedural).toBeDefined();
+  });
+
+  it("mode:'pdg' downstream: a callee invoked ON the seeded line is proven even with no downstream dependents", async () => {
+    // Regression for the PR #2227 tri-review P2: the seed block is excluded from
+    // `reachableBlocks` (seed-minus-reachable convention), so a callee called
+    // directly on the changed line — with NO downstream-dependent block — used to
+    // be dropped from the statement-precise set. The dispatch now unions the seed
+    // block's callees, so it must be proven.
+    resolveSingleTarget();
+    (executeParameterized as any).mockResolvedValue([
+      {
+        id: 'func:main',
+        name: 'main',
+        type: 'Function',
+        filePath: 'src/index.ts',
+        callees: 'seedCallee',
+      },
+    ]);
+    // reachableBlocks EMPTY (line N has no downstream dependents) but seedBlocks
+    // carries the changed line's own block — the case that regressed.
+    vi.spyOn(backend as any, '_runImpactPDG').mockResolvedValueOnce({
+      mode: 'pdg',
+      target: { id: 'func:main', name: 'main', type: 'Function', filePath: 'src/index.ts' },
+      direction: 'downstream',
+      risk: 'UNKNOWN',
+      impactedCount: 0,
+      epistemic: 'pdg-intra-procedural',
+      reachableBlocks: [],
+      intraReachableBlocks: [],
+      seedBlocks: ['BasicBlock:src/index.ts:8:0:0'],
+      blockCount: 0,
+      affectedStatements: [],
+      affectedStatementCount: 0,
+      criterionLine: 8,
+    });
+    const bfsSpy = vi.spyOn(backend as any, '_runImpactBFS');
+    await backend.callTool('impact', {
+      target: 'main',
+      direction: 'downstream',
+      mode: 'pdg',
+      line: 8,
+    });
+    const bridge = bfsSpy.mock.calls[0][4].pdgBridge;
+    // The bridge is seeded from the seed block (not just reachableBlocks), so the
+    // seed-line callee is provable.
+    expect(bridge).toBeDefined();
+    expect([...bridge.sliceCalleeNames]).toContain('seedCallee');
+  });
+
+  it('betterBridgeEvidence keeps callgraph-bridge regardless of parent order (U3 order-independence)', () => {
+    const proven = { evidence: 'callgraph-bridge' as const, basis: 'in slice' };
+    const unproven = { evidence: 'unproven-bridge' as const, basis: 'not in slice' };
+    // A node reached from a proven and an unproven parent is proven either way —
+    // the diamond label does not depend on which edge the BFS visits first.
+    expect(betterBridgeEvidence(unproven, proven).evidence).toBe('callgraph-bridge');
+    expect(betterBridgeEvidence(proven, unproven).evidence).toBe('callgraph-bridge');
+    // First verdict wins when neither is stronger; undefined existing takes the candidate.
+    expect(betterBridgeEvidence(undefined, unproven).evidence).toBe('unproven-bridge');
+    expect(betterBridgeEvidence(unproven, unproven).evidence).toBe('unproven-bridge');
+  });
+
+  it('pdgBridgeEvidenceForImpact treats a truncated-slice (sentinel) as callee-unknown → proven', () => {
+    // A slice block that hit the per-statement site cap has an incomplete callee
+    // list; the sentinel forces callgraph-equal so an absent-but-real callee is
+    // not under-proven.
+    const truncated = pdgBridgeEvidenceForImpact({
+      bridge: {
+        sliceCalleeNames: new Set([CALLEES_TRUNCATED_SENTINEL, 'foo']),
+        sliceCalleeIds: new Set(),
+      },
+      depth: 1,
+      calleeName: 'unrelatedNotInSlice',
+    });
+    expect(truncated.evidence).toBe('callgraph-bridge');
+    // Without the sentinel, a callee not in the slice is unproven.
+    const notTruncated = pdgBridgeEvidenceForImpact({
+      bridge: { sliceCalleeNames: new Set(['foo']), sliceCalleeIds: new Set() },
+      depth: 1,
+      calleeName: 'unrelatedNotInSlice',
+    });
+    expect(notTruncated.evidence).toBe('unproven-bridge');
+  });
+
+  it("mode:'pdg' degrades gracefully when the slice-callees query fails (no bridge, no throw)", async () => {
+    // calleesOfBlocks swallows a DB error and returns an empty set, so the bridge
+    // is not built and the inter-procedural reach falls back to callgraph-equal —
+    // never surfacing the error or producing a partial proven/unproven labeling.
+    resolveSingleTarget();
+    // The slice-callees query (RETURN b.callees) throws; every other query (target
+    // resolution) returns the resolved symbol row.
+    vi.mocked(executeParameterized).mockImplementation(async (_repo, query) => {
+      if (query.includes('RETURN b.callees')) throw new Error('slice-callees query failed');
+      return [{ id: 'func:main', name: 'main', type: 'Function', filePath: 'src/index.ts' }];
+    });
+    // A line-seeded downstream slice so calleesOfBlocks is attempted.
+    vi.spyOn(backend as any, '_runImpactPDG').mockResolvedValueOnce({
+      mode: 'pdg',
+      target: { id: 'func:main', name: 'main', type: 'Function', filePath: 'src/index.ts' },
+      direction: 'downstream',
+      risk: 'UNKNOWN',
+      impactedCount: 0,
+      epistemic: 'pdg-intra-procedural',
+      reachableBlocks: ['BasicBlock:src/index.ts:8:0:1'],
+      intraReachableBlocks: ['BasicBlock:src/index.ts:8:0:1'],
+      seedBlocks: ['BasicBlock:src/index.ts:8:0:0'],
+      blockCount: 1,
+      affectedStatements: [{ line: 8, filePath: 'src/index.ts', text: 'callee()' }],
+      affectedStatementCount: 1,
+      criterionLine: 8,
+    });
+    const bfsSpy = vi.spyOn(backend as any, '_runImpactBFS');
+    const result = await backend.callTool('impact', {
+      target: 'main',
+      direction: 'downstream',
+      mode: 'pdg',
+      line: 8,
+    });
+    // The error was swallowed: no bridge passed to the BFS, and no error surfaced.
+    expect(result.error).toBeUndefined();
+    expect(bfsSpy.mock.calls[0][4].pdgBridge).toBeUndefined();
+  });
+
+  it("mode:'pdg' + crossDepth → hard {error} (single-repo PDG impact)", async () => {
+    resolveSingleTarget();
+    const bfsSpy = vi.spyOn(backend as any, '_runImpactBFS');
+    const result = await backend.callTool('impact', {
+      target: 'main',
+      direction: 'upstream',
+      mode: 'pdg',
+      crossDepth: 2,
+    });
+    expect(result.error).toMatch(/not supported with mode:'pdg'/);
+    expect(result.error).toContain('crossDepth');
+    expect(bfsSpy).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['relationTypes', { relationTypes: ['CALLS'] }, (opts: any) => opts.relationTypes],
+    ['minConfidence', { minConfidence: 0.5 }, (opts: any) => opts.minConfidence],
+  ])("mode:'pdg' + %s feeds the interprocedural symbol reach", async (_label, extra, readOpt) => {
+    resolveSingleTarget();
+    const bfsSpy = vi.spyOn(backend as any, '_runImpactBFS').mockResolvedValueOnce({
+      target: { id: 'func:main', name: 'main', type: 'Function', filePath: 'src/index.ts' },
+      direction: 'upstream',
+      impactedCount: 0,
+      risk: 'LOW',
+      summary: { direct: 0, processes_affected: 0, modules_affected: 0 },
+      byDepthCounts: {},
+      affected_processes: [],
+      affected_modules: [],
+      byDepth: {},
+    });
+    const result = await backend.callTool('impact', {
+      target: 'main',
+      direction: 'upstream',
+      mode: 'pdg',
+      ...extra,
+    });
+    expect(result.error).toBeUndefined();
+    expect(result.mode).toBe('pdg');
+    expect(bfsSpy).toHaveBeenCalledTimes(1);
+    expect(readOpt(bfsSpy.mock.calls[0][4])).toBeDefined();
+  });
+
+  it("ambiguous target under mode:'pdg' never invokes interprocedural fan-out (KTD5 ambiguous trap)", async () => {
+    // Two same-name Functions → resolver returns ambiguous.
+    (executeParameterized as any).mockResolvedValue([
+      {
+        id: 'func:login:1',
+        name: 'login',
+        type: 'Function',
+        filePath: 'src/auth.ts',
+        startLine: 5,
+      },
+      {
+        id: 'func:login:2',
+        name: 'login',
+        type: 'Function',
+        filePath: 'src/admin/login.ts',
+        startLine: 8,
+      },
+    ]);
+    const bfsSpy = vi.spyOn(backend as any, '_runImpactBFS');
+    const result = await backend.callTool('impact', {
+      target: 'login',
+      direction: 'upstream',
+      mode: 'pdg',
+    });
+    expect(result.status).toBe('ambiguous');
+    expect(result.mode).toBe('pdg');
+    expect(result.candidates).toHaveLength(2);
+    expect(result.impactedCount).toBe(0);
+    expect(result.risk).toBe('UNKNOWN');
+    // The callgraph per-candidate probe fan-out MUST NOT run under pdg.
+    expect(bfsSpy).not.toHaveBeenCalled();
+    // No per-candidate blast radius is computed yet (U4), so the candidate
+    // entries carry no impactedCount field from a callgraph probe.
+    for (const c of result.candidates) {
+      expect(c.impactedCount).toBeUndefined();
+    }
+  });
+
+  it("unknown target with mode:'pdg' returns the normalized PDG error envelope", async () => {
+    (executeParameterized as any).mockResolvedValue([]);
+    const result = await backend.callTool('impact', {
+      target: 'missingSymbol',
+      direction: 'upstream',
+      mode: 'pdg',
+    });
+    expect(result.error).toMatch(/not found/);
+    expect(result.mode).toBe('pdg');
+    expect(result.target).toEqual({ name: 'missingSymbol' });
+    expect(result.direction).toBe('upstream');
+    expect(result.impactedCount).toBe(0);
+    expect(result.risk).toBe('UNKNOWN');
+  });
+
+  it("runtime failures with mode:'pdg' return the normalized PDG error envelope", async () => {
+    const failing = new Error('pdg query failed');
+    const implSpy = vi.spyOn(backend as any, '_impactImpl').mockRejectedValueOnce(failing);
+    const result = await backend.callTool('impact', {
+      target: 'main',
+      direction: 'downstream',
+      mode: 'pdg',
+    });
+    expect(result.error).toBe('pdg query failed');
+    expect(result.mode).toBe('pdg');
+    expect(result.target).toEqual({ name: 'main' });
+    expect(result.direction).toBe('downstream');
+    expect(result.impactedCount).toBe(0);
+    expect(result.risk).toBe('UNKNOWN');
+    expect(result.suggestion).toMatch(/context/);
+    implSpy.mockRestore();
+  });
+
+  it("@group target with mode:'pdg' is rejected (KTD12 — PDG is single-repo)", async () => {
+    resolveAtMemberMock.mockResolvedValue({ ok: true, repoPath: '/tmp/test-project' });
+    const result = await backend.callTool('impact', {
+      target: 'main',
+      direction: 'upstream',
+      mode: 'pdg',
+      repo: '@grp',
+    });
+    expect(result.error).toMatch(/not supported for @group targets/);
+    expect(result.mode).toBe('pdg');
+    expect(result.target).toEqual({ name: 'main' });
+    expect(result.direction).toBe('upstream');
+    expect(result.impactedCount).toBe(0);
+    expect(result.risk).toBe('UNKNOWN');
+  });
+
+  it("@group target with mode:'callgraph' still forwards to group impact (unchanged)", async () => {
+    resolveAtMemberMock.mockResolvedValue({ ok: true, repoPath: '/tmp/test-project' });
+    // groupImpact is reached only if the mode gate passes; we don't assert its
+    // payload (group infra is stubbed), only that no mode-error short-circuited.
+    const result = await backend.callTool('impact', {
+      target: 'main',
+      direction: 'upstream',
+      mode: 'callgraph',
+      repo: '@grp',
+    });
+    expect(result?.error ?? '').not.toMatch(/not supported for @group targets/);
+    expect(result?.error ?? '').not.toMatch(/Invalid "mode"/);
   });
 });
 

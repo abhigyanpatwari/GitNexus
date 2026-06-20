@@ -20,7 +20,7 @@
  */
 import type { KnowledgeGraph } from '../../graph/types.js';
 import { generateId } from '../../../lib/utils.js';
-import { computeReachingDefs } from './reaching-defs.js';
+import { computeReachingDefs, type ReachingDefsSolver } from './reaching-defs.js';
 import { computeControlDependence } from './control-dependence.js';
 import {
   computePostDominators,
@@ -28,7 +28,37 @@ import {
   NO_IPDOM,
 } from './post-dominators.js';
 import { augmentForPostDom } from './synthetic-escape.js';
-import type { BindingEntry, FunctionCfg } from './types.js';
+import { DEFAULT_PDG_MAX_SITES_PER_STATEMENT } from './visitors/call-site-harvest.js';
+import { calleeIdPosKey } from '../scope-resolution/graph-bridge/callee-id-sink.js';
+import { encodeReachingDefReasonPairs } from './reaching-def-reason-codec.js';
+import type { BasicBlockData, BindingEntry, FunctionCfg } from './types.js';
+
+/**
+ * Reserved token placed in `BasicBlock.callees` when a statement's call sites
+ * were truncated at {@link DEFAULT_PDG_MAX_SITES_PER_STATEMENT}: the recorded
+ * callee list is then INCOMPLETE, so over-cap callees are absent. `*` is not a
+ * valid identifier leaf, so it cannot collide with a real callee name. The
+ * impact bridge treats a slice containing this sentinel as "callees unknown" and
+ * keeps reach callgraph-equal (proven), rather than falsely labeling an
+ * absent-but-real callee `unproven-bridge`.
+ */
+export const CALLEES_TRUNCATED_SENTINEL = '*';
+
+/**
+ * Inner separator for the `BasicBlock.calleeIds` cell (resolved callee symbol
+ * ids). A TAB is used — NOT a space — because resolved ids embed `filePath` and
+ * C++ overload shape tags with multi-word primitive types (e.g. `unsigned char`,
+ * `long double`), so an id can legitimately contain a space; a space-joined cell
+ * then fragments on read and silently drops inter-procedural reach to that
+ * callee (#2227 tri-review). A tab cannot appear in a tree-sitter-derived id
+ * token (paths/identifiers/type tokens are tab-free) and round-trips intact
+ * through `escapeCSVField` (tab is in its preserved set) and the RFC-4180 COPY
+ * reader (every cell is quoted). Producer ({@link calleeIdsOfBlock}) and
+ * consumer (`splitCalleeIds`) import this single constant so they cannot drift.
+ * The sibling `callees` (leaf-name) cell stays space-joined — leaf names are
+ * bare identifiers and never contain a space.
+ */
+export const CALLEE_ID_SEP = '\t';
 
 /**
  * Default per-function CFG edge cap. A pathological generated function could
@@ -255,11 +285,94 @@ export const hasEmitSafeFacts = (cfg: FunctionCfg): boolean => {
  * no silent truncation (KTD6/R6). Block nodes are always fully emitted (their
  * count is bounded by the function's statement count); only edges are capped.
  */
+/**
+ * Space-joined, sorted, de-duplicated leaf callee names invoked directly in a
+ * block (`call`/`new` sites; the leaf of a dotted path — `child_process.exec` ⇒
+ * `exec`). This is the persisted substrate for statement-precise inter-procedural
+ * impact: a callee reached from a function is "proven" to be impacted by a
+ * changed statement iff its name appears in the callees of a block in that
+ * statement's dependence slice. `sites` is harvested only for TS/JS under `--pdg`
+ * (and absent on synthetic ENTRY/EXIT), so the field is empty elsewhere and the
+ * bridge degrades to the prior (callgraph-equal) behavior. Space-joined because
+ * leaf names are identifiers (no spaces) and the field is itself one CSV cell.
+ */
+export function calleesOfBlock(block: BasicBlockData): string {
+  const names = new Set<string>();
+  for (const stmt of block.statements ?? []) {
+    // A statement whose recorded sites reached the per-statement cap may have
+    // dropped over-cap callees (the harvester stops at the cap). Flag the block
+    // callee-unknown so the impact bridge keeps it callgraph-equal rather than
+    // under-proving an absent-but-real callee.
+    if ((stmt.sites?.length ?? 0) >= DEFAULT_PDG_MAX_SITES_PER_STATEMENT) {
+      names.add(CALLEES_TRUNCATED_SENTINEL);
+    }
+    for (const site of stmt.sites ?? []) {
+      if (site.kind === 'member-read') continue;
+      const callee = site.callee;
+      if (!callee) continue;
+      const leaf = callee.slice(callee.lastIndexOf('.') + 1);
+      if (leaf) names.add(leaf);
+    }
+  }
+  return [...names].sort().join(' ');
+}
+
+/**
+ * Tab-joined ({@link CALLEE_ID_SEP}), sorted, de-duplicated RESOLVED callee symbol ids invoked
+ * directly in a block — the SOUND parallel to {@link calleesOfBlock}'s leaf
+ * names (#2227 follow-up plan U3, KTD1/KTD2/KTD7). Each block site's call-site
+ * anchor `at` (U1) is joined by EXACT position to the per-file resolved-id map
+ * `fileMap` (U2's `(line,col) → Set<calleeId>`), so a callee reached from a
+ * function is proven impacted by a changed statement iff its resolved id — not
+ * just its leaf NAME — appears in a slice block's `calleeIds`. This eliminates
+ * the same-leaf-name collision (false-proven) and import-alias (false-unproven)
+ * the name predicate suffers on overloading languages.
+ *
+ * The site partitioning is inherited verbatim from {@link calleesOfBlock}: the
+ * SAME `member-read`-skip and the SAME per-statement site cap (R7) — a capped
+ * statement adds {@link CALLEES_TRUNCATED_SENTINEL} so the bridge keeps the
+ * block callee-unknown for ids too (callgraph-equal rather than under-proving).
+ * Because `at` is the SAME anchor the CALLS resolution keyed `atRange` on
+ * (KTD7), the join lands on exactly the sites the name harvest partitioned,
+ * including the nested-function exclusion (so a single-line inline closure's
+ * inner call never leaks its id into the outer block).
+ *
+ * `fileMap` is the resolved-id map for THIS file (`calleeIdAccumulator.get(
+ * filePath)` in run.ts). Absent (pdg off, or a file with no captured CALLS) ⇒
+ * `''` — the bridge then degrades to the leaf-name fallback (R3). A site whose
+ * `at` is absent (pre-U1 channel) or whose position is not in the map
+ * contributes no id (graceful, never throws).
+ */
+export function calleeIdsOfBlock(
+  block: BasicBlockData,
+  fileMap: ReadonlyMap<string, ReadonlySet<string>> | undefined,
+): string {
+  if (fileMap === undefined) return '';
+  const ids = new Set<string>();
+  for (const stmt of block.statements ?? []) {
+    // Mirror calleesOfBlock's cap signal: an over-cap statement dropped sites,
+    // so the id list is INCOMPLETE — flag the block callee-unknown (R7).
+    if ((stmt.sites?.length ?? 0) >= DEFAULT_PDG_MAX_SITES_PER_STATEMENT) {
+      ids.add(CALLEES_TRUNCATED_SENTINEL);
+    }
+    for (const site of stmt.sites ?? []) {
+      if (site.kind === 'member-read') continue;
+      const at = site.at;
+      if (!at) continue;
+      const resolved = fileMap.get(calleeIdPosKey(at[0], at[1]));
+      if (resolved === undefined) continue;
+      for (const id of resolved) ids.add(id);
+    }
+  }
+  return [...ids].sort().join(CALLEE_ID_SEP);
+}
+
 export function emitFileCfgs(
   graph: KnowledgeGraph,
   cfgs: readonly FunctionCfg[],
   maxEdgesPerFunction: number = DEFAULT_MAX_CFG_EDGES_PER_FUNCTION,
   onWarn?: (message: string) => void,
+  calleeIdMap?: ReadonlyMap<string, ReadonlySet<string>>,
 ): CfgEmitResult {
   const result: CfgEmitResult = { blocks: 0, edges: 0, droppedEdges: 0, cappedFunctions: 0 };
   const cap = maxEdgesPerFunction > 0 ? maxEdgesPerFunction : Infinity;
@@ -277,6 +390,16 @@ export function emitFileCfgs(
           startLine: b.startLine,
           endLine: b.endLine,
           text: b.text,
+          // Space-joined leaf callee names invoked in this block — the
+          // statement-precise inter-procedural reach substrate. Harvested from
+          // the per-statement `sites` (already on the side channel); dropping
+          // them here is what made the impact-mode bridge labeling degenerate.
+          callees: calleesOfBlock(b),
+          // Space-joined RESOLVED callee symbol ids — the SOUND parallel to
+          // `callees`, joined from the U2 map by each site's exact `at`
+          // position (#2227 follow-up U3). Absent map (pdg off / no captures)
+          // ⇒ `''`, and the bridge falls back to the leaf-name match (R3).
+          calleeIds: calleeIdsOfBlock(b, calleeIdMap),
         },
       });
       result.blocks++;
@@ -361,6 +484,11 @@ export function emitFileReachingDefs(
   cfgs: readonly FunctionCfg[],
   maxEdgesPerFunction: number = DEFAULT_PDG_MAX_REACHING_DEF_EDGES_PER_FUNCTION,
   onWarn?: (message: string) => void,
+  // U12: a per-file memoized solver lets the RD-emit / harvest / taint passes
+  // share the SAME per-function fixpoint (this caller is its own cache bucket —
+  // it passes maxBlockVisits, the harvest/taint callers do not). Defaults to the
+  // plain solver so existing callers are unaffected.
+  solve: ReachingDefsSolver = computeReachingDefs,
 ): ReachingDefEmitResult {
   const result: ReachingDefEmitResult = {
     edges: 0,
@@ -385,7 +513,7 @@ export function emitFileReachingDefs(
       );
       continue;
     }
-    const r = computeReachingDefs(cfg, {
+    const r = solve(cfg, {
       maxFacts,
       maxBlockVisits: cfg.blocks.length * DEFAULT_PDG_MAX_REACHING_DEF_BLOCK_REVISITS,
     });
@@ -412,18 +540,47 @@ export function emitFileReachingDefs(
     }
 
     // Dedup to (defBlock, useBlock, binding) — facts arrive sorted, so the
-    // deduped order (and therefore cap truncation) is deterministic.
-    const seen = new Set<string>();
-    const deduped: { defBlock: number; useBlock: number; bindingIdx: number }[] = [];
+    // deduped order (and therefore cap truncation) is deterministic. ONE edge per
+    // group (the edge COUNT is unchanged — substrate/bench safe), but the FU-B-2
+    // annotation AGGREGATES the FULL ordered list of (defLine, useLine) pairs for
+    // that group into the persisted `reason`. The first fact of a group (facts
+    // sort by def block, def stmt, use block, use stmt, binding) keeps the group's
+    // emit position; every subsequent fact of the SAME (block-pair, binding)
+    // appends its line pair to that group's list. Carrying the full list (not just
+    // the first pair) is what makes a SAME-BINDING reassignment chain recoverable:
+    // `acc = f(acc); acc = g(acc)` coalesces into one self-block whose
+    // `acc@N->acc@N+1` and `acc@N+1->acc@N+2` steps share the one group — a
+    // first-pair-only annotation could chain N->N+1 but never reach N+2. Dedup of
+    // exact-duplicate pairs within a group keeps the list compact (a `x = x + 1`
+    // self-fact never re-adds the same pair).
+    const groupIndex = new Map<string, number>();
+    const deduped: {
+      defBlock: number;
+      useBlock: number;
+      bindingIdx: number;
+      pairs: { defLine: number; useLine: number }[];
+    }[] = [];
     for (const f of r.facts) {
       const key = `${f.def.blockIndex}:${f.use.blockIndex}:${f.bindingIdx}`;
-      if (seen.has(key)) continue;
-      seen.add(key);
-      deduped.push({
-        defBlock: f.def.blockIndex,
-        useBlock: f.use.blockIndex,
-        bindingIdx: f.bindingIdx,
-      });
+      const at = groupIndex.get(key);
+      const pair = { defLine: f.def.line, useLine: f.use.line };
+      if (at === undefined) {
+        groupIndex.set(key, deduped.length);
+        deduped.push({
+          defBlock: f.def.blockIndex,
+          useBlock: f.use.blockIndex,
+          bindingIdx: f.bindingIdx,
+          pairs: [pair],
+        });
+        continue;
+      }
+      const list = deduped[at].pairs;
+      // Skip an exact-duplicate (defLine, useLine) — a self-referential statement
+      // (`x = x + 1`) emits the same line pair more than once; the list only needs
+      // each distinct step once for the projection walk.
+      if (!list.some((p) => p.defLine === pair.defLine && p.useLine === pair.useLine)) {
+        list.push(pair);
+      }
     }
 
     let emittedForFn = 0;
@@ -476,7 +633,16 @@ export function emitFileReachingDefs(
         sourceId,
         targetId,
         confidence: 1.0,
-        reason: binding.name, // plain source-level name (M0/S1 verdict) — queryable
+        // FU-B-2: the source-level binding name (M0/S1 verdict — name FIRST so
+        // `pdg_query` flows stays queryable) PLUS a compact versioned annotation
+        // carrying the FULL ordered list of def/use source LINE pairs for this
+        // (block-pair, binding) group. For a self-edge (defBlock === useBlock)
+        // this captures the intra-block def@L→use@L' chain — including a
+        // SAME-BINDING reassignment chain (`acc@24->acc@25->acc@26`) — that the
+        // block-granular projection lost; the statement projection (pdg-impact.ts)
+        // walks the list forward to fixpoint to recover the coalesced block's
+        // interior statements.
+        reason: encodeReachingDefReasonPairs(binding.name, edge.pairs),
       });
       result.edges++;
       emittedForFn++;

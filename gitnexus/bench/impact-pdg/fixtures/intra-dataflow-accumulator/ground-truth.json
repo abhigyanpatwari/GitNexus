@@ -1,0 +1,30 @@
+{
+  "schemaVersion": 1,
+  "criterion": {
+    "name": "total",
+    "filePath": "src/accumulator.ts",
+    "direction": "downstream",
+    "line": 8,
+    "marker": "sum + x",
+    "pdgEdgeKinds": ["REACHING_DEF", "CDG"]
+  },
+  "locus": "intra",
+  "provenance": "manual",
+  "analyzerVersion": "1.6.7",
+  "intra_AIS": [
+    {
+      "symbol": "total",
+      "filePath": "src/accumulator.ts",
+      "line": 10,
+      "note": "for-loop body re-defines/uses `sum`: data-dependent on the initial def"
+    },
+    {
+      "symbol": "total",
+      "filePath": "src/accumulator.ts",
+      "line": 12,
+      "note": "return reads the accumulated `sum`: data-dependent on every prior def"
+    }
+  ],
+  "inter_AIS": [],
+  "rationale": "criterion.line=8 — the `sum` definition `let sum = 0`, the statement whose change propagates (chosen from source semantics: `sum` is the loop-carried accumulator). DOWNSTREAM from line 8, the REACHING_DEF def->use edges reach the in-loop redefinition/use (line 10) and the final return's use (line 12). These two lines are the only truly-affected statements and they are all WITHIN `total` — so intra_AIS is exactly {line 10, line 12}; inter_AIS is empty (the function calls nothing). Step-0 reconciliation: the statement-anchored PDG slice from line 8 returns exactly {10, 12} — an EXACT match to this source-derived annotation (no correction needed). The call-graph mode only knows `total` exists and has no inbound edges, so it reports the empty cross-function set; PDG resolves the precise dependent statements the call-graph cannot express below function granularity."
+}

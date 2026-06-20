@@ -83,6 +83,26 @@ describe('U7 — end-to-end --pdg pipeline', () => {
     }
   }, 60000);
 
+  // #2227 tri-review-2 R3: the regression guard the stale-parse-cache emptiness
+  // needed. The bridge unit tests used SYNTHETIC capture maps, so the real
+  // worker→capture→position-join→BasicBlock.calleeIds path was never exercised
+  // end-to-end and a stale-cache emptiness shipped undetected. This asserts a
+  // REAL --pdg run populates calleeIds for the fixture's in-repo call sites
+  // (read from the in-memory graph; the join runs main-thread in scope-resolution).
+  it('with --pdg on: populates BasicBlock.calleeIds from the real pipeline (R3)', async () => {
+    const result = await runPipelineFromRepo(freshRepo(), () => {}, { pdg: true });
+    const nonEmptyCalleeIds: string[] = [];
+    result.graph.forEachNode((n) => {
+      if (n.label !== 'BasicBlock') return;
+      const v = n.properties.calleeIds;
+      if (typeof v === 'string' && v.length > 0) nonEmptyCalleeIds.push(v);
+    });
+    // The fixture has in-repo calls whose resolved ids join into calleeIds; a real
+    // --pdg run must populate at least one (synthetic-map unit tests cannot catch
+    // a join/capture/cache regression that empties this column).
+    expect(nonEmptyCalleeIds.length).toBeGreaterThan(0);
+  }, 60000);
+
   // M3 (#2083 U4/U7): the taint layer rides the same gate. The fixture's
   // vuln.ts carries one vulnerable flow (req.body → child_process.exec) and
   // one sanitized variant (encodeURIComponent before res.send); taint-cases.ts

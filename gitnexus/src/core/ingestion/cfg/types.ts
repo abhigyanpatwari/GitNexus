@@ -40,6 +40,20 @@ export interface BindingEntry {
    * `name@module` in edge ids instead of `name:line:col`.
    */
   readonly synthetic?: boolean;
+  /**
+   * For `kind: 'param'` bindings only: the 0-based ENCLOSING TOP-LEVEL FORMAL
+   * position this binding belongs to — the index a call site's argument position
+   * joins against (PDG FU-C). For a simple identifier formal this equals the
+   * param's ordinal; for a DESTRUCTURED/REST formal every inner name carries the
+   * SAME formal index (`function f({a, b}, c)` ⇒ a:0, b:0, c:1), so a downstream
+   * positional consumer never mistakes the destructured-object formal for a later
+   * simple formal. Set by the per-language `declareParams`; OMITTED when the
+   * producer does not (yet) supply it — a consumer that needs a sound formal
+   * position MUST treat a param binding without `formalIndex` as unknown and fall
+   * back conservatively (never attribute a flattened ordinal to a formal slot).
+   * Omit-when-absent (pre-upgrade durable channels stay valid; JSON-plain).
+   */
+  readonly formalIndex?: number;
 }
 
 /**
@@ -126,6 +140,35 @@ export interface SiteRecord {
    * included; dynamic `req[key]` is never recorded — documented KTD10 FN).
    */
   readonly property?: string;
+  /**
+   * Call-site anchor source position `[line (1-based), column (0-based)]` for
+   * call/new sites only — member-read sites omit it (the resolved-id join only
+   * consumes call/new). Recorded by the harvester at the call/new node where it
+   * reads the callee, so the later resolved-callee-id join inherits this
+   * harvester's exact (nested-function-excluded — see line 150) site
+   * partitioning (#2227 follow-up plan KTD1).
+   *
+   * ANCHOR ALIGNMENT (plan KTD7 — load-bearing): this MUST be the SAME position
+   * the CALLS-edge resolution keys its `atRange` on, because a downstream unit
+   * joins the two by EXACT position. That anchor is the WHOLE call/new
+   * expression node's start — `nodeToCapture('@reference.call.*', node)` in the
+   * scope-extractor anchors `@reference.call.free/.member/.constructor` on the
+   * `call_expression`/`new_expression` (TS) / `method_invocation`/
+   * `object_creation_expression` (Java) node itself (the callee identifier /
+   * member property is the `@reference.name` SUB-tag, never the anchor — see
+   * `anchorCaptureFor` + `KNOWN_SUB_TAGS` in scope-extractor.ts, and
+   * `atRange: anchor.range` at scope-extractor.ts:1030). So for a bare call
+   * `foo(x)`, a member call `arr.map(x)`, and a namespaced/chained call
+   * `a.b.c(x)` alike, `at` is the start of the enclosing call/new expression
+   * node — the harvester's `visitCall`/`visitNew` receives exactly that node and
+   * records `[node.startPosition.row + 1, node.startPosition.column]`. (For a
+   * member call the call expression starts at the receiver, e.g. `arr` in
+   * `arr.map(x)`, and the CALLS anchor starts there too — they match.)
+   *
+   * Omit-when-absent (pre-upgrade durable channels stay valid; JSON-plain; NOT
+   * named `nodeId` per the reviver hazard above).
+   */
+  readonly at?: readonly [number, number];
 }
 
 /**
