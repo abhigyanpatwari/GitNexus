@@ -1,4 +1,4 @@
-﻿/**
+/**
  * Python taint model (#2204) over real Python CFG and import capture output.
  */
 
@@ -86,14 +86,40 @@ def f(request):
     expect(allSources(m)).toHaveLength(1);
   });
 
-  it('matches conventional database execute/query calls as SQL sinks', () => {
+  it('matches global code and path sinks at argument position zero', () => {
+    const m = matchesOf(`
+def f(request):
+    eval(request.args)
+    exec(request.form)
+    open(request.path_params)
+`);
+    const sinks = allSinks(m);
+    expect(sinks.map((s) => s.entry.kind)).toEqual([
+      'code-injection',
+      'code-injection',
+      'path-traversal',
+    ]);
+    expect(sinks.map((s) => [...s.argPositions])).toEqual([[0], [0], [0]]);
+    expect(allSources(m)).toHaveLength(3);
+  });
+
+  it('matches conventional database calls at argument position zero', () => {
     const m = matchesOf(`
 def f(request, cursor, db):
     cursor.execute(request.args)
     db.query(request.form)
+    cursor.executemany(request.json)
+    cursor.executescript(request.data)
 `);
-    expect(allSinks(m).map((s) => s.entry.kind)).toEqual(['sql-injection', 'sql-injection']);
-    expect(allSources(m)).toHaveLength(2);
+    const sinks = allSinks(m);
+    expect(sinks.map((s) => s.entry.name)).toEqual([
+      'execute',
+      'query',
+      'executemany',
+      'executescript',
+    ]);
+    expect(sinks.map((s) => [...s.argPositions])).toEqual([[0], [0], [0], [0]]);
+    expect(allSources(m)).toHaveLength(4);
   });
 
   it('does not match a locally shadowed stdlib sink name', () => {

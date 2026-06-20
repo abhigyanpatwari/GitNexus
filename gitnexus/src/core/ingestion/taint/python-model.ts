@@ -1,4 +1,4 @@
-﻿/**
+/**
  * Built-in Python taint model (#2204 first slice).
  *
  * Keep the model intentionally conservative: import-aware sinks for standard

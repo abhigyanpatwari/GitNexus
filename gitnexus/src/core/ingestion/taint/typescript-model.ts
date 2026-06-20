@@ -111,10 +111,10 @@ export const BUILTIN_TAINT_MODELS = {
 export const taintModelVersion: string = computeModelDigest(BUILTIN_TAINT_MODELS);
 
 /**
- * Register the built-in model for TypeScript and JavaScript. Explicit init
- * seam for the U4 emit path (call before the pdg window consumes the
- * registry); idempotent. Vue and other TS-adjacent language ids are
- * deliberately NOT registered — the M3 scope is TS/JS only.
+ * Register the built-in models for TypeScript, JavaScript, and Python.
+ * Explicit init seam for the U4 emit path (call before the pdg window
+ * consumes the registry); idempotent. Other language ids remain unregistered
+ * until they have a dedicated model.
  */
 export function registerBuiltinTaintModels(): void {
   registerSourceSinkConfig(SupportedLanguages.TypeScript, TS_JS_TAINT_MODEL);

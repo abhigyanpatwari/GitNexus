@@ -11,9 +11,9 @@
  * per-statement variable definition/use facts that ride the side channel for the
  * reaching-defs / CDG solvers. Output is the per-function binding table
  * ({@link BindingEntry}[]) plus {@link StatementFacts} the visitor attaches to
- * blocks as it walks. NO `sites[]` are harvested here — the call-site taint
- * substrate is a later step (this unit emits only bindings + defs/uses + mayDefs
- * via the local {@link FactAccumulator}, which has no site machinery at all).
+ * blocks as it walks. The local {@link FactAccumulator} also records call,
+ * argument, result-def, and member-read sites for Python's taint matcher while
+ * preserving the same def/use and may-def facts.
  *
  * Every node type and field literal below was grammar-validated against
  * tree-sitter-python (0.23.x) via the introspection probe before use (mandatory
