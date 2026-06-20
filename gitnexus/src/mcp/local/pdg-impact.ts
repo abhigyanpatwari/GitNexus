@@ -1681,12 +1681,43 @@ async function interproceduralDescent(input: {
       }),
     );
 
+    // U14: run each callee's BFS CONCURRENTLY against a PRIVATE clone of the
+    // hop-start `visited` snapshot, then merge IN SPAN ORDER below. Cross-span
+    // sharing of the mutable `visited` set was the ONLY thing forcing the BFS
+    // sequential; the clones remove the race. The reachable set is the monotone
+    // union of the per-callee closures (order-independent — `bfsReachableBlocks`
+    // keys its query on the frontier, not `visited`; `visited` only gates
+    // re-collection), so only the per-callee BFS DB round-trips run in parallel
+    // while the merged result stays byte-identical. In a degraded case where a
+    // per-callee BFS hits its depth/step limit, a sibling may expand through the
+    // truncated region — a bounded, sound OVER-approximation, never fewer blocks.
+    const visitedSnapshot = new Set(visited);
+    const spanBfs = await Promise.all(
+      spanSeeds.map(async ({ seeds }) =>
+        seeds.length === 0
+          ? null
+          : bfsReachableBlocks({
+              lbugPath,
+              exec,
+              seedBlocks: seeds,
+              visited: new Set(visitedSnapshot), // private clone — no cross-span race
+              direction: 'downstream',
+              // Per-callee intra DEPTH clamp (block-hops within the callee), NOT
+              // the row budget — mirrors the top-level intra BFS depth clamp.
+              depthBudget: intraDepthBudget,
+              stepLimit,
+              probeLimit,
+            }),
+      ),
+    );
+
     const hopReached = new Set<string>();
     for (let si = 0; si < spans.length; si++) {
-      // Node budget is checked INSIDE the per-span loop (not only after a full
-      // hop) so a hub/dispatcher slice that invokes many distinct callees does
-      // bounded work per hop — it short-circuits mid-hop rather than expanding
-      // O(distinctCallees × per-callee-BFS) before the guard.
+      // Node budget is checked INSIDE the per-span MERGE (in span order) so the
+      // mid-hop short-circuit stays byte-identical: the cumulative reachable size
+      // after merging spans 0..k equals the sequential path's, so the break fires
+      // at the SAME span. A span past the break is never merged (its parallel BFS
+      // result is discarded), exactly as the sequential loop never processed it.
       if (reachable.size > nodeBudget) {
         truncatedByNodeCap = true;
         break hopLoop;
@@ -1694,10 +1725,8 @@ async function interproceduralDescent(input: {
       const { exceeded, seeds: calleeSeeds } = spanSeeds[si];
       if (exceeded) truncatedByLimit = true;
       if (calleeSeeds.length === 0) continue;
-      // Run the SAME intra BFS within the callee — always DOWNSTREAM (forward
-      // closure), mirroring the dispatcher's direction gate. A callee seed block
-      // IS reachable (the callee is invoked from the slice), unlike the top-level
-      // seed which is the target itself.
+      // A callee seed block IS reachable (the callee is invoked from the slice),
+      // unlike the top-level seed which is the target itself.
       for (const id of calleeSeeds) {
         if (!visited.has(id)) {
           visited.add(id);
@@ -1705,20 +1734,14 @@ async function interproceduralDescent(input: {
           hopReached.add(id);
         }
       }
-      const bfs = await bfsReachableBlocks({
-        lbugPath,
-        exec,
-        seedBlocks: calleeSeeds,
-        visited,
-        direction: 'downstream',
-        // Per-callee intra DEPTH clamp (block-hops within the callee), NOT the row
-        // budget — mirrors the top-level intra BFS depth clamp exactly.
-        depthBudget: intraDepthBudget,
-        stepLimit,
-        probeLimit,
-      });
+      const bfs = spanBfs[si];
+      if (bfs === null) continue;
       if (bfs.truncatedByLimit) truncatedByLimit = true;
+      // The per-callee BFS ran against a clone, so fold its discovered blocks
+      // into the shared `visited`/`reachable` here (the sequential path did this
+      // inside the BFS); Sets dedup, so order across siblings is irrelevant.
       for (const id of bfs.reachable) {
+        visited.add(id);
         reachable.add(id);
         hopReached.add(id);
       }
