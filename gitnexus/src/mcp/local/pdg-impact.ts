@@ -1657,33 +1657,47 @@ async function interproceduralDescent(input: {
     if (spans.length === 0) break;
     hopsReached = hop + 1;
 
+    // U13: fetch every callee's seed blocks CONCURRENTLY. The seed fetch was the
+    // only per-span round-trip; running them in one wave collapses N sequential
+    // round-trips. Each span runs the IDENTICAL query as before — same anchor,
+    // same LIMIT, same slice — so the per-span seed set and the `exceeded`
+    // (truncatedByLimit) flag are byte-identical; only the latency changes. The
+    // flag is still APPLIED per span in the sequential loop below, so a span past
+    // the node-budget short-circuit never sets it (prior semantics preserved).
+    const spanSeeds = await Promise.all(
+      spans.map(async (span) => {
+        const { anchorClause, queryParams } = blockAnchorForResolvedSymbol(span);
+        const rawSeedRows = await exec(
+          lbugPath,
+          `MATCH (a:BasicBlock) WHERE ${anchorClause} RETURN a.id AS id LIMIT ${probeLimit}`,
+          queryParams,
+        );
+        const exceeded = rawSeedRows.length > stepLimit;
+        const seeds = rawSeedRows
+          .slice(0, stepLimit)
+          .map((r: Record<string, unknown>) => String(r['id'] ?? ''))
+          .filter((id: string) => id.length > 0);
+        return { exceeded, seeds };
+      }),
+    );
+
     const hopReached = new Set<string>();
-    for (const span of spans) {
+    for (let si = 0; si < spans.length; si++) {
       // Node budget is checked INSIDE the per-span loop (not only after a full
       // hop) so a hub/dispatcher slice that invokes many distinct callees does
-      // bounded work per hop — it short-circuits mid-hop rather than running
-      // O(distinctCallees × per-callee-BFS) sequential queries before the guard.
+      // bounded work per hop — it short-circuits mid-hop rather than expanding
+      // O(distinctCallees × per-callee-BFS) before the guard.
       if (reachable.size > nodeBudget) {
         truncatedByNodeCap = true;
         break hopLoop;
       }
-      // Seed the callee's blocks from the resolved span (same window helper the
-      // intra seed uses), then run the SAME intra BFS within the callee — always
-      // DOWNSTREAM (forward closure), mirroring the dispatcher's direction gate.
-      const { anchorClause, queryParams } = blockAnchorForResolvedSymbol(span);
-      const rawSeedRows = await exec(
-        lbugPath,
-        `MATCH (a:BasicBlock) WHERE ${anchorClause} RETURN a.id AS id LIMIT ${probeLimit}`,
-        queryParams,
-      );
-      if (rawSeedRows.length > stepLimit) truncatedByLimit = true;
-      const calleeSeeds = rawSeedRows
-        .slice(0, stepLimit)
-        .map((r: Record<string, unknown>) => String(r['id'] ?? ''))
-        .filter((id: string) => id.length > 0);
+      const { exceeded, seeds: calleeSeeds } = spanSeeds[si];
+      if (exceeded) truncatedByLimit = true;
       if (calleeSeeds.length === 0) continue;
-      // A callee seed block IS reachable (the callee is invoked from the slice),
-      // unlike the top-level seed which is the target itself.
+      // Run the SAME intra BFS within the callee — always DOWNSTREAM (forward
+      // closure), mirroring the dispatcher's direction gate. A callee seed block
+      // IS reachable (the callee is invoked from the slice), unlike the top-level
+      // seed which is the target itself.
       for (const id of calleeSeeds) {
         if (!visited.has(id)) {
           visited.add(id);
