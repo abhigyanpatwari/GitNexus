@@ -45,6 +45,7 @@ import {
   DEFAULT_PDG_MAX_CDG_EDGES_PER_FUNCTION,
   REACHING_DEF_FACTS_PER_EDGE_CAP,
 } from '../../cfg/emit.js';
+import { createMemoizedReachingDefs } from '../../cfg/reaching-defs.js';
 import {
   emitFileTaint,
   DEFAULT_PDG_MAX_TAINT_FINDINGS_PER_FUNCTION,
@@ -955,6 +956,11 @@ export function runScopeResolution(
         // bounded (defBlock, useBlock, binding) projection is persisted —
         // M3 recomputes via the same pure solver in-phase (KTD8). Timing is
         // PROF-gated like every other checkpoint here (zero cost when off).
+        // U12: one memoized RD solver per file, shared by the RD-emit + call-
+        // summary + taint + summary passes, so the per-function fixpoint runs once
+        // per (limits) bucket instead of 3–4× (#2227 tri-review). File-scoped: it
+        // is re-created each iteration, so its per-function facts drop with the file.
+        const rdSolve = createMemoizedReachingDefs();
         const t0 = PROF ? performance.now() : 0;
         const rd = emitFileReachingDefs(
           pdgTarget,
@@ -962,6 +968,7 @@ export function runScopeResolution(
           input.pdgMaxReachingDefEdgesPerFunction ??
             DEFAULT_PDG_MAX_REACHING_DEF_EDGES_PER_FUNCTION,
           (message) => logger.warn(message), // unconditional — R7, both layers
+          rdSolve,
         );
         if (PROF) pdgMs += performance.now() - t0;
         rdEdges += rd.edges;
@@ -996,6 +1003,7 @@ export function runScopeResolution(
           taintLimits.maxFacts && taintLimits.maxFacts > 0
             ? taintLimits.maxFacts
             : DEFAULT_PDG_MAX_REACHING_DEF_FACTS_PER_FUNCTION,
+          rdSolve,
         );
         harvestedCallSummaries.push(...callHarvest.summaries);
         callSummaryUnresolved += callHarvest.unresolved;
@@ -1013,6 +1021,7 @@ export function runScopeResolution(
             taintSpec,
             taintLimits,
             (message) => logger.warn(message), // unconditional — R4/R6
+            rdSolve,
           );
           if (PROF) taintMs += performance.now() - t1;
           taintTotals.analyzed += taint.functionsAnalyzed;
@@ -1046,6 +1055,7 @@ export function runScopeResolution(
               taintLimits.maxFacts && taintLimits.maxFacts > 0
                 ? taintLimits.maxFacts
                 : DEFAULT_PDG_MAX_REACHING_DEF_FACTS_PER_FUNCTION,
+              rdSolve,
             );
             harvestedSummaries.push(...harvest.summaries);
             summaryUnresolved += harvest.unresolved;

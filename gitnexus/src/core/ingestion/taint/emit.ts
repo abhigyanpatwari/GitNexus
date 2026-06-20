@@ -71,7 +71,12 @@ import {
   bindingKey,
   DEFAULT_PDG_MAX_REACHING_DEF_FACTS_PER_FUNCTION,
 } from '../cfg/emit.js';
-import { computeReachingDefs, pointKey, type ProgramPoint } from '../cfg/reaching-defs.js';
+import {
+  computeReachingDefs,
+  pointKey,
+  type ProgramPoint,
+  type ReachingDefsSolver,
+} from '../cfg/reaching-defs.js';
 import type { BindingEntry, FunctionCfg } from '../cfg/types.js';
 import { hasTaintSafeSites } from './site-safety.js';
 import { buildTaintImportIndex, matchFunctionSites } from './match.js';
@@ -156,6 +161,10 @@ export function emitFileTaint(
   spec: SourceSinkSanitizerSpec,
   limits?: TaintEmitLimits,
   onWarn?: (message: string) => void,
+  // U12: shared per-file memoized solver (harvest/taint bucket — no maxBlockVisits).
+  // The zero-match fast path below still skips the solve entirely; only MATCHED
+  // functions request it, hitting the cache the call-summary harvest warmed.
+  solve: ReachingDefsSolver = computeReachingDefs,
 ): TaintEmitResult {
   const result: TaintEmitResult = {
     functionsAnalyzed: 0,
@@ -204,7 +213,7 @@ export function emitFileTaint(
       continue;
     }
 
-    const defUse = computeReachingDefs(cfg, { maxFacts });
+    const defUse = solve(cfg, { maxFacts });
     const flows = computeTaintFlows(cfg, defUse, matches, { maxFindingsPerFunction, maxHops });
     if (flows.status === 'coverage-gap') {
       // R4: skipped entirely, counted by reason; aggregate-warned by the

@@ -20,7 +20,7 @@
  */
 import type { KnowledgeGraph } from '../../graph/types.js';
 import { generateId } from '../../../lib/utils.js';
-import { computeReachingDefs } from './reaching-defs.js';
+import { computeReachingDefs, type ReachingDefsSolver } from './reaching-defs.js';
 import { computeControlDependence } from './control-dependence.js';
 import {
   computePostDominators,
@@ -484,6 +484,11 @@ export function emitFileReachingDefs(
   cfgs: readonly FunctionCfg[],
   maxEdgesPerFunction: number = DEFAULT_PDG_MAX_REACHING_DEF_EDGES_PER_FUNCTION,
   onWarn?: (message: string) => void,
+  // U12: a per-file memoized solver lets the RD-emit / harvest / taint passes
+  // share the SAME per-function fixpoint (this caller is its own cache bucket —
+  // it passes maxBlockVisits, the harvest/taint callers do not). Defaults to the
+  // plain solver so existing callers are unaffected.
+  solve: ReachingDefsSolver = computeReachingDefs,
 ): ReachingDefEmitResult {
   const result: ReachingDefEmitResult = {
     edges: 0,
@@ -508,7 +513,7 @@ export function emitFileReachingDefs(
       );
       continue;
     }
-    const r = computeReachingDefs(cfg, {
+    const r = solve(cfg, {
       maxFacts,
       maxBlockVisits: cfg.blocks.length * DEFAULT_PDG_MAX_REACHING_DEF_BLOCK_REVISITS,
     });

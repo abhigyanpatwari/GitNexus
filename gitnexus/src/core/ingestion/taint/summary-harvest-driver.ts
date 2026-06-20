@@ -30,7 +30,7 @@
 
 import type { ParsedImport, GraphNode } from 'gitnexus-shared';
 import type { KnowledgeGraph } from '../../graph/types.js';
-import { computeReachingDefs } from '../cfg/reaching-defs.js';
+import { computeReachingDefs, type ReachingDefsSolver } from '../cfg/reaching-defs.js';
 import { DEFAULT_PDG_MAX_REACHING_DEF_FACTS_PER_FUNCTION } from '../cfg/emit.js';
 import type { FunctionCfg } from '../cfg/types.js';
 import { buildTaintImportIndex, matchFunctionSites } from './match.js';
@@ -110,6 +110,8 @@ export function harvestFileSummaries(
   parsedImports: readonly ParsedImport[],
   spec: SourceSinkSanitizerSpec,
   maxFacts: number = DEFAULT_PDG_MAX_REACHING_DEF_FACTS_PER_FUNCTION,
+  // U12: shared per-file memoized solver (harvest/taint bucket — no maxBlockVisits).
+  solve: ReachingDefsSolver = computeReachingDefs,
 ): FileSummaryResult {
   const importIndex = buildTaintImportIndex(parsedImports);
   const summaries: FunctionSummary[] = [];
@@ -122,7 +124,7 @@ export function harvestFileSummaries(
       unresolved++;
       continue;
     }
-    const defUse = computeReachingDefs(cfg, { maxFacts });
+    const defUse = solve(cfg, { maxFacts });
     const matches = matchFunctionSites(cfg, spec, importIndex);
     const harvested = harvestFunctionSummary(cfg, defUse, matches);
     if (harvested.status !== 'computed') {
@@ -183,6 +185,8 @@ export function harvestFileCallSummaries(
   fnIndex: FunctionNodeIndex,
   cfgs: readonly FunctionCfg[],
   maxFacts: number = DEFAULT_PDG_MAX_REACHING_DEF_FACTS_PER_FUNCTION,
+  // U12: shared per-file memoized solver (harvest/taint bucket — no maxBlockVisits).
+  solve: ReachingDefsSolver = computeReachingDefs,
 ): FileCallSummaryResult {
   const summaries: CallSummary[] = [];
   let unresolved = 0;
@@ -194,7 +198,7 @@ export function harvestFileCallSummaries(
       unresolved++;
       continue;
     }
-    const defUse = computeReachingDefs(cfg, { maxFacts });
+    const defUse = solve(cfg, { maxFacts });
     const harvested = harvestCallSummary(cfg, defUse);
     if (harvested.status !== 'computed') {
       gaps++;
