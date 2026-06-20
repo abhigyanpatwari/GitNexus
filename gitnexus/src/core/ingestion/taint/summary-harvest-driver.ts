@@ -43,7 +43,16 @@ import type { CallSummary } from './call-summary-model.js';
 /** `cfg.functionStartLine` (1-based) − this = the node's 0-based `startLine`. */
 export const NODE_TO_CFG_LINE_OFFSET = 1;
 
-/** Node labels that can own a CFG / be a `CALLS` endpoint. */
+/**
+ * Node labels that can own a CFG / be a `CALLS` endpoint AND receive a
+ * return-value-ascent summary. `Constructor` is INTENTIONALLY excluded: a
+ * constructor's "return" is the freshly-allocated instance, not a user-flowed
+ * value, so a formal→return ascent is not meaningful for it. A Constructor CFG
+ * therefore resolves to no functionish node (counted `unresolved`) and emits no
+ * CALL_SUMMARY edge — a sound recall miss, never a false ascent. The impact
+ * consumer may still DESCEND into a Constructor; it just never learns a
+ * constructor's return-flow. (#2227 tri-review.)
+ */
 const FUNCTIONISH_LABELS = new Set(['Function', 'Method']);
 
 /**
