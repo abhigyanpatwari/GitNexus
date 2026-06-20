@@ -52,6 +52,16 @@ jobs:
         run: node --import tsx bench/impact-pdg/measure.mjs --mutation --json > mutation-report.json
         working-directory: gitnexus
 
+      # Regression gate: write a recall summary to the run AND fail if the
+      # minimum realized recall drops below the (tunable) floor, so a recall
+      # regression surfaces instead of sitting unread in the artifact. Runs
+      # before the (always) upload so the artifact is preserved even on a fail.
+      - name: Gate on mutation recall regression
+        run: node bench/impact-pdg/gate-mutation-recall.mjs mutation-report.json
+        working-directory: gitnexus
+        env:
+          MUTATION_RECALL_FLOOR: '0.5'
+
       - name: Upload mutation report
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
