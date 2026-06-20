@@ -227,13 +227,13 @@ class FetchHelperReadPhaseErrors(TestCase):
     @staticmethod
     def _patch_urlopen(*, read_returns=None, read_raises=None):
         class _Resp:
-            def __enter__(self_inner):
-                return self_inner
+            def __enter__(self):
+                return self
 
-            def __exit__(self_inner, *exc):
+            def __exit__(self, *exc):
                 return False
 
-            def read(self_inner, *a, **k):
+            def read(self, *a, **k):
                 if read_raises is not None:
                     raise read_raises
                 return read_returns
