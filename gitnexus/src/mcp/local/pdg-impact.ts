@@ -461,13 +461,17 @@ async function projectBlocksToSymbols(deps: {
       // >1 ⇒ ambiguous-projection (same-line, different-name functions). Report
       // ALL colliding symbols, NEVER silently pick one (R4 / Feasibility 1).
       const isAmbiguous = rows.length > 1;
-      for (const r of rows) {
+      // Narrow the rows ONCE at the boundary to a typed record shape and read the
+      // aliased cells via bracket access (with positional `['0']`… fallback for a
+      // non-aliased row shape) — no per-field `as any`, matching the typed-row
+      // pattern used elsewhere in this file (e.g. lines ~264, ~1309, ~1386).
+      for (const r of rows as Array<Record<string, unknown>>) {
         resolved.push({
-          id: String((r as any).id ?? (r as any)[0] ?? ''),
-          name: String((r as any).name ?? (r as any)[1] ?? ''),
-          type: String((r as any).label ?? (r as any)[2] ?? 'Function'),
+          id: String(r['id'] ?? r['0'] ?? ''),
+          name: String(r['name'] ?? r['1'] ?? ''),
+          type: String(r['label'] ?? r['2'] ?? 'Function'),
           filePath,
-          startLine: Number((r as any).startLine ?? (r as any)[3] ?? symStart),
+          startLine: Number(r['startLine'] ?? r['3'] ?? symStart),
           ...(isAmbiguous ? { ambiguous: true as const } : {}),
         });
       }
