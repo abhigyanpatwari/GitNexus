@@ -2381,10 +2381,47 @@ export function composeUnifiedPdgImpactResult(
     .map((d) => Number(d))
     .filter((d) => Number.isFinite(d))
     .sort((a, b) => a - b);
+  // Resolved symbol id of a byDepth item, or null for an unresolved/shadow item.
+  const itemId = (item: unknown): string | null => {
+    if (item && typeof item === 'object' && 'id' in item) {
+      const id = (item as { id?: unknown }).id;
+      return typeof id === 'string' && id.length > 0 ? id : null;
+    }
+    return null;
+  };
+  // Cross-bucket dedup: a callee can surface in BOTH the local PDG block-expansion
+  // AND the inter-procedural callgraph reach, so the raw `local + interproc` sums
+  // double-count it. Track each layer's resolved ids to subtract the overlap from
+  // the headline (cross-depth) and the per-depth counts.
+  const localAllIds = new Set<string>();
+  const interAllIds = new Set<string>();
   for (const depth of depthKeys) {
     const localItems = localByDepth[depth] ?? localByDepth[String(depth)] ?? [];
     const interItems = interproceduralByDepth[depth] ?? interproceduralByDepth[String(depth)] ?? [];
-    const items = [...localItems, ...interItems];
+    const localDepthIds = new Set<string>();
+    for (const it of localItems) {
+      const id = itemId(it);
+      if (id !== null) {
+        localDepthIds.add(id);
+        localAllIds.add(id);
+      }
+    }
+    // Drop an interproc item whose resolved id is already present locally AT THIS
+    // DEPTH — keep the local item (richer projection). The SAME id reached at a
+    // DIFFERENT depth is a legitimate distinct per-depth bucket and is retained
+    // (so sum(byDepthCounts) can exceed the cross-depth `impactedCount`).
+    let perDepthOverlap = 0;
+    const dedupedInter: unknown[] = [];
+    for (const it of interItems) {
+      const id = itemId(it);
+      if (id !== null) interAllIds.add(id);
+      if (id !== null && localDepthIds.has(id)) {
+        perDepthOverlap += 1;
+        continue;
+      }
+      dedupedInter.push(it);
+    }
+    const items = [...localItems, ...dedupedInter];
     if (items.length > 0) byDepth[depth] = items;
     const localCount =
       localByDepthCounts[depth] ?? localByDepthCounts[String(depth)] ?? localItems.length;
@@ -2392,9 +2429,15 @@ export function composeUnifiedPdgImpactResult(
       interproceduralByDepthCounts[depth] ??
       interproceduralByDepthCounts[String(depth)] ??
       interItems.length;
-    const totalCount = localCount + interCount;
+    const totalCount = Math.max(0, localCount + interCount - perDepthOverlap);
     if (totalCount > 0) byDepthCounts[depth] = totalCount;
   }
+  // Cross-depth overlap of resolved ids reached by BOTH layers. Computed from the
+  // visible byDepth ids; if a layer's byDepth was display-truncated this is a
+  // lower bound, so the resulting count is a safe over-estimate (never the old
+  // double-count, never below the larger single layer).
+  let crossOverlap = 0;
+  for (const id of interAllIds) if (localAllIds.has(id)) crossOverlap += 1;
 
   if (Object.keys(byDepthCounts).length === 0) {
     const localZero = localByDepthCounts[1] ?? localByDepthCounts['1'];
@@ -2412,14 +2455,22 @@ export function composeUnifiedPdgImpactResult(
     typeof interproceduralResult?.impactedCount === 'number'
       ? interproceduralResult.impactedCount
       : 0;
-  const impactedCount = localImpactedCount + interproceduralImpactedCount;
+  // DISTINCT owning symbols across both layers (was localImpactedCount +
+  // interproceduralImpactedCount, which double-counted a symbol reached by both).
+  const impactedCount = Math.max(
+    0,
+    localImpactedCount + interproceduralImpactedCount - crossOverlap,
+  );
+  // `direct` = distinct depth-1 reach. The deduped byDepthCounts[1] is exactly
+  // that union, so it stays consistent with impactedCount (no separate layer sum).
+  const directCount = byDepthCounts[1] ?? pdgResult.summary?.direct ?? localImpactedCount;
   const summary = interproceduralResult?.summary
     ? {
         ...interproceduralResult.summary,
-        direct: (pdgResult.summary?.direct ?? 0) + (interproceduralResult.summary.direct ?? 0),
+        direct: directCount,
       }
     : {
-        direct: pdgResult.summary?.direct ?? localImpactedCount,
+        direct: directCount,
         processes_affected: 0,
         modules_affected: 0,
       };
