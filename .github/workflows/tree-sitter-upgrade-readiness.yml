@@ -133,11 +133,32 @@ jobs:
             const existing = open.find(i => i.title === title);
             if (existing) {
               // Extract ready/total count for the changelog comment.
-              const readyMatch = report.match(/- (\d+)\/(\d+) npm-installed grammars already accept tree-sitter@/);
-              const blockerMatch = report.match(/\*\*Blocked\*\* — (\d+) grammars? /);
-              const ready = readyMatch ? readyMatch[1] : '?';
-              const total = readyMatch ? readyMatch[2] : '?';
-              const blockers = blockerMatch ? blockerMatch[1] : '?';
+              // The two report.match() regexes below are mirrored as
+              // _ISSUE_READY_RE / _ISSUE_BLOCKER_RE in
+              // .github/scripts/test_check_tree_sitter_upgrade_readiness.py, which is
+              // the ONLY place the contract is asserted against the rendered report.
+              // Keep all three in sync: changing the report prose means updating both
+              // these literals AND the test mirror, or requireMatch throws on the next
+              // scheduled run (the silent "?" fallback that used to hide drift is gone).
+              const requireMatch = (name, match) => {
+                if (!match) {
+                  throw new Error(
+                    `Could not extract ${name} from tree-sitter readiness report`,
+                  );
+                }
+                return match;
+              };
+              const readyMatch = requireMatch(
+                'ready npm grammar count',
+                report.match(/- (\d+)\/(\d+) npm-installed grammars already accept tree-sitter@/),
+              );
+              const blockerMatch = requireMatch(
+                'blocker count',
+                report.match(/\*\*Blocked\*\* — (\d+) grammars? /),
+              );
+              const ready = readyMatch[1];
+              const total = readyMatch[2];
+              const blockers = blockerMatch[1];
 
               // Find grammars whose status changed by diffing the old and
               // new table rows.  Each row looks like:
