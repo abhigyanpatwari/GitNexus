@@ -595,16 +595,22 @@ export interface PdgImpactBaseResult extends PdgImpactParityFields {
   pdgEvidence?: PdgImpactEvidenceSummary;
 }
 
-export interface PdgImpactSuccessResult extends PdgImpactBaseResult {
-  target: Required<PdgImpactTarget>;
-  epistemic: 'pdg-intra-procedural';
+/**
+ * Slice-result fields shared verbatim by {@link PdgImpactSuccessResult} and
+ * {@link PdgImpactEmptyResult}. Those two differ ONLY in their `epistemic`
+ * discriminant (and the narrowed `target`, which must be re-declared on each to
+ * override `PdgImpactBaseResult.target`), so every other slice field lives here
+ * to keep the two in lockstep — a new slice field is added once, not twice.
+ */
+export interface PdgImpactSliceFields {
   reachableBlocks: string[];
   /**
-   * INTRA-procedural reachable subset of `reachableBlocks` (the original
-   * statement slice, BEFORE the U1 inter-procedural descent expanded it). The
-   * callgraph bridge keys its "first-hop proven" set on this, NOT the interproc-
-   * expanded `reachableBlocks` superset, so statementPrecision keeps its
-   * first-hop meaning (FIX 6). Equals `reachableBlocks` when no hop crossed.
+   * INTRA-procedural reachable subset of `reachableBlocks` (the statement slice
+   * BEFORE the U1 inter-procedural descent expanded it). The callgraph bridge
+   * keys its "first-hop proven" set on this, NOT the interproc-expanded
+   * `reachableBlocks` superset, so statementPrecision keeps its first-hop meaning
+   * (FIX 6). Equals `reachableBlocks` when no hop crossed; empty for the
+   * no-body / no-block-at-line empty returns.
    */
   intraReachableBlocks: string[];
   /** The criterion's own seed blocks (changed statement / whole-symbol body). */
@@ -621,28 +627,14 @@ export interface PdgImpactSuccessResult extends PdgImpactBaseResult {
   truncatedByReasons?: readonly ('depth' | 'limit')[];
 }
 
-export interface PdgImpactEmptyResult extends PdgImpactBaseResult {
+export interface PdgImpactSuccessResult extends PdgImpactBaseResult, PdgImpactSliceFields {
+  target: Required<PdgImpactTarget>;
+  epistemic: 'pdg-intra-procedural';
+}
+
+export interface PdgImpactEmptyResult extends PdgImpactBaseResult, PdgImpactSliceFields {
   target: Required<PdgImpactTarget>;
   epistemic: 'no-pdg-body' | 'pdg-no-block-at-line' | 'pdg-intra-procedural';
-  reachableBlocks: string[];
-  /**
-   * INTRA-procedural reachable subset of `reachableBlocks` (empty here for the
-   * no-body / no-block-at-line returns; the whole-symbol empty-slice return also
-   * has no intra reach). Surfaced for bridge-key parity with the success result.
-   */
-  intraReachableBlocks: string[];
-  /** The criterion's own seed blocks (changed statement / whole-symbol body). */
-  seedBlocks: string[];
-  blockCount: number;
-  affectedStatements: PdgStatement[];
-  affectedStatementCount: number;
-  depthReached: number;
-  unresolvedBlockCount: number;
-  ambiguousProjectionCount: number;
-  criterionLine?: number;
-  truncated?: boolean;
-  truncatedBy?: 'depth' | 'limit';
-  truncatedByReasons?: readonly ('depth' | 'limit')[];
 }
 
 export type PdgDegradedLayerState = Exclude<PdgLayerStatus['state'], 'ready'>;
