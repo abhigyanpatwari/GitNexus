@@ -46,6 +46,17 @@ if (process.env.GITHUB_STEP_SUMMARY) {
 }
 process.stdout.write(summary + '\n');
 
+// A report that produced checks but gated NONE of them has no recall signal:
+// the floor check below would pass vacuously (`min === null`). Fail loudly so a
+// degenerate corpus, or a harvest that silently emptied every behavioral AIS,
+// surfaces as a red run instead of a green "scored cases: 0 of N".
+if (checks.length > 0 && scored.length === 0) {
+  console.error(
+    `Mutation gate has no signal: 0 of ${checks.length} checks were recall-gated — refusing to pass.`,
+  );
+  process.exit(1);
+}
+
 if (min !== null && min < floor) {
   console.error(`Mutation recall regression: min realized recall ${fmt(min)} < floor ${floor}`);
   process.exit(1);
