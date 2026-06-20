@@ -64,6 +64,7 @@ import {
 } from '../tools.js';
 import { findImportCycles } from '../../core/graph/import-cycles.js';
 import { decodeTaintPath } from '../../core/ingestion/taint/path-codec.js';
+import { decodeReachingDefReason } from '../../core/ingestion/cfg/reaching-def-reason-codec.js';
 import { EXTENSIONS } from '../../core/ingestion/import-resolvers/utils.js';
 import {
   fnLineOf,
@@ -3349,11 +3350,17 @@ export class LocalBackend {
     const queryParams = resolved.queryParams;
 
     // Optional variable filter (flows mode) — REACHING_DEF stores the variable
-    // name in `reason`.
+    // name in `reason`. FU-B-2 prefixes the name with a `<name>|1:<def>:<use>`
+    // annotation (name FIRST), so match BOTH a legacy bare-name reason (`=`) AND
+    // an annotated one (`STARTS WITH <name>|`). Source identifiers never contain
+    // `|`, so the `<name>|` prefix is exact (it cannot collide with a longer name
+    // — `ab|…` is not a prefix of `abc|…`).
     let reasonClause = '';
     if (mode === 'flows' && typeof params.variable === 'string' && params.variable.trim()) {
-      reasonClause = ' AND r.reason = $variable';
-      queryParams.variable = params.variable.trim();
+      reasonClause = ' AND (r.reason = $variable OR r.reason STARTS WITH $variablePrefix)';
+      const variable = params.variable.trim();
+      queryParams.variable = variable;
+      queryParams.variablePrefix = `${variable}|`;
     }
 
     // edgeType is a hardcoded per-mode literal (never user input); `target` /
@@ -3412,9 +3419,13 @@ export class LocalBackend {
           })
         : rows.map((r: any) => {
             const fnLine = fnLineOf(String(r.srcId ?? r[0] ?? ''));
+            // FU-B-2: REACHING_DEF `reason` is `<name>` (legacy) or
+            // `<name>|1:<defLine>:<useLine>` — decode to surface the bare
+            // variable name, not the encoded annotation.
+            const variable = decodeReachingDefReason(r.reason ?? r[4] ?? '').name;
             return {
               ...(Number.isInteger(fnLine) ? { functionLine: fnLine } : {}),
-              variable: String(r.reason ?? r[4] ?? ''),
+              variable,
               def: { line: (r.srcLine ?? r[1]) as number | undefined },
               use: {
                 line: (r.dstLine ?? r[2]) as number | undefined,

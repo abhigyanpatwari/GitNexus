@@ -12,6 +12,7 @@ import { loadMeta } from '../../storage/repo-manager.js';
 import { IMPACT_MAX_DEPTH, PDG_QUERY_DEFAULT_LIMIT, PDG_QUERY_MAX_LIMIT } from '../tools.js';
 import { CALLEES_TRUNCATED_SENTINEL } from '../../core/ingestion/cfg/emit.js';
 import { decodeCallSummary } from '../../core/ingestion/taint/call-summary-codec.js';
+import { decodeReachingDefReason } from '../../core/ingestion/cfg/reaching-def-reason-codec.js';
 
 /**
  * Parse the `<fnLine>` segment out of a `BasicBlock` id (1-based function start
@@ -102,11 +103,115 @@ export interface PdgStatement {
 }
 
 /**
- * Resolve a set of reachable BasicBlock ids to their source statements
- * (line + text), deduped by BasicBlock id and sorted by line. This is the
- * useful output of a statement-anchored PDG slice — the dependent statements the
- * change reaches. A query error propagates (no `.catch` swallow) so a DB failure
- * is never silently reported as "no affected statements".
+ * FU-B-2 intra-block def→use line walk. Given a block's self REACHING_DEF
+ * def→use line PAIRS (every `defLine → useLine` step decoded from the edge
+ * `reason`'s pair list), walk FORWARD from a set of entry lines and return every
+ * interior USE line transitively reached. This is the principled statement-
+ * granular recovery for a coalesced straight-line BasicBlock, for BOTH chain
+ * shapes:
+ *  - DISTINCT bindings: `chainCompute` coalesces `a@7; b@8; c@9` into one block;
+ *    each binding is its own (block-pair, binding) group, so `a@7→b@8` and
+ *    `b@8→c@9` arrive as separate self-edges, and walking from line 7 recovers
+ *    {8, 9}.
+ *  - SAME binding (reassignment): `acc = f(acc); acc = g(acc); acc = h(acc)`
+ *    coalesces into one self-block whose `acc@24→acc@25`, `acc@25→acc@26`,
+ *    `acc@26→acc@27` steps ALL share the one (self-block, accIdx) group — the
+ *    dedup collapses them onto one edge, but the FU-B-2 pair LIST carries all
+ *    three, so walking from line 24 chains 24→25→26→27 to fixpoint. (A
+ *    first-pair-only annotation would stop at 25.)
+ *
+ * Pure: forward adjacency `defLine → Set<useLine>`, BFS from `entryLines`,
+ * bounded by the (finite) pair set + a `reached` set so it always terminates,
+ * even on a cycle — a self-referential line (`x = x + 1`, def@L→use@L) re-adds
+ * nothing new. The entry lines themselves are NOT emitted (they are the seed /
+ * the block's representative line already surfaced elsewhere); only newly-reached
+ * interior use lines are.
+ */
+function walkIntraBlockChain(
+  selfEdges: ReadonlyArray<{ defLine: number; useLine: number }>,
+  entryLines: Iterable<number>,
+): Set<number> {
+  const succ = new Map<number, Set<number>>();
+  for (const { defLine, useLine } of selfEdges) {
+    if (!Number.isInteger(defLine) || !Number.isInteger(useLine)) continue;
+    const set = succ.get(defLine) ?? new Set<number>();
+    set.add(useLine);
+    succ.set(defLine, set);
+  }
+  const reached = new Set<number>();
+  const frontier: number[] = [];
+  for (const e of entryLines) frontier.push(e);
+  const seenSeed = new Set<number>(frontier);
+  while (frontier.length > 0) {
+    const cur = frontier.pop() as number;
+    for (const next of succ.get(cur) ?? []) {
+      if (reached.has(next) || seenSeed.has(next)) continue;
+      reached.add(next);
+      frontier.push(next);
+    }
+  }
+  return reached;
+}
+
+/**
+ * Fetch the self REACHING_DEF edges (`(a)-[REACHING_DEF]->(a)`) for a set of
+ * blocks, grouped by block id, with each edge's def/use source LINES decoded
+ * from the FU-B-2 `reason` annotation (`<name>|1:<defLine>:<useLine>`). A
+ * pre-FU-B-2 (un-annotated) `reason` decodes to no line info → the edge is
+ * dropped (the block then projects at block-start granularity exactly as before,
+ * the documented graceful degrade for an older index). A query error propagates.
+ */
+async function selfReachingDefEdgesByBlock(
+  lbugPath: string,
+  blockIds: string[],
+  exec: typeof executeParameterized,
+): Promise<Map<string, Array<{ defLine: number; useLine: number }>>> {
+  const out = new Map<string, Array<{ defLine: number; useLine: number }>>();
+  if (blockIds.length === 0) return out;
+  const rows = await exec(
+    lbugPath,
+    `MATCH (a:BasicBlock)-[r:CodeRelation]->(a)
+       WHERE r.type = 'REACHING_DEF' AND a.id IN $ids
+       RETURN a.id AS id, r.reason AS reason`,
+    { ids: blockIds },
+  );
+  for (const r of rows as Array<Record<string, unknown>>) {
+    const id = String(r['id'] ?? '');
+    if (!id) continue;
+    const decoded = decodeReachingDefReason(r['reason']);
+    // FU-B-2: the annotation carries the FULL ordered (defLine, useLine) pair
+    // list for this (block-pair, binding) group — push EVERY pair so the walk can
+    // chain a same-binding reassignment (`acc@24->acc@25->acc@26`), which the
+    // dedup coalesces onto this one edge. A pre-FU-B-2 (un-annotated) reason
+    // decodes to no pairs → contributes nothing (block-start granularity).
+    if (decoded.pairs.length === 0) continue;
+    const list = out.get(id) ?? [];
+    for (const p of decoded.pairs) list.push({ defLine: p.defLine, useLine: p.useLine });
+    out.set(id, list);
+  }
+  return out;
+}
+
+/**
+ * Resolve a set of BasicBlock ids to their source statements (line + text),
+ * deduped by `(filePath, line, block id)` and sorted by line. This is the useful
+ * output of a statement-anchored PDG slice — the dependent statements the change
+ * reaches. A query error propagates (no `.catch` swallow) so a DB failure is
+ * never silently reported as "no affected statements".
+ *
+ * FU-B-2 statement granularity: a coalesced straight-line BasicBlock is projected
+ * to its single `startLine` by default, which UNDER-reports the interior
+ * statements that genuinely depend on the criterion (lines 8/9 of a `7-9` block).
+ * For each block in `chainWalkBlocks` we walk its self REACHING_DEF def→use LINE
+ * chain (decoded from the FU-B-2 `reason` annotation) FORWARD from that block's
+ * entry line(s) and emit one statement per reached INTERIOR line (its own text
+ * from the block text). This is the SINGLE principled statement-granular
+ * mechanism — it replaces FU-C's blind all-interior-lines expansion of ascent
+ * blocks (now routed through the same walk, seeded at the block's start line) and
+ * also recovers the seed block's own interior dependents (the U2/intra-dataflow-
+ * chain recall gap). A pre-FU-B-2 index (no line annotation) yields no self-edge
+ * lines → the block degrades to its block-start projection (byte-identical to the
+ * old behavior).
  */
 async function pdgStatementsForBlocks(
   lbugPath: string,
@@ -115,26 +220,38 @@ async function pdgStatementsForBlocks(
   criterionFile: string,
   ownerFnLine: number,
   /**
-   * U-C4 ascent-confirmed CALL blocks: blocks whose callee's CALL_SUMMARY
-   * licensed a return-value ascent. A coalesced straight-line call block spans
-   * several call statements (`acc = f(acc); acc = g(acc); …`) on consecutive
-   * source lines but is projected to a SINGLE `startLine` by default — under-
-   * reporting the interior lines whose call results chain through the block. For
-   * an ascent block we emit one statement PER source line in `[startLine,
-   * endLine]` (each line's own text), so the dependent call statements the
-   * ascent proves are surfaced at statement granularity. Empty/absent ⇒ the
-   * established single-startLine projection (byte-identical).
+   * Blocks whose interior should be expanded to statement granularity via the
+   * self-edge def→use line walk, each mapped to the entry line(s) the walk
+   * starts from. Two contributors:
+   *  - the SEED block, seeded at the criterion line — recovers the interior
+   *    dependents of the changed statement inside its own coalesced block (the
+   *    U2 intra-dataflow-chain gap: line 7's block 7-9 yields {8,9});
+   *  - each U-C4 ascent-confirmed CALL block, seeded at its start line — the
+   *    statement-granular realisation of the return-value ascent (replacing the
+   *    FU-C blind interior-line stop-gap with the principled walk).
+   * Empty/absent ⇒ every block projects at block-start granularity (byte-
+   * identical to the pre-FU-B-2 behavior).
    */
-  ascentBlocks: ReadonlySet<string> = new Set(),
+  chainWalkBlocks: ReadonlyMap<string, ReadonlySet<number>> = new Map(),
 ): Promise<PdgStatement[]> {
-  if (blockIds.length === 0) return [];
-  const rows = await exec(
-    lbugPath,
-    `MATCH (b:BasicBlock) WHERE b.id IN $ids
-     RETURN b.id AS id, b.startLine AS line, b.endLine AS endLine, b.text AS text`,
-    { ids: blockIds },
-  );
+  if (blockIds.length === 0 && chainWalkBlocks.size === 0) return [];
+  // The seed block(s) we walk are NOT in `blockIds` (seeds are excluded from the
+  // reachable slice), so the block-text fetch must cover BOTH the reachable
+  // blocks and the chain-walk blocks. Union, de-duplicated.
+  const fetchIds = [...new Set([...blockIds, ...chainWalkBlocks.keys()])];
+  const [rows, selfEdgesByBlock] = await Promise.all([
+    exec(
+      lbugPath,
+      `MATCH (b:BasicBlock) WHERE b.id IN $ids
+       RETURN b.id AS id, b.startLine AS line, b.endLine AS endLine, b.text AS text`,
+      { ids: fetchIds },
+    ),
+    chainWalkBlocks.size > 0
+      ? selfReachingDefEdgesByBlock(lbugPath, [...chainWalkBlocks.keys()], exec)
+      : Promise.resolve(new Map<string, Array<{ defLine: number; useLine: number }>>()),
+  ]);
   const byKey = new Map<string, PdgStatement>();
+  const reachableIds = new Set(blockIds);
   // Narrow the awaited rows ONCE at the boundary to a typed record shape; read
   // the aliased cells via bracket access with String()/Number() coercion.
   for (const r of rows as Array<Record<string, unknown>>) {
@@ -148,38 +265,50 @@ async function pdgStatementsForBlocks(
     // (INTER). Pure key comparison parsed from the block id — no extra DB query.
     const scope: 'intra' | 'inter' =
       filePath === criterionFile && fnLineOf(id) === ownerFnLine ? 'intra' : 'inter';
-    // ── U-C4 ascent block: expand to its interior source lines ──────────────
-    // A return-flow-confirmed coalesced call block spans `[startLine, endLine]`;
-    // each interior line is a call statement whose result chains through the
-    // block (the ascent the CALL_SUMMARY licensed). Emit one statement per line
-    // with that line's own source text, so the dependent statements surface at
-    // statement granularity (not just the block's `startLine`).
-    //
-    // Iterate the ACTUAL physical lines of the block text (`BasicBlock.text` is
-    // `textParts.join('\n')`), assigning consecutive 1-based line numbers from
-    // `startLine`. We do NOT map `[startLine..endLine]` positionally into the
-    // text array: `endLine` is the LAST statement's line, so a coalesced block
-    // containing a multi-physical-line statement breaks the positional invariant
-    // (`endLine !== startLine + textLines.length - 1`) and the index goes
-    // wrong/out-of-bounds. Splitting `b.text` and iterating its own indices is
-    // bounds-safe by construction and gives each physical line its correct text.
-    // Over-including the physical lines of a multi-line statement is acceptable
-    // (those lines ARE part of an affected statement). This interior-line
-    // expansion is a block-granularity stop-gap that FU-B-2 (statement-granular
-    // RD) will supersede with true per-statement boundaries.
-    const endLine = Number(r['endLine']);
-    if (ascentBlocks.has(id) && Number.isFinite(endLine) && endLine > line) {
-      const textLines = String(r['text'] ?? '').split('\n');
-      for (let i = 0; i < textLines.length; i++) {
-        const ln = line + i;
-        const lineText = textLines[i].trim();
+    const textLines = String(r['text'] ?? '').split('\n');
+    // ── FU-B-2 chain-walk block: expand to its interior dependent lines ───────
+    // Walk the block's self REACHING_DEF def→use LINE chain forward from the
+    // entry line(s). Each reached interior line is a statement transitively
+    // data-dependent on the entry (the chain the coalesced block lost). Emit it
+    // with its own physical-line text (`BasicBlock.text` is `lines.join('\n')`,
+    // 1-based from `startLine`). This is the principled replacement for FU-C's
+    // blind all-interior expansion — only lines the def→use chain proves are
+    // surfaced. A block that is ALSO a reachable block keeps its block-start
+    // statement too (added below); the seed block (not reachable) contributes
+    // ONLY its walked interior lines.
+    const entryLines = chainWalkBlocks.get(id);
+    if (entryLines !== undefined) {
+      // An empty entry set means "seed from the block's own start line" — the
+      // FU-C ascent blocks, whose call statements chain forward from the block
+      // start (the caller does not know the start line at map-build time). A
+      // non-empty set (the seed block, seeded at the criterion line) is used
+      // verbatim. `line` is the resolved block start line for this row.
+      const seeds = entryLines.size > 0 ? entryLines : new Set<number>([line]);
+      const reached = walkIntraBlockChain(selfEdgesByBlock.get(id) ?? [], seeds);
+      for (const ln of reached) {
+        const idx = ln - line;
+        if (idx < 0 || idx >= textLines.length) continue; // out of this block's text
+        const lineText = textLines[idx].trim();
         const key = `${filePath}:${ln}:${id}`;
         if (!byKey.has(key)) byKey.set(key, { line: ln, filePath, text: lineText, scope });
       }
-      continue;
     }
-    const key = `${filePath}:${line}:${id}`;
-    if (!byKey.has(key)) byKey.set(key, { line, filePath, text, scope });
+    // A reachable block always surfaces its representative block-start statement.
+    // A pure chain-walk seed block (not reachable) does NOT (its start line is
+    // the criterion / the call block already surfaced elsewhere — only its
+    // walked-forward dependents are new). When the reachable block is ALSO a
+    // chain-walk block (a coalesced call block whose interior lines we expanded),
+    // its block-start statement is surfaced at the SAME statement granularity —
+    // the first physical line's own text, not the whole multi-statement block
+    // text — so all of its statements are consistently single-line. A reachable
+    // block that is NOT chain-walked keeps the full trimmed block text (byte-
+    // identical to the pre-FU-B-2 projection).
+    if (reachableIds.has(id)) {
+      const key = `${filePath}:${line}:${id}`;
+      const startText =
+        entryLines !== undefined && textLines.length > 0 ? textLines[0].trim() : text;
+      if (!byKey.has(key)) byKey.set(key, { line, filePath, text: startText, scope });
+    }
   }
   return [...byKey.values()].sort((a, b) => {
     if (a.filePath !== b.filePath) return a.filePath < b.filePath ? -1 : 1;
@@ -1829,21 +1958,63 @@ export async function runImpactPDG(deps: RunPdgImpactDeps): Promise<PdgImpactRes
   // statement tags as 'inter' (no false intra claim).
   const criterionFile = sym.filePath;
   const ownerFnLine = typeof sym.startLine === 'number' ? sym.startLine + 1 : Number.NaN;
+  // ── FU-B-2 chain-walk blocks: statement-granular interior recovery ─────────
+  // The SINGLE principled mechanism that expands a coalesced straight-line
+  // BasicBlock to its interior dependent statements via the self REACHING_DEF
+  // def→use LINE chain. Two contributors:
+  //  - the SEED block(s), seeded at the criterion `line` (statement mode only):
+  //    recovers the interior statements of the criterion's own coalesced block
+  //    that the block-granular slice lost (the U2 intra-dataflow-chain gap —
+  //    line 7's `7-9` block yields {8,9}). The seed block is NOT in
+  //    `reachableBlocks` (seeds are excluded), so the walk surfaces lines no
+  //    other projection reaches.
+  //  - each U-C4 ascent CALL block, seeded from its own start line (empty entry
+  //    set ⇒ the projection default-seeds at the block start): the principled
+  //    replacement for FU-C's blind all-interior-lines expansion.
+  const chainWalkBlocks = new Map<string, ReadonlySet<number>>();
+  if (statementMode) {
+    for (const id of seedBlocks) chainWalkBlocks.set(id, new Set<number>([line as number]));
+  }
+  // Every REACHABLE coalesced block is also walked, seeded from its own start
+  // line (empty entry set ⇒ the projection default-seeds at the block start): a
+  // block reached via CDG (a control-dependent body block) or REACHING_DEF can
+  // itself coalesce a straight-line data-dep chain whose interior statements the
+  // block-start projection would lose (e.g. the guard fixture's `const y; const
+  // z = y + 1;` post-guard body — line 12 chains from line 11 via `y`). This is
+  // the SAME principled self-edge walk, applied to the whole slice, not just the
+  // seed.
+  for (const id of reachableBlocks) {
+    if (!chainWalkBlocks.has(id)) chainWalkBlocks.set(id, new Set<number>());
+  }
+  for (const id of ascentBlocks) {
+    if (!chainWalkBlocks.has(id)) chainWalkBlocks.set(id, new Set<number>());
+  }
   const affectedStatements = await pdgStatementsForBlocks(
     repo.lbugPath,
     reachableBlocks,
     exec,
     criterionFile,
     ownerFnLine,
-    ascentBlocks,
+    chainWalkBlocks,
   );
 
-  // ── Has a PDG body but no intra-procedural dependence reachability ─────────
+  // ── Has a PDG body but no inter-block dependence reachability ──────────────
   // Distinct from "no PDG body": the function exists and has blocks, but no
-  // CDG/REACHING_DEF edge leaves the target's blocks in this direction. For a
-  // WHOLE-SYMBOL seed this is the expected (and uninformative) result — every
-  // intra-procedural block is already a seed — so the note steers to `line`.
-  // Still not a confident zero — explicit note + UNKNOWN (KTD6/KTD8).
+  // CDG/REACHING_DEF edge leaves the target's blocks in this direction (no
+  // DISTINCT downstream BasicBlock is reached). For a WHOLE-SYMBOL seed this is
+  // the expected (and uninformative) result — every intra-procedural block is
+  // already a seed — so the note steers to `line`. Still not a confident zero —
+  // explicit note + UNKNOWN (KTD6/KTD8).
+  //
+  // Item 5 robustness: `affectedStatements` was ALREADY computed above with the
+  // seed block(s) in `chainWalkBlocks`, so a criterion whose only dependents are
+  // INTERIOR to its own coalesced seed block (a straight-line chain with no
+  // distinct downstream block — e.g. `const a; const b = a*2; const c = b-3`
+  // with no `return`) still has those recovered interior statements here. Surface
+  // them rather than hardcoding `[]` (which would silently drop the seed-block
+  // chain-walk on this path). `reachableBlocks` stays `[]` — those lines belong to
+  // the seed block, correctly not a reachable BLOCK — but the statement slice is
+  // not lost.
   if (reachableBlocks.length === 0) {
     return {
       mode: 'pdg',
@@ -1854,9 +2025,10 @@ export async function runImpactPDG(deps: RunPdgImpactDeps): Promise<PdgImpactRes
       risk: 'UNKNOWN',
       epistemic: 'pdg-intra-procedural',
       note: statementMode
-        ? `No statement in '${sym.name}' is ${direction}-dependent on line ${line} ` +
-          `(no CDG/REACHING_DEF reachability from that statement). The line may have no ` +
-          `dependents in this direction.`
+        ? `No statement in '${sym.name}' is in a DISTINCT ${direction}-dependent block of ` +
+          `line ${line} (no CDG/REACHING_DEF edge leaves the seed block in this direction). ` +
+          `Any interior statements of the seed's own coalesced block that depend on line ${line} ` +
+          `are surfaced in affectedStatements.`
         : `'${sym.name}' has a PDG body but a WHOLE-SYMBOL ${direction} slice is empty: ` +
           `intra-procedural dependence stays inside the function, so every reachable block ` +
           `is already part of the seed. Pass line:<N> to slice from a specific statement ` +
@@ -1873,8 +2045,8 @@ export async function runImpactPDG(deps: RunPdgImpactDeps): Promise<PdgImpactRes
       // the tri-review found). Empty reachableBlocks must NOT zero the seed callees.
       seedBlocks,
       blockCount: 0,
-      affectedStatements: [],
-      affectedStatementCount: 0,
+      affectedStatements,
+      affectedStatementCount: affectedStatements.length,
       depthReached,
       unresolvedBlockCount: 0,
       ambiguousProjectionCount: 0,

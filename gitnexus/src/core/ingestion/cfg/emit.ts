@@ -30,6 +30,7 @@ import {
 import { augmentForPostDom } from './synthetic-escape.js';
 import { DEFAULT_PDG_MAX_SITES_PER_STATEMENT } from './visitors/call-site-harvest.js';
 import { calleeIdPosKey } from '../scope-resolution/graph-bridge/callee-id-sink.js';
+import { encodeReachingDefReasonPairs } from './reaching-def-reason-codec.js';
 import type { BasicBlockData, BindingEntry, FunctionCfg } from './types.js';
 
 /**
@@ -518,18 +519,47 @@ export function emitFileReachingDefs(
     }
 
     // Dedup to (defBlock, useBlock, binding) — facts arrive sorted, so the
-    // deduped order (and therefore cap truncation) is deterministic.
-    const seen = new Set<string>();
-    const deduped: { defBlock: number; useBlock: number; bindingIdx: number }[] = [];
+    // deduped order (and therefore cap truncation) is deterministic. ONE edge per
+    // group (the edge COUNT is unchanged — substrate/bench safe), but the FU-B-2
+    // annotation AGGREGATES the FULL ordered list of (defLine, useLine) pairs for
+    // that group into the persisted `reason`. The first fact of a group (facts
+    // sort by def block, def stmt, use block, use stmt, binding) keeps the group's
+    // emit position; every subsequent fact of the SAME (block-pair, binding)
+    // appends its line pair to that group's list. Carrying the full list (not just
+    // the first pair) is what makes a SAME-BINDING reassignment chain recoverable:
+    // `acc = f(acc); acc = g(acc)` coalesces into one self-block whose
+    // `acc@N->acc@N+1` and `acc@N+1->acc@N+2` steps share the one group — a
+    // first-pair-only annotation could chain N->N+1 but never reach N+2. Dedup of
+    // exact-duplicate pairs within a group keeps the list compact (a `x = x + 1`
+    // self-fact never re-adds the same pair).
+    const groupIndex = new Map<string, number>();
+    const deduped: {
+      defBlock: number;
+      useBlock: number;
+      bindingIdx: number;
+      pairs: { defLine: number; useLine: number }[];
+    }[] = [];
     for (const f of r.facts) {
       const key = `${f.def.blockIndex}:${f.use.blockIndex}:${f.bindingIdx}`;
-      if (seen.has(key)) continue;
-      seen.add(key);
-      deduped.push({
-        defBlock: f.def.blockIndex,
-        useBlock: f.use.blockIndex,
-        bindingIdx: f.bindingIdx,
-      });
+      const at = groupIndex.get(key);
+      const pair = { defLine: f.def.line, useLine: f.use.line };
+      if (at === undefined) {
+        groupIndex.set(key, deduped.length);
+        deduped.push({
+          defBlock: f.def.blockIndex,
+          useBlock: f.use.blockIndex,
+          bindingIdx: f.bindingIdx,
+          pairs: [pair],
+        });
+        continue;
+      }
+      const list = deduped[at].pairs;
+      // Skip an exact-duplicate (defLine, useLine) — a self-referential statement
+      // (`x = x + 1`) emits the same line pair more than once; the list only needs
+      // each distinct step once for the projection walk.
+      if (!list.some((p) => p.defLine === pair.defLine && p.useLine === pair.useLine)) {
+        list.push(pair);
+      }
     }
 
     let emittedForFn = 0;
@@ -582,7 +612,16 @@ export function emitFileReachingDefs(
         sourceId,
         targetId,
         confidence: 1.0,
-        reason: binding.name, // plain source-level name (M0/S1 verdict) — queryable
+        // FU-B-2: the source-level binding name (M0/S1 verdict — name FIRST so
+        // `pdg_query` flows stays queryable) PLUS a compact versioned annotation
+        // carrying the FULL ordered list of def/use source LINE pairs for this
+        // (block-pair, binding) group. For a self-edge (defBlock === useBlock)
+        // this captures the intra-block def@L→use@L' chain — including a
+        // SAME-BINDING reassignment chain (`acc@24->acc@25->acc@26`) — that the
+        // block-granular projection lost; the statement projection (pdg-impact.ts)
+        // walks the list forward to fixpoint to recover the coalesced block's
+        // interior statements.
+        reason: encodeReachingDefReasonPairs(binding.name, edge.pairs),
       });
       result.edges++;
       emittedForFn++;

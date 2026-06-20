@@ -196,6 +196,15 @@ describe('runImpactPDG', () => {
       if (query.includes("r.type = 'CALL_SUMMARY'")) {
         return [{ id: 'Function:src/p.ts:stage', reason: '1|r:1' }];
       }
+      // FU-B-2 self REACHING_DEF edge of the ascent call block: the coalesced
+      // same-binding `acc` reassignment chain (def 4→use 5, def 5→use 6) is ONE
+      // deduped edge whose `reason` carries the FULL ordered pair LIST
+      // (`acc|1:4:5;5:6`). The interior-line walk follows the whole list to
+      // fixpoint, surfacing both line 5 and line 6 from the block start (4) — a
+      // first-pair-only encoding would surface only line 5.
+      if (query.includes('MATCH (a:BasicBlock)-[r:CodeRelation]->(a)')) {
+        return [{ id: callBlock, reason: 'acc|1:4:5;5:6' }];
+      }
       // Callee span resolution: stage has no CFG body here (no callee blocks to
       // descend into — the ascent, not the descent, is under test).
       if (query.includes('MATCH (s:`Function`)')) return [];
