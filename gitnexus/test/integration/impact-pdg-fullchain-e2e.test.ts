@@ -60,7 +60,9 @@ vi.mock('../../src/storage/repo-manager.js', async (importOriginal) => {
 
 const FIXTURE = path.join(__dirname, 'cfg', 'fixtures', 'pdg-repo');
 const READY_PDG_META = {
-  pdg: { maxCdgEdgesPerFunction: 0, maxReachingDefEdgesPerFunction: 0 },
+  // hasCallSummary enables the FU-C return-value ascent in the consumer (without
+  // it the ascent is suppressed and only the descent path is exercised).
+  pdg: { maxCdgEdgesPerFunction: 0, maxReachingDefEdgesPerFunction: 0, hasCallSummary: true },
 } as unknown as RepoMeta;
 
 /**
@@ -75,6 +77,7 @@ async function persistFixtureGraphWithCallees(): Promise<{
   reachingDefEdges: number;
   cdgEdges: number;
   calleeIdBearingBlocks: number;
+  callSummaryEdges: number;
 }> {
   const repoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-impact-pdg-fullchain-'));
   try {
@@ -126,7 +129,20 @@ async function persistFixtureGraphWithCallees(): Promise<{
 
     let reachingDefEdges = 0;
     let cdgEdges = 0;
+    let callSummaryEdges = 0;
     for (const rel of pipelineResult.graph.iterRelationships()) {
+      // CALL_SUMMARY is a self-loop on the callee's Function/Method node (NOT a
+      // BasicBlock edge), so persist it separately — the U-C4 return-value ascent
+      // reads it to re-seed the caller's continuation from the call block.
+      if (rel.type === 'CALL_SUMMARY') {
+        await adapter.executePrepared(
+          `MATCH (a:Function {id: $src})
+           CREATE (a)-[:CodeRelation {type: 'CALL_SUMMARY', confidence: $confidence, reason: $reason, step: 0}]->(a)`,
+          { src: rel.sourceId, confidence: rel.confidence ?? 1.0, reason: rel.reason ?? '' },
+        );
+        callSummaryEdges++;
+        continue;
+      }
       if (rel.type !== 'CDG' && rel.type !== 'REACHING_DEF') continue;
       await adapter.executePrepared(
         `MATCH (a:BasicBlock {id: $src}), (b:BasicBlock {id: $dst})
@@ -142,7 +158,7 @@ async function persistFixtureGraphWithCallees(): Promise<{
       if (rel.type === 'CDG') cdgEdges++;
     }
 
-    return { reachingDefEdges, cdgEdges, calleeIdBearingBlocks };
+    return { reachingDefEdges, cdgEdges, calleeIdBearingBlocks, callSummaryEdges };
   } finally {
     fs.rmSync(repoDir, { recursive: true, force: true });
   }
@@ -233,6 +249,15 @@ withTestLbugDB(
           expect.objectContaining({ line: 60, text: "return 'sh -c ' + s;" }),
         ]),
       );
+      // FU-C wiring (hasCallSummary:true + a REAL persisted CALL_SUMMARY edge):
+      // line 56 `exec(built);` consumes `built`, decorate's RETURN value. The
+      // consumer ran calleesWithReturnFlow against the real CALL_SUMMARY edge and
+      // surfaced the call-result continuation — the meta -> callSummaryAvailable
+      // -> CALL_SUMMARY-read path that was previously only mock-covered.
+      expect(lines).toContain(56);
+      expect(statements).toEqual(
+        expect.arrayContaining([expect.objectContaining({ line: 56, text: 'exec(built);' })]),
+      );
       // The seed statement's own line (54) is excluded (seed-minus-reachable).
       expect(lines).not.toContain(54);
       expect(result.affectedStatementCount).toBe(result.affectedStatements.length);
@@ -244,8 +269,14 @@ withTestLbugDB(
     afterSetup: async (handle) => {
       metaByStoragePath.set(handle.tmpHandle.dbPath, READY_PDG_META);
       const counts = await persistFixtureGraphWithCallees();
-      if (counts.reachingDefEdges === 0 || counts.calleeIdBearingBlocks === 0) {
-        throw new Error('fixture produced no calleeId-bearing blocks or no dependence edges');
+      if (
+        counts.reachingDefEdges === 0 ||
+        counts.calleeIdBearingBlocks === 0 ||
+        counts.callSummaryEdges === 0
+      ) {
+        throw new Error(
+          'fixture produced no calleeId-bearing blocks, dependence edges, or CALL_SUMMARY edges',
+        );
       }
       vi.mocked(listRegisteredRepos).mockResolvedValue([
         {
