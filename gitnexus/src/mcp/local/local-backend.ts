@@ -4446,6 +4446,10 @@ export class LocalBackend {
     }
 
     if (outcome.kind === 'ambiguous') {
+      // Shared truncation cap for the ambiguous candidate list — both the pdg
+      // branch (shows candidates) and the callgraph branch (probes candidates)
+      // bound to this many.
+      const AMBIGUOUS_MAX_CANDIDATES = 6;
       // KTD5 ambiguous trap — under mode:'pdg' we MUST NOT fall into the
       // callgraph fan-out below: it runs `_runImpactBFS` per candidate, which
       // would silently execute the call-graph engine under a `pdg` call (the
@@ -4453,7 +4457,6 @@ export class LocalBackend {
       // returns the candidate list WITHOUT any callgraph probe; the full pdg
       // ambiguous handling (per-candidate PDG summaries / ranking) lands in U4.
       if (mode === 'pdg') {
-        const AMBIGUOUS_MAX_CANDIDATES = 6;
         const truncated = outcome.candidates.length > AMBIGUOUS_MAX_CANDIDATES;
         const shown = outcome.candidates.slice(0, AMBIGUOUS_MAX_CANDIDATES);
         return {
@@ -4493,7 +4496,6 @@ export class LocalBackend {
       // summary-only BFS per candidate so each one's true count + risk is
       // visible, and surface the maximum at the top level so the headline can
       // never read as "safe to refactor". Candidates arrive sorted by score.
-      const AMBIGUOUS_MAX_CANDIDATES = 6;
       const probed = outcome.candidates.slice(0, AMBIGUOUS_MAX_CANDIDATES);
       // `partialProbe` is intentionally a SECOND incompleteness flag, distinct
       // from the traversal-interrupted `partial` flag used elsewhere: it means
