@@ -9,8 +9,27 @@
  * Test-safety: when `isLbugReady()` is false (the default in every analyze unit
  * test that mocks run-analyze — the DB is never opened), the wrapper must NOT
  * force-exit, preserving the soft return those tests rely on.
+ *
+ * Worker-safety: `analyzeCommand` calls `installFatalHandlers()`, which registers
+ * global `unhandledRejection` / `uncaughtException` handlers that call the REAL
+ * `process.exit(1)`. Across this file's `vi.resetModules()` reimports those
+ * accumulate on `process`, and a stray async rejection firing one while no
+ * `process.exit` spy is active would kill the forked vitest worker ("Worker
+ * exited unexpectedly"). So we keep `process.exit` spied for the WHOLE file and
+ * strip the handlers `installFatalHandlers` added in `afterAll`, and reset
+ * `process.exitCode` so the worker exits clean.
  */
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+  type MockInstance,
+} from 'vitest';
 
 const {
   runFullAnalysisMock,
@@ -57,8 +76,38 @@ vi.mock('../../src/core/ingestion/utils/max-file-size.js', () => ({
 }));
 
 describe('analyzeCommand — finalize-failure must terminate, not hang (#2264 P1)', () => {
+  // Snapshot the fatal-handler listeners present BEFORE this file ran (vitest's
+  // own) so afterAll can strip only the ones installFatalHandlers added, leaving
+  // vitest's intact for the rest of the worker's life.
+  const baselineUnhandled = process.listeners('unhandledRejection');
+  const baselineUncaught = process.listeners('uncaughtException');
+  let exitSpy: MockInstance<typeof process.exit>;
+
+  beforeAll(() => {
+    // Mock process.exit for the WHOLE file — a fatal handler firing between
+    // tests (after a per-test spy would have been restored) can't really exit.
+    exitSpy = vi.spyOn(process, 'exit').mockImplementation(() => undefined as never);
+  });
+
+  afterAll(() => {
+    // Strip the unhandledRejection/uncaughtException handlers installFatalHandlers
+    // added, BEFORE restoring the real process.exit — so no stray rejection during
+    // teardown can fire a real exit. Only remove non-baseline (vitest's) listeners.
+    process
+      .listeners('unhandledRejection')
+      .filter((l) => !baselineUnhandled.includes(l))
+      .forEach((l) => process.removeListener('unhandledRejection', l));
+    process
+      .listeners('uncaughtException')
+      .filter((l) => !baselineUncaught.includes(l))
+      .forEach((l) => process.removeListener('uncaughtException', l));
+    exitSpy.mockRestore();
+    process.exitCode = 0;
+  });
+
   beforeEach(() => {
     vi.resetModules();
+    exitSpy.mockClear();
     runFullAnalysisMock.mockReset();
     // Full analysis succeeded (NOT the alreadyUpToDate fast path) → skip-closed.
     runFullAnalysisMock.mockResolvedValue({
@@ -76,28 +125,23 @@ describe('analyzeCommand — finalize-failure must terminate, not hang (#2264 P1
     process.exitCode = undefined;
   });
 
+  afterEach(() => {
+    // Don't leak a non-zero exit code to the forked worker's natural exit.
+    process.exitCode = 0;
+  });
+
   it('force-exits when native handles are still open (isLbugReady true)', async () => {
     isLbugReadyMock.mockReturnValue(true);
-    const exitSpy = vi.spyOn(process, 'exit').mockImplementation(() => undefined as never);
-    try {
-      const { analyzeCommand } = await import('../../src/cli/analyze.js');
-      await analyzeCommand(undefined, {});
-      expect(exitSpy).toHaveBeenCalledWith(1);
-    } finally {
-      exitSpy.mockRestore();
-    }
+    const { analyzeCommand } = await import('../../src/cli/analyze.js');
+    await analyzeCommand(undefined, {});
+    expect(exitSpy).toHaveBeenCalledWith(1);
   });
 
   it('does NOT force-exit when no handles are open (isLbugReady false) — soft return preserved', async () => {
     isLbugReadyMock.mockReturnValue(false);
-    const exitSpy = vi.spyOn(process, 'exit').mockImplementation(() => undefined as never);
-    try {
-      const { analyzeCommand } = await import('../../src/cli/analyze.js');
-      await analyzeCommand(undefined, {});
-      expect(exitSpy).not.toHaveBeenCalled();
-      expect(process.exitCode).toBe(1);
-    } finally {
-      exitSpy.mockRestore();
-    }
+    const { analyzeCommand } = await import('../../src/cli/analyze.js');
+    await analyzeCommand(undefined, {});
+    expect(exitSpy).not.toHaveBeenCalled();
+    expect(process.exitCode).toBe(1);
   });
 });
