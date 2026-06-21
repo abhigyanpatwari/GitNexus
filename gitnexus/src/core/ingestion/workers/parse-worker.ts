@@ -966,8 +966,13 @@ const processBatch = (
         try {
           setLanguage(language, regularFiles[0].path);
           processFileGroup(regularFiles, language, queryString, result, onFileProcessed);
-        } catch {
-          // parser unavailable — skip this language group
+        } catch (err) {
+          // A throw here drops the whole language group — surface it to the pool
+          // (#2264) instead of silently skipping. The old empty catch hid real
+          // extractor/parser failures, not just an unavailable grammar.
+          reportWarning(
+            `Skipped ${regularFiles.length} ${language} file(s) after a processing error: ${err instanceof Error ? err.message : String(err)}`,
+          );
         }
       } else {
         result.skippedLanguages[language] =
@@ -981,8 +986,12 @@ const processBatch = (
         try {
           setLanguage(language, tsxFiles[0].path);
           processFileGroup(tsxFiles, language, queryString, result, onFileProcessed);
-        } catch {
-          // parser unavailable — skip this language group
+        } catch (err) {
+          // See above — surface a tsx-group processing failure rather than
+          // silently dropping every file in it (#2264).
+          reportWarning(
+            `Skipped ${tsxFiles.length} ${language} (tsx) file(s) after a processing error: ${err instanceof Error ? err.message : String(err)}`,
+          );
         }
       } else {
         result.skippedLanguages[language] =
@@ -1142,6 +1151,23 @@ export function extractORMQueries(
 
 import { extractFastAPIRouterBindings } from '../route-extractors/fastapi-router-bindings.js';
 
+/**
+ * Report a non-fatal worker issue to the pool over IPC so a caught error is not
+ * invisible to the operator (#2264). The pool logs it on the main thread AND
+ * resets the worker idle timer (so a worker grinding through failing files isn't
+ * falsely idle-evicted). Falls back to the local logger when there's no parent —
+ * this code also runs on the main thread in tests / the non-worker path. Fatal,
+ * group-aborting errors go through the message handler's
+ * `{ type: 'error', errorStack }` channel instead.
+ */
+function reportWarning(message: string): void {
+  if (parentPort) {
+    parentPort.postMessage({ type: 'warning', message });
+  } else {
+    logger.warn(message);
+  }
+}
+
 const processFileGroup = (
   files: ParseWorkerInput[],
   language: SupportedLanguages,
@@ -1154,12 +1180,9 @@ const processFileGroup = (
     const lang = parser.getLanguage();
     query = new Parser.Query(lang, queryString);
   } catch (err) {
-    const message = `Query compilation failed for ${language}: ${err instanceof Error ? err.message : String(err)}`;
-    if (parentPort) {
-      parentPort.postMessage({ type: 'warning', message });
-    } else {
-      logger.warn(message);
-    }
+    reportWarning(
+      `Query compilation failed for ${language}: ${err instanceof Error ? err.message : String(err)}`,
+    );
     return;
   }
 
@@ -1203,7 +1226,7 @@ const processFileGroup = (
         bufferSize: getTreeSitterBufferSize(parseContent),
       });
     } catch (err) {
-      logger.warn(
+      reportWarning(
         `Failed to parse file ${file.path}: ${err instanceof Error ? err.message : String(err)}`,
       );
       continue;
@@ -1216,7 +1239,7 @@ const processFileGroup = (
     try {
       matches = query.matches(tree.rootNode);
     } catch (err) {
-      logger.warn(
+      reportWarning(
         `Query execution failed for ${file.path}: ${err instanceof Error ? err.message : String(err)}`,
       );
       continue;
@@ -1237,13 +1260,7 @@ const processFileGroup = (
       provider,
       parseContent,
       file.path,
-      (message) => {
-        if (parentPort) {
-          parentPort.postMessage({ type: 'warning', message });
-        } else {
-          logger.warn(message);
-        }
-      },
+      reportWarning,
       tree,
       scopeSourceKind,
     );
@@ -1306,9 +1323,9 @@ const processFileGroup = (
             };
           }
         } catch (err) {
-          const message = `CFG build failed for ${file.path}: ${err instanceof Error ? err.message : String(err)}`;
-          if (parentPort) parentPort.postMessage({ type: 'warning', message });
-          else logger.warn(message);
+          reportWarning(
+            `CFG build failed for ${file.path}: ${err instanceof Error ? err.message : String(err)}`,
+          );
         }
       }
 
@@ -2109,7 +2126,12 @@ const processFileGroup = (
           if (parsedTemplateConstraints !== undefined) {
             constraintsTag = templateConstraintsIdTag(parsedTemplateConstraints);
           }
-        } catch {
+        } catch (err) {
+          // Optional C++ template-constraint enrichment: fall back to no tag, but
+          // surface the failure (#2264) — matches the CFG-build warning above.
+          reportWarning(
+            `Template-constraint extraction failed for ${file.path}: ${err instanceof Error ? err.message : String(err)}`,
+          );
           parsedTemplateConstraints = undefined;
           constraintsTag = '';
         }

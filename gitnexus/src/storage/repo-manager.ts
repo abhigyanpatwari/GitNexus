@@ -63,6 +63,15 @@ export const canonicalizePath = (p: string): string => {
   }
 };
 
+/**
+ * Compare two already-canonicalised registry paths. Case-insensitive on Windows
+ * (its filesystem is), case-sensitive elsewhere. Both arguments must already be
+ * run through {@link canonicalizePath}; this is the single comparison the registry
+ * lookups/dedup/finalize checks all share so they answer identically.
+ */
+export const registryPathEquals = (a: string, b: string): boolean =>
+  process.platform === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b;
+
 export interface RepoMeta {
   repoPath: string;
   lastCommit: string;
@@ -709,7 +718,7 @@ export const registerRepo = async (
     // to a stable key instead of throwing.
     const a = canonicalizePath(e.path);
     const b = canonicalInput;
-    return process.platform === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b;
+    return registryPathEquals(a, b);
   });
   const existing = existingIdx >= 0 ? entries[existingIdx] : null;
 
@@ -817,9 +826,7 @@ export const registerRepo = async (
   const fresh = await readRegistry();
   const freshIdx = fresh.findIndex((e) => {
     const a = canonicalizePath(e.path);
-    return process.platform === 'win32'
-      ? a.toLowerCase() === canonicalInput.toLowerCase()
-      : a === canonicalInput;
+    return registryPathEquals(a, canonicalInput);
   });
   const freshExisting = freshIdx >= 0 ? fresh[freshIdx] : null;
   let merged: RegistryEntry;
@@ -858,9 +865,7 @@ export const unregisterRepo = async (repoPath: string): Promise<void> => {
   // `resolveRegistryEntry` post-#1003 review.
   const resolved = canonicalizePath(repoPath);
   const entries = await readRegistry();
-  const matches = (a: string, b: string) =>
-    process.platform === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b;
-  const filtered = entries.filter((e) => !matches(canonicalizePath(e.path), resolved));
+  const filtered = entries.filter((e) => !registryPathEquals(canonicalizePath(e.path), resolved));
   await writeRegistry(filtered);
 };
 
@@ -874,10 +879,8 @@ export const unregisterRepo = async (repoPath: string): Promise<void> => {
  */
 export const removeBranchIndex = async (repoPath: string, branch: string): Promise<boolean> => {
   const resolved = canonicalizePath(repoPath);
-  const matches = (a: string, b: string) =>
-    process.platform === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b;
   const entries = await readRegistry();
-  const idx = entries.findIndex((e) => matches(canonicalizePath(e.path), resolved));
+  const idx = entries.findIndex((e) => registryPathEquals(canonicalizePath(e.path), resolved));
   if (idx < 0) return false;
   const entry = entries[idx];
   const before = entry.branches?.length ?? 0;
@@ -979,6 +982,18 @@ export class AnalysisNotFinalizedError extends Error {
 }
 
 /**
+ * True when the global registry already contains an entry whose canonical path
+ * matches `repoPath`. Uses the same canonical, case-folded (Windows) comparison
+ * as {@link assertAnalysisFinalized} so "is it registered?" answers identically
+ * at the analyze fast-path gate and at the finalize assertion. Pure read.
+ */
+export const isRepoRegistered = async (repoPath: string): Promise<boolean> => {
+  const entries = await readRegistry();
+  const canonicalInput = canonicalizePath(path.resolve(repoPath));
+  return entries.some((e) => registryPathEquals(canonicalizePath(e.path), canonicalInput));
+};
+
+/**
  * Verify that a successful `analyze` call actually produced an indexed,
  * registered repo on disk. Two checks, both strictly required:
  *
@@ -1002,14 +1017,7 @@ export const assertAnalysisFinalized = async (repoPath: string): Promise<void> =
     throw new AnalysisNotFinalizedError(resolved, storagePath, 'meta', getGlobalRegistryPath());
   }
 
-  const entries = await readRegistry();
-  const canonicalInput = canonicalizePath(resolved);
-  const isWin = process.platform === 'win32';
-  const found = entries.some((e) => {
-    const a = canonicalizePath(e.path);
-    return isWin ? a.toLowerCase() === canonicalInput.toLowerCase() : a === canonicalInput;
-  });
-  if (!found) {
+  if (!(await isRepoRegistered(resolved))) {
     throw new AnalysisNotFinalizedError(
       resolved,
       storagePath,
@@ -1125,7 +1133,7 @@ export const resolveRegistryEntry = (entries: RegistryEntry[], target: string): 
   const pathMatch = entries.find((e) => {
     const a = canonicalizePath(e.path);
     const b = canonicalTarget;
-    return process.platform === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b;
+    return registryPathEquals(a, b);
   });
   if (pathMatch) return pathMatch;
 

@@ -101,6 +101,12 @@ export class JobManager {
     const job = this.jobs.get(id);
     if (!job) return;
 
+    // Once a job is terminal (complete/failed) its outcome is immutable — drop any
+    // later update so a worker `complete` racing a SIGTERM-driven `error` (or vice
+    // versa) can't flip a reported result (#2264 P3). The transition INTO a terminal
+    // state still applies because `job.status` is not yet terminal at that point.
+    if (this.isTerminal(job.status)) return;
+
     Object.assign(job, update);
 
     if (this.isTerminal(job.status)) {

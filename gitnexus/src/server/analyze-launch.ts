@@ -81,6 +81,13 @@ export function createLaunchAnalysisWorker(deps: LaunchDeps) {
       });
 
       child.on('message', (msg: WorkerMessage) => {
+        // Ignore any message once the job is terminal — a late worker message (a
+        // SIGTERM-driven `error` after `complete`, or vice versa) must not
+        // re-release the repo lock or flip the reported status. Mirrors the `exit`
+        // handler guard below; pairs with the worker's terminal-claim (#2264 P3).
+        const current = jobManager.getJob(job.id);
+        if (!current || current.status === 'complete' || current.status === 'failed') return;
+
         if (msg.type === 'progress') {
           jobManager.updateJob(job.id, {
             status: 'analyzing',
