@@ -2067,7 +2067,7 @@ export const deleteAllCommunitiesAndProcesses = async (): Promise<{
         const rows = await result.getAll();
         const count = Number(rows[0]?.cnt ?? rows[0]?.[0] ?? 0);
         if (count > 0) {
-          await c.query(`MATCH (n:${label}) DETACH DELETE n`);
+          await closeQueryResults(await c.query(`MATCH (n:${label}) DETACH DELETE n`));
           nodesDeleted += count;
         }
       } catch {
@@ -2113,7 +2113,9 @@ export const deleteAllInterprocTaintPaths = async (): Promise<{ edgesDeleted: nu
       const rows = await result.getAll();
       const count = Number(rows[0]?.cnt ?? rows[0]?.[0] ?? 0);
       if (count > 0) {
-        await c.query(`MATCH ()-[r:CodeRelation]->() WHERE r.type = 'TAINT_PATH' DELETE r`);
+        await closeQueryResults(
+          await c.query(`MATCH ()-[r:CodeRelation]->() WHERE r.type = 'TAINT_PATH' DELETE r`),
+        );
         edgesDeleted = count;
       }
     } catch (err) {
@@ -2170,7 +2172,9 @@ export const deleteAllCallSummaries = async (): Promise<{ edgesDeleted: number }
       const rows = await result.getAll();
       const count = Number(rows[0]?.cnt ?? rows[0]?.[0] ?? 0);
       if (count > 0) {
-        await c.query(`MATCH ()-[r:CodeRelation]->() WHERE r.type = 'CALL_SUMMARY' DELETE r`);
+        await closeQueryResults(
+          await c.query(`MATCH ()-[r:CodeRelation]->() WHERE r.type = 'CALL_SUMMARY' DELETE r`),
+        );
         edgesDeleted = count;
       }
     } catch (err) {

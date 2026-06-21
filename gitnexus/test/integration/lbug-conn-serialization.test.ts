@@ -27,6 +27,18 @@ vi.mock('../../src/core/lbug/conn-lock.js', async (importOriginal) => {
 import { withConnLock } from '../../src/core/lbug/conn-lock.js';
 const lockSpy = vi.mocked(withConnLock);
 
+// Spy `closeQueryResults` (call-through) to prove the deleteAll* helpers now
+// drain/close their DELETE result, not just the count result (P2 #2264).
+vi.mock('../../src/core/lbug/query-result-utils.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../src/core/lbug/query-result-utils.js')>();
+  return {
+    ...actual,
+    closeQueryResults: vi.fn(actual.closeQueryResults) as typeof actual.closeQueryResults,
+  };
+});
+import { closeQueryResults } from '../../src/core/lbug/query-result-utils.js';
+const closeSpy = vi.mocked(closeQueryResults);
+
 withTestLbugDB('conn-serialization', () => {
   describe('singleton-conn helpers acquire withConnLock (P1 #2264)', () => {
     beforeEach(() => {
@@ -62,3 +74,30 @@ withTestLbugDB('conn-serialization', () => {
     });
   });
 });
+
+withTestLbugDB(
+  'conn-serialization-drain',
+  () => {
+    describe('deleteAll* drain their DELETE result (P2 #2264)', () => {
+      beforeEach(() => {
+        closeSpy.mockClear();
+      });
+
+      it('U4: deleteAllCommunitiesAndProcesses closes the DETACH DELETE result', async () => {
+        const { deleteAllCommunitiesAndProcesses } =
+          await import('../../src/core/lbug/lbug-adapter.js');
+        const result = await deleteAllCommunitiesAndProcesses();
+        // Seed has 1 Community, 0 Process. With the drain fix, closeQueryResults
+        // fires for: Community count, Community DETACH DELETE, Process count = 3.
+        // Without the fix the delete result is dropped → only 2 closes.
+        expect(result).toMatchObject({ nodesDeleted: 1 });
+        expect(closeSpy.mock.calls.length).toBeGreaterThanOrEqual(3);
+      });
+    });
+  },
+  {
+    seed: [
+      "CREATE (c:Community {id: 'comm:drain', label: 'Drain', heuristicLabel: 'Drain', keywords: ['x'], description: 'd', enrichedBy: 'heuristic', cohesion: 0.5, symbolCount: 1})",
+    ],
+  },
+);
