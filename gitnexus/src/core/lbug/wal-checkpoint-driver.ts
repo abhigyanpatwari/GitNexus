@@ -33,7 +33,7 @@
  */
 
 import { logger } from '../logger.js';
-import { tryFlushWAL } from './lbug-adapter.js';
+import { tryFlushWAL, markWalDriverActive } from './lbug-adapter.js';
 import { isLbugCheckpointIoError } from './lbug-config.js';
 
 /**
@@ -162,6 +162,10 @@ export const startWalCheckpointDriver = (
   let stopped = false;
   let inflight: Promise<void> | null = null;
 
+  // Arm the streamQuery guard: while this driver runs, an unlocked streamQuery on
+  // the singleton connection could race a CHECKPOINT (#2264). Cleared in stop().
+  markWalDriverActive(true);
+
   const tick = async (): Promise<void> => {
     if (stopped) return;
     // Reentrancy guard: setInterval keeps firing on its fixed cadence even when
@@ -218,6 +222,9 @@ export const startWalCheckpointDriver = (
           /* swallowed in tick() — surface path is the surrounding write */
         }
       }
+      // Disarm AFTER the in-flight CHECKPOINT drains — clearing it earlier would
+      // briefly let a streamQuery race the still-finishing CHECKPOINT (#2264).
+      markWalDriverActive(false);
     },
   };
 };

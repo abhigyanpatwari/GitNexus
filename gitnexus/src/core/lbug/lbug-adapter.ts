@@ -198,6 +198,20 @@ let conn: lbug.Connection | null = null;
 // reassigned only at open/close, never mid-load).
 const isSharedSingletonConn = (c: lbug.Connection): boolean => c === conn;
 
+// True while the manual WAL-checkpoint driver is running (toggled by the driver's
+// start/stop). `streamQuery` is deliberately NOT wrapped in withConnLock (its
+// per-row callback can re-enter the adapter), so it must NOT run while a CHECKPOINT
+// can fire on the unlocked read connection — the exact overlap the lock serializes
+// everything else against (#2264). The serve/read path never starts the driver, so
+// this stays false there; an in-process analyze overlapping a stream would trip the
+// guard in streamQuery instead of silently corrupting native state.
+let walDriverActive = false;
+
+/** Toggled by the WAL-checkpoint driver's start (true) / stop (false). @see streamQuery */
+export const markWalDriverActive = (active: boolean): void => {
+  walDriverActive = active;
+};
+
 let currentDbPath: string | null = null;
 let currentDbReadOnly = false;
 let ftsLoaded = false;
@@ -1529,6 +1543,18 @@ export const streamQuery = async (
   cypher: string,
   onRow: (row: any) => void | Promise<void>,
 ): Promise<number> => {
+  if (walDriverActive) {
+    // streamQuery reads rows on the singleton connection WITHOUT withConnLock; if
+    // the WAL-checkpoint driver is live, those reads could race a CHECKPOINT — the
+    // #2264 corruption window. Today the serve/read path never runs the driver
+    // (analyze runs in a forked worker), so this fails loud only if a future
+    // in-process analyze overlaps a stream. Run analysis in a worker, or stop the
+    // driver before streaming. See conn-lock.ts.
+    throw new Error(
+      'streamQuery cannot run while the WAL-checkpoint driver is active (it would ' +
+        'race a CHECKPOINT on the unlocked read connection — #2264).',
+    );
+  }
   if (!conn) {
     throw new Error('LadybugDB not initialized. Call initLbug first.');
   }
