@@ -234,10 +234,38 @@ function getCallFuncName(node: SyntaxNode): string | null {
 }
 
 /**
+ * Find the Django project root for `startFilePath` — the nearest ancestor
+ * directory that contains a `manage.py`. Django resolves `include('app.urls')`
+ * as an absolute import from this directory (it is the entry on `sys.path`), so
+ * knowing it lets us resolve includes unambiguously even when an unrelated
+ * `app/urls.py` exists at the repo root (the monorepo wrong-app hazard).
+ * Returns the project-root directory (possibly `''` for a repo-root project),
+ * or `null` when no `manage.py` ancestor is readable.
+ */
+function findDjangoProjectRoot(
+  startFilePath: string,
+  readFile: DjangoFileReader | null | undefined,
+): string | null {
+  if (!readFile) return null;
+  let dir = startFilePath.includes('/')
+    ? startFilePath.substring(0, startFilePath.lastIndexOf('/'))
+    : '';
+  for (;;) {
+    const candidate = dir ? `${dir}/manage.py` : 'manage.py';
+    if (readFile(candidate) !== null) return dir;
+    if (!dir) return null;
+    const sep = dir.lastIndexOf('/');
+    dir = sep < 0 ? '' : dir.substring(0, sep);
+  }
+}
+
+/**
  * Given a Django dotted module path like `app.submodule.urls`,
  * try multiple path resolution strategies to find the file on disk.
  *
  * Strategies tried in order:
+ *  0. Anchored at the Django project root (manage.py dir) — the authoritative
+ *     resolution for absolute module paths, when the project root is known
  *  1. Direct dot-to-slash: `module/path.py` and `module/path/__init__.py`
  *  2. Relative to the current file's directory
  *  3. Walk up the directory tree from the current file, trying each ancestor
@@ -246,10 +274,20 @@ function resolveIncludedFile(
   modulePath: string,
   currentFilePath: string,
   readFile: DjangoFileReader,
+  projectRoot: string | null,
 ): { filePath: string; content: string } | null {
   const basePath = modulePathToFilePath(modulePath);
 
   const candidates: string[] = [];
+
+  // Strategy 0: anchored at the project root (sys.path entry). Tried first so
+  // `include('app.urls')` from backend/ resolves to backend/app/urls.py rather
+  // than a same-named app at the repo root.
+  if (projectRoot !== null) {
+    const anchored = projectRoot ? `${projectRoot}/${basePath}` : basePath;
+    candidates.push(anchored + '.py');
+    candidates.push(anchored + '/__init__.py');
+  }
 
   // Strategy 1: direct path (app/urls.py, app/urls/__init__.py)
   candidates.push(basePath + '.py');
@@ -303,6 +341,10 @@ export function extractDjangoRoutes(
   if (routeSet.has(entryKey)) return [];
   routeSet.add(entryKey);
 
+  // Resolve the project root once (constant across the whole walk) so absolute
+  // include() module paths anchor correctly even in a monorepo.
+  const projectRoot = findDjangoProjectRoot(filePath, readFile);
+
   const listNodes = findUrlpatternsLists(tree.rootNode);
   if (listNodes.length === 0) return [];
 
@@ -353,7 +395,12 @@ export function extractDjangoRoutes(
               hasIncludeChild = true;
               const modulePath = getIncludeModulePath(child);
               if (modulePath && readFile && depth < MAX_INCLUDE_DEPTH) {
-                const resolved = resolveIncludedFile(modulePath, currentFilePath, readFile);
+                const resolved = resolveIncludedFile(
+                  modulePath,
+                  currentFilePath,
+                  readFile,
+                  projectRoot,
+                );
                 // Key the guard on (file, accumulated prefix) so the same
                 // urlconf mounted under another prefix elsewhere is still walked.
                 const childPrefix = makePrefix(routeCtx.prefix, extractStringArg(argsNode));
@@ -389,7 +436,7 @@ export function extractDjangoRoutes(
       if (funcName === DJANGO_INCLUDE_FUNCTION && readFile && depth < MAX_INCLUDE_DEPTH) {
         const modulePath = getIncludeModulePath(node);
         if (modulePath) {
-          const resolved = resolveIncludedFile(modulePath, currentFilePath, readFile);
+          const resolved = resolveIncludedFile(modulePath, currentFilePath, readFile, projectRoot);
           // Bare include() inherits the current prefix; key the guard on it so a
           // shared urlconf reached under two prefixes is walked once per prefix.
           if (resolved && !routeSet.has(includeVisitKey(resolved.filePath, routeCtx.prefix))) {

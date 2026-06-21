@@ -250,6 +250,42 @@ urlpatterns = [
     expect(routes.filter((r) => r.routePath === 'home/')).toHaveLength(1);
   });
 
+  it('resolves include() to the project-local app, not a same-named app at the repo root (monorepo)', () => {
+    const rootApp = `
+from django.urls import path
+from . import views
+urlpatterns = [path('wrong/', views.wrong)]
+`;
+    const backendApp = `
+from django.urls import path
+from . import views
+urlpatterns = [path('right/', views.right)]
+`;
+    // A monorepo with a repo-root app/ AND a backend/ Django project that also
+    // has an app/. The manage.py at backend/ pins the project root.
+    const fsMap: Record<string, string> = {
+      'backend/manage.py': "DJANGO_SETTINGS_MODULE = 'myproj.settings'\n",
+      'app/urls.py': rootApp,
+      'backend/app/urls.py': backendApp,
+    };
+    const readFile = (p: string) =>
+      Object.prototype.hasOwnProperty.call(fsMap, p) ? fsMap[p] : null;
+
+    const routes = extract(
+      `
+from django.urls import path, include
+urlpatterns = [path('api/', include('app.urls'))]
+`,
+      'backend/myproj/urls.py',
+      readFile,
+    );
+
+    // The include resolves to backend/app/urls.py (project-local), not the
+    // repo-root app/urls.py.
+    expect(routes.map((r) => r.routePath)).toEqual(['right/']);
+    expect(routes.map((r) => r.filePath)).toEqual(['backend/app/urls.py']);
+  });
+
   it('resolves views with attribute-style references (views.function)', () => {
     const routes = extract(`
 from django.urls import path
