@@ -73,19 +73,26 @@ process.on('unhandledRejection', (reason: unknown) => {
   }
 });
 
-// Handle graceful shutdown — notify the parent over IPC, then exit. A cleanup
-// failure is reported to the parent (not swallowed), and the exit lives in
-// `finally` so it always fires even if a send() throws on a closed channel.
-process.on('SIGTERM', async () => {
-  try {
-    send({ type: 'error', message: 'Analysis cancelled (worker received SIGTERM)' });
-    await closeLbug();
-  } catch (err: unknown) {
-    const message = err instanceof Error ? err.message : 'Worker cleanup failed during SIGTERM';
-    send({ type: 'error', message });
-  } finally {
-    process.exit(0);
-  }
+// Handle cancellation / timeout shutdown (analyze-job.ts `cancelJob` sends
+// SIGTERM). Mirror the CLI SIGINT path (#2264): a best-effort CHECKPOINT that
+// SKIPS the native close. A real conn.close()/db.close() here can double-free in
+// LadybugDB's ClientContext destructor after --pdg writes, AND it would block
+// behind the in-flight COPY's connection lock — so a single cancel could abort
+// the worker or hang until the COPY releases. Bound the CHECKPOINT with a short
+// timeout; process.exit reclaims the native handles regardless. A CHECKPOINT
+// failure is reported to the parent over IPC, not swallowed; the exit lives in
+// `finally` so it always fires.
+const SIGTERM_CLEANUP_TIMEOUT_MS = 2000;
+process.on('SIGTERM', () => {
+  send({ type: 'error', message: 'Analysis cancelled (worker received SIGTERM)' });
+  void Promise.race([
+    closeLbug({ skipNativeClose: true }).catch((err: unknown) => {
+      const message =
+        err instanceof Error ? err.message : 'Worker checkpoint failed during SIGTERM';
+      send({ type: 'error', message });
+    }),
+    new Promise<void>((resolve) => setTimeout(resolve, SIGTERM_CLEANUP_TIMEOUT_MS)),
+  ]).finally(() => process.exit(0));
 });
 
 // Listen for start command from parent — guarded against re-entry
