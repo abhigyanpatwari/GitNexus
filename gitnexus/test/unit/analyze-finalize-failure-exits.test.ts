@@ -85,8 +85,18 @@ describe('analyzeCommand — finalize-failure must terminate, not hang (#2264 P1
   const baselineUnhandled = process.listeners('unhandledRejection');
   const baselineUncaught = process.listeners('uncaughtException');
   let exitSpy: MockInstance<typeof process.exit>;
+  let savedNodeOptions: string | undefined;
 
   beforeAll(() => {
+    // analyzeCommand calls ensureHeap(), which RE-EXECS the process — spawning
+    // `node <heap-flags> <argv>` where argv is vitest's, killing the forked
+    // worker — UNLESS NODE_OPTIONS already carries a heap cap (analyze.ts:498).
+    // Locally a high V8 heap-size-limit also short-circuits it (analyze.ts:501),
+    // which is why this only crashed on the memory-constrained CI runner. Pre-set
+    // the cap so ensureHeap returns early — the same workaround cli-e2e uses
+    // (#2264 CI). Restored in afterAll so a reused worker's later files are clean.
+    savedNodeOptions = process.env.NODE_OPTIONS;
+    process.env.NODE_OPTIONS = `${process.env.NODE_OPTIONS ?? ''} --max-old-space-size=8192`.trim();
     // Mock process.exit for the WHOLE file — a fatal handler firing between tests
     // (after a per-test spy would have been restored) can't really exit.
     exitSpy = vi.spyOn(process, 'exit').mockImplementation(() => undefined as never);
@@ -105,6 +115,7 @@ describe('analyzeCommand — finalize-failure must terminate, not hang (#2264 P1
       .filter((l) => !baselineUncaught.includes(l))
       .forEach((l) => process.removeListener('uncaughtException', l));
     exitSpy.mockRestore();
+    process.env.NODE_OPTIONS = savedNodeOptions ?? '';
     process.exitCode = 0;
   });
 
