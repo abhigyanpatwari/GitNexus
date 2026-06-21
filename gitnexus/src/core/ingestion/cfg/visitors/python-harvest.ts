@@ -116,10 +116,10 @@ export class PythonHarvester {
   /** >0 while walking a conditionally-evaluated subexpression — defs become may-defs. */
   private conditionalDepth = 0;
   /**
-   * `call` node id → binding indices its single-target result is assigned to
-   * (`x = f()` ⇒ `[x]`). Populated just before the value walk reaches the call
-   * (see {@link registerResultDefs}) and consumed by {@link visitCall}. Mirrors
-   * the Go harvester's `resultDefTargets`.
+   * `call` node id → binding indices its result is assigned to (`x = f()` ⇒
+   * `[x]`, `a, b = f()` ⇒ `[a, b]`). Populated just before the value walk reaches
+   * the call (see {@link registerResultDefs}) and consumed by {@link visitCall}.
+   * Mirrors the Go harvester's `resultDefTargets`.
    */
   private readonly resultDefTargets = new Map<number, number[]>();
 
@@ -227,7 +227,18 @@ export class PythonHarvester {
    */
   private prescan(node: SyntaxNode): void {
     const t = node.type;
-    if (NESTED_FUNCTION_TYPES.has(t) && node.id !== this.fnId) return;
+    if (NESTED_FUNCTION_TYPES.has(t) && node.id !== this.fnId) {
+      if (t === 'function_definition') {
+        const name = node.childForFieldName('name');
+        if (name?.type === 'identifier') this.declare(name, 'function');
+      }
+      return;
+    }
+    if (t === 'class_definition') {
+      const name = node.childForFieldName('name');
+      if (name?.type === 'identifier') this.declare(name, 'class');
+      return;
+    }
 
     switch (t) {
       case 'global_statement':
@@ -555,9 +566,9 @@ export class PythonHarvester {
         const left = node.childForFieldName('left');
         const right = node.childForFieldName('right');
         // Register result-defs BEFORE walking the value so the nested call site
-        // (reached during the value walk) carries them — single identifier
-        // target only (`x = f()`); a tuple/attribute LHS attaches nothing.
-        if (left?.type === 'identifier' && right) this.registerResultDefs(right, [left]);
+        // (reached during the value walk) carries them. Plain and unpack targets
+        // are preserved; attribute/subscript LHS attaches nothing.
+        if (left && right) this.registerResultDefs(right, this.targetDefIndices(left));
         if (right) this.walkValue(right, acc);
         if (left) this.defTargets(left, acc);
         return;
@@ -581,7 +592,9 @@ export class PythonHarvester {
         // walrus `(n := v)` — `n` is a def, `v` a use.
         const name = node.childForFieldName('name');
         const value = node.childForFieldName('value');
-        if (name?.type === 'identifier' && value) this.registerResultDefs(value, [name]);
+        if (name?.type === 'identifier' && value) {
+          this.registerResultDefs(value, this.targetDefIndices(name));
+        }
         if (value) this.walkValue(value, acc);
         if (name?.type === 'identifier') this.def(name, acc);
         return;
@@ -673,25 +686,32 @@ export class PythonHarvester {
     if (body) this.walkValue(body, acc);
   }
 
-  // ── taint-site harvest (#2227 follow-up) ─────────────────────────────────
-
-  /**
-   * When `value`'s root (after stripping parens) is a `call`, remember that
-   * call site should carry `resultDefs` — the binding indices of `targets`
-   * (def-position identifiers). Consumed by {@link visitCall} once the value
-   * walk reaches the node. Single-target only (the caller restricts to a plain
-   * identifier LHS); the blank identifier (`_`) binds nothing and is skipped.
-   */
-  private registerResultDefs(value: SyntaxNode, targets: readonly SyntaxNode[]): void {
-    const root = this.unwrapValue(value);
-    if (root.type !== 'call') return;
-    const defs: number[] = [];
-    for (const target of targets) {
-      if (target.type !== 'identifier' || target.text === '_') continue;
-      defs.push(this.resolve(target));
+  /** Binding indices assigned by a target pattern, without mutating statement facts. */
+  private targetDefIndices(target: SyntaxNode): number[] {
+    if (target.type === 'identifier') return target.text === '_' ? [] : [this.resolve(target)];
+    if (PATTERN_LIST_TYPES.has(target.type)) {
+      const out: number[] = [];
+      for (let i = 0; i < target.namedChildCount; i++) {
+        const c = target.namedChild(i);
+        if (c) out.push(...this.targetDefIndices(c));
+      }
+      return out;
     }
-    if (defs.length > 0) this.resultDefTargets.set(root.id, defs);
+    if (target.type === 'list_splat_pattern') {
+      const id = target.namedChild(0);
+      return id ? this.targetDefIndices(id) : [];
+    }
+    return [];
   }
+
+  /** Record result defs for a call-valued assignment. */
+  private registerResultDefs(value: SyntaxNode, defs: readonly number[]): void {
+    if (defs.length === 0) return;
+    const root = this.unwrapValue(value);
+    if (root.type === 'call') this.resultDefTargets.set(root.id, [...defs]);
+  }
+
+  // ── taint-site harvest (#2227 follow-up) ─────────────────────────────────
 
   /** Strip `parenthesized_expression` wrappers around a value (`(f())`). */
   private unwrapValue(node: SyntaxNode): SyntaxNode {
@@ -740,28 +760,37 @@ export class PythonHarvester {
     }
     const resultDefs = this.resultDefTargets.get(node.id);
     if (resultDefs !== undefined) acc.setSiteResultDefs(siteIdx, resultDefs);
-    if (argsNode) {
-      let pos = 0;
-      for (let i = 0; i < argsNode.namedChildCount; i++) {
-        const arg = argsNode.namedChild(i);
-        if (!arg || arg.type === 'comment') continue;
-        if (arg.type === 'list_splat' || arg.type === 'dictionary_splat') {
-          // `f(*args)` / `f(**kw)` — a spread. Mark the first spread position so
-          // the matcher degrades soundly; the inner value still walks.
-          acc.setFrameArg(pos);
-          acc.setSiteSpread(siteIdx, pos);
-          const inner = arg.namedChild(0);
-          if (inner) this.walkValue(inner, acc);
-        } else {
-          // Positional or `keyword_argument` — the `keyword_argument` case in
-          // `walkValue` walks only its `value`, so the key name is not a use.
-          acc.setFrameArg(pos);
-          this.walkValue(arg, acc);
-        }
+    this.walkArgs(argsNode, acc, siteIdx);
+    acc.popFrame();
+  }
+
+  /** Walk arguments, assigning only positional values to positional sink slots. */
+  private walkArgs(args: SyntaxNode | null, acc: FactAccumulator, siteIdx: number): void {
+    if (!args) return;
+    let pos = 0;
+    for (let i = 0; i < args.namedChildCount; i++) {
+      const arg = args.namedChild(i);
+      if (!arg || arg.type === 'comment') continue;
+      if (arg.type === 'keyword_argument') {
+        const value = arg.childForFieldName('value');
+        // SiteRecord has no keyword-name metadata. Keep the value's ordinary
+        // uses/sources, but do not guess a positional sink slot from source order.
+        if (value) acc.suppressOccurrences(() => this.walkValue(value, acc));
+      } else if (arg.type === 'list_splat') {
+        acc.setFrameArg(pos);
+        acc.setSiteSpread(siteIdx, pos);
+        const inner = arg.namedChild(0);
+        if (inner) this.walkValue(inner, acc);
+        pos++;
+      } else if (arg.type === 'dictionary_splat') {
+        const inner = arg.namedChild(0);
+        if (inner) acc.suppressOccurrences(() => this.walkValue(inner, acc));
+      } else {
+        acc.setFrameArg(pos);
+        this.walkValue(arg, acc);
         pos++;
       }
     }
-    acc.popFrame();
   }
 
   /**

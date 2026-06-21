@@ -18,6 +18,7 @@
 import { createHash } from 'node:crypto';
 import { SupportedLanguages } from 'gitnexus-shared';
 import type { SourceSinkSanitizerSpec } from './source-sink-config.js';
+import { PYTHON_TAINT_MODEL } from './python-model.js';
 import { registerSourceSinkConfig } from './source-sink-registry.js';
 
 /**
@@ -78,7 +79,11 @@ export const TS_JS_TAINT_MODEL: SourceSinkSanitizerSpec = {
  * array order is semantic (entry identity) and intentionally preserved.
  */
 export function computeTaintModelVersion(spec: SourceSinkSanitizerSpec): string {
-  return createHash('sha256').update(canonicalJson(spec)).digest('hex').slice(0, 12);
+  return computeModelDigest(spec);
+}
+
+function computeModelDigest(value: unknown): string {
+  return createHash('sha256').update(canonicalJson(value)).digest('hex').slice(0, 12);
 }
 
 function canonicalJson(value: unknown): string {
@@ -93,16 +98,26 @@ function canonicalJson(value: unknown): string {
   return JSON.stringify(value);
 }
 
-/** Version stamp of the built-in TS/JS model (joins the RepoMeta pdg key in U5). */
-export const taintModelVersion: string = computeTaintModelVersion(TS_JS_TAINT_MODEL);
+export const BUILTIN_TAINT_MODELS = {
+  [SupportedLanguages.JavaScript]: TS_JS_TAINT_MODEL,
+  [SupportedLanguages.Python]: PYTHON_TAINT_MODEL,
+  [SupportedLanguages.TypeScript]: TS_JS_TAINT_MODEL,
+} as const satisfies Record<string, SourceSinkSanitizerSpec>;
 
 /**
- * Register the built-in model for TypeScript and JavaScript. Explicit init
- * seam for the U4 emit path (call before the pdg window consumes the
- * registry); idempotent. Vue and other TS-adjacent language ids are
- * deliberately NOT registered — the M3 scope is TS/JS only.
+ * Version stamp of every built-in model (joins the RepoMeta pdg key in U5).
+ * Adding a language model must invalidate existing persisted taint findings.
+ */
+export const taintModelVersion: string = computeModelDigest(BUILTIN_TAINT_MODELS);
+
+/**
+ * Register the built-in models for TypeScript, JavaScript, and Python.
+ * Explicit init seam for the U4 emit path (call before the pdg window
+ * consumes the registry); idempotent. Other language ids remain unregistered
+ * until they have a dedicated model.
  */
 export function registerBuiltinTaintModels(): void {
   registerSourceSinkConfig(SupportedLanguages.TypeScript, TS_JS_TAINT_MODEL);
   registerSourceSinkConfig(SupportedLanguages.JavaScript, TS_JS_TAINT_MODEL);
+  registerSourceSinkConfig(SupportedLanguages.Python, PYTHON_TAINT_MODEL);
 }

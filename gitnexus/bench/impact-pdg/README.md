@@ -227,10 +227,14 @@ analyze via a temp `GITNEXUS_HOME`, mock-free**. Per fixture:
    first, keeping the source tree clean).
 2. **Shell out** to the real CLI as a child process — child-process isolation
    sidesteps `process.exit`; real `saveMeta` + `registerRepo` land in the temp
-   home; parse workers spawn from `dist/` (so the harness needs a built `dist/`):
+   home. The harness prefers the built `dist/` CLI (plain JS, no tsx; the parse
+   workers it spawns also load from `dist/`), so it needs a built `dist/`; it
+   falls back to tsx's own CLI over `src/` for build-free local runs. (`node
+   --import tsx src/cli/index.ts` is avoided: Node ≥22.18 native type-stripping
+   breaks the `.ts` entry's `./lazy-action.js`→`.ts` import resolution.)
 
    ```
-   node --import tsx src/cli/index.ts analyze <fixtureCopy> --pdg --skip-git --index-only
+   node dist/cli/index.js analyze <fixtureCopy> --pdg --skip-git --index-only
    ```
 3. `new LocalBackend(); await init()` resolves the fixture via the **real**
    registry (the parent process sets `GITNEXUS_HOME` too, so `init()` reads the
