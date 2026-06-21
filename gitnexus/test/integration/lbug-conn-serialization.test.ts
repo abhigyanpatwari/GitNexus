@@ -92,6 +92,20 @@ withTestLbugDB('conn-serialization', () => {
       expect(cached.embeddings).toEqual([]);
       expect(cached.embeddingNodeIds.size).toBe(0);
     });
+
+    it('U4: deleteAllInterprocTaintPaths routes through withConnLock', async () => {
+      const { deleteAllInterprocTaintPaths } = await import('../../src/core/lbug/lbug-adapter.js');
+      const result = await deleteAllInterprocTaintPaths();
+      expect(lockSpy).toHaveBeenCalled();
+      expect(result).toMatchObject({ edgesDeleted: 0 });
+    });
+
+    it('U4: deleteAllCallSummaries routes through withConnLock', async () => {
+      const { deleteAllCallSummaries } = await import('../../src/core/lbug/lbug-adapter.js');
+      const result = await deleteAllCallSummaries();
+      expect(lockSpy).toHaveBeenCalled();
+      expect(result).toMatchObject({ edgesDeleted: 0 });
+    });
   });
 });
 
