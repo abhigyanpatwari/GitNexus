@@ -53,21 +53,13 @@ const FASTAPI_APP_PATTERNS = compilePatterns({
   ],
 } satisfies LanguagePatterns<Record<string, never>>);
 
-// ─── Provider: Django path()/re_path()/url() ─────────────────────────
-const DJANGO_PATH_PATTERNS = compilePatterns({
-  name: 'python-django-path',
-  language: Python,
-  patterns: [
-    {
-      meta: {},
-      query: `
-        (call
-          function: (identifier) @func (#match? @func "^(path|re_path)$")
-          arguments: (argument_list . (string) @path))
-      `,
-    },
-  ],
-} satisfies LanguagePatterns<Record<string, never>>);
+// NOTE: Django providers are NOT extracted by this per-file source scan.
+// A standalone scan of `path()`/`re_path()` calls cannot tell a route from an
+// `include()` mount point, nor compose the include() prefix across files, so it
+// emitted bogus fragments (e.g. `/api` for a mount and `/items` un-prefixed
+// instead of the real `/api/items`). Django provider contracts come from the
+// graph Route nodes, which the ingestion route extractor builds with the
+// includes already composed.
 
 const FASTAPI_ROUTER_PATTERNS = compilePatterns({
   name: 'python-fastapi-router',
@@ -82,21 +74,6 @@ const FASTAPI_ROUTER_PATTERNS = compilePatterns({
               object: (identifier) @obj (#eq? @obj "router")
               attribute: (identifier) @method (#match? @method "^(get|post|put|delete|patch)$"))
             arguments: (argument_list . (string) @path)))
-      `,
-    },
-  ],
-} satisfies LanguagePatterns<Record<string, never>>);
-
-const DJANGO_URL_PATTERNS = compilePatterns({
-  name: 'python-django-url',
-  language: Python,
-  patterns: [
-    {
-      meta: {},
-      query: `
-        (call
-          function: (identifier) @func (#eq? @func "url")
-          arguments: (argument_list . (string) @pattern . (identifier) @view))
       `,
     },
   ],
@@ -970,35 +947,9 @@ export const PYTHON_HTTP_PLUGIN: HttpLanguagePlugin = {
       });
     }
 
-    // Providers: Django path()/re_path()/url()
-    for (const match of runCompiledPatterns(DJANGO_PATH_PATTERNS, tree)) {
-      const pathNode = match.captures.path;
-      if (!pathNode) continue;
-      const path = unquoteLiteral(pathNode.text);
-      if (path === null) continue;
-      out.push({
-        role: 'provider',
-        framework: 'django',
-        method: '*',
-        path,
-        name: null,
-        confidence: 0.7,
-      });
-    }
-    for (const match of runCompiledPatterns(DJANGO_URL_PATTERNS, tree)) {
-      const patternNode = match.captures.pattern;
-      if (!patternNode) continue;
-      const path = unquoteLiteral(patternNode.text);
-      if (path === null) continue;
-      out.push({
-        role: 'provider',
-        framework: 'django',
-        method: '*',
-        path,
-        name: null,
-        confidence: 0.7,
-      });
-    }
+    // Django providers come from the graph Route nodes (includes composed by
+    // the ingestion route extractor), not a per-file source scan — see the note
+    // at the top of this file.
 
     // Providers: FastAPI @router.<verb>("/path") — must be joined
     // with the prefix(es) declared at the include_router site. When
