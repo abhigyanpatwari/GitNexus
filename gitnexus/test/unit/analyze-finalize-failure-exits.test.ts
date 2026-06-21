@@ -10,14 +10,15 @@
  * test that mocks run-analyze — the DB is never opened), the wrapper must NOT
  * force-exit, preserving the soft return those tests rely on.
  *
- * Worker-safety: `analyzeCommand` calls `installFatalHandlers()`, which registers
- * global `unhandledRejection` / `uncaughtException` handlers that call the REAL
- * `process.exit(1)`. Across this file's `vi.resetModules()` reimports those
- * accumulate on `process`, and a stray async rejection firing one while no
- * `process.exit` spy is active would kill the forked vitest worker ("Worker
- * exited unexpectedly"). So we keep `process.exit` spied for the WHOLE file and
- * strip the handlers `installFatalHandlers` added in `afterAll`, and reset
- * `process.exitCode` so the worker exits clean.
+ * Worker-safety (#2264 CI): the module is imported ONCE and the mocks are driven
+ * per-test via `mockReturnValue`. The earlier `vi.resetModules()` + per-test
+ * `await import('analyze.js')` re-instrumented the ENTIRE analyze module graph on
+ * every test; under `--coverage` on the memory-constrained CI runner that
+ * OOM/crashed the forked worker ("Worker exited unexpectedly"), even though it
+ * passed locally. `analyzeCommand` also installs global fatal handlers
+ * (installFatalHandlers) that call the REAL process.exit(1); we keep process.exit
+ * spied for the whole file so one firing can't kill the worker, strip the handlers
+ * it added in afterAll, and reset process.exitCode so the worker exits clean.
  */
 import {
   afterAll,
@@ -75,24 +76,26 @@ vi.mock('../../src/core/ingestion/utils/max-file-size.js', () => ({
   getMaxFileSizeBannerMessage: vi.fn(() => null),
 }));
 
+// Imported ONCE (not re-imported per test) — see the worker-safety note above.
+import { analyzeCommand } from '../../src/cli/analyze.js';
+
 describe('analyzeCommand — finalize-failure must terminate, not hang (#2264 P1)', () => {
   // Snapshot the fatal-handler listeners present BEFORE this file ran (vitest's
-  // own) so afterAll can strip only the ones installFatalHandlers added, leaving
-  // vitest's intact for the rest of the worker's life.
+  // own) so afterAll strips only the ones installFatalHandlers added.
   const baselineUnhandled = process.listeners('unhandledRejection');
   const baselineUncaught = process.listeners('uncaughtException');
   let exitSpy: MockInstance<typeof process.exit>;
 
   beforeAll(() => {
-    // Mock process.exit for the WHOLE file — a fatal handler firing between
-    // tests (after a per-test spy would have been restored) can't really exit.
+    // Mock process.exit for the WHOLE file — a fatal handler firing between tests
+    // (after a per-test spy would have been restored) can't really exit.
     exitSpy = vi.spyOn(process, 'exit').mockImplementation(() => undefined as never);
   });
 
   afterAll(() => {
-    // Strip the unhandledRejection/uncaughtException handlers installFatalHandlers
-    // added, BEFORE restoring the real process.exit — so no stray rejection during
-    // teardown can fire a real exit. Only remove non-baseline (vitest's) listeners.
+    // Strip the handlers installFatalHandlers added BEFORE restoring the real
+    // process.exit, so no stray rejection during teardown fires a real exit. Only
+    // remove non-baseline (vitest's own) listeners.
     process
       .listeners('unhandledRejection')
       .filter((l) => !baselineUnhandled.includes(l))
@@ -106,7 +109,6 @@ describe('analyzeCommand — finalize-failure must terminate, not hang (#2264 P1
   });
 
   beforeEach(() => {
-    vi.resetModules();
     exitSpy.mockClear();
     runFullAnalysisMock.mockReset();
     // Full analysis succeeded (NOT the alreadyUpToDate fast path) → skip-closed.
@@ -132,14 +134,12 @@ describe('analyzeCommand — finalize-failure must terminate, not hang (#2264 P1
 
   it('force-exits when native handles are still open (isLbugReady true)', async () => {
     isLbugReadyMock.mockReturnValue(true);
-    const { analyzeCommand } = await import('../../src/cli/analyze.js');
     await analyzeCommand(undefined, {});
     expect(exitSpy).toHaveBeenCalledWith(1);
   });
 
   it('does NOT force-exit when no handles are open (isLbugReady false) — soft return preserved', async () => {
     isLbugReadyMock.mockReturnValue(false);
-    const { analyzeCommand } = await import('../../src/cli/analyze.js');
     await analyzeCommand(undefined, {});
     expect(exitSpy).not.toHaveBeenCalled();
     expect(process.exitCode).toBe(1);
