@@ -43,6 +43,16 @@ export const WEB_CLIENT_SHORT_TO_HTTP: Record<string, string> = {
 };
 
 /**
+ * Accepted HTTP verbs for the WebClient long form
+ * `webClient.method(HttpMethod.X).uri("/y")`. The verb is captured as the
+ * literal `HttpMethod.X` field name (`GET`, `POST`, …); HEAD/OPTIONS/TRACE are
+ * intentionally excluded for symmetry with the short form
+ * (`WEB_CLIENT_SHORT_TO_HTTP`). Shared so the Java and Kotlin long-form scans
+ * gate verbs identically.
+ */
+export const WEB_CLIENT_LONG_VERB_RE = /^(GET|POST|PUT|DELETE|PATCH)$/;
+
+/**
  * Spring 6 declarative HTTP Interface shortcut annotation → HTTP verb.
  *
  * `@GetExchange`/`@PostExchange`/… on a service interface proxied by

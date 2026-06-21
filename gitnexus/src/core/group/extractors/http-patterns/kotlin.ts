@@ -19,6 +19,7 @@ import {
 import {
   REST_TEMPLATE_TO_HTTP,
   WEB_CLIENT_SHORT_TO_HTTP,
+  WEB_CLIENT_LONG_VERB_RE,
   EXCHANGE_ANNOTATION_TO_HTTP,
   parseRequestLine,
   joinPath,
@@ -102,15 +103,9 @@ try {
 // `spring-consumer-shared.ts` / `spring-shared.ts` so the Kotlin and Java
 // plugins emit identical contract IDs.
 
-/**
- * Allowed HTTP verbs for the WebClient long-form path
- * `webClient.method(HttpMethod.X).uri("/y")`. Compiled once at module
- * load (instead of inside the scan loop) per maintainer feedback on
- * PR #1884. Mirrors the keys of `WEB_CLIENT_SHORT_TO_HTTP` above —
- * keeping HEAD/OPTIONS/TRACE intentionally excluded for symmetry
- * with the short form and the Java plugin.
- */
-const WEB_CLIENT_LONG_VERB_RE = /^(GET|POST|PUT|DELETE|PATCH)$/;
+// The WebClient long-form verb gate (`WEB_CLIENT_LONG_VERB_RE`) is imported from
+// `spring-consumer-shared.ts` so the Java and Kotlin long-form scans accept the
+// same verb set (HEAD/OPTIONS/TRACE excluded, matching the short form).
 
 /**
  * Accumulate a route prefix (de-duped) under a class-declaration node id. A

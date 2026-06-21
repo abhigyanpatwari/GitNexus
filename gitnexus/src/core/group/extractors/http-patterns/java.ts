@@ -14,6 +14,7 @@ import {
 import {
   REST_TEMPLATE_TO_HTTP,
   WEB_CLIENT_SHORT_TO_HTTP,
+  WEB_CLIENT_LONG_VERB_RE,
   EXCHANGE_ANNOTATION_TO_HTTP,
   parseRequestLine,
   joinPath,
@@ -239,6 +240,37 @@ const WEB_CLIENT_SHORT_FORM_PATTERNS = compilePatterns({
             object: (identifier) @obj (#eq? @obj "webClient")
             name: (identifier) @verb (#match? @verb "^(get|post|put|delete|patch)$")
             arguments: (argument_list))
+          name: (identifier) @uri_method (#eq? @uri_method "uri")
+          arguments: (argument_list . (string_literal) @path))
+      `,
+    },
+  ],
+} satisfies LanguagePatterns<Record<string, never>>);
+
+// ─── Consumer: WebClient long form `webClient.method(HttpMethod.X).uri("/y")` ─
+// The fluent long form carries the verb as a `HttpMethod.X` field access through
+// `.method(...)` and the path on a separate `.uri(...)` hop. A single structural
+// query matches the whole chain (the same field-access shape used by
+// REST_TEMPLATE_EXCHANGE_PATTERNS) — the earlier "intentionally deferred" note
+// predated the Kotlin plugin proving the structural query is enough. Variable-
+// bound verbs (`webClient.method(verb).uri(...)`) do NOT match: the value carries
+// a bare `identifier`, not a `HttpMethod.X` field access — source-scan can't
+// follow the binding (anti-overreach test pins this, parity with Kotlin).
+const WEB_CLIENT_LONG_FORM_PATTERNS = compilePatterns({
+  name: 'java-web-client-long-form',
+  language: Java,
+  patterns: [
+    {
+      meta: {},
+      query: `
+        (method_invocation
+          object: (method_invocation
+            object: (identifier) @obj (#eq? @obj "webClient")
+            name: (identifier) @method_call (#eq? @method_call "method")
+            arguments: (argument_list
+              (field_access
+                object: (identifier) @httpMethodCls (#eq? @httpMethodCls "HttpMethod")
+                field: (identifier) @verb)))
           name: (identifier) @uri_method (#eq? @uri_method "uri")
           arguments: (argument_list . (string_literal) @path))
       `,
@@ -791,9 +823,9 @@ export const JAVA_HTTP_PLUGIN: HttpLanguagePlugin = {
     }
 
     // ─── Consumers: WebClient.get().uri("path") short form ─────────
-    // Source-scan only: receiver must be named exactly `webClient`.
-    // The real long-form chain `webClient.method(HttpMethod.X).uri("/x")`
-    // needs multi-hop chain analysis and is intentionally deferred.
+    // Source-scan only: receiver must be named exactly `webClient`. The
+    // long-form chain `webClient.method(HttpMethod.X).uri("/x")` is handled
+    // separately below by WEB_CLIENT_LONG_FORM_PATTERNS.
     for (const match of runCompiledPatterns(WEB_CLIENT_SHORT_FORM_PATTERNS, tree)) {
       const verbNode = match.captures.verb;
       const pathNode = match.captures.path;
@@ -806,6 +838,29 @@ export const JAVA_HTTP_PLUGIN: HttpLanguagePlugin = {
         role: 'consumer',
         framework: 'spring-web-client',
         method: httpMethod,
+        path,
+        name: null,
+        confidence: 0.7,
+      });
+    }
+
+    // ─── Consumers: WebClient.method(HttpMethod.X).uri("path") long form ─
+    // The verb is captured as the literal `HttpMethod.X` field name; gate it on
+    // the shared verb regex (HEAD/OPTIONS/TRACE excluded, matching the short
+    // form). The short-form query requires an empty inner argument list, so it
+    // cannot also fire on this chain — no double-emit.
+    for (const match of runCompiledPatterns(WEB_CLIENT_LONG_FORM_PATTERNS, tree)) {
+      const verbNode = match.captures.verb;
+      const pathNode = match.captures.path;
+      if (!verbNode || !pathNode) continue;
+      const verbText = verbNode.text;
+      if (!WEB_CLIENT_LONG_VERB_RE.test(verbText)) continue;
+      const path = unquoteLiteral(pathNode.text);
+      if (path === null) continue;
+      out.push({
+        role: 'consumer',
+        framework: 'spring-web-client',
+        method: verbText,
         path,
         name: null,
         confidence: 0.7,

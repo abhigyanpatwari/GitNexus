@@ -1738,7 +1738,10 @@ class ApiClient {
       ).toBeDefined();
     });
 
-    it('does NOT match Java WebClient long-form method(HttpMethod).uri(...) yet', async () => {
+    it('extracts Java WebClient long-form method(HttpMethod.X).uri(...) — #2254 parity', async () => {
+      // Parity with the Kotlin plugin: a single structural query matches the
+      // verb (HttpMethod.X field access) and path. Previously deferred on the
+      // Java side; PR #2254 lifts it so .java and .kt detect it identically.
       const dir = path.join(tmpDir, 'java-web-client-long-form');
       fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
       fs.writeFileSync(
@@ -1749,6 +1752,10 @@ import org.springframework.web.reactive.function.client.WebClient;
 
 class LongFormClient {
   void run(WebClient webClient) {
+    webClient.method(HttpMethod.GET).uri("/api/get").retrieve();
+    webClient.method(HttpMethod.POST).uri("/api/post").retrieve();
+    webClient.method(HttpMethod.PUT).uri("/api/put").retrieve();
+    webClient.method(HttpMethod.DELETE).uri("/api/delete").retrieve();
     webClient.method(HttpMethod.PATCH).uri("/api/users/42").retrieve();
   }
 }
@@ -1758,8 +1765,50 @@ class LongFormClient {
       const contracts = await extractor.extract(null, dir, makeRepo(dir));
       const consumers = contracts.filter((c) => c.role === 'consumer');
 
+      for (const [verb, p] of [
+        ['GET', '/api/get'],
+        ['POST', '/api/post'],
+        ['PUT', '/api/put'],
+        ['DELETE', '/api/delete'],
+        ['PATCH', '/api/users/{param}'],
+      ]) {
+        expect(
+          consumers.find(
+            (c) =>
+              c.contractId === `http::${verb}::${p}` &&
+              c.meta.framework === 'spring-web-client' &&
+              c.confidence === 0.7,
+          ),
+        ).toBeDefined();
+      }
+      // No double-emit: the short-form query cannot also fire on the long form.
+      expect(consumers.filter((c) => c.contractId === 'http::GET::/api/get')).toHaveLength(1);
+    });
+
+    it('does NOT match Java WebClient long-form with a variable-bound verb', async () => {
+      // The value carries a bare identifier, not a HttpMethod.X field access —
+      // source-scan can't follow the binding (anti-overreach, parity with Kotlin).
+      const dir = path.join(tmpDir, 'java-web-client-long-form-var');
+      fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'src', 'VarVerbClient.java'),
+        `
+import org.springframework.http.HttpMethod;
+import org.springframework.web.reactive.function.client.WebClient;
+
+class VarVerbClient {
+  void run(WebClient webClient, HttpMethod verb) {
+    webClient.method(verb).uri("/api/users/42").retrieve();
+  }
+}
+`,
+      );
+
+      const contracts = await extractor.extract(null, dir, makeRepo(dir));
+      const consumers = contracts.filter((c) => c.role === 'consumer');
+
       expect(
-        consumers.find((c) => c.contractId === 'http::PATCH::/api/users/{param}'),
+        consumers.find((c) => c.contractId.startsWith('http::') && c.contractId.includes('/api/users')),
       ).toBeUndefined();
     });
 
