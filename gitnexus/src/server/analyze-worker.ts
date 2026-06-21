@@ -13,7 +13,7 @@
 
 import { runFullAnalysis, type AnalyzeOptions } from '../core/run-analyze.js';
 import { type AnalyzeResultIpc } from './analyze-worker-ipc.js';
-import { runWorkerAnalysis } from './analyze-worker-core.js';
+import { runWorkerAnalysis, createTerminalClaim } from './analyze-worker-core.js';
 import { assertAnalysisFinalized } from '../storage/repo-manager.js';
 import { closeLbug } from '../core/lbug/lbug-adapter.js';
 
@@ -53,6 +53,12 @@ function send(msg: WorkerMessage) {
   process.send?.(msg);
 }
 
+// Single terminal-outcome slot shared by the message handler and the SIGTERM
+// handler: whoever claims it first reports its complete/error; the other skips its
+// terminal send, so a cancel near the finish line can't also report success and a
+// late SIGTERM can't flip an already-reported job (#2264 P3).
+const claimTerminal = createTerminalClaim();
+
 // Catch uncaught exceptions and unhandled rejections — report them to the parent
 // over IPC (the same channel the analysis path uses), then exit. The report runs
 // in `try` and the exit in `finally` so a throw from send() on a closed channel
@@ -86,7 +92,12 @@ process.on('unhandledRejection', (reason: unknown) => {
 // `finally` so it always fires.
 const SIGTERM_CLEANUP_TIMEOUT_MS = 2000;
 process.on('SIGTERM', () => {
-  send({ type: 'error', message: 'Analysis cancelled (worker received SIGTERM)' });
+  // Only report the cancellation if the analysis hasn't already reported a
+  // terminal outcome (#2264 P3) — otherwise this would flip an already-complete
+  // job to failed. The cleanup + exit below run regardless.
+  if (claimTerminal()) {
+    send({ type: 'error', message: 'Analysis cancelled (worker received SIGTERM)' });
+  }
   void Promise.race([
     closeLbug({ skipNativeClose: true }).catch((err: unknown) => {
       const message =
@@ -112,6 +123,7 @@ process.on('message', async (msg: StartMessage) => {
       runFullAnalysis,
       assertAnalysisFinalized,
       send,
+      claimTerminal,
     });
   } finally {
     // LadybugDB's native module prevents clean exit — force it (same reason the
