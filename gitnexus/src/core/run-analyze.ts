@@ -1582,9 +1582,14 @@ export async function runFullAnalysis(
       /* swallow — surface path is the rethrow below */
     }
     try {
-      // Same native-close skip on the error path for CLI callers — they
-      // process.exit too, and the native close can double-free (#2264).
-      await closeLbug({ skipNativeClose: options.skipNativeCloseOnExit });
+      // Real close on the error path — NOT skipNativeClose. The CLI error
+      // handler soft-returns (process.exitCode = 1) instead of forcing exit, so
+      // the native handles must be released here or the process would hang on the
+      // live connection (#2264 review P1-2). A late-error close could still abort
+      // in LadybugDB's destructor, but that terminates the process — it does not
+      // hang. Only the success path (which guarantees a following process.exit)
+      // skips the native close.
+      await closeLbug();
     } catch {
       /* swallow */
     }
