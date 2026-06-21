@@ -576,8 +576,13 @@ function buildKotlinPlugin(language: unknown): HttpLanguagePlugin {
     const direct = annotation.namedChildren.find((c) => c.type === 'user_type');
     const ctor = annotation.namedChildren.find((c) => c.type === 'constructor_invocation');
     const userType = direct ?? ctor?.namedChildren.find((c) => c.type === 'user_type');
-    const ident = userType?.namedChildren.find((c) => c.type === 'type_identifier');
-    return ident ? (ident.text.split('.').pop() ?? ident.text) : null;
+    // A fully-qualified annotation (`@a.b.Foo`) parses to a `user_type` carrying
+    // one `type_identifier` per dotted segment (`a`, `b`, `Foo`); the trailing
+    // one is the simple name. Taking the FIRST would resolve `@org…RestController`
+    // to "org" and miss the controller.
+    const idents = userType?.namedChildren.filter((c) => c.type === 'type_identifier') ?? [];
+    const ident = idents.at(-1);
+    return ident ? ident.text : null;
   };
 
   /**
@@ -612,8 +617,11 @@ function buildKotlinPlugin(language: unknown): HttpLanguagePlugin {
     for (const child of node.namedChildren) {
       if (child.type !== 'delegation_specifier') continue;
       const userType = child.namedChildren.find((c) => c.type === 'user_type');
-      const ident = userType?.namedChildren.find((c) => c.type === 'type_identifier');
-      if (ident) out.push(ident.text.split('.').pop() ?? ident.text);
+      // FQN supertype (`: a.b.Api`) → one `type_identifier` per segment; the
+      // trailing one is the simple name (taking the first would yield "a").
+      const idents = userType?.namedChildren.filter((c) => c.type === 'type_identifier') ?? [];
+      const ident = idents.at(-1);
+      if (ident) out.push(ident.text);
     }
     return out;
   };

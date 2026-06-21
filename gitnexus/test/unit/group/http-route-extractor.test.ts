@@ -3235,6 +3235,95 @@ class WarehouseController(private val svc: Svc) : WarehouseApi {
     );
 
     itKotlinConsumer(
+      'recognises a fully-qualified @org…RestController as a controller (#2254 FQN parity)',
+      async () => {
+        // A FQN annotation parses to a user_type with one type_identifier per
+        // segment; the controller gate must read the trailing segment, not "org".
+        const dir = path.join(tmpDir, 'kotlin-fqn-controller');
+        fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+        fs.writeFileSync(
+          path.join(dir, 'src', 'WarehouseApi.kt'),
+          `package com.example
+import org.springframework.web.bind.annotation.RequestMapping
+import org.springframework.web.bind.annotation.GetMapping
+
+@RequestMapping("/warehouses")
+interface WarehouseApi {
+    @GetMapping("/{id}/stock")
+    fun listStock(id: String): Any
+}
+`,
+        );
+        fs.writeFileSync(
+          path.join(dir, 'src', 'WarehouseController.kt'),
+          `package com.example
+
+@org.springframework.web.bind.annotation.RestController
+class WarehouseController(private val svc: Svc) : WarehouseApi {
+    override fun listStock(id: String): Any = TODO()
+}
+`,
+        );
+
+        const contracts = await extractor.extract(null, dir, makeRepo(dir));
+        const providers = contracts.filter((c) => c.role === 'provider');
+
+        expect(
+          providers.find(
+            (c) =>
+              c.contractId === 'http::GET::/warehouses/{param}/stock' &&
+              c.symbolRef.filePath.endsWith('WarehouseController.kt'),
+          ),
+        ).toBeDefined();
+      },
+    );
+
+    itKotlinConsumer(
+      'resolves a fully-qualified supertype to its trailing segment for interface inheritance',
+      async () => {
+        // `: com.example.WarehouseApi` must resolve to "WarehouseApi" (trailing
+        // segment), not "com", so the inherited interface route is matched.
+        const dir = path.join(tmpDir, 'kotlin-fqn-supertype');
+        fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+        fs.writeFileSync(
+          path.join(dir, 'src', 'WarehouseApi.kt'),
+          `package com.example
+import org.springframework.web.bind.annotation.RequestMapping
+import org.springframework.web.bind.annotation.GetMapping
+
+@RequestMapping("/warehouses")
+interface WarehouseApi {
+    @GetMapping("/{id}/stock")
+    fun listStock(id: String): Any
+}
+`,
+        );
+        fs.writeFileSync(
+          path.join(dir, 'src', 'WarehouseController.kt'),
+          `package com.example
+import org.springframework.web.bind.annotation.RestController
+
+@RestController
+class WarehouseController(private val svc: Svc) : com.example.WarehouseApi {
+    override fun listStock(id: String): Any = TODO()
+}
+`,
+        );
+
+        const contracts = await extractor.extract(null, dir, makeRepo(dir));
+        const providers = contracts.filter((c) => c.role === 'provider');
+
+        expect(
+          providers.find(
+            (c) =>
+              c.contractId === 'http::GET::/warehouses/{param}/stock' &&
+              c.symbolRef.filePath.endsWith('WarehouseController.kt'),
+          ),
+        ).toBeDefined();
+      },
+    );
+
+    itKotlinConsumer(
       'a @FeignClient API interface implemented by a controller yields both a consumer and a provider',
       async () => {
         // catalog-service pattern: an `api` module publishes a @FeignClient contract that
