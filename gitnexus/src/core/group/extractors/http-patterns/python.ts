@@ -795,6 +795,15 @@ function joinPrefix(prefix: string, route: string): string {
 export const PYTHON_HTTP_PLUGIN: HttpLanguagePlugin = {
   name: 'python-http',
   language: Python,
+  // FastAPI @app/@router route decorators are emitted as Route nodes by
+  // ingestion, so the graph is authoritative for Python providers (#2138 Part 2).
+  routeCoverage: 'complete',
+  // Consumer signals scan() can detect: `requests.<verb>`/`requests.request` and
+  // `httpx` (sync/async client) calls. A provider-covered file with any of these
+  // must still be parsed (ingestion emits no FETCHES for Python). Conservative.
+  hasConsumerSignals(content) {
+    return /\brequests\s*\.|\bhttpx\b/.test(content);
+  },
   prepareRepo({ files, parser, readFile, parseSource }): RepoContext {
     return buildPythonRepoContext(files, parser, readFile, parseSource);
   },

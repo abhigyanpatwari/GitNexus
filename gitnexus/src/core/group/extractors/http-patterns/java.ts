@@ -675,6 +675,20 @@ function scanSpringProject(files: readonly HttpScanInput[]): HttpFileDetections[
 export const JAVA_HTTP_PLUGIN: HttpLanguagePlugin = {
   name: 'java-http',
   language: Java,
+  // Spring @(Get|Post|...)Mapping providers are emitted as Route nodes by the
+  // ingestion routes phase (#2078), so the graph is authoritative for Java
+  // providers — see HttpRouteExtractor's parse-skip (#2138 Part 2).
+  routeCoverage: 'complete',
+  // Consumer signals this plugin's scan() can detect: RestTemplate / WebClient /
+  // OkHttp / Java-HttpClient / Apache-HttpClient call sites and OpenFeign
+  // (`@FeignClient` + `@RequestLine`) interfaces. A provider-covered file
+  // containing any of these must still be parsed so its consumer contracts are
+  // not dropped (ingestion emits no FETCHES for Java). Conservative by design.
+  hasConsumerSignals(content) {
+    return /\brestTemplate\b|\bwebClient\b|Request\.Builder|HttpRequest|HttpMethod\.|new\s+Http(Get|Post|Put|Delete|Patch)\b|@RequestLine|@FeignClient/.test(
+      content,
+    );
+  },
   scan(tree) {
     const out: HttpDetection[] = [];
 

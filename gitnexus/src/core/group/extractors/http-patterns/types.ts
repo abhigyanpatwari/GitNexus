@@ -79,6 +79,43 @@ export interface HttpLanguagePlugin {
   /** tree-sitter grammar object (passed to the shared parser). */
   language: unknown;
   /**
+   * Whether ingestion is known to emit a `Route` graph node for EVERY
+   * provider route in this language (Spring/FastAPI/Laravel annotations are
+   * extracted into Route nodes during parse). When `'complete'`, the
+   * orchestrator may skip the source-scan + tree-sitter parse for a file whose
+   * graph provider routes all resolved a handler symbol (#2138 Part 2) — the
+   * graph is authoritative, the scan would only re-discover the same routes.
+   *
+   * Defaults to `'partial'` (the safe assumption): the source scan always runs,
+   * so a language whose ingestion coverage is incomplete never loses routes.
+   * This is a deliberate, per-language trust assertion — set it only for
+   * languages whose route ingestion is provably complete.
+   */
+  routeCoverage?: 'complete' | 'partial';
+  /**
+   * Cheap, parse-free pre-check used by the parse-skip optimization (#2138
+   * Part 2). Given a file's raw source text, return `false` ONLY when the file
+   * provably contains no outbound-HTTP (consumer) call that this plugin's
+   * `scan()` would detect; return `true` on any doubt.
+   *
+   * Why it exists: `routeCoverage: 'complete'` asserts *provider* Route-node
+   * completeness only. A provider-covered file may ALSO be a consumer (e.g. a
+   * Spring `@RestController` that calls `restTemplate`/`webClient`, a Laravel
+   * controller using Guzzle, a FastAPI handler calling `requests`/`httpx`).
+   * Ingestion's `FETCHES` edges are JS/TS-only, so the graph cannot back up
+   * those server-side consumers — they come solely from the source scan. The
+   * orchestrator may therefore skip a provider-covered file's parse only when
+   * this returns `false`; otherwise the file is still scanned so its consumer
+   * contracts are not dropped.
+   *
+   * MUST be implemented by any plugin whose `scan()` can emit `'consumer'`
+   * detections AND that declares `routeCoverage: 'complete'`; otherwise that
+   * language's provider-covered files are never parse-skipped (safe, no win).
+   * The check is intentionally conservative — over-matching only costs a parse
+   * that could have been skipped; it never drops data.
+   */
+  hasConsumerSignals?(content: string): boolean;
+  /**
    * Optional pre-pass: walk the relevant files in the repo and produce
    * an opaque context that `scan` can use to resolve cross-file facts.
    * Implementations must not throw — return undefined on any error so

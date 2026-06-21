@@ -283,22 +283,57 @@ export class HttpRouteExtractor implements ContractExtractor {
     };
 
     const files = await getScannedFiles();
-    await collectProjectDetections(files);
 
+    // Run the graph provider pass FIRST. After #2138 Part 2 it reads handler
+    // symbols from the graph (no source parse for resolved routes), so it can
+    // report which files are fully graph-covered BEFORE we decide what to
+    // parse. Files fully covered by a `routeCoverage: 'complete'` language are
+    // candidates to skip the source scan + tree-sitter parse — but only their
+    // *providers* are graph-authoritative; the consumer-safety gate below
+    // removes any candidate that still needs scanning for outbound calls.
+    const coveredFiles = new Set<string>();
     const graphProviders =
-      dbExecutor != null ? await this.extractProvidersGraph(dbExecutor, getDetections) : [];
-    // Source scan always runs to capture routes in languages/files not covered
-    // by graph edges; the glob and per-file parse results are cached above.
+      dbExecutor != null
+        ? await this.extractProvidersGraph(dbExecutor, getDetections, coveredFiles)
+        : [];
+
+    // Consumer-safety gate (#2138 Part 2): `extractProvidersGraph` marks a file
+    // covered on *provider* grounds (all HANDLES_ROUTE rows resolved + a
+    // `routeCoverage: 'complete'` language). But a provider-covered file may also
+    // be a *consumer* (a controller that calls RestTemplate/WebClient/Guzzle/
+    // requests/...), and ingestion emits no FETCHES edges for those server-side
+    // languages — the graph can't back them up. So a covered file is only truly
+    // safe to skip (parse) when its plugin can PROVE, from a cheap parse-free
+    // text scan, that it holds no such consumer call. Anything else (a positive
+    // signal, no `hasConsumerSignals` hook, or an unreadable file) stays in the
+    // scan set so its consumer contracts are preserved.
+    for (const f of [...coveredFiles]) {
+      const plugin = getPluginForFile(f);
+      const content = readSafe(repoPath, f);
+      const provenNoConsumer =
+        content != null && typeof plugin?.hasConsumerSignals === 'function'
+          ? plugin.hasConsumerSignals(content) === false
+          : false;
+      if (!provenNoConsumer) coveredFiles.delete(f);
+    }
+
+    // Everything the graph did not fully cover still gets a full source scan
+    // (fail-open: partial-coverage languages, unresolved routes, and graph-less
+    // runs all land here).
+    const scanFiles = files.filter((f) => !coveredFiles.has(f));
+
+    await collectProjectDetections(scanFiles);
+
     const providers = this.mergeGraphAndSourceContracts(
       graphProviders,
-      await this.extractProvidersSourceScan(files, getDetections),
+      await this.extractProvidersSourceScan(scanFiles, getDetections),
     );
 
     const graphConsumers =
       dbExecutor != null ? await this.extractConsumersGraph(dbExecutor, getDetections) : [];
     const consumers = this.mergeGraphAndSourceContracts(
       graphConsumers,
-      await this.extractConsumersSourceScan(files, getDetections),
+      await this.extractConsumersSourceScan(scanFiles, getDetections),
     );
 
     return [...providers, ...consumers];
@@ -324,8 +359,14 @@ export class HttpRouteExtractor implements ContractExtractor {
   private async extractProvidersGraph(
     db: CypherExecutor,
     getDetections: (rel: string) => Promise<HttpDetection[]>,
+    coveredFiles?: Set<string>,
   ): Promise<ExtractedContract[]> {
     const out: ExtractedContract[] = [];
+    // Per-file coverage tracking (#2138 Part 2): a file is "fully graph-covered"
+    // when every one of its HANDLES_ROUTE rows resolved a handlerSymbolId AND its
+    // language plugin declares `routeCoverage: 'complete'`. Such files can skip
+    // the source scan + parse entirely — the graph is authoritative for them.
+    const fileAllResolved = new Map<string, boolean>();
     let rows: Record<string, unknown>[];
     try {
       rows = await db(HANDLES_ROUTE_QUERY);
@@ -357,6 +398,12 @@ export class HttpRouteExtractor implements ContractExtractor {
 
       const handlerSymbolId = String(row.handlerSymbolId ?? '').trim();
       const fileId = row.fileId ?? row[0];
+      // Track per-file resolution for the parse-skip coverage set: a file stays
+      // "all resolved" only while every one of its rows carries a handlerSymbolId.
+      if (filePath) {
+        const prev = fileAllResolved.get(filePath);
+        fileAllResolved.set(filePath, (prev ?? true) && handlerSymbolId.length > 0);
+      }
       const pathNormEarly = normalizeHttpPath(routePath);
 
       let symbolUid = '';
@@ -449,6 +496,18 @@ export class HttpRouteExtractor implements ContractExtractor {
           routeSource,
         },
       });
+    }
+
+    // Populate the parse-skip coverage set: files whose every provider route
+    // resolved a handler symbol AND whose language declares complete ingestion
+    // route coverage. Fail-open — any unresolved row or a 'partial' language
+    // leaves the file out, so it still gets a full source scan.
+    if (coveredFiles) {
+      for (const [fp, allResolved] of fileAllResolved) {
+        if (allResolved && getPluginForFile(fp)?.routeCoverage === 'complete') {
+          coveredFiles.add(fp);
+        }
+      }
     }
     return out;
   }
