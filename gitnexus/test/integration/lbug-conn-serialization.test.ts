@@ -84,6 +84,14 @@ withTestLbugDB('conn-serialization', () => {
       const rows = await adapter.executeQuery('RETURN 1 AS one');
       expect(rows).toHaveLength(1);
     });
+
+    it('U3: loadCachedEmbeddings routes through withConnLock', async () => {
+      const { loadCachedEmbeddings } = await import('../../src/core/lbug/lbug-adapter.js');
+      const cached = await loadCachedEmbeddings();
+      expect(lockSpy).toHaveBeenCalled();
+      expect(cached.embeddings).toEqual([]);
+      expect(cached.embeddingNodeIds.size).toBe(0);
+    });
   });
 });
 

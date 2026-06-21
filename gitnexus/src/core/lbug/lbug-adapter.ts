@@ -1659,67 +1659,75 @@ export const loadCachedEmbeddings = async (): Promise<{
   embeddingNodeIds: Set<string>;
   embeddings: CachedEmbedding[];
 }> => {
-  if (!conn) {
+  const c = conn;
+  if (!c) {
     return { embeddingNodeIds: new Set(), embeddings: [] };
   }
 
-  const embeddingNodeIds = new Set<string>();
-  const embeddings: CachedEmbedding[] = [];
-  try {
-    // Schema migration detection: query with new columns to verify schema version.
-    // Old schema only had (nodeId, embedding); new schema adds (id, chunkIndex, startLine, endLine, contentHash).
-    // If the query fails (column missing), we return empty cache to force a full rebuild.
+  // The whole read runs inside the connection lock (#2264 review P2). It's safe
+  // today only by call-ordering (loadCachedEmbeddings runs before the WAL driver
+  // starts), but the lock makes it robust to future reordering — a concurrent
+  // CHECKPOINT on the singleton connection is the documented corruption trigger.
+  // Leaf read: no nested withConnLock-wrapped helpers inside.
+  return withConnLock(async () => {
+    const embeddingNodeIds = new Set<string>();
+    const embeddings: CachedEmbedding[] = [];
     try {
-      const check = await conn.query(
-        `MATCH (e:${EMBEDDING_TABLE_NAME}) RETURN e.nodeId AS nodeId, e.chunkIndex AS chunkIndex LIMIT 1`,
-      );
-      await readQueryRows(check);
-    } catch {
-      return { embeddingNodeIds: new Set(), embeddings: [] };
-    }
-
-    // Try to read contentHash alongside chunk columns
-    let rows: any;
-    let hasContentHash = true;
-    try {
-      rows = await conn.query(
-        `MATCH (e:${EMBEDDING_TABLE_NAME}) RETURN e.nodeId AS nodeId, e.chunkIndex AS chunkIndex, e.startLine AS startLine, e.endLine AS endLine, e.embedding AS embedding, e.contentHash AS contentHash`,
-      );
-    } catch (err: any) {
-      // Fallback for legacy DBs without contentHash column
-      const msg = err?.message ?? '';
-      if (isMissingColumnOrTableError(msg)) {
-        hasContentHash = false;
-        rows = await conn.query(
-          `MATCH (e:${EMBEDDING_TABLE_NAME}) RETURN e.nodeId AS nodeId, e.chunkIndex AS chunkIndex, e.startLine AS startLine, e.endLine AS endLine, e.embedding AS embedding`,
+      // Schema migration detection: query with new columns to verify schema version.
+      // Old schema only had (nodeId, embedding); new schema adds (id, chunkIndex, startLine, endLine, contentHash).
+      // If the query fails (column missing), we return empty cache to force a full rebuild.
+      try {
+        const check = await c.query(
+          `MATCH (e:${EMBEDDING_TABLE_NAME}) RETURN e.nodeId AS nodeId, e.chunkIndex AS chunkIndex LIMIT 1`,
         );
-      } else {
-        throw err;
+        await readQueryRows(check);
+      } catch {
+        return { embeddingNodeIds: new Set(), embeddings: [] };
       }
-    }
-    for (const row of await readQueryRows(rows)) {
-      const nodeId = String(row.nodeId ?? row[0] ?? '');
-      if (!nodeId) continue;
-      embeddingNodeIds.add(nodeId);
-      const embedding = row.embedding ?? row[4];
-      if (embedding) {
-        embeddings.push({
-          nodeId,
-          chunkIndex: Number(row.chunkIndex ?? row[1] ?? 0),
-          startLine: Number(row.startLine ?? row[2] ?? 0),
-          endLine: Number(row.endLine ?? row[3] ?? 0),
-          embedding: Array.isArray(embedding)
-            ? embedding.map(Number)
-            : Array.from(embedding as any).map(Number),
-          contentHash: hasContentHash ? (row.contentHash ?? row[5] ?? undefined) : undefined,
-        });
-      }
-    }
-  } catch {
-    /* embedding table may not exist */
-  }
 
-  return { embeddingNodeIds, embeddings };
+      // Try to read contentHash alongside chunk columns
+      let rows: any;
+      let hasContentHash = true;
+      try {
+        rows = await c.query(
+          `MATCH (e:${EMBEDDING_TABLE_NAME}) RETURN e.nodeId AS nodeId, e.chunkIndex AS chunkIndex, e.startLine AS startLine, e.endLine AS endLine, e.embedding AS embedding, e.contentHash AS contentHash`,
+        );
+      } catch (err: any) {
+        // Fallback for legacy DBs without contentHash column
+        const msg = err?.message ?? '';
+        if (isMissingColumnOrTableError(msg)) {
+          hasContentHash = false;
+          rows = await c.query(
+            `MATCH (e:${EMBEDDING_TABLE_NAME}) RETURN e.nodeId AS nodeId, e.chunkIndex AS chunkIndex, e.startLine AS startLine, e.endLine AS endLine, e.embedding AS embedding`,
+          );
+        } else {
+          throw err;
+        }
+      }
+      for (const row of await readQueryRows(rows)) {
+        const nodeId = String(row.nodeId ?? row[0] ?? '');
+        if (!nodeId) continue;
+        embeddingNodeIds.add(nodeId);
+        const embedding = row.embedding ?? row[4];
+        if (embedding) {
+          embeddings.push({
+            nodeId,
+            chunkIndex: Number(row.chunkIndex ?? row[1] ?? 0),
+            startLine: Number(row.startLine ?? row[2] ?? 0),
+            endLine: Number(row.endLine ?? row[3] ?? 0),
+            embedding: Array.isArray(embedding)
+              ? embedding.map(Number)
+              : Array.from(embedding as any).map(Number),
+            contentHash: hasContentHash ? (row.contentHash ?? row[5] ?? undefined) : undefined,
+          });
+        }
+      }
+    } catch {
+      /* embedding table may not exist */
+    }
+
+    return { embeddingNodeIds, embeddings };
+  });
 };
 
 /**
