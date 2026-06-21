@@ -1967,6 +1967,15 @@ export const safeClose = async (): Promise<void> => {
  */
 export const closeLbugBeforeExit = async (): Promise<void> => {
   await flushWAL();
+  // NOTE (#2264): unlike safeClose, this deliberately does NOT run
+  // finalizeLbugSidecarsAfterClose. That step inspects/quarantines orphan WAL +
+  // sidecar files and is designed to run AFTER the native close has released the
+  // WAL handle; running it here — with the connection still open — would risk a
+  // Windows file-lock on the in-use WAL for no benefit. The CHECKPOINT above
+  // already made the index durable, and the next run's preflightLbugSidecars
+  // reconciles any residual WAL on open. The deferred sidecar housekeeping is the
+  // accepted trade-off of skipping the native close to dodge the destructor
+  // double-free.
 };
 
 export const closeLbug = async (): Promise<void> => {
