@@ -1,3 +1,5 @@
+import type { DjangoFileReader } from './django.js';
+
 /**
  * Given a `manage.py` file content, extract the Django settings module.
  * e.g. `os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'cmrMngt.settings')`
@@ -16,9 +18,6 @@ export function djangoModuleToFilePaths(modulePath: string): string[] {
   const base = modulePath.replace(/\./g, '/');
   return [`${base}.py`, `${base}/__init__.py`];
 }
-
-/** Reader callback resolving a repo-relative path to file content (or null). */
-type DjangoFileReader = (relativePath: string) => string | null;
 
 /**
  * Read a file, trying first the in-memory content map, then the optional
@@ -56,13 +55,9 @@ function extractStarImports(content: string): string[] {
   const regex = /^from\s+(\.?[\w.]+)\s+import\s+\*/gm;
   let m;
   while ((m = regex.exec(content)) !== null) {
-    const moduleName = m[1];
-    if (moduleName.startsWith('.')) {
-      // Relative import — caller needs to resolve based on current module
-      modules.push(moduleName);
-    } else {
-      modules.push(moduleName);
-    }
+    // Relative (leading-dot) and absolute module names are both pushed verbatim;
+    // the caller resolves relative ones against the current module path.
+    modules.push(m[1]);
   }
   return modules;
 }
@@ -153,23 +148,19 @@ function resolveDjangoProjectRoot(
       }
       if (!baseModule) continue;
 
+      // `baseModule` is always a slash-path here: a relative import is resolved
+      // by `resolveRelativeImport` (which never returns a leading-dot path), and
+      // an absolute import is the bare module name. So there is no remaining
+      // dot-prefixed case to handle.
       const basePaths: string[] = [];
-      if (baseModule.startsWith('.')) {
-        const resolved = resolveRelativeImport(resolvedSettingsPath, baseModule);
-        if (resolved) {
-          basePaths.push(`${resolved.replace(/\./g, '/')}.py`);
-          basePaths.push(`${resolved.replace(/\./g, '/')}/__init__.py`);
-        }
-      } else {
-        const baseSlash = baseModule.replace(/\./g, '/');
-        // A relative import (`imp` started with `.`) is already anchored under
-        // the project dir via `resolvedSettingsPath`; an absolute module name
-        // may live under the project dir OR the repo root.
-        const candidateBases = imp.startsWith('.') ? [''] : bases;
-        for (const cb of candidateBases) {
-          basePaths.push(`${cb}${baseSlash}.py`);
-          basePaths.push(`${cb}${baseSlash}/__init__.py`);
-        }
+      const baseSlash = baseModule.replace(/\./g, '/');
+      // A relative import (`imp` started with `.`) is already anchored under
+      // the project dir via `resolvedSettingsPath`; an absolute module name
+      // may live under the project dir OR the repo root.
+      const candidateBases = imp.startsWith('.') ? [''] : bases;
+      for (const cb of candidateBases) {
+        basePaths.push(`${cb}${baseSlash}.py`);
+        basePaths.push(`${cb}${baseSlash}/__init__.py`);
       }
 
       for (const bp of basePaths) {
