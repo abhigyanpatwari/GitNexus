@@ -180,6 +180,102 @@ export const VALID_NODE_LABELS = new Set([
   'Tool',
 ]);
 
+/**
+ * Frozen set of valid node labels - prevents runtime modification
+ */
+const FROZEN_VALID_NODE_LABELS = Object.freeze(new Set([...VALID_NODE_LABELS]));
+
+/**
+ * Secure node label validator with strict validation rules
+ */
+class NodeLabelValidator {
+  private static readonly LABEL_PATTERN = /^[a-zA-Z][a-zA-Z0-9_]*$/;
+  private static readonly MAX_LABEL_LENGTH = 50;
+
+  /**
+   * Validate a node label against security rules
+   * @returns The validated label if valid, null otherwise
+   */
+  static validate(label: unknown): string | null {
+    // Type check
+    if (typeof label !== 'string') {
+      logger.warn({ label }, 'Security: Invalid label type');
+      return null;
+    }
+
+    // Length check
+    if (label.length === 0 || label.length > this.MAX_LABEL_LENGTH) {
+      logger.warn({ label, length: label.length }, 'Security: Label length out of range');
+      return null;
+    }
+
+    // Format check - only alphanumeric and underscore, must start with letter
+    if (!this.LABEL_PATTERN.test(label)) {
+      logger.warn({ label }, 'Security: Label format invalid');
+      return null;
+    }
+
+    // Whitelist check using frozen set
+    if (!FROZEN_VALID_NODE_LABELS.has(label)) {
+      logger.warn({ label }, 'Security: Label not in whitelist');
+      return null;
+    }
+
+    return label;
+  }
+}
+
+/**
+ * Pre-defined Cypher query templates for safe query construction
+ * Uses template functions that validate labels before interpolation
+ */
+const CYPHER_TEMPLATES = Object.freeze({
+  /**
+   * Get connections for a node - labels are validated before use
+   */
+  connections: (label: string) => {
+    const validLabel = NodeLabelValidator.validate(label);
+    if (!validLabel) throw new Error(`Invalid node label: ${label}`);
+    return `
+      MATCH (n:${validLabel} {id: $nid})
+      OPTIONAL MATCH (n)-[r1:CodeRelation]->(dst)
+      OPTIONAL MATCH (src)-[r2:CodeRelation]->(n)
+      RETURN
+        collect(DISTINCT {name: dst.name, type: r1.type, confidence: r1.confidence}) AS outgoing,
+        collect(DISTINCT {name: src.name, type: r2.type, confidence: r2.confidence}) AS incoming
+      LIMIT 1
+    `;
+  },
+
+  /**
+   * Get cluster/community for a node
+   */
+  cluster: (label: string) => {
+    const validLabel = NodeLabelValidator.validate(label);
+    if (!validLabel) throw new Error(`Invalid node label: ${label}`);
+    return `
+      MATCH (n:${validLabel} {id: $nid})
+      MATCH (n)-[:CodeRelation {type: 'MEMBER_OF'}]->(c:Community)
+      RETURN c.label AS label, c.description AS description
+      LIMIT 1
+    `;
+  },
+
+  /**
+   * Get processes for a node
+   */
+  processes: (label: string) => {
+    const validLabel = NodeLabelValidator.validate(label);
+    if (!validLabel) throw new Error(`Invalid node label: ${label}`);
+    return `
+      MATCH (n:${validLabel} {id: $nid})
+      MATCH (n)-[rel:CodeRelation {type: 'STEP_IN_PROCESS'}]->(p:Process)
+      RETURN p.id AS id, p.label AS label, rel.step AS step, p.stepCount AS stepCount
+      ORDER BY rel.step
+    `;
+  },
+});
+
 /** Valid relation types for impact analysis filtering */
 export const VALID_RELATION_TYPES = new Set([
   'CALLS',

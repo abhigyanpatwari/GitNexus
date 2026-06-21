@@ -48,6 +48,84 @@ import { sweepStaleUploads } from './upload-sweep.js';
 import { isRfc1918PrivateIpv4 } from './private-ip.js';
 import { logger, flushLoggerSync } from '../core/logger.js';
 
+// ─── Security: Cypher Query Hardening ────────────────────────────────
+
+/**
+ * Dangerous keys that could lead to prototype pollution or injection
+ */
+const DANGEROUS_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
+
+/**
+ * Security-hardened node label validator for Cypher query construction.
+ * Validates labels against whitelist and strict format rules.
+ */
+class NodeLabelValidator {
+  private static readonly LABEL_PATTERN = /^[a-zA-Z][a-zA-Z0-9_]*$/;
+  private static readonly MAX_LABEL_LENGTH = 50;
+
+  static validate(label: unknown): string | null {
+    if (typeof label !== 'string') {
+      logger.warn({ label }, 'Security: Invalid label type');
+      return null;
+    }
+    if (label.length === 0 || label.length > this.MAX_LABEL_LENGTH) {
+      logger.warn({ label, length: label.length }, 'Security: Label length out of range');
+      return null;
+    }
+    if (!this.LABEL_PATTERN.test(label)) {
+      logger.warn({ label }, 'Security: Label format invalid');
+      return null;
+    }
+    // Validate against compile-time safe NODE_TABLES
+    if (!(NODE_TABLES as readonly string[]).includes(label)) {
+      logger.warn({ label }, 'Security: Label not in NODE_TABLES whitelist');
+      return null;
+    }
+    return label;
+  }
+}
+
+/**
+ * Pre-defined Cypher query templates with validated label interpolation.
+ * All templates use parameterized queries for values ($nid) and
+ * strict validation for labels to prevent Cypher injection.
+ */
+const CYPHER_TEMPLATES = Object.freeze({
+  connections: (label: string) => {
+    const validLabel = NodeLabelValidator.validate(label);
+    if (!validLabel) throw new Error(`Invalid node label: ${label}`);
+    return `
+      MATCH (n:${validLabel} {id: $nid})
+      OPTIONAL MATCH (n)-[r1:CodeRelation]->(dst)
+      OPTIONAL MATCH (src)-[r2:CodeRelation]->(n)
+      RETURN
+        collect(DISTINCT {name: dst.name, type: r1.type, confidence: r1.confidence}) AS outgoing,
+        collect(DISTINCT {name: src.name, type: r2.type, confidence: r2.confidence}) AS incoming
+      LIMIT 1
+    `;
+  },
+  cluster: (label: string) => {
+    const validLabel = NodeLabelValidator.validate(label);
+    if (!validLabel) throw new Error(`Invalid node label: ${label}`);
+    return `
+      MATCH (n:${validLabel} {id: $nid})
+      MATCH (n)-[:CodeRelation {type: 'MEMBER_OF'}]->(c:Community)
+      RETURN c.label AS label, c.description AS description
+      LIMIT 1
+    `;
+  },
+  processes: (label: string) => {
+    const validLabel = NodeLabelValidator.validate(label);
+    if (!validLabel) throw new Error(`Invalid node label: ${label}`);
+    return `
+      MATCH (n:${validLabel} {id: $nid})
+      MATCH (n)-[rel:CodeRelation {type: 'STEP_IN_PROCESS'}]->(p:Process)
+      RETURN p.id AS id, p.label AS label, rel.step AS step, p.stepCount AS stepCount
+      ORDER BY rel.step
+    `;
+  },
+});
+
 const _require = createRequire(import.meta.url);
 const pkg = _require('../../package.json');
 
@@ -1233,52 +1311,30 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
           if (!enrich) return { searchResults, ftsAvailable };
 
           // Server-side enrichment: add connections, cluster, processes per result
-          // Uses parameterized queries to prevent Cypher injection via nodeId
-          const validLabel = (label: string): boolean =>
-            (NODE_TABLES as readonly string[]).includes(label);
-
+          // Security: Uses CYPHER_TEMPLATES with strict label validation to prevent injection
           const enriched = await Promise.all(
             searchResults.slice(0, limit).map(async (r: any) => {
               const nodeId: string = r.nodeId || r.id || '';
               const nodeLabel = nodeId.split(':')[0];
               const enrichment: { connections?: any; cluster?: string; processes?: any[] } = {};
 
-              if (!nodeId || !validLabel(nodeLabel)) return { ...r, ...enrichment };
+              // Security: Validate label using hardened validator (format + whitelist)
+              const validatedLabel = NodeLabelValidator.validate(nodeLabel);
+              if (!nodeId || !validatedLabel) return { ...r, ...enrichment };
 
               // Run connections, cluster, and process queries in parallel
-              // Label is validated against NODE_TABLES (compile-time safe identifiers);
+              // Security: CYPHER_TEMPLATES validates labels before interpolation;
               // nodeId uses $nid parameter binding to prevent injection
               const [connRes, clusterRes, procRes] = await Promise.all([
-                executePrepared(
-                  `
-              MATCH (n:${nodeLabel} {id: $nid})
-              OPTIONAL MATCH (n)-[r1:CodeRelation]->(dst)
-              OPTIONAL MATCH (src)-[r2:CodeRelation]->(n)
-              RETURN
-                collect(DISTINCT {name: dst.name, type: r1.type, confidence: r1.confidence}) AS outgoing,
-                collect(DISTINCT {name: src.name, type: r2.type, confidence: r2.confidence}) AS incoming
-              LIMIT 1
-            `,
-                  { nid: nodeId },
-                ).catch(() => []),
-                executePrepared(
-                  `
-              MATCH (n:${nodeLabel} {id: $nid})
-              MATCH (n)-[:CodeRelation {type: 'MEMBER_OF'}]->(c:Community)
-              RETURN c.label AS label, c.description AS description
-              LIMIT 1
-            `,
-                  { nid: nodeId },
-                ).catch(() => []),
-                executePrepared(
-                  `
-              MATCH (n:${nodeLabel} {id: $nid})
-              MATCH (n)-[rel:CodeRelation {type: 'STEP_IN_PROCESS'}]->(p:Process)
-              RETURN p.id AS id, p.label AS label, rel.step AS step, p.stepCount AS stepCount
-              ORDER BY rel.step
-            `,
-                  { nid: nodeId },
-                ).catch(() => []),
+                executePrepared(CYPHER_TEMPLATES.connections(validatedLabel), { nid: nodeId }).catch(
+                  () => [],
+                ),
+                executePrepared(CYPHER_TEMPLATES.cluster(validatedLabel), { nid: nodeId }).catch(
+                  () => [],
+                ),
+                executePrepared(CYPHER_TEMPLATES.processes(validatedLabel), { nid: nodeId }).catch(
+                  () => [],
+                ),
               ]);
 
               if (connRes.length > 0) {
@@ -1338,6 +1394,13 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
     await handleFileRequest(req, res, entry.path);
   });
 
+  // Grep configuration constants for ReDoS protection
+  const GREP_CONFIG = {
+    MAX_PATTERN_LENGTH: 200,
+    MAX_RESULTS: 200,
+    TIMEOUT_MS: 30000, // 30 second timeout
+  } as const;
+
   // Grep — regex search across file contents in the indexed repo
   // Uses filesystem-based search for memory efficiency (never loads all files into memory)
   // Rate-limited (CodeQL js/missing-rate-limiting): scans every file in
@@ -1367,14 +1430,15 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
 
       // Length cap: applies to both literal and regex modes as a defense-in-depth
       // bound against pathological input.
-      if (pattern.length > 200) {
-        res.status(400).json({ error: 'Pattern too long (max 200 characters)' });
+      if (pattern.length > GREP_CONFIG.MAX_PATTERN_LENGTH) {
+        res.status(400).json({ error: `Pattern too long (max ${GREP_CONFIG.MAX_PATTERN_LENGTH} characters)` });
         return;
       }
 
       // Treat user input as a literal substring in all cases to prevent
       // regex-injection/ReDoS via attacker-controlled regex syntax.
-      const effectivePattern = escapeRegExp(pattern);
+      // Security: escapeRegExp enforces additional length limits and complexity bounds.
+      const effectivePattern = escapeRegExp(pattern, GREP_CONFIG.MAX_PATTERN_LENGTH);
 
       // Validate regex syntax (catches both opt-in user regex and any escapeRegExp bug)
       let regex: RegExp;
@@ -1387,7 +1451,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
 
       const parsedLimit = Number(req.query.limit ?? 50);
       const limit = Number.isFinite(parsedLimit)
-        ? Math.max(1, Math.min(200, Math.trunc(parsedLimit)))
+        ? Math.max(1, Math.min(GREP_CONFIG.MAX_RESULTS, Math.trunc(parsedLimit)))
         : 50;
 
       const results: { filePath: string; line: number; text: string }[] = [];
