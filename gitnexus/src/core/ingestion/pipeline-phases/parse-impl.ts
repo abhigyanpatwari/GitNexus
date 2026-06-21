@@ -56,7 +56,7 @@ import {
   createParserForLanguage,
 } from '../../tree-sitter/parser-loader.js';
 import { parseSourceSafe } from '../../tree-sitter/safe-parse.js';
-import { getProvider } from '../languages/index.js';
+import { getProvider, providers } from '../languages/index.js';
 import type Parser from 'tree-sitter';
 import {
   createWorkerPool,
@@ -181,11 +181,25 @@ export async function extractCrossFileRoutes(
 ): Promise<ExtractedRoute[]> {
   const out: ExtractedRoute[] = [];
 
-  // Bucket repo-relative paths by language once.
+  // Languages whose provider implements the cross-file route hooks. Route
+  // results are intentionally NOT persisted across analyze runs, so a repo
+  // using such a framework (e.g. Django) re-derives its routes on every run;
+  // a repo without one does effectively nothing here. Cross-run route caching
+  // is a deliberate follow-up — see #1836.
+  const routeCapableLangs = new Set<SupportedLanguages>();
+  for (const provider of Object.values(providers)) {
+    if (provider.discoverRootRouteFiles && provider.extractRoutes) {
+      routeCapableLangs.add(provider.id);
+    }
+  }
+  if (routeCapableLangs.size === 0) return out;
+
+  // Bucket only the paths whose language can contribute routes, so a non-
+  // framework repo never pays to bucket the languages it doesn't use here.
   const pathsByLang = new Map<SupportedLanguages, string[]>();
   for (const p of allPaths) {
     const lang = getLanguageFromFilename(p);
-    if (!lang) continue;
+    if (!lang || !routeCapableLangs.has(lang)) continue;
     let bucket = pathsByLang.get(lang);
     if (!bucket) {
       bucket = [];
