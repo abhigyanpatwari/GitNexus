@@ -52,7 +52,7 @@ Kilo supports local MCP servers through STDIO, and GitNexus should be added as a
 
 #### From there, Kilo allows adding, editing, enabling, disabling, and deleting MCP servers, and it writes changes directly to the appropriate config file.
 
-![alt text](assets/image-2.png)
+![alt text](docs-asset/kilo-code-mcp.png)
 
 
 
