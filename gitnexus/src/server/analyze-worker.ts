@@ -44,7 +44,14 @@ export interface ErrorMessage {
 export type WorkerMessage = ProgressMessage | CompleteMessage | ErrorMessage;
 
 function send(msg: WorkerMessage) {
-  process.send?.(msg);
+  try {
+    process.send?.(msg);
+  } catch {
+    // The parent may have already disconnected the IPC channel
+    // (ERR_IPC_CHANNEL_CLOSED). Swallow so a failed notification can't escape the
+    // message/SIGTERM handlers and skip their scheduled process.exit (#2264 review
+    // P3) — a vanished child is treated as a failure by the parent regardless.
+  }
 }
 
 // Catch uncaught exceptions and unhandled rejections — report to parent
