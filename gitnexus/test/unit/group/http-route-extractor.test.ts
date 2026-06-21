@@ -1158,12 +1158,13 @@ public class StatusController implements StatusApi {
       ).toHaveLength(0);
     });
 
-    it('does not extract fully-qualified Java route annotations (documented limitation #2254)', async () => {
-      // JAVA_ROUTE_ANNOTATION_PATTERNS binds `name: (identifier)`; a FQN route
-      // annotation parses its name as `scoped_identifier` and is not matched, so
-      // its route is not extracted (only the route string — the controller itself
-      // is still recognised). This pins that documented limitation / asymmetry
-      // with Kotlin. If FQN matching is ever added, flip this assertion.
+    it('extracts fully-qualified Java route annotations (#2254 FQN follow-through)', async () => {
+      // JAVA_ROUTE_ANNOTATION_PATTERNS now binds `name: [(identifier)
+      // (scoped_identifier)]`; a deep FQN route annotation
+      // (`@org.springframework…GetMapping`) is matched and the for-loop
+      // normalizes the name to its trailing segment (`simpleName`). The
+      // controller was already recognised (hasAnnotation trailing-segment match);
+      // now the route string is extracted too — parity with the Kotlin plugin.
       const dir = path.join(tmpDir, 'java-fqn-route-annotation');
       fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
       fs.writeFileSync(
@@ -1181,12 +1182,57 @@ class FqnController {
       const contracts = await extractor.extract(null, dir, makeRepo(dir));
       const providers = contracts.filter((c) => c.role === 'provider');
 
-      // The FQN route annotation is not extracted (documented limitation).
-      expect(providers.find((c) => c.contractId === 'http::GET::/api/users')).toBeUndefined();
-      // And it must not over-match into a bogus contract either.
       expect(
-        providers.filter((c) => c.symbolRef.filePath.endsWith('FqnController.java')),
-      ).toHaveLength(0);
+        providers.find(
+          (c) =>
+            c.contractId === 'http::GET::/api/users' &&
+            c.meta.framework === 'spring' &&
+            c.confidence === 0.8,
+        ),
+      ).toBeDefined();
+    });
+
+    it('extracts FQN OpenFeign consumers + two-segment FQN, with anti-overreach', async () => {
+      const dir = path.join(tmpDir, 'java-fqn-feign');
+      fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'src', 'QualifiedClient.java'),
+        `
+@org.springframework.cloud.openfeign.FeignClient(name = "order-service", path = "/api")
+interface QualifiedClient {
+  @org.springframework.web.bind.annotation.GetMapping("/orders/{id}")
+  OrderDto getOrder(String id);
+}
+
+@foo.RestController
+@foo.RequestMapping("/v2")
+class ShortFqnController {
+  @foo.GetMapping("/items")
+  Object items() { return null; }
+}
+
+@com.example.NotARoute("/should-not-extract")
+class Unrelated {
+  @com.example.AlsoNotARoute("/nope")
+  Object noop() { return null; }
+}
+`,
+      );
+
+      const contracts = await extractor.extract(null, dir, makeRepo(dir));
+      const fromFile = contracts.filter((c) =>
+        c.symbolRef.filePath.endsWith('QualifiedClient.java'),
+      );
+
+      // Exactly two contracts: the FQN @FeignClient(path)+@GetMapping consumer and
+      // the two-segment-FQN provider. The `Unrelated` class's non-route FQN
+      // annotations contribute nothing (anti-overreach — simpleName misses them).
+      expect(new Set(fromFile.map((c) => `${c.role} ${c.contractId} ${c.meta.framework}`))).toEqual(
+        new Set([
+          'consumer http::GET::/api/orders/{param} openfeign',
+          'provider http::GET::/v2/items spring',
+        ]),
+      );
     });
 
     it('extracts Express router.get patterns', async () => {

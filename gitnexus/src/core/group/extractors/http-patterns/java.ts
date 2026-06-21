@@ -98,17 +98,15 @@ import type {
 // sidesteps that hazard entirely; all name/key discrimination lives in the
 // for-loop, where it reads as straight-line code.
 //
-// KNOWN LIMITATION — fully-qualified route annotations are not matched. `@ann`
-// binds `name: (identifier)`, but a FQN annotation (`@org.springframework…
-// GetMapping("/x")`) parses its name as a `scoped_identifier`, which this query
-// does not match, so its route is not extracted. (The class is still recognized
-// as a controller — `hasAnnotation` trailing-segment-matches the FQN — only the
-// route-string extraction is missed.) In practice annotations are imported and
-// written by simple name, so this is rare. It is a minor asymmetry with the
-// Kotlin plugin, whose grammar models a FQN as separate `type_identifier`
-// segments that its route queries DO match. Aligning Java would mean matching
-// `scoped_identifier` too; that is deferred to avoid re-keying existing Java
-// contracts via the predicate hazard above. Pinned by an anti-overreach test.
+// FULLY-QUALIFIED route annotations ARE matched. `@ann` binds either an
+// `identifier` (simple name) or a `scoped_identifier` (a FQN annotation such as
+// `@org.springframework…GetMapping("/x")`); the for-loop normalizes the name to
+// its trailing segment via `simpleName` before discriminating. This is a node-
+// type widening only — the query stays predicate-free, so it does NOT reintroduce
+// the bucket hazard above, and a simple name maps to itself so existing Java
+// contracts are unchanged (only previously-unmatched FQN annotations gain
+// routes). This brings Java to parity with the Kotlin plugin, whose grammar
+// already matches FQN route annotations.
 const JAVA_ROUTE_ANNOTATION_PATTERNS = compilePatterns({
   name: 'java-route-annotation',
   language: Java,
@@ -120,17 +118,17 @@ const JAVA_ROUTE_ANNOTATION_PATTERNS = compilePatterns({
           (class_declaration
             (modifiers
               (annotation
-                name: (identifier) @ann
+                name: [(identifier) (scoped_identifier)] @ann
                 arguments: (annotation_argument_list [(string_literal) @value (element_value_array_initializer (string_literal) @value)])))) @node
           (interface_declaration
             (modifiers
               (annotation
-                name: (identifier) @ann
+                name: [(identifier) (scoped_identifier)] @ann
                 arguments: (annotation_argument_list [(string_literal) @value (element_value_array_initializer (string_literal) @value)])))) @node
           (class_declaration
             (modifiers
               (annotation
-                name: (identifier) @ann
+                name: [(identifier) (scoped_identifier)] @ann
                 arguments: (annotation_argument_list
                   (element_value_pair
                     key: (identifier) @key
@@ -138,7 +136,7 @@ const JAVA_ROUTE_ANNOTATION_PATTERNS = compilePatterns({
           (interface_declaration
             (modifiers
               (annotation
-                name: (identifier) @ann
+                name: [(identifier) (scoped_identifier)] @ann
                 arguments: (annotation_argument_list
                   (element_value_pair
                     key: (identifier) @key
@@ -146,13 +144,13 @@ const JAVA_ROUTE_ANNOTATION_PATTERNS = compilePatterns({
           (method_declaration
             (modifiers
               (annotation
-                name: (identifier) @ann
+                name: [(identifier) (scoped_identifier)] @ann
                 arguments: (annotation_argument_list [(string_literal) @value (element_value_array_initializer (string_literal) @value)])))
             name: (identifier) @member) @node
           (method_declaration
             (modifiers
               (annotation
-                name: (identifier) @ann
+                name: [(identifier) (scoped_identifier)] @ann
                 arguments: (annotation_argument_list
                   (element_value_pair
                     key: (identifier) @key
@@ -420,6 +418,18 @@ function getNodeName(node: Parser.SyntaxNode): string | null {
   return node.childForFieldName('name')?.text ?? null;
 }
 
+/**
+ * Trailing segment of a possibly fully-qualified annotation name
+ * (`org.springframework.web.bind.annotation.GetMapping` → `GetMapping`). The
+ * route query binds `@ann` to either an `identifier` (simple) or a
+ * `scoped_identifier` (FQN); normalizing here lets the one for-loop discriminate
+ * on the simple name in both cases. A simple name maps to itself, so this never
+ * changes how a non-FQN annotation is classified.
+ */
+function simpleName(text: string): string {
+  return text.split('.').pop() ?? text;
+}
+
 function hasAnnotation(node: Parser.SyntaxNode, names: string | readonly string[]): boolean {
   const modifiers = node.namedChildren.find((child) => child.type === 'modifiers');
   if (!modifiers) return false;
@@ -626,7 +636,7 @@ function scanRouteAnnotations(tree: Parser.Tree): RouteAnnotationScan {
     const node = captures.node;
     const valueNode = captures.value;
     if (!annNode || !node || !valueNode) continue;
-    const ann = annNode.text;
+    const ann = simpleName(annNode.text);
     const keyNode = captures.key; // undefined for the positional shape
 
     if (node.type === 'method_declaration') {
