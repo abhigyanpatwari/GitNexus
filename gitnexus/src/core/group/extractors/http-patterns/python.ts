@@ -1135,7 +1135,7 @@ export const PYTHON_HTTP_PLUGIN: HttpLanguagePlugin = {
     // Consumers: wrapper classes with uri= or url= keyword argument
     //   obj.fetch(uri="api/v1/camera/info/")
     //   obj.post(url="api/v1/config/update/")
-    const seenUriDetections = new Set<number>(); // Track line numbers to avoid duplicates
+    const seenUriDetections = new Set<string>(); // node byte ranges, to avoid duplicates
     for (const match of runCompiledPatterns(WRAPPER_URI_PATTERNS, tree)) {
       const methodNode = match.captures.method;
       const pathNode = match.captures.path;
@@ -1143,9 +1143,10 @@ export const PYTHON_HTTP_PLUGIN: HttpLanguagePlugin = {
       const path = unquoteLiteral(pathNode.text);
       if (path === null) continue;
 
-      // Deduplicate: the two pattern branches can match the same call
-      const lineNum = pathNode.startPosition.row;
-      const dedupKey = lineNum * 1000 + methodNode.startPosition.row;
+      // Deduplicate: the two pattern branches can match the same call. Key on
+      // node byte offsets, not line arithmetic (lineNum*1000+row can collide in
+      // files over 1000 lines, and miss a real dup when a node straddles a line).
+      const dedupKey = `${pathNode.startIndex}:${methodNode.startIndex}`;
       if (seenUriDetections.has(dedupKey)) continue;
       seenUriDetections.add(dedupKey);
 
