@@ -39,7 +39,11 @@ vi.mock('../../src/cli/ai-context.js', () => ({
 }));
 vi.mock('../../src/cli/skill-gen.js', () => ({ generateSkillFiles: generateSkillFilesMock }));
 vi.mock('../../src/cli/cli-message.js', () => ({ cliError: cliErrorMock }));
-vi.mock('../../src/core/lbug/lbug-adapter.js', () => ({ closeLbug: vi.fn(async () => undefined) }));
+vi.mock('../../src/core/lbug/lbug-adapter.js', () => ({
+  closeLbug: vi.fn(async () => undefined),
+  closeLbugBeforeExit: vi.fn(async () => undefined),
+  isLbugReady: vi.fn(() => false),
+}));
 
 vi.mock('../../src/storage/repo-manager.js', () => ({
   getStoragePaths: vi.fn((repoPath: string) => ({

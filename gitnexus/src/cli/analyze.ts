@@ -13,7 +13,8 @@ import os from 'os';
 import { spawn } from 'child_process';
 import v8 from 'v8';
 import cliProgress from 'cli-progress';
-import { closeLbug } from '../core/lbug/lbug-adapter.js';
+import { isLbugReady } from '../core/lbug/lbug-adapter.js';
+import { boundedCheckpointBeforeExit } from '../core/lbug/shutdown-helpers.js';
 import {
   isLbugCheckpointIoError,
   isWalCorruptionError,
@@ -738,6 +739,17 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
   } finally {
     restoreAnalyzeEnv(envSnap);
   }
+  // If analyzeCommandImpl returned via a soft `process.exitCode = 1` error path
+  // while LadybugDB native handles are still open, the event loop won't drain and
+  // the process would HANG (#2264 review P1). The full analyze paths skip-close the
+  // DB — handles are left open and reclaimed by process.exit — so a soft return
+  // after a real analyze must force the exit. The success path never reaches here
+  // (analyzeCommandImpl calls process.exit(0) itself); early-validation errors and
+  // unit tests that mock runFullAnalysis never open the DB, so isLbugReady() is
+  // false and the soft return is preserved.
+  if (isLbugReady()) {
+    process.exit(typeof process.exitCode === 'number' ? process.exitCode : 1);
+  }
 };
 
 const analyzeCommandImpl = async (
@@ -1168,13 +1180,18 @@ const analyzeCommandImpl = async (
     aborted = true;
     bar.stop();
     console.log('\n  Interrupted — cleaning up...');
-    closeLbug()
-      .catch(() => {})
-      .finally(async () => {
+    // Bounded CHECKPOINT-then-exit (#2264 review P3): skip the native close (the
+    // LadybugDB destructor can double-free after --pdg writes), but don't hang
+    // behind a long --pdg COPY holding the connection lock — bound it so a single
+    // Ctrl-C stays responsive; the WAL replays on the next analyze. A second
+    // Ctrl-C (`if (aborted) process.exit(1)` above) remains the escape hatch.
+    void boundedCheckpointBeforeExit({
+      exitCode: 130,
+      beforeExit: async () => {
         const { flushLoggerSync } = await import('../core/logger.js');
         flushLoggerSync();
-        process.exit(130);
-      });
+      },
+    });
   };
   process.on('SIGINT', sigintHandler);
 
@@ -1273,6 +1290,12 @@ const analyzeCommandImpl = async (
         // Extra fetch-wrapper names from `.gitnexusrc` (#1589/#1852 residual);
         // forwarded to the routes phase consumer scan.
         fetchWrappers: options.fetchWrappers,
+        // The CLI always process.exit()s after this returns (success path at the
+        // end of analyzeCommandImpl, error/interrupt paths via process.exit too),
+        // so the finalize close skips the native conn/db close — it can double-free
+        // in LadybugDB's ClientContext destructor after --pdg writes (#2264). The
+        // CHECKPOINT keeps the index durable; process exit reclaims the handles.
+        skipNativeCloseOnExit: true,
       },
       {
         onProgress: (_phase, percent, message) => {

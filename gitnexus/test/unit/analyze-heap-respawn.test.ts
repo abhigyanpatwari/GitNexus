@@ -25,6 +25,8 @@ vi.mock('os', async () => {
 
 vi.mock('../../src/core/lbug/lbug-adapter.js', () => ({
   closeLbug: vi.fn(async () => undefined),
+  closeLbugBeforeExit: vi.fn(async () => undefined),
+  isLbugReady: vi.fn(() => false),
 }));
 
 const mockSpawnExit = ({
