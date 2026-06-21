@@ -624,12 +624,13 @@ export const JAVA_HTTP_PLUGIN: HttpLanguagePlugin = {
   // providers — see HttpRouteExtractor's parse-skip (#2138 Part 2).
   routeCoverage: 'complete',
   // Consumer signals this plugin's scan() can detect: RestTemplate / WebClient /
-  // OkHttp / Java-HttpClient / Apache-HttpClient call sites and OpenFeign
-  // (`@FeignClient` + `@RequestLine`) interfaces. A provider-covered file
-  // containing any of these must still be parsed so its consumer contracts are
-  // not dropped (ingestion emits no FETCHES for Java). Conservative by design.
+  // OkHttp / Java-HttpClient / Apache-HttpClient call sites, OpenFeign
+  // (`@FeignClient` + `@RequestLine`) interfaces, and Spring 6 HTTP Interface
+  // `@(Get|...)Exchange` / `@HttpExchange`. A provider-covered file containing
+  // any of these must still be parsed so its consumer contracts are not dropped
+  // (ingestion emits no FETCHES for Java). Conservative by design.
   hasConsumerSignals(content) {
-    return /\brestTemplate\b|\bwebClient\b|Request\.Builder|HttpRequest|HttpMethod\.|new\s+Http(Get|Post|Put|Delete|Patch)\b|@RequestLine|@FeignClient/.test(
+    return /\brestTemplate\b|\bwebClient\b|Request\.Builder|HttpRequest|HttpMethod\.|new\s+Http(Get|Post|Put|Delete|Patch)\b|@RequestLine|@FeignClient|Exchange/.test(
       content,
     );
   },
