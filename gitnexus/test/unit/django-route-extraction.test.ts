@@ -349,4 +349,58 @@ urlpatterns = [
     expect(routes).toHaveLength(1);
     expect(routes[0].routePath).toBe('real/');
   });
+
+  it('extracts routes from list concatenation (urlpatterns = a + b)', () => {
+    const routes = extract(`
+from django.urls import path
+from . import views
+
+urlpatterns = [path('a/', views.a)] + [path('b/', views.b)]
+`);
+    expect(routes.map((r) => r.routePath).sort()).toEqual(['a/', 'b/']);
+  });
+
+  it('extracts routes wrapped in format_suffix_patterns()', () => {
+    const routes = extract(`
+from rest_framework.urlpatterns import format_suffix_patterns
+from django.urls import path
+from . import views
+
+urlpatterns = format_suffix_patterns([path('a/', views.a)])
+`);
+    expect(routes).toHaveLength(1);
+    expect(routes[0].routePath).toBe('a/');
+  });
+
+  it('extracts routes from a tuple urlpatterns', () => {
+    const routes = extract(`
+from django.urls import path
+from . import views
+
+urlpatterns = (path('a/', views.a),)
+`);
+    expect(routes).toHaveLength(1);
+    expect(routes[0].routePath).toBe('a/');
+  });
+
+  it('combines a base list with an augmented concatenation (urlpatterns += a + b)', () => {
+    const routes = extract(`
+from django.urls import path
+from . import views
+
+urlpatterns = [path('base/', views.base)]
+urlpatterns += [path('x/', views.x)] + [path('y/', views.y)]
+`);
+    expect(routes.map((r) => r.routePath).sort()).toEqual(['base/', 'x/', 'y/']);
+  });
+
+  it('returns no routes (without throwing) for dynamic urlpatterns like router.urls', () => {
+    const routes = extract(`
+from rest_framework import routers
+
+router = routers.DefaultRouter()
+urlpatterns = router.urls
+`);
+    expect(routes).toEqual([]);
+  });
 });

@@ -2,6 +2,7 @@ import type Parser from 'tree-sitter';
 import { parseSourceSafe } from '../../tree-sitter/safe-parse.js';
 import { extractStringContent, type SyntaxNode } from '../utils/ast-helpers.js';
 import type { ExtractedRoute } from './laravel.js';
+import { logger } from '../../logger.js';
 
 interface DjangoRouteContext {
   prefix: string | null;
@@ -17,6 +18,15 @@ interface WalkFrame {
 const DJANGO_ROUTE_FUNCTIONS = new Set(['path', 're_path', 'url']);
 const DJANGO_INCLUDE_FUNCTION = 'include';
 const MAX_INCLUDE_DEPTH = 8;
+
+// Wrapper calls whose first list/tuple argument is itself a urlpatterns list
+// (e.g. DRF's `format_suffix_patterns([...])`, `i18n_patterns(...)`,
+// `staticfiles_urlpatterns()`). We descend into their list-typed arguments.
+const URLPATTERNS_WRAPPER_FUNCTIONS = new Set([
+  'format_suffix_patterns',
+  'staticfiles_urlpatterns',
+  'i18n_patterns',
+]);
 
 function modulePathToFilePath(modulePath: string): string {
   return modulePath.replace(/\./g, '/');
@@ -75,6 +85,39 @@ function inferHttpMethod(viewName: string | null): string {
   return '*';
 }
 
+/**
+ * Collect the list/tuple container node(s) that hold route entries from a
+ * `urlpatterns` right-hand side. Handles the common non-literal shapes:
+ *   - `urlpatterns = [...]`              → the list
+ *   - `urlpatterns = (...)`              → the tuple
+ *   - `urlpatterns = a + b`              → both operands (concatenation)
+ *   - `urlpatterns = wrapper([...])`     → the wrapper's list argument
+ * Inherently-dynamic shapes (`router.urls`, comprehensions, bare names) yield
+ * nothing — they cannot be resolved statically.
+ */
+function collectUrlpatternContainers(node: SyntaxNode, out: SyntaxNode[]): void {
+  switch (node.type) {
+    case 'list':
+    case 'tuple':
+      out.push(node);
+      return;
+    case 'binary_operator':
+      // `a + b` concatenation — descend into both operands.
+      for (const child of node.children ?? []) collectUrlpatternContainers(child, out);
+      return;
+    case 'call': {
+      const fn = getCallFuncName(node);
+      if (fn && URLPATTERNS_WRAPPER_FUNCTIONS.has(fn)) {
+        const args = node.childForFieldName?.('arguments') ?? null;
+        for (const child of args?.children ?? []) collectUrlpatternContainers(child, out);
+      }
+      return;
+    }
+    default:
+      return;
+  }
+}
+
 function findUrlpatternsLists(rootNode: SyntaxNode): SyntaxNode[] {
   const assignmentNodes: SyntaxNode[] = [];
   _collectAssignments(rootNode, assignmentNodes);
@@ -83,8 +126,13 @@ function findUrlpatternsLists(rootNode: SyntaxNode): SyntaxNode[] {
     const left = node.childForFieldName?.('left') ?? node.children?.[0] ?? null;
     if (left?.type === 'identifier' && left.text === 'urlpatterns') {
       const right = node.childForFieldName?.('right') ?? node.children?.[2] ?? null;
-      if (right?.type === 'list') {
-        lists.push(right);
+      if (!right) continue;
+      const before = lists.length;
+      collectUrlpatternContainers(right, lists);
+      if (lists.length === before && (right.type === 'attribute' || right.type === 'identifier')) {
+        // Dynamically-built urlpatterns (e.g. DRF `router.urls`) can't be
+        // resolved statically — surface it so the silent-zero case is visible.
+        logger.debug(`Django: skipping non-static urlpatterns (${right.type}: ${right.text})`);
       }
     }
   }
