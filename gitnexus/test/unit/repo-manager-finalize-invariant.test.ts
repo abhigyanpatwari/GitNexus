@@ -18,6 +18,7 @@ import fs from 'fs/promises';
 import {
   AnalysisNotFinalizedError,
   assertAnalysisFinalized,
+  isRepoRegistered,
   registerRepo,
   saveMeta,
   getStoragePaths,
@@ -127,5 +128,18 @@ describe('assertAnalysisFinalized (#1169)', () => {
 
     const variant = process.platform === 'win32' ? tmpRepo.dbPath.toUpperCase() : tmpRepo.dbPath; // POSIX is case-sensitive; assertion uses canonical form
     await expect(assertAnalysisFinalized(variant)).resolves.toBeUndefined();
+  });
+
+  // isRepoRegistered backs the analyze up-to-date fast-path gate (#2264): the
+  // fast path must NOT short-circuit a repo that is indexed-but-unregistered
+  // (e.g. a prior --name collision wrote meta.json then failed before
+  // registerRepo), otherwise --allow-duplicate-name could never heal it.
+  it('isRepoRegistered is false when the repo has no registry entry', async () => {
+    expect(await isRepoRegistered(tmpRepo.dbPath)).toBe(false);
+  });
+
+  it('isRepoRegistered is true once a matching entry is written', async () => {
+    await registerRepo(tmpRepo.dbPath, meta);
+    expect(await isRepoRegistered(tmpRepo.dbPath)).toBe(true);
   });
 });

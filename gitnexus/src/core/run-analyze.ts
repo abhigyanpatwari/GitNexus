@@ -21,6 +21,7 @@ import {
   executeQuery,
   executeWithReusedStatement,
   closeLbug,
+  closeLbugBeforeExit,
   loadCachedEmbeddings,
   deleteNodesForFile,
   deleteAllCommunitiesAndProcesses,
@@ -42,6 +43,7 @@ import {
   loadMeta,
   ensureGitNexusIgnored,
   registerRepo,
+  isRepoRegistered,
   cleanupOldKuzuFiles,
   INCREMENTAL_SCHEMA_VERSION,
   type RepoMeta,
@@ -232,6 +234,15 @@ export interface AnalyzeOptions {
    * consumer scan unchanged.
    */
   fetchWrappers?: string[];
+  /**
+   * The caller will `process.exit()` immediately after this analyze returns (the
+   * CLI `analyze` command). When set, the finalize/error close CHECKPOINTs for
+   * durability but skips the native `conn.close()`/`db.close()`, which can
+   * double-free in LadybugDB's `ClientContext` destructor after large `--pdg`
+   * writes (gdb-confirmed) — aborting the process AFTER a fully-written index.
+   * Process exit reclaims the handles. Long-lived callers (MCP server, tests)
+   * leave this unset so they get a real close. See `closeLbug`. */
+  skipNativeCloseOnExit?: boolean;
 }
 
 export interface AnalyzeResult {
@@ -768,7 +779,21 @@ export async function runFullAnalysis(
           return true; // conservative on git failure
         }
       })();
-      if (!dirty) {
+      // Registration wrinkle around the fast path (#2264). A prior
+      // `analyze --name X` that hit a name collision writes meta.json (meta-save
+      // runs before registerRepo) then fails before registering, leaving the
+      // index up-to-date but UNREGISTERED. When the user re-runs with
+      // --allow-duplicate-name they explicitly want it registered, so fall
+      // through to the pipeline (which registers it, honoring the flag) instead
+      // of early-returning an unregistered repo the flag could never heal.
+      // For a PLAIN analyze we deliberately do NOT self-heal: an up-to-date but
+      // unregistered repo early-returns here and the CLI's assertAnalysisFinalized
+      // surfaces it as a hard failure (#1169) rather than silently registering a
+      // possibly half-finalized index. `isRepoRegistered` is only read on the
+      // opt-in branch so the common fast path keeps its single-stat cost.
+      const healUnregistered =
+        options.allowDuplicateName === true && !(await isRepoRegistered(repoPath));
+      if (!dirty && !healUnregistered) {
         await ensureGitNexusIgnored(repoPath);
         return {
           // `resolveRepoIdentityRoot` collapses worktree roots to the
@@ -1549,7 +1574,11 @@ export async function runFullAnalysis(
     // Stop the manual checkpoint driver before closeLbug so its
     // in-flight CHECKPOINT cannot race the `safeClose` CHECKPOINT.
     await walCheckpointDriver.stop();
-    await closeLbug();
+    // CLI callers (about to process.exit) skip the native close to dodge a
+    // LadybugDB destructor double-free after --pdg writes — closeLbugBeforeExit
+    // CHECKPOINTs for durability then leaves the handles for process exit to
+    // reclaim (#2264). Long-lived callers close for real.
+    await (options.skipNativeCloseOnExit ? closeLbugBeforeExit() : closeLbug());
 
     progress('done', 100, 'Done');
 
@@ -1570,7 +1599,15 @@ export async function runFullAnalysis(
       /* swallow — surface path is the rethrow below */
     }
     try {
-      await closeLbug();
+      // Skip the native close on the error path too: a real conn.close() after
+      // large --pdg writes can itself abort in LadybugDB's ClientContext
+      // destructor (#2264 review P2), turning an actionable exit-1 into a raw
+      // SIGABRT. closeLbugBeforeExit leaves the handles open, but the CLI catch
+      // now force-exits when isLbugReady() (analyze.ts, #2264 review P1), so the
+      // process still terminates — no hang, no abort. flushWAL keeps the partial
+      // index durable; process exit reclaims the handles. Long-lived callers
+      // (skipNativeCloseOnExit unset) close for real.
+      await (options.skipNativeCloseOnExit ? closeLbugBeforeExit() : closeLbug());
     } catch {
       /* swallow */
     }
