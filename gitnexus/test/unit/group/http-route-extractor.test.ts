@@ -1771,6 +1771,48 @@ class ApiClient {
       ).toBeDefined();
     });
 
+    it('extracts Java RestTemplate URI.create(...) static paths', async () => {
+      const dir = path.join(tmpDir, 'java-rest-template-uri-create');
+      fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'src', 'UriClient.java'),
+        `
+import java.net.URI;
+import org.springframework.http.HttpMethod;
+import org.springframework.web.client.RestTemplate;
+
+class UriClient {
+  void run(RestTemplate restTemplate) {
+    String dynamicPath = "/api/dynamic-users/99";
+    restTemplate.getForEntity(URI.create("/api/uri-users/42"), String.class);
+    restTemplate.exchange(URI.create("/api/uri-users/42/details"), HttpMethod.POST, null, String.class);
+    restTemplate.getForObject(dynamicPath, String.class);
+  }
+}
+`,
+      );
+
+      const contracts = await extractor.extract(null, dir, makeRepo(dir));
+      const consumers = contracts.filter((c) => c.role === 'consumer');
+
+      expect(
+        consumers.find(
+          (c) =>
+            c.contractId === 'http::GET::/api/uri-users/{param}' &&
+            c.meta.framework === 'spring-rest-template' &&
+            c.confidence === 0.7,
+        ),
+      ).toBeDefined();
+      expect(
+        consumers.find((c) => c.contractId === 'http::POST::/api/uri-users/{param}/details'),
+      ).toBeDefined();
+      // Anti-overreach: a variable-bound path is not statically resolvable, so
+      // the widened `(_) @path` capture must NOT emit a consumer for it.
+      expect(
+        consumers.find((c) => c.contractId === 'http::GET::/api/dynamic-users/{param}'),
+      ).toBeUndefined();
+    });
+
     it('extracts Java WebClient long-form method(HttpMethod.X).uri(...) — #2254 parity', async () => {
       // Parity with the Kotlin plugin: a single structural query matches the
       // verb (HttpMethod.X field access) and path. Previously deferred on the

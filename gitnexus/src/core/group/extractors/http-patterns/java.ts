@@ -199,7 +199,7 @@ const REST_TEMPLATE_PATTERNS = compilePatterns({
         (method_invocation
           object: (identifier) @obj (#eq? @obj "restTemplate")
           name: (identifier) @method
-          arguments: (argument_list . (string_literal) @path))
+          arguments: (argument_list . (_) @path))
       `,
     },
   ],
@@ -216,7 +216,7 @@ const REST_TEMPLATE_EXCHANGE_PATTERNS = compilePatterns({
           object: (identifier) @obj (#eq? @obj "restTemplate")
           name: (identifier) @method (#eq? @method "exchange")
           arguments: (argument_list
-            . (string_literal) @path
+            . (_) @path
             (field_access
               object: (identifier) @httpMethodCls (#eq? @httpMethodCls "HttpMethod")
               field: (identifier) @http_method)))
@@ -379,6 +379,49 @@ function hasAnnotation(node: Parser.SyntaxNode, names: string | readonly string[
     stack.push(...cur.namedChildren);
   }
   return false;
+}
+
+// ─── Statically-resolvable consumer path helpers ──────────────────────
+// RestTemplate calls increasingly pass a non-literal path argument that is
+// still statically derivable — `URI.create("/x")` or a `UriComponentsBuilder`
+// fluent chain. These helpers resolve those shapes to a literal path; a
+// genuinely dynamic argument (a variable, a non-`URI`/`UriComponentsBuilder`
+// call) resolves to null and the call site is skipped.
+
+function methodInvocationName(node: Parser.SyntaxNode): string | null {
+  return node.type === 'method_invocation' ? (node.childForFieldName('name')?.text ?? null) : null;
+}
+
+function methodInvocationObject(node: Parser.SyntaxNode): Parser.SyntaxNode | null {
+  return node.type === 'method_invocation' ? node.childForFieldName('object') : null;
+}
+
+function methodInvocationArguments(node: Parser.SyntaxNode): Parser.SyntaxNode[] {
+  const argsNode = node.type === 'method_invocation' ? node.childForFieldName('arguments') : null;
+  return argsNode?.namedChildren ?? [];
+}
+
+function firstLiteralArgument(node: Parser.SyntaxNode): string | null {
+  const first = methodInvocationArguments(node)[0];
+  return first?.type === 'string_literal' ? unquoteLiteral(first.text) : null;
+}
+
+/** Resolve a `URI.create("/path")` call to its literal path; null otherwise. */
+function extractUriCreatePath(node: Parser.SyntaxNode): string | null {
+  if (node.type !== 'method_invocation') return null;
+  if (methodInvocationObject(node)?.text !== 'URI' || methodInvocationName(node) !== 'create')
+    return null;
+  return firstLiteralArgument(node);
+}
+
+/**
+ * Resolve a statically-derivable path argument to a literal path: a bare
+ * string literal, or a `URI.create("/x")` call. (U2 extends this with
+ * `UriComponentsBuilder` fluent chains.) Genuinely dynamic arguments → null.
+ */
+function extractStaticPathExpression(node: Parser.SyntaxNode): string | null {
+  if (node.type === 'string_literal') return unquoteLiteral(node.text);
+  return extractUriCreatePath(node);
 }
 
 interface MethodRouteAnnotation {
@@ -727,7 +770,7 @@ export const JAVA_HTTP_PLUGIN: HttpLanguagePlugin = {
       if (!methodNode || !pathNode) continue;
       const httpMethod = REST_TEMPLATE_TO_HTTP[methodNode.text];
       if (!httpMethod) continue;
-      const path = unquoteLiteral(pathNode.text);
+      const path = extractStaticPathExpression(pathNode);
       if (path === null) continue;
       out.push({
         role: 'consumer',
@@ -743,7 +786,7 @@ export const JAVA_HTTP_PLUGIN: HttpLanguagePlugin = {
       const httpMethodNode = match.captures.http_method;
       const pathNode = match.captures.path;
       if (!httpMethodNode || !pathNode) continue;
-      const path = unquoteLiteral(pathNode.text);
+      const path = extractStaticPathExpression(pathNode);
       if (path === null) continue;
       out.push({
         role: 'consumer',
