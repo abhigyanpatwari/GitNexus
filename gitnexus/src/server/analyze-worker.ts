@@ -74,14 +74,23 @@ process.on('message', async (msg: StartMessage) => {
   started = true;
 
   try {
-    const result = await runFullAnalysis(msg.repoPath, msg.options, {
-      onProgress: (phase, percent, message) => {
-        send({ type: 'progress', phase, percent, message });
+    const result = await runFullAnalysis(
+      msg.repoPath,
+      // This worker force-exits (process.exit(0) below) right after sending its
+      // result, so skip the native close: it can double-free in LadybugDB's
+      // ClientContext destructor after --pdg writes and abort the worker BEFORE it
+      // can send 'complete' (#2264). flushWAL still persists the index; the
+      // subsequent process.exit reclaims the native handles.
+      { ...msg.options, skipNativeCloseOnExit: true },
+      {
+        onProgress: (phase, percent, message) => {
+          send({ type: 'progress', phase, percent, message });
+        },
+        onLog: (message) => {
+          send({ type: 'progress', phase: 'log', percent: -1, message });
+        },
       },
-      onLog: (message) => {
-        send({ type: 'progress', phase: 'log', percent: -1, message });
-      },
-    });
+    );
 
     // Send a JSON-safe projection, NOT the raw result: the IPC channel is
     // default-JSON serialization and `result.pipelineResult` carries the live
