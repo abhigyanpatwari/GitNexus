@@ -2692,6 +2692,48 @@ class HttpClients {
       ).toBeDefined();
     });
 
+    it('extracts Java HttpClient HEAD, .method(), and default-GET forms', async () => {
+      const dir = path.join(tmpDir, 'java-http-client-verbs');
+      fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'src', 'HttpClientVerbs.java'),
+        `
+import java.net.URI;
+import java.net.http.HttpRequest;
+
+class HttpClientVerbs {
+  void run(String verb) throws Exception {
+    HttpRequest head = HttpRequest.newBuilder().uri(URI.create("/api/users/head")).HEAD().build();
+    HttpRequest patch = HttpRequest.newBuilder().uri(URI.create("/api/users/2")).method("PATCH", HttpRequest.BodyPublishers.ofString("{}")).build();
+    HttpRequest def = HttpRequest.newBuilder().uri(URI.create("/api/default-users/3")).build();
+    HttpRequest dyn = HttpRequest.newBuilder().uri(URI.create("/api/dyn/4")).method(verb, HttpRequest.BodyPublishers.noBody()).build();
+  }
+}
+`,
+      );
+
+      const contracts = await extractor.extract(null, dir, makeRepo(dir));
+      const hc = contracts.filter(
+        (c) =>
+          c.role === 'consumer' &&
+          c.meta.framework === 'java-http-client' &&
+          c.symbolRef.filePath.endsWith('HttpClientVerbs.java'),
+      );
+
+      // HEAD via verb helper, PATCH via `.method("X")`, default GET via bare
+      // `.build()`. The variable-bound `.method(verb, …)` is NOT resolved
+      // (string literal only) → no contract. Exact set-equality also pins that
+      // no chain double-emits (e.g. HEAD would never also yield a GET).
+      expect(new Set(hc.map((c) => c.contractId))).toEqual(
+        new Set([
+          'http::HEAD::/api/users/head',
+          'http::PATCH::/api/users/{param}',
+          'http::GET::/api/default-users/{param}',
+        ]),
+      );
+      expect(hc.every((c) => c.confidence === 0.65)).toBe(true);
+    });
+
     // ─── Kotlin consumers (RestTemplate / WebClient short+long / OkHttp) ──
     // Same shape as the Java consumer test above, but parsed by the
     // tree-sitter-kotlin grammar via `KOTLIN_HTTP_PLUGIN`. Four

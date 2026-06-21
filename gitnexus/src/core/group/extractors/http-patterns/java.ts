@@ -315,7 +315,66 @@ const JAVA_HTTP_CLIENT_PATTERNS = compilePatterns({
                 object: (identifier) @uriCls (#eq? @uriCls "URI")
                 name: (identifier) @create (#eq? @create "create")
                 arguments: (argument_list . (string_literal) @path))))
-          name: (identifier) @http_method (#match? @http_method "^(GET|POST|PUT|DELETE)$"))
+          name: (identifier) @http_method (#match? @http_method "^(GET|POST|PUT|DELETE|HEAD)$"))
+      `,
+    },
+  ],
+} satisfies LanguagePatterns<Record<string, never>>);
+
+// Generic verb form: `HttpRequest.newBuilder().uri(URI.create("...")).method("VERB", body)`.
+// Covers PATCH and any other verb the dedicated helpers don't expose. Terminates
+// at `.method(...)`, so it never overlaps the verb-helper or default-GET families.
+const JAVA_HTTP_CLIENT_METHOD_PATTERNS = compilePatterns({
+  name: 'java-http-client-method',
+  language: Java,
+  patterns: [
+    {
+      meta: {},
+      query: `
+        (method_invocation
+          object: (method_invocation
+            object: (method_invocation
+              object: (identifier) @builderCls (#eq? @builderCls "HttpRequest")
+              name: (identifier) @newBuilder (#eq? @newBuilder "newBuilder")
+              arguments: (argument_list))
+            name: (identifier) @uri_method (#eq? @uri_method "uri")
+            arguments: (argument_list
+              (method_invocation
+                object: (identifier) @uriCls (#eq? @uriCls "URI")
+                name: (identifier) @create (#eq? @create "create")
+                arguments: (argument_list . (string_literal) @path))))
+          name: (identifier) @method (#eq? @method "method")
+          arguments: (argument_list . (string_literal) @http_method))
+      `,
+    },
+  ],
+} satisfies LanguagePatterns<Record<string, never>>);
+
+// Default GET form: `HttpRequest.newBuilder().uri(URI.create("...")).build()` with
+// no verb helper between `.uri(...)` and `.build()`. The `.build()` object must be
+// the `.uri(...)` call DIRECTLY, so a chain carrying a verb helper or `.method(...)`
+// does not also match here.
+const JAVA_HTTP_CLIENT_DEFAULT_GET_PATTERNS = compilePatterns({
+  name: 'java-http-client-default-get',
+  language: Java,
+  patterns: [
+    {
+      meta: {},
+      query: `
+        (method_invocation
+          object: (method_invocation
+            object: (method_invocation
+              object: (identifier) @builderCls (#eq? @builderCls "HttpRequest")
+              name: (identifier) @newBuilder (#eq? @newBuilder "newBuilder")
+              arguments: (argument_list))
+            name: (identifier) @uri_method (#eq? @uri_method "uri")
+            arguments: (argument_list
+              (method_invocation
+                object: (identifier) @uriCls (#eq? @uriCls "URI")
+                name: (identifier) @create (#eq? @create "create")
+                arguments: (argument_list . (string_literal) @path))))
+          name: (identifier) @build (#eq? @build "build")
+          arguments: (argument_list))
       `,
     },
   ],
@@ -943,8 +1002,14 @@ export const JAVA_HTTP_PLUGIN: HttpLanguagePlugin = {
     }
 
     // ─── Consumers: Java HttpClient request builder ─────────────────
-    // Java's builder exposes GET/POST/PUT/DELETE helpers. PATCH uses
-    // `.method("PATCH", body)`, which is intentionally deferred.
+    // The standard builder exposes GET/POST/PUT/DELETE/HEAD verb helpers
+    // (JAVA_HTTP_CLIENT_PATTERNS). Other verbs — incl. PATCH — use the generic
+    // `.method("VERB", body)` form (JAVA_HTTP_CLIENT_METHOD_PATTERNS); a
+    // `.build()` with no verb helper defaults to GET
+    // (JAVA_HTTP_CLIENT_DEFAULT_GET_PATTERNS). The three families terminate at
+    // different calls (verb helper / `.method` / `.build` whose object is the
+    // `.uri(...)` call directly), so a chain matches exactly one — no double-emit.
+    // A variable-bound `.method(verb, …)` stays unresolved (string literal only).
     for (const match of runCompiledPatterns(JAVA_HTTP_CLIENT_PATTERNS, tree)) {
       const httpMethodNode = match.captures.http_method;
       const pathNode = match.captures.path;
@@ -955,6 +1020,38 @@ export const JAVA_HTTP_PLUGIN: HttpLanguagePlugin = {
         role: 'consumer',
         framework: 'java-http-client',
         method: httpMethodNode.text.toUpperCase(),
+        path,
+        name: null,
+        confidence: 0.65,
+      });
+    }
+
+    for (const match of runCompiledPatterns(JAVA_HTTP_CLIENT_METHOD_PATTERNS, tree)) {
+      const httpMethodNode = match.captures.http_method;
+      const pathNode = match.captures.path;
+      if (!httpMethodNode || !pathNode) continue;
+      const httpMethod = unquoteLiteral(httpMethodNode.text);
+      const path = unquoteLiteral(pathNode.text);
+      if (httpMethod === null || path === null) continue;
+      out.push({
+        role: 'consumer',
+        framework: 'java-http-client',
+        method: httpMethod.toUpperCase(),
+        path,
+        name: null,
+        confidence: 0.65,
+      });
+    }
+
+    for (const match of runCompiledPatterns(JAVA_HTTP_CLIENT_DEFAULT_GET_PATTERNS, tree)) {
+      const pathNode = match.captures.path;
+      if (!pathNode) continue;
+      const path = unquoteLiteral(pathNode.text);
+      if (path === null) continue;
+      out.push({
+        role: 'consumer',
+        framework: 'java-http-client',
+        method: 'GET',
         path,
         name: null,
         confidence: 0.65,
