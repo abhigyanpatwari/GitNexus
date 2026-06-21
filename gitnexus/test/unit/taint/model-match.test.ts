@@ -13,6 +13,7 @@ import { cfgOf, importsFor } from '../../helpers/ts-cfg-harness.js';
 import { hasTaintSafeSites } from '../../../src/core/ingestion/taint/site-safety.js';
 import type { SourceSinkSanitizerSpec } from '../../../src/core/ingestion/taint/source-sink-config.js';
 import {
+  BUILTIN_TAINT_MODELS,
   TS_JS_TAINT_MODEL,
   computeTaintModelVersion,
   registerBuiltinTaintModels,
@@ -272,18 +273,19 @@ function f(x) { exec(escape(x)); }`);
 describe('registry + model identity', () => {
   beforeEach(() => clearSourceSinkRegistry());
 
-  it('registerBuiltinTaintModels registers typescript AND javascript (idempotent); others stay undefined', () => {
+  it('registerBuiltinTaintModels registers TS, JS, and Python (idempotent); others stay undefined', () => {
     registerBuiltinTaintModels();
     registerBuiltinTaintModels(); // idempotent — last-write-wins on the same ids
-    expect(registeredTaintLanguages().sort()).toEqual(['javascript', 'typescript']);
+    expect(registeredTaintLanguages().sort()).toEqual(['javascript', 'python', 'typescript']);
     expect(getSourceSinkConfig('typescript')).toBe(TS_JS_TAINT_MODEL);
     expect(getSourceSinkConfig('javascript')).toBe(TS_JS_TAINT_MODEL);
-    expect(getSourceSinkConfig('python')).toBeUndefined();
+    expect(getSourceSinkConfig('python')).toBe(BUILTIN_TAINT_MODELS.python);
+    expect(getSourceSinkConfig('ruby')).toBeUndefined();
   });
 
-  it('taintModelVersion is the digest of the full built-in model', () => {
-    expect(taintModelVersion).toBe(computeTaintModelVersion(TS_JS_TAINT_MODEL));
+  it('taintModelVersion covers the full built-in model registry', () => {
     expect(taintModelVersion).toMatch(/^[0-9a-f]{12}$/);
+    expect(taintModelVersion).not.toBe(computeTaintModelVersion(TS_JS_TAINT_MODEL));
   });
 
   it('adding an entry changes the version', () => {
@@ -291,7 +293,7 @@ describe('registry + model identity', () => {
       ...TS_JS_TAINT_MODEL,
       sinks: [...TS_JS_TAINT_MODEL.sinks, { name: 'load', kind: 'code-injection', module: 'vm' }],
     };
-    expect(computeTaintModelVersion(added)).not.toBe(taintModelVersion);
+    expect(computeTaintModelVersion(added)).not.toBe(computeTaintModelVersion(TS_JS_TAINT_MODEL));
   });
 
   it('changing only a kind label changes the version', () => {
@@ -301,7 +303,9 @@ describe('registry + model identity', () => {
         s.name === 'exec' ? { ...s, kind: 'xss' as const } : s,
       ),
     };
-    expect(computeTaintModelVersion(relabeled)).not.toBe(taintModelVersion);
+    expect(computeTaintModelVersion(relabeled)).not.toBe(
+      computeTaintModelVersion(TS_JS_TAINT_MODEL),
+    );
   });
 
   it('the version is content-derived: key order does not matter, entry order does', () => {
@@ -310,6 +314,6 @@ describe('registry + model identity', () => {
       sinks: TS_JS_TAINT_MODEL.sinks,
       sources: TS_JS_TAINT_MODEL.sources,
     };
-    expect(computeTaintModelVersion(reordered)).toBe(taintModelVersion);
+    expect(computeTaintModelVersion(reordered)).toBe(computeTaintModelVersion(TS_JS_TAINT_MODEL));
   });
 });
