@@ -2040,28 +2040,35 @@ export const queryImporters = async (targetFilePath: string): Promise<string[]> 
 export const deleteAllCommunitiesAndProcesses = async (): Promise<{
   nodesDeleted: number;
 }> => {
-  if (!conn) {
+  const c = conn;
+  if (!c) {
     throw new Error('LadybugDB not initialized. Call initLbug first.');
   }
-  let nodesDeleted = 0;
-  for (const label of ['Community', 'Process']) {
-    let countResult: lbug.QueryResult | lbug.QueryResult[] | undefined;
-    try {
-      countResult = await conn.query(`MATCH (n:${label}) RETURN count(n) AS cnt`);
-      const result = Array.isArray(countResult) ? countResult[0] : countResult;
-      const rows = await result.getAll();
-      const count = Number(rows[0]?.cnt ?? rows[0]?.[0] ?? 0);
-      if (count > 0) {
-        await conn.query(`MATCH (n:${label}) DETACH DELETE n`);
-        nodesDeleted += count;
+  // count + DETACH DELETE run inside the connection lock so they cannot execute
+  // concurrently with the WAL-checkpoint driver's CHECKPOINT on the singleton
+  // connection. This runs during incremental --pdg writeback while the driver is
+  // live; mirrors the wrapped deleteAllInterprocTaintPaths / deleteAllCallSummaries.
+  return withConnLock(async () => {
+    let nodesDeleted = 0;
+    for (const label of ['Community', 'Process']) {
+      let countResult: lbug.QueryResult | lbug.QueryResult[] | undefined;
+      try {
+        countResult = await c.query(`MATCH (n:${label}) RETURN count(n) AS cnt`);
+        const result = Array.isArray(countResult) ? countResult[0] : countResult;
+        const rows = await result.getAll();
+        const count = Number(rows[0]?.cnt ?? rows[0]?.[0] ?? 0);
+        if (count > 0) {
+          await c.query(`MATCH (n:${label}) DETACH DELETE n`);
+          nodesDeleted += count;
+        }
+      } catch {
+        // Table may not exist yet on a freshly-initialized DB — fine.
+      } finally {
+        if (countResult) await closeQueryResults(countResult);
       }
-    } catch {
-      // Table may not exist yet on a freshly-initialized DB — fine.
-    } finally {
-      if (countResult) await closeQueryResults(countResult);
     }
-  }
-  return { nodesDeleted };
+    return { nodesDeleted };
+  });
 };
 
 /**
