@@ -54,7 +54,11 @@ describe('flushWAL / safeClose — consolidation guard (#1376)', () => {
   });
 
   it('CHECKPOINT is issued only by flushWAL (best-effort) and tryFlushWAL (rethrows for the retry driver)', () => {
-    const matches = adapterSource.match(/conn\.query\('CHECKPOINT'\)/g) ?? [];
+    // Receiver-agnostic: since the connection-serialization refactor (#2264)
+    // both sites capture `const c = conn` and call `c.query('CHECKPOINT')`
+    // inside withConnLock, so match `.query('CHECKPOINT')` regardless of the
+    // receiver name rather than the literal `conn.query(...)`.
+    const matches = adapterSource.match(/\.query\('CHECKPOINT'\)/g) ?? [];
     // Two authorized sites: `flushWAL` (swallows errors — used by
     // `safeClose` and the server's best-effort flush) and `tryFlushWAL`
     // (rethrows so the manual checkpoint driver in `wal-checkpoint-driver.ts`
