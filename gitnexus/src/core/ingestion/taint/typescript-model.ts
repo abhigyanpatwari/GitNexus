@@ -18,6 +18,7 @@
 import { createHash } from 'node:crypto';
 import { SupportedLanguages } from 'gitnexus-shared';
 import type { SourceSinkSanitizerSpec } from './source-sink-config.js';
+import { JAVA_TAINT_MODEL } from './java-model.js';
 import { PYTHON_TAINT_MODEL } from './python-model.js';
 import { registerSourceSinkConfig } from './source-sink-registry.js';
 
@@ -99,6 +100,7 @@ function canonicalJson(value: unknown): string {
 }
 
 export const BUILTIN_TAINT_MODELS = {
+  [SupportedLanguages.Java]: JAVA_TAINT_MODEL,
   [SupportedLanguages.JavaScript]: TS_JS_TAINT_MODEL,
   [SupportedLanguages.Python]: PYTHON_TAINT_MODEL,
   [SupportedLanguages.TypeScript]: TS_JS_TAINT_MODEL,
@@ -117,6 +119,7 @@ export const taintModelVersion: string = computeModelDigest(BUILTIN_TAINT_MODELS
  * until they have a dedicated model.
  */
 export function registerBuiltinTaintModels(): void {
+  registerSourceSinkConfig(SupportedLanguages.Java, JAVA_TAINT_MODEL);
   registerSourceSinkConfig(SupportedLanguages.TypeScript, TS_JS_TAINT_MODEL);
   registerSourceSinkConfig(SupportedLanguages.JavaScript, TS_JS_TAINT_MODEL);
   registerSourceSinkConfig(SupportedLanguages.Python, PYTHON_TAINT_MODEL);

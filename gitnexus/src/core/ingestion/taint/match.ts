@@ -76,8 +76,10 @@
 import type { ParsedImport } from 'gitnexus-shared';
 import type { FunctionCfg, SiteRecord } from '../cfg/types.js';
 import type {
+  TaintCallResultSourceEntry,
   SourceSinkSanitizerSpec,
   TaintMemberSourceEntry,
+  TaintSourceEntry,
   TaintSanitizerEntry,
   TaintSinkEntry,
 } from './source-sink-config.js';
@@ -99,10 +101,23 @@ export type TaintImportIndex = ReadonlyMap<string, TaintImportBinding>;
 
 /** A member-read site matched as a taint source. */
 export interface MatchedSourceRead {
+  readonly type: 'member-read';
   /** Index into the owning statement's `sites` array. */
   readonly siteIndex: number;
   readonly entry: TaintMemberSourceEntry;
 }
+
+/** A call-result source matched on a call site with direct result definitions. */
+export interface MatchedSourceCall {
+  readonly type: 'call-result';
+  /** Index into the owning statement's `sites` array. */
+  readonly siteIndex: number;
+  readonly entry: TaintCallResultSourceEntry;
+  /** Bindings directly defined by this call result. Never empty. */
+  readonly resultDefs: readonly number[];
+}
+
+export type MatchedSource = MatchedSourceRead | MatchedSourceCall;
 
 /** A call/new site matched as a sink. */
 export interface MatchedSinkCall {
@@ -141,7 +156,7 @@ export interface StatementMatches {
   readonly blockIndex: number;
   readonly statementIndex: number;
   readonly line: number;
-  readonly sources: readonly MatchedSourceRead[];
+  readonly sources: readonly MatchedSource[];
   readonly sinks: readonly MatchedSinkCall[];
   readonly sanitizers: readonly MatchedSanitizerCall[];
 }
@@ -156,6 +171,9 @@ export interface FunctionSiteMatches {
 
 const stripNodeScheme = (specifier: string): string =>
   specifier.startsWith('node:') ? specifier.slice('node:'.length) : specifier;
+
+const isCallResultSource = (entry: TaintSourceEntry): entry is TaintCallResultSourceEntry =>
+  entry.type === 'call-result';
 
 /**
  * Build the local-name → module/member index from a file's `parsedImports`.
@@ -330,7 +348,7 @@ export function matchFunctionSites(
     block.statements?.forEach((stmt, statementIndex) => {
       const sites = stmt.sites;
       if (sites === undefined || sites.length === 0) return;
-      const sources: MatchedSourceRead[] = [];
+      const sources: MatchedSource[] = [];
       const sinks: MatchedSinkCall[] = [];
       const sanitizers: MatchedSanitizerCall[] = [];
 
@@ -340,8 +358,9 @@ export function matchFunctionSites(
           const objectName = bindings[site.object].name;
           const property = site.property;
           for (const entry of spec.sources) {
+            if (isCallResultSource(entry)) continue;
             if (entry.objects.includes(objectName) && entry.properties.includes(property)) {
-              sources.push({ siteIndex, entry });
+              sources.push({ type: 'member-read', siteIndex, entry });
             }
           }
           return;
@@ -349,6 +368,23 @@ export function matchFunctionSites(
         // call / new
         const resolved = resolveCallee(site);
         if (resolved === undefined) return;
+        if (site.kind === 'call' && (site.resultDefs?.length ?? 0) > 0) {
+          for (const entry of spec.sources) {
+            if (!isCallResultSource(entry)) continue;
+            if (
+              resolved.path.length === 2 &&
+              entry.receivers.includes(resolved.path[0]) &&
+              entry.methods.includes(resolved.path[1])
+            ) {
+              sources.push({
+                type: 'call-result',
+                siteIndex,
+                entry,
+                resultDefs: site.resultDefs as readonly number[],
+              });
+            }
+          }
+        }
         for (const entry of spec.sinks) {
           if (!sinkMechanismHit(entry, site, resolved)) continue;
           const argPositions: number[] = [];

@@ -15,7 +15,7 @@ import {
   matchFunctionSites,
   type FunctionSiteMatches,
   type MatchedSinkCall,
-  type MatchedSourceRead,
+  type MatchedSource,
 } from '../../../src/core/ingestion/taint/match.js';
 import { makeCfgHarness } from '../../helpers/cfg-harness.js';
 
@@ -36,7 +36,7 @@ function matchesOf(code: string, fnIndex = 0): FunctionSiteMatches {
 
 const allSinks = (m: FunctionSiteMatches): MatchedSinkCall[] =>
   m.statements.flatMap((s) => [...s.sinks]);
-const allSources = (m: FunctionSiteMatches): MatchedSourceRead[] =>
+const allSources = (m: FunctionSiteMatches): MatchedSource[] =>
   m.statements.flatMap((s) => [...s.sources]);
 
 describe('Python taint model (#2204)', () => {

@@ -25,7 +25,7 @@ import {
   type FunctionSiteMatches,
   type MatchedSanitizerCall,
   type MatchedSinkCall,
-  type MatchedSourceRead,
+  type MatchedSource,
 } from '../../../src/core/ingestion/taint/match.js';
 import {
   getSourceSinkConfig,
@@ -47,7 +47,7 @@ function matchesOf(
 
 const allSinks = (m: FunctionSiteMatches): MatchedSinkCall[] =>
   m.statements.flatMap((s) => [...s.sinks]);
-const allSources = (m: FunctionSiteMatches): MatchedSourceRead[] =>
+const allSources = (m: FunctionSiteMatches): MatchedSource[] =>
   m.statements.flatMap((s) => [...s.sources]);
 const allSanitizers = (m: FunctionSiteMatches): MatchedSanitizerCall[] =>
   m.statements.flatMap((s) => [...s.sanitizers]);
@@ -276,7 +276,13 @@ describe('registry + model identity', () => {
   it('registerBuiltinTaintModels registers TS, JS, and Python (idempotent); others stay undefined', () => {
     registerBuiltinTaintModels();
     registerBuiltinTaintModels(); // idempotent — last-write-wins on the same ids
-    expect(registeredTaintLanguages().sort()).toEqual(['javascript', 'python', 'typescript']);
+    expect(registeredTaintLanguages().sort()).toEqual([
+      'java',
+      'javascript',
+      'python',
+      'typescript',
+    ]);
+    expect(getSourceSinkConfig('java')).toBe(BUILTIN_TAINT_MODELS.java);
     expect(getSourceSinkConfig('typescript')).toBe(TS_JS_TAINT_MODEL);
     expect(getSourceSinkConfig('javascript')).toBe(TS_JS_TAINT_MODEL);
     expect(getSourceSinkConfig('python')).toBe(BUILTIN_TAINT_MODELS.python);
