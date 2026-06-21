@@ -44,34 +44,48 @@ export interface ErrorMessage {
 export type WorkerMessage = ProgressMessage | CompleteMessage | ErrorMessage;
 
 function send(msg: WorkerMessage) {
-  try {
-    process.send?.(msg);
-  } catch {
-    // The parent may have already disconnected the IPC channel
-    // (ERR_IPC_CHANNEL_CLOSED). Swallow so a failed notification can't escape the
-    // message/SIGTERM handlers and skip their scheduled process.exit (#2264 review
-    // P3) — a vanished child is treated as a failure by the parent regardless.
-  }
+  // No try/catch: if the IPC channel is gone, process.send throws
+  // (ERR_IPC_CHANNEL_CLOSED) and that failure must NOT be swallowed. Every caller
+  // schedules its process.exit inside a `finally`, so a throw here still tears the
+  // worker down deterministically instead of wedging the event loop (#2264 P3).
+  process.send?.(msg);
 }
 
-// Catch uncaught exceptions and unhandled rejections — report to parent
-process.on('uncaughtException', (err) => {
-  send({ type: 'error', message: err?.message || 'Uncaught exception in worker' });
-  setTimeout(() => process.exit(1), 500);
-});
-
-process.on('unhandledRejection', (reason: any) => {
-  send({ type: 'error', message: reason?.message || 'Unhandled rejection in worker' });
-  setTimeout(() => process.exit(1), 500);
-});
-
-// Handle graceful shutdown — notify parent before exit
-process.on('SIGTERM', async () => {
-  send({ type: 'error', message: 'Analysis cancelled (worker received SIGTERM)' });
+// Catch uncaught exceptions and unhandled rejections — report them to the parent
+// over IPC (the same channel the analysis path uses), then exit. The report runs
+// in `try` and the exit in `finally` so a throw from send() on a closed channel
+// can't skip the exit and leave the worker wedged (#2264 review P3).
+process.on('uncaughtException', (err: unknown) => {
   try {
+    const message = err instanceof Error ? err.message : 'Uncaught exception in worker';
+    send({ type: 'error', message });
+  } finally {
+    setTimeout(() => process.exit(1), 500);
+  }
+});
+
+process.on('unhandledRejection', (reason: unknown) => {
+  try {
+    const message = reason instanceof Error ? reason.message : 'Unhandled rejection in worker';
+    send({ type: 'error', message });
+  } finally {
+    setTimeout(() => process.exit(1), 500);
+  }
+});
+
+// Handle graceful shutdown — notify the parent over IPC, then exit. A cleanup
+// failure is reported to the parent (not swallowed), and the exit lives in
+// `finally` so it always fires even if a send() throws on a closed channel.
+process.on('SIGTERM', async () => {
+  try {
+    send({ type: 'error', message: 'Analysis cancelled (worker received SIGTERM)' });
     await closeLbug();
-  } catch {}
-  process.exit(0);
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : 'Worker cleanup failed during SIGTERM';
+    send({ type: 'error', message });
+  } finally {
+    process.exit(0);
+  }
 });
 
 // Listen for start command from parent — guarded against re-entry
@@ -105,11 +119,14 @@ process.on('message', async (msg: StartMessage) => {
     // a BigInt/circular value would throw and mis-report this success as a
     // failure). See analyze-worker-ipc.ts.
     send({ type: 'complete', result: projectAnalyzeResultForIpc(result) });
-  } catch (err: any) {
-    send({ type: 'error', message: err?.message || 'Analysis failed' });
+  } catch (err: unknown) {
+    // Report the failure to the parent over IPC (the parent surfaces the message).
+    const message = err instanceof Error ? err.message : 'Analysis failed';
+    send({ type: 'error', message });
+  } finally {
+    // LadybugDB's native module prevents clean exit — force it (same reason the
+    // CLI uses process.exit(0)). In `finally` so the exit still fires even if the
+    // error report above throws on a closed IPC channel (#2264 review P3).
+    setTimeout(() => process.exit(0), 500);
   }
-
-  // LadybugDB's native module prevents clean exit — force it
-  // (same reason the CLI uses process.exit(0))
-  setTimeout(() => process.exit(0), 500);
 });
