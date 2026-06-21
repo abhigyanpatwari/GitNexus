@@ -168,6 +168,10 @@ const VALID_HTTP_METHODS = new Set([
 export function normalizeRouteMethod(raw: string | null | undefined): string | undefined {
   if (typeof raw !== 'string') return undefined;
   const verb = raw.trim().toUpperCase();
+  // '*' marks a method-agnostic route (e.g. a Django function view handles any
+  // verb). Preserve it so the contract layer emits a wildcard provider that
+  // matches consumers of any method, instead of silently narrowing to GET.
+  if (verb === '*') return '*';
   return VALID_HTTP_METHODS.has(verb) ? verb : undefined;
 }
 
