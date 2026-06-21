@@ -8,7 +8,8 @@
  * future in-process analyze ever overlaps a stream.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { streamQuery, markWalDriverActive } from '../../src/core/lbug/lbug-adapter.js';
+import { streamQuery } from '../../src/core/lbug/lbug-adapter.js';
+import { markWalDriverActive } from '../../src/core/lbug/wal-driver-state.js';
 import { startWalCheckpointDriver } from '../../src/core/lbug/wal-checkpoint-driver.js';
 
 describe('streamQuery WAL-driver guard (#2264)', () => {

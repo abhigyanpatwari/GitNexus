@@ -33,7 +33,8 @@
  */
 
 import { logger } from '../logger.js';
-import { tryFlushWAL, markWalDriverActive } from './lbug-adapter.js';
+import { tryFlushWAL } from './lbug-adapter.js';
+import { markWalDriverActive } from './wal-driver-state.js';
 import { isLbugCheckpointIoError } from './lbug-config.js';
 
 /**

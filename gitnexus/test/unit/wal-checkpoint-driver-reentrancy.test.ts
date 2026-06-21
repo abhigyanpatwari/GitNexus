@@ -14,8 +14,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../../src/core/lbug/lbug-adapter.js', () => ({
   tryFlushWAL: vi.fn(),
-  // The driver now toggles the streamQuery guard on start/stop (#2264).
-  markWalDriverActive: vi.fn(),
 }));
 
 import { startWalCheckpointDriver } from '../../src/core/lbug/wal-checkpoint-driver.js';
