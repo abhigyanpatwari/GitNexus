@@ -1841,7 +1841,9 @@ class VarVerbClient {
       const consumers = contracts.filter((c) => c.role === 'consumer');
 
       expect(
-        consumers.find((c) => c.contractId.startsWith('http::') && c.contractId.includes('/api/users')),
+        consumers.find(
+          (c) => c.contractId.startsWith('http::') && c.contractId.includes('/api/users'),
+        ),
       ).toBeUndefined();
     });
 
@@ -4359,9 +4361,7 @@ class DataReleaseController : DataReleaseApi {
         expect(
           providers.find((c) => c.contractId === 'http::GET::/open/open/ai/query'),
         ).toBeDefined();
-        expect(
-          providers.find((c) => c.contractId === 'http::GET::/open/ai/query'),
-        ).toBeUndefined();
+        expect(providers.find((c) => c.contractId === 'http::GET::/open/ai/query')).toBeUndefined();
       },
     );
 
@@ -4403,9 +4403,7 @@ class UserController : UserApi {
         expect(
           providers.find((c) => c.contractId === 'http::GET::/users/users/{param}'),
         ).toBeDefined();
-        expect(
-          providers.find((c) => c.contractId === 'http::GET::/users/{param}'),
-        ).toBeUndefined();
+        expect(providers.find((c) => c.contractId === 'http::GET::/users/{param}')).toBeUndefined();
       },
     );
 

@@ -818,7 +818,9 @@ function buildKotlinPlugin(language: unknown): HttpLanguagePlugin {
   // controller form (bare, paired, and the arg-form `@RestController("bean")`)
   // via the `modifiers` `annotation`/`constructor_invocation` shape.
   const scanKotlinProject = (files: readonly HttpScanInput[]): HttpFileDetections[] =>
-    scanSpringInheritanceProject(files.flatMap((f) => collectKotlinSpringTypes(f.filePath, f.tree)));
+    scanSpringInheritanceProject(
+      files.flatMap((f) => collectKotlinSpringTypes(f.filePath, f.tree)),
+    );
 
   return {
     name: 'kotlin-http',
@@ -1047,10 +1049,8 @@ function buildKotlinPlugin(language: unknown): HttpLanguagePlugin {
         // the interface's class-level @RequestMapping prefix, else none. Without
         // the prefixByClassId fallback Kotlin dropped the class prefix that Java
         // applies — the same fallback chain the @GetMapping-in-Feign path uses above.
-        const prefixes =
-          feignPrefixByClassId.get(enclosingClass.id) ??
-          prefixByClassId.get(enclosingClass.id) ??
-          [''];
+        const prefixes = feignPrefixByClassId.get(enclosingClass.id) ??
+          prefixByClassId.get(enclosingClass.id) ?? [''];
         for (const prefix of prefixes) {
           out.push({
             role: 'consumer',
