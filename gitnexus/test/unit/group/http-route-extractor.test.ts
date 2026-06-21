@@ -4504,6 +4504,321 @@ class GatewayController : OrdersApi, UsersApi {
       },
     );
 
+    // ─── Byte-identical Java↔Kotlin contract parity (set-equality harness) ─────
+    // Independent per-side twin tests can both pass while the emitted contract
+    // SETS differ (an extra contract on one side, or a confidence/framework
+    // drift). This harness feeds matched .java/.kt fixtures through both plugins
+    // and asserts the full projected contract set is equal across languages AND
+    // equal to the expected set — the only check that actually verifies the
+    // "byte-identical contract IDs" goal. Per-scenario twins above stay for
+    // readability and language-specific cases; this covers the parity-critical
+    // families. Drift in any covered family fails here directly.
+    describe('Java↔Kotlin contract parity (set-equality)', () => {
+      interface ParityFile {
+        name: string;
+        java: string;
+        kotlin: string;
+      }
+      interface ParityContract {
+        role: string;
+        contractId: string;
+        framework: unknown;
+        confidence: number;
+      }
+      interface ParityRow {
+        name: string;
+        files: ParityFile[];
+        expected: ParityContract[];
+      }
+
+      const sortContracts = (contracts: ParityContract[]): ParityContract[] =>
+        [...contracts].sort((a, b) =>
+          `${a.role} ${a.contractId}`.localeCompare(`${b.role} ${b.contractId}`),
+        );
+
+      const projectContracts = (
+        contracts: Awaited<ReturnType<typeof extractor.extract>>,
+      ): ParityContract[] =>
+        sortContracts(
+          contracts.map((c) => ({
+            role: c.role,
+            contractId: c.contractId,
+            framework: c.meta.framework,
+            confidence: c.confidence,
+          })),
+        );
+
+      const rows: ParityRow[] = [
+        {
+          name: '@RequestLine with @RequestMapping prefix fallback',
+          files: [
+            {
+              name: 'OrderClient',
+              java: `
+import org.springframework.cloud.openfeign.FeignClient;
+import org.springframework.web.bind.annotation.RequestMapping;
+import feign.RequestLine;
+
+@FeignClient(name = "order-service")
+@RequestMapping("/orders")
+interface OrderClient {
+  @RequestLine("GET /{id}")
+  Object get();
+}
+`,
+              kotlin: `package com.example
+import org.springframework.cloud.openfeign.FeignClient
+import org.springframework.web.bind.annotation.RequestMapping
+import feign.RequestLine
+
+@FeignClient(name = "order-service")
+@RequestMapping("/orders")
+interface OrderClient {
+    @RequestLine("GET /{id}")
+    fun get(): Any
+}
+`,
+            },
+          ],
+          expected: [
+            {
+              role: 'consumer',
+              contractId: 'http::GET::/orders/{param}',
+              framework: 'openfeign',
+              confidence: 0.75,
+            },
+          ],
+        },
+        {
+          name: 'named @RequestLine(value=...)',
+          files: [
+            {
+              name: 'CreateClient',
+              java: `
+import org.springframework.cloud.openfeign.FeignClient;
+import feign.RequestLine;
+
+@FeignClient(name = "create-service")
+interface CreateClient {
+  @RequestLine(value = "POST /create")
+  Object create();
+}
+`,
+              kotlin: `package com.example
+import org.springframework.cloud.openfeign.FeignClient
+import feign.RequestLine
+
+@FeignClient(name = "create-service")
+interface CreateClient {
+    @RequestLine(value = "POST /create")
+    fun create(): Any
+}
+`,
+            },
+          ],
+          expected: [
+            {
+              role: 'consumer',
+              contractId: 'http::POST::/create',
+              framework: 'openfeign',
+              confidence: 0.75,
+            },
+          ],
+        },
+        {
+          name: '@FeignClient(path) + @GetMapping',
+          files: [
+            {
+              name: 'UsersClient',
+              java: `
+import org.springframework.cloud.openfeign.FeignClient;
+import org.springframework.web.bind.annotation.GetMapping;
+
+@FeignClient(name = "users-service", path = "/api")
+interface UsersClient {
+  @GetMapping("/users")
+  Object users();
+}
+`,
+              kotlin: `package com.example
+import org.springframework.cloud.openfeign.FeignClient
+import org.springframework.web.bind.annotation.GetMapping
+
+@FeignClient(name = "users-service", path = "/api")
+interface UsersClient {
+    @GetMapping("/users")
+    fun users(): Any
+}
+`,
+            },
+          ],
+          expected: [
+            {
+              role: 'consumer',
+              contractId: 'http::GET::/api/users',
+              framework: 'openfeign',
+              confidence: 0.7,
+            },
+          ],
+        },
+        {
+          name: '@HttpExchange(url) prefix + @GetExchange',
+          files: [
+            {
+              name: 'ProductApi',
+              java: `
+import org.springframework.web.service.annotation.HttpExchange;
+import org.springframework.web.service.annotation.GetExchange;
+
+@HttpExchange(url = "/products")
+interface ProductApi {
+  @GetExchange("/{id}")
+  Object get();
+}
+`,
+              kotlin: `package com.example
+import org.springframework.web.service.annotation.HttpExchange
+import org.springframework.web.service.annotation.GetExchange
+
+@HttpExchange(url = "/products")
+interface ProductApi {
+    @GetExchange("/{id}")
+    fun get(): Any
+}
+`,
+            },
+          ],
+          expected: [
+            {
+              role: 'consumer',
+              contractId: 'http::GET::/products/{param}',
+              framework: 'spring-http-interface',
+              confidence: 0.75,
+            },
+          ],
+        },
+        {
+          name: 'WebClient long-form method(HttpMethod.X).uri(...)',
+          files: [
+            {
+              name: 'LongFormClient',
+              java: `
+import org.springframework.http.HttpMethod;
+import org.springframework.web.reactive.function.client.WebClient;
+
+class LongFormClient {
+  void run(WebClient webClient) {
+    webClient.method(HttpMethod.GET).uri("/api/items").retrieve();
+  }
+}
+`,
+              kotlin: `package com.example
+import org.springframework.http.HttpMethod
+import org.springframework.web.reactive.function.client.WebClient
+
+class LongFormClient {
+    fun run(webClient: WebClient) {
+        webClient.method(HttpMethod.GET).uri("/api/items").retrieve()
+    }
+}
+`,
+            },
+          ],
+          expected: [
+            {
+              role: 'consumer',
+              contractId: 'http::GET::/api/items',
+              framework: 'spring-web-client',
+              confidence: 0.7,
+            },
+          ],
+        },
+        {
+          name: 'interface-based controller inheritance',
+          files: [
+            {
+              name: 'WarehouseApi',
+              java: `
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.GetMapping;
+
+@RequestMapping("/warehouses")
+interface WarehouseApi {
+  @GetMapping("/{id}/stock")
+  Object listStock();
+}
+`,
+              kotlin: `package com.example
+import org.springframework.web.bind.annotation.RequestMapping
+import org.springframework.web.bind.annotation.GetMapping
+
+@RequestMapping("/warehouses")
+interface WarehouseApi {
+    @GetMapping("/{id}/stock")
+    fun listStock(): Any
+}
+`,
+            },
+            {
+              name: 'WarehouseController',
+              java: `
+import org.springframework.web.bind.annotation.RestController;
+
+@RestController
+class WarehouseController implements WarehouseApi {
+  @Override
+  public Object listStock() { return null; }
+}
+`,
+              kotlin: `package com.example
+import org.springframework.web.bind.annotation.RestController
+
+@RestController
+class WarehouseController : WarehouseApi {
+    override fun listStock(): Any = TODO()
+}
+`,
+            },
+          ],
+          expected: [
+            {
+              role: 'provider',
+              contractId: 'http::GET::/warehouses/{param}/stock',
+              framework: 'spring',
+              confidence: 0.8,
+            },
+          ],
+        },
+      ];
+
+      rows.forEach((row) => {
+        itKotlinConsumer(`emits identical contracts for ${row.name}`, async () => {
+          const base = path.join(tmpDir, `parity-${row.name.replace(/[^a-z0-9]+/gi, '-')}`);
+          const javaDir = path.join(base, 'java');
+          const kotlinDir = path.join(base, 'kotlin');
+          fs.mkdirSync(path.join(javaDir, 'src'), { recursive: true });
+          fs.mkdirSync(path.join(kotlinDir, 'src'), { recursive: true });
+          for (const file of row.files) {
+            fs.writeFileSync(path.join(javaDir, 'src', `${file.name}.java`), file.java);
+            fs.writeFileSync(path.join(kotlinDir, 'src', `${file.name}.kt`), file.kotlin);
+          }
+
+          const javaContracts = projectContracts(
+            await extractor.extract(null, javaDir, makeRepo(javaDir)),
+          );
+          const kotlinContracts = projectContracts(
+            await extractor.extract(null, kotlinDir, makeRepo(kotlinDir)),
+          );
+          const expected = sortContracts(row.expected);
+
+          // The two languages emit the same contract set...
+          expect(kotlinContracts).toEqual(javaContracts);
+          // ...and it is exactly the expected set (no extra/missing contracts).
+          expect(javaContracts).toEqual(expected);
+        });
+      });
+    });
+
     it('extracts Go stdlib and resty calls', async () => {
       const dir = path.join(tmpDir, 'go-consumer');
       fs.mkdirSync(path.join(dir, 'cmd'), { recursive: true });
