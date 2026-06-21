@@ -24,7 +24,8 @@ import {
   parseRequestLine,
   pushPrefix,
   joinPath,
-  joinInheritedSpringPath,
+  scanSpringInheritanceProject,
+  type SharedSpringType,
   OPENFEIGN_FRAMEWORK,
   HTTP_INTERFACE_FRAMEWORK,
   FEIGN_CONFIDENCE,
@@ -761,18 +762,7 @@ function buildKotlinPlugin(language: unknown): HttpLanguagePlugin {
   const kotlinFunctionName = (fn: Parser.SyntaxNode): string | null =>
     fn.namedChildren.find((c) => c.type === 'simple_identifier')?.text ?? null;
 
-  interface KotlinTypeInfo {
-    filePath: string;
-    kind: 'class' | 'interface';
-    name: string;
-    isController: boolean;
-    /** Class-level `@RequestMapping` prefixes — one per array element. */
-    classPrefixes: string[];
-    implementedInterfaces: string[];
-    methods: Array<{ name: string; routes: Array<{ method: string; path: string }> }>;
-  }
-
-  const collectKotlinSpringTypes = (filePath: string, tree: Parser.Tree): KotlinTypeInfo[] => {
+  const collectKotlinSpringTypes = (filePath: string, tree: Parser.Tree): SharedSpringType[] => {
     // Class-level @RequestMapping prefixes (reuse the provider class-prefix query).
     const prefixByClassId = new Map<number, string[]>();
     for (const match of runCompiledPatterns(SPRING_CLASS_PREFIX_PATTERNS, tree)) {
@@ -798,7 +788,7 @@ function buildKotlinPlugin(language: unknown): HttpLanguagePlugin {
       routesByMethodId.set(methodNode.id, arr);
     }
 
-    const out: KotlinTypeInfo[] = [];
+    const out: SharedSpringType[] = [];
     for (const match of runCompiledPatterns(KOTLIN_TYPE_DECLARATION_PATTERNS, tree)) {
       const typeNode = match.captures.type;
       const nameNode = match.captures.name;
@@ -822,90 +812,13 @@ function buildKotlinPlugin(language: unknown): HttpLanguagePlugin {
     return out;
   };
 
-  const scanKotlinProject = (files: readonly HttpScanInput[]): HttpFileDetections[] => {
-    const types = files.flatMap((f) => collectKotlinSpringTypes(f.filePath, f.tree));
-
-    // interface name → (method name → routes). `ownerPrefix` records the interface's
-    // own class prefix so the controller side can avoid doubling it (#2057). Null
-    // marks an ambiguous (duplicated) name.
-    type InheritedRoute = { method: string; path: string; ownerPrefix: string };
-    const interfaceRoutes = new Map<string, Map<string, InheritedRoute[]> | null>();
-    for (const type of types) {
-      if (type.kind !== 'interface') continue;
-      if (interfaceRoutes.has(type.name)) {
-        interfaceRoutes.set(type.name, null);
-        continue;
-      }
-      const prefixes = type.classPrefixes.length ? type.classPrefixes : [''];
-      const methodMap = new Map<string, InheritedRoute[]>();
-      for (const method of type.methods) {
-        // Cross-product the interface's class prefixes with each method route, so a
-        // multi-element `@RequestMapping(["/a","/b"])` interface yields N bindings.
-        const routes = method.routes.flatMap((r) =>
-          prefixes.map((prefix) => ({
-            method: r.method,
-            path: prefix ? joinPath(prefix, r.path) : r.path,
-            ownerPrefix: prefix,
-          })),
-        );
-        if (routes.length > 0) methodMap.set(method.name, routes);
-      }
-      interfaceRoutes.set(type.name, methodMap);
-    }
-
-    // A concrete @RestController/@Controller class implementing a route-defining
-    // interface is the Spring *provider* of those routes (a @FeignClient/
-    // @HttpExchange interface is the client side; only a class implements the
-    // contract as a server). Gating on the controller annotation mirrors Java's
-    // scanSpringProject `isController` check and stops non-controller classes that
-    // merely implement the same interface (services, adapters, test doubles) from
-    // emitting phantom provider routes. kotlinClassIsController handles every
-    // controller form (bare, paired, and the arg-form `@RestController("bean")`)
-    // via the `modifiers` `annotation`/`constructor_invocation` shape.
-    const detectionsByFile = new Map<string, HttpDetection[]>();
-    for (const type of types) {
-      if (type.kind !== 'class' || !type.isController) continue;
-      // Cross-product the controller's own class prefixes with each inherited
-      // route (mirrors java.ts scanSpringProject); `['']` keeps the common
-      // no-prefix controller emitting the interface path unchanged.
-      const controllerPrefixes = type.classPrefixes.length ? type.classPrefixes : [''];
-      for (const method of type.methods) {
-        if (method.routes.length > 0) continue; // own @*Mapping → already a provider via scan()
-        const inherited = type.implementedInterfaces.flatMap((iface) => {
-          const routeMap = interfaceRoutes.get(iface);
-          if (!routeMap) return [];
-          const routes = routeMap.get(method.name) ?? [];
-          return routes.flatMap((route) =>
-            controllerPrefixes.map((controllerPrefix) => ({
-              method: route.method,
-              path: joinInheritedSpringPath(controllerPrefix, route.path, route.ownerPrefix),
-            })),
-          );
-        });
-        const seen = new Set<string>();
-        for (const route of inherited) {
-          const key = `${route.method} ${route.path}`;
-          if (seen.has(key)) continue;
-          seen.add(key);
-          const detections = detectionsByFile.get(type.filePath) ?? [];
-          detections.push({
-            role: 'provider',
-            framework: 'spring',
-            method: route.method,
-            path: route.path,
-            name: method.name,
-            confidence: 0.8,
-          });
-          detectionsByFile.set(type.filePath, detections);
-        }
-      }
-    }
-
-    return [...detectionsByFile.entries()].map(([filePath, detections]) => ({
-      filePath,
-      detections,
-    }));
-  };
+  // The interface-based-controller inheritance algorithm is shared with java.ts
+  // (`scanSpringInheritanceProject`); this collects the language-specific
+  // `SharedSpringType` view and delegates. kotlinClassIsController handles every
+  // controller form (bare, paired, and the arg-form `@RestController("bean")`)
+  // via the `modifiers` `annotation`/`constructor_invocation` shape.
+  const scanKotlinProject = (files: readonly HttpScanInput[]): HttpFileDetections[] =>
+    scanSpringInheritanceProject(files.flatMap((f) => collectKotlinSpringTypes(f.filePath, f.tree)));
 
   return {
     name: 'kotlin-http',

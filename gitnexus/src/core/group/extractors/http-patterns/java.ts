@@ -19,7 +19,8 @@ import {
   parseRequestLine,
   pushPrefix,
   joinPath,
-  joinInheritedSpringPath,
+  scanSpringInheritanceProject,
+  type SharedSpringType,
   OPENFEIGN_FRAMEWORK,
   HTTP_INTERFACE_FRAMEWORK,
   FEIGN_CONFIDENCE,
@@ -64,27 +65,10 @@ import type {
 // corrupt every route). That key filtering is done in `isRouteMemberKey`, and
 // all of these annotations are matched by the one `JAVA_ROUTE_ANNOTATION_PATTERNS`
 // query below (see its header for why the filtering lives in JS, not the query).
-interface SpringRouteBinding {
-  method: string;
-  path: string;
-  ownerPrefix?: string;
-}
-
-interface SpringMethodInfo {
-  name: string;
-  routes: SpringRouteBinding[];
-}
-
-interface SpringTypeInfo {
-  filePath: string;
-  kind: 'class' | 'interface';
-  name: string;
-  /** Class-level `@RequestMapping` prefixes — one per array element (`{"/a","/b"}` → two). */
-  classPrefixes: string[];
-  implementedInterfaces: string[];
-  isController: boolean;
-  methods: SpringMethodInfo[];
-}
+// The Spring class/interface view (`SharedSpringType`) and the interface-based
+// controller inheritance algorithm (`scanSpringInheritanceProject`) are shared
+// with kotlin.ts via spring-consumer-shared.ts so both plugins emit identical
+// provider contracts. `collectSpringTypes` below produces that shared shape.
 
 // ─── Route-defining annotations (one generic query, one pass) ─────────
 // Every Java route-mapper annotation shares one shape: an annotation carrying a
@@ -572,15 +556,15 @@ function collectImplementedInterfaces(typeNode: Parser.SyntaxNode): string[] {
   return out;
 }
 
-function collectSpringTypes(filePath: string, tree: Parser.Tree): SpringTypeInfo[] {
+function collectSpringTypes(filePath: string, tree: Parser.Tree): SharedSpringType[] {
   const { prefixByTypeId, methodRoutes } = scanRouteAnnotations(tree);
-  const routesByMethodId = new Map<number, SpringRouteBinding[]>();
+  const routesByMethodId = new Map<number, Array<{ method: string; path: string }>>();
   for (const route of methodRoutes) {
     const routes = routesByMethodId.get(route.methodNode.id) ?? [];
     routes.push({ method: route.httpMethod, path: route.rawPath });
     routesByMethodId.set(route.methodNode.id, routes);
   }
-  const out: SpringTypeInfo[] = [];
+  const out: SharedSpringType[] = [];
 
   for (const match of runCompiledPatterns(SPRING_TYPE_DECLARATION_PATTERNS, tree)) {
     const typeNode = match.captures.type;
@@ -592,7 +576,10 @@ function collectSpringTypes(filePath: string, tree: Parser.Tree): SpringTypeInfo
         name: getNodeName(methodNode),
         routes: routesByMethodId.get(methodNode.id) ?? [],
       }))
-      .filter((method): method is SpringMethodInfo => method.name !== null);
+      .filter(
+        (method): method is { name: string; routes: Array<{ method: string; path: string }> } =>
+          method.name !== null,
+      );
 
     out.push({
       filePath,
@@ -608,75 +595,13 @@ function collectSpringTypes(filePath: string, tree: Parser.Tree): SpringTypeInfo
   return out;
 }
 
+// The interface-based-controller inheritance algorithm is shared with kotlin.ts
+// (`scanSpringInheritanceProject`); this collects the `SharedSpringType` view and
+// delegates so Java and Kotlin emit byte-identical provider contracts.
 function scanSpringProject(files: readonly HttpScanInput[]): HttpFileDetections[] {
-  const types = files.flatMap((file) => collectSpringTypes(file.filePath, file.tree));
-  const interfaceRoutes = new Map<string, Map<string, SpringRouteBinding[]> | null>();
-
-  for (const type of types) {
-    if (type.kind !== 'interface') continue;
-    if (interfaceRoutes.has(type.name)) {
-      interfaceRoutes.set(type.name, null);
-      continue;
-    }
-    const prefixes = type.classPrefixes.length ? type.classPrefixes : [''];
-    const methodMap = new Map<string, SpringRouteBinding[]>();
-    for (const method of type.methods) {
-      // Cross-product the interface's class prefixes with each method route, so a
-      // multi-element `@RequestMapping({"/a","/b"})` interface yields N bindings.
-      const routes = method.routes.flatMap((route) =>
-        prefixes.map((prefix) => ({
-          method: route.method,
-          path: prefix ? joinPath(prefix, route.path) : route.path,
-          ownerPrefix: prefix,
-        })),
-      );
-      if (routes.length > 0) methodMap.set(method.name, routes);
-    }
-    interfaceRoutes.set(type.name, methodMap);
-  }
-
-  const detectionsByFile = new Map<string, HttpDetection[]>();
-  for (const type of types) {
-    if (type.kind !== 'class' || !type.isController) continue;
-    const controllerPrefixes = type.classPrefixes.length ? type.classPrefixes : [''];
-    for (const method of type.methods) {
-      if (method.routes.length > 0) continue;
-      const inheritedRoutes = type.implementedInterfaces.flatMap((interfaceName) => {
-        const routeMap = interfaceRoutes.get(interfaceName);
-        if (!routeMap) return [];
-        const routes = routeMap.get(method.name) ?? [];
-        // Cross-product the controller's own class prefixes with each inherited route.
-        return routes.flatMap((route) =>
-          controllerPrefixes.map((controllerPrefix) => ({
-            method: route.method,
-            path: joinInheritedSpringPath(controllerPrefix, route.path, route.ownerPrefix),
-          })),
-        );
-      });
-
-      const seen = new Set<string>();
-      for (const route of inheritedRoutes) {
-        const key = `${route.method} ${route.path}`;
-        if (seen.has(key)) continue;
-        seen.add(key);
-        const detections = detectionsByFile.get(type.filePath) ?? [];
-        detections.push({
-          role: 'provider',
-          framework: 'spring',
-          method: route.method,
-          path: route.path,
-          name: method.name,
-          confidence: 0.8,
-        });
-        detectionsByFile.set(type.filePath, detections);
-      }
-    }
-  }
-
-  return [...detectionsByFile.entries()].map(([filePath, detections]) => ({
-    filePath,
-    detections,
-  }));
+  return scanSpringInheritanceProject(
+    files.flatMap((file) => collectSpringTypes(file.filePath, file.tree)),
+  );
 }
 
 export const JAVA_HTTP_PLUGIN: HttpLanguagePlugin = {

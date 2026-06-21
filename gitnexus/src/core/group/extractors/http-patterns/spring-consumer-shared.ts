@@ -15,6 +15,8 @@
  * the group layer beside the plugins that use it.
  */
 
+import type { HttpDetection, HttpFileDetections } from './types.js';
+
 /**
  * RestTemplate method-name → HTTP verb. Source-scan only: the receiver must be
  * named exactly `restTemplate` (the per-language query enforces that).
@@ -158,4 +160,110 @@ export function joinInheritedSpringPath(
     return `/${cleanInherited}`;
   }
   return joined;
+}
+
+/**
+ * Language-agnostic view of a Spring class/interface that each plugin's
+ * grammar-specific collector produces. The interface-based-controller
+ * inheritance algorithm (`scanSpringInheritanceProject`) operates only on this
+ * shape, so the Java and Kotlin plugins share one algorithm and cannot drift.
+ *
+ * `methods[].routes` carry only `{ method, path }` — the interface's own class
+ * prefix is applied *inside* `scanSpringInheritanceProject` (it is not part of
+ * the collector's output).
+ */
+export interface SharedSpringType {
+  filePath: string;
+  kind: 'class' | 'interface';
+  name: string;
+  /** Class-level `@RequestMapping` prefixes — one per array element. */
+  classPrefixes: string[];
+  implementedInterfaces: string[];
+  isController: boolean;
+  methods: Array<{ name: string; routes: Array<{ method: string; path: string }> }>;
+}
+
+/**
+ * Resolve interface-based-controller provider routes (#1743): a concrete
+ * `@RestController`/`@Controller` class inherits the `@(Get|...)Mapping` routes
+ * declared on the interface it implements. Shared by the Java and Kotlin plugins
+ * so both emit byte-identical provider contracts.
+ *
+ * An interface name that resolves to two distinct interfaces is ambiguous and
+ * its routes are dropped (the `null` marker). The controller's own class
+ * prefix(es) cross-product the inherited routes; `joinInheritedSpringPath`
+ * avoids doubling a prefix the interface already baked in (#2057).
+ */
+export function scanSpringInheritanceProject(types: SharedSpringType[]): HttpFileDetections[] {
+  // interface name → (method name → routes). `ownerPrefix` records the
+  // interface's own class prefix so the controller side avoids doubling it
+  // (#2057). `null` marks an ambiguous (duplicated) interface name.
+  type InheritedRoute = { method: string; path: string; ownerPrefix: string };
+  const interfaceRoutes = new Map<string, Map<string, InheritedRoute[]> | null>();
+  for (const type of types) {
+    if (type.kind !== 'interface') continue;
+    if (interfaceRoutes.has(type.name)) {
+      interfaceRoutes.set(type.name, null);
+      continue;
+    }
+    const prefixes = type.classPrefixes.length ? type.classPrefixes : [''];
+    const methodMap = new Map<string, InheritedRoute[]>();
+    for (const method of type.methods) {
+      // Cross-product the interface's class prefixes with each method route, so a
+      // multi-element `@RequestMapping(["/a","/b"])` interface yields N bindings.
+      const routes = method.routes.flatMap((route) =>
+        prefixes.map((prefix) => ({
+          method: route.method,
+          path: prefix ? joinPath(prefix, route.path) : route.path,
+          ownerPrefix: prefix,
+        })),
+      );
+      if (routes.length > 0) methodMap.set(method.name, routes);
+    }
+    interfaceRoutes.set(type.name, methodMap);
+  }
+
+  const detectionsByFile = new Map<string, HttpDetection[]>();
+  for (const type of types) {
+    if (type.kind !== 'class' || !type.isController) continue;
+    // Cross-product the controller's own class prefixes with each inherited
+    // route; `['']` keeps the common no-prefix controller emitting the
+    // interface path unchanged.
+    const controllerPrefixes = type.classPrefixes.length ? type.classPrefixes : [''];
+    for (const method of type.methods) {
+      if (method.routes.length > 0) continue; // own @*Mapping → already a provider via scan()
+      const inherited = type.implementedInterfaces.flatMap((iface) => {
+        const routeMap = interfaceRoutes.get(iface);
+        if (!routeMap) return [];
+        const routes = routeMap.get(method.name) ?? [];
+        return routes.flatMap((route) =>
+          controllerPrefixes.map((controllerPrefix) => ({
+            method: route.method,
+            path: joinInheritedSpringPath(controllerPrefix, route.path, route.ownerPrefix),
+          })),
+        );
+      });
+      const seen = new Set<string>();
+      for (const route of inherited) {
+        const key = `${route.method} ${route.path}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        const detections = detectionsByFile.get(type.filePath) ?? [];
+        detections.push({
+          role: 'provider',
+          framework: 'spring',
+          method: route.method,
+          path: route.path,
+          name: method.name,
+          confidence: 0.8,
+        });
+        detectionsByFile.set(type.filePath, detections);
+      }
+    }
+  }
+
+  return [...detectionsByFile.entries()].map(([filePath, detections]) => ({
+    filePath,
+    detections,
+  }));
 }
