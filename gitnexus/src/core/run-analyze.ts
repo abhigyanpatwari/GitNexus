@@ -1582,14 +1582,14 @@ export async function runFullAnalysis(
       /* swallow — surface path is the rethrow below */
     }
     try {
-      // Real close on the error path — NOT skipNativeClose. The CLI error
-      // handler soft-returns (process.exitCode = 1) instead of forcing exit, so
-      // the native handles must be released here or the process would hang on the
-      // live connection (#2264 review P1-2). A late-error close could still abort
-      // in LadybugDB's destructor, but that terminates the process — it does not
-      // hang. Only the success path (which guarantees a following process.exit)
-      // skips the native close.
-      await closeLbug();
+      // Skip the native close on the error path too: a real conn.close() after
+      // large --pdg writes can itself abort in LadybugDB's ClientContext
+      // destructor (#2264 review P2), turning an actionable exit-1 into a raw
+      // SIGABRT. Skipping leaves the handles open, but the CLI catch now
+      // force-exits when isLbugReady() (analyze.ts, #2264 review P1), so the
+      // process still terminates — no hang, no abort. flushWAL inside closeLbug
+      // keeps the partial index durable; process exit reclaims the handles.
+      await closeLbug({ skipNativeClose: options.skipNativeCloseOnExit });
     } catch {
       /* swallow */
     }
