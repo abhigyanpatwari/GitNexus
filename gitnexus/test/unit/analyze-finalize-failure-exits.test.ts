@@ -155,4 +155,25 @@ describe('analyzeCommand — finalize-failure must terminate, not hang (#2264 P1
     expect(exitSpy).not.toHaveBeenCalled();
     expect(process.exitCode).toBe(1);
   });
+
+  it('forwards a pre-set process.exitCode rather than the hardcoded fallback', async () => {
+    // The alreadyUpToDate path returns WITHOUT setting process.exitCode or calling
+    // process.exit (unlike the error catch, which always sets exitCode=1), so the
+    // wrapper's force-exit must forward whatever exitCode is already set — proving
+    // `process.exit(process.exitCode ?? 1)` reads exitCode and doesn't hardcode 1.
+    // isLbugReady is forced true to drive the wrapper's force-exit on this path.
+    isLbugReadyMock.mockReturnValue(true);
+    runFullAnalysisMock.mockResolvedValue({
+      repoName: 'repo',
+      repoPath: '/repo',
+      stats: {},
+      alreadyUpToDate: true,
+      ftsRepairedOnly: false,
+      pipelineResult: { communityResult: undefined },
+    });
+    assertAnalysisFinalizedMock.mockResolvedValue(undefined);
+    process.exitCode = 2;
+    await analyzeCommand(undefined, {});
+    expect(exitSpy).toHaveBeenCalledWith(2);
+  });
 });
