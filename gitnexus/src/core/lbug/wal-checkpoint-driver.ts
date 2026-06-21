@@ -164,6 +164,14 @@ export const startWalCheckpointDriver = (
 
   const tick = async (): Promise<void> => {
     if (stopped) return;
+    // Reentrancy guard: setInterval keeps firing on its fixed cadence even when
+    // the previous checkpoint has not settled (a CHECKPOINT can outlast the
+    // period during a large `--pdg` writeback). Without this, each overdue tick
+    // would queue another CHECKPOINT — they now serialize on the connection lock
+    // (lbug-adapter `withConnLock`), but letting them pile up is still pointless
+    // work and widens the window for a backlog at stop(). Skip while one is in
+    // flight; the next tick covers any WAL accumulated in the meantime.
+    if (inflight) return;
     inflight = runCheckpointWithRetry()
       .then(() => undefined)
       .catch((err) => {

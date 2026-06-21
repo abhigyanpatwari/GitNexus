@@ -6,6 +6,7 @@ import { finished } from 'stream/promises';
 import path from 'path';
 import lbug from '@ladybugdb/core';
 import { closeQueryResults } from './query-result-utils.js';
+import { withConnLock } from './conn-lock.js';
 import { KnowledgeGraph } from '../graph/types.js';
 import {
   NODE_TABLES,
@@ -178,6 +179,18 @@ export const splitRelCsvByLabelPair = async (
 
 let db: lbug.Database | null = null;
 let conn: lbug.Connection | null = null;
+
+// Serialize every operation on the shared singleton `conn`. LadybugDB's
+// Connection is single-writer and is NOT safe for concurrent query execution;
+// the periodic WAL-checkpoint driver overlapping a long `--pdg` COPY on this
+// connection corrupted native state (`double free or corruption`). Each
+// singleton-`conn` helper below runs its full query + drain inside withConnLock.
+// Invariant: a wrapped helper MUST NOT call another wrapped helper (re-entry
+// self-deadlocks); all current holders are leaf-level. `streamQuery` is
+// deliberately NOT wrapped — its per-row callback can re-enter the adapter and
+// it only runs on the read path where the checkpoint driver is inactive.
+// See conn-lock.ts for the full rationale.
+
 let currentDbPath: string | null = null;
 let currentDbReadOnly = false;
 let ftsLoaded = false;
@@ -472,8 +485,15 @@ const readQueryRows = async (
 };
 
 const queryAndDrain = async (targetConn: lbug.Connection, cypher: string): Promise<void> => {
-  const queryResult = await targetConn.query(cypher);
-  await drainQueryResult(queryResult);
+  const run = async (): Promise<void> => {
+    const queryResult = await targetConn.query(cypher);
+    await drainQueryResult(queryResult);
+  };
+  // Serialize only when this runs on the shared singleton connection (the bulk
+  // node/relationship COPY captures `writeConn = conn`). Per-file / temp
+  // connections are distinct objects with no shared native state, so they must
+  // not block on — or be blocked by — the singleton's lock.
+  return targetConn === conn ? withConnLock(run) : run();
 };
 
 const READ_ONLY_SHADOW_REPLAY_PROBE = 'MATCH (n) RETURN n LIMIT 1';
@@ -1535,23 +1555,27 @@ export const executePrepared = async (
   cypher: string,
   params: Record<string, any>,
 ): Promise<any[]> => {
-  if (!conn) {
+  const c = conn;
+  if (!c) {
     throw new Error('LadybugDB not initialized. Call initLbug first.');
   }
-  const stmt = await conn.prepare(cypher);
-  if (!stmt.isSuccess()) {
-    const errMsg = await stmt.getErrorMessage();
-    throw new Error(`Prepare failed: ${errMsg}`);
-  }
-  const queryResult = await conn.execute(stmt, params);
-  return await readQueryRows(queryResult);
+  return withConnLock(async () => {
+    const stmt = await c.prepare(cypher);
+    if (!stmt.isSuccess()) {
+      const errMsg = await stmt.getErrorMessage();
+      throw new Error(`Prepare failed: ${errMsg}`);
+    }
+    const queryResult = await c.execute(stmt, params);
+    return await readQueryRows(queryResult);
+  });
 };
 
 export const executeWithReusedStatement = async (
   cypher: string,
   paramsList: Array<Record<string, any>>,
 ): Promise<void> => {
-  if (!conn) {
+  const c = conn;
+  if (!c) {
     throw new Error('LadybugDB not initialized. Call initLbug first.');
   }
   if (paramsList.length === 0) return;
@@ -1559,39 +1583,50 @@ export const executeWithReusedStatement = async (
   const SUB_BATCH_SIZE = 4;
   for (let i = 0; i < paramsList.length; i += SUB_BATCH_SIZE) {
     const subBatch = paramsList.slice(i, i + SUB_BATCH_SIZE);
-    const stmt = await conn.prepare(cypher);
-    if (!stmt.isSuccess()) {
-      const errMsg = await stmt.getErrorMessage();
-      throw new Error(`Prepare failed: ${errMsg}`);
-    }
-    try {
-      for (const params of subBatch) {
-        await drainQueryResult(await conn.execute(stmt, params));
+    // One critical section per sub-batch: the prepare + its executes run with
+    // exclusive access to the connection (so the WAL checkpoint driver cannot
+    // interleave a CHECKPOINT mid-batch), while the lock is released between
+    // sub-batches to let the driver checkpoint during a long writeback.
+    await withConnLock(async () => {
+      const stmt = await c.prepare(cypher);
+      if (!stmt.isSuccess()) {
+        const errMsg = await stmt.getErrorMessage();
+        throw new Error(`Prepare failed: ${errMsg}`);
       }
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      const queryPreview = cypher.replace(/\s+/g, ' ').slice(0, 120);
-      throw new Error(
-        `Batch execution failed for rows ${i + 1}-${i + subBatch.length}: ${msg} (${queryPreview})`,
-      );
-    }
-    // Note: LadybugDB PreparedStatement doesn't require explicit close()
+      try {
+        for (const params of subBatch) {
+          await drainQueryResult(await c.execute(stmt, params));
+        }
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        const queryPreview = cypher.replace(/\s+/g, ' ').slice(0, 120);
+        throw new Error(
+          `Batch execution failed for rows ${i + 1}-${i + subBatch.length}: ${msg} (${queryPreview})`,
+        );
+      }
+      // Note: LadybugDB PreparedStatement doesn't require explicit close()
+    });
   }
 };
 
 export const getLbugStats = async (): Promise<{ nodes: number; edges: number }> => {
-  if (!conn) return { nodes: 0, edges: 0 };
+  const c = conn;
+  if (!c) return { nodes: 0, edges: 0 };
 
+  // Called during analyze finalize while the WAL-checkpoint driver is still
+  // running; each count read takes the connection lock so it cannot execute
+  // concurrently with a driver CHECKPOINT. Per-query locking lets the driver
+  // checkpoint between table counts rather than waiting for the whole sweep.
   let totalNodes = 0;
   for (const tableName of NODE_TABLES) {
     try {
-      const queryResult = await conn.query(
-        `MATCH (n:${escapeTableName(tableName)}) RETURN count(n) AS cnt`,
-      );
-      const nodeRows = await readQueryRows(queryResult);
-      if (nodeRows.length > 0) {
-        totalNodes += Number(nodeRows[0]?.cnt ?? nodeRows[0]?.[0] ?? 0);
-      }
+      totalNodes += await withConnLock(async () => {
+        const queryResult = await c.query(
+          `MATCH (n:${escapeTableName(tableName)}) RETURN count(n) AS cnt`,
+        );
+        const nodeRows = await readQueryRows(queryResult);
+        return nodeRows.length > 0 ? Number(nodeRows[0]?.cnt ?? nodeRows[0]?.[0] ?? 0) : 0;
+      });
     } catch {
       // ignore
     }
@@ -1599,13 +1634,13 @@ export const getLbugStats = async (): Promise<{ nodes: number; edges: number }> 
 
   let totalEdges = 0;
   try {
-    const queryResult = await conn.query(
-      `MATCH ()-[r:${REL_TABLE_NAME}]->() RETURN count(r) AS cnt`,
-    );
-    const edgeRows = await readQueryRows(queryResult);
-    if (edgeRows.length > 0) {
-      totalEdges = Number(edgeRows[0]?.cnt ?? edgeRows[0]?.[0] ?? 0);
-    }
+    totalEdges = await withConnLock(async () => {
+      const queryResult = await c.query(
+        `MATCH ()-[r:${REL_TABLE_NAME}]->() RETURN count(r) AS cnt`,
+      );
+      const edgeRows = await readQueryRows(queryResult);
+      return edgeRows.length > 0 ? Number(edgeRows[0]?.cnt ?? edgeRows[0]?.[0] ?? 0) : 0;
+    });
   } catch {
     // ignore
   }
@@ -1768,10 +1803,13 @@ export const fetchExistingEmbeddingHashes = async (
  * @see safeClose — CHECKPOINT + connection/database close
  */
 export const flushWAL = async (): Promise<void> => {
-  if (!conn) return;
+  const c = conn;
+  if (!c) return;
   try {
-    const checkpointResult = await conn.query('CHECKPOINT');
-    await drainQueryResult(checkpointResult);
+    await withConnLock(async () => {
+      const checkpointResult = await c.query('CHECKPOINT');
+      await drainQueryResult(checkpointResult);
+    });
   } catch (err) {
     logger.debug(
       `GitNexus: LadybugDB CHECKPOINT skipped/failed during WAL flush: ${summarizeError(err)}`,
@@ -1794,9 +1832,15 @@ export const flushWAL = async (): Promise<void> => {
  * whether to retry.
  */
 export const tryFlushWAL = async (): Promise<boolean> => {
-  if (!conn) return false;
-  const checkpointResult = await conn.query('CHECKPOINT');
-  await drainQueryResult(checkpointResult);
+  const c = conn;
+  if (!c) return false;
+  // Runs on the periodic WAL-checkpoint driver. The lock makes this CHECKPOINT
+  // wait for any in-flight COPY / writeback on the singleton connection instead
+  // of executing concurrently with it (the `analyze --pdg` heap-corruption bug).
+  await withConnLock(async () => {
+    const checkpointResult = await c.query('CHECKPOINT');
+    await drainQueryResult(checkpointResult);
+  });
   return true;
 };
 
@@ -2036,44 +2080,49 @@ export const deleteAllCommunitiesAndProcesses = async (): Promise<{
  * plain DELETE on the typed CodeRelation rows — endpoints are untouched.
  */
 export const deleteAllInterprocTaintPaths = async (): Promise<{ edgesDeleted: number }> => {
-  if (!conn) {
+  const c = conn;
+  if (!c) {
     throw new Error('LadybugDB not initialized. Call initLbug first.');
   }
-  let edgesDeleted = 0;
-  let countResult: lbug.QueryResult | lbug.QueryResult[] | undefined;
-  try {
-    countResult = await conn.query(
-      `MATCH ()-[r:CodeRelation]->() WHERE r.type = 'TAINT_PATH' RETURN count(r) AS cnt`,
-    );
-    const result = Array.isArray(countResult) ? countResult[0] : countResult;
-    const rows = await result.getAll();
-    const count = Number(rows[0]?.cnt ?? rows[0]?.[0] ?? 0);
-    if (count > 0) {
-      await conn.query(`MATCH ()-[r:CodeRelation]->() WHERE r.type = 'TAINT_PATH' DELETE r`);
-      edgesDeleted = count;
-    }
-  } catch (err) {
-    // A missing table on a freshly-initialized DB is the benign, expected case
-    // (the count query above is what throws) — stay silent. Any OTHER failure
-    // (lock, disk, native error) would leave stale TAINT_PATH rows that the
-    // subsequent re-extract then DUPLICATES (CodeRelation has no PK), so it
-    // must ABORT the writeback (#2084 review P2-5): re-throw so the caller's
-    // crash-recovery dirty flag forces a clean full rebuild on the next run,
-    // rather than silently writing duplicate cross-function findings.
-    const msg = err instanceof Error ? err.message : String(err);
-    if (/no table|not exist|not found|does not exist|Table .* does not exist/i.test(msg)) {
+  // count + DELETE run as one critical section on the singleton connection so a
+  // concurrent WAL-checkpoint cannot corrupt native state mid-delete (#pdg).
+  return withConnLock(async () => {
+    let edgesDeleted = 0;
+    let countResult: lbug.QueryResult | lbug.QueryResult[] | undefined;
+    try {
+      countResult = await c.query(
+        `MATCH ()-[r:CodeRelation]->() WHERE r.type = 'TAINT_PATH' RETURN count(r) AS cnt`,
+      );
+      const result = Array.isArray(countResult) ? countResult[0] : countResult;
+      const rows = await result.getAll();
+      const count = Number(rows[0]?.cnt ?? rows[0]?.[0] ?? 0);
+      if (count > 0) {
+        await c.query(`MATCH ()-[r:CodeRelation]->() WHERE r.type = 'TAINT_PATH' DELETE r`);
+        edgesDeleted = count;
+      }
+    } catch (err) {
+      // A missing table on a freshly-initialized DB is the benign, expected case
+      // (the count query above is what throws) — stay silent. Any OTHER failure
+      // (lock, disk, native error) would leave stale TAINT_PATH rows that the
+      // subsequent re-extract then DUPLICATES (CodeRelation has no PK), so it
+      // must ABORT the writeback (#2084 review P2-5): re-throw so the caller's
+      // crash-recovery dirty flag forces a clean full rebuild on the next run,
+      // rather than silently writing duplicate cross-function findings.
+      const msg = err instanceof Error ? err.message : String(err);
+      if (/no table|not exist|not found|does not exist|Table .* does not exist/i.test(msg)) {
+        if (countResult) await closeQueryResults(countResult);
+        return { edgesDeleted };
+      }
       if (countResult) await closeQueryResults(countResult);
-      return { edgesDeleted };
+      throw new Error(
+        `[taint-interproc] failed to clear existing TAINT_PATH edges before incremental ` +
+          `re-write (${msg}) — aborting to avoid duplicate cross-function findings; ` +
+          `the next run will full-rebuild`,
+      );
     }
     if (countResult) await closeQueryResults(countResult);
-    throw new Error(
-      `[taint-interproc] failed to clear existing TAINT_PATH edges before incremental ` +
-        `re-write (${msg}) — aborting to avoid duplicate cross-function findings; ` +
-        `the next run will full-rebuild`,
-    );
-  }
-  if (countResult) await closeQueryResults(countResult);
-  return { edgesDeleted };
+    return { edgesDeleted };
+  });
 };
 
 /**
@@ -2088,42 +2137,47 @@ export const deleteAllInterprocTaintPaths = async (): Promise<{ edgesDeleted: nu
  * an unchanged function's summary from being lost.
  */
 export const deleteAllCallSummaries = async (): Promise<{ edgesDeleted: number }> => {
-  if (!conn) {
+  const c = conn;
+  if (!c) {
     throw new Error('LadybugDB not initialized. Call initLbug first.');
   }
-  let edgesDeleted = 0;
-  let countResult: lbug.QueryResult | lbug.QueryResult[] | undefined;
-  try {
-    countResult = await conn.query(
-      `MATCH ()-[r:CodeRelation]->() WHERE r.type = 'CALL_SUMMARY' RETURN count(r) AS cnt`,
-    );
-    const result = Array.isArray(countResult) ? countResult[0] : countResult;
-    const rows = await result.getAll();
-    const count = Number(rows[0]?.cnt ?? rows[0]?.[0] ?? 0);
-    if (count > 0) {
-      await conn.query(`MATCH ()-[r:CodeRelation]->() WHERE r.type = 'CALL_SUMMARY' DELETE r`);
-      edgesDeleted = count;
-    }
-  } catch (err) {
-    // A missing table on a freshly-initialized DB is the benign, expected case
-    // (the count query is what throws) — stay silent. Any OTHER failure would
-    // leave stale rows that the re-extract then DUPLICATES (CodeRelation has no
-    // PK), so it must ABORT the writeback: re-throw so the caller's crash-
-    // recovery dirty flag forces a clean full rebuild on the next run.
-    const msg = err instanceof Error ? err.message : String(err);
-    if (/no table|not exist|not found|does not exist|Table .* does not exist/i.test(msg)) {
+  // count + DELETE run as one critical section on the singleton connection so a
+  // concurrent WAL-checkpoint cannot corrupt native state mid-delete (#pdg).
+  return withConnLock(async () => {
+    let edgesDeleted = 0;
+    let countResult: lbug.QueryResult | lbug.QueryResult[] | undefined;
+    try {
+      countResult = await c.query(
+        `MATCH ()-[r:CodeRelation]->() WHERE r.type = 'CALL_SUMMARY' RETURN count(r) AS cnt`,
+      );
+      const result = Array.isArray(countResult) ? countResult[0] : countResult;
+      const rows = await result.getAll();
+      const count = Number(rows[0]?.cnt ?? rows[0]?.[0] ?? 0);
+      if (count > 0) {
+        await c.query(`MATCH ()-[r:CodeRelation]->() WHERE r.type = 'CALL_SUMMARY' DELETE r`);
+        edgesDeleted = count;
+      }
+    } catch (err) {
+      // A missing table on a freshly-initialized DB is the benign, expected case
+      // (the count query is what throws) — stay silent. Any OTHER failure would
+      // leave stale rows that the re-extract then DUPLICATES (CodeRelation has no
+      // PK), so it must ABORT the writeback: re-throw so the caller's crash-
+      // recovery dirty flag forces a clean full rebuild on the next run.
+      const msg = err instanceof Error ? err.message : String(err);
+      if (/no table|not exist|not found|does not exist|Table .* does not exist/i.test(msg)) {
+        if (countResult) await closeQueryResults(countResult);
+        return { edgesDeleted };
+      }
       if (countResult) await closeQueryResults(countResult);
-      return { edgesDeleted };
+      throw new Error(
+        `[call-summary] failed to clear existing CALL_SUMMARY edges before incremental ` +
+          `re-write (${msg}) — aborting to avoid duplicate summaries; ` +
+          `the next run will full-rebuild`,
+      );
     }
     if (countResult) await closeQueryResults(countResult);
-    throw new Error(
-      `[call-summary] failed to clear existing CALL_SUMMARY edges before incremental ` +
-        `re-write (${msg}) — aborting to avoid duplicate summaries; ` +
-        `the next run will full-rebuild`,
-    );
-  }
-  if (countResult) await closeQueryResults(countResult);
-  return { edgesDeleted };
+    return { edgesDeleted };
+  });
 };
 
 // ============================================================================
