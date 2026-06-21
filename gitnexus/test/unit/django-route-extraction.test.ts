@@ -206,6 +206,56 @@ urlpatterns = [
     expect(v2Routes.every((r) => r.filePath === 'v2/urls.py')).toBe(true);
   });
 
+  it('emits both mounts when one urlconf is included under two prefixes (diamond)', () => {
+    const common = `
+from django.urls import path
+from . import views
+
+urlpatterns = [
+    path('ping/', views.ping),
+]
+`;
+    const readFile = (path: string) =>
+      path === 'common/urls.py' || path === 'app/common/urls.py' ? common : null;
+
+    const routes = extract(
+      `
+from django.urls import path, include
+
+urlpatterns = [
+    path('v1/', include('common.urls')),
+    path('v2/', include('common.urls')),
+]
+`,
+      'app/urls.py',
+      readFile,
+    );
+
+    const pings = routes.filter((r) => r.routePath === 'ping/');
+    expect(pings).toHaveLength(2);
+    expect(pings.some((r) => r.prefix === 'v1/')).toBe(true);
+    expect(pings.some((r) => r.prefix === 'v2/')).toBe(true);
+  });
+
+  it('terminates on a self-referential include() cycle without re-emitting routes', () => {
+    const entrySource = `
+from django.urls import path, include
+from . import views
+
+urlpatterns = [
+    path('home/', views.home),
+    include('app.urls'),
+]
+`;
+    // `app.urls` resolves back to the entry file — a cycle the guard must break.
+    const readFile = (path: string) => (path === 'app/urls.py' ? entrySource : null);
+
+    const routes = extract(entrySource, 'app/urls.py', readFile);
+
+    // The cycle is bounded (no hang) and home/ is emitted exactly once.
+    expect(routes.filter((r) => r.routePath === 'home/')).toHaveLength(1);
+  });
+
   it('resolves views with attribute-style references (views.function)', () => {
     const routes = extract(`
 from django.urls import path

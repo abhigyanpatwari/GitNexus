@@ -166,6 +166,17 @@ function makePrefix(parentPrefix: string | null, childPrefix: string | null): st
   return `${parentPrefix}/${childPrefix}`.replace(/\/+/g, '/');
 }
 
+/**
+ * Recursion-guard key. A urlconf file is walked once *per accumulated prefix*,
+ * so a urlconf `include()`d under two different prefixes (a "diamond" — e.g.
+ * the same app mounted at `/v1/` and `/v2/`) emits routes for both mounts,
+ * while a genuine cycle (same file + same prefix) still terminates. `null` and
+ * `''` collapse to the same key so a no-prefix re-entry is treated as a cycle.
+ */
+function includeVisitKey(filePath: string, prefix: string | null): string {
+  return `${filePath}\u0000${prefix ?? ''}`;
+}
+
 function getCallFuncName(node: SyntaxNode): string | null {
   return (
     node.childForFieldName?.('function')?.text ??
@@ -245,8 +256,9 @@ export function extractDjangoRoutes(
   _visited?: Set<string>,
 ): ExtractedRoute[] {
   const routeSet = _visited ?? new Set<string>();
-  if (routeSet.has(filePath)) return [];
-  routeSet.add(filePath);
+  const entryKey = includeVisitKey(filePath, null);
+  if (routeSet.has(entryKey)) return [];
+  routeSet.add(entryKey);
 
   const listNodes = findUrlpatternsLists(tree.rootNode);
   if (listNodes.length === 0) return [];
@@ -299,8 +311,11 @@ export function extractDjangoRoutes(
               const modulePath = getIncludeModulePath(child);
               if (modulePath && readFile && _djangoParser && depth < MAX_INCLUDE_DEPTH) {
                 const resolved = resolveIncludedFile(modulePath, currentFilePath, readFile);
-                if (resolved && !routeSet.has(resolved.filePath)) {
-                  routeSet.add(resolved.filePath);
+                // Key the guard on (file, accumulated prefix) so the same
+                // urlconf mounted under another prefix elsewhere is still walked.
+                const childPrefix = makePrefix(routeCtx.prefix, extractStringArg(argsNode));
+                if (resolved && !routeSet.has(includeVisitKey(resolved.filePath, childPrefix))) {
+                  routeSet.add(includeVisitKey(resolved.filePath, childPrefix));
                   let childTree: Parser.Tree;
                   try {
                     childTree = parseSourceSafe(_djangoParser, resolved.content);
@@ -309,7 +324,6 @@ export function extractDjangoRoutes(
                   }
                   const childLists = findUrlpatternsLists(childTree.rootNode);
                   for (const childList of childLists) {
-                    const childPrefix = makePrefix(routeCtx.prefix, extractStringArg(argsNode));
                     walkStack.push({
                       node: childList,
                       routeCtx: { prefix: childPrefix },
@@ -338,8 +352,10 @@ export function extractDjangoRoutes(
         const modulePath = getIncludeModulePath(node);
         if (modulePath) {
           const resolved = resolveIncludedFile(modulePath, currentFilePath, readFile);
-          if (resolved && !routeSet.has(resolved.filePath)) {
-            routeSet.add(resolved.filePath);
+          // Bare include() inherits the current prefix; key the guard on it so a
+          // shared urlconf reached under two prefixes is walked once per prefix.
+          if (resolved && !routeSet.has(includeVisitKey(resolved.filePath, routeCtx.prefix))) {
+            routeSet.add(includeVisitKey(resolved.filePath, routeCtx.prefix));
             let childTree: Parser.Tree;
             try {
               childTree = parseSourceSafe(_djangoParser, resolved.content);
