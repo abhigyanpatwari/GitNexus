@@ -190,6 +190,13 @@ let conn: lbug.Connection | null = null;
 // deliberately NOT wrapped — its per-row callback can re-enter the adapter and
 // it only runs on the read path where the checkpoint driver is inactive.
 // See conn-lock.ts for the full rationale.
+//
+// The gate that decides whether an op must take withConnLock: only operations on
+// the shared singleton `conn` serialize. Per-file / temp connections (distinct
+// native objects with no shared engine state) must NOT block on — or be blocked
+// by — the singleton's lock. Reads the live `conn` binding at call time (it's
+// reassigned only at open/close, never mid-load).
+const isSharedSingletonConn = (c: lbug.Connection): boolean => c === conn;
 
 let currentDbPath: string | null = null;
 let currentDbReadOnly = false;
@@ -490,10 +497,9 @@ const queryAndDrain = async (targetConn: lbug.Connection, cypher: string): Promi
     await drainQueryResult(queryResult);
   };
   // Serialize only when this runs on the shared singleton connection (the bulk
-  // node/relationship COPY captures `writeConn = conn`). Per-file / temp
-  // connections are distinct objects with no shared native state, so they must
-  // not block on — or be blocked by — the singleton's lock.
-  return targetConn === conn ? withConnLock(run) : run();
+  // node/relationship COPY captures `writeConn = conn`); per-file / temp
+  // connections skip the lock — see isSharedSingletonConn.
+  return isSharedSingletonConn(targetConn) ? withConnLock(run) : run();
 };
 
 const READ_ONLY_SHADOW_REPLAY_PROBE = 'MATCH (n) RETURN n LIMIT 1';
@@ -1992,7 +1998,9 @@ export const deleteNodesForFile = async (
         const tn = escapeTableName(tableName);
         const countCypher = `MATCH (n:${tn}) WHERE n.filePath = '${escapedPath}' RETURN count(n) AS cnt`;
         const runCount = async () => readQueryRows(await targetConn!.query(countCypher));
-        const rows = targetConn === conn ? await withConnLock(runCount) : await runCount();
+        const rows = isSharedSingletonConn(targetConn!)
+          ? await withConnLock(runCount)
+          : await runCount();
         const count = Number(rows[0]?.cnt ?? rows[0]?.[0] ?? 0);
 
         if (count > 0) {
