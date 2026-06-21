@@ -1158,6 +1158,37 @@ public class StatusController implements StatusApi {
       ).toHaveLength(0);
     });
 
+    it('does not extract fully-qualified Java route annotations (documented limitation #2254)', async () => {
+      // JAVA_ROUTE_ANNOTATION_PATTERNS binds `name: (identifier)`; a FQN route
+      // annotation parses its name as `scoped_identifier` and is not matched, so
+      // its route is not extracted (only the route string — the controller itself
+      // is still recognised). This pins that documented limitation / asymmetry
+      // with Kotlin. If FQN matching is ever added, flip this assertion.
+      const dir = path.join(tmpDir, 'java-fqn-route-annotation');
+      fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'src', 'FqnController.java'),
+        `
+@org.springframework.web.bind.annotation.RestController
+@org.springframework.web.bind.annotation.RequestMapping("/api")
+class FqnController {
+  @org.springframework.web.bind.annotation.GetMapping("/users")
+  Object users() { return null; }
+}
+`,
+      );
+
+      const contracts = await extractor.extract(null, dir, makeRepo(dir));
+      const providers = contracts.filter((c) => c.role === 'provider');
+
+      // The FQN route annotation is not extracted (documented limitation).
+      expect(providers.find((c) => c.contractId === 'http::GET::/api/users')).toBeUndefined();
+      // And it must not over-match into a bogus contract either.
+      expect(
+        providers.filter((c) => c.symbolRef.filePath.endsWith('FqnController.java')),
+      ).toHaveLength(0);
+    });
+
     it('extracts Express router.get patterns', async () => {
       const dir = path.join(tmpDir, 'express');
       fs.mkdirSync(path.join(dir, 'src/routes'), { recursive: true });

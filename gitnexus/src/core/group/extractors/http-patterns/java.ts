@@ -97,6 +97,18 @@ import type {
 // silently dropping sibling-branch matches. Keeping the query predicate-free
 // sidesteps that hazard entirely; all name/key discrimination lives in the
 // for-loop, where it reads as straight-line code.
+//
+// KNOWN LIMITATION — fully-qualified route annotations are not matched. `@ann`
+// binds `name: (identifier)`, but a FQN annotation (`@org.springframework…
+// GetMapping("/x")`) parses its name as a `scoped_identifier`, which this query
+// does not match, so its route is not extracted. (The class is still recognized
+// as a controller — `hasAnnotation` trailing-segment-matches the FQN — only the
+// route-string extraction is missed.) In practice annotations are imported and
+// written by simple name, so this is rare. It is a minor asymmetry with the
+// Kotlin plugin, whose grammar models a FQN as separate `type_identifier`
+// segments that its route queries DO match. Aligning Java would mean matching
+// `scoped_identifier` too; that is deferred to avoid re-keying existing Java
+// contracts via the predicate hazard above. Pinned by an anti-overreach test.
 const JAVA_ROUTE_ANNOTATION_PATTERNS = compilePatterns({
   name: 'java-route-annotation',
   language: Java,
