@@ -975,7 +975,15 @@ function buildKotlinPlugin(language: unknown): HttpLanguagePlugin {
         if (!parsed) continue;
         const enclosingClass = findEnclosingClass(methodNode);
         if (!enclosingClass || !isKotlinInterface(enclosingClass)) continue;
-        const prefixes = feignPrefixByClassId.get(enclosingClass.id) ?? [''];
+        // Mirror java.ts (which pre-merges the @RequestMapping fallback into
+        // feignPrefixByInterfaceId, "path wins"): @FeignClient(path) wins, else
+        // the interface's class-level @RequestMapping prefix, else none. Without
+        // the prefixByClassId fallback Kotlin dropped the class prefix that Java
+        // applies — the same fallback chain the @GetMapping-in-Feign path uses above.
+        const prefixes =
+          feignPrefixByClassId.get(enclosingClass.id) ??
+          prefixByClassId.get(enclosingClass.id) ??
+          [''];
         for (const prefix of prefixes) {
           out.push({
             role: 'consumer',

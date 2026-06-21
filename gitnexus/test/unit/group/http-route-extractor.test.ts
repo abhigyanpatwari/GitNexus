@@ -3001,6 +3001,81 @@ interface AiClient {
     });
 
     itKotlinConsumer(
+      'applies the @RequestMapping interface prefix to @RequestLine consumers (no @FeignClient path) — #2254 P2 parity',
+      async () => {
+        // Parity with java.ts, which merges the @RequestMapping prefix into
+        // feignPrefixByInterfaceId: an interface with @RequestMapping("/orders")
+        // and a @RequestLine method (no @FeignClient(path)) must apply the prefix.
+        // Kotlin previously dropped it (PR #2254 tri-review, kotlin.ts:978).
+        const dir = path.join(tmpDir, 'kotlin-request-line-rm-prefix');
+        fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+        fs.writeFileSync(
+          path.join(dir, 'src', 'OrderClient.kt'),
+          `package com.example
+import org.springframework.cloud.openfeign.FeignClient
+import org.springframework.web.bind.annotation.RequestMapping
+import feign.RequestLine
+
+@FeignClient(name = "order-service")
+@RequestMapping("/orders")
+interface OrderClient {
+    @RequestLine("GET /{id}")
+    fun get(id: String): Any
+}
+`,
+        );
+
+        const contracts = await extractor.extract(null, dir, makeRepo(dir));
+        const consumers = contracts.filter((c) => c.role === 'consumer');
+
+        expect(
+          consumers.find(
+            (c) =>
+              c.contractId === 'http::GET::/orders/{param}' &&
+              c.meta.framework === 'openfeign' &&
+              c.confidence === 0.75,
+          ),
+        ).toBeDefined();
+        // The un-prefixed form must NOT be emitted (the prefix was applied).
+        expect(consumers.find((c) => c.contractId === 'http::GET::/{param}')).toBeUndefined();
+      },
+    );
+
+    itKotlinConsumer(
+      'prefers @FeignClient(path) over @RequestMapping for @RequestLine consumers',
+      async () => {
+        const dir = path.join(tmpDir, 'kotlin-request-line-feign-path-wins');
+        fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+        fs.writeFileSync(
+          path.join(dir, 'src', 'OrderClient.kt'),
+          `package com.example
+import org.springframework.cloud.openfeign.FeignClient
+import org.springframework.web.bind.annotation.RequestMapping
+import feign.RequestLine
+
+@FeignClient(name = "order-service", path = "/feign-path")
+@RequestMapping("/rm-path")
+interface OrderClient {
+    @RequestLine("GET /orders/{id}")
+    fun get(id: String): Any
+}
+`,
+        );
+
+        const contracts = await extractor.extract(null, dir, makeRepo(dir));
+        const consumers = contracts.filter((c) => c.role === 'consumer');
+
+        // @FeignClient(path) wins over @RequestMapping (parity with the @GetMapping path).
+        expect(
+          consumers.find((c) => c.contractId === 'http::GET::/feign-path/orders/{param}'),
+        ).toBeDefined();
+        expect(
+          consumers.find((c) => c.contractId === 'http::GET::/rm-path/orders/{param}'),
+        ).toBeUndefined();
+      },
+    );
+
+    itKotlinConsumer(
       'classifies a @RestController class as provider and a @FeignClient interface as consumer',
       async () => {
         const dir = path.join(tmpDir, 'kotlin-controller-vs-feign');
