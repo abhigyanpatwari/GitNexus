@@ -414,14 +414,72 @@ function extractUriCreatePath(node: Parser.SyntaxNode): string | null {
   return firstLiteralArgument(node);
 }
 
+/** Join a builder base with a sub-path using exactly one separating slash. */
+function appendPath(base: string, subPath: string): string {
+  if (!base) return subPath.startsWith('/') ? subPath : `/${subPath}`;
+  if (!subPath) return base;
+  return `${base.replace(/\/+$/, '')}/${subPath.replace(/^\/+/, '')}`;
+}
+
+/**
+ * Resolve a `UriComponentsBuilder` fluent chain to its literal path. Seed
+ * methods (`fromPath`/`fromUriString`/`fromHttpUrl`) return the literal arg
+ * VERBATIM — a `fromHttpUrl("https://host/api")` seed keeps its host, which the
+ * shared `normalizeConsumerPath` later reduces to the path (the same single
+ * normalization point every other consumer path goes through). `path` and
+ * `pathSegment` append literal segments; `build`/`toUriString`/`toUri`/`encode`
+ * and the `query*` family pass through (query attributes do not change the
+ * path). Any non-literal segment or unknown call → null.
+ */
+function extractUriComponentsBuilderPath(node: Parser.SyntaxNode): string | null {
+  if (node.type !== 'method_invocation') return null;
+  const name = methodInvocationName(node);
+  const objectNode = methodInvocationObject(node);
+  if (
+    (name === 'fromPath' || name === 'fromUriString' || name === 'fromHttpUrl') &&
+    objectNode?.text === 'UriComponentsBuilder'
+  )
+    return firstLiteralArgument(node);
+  if (!objectNode) return null;
+  if (name === 'path') {
+    const base = extractUriComponentsBuilderPath(objectNode);
+    const subPath = firstLiteralArgument(node);
+    return base !== null && subPath !== null ? appendPath(base, subPath) : null;
+  }
+  if (name === 'pathSegment') {
+    const base = extractUriComponentsBuilderPath(objectNode);
+    if (base === null) return null;
+    const args = methodInvocationArguments(node);
+    const segments = args
+      .map((arg) => (arg.type === 'string_literal' ? unquoteLiteral(arg.text) : null))
+      .filter((segment): segment is string => segment !== null);
+    if (segments.length !== args.length) return null; // a non-literal segment defeats static resolution
+    return segments.reduce((acc, segment) => appendPath(acc, segment), base);
+  }
+  if (
+    name === 'build' ||
+    name === 'toUriString' ||
+    name === 'toUri' ||
+    name === 'encode' ||
+    name === 'query' ||
+    name === 'queryParam' ||
+    name === 'queryParams' ||
+    name === 'replaceQuery' ||
+    name === 'replaceQueryParam' ||
+    name === 'replaceQueryParams'
+  )
+    return extractUriComponentsBuilderPath(objectNode);
+  return null;
+}
+
 /**
  * Resolve a statically-derivable path argument to a literal path: a bare
- * string literal, or a `URI.create("/x")` call. (U2 extends this with
- * `UriComponentsBuilder` fluent chains.) Genuinely dynamic arguments → null.
+ * string literal, a `URI.create("/x")` call, or a `UriComponentsBuilder`
+ * fluent chain. Genuinely dynamic arguments → null.
  */
 function extractStaticPathExpression(node: Parser.SyntaxNode): string | null {
   if (node.type === 'string_literal') return unquoteLiteral(node.text);
-  return extractUriCreatePath(node);
+  return extractUriCreatePath(node) ?? extractUriComponentsBuilderPath(node);
 }
 
 interface MethodRouteAnnotation {

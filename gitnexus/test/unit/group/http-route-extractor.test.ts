@@ -1813,6 +1813,54 @@ class UriClient {
       ).toBeUndefined();
     });
 
+    it('extracts Java RestTemplate UriComponentsBuilder fluent-chain paths', async () => {
+      const dir = path.join(tmpDir, 'java-rest-template-builder');
+      fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'src', 'BuilderClient.java'),
+        `
+import org.springframework.web.client.RestTemplate;
+import org.springframework.web.util.UriComponentsBuilder;
+
+class BuilderClient {
+  void run(RestTemplate restTemplate, String idVar) {
+    restTemplate.getForObject(
+        UriComponentsBuilder.fromPath("/api").path("/builder-users").pathSegment("42").build().toUriString(),
+        String.class);
+    restTemplate.getForObject(
+        UriComponentsBuilder.fromUriString("/base").path("/sub").queryParam("page", "1").build().toUriString(),
+        String.class);
+    restTemplate.getForObject(
+        UriComponentsBuilder.fromHttpUrl("https://example.com/api").path("/external-users").query("page=1").build().toUriString(),
+        String.class);
+    restTemplate.getForObject(
+        UriComponentsBuilder.fromPath("/api").pathSegment(idVar).build().toUriString(),
+        String.class);
+  }
+}
+`,
+      );
+
+      const contracts = await extractor.extract(null, dir, makeRepo(dir));
+      const consumers = contracts.filter((c) => c.role === 'consumer');
+
+      // fromPath + path + numeric pathSegment → joined, numeric → {param}.
+      expect(
+        consumers.find((c) => c.contractId === 'http::GET::/api/builder-users/{param}'),
+      ).toBeDefined();
+      // fromUriString seed + path; the queryParam attribute does not alter the path.
+      expect(consumers.find((c) => c.contractId === 'http::GET::/base/sub')).toBeDefined();
+      // fromHttpUrl host seed: helper keeps the host; normalizeConsumerPath strips it.
+      expect(
+        consumers.find((c) => c.contractId === 'http::GET::/api/external-users'),
+      ).toBeDefined();
+      // Anti-overreach: the non-literal `pathSegment(idVar)` call defeats static
+      // resolution, so exactly the three resolvable chains emit — not a fourth.
+      expect(
+        consumers.filter((c) => c.symbolRef.filePath.endsWith('BuilderClient.java')),
+      ).toHaveLength(3);
+    });
+
     it('extracts Java WebClient long-form method(HttpMethod.X).uri(...) — #2254 parity', async () => {
       // Parity with the Kotlin plugin: a single structural query matches the
       // verb (HttpMethod.X field access) and path. Previously deferred on the
