@@ -106,6 +106,24 @@ withTestLbugDB('conn-serialization', () => {
       expect(lockSpy).toHaveBeenCalled();
       expect(result).toMatchObject({ edgesDeleted: 0 });
     });
+
+    it('U5: deleteNodesForFile on a temp dbPath does NOT take the lock (negative gate)', async () => {
+      // The targetConn === conn gate's negative branch: a per-file/temp connection
+      // (dbPath provided) must NOT take the singleton lock, so temp-conn callers
+      // can't contend with the singleton. Mirrors the positive U3 case above so a
+      // regression that unconditionally locks is caught. (#2264)
+      const { createTempDir } = await import('../helpers/test-db.js');
+      const { deleteNodesForFile } = await import('../../src/core/lbug/lbug-adapter.js');
+      const temp = await createTempDir('gn-negative-gate-');
+      try {
+        lockSpy.mockClear();
+        const result = await deleteNodesForFile('any/path.ts', temp.dbPath);
+        expect(lockSpy).not.toHaveBeenCalled();
+        expect(result).toMatchObject({ deletedNodes: 0 });
+      } finally {
+        await temp.cleanup();
+      }
+    });
   });
 });
 
