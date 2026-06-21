@@ -2003,7 +2003,8 @@ export const getEmbeddingTableName = (): string => EMBEDDING_TABLE_NAME;
  * exports.
  */
 export const queryImporters = async (targetFilePath: string): Promise<string[]> => {
-  if (!conn) {
+  const c = conn;
+  if (!c) {
     throw new Error('LadybugDB not initialized. Call initLbug first.');
   }
   const escaped = targetFilePath.replace(/'/g, "''");
@@ -2012,22 +2013,27 @@ export const queryImporters = async (targetFilePath: string): Promise<string[]> 
     WHERE r.type = 'IMPORTS' AND b.filePath = '${escaped}'
     RETURN DISTINCT a.filePath AS importer
   `;
-  let queryResult: lbug.QueryResult | lbug.QueryResult[] | undefined;
-  try {
-    queryResult = await conn.query(cypher);
-    const result = Array.isArray(queryResult) ? queryResult[0] : queryResult;
-    const rows = await result.getAll();
-    const out: string[] = [];
-    for (const row of rows) {
-      const v = (row as { importer?: unknown }).importer;
-      if (typeof v === 'string' && v.length > 0) out.push(v);
+  // Runs inside the connection lock: queryImporters is called in the importer-BFS
+  // loop during incremental --pdg writeback while the WAL driver is live, so an
+  // unlocked conn.query here could race a concurrent CHECKPOINT on the singleton.
+  return withConnLock(async () => {
+    let queryResult: lbug.QueryResult | lbug.QueryResult[] | undefined;
+    try {
+      queryResult = await c.query(cypher);
+      const result = Array.isArray(queryResult) ? queryResult[0] : queryResult;
+      const rows = await result.getAll();
+      const out: string[] = [];
+      for (const row of rows) {
+        const v = (row as { importer?: unknown }).importer;
+        if (typeof v === 'string' && v.length > 0) out.push(v);
+      }
+      return out;
+    } catch {
+      return [];
+    } finally {
+      if (queryResult) await closeQueryResults(queryResult);
     }
-    return out;
-  } catch {
-    return [];
-  } finally {
-    if (queryResult) await closeQueryResults(queryResult);
-  }
+  });
 };
 
 /**

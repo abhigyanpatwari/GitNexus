@@ -41,5 +41,12 @@ withTestLbugDB('conn-serialization', () => {
       expect(lockSpy).toHaveBeenCalled();
       expect(result).toMatchObject({ nodesDeleted: 0 });
     });
+
+    it('U2: queryImporters routes through withConnLock', async () => {
+      const { queryImporters } = await import('../../src/core/lbug/lbug-adapter.js');
+      const importers = await queryImporters('any/path.ts');
+      expect(lockSpy).toHaveBeenCalled();
+      expect(importers).toEqual([]);
+    });
   });
 });
