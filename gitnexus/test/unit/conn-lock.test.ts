@@ -71,3 +71,39 @@ describe('withConnLock — connection serialization', () => {
     await expect(withConnLock(async () => 42)).resolves.toBe(42);
   });
 });
+
+describe('withConnLock — re-entry guard', () => {
+  it('throws on a nested (wrapped-in-wrapped) call instead of deadlocking', async () => {
+    await expect(withConnLock(async () => withConnLock(async () => 'inner'))).rejects.toThrow(
+      /re-entry/,
+    );
+  });
+
+  it('does NOT false-fire on sequential (non-nested) calls', async () => {
+    // Mirrors getLbugStats: many withConnLock calls in a loop, each awaited to
+    // completion before the next — distinct async contexts, never nested.
+    const results: number[] = [];
+    for (let i = 0; i < 5; i++) {
+      results.push(await withConnLock(async () => i));
+    }
+    expect(results).toEqual([0, 1, 2, 3, 4]);
+  });
+
+  it('does NOT false-fire on concurrent top-level (queued) callers', async () => {
+    // Legitimate contention: B and C call while A holds the lock. They are
+    // separate async contexts (not nested in A's fn), so they queue, not throw.
+    const out = await Promise.all([
+      withConnLock(async () => 'a'),
+      withConnLock(async () => 'b'),
+      withConnLock(async () => 'c'),
+    ]);
+    expect(out).toEqual(['a', 'b', 'c']);
+  });
+
+  it('releases the lock after a re-entry throw so later callers proceed', async () => {
+    await expect(withConnLock(async () => withConnLock(async () => 'inner'))).rejects.toThrow(
+      /re-entry/,
+    );
+    await expect(withConnLock(async () => 'ok')).resolves.toBe('ok');
+  });
+});
