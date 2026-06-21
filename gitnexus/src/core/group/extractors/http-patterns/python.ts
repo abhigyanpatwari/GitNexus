@@ -1197,10 +1197,17 @@ export const PYTHON_HTTP_PLUGIN: HttpLanguagePlugin = {
 function normalizeConsumerPath(url: string): string {
   let s = url.replace(/\$\{[^}]+\}/g, '{param}').trim();
   if (/^https?:\/\//i.test(s)) {
-    try { s = new URL(s).pathname; } catch { s = s.replace(/^https?:\/\/[^/]+/i, ''); }
+    try {
+      s = new URL(s).pathname;
+    } catch {
+      s = s.replace(/^https?:\/\/[^/]+/i, '');
+    }
   }
   if (!s.startsWith('/')) s = '/' + s;
-  const segments = s.split('/').filter(Boolean).map(seg => /^\d+$/.test(seg) ? '{param}' : seg);
+  const segments = s
+    .split('/')
+    .filter(Boolean)
+    .map((seg) => (/^\d+$/.test(seg) ? '{param}' : seg));
   s = '/' + segments.join('/');
   return s.replace(/\/+$/, '') || '/';
 }
