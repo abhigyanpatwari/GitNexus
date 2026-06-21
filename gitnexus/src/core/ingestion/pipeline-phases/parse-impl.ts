@@ -175,7 +175,7 @@ type ProgressFn = (progress: PipelineProgress) => void;
  * `extractRoutes` participates (today only Python/Django). For repos without
  * such a framework the cost is a path scan plus one `manage.py`-style miss.
  */
-async function extractCrossFileRoutes(
+export async function extractCrossFileRoutes(
   allPaths: string[],
   repoPath: string,
 ): Promise<ExtractedRoute[]> {
@@ -245,8 +245,14 @@ async function extractCrossFileRoutes(
         continue; // skip this root only
       }
 
-      const routes = provider.extractRoutes(rootTree, rootPath, reader, parser);
-      for (const r of routes) out.push(r);
+      // Isolate a misbehaving provider: a throw here must not abort the whole
+      // analyze (mirrors the worker's per-file isolation). Skip this root, warn.
+      try {
+        const routes = provider.extractRoutes(rootTree, rootPath, reader, parser);
+        for (const r of routes) out.push(r);
+      } catch (err) {
+        logger.warn({ err }, `Cross-file route extraction failed for ${rootPath}`);
+      }
     }
   }
 
