@@ -95,45 +95,48 @@ function resolveRelativeImport(currentModulePath: string, importPath: string): s
 }
 
 /**
- * Discover the Django root URL file by following:
- *   manage.py → DJANGO_SETTINGS_MODULE → settings → ROOT_URLCONF → urls.py
+ * Resolve the root URL file for a SINGLE Django project rooted at `managePyPath`.
  *
- * @param files Array of file paths (content optional — when absent, `reader`
- *   resolves it on demand).
- * @param contentMap Optional pre-built map of file path → content.
- * @param reader Optional disk-backed reader for files not present in the map.
- * @returns The relative path to the root URL file, or null.
+ * Module paths in `manage.py`/`settings.py` are written relative to the
+ * project directory (the one containing `manage.py`), NOT the repo root — so a
+ * project under `backend/` declares `myproj.settings`, with the file living at
+ * `backend/myproj/settings.py`. We therefore resolve every candidate against
+ * the project directory first and the repo root second. `resolvedSettingsPath`
+ * is kept project-dir-aware so the downstream star-import and urls-dir
+ * resolution anchor correctly.
  */
-export function discoverDjangoRootUrl(
-  files: Array<{ path: string; content?: string }>,
-  contentMap?: Map<string, string>,
+function resolveDjangoProjectRoot(
+  managePyPath: string,
+  manageContent: string,
+  map: Map<string, string>,
   reader?: DjangoFileReader,
 ): string | null {
-  const map = contentMap ?? new Map<string, string>();
-  for (const f of files) if (f.content != null) map.set(f.path, f.content);
-
-  const managePy = files.find((f) => f.path === 'manage.py' || f.path.endsWith('/manage.py'));
-  if (!managePy) return null;
-
-  const manageContent = managePy.content ?? tryReadFile(managePy.path, map, reader);
-  if (!manageContent) return null;
+  const projectDir = managePyPath.includes('/')
+    ? managePyPath.substring(0, managePyPath.lastIndexOf('/'))
+    : '';
+  // Try the project dir first (the common subdir case), then the repo root.
+  const bases = projectDir ? [`${projectDir}/`, ''] : [''];
 
   const settingsModule = extractDjangoSettingsModule(manageContent);
   if (!settingsModule) return null;
+  const settingsSlash = settingsModule.replace(/\./g, '/');
 
-  // Find the settings file
-  const settingsPaths = djangoModuleToFilePaths(settingsModule);
+  // Find the settings file, recording which base it resolved under so relative
+  // imports and the urls-dir fallback stay anchored to the right directory.
   let settingsContent: string | null = null;
   let resolvedSettingsPath: string | null = null;
-  for (const sp of settingsPaths) {
-    const c = tryReadFile(sp, map, reader);
-    if (c !== null) {
-      settingsContent = c;
-      resolvedSettingsPath = settingsModule.replace(/\./g, '/');
-      break;
+  for (const base of bases) {
+    for (const sp of djangoModuleToFilePaths(settingsModule)) {
+      const c = tryReadFile(base + sp, map, reader);
+      if (c !== null) {
+        settingsContent = c;
+        resolvedSettingsPath = base + settingsSlash;
+        break;
+      }
     }
+    if (settingsContent) break;
   }
-  if (!settingsContent) return null;
+  if (!settingsContent || resolvedSettingsPath === null) return null;
 
   // Check ROOT_URLCONF in the main settings and any base settings (star imports)
   let rootUrlConf = extractPythonStringAssignment(settingsContent, 'ROOT_URLCONF');
@@ -143,7 +146,7 @@ export function discoverDjangoRootUrl(
     for (const imp of starImports) {
       let baseModule: string | null = null;
       if (imp.startsWith('.')) {
-        const resolved = resolveRelativeImport(resolvedSettingsPath!, imp);
+        const resolved = resolveRelativeImport(resolvedSettingsPath, imp);
         if (resolved) baseModule = resolved;
       } else {
         baseModule = imp;
@@ -152,14 +155,21 @@ export function discoverDjangoRootUrl(
 
       const basePaths: string[] = [];
       if (baseModule.startsWith('.')) {
-        const resolved = resolveRelativeImport(resolvedSettingsPath!, baseModule);
+        const resolved = resolveRelativeImport(resolvedSettingsPath, baseModule);
         if (resolved) {
           basePaths.push(`${resolved.replace(/\./g, '/')}.py`);
           basePaths.push(`${resolved.replace(/\./g, '/')}/__init__.py`);
         }
       } else {
-        basePaths.push(`${baseModule.replace(/\./g, '/')}.py`);
-        basePaths.push(`${baseModule.replace(/\./g, '/')}/__init__.py`);
+        const baseSlash = baseModule.replace(/\./g, '/');
+        // A relative import (`imp` started with `.`) is already anchored under
+        // the project dir via `resolvedSettingsPath`; an absolute module name
+        // may live under the project dir OR the repo root.
+        const candidateBases = imp.startsWith('.') ? [''] : bases;
+        for (const cb of candidateBases) {
+          basePaths.push(`${cb}${baseSlash}.py`);
+          basePaths.push(`${cb}${baseSlash}/__init__.py`);
+        }
       }
 
       for (const bp of basePaths) {
@@ -175,14 +185,16 @@ export function discoverDjangoRootUrl(
 
   if (!rootUrlConf) return null;
 
-  // Convert ROOT_URLCONF module path to file path
+  // Convert ROOT_URLCONF module path to a file path, trying project dir then root.
   const urlPaths = djangoModuleToFilePaths(rootUrlConf);
-  for (const up of urlPaths) {
-    if (tryReadFile(up, map, reader) !== null) return up;
+  for (const base of bases) {
+    for (const up of urlPaths) {
+      if (tryReadFile(base + up, map, reader) !== null) return base + up;
+    }
   }
 
-  // Also try relative to the settings module's directory
-  if (resolvedSettingsPath && resolvedSettingsPath.includes('/')) {
+  // Also try relative to the settings module's directory (project-dir-aware).
+  if (resolvedSettingsPath.includes('/')) {
     const settingsDir = resolvedSettingsPath.substring(
       0,
       resolvedSettingsPath.lastIndexOf('/') + 1,
@@ -194,4 +206,42 @@ export function discoverDjangoRootUrl(
   }
 
   return null;
+}
+
+/**
+ * Discover the Django root URL file(s) by following, for EVERY `manage.py` in
+ * the file set:
+ *   manage.py → DJANGO_SETTINGS_MODULE → settings → ROOT_URLCONF → urls.py
+ *
+ * Returns one root urls path per discoverable Django project, so a monorepo
+ * with several `manage.py` files (e.g. `serviceA/manage.py`, `serviceB/manage.py`)
+ * yields every project's routes rather than only the first.
+ *
+ * @param files Array of file paths (content optional — when absent, `reader`
+ *   resolves it on demand).
+ * @param contentMap Optional pre-built map of file path → content.
+ * @param reader Optional disk-backed reader for files not present in the map.
+ * @returns De-duplicated relative paths to each project's root URL file (empty if none).
+ */
+export function discoverDjangoRootUrls(
+  files: Array<{ path: string; content?: string }>,
+  contentMap?: Map<string, string>,
+  reader?: DjangoFileReader,
+): string[] {
+  const map = contentMap ?? new Map<string, string>();
+  for (const f of files) if (f.content != null) map.set(f.path, f.content);
+
+  const roots: string[] = [];
+  const seen = new Set<string>();
+  for (const f of files) {
+    if (f.path !== 'manage.py' && !f.path.endsWith('/manage.py')) continue;
+    const manageContent = f.content ?? tryReadFile(f.path, map, reader);
+    if (!manageContent) continue;
+    const root = resolveDjangoProjectRoot(f.path, manageContent, map, reader);
+    if (root !== null && !seen.has(root)) {
+      seen.add(root);
+      roots.push(root);
+    }
+  }
+  return roots;
 }

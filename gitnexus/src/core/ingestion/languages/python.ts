@@ -43,7 +43,7 @@ import {
   resolvePythonImportTarget,
 } from './python/index.js';
 import { extractDjangoRoutes, setDjangoParser } from '../route-extractors/django.js';
-import { discoverDjangoRootUrl } from '../route-extractors/django-root-discovery.js';
+import { discoverDjangoRootUrls } from '../route-extractors/django-root-discovery.js';
 
 const BUILT_INS: ReadonlySet<string> = new Set([
   'print',
@@ -138,8 +138,8 @@ export const pythonProvider = defineLanguage({
   // a main-thread pass (see parse-impl's cross-file route extraction) rather
   // than the worker's single-file `isRouteFile` path. `reader` lets discovery
   // and extraction resolve any repo-relative file regardless of parse chunking.
-  discoverRootRouteFile: (files, contentMap, reader) =>
-    discoverDjangoRootUrl(files, contentMap, reader),
+  discoverRootRouteFiles: (files, contentMap, reader) =>
+    discoverDjangoRootUrls(files, contentMap, reader),
   extractRoutes: (tree, filePath, reader, parser) => {
     if (parser) {
       setDjangoParser(parser);

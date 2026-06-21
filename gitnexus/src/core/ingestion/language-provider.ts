@@ -246,19 +246,20 @@ interface LanguageProviderConfig {
    *  routes from that file in isolation via the worker's route logic.
    *  Default: undefined (no route files). */
   readonly isRouteFile?: (filePath: string) => boolean;
-  /** Discover the single root route file for a whole-repo, cross-file routing
+  /** Discover the root route file(s) for a whole-repo, cross-file routing
    *  framework (e.g. Django: manage.py → settings → ROOT_URLCONF → root urls.py).
    *  Runs once on the main thread after all files are scanned. `reader` resolves
    *  arbitrary repo-relative paths (in-memory map, then disk) so discovery never
-   *  depends on which parse chunk a file landed in. Returns the root route file's
-   *  repo-relative path, or null when the framework is absent.
+   *  depends on which parse chunk a file landed in. Returns one repo-relative
+   *  path per discoverable project (empty when the framework is absent) — a
+   *  monorepo with several projects yields each project's root.
    *  Pairs with `extractRoutes`; languages with this hook are skipped by the
    *  worker's single-file `isRouteFile` path. */
-  readonly discoverRootRouteFile?: (
+  readonly discoverRootRouteFiles?: (
     files: Array<{ path: string; content?: string }>,
     contentMap?: Map<string, string>,
     reader?: (relativePath: string) => string | null,
-  ) => string | null;
+  ) => string[];
   /** Extract routes from a root route file, following cross-file includes via
    *  `reader`. Runs on the main thread (never in the worker, which has no
    *  filesystem access). `parser` is a tree-sitter parser preloaded with this

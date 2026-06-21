@@ -197,7 +197,7 @@ async function extractCrossFileRoutes(
   for (const [lang, langPaths] of pathsByLang) {
     if (!isLanguageAvailable(lang)) continue;
     const provider = getProvider(lang);
-    if (!provider.discoverRootRouteFile || !provider.extractRoutes) continue;
+    if (!provider.discoverRootRouteFiles || !provider.extractRoutes) continue;
 
     // Disk-backed reader keyed on repo-relative paths. Discovery and the
     // include() walk read through this; nothing is pre-loaded, so a repo that
@@ -216,33 +216,38 @@ async function extractCrossFileRoutes(
       return content;
     };
 
-    const rootPath = provider.discoverRootRouteFile(
+    // One root route file per discoverable project (a monorepo can have several).
+    const rootPaths = provider.discoverRootRouteFiles(
       langPaths.map((p) => ({ path: p })),
       undefined,
       reader,
     );
-    if (!rootPath) continue;
+    if (rootPaths.length === 0) continue;
 
-    const rootContent = reader(rootPath);
-    if (rootContent === null) continue;
-
+    // One parser per language — the grammar is language-scoped, so it is reused
+    // for every project root and every include() re-parse.
     let parser: Parser;
     try {
-      parser = await createParserForLanguage(lang, rootPath);
+      parser = await createParserForLanguage(lang, rootPaths[0]);
     } catch {
-      continue; // grammar unavailable — skip silently, mirrors worker safety net
+      continue; // grammar unavailable — skip the language, mirrors worker safety net
     }
 
-    let rootTree: Parser.Tree;
-    try {
-      rootTree = parseSourceSafe(parser, rootContent);
-    } catch {
-      logger.warn(`Skipping unparseable root route file: ${rootPath}`);
-      continue;
-    }
+    for (const rootPath of rootPaths) {
+      const rootContent = reader(rootPath);
+      if (rootContent === null) continue; // skip this root only, not the language
 
-    const routes = provider.extractRoutes(rootTree, rootPath, reader, parser);
-    for (const r of routes) out.push(r);
+      let rootTree: Parser.Tree;
+      try {
+        rootTree = parseSourceSafe(parser, rootContent);
+      } catch {
+        logger.warn(`Skipping unparseable root route file: ${rootPath}`);
+        continue; // skip this root only
+      }
+
+      const routes = provider.extractRoutes(rootTree, rootPath, reader, parser);
+      for (const r of routes) out.push(r);
+    }
   }
 
   return out;
