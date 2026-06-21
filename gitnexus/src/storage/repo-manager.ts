@@ -979,6 +979,22 @@ export class AnalysisNotFinalizedError extends Error {
 }
 
 /**
+ * True when the global registry already contains an entry whose canonical path
+ * matches `repoPath`. Uses the same canonical, case-folded (Windows) comparison
+ * as {@link assertAnalysisFinalized} so "is it registered?" answers identically
+ * at the analyze fast-path gate and at the finalize assertion. Pure read.
+ */
+export const isRepoRegistered = async (repoPath: string): Promise<boolean> => {
+  const entries = await readRegistry();
+  const canonicalInput = canonicalizePath(path.resolve(repoPath));
+  const isWin = process.platform === 'win32';
+  return entries.some((e) => {
+    const a = canonicalizePath(e.path);
+    return isWin ? a.toLowerCase() === canonicalInput.toLowerCase() : a === canonicalInput;
+  });
+};
+
+/**
  * Verify that a successful `analyze` call actually produced an indexed,
  * registered repo on disk. Two checks, both strictly required:
  *
@@ -1002,14 +1018,7 @@ export const assertAnalysisFinalized = async (repoPath: string): Promise<void> =
     throw new AnalysisNotFinalizedError(resolved, storagePath, 'meta', getGlobalRegistryPath());
   }
 
-  const entries = await readRegistry();
-  const canonicalInput = canonicalizePath(resolved);
-  const isWin = process.platform === 'win32';
-  const found = entries.some((e) => {
-    const a = canonicalizePath(e.path);
-    return isWin ? a.toLowerCase() === canonicalInput.toLowerCase() : a === canonicalInput;
-  });
-  if (!found) {
+  if (!(await isRepoRegistered(resolved))) {
     throw new AnalysisNotFinalizedError(
       resolved,
       storagePath,

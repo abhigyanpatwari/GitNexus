@@ -42,6 +42,7 @@ import {
   loadMeta,
   ensureGitNexusIgnored,
   registerRepo,
+  isRepoRegistered,
   cleanupOldKuzuFiles,
   INCREMENTAL_SCHEMA_VERSION,
   type RepoMeta,
@@ -777,7 +778,15 @@ export async function runFullAnalysis(
           return true; // conservative on git failure
         }
       })();
-      if (!dirty) {
+      // Only short-circuit when this repo is actually REGISTERED. A prior run
+      // can write meta.json and then fail before registerRepo (e.g. a rejected
+      // --name collision), leaving the index up-to-date but UNREGISTERED. Taking
+      // the fast path there returns an unregistered repo that the CLI's
+      // assertAnalysisFinalized rejects — and `--allow-duplicate-name` could
+      // never heal it (it would keep hitting this early-return). Fall through to
+      // the pipeline so it gets registered (honoring allowDuplicateName); already
+      // registered repos keep the fast path unchanged (#2264).
+      if (!dirty && (await isRepoRegistered(repoPath))) {
         await ensureGitNexusIgnored(repoPath);
         return {
           // `resolveRepoIdentityRoot` collapses worktree roots to the
