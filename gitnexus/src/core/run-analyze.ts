@@ -232,6 +232,15 @@ export interface AnalyzeOptions {
    * consumer scan unchanged.
    */
   fetchWrappers?: string[];
+  /**
+   * The caller will `process.exit()` immediately after this analyze returns (the
+   * CLI `analyze` command). When set, the finalize/error close CHECKPOINTs for
+   * durability but skips the native `conn.close()`/`db.close()`, which can
+   * double-free in LadybugDB's `ClientContext` destructor after large `--pdg`
+   * writes (gdb-confirmed) — aborting the process AFTER a fully-written index.
+   * Process exit reclaims the handles. Long-lived callers (MCP server, tests)
+   * leave this unset so they get a real close. See `closeLbug`. */
+  skipNativeCloseOnExit?: boolean;
 }
 
 export interface AnalyzeResult {
@@ -1549,7 +1558,10 @@ export async function runFullAnalysis(
     // Stop the manual checkpoint driver before closeLbug so its
     // in-flight CHECKPOINT cannot race the `safeClose` CHECKPOINT.
     await walCheckpointDriver.stop();
-    await closeLbug();
+    // CLI callers (about to process.exit) skip the native close to dodge a
+    // LadybugDB destructor double-free after --pdg writes — the CHECKPOINT inside
+    // closeLbug keeps the index durable (#2264). Long-lived callers close for real.
+    await closeLbug({ skipNativeClose: options.skipNativeCloseOnExit });
 
     progress('done', 100, 'Done');
 
@@ -1570,7 +1582,9 @@ export async function runFullAnalysis(
       /* swallow — surface path is the rethrow below */
     }
     try {
-      await closeLbug();
+      // Same native-close skip on the error path for CLI callers — they
+      // process.exit too, and the native close can double-free (#2264).
+      await closeLbug({ skipNativeClose: options.skipNativeCloseOnExit });
     } catch {
       /* swallow */
     }

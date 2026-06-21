@@ -72,6 +72,18 @@ withTestLbugDB('conn-serialization', () => {
       expect(lockSpy.mock.calls.length).toBeGreaterThanOrEqual(filePathTables.length);
       expect(result).toMatchObject({ deletedNodes: 0 });
     });
+
+    it('closeLbug({ skipNativeClose }) checkpoints but leaves the connection open (#2264 close-crash)', async () => {
+      const adapter = await import('../../src/core/lbug/lbug-adapter.js');
+      await adapter.closeLbug({ skipNativeClose: true });
+      // The native conn/db are deliberately NOT torn down — that avoids LadybugDB's
+      // ClientContext destructor double-free after --pdg writes. The connection
+      // stays ready and queryable (the CHECKPOINT made the index durable; process
+      // exit reclaims the handles on the CLI path).
+      expect(adapter.isLbugReady()).toBe(true);
+      const rows = await adapter.executeQuery('RETURN 1 AS one');
+      expect(rows).toHaveLength(1);
+    });
   });
 });
 

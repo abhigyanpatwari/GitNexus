@@ -1168,7 +1168,10 @@ const analyzeCommandImpl = async (
     aborted = true;
     bar.stop();
     console.log('\n  Interrupted — cleaning up...');
-    closeLbug()
+    // process.exit(130) follows, so skip the native close (LadybugDB destructor
+    // can double-free after --pdg writes, #2264); the CHECKPOINT inside closeLbug
+    // still flushes the WAL.
+    closeLbug({ skipNativeClose: true })
       .catch(() => {})
       .finally(async () => {
         const { flushLoggerSync } = await import('../core/logger.js');
@@ -1273,6 +1276,12 @@ const analyzeCommandImpl = async (
         // Extra fetch-wrapper names from `.gitnexusrc` (#1589/#1852 residual);
         // forwarded to the routes phase consumer scan.
         fetchWrappers: options.fetchWrappers,
+        // The CLI always process.exit()s after this returns (success path at the
+        // end of analyzeCommandImpl, error/interrupt paths via process.exit too),
+        // so the finalize close skips the native conn/db close — it can double-free
+        // in LadybugDB's ClientContext destructor after --pdg writes (#2264). The
+        // CHECKPOINT keeps the index durable; process exit reclaims the handles.
+        skipNativeCloseOnExit: true,
       },
       {
         onProgress: (_phase, percent, message) => {
