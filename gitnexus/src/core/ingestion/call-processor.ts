@@ -243,7 +243,7 @@ export const processRoutesFromExtracted = async (
   }
 
   onProgress?.(extractedRoutes.length, extractedRoutes.length);
-}
+};
 
 /**
  * Resolve each route's handler to a real symbol UID, keyed by the normalized
@@ -305,7 +305,7 @@ export function resolveRouteHandlerSymbols(
   }
 
   return out;
-};
+}
 
 /** Common method names on response/data objects that are NOT property accesses */
 // Properties/methods to ignore when extracting consumer accessed keys from `data.X` patterns.
