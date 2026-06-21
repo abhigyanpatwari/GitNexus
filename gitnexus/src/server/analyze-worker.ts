@@ -12,7 +12,9 @@
  */
 
 import { runFullAnalysis, type AnalyzeOptions } from '../core/run-analyze.js';
-import { projectAnalyzeResultForIpc, type AnalyzeResultIpc } from './analyze-worker-ipc.js';
+import { type AnalyzeResultIpc } from './analyze-worker-ipc.js';
+import { runWorkerAnalysis } from './analyze-worker-core.js';
+import { assertAnalysisFinalized } from '../storage/repo-manager.js';
 import { closeLbug } from '../core/lbug/lbug-adapter.js';
 
 interface StartMessage {
@@ -102,38 +104,19 @@ process.on('message', async (msg: StartMessage) => {
   started = true;
 
   try {
-    const result = await runFullAnalysis(
-      msg.repoPath,
-      // This worker force-exits (process.exit(0) below) right after sending its
-      // result, so skip the native close: it can double-free in LadybugDB's
-      // ClientContext destructor after --pdg writes and abort the worker BEFORE it
-      // can send 'complete' (#2264). flushWAL still persists the index; the
-      // subsequent process.exit reclaims the native handles.
-      { ...msg.options, skipNativeCloseOnExit: true },
-      {
-        onProgress: (phase, percent, message) => {
-          send({ type: 'progress', phase, percent, message });
-        },
-        onLog: (message) => {
-          send({ type: 'progress', phase: 'log', percent: -1, message });
-        },
-      },
-    );
-
-    // Send a JSON-safe projection, NOT the raw result: the IPC channel is
-    // default-JSON serialization and `result.pipelineResult` carries the live
-    // KnowledgeGraph (wasteful to materialize, silently corrupted by JSON, and
-    // a BigInt/circular value would throw and mis-report this success as a
-    // failure). See analyze-worker-ipc.ts.
-    send({ type: 'complete', result: projectAnalyzeResultForIpc(result) });
-  } catch (err: unknown) {
-    // Report the failure to the parent over IPC (the parent surfaces the message).
-    const message = err instanceof Error ? err.message : 'Analysis failed';
-    send({ type: 'error', message });
+    // The run → finalize → report contract lives in the side-effect-free
+    // analyze-worker-core seam (unit-testable without this entry module's
+    // process.on side effects). It reports exactly one terminal message and
+    // never throws.
+    await runWorkerAnalysis(msg.repoPath, msg.options, {
+      runFullAnalysis,
+      assertAnalysisFinalized,
+      send,
+    });
   } finally {
     // LadybugDB's native module prevents clean exit — force it (same reason the
     // CLI uses process.exit(0)). In `finally` so the exit still fires even if the
-    // error report above throws on a closed IPC channel (#2264 review P3).
+    // report above throws on a closed IPC channel (#2264 review P3).
     setTimeout(() => process.exit(0), 500);
   }
 });
