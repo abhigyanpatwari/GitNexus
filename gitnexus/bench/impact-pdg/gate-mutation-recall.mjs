@@ -17,7 +17,14 @@ const floor = Number(process.env.MUTATION_RECALL_FLOOR ?? '0.5');
 
 const report = JSON.parse(fs.readFileSync(reportPath, 'utf8'));
 const checks = Array.isArray(report?.mutation?.checks) ? report.mutation.checks : [];
-const scored = checks.filter((c) => typeof c.recall === 'number');
+// Gate only the checks the oracle marked recall-gated. measure.mjs sets
+// `recallGated: false` for cases a forward value-diff oracle cannot fairly
+// score against the PDG slice: UPSTREAM fixtures (the oracle runs in its native
+// downstream sense, so its behavioral AIS can never intersect a reverse slice —
+// recall is 0 by construction) and id-discrimination corroboration fixtures.
+// Those still carry a numeric `recall` for the report, so the legacy
+// `typeof c.recall === 'number'` filter wrongly tripped the floor on them.
+const scored = checks.filter((c) => c.recallGated === true && typeof c.recall === 'number');
 const recalls = scored.map((c) => c.recall);
 const min = recalls.length ? Math.min(...recalls) : null;
 const mean = recalls.length ? recalls.reduce((a, b) => a + b, 0) / recalls.length : null;
@@ -38,6 +45,17 @@ if (process.env.GITHUB_STEP_SUMMARY) {
   fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, summary + '\n');
 }
 process.stdout.write(summary + '\n');
+
+// A report that produced checks but gated NONE of them has no recall signal:
+// the floor check below would pass vacuously (`min === null`). Fail loudly so a
+// degenerate corpus, or a harvest that silently emptied every behavioral AIS,
+// surfaces as a red run instead of a green "scored cases: 0 of N".
+if (checks.length > 0 && scored.length === 0) {
+  console.error(
+    `Mutation gate has no signal: 0 of ${checks.length} checks were recall-gated — refusing to pass.`,
+  );
+  process.exit(1);
+}
 
 if (min !== null && min < floor) {
   console.error(`Mutation recall regression: min realized recall ${fmt(min)} < floor ${floor}`);

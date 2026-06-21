@@ -844,11 +844,11 @@ export function runScopeResolution(
     // ── M3 taint setup (#2083 U4) ────────────────────────────────────────
     // Explicit model-registration seam (idempotent, cheap) — the registry
     // stays empty on non-pdg runs, preserving default-run parity. The
-    // registry is keyed by `SupportedLanguages` enum VALUES ('typescript' /
-    // 'javascript'), and `ScopeResolver.language` IS a `SupportedLanguages`
-    // member registered under those same constants — the join is direct
-    // equality, no mapping table. A language without a registered spec
-    // (python, go, …) skips taint entirely: no work, no warn spam (KTD8).
+    // registry is keyed by SupportedLanguages enum values, and
+    // ScopeResolver.language is registered under those same constants -
+    // the join is direct equality, with no mapping table. A language without a
+    // registered spec (go, ruby, ...) skips taint entirely: no work, no warn spam
+    // (KTD8).
     registerBuiltinTaintModels();
     const taintSpec = getSourceSinkConfig(provider.language);
     // Taint-side solver fact cap: the SAME derivation emitFileReachingDefs

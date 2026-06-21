@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { createRequire } from 'node:module';
 import { createPythonCfgVisitor } from '../../../src/core/ingestion/cfg/visitors/python.js';
-import type { FunctionCfg } from '../../../src/core/ingestion/cfg/types.js';
+import type { FunctionCfg, SiteRecord } from '../../../src/core/ingestion/cfg/types.js';
 import {
   makeCfgHarness,
   type CfgHarness,
@@ -380,13 +380,29 @@ describe('Python CfgVisitor — production CDG probe (plan-required)', () => {
   });
 });
 
-describe('Python CfgVisitor — taint call sites harvested (this unit)', () => {
-  it('call statements now carry harvested call sites (callee path recorded)', () => {
-    const cfg = py.cfgOf(`def f(cmd):\n    exec(cmd)\n    x = escape(cmd)\n    use(x)\n`);
-    const callees = cfg.blocks
-      .flatMap((b) => b.statements ?? [])
-      .flatMap((s) => s.sites ?? [])
-      .map((site) => site.callee);
-    expect(callees).toEqual(expect.arrayContaining(['exec', 'escape', 'use']));
+describe('Python CfgVisitor — taint-site substrate', () => {
+  it('harvests call, member-read, argument, receiver, and result-def sites', () => {
+    const cfg = py.cfgOf(
+      `def f(request, db):\n    db.query(request.args)\n    value = sanitize(request.form)\n`,
+    );
+    const request = bindingIdx(cfg, 'request');
+    const db = bindingIdx(cfg, 'db');
+    const value = bindingIdx(cfg, 'value');
+    const sites: SiteRecord[] = cfg.blocks.flatMap((b) =>
+      (b.statements ?? []).flatMap((s) => [...(s.sites ?? [])]),
+    );
+
+    const query = sites.find((s) => s.kind === 'call' && s.callee === 'db.query');
+    expect(query?.receiver).toBe(db);
+    expect(query?.args?.[0]).toContain(request);
+    expect(query?.at).toEqual([2, 4]);
+
+    expect(
+      sites.some((s) => s.kind === 'member-read' && s.object === request && s.property === 'args'),
+    ).toBe(true);
+
+    const sanitize = sites.find((s) => s.kind === 'call' && s.callee === 'sanitize');
+    expect(sanitize?.resultDefs).toEqual([value]);
+    expect(sanitize?.at).toEqual([3, 12]);
   });
 });

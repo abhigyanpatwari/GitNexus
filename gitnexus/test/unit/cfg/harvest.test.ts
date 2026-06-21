@@ -878,13 +878,15 @@ describe('Python call-site harvest', () => {
     expect(sites[execIdx].args).toEqual([[[x, escapeIdx]]]);
   });
 
-  it('keyword argument f(k=v) → only the value v is an occurrence (key is not a use)', () => {
+  it('keyword argument f(k=v) → value remains a use without minting a positional slot', () => {
     const cfg = py.cfgOf(`def f(v):\n    foo(k=v)\n`);
     const s = siteFact(cfg, 2).sites![0];
     expect(s.callee).toBe('foo');
-    // `k` mints no binding; `v` occurs at position 0.
+    // `k` mints no binding; `v` remains a statement use, but keyword names are
+    // unavailable in SiteRecord so mapping it to positional slot 0 is unsound.
     expect(bindingIdxs(cfg, 'k')).toHaveLength(0);
-    expect(s.args).toEqual([[bindingIdx(cfg, 'v')]]);
+    expect(usesOf(cfg)).toContain(bindingIdx(cfg, 'v'));
+    expect(s.args).toBeUndefined();
   });
 
   it('def/use facts stay intact alongside the new sites (regression guard)', () => {
