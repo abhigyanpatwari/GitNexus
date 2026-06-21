@@ -4083,6 +4083,191 @@ class LedgerController : LedgerApi {
       },
     );
 
+    itKotlinConsumer(
+      'still combines distinct inherited Kotlin prefixes that share a leading segment',
+      async () => {
+        // Twin of the Java 'shared leading segment' case: controller @RequestMapping("/open")
+        // + interface @RequestMapping("/open/ai") must combine to /open/open/ai/query, NOT
+        // dedup to /open/ai/query (the dedup only fires on an exact prefix match).
+        const dir = path.join(tmpDir, 'kotlin-shared-leading-prefix');
+        fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+        fs.writeFileSync(
+          path.join(dir, 'src', 'DataReleaseApi.kt'),
+          `package com.example
+import org.springframework.web.bind.annotation.RequestMapping
+import org.springframework.web.bind.annotation.GetMapping
+
+@RequestMapping("/open/ai")
+interface DataReleaseApi {
+    @GetMapping("/query")
+    fun query(): Any
+}
+`,
+        );
+        fs.writeFileSync(
+          path.join(dir, 'src', 'DataReleaseController.kt'),
+          `package com.example
+import org.springframework.web.bind.annotation.RestController
+import org.springframework.web.bind.annotation.RequestMapping
+
+@RestController
+@RequestMapping("/open")
+class DataReleaseController : DataReleaseApi {
+    override fun query(): Any = TODO()
+}
+`,
+        );
+
+        const contracts = await extractor.extract(null, dir, makeRepo(dir));
+        const providers = contracts.filter((c) => c.role === 'provider');
+        expect(
+          providers.find((c) => c.contractId === 'http::GET::/open/open/ai/query'),
+        ).toBeDefined();
+        expect(
+          providers.find((c) => c.contractId === 'http::GET::/open/ai/query'),
+        ).toBeUndefined();
+      },
+    );
+
+    itKotlinConsumer(
+      'keeps a Kotlin controller prefix when a prefix-less interface method starts with the same path',
+      async () => {
+        // Twin of the Java prefix-overlap case: controller @RequestMapping("/users")
+        // + interface @GetMapping("/users/{id}") (no interface prefix) →
+        // /users/users/{param}, not deduped to /users/{param}.
+        const dir = path.join(tmpDir, 'kotlin-method-prefix-overlap');
+        fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+        fs.writeFileSync(
+          path.join(dir, 'src', 'UserApi.kt'),
+          `package com.example
+import org.springframework.web.bind.annotation.GetMapping
+
+interface UserApi {
+    @GetMapping("/users/{id}")
+    fun getUser(id: String): Any
+}
+`,
+        );
+        fs.writeFileSync(
+          path.join(dir, 'src', 'UserController.kt'),
+          `package com.example
+import org.springframework.web.bind.annotation.RestController
+import org.springframework.web.bind.annotation.RequestMapping
+
+@RestController
+@RequestMapping("/users")
+class UserController : UserApi {
+    override fun getUser(id: String): Any = TODO()
+}
+`,
+        );
+
+        const contracts = await extractor.extract(null, dir, makeRepo(dir));
+        const providers = contracts.filter((c) => c.role === 'provider');
+        expect(
+          providers.find((c) => c.contractId === 'http::GET::/users/users/{param}'),
+        ).toBeDefined();
+        expect(
+          providers.find((c) => c.contractId === 'http::GET::/users/{param}'),
+        ).toBeUndefined();
+      },
+    );
+
+    itKotlinConsumer(
+      'skips ambiguous inherited Kotlin routes when interfaces share a simple name',
+      async () => {
+        // Twin of the Java simple-name-collision case: two distinct interfaces both
+        // named StatusApi → ambiguous, so the implementing controller emits nothing.
+        const dir = path.join(tmpDir, 'kotlin-iface-name-collision');
+        fs.mkdirSync(path.join(dir, 'src', 'a'), { recursive: true });
+        fs.mkdirSync(path.join(dir, 'src', 'b'), { recursive: true });
+        fs.writeFileSync(
+          path.join(dir, 'src', 'a', 'StatusApi.kt'),
+          `package com.example.a
+import org.springframework.web.bind.annotation.GetMapping
+
+interface StatusApi {
+    @GetMapping("/a/status")
+    fun getStatus(): Any
+}
+`,
+        );
+        fs.writeFileSync(
+          path.join(dir, 'src', 'b', 'StatusApi.kt'),
+          `package com.example.b
+import org.springframework.web.bind.annotation.GetMapping
+
+interface StatusApi {
+    @GetMapping("/b/status")
+    fun getStatus(): Any
+}
+`,
+        );
+        fs.writeFileSync(
+          path.join(dir, 'src', 'StatusController.kt'),
+          `package com.example
+import org.springframework.web.bind.annotation.RestController
+
+@RestController
+class StatusController : StatusApi {
+    override fun getStatus(): Any = TODO()
+}
+`,
+        );
+
+        const contracts = await extractor.extract(null, dir, makeRepo(dir));
+        const providers = contracts.filter((c) => c.role === 'provider');
+        expect(providers.find((c) => c.contractId === 'http::GET::/a/status')).toBeUndefined();
+        expect(providers.find((c) => c.contractId === 'http::GET::/b/status')).toBeUndefined();
+        expect(
+          providers.filter((c) => c.symbolRef.filePath.endsWith('StatusController.kt')),
+        ).toHaveLength(0);
+      },
+    );
+
+    itKotlinConsumer(
+      'emits routes from every distinctly-named interface a Kotlin controller implements',
+      async () => {
+        // Positive multi-interface case (untested in both languages before #2254):
+        // a controller implementing two route interfaces emits both their routes.
+        const dir = path.join(tmpDir, 'kotlin-multi-iface');
+        fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+        fs.writeFileSync(
+          path.join(dir, 'src', 'Apis.kt'),
+          `package com.example
+import org.springframework.web.bind.annotation.GetMapping
+
+interface OrdersApi {
+    @GetMapping("/orders")
+    fun orders(): Any
+}
+
+interface UsersApi {
+    @GetMapping("/users")
+    fun users(): Any
+}
+`,
+        );
+        fs.writeFileSync(
+          path.join(dir, 'src', 'GatewayController.kt'),
+          `package com.example
+import org.springframework.web.bind.annotation.RestController
+
+@RestController
+class GatewayController : OrdersApi, UsersApi {
+    override fun orders(): Any = TODO()
+    override fun users(): Any = TODO()
+}
+`,
+        );
+
+        const contracts = await extractor.extract(null, dir, makeRepo(dir));
+        const providers = contracts.filter((c) => c.role === 'provider');
+        expect(providers.find((c) => c.contractId === 'http::GET::/orders')).toBeDefined();
+        expect(providers.find((c) => c.contractId === 'http::GET::/users')).toBeDefined();
+      },
+    );
+
     it('extracts Go stdlib and resty calls', async () => {
       const dir = path.join(tmpDir, 'go-consumer');
       fs.mkdirSync(path.join(dir, 'cmd'), { recursive: true });
