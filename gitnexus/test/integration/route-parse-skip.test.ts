@@ -22,8 +22,7 @@ import path from 'node:path';
 // Count real parses by wrapping the actual parseSourceSafe.
 const parseCalls: string[] = [];
 vi.mock('../../src/core/tree-sitter/safe-parse.js', async (importActual) => {
-  const actual =
-    await importActual<typeof import('../../src/core/tree-sitter/safe-parse.js')>();
+  const actual = await importActual<typeof import('../../src/core/tree-sitter/safe-parse.js')>();
   return {
     ...actual,
     parseSourceSafe: (parser: unknown, src: unknown) => {
@@ -113,8 +112,18 @@ function makeDb(opts: { resolved: Record<string, boolean> }) {
     if (query.includes('CONTAINS')) {
       // Return both handler symbols; the extractor picks by id.
       return [
-        { uid: 'Method:AController.java:list', name: 'list', filePath: 'AController.java', labels: ['Method'] },
-        { uid: 'Method:BController.java:make', name: 'make', filePath: 'BController.java', labels: ['Method'] },
+        {
+          uid: 'Method:AController.java:list',
+          name: 'list',
+          filePath: 'AController.java',
+          labels: ['Method'],
+        },
+        {
+          uid: 'Method:BController.java:make',
+          name: 'make',
+          filePath: 'BController.java',
+          labels: ['Method'],
+        },
       ];
     }
     return []; // FETCHES → no consumers
@@ -181,7 +190,12 @@ describe('HttpRouteExtractor — parse-skip for graph-covered files (#2138 U4)',
         }
         if (query.includes('CONTAINS')) {
           return [
-            { uid: 'Method:CController.java:list', name: 'list', filePath: 'CController.java', labels: ['Method'] },
+            {
+              uid: 'Method:CController.java:list',
+              name: 'list',
+              filePath: 'CController.java',
+              labels: ['Method'],
+            },
           ];
         }
         return [];

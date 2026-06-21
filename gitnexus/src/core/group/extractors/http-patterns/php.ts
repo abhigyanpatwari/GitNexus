@@ -139,9 +139,7 @@ export const PHP_HTTP_PLUGIN: HttpLanguagePlugin = {
   // emits no FETCHES for PHP). Conservative — the `->verb(` shape over-matches
   // ordinary method calls, which only costs a parse, never data.
   hasConsumerSignals(content) {
-    return /Http::|file_get_contents|->\s*(get|post|put|delete|patch|request)\s*\(/i.test(
-      content,
-    );
+    return /Http::|file_get_contents|->\s*(get|post|put|delete|patch|request)\s*\(/i.test(content);
   },
   scan(tree) {
     const out: HttpDetection[] = [];
