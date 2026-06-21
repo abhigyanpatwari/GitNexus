@@ -3076,6 +3076,67 @@ interface OrderClient {
     );
 
     itKotlinConsumer(
+      'extracts Kotlin @RequestLine written with the named "value" argument (#2254 P2)',
+      async () => {
+        const dir = path.join(tmpDir, 'kotlin-request-line-named-value');
+        fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+        fs.writeFileSync(
+          path.join(dir, 'src', 'AiClient.kt'),
+          `package com.example
+import org.springframework.cloud.openfeign.FeignClient
+import feign.RequestLine
+
+@FeignClient(name = "ai-backend")
+interface AiClient {
+    @RequestLine(value = "POST /create")
+    fun create(): String
+}
+`,
+        );
+
+        const contracts = await extractor.extract(null, dir, makeRepo(dir));
+        const consumers = contracts.filter((c) => c.role === 'consumer');
+
+        expect(
+          consumers.find(
+            (c) =>
+              c.contractId === 'http::POST::/create' &&
+              c.meta.framework === 'openfeign' &&
+              c.confidence === 0.75,
+          ),
+        ).toBeDefined();
+      },
+    );
+
+    itKotlinConsumer(
+      'ignores Kotlin @RequestLine whose named argument is not "value"',
+      async () => {
+        const dir = path.join(tmpDir, 'kotlin-request-line-non-value-key');
+        fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+        fs.writeFileSync(
+          path.join(dir, 'src', 'AiClient.kt'),
+          `package com.example
+import org.springframework.cloud.openfeign.FeignClient
+import feign.RequestLine
+
+@FeignClient(name = "ai-backend")
+interface AiClient {
+    @RequestLine(name = "GET /should-not-extract")
+    fun nope(): String
+}
+`,
+        );
+
+        const contracts = await extractor.extract(null, dir, makeRepo(dir));
+        const consumers = contracts.filter((c) => c.role === 'consumer');
+
+        expect(
+          consumers.find((c) => c.contractId === 'http::GET::/should-not-extract'),
+        ).toBeUndefined();
+      },
+    );
+
+    itKotlinConsumer(
       'classifies a @RestController class as provider and a @FeignClient interface as consumer',
       async () => {
         const dir = path.join(tmpDir, 'kotlin-controller-vs-feign');

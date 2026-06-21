@@ -514,6 +514,12 @@ function buildKotlinPlugin(language: unknown): HttpLanguagePlugin {
   } satisfies LanguagePatterns<Record<string, never>>);
 
   // ─── Consumer: OpenFeign native @RequestLine("VERB /path") ────────────
+  // Two patterns mirror the positional vs named split. java.ts accepts the
+  // named `value` argument (java.ts:442 drops any non-`value` key); the
+  // positional pattern's `.` anchor only matches when the string literal is the
+  // first argument, so the named form needs its own pattern. Constraining
+  // `#eq? @key "value"` keeps non-`value` keys (`name`, etc.) dropped — Java
+  // parity, just enforced in the query rather than the JS loop.
   const SPRING_REQUEST_LINE_PATTERNS = compilePatterns({
     name: 'kotlin-spring-request-line',
     language,
@@ -528,6 +534,21 @@ function buildKotlinPlugin(language: unknown): HttpLanguagePlugin {
                   (user_type (type_identifier) @ann (#eq? @ann "RequestLine"))
                   (value_arguments
                     (value_argument . (string_literal) @value)))))
+            (simple_identifier) @method_name) @method
+        `,
+      },
+      {
+        meta: {},
+        query: `
+          (function_declaration
+            (modifiers
+              (annotation
+                (constructor_invocation
+                  (user_type (type_identifier) @ann (#eq? @ann "RequestLine"))
+                  (value_arguments
+                    (value_argument
+                      (simple_identifier) @key (#eq? @key "value")
+                      (string_literal) @value)))))
             (simple_identifier) @method_name) @method
         `,
       },
