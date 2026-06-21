@@ -233,12 +233,6 @@ function getCallFuncName(node: SyntaxNode): string | null {
   );
 }
 
-let _djangoParser: Parser | null = null;
-
-export function setDjangoParser(p: Parser): void {
-  _djangoParser = p;
-}
-
 /**
  * Given a Django dotted module path like `app.submodule.urls`,
  * try multiple path resolution strategies to find the file on disk.
@@ -300,6 +294,7 @@ function resolveIncludedFile(
 export function extractDjangoRoutes(
   tree: Parser.Tree,
   filePath: string,
+  parser: Parser,
   readFile?: DjangoFileReader | null,
   _visited?: Set<string>,
 ): ExtractedRoute[] {
@@ -357,7 +352,7 @@ export function extractDjangoRoutes(
             if (child.type === 'call' && getCallFuncName(child) === DJANGO_INCLUDE_FUNCTION) {
               hasIncludeChild = true;
               const modulePath = getIncludeModulePath(child);
-              if (modulePath && readFile && _djangoParser && depth < MAX_INCLUDE_DEPTH) {
+              if (modulePath && readFile && depth < MAX_INCLUDE_DEPTH) {
                 const resolved = resolveIncludedFile(modulePath, currentFilePath, readFile);
                 // Key the guard on (file, accumulated prefix) so the same
                 // urlconf mounted under another prefix elsewhere is still walked.
@@ -366,7 +361,7 @@ export function extractDjangoRoutes(
                   routeSet.add(includeVisitKey(resolved.filePath, childPrefix));
                   let childTree: Parser.Tree;
                   try {
-                    childTree = parseSourceSafe(_djangoParser, resolved.content);
+                    childTree = parseSourceSafe(parser, resolved.content);
                   } catch {
                     continue;
                   }
@@ -391,12 +386,7 @@ export function extractDjangoRoutes(
         continue;
       }
 
-      if (
-        funcName === DJANGO_INCLUDE_FUNCTION &&
-        readFile &&
-        _djangoParser &&
-        depth < MAX_INCLUDE_DEPTH
-      ) {
+      if (funcName === DJANGO_INCLUDE_FUNCTION && readFile && depth < MAX_INCLUDE_DEPTH) {
         const modulePath = getIncludeModulePath(node);
         if (modulePath) {
           const resolved = resolveIncludedFile(modulePath, currentFilePath, readFile);
@@ -406,7 +396,7 @@ export function extractDjangoRoutes(
             routeSet.add(includeVisitKey(resolved.filePath, routeCtx.prefix));
             let childTree: Parser.Tree;
             try {
-              childTree = parseSourceSafe(_djangoParser, resolved.content);
+              childTree = parseSourceSafe(parser, resolved.content);
             } catch {
               continue;
             }

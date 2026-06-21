@@ -42,7 +42,7 @@ import {
   pythonReceiverBinding,
   resolvePythonImportTarget,
 } from './python/index.js';
-import { extractDjangoRoutes, setDjangoParser } from '../route-extractors/django.js';
+import { extractDjangoRoutes } from '../route-extractors/django.js';
 import { discoverDjangoRootUrls } from '../route-extractors/django-root-discovery.js';
 
 const BUILT_INS: ReadonlySet<string> = new Set([
@@ -140,12 +140,8 @@ export const pythonProvider = defineLanguage({
   // and extraction resolve any repo-relative file regardless of parse chunking.
   discoverRootRouteFiles: (files, contentMap, reader) =>
     discoverDjangoRootUrls(files, contentMap, reader),
-  extractRoutes: (tree, filePath, reader, parser) => {
-    if (parser) {
-      setDjangoParser(parser);
-    }
-    return extractDjangoRoutes(tree, filePath, reader);
-  },
+  extractRoutes: (tree, filePath, reader, parser) =>
+    parser ? extractDjangoRoutes(tree, filePath, parser, reader) : [],
   labelOverride: pythonFunctionDefinitionLabel,
 
   // ── RFC #909 Ring 3: scope-based resolution hooks (RFC §5) ──────────

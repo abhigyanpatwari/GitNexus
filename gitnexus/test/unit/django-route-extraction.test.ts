@@ -1,23 +1,17 @@
 import { describe, expect, it } from 'vitest';
 import Parser from 'tree-sitter';
 import Python from 'tree-sitter-python';
-import {
-  extractDjangoRoutes,
-  setDjangoParser,
-} from '../../src/core/ingestion/route-extractors/django.js';
+import { extractDjangoRoutes } from '../../src/core/ingestion/route-extractors/django.js';
 
 const parser = new Parser();
 parser.setLanguage(Python);
-
-// Must be called once before extractDjangoRoutes can resolve includes
-setDjangoParser(parser);
 
 const extract = (
   source: string,
   filePath = 'app/urls.py',
   readFile?: (path: string) => string | null,
 ) =>
-  extractDjangoRoutes(parser.parse(source), filePath, readFile).map((route) => ({
+  extractDjangoRoutes(parser.parse(source), filePath, parser, readFile).map((route) => ({
     httpMethod: route.httpMethod,
     routePath: route.routePath,
     routeName: route.routeName,
