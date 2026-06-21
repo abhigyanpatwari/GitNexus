@@ -23,10 +23,20 @@ import { flushWAL } from '../../src/core/lbug/lbug-adapter.js';
 describe('flushWAL / safeClose — consolidation guard (#1376)', () => {
   let adapterSource: string;
 
+  // Strip comments before the structural assertions so they reflect CODE only.
+  // Otherwise a `conn.close()` / `db.close()` / `.query('CHECKPOINT')` token
+  // mentioned in a doc comment would falsely trip (or vacuously satisfy) a guard,
+  // coupling the test to comment wording — exactly the brittleness flagged in the
+  // #2264 review (a prior commit had to reword a comment just to keep this green).
+  const codeOnly = (src: string): string =>
+    src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
+
   beforeAll(async () => {
-    adapterSource = await fs.readFile(
-      path.join(__dirname, '..', '..', 'src', 'core', 'lbug', 'lbug-adapter.ts'),
-      'utf-8',
+    adapterSource = codeOnly(
+      await fs.readFile(
+        path.join(__dirname, '..', '..', 'src', 'core', 'lbug', 'lbug-adapter.ts'),
+        'utf-8',
+      ),
     );
   });
 
