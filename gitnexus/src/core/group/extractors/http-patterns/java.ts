@@ -290,7 +290,7 @@ const OK_HTTP_PATTERNS = compilePatterns({
           object: (object_creation_expression
             type: (scoped_type_identifier) @type (#eq? @type "Request.Builder"))
           name: (identifier) @method (#eq? @method "url")
-          arguments: (argument_list . (string_literal) @path))
+          arguments: (argument_list . (string_literal) @path)) @call
       `,
     },
   ],
@@ -480,6 +480,28 @@ function extractUriComponentsBuilderPath(node: Parser.SyntaxNode): string | null
 function extractStaticPathExpression(node: Parser.SyntaxNode): string | null {
   if (node.type === 'string_literal') return unquoteLiteral(node.text);
   return extractUriCreatePath(node) ?? extractUriComponentsBuilderPath(node);
+}
+
+/**
+ * Infer an OkHttp request verb by walking UP the builder chain from the matched
+ * `.url(...)` call: the first `.get()/.head()/.post()/.put()/.delete()/.patch()`
+ * helper, or a `.method("VERB", …)` literal, wins; otherwise `GET` (OkHttp's
+ * default). Source-scan only — a variable-bound verb (`.method(verb, …)`) is not
+ * resolved and falls back to `GET` (parity with the WebClient long-form
+ * variable-bound-verb limitation).
+ */
+function inferOkHttpMethod(urlCall: Parser.SyntaxNode): string {
+  let cur: Parser.SyntaxNode = urlCall;
+  let parent = cur.parent;
+  while (parent?.type === 'method_invocation' && methodInvocationObject(parent)?.id === cur.id) {
+    const name = methodInvocationName(parent);
+    if (name && ['get', 'head', 'post', 'put', 'delete', 'patch'].includes(name))
+      return name.toUpperCase();
+    if (name === 'method') return firstLiteralArgument(parent)?.toUpperCase() ?? 'GET';
+    cur = parent;
+    parent = parent.parent;
+  }
+  return 'GET';
 }
 
 interface MethodRouteAnnotation {
@@ -902,15 +924,18 @@ export const JAVA_HTTP_PLUGIN: HttpLanguagePlugin = {
     }
 
     // ─── Consumers: OkHttp Request.Builder().url("path") ────────────
+    // The verb is the builder's sibling helper call (`.post()`/`.method("X")`),
+    // inferred by walking up the chain from the matched `.url(...)` call.
     for (const match of runCompiledPatterns(OK_HTTP_PATTERNS, tree)) {
+      const callNode = match.captures.call;
       const pathNode = match.captures.path;
-      if (!pathNode) continue;
+      if (!callNode || !pathNode) continue;
       const path = unquoteLiteral(pathNode.text);
       if (path === null) continue;
       out.push({
         role: 'consumer',
         framework: 'okhttp',
-        method: 'GET',
+        method: inferOkHttpMethod(callNode),
         path,
         name: null,
         confidence: 0.7,
