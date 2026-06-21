@@ -14,19 +14,18 @@ import {
   type KotlinResolveContext,
 } from './index.js';
 import { clearCompanionScopes } from './companion-scopes.js';
+import { applyKotlinCaptureSideChannel } from './capture-side-channel.js';
 import { isKotlinStaticOnly } from './owners.js';
 
 /**
  * Kotlin scope resolver for RFC #909 Ring 3.
  *
- * **Migration status:** Kotlin is in `MIGRATED_LANGUAGES`. Default
- * production resolution flows through the scope-resolution pipeline;
- * the legacy DAG is consulted only when the per-language env var
- * (`REGISTRY_PRIMARY_KOTLIN=0`) explicitly forces the legacy parity
- * run for CI comparison.
+ * Kotlin resolves via the scope-resolution registry — production
+ * resolution flows through the scope-resolution pipeline as the sole
+ * call-resolution path.
  *
- * **Forced-mode parity (`REGISTRY_PRIMARY_KOTLIN=1`):** 208/208
- * fixtures pass after the migration sub-issues #1758–#1763, the
+ * **Coverage:** 208/208 fixtures pass after the migration sub-issues
+ * #1758–#1763, the
  * companion/instance dispatch fix #1756, and the lambda scopes
  * fix #1757. Covers core import, receiver, companion, default-param,
  * vararg, constructor, local assignment-chain, collection-iteration,
@@ -85,6 +84,23 @@ export const kotlinScopeResolver: ScopeResolver = {
   arityCompatibility: (callsite, def) => kotlinArityCompatibility(def, callsite),
 
   buildMro: (graph, parsedFiles, nodeLookup) => buildKotlinMro(graph, parsedFiles, nodeLookup),
+
+  // Worker-boundary restore (see `ScopeResolver.applyCaptureSideChannel`).
+  // `emitKotlinScopeCaptures` records per-file companion-object scope ids
+  // (`markCompanionScope` → `companionScopesByFile`) as a SIDE EFFECT — that
+  // state is NOT serialized onto the returned ParsedFile's scopes/defs. On the
+  // worker path those marks are populated in the worker process and lost across
+  // the MessageChannel / disk store; the main thread reuses the serialized
+  // ParsedFile and skips `extractParsedFile`, so `isKotlinStaticOnly` and
+  // `populateCompanionMembersOnEnclosingClass` (owners.ts) would see an empty
+  // map and companion/static dispatch would emit zero CALLS edges. The worker
+  // stashed a plain-data snapshot on `parsed.captureSideChannel` via
+  // `kotlinProvider.collectCaptureSideChannel`; this restores it into the
+  // module map WITHOUT any tree-sitter re-parse (the #1983 fix). The
+  // freshly-extracted leg never calls this — its marks were just populated in
+  // this process. Runs BEFORE `populateOwners` so the restored companion map is
+  // visible to it.
+  applyCaptureSideChannel: applyKotlinCaptureSideChannel,
 
   populateOwners: (parsed: ParsedFile) => populateKotlinOwners(parsed),
 

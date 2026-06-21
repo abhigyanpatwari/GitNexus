@@ -5,50 +5,12 @@
  * slightly different node types. These queries are designed to be
  * compatible with the standard tree-sitter grammars.
  *
- * Heritage (extends/implements/embed/trait) supertype positions are NOT
- * hand-written per shape. Each language declares its supertype node-type
- * shapes in heritage-extractors/configs/<lang>.ts; buildSupertypeAlternation()
- * turns those into a tree-sitter `[(a) (b) …] @heritage.*` alternation that is
- * interpolated into the heritage blocks below. The matching runtime
- * name-normalizer lives in heritage-extractors/supertype-alternation.ts. This
- * keeps qualified/generic/scoped/interface supertypes from being silently
- * dropped (they previously matched only the bare `(type_identifier)`).
+ * Heritage (extends/implements/embed/trait) is NOT captured here. The legacy
+ * heritage-capture leg was removed (issue #942); inheritance edges are
+ * produced by the registry-primary scope-resolution path, which synthesizes
+ * `@reference.inherits` captures in each language's `languages/<lang>/captures.ts`.
  */
 
-import { buildSupertypeAlternation } from './heritage-extractors/supertype-alternation.js';
-import { javaHeritageShapes } from './heritage-extractors/configs/java.js';
-import { csharpHeritageShapes } from './heritage-extractors/configs/csharp.js';
-import {
-  typescriptExtendsShapes,
-  typescriptInterfaceShapes,
-} from './heritage-extractors/configs/typescript.js';
-import { javascriptHeritageShapes } from './heritage-extractors/configs/javascript.js';
-import { pythonHeritageShapes } from './heritage-extractors/configs/python.js';
-import { rustHeritageShapes } from './heritage-extractors/configs/rust.js';
-import { goHeritageShapes } from './heritage-extractors/configs/go.js';
-import { kotlinHeritageShapes } from './heritage-extractors/configs/kotlin.js';
-import { cppHeritageShapes } from './heritage-extractors/configs/cpp.js';
-import { rubyHeritageShapes } from './heritage-extractors/configs/ruby.js';
-
-// Pre-built heritage alternation fragments, one per (language, capture-tag).
-// These are plain strings interpolated into the *_QUERIES template literals.
-const JAVA_EXTENDS_ALT = buildSupertypeAlternation(javaHeritageShapes, 'heritage.extends');
-const JAVA_IMPLEMENTS_ALT = buildSupertypeAlternation(javaHeritageShapes, 'heritage.implements');
-const CSHARP_BASE_ALT = buildSupertypeAlternation(csharpHeritageShapes, 'heritage.extends');
-const TS_EXTENDS_ALT = buildSupertypeAlternation(typescriptExtendsShapes, 'heritage.extends');
-const TS_INTERFACE_IMPLEMENTS_ALT = buildSupertypeAlternation(
-  typescriptInterfaceShapes,
-  'heritage.implements',
-);
-const JS_EXTENDS_ALT = buildSupertypeAlternation(javascriptHeritageShapes, 'heritage.extends');
-const PYTHON_EXTENDS_ALT = buildSupertypeAlternation(pythonHeritageShapes, 'heritage.extends');
-const RUST_TRAIT_ALT = buildSupertypeAlternation(rustHeritageShapes, 'heritage.trait');
-const RUST_CLASS_ALT = buildSupertypeAlternation(rustHeritageShapes, 'heritage.class');
-const GO_EMBED_ALT = buildSupertypeAlternation(goHeritageShapes, 'heritage.extends');
-const KOTLIN_EXTENDS_ALT = buildSupertypeAlternation(kotlinHeritageShapes, 'heritage.extends');
-const CPP_BASE_ALT = buildSupertypeAlternation(cppHeritageShapes, 'heritage.extends');
-const RUBY_SUPERCLASS_ALT = buildSupertypeAlternation(rubyHeritageShapes, 'heritage.extends');
-const RUBY_CLASS_ALT = buildSupertypeAlternation(rubyHeritageShapes, 'heritage.class');
 import { ARRAY_METHOD_NOT_ANY_OF_PREDICATE } from './ts-js-hoc-utils.js';
 
 // TypeScript queries - works with tree-sitter-typescript
@@ -355,30 +317,6 @@ export const TYPESCRIPT_QUERIES = `
   (accessibility_modifier)
   pattern: (identifier) @name) @definition.property
 
-; Heritage queries - class extends (bare or qualified ns.Base; generics ride
-; a separate type_arguments field, captured by the extends_clause value).
-(class_declaration
-  name: (type_identifier) @heritage.class
-  (class_heritage
-    (extends_clause
-      value: ${TS_EXTENDS_ALT}))) @heritage
-
-; Heritage queries - class implements interface (bare/generic/nested)
-(class_declaration
-  name: (type_identifier) @heritage.class
-  (class_heritage
-    (implements_clause
-      ${TS_INTERFACE_IMPLEMENTS_ALT}))) @heritage.impl
-
-; Heritage queries - interface extends interface(s): interface I extends A, B<T>
-; Without this, interface-to-interface chains are never captured. Tagged as
-; @heritage.implements (interface relationship), matching the Java interface
-; extends block.
-(interface_declaration
-  name: (type_identifier) @heritage.class
-  (extends_type_clause
-    ${TS_INTERFACE_IMPLEMENTS_ALT})) @heritage.impl
-
 ; Write access: obj.field = value
 (assignment_expression
   left: (member_expression
@@ -669,14 +607,6 @@ export const JAVASCRIPT_QUERIES = `
 (field_definition
   property: (property_identifier) @name) @definition.property
 
-; Heritage queries - class extends (JavaScript uses different AST than TypeScript)
-; In tree-sitter-javascript, class_heritage directly contains the parent
-; expression: a bare identifier or a qualified member_expression (ns.Base).
-(class_declaration
-  name: (identifier) @heritage.class
-  (class_heritage
-    ${JS_EXTENDS_ALT})) @heritage
-
 ; Write access: obj.field = value
 (assignment_expression
   left: (member_expression
@@ -763,13 +693,6 @@ export const PYTHON_QUERIES = `
   (assignment
     left: (identifier) @name)) @definition.variable
 
-; Heritage queries - Python class inheritance (bare, qualified attribute
-; models.Model, or subscript Generic[T]).
-(class_definition
-  name: (identifier) @heritage.class
-  superclasses: (argument_list
-    ${PYTHON_EXTENDS_ALT})) @heritage
-
 ; Write access: obj.field = value
 (assignment
   left: (attribute
@@ -833,19 +756,6 @@ export const JAVA_QUERIES = `
 (local_variable_declaration
   declarator: (variable_declarator
     name: (identifier) @name)) @definition.variable
-
-; Heritage - extends class (bare / generic Foo<T> / scoped pkg.Foo)
-(class_declaration name: (identifier) @heritage.class
-  (superclass ${JAVA_EXTENDS_ALT})) @heritage
-
-; Heritage - implements interfaces (bare / generic / scoped)
-(class_declaration name: (identifier) @heritage.class
-  (super_interfaces (type_list ${JAVA_IMPLEMENTS_ALT}))) @heritage.impl
-
-; Heritage - interface extends interface(s): interface IA extends IB, IC<T>
-; Without this, interface-to-interface relationships are never captured.
-(interface_declaration name: (identifier) @heritage.class
-  (extends_interfaces (type_list ${JAVA_IMPLEMENTS_ALT}))) @heritage.impl
 
 ; Write access: obj.field = value
 (assignment_expression
@@ -920,32 +830,14 @@ export const GO_QUERIES = `
   (field_declaration
     name: (field_identifier) @name) @definition.property)
 
-; Struct embedding (anonymous fields = inheritance). Named fields also match
-; the field_declaration pattern but are filtered by goHeritageConfig
-; .shouldSkipExtends. Embed type may be bare, qualified (pkg.Base) or generic.
-(type_declaration
-  (type_spec
-    name: (type_identifier) @heritage.class
-    type: (struct_type
-      (field_declaration_list
-        (field_declaration
-          type: ${GO_EMBED_ALT}))))) @definition.struct
-
-; Interface embedding: an embedded interface inside an interface_type
-; (type I interface { io.Reader; Other }) — type_elem holds the embed.
-(type_declaration
-  (type_spec
-    name: (type_identifier) @heritage.class
-    type: (interface_type
-      (type_elem ${GO_EMBED_ALT})))) @definition.interface
-
 ; Calls
 (call_expression function: (identifier) @call.name) @call
 (call_expression function: (selector_expression field: (field_identifier) @call.name)) @call
 
 ; Const/var declarations
-(const_declaration (const_spec name: (identifier) @name)) @definition.const
-(var_declaration (var_spec name: (identifier) @name)) @definition.variable
+(const_declaration (const_spec (identifier) @name)) @definition.const
+(var_declaration (var_spec (identifier) @name)) @definition.variable
+(var_declaration (var_spec_list (var_spec (identifier) @name))) @definition.variable
 
 ; Short variable declaration: x := 5
 (short_var_declaration left: (expression_list (identifier) @name)) @definition.variable
@@ -1113,11 +1005,18 @@ export const CPP_QUERIES = `
   declarator: (init_declarator
     declarator: (identifier) @name)) @definition.variable
 
-; Heritage (base class). Bracketed alternation matches the base node whether
-; or not it is preceded by an access_specifier (public/private/protected), and
-; covers bare / templated (Base<T>) / qualified (ns::Base) bases.
-(class_specifier name: (type_identifier) @heritage.class
-  (base_class_clause ${CPP_BASE_ALT})) @heritage
+; Structured bindings: auto [a, b] = makePair();  (one @name per bound identifier)
+(declaration
+  declarator: (init_declarator
+    declarator: (structured_binding_declarator
+      (identifier) @name))) @definition.variable
+
+; Structured bindings, reference form: auto& [x, y] = tup;
+(declaration
+  declarator: (init_declarator
+    declarator: (reference_declarator
+      (structured_binding_declarator
+        (identifier) @name)))) @definition.variable
 
 ; Write access: obj.field = value
 (assignment_expression
@@ -1181,26 +1080,6 @@ export const CSHARP_QUERIES = `
     (variable_declarator
       (identifier) @name))) @definition.variable
 
-; Heritage. Every base_list entry is captured as @heritage.extends regardless
-; of bare/generic/qualified/scoped/primary-ctor shape; EXTENDS-vs-IMPLEMENTS is
-; decided downstream by resolveExtendsType, so we do not pre-split here.
-(class_declaration name: (identifier) @heritage.class
-  (base_list ${CSHARP_BASE_ALT})) @heritage
-
-; record base_list: record R(...) : Base(args), IFoo
-(record_declaration name: (identifier) @heritage.class
-  (base_list ${CSHARP_BASE_ALT})) @heritage
-
-; struct base_list: struct S : IFoo, ns.IBar
-(struct_declaration name: (identifier) @heritage.class
-  (base_list ${CSHARP_BASE_ALT})) @heritage
-
-; Interface inheritance: interface IFoo : IBar / interface IFoo : IBar, IBaz
-; Without these patterns, interface-to-interface relationships are never
-; captured, so transitive "class X implements IBar" chains are broken.
-(interface_declaration name: (identifier) @heritage.class
-  (base_list ${CSHARP_BASE_ALT})) @heritage
-
 ; Write access: obj.field = value
 (assignment_expression
   left: (member_access_expression
@@ -1252,13 +1131,6 @@ export const RUST_QUERIES = `
 (field_declaration_list
   (field_declaration
     name: (field_identifier) @name) @definition.property)
-
-; Heritage (trait implementation). Both trait and type positions accept bare /
-; generic (Trait<T>) / scoped (ns::Trait) shapes; the normalizer reduces each
-; to the innermost simple name.
-(impl_item
-  trait: ${RUST_TRAIT_ALT}
-  type: ${RUST_CLASS_ALT}) @heritage
 
 ; Write access: obj.field = value
 (assignment_expression
@@ -1349,35 +1221,6 @@ export const PHP_QUERIES = `
   (const_element
     (name) @name)) @definition.const
 
-; ── Heritage: extends ────────────────────────────────────────────────────────
-(class_declaration
-  name: (name) @heritage.class
-  (base_clause
-    [(name) (qualified_name)] @heritage.extends)) @heritage
-
-; ── Heritage: implements ─────────────────────────────────────────────────────
-(class_declaration
-  name: (name) @heritage.class
-  (class_interface_clause
-    [(name) (qualified_name)] @heritage.implements)) @heritage.impl
-
-; ── Heritage: use trait (must capture enclosing class name) ──────────────────
-(class_declaration
-  name: (name) @heritage.class
-  body: (declaration_list
-    (use_declaration
-      [(name) (qualified_name)] @heritage.trait))) @heritage
-
-; ── Heritage: trait uses another trait (transitive trait composition) ────────
-; PHP allows a trait body to contain "use OtherTrait;". The trait-uses-trait
-; IMPLEMENTS edge is required by buildPhpMro to compute the full transitive
-; trait closure (depth 3+ chains).
-(trait_declaration
-  name: (name) @heritage.class
-  body: (declaration_list
-    (use_declaration
-      [(name) (qualified_name)] @heritage.trait))) @heritage
-
 ; PHP HTTP consumers: file_get_contents('/path'), curl_init('/path')
 (function_call_expression
   function: (name) @_php_http (#match? @_php_http "^(file_get_contents|curl_init)$")
@@ -1452,15 +1295,6 @@ export const RUBY_QUERIES = `
 (body_statement
   (identifier) @call.name @call)
 
-; ── Heritage: class < SuperClass ─────────────────────────────────────────────
-; Both the class name and the superclass accept a bare constant or a
-; scope_resolution (class Foo::Bar < Base::Sup); normalized to the trailing
-; constant downstream.
-(class
-  name: ${RUBY_CLASS_ALT}
-  superclass: (superclass
-    ${RUBY_SUPERCLASS_ALT})) @heritage
-
 ; Write access: obj.field = value (Ruby setter — syntactically a method call to field=)
 (assignment
   left: (call
@@ -1505,10 +1339,46 @@ export const KOTLIN_QUERIES = `
 (function_declaration
   (simple_identifier) @name) @definition.function
 
+; ── Secondary constructors (F49 sibling F48, issue #1919) ────────────────
+; "constructor(...) { }" inside a class body is a secondary_constructor with
+; no name child — its only identity token is the anonymous "constructor"
+; keyword, captured here as @name so the node is named "constructor"
+; (matching kotlinMethodConfig.extractName). Multiple secondary constructors
+; share that name but get distinct ids via the worker's #<arity> suffix.
+(secondary_constructor
+  "constructor" @name) @definition.constructor
+
 ; ── Properties ───────────────────────────────────────────────────────────
 (property_declaration
   (variable_declaration
     (simple_identifier) @name)) @definition.property
+
+; ── Destructuring declarations (F51, issue #1919) ────────────────────────
+; "val (a, b) = pair" binds several names through a multi_variable_declaration
+; (NOT a variable_declaration), which the property rule above misses. Emit one
+; @definition.property per bound name — the SAME label every other Kotlin val/var
+; gets (KOTLIN_QUERIES has no @definition.variable rule, so a single "val x"
+; is already a Property; matching that keeps destructured names consistent and
+; out of the block-scope local-symbol pruner that drops Variable/Const/Static).
+; The Kotlin "_" discard placeholder is filtered out here via (#not-eq? @name "_")
+; — these locals have no enclosing class, so the field-extractor enrichment path
+; never runs and cannot do the filtering itself. Each rule is a standalone
+; pattern (NOT a top-level [...] alternation), so the predicate is safe under
+; tree-sitter 0.21.1 (no sibling-branch drop). Loop destructuring
+; "for ((k, v) in m)" nests the SAME multi_variable_declaration directly under the
+; for_statement (no property_declaration wrapper); the scope-path loop binding only
+; handles the single variable_declaration form, so this rule does not double-emit.
+((property_declaration
+  (multi_variable_declaration
+    (variable_declaration
+      (simple_identifier) @name))) @definition.property
+  (#not-eq? @name "_"))
+
+((for_statement
+  (multi_variable_declaration
+    (variable_declaration
+      (simple_identifier) @name))) @definition.property
+  (#not-eq? @name "_"))
 
 ; Primary constructor val/var parameters (data class, value class, regular class)
 ; binding_pattern_kind contains "val" or "var" — without it, the param is not a property
@@ -1544,20 +1414,23 @@ export const KOTLIN_QUERIES = `
     (type_identifier) @call.name)) @call
 
 ; ── Infix function calls (e.g., a to b, x until y) ──────────────────────
+; tree-sitter-kotlin models infix_expression as three UNNAMED-FIELD children:
+; (operand) (operator) (operand) — all three are simple_identifier for
+; "a to b". The old rule "(infix_expression (simple_identifier) @call.name)"
+; matched EVERY simple_identifier child, so it captured the operands a/b as
+; spurious @call.name calls (F49, issue #1919). There is no operator: field to
+; anchor on, so anchor positionally: the operator is the middle child, flanked
+; by an operand on each side. End-anchored on both sides so only the lone
+; middle simple_identifier (the infix function) is captured; chained
+; "a to b to c" still matches each nested infix_expression's own operator.
 (infix_expression
-  (simple_identifier) @call.name) @call
-
-; ── Heritage: extends / implements via delegation_specifier ──────────────
-; A delegation_specifier wraps one of:
-;   user_type               class Foo : Bar          (interface impl / bare)
-;   constructor_invocation  class Foo : Bar()        (superclass ctor call)
-;   explicit_delegation     class Foo : Bar by baz   (interface delegation)
-; The normalizer descends into the wrapper to the inner user_type's name, so a
-; single alternation captures all three forms (including qualified pkg.Bar and
-; generic Gen<T>).
-(class_declaration
-  (type_identifier) @heritage.class
-  (delegation_specifier ${KOTLIN_EXTENDS_ALT})) @heritage
+  .
+  (_)
+  .
+  (simple_identifier) @call.name
+  .
+  (_)
+  .) @call
 
 ; Write access: obj.field = value
 (assignment
@@ -1604,6 +1477,13 @@ export const SWIFT_QUERIES = `
 ; Properties (stored and computed)
 (property_declaration (pattern (simple_identifier) @name)) @definition.property
 
+; Protocol property requirements (F75): "var title: String { get }" parses to a
+; protocol_property_declaration (NOT property_declaration). Its name is a
+; "name:" pattern field wrapping a value_binding_pattern + the bound
+; simple_identifier; match the inner identifier so the requirement is emitted
+; as a property symbol of the protocol.
+(protocol_property_declaration (pattern (simple_identifier) @name)) @definition.property
+
 ; Enum cases
 (enum_entry (simple_identifier) @name) @definition.property
 
@@ -1615,19 +1495,6 @@ export const SWIFT_QUERIES = `
 
 ; Calls - member/navigation calls (obj.method())
 (call_expression (navigation_expression (navigation_suffix (simple_identifier) @call.name))) @call
-
-; Heritage - class/struct/enum inheritance and protocol conformance
-(class_declaration name: (type_identifier) @heritage.class
-  (inheritance_specifier inherits_from: (user_type (type_identifier) @heritage.extends))) @heritage
-
-; Heritage - protocol inheritance
-(protocol_declaration name: (type_identifier) @heritage.class
-  (inheritance_specifier inherits_from: (user_type (type_identifier) @heritage.extends))) @heritage
-
-; Heritage - extension protocol conformance (e.g. extension Foo: SomeProtocol)
-; Extensions wrap the name in user_type unlike class/struct/enum declarations
-(class_declaration "extension" name: (user_type (type_identifier) @heritage.class)
-  (inheritance_specifier inherits_from: (user_type (type_identifier) @heritage.extends))) @heritage
 
 ; Write access: obj.field = value (tree-sitter-swift 0.7.1 uses named fields)
 (assignment
@@ -1663,11 +1530,35 @@ export const DART_QUERIES = `
 (enum_declaration
   name: (identifier) @name) @definition.enum
 
-; ── Type aliases ─────────────────────────────────────────────────────────────
-; Anchor "=" after the name to avoid capturing the RHS type
+; ── Type aliases — new-style (typedef Pred = bool Function(int);) ────────────
+; Anchor "=" after the name to avoid capturing the RHS type. The name is the
+; first type_identifier (the alias), the RHS function_type follows the "=".
 (type_alias
   (type_identifier) @name
   "=") @definition.type
+
+; ── Type aliases — old-style (typedef int Cmp(int a, int b);) ────────────────
+; The old-style function typedef has NO "=" — it parses as a type_alias whose
+; children are: return type_identifier, NAME type_identifier, formal_parameter_list.
+; Anchor @name as the type_identifier immediately before the parameter list so we
+; capture the alias name (Cmp), not the leading return type (int).
+(type_alias
+  (type_identifier) @name
+  .
+  (formal_parameter_list)) @definition.type
+
+; ── Type aliases — generic old-style (typedef int Cmp<T>(T a, T b);) ─────────
+; #1919 review CF2: a generic <T> inserts a type_parameters node between the
+; NAME and the parameter list, so the non-generic adjacency above misses it.
+; Standalone pattern (NOT an alternation arm) anchoring @name immediately before
+; type_parameters, which is immediately before the parameter list. The new-style
+; "=" rule above is unanchored and already covers generic new-style (Mapper<T>).
+(type_alias
+  (type_identifier) @name
+  .
+  (type_parameters)
+  .
+  (formal_parameter_list)) @definition.type
 
 ; ── Top-level functions (parent is program, not method_signature) ────────────
 (program
@@ -1707,6 +1598,19 @@ export const DART_QUERIES = `
     (initialized_identifier
       (identifier) @name))) @definition.property
 
+; ── static const / static final / const class fields ────────────────────────
+; A "static const a = 1;" / "static final String b = ..., c = ...;" field parses
+; with a static_final_declaration_list (NOT an initialized_identifier_list), so
+; the field rules above miss them. One @name per static_final_declaration, so a
+; multi-name declaration yields a Property per name. Anchored on declaration (not
+; class_body) so top-level final/const variables — whose
+; static_final_declaration_list is a direct child of program, not wrapped in a
+; declaration — never match here.
+(declaration
+  (static_final_declaration_list
+    (static_final_declaration
+      (identifier) @name))) @definition.property
+
 ; ── Getters ──────────────────────────────────────────────────────────────────
 (method_signature
   (getter_signature
@@ -1717,11 +1621,22 @@ export const DART_QUERIES = `
   (setter_signature
     name: (identifier) @name)) @definition.property
 
-; ── Top-level variable declarations (const maxSize = 100, final x = 5, var y = 0) ──
-(declaration
+; ── Top-level variable declarations ──────────────────────────────────────────
+; Top-level Dart variables are NOT wrapped in a declaration node (that wrapper
+; only occurs for class-body members). They sit as loose siblings under program:
+;   var name = 'x';   int x = 5;       → initialized_identifier_list
+;   final int count = 3;   const a = 1, b = 2;   → static_final_declaration_list
+; Anchor both rules under (program) so class-body fields (which reuse the same
+; inner node types) are never matched here. One @name per declared name so
+; multi-name forms (const a = 1, b = 2;) yield a Variable per name.
+(program
   (initialized_identifier_list
     (initialized_identifier
-      (identifier) @name))) @definition.variable
+      (identifier) @name)) @definition.variable)
+(program
+  (static_final_declaration_list
+    (static_final_declaration
+      (identifier) @name)) @definition.variable)
 
 ; ── Imports ──────────────────────────────────────────────────────────────────
 (import_or_export
@@ -1830,25 +1745,6 @@ export const DART_QUERIES = `
     (unconditional_assignable_selector
       (identifier) @assignment.property))
   right: (_)) @assignment
-
-; ── Heritage: extends ────────────────────────────────────────────────────────
-(class_definition
-  name: (identifier) @heritage.class
-  superclass: (superclass
-    (type_identifier) @heritage.extends)) @heritage
-
-; ── Heritage: implements ─────────────────────────────────────────────────────
-(class_definition
-  name: (identifier) @heritage.class
-  interfaces: (interfaces
-    (type_identifier) @heritage.implements)) @heritage.impl
-
-; ── Heritage: with (mixins) ──────────────────────────────────────────────────
-(class_definition
-  name: (identifier) @heritage.class
-  superclass: (superclass
-    (mixins
-      (type_identifier) @heritage.trait))) @heritage
 `;
 
 import { SupportedLanguages } from 'gitnexus-shared';

@@ -58,14 +58,21 @@ function parsePositiveIntegerOption(
 
 function isLocalProvider(
   provider: LLMProvider | undefined,
-): provider is 'cursor' | 'claude' | 'codex' {
-  return provider === 'cursor' || provider === 'claude' || provider === 'codex';
+): provider is 'cursor' | 'claude' | 'codex' | 'opencode' {
+  return (
+    provider === 'cursor' ||
+    provider === 'claude' ||
+    provider === 'codex' ||
+    provider === 'opencode'
+  );
 }
 
-function localModelConfigKey(provider: 'cursor' | 'claude' | 'codex') {
+function localModelConfigKey(provider: 'cursor' | 'claude' | 'codex' | 'opencode') {
   if (provider === 'cursor') return 'cursorModel';
   if (provider === 'claude') return 'claudeModel';
-  return 'codexModel';
+  if (provider === 'codex') return 'codexModel';
+  if (provider === 'opencode') return 'opencodeModel';
+  throw new Error(`Unsupported local provider: ${provider satisfies never}`);
 }
 
 /**
@@ -248,7 +255,7 @@ const wikiCommandImpl = async (inputPath?: string, options?: WikiCommandOptions)
       if (!llmConfig.apiKey && !isLocalProvider(llmConfig.provider)) {
         console.log('  Error: No LLM API key found.');
         console.log('  Set OPENAI_API_KEY or GITNEXUS_API_KEY environment variable,');
-        console.log('  or pass --api-key <key>, or use --provider cursor|claude|codex.\n');
+        console.log('  or pass --api-key <key>, or use --provider cursor|claude|codex|opencode.\n');
         process.exitCode = 1;
         return;
       }
@@ -256,16 +263,17 @@ const wikiCommandImpl = async (inputPath?: string, options?: WikiCommandOptions)
     } else {
       console.log("  No LLM configured. Let's set it up.\n");
       console.log(
-        '  Supports OpenAI, OpenRouter, Azure, any OpenAI-compatible API, Cursor CLI, Claude CLI, or Codex CLI.\n',
+        '  Supports OpenAI, OpenRouter, Azure, any OpenAI-compatible API, Cursor CLI, Claude CLI, Codex CLI, or OpenCode CLI.\n',
       );
 
       // Check if local agent CLIs are available.
       const hasCursor = detectCursorCLI();
       const hasClaude = detectLocalCLI('claude');
       const hasCodex = detectLocalCLI('codex');
+      const hasOpenCode = detectLocalCLI('opencode');
       const localChoices: Array<{
         choice: string;
-        provider: 'cursor' | 'claude' | 'codex';
+        provider: 'cursor' | 'claude' | 'codex' | 'opencode';
       }> = [];
 
       // Provider selection
@@ -297,6 +305,14 @@ const wikiCommandImpl = async (inputPath?: string, options?: WikiCommandOptions)
           provider: 'codex',
         });
         console.log(`  [${choice}] Codex CLI (local, uses your Codex login)`);
+      }
+      if (hasOpenCode) {
+        const choice = String(nextChoice++);
+        localChoices.push({
+          choice,
+          provider: 'opencode',
+        });
+        console.log(`  [${choice}] OpenCode CLI (local, uses your OpenCode login/config)`);
       }
       console.log('');
 

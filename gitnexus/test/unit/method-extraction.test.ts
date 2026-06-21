@@ -30,17 +30,19 @@ import PHP from 'tree-sitter-php';
 import Ruby from 'tree-sitter-ruby';
 import Rust from 'tree-sitter-rust';
 import { SupportedLanguages } from '../../src/config/supported-languages.js';
+import { requireVendoredGrammar } from '../../src/core/tree-sitter/vendored-grammars.js';
 
+// Vendored grammars — loaded from vendor/ by absolute path, never node_modules (#2111).
 let Kotlin: unknown;
 try {
-  Kotlin = require('tree-sitter-kotlin');
+  Kotlin = requireVendoredGrammar('tree-sitter-kotlin');
 } catch {
   // Kotlin grammar may not be installed
 }
 
 let Dart: unknown;
 try {
-  Dart = require('tree-sitter-dart');
+  Dart = requireVendoredGrammar('tree-sitter-dart');
   // Verify the grammar actually works with the installed tree-sitter version
   const testParser = new Parser();
   testParser.setLanguage(Dart as Parser.Language);
@@ -50,7 +52,7 @@ try {
 
 let Swift: unknown;
 try {
-  Swift = require('tree-sitter-swift');
+  Swift = requireVendoredGrammar('tree-sitter-swift');
   // Verify the grammar actually works with the installed tree-sitter version
   const testParser = new Parser();
   testParser.setLanguage(Swift as Parser.Language);
@@ -504,6 +506,54 @@ describeKotlin('Kotlin MethodExtractor', () => {
     });
   });
 
+  describe('default parameters', () => {
+    it('keeps all required parameters non-optional', () => {
+      const tree = parseKotlin(`
+        class Greeter {
+          fun greet(name: String, greeting: String) { }
+        }
+      `);
+      const classNode = tree.rootNode.child(0)!;
+      const result = extractor.extract(classNode, kotlinCtx);
+
+      expect(result!.methods[0].parameters.map((parameter) => parameter.isOptional)).toEqual([
+        false,
+        false,
+      ]);
+    });
+
+    it('marks parameters with default expressions as optional', () => {
+      const tree = parseKotlin(`
+        class Greeter {
+          fun greet(name: String, greeting: String = "Hello", punctuation: String = "!") { }
+        }
+      `);
+      const classNode = tree.rootNode.child(0)!;
+      const result = extractor.extract(classNode, kotlinCtx);
+
+      expect(result!.methods[0].parameters.map((parameter) => parameter.isOptional)).toEqual([
+        false,
+        true,
+        true,
+      ]);
+    });
+
+    it('preserves a required parameter after a defaulted parameter', () => {
+      const tree = parseKotlin(`
+        class Greeter {
+          fun greet(greeting: String = "Hello", name: String) { }
+        }
+      `);
+      const classNode = tree.rootNode.child(0)!;
+      const result = extractor.extract(classNode, kotlinCtx);
+
+      expect(result!.methods[0].parameters.map((parameter) => parameter.isOptional)).toEqual([
+        true,
+        false,
+      ]);
+    });
+  });
+
   describe('extension functions', () => {
     it('extracts receiverType for extension functions', () => {
       const tree = parseKotlin(`
@@ -677,6 +727,69 @@ describeKotlin('Kotlin MethodExtractor', () => {
       expect(result!.ownerName).toBe('Factory');
       expect(result!.methods[0].name).toBe('build');
       expect(result!.methods[0].isStatic).toBe(true);
+    });
+  });
+
+  // F48 (issue #1919): secondary constructors were dropped — methodNodeTypes
+  // listed only 'function_declaration'. They are now extracted as members
+  // named "constructor" with their function_value_parameters.
+  describe('secondary constructors (F48)', () => {
+    it('extracts a secondary constructor as a member named "constructor" with its params', () => {
+      const tree = parseKotlin(`
+        class C(val x: Int) {
+          constructor(a: Int, b: String) : this(a) { }
+        }
+      `);
+      const classNode = tree.rootNode.child(0)!;
+      const result = extractor.extract(classNode, kotlinCtx);
+
+      const ctor = result!.methods.find((m) => m.name === 'constructor');
+      expect(ctor).toBeDefined();
+      expect(ctor!.parameters.map((p) => p.name)).toEqual(['a', 'b']);
+      expect(ctor!.parameters[0].type).toBe('Int');
+    });
+
+    it('extracts multiple secondary constructors distinctly (by arity)', () => {
+      const tree = parseKotlin(`
+        class C(val x: Int) {
+          constructor(a: Int, b: String) : this(a) { }
+          constructor() { }
+        }
+      `);
+      const classNode = tree.rootNode.child(0)!;
+      const result = extractor.extract(classNode, kotlinCtx);
+
+      const ctors = result!.methods.filter((m) => m.name === 'constructor');
+      expect(ctors).toHaveLength(2);
+      const arities = ctors.map((c) => c.parameters.length).sort();
+      expect(arities).toEqual([0, 2]);
+    });
+
+    it('still extracts the secondary constructor when it delegates via : this(...)', () => {
+      const tree = parseKotlin(`
+        class C(val x: Int) {
+          constructor(a: Int) : this(a) { }
+        }
+      `);
+      const classNode = tree.rootNode.child(0)!;
+      const result = extractor.extract(classNode, kotlinCtx);
+
+      const ctor = result!.methods.find((m) => m.name === 'constructor');
+      expect(ctor).toBeDefined();
+      expect(ctor!.parameters.map((p) => p.name)).toEqual(['a']);
+    });
+
+    it('does not synthesize a constructor member for a class with only a primary constructor + methods', () => {
+      const tree = parseKotlin(`
+        class C(val x: Int) {
+          fun normal(): Int = x
+        }
+      `);
+      const classNode = tree.rootNode.child(0)!;
+      const result = extractor.extract(classNode, kotlinCtx);
+
+      expect(result!.methods.some((m) => m.name === 'constructor')).toBe(false);
+      expect(result!.methods.map((m) => m.name)).toEqual(['normal']);
     });
   });
 });
@@ -2286,7 +2399,7 @@ describe('C++ MethodExtractor', () => {
       expect(result!.methods[1].visibility).toBe('public');
     });
 
-    it('suppresses = delete special members from extraction', () => {
+    it('retains = delete special members and marks them unavailable', () => {
       const tree = parseCPP(`
         class NonCopyable {
         public:
@@ -2298,11 +2411,12 @@ describe('C++ MethodExtractor', () => {
       const classNode = tree.rootNode.child(0)!;
       const result = extractor.extract(classNode, cppCtx);
 
-      expect(result!.methods).toHaveLength(1);
-      expect(result!.methods[0].name).toBe('doWork');
+      expect(result!.methods).toHaveLength(3);
+      expect(result!.methods.filter((method) => method.isDeleted)).toHaveLength(2);
+      expect(result!.methods.find((method) => method.name === 'doWork')?.isDeleted).toBeUndefined();
     });
 
-    it('suppresses = default special members from extraction', () => {
+    it('retains = default special members as callable', () => {
       const tree = parseCPP(`
         class Widget {
         public:
@@ -2314,8 +2428,9 @@ describe('C++ MethodExtractor', () => {
       const classNode = tree.rootNode.child(0)!;
       const result = extractor.extract(classNode, cppCtx);
 
-      expect(result!.methods).toHaveLength(1);
-      expect(result!.methods[0].name).toBe('paint');
+      expect(result!.methods).toHaveLength(3);
+      expect(result!.methods.map((method) => method.name)).toEqual(['Widget', '~Widget', 'paint']);
+      expect(result!.methods.every((method) => method.isDeleted !== true)).toBe(true);
     });
 
     it('does not suppress = 0 (pure virtual) as deleted/defaulted', () => {
@@ -4485,6 +4600,74 @@ class Child {
       expect(result!.methods).toHaveLength(1);
       expect(result!.methods[0].name).toBe('toString');
       expect(result!.methods[0].isOverride).toBe(true);
+    });
+  });
+
+  // F79: a Swift `enum { ... }` parses to a class_declaration whose body is an
+  // `enum_class_body` (NOT class_body). With enum_class_body added to
+  // bodyNodeTypes the factory reaches enum methods via the proper body-node
+  // path instead of the generic findBodies fallback.
+  describe('enum members (F79)', () => {
+    it('extracts a method declared inside an enum', () => {
+      const tree = parseSwift(`
+enum E {
+    case a
+    func describe() -> String {
+        return "x"
+    }
+}
+      `);
+      const enumNode = tree.rootNode.child(0)!;
+      expect(enumNode.type).toBe('class_declaration');
+      expect(extractor.isTypeDeclaration(enumNode)).toBe(true);
+
+      const result = extractor.extract(enumNode, swiftCtx);
+      expect(result!.ownerName).toBe('E');
+      const describe = result!.methods.find((m) => m.name === 'describe');
+      expect(describe).toBeDefined();
+      expect(describe!.returnType).toBe('String');
+    });
+
+    it('extracts a static method inside an enum as static', () => {
+      const tree = parseSwift(`
+enum E {
+    case a
+    static func make() -> E {
+        return .a
+    }
+}
+      `);
+      const enumNode = tree.rootNode.child(0)!;
+      const result = extractor.extract(enumNode, swiftCtx);
+      const make = result!.methods.find((m) => m.name === 'make');
+      expect(make).toBeDefined();
+      expect(make!.isStatic).toBe(true);
+    });
+
+    it('extracts multiple enum methods, each exactly once', () => {
+      const tree = parseSwift(`
+enum E {
+    case a
+    func describe() -> String { return "x" }
+    static func make() -> E { return .a }
+}
+      `);
+      const enumNode = tree.rootNode.child(0)!;
+      const result = extractor.extract(enumNode, swiftCtx);
+      const names = result!.methods.map((m) => m.name).sort();
+      expect(names).toEqual(['describe', 'make']);
+    });
+
+    it('still extracts class methods exactly once (regression)', () => {
+      const tree = parseSwift(`
+class Compass {
+    func heading() -> String { return "n" }
+}
+      `);
+      const classNode = tree.rootNode.child(0)!;
+      const result = extractor.extract(classNode, swiftCtx);
+      const heading = result!.methods.filter((m) => m.name === 'heading');
+      expect(heading).toHaveLength(1);
     });
   });
 });

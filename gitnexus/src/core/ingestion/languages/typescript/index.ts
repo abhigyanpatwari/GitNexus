@@ -80,10 +80,9 @@
  *      identifiers are narrowed (`user instanceof User`). Member paths
  *      such as `user.address instanceof Address` remain unresolved.
  *
- * Shadow-harness corpus parity on `test/integration/resolvers/
- * typescript.test.ts` is the authoritative signal for which of these
- * matter in practice. The CI parity gate blocks any PR that regresses
- * either the legacy or registry-primary run.
+ * The `test/integration/resolvers/typescript.test.ts` resolver suite is
+ * the authoritative signal for which of these matter in practice; it runs
+ * in the standard CI test workflow, so a regression blocks the merge.
  */
 
 export { emitTsScopeCaptures } from './captures.js';

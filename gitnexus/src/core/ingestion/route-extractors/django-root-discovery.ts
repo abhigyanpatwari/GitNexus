@@ -17,11 +17,22 @@ export function djangoModuleToFilePaths(modulePath: string): string[] {
   return [`${base}.py`, `${base}/__init__.py`];
 }
 
+/** Reader callback resolving a repo-relative path to file content (or null). */
+type DjangoFileReader = (relativePath: string) => string | null;
+
 /**
- * Read a file, trying first from the given content map, then from disk.
+ * Read a file, trying first the in-memory content map, then the optional
+ * reader (typically a disk-backed reader on the main thread). The map keeps
+ * already-loaded content cheap; the reader lets discovery reach files that
+ * were never pre-loaded — critical because the relevant files (manage.py,
+ * settings, the root urls.py) can be scattered across parse chunks.
  */
-function tryReadFile(relativePath: string, contentMap: Map<string, string>): string | null {
-  return contentMap.get(relativePath) ?? null;
+function tryReadFile(
+  relativePath: string,
+  contentMap: Map<string, string>,
+  reader?: DjangoFileReader,
+): string | null {
+  return contentMap.get(relativePath) ?? reader?.(relativePath) ?? null;
 }
 
 /**
@@ -87,21 +98,27 @@ function resolveRelativeImport(currentModulePath: string, importPath: string): s
  * Discover the Django root URL file by following:
  *   manage.py → DJANGO_SETTINGS_MODULE → settings → ROOT_URLCONF → urls.py
  *
- * @param files Array of file paths and their contents in the current batch.
+ * @param files Array of file paths (content optional — when absent, `reader`
+ *   resolves it on demand).
  * @param contentMap Optional pre-built map of file path → content.
+ * @param reader Optional disk-backed reader for files not present in the map.
  * @returns The relative path to the root URL file, or null.
  */
 export function discoverDjangoRootUrl(
-  files: Array<{ path: string; content: string }>,
+  files: Array<{ path: string; content?: string }>,
   contentMap?: Map<string, string>,
+  reader?: DjangoFileReader,
 ): string | null {
   const map = contentMap ?? new Map<string, string>();
-  for (const f of files) map.set(f.path, f.content);
+  for (const f of files) if (f.content != null) map.set(f.path, f.content);
 
   const managePy = files.find((f) => f.path === 'manage.py' || f.path.endsWith('/manage.py'));
   if (!managePy) return null;
 
-  const settingsModule = extractDjangoSettingsModule(managePy.content);
+  const manageContent = managePy.content ?? tryReadFile(managePy.path, map, reader);
+  if (!manageContent) return null;
+
+  const settingsModule = extractDjangoSettingsModule(manageContent);
   if (!settingsModule) return null;
 
   // Find the settings file
@@ -109,7 +126,7 @@ export function discoverDjangoRootUrl(
   let settingsContent: string | null = null;
   let resolvedSettingsPath: string | null = null;
   for (const sp of settingsPaths) {
-    const c = tryReadFile(sp, map);
+    const c = tryReadFile(sp, map, reader);
     if (c !== null) {
       settingsContent = c;
       resolvedSettingsPath = settingsModule.replace(/\./g, '/');
@@ -146,7 +163,7 @@ export function discoverDjangoRootUrl(
       }
 
       for (const bp of basePaths) {
-        const bc = tryReadFile(bp, map);
+        const bc = tryReadFile(bp, map, reader);
         if (bc) {
           rootUrlConf = extractPythonStringAssignment(bc, 'ROOT_URLCONF');
           if (rootUrlConf) break;
@@ -161,7 +178,7 @@ export function discoverDjangoRootUrl(
   // Convert ROOT_URLCONF module path to file path
   const urlPaths = djangoModuleToFilePaths(rootUrlConf);
   for (const up of urlPaths) {
-    if (tryReadFile(up, map) !== null) return up;
+    if (tryReadFile(up, map, reader) !== null) return up;
   }
 
   // Also try relative to the settings module's directory
@@ -172,7 +189,7 @@ export function discoverDjangoRootUrl(
     );
     for (const up of urlPaths) {
       const tryPath = settingsDir + up;
-      if (tryReadFile(tryPath, map) !== null) return tryPath;
+      if (tryReadFile(tryPath, map, reader) !== null) return tryPath;
     }
   }
 

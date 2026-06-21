@@ -7,8 +7,11 @@ import {
   computeChunkHash,
   fileContentHash,
   loadParseCache,
+  loadParseCacheChunk,
+  persistParseCacheChunk,
   saveParseCache,
   pruneCache,
+  slimParseWorkerResultsForCache,
   type ParseCache,
 } from '../../src/storage/parse-cache.js';
 import type { ParseWorkerResult } from '../../src/core/ingestion/workers/parse-worker.js';
@@ -132,6 +135,18 @@ describe('pruneCache', () => {
     expect(pruneCache(cache, cache.usedKeys)).toBe(0);
     expect(cache.entries.size).toBe(2);
   });
+
+  it('drops onDiskKeys entries not in the used-set and counts them', () => {
+    const cache: ParseCache = {
+      version: PARSE_CACHE_VERSION,
+      entries: new Map<string, ParseWorkerResult[]>(),
+      usedKeys: new Set<string>(['disk-A']),
+      onDiskKeys: new Set<string>(['disk-A', 'disk-B', 'disk-C']),
+    };
+    const removed = pruneCache(cache, new Set(['disk-A']));
+    expect(removed).toBe(2);
+    expect([...(cache.onDiskKeys ?? [])].sort()).toEqual(['disk-A']);
+  });
 });
 
 describe('loadParseCache / saveParseCache (round-trip)', () => {
@@ -217,7 +232,7 @@ describe('loadParseCache / saveParseCache (round-trip)', () => {
     }
   });
 
-  it('skips corrupt or missing shards while loading the sharded cache', async () => {
+  it('skips corrupt or missing shards while loading the sharded cache index', async () => {
     const dir = await mkdtemp(path.join(tmpdir(), 'gnx-pc-'));
     try {
       const fs = await import('fs/promises');
@@ -242,8 +257,14 @@ describe('loadParseCache / saveParseCache (round-trip)', () => {
       await fs.writeFile(path.join(cacheDir, `${badKey}.json`), '{not-json', 'utf-8');
 
       const loaded = await loadParseCache(dir);
-      expect(loaded.entries.size).toBe(1);
-      expect(loaded.entries.get(goodKey)?.[0]?.fileCount).toBe(3);
+      expect(loaded.entries.size).toBe(0);
+      expect(loaded.onDiskKeys?.size).toBe(3);
+      const chunk = await loadParseCacheChunk(loaded, goodKey);
+      expect(chunk?.[0]?.fileCount).toBe(3);
+      // A shard listed in the index but absent on disk, and a corrupt-JSON
+      // shard, both resolve to undefined (graceful cache miss) — not a throw.
+      expect(await loadParseCacheChunk(loaded, missingKey)).toBeUndefined();
+      expect(await loadParseCacheChunk(loaded, badKey)).toBeUndefined();
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
@@ -290,7 +311,7 @@ describe('loadParseCache / saveParseCache (round-trip)', () => {
       expect(persisted).toContain('index.json');
       expect(persisted).toContain(`${chunkKey}.json`);
       const loaded = await loadParseCache(dir);
-      const reloaded = loaded.entries.get(chunkKey)?.[0];
+      const reloaded = (await loadParseCacheChunk(loaded, chunkKey))?.[0];
       expect(reloaded).toBeDefined();
       const scope = (reloaded as ParseWorkerResult).parsedFiles[0]?.scopes[0] as unknown as {
         typeBindings?: unknown;
@@ -327,8 +348,9 @@ describe('loadParseCache / saveParseCache (round-trip)', () => {
         'utf-8',
       );
       const loaded = await loadParseCache(dir);
-      expect(loaded.entries.size).toBe(1);
-      expect(loaded.entries.get(safeKey)?.[0]?.fileCount).toBe(9);
+      expect(loaded.onDiskKeys?.size).toBe(1);
+      const chunk = await loadParseCacheChunk(loaded, safeKey);
+      expect(chunk?.[0]?.fileCount).toBe(9);
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
@@ -356,7 +378,7 @@ describe('loadParseCache / saveParseCache (round-trip)', () => {
       expect(names).toContain('index.json');
       expect(names.filter((n) => n.endsWith('.json') && n !== 'index.json').length).toBe(3);
       const loaded = await loadParseCache(dir);
-      expect(loaded.entries.size).toBe(3);
+      expect(loaded.onDiskKeys?.size).toBe(3);
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
@@ -408,8 +430,9 @@ describe('loadParseCache / saveParseCache (round-trip)', () => {
       expect(names).not.toContain(`${k1}.json`);
       expect(names).toContain(`${k2}.json`);
       const loaded = await loadParseCache(dir);
-      expect(loaded.entries.size).toBe(1);
-      expect(loaded.entries.get(k2)?.[0]?.fileCount).toBe(99);
+      expect(loaded.onDiskKeys?.size).toBe(1);
+      const chunk = await loadParseCacheChunk(loaded, k2);
+      expect(chunk?.[0]?.fileCount).toBe(99);
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
@@ -435,8 +458,119 @@ describe('loadParseCache / saveParseCache (round-trip)', () => {
       });
       await expect(fs.access(path.join(dir, 'parse-cache.json'))).rejects.toThrow();
       const loaded = await loadParseCache(dir);
-      expect(loaded.entries.get(k)?.[0]?.fileCount).toBe(6);
-      expect(loaded.entries.has('oldLegacy')).toBe(false);
+      const chunk = await loadParseCacheChunk(loaded, k);
+      expect(chunk?.[0]?.fileCount).toBe(6);
+      expect(loaded.onDiskKeys?.has(k)).toBe(true);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('slimParseWorkerResultsForCache drops legacy DAG fields', () => {
+    const raw = minimalResult({
+      calls: [{ filePath: 'a.c', calleeName: 'f', line: 1 } as never],
+      assignments: [
+        { filePath: 'a.c', sourceId: 's', receiverText: 'x', propertyName: 'y', line: 1 },
+      ],
+      constructorBindings: [{ filePath: 'a.c', bindings: [] }],
+      parsedFiles: [
+        {
+          filePath: 'a.c',
+          moduleScope: 'm',
+          scopes: [],
+          parsedImports: [],
+          localDefs: [],
+          referenceSites: [],
+        },
+      ],
+    });
+    const slim = slimParseWorkerResultsForCache([raw])[0];
+    expect(slim.calls).toEqual([]);
+    expect(slim.assignments).toEqual([]);
+    expect(slim.constructorBindings).toEqual([]);
+    expect(slim.parsedFiles).toEqual([]);
+    expect(slim.fileCount).toBe(raw.fileCount);
+  });
+
+  it('slimParseWorkerResultsForCache preserves nodes (incremental exportedTypeMap depends on them)', () => {
+    const raw = minimalResult({
+      nodes: [
+        {
+          id: 'Function:a.ts:foo',
+          label: 'Function',
+          properties: { name: 'foo', filePath: 'a.ts', isExported: true },
+        },
+      ] as ParseWorkerResult['nodes'],
+    });
+    const slim = slimParseWorkerResultsForCache([raw])[0];
+    // `nodes` (and `symbols`) must survive slimming — on a warm cache hit they
+    // are what mergeChunkResults replays to rebuild the ExportedTypeMap.
+    expect(slim.nodes).toEqual(raw.nodes);
+    expect(slim.nodes).toHaveLength(1);
+  });
+
+  it('persistParseCacheChunk writes to disk without retaining in-memory entries', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'gnx-pc-'));
+    try {
+      const key = '7'.repeat(64);
+      const cache: ParseCache = {
+        version: PARSE_CACHE_VERSION,
+        entries: new Map(),
+        usedKeys: new Set(),
+        storagePath: dir,
+        onDiskKeys: new Set(),
+      };
+      await persistParseCacheChunk(cache, key, [minimalResult({ fileCount: 11 })]);
+      expect(cache.entries.has(key)).toBe(false);
+      expect(cache.onDiskKeys?.has(key)).toBe(true);
+      const chunk = await loadParseCacheChunk(cache, key);
+      expect(chunk?.[0]?.fileCount).toBe(11);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('saveParseCache excludes a usedKeys hash whose shard was never persisted (no phantom index key)', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'gnx-pc-'));
+    try {
+      const realKey = 'a'.repeat(64);
+      const phantomKey = 'b'.repeat(64); // in usedKeys but has no entry and no on-disk shard
+      const cache: ParseCache = {
+        version: PARSE_CACHE_VERSION,
+        entries: new Map([[realKey, [minimalResult({ fileCount: 3 })]]]),
+        usedKeys: new Set([realKey, phantomKey]),
+      };
+      await saveParseCache(dir, cache);
+      const loaded = await loadParseCache(dir);
+      expect(loaded.onDiskKeys?.has(realKey)).toBe(true);
+      // The phantom key was never written, so it must not appear in the index.
+      expect(loaded.onDiskKeys?.has(phantomKey)).toBe(false);
+      expect((await loadParseCacheChunk(loaded, realKey))?.[0]?.fileCount).toBe(3);
+      expect(await loadParseCacheChunk(loaded, phantomKey)).toBeUndefined();
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('saveParseCache copies a persisted-but-evicted shard (copyFile branch) and round-trips', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'gnx-pc-'));
+    try {
+      const key = 'c'.repeat(64);
+      const cache: ParseCache = {
+        version: PARSE_CACHE_VERSION,
+        entries: new Map(),
+        usedKeys: new Set([key]),
+        storagePath: dir,
+        onDiskKeys: new Set(),
+      };
+      // persist writes the shard to the live dir and evicts it from `entries`,
+      // so saveParseCache must hit the copyFile branch to carry it forward.
+      await persistParseCacheChunk(cache, key, [minimalResult({ fileCount: 42 })]);
+      expect(cache.entries.has(key)).toBe(false);
+      await saveParseCache(dir, cache);
+      const loaded = await loadParseCache(dir);
+      expect(loaded.onDiskKeys?.has(key)).toBe(true);
+      expect((await loadParseCacheChunk(loaded, key))?.[0]?.fileCount).toBe(42);
     } finally {
       await rm(dir, { recursive: true, force: true });
     }

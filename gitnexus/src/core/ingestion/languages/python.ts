@@ -5,9 +5,7 @@
  * LanguageProvider, following the Strategy pattern used by the pipeline.
  *
  * Key Python traits:
- *   - importSemantics: 'namespace' (Python uses namespace imports, not wildcard)
  *   - mroStrategy: 'c3' (Python C3 linearization for multiple inheritance)
- *   - namedBindingExtractor: present (from X import Y)
  */
 
 import type { NodeLabel } from 'gitnexus-shared';
@@ -20,7 +18,6 @@ import { typeConfig as pythonConfig } from '../type-extractors/python.js';
 import { pythonExportChecker } from '../export-detection.js';
 import { createImportResolver } from '../import-resolvers/resolver-factory.js';
 import { pythonImportConfig } from '../import-resolvers/configs/python.js';
-import { extractPythonNamedBindings } from '../named-bindings/python.js';
 import { PYTHON_QUERIES } from '../tree-sitter-queries.js';
 import { createFieldExtractor } from '../field-extractors/generic.js';
 import { pythonConfig as pythonFieldConfig } from '../field-extractors/configs/python.js';
@@ -30,7 +27,7 @@ import { createVariableExtractor } from '../variable-extractors/generic.js';
 import { pythonVariableConfig } from '../variable-extractors/configs/python.js';
 import { createCallExtractor } from '../call-extractors/generic.js';
 import { pythonCallConfig } from '../call-extractors/configs/python.js';
-import { createHeritageExtractor } from '../heritage-extractors/generic.js';
+import { createPythonCfgVisitor } from '../cfg/visitors/python.js';
 import type { CaptureMap } from '../language-provider.js';
 import type { SyntaxNode } from '../utils/ast-helpers.js';
 import {
@@ -106,16 +103,6 @@ function normalizePythonStringLiteral(text: string): string | undefined {
   return raw.replace(/\s+/g, ' ');
 }
 
-/** Detect Django URL config files by naming convention. */
-function isDjangoRouteFile(filePath: string): boolean {
-  return (
-    filePath.endsWith('.py') &&
-    (filePath.endsWith('/urls.py') ||
-      filePath.endsWith('/urls/__init__.py') ||
-      filePath === 'urls.py')
-  );
-}
-
 export const pythonProvider = defineLanguage({
   id: SupportedLanguages.Python,
   extensions: ['.py'],
@@ -138,19 +125,21 @@ export const pythonProvider = defineLanguage({
   typeConfig: pythonConfig,
   exportChecker: pythonExportChecker,
   importResolver: createImportResolver(pythonImportConfig),
-  namedBindingExtractor: extractPythonNamedBindings,
-  importSemantics: 'namespace',
   mroStrategy: 'c3',
   callExtractor: createCallExtractor(pythonCallConfig),
   fieldExtractor: createFieldExtractor(pythonFieldConfig),
   methodExtractor: createMethodExtractor(pythonMethodConfig),
   variableExtractor: createVariableExtractor(pythonVariableConfig),
   classExtractor: createClassExtractor(pythonClassConfig),
-  heritageExtractor: createHeritageExtractor(SupportedLanguages.Python),
   descriptionExtractor: pythonDescriptionExtractor,
   builtInNames: BUILT_INS,
-  isRouteFile: isDjangoRouteFile,
-  discoverRootRouteFile: (files, contentMap) => discoverDjangoRootUrl(files, contentMap),
+  // Django routing is whole-repo and cross-file (manage.py → settings →
+  // ROOT_URLCONF → root urls.py, then include()s across files), so it runs as
+  // a main-thread pass (see parse-impl's cross-file route extraction) rather
+  // than the worker's single-file `isRouteFile` path. `reader` lets discovery
+  // and extraction resolve any repo-relative file regardless of parse chunking.
+  discoverRootRouteFile: (files, contentMap, reader) =>
+    discoverDjangoRootUrl(files, contentMap, reader),
   extractRoutes: (tree, filePath, reader, parser) => {
     if (parser) {
       setDjangoParser(parser);
@@ -164,6 +153,7 @@ export const pythonProvider = defineLanguage({
   // full per-hook rationale and the canonical capture vocabulary in
   // ./python/query.ts (PYTHON_SCOPE_QUERY constant).
   emitScopeCaptures: emitPythonScopeCaptures,
+  cfgVisitor: createPythonCfgVisitor(),
   interpretImport: interpretPythonImport,
   interpretTypeBinding: interpretPythonTypeBinding,
   bindingScopeFor: pythonBindingScopeFor,

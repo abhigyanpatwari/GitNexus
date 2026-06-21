@@ -42,18 +42,11 @@ function findFunctionDeclarator(node: SyntaxNode): SyntaxNode | null {
   return null;
 }
 
-/**
- * Detect `= delete` and `= default` special member function declarations.
- * These are not callable methods and should be suppressed from extraction.
- * tree-sitter-cpp ^0.23.4 emits `delete_method_clause` / `default_method_clause`
- * as named children of the function_definition node.
- */
-function isDeletedOrDefaulted(node: SyntaxNode): boolean {
+/** Detect a C++ special member clause by its tree-sitter node type. */
+function hasSpecialMethodClause(node: SyntaxNode, clauseType: string): boolean {
   for (let i = 0; i < node.namedChildCount; i++) {
     const child = node.namedChild(i);
-    if (child?.type === 'delete_method_clause' || child?.type === 'default_method_clause') {
-      return true;
-    }
+    if (child?.type === clauseType) return true;
   }
   return false;
 }
@@ -66,10 +59,6 @@ function isDeletedOrDefaulted(node: SyntaxNode): boolean {
 function extractCppMethodName(node: SyntaxNode): string | undefined {
   const funcDecl = findFunctionDeclarator(node);
   if (!funcDecl) return undefined;
-
-  // Suppress `= delete` and `= default` special members — these are not callable
-  // methods and should not appear in HAS_METHOD edges.
-  if (isDeletedOrDefaulted(node)) return undefined;
 
   const nameNode = funcDecl.childForFieldName('declarator');
   if (!nameNode) return undefined;
@@ -386,6 +375,10 @@ export const cppMethodConfig: MethodExtractionConfig = {
       if (child?.type === 'type_qualifier' && child.text === 'const') return true;
     }
     return false;
+  },
+
+  isDeleted(node) {
+    return hasSpecialMethodClause(node, 'delete_method_clause');
   },
 };
 

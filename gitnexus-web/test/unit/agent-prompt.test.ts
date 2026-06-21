@@ -1,11 +1,25 @@
 import { describe, expect, it } from 'vitest';
 import { BASE_SYSTEM_PROMPT } from '../../src/core/llm/agent';
+import { buildDynamicSystemPrompt, type CodebaseContext } from '../../src/core/llm/context-builder';
 import {
   createGraphRAGTools,
   GRAPH_RAG_TOOL_NAMES,
   type GraphRAGBackend,
 } from '../../src/core/llm/tools';
 import { NODE_REF_REGEX } from '../../src/lib/grounding-patterns';
+
+const MINIMAL_CONTEXT: CodebaseContext = {
+  stats: {
+    projectName: 'proj',
+    fileCount: 0,
+    functionCount: 0,
+    classCount: 0,
+    interfaceCount: 0,
+    methodCount: 0,
+  },
+  hotspots: [],
+  folderTree: '',
+};
 
 /** Legacy or phantom tool names that must not appear in the system prompt. */
 const FORBIDDEN_TOOL_NAMES = [
@@ -78,5 +92,21 @@ describe('BASE_SYSTEM_PROMPT tool parity', () => {
     expect(BASE_SYSTEM_PROMPT).toContain('highlight_in_graph');
     // ...and must never instruct the model to call it (guards an affirmative reword).
     expect(BASE_SYSTEM_PROMPT).not.toMatch(/\b(?:use|call|invoke)\s+`?highlight_in_graph/i);
+  });
+});
+
+describe('buildDynamicSystemPrompt chat-only mode (#2178)', () => {
+  it('appends a chat-only note that overrides VISUAL GROUNDING when chatOnly', () => {
+    const prompt = buildDynamicSystemPrompt(BASE_SYSTEM_PROMPT, MINIMAL_CONTEXT, true);
+    expect(prompt).toContain('CHAT-ONLY MODE');
+    expect(prompt).toMatch(/node citations will NOT highlight/i);
+    expect(prompt).toContain('[[path:START-END]]');
+  });
+
+  it('leaves the prompt unchanged when chatOnly is false/omitted', () => {
+    const full = buildDynamicSystemPrompt(BASE_SYSTEM_PROMPT, MINIMAL_CONTEXT);
+    const explicitFalse = buildDynamicSystemPrompt(BASE_SYSTEM_PROMPT, MINIMAL_CONTEXT, false);
+    expect(full).toBe(explicitFalse);
+    expect(full).not.toContain('CHAT-ONLY MODE');
   });
 });

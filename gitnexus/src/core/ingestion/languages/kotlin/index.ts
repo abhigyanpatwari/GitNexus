@@ -1,4 +1,9 @@
 export { emitKotlinScopeCaptures } from './captures.js';
+export {
+  collectKotlinCaptureSideChannel,
+  applyKotlinCaptureSideChannel,
+  type KotlinCaptureSideChannel,
+} from './capture-side-channel.js';
 export { getKotlinCaptureCacheStats, resetKotlinCaptureCacheStats } from './cache-stats.js';
 export { interpretKotlinImport, interpretKotlinTypeBinding } from './interpret.js';
 export { kotlinArityCompatibility } from './arity.js';

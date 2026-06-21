@@ -189,7 +189,7 @@ function spawnMcpServer(): SpawnedServer {
 }
 
 describe('MCP server end-to-end startup', () => {
-  it('preserves JSON-RPC stdout discipline through initialize + tools/list', async () => {
+  it('preserves JSON-RPC stdout discipline through initialize + tools/list + tools/call', async () => {
     if (!fs.existsSync(DIST_CLI)) {
       throw new Error(
         `dist/cli/index.js missing — run \`npm run build\` first (or use \`npm run test:integration\` which builds via pretest:integration).`,
@@ -252,6 +252,53 @@ describe('MCP server end-to-end startup', () => {
       for (const t of expectedTools) {
         expect(toolNames).toContain(t);
       }
+
+      // tools/call list_repos — proves the paginated { repositories, pagination }
+      // shape survives the real request → backend.callTool → JSON.stringify →
+      // content[0].text serialization path (#2119), independent of repo count.
+      server.send({
+        jsonrpc: '2.0',
+        id: 3,
+        method: 'tools/call',
+        params: { name: 'list_repos', arguments: { limit: 5 } },
+      });
+      const callResponse = (await server.nextMessage()) as {
+        id: number;
+        result?: { content?: Array<{ type: string; text: string }>; isError?: boolean };
+      };
+      expect(callResponse.id).toBe(3);
+      expect(callResponse.result?.isError).not.toBe(true);
+      const callText = callResponse.result!.content![0].text;
+      // The server appends a non-JSON next-step hint after the JSON payload.
+      // Extract the leading JSON object with a string-aware brace scan so a repo
+      // path containing braces can never truncate the parse (more robust than
+      // splitting on the hint's separator).
+      const jsonStart = callText.indexOf('{');
+      let depth = 0;
+      let inStr = false;
+      let esc = false;
+      let jsonEnd = callText.length;
+      for (let i = jsonStart; i < callText.length; i++) {
+        const ch = callText[i];
+        if (esc) {
+          esc = false;
+        } else if (ch === '\\') {
+          esc = true;
+        } else if (ch === '"') {
+          inStr = !inStr;
+        } else if (!inStr && ch === '{') {
+          depth++;
+        } else if (!inStr && ch === '}' && --depth === 0) {
+          jsonEnd = i + 1;
+          break;
+        }
+      }
+      const payload = JSON.parse(callText.slice(jsonStart, jsonEnd));
+      expect(Array.isArray(payload.repositories)).toBe(true);
+      expect(typeof payload.pagination.total).toBe('number');
+      expect(payload.pagination.limit).toBe(5);
+      expect(payload.pagination.offset).toBe(0);
+      expect(payload.repositories.length).toBeLessThanOrEqual(5);
 
       // The headline assertion: every byte the server emitted on stdout
       // must reassemble into a valid JSON-RPC frame. Any leftover is a

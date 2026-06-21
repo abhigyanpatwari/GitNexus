@@ -17,7 +17,7 @@ import {
 
 describe('VALID_RELATION_TYPES', () => {
   it('contains all expected relation types', () => {
-    expect(VALID_RELATION_TYPES.size).toBe(15);
+    expect(VALID_RELATION_TYPES.size).toBe(16);
     for (const t of [
       'CALLS',
       'IMPORTS',
@@ -29,6 +29,9 @@ describe('VALID_RELATION_TYPES', () => {
       'OVERRIDES',
       'METHOD_IMPLEMENTS',
       'ACCESSES',
+      // USES is an emitted edge type (emit-references.ts) used in the default
+      // impact relTypes + context queries; added to the allowlist in F5.
+      'USES',
       'HANDLES_ROUTE',
       'FETCHES',
       'HANDLES_TOOL',
@@ -41,9 +44,39 @@ describe('VALID_RELATION_TYPES', () => {
 
   it('rejects invalid relation types', () => {
     expect(VALID_RELATION_TYPES.has('CONTAINS')).toBe(false);
-    expect(VALID_RELATION_TYPES.has('USES')).toBe(false);
     expect(VALID_RELATION_TYPES.has('calls')).toBe(false); // case-sensitive
     expect(VALID_RELATION_TYPES.has('DROP_TABLE')).toBe(false);
+  });
+
+  it('taint edge types stay OUT of the impact allow-list (#2083 M3 KTD9a)', () => {
+    // impact's BFS traverses symbol space; TAINTED/SANITIZES live in
+    // block-space (BasicBlock→BasicBlock) and would be unreachable noise
+    // there. The `explain` tool is the dedicated taint consumer. Pinned
+    // explicitly so a future "add all emitted types" sweep can't drag them in.
+    expect(VALID_RELATION_TYPES.has('TAINTED')).toBe(false);
+    expect(VALID_RELATION_TYPES.has('SANITIZES')).toBe(false);
+  });
+
+  it('TAINT_PATH stays OUT of the impact allow-list (#2084 M4 KTD9a)', () => {
+    // Cross-function TAINT_PATH (Function→Function) is the interprocedural
+    // analogue of TAINTED — surfaced ONLY via `explain` (its interprocedural
+    // findings), never impact()'s BFS. Pinned so a future allow-all sweep
+    // can't drag it in, and the set size stays fixed at 16.
+    expect(VALID_RELATION_TYPES.has('TAINT_PATH')).toBe(false);
+    expect(VALID_RELATION_TYPES.size).toBe(16);
+  });
+
+  it('CDG control-dependence edge types stay OUT of the impact allow-list (#2085 M5)', () => {
+    // CDG and POST_DOMINATE are BasicBlock→BasicBlock (block space), like the
+    // taint substrate — they must not enter impact()'s symbol-space BFS. Pinned
+    // explicitly (not just via the size==16 guard) so a future "add all emitted
+    // types" sweep can't drag them in, mirroring the TAINTED/TAINT_PATH pins.
+    expect(VALID_RELATION_TYPES.has('CDG')).toBe(false);
+    expect(VALID_RELATION_TYPES.has('POST_DOMINATE')).toBe(false);
+    // REACHING_DEF is the other BasicBlock→BasicBlock PDG edge (#2086 impact
+    // PDG mode traverses it directly, never through impact's symbol-space BFS).
+    // Pinned alongside CDG/POST_DOMINATE so an allow-all sweep can't drag it in.
+    expect(VALID_RELATION_TYPES.has('REACHING_DEF')).toBe(false);
   });
 });
 

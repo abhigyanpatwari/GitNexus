@@ -15,7 +15,7 @@ import type { LLMResponse, CallLLMOptions } from './llm-client.js';
 
 import { logger } from '../logger.js';
 
-export type LocalAgentProvider = 'claude' | 'codex';
+export type LocalAgentProvider = 'claude' | 'codex' | 'opencode';
 
 export interface LocalCLIConfig {
   model?: string;
@@ -26,6 +26,7 @@ export interface LocalCLIConfig {
 const COMMANDS: Record<LocalAgentProvider, string> = {
   claude: 'claude',
   codex: 'codex',
+  opencode: 'opencode',
 };
 
 interface LocalCommand {
@@ -162,6 +163,102 @@ export async function callCodexLLM(
   }
 }
 
+interface OpenCodeEvent {
+  type?: string;
+  message?: string;
+  error?: {
+    message?: string;
+    name?: string;
+    data?: {
+      message?: string;
+    };
+  };
+  part?: {
+    type?: string;
+    text?: string;
+  };
+}
+
+function parseOpenCodeEventStream(output: string): string {
+  const lines = output
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  const textParts: string[] = [];
+
+  for (const line of lines) {
+    let event: OpenCodeEvent;
+    try {
+      event = JSON.parse(line) as OpenCodeEvent;
+    } catch {
+      continue;
+    }
+
+    if (event.type === 'error') {
+      const message =
+        event.error?.data?.message ||
+        event.error?.name ||
+        event.message ||
+        event.part?.text ||
+        line;
+      throw new Error(`OpenCode CLI returned error event: ${message}`);
+    }
+
+    if (event.type === 'text' && typeof event.part?.text === 'string') {
+      textParts.push(event.part.text);
+    }
+  }
+
+  const content = textParts.join('').trim();
+  if (!content) {
+    throw new Error('OpenCode CLI returned no text output');
+  }
+  return content;
+}
+
+function buildChildEnv(provider: LocalAgentProvider): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = {
+    ...process.env,
+    CI: '1',
+  };
+
+  if (provider === 'opencode') {
+    delete env.OPENCODE_SERVER_PASSWORD;
+    delete env.OPENCODE_SERVER_USERNAME;
+  }
+
+  return env;
+}
+
+export async function callOpenCodeLLM(
+  prompt: string,
+  config: LocalCLIConfig,
+  systemPrompt?: string,
+  options?: CallLLMOptions,
+): Promise<LLMResponse> {
+  const commandInfo = getDetectedCommand('opencode');
+  if (!commandInfo) {
+    throw new Error(
+      'OpenCode CLI not found. Install OpenCode CLI and ensure `opencode` is on PATH.',
+    );
+  }
+
+  const workingDirectory = config.workingDirectory || process.cwd();
+  const fullPrompt = systemPrompt ? `${systemPrompt}\n\n---\n\n${prompt}` : prompt;
+  // OpenCode does not expose a Codex-style read-only sandbox / no-tools flag,
+  // so we rely on its non-interactive permission model and tolerate any
+  // non-JSON stdout warnings in the parser.
+  const args = ['run', '--format', 'json', '--dir', workingDirectory];
+
+  if (config.model) {
+    args.push('--model', config.model);
+  }
+
+  const response = await runLocalCLI('opencode', commandInfo, args, config, fullPrompt, options);
+  return { content: parseOpenCodeEventStream(response.content) };
+}
+
 function runLocalCLI(
   provider: LocalAgentProvider,
   commandInfo: LocalCommand,
@@ -191,10 +288,7 @@ function runLocalCLI(
       cwd: config.workingDirectory || process.cwd(),
       stdio: ['pipe', 'pipe', 'pipe'],
       windowsHide: true,
-      env: {
-        ...process.env,
-        CI: '1',
-      },
+      env: buildChildEnv(provider),
     });
 
     verboseLog(provider, 'Process spawned with PID:', child.pid);

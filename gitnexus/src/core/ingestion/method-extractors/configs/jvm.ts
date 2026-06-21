@@ -176,9 +176,40 @@ export const javaMethodConfig: MethodExtractionConfig = {
 
 const KOTLIN_VIS = new Set<MethodVisibility>(['public', 'private', 'protected', 'internal']);
 
+function kotlinParameterHasDefaultValue(param: SyntaxNode): boolean {
+  // tree-sitter-kotlin inlines `_function_value_parameter`, so `=` and its
+  // expression are siblings of `parameter`, not children of the parameter.
+  for (let sibling = param.nextSibling; sibling !== null; sibling = sibling.nextSibling) {
+    if (sibling.type === ',' || sibling.type === ')') return false;
+    if (sibling.type === '=') return true;
+  }
+  return false;
+}
+
+/**
+ * Member name for a Kotlin method node. A `secondary_constructor`
+ * (`constructor(...) { }`) has no name child — its only identity token is
+ * the anonymous `constructor` keyword — so it is named "constructor" (F48,
+ * issue #1919), matching the @name the KOTLIN_QUERIES structure rule captures
+ * off that keyword so method-extractor enrichment keys (`name:line`) align.
+ * Multiple secondary constructors collide on this name but are disambiguated
+ * downstream by the `#<arity>` ID suffix the worker appends to Constructors.
+ */
+function extractKotlinMethodName(node: SyntaxNode): string | undefined {
+  if (node.type === 'secondary_constructor') return 'constructor';
+  for (let i = 0; i < node.namedChildCount; i++) {
+    const child = node.namedChild(i);
+    if (child?.type === 'simple_identifier') return child.text;
+  }
+  return undefined;
+}
+
 function extractKotlinParameters(node: SyntaxNode): ParameterInfo[] {
   const params: ParameterInfo[] = [];
-  // Kotlin: function_declaration > function_value_parameters > parameter
+  // Kotlin: function_declaration / secondary_constructor >
+  // function_value_parameters > parameter. Both node types nest the
+  // parameter list the same way, so the same walk extracts a secondary
+  // constructor's parameters (F48).
   for (let i = 0; i < node.namedChildCount; i++) {
     const child = node.namedChild(i);
     if (child && child.type === 'function_value_parameters') {
@@ -199,7 +230,6 @@ function extractKotlinParameters(node: SyntaxNode): ParameterInfo[] {
         let paramName: string | undefined;
         let paramType: string | null = null;
         let paramRawType: string | null = null;
-        let hasDefault = false;
         const isVariadic = nextIsVariadic;
         nextIsVariadic = false;
 
@@ -218,21 +248,12 @@ function extractKotlinParameters(node: SyntaxNode): ParameterInfo[] {
           }
         }
 
-        // Check for default value: `= expr`
-        for (let k = 0; k < param.childCount; k++) {
-          const c = param.child(k);
-          if (c && c.text === '=') {
-            hasDefault = true;
-            break;
-          }
-        }
-
         if (paramName) {
           params.push({
             name: paramName,
             type: paramType,
             rawType: paramRawType,
-            isOptional: hasDefault,
+            isOptional: kotlinParameterHasDefaultValue(param),
             isVariadic: isVariadic,
           });
         }
@@ -271,16 +292,10 @@ function extractKotlinReturnType(node: SyntaxNode): string | undefined {
 export const kotlinMethodConfig: MethodExtractionConfig = {
   language: SupportedLanguages.Kotlin,
   typeDeclarationNodes: ['class_declaration', 'object_declaration', 'companion_object'],
-  methodNodeTypes: ['function_declaration'],
+  methodNodeTypes: ['function_declaration', 'secondary_constructor'],
   bodyNodeTypes: ['class_body'],
   staticOwnerTypes: new Set(['companion_object', 'object_declaration']),
-  extractName(node) {
-    for (let i = 0; i < node.namedChildCount; i++) {
-      const child = node.namedChild(i);
-      if (child?.type === 'simple_identifier') return child.text;
-    }
-    return undefined;
-  },
+  extractName: extractKotlinMethodName,
 
   extractReturnType: extractKotlinReturnType,
 

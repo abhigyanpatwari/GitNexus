@@ -49,8 +49,7 @@ describe('F71 — union declaration', () => {
 // These pin the tree-sitter CAPTURE shape only. End-to-end macro RESOLUTION
 // (the @reference.macro → MacroRegistry → USES-edge-to-a-Macro-node path, and
 // the guarantee that a macro never binds to a same-named function) is asserted
-// at the pipeline level — and under the legacy-vs-registry-primary scope-parity
-// gate — in `rust.test.ts` › "Rust macro resolution (issue #1934 F72)".
+// at the pipeline level in `rust.test.ts` › "Rust macro resolution (issue #1934 F72)".
 // ---------------------------------------------------------------------------
 
 describe('F72 — macro invocations (capture layer)', () => {

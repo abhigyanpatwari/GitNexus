@@ -29,6 +29,18 @@ export interface AIContextOptions {
   skipAgentsMd?: boolean;
   noStats?: boolean;
   skipSkills?: boolean;
+  /**
+   * Default branch used by the generated regression-compare example (#243).
+   * Resolved by the CLI (CLI flag > `.gitnexusrc` > auto-detect > "main"); a
+   * plain caller that omits it gets "main", preserving prior behavior.
+   */
+  defaultBranch?: string;
+  /**
+   * Whether the index was built with `--pdg` (#2086 M6). Gates the `pdg_query`
+   * line in the generated block — without the PDG layer the tool only returns a
+   * "no PDG layer" note, so advertising it on a non-`--pdg` index is noise.
+   */
+  hasPdg?: boolean;
 }
 
 const GITNEXUS_START_MARKER = '<!-- gitnexus:start -->';
@@ -89,18 +101,55 @@ async function findGroupsContainingRegistryName(registryName: string): Promise<s
   return hits;
 }
 
+/**
+ * Strip backticks from a branch name before it is embedded in a Markdown
+ * inline-code span (#1996 tri-review P1). validateBranchName already rejects
+ * backticks for CLI/config/auto-detect inputs; this is the last-line defense at
+ * the generation sink so the embedding is provably safe regardless of caller.
+ */
+export function markdownSafeBranch(branch: string): string {
+  return branch.replace(/`/g, '');
+}
+
+/** Options for {@link generateGitNexusContent} (collapsed from positional
+ *  params, #2188 review — six `undefined`s to reach `hasPdg` was the smell). */
+export interface GitNexusContentOptions {
+  generatedSkills?: GeneratedSkillInfo[];
+  groupNames?: string[];
+  noStats?: boolean;
+  skipSkills?: boolean;
+  /** Project-relative path to the runner `gitnexus analyze` drops next to the
+   *  index (#1945). Referenced by docs so a single CLI-neutral command resolves
+   *  the available runner (global `gitnexus` → `pnpm dlx` → `npx`) at call time. */
+  runnerPath?: string;
+  /** Default branch for the regression-compare example (#243). Configurable so
+   *  projects on `develop`/`master`/etc. don't get `base_ref: "main"` rewritten
+   *  back over their fix on every analyze. The value is embedded inside a
+   *  Markdown inline-code span: validateBranchName rejects backticks upstream,
+   *  and `markdownSafeBranch` strips any remaining backtick here as defense in
+   *  depth, so JSON.stringify's quote/escape handling is sufficient and the
+   *  branch cannot break out of the span (#1996 tri-review P1). */
+  defaultBranch?: string;
+  /** Whether the index was built with `--pdg` (#2086 M6). Gates the pdg_query
+   *  line below — false (default) omits it, so a non-pdg index doesn't advertise
+   *  a tool that only returns a "no PDG layer" note. */
+  hasPdg?: boolean;
+}
+
 export function generateGitNexusContent(
   projectName: string,
   stats: RepoStats,
-  generatedSkills?: GeneratedSkillInfo[],
-  groupNames?: string[],
-  noStats?: boolean,
-  skipSkills?: boolean,
-  // Project-relative path to the runner `gitnexus analyze` drops next to the
-  // index (#1945). Referenced by docs so a single CLI-neutral command resolves
-  // the available runner (global `gitnexus` → `pnpm dlx` → `npx`) at call time.
-  runnerPath: string = '.gitnexus/run.cjs',
+  opts: GitNexusContentOptions = {},
 ): string {
+  const {
+    generatedSkills,
+    groupNames,
+    noStats,
+    skipSkills,
+    runnerPath = '.gitnexus/run.cjs',
+    defaultBranch = 'main',
+    hasPdg = false,
+  } = opts;
   const generatedRows =
     generatedSkills && generatedSkills.length > 0
       ? generatedSkills
@@ -150,18 +199,27 @@ This project is indexed by GitNexus as **${projectName}**${noStats ? '' : ` (${s
 
 ## Always Do
 
-- **MUST run impact analysis before editing any symbol.** Before modifying a function, class, or method, run \`gitnexus_impact({target: "symbolName", direction: "upstream"})\` and report the blast radius (direct callers, affected processes, risk level) to the user.
-- **MUST run \`gitnexus_detect_changes()\` before committing** to verify your changes only affect expected symbols and execution flows.
+- **MUST run impact analysis before editing any symbol.** Before modifying a function, class, or method, run \`impact({target: "symbolName", direction: "upstream"})\` and report the blast radius (direct callers, affected processes, risk level) to the user.${
+    hasPdg
+      ? ` For unified PDG impact, add \`mode: "pdg"\` with optional \`line: <N>\` — it returns statement-level \`affectedStatements\` over CDG + REACHING_DEF and inter-procedural symbols in \`interproceduralByDepth\`/\`byDepth\`; no-layer/degraded PDG results are UNKNOWN-risk notes (\`--pdg\` layer).`
+      : ''
+  }
+- **MUST run \`detect_changes()\` before committing** to verify your changes only affect expected symbols and execution flows. For regression review, compare against the default branch: \`detect_changes({scope: "compare", base_ref: ${JSON.stringify(markdownSafeBranch(defaultBranch))}})\`.
 - **MUST warn the user** if impact analysis returns HIGH or CRITICAL risk before proceeding with edits.
-- When exploring unfamiliar code, use \`gitnexus_query({query: "concept"})\` to find execution flows instead of grepping. It returns process-grouped results ranked by relevance.
-- When you need full context on a specific symbol — callers, callees, which execution flows it participates in — use \`gitnexus_context({name: "symbolName"})\`.
+- When exploring unfamiliar code, use \`query({search_query: "concept"})\` to find execution flows instead of grepping. It returns process-grouped results ranked by relevance.
+- When you need full context on a specific symbol — callers, callees, which execution flows it participates in — use \`context({name: "symbolName"})\`.
+- For security review, \`explain({target: "fileOrSymbol"})\` lists taint findings (source→sink flows; needs \`analyze --pdg\`).${
+    hasPdg
+      ? `\n- For control/data dependence, \`pdg_query({mode: "controls", target: "fileOrSymbol"})\` answers "under what condition does X run?" (CDG, incl. guard clauses) and \`pdg_query({mode: "flows", target, variable})\` traces "where does variable Y flow?" (REACHING_DEF). \`--pdg\` layer.`
+      : ''
+  }
 
 ## Never Do
 
-- NEVER edit a function, class, or method without first running \`gitnexus_impact\` on it.
+- NEVER edit a function, class, or method without first running \`impact\` on it.
 - NEVER ignore HIGH or CRITICAL risk warnings from impact analysis.
-- NEVER rename symbols with find-and-replace — use \`gitnexus_rename\` which understands the call graph.
-- NEVER commit changes without running \`gitnexus_detect_changes()\` to check affected scope.
+- NEVER rename symbols with find-and-replace — use \`rename\` which understands the call graph.
+- NEVER commit changes without running \`detect_changes()\` to check affected scope.
 
 ## Resources
 
@@ -422,15 +480,15 @@ export async function generateAIContextFiles(
     logger.warn(`Could not write GitNexus runner to ${runnerPath}: ${String(err)}`);
   }
 
-  const content = generateGitNexusContent(
-    projectName,
-    stats,
+  const content = generateGitNexusContent(projectName, stats, {
     generatedSkills,
     groupNames,
-    options?.noStats,
-    options?.skipSkills,
+    noStats: options?.noStats,
+    skipSkills: options?.skipSkills,
     runnerPath,
-  );
+    defaultBranch: options?.defaultBranch ?? 'main',
+    hasPdg: options?.hasPdg ?? false,
+  });
   const createdFiles: string[] = [];
 
   if (!options?.skipAgentsMd) {
@@ -471,4 +529,57 @@ export async function generateAIContextFiles(
   }
 
   return { files: createdFiles };
+}
+
+/**
+ * Refresh only the `base_ref: "..."` value inside the GitNexus block of an
+ * already-generated AGENTS.md / CLAUDE.md, in place (#1996 tri-review P2).
+ *
+ * The `alreadyUpToDate` analyze fast path returns before the normal
+ * {@link generateAIContextFiles} call, so a changed `.gitnexusrc` defaultBranch
+ * (or `--default-branch`) would otherwise not take effect until the next
+ * re-index. This does a surgical line update that preserves the rest of the
+ * block — including community-skill rows written by a prior `--skills` run —
+ * rather than regenerating (which would drop those rows on a no-`--skills` run).
+ *
+ * Best-effort: missing files, a missing/blank block, or a block with no
+ * `base_ref` line (e.g. a user-trimmed keep block) are silently skipped. Writes
+ * only when the value actually changes, so a routine up-to-date run is a no-op.
+ */
+export async function refreshBaseRefLine(
+  repoPath: string,
+  defaultBranch: string,
+  options?: { skipAgentsMd?: boolean },
+): Promise<{ files: string[] }> {
+  if (options?.skipAgentsMd) return { files: [] };
+  const replacement = `base_ref: ${JSON.stringify(markdownSafeBranch(defaultBranch))}`;
+  const updated: string[] = [];
+  for (const name of ['AGENTS.md', 'CLAUDE.md']) {
+    const filePath = path.join(repoPath, name);
+    if (!(await fileExists(filePath))) continue;
+    let content: string;
+    try {
+      content = await fs.readFile(filePath, 'utf-8');
+    } catch {
+      continue;
+    }
+    const startIdx = findSectionMarkerIndex(content, GITNEXUS_START_MARKER);
+    if (startIdx === -1) continue;
+    const endIdx = findSectionMarkerIndex(content, GITNEXUS_END_MARKER, startIdx);
+    if (endIdx === -1 || endIdx <= startIdx) continue;
+    const blockEnd = endIdx + GITNEXUS_END_MARKER.length;
+    const block = content.substring(startIdx, blockEnd);
+    // Only the generated regression example carries a base_ref line, and only
+    // one per block; replace its quoted value while leaving the rest untouched.
+    const newBlock = block.replace(/base_ref: "(?:[^"\\]|\\.)*"/, replacement);
+    if (newBlock === block) continue; // no base_ref line present, or already current
+    const newContent = content.substring(0, startIdx) + newBlock + content.substring(blockEnd);
+    try {
+      await fs.writeFile(filePath, newContent, 'utf-8');
+      updated.push(name);
+    } catch {
+      // best-effort — never fail analyze over a context refresh
+    }
+  }
+  return { files: updated };
 }

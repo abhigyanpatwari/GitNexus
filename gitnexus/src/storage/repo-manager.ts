@@ -12,6 +12,17 @@ import path from 'path';
 import os from 'os';
 import { getInferredRepoName, resolveRepoIdentityRoot } from './git.js';
 import { logger } from '../core/logger.js';
+import {
+  branchSlug,
+  BRANCHES_DIR,
+  resolveBranchPlacement,
+  type BranchSummary,
+} from './branch-index.js';
+
+// Re-export the #2106 branch primitives (extracted to branch-index.ts, R10) so
+// existing `repo-manager` import sites and tests keep working unchanged.
+export { branchSlug, resolveBranchPlacement };
+export type { BranchSummary };
 
 /**
  * Normalise a repo path for registry comparison across platforms
@@ -52,6 +63,15 @@ export const canonicalizePath = (p: string): string => {
   }
 };
 
+/**
+ * Compare two already-canonicalised registry paths. Case-insensitive on Windows
+ * (its filesystem is), case-sensitive elsewhere. Both arguments must already be
+ * run through {@link canonicalizePath}; this is the single comparison the registry
+ * lookups/dedup/finalize checks all share so they answer identically.
+ */
+export const registryPathEquals = (a: string, b: string): boolean =>
+  process.platform === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b;
+
 export interface RepoMeta {
   repoPath: string;
   lastCommit: string;
@@ -87,24 +107,145 @@ export interface RepoMeta {
    */
   fileHashes?: Record<string, string>;
   /**
-   * Crash-recovery dirty flag. Written to meta.json BEFORE any
-   * destructive DB mutation in an incremental run; cleared on success
-   * by overwriting meta.json. If a run crashes between, the next run
-   * sees the flag and forces a full rebuild — the cheapest path back
-   * to a known-good index.
+   * Crash-recovery dirty flag — a generic marker written to meta.json
+   * BEFORE any destructive DB mutation by BOTH writeback branches
+   * (incremental since its introduction; full rebuilds over an existing
+   * meta since #2099 F1); cleared on success by overwriting meta.json.
+   * If a run crashes between, the next run sees the flag and forces a
+   * full rebuild — the cheapest path back to a known-good index.
    */
   incrementalInProgress?: {
-    /** When the incremental run started (epoch ms). */
+    /** When the run started (epoch ms). */
     startedAt: number;
-    /** Number of files in the writable set, for diagnostic logs. */
+    /** Number of files in the writable set, for diagnostic logs.
+     *  `0` on the full-rebuild path (no incremental write set exists). */
     toWriteCount: number;
+  };
+  /**
+   * Name of the git branch this index represents (#2106). Absent for the
+   * default/legacy single-branch case so the flat `meta.json` stays
+   * byte-identical to pre-multi-branch output. When present in the FLAT
+   * `meta.json`, it records which branch "owns" the flat slot (the first
+   * branch indexed); per-branch indexes under `branches/<slug>/` always carry
+   * their own `branch`.
+   */
+  branch?: string;
+  /**
+   * The parse-cache chunk keys this branch's index needs (#2106 R6). The
+   * parse-cache and durable parsedfile store live ONCE at the repo root and are
+   * shared across branches; recording each branch's live chunk keys lets the
+   * prune step union them so re-analyzing one branch doesn't evict another
+   * branch's still-live shards. Additive/optional; absent in legacy metas.
+   */
+  cacheKeys?: string[];
+  /**
+   * The effective `--pdg` configuration this index's DB rows were built
+   * under (#2099 F1). Presence ≡ the BasicBlock/CFG layer exists in the DB;
+   * ABSENT ≡ pdg-off — which covers every legacy meta, since `--pdg`
+   * shipped opt-in. Caps are recorded RESOLVED (defaults applied) so an
+   * explicit-default run compares equal to a default run. run-analyze
+   * compares this against the requested options and forces a full
+   * writeback on any mismatch — the incremental path only persists
+   * changed-file nodes and would otherwise silently drop (or strand) the
+   * CFG layer on a mode flip. Additive/optional, no
+   * INCREMENTAL_SCHEMA_VERSION bump (a bump would force a one-time full
+   * rebuild for every user). NOTE the removal mechanism is load-bearing:
+   * the end-of-run meta is a fresh object literal, NOT a spread of the
+   * prior meta, so omitting this field on a pdg-off run is what clears
+   * the stamp after an on→off flip.
+   */
+  pdg?: {
+    /** Worker-side per-function source-line cap, resolved (0 = unlimited). */
+    maxFunctionLines: number;
+    /** Emit-side per-function CFG edge cap, resolved (0 = unlimited). */
+    maxEdgesPerFunction: number;
+    /**
+     * Emit-side per-function REACHING_DEF edge cap, resolved (0 = unlimited;
+     * #2082 M2). ABSENT on an M1-era stamp — which is exactly what makes
+     * `pdgModeMismatch` trip on the first M2 run over an M1 index and force
+     * the full writeback that populates REACHING_DEF rows. Optional in the
+     * type for that reason; resolved (always present) on every M2+ write.
+     */
+    maxReachingDefEdgesPerFunction?: number;
+    /**
+     * Emit-side per-function CDG (control-dependence) edge cap, resolved
+     * (0 = unlimited; #2085 M5). ABSENT on any pre-M5 stamp — that absence is
+     * what trips `pdgModeMismatch` on the first CDG-aware run and forces the
+     * full writeback that materialises CDG edges. Optional for that upgrade
+     * reason; resolved (always present) on every M5+ write.
+     */
+    maxCdgEdgesPerFunction?: number;
+    /**
+     * Per-function taint findings cap, resolved (0 = unlimited; #2083 M3).
+     * ABSENT on an M1/M2-era stamp — like `maxReachingDefEdgesPerFunction`,
+     * that absence is what trips `pdgModeMismatch` on the first M3 run and
+     * forces the full writeback that populates TAINTED/SANITIZES rows.
+     */
+    maxTaintFindingsPerFunction?: number;
+    /** Per-finding taint hop cap, resolved (0 = unlimited; #2083 M3 KTD6 —
+     *  bounds the persisted hop-encoded `reason`). Optional for the same
+     *  M2-era-stamp upgrade reason as the findings cap. */
+    maxTaintHops?: number;
+    /**
+     * Per-run cross-function caps, resolved (0 = unlimited; #2084 M4 review
+     * P1-3). ABSENT on an M3-era stamp — that absence trips `pdgModeMismatch`
+     * on the first run that adds them and forces the full writeback that
+     * re-materialises TAINT_PATH within bounds. Optional for that upgrade
+     * reason; resolved (always present) on every post-fix write.
+     */
+    maxInterprocFindings?: number;
+    maxInterprocHops?: number;
+    maxInterprocEdges?: number;
+    /**
+     * Digest of the built-in taint model the persisted findings were
+     * produced under (#2083 M3 KTD7/R7). Any model-content change ships a
+     * new digest → mismatch → full writeback repopulates taint edges
+     * without `--force`. Optional: absent on pre-M3 stamps.
+     */
+    taintModelVersion?: string;
+    /**
+     * Identity of the reaching-definitions solver the persisted REACHING_DEF
+     * rows were produced under (#2201 review R3). The SSA-sparse rewrite computes
+     * FULL facts for deep-loop functions the old dense worklist truncated to
+     * empty (the blocks×64 ceiling no longer fires) — but an existing `--pdg`
+     * index built under the old solver carries those truncated rows. ABSENT on
+     * any pre-#2201 stamp, so that absence trips `pdgModeMismatch` on the first
+     * upgraded run and forces the full writeback that recomputes the now-fuller
+     * REACHING_DEF coverage without `--force`. Bump the tag on any future change
+     * that alters which facts the solver emits. Optional for that upgrade reason;
+     * resolved (always present) on every post-#2201 write.
+     */
+    reachingDefSolver?: string;
+    /**
+     * Whether this `--pdg` index recorded the FU-C `CALL_SUMMARY` return-value
+     * ascent layer (per-callee param→return summary edges). `true` on every
+     * FU-C+ (v4) write. ABSENT on any pre-FU-C (v3) `--pdg` stamp — that absence
+     * is what tells `impact`'s PDG mode the index predates CALL_SUMMARY, so it
+     * surfaces a "no return-value ascent (re-index for CALL_SUMMARY)" note while
+     * STILL serving the intra slice. CALL_SUMMARY is deliberately NOT a required
+     * sub-layer for `pdgLayerStatus` to report `'ready'`: a v3 index stays fully
+     * usable for the intra-procedural statement slice; only the ascent upgrade is
+     * unavailable. Optional for that back-compat reason.
+     */
+    hasCallSummary?: boolean;
   };
 }
 
 /**
  * Bumped whenever incremental-indexing invariants change incompatibly.
+ * v2: `BasicBlock.callees` column added (statement-precise inter-procedural
+ * reach substrate) — an index built before this lacks the column, so a full
+ * re-analyze is required rather than an incremental top-up.
+ * v3: `BasicBlock.calleeIds` column added (sound resolved-callee-id parallel
+ * to `callees`, #2227) — same contract: an index built before this lacks the
+ * column, so a full re-analyze is forced rather than an incremental top-up.
+ * v4: `CALL_SUMMARY` relation type added (per-callee RETURN-VALUE ASCENT
+ * summary edges, PDG FU-C). A pre-v4 `--pdg` index has NO CALL_SUMMARY edges,
+ * so the engine would silently UNDER-REPORT return-value ascent on an
+ * incremental top-up; force a full re-analyze instead (same contract as v2/v3).
+ * This single bump covers the whole FU-C re-index window (and the later FU-B-2).
  */
-export const INCREMENTAL_SCHEMA_VERSION = 1;
+export const INCREMENTAL_SCHEMA_VERSION = 4;
 
 export interface IndexedRepo {
   repoPath: string;
@@ -126,6 +267,18 @@ export interface RegistryEntry {
   /** See {@link RepoMeta.remoteUrl}. Mirrored from meta at register time. */
   remoteUrl?: string;
   stats?: RepoMeta['stats'];
+  /**
+   * Branch name owning the flat/primary index (#2106). Mirrors the flat
+   * `meta.branch`. Absent for legacy single-branch entries and non-git repos —
+   * additive and backward compatible.
+   */
+  branch?: string;
+  /**
+   * Non-primary branch indexes for this same path (#2106). Absent when only the
+   * primary branch is indexed, preserving the one-entry-per-path model and the
+   * legacy registry shape.
+   */
+  branches?: BranchSummary[];
 }
 
 const GITNEXUS_DIR = '.gitnexus';
@@ -141,14 +294,21 @@ export const getStoragePath = (repoPath: string): string => {
 };
 
 /**
- * Get paths to key storage files
+ * Get paths to key storage files.
+ *
+ * `storagePath` is ALWAYS the flat `<repo>/.gitnexus` — content-addressed
+ * caches (`parse-cache/`, `parsedfile-store/`) live there and are shared
+ * across branches (#2106 KTD7). When `branch` is provided, only `lbugPath` and
+ * `metaPath` are scoped under `branches/<slug>/`; the flat call (no `branch`)
+ * returns byte-identical paths to the pre-multi-branch behavior.
  */
-export const getStoragePaths = (repoPath: string) => {
+export const getStoragePaths = (repoPath: string, branch?: string) => {
   const storagePath = getStoragePath(repoPath);
+  const baseDir = branch ? path.join(storagePath, BRANCHES_DIR, branchSlug(branch)) : storagePath;
   return {
     storagePath,
-    lbugPath: path.join(storagePath, 'lbug'),
-    metaPath: path.join(storagePath, 'meta.json'),
+    lbugPath: path.join(baseDir, 'lbug'),
+    metaPath: path.join(baseDir, 'meta.json'),
   };
 };
 
@@ -399,7 +559,13 @@ export const readRegistry = async (): Promise<RegistryEntry[]> => {
 const writeRegistry = async (entries: RegistryEntry[]): Promise<void> => {
   const dir = getGlobalDir();
   await fs.mkdir(dir, { recursive: true });
-  await fs.writeFile(getGlobalRegistryPath(), JSON.stringify(entries, null, 2), 'utf-8');
+  // Atomic tmp+rename (mirrors saveMeta): a crash mid-write can never leave a
+  // truncated/half-written registry.json that the next load would treat as
+  // empty and silently drop every registered repo (#2106 R9).
+  const target = getGlobalRegistryPath();
+  const tmp = `${target}.tmp`;
+  await fs.writeFile(tmp, JSON.stringify(entries, null, 2), 'utf-8');
+  await fs.rename(tmp, target);
 };
 
 /**
@@ -432,6 +598,14 @@ export interface RegisterRepoOptions {
    * re-run the full pipeline.
    */
   allowDuplicateName?: boolean;
+  /**
+   * Non-primary branch this run indexed (#2106). When set, the branch's
+   * summary is upserted into the entry's `branches[]` and the primary
+   * top-level fields are left untouched. When `undefined`, this is a
+   * primary/flat run that refreshes the top-level fields (and preserves any
+   * existing branch summaries).
+   */
+  branch?: string;
 }
 
 /**
@@ -544,7 +718,7 @@ export const registerRepo = async (
     // to a stable key instead of throwing.
     const a = canonicalizePath(e.path);
     const b = canonicalInput;
-    return process.platform === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b;
+    return registryPathEquals(a, b);
   });
   const existing = existingIdx >= 0 ? entries[existingIdx] : null;
 
@@ -597,23 +771,85 @@ export const registerRepo = async (
     }
   }
 
-  const entry: RegistryEntry = {
-    name,
-    path: resolved,
-    storagePath,
-    indexedAt: meta.indexedAt,
-    lastCommit: meta.lastCommit,
-    remoteUrl: meta.remoteUrl,
-    stats: meta.stats,
-  };
+  // This run's branch summary (non-primary runs only); hoisted so the
+  // re-read-before-write merge below can re-apply it against a fresh snapshot.
+  const summary: BranchSummary | null = opts?.branch
+    ? {
+        branch: opts.branch,
+        indexedAt: meta.indexedAt,
+        lastCommit: meta.lastCommit,
+        stats: meta.stats,
+      }
+    : null;
 
-  if (existingIdx >= 0) {
-    entries[existingIdx] = entry;
+  let entry: RegistryEntry;
+  if (summary) {
+    // Non-primary branch run (#2106): keep the primary's top-level fields and
+    // upsert this branch into branches[]. One entry per path is preserved.
+    // When the registry entry is missing (lost/rebuilt registry.json), rebuild
+    // the primary top-level from the FLAT meta.json rather than this branch's
+    // meta, so `--branch <primary>` can still resolve (#2106 review).
+    const flatMeta = existing ? null : await loadMeta(storagePath);
+    const base: RegistryEntry = existing ?? {
+      name,
+      path: resolved,
+      storagePath,
+      indexedAt: flatMeta?.indexedAt ?? meta.indexedAt,
+      lastCommit: flatMeta?.lastCommit ?? meta.lastCommit,
+      remoteUrl: flatMeta?.remoteUrl ?? meta.remoteUrl,
+      stats: flatMeta?.stats ?? meta.stats,
+      ...(flatMeta?.branch ? { branch: flatMeta.branch } : {}),
+    };
+    const branches = (base.branches ?? []).filter((b) => b.branch !== summary.branch);
+    branches.push(summary);
+    entry = { ...base, name, branches };
   } else {
-    entries.push(entry);
+    // Primary/flat run: refresh top-level fields, preserve any branch summaries
+    // already recorded for this path so a primary re-analyze does not drop them.
+    entry = {
+      name,
+      path: resolved,
+      storagePath,
+      indexedAt: meta.indexedAt,
+      lastCommit: meta.lastCommit,
+      remoteUrl: meta.remoteUrl,
+      stats: meta.stats,
+      ...(meta.branch ? { branch: meta.branch } : {}),
+      ...(existing?.branches ? { branches: existing.branches } : {}),
+    };
   }
 
-  await writeRegistry(entries);
+  // Re-read immediately before writing to narrow the lost-update window (#2106
+  // R9): re-derive THIS run's delta against the FRESHEST snapshot so a
+  // concurrent change to the OTHER axis (a branch upsert vs a primary refresh)
+  // survives instead of being clobbered by a stale entry-time view.
+  const fresh = await readRegistry();
+  const freshIdx = fresh.findIndex((e) => {
+    const a = canonicalizePath(e.path);
+    return registryPathEquals(a, canonicalInput);
+  });
+  const freshExisting = freshIdx >= 0 ? fresh[freshIdx] : null;
+  let merged: RegistryEntry;
+  if (summary) {
+    // Branch run: keep the FRESH top-level + branches, just upsert our summary.
+    const base = freshExisting ?? entry;
+    const branches = (base.branches ?? []).filter((b) => b.branch !== summary.branch);
+    branches.push(summary);
+    merged = { ...base, name, branches };
+  } else {
+    // Primary run: apply our refreshed top-level, but defer to the FRESH
+    // branches[] (a concurrent branch upsert or `clean --branch` wins).
+    merged = { ...entry };
+    if (freshExisting?.branches) merged.branches = freshExisting.branches;
+    else delete merged.branches;
+  }
+  if (freshIdx >= 0) {
+    fresh[freshIdx] = merged;
+  } else {
+    fresh.push(merged);
+  }
+
+  await writeRegistry(fresh);
   return name;
 };
 
@@ -629,10 +865,33 @@ export const unregisterRepo = async (repoPath: string): Promise<void> => {
   // `resolveRegistryEntry` post-#1003 review.
   const resolved = canonicalizePath(repoPath);
   const entries = await readRegistry();
-  const matches = (a: string, b: string) =>
-    process.platform === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b;
-  const filtered = entries.filter((e) => !matches(canonicalizePath(e.path), resolved));
+  const filtered = entries.filter((e) => !registryPathEquals(canonicalizePath(e.path), resolved));
   await writeRegistry(filtered);
+};
+
+/**
+ * Remove a single non-primary branch's summary from a repo's registry entry
+ * (#2106 R7). Called by `gitnexus clean --branch`. Returns `true` when a
+ * matching `branches[]` summary was found and removed; `false` otherwise (so
+ * the CLI can report "no such indexed branch" without crashing). The top-level
+ * primary entry is left intact; an empty `branches[]` is dropped to keep the
+ * registry shape legacy-clean.
+ */
+export const removeBranchIndex = async (repoPath: string, branch: string): Promise<boolean> => {
+  const resolved = canonicalizePath(repoPath);
+  const entries = await readRegistry();
+  const idx = entries.findIndex((e) => registryPathEquals(canonicalizePath(e.path), resolved));
+  if (idx < 0) return false;
+  const entry = entries[idx];
+  const before = entry.branches?.length ?? 0;
+  if (!entry.branches || before === 0) return false;
+  const remaining = entry.branches.filter((b) => b.branch !== branch);
+  if (remaining.length === before) return false; // branch not recorded
+  if (remaining.length > 0) entry.branches = remaining;
+  else delete entry.branches;
+  entries[idx] = entry;
+  await writeRegistry(entries);
+  return true;
 };
 
 /**
@@ -723,6 +982,18 @@ export class AnalysisNotFinalizedError extends Error {
 }
 
 /**
+ * True when the global registry already contains an entry whose canonical path
+ * matches `repoPath`. Uses the same canonical, case-folded (Windows) comparison
+ * as {@link assertAnalysisFinalized} so "is it registered?" answers identically
+ * at the analyze fast-path gate and at the finalize assertion. Pure read.
+ */
+export const isRepoRegistered = async (repoPath: string): Promise<boolean> => {
+  const entries = await readRegistry();
+  const canonicalInput = canonicalizePath(path.resolve(repoPath));
+  return entries.some((e) => registryPathEquals(canonicalizePath(e.path), canonicalInput));
+};
+
+/**
  * Verify that a successful `analyze` call actually produced an indexed,
  * registered repo on disk. Two checks, both strictly required:
  *
@@ -746,14 +1017,7 @@ export const assertAnalysisFinalized = async (repoPath: string): Promise<void> =
     throw new AnalysisNotFinalizedError(resolved, storagePath, 'meta', getGlobalRegistryPath());
   }
 
-  const entries = await readRegistry();
-  const canonicalInput = canonicalizePath(resolved);
-  const isWin = process.platform === 'win32';
-  const found = entries.some((e) => {
-    const a = canonicalizePath(e.path);
-    return isWin ? a.toLowerCase() === canonicalInput.toLowerCase() : a === canonicalInput;
-  });
-  if (!found) {
+  if (!(await isRepoRegistered(resolved))) {
     throw new AnalysisNotFinalizedError(
       resolved,
       storagePath,
@@ -869,7 +1133,7 @@ export const resolveRegistryEntry = (entries: RegistryEntry[], target: string): 
   const pathMatch = entries.find((e) => {
     const a = canonicalizePath(e.path);
     const b = canonicalTarget;
-    return process.platform === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b;
+    return registryPathEquals(a, b);
   });
   if (pathMatch) return pathMatch;
 
@@ -900,7 +1164,14 @@ export const resolveRegistryEntry = (entries: RegistryEntry[], target: string): 
 
 /**
  * List all registered repos from the global registry.
- * Optionally validates that each entry's .gitnexus/ still exists.
+ *
+ * With `validate: true`, prunes only entries whose index is *provably* gone
+ * (fs.access on .gitnexus/meta.json fails with ENOENT or ENOTDIR) and persists
+ * the result. Entries that are merely "not provably absent" — any other
+ * fs.access failure (EIO/EAGAIN/EBUSY/EACCES, etc.) — are KEPT, so a transient
+ * I/O storm cannot wipe the registry. A kept entry is therefore "not confirmed
+ * present," not "confirmed present"; downstream DB opens are independently and
+ * lazily guarded.
  */
 export const listRegisteredRepos = async (opts?: {
   validate?: boolean;
@@ -914,8 +1185,30 @@ export const listRegisteredRepos = async (opts?: {
     try {
       await fs.access(path.join(entry.storagePath, 'meta.json'));
       valid.push(entry);
-    } catch {
-      // Index no longer exists — skip
+    } catch (err: any) {
+      // Prune ONLY when the index is provably gone: ENOENT (file absent) or
+      // ENOTDIR (a path component is no longer a directory). Every other
+      // fs.access failure keeps the entry, because the file may well still
+      // exist and we must not wipe the registry on a transient I/O storm
+      // (EIO/EAGAIN/EBUSY under swap pressure, NFS hiccups, etc.).
+      //
+      // Note: some kept codes are NOT necessarily transient — EACCES, for
+      // example, can be permanent (a chmod'd directory). Keeping is still the
+      // correct conservative choice: a stale-but-kept entry is harmless (DB
+      // opens are lazily guarded) and removable via `gitnexus remove`, whereas
+      // an over-eager prune destroys data. When in doubt, keep.
+      if (err?.code === 'ENOENT' || err?.code === 'ENOTDIR') {
+        // Index genuinely removed — safe to prune
+      } else {
+        // Not provably absent — keep entry to prevent mass registry wipe.
+        // Warn so an I/O storm becomes observable instead of silently
+        // keeping (or, pre-fix, silently wiping) entries.
+        logger.warn(
+          { name: entry.name, storagePath: entry.storagePath, code: err?.code },
+          'Keeping registry entry despite fs.access failure (not provably absent); not pruning to avoid mass registry wipe.',
+        );
+        valid.push(entry);
+      }
     }
   }
 
@@ -933,10 +1226,19 @@ export interface CLIConfig {
   apiKey?: string;
   model?: string;
   baseUrl?: string;
-  provider?: 'openai' | 'openrouter' | 'azure' | 'custom' | 'cursor' | 'claude' | 'codex';
+  provider?:
+    | 'openai'
+    | 'openrouter'
+    | 'azure'
+    | 'custom'
+    | 'cursor'
+    | 'claude'
+    | 'codex'
+    | 'opencode';
   cursorModel?: string;
   claudeModel?: string;
   codexModel?: string;
+  opencodeModel?: string;
   /** Azure api-version query param (e.g. '2024-10-21'). Only used when provider is 'azure'. */
   apiVersion?: string;
   /** Set true when the deployment is a reasoning model (o1, o3, o4-mini). Auto-detected for OpenAI; must be set for Azure deployments. */

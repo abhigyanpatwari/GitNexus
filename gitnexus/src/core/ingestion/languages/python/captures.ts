@@ -38,9 +38,10 @@ export function emitPythonScopeCaptures(
   _filePath: string,
   cachedTree?: unknown,
 ): readonly CaptureMatch[] {
-  // Skip the parse when the caller (parse phase's ASTCache) already
-  // produced a Tree for this source. Cache miss = re-parse, same as
-  // before. The cachedTree parameter is typed as `unknown` at the
+  // Skip the parse when the caller (the scope-resolution orchestrator's
+  // `treeCache`) already produced a Tree for this source — empty under
+  // worker-pool runs, so cache miss = re-parse. The cachedTree parameter
+  // is typed as `unknown` at the
   // contract layer (see `LanguageProvider.emitScopeCaptures`); cast
   // here at the use site.
   let tree = cachedTree as ReturnType<ReturnType<typeof getPythonParser>['parse']> | undefined;
@@ -178,13 +179,13 @@ export function emitPythonScopeCaptures(
  * (mirrors C#'s `synthesizeCsharpInheritanceReferences` / C++'s
  * `emitCppInheritanceCaptures` / TypeScript's `synthesizeTsInheritanceReferences`).
  * Without this, Python inheritance edges came only from the legacy
- * `@heritage.*` path, which is dropped for registry-primary languages in the
- * worker pipeline (issue #1951).
+ * heritage-capture leg (removed in #942), which is dropped for registry-primary
+ * languages in the worker pipeline (issue #1951).
  *
  * Scope matches the legacy Python heritage leg (config-driven since #1940):
  * every direct base in the `superclasses` `argument_list`, resolved to its bare
  * simple name. Three base shapes that the previous synth DROPPED — and so
- * silently omitted in production while the legacy `@heritage` leg captured them
+ * silently omitted in production while the legacy heritage leg captured them
  * — are now handled (#1951):
  *
  *   - `class C(pkg.Base)`     → `attribute`  (trailing `.attribute` id → `Base`)

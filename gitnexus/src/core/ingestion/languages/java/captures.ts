@@ -216,15 +216,112 @@ export function emitJavaScopeCaptures(
     out.push(grouped);
   }
 
-  return [...resolveVarTypeBindings(out), ...synthesizeJavaInheritanceReferences(tree.rootNode)];
+  return [
+    ...resolveVarTypeBindings(out),
+    ...synthesizeJavaInheritanceReferences(tree.rootNode),
+    ...synthesizeJavaExplicitConstructorReferences(tree.rootNode),
+  ];
+}
+
+/**
+ * Synthesize `@reference.call.constructor` captures for explicit constructor
+ * invocations — `super(...)` and `this(...)` (F38 #1928). tree-sitter-java
+ * models these as `explicit_constructor_invocation` nodes, which the scope
+ * query does not match, so the chained-constructor CALLS edges (subclass ctor →
+ * superclass ctor; ctor → sibling overload) were silently dropped.
+ *
+ * The grammar gives no constructor *name* at the call site (the child is a bare
+ * `(super)` / `(this)` token), so the target name is resolved structurally:
+ *   - `this(...)`  → the enclosing type's own simple name (constructor symbols
+ *                    are keyed by the declaring class name).
+ *   - `super(...)` → the enclosing class's superclass simple-name tail (reusing
+ *                    `javaBaseLookupNameNode` so qualified/generic supers reduce
+ *                    to the bare class name, matching the EXTENDS synth). An
+ *                    implicit `Object` super (no `superclass` field) has no
+ *                    in-graph symbol, so it is skipped rather than emitting a
+ *                    dangling reference.
+ * Arity is attached so overloaded constructors disambiguate downstream, mirroring
+ * the call-site arity synthesized for `new X(...)`.
+ */
+function synthesizeJavaExplicitConstructorReferences(root: SyntaxNode): CaptureMatch[] {
+  const out: CaptureMatch[] = [];
+  const stack: SyntaxNode[] = [root];
+  while (stack.length > 0) {
+    const node = stack.pop()!;
+    if (node.type === 'explicit_constructor_invocation') {
+      emitJavaExplicitConstructorRef(out, node);
+    }
+    for (let i = 0; i < node.namedChildCount; i++) {
+      const child = node.namedChild(i);
+      if (child !== null) stack.push(child);
+    }
+  }
+  return out;
+}
+
+const TYPE_DECL_NODE_TYPES = new Set([
+  'class_declaration',
+  'enum_declaration',
+  'record_declaration',
+]);
+
+function emitJavaExplicitConstructorRef(out: CaptureMatch[], node: SyntaxNode): void {
+  const ctor = node.childForFieldName('constructor');
+  if (ctor === null) return;
+
+  const enclosingType = findEnclosingTypeDeclaration(node);
+  if (enclosingType === null) return;
+
+  let targetNameNode: SyntaxNode | null = null;
+  if (ctor.type === 'this') {
+    targetNameNode = enclosingType.childForFieldName('name');
+  } else if (ctor.type === 'super') {
+    // Only class_declaration carries a `superclass` field; enum/record cannot
+    // declare an explicit superclass, so `super(...)` there has no resolvable
+    // target symbol.
+    const superclass = enclosingType.childForFieldName('superclass');
+    if (superclass === null) return;
+    for (const base of superclass.namedChildren) {
+      if (base === null) continue;
+      const nameNode = javaBaseLookupNameNode(base);
+      if (nameNode !== null) {
+        targetNameNode = nameNode;
+        break;
+      }
+    }
+  }
+  if (targetNameNode === null) return;
+
+  const argList = node.childForFieldName('arguments');
+  const args =
+    argList === null
+      ? []
+      : argList.namedChildren.filter(
+          (c) => c !== null && c.type !== 'block_comment' && c.type !== 'line_comment',
+        );
+
+  out.push({
+    '@reference.call.constructor': nodeToCapture('@reference.call.constructor', node),
+    '@reference.name': nodeToCapture('@reference.name', targetNameNode),
+    '@reference.arity': syntheticCapture('@reference.arity', node, String(args.length)),
+  });
+}
+
+function findEnclosingTypeDeclaration(node: SyntaxNode): SyntaxNode | null {
+  let cur: SyntaxNode | null = node.parent;
+  while (cur !== null) {
+    if (TYPE_DECL_NODE_TYPES.has(cur.type)) return cur;
+    cur = cur.parent;
+  }
+  return null;
 }
 
 /**
  * Synthesize `@reference.inherits` captures from Java class heritage so the
  * registry-primary scope-resolution path emits EXTENDS / IMPLEMENTS edges
  * (mirrors C++ `emitCppInheritanceCaptures`). Without this, Java inheritance
- * edges came only from the legacy `@heritage.*` path, which is dropped for
- * registry-primary languages in the worker pipeline (issue #1951).
+ * edges came only from the legacy heritage-capture leg (removed in #942), which
+ * is dropped for registry-primary languages in the worker pipeline (issue #1951).
  *
  * Scope covers `class_declaration` (`superclass` extends + `interfaces`
  * implements clauses) AND `interface_declaration` (`extends_interfaces` →
@@ -235,19 +332,19 @@ export function emitJavaScopeCaptures(
  * edge while the legacy leg emitted it — the exact =0/=N parity break #1951
  * targets. Enum/record heritage stays unemitted (no legacy arm). Generic
  * bases (`extends Box<T>`, `implements IFoo<T>`) ARE emitted here: the legacy
- * `@heritage` query was widened to capture the inner `type_identifier` of a
+ * heritage query was widened to capture the inner `type_identifier` of a
  * `generic_type` (tree-sitter-queries.ts), so both paths now agree on SIMPLE
  * (unqualified) generic bases — the more-correct behavior, consistent with
  * C#/Rust (#1951). Qualified bases (`a.b.Base`, `a.b.Box<T>`, `a.b.IFoo<T>`) are
  * ALSO now at parity (#1956 tri-review U2): the synth resolves them by their
- * `scoped_type_identifier` tail, and the legacy `@heritage` query was widened
+ * `scoped_type_identifier` tail, and the legacy heritage query was widened
  * with matching `scoped_type_identifier` arms (plain + generic-wrapped). The
  * EXTENDS-vs-IMPLEMENTS split is decided downstream from the resolved target's
  * symbol kind (`preEmitInheritanceEdges`): a superclass resolves to a class
  * (EXTENDS), an implemented interface resolves to an interface (IMPLEMENTS).
  * An `interface IA extends IB` base resolves to an Interface too, so it is
  * emitted as IMPLEMENTS — matching the legacy `interface_declaration` arm,
- * which tags the bases `@heritage.impl` (`kind: 'implements'`) and likewise
+ * which tagged the bases as implements (`kind: 'implements'`) and likewise
  * resolves them as interfaces. The synth therefore does not need to know the
  * declaration's own kind; it only emits inherits sites and lets the resolved
  * target decide the edge type.
@@ -279,7 +376,7 @@ function synthesizeJavaInheritanceReferences(root: SyntaxNode): CaptureMatch[] {
       // whose bases reuse `javaBaseLookupNameNode` (handles type_identifier /
       // generic_type / scoped_type_identifier). These resolve to Interface
       // targets, so `preEmitInheritanceEdges` emits them as IMPLEMENTS, at
-      // parity with the legacy `interface_declaration` @heritage.impl arm.
+      // parity with the legacy `interface_declaration` implements arm.
       for (let i = 0; i < node.namedChildCount; i++) {
         const extendsInterfaces = node.namedChild(i);
         if (extendsInterfaces === null || extendsInterfaces.type !== 'extends_interfaces') continue;

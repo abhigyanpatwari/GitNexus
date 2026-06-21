@@ -9,8 +9,12 @@
  *
  * Run: GITNEXUS_BENCH=1 npx vitest run test/integration/cpp-pipeline-benchmark.test.ts
  *
- * Runs build-free (workerPoolSize: 0 → no dist/parse-worker.js needed), so it
- * parses single-threaded; scales are kept modest accordingly.
+ * Parses with a single-worker pool (`workerPoolSize: 1`) — the sequential
+ * parser was removed, so the worker pool is the only parse path. NOTE: this
+ * needs the built `dist/parse-worker.js`; run `npm run build` first. The
+ * wall-clock numbers now include 1-worker IPC overhead, so re-baseline before
+ * trusting the timeRatio margin and confirm the node-ratio guard below still
+ * trips on an injected O(n²) regression. Scales are kept modest accordingly.
  *
  * IMPORTANT — this benchmark measures scaling in FILE COUNT, so per-file work
  * must stay constant as fileCount grows. Each translation unit therefore
@@ -123,7 +127,7 @@ async function runBenchmark(fileCount: number, budgetMs: number): Promise<BenchR
   try {
     const start = Date.now();
     const result = await Promise.race([
-      runPipelineFromRepo(dir, () => {}, { workerPoolSize: 0 }),
+      runPipelineFromRepo(dir, () => {}, { workerPoolSize: 1 }),
       new Promise<never>((_, reject) =>
         setTimeout(
           () => reject(new Error(`Pipeline exceeded ${budgetMs}ms at ${fileCount} files`)),

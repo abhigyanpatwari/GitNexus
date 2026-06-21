@@ -149,6 +149,14 @@ describe('CLI help surface', () => {
     expect(result.stdout).not.toContain('Target repository (omit if only one indexed)');
   });
 
+  it('setup help exposes selective coding-agent configuration', () => {
+    const result = runHelp('setup');
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain('gitnexus setup [options]');
+    expect(result.stdout).toContain('-c, --coding-agent <agents>');
+  });
+
   it('localizes every registered CLI command and option description in zh-CN help', () => {
     const zhHelpOutput = allHelpCommands
       .map((args) => {
@@ -218,6 +226,14 @@ describe('CLI help surface', () => {
     expect(result.stdout).toContain('--scope <scope>');
     expect(result.stdout).toContain('--base-ref <ref>');
     expect(result.stdout).toContain('--repo <name>');
+  });
+
+  it('query-family commands expose the --branch scope flag (#2106)', () => {
+    for (const cmd of ['query', 'context', 'impact', 'cypher', 'detect-changes']) {
+      const result = runHelp(cmd);
+      expect(result.status, cmd).toBe(0);
+      expect(result.stdout, cmd).toContain('--branch <name>');
+    }
   });
 
   it('wiki help shows provider, review, and verbose flags', () => {

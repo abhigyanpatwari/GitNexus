@@ -10,7 +10,7 @@ import {
 } from 'react';
 import type { GraphNode, NodeLabel, PipelineProgress } from 'gitnexus-shared';
 import type { KnowledgeGraph } from '../core/graph/types';
-import { createKnowledgeGraph } from '../core/graph/graph';
+import { buildGraphFromConnectResult } from '../lib/apply-connect-result';
 import type {
   LLMSettings,
   AgentStreamChunk,
@@ -43,7 +43,7 @@ import { ERROR_RESET_DELAY_MS } from '../config/ui-constants';
 import i18n from '../i18n';
 import { normalizePath } from '../lib/path-resolution';
 import { FILE_REF_REGEX, NODE_REF_REGEX } from '../lib/grounding-patterns';
-import { GraphStateProvider, useGraphState } from './app-state/graph';
+import { GraphStateProvider, useGraphState, type GraphMode } from './app-state/graph';
 
 export const AUTO_START_EMBEDDINGS_STORAGE_KEY = 'gitnexus.autoStartEmbeddings';
 
@@ -127,6 +127,13 @@ interface AppState {
   graphViewMode: 'force' | 'tree' | 'circles';
   setGraphViewMode: (mode: 'force' | 'tree' | 'circles') => void;
 
+  // Graph load mode (full download vs chat-only / skipped graph)
+  graphMode: GraphMode;
+  setGraphMode: (mode: GraphMode) => void;
+  // Connected repo's node count while in chat-only mode (null when unknown)
+  chatOnlyNodeCount: number | null;
+  setChatOnlyNodeCount: (count: number | null) => void;
+
   // Query state
   highlightedNodeIds: Set<string>;
   setHighlightedNodeIds: (ids: Set<string>) => void;
@@ -163,6 +170,8 @@ interface AppState {
   setAvailableRepos: (repos: BackendRepo[]) => void;
   switchRepo: (repoName: string) => Promise<void>;
   setCurrentRepo: (repoName: string) => void;
+  /** Download the full graph for the current repo after a chat-only connect (#2178). */
+  loadGraphAnyway: () => Promise<void>;
 
   // Worker API (shared across app)
   runQuery: (cypher: string) => Promise<any[]>;
@@ -195,7 +204,7 @@ interface AppState {
 
   // LLM methods
   refreshLLMSettings: () => void;
-  initializeAgent: (overrideProjectName?: string) => Promise<void>;
+  initializeAgent: (overrideProjectName?: string, opts?: { chatOnly?: boolean }) => Promise<void>;
   sendChatMessage: (message: string) => Promise<void>;
   stopChatResponse: () => void;
   clearChat: () => void;
@@ -238,6 +247,10 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
     setHighlightedNodeIds,
     graphViewMode,
     setGraphViewMode,
+    graphMode,
+    setGraphMode,
+    chatOnlyNodeCount,
+    setChatOnlyNodeCount,
   } = useGraphState();
 
   // Right Panel
@@ -591,13 +604,24 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
   const chatAbortRef = useRef<AbortController | null>(null);
   const chatStateRef = useRef<'idle' | 'streaming' | 'aborting'>('idle');
 
+  // Mirror graphMode into a ref so initializeAgent's deferred callers (lazy chat
+  // init, settings-driven re-init) can read the current mode without re-creating
+  // the callback; connect-flow callers pass an explicit chatOnly flag. (#2178)
+  const graphModeRef = useRef(graphMode);
+  useEffect(() => {
+    graphModeRef.current = graphMode;
+  }, [graphMode]);
+
   const initializeAgent = useCallback(
-    async (overrideProjectName?: string): Promise<void> => {
+    async (overrideProjectName?: string, opts?: { chatOnly?: boolean }): Promise<void> => {
       const config = getActiveProviderConfig();
       if (!config) {
         setAgentError('Please configure an LLM provider in settings');
         return;
       }
+      // Explicit flag from connect-flow callers (race-safe); otherwise fall back
+      // to live mode via the ref so deferred callers stay correct too. (#2178)
+      const chatOnly = opts?.chatOnly ?? graphModeRef.current === 'chatOnly';
 
       setIsAgentInitializing(true);
       setAgentError(null);
@@ -628,7 +652,7 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
             backendReadFile(filePath, { repo }).then((r) => r.content),
         };
 
-        agentRef.current = createGraphRAGAgent(config, backend, codebaseContext);
+        agentRef.current = createGraphRAGAgent(config, backend, codebaseContext, chatOnly);
         setIsAgentReady(true);
         setAgentError(null);
         if (import.meta.env.DEV) {
@@ -1153,9 +1177,15 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
       setCodeReferences([]);
       setCodePanelOpen(false);
       setCodeReferenceFocus(null);
+      // Reset graph-load mode up front so a FAILED switch can't leave the
+      // previous repo's stale chat-only overlay showing (#2178). The success
+      // path re-derives the mode from the connect result below.
+      setGraphMode('full');
+      setChatOnlyNodeCount(null);
 
       let connectedRepo: BackendRepo | undefined;
       let pNameStr = repoName || 'server-project';
+      let connectedChatOnly = false;
 
       try {
         const result: ConnectResult = await connectToServer(
@@ -1205,10 +1235,14 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
         connectedRepo = result.repoInfo;
         pNameStr = pName;
 
-        const newGraph = createKnowledgeGraph();
-        for (const node of result.nodes) newGraph.addNode(node);
-        for (const rel of result.relationships) newGraph.addRelationship(rel);
-        setGraph(newGraph);
+        // In chat-only mode the graph download was skipped; the shared builder
+        // keeps an empty (but non-null) graph so existing `graph?.` consumers
+        // stay happy, and reports the mode + node count in lockstep.
+        const built = buildGraphFromConnectResult(result);
+        setGraph(built.graph);
+        setGraphMode(built.graphMode);
+        setChatOnlyNodeCount(built.graphMode === 'chatOnly' ? built.nodeCount : null);
+        connectedChatOnly = built.graphMode === 'chatOnly';
       } catch (err: unknown) {
         console.error('Repo switch failed:', err);
         setProgress({
@@ -1227,9 +1261,13 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
       }
 
       if (pNameStr) {
-        // Persist the selected project in the URL so a refresh re-opens it
+        // Persist the selected project in the URL so a refresh re-opens it.
+        // Drop any `?skipGraph` override: a deliberate repo switch should make a
+        // fresh per-repo decision (auto-detect) on the next refresh rather than
+        // carry the previous repo's forced mode (#2178).
         const urlObj = new URL(window.location.href);
         urlObj.searchParams.set('project', pNameStr);
+        urlObj.searchParams.delete('skipGraph');
         window.history.replaceState(null, '', urlObj.toString());
       }
 
@@ -1241,7 +1279,7 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
       // Re-initialize agent with the new repo's graph context
       try {
         if (getActiveProviderConfig()) {
-          await initializeAgent(pNameStr);
+          await initializeAgent(pNameStr, { chatOnly: connectedChatOnly });
         }
         setViewMode('exploring');
         startEmbeddingsWithFallback();
@@ -1261,6 +1299,8 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
       setViewMode,
       setProjectName,
       setGraph,
+      setGraphMode,
+      setChatOnlyNodeCount,
       initializeAgent,
       startEmbeddingsWithFallback,
       setHighlightedNodeIds,
@@ -1275,6 +1315,102 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
       setChatMessages,
     ],
   );
+
+  // Load the full graph for the current repo after a chat-only connection.
+  // This is the escape hatch behind the chat-only empty state (#2178). It
+  // forces `skipGraph: false` so the size-based auto-detect cannot re-skip it.
+  // The override is session-scoped (deliberately NOT persisted to the URL): a
+  // persisted `?skipGraph=0` would leak onto a different repo via the other
+  // connect entry points and could silently re-trigger the hang on refresh.
+  const loadGraphInFlightRef = useRef(false);
+  // Cancels the in-flight load-anyway download; mountedRef gates post-await
+  // state writes so an unmount mid-download can't setState on a dead instance.
+  const loadGraphAbortRef = useRef<AbortController | null>(null);
+  const loadGraphMountedRef = useRef(true);
+  useEffect(() => {
+    return () => {
+      loadGraphMountedRef.current = false;
+      loadGraphAbortRef.current?.abort();
+    };
+  }, []);
+  const loadGraphAnyway = useCallback(async (): Promise<void> => {
+    if (!serverBaseUrl) return;
+    // Guard against a double-trigger (rapid double-click or a racing
+    // programmatic call) starting two concurrent full-graph downloads.
+    if (loadGraphInFlightRef.current) return;
+    loadGraphInFlightRef.current = true;
+    const repo = repoRef.current;
+    const controller = new AbortController();
+    loadGraphAbortRef.current = controller;
+
+    setProgress({
+      phase: 'extracting',
+      percent: 0,
+      message: i18n.t('common:progress.downloadingGraph'),
+      detail: i18n.t('common:progress.validating'),
+    });
+    setViewMode('loading');
+
+    try {
+      const result = await connectToServer(
+        serverBaseUrl,
+        (phase, downloaded, total) => {
+          if (phase === 'downloading') {
+            const pct = total ? Math.round((downloaded / total) * 90) + 5 : 50;
+            const mb = (downloaded / (1024 * 1024)).toFixed(1);
+            setProgress({
+              phase: 'extracting',
+              percent: pct,
+              message: i18n.t('common:progress.downloadingGraph'),
+              detail: i18n.t('common:progress.downloadedMb', { mb }),
+            });
+          }
+        },
+        controller.signal,
+        repo,
+        { awaitAnalysis: true, skipGraph: false },
+      );
+
+      // Bail if we unmounted, or if a concurrent switchRepo changed the active
+      // repo while this load was in flight (the late result must not clobber the
+      // new repo's state). Guard keyed on the ref — an abort surfaces as a
+      // BackendError, not a DOMException AbortError.
+      if (!loadGraphMountedRef.current || repoRef.current !== repo) return;
+
+      const built = buildGraphFromConnectResult(result);
+      setGraph(built.graph);
+      setGraphMode(built.graphMode);
+      // Full download succeeded → leave chat-only mode; clear the cached count.
+      setChatOnlyNodeCount(built.graphMode === 'chatOnly' ? built.nodeCount : null);
+
+      setProgress(null);
+      setViewMode('exploring');
+
+      // The graph is now loaded — re-init the agent so its system prompt drops
+      // the chat-only note (#2178, KTD2). Guarded on a configured provider, like
+      // switchRepo; runs inside the mounted/stale guard above.
+      if (getActiveProviderConfig()) {
+        await initializeAgent(repo, { chatOnly: false });
+      }
+    } catch (err) {
+      if (!loadGraphMountedRef.current || repoRef.current !== repo) return;
+      console.error('Load graph anyway failed:', err);
+      // Stay in chat-only mode (the overlay reappears) and return to the view.
+      setProgress(null);
+      setViewMode('exploring');
+    } finally {
+      if (loadGraphAbortRef.current === controller) loadGraphAbortRef.current = null;
+      loadGraphInFlightRef.current = false;
+    }
+  }, [
+    serverBaseUrl,
+    setProgress,
+    setViewMode,
+    setGraph,
+    setGraphMode,
+    setChatOnlyNodeCount,
+    initializeAgent,
+  ]);
 
   const removeCodeReference = useCallback(
     (id: string) => {
@@ -1334,6 +1470,10 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
     setDepthFilter,
     graphViewMode,
     setGraphViewMode,
+    graphMode,
+    setGraphMode,
+    chatOnlyNodeCount,
+    setChatOnlyNodeCount,
     highlightedNodeIds,
     setHighlightedNodeIds,
     aiCitationHighlightedNodeIds,
@@ -1362,6 +1502,7 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
     setAvailableRepos,
     switchRepo,
     setCurrentRepo,
+    loadGraphAnyway,
     runQuery,
     isDatabaseReady,
     // Embedding state and methods

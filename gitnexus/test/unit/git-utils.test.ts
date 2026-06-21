@@ -146,6 +146,20 @@ describe('getGitRoot', () => {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
   });
+
+  it('preserves a trailing-space repository directory name (#2190)', async () => {
+    const { getGitRoot } = await import('../../src/storage/git.js');
+    const parentDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-space-root-'));
+    const repoDir = path.join(parentDir, 'repo ');
+    try {
+      fs.mkdirSync(repoDir);
+      execSync('git init -q', { cwd: repoDir });
+
+      expect(getGitRoot(repoDir)).toBe(path.resolve(repoDir));
+    } finally {
+      fs.rmSync(parentDir, { recursive: true, force: true });
+    }
+  });
 });
 
 // ─── getRemoteUrl ─────────────────────────────────────────────────────────

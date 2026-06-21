@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "criterion": {
+    "name": "Shape",
+    "filePath": "src/nobody.ts",
+    "direction": "downstream"
+  },
+  "locus": "n/a",
+  "pdgScoring": "exclude",
+  "provenance": "manual",
+  "analyzerVersion": "1.6.7",
+  "intra_AIS": [],
+  "inter_AIS": [],
+  "rationale": "This is the KTD6 no-body case. `Shape` (an interface), `ShapeName` (a type alias), and `AbstractShape.perimeter` (an abstract method) have no CFG body, so they emit ZERO PDG (CDG/REACHING_DEF) edges. Their `intra_AIS` is genuinely undefined under PDG, not empty-because-safe — a confident `impactedCount:0/LOW` would be the exact false-safe the impact tool exists to prevent (#2129/#1858 lineage). The case is tagged `pdgScoring: \"exclude\"` and `locus: \"n/a\"` so the U7 harness drops it from PDG precision/recall denominators (and logs the exclusion, never scoring it 0/0). It exists to assert the exclusion path is honored — it is the only fixture the smoke test exempts from the 'criterion produces CDG+REACHING_DEF edges' requirement. intra_AIS and inter_AIS are both empty by definition (no body)."
+}

@@ -339,7 +339,11 @@ function extractProcessNames(impact: unknown): string[] {
   return o.affected_processes.map((p) => String(p.name ?? '')).filter(Boolean);
 }
 
-function mergeRisk(localRisk: string, cross: CrossRepoImpact[]): string {
+// Exported so the U4 PDG-result interchangeability contract (KTD8) can assert
+// permanently that a PDG `risk:'UNKNOWN'` never coalesces to a confident `LOW`.
+// No behavior change — `'UNKNOWN'` was already handled correctly at the
+// `(localRisk === 'LOW' || localRisk === 'UNKNOWN')` branch below.
+export function mergeRisk(localRisk: string, cross: CrossRepoImpact[]): string {
   const highConf = cross.some((c) => c.contract.confidence >= 0.85);
   if (localRisk === 'CRITICAL') return 'CRITICAL';
   if (cross.length >= 3) return 'CRITICAL';

@@ -1,8 +1,8 @@
 /**
  * Rust scope-resolution integration tests (RFC #909 Ring 3).
  *
- * These tests run with REGISTRY_PRIMARY_RUST=true to exercise the
- * scope-based resolution path. They validate the core deliverables:
+ * These tests exercise the scope-based resolution path. They validate
+ * the core deliverables:
  * impl blocks, use statements, receiver binding, module resolution.
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
@@ -23,18 +23,6 @@ function writeFixtureRepo(root: string, files: Record<string, string>): void {
     fs.writeFileSync(abs, content, 'utf8');
   }
 }
-
-let savedEnv: string | undefined;
-
-beforeAll(() => {
-  savedEnv = process.env['REGISTRY_PRIMARY_RUST'];
-  process.env['REGISTRY_PRIMARY_RUST'] = 'true';
-});
-
-afterAll(() => {
-  if (savedEnv === undefined) delete process.env['REGISTRY_PRIMARY_RUST'];
-  else process.env['REGISTRY_PRIMARY_RUST'] = savedEnv;
-});
 
 // ---------------------------------------------------------------------------
 // 1. Impl blocks: methods classified as Method, owned by struct

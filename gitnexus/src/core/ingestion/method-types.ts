@@ -33,6 +33,7 @@ export interface MethodInfo {
   isAsync?: boolean;
   isPartial?: boolean;
   isConst?: boolean;
+  isDeleted?: boolean;
   annotations: string[];
   sourceFile: string;
   line: number;
@@ -84,6 +85,7 @@ export interface MethodExtractionConfig {
   isAsync?: (node: SyntaxNode) => boolean;
   isPartial?: (node: SyntaxNode) => boolean;
   isConst?: (node: SyntaxNode) => boolean;
+  isDeleted?: (node: SyntaxNode) => boolean;
   /** Owner node types where member functions are effectively static (e.g.
    *  Ruby singleton_class, Kotlin companion_object / object_declaration).
    *  When the ownerNode matches one of these types, isStatic is forced true. */

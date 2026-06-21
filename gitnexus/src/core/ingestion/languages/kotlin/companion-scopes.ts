@@ -55,6 +55,17 @@ export function isCompanionScope(filePath: string, scopeId: ScopeId): boolean {
   return companionScopesByFile.get(filePath)?.has(scopeId) ?? false;
 }
 
+/**
+ * Snapshot the companion-object scope ids recorded for `filePath` as a plain
+ * array (for the worker→main capture side-channel, #1983). Returns an empty
+ * array when the file recorded no companion scopes. See
+ * `capture-side-channel.ts`.
+ */
+export function getCompanionScopesForFile(filePath: string): ScopeId[] {
+  const scopes = companionScopesByFile.get(filePath);
+  return scopes === undefined ? [] : [...scopes];
+}
+
 /** Clear all tracked companion scopes (for testing). */
 export function clearCompanionScopes(): void {
   companionScopesByFile.clear();

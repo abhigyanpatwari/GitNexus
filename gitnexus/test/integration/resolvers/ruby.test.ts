@@ -3,10 +3,9 @@
  *       calls, member calls, ambiguous disambiguation, local shadow,
  *       constructor-inferred type resolution
  */
-import { describe, expect, beforeAll } from 'vitest';
+import { describe, it, expect, beforeAll } from 'vitest';
 import path from 'path';
 import {
-  createResolverParityIt,
   FIXTURES,
   CROSS_FILE_FIXTURES,
   getRelationships,
@@ -17,8 +16,6 @@ import {
   runPipelineFromRepo,
   type PipelineResult,
 } from './helpers.js';
-
-const pit = createResolverParityIt('ruby');
 
 // ---------------------------------------------------------------------------
 // Heritage: require_relative imports + include heritage + attr_* properties + calls
@@ -33,19 +30,20 @@ describe('Ruby require_relative, heritage & property resolution', () => {
 
   // --- Node detection ---
 
-  pit('detects 3 classes', () => {
+  it('detects 3 classes', () => {
     expect(getNodesByLabel(result, 'Class')).toEqual(['BaseModel', 'User', 'UserService']);
   });
 
-  pit('detects 3 modules (labeled as Trait for class-like registry lookup)', () => {
+  it('detects 3 modules (labeled as Trait for class-like registry lookup)', () => {
     // Ruby `module` declarations are relabeled to `Trait` during ingestion so
-    // they participate in `lookupClassByName` and `buildHeritageMap`. This is
-    // the single source of truth for Ruby module detection in the graph.
+    // they participate in `lookupClassByName` and scope-resolution's heritage
+    // resolution. This is the single source of truth for Ruby module detection
+    // in the graph.
     expect(getNodesByLabel(result, 'Trait')).toEqual(['Cacheable', 'Loggable', 'Serializable']);
     expect(getNodesByLabel(result, 'Module')).toEqual([]);
   });
 
-  pit('detects methods on classes and modules', () => {
+  it('detects methods on classes and modules', () => {
     const methods = getNodesByLabel(result, 'Method');
     expect(methods).toContain('persist');
     expect(methods).toContain('run_validations');
@@ -54,12 +52,12 @@ describe('Ruby require_relative, heritage & property resolution', () => {
     expect(methods).toContain('create_user');
   });
 
-  pit('detects singleton method (def self.factory) as Method', () => {
+  it('detects singleton method (def self.factory) as Method', () => {
     const methods = getNodesByLabel(result, 'Method');
     expect(methods).toContain('factory');
   });
 
-  pit('emits CALLS from singleton method: factory → run_validations', () => {
+  it('emits CALLS from singleton method: factory → run_validations', () => {
     const calls = getRelationships(result, 'CALLS').filter(
       (e) => e.source === 'factory' && e.target === 'run_validations',
     );
@@ -69,7 +67,7 @@ describe('Ruby require_relative, heritage & property resolution', () => {
 
   // --- Import resolution via require_relative ---
 
-  pit('resolves 5 require_relative imports to IMPORTS edges', () => {
+  it('resolves 5 require_relative imports to IMPORTS edges', () => {
     const imports = getRelationships(result, 'IMPORTS');
     const importEdges = edgeSet(imports);
     expect(importEdges).toContain('user.rb → base_model.rb');
@@ -79,7 +77,7 @@ describe('Ruby require_relative, heritage & property resolution', () => {
     expect(importEdges).toContain('service.rb → user.rb');
   });
 
-  pit('resolves bare require to IMPORTS edge', () => {
+  it('resolves bare require to IMPORTS edge', () => {
     const imports = getRelationships(result, 'IMPORTS');
     const bareRequire = imports.find(
       (e) =>
@@ -90,21 +88,21 @@ describe('Ruby require_relative, heritage & property resolution', () => {
 
   // --- Heritage: include → IMPLEMENTS ---
 
-  pit('emits IMPLEMENTS edge for include Serializable with reason "include"', () => {
+  it('emits IMPLEMENTS edge for include Serializable with reason "include"', () => {
     const implements_ = getRelationships(result, 'IMPLEMENTS');
     const edge = implements_.find((e) => e.source === 'User' && e.target === 'Serializable');
     expect(edge).toBeDefined();
     expect(edge!.rel.reason).toBe('include');
   });
 
-  pit('emits IMPLEMENTS edge for extend Loggable with reason "extend"', () => {
+  it('emits IMPLEMENTS edge for extend Loggable with reason "extend"', () => {
     const implements_ = getRelationships(result, 'IMPLEMENTS');
     const edge = implements_.find((e) => e.source === 'User' && e.target === 'Loggable');
     expect(edge).toBeDefined();
     expect(edge!.rel.reason).toBe('extend');
   });
 
-  pit('emits IMPLEMENTS edge for prepend Cacheable with reason "prepend"', () => {
+  it('emits IMPLEMENTS edge for prepend Cacheable with reason "prepend"', () => {
     const implements_ = getRelationships(result, 'IMPLEMENTS');
     const edge = implements_.find((e) => e.source === 'User' && e.target === 'Cacheable');
     expect(edge).toBeDefined();
@@ -113,7 +111,7 @@ describe('Ruby require_relative, heritage & property resolution', () => {
 
   // --- Extends: class inheritance ---
 
-  pit('emits EXTENDS edge: User → BaseModel', () => {
+  it('emits EXTENDS edge: User → BaseModel', () => {
     const extends_ = getRelationships(result, 'EXTENDS');
     expect(extends_.length).toBe(1);
     const edges = edgeSet(extends_);
@@ -122,25 +120,25 @@ describe('Ruby require_relative, heritage & property resolution', () => {
 
   // --- Property nodes: attr_accessor, attr_reader, attr_writer ---
 
-  pit('creates Property nodes for attr_accessor :id and :created_at', () => {
+  it('creates Property nodes for attr_accessor :id and :created_at', () => {
     const props = getNodesByLabel(result, 'Property');
     expect(props).toContain('id');
     expect(props).toContain('created_at');
   });
 
-  pit('creates Property nodes for attr_reader :name and attr_writer :email', () => {
+  it('creates Property nodes for attr_reader :name and attr_writer :email', () => {
     const props = getNodesByLabel(result, 'Property');
     expect(props).toContain('name');
     expect(props).toContain('email');
   });
 
-  pit('emits HAS_PROPERTY from User to attr_reader :name', () => {
+  it('emits HAS_PROPERTY from User to attr_reader :name', () => {
     const hasProperty = getRelationships(result, 'HAS_PROPERTY');
     const edge = hasProperty.find((e) => e.source === 'User' && e.target === 'name');
     expect(edge).toBeDefined();
   });
 
-  pit('emits HAS_PROPERTY from BaseModel to attr_accessor :id', () => {
+  it('emits HAS_PROPERTY from BaseModel to attr_accessor :id', () => {
     const hasProperty = getRelationships(result, 'HAS_PROPERTY');
     const edge = hasProperty.find((e) => e.source === 'BaseModel' && e.target === 'id');
     expect(edge).toBeDefined();
@@ -148,7 +146,7 @@ describe('Ruby require_relative, heritage & property resolution', () => {
 
   // --- Call resolution: method-level attribution ---
 
-  pit('emits method-level CALLS: create_user → persist (member call)', () => {
+  it('emits method-level CALLS: create_user → persist (member call)', () => {
     const calls = getRelationships(result, 'CALLS').filter(
       (e) => e.source === 'create_user' && e.target === 'persist',
     );
@@ -157,7 +155,7 @@ describe('Ruby require_relative, heritage & property resolution', () => {
     expect(calls[0].targetLabel).toBe('Method');
   });
 
-  pit('emits method-level CALLS: create_user → greet_user (member call)', () => {
+  it('emits method-level CALLS: create_user → greet_user (member call)', () => {
     const calls = getRelationships(result, 'CALLS').filter(
       (e) => e.source === 'create_user' && e.target === 'greet_user',
     );
@@ -166,21 +164,21 @@ describe('Ruby require_relative, heritage & property resolution', () => {
     expect(calls[0].targetLabel).toBe('Method');
   });
 
-  pit('emits method-level CALLS: greet_user → persist (bare call)', () => {
+  it('emits method-level CALLS: greet_user → persist (bare call)', () => {
     const calls = getRelationships(result, 'CALLS').filter(
       (e) => e.source === 'greet_user' && e.target === 'persist',
     );
     expect(calls.length).toBe(1);
   });
 
-  pit('emits method-level CALLS: greet_user → serialize_data (bare call)', () => {
+  it('emits method-level CALLS: greet_user → serialize_data (bare call)', () => {
     const calls = getRelationships(result, 'CALLS').filter(
       (e) => e.source === 'greet_user' && e.target === 'serialize_data',
     );
     expect(calls.length).toBe(1);
   });
 
-  pit('emits method-level CALLS: persist → run_validations (bare call)', () => {
+  it('emits method-level CALLS: persist → run_validations (bare call)', () => {
     const calls = getRelationships(result, 'CALLS').filter(
       (e) => e.source === 'persist' && e.target === 'run_validations',
     );
@@ -189,7 +187,7 @@ describe('Ruby require_relative, heritage & property resolution', () => {
 
   // --- Heritage edges point to real graph nodes ---
 
-  pit('all heritage edges point to real graph nodes', () => {
+  it('all heritage edges point to real graph nodes', () => {
     for (const edge of [
       ...getRelationships(result, 'EXTENDS'),
       ...getRelationships(result, 'IMPLEMENTS'),
@@ -201,7 +199,7 @@ describe('Ruby require_relative, heritage & property resolution', () => {
 
   // --- No OVERRIDES edges target Property nodes ---
 
-  pit('no OVERRIDES edges target Property nodes', () => {
+  it('no OVERRIDES edges target Property nodes', () => {
     const overrides = getRelationships(result, 'METHOD_OVERRIDES');
     for (const edge of overrides) {
       const target = result.graph.getNode(edge.rel.targetId);
@@ -222,7 +220,7 @@ describe('Ruby call resolution with arity filtering', () => {
     result = await runPipelineFromRepo(path.join(FIXTURES, 'ruby-calls'), () => {});
   }, 60000);
 
-  pit('resolves run_task → write_audit to one_arg.rb via arity narrowing', () => {
+  it('resolves run_task → write_audit to one_arg.rb via arity narrowing', () => {
     const calls = getRelationships(result, 'CALLS');
     const auditCall = calls.find((c) => c.target === 'write_audit');
     expect(auditCall).toBeDefined();
@@ -243,7 +241,7 @@ describe('Ruby member-call resolution', () => {
     result = await runPipelineFromRepo(path.join(FIXTURES, 'ruby-member-calls'), () => {});
   }, 60000);
 
-  pit('resolves process_user → persist_record as a member call on User', () => {
+  it('resolves process_user → persist_record as a member call on User', () => {
     const calls = getRelationships(result, 'CALLS');
     const saveCall = calls.find((c) => c.target === 'persist_record');
     expect(saveCall).toBeDefined();
@@ -251,12 +249,12 @@ describe('Ruby member-call resolution', () => {
     expect(saveCall!.targetFilePath).toContain('user.rb');
   });
 
-  pit('detects User class and persist_record method', () => {
+  it('detects User class and persist_record method', () => {
     expect(getNodesByLabel(result, 'Class')).toContain('User');
     expect(getNodesByLabel(result, 'Method')).toContain('persist_record');
   });
 
-  pit('emits HAS_METHOD edge from User to persist_record', () => {
+  it('emits HAS_METHOD edge from User to persist_record', () => {
     const hasMethod = getRelationships(result, 'HAS_METHOD');
     const edge = hasMethod.find((e) => e.source === 'User' && e.target === 'persist_record');
     expect(edge).toBeDefined();
@@ -270,7 +268,7 @@ describe('Ruby qualified class names', () => {
     result = await runPipelineFromRepo(path.join(FIXTURES, 'ruby-qualified-types'), () => {});
   }, 60000);
 
-  pit('stores distinct qualified names for same-named classes across modules', () => {
+  it('stores distinct qualified names for same-named classes across modules', () => {
     const users = getNodesByLabelFull(result, 'Class').filter((node) => node.name === 'User');
     expect(users).toHaveLength(2);
     expect(users.map((node) => node.properties.qualifiedName).sort()).toEqual([
@@ -282,9 +280,9 @@ describe('Ruby qualified class names', () => {
 
 // ---------------------------------------------------------------------------
 // Qualified-base heritage: `class C < Outer::Super` (scope_resolution super-
-// class) must emit EXTENDS at parity with the legacy @heritage leg (#1951).
-// The bare control `class D < Base` keeps the original path byte-identical, and
-// `include Mixin` flows through the unchanged mixin → IMPLEMENTS lane.
+// class) must emit EXTENDS (#1951). The bare control `class D < Base` keeps the
+// original path unchanged, and `include Mixin` flows through the unchanged
+// mixin → IMPLEMENTS lane. Scope-resolution owns these edges since #942.
 // ---------------------------------------------------------------------------
 
 describe('Ruby qualified-base heritage resolution (#1951)', () => {
@@ -294,7 +292,7 @@ describe('Ruby qualified-base heritage resolution (#1951)', () => {
     result = await runPipelineFromRepo(path.join(FIXTURES, 'ruby-qualified-base'), () => {});
   }, 60000);
 
-  pit('emits EXTENDS for scoped (C < Outer::Super) and bare (D < Base) bases', () => {
+  it('emits EXTENDS for scoped (C < Outer::Super) and bare (D < Base) bases', () => {
     const extends_ = getRelationships(result, 'EXTENDS');
     const edges = edgeSet(extends_);
     // Scoped superclass resolves by its trailing bare name (Outer::Super → Super).
@@ -303,7 +301,7 @@ describe('Ruby qualified-base heritage resolution (#1951)', () => {
     expect(edges).toContain('D → Base');
   });
 
-  pit('emits IMPLEMENTS for the include Mixin (unchanged mixin lane): C → Mixin', () => {
+  it('emits IMPLEMENTS for the include Mixin (unchanged mixin lane): C → Mixin', () => {
     const implements_ = getRelationships(result, 'IMPLEMENTS');
     const edge = implements_.find((e) => e.source === 'C' && e.target === 'Mixin');
     expect(edge).toBeDefined();
@@ -322,13 +320,13 @@ describe('Ruby ambiguous symbol resolution', () => {
     result = await runPipelineFromRepo(path.join(FIXTURES, 'ruby-ambiguous'), () => {});
   }, 60000);
 
-  pit('detects 2 Handler classes', () => {
+  it('detects 2 Handler classes', () => {
     const classes = getNodesByLabel(result, 'Class');
     expect(classes.filter((n) => n === 'Handler').length).toBe(2);
     expect(classes).toContain('UserHandler');
   });
 
-  pit('resolves EXTENDS to models/handler.rb (not other/handler.rb)', () => {
+  it('resolves EXTENDS to models/handler.rb (not other/handler.rb)', () => {
     const extends_ = getRelationships(result, 'EXTENDS');
     expect(extends_.length).toBe(1);
     expect(extends_[0].source).toBe('UserHandler');
@@ -336,13 +334,13 @@ describe('Ruby ambiguous symbol resolution', () => {
     expect(extends_[0].targetFilePath).toBe('models/handler.rb');
   });
 
-  pit('import edge points to models/ not other/', () => {
+  it('import edge points to models/ not other/', () => {
     const imports = getRelationships(result, 'IMPORTS');
     expect(imports.length).toBe(1);
     expect(imports[0].targetFilePath).toBe('models/handler.rb');
   });
 
-  pit('all heritage edges point to real graph nodes', () => {
+  it('all heritage edges point to real graph nodes', () => {
     for (const edge of getRelationships(result, 'EXTENDS')) {
       const target = result.graph.getNode(edge.rel.targetId);
       expect(target).toBeDefined();
@@ -361,7 +359,7 @@ describe('Ruby local definition shadows import', () => {
     result = await runPipelineFromRepo(path.join(FIXTURES, 'ruby-local-shadow'), () => {});
   }, 60000);
 
-  pit('resolves run_app → do_work to same-file definition, not the imported one', () => {
+  it('resolves run_app → do_work to same-file definition, not the imported one', () => {
     const calls = getRelationships(result, 'CALLS');
     const doWorkCall = calls.find((c) => c.target === 'do_work' && c.source === 'run_app');
     expect(doWorkCall).toBeDefined();
@@ -383,19 +381,19 @@ describe('Ruby constructor-inferred type resolution', () => {
     );
   }, 60000);
 
-  pit('detects User, Repo, and AppService classes', () => {
+  it('detects User, Repo, and AppService classes', () => {
     expect(getNodesByLabel(result, 'Class')).toContain('User');
     expect(getNodesByLabel(result, 'Class')).toContain('Repo');
     expect(getNodesByLabel(result, 'Class')).toContain('AppService');
   });
 
-  pit('detects save on User and Repo, cleanup on all three', () => {
+  it('detects save on User and Repo, cleanup on all three', () => {
     const methods = getNodesByLabel(result, 'Method');
     expect(methods.filter((m) => m === 'save').length).toBe(2);
     expect(methods.filter((m) => m === 'cleanup').length).toBe(3);
   });
 
-  pit('resolves user.save to models/user.rb via constructor-inferred type', () => {
+  it('resolves user.save to models/user.rb via constructor-inferred type', () => {
     const calls = getRelationships(result, 'CALLS');
     const userSave = calls.find(
       (c) => c.target === 'save' && c.targetFilePath === 'models/user.rb',
@@ -404,7 +402,7 @@ describe('Ruby constructor-inferred type resolution', () => {
     expect(userSave!.source).toBe('process_entities');
   });
 
-  pit('resolves repo.save to models/repo.rb via constructor-inferred type', () => {
+  it('resolves repo.save to models/repo.rb via constructor-inferred type', () => {
     const calls = getRelationships(result, 'CALLS');
     const repoSave = calls.find(
       (c) => c.target === 'save' && c.targetFilePath === 'models/repo.rb',
@@ -413,20 +411,20 @@ describe('Ruby constructor-inferred type resolution', () => {
     expect(repoSave!.source).toBe('process_entities');
   });
 
-  pit('emits exactly 2 save CALLS edges (one per receiver type)', () => {
+  it('emits exactly 2 save CALLS edges (one per receiver type)', () => {
     const calls = getRelationships(result, 'CALLS');
     const saveCalls = calls.filter((c) => c.target === 'save');
     expect(saveCalls.length).toBe(2);
   });
 
-  pit('resolves self.process_entities to services/app.rb (unique method)', () => {
+  it('resolves self.process_entities to services/app.rb (unique method)', () => {
     const calls = getRelationships(result, 'CALLS');
     const selfCall = calls.find((c) => c.source === 'greet' && c.target === 'process_entities');
     expect(selfCall).toBeDefined();
     expect(selfCall!.targetFilePath).toContain('app.rb');
   });
 
-  pit('resolves self.cleanup to services/app.rb, not models/user.rb or models/repo.rb', () => {
+  it('resolves self.cleanup to services/app.rb, not models/user.rb or models/repo.rb', () => {
     const calls = getRelationships(result, 'CALLS');
     const selfCleanup = calls.find((c) => c.source === 'greet' && c.target === 'cleanup');
     expect(selfCleanup).toBeDefined();
@@ -445,13 +443,13 @@ describe('Ruby self resolution', () => {
     result = await runPipelineFromRepo(path.join(FIXTURES, 'ruby-self-this-resolution'), () => {});
   }, 60000);
 
-  pit('detects User and Repo classes, each with a save method', () => {
+  it('detects User and Repo classes, each with a save method', () => {
     expect(getNodesByLabel(result, 'Class')).toEqual(['Repo', 'User']);
     const saveMethods = getNodesByLabel(result, 'Method').filter((m) => m === 'save');
     expect(saveMethods.length).toBe(2);
   });
 
-  pit('resolves self.save inside User#process to User#save, not Repo#save', () => {
+  it('resolves self.save inside User#process to User#save, not Repo#save', () => {
     const calls = getRelationships(result, 'CALLS');
     const saveCall = calls.find((c) => c.target === 'save' && c.source === 'process');
     expect(saveCall).toBeDefined();
@@ -470,20 +468,20 @@ describe('Ruby parent resolution', () => {
     result = await runPipelineFromRepo(path.join(FIXTURES, 'ruby-parent-resolution'), () => {});
   }, 60000);
 
-  pit('detects BaseModel and User classes plus Serializable module (Trait)', () => {
+  it('detects BaseModel and User classes plus Serializable module (Trait)', () => {
     expect(getNodesByLabel(result, 'Class')).toEqual(['BaseModel', 'User']);
     // Ruby modules are labeled Trait — see the "detects 3 modules" test above.
     expect(getNodesByLabel(result, 'Trait')).toEqual(['Serializable']);
   });
 
-  pit('emits EXTENDS edge: User < BaseModel', () => {
+  it('emits EXTENDS edge: User < BaseModel', () => {
     const extends_ = getRelationships(result, 'EXTENDS');
     expect(extends_.length).toBe(1);
     expect(extends_[0].source).toBe('User');
     expect(extends_[0].target).toBe('BaseModel');
   });
 
-  pit('emits IMPLEMENTS edge: User includes Serializable', () => {
+  it('emits IMPLEMENTS edge: User includes Serializable', () => {
     const implements_ = getRelationships(result, 'IMPLEMENTS');
     const includeEdge = implements_.find((e) => e.source === 'User' && e.target === 'Serializable');
     expect(includeEdge).toBeDefined();
@@ -502,18 +500,18 @@ describe('Ruby super resolution', () => {
     result = await runPipelineFromRepo(path.join(FIXTURES, 'ruby-super-resolution'), () => {});
   }, 60000);
 
-  pit('detects BaseModel, User, and Repo classes', () => {
+  it('detects BaseModel, User, and Repo classes', () => {
     expect(getNodesByLabel(result, 'Class')).toEqual(['BaseModel', 'Repo', 'User']);
   });
 
-  pit('emits EXTENDS edge: User < BaseModel', () => {
+  it('emits EXTENDS edge: User < BaseModel', () => {
     const extends_ = getRelationships(result, 'EXTENDS');
     expect(extends_.length).toBe(1);
     expect(extends_[0].source).toBe('User');
     expect(extends_[0].target).toBe('BaseModel');
   });
 
-  pit('detects save methods on all three classes', () => {
+  it('detects save methods on all three classes', () => {
     const saveMethods = getNodesByLabel(result, 'Method').filter((m) => m === 'save');
     expect(saveMethods.length).toBe(3);
   });
@@ -530,13 +528,13 @@ describe('Ruby constant constructor binding resolution', () => {
     result = await runPipelineFromRepo(path.join(FIXTURES, 'ruby-constant-constructor'), () => {});
   }, 60000);
 
-  pit('detects UserService class with process and validate methods', () => {
+  it('detects UserService class with process and validate methods', () => {
     expect(getNodesByLabel(result, 'Class')).toContain('UserService');
     expect(getNodesByLabel(result, 'Method')).toContain('process');
     expect(getNodesByLabel(result, 'Method')).toContain('validate');
   });
 
-  pit('resolves SERVICE.process() via constant constructor binding', () => {
+  it('resolves SERVICE.process() via constant constructor binding', () => {
     const calls = getRelationships(result, 'CALLS');
     const processCall = calls.find(
       (c) => c.target === 'process' && c.targetFilePath === 'models.rb',
@@ -544,7 +542,7 @@ describe('Ruby constant constructor binding resolution', () => {
     expect(processCall).toBeDefined();
   });
 
-  pit('resolves SERVICE.validate() via constant constructor binding', () => {
+  it('resolves SERVICE.validate() via constant constructor binding', () => {
     const calls = getRelationships(result, 'CALLS');
     const validateCall = calls.find(
       (c) => c.target === 'validate' && c.targetFilePath === 'models.rb',
@@ -564,13 +562,13 @@ describe('Ruby YARD annotation type resolution', () => {
     result = await runPipelineFromRepo(path.join(FIXTURES, 'ruby-yard-annotations'), () => {});
   }, 60000);
 
-  pit('detects UserRepo, User, and UserService classes', () => {
+  it('detects UserRepo, User, and UserService classes', () => {
     expect(getNodesByLabel(result, 'Class')).toContain('UserRepo');
     expect(getNodesByLabel(result, 'Class')).toContain('User');
     expect(getNodesByLabel(result, 'Class')).toContain('UserService');
   });
 
-  pit('detects save, find_by_name, greet, and create methods', () => {
+  it('detects save, find_by_name, greet, and create methods', () => {
     const methods = getNodesByLabel(result, 'Method');
     expect(methods).toContain('save');
     expect(methods).toContain('find_by_name');
@@ -578,14 +576,14 @@ describe('Ruby YARD annotation type resolution', () => {
     expect(methods).toContain('create');
   });
 
-  pit('resolves repo.save to UserRepo#save via YARD @param annotation', () => {
+  it('resolves repo.save to UserRepo#save via YARD @param annotation', () => {
     const calls = getRelationships(result, 'CALLS');
     const saveCall = calls.find((c) => c.target === 'save' && c.source === 'create');
     expect(saveCall).toBeDefined();
     expect(saveCall!.targetFilePath).toContain('models.rb');
   });
 
-  pit('resolves user.greet to User#greet via YARD @param annotation', () => {
+  it('resolves user.greet to User#greet via YARD @param annotation', () => {
     const calls = getRelationships(result, 'CALLS');
     const greetCall = calls.find((c) => c.target === 'greet' && c.source === 'create');
     expect(greetCall).toBeDefined();
@@ -608,14 +606,14 @@ describe('Ruby namespaced constructor resolution (Models::UserService.new)', () 
     );
   }, 60000);
 
-  pit('detects UserService class with process and validate methods', () => {
+  it('detects UserService class with process and validate methods', () => {
     expect(getNodesByLabel(result, 'Class')).toContain('UserService');
     const methods = getNodesByLabel(result, 'Method');
     expect(methods).toContain('process');
     expect(methods).toContain('validate');
   });
 
-  pit('resolves svc.process() via namespaced constructor Models::UserService.new', () => {
+  it('resolves svc.process() via namespaced constructor Models::UserService.new', () => {
     const calls = getRelationships(result, 'CALLS');
     const processCall = calls.find(
       (c) => c.target === 'process' && c.targetFilePath.includes('user_service.rb'),
@@ -623,7 +621,7 @@ describe('Ruby namespaced constructor resolution (Models::UserService.new)', () 
     expect(processCall).toBeDefined();
   });
 
-  pit('resolves svc.validate() via namespaced constructor Models::UserService.new', () => {
+  it('resolves svc.validate() via namespaced constructor Models::UserService.new', () => {
     const calls = getRelationships(result, 'CALLS');
     const validateCall = calls.find(
       (c) => c.target === 'validate' && c.targetFilePath.includes('user_service.rb'),
@@ -648,23 +646,23 @@ describe('Ruby return type inference via function call', () => {
     result = await runPipelineFromRepo(path.join(FIXTURES, 'ruby-return-type'), () => {});
   }, 60000);
 
-  pit('detects User and Repo classes', () => {
+  it('detects User and Repo classes', () => {
     expect(getNodesByLabel(result, 'Class')).toContain('User');
     expect(getNodesByLabel(result, 'Class')).toContain('Repo');
   });
 
-  pit('detects get_user and get_repo methods', () => {
+  it('detects get_user and get_repo methods', () => {
     expect(getNodesByLabel(result, 'Method')).toContain('get_user');
     expect(getNodesByLabel(result, 'Method')).toContain('get_repo');
   });
 
-  pit('detects save method on both User and Repo (disambiguation required)', () => {
+  it('detects save method on both User and Repo (disambiguation required)', () => {
     const methods = getNodesByLabel(result, 'Method');
     // Both classes have save — fuzzy match alone cannot resolve this
     expect(methods.filter((m) => m === 'save').length).toBe(2);
   });
 
-  pit('resolves user.save to User#save via YARD @return [User] on get_user()', () => {
+  it('resolves user.save to User#save via YARD @return [User] on get_user()', () => {
     // With both User#save and Repo#save in scope, resolving user.save
     // requires return type inference: get_user() → @return [User] → user is User
     const calls = getRelationships(result, 'CALLS');
@@ -677,7 +675,7 @@ describe('Ruby return type inference via function call', () => {
     expect(saveCall).toBeDefined();
   });
 
-  pit('resolves repo.save to Repo#save via YARD @return [Repo] on get_repo()', () => {
+  it('resolves repo.save to Repo#save via YARD @return [Repo] on get_repo()', () => {
     const calls = getRelationships(result, 'CALLS');
     const saveCall = calls.find(
       (c) =>
@@ -700,14 +698,14 @@ describe('Ruby constant factory call resolution (SERVICE = build_service())', ()
     result = await runPipelineFromRepo(path.join(FIXTURES, 'ruby-constant-factory-call'), () => {});
   }, 60000);
 
-  pit('detects UserService and AdminService classes with process and validate methods', () => {
+  it('detects UserService and AdminService classes with process and validate methods', () => {
     expect(getNodesByLabel(result, 'Class')).toContain('UserService');
     expect(getNodesByLabel(result, 'Class')).toContain('AdminService');
     expect(getNodesByLabel(result, 'Method')).toContain('process');
     expect(getNodesByLabel(result, 'Method')).toContain('validate');
   });
 
-  pit('resolves SERVICE.process() to UserService#process via constant factory call', () => {
+  it('resolves SERVICE.process() to UserService#process via constant factory call', () => {
     const calls = getRelationships(result, 'CALLS');
     const processCall = calls.find(
       (c) => c.target === 'process' && c.targetFilePath.includes('user_service.rb'),
@@ -722,7 +720,7 @@ describe('Ruby constant factory call resolution (SERVICE = build_service())', ()
     expect(wrongCall).toBeUndefined();
   });
 
-  pit('resolves SERVICE.validate() to UserService#validate via constant factory call', () => {
+  it('resolves SERVICE.validate() to UserService#validate via constant factory call', () => {
     const calls = getRelationships(result, 'CALLS');
     const validateCall = calls.find(
       (c) => c.target === 'validate' && c.targetFilePath.includes('user_service.rb'),
@@ -745,13 +743,13 @@ describe('Ruby YARD generic type annotations (Hash<Symbol, User>)', () => {
     result = await runPipelineFromRepo(path.join(FIXTURES, 'ruby-yard-generics'), () => {});
   }, 60000);
 
-  pit('detects UserRepo, AdminRepo, and DataService classes', () => {
+  it('detects UserRepo, AdminRepo, and DataService classes', () => {
     expect(getNodesByLabel(result, 'Class')).toContain('UserRepo');
     expect(getNodesByLabel(result, 'Class')).toContain('AdminRepo');
     expect(getNodesByLabel(result, 'Class')).toContain('DataService');
   });
 
-  pit('detects save and find_all on both repos, plus sync and audit methods', () => {
+  it('detects save and find_all on both repos, plus sync and audit methods', () => {
     const methods = getNodesByLabel(result, 'Method');
     expect(methods).toContain('save');
     expect(methods).toContain('find_all');
@@ -759,7 +757,7 @@ describe('Ruby YARD generic type annotations (Hash<Symbol, User>)', () => {
     expect(methods).toContain('audit');
   });
 
-  pit('resolves repo.save in sync() to UserRepo#save via @param repo [UserRepo]', () => {
+  it('resolves repo.save in sync() to UserRepo#save via @param repo [UserRepo]', () => {
     const calls = getRelationships(result, 'CALLS');
     const saveCall = calls.find(
       (c) => c.target === 'save' && c.source === 'sync' && c.targetFilePath.includes('models.rb'),
@@ -767,32 +765,26 @@ describe('Ruby YARD generic type annotations (Hash<Symbol, User>)', () => {
     expect(saveCall).toBeDefined();
   });
 
-  pit(
-    'does NOT resolve cache param to a class (Hash<Symbol, UserRepo> is a generic container)',
-    () => {
-      // The @param cache [Hash<Symbol, UserRepo>] should extract type "Hash" — not "UserRepo".
-      // Since Hash is not a class in the fixture, no type binding is created for cache.
-      // This verifies the bracket-balanced split doesn't break on the inner comma.
-      const calls = getRelationships(result, 'CALLS');
-      // No calls should originate from cache.* since cache has no resolved type
-      const cacheCall = calls.find(
-        (c) => c.source === 'sync' && c.target === 'save' && c.targetFilePath.includes('admin'),
-      );
-      expect(cacheCall).toBeUndefined();
-    },
-  );
+  it('does NOT resolve cache param to a class (Hash<Symbol, UserRepo> is a generic container)', () => {
+    // The @param cache [Hash<Symbol, UserRepo>] should extract type "Hash" — not "UserRepo".
+    // Since Hash is not a class in the fixture, no type binding is created for cache.
+    // This verifies the bracket-balanced split doesn't break on the inner comma.
+    const calls = getRelationships(result, 'CALLS');
+    // No calls should originate from cache.* since cache has no resolved type
+    const cacheCall = calls.find(
+      (c) => c.source === 'sync' && c.target === 'save' && c.targetFilePath.includes('admin'),
+    );
+    expect(cacheCall).toBeUndefined();
+  });
 
-  pit(
-    'resolves admin_repo.save in audit() to AdminRepo#save via alternate @param [AdminRepo] order',
-    () => {
-      const calls = getRelationships(result, 'CALLS');
-      // audit() calls admin_repo.save — should resolve via the alternate YARD format
-      const saveCall = calls.find((c) => c.target === 'save' && c.source === 'audit');
-      expect(saveCall).toBeDefined();
-    },
-  );
+  it('resolves admin_repo.save in audit() to AdminRepo#save via alternate @param [AdminRepo] order', () => {
+    const calls = getRelationships(result, 'CALLS');
+    // audit() calls admin_repo.save — should resolve via the alternate YARD format
+    const saveCall = calls.find((c) => c.target === 'save' && c.source === 'audit');
+    expect(saveCall).toBeDefined();
+  });
 
-  pit('resolves admin_repo.find_all in audit() to AdminRepo#find_all', () => {
+  it('resolves admin_repo.find_all in audit() to AdminRepo#find_all', () => {
     const calls = getRelationships(result, 'CALLS');
     const findCall = calls.find((c) => c.target === 'find_all' && c.source === 'audit');
     expect(findCall).toBeDefined();
@@ -812,7 +804,7 @@ describe('Ruby chained method call resolution (Phase 5 review fix)', () => {
     result = await runPipelineFromRepo(path.join(FIXTURES, 'ruby-chain-call'), () => {});
   }, 60000);
 
-  pit('detects User, Repo, UserService and App classes', () => {
+  it('detects User, Repo, UserService and App classes', () => {
     const classes = getNodesByLabel(result, 'Class');
     expect(classes).toContain('User');
     expect(classes).toContain('Repo');
@@ -820,18 +812,18 @@ describe('Ruby chained method call resolution (Phase 5 review fix)', () => {
     expect(classes).toContain('App');
   });
 
-  pit('detects save methods on both User and Repo', () => {
+  it('detects save methods on both User and Repo', () => {
     const methods = getNodesByLabel(result, 'Method');
     const saveMethods = methods.filter((m) => m === 'save');
     expect(saveMethods.length).toBe(2);
   });
 
-  pit('detects get_user method on UserService', () => {
+  it('detects get_user method on UserService', () => {
     const methods = getNodesByLabel(result, 'Method');
     expect(methods).toContain('get_user');
   });
 
-  pit('resolves svc.get_user.save to User#save via chain resolution', () => {
+  it('resolves svc.get_user.save to User#save via chain resolution', () => {
     const calls = getRelationships(result, 'CALLS');
     const userSave = calls.find(
       (c) => c.target === 'save' && c.source === 'process' && c.targetFilePath?.includes('user.rb'),
@@ -839,7 +831,7 @@ describe('Ruby chained method call resolution (Phase 5 review fix)', () => {
     expect(userSave).toBeDefined();
   });
 
-  pit('does NOT resolve svc.get_user.save to Repo#save', () => {
+  it('does NOT resolve svc.get_user.save to Repo#save', () => {
     const calls = getRelationships(result, 'CALLS');
     const repoSave = calls.find(
       (c) => c.target === 'save' && c.source === 'process' && c.targetFilePath?.includes('repo.rb'),
@@ -859,11 +851,11 @@ describe('Ruby for-in loop resolution', () => {
     result = await runPipelineFromRepo(path.join(FIXTURES, 'ruby-for-in-loop'), () => {});
   }, 60000);
 
-  pit('detects User class with save method', () => {
+  it('detects User class with save method', () => {
     expect(getNodesByLabel(result, 'Class')).toContain('User');
   });
 
-  pit('resolves user.save in for-in to User#save', () => {
+  it('resolves user.save in for-in to User#save', () => {
     const calls = getRelationships(result, 'CALLS');
     const userSave = calls.find(
       (c) =>
@@ -872,7 +864,7 @@ describe('Ruby for-in loop resolution', () => {
     expect(userSave).toBeDefined();
   });
 
-  pit('does NOT resolve user.save to Repo#save (negative)', () => {
+  it('does NOT resolve user.save to Repo#save (negative)', () => {
     const calls = getRelationships(result, 'CALLS');
     const wrongSave = calls.find(
       (c) =>
@@ -893,18 +885,18 @@ describe('Field type resolution (Ruby)', () => {
     result = await runPipelineFromRepo(path.join(FIXTURES, 'ruby-field-types'), () => {});
   }, 60000);
 
-  pit('detects classes: Address, User', () => {
+  it('detects classes: Address, User', () => {
     expect(getNodesByLabel(result, 'Class')).toEqual(['Address', 'User']);
   });
 
-  pit('detects Property nodes for attr_accessor fields', () => {
+  it('detects Property nodes for attr_accessor fields', () => {
     const properties = getNodesByLabel(result, 'Property');
     expect(properties).toContain('address');
     expect(properties).toContain('name');
     expect(properties).toContain('city');
   });
 
-  pit('emits HAS_PROPERTY edges linking properties to classes', () => {
+  it('emits HAS_PROPERTY edges linking properties to classes', () => {
     const propEdges = getRelationships(result, 'HAS_PROPERTY');
     expect(propEdges.length).toBe(3);
     expect(edgeSet(propEdges)).toContain('User → address');
@@ -912,7 +904,7 @@ describe('Field type resolution (Ruby)', () => {
     expect(edgeSet(propEdges)).toContain('Address → city');
   });
 
-  pit('resolves user.address.save → Address#save via YARD @return [Address]', () => {
+  it('resolves user.address.save → Address#save via YARD @return [Address]', () => {
     const calls = getRelationships(result, 'CALLS');
     const saveCalls = calls.filter((e) => e.target === 'save');
     const addressSave = saveCalls.find(
@@ -921,7 +913,7 @@ describe('Field type resolution (Ruby)', () => {
     expect(addressSave).toBeDefined();
   });
 
-  pit('Property nodes contain expected field names', () => {
+  it('Property nodes contain expected field names', () => {
     const properties = getNodesByLabelFull(result, 'Property');
 
     const city = properties.find((p) => p.name === 'city');
@@ -946,13 +938,13 @@ describe('Field type disambiguation (Ruby)', () => {
     result = await runPipelineFromRepo(path.join(FIXTURES, 'ruby-field-type-disambig'), () => {});
   }, 60000);
 
-  pit('detects both User#save and Address#save', () => {
+  it('detects both User#save and Address#save', () => {
     const methods = getNodesByLabel(result, 'Method');
     const saveMethods = methods.filter((m) => m === 'save');
     expect(saveMethods.length).toBe(2);
   });
 
-  pit('resolves user.address.save → Address#save (not User#save)', () => {
+  it('resolves user.address.save → Address#save (not User#save)', () => {
     const calls = getRelationships(result, 'CALLS');
     const saveCalls = calls.filter((e) => e.target === 'save' && e.source === 'process_user');
     expect(saveCalls.length).toBe(1);
@@ -972,7 +964,7 @@ describe('Write access tracking (Ruby)', () => {
     result = await runPipelineFromRepo(path.join(FIXTURES, 'ruby-write-access'), () => {});
   }, 60000);
 
-  pit('emits ACCESSES write edges for setter assignments', () => {
+  it('emits ACCESSES write edges for setter assignments', () => {
     const accesses = getRelationships(result, 'ACCESSES');
     const writes = accesses.filter((e) => e.rel.reason === 'write');
     expect(writes.length).toBe(3);
@@ -987,7 +979,7 @@ describe('Write access tracking (Ruby)', () => {
     expect(scoreWrite!.source).toBe('update_user');
   });
 
-  pit('emits ACCESSES write edge for compound assignment (operator_assignment)', () => {
+  it('emits ACCESSES write edge for compound assignment (operator_assignment)', () => {
     const accesses = getRelationships(result, 'ACCESSES');
     const writes = accesses.filter((e) => e.rel.reason === 'write');
     const scoreWrite = writes.find((e) => e.target === 'score');
@@ -995,7 +987,7 @@ describe('Write access tracking (Ruby)', () => {
     expect(scoreWrite!.source).toBe('update_user');
   });
 
-  pit('write ACCESSES edges have confidence 1.0', () => {
+  it('write ACCESSES edges have confidence 1.0', () => {
     const accesses = getRelationships(result, 'ACCESSES');
     const writes = accesses.filter((e) => e.rel.reason === 'write');
     for (const edge of writes) {
@@ -1015,7 +1007,7 @@ describe('Ruby call-result variable binding (Tier 2b)', () => {
     result = await runPipelineFromRepo(path.join(FIXTURES, 'ruby-call-result-binding'), () => {});
   }, 60000);
 
-  pit('resolves user.save to User#save via call-result binding', () => {
+  it('resolves user.save to User#save via call-result binding', () => {
     const calls = getRelationships(result, 'CALLS');
     const saveCall = calls.find(
       (c) => c.target === 'save' && c.source === 'process_user' && c.targetFilePath.includes('app'),
@@ -1035,7 +1027,7 @@ describe('Ruby method chain binding via unified fixpoint (Phase 9C)', () => {
     result = await runPipelineFromRepo(path.join(FIXTURES, 'ruby-method-chain-binding'), () => {});
   }, 60000);
 
-  pit('resolves city.save to City#save via method chain', () => {
+  it('resolves city.save to City#save via method chain', () => {
     const calls = getRelationships(result, 'CALLS');
     const saveCall = calls.find(
       (c) =>
@@ -1060,7 +1052,7 @@ describe('Ruby grandparent method resolution via MRO (Phase B)', () => {
     );
   }, 60000);
 
-  pit('detects A, B, C, Greeting classes', () => {
+  it('detects A, B, C, Greeting classes', () => {
     const classes = getNodesByLabel(result, 'Class');
     expect(classes).toContain('A');
     expect(classes).toContain('B');
@@ -1068,13 +1060,13 @@ describe('Ruby grandparent method resolution via MRO (Phase B)', () => {
     expect(classes).toContain('Greeting');
   });
 
-  pit('emits EXTENDS edges: B→A, C→B', () => {
+  it('emits EXTENDS edges: B→A, C→B', () => {
     const extends_ = getRelationships(result, 'EXTENDS');
     expect(edgeSet(extends_)).toContain('B → A');
     expect(edgeSet(extends_)).toContain('C → B');
   });
 
-  pit('resolves c.greet.save to Greeting#save via depth-2 MRO lookup', () => {
+  it('resolves c.greet.save to Greeting#save via depth-2 MRO lookup', () => {
     const calls = getRelationships(result, 'CALLS');
     const saveCall = calls.find(
       (c) => c.target === 'save' && c.targetFilePath.includes('greeting'),
@@ -1082,7 +1074,7 @@ describe('Ruby grandparent method resolution via MRO (Phase B)', () => {
     expect(saveCall).toBeDefined();
   });
 
-  pit('resolves c.greet to A#greet (method found via MRO walk)', () => {
+  it('resolves c.greet to A#greet (method found via MRO walk)', () => {
     const calls = getRelationships(result, 'CALLS');
     const greetCall = calls.find((c) => c.target === 'greet' && c.targetFilePath.includes('a.rb'));
     expect(greetCall).toBeDefined();
@@ -1100,7 +1092,7 @@ describe('Ruby default parameter arity resolution', () => {
     result = await runPipelineFromRepo(path.join(FIXTURES, 'ruby-default-params'), () => {});
   }, 60000);
 
-  pit('resolves greet("Alice") with 1 arg to greet with 2 params (1 default)', () => {
+  it('resolves greet("Alice") with 1 arg to greet with 2 params (1 default)', () => {
     const calls = getRelationships(result, 'CALLS');
     const greetCalls = calls.filter((c) => c.source === 'process' && c.target === 'greet');
     expect(greetCalls.length).toBe(1);
@@ -1122,18 +1114,18 @@ describe('Ruby cross-file binding propagation', () => {
     result = await runPipelineFromRepo(path.join(CROSS_FILE_FIXTURES, 'rb-cross-file'), () => {});
   }, 60000);
 
-  pit('detects User class with save and get_name methods', () => {
+  it('detects User class with save and get_name methods', () => {
     expect(getNodesByLabel(result, 'Class')).toContain('User');
     expect(getNodesByLabel(result, 'Method')).toContain('save');
     expect(getNodesByLabel(result, 'Method')).toContain('get_name');
   });
 
-  pit('detects UserFactory class and get_user method', () => {
+  it('detects UserFactory class and get_user method', () => {
     expect(getNodesByLabel(result, 'Class')).toContain('UserFactory');
     expect(getNodesByLabel(result, 'Method')).toContain('get_user');
   });
 
-  pit('emits IMPORTS edge from app.rb to models', () => {
+  it('emits IMPORTS edge from app.rb to models', () => {
     const imports = getRelationships(result, 'IMPORTS');
     const edge = imports.find(
       (e) => e.sourceFilePath.includes('app') && e.targetFilePath.includes('models'),
@@ -1141,7 +1133,7 @@ describe('Ruby cross-file binding propagation', () => {
     expect(edge).toBeDefined();
   });
 
-  pit('resolves user.save in process to User#save via cross-file propagation', () => {
+  it('resolves user.save in process to User#save via cross-file propagation', () => {
     const calls = getRelationships(result, 'CALLS');
     const saveCall = calls.find(
       (c) => c.target === 'save' && c.source === 'process' && c.targetFilePath.includes('models'),
@@ -1149,7 +1141,7 @@ describe('Ruby cross-file binding propagation', () => {
     expect(saveCall).toBeDefined();
   });
 
-  pit('resolves user.get_name in process to User#get_name via cross-file propagation', () => {
+  it('resolves user.get_name in process to User#get_name via cross-file propagation', () => {
     const calls = getRelationships(result, 'CALLS');
     const getNameCall = calls.find(
       (c) =>
@@ -1158,7 +1150,7 @@ describe('Ruby cross-file binding propagation', () => {
     expect(getNameCall).toBeDefined();
   });
 
-  pit('emits HAS_METHOD edges linking save and get_name to User', () => {
+  it('emits HAS_METHOD edges linking save and get_name to User', () => {
     const hasMethod = getRelationships(result, 'HAS_METHOD');
     const saveEdge = hasMethod.find((e) => e.source === 'User' && e.target === 'save');
     const getNameEdge = hasMethod.find((e) => e.source === 'User' && e.target === 'get_name');
@@ -1179,11 +1171,11 @@ describe('Ruby method enrichment (visibility, isStatic, parameters)', () => {
     result = await runPipelineFromRepo(path.join(FIXTURES, 'ruby-method-enrichment'), () => {});
   }, 60000);
 
-  pit('detects Animal and Dog classes', () => {
+  it('detects Animal and Dog classes', () => {
     expect(getNodesByLabel(result, 'Class')).toEqual(['Animal', 'Dog']);
   });
 
-  pit('detects all methods including singleton', () => {
+  it('detects all methods including singleton', () => {
     const methods = getNodesByLabel(result, 'Method');
     expect(methods).toContain('speak');
     expect(methods).toContain('classify');
@@ -1192,7 +1184,7 @@ describe('Ruby method enrichment (visibility, isStatic, parameters)', () => {
     expect(methods).toContain('energy_level');
   });
 
-  pit('emits HAS_METHOD edges for Animal and Dog', () => {
+  it('emits HAS_METHOD edges for Animal and Dog', () => {
     const hasMethod = getRelationships(result, 'HAS_METHOD');
     // Animal has speak, classify, from_habitat, internal_state
     expect(hasMethod.find((e) => e.source === 'Animal' && e.target === 'speak')).toBeDefined();
@@ -1208,7 +1200,7 @@ describe('Ruby method enrichment (visibility, isStatic, parameters)', () => {
     expect(hasMethod.find((e) => e.source === 'Dog' && e.target === 'energy_level')).toBeDefined();
   });
 
-  pit('marks internal_state as private (when enriched)', () => {
+  it('marks internal_state as private (when enriched)', () => {
     const methods = getNodesByLabelFull(result, 'Method');
     const internalState = methods.find(
       (m) => m.name === 'internal_state' && m.properties.filePath?.includes('animal'),
@@ -1221,7 +1213,7 @@ describe('Ruby method enrichment (visibility, isStatic, parameters)', () => {
     }
   });
 
-  pit('marks energy_level as protected (when enriched)', () => {
+  it('marks energy_level as protected (when enriched)', () => {
     const methods = getNodesByLabelFull(result, 'Method');
     const energyLevel = methods.find(
       (m) => m.name === 'energy_level' && m.properties.filePath?.includes('animal'),
@@ -1232,7 +1224,7 @@ describe('Ruby method enrichment (visibility, isStatic, parameters)', () => {
     }
   });
 
-  pit('marks classify as static (when enriched)', () => {
+  it('marks classify as static (when enriched)', () => {
     const methods = getNodesByLabelFull(result, 'Method');
     const classify = methods.find(
       (m) => m.name === 'classify' && m.properties.filePath?.includes('animal'),
@@ -1243,7 +1235,7 @@ describe('Ruby method enrichment (visibility, isStatic, parameters)', () => {
     }
   });
 
-  pit('marks from_habitat (class << self) as static and public (when enriched)', () => {
+  it('marks from_habitat (class << self) as static and public (when enriched)', () => {
     const methods = getNodesByLabelFull(result, 'Method');
     const fromHabitat = methods.find(
       (m) => m.name === 'from_habitat' && m.properties.filePath?.includes('animal'),
@@ -1257,7 +1249,7 @@ describe('Ruby method enrichment (visibility, isStatic, parameters)', () => {
     }
   });
 
-  pit('extracts parameterCount for from_habitat(habitat)', () => {
+  it('extracts parameterCount for from_habitat(habitat)', () => {
     const methods = getNodesByLabelFull(result, 'Method');
     const fromHabitat = methods.find(
       (m) => m.name === 'from_habitat' && m.properties.filePath?.includes('animal'),
@@ -1266,7 +1258,7 @@ describe('Ruby method enrichment (visibility, isStatic, parameters)', () => {
     expect(fromHabitat!.properties.parameterCount).toBe(1);
   });
 
-  pit('marks speak as public (when enriched)', () => {
+  it('marks speak as public (when enriched)', () => {
     const methods = getNodesByLabelFull(result, 'Method');
     const speak = methods.find(
       (m) => m.name === 'speak' && m.properties.filePath?.includes('animal'),
@@ -1278,7 +1270,7 @@ describe('Ruby method enrichment (visibility, isStatic, parameters)', () => {
     }
   });
 
-  pit('extracts parameterCount for classify(name)', () => {
+  it('extracts parameterCount for classify(name)', () => {
     const methods = getNodesByLabelFull(result, 'Method');
     const classify = methods.find(
       (m) => m.name === 'classify' && m.properties.filePath?.includes('animal'),
@@ -1287,7 +1279,7 @@ describe('Ruby method enrichment (visibility, isStatic, parameters)', () => {
     expect(classify!.properties.parameterCount).toBe(1);
   });
 
-  pit('resolves dog.speak member call from main to Dog#speak', () => {
+  it('resolves dog.speak member call from main to Dog#speak', () => {
     const calls = getRelationships(result, 'CALLS');
     const speakCall = calls.find(
       (c) => c.source === 'main' && c.target === 'speak' && c.targetFilePath.includes('animal'),
@@ -1295,36 +1287,34 @@ describe('Ruby method enrichment (visibility, isStatic, parameters)', () => {
     expect(speakCall).toBeDefined();
   });
 
-  pit('emits EXTENDS edge from Dog to Animal', () => {
+  it('emits EXTENDS edge from Dog to Animal', () => {
     const extends_ = getRelationships(result, 'EXTENDS');
     const edge = extends_.find((e) => e.source === 'Dog' && e.target === 'Animal');
     expect(edge).toBeDefined();
   });
 
-  pit('detects main as top-level Method in app.rb', () => {
+  it('detects main as top-level Method in app.rb', () => {
     // Ruby top-level def is parsed as a method node (tree-sitter `method` type)
     const methods = getNodesByLabel(result, 'Method');
     expect(methods).toContain('main');
   });
 });
 
-describe('Ruby singleton_class handling via sequential path (skipWorkers)', () => {
+describe('Ruby singleton_class handling (worker path)', () => {
   let result: PipelineResult;
 
   beforeAll(async () => {
-    result = await runPipelineFromRepo(path.join(FIXTURES, 'ruby-method-enrichment'), () => {}, {
-      skipWorkers: true,
-    });
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'ruby-method-enrichment'), () => {});
   }, 60000);
 
-  pit('keeps Animal as the owner for class << self methods', () => {
+  it('keeps Animal as the owner for class << self methods', () => {
     const hasMethod = getRelationships(result, 'HAS_METHOD');
     expect(
       hasMethod.find((e) => e.source === 'Animal' && e.target === 'from_habitat'),
     ).toBeDefined();
   });
 
-  pit('marks from_habitat as static in the sequential path', () => {
+  it('marks from_habitat as static', () => {
     const methods = getNodesByLabelFull(result, 'Method');
     const fromHabitat = methods.find(
       (m) => m.name === 'from_habitat' && m.properties.filePath?.includes('animal'),
@@ -1346,17 +1336,17 @@ describe('Ruby overload dispatch (format vs format_with_prefix)', () => {
     result = await runPipelineFromRepo(path.join(FIXTURES, 'ruby-overload-dispatch'), () => {});
   }, 60000);
 
-  pit('detects Formatter class', () => {
+  it('detects Formatter class', () => {
     expect(getNodesByLabel(result, 'Class')).toContain('Formatter');
   });
 
-  pit('detects format and format_with_prefix methods', () => {
+  it('detects format and format_with_prefix methods', () => {
     const methods = getNodesByLabel(result, 'Method');
     expect(methods).toContain('format');
     expect(methods).toContain('format_with_prefix');
   });
 
-  pit('emits HAS_METHOD edges for both methods on Formatter', () => {
+  it('emits HAS_METHOD edges for both methods on Formatter', () => {
     const hasMethod = getRelationships(result, 'HAS_METHOD');
     expect(hasMethod.find((e) => e.source === 'Formatter' && e.target === 'format')).toBeDefined();
     expect(
@@ -1364,21 +1354,21 @@ describe('Ruby overload dispatch (format vs format_with_prefix)', () => {
     ).toBeDefined();
   });
 
-  pit('extracts arity for format(value) — 1 parameter', () => {
+  it('extracts arity for format(value) — 1 parameter', () => {
     const methods = getNodesByLabelFull(result, 'Method');
     const format = methods.find((m) => m.name === 'format');
     expect(format).toBeDefined();
     expect(format!.properties.parameterCount).toBe(1);
   });
 
-  pit('extracts arity for format_with_prefix(value, prefix) — 2 parameters', () => {
+  it('extracts arity for format_with_prefix(value, prefix) — 2 parameters', () => {
     const methods = getNodesByLabelFull(result, 'Method');
     const fwp = methods.find((m) => m.name === 'format_with_prefix');
     expect(fwp).toBeDefined();
     expect(fwp!.properties.parameterCount).toBe(2);
   });
 
-  pit('resolves f.format call from run to Formatter#format', () => {
+  it('resolves f.format call from run to Formatter#format', () => {
     const calls = getRelationships(result, 'CALLS');
     const formatCall = calls.find(
       (c) => c.source === 'run' && c.target === 'format' && c.targetFilePath.includes('formatter'),
@@ -1386,7 +1376,7 @@ describe('Ruby overload dispatch (format vs format_with_prefix)', () => {
     expect(formatCall).toBeDefined();
   });
 
-  pit('resolves f.format_with_prefix call from run to Formatter#format_with_prefix', () => {
+  it('resolves f.format_with_prefix call from run to Formatter#format_with_prefix', () => {
     const calls = getRelationships(result, 'CALLS');
     const fwpCall = calls.find(
       (c) =>
@@ -1397,7 +1387,7 @@ describe('Ruby overload dispatch (format vs format_with_prefix)', () => {
     expect(fwpCall).toBeDefined();
   });
 
-  pit('detects run as top-level Method in app.rb', () => {
+  it('detects run as top-level Method in app.rb', () => {
     // Ruby top-level def is parsed as a method node (tree-sitter `method` type)
     const methods = getNodesByLabel(result, 'Method');
     expect(methods).toContain('run');
@@ -1405,7 +1395,7 @@ describe('Ruby overload dispatch (format vs format_with_prefix)', () => {
 });
 
 // ---------------------------------------------------------------------------
-// SM-9/SM-10: lookupMethodByOwnerWithMRO + D0 fast path — Ruby first-wins
+// SM-9/SM-10: inherited method resolution — Ruby first-wins inheritance walk
 // ---------------------------------------------------------------------------
 
 describe('Ruby Child extends Parent — inherited method resolution (SM-9)', () => {
@@ -1415,13 +1405,13 @@ describe('Ruby Child extends Parent — inherited method resolution (SM-9)', () 
     result = await runPipelineFromRepo(path.join(FIXTURES, 'ruby-child-extends-parent'), () => {});
   }, 60000);
 
-  pit('detects Parent and Child classes', () => {
+  it('detects Parent and Child classes', () => {
     const classes = getNodesByLabel(result, 'Class');
     expect(classes).toContain('Parent');
     expect(classes).toContain('Child');
   });
 
-  pit('resolves c.parent_method to Parent#parent_method via first-wins MRO walk', () => {
+  it('resolves c.parent_method to Parent#parent_method via first-wins MRO walk', () => {
     const calls = getRelationships(result, 'CALLS');
     const parentMethodCall = calls.find(
       (c) => c.target === 'parent_method' && c.targetFilePath.includes('parent.rb'),
@@ -1453,29 +1443,29 @@ describe('Ruby namespaced class/module definitions — graph nodes (issue #1975)
   // keyed by its full scoped name (so Foo::Bar and Baz::Bar never collide).
   // The node id matches the HAS_METHOD owner id derived from the same name field;
   // qualifiedName carries the dotted path (Foo.Bar).
-  pit('materializes a Class node for class Foo::Bar', () => {
+  it('materializes a Class node for class Foo::Bar', () => {
     const classes = getNodesByLabelFull(result, 'Class');
     expect(classes.some((c) => c.properties.qualifiedName === 'Foo.Bar')).toBe(true);
   });
 
   // R1: deep chain Outer::Middle::Inner → qualifiedName Outer.Middle.Inner.
-  pit('materializes a Class node for class Outer::Middle::Inner', () => {
+  it('materializes a Class node for class Outer::Middle::Inner', () => {
     const classes = getNodesByLabelFull(result, 'Class');
     expect(classes.some((c) => c.properties.qualifiedName === 'Outer.Middle.Inner')).toBe(true);
   });
 
   // R1: module → Trait (Ruby modules are relabeled Trait for class-like lookup).
-  pit('materializes a Trait node for module Baz::Qux', () => {
+  it('materializes a Trait node for module Baz::Qux', () => {
     expect(getNodesByLabel(result, 'Trait')).toContain('Baz::Qux');
   });
 
   // R2: methods of namespaced declarations must not produce dangling HAS_METHOD edges.
-  pit('emits no dangling HAS_METHOD edges for namespaced declarations', () => {
+  it('emits no dangling HAS_METHOD edges for namespaced declarations', () => {
     expect(findDanglingEdges(result, ['HAS_METHOD'])).toEqual([]);
   });
 
   // R2: the method resolves to a real owner node (not an 'unknown' dangling source).
-  pit('owns bar_method under a resolving namespaced class node', () => {
+  it('owns bar_method under a resolving namespaced class node', () => {
     const hasMethod = getRelationships(result, 'HAS_METHOD');
     const edge = hasMethod.find((e) => e.target === 'bar_method');
     expect(edge).toBeDefined();
@@ -1492,7 +1482,7 @@ describe('Ruby cross-namespace tail collision — distinct nodes (issue #1975)',
 
   // R3: Foo::Bar and Baz::Bar share the tail `Bar` but must NOT merge — keying by
   // the full scoped name keeps them two distinct Class nodes.
-  pit('keeps Foo::Bar and Baz::Bar as two distinct Class nodes', () => {
+  it('keeps Foo::Bar and Baz::Bar as two distinct Class nodes', () => {
     const qns = getNodesByLabelFull(result, 'Class')
       .map((c) => c.properties.qualifiedName)
       .filter((q) => q === 'Foo.Bar' || q === 'Baz.Bar')
@@ -1501,10 +1491,290 @@ describe('Ruby cross-namespace tail collision — distinct nodes (issue #1975)',
   });
 
   // R2/R3: each namespaced class owns its own method through a resolving node.
-  pit('owns each method under its own namespaced class (no dangling, no cross-wire)', () => {
+  it('owns each method under its own namespaced class (no dangling, no cross-wire)', () => {
     expect(findDanglingEdges(result, ['HAS_METHOD'])).toEqual([]);
     const hasMethod = getRelationships(result, 'HAS_METHOD');
     expect(hasMethod.some((e) => e.target === 'from_foo' && e.sourceLabel === 'Class')).toBe(true);
     expect(hasMethod.some((e) => e.target === 'from_baz' && e.sourceLabel === 'Class')).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Inline module-nested same-tail collision — distinct nodes (issue #1978)
+//
+// `module Outer; class Inner; end; end` + `module Other; class Inner; end; end`
+// must own their methods through TWO distinct Class nodes (qn Outer.Inner vs
+// Other.Inner). On the pre-fix base both Inner classes merge into one
+// simple-keyed node and from_outer/from_other cross-wire (dangling:0 but wrong).
+// Asserts positive owner-identity by the resolved node's qualifiedName (R7).
+// (Distinct from the compact `Foo::Bar` collision block above, which #1977 fixed.)
+// ---------------------------------------------------------------------------
+
+describe('Ruby inline module-nested same-tail collision — distinct nodes (issue #1978)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'ruby-nested-tail-collision'), () => {});
+  }, 60000);
+
+  it('owns from_outer / from_other through distinct Outer.Inner / Other.Inner nodes (R7)', () => {
+    expect(findDanglingEdges(result, ['HAS_METHOD'])).toEqual([]);
+    const hm = getRelationships(result, 'HAS_METHOD');
+    const ownerQn = (target: string) => {
+      const e = hm.find((x) => x.target === target);
+      expect(e, `HAS_METHOD -> ${target}`).toBeDefined();
+      return result.graph.getNode(e!.rel.sourceId)?.properties.qualifiedName;
+    };
+    expect(ownerQn('from_outer')).toBe('Outer.Inner');
+    expect(ownerQn('from_other')).toBe('Other.Inner');
+  });
+
+  // attr_accessor routes through the property-registration pre-pass — a SEPARATE
+  // code path from `def` methods: call-processor.ts (sequential/legacy) and the
+  // parse-worker `kind === 'properties'` block (worker). Under qualifiedNodeId the
+  // owner must resolve to the QUALIFIED class node (Shapes.Circle); the pre-fix
+  // simple `Class:f.rb:Circle` no longer exists and would dangle. Exercised here
+  // on an UNAMBIGUOUS nested class (no same-tail sibling) so the assertion is
+  // exact on both legs.
+  //
+  // NOTE: exact owner identity for a routed property under SAME-TAIL nested types
+  // (e.g. two `Inner` classes) is a separate resolution-side concern — the
+  // registry-primary `emitRubyMixinEdges` bridge resolves the owner by simple
+  // tail name (last-wins) and the worker path can emit a duplicate cross-wired
+  // edge. That is deferred to the #1978 resolution-side follow-up; the
+  // structure-phase HAS_METHOD ownership above is already exact on both legs.
+  it('owns radius (attr_accessor) under the qualified Shapes.Circle node, no dangling (R7)', () => {
+    expect(findDanglingEdges(result, ['HAS_PROPERTY'])).toEqual([]);
+    const hp = getRelationships(result, 'HAS_PROPERTY');
+    const e = hp.find((x) => x.target === 'radius');
+    expect(e, 'HAS_PROPERTY -> radius').toBeDefined();
+    expect(result.graph.getNode(e!.rel.sourceId)?.properties.qualifiedName).toBe('Shapes.Circle');
+  });
+
+  // #1982 resolution-side: SAME-TAIL routed-property owner identity. The
+  // pre-fix emitRubyMixinEdges keys its owner map by simple tail (last-wins),
+  // so outer_attr / other_attr both attach to whichever `Inner` was processed
+  // last. Asserts each routes to its OWN qualified node by qualifiedName, with
+  // exactly one (non-duplicated) edge. Registry-primary only.
+  it('owns outer_attr / other_attr under their OWN qualified Inner node (same-tail attr_accessor, R7)', () => {
+    const hp = getRelationships(result, 'HAS_PROPERTY');
+    const ownerQnOf = (prop: string) => {
+      const e = hp.find((x) => x.target === prop);
+      expect(e, `HAS_PROPERTY -> ${prop}`).toBeDefined();
+      return result.graph.getNode(e!.rel.sourceId)?.properties.qualifiedName;
+    };
+    expect(ownerQnOf('outer_attr')).toBe('Outer.Inner');
+    expect(ownerQnOf('other_attr')).toBe('Other.Inner');
+    expect(hp.filter((x) => x.target === 'outer_attr')).toHaveLength(1);
+    expect(hp.filter((x) => x.target === 'other_attr')).toHaveLength(1);
+  });
+
+  // #1982 resolution-side: SAME-TAIL mixin owner identity (IMPLEMENTS).
+  it('routes include OuterMix / OtherMix to their OWN qualified Inner owner (same-tail mixin, R7)', () => {
+    const impl = getRelationships(result, 'IMPLEMENTS');
+    const ownerQnOfMixin = (mixinName: string) => {
+      const e = impl.find((x) => x.target === mixinName);
+      expect(e, `IMPLEMENTS -> ${mixinName}`).toBeDefined();
+      return result.graph.getNode(e!.rel.sourceId)?.properties.qualifiedName;
+    };
+    expect(ownerQnOfMixin('OuterMix')).toBe('Outer.Inner');
+    expect(ownerQnOfMixin('OtherMix')).toBe('Other.Inner');
+  });
+});
+
+// Same fixture through the WORKER pool. The deferred note flagged that the worker
+// path could emit a DUPLICATE cross-wired same-tail owner edge (the worker emits
+// the __property__/__heritage__ markers, which must now carry the full qualified
+// owner). Asserts worker == sequential: each attr owns its OWN qualified node with
+// exactly one edge (#1982 R7). Registry-primary only.
+describe('Ruby inline module-nested same-tail collision — worker path parity (issue #1982)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'ruby-nested-tail-collision'),
+      () => {},
+      {
+        workerPoolSize: 2,
+      },
+    );
+  }, 120000);
+
+  it('genuinely used the worker pool for the same-tail Ruby fixture', () => {
+    expect(result.usedWorkerPool).toBe(true);
+  });
+
+  it('owns outer_attr / other_attr under their OWN qualified Inner node on the worker path (no duplicate, R7)', () => {
+    const hp = getRelationships(result, 'HAS_PROPERTY');
+    const ownerQnOf = (prop: string) => {
+      const e = hp.find((x) => x.target === prop);
+      expect(e, `HAS_PROPERTY -> ${prop}`).toBeDefined();
+      return result.graph.getNode(e!.rel.sourceId)?.properties.qualifiedName;
+    };
+    expect(ownerQnOf('outer_attr')).toBe('Outer.Inner');
+    expect(ownerQnOf('other_attr')).toBe('Other.Inner');
+    expect(hp.filter((x) => x.target === 'outer_attr')).toHaveLength(1);
+    expect(hp.filter((x) => x.target === 'other_attr')).toHaveLength(1);
+  });
+
+  // Worker-path parity for the MIXIN (IMPLEMENTS) path — the __heritage__ marker
+  // owner must survive worker serialization (not only attr_accessor / HAS_PROPERTY).
+  it('routes include OuterMix / OtherMix to their OWN qualified Inner owner on the worker path (IMPLEMENTS, R7)', () => {
+    const impl = getRelationships(result, 'IMPLEMENTS');
+    const ownerQnOfMixin = (mixinName: string) => {
+      const e = impl.find((x) => x.target === mixinName);
+      expect(e, `IMPLEMENTS -> ${mixinName}`).toBeDefined();
+      return result.graph.getNode(e!.rel.sourceId)?.properties.qualifiedName;
+    };
+    expect(ownerQnOfMixin('OuterMix')).toBe('Outer.Inner');
+    expect(ownerQnOfMixin('OtherMix')).toBe('Other.Inner');
+    expect(impl.filter((x) => x.target === 'OuterMix')).toHaveLength(1);
+    expect(impl.filter((x) => x.target === 'OtherMix')).toHaveLength(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Same-tail NESTED mixin MODULE collision — distinct Trait nodes (issue #1991)
+//
+// `module App; module Loggable; class S; include Loggable; end; end` +
+// `module Web; module Loggable; class T; include Loggable; end; end`. The
+// structure phase never qualified `module` (Trait) node ids, so both Loggable
+// modules collapsed onto one Trait:app.rb:Loggable node and the bare-name mixin
+// reference cross-wired IMPLEMENTS (first-wins tail). Asserts two distinct Trait
+// nodes and each class IMPLEMENTS its OWN module (positive target identity), not
+// just dangle-free. The IMPLEMENTS routing is registry-primary.
+// ---------------------------------------------------------------------------
+
+describe('Ruby same-tail nested mixin-module collision — distinct Trait nodes (issue #1991)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'ruby-nested-mixin-tail-collision'),
+      () => {},
+    );
+  }, 60000);
+
+  it('materializes App.Loggable and Web.Loggable as two distinct Trait nodes', () => {
+    const qns = getNodesByLabelFull(result, 'Trait')
+      .map((n) => n.properties.qualifiedName)
+      .filter((q) => q === 'App.Loggable' || q === 'Web.Loggable')
+      .sort();
+    expect(qns).toEqual(['App.Loggable', 'Web.Loggable']);
+  });
+
+  it('routes S -> App.Loggable and T -> Web.Loggable (no cross-wire, R2)', () => {
+    expect(findDanglingEdges(result, ['IMPLEMENTS', 'HAS_METHOD'])).toEqual([]);
+    const impl = getRelationships(result, 'IMPLEMENTS');
+    const targetQnOf = (className: string) => {
+      const e = impl.find((x) => x.source === className && x.target === 'Loggable');
+      expect(e, `IMPLEMENTS from ${className}`).toBeDefined();
+      return result.graph.getNode(e!.rel.targetId)?.properties.qualifiedName;
+    };
+    expect(targetQnOf('S')).toBe('App.Loggable');
+    expect(targetQnOf('T')).toBe('Web.Loggable');
+    expect(impl.filter((x) => x.source === 'S')).toHaveLength(1);
+    expect(impl.filter((x) => x.source === 'T')).toHaveLength(1);
+  });
+});
+
+// Same fixture through the WORKER pool — the __heritage__ marker owner + the
+// qualified module node id must survive worker serialization (#1991 R2/R15).
+describe('Ruby same-tail nested mixin-module collision — worker path parity (issue #1991)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'ruby-nested-mixin-tail-collision'),
+      () => {},
+      { workerPoolSize: 2 },
+    );
+  }, 120000);
+
+  it('genuinely used the worker pool for the same-tail mixin-module fixture', () => {
+    expect(result.usedWorkerPool).toBe(true);
+  });
+
+  it('routes S -> App.Loggable and T -> Web.Loggable on the worker path (no cross-wire)', () => {
+    const impl = getRelationships(result, 'IMPLEMENTS');
+    const targetQnOf = (className: string) => {
+      const e = impl.find((x) => x.source === className && x.target === 'Loggable');
+      expect(e, `IMPLEMENTS from ${className}`).toBeDefined();
+      return result.graph.getNode(e!.rel.targetId)?.properties.qualifiedName;
+    };
+    expect(targetQnOf('S')).toBe('App.Loggable');
+    expect(targetQnOf('T')).toBe('Web.Loggable');
+    expect(impl.filter((x) => x.source === 'S')).toHaveLength(1);
+    expect(impl.filter((x) => x.source === 'T')).toHaveLength(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Nested mixin included by SHORT name — IMPLEMENTS edge must not drop (#1982).
+//
+// `module App; module Loggable; end; class Service; include Loggable; end; end`
+// — `Loggable` is nested (qn App.Loggable) but included by its bare short name.
+// The structure phase materializes a distinct App.Loggable node, but
+// emitRubyMixinEdges keys graphIdByName by FULL qualifiedName while the
+// __heritage__ marker carries the bare arg.text ('Loggable'), so the
+// mixin-target lookup missed and the IMPLEMENTS edge was silently dropped
+// (0 dangling, undetectable). The shipped same-tail fixture only uses TOP-LEVEL
+// mixin modules (full qn == bare name), so it cannot catch this. Asserts the
+// edge exists and resolves by NODE ID (KTD3 — not the normalized qualifiedName
+// property). Registry-primary only (emitRubyMixinEdges is the registry bridge).
+// ---------------------------------------------------------------------------
+
+describe('Ruby nested mixin by short name — IMPLEMENTS not dropped (issue #1982)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'ruby-nested-mixin-shortname'),
+      () => {},
+    );
+  }, 60000);
+
+  it('emits App.Service -IMPLEMENTS-> App.Loggable for a short-name nested mixin (R1)', () => {
+    expect(findDanglingEdges(result, ['IMPLEMENTS'])).toEqual([]);
+    const impl = getRelationships(result, 'IMPLEMENTS');
+    const e = impl.find((x) => x.target === 'Loggable');
+    expect(e, 'IMPLEMENTS -> Loggable (nested mixin by short name)').toBeDefined();
+    // KTD3: discriminate on the resolved node id, not the normalized property.
+    // The owner resolves to the QUALIFIED `App.Service` class node — the pre-fix
+    // bug dropped the edge entirely, so its presence + qualified owner is the
+    // discriminator. (The mixin module is a Trait node keyed by its simple name
+    // `Loggable`; Trait-node qualification under same-tail modules is a separate
+    // structure-phase concern, deferred.)
+    expect(e!.rel.sourceId).toContain('App.Service');
+    expect(e!.rel.targetId).toContain('Loggable');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Qualified mixin argument — `::` must not corrupt the __heritage__ marker (#1982).
+//
+// `class Consumer; include Outer::Mixin; end` — the `::` in `arg.text`
+// (`Outer::Mixin`) collided with the ':'-delimited __heritage__ marker field
+// separator (`__heritage__:include:Outer::Mixin:Consumer`), so emitRubyMixinEdges
+// mis-split it and dropped the edge. The marker now embeds the dotted form
+// (`Outer.Mixin`), which both parses correctly and matches the mixin def's
+// qualifiedName. Registry-primary only.
+// ---------------------------------------------------------------------------
+
+describe('Ruby qualified mixin arg — IMPLEMENTS not corrupted by :: (issue #1982)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'ruby-qualified-mixin'), () => {});
+  }, 60000);
+
+  it('emits Consumer -IMPLEMENTS-> Outer.Mixin for include Outer::Mixin (R2)', () => {
+    expect(findDanglingEdges(result, ['IMPLEMENTS'])).toEqual([]);
+    const impl = getRelationships(result, 'IMPLEMENTS');
+    const e = impl.find((x) => x.target === 'Mixin');
+    expect(e, 'IMPLEMENTS -> Mixin (qualified mixin arg)').toBeDefined();
+    // KTD3: discriminate on the resolved node id (the pre-fix bug dropped the edge).
+    expect(e!.rel.sourceId).toContain('Consumer');
+    expect(e!.rel.targetId).toContain('Mixin');
   });
 });

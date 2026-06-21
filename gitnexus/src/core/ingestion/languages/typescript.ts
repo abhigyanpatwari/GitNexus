@@ -1,9 +1,8 @@
 /**
  * TypeScript and JavaScript language providers.
  *
- * Both languages share the same type extraction config (typescriptConfig),
- * export checker (tsExportChecker), and named binding extractor
- * (extractTsNamedBindings). They differ in file extensions, tree-sitter
+ * Both languages share the same type extraction config (typescriptConfig)
+ * and export checker (tsExportChecker). They differ in file extensions, tree-sitter
  * queries (TypeScript grammar has interface/type nodes), and language ID.
  */
 
@@ -17,6 +16,7 @@ import {
   javascriptClassConfig,
 } from '../class-extractors/configs/typescript-javascript.js';
 import type { SyntaxNode } from '../utils/ast-helpers.js';
+import { createTypeScriptCfgVisitor } from '../cfg/visitors/typescript.js';
 import { typeConfig as typescriptConfig } from '../type-extractors/typescript.js';
 import { tsExportChecker } from '../export-detection.js';
 import { createImportResolver } from '../import-resolvers/resolver-factory.js';
@@ -24,7 +24,6 @@ import {
   typescriptImportConfig,
   javascriptImportConfig,
 } from '../import-resolvers/configs/typescript-javascript.js';
-import { extractTsNamedBindings } from '../named-bindings/typescript.js';
 import { TYPESCRIPT_QUERIES, JAVASCRIPT_QUERIES } from '../tree-sitter-queries.js';
 import { typescriptFieldExtractor } from '../field-extractors/typescript.js';
 import { createFieldExtractor } from '../field-extractors/generic.js';
@@ -44,7 +43,6 @@ import {
   typescriptCallConfig,
   javascriptCallConfig,
 } from '../call-extractors/configs/typescript-javascript.js';
-import { createHeritageExtractor } from '../heritage-extractors/generic.js';
 import {
   ARRAY_METHOD_HOC_BLOCKLIST_SET,
   DEFAULT_EXPORT_IDENTIFIER_BLOCKLIST_SET,
@@ -338,7 +336,6 @@ export const typescriptProvider = defineLanguage({
   typeConfig: typescriptConfig,
   exportChecker: tsExportChecker,
   importResolver: createImportResolver(typescriptImportConfig),
-  namedBindingExtractor: extractTsNamedBindings,
   callExtractor: createCallExtractor(typescriptCallConfig),
   fieldExtractor: typescriptFieldExtractor,
   methodExtractor: createMethodExtractor({
@@ -347,7 +344,6 @@ export const typescriptProvider = defineLanguage({
   }),
   variableExtractor: createVariableExtractor(typescriptVariableConfig),
   classExtractor: createClassExtractor(typescriptClassConfig),
-  heritageExtractor: createHeritageExtractor(SupportedLanguages.TypeScript),
   builtInNames: BUILT_INS,
 
   // ── RFC #909 Ring 3: scope-based resolution hooks (RFC §5) ──────────
@@ -356,6 +352,8 @@ export const typescriptProvider = defineLanguage({
   // canonical capture vocabulary in ./typescript/query.ts
   // (TYPESCRIPT_SCOPE_QUERY constant).
   emitScopeCaptures: emitTsScopeCaptures,
+  // CFG/PDG substrate (#2081 M1) — runs in the worker on a --pdg run.
+  cfgVisitor: createTypeScriptCfgVisitor(),
   interpretImport: interpretTsImport,
   interpretTypeBinding: interpretTsTypeBinding,
   bindingScopeFor: tsBindingScopeFor,
@@ -400,7 +398,6 @@ export const javascriptProvider = defineLanguage({
   typeConfig: typescriptConfig,
   exportChecker: tsExportChecker,
   importResolver: createImportResolver(javascriptImportConfig),
-  namedBindingExtractor: extractTsNamedBindings,
   callExtractor: createCallExtractor(javascriptCallConfig),
   fieldExtractor: createFieldExtractor(javascriptConfig),
   methodExtractor: createMethodExtractor({
@@ -409,7 +406,6 @@ export const javascriptProvider = defineLanguage({
   }),
   variableExtractor: createVariableExtractor(javascriptVariableConfig),
   classExtractor: createClassExtractor(javascriptClassConfig),
-  heritageExtractor: createHeritageExtractor(SupportedLanguages.JavaScript),
   builtInNames: BUILT_INS,
 
   // ── RFC #909 Ring 3: scope-based resolution hooks (RFC §5) ──────────
@@ -419,6 +415,8 @@ export const javascriptProvider = defineLanguage({
   // JSDoc type bindings) live in ./javascript/captures.ts.
   // See ./javascript/index.ts for the full per-module rationale.
   emitScopeCaptures: emitJsScopeCaptures,
+  // CFG/PDG substrate (#2081 M1) — TS and JS share the same grammar family.
+  cfgVisitor: createTypeScriptCfgVisitor(),
   interpretImport: interpretJsImport,
   interpretTypeBinding: interpretJsTypeBinding,
   bindingScopeFor: jsBindingScopeFor,

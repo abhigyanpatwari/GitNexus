@@ -6,6 +6,7 @@ import type {
   ClassLikeNodeLabel,
   ExtractedClassSymbol,
 } from '../class-types.js';
+import { splitQualifiedName } from '../utils/qualified-name.js';
 
 const DEFAULT_SCOPE_NAME_NODE_TYPES = new Set([
   'nested_namespace_specifier',
@@ -57,20 +58,6 @@ const CLASS_LIKE_LABELS = new Set<ClassLikeNodeLabel>([
   'Enum',
   'Record',
 ]);
-
-const normalizeQualifiedName = (value: string): string =>
-  value
-    .replace(/\s+/g, '')
-    .replace(/^::/, '')
-    .replace(/::/g, '.')
-    .replace(/\\/g, '.')
-    .replace(/\.+/g, '.')
-    .replace(/^\.+|\.+$/g, '');
-
-const splitQualifiedName = (value: string): string[] => {
-  const normalized = normalizeQualifiedName(value);
-  return normalized ? normalized.split('.').filter(Boolean) : [];
-};
 
 const extractScopeSegmentsFromNode = (
   scopeNode: SyntaxNode,
@@ -165,6 +152,7 @@ export function createClassExtractor(config: ClassExtractionConfig): ClassExtrac
 
   return {
     language: config.language,
+    qualifiedNodeId: config.qualifiedNodeId ?? false,
 
     isTypeDeclaration(node: SyntaxNode): boolean {
       return typeDeclarationSet.has(node.type);
@@ -174,6 +162,14 @@ export function createClassExtractor(config: ClassExtractionConfig): ClassExtrac
 
     extractQualifiedName(node: SyntaxNode, simpleName: string): string | null {
       return extract(node, { name: simpleName })?.qualifiedName ?? null;
+    },
+
+    // #1991: qualify a non-typeDeclaration scope node (e.g. a Ruby `module` → Trait)
+    // by the same ancestor-scope walk the node-id path uses, so two same-tail nested
+    // mixin modules stay distinct. extract()/extractQualifiedName cannot be reused —
+    // they bail on non-typeDeclarations (a module is not in typeDeclarationNodes).
+    qualifyScopeName(node: SyntaxNode, simpleName: string): string {
+      return buildQualifiedName(node, simpleName);
     },
 
     shouldSkipClassCapture(context): boolean {

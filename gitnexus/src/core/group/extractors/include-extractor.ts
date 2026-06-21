@@ -2,8 +2,22 @@ import * as path from 'node:path';
 import * as fs from 'node:fs/promises';
 import { glob } from 'glob';
 import Parser from 'tree-sitter';
-import C from 'tree-sitter-c';
 import Cpp from 'tree-sitter-cpp';
+import { requireVendoredGrammar } from '../../tree-sitter/vendored-grammars.js';
+
+// `tree-sitter-c` is vendored (#2116), loaded from `vendor/` by absolute path
+// (NEVER copied into node_modules — see vendored-grammars.ts / #2111). Load it
+// via a guarded call rather than a top-level `import C from 'tree-sitter-c'`,
+// which would throw ERR_MODULE_NOT_FOUND at module-load and crash analyze
+// (#2091/#2093). It may be absent on a platform without a prebuild; when the
+// binding is absent, `getLanguageForFile` returns null for `.c`/`.h` so C
+// include-extraction is skipped (C++ is unaffected — its binding always ships).
+let C: unknown = null;
+try {
+  C = requireVendoredGrammar('tree-sitter-c');
+} catch {
+  /* C grammar unavailable — C include extraction degrades to a no-op. */
+}
 import type { ContractExtractor, CypherExecutor } from '../contract-extractor.js';
 import type { ExtractedContract, RepoHandle } from '../types.js';
 import { readSafe } from './fs-utils.js';
@@ -16,7 +30,7 @@ import { logger } from '../../logger.js';
 /**
  * Cross-repo C/C++ `#include` dependency extractor.
  *
- * **Provider side:** registers every `.h/.hpp/.hxx/.hh` file in the repo
+ * **Provider side:** registers every `.h/.hpp/.hxx/.hh/.cuh` file in the repo
  * as a provider contract with `include::<relative-path>`.
  *
  * **Consumer side:** parses all C/C++ source/header files for `#include "…"`
@@ -31,13 +45,20 @@ import { logger } from '../../logger.js';
 
 // ---------- constants ----------
 
-const HEADER_EXTENSIONS = new Set(['.h', '.hpp', '.hxx', '.hh']);
+const HEADER_EXTENSIONS = new Set(['.h', '.hpp', '.hxx', '.hh', '.cuh']);
 
-// Source = headers (provider-eligible) ∪ implementation files (.c/.cpp/.cc/.cxx).
+// Source = headers (provider-eligible) ∪ implementation files (.c/.cpp/.cc/.cxx/.cu).
 // Spread keeps the subset relationship explicit so a future contributor adding
 // a new header extension to HEADER_EXTENSIONS does not have to remember to
 // also add it here.
-const SOURCE_EXTENSIONS = new Set<string>([...HEADER_EXTENSIONS, '.c', '.cpp', '.cc', '.cxx']);
+const SOURCE_EXTENSIONS = new Set<string>([
+  ...HEADER_EXTENSIONS,
+  '.c',
+  '.cpp',
+  '.cc',
+  '.cxx',
+  '.cu',
+]);
 
 const INCLUDE_QUERY_SRC = '(preproc_include path: (_) @import.source) @import';
 
@@ -261,6 +282,8 @@ function getLanguageForFile(filePath: string): unknown | null {
     case '.hpp':
     case '.hxx':
     case '.hh':
+    case '.cu':
+    case '.cuh':
       return Cpp;
     default:
       return null;
@@ -284,7 +307,7 @@ function getLanguageForFile(filePath: string): unknown | null {
 function isLocalInclude(cleaned: string, suffixIndex: SuffixIndex): boolean {
   const candidates = [cleaned];
   if (!/\.[a-zA-Z0-9]+$/.test(cleaned)) {
-    for (const ext of ['.h', '.hpp', '.hxx', '.hh']) candidates.push(cleaned + ext);
+    for (const ext of HEADER_EXTENSIONS) candidates.push(cleaned + ext);
   }
   for (const c of candidates) {
     if (suffixIndex.get(c) || suffixIndex.getInsensitive(c)) return true;
@@ -414,7 +437,7 @@ export class IncludeExtractor implements ContractExtractor {
     try {
       const rows = await db(
         `MATCH (f:File)
-         WHERE f.filePath =~ '.*\\\\.(h|hpp|hxx|hh)$'
+         WHERE f.filePath =~ '.*\\\\.(h|hpp|hxx|hh|cuh)$'
          RETURN f.filePath AS filePath, f.id AS fileId`,
       );
       // gitnexus analyze stores absolute paths in the File.filePath column.

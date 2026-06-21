@@ -42,6 +42,15 @@ const EXPO_NAV_PATTERNS = [
 export interface RouteEntry {
   filePath: string;
   source: string;
+  /**
+   * HTTP verb for this route when ingestion knows it structurally
+   * (Spring/Laravel framework routes and decorator routes carry
+   * `httpMethod`; filesystem-derived routes — Next.js/Expo/PHP file
+   * routes — do not, so this stays undefined for them). Persisted onto
+   * the Route node so downstream contract extraction can read the verb
+   * from the graph instead of re-parsing the handler source.
+   */
+  method?: string;
 }
 
 export interface RoutesOutput {
@@ -135,6 +144,33 @@ function escapeRegex(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
+/**
+ * Canonicalize a route's HTTP verb for persistence on the Route node.
+ * Returns an upper-cased standard method, or `undefined` when the value
+ * is not a real HTTP verb. Laravel `Route::resource` / `apiResource`
+ * surface `httpMethod` values like `resource` / `apiResource` (they
+ * expand to several verbs at runtime), so they must not be stored as a
+ * method — leaving them `undefined` keeps the column clean and lets the
+ * contract extractor fall back to its source-scan path for those routes.
+ */
+const VALID_HTTP_METHODS = new Set([
+  'GET',
+  'POST',
+  'PUT',
+  'PATCH',
+  'DELETE',
+  'HEAD',
+  'OPTIONS',
+  'TRACE',
+  'CONNECT',
+]);
+
+export function normalizeRouteMethod(raw: string | null | undefined): string | undefined {
+  if (typeof raw !== 'string') return undefined;
+  const verb = raw.trim().toUpperCase();
+  return VALID_HTTP_METHODS.has(verb) ? verb : undefined;
+}
+
 export const routesPhase: PipelinePhase<RoutesOutput> = {
   name: 'routes',
   deps: ['parse'],
@@ -213,6 +249,7 @@ export const routesPhase: PipelinePhase<RoutesOutput> = {
       addRoute(routeUrl, {
         filePath: route.filePath,
         source: 'framework-route',
+        method: normalizeRouteMethod(route.httpMethod),
       });
       if (route.routeName && !namedRouteRegistry.has(route.routeName)) {
         namedRouteRegistry.set(route.routeName, routeUrl);
@@ -223,6 +260,7 @@ export const routesPhase: PipelinePhase<RoutesOutput> = {
       addRoute(url, {
         filePath: dr.filePath,
         source: `decorator-${dr.decoratorName}`,
+        method: normalizeRouteMethod(dr.httpMethod),
       });
     }
 
@@ -232,7 +270,7 @@ export const routesPhase: PipelinePhase<RoutesOutput> = {
       handlerContents = await readFileContents(ctx.repoPath, handlerPaths);
 
       for (const [routeURL, entry] of routeRegistry) {
-        const { filePath: handlerPath, source: routeSource } = entry;
+        const { filePath: handlerPath, source: routeSource, method: routeMethod } = entry;
         const content = handlerContents.get(handlerPath);
 
         const { responseKeys, errorKeys } = content
@@ -251,6 +289,7 @@ export const routesPhase: PipelinePhase<RoutesOutput> = {
           properties: {
             name: routeURL,
             filePath: handlerPath,
+            ...(routeMethod ? { method: routeMethod } : {}),
             ...(responseKeys ? { responseKeys } : {}),
             ...(errorKeys ? { errorKeys } : {}),
             ...(middleware && middleware.length > 0 ? { middleware } : {}),
@@ -367,25 +406,77 @@ export const routesPhase: PipelinePhase<RoutesOutput> = {
     // scan JS/TS consumer files for calls to those wrapper functions with
     // URL-like string arguments and add them to allFetchCalls so
     // processNextjsFetchRoutes can create FETCHES edges.
-    if (allFetchWrapperDefs && allFetchWrapperDefs.length > 0 && routeRegistry.size > 0) {
-      const wrapperNames = new Set(allFetchWrapperDefs.map((d) => d.functionName));
+    // Wrapper names come from two sources: functions the parse phase
+    // auto-detected as calling the bare global `fetch()`, plus any names the
+    // user declared in `.gitnexusrc` `fetchWrappers` (#1589/#1852 residual).
+    // Config names let an axios/custom-client wrapper — or one named outside the
+    // built-in convention — still produce route_map consumers; without them it
+    // silently falls back to `consumers: []`. Configured names alone are enough
+    // to run the scan even when nothing was auto-detected.
+    // Configured names are already validated/trimmed/de-duped/capped by
+    // analyze-config.ts — trusted as-is (#1589/#1852 review F9, dropped the
+    // redundant re-trim/re-filter). The single filter below guards only the
+    // auto-detected `functionName`s, which have no shape guarantee.
+    const configuredWrappers = ctx.options?.fetchWrappers ?? [];
+    const wrapperNames = new Set<string>(
+      [...(allFetchWrapperDefs ?? []).map((d) => d.functionName), ...configuredWrappers].filter(
+        (n): n is string => typeof n === 'string' && n.trim().length > 0,
+      ),
+    );
+    if (wrapperNames.size > 0 && routeRegistry.size > 0) {
       const jsFiles = allPaths.filter((p) => /\.[jt]sx?$/.test(p));
-      if (jsFiles.length > 0 && wrapperNames.size > 0) {
-        const jsContents = await readFileContents(ctx.repoPath, jsFiles);
-        for (const [filePath, content] of jsContents) {
-          for (const name of wrapperNames) {
-            const regex = new RegExp(
-              `\\b${escapeRegex(name)}\\s*\\(\\s*['"\`](/[^'"\`\\s)]+)['"\`]`,
-              'g',
-            );
-            let match;
-            while ((match = regex.exec(content)) !== null) {
-              allFetchCalls.push({
-                filePath,
-                fetchURL: match[1],
-                lineNumber: content.substring(0, match.index).split('\n').length,
-              });
+      if (jsFiles.length > 0) {
+        // Reuse contents already read for handler extraction; only read the
+        // remainder (mirrors the Expo block above). Avoids a second full read of
+        // files we already have in memory.
+        const unreadJsFiles = jsFiles.filter((p) => !handlerContents?.has(p));
+        const extraContents =
+          unreadJsFiles.length > 0
+            ? await readFileContents(ctx.repoPath, unreadJsFiles)
+            : new Map<string, string>();
+        // One alternation regex over every wrapper name per file — O(files), not
+        // O(files × wrappers) (#1852 review F3). Names are escaped and grouped
+        // non-capturing so capture group 1 stays the URL. The left boundary is a
+        // negative lookbehind, not `\b`: a bare configured name like `get` must
+        // match the free call `get('/x')` but NOT a member access `client.get(`
+        // (a `.get(` on an unrelated object), and `apiFetch` must not match
+        // `myApiFetch`. Member-style wrappers are configured with the dot
+        // (`client.get`), where the `.` is part of the pattern. The `u` flag +
+        // Unicode property classes make the boundary cover non-ASCII identifier
+        // characters too — ASCII `\w` would let `caféget('/x')` match `get`
+        // (#1852 review F10).
+        const alternation = [...wrapperNames].map(escapeRegex).join('|');
+        const wrapperCallRegex = new RegExp(
+          `(?<![.\\p{L}\\p{N}_$])(?:${alternation})\\s*\\(\\s*['"\`](/[^'"\`\\s)]+)['"\`]`,
+          'gu',
+        );
+        const scanContent = (filePath: string, content: string): void => {
+          wrapperCallRegex.lastIndex = 0;
+          // 1-based line number via a running newline counter: matches arrive in
+          // ascending index, so accumulate newlines incrementally instead of
+          // re-allocating `content.substring(0, match.index).split('\n')` on
+          // every match (#1852 review F12). Output is identical.
+          let line = 1;
+          let scanned = 0;
+          let match;
+          while ((match = wrapperCallRegex.exec(content)) !== null) {
+            for (; scanned < match.index; scanned++) {
+              if (content.charCodeAt(scanned) === 10 /* '\n' */) line++;
             }
+            allFetchCalls.push({
+              filePath,
+              fetchURL: match[1],
+              lineNumber: line,
+            });
+          }
+        };
+        for (const [filePath, content] of extraContents) scanContent(filePath, content);
+        // Also scan already-read JS/TS handler files (a handler can itself
+        // consume another route through a wrapper).
+        if (handlerContents) {
+          for (const p of jsFiles) {
+            const cached = handlerContents.get(p);
+            if (cached !== undefined) scanContent(p, cached);
           }
         }
       }

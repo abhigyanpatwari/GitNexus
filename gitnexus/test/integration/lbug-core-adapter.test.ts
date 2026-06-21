@@ -114,6 +114,31 @@ withTestLbugDB(
         expect(stats.edges).toBe(4);
       });
 
+      it('deleteAllInterprocTaintPaths: removes TAINT_PATH edges and is benign when none exist (#2084 review P2-5)', async () => {
+        const { executeQuery: coreExecuteQuery, deleteAllInterprocTaintPaths } =
+          await import('../../src/core/lbug/lbug-adapter.js');
+
+        // Benign: no TAINT_PATH rows yet → returns 0, does NOT throw.
+        await expect(deleteAllInterprocTaintPaths()).resolves.toEqual({ edgesDeleted: 0 });
+
+        // Seed one TAINT_PATH edge between the two seeded Function nodes, then
+        // delete-all and confirm it is removed (the incremental-rebuild guard).
+        const fns = (await coreExecuteQuery('MATCH (n:Function) RETURN n.id AS id')) as {
+          id: string;
+        }[];
+        expect(fns.length).toBe(2);
+        await coreExecuteQuery(
+          `MATCH (a:Function {id: '${fns[0].id}'}), (b:Function {id: '${fns[1].id}'}) ` +
+            `CREATE (a)-[:CodeRelation {type: 'TAINT_PATH', confidence: 0.6, reason: '1', step: 0}]->(b)`,
+        );
+        const r = await deleteAllInterprocTaintPaths();
+        expect(r.edgesDeleted).toBe(1);
+        const left = await coreExecuteQuery(
+          `MATCH ()-[r:CodeRelation]->() WHERE r.type = 'TAINT_PATH' RETURN count(r) AS cnt`,
+        );
+        expect(Number((left[0] as { cnt: number }).cnt)).toBe(0);
+      });
+
       describe('unhappy path', () => {
         it('throws on malformed Cypher query', async () => {
           const { executeQuery } = await import('../../src/core/lbug/lbug-adapter.js');

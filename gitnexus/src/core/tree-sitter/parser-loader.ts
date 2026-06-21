@@ -3,6 +3,7 @@ import { createRequire } from 'node:module';
 import { SupportedLanguages } from 'gitnexus-shared';
 
 import { logger } from '../logger.js';
+import { requireVendoredGrammar } from './vendored-grammars.js';
 const _require = createRequire(import.meta.url);
 
 /**
@@ -39,6 +40,15 @@ interface GrammarSource {
   unavailableNote: string;
   optional?: boolean;
   severity?: 'warn' | 'error';
+  /**
+   * When true, this grammar may be disabled at runtime via
+   * `GITNEXUS_SKIP_OPTIONAL_GRAMMARS`. Set ONLY on genuinely-optional grammars
+   * (optionalDependencies / vendored — swift/dart/kotlin). Required dependencies
+   * routed through the optional machinery for ABI safety (e.g. C, which is
+   * `optional: true` + `severity: 'error'`) must NOT set this — opting out of a
+   * required parser is always an install/platform problem, never a user choice.
+   */
+  userSkippable?: boolean;
 }
 
 const ISSUES_URL = 'https://github.com/abhigyanpatwari/GitNexus/issues';
@@ -112,33 +122,35 @@ const SOURCES: Record<string, GrammarSource> = {
       'Vue parsing piggybacks on `tree-sitter-typescript`. Check the install and native binding.',
   },
 
-  // tree-sitter-c is a required dependency, but its native binding has
-  // historically been ABI-incompatible with the bundled tree-sitter@0.21.1
-  // runtime on some platforms (#1242, #858). Loading it through the
-  // optional machinery turns a would-be segfault into a clean degradation
-  // while preserving every other language's analysis. Severity is pinned
-  // to `error` because the package is in `dependencies`: a failure here
-  // is always an install/platform problem the user needs to see, never an
-  // expected "user opted out" condition like Swift/Dart/Kotlin.
+  // tree-sitter-c is a core grammar, vendored prebuild-only (under
+  // gitnexus/vendor/tree-sitter-c) with GitNexus-built prebuilds for every
+  // supported platform-arch — upstream ships only 4/6 (#2116) and C is a
+  // required grammar whose source build hard-fails install on a toolchain-less
+  // ARM host. Loading through the optional machinery turns a would-be ABI
+  // segfault (#1242, #858) into a clean degradation while preserving every
+  // other language's analysis. Severity stays `error` because C is not a
+  // user-opt-out grammar like Swift/Dart/Kotlin: a failure here is always an
+  // install/platform problem the user needs to see.
   [SupportedLanguages.C]: {
-    load: () => _require('tree-sitter-c'),
+    load: () => requireVendoredGrammar('tree-sitter-c'),
     optional: true,
     severity: 'error',
     unavailableNote:
-      'C parsing disabled: `tree-sitter-c` could not be loaded. ' +
-      'This package is in `dependencies` and prebuilds ship for all supported ' +
-      'platforms (win32/darwin/linux x64+arm64, Node 18/20/22), so this ' +
-      'usually indicates a corrupted install, an unsupported Node version, ' +
-      'or a native ABI mismatch with the bundled tree-sitter runtime. ' +
-      'Try `npm rebuild tree-sitter-c` or reinstalling, then re-run analyze. ' +
+      'C parsing disabled: vendored `tree-sitter-c` (under ' +
+      '`gitnexus/vendor/tree-sitter-c`) could not be loaded. GitNexus ships ' +
+      'prebuilt binaries for all supported platforms (win32/darwin/linux ' +
+      'x64+arm64, N-API), so this usually indicates a corrupted install or a ' +
+      'native ABI mismatch with the bundled tree-sitter@0.21.1 runtime. ' +
+      'Try reinstalling, then re-run analyze. ' +
       `If the failure persists, file details at ${ISSUES_URL}/1242.`,
   },
 
   // optionalDependencies — may be absent on platforms without prebuilds
   // or when users skip optional installs.
   [SupportedLanguages.Swift]: {
-    load: () => _require('tree-sitter-swift'),
+    load: () => requireVendoredGrammar('tree-sitter-swift'),
     optional: true,
+    userSkippable: true,
     unavailableNote:
       'Swift parsing disabled: vendored `tree-sitter-swift` (under ' +
       '`gitnexus/vendor/tree-sitter-swift`) failed to load. ' +
@@ -146,8 +158,9 @@ const SOURCES: Record<string, GrammarSource> = {
       `See ${ISSUES_URL}/1130.`,
   },
   [SupportedLanguages.Dart]: {
-    load: () => _require('tree-sitter-dart'),
+    load: () => requireVendoredGrammar('tree-sitter-dart'),
     optional: true,
+    userSkippable: true,
     unavailableNote:
       'Dart parsing disabled: vendored `tree-sitter-dart` (under ' +
       '`gitnexus/vendor/tree-sitter-dart`) failed to load. ' +
@@ -155,11 +168,14 @@ const SOURCES: Record<string, GrammarSource> = {
       `See ${ISSUES_URL}/1125.`,
   },
   [SupportedLanguages.Kotlin]: {
-    load: () => _require('tree-sitter-kotlin'),
+    load: () => requireVendoredGrammar('tree-sitter-kotlin'),
     optional: true,
+    userSkippable: true,
     unavailableNote:
-      'Kotlin parsing disabled: `tree-sitter-kotlin` is an optionalDependency ' +
-      'and is not installed (or its native binding failed to build).',
+      'Kotlin parsing disabled: vendored `tree-sitter-kotlin` (under ' +
+      '`gitnexus/vendor/tree-sitter-kotlin`) failed to load. ' +
+      'Likely cause: no prebuilt `.node` for this platform/architecture. ' +
+      `See ${ISSUES_URL}/2107.`,
   },
 };
 
@@ -188,6 +204,63 @@ type LoadResult =
 
 const loadCache = new Map<string, LoadResult>();
 const logged = new Set<string>();
+
+/**
+ * Runtime opt-out for genuinely-optional grammars (Swift/Dart/Kotlin).
+ *
+ * `GITNEXUS_SKIP_OPTIONAL_GRAMMARS` has historically been an *install-time*
+ * env only — the postinstall build scripts read it to skip building the
+ * vendored grammars. There was no way to disable an optional grammar at
+ * analyze time, so users on a platform with a broken/partial binding had no
+ * escape hatch short of uninstalling the package (#2091, #2093). This honors
+ * the same env name at runtime: when set, the named optional grammars report
+ * as unavailable and the pipeline skips their files (mirroring a genuinely
+ * absent binding) instead of attempting to load them.
+ *
+ * Accepts `1` / `true` / `all` / `*` (every skippable grammar), or a
+ * comma-separated list of language ids and/or package names
+ * (e.g. `swift,tree-sitter-dart`). Only grammars flagged `userSkippable` (the
+ * genuinely-optional swift/dart/kotlin) can be skipped — required dependencies
+ * routed through the optional machinery for ABI safety (C) carry no
+ * `userSkippable` and are never skippable here.
+ */
+type SkipDirective = 'all' | Set<string> | null;
+
+// Parsed form of GITNEXUS_SKIP_OPTIONAL_GRAMMARS, resolved lazily ONCE per
+// process. The env is set before analyze runs, so re-reading + re-allocating a
+// Set on every call was wasted work (and a latent trap for any future per-file
+// caller). `vi.resetModules()` gives the unit tests a fresh module — and thus a
+// fresh memo — per case, so this stays test-friendly.
+//   'all' → every userSkippable grammar; Set → only the named ids
+//   (and `tree-sitter-<id>` spellings); null → env unset/empty (nothing).
+let _skipDirective: SkipDirective | undefined;
+const skipDirective = (): SkipDirective => {
+  if (_skipDirective !== undefined) return _skipDirective;
+  const raw = (process.env.GITNEXUS_SKIP_OPTIONAL_GRAMMARS ?? '').trim().toLowerCase();
+  if (raw === '') return (_skipDirective = null);
+  if (raw === '1' || raw === 'true' || raw === 'all' || raw === '*')
+    return (_skipDirective = 'all');
+  return (_skipDirective = new Set(
+    raw
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean)
+      .flatMap((s) => [s, s.replace(/^tree-sitter-/, '')]),
+  ));
+};
+
+const isRuntimeSkippedGrammar = (key: string, source: GrammarSource): boolean => {
+  // Only grammars explicitly flagged user-skippable (swift/dart/kotlin) — never
+  // required deps that use the optional machinery for ABI safety (C carries no
+  // `userSkippable`).
+  if (source.userSkippable !== true) return false;
+  const directive = skipDirective();
+  if (directive === null) return false;
+  if (directive === 'all') return true;
+  // `key` is the SupportedLanguages value (e.g. `swift`); the directive Set
+  // already holds both the bare id and the `tree-sitter-<id>` spelling.
+  return directive.has(key) || directive.has(`tree-sitter-${key}`);
+};
 
 const logFailure = (key: string, result: LoadResult): void => {
   if (result.ok === true) return;
@@ -227,6 +300,25 @@ const loadGrammar = (key: string): LoadResult => {
     return result;
   }
 
+  // Runtime opt-out: treat a user-skipped optional grammar exactly like an
+  // absent binding (non-fatal unavailable + one warning), without attempting
+  // the native load. See `isRuntimeSkippedGrammar`.
+  if (isRuntimeSkippedGrammar(key, source)) {
+    // Deliberate opt-out: emit an accurate "disabled on purpose" note rather
+    // than `source.unavailableNote` (which blames a missing/unbuilt binding and
+    // would mislead a user who set the env intentionally — #2101 review).
+    const result: LoadResult = {
+      ok: false,
+      error: new Error('runtime opt-out'),
+      note: `${key} parsing disabled via GITNEXUS_SKIP_OPTIONAL_GRAMMARS (unset it to re-enable).`,
+      fatal: false,
+      severity: 'warn',
+    };
+    loadCache.set(key, result);
+    logFailure(key, result);
+    return result;
+  }
+
   let result: LoadResult;
   try {
     result = { ok: true, grammar: source.load() };
@@ -247,6 +339,22 @@ const loadGrammar = (key: string): LoadResult => {
 
 export const isLanguageAvailable = (language: SupportedLanguages, filePath?: string): boolean =>
   loadGrammar(resolveLanguageKey(language, filePath)).ok;
+
+/**
+ * True when `language`'s grammar is being treated as unavailable specifically
+ * because of the runtime GITNEXUS_SKIP_OPTIONAL_GRAMMARS opt-out — as opposed
+ * to a genuinely-missing/broken native binding. Lets callers surface an
+ * accurate "skipped on purpose" message instead of a spurious "npm rebuild"
+ * recovery hint. Returns false for required grammars and for an absent env.
+ */
+export const isGrammarRuntimeSkipped = (
+  language: SupportedLanguages,
+  filePath?: string,
+): boolean => {
+  const key = resolveLanguageKey(language, filePath);
+  const source = SOURCES[key];
+  return source !== undefined && isRuntimeSkippedGrammar(key, source);
+};
 
 export const getLanguageGrammar = (language: SupportedLanguages, filePath?: string): unknown => {
   const key = resolveLanguageKey(language, filePath);

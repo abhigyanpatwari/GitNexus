@@ -26,11 +26,11 @@ import { rubyScopeResolver } from '../../languages/ruby/scope-resolver.js';
 import { cobolScopeResolver } from '../../languages/cobol/scope-resolver.js';
 import { swiftScopeResolver } from '../../languages/swift/scope-resolver.js';
 import { dartScopeResolver } from '../../languages/dart/scope-resolver.js';
+import { vueScopeResolver } from '../../languages/vue/scope-resolver.js';
 
-/** Map of `SupportedLanguages` → `ScopeResolver`. The phase iterates
- *  this map intersected with `MIGRATED_LANGUAGES` (the per-language
- *  flag set) so adding a resolver here without flipping the flag is
- *  safe — the resolver sits idle until the language is migrated. */
+/** Map of `SupportedLanguages` → `ScopeResolver`. The scope-resolution phase
+ *  iterates this map directly — every registered resolver runs. This is the
+ *  single source of truth for which languages resolve via scope-resolution. */
 export const SCOPE_RESOLVERS: ReadonlyMap<SupportedLanguages, ScopeResolver> = new Map<
   SupportedLanguages,
   ScopeResolver
@@ -50,4 +50,5 @@ export const SCOPE_RESOLVERS: ReadonlyMap<SupportedLanguages, ScopeResolver> = n
   [SupportedLanguages.Cobol, cobolScopeResolver],
   [SupportedLanguages.Swift, swiftScopeResolver],
   [SupportedLanguages.Dart, dartScopeResolver],
+  [SupportedLanguages.Vue, vueScopeResolver],
 ]);

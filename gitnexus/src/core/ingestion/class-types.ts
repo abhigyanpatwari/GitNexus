@@ -28,6 +28,13 @@ export interface ClassCaptureContext {
  */
 export interface ClassExtractor {
   language: SupportedLanguages;
+  /**
+   * When true, this language's nested-type graph nodes are keyed by their
+   * fully-qualified path (e.g. `Class:file:Outer.Inner`) instead of the simple
+   * tail name, so same-tail nested types in one file stay distinct (#1978).
+   * Surfaced from `ClassExtractionConfig.qualifiedNodeId`.
+   */
+  readonly qualifiedNodeId: boolean;
   isTypeDeclaration(node: SyntaxNode): boolean;
   extract(
     node: SyntaxNode,
@@ -37,6 +44,14 @@ export interface ClassExtractor {
     },
   ): ExtractedClassSymbol | null;
   extractQualifiedName(node: SyntaxNode, simpleName: string): string | null;
+  /**
+   * #1991: qualify a scope-defining node that maps to a class-like registry label
+   * (e.g. a Ruby `module` → Trait) but is NOT a typeDeclaration, so it cannot go
+   * through extract()/extractQualifiedName (which bail on non-typeDeclarations).
+   * Walks the same ancestor scopes as the node-id path. Optional — only providers
+   * that materialize such nodes implement it.
+   */
+  qualifyScopeName?(node: SyntaxNode, simpleName: string): string;
   shouldSkipClassCapture?(
     context: ClassCaptureContext & { nodeLabel: ClassLikeNodeLabel },
   ): boolean;
@@ -48,6 +63,14 @@ export interface ClassExtractionConfig {
   typeDeclarationNodes: string[];
   fileScopeNodeTypes?: string[];
   ancestorScopeNodeTypes?: string[];
+  /**
+   * Opt-in (#1978): key this language's nested-type graph nodes (and their
+   * member-owner edges) by the fully-qualified path instead of the simple tail
+   * name, so same-tail nested types in one file stop colliding. Default false.
+   * Requires `ancestorScopeNodeTypes` to be set so `buildQualifiedName` can walk
+   * the scope chain.
+   */
+  qualifiedNodeId?: boolean;
   scopeNameNodeTypes?: string[];
   extractName?: (node: SyntaxNode) => string | undefined;
   extractType?: (node: SyntaxNode) => ClassLikeNodeLabel | undefined;

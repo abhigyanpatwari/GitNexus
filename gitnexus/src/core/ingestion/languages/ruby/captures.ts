@@ -12,6 +12,8 @@ import { recordRubyCacheHit, recordRubyCacheMiss } from './cache-stats.js';
 import { synthesizeRubyReceiverBinding, findEnclosingClassOrModule } from './receiver-binding.js';
 import { getTreeSitterBufferSize } from '../../constants.js';
 import { parseSourceSafe } from '../../../tree-sitter/safe-parse.js';
+import { splitQualifiedName } from '../../utils/qualified-name.js';
+import { encodeMarker } from '../../utils/heritage-marker.js';
 
 const FUNCTION_NODE_TYPES = ['method', 'singleton_method'] as const;
 const HERITAGE_CALL_NAMES: ReadonlySet<string> = new Set(['include', 'extend', 'prepend']);
@@ -20,6 +22,34 @@ const ATTR_CALL_NAMES: ReadonlySet<string> = new Set([
   'attr_reader',
   'attr_writer',
 ]);
+
+/**
+ * Build the full `.`-joined qualified owner name for a heritage/attr call by
+ * walking ALL enclosing class/module ancestors (not just the immediate one),
+ * so a same-tail nested owner (`module Outer; class Inner`) is keyed by its
+ * full path `Outer.Inner` instead of the bare tail `Inner` — which otherwise
+ * collapses both same-tail owners onto one `__heritage__`/`__property__` marker
+ * key (last-wins) and cross-wires their mixin / attr_accessor edges (#1982).
+ * Handles the compact `class Outer::Inner` form (name is a `scope_resolution`)
+ * via the shared normalizer, so the marker owner byte-matches the resolution
+ * def's `qualifiedName`. Returns undefined when there is no enclosing class/module.
+ */
+function buildEnclosingQualifiedName(callNode: SyntaxNode): string | undefined {
+  const segments: string[] = [];
+  let current: SyntaxNode | null = callNode.parent;
+  while (current !== null) {
+    if (current.type === 'class' || current.type === 'module') {
+      const nameNode = current.childForFieldName('name');
+      if (nameNode !== null) segments.unshift(...splitQualifiedName(nameNode.text));
+    }
+    // Stop at the file root — nothing above `program` contributes a Ruby
+    // class/module scope segment (#1982 perf; avoids walking to the very top
+    // for every heritage/attr call).
+    if (current.type === 'program') break;
+    current = current.parent;
+  }
+  return segments.length > 0 ? segments.join('.') : undefined;
+}
 
 export function emitRubyScopeCaptures(
   sourceText: string,
@@ -144,23 +174,29 @@ export function emitRubyScopeCaptures(
       if (HERITAGE_CALL_NAMES.has(callName)) {
         const callNode = nodeIfType(nodeMap['@reference.call.free'], 'call');
         if (callNode !== null) {
-          const enclosing = findEnclosingClassOrModule(callNode);
-          const ownerName = enclosing?.childForFieldName('name')?.text;
+          const ownerName = buildEnclosingQualifiedName(callNode);
           if (ownerName) {
             const argList = callNode.childForFieldName('arguments');
             if (argList !== null) {
               for (let ai = 0; ai < argList.namedChildCount; ai++) {
                 const arg = argList.namedChild(ai);
                 if (arg !== null && (arg.type === 'constant' || arg.type === 'scope_resolution')) {
+                  // Normalize a qualified mixin arg (`Outer::Mixin`) to its dotted
+                  // form (`Outer.Mixin`) BEFORE embedding it in the ':'-delimited
+                  // __heritage__ marker: the raw `::` collides with the marker's `:`
+                  // field separator and emitRubyMixinEdges mis-splits it, dropping
+                  // the edge (#1982). The dotted form also matches the mixin def's
+                  // qualifiedName key for resolution. Simple names are unchanged.
+                  const mixinName = splitQualifiedName(arg.text).join('.');
                   out.push({
                     '@import.statement': grouped['@reference.call.free']!,
                     '@import.kind': syntheticCapture('@import.kind', callNode, 'namespace'),
                     '@import.source': syntheticCapture(
                       '@import.source',
                       callNode,
-                      `__heritage__:${callName}:${arg.text}:${ownerName}`,
+                      encodeMarker('heritage', [callName, mixinName, ownerName]),
                     ),
-                    '@import.name': syntheticCapture('@import.name', callNode, arg.text),
+                    '@import.name': syntheticCapture('@import.name', callNode, mixinName),
                   });
                 }
               }
@@ -178,8 +214,7 @@ export function emitRubyScopeCaptures(
       if (ATTR_CALL_NAMES.has(callName)) {
         const callNode = nodeIfType(nodeMap['@reference.call.free'], 'call');
         if (callNode !== null) {
-          const enclosing = findEnclosingClassOrModule(callNode);
-          const ownerName = enclosing?.childForFieldName('name')?.text;
+          const ownerName = buildEnclosingQualifiedName(callNode);
           if (ownerName) {
             const argList = callNode.childForFieldName('arguments');
             if (argList !== null) {
@@ -193,7 +228,7 @@ export function emitRubyScopeCaptures(
                     '@import.source': syntheticCapture(
                       '@import.source',
                       callNode,
-                      `__property__:${callName}:${propName}:${ownerName}`,
+                      encodeMarker('property', [callName, propName, ownerName]),
                     ),
                     '@import.name': syntheticCapture('@import.name', callNode, propName),
                   });
@@ -436,11 +471,11 @@ export function emitRubyScopeCaptures(
   // Emit `@reference.inherits` captures so the registry-primary scope-
   // resolution path produces EXTENDS edges (issue #1951). This mirrors the
   // C#/C++ inheritance synthesis: Ruby's superclass edges previously came
-  // only from the legacy `@heritage.extends` query, which the worker
-  // pipeline drops for registry-primary languages → 0 inheritance edges in
-  // worker mode. Mixins (include/extend/prepend) are NOT touched here — they
+  // only from the legacy heritage-capture query (removed in #942), which the
+  // worker pipeline drops for registry-primary languages → 0 inheritance edges
+  // in worker mode. Mixins (include/extend/prepend) are NOT touched here — they
   // flow through `emitHeritageEdges` (the `__heritage__:` import path above),
-  // an independent lane that stays intact when legacy @heritage is gated off.
+  // an independent lane that stays intact when the legacy heritage leg is gated off.
   out.push(...synthesizeRubySuperclassReferences(tree.rootNode));
 
   return out;
@@ -454,18 +489,16 @@ export function emitRubyScopeCaptures(
  * Scope is `class` nodes whose `superclass` field holds either a bare
  * `constant` base (`class D < Super`) or a qualified/scoped
  * `scope_resolution` base (`class C < Outer::Super`, `class E < A::B::C`) —
- * exactly the two shapes the config-driven legacy `@heritage.extends`
- * alternation now captures (heritage-extractors/configs/ruby.ts
- * `rubyHeritageShapes: ['constant', 'scope_resolution']`):
- *
- *   (class
- *     name: (constant) @heritage.class
- *     superclass: (superclass
- *       [(constant) (scope_resolution)] @heritage.extends)) @heritage
+ * exactly the two shapes the config-driven legacy heritage alternation
+ * captured (heritage-extractors/configs/ruby.ts
+ * `rubyHeritageShapes: ['constant', 'scope_resolution']`). In prose: the
+ * legacy query matched a `class` whose name is a `constant` and whose
+ * `superclass` is either a `constant` or a `scope_resolution`, capturing the
+ * superclass constant as the inherited base.
  *
  * Previously this pass emitted only for a direct `(constant)` child, so the
  * production registry-primary path silently dropped `Outer::Super`
- * superclasses while the legacy @heritage leg captured them — the exact
+ * superclasses while the legacy heritage leg captured them — the exact
  * EXTENDS/IMPLEMENTS-drop bug of #1951.
  *
  * THE PARITY CONTRACT: the `@reference.name` bare text must equal the legacy

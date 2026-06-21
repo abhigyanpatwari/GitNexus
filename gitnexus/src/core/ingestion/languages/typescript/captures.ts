@@ -163,10 +163,11 @@ export function emitTsScopeCaptures(
   filePath: string,
   cachedTree?: unknown,
 ): readonly CaptureMatch[] {
-  // Skip the parse when the caller (parse phase's scopeTreeCache) already
-  // produced a Tree for this source. Cache miss = re-parse, same as before.
-  // The cachedTree parameter is typed as `unknown` at the LanguageProvider
-  // contract layer; cast here at the use site.
+  // Reuse a pre-parsed Tree when the caller passes one via `cachedTree`; a
+  // miss re-parses. (The cache is currently always empty — its only producer,
+  // the sequential parser, was removed — so this re-parses in practice.) The
+  // cachedTree parameter is typed `unknown` at the LanguageProvider contract
+  // layer; cast here at the use site.
   //
   // Grammar selection: `.tsx` files are parsed with the TSX grammar,
   // `.ts` files with the TypeScript grammar. The two grammars have
@@ -429,13 +430,13 @@ export function emitTsScopeCaptures(
  * the registry-primary scope-resolution path emits EXTENDS / IMPLEMENTS edges
  * (mirrors C# `synthesizeCsharpInheritanceReferences` / JS
  * `synthesizeJsInheritanceReferences`). Without this, TS inheritance edges came
- * only from the legacy `@heritage.*` path, which the worker pipeline drops for
- * registry-primary languages — yielding 0 inheritance edges in worker mode
- * (issue #1951).
+ * only from the legacy heritage-capture leg (removed in #942), which the worker
+ * pipeline drops for registry-primary languages — yielding 0 inheritance edges
+ * in worker mode (issue #1951).
  *
  * Scope is intentionally limited to a `class_declaration`'s `class_heritage`
  * `extends_clause` value + `implements_clause` types, matching the legacy
- * TypeScript `@heritage` query's class scope (TYPESCRIPT_QUERIES). Generic
+ * TypeScript heritage query's class scope (TYPESCRIPT_QUERIES). Generic
  * bases agree across both paths: `extends Base<T>` is captured by the legacy
  * `extends_clause value: (identifier)` already (the `type_arguments` are a
  * sibling field), and `implements IFoo<T>` is captured by a legacy clause
@@ -443,14 +444,12 @@ export function emitTsScopeCaptures(
  * path keeps parity on SIMPLE (unqualified) generic bases too (#1951).
  * Qualified bases (`ns.Base`, `ns.Base<T>`, `ns.IFoo<T>`) are ALSO now at parity
  * (#1956 tri-review U2): the synth resolves them by their member_expression /
- * nested_type_identifier tail, and the legacy `@heritage` query was widened with
+ * nested_type_identifier tail, and the legacy heritage query was widened with
  * matching arms (member_expression for extends, nested_type_identifier plain +
  * generic-wrapped for implements).
  *
  * `interface_declaration` / `abstract_class_declaration` heritage is NOT emitted
- * — the legacy query captures neither, so the registry path keeps parity with
- * the legacy DAG under the CI scope-parity gate (REGISTRY_PRIMARY_TYPESCRIPT=0
- * vs =1). The EXTENDS-vs-IMPLEMENTS split is decided downstream from the
+ * by the synth. The EXTENDS-vs-IMPLEMENTS split is decided downstream from the
  * resolved target's symbol kind in `preEmitInheritanceEdges` (class-extends →
  * EXTENDS, implements-interface / interface-target → IMPLEMENTS), so all bases
  * are emitted with the same `inherits` kind here. The base lookup name is

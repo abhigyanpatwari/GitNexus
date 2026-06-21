@@ -36,6 +36,17 @@ RUN npm ci --prefix gitnexus
 # Drop dev dependencies for a smaller runtime layer.
 RUN npm prune --omit=dev --prefix gitnexus
 
+# `npm prune` removes anything not in package.json's dependency tree — which
+# includes the VENDORED tree-sitter grammars (materialized into node_modules/ by
+# postinstall, but not declared as deps) and their freshly-built native bindings.
+# The `serve` image analyzes/parses uploaded repos at runtime, so those grammars
+# must survive into the runtime layer. Re-run the grammar postinstall here in the
+# builder (which still has python3/make/g++ and the hoisted node-addon-api /
+# node-gyp-build) to re-materialize + rebuild them after the prune. This is
+# load-bearing for tree-sitter-c (a core, REQUIRED grammar now vendored, #2116):
+# as a former `dependency` it used to survive prune; vendored, it would not.
+RUN npm run postinstall --prefix gitnexus
+
 # -- Runtime -----------------------------------------------------------
 # node:22-bookworm-slim
 FROM node:22-bookworm-slim@sha256:9f6d5975c7dca860947d3915877f85607946403fc55349f39b4bc3688448bb6e AS runtime
@@ -66,6 +77,44 @@ COPY --from=builder --chown=node:node /app/gitnexus/vendor ./gitnexus/vendor
 # which already carries `#!/usr/bin/env node` and 755 perms) is otherwise
 # unreachable from $PATH.
 RUN ln -s /app/gitnexus/dist/cli/index.js /usr/local/bin/gitnexus
+
+# Bake the LadybugDB FTS extension into the image so BM25 keyword search works
+# at runtime. The server runs the default `load-only` extension policy (the read
+# pool pins `{ policy: 'load-only' }`), so a runtime `LOAD EXTENSION fts` never
+# INSTALLs — the extension must already exist in the runtime user's HOME
+# extension dir, or every keyword search silently degrades (no FTS indexes are
+# written and ranking falls back to vector-only with only a `warning` field).
+# Run the installer as the `node` user with the SAME HOME the server runs under,
+# so `INSTALL fts` materializes the extension under `$HOME/.lbdb/extension` where
+# the runtime `LOAD` resolves it offline. `ENV HOME` is pinned because Docker
+# does not derive HOME from `USER`, so without it build-install and runtime-load
+# would resolve different paths. Requires network egress for the one-time
+# INSTALL; the build fails loudly if it cannot fetch the extension. The DB-size
+# default comes from GITNEXUS_LBUG_MAX_DB_SIZE (single source of truth, matches
+# the runtime) — it only sizes the throwaway scratch DB used to run INSTALL.
+# The second `--verify-only` step re-LOADs the extension in a FRESH process
+# under the same HOME, so a HOME/extension-dir mismatch fails the build here
+# rather than silently degrading keyword search to vector-only at runtime.
+ENV HOME=/home/node \
+    GITNEXUS_LBUG_MAX_DB_SIZE=17179869184
+RUN su node -s /bin/sh -c "HOME=/home/node node /app/gitnexus/scripts/install-duckdb-extension.mjs fts" \
+ && su node -s /bin/sh -c "HOME=/home/node node /app/gitnexus/scripts/install-duckdb-extension.mjs fts --verify-only"
+
+# Published runtime assets (in package.json `files`). Placed AFTER the DuckDB
+# FTS-extension RUN above so editing hook/skill content does not invalidate that
+# network-fetching cache layer; they have no input dependency on it.
+# `hooks/`: dist/cli/resolve-invocation.js does
+# `require('../../hooks/claude/resolve-analyze-cmd.cjs')` at module load — the
+# single source of truth for the npm-11 npx-crash invocation decision (#1939).
+# Without it, `gitnexus analyze` inside the image crashes with MODULE_NOT_FOUND
+# before it does any work (#2130). `skills/`: the CLI reads the bundled SKILL.md
+# templates from `<pkg>/skills/` for `gitnexus analyze --skills` and `gitnexus
+# setup`/`uninstall`; absent, those degrade silently (placeholder content / zero
+# skills installed). (The web UI bundle `web/`, also in `files`, is deliberately
+# NOT shipped: this builder never builds gitnexus-web, so the image is API-only;
+# the UI is the separate Dockerfile.web image / hosted app.)
+COPY --from=builder --chown=node:node /app/gitnexus/hooks ./gitnexus/hooks
+COPY --from=builder --chown=node:node /app/gitnexus/skills ./gitnexus/skills
 
 USER node
 

@@ -2,6 +2,9 @@ import { describe, it, expect } from 'vitest';
 import {
   extractVueScript,
   extractTemplateComponents,
+  extractScriptEmitCalls,
+  extractComponentEventBindings,
+  extractNativeElementEventHandlers,
 } from '../../src/core/ingestion/vue-sfc-extractor.js';
 
 describe('extractVueScript', () => {
@@ -42,13 +45,12 @@ export default {
     expect(result!.scriptContent).toContain('export default');
   });
 
-  it('prefers <script setup> when both blocks exist', () => {
+  it('combines both blocks when <script> and <script setup> both exist', () => {
     const vue = `<script lang="ts">
 export default {
   inheritAttrs: false,
 };
 </script>
-
 <script setup lang="ts">
 import { ref } from 'vue';
 const name = ref('test');
@@ -58,9 +60,78 @@ const name = ref('test');
 `;
     const result = extractVueScript(vue);
     expect(result).not.toBeNull();
+    // F90: both blocks are combined
     expect(result!.isSetup).toBe(true);
     expect(result!.scriptContent).toContain("const name = ref('test')");
-    expect(result!.scriptContent).not.toContain('inheritAttrs');
+    expect(result!.scriptContent).toContain('inheritAttrs');
+  });
+
+  it('returns lang from the script block', () => {
+    const vue = `<script lang="js">
+export default {};
+</script>
+`;
+    const result = extractVueScript(vue);
+    expect(result).not.toBeNull();
+    expect(result!.lang).toBe('js');
+  });
+
+  it('returns empty lang when no lang attribute', () => {
+    const vue = `<script>
+export default {};
+</script>
+`;
+    const result = extractVueScript(vue);
+    expect(result).not.toBeNull();
+    expect(result!.lang).toBe('');
+  });
+
+  it('jsx lang triggers JS grammar (maps to lang=js)', () => {
+    const vue = `<script lang="jsx">
+export default {};
+</script>
+`;
+    const result = extractVueScript(vue);
+    expect(result).not.toBeNull();
+    expect(result!.lang).toBe('js');
+  });
+
+  it('ts lang returns empty (only js/jsx triggers JS grammar)', () => {
+    const vue = `<script lang="ts">
+export default {};
+</script>
+`;
+    const result = extractVueScript(vue);
+    expect(result).not.toBeNull();
+    expect(result!.lang).toBe('');
+  });
+
+  it('mixed js + ts blocks return empty lang (TypeScript wins)', () => {
+    const vue = `<script lang="js">
+export default {};
+</script>
+<script setup lang="ts">
+import { ref } from 'vue';
+</script>
+`;
+    const result = extractVueScript(vue);
+    expect(result).not.toBeNull();
+    expect(result!.lang).toBe('');
+  });
+
+  it('isSetup is true when at least one block is setup', () => {
+    const vue = `<script lang="ts">
+export default {};
+</script>
+<script setup lang="ts">
+import { ref } from 'vue';
+</script>
+`;
+    const result = extractVueScript(vue);
+    expect(result).not.toBeNull();
+    expect(result!.isSetup).toBe(true);
+    // ts blocks — lang should be empty
+    expect(result!.lang).toBe('');
   });
 
   it('returns null for .vue files with no <script> block', () => {
@@ -184,6 +255,140 @@ const x = 1;
 `;
     const components = extractTemplateComponents(vue);
     expect(components).toEqual(['MyComponent']);
+  });
+
+  it('treats kebab-case component tags as component candidates', () => {
+    const vue = `<template>
+  <div>
+    <post-list />
+    <user-card />
+  </div>
+</template>`;
+    const components = extractTemplateComponents(vue);
+    expect(components).toContain('PostList');
+    expect(components).toContain('UserCard');
+  });
+});
+
+describe('extractScriptEmitCalls', () => {
+  it('extracts bare emit() event names', () => {
+    const vue = `<script setup lang="ts">
+const emit = defineEmits(['select']);
+emit('select', { id: 1 });
+</script>`;
+    expect(extractScriptEmitCalls(vue).map((c) => c.eventName)).toEqual(['select']);
+  });
+
+  it('ignores property emits and commented/string emit text', () => {
+    const vue = `<script setup lang="ts">
+const socket = createSocket();
+socket.emit('message');
+// emit('commented')
+const text = "emit('inside-string')";
+emit('actual');
+</script>`;
+    expect(extractScriptEmitCalls(vue).map((c) => c.eventName)).toEqual(['actual']);
+  });
+});
+
+describe('extractComponentEventBindings', () => {
+  it('captures kebab-case component event bindings', () => {
+    const vue = `<template>
+  <post-list @select="onPostSelected" />
+</template>`;
+    expect(extractComponentEventBindings(vue)).toEqual([
+      { componentName: 'PostList', eventName: 'select', handlerName: 'onPostSelected' },
+    ]);
+  });
+
+  it('captures hyphenated event names (@user-loaded)', () => {
+    const vue = `<template>
+  <UserCard @user-loaded="onUserLoaded" />
+</template>`;
+    const bindings = extractComponentEventBindings(vue);
+    expect(bindings).toContainEqual({
+      componentName: 'UserCard',
+      eventName: 'user-loaded',
+      handlerName: 'onUserLoaded',
+    });
+  });
+
+  it('captures update:model-value style event names', () => {
+    const vue = `<template>
+  <MyInput @update:model-value="onChange" />
+</template>`;
+    const bindings = extractComponentEventBindings(vue);
+    expect(bindings).toContainEqual({
+      componentName: 'MyInput',
+      eventName: 'update:model-value',
+      handlerName: 'onChange',
+    });
+  });
+});
+
+describe('extractNativeElementEventHandlers', () => {
+  it('captures handlers from native elements', () => {
+    const vue = `<template>
+  <button @click="handleSave" />
+  <form @submit.prevent="onSubmit" />
+</template>`;
+    const handlers = extractNativeElementEventHandlers(vue);
+    expect(handlers).toContain('handleSave');
+    expect(handlers).toContain('onSubmit');
+  });
+
+  it('does not emit handlers for kebab-case component tags', () => {
+    // <post-list> is a Vue component, not a native element.
+    // The NATIVE_TAG_RE negative lookahead must prevent matching `post` as a native tag.
+    const vue = `<template>
+  <post-list @select="onSelect" />
+  <button @click="handleClick" />
+</template>`;
+    const handlers = extractNativeElementEventHandlers(vue);
+    expect(handlers).not.toContain('onSelect');
+    expect(handlers).toContain('handleClick');
+  });
+});
+
+describe('extractScriptEmitCalls — Options API this.$emit', () => {
+  it('captures this.$emit() in Options API components', () => {
+    const vue = `<script lang="ts">
+export default {
+  methods: {
+    save() {
+      this.$emit('save');
+      this.$emit('update:modelValue', this.value);
+    },
+  },
+};
+</script>`;
+    const events = extractScriptEmitCalls(vue).map((c) => c.eventName);
+    expect(events).toContain('save');
+    expect(events).toContain('update:modelValue');
+  });
+
+  it('does NOT capture socket.emit() or eventBus.emit() as component events', () => {
+    const vue = `<script setup lang="ts">
+const socket = getSocket();
+socket.emit('message');
+eventBus.emit('data');
+emit('actual');
+</script>`;
+    const events = extractScriptEmitCalls(vue).map((c) => c.eventName);
+    expect(events).toEqual(['actual']);
+    expect(events).not.toContain('message');
+    expect(events).not.toContain('data');
+  });
+
+  it('captures update:modelValue style event names with colon', () => {
+    const vue = `<script setup lang="ts">
+const emit = defineEmits(['update:modelValue', 'user-loaded']);
+emit('update:modelValue', newVal);
+emit('user-loaded');
+</script>`;
+    const events = extractScriptEmitCalls(vue).map((c) => c.eventName);
+    expect(events).toContain('update:modelValue');
+    expect(events).toContain('user-loaded');
   });
 });
 

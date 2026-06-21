@@ -29,6 +29,18 @@ export const parseTruthyEnv = (raw: string | undefined): boolean => {
 };
 
 /**
+ * Parse a positive-integer env-var value. Returns the integer when `raw` is a
+ * finite integer `> 0`; otherwise (`undefined`, empty, non-numeric, `0`, or
+ * negative) returns `undefined` so the caller falls back to its default. Used
+ * for numeric tuning knobs like `GITNEXUS_PDG_EMIT_CHUNK_SIZE` (#2202).
+ */
+export const parsePositiveIntEnv = (raw: string | undefined): number | undefined => {
+  if (raw === undefined) return undefined;
+  const n = Number(raw.trim());
+  return Number.isInteger(n) && n > 0 ? n : undefined;
+};
+
+/**
  * Whether scope-resolution dev validators (e.g. `validateBindingsImmutability`)
  * should run AND emit warnings. Off by default in CLI runs to avoid silent
  * O(n) scans on large repos; on in `NODE_ENV=development` or when explicitly

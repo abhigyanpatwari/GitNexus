@@ -9,8 +9,29 @@ import { resolveDefGraphId } from '../../scope-resolution/graph-bridge/ids.js';
 import type { GraphNodeLookup } from '../../scope-resolution/graph-bridge/node-lookup.js';
 import type { KnowledgeGraph } from '../../../graph/types.js';
 import { generateId } from '../../../../lib/utils.js';
+import { decodeMarker } from '../../utils/heritage-marker.js';
 
-const HERITAGE_PREFIX = '__heritage__:';
+/**
+ * #1991: resolve a BARE mixin reference (`include Loggable`) to a nested module by
+ * the INCLUDING class's lexical scope — Ruby looks up a constant in the innermost
+ * enclosing scope first. For owner `App.S`, try `App.Loggable`, then walk outward.
+ * Returns undefined if no enclosing-scope-qualified module exists.
+ */
+function qualifyMixinByOwnerScope(
+  mixinName: string,
+  ownerName: string,
+  graphIdByName: ReadonlyMap<string, string>,
+): string | undefined {
+  let prefix = ownerName;
+  let dot = prefix.lastIndexOf('.');
+  while (dot !== -1) {
+    prefix = prefix.slice(0, dot);
+    const g = graphIdByName.get(`${prefix}.${mixinName}`);
+    if (g !== undefined) return g;
+    dot = prefix.lastIndexOf('.');
+  }
+  return undefined;
+}
 
 function emitRubyMixinEdges(
   graph: KnowledgeGraph,
@@ -18,13 +39,36 @@ function emitRubyMixinEdges(
   nodeLookup: GraphNodeLookup,
 ): void {
   const graphIdByName = new Map<string, string>();
+  // Secondary tail -> graphId map. The `__heritage__` marker carries the mixin
+  // TARGET as the bare written name (`arg.text`, e.g. `Loggable`), not its full
+  // qualifiedName, so a nested mixin module included by its short name misses the
+  // full-qn map. We first resolve it lexically by the including class's enclosing
+  // scope (`qualifyMixinByOwnerScope`); this tail map is the last resort. A genuine
+  // same-tail collision is mapped to `null` so we REFUSE to guess (#1991) rather
+  // than the old first-wins, which cross-wired App::Loggable / Web::Loggable.
+  const graphIdByTail = new Map<string, string | null>();
   for (const parsed of parsedFiles) {
     for (const def of parsed.localDefs) {
       if (!isClassLike(def.type)) continue;
       const graphId = resolveDefGraphId(parsed.filePath, def, nodeLookup);
       if (graphId !== undefined) {
-        const simpleName = def.qualifiedName?.split('.').pop() ?? def.qualifiedName ?? '';
-        graphIdByName.set(simpleName, graphId);
+        // Key by the FULL qualified name (`Outer.Inner`), NOT the simple tail.
+        // Same-tail nested classes (`Outer::Inner` + `Other::Inner`) otherwise
+        // collapse onto one `Inner` key (last-wins) and cross-wire their mixin /
+        // attr_accessor owners (#1982). The `__heritage__`/`__property__` markers
+        // carry the full qualified owner name in lockstep (see ruby/captures.ts).
+        const fullName = def.qualifiedName ?? '';
+        if (fullName.length > 0) {
+          graphIdByName.set(fullName, graphId);
+          const dot = fullName.lastIndexOf('.');
+          const tail = dot === -1 ? fullName : fullName.slice(dot + 1);
+          if (tail.length > 0) {
+            const existingTail = graphIdByTail.get(tail);
+            if (existingTail === undefined) graphIdByTail.set(tail, graphId);
+            else if (existingTail !== null && existingTail !== graphId)
+              graphIdByTail.set(tail, null); // same-tail collision — refuse to guess
+          }
+        }
       }
     }
   }
@@ -39,12 +83,21 @@ function emitRubyMixinEdges(
 
   for (const parsed of parsedFiles) {
     for (const imp of parsed.parsedImports) {
-      if (!imp.targetRaw.startsWith(HERITAGE_PREFIX)) continue;
-      const parts = imp.targetRaw.slice(HERITAGE_PREFIX.length).split(':');
+      const decoded = decodeMarker(imp.targetRaw);
+      if (decoded?.kind !== 'heritage') continue;
+      const parts = decoded.fields;
       if (parts.length < 3) continue;
       const [kind, mixinName, className] = parts;
       const classGraphId = graphIdByName.get(className!);
-      const mixinGraphId = graphIdByName.get(mixinName!);
+      // Owner stays full-qn. The mixin target may be written by short name and miss
+      // the full-qn map; resolve it lexically by the including class's enclosing
+      // scope (`App::S` + `Loggable` -> `App::Loggable`), then fall back to the tail
+      // map ONLY when unambiguous — never first-wins on a collision (#1982/#1991).
+      const mixinGraphId =
+        graphIdByName.get(mixinName!) ??
+        qualifyMixinByOwnerScope(mixinName!, className!, graphIdByName) ??
+        graphIdByTail.get(mixinName!) ??
+        undefined;
       if (classGraphId === undefined || mixinGraphId === undefined) continue;
       const edgeKey = `${classGraphId}->${mixinGraphId}:${kind}`;
       if (emitted.has(edgeKey)) continue;
@@ -71,11 +124,11 @@ function emitRubyMixinEdges(
     }
   }
 
-  const PROPERTY_PREFIX = '__property__:';
   for (const parsed of parsedFiles) {
     for (const imp of parsed.parsedImports) {
-      if (!imp.targetRaw.startsWith(PROPERTY_PREFIX)) continue;
-      const parts = imp.targetRaw.slice(PROPERTY_PREFIX.length).split(':');
+      const decoded = decodeMarker(imp.targetRaw);
+      if (decoded?.kind !== 'property') continue;
+      const parts = decoded.fields;
       if (parts.length < 3) continue;
       const [_attrKind, propName, className] = parts;
       const classGraphId = graphIdByName.get(className!);
@@ -150,8 +203,8 @@ function buildRubyMro(
 
   // Step 4: Reorder MRO per Ruby semantics.
   // Order: prepend (reversed) → direct extends chain → include (reversed).
-  // `extend` is excluded — it belongs to singleton dispatch only (legacy
-  // `getInstanceAncestry` in heritage-map.ts explicitly drops extend entries).
+  // `extend` is excluded — it belongs to singleton dispatch only (the
+  // instance-ancestry walk drops extend entries).
   // Reversed because Ruby declaration order means last-declared wins
   // (prepend B; prepend A → B checked before A).
   for (const defId of defIdByGraphId.values()) {

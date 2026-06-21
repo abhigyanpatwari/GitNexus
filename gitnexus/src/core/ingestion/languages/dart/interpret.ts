@@ -3,7 +3,7 @@
  *
  *   - `interpretDartImport`  — `@import.source` → a whole-library
  *     `ParsedImport` (Dart `import`/`export` bring every public top-level
- *     symbol of the target into scope: `importSemantics: 'wildcard-leaf'`).
+ *     symbol of the target into scope — whole-library / wildcard-leaf semantics).
  *     `@import.heritage` markers (synthesized by `captures.ts` for
  *     `implements`/`with` clauses) become side-effect imports carrying a
  *     `__heritage__:` payload that `emitDartHeritageEdges` consumes; they
@@ -15,10 +15,13 @@
  */
 
 import type { CaptureMatch, ParsedImport, ParsedTypeBinding, TypeRef } from 'gitnexus-shared';
+import { HERITAGE_MARKER_PREFIX } from '../../utils/heritage-marker.js';
 
 /** Marker prefix carried on a side-effect `ParsedImport.targetRaw` for
- *  `implements`/`with` heritage, consumed by `emitDartHeritageEdges`. */
-export const DART_HERITAGE_PREFIX = '__heritage__:';
+ *  `implements`/`with` heritage, consumed by `emitDartHeritageEdges`. Aliased to
+ *  the shared codec prefix (#1994) so the Dart wire prefix has a single source of
+ *  truth and cannot desync from `encodeMarker`/`decodeMarker`. */
+export const DART_HERITAGE_PREFIX = HERITAGE_MARKER_PREFIX;
 
 function stripQuotes(s: string): string {
   return s.replace(/^['"]|['"]$/g, '');

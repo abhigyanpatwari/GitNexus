@@ -19,7 +19,7 @@
  *          ↑
  *     model/semantic-model.ts                 — THIS FILE (orchestrator)
  *          ↑
- *     resolve.ts, call-processor.ts, resolution-context.ts, ...
+ *     resolve.ts, call-processor.ts, ...
  *
  * `symbol-table.ts` is a leaf — it never imports from `./model/`. This
  * file (semantic-model.ts) is the ONLY place where SymbolTable and the
@@ -126,10 +126,8 @@ export interface SemanticModel {
   /**
    * Materialized scope-resolution indexes from RFC #909 Ring 2 PKG #921.
    *
-   * `undefined` until the finalize-orchestrator attaches them. While
-   * `undefined`, the legacy DAG is the sole resolution surface; once set,
-   * resolvers whose language has `REGISTRY_PRIMARY_<LANG>=true` consult
-   * these indexes instead.
+   * `undefined` until the finalize-orchestrator attaches them. Once set,
+   * the scope-resolution resolvers consult these indexes.
    *
    * The attach is a one-shot write (see `MutableSemanticModel`). Callers
    * holding a read-only `SemanticModel` handle see either `undefined` or
@@ -144,7 +142,7 @@ export interface SemanticModel {
 
 /** Mutable variant — exposes the MutableX registries, a Writer-typed
  *  `symbols` facade, and a full-cascade reset. This is the interface
- *  held by the lifecycle owner (pipeline, resolution-context); resolvers
+ *  held by the lifecycle owner (the parse pipeline); resolvers
  *  that only query should hold the narrower {@link SemanticModel}. */
 export interface MutableSemanticModel extends SemanticModel {
   readonly types: MutableTypeRegistry;

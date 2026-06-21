@@ -102,13 +102,15 @@ export interface WorkerPool {
    *
    * Files in {@link WorkerPool.getQuarantinedPaths} are filtered out before
    * dispatch — they have already caused a worker death this pool lifetime and
-   * are not safe to re-attempt in workers. The caller is responsible for
-   * routing them (e.g. to sequential fallback); inspect the quarantine
-   * snapshot before and after each dispatch.
+   * are not safe to re-attempt in workers. They are dropped from the run (the
+   * sequential fallback that once re-parsed them was removed); inspect the
+   * quarantine snapshot before and after each dispatch to surface skipped files
+   * in diagnostics.
    */
   dispatch<TInput, TResult>(
     items: TInput[],
     onProgress?: (filesProcessed: number) => void,
+    chunkHash?: string,
   ): Promise<TResult[]>;
 
   /** Terminate all workers. Must be called when done. */
@@ -192,8 +194,8 @@ export interface WorkerPoolOptions {
    * Hard ceiling on total wall time the pool will spend retrying / splitting
    * any single job. Combined with `timeoutBackoffFactor`, this prevents
    * exponentially-growing retry waits from accumulating into multi-hour
-   * stalls before the pool finally surfaces the bad file to sequential
-   * fallback. Default 5x `subBatchIdleTimeoutMs`.
+   * stalls before the pool finally quarantines the bad file and proceeds
+   * without it. Default 5x `subBatchIdleTimeoutMs`.
    */
   maxCumulativeTimeoutMs?: number;
   /**
@@ -209,6 +211,36 @@ export interface WorkerPoolOptions {
    * code should leave this unset.
    */
   workerFactory?: (workerUrl: URL) => Worker;
+  /**
+   * Storage path for the disk-backed ParsedFile store (#1983 parallel
+   * serialization). When set, it is baked into every spawned worker's
+   * `workerData` so the worker writes its own ParsedFile shards to disk
+   * instead of returning them over the MessageChannel for the main thread to
+   * serialize. Immutable for the run; captured in the default factory closure
+   * so RESPAWNED workers inherit it automatically (all spawn sites reuse the
+   * same factory). `undefined` ⇒ workers fall back to returning ParsedFiles in
+   * the result (small-repo / no-storage path).
+   */
+  parsedFileStoreStoragePath?: string;
+  /**
+   * Directory for the DURABLE, content-addressed ParsedFile store
+   * (`getDurableParsedFileDir`). When set (alongside a chunk hash on the
+   * dispatch), the worker ALSO writes its ParsedFiles to a content-addressed
+   * shard keyed by chunk hash so a future warm parse-cache hit can restore
+   * them without re-parsing (#2038 warm-cache coverage). Baked into every
+   * worker's `workerData` exactly like {@link parsedFileStoreStoragePath}.
+   * `undefined` ⇒ no durable write.
+   */
+  durableParsedFileStoragePath?: string;
+  /**
+   * CFG/PDG opt-in (#2081 M1). Baked into every spawned worker's `workerData`
+   * (like the store paths above); when `true`, workers build a per-function
+   * control-flow graph from the tree-sitter AST and attach it to
+   * `ParsedFile.cfgSideChannel`. `undefined`/`false` ⇒ no CFG work.
+   */
+  pdg?: boolean;
+  /** Per-function source-line cap for worker-side CFG construction (0 ⇒ no cap). */
+  pdgMaxFunctionLines?: number;
 }
 
 export class WorkerPoolDispatchError extends Error {
@@ -265,12 +297,37 @@ export class WorkerPoolInitializationError extends WorkerPoolDispatchError {
   }
 }
 
+/**
+ * Thrown when a caller asks GitNexus to parse without the worker pool —
+ * `--workers 0`, `GITNEXUS_WORKER_POOL_SIZE=0`, or `skipWorkers: true`.
+ *
+ * GitNexus no longer has a sequential parser: the worker pool (with its
+ * quarantine + respawn/recycle + circuit-breaker resilience) is the SOLE
+ * parse path. These channels used to select an in-process fallback; they are
+ * now hard configuration errors so the operator gets an actionable message
+ * instead of silently parsing through a (deleted) slower path.
+ */
+export class WorkerPoolDisabledError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'WorkerPoolDisabledError';
+  }
+}
+
 /** Message shapes sent back by worker threads. */
 type WorkerOutgoingMessage =
   | { type: 'progress'; filesProcessed: number }
   | { type: 'warning'; message: string }
   | { type: 'sub-batch-done' }
-  | { type: 'error'; error: string }
+  /**
+   * Worker-side caught error. `error` is the message; `errorStack` carries the
+   * worker thread's stack so the pool can embed a real file:line into its
+   * death / circuit-breaker reason instead of surfacing a bare one-liner (the
+   * #2068 diagnosability gap). `errorStack` is optional so an older worker
+   * build that only sends `error` still validates and degrades to message-only
+   * — and a newer pool reading it just gets no stack.
+   */
+  | { type: 'error'; error: string; errorStack?: string }
   | { type: 'result'; data: unknown }
   /**
    * Authoritative in-flight signal: worker is about to process this file.
@@ -298,6 +355,16 @@ interface WorkerJob<TInput> {
   estimatedBytes: number;
   attempt: number;
   splitDepth: number;
+  /**
+   * Content hash of the parse chunk these items belong to (when the caller
+   * dispatches per content-addressed chunk). Threaded into the worker's
+   * `flush` message so the worker can additionally write a durable,
+   * content-addressed ParsedFile shard for warm-cache reuse. Carried through
+   * every job-derivation site (split/requeue) so a split sub-job still tags
+   * its durable shard with the chunk hash. `undefined` ⇒ no durable write
+   * (tests / no-cache / no storage path).
+   */
+  chunkHash?: string;
   timeoutMs: number;
   /**
    * Running total of timeoutMs across all attempts/splits/respawn-retries
@@ -502,7 +569,7 @@ export function resolveWorkerPoolOptions(
  * The pool size requested via the `GITNEXUS_WORKER_POOL_SIZE` env var, or
  * `undefined` when unset, empty/whitespace, or invalid. Module-internal sizing
  * reader consumed by {@link resolveAutoPoolSize} (the env override) and
- * {@link workerPoolDisabledByEnv} (the sequential-routing gate). Reads only —
+ * {@link workerPoolDisabledByEnv} (the disabled-channel check). Reads only —
  * never mutates `process.env`. Empty/whitespace is treated as *unset* (falls
  * through to the auto formula), not as 0 — an empty assignment (`export
  * GITNEXUS_WORKER_POOL_SIZE=`) is an accident, not a request for zero workers;
@@ -515,12 +582,11 @@ function envWorkerPoolSize(): number | undefined {
 }
 
 /**
- * True when the operator explicitly disabled the worker pool via
- * `GITNEXUS_WORKER_POOL_SIZE=0` — the env-channel equivalent of `--workers 0`.
- * The parse phase's `shouldUseWorkers` gate consults this (only when no
- * explicit `--workers <N>` was passed) to route to sequential parsing instead
- * of constructing a useless size-0 pool that would fail fast on a phantom
- * crash (#1741). An explicit positive `--workers N` always wins.
+ * True when the operator set `GITNEXUS_WORKER_POOL_SIZE=0` — the env-channel
+ * equivalent of `--workers 0`. The parse phase consults this (only when no
+ * explicit `--workers <N>` was passed) and HARD-ERRORS: sequential parsing was
+ * removed, so a disabled pool is an actionable configuration error, not a
+ * silent fallback. An explicit positive `--workers N` always wins.
  */
 export function workerPoolDisabledByEnv(): boolean {
   return envWorkerPoolSize() === 0;
@@ -605,6 +671,25 @@ function workerStderrTail(worker: Worker): string {
 function withStderr(worker: Worker, message: string): string {
   const tail = workerStderrTail(worker);
   return tail ? `${message}. Worker stderr:\n${tail}` : message;
+}
+
+/**
+ * Build a worker-death reason string that carries the worker-side stack when one
+ * is available (#2068). The stack is appended AFTER the `Worker N error: <msg>`
+ * prefix so every prefix/substring consumer downstream — recoverAndResume →
+ * handleWorkerDeath → the circuit-breaker `WorkerPoolDispatchError` message, and
+ * the tests that regex-match those — keeps working unchanged, while the operator
+ * now gets the real frame instead of a bare one-liner. The stack's first line is
+ * normally the message itself; keeping both is harmless and the indented block
+ * scans cleanly in a log. The stack is capped at WORKER_STDERR_TAIL_LIMIT,
+ * mirroring the sibling stderr-tail bound, so a pathological error type (or a
+ * raised `Error.stackTraceLimit`) can't bloat the death reason. `stack` is
+ * `undefined` for an older worker build (or a thrown non-Error), in which case
+ * the reason is exactly the prior message-only form.
+ */
+function workerErrorReason(workerIndex: number, message: string, stack?: string): string {
+  const base = `Worker ${workerIndex} error: ${message}`;
+  return stack ? `${base}\n  worker stack:\n${stack.slice(0, WORKER_STDERR_TAIL_LIMIT)}` : base;
 }
 
 /**
@@ -724,6 +809,7 @@ function createJobs<TInput>(
   maxItems: number,
   maxBytes: number,
   timeoutMs: number,
+  chunkHash?: string,
 ): WorkerJob<TInput>[] {
   const jobs: WorkerJob<TInput>[] = [];
   let startIndex = 0;
@@ -738,6 +824,7 @@ function createJobs<TInput>(
       estimatedBytes: batchBytes,
       attempt: 0,
       splitDepth: 0,
+      chunkHash,
       timeoutMs,
       cumulativeTimeoutMs: timeoutMs,
     });
@@ -780,6 +867,12 @@ function createJobs<TInput>(
  *   time spent across all attempts/splits/retries. When the budget is
  *   exhausted, the pool surfaces the in-flight path via `WorkerPoolDispatchError`
  *   instead of letting timeouts compound indefinitely.
+ *
+ * Upstream of these layers, the parse worker self-sanitizes a result that the
+ * structured-clone algorithm can't serialize (#2112) — stripping or dropping
+ * the offending value and reporting the affected paths on the result — so a
+ * single non-cloneable value can't masquerade as a worker death and exhaust a
+ * slot's respawn budget here.
  */
 export const createWorkerPool = (
   workerUrl: URL,
@@ -800,7 +893,36 @@ export const createWorkerPool = (
   // (see captureWorkerStderr) and attach to readiness-failure messages —
   // instead of the generic "did not report ready" that hid the real cause
   // in #1741. Test factories (workerFactory) are used verbatim.
-  const spawnWorker = options?.workerFactory ?? ((url: URL) => new Worker(url, { stderr: true }));
+  // Bake the (immutable) ParsedFile store path into the factory closure so it
+  // reaches EVERY spawned worker — including respawns, which reuse this same
+  // factory — via `workerData`, read once at worker init. The `(url) => Worker`
+  // signature is unchanged so the zero-arg test factories keep working.
+  const parsedFileStoreStoragePath = options?.parsedFileStoreStoragePath;
+  const durableParsedFileStoragePath = options?.durableParsedFileStoragePath;
+  // CFG/PDG opt-in (#2081 M1) — carried in workerData alongside the store paths.
+  const pdg = options?.pdg === true;
+  const pdgMaxFunctionLines = options?.pdgMaxFunctionLines;
+  const workerStoreData =
+    parsedFileStoreStoragePath || durableParsedFileStoragePath || pdg
+      ? { parsedFileStoreStoragePath, durableParsedFileStoragePath, pdg, pdgMaxFunctionLines }
+      : undefined;
+  const spawnWorker =
+    options?.workerFactory ??
+    ((url: URL) =>
+      new Worker(url, {
+        stderr: true,
+        workerData: workerStoreData,
+        // The CFG visitors build per-function control-flow graphs by RECURSIVE
+        // descent over the tree-sitter AST, so deeply-nested source overflows
+        // the worker thread's call stack. A worker's stack is governed by
+        // `resourceLimits.stackSizeMb` (Node default 4 MB) — the main process's
+        // `--stack-size` flag does NOT propagate to worker threads — so raise it
+        // here. This pushes the overflow threshold from ~1.5k to several-k
+        // nesting levels (far beyond any hand-written code); a deeper machine-
+        // generated nest is still caught per-function (buildFunctionCfg's R4
+        // try/catch) and only that function's PDG is skipped, never a crash.
+        resourceLimits: { stackSizeMb: 16 },
+      }));
   /** Spawn + wire stderr capture in one step (used by all spawn sites). */
   const spawnAndCapture = (url: URL): Worker => {
     const worker = spawnWorker(url);
@@ -966,6 +1088,7 @@ export const createWorkerPool = (
   const dispatch = async <TInput, TResult>(
     items: TInput[],
     onProgress?: (filesProcessed: number) => void,
+    chunkHash?: string,
   ): Promise<TResult[]> => {
     // Await the initial-spawn readiness gate (F13). On first dispatch
     // this blocks for up to WORKER_READY_TIMEOUT_MS while every initial
@@ -1020,6 +1143,7 @@ export const createWorkerPool = (
       poolOptions.subBatchSize,
       poolOptions.subBatchMaxBytes,
       poolOptions.subBatchIdleTimeoutMs,
+      chunkHash,
     );
 
     return new Promise<TResult[]>((resolve, reject) => {
@@ -1262,6 +1386,7 @@ export const createWorkerPool = (
           estimatedBytes: filtered.reduce((sum, item) => sum + estimateItemBytes(item), 0),
           attempt: job.attempt,
           splitDepth: job.splitDepth,
+          chunkHash: job.chunkHash,
           timeoutMs: job.timeoutMs,
           cumulativeTimeoutMs: job.cumulativeTimeoutMs,
         });
@@ -1398,6 +1523,7 @@ export const createWorkerPool = (
             estimatedBytes: firstItems.reduce((sum, item) => sum + estimateItemBytes(item), 0),
             attempt: job.attempt,
             splitDepth: job.splitDepth + 1,
+            chunkHash: job.chunkHash,
             timeoutMs: nextTimeout,
             cumulativeTimeoutMs: nextCumulative,
           };
@@ -1407,6 +1533,7 @@ export const createWorkerPool = (
             estimatedBytes: secondItems.reduce((sum, item) => sum + estimateItemBytes(item), 0),
             attempt: job.attempt,
             splitDepth: job.splitDepth + 1,
+            chunkHash: job.chunkHash,
             timeoutMs: nextTimeout,
             cumulativeTimeoutMs: nextCumulative,
           };
@@ -1717,14 +1844,19 @@ export const createWorkerPool = (
           if (slotGenerations[workerIndex] !== slotGen) return;
           if (settled || stopped) return;
           // Native postMessage delivers POJO directly via Node's
-          // structured clone. V8 deserialization failures (malformed
-          // frame, non-cloneable value) surface as a `messageerror`
-          // event handled below — they never reach this handler. The
-          // only thing we need to guard for here is a worker that
-          // sends a message without a `type` discriminant (a bug in
-          // the worker, not a wire-format issue): without the guard
-          // `null.type` would throw a TypeError out of the
-          // EventEmitter listener → uncaughtException on the main
+          // structured clone. Two distinct clone failure modes exist,
+          // and NEITHER reaches this handler: (1) a SENDER-side
+          // non-cloneable value (a function/symbol that leaked into the
+          // result) throws a synchronous `DataCloneError` on the
+          // worker's own postMessage — the parse worker self-sanitizes
+          // such results before delivery (#2112) and falls back to a
+          // primitive-only `{type:'error'}` if it still can't serialize;
+          // (2) a RECEIVER-side deserialization failure surfaces as a
+          // `messageerror` event handled below. The only thing THIS
+          // handler guards is a worker that sends a message without a
+          // `type` discriminant (a worker bug, not a wire-format issue):
+          // without the guard `null.type` would throw a TypeError out of
+          // the EventEmitter listener → uncaughtException on the main
           // thread.
           const msg = raw as WorkerOutgoingMessage;
           if (msg === null || typeof msg !== 'object' || typeof msg.type !== 'string') {
@@ -1752,12 +1884,15 @@ export const createWorkerPool = (
           } else if (msg.type === 'sub-batch-done') {
             waitingForFlush = true;
             resetIdleTimer();
-            worker.postMessage({ type: 'flush' });
+            // Carry the chunk hash on the flush so the worker can write a
+            // durable, content-addressed ParsedFile shard (warm-cache reuse)
+            // at the flush boundary where `accumulated.parsedFiles` is complete.
+            worker.postMessage({ type: 'flush', chunkHash: job.chunkHash });
           } else if (msg.type === 'error') {
             settled = true;
             cleanup();
             void recoverAndResume(
-              `Worker ${workerIndex} error: ${msg.error}`,
+              workerErrorReason(workerIndex, msg.error, msg.errorStack),
               resolveExcludePaths(),
             );
           } else if (msg.type === 'result') {
@@ -1802,8 +1937,13 @@ export const createWorkerPool = (
           if (!settled) {
             settled = true;
             cleanup();
+            // The Node 'error' event fires on an UNCAUGHT worker throw (one that
+            // escaped the worker's own try/catch, or an async rejection). Unlike
+            // the `{type:'error'}` message, the event delivers a real Error whose
+            // `.stack` is the worker-side frame — carry it so the surfaced reason
+            // points at the actual failure site, not just `err.message` (#2068).
             void recoverAndResume(
-              `Worker ${workerIndex} error: ${err.message}`,
+              workerErrorReason(workerIndex, err.message, err.stack),
               resolveExcludePaths(),
             );
           }
@@ -1824,12 +1964,15 @@ export const createWorkerPool = (
           }
         };
 
-        // `messageerror` fires when V8 fails to deserialize a postMessage
-        // payload (e.g., the worker tries to send a non-cloneable value
-        // back, or structured-clone hits an unsupported shape). The worker
-        // stays ALIVE but the message is lost — without this handler the
-        // pool would sit on the dropped message until the idle timeout
-        // expires. Treat it as worker death so the resilience layers fire:
+        // `messageerror` fires when V8 fails to DESERIALIZE a postMessage
+        // payload on THIS (receiver) side — a value that serialized on the
+        // worker but can't be reconstructed here. (A non-cloneable value on
+        // the SENDER side instead throws a synchronous DataCloneError on the
+        // worker's own postMessage; that path is caught and sanitized
+        // worker-side (#2112) and never arrives here.) The worker stays ALIVE
+        // but the message is lost — without this handler the pool would sit on
+        // the dropped message until the idle timeout expires. Treat it as
+        // worker death so the resilience layers fire:
         // requeue the remainder via `recoverAndResume`, attribute the
         // in-flight file from the `starting-file` signal (if observed),
         // and let the per-slot respawn budget and circuit breaker decide

@@ -14,16 +14,6 @@
     "dockerfile": "Dockerfile",
     "context": ".",
     "args": {
-      "CLAUDE_CODE_VERSION": "2.1.156",
-      "CODEX_VERSION": "0.134.0",
-      // Cursor: a pinned version plus one sha256 hash per CPU arch. The
-      // Dockerfile checks the tarball against the hash at build time, so it
-      // never runs a remote install script. Bump all three values together.
-      // Re-hash each arch with:
-      //   curl -fSL https://downloads.cursor.com/lab/<ver>/linux/<x64|arm64>/agent-cli-package.tar.gz | sha256sum
-      "CURSOR_VERSION": "2026.05.28-a70ca7c",
-      "CURSOR_SHA256_X64": "7f8b6a09393e0b84b288cc6952b292fc98d15775f644cc01b0b9aa4f04b268df",
-      "CURSOR_SHA256_ARM64": "05a0ab361e038729aba25fe7f407531b3e8432912e499d0bffdf1dda0e7833e9",
       // Bun: pinned by version. Installed by the official bun.sh/install
       // script, which accepts the release tag as its first positional arg
       // (`bash -s bun-vX.Y.Z`). UNLIKE Cursor, the install path runs an
@@ -324,17 +314,6 @@
   // dependency explicit instead of silently following the default.
   "containerEnv": {
     "CODEX_HOME": "/home/node/.codex",
-    "DISABLE_AUTOUPDATER": "1",
-    // post-create.sh removes `installMethod` from the seeded ~/.claude.json so
-    // the npm-global binary detects its own install method. This is a backup
-    // safeguard for Claude Code issue #17289. The install-checks routine probes
-    // ~/.local/bin/claude just because that directory EXISTS. It does exist
-    // here, because Cursor drops agent and cursor-agent symlinks there. So even
-    // when installMethod is non-native, the routine reports a false "claude
-    // command not found at ~/.local/bin/claude". DISABLE_AUTOUPDATER does NOT
-    // turn that routine off. DISABLE_INSTALLATION_CHECKS is its dedicated kill
-    // switch.
-    "DISABLE_INSTALLATION_CHECKS": "1",
     "HISTFILE": "/commandhistory/.zsh_history"
   },
 

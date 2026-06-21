@@ -24,6 +24,11 @@ import type { BindingRef, ParsedFile, ScopeId, SymbolDefinition, TypeRef } from 
 import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
 import type { SemanticModel } from '../../model/semantic-model.js';
 import type { WorkspaceResolutionIndex } from '../workspace-index.js';
+import {
+  normalizeQualifiedName,
+  splitQualifiedName,
+  stripTrailingTypeArguments,
+} from '../../utils/qualified-name.js';
 
 const EMPTY_BINDINGS: readonly BindingRef[] = Object.freeze([]);
 
@@ -309,11 +314,163 @@ export function resolveInheritanceBaseInScope(
   startScope: ScopeId,
   baseName: string,
   scopes: ScopeResolutionIndexes,
+  rawQualifiedName?: string,
+  enclosingClassDef?: SymbolDefinition,
 ): SymbolDefinition | undefined {
+  // #1982: when the source wrote a qualified base (`Other::Inner`), resolve it
+  // against the full-path QualifiedNameIndex FIRST, so a same-tail nested base
+  // binds to the matching sibling instead of the first-inserted one that the
+  // simple-tail scope walk picks. Falls through to the existing walk when the
+  // base is unqualified, unknown, or the qualified lookup can't pick a unique
+  // winner — so unqualified bases and the cross-file single-candidate case are
+  // unchanged. `enclosingClassDef` (the deriving class) is threaded from the
+  // caller to skip a redundant enclosing-class walk (#1982 perf).
+  if (rawQualifiedName !== undefined) {
+    const qualified = resolveQualifiedInheritanceBase(
+      startScope,
+      rawQualifiedName,
+      scopes,
+      enclosingClassDef,
+    );
+    if (qualified !== undefined) return qualified;
+  }
   return (
     findClassBindingInScope(startScope, baseName, scopes) ??
     resolveAmbiguousInheritanceBaseViaImports(startScope, baseName, scopes)
   );
+}
+
+/**
+ * Resolve a qualified inheritance base (`Other::Inner`, `ns::Base`) against the
+ * full-path `QualifiedNameIndex` (keyed by `def.qualifiedName`, which carries
+ * the promoted dotted path post-`populateOwners`). Tries the referencing site's
+ * enclosing-scope segments as progressive prefixes (longest first) before the
+ * root-anchored qualifier, so a *relative* base like `Outer::Inner` written
+ * inside `namespace NS` resolves to the root-anchored key `NS.Outer.Inner`.
+ * Returns a unique class-like def, or `undefined` when the base is unqualified,
+ * unknown, or genuinely ambiguous at a key (refuse-on-tie — never guess; a
+ * wrong EXTENDS edge silently corrupts impact analysis).
+ */
+function resolveQualifiedInheritanceBase(
+  startScope: ScopeId,
+  rawQualifiedName: string,
+  scopes: ScopeResolutionIndexes,
+  enclosingClassDef?: SymbolDefinition,
+): SymbolDefinition | undefined {
+  const normalized = stripTrailingTypeArguments(normalizeQualifiedName(rawQualifiedName));
+  // No qualifier after normalization → nothing the simple-tail walk doesn't do.
+  if (normalized.length === 0 || !normalized.includes('.')) return undefined;
+
+  // #1982: a root-anchored base (`::Net::X`) names the GLOBAL scope, so it must
+  // NOT be prefixed with the referencing site's enclosing segments — try only
+  // the root-anchored key. normalizeQualifiedName strips the leading `::`, so
+  // detect the anchor on the raw text (after leading whitespace).
+  const isRootAnchored = /^\s*::/.test(rawQualifiedName);
+  const enclosing = isRootAnchored
+    ? []
+    : enclosingScopeSegments(startScope, scopes, enclosingClassDef);
+  // Candidate keys: longest enclosing prefix first for *relative* qualified
+  // bases (`Outer.Inner` inside `NS.Outer.Derived` → `NS.Outer.Inner`). When the
+  // qualifier names a *different* namespace than the enclosing scope (`new B.Foo()`
+  // inside `namespace A` → `B.Foo`, not `A.Foo`), try the raw normalized key
+  // FIRST so same-tail local bindings don't win (#2046 / #1991).
+  const normParts = splitQualifiedName(normalized);
+  const isRelativeToEnclosing =
+    enclosing.length > 0 &&
+    normParts.length > 0 &&
+    normParts[0] === enclosing[enclosing.length - 1];
+  const keys: string[] = [];
+  if (!isRelativeToEnclosing) {
+    keys.push(normalized);
+  }
+  for (let i = enclosing.length; i >= 1; i--) {
+    keys.push([...enclosing.slice(0, i), normalized].join('.'));
+  }
+  if (!keys.includes(normalized)) {
+    keys.push(normalized);
+  }
+
+  for (const key of keys) {
+    const ids = scopes.qualifiedNames.get(key);
+    if (ids.length === 0) continue;
+    let unique: SymbolDefinition | undefined;
+    let count = 0;
+    for (const id of ids) {
+      const def = scopes.defs.get(id);
+      if (def !== undefined && isClassLike(def.type)) {
+        unique = def;
+        count++;
+      }
+    }
+    if (count === 1) return unique;
+    if (count > 1) {
+      // #1993: same-tail bases collide at this namespace-omitted key (`NS1::A::Inner`
+      // and `NS2::A::Inner` both key `A.Inner`). Break the tie with the bridge's
+      // `namespacePrefix` sidecar — prefer the candidate in the SAME enclosing
+      // namespace as the deriving class. Bridge-held: `def.qualifiedName` and the
+      // index keys are untouched; still refuse when the sidecar can't pick a unique.
+      const childPrefix = enclosingClassDef?.namespacePrefix;
+      if (childPrefix !== undefined && childPrefix.length > 0) {
+        let nsUnique: SymbolDefinition | undefined;
+        let nsCount = 0;
+        for (const id of ids) {
+          const def = scopes.defs.get(id);
+          if (def !== undefined && isClassLike(def.type) && def.namespacePrefix === childPrefix) {
+            nsUnique = def;
+            nsCount++;
+          }
+        }
+        if (nsCount === 1) return nsUnique;
+      }
+      return undefined; // genuine tie → refuse, don't guess
+    }
+  }
+
+  // Qualifier-vs-sidecar fallback (#2046). Languages whose class `qualifiedName`
+  // is the SIMPLE name (C#) never populate a qualified key in the index, so the
+  // keyed loop above can't see `B.Foo`. Resolve the simple TAIL and break the
+  // same-tail collision by matching the explicit qualifier (`B`) against each
+  // candidate's `namespacePrefix` sidecar. Commit only on a unique match — a
+  // still-ambiguous qualifier refuses (never guesses a wrong EXTENDS/CALLS edge).
+  const tail = normParts[normParts.length - 1];
+  const qualifier = normParts.slice(0, -1).join('.');
+  if (tail !== undefined && qualifier.length > 0) {
+    const tailIds = scopes.qualifiedNames.get(tail);
+    let qUnique: SymbolDefinition | undefined;
+    let qCount = 0;
+    for (const id of tailIds) {
+      const def = scopes.defs.get(id);
+      if (def === undefined || !isClassLike(def.type)) continue;
+      const np = def.namespacePrefix;
+      if (np === undefined || np.length === 0) continue;
+      if (np === qualifier || np.endsWith(`.${qualifier}`)) {
+        qUnique = def;
+        qCount++;
+      }
+    }
+    if (qCount === 1) return qUnique;
+  }
+  return undefined;
+}
+
+/**
+ * Enclosing scope segments of an inheritance site, derived from the deriving
+ * (child) class def's `qualifiedName` minus its own tail. For child
+ * `NS.Other.Derived` this is `['NS', 'Other']`; empty for a file-scope child.
+ * Used to build progressive-prefix lookup keys for relative qualified bases.
+ */
+function enclosingScopeSegments(
+  startScope: ScopeId,
+  scopes: ScopeResolutionIndexes,
+  enclosingClassDef?: SymbolDefinition,
+): string[] {
+  // Reuse the caller-provided deriving class when available (#1982 perf); only
+  // walk the scope chain when it wasn't threaded in.
+  const child = enclosingClassDef ?? findEnclosingClassDef(startScope, scopes);
+  const q = child?.qualifiedName;
+  if (q === undefined || q.length === 0) return [];
+  const segs = q.split('.').filter(Boolean);
+  return segs.slice(0, -1);
 }
 
 /**
@@ -707,6 +864,89 @@ export function populateClassOwnedMembers(parsed: ParsedFile): void {
 }
 
 /**
+ * Tag every def declared inside one or more `Namespace` scopes with its
+ * enclosing-namespace path (`NS`, `Outer.Inner`) on a sidecar `namespacePrefix`
+ * field — WITHOUT touching `qualifiedName`.
+ *
+ * Some scope-extractors qualify a nested type by its enclosing CLASS chain
+ * (`A.Inner`) but drop the enclosing NAMESPACE, while the structure phase keys
+ * the graph node by the full path (`NS.A.Inner`). `resolveDefGraphId` reads this
+ * tag to retry the node lookup with the namespace-prefixed key before the
+ * simple-name fallback, so same-tail nested bases don't collapse across sibling
+ * namespace members (#1982). `qualifiedName` is deliberately left unchanged, so
+ * the `qualifiedName`-keyed resolution index and existing namespace resolution
+ * (brace-init, UDC ranking, two-phase lookup) are untouched.
+ *
+ * Language-agnostic: it acts only on `Namespace`-kind scopes (a namespace-free
+ * language is a no-op) and is opt-in per provider (call after `populateOwners`).
+ * Namespace segments are taken as each namespace def's own tail, so it composes
+ * for nested namespaces regardless of whether the inner namespace's name is
+ * stored simple or already dotted. Skips defs already carrying the prefix.
+ */
+export function tagNamespacePrefixes(parsed: ParsedFile): void {
+  const scopesById = new Map<ScopeId, ParsedFile['scopes'][number]>();
+  for (const scope of parsed.scopes) scopesById.set(scope.id, scope);
+
+  // Enclosing-namespace prefix for a scope: the dotted path of each ancestor
+  // Namespace scope's name, outermost-first (`['Outer','Inner'] → 'Outer.Inner'`).
+  const namespacePrefixOf = (scope: ParsedFile['scopes'][number]): string => {
+    const segments: string[] = [];
+    let parentId = scope.parent;
+    while (parentId !== null) {
+      const parent = scopesById.get(parentId);
+      if (parent === undefined) break;
+      if (parent.kind === 'Namespace') {
+        const nsDef = parent.ownedDefs.find((d) => d.type === 'Namespace');
+        const nsQ = nsDef?.qualifiedName;
+        if (nsQ !== undefined && nsQ.length > 0) {
+          const dot = nsQ.lastIndexOf('.');
+          segments.unshift(dot === -1 ? nsQ : nsQ.slice(dot + 1));
+        }
+      }
+      parentId = parent.parent;
+    }
+    return segments.join('.');
+  };
+
+  for (const scope of parsed.scopes) {
+    if (scope.kind === 'Namespace') continue;
+    const prefix = namespacePrefixOf(scope);
+    if (prefix.length === 0) continue;
+    for (const def of scope.ownedDefs) {
+      const q = def.qualifiedName;
+      if (q === undefined || q.length === 0) continue;
+      if (q === prefix || q.startsWith(`${prefix}.`)) continue; // already namespaced
+      def.namespacePrefix = prefix;
+    }
+  }
+
+  // #1993: also tag defs declared DIRECTLY in a Namespace scope with that
+  // namespace's OWN full path. The loop above only reaches class-nested defs
+  // (`A::Inner`); a deriving class like `NS1::DA` lives in the namespace scope and
+  // is skipped, so it would carry no prefix and a same-tail cross-namespace base
+  // tie (`NS1::A::Inner` vs `NS2::A::Inner`) could not be broken by the deriving
+  // side. Composed identically to the class-nested path (enclosing tails + own
+  // tail) so the two agree; still sidecar-only (`qualifiedName` untouched).
+  for (const scope of parsed.scopes) {
+    if (scope.kind !== 'Namespace') continue;
+    const ownNsDef = scope.ownedDefs.find((d) => d.type === 'Namespace');
+    const ownQ = ownNsDef?.qualifiedName;
+    if (ownQ === undefined || ownQ.length === 0) continue;
+    const ownTail = ownQ.slice(ownQ.lastIndexOf('.') + 1);
+    const parentPrefix = namespacePrefixOf(scope);
+    const fullPrefix = parentPrefix.length > 0 ? `${parentPrefix}.${ownTail}` : ownTail;
+    for (const def of scope.ownedDefs) {
+      if (def.type === 'Namespace') continue;
+      const q = def.qualifiedName;
+      if (q === undefined || q.length === 0) continue;
+      if (q === fullPrefix || q.startsWith(`${fullPrefix}.`)) continue; // already namespaced
+      if (def.namespacePrefix !== undefined) continue;
+      def.namespacePrefix = fullPrefix;
+    }
+  }
+}
+
+/**
  * Walk a scope chain upward looking for the innermost enclosing
  * Class scope and return that class's def. Used by per-language
  * `super` receiver branches to discover the dispatch base.
@@ -768,24 +1008,16 @@ export function findExportedDefByName(
     }
     currentId = scope.parent;
   }
-  // Workspace-wide fallback: iterate every file's Module scope (via
-  // the scope-tied `moduleScopeByFile` lookup) and return the first
-  // locally-declared callable binding matching `name`. First-seen-
-  // by-file wins; bindings filtered to `origin === 'local'` and the
-  // callable types Function/Method/Constructor. We walk scopes here
-  // rather than consult `SemanticModel.symbols.lookupCallableByName`
-  // because the `origin === 'local'` module-export-visibility filter
-  // is a scope concept the raw symbol index doesn't express.
-  for (const [, moduleScope] of index.moduleScopeByFile) {
-    const refs = moduleScope.bindings.get(name);
-    if (refs === undefined) continue;
-    for (const ref of refs) {
-      if (ref.origin !== 'local') continue;
-      const t = ref.def.type;
-      if (t === 'Function' || t === 'Method' || t === 'Constructor') return ref.def;
-    }
-  }
-  return undefined;
+  // Workspace-wide fallback: the first locally-declared callable binding
+  // matching `name` across every file's Module scope (first-seen-by-file wins;
+  // `origin === 'local'`, callable types Function/Method/Constructor). This is
+  // precomputed ONCE into `index.exportedCallableByName` — byte-identical to the
+  // old per-call scan over `moduleScopeByFile`, but O(1) and disk-read-free
+  // (the old scan faulted every module scope in from disk under the out-of-core scope index). We use
+  // this scope-derived index rather than `SemanticModel.symbols.lookupCallableByName`
+  // because the `origin === 'local'` module-export-visibility filter is a scope
+  // concept the raw symbol index doesn't express.
+  return index.exportedCallableByName.get(name);
 }
 
 /**

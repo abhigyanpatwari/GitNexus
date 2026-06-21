@@ -22,6 +22,7 @@ import {
   withHfDownloadRetry,
 } from '../../core/embeddings/hf-env.js';
 import { getLocalEmbeddingRuntimeBlocker } from '../../core/embeddings/runtime-support.js';
+import { ensureOnnxRuntimeCommonResolvable } from '../../core/embeddings/onnxruntime-common-resolver.js';
 import { silenceStdout, restoreStdout, realStderrWrite } from '../../core/lbug/pool-adapter.js';
 
 import { logger } from '../../core/logger.js';
@@ -65,6 +66,9 @@ export const initEmbedder = async (): Promise<FeatureExtractionPipeline> => {
     try {
       // Lazy-load transformers.js only after the runtime guard has passed, so
       // unsupported platforms never reach the native ONNX import (#1515).
+      // Under pnpm-strict / `pnpm dlx`, transformers' phantom `onnxruntime-common`
+      // import is unresolvable; register the fallback resolver first (#307).
+      ensureOnnxRuntimeCommonResolvable();
       const { pipeline, env } = await import('@huggingface/transformers');
 
       env.allowLocalModels = false;

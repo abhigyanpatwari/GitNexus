@@ -37,6 +37,55 @@ function extractCVarName(node: SyntaxNode): string | undefined {
   return undefined;
 }
 
+/**
+ * Locate the `structured_binding_declarator` inside a `declaration` node, if any.
+ *
+ * C++ structured bindings (`auto [a, b] = pair;`) parse as:
+ *   declaration → init_declarator → structured_binding_declarator → identifier+
+ * The reference form (`auto& [x, y] = tup;`) wraps it one level deeper:
+ *   declaration → init_declarator → reference_declarator → structured_binding_declarator
+ */
+function findStructuredBindingDeclarator(node: SyntaxNode): SyntaxNode | undefined {
+  for (let i = 0; i < node.namedChildCount; i++) {
+    const child = node.namedChild(i);
+    if (child?.type !== 'init_declarator') continue;
+    const declarator = child.childForFieldName('declarator');
+    if (declarator?.type === 'structured_binding_declarator') return declarator;
+    // `auto& [x, y]` → reference_declarator wraps the structured_binding_declarator.
+    if (declarator?.type === 'reference_declarator') {
+      const inner = declarator.namedChildren.find(
+        (c: SyntaxNode) => c.type === 'structured_binding_declarator',
+      );
+      if (inner) return inner;
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Extract every bound name from a C/C++ declaration.
+ *
+ * For a structured binding `auto [a, b] = ...;` this returns each bound
+ * identifier (`['a', 'b']`); the binding's `structured_binding_declarator`
+ * lists one `identifier` per name. For an ordinary single-name declaration
+ * (`int n = 0;`) it falls back to the single name extractor so behaviour is
+ * unchanged (issue #1919 F9).
+ */
+function extractCVarNames(node: SyntaxNode): string[] {
+  const binding = findStructuredBindingDeclarator(node);
+  if (binding !== undefined) {
+    const names: string[] = [];
+    for (let i = 0; i < binding.namedChildCount; i++) {
+      const child = binding.namedChild(i);
+      if (child?.type === 'identifier') names.push(child.text);
+    }
+    return names;
+  }
+
+  const single = extractCVarName(node);
+  return single !== undefined ? [single] : [];
+}
+
 function extractCVarType(node: SyntaxNode): string | undefined {
   const typeNode = node.childForFieldName('type');
   if (typeNode) return extractSimpleTypeName(typeNode) ?? typeNode.text?.trim();
@@ -60,6 +109,7 @@ const shared: Omit<VariableExtractionConfig, 'language'> = {
   variableNodeTypes: ['declaration'],
 
   extractName: extractCVarName,
+  extractNames: extractCVarNames,
   extractType: extractCVarType,
 
   extractVisibility(node): VariableVisibility {

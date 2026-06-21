@@ -31,7 +31,7 @@
   },
   "analyzeFirst": {
     "title": "Analyze your first repository",
-    "description": "Paste a GitHub URL and GitNexus will clone it, parse the code, and build a live knowledge graph — right in your browser.",
+    "description": "Paste a repository URL and GitNexus will clone it, parse the code, and build a live knowledge graph — right in your browser.",
     "footer": "Public repos only · Cloned locally by the server · No data leaves your machine"
   },
   "landing": {
@@ -51,6 +51,7 @@
     "inputType": "Input type",
     "githubUrl": "GitHub URL",
     "gitlabUrl": "GitLab URL",
+    "azureDevOpsUrl": "Azure DevOps",
     "localFolder": "Local Folder",
     "starting": "Starting analysis...",
     "analyzeRepository": "Analyze Repository",
@@ -58,10 +59,20 @@
     "loadingGraph": "Loading graph...",
     "defaultRepoName": "repository",
     "githubRepositoryUrl": "GitHub Repository URL",
+    "githubTokenLabel": "Personal Access Token (optional)",
+    "githubTokenPlaceholder": "ghp_… or github_pat_…",
+    "githubTokenHelp": "Required for private repos. Needs the 'repo' (or fine-grained Contents:read) scope. Sent once, not stored.",
     "gitlabRepositoryUrl": "GitLab Repository URL",
     "gitlabSupported": "Supports GitLab.com and self-hosted GitLab instances.",
+    "azureDevOpsRepositoryUrl": "Azure DevOps Repository URL",
+    "azureDevOpsSupported": "Format: https://dev.azure.com/organization/project/_git/repository",
     "localFolderPath": "Local Folder Path",
-    "browseForFolder": "Browse for folder",
-    "hideBackground": "Hide (analysis continues in background)"
+    "hideBackground": "Hide (analysis continues in background)",
+    "upload": {
+      "button": "Upload a folder",
+      "uploading": "Uploading…",
+      "selected": "{{fileCount}} files ready ({{dropped}} skipped: .git, node_modules, build output)",
+      "empty": "No analyzable files found in that folder."
+    }
   }
 }

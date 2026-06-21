@@ -23,6 +23,7 @@ export const RightPanel = () => {
     isRightPanelOpen,
     setRightPanelOpen,
     graph,
+    graphMode,
     addCodeReference,
     // LLM / chat state
     chatMessages,
@@ -282,6 +283,14 @@ export const RightPanel = () => {
               )}
             </div>
           </div>
+
+          {/* Chat-only notice: the graph wasn't loaded for this large project, so
+              inline node citations won't pin in the (absent) graph view (#2178). */}
+          {graphMode === 'chatOnly' && (
+            <div className="border-b border-amber-500/20 bg-amber-500/10 px-4 py-2 text-[11px] text-amber-200/90">
+              {t('chat:chatOnly.banner')}
+            </div>
+          )}
 
           {/* Status / errors */}
           {agentError && (

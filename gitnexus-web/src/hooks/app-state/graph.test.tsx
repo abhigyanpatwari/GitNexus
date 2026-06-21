@@ -19,4 +19,21 @@ describe('GraphState', () => {
     });
     expect(result.current.graphViewMode).toBe('tree');
   });
+
+  it('should default graphMode to "full"', () => {
+    const { result } = renderHook(() => useGraphState(), { wrapper });
+    expect(result.current.graphMode).toBe('full');
+  });
+
+  it('should switch graphMode to "chatOnly" and back', () => {
+    const { result } = renderHook(() => useGraphState(), { wrapper });
+    act(() => {
+      result.current.setGraphMode('chatOnly');
+    });
+    expect(result.current.graphMode).toBe('chatOnly');
+    act(() => {
+      result.current.setGraphMode('full');
+    });
+    expect(result.current.graphMode).toBe('full');
+  });
 });

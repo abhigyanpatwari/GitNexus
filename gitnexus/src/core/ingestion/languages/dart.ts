@@ -2,7 +2,6 @@
  * Dart Language Provider
  *
  * Dart traits:
- *   - importSemantics: 'wildcard-leaf' (Dart imports bring everything public into scope)
  *   - exportChecker: public if no leading underscore
  *   - Dart SDK imports (dart:*) and external packages are skipped
  *   - enclosingFunctionFinder: Dart's tree-sitter grammar places function_body
@@ -23,6 +22,7 @@ import { dartExportChecker } from '../export-detection.js';
 import { createImportResolver } from '../import-resolvers/resolver-factory.js';
 import { dartImportConfig } from '../import-resolvers/configs/dart.js';
 import { DART_QUERIES } from '../tree-sitter-queries.js';
+import { createDartCfgVisitor } from '../cfg/visitors/dart.js';
 import { createFieldExtractor } from '../field-extractors/generic.js';
 import { dartConfig as dartFieldConfig } from '../field-extractors/configs/dart.js';
 import { createMethodExtractor } from '../method-extractors/generic.js';
@@ -31,7 +31,6 @@ import { createVariableExtractor } from '../variable-extractors/generic.js';
 import { dartVariableConfig } from '../variable-extractors/configs/dart.js';
 import { createCallExtractor } from '../call-extractors/generic.js';
 import { dartCallConfig } from '../call-extractors/configs/dart.js';
-import { createHeritageExtractor } from '../heritage-extractors/generic.js';
 import {
   emitDartScopeCaptures,
   interpretDartImport,
@@ -120,13 +119,11 @@ export const dartProvider = defineLanguage({
   typeConfig: dartConfig,
   exportChecker: dartExportChecker,
   importResolver: createImportResolver(dartImportConfig),
-  importSemantics: 'wildcard-leaf',
   callExtractor: createCallExtractor(dartCallConfig),
   fieldExtractor: createFieldExtractor(dartFieldConfig),
   methodExtractor: createMethodExtractor(dartMethodConfig),
   variableExtractor: createVariableExtractor(dartVariableConfig),
   classExtractor: createClassExtractor(dartClassConfig),
-  heritageExtractor: createHeritageExtractor(SupportedLanguages.Dart),
   enclosingFunctionFinder: dartEnclosingFunctionFinder,
   builtInNames: DART_BUILT_INS,
 
@@ -135,6 +132,7 @@ export const dartProvider = defineLanguage({
   // emit-side `ScopeResolver` lives in `dart/scope-resolver.ts`; the same
   // function references flow through both interfaces.
   emitScopeCaptures: emitDartScopeCaptures,
+  cfgVisitor: createDartCfgVisitor(),
   interpretImport: interpretDartImport,
   interpretTypeBinding: interpretDartTypeBinding,
   bindingScopeFor: dartBindingScopeFor,

@@ -35,6 +35,8 @@ vi.mock('../../src/cli/cli-message.js', () => ({
 
 vi.mock('../../src/core/lbug/lbug-adapter.js', () => ({
   closeLbug: vi.fn(async () => undefined),
+  closeLbugBeforeExit: vi.fn(async () => undefined),
+  isLbugReady: vi.fn(() => false),
 }));
 
 vi.mock('../../src/storage/repo-manager.js', () => ({
@@ -48,6 +50,9 @@ vi.mock('../../src/storage/repo-manager.js', () => ({
 vi.mock('../../src/storage/git.js', () => ({
   getGitRoot: vi.fn(() => '/repo'),
   hasGitDir: vi.fn(() => true),
+  // #243: default-branch auto-detection. Return null so the resolver falls back
+  // to "main" deterministically in this mocked environment.
+  getDefaultBranch: vi.fn(() => null),
 }));
 
 vi.mock('../../src/core/ingestion/utils/max-file-size.js', () => ({
@@ -162,7 +167,11 @@ describe('analyzeCommand commander → runFullAnalysis noStats bridge (#1477)', 
       expect(aiCtxOpts).toEqual({
         skipAgentsMd: undefined,
         skipSkills: undefined,
+        // #243: resolved default branch threaded into the --skills regen path.
+        defaultBranch: 'main',
         noStats: true,
+        // #2086 M6: the --pdg gate is threaded too; false here (no --pdg flag).
+        hasPdg: false,
       });
     } finally {
       exitSpy.mockRestore();
