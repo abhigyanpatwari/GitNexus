@@ -200,6 +200,53 @@ describe('HttpRouteExtractor — Route.method from graph (Step A / #2138)', () =
     expect(out[0].symbolName).toBe('listOrders');
   });
 
+  it('fast path: Route.handlerSymbolId resolves the handler without any source scan', async () => {
+    // Deliberately leave FILE_DETECTIONS empty: if the extractor still resolves
+    // the handler, it MUST have used the persisted handlerSymbolId (the graph
+    // fast path), not a plugin scan of the source.
+    const HID = 'Method:OrderController.java:OrderController.createOrder#0';
+    const db = vi.fn(async (query: string) => {
+      if (query.includes('HANDLES_ROUTE')) {
+        return [
+          {
+            fileId: 'f1',
+            filePath: 'OrderController.java',
+            routePath: '/api/orders',
+            routeMethod: 'POST',
+            handlerSymbolId: HID,
+            routeSource: 'framework-route',
+          },
+        ];
+      }
+      if (query.includes('CONTAINS')) {
+        return [
+          {
+            uid: HID,
+            name: 'createOrder',
+            filePath: 'OrderController.java',
+            labels: ['Method'],
+            0: HID,
+            1: 'createOrder',
+            2: 'OrderController.java',
+            3: ['Method'],
+          },
+        ];
+      }
+      return [];
+    });
+
+    const out = await new HttpRouteExtractor().extract(db, '/repo', {
+      name: 'r',
+      url: 'r',
+    } as never);
+    expect(out).toHaveLength(1);
+    expect(out[0].meta.method).toBe('POST');
+    // The persisted symbol id is authoritative; name/path come from the cheap
+    // CONTAINS graph query (no source parse).
+    expect(out[0].symbolUid).toBe(HID);
+    expect(out[0].symbolName).toBe('createOrder');
+  });
+
   it('backward-compat: no Route.method and undecodable reason stays at conservative GET', async () => {
     FILE_DETECTIONS.set('routes.ts', [detection('provider', 'POST', '/api/orders', 'createOrder')]);
 

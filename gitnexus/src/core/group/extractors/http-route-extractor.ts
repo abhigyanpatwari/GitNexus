@@ -49,6 +49,7 @@ MATCH (handlerFile:File)-[r:CodeRelation {type: 'HANDLES_ROUTE'}]->(route:Route)
 RETURN handlerFile.id AS fileId, handlerFile.filePath AS filePath,
        route.name AS routePath, route.id AS routeId,
        route.method AS routeMethod,
+       route.handlerSymbolId AS handlerSymbolId,
        route.responseKeys AS responseKeys,
        r.reason AS routeSource`;
 const FETCHES_QUERY = `
@@ -354,66 +355,83 @@ export class HttpRouteExtractor implements ContractExtractor {
         .toUpperCase();
       let method = (graphMethod || null) ?? methodFromRouteReason(routeSource);
 
-      // Look up handler name (and backfill method if missing) from the
-      // plugin's scan of the handler file. This replaces the old
-      // regex-based `inferMethodFromFileScan` and `pickJavaHandlerName`
-      // helpers — tree-sitter gives both pieces of information
-      // structurally. Always run the lookup: even when method is set by
-      // `methodFromRouteReason`, we still need the handler name.
-      const detections = filePath ? await getDetections(filePath) : [];
-      const providerDetections = detections.filter((d) => d.role === 'provider');
-      let handlerName: string | null = null;
-      const normalizedRoute = normalizeHttpPath(routePath);
-      // Candidates share the same normalized path. When multiple
-      // detections at the same path exist (e.g. GET + POST /api/orders
-      // in one router), a blind `.find()` silently returned the first
-      // verb — attaching the wrong handler and, when method was not
-      // already pinned by the route reason, the wrong method too.
-      // Disambiguate by method when we know it; refuse to guess when
-      // we don't.
-      const candidates = providerDetections.filter(
-        (d) => normalizeHttpPath(d.path) === normalizedRoute,
-      );
-      let match: (typeof candidates)[number] | undefined;
-      const ambiguousCandidates = !method && candidates.length > 1;
-      if (method) {
-        match = candidates.find((d) => d.method === method);
-      } else if (candidates.length === 1) {
-        match = candidates[0];
-      }
-      // else: multiple candidates + unknown method → leave match
-      // undefined so handlerName stays null and skip symbol
-      // enrichment below, keeping the file-basename fallback instead
-      // of letting pickSymbolUid silently pick the first Function /
-      // Method in the file (which reintroduces the mis-attribution
-      // we were trying to avoid). Method stays at the conservative
-      // 'GET' default set below.
-      if (match) {
-        if (!method) method = match.method;
-        handlerName = match.name;
-      }
-      if (!method) method = 'GET';
-
-      const pathNorm = normalizeHttpPath(routePath);
-      const cid = contractIdFor(method, pathNorm);
+      const handlerSymbolId = String(row.handlerSymbolId ?? '').trim();
+      const fileId = row.fileId ?? row[0];
+      const pathNormEarly = normalizeHttpPath(routePath);
 
       let symbolUid = '';
       let symbolName = path.basename(filePath) || 'handler';
       let symPath = filePath;
-      const fileId = row.fileId ?? row[0];
-      if (fileId && !ambiguousCandidates) {
-        try {
-          const syms = await db(CONTAINS_QUERY, { fileId });
-          if (syms.length > 0) {
-            const picked = pickSymbolUid(syms, handlerName);
-            symbolUid = picked.uid;
-            symbolName = picked.name;
-            symPath = picked.filePath || filePath;
+
+      if (handlerSymbolId) {
+        // Fast path (Part 2, #2138): the handler symbol was resolved during
+        // ingestion and persisted on the Route node, so we read it straight
+        // from the graph and SKIP the `getDetections()` source-scan/parse the
+        // legacy path needed just to recover the handler name. CONTAINS is a
+        // cheap graph query (no tree-sitter parse) used only to surface the
+        // handler's display name/path; the uid is authoritative regardless.
+        if (!method) method = 'GET';
+        symbolUid = handlerSymbolId;
+        if (fileId) {
+          try {
+            const syms = await db(CONTAINS_QUERY, { fileId });
+            const hit = syms.find((s) => String(s.uid ?? s[0]) === handlerSymbolId);
+            if (hit) {
+              symbolName = String(hit.name ?? hit[1]) || symbolName;
+              symPath = String(hit.filePath ?? hit[2]) || filePath;
+            }
+          } catch {
+            /* keep the authoritative uid + basename fallback */
           }
-        } catch {
-          /* ignore */
+        }
+      } else {
+        // Legacy fallback (old index / unresolved handler): recover the handler
+        // name from the plugin's scan of the handler file (this parses source).
+        // Always run the lookup: even when method is set, we still need the name.
+        const detections = filePath ? await getDetections(filePath) : [];
+        const providerDetections = detections.filter((d) => d.role === 'provider');
+        let handlerName: string | null = null;
+        // Candidates share the same normalized path. When multiple detections at
+        // the same path exist (GET + POST /api/orders in one router), a blind
+        // `.find()` silently returned the first verb — attaching the wrong
+        // handler/method. Disambiguate by method when known; refuse to guess.
+        const candidates = providerDetections.filter(
+          (d) => normalizeHttpPath(d.path) === pathNormEarly,
+        );
+        let match: (typeof candidates)[number] | undefined;
+        const ambiguousCandidates = !method && candidates.length > 1;
+        if (method) {
+          match = candidates.find((d) => d.method === method);
+        } else if (candidates.length === 1) {
+          match = candidates[0];
+        }
+        // else: multiple candidates + unknown method → leave match undefined so
+        // handlerName stays null and we skip symbol enrichment, keeping the
+        // file-basename fallback rather than letting pickSymbolUid pick the
+        // first Function/Method (which reintroduces mis-attribution).
+        if (match) {
+          if (!method) method = match.method;
+          handlerName = match.name;
+        }
+        if (!method) method = 'GET';
+
+        if (fileId && !ambiguousCandidates) {
+          try {
+            const syms = await db(CONTAINS_QUERY, { fileId });
+            if (syms.length > 0) {
+              const picked = pickSymbolUid(syms, handlerName);
+              symbolUid = picked.uid;
+              symbolName = picked.name;
+              symPath = picked.filePath || filePath;
+            }
+          } catch {
+            /* ignore */
+          }
         }
       }
+
+      const pathNorm = pathNormEarly;
+      const cid = contractIdFor(method, pathNorm);
 
       out.push({
         contractId: cid,
