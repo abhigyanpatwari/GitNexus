@@ -13,6 +13,7 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { withTestLbugDB } from '../helpers/test-indexed-db.js';
+import { NODE_TABLES } from '../../src/core/lbug/schema.js';
 
 // Spy `withConnLock` while preserving its real behavior (call-through). The
 // adapter imports this module, so the spy observes every lock acquisition.
@@ -47,6 +48,17 @@ withTestLbugDB('conn-serialization', () => {
       const importers = await queryImporters('any/path.ts');
       expect(lockSpy).toHaveBeenCalled();
       expect(importers).toEqual([]);
+    });
+
+    it('U3: deleteNodesForFile (singleton) locks every per-table count query', async () => {
+      const { deleteNodesForFile } = await import('../../src/core/lbug/lbug-adapter.js');
+      const result = await deleteNodesForFile('any/path.ts');
+      // One locked count per filePath-bearing node table (Community/Process are
+      // skipped), proving the count read — not just the already-locked DELETE —
+      // now serializes. Baseline (count unlocked) would show ~1 lock call.
+      const filePathTables = NODE_TABLES.filter((t) => t !== 'Community' && t !== 'Process');
+      expect(lockSpy.mock.calls.length).toBeGreaterThanOrEqual(filePathTables.length);
+      expect(result).toMatchObject({ deletedNodes: 0 });
     });
   });
 });

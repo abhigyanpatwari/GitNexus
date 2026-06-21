@@ -1947,12 +1947,15 @@ export const deleteNodesForFile = async (
       if (tableName === 'Community' || tableName === 'Process') continue;
 
       try {
-        // First count how many we'll delete
+        // First count how many we'll delete. On the singleton connection this
+        // count runs inside withConnLock (incremental --pdg writeback executes
+        // while the WAL driver is live); per-query/temp connections skip the
+        // lock, matching queryAndDrain's `targetConn === conn` gate — the sibling
+        // DETACH DELETE below already routes through it. (#2264)
         const tn = escapeTableName(tableName);
-        const countResult = await targetConn!.query(
-          `MATCH (n:${tn}) WHERE n.filePath = '${escapedPath}' RETURN count(n) AS cnt`,
-        );
-        const rows = await readQueryRows(countResult);
+        const countCypher = `MATCH (n:${tn}) WHERE n.filePath = '${escapedPath}' RETURN count(n) AS cnt`;
+        const runCount = async () => readQueryRows(await targetConn!.query(countCypher));
+        const rows = targetConn === conn ? await withConnLock(runCount) : await runCount();
         const count = Number(rows[0]?.cnt ?? rows[0]?.[0] ?? 0);
 
         if (count > 0) {
