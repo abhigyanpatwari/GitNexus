@@ -1180,15 +1180,22 @@ const analyzeCommandImpl = async (
     bar.stop();
     console.log('\n  Interrupted — cleaning up...');
     // process.exit(130) follows, so skip the native close (LadybugDB destructor
-    // can double-free after --pdg writes, #2264); the CHECKPOINT inside closeLbug
-    // still flushes the WAL.
-    closeLbug({ skipNativeClose: true })
-      .catch(() => {})
-      .finally(async () => {
-        const { flushLoggerSync } = await import('../core/logger.js');
-        flushLoggerSync();
-        process.exit(130);
-      });
+    // can double-free after --pdg writes, #2264); closeLbug's CHECKPOINT still
+    // flushes the WAL. But that CHECKPOINT queues behind the connection lock held
+    // by an in-flight COPY, so a single Ctrl-C during a long --pdg COPY would
+    // otherwise appear hung until the COPY releases. Bound it with a short timeout
+    // so the interrupt stays responsive; the WAL replays on the next analyze
+    // (#2264 review P3). A second Ctrl-C (`if (aborted) process.exit(1)` above)
+    // remains the immediate escape hatch.
+    const SIGINT_CLEANUP_TIMEOUT_MS = 2000;
+    void Promise.race([
+      closeLbug({ skipNativeClose: true }).catch(() => {}),
+      new Promise<void>((resolve) => setTimeout(resolve, SIGINT_CLEANUP_TIMEOUT_MS)),
+    ]).finally(async () => {
+      const { flushLoggerSync } = await import('../core/logger.js');
+      flushLoggerSync();
+      process.exit(130);
+    });
   };
   process.on('SIGINT', sigintHandler);
 
