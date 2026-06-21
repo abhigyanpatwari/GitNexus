@@ -778,15 +778,21 @@ export async function runFullAnalysis(
           return true; // conservative on git failure
         }
       })();
-      // Only short-circuit when this repo is actually REGISTERED. A prior run
-      // can write meta.json and then fail before registerRepo (e.g. a rejected
-      // --name collision), leaving the index up-to-date but UNREGISTERED. Taking
-      // the fast path there returns an unregistered repo that the CLI's
-      // assertAnalysisFinalized rejects — and `--allow-duplicate-name` could
-      // never heal it (it would keep hitting this early-return). Fall through to
-      // the pipeline so it gets registered (honoring allowDuplicateName); already
-      // registered repos keep the fast path unchanged (#2264).
-      if (!dirty && (await isRepoRegistered(repoPath))) {
+      // Registration wrinkle around the fast path (#2264). A prior
+      // `analyze --name X` that hit a name collision writes meta.json (meta-save
+      // runs before registerRepo) then fails before registering, leaving the
+      // index up-to-date but UNREGISTERED. When the user re-runs with
+      // --allow-duplicate-name they explicitly want it registered, so fall
+      // through to the pipeline (which registers it, honoring the flag) instead
+      // of early-returning an unregistered repo the flag could never heal.
+      // For a PLAIN analyze we deliberately do NOT self-heal: an up-to-date but
+      // unregistered repo early-returns here and the CLI's assertAnalysisFinalized
+      // surfaces it as a hard failure (#1169) rather than silently registering a
+      // possibly half-finalized index. `isRepoRegistered` is only read on the
+      // opt-in branch so the common fast path keeps its single-stat cost.
+      const healUnregistered =
+        options.allowDuplicateName === true && !(await isRepoRegistered(repoPath));
+      if (!dirty && !healUnregistered) {
         await ensureGitNexusIgnored(repoPath);
         return {
           // `resolveRepoIdentityRoot` collapses worktree roots to the
