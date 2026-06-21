@@ -13,7 +13,7 @@ import os from 'os';
 import { spawn } from 'child_process';
 import v8 from 'v8';
 import cliProgress from 'cli-progress';
-import { closeLbug } from '../core/lbug/lbug-adapter.js';
+import { closeLbug, isLbugReady } from '../core/lbug/lbug-adapter.js';
 import {
   isLbugCheckpointIoError,
   isWalCorruptionError,
@@ -737,6 +737,17 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
     await analyzeCommandImpl(inputPath, options);
   } finally {
     restoreAnalyzeEnv(envSnap);
+  }
+  // If analyzeCommandImpl returned via a soft `process.exitCode = 1` error path
+  // while LadybugDB native handles are still open, the event loop won't drain and
+  // the process would HANG (#2264 review P1). The full analyze paths skip-close the
+  // DB — handles are left open and reclaimed by process.exit — so a soft return
+  // after a real analyze must force the exit. The success path never reaches here
+  // (analyzeCommandImpl calls process.exit(0) itself); early-validation errors and
+  // unit tests that mock runFullAnalysis never open the DB, so isLbugReady() is
+  // false and the soft return is preserved.
+  if (isLbugReady()) {
+    process.exit(typeof process.exitCode === 'number' ? process.exitCode : 1);
   }
 };
 
