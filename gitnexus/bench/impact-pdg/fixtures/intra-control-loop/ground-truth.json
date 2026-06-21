@@ -1,0 +1,42 @@
+{
+  "schemaVersion": 1,
+  "criterion": {
+    "name": "filterPositive",
+    "filePath": "src/loop.ts",
+    "direction": "upstream",
+    "line": 11,
+    "marker": "count + 1",
+    "pdgEdgeKinds": ["REACHING_DEF", "CDG"]
+  },
+  "locus": "intra",
+  "provenance": "manual",
+  "analyzerVersion": "1.6.7",
+  "intra_AIS": [
+    {
+      "symbol": "filterPositive",
+      "filePath": "src/loop.ts",
+      "line": 6,
+      "note": "the function-signature/parameter block defines `xs`, which the `for` loop iterates — an upstream reaching dependency of the increment"
+    },
+    {
+      "symbol": "filterPositive",
+      "filePath": "src/loop.ts",
+      "line": 7,
+      "note": "`let count = 0` is the initial def of `count` reaching the increment via REACHING_DEF — an upstream data dependency"
+    },
+    {
+      "symbol": "filterPositive",
+      "filePath": "src/loop.ts",
+      "line": 8,
+      "note": "the enclosing `for` loop guard controls whether the if and its body run (transitive CDG controller)"
+    },
+    {
+      "symbol": "filterPositive",
+      "filePath": "src/loop.ts",
+      "line": 10,
+      "note": "the inner `if (x > 0)` predicate directly controls the `count` increment (immediate CDG controller)"
+    }
+  ],
+  "inter_AIS": [],
+  "rationale": "criterion.line=11 — the `count = count + 1` increment (source semantics: UPSTREAM asks which definitions/predicates govern this statement). CORRECTION (Step-0 reconciliation): the source-derived belief was intra_AIS={8,10} (the two CONTROL predicates only). But the statement-anchored PDG slice is a COMBINED CDG+REACHING_DEF reverse slice, so it correctly also reaches the DATA dependencies of the increment: line 7 (`let count = 0`, the initial reaching def of `count`) and line 6 (the parameter block defining `xs`, which feeds the `for` loop). The original annotation under-counted by considering only control dependence. The full upstream slice is {6, 7, 8, 10}; the slice from line 11 returns exactly that. Both controllers (8, 10) and both data deps (6, 7) are intra-procedural; inter_AIS empty. Exercises the CDG+RD-reverse slice over nested control structure."
+}

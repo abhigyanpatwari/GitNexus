@@ -207,13 +207,36 @@ export interface RepoMeta {
      * resolved (always present) on every post-#2201 write.
      */
     reachingDefSolver?: string;
+    /**
+     * Whether this `--pdg` index recorded the FU-C `CALL_SUMMARY` return-value
+     * ascent layer (per-callee param→return summary edges). `true` on every
+     * FU-C+ (v4) write. ABSENT on any pre-FU-C (v3) `--pdg` stamp — that absence
+     * is what tells `impact`'s PDG mode the index predates CALL_SUMMARY, so it
+     * surfaces a "no return-value ascent (re-index for CALL_SUMMARY)" note while
+     * STILL serving the intra slice. CALL_SUMMARY is deliberately NOT a required
+     * sub-layer for `pdgLayerStatus` to report `'ready'`: a v3 index stays fully
+     * usable for the intra-procedural statement slice; only the ascent upgrade is
+     * unavailable. Optional for that back-compat reason.
+     */
+    hasCallSummary?: boolean;
   };
 }
 
 /**
  * Bumped whenever incremental-indexing invariants change incompatibly.
+ * v2: `BasicBlock.callees` column added (statement-precise inter-procedural
+ * reach substrate) — an index built before this lacks the column, so a full
+ * re-analyze is required rather than an incremental top-up.
+ * v3: `BasicBlock.calleeIds` column added (sound resolved-callee-id parallel
+ * to `callees`, #2227) — same contract: an index built before this lacks the
+ * column, so a full re-analyze is forced rather than an incremental top-up.
+ * v4: `CALL_SUMMARY` relation type added (per-callee RETURN-VALUE ASCENT
+ * summary edges, PDG FU-C). A pre-v4 `--pdg` index has NO CALL_SUMMARY edges,
+ * so the engine would silently UNDER-REPORT return-value ascent on an
+ * incremental top-up; force a full re-analyze instead (same contract as v2/v3).
+ * This single bump covers the whole FU-C re-index window (and the later FU-B-2).
  */
-export const INCREMENTAL_SCHEMA_VERSION = 1;
+export const INCREMENTAL_SCHEMA_VERSION = 4;
 
 export interface IndexedRepo {
   repoPath: string;

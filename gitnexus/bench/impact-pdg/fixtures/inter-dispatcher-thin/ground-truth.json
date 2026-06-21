@@ -1,0 +1,33 @@
+{
+  "schemaVersion": 1,
+  "criterion": {
+    "name": "dispatch",
+    "filePath": "src/dispatcher.ts",
+    "direction": "downstream",
+    "line": 23,
+    "marker": "kind === 'b'",
+    "pdgEdgeKinds": ["REACHING_DEF", "CDG"]
+  },
+  "locus": "inter",
+  "provenance": "manual",
+  "analyzerVersion": "1.6.7",
+  "intra_AIS": [],
+  "inter_AIS": [
+    {
+      "symbol": "handleA",
+      "filePath": "src/dispatcher.ts",
+      "note": "routed to when kind === 'a'; its behavior is part of dispatch's true blast radius"
+    },
+    {
+      "symbol": "handleB",
+      "filePath": "src/dispatcher.ts",
+      "note": "routed to when kind === 'b'"
+    },
+    {
+      "symbol": "handleDefault",
+      "filePath": "src/dispatcher.ts",
+      "note": "the fallthrough route"
+    }
+  ],
+  "rationale": "criterion.line=23 — the dispatcher's own first body statement `if (kind === 'a')` (source semantics: the router's work begins here). intra_AIS is EMPTY BY DESIGN: `dispatch` is a thin router whose TRUE impact is ENTIRELY cross-function — changing it affects the three handlers it routes to (handleA/handleB/handleDefault), captured in inter_AIS. The only intra statements are the routing branch returns, which carry no work of their own, so there is no meaningful intra-procedural ground truth. Step-0 reconciliation: the statement-anchored PDG slice from line 23 DOES return the routing return statements (the branch predicates control-depend on each other and each return), but those are NOT the meaningful blast radius — PDG is intra-procedural, so on a pure-inter fixture its intra slice is noise relative to the (empty) intra ground truth. This is the symmetric counterpart of call-graph's empty intra slice on the intra fixtures: each engine is blind to the other's locus. The call-graph mode (inter-procedural) finds all three handlers exactly. Anchors the `inter` stratum. NOTE: the smoke test requires `dispatch` to produce SOME CDG/REACHING_DEF edges (its routing branches do) — a zero-edge criterion would be unmeasurable; but those edges are not the AIS."
+}

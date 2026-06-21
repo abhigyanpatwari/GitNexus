@@ -1311,8 +1311,10 @@ export const getCopyQuery = (table: NodeTableName, filePath: string): string => 
     return `COPY ${t}(id, name, filePath, description) FROM "${filePath}" ${COPY_CSV_OPTS}`;
   }
   if (table === 'BasicBlock') {
-    // Taint/PDG substrate (issue #2080) — no name column.
-    return `COPY ${t}(id, filePath, startLine, endLine, text) FROM "${filePath}" ${COPY_CSV_OPTS}`;
+    // Taint/PDG substrate (issue #2080) — no name column. `callees` is the
+    // statement-precise inter-procedural reach substrate (space-joined leaf names);
+    // `calleeIds` is its SOUND parallel (space-joined resolved callee ids, #2227).
+    return `COPY ${t}(id, filePath, startLine, endLine, text, callees, calleeIds) FROM "${filePath}" ${COPY_CSV_OPTS}`;
   }
   if (table === 'Method') {
     return `COPY ${t}(id, name, filePath, startLine, endLine, isExported, content, description, parameterCount, returnType) FROM "${filePath}" ${COPY_CSV_OPTS}`;
@@ -1367,8 +1369,9 @@ export const insertNodeToLbug = async (
         : '';
       query = `CREATE (n:Section {id: ${escapeValue(properties.id)}, name: ${escapeValue(properties.name)}, filePath: ${escapeValue(properties.filePath)}, startLine: ${properties.startLine || 0}, endLine: ${properties.endLine || 0}, level: ${properties.level || 1}, content: ${escapeValue(properties.content || '')}${descPart}})`;
     } else if (label === 'BasicBlock') {
-      // Taint/PDG substrate (issue #2080) — no name column.
-      query = `CREATE (n:BasicBlock {id: ${escapeValue(properties.id)}, filePath: ${escapeValue(properties.filePath)}, startLine: ${properties.startLine || 0}, endLine: ${properties.endLine || 0}, text: ${escapeValue(properties.text || '')}})`;
+      // Taint/PDG substrate (issue #2080) — no name column. `calleeIds` (#2227)
+      // is the sound resolved-id parallel to the leaf-name `callees` set.
+      query = `CREATE (n:BasicBlock {id: ${escapeValue(properties.id)}, filePath: ${escapeValue(properties.filePath)}, startLine: ${properties.startLine || 0}, endLine: ${properties.endLine || 0}, text: ${escapeValue(properties.text || '')}, callees: ${escapeValue(properties.callees || '')}, calleeIds: ${escapeValue(properties.calleeIds || '')}})`;
     } else if (TABLES_WITH_EXPORTED.has(label)) {
       const descPart = properties.description
         ? `, description: ${escapeValue(properties.description)}`
@@ -1453,8 +1456,9 @@ export const batchInsertNodesToLbug = async (
             : '';
           query = `MERGE (n:Section {id: ${escapeValue(properties.id)}}) SET n.name = ${escapeValue(properties.name)}, n.filePath = ${escapeValue(properties.filePath)}, n.startLine = ${properties.startLine || 0}, n.endLine = ${properties.endLine || 0}, n.level = ${properties.level || 1}, n.content = ${escapeValue(properties.content || '')}${descPart}`;
         } else if (label === 'BasicBlock') {
-          // Taint/PDG substrate (issue #2080) — no name column.
-          query = `MERGE (n:BasicBlock {id: ${escapeValue(properties.id)}}) SET n.filePath = ${escapeValue(properties.filePath)}, n.startLine = ${properties.startLine || 0}, n.endLine = ${properties.endLine || 0}, n.text = ${escapeValue(properties.text || '')}`;
+          // Taint/PDG substrate (issue #2080) — no name column. `calleeIds`
+          // (#2227) is the sound resolved-id parallel to the `callees` set.
+          query = `MERGE (n:BasicBlock {id: ${escapeValue(properties.id)}}) SET n.filePath = ${escapeValue(properties.filePath)}, n.startLine = ${properties.startLine || 0}, n.endLine = ${properties.endLine || 0}, n.text = ${escapeValue(properties.text || '')}, n.callees = ${escapeValue(properties.callees || '')}, n.calleeIds = ${escapeValue(properties.calleeIds || '')}`;
         } else if (TABLES_WITH_EXPORTED.has(label)) {
           const descPart = properties.description
             ? `, n.description = ${escapeValue(properties.description)}`
@@ -2065,6 +2069,56 @@ export const deleteAllInterprocTaintPaths = async (): Promise<{ edgesDeleted: nu
     throw new Error(
       `[taint-interproc] failed to clear existing TAINT_PATH edges before incremental ` +
         `re-write (${msg}) — aborting to avoid duplicate cross-function findings; ` +
+        `the next run will full-rebuild`,
+    );
+  }
+  if (countResult) await closeQueryResults(countResult);
+  return { edgesDeleted };
+};
+
+/**
+ * Drop every `CALL_SUMMARY` relationship (PDG FU-C, U-C3). Used at the start of
+ * an incremental `--pdg` writeback so the `callSummaries` phase re-materialises
+ * them from scratch on the FULL recomputed graph.
+ *
+ * Mirrors {@link deleteAllInterprocTaintPaths}: CALL_SUMMARY is a self-loop edge
+ * type (not a node label), so a plain DELETE on the typed CodeRelation rows
+ * leaves endpoints untouched. `extractChangedSubgraph` re-includes ALL of them
+ * from the fresh graph (`isGraphWideRelType`), so delete-all-then-rebuild keeps
+ * an unchanged function's summary from being lost.
+ */
+export const deleteAllCallSummaries = async (): Promise<{ edgesDeleted: number }> => {
+  if (!conn) {
+    throw new Error('LadybugDB not initialized. Call initLbug first.');
+  }
+  let edgesDeleted = 0;
+  let countResult: lbug.QueryResult | lbug.QueryResult[] | undefined;
+  try {
+    countResult = await conn.query(
+      `MATCH ()-[r:CodeRelation]->() WHERE r.type = 'CALL_SUMMARY' RETURN count(r) AS cnt`,
+    );
+    const result = Array.isArray(countResult) ? countResult[0] : countResult;
+    const rows = await result.getAll();
+    const count = Number(rows[0]?.cnt ?? rows[0]?.[0] ?? 0);
+    if (count > 0) {
+      await conn.query(`MATCH ()-[r:CodeRelation]->() WHERE r.type = 'CALL_SUMMARY' DELETE r`);
+      edgesDeleted = count;
+    }
+  } catch (err) {
+    // A missing table on a freshly-initialized DB is the benign, expected case
+    // (the count query is what throws) — stay silent. Any OTHER failure would
+    // leave stale rows that the re-extract then DUPLICATES (CodeRelation has no
+    // PK), so it must ABORT the writeback: re-throw so the caller's crash-
+    // recovery dirty flag forces a clean full rebuild on the next run.
+    const msg = err instanceof Error ? err.message : String(err);
+    if (/no table|not exist|not found|does not exist|Table .* does not exist/i.test(msg)) {
+      if (countResult) await closeQueryResults(countResult);
+      return { edgesDeleted };
+    }
+    if (countResult) await closeQueryResults(countResult);
+    throw new Error(
+      `[call-summary] failed to clear existing CALL_SUMMARY edges before incremental ` +
+        `re-write (${msg}) — aborting to avoid duplicate summaries; ` +
         `the next run will full-rebuild`,
     );
   }

@@ -67,7 +67,7 @@
  */
 import type { SyntaxNode } from '../../utils/ast-helpers.js';
 import type { BindingEntry, StatementFacts } from '../types.js';
-import { CallSiteFactAccumulator } from './call-site-harvest.js';
+import { CallSiteFactAccumulator, finalizeChain } from './call-site-harvest.js';
 import { ScopeTreeHarvester, type Scope, type FactAccumulator } from './scope-tree-harvest.js';
 
 /** Node types that own a nested CFG — their subtrees are opaque to harvesting. */
@@ -571,7 +571,12 @@ export class GoHarvester extends ScopeTreeHarvester {
   private visitCall(node: SyntaxNode, acc: FactAccumulator): void {
     const calleeNode = node.childForFieldName('function');
     const argsNode = node.childForFieldName('arguments');
-    const siteIdx = acc.openCallSite('call');
+    // `node` IS the call_expression — the SAME node the scope-extractor anchors
+    // `@reference.call.*` (its `atRange`) on (KTD7).
+    const siteIdx = acc.openCallSite('call', [
+      node.startPosition.row + 1,
+      node.startPosition.column,
+    ]);
     acc.pushFrame(siteIdx);
     let calleePath: string | undefined;
     if (calleeNode) {
@@ -640,24 +645,11 @@ export class GoHarvester extends ScopeTreeHarvester {
         break;
       }
     }
-    let rootIdx: number | undefined;
-    let rootSegment: string | undefined;
-    if (cur.type === 'identifier' && cur.text !== '_') {
-      rootIdx = this.resolve(cur);
-      acc.addUse(rootIdx);
-      rootSegment = cur.text;
-    } else {
-      this.walkValue(cur, acc);
-    }
-    const innermost = accesses[0];
-    if (rootIdx !== undefined && innermost && !(skipFinalRead && accesses.length === 1)) {
-      acc.addMemberRead(rootIdx, innermost);
-    }
-    const path =
-      rootSegment !== undefined && accesses.every((a) => a !== '')
-        ? [rootSegment, ...accesses].join('.')
-        : undefined;
-    return { path, rootIdx };
+    // The shared terminal: root-use record + innermost member-read + path-join.
+    return finalizeChain(acc, cur, accesses, skipFinalRead, (t) => t === 'identifier', {
+      resolve: (n) => this.resolve(n),
+      walkRoot: (n) => this.walkValue(n, acc),
+    });
   }
 }
 

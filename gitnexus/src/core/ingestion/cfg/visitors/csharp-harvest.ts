@@ -466,7 +466,9 @@ export class CsharpHarvester extends ScopeTreeHarvester {
   private visitCall(node: SyntaxNode, acc: FactAccumulator, kind: 'call' | 'new'): void {
     const calleeNode = node.childForFieldName(kind === 'new' ? 'type' : 'function');
     const argsNode = node.childForFieldName('arguments');
-    const siteIdx = acc.openCallSite(kind);
+    // `node` IS the call/object-creation expression — the SAME node the
+    // scope-extractor anchors `@reference.call.*` (its `atRange`) on (KTD7).
+    const siteIdx = acc.openCallSite(kind, [node.startPosition.row + 1, node.startPosition.column]);
     acc.pushFrame(siteIdx);
     let calleePath: string | undefined;
     if (calleeNode) {

@@ -1,12 +1,42 @@
 /**
  * Kotlin def/use harvester (#2195) — the Kotlin analogue of
  * {@link import('./swift-harvest.js').SwiftHarvester} and the C-family / Go /
- * Rust / Python harvesters. Like the Swift / Python / Rust harvesters it harvests
- * NO call-site `sites[]` (the call-site taint substrate is a later step): it emits
- * only the per-function binding table ({@link BindingEntry}[]) plus
- * {@link StatementFacts} (defs / uses / mayDefs) via a local
- * {@link FactAccumulator} with no site machinery, so the produced facts never
- * carry a `sites` key.
+ * Rust / Python harvesters. Like the Go / Python / Dart harvesters it harvests
+ * the per-function binding table ({@link BindingEntry}[]) plus
+ * {@link StatementFacts} (defs / uses / mayDefs) AND a taint
+ * {@link import('../types.js').SiteRecord} per call (callee path, receiver,
+ * per-arg occurrence entries, result defs, spread marker, and an `at` anchor)
+ * via the shared {@link CallSiteFactAccumulator} — the same site substrate the
+ * C-family / Go / TS / Python / Dart harvesters emit (#2227 follow-up).
+ *
+ * KOTLIN CALL SHAPE (verified by a real parse — see below). A call is a
+ * `call_expression` whose LAST child is a `call_suffix` (holding the
+ * `value_arguments` and/or a trailing `annotated_lambda`); the callee is the
+ * preceding expression — a bare `simple_identifier` (`foo()`) for a FREE call,
+ * or a `navigation_expression` (`obj.method` / `a?.b` via `navigation_suffix`)
+ * for a MEMBER call. A chained call `a.b.c()` nests `navigation_expression`s;
+ * the receiver is the chain ROOT binding. Kotlin constructor calls look like
+ * ordinary calls (no `new`), so every site is `kind: 'call'` (the CALLS query
+ * classifies a capitalized/known-type callee as `@reference.call.constructor`,
+ * but the harvester only needs callee + receiver + `at` right — `kind` is not
+ * joined). Named args (`name = value`) record the VALUE occurrence and drop the
+ * name (like Python / Dart).
+ *
+ * ANCHOR ALIGNMENT (plan KTD7 — load-bearing): a call site's `at` MUST be the
+ * SAME `[line (1-based), col (0-based)]` the Kotlin CALLS resolution keys its
+ * `atRange` on, because a downstream unit joins the two by EXACT position. The
+ * Kotlin scope query (query.ts) anchors `@reference.call.free` and
+ * `@reference.call.member` on the WHOLE `call_expression` node (the
+ * `@reference.name` simple_identifier and the `@reference.receiver` are SUB-tags,
+ * excluded from the anchor by `KNOWN_SUB_TAGS` + the broadest-span rule in
+ * `anchorCaptureFor`; `atRange: anchor.range` at scope-extractor.ts:1030). So for
+ * a free call `foo(x)`, a member call `obj.method(x)`, and a chained call
+ * `a.b.c(x)` alike, `at` is the start of the enclosing `call_expression` node —
+ * which, for a member/chained call, starts at the RECEIVER (`obj`/`a`), exactly
+ * where the CALLS anchor starts too. This is the Go/Python whole-call-node model,
+ * NOT the Dart callee-name model. The harvester's `visitCall` receives exactly
+ * the `call_expression` node and records `[node.startPosition.row + 1,
+ * node.startPosition.column]`.
  *
  * Runs in the parse worker next to the Kotlin CFG visitor. Output is the binding
  * table the {@link import('../cfg-builder.js').CfgBuilder} stamps onto the CFG,
@@ -80,7 +110,7 @@
  */
 import type { SyntaxNode } from '../../utils/ast-helpers.js';
 import type { BindingEntry, StatementFacts } from '../types.js';
-import { DefUseAccumulator as FactAccumulator } from './call-site-harvest.js';
+import { CallSiteFactAccumulator as FactAccumulator, finalizeChain } from './call-site-harvest.js';
 
 /** Node types that own a nested CFG — their subtrees are opaque to harvesting. */
 const NESTED_FUNCTION_TYPES = new Set([
@@ -99,6 +129,13 @@ export class KotlinHarvester {
   private readonly fnId: number;
   /** >0 while walking a conditionally-evaluated subexpression — defs become may-defs. */
   private conditionalDepth = 0;
+  /**
+   * `call_expression` node id → binding indices its single-target result is
+   * assigned to (`val x = f()` / `x = g()` ⇒ `[x]`). Populated just before the
+   * value walk reaches the call (see {@link registerResultDefs}) and consumed by
+   * {@link visitCall}. Mirrors the Go / Python / Dart harvesters' `resultDefTargets`.
+   */
+  private readonly resultDefTargets = new Map<number, number[]>();
 
   constructor(private readonly fnNode: SyntaxNode) {
     this.fnId = fnNode.id;
@@ -431,6 +468,14 @@ export class KotlinHarvester {
           (c) => c.type === 'variable_declaration' || c.type === 'multi_variable_declaration',
         );
         const value = this.propertyValue(node);
+        // Register result-defs BEFORE the value walk so the call site (reached
+        // during the walk) carries them — single `variable_declaration` binder
+        // only (`val x = f()`); a `multi_variable_declaration` destructuring
+        // (`val (a, b) = p`) attaches nothing.
+        if (value && binder?.type === 'variable_declaration') {
+          const id = binder.namedChildren.find((c) => c.type === 'simple_identifier');
+          if (id) this.registerResultDefs(value, [id]);
+        }
         if (value) this.walkValue(value, acc);
         if (binder?.type === 'variable_declaration') this.defVariableDeclaration(binder, acc);
         else if (binder?.type === 'multi_variable_declaration') {
@@ -444,9 +489,16 @@ export class KotlinHarvester {
         const lvalue = node.namedChildren.find((c) => c.type === 'directly_assignable_expression');
         const op = this.assignmentOperator(node);
         const value = this.assignmentValue(node);
+        const scalar = lvalue ? this.unwrapAssignable(lvalue) : undefined;
+        // Plain `x = f(a)` attaches `resultDefs: [x]` (a compound `x += f(a)`
+        // does not — the prior value flows in too; a member/index lvalue is not
+        // a scalar def).
+        if (value && op === '=' && scalar?.type === 'simple_identifier') {
+          this.registerResultDefs(value, [scalar]);
+        }
         if (value) this.walkValue(value, acc);
         if (lvalue) {
-          const lv = this.unwrapAssignable(lvalue);
+          const lv = scalar ?? this.unwrapAssignable(lvalue);
           if (lv.type === 'simple_identifier') {
             this.def(lv, acc);
             if (op !== '=') this.use(lv, acc); // compound assign reads too
@@ -471,11 +523,18 @@ export class KotlinHarvester {
         }
         return;
       }
+      case 'call_expression':
+        // #2227 follow-up: explicit case (previously default-descended) — same
+        // uses, plus a taint-site record. Kotlin has no `new` (constructor calls
+        // are plain `call_expression`s). Defs/uses stay byte-identical.
+        this.visitCall(node, acc);
+        return;
       case 'navigation_expression': {
         // `a.b` / `a?.b` — value read of the chain root only; the suffix name is
-        // not a scalar binding.
-        const target = node.namedChild(0);
-        if (target) this.walkValue(target, acc);
+        // not a scalar binding. Records the chain-root use (identical to the old
+        // descent) plus at most ONE member-read site (the innermost access),
+        // mirroring the Go / Python harvesters' value-position `walkChain`.
+        this.walkChain(node, acc, false);
         return;
       }
       case 'conjunction_expression':
@@ -571,5 +630,181 @@ export class KotlinHarvester {
       n = inner;
     }
     return n;
+  }
+
+  // ── taint-site harvest (#2227 follow-up) ─────────────────────────────────
+
+  /** Strip `parenthesized_expression` wrappers around a value (`(f())`). */
+  private unwrapValue(node: SyntaxNode): SyntaxNode {
+    let n = node;
+    let hops = 8;
+    while (n.type === 'parenthesized_expression' && hops-- > 0) {
+      const inner = n.namedChild(0);
+      if (!inner) break;
+      n = inner;
+    }
+    return n;
+  }
+
+  /**
+   * When `value`'s root (after stripping parens) is a `call_expression`, remember
+   * that call site should carry `resultDefs` — the binding indices of `targets`
+   * (def-position identifiers). Consumed by {@link visitCall} once the value walk
+   * reaches the node. Single-target only (the caller restricts to a plain
+   * identifier binder); the blank target (`_`) binds nothing and is skipped.
+   */
+  private registerResultDefs(value: SyntaxNode, targets: readonly SyntaxNode[]): void {
+    const root = this.unwrapValue(value);
+    if (root.type !== 'call_expression') return;
+    const defs: number[] = [];
+    for (const target of targets) {
+      if (target.type !== 'simple_identifier' || target.text === '_') continue;
+      defs.push(this.resolve(target));
+    }
+    if (defs.length > 0) this.resultDefTargets.set(root.id, defs);
+  }
+
+  /**
+   * The callee node of a `call_expression` — the first named child that is NOT
+   * the trailing `call_suffix` (a bare `simple_identifier` for a free call, or a
+   * `navigation_expression` for a member/chained call).
+   */
+  private calleeOf(call: SyntaxNode): SyntaxNode | undefined {
+    for (let i = 0; i < call.namedChildCount; i++) {
+      const c = call.namedChild(i);
+      if (c && c.type !== 'call_suffix' && !COMMENT_TYPES.has(c.type)) return c;
+    }
+    return undefined;
+  }
+
+  /**
+   * Explicit `call_expression` handler. Records a call site (callee path,
+   * receiver, per-arg occurrence entries, result defs, spread marker) while
+   * reproducing EXACTLY the uses the old default descent recorded (callee chain
+   * root + arguments). Kotlin has no `new` — every site is `kind: 'call'`.
+   */
+  private visitCall(node: SyntaxNode, acc: FactAccumulator): void {
+    const calleeNode = this.calleeOf(node);
+    // `node` IS the `call_expression` — the SAME node the scope query anchors
+    // `@reference.call.free/.member` on (its `atRange`), so the resolved-id join
+    // lands by exact position (see file header ANCHOR ALIGNMENT).
+    const siteIdx = acc.openCallSite('call', [
+      node.startPosition.row + 1,
+      node.startPosition.column,
+    ]);
+    acc.pushFrame(siteIdx);
+    if (calleeNode) {
+      const callee = this.unwrapValue(calleeNode);
+      if (callee.type === 'simple_identifier') {
+        // A bare free call — the callee NAME is a statement-level use but NOT a
+        // value occurrence in any enclosing argument.
+        if (callee.text !== '_') acc.addUseWithoutOccurrence(this.resolve(callee));
+        acc.setSiteCallee(siteIdx, callee.text);
+      } else if (callee.type === 'navigation_expression') {
+        // skipFinalRead: the final `.name` IS the callee, carried by the path.
+        const chain = this.walkChain(callee, acc, true);
+        if (chain.path !== undefined) acc.setSiteCallee(siteIdx, chain.path);
+        if (chain.rootIdx !== undefined) acc.setSiteReceiver(siteIdx, chain.rootIdx);
+      } else {
+        // Call-rooted chains (`f().g()`), indexing (`m[k]()`), parenthesized
+        // callables — the walk still records uses and nested sites; the callee
+        // path is not statically known.
+        this.walkValue(callee, acc);
+      }
+    }
+    const resultDefs = this.resultDefTargets.get(node.id);
+    if (resultDefs !== undefined) acc.setSiteResultDefs(siteIdx, resultDefs);
+    const suffix = node.namedChildren.find((c) => c.type === 'call_suffix');
+    if (suffix) this.walkArguments(suffix, siteIdx, acc);
+    acc.popFrame();
+  }
+
+  /**
+   * Walk a `call_suffix`'s `value_arguments`, tagging each positional / named /
+   * spread argument's occurrence position. A trailing `annotated_lambda` is a
+   * nested function body — opaque (its `lambda_literal` is excluded by
+   * {@link NESTED_FUNCTION_TYPES}), so it is not an argument occurrence here.
+   */
+  private walkArguments(suffix: SyntaxNode, siteIdx: number, acc: FactAccumulator): void {
+    const args = suffix.namedChildren.find((c) => c.type === 'value_arguments');
+    if (!args) return;
+    let pos = 0;
+    for (let i = 0; i < args.namedChildCount; i++) {
+      const arg = args.namedChild(i);
+      if (!arg || arg.type !== 'value_argument') continue;
+      acc.setFrameArg(pos);
+      const value = this.argumentValue(arg);
+      if (value?.type === 'spread_expression') {
+        // `f(*xs)` — a spread. Mark the first spread position so the matcher
+        // degrades soundly; the inner value still walks for occurrences.
+        acc.setSiteSpread(siteIdx, pos);
+        const inner = value.namedChild(0);
+        if (inner) this.walkValue(inner, acc);
+      } else if (value) {
+        this.walkValue(value, acc);
+      }
+      pos++;
+    }
+  }
+
+  /**
+   * The value expression of a `value_argument` — for a named argument
+   * (`name = value`) the leading `simple_identifier` name is dropped (it is a
+   * parameter name, not a use), and only the value after `=` is returned; a
+   * positional argument's value is its sole non-comment named child.
+   */
+  private argumentValue(arg: SyntaxNode): SyntaxNode | undefined {
+    // A named arg carries an anon `=` token; the value is the named child after
+    // it (skipping the leading `simple_identifier` name).
+    let sawEq = false;
+    for (let i = 0; i < arg.childCount; i++) {
+      const c = arg.child(i);
+      if (!c) continue;
+      if (!c.isNamed && c.type === '=') {
+        sawEq = true;
+        continue;
+      }
+      if (sawEq && c.isNamed && !COMMENT_TYPES.has(c.type)) return c;
+    }
+    // Positional arg — the first non-comment named child.
+    for (let i = 0; i < arg.namedChildCount; i++) {
+      const c = arg.namedChild(i);
+      if (c && c.type !== 'annotation' && !COMMENT_TYPES.has(c.type)) return c;
+    }
+    return undefined;
+  }
+
+  /**
+   * `navigation_expression` chain walk shared by value position and callee
+   * position. Records the chain-root identifier as a use (identical to the old
+   * default descent) plus at most ONE member-read site — the INNERMOST access —
+   * when the root is an identifier; `skipFinalRead` suppresses it when that
+   * access is the callee (carried by the dotted path instead). Mirrors the Go /
+   * Python harvesters' `walkChain`.
+   */
+  private walkChain(
+    node: SyntaxNode,
+    acc: FactAccumulator,
+    skipFinalRead: boolean,
+  ): { path?: string; rootIdx?: number } {
+    const accesses: string[] = [];
+    let cur: SyntaxNode = this.unwrapValue(node);
+    for (;;) {
+      if (cur.type === 'navigation_expression') {
+        const suffix = cur.namedChildren.find((c) => c.type === 'navigation_suffix');
+        const name = suffix?.namedChildren.find((c) => c.type === 'simple_identifier');
+        accesses.unshift(name?.text ?? '');
+        const operand = cur.namedChild(0);
+        if (!operand) break;
+        cur = this.unwrapValue(operand);
+      } else {
+        break;
+      }
+    }
+    // The shared terminal: root-use record + innermost member-read + path-join.
+    return finalizeChain(acc, cur, accesses, skipFinalRead, (t) => t === 'simple_identifier', {
+      resolve: (n) => this.resolve(n),
+      walkRoot: (n) => this.walkValue(n, acc),
+    });
   }
 }

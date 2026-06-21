@@ -261,11 +261,16 @@ export const buildRelRow = (rel: GraphRelationship): string =>
  * No `name` column; blocks are identified by id + source span. Shared by the
  * whole-graph emit pass and the streaming PDG emit sink (issue #2202) so the
  * two paths produce byte-identical BasicBlock rows by construction. */
-export const BASICBLOCK_CSV_HEADER = 'id,filePath,startLine,endLine,text';
+export const BASICBLOCK_CSV_HEADER = 'id,filePath,startLine,endLine,text,callees,calleeIds';
 
 /** Build the escaped CSV row (no trailing newline) for one BasicBlock node.
  * Single source of the BasicBlock row bytes — used by `streamAllCSVsToDisk`
- * and by the streaming `PdgEmitSink` (issue #2202). */
+ * and by the streaming `PdgEmitSink` (issue #2202). `callees` is a comma-free
+ * (space-joined) list of the leaf callee names invoked in the block — the
+ * statement-precise inter-procedural reach substrate (the field is itself a CSV
+ * cell, so the inner separator must NOT be a comma). `calleeIds` is the SOUND
+ * parallel to `callees`: the space-joined RESOLVED callee symbol ids for the
+ * block (#2227 follow-up), likewise a comma-free cell. */
 export const buildBasicBlockRow = (node: GraphNode): string =>
   [
     escapeCSVField(node.id),
@@ -273,6 +278,8 @@ export const buildBasicBlockRow = (node: GraphNode): string =>
     escapeCSVNumber(node.properties.startLine, -1),
     escapeCSVNumber(node.properties.endLine, -1),
     escapeCSVField(node.properties.text || ''),
+    escapeCSVField(String(node.properties.callees ?? '')),
+    escapeCSVField(String(node.properties.calleeIds ?? '')),
   ].join(',');
 
 export interface StreamedCSVResult {

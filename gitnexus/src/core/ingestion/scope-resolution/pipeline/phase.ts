@@ -43,6 +43,7 @@ import {
 } from '../../../../storage/parsedfile-store.js';
 import type { ResolutionOutcome } from '../resolution-outcome.js';
 import type { FunctionSummary } from '../../taint/summary-model.js';
+import type { CallSummary } from '../../taint/call-summary-model.js';
 import { buildFunctionNodeIndex } from '../../taint/summary-harvest-driver.js';
 import { PdgEmitSink, type PdgEmitManifest } from '../../../lbug/pdg-emit-sink.js';
 import { resolveNativeSafeStorageDir } from '../../../lbug/lbug-config.js';
@@ -75,6 +76,13 @@ export interface ScopeResolutionOutput {
    */
   readonly functionSummaries: readonly FunctionSummary[];
   /**
+   * Per-function RETURN-VALUE ASCENT summaries harvested in the pdg window
+   * (PDG FU-C, U-C2), across all languages. Empty unless `--pdg`. The
+   * `callSummaries` phase materialises one `CALL_SUMMARY` self-loop edge per
+   * entry once the resolved call graph is known.
+   */
+  readonly callSummaries: readonly CallSummary[];
+  /**
    * Streamed PDG-emit COPY manifest (#2202). Present only when streaming was on
    * (full rebuild + `--pdg` + enabled): the BasicBlock node CSV + per-pair PDG
    * edge CSVs that were flushed to disk during the emit loop, for the persistence
@@ -92,6 +100,7 @@ const NOOP_OUTPUT: ScopeResolutionOutput = Object.freeze({
   resolutionOutcomes: [],
   perLanguage: new Map(),
   functionSummaries: [],
+  callSummaries: [],
 });
 
 export const scopeResolutionPhase: PipelinePhase<ScopeResolutionOutput> = {
@@ -165,6 +174,9 @@ export const scopeResolutionPhase: PipelinePhase<ScopeResolutionOutput> = {
     // M4 (#2084 U1): per-function taint summaries accumulated across every
     // language pass; the cross-function fixpoint phase reads this output.
     const functionSummaries: FunctionSummary[] = [];
+    // FU-C (U-C2): per-function RETURN-VALUE ASCENT summaries accumulated across
+    // every language pass; the `callSummaries` emit phase reads this output.
+    const callSummaries: CallSummary[] = [];
     const perLanguage = new Map<
       SupportedLanguages,
       {
@@ -510,6 +522,7 @@ export const scopeResolutionPhase: PipelinePhase<ScopeResolutionOutput> = {
         processedScopeFiles += langFileCount;
         anyRan = true;
         functionSummaries.push(...stats.functionSummaries);
+        callSummaries.push(...stats.callSummaries);
         totalFiles += stats.filesProcessed;
         totalImports += stats.importsEmitted;
         totalRefs += stats.referenceEdgesEmitted;
@@ -572,6 +585,7 @@ export const scopeResolutionPhase: PipelinePhase<ScopeResolutionOutput> = {
       resolutionOutcomes,
       perLanguage,
       functionSummaries,
+      callSummaries,
       pdgEmitManifest,
     };
   },

@@ -62,7 +62,14 @@ const isGraphWide = (label: string): boolean => label === 'Community' || label =
  * A→C edge. These are always extracted (and the orchestrator delete-alls them
  * first, like Community/Process) so they rebuild from the fresh graph.
  */
-const isGraphWideRelType = (type: string): boolean => type === 'TAINT_PATH';
+// `CALL_SUMMARY` (PDG FU-C) is intra-procedural (a callee's RETURN-VALUE ASCENT
+// depends only on its OWN body), but the orchestrator delete-alls it on an
+// incremental `--pdg` writeback to keep the emit path single — so it must be
+// re-included from the FULL fresh graph (which the emit phase recomputes every
+// run) or an unchanged function's summary would be lost. Cheap: one self-loop
+// edge per return-flowing function.
+const isGraphWideRelType = (type: string): boolean =>
+  type === 'TAINT_PATH' || type === 'CALL_SUMMARY';
 
 /**
  * Build a Map<nodeId, filePath> for every File-bound node in the graph.

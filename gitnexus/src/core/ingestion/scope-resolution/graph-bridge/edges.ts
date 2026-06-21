@@ -20,6 +20,17 @@ import type { KnowledgeGraph } from '../../../graph/types.js';
 import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
 import type { GraphNodeLookup } from '../graph-bridge/node-lookup.js';
 import { resolveCallerGraphId, resolveDefGraphId } from '../graph-bridge/ids.js';
+import type { CalleeIdSink } from './callee-id-sink.js';
+
+/**
+ * Optional resolved-callee-id capture context (#2227 follow-up U2). Threaded
+ * in only under `--pdg` (else `undefined` → zero overhead, byte-identity R4).
+ * `filePath` is NOT on the `site` param, so it rides here alongside the sink.
+ */
+export interface CalleeIdCaptureCtx {
+  readonly sink: CalleeIdSink;
+  readonly filePath: string;
+}
 
 /**
  * Map a `Reference.kind` to a graph edge type. `import-use` is dropped
@@ -74,6 +85,7 @@ export function tryEmitEdge(
   seen: Set<string>,
   confidence = 0.85,
   collapseByCallerTarget = false,
+  calleeCapture?: CalleeIdCaptureCtx,
 ): boolean {
   // Inheritance edges are emitted directly by `preEmitInheritanceEdges` (which
   // owns the enclosing-class caller and the EXTENDS-vs-IMPLEMENTS type), so this
@@ -84,6 +96,19 @@ export function tryEmitEdge(
   if (callerGraphId === undefined) return false;
   if (targetGraphId === undefined) return false;
   if (edgeType === undefined) return false;
+
+  // Resolved-callee-id capture (#2227 U2/KTD6/R8): record this CALLS site's
+  // resolved target BEFORE the dedup `seen` check, so collapsed same-target
+  // multi-line calls are still captured per site. Keyed on `site.atRange`
+  // (1-based line / 0-based col — byte-equal to U1's SiteRecord.at).
+  if (calleeCapture !== undefined && edgeType === 'CALLS') {
+    calleeCapture.sink.add(
+      calleeCapture.filePath,
+      site.atRange.startLine,
+      site.atRange.startCol,
+      targetGraphId,
+    );
+  }
 
   // CALLS edges may collapse to `(caller, target)` granularity when
   // the provider opts in (C# matches legacy DAG behavior this way).
@@ -134,11 +159,23 @@ export function tryEmitEdgeWithExplicitTargetId(
   seen: Set<string>,
   confidence = 0.85,
   collapseByCallerTarget = false,
+  calleeCapture?: CalleeIdCaptureCtx,
 ): boolean {
   const callerGraphId = resolveCallerGraphId(site.inScope, scopes, nodeLookup, site.atRange);
   const edgeType = mapReferenceKindToEdgeType(site.kind as Reference['kind']);
   if (callerGraphId === undefined) return false;
   if (edgeType === undefined) return false;
+
+  // Resolved-callee-id capture (#2227 U2/KTD6/R8) — before dedup, see
+  // `tryEmitEdge`. The explicit target id IS the resolved callee id.
+  if (calleeCapture !== undefined && edgeType === 'CALLS') {
+    calleeCapture.sink.add(
+      calleeCapture.filePath,
+      site.atRange.startLine,
+      site.atRange.startCol,
+      targetGraphId,
+    );
+  }
 
   const useCollapsed = collapseByCallerTarget && edgeType === 'CALLS';
   const dedupKey = useCollapsed
