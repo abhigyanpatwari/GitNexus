@@ -3565,12 +3565,13 @@ class WarehouseServiceImpl(private val svc: Svc) : WarehouseApi {
     );
 
     itKotlinConsumer(
-      'detects a controller whose leading arg-form @RestController("bean") detaches in the AST',
+      'detects a controller using the arg-form @RestController("bean")',
       async () => {
-        // A lone leading annotation with parenthesized args parses as a sibling
-        // prefix_expression (not under the class `modifiers`). The controller
-        // gate must still recognise it so the inherited route is emitted.
-        const dir = path.join(tmpDir, 'kotlin-detached-restcontroller');
+        // The arg-form @RestController("bean") attaches under the class
+        // `modifiers` as an `annotation` whose child is a `constructor_invocation`
+        // (NOT a detached sibling). The controller gate reads its trailing name so
+        // the inherited route is still emitted.
+        const dir = path.join(tmpDir, 'kotlin-argform-restcontroller');
         fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
         fs.writeFileSync(
           path.join(dir, 'src', 'WarehouseApi.kt'),

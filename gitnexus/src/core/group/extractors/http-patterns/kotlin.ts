@@ -587,12 +587,12 @@ function buildKotlinPlugin(language: unknown): HttpLanguagePlugin {
 
   /**
    * Whether a `class_declaration` is a Spring `@RestController` / `@Controller`.
-   * Two AST shapes (confirmed against tree-sitter-kotlin fwcd): the annotation
-   * normally attaches under `modifiers` (`@RestController`, including the common
-   * `@RestController @RequestMapping("/x")` pair), but a *leading* annotation
-   * that itself carries parenthesized arguments — e.g. a lone `@RestController("bean")`
-   * — detaches into a sibling `prefix_expression` preceding the class. Check both
-   * so neither form is missed.
+   * All forms attach under `modifiers` as an `annotation` (confirmed against
+   * tree-sitter-kotlin fwcd): the bare `@RestController`, the common
+   * `@RestController @RequestMapping("/x")` pair, AND the arg-form
+   * `@RestController("beanName")` — the last parses to an `annotation` whose
+   * child is a `constructor_invocation` (NOT a detached sibling), which
+   * `kotlinAnnotationName` reads. A single pass over `modifiers` covers them all.
    */
   const CONTROLLER_ANNOTATIONS = new Set(['RestController', 'Controller']);
   const kotlinClassIsController = (typeNode: Parser.SyntaxNode): boolean => {
@@ -600,12 +600,6 @@ function buildKotlinPlugin(language: unknown): HttpLanguagePlugin {
     for (const ann of modifiers?.namedChildren ?? []) {
       if (ann.type !== 'annotation') continue;
       const name = kotlinAnnotationName(ann);
-      if (name && CONTROLLER_ANNOTATIONS.has(name)) return true;
-    }
-    const prev = typeNode.previousNamedSibling;
-    if (prev?.type === 'prefix_expression') {
-      const ann = prev.namedChildren.find((c) => c.type === 'annotation');
-      const name = ann ? kotlinAnnotationName(ann) : null;
       if (name && CONTROLLER_ANNOTATIONS.has(name)) return true;
     }
     return false;
@@ -734,9 +728,9 @@ function buildKotlinPlugin(language: unknown): HttpLanguagePlugin {
     // contract as a server). Gating on the controller annotation mirrors Java's
     // scanSpringProject `isController` check and stops non-controller classes that
     // merely implement the same interface (services, adapters, test doubles) from
-    // emitting phantom provider routes. kotlinClassIsController handles both the
-    // attached (`@RestController` under `modifiers`) and detached (a leading
-    // arg-form annotation as a preceding `prefix_expression`) AST shapes.
+    // emitting phantom provider routes. kotlinClassIsController handles every
+    // controller form (bare, paired, and the arg-form `@RestController("bean")`)
+    // via the `modifiers` `annotation`/`constructor_invocation` shape.
     const detectionsByFile = new Map<string, HttpDetection[]>();
     for (const type of types) {
       if (type.kind !== 'class' || !type.isController) continue;
