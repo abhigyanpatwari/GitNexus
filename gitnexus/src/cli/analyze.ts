@@ -13,7 +13,8 @@ import os from 'os';
 import { spawn } from 'child_process';
 import v8 from 'v8';
 import cliProgress from 'cli-progress';
-import { closeLbugBeforeExit, isLbugReady } from '../core/lbug/lbug-adapter.js';
+import { isLbugReady } from '../core/lbug/lbug-adapter.js';
+import { boundedCheckpointBeforeExit } from '../core/lbug/shutdown-helpers.js';
 import {
   isLbugCheckpointIoError,
   isWalCorruptionError,
@@ -1179,22 +1180,17 @@ const analyzeCommandImpl = async (
     aborted = true;
     bar.stop();
     console.log('\n  Interrupted — cleaning up...');
-    // process.exit(130) follows, so skip the native close (LadybugDB destructor
-    // can double-free after --pdg writes, #2264); closeLbugBeforeExit's CHECKPOINT
-    // still flushes the WAL. But that CHECKPOINT queues behind the connection lock
-    // held by an in-flight COPY, so a single Ctrl-C during a long --pdg COPY would
-    // otherwise appear hung until the COPY releases. Bound it with a short timeout
-    // so the interrupt stays responsive; the WAL replays on the next analyze
-    // (#2264 review P3). A second Ctrl-C (`if (aborted) process.exit(1)` above)
-    // remains the immediate escape hatch.
-    const SIGINT_CLEANUP_TIMEOUT_MS = 2000;
-    void Promise.race([
-      closeLbugBeforeExit().catch(() => {}),
-      new Promise<void>((resolve) => setTimeout(resolve, SIGINT_CLEANUP_TIMEOUT_MS)),
-    ]).finally(async () => {
-      const { flushLoggerSync } = await import('../core/logger.js');
-      flushLoggerSync();
-      process.exit(130);
+    // Bounded CHECKPOINT-then-exit (#2264 review P3): skip the native close (the
+    // LadybugDB destructor can double-free after --pdg writes), but don't hang
+    // behind a long --pdg COPY holding the connection lock — bound it so a single
+    // Ctrl-C stays responsive; the WAL replays on the next analyze. A second
+    // Ctrl-C (`if (aborted) process.exit(1)` above) remains the escape hatch.
+    void boundedCheckpointBeforeExit({
+      exitCode: 130,
+      beforeExit: async () => {
+        const { flushLoggerSync } = await import('../core/logger.js');
+        flushLoggerSync();
+      },
     });
   };
   process.on('SIGINT', sigintHandler);

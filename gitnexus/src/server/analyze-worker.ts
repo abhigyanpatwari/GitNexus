@@ -15,7 +15,7 @@ import { runFullAnalysis, type AnalyzeOptions } from '../core/run-analyze.js';
 import { type AnalyzeResultIpc } from './analyze-worker-ipc.js';
 import { runWorkerAnalysis, createTerminalClaim } from './analyze-worker-core.js';
 import { assertAnalysisFinalized } from '../storage/repo-manager.js';
-import { closeLbugBeforeExit } from '../core/lbug/lbug-adapter.js';
+import { boundedCheckpointBeforeExit } from '../core/lbug/shutdown-helpers.js';
 
 interface StartMessage {
   type: 'start';
@@ -82,15 +82,11 @@ process.on('unhandledRejection', (reason: unknown) => {
 });
 
 // Handle cancellation / timeout shutdown (analyze-job.ts `cancelJob` sends
-// SIGTERM). Mirror the CLI SIGINT path (#2264): a best-effort CHECKPOINT that
-// SKIPS the native close. A real conn.close()/db.close() here can double-free in
-// LadybugDB's ClientContext destructor after --pdg writes, AND it would block
-// behind the in-flight COPY's connection lock — so a single cancel could abort
-// the worker or hang until the COPY releases. Bound the CHECKPOINT with a short
-// timeout; process.exit reclaims the native handles regardless. A CHECKPOINT
-// failure is reported to the parent over IPC, not swallowed; the exit lives in
-// `finally` so it always fires.
-const SIGTERM_CLEANUP_TIMEOUT_MS = 2000;
+// SIGTERM). Bounded CHECKPOINT-then-exit shared with the CLI SIGINT path (#2264):
+// skip the native close (the LadybugDB destructor can double-free after --pdg
+// writes), but don't block behind the in-flight COPY's connection lock — so a
+// single cancel can't abort or hang the worker. A CHECKPOINT failure is reported
+// to the parent over IPC, not swallowed; the exit always fires.
 process.on('SIGTERM', () => {
   // Only report the cancellation if the analysis hasn't already reported a
   // terminal outcome (#2264 P3) — otherwise this would flip an already-complete
@@ -98,14 +94,14 @@ process.on('SIGTERM', () => {
   if (claimTerminal()) {
     send({ type: 'error', message: 'Analysis cancelled (worker received SIGTERM)' });
   }
-  void Promise.race([
-    closeLbugBeforeExit().catch((err: unknown) => {
+  void boundedCheckpointBeforeExit({
+    exitCode: 0,
+    onFlushError: (err: unknown) => {
       const message =
         err instanceof Error ? err.message : 'Worker checkpoint failed during SIGTERM';
       send({ type: 'error', message });
-    }),
-    new Promise<void>((resolve) => setTimeout(resolve, SIGTERM_CLEANUP_TIMEOUT_MS)),
-  ]).finally(() => process.exit(0));
+    },
+  });
 });
 
 // Listen for start command from parent — guarded against re-entry
