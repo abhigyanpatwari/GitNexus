@@ -58,6 +58,7 @@ vi.mock('../../src/cli/skill-gen.js', () => ({ generateSkillFiles: vi.fn() }));
 vi.mock('../../src/cli/cli-message.js', () => ({ cliError: vi.fn() }));
 vi.mock('../../src/core/lbug/lbug-adapter.js', () => ({
   closeLbug: vi.fn(async () => undefined),
+  closeLbugBeforeExit: vi.fn(async () => undefined),
   isLbugReady: isLbugReadyMock,
 }));
 vi.mock('../../src/storage/repo-manager.js', () => ({

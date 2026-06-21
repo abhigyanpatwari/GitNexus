@@ -1913,26 +1913,31 @@ export const safeClose = async (): Promise<void> => {
   }
 };
 
-export const closeLbug = async (options: { skipNativeClose?: boolean } = {}): Promise<void> => {
-  if (options.skipNativeClose) {
-    // The caller guarantees a process.exit afterward (CLI analyze success path).
-    // CHECKPOINT for durability via flushWAL, then DELIBERATELY skip the native
-    // connection and database teardown: LadybugDB's ClientContext/Connection
-    // destructor can double-free after large --pdg writes (gdb: `double free or
-    // corruption` in ClientContext::~ClientContext via NodeConnection::Close),
-    // aborting the process AFTER a fully-written, checkpointed index. flushWAL
-    // already persisted the data; process exit reclaims the native handles. We
-    // leave the handles referenced and module state intact so a GC finalizer
-    // cannot run the same destructor before exit, and any post-analyze read
-    // reuses the live connection. Mirrors the pool adapter's fire-and-forget
-    // native teardown (pool-adapter.ts) and the ONNX native-cleanup philosophy.
-    // Workaround for a LadybugDB engine bug (to be reported upstream).
-    // SAFETY: only valid when a process.exit is guaranteed to follow — the
-    // runFullAnalysis ERROR path intentionally does NOT pass this (it closes for
-    // real, so a soft-returning caller still releases handles and terminates).
-    await flushWAL();
-    return;
-  }
+/**
+ * CHECKPOINT for durability, then DELIBERATELY skip the native connection/database
+ * teardown. The name encodes the contract — there is no boolean flag to misuse:
+ * call this ONLY from a path that guarantees a `process.exit` immediately after
+ * (the CLI analyze success/SIGINT paths and the forked worker).
+ *
+ * LadybugDB's ClientContext/Connection destructor can double-free after large
+ * --pdg writes (gdb: `double free or corruption` in ClientContext::~ClientContext
+ * via NodeConnection::Close), aborting the process AFTER a fully-written,
+ * checkpointed index. flushWAL already persisted the data; process exit reclaims
+ * the native handles. We leave the handles referenced and module state intact so a
+ * GC finalizer cannot run the same destructor before exit, and any post-analyze
+ * read reuses the live connection. Mirrors the pool adapter's fire-and-forget
+ * native teardown (pool-adapter.ts) and the ONNX native-cleanup philosophy.
+ * Workaround for a LadybugDB engine bug (to be reported upstream).
+ *
+ * SAFETY: only valid when a process.exit is guaranteed to follow. Long-lived
+ * callers (MCP server, tests) leave `skipNativeCloseOnExit` unset, so
+ * runFullAnalysis closes for real via {@link closeLbug} — never this.
+ */
+export const closeLbugBeforeExit = async (): Promise<void> => {
+  await flushWAL();
+};
+
+export const closeLbug = async (): Promise<void> => {
   await safeClose();
   currentDbPath = null;
   ftsLoaded = false;

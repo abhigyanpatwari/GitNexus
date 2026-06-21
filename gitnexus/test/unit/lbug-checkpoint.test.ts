@@ -54,13 +54,28 @@ describe('flushWAL / safeClose — consolidation guard (#1376)', () => {
   });
 
   it('closeLbug delegates to safeClose instead of inlining conn.close/db.close', () => {
-    const closeLbugBody = adapterSource.slice(adapterSource.indexOf('export const closeLbug'));
+    // Match `closeLbug =` precisely so we don't prefix-match `closeLbugBeforeExit`.
+    const closeLbugBody = adapterSource.slice(adapterSource.indexOf('export const closeLbug ='));
     expect(closeLbugBody).toMatch(/await safeClose\(\)/);
     // closeLbug must NOT contain its own conn.close() or db.close() — those
     // live exclusively inside safeClose now.
     const closeLbugBlock = closeLbugBody.slice(0, closeLbugBody.indexOf('export const', 1) >>> 0);
     expect(closeLbugBlock).not.toMatch(/conn\.close\(\)/);
     expect(closeLbugBlock).not.toMatch(/db\.close\(\)/);
+  });
+
+  it('exports closeLbugBeforeExit (CHECKPOINT-only, skips native close) (#2264)', () => {
+    expect(adapterSource).toMatch(/export const closeLbugBeforeExit/);
+    // closeLbugBeforeExit is declared immediately before closeLbug; its body must
+    // CHECKPOINT via flushWAL and NEVER do a native conn/db close (that's the
+    // whole point — it relies on a guaranteed process.exit).
+    const body = adapterSource.slice(
+      adapterSource.indexOf('export const closeLbugBeforeExit'),
+      adapterSource.indexOf('export const closeLbug ='),
+    );
+    expect(body).toMatch(/await flushWAL\(\)/);
+    expect(body).not.toMatch(/conn\.close\(\)/);
+    expect(body).not.toMatch(/db\.close\(\)/);
   });
 
   it('CHECKPOINT is issued only by flushWAL (best-effort) and tryFlushWAL (rethrows for the retry driver)', () => {

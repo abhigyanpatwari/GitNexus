@@ -15,7 +15,7 @@ import { runFullAnalysis, type AnalyzeOptions } from '../core/run-analyze.js';
 import { type AnalyzeResultIpc } from './analyze-worker-ipc.js';
 import { runWorkerAnalysis, createTerminalClaim } from './analyze-worker-core.js';
 import { assertAnalysisFinalized } from '../storage/repo-manager.js';
-import { closeLbug } from '../core/lbug/lbug-adapter.js';
+import { closeLbugBeforeExit } from '../core/lbug/lbug-adapter.js';
 
 interface StartMessage {
   type: 'start';
@@ -99,7 +99,7 @@ process.on('SIGTERM', () => {
     send({ type: 'error', message: 'Analysis cancelled (worker received SIGTERM)' });
   }
   void Promise.race([
-    closeLbug({ skipNativeClose: true }).catch((err: unknown) => {
+    closeLbugBeforeExit().catch((err: unknown) => {
       const message =
         err instanceof Error ? err.message : 'Worker checkpoint failed during SIGTERM';
       send({ type: 'error', message });

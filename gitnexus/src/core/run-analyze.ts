@@ -21,6 +21,7 @@ import {
   executeQuery,
   executeWithReusedStatement,
   closeLbug,
+  closeLbugBeforeExit,
   loadCachedEmbeddings,
   deleteNodesForFile,
   deleteAllCommunitiesAndProcesses,
@@ -1574,9 +1575,10 @@ export async function runFullAnalysis(
     // in-flight CHECKPOINT cannot race the `safeClose` CHECKPOINT.
     await walCheckpointDriver.stop();
     // CLI callers (about to process.exit) skip the native close to dodge a
-    // LadybugDB destructor double-free after --pdg writes — the CHECKPOINT inside
-    // closeLbug keeps the index durable (#2264). Long-lived callers close for real.
-    await closeLbug({ skipNativeClose: options.skipNativeCloseOnExit });
+    // LadybugDB destructor double-free after --pdg writes — closeLbugBeforeExit
+    // CHECKPOINTs for durability then leaves the handles for process exit to
+    // reclaim (#2264). Long-lived callers close for real.
+    await (options.skipNativeCloseOnExit ? closeLbugBeforeExit() : closeLbug());
 
     progress('done', 100, 'Done');
 
@@ -1600,11 +1602,12 @@ export async function runFullAnalysis(
       // Skip the native close on the error path too: a real conn.close() after
       // large --pdg writes can itself abort in LadybugDB's ClientContext
       // destructor (#2264 review P2), turning an actionable exit-1 into a raw
-      // SIGABRT. Skipping leaves the handles open, but the CLI catch now
-      // force-exits when isLbugReady() (analyze.ts, #2264 review P1), so the
-      // process still terminates — no hang, no abort. flushWAL inside closeLbug
-      // keeps the partial index durable; process exit reclaims the handles.
-      await closeLbug({ skipNativeClose: options.skipNativeCloseOnExit });
+      // SIGABRT. closeLbugBeforeExit leaves the handles open, but the CLI catch
+      // now force-exits when isLbugReady() (analyze.ts, #2264 review P1), so the
+      // process still terminates — no hang, no abort. flushWAL keeps the partial
+      // index durable; process exit reclaims the handles. Long-lived callers
+      // (skipNativeCloseOnExit unset) close for real.
+      await (options.skipNativeCloseOnExit ? closeLbugBeforeExit() : closeLbug());
     } catch {
       /* swallow */
     }
