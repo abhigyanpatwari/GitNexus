@@ -438,10 +438,9 @@ function hasAnnotation(node: Parser.SyntaxNode, names: string | readonly string[
   while (stack.length > 0) {
     const cur = stack.pop()!;
     const annotationName = cur.childForFieldName('name')?.text ?? '';
-    const simpleName = annotationName.split('.').pop() ?? annotationName;
     if (
       (cur.type === 'annotation' || cur.type === 'marker_annotation') &&
-      (allowed.has(annotationName) || allowed.has(simpleName))
+      (allowed.has(annotationName) || allowed.has(simpleName(annotationName)))
     ) {
       return true;
     }
@@ -483,7 +482,11 @@ function extractUriCreatePath(node: Parser.SyntaxNode): string | null {
   return firstLiteralArgument(node);
 }
 
-/** Join a builder base with a sub-path using exactly one separating slash. */
+// Join a builder base with a sub-path using exactly one separating slash. This
+// is intentionally NOT the shared `joinPath`: `joinPath` force-prepends `/`,
+// whereas `appendPath` must preserve an absolute/host base (`fromHttpUrl`
+// "https://host/api") so the host survives until `normalizeConsumerPath` strips
+// it downstream. Do not unify the two.
 function appendPath(base: string, subPath: string): string {
   if (!base) return subPath.startsWith('/') ? subPath : `/${subPath}`;
   if (!subPath) return base;
