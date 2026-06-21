@@ -1136,7 +1136,12 @@ export const loadGraphToLbug = async (
         log(`Loading edges: ${pairIdx}/${relsByPair.size} types (${fromLabel} -> ${toLabel})`);
       }
 
-      await copyCsvWithRetry(conn, copyQuery, (retryErr) => {
+      // Use the captured `writeConn` (not the module-level `conn`) for the rel
+      // COPY, matching the node COPY above — one captured reference for the whole
+      // bulk load (#2264 review P3). Same object during analyze (`conn` is only
+      // reassigned at open/close under the session lock, never mid-load), so the
+      // queryAndDrain `targetConn === conn` lock gate still engages.
+      await copyCsvWithRetry(writeConn, copyQuery, (retryErr) => {
         const retryMsg = retryErr instanceof Error ? retryErr.message : String(retryErr);
         warnings.push(`${fromLabel}->${toLabel} (${rows} edges): ${retryMsg.slice(0, 80)}`);
         failedPairEdges += rows;
