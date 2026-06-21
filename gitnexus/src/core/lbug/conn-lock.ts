@@ -61,6 +61,6 @@ export const withConnLock = async <T>(fn: () => Promise<T>): Promise<T> => {
  *
  * @internal
  */
-export const __resetConnLockForTests = (): void => {
+export const _resetConnLockForTests = (): void => {
   tail = Promise.resolve();
 };

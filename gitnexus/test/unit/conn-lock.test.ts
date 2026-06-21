@@ -10,10 +10,10 @@
  * the property that makes the otherwise-crashing overlap safe.
  */
 import { afterEach, describe, expect, it } from 'vitest';
-import { withConnLock, __resetConnLockForTests } from '../../src/core/lbug/conn-lock.js';
+import { withConnLock, _resetConnLockForTests } from '../../src/core/lbug/conn-lock.js';
 
 afterEach(() => {
-  __resetConnLockForTests();
+  _resetConnLockForTests();
 });
 
 describe('withConnLock — connection serialization', () => {
