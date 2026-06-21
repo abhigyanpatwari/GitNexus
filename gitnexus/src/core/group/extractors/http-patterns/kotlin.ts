@@ -22,6 +22,7 @@ import {
   WEB_CLIENT_LONG_VERB_RE,
   EXCHANGE_ANNOTATION_TO_HTTP,
   parseRequestLine,
+  pushPrefix,
   joinPath,
   joinInheritedSpringPath,
   OPENFEIGN_FRAMEWORK,
@@ -107,16 +108,9 @@ try {
 // `spring-consumer-shared.ts` so the Java and Kotlin long-form scans accept the
 // same verb set (HEAD/OPTIONS/TRACE excluded, matching the short form).
 
-/**
- * Accumulate a route prefix (de-duped) under a class-declaration node id. A
- * route attribute is `Array<String>`; a multi-element `@RequestMapping(["/a","/b"])`
- * yields one query match per element, so prefixes accumulate rather than overwrite.
- */
-const pushKotlinPrefix = (map: Map<number, string[]>, id: number, prefix: string): void => {
-  const arr = map.get(id) ?? [];
-  if (!arr.includes(prefix)) arr.push(prefix);
-  map.set(id, arr);
-};
+// The de-duping prefix accumulator (`pushPrefix`) is imported from
+// `spring-consumer-shared.ts` so the Java and Kotlin plugins build their
+// per-declaration prefix maps identically.
 
 /**
  * Tree-sitter sub-pattern for the Kotlin `arrayOf("/a", "/b")` annotation-array
@@ -786,7 +780,7 @@ function buildKotlinPlugin(language: unknown): HttpLanguagePlugin {
       const classNode = match.captures.class;
       if (!prefixNode || !classNode) continue;
       const prefix = unquoteLiteral(prefixNode.text);
-      if (prefix !== null) pushKotlinPrefix(prefixByClassId, classNode.id, prefix);
+      if (prefix !== null) pushPrefix(prefixByClassId, classNode.id, prefix);
     }
     // Method @(Get|...)Mapping routes keyed by the function_declaration node id.
     const routesByMethodId = new Map<number, Array<{ method: string; path: string }>>();
@@ -926,7 +920,7 @@ function buildKotlinPlugin(language: unknown): HttpLanguagePlugin {
         const classNode = match.captures.class;
         if (!prefixNode || !classNode) continue;
         const prefix = unquoteLiteral(prefixNode.text);
-        if (prefix !== null) pushKotlinPrefix(prefixByClassId, classNode.id, prefix);
+        if (prefix !== null) pushPrefix(prefixByClassId, classNode.id, prefix);
       }
 
       // ─── OpenFeign client interfaces + HTTP Interface type prefixes ──
@@ -943,7 +937,7 @@ function buildKotlinPlugin(language: unknown): HttpLanguagePlugin {
         const prefixNode = match.captures.prefix;
         if (prefixNode) {
           const prefix = unquoteLiteral(prefixNode.text);
-          if (prefix !== null) pushKotlinPrefix(feignPrefixByClassId, classNode.id, prefix);
+          if (prefix !== null) pushPrefix(feignPrefixByClassId, classNode.id, prefix);
         }
       }
       const httpExchangePrefixByClassId = new Map<number, string[]>();
@@ -952,7 +946,7 @@ function buildKotlinPlugin(language: unknown): HttpLanguagePlugin {
         const prefixNode = match.captures.prefix;
         if (!classNode || !prefixNode) continue;
         const prefix = unquoteLiteral(prefixNode.text);
-        if (prefix !== null) pushKotlinPrefix(httpExchangePrefixByClassId, classNode.id, prefix);
+        if (prefix !== null) pushPrefix(httpExchangePrefixByClassId, classNode.id, prefix);
       }
 
       // ─── Method routes (Spring providers) + OpenFeign consumers ─────

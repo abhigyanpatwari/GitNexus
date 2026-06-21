@@ -73,6 +73,19 @@ export const EXCHANGE_ANNOTATION_TO_HTTP: Record<string, string> = {
   PatchExchange: 'PATCH',
 };
 
+/**
+ * Accumulate a route prefix (de-duped) under a class/interface declaration node
+ * id. A Spring route attribute is `String[]`; a multi-element array (`["/a","/b"]`,
+ * `arrayOf("/a","/b")`, `{"/a","/b"}`) yields one query match per element, so
+ * prefixes accumulate rather than overwrite. Shared by the Java and Kotlin plugins
+ * so both build their prefix maps identically.
+ */
+export const pushPrefix = (map: Map<number, string[]>, id: number, prefix: string): void => {
+  const arr = map.get(id) ?? [];
+  if (!arr.includes(prefix)) arr.push(prefix);
+  map.set(id, arr);
+};
+
 /** Framework tags emitted on consumer detections (stable contract metadata). */
 export const OPENFEIGN_FRAMEWORK = 'openfeign';
 export const HTTP_INTERFACE_FRAMEWORK = 'spring-http-interface';

@@ -17,6 +17,7 @@ import {
   WEB_CLIENT_LONG_VERB_RE,
   EXCHANGE_ANNOTATION_TO_HTTP,
   parseRequestLine,
+  pushPrefix,
   joinPath,
   joinInheritedSpringPath,
   OPENFEIGN_FRAMEWORK,
@@ -439,13 +440,8 @@ function scanRouteAnnotations(tree: Parser.Tree): RouteAnnotationScan {
   // Interface `@RequestMapping` prefixes rank below `@FeignClient(path)`;
   // collect them and apply only after the FeignClient pass below.
   const interfaceRequestMappingPrefixes: Array<{ id: number; prefix: string }> = [];
-  // A route attribute is `String[]`; a multi-element array yields one match per
-  // element, so prefixes accumulate (de-duped) rather than overwrite.
-  const pushPrefix = (map: Map<number, string[]>, id: number, prefix: string): void => {
-    const arr = map.get(id) ?? [];
-    if (!arr.includes(prefix)) arr.push(prefix);
-    map.set(id, arr);
-  };
+  // `pushPrefix` (the de-duping accumulator) is shared from
+  // spring-consumer-shared.ts so Java and Kotlin build prefix maps identically.
 
   for (const { captures } of matches) {
     const annNode = captures.ann;
