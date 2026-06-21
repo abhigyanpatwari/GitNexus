@@ -3459,6 +3459,205 @@ interface PricingApi {
     );
 
     itKotlinConsumer(
+      'handles Kotlin arrayOf("/x") annotation arrays across families (#2254 P3)',
+      async () => {
+        // arrayOf(...) is the explicit (older) form of a Kotlin String[] arg,
+        // distinct from the ["/x"] collection_literal. Each route-bearing
+        // annotation must accept it, positional and named, in all families.
+        const dir = path.join(tmpDir, 'kotlin-array-of');
+        fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+        // Provider: positional arrayOf class prefix + named arrayOf method path.
+        fs.writeFileSync(
+          path.join(dir, 'src', 'ProductsController.kt'),
+          `package com.example
+import org.springframework.web.bind.annotation.RestController
+import org.springframework.web.bind.annotation.RequestMapping
+import org.springframework.web.bind.annotation.GetMapping
+
+@RestController
+@RequestMapping(arrayOf("/api/products"))
+class ProductsController {
+    @GetMapping(value = arrayOf("/{id}"))
+    fun get(id: Int): Any = TODO()
+}
+`,
+        );
+        // OpenFeign consumer: named arrayOf path prefix.
+        fs.writeFileSync(
+          path.join(dir, 'src', 'OrdersClient.kt'),
+          `package com.example
+import org.springframework.cloud.openfeign.FeignClient
+import org.springframework.web.bind.annotation.PostMapping
+
+@FeignClient(name = "orders", path = arrayOf("/feign"))
+interface OrdersClient {
+    @PostMapping(arrayOf("/orders/search"))
+    fun search(): Any
+}
+`,
+        );
+        // Spring HTTP Interface consumer: positional arrayOf class prefix + named arrayOf url.
+        fs.writeFileSync(
+          path.join(dir, 'src', 'PricingApi.kt'),
+          `package com.example
+import org.springframework.web.service.annotation.HttpExchange
+import org.springframework.web.service.annotation.GetExchange
+
+@HttpExchange(arrayOf("/pricing"))
+interface PricingApi {
+    @GetExchange(url = arrayOf("/{id}"))
+    fun price(id: Int): Any
+}
+`,
+        );
+
+        const contracts = await extractor.extract(null, dir, makeRepo(dir));
+        const providers = contracts.filter((c) => c.role === 'provider');
+        const consumers = contracts.filter((c) => c.role === 'consumer');
+
+        // class @RequestMapping(arrayOf) + method @GetMapping(value = arrayOf) → provider.
+        expect(
+          providers.find((c) => c.contractId === 'http::GET::/api/products/{param}'),
+        ).toBeDefined();
+        // @FeignClient(path = arrayOf) + @PostMapping(arrayOf) → consumer (path applied).
+        expect(
+          consumers.find(
+            (c) =>
+              c.contractId === 'http::POST::/feign/orders/search' &&
+              c.meta.framework === 'openfeign',
+          ),
+        ).toBeDefined();
+        // @HttpExchange(arrayOf) + @GetExchange(url = arrayOf) → consumer (prefix applied).
+        expect(
+          consumers.find(
+            (c) =>
+              c.contractId === 'http::GET::/pricing/{param}' &&
+              c.meta.framework === 'spring-http-interface',
+          ),
+        ).toBeDefined();
+      },
+    );
+
+    itKotlinConsumer(
+      'registers a multi-element arrayOf("/a","/b") under every element (cross-product)',
+      async () => {
+        const dir = path.join(tmpDir, 'kotlin-array-of-multi');
+        fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+        fs.writeFileSync(
+          path.join(dir, 'src', 'MultiController.kt'),
+          `package com.example
+import org.springframework.web.bind.annotation.RestController
+import org.springframework.web.bind.annotation.RequestMapping
+import org.springframework.web.bind.annotation.GetMapping
+
+@RestController
+@RequestMapping(arrayOf("/a", "/b"))
+class MultiController {
+    @GetMapping(arrayOf("/x", "/y"))
+    fun get(): Any = TODO()
+}
+`,
+        );
+
+        const contracts = await extractor.extract(null, dir, makeRepo(dir));
+        const providers = contracts.filter((c) => c.role === 'provider');
+
+        // 2 prefixes × 2 method paths → 4 contract IDs.
+        for (const id of [
+          'http::GET::/a/x',
+          'http::GET::/a/y',
+          'http::GET::/b/x',
+          'http::GET::/b/y',
+        ]) {
+          expect(providers.find((c) => c.contractId === id)).toBeDefined();
+        }
+      },
+    );
+
+    itKotlinConsumer(
+      'mixes arrayOf and collection-literal arrays without cannibalising either',
+      async () => {
+        // The dedicated arrayOf pattern must not drop the sibling ["/x"]
+        // collection_literal match (the tree-sitter 0.21.x predicate-bucket hazard).
+        const dir = path.join(tmpDir, 'kotlin-array-of-mixed');
+        fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+        fs.writeFileSync(
+          path.join(dir, 'src', 'ArrayOfController.kt'),
+          `package com.example
+import org.springframework.web.bind.annotation.RestController
+import org.springframework.web.bind.annotation.RequestMapping
+import org.springframework.web.bind.annotation.GetMapping
+
+@RestController
+@RequestMapping(arrayOf("/aof"))
+class ArrayOfController {
+    @GetMapping(arrayOf("/x"))
+    fun get(): Any = TODO()
+}
+`,
+        );
+        fs.writeFileSync(
+          path.join(dir, 'src', 'LiteralController.kt'),
+          `package com.example
+import org.springframework.web.bind.annotation.RestController
+import org.springframework.web.bind.annotation.RequestMapping
+import org.springframework.web.bind.annotation.GetMapping
+
+@RestController
+@RequestMapping(["/lit"])
+class LiteralController {
+    @GetMapping(["/y"])
+    fun get(): Any = TODO()
+}
+`,
+        );
+
+        const contracts = await extractor.extract(null, dir, makeRepo(dir));
+        const providers = contracts.filter((c) => c.role === 'provider');
+
+        expect(providers.find((c) => c.contractId === 'http::GET::/aof/x')).toBeDefined();
+        expect(providers.find((c) => c.contractId === 'http::GET::/lit/y')).toBeDefined();
+      },
+    );
+
+    itKotlinConsumer(
+      'does not treat a non-arrayOf call or a non-route arrayOf key as a route (anti-overreach)',
+      async () => {
+        const dir = path.join(tmpDir, 'kotlin-array-of-negative');
+        fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+        // buildPath(...) is a call_expression but not arrayOf → no prefix.
+        // produces = arrayOf(...) is a non-route key → no route.
+        // arrayOf() is empty → no phantom route.
+        fs.writeFileSync(
+          path.join(dir, 'src', 'NegController.kt'),
+          `package com.example
+import org.springframework.web.bind.annotation.RestController
+import org.springframework.web.bind.annotation.RequestMapping
+import org.springframework.web.bind.annotation.GetMapping
+
+@RestController
+@RequestMapping(buildPath("/built"))
+class NegController {
+    @GetMapping(produces = arrayOf("application/json"))
+    fun a(): Any = TODO()
+
+    @GetMapping(arrayOf())
+    fun b(): Any = TODO()
+}
+`,
+        );
+
+        const contracts = await extractor.extract(null, dir, makeRepo(dir));
+        const providers = contracts.filter((c) =>
+          c.symbolRef.filePath.endsWith('NegController.kt'),
+        );
+
+        // No route should be produced from any of the three anti-overreach forms.
+        expect(providers).toHaveLength(0);
+      },
+    );
+
+    itKotlinConsumer(
       'does not extract @RequestLine on a Kotlin class method (Feign proxies are interfaces only)',
       async () => {
         // Feign builds its proxy from an interface; a @RequestLine on a concrete

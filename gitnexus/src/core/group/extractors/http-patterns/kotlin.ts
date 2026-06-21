@@ -124,6 +124,24 @@ const pushKotlinPrefix = (map: Map<number, string[]>, id: number, prefix: string
 };
 
 /**
+ * Tree-sitter sub-pattern for the Kotlin `arrayOf("/a", "/b")` annotation-array
+ * form, capturing each element string under `cap` (`@prefix` or `@path`).
+ *
+ * Kept as a DEDICATED query fragment embedded in its own pattern — NEVER as an
+ * arm of the `[(string_literal) (collection_literal …)]` alternation. The
+ * `#eq? @arrayOf "arrayOf"` predicate, sharing a single alternation bucket with
+ * the string/collection arms, would evaluate FALSE for those arms (where
+ * `@arrayOf` is absent) and silently drop them — the tree-sitter 0.21.x hazard
+ * documented in `java.ts`. tree-sitter yields one match per `arrayOf` element,
+ * so multi-element arrays accumulate through the same loops as `collection_literal`
+ * (verified by AST probe). The `arrayOf` callee constraint keeps unrelated calls
+ * (`buildPath("/x")`) from matching.
+ */
+const arrayOfArg = (cap: string): string => `(call_expression
+  (simple_identifier) @arrayOf (#eq? @arrayOf "arrayOf")
+  (call_suffix (value_arguments (value_argument (string_literal) ${cap}))))`;
+
+/**
  * Build the plugin only if the Kotlin grammar is available. Compiling
  * the queries against a null grammar would throw at module load time
  * and abort the whole http-route-extractor module.
@@ -181,6 +199,34 @@ function buildKotlinPlugin(language: unknown): HttpLanguagePlugin {
             (type_identifier) @cls) @class
         `,
       },
+      {
+        meta: {},
+        query: `
+          (class_declaration
+            (modifiers
+              (annotation
+                (constructor_invocation
+                  (user_type (type_identifier) @ann (#eq? @ann "RequestMapping"))
+                  (value_arguments
+                    (value_argument . ${arrayOfArg('@prefix')})))))
+            (type_identifier) @cls) @class
+        `,
+      },
+      {
+        meta: {},
+        query: `
+          (class_declaration
+            (modifiers
+              (annotation
+                (constructor_invocation
+                  (user_type (type_identifier) @ann (#eq? @ann "RequestMapping"))
+                  (value_arguments
+                    (value_argument
+                      (simple_identifier) @key (#match? @key "^(path|value)$")
+                      ${arrayOfArg('@prefix')})))))
+            (type_identifier) @cls) @class
+        `,
+      },
     ],
   } satisfies LanguagePatterns<Record<string, never>>);
 
@@ -217,6 +263,34 @@ function buildKotlinPlugin(language: unknown): HttpLanguagePlugin {
                     (value_argument
                       (simple_identifier) @key (#match? @key "^(path|value)$")
                       [(string_literal) @path (collection_literal (string_literal) @path)])))))
+            (simple_identifier) @method_name) @method
+        `,
+      },
+      {
+        meta: {},
+        query: `
+          (function_declaration
+            (modifiers
+              (annotation
+                (constructor_invocation
+                  (user_type (type_identifier) @ann (#match? @ann "^(Get|Post|Put|Delete|Patch)Mapping$"))
+                  (value_arguments
+                    (value_argument . ${arrayOfArg('@path')})))))
+            (simple_identifier) @method_name) @method
+        `,
+      },
+      {
+        meta: {},
+        query: `
+          (function_declaration
+            (modifiers
+              (annotation
+                (constructor_invocation
+                  (user_type (type_identifier) @ann (#match? @ann "^(Get|Post|Put|Delete|Patch)Mapping$"))
+                  (value_arguments
+                    (value_argument
+                      (simple_identifier) @key (#match? @key "^(path|value)$")
+                      ${arrayOfArg('@path')})))))
             (simple_identifier) @method_name) @method
         `,
       },
@@ -437,6 +511,20 @@ function buildKotlinPlugin(language: unknown): HttpLanguagePlugin {
                       [(string_literal) @prefix (collection_literal (string_literal) @prefix)])))))) @class
         `,
       },
+      {
+        meta: {},
+        query: `
+          (class_declaration
+            (modifiers
+              (annotation
+                (constructor_invocation
+                  (user_type (type_identifier) @ann (#eq? @ann "FeignClient"))
+                  (value_arguments
+                    (value_argument
+                      (simple_identifier) @key (#eq? @key "path")
+                      ${arrayOfArg('@prefix')})))))) @class
+        `,
+      },
     ],
   } satisfies LanguagePatterns<Record<string, never>>);
 
@@ -476,6 +564,34 @@ function buildKotlinPlugin(language: unknown): HttpLanguagePlugin {
             (simple_identifier) @method_name) @method
         `,
       },
+      {
+        meta: {},
+        query: `
+          (function_declaration
+            (modifiers
+              (annotation
+                (constructor_invocation
+                  (user_type (type_identifier) @ann (#match? @ann "^(Get|Post|Put|Delete|Patch)Exchange$"))
+                  (value_arguments
+                    (value_argument . ${arrayOfArg('@path')})))))
+            (simple_identifier) @method_name) @method
+        `,
+      },
+      {
+        meta: {},
+        query: `
+          (function_declaration
+            (modifiers
+              (annotation
+                (constructor_invocation
+                  (user_type (type_identifier) @ann (#match? @ann "^(Get|Post|Put|Delete|Patch)Exchange$"))
+                  (value_arguments
+                    (value_argument
+                      (simple_identifier) @key (#match? @key "^(url|value)$")
+                      ${arrayOfArg('@path')})))))
+            (simple_identifier) @method_name) @method
+        `,
+      },
     ],
   } satisfies LanguagePatterns<Record<string, never>>);
 
@@ -508,6 +624,32 @@ function buildKotlinPlugin(language: unknown): HttpLanguagePlugin {
                     (value_argument
                       (simple_identifier) @key (#match? @key "^(url|value)$")
                       [(string_literal) @prefix (collection_literal (string_literal) @prefix)])))))) @class
+        `,
+      },
+      {
+        meta: {},
+        query: `
+          (class_declaration
+            (modifiers
+              (annotation
+                (constructor_invocation
+                  (user_type (type_identifier) @ann (#eq? @ann "HttpExchange"))
+                  (value_arguments
+                    (value_argument . ${arrayOfArg('@prefix')})))))) @class
+        `,
+      },
+      {
+        meta: {},
+        query: `
+          (class_declaration
+            (modifiers
+              (annotation
+                (constructor_invocation
+                  (user_type (type_identifier) @ann (#eq? @ann "HttpExchange"))
+                  (value_arguments
+                    (value_argument
+                      (simple_identifier) @key (#match? @key "^(url|value)$")
+                      ${arrayOfArg('@prefix')})))))) @class
         `,
       },
     ],
