@@ -433,16 +433,18 @@ function buildKotlinPlugin(language: unknown): HttpLanguagePlugin {
   // that imports OkHttp's `Request` under an alias (`import okhttp3.Request as OkRequest`)
   // would not be picked up — this matches the Java plugin's heuristic.
   //
-  // **Known limitation — verb defaults to GET.** OkHttp encodes the
-  // verb on a *sibling* call further down the builder chain (e.g.
-  // `.post(body)` / `.get()` / `.delete()`), not on `.url(...)` itself.
-  // This query intentionally does not walk the chain to recover the
-  // verb — it emits `method: 'GET'` for every match, mirroring
-  // `java.ts:OK_HTTP_PATTERNS`. So a `Request.Builder().url("/x").post(body).build()`
-  // call becomes `http::GET::/x`, not `http::POST::/x`. This is the
-  // same trade-off Java has accepted; pinned by an anti-overreach
-  // test in `http-route-extractor.test.ts` so a future verb-walk
-  // implementation has to update this comment in lockstep.
+  // **Known limitation — verb defaults to GET (documented asymmetry with Java).**
+  // OkHttp encodes the verb on a *sibling* call further down the builder chain
+  // (e.g. `.post(body)` / `.get()` / `.delete()`), not on `.url(...)` itself.
+  // This Kotlin query intentionally does not walk the chain to recover the
+  // verb — it emits `method: 'GET'` for every match, so a
+  // `Request.Builder().url("/x").post(body).build()` call becomes
+  // `http::GET::/x`, not `http::POST::/x`. NOTE: the Java plugin now DOES walk
+  // the chain (`inferOkHttpMethod` in java.ts), so `.java` and `.kt` currently
+  // diverge for the same shape; mirroring `inferOkHttpMethod` into this plugin
+  // (and adding an OkHttp row to the Java↔Kotlin parity harness) is the tracked
+  // follow-up. Pinned by an anti-overreach test in `http-route-extractor.test.ts`
+  // so the future Kotlin verb-walk has to update this comment in lockstep.
   const OK_HTTP_PATTERNS = compilePatterns({
     name: 'kotlin-okhttp',
     language,
