@@ -29,9 +29,8 @@ import {
 } from './spring-consumer-shared.js';
 import {
   extractStaticPathExpression,
-  methodInvocationName,
-  methodInvocationObject,
-  firstLiteralArgument,
+  inferOkHttpMethod,
+  inferHttpClientMethod,
 } from './java-static-path.js';
 import type {
   HttpDetection,
@@ -300,6 +299,18 @@ const OK_HTTP_PATTERNS = compilePatterns({
   ],
 } satisfies LanguagePatterns<Record<string, never>>);
 
+// Anchor on the `HttpRequest.newBuilder().uri(URI.create("..."))` core only,
+// capturing the `.uri(...)` call as `@call`. The verb (a `.GET()/.POST()/.PUT()/`
+// `.DELETE()/.HEAD()` helper, a `.method("VERB", body)` literal, or the bare-build
+// default) lives on a sibling call further UP the chain and is recovered by
+// `inferHttpClientMethod` walking up from `@call` — exactly like OkHttp's
+// `@call` + `inferOkHttpMethod`. One `.uri(...)` per chain = one match; the walk
+// is transparent to intervening `.header()/.timeout()/.version()` calls AFTER
+// `.uri()`, so a header/timeout hop before the terminal no longer drops the
+// contract. (A call BEFORE `.uri()` — `.version(V).uri(...)` — is outside this
+// root and stays unmatched, a separate pre-existing limitation; see OK_HTTP
+// PATTERNS comment for the OkHttp dual.) Matching `.uri(...)` regardless of a
+// trailing `.build()` mirrors the accepted OkHttp over-match posture.
 const JAVA_HTTP_CLIENT_PATTERNS = compilePatterns({
   name: 'java-http-client',
   language: Java,
@@ -309,76 +320,15 @@ const JAVA_HTTP_CLIENT_PATTERNS = compilePatterns({
       query: `
         (method_invocation
           object: (method_invocation
-            object: (method_invocation
-              object: (identifier) @builderCls (#eq? @builderCls "HttpRequest")
-              name: (identifier) @newBuilder (#eq? @newBuilder "newBuilder")
-              arguments: (argument_list))
-            name: (identifier) @uri_method (#eq? @uri_method "uri")
-            arguments: (argument_list
-              (method_invocation
-                object: (identifier) @uriCls (#eq? @uriCls "URI")
-                name: (identifier) @create (#eq? @create "create")
-                arguments: (argument_list . (string_literal) @path))))
-          name: (identifier) @http_method (#match? @http_method "^(GET|POST|PUT|DELETE|HEAD)$"))
-      `,
-    },
-  ],
-} satisfies LanguagePatterns<Record<string, never>>);
-
-// Generic verb form: `HttpRequest.newBuilder().uri(URI.create("...")).method("VERB", body)`.
-// Covers PATCH and any other verb the dedicated helpers don't expose. Terminates
-// at `.method(...)`, so it never overlaps the verb-helper or default-GET families.
-const JAVA_HTTP_CLIENT_METHOD_PATTERNS = compilePatterns({
-  name: 'java-http-client-method',
-  language: Java,
-  patterns: [
-    {
-      meta: {},
-      query: `
-        (method_invocation
-          object: (method_invocation
-            object: (method_invocation
-              object: (identifier) @builderCls (#eq? @builderCls "HttpRequest")
-              name: (identifier) @newBuilder (#eq? @newBuilder "newBuilder")
-              arguments: (argument_list))
-            name: (identifier) @uri_method (#eq? @uri_method "uri")
-            arguments: (argument_list
-              (method_invocation
-                object: (identifier) @uriCls (#eq? @uriCls "URI")
-                name: (identifier) @create (#eq? @create "create")
-                arguments: (argument_list . (string_literal) @path))))
-          name: (identifier) @method (#eq? @method "method")
-          arguments: (argument_list . (string_literal) @http_method))
-      `,
-    },
-  ],
-} satisfies LanguagePatterns<Record<string, never>>);
-
-// Default GET form: `HttpRequest.newBuilder().uri(URI.create("...")).build()` with
-// no verb helper between `.uri(...)` and `.build()`. The `.build()` object must be
-// the `.uri(...)` call DIRECTLY, so a chain carrying a verb helper or `.method(...)`
-// does not also match here.
-const JAVA_HTTP_CLIENT_DEFAULT_GET_PATTERNS = compilePatterns({
-  name: 'java-http-client-default-get',
-  language: Java,
-  patterns: [
-    {
-      meta: {},
-      query: `
-        (method_invocation
-          object: (method_invocation
-            object: (method_invocation
-              object: (identifier) @builderCls (#eq? @builderCls "HttpRequest")
-              name: (identifier) @newBuilder (#eq? @newBuilder "newBuilder")
-              arguments: (argument_list))
-            name: (identifier) @uri_method (#eq? @uri_method "uri")
-            arguments: (argument_list
-              (method_invocation
-                object: (identifier) @uriCls (#eq? @uriCls "URI")
-                name: (identifier) @create (#eq? @create "create")
-                arguments: (argument_list . (string_literal) @path))))
-          name: (identifier) @build (#eq? @build "build")
-          arguments: (argument_list))
+            object: (identifier) @builderCls (#eq? @builderCls "HttpRequest")
+            name: (identifier) @newBuilder (#eq? @newBuilder "newBuilder")
+            arguments: (argument_list))
+          name: (identifier) @uri_method (#eq? @uri_method "uri")
+          arguments: (argument_list
+            (method_invocation
+              object: (identifier) @uriCls (#eq? @uriCls "URI")
+              name: (identifier) @create (#eq? @create "create")
+              arguments: (argument_list . (string_literal) @path)))) @call
       `,
     },
   ],
@@ -456,34 +406,9 @@ function hasAnnotation(node: Parser.SyntaxNode, names: string | readonly string[
 }
 
 // The statically-resolvable consumer path helpers (URI.create /
-// UriComponentsBuilder resolution) live in ./java-static-path.ts (#2268), shared
-// with the RestTemplate loops and inferOkHttpMethod below.
-
-/**
- * Infer an OkHttp request verb by walking UP the builder chain from the matched
- * `.url(...)` call: the first `.get()/.head()/.post()/.put()/.delete()/.patch()`
- * helper, or a `.method("VERB", …)` literal, wins. Returns `'GET'` only when the
- * chain has NO verb call at all (a bare `.url(...).build()` — OkHttp's real
- * default). Returns `null` for an explicit `.method(verb, …)` whose verb is a
- * non-literal: the verb is set but not statically resolvable, so the caller
- * skips the call rather than asserting a wrong GET (parity with the WebClient
- * long-form variable-bound-verb behavior, which also skips).
- */
-function inferOkHttpMethod(urlCall: Parser.SyntaxNode): string | null {
-  let cur: Parser.SyntaxNode = urlCall;
-  let parent = cur.parent;
-  while (parent?.type === 'method_invocation' && methodInvocationObject(parent)?.id === cur.id) {
-    const name = methodInvocationName(parent);
-    if (name && ['get', 'head', 'post', 'put', 'delete', 'patch'].includes(name))
-      return name.toUpperCase();
-    // Explicit `.method(...)`: a string-literal verb resolves; a non-literal
-    // (variable-bound) verb is unresolvable → null (skip), NOT a guessed GET.
-    if (name === 'method') return firstLiteralArgument(parent)?.toUpperCase() ?? null;
-    cur = parent;
-    parent = parent.parent;
-  }
-  return 'GET';
-}
+// UriComponentsBuilder resolution) and the OkHttp / HttpClient builder verb-walks
+// (`inferOkHttpMethod` / `inferHttpClientMethod`) live in ./java-static-path.ts
+// (#2268), shared with the RestTemplate, OkHttp, and HttpClient consumer loops.
 
 interface MethodRouteAnnotation {
   methodNode: Parser.SyntaxNode;
@@ -934,56 +859,26 @@ export const JAVA_HTTP_PLUGIN: HttpLanguagePlugin = {
     }
 
     // ─── Consumers: Java HttpClient request builder ─────────────────
-    // The standard builder exposes GET/POST/PUT/DELETE/HEAD verb helpers
-    // (JAVA_HTTP_CLIENT_PATTERNS). Other verbs — incl. PATCH — use the generic
-    // `.method("VERB", body)` form (JAVA_HTTP_CLIENT_METHOD_PATTERNS); a
-    // `.build()` with no verb helper defaults to GET
-    // (JAVA_HTTP_CLIENT_DEFAULT_GET_PATTERNS). The three families terminate at
-    // different calls (verb helper / `.method` / `.build` whose object is the
-    // `.uri(...)` call directly), so a chain matches exactly one — no double-emit.
-    // A variable-bound `.method(verb, …)` stays unresolved (string literal only).
+    // One query matches the `HttpRequest.newBuilder().uri(URI.create("..."))`
+    // core (capturing the `.uri(...)` call as `@call`); `inferHttpClientMethod`
+    // walks UP the chain for the verb — a `.GET()/.POST()/.PUT()/.DELETE()/`
+    // `.HEAD()` helper, a `.method("VERB", body)` literal, or the bare-build
+    // default GET. The up-walk is transparent to intervening `.header()/`
+    // `.timeout()/.version()` calls, so a header/timeout hop before the terminal
+    // is no longer dropped. A variable-bound `.method(verb, …)` is unresolvable →
+    // emit nothing rather than a wrong GET. Mirrors the OkHttp loop above.
     for (const match of runCompiledPatterns(JAVA_HTTP_CLIENT_PATTERNS, tree)) {
-      const httpMethodNode = match.captures.http_method;
+      const callNode = match.captures.call;
       const pathNode = match.captures.path;
-      if (!httpMethodNode || !pathNode) continue;
+      if (!callNode || !pathNode) continue;
       const path = unquoteLiteral(pathNode.text);
       if (path === null) continue;
+      const method = inferHttpClientMethod(callNode);
+      if (method === null) continue;
       out.push({
         role: 'consumer',
         framework: 'java-http-client',
-        method: httpMethodNode.text.toUpperCase(),
-        path,
-        name: null,
-        confidence: 0.65,
-      });
-    }
-
-    for (const match of runCompiledPatterns(JAVA_HTTP_CLIENT_METHOD_PATTERNS, tree)) {
-      const httpMethodNode = match.captures.http_method;
-      const pathNode = match.captures.path;
-      if (!httpMethodNode || !pathNode) continue;
-      const httpMethod = unquoteLiteral(httpMethodNode.text);
-      const path = unquoteLiteral(pathNode.text);
-      if (httpMethod === null || path === null) continue;
-      out.push({
-        role: 'consumer',
-        framework: 'java-http-client',
-        method: httpMethod.toUpperCase(),
-        path,
-        name: null,
-        confidence: 0.65,
-      });
-    }
-
-    for (const match of runCompiledPatterns(JAVA_HTTP_CLIENT_DEFAULT_GET_PATTERNS, tree)) {
-      const pathNode = match.captures.path;
-      if (!pathNode) continue;
-      const path = unquoteLiteral(pathNode.text);
-      if (path === null) continue;
-      out.push({
-        role: 'consumer',
-        framework: 'java-http-client',
-        method: 'GET',
+        method,
         path,
         name: null,
         confidence: 0.65,

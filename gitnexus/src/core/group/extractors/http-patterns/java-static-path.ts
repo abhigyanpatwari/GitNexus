@@ -1,21 +1,25 @@
 import Parser from 'tree-sitter';
 import { unquoteLiteral } from '../tree-sitter-scanner.js';
 
-// ─── Statically-resolvable consumer path helpers ──────────────────────
+// ─── Statically-resolvable consumer path + builder verb-walk helpers ──────
 // RestTemplate calls increasingly pass a non-literal path argument that is
 // still statically derivable — `URI.create("/x")` or a `UriComponentsBuilder`
 // fluent chain. These helpers resolve those shapes to a literal path; a
 // genuinely dynamic argument (a variable, a non-`URI`/`UriComponentsBuilder`
-// call) resolves to null and the call site is skipped. Extracted from java.ts
-// (#2268) so that plugin stays under ~1000 lines; the only consumers are
-// java.ts's RestTemplate loops (extractStaticPathExpression) and inferOkHttpMethod
-// (the methodInvocation* primitives + firstLiteralArgument).
+// call) resolves to null and the call site is skipped. This module also owns
+// the OkHttp / Java-HttpClient builder verb-walks (`inferOkHttpMethod` /
+// `inferHttpClientMethod`), which recover the request verb by walking UP the
+// fluent chain from the matched `.url(...)` / `.uri(...)` call. Extracted from
+// java.ts (#2268) so that plugin stays under ~1000 lines; the `methodInvocation*`
+// primitives + `firstLiteralArgument` are module-internal (shared by the path
+// resolvers and the verb-walks), while the path resolver and the two verb-walks
+// are java.ts's only entry points here.
 
-export function methodInvocationName(node: Parser.SyntaxNode): string | null {
+function methodInvocationName(node: Parser.SyntaxNode): string | null {
   return node.type === 'method_invocation' ? (node.childForFieldName('name')?.text ?? null) : null;
 }
 
-export function methodInvocationObject(node: Parser.SyntaxNode): Parser.SyntaxNode | null {
+function methodInvocationObject(node: Parser.SyntaxNode): Parser.SyntaxNode | null {
   return node.type === 'method_invocation' ? node.childForFieldName('object') : null;
 }
 
@@ -24,7 +28,7 @@ function methodInvocationArguments(node: Parser.SyntaxNode): Parser.SyntaxNode[]
   return argsNode?.namedChildren ?? [];
 }
 
-export function firstLiteralArgument(node: Parser.SyntaxNode): string | null {
+function firstLiteralArgument(node: Parser.SyntaxNode): string | null {
   const first = methodInvocationArguments(node)[0];
   return first?.type === 'string_literal' ? unquoteLiteral(first.text) : null;
 }
@@ -120,4 +124,70 @@ function extractUriComponentsBuilderPath(node: Parser.SyntaxNode, depth = 0): st
 export function extractStaticPathExpression(node: Parser.SyntaxNode): string | null {
   if (node.type === 'string_literal') return unquoteLiteral(node.text);
   return extractUriCreatePath(node) ?? extractUriComponentsBuilderPath(node);
+}
+
+// ─── Builder verb-walks ───────────────────────────────────────────────
+// OkHttp / Java-HttpClient encode the request verb on a SIBLING call further up
+// the fluent chain, not on the matched path call. Both queries capture the path
+// call (`.url(...)` / `.uri(...)`); these helpers recover the verb by walking UP
+// the chain — transparent to neutral intervening calls (`.addHeader()`,
+// `.header()`, `.timeout()`, `.version()`), which is what lets a header/timeout
+// hop between the path call and the terminal still resolve correctly.
+
+/** Walk up the fluent chain from `pathCall`, returning the verb a `name`-matching
+ *  helper or a `.method("LITERAL")` call sets. `null` means "verb is set but not
+ *  statically resolvable" (a non-literal `.method(verb)`) → the caller skips
+ *  rather than guessing. `defaultVerb` is returned only when the walk reaches the
+ *  chain top with no verb call (a bare build). `verbHelpers` are matched on the
+ *  method NAME (OkHttp helpers are lowercase, HttpClient helpers uppercase). */
+function inferBuilderVerb(
+  pathCall: Parser.SyntaxNode,
+  verbHelpers: readonly string[],
+  defaultVerb: string,
+): string | null {
+  let cur: Parser.SyntaxNode = pathCall;
+  let parent = cur.parent;
+  while (parent?.type === 'method_invocation' && methodInvocationObject(parent)?.id === cur.id) {
+    const name = methodInvocationName(parent);
+    if (name && verbHelpers.includes(name)) return name.toUpperCase();
+    // Explicit `.method(...)`: a string-literal verb resolves; a non-literal
+    // (variable-bound) verb is unresolvable → null (skip), NOT a guessed default.
+    if (name === 'method') return firstLiteralArgument(parent)?.toUpperCase() ?? null;
+    cur = parent;
+    parent = parent.parent;
+  }
+  return defaultVerb;
+}
+
+const OK_HTTP_VERB_HELPERS = ['get', 'head', 'post', 'put', 'delete', 'patch'] as const;
+const HTTP_CLIENT_VERB_HELPERS = ['GET', 'POST', 'PUT', 'DELETE', 'HEAD'] as const;
+
+/**
+ * Infer an OkHttp request verb by walking UP the builder chain from the matched
+ * `.url(...)` call: the first `.get()/.head()/.post()/.put()/.delete()/.patch()`
+ * helper, or a `.method("VERB", …)` literal, wins. Returns `'GET'` only when the
+ * chain has NO verb call at all (a bare `.url(...).build()` — OkHttp's real
+ * default). Returns `null` for an explicit `.method(verb, …)` whose verb is a
+ * non-literal: the verb is set but not statically resolvable, so the caller
+ * skips the call rather than asserting a wrong GET (parity with the WebClient
+ * long-form variable-bound-verb behavior, which also skips).
+ */
+export function inferOkHttpMethod(urlCall: Parser.SyntaxNode): string | null {
+  return inferBuilderVerb(urlCall, OK_HTTP_VERB_HELPERS, 'GET');
+}
+
+/**
+ * Infer a Java-`HttpClient` request verb by walking UP the builder chain from the
+ * matched `.uri(URI.create("..."))` call: the first `.GET()/.POST()/.PUT()/`
+ * `.DELETE()/.HEAD()` verb-helper, or a `.method("VERB", body)` literal, wins.
+ * Returns `'GET'` only when the chain has no verb call (a bare `.build()` — the
+ * builder's real default). Returns `null` for an explicit `.method(verb, …)` with
+ * a non-literal verb (skip, not a guessed GET). The walk is transparent to
+ * intervening neutral calls AFTER `.uri()` (`.header()`/`.timeout()`/`.version()`),
+ * so a header/timeout hop before the terminal no longer drops the contract.
+ * (A call BEFORE `.uri()` is outside the query root and is a separate,
+ * pre-existing limitation — see java.ts OK_HTTP_PATTERNS comment.)
+ */
+export function inferHttpClientMethod(uriCall: Parser.SyntaxNode): string | null {
+  return inferBuilderVerb(uriCall, HTTP_CLIENT_VERB_HELPERS, 'GET');
 }

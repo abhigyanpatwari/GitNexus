@@ -2847,6 +2847,64 @@ class HttpClientVerbs {
       expect(hc.every((c) => c.confidence === 0.65)).toBe(true);
     });
 
+    it('extracts Java HttpClient verbs across intervening builder calls (#2268)', async () => {
+      // The verb-walk is transparent to neutral calls AFTER `.uri(...)`, so a
+      // `.header()`/`.timeout()` hop before the terminal no longer drops the
+      // contract. Each verb-producing branch gets a DISTINCT non-numeric path so
+      // the set-equality assertion cannot mask a branch. A call BEFORE `.uri()`,
+      // a constructor-arg `newBuilder(uri)`, and a non-literal `.uri()` arg are
+      // documented misses (must NOT extract).
+      const dir = path.join(tmpDir, 'java-http-client-intervening');
+      fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'src', 'HttpClientIntervening.java'),
+        `
+import java.net.URI;
+import java.net.http.HttpRequest;
+import java.net.http.HttpClient;
+import java.time.Duration;
+
+class HttpClientIntervening {
+  void run(URI uriVar, Duration dur, HttpClient.Version ver, HttpRequest.BodyPublisher body) throws Exception {
+    // Intervening calls AFTER .uri() — header/timeout transparent to the verb-walk.
+    HttpRequest a = HttpRequest.newBuilder().uri(URI.create("/api/hdr")).header("Accept", "application/json").build();
+    HttpRequest b = HttpRequest.newBuilder().uri(URI.create("/api/tmo")).timeout(dur).method("PUT", body).build();
+    HttpRequest c = HttpRequest.newBuilder().uri(URI.create("/api/hdr-verb")).header("X", "y").DELETE().build();
+    // Verb helper BEFORE an intervening call (walk does not stop at the first non-verb).
+    HttpRequest d = HttpRequest.newBuilder().uri(URI.create("/api/verb-then-hdr")).POST(body).header("X", "y").build();
+    // Unbuilt .uri() — no .build(); over-match emits the default GET (mirrors OkHttp).
+    HttpRequest.Builder e = HttpRequest.newBuilder().uri(URI.create("/api/unbuilt"));
+    // Documented misses (must NOT extract):
+    HttpRequest f = HttpRequest.newBuilder().version(ver).uri(URI.create("/api/pre-uri")).build(); // call before .uri()
+    HttpRequest g = HttpRequest.newBuilder(URI.create("/api/ctor")).build(); // constructor-arg, no .uri()
+    HttpRequest h = HttpRequest.newBuilder().uri(uriVar).build(); // non-literal .uri() arg
+  }
+}
+`,
+      );
+
+      const contracts = await extractor.extract(null, dir, makeRepo(dir));
+      const hc = contracts.filter(
+        (c) =>
+          c.role === 'consumer' &&
+          c.meta.framework === 'java-http-client' &&
+          c.symbolRef.filePath.endsWith('HttpClientIntervening.java'),
+      );
+
+      // Exactly the five resolvable chains; the three documented misses
+      // (`/api/pre-uri`, `/api/ctor`, the non-literal `.uri()`) contribute nothing.
+      expect(new Set(hc.map((c) => c.contractId))).toEqual(
+        new Set([
+          'http::GET::/api/hdr',
+          'http::PUT::/api/tmo',
+          'http::DELETE::/api/hdr-verb',
+          'http::POST::/api/verb-then-hdr',
+          'http::GET::/api/unbuilt',
+        ]),
+      );
+      expect(hc.every((c) => c.confidence === 0.65)).toBe(true);
+    });
+
     // ─── Kotlin consumers (RestTemplate / WebClient short+long / OkHttp) ──
     // Same shape as the Java consumer test above, but parsed by the
     // tree-sitter-kotlin grammar via `KOTLIN_HTTP_PLUGIN`. Four
