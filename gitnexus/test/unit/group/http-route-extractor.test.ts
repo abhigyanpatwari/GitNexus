@@ -1924,7 +1924,7 @@ class OkHttpVerbs {
     new Request.Builder().url("/api/orders/1").put(body).build();
     new Request.Builder().url("/api/orders/2").delete().build();
     new Request.Builder().url("/api/orders/3").method("PATCH", body).build();
-    new Request.Builder().url("/api/orders/4").build();
+    new Request.Builder().url("/api/bare-build").build();
     new Request.Builder().url("/api/orders/5").method(verb, body).build();
   }
 }
@@ -1939,12 +1939,16 @@ class OkHttpVerbs {
           c.symbolRef.filePath.endsWith('OkHttpVerbs.java'),
       );
 
-      // Exact set-equality pin: explicit verbs resolve; `.build()` with no verb
-      // (orders/4) AND the variable-bound `.method(verb, body)` (orders/5) both
-      // default to GET — no over-emit, no verb invented from the `verb` variable.
-      // Numeric segments normalize to {param}, collapsing same-verb paths.
+      // The bare `.build()` with no verb call gets its OWN path (`/api/bare-build`)
+      // so the default-GET branch of inferOkHttpMethod is pinned independently and
+      // can't be masked by the explicit `.get()` case collapsing into the same
+      // `{param}` slot. Explicit verbs resolve; numeric segments normalize to
+      // {param}. (orders/5's variable-bound `.method(verb)` still defaults to GET
+      // here — its behavior is changed and pinned distinctly in the next commit.)
+      expect(okhttp.find((c) => c.contractId === 'http::GET::/api/bare-build')).toBeDefined();
       expect(new Set(okhttp.map((c) => c.contractId))).toEqual(
         new Set([
+          'http::GET::/api/bare-build',
           'http::GET::/api/orders/{param}',
           'http::POST::/api/orders',
           'http::PUT::/api/orders/{param}',
