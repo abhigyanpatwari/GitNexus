@@ -88,7 +88,15 @@ function extractUriComponentsBuilderPath(node: Parser.SyntaxNode, depth = 0): st
   if (name === 'path') {
     const base = extractUriComponentsBuilderPath(objectNode, depth + 1);
     const subPath = firstLiteralArgument(node);
-    return base !== null && subPath !== null ? appendPath(base, subPath) : null;
+    if (base === null || subPath === null) return null;
+    // Spring `UriComponentsBuilder.path(p)` appends `p` VERBATIM (no slash
+    // inserted — unlike `pathSegment`, which slash-joins), then normalizes the
+    // full path to collapse duplicate slashes. So `fromPath("/api").path("users")`
+    // → `/apiusers`, while `.path("/users")` → `/api/users`, and a trailing-slash
+    // base collapses (`/api/` + `/users` → `/api/users`). The `(?<!:)` keeps a
+    // scheme `://` in a host seed intact; the downstream normalizer is the other
+    // slash-collapser for consumer paths (see KTD2 — do not remove it).
+    return (base + subPath).replace(/(?<!:)\/{2,}/g, '/');
   }
   if (name === 'pathSegment') {
     const base = extractUriComponentsBuilderPath(objectNode, depth + 1);

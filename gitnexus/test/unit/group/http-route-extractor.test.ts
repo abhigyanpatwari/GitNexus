@@ -1939,6 +1939,52 @@ class QuerySeedClient {
       expect(consumers.find((c) => c.contractId === 'http::GET::/api/y')).toBeDefined();
     });
 
+    it('appends UriComponentsBuilder .path() verbatim per Spring semantics (#2268)', async () => {
+      // Spring `.path(p)` appends `p` as-is (no slash inserted) then collapses
+      // duplicate slashes — unlike `.pathSegment`, which slash-joins. So a
+      // no-leading-slash arg is NOT given a phantom slash, a leading-slash arg
+      // joins cleanly, a trailing-slash base collapses, and a host seed keeps its
+      // `://` until the downstream normalizer strips the host.
+      const dir = path.join(tmpDir, 'java-rest-template-builder-path');
+      fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'src', 'PathClient.java'),
+        `
+import org.springframework.web.client.RestTemplate;
+import org.springframework.web.util.UriComponentsBuilder;
+
+class PathClient {
+  void run(RestTemplate restTemplate) {
+    restTemplate.getForObject(UriComponentsBuilder.fromPath("/api").path("noslash").build().toUriString(), String.class);
+    restTemplate.getForObject(UriComponentsBuilder.fromPath("/svc").path("/withslash").build().toUriString(), String.class);
+    restTemplate.getForObject(UriComponentsBuilder.fromPath("/trail/").path("/seg").build().toUriString(), String.class);
+    restTemplate.getForObject(UriComponentsBuilder.fromPath("/first-").path("value/").path("/end").build().toUriString(), String.class);
+    restTemplate.getForObject(UriComponentsBuilder.fromHttpUrl("https://example.com/api").path("/ext").build().toUriString(), String.class);
+    restTemplate.getForObject(UriComponentsBuilder.fromPath("/empty").path("").build().toUriString(), String.class);
+  }
+}
+`,
+      );
+
+      const contracts = await extractor.extract(null, dir, makeRepo(dir));
+      const fromFile = contracts.filter(
+        (c) => c.role === 'consumer' && c.symbolRef.filePath.endsWith('PathClient.java'),
+      );
+
+      // Exactly these six — no phantom slash on the no-leading-slash arg, no
+      // double slash from the trailing-slash base, no `://` corruption.
+      expect(new Set(fromFile.map((c) => c.contractId))).toEqual(
+        new Set([
+          'http::GET::/apinoslash', // fromPath("/api").path("noslash") — verbatim, no slash
+          'http::GET::/svc/withslash', // leading-slash arg joins cleanly
+          'http::GET::/trail/seg', // trailing-slash base collapses
+          'http::GET::/first-value/end', // value/ + /end → one slash
+          'http::GET::/api/ext', // host seed: `://` kept, host stripped downstream
+          'http::GET::/empty', // empty .path("") is a no-op
+        ]),
+      );
+    });
+
     it('does not overflow on a pathological UriComponentsBuilder chain (#2268)', async () => {
       const dir = path.join(tmpDir, 'java-rest-template-builder-deep');
       fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
