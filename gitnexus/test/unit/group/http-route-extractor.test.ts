@@ -2913,8 +2913,8 @@ class OkClient(private val client: OkHttpClient) {
         // verb (`inferOkHttpMethod` in java.ts). The Kotlin plugin
         // (`kotlin.ts:OK_HTTP_PATTERNS`) does NOT yet — it still emits
         // `method: 'GET'` for every match. So a polyglot repo currently emits
-        // `http::POST::/api/users` from a `.kt` source's sibling `.post()` and
-        // `http::GET::/api/users` from the same shape in `.java`. This is a
+        // `http::POST::/api/users` from a `.java` source's sibling `.post()` and
+        // `http::GET::/api/users` from the same shape in `.kt`. This is a
         // tracked, accepted gap; the follow-up is to mirror `inferOkHttpMethod`
         // into kotlin.ts (and add an OkHttp row to the Java↔Kotlin parity
         // harness once the two sides agree).
