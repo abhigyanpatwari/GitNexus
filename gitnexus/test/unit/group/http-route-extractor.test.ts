@@ -1937,6 +1937,42 @@ class QuerySeedClient {
       expect(consumers.find((c) => c.contractId === 'http::GET::/base/sub')).toBeDefined();
       // Host + query seed: query stripped at the seed, host stripped downstream.
       expect(consumers.find((c) => c.contractId === 'http::GET::/api/y')).toBeDefined();
+      // Count guard: exactly the two resolvable chains. A regression that
+      // double-emitted (e.g. both /base and /base/sub) would slip past the two
+      // `find` assertions above without this.
+      expect(
+        consumers.filter((c) => c.symbolRef.filePath.endsWith('QuerySeedClient.java')),
+      ).toHaveLength(2);
+    });
+
+    it('resolves a UriComponentsBuilder argument passed to restTemplate.exchange (#2268)', async () => {
+      // The exchange() path capture was widened to `(_) @path` alongside the
+      // plain RestTemplate loop, but was only covered with URI.create. Pin that a
+      // UriComponentsBuilder chain through exchange() also resolves end-to-end.
+      const dir = path.join(tmpDir, 'java-rest-template-exchange-builder');
+      fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'src', 'ExchangeBuilderClient.java'),
+        `
+import org.springframework.http.HttpMethod;
+import org.springframework.web.client.RestTemplate;
+import org.springframework.web.util.UriComponentsBuilder;
+
+class ExchangeBuilderClient {
+  void run(RestTemplate restTemplate) {
+    restTemplate.exchange(
+        UriComponentsBuilder.fromPath("/api").path("/exchange-users").build().toUriString(),
+        HttpMethod.PUT, null, String.class);
+  }
+}
+`,
+      );
+
+      const contracts = await extractor.extract(null, dir, makeRepo(dir));
+      const consumers = contracts.filter((c) => c.role === 'consumer');
+      expect(
+        consumers.find((c) => c.contractId === 'http::PUT::/api/exchange-users'),
+      ).toBeDefined();
     });
 
     it('appends UriComponentsBuilder .path() verbatim per Spring semantics (#2268)', async () => {
@@ -2982,6 +3018,35 @@ class HttpClientIntervening {
         ]),
       );
       expect(hc.every((c) => c.confidence === 0.65)).toBe(true);
+    });
+
+    it('passes through a non-standard HttpClient .method("VERB") verb (#2268)', async () => {
+      // A custom verb literal passes through (uppercased), matching the OkHttp
+      // .method() precedent — the verb-walk does not restrict to known verbs.
+      const dir = path.join(tmpDir, 'java-http-client-custom-verb');
+      fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'src', 'CustomVerb.java'),
+        `
+import java.net.URI;
+import java.net.http.HttpRequest;
+
+class CustomVerb {
+  void run(HttpRequest.BodyPublisher body) throws Exception {
+    HttpRequest r = HttpRequest.newBuilder().uri(URI.create("/api/report")).method("REPORT", body).build();
+  }
+}
+`,
+      );
+
+      const contracts = await extractor.extract(null, dir, makeRepo(dir));
+      const hc = contracts.filter(
+        (c) =>
+          c.role === 'consumer' &&
+          c.meta.framework === 'java-http-client' &&
+          c.symbolRef.filePath.endsWith('CustomVerb.java'),
+      );
+      expect(new Set(hc.map((c) => c.contractId))).toEqual(new Set(['http::REPORT::/api/report']));
     });
 
     // ─── Kotlin consumers (RestTemplate / WebClient short+long / OkHttp) ──
