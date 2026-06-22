@@ -510,8 +510,15 @@ function extractUriComponentsBuilderPath(node: Parser.SyntaxNode): string | null
   if (
     (name === 'fromPath' || name === 'fromUriString' || name === 'fromHttpUrl') &&
     objectNode?.text === 'UriComponentsBuilder'
-  )
-    return firstLiteralArgument(node);
+  ) {
+    // Strip any `?query` baked into the seed literal so a later `.path()` appends
+    // to a clean base; otherwise the sub-path is glued after the query
+    // (`/base?x=1/sub`) and normalizeHttpPath truncates the whole tail at `?`.
+    // A host prefix (`https://h/api`) is preserved and stripped downstream by
+    // normalizeConsumerPath.
+    const seed = firstLiteralArgument(node);
+    return seed === null ? null : seed.split('?')[0];
+  }
   if (!objectNode) return null;
   if (name === 'path') {
     const base = extractUriComponentsBuilderPath(objectNode);

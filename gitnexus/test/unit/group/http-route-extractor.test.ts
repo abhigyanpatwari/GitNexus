@@ -1907,6 +1907,38 @@ class BuilderClient {
       ).toHaveLength(3);
     });
 
+    it('strips a query string baked into a UriComponentsBuilder seed (#2268)', async () => {
+      const dir = path.join(tmpDir, 'java-rest-template-builder-query-seed');
+      fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'src', 'QuerySeedClient.java'),
+        `
+import org.springframework.web.client.RestTemplate;
+import org.springframework.web.util.UriComponentsBuilder;
+
+class QuerySeedClient {
+  void run(RestTemplate restTemplate) {
+    restTemplate.getForObject(
+        UriComponentsBuilder.fromUriString("/base?x=1").path("/sub").build().toUriString(),
+        String.class);
+    restTemplate.getForObject(
+        UriComponentsBuilder.fromHttpUrl("https://example.com/api?x=1").path("/y").build().toUriString(),
+        String.class);
+  }
+}
+`,
+      );
+
+      const contracts = await extractor.extract(null, dir, makeRepo(dir));
+      const consumers = contracts.filter((c) => c.role === 'consumer');
+
+      // Query in the seed must NOT swallow the later .path() segment:
+      // fromUriString("/base?x=1").path("/sub") → /base/sub (was /base before the fix).
+      expect(consumers.find((c) => c.contractId === 'http::GET::/base/sub')).toBeDefined();
+      // Host + query seed: query stripped at the seed, host stripped downstream.
+      expect(consumers.find((c) => c.contractId === 'http::GET::/api/y')).toBeDefined();
+    });
+
     it('infers Java OkHttp verbs from sibling Request.Builder calls', async () => {
       const dir = path.join(tmpDir, 'java-okhttp-verbs');
       fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
