@@ -2069,6 +2069,39 @@ class OkHttpVerbs {
       expect(okhttp.every((c) => c.confidence === 0.7)).toBe(true);
     });
 
+    it('does not emit a contract for an empty-string verb literal (#2268)', async () => {
+      // `.method("", body)` is an explicit-but-unresolvable verb — `unquoteLiteral`
+      // returns "" (not null), so the falsiness guard must skip it rather than
+      // emit a malformed `http::::/path` contract or a guessed GET. Covers both
+      // the OkHttp and Java-HttpClient verb-walks (shared `inferBuilderVerb`).
+      const dir = path.join(tmpDir, 'java-empty-verb');
+      fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'src', 'EmptyVerb.java'),
+        `
+import java.net.URI;
+import java.net.http.HttpRequest;
+import okhttp3.Request;
+import okhttp3.RequestBody;
+
+class EmptyVerb {
+  void run(RequestBody body) throws Exception {
+    new Request.Builder().url("/api/okhttp-empty").method("", body).build();
+    HttpRequest hc = HttpRequest.newBuilder().uri(URI.create("/api/hc-empty")).method("", body).build();
+  }
+}
+`,
+      );
+
+      const contracts = await extractor.extract(null, dir, makeRepo(dir));
+      const fromFile = contracts.filter(
+        (c) => c.role === 'consumer' && c.symbolRef.filePath.endsWith('EmptyVerb.java'),
+      );
+
+      // No contract at all — neither a malformed empty-method id nor a guessed GET.
+      expect(fromFile.map((c) => c.contractId)).toEqual([]);
+    });
+
     it('extracts Java WebClient long-form method(HttpMethod.X).uri(...) — #2254 parity', async () => {
       // Parity with the Kotlin plugin: a single structural query matches the
       // verb (HttpMethod.X field access) and path. Previously deferred on the

@@ -158,9 +158,13 @@ function inferBuilderVerb(
   while (parent?.type === 'method_invocation' && methodInvocationObject(parent)?.id === cur.id) {
     const name = methodInvocationName(parent);
     if (name && verbHelpers.includes(name)) return name.toUpperCase();
-    // Explicit `.method(...)`: a string-literal verb resolves; a non-literal
-    // (variable-bound) verb is unresolvable → null (skip), NOT a guessed default.
-    if (name === 'method') return firstLiteralArgument(parent)?.toUpperCase() ?? null;
+    // Explicit `.method(...)`: a non-empty string-literal verb resolves; a
+    // non-literal (variable-bound) OR empty-string verb is unresolvable → null
+    // (skip), NOT a guessed default or a malformed empty-method contract.
+    if (name === 'method') {
+      const verb = firstLiteralArgument(parent);
+      return verb ? verb.toUpperCase() : null;
+    }
     cur = parent;
     parent = parent.parent;
   }

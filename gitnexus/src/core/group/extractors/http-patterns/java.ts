@@ -845,9 +845,10 @@ export const JAVA_HTTP_PLUGIN: HttpLanguagePlugin = {
       const path = unquoteLiteral(pathNode.text);
       if (path === null) continue;
       const method = inferOkHttpMethod(callNode);
-      // An explicit `.method(verb, …)` with a non-literal verb is unresolvable —
-      // emit nothing rather than a wrong GET.
-      if (method === null) continue;
+      // An explicit `.method(verb, …)` with a non-literal or empty verb is
+      // unresolvable (null) — emit nothing rather than a wrong GET or an empty
+      // `http::::/path` contract.
+      if (!method) continue;
       out.push({
         role: 'consumer',
         framework: 'okhttp',
@@ -874,7 +875,7 @@ export const JAVA_HTTP_PLUGIN: HttpLanguagePlugin = {
       const path = unquoteLiteral(pathNode.text);
       if (path === null) continue;
       const method = inferHttpClientMethod(callNode);
-      if (method === null) continue;
+      if (!method) continue;
       out.push({
         role: 'consumer',
         framework: 'java-http-client',
