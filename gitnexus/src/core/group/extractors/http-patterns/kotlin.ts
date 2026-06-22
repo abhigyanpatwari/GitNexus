@@ -131,6 +131,118 @@ const arrayOfArg = (cap: string): string => `(call_expression
   (simple_identifier) @arrayOf (#eq? @arrayOf "arrayOf")
   (call_suffix (value_arguments (value_argument (string_literal) ${cap}))))`;
 
+// ─── Kotlin OkHttp builder verb-walk (parity with java-static-path.ts) ──
+// Mirrors `inferOkHttpMethod`, adapted to the Kotlin grammar: a call `X.name(args)`
+// is a `call_expression` whose callee is a `navigation_expression` (receiver +
+// `navigation_suffix` → the method name) and whose `call_suffix` holds the
+// `value_arguments`. The chain is left-nested via `navigation_expression`, so we
+// walk UP from the matched `.url(...)` call to the sibling verb call (`.post()` /
+// `.method("X")`), exactly as the Java side does — so `.java` and `.kt` infer the
+// same verb for the same OkHttp shape.
+const OK_HTTP_VERB_HELPERS = ['get', 'head', 'post', 'put', 'delete', 'patch'];
+
+/** The method name a Kotlin `call_expression` invokes (its `navigation_suffix`). */
+function kotlinCallName(call: Parser.SyntaxNode): string | null {
+  const callee = call.namedChild(0);
+  if (callee?.type !== 'navigation_expression') return null;
+  for (let i = 0; i < callee.namedChildCount; i++) {
+    const child = callee.namedChild(i);
+    if (child?.type === 'navigation_suffix') return child.namedChild(0)?.text ?? null;
+  }
+  return null;
+}
+
+/** The first string-literal argument of a Kotlin `call_expression`, else null. */
+function kotlinFirstStringArg(call: Parser.SyntaxNode): string | null {
+  for (let i = 0; i < call.namedChildCount; i++) {
+    const callSuffix = call.namedChild(i);
+    if (callSuffix?.type !== 'call_suffix') continue;
+    for (let j = 0; j < callSuffix.namedChildCount; j++) {
+      const args = callSuffix.namedChild(j);
+      if (args?.type !== 'value_arguments') continue;
+      const firstArg = args.namedChild(0);
+      if (firstArg?.type !== 'value_argument') return null;
+      // Positional literal `"X"`, or named-argument `name = "X"` (the label is a
+      // leading `simple_identifier` and the literal follows). A non-literal value
+      // (a variable) → null → unresolvable.
+      const positional = firstArg.namedChild(0);
+      if (positional?.type === 'string_literal') return unquoteLiteral(positional.text);
+      const labeled = positional?.type === 'simple_identifier' ? firstArg.namedChild(1) : null;
+      return labeled?.type === 'string_literal' ? unquoteLiteral(labeled.text) : null;
+    }
+  }
+  return null;
+}
+
+/** The receiver expression a Kotlin `call_expression` is invoked on. */
+function kotlinReceiver(call: Parser.SyntaxNode): Parser.SyntaxNode | null {
+  const nav = call.namedChild(0);
+  return nav?.type === 'navigation_expression' ? nav.namedChild(0) : null;
+}
+
+/** The call that invokes a method ON `call` as its receiver — one hop up the chain. */
+function kotlinChainParentCall(call: Parser.SyntaxNode): Parser.SyntaxNode | null {
+  const nav = call.parent;
+  if (nav?.type !== 'navigation_expression' || nav.namedChild(0)?.id !== call.id) return null;
+  return nav.parent?.type === 'call_expression' ? nav.parent : null;
+}
+
+/** Every `call_expression` in the fluent chain `pathCall` belongs to, innermost
+ *  (next to the construction) → outermost. Lets the verb-walk find a verb call
+ *  wherever it sits relative to `.url(...)` — parity with java-static-path.ts
+ *  `builderChainCalls`. */
+function kotlinBuilderChainCalls(pathCall: Parser.SyntaxNode): Parser.SyntaxNode[] {
+  let innermost = pathCall;
+  let recv = kotlinReceiver(innermost);
+  while (recv?.type === 'call_expression') {
+    innermost = recv;
+    recv = kotlinReceiver(innermost);
+  }
+  const calls: Parser.SyntaxNode[] = [innermost];
+  let cur = innermost;
+  for (let next = kotlinChainParentCall(cur); next; next = kotlinChainParentCall(cur)) {
+    calls.push(next);
+    cur = next;
+  }
+  return calls;
+}
+
+/** True when `urlCall`'s receiver chain bottoms out on `Request.Builder()` — the
+ *  Kotlin anti-overreach gate (mirror of okHttpUrlRootsAtBuilder), so a `.url(...)`
+ *  on an unrelated object is rejected while a builder call before `.url()` is kept. */
+function kotlinUrlRootsAtRequestBuilder(urlCall: Parser.SyntaxNode): boolean {
+  let cur: Parser.SyntaxNode | null = kotlinReceiver(urlCall);
+  while (cur?.type === 'call_expression') {
+    const recv = kotlinReceiver(cur);
+    if (recv?.type === 'simple_identifier')
+      return recv.text === 'Request' && kotlinCallName(cur) === 'Builder';
+    cur = recv;
+  }
+  return false;
+}
+
+/** Infer the OkHttp verb by scanning the builder chain around the matched
+ *  `.url(...)` call — parity with java-static-path.ts `inferOkHttpMethod`. The
+ *  LAST verb call wins (runtime overwrite); `null` for an unresolvable
+ *  `.method(verb)` (non-literal/empty) so the caller skips; `'GET'` when the
+ *  chain has no verb call. */
+function inferKotlinOkHttpMethod(urlCall: Parser.SyntaxNode): string | null {
+  let lastVerbCall: Parser.SyntaxNode | null = null;
+  for (const call of kotlinBuilderChainCalls(urlCall)) {
+    if (call.id === urlCall.id) continue;
+    const name = kotlinCallName(call);
+    if (name === 'method' || (name !== null && OK_HTTP_VERB_HELPERS.includes(name)))
+      lastVerbCall = call;
+  }
+  if (lastVerbCall === null) return 'GET'; // no verb call → OkHttp default
+  const name = kotlinCallName(lastVerbCall);
+  if (name === 'method') {
+    const verb = kotlinFirstStringArg(lastVerbCall);
+    return verb ? verb.toUpperCase() : null;
+  }
+  return name === null ? 'GET' : name.toUpperCase();
+}
+
 /**
  * Build the plugin only if the Kotlin grammar is available. Compiling
  * the queries against a null grammar would throw at module load time
@@ -423,26 +535,25 @@ function buildKotlinPlugin(language: unknown): HttpLanguagePlugin {
   } satisfies LanguagePatterns<Record<string, never>>);
 
   // ─── Consumer: OkHttp Request.Builder().url("/x") ─────────────────────
-  // Kotlin parses `Request.Builder()` as a `call_expression` whose
-  // callee is a `navigation_expression` (Request → .Builder), NOT as
-  // Java's `object_creation_expression`. The chain `.url("/x")` then
-  // wraps that in another `call_expression`. The query mirrors Java's
-  // `OK_HTTP_PATTERNS` (java.ts) but adapts the node types.
+  // Full parity with the Java OkHttp extraction (java.ts + java-static-path.ts),
+  // adapted to the Kotlin grammar (a call is a `call_expression` whose callee is a
+  // `navigation_expression`, not Java's `object_creation_expression`):
   //
-  // Receiver `Request` is constrained by name (#eq? @cls); a project
-  // that imports OkHttp's `Request` under an alias (`import okhttp3.Request as OkRequest`)
-  // would not be picked up — this matches the Java plugin's heuristic.
+  //   • Match a bare `.url("literal")` call on ANY receiver (capture it as `@call`);
+  //     `kotlinUrlRootsAtRequestBuilder` (JS) then verifies the receiver chain
+  //     bottoms out on `Request.Builder()` — re-imposing the framework anchor while
+  //     allowing a builder call BEFORE `.url()` (`Request.Builder().addHeader(...)`
+  //     `.url(...)`) and rejecting a `.url(...)` on an unrelated object.
+  //   • `inferKotlinOkHttpMethod` scans the whole chain for the verb (`.post(body)`
+  //     / `.get()` / `.method("X")`, before or after `.url()`) — the mirror of
+  //     `inferOkHttpMethod`. So `Request.Builder().url("/x").post(body).build()`
+  //     becomes `http::POST::/x` on both `.java` and `.kt` (pinned by the Java↔Kotlin
+  //     parity harness). A variable-bound/empty `.method(verb)` is unresolvable →
+  //     the call is skipped (not a guessed GET), matching the Java side.
   //
-  // **Known limitation — verb defaults to GET.** OkHttp encodes the
-  // verb on a *sibling* call further down the builder chain (e.g.
-  // `.post(body)` / `.get()` / `.delete()`), not on `.url(...)` itself.
-  // This query intentionally does not walk the chain to recover the
-  // verb — it emits `method: 'GET'` for every match, mirroring
-  // `java.ts:OK_HTTP_PATTERNS`. So a `Request.Builder().url("/x").post(body).build()`
-  // call becomes `http::GET::/x`, not `http::POST::/x`. This is the
-  // same trade-off Java has accepted; pinned by an anti-overreach
-  // test in `http-route-extractor.test.ts` so a future verb-walk
-  // implementation has to update this comment in lockstep.
+  // Receiver `Request` is constrained by name (in the JS gate); a project that
+  // imports OkHttp's `Request` under an alias would not be picked up — matching the
+  // Java plugin's heuristic.
   const OK_HTTP_PATTERNS = compilePatterns({
     name: 'kotlin-okhttp',
     language,
@@ -452,14 +563,9 @@ function buildKotlinPlugin(language: unknown): HttpLanguagePlugin {
         query: `
           (call_expression
             (navigation_expression
-              (call_expression
-                (navigation_expression
-                  (simple_identifier) @cls (#eq? @cls "Request")
-                  (navigation_suffix (simple_identifier) @builder (#eq? @builder "Builder")))
-                (call_suffix (value_arguments)))
               (navigation_suffix (simple_identifier) @method (#eq? @method "url")))
             (call_suffix
-              (value_arguments . (value_argument . (string_literal) @path))))
+              (value_arguments . (value_argument . (string_literal) @path)))) @call
         `,
       },
     ],
@@ -983,15 +1089,23 @@ function buildKotlinPlugin(language: unknown): HttpLanguagePlugin {
       }
 
       // ─── Consumers: OkHttp Request.Builder().url("path") ────────────
+      // Gate to chains rooting at `Request.Builder()` (so a call before `.url()` is
+      // captured but an unrelated `.url()` is not), then recover the verb by scanning
+      // the chain (parity with Java); a variable-bound or empty `.method(verb)` is
+      // unresolvable → emit nothing rather than a GET.
       for (const match of runCompiledPatterns(OK_HTTP_PATTERNS, tree)) {
+        const callNode = match.captures.call;
         const pathNode = match.captures.path;
-        if (!pathNode) continue;
+        if (!callNode || !pathNode) continue;
+        if (!kotlinUrlRootsAtRequestBuilder(callNode)) continue;
         const path = unquoteLiteral(pathNode.text);
         if (path === null) continue;
+        const method = inferKotlinOkHttpMethod(callNode);
+        if (!method) continue;
         out.push({
           role: 'consumer',
           framework: 'okhttp',
-          method: 'GET',
+          method,
           path,
           name: null,
           confidence: 0.7,

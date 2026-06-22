@@ -27,6 +27,14 @@ import {
   REQUEST_LINE_CONFIDENCE,
   EXCHANGE_CONFIDENCE,
 } from './spring-consumer-shared.js';
+import {
+  extractStaticPathExpression,
+  inferOkHttpMethod,
+  inferHttpClientMethod,
+  okHttpUrlRootsAtBuilder,
+  httpClientUriRootsAtNewBuilder,
+  httpClientChainHasUriCall,
+} from './java-static-path.js';
 import type {
   HttpDetection,
   HttpFileDetections,
@@ -98,17 +106,15 @@ import type {
 // sidesteps that hazard entirely; all name/key discrimination lives in the
 // for-loop, where it reads as straight-line code.
 //
-// KNOWN LIMITATION — fully-qualified route annotations are not matched. `@ann`
-// binds `name: (identifier)`, but a FQN annotation (`@org.springframework…
-// GetMapping("/x")`) parses its name as a `scoped_identifier`, which this query
-// does not match, so its route is not extracted. (The class is still recognized
-// as a controller — `hasAnnotation` trailing-segment-matches the FQN — only the
-// route-string extraction is missed.) In practice annotations are imported and
-// written by simple name, so this is rare. It is a minor asymmetry with the
-// Kotlin plugin, whose grammar models a FQN as separate `type_identifier`
-// segments that its route queries DO match. Aligning Java would mean matching
-// `scoped_identifier` too; that is deferred to avoid re-keying existing Java
-// contracts via the predicate hazard above. Pinned by an anti-overreach test.
+// FULLY-QUALIFIED route annotations ARE matched. `@ann` binds either an
+// `identifier` (simple name) or a `scoped_identifier` (a FQN annotation such as
+// `@org.springframework…GetMapping("/x")`); the for-loop normalizes the name to
+// its trailing segment via `simpleName` before discriminating. This is a node-
+// type widening only — the query stays predicate-free, so it does NOT reintroduce
+// the bucket hazard above, and a simple name maps to itself so existing Java
+// contracts are unchanged (only previously-unmatched FQN annotations gain
+// routes). This brings Java to parity with the Kotlin plugin, whose grammar
+// already matches FQN route annotations.
 const JAVA_ROUTE_ANNOTATION_PATTERNS = compilePatterns({
   name: 'java-route-annotation',
   language: Java,
@@ -120,17 +126,17 @@ const JAVA_ROUTE_ANNOTATION_PATTERNS = compilePatterns({
           (class_declaration
             (modifiers
               (annotation
-                name: (identifier) @ann
+                name: [(identifier) (scoped_identifier)] @ann
                 arguments: (annotation_argument_list [(string_literal) @value (element_value_array_initializer (string_literal) @value)])))) @node
           (interface_declaration
             (modifiers
               (annotation
-                name: (identifier) @ann
+                name: [(identifier) (scoped_identifier)] @ann
                 arguments: (annotation_argument_list [(string_literal) @value (element_value_array_initializer (string_literal) @value)])))) @node
           (class_declaration
             (modifiers
               (annotation
-                name: (identifier) @ann
+                name: [(identifier) (scoped_identifier)] @ann
                 arguments: (annotation_argument_list
                   (element_value_pair
                     key: (identifier) @key
@@ -138,7 +144,7 @@ const JAVA_ROUTE_ANNOTATION_PATTERNS = compilePatterns({
           (interface_declaration
             (modifiers
               (annotation
-                name: (identifier) @ann
+                name: [(identifier) (scoped_identifier)] @ann
                 arguments: (annotation_argument_list
                   (element_value_pair
                     key: (identifier) @key
@@ -146,13 +152,13 @@ const JAVA_ROUTE_ANNOTATION_PATTERNS = compilePatterns({
           (method_declaration
             (modifiers
               (annotation
-                name: (identifier) @ann
+                name: [(identifier) (scoped_identifier)] @ann
                 arguments: (annotation_argument_list [(string_literal) @value (element_value_array_initializer (string_literal) @value)])))
             name: (identifier) @member) @node
           (method_declaration
             (modifiers
               (annotation
-                name: (identifier) @ann
+                name: [(identifier) (scoped_identifier)] @ann
                 arguments: (annotation_argument_list
                   (element_value_pair
                     key: (identifier) @key
@@ -199,7 +205,7 @@ const REST_TEMPLATE_PATTERNS = compilePatterns({
         (method_invocation
           object: (identifier) @obj (#eq? @obj "restTemplate")
           name: (identifier) @method
-          arguments: (argument_list . (string_literal) @path))
+          arguments: (argument_list . (_) @path))
       `,
     },
   ],
@@ -216,7 +222,7 @@ const REST_TEMPLATE_EXCHANGE_PATTERNS = compilePatterns({
           object: (identifier) @obj (#eq? @obj "restTemplate")
           name: (identifier) @method (#eq? @method "exchange")
           arguments: (argument_list
-            . (string_literal) @path
+            . (_) @path
             (field_access
               object: (identifier) @httpMethodCls (#eq? @httpMethodCls "HttpMethod")
               field: (identifier) @http_method)))
@@ -275,10 +281,14 @@ const WEB_CLIENT_LONG_FORM_PATTERNS = compilePatterns({
   ],
 } satisfies LanguagePatterns<Record<string, never>>);
 
-// ─── Consumer: OkHttp `new Request.Builder().url("path")` ─────────────
-// Note: `Request.Builder` is a `scoped_type_identifier` whose text includes
-// the dot, so `#eq?` against the literal string matches cleanly (no need
-// to escape a regex dot).
+// ─── Consumer: OkHttp `Request.Builder()…url("path")` ─────────────────
+// Match a bare `.url("literal")` call on ANY receiver, capturing it as `@call`.
+// `okHttpUrlRootsAtBuilder` (JS) then verifies the receiver chain bottoms out on
+// `new Request.Builder()` — re-imposing the framework anchor while allowing
+// builder calls BEFORE `.url()` (`new Request.Builder().addHeader(...).url("/x")`)
+// that the old object-direct query dropped, and rejecting a `.url(...)` on an
+// unrelated object. The verb is recovered by `inferOkHttpMethod` scanning the
+// whole chain (java-static-path.ts).
 const OK_HTTP_PATTERNS = compilePatterns({
   name: 'java-okhttp',
   language: Java,
@@ -287,15 +297,22 @@ const OK_HTTP_PATTERNS = compilePatterns({
       meta: {},
       query: `
         (method_invocation
-          object: (object_creation_expression
-            type: (scoped_type_identifier) @type (#eq? @type "Request.Builder"))
           name: (identifier) @method (#eq? @method "url")
-          arguments: (argument_list . (string_literal) @path))
+          arguments: (argument_list . (string_literal) @path)) @call
       `,
     },
   ],
 } satisfies LanguagePatterns<Record<string, never>>);
 
+// Match a bare `.uri(URI.create("literal"))` call on ANY receiver, capturing it
+// as `@call`. `httpClientUriRootsAtNewBuilder` (JS) verifies the chain includes
+// `HttpRequest.newBuilder()` — allowing calls BEFORE `.uri()` (`.version(v)`
+// `.uri(...)`) that the old object-direct query dropped, and rejecting a `.uri(...)`
+// on an unrelated object (e.g. WebClient). The verb (a `.GET()/.POST()/.PUT()/`
+// `.DELETE()/.HEAD()` helper, a `.method("VERB", body)` literal, or the bare-build
+// default) is recovered by `inferHttpClientMethod` scanning the whole chain.
+// Matching `.uri(...)` regardless of a trailing `.build()` mirrors the accepted
+// OkHttp over-match posture.
 const JAVA_HTTP_CLIENT_PATTERNS = compilePatterns({
   name: 'java-http-client',
   language: Java,
@@ -304,18 +321,36 @@ const JAVA_HTTP_CLIENT_PATTERNS = compilePatterns({
       meta: {},
       query: `
         (method_invocation
-          object: (method_invocation
-            object: (method_invocation
-              object: (identifier) @builderCls (#eq? @builderCls "HttpRequest")
-              name: (identifier) @newBuilder (#eq? @newBuilder "newBuilder")
-              arguments: (argument_list))
-            name: (identifier) @uri_method (#eq? @uri_method "uri")
-            arguments: (argument_list
-              (method_invocation
-                object: (identifier) @uriCls (#eq? @uriCls "URI")
-                name: (identifier) @create (#eq? @create "create")
-                arguments: (argument_list . (string_literal) @path))))
-          name: (identifier) @http_method (#match? @http_method "^(GET|POST|PUT|DELETE)$"))
+          name: (identifier) @uri_method (#eq? @uri_method "uri")
+          arguments: (argument_list
+            (method_invocation
+              object: (identifier) @uriCls (#eq? @uriCls "URI")
+              name: (identifier) @create (#eq? @create "create")
+              arguments: (argument_list . (string_literal) @path)))) @call
+      `,
+    },
+  ],
+} satisfies LanguagePatterns<Record<string, never>>);
+
+// Constructor-arg form: `HttpRequest.newBuilder(URI.create("..."))` — the path is
+// the `newBuilder(...)` argument, with no `.uri()` call. Captures the `newBuilder`
+// call as `@call`; the emission skips it when a later `.uri(...)` overrides the
+// constructor URI (`httpClientChainHasUriCall`), so the `.uri()` query owns that case.
+const JAVA_HTTP_CLIENT_CTOR_PATTERNS = compilePatterns({
+  name: 'java-http-client-ctor',
+  language: Java,
+  patterns: [
+    {
+      meta: {},
+      query: `
+        (method_invocation
+          object: (identifier) @builderCls (#eq? @builderCls "HttpRequest")
+          name: (identifier) @newBuilder (#eq? @newBuilder "newBuilder")
+          arguments: (argument_list
+            (method_invocation
+              object: (identifier) @uriCls (#eq? @uriCls "URI")
+              name: (identifier) @create (#eq? @create "create")
+              arguments: (argument_list . (string_literal) @path)))) @call
       `,
     },
   ],
@@ -361,6 +396,18 @@ function getNodeName(node: Parser.SyntaxNode): string | null {
   return node.childForFieldName('name')?.text ?? null;
 }
 
+/**
+ * Trailing segment of a possibly fully-qualified annotation name
+ * (`org.springframework.web.bind.annotation.GetMapping` → `GetMapping`). The
+ * route query binds `@ann` to either an `identifier` (simple) or a
+ * `scoped_identifier` (FQN); normalizing here lets the one for-loop discriminate
+ * on the simple name in both cases. A simple name maps to itself, so this never
+ * changes how a non-FQN annotation is classified.
+ */
+function simpleName(text: string): string {
+  return text.split('.').pop() ?? text;
+}
+
 function hasAnnotation(node: Parser.SyntaxNode, names: string | readonly string[]): boolean {
   const modifiers = node.namedChildren.find((child) => child.type === 'modifiers');
   if (!modifiers) return false;
@@ -369,10 +416,9 @@ function hasAnnotation(node: Parser.SyntaxNode, names: string | readonly string[
   while (stack.length > 0) {
     const cur = stack.pop()!;
     const annotationName = cur.childForFieldName('name')?.text ?? '';
-    const simpleName = annotationName.split('.').pop() ?? annotationName;
     if (
       (cur.type === 'annotation' || cur.type === 'marker_annotation') &&
-      (allowed.has(annotationName) || allowed.has(simpleName))
+      (allowed.has(annotationName) || allowed.has(simpleName(annotationName)))
     ) {
       return true;
     }
@@ -380,6 +426,11 @@ function hasAnnotation(node: Parser.SyntaxNode, names: string | readonly string[
   }
   return false;
 }
+
+// The statically-resolvable consumer path helpers (URI.create /
+// UriComponentsBuilder resolution) and the OkHttp / HttpClient builder verb-walks
+// (`inferOkHttpMethod` / `inferHttpClientMethod`) live in ./java-static-path.ts
+// (#2268), shared with the RestTemplate, OkHttp, and HttpClient consumer loops.
 
 interface MethodRouteAnnotation {
   methodNode: Parser.SyntaxNode;
@@ -444,7 +495,13 @@ function scanRouteAnnotations(tree: Parser.Tree): RouteAnnotationScan {
     const node = captures.node;
     const valueNode = captures.value;
     if (!annNode || !node || !valueNode) continue;
-    const ann = annNode.text;
+    // Discrimination is on the trailing segment only (`simpleName`), so a
+    // non-Spring annotation whose last segment collides with a route annotation
+    // (e.g. `@com.evil.GetMapping("/x")`) is treated as a route. This is the
+    // same accepted trailing-segment trade-off `hasAnnotation` already makes and
+    // the intended parity with the Kotlin plugin — package-origin gating would
+    // break that parity and is deliberately not done.
+    const ann = simpleName(annNode.text);
     const keyNode = captures.key; // undefined for the positional shape
 
     if (node.type === 'method_declaration') {
@@ -727,7 +784,7 @@ export const JAVA_HTTP_PLUGIN: HttpLanguagePlugin = {
       if (!methodNode || !pathNode) continue;
       const httpMethod = REST_TEMPLATE_TO_HTTP[methodNode.text];
       if (!httpMethod) continue;
-      const path = unquoteLiteral(pathNode.text);
+      const path = extractStaticPathExpression(pathNode);
       if (path === null) continue;
       out.push({
         role: 'consumer',
@@ -743,7 +800,7 @@ export const JAVA_HTTP_PLUGIN: HttpLanguagePlugin = {
       const httpMethodNode = match.captures.http_method;
       const pathNode = match.captures.path;
       if (!httpMethodNode || !pathNode) continue;
-      const path = unquoteLiteral(pathNode.text);
+      const path = extractStaticPathExpression(pathNode);
       if (path === null) continue;
       out.push({
         role: 'consumer',
@@ -801,15 +858,25 @@ export const JAVA_HTTP_PLUGIN: HttpLanguagePlugin = {
     }
 
     // ─── Consumers: OkHttp Request.Builder().url("path") ────────────
+    // Match any `.url("literal")`, gate to chains rooting at `new Request.Builder()`
+    // (so a call before `.url()` is captured but an unrelated `.url()` is not), then
+    // recover the verb (`.post()`/`.method("X")`) by scanning the builder chain.
     for (const match of runCompiledPatterns(OK_HTTP_PATTERNS, tree)) {
+      const callNode = match.captures.call;
       const pathNode = match.captures.path;
-      if (!pathNode) continue;
+      if (!callNode || !pathNode) continue;
+      if (!okHttpUrlRootsAtBuilder(callNode)) continue;
       const path = unquoteLiteral(pathNode.text);
       if (path === null) continue;
+      const method = inferOkHttpMethod(callNode);
+      // An explicit `.method(verb, …)` with a non-literal or empty verb is
+      // unresolvable (null) — emit nothing rather than a wrong GET or an empty
+      // `http::::/path` contract.
+      if (!method) continue;
       out.push({
         role: 'consumer',
         framework: 'okhttp',
-        method: 'GET',
+        method,
         path,
         name: null,
         confidence: 0.7,
@@ -817,18 +884,48 @@ export const JAVA_HTTP_PLUGIN: HttpLanguagePlugin = {
     }
 
     // ─── Consumers: Java HttpClient request builder ─────────────────
-    // Java's builder exposes GET/POST/PUT/DELETE helpers. PATCH uses
-    // `.method("PATCH", body)`, which is intentionally deferred.
+    // Match any `.uri(URI.create("..."))`, gate to chains including `HttpRequest`
+    // `.newBuilder()` (so a call before `.uri()` is captured but an unrelated
+    // `.uri()` is not); `inferHttpClientMethod` scans the chain for the verb — a
+    // `.GET()/.POST()/.PUT()/.DELETE()/.HEAD()` helper, a `.method("VERB", body)`
+    // literal, or the bare-build default GET. A variable-bound `.method(verb, …)`
+    // is unresolvable → emit nothing. Mirrors the OkHttp loop above. The
+    // constructor-arg form (`newBuilder(URI.create(...))`, no `.uri()`) follows.
     for (const match of runCompiledPatterns(JAVA_HTTP_CLIENT_PATTERNS, tree)) {
-      const httpMethodNode = match.captures.http_method;
+      const callNode = match.captures.call;
       const pathNode = match.captures.path;
-      if (!httpMethodNode || !pathNode) continue;
+      if (!callNode || !pathNode) continue;
+      if (!httpClientUriRootsAtNewBuilder(callNode)) continue;
       const path = unquoteLiteral(pathNode.text);
       if (path === null) continue;
+      const method = inferHttpClientMethod(callNode);
+      if (!method) continue;
       out.push({
         role: 'consumer',
         framework: 'java-http-client',
-        method: httpMethodNode.text.toUpperCase(),
+        method,
+        path,
+        name: null,
+        confidence: 0.65,
+      });
+    }
+
+    // Constructor-arg form: `HttpRequest.newBuilder(URI.create("..."))` with the
+    // path in the constructor and no overriding `.uri(...)` later in the chain
+    // (a later `.uri()` wins at runtime, so the loop above owns that case).
+    for (const match of runCompiledPatterns(JAVA_HTTP_CLIENT_CTOR_PATTERNS, tree)) {
+      const callNode = match.captures.call;
+      const pathNode = match.captures.path;
+      if (!callNode || !pathNode) continue;
+      if (httpClientChainHasUriCall(callNode)) continue;
+      const path = unquoteLiteral(pathNode.text);
+      if (path === null) continue;
+      const method = inferHttpClientMethod(callNode);
+      if (!method) continue;
+      out.push({
+        role: 'consumer',
+        framework: 'java-http-client',
+        method,
         path,
         name: null,
         confidence: 0.65,
