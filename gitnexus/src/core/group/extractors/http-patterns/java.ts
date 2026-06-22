@@ -708,6 +708,7 @@ export const JAVA_HTTP_PLUGIN: HttpLanguagePlugin = {
             method: route.httpMethod,
             path: joinPath(prefix, route.rawPath),
             name: route.methodName,
+            line: route.methodNode.startPosition.row + 1,
             confidence: FEIGN_CONFIDENCE,
           });
         }
@@ -751,6 +752,7 @@ export const JAVA_HTTP_PLUGIN: HttpLanguagePlugin = {
           method: requestLine.parsed.method,
           path: joinPath(prefix, requestLine.parsed.path),
           name: requestLine.methodName,
+          line: requestLine.methodNode.startPosition.row + 1,
           confidence: REQUEST_LINE_CONFIDENCE,
         });
       }
@@ -772,6 +774,7 @@ export const JAVA_HTTP_PLUGIN: HttpLanguagePlugin = {
           method: route.httpMethod,
           path: joinPath(prefix, route.rawPath),
           name: route.methodName,
+          line: route.methodNode.startPosition.row + 1,
           confidence: EXCHANGE_CONFIDENCE,
         });
       }
@@ -792,6 +795,7 @@ export const JAVA_HTTP_PLUGIN: HttpLanguagePlugin = {
         method: httpMethod,
         path,
         name: null,
+        line: pathNode.startPosition.row + 1,
         confidence: 0.7,
       });
     }
@@ -808,6 +812,7 @@ export const JAVA_HTTP_PLUGIN: HttpLanguagePlugin = {
         method: httpMethodNode.text.toUpperCase(),
         path,
         name: null,
+        line: pathNode.startPosition.row + 1,
         confidence: 0.7,
       });
     }
@@ -830,6 +835,7 @@ export const JAVA_HTTP_PLUGIN: HttpLanguagePlugin = {
         method: httpMethod,
         path,
         name: null,
+        line: pathNode.startPosition.row + 1,
         confidence: 0.7,
       });
     }
@@ -853,6 +859,7 @@ export const JAVA_HTTP_PLUGIN: HttpLanguagePlugin = {
         method: verbText,
         path,
         name: null,
+        line: pathNode.startPosition.row + 1,
         confidence: 0.7,
       });
     }
@@ -879,6 +886,7 @@ export const JAVA_HTTP_PLUGIN: HttpLanguagePlugin = {
         method,
         path,
         name: null,
+        line: pathNode.startPosition.row + 1,
         confidence: 0.7,
       });
     }

@@ -43,7 +43,7 @@ describe('HttpRouteExtractor', () => {
 
   const toPosixPath = (filePath: string): string => filePath.replace(/\\/g, '/');
 
-  describe('symbolUid resolution via containment (DEFINES)', () => {
+  describe('symbolUid resolution via containment', () => {
     it('resolves a source-scan consumer to the function CONTAINING the fetch', async () => {
       const dir = path.join(tmpDir, 'consumer-containment');
       fs.mkdirSync(path.join(dir, 'src/api'), { recursive: true });
@@ -62,7 +62,7 @@ describe('HttpRouteExtractor', () => {
         query: string,
         params?: Record<string, unknown>,
       ): Promise<Record<string, unknown>[]> => {
-        if (query.includes('DEFINES') && String(params?.filePath ?? '').includes('users.ts')) {
+        if (query.includes('UNION ALL') && String(params?.filePath ?? '').includes('users.ts')) {
           return [
             {
               uid: 'fn-fetchUsers',
@@ -102,7 +102,7 @@ export default router;
         query: string,
         params?: Record<string, unknown>,
       ): Promise<Record<string, unknown>[]> => {
-        if (query.includes('DEFINES') && String(params?.filePath ?? '').includes('routes.ts')) {
+        if (query.includes('UNION ALL') && String(params?.filePath ?? '').includes('routes.ts')) {
           return [
             {
               uid: 'fn-listUsers',

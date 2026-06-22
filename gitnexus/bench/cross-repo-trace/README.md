@@ -43,8 +43,13 @@ The extractor resolves `symbolUid` in this order, falling through on a miss:
    endpoint anchors the boundary. A `notes[]` entry flags it as file-level, not
    symbol-precise.
 
+The call-site line is set by all bundled language plugins (Node/TS, Python, Go,
+PHP, Kotlin, Java), and containment matches symbols by `filePath` across
+`Function`/`Method`/`CodeElement`, so it also resolves methods nested in classes
+(Java/Kotlin), not just top-level functions.
+
 Residual (inherent): a **fully anonymous handler with no named callee**
 (`router.get('/x', (req,res) => res.json(...))`) exposes no symbol to name as a
 trace target — those rely on the file fallback (or a named function the handler
-calls). The line is set per language plugin; plugins that do not yet set it fall
-through to the file fallback with no regression.
+calls). A plugin that does not set the line simply falls through to the file
+fallback with no regression.

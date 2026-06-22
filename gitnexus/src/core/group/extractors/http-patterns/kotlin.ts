@@ -996,6 +996,7 @@ function buildKotlinPlugin(language: unknown): HttpLanguagePlugin {
               method: httpMethod,
               path: joinPath(prefix, rawPath),
               name: nameNode?.text ?? null,
+              line: methodNode.startPosition.row + 1,
               confidence: FEIGN_CONFIDENCE,
             });
           }
@@ -1038,6 +1039,7 @@ function buildKotlinPlugin(language: unknown): HttpLanguagePlugin {
           method: httpMethod,
           path,
           name: null,
+          line: pathNode.startPosition.row + 1,
           confidence: 0.7,
         });
       }
@@ -1057,6 +1059,7 @@ function buildKotlinPlugin(language: unknown): HttpLanguagePlugin {
           method: httpMethod,
           path,
           name: null,
+          line: pathNode.startPosition.row + 1,
           confidence: 0.7,
         });
       }
@@ -1084,6 +1087,7 @@ function buildKotlinPlugin(language: unknown): HttpLanguagePlugin {
           method: verbText,
           path,
           name: null,
+          line: pathNode.startPosition.row + 1,
           confidence: 0.7,
         });
       }
@@ -1108,6 +1112,7 @@ function buildKotlinPlugin(language: unknown): HttpLanguagePlugin {
           method,
           path,
           name: null,
+          line: pathNode.startPosition.row + 1,
           confidence: 0.7,
         });
       }
@@ -1134,6 +1139,7 @@ function buildKotlinPlugin(language: unknown): HttpLanguagePlugin {
             method: httpMethod,
             path: joinPath(prefix, rawPath),
             name: nameNode?.text ?? null,
+            line: methodNode.startPosition.row + 1,
             confidence: EXCHANGE_CONFIDENCE,
           });
         }

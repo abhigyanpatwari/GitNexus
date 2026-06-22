@@ -63,13 +63,25 @@ WHERE sym.startLine IS NOT NULL
 RETURN sym.id AS uid, sym.name AS name, sym.filePath AS filePath, labels(sym) AS labels
 ORDER BY sym.startLine`;
 
-// Symbols (with line spans) in a file, addressed by repo-relative path so the
-// source-scan paths — which have a path but no graph `fileId` — can resolve the
-// function CONTAINING an HTTP call by line-span containment. The File→symbol
-// edge is DEFINES (CONTAINS links File→Folder, not symbols).
+// Function/Method/CodeElement symbols (with line spans) in a file, addressed by
+// repo-relative path so the source-scan paths — which have a path but no graph
+// `fileId` — can resolve the symbol CONTAINING an HTTP call by line-span
+// containment. Matched by `filePath` rather than a File-[DEFINES]->sym edge so
+// it also reaches methods nested in classes (Java/Kotlin), where the File
+// defines the class and the class defines the method.
 const CONTAINING_QUERY = `
-MATCH (file:File {filePath: $filePath})-[:CodeRelation {type: 'DEFINES'}]->(sym)
-WHERE sym.startLine IS NOT NULL AND sym.endLine IS NOT NULL
+MATCH (sym:Function)
+WHERE sym.filePath = $filePath AND sym.startLine IS NOT NULL AND sym.endLine IS NOT NULL
+RETURN sym.id AS uid, sym.name AS name, sym.filePath AS filePath,
+       sym.startLine AS startLine, sym.endLine AS endLine, labels(sym) AS labels
+UNION ALL
+MATCH (sym:Method)
+WHERE sym.filePath = $filePath AND sym.startLine IS NOT NULL AND sym.endLine IS NOT NULL
+RETURN sym.id AS uid, sym.name AS name, sym.filePath AS filePath,
+       sym.startLine AS startLine, sym.endLine AS endLine, labels(sym) AS labels
+UNION ALL
+MATCH (sym:CodeElement)
+WHERE sym.filePath = $filePath AND sym.startLine IS NOT NULL AND sym.endLine IS NOT NULL
 RETURN sym.id AS uid, sym.name AS name, sym.filePath AS filePath,
        sym.startLine AS startLine, sym.endLine AS endLine, labels(sym) AS labels`;
 
@@ -96,7 +108,7 @@ function resolveContainingSymbol(
   let bestSpan = Number.POSITIVE_INFINITY;
   for (const r of rows) {
     const labels = JSON.stringify(r.labels ?? r[5] ?? '');
-    if (!labels.includes('Function') && !labels.includes('Method')) continue;
+    if (!['Function', 'Method', 'CodeElement'].some((l) => labels.includes(l))) continue;
     const start = Number(r.startLine ?? r[3]);
     const end = Number(r.endLine ?? r[4]);
     if (!Number.isFinite(start) || !Number.isFinite(end)) continue;
@@ -124,7 +136,7 @@ function resolveSymbolByName(rows: Record<string, unknown>[], name: string): Res
   const norm = (x: unknown): string => String(x ?? '');
   for (const r of rows) {
     const labels = JSON.stringify(r.labels ?? r[5] ?? '');
-    if (!labels.includes('Function') && !labels.includes('Method')) continue;
+    if (!['Function', 'Method', 'CodeElement'].some((l) => labels.includes(l))) continue;
     if (norm(r.name ?? r[1]) !== name) continue;
     const uid = norm(r.uid ?? r[0]);
     if (uid) return { uid, name, filePath: norm(r.filePath ?? r[2]) };
