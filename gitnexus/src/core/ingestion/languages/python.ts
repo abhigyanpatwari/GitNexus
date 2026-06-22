@@ -42,6 +42,8 @@ import {
   pythonReceiverBinding,
   resolvePythonImportTarget,
 } from './python/index.js';
+import { extractDjangoRoutes } from '../route-extractors/django.js';
+import { discoverDjangoRootUrls } from '../route-extractors/django-root-discovery.js';
 
 const BUILT_INS: ReadonlySet<string> = new Set([
   'print',
@@ -131,6 +133,15 @@ export const pythonProvider = defineLanguage({
   classExtractor: createClassExtractor(pythonClassConfig),
   descriptionExtractor: pythonDescriptionExtractor,
   builtInNames: BUILT_INS,
+  // Django routing is whole-repo and cross-file (manage.py → settings →
+  // ROOT_URLCONF → root urls.py, then include()s across files), so it runs as
+  // a main-thread pass (see parse-impl's cross-file route extraction) rather
+  // than the worker's single-file `isRouteFile` path. `reader` lets discovery
+  // and extraction resolve any repo-relative file regardless of parse chunking.
+  discoverRootRouteFiles: (files, contentMap, reader) =>
+    discoverDjangoRootUrls(files, contentMap, reader),
+  extractRoutes: (tree, filePath, reader, parser) =>
+    parser ? extractDjangoRoutes(tree, filePath, parser, reader) : [],
   labelOverride: pythonFunctionDefinitionLabel,
 
   // ── RFC #909 Ring 3: scope-based resolution hooks (RFC §5) ──────────

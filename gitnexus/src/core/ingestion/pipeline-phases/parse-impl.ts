@@ -50,7 +50,14 @@ import {
   SupportedLanguages,
 } from 'gitnexus-shared';
 import { readFileContents } from '../filesystem-walker.js';
-import { isLanguageAvailable, isGrammarRuntimeSkipped } from '../../tree-sitter/parser-loader.js';
+import {
+  isLanguageAvailable,
+  isGrammarRuntimeSkipped,
+  createParserForLanguage,
+} from '../../tree-sitter/parser-loader.js';
+import { parseSourceSafe } from '../../tree-sitter/safe-parse.js';
+import { getProvider, providers } from '../languages/index.js';
+import type Parser from 'tree-sitter';
 import {
   createWorkerPool,
   workerPoolDisabledByEnv,
@@ -149,6 +156,122 @@ function resolveChunkByteBudget(options?: PipelineOptions, effectivePoolSize = 1
 
 type ScannedFile = { path: string; size: number };
 type ProgressFn = (progress: PipelineProgress) => void;
+
+/**
+ * Whole-repo, cross-file route extraction (main thread).
+ *
+ * Some frameworks define their route table from a single root file that pulls
+ * in other files across the repo — e.g. Django follows
+ * `manage.py → DJANGO_SETTINGS_MODULE → ROOT_URLCONF → root urls.py`, then walks
+ * `include()` chains across many files. Unlike single-file route files (Laravel
+ * `routes/*.php`), which the parse worker extracts in isolation, these need a
+ * whole-repo view and on-demand cross-file reads — neither of which the
+ * filesystem-free worker can provide, and which a per-chunk worker view gets
+ * wrong whenever the root file and its includes land in different chunks.
+ *
+ * So it runs here, once, after every file is scanned — mirroring the FastAPI
+ * router-include join further below. The pass is language-agnostic: any
+ * {@link LanguageProvider} exposing both `discoverRootRouteFile` and
+ * `extractRoutes` participates (today only Python/Django). For repos without
+ * such a framework the cost is a path scan plus one `manage.py`-style miss.
+ */
+export async function extractCrossFileRoutes(
+  allPaths: string[],
+  repoPath: string,
+): Promise<ExtractedRoute[]> {
+  const out: ExtractedRoute[] = [];
+
+  // Languages whose provider implements the cross-file route hooks. Route
+  // results are intentionally NOT persisted across analyze runs, so a repo
+  // using such a framework (e.g. Django) re-derives its routes on every run;
+  // a repo without one does effectively nothing here. Cross-run route caching
+  // is a deliberate follow-up — see #1836.
+  const routeCapableLangs = new Set<SupportedLanguages>();
+  for (const provider of Object.values(providers)) {
+    if (provider.discoverRootRouteFiles && provider.extractRoutes) {
+      routeCapableLangs.add(provider.id);
+    }
+  }
+  if (routeCapableLangs.size === 0) return out;
+
+  // Bucket only the paths whose language can contribute routes, so a non-
+  // framework repo never pays to bucket the languages it doesn't use here.
+  const pathsByLang = new Map<SupportedLanguages, string[]>();
+  for (const p of allPaths) {
+    const lang = getLanguageFromFilename(p);
+    if (!lang || !routeCapableLangs.has(lang)) continue;
+    let bucket = pathsByLang.get(lang);
+    if (!bucket) {
+      bucket = [];
+      pathsByLang.set(lang, bucket);
+    }
+    bucket.push(p);
+  }
+
+  for (const [lang, langPaths] of pathsByLang) {
+    if (!isLanguageAvailable(lang)) continue;
+    const provider = getProvider(lang);
+    if (!provider.discoverRootRouteFiles || !provider.extractRoutes) continue;
+
+    // Disk-backed reader keyed on repo-relative paths. Discovery and the
+    // include() walk read through this; nothing is pre-loaded, so a repo that
+    // lacks the framework pays only the reads its own discovery probes trigger.
+    const readCache = new Map<string, string | null>();
+    const reader = (relativePath: string): string | null => {
+      const cached = readCache.get(relativePath);
+      if (cached !== undefined) return cached;
+      let content: string | null = null;
+      try {
+        content = fs.readFileSync(path.join(repoPath, relativePath), 'utf-8');
+      } catch {
+        content = null;
+      }
+      readCache.set(relativePath, content);
+      return content;
+    };
+
+    // One root route file per discoverable project (a monorepo can have several).
+    const rootPaths = provider.discoverRootRouteFiles(
+      langPaths.map((p) => ({ path: p })),
+      undefined,
+      reader,
+    );
+    if (rootPaths.length === 0) continue;
+
+    // One parser per language — the grammar is language-scoped, so it is reused
+    // for every project root and every include() re-parse.
+    let parser: Parser;
+    try {
+      parser = await createParserForLanguage(lang, rootPaths[0]);
+    } catch {
+      continue; // grammar unavailable — skip the language, mirrors worker safety net
+    }
+
+    for (const rootPath of rootPaths) {
+      const rootContent = reader(rootPath);
+      if (rootContent === null) continue; // skip this root only, not the language
+
+      let rootTree: Parser.Tree;
+      try {
+        rootTree = parseSourceSafe(parser, rootContent);
+      } catch {
+        logger.warn(`Skipping unparseable root route file: ${rootPath}`);
+        continue; // skip this root only
+      }
+
+      // Isolate a misbehaving provider: a throw here must not abort the whole
+      // analyze (mirrors the worker's per-file isolation). Skip this root, warn.
+      try {
+        const routes = provider.extractRoutes(rootTree, rootPath, reader, parser);
+        for (const r of routes) out.push(r);
+      } catch (err) {
+        logger.warn({ err }, `Cross-file route extraction failed for ${rootPath}`);
+      }
+    }
+  }
+
+  return out;
+}
 
 /**
  * Handle a worker-pool startup failure by FAILING FAST with the captured cause
@@ -931,6 +1054,17 @@ export async function runChunkedParseAndResolve(
       const graphExports = buildExportedTypeMapFromGraph(graph, model.symbols);
       for (const [fp, exports] of graphExports) exportedTypeMap.set(fp, exports);
       logHeapProbe('post-buildExportedTypeMapFromGraph');
+    }
+    // Whole-repo, cross-file route extraction (e.g. Django) runs on the main
+    // thread — the worker has no filesystem access and can't follow `include()`
+    // chains across files. Merge its routes in before `processRoutesFromExtracted`
+    // and the routes phase consume `allExtractedRoutes`.
+    const crossFileRoutes = await extractCrossFileRoutes(allPaths, repoPath);
+    if (crossFileRoutes.length > 0) {
+      for (const r of crossFileRoutes) allExtractedRoutes.push(r);
+      if (deferredProfile) {
+        logDeferredProfile(`cross-file routes: +${crossFileRoutes.length}`);
+      }
     }
     if (allExtractedRoutes.length > 0) {
       const tRoutes = startTimer(deferredProfile);
