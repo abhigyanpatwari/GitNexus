@@ -164,7 +164,20 @@ export const TRACE_NOTES = {
   degradedMembers: (repos: string[]): string =>
     `${repos.length} member repo(s) could not be queried (${repos.join(', ')}) — a not_found ` +
     `result may be incomplete; re-run once the repo(s) are indexed and available.`,
+  fileBoundaryFallback:
+    'A cross-repo boundary was anchored by contract FILE, not symbol — the HTTP (or other ' +
+    'source-scan) contract carried no resolved symbolUid, so the endpoint was matched because ' +
+    'it lives in the contract file. The boundary is file-level, not symbol-precise.',
 } as const;
+
+/** Repo-relative path equality, tolerant of a leading "./" / "/" or a repo prefix. */
+function sameFile(a: string, b: string): boolean {
+  if (!a || !b) return false;
+  const norm = (s: string): string => s.replace(/^\.?\//, '');
+  const na = norm(a);
+  const nb = norm(b);
+  return na === nb || na.endsWith('/' + nb) || nb.endsWith('/' + na);
+}
 
 export interface RunGroupTraceDeps {
   port: GroupToolPort;
@@ -212,6 +225,8 @@ WHERE consumer.repo = $fromRepo
   AND provider.role = 'provider'
 RETURN consumer.symbolUid AS consumerUid,
        provider.symbolUid AS providerUid,
+       consumer.filePath AS consumerFile,
+       provider.filePath AS providerFile,
        l.matchType AS matchType,
        l.confidence AS confidence,
        l.contractId AS contractId,
@@ -223,6 +238,8 @@ LIMIT ${MAX_CROSSINGS_TO_TRY + 1}
 interface CrossingRow {
   consumerUid: string;
   providerUid: string;
+  consumerFile: string;
+  providerFile: string;
   matchType: string;
   confidence: number;
   contractId: string;
@@ -230,16 +247,26 @@ interface CrossingRow {
 }
 
 function rowToCrossing(r: Record<string, unknown>): CrossingRow | null {
+  const consumerFile = String(r.consumerFile ?? r[2] ?? '');
+  const providerFile = String(r.providerFile ?? r[3] ?? '');
+  // A crossing is usable if EITHER endpoint can be anchored — by a resolved
+  // symbolUid (gRPC/manifest/named) OR, when the uid is empty (HTTP and other
+  // source-scan contracts hardcode symbolUid:''), by the contract's file so the
+  // file-level boundary fallback in stitchCrossRepo can still connect it. Drop
+  // only crossings that have neither a uid nor a file on a side.
   const consumerUid = String(r.consumerUid ?? r[0] ?? '');
   const providerUid = String(r.providerUid ?? r[1] ?? '');
-  if (!consumerUid || !providerUid) return null;
+  if (!consumerUid && !consumerFile) return null;
+  if (!providerUid && !providerFile) return null;
   return {
     consumerUid,
     providerUid,
-    matchType: String(r.matchType ?? r[2] ?? 'exact'),
-    confidence: Number(r.confidence ?? r[3] ?? 0),
-    contractId: String(r.contractId ?? r[4] ?? ''),
-    contractType: String(r.contractType ?? r[5] ?? 'custom'),
+    consumerFile,
+    providerFile,
+    matchType: String(r.matchType ?? r[4] ?? 'exact'),
+    confidence: Number(r.confidence ?? r[5] ?? 0),
+    contractId: String(r.contractId ?? r[6] ?? ''),
+    contractType: String(r.contractType ?? r[7] ?? 'custom'),
   };
 }
 
@@ -766,20 +793,45 @@ async function stitchCrossRepo(
 
     // Single boundary crossing (MAX_SUPPORTED_CROSS_DEPTH). Try crossings in
     // confidence order; the first one whose two segments both connect wins.
+    let usedFileFallback = false;
     for (const crossing of crossings) {
-      let segA = segACache.get(crossing.consumerUid);
+      // Anchor each boundary to a usable symbol id. Prefer the resolved
+      // symbolUid; when it is empty (HTTP and other source-scan contracts
+      // hardcode symbolUid:''), fall back to the trace endpoint itself when it
+      // lives in the contract's file — the common "trace from the calling
+      // function to the handler function" case. A side we can anchor on neither
+      // a uid nor the file is skipped.
+      let consumerUid = crossing.consumerUid;
+      let consumerViaFile = false;
+      if (!consumerUid && sameFile(fromEp.symbol.filePath, crossing.consumerFile)) {
+        consumerUid = fromEp.symbol.id;
+        consumerViaFile = true;
+      }
+      if (!consumerUid) continue;
+
+      let providerUid = crossing.providerUid;
+      let providerViaFile = false;
+      if (!providerUid && sameFile(toEp.symbol.filePath, crossing.providerFile)) {
+        providerUid = toEp.symbol.id;
+        providerViaFile = true;
+      }
+      if (!providerUid) continue;
+
+      let segA = segACache.get(consumerUid);
       if (segA === undefined) {
-        segA = await traceFromTo(fromEp.member.handle, fromEp.symbol.id, crossing.consumerUid);
-        segACache.set(crossing.consumerUid, segA);
+        segA = await traceFromTo(fromEp.member.handle, fromEp.symbol.id, consumerUid);
+        segACache.set(consumerUid, segA);
       }
       if (!segA) continue;
 
-      let segB = segBCache.get(crossing.providerUid);
+      let segB = segBCache.get(providerUid);
       if (segB === undefined) {
-        segB = await traceFromTo(toEp.member.handle, crossing.providerUid, toEp.symbol.id);
-        segBCache.set(crossing.providerUid, segB);
+        segB = await traceFromTo(toEp.member.handle, providerUid, toEp.symbol.id);
+        segBCache.set(providerUid, segB);
       }
       if (!segB) continue;
+
+      usedFileFallback = consumerViaFile || providerViaFile;
 
       // Found a connecting crossing. Build the stitched path.
       const hopsA = tagHops(segA.hops, fromEp.member.repoPath);
@@ -803,16 +855,17 @@ async function stitchCrossRepo(
         confidence: crossing.confidence,
       };
 
-      // PDG enrichment (opt-in): the consumer-side segment ends at the
-      // boundary call (anchor = consumer symbol); the provider-side segment
-      // begins at the provider entry (anchor = provider symbol).
+      if (usedFileFallback) notes.push(TRACE_NOTES.fileBoundaryFallback);
+
+      // PDG enrichment (opt-in): anchor on the RESOLVED boundary uids (which,
+      // under the file fallback, are the trace endpoints themselves).
       const dataFlow: SegmentDataFlow[] = [];
       if (p.pdg) {
         const dfA = await enrichSegment(
           deps.port,
           fromEp.member,
-          crossing.consumerUid,
-          consumerNameFromHops(hopsA, crossing.consumerUid),
+          consumerUid,
+          consumerNameFromHops(hopsA, consumerUid),
           p.pdgLimit,
           notes,
         );
@@ -820,7 +873,7 @@ async function stitchCrossRepo(
         const dfB = await enrichSegment(
           deps.port,
           toEp.member,
-          crossing.providerUid,
+          providerUid,
           providerNameFromHops(hopsB),
           p.pdgLimit,
           notes,

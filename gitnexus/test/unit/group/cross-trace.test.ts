@@ -297,6 +297,77 @@ describe('runGroupTrace', () => {
     });
   });
 
+  itLbugReopen(
+    'stitches an HTTP-style crossing with EMPTY symbolUid via the contract-file fallback',
+    async () => {
+      // HTTP contracts hardcode symbolUid:'' and only record the file. When the
+      // user's from/to resolve into the contract files, the file-level fallback
+      // anchors the boundary so the trace still stitches.
+      const consumer = makeContract({
+        repo: 'app/frontend',
+        role: 'consumer',
+        symbolUid: '', // <-- empty, like a real HTTP source-scan contract
+        symbolRef: { filePath: 'src/api.ts', name: 'fetch' },
+        symbolName: 'fetch',
+        contractId: 'http::GET::/api/users',
+      });
+      const provider = makeContract({
+        repo: 'app/backend',
+        role: 'provider',
+        symbolUid: '',
+        symbolRef: { filePath: 'src/routes.ts', name: 'handler' },
+        symbolName: 'handler',
+        contractId: 'http::GET::/api/users',
+      });
+      const link: CrossLink = {
+        from: { repo: 'app/frontend', symbolUid: '', symbolRef: consumer.symbolRef },
+        to: { repo: 'app/backend', symbolUid: '', symbolRef: provider.symbolRef },
+        type: 'http',
+        contractId: 'http::GET::/api/users',
+        matchType: 'exact',
+        confidence: 1,
+      };
+      await writeBridge(groupDir, {
+        contracts: [consumer, provider],
+        crossLinks: [link],
+        repoSnapshots: {},
+        missingRepos: [],
+      });
+
+      const port = makePort(
+        {
+          // from/to resolve to symbols that LIVE IN the contract files.
+          'reg-fe:callUsers': okSym('callUsers-uid', 'callUsers', 'src/api.ts', 3),
+          'reg-be:getUsers': okSym('getUsers-uid', 'getUsers', 'src/routes.ts', 5),
+        },
+        {
+          // Trivial same-symbol segments (from IS the consumer, to IS the provider).
+          'reg-fe:callUsers-uid->callUsers-uid': okTrace(
+            [{ name: 'callUsers', filePath: 'src/api.ts', startLine: 3 }],
+            [],
+          ),
+          'reg-be:getUsers-uid->getUsers-uid': okTrace(
+            [{ name: 'getUsers', filePath: 'src/routes.ts', startLine: 5 }],
+            [],
+          ),
+        },
+      );
+      const r = await runGroupTrace(
+        { port, gitnexusDir: tmpDir },
+        { name: 'g1', from: 'callUsers', to: 'getUsers' },
+      );
+      expect(r).toMatchObject({
+        status: 'ok',
+        crossings: [{ contractId: 'http::GET::/api/users' }],
+        hops: [
+          { name: 'callUsers', repo: 'app/frontend' },
+          { name: 'getUsers', repo: 'app/backend' },
+        ],
+        notes: expect.arrayContaining([expect.stringContaining('anchored by contract FILE')]),
+      });
+    },
+  );
+
   itLbugReopen('same-repo endpoints trace locally with no crossing', async () => {
     await writeLinkedBridge(groupDir);
     const port = makePort(
