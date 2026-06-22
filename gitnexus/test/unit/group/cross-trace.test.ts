@@ -225,6 +225,33 @@ describe('runGroupTrace', () => {
     });
   });
 
+  it('flags not_found as possibly-incomplete when a member DB cannot be queried', async () => {
+    // reg-be's resolveSymbol throws (corrupt/locked DB). A throw must NOT be
+    // reported as a clean not_found ("symbol absent"); the result carries a
+    // degraded-member note so the caller knows the answer may be incomplete.
+    const responders: Record<string, () => Promise<GroupSymbolResolution>> = {
+      'reg-be': () => Promise.reject(new Error('DB locked')),
+      'reg-fe': () => Promise.resolve({ kind: 'not_found' }),
+    };
+    const base = makePort({}, {});
+    const port: GroupToolPort = {
+      ...base,
+      resolveSymbol: async (repo) =>
+        (responders[repo.name] ?? (() => Promise.resolve({ kind: 'not_found' })))(),
+    };
+    const r = await runGroupTrace(
+      { port, gitnexusDir: tmpDir },
+      { name: 'g1', from: 'Ghost', to: 'Target' },
+    );
+    expect(r).toMatchObject({
+      status: 'not_found',
+      role: 'from',
+      notes: expect.arrayContaining([expect.stringContaining('could not be queried')]),
+    });
+    // The degraded member is named.
+    expect((r as { notes: string[] }).notes.join(' ')).toContain('app/backend');
+  });
+
   itLbugReopen('stitches a cross-repo path over one ContractLink', async () => {
     await writeLinkedBridge(groupDir);
     const port = makePort(

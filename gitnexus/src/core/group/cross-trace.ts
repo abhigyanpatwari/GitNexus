@@ -105,6 +105,13 @@ export interface GroupTraceNotFoundResult {
   group: string;
   role?: 'from' | 'to';
   query?: string;
+  /**
+   * True when the answer is NOT authoritative: the crossing cap
+   * (`MAX_CROSSINGS_TO_TRY`) was hit, so a connecting ContractLink ranked beyond
+   * the cap may have been skipped. A consumer should treat this as "unknown",
+   * not "no path exists".
+   */
+  truncated?: boolean;
   notes: string[];
   suggestion?: string;
 }
@@ -154,6 +161,9 @@ export const TRACE_NOTES = {
   crossingsCapped: (cap: number): string =>
     `More than ${cap} ContractLinks connect these repos; only the ${cap} highest-confidence ` +
     `crossings were tried. Narrow with from_uid/to_uid if the expected path was missed.`,
+  degradedMembers: (repos: string[]): string =>
+    `${repos.length} member repo(s) could not be queried (${repos.join(', ')}) — a not_found ` +
+    `result may be incomplete; re-run once the repo(s) are indexed and available.`,
 } as const;
 
 export interface RunGroupTraceDeps {
@@ -275,6 +285,13 @@ type ResolveAcrossOutcome =
   | { kind: 'ambiguous'; candidates: GroupTraceCandidate[] }
   | { kind: 'not_found' };
 
+/** Resolution result plus the member repos that could not be queried at all. */
+interface ResolveAcrossResult {
+  outcome: ResolveAcrossOutcome;
+  /** repoPaths whose resolveSymbol threw (corrupt/unopenable DB) — distinct from "symbol absent". */
+  degraded: string[];
+}
+
 /**
  * Resolve a symbol query across every member repo. Exactly one `ok` match and
  * no per-member ambiguity → resolved. Zero matches → not_found. Anything else
@@ -285,9 +302,10 @@ async function resolveAcrossMembers(
   port: GroupToolPort,
   members: MemberHandle[],
   query: { name?: string; uid?: string; file_path?: string },
-): Promise<ResolveAcrossOutcome> {
+): Promise<ResolveAcrossResult> {
   const okMatches: ResolvedEndpoint[] = [];
   const ambiguous: GroupTraceCandidate[] = [];
+  const degraded: string[] = [];
 
   // Resolve the symbol in every member concurrently (each is an independent DB
   // read). Promise.all preserves member order, so the aggregated okMatches /
@@ -296,12 +314,21 @@ async function resolveAcrossMembers(
   const resolveSymbol = port.resolveSymbol;
   const perMember = await Promise.all(
     members.map(
-      async (member): Promise<{ member: MemberHandle; outcome: GroupSymbolResolution } | null> => {
+      async (
+        member,
+      ): Promise<
+        | { member: MemberHandle; outcome: GroupSymbolResolution }
+        | { member: MemberHandle; failed: true }
+        | null
+      > => {
         if (!resolveSymbol) return null;
         try {
           return { member, outcome: await resolveSymbol(member.handle, query) };
         } catch {
-          return null;
+          // A throw means the member's DB could not be queried — NOT that the
+          // symbol is absent. Record it so a not_found can be flagged as
+          // possibly-incomplete rather than asserting the symbol does not exist.
+          return { member, failed: true };
         }
       },
     ),
@@ -309,6 +336,10 @@ async function resolveAcrossMembers(
 
   for (const entry of perMember) {
     if (!entry) continue;
+    if ('failed' in entry) {
+      degraded.push(entry.member.repoPath);
+      continue;
+    }
     const { member, outcome } = entry;
     if (outcome.kind === 'ok') {
       okMatches.push({
@@ -334,10 +365,10 @@ async function resolveAcrossMembers(
   }
 
   if (okMatches.length === 1 && ambiguous.length === 0) {
-    return { kind: 'ok', endpoint: okMatches[0]! };
+    return { outcome: { kind: 'ok', endpoint: okMatches[0]! }, degraded };
   }
   if (okMatches.length === 0 && ambiguous.length === 0) {
-    return { kind: 'not_found' };
+    return { outcome: { kind: 'not_found' }, degraded };
   }
   // Multiple repos matched, or a member was internally ambiguous: surface all.
   const candidates = [
@@ -350,7 +381,7 @@ async function resolveAcrossMembers(
     })),
     ...ambiguous,
   ];
-  return { kind: 'ambiguous', candidates };
+  return { outcome: { kind: 'ambiguous', candidates }, degraded };
 }
 
 // ── Stitching ────────────────────────────────────────────────────────────
@@ -526,17 +557,24 @@ export async function runGroupTrace(
   // which surfaces downstream as not_found.
   const resolvedMembers = await Promise.all(
     Object.entries(config.repos).map(
-      async ([repoPath, registryName]): Promise<MemberHandle | null> => {
+      async ([repoPath, registryName]): Promise<
+        MemberHandle | { repoPath: string; failed: true }
+      > => {
         try {
           const handle = await deps.port.resolveRepo(registryName);
           return { repoPath, registryName, handle };
         } catch {
-          return null;
+          return { repoPath, failed: true };
         }
       },
     ),
   );
-  const members: MemberHandle[] = resolvedMembers.filter((m): m is MemberHandle => m !== null);
+  const members: MemberHandle[] = [];
+  const unreachableMembers: string[] = [];
+  for (const m of resolvedMembers) {
+    if ('failed' in m) unreachableMembers.push(m.repoPath);
+    else members.push(m);
+  }
   if (members.length === 0) {
     return {
       status: 'error',
@@ -546,59 +584,68 @@ export async function runGroupTrace(
     };
   }
 
-  const fromOutcome = await resolveAcrossMembers(deps.port, members, {
+  // A not_found is only authoritative if every relevant member was actually
+  // queryable. Members whose repo failed to resolve, or whose symbol query
+  // threw, are tracked so a not_found can be flagged as possibly-incomplete
+  // rather than asserting the symbol does not exist anywhere.
+  const degradedNotes = (extra: string[]): string[] => {
+    const all = [...new Set([...unreachableMembers, ...extra])];
+    return all.length > 0 ? [TRACE_NOTES.degradedMembers(all)] : [];
+  };
+
+  const fromRes = await resolveAcrossMembers(deps.port, members, {
     name: p.from,
     uid: p.from_uid,
     file_path: p.from_file,
   });
-  if (fromOutcome.kind === 'not_found') {
+  if (fromRes.outcome.kind === 'not_found') {
     return {
       status: 'not_found',
       group: p.name,
       role: 'from',
       query: p.from_uid ?? p.from,
-      notes: [],
+      notes: degradedNotes(fromRes.degraded),
       suggestion:
         'Check the symbol name, pass from_uid for zero-ambiguity, or from_file to narrow.',
     };
   }
-  if (fromOutcome.kind === 'ambiguous') {
+  if (fromRes.outcome.kind === 'ambiguous') {
     return {
       status: 'ambiguous',
       group: p.name,
       role: 'from',
-      candidates: fromOutcome.candidates,
+      candidates: fromRes.outcome.candidates,
       notes: [],
     };
   }
 
-  const toOutcome = await resolveAcrossMembers(deps.port, members, {
+  const toRes = await resolveAcrossMembers(deps.port, members, {
     name: p.to,
     uid: p.to_uid,
     file_path: p.to_file,
   });
-  if (toOutcome.kind === 'not_found') {
+  if (toRes.outcome.kind === 'not_found') {
     return {
       status: 'not_found',
       group: p.name,
       role: 'to',
       query: p.to_uid ?? p.to,
-      notes: [],
+      notes: degradedNotes([...fromRes.degraded, ...toRes.degraded]),
       suggestion: 'Check the symbol name, pass to_uid for zero-ambiguity, or to_file to narrow.',
     };
   }
-  if (toOutcome.kind === 'ambiguous') {
+  if (toRes.outcome.kind === 'ambiguous') {
     return {
       status: 'ambiguous',
       group: p.name,
       role: 'to',
-      candidates: toOutcome.candidates,
+      candidates: toRes.outcome.candidates,
       notes: [],
     };
   }
 
-  const fromEp = fromOutcome.endpoint;
-  const toEp = toOutcome.endpoint;
+  const fromEp = fromRes.outcome.endpoint;
+  const toEp = toRes.outcome.endpoint;
   const notes: string[] = [];
 
   // Same repo → single-repo trace, no crossing.
@@ -797,15 +844,20 @@ async function stitchCrossRepo(
       return result;
     }
 
-    // Crossings exist but none connected both segments.
+    // Crossings exist but none connected both segments. If the crossing cap was
+    // hit, this is NOT authoritative — a connecting link may rank beyond the cap.
     notes.push(TRACE_NOTES.noBridgeLink);
     return {
       status: 'not_found',
       group: p.name,
+      ...(crossingsTruncated ? { truncated: true } : {}),
       notes,
-      suggestion:
-        'A ContractLink exists between the repos, but no local path reaches the consumer ' +
-        'call site or leaves the provider handler. Try a higher maxDepth.',
+      suggestion: crossingsTruncated
+        ? `No connecting crossing among the ${MAX_CROSSINGS_TO_TRY} highest-confidence ` +
+          'ContractLinks tried, but more exist (truncated:true) — narrow with from_uid/to_uid, ' +
+          'or a higher maxDepth, before concluding no path exists.'
+        : 'A ContractLink exists between the repos, but no local path reaches the consumer ' +
+          'call site or leaves the provider handler. Try a higher maxDepth.',
     };
   } finally {
     await closeBridgeDb(handle);

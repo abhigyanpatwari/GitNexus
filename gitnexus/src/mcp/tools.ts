@@ -825,10 +825,10 @@ CROSS-REPO (experimental): pass repo as "@groupName" to trace across repositorie
         crossDepth: {
           type: 'number',
           description:
-            'Cross-repo only: number of ContractLink boundaries to cross. Clamped to 1 today (multi-hop deferred); higher values are accepted and reported via notes[].',
+            'Cross-repo only: number of ContractLink boundaries to cross. Only 1 is supported today (multi-hop deferred); a direct caller that passes a higher value gets it clamped to 1 with a notes[] entry.',
           default: 1,
           minimum: 1,
-          maximum: 10,
+          maximum: 1,
         },
         limit: {
           type: 'number',
