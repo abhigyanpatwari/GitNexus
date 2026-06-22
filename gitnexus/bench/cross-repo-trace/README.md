@@ -8,12 +8,35 @@ Run from `gitnexus/` (needs a current build for the parse worker):
 
 ```bash
 node scripts/build.js
-node bench/cross-repo-trace/verify-named.mjs
+node bench/cross-repo-trace/verify.mjs
 ```
 
-Fixture (`fixtures-named/`): a frontend with named `fetch` wrappers
-(`fetchUsers`, `createUserReq`) and a backend with named express handlers
-(`listUsers`, `createUser`), linked by `/api/users` GET/POST.
+`verify.mjs` is self-contained — it generates each fixture inline, runs the real
+analyze → sync → trace/impact pipeline, and prints PASS/FAIL per assertion
+(exit non-zero on any failure). Expected verdict: **9/9 checks passed**.
+
+## Cases covered (one scenario each)
+
+1. **Named handlers, same file** — a frontend with named `fetch` wrappers
+   (`fetchUsers`, `createUserReq`) and a backend with named express handlers
+   (`listUsers`, `createUser`) on `/api/users` GET/POST. Asserts: all four
+   contracts resolve a `symbolUid`; `trace` is **symbol-precise** (the GET pair
+   selects `http::GET`, the POST pair `http::POST`, no file-fallback note); the
+   destination trace lands at `listUsers`.
+2. **Anonymous handler** — `router.get('/api/ping', (req,res) => …)`. Asserts the
+   provider contract has an empty `symbolUid`, and the **destination trace**
+   (omit `to`) reaches it, reported as `<http::GET::/api/ping handler>` with an
+   anonymous note.
+3. **Cross-repo `impact` fan-out** — `impact @group` on `fetchUsers` crosses the
+   boundary (`cross_repo_hits >= 1`); the same `symbolUid` join was 0 before.
+4. **Multi-language (Python)** — a Flask provider + `requests` consumer; asserts
+   the Python line wiring resolves the consumer and the cross-repo `trace`
+   stitches `fetch_items -> list_items`.
+
+The **ambiguous-destination** (a file making several HTTP calls whose consumer
+contracts have no resolved uid) and **degraded-member** (a member DB that throws
+mid-resolution) paths need synthetic inputs the real analyzer cannot produce, so
+they live in the unit suite (`test/unit/group/cross-trace.test.ts`).
 
 ## What it proves
 
@@ -28,9 +51,8 @@ Fixture (`fixtures-named/`): a frontend with named `fetch` wrappers
   `extractionStrategy: 'source_scan_resolved'` / `'graph_assisted'` with a uid.
 - `trace @group from=<calling fn> to=<handler fn>` **stitches the cross-repo
   path** (`fetchUsers → listUsers`), reporting the `CONTRACT_LINK` hop and
-  (with `pdg:true`) the data-flow enrichment. Expected verdict: **2/2 ok**,
-  **symbol-precise** (GET pair → `http::GET` contract, POST → `http::POST`),
-  with no file-fallback note.
+  (with `pdg:true`) the data-flow enrichment, **symbol-precise** (GET pair →
+  `http::GET` contract, POST → `http::POST`), with no file-fallback note.
 - The same `symbolUid` fix makes `impact @group` fan out across the boundary
   (it was 0 cross-repo hits before — both tools join crossings on `symbolUid`).
 
