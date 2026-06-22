@@ -778,7 +778,12 @@ export async function runGroupTrace(
   }
 
   const toEp = toRes.outcome.endpoint;
-  const notes: string[] = [];
+  // Seed with degraded-member notes so a SUCCESSFUL trace is still flagged as
+  // possibly-incomplete: group resolution is "unique among the members we could
+  // query", so if a member that threw during resolveSymbol also holds `from`/`to`
+  // the real answer could be ambiguous. Carries through same-repo and cross-repo
+  // success, not just the not_found branches.
+  const notes: string[] = degradedNotes([...fromRes.degraded, ...toRes.degraded]);
 
   // Same repo → single-repo trace, no crossing.
   if (fromEp.member.repoPath === toEp.member.repoPath) {

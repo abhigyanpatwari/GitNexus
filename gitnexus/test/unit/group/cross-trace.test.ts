@@ -252,6 +252,47 @@ describe('runGroupTrace', () => {
     expect((r as { notes: string[] }).notes.join(' ')).toContain('app/backend');
   });
 
+  it('flags a SUCCESSFUL trace as possibly-incomplete when a member DB cannot be queried', async () => {
+    // reg-be throws (locked DB) while reg-fe resolves both endpoints and the
+    // same-repo trace succeeds. The `ok` result must STILL carry the degraded
+    // note — group resolution is only unique among the members we could query,
+    // so if the unreachable member also held `from`/`to` the answer is suspect.
+    const feSyms: Record<string, GroupSymbolResolution> = {
+      checkout: okSym('checkout-uid', 'checkout', 'src/a.ts', 1),
+      callUsers: okSym('callUsers-uid', 'callUsers', 'src/a.ts', 5),
+    };
+    const responders: Record<string, (q: { name?: string }) => Promise<GroupSymbolResolution>> = {
+      'reg-be': () => Promise.reject(new Error('DB locked')),
+      'reg-fe': (q) => Promise.resolve(feSyms[q.name ?? ''] ?? { kind: 'not_found' }),
+    };
+    const base = makePort(
+      {},
+      {
+        'reg-fe:checkout-uid->callUsers-uid': okTrace(
+          [
+            { name: 'checkout', filePath: 'src/a.ts', startLine: 1 },
+            { name: 'callUsers', filePath: 'src/a.ts', startLine: 5 },
+          ],
+          [{ relType: 'CALLS', confidence: 1 }],
+        ),
+      },
+    );
+    const port: GroupToolPort = {
+      ...base,
+      resolveSymbol: async (repo, q) =>
+        (responders[repo.name] ?? (() => Promise.resolve({ kind: 'not_found' })))(q),
+    };
+    const r = await runGroupTrace(
+      { port, gitnexusDir: tmpDir },
+      { name: 'g1', from: 'checkout', to: 'callUsers' },
+    );
+    expect(r).toMatchObject({
+      status: 'ok',
+      notes: expect.arrayContaining([expect.stringContaining('could not be queried')]),
+    });
+    expect((r as { notes: string[] }).notes.join(' ')).toContain('app/backend');
+  });
+
   itLbugReopen('stitches a cross-repo path over one ContractLink', async () => {
     await writeLinkedBridge(groupDir);
     const port = makePort(
