@@ -451,6 +451,72 @@ describe('runGroupTrace', () => {
     });
   });
 
+  itLbugReopen(
+    'destination trace is AMBIGUOUS when a file makes multiple HTTP calls with empty uids',
+    async () => {
+      // Two HTTP consumer contracts in the SAME file, both with empty symbolUid
+      // (the file-fallback case). `from` lives in that file, so `trace(from->from)`
+      // trivially succeeds for BOTH — the destination must be reported ambiguous,
+      // not silently resolved to the highest-confidence sibling.
+      // Distinct consumer NAMES so the bridge links resolve uniquely, but the
+      // SAME file (src/api.ts) and empty uid so both hit the file-fallback.
+      const mk = (cid: string, consName: string, provFile: string) => ({
+        consumer: makeContract({
+          repo: 'app/frontend',
+          role: 'consumer',
+          symbolUid: '',
+          symbolRef: { filePath: 'src/api.ts', name: consName },
+          symbolName: consName,
+          contractId: cid,
+        }),
+        provider: makeContract({
+          repo: 'app/backend',
+          role: 'provider',
+          symbolUid: '',
+          symbolRef: { filePath: provFile, name: 'handler' },
+          symbolName: 'handler',
+          contractId: cid,
+        }),
+      });
+      const users = mk('http::GET::/api/users', 'fetchUsers', 'src/users.ts');
+      const orders = mk('http::GET::/api/orders', 'fetchOrders', 'src/orders.ts');
+      const link = (c: typeof users): CrossLink => ({
+        from: { repo: 'app/frontend', symbolUid: '', symbolRef: c.consumer.symbolRef },
+        to: { repo: 'app/backend', symbolUid: '', symbolRef: c.provider.symbolRef },
+        type: 'http',
+        contractId: c.consumer.contractId,
+        matchType: 'exact',
+        confidence: 1,
+      });
+      await writeBridge(groupDir, {
+        contracts: [users.consumer, users.provider, orders.consumer, orders.provider],
+        crossLinks: [link(users), link(orders)],
+        repoSnapshots: {},
+        missingRepos: [],
+      });
+
+      const port = makePort(
+        { 'reg-fe:caller': okSym('caller-uid', 'caller', 'src/api.ts', 3) },
+        {
+          'reg-fe:caller-uid->caller-uid': okTrace(
+            [{ name: 'caller', filePath: 'src/api.ts', startLine: 3 }],
+            [],
+          ),
+        },
+      );
+      const r = await runGroupTrace({ port, gitnexusDir: tmpDir }, { name: 'g1', from: 'caller' });
+      expect(r).toMatchObject({
+        status: 'ambiguous',
+        role: 'to',
+        candidates: expect.arrayContaining([
+          expect.objectContaining({ id: 'http::GET::/api/users' }),
+          expect.objectContaining({ id: 'http::GET::/api/orders' }),
+        ]),
+        notes: expect.arrayContaining([expect.stringContaining('more than one HTTP call')]),
+      });
+    },
+  );
+
   itLbugReopen('same-repo endpoints trace locally with no crossing', async () => {
     await writeLinkedBridge(groupDir);
     const port = makePort(

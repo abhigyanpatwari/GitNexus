@@ -18,10 +18,13 @@ Fixture (`fixtures-named/`): a frontend with named `fetch` wrappers
 ## What it proves
 
 - `analyze` + `syncGroup` build the correct `ContractLink`s (exact HTTP match).
-- HTTP contracts now carry a **real `symbolUid`** — the extractor resolves each
-  detection to the function it lives in (the function CONTAINING the `fetch`;
-  the named/inline handler for a route) via line-span containment over the
-  `File-[DEFINES]->symbol` graph. Contracts report
+- HTTP contracts carry a **real `symbolUid` whenever the endpoint resolves** —
+  the extractor binds each detection to the function it lives in (the function
+  CONTAINING the `fetch`; the named handler, or the inline handler by line-span
+  containment, for a route). A handler/consumer that resolves to no named symbol
+  (a fully anonymous handler, or a language plugin that does not yet set the
+  call-site line) keeps an empty uid and degrades to the file/destination
+  fallback. When resolved, contracts report
   `extractionStrategy: 'source_scan_resolved'` / `'graph_assisted'` with a uid.
 - `trace @group from=<calling fn> to=<handler fn>` **stitches the cross-repo
   path** (`fetchUsers → listUsers`), reporting the `CONTRACT_LINK` hop and

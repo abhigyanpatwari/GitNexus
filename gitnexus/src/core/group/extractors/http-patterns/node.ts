@@ -361,15 +361,17 @@ function scanBundle(bundle: NodePatternBundle, tree: Parser.Tree): HttpDetection
     const path = unquoteLiteral(pathNode.text);
     if (path === null) continue;
     // Capture the handler argument identifier (`router.get('/x', listUsers)`
-    // → `listUsers`) so a named handler resolves by name; falls back to the
-    // registration line for inline arrow handlers (resolved by containment).
+    // → `listUsers`) so a named handler resolves by name. For an inline/anonymous
+    // handler emit `name: null` (NOT the sentinel `'handler'`) so the resolver
+    // does NOT match an unrelated function that happens to be named `handler` —
+    // it uses the registration line for containment instead.
     const handlerNode = match.captures.handler;
     out.push({
       role: 'provider',
       framework: 'express',
       method: methodNode.text.toUpperCase(),
       path,
-      name: handlerNode?.type === 'identifier' ? handlerNode.text : 'handler',
+      name: handlerNode?.type === 'identifier' ? handlerNode.text : null,
       line: (handlerNode ?? pathNode).startPosition.row + 1,
       confidence: 0.8,
     });

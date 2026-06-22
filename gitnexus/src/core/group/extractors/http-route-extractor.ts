@@ -57,12 +57,6 @@ RETURN callerFile.id AS fileId, callerFile.filePath AS filePath,
        route.name AS routePath, route.id AS routeId,
        r.reason AS fetchReason`;
 
-const CONTAINS_QUERY = `
-MATCH (file:File {id: $fileId})<-[:CodeRelation {type: 'CONTAINS'}]-(sym)
-WHERE sym.startLine IS NOT NULL
-RETURN sym.id AS uid, sym.name AS name, sym.filePath AS filePath, labels(sym) AS labels
-ORDER BY sym.startLine`;
-
 // Function/Method/CodeElement symbols (with line spans) in a file, addressed by
 // repo-relative path so the source-scan paths — which have a path but no graph
 // `fileId` — can resolve the symbol CONTAINING an HTTP call by line-span
@@ -104,31 +98,36 @@ function resolveContainingSymbol(
   line: number,
 ): ResolvedSymbol | null {
   const norm = (x: unknown): string => String(x ?? '');
-  let best: ResolvedSymbol | null = null;
-  let bestSpan = Number.POSITIVE_INFINITY;
-  for (const r of rows) {
-    const labels = JSON.stringify(r.labels ?? r[5] ?? '');
-    if (!['Function', 'Method', 'CodeElement'].some((l) => labels.includes(l))) continue;
-    const start = Number(r.startLine ?? r[3]);
-    const end = Number(r.endLine ?? r[4]);
-    if (!Number.isFinite(start) || !Number.isFinite(end)) continue;
-    // Symbol spans are stored 0-based for some languages and 1-based for
-    // others; the detection line is 1-based. Accept a match against either the
-    // line or its 0-based form so the comparison is base-agnostic. Spans are
-    // multi-line, so this never widens enough to mis-pick a sibling function.
-    const inSpan = (start <= line && line <= end) || (start <= line - 1 && line - 1 <= end);
-    if (!inSpan) continue;
-    const span = end - start;
-    if (span < bestSpan) {
-      bestSpan = span;
-      best = {
-        uid: norm(r.uid ?? r[0]),
-        name: norm(r.name ?? r[1]),
-        filePath: norm(r.filePath ?? r[2]),
-      };
+  // Detection lines are 1-based; symbol spans are stored 0-based for the
+  // languages indexed today (parse-worker records `startPosition.row`). So the
+  // base-correct probe is `line - 1`. Pick the INNERMOST (smallest-span) symbol
+  // whose span contains the probe. Only if nothing contains `line - 1` do we
+  // retry with the raw `line` — a defensive fallback for any future language
+  // that stores 1-based spans. Probing `line - 1` first (rather than OR-ing both)
+  // avoids the +1 slack mis-picking a one-line sibling that sits on `line`.
+  const pick = (probe: number): ResolvedSymbol | null => {
+    let best: ResolvedSymbol | null = null;
+    let bestSpan = Number.POSITIVE_INFINITY;
+    for (const r of rows) {
+      const labels = JSON.stringify(r.labels ?? r[5] ?? '');
+      if (!['Function', 'Method', 'CodeElement'].some((l) => labels.includes(l))) continue;
+      const start = Number(r.startLine ?? r[3]);
+      const end = Number(r.endLine ?? r[4]);
+      if (!Number.isFinite(start) || !Number.isFinite(end)) continue;
+      if (probe < start || probe > end) continue;
+      const span = end - start;
+      if (span < bestSpan) {
+        bestSpan = span;
+        best = {
+          uid: norm(r.uid ?? r[0]),
+          name: norm(r.name ?? r[1]),
+          filePath: norm(r.filePath ?? r[2]),
+        };
+      }
     }
-  }
-  return best && best.uid ? best : null;
+    return best && best.uid ? best : null;
+  };
+  return pick(line - 1) ?? pick(line);
 }
 
 /** A Function/Method in the file matching `name` exactly (for named handlers). */
@@ -202,35 +201,6 @@ function methodFromRouteReason(reason: string): string | null {
   if (/DeleteMapping|decorator-Delete/i.test(r)) return 'DELETE';
   if (/PatchMapping|decorator-Patch/i.test(r)) return 'PATCH';
   return null;
-}
-
-function pickSymbolUid(
-  rows: Record<string, unknown>[],
-  preferredName: string | null,
-): { uid: string; name: string; filePath: string } {
-  const norm = (x: unknown) => String(x ?? '');
-  const labeled = rows.filter((r) => {
-    const labels = r.labels ?? r[3];
-    const s = JSON.stringify(labels);
-    return s.includes('Method') || s.includes('Function');
-  });
-  const pool = labeled.length > 0 ? labeled : rows;
-  if (preferredName) {
-    const hit = pool.find((r) => norm(r.name ?? r[1]) === preferredName);
-    if (hit) {
-      return {
-        uid: norm(hit.uid ?? hit[0]),
-        name: norm(hit.name ?? hit[1]),
-        filePath: norm(hit.filePath ?? hit[2]),
-      };
-    }
-  }
-  const first = pool[0] || rows[0];
-  return {
-    uid: norm(first?.uid ?? first?.[0]),
-    name: norm(first?.name ?? first?.[1]),
-    filePath: norm(first?.filePath ?? first?.[2]),
-  };
 }
 
 // ─── Orchestrator ────────────────────────────────────────────────────
@@ -369,9 +339,10 @@ export class HttpRouteExtractor implements ContractExtractor {
     // function for a consumer / inline-arrow provider, or a named handler for
     // a provider — addressed by repo-relative file path so the source-scan
     // paths (which have no graph `fileId`) can resolve too. Per-file symbol
-    // lists are cached. Returns null without a DB, without a detection line,
-    // or when nothing resolves; the contract then keeps an empty symbolUid and
-    // downstream falls back to file-level boundary matching.
+    // lists are cached. Returns null without a DB or when nothing resolves (a
+    // named provider resolves by name even with no `line`; containment needs
+    // one); the contract then keeps an empty symbolUid and downstream falls
+    // back to file-level boundary matching.
     const fileSymbolCache = new Map<string, Record<string, unknown>[]>();
     const loadFileSymbols = async (filePath: string): Promise<Record<string, unknown>[]> => {
       if (!dbExecutor) return [];
@@ -390,13 +361,18 @@ export class HttpRouteExtractor implements ContractExtractor {
       filePath: string,
       d: HttpDetection,
     ): Promise<ResolvedSymbol | null> => {
-      if (!dbExecutor || d.line == null) return null;
+      if (!dbExecutor) return null;
       const syms = await loadFileSymbols(filePath);
       if (syms.length === 0) return null;
+      // Name resolution does NOT need a detection line — a named provider
+      // handler (Spring/Go/etc. method name) resolves by name even when the
+      // plugin didn't set `line`. Try it FIRST; only the containment fallback
+      // requires a line.
       if (d.role === 'provider' && d.name) {
         const byName = resolveSymbolByName(syms, d.name);
         if (byName) return byName;
       }
+      if (d.line == null) return null;
       return resolveContainingSymbol(syms, d.line);
     };
 
@@ -483,7 +459,6 @@ export class HttpRouteExtractor implements ContractExtractor {
       // `methodFromRouteReason`, we still need the handler name.
       const detections = filePath ? await getDetections(filePath) : [];
       const providerDetections = detections.filter((d) => d.role === 'provider');
-      let handlerName: string | null = null;
       const normalizedRoute = normalizeHttpPath(routePath);
       // Candidates share the same normalized path. When multiple
       // detections at the same path exist (e.g. GET + POST /api/orders
@@ -502,17 +477,11 @@ export class HttpRouteExtractor implements ContractExtractor {
       } else if (candidates.length === 1) {
         match = candidates[0];
       }
-      // else: multiple candidates + unknown method → leave match
-      // undefined so handlerName stays null and skip symbol
-      // enrichment below, keeping the file-basename fallback instead
-      // of letting pickSymbolUid silently pick the first Function /
-      // Method in the file (which reintroduces the mis-attribution
-      // we were trying to avoid). Method stays at the conservative
-      // 'GET' default set below.
-      if (match) {
-        if (!method) method = match.method;
-        handlerName = match.name;
-      }
+      // else: multiple candidates + unknown method → leave match undefined and
+      // skip symbol enrichment below, keeping the file-basename fallback rather
+      // than guessing the wrong handler. Method stays at the conservative 'GET'
+      // default set below.
+      if (match && !method) method = match.method;
       if (!method) method = 'GET';
 
       const pathNorm = normalizeHttpPath(routePath);
@@ -521,28 +490,15 @@ export class HttpRouteExtractor implements ContractExtractor {
       let symbolUid = '';
       let symbolName = path.basename(filePath) || 'handler';
       let symPath = filePath;
-      // Resolve the handler to a real symbol via DEFINES + name/containment
-      // (the matched detection carries the handler name and registration line).
+      // Resolve the handler to a real symbol by name (the handler/method name)
+      // or, for an inline handler, by line-span containment — both over the
+      // File-[DEFINES]->symbol graph via resolveSymbol. No CONTAINS fallback:
+      // CONTAINS is the File->Folder edge, so it never yields a symbol.
       const resolved = match && !ambiguousCandidates ? await resolveSymbol(filePath, match) : null;
       if (resolved) {
         symbolUid = resolved.uid;
         symbolName = resolved.name;
         symPath = resolved.filePath || filePath;
-      } else {
-        const fileId = row.fileId ?? row[0];
-        if (fileId && !ambiguousCandidates) {
-          try {
-            const syms = await db(CONTAINS_QUERY, { fileId });
-            if (syms.length > 0) {
-              const picked = pickSymbolUid(syms, handlerName);
-              symbolUid = picked.uid;
-              symbolName = picked.name;
-              symPath = picked.filePath || filePath;
-            }
-          } catch {
-            /* ignore */
-          }
-        }
       }
 
       out.push({
@@ -651,10 +607,11 @@ export class HttpRouteExtractor implements ContractExtractor {
       let symbolUid = '';
       let symbolName = 'fetch';
       let symPath = filePath;
-      // Resolve the function CONTAINING the fetch by line-span, not the first
-      // symbol in the file (`pickSymbolUid(syms, null)` mis-attributed). Use the
-      // unambiguous single candidate's line; fall back to the old first-symbol
-      // heuristic only when no detection line is available.
+      // Resolve the function CONTAINING the fetch by line-span. Do NOT fall back
+      // to the old `pickSymbolUid(syms, null)` first-symbol-in-file guess: an
+      // arbitrary wrong uid is worse than an empty one because it would win the
+      // contractId merge over a correctly-resolved source-scan contract (and the
+      // empty case degrades to the file-level boundary fallback downstream).
       const resolved =
         consumerCandidates.length === 1
           ? await resolveSymbol(filePath, consumerCandidates[0])
@@ -663,21 +620,6 @@ export class HttpRouteExtractor implements ContractExtractor {
         symbolUid = resolved.uid;
         symbolName = resolved.name;
         symPath = resolved.filePath || filePath;
-      } else {
-        const fileId = row.fileId ?? row[0];
-        if (fileId) {
-          try {
-            const syms = await db(CONTAINS_QUERY, { fileId });
-            if (syms.length > 0) {
-              const picked = pickSymbolUid(syms, null);
-              symbolUid = picked.uid;
-              symbolName = picked.name;
-              symPath = picked.filePath || filePath;
-            }
-          } catch {
-            /* ignore */
-          }
-        }
       }
       out.push({
         contractId: cid,

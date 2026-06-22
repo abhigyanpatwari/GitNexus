@@ -626,13 +626,23 @@ describe('LocalBackend.callTool', () => {
   // is untouched (here it resolves to not_found against the empty mocked graph).
   it('single-repo trace does not route to groupTrace', async () => {
     const groupTraceSpy = vi.spyOn(backend.getGroupService(), 'groupTrace');
-    (executeParameterized as any).mockResolvedValue([]);
+    vi.mocked(executeParameterized).mockResolvedValue([]);
 
     const result = await backend.callTool('trace', { from: 'A', to: 'B' });
 
     expect(groupTraceSpy).not.toHaveBeenCalled();
     expect(result).toMatchObject({ status: 'not_found' });
     groupTraceSpy.mockRestore();
+  });
+
+  // The destination trace (omit `to`) is a cross-repo @group feature; a single-repo
+  // trace without `to` must error clearly, not return an opaque "symbol not found".
+  it('single-repo trace without `to` returns an actionable error', async () => {
+    const result = await backend.callTool('trace', { from: 'A' });
+    expect(result).toMatchObject({
+      status: 'error',
+      error: expect.stringContaining('requires `to`'),
+    });
   });
 
   // #2175 review: the MCP envelope is not schema-validated, so a client can send a

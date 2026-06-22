@@ -43,6 +43,12 @@ vi.mock('../../../src/storage/repo-manager.js', async (importOriginal) => {
 // exit); the bridge write+read and the sequential two-DB build both hit it.
 const describeReopen = process.platform === 'win32' ? describe.skip : describe;
 
+/** Restore an env var to a prior value, or unset it if there was none. */
+function restoreEnvVar(key: string, prev: string | undefined): void {
+  if (prev === undefined) delete process.env[key];
+  else process.env[key] = prev;
+}
+
 interface NodeSpec {
   label: 'Function' | 'BasicBlock';
   props: Record<string, unknown>;
@@ -278,10 +284,9 @@ matching:
   }, 120_000);
 
   afterAll(async () => {
-    if (backend) await backend.dispose();
-    if (prevHome === undefined) delete process.env.GITNEXUS_HOME;
-    else process.env.GITNEXUS_HOME = prevHome;
-    if (tmpHome) fs.rmSync(tmpHome, { recursive: true, force: true });
+    await backend?.dispose();
+    restoreEnvVar('GITNEXUS_HOME', prevHome);
+    fs.rmSync(tmpHome, { recursive: true, force: true });
   }, 120_000);
 
   it('stitches checkout -> getUsers across the bridge with real PDG enrichment', async () => {

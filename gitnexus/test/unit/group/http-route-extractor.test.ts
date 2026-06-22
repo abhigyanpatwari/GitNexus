@@ -86,6 +86,51 @@ describe('HttpRouteExtractor', () => {
       });
     });
 
+    it('does NOT resolve an anonymous express handler to a sibling fn named "handler"', async () => {
+      const dir = path.join(tmpDir, 'anon-handler-no-false-name');
+      fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+      // An unrelated function literally named `handler`, plus an ANONYMOUS route
+      // handler. The anonymous handler must not be mis-attached to `handler`.
+      fs.writeFileSync(
+        path.join(dir, 'src/routes.ts'),
+        `import { Router } from 'express';
+const router = Router();
+function handler() { return 1; }
+router.get('/api/x', (req, res) => { res.json([]); });
+export default router;
+`,
+      );
+      const mockDbExecutor = async (
+        query: string,
+        params?: Record<string, unknown>,
+      ): Promise<Record<string, unknown>[]> => {
+        if (query.includes('UNION ALL') && String(params?.filePath ?? '').includes('routes.ts')) {
+          // `function handler` is on source line 3 → 0-based span [2,2]. The
+          // anonymous route handler is on line 4, so it is NOT inside this span.
+          return [
+            {
+              uid: 'uid-unrelated-handler',
+              name: 'handler',
+              filePath: 'src/routes.ts',
+              startLine: 2,
+              endLine: 2,
+              labels: ['Function'],
+            },
+          ];
+        }
+        return [];
+      };
+
+      const contracts = await extractor.extract(mockDbExecutor, dir, makeRepo(dir));
+      const provider = contracts.find(
+        (c) => c.role === 'provider' && c.contractId === 'http::GET::/api/x',
+      );
+      expect(provider).toBeDefined();
+      // The anonymous arrow (line ~4) is NOT inside `handler`'s span [3,3], so it
+      // must not borrow that uid — name resolution is skipped for anonymous.
+      expect(provider?.symbolUid).not.toBe('uid-unrelated-handler');
+    });
+
     it('resolves an express provider to its named handler symbol', async () => {
       const dir = path.join(tmpDir, 'provider-named-handler');
       fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
@@ -160,7 +205,7 @@ public class UserController {
             },
           ];
         }
-        if (query.includes('CONTAINS')) {
+        if (query.includes('UNION ALL')) {
           return [
             {
               uid: 'uid-ctrl-list',
@@ -230,7 +275,7 @@ func main() {
           ];
         }
         if (query.includes('FETCHES')) return [];
-        if (query.includes('CONTAINS')) {
+        if (query.includes('UNION ALL')) {
           return [
             {
               uid: 'uid-ctrl-list',
@@ -5890,10 +5935,19 @@ async def standalone():
   });
 
   describe('consumer extraction — graph-first (Strategy A)', () => {
-    it('extracts consumers from FETCHES graph edges', async () => {
+    it('extracts consumers from FETCHES graph edges, resolved to the containing fn', async () => {
       const dir = path.join(tmpDir, 'graph-consumers');
       fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
-      fs.writeFileSync(path.join(dir, 'src/api.ts'), 'export const api = {};');
+      // A real fetch so the plugin produces a consumer detection with a line;
+      // the graph path then resolves it to the CONTAINING function by line-span.
+      fs.writeFileSync(
+        path.join(dir, 'src/api.ts'),
+        `export async function fetchUsers() {
+  const r = await fetch('/api/users');
+  return r.json();
+}
+`,
+      );
 
       const mockDbExecutor = async (query: string) => {
         if (query.includes('HANDLES_ROUTE')) return [];
@@ -5908,12 +5962,14 @@ async def standalone():
             },
           ];
         }
-        if (query.includes('CONTAINS')) {
+        if (query.includes('UNION ALL') && String(query).includes('filePath')) {
           return [
             {
               uid: 'uid-fn-fetch',
               name: 'fetchUsers',
               filePath: 'src/api.ts',
+              startLine: 1,
+              endLine: 4,
               labels: ['Function'],
             },
           ];
@@ -5927,12 +5983,20 @@ async def standalone():
       expect(consumers.length).toBeGreaterThanOrEqual(1);
       expect(consumers[0].confidence).toBe(0.9);
       expect(consumers[0].symbolName).toBe('fetchUsers');
+      expect(consumers[0].symbolUid).toBe('uid-fn-fetch');
     });
 
     it('supplements graph consumers with source-scan consumers from other files', async () => {
       const dir = path.join(tmpDir, 'graph-source-consumer-union');
       fs.mkdirSync(path.join(dir, 'src/api'), { recursive: true });
-      fs.writeFileSync(path.join(dir, 'src/api/graph.ts'), 'export const api = {};');
+      fs.writeFileSync(
+        path.join(dir, 'src/api/graph.ts'),
+        `export async function fetchUsers() {
+  const r = await fetch('/api/users');
+  return r.json();
+}
+`,
+      );
       fs.writeFileSync(
         path.join(dir, 'src/api/health.ts'),
         `
@@ -5943,7 +6007,7 @@ export async function fetchHealth() {
 `,
       );
 
-      const mockDbExecutor = async (query: string) => {
+      const mockDbExecutor = async (query: string, params?: Record<string, unknown>) => {
         if (query.includes('HANDLES_ROUTE')) return [];
         if (query.includes('FETCHES')) {
           return [
@@ -5956,15 +6020,14 @@ export async function fetchHealth() {
             },
           ];
         }
-        if (query.includes('CONTAINS')) {
-          return [
-            {
-              uid: 'uid-fn-fetch',
-              name: 'fetchUsers',
-              filePath: 'src/api/graph.ts',
-              labels: ['Function'],
-            },
-          ];
+        if (query.includes('UNION ALL')) {
+          const fp = String(params?.filePath ?? '');
+          const row = fp.includes('graph.ts')
+            ? { uid: 'uid-fn-fetch', name: 'fetchUsers', filePath: 'src/api/graph.ts' }
+            : fp.includes('health.ts')
+              ? { uid: 'uid-fn-health', name: 'fetchHealth', filePath: 'src/api/health.ts' }
+              : null;
+          return row ? [{ ...row, startLine: 1, endLine: 4, labels: ['Function'] }] : [];
         }
         return [];
       };
@@ -5979,7 +6042,7 @@ export async function fetchHealth() {
 
       const sourceConsumer = consumers.find((c) => c.contractId === 'http::GET::/api/health');
       expect(sourceConsumer).toBeDefined();
-      expect(sourceConsumer?.meta.extractionStrategy).toBe('source_scan');
+      expect(sourceConsumer?.meta.extractionStrategy).toBe('source_scan_resolved');
     });
   });
 

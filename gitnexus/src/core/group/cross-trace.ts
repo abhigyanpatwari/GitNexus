@@ -177,6 +177,13 @@ export const TRACE_NOTES = {
   destinationNoReach:
     'An HTTP ContractLink leaves this repo, but `from` does not reach its consumer call site. ' +
     'Trace from the function that actually issues the request.',
+  destinationMultiple:
+    '`from` reaches more than one HTTP endpoint — the destination is ambiguous. The candidates ' +
+    'are listed; pass `to`/`to_uid` to pick one, or trace from the exact calling function.',
+  destinationAmbiguousFile:
+    '`from`’s file makes more than one HTTP call and those consumer contracts carry no resolved ' +
+    'symbolUid, so the specific destination cannot be determined (file-level, not symbol-precise). ' +
+    'The candidates are listed; trace from the exact calling function or pass `to_uid`.',
 } as const;
 
 /** Repo-relative path equality, tolerant of a leading "./" / "/" or a repo prefix. */
@@ -208,7 +215,17 @@ function asLocalTrace(raw: unknown): LocalTraceShape | null {
   if (!raw || typeof raw !== 'object') return null;
   const o = raw as Record<string, unknown>;
   if (typeof o.status !== 'string') return null;
-  return o as unknown as LocalTraceShape;
+  // Project the known fields (all optional but `status`) instead of a blanket
+  // `as unknown as` cast. The per-field `unknown -> T` assertions trust the
+  // single-repo `trace` port contract for the array element shapes.
+  return {
+    status: o.status,
+    from: o.from as LocalTraceShape['from'],
+    to: o.to as LocalTraceShape['to'],
+    hopCount: typeof o.hopCount === 'number' ? o.hopCount : undefined,
+    hops: Array.isArray(o.hops) ? (o.hops as LocalTraceShape['hops']) : undefined,
+    edges: Array.isArray(o.edges) ? (o.edges as LocalTraceShape['edges']) : undefined,
+  };
 }
 
 // ── Bridge pair query (trace-specific; keeps BOTH endpoints) ──────────────
@@ -1005,15 +1022,32 @@ async function stitchCrossRepo(
   }
 }
 
+// A source-scan fallback leaves a file basename as the symbol name when it could
+// not resolve a real handler (e.g. `routes.ts`). Match only KNOWN source-file
+// extensions — NOT any dotted name — so a legitimate method-style handler name
+// (`users.list`, `UserController.index`) is not misclassified as anonymous.
+const FILE_BASENAME_RE =
+  /\.(ts|tsx|js|jsx|mjs|cjs|py|go|php|java|kt|kts|rb|cs|rs|swift|dart|scala|c|cc|cpp|cxx|h|hpp|m|mm)$/i;
+
 /**
  * A provider endpoint's display label. A resolved handler has a real function
  * name; the source-scan fallbacks leave a generic token (`'handler'`/`'fetch'`)
- * or a file basename (contains a dot). Those are treated as anonymous and shown
- * as `<METHOD /path handler>` so the endpoint is still identifiable by route.
+ * or a file basename. Those are treated as anonymous and shown as
+ * `<METHOD /path handler>` so the endpoint is still identifiable by route. When
+ * the bridge row carries a resolved `providerUid`, the name IS a real symbol —
+ * the `'handler'`/`'fetch'` sentinel check is suppressed so a function genuinely
+ * named `handler` is not mislabeled anonymous.
  */
-function providerLabel(providerName: string, contractId: string): { label: string; anon: boolean } {
+function providerLabel(
+  providerName: string,
+  contractId: string,
+  providerUid: string,
+): { label: string; anon: boolean } {
+  const resolved = providerUid !== '';
   const generic =
-    providerName === '' || providerName === 'handler' || /\.[a-z]+$/i.test(providerName);
+    providerName === '' ||
+    FILE_BASENAME_RE.test(providerName) ||
+    (!resolved && (providerName === 'handler' || providerName === 'fetch'));
   return generic
     ? { label: `<${contractId} handler>`, anon: true }
     : { label: providerName, anon: false };
@@ -1036,7 +1070,10 @@ async function stitchToDestination(
     return { status: 'error', group: p.name, error: bridgePrep.error, notes: [] };
   }
   const handle = bridgePrep.handle;
-  const notes: string[] = [];
+  // Seed with degraded-member notes so EVERY outcome (success included) carries
+  // them — a successful destination trace can still be incomplete if a member
+  // repo could not be queried.
+  const notes: string[] = [...degradedNoteList];
   if (p.crossDepthClamped) notes.push(TRACE_NOTES.crossDepthClamped);
 
   try {
@@ -1048,39 +1085,83 @@ async function stitchToDestination(
         group: p.name,
         role: 'to',
         query: p.from_uid ?? p.from,
-        notes: [...notes, ...degradedNoteList],
+        notes,
         suggestion: 'Pass a `to` symbol for a symbol-to-symbol trace, or run group_sync.',
       };
     }
     if (truncated) notes.push(TRACE_NOTES.crossingsCapped(MAX_CROSSINGS_TO_TRY));
 
     const segACache = new Map<string, LocalTraceShape | null>();
+    const traceTo = async (uid: string): Promise<LocalTraceShape | null> => {
+      const cached = segACache.get(uid);
+      if (cached !== undefined) return cached;
+      const raw = await deps.port.trace!(fromEp.member.handle, {
+        from_uid: fromEp.symbol.id,
+        to_uid: uid,
+        maxDepth: p.maxDepth,
+        includeTests: p.includeTests,
+      });
+      const seg = asLocalTrace(raw);
+      const r = seg && seg.status === 'ok' ? seg : null;
+      segACache.set(uid, r);
+      return r;
+    };
+
+    // Collect EVERY connecting crossing (not just the first) so an ambiguous
+    // destination is reported as ambiguous, not silently resolved to the
+    // highest-confidence sibling. Two tiers:
+    //   PRECISE  — the consumer resolved to a real symbolUid that `from` reaches.
+    //              Strong: a successful `trace(from -> consumerUid)` proves it.
+    //   FILE     — the consumer uid is empty but `from` lives in the consumer's
+    //              file. WEAK: `trace(from -> from)` is trivially ok, so this only
+    //              proves the FILE makes the call, not that THIS `from` does.
+    type Hit = { crossing: CrossingRow; segA: LocalTraceShape };
+    const precise: Hit[] = [];
+    const fileLevel: Hit[] = [];
     for (const crossing of crossings) {
-      // Anchor the consumer boundary: its uid, or `from` itself when `from`
-      // lives in the consumer contract's file (the common case).
-      let consumerUid = crossing.consumerUid;
-      if (!consumerUid && sameFile(fromEp.symbol.filePath, crossing.consumerFile)) {
-        consumerUid = fromEp.symbol.id;
+      if (crossing.consumerUid) {
+        const segA = await traceTo(crossing.consumerUid);
+        if (segA) precise.push({ crossing, segA });
+      } else if (sameFile(fromEp.symbol.filePath, crossing.consumerFile)) {
+        const segA = await traceTo(fromEp.symbol.id);
+        if (segA) fileLevel.push({ crossing, segA });
       }
-      if (!consumerUid) continue;
+    }
 
-      let segA = segACache.get(consumerUid);
-      if (segA === undefined) {
-        const raw = await deps.port.trace!(fromEp.member.handle, {
-          from_uid: fromEp.symbol.id,
-          to_uid: consumerUid,
-          maxDepth: p.maxDepth,
-          includeTests: p.includeTests,
-        });
-        const seg = asLocalTrace(raw);
-        segA = seg && seg.status === 'ok' ? seg : null;
-        segACache.set(consumerUid, segA);
+    const endpointKey = (c: CrossingRow): string => `${c.providerRepo ?? ''} ${c.contractId}`;
+    const distinct = (hits: Hit[]): Hit[] => {
+      const seen = new Set<string>();
+      const out: Hit[] = [];
+      for (const h of hits) {
+        const k = endpointKey(h.crossing);
+        if (!seen.has(k)) {
+          seen.add(k);
+          out.push(h);
+        }
       }
-      if (!segA) continue;
+      return out;
+    };
+    const candidatesFrom = (hits: Hit[]): GroupTraceCandidate[] =>
+      distinct(hits).map((h) => ({
+        repo: h.crossing.providerRepo ?? '',
+        id: h.crossing.contractId,
+        name: providerLabel(
+          h.crossing.providerName ?? '',
+          h.crossing.contractId,
+          h.crossing.providerUid ?? '',
+        ).label,
+        filePath: h.crossing.providerFile,
+        startLine: 0,
+      }));
 
-      // `from` reaches this consumer call → report where it lands.
+    const buildOk = (hit: Hit, fileLevelAnchor: boolean): GroupTraceOkResult => {
+      const { crossing, segA } = hit;
       const providerRepo = crossing.providerRepo ?? '';
-      const { label, anon } = providerLabel(crossing.providerName ?? '', crossing.contractId);
+      const { label, anon } = providerLabel(
+        crossing.providerName ?? '',
+        crossing.contractId,
+        crossing.providerUid ?? '',
+      );
       const hopsA = tagHops(segA.hops, fromEp.member.repoPath);
       const providerHop: TraceHop = {
         name: label,
@@ -1093,9 +1174,10 @@ async function stitchToDestination(
         confidence: e.confidence,
       }));
       const boundaryEdge: TraceEdge = { relType: 'CONTRACT_LINK', confidence: crossing.confidence };
-      const hops = [...hopsA, providerHop];
+      const resultNotes = [...notes];
+      if (fileLevelAnchor) resultNotes.push(TRACE_NOTES.fileBoundaryFallback);
       if (anon) {
-        notes.push(
+        resultNotes.push(
           TRACE_NOTES.anonymousHandler(
             crossing.contractId,
             `${providerRepo}:${crossing.providerFile}`,
@@ -1118,10 +1200,40 @@ async function stitchToDestination(
           },
         ],
         hopCount: edgesA.length + 1,
-        hops,
+        hops: [...hopsA, providerHop],
         edges: [...edgesA, boundaryEdge],
         ...(truncated ? { truncated: true } : {}),
-        notes,
+        notes: resultNotes,
+      };
+    };
+
+    // Precise hits win. Crossings are pre-sorted by confidence, so the first
+    // distinct precise hit is the strongest. More than one DISTINCT precise
+    // endpoint means `from` genuinely reaches several — report it as ambiguous.
+    const distinctPrecise = distinct(precise);
+    if (distinctPrecise.length === 1) return buildOk(distinctPrecise[0]!, false);
+    if (distinctPrecise.length > 1) {
+      return {
+        status: 'ambiguous',
+        group: p.name,
+        role: 'to',
+        candidates: candidatesFrom(precise),
+        notes: [...notes, TRACE_NOTES.destinationMultiple],
+      };
+    }
+    // No precise hit — fall back to the file-level anchor, but ONLY when it is
+    // unambiguous (a single endpoint). Multiple file-level endpoints cannot be
+    // disambiguated without a resolved consumer uid, so report them as candidates
+    // rather than guessing the highest-confidence one.
+    const distinctFile = distinct(fileLevel);
+    if (distinctFile.length === 1) return buildOk(distinctFile[0]!, true);
+    if (distinctFile.length > 1) {
+      return {
+        status: 'ambiguous',
+        group: p.name,
+        role: 'to',
+        candidates: candidatesFrom(fileLevel),
+        notes: [...notes, TRACE_NOTES.destinationAmbiguousFile],
       };
     }
 
@@ -1132,7 +1244,7 @@ async function stitchToDestination(
       role: 'to',
       query: p.from_uid ?? p.from,
       ...(truncated ? { truncated: true } : {}),
-      notes: [...notes, ...degradedNoteList],
+      notes,
       suggestion: 'Trace from the function that issues the HTTP request, or pass a `to` symbol.',
     };
   } finally {

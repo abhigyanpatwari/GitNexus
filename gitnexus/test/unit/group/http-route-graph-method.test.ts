@@ -97,7 +97,7 @@ describe('HttpRouteExtractor — Route.method from graph (Step A / #2138)', () =
           },
         ];
       }
-      if (query.includes('CONTAINS')) return containsFor(['createOrder']);
+      if (query.includes('UNION ALL')) return containsFor(['createOrder']);
       return [];
     });
 
@@ -130,7 +130,7 @@ describe('HttpRouteExtractor — Route.method from graph (Step A / #2138)', () =
           },
         ];
       }
-      if (query.includes('CONTAINS')) return containsFor(['listOrders', 'replaceOrder']);
+      if (query.includes('UNION ALL')) return containsFor(['listOrders', 'replaceOrder']);
       return [];
     });
 
@@ -160,7 +160,7 @@ describe('HttpRouteExtractor — Route.method from graph (Step A / #2138)', () =
           },
         ];
       }
-      if (query.includes('CONTAINS')) return containsFor(['deleteOrder']);
+      if (query.includes('UNION ALL')) return containsFor(['deleteOrder']);
       return [];
     });
 
@@ -188,7 +188,7 @@ describe('HttpRouteExtractor — Route.method from graph (Step A / #2138)', () =
           },
         ];
       }
-      if (query.includes('CONTAINS')) return containsFor(['listOrders']);
+      if (query.includes('UNION ALL')) return containsFor(['listOrders']);
       return [];
     });
 
@@ -214,7 +214,7 @@ describe('HttpRouteExtractor — Route.method from graph (Step A / #2138)', () =
           },
         ];
       }
-      if (query.includes('CONTAINS')) return containsFor(['createOrder']);
+      if (query.includes('UNION ALL')) return containsFor(['createOrder']);
       return [];
     });
 
