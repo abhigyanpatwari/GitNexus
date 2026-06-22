@@ -349,6 +349,112 @@ describe('runGroupTrace', () => {
     });
   });
 
+  itLbugReopen(
+    'memoizes the home-repo segment across crossings that share one consumer',
+    async () => {
+      // Two ContractLinks from the SAME consumer (c1) to two providers (p1, p2).
+      // p1's provider→to segment fails; p2's succeeds. The from→consumer segment
+      // (segA) depends only on the consumer uid, so it must be traced ONCE even
+      // though two crossings are attempted — the O(2·N) → O(distinct endpoints) fix.
+      const consumer = makeContract({
+        repo: 'app/frontend',
+        role: 'consumer',
+        symbolUid: 'c1',
+        symbolRef: { filePath: 'src/api.ts', name: 'callBoth' },
+        symbolName: 'callBoth',
+        contractId: 'http::GET::/api/a',
+      });
+      const provider1 = makeContract({
+        repo: 'app/backend',
+        role: 'provider',
+        symbolUid: 'p1',
+        symbolRef: { filePath: 'src/r1.ts', name: 'h1' },
+        symbolName: 'h1',
+        contractId: 'http::GET::/api/a',
+      });
+      const provider2 = makeContract({
+        repo: 'app/backend',
+        role: 'provider',
+        symbolUid: 'p2',
+        symbolRef: { filePath: 'src/r2.ts', name: 'h2' },
+        symbolName: 'h2',
+        contractId: 'http::GET::/api/b',
+      });
+      const link1: CrossLink = {
+        from: { repo: 'app/frontend', symbolUid: 'c1', symbolRef: consumer.symbolRef },
+        to: { repo: 'app/backend', symbolUid: 'p1', symbolRef: provider1.symbolRef },
+        type: 'http',
+        contractId: 'http::GET::/api/a',
+        matchType: 'exact',
+        confidence: 0.9,
+      };
+      const link2: CrossLink = {
+        from: { repo: 'app/frontend', symbolUid: 'c1', symbolRef: consumer.symbolRef },
+        to: { repo: 'app/backend', symbolUid: 'p2', symbolRef: provider2.symbolRef },
+        type: 'http',
+        contractId: 'http::GET::/api/b',
+        matchType: 'exact',
+        confidence: 0.8,
+      };
+      await writeBridge(groupDir, {
+        contracts: [consumer, provider1, provider2],
+        crossLinks: [link1, link2],
+        repoSnapshots: {},
+        missingRepos: [],
+      });
+
+      const handles: Record<string, GroupRepoHandle> = {
+        'reg-fe': { id: 'fe', name: 'reg-fe', repoPath: '/fe', storagePath: '/fe/.gitnexus' },
+        'reg-be': { id: 'be', name: 'reg-be', repoPath: '/be', storagePath: '/be/.gitnexus' },
+      };
+      const symbolTable: Record<string, GroupSymbolResolution> = {
+        'reg-fe:start': okSym('start-uid', 'start', 'src/start.ts', 1),
+        'reg-be:target': okSym('target-uid', 'target', 'src/target.ts', 1),
+      };
+      const traceTable: Record<string, unknown> = {
+        'reg-fe:start-uid->c1': okTrace(
+          [
+            { name: 'start', filePath: 'src/start.ts', startLine: 1 },
+            { name: 'callBoth', filePath: 'src/api.ts', startLine: 1 },
+          ],
+          [{ relType: 'CALLS', confidence: 1 }],
+        ),
+        'reg-be:p1->target-uid': { status: 'no_path' },
+        'reg-be:p2->target-uid': okTrace(
+          [{ name: 'target', filePath: 'src/target.ts', startLine: 1 }],
+          [],
+        ),
+      };
+      const traceCalls: string[] = [];
+      const port: GroupToolPort = {
+        resolveRepo: async (rp) => handles[String(rp)] ?? handles['reg-fe']!,
+        impact: async () => ({}),
+        query: async () => ({}),
+        impactByUid: async () => null,
+        context: async () => ({}),
+        resolveSymbol: async (repo, q) =>
+          symbolTable[`${repo.name}:${q.name ?? q.uid ?? ''}`] ?? { kind: 'not_found' },
+        trace: async (repo, params) => {
+          const key = `${repo.name}:${params.from_uid}->${params.to_uid}`;
+          traceCalls.push(key);
+          return traceTable[key] ?? { status: 'no_path' };
+        },
+      };
+
+      const r = await runGroupTrace(
+        { port, gitnexusDir: tmpDir },
+        { name: 'g1', from: 'start', to: 'target' },
+      );
+      // p2's crossing wins (p1's provider segment had no path).
+      expect(r).toMatchObject({
+        status: 'ok',
+        crossings: [{ contractId: 'http::GET::/api/b' }],
+      });
+      // segA (start → c1) was traced exactly once despite two crossings sharing c1.
+      expect(traceCalls.filter((k) => k === 'reg-fe:start-uid->c1')).toHaveLength(1);
+    },
+  );
+
   // ── U4: opt-in PDG data-flow enrichment ──────────────────────────────────
 
   itLbugReopen('pdg:true attaches data-flow for the boundary-adjacent segment', async () => {

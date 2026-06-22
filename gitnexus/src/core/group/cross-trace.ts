@@ -151,6 +151,9 @@ export const TRACE_NOTES = {
   pdgSameRepoNoop:
     'pdg:true has no effect for a same-repo trace — PDG data-flow enrichment only runs ' +
     'at a cross-repo ContractLink boundary.',
+  crossingsCapped: (cap: number): string =>
+    `More than ${cap} ContractLinks connect these repos; only the ${cap} highest-confidence ` +
+    `crossings were tried. Narrow with from_uid/to_uid if the expected path was missed.`,
 } as const;
 
 export interface RunGroupTraceDeps {
@@ -178,6 +181,19 @@ function asLocalTrace(raw: unknown): LocalTraceShape | null {
 
 // ── Bridge pair query (trace-specific; keeps BOTH endpoints) ──────────────
 
+/**
+ * Cap on ContractLinks attempted between one repo pair. Each crossing can cost
+ * up to two trace BFS queries, so an unbounded `bridge.lbug` (a repo pair that
+ * shares many contracts) would otherwise drive an unbounded fan-out. Crossings
+ * are confidence-sorted, so the cap keeps the strongest candidates; exceeding it
+ * is surfaced via a note (no silent truncation). Generous because the per-unique
+ * endpoint memoization in `stitchCrossRepo` already collapses most of the cost.
+ */
+const MAX_CROSSINGS_TO_TRY = 50;
+
+// ORDER BY + LIMIT in the query so the cap keeps the highest-confidence
+// crossings (LadybugDB has no rel-property index; this is the bound). One extra
+// row (`+ 1`) lets the caller detect — and surface — truncation.
 const CY_CROSSINGS_BETWEEN = `
 MATCH (consumer:Contract)-[l:ContractLink]->(provider:Contract)
 WHERE consumer.repo = $fromRepo
@@ -190,6 +206,8 @@ RETURN consumer.symbolUid AS consumerUid,
        l.confidence AS confidence,
        l.contractId AS contractId,
        consumer.type AS contractType
+ORDER BY l.confidence DESC
+LIMIT ${MAX_CROSSINGS_TO_TRY + 1}
 `;
 
 interface CrossingRow {
@@ -219,18 +237,24 @@ async function listCrossingsBetween(
   handle: BridgeHandle,
   fromRepo: string,
   toRepo: string,
-): Promise<CrossingRow[]> {
+): Promise<{ crossings: CrossingRow[]; truncated: boolean }> {
   const rows = await queryBridge<Record<string, unknown>>(handle, CY_CROSSINGS_BETWEEN, {
     fromRepo,
     toRepo,
   });
-  const crossings: CrossingRow[] = [];
+  const all: CrossingRow[] = [];
   for (const raw of rows) {
     const c = rowToCrossing(raw);
-    if (c) crossings.push(c);
+    if (c) all.push(c);
   }
-  crossings.sort((a, b) => b.confidence - a.confidence);
-  return crossings;
+  // The query already orders by confidence DESC; re-sort defensively so the cap
+  // keeps the strongest candidates even if a tuple-mode driver reorders rows.
+  all.sort((a, b) => b.confidence - a.confidence);
+  const truncated = all.length > MAX_CROSSINGS_TO_TRY;
+  return {
+    crossings: truncated ? all.slice(0, MAX_CROSSINGS_TO_TRY) : all,
+    truncated,
+  };
 }
 
 // ── Cross-member symbol resolution ───────────────────────────────────────
@@ -650,7 +674,7 @@ async function stitchCrossRepo(
   if (p.pdg) notes.push(TRACE_NOTES.pdgRequested);
 
   try {
-    const crossings = await listCrossingsBetween(
+    const { crossings, truncated: crossingsTruncated } = await listCrossingsBetween(
       handle,
       fromEp.member.repoPath,
       toEp.member.repoPath,
@@ -666,27 +690,49 @@ async function stitchCrossRepo(
           'Run group_sync, or trace within a single repo.',
       };
     }
+    if (crossingsTruncated) notes.push(TRACE_NOTES.crossingsCapped(MAX_CROSSINGS_TO_TRY));
+
+    // Per-endpoint trace memoization: many crossings can share one consumer
+    // (a client call linked to several providers) or one provider, and the
+    // home-repo segment depends ONLY on the consumer uid (from is fixed) while
+    // the target-repo segment depends ONLY on the provider uid (to is fixed).
+    // Cache each unique-endpoint trace so the fan-out is bounded by the number
+    // of distinct endpoints, not the number of crossings. `undefined` = not yet
+    // attempted; `null` = attempted and did not connect.
+    const segACache = new Map<string, LocalTraceShape | null>();
+    const segBCache = new Map<string, LocalTraceShape | null>();
+
+    const traceFromTo = async (
+      handleToUse: GroupRepoHandle,
+      fromUid: string,
+      toUid: string,
+    ): Promise<LocalTraceShape | null> => {
+      const raw = await deps.port.trace!(handleToUse, {
+        from_uid: fromUid,
+        to_uid: toUid,
+        maxDepth: p.maxDepth,
+        includeTests: p.includeTests,
+      });
+      const seg = asLocalTrace(raw);
+      return seg && seg.status === 'ok' ? seg : null;
+    };
 
     // Single boundary crossing (MAX_SUPPORTED_CROSS_DEPTH). Try crossings in
     // confidence order; the first one whose two segments both connect wins.
     for (const crossing of crossings) {
-      const segARaw = await deps.port.trace!(fromEp.member.handle, {
-        from_uid: fromEp.symbol.id,
-        to_uid: crossing.consumerUid,
-        maxDepth: p.maxDepth,
-        includeTests: p.includeTests,
-      });
-      const segA = asLocalTrace(segARaw);
-      if (!segA || segA.status !== 'ok') continue;
+      let segA = segACache.get(crossing.consumerUid);
+      if (segA === undefined) {
+        segA = await traceFromTo(fromEp.member.handle, fromEp.symbol.id, crossing.consumerUid);
+        segACache.set(crossing.consumerUid, segA);
+      }
+      if (!segA) continue;
 
-      const segBRaw = await deps.port.trace!(toEp.member.handle, {
-        from_uid: crossing.providerUid,
-        to_uid: toEp.symbol.id,
-        maxDepth: p.maxDepth,
-        includeTests: p.includeTests,
-      });
-      const segB = asLocalTrace(segBRaw);
-      if (!segB || segB.status !== 'ok') continue;
+      let segB = segBCache.get(crossing.providerUid);
+      if (segB === undefined) {
+        segB = await traceFromTo(toEp.member.handle, crossing.providerUid, toEp.symbol.id);
+        segBCache.set(crossing.providerUid, segB);
+      }
+      if (!segB) continue;
 
       // Found a connecting crossing. Build the stitched path.
       const hopsA = tagHops(segA.hops, fromEp.member.repoPath);
