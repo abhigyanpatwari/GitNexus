@@ -43,6 +43,91 @@ describe('HttpRouteExtractor', () => {
 
   const toPosixPath = (filePath: string): string => filePath.replace(/\\/g, '/');
 
+  describe('symbolUid resolution via containment (DEFINES)', () => {
+    it('resolves a source-scan consumer to the function CONTAINING the fetch', async () => {
+      const dir = path.join(tmpDir, 'consumer-containment');
+      fs.mkdirSync(path.join(dir, 'src/api'), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'src/api/users.ts'),
+        `export async function fetchUsers() {
+  const r = await fetch('/api/users');
+  return r.json();
+}
+`,
+      );
+      // The DEFINES query (CONTAINING_QUERY) returns the function span; every
+      // other query (HANDLES_ROUTE / FETCHES / CONTAINS) is empty, so only the
+      // source-scan + line-span containment path resolves the symbol.
+      const mockDbExecutor = async (
+        query: string,
+        params?: Record<string, unknown>,
+      ): Promise<Record<string, unknown>[]> => {
+        if (query.includes('DEFINES') && String(params?.filePath ?? '').includes('users.ts')) {
+          return [
+            {
+              uid: 'fn-fetchUsers',
+              name: 'fetchUsers',
+              filePath: 'src/api/users.ts',
+              startLine: 1,
+              endLine: 4,
+              labels: ['Function'],
+            },
+          ];
+        }
+        return [];
+      };
+
+      const contracts = await extractor.extract(mockDbExecutor, dir, makeRepo(dir));
+      const consumer = contracts.find((c) => c.role === 'consumer');
+      expect(consumer).toMatchObject({
+        symbolUid: 'fn-fetchUsers',
+        symbolName: 'fetchUsers',
+        meta: { extractionStrategy: 'source_scan_resolved' },
+      });
+    });
+
+    it('resolves an express provider to its named handler symbol', async () => {
+      const dir = path.join(tmpDir, 'provider-named-handler');
+      fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'src/routes.ts'),
+        `import { Router } from 'express';
+const router = Router();
+export function listUsers(req, res) { res.json([]); }
+router.get('/api/users', listUsers);
+export default router;
+`,
+      );
+      const mockDbExecutor = async (
+        query: string,
+        params?: Record<string, unknown>,
+      ): Promise<Record<string, unknown>[]> => {
+        if (query.includes('DEFINES') && String(params?.filePath ?? '').includes('routes.ts')) {
+          return [
+            {
+              uid: 'fn-listUsers',
+              name: 'listUsers',
+              filePath: 'src/routes.ts',
+              startLine: 3,
+              endLine: 3,
+              labels: ['Function'],
+            },
+          ];
+        }
+        return [];
+      };
+
+      const contracts = await extractor.extract(mockDbExecutor, dir, makeRepo(dir));
+      const provider = contracts.find(
+        (c) => c.role === 'provider' && c.contractId === 'http::GET::/api/users',
+      );
+      expect(provider).toMatchObject({
+        symbolUid: 'fn-listUsers',
+        symbolName: 'listUsers',
+      });
+    });
+  });
+
   describe('provider extraction — graph-first (Strategy A)', () => {
     it('extracts routes from Route/HANDLES_ROUTE graph + source scan for method', async () => {
       const dir = path.join(tmpDir, 'graph-first');

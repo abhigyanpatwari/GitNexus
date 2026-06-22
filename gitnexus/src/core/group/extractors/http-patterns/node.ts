@@ -65,7 +65,7 @@ const EXPRESS_SPEC: PatternSpec<Record<string, never>> = {
       function: (member_expression
         object: (identifier) @obj (#match? @obj "^(router|app)$")
         property: (property_identifier) @http_method (#match? @http_method "^(get|post|put|delete|patch)$"))
-      arguments: (arguments . [(string) (template_string)] @path))
+      arguments: (arguments . [(string) (template_string)] @path . (_)? @handler))
   `,
 };
 
@@ -348,6 +348,7 @@ function scanBundle(bundle: NodePatternBundle, tree: Parser.Tree): HttpDetection
       method: httpMethod,
       path: joinPath(prefix, rawPath),
       name,
+      line: methodNode.startPosition.row + 1,
       confidence: 0.8,
     });
   }
@@ -359,12 +360,17 @@ function scanBundle(bundle: NodePatternBundle, tree: Parser.Tree): HttpDetection
     if (!methodNode || !pathNode) continue;
     const path = unquoteLiteral(pathNode.text);
     if (path === null) continue;
+    // Capture the handler argument identifier (`router.get('/x', listUsers)`
+    // → `listUsers`) so a named handler resolves by name; falls back to the
+    // registration line for inline arrow handlers (resolved by containment).
+    const handlerNode = match.captures.handler;
     out.push({
       role: 'provider',
       framework: 'express',
       method: methodNode.text.toUpperCase(),
       path,
-      name: 'handler',
+      name: handlerNode?.type === 'identifier' ? handlerNode.text : 'handler',
+      line: (handlerNode ?? pathNode).startPosition.row + 1,
       confidence: 0.8,
     });
   }
@@ -385,6 +391,7 @@ function scanBundle(bundle: NodePatternBundle, tree: Parser.Tree): HttpDetection
       method: method.toUpperCase(),
       path,
       name: null,
+      line: pathNode.startPosition.row + 1,
       confidence: 0.7,
     });
   }
@@ -403,6 +410,7 @@ function scanBundle(bundle: NodePatternBundle, tree: Parser.Tree): HttpDetection
       method: 'GET',
       path,
       name: null,
+      line: pathNode.startPosition.row + 1,
       confidence: 0.7,
     });
   }
@@ -420,6 +428,7 @@ function scanBundle(bundle: NodePatternBundle, tree: Parser.Tree): HttpDetection
       method: methodNode.text.toUpperCase(),
       path,
       name: null,
+      line: pathNode.startPosition.row + 1,
       confidence: 0.7,
     });
   }
@@ -437,6 +446,7 @@ function scanBundle(bundle: NodePatternBundle, tree: Parser.Tree): HttpDetection
       method: methodNode.text.toUpperCase(),
       path,
       name: null,
+      line: pathNode.startPosition.row + 1,
       confidence: 0.7,
     });
   }
@@ -456,6 +466,7 @@ function scanBundle(bundle: NodePatternBundle, tree: Parser.Tree): HttpDetection
       method,
       path,
       name: null,
+      line: optionsNode.startPosition.row + 1,
       confidence: 0.7,
     });
   }
@@ -476,6 +487,7 @@ function scanBundle(bundle: NodePatternBundle, tree: Parser.Tree): HttpDetection
       method,
       path,
       name: null,
+      line: optionsNode.startPosition.row + 1,
       confidence: 0.7,
     });
   }

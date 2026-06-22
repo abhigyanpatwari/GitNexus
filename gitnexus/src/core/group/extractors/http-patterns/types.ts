@@ -36,6 +36,15 @@ export interface HttpDetection {
    * Null when no good candidate is available.
    */
   name: string | null;
+  /**
+   * 1-based source line of the call/registration site (the `fetch(...)` for
+   * consumers, the `router.get(...)` / decorator for providers). Lets the
+   * extractor resolve the contract to the *containing* symbol (the function
+   * the call lives in) via line-span containment, so HTTP contracts carry a
+   * real `symbolUid` instead of an empty one. Optional — a plugin that does
+   * not set it falls back to file-level boundary resolution downstream.
+   */
+  line?: number;
   /** Confidence in (0, 1]. Source-scan plugins typically use 0.7–0.8. */
   confidence: number;
 }
