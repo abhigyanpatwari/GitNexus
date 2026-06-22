@@ -793,7 +793,9 @@ Traverses CALLS edges plus HAS_METHOD (class → member) edges, so a trace can d
 
 Returns: ordered hops with file:line, and an aligned edges[] of edge type + confidence. When no path exists, reports the furthest reachable node so you know where the chain breaks (and truncated: true if a traversal cap was hit first).
 
-CROSS-REPO (experimental): pass repo as "@groupName" to trace across repositories in a group. When from/to live in different member repos, the trace stitches the two repo-local segments across a single ContractLink boundary (e.g. an HTTP consumer→provider link), clamped to one crossing. The result adds crossings[] (the bridged contract with matchType/confidence), tags each hop with its member repo, and a notes[] channel for degraded states. The boundary hop is reported with edge type CONTRACT_LINK. Pass pdg:true to also attach the intra-procedural data-flow (REACHING_DEF) for boundary-adjacent segments when those repos were indexed with --pdg; absent a PDG layer it degrades to call-level hops with a note.`,
+CROSS-REPO (experimental): pass repo as "@groupName" to trace across repositories in a group. When from/to live in different member repos, the trace stitches the two repo-local segments across a single ContractLink boundary (e.g. an HTTP consumer→provider link), clamped to one crossing. The result adds crossings[] (the bridged contract with matchType/confidence), tags each hop with its member repo, and a notes[] channel for degraded states. The boundary hop is reported with edge type CONTRACT_LINK. Pass pdg:true to also attach the intra-procedural data-flow (REACHING_DEF) for boundary-adjacent segments when those repos were indexed with --pdg; absent a PDG layer it degrades to call-level hops with a note.
+
+DESTINATION TRACE (cross-repo): for an "@groupName" trace, OMIT to/to_uid/to_file to trace 'from' to wherever its outgoing HTTP call lands. The result ends at the provider endpoint (reported by route + file even when the handler is an anonymous function with no nameable symbol). This is the way to follow a client call to a backend handler you cannot name.`,
     annotations: READ_ONLY_TOOL_ANNOTATIONS,
     inputSchema: {
       type: 'object',
@@ -801,7 +803,11 @@ CROSS-REPO (experimental): pass repo as "@groupName" to trace across repositorie
         from: { type: 'string', description: 'Source symbol name' },
         from_uid: { type: 'string', description: 'Source symbol UID (zero-ambiguity)' },
         from_file: { type: 'string', description: 'Source file path hint for disambiguation' },
-        to: { type: 'string', description: 'Target symbol name' },
+        to: {
+          type: 'string',
+          description:
+            "Target symbol name. Omit (with to_uid/to_file) on an @group trace to trace 'from' to its HTTP destination.",
+        },
         to_uid: { type: 'string', description: 'Target symbol UID (zero-ambiguity)' },
         to_file: { type: 'string', description: 'Target file path hint for disambiguation' },
         maxDepth: {

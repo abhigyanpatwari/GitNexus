@@ -187,10 +187,10 @@ describe('runGroupTrace', () => {
     await cleanupTempDir(tmpDir);
   });
 
-  it('errors when from/to are missing', async () => {
+  it('errors when from is missing', async () => {
     const port = makePort({}, {});
-    const r = await runGroupTrace({ port, gitnexusDir: tmpDir }, { name: 'g1', from: 'A' });
-    expect(r).toMatchObject({ status: 'error', error: expect.stringContaining('to') });
+    const r = await runGroupTrace({ port, gitnexusDir: tmpDir }, { name: 'g1' });
+    expect(r).toMatchObject({ status: 'error', error: expect.stringContaining('from') });
   });
 
   it('not_found when the from symbol resolves in no member', async () => {
@@ -367,6 +367,89 @@ describe('runGroupTrace', () => {
       });
     },
   );
+
+  itLbugReopen(
+    'destination trace (no `to`) reports an ANONYMOUS handler endpoint by route + file',
+    async () => {
+      // The inherent case: the provider handler is an anonymous arrow with no
+      // symbol (symbolUid:''). Omitting `to` follows the consumer's HTTP call to
+      // the endpoint, reported by route + file even though it has no name.
+      const consumer = makeContract({
+        repo: 'app/frontend',
+        role: 'consumer',
+        symbolUid: 'callUsers-uid',
+        symbolRef: { filePath: 'src/api.ts', name: 'callUsers' },
+        symbolName: 'callUsers',
+        contractId: 'http::GET::/api/users',
+      });
+      const provider = makeContract({
+        repo: 'app/backend',
+        role: 'provider',
+        symbolUid: '', // anonymous handler — no symbol in the graph
+        symbolRef: { filePath: 'src/routes.ts', name: 'handler' },
+        symbolName: 'handler',
+        contractId: 'http::GET::/api/users',
+      });
+      const link: CrossLink = {
+        from: { repo: 'app/frontend', symbolUid: 'callUsers-uid', symbolRef: consumer.symbolRef },
+        to: { repo: 'app/backend', symbolUid: '', symbolRef: provider.symbolRef },
+        type: 'http',
+        contractId: 'http::GET::/api/users',
+        matchType: 'exact',
+        confidence: 1,
+      };
+      await writeBridge(groupDir, {
+        contracts: [consumer, provider],
+        crossLinks: [link],
+        repoSnapshots: {},
+        missingRepos: [],
+      });
+
+      const port = makePort(
+        { 'reg-fe:callUsers': okSym('callUsers-uid', 'callUsers', 'src/api.ts', 3) },
+        {
+          'reg-fe:callUsers-uid->callUsers-uid': okTrace(
+            [{ name: 'callUsers', filePath: 'src/api.ts', startLine: 3 }],
+            [],
+          ),
+        },
+      );
+      // NO `to` — destination trace.
+      const r = await runGroupTrace(
+        { port, gitnexusDir: tmpDir },
+        { name: 'g1', from: 'callUsers' },
+      );
+      expect(r).toMatchObject({
+        status: 'ok',
+        crossings: [{ contractId: 'http::GET::/api/users', toRepo: 'app/backend' }],
+        to: {
+          name: '<http::GET::/api/users handler>',
+          repo: 'app/backend',
+          filePath: 'src/routes.ts',
+        },
+        hops: [
+          { name: 'callUsers', repo: 'app/frontend' },
+          { name: '<http::GET::/api/users handler>', repo: 'app/backend' },
+        ],
+        edges: [{ relType: 'CONTRACT_LINK' }],
+        notes: expect.arrayContaining([expect.stringContaining('anonymous')]),
+      });
+    },
+  );
+
+  itLbugReopen('destination trace not_found when no HTTP link leaves the repo', async () => {
+    await writeUnlinkedBridge(groupDir);
+    const port = makePort(
+      { 'reg-fe:checkout': okSym('checkout-uid', 'checkout', 'src/checkout.ts', 10) },
+      {},
+    );
+    const r = await runGroupTrace({ port, gitnexusDir: tmpDir }, { name: 'g1', from: 'checkout' });
+    expect(r).toMatchObject({
+      status: 'not_found',
+      role: 'to',
+      notes: expect.arrayContaining([expect.stringContaining('No outgoing HTTP ContractLink')]),
+    });
+  });
 
   itLbugReopen('same-repo endpoints trace locally with no crossing', async () => {
     await writeLinkedBridge(groupDir);

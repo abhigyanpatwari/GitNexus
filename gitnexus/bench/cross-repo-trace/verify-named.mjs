@@ -89,6 +89,20 @@ for (const [from, to, label] of pairs) {
   }
 }
 
+line('\n## destination trace (no `to`) — follow consumer to its HTTP endpoint');
+{
+  const r = await backend.callTool('trace', {
+    repo: '@named-group',
+    from: 'fetchUsers',
+    pdg: true,
+  });
+  const ok = r.status === 'ok' && (r.crossings?.length ?? 0) === 1;
+  line(
+    `  fetchUsers → (destination) => status=${r.status}` +
+      (ok ? `  lands at ${r.to?.repo}:${r.to?.name} via ${r.crossings[0].contractId}` : ''),
+  );
+}
+
 line('\n## Verdict');
 line(
   `  trace pairs: ${pairs.length}  |  ok WITH cross-repo crossing: ${okWithCrossing}/${pairs.length}`,

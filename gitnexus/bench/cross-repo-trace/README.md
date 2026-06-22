@@ -48,8 +48,18 @@ PHP, Kotlin, Java), and containment matches symbols by `filePath` across
 `Function`/`Method`/`CodeElement`, so it also resolves methods nested in classes
 (Java/Kotlin), not just top-level functions.
 
-Residual (inherent): a **fully anonymous handler with no named callee**
-(`router.get('/x', (req,res) => res.json(...))`) exposes no symbol to name as a
-trace target — those rely on the file fallback (or a named function the handler
-calls). A plugin that does not set the line simply falls through to the file
-fallback with no regression.
+### Anonymous handlers — the destination trace
+
+A **fully anonymous handler** (`router.get('/x', (req,res) => res.json(...))`)
+has no symbol node at all, so it cannot be named as a `to` target. This is
+handled by the **destination trace**: omit `to`/`to_uid`/`to_file` on an
+`@group` trace and `trace from=<consumer>` follows the consumer's outgoing HTTP
+call across the bridge and reports where it lands — by route + file:line, with a
+`notes[]` entry flagging the handler as anonymous:
+
+```
+app/frontend:fetchUsers → app/backend:<http::GET::/api/users handler>   [CONTRACT_LINK]
+```
+
+To go deeper into an anonymous handler, trace to a named function it calls (the
+provider segment then resolves normally).

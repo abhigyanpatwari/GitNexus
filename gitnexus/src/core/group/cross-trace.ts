@@ -168,6 +168,15 @@ export const TRACE_NOTES = {
     'A cross-repo boundary was anchored by contract FILE, not symbol — the HTTP (or other ' +
     'source-scan) contract carried no resolved symbolUid, so the endpoint was matched because ' +
     'it lives in the contract file. The boundary is file-level, not symbol-precise.',
+  anonymousHandler: (route: string, location: string): string =>
+    `The handler for ${route} is anonymous (no named symbol); reported by location ${location}. ` +
+    `Pass a named function the handler calls as 'to' to trace deeper into the provider.`,
+  destinationNoLink:
+    'No outgoing HTTP ContractLink leaves this repo for any provider — the symbol may make no ' +
+    'cross-repo HTTP call, or group_sync has not linked it. Pass a `to` for a symbol-to-symbol trace.',
+  destinationNoReach:
+    'An HTTP ContractLink leaves this repo, but `from` does not reach its consumer call site. ' +
+    'Trace from the function that actually issues the request.',
 } as const;
 
 /** Repo-relative path equality, tolerant of a leading "./" / "/" or a repo prefix. */
@@ -235,6 +244,28 @@ ORDER BY l.confidence DESC
 LIMIT ${MAX_CROSSINGS_TO_TRY + 1}
 `;
 
+// Destination trace: every ContractLink leaving a consumer repo, to ANY provider
+// repo. Returns the provider's repo + symbol name so the endpoint can be reported
+// even when it has no resolved symbolUid (an anonymous handler).
+const CY_CROSSINGS_FROM = `
+MATCH (consumer:Contract)-[l:ContractLink]->(provider:Contract)
+WHERE consumer.repo = $fromRepo
+  AND consumer.role = 'consumer'
+  AND provider.role = 'provider'
+RETURN consumer.symbolUid AS consumerUid,
+       provider.symbolUid AS providerUid,
+       consumer.filePath AS consumerFile,
+       provider.filePath AS providerFile,
+       provider.repo AS providerRepo,
+       provider.symbolName AS providerName,
+       l.matchType AS matchType,
+       l.confidence AS confidence,
+       l.contractId AS contractId,
+       consumer.type AS contractType
+ORDER BY l.confidence DESC
+LIMIT ${MAX_CROSSINGS_TO_TRY + 1}
+`;
+
 interface CrossingRow {
   consumerUid: string;
   providerUid: string;
@@ -244,6 +275,9 @@ interface CrossingRow {
   confidence: number;
   contractId: string;
   contractType: string;
+  /** Populated only by the destination query (CY_CROSSINGS_FROM). */
+  providerRepo?: string;
+  providerName?: string;
 }
 
 function rowToCrossing(r: Record<string, unknown>): CrossingRow | null {
@@ -286,6 +320,44 @@ async function listCrossingsBetween(
   }
   // The query already orders by confidence DESC; re-sort defensively so the cap
   // keeps the strongest candidates even if a tuple-mode driver reorders rows.
+  all.sort((a, b) => b.confidence - a.confidence);
+  const truncated = all.length > MAX_CROSSINGS_TO_TRY;
+  return {
+    crossings: truncated ? all.slice(0, MAX_CROSSINGS_TO_TRY) : all,
+    truncated,
+  };
+}
+
+function destRowToCrossing(r: Record<string, unknown>): CrossingRow | null {
+  const consumerUid = String(r.consumerUid ?? r[0] ?? '');
+  const consumerFile = String(r.consumerFile ?? r[2] ?? '');
+  // Only the consumer side must be anchorable here — the provider endpoint is
+  // reported (by name/file), not traced into, so an empty provider uid is fine.
+  if (!consumerUid && !consumerFile) return null;
+  return {
+    consumerUid,
+    providerUid: String(r.providerUid ?? r[1] ?? ''),
+    consumerFile,
+    providerFile: String(r.providerFile ?? r[3] ?? ''),
+    providerRepo: String(r.providerRepo ?? r[4] ?? ''),
+    providerName: String(r.providerName ?? r[5] ?? ''),
+    matchType: String(r.matchType ?? r[6] ?? 'exact'),
+    confidence: Number(r.confidence ?? r[7] ?? 0),
+    contractId: String(r.contractId ?? r[8] ?? ''),
+    contractType: String(r.contractType ?? r[9] ?? 'custom'),
+  };
+}
+
+async function listCrossingsFrom(
+  handle: BridgeHandle,
+  fromRepo: string,
+): Promise<{ crossings: CrossingRow[]; truncated: boolean }> {
+  const rows = await queryBridge<Record<string, unknown>>(handle, CY_CROSSINGS_FROM, { fromRepo });
+  const all: CrossingRow[] = [];
+  for (const raw of rows) {
+    const c = destRowToCrossing(raw);
+    if (c) all.push(c);
+  }
   all.sort((a, b) => b.confidence - a.confidence);
   const truncated = all.length > MAX_CROSSINGS_TO_TRY;
   return {
@@ -484,6 +556,12 @@ interface ParsedTraceParams {
   pdgLimit: number;
   /** True when the caller asked for a deeper crossDepth than is supported. */
   crossDepthClamped: boolean;
+  /**
+   * True when no `to`/`to_uid`/`to_file` was given: a *destination* trace that
+   * follows `from`'s outgoing HTTP call across the bridge and reports where it
+   * lands. This is how an anonymous handler (no nameable symbol) is reached.
+   */
+  destination: boolean;
 }
 
 const DEFAULT_PDG_FLOW_LIMIT = 50;
@@ -502,8 +580,10 @@ function parseTraceParams(
   const to = str(params.to);
   const from_uid = str(params.from_uid);
   const to_uid = str(params.to_uid);
+  const to_file = str(params.to_file);
   if (!from && !from_uid) return { ok: false, error: 'from (or from_uid) is required' };
-  if (!to && !to_uid) return { ok: false, error: 'to (or to_uid) is required' };
+  // No `to` at all → destination trace (trace `from` to its HTTP endpoint).
+  const destination = !to && !to_uid && !to_file;
   const maxDepth =
     typeof params.maxDepth === 'number' && params.maxDepth > 0 ? params.maxDepth : undefined;
   const rawLimit =
@@ -521,12 +601,13 @@ function parseTraceParams(
       from_uid,
       to_uid,
       from_file: str(params.from_file),
-      to_file: str(params.to_file),
+      to_file,
       maxDepth,
       includeTests: Boolean(params.includeTests),
       pdg: params.pdg === true,
       pdgLimit: Math.min(rawLimit, MAX_PDG_FLOW_LIMIT),
       crossDepthClamped,
+      destination,
     },
   };
 }
@@ -645,6 +726,14 @@ export async function runGroupTrace(
       notes: [],
     };
   }
+  const fromEp = fromRes.outcome.endpoint;
+
+  // Destination trace: no `to` was given → follow `from`'s outgoing HTTP call
+  // across the bridge and report where it lands. This is the only way to reach
+  // a handler that has no nameable symbol (an inline anonymous route handler).
+  if (p.destination) {
+    return stitchToDestination(deps, p, fromEp, groupDir, degradedNotes(fromRes.degraded));
+  }
 
   const toRes = await resolveAcrossMembers(deps.port, members, {
     name: p.to,
@@ -671,7 +760,6 @@ export async function runGroupTrace(
     };
   }
 
-  const fromEp = fromRes.outcome.endpoint;
   const toEp = toRes.outcome.endpoint;
   const notes: string[] = [];
 
@@ -911,6 +999,141 @@ async function stitchCrossRepo(
           'or a higher maxDepth, before concluding no path exists.'
         : 'A ContractLink exists between the repos, but no local path reaches the consumer ' +
           'call site or leaves the provider handler. Try a higher maxDepth.',
+    };
+  } finally {
+    await closeBridgeDb(handle);
+  }
+}
+
+/**
+ * A provider endpoint's display label. A resolved handler has a real function
+ * name; the source-scan fallbacks leave a generic token (`'handler'`/`'fetch'`)
+ * or a file basename (contains a dot). Those are treated as anonymous and shown
+ * as `<METHOD /path handler>` so the endpoint is still identifiable by route.
+ */
+function providerLabel(providerName: string, contractId: string): { label: string; anon: boolean } {
+  const generic =
+    providerName === '' || providerName === 'handler' || /\.[a-z]+$/i.test(providerName);
+  return generic
+    ? { label: `<${contractId} handler>`, anon: true }
+    : { label: providerName, anon: false };
+}
+
+/**
+ * Destination trace: no `to` was given. Follow `from`'s outgoing HTTP call across
+ * the bridge and report the provider endpoint it lands on — by route + file when
+ * the handler is anonymous (the only way to reach a handler with no symbol).
+ */
+async function stitchToDestination(
+  deps: RunGroupTraceDeps,
+  p: ParsedTraceParams,
+  fromEp: ResolvedEndpoint,
+  groupDir: string,
+  degradedNoteList: string[],
+): Promise<GroupTraceResult> {
+  const bridgePrep = await ensureBridgeReady(groupDir);
+  if ('error' in bridgePrep) {
+    return { status: 'error', group: p.name, error: bridgePrep.error, notes: [] };
+  }
+  const handle = bridgePrep.handle;
+  const notes: string[] = [];
+  if (p.crossDepthClamped) notes.push(TRACE_NOTES.crossDepthClamped);
+
+  try {
+    const { crossings, truncated } = await listCrossingsFrom(handle, fromEp.member.repoPath);
+    if (crossings.length === 0) {
+      notes.push(TRACE_NOTES.destinationNoLink);
+      return {
+        status: 'not_found',
+        group: p.name,
+        role: 'to',
+        query: p.from_uid ?? p.from,
+        notes: [...notes, ...degradedNoteList],
+        suggestion: 'Pass a `to` symbol for a symbol-to-symbol trace, or run group_sync.',
+      };
+    }
+    if (truncated) notes.push(TRACE_NOTES.crossingsCapped(MAX_CROSSINGS_TO_TRY));
+
+    const segACache = new Map<string, LocalTraceShape | null>();
+    for (const crossing of crossings) {
+      // Anchor the consumer boundary: its uid, or `from` itself when `from`
+      // lives in the consumer contract's file (the common case).
+      let consumerUid = crossing.consumerUid;
+      if (!consumerUid && sameFile(fromEp.symbol.filePath, crossing.consumerFile)) {
+        consumerUid = fromEp.symbol.id;
+      }
+      if (!consumerUid) continue;
+
+      let segA = segACache.get(consumerUid);
+      if (segA === undefined) {
+        const raw = await deps.port.trace!(fromEp.member.handle, {
+          from_uid: fromEp.symbol.id,
+          to_uid: consumerUid,
+          maxDepth: p.maxDepth,
+          includeTests: p.includeTests,
+        });
+        const seg = asLocalTrace(raw);
+        segA = seg && seg.status === 'ok' ? seg : null;
+        segACache.set(consumerUid, segA);
+      }
+      if (!segA) continue;
+
+      // `from` reaches this consumer call → report where it lands.
+      const providerRepo = crossing.providerRepo ?? '';
+      const { label, anon } = providerLabel(crossing.providerName ?? '', crossing.contractId);
+      const hopsA = tagHops(segA.hops, fromEp.member.repoPath);
+      const providerHop: TraceHop = {
+        name: label,
+        filePath: crossing.providerFile,
+        startLine: 0,
+        repo: providerRepo,
+      };
+      const edgesA: TraceEdge[] = (segA.edges ?? []).map((e) => ({
+        relType: e.relType,
+        confidence: e.confidence,
+      }));
+      const boundaryEdge: TraceEdge = { relType: 'CONTRACT_LINK', confidence: crossing.confidence };
+      const hops = [...hopsA, providerHop];
+      if (anon) {
+        notes.push(
+          TRACE_NOTES.anonymousHandler(
+            crossing.contractId,
+            `${providerRepo}:${crossing.providerFile}`,
+          ),
+        );
+      }
+      return {
+        status: 'ok',
+        group: p.name,
+        from: endpointFrom(fromEp),
+        to: { name: label, filePath: crossing.providerFile, startLine: 0, repo: providerRepo },
+        crossings: [
+          {
+            fromRepo: fromEp.member.repoPath,
+            toRepo: providerRepo,
+            contractId: crossing.contractId,
+            contractType: crossing.contractType,
+            matchType: crossing.matchType,
+            confidence: crossing.confidence,
+          },
+        ],
+        hopCount: edgesA.length + 1,
+        hops,
+        edges: [...edgesA, boundaryEdge],
+        ...(truncated ? { truncated: true } : {}),
+        notes,
+      };
+    }
+
+    notes.push(TRACE_NOTES.destinationNoReach);
+    return {
+      status: 'not_found',
+      group: p.name,
+      role: 'to',
+      query: p.from_uid ?? p.from,
+      ...(truncated ? { truncated: true } : {}),
+      notes: [...notes, ...degradedNoteList],
+      suggestion: 'Trace from the function that issues the HTTP request, or pass a `to` symbol.',
     };
   } finally {
     await closeBridgeDb(handle);
