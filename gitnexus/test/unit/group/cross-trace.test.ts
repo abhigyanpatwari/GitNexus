@@ -10,6 +10,7 @@ import type {
   GroupToolPort,
   GroupRepoHandle,
   GroupSymbolResolution,
+  GroupPdgFlowResult,
 } from '../../../src/core/group/service.js';
 import type { CrossLink } from '../../../src/core/group/types.js';
 import { makeContract } from './fixtures.js';
@@ -120,6 +121,7 @@ function okTrace(
 function makePort(
   symbolTable: Record<string, GroupSymbolResolution>,
   traceTable: Record<string, unknown>,
+  pdgTable?: Record<string, GroupPdgFlowResult>,
 ): GroupToolPort {
   const handles: Record<string, GroupRepoHandle> = {
     'reg-fe': { id: 'fe', name: 'reg-fe', repoPath: '/fe', storagePath: '/fe/.gitnexus' },
@@ -135,6 +137,39 @@ function makePort(
       symbolTable[`${repo.name}:${q.name ?? q.uid ?? ''}`] ?? { kind: 'not_found' },
     trace: async (repo, params) =>
       traceTable[`${repo.name}:${params.from_uid}->${params.to_uid}`] ?? { status: 'no_path' },
+    ...(pdgTable
+      ? {
+          pdgFlows: async (
+            repo: GroupRepoHandle,
+            anchor: { uid?: string },
+          ): Promise<GroupPdgFlowResult> =>
+            pdgTable[`${repo.name}:${anchor.uid}`] ?? { available: false, hops: [] },
+        }
+      : {}),
+  };
+}
+
+/** The cross-repo stitch fixtures (checkout -> getUsers over one ContractLink). */
+function crossSymbolTable(): Record<string, GroupSymbolResolution> {
+  return {
+    'reg-fe:checkout': okSym('checkout-uid', 'checkout', 'src/checkout.ts', 10),
+    'reg-be:getUsers': okSym('getUsers-uid', 'getUsers', 'src/routes.ts', 5),
+  };
+}
+
+function crossTraceTable(): Record<string, unknown> {
+  return {
+    'reg-fe:checkout-uid->consumer-uid': okTrace(
+      [
+        { name: 'checkout', filePath: 'src/checkout.ts', startLine: 10 },
+        { name: 'callUsers', filePath: 'src/api.ts', startLine: 3 },
+      ],
+      [{ relType: 'CALLS', confidence: 1 }],
+    ),
+    'reg-be:provider-uid->getUsers-uid': okTrace(
+      [{ name: 'getUsers', filePath: 'src/routes.ts', startLine: 5 }],
+      [],
+    ),
   };
 }
 
@@ -312,5 +347,73 @@ describe('runGroupTrace', () => {
       status: 'ok',
       notes: expect.arrayContaining([expect.stringContaining('Multi-hop')]),
     });
+  });
+
+  // ── U4: opt-in PDG data-flow enrichment ──────────────────────────────────
+
+  itLbugReopen('pdg:true attaches data-flow for the boundary-adjacent segment', async () => {
+    await writeLinkedBridge(groupDir);
+    const port = makePort(crossSymbolTable(), crossTraceTable(), {
+      'reg-fe:consumer-uid': {
+        available: true,
+        variable: 'userId',
+        hops: [
+          { line: 11, text: 'const userId = req.params.id', variable: 'userId' },
+          { line: 12, text: 'callUsers(userId)', variable: 'userId' },
+        ],
+      },
+    });
+    const r = await runGroupTrace(
+      { port, gitnexusDir: tmpDir },
+      { name: 'g1', from: 'checkout', to: 'getUsers', pdg: true },
+    );
+    expect(r).toMatchObject({
+      status: 'ok',
+      dataFlow: [
+        {
+          repo: 'app/frontend',
+          variable: 'userId',
+          hops: [{ line: 11, variable: 'userId' }, { line: 12 }],
+        },
+      ],
+      notes: expect.arrayContaining([expect.stringContaining('experimental')]),
+    });
+  });
+
+  itLbugReopen('pdg:true with no PDG layer degrades with a note and no dataFlow', async () => {
+    await writeLinkedBridge(groupDir);
+    const port = makePort(crossSymbolTable(), crossTraceTable(), {
+      'reg-fe:consumer-uid': { available: false, hops: [] },
+      'reg-be:provider-uid': { available: false, hops: [] },
+    });
+    const r = await runGroupTrace(
+      { port, gitnexusDir: tmpDir },
+      { name: 'g1', from: 'checkout', to: 'getUsers', pdg: true },
+    );
+    expect(r).toMatchObject({
+      status: 'ok',
+      notes: expect.arrayContaining([expect.stringContaining('No PDG layer')]),
+    });
+    expect((r as { dataFlow?: unknown }).dataFlow).toBeUndefined();
+  });
+
+  itLbugReopen('pdg omitted never requests enrichment', async () => {
+    await writeLinkedBridge(groupDir);
+    let pdgCalls = 0;
+    const base = makePort(crossSymbolTable(), crossTraceTable());
+    const port: typeof base = {
+      ...base,
+      pdgFlows: async () => {
+        pdgCalls++;
+        return { available: true, hops: [{ line: 1, text: 'x' }] };
+      },
+    };
+    const r = await runGroupTrace(
+      { port, gitnexusDir: tmpDir },
+      { name: 'g1', from: 'checkout', to: 'getUsers' },
+    );
+    expect(r).toMatchObject({ status: 'ok' });
+    expect((r as { dataFlow?: unknown }).dataFlow).toBeUndefined();
+    expect(pdgCalls).toBe(0);
   });
 });

@@ -44,6 +44,7 @@ import {
   type GroupToolPort,
   type GroupSymbolResolution,
   type GroupPdgFlowResult,
+  type GroupPdgFlowHop,
 } from '../../core/group/service.js';
 import { resolveAtGroupMemberRepoPath } from '../../core/group/resolve-at-member.js';
 import { collectBestChunks } from '../../core/embeddings/types.js';
@@ -665,12 +666,96 @@ export class LocalBackend {
     anchor: { name?: string; uid?: string; file_path?: string },
     opts: { limit?: number },
   ): Promise<GroupPdgFlowResult> {
-    // U4 implements the real REACHING_DEF anchor walk. Until then the cross-repo
-    // trace ships at call-level only: report no layer so it degrades cleanly.
-    void anchor;
-    void opts;
-    void repo;
-    return { available: false, hops: [] };
+    try {
+      await this.ensureInitialized(repo);
+      return await this._pdgFlowsForGroupImpl(repo, anchor, opts);
+    } catch {
+      // Enrichment is auxiliary — never let a PDG query failure fail the trace.
+      return { available: false, hops: [] };
+    }
+  }
+
+  /**
+   * Intra-procedural REACHING_DEF data-flow within the anchor symbol's block
+   * span. Reuses the same anchored, bind-param-only `flows` query as
+   * `pdg_query` (no rel-property index ⇒ the BasicBlock id-prefix + line-span
+   * anchor IS the bound). The anchor is resolved by UID when available (the
+   * boundary symbol is known precisely), avoiding the name-ambiguity the
+   * by-name `resolveBlockAnchor` path can hit. Data flow never crosses the repo
+   * boundary — this only describes how values move toward the boundary call
+   * inside one function.
+   */
+  private async _pdgFlowsForGroupImpl(
+    repo: RepoHandle,
+    anchor: { name?: string; uid?: string; file_path?: string },
+    opts: { limit?: number },
+  ): Promise<GroupPdgFlowResult> {
+    const rawLimit = opts.limit ?? PDG_QUERY_DEFAULT_LIMIT;
+    const limit =
+      Number.isInteger(rawLimit) && rawLimit >= 1 && rawLimit <= PDG_QUERY_MAX_LIMIT
+        ? rawLimit
+        : PDG_QUERY_DEFAULT_LIMIT;
+
+    // Meta probe: layer present iff the flows cap is stamped. `false` is a
+    // definitive absence (degrade to call-level); `undefined` is unreadable
+    // meta (fall through and infer presence from rows found).
+    const pdgStamped = await pdgStampForMode(repo.lbugPath, 'flows');
+    if (pdgStamped === false) return { available: false, hops: [] };
+
+    // Resolve the anchor symbol (UID is precise; fall back to name/file).
+    const resolved = await this.resolveSymbolCandidates(
+      repo,
+      { uid: anchor.uid, name: anchor.name },
+      { file_path: anchor.file_path },
+    );
+    if (resolved.kind !== 'ok') {
+      // Layer may exist but we couldn't anchor — report availability from the
+      // stamp so the caller's note reflects the layer, not the miss.
+      return { available: pdgStamped === true, hops: [] };
+    }
+    const sym = resolved.symbol;
+
+    // Same span-anchored clause as resolveBlockAnchor's symbol branch: the
+    // BasicBlock startLine is 1-based vs the 0-based symbol span, so shift both
+    // bounds +1. `idPrefix`/`symStart`/`symEnd` are bind params; the edge type
+    // is a hardcoded literal — no user string is ever interpolated.
+    const hasSpan =
+      typeof sym.startLine === 'number' &&
+      typeof sym.endLine === 'number' &&
+      sym.endLine >= sym.startLine;
+    const idPrefix = `BasicBlock:${sym.filePath}:`;
+    const anchorClause = hasSpan
+      ? 'a.id STARTS WITH $idPrefix AND a.startLine >= $symStart AND a.startLine <= $symEnd'
+      : 'a.id STARTS WITH $idPrefix';
+    const queryParams: Record<string, unknown> = hasSpan
+      ? { idPrefix, symStart: sym.startLine + 1, symEnd: sym.endLine + 1 }
+      : { idPrefix };
+
+    const rows = await executeParameterized(
+      repo.lbugPath,
+      `MATCH (a:BasicBlock)-[r:CodeRelation]->(b:BasicBlock)
+       WHERE r.type = 'REACHING_DEF' AND ${anchorClause}
+       RETURN a.startLine AS defLine, b.startLine AS useLine, b.text AS useText, r.reason AS reason
+       ORDER BY useLine, defLine, reason
+       LIMIT ${limit + 1}`,
+      queryParams,
+    );
+
+    const truncated = rows.length > limit;
+    const capped = truncated ? rows.slice(0, limit) : rows;
+    const hops: GroupPdgFlowHop[] = capped.map((r: any) => ({
+      line: (r.useLine ?? r[1]) as number,
+      text: String(r.useText ?? r[2] ?? '').trim(),
+      variable: decodeReachingDefReason(r.reason ?? r[3] ?? '').name || undefined,
+    }));
+
+    const available = pdgStamped === true || hops.length > 0;
+    return {
+      available,
+      ...(hops[0]?.variable ? { variable: hops[0].variable } : {}),
+      hops,
+      ...(truncated ? { truncated: true } : {}),
+    };
   }
 
   /** Close all pooled LadybugDB connections (CLI one-shot; optional for long-lived MCP). */
