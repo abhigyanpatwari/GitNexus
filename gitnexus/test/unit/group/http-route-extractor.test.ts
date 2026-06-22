@@ -1158,12 +1158,13 @@ public class StatusController implements StatusApi {
       ).toHaveLength(0);
     });
 
-    it('does not extract fully-qualified Java route annotations (documented limitation #2254)', async () => {
-      // JAVA_ROUTE_ANNOTATION_PATTERNS binds `name: (identifier)`; a FQN route
-      // annotation parses its name as `scoped_identifier` and is not matched, so
-      // its route is not extracted (only the route string — the controller itself
-      // is still recognised). This pins that documented limitation / asymmetry
-      // with Kotlin. If FQN matching is ever added, flip this assertion.
+    it('extracts fully-qualified Java route annotations (#2254 FQN follow-through)', async () => {
+      // JAVA_ROUTE_ANNOTATION_PATTERNS now binds `name: [(identifier)
+      // (scoped_identifier)]`; a deep FQN route annotation
+      // (`@org.springframework…GetMapping`) is matched and the for-loop
+      // normalizes the name to its trailing segment (`simpleName`). The
+      // controller was already recognised (hasAnnotation trailing-segment match);
+      // now the route string is extracted too — parity with the Kotlin plugin.
       const dir = path.join(tmpDir, 'java-fqn-route-annotation');
       fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
       fs.writeFileSync(
@@ -1181,12 +1182,57 @@ class FqnController {
       const contracts = await extractor.extract(null, dir, makeRepo(dir));
       const providers = contracts.filter((c) => c.role === 'provider');
 
-      // The FQN route annotation is not extracted (documented limitation).
-      expect(providers.find((c) => c.contractId === 'http::GET::/api/users')).toBeUndefined();
-      // And it must not over-match into a bogus contract either.
       expect(
-        providers.filter((c) => c.symbolRef.filePath.endsWith('FqnController.java')),
-      ).toHaveLength(0);
+        providers.find(
+          (c) =>
+            c.contractId === 'http::GET::/api/users' &&
+            c.meta.framework === 'spring' &&
+            c.confidence === 0.8,
+        ),
+      ).toBeDefined();
+    });
+
+    it('extracts FQN OpenFeign consumers + two-segment FQN, with anti-overreach', async () => {
+      const dir = path.join(tmpDir, 'java-fqn-feign');
+      fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'src', 'QualifiedClient.java'),
+        `
+@org.springframework.cloud.openfeign.FeignClient(name = "order-service", path = "/api")
+interface QualifiedClient {
+  @org.springframework.web.bind.annotation.GetMapping("/orders/{id}")
+  OrderDto getOrder(String id);
+}
+
+@foo.RestController
+@foo.RequestMapping("/v2")
+class ShortFqnController {
+  @foo.GetMapping("/items")
+  Object items() { return null; }
+}
+
+@com.example.NotARoute("/should-not-extract")
+class Unrelated {
+  @com.example.AlsoNotARoute("/nope")
+  Object noop() { return null; }
+}
+`,
+      );
+
+      const contracts = await extractor.extract(null, dir, makeRepo(dir));
+      const fromFile = contracts.filter((c) =>
+        c.symbolRef.filePath.endsWith('QualifiedClient.java'),
+      );
+
+      // Exactly two contracts: the FQN @FeignClient(path)+@GetMapping consumer and
+      // the two-segment-FQN provider. The `Unrelated` class's non-route FQN
+      // annotations contribute nothing (anti-overreach — simpleName misses them).
+      expect(new Set(fromFile.map((c) => `${c.role} ${c.contractId} ${c.meta.framework}`))).toEqual(
+        new Set([
+          'consumer http::GET::/api/orders/{param} openfeign',
+          'provider http::GET::/v2/items spring',
+        ]),
+      );
     });
 
     it('extracts Express router.get patterns', async () => {
@@ -1769,6 +1815,366 @@ class ApiClient {
             c.confidence === 0.7,
         ),
       ).toBeDefined();
+    });
+
+    it('extracts Java RestTemplate URI.create(...) static paths', async () => {
+      const dir = path.join(tmpDir, 'java-rest-template-uri-create');
+      fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'src', 'UriClient.java'),
+        `
+import java.net.URI;
+import org.springframework.http.HttpMethod;
+import org.springframework.web.client.RestTemplate;
+
+class UriClient {
+  void run(RestTemplate restTemplate) {
+    String dynamicPath = "/api/dynamic-users/99";
+    restTemplate.getForEntity(URI.create("/api/uri-users/42"), String.class);
+    restTemplate.exchange(URI.create("/api/uri-users/42/details"), HttpMethod.POST, null, String.class);
+    restTemplate.getForObject(dynamicPath, String.class);
+  }
+}
+`,
+      );
+
+      const contracts = await extractor.extract(null, dir, makeRepo(dir));
+      const consumers = contracts.filter((c) => c.role === 'consumer');
+
+      expect(
+        consumers.find(
+          (c) =>
+            c.contractId === 'http::GET::/api/uri-users/{param}' &&
+            c.meta.framework === 'spring-rest-template' &&
+            c.confidence === 0.7,
+        ),
+      ).toBeDefined();
+      expect(
+        consumers.find((c) => c.contractId === 'http::POST::/api/uri-users/{param}/details'),
+      ).toBeDefined();
+      // Anti-overreach: a variable-bound path is not statically resolvable, so
+      // the widened `(_) @path` capture must NOT emit a consumer for it.
+      expect(
+        consumers.find((c) => c.contractId === 'http::GET::/api/dynamic-users/{param}'),
+      ).toBeUndefined();
+    });
+
+    it('extracts Java RestTemplate UriComponentsBuilder fluent-chain paths', async () => {
+      const dir = path.join(tmpDir, 'java-rest-template-builder');
+      fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'src', 'BuilderClient.java'),
+        `
+import org.springframework.web.client.RestTemplate;
+import org.springframework.web.util.UriComponentsBuilder;
+
+class BuilderClient {
+  void run(RestTemplate restTemplate, String idVar) {
+    restTemplate.getForObject(
+        UriComponentsBuilder.fromPath("/api").path("/builder-users").pathSegment("42").build().toUriString(),
+        String.class);
+    restTemplate.getForObject(
+        UriComponentsBuilder.fromUriString("/base").path("/sub").queryParam("page", "1").build().toUriString(),
+        String.class);
+    restTemplate.getForObject(
+        UriComponentsBuilder.fromHttpUrl("https://example.com/api").path("/external-users").query("page=1").build().toUriString(),
+        String.class);
+    restTemplate.getForObject(
+        UriComponentsBuilder.fromPath("/api").pathSegment(idVar).build().toUriString(),
+        String.class);
+  }
+}
+`,
+      );
+
+      const contracts = await extractor.extract(null, dir, makeRepo(dir));
+      const consumers = contracts.filter((c) => c.role === 'consumer');
+
+      // fromPath + path + numeric pathSegment → joined, numeric → {param}.
+      expect(
+        consumers.find((c) => c.contractId === 'http::GET::/api/builder-users/{param}'),
+      ).toBeDefined();
+      // fromUriString seed + path; the queryParam attribute does not alter the path.
+      expect(consumers.find((c) => c.contractId === 'http::GET::/base/sub')).toBeDefined();
+      // fromHttpUrl host seed: helper keeps the host; normalizeConsumerPath strips it.
+      expect(
+        consumers.find((c) => c.contractId === 'http::GET::/api/external-users'),
+      ).toBeDefined();
+      // Anti-overreach: the non-literal `pathSegment(idVar)` call defeats static
+      // resolution, so exactly the three resolvable chains emit — not a fourth.
+      expect(
+        consumers.filter((c) => c.symbolRef.filePath.endsWith('BuilderClient.java')),
+      ).toHaveLength(3);
+    });
+
+    it('strips a query string baked into a UriComponentsBuilder seed (#2268)', async () => {
+      const dir = path.join(tmpDir, 'java-rest-template-builder-query-seed');
+      fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'src', 'QuerySeedClient.java'),
+        `
+import org.springframework.web.client.RestTemplate;
+import org.springframework.web.util.UriComponentsBuilder;
+
+class QuerySeedClient {
+  void run(RestTemplate restTemplate) {
+    restTemplate.getForObject(
+        UriComponentsBuilder.fromUriString("/base?x=1").path("/sub").build().toUriString(),
+        String.class);
+    restTemplate.getForObject(
+        UriComponentsBuilder.fromHttpUrl("https://example.com/api?x=1").path("/y").build().toUriString(),
+        String.class);
+  }
+}
+`,
+      );
+
+      const contracts = await extractor.extract(null, dir, makeRepo(dir));
+      const consumers = contracts.filter((c) => c.role === 'consumer');
+
+      // Query in the seed must NOT swallow the later .path() segment:
+      // fromUriString("/base?x=1").path("/sub") → /base/sub (was /base before the fix).
+      expect(consumers.find((c) => c.contractId === 'http::GET::/base/sub')).toBeDefined();
+      // Host + query seed: query stripped at the seed, host stripped downstream.
+      expect(consumers.find((c) => c.contractId === 'http::GET::/api/y')).toBeDefined();
+      // Count guard: exactly the two resolvable chains. A regression that
+      // double-emitted (e.g. both /base and /base/sub) would slip past the two
+      // `find` assertions above without this.
+      expect(
+        consumers.filter((c) => c.symbolRef.filePath.endsWith('QuerySeedClient.java')),
+      ).toHaveLength(2);
+    });
+
+    it('resolves a UriComponentsBuilder argument passed to restTemplate.exchange (#2268)', async () => {
+      // The exchange() path capture was widened to `(_) @path` alongside the
+      // plain RestTemplate loop, but was only covered with URI.create. Pin that a
+      // UriComponentsBuilder chain through exchange() also resolves end-to-end.
+      const dir = path.join(tmpDir, 'java-rest-template-exchange-builder');
+      fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'src', 'ExchangeBuilderClient.java'),
+        `
+import org.springframework.http.HttpMethod;
+import org.springframework.web.client.RestTemplate;
+import org.springframework.web.util.UriComponentsBuilder;
+
+class ExchangeBuilderClient {
+  void run(RestTemplate restTemplate) {
+    restTemplate.exchange(
+        UriComponentsBuilder.fromPath("/api").path("/exchange-users").build().toUriString(),
+        HttpMethod.PUT, null, String.class);
+  }
+}
+`,
+      );
+
+      const contracts = await extractor.extract(null, dir, makeRepo(dir));
+      const consumers = contracts.filter((c) => c.role === 'consumer');
+      expect(
+        consumers.find((c) => c.contractId === 'http::PUT::/api/exchange-users'),
+      ).toBeDefined();
+    });
+
+    it('appends UriComponentsBuilder .path() verbatim per Spring semantics (#2268)', async () => {
+      // Spring `.path(p)` appends `p` as-is (no slash inserted) then collapses
+      // duplicate slashes — unlike `.pathSegment`, which slash-joins. So a
+      // no-leading-slash arg is NOT given a phantom slash, a leading-slash arg
+      // joins cleanly, a trailing-slash base collapses, and a host seed keeps its
+      // `://` until the downstream normalizer strips the host.
+      const dir = path.join(tmpDir, 'java-rest-template-builder-path');
+      fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'src', 'PathClient.java'),
+        `
+import org.springframework.web.client.RestTemplate;
+import org.springframework.web.util.UriComponentsBuilder;
+
+class PathClient {
+  void run(RestTemplate restTemplate) {
+    restTemplate.getForObject(UriComponentsBuilder.fromPath("/api").path("noslash").build().toUriString(), String.class);
+    restTemplate.getForObject(UriComponentsBuilder.fromPath("/svc").path("/withslash").build().toUriString(), String.class);
+    restTemplate.getForObject(UriComponentsBuilder.fromPath("/trail/").path("/seg").build().toUriString(), String.class);
+    restTemplate.getForObject(UriComponentsBuilder.fromPath("/first-").path("value/").path("/end").build().toUriString(), String.class);
+    restTemplate.getForObject(UriComponentsBuilder.fromHttpUrl("https://example.com/api").path("/ext").build().toUriString(), String.class);
+    restTemplate.getForObject(UriComponentsBuilder.fromPath("/empty").path("").build().toUriString(), String.class);
+  }
+}
+`,
+      );
+
+      const contracts = await extractor.extract(null, dir, makeRepo(dir));
+      const fromFile = contracts.filter(
+        (c) => c.role === 'consumer' && c.symbolRef.filePath.endsWith('PathClient.java'),
+      );
+
+      // Exactly these six — no phantom slash on the no-leading-slash arg, no
+      // double slash from the trailing-slash base, no `://` corruption.
+      expect(new Set(fromFile.map((c) => c.contractId))).toEqual(
+        new Set([
+          'http::GET::/apinoslash', // fromPath("/api").path("noslash") — verbatim, no slash
+          'http::GET::/svc/withslash', // leading-slash arg joins cleanly
+          'http::GET::/trail/seg', // trailing-slash base collapses
+          'http::GET::/first-value/end', // value/ + /end → one slash
+          'http::GET::/api/ext', // host seed: `://` kept, host stripped downstream
+          'http::GET::/empty', // empty .path("") is a no-op
+        ]),
+      );
+    });
+
+    it('does not overflow on a pathological UriComponentsBuilder chain (#2268)', async () => {
+      const dir = path.join(tmpDir, 'java-rest-template-builder-deep');
+      fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+      // A chain far deeper than the recursion cap — exercises the depth guard.
+      const deepChain = `UriComponentsBuilder.fromPath("/r")${'.path("/x")'.repeat(200)}.build().toUriString()`;
+      fs.writeFileSync(
+        path.join(dir, 'src', 'DeepClient.java'),
+        `
+import org.springframework.web.client.RestTemplate;
+import org.springframework.web.util.UriComponentsBuilder;
+
+class DeepClient {
+  void run(RestTemplate restTemplate) {
+    restTemplate.getForObject(${deepChain}, String.class);
+  }
+}
+`,
+      );
+
+      // Must not throw (the depth guard caps recursion). A chain past the cap
+      // resolves to null, so no consumer is emitted for it (without the guard it
+      // would either overflow or resolve to a bogus deep path).
+      const contracts = await extractor.extract(null, dir, makeRepo(dir));
+      expect(
+        contracts.filter(
+          (c) => c.role === 'consumer' && c.symbolRef.filePath.endsWith('DeepClient.java'),
+        ),
+      ).toHaveLength(0);
+    });
+
+    it('infers Java OkHttp verbs from sibling Request.Builder calls', async () => {
+      const dir = path.join(tmpDir, 'java-okhttp-verbs');
+      fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'src', 'OkHttpVerbs.java'),
+        `
+import okhttp3.Request;
+import okhttp3.RequestBody;
+
+class OkHttpVerbs {
+  void run(RequestBody body, String verb) {
+    new Request.Builder().url("/api/orders/0").get().build();
+    new Request.Builder().url("/api/orders/head").head().build();
+    new Request.Builder().url("/api/orders").post(body).build();
+    new Request.Builder().url("/api/orders/1").put(body).build();
+    new Request.Builder().url("/api/orders/2").delete().build();
+    new Request.Builder().url("/api/orders/3").method("PATCH", body).build();
+    new Request.Builder().url("/api/bare-build").build();
+    new Request.Builder().url("/api/dyn-verb").method(verb, body).build();
+  }
+}
+`,
+      );
+
+      const contracts = await extractor.extract(null, dir, makeRepo(dir));
+      const okhttp = contracts.filter(
+        (c) =>
+          c.role === 'consumer' &&
+          c.meta.framework === 'okhttp' &&
+          c.symbolRef.filePath.endsWith('OkHttpVerbs.java'),
+      );
+
+      // The bare `.build()` with no verb call gets its OWN path (`/api/bare-build`)
+      // so the default-GET branch of inferOkHttpMethod is pinned independently.
+      // An explicit `.method(verb, …)` with a *variable* verb (`/api/dyn-verb`) is
+      // unresolvable and emits NOTHING — not a guessed GET (parity with WebClient
+      // long-form). Explicit verbs resolve; numeric segments normalize to {param}.
+      expect(okhttp.find((c) => c.contractId === 'http::GET::/api/bare-build')).toBeDefined();
+      // Variable-bound `.method(verb)` produces no contract at all (any verb).
+      expect(okhttp.find((c) => c.contractId.includes('/api/dyn-verb'))).toBeUndefined();
+      expect(new Set(okhttp.map((c) => c.contractId))).toEqual(
+        new Set([
+          'http::GET::/api/bare-build',
+          'http::GET::/api/orders/{param}',
+          'http::POST::/api/orders',
+          'http::PUT::/api/orders/{param}',
+          'http::DELETE::/api/orders/{param}',
+          'http::PATCH::/api/orders/{param}',
+          'http::HEAD::/api/orders/head',
+        ]),
+      );
+      expect(okhttp.every((c) => c.confidence === 0.7)).toBe(true);
+    });
+
+    it('does not emit a contract for an empty-string verb literal (#2268)', async () => {
+      // `.method("", body)` is an explicit-but-unresolvable verb — `unquoteLiteral`
+      // returns "" (not null), so the falsiness guard must skip it rather than
+      // emit a malformed `http::::/path` contract or a guessed GET. Covers both
+      // the OkHttp and Java-HttpClient verb-walks (shared `inferBuilderVerb`).
+      const dir = path.join(tmpDir, 'java-empty-verb');
+      fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'src', 'EmptyVerb.java'),
+        `
+import java.net.URI;
+import java.net.http.HttpRequest;
+import okhttp3.Request;
+import okhttp3.RequestBody;
+
+class EmptyVerb {
+  void run(RequestBody body) throws Exception {
+    new Request.Builder().url("/api/okhttp-empty").method("", body).build();
+    HttpRequest hc = HttpRequest.newBuilder().uri(URI.create("/api/hc-empty")).method("", body).build();
+  }
+}
+`,
+      );
+
+      const contracts = await extractor.extract(null, dir, makeRepo(dir));
+      const fromFile = contracts.filter(
+        (c) => c.role === 'consumer' && c.symbolRef.filePath.endsWith('EmptyVerb.java'),
+      );
+
+      // No contract at all — neither a malformed empty-method id nor a guessed GET.
+      expect(fromFile.map((c) => c.contractId)).toEqual([]);
+    });
+
+    it('extracts OkHttp chains with a builder call before .url(), with anti-overreach (#2268)', async () => {
+      // A builder call BEFORE .url() (`new Request.Builder().addHeader(...).url(...)`)
+      // no longer drops the contract — the chain is matched as long as it roots at
+      // `new Request.Builder()`. The verb-walk scans the whole chain, so a verb set
+      // before .url() also resolves. A `.url(...)` on an unrelated object does NOT
+      // emit (the root gate rejects it).
+      const dir = path.join(tmpDir, 'java-okhttp-pre-url');
+      fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'src', 'OkHttpPreUrl.java'),
+        `
+import okhttp3.Request;
+import okhttp3.RequestBody;
+
+class OkHttpPreUrl {
+  void run(RequestBody body, SomeClient other) {
+    new Request.Builder().addHeader("A", "b").url("/api/pre-url").build();
+    new Request.Builder().post(body).url("/api/verb-first").build();
+    other.url("/api/not-okhttp").build();
+  }
+}
+`,
+      );
+
+      const contracts = await extractor.extract(null, dir, makeRepo(dir));
+      const okhttp = contracts.filter(
+        (c) =>
+          c.role === 'consumer' &&
+          c.meta.framework === 'okhttp' &&
+          c.symbolRef.filePath.endsWith('OkHttpPreUrl.java'),
+      );
+
+      // The header-before-url chain (default GET) and the verb-before-url chain
+      // (POST) both emit; `other.url(...)` does not (not a Request.Builder chain).
+      expect(new Set(okhttp.map((c) => c.contractId))).toEqual(
+        new Set(['http::GET::/api/pre-url', 'http::POST::/api/verb-first']),
+      );
     });
 
     it('extracts Java WebClient long-form method(HttpMethod.X).uri(...) — #2254 parity', async () => {
@@ -2553,6 +2959,208 @@ class HttpClients {
       ).toBeDefined();
     });
 
+    it('extracts Java HttpClient HEAD, .method(), and default-GET forms', async () => {
+      const dir = path.join(tmpDir, 'java-http-client-verbs');
+      fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'src', 'HttpClientVerbs.java'),
+        `
+import java.net.URI;
+import java.net.http.HttpRequest;
+
+class HttpClientVerbs {
+  void run(String verb) throws Exception {
+    HttpRequest head = HttpRequest.newBuilder().uri(URI.create("/api/users/head")).HEAD().build();
+    HttpRequest patch = HttpRequest.newBuilder().uri(URI.create("/api/users/2")).method("PATCH", HttpRequest.BodyPublishers.ofString("{}")).build();
+    HttpRequest def = HttpRequest.newBuilder().uri(URI.create("/api/default-users/3")).build();
+    HttpRequest dyn = HttpRequest.newBuilder().uri(URI.create("/api/dyn/4")).method(verb, HttpRequest.BodyPublishers.noBody()).build();
+  }
+}
+`,
+      );
+
+      const contracts = await extractor.extract(null, dir, makeRepo(dir));
+      const hc = contracts.filter(
+        (c) =>
+          c.role === 'consumer' &&
+          c.meta.framework === 'java-http-client' &&
+          c.symbolRef.filePath.endsWith('HttpClientVerbs.java'),
+      );
+
+      // HEAD via verb helper, PATCH via `.method("X")`, default GET via bare
+      // `.build()`. The variable-bound `.method(verb, …)` is NOT resolved
+      // (string literal only) → no contract. Exact set-equality also pins that
+      // no chain double-emits (e.g. HEAD would never also yield a GET).
+      expect(new Set(hc.map((c) => c.contractId))).toEqual(
+        new Set([
+          'http::HEAD::/api/users/head',
+          'http::PATCH::/api/users/{param}',
+          'http::GET::/api/default-users/{param}',
+        ]),
+      );
+      expect(hc.every((c) => c.confidence === 0.65)).toBe(true);
+    });
+
+    it('extracts Java HttpClient verbs across intervening builder calls (#2268)', async () => {
+      // The verb-walk is transparent to neutral calls AFTER `.uri(...)`, so a
+      // `.header()`/`.timeout()` hop before the terminal no longer drops the
+      // contract. Each verb-producing branch gets a DISTINCT non-numeric path so
+      // the set-equality assertion cannot mask a branch. A call BEFORE `.uri()`,
+      // a constructor-arg `newBuilder(uri)`, and a non-literal `.uri()` arg are
+      // documented misses (must NOT extract).
+      const dir = path.join(tmpDir, 'java-http-client-intervening');
+      fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'src', 'HttpClientIntervening.java'),
+        `
+import java.net.URI;
+import java.net.http.HttpRequest;
+import java.net.http.HttpClient;
+import java.time.Duration;
+
+class HttpClientIntervening {
+  void run(URI uriVar, Duration dur, HttpClient.Version ver, HttpRequest.BodyPublisher body) throws Exception {
+    // Intervening calls AFTER .uri() — header/timeout transparent to the verb-walk.
+    HttpRequest a = HttpRequest.newBuilder().uri(URI.create("/api/hdr")).header("Accept", "application/json").build();
+    HttpRequest b = HttpRequest.newBuilder().uri(URI.create("/api/tmo")).timeout(dur).method("PUT", body).build();
+    HttpRequest c = HttpRequest.newBuilder().uri(URI.create("/api/hdr-verb")).header("X", "y").DELETE().build();
+    // Verb helper BEFORE an intervening call (walk does not stop at the first non-verb).
+    HttpRequest d = HttpRequest.newBuilder().uri(URI.create("/api/verb-then-hdr")).POST(body).header("X", "y").build();
+    // Unbuilt .uri() — no .build(); over-match emits the default GET (mirrors OkHttp).
+    HttpRequest.Builder e = HttpRequest.newBuilder().uri(URI.create("/api/unbuilt"));
+    // Call BEFORE .uri() and the constructor-arg form are now captured too (the
+    // chain roots at HttpRequest.newBuilder); only a non-literal .uri() is a miss.
+    HttpRequest f = HttpRequest.newBuilder().version(ver).uri(URI.create("/api/pre-uri")).build(); // call before .uri()
+    HttpRequest g = HttpRequest.newBuilder(URI.create("/api/ctor")).build(); // constructor-arg, no .uri()
+    HttpRequest h = HttpRequest.newBuilder().uri(uriVar).build(); // non-literal .uri() arg → miss
+  }
+}
+`,
+      );
+
+      const contracts = await extractor.extract(null, dir, makeRepo(dir));
+      const hc = contracts.filter(
+        (c) =>
+          c.role === 'consumer' &&
+          c.meta.framework === 'java-http-client' &&
+          c.symbolRef.filePath.endsWith('HttpClientIntervening.java'),
+      );
+
+      // The seven resolvable chains (incl. the pre-`.uri()` and constructor-arg
+      // forms); only the non-literal `.uri(uriVar)` contributes nothing.
+      expect(new Set(hc.map((c) => c.contractId))).toEqual(
+        new Set([
+          'http::GET::/api/hdr',
+          'http::PUT::/api/tmo',
+          'http::DELETE::/api/hdr-verb',
+          'http::POST::/api/verb-then-hdr',
+          'http::GET::/api/unbuilt',
+          'http::GET::/api/pre-uri',
+          'http::GET::/api/ctor',
+        ]),
+      );
+      expect(hc.every((c) => c.confidence === 0.65)).toBe(true);
+    });
+
+    it('passes through a non-standard HttpClient .method("VERB") verb (#2268)', async () => {
+      // A custom verb literal passes through (uppercased), matching the OkHttp
+      // .method() precedent — the verb-walk does not restrict to known verbs.
+      const dir = path.join(tmpDir, 'java-http-client-custom-verb');
+      fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'src', 'CustomVerb.java'),
+        `
+import java.net.URI;
+import java.net.http.HttpRequest;
+
+class CustomVerb {
+  void run(HttpRequest.BodyPublisher body) throws Exception {
+    HttpRequest r = HttpRequest.newBuilder().uri(URI.create("/api/report")).method("REPORT", body).build();
+  }
+}
+`,
+      );
+
+      const contracts = await extractor.extract(null, dir, makeRepo(dir));
+      const hc = contracts.filter(
+        (c) =>
+          c.role === 'consumer' &&
+          c.meta.framework === 'java-http-client' &&
+          c.symbolRef.filePath.endsWith('CustomVerb.java'),
+      );
+      expect(new Set(hc.map((c) => c.contractId))).toEqual(new Set(['http::REPORT::/api/report']));
+    });
+
+    it('handles HttpClient constructor-URI override and rejects non-newBuilder .uri (#2268)', async () => {
+      // A constructor URI overridden by a later `.uri(...)` emits ONLY the override
+      // (not both), and a `.uri(URI.create(...))` on a chain that does not root at
+      // HttpRequest.newBuilder (e.g. WebClient) is NOT a java-http-client consumer.
+      const dir = path.join(tmpDir, 'java-http-client-ctor-override');
+      fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'src', 'CtorOverride.java'),
+        `
+import java.net.URI;
+import java.net.http.HttpRequest;
+import org.springframework.web.reactive.function.client.WebClient;
+
+class CtorOverride {
+  void run(WebClient webClient) {
+    HttpRequest a = HttpRequest.newBuilder(URI.create("/api/ctor-overridden")).uri(URI.create("/api/override-wins")).build();
+    webClient.get().uri(URI.create("/api/webclient-not-hc")).retrieve();
+  }
+}
+`,
+      );
+
+      const contracts = await extractor.extract(null, dir, makeRepo(dir));
+      const hc = contracts.filter(
+        (c) =>
+          c.role === 'consumer' &&
+          c.meta.framework === 'java-http-client' &&
+          c.symbolRef.filePath.endsWith('CtorOverride.java'),
+      );
+
+      // Only the override URI, exactly once; the overridden constructor URI and the
+      // WebClient `.uri()` are not java-http-client contracts.
+      expect(new Set(hc.map((c) => c.contractId))).toEqual(
+        new Set(['http::GET::/api/override-wins']),
+      );
+    });
+
+    it('resolves the last verb when a chain sets two (runtime last-wins) (#2268)', async () => {
+      // Each verb-setter overwrites the previous at runtime, so a chain that sets
+      // two verbs resolves to the one nearest the terminal — not the first found.
+      const dir = path.join(tmpDir, 'java-http-two-verb');
+      fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'src', 'TwoVerb.java'),
+        `
+import java.net.URI;
+import java.net.http.HttpRequest;
+import okhttp3.Request;
+import okhttp3.RequestBody;
+
+class TwoVerb {
+  void run(RequestBody body, HttpRequest.BodyPublisher pub) throws Exception {
+    HttpRequest hc = HttpRequest.newBuilder().GET().uri(URI.create("/api/hc-two")).POST(pub).build();
+    new Request.Builder().get().url("/api/ok-two").post(body).build();
+  }
+}
+`,
+      );
+
+      const contracts = await extractor.extract(null, dir, makeRepo(dir));
+      const fromFile = contracts.filter(
+        (c) => c.role === 'consumer' && c.symbolRef.filePath.endsWith('TwoVerb.java'),
+      );
+
+      // Both resolve to the LAST verb (POST), not the first (GET).
+      expect(new Set(fromFile.map((c) => `${c.meta.framework} ${c.contractId}`))).toEqual(
+        new Set(['java-http-client http::POST::/api/hc-two', 'okhttp http::POST::/api/ok-two']),
+      );
+    });
+
     // ─── Kotlin consumers (RestTemplate / WebClient short+long / OkHttp) ──
     // Same shape as the Java consumer test above, but parsed by the
     // tree-sitter-kotlin grammar via `KOTLIN_HTTP_PLUGIN`. Four
@@ -2678,26 +3286,14 @@ class OkClient(private val client: OkHttpClient) {
     });
 
     itKotlinConsumer(
-      'OkHttp Request.Builder().url("/x").post(body) — verb defaults to GET (Java parity)',
+      'Kotlin OkHttp .url("/x").post(body) infers POST — verb-walk parity with Java (#2268)',
       async () => {
-        // Anti-overreach / known-limitation pin: OkHttp encodes the
-        // HTTP verb on a sibling call (`.post(body)` / `.delete()` /
-        // ...), not on `.url(...)`. The query at `kotlin.ts:OK_HTTP_PATTERNS`
-        // intentionally does not walk the chain to recover the verb —
-        // it emits `method: 'GET'` for every match, mirroring the Java
-        // plugin's `OK_HTTP_PATTERNS` (java.ts).
-        //
-        // This test pins the accepted behavior so a future verb-walk
-        // implementation must update kotlin.ts's known-limitation
-        // comment in lockstep. Concretely:
-        //   - `Request.Builder().url("/api/users").post(body).build()`
-        //     → ONE consumer: `http::GET::/api/users` (heuristic-default)
-        //     → NO `http::POST::/api/users` consumer
-        //
-        // Test signal:
-        //   - if this becomes correct (POST detected) without updating
-        //     the kotlin.ts comment + java.ts behavior together, this
-        //     test goes red and the reviewer must reconcile both sides.
+        // OkHttp encodes the HTTP verb on a sibling call (`.post(body)` / `.delete()`
+        // / `.method("X")`), not on `.url(...)`. The Kotlin plugin now WALKS the
+        // builder chain (`inferKotlinOkHttpMethod`) to recover it — the mirror of
+        // the Java side's `inferOkHttpMethod`. So `Request.Builder().url("/api/users")`
+        // `.post(body).build()` emits `http::POST::/api/users` (not GET) on `.kt`,
+        // identical to `.java` (pinned by the Java↔Kotlin parity harness below).
         const dir = path.join(tmpDir, 'kotlin-okhttp-post-chain');
         fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
         fs.writeFileSync(
@@ -2717,24 +3313,102 @@ class OkPostClient(private val client: OkHttpClient, private val body: RequestBo
         );
 
         const contracts = await extractor.extract(null, dir, makeRepo(dir));
-        const consumers = contracts.filter((c) => c.role === 'consumer');
-
-        const fromThisFile = consumers.filter((c) =>
-          c.symbolRef.filePath.endsWith('OkPostClient.kt'),
+        const fromThisFile = contracts.filter(
+          (c) => c.role === 'consumer' && c.symbolRef.filePath.endsWith('OkPostClient.kt'),
         );
 
-        // Heuristic-default GET: exactly one consumer is emitted for
-        // the .url("/x") capture, with method=GET regardless of the
-        // sibling .post(body) call.
+        // The sibling `.post(body)` is recovered: exactly one POST consumer, no GET.
         expect(fromThisFile).toHaveLength(1);
-        expect(fromThisFile[0].contractId).toBe('http::GET::/api/users');
-        expect(fromThisFile[0].meta.method).toBe('GET');
+        expect(fromThisFile[0].contractId).toBe('http::POST::/api/users');
+        expect(fromThisFile[0].meta.method).toBe('POST');
+        expect(fromThisFile.find((c) => c.contractId === 'http::GET::/api/users')).toBeUndefined();
+      },
+    );
 
-        // Anti-overreach: no second contract with POST should appear.
-        // If a future verb-walk lands and this assertion needs to flip
-        // (i.e. POST is now detected), bump kotlin.ts's known-limitation
-        // comment and java.ts in the same PR.
-        expect(fromThisFile.find((c) => c.contractId === 'http::POST::/api/users')).toBeUndefined();
+    itKotlinConsumer(
+      'Kotlin OkHttp verb-walk: helpers, .method("X"), default GET, variable skip (#2268)',
+      async () => {
+        // Parity with the Java OkHttp verb cases: a verb helper resolves, a literal
+        // `.method("X")` resolves, a bare `.build()` defaults to GET, and a
+        // variable-bound `.method(verb)` is unresolvable → emits nothing.
+        const dir = path.join(tmpDir, 'kotlin-okhttp-verbs');
+        fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+        fs.writeFileSync(
+          path.join(dir, 'src', 'OkVerbs.kt'),
+          `package com.example
+import okhttp3.Request
+import okhttp3.RequestBody
+
+class OkVerbs(private val body: RequestBody, private val verb: String) {
+  fun run() {
+    Request.Builder().url("/api/k-get").build()
+    Request.Builder().url("/api/k-delete").delete().build()
+    Request.Builder().url("/api/k-patch").method("PATCH", body).build()
+    Request.Builder().url("/api/k-named").method(method = "REPORT", body = body).build()
+    Request.Builder().url("/api/k-dyn").method(verb, body).build()
+  }
+}
+`,
+        );
+
+        const contracts = await extractor.extract(null, dir, makeRepo(dir));
+        const okhttp = contracts.filter(
+          (c) =>
+            c.role === 'consumer' &&
+            c.meta.framework === 'okhttp' &&
+            c.symbolRef.filePath.endsWith('OkVerbs.kt'),
+        );
+
+        // The variable-bound `.method(verb)` (`/api/k-dyn`) emits nothing; the
+        // named-argument `.method(method = "REPORT")` resolves its literal verb.
+        expect(new Set(okhttp.map((c) => c.contractId))).toEqual(
+          new Set([
+            'http::GET::/api/k-get',
+            'http::DELETE::/api/k-delete',
+            'http::PATCH::/api/k-patch',
+            'http::REPORT::/api/k-named',
+          ]),
+        );
+      },
+    );
+
+    itKotlinConsumer(
+      'Kotlin OkHttp: builder call before .url(), with anti-overreach (#2268)',
+      async () => {
+        // Parity with the Java OkHttp pre-`.url()` support: a builder call BEFORE
+        // `.url()` is captured (the chain roots at Request.Builder), the verb-walk
+        // scans the whole chain so a verb before `.url()` resolves, and a `.url(...)`
+        // on an unrelated object does NOT emit.
+        const dir = path.join(tmpDir, 'kotlin-okhttp-pre-url');
+        fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+        fs.writeFileSync(
+          path.join(dir, 'src', 'OkPreUrl.kt'),
+          `package com.example
+import okhttp3.Request
+import okhttp3.RequestBody
+
+class OkPreUrl(private val body: RequestBody, private val other: SomeClient) {
+  fun run() {
+    Request.Builder().addHeader("A", "b").url("/api/k-pre-url").build()
+    Request.Builder().post(body).url("/api/k-verb-first").build()
+    other.url("/api/k-not-okhttp").build()
+  }
+}
+`,
+        );
+
+        const contracts = await extractor.extract(null, dir, makeRepo(dir));
+        const okhttp = contracts.filter(
+          (c) =>
+            c.role === 'consumer' &&
+            c.meta.framework === 'okhttp' &&
+            c.symbolRef.filePath.endsWith('OkPreUrl.kt'),
+        );
+
+        // header-before-url → GET, verb-before-url → POST; `other.url(...)` emits nothing.
+        expect(new Set(okhttp.map((c) => c.contractId))).toEqual(
+          new Set(['http::GET::/api/k-pre-url', 'http::POST::/api/k-verb-first']),
+        );
       },
     );
 
@@ -4547,6 +5221,78 @@ class GatewayController : OrdersApi, UsersApi {
         );
 
       const rows: ParityRow[] = [
+        {
+          name: 'OkHttp builder verb inference',
+          files: [
+            {
+              name: 'OkClient',
+              java: `
+import okhttp3.Request;
+import okhttp3.RequestBody;
+
+class OkClient {
+  void run(RequestBody body) {
+    new Request.Builder().url("/api/things").post(body).build();
+  }
+}
+`,
+              kotlin: `package com.example
+import okhttp3.Request
+import okhttp3.RequestBody
+
+class OkClient(private val body: RequestBody) {
+  fun run() {
+    Request.Builder().url("/api/things").post(body).build()
+  }
+}
+`,
+            },
+          ],
+          expected: [
+            {
+              role: 'consumer',
+              contractId: 'http::POST::/api/things',
+              framework: 'okhttp',
+              confidence: 0.7,
+            },
+          ],
+        },
+        {
+          name: 'OkHttp verb + builder call before .url()',
+          files: [
+            {
+              name: 'OkPre',
+              java: `
+import okhttp3.Request;
+import okhttp3.RequestBody;
+
+class OkPre {
+  void run(RequestBody body) {
+    new Request.Builder().post(body).url("/api/pre").build();
+  }
+}
+`,
+              kotlin: `package com.example
+import okhttp3.Request
+import okhttp3.RequestBody
+
+class OkPre(private val body: RequestBody) {
+  fun run() {
+    Request.Builder().post(body).url("/api/pre").build()
+  }
+}
+`,
+            },
+          ],
+          expected: [
+            {
+              role: 'consumer',
+              contractId: 'http::POST::/api/pre',
+              framework: 'okhttp',
+              confidence: 0.7,
+            },
+          ],
+        },
         {
           name: '@RequestLine with @RequestMapping prefix fallback',
           files: [
