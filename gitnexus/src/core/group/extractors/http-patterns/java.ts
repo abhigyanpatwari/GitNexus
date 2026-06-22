@@ -557,19 +557,23 @@ function extractStaticPathExpression(node: Parser.SyntaxNode): string | null {
 /**
  * Infer an OkHttp request verb by walking UP the builder chain from the matched
  * `.url(...)` call: the first `.get()/.head()/.post()/.put()/.delete()/.patch()`
- * helper, or a `.method("VERB", …)` literal, wins; otherwise `GET` (OkHttp's
- * default). Source-scan only — a variable-bound verb (`.method(verb, …)`) is not
- * resolved and falls back to `GET` (parity with the WebClient long-form
- * variable-bound-verb limitation).
+ * helper, or a `.method("VERB", …)` literal, wins. Returns `'GET'` only when the
+ * chain has NO verb call at all (a bare `.url(...).build()` — OkHttp's real
+ * default). Returns `null` for an explicit `.method(verb, …)` whose verb is a
+ * non-literal: the verb is set but not statically resolvable, so the caller
+ * skips the call rather than asserting a wrong GET (parity with the WebClient
+ * long-form variable-bound-verb behavior, which also skips).
  */
-function inferOkHttpMethod(urlCall: Parser.SyntaxNode): string {
+function inferOkHttpMethod(urlCall: Parser.SyntaxNode): string | null {
   let cur: Parser.SyntaxNode = urlCall;
   let parent = cur.parent;
   while (parent?.type === 'method_invocation' && methodInvocationObject(parent)?.id === cur.id) {
     const name = methodInvocationName(parent);
     if (name && ['get', 'head', 'post', 'put', 'delete', 'patch'].includes(name))
       return name.toUpperCase();
-    if (name === 'method') return firstLiteralArgument(parent)?.toUpperCase() ?? 'GET';
+    // Explicit `.method(...)`: a string-literal verb resolves; a non-literal
+    // (variable-bound) verb is unresolvable → null (skip), NOT a guessed GET.
+    if (name === 'method') return firstLiteralArgument(parent)?.toUpperCase() ?? null;
     cur = parent;
     parent = parent.parent;
   }
@@ -1004,10 +1008,14 @@ export const JAVA_HTTP_PLUGIN: HttpLanguagePlugin = {
       if (!callNode || !pathNode) continue;
       const path = unquoteLiteral(pathNode.text);
       if (path === null) continue;
+      const method = inferOkHttpMethod(callNode);
+      // An explicit `.method(verb, …)` with a non-literal verb is unresolvable —
+      // emit nothing rather than a wrong GET.
+      if (method === null) continue;
       out.push({
         role: 'consumer',
         framework: 'okhttp',
-        method: inferOkHttpMethod(callNode),
+        method,
         path,
         name: null,
         confidence: 0.7,

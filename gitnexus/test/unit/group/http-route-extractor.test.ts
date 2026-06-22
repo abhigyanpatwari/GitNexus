@@ -1925,7 +1925,7 @@ class OkHttpVerbs {
     new Request.Builder().url("/api/orders/2").delete().build();
     new Request.Builder().url("/api/orders/3").method("PATCH", body).build();
     new Request.Builder().url("/api/bare-build").build();
-    new Request.Builder().url("/api/orders/5").method(verb, body).build();
+    new Request.Builder().url("/api/dyn-verb").method(verb, body).build();
   }
 }
 `,
@@ -1940,12 +1940,13 @@ class OkHttpVerbs {
       );
 
       // The bare `.build()` with no verb call gets its OWN path (`/api/bare-build`)
-      // so the default-GET branch of inferOkHttpMethod is pinned independently and
-      // can't be masked by the explicit `.get()` case collapsing into the same
-      // `{param}` slot. Explicit verbs resolve; numeric segments normalize to
-      // {param}. (orders/5's variable-bound `.method(verb)` still defaults to GET
-      // here — its behavior is changed and pinned distinctly in the next commit.)
+      // so the default-GET branch of inferOkHttpMethod is pinned independently.
+      // An explicit `.method(verb, …)` with a *variable* verb (`/api/dyn-verb`) is
+      // unresolvable and emits NOTHING — not a guessed GET (parity with WebClient
+      // long-form). Explicit verbs resolve; numeric segments normalize to {param}.
       expect(okhttp.find((c) => c.contractId === 'http::GET::/api/bare-build')).toBeDefined();
+      // Variable-bound `.method(verb)` produces no contract at all (any verb).
+      expect(okhttp.find((c) => c.contractId.includes('/api/dyn-verb'))).toBeUndefined();
       expect(new Set(okhttp.map((c) => c.contractId))).toEqual(
         new Set([
           'http::GET::/api/bare-build',
