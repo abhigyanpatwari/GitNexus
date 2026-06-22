@@ -192,6 +192,13 @@ export interface BridgeHandle {
   readonly _db: unknown;
   readonly _conn: unknown;
   readonly groupDir: string;
+  /**
+   * True when the handle was opened read-only. `closeBridgeDb` must NOT issue a
+   * CHECKPOINT on a read-only connection — doing so leaves a WAL/shadow lock
+   * artifact that makes the next read-only open of the same file fail in-process
+   * (repeated `@group` impact/trace calls in a long-lived server).
+   */
+  readonly _readOnly?: boolean;
 }
 
 export interface BridgeMeta {

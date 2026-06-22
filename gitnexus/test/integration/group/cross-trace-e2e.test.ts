@@ -335,13 +335,25 @@ matching:
     );
   });
 
-  // NOTE: deliberately a SINGLE @group assertion. Opening `bridge.lbug`
-  // read-only a SECOND time in the same process currently fails (the first
-  // close leaves sidecars that `ensureBridgeDbFileAvailable` then disturbs) —
-  // a pre-existing limitation of the shared bridge open/close lifecycle that
-  // `impact @group` also has. The pdg-omitted and crossDepth-clamp variants are
-  // covered by the unit tests (test/unit/group/cross-trace.test.ts), which use
-  // a fresh bridge per case. See the plan's deferred follow-ups.
+  // A SECOND @group call in the same process — exercises the bridge read-only
+  // reopen that previously failed (closeBridgeDb used to CHECKPOINT read-only
+  // handles, leaving a lock artifact). Now fixed, so repeated @group traces work.
+  it('omitting pdg yields the same stitched path with no data-flow enrichment', async () => {
+    const result = await backend.callTool('trace', {
+      repo: '@grp',
+      from: 'checkout',
+      to: 'getUsers',
+    });
+    expect(result.status).toBe('ok');
+    expect(result.dataFlow).toBeUndefined();
+    expect((result.crossings as unknown[]).length).toBe(1);
+    expect((result.hops as Array<{ name: string }>).map((h) => h.name)).toEqual([
+      'checkout',
+      'callUsers',
+      'handleUsers',
+      'getUsers',
+    ]);
+  });
 
   it('single-repo trace against one member is unchanged (no group routing)', async () => {
     const result = await backend.callTool('trace', {

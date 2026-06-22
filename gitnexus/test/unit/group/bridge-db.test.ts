@@ -219,6 +219,38 @@ describe('writeBridge + read', () => {
     await closeBridgeDb(handle!);
   });
 
+  itLbugReopen('test_openBridgeDbReadOnly_can_reopen_in_same_process', async () => {
+    // Regression: closeBridgeDb used to issue CHECKPOINT on read-only handles
+    // too, which left a WAL/shadow lock artifact that made the next read-only
+    // open of the same file fail in-process — breaking repeated @group
+    // impact/trace calls in a long-lived MCP server. closeBridgeDb now skips
+    // the checkpoint for read-only handles, so open→query→close→open works.
+    await writeBridge(tmpDir, {
+      contracts: [makeContract()],
+      crossLinks: [],
+      repoSnapshots: {},
+      missingRepos: [],
+    });
+
+    const first = await openBridgeDbReadOnly(tmpDir);
+    expect(first).not.toBeNull();
+    const r1 = await queryBridge<{ n: number }>(first!, 'MATCH (c:Contract) RETURN count(c) AS n');
+    expect(r1[0].n).toBe(1);
+    await closeBridgeDb(first!);
+
+    // Second open in the SAME process must succeed (previously returned null).
+    const second = await openBridgeDbReadOnly(tmpDir);
+    expect(second).not.toBeNull();
+    const r2 = await queryBridge<{ n: number }>(second!, 'MATCH (c:Contract) RETURN count(c) AS n');
+    expect(r2[0].n).toBe(1);
+    await closeBridgeDb(second!);
+
+    // And a third, to confirm it is not a one-shot.
+    const third = await openBridgeDbReadOnly(tmpDir);
+    expect(third).not.toBeNull();
+    await closeBridgeDb(third!);
+  });
+
   it('test_writeBridge_meta_json_persists_missingRepos', async () => {
     await writeBridge(tmpDir, {
       contracts: [],

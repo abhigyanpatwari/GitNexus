@@ -237,10 +237,18 @@ export async function closeBridgeDb(handle: BridgeHandle): Promise<void> {
   // pending on disk, which makes a subsequent read-side open either race
   // with the WAL replay or trip the database-id check on the sidecars.
   // CHECKPOINT is a no-op when there's nothing pending, so it's cheap.
-  try {
-    await (handle._conn as lbug.Connection).query('CHECKPOINT');
-  } catch {
-    /* ignore — older LadybugDB or schemaless DB may not accept it */
+  //
+  // ONLY on a writable handle. A read-only connection has nothing to flush,
+  // and issuing CHECKPOINT on it leaves a WAL/shadow lock artifact that makes
+  // the very next read-only open of the same path fail in-process — which broke
+  // repeated `@group` impact/trace calls in a long-lived MCP server (the read
+  // path opens read-only, queries, and closes per call).
+  if (!handle._readOnly) {
+    try {
+      await (handle._conn as lbug.Connection).query('CHECKPOINT');
+    } catch {
+      /* ignore — older LadybugDB or schemaless DB may not accept it */
+    }
   }
   try {
     await (handle._conn as lbug.Connection).close();
@@ -713,7 +721,7 @@ export async function openBridgeDbReadOnly(groupDir: string): Promise<BridgeHand
       // (where we can retry) instead of on the first user query.
       await handle.db.init();
       await handle.conn.init();
-      return { _db: handle.db, _conn: handle.conn, groupDir } as BridgeHandle;
+      return { _db: handle.db, _conn: handle.conn, groupDir, _readOnly: true } as BridgeHandle;
     } catch (err) {
       lastErr = err;
       if (handle) await closeLbugConnection(handle);
