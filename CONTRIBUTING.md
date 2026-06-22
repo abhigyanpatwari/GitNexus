@@ -144,6 +144,15 @@ Re-invoking `/autofix` after a successful apply is a safe no-op — the workflow
 
 **Sensitive paths.** The apply workflow refuses any patch that touches `.github/` (workflow files, CODEOWNERS, dependabot config). A malicious PR could ship a custom prettier or ESLint config that reformats workflow YAML; if accepted, those edits would be pushed under `contents: write` without human review. Apply formatter changes to files under `.github/` manually in a normal commit so they get the same review every other workflow change gets.
 
+### Vendored tree-sitter grammars
+
+`.github/vendored-grammars.json` is the **single source of truth** for the vendored tree-sitter grammar **set** and each grammar's policy `hold` (the ones shipped from `gitnexus/vendor/<name>` rather than installed from npm). It lists each grammar's name, upstream coords (`npm` or `github`), and any `hold`. The monitor resolves upstreams from it; the readiness report keeps its own upstream-drift coords and reads vendored ABIs from `gitnexus/vendor/`. Two workflows read it:
+
+- `grammar-update-monitor.yml` (`.github/scripts/update-vendored-grammars.mjs`) — weekly; opens auto-PRs re-vendoring ABI-compatible upstream updates.
+- `tree-sitter-upgrade-readiness.yml` (`.github/scripts/check-tree-sitter-upgrade-readiness.py`) — daily; renders the tree-sitter-0.25 readiness report (issue #858), reading each vendored grammar's ABI from `gitnexus/vendor/<name>/src/parser.c`.
+
+Sharing the manifest keeps the two aligned: a consistency-guard test asserts the manifest set equals the `gitnexus/vendor/tree-sitter-*` directories. **When you vendor a new grammar (or remove one), update `.github/vendored-grammars.json` in the same change** — otherwise that guard fails CI and the readiness report regresses to `?` placeholders.
+
 ## AI-assisted contributions
 
 If you use coding agents, follow project context files (e.g. `AGENTS.md`, `CLAUDE.md`) and avoid drive-by refactors unrelated to the issue. Prefer incremental, test-backed changes.
@@ -157,7 +166,12 @@ routes between two modes based on the triggering event:
   suffix; RC tags are excluded at trigger via a negative glob). Publishes to
   the `latest` dist-tag with a changelog-backed GitHub release. Maintainers
   are expected to tag from `main` as a convention; the workflow itself does
-  not enforce branch reachability. No Docker build (RC-only).
+  not enforce branch reachability. No Docker build (RC-only). Before cutting a
+  stable release, keep `gitnexus/package.json`,
+  `gitnexus-claude-plugin/.claude-plugin/plugin.json`,
+  `.claude-plugin/marketplace.json`, and the matching `CHANGELOG.md` entry in
+  lockstep — the always-on `gitnexus` unit suite now fails if those manifest
+  versions drift.
 - **Release-candidate mode** — runs on every push to `main` (typically a
   merged PR) plus manual `workflow_dispatch`. Docs-only changes are skipped
   via `paths-ignore`. Publishes to the `rc` dist-tag with version

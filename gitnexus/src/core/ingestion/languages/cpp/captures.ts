@@ -20,6 +20,8 @@ import { markCppDependentBase, markCppDependentPackBase } from './two-phase-look
 import { markCppAdlSiteArgs, markCppAdlSiteNoAdl, type CppAdlArgInfo } from './adl.js';
 import { markCppInlineNamespaceRange } from './inline-namespaces.js';
 import { extractCppTemplateConstraints } from './constraint-extractor.js';
+import { captureCppMemberLookupFacts } from './member-lookup.js';
+import { CPP_BRACED_INIT_TYPE_PREFIX } from './conversion-rank.js';
 
 export function emitCppScopeCaptures(
   sourceText: string,
@@ -158,6 +160,13 @@ export function emitCppScopeCaptures(
         if (hasExplicitSpecifier(fnNode)) {
           grouped['@declaration.is-explicit'] = syntheticCapture(
             '@declaration.is-explicit',
+            fnNode,
+            'true',
+          );
+        }
+        if (hasDeletedMethodClause(fnNode, grouped['@declaration.name']?.text)) {
+          grouped['@declaration.is-deleted'] = syntheticCapture(
+            '@declaration.is-deleted',
             fnNode,
             'true',
           );
@@ -464,6 +473,7 @@ export function emitCppScopeCaptures(
   // and the resolver can suppress unqualified-call binding to those
   // bases per ISO C++ two-phase lookup.
   detectCppDependentBases(tree.rootNode, filePath);
+  captureCppMemberLookupFacts(tree.rootNode, filePath);
 
   return out;
 }
@@ -661,6 +671,7 @@ function isFollowedByPackExpansion(baseClause: SyntaxNode, childIndex: number): 
     if (sibling === null) continue;
     if (sibling.type === '...' || (!sibling.isNamed && sibling.text === '...')) return true;
     if (sibling.type === ',' || sibling.type === 'access_specifier') return false;
+    if (sibling.type === 'comment') continue;
     if (sibling.isNamed) return false;
   }
   return false;
@@ -1013,6 +1024,8 @@ function unknownTypeClass(base: string): ParameterTypeClass {
  */
 function inferCppLiteralType(node: SyntaxNode): string {
   switch (node.type) {
+    case 'initializer_list':
+      return inferCppBracedInitType(node);
     case 'number_literal': {
       const text = node.text;
       // Floating-point literals contain '.', 'e', 'E', or end with 'f'/'F'
@@ -1042,6 +1055,25 @@ function inferCppLiteralType(node: SyntaxNode): string {
     default:
       return '';
   }
+}
+
+function inferCppBracedInitType(node: SyntaxNode): string {
+  const elementTypes: string[] = [];
+  for (let i = 0; i < node.childCount; i++) {
+    const child = node.child(i);
+    if (child === null) continue;
+    if (child.type === ',' || child.type === '{' || child.type === '}') continue;
+    const elementType = inferCppLiteralType(child);
+    if (elementType === '' || elementType.startsWith(CPP_BRACED_INIT_TYPE_PREFIX)) {
+      return `${CPP_BRACED_INIT_TYPE_PREFIX}unknown:${elementTypes.length + 1}`;
+    }
+    elementTypes.push(elementType);
+  }
+  if (elementTypes.length === 0) return `${CPP_BRACED_INIT_TYPE_PREFIX}unknown:0`;
+  const first = elementTypes[0];
+  return elementTypes.every((type) => type === first)
+    ? `${CPP_BRACED_INIT_TYPE_PREFIX}${first}:${elementTypes.length}`
+    : `${CPP_BRACED_INIT_TYPE_PREFIX}unknown:${elementTypes.length}`;
 }
 
 /**
@@ -1683,7 +1715,13 @@ function extractDeclaratorLeafName(node: SyntaxNode): string | null {
   let cur: SyntaxNode = node;
   let safety = 16;
   while (safety-- > 0) {
-    if (cur.type === 'identifier' || cur.type === 'type_identifier') return cur.text;
+    if (
+      cur.type === 'identifier' ||
+      cur.type === 'type_identifier' ||
+      cur.type === 'operator_name'
+    ) {
+      return cur.text;
+    }
     // Common wrapper nodes — follow the 'declarator' field when present.
     const next =
       cur.childForFieldName('declarator') ??
@@ -1709,6 +1747,25 @@ function hasExplicitSpecifier(node: SyntaxNode): boolean {
     if (child !== null && child.text === 'explicit') return true;
   }
   return /\bexplicit\b/.test(node.text.slice(0, 128));
+}
+
+function hasDeletedMethodClause(node: SyntaxNode, callableName: string | undefined): boolean {
+  for (let i = 0; i < node.namedChildCount; i++) {
+    const child = node.namedChild(i);
+    if (child?.type === 'delete_method_clause') return true;
+    // tree-sitter-cpp 0.23 parses a deleted free-function declaration as
+    // `declaration > init_declarator > delete_expression`, while class
+    // members use the dedicated `delete_method_clause`.
+    if (
+      child?.type === 'init_declarator' &&
+      child.childForFieldName('value')?.type === 'delete_expression' &&
+      callableName !== undefined &&
+      extractDeclaratorLeafName(child.childForFieldName('declarator') ?? child) === callableName
+    ) {
+      return true;
+    }
+  }
+  return false;
 }
 
 /**

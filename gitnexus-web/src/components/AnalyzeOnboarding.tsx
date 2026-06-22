@@ -3,7 +3,7 @@
  *
  * The "empty state" card rendered inside DropZone's Crossfade when the server
  * is connected but zero repos are indexed. Replaces the generic error message
- * with a first-class GitHub URL input flow.
+ * with a first-class repository URL input flow.
  *
  * Rendering context:
  *   DropZone (Crossfade, phase="analyze")
@@ -15,7 +15,7 @@
  * the app to the graph explorer.
  */
 
-import { Sparkles, Github } from '@/lib/lucide-icons';
+import { Sparkles, GitBranch } from '@/lib/lucide-icons';
 import { RepoAnalyzer } from './RepoAnalyzer';
 import { useTranslation } from 'react-i18next';
 
@@ -46,7 +46,7 @@ export const AnalyzeOnboarding = ({ onComplete }: AnalyzeOnboardingProps) => {
 
           {/* Icon */}
           <div className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-2xl border border-accent/30 bg-gradient-to-br from-accent/20 to-accent-dim/10 shadow-glow-soft">
-            <Github className="h-7 w-7 text-accent" />
+            <GitBranch className="h-7 w-7 text-accent" />
           </div>
 
           <h2 className="text-lg leading-snug font-semibold text-text-primary">

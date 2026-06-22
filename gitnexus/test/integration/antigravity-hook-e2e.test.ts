@@ -26,6 +26,8 @@ import {
   runHook,
   parseHookOutput,
   createGitNexusPathEntry,
+  createHookToolDir,
+  hookEnv,
   envWithPath,
 } from '../utils/hook-test-helpers.js';
 import { setupCommand } from '../../src/cli/setup.js';
@@ -101,7 +103,10 @@ afterAll(async () => {
 
 describe('antigravity hook adapter e2e', () => {
   describe('AfterTool — stale-index hint after git mutations', () => {
-    it('emits the hint via both additionalContext and stderr after a successful git commit', () => {
+    // #1913: by default the hint reaches the agent via additionalContext (stdout
+    // JSON) but is NOT mirrored to stderr, so strict hook runners see no
+    // unexpected output on this normal (non-error) path.
+    it('emits the hint via additionalContext and stays silent on stderr by default', () => {
       fs.writeFileSync(
         path.join(gitNexusDir, 'meta.json'),
         JSON.stringify({ lastCommit: 'a'.repeat(40), stats: {} }),
@@ -117,7 +122,7 @@ describe('antigravity hook adapter e2e', () => {
           cwd: tmpDir,
         },
         tmpDir,
-        { env: { ...process.env, GITNEXUS_INVOCATION: 'npx' } },
+        { env: { ...process.env, GITNEXUS_INVOCATION: 'npx', GITNEXUS_DEBUG: '' } },
       );
 
       const output = parseHookOutput(result.stdout);
@@ -125,9 +130,33 @@ describe('antigravity hook adapter e2e', () => {
       expect(output!.hookEventName).toBe('AfterTool');
       expect(output!.additionalContext).toContain('index is stale');
       expect(output!.additionalContext).toContain('npx gitnexus@latest analyze');
+      // Strict-runner contract: the hint is NOT mirrored to stderr by default.
+      expect(result.stderr).not.toContain('[GitNexus] index is stale');
+    });
 
-      // Mirror to stderr so terminal users see the hint even when the agent
-      // discards additionalContext
+    // #1913: the terminal-mirror remains available for operators who opt in.
+    it('mirrors the hint to stderr for terminal users only under GITNEXUS_DEBUG=1', () => {
+      fs.writeFileSync(
+        path.join(gitNexusDir, 'meta.json'),
+        JSON.stringify({ lastCommit: 'a'.repeat(40), stats: {} }),
+      );
+
+      const result = runHook(
+        installedHook,
+        {
+          hook_event_name: 'AfterTool',
+          tool_name: 'run_shell_command',
+          tool_input: { command: 'git commit -m "test"' },
+          tool_response: { llmContent: '[committed]' },
+          cwd: tmpDir,
+        },
+        tmpDir,
+        { env: { ...process.env, GITNEXUS_INVOCATION: 'npx', GITNEXUS_DEBUG: '1' } },
+      );
+
+      const output = parseHookOutput(result.stdout);
+      expect(output).not.toBeNull();
+      expect(output!.additionalContext).toContain('index is stale');
       expect(result.stderr).toContain('[GitNexus] index is stale');
     });
 
@@ -358,6 +387,97 @@ describe('antigravity hook adapter e2e', () => {
       expect(parseHookOutput(result.stdout)).toBeNull();
     });
   });
+
+  // Issue #1913: when a GitNexus MCP server owns the repo DB, runAugment() must
+  // SKIP — silently by default so strict hook runners never see unexpected
+  // output, and surface the reason only under GITNEXUS_DEBUG=1. The Claude/Plugin
+  // copies are covered in test/unit/hooks.test.ts; the antigravity adapter shares
+  // the identical gated skip and is exercised here through the install pipeline
+  // (its lock/probe helpers only resolve from the install dir). A faked lsof/ps +
+  // an empty `lbug` lock force hasGitNexusServerOwner() => true; a marker-writing
+  // fake CLI proves augment never ran.
+  //
+  // #2180: skipped on Linux too — the probe's Linux backend no longer uses
+  // lsof/ps, so the faked lsof/ps can't force owner=true there. This stays as the
+  // macOS/other-Unix lsof-path lane; the antigravity adapter shares the identical
+  // gated owner-skip with the claude/plugin copies, whose Linux owner detection
+  // is covered against a fake /proc in test/unit/hook-db-lock-probe.test.ts.
+  describe.skipIf(process.platform === 'win32' || process.platform === 'linux')(
+    'AfterTool — augment skipped when MCP server owns the DB (#1913)',
+    () => {
+      const OWNER_PROBE = {
+        lsofOutput: '12345\n',
+        psOutput: 'node /tmp/node_modules/.bin/gitnexus mcp\n',
+      };
+
+      it('stays SILENT by default (no augment ran, no stderr noise, exit 0)', () => {
+        const markerPath = path.join(os.tmpdir(), `antigravity-skip-silent-${process.pid}`);
+        const lbugPath = path.join(gitNexusDir, 'lbug');
+        fs.writeFileSync(lbugPath, '');
+        fs.rmSync(markerPath, { force: true });
+        const binDir = createHookToolDir({ ...OWNER_PROBE, gitnexusMarkerPath: markerPath });
+        try {
+          const result = runHook(
+            installedHook,
+            {
+              hook_event_name: 'AfterTool',
+              tool_name: 'search_file_content',
+              tool_input: { pattern: 'validateUser' },
+              tool_response: { llmContent: '...' },
+              cwd: tmpDir,
+            },
+            tmpDir,
+            { env: { ...hookEnv(binDir), GITNEXUS_DEBUG: '' } },
+          );
+
+          expect(result.status).toBe(0);
+          // Strict-runner contract: completely silent — empty stdout AND stderr
+          // (matches the unit suite's assertion strength for the claude/plugin copies).
+          expect(result.stdout.trim()).toBe('');
+          expect(result.stderr.trim()).toBe('');
+          // Marker absent ⇒ the CLI never ran (augment short-circuited at the owner
+          // check). The paired GITNEXUS_DEBUG=1 test below positively proves the skip
+          // was the owner path (it asserts the owner-skip diagnostic on stderr).
+          expect(fs.existsSync(markerPath)).toBe(false);
+        } finally {
+          fs.rmSync(lbugPath, { force: true });
+          fs.rmSync(markerPath, { force: true });
+          fs.rmSync(binDir, { recursive: true, force: true });
+        }
+      });
+
+      it('surfaces the skip reason on stderr only under GITNEXUS_DEBUG=1', () => {
+        const markerPath = path.join(os.tmpdir(), `antigravity-skip-debug-${process.pid}`);
+        const lbugPath = path.join(gitNexusDir, 'lbug');
+        fs.writeFileSync(lbugPath, '');
+        fs.rmSync(markerPath, { force: true });
+        const binDir = createHookToolDir({ ...OWNER_PROBE, gitnexusMarkerPath: markerPath });
+        try {
+          const result = runHook(
+            installedHook,
+            {
+              hook_event_name: 'AfterTool',
+              tool_name: 'search_file_content',
+              tool_input: { pattern: 'validateUser' },
+              tool_response: { llmContent: '...' },
+              cwd: tmpDir,
+            },
+            tmpDir,
+            { env: { ...hookEnv(binDir), GITNEXUS_DEBUG: '1' } },
+          );
+
+          expect(result.status).toBe(0);
+          expect(parseHookOutput(result.stdout)).toBeNull();
+          expect(result.stderr).toContain('[GitNexus] augment skipped: MCP server owns DB');
+          expect(fs.existsSync(markerPath)).toBe(false);
+        } finally {
+          fs.rmSync(lbugPath, { force: true });
+          fs.rmSync(markerPath, { force: true });
+          fs.rmSync(binDir, { recursive: true, force: true });
+        }
+      });
+    },
+  );
 
   describe('cwd validation', () => {
     it('rejects relative cwd silently', () => {

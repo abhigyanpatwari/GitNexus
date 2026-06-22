@@ -241,11 +241,15 @@ describe('production routes — rate-limit middleware wiring', () => {
   });
 
   it('POST /api/analyze is wired with createRouteLimiter', () => {
-    expect(apiSource).toMatch(/app\.post\('\/api\/analyze',\s*createRouteLimiter\(/);
+    // Tolerate Prettier wrapping the registration across lines (it does once
+    // the route carries extra middleware like requireLocalhostOrigin).
+    expect(apiSource).toMatch(/app\.post\(\s*'\/api\/analyze',\s*createRouteLimiter\(/);
   });
 
   it('POST /api/embed is wired with createRouteLimiter', () => {
-    expect(apiSource).toMatch(/app\.post\('\/api\/embed',\s*createRouteLimiter\(/);
+    // Tolerate Prettier wrapping the registration across lines (it does once
+    // the route carries extra middleware like requireLocalhostOrigin).
+    expect(apiSource).toMatch(/app\.post\(\s*'\/api\/embed',\s*createRouteLimiter\(/);
   });
 
   it('SPA fallback is wired with createRouteLimiter', () => {

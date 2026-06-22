@@ -4,7 +4,6 @@ import {
   findEnclosingClassDef,
 } from '../../scope-resolution/scope/walkers.js';
 import { SupportedLanguages } from 'gitnexus-shared';
-import { buildMro, defaultLinearize } from '../../scope-resolution/passes/mro.js';
 import {
   populateClassOwnedMembers,
   tagNamespacePrefixes,
@@ -12,7 +11,7 @@ import {
 import type { ScopeResolver } from '../../scope-resolution/contract/scope-resolver.js';
 import { cppProvider } from '../c-cpp.js';
 import { cppArityCompatibility } from './arity.js';
-import { cppConversionRank } from './conversion-rank.js';
+import { CPP_CONVERSION_ONLY_ARG_TYPE_PREFIXES, cppConversionRank } from './conversion-rank.js';
 import { cppMergeBindings } from './merge-bindings.js';
 import { resolveCppImportTarget } from './import-target.js';
 import { scanCppHeaderFiles } from './header-scan.js';
@@ -30,6 +29,7 @@ import {
   isCppDependentBaseMember,
 } from './two-phase-lookup.js';
 import { populateCppAssociatedNamespaces, clearCppAdlState, pickCppAdlCandidates } from './adl.js';
+import { applyCppCaptureSideChannel } from './capture-side-channel.js';
 import {
   clearCppInlineNamespaces,
   populateCppInlineNamespaceScopes,
@@ -41,6 +41,45 @@ import {
   clearCppUserDefinedConversions,
   populateCppUserDefinedConversions,
 } from './user-defined-conversions.js';
+import {
+  buildCppMemberLookupMro,
+  clearCppMemberLookupState,
+  resolveCppReceiverMember,
+} from './member-lookup.js';
+
+/**
+ * Per-pass memo of the augmented `#include`-resolution file set
+ * (`allFilePaths` ∪ header paths), keyed on the two stable source sets.
+ * `resolveImportTarget` is called once per C++ `#include`; the old code rebuilt
+ * a fresh ~F-entry `Set` on every call AND defeated the shared
+ * `resolveCImportTarget` suffix-index memo (in `c/import-target.ts`) by handing
+ * it a new set identity each time. Both inputs are stable per pass, so the
+ * union is built once and reused. `WeakMap`-keyed → reclaimed with the pass.
+ * (Twin of the C resolver's `augmentedFilePaths`.)
+ */
+const augmentedPathsByPass = new WeakMap<
+  ReadonlySet<string>,
+  WeakMap<ReadonlySet<string>, ReadonlySet<string>>
+>();
+
+function augmentedFilePaths(
+  allFilePaths: ReadonlySet<string>,
+  headerPaths: ReadonlySet<string>,
+): ReadonlySet<string> {
+  let byHeaders = augmentedPathsByPass.get(allFilePaths);
+  if (byHeaders === undefined) {
+    byHeaders = new WeakMap();
+    augmentedPathsByPass.set(allFilePaths, byHeaders);
+  }
+  let augmented = byHeaders.get(headerPaths);
+  if (augmented === undefined) {
+    const set = new Set(allFilePaths);
+    for (const h of headerPaths) set.add(h);
+    augmented = set;
+    byHeaders.set(headerPaths, augmented);
+  }
+  return augmented;
+}
 
 /**
  * C++ `ScopeResolver` registered in `SCOPE_RESOLVERS` and consumed by
@@ -69,6 +108,7 @@ export const cppScopeResolver: ScopeResolver = {
     clearCppAdlState();
     clearCppInlineNamespaces();
     clearCppUserDefinedConversions();
+    clearCppMemberLookupState();
     return scanCppHeaderFiles(repoPath);
   },
 
@@ -78,9 +118,11 @@ export const cppScopeResolver: ScopeResolver = {
     // detection but are importable from .cpp files via #include.
     const headerPaths = resolutionConfig as ReadonlySet<string> | undefined;
     if (headerPaths !== undefined && headerPaths.size > 0) {
-      const augmented = new Set(allFilePaths);
-      for (const h of headerPaths) augmented.add(h);
-      return resolveCppImportTarget(targetRaw, fromFile, augmented);
+      return resolveCppImportTarget(
+        targetRaw,
+        fromFile,
+        augmentedFilePaths(allFilePaths, headerPaths),
+      );
     }
     return resolveCppImportTarget(targetRaw, fromFile, allFilePaths);
   },
@@ -100,8 +142,25 @@ export const cppScopeResolver: ScopeResolver = {
   // `'unknown'` keeps the candidate, preserving "degrade not lie".
   constraintCompatibility: cppConstraintCompatibility,
 
-  buildMro: (graph, parsedFiles, nodeLookup) =>
-    buildMro(graph, parsedFiles, nodeLookup, defaultLinearize),
+  buildMro: buildCppMemberLookupMro,
+
+  // Worker-boundary restore (see `ScopeResolver.applyCaptureSideChannel`).
+  // `emitCppScopeCaptures` records per-file ADL call-site arg shapes
+  // (`markCppAdlSiteArgs`/`markCppAdlSiteNoAdl`), inline-/anonymous-namespace
+  // ranges (`markCppInlineNamespaceRange`/`markCppAnonymousNamespaceRange`),
+  // dependent-base names (`markCppDependentBase`/`markCppDependentPackBase`),
+  // and file-local linkage (`markFileLocal`) into module-level maps as a SIDE
+  // EFFECT — none of it is serialized onto the returned ParsedFile's scopes/defs.
+  // On the worker path those marks are populated in the worker process and lost
+  // across the MessageChannel / disk store; the main thread reuses the
+  // serialized ParsedFile and skips `extractParsedFile`, so `populateOwners` +
+  // the ADL / two-phase-lookup passes would see empty maps and emit zero edges.
+  // The worker stashed a plain-data snapshot on `parsed.captureSideChannel` via
+  // `cppProvider.collectCaptureSideChannel`; this restores it into the module
+  // maps WITHOUT any tree-sitter re-parse (the #1983 fix — the old re-parse
+  // replay re-OOM'd huge `.h`/`.cpp` repos). The freshly-extracted leg never
+  // calls this — its marks were just populated in this process.
+  applyCaptureSideChannel: applyCppCaptureSideChannel,
 
   populateOwners: (parsed: ParsedFile) => {
     populateClassOwnedMembers(parsed);
@@ -198,6 +257,7 @@ export const cppScopeResolver: ScopeResolver = {
   // Disambiguates `f(int)` vs `f(double)` called with `f(2.5)` by scoring
   // each candidate's conversion cost; exact match wins over standard conversion.
   conversionRankFn: cppConversionRank,
+  conversionOnlyArgTypePrefixes: CPP_CONVERSION_ONLY_ARG_TYPE_PREFIXES,
   // Range-for element type inference: for (auto& user : users) → bind user to User
   populateRangeBindings: populateCppRangeBindings,
   // C++ method return-type bindings need to be visible from module scope
@@ -206,6 +266,7 @@ export const cppScopeResolver: ScopeResolver = {
   hoistTypeBindingsToModule: true,
   // Enable receiver-bound explicit-`this` fallback only for C++.
   resolveThisViaEnclosingClass: true,
+  resolveReceiverMember: resolveCppReceiverMember,
   // The `isFileLocalDef` hook on the global free-call fallback names
   // file-local linkage historically, but semantically gates "logically
   // invisible cross-file" defs. C++ extends this to also reject class-

@@ -55,6 +55,23 @@ import type { KnowledgeGraph } from '../graph/types.js';
 const isGraphWide = (label: string): boolean => label === 'Community' || label === 'Process';
 
 /**
+ * Relationship types whose VALIDITY is a whole-program property, not a
+ * function of their endpoints' files (#2084 M4 U6). `TAINT_PATH` (cross-
+ * function taint) can be invalidated by a change to an INTERMEDIATE function
+ * on a third file, so the endpoint-writability rule below would skip a stale
+ * A→C edge. These are always extracted (and the orchestrator delete-alls them
+ * first, like Community/Process) so they rebuild from the fresh graph.
+ */
+// `CALL_SUMMARY` (PDG FU-C) is intra-procedural (a callee's RETURN-VALUE ASCENT
+// depends only on its OWN body), but the orchestrator delete-alls it on an
+// incremental `--pdg` writeback to keep the emit path single — so it must be
+// re-included from the FULL fresh graph (which the emit phase recomputes every
+// run) or an unchanged function's summary would be lost. Cheap: one self-loop
+// edge per return-flowing function.
+const isGraphWideRelType = (type: string): boolean =>
+  type === 'TAINT_PATH' || type === 'CALL_SUMMARY';
+
+/**
  * Build a Map<nodeId, filePath> for every File-bound node in the graph.
  * Graph-wide nodes (Community/Process) have no filePath and are filtered.
  */
@@ -84,7 +101,11 @@ export const extractChangedSubgraph = (
   });
 
   fullGraph.forEachRelationship((r: GraphRelationship) => {
-    if (writableNodeIds.has(r.sourceId) || writableNodeIds.has(r.targetId)) {
+    if (
+      writableNodeIds.has(r.sourceId) ||
+      writableNodeIds.has(r.targetId) ||
+      isGraphWideRelType(r.type)
+    ) {
       sub.addRelationship(r);
     }
   });

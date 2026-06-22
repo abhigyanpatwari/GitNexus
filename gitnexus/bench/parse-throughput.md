@@ -70,10 +70,17 @@ this doc, run it under instrumentation:
 ```bash
 # From the gitnexus/ subdir:
 cd gitnexus
-# Single-threaded baseline (sequential fallback):
-npx vitest run test/integration/parse-impl-large-fixture.test.ts --reporter=verbose
+# The worker pool is the sole parse path, so every run needs the dist worker
+# (`npm run build`) and a pool size pinned via GITNEXUS_WORKER_POOL_SIZE.
 
-# Worker-pool path (requires built dist/ — pre-built by `npm run build`):
+# Single-worker-pool baseline (closest analog to the old single-threaded run —
+# sequential parsing was removed, so a 1-worker pool is the floor):
+npm run build && \
+  GITNEXUS_WORKER_POOL_SIZE=1 \
+  GITNEXUS_VERBOSE=1 \
+  npx vitest run test/integration/parse-impl-large-fixture.test.ts --reporter=verbose
+
+# Multi-worker path:
 npm run build && \
   GITNEXUS_WORKER_POOL_SIZE=4 \
   GITNEXUS_PARSE_CHUNK_CONCURRENCY=2 \
@@ -97,22 +104,26 @@ node --inspect=0 \
 ## Latest measurement
 
 > _No measurement data has been collected yet — this file is the
-> methodology + harness scaffold. The single recorded data point is the
-> U6 wall-clock smoke baseline below; the worker-pool rows are
-> placeholders for future bench-pass output._
+> methodology + harness scaffold. The U6 smoke test confirms the
+> worker-pool path stays well within its wall-clock budget, but every
+> throughput/heap cell below is a `_TBD_` placeholder for a future
+> bench-pass._
 
 The U6 integration test (`gitnexus/test/integration/parse-impl-large-fixture.test.ts`)
-was observed completing the synthetic fixture in **~6 seconds** under
-the sequential path (`skipWorkers: true`) on the development machine,
-well under the 30 s `Promise.race` wall-clock budget. That number is a
-smoke baseline only — recorded here for reference, not as a regression
-target.
+runs the worker pool — the sole parse path now that sequential parsing
+has been removed (disabling the pool on a repo with parseable files
+raises a hard `WorkerPoolDisabledError`). It completes the synthetic
+fixture well within the 30 s `Promise.race` wall-clock budget on the
+development machine, but no worker-pool throughput/heap numbers have been
+captured yet, so the rows below are all `_TBD_`. (An earlier ~6 s figure
+recorded here was measured on the now-removed sequential path; it has
+been dropped rather than relabelled as a worker-pool baseline, since the
+two paths are not comparable.)
 
-| Path                                       | files/s | wall-clock           | peak heap | chunks | quarantined |
-| ------------------------------------------ | ------- | -------------------- | --------- | ------ | ----------- |
-| Sequential (`skipWorkers: true`, U6 smoke) | _TBD_   | ~6 s _(observation)_ | _TBD_     | 17     | 0           |
-| Worker pool, `--workers 4`, concurrency 2  | _TBD_   | _TBD_                | _TBD_     | _TBD_  | 0           |
-| Worker pool, `--workers 1`, concurrency 1  | _TBD_   | _TBD_                | _TBD_     | _TBD_  | 0           |
+| Path                                                                      | files/s | wall-clock | peak heap | chunks | quarantined |
+| ------------------------------------------------------------------------- | ------- | ---------- | --------- | ------ | ----------- |
+| Worker pool, `--workers 1` (`GITNEXUS_WORKER_POOL_SIZE=1`), concurrency 1 | _TBD_   | _TBD_      | _TBD_     | _TBD_  | 0           |
+| Worker pool, `--workers 4`, concurrency 2                                 | _TBD_   | _TBD_      | _TBD_     | _TBD_  | 0           |
 
 **Hardware:** _TBD — record OS, CPU, RAM, Node version, gitnexus SHA at
 the time of the bench-pass that populates the table above._

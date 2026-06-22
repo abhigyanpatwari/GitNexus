@@ -15,7 +15,10 @@ const fs = require('fs');
 const path = require('path');
 const { spawnSync } = require('child_process');
 const { acquireHookSlot } = require('./hook-lock.cjs');
-const { hasGitNexusDbLockedByGitNexusServer } = require('./hook-db-lock-probe.cjs');
+const {
+  hasGitNexusDbLockedByGitNexusServer,
+  resolveUnixGuardTimeout,
+} = require('./hook-db-lock-probe.cjs');
 const { formatAnalyzeCommand } = require('./resolve-analyze-cmd.cjs');
 
 /**
@@ -110,10 +113,20 @@ function hasGitNexusServerOwner(gitNexusDir) {
   return hasGitNexusDbLockedByGitNexusServer(path.join(gitNexusDir, 'lbug'), process.pid);
 }
 
+/**
+ * Whether opt-in diagnostics should be written to the hook's stderr. Strict
+ * hook runners (e.g. Codex `PreToolUse`) validate hook output, so normal,
+ * non-error skip paths must stay silent unless the operator explicitly asks
+ * for diagnostics via GITNEXUS_DEBUG. See issue #1913.
+ */
+function isDebugEnabled() {
+  return process.env.GITNEXUS_DEBUG === '1' || process.env.GITNEXUS_DEBUG === 'true';
+}
+
 function extractAugmentContext(stderr) {
   const output = (stderr || '').trim();
   const marker = output.indexOf('[GitNexus]');
-  const debug = process.env.GITNEXUS_DEBUG === '1' || process.env.GITNEXUS_DEBUG === 'true';
+  const debug = isDebugEnabled();
   if (debug && output.length > 0) {
     // Emit the FULL discarded prefix (everything before the marker, or all of
     // it when no marker is present) so suppressed diagnostics — KuzuDB lock
@@ -208,14 +221,76 @@ function resolveCliPath() {
   return cliPath;
 }
 
+// Debounce for the unguarded-CLI diagnostic below (#2163 follow-up review):
+// at most one line per (short-lived) hook process, even if a future change
+// runs the CLI more than once.
+let unguardedCliWarned = false;
+
 /**
  * Spawn a gitnexus CLI command synchronously.
  * Returns the stderr output (KuzuDB captures stdout at OS level).
+ *
+ * Unix orphan containment (#2163 follow-up): the augment CLI is the
+ * longest-lived hook child (inner spawnSync timeout 7s locally, 12s via
+ * npx), so on Unix it gets the same SIGKILL-surviving coreutils `timeout`
+ * wrapper as the probe's lsof/ps. The wrapper budget is ceil(inner/1000)+1
+ * seconds — STRICTLY greater than the inner spawnSync timeout, so on the
+ * supervised path Node's SIGTERM always fires first and the existing
+ * error/status contract is untouched. Once the hook itself has been
+ * SIGKILLed (exactly the orphan case the wrapper exists for), the guard
+ * semantics differ per branch:
+ *   - direct exec (the CLI is the guard's CHILD): `-k 1` TERM-first — a
+ *     SIGTERM-immune CLI can hold the guard ~1s past the inner timeout
+ *     before the `-k` SIGKILL escalation reaps it.
+ *   - npx (the CLI is a GRANDCHILD: guard → npx → CLI): `-s KILL` — the
+ *     budget expiry SIGKILLs the whole process group outright. TERM-first
+ *     would kill only the obedient npx parent, making `timeout` reap it and
+ *     return before the `-k` escalation ever fires, stranding a
+ *     SIGTERM-immune CLI grandchild unbounded (reproduced on coreutils
+ *     9.x). `-k 1` is retained alongside `-s KILL` as a harmless belt: with
+ *     `-s KILL` the `-k` escalation signal is also KILL. Two residual gaps
+ *     on this branch, both bounded by "no worse than pre-fix" (where the
+ *     grandchild received no signal at all): the group-wide SIGKILL is
+ *     coreutils semantics — a busybox `timeout` passes the self-test (it
+ *     has `-k` and propagates exit status) but signals only its direct
+ *     child, so a busybox guard cannot reach the grandchild; and on the
+ *     SUPERVISED path (hook alive, inner spawnSync timeout SIGTERMs the
+ *     guard) coreutils forwards TERM rather than the `-s` signal, npx dies,
+ *     and the guard exits before any KILL fires — so a SIGTERM-immune CLI
+ *     grandchild still escapes in those two cases.
+ * If the sibling probe predates the resolveUnixGuardTimeout export (version
+ * skew), the adapter degrades to the unwrapped invocation instead of
+ * throwing. Windows is deliberately NOT wrapped — there is no coreutils
+ * timeout to resolve there and the resolver's self-test spawns /bin/sh — so
+ * on win32 (the npx.cmd path) and whenever the guard resolves to null (e.g.
+ * macOS without Homebrew coreutils — reported once under GITNEXUS_DEBUG)
+ * the argv stays byte-identical to the pre-wrap invocation.
  */
 function runGitNexusCli(cliPath, args, cwd, timeout) {
   const isWin = process.platform === 'win32';
+  // Version-skew guard (#2163 follow-up review): an older sibling probe
+  // without the resolveUnixGuardTimeout export must degrade to the unwrapped
+  // invocation — a TypeError here would be swallowed by the caller's catch
+  // and silently kill the augment.
+  const guard =
+    isWin || typeof resolveUnixGuardTimeout !== 'function' ? null : resolveUnixGuardTimeout();
+  if (!isWin && !guard && !unguardedCliWarned && isDebugEnabled()) {
+    // Diagnose the "stays unwrapped" Unix paths once per hook process: no
+    // usable coreutils timeout/gtimeout (e.g. macOS without Homebrew
+    // coreutils), GITNEXUS_HOOK_TIMEOUT_PATH=disabled, or probe skew above.
+    unguardedCliWarned = true;
+    process.stderr.write(
+      '[GitNexus hook] no usable timeout/gtimeout guard; augment CLI child runs unguarded\n',
+    );
+  }
   if (cliPath) {
-    return spawnSync(process.execPath, [cliPath, ...args], {
+    const [cmd, cmdArgs] = guard
+      ? [
+          guard,
+          ['-k', '1', String(Math.ceil(timeout / 1000) + 1), process.execPath, cliPath, ...args],
+        ]
+      : [process.execPath, [cliPath, ...args]];
+    return spawnSync(cmd, cmdArgs, {
       encoding: 'utf-8',
       timeout,
       cwd,
@@ -223,8 +298,27 @@ function runGitNexusCli(cliPath, args, cwd, timeout) {
       windowsHide: true,
     });
   }
-  // On Windows, invoke npx.cmd directly (no shell needed)
-  return spawnSync(isWin ? 'npx.cmd' : 'npx', ['-y', 'gitnexus', ...args], {
+  // On Windows, invoke npx.cmd directly (no shell needed). A non-null guard
+  // implies non-Windows, so the wrapped arm can hardcode plain `npx`. The
+  // wrapped arm leads with `-s KILL` (NOT TERM-first like the direct branch
+  // above): the CLI here is a grandchild behind npx — see the docblock.
+  const [cmd, cmdArgs] = guard
+    ? [
+        guard,
+        [
+          '-s',
+          'KILL',
+          '-k',
+          '1',
+          String(Math.ceil((timeout + 5000) / 1000) + 1),
+          'npx',
+          '-y',
+          'gitnexus',
+          ...args,
+        ],
+      ]
+    : [isWin ? 'npx.cmd' : 'npx', ['-y', 'gitnexus', ...args]];
+  return spawnSync(cmd, cmdArgs, {
     encoding: 'utf-8',
     timeout: timeout + 5000,
     cwd,
@@ -249,17 +343,35 @@ function handlePreToolUse(input) {
 
   const pattern = extractPattern(toolName, toolInput);
   if (!pattern || pattern.length < 3) return;
-  if (hasGitNexusServerOwner(gitNexusDir)) {
-    process.stderr.write('[GitNexus] augment skipped: MCP server owns DB\n');
+
+  // Acquire the per-repo slot BEFORE the DB-owner probe (#2163): the probe
+  // itself spawns lsof/ps, so it must be bounded by the same ≤3-per-repo cap
+  // as the augment, or concurrent sessions fan out unbounded probe
+  // subprocesses. Keep the acquire right after the cheap guards above —
+  // moving it earlier would churn slot files on tool calls that never probe.
+  const release = acquireHookSlot(gitNexusDir);
+  if (!release) {
+    // Normal skip path: all per-repo hook slots are held by concurrent
+    // sessions. Stay silent for strict hook runners (issue #1913); surface
+    // the reason only when diagnostics are explicitly requested.
+    if (isDebugEnabled()) {
+      process.stderr.write('[GitNexus] augment skipped: hook slots saturated\n');
+    }
     return;
   }
 
-  const release = acquireHookSlot(gitNexusDir);
-  if (!release) return;
-
-  const cliPath = resolveCliPath();
   let result = '';
   try {
+    if (hasGitNexusServerOwner(gitNexusDir)) {
+      // Normal skip path: the MCP server owns the DB, so the CLI augment would
+      // contend on the lock. Stay silent for strict hook runners (issue #1913);
+      // surface the reason only when diagnostics are explicitly requested.
+      if (isDebugEnabled()) {
+        process.stderr.write('[GitNexus] augment skipped: MCP server owns DB\n');
+      }
+      return;
+    }
+    const cliPath = resolveCliPath();
     const child = runGitNexusCli(cliPath, ['augment', '--', pattern], cwd, 7000);
     if (!child.error && child.status === 0) {
       result = extractAugmentContext(child.stderr || '');
@@ -361,7 +473,7 @@ function main() {
     const handler = handlers[input.hook_event_name || ''];
     if (handler) handler(input);
   } catch (err) {
-    if (process.env.GITNEXUS_DEBUG) {
+    if (isDebugEnabled()) {
       console.error('GitNexus hook error:', (err.message || '').slice(0, 200));
     }
   }

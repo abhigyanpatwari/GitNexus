@@ -1,0 +1,42 @@
+{
+  "schemaVersion": 1,
+  "criterion": {
+    "name": "guarded",
+    "filePath": "src/guard.ts",
+    "direction": "downstream",
+    "line": 7,
+    "marker": "y + 1",
+    "pdgEdgeKinds": ["REACHING_DEF", "CDG"]
+  },
+  "locus": "intra",
+  "provenance": "manual",
+  "analyzerVersion": "1.6.7",
+  "intra_AIS": [
+    {
+      "symbol": "guarded",
+      "filePath": "src/guard.ts",
+      "line": 9,
+      "note": "`return -1` is control-dependent on the guard's true arm"
+    },
+    {
+      "symbol": "guarded",
+      "filePath": "src/guard.ts",
+      "line": 11,
+      "note": "the post-guard body block `const y = x * 2; const z = y + 1;` (lines 11-12, coalesced) runs only when the guard is false: control-dependent (block-start representative)"
+    },
+    {
+      "symbol": "guarded",
+      "filePath": "src/guard.ts",
+      "line": 12,
+      "note": "`const z = y + 1` is control-dependent on the guard AND data-dependent on `y` (interior of the coalesced 11-12 body block; recovered statement-granular by FU-B-2 walking the `y@11->z@12` self-edge in the reached body block)"
+    },
+    {
+      "symbol": "guarded",
+      "filePath": "src/guard.ts",
+      "line": 13,
+      "note": "`return z` is control-dependent on the guard"
+    }
+  ],
+  "inter_AIS": [],
+  "rationale": "criterion.line=7 — the guard predicate `if (!ok)` (source semantics: the guard controls whether the post-guard body runs). DOWNSTREAM CDG controller->dependent edges reach the true-arm `return -1` (line 9), the post-guard body, and `return z` (line 13). CORRECTION (FU-B-2 re-reconciliation): the CFG COALESCES the two consecutive post-guard defs `const y = x * 2` and `const z = y + 1` into ONE BasicBlock starting at line 11. BEFORE FU-B-2 the block-granular slice could not pinpoint the interior line 12, so the measurable set was {9, 11, 13}. FU-B-2 makes the slice STATEMENT-granular: the reached body block (11-12) is itself walked over its self REACHING_DEF def->use lines (`y@11->z@12`, decoded from the FU-B-2 `reason` annotation), surfacing line 12. So the measurable control/data-dependent set is now {9, 11, 12, 13} — the slice from line 7 returns exactly that, restoring the ORIGINAL source-derived belief (the block-coalescing under-count is repaired, not a metric re-fit). All dependents WITHIN `guarded`; inter_AIS empty. Canonical guard-clause CDG shape (#559); isolates the CDG-forward arm of KTD4 combined with the FU-B-2 intra-block data-dep recovery on a control-reached body block."
+}

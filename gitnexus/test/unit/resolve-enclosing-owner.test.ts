@@ -12,12 +12,14 @@ import Parser from 'tree-sitter';
 import Ruby from 'tree-sitter-ruby';
 import { findEnclosingClassInfo } from '../../src/core/ingestion/utils/ast-helpers.js';
 import { rubyProvider } from '../../src/core/ingestion/languages/ruby.js';
+import { requireVendoredGrammar } from '../../src/core/tree-sitter/vendored-grammars.js';
 
+// Vendored grammar — loaded from vendor/ by absolute path, never node_modules (#2111).
 let Kotlin: unknown;
 try {
-  Kotlin = require('tree-sitter-kotlin');
+  Kotlin = requireVendoredGrammar('tree-sitter-kotlin');
 } catch {
-  // Kotlin grammar may not be installed
+  // Kotlin grammar may not have a prebuild for this platform
 }
 
 const parser = new Parser();

@@ -19,6 +19,7 @@ import {
   methodToTypeArgPosition,
   type TypeArgPosition,
 } from './shared.js';
+import { CPP_BRACED_INIT_TYPE_PREFIX } from '../languages/cpp/conversion-rank.js';
 
 const DECLARATION_NODE_TYPES: ReadonlySet<string> = new Set(['declaration']);
 
@@ -479,6 +480,8 @@ const extractForLoopBinding: ForLoopExtractor = (
 /** Infer the type of a literal AST node for C++ overload disambiguation. */
 const inferLiteralType: LiteralTypeInferrer = (node) => {
   switch (node.type) {
+    case 'initializer_list':
+      return inferBracedInitLiteralType(node);
     case 'number_literal': {
       const t = node.text;
       // Float suffixes
@@ -504,6 +507,23 @@ const inferLiteralType: LiteralTypeInferrer = (node) => {
       return undefined;
   }
 };
+
+function inferBracedInitLiteralType(node: SyntaxNode): string | undefined {
+  const elementTypes: string[] = [];
+  for (const child of node.children) {
+    if (child.type === ',' || child.type === '{' || child.type === '}') continue;
+    const elementType = inferLiteralType(child);
+    if (elementType === undefined || elementType.startsWith(CPP_BRACED_INIT_TYPE_PREFIX)) {
+      return `${CPP_BRACED_INIT_TYPE_PREFIX}unknown:${elementTypes.length + 1}`;
+    }
+    elementTypes.push(elementType);
+  }
+  if (elementTypes.length === 0) return `${CPP_BRACED_INIT_TYPE_PREFIX}unknown:0`;
+  const first = elementTypes[0];
+  return elementTypes.every((type) => type === first)
+    ? `${CPP_BRACED_INIT_TYPE_PREFIX}${first}:${elementTypes.length}`
+    : `${CPP_BRACED_INIT_TYPE_PREFIX}unknown:${elementTypes.length}`;
+}
 
 /** C++: detect constructor type from smart pointer factory calls (make_shared<Dog>()).
  *  Extracts the template type argument as the constructor type for virtual dispatch. */

@@ -8,6 +8,8 @@ vi.mock('../../src/core/run-analyze.js', () => ({
 
 vi.mock('../../src/core/lbug/lbug-adapter.js', () => ({
   closeLbug: vi.fn(async () => undefined),
+  closeLbugBeforeExit: vi.fn(async () => undefined),
+  isLbugReady: vi.fn(() => false),
 }));
 
 vi.mock('../../src/storage/repo-manager.js', () => ({
@@ -62,9 +64,7 @@ describe('analyzeCommand --workers validation', () => {
       expect(
         cap
           .records()
-          .some((r) =>
-            String(r.msg ?? '').startsWith('  --workers must be a non-negative integer'),
-          ),
+          .some((r) => String(r.msg ?? '').startsWith('  --workers must be a positive integer')),
       ).toBe(true);
       expect(runFullAnalysisMock).not.toHaveBeenCalled();
       cap.restore();
@@ -89,7 +89,7 @@ describe('analyzeCommand --workers validation', () => {
     );
   });
 
-  it('threads --workers 0 as workerPoolSize: 0 (sequential-fallback signal)', async () => {
+  it('rejects --workers 0 with a CLI error (sequential parsing was removed)', async () => {
     const { analyzeCommand } = await import('../../src/cli/analyze.js');
     runFullAnalysisMock.mockResolvedValue({
       repoName: 'repo',
@@ -100,12 +100,11 @@ describe('analyzeCommand --workers validation', () => {
 
     await analyzeCommand(undefined, { workers: '0' });
 
-    expect(runFullAnalysisMock).toHaveBeenCalledWith(
-      expect.any(String),
-      expect.objectContaining({ workerPoolSize: 0 }),
-      expect.any(Object),
-    );
-    expect(process.exitCode).toBeUndefined();
+    // 0 is no longer a "disable the pool" signal — it must error out before the
+    // pipeline runs, not thread workerPoolSize: 0.
+    expect(runFullAnalysisMock).not.toHaveBeenCalled();
+    expect(process.exitCode).toBe(1);
+    process.exitCode = undefined; // reset the global so sibling tests aren't affected
   });
 
   it('does not mutate GITNEXUS_WORKER_POOL_SIZE in process.env', async () => {

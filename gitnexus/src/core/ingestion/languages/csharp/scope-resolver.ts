@@ -10,6 +10,7 @@ import type { ParsedFile } from 'gitnexus-shared';
 import { SupportedLanguages } from 'gitnexus-shared';
 import { buildMro, defaultLinearize } from '../../scope-resolution/passes/mro.js';
 import { populateClassOwnedMembers } from '../../scope-resolution/scope/walkers.js';
+import { populateCsharpNamespacePrefixes } from './qualified-type-names.js';
 import type { ScopeResolver } from '../../scope-resolution/contract/scope-resolver.js';
 import { csharpProvider } from '../csharp.js';
 import {
@@ -57,7 +58,13 @@ const csharpScopeResolver: ScopeResolver = {
   buildMro: (graph, parsedFiles, nodeLookup) =>
     buildMro(graph, parsedFiles, nodeLookup, defaultLinearize),
 
-  populateOwners: (parsed: ParsedFile) => populateClassOwnedMembers(parsed),
+  populateOwners: (parsed: ParsedFile) => {
+    populateClassOwnedMembers(parsed);
+    // Sidecar-only namespace tagging (does NOT touch qualifiedName) so the
+    // qualified constructor resolver can break same-tail collisions like
+    // `new B.Foo()` by matching the explicit qualifier (#2046).
+    populateCsharpNamespacePrefixes(parsed);
+  },
 
   // C# uses `base` for super-class dispatch, not `super`. Match as a
   // plain identifier (no `()` call like Python's `super(...)`) — `base`

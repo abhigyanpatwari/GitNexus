@@ -94,6 +94,86 @@ withTestLbugDB(
       });
     });
 
+    // ─── closeLbug rejects pending waiters (#2068 follow-up) ─────────────
+    //
+    // Before the fix, closeOne() never rejected queued waiters: a caller
+    // waiting for a free connection when the pool was closed (e.g. a staleness
+    // reinit under concurrent query load) hung for WAITER_TIMEOUT_MS (15s) and
+    // then surfaced a misleading "pool exhausted" error. Now they reject
+    // immediately with an actionable "pool closed" message. The pool caps at
+    // MAX_CONNS_PER_REPO (8); firing a synchronous burst larger than that queues
+    // the surplus as waiters, and closing synchronously (before any query
+    // settles) must reject every queued waiter at once. The default 5s test
+    // timeout also guards promptness — a regression would block ~15s and time
+    // out rather than reject.
+    describe('closeLbug waiter handling (#2068)', () => {
+      it('rejects queued waiters promptly with a pool-closed error on close', async () => {
+        await initLbug('test-repo', handle.dbPath);
+
+        // Fire a burst larger than the 8-connection cap WITHOUT awaiting: the
+        // first 8 check out connections synchronously, the surplus queue as
+        // waiters — all before the synchronous closeLbug below runs.
+        const BURST = 24;
+        const MAX_CONNS = 8;
+        const inflight = Array.from({ length: BURST }, () =>
+          executeQuery('test-repo', 'MATCH (n:Function) RETURN n.name AS name'),
+        );
+        // Close in the same synchronous tick — no microtask has served a waiter.
+        const closing = closeLbug('test-repo');
+
+        const settled = await Promise.allSettled(inflight);
+        await closing;
+
+        const reasons = settled
+          .filter((r): r is PromiseRejectedResult => r.status === 'rejected')
+          .map((r) => String(r.reason?.message ?? r.reason));
+
+        // The surplus (BURST - MAX_CONNS) waiters must reject with "pool closed".
+        const poolClosed = reasons.filter((m) => /pool closed/i.test(m));
+        expect(poolClosed.length).toBeGreaterThanOrEqual(BURST - MAX_CONNS);
+        // And none should have hit the 15s "exhausted" waiter-timeout path.
+        expect(reasons.some((m) => /waiting for a free connection/i.test(m))).toBe(false);
+
+        expect(isLbugReady('test-repo')).toBe(false);
+      });
+
+      it('settles in-flight queries and fully tears down when closed mid-flight', async () => {
+        // closeOne-vs-checkin interleave (F4b): with 8 connections in-flight and
+        // surplus callers queued, a synchronous close must (a) let every promise
+        // settle — no hang — and (b) fully delete the pool entry so checked-in
+        // connections are closed as orphans rather than handed to a rejected
+        // waiter. We assert the observable contract; the "orphan not handed to a
+        // rejected waiter" invariant is single-threaded-by-construction (closeOne
+        // drains waiters with no await before any checkin can run).
+        await initLbug('test-repo', handle.dbPath);
+
+        const inflight = Array.from({ length: 16 }, () =>
+          executeQuery('test-repo', 'MATCH (n:Function) RETURN n.name AS name'),
+        );
+        const closing = closeLbug('test-repo');
+
+        // allSettled only resolves once EVERY query settled — proving none hangs
+        // (a 15s waiter-timeout regression would blow the default test timeout).
+        const settled = await Promise.allSettled(inflight);
+        await closing;
+        expect(settled).toHaveLength(16);
+        expect(
+          settled.some(
+            (r) =>
+              r.status === 'rejected' &&
+              /waiting for a free connection/i.test(String(r.reason?.message ?? r.reason)),
+          ),
+        ).toBe(false);
+
+        // Pool entry fully gone — a subsequent query fails fast with the
+        // not-initialized error, not a hang or a stale connection.
+        expect(isLbugReady('test-repo')).toBe(false);
+        await expect(executeQuery('test-repo', 'MATCH (n) RETURN n LIMIT 1')).rejects.toThrow(
+          /not initialized/i,
+        );
+      });
+    });
+
     // ─── Parameterized queries ───────────────────────────────────────────
 
     describe('executeParameterized', () => {

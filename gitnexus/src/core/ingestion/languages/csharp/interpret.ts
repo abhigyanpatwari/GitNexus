@@ -129,9 +129,20 @@ function stripGeneric(text: string): string {
  *  receiver's generic type based on the suffix — `data.Values` →
  *  element type of `data`'s Dictionary<K,V>. */
 function stripQualifier(text: string): string {
-  const lastDot = text.lastIndexOf('.');
-  if (lastDot === -1) return text;
-  const tail = text.slice(lastDot + 1);
+  // Strip only the outermost qualifier: the last `.` at generic nesting depth 0.
+  // This preserves F41 (never cut inside `Dictionary<string, Ns.User>`) AND
+  // nested types through a generic outer (`Ns.Outer<int>.Inner` → `Inner`, not
+  // `Outer<int>.Inner` — #2046 P3).
+  let depth = 0;
+  let lastDotAtDepth0 = -1;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (c === '<') depth++;
+    else if (c === '>') depth = Math.max(0, depth - 1);
+    else if (c === '.' && depth === 0) lastDotAtDepth0 = i;
+  }
+  if (lastDotAtDepth0 === -1) return text;
+  const tail = text.slice(lastDotAtDepth0 + 1);
   if (COLLECTION_ACCESSOR_SUFFIXES.has(tail)) return text;
   return tail;
 }

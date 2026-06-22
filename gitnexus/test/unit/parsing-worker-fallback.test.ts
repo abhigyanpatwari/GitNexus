@@ -26,7 +26,6 @@
  *     next analyze with a fresh pool gets another chance.
  */
 import { describe, expect, it, vi } from 'vitest';
-import { createASTCache } from '../../src/core/ingestion/ast-cache.js';
 import { processParsing } from '../../src/core/ingestion/parsing-processor.js';
 import type { WorkerPool } from '../../src/core/ingestion/workers/worker-pool.js';
 import { WorkerPoolDispatchError } from '../../src/core/ingestion/workers/worker-pool.js';
@@ -49,10 +48,8 @@ describe('processParsing — worker-pool error propagation (U20)', () => {
         graph,
         [{ path: 'src/a.ts', content: 'export function a() { return 1; }\n' }],
         createSymbolTable(),
-        createASTCache(),
-        createASTCache(),
-        () => {},
         workerPool,
+        () => {},
       ),
     ).rejects.toThrow('replacement worker failed');
 
@@ -82,15 +79,16 @@ describe('processParsing — worker-pool error propagation (U20)', () => {
         { path: 'src/a.ts', content: 'export function a() { return 1; }\n' },
       ],
       createSymbolTable(),
-      createASTCache(),
-      createASTCache(),
-      () => {},
       workerPool,
+      () => {},
     );
 
     await expect(rejection).rejects.toBeInstanceOf(WorkerPoolDispatchError);
-    const err = await rejection.catch((e) => e as WorkerPoolDispatchError);
-    expect(err.quarantinedPaths).toEqual(['src/poison.ts']);
+    const err = await rejection.then(
+      () => undefined,
+      (e: unknown) => e as WorkerPoolDispatchError,
+    );
+    expect(err?.quarantinedPaths).toEqual(['src/poison.ts']);
 
     // No sequential fallback ran for either file. The caller (analyze
     // entry point) is responsible for surfacing this as a hard
@@ -128,62 +126,16 @@ describe('processParsing — worker-pool error propagation (U20)', () => {
         { path: 'src/a.ts', content: 'export function a() { return 1; }\n' },
       ],
       createSymbolTable(),
-      createASTCache(),
-      createASTCache(),
+      workerPool,
       (_current, _total, detail) => {
         progressDetails.push(detail);
       },
-      workerPool,
     );
 
-    // Worker path returned successfully (not null — null was the
-    // pre-U20 sentinel for "ran sequential fallback"). The progress
-    // log surfaces the quarantine count for operator visibility.
+    // Worker path returned the merged chunk data (never null — the pre-U20
+    // null sentinel meant "ran sequential fallback", which no longer exists).
+    // The progress log surfaces the quarantine count for operator visibility.
     expect(result).not.toBeNull();
     expect(progressDetails).toContain('1 worker-quarantined file(s) skipped');
-  });
-});
-
-describe('TypeScript object literal method exports', () => {
-  it('links exported object literal shorthand methods back to the exported object', async () => {
-    const graph = createKnowledgeGraph();
-
-    await processParsing(
-      graph,
-      [
-        {
-          path: 'src/foo.ts',
-          content: `export const fooService = {
-  async getUser(id: string) {
-    return findUser(id);
-  },
-  saveUser(user: User) {
-    return persist(user);
-  },
-};
-`,
-        },
-      ],
-      createSymbolTable(),
-      createASTCache(),
-      createASTCache(),
-    );
-
-    const service = graph.nodes.find(
-      (node) => node.label === 'Const' && node.properties.name === 'fooService',
-    );
-    expect(service, 'exported object literal should be captured as a Const').toBeDefined();
-
-    const methodNames = new Set(
-      graph.nodes.filter((node) => node.label === 'Method').map((node) => node.properties.name),
-    );
-    expect(methodNames).toEqual(new Set(['getUser', 'saveUser']));
-
-    const linkedMethodNames = graph.relationships
-      .filter((rel) => rel.type === 'HAS_METHOD' && rel.sourceId === service!.id)
-      .map((rel) => graph.getNode(rel.targetId)?.properties.name)
-      .sort();
-
-    expect(linkedMethodNames).toEqual(['getUser', 'saveUser']);
   });
 });

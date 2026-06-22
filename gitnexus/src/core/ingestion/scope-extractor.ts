@@ -575,6 +575,7 @@ function buildDefFromDeclarationMatch(
   const returnType = match['@declaration.return-type']?.text;
   const templateConstraints = parseJsonCapture(match['@declaration.template-constraints']);
   const isExplicit = parseBooleanCapture(match['@declaration.is-explicit']);
+  const isDeleted = parseBooleanCapture(match['@declaration.is-deleted']);
 
   return {
     nodeId: makeDefId(filePath, anchor.range, type, nameCap.text),
@@ -590,6 +591,7 @@ function buildDefFromDeclarationMatch(
     ...(templateArguments !== undefined ? { templateArguments } : {}),
     ...(templateConstraints !== undefined ? { templateConstraints } : {}),
     ...(isExplicit === true ? { isExplicit: true } : {}),
+    ...(isDeleted === true ? { isDeleted: true } : {}),
   };
 }
 
@@ -652,12 +654,19 @@ function parseJsonParameterTypeClassesCapture(
       if (typeof o.pointerDepth !== 'number' || !Number.isFinite(o.pointerDepth)) {
         return undefined;
       }
-      out.push({
+      const shape: ParameterTypeClass = {
         base: o.base,
         cv: o.cv,
         indirection: o.indirection,
         pointerDepth: o.pointerDepth,
-      });
+      };
+      if (Array.isArray(o.templateArguments)) {
+        if (!o.templateArguments.every((x): x is string => typeof x === 'string')) {
+          return undefined;
+        }
+        shape.templateArguments = [...o.templateArguments];
+      }
+      out.push(shape);
     }
     return out;
   } catch {
@@ -1158,6 +1167,7 @@ const KNOWN_SUB_TAGS: ReadonlySet<string> = new Set<string>([
   '@declaration.return-type',
   '@declaration.template-constraints',
   '@declaration.is-explicit',
+  '@declaration.is-deleted',
 ]);
 
 /**

@@ -210,7 +210,7 @@ describe('Go receiver method free-call resolution', () => {
     result = await runPipelineFromRepo(
       path.join(FIXTURES, 'go-receiver-method-free-call'),
       () => {},
-      { workerThresholdsForTest: { minFiles: 1, minBytes: 0 } },
+      {},
     );
   }, 60000);
 

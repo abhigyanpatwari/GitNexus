@@ -20,10 +20,8 @@
  * (Windows LadybugDB handle release can lag; `cleanupTempDir` retries).
  */
 
-import { execSync } from 'child_process';
-import { writeFile, readFile, copyFile, mkdir } from 'fs/promises';
+import { writeFile, readFile } from 'fs/promises';
 import path from 'path';
-import { fileURLToPath } from 'url';
 import { describe, it, expect } from 'vitest';
 import {
   getStoragePaths,
@@ -32,43 +30,9 @@ import {
   INCREMENTAL_SCHEMA_VERSION,
   type RepoMeta,
 } from '../../src/storage/repo-manager.js';
-import { createTempDir } from '../helpers/test-db.js';
+import { setupMiniRepo as setupSharedMiniRepo } from '../helpers/mini-repo.js';
 
-const HERE = path.dirname(fileURLToPath(import.meta.url));
-const FIXTURE_SRC = path.resolve(HERE, '..', 'fixtures', 'mini-repo', 'src');
-
-/**
- * Copy the mini-repo fixture into a fresh git-initialized temp directory.
- * Returns the temp handle so the caller owns cleanup.
- */
-async function setupMiniRepo(): Promise<{ dbPath: string; cleanup: () => Promise<void> }> {
-  const tmp = await createTempDir('gitnexus-incr-orch-');
-  const dest = path.join(tmp.dbPath, 'src');
-  await mkdir(dest, { recursive: true });
-  // Copy mini-repo fixture files
-  const names = [
-    'index.ts',
-    'handler.ts',
-    'validator.ts',
-    'formatter.ts',
-    'middleware.ts',
-    'logger.ts',
-    'db.ts',
-  ];
-  for (const n of names) {
-    await copyFile(path.join(FIXTURE_SRC, n), path.join(dest, n));
-  }
-  execSync('git init', { cwd: tmp.dbPath, stdio: 'pipe' });
-  execSync('git -c user.name=test -c user.email=t@t -c commit.gpgsign=false add -A', {
-    cwd: tmp.dbPath,
-    stdio: 'pipe',
-  });
-  execSync('git -c user.name=test -c user.email=t@t -c commit.gpgsign=false commit -q -m initial', {
-    cwd: tmp.dbPath,
-    stdio: 'pipe',
-  });
-  return tmp;
-}
+const setupMiniRepo = () => setupSharedMiniRepo('gitnexus-incr-orch-');
 
 describe('runFullAnalysis — incremental orchestration', () => {
   it('first run populates fileHashes + schemaVersion and clears incrementalInProgress on success', async () => {

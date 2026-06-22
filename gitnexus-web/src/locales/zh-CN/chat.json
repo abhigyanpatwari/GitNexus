@@ -29,6 +29,9 @@
     "configureAI": "配置 AI",
     "connecting": "连接中"
   },
+  "chatOnly": {
+    "banner": "图谱未加载（大型项目）。对话功能正常；内联节点引用不会在图谱视图中高亮。"
+  },
   "roles": {
     "you": "你",
     "assistant": "Nexus AI"

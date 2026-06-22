@@ -100,6 +100,22 @@ describe('runExactMatch', () => {
     expect(matched).toHaveLength(2);
   });
 
+  it('matches a specific-method consumer to a method-agnostic (wildcard) provider', () => {
+    // A Django function view is method-agnostic (provider method '*'); a POST
+    // consumer on the same path must still match it.
+    const contracts: StoredContract[] = [
+      makeContract('http::*::/api/items', 'provider', 'backend'),
+      makeContract('http::POST::/api/items', 'consumer', 'frontend'),
+    ];
+
+    const { matched, unmatched } = runExactMatch(contracts);
+
+    expect(matched).toHaveLength(1);
+    expect(matched[0].from.repo).toBe('frontend');
+    expect(matched[0].to.repo).toBe('backend');
+    expect(unmatched).toHaveLength(0);
+  });
+
   it('reports unmatched contracts', () => {
     const contracts: StoredContract[] = [
       makeContract('http::GET::/api/users', 'provider', 'backend'),

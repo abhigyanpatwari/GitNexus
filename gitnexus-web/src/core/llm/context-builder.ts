@@ -413,7 +413,27 @@ export function formatContextForPrompt(context: CodebaseContext): string {
  * Build the complete dynamic system prompt
  * Context is appended at the END so core instructions remain at the top
  */
-export function buildDynamicSystemPrompt(basePrompt: string, context: CodebaseContext): string {
+/**
+ * Note appended in chat-only mode (graph download skipped for a large project,
+ * #2178). It supersedes the static VISUAL GROUNDING section in BASE_SYSTEM_PROMPT
+ * so the agent stops claiming the user sees a graph or that node citations
+ * highlight — neither is true when the in-memory graph is empty.
+ */
+export const CHAT_ONLY_PROMPT_NOTE = `
+
+---
+
+## ⚠️ CHAT-ONLY MODE (graph not loaded)
+The knowledge graph is NOT loaded in the UI for this project (it was too large to render). This OVERRIDES the VISUAL GROUNDING section above:
+- \`[[Type:Name]]\` node citations will NOT highlight anything — avoid relying on them.
+- Prefer \`[[path:START-END]]\` file citations, which still resolve and open the file.
+- All your tools (search, cypher, grep, read) work normally against the backend; only the visual graph is absent.`;
+
+export function buildDynamicSystemPrompt(
+  basePrompt: string,
+  context: CodebaseContext,
+  chatOnly = false,
+): string {
   const contextSection = formatContextForPrompt(context);
 
   // Append context at the END - keeps core instructions at top for better adherence
@@ -422,5 +442,5 @@ export function buildDynamicSystemPrompt(basePrompt: string, context: CodebaseCo
 ---
 
 ## 📦 CURRENT CODEBASE
-${contextSection}`;
+${contextSection}${chatOnly ? CHAT_ONLY_PROMPT_NOTE : ''}`;
 }

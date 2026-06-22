@@ -116,18 +116,33 @@ export function normalizeContractId(id: string): string {
 
 function findMatchingKeys(contractId: string, index: Map<string, StoredContract[]>): string[] {
   const normalized = normalizeContractId(contractId);
-  if (index.has(normalized)) return [normalized];
 
-  if (normalized.startsWith('http::*::')) {
-    const pathPart = normalized.substring('http::*::'.length);
+  if (normalized.startsWith('http::')) {
+    const rest = normalized.substring('http::'.length);
+    const sepIdx = rest.indexOf('::');
+    const method = sepIdx >= 0 ? rest.substring(0, sepIdx) : '';
+    const pathPart = sepIdx >= 0 ? rest.substring(sepIdx + 2) : rest;
     const matches: string[] = [];
-    for (const key of index.keys()) {
-      if (key.startsWith('http::') && key.endsWith(`::${pathPart}`)) {
-        matches.push(key);
+    if (method === '*') {
+      // Wildcard consumer: match a provider of any method on this path.
+      for (const key of index.keys()) {
+        if (key.startsWith('http::') && key.endsWith(`::${pathPart}`)) {
+          matches.push(key);
+        }
       }
+      return matches;
     }
+    // Specific consumer: match an exact-method provider OR a method-agnostic
+    // (`*`) provider on the same path — symmetric to the wildcard-consumer case,
+    // so a `POST /x` consumer still matches a method-agnostic (e.g. Django)
+    // provider for `/x`.
+    if (index.has(normalized)) matches.push(normalized);
+    const wildcardKey = `http::*::${pathPart}`;
+    if (index.has(wildcardKey)) matches.push(wildcardKey);
     return matches;
   }
+
+  if (index.has(normalized)) return [normalized];
 
   if (normalized.startsWith('thrift::')) {
     const rest = normalized.substring('thrift::'.length);

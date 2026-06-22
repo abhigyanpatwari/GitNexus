@@ -1,0 +1,36 @@
+{
+  "schemaVersion": 1,
+  "criterion": {
+    "name": "chainCompute",
+    "filePath": "src/chain.ts",
+    "direction": "downstream",
+    "line": 7,
+    "marker": "b - 3",
+    "pdgEdgeKinds": ["REACHING_DEF"]
+  },
+  "locus": "intra",
+  "provenance": "manual",
+  "analyzerVersion": "1.6.7",
+  "intra_AIS": [
+    {
+      "symbol": "chainCompute",
+      "filePath": "src/chain.ts",
+      "line": 8,
+      "note": "`const b = a * 2` is data-dependent on `a` (interior of the coalesced 7-9 block; recovered statement-granular by FU-B-2)"
+    },
+    {
+      "symbol": "chainCompute",
+      "filePath": "src/chain.ts",
+      "line": 9,
+      "note": "`const c = b - 3` is data-dependent on `b` (transitively on `a`; interior of the coalesced 7-9 block; recovered statement-granular by FU-B-2)"
+    },
+    {
+      "symbol": "chainCompute",
+      "filePath": "src/chain.ts",
+      "line": 10,
+      "note": "`return c` is transitively data-dependent on `a` via the chain — a distinct downstream BasicBlock"
+    }
+  ],
+  "inter_AIS": [],
+  "rationale": "criterion.line=7 — the def of `a` (`const a = input + 1`), the changed statement (source semantics: `a` seeds the straight-line def->use chain a->b->c->return). DOWNSTREAM from line 7. CORRECTION (FU-B-2 re-reconciliation): the CFG COALESCES consecutive straight-line statements into ONE BasicBlock: lines 7-9 (`const a`, `const b`, `const c`) share a single block whose start line is 7 — the criterion's own seed block. BEFORE FU-B-2 the block-granular slice could not pinpoint the interior statements 8/9 (they lived inside the seed block, which the traversal excludes), so the measurable intra_AIS was {10} only. FU-B-2 makes the intra slice STATEMENT-granular: the persisted REACHING_DEF edge now carries its def/use SOURCE LINES (codec annotation on `reason`), and the projection walks the self-edge def->use chain (a@7->b@8->c@9) forward from the criterion line to recover the interior dependents. So the measurable intra_AIS is now {8, 9, 10} — the slice returns exactly {8,9,10}, an EXACT match to the corrected annotation. This is an independently-justified ground-truth correction, NOT a metric re-fit: the U2 dynamic value-diff oracle PROVED behavioral_AIS = {8,9,10} (mutation-ground-truth.json) and flagged lines 8/9 as a manual-annotation circularity miss BEFORE this edit — the dynamic oracle and the static slice agree. Isolates the RD-forward arm of the KTD4 truth table; inter_AIS empty (no calls)."
+}

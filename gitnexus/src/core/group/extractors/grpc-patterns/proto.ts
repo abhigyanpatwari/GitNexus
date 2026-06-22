@@ -1,4 +1,5 @@
 import { createRequire } from 'node:module';
+import { requireVendoredGrammar } from '../../../tree-sitter/vendored-grammars.js';
 import {
   compilePatterns,
   runCompiledPatterns,
@@ -10,11 +11,11 @@ import type { GrpcDetection, GrpcLanguagePlugin } from './types.js';
 /**
  * Protobuf (.proto) tree-sitter plugin for gRPC contract extraction.
  *
- * Uses `tree-sitter-proto` (coder3101/tree-sitter-proto) as an
- * optionalDependency — if the grammar is not installed (e.g. native
- * compilation failed on an unusual platform), the plugin exports
- * `null` and the orchestrator falls back to the existing manual
- * string-sanitizing parser.
+ * Uses `tree-sitter-proto` (coder3101/tree-sitter-proto), loaded from
+ * `vendor/` by absolute path (NEVER copied into node_modules — see
+ * vendored-grammars.ts / #2111). If the grammar's binding cannot be loaded
+ * (e.g. no prebuild for an unusual platform), the plugin exports `null` and the
+ * orchestrator falls back to the existing manual string-sanitizing parser.
  *
  * The grammar is vendored in `vendor/tree-sitter-proto/` with
  * parser.c regenerated against tree-sitter-cli 0.24 (ABI version 14)
@@ -22,10 +23,13 @@ import type { GrpcDetection, GrpcLanguagePlugin } from './types.js';
  * (which loads ABI 13–14).
  */
 
+// Only for `tree-sitter` (a real npm dependency) in the smoke-test below;
+// the vendored grammar goes through requireVendoredGrammar (never a bare
+// `_require('tree-sitter-proto')`, which would force a node_modules copy — #2111).
 const _require = createRequire(import.meta.url);
 let ProtoGrammar: unknown = null;
 try {
-  ProtoGrammar = _require('tree-sitter-proto');
+  ProtoGrammar = requireVendoredGrammar('tree-sitter-proto');
 } catch {
   // Grammar not installed — PROTO_GRPC_PLUGIN will be null.
 }

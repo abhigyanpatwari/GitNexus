@@ -28,6 +28,7 @@ import { createVariableExtractor } from '../variable-extractors/generic.js';
 import { rubyVariableConfig } from '../variable-extractors/configs/ruby.js';
 import { createCallExtractor } from '../call-extractors/generic.js';
 import { rubyCallConfig } from '../call-extractors/configs/ruby.js';
+import { createRubyCfgVisitor } from '../cfg/visitors/ruby.js';
 import {
   emitRubyScopeCaptures,
   rubyArityCompatibility,
@@ -205,6 +206,7 @@ export const rubyProvider = defineLanguage({
   builtInNames: BUILT_INS,
   // ── RFC #909 Ring 3: scope-based resolution hooks ──────────
   emitScopeCaptures: emitRubyScopeCaptures,
+  cfgVisitor: createRubyCfgVisitor(),
   interpretImport: interpretRubyImport,
   interpretTypeBinding: interpretRubyTypeBinding,
   bindingScopeFor: rubyBindingScopeFor,

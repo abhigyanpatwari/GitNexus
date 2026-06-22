@@ -15,6 +15,14 @@ import { promisify } from 'util';
 import { fileURLToPath } from 'url';
 import { parseTree, modify, applyEdits, ParseError, parse as parseJsonc } from 'jsonc-parser';
 import { getGlobalDir } from '../storage/repo-manager.js';
+import {
+  getEditorTargets,
+  mcpTarget,
+  skillTarget,
+  hookTarget,
+  detectIndentation,
+  type EditorId,
+} from './editor-targets.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -76,6 +84,37 @@ interface SetupResult {
   configured: string[];
   skipped: string[];
   errors: string[];
+}
+
+const CODING_AGENT_IDS = {
+  cursor: 'cursor',
+  claude: 'claude',
+  antigravity: 'antigravity',
+  opencode: 'opencode',
+  codex: 'codex',
+} as const satisfies Record<EditorId, EditorId>;
+const SUPPORTED_CODING_AGENTS = Object.values(CODING_AGENT_IDS);
+
+function selectedCodingAgents(values: string[] | string | undefined): Set<EditorId> | null {
+  if (values == null) return new Set(SUPPORTED_CODING_AGENTS);
+  const rawValues = Array.isArray(values) ? values : [values];
+  const requested = rawValues
+    .flatMap((value) => value.split(','))
+    .map((value) => value.trim().toLowerCase())
+    .filter(Boolean);
+  const invalid = requested.filter(
+    (value): value is string => !SUPPORTED_CODING_AGENTS.includes(value as EditorId),
+  );
+  if (requested.length === 0 || invalid.length > 0) {
+    const detail =
+      requested.length === 0
+        ? 'No coding agents were provided.'
+        : `Unknown: ${invalid.join(', ')}.`;
+    process.stderr.write(`${detail} Valid values: ${SUPPORTED_CODING_AGENTS.join(', ')}.\n`);
+    process.exitCode = 1;
+    return null;
+  }
+  return new Set(requested as EditorId[]);
 }
 
 /**
@@ -163,17 +202,6 @@ function getOpenCodeMcpEntry() {
 }
 
 /**
- * Detect indentation style from file content.
- * Returns formatting options matching the file's existing style.
- */
-function detectIndentation(raw: string): { tabSize: number; insertSpaces: boolean } {
-  const firstIndented = raw.match(/^( +|\t)/m);
-  if (!firstIndented) return { tabSize: 2, insertSpaces: true };
-  if (firstIndented[1] === '\t') return { tabSize: 1, insertSpaces: false };
-  return { tabSize: firstIndented[1].length, insertSpaces: true };
-}
-
-/**
  * Merge a key/value pair into a JSONC config file, preserving comments and formatting.
  * If the file is genuinely corrupt (not valid JSONC), leaves it untouched.
  */
@@ -233,9 +261,9 @@ async function setupCursor(result: SetupResult): Promise<void> {
     return;
   }
 
-  const mcpPath = path.join(cursorDir, 'mcp.json');
+  const { file: mcpPath, keyPath } = mcpTarget('cursor');
   try {
-    const ok = await mergeJsoncFile(mcpPath, ['mcpServers', 'gitnexus'], getMcpEntry());
+    const ok = await mergeJsoncFile(mcpPath, keyPath, getMcpEntry());
     if (ok) {
       result.configured.push('Cursor');
     } else {
@@ -254,9 +282,9 @@ async function setupClaudeCode(result: SetupResult): Promise<void> {
   }
 
   // Claude Code stores MCP config in ~/.claude.json
-  const mcpPath = path.join(os.homedir(), '.claude.json');
+  const { file: mcpPath, keyPath } = mcpTarget('claude');
   try {
-    const ok = await mergeJsoncFile(mcpPath, ['mcpServers', 'gitnexus'], getMcpEntry());
+    const ok = await mergeJsoncFile(mcpPath, keyPath, getMcpEntry());
     if (ok) {
       result.configured.push('Claude Code');
     } else {
@@ -276,7 +304,7 @@ async function installClaudeCodeSkills(result: SetupResult): Promise<void> {
   const claudeDir = path.join(os.homedir(), '.claude');
   if (!(await dirExists(claudeDir))) return;
 
-  const skillsDir = path.join(claudeDir, 'skills');
+  const skillsDir = skillTarget('claude').dir;
   try {
     const installed = await installSkillsTo(skillsDir);
     if (installed.length > 0) {
@@ -422,13 +450,14 @@ async function installClaudeCodeHooks(result: SetupResult): Promise<void> {
   const claudeDir = path.join(os.homedir(), '.claude');
   if (!(await dirExists(claudeDir))) return;
 
-  const settingsPath = path.join(claudeDir, 'settings.json');
+  const claudeHook = hookTarget('claude');
+  const settingsPath = claudeHook.settingsFile;
 
   // Source hooks bundled within the gitnexus package (hooks/claude/)
   const pluginHooksPath = path.join(__dirname, '..', '..', 'hooks', 'claude');
 
   // Copy unified hook script to ~/.claude/hooks/gitnexus/
-  const destHooksDir = path.join(claudeDir, 'hooks', 'gitnexus');
+  const destHooksDir = claudeHook.scriptDir;
 
   try {
     await fs.mkdir(destHooksDir, { recursive: true });
@@ -494,7 +523,7 @@ async function installClaudeCodeHooks(result: SetupResult): Promise<void> {
     // NOTE: SessionStart hooks are broken on Windows (Claude Code bug #23576).
     // Session context is delivered via CLAUDE.md / skills instead.
 
-    if (!hasGitnexusHook(parsed?.hooks, 'PreToolUse')) {
+    if (!hasGitnexusHook(parsed?.hooks, 'PreToolUse', claudeHook.needle)) {
       hookEntries.push({
         eventName: 'PreToolUse',
         value: {
@@ -510,7 +539,7 @@ async function installClaudeCodeHooks(result: SetupResult): Promise<void> {
         },
       });
     }
-    if (!hasGitnexusHook(parsed?.hooks, 'PostToolUse')) {
+    if (!hasGitnexusHook(parsed?.hooks, 'PostToolUse', claudeHook.needle)) {
       hookEntries.push({
         eventName: 'PostToolUse',
         value: {
@@ -566,9 +595,9 @@ async function setupAntigravity(result: SetupResult): Promise<void> {
     return;
   }
 
-  const mcpPath = path.join(antigravityDir, 'mcp_config.json');
+  const { file: mcpPath, keyPath } = mcpTarget('antigravity');
   try {
-    const ok = await mergeJsoncFile(mcpPath, ['mcpServers', 'gitnexus'], getMcpEntry());
+    const ok = await mergeJsoncFile(mcpPath, keyPath, getMcpEntry());
     if (ok) {
       result.configured.push('Antigravity');
     } else {
@@ -590,7 +619,7 @@ async function installAntigravitySkills(result: SetupResult): Promise<void> {
   const antigravityDir = path.join(os.homedir(), '.gemini', 'antigravity');
   if (!(await dirExists(antigravityDir))) return;
 
-  const skillsDir = path.join(antigravityDir, 'skills');
+  const skillsDir = skillTarget('antigravity').dir;
   try {
     const installed = await installSkillsTo(skillsDir);
     if (installed.length > 0) {
@@ -618,9 +647,9 @@ async function installAntigravityHooks(result: SetupResult): Promise<void> {
   const antigravityDir = path.join(os.homedir(), '.gemini', 'antigravity');
   if (!(await dirExists(antigravityDir))) return;
 
-  const geminiDir = path.join(os.homedir(), '.gemini');
-  const settingsPath = path.join(geminiDir, 'settings.json');
-  const destHooksDir = path.join(geminiDir, 'config', 'hooks', 'gitnexus');
+  const antigravityHook = hookTarget('antigravity');
+  const settingsPath = antigravityHook.settingsFile;
+  const destHooksDir = antigravityHook.scriptDir;
 
   // The antigravity adapter shares its lock/probe helpers with the claude
   // adapter — same DB, same concurrency rules — so we reuse those CJS files
@@ -694,7 +723,7 @@ async function installAntigravityHooks(result: SetupResult): Promise<void> {
 
     const hookEntries: Array<{ eventName: string; value: unknown }> = [];
 
-    if (!hasGitnexusHook(parsed?.hooks, 'AfterTool', 'gitnexus-antigravity-hook')) {
+    if (!hasGitnexusHook(parsed?.hooks, 'AfterTool', antigravityHook.needle)) {
       // Matcher follows the Gemini CLI built-in tool naming (snake_case).
       // search_file_content / glob cover content + filename search; run_shell_command
       // catches rg/grep invocations and the git commit family for stale-index hints.
@@ -742,9 +771,9 @@ async function setupOpenCode(result: SetupResult): Promise<void> {
     return;
   }
 
-  const configPath = path.join(opencodeDir, 'opencode.json');
+  const { file: configPath, keyPath } = mcpTarget('opencode');
   try {
-    const ok = await mergeJsoncFile(configPath, ['mcp', 'gitnexus'], getOpenCodeMcpEntry());
+    const ok = await mergeJsoncFile(configPath, keyPath, getOpenCodeMcpEntry());
     if (ok) {
       result.configured.push('OpenCode');
     } else {
@@ -764,7 +793,7 @@ function getCodexMcpTomlSection(): string {
   const entry = getMcpEntry();
   const command = JSON.stringify(entry.command);
   const args = `[${entry.args.map((arg) => JSON.stringify(arg)).join(', ')}]`;
-  return `[mcp_servers.gitnexus]\ncommand = ${command}\nargs = ${args}\n`;
+  return `[${getEditorTargets().codex.tomlSection}]\ncommand = ${command}\nargs = ${args}\n`;
 }
 
 /**
@@ -778,7 +807,7 @@ async function upsertCodexConfigToml(configPath: string): Promise<void> {
     existing = '';
   }
 
-  if (existing.includes('[mcp_servers.gitnexus]')) {
+  if (existing.includes(`[${getEditorTargets().codex.tomlSection}]`)) {
     return;
   }
 
@@ -809,7 +838,7 @@ async function setupCodex(result: SetupResult): Promise<void> {
   }
 
   try {
-    const configPath = path.join(codexDir, 'config.toml');
+    const configPath = getEditorTargets().codex.configFile;
     await upsertCodexConfigToml(configPath);
     result.configured.push('Codex (MCP added to ~/.codex/config.toml)');
   } catch (err: any) {
@@ -920,7 +949,7 @@ async function installCursorSkills(result: SetupResult): Promise<void> {
   const cursorDir = path.join(os.homedir(), '.cursor');
   if (!(await dirExists(cursorDir))) return;
 
-  const skillsDir = path.join(cursorDir, 'skills');
+  const skillsDir = skillTarget('cursor').dir;
   try {
     const installed = await installSkillsTo(skillsDir);
     if (installed.length > 0) {
@@ -938,7 +967,7 @@ async function installOpenCodeSkills(result: SetupResult): Promise<void> {
   const opencodeDir = path.join(os.homedir(), '.config', 'opencode');
   if (!(await dirExists(opencodeDir))) return;
 
-  const skillsDir = path.join(opencodeDir, 'skills');
+  const skillsDir = skillTarget('opencode').dir;
   try {
     const installed = await installSkillsTo(skillsDir);
     if (installed.length > 0) {
@@ -958,7 +987,7 @@ async function installCodexSkills(result: SetupResult): Promise<void> {
   const codexDir = path.join(os.homedir(), '.codex');
   if (!(await dirExists(codexDir))) return;
 
-  const skillsDir = path.join(os.homedir(), '.agents', 'skills');
+  const skillsDir = skillTarget('codex').dir;
   try {
     const installed = await installSkillsTo(skillsDir);
     if (installed.length > 0) {
@@ -971,7 +1000,11 @@ async function installCodexSkills(result: SetupResult): Promise<void> {
 
 // ─── Main command ──────────────────────────────────────────────────
 
-export const setupCommand = async () => {
+export const setupCommand = async (options?: { codingAgent?: string[] | string }) => {
+  const explicitSelection = options?.codingAgent != null;
+  const selected = selectedCodingAgents(options?.codingAgent);
+  if (!selected) return;
+
   console.log('');
   console.log('  GitNexus Setup');
   console.log('  ==============');
@@ -988,20 +1021,24 @@ export const setupCommand = async () => {
   };
 
   // Detect and configure each editor's MCP
-  await setupCursor(result);
-  await setupClaudeCode(result);
-  await setupAntigravity(result);
-  await setupOpenCode(result);
-  await setupCodex(result);
+  if (selected.has('cursor')) await setupCursor(result);
+  if (selected.has('claude')) await setupClaudeCode(result);
+  if (selected.has('antigravity')) await setupAntigravity(result);
+  if (selected.has('opencode')) await setupOpenCode(result);
+  if (selected.has('codex')) await setupCodex(result);
 
   // Install global skills for platforms that support them
-  await installClaudeCodeSkills(result);
-  await installClaudeCodeHooks(result);
-  await installAntigravitySkills(result);
-  await installAntigravityHooks(result);
-  await installCursorSkills(result);
-  await installOpenCodeSkills(result);
-  await installCodexSkills(result);
+  if (selected.has('claude')) {
+    await installClaudeCodeSkills(result);
+    await installClaudeCodeHooks(result);
+  }
+  if (selected.has('antigravity')) {
+    await installAntigravitySkills(result);
+    await installAntigravityHooks(result);
+  }
+  if (selected.has('cursor')) await installCursorSkills(result);
+  if (selected.has('opencode')) await installOpenCodeSkills(result);
+  if (selected.has('codex')) await installCodexSkills(result);
 
   // Print results
   if (result.configured.length > 0) {
@@ -1035,10 +1072,17 @@ export const setupCommand = async () => {
   console.log(
     `    Skills installed to: ${result.configured.filter((c) => c.includes('skills')).length > 0 ? result.configured.filter((c) => c.includes('skills')).join(', ') : 'none'}`,
   );
+  const configurationSucceeded = result.configured.length > 0;
+  if (explicitSelection && !configurationSucceeded) {
+    process.stderr.write('None of the explicitly selected coding agents were configured.\n');
+    process.exitCode = 1;
+  }
   console.log('');
-  console.log('  Next steps:');
-  console.log('    1. cd into any git repo');
-  console.log('    2. Run: gitnexus analyze');
-  console.log('    3. Open the repo in your editor — MCP is ready!');
+  if (configurationSucceeded) {
+    console.log('  Next steps:');
+    console.log('    1. cd into any git repo');
+    console.log('    2. Run: gitnexus analyze');
+    console.log('    3. Open the repo in your editor — MCP is ready!');
+  }
   console.log('');
 };

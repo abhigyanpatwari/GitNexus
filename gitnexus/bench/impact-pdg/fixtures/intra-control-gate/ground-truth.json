@@ -1,0 +1,30 @@
+{
+  "schemaVersion": 1,
+  "criterion": {
+    "name": "gate",
+    "filePath": "src/gate.ts",
+    "direction": "downstream",
+    "line": 10,
+    "marker": "!ok",
+    "pdgEdgeKinds": ["CDG"]
+  },
+  "locus": "intra",
+  "provenance": "manual",
+  "analyzerVersion": "1.6.7",
+  "intra_AIS": [
+    {
+      "symbol": "gate",
+      "filePath": "src/gate.ts",
+      "line": 11,
+      "note": "`return 0` is control-dependent on the guard (true arm)"
+    },
+    {
+      "symbol": "gate",
+      "filePath": "src/gate.ts",
+      "line": 13,
+      "note": "`return 1` is control-dependent on the guard (executes only when the guard is false)"
+    }
+  ],
+  "inter_AIS": [],
+  "rationale": "SOURCE-ONLY fixture (KTD9 annotation-circularity anchor): the intra_AIS below was written PURELY from language semantics and is deliberately NOT reconciled against the live traversal — there is no `CORRECTION (Step-0 reconciliation)` block. criterion.line=10 is the guard predicate `if (!ok)`; downstream CDG controller->dependent edges reach the true-arm `return 0` (line 11) and the fall-through `return 1` (line 13). Each arm is a single statement on its own block, so unlike the coalescing-prone sibling control fixtures there is no consecutive-statement merge to surprise the annotation: the source-derived set {11, 13} is also the measurable set. If the traversal scores this F1=1.0 it is an INDEPENDENT confirmation (the analyzer matched an un-reconciled, semantics-only annotation), not self-consistency — the one corpus data point that breaks the circularity threat the other fixtures document. All dependents are WITHIN `gate`; inter_AIS empty."
+}

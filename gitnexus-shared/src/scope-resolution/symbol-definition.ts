@@ -20,6 +20,8 @@ export interface ParameterTypeClass {
   indirection: 'value' | 'lvalue-ref' | 'rvalue-ref' | 'pointer' | 'unknown';
   /** Number of pointer markers when indirection is `pointer`; otherwise 0. */
   pointerDepth: number;
+  /** Normalized top-level template arguments, when a language preserves them. */
+  templateArguments?: string[];
 }
 
 export interface SymbolDefinition {
@@ -57,6 +59,10 @@ export interface SymbolDefinition {
    *  Currently used by C++ overload ranking to exclude explicit constructors
    *  from implicit user-defined conversion candidates. */
   isExplicit?: boolean;
+  /** True when the callable is declared unavailable (for example C++ `= delete`).
+   *  Unavailable callables still participate in overload selection, but a
+   *  selected unavailable target must suppress edge emission. */
+  isDeleted?: boolean;
   /** Links Method/Constructor/Property to owning Class/Struct/Trait nodeId */
   ownerId?: string;
   /** #1982/#1993: bridge-held enclosing-namespace path (e.g. `NS1`, `Outer.Inner`)

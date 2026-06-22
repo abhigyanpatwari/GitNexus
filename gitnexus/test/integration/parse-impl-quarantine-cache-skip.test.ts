@@ -245,7 +245,6 @@ describe('U20: parse-impl quarantine + chunk-cache integration (PR #1693 Codex f
       {
         skipWorkers: false,
         // Force the worker-pool gate to open on the 3-file fixture.
-        workerThresholdsForTest: { minFiles: 1, minBytes: 1 },
         // Inject the custom worker script — the pool will spawn it
         // instead of the production parse-worker.js.
         workerUrlForTest: pathToFileURL(workerPath) as URL,
@@ -331,7 +330,6 @@ describe('U20: parse-impl quarantine + chunk-cache integration (PR #1693 Codex f
         () => {},
         {
           skipWorkers: false,
-          workerThresholdsForTest: { minFiles: 1, minBytes: 1 },
           workerUrlForTest: pathToFileURL(workerPath) as URL,
           workerPoolSize: 1,
           parseCache,
@@ -361,7 +359,6 @@ describe('U20: parse-impl quarantine + chunk-cache integration (PR #1693 Codex f
         () => {},
         {
           skipWorkers: false,
-          workerThresholdsForTest: { minFiles: 1, minBytes: 1 },
           workerUrlForTest: pathToFileURL(workerPath) as URL,
           workerPoolSize: 1,
           parseCache,

@@ -1,7 +1,7 @@
 /**
  * Direct CLI Tool Commands
  *
- * Exposes GitNexus tools (query, context, impact, cypher) as direct CLI commands.
+ * Exposes GitNexus tools (query, context, impact, cypher, check) as direct CLI commands.
  * Bypasses MCP entirely — invokes LocalBackend directly for minimal overhead.
  *
  * Usage:
@@ -62,6 +62,7 @@ export async function queryCommand(
   queryText: string,
   options?: {
     repo?: string;
+    branch?: string;
     context?: string;
     goal?: string;
     limit?: string;
@@ -75,12 +76,14 @@ export async function queryCommand(
 
   const backend = await getBackend();
   const result = await backend.callTool('query', {
-    query: queryText,
+    // #2175: canonical param is search_query; the backend still accepts legacy "query".
+    search_query: queryText,
     task_context: options?.context,
     goal: options?.goal,
     limit: options?.limit ? parseInt(options.limit) : undefined,
     include_content: options?.content ?? false,
     repo: options?.repo,
+    branch: options?.branch,
   });
   output(result);
 }
@@ -89,6 +92,7 @@ export async function contextCommand(
   name: string,
   options?: {
     repo?: string;
+    branch?: string;
     file?: string;
     uid?: string;
     content?: boolean;
@@ -111,6 +115,7 @@ export async function contextCommand(
     file_path: options?.file,
     include_content: options?.content ?? false,
     repo: options?.repo,
+    branch: options?.branch,
   });
   output(result);
 }
@@ -119,7 +124,10 @@ export async function impactCommand(
   target?: string,
   options?: {
     direction?: string;
+    mode?: string;
+    line?: string;
     repo?: string;
+    branch?: string;
     uid?: string;
     file?: string;
     kind?: string;
@@ -156,15 +164,27 @@ export async function impactCommand(
     const rawOffset = parseInt(options?.offset ?? '', 10);
     const parsedLimit = Number.isFinite(rawLimit) ? rawLimit : undefined;
     const parsedOffset = Number.isFinite(rawOffset) ? rawOffset : undefined;
+    // `--line` is a PDG-only statement anchor (1-based source line). Parse it to
+    // an integer when provided and thread it ONLY when present, so the backend's
+    // line-without-pdg / non-positive-integer validation fires on the real value
+    // rather than on a silently-dropped flag. A non-numeric `--line` parses to
+    // NaN, which the backend rejects as a non-positive integer (loud, not silent).
+    const parsedLine = options?.line !== undefined ? parseInt(options.line, 10) : undefined;
     const result = await backend.callTool('impact', {
       target: target || undefined,
       target_uid: options?.uid,
       file_path: options?.file,
       kind: options?.kind,
       direction: options?.direction || 'upstream',
+      // Forward the engine selector; backend validates the enum (callgraph/pdg)
+      // and treats the default 'callgraph' identically to an omitted mode.
+      mode: options?.mode,
+      // PDG-only statement anchor — forwarded only when --line was given.
+      ...(parsedLine !== undefined ? { line: parsedLine } : {}),
       maxDepth: options?.depth ? parseInt(options.depth, 10) : undefined,
       includeTests: options?.includeTests ?? false,
       repo: options?.repo,
+      branch: options?.branch,
       limit: parsedLimit,
       offset: parsedOffset,
       summaryOnly: options?.summaryOnly ?? undefined,
@@ -188,6 +208,7 @@ export async function cypherCommand(
   query: string,
   options?: {
     repo?: string;
+    branch?: string;
   },
 ): Promise<void> {
   if (!query?.trim()) {
@@ -197,8 +218,10 @@ export async function cypherCommand(
 
   const backend = await getBackend();
   const result = await backend.callTool('cypher', {
-    query,
+    // #2175: canonical param is statement; the backend still accepts legacy "query".
+    statement: query,
     repo: options?.repo,
+    branch: options?.branch,
   });
   output(result);
 }
@@ -207,12 +230,115 @@ export async function detectChangesCommand(options?: {
   scope?: string;
   baseRef?: string;
   repo?: string;
+  branch?: string;
 }): Promise<void> {
   const backend = await getBackend();
   const result = await backend.callTool('detect_changes', {
     scope: options?.scope || 'unstaged',
     base_ref: options?.baseRef,
     repo: options?.repo,
+    branch: options?.branch,
   });
   output(formatDetectChangesResult(result));
+}
+
+export async function checkCommand(options?: {
+  cycles?: boolean;
+  json?: boolean;
+  repo?: string;
+  branch?: string;
+}): Promise<void> {
+  if (!options?.cycles) {
+    process.stderr.write('Usage: gitnexus check --cycles [--json]\n');
+    process.exitCode = 1;
+    return;
+  }
+
+  try {
+    const backend = await getBackend();
+    const result = await backend.callTool('check', {
+      cycles: true,
+      repo: options.repo,
+      branch: options.branch,
+    });
+    if (result?.error) {
+      output(result);
+      process.exitCode = 1;
+      return;
+    }
+    if (options.json) {
+      output(result);
+    } else if (result.cycleCount === 0) {
+      output('No circular imports found.');
+    } else {
+      output(
+        result.cycles.map((cycle: { files: string[] }) => cycle.files.join(' -> ')).join('\n'),
+      );
+    }
+    if (result.cycleCount > 0) process.exitCode = 1;
+  } catch (error) {
+    output({ error: error instanceof Error ? error.message : String(error) });
+    process.exitCode = 1;
+  }
+}
+
+export async function traceCommand(
+  from?: string,
+  to?: string,
+  options?: {
+    fromUid?: string;
+    fromFile?: string;
+    toUid?: string;
+    toFile?: string;
+    depth?: string;
+    repo?: string;
+    branch?: string;
+    includeTests?: boolean;
+  },
+): Promise<void> {
+  if (options?.fromUid?.startsWith('--') || options?.toUid?.startsWith('--')) {
+    cliErrorKey('tool.usage.trace');
+    process.exit(1);
+  }
+  if ((!from?.trim() && !options?.fromUid) || (!to?.trim() && !options?.toUid)) {
+    cliErrorKey('tool.usage.trace');
+    process.exit(1);
+  }
+  // Reject a non-numeric / non-positive --depth up front rather than forwarding
+  // NaN (which the backend would silently treat as the default).
+  if (options?.depth !== undefined) {
+    const parsedDepth = Number(options.depth);
+    if (!Number.isInteger(parsedDepth) || parsedDepth < 1) {
+      cliErrorKey('tool.usage.trace');
+      process.exit(1);
+    }
+  }
+
+  try {
+    const backend = await getBackend();
+    const result = await backend.callTool('trace', {
+      from: from || undefined,
+      from_uid: options?.fromUid,
+      from_file: options?.fromFile,
+      to: to || undefined,
+      to_uid: options?.toUid,
+      to_file: options?.toFile,
+      maxDepth: options?.depth ? parseInt(options.depth, 10) : undefined,
+      includeTests: options?.includeTests ?? false,
+      repo: options?.repo,
+      branch: options?.branch,
+    });
+    output(result);
+  } catch (err: unknown) {
+    output({
+      status: 'error',
+      error:
+        (err instanceof Error ? err.message : String(err)) || 'Trace analysis failed unexpectedly',
+      from: { name: from },
+      to: { name: to },
+      suggestion:
+        'Try gitnexus context <symbol> to see connections, or check if an interface bridges them.',
+    });
+    process.exit(1);
+  }
 }

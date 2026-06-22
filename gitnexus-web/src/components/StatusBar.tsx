@@ -5,7 +5,7 @@ import { useTranslation } from 'react-i18next';
 import { translateProgressMessage } from '../i18n/progress';
 
 export const StatusBar = () => {
-  const { graph, progress } = useAppState();
+  const { graph, graphMode, progress } = useAppState();
   const { t } = useTranslation(['common', 'graph']);
 
   const nodeCount = graph?.nodes.length ?? 0;
@@ -68,7 +68,9 @@ export const StatusBar = () => {
 
       {/* Right - Stats */}
       <div className="flex items-center gap-3" data-testid="graph-stats">
-        {graph && (
+        {/* Suppress counts in chat-only mode: the empty-but-non-null graph would
+            otherwise show a misleading "0 nodes / 0 edges" for a large repo (#2178). */}
+        {graph && graphMode !== 'chatOnly' && (
           <>
             <span>{t('common:counts.nodes', { count: nodeCount })}</span>
             <span className="text-border-default">•</span>

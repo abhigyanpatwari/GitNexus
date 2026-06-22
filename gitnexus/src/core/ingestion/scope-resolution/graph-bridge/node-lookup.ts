@@ -20,6 +20,7 @@
 
 import type { NodeLabel, ParameterTypeClass } from 'gitnexus-shared';
 import type { KnowledgeGraph } from '../../../graph/types.js';
+import { isOverloadableCallable } from '../../utils/callable-labels.js';
 import { templateConstraintsIdTag } from '../../utils/template-arguments.js';
 import { parameterShapeIdTag } from '../../utils/method-props.js';
 
@@ -99,11 +100,7 @@ export function buildGraphNodeLookup(graph: KnowledgeGraph): GraphNodeLookup {
       // a parameter-types-suffixed key so resolveDefGraphId can find
       // the right overload by matching its def's parameterTypes.
       const pTypes = (props as { parameterTypes?: readonly string[] }).parameterTypes;
-      if (
-        pTypes !== undefined &&
-        pTypes.length > 0 &&
-        (node.label === 'Function' || node.label === 'Method')
-      ) {
+      if (pTypes !== undefined && pTypes.length > 0 && isOverloadableCallable(node.label)) {
         const pKey = qualifiedKey(
           props.filePath,
           node.label,
@@ -112,10 +109,24 @@ export function buildGraphNodeLookup(graph: KnowledgeGraph): GraphNodeLookup {
         // Each overload is unique — set unconditionally.
         if (!lookup.has(pKey)) lookup.set(pKey, node.id);
       }
+      // Arity-disambiguating key: include the parameter count so two same-name
+      // overloads of DIFFERENT arity route to distinct graph nodes even when the
+      // shorter overload carries no parameter types (e.g. a Kotlin zero-arg
+      // secondary constructor vs a 2-arg one — both share the qualified key, whose
+      // first-write-wins assignment is source-order-dependent). The structure-phase
+      // node id encodes `#<arity>`; this mirrors it in the lookup keyspace so
+      // resolveDefGraphId can match by the def's own parameterCount. Same-arity
+      // overloads collapse onto one arity key (first-write-wins) — identical to the
+      // pre-existing qualified-key behavior, so no regression there.
+      const pCount = (props as { parameterCount?: number }).parameterCount;
+      if (pCount !== undefined && isOverloadableCallable(node.label)) {
+        const aKey = qualifiedKey(props.filePath, node.label, `${keyQualified}#${pCount}`);
+        if (!lookup.has(aKey)) lookup.set(aKey, node.id);
+      }
       const pClasses = (props as { parameterTypeClasses?: readonly ParameterTypeClass[] })
         .parameterTypeClasses;
       const shapeTag = parameterShapeIdTag(pTypes, pClasses);
-      if (shapeTag !== '' && (node.label === 'Function' || node.label === 'Method')) {
+      if (shapeTag !== '' && isOverloadableCallable(node.label)) {
         const shapeKey = qualifiedKey(props.filePath, node.label, `${keyQualified}${shapeTag}`);
         if (!lookup.has(shapeKey)) lookup.set(shapeKey, node.id);
       }

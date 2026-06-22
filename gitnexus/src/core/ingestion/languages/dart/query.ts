@@ -23,7 +23,15 @@
  */
 
 import Parser from 'tree-sitter';
-import Dart from 'tree-sitter-dart';
+import { SupportedLanguages } from 'gitnexus-shared';
+// `tree-sitter-dart` is an optional/vendored grammar that may be absent on a
+// default install. Loaded lazily + guarded via parser-loader rather than
+// statically imported: this module is pulled onto the main thread eagerly by
+// the scope-resolution registry and the language-provider index, so a top-level
+// `import Dart from 'tree-sitter-dart'` would throw ERR_MODULE_NOT_FOUND at
+// module-load and crash `analyze` even for repos with no Dart files (#2091,
+// #2093). The grammar is only ever needed inside the lazy getters below.
+import { getLanguageGrammar } from '../../../tree-sitter/parser-loader.js';
 
 const DART_SCOPE_QUERY = `
 ; ── Scopes ───────────────────────────────────────────────────────────────────
@@ -38,6 +46,46 @@ const DART_SCOPE_QUERY = `
 (mixin_declaration (identifier) @declaration.name) @declaration.trait
 (extension_declaration name: (identifier) @declaration.name) @declaration.class
 (enum_declaration name: (identifier) @declaration.name) @declaration.enum
+
+; ── Declarations — type aliases (old-style + new-style function typedefs) ────
+; Both forms parse as type_alias; the name position differs, and a generic
+; <T> parameter list intervenes for the generic variants. Per #1919 review CF2,
+; a generic type_parameters node sits between the name and the next anchor, so
+; the non-generic adjacency patterns silently drop the generic forms. Four
+; standalone patterns (NOT one alternation — the tree-sitter 0.21 hazard drops
+; sibling branches) keep the name capture unambiguous and single-match per form:
+;   non-generic old-style  typedef int Cmp(int a, int b);
+;       children: return-type, NAME, formal_parameter_list
+;   generic old-style      typedef int Cmp<T>(T a, T b);          (CF2)
+;       children: return-type, NAME, type_parameters, formal_parameter_list
+;   non-generic new-style  typedef Pred = bool Function(int);
+;       children: NAME, "=", function_type
+;   generic new-style      typedef Mapper<T> = T Function(T);
+;       children: NAME, type_parameters, "=", function_type
+; The alias name is the type_identifier immediately before the param list (old)
+; or before "=" (new); for the generic forms it is the one immediately before
+; the intervening type_parameters. Mirrors Kotlin's @declaration.type_alias
+; rule; the generic scope-extractor maps "type_alias" → TypeAlias.
+(type_alias
+  (type_identifier) @declaration.name
+  .
+  (formal_parameter_list)) @declaration.type_alias
+(type_alias
+  (type_identifier) @declaration.name
+  .
+  (type_parameters)
+  .
+  (formal_parameter_list)) @declaration.type_alias
+(type_alias
+  (type_identifier) @declaration.name
+  .
+  "=") @declaration.type_alias
+(type_alias
+  (type_identifier) @declaration.name
+  .
+  (type_parameters)
+  .
+  "=") @declaration.type_alias
 
 ; ── Declarations — top-level functions (parent is program, not method) ───────
 (program
@@ -94,14 +142,19 @@ let _query: Parser.Query | null = null;
 export function getDartParser(): Parser {
   if (_parser === null) {
     _parser = new Parser();
-    _parser.setLanguage(Dart as Parameters<Parser['setLanguage']>[0]);
+    _parser.setLanguage(
+      getLanguageGrammar(SupportedLanguages.Dart) as Parameters<Parser['setLanguage']>[0],
+    );
   }
   return _parser;
 }
 
 export function getDartScopeQuery(): Parser.Query {
   if (_query === null) {
-    _query = new Parser.Query(Dart as Parameters<Parser['setLanguage']>[0], DART_SCOPE_QUERY);
+    _query = new Parser.Query(
+      getLanguageGrammar(SupportedLanguages.Dart) as Parameters<Parser['setLanguage']>[0],
+      DART_SCOPE_QUERY,
+    );
   }
   return _query;
 }

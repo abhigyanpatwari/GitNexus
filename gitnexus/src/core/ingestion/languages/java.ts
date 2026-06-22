@@ -13,6 +13,7 @@ import { javaClassConfig } from '../class-extractors/configs/jvm.js';
 import { defineLanguage } from '../language-provider.js';
 import type { AstFrameworkPatternConfig } from '../language-provider.js';
 import { javaTypeConfig } from '../type-extractors/jvm.js';
+import { extractSpringRoutes } from '../route-extractors/spring.js';
 import { javaExportChecker } from '../export-detection.js';
 import { createImportResolver } from '../import-resolvers/resolver-factory.js';
 import { javaImportConfig } from '../import-resolvers/configs/jvm.js';
@@ -25,6 +26,7 @@ import { createMethodExtractor } from '../method-extractors/generic.js';
 import { javaMethodConfig } from '../method-extractors/configs/jvm.js';
 import { createVariableExtractor } from '../variable-extractors/generic.js';
 import { javaVariableConfig } from '../variable-extractors/configs/jvm.js';
+import { createJavaCfgVisitor } from '../cfg/visitors/java.js';
 import type { SymbolDefinition } from 'gitnexus-shared';
 import {
   emitJavaScopeCaptures,
@@ -117,6 +119,9 @@ export const javaProvider = defineLanguage({
 
   // ── RFC #909 Ring 3: scope-based resolution hooks ──
   emitScopeCaptures: emitJavaScopeCaptures,
+
+  // ── PDG: per-function CFG + def/use harvest (#2195 U4) ──
+  cfgVisitor: createJavaCfgVisitor(),
   interpretImport: interpretJavaImport,
   interpretTypeBinding: interpretJavaTypeBinding,
   bindingScopeFor: javaBindingScopeFor,
@@ -126,4 +131,7 @@ export const javaProvider = defineLanguage({
   arityCompatibility: javaArityCompatibility,
   resolveImportTarget: resolveJavaImportTarget,
   orderSameNameTypeCandidates: orderJavaSameNameTypeCandidates,
+
+  // ── Route extraction ──
+  extractDecoratorRoutes: extractSpringRoutes,
 });

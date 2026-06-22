@@ -21,9 +21,12 @@ import {
   executeQuery,
   executeWithReusedStatement,
   closeLbug,
+  closeLbugBeforeExit,
   loadCachedEmbeddings,
   deleteNodesForFile,
   deleteAllCommunitiesAndProcesses,
+  deleteAllInterprocTaintPaths,
+  deleteAllCallSummaries,
   queryImporters,
   loadFTSExtension,
 } from './lbug/lbug-adapter.js';
@@ -35,22 +38,53 @@ import {
 } from './lbug/wal-checkpoint-driver.js';
 import {
   getStoragePaths,
+  resolveBranchPlacement,
   saveMeta,
   loadMeta,
   ensureGitNexusIgnored,
   registerRepo,
+  isRepoRegistered,
   cleanupOldKuzuFiles,
   INCREMENTAL_SCHEMA_VERSION,
+  type RepoMeta,
 } from '../storage/repo-manager.js';
+import { DEFAULT_PDG_MAX_FUNCTION_LINES } from './ingestion/cfg/collect.js';
+import {
+  DEFAULT_MAX_CFG_EDGES_PER_FUNCTION,
+  DEFAULT_PDG_MAX_REACHING_DEF_EDGES_PER_FUNCTION,
+  DEFAULT_PDG_MAX_CDG_EDGES_PER_FUNCTION,
+} from './ingestion/cfg/emit.js';
+import {
+  DEFAULT_PDG_MAX_TAINT_FINDINGS_PER_FUNCTION,
+  DEFAULT_PDG_MAX_TAINT_HOPS,
+} from './ingestion/taint/propagate.js';
+import {
+  DEFAULT_MAX_INTERPROC_HOPS,
+  DEFAULT_PDG_MAX_INTERPROC_FINDINGS,
+} from './ingestion/taint/interproc-solver.js';
+import { DEFAULT_PDG_MAX_INTERPROC_EDGES } from './ingestion/taint/interproc-emit.js';
+import { taintModelVersion } from './ingestion/taint/typescript-model.js';
+import { parseTruthyEnv, parsePositiveIntEnv } from './ingestion/utils/env.js';
 import { computeFileHashes, diffFileHashes } from '../storage/file-hash.js';
 import {
   extractChangedSubgraph,
   computeEffectiveWriteSet,
 } from './incremental/subgraph-extract.js';
 import { shadowCandidatesFor } from './incremental/shadow-candidates.js';
-import { loadParseCache, saveParseCache, pruneCache } from '../storage/parse-cache.js';
+import {
+  loadParseCache,
+  saveParseCache,
+  pruneCache,
+  PARSE_CACHE_VERSION,
+} from '../storage/parse-cache.js';
+import {
+  getDurableParsedFileDir,
+  pruneAndSaveDurableParsedFileStore,
+} from '../storage/parsedfile-store.js';
 import {
   getCurrentCommit,
+  getCurrentBranch,
+  getDefaultBranch,
   getRemoteUrl,
   hasGitDir,
   getInferredRepoName,
@@ -58,6 +92,7 @@ import {
 } from '../storage/git.js';
 import type { CachedEmbedding } from './embeddings/types.js';
 import { generateAIContextFiles } from '../cli/ai-context.js';
+import { sanitizeDetectedBranch } from '../cli/analyze-config.js';
 import { EMBEDDING_TABLE_NAME } from './lbug/schema.js';
 import { STALE_HASH_SENTINEL } from './lbug/schema.js';
 
@@ -107,12 +142,68 @@ export interface AnalyzeOptions {
   /** Skip installing standard GitNexus skill files to .claude/skills/gitnexus/. */
   skipSkills?: boolean;
   /**
+   * Build the CFG/PDG substrate (#2081 M1). Forwarded to `PipelineOptions.pdg`,
+   * which threads to BOTH the worker (CFG build, via workerData) AND
+   * scope-resolution (BasicBlock/CFG emit gate). Off by default.
+   */
+  pdg?: boolean;
+  /** Per-function source-line cap for worker-side CFG construction (#2081 M1).
+   *  Forwarded to `PipelineOptions.pdgMaxFunctionLines`. No CLI flag in M1 —
+   *  programmatic / server analyze-worker path only; the worker applies
+   *  `DEFAULT_PDG_MAX_FUNCTION_LINES` when unset. */
+  pdgMaxFunctionLines?: number;
+  /** Per-function CFG edge cap. Forwarded to `PipelineOptions.pdgMaxEdgesPerFunction`. */
+  pdgMaxEdgesPerFunction?: number;
+  /** Per-function REACHING_DEF edge cap (#2082 M2). Forwarded to
+   *  `PipelineOptions.pdgMaxReachingDefEdgesPerFunction`. */
+  pdgMaxReachingDefEdgesPerFunction?: number;
+  /** Per-function CDG edge cap (#2085 M5). Forwarded to
+   *  `PipelineOptions.pdgMaxCdgEdgesPerFunction`. No CLI flag or rc key —
+   *  programmatic / server path only, like the other pdg caps. */
+  pdgMaxCdgEdgesPerFunction?: number;
+  /** Per-function taint findings cap (#2083 M3). Forwarded to
+   *  `PipelineOptions.pdgMaxTaintFindingsPerFunction`. No CLI flag or rc key
+   *  (KTD8) — programmatic / server path only, like the other pdg caps. */
+  pdgMaxTaintFindingsPerFunction?: number;
+  /** Per-finding taint hop cap (#2083 M3, KTD6). Forwarded to
+   *  `PipelineOptions.pdgMaxTaintHops`. No CLI flag or rc key (KTD8). */
+  pdgMaxTaintHops?: number;
+  /** Per-run cross-function findings/hops/edges caps (#2084 review P1-3).
+   *  Forwarded to the matching `PipelineOptions.pdgMaxInterproc*`; resolved
+   *  into `RepoMeta.pdg`. No CLI flag or rc key (KTD8). */
+  pdgMaxInterprocFindings?: number;
+  pdgMaxInterprocHops?: number;
+  pdgMaxInterprocEdges?: number;
+  /**
+   * Stream the BasicBlock + intra-file PDG-edge layer to CSV-on-disk during the
+   * emit loop instead of materializing it in the in-memory graph, bounding peak
+   * RSS to O(chunk) for full-kernel-scale repos (#2202). Only engages on a full
+   * rebuild — `resolveStreamPdgEmit` additionally requires `force === true`
+   * (the pre-pipeline guarantee of a full rebuild). May also be enabled via
+   * `GITNEXUS_STREAM_PDG_EMIT`. Memory-only; byte-identical output; not stamped
+   * into `RepoMeta.pdg`. */
+  streamPdgEmit?: boolean;
+  /** Streamed PDG-emit write buffer (rows). `undefined` ⇒
+   *  `DEFAULT_PDG_EMIT_CHUNK_ROWS`. May also be set via
+   *  `GITNEXUS_PDG_EMIT_CHUNK_SIZE`. Memory-only (#2202). */
+  pdgEmitChunkSize?: number;
+  /**
    * Default branch threaded into generated AGENTS.md / CLAUDE.md so the
    * regression-compare example uses the configured branch instead of a
    * hardcoded "main" (#243). Resolved by the CLI; `undefined` here keeps the
    * "main" fallback for non-CLI callers (e.g. the server analyze worker).
    */
   defaultBranch?: string;
+  /**
+   * Index-branch selector (#2106). Distinct from `defaultBranch` (which only
+   * affects generated AGENTS.md/CLAUDE.md base_ref text). When set, this run is
+   * labelled as that branch and routed to a per-branch index slot unless it is
+   * the primary branch. When `undefined`, the branch is auto-detected from the
+   * checked-out HEAD (the flat/primary slot for the first-indexed branch, a
+   * `branches/<slug>/` sub-directory otherwise). Detached HEAD / non-git always
+   * maps to the flat slot.
+   */
+  branch?: string;
   /**
    * User-provided alias for the registry `name` (#829). When set,
    * forwarded to `registerRepo` so the indexed repo is stored under
@@ -132,10 +223,26 @@ export interface AnalyzeOptions {
    * Worker pool size override, threaded from the CLI `--workers` flag.
    * Forwarded to `PipelineOptions.workerPoolSize` so the parse phase
    * sizes the pool without `analyzeCommand` mutating `process.env`.
-   * `0` disables the pool (sequential fallback); positive integer sets
-   * the count; `undefined` defers to the env / auto-formula fallback.
+   * Must be a positive integer — `0` hard-errors (sequential parsing was
+   * removed); `undefined` defers to the env / auto-formula fallback.
    */
   workerPoolSize?: number;
+  /**
+   * Extra fetch-wrapper function names to treat as HTTP consumers, forwarded to
+   * `PipelineOptions.fetchWrappers` (#1589/#1852 residual). Sourced from the CLI
+   * `.gitnexusrc` `fetchWrappers` list. `undefined`/empty leaves the route
+   * consumer scan unchanged.
+   */
+  fetchWrappers?: string[];
+  /**
+   * The caller will `process.exit()` immediately after this analyze returns (the
+   * CLI `analyze` command). When set, the finalize/error close CHECKPOINTs for
+   * durability but skips the native `conn.close()`/`db.close()`, which can
+   * double-free in LadybugDB's `ClientContext` destructor after large `--pdg`
+   * writes (gdb-confirmed) — aborting the process AFTER a fully-written index.
+   * Process exit reclaims the handles. Long-lived callers (MCP server, tests)
+   * leave this unset so they get a real close. See `closeLbug`. */
+  skipNativeCloseOnExit?: boolean;
 }
 
 export interface AnalyzeResult {
@@ -161,6 +268,13 @@ export interface AnalyzeResult {
    * the persisted meta surface the degraded state instead of reporting healthy.
    */
   ftsSkipped?: boolean;
+  /**
+   * True when the index this run produced/validated is the primary/flat slot
+   * (#2106 R2). `false` for a non-primary branch index. Lets the CLI skip
+   * repo-root AGENTS.md/CLAUDE.md refreshes (e.g. the base_ref fast-path) for a
+   * branch analyze, mirroring the in-pipeline `if (!placement.branch)` gate.
+   */
+  isPrimaryBranch?: boolean;
 }
 
 /**
@@ -216,6 +330,214 @@ export const PHASE_LABELS: Record<string, string> = {
  * the {@link AnalyzeCallbacks} interface — it never writes to stdout/stderr
  * directly and never calls `process.exit()`.
  */
+/**
+ * Build the primary-inversion warning (#2106 R8), or `undefined` when there is
+ * nothing to warn about. Pure + exported for testing. Both inputs are trimmed
+ * (a diagnostic — a missed warning is low-harm; a false warning is the thing to
+ * avoid). `defaultBranch` is the repo's `origin/HEAD` branch (null when unset,
+ * e.g. fresh clones / CI), `flatOwner` is the branch that owns the flat slot.
+ */
+export const primaryInversionWarning = (
+  defaultBranch: string | null | undefined,
+  flatOwner: string | null | undefined,
+): string | undefined => {
+  const norm = (s: string | null | undefined): string | undefined => s?.trim() || undefined;
+  const d = norm(defaultBranch);
+  const o = norm(flatOwner);
+  if (!d || !o || d === o) return undefined;
+  return (
+    `Warning: the default branch "${d}" is not the primary index — "${o}" owns the flat slot. ` +
+    `Run \`gitnexus clean --branch ${o}\` then re-index on "${d}", or query it explicitly with \`--branch ${d}\`.`
+  );
+};
+
+/**
+ * Collect the recorded parse-cache chunk keys across the flat + every branch
+ * meta under a flat `.gitnexus` storage, EXCLUDING `excludeDir` (the current
+ * run's own meta dir) so a single-branch repo collects nothing and its prune
+ * stays byte-identical to today (#2106 R6). `complete` is false when a sibling
+ * meta.json exists but fails to parse — callers then retain the whole shared
+ * cache rather than over-evict another branch's still-live shards. Exported for
+ * testing.
+ */
+export const collectBranchCacheKeys = async (
+  storagePath: string,
+  excludeDir?: string,
+): Promise<{ keys: Set<string>; complete: boolean }> => {
+  const keys = new Set<string>();
+  let complete = true;
+  const metaDirs = [storagePath];
+  const branchesDir = path.join(storagePath, 'branches');
+  const slugs = await fs.readdir(branchesDir).catch(() => [] as string[]);
+  for (const slug of slugs) metaDirs.push(path.join(branchesDir, slug));
+  for (const dir of metaDirs) {
+    if (excludeDir && path.resolve(dir) === path.resolve(excludeDir)) continue;
+    let raw: string;
+    try {
+      raw = await fs.readFile(path.join(dir, 'meta.json'), 'utf-8');
+    } catch {
+      continue; // no meta here — not a branch index, not a failure
+    }
+    try {
+      const parsed = JSON.parse(raw) as { cacheKeys?: unknown };
+      if (Array.isArray(parsed.cacheKeys)) {
+        for (const k of parsed.cacheKeys) if (typeof k === 'string') keys.add(k);
+      }
+    } catch {
+      complete = false; // present but corrupt → fail-safe toward retention
+    }
+  }
+  return { keys, complete };
+};
+
+/**
+ * Resolve the requested `--pdg` configuration to the shape recorded in
+ * `RepoMeta.pdg`, or `undefined` for a pdg-off run. Caps resolve to their
+ * defaults so an explicit-default run compares equal to a default run
+ * (`0` = unlimited is preserved as `0`). Pure + exported for testing.
+ */
+type PdgOptions = Pick<
+  AnalyzeOptions,
+  | 'pdg'
+  | 'pdgMaxFunctionLines'
+  | 'pdgMaxEdgesPerFunction'
+  | 'pdgMaxReachingDefEdgesPerFunction'
+  | 'pdgMaxCdgEdgesPerFunction'
+  | 'pdgMaxTaintFindingsPerFunction'
+  | 'pdgMaxTaintHops'
+  | 'pdgMaxInterprocFindings'
+  | 'pdgMaxInterprocHops'
+  | 'pdgMaxInterprocEdges'
+>;
+
+export const resolvePdgConfig = (options: PdgOptions): RepoMeta['pdg'] =>
+  options.pdg === true
+    ? {
+        maxFunctionLines: options.pdgMaxFunctionLines ?? DEFAULT_PDG_MAX_FUNCTION_LINES,
+        maxEdgesPerFunction: options.pdgMaxEdgesPerFunction ?? DEFAULT_MAX_CFG_EDGES_PER_FUNCTION,
+        maxReachingDefEdgesPerFunction:
+          options.pdgMaxReachingDefEdgesPerFunction ??
+          DEFAULT_PDG_MAX_REACHING_DEF_EDGES_PER_FUNCTION,
+        // #2085 M5: control-dependence cap. Absent on any pre-M5 (M2/M3/M4-era)
+        // stamp → the key-union pdgModeMismatch trips the first CDG-aware run
+        // over an existing `--pdg` index and forces the full writeback that
+        // materialises CDG edges for every file without `--force`.
+        maxCdgEdgesPerFunction:
+          options.pdgMaxCdgEdgesPerFunction ?? DEFAULT_PDG_MAX_CDG_EDGES_PER_FUNCTION,
+        // #2083 M3: taint caps + model identity. The key-union comparator in
+        // pdgModeMismatch picks these up structurally — an M2-era stamp lacks
+        // all three, so the first M3 run over an M2 `--pdg` index trips a full
+        // writeback that populates TAINTED/SANITIZES rows without `--force`.
+        maxTaintFindingsPerFunction:
+          options.pdgMaxTaintFindingsPerFunction ?? DEFAULT_PDG_MAX_TAINT_FINDINGS_PER_FUNCTION,
+        maxTaintHops: options.pdgMaxTaintHops ?? DEFAULT_PDG_MAX_TAINT_HOPS,
+        // #2084 review P1-3: cross-function caps. Absent on an M3-era stamp →
+        // pdgModeMismatch trips the first run that adds them (key-union),
+        // forcing the full writeback that re-materialises TAINT_PATH bounded.
+        maxInterprocFindings: options.pdgMaxInterprocFindings ?? DEFAULT_PDG_MAX_INTERPROC_FINDINGS,
+        maxInterprocHops: options.pdgMaxInterprocHops ?? DEFAULT_MAX_INTERPROC_HOPS,
+        maxInterprocEdges: options.pdgMaxInterprocEdges ?? DEFAULT_PDG_MAX_INTERPROC_EDGES,
+        // Built-in model digest (KTD7/R7): persisted findings must never
+        // outlive the model that produced them — ANY model-content change
+        // ships as a new digest and repopulates the taint edges.
+        taintModelVersion,
+        // #2201 review R3: reaching-defs solver identity. The SSA-sparse rewrite
+        // computes full facts for deep-loop functions the dense worklist used to
+        // truncate to empty, so an existing `--pdg` index carries stale-truncated
+        // REACHING_DEF rows. Absent on any pre-#2201 stamp → the key-union
+        // pdgModeMismatch trips on the first upgraded run and forces the full
+        // writeback that recomputes the fuller coverage (no `--force` needed).
+        // Bump this tag on any future change to which facts the solver emits.
+        reachingDefSolver: 'ssa-sparse-v1',
+        // PDG FU-C: this run records CALL_SUMMARY return-value-ascent edges.
+        // Absent on any pre-FU-C (v3) stamp → the key-union pdgModeMismatch trips
+        // the first FU-C-aware run over an existing `--pdg` index and forces the
+        // full writeback that materialises CALL_SUMMARY edges without `--force`;
+        // and `impact`'s PDG mode reads its absence to note "no return-value
+        // ascent (re-index for CALL_SUMMARY)" on a v3 index (intra slice intact).
+        hasCallSummary: true,
+      }
+    : undefined;
+
+/**
+ * Whether streaming/chunked PDG graph emit (#2202) engages this run.
+ *
+ * Streaming flushes the BasicBlock + intra-file PDG-edge layer to CSV-on-disk
+ * during the emit loop and never lands it in the in-memory graph, bounding peak
+ * RSS to O(chunk). It is sound ONLY on a full rebuild: the incremental
+ * writeback (`extractChangedSubgraph`) reads BasicBlock nodes back out of the
+ * in-memory graph, which streaming has already offloaded. `force === true` is
+ * the pre-pipeline guarantee of a full rebuild — `isIncremental` has
+ * `!force` as a necessary condition — so gating on it avoids the deliberately
+ * absent pre-pipeline incremental prediction (see the `isIncremental` note).
+ *
+ * Requires `pdg === true` (nothing to stream otherwise). Enabled by either the
+ * explicit `streamPdgEmit` option or the `GITNEXUS_STREAM_PDG_EMIT` env toggle.
+ * Memory-only — NOT part of {@link resolvePdgConfig}, so toggling it never
+ * trips `pdgModeMismatch`. Read every call (not memoized) so `vi.stubEnv`
+ * works in tests. Pure + exported for testing.
+ */
+export const resolveStreamPdgEmit = (options: {
+  pdg?: boolean;
+  force?: boolean;
+  streamPdgEmit?: boolean;
+}): boolean =>
+  options.pdg === true &&
+  options.force === true &&
+  (options.streamPdgEmit === true || parseTruthyEnv(process.env.GITNEXUS_STREAM_PDG_EMIT));
+
+/**
+ * Resolve the streamed PDG-emit write-buffer size (#2202). Explicit option wins
+ * over `GITNEXUS_PDG_EMIT_CHUNK_SIZE`; `undefined` ⇒ the sink's
+ * `DEFAULT_PDG_EMIT_CHUNK_ROWS`. Memory-only; does not affect emitted bytes.
+ */
+export const resolvePdgEmitChunkSize = (options: {
+  pdgEmitChunkSize?: number;
+}): number | undefined => {
+  // Only honor a positive-integer explicit option; `0`/negative is NOT nullish
+  // so `?? env` would pass it through and make the sink flush every row.
+  const opt = options.pdgEmitChunkSize;
+  if (opt !== undefined && Number.isInteger(opt) && opt > 0) return opt;
+  return parsePositiveIntEnv(process.env.GITNEXUS_PDG_EMIT_CHUNK_SIZE);
+};
+
+/**
+ * Whether the requested `--pdg` configuration differs from the one the
+ * existing index's DB rows were built under (#2099 F1). An absent recorded
+ * stamp means pdg-off (every legacy meta — `--pdg` shipped opt-in). Any
+ * mismatch means the incremental writeback (which only persists changed-file
+ * nodes) cannot produce a coherent index: off→on would silently drop the
+ * freshly built CFG layer, on→off would strand zombie BasicBlocks — so the
+ * caller forces a full writeback. Pure + exported for testing.
+ */
+export const pdgModeMismatch = (recorded: RepoMeta['pdg'], options: PdgOptions): boolean => {
+  const requested = resolvePdgConfig(options);
+  if (!requested && !recorded) return false;
+  if (!requested || !recorded) return true;
+  // Structural comparison over the KEY UNION of both resolved records — not a
+  // hand-maintained field list. Both sides come fully resolved from
+  // resolvePdgConfig, so any new emit-affecting knob added there joins the
+  // comparison automatically (M1's hand-extended comparator was the trap this
+  // closes: a knob it missed would silently strand a stale projection). It is
+  // also what makes the M1→M2 upgrade work with zero extra code: an M1-era
+  // stamp lacks maxReachingDefEdgesPerFunction, so `4000 !== undefined` trips
+  // a full writeback that populates REACHING_DEF rows without `--force`.
+  const reqRecord = requested as Record<string, unknown>;
+  const recRecord = recorded as Record<string, unknown>;
+  // INVARIANT: every value stamped by resolvePdgConfig MUST be a SCALAR (string /
+  // number / boolean). This comparison is a shallow `!==`, so an OBJECT or ARRAY
+  // value would compare by REFERENCE — two structurally-equal values from
+  // different runs would always be `!==`, tripping pdgModeMismatch on every
+  // re-analyze and forcing a needless full writeback. e.g. do NOT change
+  // `hasCallSummary: true` to a per-language object like `{ ts: true, ... }`; keep
+  // the diagnostic per-language refinement in the impact CONSUMER (see
+  // pdg-impact.ts assemblePdgImpactResult), not in this version discriminator.
+  for (const key of new Set([...Object.keys(reqRecord), ...Object.keys(recRecord)])) {
+    if (reqRecord[key] !== recRecord[key]) return true;
+  }
+  return false;
+};
+
 export async function runFullAnalysis(
   repoPath: string,
   options: AnalyzeOptions,
@@ -233,7 +555,10 @@ export async function runFullAnalysis(
   // worker-side reset is needed (see safe-parse.ts ParseTimeoutError contract).
   resetDegradedParseCounter();
 
-  const { storagePath, lbugPath } = getStoragePaths(repoPath);
+  // `storagePath` is ALWAYS the flat `.gitnexus` — content-addressed caches
+  // (parse-cache, parsedfile-store) and the kuzu-migration cleanup live there
+  // and are shared across branches (#2106 KTD7).
+  const { storagePath } = getStoragePaths(repoPath);
 
   // Clean up stale KuzuDB files from before the LadybugDB migration.
   const kuzuResult = await cleanupOldKuzuFiles(storagePath);
@@ -243,7 +568,57 @@ export async function runFullAnalysis(
 
   const repoHasGit = hasGitDir(repoPath);
   const currentCommit = repoHasGit ? getCurrentCommit(repoPath) : '';
-  const existingMeta = await loadMeta(storagePath);
+
+  // ── #2106: resolve which branch slot this run writes to ───────────────
+  // `branchLabel` is the branch identity recorded in meta.json (incl. the
+  // primary). `placement.branch` is undefined for the flat/primary slot (the
+  // lbug/meta paths stay byte-identical to single-branch behavior) and set for
+  // a `branches/<slug>/` sub-directory. Explicit `--branch` is always honored;
+  // otherwise auto-detect the checked-out branch (null for detached HEAD /
+  // non-git → flat slot).
+  // Normalize the auto-detected branch the same way an explicit `--branch` is
+  // validated (#2106 R1): a git ref the branch-name rules forbid (backtick,
+  // `~ ^ : ? *`, leading `-`, `..`) becomes `null` → the flat slot, matching
+  // that a later `--branch <that-ref>` query would also be rejected. A normal
+  // ref passes through unchanged so index-time and query-time labels round-trip.
+  const checkedOutBranch = repoHasGit
+    ? (sanitizeDetectedBranch(getCurrentBranch(repoPath)) ?? null)
+    : null;
+  // Analyze indexes the working tree, not an arbitrary ref. An explicit
+  // `--branch X` while a DIFFERENT branch Y is checked out would write Y's
+  // content (and Y's commit) into X's index slot, corrupting X (#2106). Refuse
+  // the mismatch. Detached HEAD / non-git (checkedOutBranch === null) still
+  // allow an explicit label so CI checkouts can name their snapshot.
+  if (options.branch && checkedOutBranch && options.branch !== checkedOutBranch) {
+    throw new Error(
+      `--branch "${options.branch}" does not match the checked-out branch "${checkedOutBranch}". ` +
+        `Check out "${options.branch}" before indexing it, or omit --branch to index the current branch.`,
+    );
+  }
+  const branchLabel = options.branch ?? checkedOutBranch;
+  const placement = await resolveBranchPlacement(repoPath, branchLabel);
+  const { lbugPath, metaPath } = getStoragePaths(repoPath, placement.branch);
+  // Directory that owns this run's meta.json (flat `.gitnexus` for the primary
+  // slot, `branches/<slug>/` otherwise). loadMeta/saveMeta operate on it so
+  // each branch keeps its own lastCommit / fileHashes / incremental dirty flag.
+  const metaDir = path.dirname(metaPath);
+
+  const existingMeta = await loadMeta(metaDir);
+
+  // ── #2106 (R8): warn when the repo's default branch is not the primary ──
+  // A non-default branch can own the flat slot (it was indexed first). That
+  // index is still fully queryable via `--branch`, so this is an ergonomics
+  // wart, not data loss — we only warn (no risky relocation of a live DB).
+  if (repoHasGit) {
+    // Who owns the flat slot after this run? For a flat/primary run it is this
+    // run's resolved label (carrying an existing stamp forward); for a branch
+    // run the flat owner is unchanged, so read the flat meta.
+    const flatOwner = placement.branch
+      ? (await loadMeta(storagePath))?.branch
+      : (branchLabel ?? existingMeta?.branch);
+    const warning = primaryInversionWarning(getDefaultBranch(repoPath), flatOwner);
+    if (warning) log(warning);
+  }
 
   // ── FTS-only repair path ────────────────────────────────────────────
   if (options.repairFts) {
@@ -323,13 +698,39 @@ export async function runFullAnalysis(
   // back to a known-good index is to wipe + rebuild from scratch.
   if (existingMeta?.incrementalInProgress) {
     log(
-      'Previous incremental run did not complete cleanly (incrementalInProgress flag set); ' +
+      // "analyze run", not "incremental run" — since #2099 F1 the flag is a
+      // generic dirty marker written by BOTH writeback branches.
+      'Previous analyze run did not complete cleanly (incrementalInProgress flag set); ' +
         'forcing full rebuild to restore a known-good index.',
     );
     options = { ...options, force: true };
     // Reload meta after clearing the flag in-memory; we still want fileHashes
     // for the post-rebuild meta carry-over, but force=true ensures the
     // rebuild path executes.
+  }
+
+  // ── pdg-mode flip forces full writeback (#2099 F1) ─────────────────
+  // The incremental writeback persists only changed-file nodes, so a pdg
+  // config differing from the one the DB rows were built under cannot be
+  // reconciled incrementally: off→on silently drops the freshly built CFG
+  // layer ("Incremental: changed=0", zero BasicBlock rows), on→off strands
+  // zombie blocks for unchanged files. MUST sit before the alreadyUpToDate
+  // fast path below — a clean-tree flip would otherwise early-return without
+  // running the pipeline at all. The notice is deliberately NOT gated on
+  // options.force: --skills implies force with no message of its own, and a
+  // mode change deserves a diagnostic regardless of why a rebuild happens.
+  if (existingMeta && pdgModeMismatch(existingMeta.pdg, options)) {
+    const pdgOn = options.pdg === true;
+    const capsOnly = !!existingMeta.pdg && pdgOn; // both-on can only mismatch via caps
+    const was = existingMeta.pdg ? 'with --pdg' : 'without --pdg';
+    const now = pdgOn ? 'with --pdg' : 'without --pdg';
+    log(
+      `pdg mode changed (index built ${was}, this run is ${now}` +
+        `${capsOnly ? ', but with different caps' : ''}); forcing a full ` +
+        `rebuild so the CFG layer is ${pdgOn ? 'fully persisted' : 'fully removed'}. ` +
+        `Tip: set \`pdg: ${pdgOn}\` in .gitnexusrc to pin the mode across runs.`,
+    );
+    options = { ...options, force: true };
   }
 
   // ── Early-return: already up to date ──────────────────────────────
@@ -378,7 +779,21 @@ export async function runFullAnalysis(
           return true; // conservative on git failure
         }
       })();
-      if (!dirty) {
+      // Registration wrinkle around the fast path (#2264). A prior
+      // `analyze --name X` that hit a name collision writes meta.json (meta-save
+      // runs before registerRepo) then fails before registering, leaving the
+      // index up-to-date but UNREGISTERED. When the user re-runs with
+      // --allow-duplicate-name they explicitly want it registered, so fall
+      // through to the pipeline (which registers it, honoring the flag) instead
+      // of early-returning an unregistered repo the flag could never heal.
+      // For a PLAIN analyze we deliberately do NOT self-heal: an up-to-date but
+      // unregistered repo early-returns here and the CLI's assertAnalysisFinalized
+      // surfaces it as a hard failure (#1169) rather than silently registering a
+      // possibly half-finalized index. `isRepoRegistered` is only read on the
+      // opt-in branch so the common fast path keeps its single-stat cost.
+      const healUnregistered =
+        options.allowDuplicateName === true && !(await isRepoRegistered(repoPath));
+      if (!dirty && !healUnregistered) {
         await ensureGitNexusIgnored(repoPath);
         return {
           // `resolveRepoIdentityRoot` collapses worktree roots to the
@@ -391,6 +806,7 @@ export async function runFullAnalysis(
           repoPath,
           stats: existingMeta.stats ?? {},
           alreadyUpToDate: true,
+          isPrimaryBranch: !placement.branch,
         };
       }
     }
@@ -497,6 +913,24 @@ export async function runFullAnalysis(
     {
       parseCache,
       workerPoolSize: options.workerPoolSize,
+      // CFG/PDG opt-in (#2081 M1). PipelineOptions.pdg fans out to the worker
+      // build gate (workerData.pdg) and the scope-resolution emit gate.
+      pdg: options.pdg === true,
+      pdgMaxFunctionLines: options.pdgMaxFunctionLines,
+      pdgMaxEdgesPerFunction: options.pdgMaxEdgesPerFunction,
+      pdgMaxReachingDefEdgesPerFunction: options.pdgMaxReachingDefEdgesPerFunction,
+      pdgMaxCdgEdgesPerFunction: options.pdgMaxCdgEdgesPerFunction,
+      pdgMaxTaintFindingsPerFunction: options.pdgMaxTaintFindingsPerFunction,
+      pdgMaxTaintHops: options.pdgMaxTaintHops,
+      pdgMaxInterprocFindings: options.pdgMaxInterprocFindings,
+      pdgMaxInterprocHops: options.pdgMaxInterprocHops,
+      pdgMaxInterprocEdges: options.pdgMaxInterprocEdges,
+      // Streaming/chunked PDG emit (#2202) — gated to full-rebuild runs
+      // (force === true) so the incremental writeback never reads back an
+      // offloaded BasicBlock layer. Memory-only; byte-identical output.
+      streamPdgEmit: resolveStreamPdgEmit(options),
+      pdgEmitChunkSize: resolvePdgEmitChunkSize(options),
+      fetchWrappers: options.fetchWrappers,
     },
   );
 
@@ -544,8 +978,8 @@ export async function runFullAnalysis(
         } unchanged file rows preserved)`,
     );
     // Set the dirty flag BEFORE any destructive DB mutation. Cleared on
-    // success at the meta-save step.
-    await saveMeta(storagePath, {
+    // success at the meta-save step. Scoped to this branch's meta.json.
+    await saveMeta(metaDir, {
       ...existingMeta!,
       incrementalInProgress: {
         startedAt: Date.now(),
@@ -554,6 +988,19 @@ export async function runFullAnalysis(
     });
   } else {
     // Full rebuild path: wipe DB files first.
+    // Set the dirty flag BEFORE the wipe whenever a prior meta exists,
+    // mirroring the incremental branch above (#2099 F1, KTD2b). Without it a
+    // full rebuild crashing between the wipe and the end-of-run saveMeta
+    // leaves a meta that vouches for a DB it no longer matches — the next
+    // clean-tree run's fast path would certify a destroyed DB (or, after a
+    // pdg flip, certify zombie/missing BasicBlock rows indefinitely).
+    // toWriteCount: 0 is the full-path sentinel (no incremental write set).
+    if (existingMeta) {
+      await saveMeta(metaDir, {
+        ...existingMeta,
+        incrementalInProgress: { startedAt: Date.now(), toWriteCount: 0 },
+      });
+    }
     await closeLbug();
     const lbugFiles = [lbugPath, `${lbugPath}.wal`, `${lbugPath}.lock`];
     for (const f of lbugFiles) {
@@ -702,6 +1149,21 @@ export async function runFullAnalysis(
       //    from the fresh pipeline output below. Required for the
       //    "Leiden runs on the FULL graph" correctness invariant.
       await deleteAllCommunitiesAndProcesses();
+      // 2b. Drop interprocedural TAINT_PATH edges (#2084 M4 U6) when pdg is on
+      //     — their validity is a whole-program property (an A→C flow can be
+      //     invalidated by a change to an intermediate function on a third
+      //     file), so endpoint-writability extraction can't refresh them.
+      //     extractChangedSubgraph re-includes all of them from the fresh
+      //     graph (isGraphWideRelType), mirroring Community/Process.
+      if (options.pdg === true) {
+        await deleteAllInterprocTaintPaths();
+        // 2c. Drop CALL_SUMMARY edges (PDG FU-C) on an incremental `--pdg`
+        //     writeback. They are re-included from the FULL fresh graph
+        //     (isGraphWideRelType) and the callSummaries phase recomputes every
+        //     summary each run, so delete-all-then-rebuild keeps an unchanged
+        //     function's summary from being lost — same contract as TAINT_PATH.
+        await deleteAllCallSummaries();
+      }
 
       // 3. Extract the changed subgraph from the FULL ctx.graph and write
       //    only that. Unchanged-file rows in the DB stay untouched. Pass
@@ -715,11 +1177,21 @@ export async function runFullAnalysis(
       });
     } else {
       // ── Full rebuild ───────────────────────────────────────────────
-      await loadGraphToLbug(pipelineResult.graph, pipelineResult.repoPath, storagePath, (msg) => {
-        lbugMsgCount++;
-        const pct = Math.min(84, 60 + Math.round((lbugMsgCount / (lbugMsgCount + 10)) * 24));
-        progress('lbug', pct, msg);
-      });
+      // Pass the streamed PDG-emit manifest (#2202) so the BasicBlock layer that
+      // was flushed to CSV during the emit loop is COPY'd alongside the
+      // structural CSVs. Only ever set on a full rebuild (streaming is
+      // force-gated), so the incremental branch above never carries it.
+      await loadGraphToLbug(
+        pipelineResult.graph,
+        pipelineResult.repoPath,
+        storagePath,
+        (msg) => {
+          lbugMsgCount++;
+          const pct = Math.min(84, 60 + Math.round((lbugMsgCount / (lbugMsgCount + 10)) * 24));
+          progress('lbug', pct, msg);
+        },
+        pipelineResult.pdgEmitManifest,
+      );
     }
 
     // ── Phase 3: FTS (85–90%) ─────────────────────────────────────────
@@ -929,6 +1401,14 @@ export async function runFullAnalysis(
       repoPath,
       lastCommit: currentCommit,
       indexedAt: new Date().toISOString(),
+      // Branch identity this index represents (#2106). Recorded for the flat
+      // slot too (so resolveBranchPlacement knows which branch owns it). When
+      // the label is null (detached HEAD / non-git re-analyze) we PRESERVE an
+      // existing stamp rather than stripping it — otherwise a detached re-index
+      // of the primary (e.g. CI's `actions/checkout` default) would un-claim the
+      // flat slot and let the next branch analyze overwrite the primary index.
+      // Stays absent only when never stamped (fresh detached/non-git repo).
+      branch: branchLabel ?? existingMeta?.branch,
       // Captured here (not at registration) so it travels with the
       // on-disk meta.json — sibling-clone fingerprinting works for
       // out-of-tree consumers (group-status, future tooling) without
@@ -967,9 +1447,20 @@ export async function runFullAnalysis(
       // dirty flag (full and incremental success paths converge here).
       schemaVersion: hasGitDir(repoPath) ? INCREMENTAL_SCHEMA_VERSION : undefined,
       fileHashes: hasGitDir(repoPath) ? newFileHashesRecord : undefined,
+      // This branch's full live chunk-key set (#2106 R6). `usedKeys` is every
+      // chunk hash touched in this scan — cache HITS included (see parse-impl
+      // usedKeys.add) — so it's complete even on an incremental run. Persisted
+      // so a sibling branch's prune can union it and not evict our shards.
+      cacheKeys: [...parseCache.usedKeys],
       incrementalInProgress: undefined as { startedAt: number; toWriteCount: number } | undefined,
+      // The effective pdg config this run's DB rows were built under
+      // (#2099 F1). `undefined` on pdg-off runs — this meta is a fresh
+      // literal (no spread of existingMeta), so omission is what CLEARS the
+      // stamp after an on→off flip; the next pdgModeMismatch then compares
+      // off==off and incremental eligibility is restored.
+      pdg: resolvePdgConfig(options),
     };
-    await saveMeta(storagePath, meta);
+    await saveMeta(metaDir, meta);
 
     // Persist the incremental parse cache for the next run. Wraps in
     // try/catch so a cache-write failure never breaks an otherwise
@@ -979,11 +1470,39 @@ export async function runFullAnalysis(
     // dead weight; the parse phase populates `usedKeys` as it processes
     // chunks).
     try {
+      // #2106 R6: the parse cache + durable store are shared across branches.
+      // Before pruning to this run's keys, fold in the OTHER branches' recorded
+      // chunk keys so a branch switch doesn't evict their still-live shards.
+      // Adding to usedKeys makes them survive pruneCache AND land in the saved
+      // index (saveParseCache builds the index from usedKeys). Excludes this
+      // run's own meta dir, so a single-branch repo folds in nothing → prune
+      // set byte-identical to today.
+      const { keys: siblingKeys, complete } = await collectBranchCacheKeys(storagePath, metaDir);
+      if (complete) {
+        for (const k of siblingKeys) parseCache.usedKeys.add(k);
+      } else {
+        // Fail-safe toward retention: a sibling meta was unreadable, so keep
+        // everything currently loaded rather than evict on incomplete info.
+        log('Parse cache: a branch meta was unreadable — retaining all cached chunks (#2106).');
+        for (const k of parseCache.entries.keys()) parseCache.usedKeys.add(k);
+      }
       const pruned = pruneCache(parseCache, parseCache.usedKeys);
       if (pruned > 0) {
         log(`Parse cache: pruned ${pruned} stale chunk entries`);
       }
-      await saveParseCache(storagePath, parseCache);
+      const savedKeys = await saveParseCache(storagePath, parseCache);
+      // Prune the durable ParsedFile store to EXACTLY the parse cache's
+      // surviving keys (#2038 warm-cache coverage), so the two content-addressed
+      // stores stay coherent: a chunk is "cached" iff both its parse-cache shard
+      // and its durable shards exist. A quarantined chunk (in usedKeys but with
+      // no parse-cache shard) drops its durable subdir here and re-dispatches
+      // next run. Same try/catch — a durable-store write failure must never
+      // break an otherwise successful run (next run treats it as a miss).
+      await pruneAndSaveDurableParsedFileStore(
+        getDurableParsedFileDir(storagePath),
+        PARSE_CACHE_VERSION,
+        new Set(savedKeys),
+      );
     } catch (e) {
       log(`Warning: could not save parse cache (${(e as Error).message}); continuing.`);
     }
@@ -1000,6 +1519,10 @@ export async function runFullAnalysis(
     const projectName = await registerRepo(repoPath, meta, {
       name: options.registryName,
       allowDuplicateName: options.allowDuplicateName,
+      // Non-primary branch runs upsert into the entry's branches[]; the
+      // primary/flat run (placement.branch === undefined) refreshes the
+      // top-level fields (#2106).
+      branch: placement.branch,
     });
 
     // Keep generated .gitnexus contents ignored without editing the user's root .gitignore.
@@ -1016,36 +1539,46 @@ export async function runFullAnalysis(
       aggregatedClusterCount = Array.from(groups.values()).filter((count) => count >= 5).length;
     }
 
-    try {
-      await generateAIContextFiles(
-        repoPath,
-        storagePath,
-        projectName,
-        {
-          files: pipelineResult.totalFileCount,
-          nodes: stats.nodes,
-          edges: stats.edges,
-          communities: pipelineResult.communityResult?.stats.totalCommunities,
-          clusters: aggregatedClusterCount,
-          processes: pipelineResult.processResult?.stats.totalProcesses,
-        },
-        undefined,
-        {
-          skipAgentsMd: options.skipAgentsMd,
-          skipSkills: options.skipSkills,
-          noStats: options.noStats,
-          defaultBranch: options.defaultBranch,
-        },
-      );
-    } catch {
-      // Best-effort — don't fail the entire analysis for context file issues
+    // Only (re)generate the repo-root AI context files (AGENTS.md / CLAUDE.md /
+    // skills) for the primary/flat index (#2106). A non-primary branch analyze
+    // must not churn the repo's committed AGENTS.md with branch-specific stats.
+    if (!placement.branch) {
+      try {
+        await generateAIContextFiles(
+          repoPath,
+          storagePath,
+          projectName,
+          {
+            files: pipelineResult.totalFileCount,
+            nodes: stats.nodes,
+            edges: stats.edges,
+            communities: pipelineResult.communityResult?.stats.totalCommunities,
+            clusters: aggregatedClusterCount,
+            processes: pipelineResult.processResult?.stats.totalProcesses,
+          },
+          undefined,
+          {
+            skipAgentsMd: options.skipAgentsMd,
+            skipSkills: options.skipSkills,
+            noStats: options.noStats,
+            defaultBranch: options.defaultBranch,
+            hasPdg: options.pdg === true,
+          },
+        );
+      } catch {
+        // Best-effort — don't fail the entire analysis for context file issues
+      }
     }
 
     // ── Close LadybugDB ──────────────────────────────────────────────
     // Stop the manual checkpoint driver before closeLbug so its
     // in-flight CHECKPOINT cannot race the `safeClose` CHECKPOINT.
     await walCheckpointDriver.stop();
-    await closeLbug();
+    // CLI callers (about to process.exit) skip the native close to dodge a
+    // LadybugDB destructor double-free after --pdg writes — closeLbugBeforeExit
+    // CHECKPOINTs for durability then leaves the handles for process exit to
+    // reclaim (#2264). Long-lived callers close for real.
+    await (options.skipNativeCloseOnExit ? closeLbugBeforeExit() : closeLbug());
 
     progress('done', 100, 'Done');
 
@@ -1055,6 +1588,7 @@ export async function runFullAnalysis(
       stats: meta.stats,
       pipelineResult,
       ftsSkipped: !ftsAvailable,
+      isPrimaryBranch: !placement.branch,
     };
   } catch (err) {
     // Ensure LadybugDB is closed even on error. Stop the driver first
@@ -1065,7 +1599,15 @@ export async function runFullAnalysis(
       /* swallow — surface path is the rethrow below */
     }
     try {
-      await closeLbug();
+      // Skip the native close on the error path too: a real conn.close() after
+      // large --pdg writes can itself abort in LadybugDB's ClientContext
+      // destructor (#2264 review P2), turning an actionable exit-1 into a raw
+      // SIGABRT. closeLbugBeforeExit leaves the handles open, but the CLI catch
+      // now force-exits when isLbugReady() (analyze.ts, #2264 review P1), so the
+      // process still terminates — no hang, no abort. flushWAL keeps the partial
+      // index durable; process exit reclaims the handles. Long-lived callers
+      // (skipNativeCloseOnExit unset) close for real.
+      await (options.skipNativeCloseOnExit ? closeLbugBeforeExit() : closeLbug());
     } catch {
       /* swallow */
     }

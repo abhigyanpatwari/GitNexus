@@ -47,6 +47,14 @@ vi.mock('../../src/storage/repo-manager.js', async (importOriginal) => {
     listRegisteredRepos: vi.fn().mockResolvedValue([]),
     cleanupOldKuzuFiles: vi.fn().mockResolvedValue({ found: false, needsReindex: false }),
     findSiblingClones: vi.fn().mockResolvedValue([]),
+    // U2: expose loadMeta as a spy that delegates to the REAL implementation by
+    // default (so branch-scope resolution, #2106, is unaffected). The
+    // impact-mode block overrides it per-test to stamp a READY PDG layer, so the
+    // U2 layer-presence probe falls THROUGH to the post-check surface (the
+    // `_runImpactPDG` delegate / ambiguous fan-out) those tests assert. The
+    // four-state degradation contract itself is covered in
+    // test/integration/impact-pdg-degradation.test.ts.
+    loadMeta: vi.fn(actual.loadMeta),
   };
 });
 
@@ -85,8 +93,28 @@ vi.mock('../../src/mcp/core/embedder.js', () => ({
   getEmbeddingDims: vi.fn().mockReturnValue(384),
 }));
 
-import { LocalBackend, REPO_ID_HASH_LENGTH } from '../../src/mcp/local/local-backend.js';
-import { listRegisteredRepos, cleanupOldKuzuFiles } from '../../src/storage/repo-manager.js';
+// #2175: lets the @group-forward path be exercised without real group.yaml infra.
+// No existing test in this file uses an @repo, so this mock is inert for them.
+const { resolveAtMemberMock } = vi.hoisted(() => ({ resolveAtMemberMock: vi.fn() }));
+vi.mock('../../src/core/group/resolve-at-member.js', () => ({
+  resolveAtGroupMemberRepoPath: resolveAtMemberMock,
+}));
+
+import {
+  LocalBackend,
+  REPO_ID_HASH_LENGTH,
+  parseListReposPagination,
+} from '../../src/mcp/local/local-backend.js';
+import {
+  betterBridgeEvidence,
+  pdgBridgeEvidenceForImpact,
+} from '../../src/mcp/local/pdg-impact.js';
+import { CALLEES_TRUNCATED_SENTINEL } from '../../src/core/ingestion/cfg/emit.js';
+import {
+  listRegisteredRepos,
+  cleanupOldKuzuFiles,
+  loadMeta,
+} from '../../src/storage/repo-manager.js';
 import { getGitRoot } from '../../src/storage/git.js';
 import { _captureLogger } from '../../src/core/logger.js';
 import {
@@ -178,6 +206,39 @@ function makeSharedPrefixFixture(nameA: string, nameB: string) {
   };
 }
 
+// Mirrors the legacy `repoId()` suffix that #2054 replaced for genuine
+// collisions: base64url is an *encoding*, not a hash, so paths sharing a long
+// prefix produce the same sliced suffix. Used by the #2054 tests to assert the
+// collision precondition actually holds (so the regression isn't vacuous).
+function legacyPathSuffix(p: string): string {
+  return Buffer.from(p).toString('base64url').slice(0, REPO_ID_HASH_LENGTH).toLowerCase();
+}
+
+/**
+ * Build N sibling clones of one remote under a SINGLE parent directory, named
+ * REPO, REPO_2, …, REPO_N. All clones share the remote-inferred registry name
+ * ("REPO") and the same remoteUrl — this is the real-world #2054 setup. Because
+ * the clones live under one parent, their absolute paths share a long common
+ * prefix, which is exactly what made the 6-char base64url suffix collide.
+ * (mkdtemp'ing each clone separately would NOT reproduce the bug — the random
+ * suffixes diverge in the first few bytes.)
+ */
+function makeSiblingClonesFixture(count: number, remoteUrl = 'git@github.com:MYCOMPANY/REPO.git') {
+  const parent = mkdtempSync(path.join(os.tmpdir(), 'gnx-2054-'));
+  duplicateFixtureDirs.push(parent);
+  const folders = Array.from({ length: count }, (_, i) => (i === 0 ? 'REPO' : `REPO_${i + 1}`));
+  const dirs: string[] = [];
+  const entries = folders.map((folder) => {
+    const dir = path.join(parent, folder);
+    const storagePath = path.join(dir, '.gitnexus');
+    mkdirSync(path.join(storagePath, 'lbug'), { recursive: true });
+    writeFileSync(path.join(storagePath, 'meta.json'), '{}');
+    dirs.push(dir);
+    return { ...MOCK_REPO_ENTRY, name: 'REPO', path: dir, storagePath, remoteUrl };
+  });
+  return { parent, dirs, entries };
+}
+
 // ─── LocalBackend lifecycle ──────────────────────────────────────────
 
 describe('LocalBackend.init', () => {
@@ -243,9 +304,18 @@ describe('LocalBackend.callTool', () => {
   });
 
   it('routes list_repos without needing repo param', async () => {
+    // No-arg compatibility: callTool('list_repos', {}) returns the first page as
+    // a { repositories, pagination } object (Strategy A — always paginated, #2119).
     const result = await backend.callTool('list_repos', {});
-    expect(Array.isArray(result)).toBe(true);
-    expect(result[0].name).toBe('test-project');
+    expect(Array.isArray(result.repositories)).toBe(true);
+    expect(result.repositories[0].name).toBe('test-project');
+    expect(result.pagination).toEqual({
+      total: 1,
+      limit: 50,
+      offset: 0,
+      returned: 1,
+      hasMore: false,
+    });
   });
 
   it('throws for unknown tool name', async () => {
@@ -259,6 +329,44 @@ describe('LocalBackend.callTool', () => {
     const result = await backend.callTool('query', { query: 'auth' });
     expect(result).toHaveProperty('processes');
     expect(result).toHaveProperty('definitions');
+  });
+
+  it('checks cycles using only non-synthetic import edges', async () => {
+    (executeParameterized as any).mockResolvedValue([
+      { source: 'src/a.ts', target: 'src/b.ts' },
+      { source: 'src/b.ts', target: 'src/a.ts' },
+    ]);
+
+    const result = await backend.callTool('check', { cycles: true });
+
+    expect(result).toEqual({
+      status: 'cycles_found',
+      cycleCount: 1,
+      cycles: [{ files: ['src/a.ts', 'src/b.ts', 'src/a.ts'] }],
+    });
+    const query = (executeParameterized as any).mock.calls.at(-1)[1] as string;
+    expect(query).toContain("r.reason <> 'swift-scope: implicit module visibility'");
+    expect(query).toContain("r.reason <> 'markdown-link'");
+    expect(query).toContain('LIMIT 100001');
+  });
+
+  it('uses the advertised cycles default when check arguments are omitted', async () => {
+    (executeParameterized as any).mockResolvedValue([]);
+
+    await expect(backend.callTool('check', undefined)).resolves.toEqual({
+      status: 'clean',
+      cycleCount: 0,
+      cycles: [],
+    });
+  });
+
+  it('fails closed when the import-edge safety limit is reached', async () => {
+    (executeParameterized as any).mockResolvedValue({ length: 100_001 });
+
+    await expect(backend.callTool('check', { cycles: true })).resolves.toEqual({
+      error: 'Import graph exceeds the 100000 edge safety limit.',
+      truncated: true,
+    });
   });
 
   it('includes FTS-unavailable warning when ftsAvailable is false (#1403)', async () => {
@@ -349,12 +457,14 @@ describe('LocalBackend.callTool', () => {
 
   it('query tool returns error for empty query', async () => {
     const result = await backend.callTool('query', { query: '' });
-    expect(result.error).toContain('query parameter is required');
+    expect(result.error).toContain('search_query');
+    expect(result.error).toContain('parameter is required');
   });
 
   it('query tool returns error for whitespace-only query', async () => {
     const result = await backend.callTool('query', { query: '   ' });
-    expect(result.error).toContain('query parameter is required');
+    expect(result.error).toContain('search_query');
+    expect(result.error).toContain('parameter is required');
   });
 
   it('dispatches cypher tool and blocks write queries', async () => {
@@ -373,6 +483,186 @@ describe('LocalBackend.callTool', () => {
     expect(result).toHaveProperty('markdown');
     expect(result).toHaveProperty('row_count');
     expect(result.row_count).toBe(1);
+  });
+
+  // ── #2175: backward-compatible parameter-alias dispatch ──────────────────
+  // Claude Code drops a tool-call argument named exactly "query", so the query
+  // and cypher tools advertise search_query / statement. The handlers must accept
+  // the new names AND keep accepting the legacy "query" key (verified by the
+  // existing tests above, which still pass { query: ... }).
+
+  it('query tool accepts the new search_query parameter (#2175)', async () => {
+    (executeParameterized as any).mockResolvedValue([]);
+    const result = await backend.callTool('query', { search_query: 'auth' });
+    expect(result).toHaveProperty('processes');
+    expect(result).toHaveProperty('definitions');
+    expect(result).not.toHaveProperty('error');
+  });
+
+  it('query tool prefers search_query over the legacy query when both are given (#2175)', async () => {
+    const { searchFTSFromLbug } = await import('../../src/core/search/bm25-index.js');
+    (executeParameterized as any).mockResolvedValue([]);
+
+    await backend.callTool('query', { search_query: 'newName', query: 'oldName' });
+
+    // bm25Search passes the resolved search text as arg 0 to searchFTSFromLbug.
+    const lastTerm = String(vi.mocked(searchFTSFromLbug).mock.calls.at(-1)?.[0] ?? '');
+    expect(lastTerm).toBe('newName');
+  });
+
+  it('query tool returns error when neither search_query nor query is provided (#2175)', async () => {
+    const result = await backend.callTool('query', {});
+    expect(result.error).toContain('search_query');
+    expect(result.error).toContain('parameter is required');
+  });
+
+  it('cypher tool accepts the new statement parameter (#2175)', async () => {
+    (executeParameterized as any).mockResolvedValue([{ name: 'test', filePath: 'src/test.ts' }]);
+    const result = await backend.callTool('cypher', {
+      statement: 'MATCH (n:Function) RETURN n.name AS name, n.filePath AS filePath LIMIT 5',
+    });
+    expect(result).toHaveProperty('markdown');
+    expect(result).toHaveProperty('row_count');
+    expect(result.row_count).toBe(1);
+  });
+
+  it('cypher tool prefers statement over the legacy query when both are given (#2175)', async () => {
+    (executeParameterized as any).mockResolvedValue([]);
+    await backend.callTool('cypher', {
+      statement: 'MATCH (a) RETURN a',
+      query: 'MATCH (b) RETURN b',
+    });
+    const passedCypher = (executeParameterized as any).mock.calls.at(-1)[1] as string;
+    expect(passedCypher).toBe('MATCH (a) RETURN a');
+  });
+
+  it('executeCypher (internal API) still works via the legacy query field (#2175)', async () => {
+    (executeParameterized as any).mockResolvedValue([{ name: 'x' }]);
+    const result = await backend.executeCypher('test-project', 'MATCH (n) RETURN n LIMIT 1');
+    expect(result).not.toHaveProperty('error');
+    const passedCypher = (executeParameterized as any).mock.calls.at(-1)[1] as string;
+    expect(passedCypher).toBe('MATCH (n) RETURN n LIMIT 1');
+  });
+
+  it('query tool returns error for empty search_query (new key) (#2175)', async () => {
+    const result = await backend.callTool('query', { search_query: '' });
+    expect(result.error).toContain('search_query');
+    expect(result.error).toContain('parameter is required');
+  });
+
+  it('query tool returns error for whitespace-only search_query (new key) (#2175)', async () => {
+    const result = await backend.callTool('query', { search_query: '   ' });
+    expect(result.error).toContain('search_query');
+    expect(result.error).toContain('parameter is required');
+  });
+
+  it('search legacy alias accepts the new search_query parameter (#2175)', async () => {
+    (executeParameterized as any).mockResolvedValue([]);
+    const result = await backend.callTool('search', { search_query: 'auth' });
+    expect(result).toHaveProperty('processes');
+    expect(result).not.toHaveProperty('error');
+  });
+
+  it('cypher tool returns a friendly required error when neither statement nor query is given (#2175)', async () => {
+    const result = await backend.callTool('cypher', {});
+    expect(result.error).toContain('statement');
+    expect(result.error).toContain('parameter is required');
+  });
+
+  // #2175 review: the @group-forward path reads `query` from the forwarded args, so it
+  // must resolve the search_query alias itself (new name wins, mirroring query()).
+  it('group-mode query forwards the resolved search_query alias (#2175)', async () => {
+    resolveAtMemberMock.mockResolvedValue({ ok: true, repoPath: '/tmp/test-project' });
+    const groupQuerySpy = vi
+      .spyOn(backend.getGroupService(), 'groupQuery')
+      .mockResolvedValue({ ok: true } as any);
+
+    await backend.callTool('query', {
+      search_query: 'alias-wins',
+      query: 'legacy-loses',
+      repo: '@grp',
+    });
+
+    expect(groupQuerySpy).toHaveBeenCalledTimes(1);
+    expect((groupQuerySpy.mock.calls[0][0] as any).query).toBe('alias-wins');
+    groupQuerySpy.mockRestore();
+  });
+
+  it('group-mode query still forwards a legacy-only query (#2175)', async () => {
+    resolveAtMemberMock.mockResolvedValue({ ok: true, repoPath: '/tmp/test-project' });
+    const groupQuerySpy = vi
+      .spyOn(backend.getGroupService(), 'groupQuery')
+      .mockResolvedValue({ ok: true } as any);
+
+    await backend.callTool('query', { query: 'legacy', repo: '@grp' });
+
+    expect((groupQuerySpy.mock.calls[0][0] as any).query).toBe('legacy');
+    groupQuerySpy.mockRestore();
+  });
+
+  // #2175 review: the MCP envelope is not schema-validated, so a client can send a
+  // non-string value for a string param. Resolve it to a friendly required-param error
+  // rather than throwing TypeError on `.trim()` (query() and cypher() both).
+  it('query tool returns a friendly error (no throw) for a non-string search_query (#2175)', async () => {
+    const result = await backend.callTool('query', { search_query: 123 as any });
+    expect(result.error).toContain('search_query');
+    expect(result.error).toContain('parameter is required');
+  });
+
+  it('cypher tool returns a friendly error (no throw) for a non-string statement (#2175)', async () => {
+    const result = await backend.callTool('cypher', { statement: 123 as any });
+    expect(result.error).toContain('statement');
+    expect(result.error).toContain('parameter is required');
+  });
+
+  // #2175 review (PR #2186): resolution prefers the first NON-BLANK string, so a blank
+  // new-name value falls back to a valid legacy value instead of clobbering it.
+  it('query tool: a blank new search_query falls back to a valid legacy query (#2175)', async () => {
+    const { searchFTSFromLbug } = await import('../../src/core/search/bm25-index.js');
+    (executeParameterized as any).mockResolvedValue([]);
+
+    const result = await backend.callTool('query', { search_query: '', query: 'real' });
+
+    expect(result).not.toHaveProperty('error');
+    expect(result).toHaveProperty('processes');
+    const lastTerm = String(vi.mocked(searchFTSFromLbug).mock.calls.at(-1)?.[0] ?? '');
+    expect(lastTerm).toBe('real');
+  });
+
+  it('query tool: a whitespace-only new search_query falls back to a valid legacy query (#2175)', async () => {
+    const { searchFTSFromLbug } = await import('../../src/core/search/bm25-index.js');
+    (executeParameterized as any).mockResolvedValue([]);
+
+    const result = await backend.callTool('query', { search_query: '   ', query: 'real' });
+
+    expect(result).not.toHaveProperty('error');
+    const lastTerm = String(vi.mocked(searchFTSFromLbug).mock.calls.at(-1)?.[0] ?? '');
+    expect(lastTerm).toBe('real');
+  });
+
+  it('query tool: both keys blank still returns the required error (#2175)', async () => {
+    const result = await backend.callTool('query', { search_query: '', query: '   ' });
+    expect(result.error).toContain('search_query');
+    expect(result.error).toContain('parameter is required');
+  });
+
+  it('cypher tool: a blank statement falls back to a valid legacy query (#2175)', async () => {
+    (executeParameterized as any).mockResolvedValue([]);
+    await backend.callTool('cypher', { statement: '', query: 'MATCH (n) RETURN n LIMIT 1' });
+    const passedCypher = (executeParameterized as any).mock.calls.at(-1)[1] as string;
+    expect(passedCypher).toBe('MATCH (n) RETURN n LIMIT 1');
+  });
+
+  it('group-mode query: a blank new search_query falls back to the legacy query (#2175)', async () => {
+    resolveAtMemberMock.mockResolvedValue({ ok: true, repoPath: '/tmp/test-project' });
+    const groupQuerySpy = vi
+      .spyOn(backend.getGroupService(), 'groupQuery')
+      .mockResolvedValue({ ok: true } as any);
+
+    await backend.callTool('query', { search_query: '', query: 'real', repo: '@grp' });
+
+    expect((groupQuerySpy.mock.calls[0][0] as any).query).toBe('real');
+    groupQuerySpy.mockRestore();
   });
 
   it('dispatches context tool', async () => {
@@ -1112,6 +1402,535 @@ describe('LocalBackend.callTool', () => {
   });
 });
 
+// ─── impact mode param (KTD1/KTD5/KTD12 — U1) ───────────────────────
+//
+// The MCP JSON-schema enum is advisory only (server forwards args
+// unvalidated, callTool is reachable directly), so the backend `mode`
+// validation is load-bearing. These tests pin: callgraph is the unchanged
+// default, pdg routes to the extracted traversal plus interprocedural symbol
+// reach, invalid modes hard-error, and the remaining incompatible params /
+// @group targets are rejected.
+
+describe('LocalBackend impact mode (KTD1/KTD5/KTD12)', () => {
+  let backend: LocalBackend;
+
+  // Resolve the target to a single Function so impact reaches the single-branch
+  // dispatch (callgraph BFS or the PDG traversal). The callgraph BFS then issues
+  // executeQuery for its frontier; the PDG path delegates to runImpactPDG.
+  function resolveSingleTarget() {
+    (executeParameterized as any).mockResolvedValue([
+      { id: 'func:main', name: 'main', type: 'Function', filePath: 'src/index.ts' },
+    ]);
+    (executeQuery as any).mockResolvedValue([]);
+  }
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    platformMocks.isVectorExtensionSupportedByPlatform.mockReturnValue(true);
+    // U2: stamp a READY PDG layer (both caps) so the layer-presence probe in
+    // `_impactImpl` falls THROUGH to the mode-dispatch surface these tests pin
+    // (the `_runImpactPDG` delegate / the ambiguous fan-out under `mode:'pdg'`).
+    // Degraded-layer behavior is owned by the integration degradation suite.
+    vi.mocked(loadMeta).mockResolvedValue({
+      pdg: { maxCdgEdgesPerFunction: 0, maxReachingDefEdgesPerFunction: 0 },
+    } as any);
+    backend = new LocalBackend();
+    setupSingleRepo();
+    await backend.init();
+  });
+
+  it('mode absent → callgraph result (target populated, no mode-error, BFS runs)', async () => {
+    resolveSingleTarget();
+    const bfsSpy = vi.spyOn(backend as any, '_runImpactBFS');
+    const result = await backend.callTool('impact', { target: 'main', direction: 'upstream' });
+    // A clean callgraph result carries no mode error and runs the BFS.
+    expect(result.error ?? '').not.toMatch(/Invalid "mode"/);
+    expect(result.error ?? '').not.toMatch(/not yet implemented/);
+    expect(result.target).toBeDefined();
+    expect(bfsSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("mode:'callgraph' and mode:undefined are byte-identical to absent (regression guard)", async () => {
+    resolveSingleTarget();
+    const absent = await backend.callTool('impact', { target: 'main', direction: 'upstream' });
+    const callgraph = await backend.callTool('impact', {
+      target: 'main',
+      direction: 'upstream',
+      mode: 'callgraph',
+    });
+    const undef = await backend.callTool('impact', {
+      target: 'main',
+      direction: 'upstream',
+      mode: undefined,
+    });
+    expect(callgraph).toEqual(absent);
+    expect(undef).toEqual(absent);
+  });
+
+  it("mode:'pdg' routes to the PDG traversal and attaches interprocedural symbol reach", async () => {
+    resolveSingleTarget();
+    const bfsSpy = vi.spyOn(backend as any, '_runImpactBFS');
+    const result = await backend.callTool('impact', {
+      target: 'main',
+      direction: 'upstream',
+      mode: 'pdg',
+    });
+    // The call reaches the real `_runImpactPDG` traversal, then composes the
+    // interprocedural symbol reach into the same pdg result.
+    expect(result.error).toBeUndefined();
+    expect(result.mode).toBe('pdg');
+    expect(Array.isArray(result.reachableBlocks)).toBe(true);
+    expect(result.pdgInterprocedural).toBeDefined();
+    expect(bfsSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("mode:'pdg' labels interprocedural symbols as a callgraph bridge", async () => {
+    resolveSingleTarget();
+    vi.spyOn(backend as any, '_runImpactBFS').mockResolvedValueOnce({
+      target: { id: 'func:main', name: 'main', type: 'Function', filePath: 'src/index.ts' },
+      direction: 'downstream',
+      impactedCount: 1,
+      risk: 'LOW',
+      summary: { direct: 1, processes_affected: 0, modules_affected: 0 },
+      byDepthCounts: { 1: 1 },
+      affected_processes: [],
+      affected_modules: [],
+      byDepth: {
+        1: [
+          {
+            depth: 1,
+            id: 'func:callee',
+            name: 'callee',
+            type: 'Function',
+            filePath: 'src/callee.ts',
+          },
+        ],
+      },
+    });
+
+    const result = await backend.callTool('impact', {
+      target: 'main',
+      direction: 'downstream',
+      mode: 'pdg',
+    });
+
+    expect(result.error).toBeUndefined();
+    expect(result.mode).toBe('pdg');
+    expect(result.pdgInterprocedural.evidence).toBe('callgraph-bridge');
+    expect(result.pdgInterprocedural.evidenceCounts['callgraph-bridge']).toBe(1);
+    expect(result.pdgEvidence.interprocedural).toBe('callgraph-bridge');
+    expect(result.interproceduralByDepth[1][0].pdgEvidence).toBe('callgraph-bridge');
+    expect(result.note).toContain('labeled as a PDG evidence bridge');
+  });
+
+  it("mode:'pdg' preserves unproven bridge evidence when call-site proof is unavailable", async () => {
+    resolveSingleTarget();
+    vi.spyOn(backend as any, '_runImpactBFS').mockResolvedValueOnce({
+      target: { id: 'func:main', name: 'main', type: 'Function', filePath: 'src/index.ts' },
+      direction: 'downstream',
+      impactedCount: 1,
+      risk: 'LOW',
+      summary: { direct: 1, processes_affected: 0, modules_affected: 0 },
+      byDepthCounts: { 1: 1 },
+      affected_processes: [],
+      affected_modules: [],
+      byDepth: {
+        1: [
+          {
+            depth: 1,
+            id: 'func:callee',
+            name: 'callee',
+            type: 'Function',
+            filePath: 'src/callee.ts',
+            pdgEvidence: 'unproven-bridge',
+          },
+        ],
+      },
+    });
+
+    const result = await backend.callTool('impact', {
+      target: 'main',
+      direction: 'downstream',
+      mode: 'pdg',
+    });
+
+    expect(result.error).toBeUndefined();
+    expect(result.mode).toBe('pdg');
+    expect(result.pdgInterprocedural.evidence).toBe('unproven-bridge');
+    expect(result.pdgInterprocedural.evidenceCounts['unproven-bridge']).toBe(1);
+    expect(result.pdgEvidence.interprocedural).toBe('unproven-bridge');
+    expect(result.note).toContain('labeled unproven-bridge');
+  });
+
+  it.each([['PDG'], ['pgd'], [''], [0], [null]])(
+    'invalid mode %j → structured {error}, never a callgraph result (KTD5 anti-silent-fallback)',
+    async (bad) => {
+      resolveSingleTarget();
+      const bfsSpy = vi.spyOn(backend as any, '_runImpactBFS');
+      const result = await backend.callTool('impact', {
+        target: 'main',
+        direction: 'upstream',
+        mode: bad as any,
+      });
+      expect(result.error).toMatch(/Invalid "mode"/);
+      expect(result.risk).toBe('UNKNOWN');
+      // A typo'd mode must NEVER quietly run callgraph.
+      expect(bfsSpy).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([['callgraph'], [undefined]])(
+    'line param with mode:%j → structured {error} (line is PDG-only), never a callgraph result',
+    async (mode) => {
+      resolveSingleTarget();
+      const bfsSpy = vi.spyOn(backend as any, '_runImpactBFS');
+      const result = await backend.callTool('impact', {
+        target: 'main',
+        direction: 'upstream',
+        mode: mode as any,
+        line: 8,
+      });
+      expect(result.error).toMatch(/'line' is only supported with mode:'pdg'/);
+      expect(result.risk).toBe('UNKNOWN');
+      // A PDG-only param on the callgraph path must NOT silently run the BFS.
+      expect(bfsSpy).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([[0], [-1], [1.5]])(
+    "mode:'pdg' + non-positive-integer line %j → structured {error}, never routed to traversal",
+    async (badLine) => {
+      resolveSingleTarget();
+      const pdgSpy = vi.spyOn(backend as any, '_runImpactPDG');
+      const result = await backend.callTool('impact', {
+        target: 'main',
+        direction: 'upstream',
+        mode: 'pdg',
+        line: badLine as any,
+      });
+      expect(result.error).toMatch(/'line' must be a positive integer/);
+      expect(result.risk).toBe('UNKNOWN');
+      // The validation fires BEFORE the traversal — a bad line never seeds a slice.
+      expect(pdgSpy).not.toHaveBeenCalled();
+    },
+  );
+
+  it("mode:'pdg' + downstream line:8 routes to the PDG traversal and seeds bridge evidence", async () => {
+    resolveSingleTarget();
+    // The target-resolution row doubles as the calleesOfBlocks row: `callees`
+    // ('callee') is the leaf name persisted on the slice's BasicBlock, the
+    // statement-precise substrate the bridge keys on.
+    (executeParameterized as any).mockResolvedValue([
+      {
+        id: 'func:main',
+        name: 'main',
+        type: 'Function',
+        filePath: 'src/index.ts',
+        callees: 'callee',
+      },
+    ]);
+    // A line-seeded downstream slice with one reachable block → the dispatch
+    // queries that block's callees and seeds the bridge with them.
+    const pdgSpy = vi.spyOn(backend as any, '_runImpactPDG').mockResolvedValueOnce({
+      mode: 'pdg',
+      target: { id: 'func:main', name: 'main', type: 'Function', filePath: 'src/index.ts' },
+      direction: 'downstream',
+      risk: 'UNKNOWN',
+      impactedCount: 0,
+      epistemic: 'pdg-intra-procedural',
+      reachableBlocks: ['BasicBlock:src/index.ts:8:0:1'],
+      // Intra-only slice (no inter-procedural hop) ⇒ the intra reach the bridge
+      // keys on equals reachableBlocks (FIX 6: bridge keys on intraReachableBlocks).
+      intraReachableBlocks: ['BasicBlock:src/index.ts:8:0:1'],
+      blockCount: 1,
+      affectedStatements: [{ line: 8, filePath: 'src/index.ts', text: 'callee()' }],
+      affectedStatementCount: 1,
+      criterionLine: 8,
+    });
+    const bfsSpy = vi.spyOn(backend as any, '_runImpactBFS');
+    const result = await backend.callTool('impact', {
+      target: 'main',
+      direction: 'downstream',
+      mode: 'pdg',
+      line: 8,
+    });
+    // A valid line routes cleanly into the PDG engine — no line/mode error.
+    expect(result.error).toBeUndefined();
+    expect(result.mode).toBe('pdg');
+    expect(pdgSpy).toHaveBeenCalledTimes(1);
+    expect(bfsSpy).toHaveBeenCalledTimes(1);
+    const bridge = bfsSpy.mock.calls[0][4].pdgBridge;
+    // The bridge now carries the slice's callee names (statement-precise reach),
+    // resolved from BasicBlock.callees — not the dead call-site-line keys.
+    expect(bridge).toBeDefined();
+    expect([...bridge.sliceCalleeNames]).toContain('callee');
+    expect(result.pdgInterprocedural).toBeDefined();
+  });
+
+  it("mode:'pdg' downstream: a callee invoked ON the seeded line is proven even with no downstream dependents", async () => {
+    // Regression for the PR #2227 tri-review P2: the seed block is excluded from
+    // `reachableBlocks` (seed-minus-reachable convention), so a callee called
+    // directly on the changed line — with NO downstream-dependent block — used to
+    // be dropped from the statement-precise set. The dispatch now unions the seed
+    // block's callees, so it must be proven.
+    resolveSingleTarget();
+    (executeParameterized as any).mockResolvedValue([
+      {
+        id: 'func:main',
+        name: 'main',
+        type: 'Function',
+        filePath: 'src/index.ts',
+        callees: 'seedCallee',
+      },
+    ]);
+    // reachableBlocks EMPTY (line N has no downstream dependents) but seedBlocks
+    // carries the changed line's own block — the case that regressed.
+    vi.spyOn(backend as any, '_runImpactPDG').mockResolvedValueOnce({
+      mode: 'pdg',
+      target: { id: 'func:main', name: 'main', type: 'Function', filePath: 'src/index.ts' },
+      direction: 'downstream',
+      risk: 'UNKNOWN',
+      impactedCount: 0,
+      epistemic: 'pdg-intra-procedural',
+      reachableBlocks: [],
+      intraReachableBlocks: [],
+      seedBlocks: ['BasicBlock:src/index.ts:8:0:0'],
+      blockCount: 0,
+      affectedStatements: [],
+      affectedStatementCount: 0,
+      criterionLine: 8,
+    });
+    const bfsSpy = vi.spyOn(backend as any, '_runImpactBFS');
+    await backend.callTool('impact', {
+      target: 'main',
+      direction: 'downstream',
+      mode: 'pdg',
+      line: 8,
+    });
+    const bridge = bfsSpy.mock.calls[0][4].pdgBridge;
+    // The bridge is seeded from the seed block (not just reachableBlocks), so the
+    // seed-line callee is provable.
+    expect(bridge).toBeDefined();
+    expect([...bridge.sliceCalleeNames]).toContain('seedCallee');
+  });
+
+  it('betterBridgeEvidence keeps callgraph-bridge regardless of parent order (U3 order-independence)', () => {
+    const proven = { evidence: 'callgraph-bridge' as const, basis: 'in slice' };
+    const unproven = { evidence: 'unproven-bridge' as const, basis: 'not in slice' };
+    // A node reached from a proven and an unproven parent is proven either way —
+    // the diamond label does not depend on which edge the BFS visits first.
+    expect(betterBridgeEvidence(unproven, proven).evidence).toBe('callgraph-bridge');
+    expect(betterBridgeEvidence(proven, unproven).evidence).toBe('callgraph-bridge');
+    // First verdict wins when neither is stronger; undefined existing takes the candidate.
+    expect(betterBridgeEvidence(undefined, unproven).evidence).toBe('unproven-bridge');
+    expect(betterBridgeEvidence(unproven, unproven).evidence).toBe('unproven-bridge');
+  });
+
+  it('pdgBridgeEvidenceForImpact treats a truncated-slice (sentinel) as callee-unknown → proven', () => {
+    // A slice block that hit the per-statement site cap has an incomplete callee
+    // list; the sentinel forces callgraph-equal so an absent-but-real callee is
+    // not under-proven.
+    const truncated = pdgBridgeEvidenceForImpact({
+      bridge: {
+        sliceCalleeNames: new Set([CALLEES_TRUNCATED_SENTINEL, 'foo']),
+        sliceCalleeIds: new Set(),
+      },
+      depth: 1,
+      calleeName: 'unrelatedNotInSlice',
+    });
+    expect(truncated.evidence).toBe('callgraph-bridge');
+    // Without the sentinel, a callee not in the slice is unproven.
+    const notTruncated = pdgBridgeEvidenceForImpact({
+      bridge: { sliceCalleeNames: new Set(['foo']), sliceCalleeIds: new Set() },
+      depth: 1,
+      calleeName: 'unrelatedNotInSlice',
+    });
+    expect(notTruncated.evidence).toBe('unproven-bridge');
+  });
+
+  it("mode:'pdg' degrades gracefully when the slice-callees query fails (no bridge, no throw)", async () => {
+    // calleesOfBlocks swallows a DB error and returns an empty set, so the bridge
+    // is not built and the inter-procedural reach falls back to callgraph-equal —
+    // never surfacing the error or producing a partial proven/unproven labeling.
+    resolveSingleTarget();
+    // The slice-callees query (RETURN b.callees) throws; every other query (target
+    // resolution) returns the resolved symbol row.
+    vi.mocked(executeParameterized).mockImplementation(async (_repo, query) => {
+      if (query.includes('RETURN b.callees')) throw new Error('slice-callees query failed');
+      return [{ id: 'func:main', name: 'main', type: 'Function', filePath: 'src/index.ts' }];
+    });
+    // A line-seeded downstream slice so calleesOfBlocks is attempted.
+    vi.spyOn(backend as any, '_runImpactPDG').mockResolvedValueOnce({
+      mode: 'pdg',
+      target: { id: 'func:main', name: 'main', type: 'Function', filePath: 'src/index.ts' },
+      direction: 'downstream',
+      risk: 'UNKNOWN',
+      impactedCount: 0,
+      epistemic: 'pdg-intra-procedural',
+      reachableBlocks: ['BasicBlock:src/index.ts:8:0:1'],
+      intraReachableBlocks: ['BasicBlock:src/index.ts:8:0:1'],
+      seedBlocks: ['BasicBlock:src/index.ts:8:0:0'],
+      blockCount: 1,
+      affectedStatements: [{ line: 8, filePath: 'src/index.ts', text: 'callee()' }],
+      affectedStatementCount: 1,
+      criterionLine: 8,
+    });
+    const bfsSpy = vi.spyOn(backend as any, '_runImpactBFS');
+    const result = await backend.callTool('impact', {
+      target: 'main',
+      direction: 'downstream',
+      mode: 'pdg',
+      line: 8,
+    });
+    // The error was swallowed: no bridge passed to the BFS, and no error surfaced.
+    expect(result.error).toBeUndefined();
+    expect(bfsSpy.mock.calls[0][4].pdgBridge).toBeUndefined();
+  });
+
+  it("mode:'pdg' + crossDepth → hard {error} (single-repo PDG impact)", async () => {
+    resolveSingleTarget();
+    const bfsSpy = vi.spyOn(backend as any, '_runImpactBFS');
+    const result = await backend.callTool('impact', {
+      target: 'main',
+      direction: 'upstream',
+      mode: 'pdg',
+      crossDepth: 2,
+    });
+    expect(result.error).toMatch(/not supported with mode:'pdg'/);
+    expect(result.error).toContain('crossDepth');
+    expect(bfsSpy).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['relationTypes', { relationTypes: ['CALLS'] }, (opts: any) => opts.relationTypes],
+    ['minConfidence', { minConfidence: 0.5 }, (opts: any) => opts.minConfidence],
+  ])("mode:'pdg' + %s feeds the interprocedural symbol reach", async (_label, extra, readOpt) => {
+    resolveSingleTarget();
+    const bfsSpy = vi.spyOn(backend as any, '_runImpactBFS').mockResolvedValueOnce({
+      target: { id: 'func:main', name: 'main', type: 'Function', filePath: 'src/index.ts' },
+      direction: 'upstream',
+      impactedCount: 0,
+      risk: 'LOW',
+      summary: { direct: 0, processes_affected: 0, modules_affected: 0 },
+      byDepthCounts: {},
+      affected_processes: [],
+      affected_modules: [],
+      byDepth: {},
+    });
+    const result = await backend.callTool('impact', {
+      target: 'main',
+      direction: 'upstream',
+      mode: 'pdg',
+      ...extra,
+    });
+    expect(result.error).toBeUndefined();
+    expect(result.mode).toBe('pdg');
+    expect(bfsSpy).toHaveBeenCalledTimes(1);
+    expect(readOpt(bfsSpy.mock.calls[0][4])).toBeDefined();
+  });
+
+  it("ambiguous target under mode:'pdg' never invokes interprocedural fan-out (KTD5 ambiguous trap)", async () => {
+    // Two same-name Functions → resolver returns ambiguous.
+    (executeParameterized as any).mockResolvedValue([
+      {
+        id: 'func:login:1',
+        name: 'login',
+        type: 'Function',
+        filePath: 'src/auth.ts',
+        startLine: 5,
+      },
+      {
+        id: 'func:login:2',
+        name: 'login',
+        type: 'Function',
+        filePath: 'src/admin/login.ts',
+        startLine: 8,
+      },
+    ]);
+    const bfsSpy = vi.spyOn(backend as any, '_runImpactBFS');
+    const result = await backend.callTool('impact', {
+      target: 'login',
+      direction: 'upstream',
+      mode: 'pdg',
+    });
+    expect(result.status).toBe('ambiguous');
+    expect(result.mode).toBe('pdg');
+    expect(result.candidates).toHaveLength(2);
+    expect(result.impactedCount).toBe(0);
+    expect(result.risk).toBe('UNKNOWN');
+    // The callgraph per-candidate probe fan-out MUST NOT run under pdg.
+    expect(bfsSpy).not.toHaveBeenCalled();
+    // No per-candidate blast radius is computed yet (U4), so the candidate
+    // entries carry no impactedCount field from a callgraph probe.
+    for (const c of result.candidates) {
+      expect(c.impactedCount).toBeUndefined();
+    }
+  });
+
+  it("unknown target with mode:'pdg' returns the normalized PDG error envelope", async () => {
+    (executeParameterized as any).mockResolvedValue([]);
+    const result = await backend.callTool('impact', {
+      target: 'missingSymbol',
+      direction: 'upstream',
+      mode: 'pdg',
+    });
+    expect(result.error).toMatch(/not found/);
+    expect(result.mode).toBe('pdg');
+    expect(result.target).toEqual({ name: 'missingSymbol' });
+    expect(result.direction).toBe('upstream');
+    expect(result.impactedCount).toBe(0);
+    expect(result.risk).toBe('UNKNOWN');
+  });
+
+  it("runtime failures with mode:'pdg' return the normalized PDG error envelope", async () => {
+    const failing = new Error('pdg query failed');
+    const implSpy = vi.spyOn(backend as any, '_impactImpl').mockRejectedValueOnce(failing);
+    const result = await backend.callTool('impact', {
+      target: 'main',
+      direction: 'downstream',
+      mode: 'pdg',
+    });
+    expect(result.error).toBe('pdg query failed');
+    expect(result.mode).toBe('pdg');
+    expect(result.target).toEqual({ name: 'main' });
+    expect(result.direction).toBe('downstream');
+    expect(result.impactedCount).toBe(0);
+    expect(result.risk).toBe('UNKNOWN');
+    expect(result.suggestion).toMatch(/context/);
+    implSpy.mockRestore();
+  });
+
+  it("@group target with mode:'pdg' is rejected (KTD12 — PDG is single-repo)", async () => {
+    resolveAtMemberMock.mockResolvedValue({ ok: true, repoPath: '/tmp/test-project' });
+    const result = await backend.callTool('impact', {
+      target: 'main',
+      direction: 'upstream',
+      mode: 'pdg',
+      repo: '@grp',
+    });
+    expect(result.error).toMatch(/not supported for @group targets/);
+    expect(result.mode).toBe('pdg');
+    expect(result.target).toEqual({ name: 'main' });
+    expect(result.direction).toBe('upstream');
+    expect(result.impactedCount).toBe(0);
+    expect(result.risk).toBe('UNKNOWN');
+  });
+
+  it("@group target with mode:'callgraph' still forwards to group impact (unchanged)", async () => {
+    resolveAtMemberMock.mockResolvedValue({ ok: true, repoPath: '/tmp/test-project' });
+    // groupImpact is reached only if the mode gate passes; we don't assert its
+    // payload (group infra is stubbed), only that no mode-error short-circuited.
+    const result = await backend.callTool('impact', {
+      target: 'main',
+      direction: 'upstream',
+      mode: 'callgraph',
+      repo: '@grp',
+    });
+    expect(result?.error ?? '').not.toMatch(/not supported for @group targets/);
+    expect(result?.error ?? '').not.toMatch(/Invalid "mode"/);
+  });
+});
+
 // ─── Repo resolution ────────────────────────────────────────────────
 
 describe('LocalBackend.resolveRepo', () => {
@@ -1132,7 +1951,7 @@ describe('LocalBackend.resolveRepo', () => {
   it('resolves single repo without param', async () => {
     setupSingleRepo();
     await backend.init();
-    const result = await backend.callTool('list_repos', {});
+    const result = await backend.listRepos();
     expect(result).toHaveLength(1);
   });
 
@@ -1333,6 +2152,312 @@ describe('LocalBackend.resolveRepo', () => {
   });
 });
 
+// ─── repo-id collisions (sibling clones) ────────────────────────────
+
+describe('LocalBackend repo-id collisions (#2054)', () => {
+  let backend: LocalBackend;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    (getGitRoot as any).mockReturnValue(null);
+    backend = new LocalBackend();
+  });
+
+  afterEach(() => {
+    for (const dir of duplicateFixtureDirs.splice(0)) {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('serves all sibling clones through the list_repos tool with siblings/remoteUrl intact (#2054, #2119)', async () => {
+    const { dirs, entries } = makeSiblingClonesFixture(4);
+    (listRegisteredRepos as any).mockResolvedValue(entries);
+    await backend.init();
+
+    // Exercise the real TOOL surface (callTool → listReposPage), not just
+    // listRepos(): the paginated wrapper must not drop sibling-clone fields
+    // during its sort + slice.
+    const page = await backend.callTool('list_repos', {});
+    expect(page.repositories).toHaveLength(4);
+    expect(page.pagination.total).toBe(4);
+    const paths = page.repositories.map((r: any) => path.resolve(r.path)).sort();
+    expect(paths).toEqual(dirs.map((d) => path.resolve(d)).sort());
+    for (const entry of page.repositories) {
+      expect(entry.remoteUrl).toBe('git@github.com:MYCOMPANY/REPO.git');
+      expect(entry.siblings).toHaveLength(3);
+    }
+  });
+
+  it('lists all four sibling clones that share a name and remote (#2054)', async () => {
+    const { dirs, entries } = makeSiblingClonesFixture(4);
+    (listRegisteredRepos as any).mockResolvedValue(entries);
+
+    // Precondition: the historical 6-char base64url suffixes really do collide
+    // for these sibling paths — otherwise this test would not exercise the bug.
+    expect(legacyPathSuffix(dirs[1])).toBe(legacyPathSuffix(dirs[2]));
+    expect(legacyPathSuffix(dirs[2])).toBe(legacyPathSuffix(dirs[3]));
+
+    expect(await backend.init()).toBe(true);
+
+    const listed = await backend.listRepos();
+    expect(listed).toHaveLength(4);
+
+    // Every distinct on-disk clone survives exactly once — no silent overwrite.
+    const listedPaths = listed.map((r: any) => path.resolve(r.path)).sort();
+    expect(listedPaths).toEqual(dirs.map((d) => path.resolve(d)).sort());
+    expect(new Set(listedPaths).size).toBe(4);
+
+    // The shared remoteUrl must NOT collapse the entries; instead each entry
+    // reports the other three as siblings (existing list_repos contract).
+    for (const entry of listed) {
+      expect(entry.remoteUrl).toBe('git@github.com:MYCOMPANY/REPO.git');
+      expect(entry.siblings).toHaveLength(3);
+    }
+
+    // Every clone is addressable by its absolute path.
+    for (const dir of dirs) {
+      const resolved = await backend.resolveRepo(dir);
+      expect(resolved.repoPath).toBe(dir);
+    }
+
+    // Re-running list_repos (which re-reads the registry) is idempotent.
+    const again = await backend.listRepos();
+    expect(again).toHaveLength(4);
+  });
+
+  it('assigns distinct, resolvable generated ids past the first legacy collision (#2054)', async () => {
+    const { dirs, entries } = makeSiblingClonesFixture(4);
+    (listRegisteredRepos as any).mockResolvedValue(entries);
+    await backend.init();
+
+    // Resolve each clone by path, collect its in-memory id.
+    const handles = await Promise.all(dirs.map((d) => backend.resolveRepo(d)));
+    const ids = handles.map((h) => h.id);
+
+    // Ids are unique across all four clones.
+    expect(new Set(ids).size).toBe(4);
+    // First clone keeps the bare name; the rest are name-prefixed generated ids.
+    expect(ids[0]).toBe('repo');
+    for (const id of ids.slice(1)) expect(id.startsWith('repo-')).toBe(true);
+
+    // Clones that collided on the legacy suffix fall back to a content hash —
+    // i.e. they are NOT addressable by the (colliding) legacy id, but ARE
+    // addressable by whatever stable id they actually hold.
+    const collidedLegacy = `repo-${legacyPathSuffix(dirs[2])}`;
+    expect(handles[2].id).not.toBe(collidedLegacy);
+    expect(handles[3].id).not.toBe(handles[2].id);
+
+    // Each *suffixed* generated id resolves back to its own clone. The bare
+    // "repo" id is intentionally shadowed by the shared repo *name* (the #1658
+    // name tier runs before the id tier), so the first clone is addressed by
+    // path instead — covered by the headline test.
+    for (const h of handles.slice(1)) {
+      const viaId = await backend.resolveRepo(h.id);
+      expect(viaId.repoPath).toBe(h.repoPath);
+    }
+  });
+
+  it('keeps each clone’s generated id stable across a registry reorder (#2067)', async () => {
+    // Ids are assigned over a path-sorted view, so the same resolved path always
+    // gets the same id regardless of registry order — a memorized hashed id
+    // can't drift to a different clone after a reorder.
+    const { dirs, entries } = makeSiblingClonesFixture(4);
+    (listRegisteredRepos as any).mockResolvedValue(entries);
+    await backend.init();
+    const before: Record<string, string> = {};
+    for (const d of dirs) before[d] = (await backend.resolveRepo(d)).id;
+
+    // Reverse the registry order and refresh.
+    (listRegisteredRepos as any).mockResolvedValue([...entries].reverse());
+    await backend.callTool('list_repos', {});
+
+    for (const d of dirs) {
+      expect((await backend.resolveRepo(d)).id).toBe(before[d]); // same path → same id
+    }
+  });
+
+  it('refresh stability: reorder, remove-one, and re-add never drop a different clone (#2054)', async () => {
+    const { dirs, entries } = makeSiblingClonesFixture(4);
+    const listedPaths = async () =>
+      (await backend.listRepos()).map((r: any) => path.resolve(r.path)).sort();
+    const allPaths = dirs.map((d) => path.resolve(d)).sort();
+
+    (listRegisteredRepos as any).mockResolvedValue(entries);
+    await backend.init();
+    expect(await listedPaths()).toEqual(allPaths);
+
+    // Reordering the registry must not silently lose a clone. (Under path-sorted
+    // assignment a reorder is a no-op for id assignment; id stability across
+    // reorder is asserted separately above. This step remains a set-survival
+    // guard.)
+    (listRegisteredRepos as any).mockResolvedValue([...entries].reverse());
+    expect(await listedPaths()).toEqual(allPaths);
+
+    // Removing one entry prunes only that entry.
+    (listRegisteredRepos as any).mockResolvedValue(entries.slice(0, 3));
+    expect(await listedPaths()).toEqual(
+      dirs
+        .slice(0, 3)
+        .map((d) => path.resolve(d))
+        .sort(),
+    );
+
+    // Re-adding it restores it without replacing another clone.
+    (listRegisteredRepos as any).mockResolvedValue(entries);
+    expect(await listedPaths()).toEqual(allPaths);
+  });
+
+  it('gives two same-name clones independent pools and never evicts on id reassignment (#2067)', async () => {
+    // The pool (and the init/staleness/reinit maps) are keyed by the immutable
+    // lbugPath, so two clones that transiently share a name-derived id get
+    // SEPARATE pool entries — neither can be served the other's database — and a
+    // pure id reassignment (path still registered) needs no pool eviction.
+    const parent = mkdtempSync(path.join(os.tmpdir(), 'gnx-remap-'));
+    duplicateFixtureDirs.push(parent);
+    const a = path.join(parent, 'A'); // 'A' sorts before 'B'
+    const b = path.join(parent, 'B');
+    const lbug = (dir: string) => path.join(dir, '.gitnexus', 'lbug');
+    const mk = (dir: string) => {
+      mkdirSync(lbug(dir), { recursive: true });
+      writeFileSync(path.join(dir, '.gitnexus', 'meta.json'), '{}');
+      return {
+        ...MOCK_REPO_ENTRY,
+        name: 'dup',
+        path: dir,
+        storagePath: path.join(dir, '.gitnexus'),
+      };
+    };
+    const entryA = mk(a);
+    const entryB = mk(b);
+
+    // Start with only B → B owns the bare "dup" id; resolve it.
+    (listRegisteredRepos as any).mockResolvedValue([entryB]);
+    await backend.init();
+    const handleB = await backend.resolveRepo(b);
+    expect(handleB.id).toBe('dup');
+
+    // Add A (sorts before B) → the bare "dup" id is reassigned to A.
+    (closeLbug as any).mockClear();
+    (listRegisteredRepos as any).mockResolvedValue([entryB, entryA]);
+    await backend.callTool('list_repos', {});
+    const handleA = await backend.resolveRepo(a);
+    expect(handleA.id).toBe('dup'); // A now owns the bare id
+    expect((await backend.resolveRepo(b)).id).not.toBe('dup'); // B moved to a suffix
+
+    // Reassigning the id evicts nothing — both paths are still registered.
+    expect(closeLbug).not.toHaveBeenCalled();
+
+    // Each clone initializes its OWN pool entry, keyed by its own lbugPath — no
+    // cross-serving even though they shared the "dup" id.
+    (initLbug as any).mockClear();
+    await (backend as any).ensureInitialized(handleA);
+    await (backend as any).ensureInitialized(handleB);
+    expect(initLbug).toHaveBeenCalledWith(lbug(a), lbug(a));
+    expect(initLbug).toHaveBeenCalledWith(lbug(b), lbug(b));
+  });
+
+  it('releases the pooled connection when a repo path leaves the registry (#2054)', async () => {
+    // When a clone's path is unregistered its pooled LadybugDB connection must
+    // be released. The pool is keyed by lbugPath, so eviction targets the path.
+    const parent = mkdtempSync(path.join(os.tmpdir(), 'gnx-vanish-'));
+    duplicateFixtureDirs.push(parent);
+    const dir = path.join(parent, 'solo');
+    const lbugPath = path.join(dir, '.gitnexus', 'lbug');
+    mkdirSync(lbugPath, { recursive: true });
+    writeFileSync(path.join(dir, '.gitnexus', 'meta.json'), '{}');
+    const entry = {
+      ...MOCK_REPO_ENTRY,
+      name: 'solo',
+      path: dir,
+      storagePath: path.join(dir, '.gitnexus'),
+    };
+
+    (listRegisteredRepos as any).mockResolvedValue([entry]);
+    await backend.init();
+    expect((await backend.resolveRepo(dir)).id).toBe('solo');
+
+    // Registry now empty → the clone's path vanishes on refresh.
+    (closeLbug as any).mockClear();
+    (listRegisteredRepos as any).mockResolvedValue([]);
+    await backend.callTool('list_repos', {});
+
+    expect(closeLbug).toHaveBeenCalledWith(lbugPath);
+  });
+
+  it('initializes the resolved clone, not a clone the id was remapped to mid-call (#2067)', async () => {
+    // ensureInitialized takes the resolved RepoHandle, so even if a concurrent
+    // refresh remaps the (floating) bare id to a different clone between resolve
+    // and init, it opens the clone the caller actually resolved — not whatever
+    // the id now points at. Pre-fix (by-id re-derivation) it opened the remapped
+    // clone's database.
+    const parent = mkdtempSync(path.join(os.tmpdir(), 'gnx-race-'));
+    duplicateFixtureDirs.push(parent);
+    const a = path.join(parent, 'A'); // 'A' sorts before 'B'
+    const b = path.join(parent, 'B');
+    const mk = (dir: string) => {
+      mkdirSync(path.join(dir, '.gitnexus', 'lbug'), { recursive: true });
+      writeFileSync(path.join(dir, '.gitnexus', 'meta.json'), '{}');
+      return {
+        ...MOCK_REPO_ENTRY,
+        name: 'dup',
+        path: dir,
+        storagePath: path.join(dir, '.gitnexus'),
+      };
+    };
+    const entryA = mk(a);
+    const entryB = mk(b);
+
+    // Only B registered → B owns the bare "dup" id; resolve it.
+    (listRegisteredRepos as any).mockResolvedValue([entryB]);
+    await backend.init();
+    const resolvedB = await backend.resolveRepo(b);
+    expect(resolvedB.id).toBe('dup');
+
+    // Concurrent refresh adds A (sorts first) → the bare "dup" id now maps to A.
+    (listRegisteredRepos as any).mockResolvedValue([entryB, entryA]);
+    await backend.callTool('list_repos', {});
+    expect((await backend.resolveRepo(a)).id).toBe('dup'); // id remapped to A
+
+    // Initialize with the handle resolved BEFORE the remap → must open B's path
+    // (pool keyed by B's lbugPath), never A's.
+    (initLbug as any).mockClear();
+    await (backend as any).ensureInitialized(resolvedB);
+    const lbug = (dir: string) => path.join(dir, '.gitnexus', 'lbug');
+    expect(initLbug).toHaveBeenCalledWith(lbug(b), lbug(b));
+    expect(initLbug).not.toHaveBeenCalledWith(lbug(a), lbug(a));
+  });
+
+  it('handles more than four sibling clones — all listed once and resolvable (#2067)', async () => {
+    const { dirs, entries } = makeSiblingClonesFixture(6);
+    (listRegisteredRepos as any).mockResolvedValue(entries);
+    await backend.init();
+
+    const listed = await backend.listRepos();
+    expect(listed).toHaveLength(6);
+
+    // All six ids are distinct (clones 3–6 exercise the sha256 fallback tier).
+    const ids = await Promise.all(dirs.map(async (d) => (await backend.resolveRepo(d)).id));
+    expect(new Set(ids).size).toBe(6);
+    for (const d of dirs) expect((await backend.resolveRepo(d)).repoPath).toBe(d);
+  });
+
+  it('lists same-name clones with no remoteUrl without grouping or collapse (#2067)', async () => {
+    const { dirs, entries } = makeSiblingClonesFixture(2);
+    // Strip remoteUrl — same name, no remote fingerprint.
+    const noRemote = entries.map((e) => ({ ...e, remoteUrl: undefined }));
+    (listRegisteredRepos as any).mockResolvedValue(noRemote);
+    await backend.init();
+
+    const listed = await backend.listRepos();
+    expect(listed).toHaveLength(2); // both present, not collapsed
+    for (const e of listed) {
+      expect(e.remoteUrl).toBeUndefined();
+      expect(e.siblings).toBeUndefined(); // no remote → no sibling grouping
+    }
+    for (const d of dirs) expect((await backend.resolveRepo(d)).repoPath).toBe(d);
+  });
+});
+
 // ─── getContext ──────────────────────────────────────────────────────
 
 describe('LocalBackend.getContext', () => {
@@ -1462,14 +2587,14 @@ describe('LocalBackend.listRepos', () => {
   it('returns empty array when no repos', async () => {
     setupNoRepos();
     await backend.init();
-    const repos = await backend.callTool('list_repos', {});
+    const repos = await backend.listRepos();
     expect(repos).toEqual([]);
   });
 
   it('returns repo metadata', async () => {
     setupSingleRepo();
     await backend.init();
-    const repos = await backend.callTool('list_repos', {});
+    const repos = await backend.listRepos();
     expect(repos).toHaveLength(1);
     expect(repos[0]).toEqual(
       expect.objectContaining({
@@ -1484,10 +2609,269 @@ describe('LocalBackend.listRepos', () => {
   it('re-reads registry on each listRepos call', async () => {
     setupSingleRepo();
     await backend.init();
-    await backend.callTool('list_repos', {});
-    await backend.callTool('list_repos', {});
+    await backend.listRepos();
+    await backend.listRepos();
     // listRegisteredRepos called: once in init, once per listRepos
     expect(listRegisteredRepos).toHaveBeenCalledTimes(3);
+  });
+});
+
+// ─── list_repos pagination (#2119) ─────────────────────────────────────
+
+describe('parseListReposPagination', () => {
+  const opts = { defaultLimit: 50, maxLimit: 200 };
+
+  it('applies defaults when nothing is supplied', () => {
+    expect(parseListReposPagination(undefined, opts)).toEqual({ limit: 50, offset: 0 });
+    expect(parseListReposPagination({}, opts)).toEqual({ limit: 50, offset: 0 });
+  });
+
+  it('accepts valid integer limit/offset', () => {
+    expect(parseListReposPagination({ limit: 10, offset: 20 }, opts)).toEqual({
+      limit: 10,
+      offset: 20,
+    });
+  });
+
+  it('rejects a limit above the maximum (does not silently clamp)', () => {
+    expect(() => parseListReposPagination({ limit: 201 }, opts)).toThrow(/limit/);
+    expect(() => parseListReposPagination({ limit: 99999 }, opts)).toThrow(/limit/);
+  });
+
+  it('accepts a valid in-range limit, including the boundary', () => {
+    expect(parseListReposPagination({ limit: 200 }, opts).limit).toBe(200);
+    expect(parseListReposPagination({ limit: 199 }, opts).limit).toBe(199);
+  });
+
+  it('rejects malformed limit values', () => {
+    for (const bad of [0, -5, 1.5, NaN, Infinity, '5', null, true, {}]) {
+      expect(() => parseListReposPagination({ limit: bad as any }, opts)).toThrow(/limit/);
+    }
+  });
+
+  it('rejects malformed offset values', () => {
+    for (const bad of [-1, 2.5, NaN, Infinity, '0', null, false]) {
+      expect(() => parseListReposPagination({ offset: bad as any }, opts)).toThrow(/offset/);
+    }
+  });
+});
+
+describe('LocalBackend.listReposPage / callTool list_repos pagination (#2119)', () => {
+  let backend: LocalBackend;
+
+  // Build N registry entries with unique, lexically-ordered names + paths and
+  // no remoteUrl (so no sibling grouping). Zero-padding makes lexical order
+  // equal numeric order, so page boundaries are predictable.
+  const id = (i: number) => `repo-${String(i).padStart(4, '0')}`;
+  const makeRepoEntries = (count: number) =>
+    Array.from({ length: count }, (_, i) => ({
+      ...MOCK_REPO_ENTRY,
+      name: id(i),
+      path: `/tmp/repos/${id(i)}`,
+      storagePath: `/tmp/repos/${id(i)}/.gitnexus`,
+    }));
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    platformMocks.isVectorExtensionSupportedByPlatform.mockReturnValue(true);
+    backend = new LocalBackend();
+  });
+
+  it('default page caps a large registry and reports continuation metadata', async () => {
+    (listRegisteredRepos as any).mockResolvedValue(makeRepoEntries(437));
+    await backend.init();
+
+    const page = await backend.callTool('list_repos', {});
+    expect(page.repositories).toHaveLength(50);
+    expect(page.pagination).toEqual({
+      total: 437,
+      limit: 50,
+      offset: 0,
+      returned: 50,
+      hasMore: true,
+      nextOffset: 50,
+    });
+    // First page starts at the first repo in deterministic order.
+    expect(page.repositories[0].name).toBe(id(0));
+  });
+
+  it('limit controls the page size', async () => {
+    (listRegisteredRepos as any).mockResolvedValue(makeRepoEntries(437));
+    await backend.init();
+
+    const page = await backend.callTool('list_repos', { limit: 100 });
+    expect(page.repositories).toHaveLength(100);
+    expect(page.pagination.limit).toBe(100);
+    expect(page.pagination.nextOffset).toBe(100);
+  });
+
+  it('offset selects a middle page', async () => {
+    (listRegisteredRepos as any).mockResolvedValue(makeRepoEntries(437));
+    await backend.init();
+
+    const page = await backend.callTool('list_repos', { limit: 50, offset: 50 });
+    expect(page.repositories[0].name).toBe(id(50));
+    expect(page.repositories[49].name).toBe(id(99));
+    // Assert total + limit too (a total miscalculation at non-zero offset would
+    // otherwise slip past this targeted middle-page test).
+    expect(page.pagination).toEqual({
+      total: 437,
+      limit: 50,
+      offset: 50,
+      returned: 50,
+      hasMore: true,
+      nextOffset: 100,
+    });
+  });
+
+  it('returns the final partial page with hasMore=false and no nextOffset', async () => {
+    (listRegisteredRepos as any).mockResolvedValue(makeRepoEntries(437));
+    await backend.init();
+
+    const page = await backend.callTool('list_repos', { limit: 50, offset: 400 });
+    expect(page.repositories).toHaveLength(37); // 437 - 400
+    expect(page.pagination.returned).toBe(37);
+    expect(page.pagination.hasMore).toBe(false);
+    expect(page.pagination).not.toHaveProperty('nextOffset');
+  });
+
+  it('limit larger than the remaining count returns only the remaining entries', async () => {
+    (listRegisteredRepos as any).mockResolvedValue(makeRepoEntries(437));
+    await backend.init();
+
+    const page = await backend.callTool('list_repos', { limit: 200, offset: 400 });
+    expect(page.repositories).toHaveLength(37);
+    expect(page.pagination.hasMore).toBe(false);
+  });
+
+  it('offset equal to total returns an empty page (total preserved)', async () => {
+    (listRegisteredRepos as any).mockResolvedValue(makeRepoEntries(437));
+    await backend.init();
+
+    const page = await backend.callTool('list_repos', { offset: 437 });
+    expect(page.repositories).toHaveLength(0);
+    expect(page.pagination).toMatchObject({ total: 437, returned: 0, hasMore: false });
+    expect(page.pagination).not.toHaveProperty('nextOffset');
+  });
+
+  it('offset beyond total returns an empty page', async () => {
+    (listRegisteredRepos as any).mockResolvedValue(makeRepoEntries(437));
+    await backend.init();
+
+    const page = await backend.callTool('list_repos', { offset: 1000 });
+    expect(page.repositories).toHaveLength(0);
+    expect(page.pagination).toMatchObject({
+      total: 437,
+      offset: 1000,
+      returned: 0,
+      hasMore: false,
+    });
+  });
+
+  it('accepts a negative-zero offset (treated as the first page)', async () => {
+    (listRegisteredRepos as any).mockResolvedValue(makeRepoEntries(437));
+    await backend.init();
+
+    const page = await backend.callTool('list_repos', { limit: 5, offset: -0 });
+    expect(page.repositories[0].name).toBe(id(0));
+    expect(page.pagination.returned).toBe(5);
+    // -0 is accepted (not rejected) and behaves as offset 0 (=== treats them equal).
+    expect(page.pagination.offset === 0).toBe(true);
+  });
+
+  it('accepts a MAX_SAFE_INTEGER offset and returns an empty page', async () => {
+    (listRegisteredRepos as any).mockResolvedValue(makeRepoEntries(437));
+    await backend.init();
+
+    const page = await backend.callTool('list_repos', { offset: Number.MAX_SAFE_INTEGER });
+    expect(page.repositories).toHaveLength(0);
+    expect(page.pagination).toMatchObject({ total: 437, returned: 0, hasMore: false });
+    expect(page.pagination).not.toHaveProperty('nextOffset');
+  });
+
+  it('returns the full set with metadata when everything fits on one page', async () => {
+    (listRegisteredRepos as any).mockResolvedValue(makeRepoEntries(3));
+    await backend.init();
+
+    const page = await backend.callTool('list_repos', {});
+    expect(page.repositories).toHaveLength(3);
+    expect(page.pagination).toEqual({
+      total: 3,
+      limit: 50,
+      offset: 0,
+      returned: 3,
+      hasMore: false,
+    });
+  });
+
+  it('rejects a limit above the maximum through the real callTool path', async () => {
+    (listRegisteredRepos as any).mockResolvedValue(makeRepoEntries(437));
+    await backend.init();
+
+    await expect(backend.callTool('list_repos', { limit: 99999 })).rejects.toThrow(/limit/);
+    // A request at the documented maximum is still accepted.
+    const page = await backend.callTool('list_repos', { limit: 200 });
+    expect(page.repositories).toHaveLength(200);
+    expect(page.pagination.limit).toBe(200);
+    expect(page.pagination.hasMore).toBe(true);
+  });
+
+  it('rejects malformed limit/offset through the real callTool path', async () => {
+    (listRegisteredRepos as any).mockResolvedValue(makeRepoEntries(3));
+    await backend.init();
+
+    await expect(backend.callTool('list_repos', { limit: 0 })).rejects.toThrow(/limit/);
+    await expect(backend.callTool('list_repos', { limit: -5 })).rejects.toThrow(/limit/);
+    await expect(backend.callTool('list_repos', { limit: 1.5 })).rejects.toThrow(/limit/);
+    await expect(backend.callTool('list_repos', { limit: 'all' as any })).rejects.toThrow(/limit/);
+    await expect(backend.callTool('list_repos', { offset: -1 })).rejects.toThrow(/offset/);
+    await expect(backend.callTool('list_repos', { offset: 2.5 })).rejects.toThrow(/offset/);
+  });
+
+  it('traverses every repository exactly once across pages (the #2119 guarantee)', async () => {
+    const entries = makeRepoEntries(437);
+    (listRegisteredRepos as any).mockResolvedValue(entries);
+    await backend.init();
+
+    const collected: string[] = [];
+    let offset = 0;
+    const limit = 50;
+    // Hard cap iterations to avoid an infinite loop if hasMore were ever wrong.
+    for (let guard = 0; guard < 100; guard++) {
+      const page = await backend.callTool('list_repos', { limit, offset });
+      collected.push(...page.repositories.map((r: any) => r.path));
+      expect(page.pagination.total).toBe(437);
+      if (!page.pagination.hasMore) break;
+      offset = page.pagination.nextOffset;
+    }
+
+    expect(collected).toHaveLength(437);
+    expect(new Set(collected).size).toBe(437); // no duplicates
+    expect(new Set(collected)).toEqual(new Set(entries.map((e) => e.path))); // exact set
+  });
+
+  it('orders pages deterministically by name then path, stable across calls', async () => {
+    // Scrambled input order; two entries deliberately SHARE a name (collision)
+    // and must be tie-broken by path, never collapsed.
+    const entries = [
+      { ...MOCK_REPO_ENTRY, name: 'zeta', path: '/tmp/z', storagePath: '/tmp/z/.gitnexus' },
+      { ...MOCK_REPO_ENTRY, name: 'shared', path: '/tmp/b', storagePath: '/tmp/b/.gitnexus' },
+      { ...MOCK_REPO_ENTRY, name: 'Alpha', path: '/tmp/a', storagePath: '/tmp/a/.gitnexus' },
+      { ...MOCK_REPO_ENTRY, name: 'shared', path: '/tmp/a2', storagePath: '/tmp/a2/.gitnexus' },
+    ];
+    (listRegisteredRepos as any).mockResolvedValue(entries);
+    await backend.init();
+
+    const first = await backend.callTool('list_repos', {});
+    const order = first.repositories.map((r: any) => `${r.name}@${r.path}`);
+    // lower-cased name primary (Alpha < shared < zeta), path tie-break for the
+    // two "shared" entries (/tmp/a2 < /tmp/b).
+    expect(order).toEqual(['Alpha@/tmp/a', 'shared@/tmp/a2', 'shared@/tmp/b', 'zeta@/tmp/z']);
+    expect(first.repositories).toHaveLength(4); // collision not collapsed
+
+    // Re-listing yields identical page boundaries.
+    const second = await backend.callTool('list_repos', {});
+    expect(second.repositories.map((r: any) => `${r.name}@${r.path}`)).toEqual(order);
   });
 });
 
@@ -1567,5 +2951,116 @@ describe('cypher result formatting', () => {
     });
     expect(result).toHaveProperty('error');
     expect(result.error).toContain('Syntax error');
+  });
+});
+
+// ─── resolveRepo branch scope (#2106) ────────────────────────────────
+
+describe('LocalBackend.resolveRepo branch scope (#2106)', () => {
+  let backend: LocalBackend;
+
+  const BRANCH_ENTRY = {
+    name: 'multi',
+    path: path.join(os.tmpdir(), 'gnx-2106-multi'),
+    storagePath: path.join(os.tmpdir(), 'gnx-2106-multi', '.gitnexus'),
+    indexedAt: '2026-06-10T12:00:00Z',
+    lastCommit: 'mainsha',
+    branch: 'main',
+    branches: [{ branch: 'feature/x', indexedAt: '2026-06-10T13:00:00Z', lastCommit: 'featsha' }],
+    stats: { files: 1, nodes: 1 },
+  };
+
+  const flatLbug = path.join(BRANCH_ENTRY.storagePath, 'lbug');
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    backend = new LocalBackend();
+    (listRegisteredRepos as any).mockResolvedValue([BRANCH_ENTRY]);
+    await backend.init();
+  });
+
+  it('no branch param resolves the flat/primary lbug', async () => {
+    const handle = await backend.resolveRepo('multi');
+    expect(handle.lbugPath).toBe(flatLbug);
+  });
+
+  it('the primary branch name resolves the flat lbug', async () => {
+    const handle = await backend.resolveRepo('multi', 'main');
+    expect(handle.lbugPath).toBe(flatLbug);
+  });
+
+  it('an indexed non-primary branch resolves a branches/<slug> lbug', async () => {
+    const handle = await backend.resolveRepo('multi', 'feature/x');
+    expect(handle.lbugPath).not.toBe(flatLbug);
+    expect(handle.lbugPath).toContain(path.join('.gitnexus', 'branches'));
+    expect(path.basename(handle.lbugPath)).toBe('lbug');
+    // The branch handle reports the branch's own commit, not the primary's.
+    expect(handle.lastCommit).toBe('featsha');
+  });
+
+  it('an un-indexed branch throws a clear error', async () => {
+    await expect(backend.resolveRepo('multi', 'nope')).rejects.toThrow(/not indexed/i);
+  });
+
+  it('a legacy entry with no top-level branch still routes an indexed branch', async () => {
+    // Pre-#2106 entries have no `branch` field; branch routing must still work
+    // off branches[] alone.
+    (listRegisteredRepos as any).mockResolvedValue([{ ...BRANCH_ENTRY, branch: undefined }]);
+    await backend.init();
+    const handle = await backend.resolveRepo('multi', 'feature/x');
+    expect(handle.lbugPath).toContain(path.join('.gitnexus', 'branches'));
+  });
+
+  it('a legacy entry resolves --branch <primary> via the flat meta (#2106 R4)', async () => {
+    // Pre-#2106 flat index: registry entry has no `branch`/`branches`, but the
+    // flat meta.json records the primary. `--branch <primary>` must resolve to
+    // the flat handle (read from meta), while an unindexed branch still errors.
+    const dir = mkdtempSync(path.join(os.tmpdir(), 'gnx-2106-legacy-'));
+    const storagePath = path.join(dir, '.gitnexus');
+    mkdirSync(storagePath, { recursive: true });
+    writeFileSync(
+      path.join(storagePath, 'meta.json'),
+      JSON.stringify({ repoPath: dir, lastCommit: 'abc', indexedAt: 'now', branch: 'main' }),
+    );
+    try {
+      (listRegisteredRepos as any).mockResolvedValue([
+        { name: 'legacy', path: dir, storagePath, indexedAt: 'now', lastCommit: 'abc' },
+      ]);
+      await backend.init();
+      const handle = await backend.resolveRepo('legacy', 'main');
+      expect(handle.lbugPath).toBe(path.join(storagePath, 'lbug'));
+      await expect(backend.resolveRepo('legacy', 'feature')).rejects.toThrow(/not indexed/i);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('callTool threads the branch param through resolveRepo (un-indexed branch errors)', async () => {
+    // If callTool dropped `branch` from repoParams, this would resolve the flat
+    // handle and NOT throw — so the rejection proves the param is threaded.
+    await expect(backend.callTool('query', { repo: 'multi', branch: 'nope' })).rejects.toThrow(
+      /not indexed/i,
+    );
+  });
+
+  it('callTool resolves an indexed branch without error', async () => {
+    const res = await backend.callTool('query', {
+      query: 'auth',
+      repo: 'multi',
+      branch: 'feature/x',
+    });
+    expect(res).toBeDefined();
+    expect(res).not.toHaveProperty('error');
+  });
+
+  it('evicts an opened branch pool when the repo leaves the registry (#2106 R3)', async () => {
+    // Open the branch pool via a tool call (ensureInitialized records its key).
+    await backend.callTool('query', { query: 'auth', repo: 'multi', branch: 'feature/x' });
+    lbugMocks.closeLbug.mockClear();
+    // Unregister the repo, then trigger a refresh (init re-reads the registry).
+    (listRegisteredRepos as any).mockResolvedValue([]);
+    await backend.init();
+    const closedPaths = lbugMocks.closeLbug.mock.calls.map((c: any[]) => String(c[0]));
+    expect(closedPaths.some((p) => p.includes(path.join('.gitnexus', 'branches')))).toBe(true);
   });
 });

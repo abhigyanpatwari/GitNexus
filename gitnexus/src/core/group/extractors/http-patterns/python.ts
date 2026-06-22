@@ -11,6 +11,7 @@ import type { HttpDetection, HttpLanguagePlugin, RepoContext } from './types.js'
 /**
  * Python HTTP plugin. Handles:
  *   - FastAPI `@app.get("/path")` provider decorators
+ *   - Django `path("route/", view)` provider calls
  *   - `requests.get/post/...("url")` consumer calls
  *   - Generic `requests.request("METHOD", "url")` consumer calls
  *   - `httpx.AsyncClient` instances calling `.get/.post/...("url")`, including
@@ -51,6 +52,14 @@ const FASTAPI_APP_PATTERNS = compilePatterns({
     },
   ],
 } satisfies LanguagePatterns<Record<string, never>>);
+
+// NOTE: Django providers are NOT extracted by this per-file source scan.
+// A standalone scan of `path()`/`re_path()` calls cannot tell a route from an
+// `include()` mount point, nor compose the include() prefix across files, so it
+// emitted bogus fragments (e.g. `/api` for a mount and `/items` un-prefixed
+// instead of the real `/api/items`). Django provider contracts come from the
+// graph Route nodes, which the ingestion route extractor builds with the
+// includes already composed.
 
 const FASTAPI_ROUTER_PATTERNS = compilePatterns({
   name: 'python-fastapi-router',
@@ -184,7 +193,7 @@ const FROM_IMPORT_MODULE_PATTERNS = compilePatterns({
   ],
 } satisfies LanguagePatterns<Record<string, never>>);
 
-// ─── Consumer: requests.get/post/... ──────────────────────────────────
+// ─── Consumer: requests.get/post/...("literal") ──────────────────────
 const REQUESTS_VERB_PATTERNS = compilePatterns({
   name: 'python-requests-verb',
   language: Python,
@@ -197,6 +206,27 @@ const REQUESTS_VERB_PATTERNS = compilePatterns({
             object: (identifier) @obj (#eq? @obj "requests")
             attribute: (identifier) @method (#match? @method "^(get|post|put|delete|patch)$"))
           arguments: (argument_list . (string) @path))
+      `,
+    },
+  ],
+} satisfies LanguagePatterns<Record<string, never>>);
+
+// ─── Consumer: requests.get/post/...(url=VALUE) keyword ──────────────
+const REQUESTS_KEYWORD_URL_PATTERNS = compilePatterns({
+  name: 'python-requests-keyword-url',
+  language: Python,
+  patterns: [
+    {
+      meta: {},
+      query: `
+        (call
+          function: (attribute
+            object: (identifier) @obj (#eq? @obj "requests")
+            attribute: (identifier) @method (#match? @method "^(get|post|put|delete|patch)$"))
+          arguments: (argument_list
+            (keyword_argument
+              name: (identifier) @kw (#eq? @kw "url")
+              value: (string) @path)))
       `,
     },
   ],
@@ -219,6 +249,101 @@ const REQUESTS_GENERIC_PATTERNS = compilePatterns({
     },
   ],
 } satisfies LanguagePatterns<Record<string, never>>);
+
+// ─── Consumer: wrapper classes with uri= or url= keyword argument ──────
+// Common pattern: wrapper classes like RequestFetch that accept URL via
+// named argument instead of positional argument:
+//   obj.fetch(uri="api/v1/camera/info/")
+//   obj.get(url="api/v1/camera/info/")
+//   obj.post(uri="api/v1/config/update/")
+const WRAPPER_URI_PATTERNS = compilePatterns({
+  name: 'python-http-wrapper-uri',
+  language: Python,
+  patterns: [
+    {
+      meta: {},
+      // Match any method call where keyword argument is `uri` or `url`
+      query: `
+        (call
+          function: (attribute
+            object: (_) @client
+            attribute: (identifier) @method)
+          arguments: (argument_list
+            (keyword_argument
+              name: (identifier) @kw (#match? @kw "^(uri|url)$")
+              value: (string) @path)))
+      `,
+    },
+  ],
+} satisfies LanguagePatterns<Record<string, never>>);
+
+// Map wrapper method names to HTTP verbs
+const WRAPPER_METHOD_TO_HTTP: Record<string, string> = {
+  get: 'GET',
+  post: 'POST',
+  put: 'PUT',
+  delete: 'DELETE',
+  patch: 'PATCH',
+  fetch: 'GET',
+  request: 'GET',
+};
+
+// ─── Variable-to-string propagation patterns ─────────────────────────
+// Many repos assign URL paths to local variables then pass them as
+// keyword arguments: uri = "api/v1/endpoint/"; obj.fetch(uri=uri, body)
+// These patterns + buildLocalStringMap resolve the variable → literal chain.
+
+// Track local string constants: uri = "api/v1/endpoint/"
+const LOCAL_STRING_ASSIGNMENTS = compilePatterns({
+  name: 'python-local-string-assign',
+  language: Python,
+  patterns: [
+    {
+      meta: {},
+      query: `
+        (assignment
+          left: (identifier) @var_name
+          right: (string) @var_value)
+      `,
+    },
+  ],
+} satisfies LanguagePatterns<Record<string, never>>);
+
+// Match method calls where uri=/url= value is a variable that was previously
+// assigned a string literal
+const WRAPPER_URI_VAR_PATTERNS = compilePatterns({
+  name: 'python-http-wrapper-uri-var',
+  language: Python,
+  patterns: [
+    {
+      meta: {},
+      query: `
+        (call
+          function: (attribute
+            object: (_) @client
+            attribute: (identifier) @method)
+          arguments: (argument_list
+            (keyword_argument
+              name: (identifier) @kw (#match? @kw "^(uri|url)$")
+              value: (identifier) @path_var)))
+      `,
+    },
+  ],
+} satisfies LanguagePatterns<Record<string, never>>);
+
+// Pre-scan: collect local string assignments (uri = "api/v1/endpoint/")
+function buildLocalStringMap(tree: Parser.Tree): Map<string, string> {
+  const map = new Map<string, string>();
+  for (const match of runCompiledPatterns(LOCAL_STRING_ASSIGNMENTS, tree)) {
+    const varNode = match.captures.var_name;
+    const valNode = match.captures.var_value;
+    if (!varNode || !valNode) continue;
+    const val = unquoteLiteral(valNode.text);
+    if (val === null) continue;
+    map.set(varNode.text, val);
+  }
+  return map;
+}
 
 // ─── Consumer: httpx.AsyncClient assignments ────────────────────────
 // Module-scope clients are only matched
@@ -822,6 +947,10 @@ export const PYTHON_HTTP_PLUGIN: HttpLanguagePlugin = {
       });
     }
 
+    // Django providers come from the graph Route nodes (includes composed by
+    // the ingestion route extractor), not a per-file source scan — see the note
+    // at the top of this file.
+
     // Providers: FastAPI @router.<verb>("/path") — must be joined
     // with the prefix(es) declared at the include_router site. When
     // no prefix is found we still emit the unprefixed path so this
@@ -865,6 +994,23 @@ export const PYTHON_HTTP_PLUGIN: HttpLanguagePlugin = {
 
     // Consumers: requests.<verb>
     for (const match of runCompiledPatterns(REQUESTS_VERB_PATTERNS, tree)) {
+      const methodNode = match.captures.method;
+      const pathNode = match.captures.path;
+      if (!methodNode || !pathNode) continue;
+      const path = unquoteLiteral(pathNode.text);
+      if (path === null) continue;
+      out.push({
+        role: 'consumer',
+        framework: 'python-requests',
+        method: methodNode.text.toUpperCase(),
+        path,
+        name: null,
+        confidence: 0.7,
+      });
+    }
+
+    // Consumers: requests.<verb>(url="literal") keyword
+    for (const match of runCompiledPatterns(REQUESTS_KEYWORD_URL_PATTERNS, tree)) {
       const methodNode = match.captures.method;
       const pathNode = match.captures.path;
       if (!methodNode || !pathNode) continue;
@@ -937,6 +1083,83 @@ export const PYTHON_HTTP_PLUGIN: HttpLanguagePlugin = {
       });
     }
 
+    // Consumers: wrapper classes with uri= or url= keyword argument
+    //   obj.fetch(uri="api/v1/camera/info/")
+    //   obj.post(url="api/v1/config/update/")
+    const seenUriDetections = new Set<string>(); // node byte ranges, to avoid duplicates
+    for (const match of runCompiledPatterns(WRAPPER_URI_PATTERNS, tree)) {
+      const methodNode = match.captures.method;
+      const pathNode = match.captures.path;
+      if (!methodNode || !pathNode) continue;
+      const path = unquoteLiteral(pathNode.text);
+      if (path === null) continue;
+
+      // Deduplicate: the two pattern branches can match the same call. Key on
+      // node byte offsets, not line arithmetic (lineNum*1000+row can collide in
+      // files over 1000 lines, and miss a real dup when a node straddles a line).
+      const dedupKey = `${pathNode.startIndex}:${methodNode.startIndex}`;
+      if (seenUriDetections.has(dedupKey)) continue;
+      seenUriDetections.add(dedupKey);
+
+      const methodName = methodNode.text.toLowerCase();
+      // Map wrapper method name to HTTP verb (fetch, request → GET)
+      const httpMethod = WRAPPER_METHOD_TO_HTTP[methodName] ?? 'GET';
+
+      out.push({
+        role: 'consumer',
+        framework: 'python-http-wrapper',
+        method: httpMethod,
+        path,
+        name: null,
+        confidence: 0.65,
+      });
+    }
+
+    // Variable propagation: uri = "api/v1/endpoint/"; obj.fetch(uri=uri)
+    // Many repos assign URL paths to local vars then pass as keyword args.
+    const localStrings = buildLocalStringMap(tree);
+    const seenVarDetections = new Set<string>();
+    for (const match of runCompiledPatterns(WRAPPER_URI_VAR_PATTERNS, tree)) {
+      const methodNode = match.captures.method;
+      const pathVarNode = match.captures.path_var;
+      if (!methodNode || !pathVarNode) continue;
+      const dedupKey = `${pathVarNode.startPosition.row}:${methodNode.startPosition.row}`;
+      if (seenVarDetections.has(dedupKey)) continue;
+      seenVarDetections.add(dedupKey);
+      const resolved = localStrings.get(pathVarNode.text);
+      if (!resolved) continue;
+      const normalized = normalizeConsumerPath(resolved);
+      if (normalized === '/') continue;
+      const httpMethod = WRAPPER_METHOD_TO_HTTP[methodNode.text.toLowerCase()] ?? 'GET';
+      out.push({
+        role: 'consumer',
+        framework: 'python-http-wrapper',
+        method: httpMethod,
+        path: normalized,
+        name: null,
+        confidence: 0.6,
+      });
+    }
+
     return out;
   },
 };
+
+/** Normalize consumer path: strip host, template literals, numeric segments → {param} */
+function normalizeConsumerPath(url: string): string {
+  let s = url.replace(/\$\{[^}]+\}/g, '{param}').trim();
+  if (/^https?:\/\//i.test(s)) {
+    try {
+      s = new URL(s).pathname;
+    } catch {
+      s = s.replace(/^https?:\/\/[^/]+/i, '');
+    }
+  }
+  if (!s.startsWith('/')) s = '/' + s;
+  const segments = s
+    .split('/')
+    .filter(Boolean)
+    .map((seg) => (/^\d+$/.test(seg) ? '{param}' : seg));
+  s = '/' + segments.join('/');
+  return s.replace(/\/+$/, '') || '/';
+}

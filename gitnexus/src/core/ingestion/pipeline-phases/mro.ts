@@ -4,7 +4,7 @@
  * Computes Method Resolution Order (MRO) and creates METHOD_OVERRIDES
  * and METHOD_IMPLEMENTS edges.
  *
- * @deps    crossFile, scopeResolution
+ * @deps    crossFile, scopeResolution, pruneLocalSymbols
  * @reads   graph (all nodes and relationships)
  * @writes  graph (METHOD_OVERRIDES, METHOD_IMPLEMENTS edges)
  */
@@ -25,7 +25,7 @@ export interface MROOutput {
 
 export const mroPhase: PipelinePhase<MROOutput> = {
   name: 'mro',
-  deps: ['crossFile', 'scopeResolution', 'structure'],
+  deps: ['crossFile', 'scopeResolution', 'pruneLocalSymbols', 'structure'],
 
   async execute(
     ctx: PipelineContext,

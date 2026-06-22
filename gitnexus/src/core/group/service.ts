@@ -49,6 +49,10 @@ export interface GroupToolPort {
   query(
     repo: GroupRepoHandle,
     params: {
+      // GroupService always supplies `query` as a string (it resolves the #2175
+      // search_query alias before calling the port), so the port contract keeps it
+      // required here even though the LocalBackend implementation accepts the wider
+      // `{ query?, search_query? }` shape for the direct MCP callTool path.
       query: string;
       task_context?: string;
       goal?: string;
