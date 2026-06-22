@@ -600,6 +600,41 @@ describe('LocalBackend.callTool', () => {
     groupQuerySpy.mockRestore();
   });
 
+  // U3: `trace` with an @group repo routes to the cross-repo groupTrace path
+  // and forwards the trace params (incl. the experimental pdg/crossDepth flags).
+  it('group-mode trace routes to groupTrace and forwards trace params', async () => {
+    resolveAtMemberMock.mockResolvedValue({ ok: true, repoPath: '/tmp/test-project' });
+    const groupTraceSpy = vi
+      .spyOn(backend.getGroupService(), 'groupTrace')
+      .mockResolvedValue({ status: 'ok' } as any);
+
+    await backend.callTool('trace', {
+      from: 'A',
+      to: 'B',
+      pdg: true,
+      crossDepth: 3,
+      repo: '@grp',
+    });
+
+    expect(groupTraceSpy).toHaveBeenCalledTimes(1);
+    const args = groupTraceSpy.mock.calls[0][0] as Record<string, unknown>;
+    expect(args).toMatchObject({ name: 'grp', from: 'A', to: 'B', pdg: true, crossDepth: 3 });
+    groupTraceSpy.mockRestore();
+  });
+
+  // U3: a non-@group trace must NOT route to groupTrace — single-repo behavior
+  // is untouched (here it resolves to not_found against the empty mocked graph).
+  it('single-repo trace does not route to groupTrace', async () => {
+    const groupTraceSpy = vi.spyOn(backend.getGroupService(), 'groupTrace');
+    (executeParameterized as any).mockResolvedValue([]);
+
+    const result = await backend.callTool('trace', { from: 'A', to: 'B' });
+
+    expect(groupTraceSpy).not.toHaveBeenCalled();
+    expect(result).toMatchObject({ status: 'not_found' });
+    groupTraceSpy.mockRestore();
+  });
+
   // #2175 review: the MCP envelope is not schema-validated, so a client can send a
   // non-string value for a string param. Resolve it to a friendly required-param error
   // rather than throwing TypeError on `.trim()` (query() and cypher() both).
