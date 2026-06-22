@@ -97,7 +97,9 @@ export interface TaintSanitizerEntry {
  * the property is one of `properties` (`body`, `query`, …). Matching is
  * name-based on the harvested `member-read` site (Semgrep-convention, not
  * type-aware — the accepted M3 FP/FN trade recorded in the plan's risk
- * table). One entry fans out over the objects × properties product.
+ * table). One entry fans out over the objects × properties product. `type`
+ * remains optional so existing/custom model objects that predate the
+ * discriminant continue to load as member-read sources.
  */
 export interface TaintMemberSourceEntry {
   readonly type?: 'member-read';

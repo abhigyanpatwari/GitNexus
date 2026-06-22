@@ -94,6 +94,12 @@ export interface TaintImportBinding {
    * CJS interop makes the default export ≈ the module object).
    */
   readonly member?: string;
+  /**
+   * True when the provider says `module` already includes `member`; used for
+   * class-like imports where a receiver call should resolve as
+   * `<module>.<method>`, not `<module>.<member>.<method>`.
+   */
+  readonly targetIncludesMember?: boolean;
 }
 
 /** Local name → import provenance for one file. Build once per file (U4). */
@@ -187,7 +193,13 @@ export function buildTaintImportIndex(imports: readonly ParsedImport[]): TaintIm
       const module = stripNodeScheme(imp.targetRaw);
       index.set(
         imp.localName,
-        imp.importedName === 'default' ? { module } : { module, member: imp.importedName },
+        imp.importedName === 'default'
+          ? { module }
+          : {
+              module,
+              member: imp.importedName,
+              ...(imp.targetIncludesImportedName === true ? { targetIncludesMember: true } : {}),
+            },
       );
     } else if (imp.kind === 'namespace') {
       index.set(imp.localName, { module: stripNodeScheme(imp.targetRaw) });
@@ -257,6 +269,10 @@ export function matchFunctionSites(
     const rest = path.slice(1);
     const canonical: string[] = [];
     let globalRoot = false;
+    const canonicalBase = (imp: TaintImportBinding): string[] =>
+      imp.member === undefined || imp.targetIncludesMember === true
+        ? [imp.module]
+        : [imp.module, imp.member];
 
     if (site.receiver !== undefined) {
       // Member chain with an identifier root — origin known by binding index.
@@ -264,8 +280,7 @@ export function matchFunctionSites(
       if (rb.synthetic === true) {
         const imp = imports.get(rb.name);
         if (imp !== undefined) {
-          const base = imp.member === undefined ? [imp.module] : [imp.module, imp.member];
-          canonical.push([...base, ...rest].join('.'));
+          canonical.push([...canonicalBase(imp), ...rest].join('.'));
         }
       } else {
         const module = requireByBinding.get(site.receiver);
@@ -286,7 +301,11 @@ export function matchFunctionSites(
         const imp = imports.get(root);
         if (imp !== undefined) {
           canonical.push(
-            imp.member === undefined ? `${imp.module}.default` : `${imp.module}.${imp.member}`,
+            imp.member === undefined
+              ? `${imp.module}.default`
+              : imp.targetIncludesMember === true
+                ? imp.module
+                : `${imp.module}.${imp.member}`,
           );
         } else {
           globalRoot = true;
@@ -368,20 +387,23 @@ export function matchFunctionSites(
         // call / new
         const resolved = resolveCallee(site);
         if (resolved === undefined) return;
-        if (site.kind === 'call' && (site.resultDefs?.length ?? 0) > 0) {
-          for (const entry of spec.sources) {
-            if (!isCallResultSource(entry)) continue;
-            if (
-              resolved.path.length === 2 &&
-              entry.receivers.includes(resolved.path[0]) &&
-              entry.methods.includes(resolved.path[1])
-            ) {
-              sources.push({
-                type: 'call-result',
-                siteIndex,
-                entry,
-                resultDefs: site.resultDefs as readonly number[],
-              });
+        if (site.kind === 'call') {
+          const resultDefs = site.resultDefs;
+          if (resultDefs !== undefined && resultDefs.length > 0) {
+            for (const entry of spec.sources) {
+              if (!isCallResultSource(entry)) continue;
+              if (
+                resolved.path.length === 2 &&
+                entry.receivers.includes(resolved.path[0]) &&
+                entry.methods.includes(resolved.path[1])
+              ) {
+                sources.push({
+                  type: 'call-result',
+                  siteIndex,
+                  entry,
+                  resultDefs,
+                });
+              }
             }
           }
         }

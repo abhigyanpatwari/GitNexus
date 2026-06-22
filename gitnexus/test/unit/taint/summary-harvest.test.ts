@@ -190,6 +190,17 @@ describe('harvestFunctionSummary — source→return', () => {
     expect(f.sourceToReturn).toEqual([{ sourceKind: 'remote-input' }]);
   });
 
+  it('records an assigned call-result source returned via a local', () => {
+    const f = harvest(
+      `function f(request: { getParameter(name: string): string }) {
+        const u = request.getParameter('path');
+        return u;
+      }`,
+      CALL_RESULT_SOURCE_SPEC,
+    );
+    expect(f.sourceToReturn).toEqual([{ sourceKind: 'remote-input' }]);
+  });
+
   it('is empty when no source is present', () => {
     const f = harvest(`function f(x: string) { return x; }`);
     expect(f.sourceToReturn).toEqual([]);

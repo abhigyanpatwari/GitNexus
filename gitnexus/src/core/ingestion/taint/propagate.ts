@@ -157,9 +157,10 @@ export interface TaintHop {
 }
 
 /**
- * The KTD6 rule-(b) source identity material: the matched member-read
- * occurrence itself — statement point + site index + object/property. For
- * worklist findings this is the ROOT source the taint chain was seeded from.
+ * The source identity material for a finding: either the matched member-read
+ * occurrence itself (statement point + site index + object/property) or an
+ * assigned call-result source. For worklist findings this is the ROOT source
+ * the taint chain was seeded from.
  */
 interface BaseSourceOccurrence {
   readonly point: ProgramPoint;
@@ -734,7 +735,8 @@ export function computeTaintFlows(
     for (const src of sm.sources) {
       if (src.type === 'call-result') {
         const srcSite = ctx.sites[src.siteIndex];
-        const calleeName = srcSite?.callee ?? src.entry.methods.join('|');
+        if (srcSite?.callee === undefined) continue;
+        const calleeName = srcSite.callee;
         for (const d of src.resultDefs) {
           const sourceOcc: CallResultSourceOccurrence = {
             point: ctx.point,

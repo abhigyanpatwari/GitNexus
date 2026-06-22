@@ -78,6 +78,21 @@ function f(c) { cp.exec(c); }`);
     expect(allSinks(m).map((s) => s.entry.name)).toEqual(['exec']);
   });
 
+  it('named import from a same-tail module is not canonicalized as a namespace handle', () => {
+    const spec: SourceSinkSanitizerSpec = {
+      sources: [],
+      sinks: [{ name: 'readString', kind: 'path-traversal', args: [0], module: 'pkg.Files' }],
+      sanitizers: [],
+    };
+    const m = matchesOf(
+      `import { Files } from 'pkg.Files';
+function f(p) { Files.readString(p); }`,
+      0,
+      spec,
+    );
+    expect(allSinks(m)).toHaveLength(0);
+  });
+
   it('node: scheme prefix is normalized — `from "node:child_process"` matches too', () => {
     const m = matchesOf(`import { execSync } from 'node:child_process';
 function f(c) { execSync(c); }`);
