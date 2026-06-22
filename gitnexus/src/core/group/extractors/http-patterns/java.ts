@@ -656,6 +656,12 @@ function scanRouteAnnotations(tree: Parser.Tree): RouteAnnotationScan {
     const node = captures.node;
     const valueNode = captures.value;
     if (!annNode || !node || !valueNode) continue;
+    // Discrimination is on the trailing segment only (`simpleName`), so a
+    // non-Spring annotation whose last segment collides with a route annotation
+    // (e.g. `@com.evil.GetMapping("/x")`) is treated as a route. This is the
+    // same accepted trailing-segment trade-off `hasAnnotation` already makes and
+    // the intended parity with the Kotlin plugin — package-origin gating would
+    // break that parity and is deliberately not done.
     const ann = simpleName(annNode.text);
     const keyNode = captures.key; // undefined for the positional shape
 
