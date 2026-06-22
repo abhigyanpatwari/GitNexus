@@ -37,6 +37,7 @@ import type { ImportResolverFn } from './import-resolvers/types.js';
 import type { SyntaxNode } from './utils/ast-helpers.js';
 import type { CfgVisitor } from './cfg/types.js';
 import type { NodeLabel } from 'gitnexus-shared';
+import type { ExtractedRoute } from './route-extractors/laravel.js';
 import type Parser from 'tree-sitter';
 import type { ExtractedDecoratorRoute } from './workers/parse-worker.js';
 
@@ -240,10 +241,36 @@ interface LanguageProviderConfig {
     nodeName: string,
     captureMap: CaptureMap,
   ) => string | undefined;
-  /** Detect if a file contains framework route definitions (e.g., Laravel routes.php).
-   *  When true, the worker extracts routes via the language's route extraction logic.
+  /** Detect if a file contains single-file framework route definitions
+   *  (e.g., Laravel `routes/*.php`). When true, the parse worker extracts
+   *  routes from that file in isolation via the worker's route logic.
    *  Default: undefined (no route files). */
   readonly isRouteFile?: (filePath: string) => boolean;
+  /** Discover the root route file(s) for a whole-repo, cross-file routing
+   *  framework (e.g. Django: manage.py → settings → ROOT_URLCONF → root urls.py).
+   *  Runs once on the main thread after all files are scanned. `reader` resolves
+   *  arbitrary repo-relative paths (in-memory map, then disk) so discovery never
+   *  depends on which parse chunk a file landed in. Returns one repo-relative
+   *  path per discoverable project (empty when the framework is absent) — a
+   *  monorepo with several projects yields each project's root.
+   *  Pairs with `extractRoutes`; languages with this hook are skipped by the
+   *  worker's single-file `isRouteFile` path. */
+  readonly discoverRootRouteFiles?: (
+    files: Array<{ path: string; content?: string }>,
+    contentMap?: Map<string, string>,
+    reader?: (relativePath: string) => string | null,
+  ) => string[];
+  /** Extract routes from a root route file, following cross-file includes via
+   *  `reader`. Runs on the main thread (never in the worker, which has no
+   *  filesystem access). `parser` is a tree-sitter parser preloaded with this
+   *  language's grammar, available for re-parsing included files.
+   *  Default: undefined (no route extraction). */
+  readonly extractRoutes?: (
+    tree: Parser.Tree,
+    filePath: string,
+    reader: (relativePath: string) => string | null,
+    parser?: Parser | null,
+  ) => ExtractedRoute[];
 
   /**
    * Extract decorator-style route annotations from a parsed file.
