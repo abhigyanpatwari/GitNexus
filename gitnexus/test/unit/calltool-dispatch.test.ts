@@ -606,7 +606,7 @@ describe('LocalBackend.callTool', () => {
     resolveAtMemberMock.mockResolvedValue({ ok: true, repoPath: '/tmp/test-project' });
     const groupTraceSpy = vi
       .spyOn(backend.getGroupService(), 'groupTrace')
-      .mockResolvedValue({ status: 'ok' } as any);
+      .mockResolvedValue({ status: 'ok' });
 
     await backend.callTool('trace', {
       from: 'A',

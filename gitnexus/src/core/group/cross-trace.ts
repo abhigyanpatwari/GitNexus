@@ -148,6 +148,9 @@ export const TRACE_NOTES = {
   pdgRequested:
     'PDG enrichment was requested (experimental). Data-flow hops are intra-procedural ' +
     'and never cross the repo boundary.',
+  pdgSameRepoNoop:
+    'pdg:true has no effect for a same-repo trace — PDG data-flow enrichment only runs ' +
+    'at a cross-repo ContractLink boundary.',
 } as const;
 
 export interface RunGroupTraceDeps {
@@ -262,16 +265,27 @@ async function resolveAcrossMembers(
   const okMatches: ResolvedEndpoint[] = [];
   const ambiguous: GroupTraceCandidate[] = [];
 
-  for (const member of members) {
-    // Guarded above by the caller; narrow for the type system.
-    const resolveSymbol = port.resolveSymbol;
-    if (!resolveSymbol) continue;
-    let outcome: GroupSymbolResolution;
-    try {
-      outcome = await resolveSymbol(member.handle, query);
-    } catch {
-      continue;
-    }
+  // Resolve the symbol in every member concurrently (each is an independent DB
+  // read). Promise.all preserves member order, so the aggregated okMatches /
+  // ambiguous sets are identical to a sequential walk — matching how
+  // groupContext / groupQuery iterate members.
+  const resolveSymbol = port.resolveSymbol;
+  const perMember = await Promise.all(
+    members.map(
+      async (member): Promise<{ member: MemberHandle; outcome: GroupSymbolResolution } | null> => {
+        if (!resolveSymbol) return null;
+        try {
+          return { member, outcome: await resolveSymbol(member.handle, query) };
+        } catch {
+          return null;
+        }
+      },
+    ),
+  );
+
+  for (const entry of perMember) {
+    if (!entry) continue;
+    const { member, outcome } = entry;
     if (outcome.kind === 'ok') {
       okMatches.push({
         member,
@@ -482,17 +496,23 @@ export async function runGroupTrace(
     };
   }
 
-  // Resolve member handles up front.
-  const members: MemberHandle[] = [];
-  for (const [repoPath, registryName] of Object.entries(config.repos)) {
-    try {
-      const handle = await deps.port.resolveRepo(registryName);
-      members.push({ repoPath, registryName, handle });
-    } catch {
-      // A member that can't be resolved is skipped; its absence only matters
-      // if an endpoint lived there, which surfaces downstream as not_found.
-    }
-  }
+  // Resolve member handles up front, concurrently (each opens an independent
+  // repo pool; order is preserved by Promise.all). A member that can't be
+  // resolved is skipped — its absence only matters if an endpoint lived there,
+  // which surfaces downstream as not_found.
+  const resolvedMembers = await Promise.all(
+    Object.entries(config.repos).map(
+      async ([repoPath, registryName]): Promise<MemberHandle | null> => {
+        try {
+          const handle = await deps.port.resolveRepo(registryName);
+          return { repoPath, registryName, handle };
+        } catch {
+          return null;
+        }
+      },
+    ),
+  );
+  const members: MemberHandle[] = resolvedMembers.filter((m): m is MemberHandle => m !== null);
   if (members.length === 0) {
     return {
       status: 'error',
@@ -573,6 +593,9 @@ async function stitchSameRepo(
   toEp: ResolvedEndpoint,
   notes: string[],
 ): Promise<GroupTraceResult> {
+  // PDG enrichment only runs at a cross-repo boundary; tell the agent why a
+  // same-repo trace returns no dataFlow even though pdg:true was passed.
+  if (p.pdg) notes.push(TRACE_NOTES.pdgSameRepoNoop);
   const segRaw = await port.trace!(fromEp.member.handle, {
     from_uid: fromEp.symbol.id,
     to_uid: toEp.symbol.id,

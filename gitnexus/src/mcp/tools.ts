@@ -828,6 +828,15 @@ CROSS-REPO (experimental): pass repo as "@groupName" to trace across repositorie
             'Cross-repo only: number of ContractLink boundaries to cross. Clamped to 1 today (multi-hop deferred); higher values are accepted and reported via notes[].',
           default: 1,
           minimum: 1,
+          maximum: 10,
+        },
+        limit: {
+          type: 'number',
+          description:
+            'Cross-repo + pdg:true only: max REACHING_DEF data-flow hops attached per boundary-adjacent segment (default 50, max 200). When a segment dataFlow is truncated, re-issue with a higher limit.',
+          default: 50,
+          minimum: 1,
+          maximum: 200,
         },
         repo: {
           type: 'string',

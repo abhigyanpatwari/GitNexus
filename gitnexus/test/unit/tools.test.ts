@@ -159,7 +159,10 @@ describe('GITNEXUS_TOOLS', () => {
 
   it('trace tool advertises cross-repo @group support plus pdg/crossDepth flags (U3)', () => {
     const traceTool = GITNEXUS_TOOLS.find((t) => t.name === 'trace')!;
-    const props = traceTool.inputSchema.properties as Record<string, any>;
+    const props = traceTool.inputSchema.properties as Record<
+      string,
+      { type?: string; default?: unknown; minimum?: number; description?: string }
+    >;
     // Experimental cross-repo flags are advertised and optional.
     expect(props.pdg).toBeDefined();
     expect(props.pdg.type).toBe('boolean');

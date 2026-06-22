@@ -743,10 +743,12 @@ export class LocalBackend {
 
     const truncated = rows.length > limit;
     const capped = truncated ? rows.slice(0, limit) : rows;
-    const hops: GroupPdgFlowHop[] = capped.map((r: any) => ({
-      line: (r.useLine ?? r[1]) as number,
+    const hops: GroupPdgFlowHop[] = capped.map((r: Record<string, unknown>) => ({
+      // Number()/String() coerce the LadybugDB object/tuple cell; a bare
+      // `as number` cast on a nullish cell would surface NaN downstream.
+      line: Number(r.useLine ?? r[1] ?? 0),
       text: String(r.useText ?? r[2] ?? '').trim(),
-      variable: decodeReachingDefReason(r.reason ?? r[3] ?? '').name || undefined,
+      variable: decodeReachingDefReason(String(r.reason ?? r[3] ?? '')).name || undefined,
     }));
 
     const available = pdgStamped === true || hops.length > 0;
