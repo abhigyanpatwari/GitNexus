@@ -281,7 +281,17 @@ const WEB_CLIENT_LONG_FORM_PATTERNS = compilePatterns({
 // ─── Consumer: OkHttp `new Request.Builder().url("path")` ─────────────
 // Note: `Request.Builder` is a `scoped_type_identifier` whose text includes
 // the dot, so `#eq?` against the literal string matches cleanly (no need
-// to escape a regex dot).
+// to escape a regex dot). The verb is recovered by `inferOkHttpMethod`
+// (java-static-path.ts) walking UP from the matched `.url(...)` call.
+//
+// PRE-`.url()` LIMITATION (pre-existing, tracked): the query anchors `.url()`'s
+// object on the `Request.Builder` object-creation DIRECTLY, so a builder call
+// BEFORE `.url()` — `new Request.Builder().addHeader(...).url("/x")` — is not
+// matched. This is the OkHttp dual of the Java-HttpClient pre-`.uri()` gap
+// (see JAVA_HTTP_CLIENT_PATTERNS): both concern calls *before* the path call,
+// distinct from the post-path intervening calls (`.header()`/`.timeout()`) the
+// verb-walk already handles. Relaxing either anchor risks over-matching
+// `.url()`/`.uri()` on unrelated objects, so the fix is deliberately deferred.
 const OK_HTTP_PATTERNS = compilePatterns({
   name: 'java-okhttp',
   language: Java,

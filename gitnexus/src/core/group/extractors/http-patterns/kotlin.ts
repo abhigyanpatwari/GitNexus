@@ -440,8 +440,8 @@ function buildKotlinPlugin(language: unknown): HttpLanguagePlugin {
   // verb — it emits `method: 'GET'` for every match, so a
   // `Request.Builder().url("/x").post(body).build()` call becomes
   // `http::GET::/x`, not `http::POST::/x`. NOTE: the Java plugin now DOES walk
-  // the chain (`inferOkHttpMethod` in java.ts), so `.java` and `.kt` currently
-  // diverge for the same shape; mirroring `inferOkHttpMethod` into this plugin
+  // the chain (`inferOkHttpMethod`, in java-static-path.ts), so `.java` and `.kt`
+  // currently diverge for the same shape; mirroring `inferOkHttpMethod` into this plugin
   // (and adding an OkHttp row to the Java↔Kotlin parity harness) is the tracked
   // follow-up. Pinned by an anti-overreach test in `http-route-extractor.test.ts`
   // so the future Kotlin verb-walk has to update this comment in lockstep.

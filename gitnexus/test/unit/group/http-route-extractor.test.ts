@@ -3179,7 +3179,7 @@ class OkClient(private val client: OkHttpClient) {
         // DOCUMENTED ASYMMETRY (not "Java parity" anymore): OkHttp encodes the
         // HTTP verb on a sibling call (`.post(body)` / `.delete()` / ...), not on
         // `.url(...)`. The Java plugin now WALKS the builder chain to recover that
-        // verb (`inferOkHttpMethod` in java.ts). The Kotlin plugin
+        // verb (`inferOkHttpMethod`, in java-static-path.ts). The Kotlin plugin
         // (`kotlin.ts:OK_HTTP_PATTERNS`) does NOT yet — it still emits
         // `method: 'GET'` for every match. So a polyglot repo currently emits
         // `http::POST::/api/users` from a `.java` source's sibling `.post()` and
