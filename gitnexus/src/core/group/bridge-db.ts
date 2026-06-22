@@ -8,10 +8,8 @@ import { BRIDGE_SCHEMA_QUERIES, BRIDGE_SCHEMA_VERSION } from './bridge-schema.js
 import {
   closeLbugConnection,
   openLbugConnection,
-  waitForWindowsHandleRelease,
   type LbugConnectionHandle,
 } from '../lbug/lbug-config.js';
-import { finalizeLbugSidecarsAfterClose } from '../lbug/sidecar-recovery.js';
 import { dedupeContracts, dedupeCrossLinks } from './normalization.js';
 import { createLogger } from '../logger.js';
 
@@ -262,30 +260,16 @@ export async function closeBridgeDb(handle: BridgeHandle): Promise<void> {
   } catch {
     /* ignore */
   }
-
-  // Mirror the core LadybugDB adapter's `safeClose` robustness so the bridge
-  // open/close cycle is as reliable as the main graph DB's — this is what lets
-  // the same `bridge.lbug` be reopened in one process (repeated `@group`
-  // impact/trace calls) without skipping Windows:
-  //   1. Windows reports `db.close()` resolved before the kernel released the
-  //      file handle; a rapid reopen then races. Probe the path (+ .wal) until
-  //      the residual lock clears, exactly like `safeClose`.
-  //   2. Quarantine an orphaned WAL (shadow missing) so the next open replays a
-  //      consistent file instead of tripping the database-id / WAL-replay check.
-  const dbPath = path.join(handle.groupDir, 'bridge.lbug');
-  if (process.platform === 'win32') {
-    const released = await waitForWindowsHandleRelease(dbPath);
-    if (!released) {
-      bridgeLogger.warn(
-        { dbPath },
-        '⚠️ bridge.lbug file handle still locked after close (Windows); the next open will retry. ' +
-          'If this repeats, check antivirus/Defender exclusions for the GitNexus storage directory.',
-      );
-    }
-  }
-  await finalizeLbugSidecarsAfterClose(dbPath, { logger: bridgeLogger }).catch(() => {
-    /* best-effort post-close repair — never let it surface as a close failure */
-  });
+  // NOTE: Windows in-process write→read reopen of the SAME bridge.lbug is still a
+  // known limitation (the writable close's OS file handle is not released before
+  // the read open races; the existing open-side LBUG_OPEN_RETRY only retries
+  // lock-pattern errors, not the post-rename sidecar database-id mismatch). The
+  // bridge's close-then-reopen tests stay Windows-skipped. A close-side
+  // waitForWindowsHandleRelease + finalizeLbugSidecarsAfterClose probe (mirroring
+  // safeClose) was tried and did NOT close that gap on Windows CI, so it was
+  // removed rather than carry latency/duplication for no Windows benefit. The
+  // read-only CHECKPOINT skip above is the load-bearing fix and works on
+  // Linux/macOS (the platforms where in-process reopen is supported).
 }
 
 /* ------------------------------------------------------------------ */

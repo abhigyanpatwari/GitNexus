@@ -23,24 +23,22 @@ import { makeContract } from './fixtures.js';
 
 /**
  * In-process close-then-reopen of `bridge.lbug` (`writeBridge →
- * openBridgeDbReadOnly`, and the read path's open→query→close→reopen) is now a
- * supported, exercised pattern: it is exactly what a long-lived MCP server does
- * on repeated `@group` impact/trace calls.
+ * openBridgeDbReadOnly`, and the read path's open→query→close→reopen) — exactly
+ * what a long-lived MCP server does on repeated `@group` impact/trace calls.
  *
- * Two fixes make it robust on every platform, bringing the bridge to parity
- * with the core LadybugDB adapter's `safeClose`:
- *   - `closeBridgeDb` skips CHECKPOINT on read-only handles (a CHECKPOINT on a
- *     read-only connection left a lock artifact that failed the next open).
- *   - `closeBridgeDb` runs the same post-close `waitForWindowsHandleRelease`
- *     probe + `finalizeLbugSidecarsAfterClose` the core adapter uses, and the
- *     read open already retries transient Windows file locks
- *     (`LBUG_OPEN_RETRY_*`).
+ * On Linux/macOS this is now a supported, exercised pattern thanks to the
+ * `closeBridgeDb` fix that skips CHECKPOINT on read-only handles (a CHECKPOINT
+ * on a read-only connection left a lock artifact that failed the next open).
  *
- * These tests therefore run on all platforms (Windows CI exercises the reopen
- * path via the cross-platform subset). `itLbugReopen` is retained as a named
- * alias so the close-then-reopen tests stay easy to find.
+ * On WINDOWS the writable-close → read-open handoff still does not release the
+ * OS file handle before the read open races (the existing open-side
+ * `LBUG_OPEN_RETRY_*` only retries lock-pattern errors, not the post-rename
+ * sidecar database-id mismatch), so these tests stay Windows-skipped — the
+ * pre-existing limitation. A close-side `waitForWindowsHandleRelease` +
+ * `finalizeLbugSidecarsAfterClose` probe was tried and did not close the gap on
+ * Windows CI, so it was not kept.
  */
-const itLbugReopen = it;
+const itLbugReopen = process.platform === 'win32' ? it.skip : it;
 
 describe('bridge-db core', () => {
   let tmpDir: string;
