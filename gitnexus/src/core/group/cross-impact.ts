@@ -352,7 +352,7 @@ export function mergeRisk(localRisk: string, cross: CrossRepoImpact[]): string {
   return localRisk;
 }
 
-async function ensureBridgeReady(
+export async function ensureBridgeReady(
   groupDir: string,
 ): Promise<{ handle: BridgeHandle } | { error: string }> {
   const meta = await readBridgeMeta(groupDir);
