@@ -503,7 +503,13 @@ function appendPath(base: string, subPath: string): string {
  * and the `query*` family pass through (query attributes do not change the
  * path). Any non-literal segment or unknown call → null.
  */
-function extractUriComponentsBuilderPath(node: Parser.SyntaxNode): string | null {
+// A UriComponentsBuilder chain deeper than this is not realistic source; cap the
+// recursion so a pathological / machine-generated chain returns null instead of
+// overflowing the stack (mirrors the project's other AST-depth guards).
+const MAX_BUILDER_DEPTH = 100;
+
+function extractUriComponentsBuilderPath(node: Parser.SyntaxNode, depth = 0): string | null {
+  if (depth > MAX_BUILDER_DEPTH) return null;
   if (node.type !== 'method_invocation') return null;
   const name = methodInvocationName(node);
   const objectNode = methodInvocationObject(node);
@@ -521,12 +527,12 @@ function extractUriComponentsBuilderPath(node: Parser.SyntaxNode): string | null
   }
   if (!objectNode) return null;
   if (name === 'path') {
-    const base = extractUriComponentsBuilderPath(objectNode);
+    const base = extractUriComponentsBuilderPath(objectNode, depth + 1);
     const subPath = firstLiteralArgument(node);
     return base !== null && subPath !== null ? appendPath(base, subPath) : null;
   }
   if (name === 'pathSegment') {
-    const base = extractUriComponentsBuilderPath(objectNode);
+    const base = extractUriComponentsBuilderPath(objectNode, depth + 1);
     if (base === null) return null;
     const args = methodInvocationArguments(node);
     const segments = args
@@ -547,7 +553,7 @@ function extractUriComponentsBuilderPath(node: Parser.SyntaxNode): string | null
     name === 'replaceQueryParam' ||
     name === 'replaceQueryParams'
   )
-    return extractUriComponentsBuilderPath(objectNode);
+    return extractUriComponentsBuilderPath(objectNode, depth + 1);
   return null;
 }
 

@@ -1939,6 +1939,36 @@ class QuerySeedClient {
       expect(consumers.find((c) => c.contractId === 'http::GET::/api/y')).toBeDefined();
     });
 
+    it('does not overflow on a pathological UriComponentsBuilder chain (#2268)', async () => {
+      const dir = path.join(tmpDir, 'java-rest-template-builder-deep');
+      fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+      // A chain far deeper than the recursion cap — exercises the depth guard.
+      const deepChain = `UriComponentsBuilder.fromPath("/r")${'.path("/x")'.repeat(200)}.build().toUriString()`;
+      fs.writeFileSync(
+        path.join(dir, 'src', 'DeepClient.java'),
+        `
+import org.springframework.web.client.RestTemplate;
+import org.springframework.web.util.UriComponentsBuilder;
+
+class DeepClient {
+  void run(RestTemplate restTemplate) {
+    restTemplate.getForObject(${deepChain}, String.class);
+  }
+}
+`,
+      );
+
+      // Must not throw (the depth guard caps recursion). A chain past the cap
+      // resolves to null, so no consumer is emitted for it (without the guard it
+      // would either overflow or resolve to a bogus deep path).
+      const contracts = await extractor.extract(null, dir, makeRepo(dir));
+      expect(
+        contracts.filter(
+          (c) => c.role === 'consumer' && c.symbolRef.filePath.endsWith('DeepClient.java'),
+        ),
+      ).toHaveLength(0);
+    });
+
     it('infers Java OkHttp verbs from sibling Request.Builder calls', async () => {
       const dir = path.join(tmpDir, 'java-okhttp-verbs');
       fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
