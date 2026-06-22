@@ -31,6 +31,9 @@ import {
   extractStaticPathExpression,
   inferOkHttpMethod,
   inferHttpClientMethod,
+  okHttpUrlRootsAtBuilder,
+  httpClientUriRootsAtNewBuilder,
+  httpClientChainHasUriCall,
 } from './java-static-path.js';
 import type {
   HttpDetection,
@@ -278,20 +281,14 @@ const WEB_CLIENT_LONG_FORM_PATTERNS = compilePatterns({
   ],
 } satisfies LanguagePatterns<Record<string, never>>);
 
-// ─── Consumer: OkHttp `new Request.Builder().url("path")` ─────────────
-// Note: `Request.Builder` is a `scoped_type_identifier` whose text includes
-// the dot, so `#eq?` against the literal string matches cleanly (no need
-// to escape a regex dot). The verb is recovered by `inferOkHttpMethod`
-// (java-static-path.ts) walking UP from the matched `.url(...)` call.
-//
-// PRE-`.url()` LIMITATION (pre-existing, tracked): the query anchors `.url()`'s
-// object on the `Request.Builder` object-creation DIRECTLY, so a builder call
-// BEFORE `.url()` — `new Request.Builder().addHeader(...).url("/x")` — is not
-// matched. This is the OkHttp dual of the Java-HttpClient pre-`.uri()` gap
-// (see JAVA_HTTP_CLIENT_PATTERNS): both concern calls *before* the path call,
-// distinct from the post-path intervening calls (`.header()`/`.timeout()`) the
-// verb-walk already handles. Relaxing either anchor risks over-matching
-// `.url()`/`.uri()` on unrelated objects, so the fix is deliberately deferred.
+// ─── Consumer: OkHttp `Request.Builder()…url("path")` ─────────────────
+// Match a bare `.url("literal")` call on ANY receiver, capturing it as `@call`.
+// `okHttpUrlRootsAtBuilder` (JS) then verifies the receiver chain bottoms out on
+// `new Request.Builder()` — re-imposing the framework anchor while allowing
+// builder calls BEFORE `.url()` (`new Request.Builder().addHeader(...).url("/x")`)
+// that the old object-direct query dropped, and rejecting a `.url(...)` on an
+// unrelated object. The verb is recovered by `inferOkHttpMethod` scanning the
+// whole chain (java-static-path.ts).
 const OK_HTTP_PATTERNS = compilePatterns({
   name: 'java-okhttp',
   language: Java,
@@ -300,8 +297,6 @@ const OK_HTTP_PATTERNS = compilePatterns({
       meta: {},
       query: `
         (method_invocation
-          object: (object_creation_expression
-            type: (scoped_type_identifier) @type (#eq? @type "Request.Builder"))
           name: (identifier) @method (#eq? @method "url")
           arguments: (argument_list . (string_literal) @path)) @call
       `,
@@ -309,18 +304,15 @@ const OK_HTTP_PATTERNS = compilePatterns({
   ],
 } satisfies LanguagePatterns<Record<string, never>>);
 
-// Anchor on the `HttpRequest.newBuilder().uri(URI.create("..."))` core only,
-// capturing the `.uri(...)` call as `@call`. The verb (a `.GET()/.POST()/.PUT()/`
+// Match a bare `.uri(URI.create("literal"))` call on ANY receiver, capturing it
+// as `@call`. `httpClientUriRootsAtNewBuilder` (JS) verifies the chain includes
+// `HttpRequest.newBuilder()` — allowing calls BEFORE `.uri()` (`.version(v)`
+// `.uri(...)`) that the old object-direct query dropped, and rejecting a `.uri(...)`
+// on an unrelated object (e.g. WebClient). The verb (a `.GET()/.POST()/.PUT()/`
 // `.DELETE()/.HEAD()` helper, a `.method("VERB", body)` literal, or the bare-build
-// default) lives on a sibling call further UP the chain and is recovered by
-// `inferHttpClientMethod` walking up from `@call` — exactly like OkHttp's
-// `@call` + `inferOkHttpMethod`. One `.uri(...)` per chain = one match; the walk
-// is transparent to intervening `.header()/.timeout()/.version()` calls AFTER
-// `.uri()`, so a header/timeout hop before the terminal no longer drops the
-// contract. (A call BEFORE `.uri()` — `.version(V).uri(...)` — is outside this
-// root and stays unmatched, a separate pre-existing limitation; see OK_HTTP
-// PATTERNS comment for the OkHttp dual.) Matching `.uri(...)` regardless of a
-// trailing `.build()` mirrors the accepted OkHttp over-match posture.
+// default) is recovered by `inferHttpClientMethod` scanning the whole chain.
+// Matching `.uri(...)` regardless of a trailing `.build()` mirrors the accepted
+// OkHttp over-match posture.
 const JAVA_HTTP_CLIENT_PATTERNS = compilePatterns({
   name: 'java-http-client',
   language: Java,
@@ -329,11 +321,31 @@ const JAVA_HTTP_CLIENT_PATTERNS = compilePatterns({
       meta: {},
       query: `
         (method_invocation
-          object: (method_invocation
-            object: (identifier) @builderCls (#eq? @builderCls "HttpRequest")
-            name: (identifier) @newBuilder (#eq? @newBuilder "newBuilder")
-            arguments: (argument_list))
           name: (identifier) @uri_method (#eq? @uri_method "uri")
+          arguments: (argument_list
+            (method_invocation
+              object: (identifier) @uriCls (#eq? @uriCls "URI")
+              name: (identifier) @create (#eq? @create "create")
+              arguments: (argument_list . (string_literal) @path)))) @call
+      `,
+    },
+  ],
+} satisfies LanguagePatterns<Record<string, never>>);
+
+// Constructor-arg form: `HttpRequest.newBuilder(URI.create("..."))` — the path is
+// the `newBuilder(...)` argument, with no `.uri()` call. Captures the `newBuilder`
+// call as `@call`; the emission skips it when a later `.uri(...)` overrides the
+// constructor URI (`httpClientChainHasUriCall`), so the `.uri()` query owns that case.
+const JAVA_HTTP_CLIENT_CTOR_PATTERNS = compilePatterns({
+  name: 'java-http-client-ctor',
+  language: Java,
+  patterns: [
+    {
+      meta: {},
+      query: `
+        (method_invocation
+          object: (identifier) @builderCls (#eq? @builderCls "HttpRequest")
+          name: (identifier) @newBuilder (#eq? @newBuilder "newBuilder")
           arguments: (argument_list
             (method_invocation
               object: (identifier) @uriCls (#eq? @uriCls "URI")
@@ -846,12 +858,14 @@ export const JAVA_HTTP_PLUGIN: HttpLanguagePlugin = {
     }
 
     // ─── Consumers: OkHttp Request.Builder().url("path") ────────────
-    // The verb is the builder's sibling helper call (`.post()`/`.method("X")`),
-    // inferred by walking up the chain from the matched `.url(...)` call.
+    // Match any `.url("literal")`, gate to chains rooting at `new Request.Builder()`
+    // (so a call before `.url()` is captured but an unrelated `.url()` is not), then
+    // recover the verb (`.post()`/`.method("X")`) by scanning the builder chain.
     for (const match of runCompiledPatterns(OK_HTTP_PATTERNS, tree)) {
       const callNode = match.captures.call;
       const pathNode = match.captures.path;
       if (!callNode || !pathNode) continue;
+      if (!okHttpUrlRootsAtBuilder(callNode)) continue;
       const path = unquoteLiteral(pathNode.text);
       if (path === null) continue;
       const method = inferOkHttpMethod(callNode);
@@ -870,18 +884,40 @@ export const JAVA_HTTP_PLUGIN: HttpLanguagePlugin = {
     }
 
     // ─── Consumers: Java HttpClient request builder ─────────────────
-    // One query matches the `HttpRequest.newBuilder().uri(URI.create("..."))`
-    // core (capturing the `.uri(...)` call as `@call`); `inferHttpClientMethod`
-    // walks UP the chain for the verb — a `.GET()/.POST()/.PUT()/.DELETE()/`
-    // `.HEAD()` helper, a `.method("VERB", body)` literal, or the bare-build
-    // default GET. The up-walk is transparent to intervening `.header()/`
-    // `.timeout()/.version()` calls, so a header/timeout hop before the terminal
-    // is no longer dropped. A variable-bound `.method(verb, …)` is unresolvable →
-    // emit nothing rather than a wrong GET. Mirrors the OkHttp loop above.
+    // Match any `.uri(URI.create("..."))`, gate to chains including `HttpRequest`
+    // `.newBuilder()` (so a call before `.uri()` is captured but an unrelated
+    // `.uri()` is not); `inferHttpClientMethod` scans the chain for the verb — a
+    // `.GET()/.POST()/.PUT()/.DELETE()/.HEAD()` helper, a `.method("VERB", body)`
+    // literal, or the bare-build default GET. A variable-bound `.method(verb, …)`
+    // is unresolvable → emit nothing. Mirrors the OkHttp loop above. The
+    // constructor-arg form (`newBuilder(URI.create(...))`, no `.uri()`) follows.
     for (const match of runCompiledPatterns(JAVA_HTTP_CLIENT_PATTERNS, tree)) {
       const callNode = match.captures.call;
       const pathNode = match.captures.path;
       if (!callNode || !pathNode) continue;
+      if (!httpClientUriRootsAtNewBuilder(callNode)) continue;
+      const path = unquoteLiteral(pathNode.text);
+      if (path === null) continue;
+      const method = inferHttpClientMethod(callNode);
+      if (!method) continue;
+      out.push({
+        role: 'consumer',
+        framework: 'java-http-client',
+        method,
+        path,
+        name: null,
+        confidence: 0.65,
+      });
+    }
+
+    // Constructor-arg form: `HttpRequest.newBuilder(URI.create("..."))` with the
+    // path in the constructor and no overriding `.uri(...)` later in the chain
+    // (a later `.uri()` wins at runtime, so the loop above owns that case).
+    for (const match of runCompiledPatterns(JAVA_HTTP_CLIENT_CTOR_PATTERNS, tree)) {
+      const callNode = match.captures.call;
+      const pathNode = match.captures.path;
+      if (!callNode || !pathNode) continue;
+      if (httpClientChainHasUriCall(callNode)) continue;
       const path = unquoteLiteral(pathNode.text);
       if (path === null) continue;
       const method = inferHttpClientMethod(callNode);

@@ -2138,6 +2138,45 @@ class EmptyVerb {
       expect(fromFile.map((c) => c.contractId)).toEqual([]);
     });
 
+    it('extracts OkHttp chains with a builder call before .url(), with anti-overreach (#2268)', async () => {
+      // A builder call BEFORE .url() (`new Request.Builder().addHeader(...).url(...)`)
+      // no longer drops the contract — the chain is matched as long as it roots at
+      // `new Request.Builder()`. The verb-walk scans the whole chain, so a verb set
+      // before .url() also resolves. A `.url(...)` on an unrelated object does NOT
+      // emit (the root gate rejects it).
+      const dir = path.join(tmpDir, 'java-okhttp-pre-url');
+      fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'src', 'OkHttpPreUrl.java'),
+        `
+import okhttp3.Request;
+import okhttp3.RequestBody;
+
+class OkHttpPreUrl {
+  void run(RequestBody body, SomeClient other) {
+    new Request.Builder().addHeader("A", "b").url("/api/pre-url").build();
+    new Request.Builder().post(body).url("/api/verb-first").build();
+    other.url("/api/not-okhttp").build();
+  }
+}
+`,
+      );
+
+      const contracts = await extractor.extract(null, dir, makeRepo(dir));
+      const okhttp = contracts.filter(
+        (c) =>
+          c.role === 'consumer' &&
+          c.meta.framework === 'okhttp' &&
+          c.symbolRef.filePath.endsWith('OkHttpPreUrl.java'),
+      );
+
+      // The header-before-url chain (default GET) and the verb-before-url chain
+      // (POST) both emit; `other.url(...)` does not (not a Request.Builder chain).
+      expect(new Set(okhttp.map((c) => c.contractId))).toEqual(
+        new Set(['http::GET::/api/pre-url', 'http::POST::/api/verb-first']),
+      );
+    });
+
     it('extracts Java WebClient long-form method(HttpMethod.X).uri(...) — #2254 parity', async () => {
       // Parity with the Kotlin plugin: a single structural query matches the
       // verb (HttpMethod.X field access) and path. Previously deferred on the
@@ -2989,10 +3028,11 @@ class HttpClientIntervening {
     HttpRequest d = HttpRequest.newBuilder().uri(URI.create("/api/verb-then-hdr")).POST(body).header("X", "y").build();
     // Unbuilt .uri() — no .build(); over-match emits the default GET (mirrors OkHttp).
     HttpRequest.Builder e = HttpRequest.newBuilder().uri(URI.create("/api/unbuilt"));
-    // Documented misses (must NOT extract):
+    // Call BEFORE .uri() and the constructor-arg form are now captured too (the
+    // chain roots at HttpRequest.newBuilder); only a non-literal .uri() is a miss.
     HttpRequest f = HttpRequest.newBuilder().version(ver).uri(URI.create("/api/pre-uri")).build(); // call before .uri()
     HttpRequest g = HttpRequest.newBuilder(URI.create("/api/ctor")).build(); // constructor-arg, no .uri()
-    HttpRequest h = HttpRequest.newBuilder().uri(uriVar).build(); // non-literal .uri() arg
+    HttpRequest h = HttpRequest.newBuilder().uri(uriVar).build(); // non-literal .uri() arg → miss
   }
 }
 `,
@@ -3006,8 +3046,8 @@ class HttpClientIntervening {
           c.symbolRef.filePath.endsWith('HttpClientIntervening.java'),
       );
 
-      // Exactly the five resolvable chains; the three documented misses
-      // (`/api/pre-uri`, `/api/ctor`, the non-literal `.uri()`) contribute nothing.
+      // The seven resolvable chains (incl. the pre-`.uri()` and constructor-arg
+      // forms); only the non-literal `.uri(uriVar)` contributes nothing.
       expect(new Set(hc.map((c) => c.contractId))).toEqual(
         new Set([
           'http::GET::/api/hdr',
@@ -3015,6 +3055,8 @@ class HttpClientIntervening {
           'http::DELETE::/api/hdr-verb',
           'http::POST::/api/verb-then-hdr',
           'http::GET::/api/unbuilt',
+          'http::GET::/api/pre-uri',
+          'http::GET::/api/ctor',
         ]),
       );
       expect(hc.every((c) => c.confidence === 0.65)).toBe(true);
@@ -3047,6 +3089,76 @@ class CustomVerb {
           c.symbolRef.filePath.endsWith('CustomVerb.java'),
       );
       expect(new Set(hc.map((c) => c.contractId))).toEqual(new Set(['http::REPORT::/api/report']));
+    });
+
+    it('handles HttpClient constructor-URI override and rejects non-newBuilder .uri (#2268)', async () => {
+      // A constructor URI overridden by a later `.uri(...)` emits ONLY the override
+      // (not both), and a `.uri(URI.create(...))` on a chain that does not root at
+      // HttpRequest.newBuilder (e.g. WebClient) is NOT a java-http-client consumer.
+      const dir = path.join(tmpDir, 'java-http-client-ctor-override');
+      fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'src', 'CtorOverride.java'),
+        `
+import java.net.URI;
+import java.net.http.HttpRequest;
+import org.springframework.web.reactive.function.client.WebClient;
+
+class CtorOverride {
+  void run(WebClient webClient) {
+    HttpRequest a = HttpRequest.newBuilder(URI.create("/api/ctor-overridden")).uri(URI.create("/api/override-wins")).build();
+    webClient.get().uri(URI.create("/api/webclient-not-hc")).retrieve();
+  }
+}
+`,
+      );
+
+      const contracts = await extractor.extract(null, dir, makeRepo(dir));
+      const hc = contracts.filter(
+        (c) =>
+          c.role === 'consumer' &&
+          c.meta.framework === 'java-http-client' &&
+          c.symbolRef.filePath.endsWith('CtorOverride.java'),
+      );
+
+      // Only the override URI, exactly once; the overridden constructor URI and the
+      // WebClient `.uri()` are not java-http-client contracts.
+      expect(new Set(hc.map((c) => c.contractId))).toEqual(
+        new Set(['http::GET::/api/override-wins']),
+      );
+    });
+
+    it('resolves the last verb when a chain sets two (runtime last-wins) (#2268)', async () => {
+      // Each verb-setter overwrites the previous at runtime, so a chain that sets
+      // two verbs resolves to the one nearest the terminal — not the first found.
+      const dir = path.join(tmpDir, 'java-http-two-verb');
+      fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'src', 'TwoVerb.java'),
+        `
+import java.net.URI;
+import java.net.http.HttpRequest;
+import okhttp3.Request;
+import okhttp3.RequestBody;
+
+class TwoVerb {
+  void run(RequestBody body, HttpRequest.BodyPublisher pub) throws Exception {
+    HttpRequest hc = HttpRequest.newBuilder().GET().uri(URI.create("/api/hc-two")).POST(pub).build();
+    new Request.Builder().get().url("/api/ok-two").post(body).build();
+  }
+}
+`,
+      );
+
+      const contracts = await extractor.extract(null, dir, makeRepo(dir));
+      const fromFile = contracts.filter(
+        (c) => c.role === 'consumer' && c.symbolRef.filePath.endsWith('TwoVerb.java'),
+      );
+
+      // Both resolve to the LAST verb (POST), not the first (GET).
+      expect(new Set(fromFile.map((c) => `${c.meta.framework} ${c.contractId}`))).toEqual(
+        new Set(['java-http-client http::POST::/api/hc-two', 'okhttp http::POST::/api/ok-two']),
+      );
     });
 
     // ─── Kotlin consumers (RestTemplate / WebClient short+long / OkHttp) ──

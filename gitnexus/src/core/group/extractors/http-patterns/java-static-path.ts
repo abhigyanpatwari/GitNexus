@@ -135,54 +135,77 @@ export function extractStaticPathExpression(node: Parser.SyntaxNode): string | n
 }
 
 // ─── Builder verb-walks ───────────────────────────────────────────────
-// OkHttp / Java-HttpClient encode the request verb on a SIBLING call further up
+// OkHttp / Java-HttpClient encode the request verb on a SIBLING call elsewhere in
 // the fluent chain, not on the matched path call. Both queries capture the path
-// call (`.url(...)` / `.uri(...)`); these helpers recover the verb by walking UP
-// the chain — transparent to neutral intervening calls (`.addHeader()`,
-// `.header()`, `.timeout()`, `.version()`), which is what lets a header/timeout
-// hop between the path call and the terminal still resolve correctly.
+// call (`.url(...)` / `.uri(...)`); these helpers recover the verb by scanning
+// the WHOLE chain — transparent to neutral calls (`.addHeader()`/`.header()`/
+// `.timeout()`/`.version()`) wherever they sit relative to the path call, so the
+// verb resolves whether it precedes or follows the path call.
 
-/** Walk up the fluent chain from `pathCall`, returning the verb a `name`-matching
- *  helper or a `.method("LITERAL")` call sets. `null` means "verb is set but not
- *  statically resolvable" (a non-literal `.method(verb)`) → the caller skips
- *  rather than guessing. `defaultVerb` is returned only when the walk reaches the
- *  chain top with no verb call (a bare build). `verbHelpers` are matched on the
- *  method NAME (OkHttp helpers are lowercase, HttpClient helpers uppercase). */
+/** Every `method_invocation` in the fluent chain `pathCall` belongs to, ordered
+ *  innermost (next to the construction) → outermost (terminal). Lets the verb-walk
+ *  find the verb wherever it sits, and lets the root gates inspect the chain base. */
+function builderChainCalls(pathCall: Parser.SyntaxNode): Parser.SyntaxNode[] {
+  let innermost = pathCall;
+  let obj = methodInvocationObject(innermost);
+  while (obj?.type === 'method_invocation') {
+    innermost = obj;
+    obj = methodInvocationObject(innermost);
+  }
+  const calls: Parser.SyntaxNode[] = [innermost];
+  let cur = innermost;
+  let parent = cur.parent;
+  while (parent?.type === 'method_invocation' && methodInvocationObject(parent)?.id === cur.id) {
+    calls.push(parent);
+    cur = parent;
+    parent = parent.parent;
+  }
+  return calls;
+}
+
+/** Scan the chain for the verb a `name`-matching helper or a `.method("LITERAL")`
+ *  call sets, resolving the LAST such call — each verb-setter overwrites the
+ *  previous at runtime, so on the (non-idiomatic) chain that sets two verbs the
+ *  one nearest the terminal wins. `null` means "verb is set but not statically
+ *  resolvable" (a non-literal/empty `.method(verb)`) → the caller skips rather
+ *  than guessing. `defaultVerb` is returned only when the chain has no verb call
+ *  at all (a bare build). `verbHelpers` are matched on the method NAME (OkHttp
+ *  helpers are lowercase, HttpClient helpers uppercase). */
 function inferBuilderVerb(
   pathCall: Parser.SyntaxNode,
   verbHelpers: readonly string[],
   defaultVerb: string,
 ): string | null {
-  let cur: Parser.SyntaxNode = pathCall;
-  let parent = cur.parent;
-  while (parent?.type === 'method_invocation' && methodInvocationObject(parent)?.id === cur.id) {
-    const name = methodInvocationName(parent);
-    if (name && verbHelpers.includes(name)) return name.toUpperCase();
-    // Explicit `.method(...)`: a non-empty string-literal verb resolves; a
-    // non-literal (variable-bound) OR empty-string verb is unresolvable → null
-    // (skip), NOT a guessed default or a malformed empty-method contract.
-    if (name === 'method') {
-      const verb = firstLiteralArgument(parent);
-      return verb ? verb.toUpperCase() : null;
-    }
-    cur = parent;
-    parent = parent.parent;
+  let lastVerbCall: Parser.SyntaxNode | null = null;
+  for (const call of builderChainCalls(pathCall)) {
+    if (call.id === pathCall.id) continue; // the path call itself is never the verb
+    const name = methodInvocationName(call);
+    if (name === 'method' || (name !== null && verbHelpers.includes(name))) lastVerbCall = call;
   }
-  return defaultVerb;
+  if (lastVerbCall === null) return defaultVerb; // no verb call → builder default
+  const name = methodInvocationName(lastVerbCall);
+  // Explicit `.method(...)`: a non-empty string-literal verb resolves; a
+  // non-literal (variable-bound) OR empty-string verb is unresolvable → null
+  // (skip), NOT a guessed default or a malformed empty-method contract.
+  if (name === 'method') {
+    const verb = firstLiteralArgument(lastVerbCall);
+    return verb ? verb.toUpperCase() : null;
+  }
+  return name === null ? defaultVerb : name.toUpperCase(); // a verb-helper name
 }
 
 const OK_HTTP_VERB_HELPERS = ['get', 'head', 'post', 'put', 'delete', 'patch'] as const;
 const HTTP_CLIENT_VERB_HELPERS = ['GET', 'POST', 'PUT', 'DELETE', 'HEAD'] as const;
 
 /**
- * Infer an OkHttp request verb by walking UP the builder chain from the matched
- * `.url(...)` call: the first `.get()/.head()/.post()/.put()/.delete()/.patch()`
- * helper, or a `.method("VERB", …)` literal, wins. Returns `'GET'` only when the
- * chain has NO verb call at all (a bare `.url(...).build()` — OkHttp's real
- * default). Returns `null` for an explicit `.method(verb, …)` whose verb is a
- * non-literal: the verb is set but not statically resolvable, so the caller
- * skips the call rather than asserting a wrong GET (parity with the WebClient
- * long-form variable-bound-verb behavior, which also skips).
+ * Infer an OkHttp request verb by scanning the builder chain around the matched
+ * `.url(...)` call: a `.get()/.head()/.post()/.put()/.delete()/.patch()` helper
+ * (before or after `.url()`), or a `.method("VERB", …)` literal, wins. Returns
+ * `'GET'` only when the chain has NO verb call at all (a bare `.url(...).build()`
+ * — OkHttp's real default). Returns `null` for an explicit `.method(verb, …)`
+ * whose verb is a non-literal: the verb is set but not statically resolvable, so
+ * the caller skips the call rather than asserting a wrong GET (parity with the
+ * WebClient long-form variable-bound-verb behavior, which also skips).
  */
 export function inferOkHttpMethod(urlCall: Parser.SyntaxNode): string | null {
   return inferBuilderVerb(urlCall, OK_HTTP_VERB_HELPERS, 'GET');
@@ -194,12 +217,53 @@ export function inferOkHttpMethod(urlCall: Parser.SyntaxNode): string | null {
  * `.DELETE()/.HEAD()` verb-helper, or a `.method("VERB", body)` literal, wins.
  * Returns `'GET'` only when the chain has no verb call (a bare `.build()` — the
  * builder's real default). Returns `null` for an explicit `.method(verb, …)` with
- * a non-literal verb (skip, not a guessed GET). The walk is transparent to
- * intervening neutral calls AFTER `.uri()` (`.header()`/`.timeout()`/`.version()`),
- * so a header/timeout hop before the terminal no longer drops the contract.
- * (A call BEFORE `.uri()` is outside the query root and is a separate,
- * pre-existing limitation — see java.ts OK_HTTP_PATTERNS comment.)
+ * a non-literal verb (skip, not a guessed GET). The scan is transparent to
+ * neutral calls anywhere in the chain (`.header()`/`.timeout()`/`.version()`),
+ * before or after `.uri()`, so neither a header/timeout hop nor a verb call's
+ * position drops the contract.
  */
 export function inferHttpClientMethod(uriCall: Parser.SyntaxNode): string | null {
   return inferBuilderVerb(uriCall, HTTP_CLIENT_VERB_HELPERS, 'GET');
+}
+
+// ─── Builder-chain root gates (anti-overreach) ────────────────────────
+// The path queries match a bare `.url(...)` / `.uri(URI.create(...))` call on ANY
+// receiver so that a builder call BEFORE the path call (`new Request.Builder()`
+// `.addHeader(...).url(...)`, `HttpRequest.newBuilder().version(v).uri(...)`) is
+// still captured. These gates re-impose the framework anchor in JS — only a chain
+// that bottoms out on the right construction emits, so a `.url(...)`/`.uri(...)`
+// on an unrelated object does not.
+
+/** True when `urlCall`'s receiver chain bottoms out on a `new Request.Builder()`
+ *  object-creation (descending the `.object` chain past any intervening calls). */
+export function okHttpUrlRootsAtBuilder(urlCall: Parser.SyntaxNode): boolean {
+  let obj = methodInvocationObject(urlCall);
+  while (obj?.type === 'method_invocation') obj = methodInvocationObject(obj);
+  return (
+    obj?.type === 'object_creation_expression' &&
+    obj.childForFieldName('type')?.text === 'Request.Builder'
+  );
+}
+
+/** True when `uriCall`'s receiver chain includes a `HttpRequest.newBuilder()`. */
+export function httpClientUriRootsAtNewBuilder(uriCall: Parser.SyntaxNode): boolean {
+  let obj = methodInvocationObject(uriCall);
+  while (obj?.type === 'method_invocation') {
+    if (
+      methodInvocationName(obj) === 'newBuilder' &&
+      methodInvocationObject(obj)?.text === 'HttpRequest'
+    )
+      return true;
+    obj = methodInvocationObject(obj);
+  }
+  return false;
+}
+
+/** True when a `HttpRequest.newBuilder(URI.create(...))` chain ALSO calls `.uri(...)`
+ *  later — a later `.uri()` overrides the constructor URI at runtime, so the
+ *  constructor-arg path must NOT be emitted (the `.uri()` query emits the override). */
+export function httpClientChainHasUriCall(newBuilderCall: Parser.SyntaxNode): boolean {
+  return builderChainCalls(newBuilderCall).some(
+    (call) => call.id !== newBuilderCall.id && methodInvocationName(call) === 'uri',
+  );
 }
