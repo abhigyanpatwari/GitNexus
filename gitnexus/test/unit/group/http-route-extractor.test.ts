@@ -3286,27 +3286,14 @@ class OkClient(private val client: OkHttpClient) {
     });
 
     itKotlinConsumer(
-      'Kotlin OkHttp .url("/x").post(body) defaults to GET — documented asymmetry with Java',
+      'Kotlin OkHttp .url("/x").post(body) infers POST — verb-walk parity with Java (#2268)',
       async () => {
-        // DOCUMENTED ASYMMETRY (not "Java parity" anymore): OkHttp encodes the
-        // HTTP verb on a sibling call (`.post(body)` / `.delete()` / ...), not on
-        // `.url(...)`. The Java plugin now WALKS the builder chain to recover that
-        // verb (`inferOkHttpMethod`, in java-static-path.ts). The Kotlin plugin
-        // (`kotlin.ts:OK_HTTP_PATTERNS`) does NOT yet — it still emits
-        // `method: 'GET'` for every match. So a polyglot repo currently emits
-        // `http::POST::/api/users` from a `.java` source's sibling `.post()` and
-        // `http::GET::/api/users` from the same shape in `.kt`. This is a
-        // tracked, accepted gap; the follow-up is to mirror `inferOkHttpMethod`
-        // into kotlin.ts (and add an OkHttp row to the Java↔Kotlin parity
-        // harness once the two sides agree).
-        //
-        // This test pins the CURRENT Kotlin behavior:
-        //   - `Request.Builder().url("/api/users").post(body).build()`
-        //     → ONE consumer: `http::GET::/api/users` (Kotlin GET-default)
-        //     → NO `http::POST::/api/users` consumer
-        //
-        // When the Kotlin verb-walk lands, flip this to assert POST and add the
-        // harness row in the same PR.
+        // OkHttp encodes the HTTP verb on a sibling call (`.post(body)` / `.delete()`
+        // / `.method("X")`), not on `.url(...)`. The Kotlin plugin now WALKS the
+        // builder chain (`inferKotlinOkHttpMethod`) to recover it — the mirror of
+        // the Java side's `inferOkHttpMethod`. So `Request.Builder().url("/api/users")`
+        // `.post(body).build()` emits `http::POST::/api/users` (not GET) on `.kt`,
+        // identical to `.java` (pinned by the Java↔Kotlin parity harness below).
         const dir = path.join(tmpDir, 'kotlin-okhttp-post-chain');
         fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
         fs.writeFileSync(
@@ -3326,21 +3313,102 @@ class OkPostClient(private val client: OkHttpClient, private val body: RequestBo
         );
 
         const contracts = await extractor.extract(null, dir, makeRepo(dir));
-        const consumers = contracts.filter((c) => c.role === 'consumer');
-
-        const fromThisFile = consumers.filter((c) =>
-          c.symbolRef.filePath.endsWith('OkPostClient.kt'),
+        const fromThisFile = contracts.filter(
+          (c) => c.role === 'consumer' && c.symbolRef.filePath.endsWith('OkPostClient.kt'),
         );
 
-        // Kotlin GET-default: exactly one consumer is emitted for the .url("/x")
-        // capture, with method=GET regardless of the sibling .post(body) call.
+        // The sibling `.post(body)` is recovered: exactly one POST consumer, no GET.
         expect(fromThisFile).toHaveLength(1);
-        expect(fromThisFile[0].contractId).toBe('http::GET::/api/users');
-        expect(fromThisFile[0].meta.method).toBe('GET');
+        expect(fromThisFile[0].contractId).toBe('http::POST::/api/users');
+        expect(fromThisFile[0].meta.method).toBe('POST');
+        expect(fromThisFile.find((c) => c.contractId === 'http::GET::/api/users')).toBeUndefined();
+      },
+    );
 
-        // Kotlin does not yet walk the chain, so no POST contract appears here
-        // (Java would emit POST for the same shape — the documented asymmetry).
-        expect(fromThisFile.find((c) => c.contractId === 'http::POST::/api/users')).toBeUndefined();
+    itKotlinConsumer(
+      'Kotlin OkHttp verb-walk: helpers, .method("X"), default GET, variable skip (#2268)',
+      async () => {
+        // Parity with the Java OkHttp verb cases: a verb helper resolves, a literal
+        // `.method("X")` resolves, a bare `.build()` defaults to GET, and a
+        // variable-bound `.method(verb)` is unresolvable → emits nothing.
+        const dir = path.join(tmpDir, 'kotlin-okhttp-verbs');
+        fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+        fs.writeFileSync(
+          path.join(dir, 'src', 'OkVerbs.kt'),
+          `package com.example
+import okhttp3.Request
+import okhttp3.RequestBody
+
+class OkVerbs(private val body: RequestBody, private val verb: String) {
+  fun run() {
+    Request.Builder().url("/api/k-get").build()
+    Request.Builder().url("/api/k-delete").delete().build()
+    Request.Builder().url("/api/k-patch").method("PATCH", body).build()
+    Request.Builder().url("/api/k-named").method(method = "REPORT", body = body).build()
+    Request.Builder().url("/api/k-dyn").method(verb, body).build()
+  }
+}
+`,
+        );
+
+        const contracts = await extractor.extract(null, dir, makeRepo(dir));
+        const okhttp = contracts.filter(
+          (c) =>
+            c.role === 'consumer' &&
+            c.meta.framework === 'okhttp' &&
+            c.symbolRef.filePath.endsWith('OkVerbs.kt'),
+        );
+
+        // The variable-bound `.method(verb)` (`/api/k-dyn`) emits nothing; the
+        // named-argument `.method(method = "REPORT")` resolves its literal verb.
+        expect(new Set(okhttp.map((c) => c.contractId))).toEqual(
+          new Set([
+            'http::GET::/api/k-get',
+            'http::DELETE::/api/k-delete',
+            'http::PATCH::/api/k-patch',
+            'http::REPORT::/api/k-named',
+          ]),
+        );
+      },
+    );
+
+    itKotlinConsumer(
+      'Kotlin OkHttp: builder call before .url(), with anti-overreach (#2268)',
+      async () => {
+        // Parity with the Java OkHttp pre-`.url()` support: a builder call BEFORE
+        // `.url()` is captured (the chain roots at Request.Builder), the verb-walk
+        // scans the whole chain so a verb before `.url()` resolves, and a `.url(...)`
+        // on an unrelated object does NOT emit.
+        const dir = path.join(tmpDir, 'kotlin-okhttp-pre-url');
+        fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+        fs.writeFileSync(
+          path.join(dir, 'src', 'OkPreUrl.kt'),
+          `package com.example
+import okhttp3.Request
+import okhttp3.RequestBody
+
+class OkPreUrl(private val body: RequestBody, private val other: SomeClient) {
+  fun run() {
+    Request.Builder().addHeader("A", "b").url("/api/k-pre-url").build()
+    Request.Builder().post(body).url("/api/k-verb-first").build()
+    other.url("/api/k-not-okhttp").build()
+  }
+}
+`,
+        );
+
+        const contracts = await extractor.extract(null, dir, makeRepo(dir));
+        const okhttp = contracts.filter(
+          (c) =>
+            c.role === 'consumer' &&
+            c.meta.framework === 'okhttp' &&
+            c.symbolRef.filePath.endsWith('OkPreUrl.kt'),
+        );
+
+        // header-before-url → GET, verb-before-url → POST; `other.url(...)` emits nothing.
+        expect(new Set(okhttp.map((c) => c.contractId))).toEqual(
+          new Set(['http::GET::/api/k-pre-url', 'http::POST::/api/k-verb-first']),
+        );
       },
     );
 
@@ -5153,6 +5221,78 @@ class GatewayController : OrdersApi, UsersApi {
         );
 
       const rows: ParityRow[] = [
+        {
+          name: 'OkHttp builder verb inference',
+          files: [
+            {
+              name: 'OkClient',
+              java: `
+import okhttp3.Request;
+import okhttp3.RequestBody;
+
+class OkClient {
+  void run(RequestBody body) {
+    new Request.Builder().url("/api/things").post(body).build();
+  }
+}
+`,
+              kotlin: `package com.example
+import okhttp3.Request
+import okhttp3.RequestBody
+
+class OkClient(private val body: RequestBody) {
+  fun run() {
+    Request.Builder().url("/api/things").post(body).build()
+  }
+}
+`,
+            },
+          ],
+          expected: [
+            {
+              role: 'consumer',
+              contractId: 'http::POST::/api/things',
+              framework: 'okhttp',
+              confidence: 0.7,
+            },
+          ],
+        },
+        {
+          name: 'OkHttp verb + builder call before .url()',
+          files: [
+            {
+              name: 'OkPre',
+              java: `
+import okhttp3.Request;
+import okhttp3.RequestBody;
+
+class OkPre {
+  void run(RequestBody body) {
+    new Request.Builder().post(body).url("/api/pre").build();
+  }
+}
+`,
+              kotlin: `package com.example
+import okhttp3.Request
+import okhttp3.RequestBody
+
+class OkPre(private val body: RequestBody) {
+  fun run() {
+    Request.Builder().post(body).url("/api/pre").build()
+  }
+}
+`,
+            },
+          ],
+          expected: [
+            {
+              role: 'consumer',
+              contractId: 'http::POST::/api/pre',
+              framework: 'okhttp',
+              confidence: 0.7,
+            },
+          ],
+        },
         {
           name: '@RequestLine with @RequestMapping prefix fallback',
           files: [
