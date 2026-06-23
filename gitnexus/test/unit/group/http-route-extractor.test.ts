@@ -171,6 +171,113 @@ export default router;
         symbolName: 'listUsers',
       });
     });
+
+    // A handler defined in a different file than its route registration: the
+    // registration file's symbols do not contain it, so resolution falls through
+    // to the unique repo-wide name lookup (#2275).
+    const crossFileRoutes = `import { Router } from 'express';
+import { listUsers } from './handlers/users';
+const router = Router();
+router.get('/api/users', listUsers);
+export default router;
+`;
+    const routesFileSyms = [
+      {
+        uid: 'const-router',
+        name: 'router',
+        filePath: 'src/routes.ts',
+        startLine: 3,
+        endLine: 3,
+        labels: ['Const'],
+      },
+    ];
+    const writeCrossFile = (sub: string) => {
+      const dir = path.join(tmpDir, sub);
+      fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+      fs.writeFileSync(path.join(dir, 'src/routes.ts'), crossFileRoutes);
+      return dir;
+    };
+    const providerOf = (contracts: Awaited<ReturnType<typeof extractor.extract>>) =>
+      contracts.find((c) => c.role === 'provider' && c.contractId === 'http::GET::/api/users');
+
+    it('resolves a cross-file named handler via the unique repo-wide lookup', async () => {
+      const dir = writeCrossFile('xfile-unique');
+      const mockDbExecutor = async (
+        query: string,
+        params?: Record<string, unknown>,
+      ): Promise<Record<string, unknown>[]> => {
+        if (query.includes('UNION ALL'))
+          return String(params?.filePath ?? '').includes('routes.ts') ? routesFileSyms : [];
+        if (query.includes('n.name = $name'))
+          return params?.name === 'listUsers'
+            ? [{ uid: 'fn-listUsers-xfile', name: 'listUsers', filePath: 'src/handlers/users.ts' }]
+            : [];
+        return [];
+      };
+      const provider = providerOf(await extractor.extract(mockDbExecutor, dir, makeRepo(dir)));
+      expect(provider).toMatchObject({ symbolUid: 'fn-listUsers-xfile', symbolName: 'listUsers' });
+    });
+
+    it('leaves symbolUid empty when the repo-wide name is AMBIGUOUS (multiple matches)', async () => {
+      const dir = writeCrossFile('xfile-ambiguous');
+      const mockDbExecutor = async (
+        query: string,
+        params?: Record<string, unknown>,
+      ): Promise<Record<string, unknown>[]> => {
+        if (query.includes('UNION ALL'))
+          return String(params?.filePath ?? '').includes('routes.ts') ? routesFileSyms : [];
+        if (query.includes('n.name = $name'))
+          return [
+            { uid: 'fn-a', name: 'listUsers', filePath: 'src/a.ts' },
+            { uid: 'fn-b', name: 'listUsers', filePath: 'src/b.ts' },
+          ];
+        return [];
+      };
+      const provider = providerOf(await extractor.extract(mockDbExecutor, dir, makeRepo(dir)));
+      expect(provider?.symbolUid).toBe('');
+    });
+
+    it('leaves symbolUid empty when no repo-wide name matches', async () => {
+      const dir = writeCrossFile('xfile-zero');
+      const mockDbExecutor = async (
+        query: string,
+        params?: Record<string, unknown>,
+      ): Promise<Record<string, unknown>[]> => {
+        if (query.includes('UNION ALL'))
+          return String(params?.filePath ?? '').includes('routes.ts') ? routesFileSyms : [];
+        return [];
+      };
+      const provider = providerOf(await extractor.extract(mockDbExecutor, dir, makeRepo(dir)));
+      expect(provider?.symbolUid).toBe('');
+    });
+
+    it('prefers the same-file handler over the repo-wide lookup', async () => {
+      const dir = writeCrossFile('xfile-samefile-wins');
+      const mockDbExecutor = async (
+        query: string,
+        params?: Record<string, unknown>,
+      ): Promise<Record<string, unknown>[]> => {
+        if (query.includes('UNION ALL'))
+          return String(params?.filePath ?? '').includes('routes.ts')
+            ? [
+                ...routesFileSyms,
+                {
+                  uid: 'fn-samefile',
+                  name: 'listUsers',
+                  filePath: 'src/routes.ts',
+                  startLine: 4,
+                  endLine: 4,
+                  labels: ['Function'],
+                },
+              ]
+            : [];
+        if (query.includes('n.name = $name'))
+          return [{ uid: 'fn-global', name: 'listUsers', filePath: 'src/elsewhere.ts' }];
+        return [];
+      };
+      const provider = providerOf(await extractor.extract(mockDbExecutor, dir, makeRepo(dir)));
+      expect(provider?.symbolUid).toBe('fn-samefile');
+    });
   });
 
   describe('provider extraction — graph-first (Strategy A)', () => {

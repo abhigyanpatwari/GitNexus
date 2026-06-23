@@ -80,6 +80,15 @@ WHERE sym.filePath = $filePath AND sym.startLine IS NOT NULL AND sym.endLine IS 
 RETURN sym.id AS uid, sym.name AS name, sym.filePath AS filePath,
        sym.startLine AS startLine, sym.endLine AS endLine, labels(sym) AS labels`;
 
+// Repo-wide lookup of a symbol by exact name (label-union, as in
+// manifest-extractor.ts). Used to resolve a provider's named handler when it is
+// defined in a file OTHER than its route registration — and only honored when
+// the result is unique (see resolveSymbolByNameUnique).
+const RESOLVE_BY_NAME_QUERY = `
+MATCH (n:Function|Method|CodeElement)
+WHERE n.name = $name
+RETURN n.id AS uid, n.name AS name, n.filePath AS filePath`;
+
 interface ResolvedSymbol {
   uid: string;
   name: string;
@@ -357,22 +366,53 @@ export class HttpRouteExtractor implements ContractExtractor {
       fileSymbolCache.set(filePath, rows);
       return rows;
     };
+    // Repo-wide UNAMBIGUOUS resolution for a provider handler defined in a file
+    // other than its route registration (e.g. `router.get('/x', listUsers)` with
+    // `listUsers` imported from another module). Returns the symbol ONLY when
+    // exactly one Function/Method/CodeElement carries that name across the repo;
+    // zero or many → null, which keeps the file-level fallback (no wrong-symbol
+    // attribution). Cached by name for the lifetime of this extract().
+    const globalNameCache = new Map<string, ResolvedSymbol | null>();
+    const resolveSymbolByNameUnique = async (name: string): Promise<ResolvedSymbol | null> => {
+      if (!dbExecutor) return null;
+      const cached = globalNameCache.get(name);
+      if (cached !== undefined) return cached;
+      let rows: Record<string, unknown>[] = [];
+      try {
+        rows = await dbExecutor(RESOLVE_BY_NAME_QUERY, { name });
+      } catch {
+        rows = [];
+      }
+      const norm = (x: unknown): string => String(x ?? '');
+      const uid = rows.length === 1 ? norm(rows[0]!.uid ?? rows[0]![0]) : '';
+      const result: ResolvedSymbol | null = uid
+        ? {
+            uid,
+            name: norm(rows[0]!.name ?? rows[0]![1]),
+            filePath: norm(rows[0]!.filePath ?? rows[0]![2]),
+          }
+        : null;
+      globalNameCache.set(name, result);
+      return result;
+    };
     const resolveDetectionSymbol = async (
       filePath: string,
       d: HttpDetection,
     ): Promise<ResolvedSymbol | null> => {
       if (!dbExecutor) return null;
       const syms = await loadFileSymbols(filePath);
-      if (syms.length === 0) return null;
       // Name resolution does NOT need a detection line — a named provider
       // handler (Spring/Go/etc. method name) resolves by name even when the
-      // plugin didn't set `line`. Try it FIRST; only the containment fallback
-      // requires a line.
+      // plugin didn't set `line`. Try the registration file FIRST; then, for a
+      // handler defined in another file, the unique repo-wide match. Only the
+      // containment fallback requires a line.
       if (d.role === 'provider' && d.name) {
         const byName = resolveSymbolByName(syms, d.name);
         if (byName) return byName;
+        const byGlobal = await resolveSymbolByNameUnique(d.name);
+        if (byGlobal) return byGlobal;
       }
-      if (d.line == null) return null;
+      if (syms.length === 0 || d.line == null) return null;
       return resolveContainingSymbol(syms, d.line);
     };
 
