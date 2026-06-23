@@ -746,11 +746,13 @@ export const JAVA_HTTP_PLUGIN: HttpLanguagePlugin = {
           method: route.httpMethod,
           path: joinPath(prefix, route.rawPath),
           name: route.methodName,
-          // Spring providers are named controller methods resolved BY NAME;
-          // `line` is wired for parity with the consumer emits (and a future
-          // inline DSL) and is inert for current resolution — a named provider
-          // never falls through to line-span containment.
-          line: route.methodNode.startPosition.row + 1,
+          // Spring providers are named controller methods resolved BY NAME, so
+          // `line` is inert — a named provider never falls through to line-span
+          // containment. Gate it on a present name so a (grammar-impossible)
+          // nameless provider degrades to file-level rather than resolving by
+          // containment to the enclosing class. Wired for consumer-emit parity
+          // and a future inline DSL.
+          line: route.methodName ? route.methodNode.startPosition.row + 1 : undefined,
           confidence: 0.8,
         });
       }
