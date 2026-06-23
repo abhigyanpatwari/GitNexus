@@ -251,8 +251,23 @@ export default router;
       expect(provider?.symbolUid).toBe('');
     });
 
-    it('prefers the same-file handler and never consults the repo-wide lookup', async () => {
-      const dir = writeCrossFile('xfile-samefile-wins');
+    it('prefers a LOCALLY-DEFINED handler and never consults the repo-wide lookup', async () => {
+      // Handler defined in the registration file itself (not imported) → no
+      // handlerImport → file-scoped resolution wins; the global / module lookups
+      // are never consulted.
+      const dir = path.join(tmpDir, 'local-handler-wins');
+      fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'src/routes.ts'),
+        `import { Router } from 'express';
+const router = Router();
+function listUsers(req, res) {
+  res.json([]);
+}
+router.get('/api/users', listUsers);
+export default router;
+`,
+      );
       let globalQueries = 0;
       const mockDbExecutor = async (
         query: string,
@@ -261,13 +276,12 @@ export default router;
         if (query.includes('UNION ALL'))
           return String(params?.filePath ?? '').includes('routes.ts')
             ? [
-                ...routesFileSyms,
                 {
                   uid: 'fn-samefile',
                   name: 'listUsers',
                   filePath: 'src/routes.ts',
-                  startLine: 4,
-                  endLine: 4,
+                  startLine: 3,
+                  endLine: 5,
                   labels: ['Function'],
                 },
               ]
@@ -457,6 +471,72 @@ export default router;
       };
       const provider = providerOf(await extractor.extract(mockDbExecutor, dir, makeRepo(dir)));
       expect(provider).toMatchObject({ symbolUid: 'fn-listUsers-xfile', symbolName: 'listUsers' });
+    });
+
+    it('resolves an ALIASED import to its declared name in the target module (not the alias)', async () => {
+      // import { listUsers as handleUsers } from './handlers/users';
+      // router.get('/api/users', handleUsers);  + an UNRELATED function handleUsers
+      // elsewhere. The route must resolve to the imported `listUsers`, and the
+      // local alias `handleUsers` must NEVER be looked up.
+      const dir = path.join(tmpDir, 'xfile-alias');
+      fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'src/routes.ts'),
+        `import { Router } from 'express';
+import { listUsers as handleUsers } from './handlers/users';
+const router = Router();
+router.get('/api/users', handleUsers);
+export default router;
+`,
+      );
+      const queriedNames: string[] = [];
+      const mockDbExecutor = async (
+        query: string,
+        params?: Record<string, unknown>,
+      ): Promise<Record<string, unknown>[]> => {
+        if (query.includes('STARTS WITH')) {
+          queriedNames.push(`module:${String(params?.name)}`);
+          return params?.name === 'listUsers' &&
+            String(params?.fileDot ?? '').startsWith('src/handlers/users')
+            ? [{ uid: 'fn-listUsers', name: 'listUsers', filePath: 'src/handlers/users.ts' }]
+            : [];
+        }
+        if (query.includes('n.name = $name')) {
+          queriedNames.push(`global:${String(params?.name)}`);
+          return params?.name === 'handleUsers'
+            ? [{ uid: 'fn-unrelated', name: 'handleUsers', filePath: 'src/other.ts' }]
+            : [];
+        }
+        return [];
+      };
+      const provider = providerOf(await extractor.extract(mockDbExecutor, dir, makeRepo(dir)));
+      expect(provider).toMatchObject({ symbolUid: 'fn-listUsers', symbolName: 'listUsers' });
+      expect(queriedNames).not.toContain('module:handleUsers');
+      expect(queriedNames).not.toContain('global:handleUsers');
+    });
+
+    it('pins an imported handler to its module, resolving a name that is ambiguous repo-wide', async () => {
+      // `listUsers` exists in two files; the import pins to ./handlers/users, so
+      // the module-scoped query returns exactly one even though a repo-wide
+      // name lookup would be ambiguous (and would decline).
+      const dir = writeCrossFile('xfile-module-pin');
+      const mockDbExecutor = async (
+        query: string,
+        params?: Record<string, unknown>,
+      ): Promise<Record<string, unknown>[]> => {
+        if (query.includes('STARTS WITH'))
+          return String(params?.fileDot ?? '').startsWith('src/handlers/users')
+            ? [{ uid: 'fn-the-right-one', name: 'listUsers', filePath: 'src/handlers/users.ts' }]
+            : [];
+        if (query.includes('n.name = $name'))
+          return [
+            { uid: 'fn-a', name: 'listUsers', filePath: 'src/handlers/users.ts' },
+            { uid: 'fn-b', name: 'listUsers', filePath: 'src/admin/users.ts' },
+          ];
+        return [];
+      };
+      const provider = providerOf(await extractor.extract(mockDbExecutor, dir, makeRepo(dir)));
+      expect(provider?.symbolUid).toBe('fn-the-right-one');
     });
   });
 

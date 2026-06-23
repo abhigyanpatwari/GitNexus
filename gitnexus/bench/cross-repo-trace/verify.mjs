@@ -327,6 +327,69 @@ export default router;
   fs.rmSync(home, { recursive: true, force: true });
 }
 
+// ── Scenario: ALIASED cross-file import — resolved through the import to the
+//    declared symbol, not the local alias (and not a same-named decoy). ───────
+line('\n## Scenario: aliased cross-file import — import-pinned resolution');
+{
+  const { sync, backend, home } = await setup(
+    'alias',
+    {
+      'alias-backend': {
+        'src/handlers/users.ts': `export function listUsers(req: { body: unknown }, res: { json: (v: unknown) => void }) {
+  res.json([]);
+}
+`,
+        // Decoy: a DIFFERENT, unrelated symbol named handleUsers. Name-only
+        // resolution of the local alias would wrongly pick this one.
+        'src/util.ts': `export function handleUsers() {
+  return 1;
+}
+`,
+        'src/routes.ts': `import { Router } from 'express';
+import { listUsers as handleUsers } from './handlers/users';
+const router = Router();
+router.get('/api/users', handleUsers);
+export default router;
+`,
+        'package.json': '{ "name": "alias-backend", "version": "1.0.0" }',
+      },
+      'alias-frontend': {
+        'src/api.ts': `export async function fetchUsers() {
+  const r = await fetch('/api/users');
+  return r.json();
+}
+`,
+        'package.json': '{ "name": "alias-frontend", "version": "1.0.0" }',
+      },
+    },
+    'alias-group',
+    { 'app/backend': 'alias-backend', 'app/frontend': 'alias-frontend' },
+  );
+
+  const provider = sync.contracts.find(
+    (c) => c.role === 'provider' && c.contractId === 'http::GET::/api/users',
+  );
+  check(
+    provider?.symbolName === 'listUsers',
+    'aliased handler resolves through the import to the declared symbol (not the alias/decoy)',
+    `sym=${provider?.symbolName} uid=${provider?.symbolUid ? 'set' : 'empty'}`,
+  );
+
+  const tr = await backend.callTool('trace', {
+    repo: '@alias-group',
+    from: 'fetchUsers',
+    to: 'listUsers',
+    pdg: true,
+  });
+  check(
+    tr.status === 'ok' && crossingId(tr) === 'http::GET::/api/users' && !hasNote(tr, 'FILE'),
+    'aliased-import trace is symbol-precise (no file-level fallback)',
+    `status=${tr.status} crossing=${crossingId(tr)}`,
+  );
+
+  fs.rmSync(home, { recursive: true, force: true });
+}
+
 // ── Summary ────────────────────────────────────────────────────────────────
 const passed = results.filter((r) => r.pass).length;
 line(`\n## Verdict: ${passed}/${results.length} checks passed`);

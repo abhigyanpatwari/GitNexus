@@ -45,6 +45,17 @@ export interface HttpDetection {
    * not set it falls back to file-level boundary resolution downstream.
    */
   line?: number;
+  /**
+   * When the handler is an IMPORTED symbol, the import resolved to its declared
+   * (exported) `name` and the `module` specifier it came from. The extractor
+   * pins resolution to the import's target file, so an aliased import
+   * (`import { listUsers as handleUsers }`) or a name that collides with a local
+   * symbol resolves to the right handler instead of a same-named decoy. `name`
+   * here is the DECLARED export name (not the local alias); `module` is the raw
+   * specifier (e.g. `./handlers/users`). Set only for named imports; omitted for
+   * locally-defined or anonymous handlers.
+   */
+  handlerImport?: { name: string; module: string };
   /** Confidence in (0, 1]. Source-scan plugins typically use 0.7–0.8. */
   confidence: number;
 }

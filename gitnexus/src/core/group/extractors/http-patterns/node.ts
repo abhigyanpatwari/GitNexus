@@ -295,8 +295,53 @@ function findDecoratedMethod(decoratorNode: Parser.SyntaxNode): Parser.SyntaxNod
   return null;
 }
 
+/**
+ * Map each named import's LOCAL binding to its DECLARED export name and source
+ * module, by walking the file's `import { x as y } from 'm'` statements. Lets
+ * the express handler resolve through an alias (the local `y`) to the real
+ * symbol (`x` in `m`) instead of looking up the alias text. Only named imports
+ * are mapped — default and namespace imports are left to fall through as
+ * locally-scoped identifiers.
+ */
+function buildImportMap(tree: Parser.Tree): Map<string, { name: string; module: string }> {
+  const map = new Map<string, { name: string; module: string }>();
+  const walk = (node: Parser.SyntaxNode): void => {
+    if (node.type === 'import_statement') {
+      const sourceNode = node.childForFieldName('source');
+      const module = sourceNode ? unquoteLiteral(sourceNode.text) : null;
+      if (module !== null) {
+        const collect = (n: Parser.SyntaxNode): void => {
+          if (n.type === 'import_specifier') {
+            const nameNode = n.childForFieldName('name');
+            const aliasNode = n.childForFieldName('alias');
+            const local = aliasNode ?? nameNode;
+            if (nameNode && local && local.type === 'identifier') {
+              map.set(local.text, { name: nameNode.text, module });
+            }
+          }
+          for (let i = 0; i < n.namedChildCount; i++) {
+            const c = n.namedChild(i);
+            if (c) collect(c);
+          }
+        };
+        collect(node);
+      }
+    }
+    for (let i = 0; i < node.namedChildCount; i++) {
+      const c = node.namedChild(i);
+      if (c) walk(c);
+    }
+  };
+  walk(tree.rootNode);
+  return map;
+}
+
 function scanBundle(bundle: NodePatternBundle, tree: Parser.Tree): HttpDetection[] {
   const out: HttpDetection[] = [];
+  // Local-binding → { declared export name, module } for the file's named
+  // imports, so an express handler that is an imported (possibly aliased)
+  // symbol resolves to the real definition rather than its local alias text.
+  const importMap = buildImportMap(tree);
 
   // NestJS: collect `@Controller('prefix')` class decorators, keyed by
   // the `class_declaration` they decorate.
@@ -364,14 +409,19 @@ function scanBundle(bundle: NodePatternBundle, tree: Parser.Tree): HttpDetection
     // → `listUsers`) so a named handler resolves by name. For an inline/anonymous
     // handler emit `name: null` (NOT the sentinel `'handler'`) so the resolver
     // does NOT match an unrelated function that happens to be named `handler` —
-    // it uses the registration line for containment instead.
+    // it uses the registration line for containment instead. When the handler is
+    // an imported (possibly aliased) symbol, carry the resolved import so the
+    // extractor can pin it to the source module rather than the local alias text.
     const handlerNode = match.captures.handler;
+    const localHandler = handlerNode?.type === 'identifier' ? handlerNode.text : null;
+    const imported = localHandler !== null ? importMap.get(localHandler) : undefined;
     out.push({
       role: 'provider',
       framework: 'express',
       method: methodNode.text.toUpperCase(),
       path,
-      name: handlerNode?.type === 'identifier' ? handlerNode.text : null,
+      name: imported ? imported.name : localHandler,
+      handlerImport: imported,
       line: (handlerNode ?? pathNode).startPosition.row + 1,
       confidence: 0.8,
     });
