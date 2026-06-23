@@ -1,0 +1,110 @@
+/**
+ * Unit tests for `extractLeadingDocComment` (issue #2270, U1).
+ *
+ * Verifies the shared helper that pulls a `/** ... *\/` leading doc comment
+ * (Javadoc / KDoc) off the definition node's preceding named sibling. The
+ * helper is grammar-agnostic: it matches on the `/**` text prefix, so it works
+ * for both tree-sitter-java (`block_comment`) and tree-sitter-kotlin
+ * (`multiline_comment`).
+ */
+import { describe, it, expect } from 'vitest';
+import Parser from 'tree-sitter';
+import Java from 'tree-sitter-java';
+import { requireVendoredGrammar } from '../../src/core/tree-sitter/vendored-grammars.js';
+import {
+  extractLeadingDocComment,
+  type SyntaxNode,
+} from '../../src/core/ingestion/utils/ast-helpers.js';
+
+// Vendored grammar — loaded from vendor/ by absolute path, never node_modules (#2111).
+const Kotlin = requireVendoredGrammar('tree-sitter-kotlin');
+
+function firstNode(language: unknown, src: string, type: string): SyntaxNode {
+  const parser = new Parser();
+  parser.setLanguage(language);
+  const node = parser.parse(src).rootNode.descendantsOfType(type)[0];
+  expect(node, `expected a ${type} node in source`).toBeDefined();
+  return node;
+}
+
+describe('extractLeadingDocComment', () => {
+  it('extracts a multi-line Javadoc including tag content (issue #2270 repro)', () => {
+    const src = `package demo;
+public class Probe {
+  /**
+   * Computes the running balance across all user accounts.
+   * @param userId the unique user identifier
+   * @deprecated since 2.0, use computeBalanceV2
+   */
+  public java.math.BigDecimal computeBalance(Long userId) { return null; }
+}`;
+    const method = firstNode(Java, src, 'method_declaration');
+    const doc = extractLeadingDocComment(method);
+    expect(doc).toContain('Computes the running balance');
+    expect(doc).toContain('userId');
+    expect(doc).toContain('computeBalanceV2');
+  });
+
+  it('extracts a class-level Javadoc', () => {
+    const cls = firstNode(
+      Java,
+      `/**\n * A probe class.\n */\npublic class Probe {}`,
+      'class_declaration',
+    );
+    expect(extractLeadingDocComment(cls)).toBe('A probe class.');
+  });
+
+  it('returns undefined when there is no preceding comment', () => {
+    const method = firstNode(Java, `class P { void m() {} }`, 'method_declaration');
+    expect(extractLeadingDocComment(method)).toBeUndefined();
+  });
+
+  it('returns undefined for a non-doc block comment (license header style)', () => {
+    const method = firstNode(
+      Java,
+      `class P {\n/* not a doc comment */\nvoid m() {}\n}`,
+      'method_declaration',
+    );
+    expect(extractLeadingDocComment(method)).toBeUndefined();
+  });
+
+  it('returns undefined for a // line comment', () => {
+    const method = firstNode(
+      Java,
+      `class P {\n// just a line comment\nvoid m() {}\n}`,
+      'method_declaration',
+    );
+    expect(extractLeadingDocComment(method)).toBeUndefined();
+  });
+
+  it('returns undefined for an empty doc comment', () => {
+    const method = firstNode(Java, `class P {\n/** */\nvoid m() {}\n}`, 'method_declaration');
+    expect(extractLeadingDocComment(method)).toBeUndefined();
+  });
+
+  it('strips the */ delimiters and per-line * gutter markers', () => {
+    const cls = firstNode(
+      Java,
+      `/**\n * Line one.\n * Line two.\n */\nclass P {}`,
+      'class_declaration',
+    );
+    const doc = extractLeadingDocComment(cls);
+    expect(doc).toBe('Line one. Line two.');
+    expect(doc).not.toContain('*');
+    expect(doc).not.toContain('/');
+  });
+
+  it('extracts a Kotlin KDoc (grammar-agnostic prefix match, multiline_comment)', () => {
+    const src = `package demo
+class Probe {
+  /**
+   * Computes the running balance, use computeBalanceV2
+   */
+  fun computeBalance(userId: Long): String? { return null }
+}`;
+    const fn = firstNode(Kotlin, src, 'function_declaration');
+    const doc = extractLeadingDocComment(fn);
+    expect(doc).toContain('Computes the running balance');
+    expect(doc).toContain('computeBalanceV2');
+  });
+});

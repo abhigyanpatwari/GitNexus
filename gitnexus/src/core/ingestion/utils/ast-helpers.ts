@@ -87,7 +87,7 @@ export const DEFINITION_CAPTURE_KEYS = [
 
 /** Extract the definition node from a tree-sitter query capture map. */
 export const getDefinitionNodeFromCaptures = (
-  captureMap: Record<string, SyntaxNode>,
+  captureMap: Record<string, SyntaxNode | undefined>,
 ): SyntaxNode | null => {
   for (const key of DEFINITION_CAPTURE_KEYS) {
     if (captureMap[key]) return captureMap[key];
@@ -925,6 +925,129 @@ export function findChild(node: SyntaxNode, type: string): SyntaxNode | null {
   }
   return null;
 }
+
+/** Normalize a block doc comment body: strip the opening (double-star or
+ *  bang) delimiter, the closing delimiter, and per-line gutter stars, then
+ *  collapse whitespace so tag content stays as searchable words. */
+const normalizeBlockDocComment = (text: string): string | undefined => {
+  const inner = text
+    .replace(/^\/\*[*!]/, '')
+    .replace(/\*\/\s*$/, '')
+    .replace(/^[ \t]*\*[ \t]?/gm, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return inner.length > 0 ? inner : undefined;
+};
+
+/** Default line-comment prefixes treated as documentation: the universal
+ *  triple-slash / bang-slash doc markers (Rust, C#, Dart, Swift, Doxygen).
+ *  Go (`//`) and Ruby (`#`) opt into their conventional markers explicitly. */
+export const DEFAULT_LINE_DOC_PREFIXES: readonly string[] = ['///', '//!'];
+
+/**
+ * Extract the normalized text of a leading doc comment immediately preceding a
+ * definition node — covering both block doc comments (Javadoc / KDoc / JSDoc /
+ * PHPDoc / Doxygen, opened by `/**` or `/*!`) and runs of line doc comments
+ * (`///`, `//!`, or the caller-supplied prefixes such as Go's `//` or Ruby's
+ * `#`). Returns `undefined` when there is no preceding doc comment or it is
+ * empty.
+ *
+ * Grammar-agnostic by design: matches on the comment text prefix rather than a
+ * grammar node type, because the comment node is named differently across
+ * grammars (`block_comment`, `multiline_comment`, `comment`, `line_comment`).
+ * Annotations and modifiers live inside the definition node, so the doc comment
+ * remains the definition's `previousNamedSibling` even on annotated/decorated
+ * declarations. Adjacency is intentionally not enforced — intervening package,
+ * import, or code siblings already separate a file-level license header from
+ * the first declaration, and some grammars fold the trailing newline into the
+ * comment node, which would make a strict row check unreliable.
+ *
+ * Normalization mirrors Python docstring handling: strip the comment delimiters
+ * / per-line markers, then collapse whitespace to single spaces so tag content
+ * (`@param`, `@deprecated since 2.0, use computeBalanceV2`) survives.
+ */
+export function extractLeadingDocComment(
+  node: SyntaxNode,
+  lineCommentPrefixes: readonly string[] = DEFAULT_LINE_DOC_PREFIXES,
+): string | undefined {
+  const prev = node.previousNamedSibling;
+  if (!prev) return undefined;
+
+  // Block doc comment: /** ... */ or /*! ... */
+  if (prev.text.startsWith('/**') || prev.text.startsWith('/*!')) {
+    return normalizeBlockDocComment(prev.text);
+  }
+
+  // Run of contiguous preceding line doc comments (e.g. `///` or `//`).
+  const matchedPrefix = (text: string): string | undefined =>
+    lineCommentPrefixes.find((prefix) => text.trimStart().startsWith(prefix));
+
+  if (matchedPrefix(prev.text) === undefined) return undefined;
+
+  const lines: string[] = [];
+  let current: SyntaxNode | null = prev;
+  while (current) {
+    const prefix = matchedPrefix(current.text);
+    if (prefix === undefined) break;
+    lines.unshift(current.text.trimStart().slice(prefix.length));
+    current = current.previousNamedSibling;
+  }
+
+  const joined = lines.join(' ').replace(/\s+/g, ' ').trim();
+  return joined.length > 0 ? joined : undefined;
+}
+
+/** Node labels that can carry a leading doc comment — callables and type-like
+ *  declarations. Field/property/variable/const doc is intentionally excluded
+ *  (issue #2270 scopes this to method/type documentation). Language-neutral:
+ *  a label a given grammar never emits simply never matches. */
+export const DOC_BEARING_LABELS: ReadonlySet<NodeLabel> = new Set<NodeLabel>([
+  'Function',
+  'Method',
+  'Constructor',
+  'Class',
+  'Interface',
+  'Enum',
+  'Struct',
+  'Trait',
+  'Record',
+  'Union',
+  'Namespace',
+  'Module',
+  'TypeAlias',
+  'Delegate',
+  'Annotation',
+  'Macro',
+]);
+
+/**
+ * Build a `LanguageProvider.descriptionExtractor` that surfaces a definition's
+ * leading doc comment as its `description` (issue #2270), so the doc text
+ * reaches the embedding metadata header and becomes semantically searchable.
+ *
+ * Language-neutral factory (names no language): callers pass the doc-bearing
+ * label set (defaults to {@link DOC_BEARING_LABELS}) and the line-comment doc
+ * prefixes (defaults to {@link DEFAULT_LINE_DOC_PREFIXES}; Go passes `['//']`,
+ * Ruby passes `['#']`).
+ */
+export const createLeadingDocDescriptionExtractor = (opts?: {
+  labels?: ReadonlySet<NodeLabel>;
+  lineCommentPrefixes?: readonly string[];
+}): ((
+  nodeLabel: NodeLabel,
+  nodeName: string,
+  captureMap: Record<string, SyntaxNode | undefined>,
+) => string | undefined) => {
+  const labels = opts?.labels ?? DOC_BEARING_LABELS;
+  const lineCommentPrefixes = opts?.lineCommentPrefixes ?? DEFAULT_LINE_DOC_PREFIXES;
+  return (nodeLabel, _nodeName, captureMap) => {
+    if (!labels.has(nodeLabel)) return undefined;
+    const definitionNode = getDefinitionNodeFromCaptures(captureMap);
+    return definitionNode
+      ? extractLeadingDocComment(definitionNode, lineCommentPrefixes)
+      : undefined;
+  };
+};
 
 // ============================================================================
 // Capture + range helpers (formerly python/ast-utils.ts — language-agnostic)
