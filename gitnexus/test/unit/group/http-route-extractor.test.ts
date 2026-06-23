@@ -251,8 +251,9 @@ export default router;
       expect(provider?.symbolUid).toBe('');
     });
 
-    it('prefers the same-file handler over the repo-wide lookup', async () => {
+    it('prefers the same-file handler and never consults the repo-wide lookup', async () => {
       const dir = writeCrossFile('xfile-samefile-wins');
+      let globalQueries = 0;
       const mockDbExecutor = async (
         query: string,
         params?: Record<string, unknown>,
@@ -271,12 +272,105 @@ export default router;
                 },
               ]
             : [];
-        if (query.includes('n.name = $name'))
+        if (query.includes('n.name = $name')) {
+          globalQueries += 1;
           return [{ uid: 'fn-global', name: 'listUsers', filePath: 'src/elsewhere.ts' }];
+        }
         return [];
       };
       const provider = providerOf(await extractor.extract(mockDbExecutor, dir, makeRepo(dir)));
       expect(provider?.symbolUid).toBe('fn-samefile');
+      expect(globalQueries).toBe(0);
+    });
+
+    it('leaves symbolUid empty (no exception) when the repo-wide query throws', async () => {
+      const dir = writeCrossFile('xfile-throws');
+      const mockDbExecutor = async (
+        query: string,
+        params?: Record<string, unknown>,
+      ): Promise<Record<string, unknown>[]> => {
+        if (query.includes('UNION ALL'))
+          return String(params?.filePath ?? '').includes('routes.ts') ? routesFileSyms : [];
+        if (query.includes('n.name = $name')) throw new Error('DB locked');
+        return [];
+      };
+      const provider = providerOf(await extractor.extract(mockDbExecutor, dir, makeRepo(dir)));
+      expect(provider?.symbolUid).toBe('');
+    });
+
+    it('caches the repo-wide lookup by name across detections in one extract()', async () => {
+      // Two routes in the same file referencing the SAME cross-file handler must
+      // issue the by-name query at most once (memoized by name).
+      const dir = path.join(tmpDir, 'xfile-cache');
+      fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'src/routes.ts'),
+        `import { Router } from 'express';
+import { listUsers } from './handlers/users';
+const router = Router();
+router.get('/api/users', listUsers);
+router.post('/api/users', listUsers);
+export default router;
+`,
+      );
+      let globalQueries = 0;
+      const mockDbExecutor = async (
+        query: string,
+        params?: Record<string, unknown>,
+      ): Promise<Record<string, unknown>[]> => {
+        if (query.includes('UNION ALL'))
+          return String(params?.filePath ?? '').includes('routes.ts') ? routesFileSyms : [];
+        if (query.includes('n.name = $name')) {
+          globalQueries += 1;
+          return [{ uid: 'fn-listUsers-x', name: 'listUsers', filePath: 'src/handlers/users.ts' }];
+        }
+        return [];
+      };
+      await extractor.extract(mockDbExecutor, dir, makeRepo(dir));
+      expect(globalQueries).toBe(1);
+    });
+
+    it('does NOT consult the repo-wide lookup for consumers', async () => {
+      // A consumer (the function making a fetch) resolves by containment in its
+      // own file; the provider-only repo-wide lookup must never fire for it.
+      const dir = path.join(tmpDir, 'xfile-consumer-gate');
+      fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'src/api.ts'),
+        `export async function fetchUsers() {
+  const r = await fetch('/api/users');
+  return r.json();
+}
+`,
+      );
+      let globalQueries = 0;
+      const mockDbExecutor = async (
+        query: string,
+        params?: Record<string, unknown>,
+      ): Promise<Record<string, unknown>[]> => {
+        if (query.includes('UNION ALL'))
+          return String(params?.filePath ?? '').includes('api.ts')
+            ? [
+                {
+                  uid: 'fn-fetchUsers',
+                  name: 'fetchUsers',
+                  filePath: 'src/api.ts',
+                  startLine: 1,
+                  endLine: 4,
+                  labels: ['Function'],
+                },
+              ]
+            : [];
+        if (query.includes('n.name = $name')) {
+          globalQueries += 1;
+          return [{ uid: 'should-not-be-used', name: 'fetchUsers', filePath: 'src/x.ts' }];
+        }
+        return [];
+      };
+      const contracts = await extractor.extract(mockDbExecutor, dir, makeRepo(dir));
+      const consumer = contracts.find((c) => c.role === 'consumer');
+      expect(consumer?.symbolName).toBe('fetchUsers');
+      expect(globalQueries).toBe(0);
     });
   });
 

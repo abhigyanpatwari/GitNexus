@@ -303,7 +303,9 @@ export default router;
     { 'app/backend': 'xfile-backend', 'app/frontend': 'xfile-frontend' },
   );
 
-  const provider = sync.contracts.find((c) => c.role === 'provider');
+  const provider = sync.contracts.find(
+    (c) => c.role === 'provider' && c.contractId === 'http::GET::/api/users',
+  );
   check(
     Boolean(provider?.symbolUid) && provider?.symbolName === 'listUsers',
     'cross-file provider resolves to the handler defined in another file (repo-wide unique)',

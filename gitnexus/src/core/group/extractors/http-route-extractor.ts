@@ -369,9 +369,12 @@ export class HttpRouteExtractor implements ContractExtractor {
     // Repo-wide UNAMBIGUOUS resolution for a provider handler defined in a file
     // other than its route registration (e.g. `router.get('/x', listUsers)` with
     // `listUsers` imported from another module). Returns the symbol ONLY when
-    // exactly one Function/Method/CodeElement carries that name across the repo;
-    // zero or many → null, which keeps the file-level fallback (no wrong-symbol
-    // attribution). Cached by name for the lifetime of this extract().
+    // exactly one Function/Method/CodeElement carries that name across the repo.
+    // The strict uniqueness guard is intentionally conservative: when a name is
+    // shared across files (homonyms like `handler`/`index`), we prefer a
+    // false-negative (no attribution → file-level fallback) over a false-positive
+    // (wrong symbol). Import-path narrowing of the ambiguous case is a deferred
+    // follow-up (#2275). Cached by name for the lifetime of this extract().
     const globalNameCache = new Map<string, ResolvedSymbol | null>();
     const resolveSymbolByNameUnique = async (name: string): Promise<ResolvedSymbol | null> => {
       if (!dbExecutor) return null;
