@@ -780,6 +780,131 @@ func registerRoutes(r *gin.Engine) {
       });
     });
 
+    it('binds the LAST arg as handler for a middleware + inline route, not the middleware (#2276)', async () => {
+      // `r.GET(path, mw, func(){})` — gin/echo variadic middleware before an
+      // inline handler. The trailing-anchor on @handler must select the closure
+      // (→ containment to the enclosing fn), NOT the middleware identifier. With
+      // the prior unanchored capture this emitted a second detection for `mw`
+      // that won the contractId merge and mis-attributed the route to it.
+      const dir = path.join(tmpDir, 'go-mw-inline-gin');
+      fs.mkdirSync(path.join(dir, 'cmd'), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'cmd/server.go'),
+        `package main
+
+func authMiddleware(c *gin.Context) {}
+
+func registerRoutes(r *gin.Engine) {
+  r.GET("/api/guarded", authMiddleware, func(c *gin.Context) {
+    c.String(200, "ok")
+  })
+}
+`,
+      );
+      // Both the middleware and the enclosing registrar are indexed. The closure
+      // sits at line 6, contained by registerRoutes [5,9]; authMiddleware [3,3]
+      // does not contain it. The route must resolve to registerRoutes.
+      const mockDbExecutor = async (
+        query: string,
+        params?: Record<string, unknown>,
+      ): Promise<Record<string, unknown>[]> => {
+        if (query.includes('UNION ALL') && String(params?.filePath ?? '').includes('server.go')) {
+          return [
+            {
+              uid: 'fn-authMiddleware',
+              name: 'authMiddleware',
+              filePath: 'cmd/server.go',
+              startLine: 3,
+              endLine: 3,
+              labels: ['Function'],
+            },
+            {
+              uid: 'fn-registerRoutes',
+              name: 'registerRoutes',
+              filePath: 'cmd/server.go',
+              startLine: 5,
+              endLine: 9,
+              labels: ['Function'],
+            },
+          ];
+        }
+        return [];
+      };
+      const contracts = await extractor.extract(mockDbExecutor, dir, makeRepo(dir));
+      const providers = contracts.filter(
+        (c) => c.role === 'provider' && c.contractId === 'http::GET::/api/guarded',
+      );
+      // Exactly one provider (no middleware over-match), resolved by containment.
+      expect(providers).toHaveLength(1);
+      expect(providers[0]).toMatchObject({
+        symbolUid: 'fn-registerRoutes',
+        symbolName: 'registerRoutes',
+      });
+    });
+
+    it('binds the LAST arg as handler for a middleware + NAMED route, not the middleware (#2276)', async () => {
+      // `r.GET(path, mw, namedHandler)` — the named handler is the last arg and
+      // must resolve by name; the leading middleware identifier must not win.
+      const dir = path.join(tmpDir, 'go-mw-named-gin');
+      fs.mkdirSync(path.join(dir, 'cmd'), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'cmd/server.go'),
+        `package main
+
+func authMiddleware(c *gin.Context) {}
+
+func listOrders(c *gin.Context) {}
+
+func registerRoutes(r *gin.Engine) {
+  r.GET("/api/orders", authMiddleware, listOrders)
+}
+`,
+      );
+      const mockDbExecutor = async (
+        query: string,
+        params?: Record<string, unknown>,
+      ): Promise<Record<string, unknown>[]> => {
+        if (query.includes('UNION ALL') && String(params?.filePath ?? '').includes('server.go')) {
+          return [
+            {
+              uid: 'fn-authMiddleware',
+              name: 'authMiddleware',
+              filePath: 'cmd/server.go',
+              startLine: 3,
+              endLine: 3,
+              labels: ['Function'],
+            },
+            {
+              uid: 'fn-listOrders',
+              name: 'listOrders',
+              filePath: 'cmd/server.go',
+              startLine: 5,
+              endLine: 5,
+              labels: ['Function'],
+            },
+            {
+              uid: 'fn-registerRoutes',
+              name: 'registerRoutes',
+              filePath: 'cmd/server.go',
+              startLine: 7,
+              endLine: 9,
+              labels: ['Function'],
+            },
+          ];
+        }
+        return [];
+      };
+      const contracts = await extractor.extract(mockDbExecutor, dir, makeRepo(dir));
+      const providers = contracts.filter(
+        (c) => c.role === 'provider' && c.contractId === 'http::GET::/api/orders',
+      );
+      expect(providers).toHaveLength(1);
+      expect(providers[0]).toMatchObject({
+        symbolUid: 'fn-listOrders',
+        symbolName: 'listOrders',
+      });
+    });
+
     it('resolves a Laravel closure route nested in a method to that method (#2276)', async () => {
       const dir = path.join(tmpDir, 'php-closure-in-method');
       fs.mkdirSync(path.join(dir, 'app'), { recursive: true });

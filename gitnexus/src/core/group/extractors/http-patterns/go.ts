@@ -17,8 +17,11 @@ import type { HttpDetection, HttpLanguagePlugin } from './types.js';
 
 // ─── Provider: framework routing ──────────────────────────────────────
 // Matches `\w+\.GET(...)` etc. (gin, echo, chi all share this shape).
-// Captures the HTTP method (field name), path literal, and handler
-// identifier passed as the second argument.
+// Captures the HTTP method (field name), path literal, and the handler —
+// anchored to the LAST argument (`@handler .`) so a variadic middleware
+// chain (`r.GET("/x", mw, handler)`, gin/echo/chi style) binds the real
+// handler, not a middleware identifier (which would otherwise over-match
+// and attach the route to the wrong symbol — see #2276 review).
 const FRAMEWORK_ROUTE_PATTERNS = compilePatterns({
   name: 'go-framework-route',
   language: Go,
@@ -31,7 +34,8 @@ const FRAMEWORK_ROUTE_PATTERNS = compilePatterns({
             field: (field_identifier) @http_method (#match? @http_method "^(GET|POST|PUT|DELETE|PATCH)$"))
           arguments: (argument_list
             (interpreted_string_literal) @path
-            [(identifier) (func_literal)] @handler))
+            [(identifier) (func_literal)] @handler
+            .))
       `,
     },
   ],
@@ -51,7 +55,8 @@ const HANDLE_FUNC_PATTERNS = compilePatterns({
             field: (field_identifier) @fn (#eq? @fn "HandleFunc"))
           arguments: (argument_list
             (interpreted_string_literal) @path
-            [(identifier) (func_literal)] @handler))
+            [(identifier) (func_literal)] @handler
+            .))
       `,
     },
   ],
