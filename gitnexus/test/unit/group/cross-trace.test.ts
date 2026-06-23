@@ -478,6 +478,73 @@ describe('runGroupTrace', () => {
     },
   );
 
+  itLbugReopen(
+    'destination trace anonymizes an unresolved Laravel `route` placeholder (#2276)',
+    async () => {
+      // A named-controller / closure Laravel provider that did not resolve keeps
+      // the synthetic `'route'` placeholder (never a real symbol name). It must
+      // be treated as anonymous — shown as `<route handler>` — exactly like the
+      // `'handler'`/`'fetch'` sentinels, not displayed as the literal `route`.
+      const consumer = makeContract({
+        repo: 'app/frontend',
+        role: 'consumer',
+        symbolUid: 'callUsers-uid',
+        symbolRef: { filePath: 'src/api.ts', name: 'callUsers' },
+        symbolName: 'callUsers',
+        contractId: 'http::GET::/api/users',
+      });
+      const provider = makeContract({
+        repo: 'app/backend',
+        role: 'provider',
+        symbolUid: '', // unresolved file-scope closure / named-controller route
+        symbolRef: { filePath: 'routes/web.php', name: 'route' },
+        symbolName: 'route',
+        contractId: 'http::GET::/api/users',
+      });
+      const link: CrossLink = {
+        from: { repo: 'app/frontend', symbolUid: 'callUsers-uid', symbolRef: consumer.symbolRef },
+        to: { repo: 'app/backend', symbolUid: '', symbolRef: provider.symbolRef },
+        type: 'http',
+        contractId: 'http::GET::/api/users',
+        matchType: 'exact',
+        confidence: 1,
+      };
+      await writeBridge(groupDir, {
+        contracts: [consumer, provider],
+        crossLinks: [link],
+        repoSnapshots: {},
+        missingRepos: [],
+      });
+
+      const port = makePort(
+        { 'reg-fe:callUsers': okSym('callUsers-uid', 'callUsers', 'src/api.ts', 3) },
+        {
+          'reg-fe:callUsers-uid->callUsers-uid': okTrace(
+            [{ name: 'callUsers', filePath: 'src/api.ts', startLine: 3 }],
+            [],
+          ),
+        },
+      );
+      const r = await runGroupTrace(
+        { port, gitnexusDir: tmpDir },
+        { name: 'g1', from: 'callUsers' },
+      );
+      expect(r).toMatchObject({
+        status: 'ok',
+        to: {
+          name: '<http::GET::/api/users handler>',
+          repo: 'app/backend',
+          filePath: 'routes/web.php',
+        },
+        hops: [
+          { name: 'callUsers', repo: 'app/frontend' },
+          { name: '<http::GET::/api/users handler>', repo: 'app/backend' },
+        ],
+        notes: expect.arrayContaining([expect.stringContaining('anonymous')]),
+      });
+    },
+  );
+
   itLbugReopen('destination trace not_found when no HTTP link leaves the repo', async () => {
     await writeUnlinkedBridge(groupDir);
     const port = makePort(

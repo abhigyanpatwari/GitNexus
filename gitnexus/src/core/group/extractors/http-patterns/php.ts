@@ -37,7 +37,9 @@ const LARAVEL_ROUTE_SPEC: PatternSpec<Record<string, never>> = {
     (scoped_call_expression
       scope: (name) @scope (#eq? @scope "Route")
       name: (name) @method (#match? @method "^(get|post|put|delete|patch)$")
-      arguments: (arguments . (argument (string) @path)))
+      arguments: (arguments
+        . (argument (string) @path)
+        (argument [(anonymous_function) (arrow_function)] @closure)?))
   `,
 };
 
@@ -150,12 +152,22 @@ export const PHP_HTTP_PLUGIN: HttpLanguagePlugin = {
       if (!methodNode || !pathNode) continue;
       const path = phpStringText(pathNode);
       if (path === null) continue;
+      // A closure handler (`Route::get('/x', function(){…})` / `fn() => …`) has
+      // no name → emit `name: null` + the registration line so it resolves to
+      // its containing symbol (e.g. a service-provider `boot()` or controller
+      // method) by line-span containment. A named-controller route keeps the
+      // `'route'` label — resolving its array/string handler to a real method is
+      // a separate, graph-backed concern. NOTE: a closure at FILE scope
+      // (routes/web.php) has no enclosing function and PHP closures are not yet
+      // indexed as symbols, so it still degrades to file-level (see #2276).
+      const closureNode = match.captures.closure;
       out.push({
         role: 'provider',
         framework: 'laravel',
         method: methodNode.text.toUpperCase(),
         path,
-        name: 'route',
+        name: closureNode ? null : 'route',
+        line: (closureNode ?? pathNode).startPosition.row + 1,
         confidence: 0.8,
       });
     }

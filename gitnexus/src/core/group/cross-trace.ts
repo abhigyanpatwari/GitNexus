@@ -1036,12 +1036,13 @@ const FILE_BASENAME_RE =
 
 /**
  * A provider endpoint's display label. A resolved handler has a real function
- * name; the source-scan fallbacks leave a generic token (`'handler'`/`'fetch'`)
- * or a file basename. Those are treated as anonymous and shown as
+ * name; the source-scan fallbacks leave a generic token (`'handler'`/`'fetch'`,
+ * or `'route'` for an unresolved named-controller / closure Laravel route) or a
+ * file basename. Those are treated as anonymous and shown as
  * `<METHOD /path handler>` so the endpoint is still identifiable by route. When
  * the bridge row carries a resolved `providerUid`, the name IS a real symbol —
- * the `'handler'`/`'fetch'` sentinel check is suppressed so a function genuinely
- * named `handler` is not mislabeled anonymous.
+ * the sentinel check is suppressed so a function genuinely named `handler` (or,
+ * hypothetically, `route`) is not mislabeled anonymous.
  */
 function providerLabel(
   providerName: string,
@@ -1052,7 +1053,8 @@ function providerLabel(
   const generic =
     providerName === '' ||
     FILE_BASENAME_RE.test(providerName) ||
-    (!resolved && (providerName === 'handler' || providerName === 'fetch'));
+    (!resolved &&
+      (providerName === 'handler' || providerName === 'fetch' || providerName === 'route'));
   return generic
     ? { label: `<${contractId} handler>`, anon: true }
     : { label: providerName, anon: false };

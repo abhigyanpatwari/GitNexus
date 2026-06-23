@@ -271,6 +271,177 @@ def fetch_items():
   fs.rmSync(home, { recursive: true, force: true });
 }
 
+// ── Scenario: Python Flask add_url_rule with an ALIASED relative import —
+//    import-pinned resolution across Python's dotted module syntax. ───────────
+line('\n## Scenario: Python aliased import (Flask add_url_rule) — import-pinned');
+{
+  const { sync, backend, home } = await setup(
+    'pyalias',
+    {
+      'pyalias-backend': {
+        'app/handlers/users.py': `def list_users():
+    return []
+`,
+        'app/routes.py': `from flask import Flask
+from .handlers.users import list_users as handle_users
+app = Flask(__name__)
+app.add_url_rule('/api/users', view_func=handle_users)
+`,
+      },
+      'pyalias-frontend': {
+        'client.py': `import requests
+
+def fetch_users():
+    return requests.get('/api/users').json()
+`,
+      },
+    },
+    'pyalias-group',
+    { 'app/backend': 'pyalias-backend', 'app/frontend': 'pyalias-frontend' },
+  );
+
+  const provider = sync.contracts.find(
+    (c) => c.role === 'provider' && c.contractId === 'http::GET::/api/users',
+  );
+  check(
+    provider?.symbolName === 'list_users',
+    'Python Flask aliased view resolves through the relative import to list_users',
+    `sym=${provider?.symbolName} uid=${provider?.symbolUid ? 'set' : 'empty'}`,
+  );
+
+  const tr = await backend.callTool('trace', {
+    repo: '@pyalias-group',
+    from: 'fetch_users',
+    to: 'list_users',
+  });
+  check(
+    tr.status === 'ok' && crossingId(tr) === 'http::GET::/api/users' && !hasNote(tr, 'FILE'),
+    'Python aliased-import trace is symbol-precise (no file-level fallback)',
+    `status=${tr.status} crossing=${crossingId(tr)}`,
+  );
+
+  fs.rmSync(home, { recursive: true, force: true });
+}
+
+// ── Scenario: cross-file named handler (#2275) — repo-wide unique resolution ──
+line('\n## Scenario: cross-file named handler — repo-wide unique resolution');
+{
+  const { sync, backend, home } = await setup(
+    'xfile',
+    {
+      'xfile-backend': {
+        'src/handlers/users.ts': `export function listUsers(req: { body: unknown }, res: { json: (v: unknown) => void }) {
+  res.json([]);
+}
+`,
+        'src/routes.ts': `import { Router } from 'express';
+import { listUsers } from './handlers/users';
+const router = Router();
+router.get('/api/users', listUsers);
+export default router;
+`,
+        'package.json': '{ "name": "xfile-backend", "version": "1.0.0" }',
+      },
+      'xfile-frontend': {
+        'src/api.ts': `export async function fetchUsers() {
+  const r = await fetch('/api/users');
+  return r.json();
+}
+`,
+        'package.json': '{ "name": "xfile-frontend", "version": "1.0.0" }',
+      },
+    },
+    'xfile-group',
+    { 'app/backend': 'xfile-backend', 'app/frontend': 'xfile-frontend' },
+  );
+
+  const provider = sync.contracts.find(
+    (c) => c.role === 'provider' && c.contractId === 'http::GET::/api/users',
+  );
+  check(
+    Boolean(provider?.symbolUid) && provider?.symbolName === 'listUsers',
+    'cross-file provider resolves to the handler defined in another file (repo-wide unique)',
+    `sym=${provider?.symbolName} uid=${provider?.symbolUid ? 'set' : 'empty'}`,
+  );
+
+  const tr = await backend.callTool('trace', {
+    repo: '@xfile-group',
+    from: 'fetchUsers',
+    to: 'listUsers',
+    pdg: true,
+  });
+  check(
+    tr.status === 'ok' && crossingId(tr) === 'http::GET::/api/users' && !hasNote(tr, 'FILE'),
+    'cross-file trace is symbol-precise (no file-level fallback)',
+    `status=${tr.status} crossing=${crossingId(tr)}`,
+  );
+
+  fs.rmSync(home, { recursive: true, force: true });
+}
+
+// ── Scenario: ALIASED cross-file import — resolved through the import to the
+//    declared symbol, not the local alias (and not a same-named decoy). ───────
+line('\n## Scenario: aliased cross-file import — import-pinned resolution');
+{
+  const { sync, backend, home } = await setup(
+    'alias',
+    {
+      'alias-backend': {
+        'src/handlers/users.ts': `export function listUsers(req: { body: unknown }, res: { json: (v: unknown) => void }) {
+  res.json([]);
+}
+`,
+        // Decoy: a DIFFERENT, unrelated symbol named handleUsers. Name-only
+        // resolution of the local alias would wrongly pick this one.
+        'src/util.ts': `export function handleUsers() {
+  return 1;
+}
+`,
+        'src/routes.ts': `import { Router } from 'express';
+import { listUsers as handleUsers } from './handlers/users';
+const router = Router();
+router.get('/api/users', handleUsers);
+export default router;
+`,
+        'package.json': '{ "name": "alias-backend", "version": "1.0.0" }',
+      },
+      'alias-frontend': {
+        'src/api.ts': `export async function fetchUsers() {
+  const r = await fetch('/api/users');
+  return r.json();
+}
+`,
+        'package.json': '{ "name": "alias-frontend", "version": "1.0.0" }',
+      },
+    },
+    'alias-group',
+    { 'app/backend': 'alias-backend', 'app/frontend': 'alias-frontend' },
+  );
+
+  const provider = sync.contracts.find(
+    (c) => c.role === 'provider' && c.contractId === 'http::GET::/api/users',
+  );
+  check(
+    provider?.symbolName === 'listUsers',
+    'aliased handler resolves through the import to the declared symbol (not the alias/decoy)',
+    `sym=${provider?.symbolName} uid=${provider?.symbolUid ? 'set' : 'empty'}`,
+  );
+
+  const tr = await backend.callTool('trace', {
+    repo: '@alias-group',
+    from: 'fetchUsers',
+    to: 'listUsers',
+    pdg: true,
+  });
+  check(
+    tr.status === 'ok' && crossingId(tr) === 'http::GET::/api/users' && !hasNote(tr, 'FILE'),
+    'aliased-import trace is symbol-precise (no file-level fallback)',
+    `status=${tr.status} crossing=${crossingId(tr)}`,
+  );
+
+  fs.rmSync(home, { recursive: true, force: true });
+}
+
 // ── Summary ────────────────────────────────────────────────────────────────
 const passed = results.filter((r) => r.pass).length;
 line(`\n## Verdict: ${passed}/${results.length} checks passed`);
