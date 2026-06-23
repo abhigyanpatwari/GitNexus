@@ -833,6 +833,53 @@ Route::put('/api/named', [UserController::class, 'update']);
       expect(provider).toBeDefined();
       expect(provider?.symbolUid).toBe('');
     });
+
+    it('resolves a FastAPI @app provider to its decorated function (source-scan fallback) (#2276)', async () => {
+      const dir = path.join(tmpDir, 'py-fastapi-app');
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'main.py'),
+        `from fastapi import FastAPI
+app = FastAPI()
+
+@app.get("/api/items")
+def list_items():
+    return []
+`,
+      );
+      // The decorator is on line 4 (row 3); `def list_items` is on line 5
+      // (row 4). tree-sitter records the function_definition span from `def`,
+      // so list_items spans 0-based [4,5]. The detection line is the decorator
+      // row + 1 = 5, and the resolver's direct `line` probe (row 4) lands in
+      // the def span. (Graph routes are authoritative; this is the fallback.)
+      const mockDbExecutor = async (
+        query: string,
+        params?: Record<string, unknown>,
+      ): Promise<Record<string, unknown>[]> => {
+        if (query.includes('UNION ALL') && String(params?.filePath ?? '').includes('main.py')) {
+          return [
+            {
+              uid: 'fn-list_items',
+              name: 'list_items',
+              filePath: 'main.py',
+              startLine: 4,
+              endLine: 5,
+              labels: ['Function'],
+            },
+          ];
+        }
+        return [];
+      };
+      const contracts = await extractor.extract(mockDbExecutor, dir, makeRepo(dir));
+      const provider = contracts.find(
+        (c) => c.role === 'provider' && c.contractId === 'http::GET::/api/items',
+      );
+      expect(provider).toMatchObject({
+        symbolUid: 'fn-list_items',
+        symbolName: 'list_items',
+        meta: { extractionStrategy: 'source_scan_resolved' },
+      });
+    });
   });
 
   describe('provider extraction — graph-first (Strategy A)', () => {
