@@ -27,7 +27,14 @@ import { phpExportChecker } from '../export-detection.js';
 import { createImportResolver } from '../import-resolvers/resolver-factory.js';
 import { phpImportConfig } from '../import-resolvers/configs/php.js';
 import { PHP_QUERIES } from '../tree-sitter-queries.js';
-import { findDescendant, extractStringContent, type SyntaxNode } from '../utils/ast-helpers.js';
+import {
+  findDescendant,
+  extractStringContent,
+  extractLeadingDocComment,
+  getDefinitionNodeFromCaptures,
+  DOC_BEARING_LABELS,
+  type SyntaxNode,
+} from '../utils/ast-helpers.js';
 import type { NodeLabel } from 'gitnexus-shared';
 import { createFieldExtractor } from '../field-extractors/generic.js';
 import { phpConfig as phpFieldConfig } from '../field-extractors/configs/php.js';
@@ -223,7 +230,10 @@ function extractEloquentRelationDescription(methodNode: SyntaxNode): string | nu
 
 /**
  * LanguageProvider.descriptionExtractor implementation for PHP.
- * Extracts Eloquent model property metadata and relationship descriptions.
+ * Eloquent model property metadata and relationship descriptions take
+ * precedence (they are richer than prose); otherwise documentable symbols fall
+ * back to their leading PHPDoc docblock (issue #2270), mirroring the other
+ * leading-comment languages.
  */
 function phpDescriptionExtractor(
   nodeLabel: NodeLabel,
@@ -231,10 +241,19 @@ function phpDescriptionExtractor(
   captureMap: Record<string, SyntaxNode>,
 ): string | undefined {
   if (nodeLabel === 'Property' && captureMap['definition.property']) {
-    return extractPhpPropertyDescription(nodeName, captureMap['definition.property']) ?? undefined;
+    const eloquentProperty = extractPhpPropertyDescription(
+      nodeName,
+      captureMap['definition.property'],
+    );
+    if (eloquentProperty) return eloquentProperty;
   }
   if (nodeLabel === 'Method' && captureMap['definition.method']) {
-    return extractEloquentRelationDescription(captureMap['definition.method']) ?? undefined;
+    const eloquentRelation = extractEloquentRelationDescription(captureMap['definition.method']);
+    if (eloquentRelation) return eloquentRelation;
+  }
+  if (DOC_BEARING_LABELS.has(nodeLabel)) {
+    const definitionNode = getDefinitionNodeFromCaptures(captureMap);
+    if (definitionNode) return extractLeadingDocComment(definitionNode);
   }
   return undefined;
 }
