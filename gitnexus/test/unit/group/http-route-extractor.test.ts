@@ -538,6 +538,47 @@ export default router;
       const provider = providerOf(await extractor.extract(mockDbExecutor, dir, makeRepo(dir)));
       expect(provider?.symbolUid).toBe('fn-the-right-one');
     });
+
+    it('resolves a Python Flask add_url_rule ALIASED view through the import (relative module)', async () => {
+      // from .handlers.users import list_users as handle_users
+      // app.add_url_rule('/api/users', view_func=handle_users)
+      // resolves to the declared `list_users` in app/handlers/users.py — the
+      // relative dotted module `.handlers.users` is pinned, the alias never used.
+      const dir = path.join(tmpDir, 'py-flask-alias');
+      fs.mkdirSync(path.join(dir, 'app', 'handlers'), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'app/routes.py'),
+        `from flask import Flask
+from .handlers.users import list_users as handle_users
+app = Flask(__name__)
+app.add_url_rule('/api/users', view_func=handle_users)
+`,
+      );
+      const queriedNames: string[] = [];
+      const mockDbExecutor = async (
+        query: string,
+        params?: Record<string, unknown>,
+      ): Promise<Record<string, unknown>[]> => {
+        if (query.includes('STARTS WITH')) {
+          queriedNames.push(`module:${String(params?.name)}`);
+          return params?.name === 'list_users' &&
+            String(params?.fileDot ?? '').startsWith('app/handlers/users')
+            ? [{ uid: 'fn-list_users', name: 'list_users', filePath: 'app/handlers/users.py' }]
+            : [];
+        }
+        if (query.includes('n.name = $name')) {
+          queriedNames.push(`global:${String(params?.name)}`);
+          return [];
+        }
+        return [];
+      };
+      const contracts = await extractor.extract(mockDbExecutor, dir, makeRepo(dir));
+      const provider = contracts.find(
+        (c) => c.role === 'provider' && c.contractId === 'http::GET::/api/users',
+      );
+      expect(provider).toMatchObject({ symbolUid: 'fn-list_users', symbolName: 'list_users' });
+      expect(queriedNames).not.toContain('module:handle_users');
+    });
   });
 
   describe('provider extraction — graph-first (Strategy A)', () => {

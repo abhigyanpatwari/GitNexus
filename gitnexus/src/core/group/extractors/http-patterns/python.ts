@@ -79,6 +79,33 @@ const FASTAPI_ROUTER_PATTERNS = compilePatterns({
   ],
 } satisfies LanguagePatterns<Record<string, never>>);
 
+// ─── Provider: Flask `app.add_url_rule('/path', view_func=handler)` ───
+// The imperative Flask route registration: unlike `@app.route` (whose handler
+// is the decorated function, same-file), `view_func` is frequently an IMPORTED
+// (and sometimes aliased) view, so the handler resolves through the file's
+// imports. `add_url_rule` + a `view_func=` keyword is highly Flask-specific, so
+// the false-positive risk is low. Method(s) come from a `methods=[...]` keyword
+// (default GET), extracted in code from the captured call.
+const FLASK_ADD_URL_RULE_PATTERNS = compilePatterns({
+  name: 'python-flask-add-url-rule',
+  language: Python,
+  patterns: [
+    {
+      meta: {},
+      query: `
+        (call
+          function: (attribute
+            attribute: (identifier) @fn (#eq? @fn "add_url_rule"))
+          arguments: (argument_list
+            . (string) @path
+            (keyword_argument
+              name: (identifier) @kw (#eq? @kw "view_func")
+              value: (identifier) @handler))) @call
+      `,
+    },
+  ],
+} satisfies LanguagePatterns<Record<string, never>>);
+
 // ─── include_router(<router_obj>, prefix='/x') across the repo ────────
 // Two shapes are common:
 //   app.include_router(assistant.router, prefix='/ai')
@@ -330,6 +357,73 @@ const WRAPPER_URI_VAR_PATTERNS = compilePatterns({
     },
   ],
 } satisfies LanguagePatterns<Record<string, never>>);
+
+/**
+ * Map each `from <module> import <name> [as <alias>]` binding to its declared
+ * name + raw module specifier (the spec keeps the leading dots for relative
+ * imports — `.users`, `..pkg.users` — which the extractor resolves to a target
+ * file). Lets a Flask `view_func` handler resolve through an alias to the real
+ * symbol in its module rather than the local alias text. `import x` / `import x
+ * as y` (module imports, not symbol imports) are left out — a route handler is a
+ * symbol, addressed via `from … import …`.
+ */
+function buildPythonImportMap(tree: Parser.Tree): Map<string, { name: string; module: string }> {
+  const map = new Map<string, { name: string; module: string }>();
+  const walk = (node: Parser.SyntaxNode): void => {
+    if (node.type === 'import_from_statement') {
+      const moduleNode = node.childForFieldName('module_name');
+      const module = moduleNode?.text ?? null;
+      if (module !== null) {
+        for (let i = 0; i < node.namedChildCount; i++) {
+          const c = node.namedChild(i);
+          if (!c || c.id === moduleNode?.id) continue;
+          if (c.type === 'dotted_name') {
+            map.set(c.text, { name: c.text, module });
+          } else if (c.type === 'aliased_import') {
+            const nameNode = c.childForFieldName('name');
+            const aliasNode = c.childForFieldName('alias');
+            if (nameNode && aliasNode) {
+              map.set(aliasNode.text, { name: nameNode.text, module });
+            }
+          }
+        }
+      }
+    }
+    for (let i = 0; i < node.namedChildCount; i++) {
+      const c = node.namedChild(i);
+      if (c) walk(c);
+    }
+  };
+  walk(tree.rootNode);
+  return map;
+}
+
+/**
+ * HTTP verbs declared on a Flask `add_url_rule(..., methods=[...])` call, upper-
+ * cased. Defaults to `['GET']` when no `methods` keyword is present (Flask's own
+ * default). Reads the captured call node directly since the list value is awkward
+ * to capture in a tree-sitter query.
+ */
+function extractFlaskMethods(callNode: Parser.SyntaxNode): string[] {
+  const args = callNode.childForFieldName('arguments');
+  if (args) {
+    for (let i = 0; i < args.namedChildCount; i++) {
+      const kw = args.namedChild(i);
+      if (!kw || kw.type !== 'keyword_argument') continue;
+      if (kw.childForFieldName('name')?.text !== 'methods') continue;
+      const list = kw.childForFieldName('value');
+      if (!list) continue;
+      const methods: string[] = [];
+      for (let j = 0; j < list.namedChildCount; j++) {
+        const el = list.namedChild(j);
+        const v = el && el.type === 'string' ? unquoteLiteral(el.text) : null;
+        if (v) methods.push(v.toUpperCase());
+      }
+      if (methods.length > 0) return methods;
+    }
+  }
+  return ['GET'];
+}
 
 // Pre-scan: collect local string assignments (uri = "api/v1/endpoint/")
 function buildLocalStringMap(tree: Parser.Tree): Map<string, string> {
@@ -943,6 +1037,10 @@ export const PYTHON_HTTP_PLUGIN: HttpLanguagePlugin = {
     const out: HttpDetection[] = [];
     const httpxAsyncClients = collectHttpxAsyncClients(tree);
     const ctx = repoContext as PythonRepoContext | undefined;
+    // Local-binding → { declared name, module } for the file's `from … import …`
+    // statements, so an imperatively-registered handler (Flask `view_func`) that
+    // is an imported (possibly aliased) symbol resolves to its real definition.
+    const importMap = buildPythonImportMap(tree);
 
     // Providers: FastAPI @app.<verb>("/path") — already absolute path.
     for (const match of runCompiledPatterns(FASTAPI_APP_PATTERNS, tree)) {
@@ -1003,6 +1101,32 @@ export const PYTHON_HTTP_PLUGIN: HttpLanguagePlugin = {
           method: httpMethod,
           path: p,
           name: null,
+          confidence: 0.8,
+        });
+      }
+    }
+
+    // Providers: Flask `app.add_url_rule('/path', view_func=handler, methods=[…])`.
+    // The handler is a `view_func` identifier, frequently an imported (possibly
+    // aliased) view, so resolve it through the file's imports to the declared
+    // symbol + its module for import-pinned resolution downstream.
+    for (const match of runCompiledPatterns(FLASK_ADD_URL_RULE_PATTERNS, tree)) {
+      const pathNode = match.captures.path;
+      const handlerNode = match.captures.handler;
+      const callNode = match.captures.call;
+      if (!pathNode || !handlerNode || !callNode) continue;
+      const path = unquoteLiteral(pathNode.text);
+      if (path === null) continue;
+      const imported = importMap.get(handlerNode.text);
+      for (const method of extractFlaskMethods(callNode)) {
+        out.push({
+          role: 'provider',
+          framework: 'flask',
+          method,
+          path,
+          name: imported ? imported.name : handlerNode.text,
+          handlerImport: imported,
+          line: (imported ? pathNode : handlerNode).startPosition.row + 1,
           confidence: 0.8,
         });
       }

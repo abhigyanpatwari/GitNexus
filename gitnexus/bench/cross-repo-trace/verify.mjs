@@ -271,6 +271,58 @@ def fetch_items():
   fs.rmSync(home, { recursive: true, force: true });
 }
 
+// ── Scenario: Python Flask add_url_rule with an ALIASED relative import —
+//    import-pinned resolution across Python's dotted module syntax. ───────────
+line('\n## Scenario: Python aliased import (Flask add_url_rule) — import-pinned');
+{
+  const { sync, backend, home } = await setup(
+    'pyalias',
+    {
+      'pyalias-backend': {
+        'app/handlers/users.py': `def list_users():
+    return []
+`,
+        'app/routes.py': `from flask import Flask
+from .handlers.users import list_users as handle_users
+app = Flask(__name__)
+app.add_url_rule('/api/users', view_func=handle_users)
+`,
+      },
+      'pyalias-frontend': {
+        'client.py': `import requests
+
+def fetch_users():
+    return requests.get('/api/users').json()
+`,
+      },
+    },
+    'pyalias-group',
+    { 'app/backend': 'pyalias-backend', 'app/frontend': 'pyalias-frontend' },
+  );
+
+  const provider = sync.contracts.find(
+    (c) => c.role === 'provider' && c.contractId === 'http::GET::/api/users',
+  );
+  check(
+    provider?.symbolName === 'list_users',
+    'Python Flask aliased view resolves through the relative import to list_users',
+    `sym=${provider?.symbolName} uid=${provider?.symbolUid ? 'set' : 'empty'}`,
+  );
+
+  const tr = await backend.callTool('trace', {
+    repo: '@pyalias-group',
+    from: 'fetch_users',
+    to: 'list_users',
+  });
+  check(
+    tr.status === 'ok' && crossingId(tr) === 'http::GET::/api/users' && !hasNote(tr, 'FILE'),
+    'Python aliased-import trace is symbol-precise (no file-level fallback)',
+    `status=${tr.status} crossing=${crossingId(tr)}`,
+  );
+
+  fs.rmSync(home, { recursive: true, force: true });
+}
+
 // ── Scenario: cross-file named handler (#2275) — repo-wide unique resolution ──
 line('\n## Scenario: cross-file named handler — repo-wide unique resolution');
 {

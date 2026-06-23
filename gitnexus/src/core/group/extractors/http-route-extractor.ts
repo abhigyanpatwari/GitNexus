@@ -113,6 +113,34 @@ LIMIT 2`;
 // building the module file-prefix so `./h/users` and `./h/users.ts` agree).
 const SOURCE_EXT_RE = /\.(?:m|c)?[jt]sx?$/;
 
+/**
+ * Resolve an import specifier to a repo-relative FILE BASE (path without
+ * extension) so the target module can be matched by `filePath STARTS WITH`.
+ * Handles two relative-import dialects and returns null for bare/absolute
+ * imports (which fall back to a repo-wide name lookup):
+ *   - path-style (JS/TS): `./handlers/users`, `../x` → joined against the
+ *     importing file's directory.
+ *   - dotted-relative (Python): `.users`, `..pkg.users` → leading dots are
+ *     package levels (one dot = the file's own package), the rest dot→slash.
+ */
+function resolveModuleBase(fromFile: string, module: string): string | null {
+  const dir = path.posix.dirname(fromFile.replace(/\\/g, '/'));
+  if (module.includes('/')) {
+    // path-style relative import
+    if (!module.startsWith('.')) return null;
+    return path.posix.normalize(path.posix.join(dir, module)).replace(SOURCE_EXT_RE, '');
+  }
+  if (module.startsWith('.')) {
+    // Python dotted-relative import
+    const dots = module.length - module.replace(/^\.+/, '').length;
+    const rest = module.slice(dots).replace(/\./g, '/');
+    let base = dir;
+    for (let i = 1; i < dots; i++) base = path.posix.dirname(base);
+    return rest ? path.posix.normalize(path.posix.join(base, rest)) : base;
+  }
+  return null; // bare / absolute import — repo-wide fallback
+}
+
 interface ResolvedSymbol {
   uid: string;
   name: string;
@@ -438,11 +466,8 @@ export class HttpRouteExtractor implements ContractExtractor {
       imp: { name: string; module: string },
     ): Promise<ResolvedSymbol | null> => {
       if (!dbExecutor) return null;
-      if (!imp.module.startsWith('.')) return null; // only relative imports pin to a file
-      const dir = path.posix.dirname(fromFile.replace(/\\/g, '/'));
-      const base = path.posix
-        .normalize(path.posix.join(dir, imp.module.replace(/\\/g, '/')))
-        .replace(SOURCE_EXT_RE, '');
+      const base = resolveModuleBase(fromFile, imp.module);
+      if (base === null) return null; // bare/absolute import → repo-wide fallback
       const cacheKey = JSON.stringify([base, imp.name]);
       const cached = importedSymbolCache.get(cacheKey);
       if (cached !== undefined) return cached;
