@@ -271,6 +271,60 @@ def fetch_items():
   fs.rmSync(home, { recursive: true, force: true });
 }
 
+// ── Scenario: cross-file named handler (#2275) — repo-wide unique resolution ──
+line('\n## Scenario: cross-file named handler — repo-wide unique resolution');
+{
+  const { sync, backend, home } = await setup(
+    'xfile',
+    {
+      'xfile-backend': {
+        'src/handlers/users.ts': `export function listUsers(req: { body: unknown }, res: { json: (v: unknown) => void }) {
+  res.json([]);
+}
+`,
+        'src/routes.ts': `import { Router } from 'express';
+import { listUsers } from './handlers/users';
+const router = Router();
+router.get('/api/users', listUsers);
+export default router;
+`,
+        'package.json': '{ "name": "xfile-backend", "version": "1.0.0" }',
+      },
+      'xfile-frontend': {
+        'src/api.ts': `export async function fetchUsers() {
+  const r = await fetch('/api/users');
+  return r.json();
+}
+`,
+        'package.json': '{ "name": "xfile-frontend", "version": "1.0.0" }',
+      },
+    },
+    'xfile-group',
+    { 'app/backend': 'xfile-backend', 'app/frontend': 'xfile-frontend' },
+  );
+
+  const provider = sync.contracts.find((c) => c.role === 'provider');
+  check(
+    Boolean(provider?.symbolUid) && provider?.symbolName === 'listUsers',
+    'cross-file provider resolves to the handler defined in another file (repo-wide unique)',
+    `sym=${provider?.symbolName} uid=${provider?.symbolUid ? 'set' : 'empty'}`,
+  );
+
+  const tr = await backend.callTool('trace', {
+    repo: '@xfile-group',
+    from: 'fetchUsers',
+    to: 'listUsers',
+    pdg: true,
+  });
+  check(
+    tr.status === 'ok' && crossingId(tr) === 'http::GET::/api/users' && !hasNote(tr, 'FILE'),
+    'cross-file trace is symbol-precise (no file-level fallback)',
+    `status=${tr.status} crossing=${crossingId(tr)}`,
+  );
+
+  fs.rmSync(home, { recursive: true, force: true });
+}
+
 // ── Summary ────────────────────────────────────────────────────────────────
 const passed = results.filter((r) => r.pass).length;
 line(`\n## Verdict: ${passed}/${results.length} checks passed`);

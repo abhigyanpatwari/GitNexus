@@ -32,6 +32,10 @@ analyze → sync → trace/impact pipeline, and prints PASS/FAIL per assertion
 4. **Multi-language (Python)** — a Flask provider + `requests` consumer; asserts
    the Python line wiring resolves the consumer and the cross-repo `trace`
    stitches `fetch_items -> list_items`.
+5. **Cross-file named handler** (#2275) — a route whose handler (`listUsers`) is
+   imported from another file than its registration. Asserts the provider
+   resolves to the handler via the repo-wide unique name lookup, and the trace is
+   symbol-precise (no file-level fallback).
 
 The **ambiguous-destination** (a file making several HTTP calls whose consumer
 contracts have no resolved uid) and **degraded-member** (a member DB that throws
