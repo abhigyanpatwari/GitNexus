@@ -97,23 +97,41 @@ export interface TaintSanitizerEntry {
  * the property is one of `properties` (`body`, `query`, …). Matching is
  * name-based on the harvested `member-read` site (Semgrep-convention, not
  * type-aware — the accepted M3 FP/FN trade recorded in the plan's risk
- * table). One entry fans out over the objects × properties product.
+ * table). One entry fans out over the objects × properties product. `type`
+ * remains optional so existing/custom model objects that predate the
+ * discriminant continue to load as member-read sources.
  */
 export interface TaintMemberSourceEntry {
+  readonly type?: 'member-read';
   readonly kind: SourceKind;
   readonly objects: readonly string[];
   readonly properties: readonly string[];
 }
 
 /**
+ * A call-result taint source: the result of `<receiver>.<method>(...)` becomes
+ * tainted, but only when the call site records direct `resultDefs`. This keeps
+ * source seeding tied to proven data-flow destinations instead of treating an
+ * arbitrary nested call expression as a value occurrence.
+ */
+export interface TaintCallResultSourceEntry {
+  readonly type: 'call-result';
+  readonly kind: SourceKind;
+  readonly receivers: readonly string[];
+  readonly methods: readonly string[];
+}
+
+export type TaintSourceEntry = TaintMemberSourceEntry | TaintCallResultSourceEntry;
+
+/**
  * The taint configuration for a single language: which member reads introduce
  * taint (sources), which callables are dangerous to reach with tainted input
  * (sinks), and which callables clear it (sanitizers). M3 sources are
- * member-read entries only; call-result sources are a forward extension
- * (add a union variant), not a missing case.
+ * member-read entries for JS/TS/Python and call-result entries for languages
+ * whose request APIs return tainted values from calls.
  */
 export interface SourceSinkSanitizerSpec {
-  readonly sources: readonly TaintMemberSourceEntry[];
+  readonly sources: readonly TaintSourceEntry[];
   readonly sinks: readonly TaintSinkEntry[];
   readonly sanitizers: readonly TaintSanitizerEntry[];
 }

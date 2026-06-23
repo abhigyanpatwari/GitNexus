@@ -30,6 +30,7 @@ export function interpretJavaImport(captures: CaptureMatch): ParsedImport | null
         localName: nameCap?.text ?? simpleName,
         importedName: simpleName,
         targetRaw: sourceCap.text,
+        targetIncludesImportedName: true,
       };
     }
     case 'wildcard': {

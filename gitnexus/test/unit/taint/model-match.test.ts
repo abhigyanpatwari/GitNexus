@@ -25,7 +25,7 @@ import {
   type FunctionSiteMatches,
   type MatchedSanitizerCall,
   type MatchedSinkCall,
-  type MatchedSourceRead,
+  type MatchedSource,
 } from '../../../src/core/ingestion/taint/match.js';
 import {
   getSourceSinkConfig,
@@ -47,7 +47,7 @@ function matchesOf(
 
 const allSinks = (m: FunctionSiteMatches): MatchedSinkCall[] =>
   m.statements.flatMap((s) => [...s.sinks]);
-const allSources = (m: FunctionSiteMatches): MatchedSourceRead[] =>
+const allSources = (m: FunctionSiteMatches): MatchedSource[] =>
   m.statements.flatMap((s) => [...s.sources]);
 const allSanitizers = (m: FunctionSiteMatches): MatchedSanitizerCall[] =>
   m.statements.flatMap((s) => [...s.sanitizers]);
@@ -76,6 +76,21 @@ function f(c) { run(c); }`);
     const m = matchesOf(`import * as cp from 'child_process';
 function f(c) { cp.exec(c); }`);
     expect(allSinks(m).map((s) => s.entry.name)).toEqual(['exec']);
+  });
+
+  it('named import from a same-tail module is not canonicalized as a namespace handle', () => {
+    const spec: SourceSinkSanitizerSpec = {
+      sources: [],
+      sinks: [{ name: 'readString', kind: 'path-traversal', args: [0], module: 'pkg.Files' }],
+      sanitizers: [],
+    };
+    const m = matchesOf(
+      `import { Files } from 'pkg.Files';
+function f(p) { Files.readString(p); }`,
+      0,
+      spec,
+    );
+    expect(allSinks(m)).toHaveLength(0);
   });
 
   it('node: scheme prefix is normalized — `from "node:child_process"` matches too', () => {
@@ -276,7 +291,13 @@ describe('registry + model identity', () => {
   it('registerBuiltinTaintModels registers TS, JS, and Python (idempotent); others stay undefined', () => {
     registerBuiltinTaintModels();
     registerBuiltinTaintModels(); // idempotent — last-write-wins on the same ids
-    expect(registeredTaintLanguages().sort()).toEqual(['javascript', 'python', 'typescript']);
+    expect(registeredTaintLanguages().sort()).toEqual([
+      'java',
+      'javascript',
+      'python',
+      'typescript',
+    ]);
+    expect(getSourceSinkConfig('java')).toBe(BUILTIN_TAINT_MODELS.java);
     expect(getSourceSinkConfig('typescript')).toBe(TS_JS_TAINT_MODEL);
     expect(getSourceSinkConfig('javascript')).toBe(TS_JS_TAINT_MODEL);
     expect(getSourceSinkConfig('python')).toBe(BUILTIN_TAINT_MODELS.python);
