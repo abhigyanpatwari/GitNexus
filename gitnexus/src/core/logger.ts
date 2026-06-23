@@ -38,6 +38,12 @@ export interface CreateLoggerOptions {
   debugEnvVar?: string;
   /** Override destination stream — primarily for tests. */
   destination?: DestinationStream;
+  /**
+   * Explicit level for the destination-override path — primarily for tests that
+   * need to capture below the default `info` (e.g. asserting a `debug` record).
+   * Ignored unless `destination` is set; `debugEnvVar` still wins when truthy.
+   */
+  level?: string;
 }
 
 function isTruthyEnv(value: string | undefined): boolean {
@@ -219,7 +225,7 @@ export function createLogger(name: string, opts?: CreateLoggerOptions): Logger {
 
   if (opts?.destination) {
     return pino(
-      { level: debugRequested ? 'debug' : 'info', base: undefined, name },
+      { level: debugRequested ? 'debug' : (opts.level ?? 'info'), base: undefined, name },
       opts.destination,
     );
   }
@@ -247,6 +253,7 @@ export function createLogger(name: string, opts?: CreateLoggerOptions): Logger {
 /* ------------------------------------------------------------------ */
 
 let _activeDestination: DestinationStream | undefined;
+let _activeLevel: string | undefined;
 let _cached: Logger | undefined;
 
 function _getInner(): Logger {
@@ -256,7 +263,7 @@ function _getInner(): Logger {
   // by `_captureLogger()` below.
   _cached = createLogger(
     'gitnexus',
-    _activeDestination ? { destination: _activeDestination } : undefined,
+    _activeDestination ? { destination: _activeDestination, level: _activeLevel } : undefined,
   );
   return _cached;
 }
@@ -342,10 +349,13 @@ export interface LoggerCapture {
  *     expect(cap.records().some(r => r.msg?.includes('clamping'))).toBe(true);
  *   });
  *
+ * Pass `level` (e.g. 'debug') to capture below the default 'info' — needed to
+ * assert that a record was emitted at debug rather than merely absent.
+ *
  * Not a public API; underscore-prefixed and called only from test code.
  * Throws if a previous capture is still active — see the body for context.
  */
-export function _captureLogger(): LoggerCapture {
+export function _captureLogger(level?: string): LoggerCapture {
   // Guard against double-capture: forgetting `restore()` between two
   // `_captureLogger()` calls silently abandoned the previous capture and
   // corrupted logger state for the rest of the vitest worker. Throwing here
@@ -358,6 +368,7 @@ export function _captureLogger(): LoggerCapture {
   }
   const w = new MemoryWritable();
   _activeDestination = w;
+  _activeLevel = level;
   _cached = undefined;
   return {
     records: () =>
@@ -369,6 +380,7 @@ export function _captureLogger(): LoggerCapture {
     text: () => w.chunks.join(''),
     restore: () => {
       _activeDestination = undefined;
+      _activeLevel = undefined;
       _cached = undefined;
     },
   };

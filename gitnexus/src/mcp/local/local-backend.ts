@@ -268,9 +268,10 @@ const confidenceForRelType = (relType: string | undefined): number =>
 
 /**
  * Structured logging for *swallowed* query failures — replaces empty catch
- * blocks. Every caller of this helper catches the failure and degrades to a
- * safe fallback (the operation still returns a result), so these are NOT
- * operation-level errors and must not be logged at `error`:
+ * blocks. The level reflects telemetry severity, NOT a promise about the
+ * caller: most callers catch the failure and degrade to a genuinely safe
+ * fallback (a usable result, usually with a caller-visible `partial`/`ftsUsed`
+ * flag), so these are not operation-level errors and must not log at `error`:
  *
  *  - A benign missing optional table/label/column — a repo analyzed without
  *    processes/communities, or a pre-v3 PDG index lacking the `calleeIds`
@@ -283,6 +284,13 @@ const confidenceForRelType = (relType: string | undefined): number =>
  * `error` is intentionally NOT used here — it is reserved for failures that
  * actually abort an operation, which log directly rather than through this
  * best-effort-degradation helper.
+ *
+ * Contract for callers (#2283 review): only route a failure here when the
+ * caller ALSO surfaces the degradation in its result (a `partial` flag,
+ * `failed_files`, `traversalComplete:false`, …). A mutating or safety-critical
+ * path that would otherwise report success/clean (e.g. `rename` apply, the
+ * `detect_changes` safety gate) MUST set that result-level signal — `warn`
+ * alone is not a substitute for an honest result.
  */
 function logQueryError(context: string, err: unknown): void {
   const msg = err instanceof Error ? err.message : String(err);
@@ -303,7 +311,12 @@ function logQueryError(context: string, err: unknown): void {
  */
 function isBenignMissingTableError(err: unknown): boolean {
   const msg = err instanceof Error ? err.message : String(err ?? '');
-  return /does not exist|no such (table|label|rel)|unknown (table|label)|not (defined|found)/i.test(
+  // The `not (defined|found)` arm is scoped to a schema object (table/label/
+  // rel/column/property), mirroring lbug-adapter's isMissingColumnError
+  // (`/(table|column|property).*not found/i`): an unscoped "not found" matched
+  // operation failures like `rg: not found` (ripgrep absent) or `Symbol not
+  // found`, which this helper would then silently demote to `debug` (#2283).
+  return /does not exist|no such (table|label|rel)|unknown (table|label)|(table|label|rel|column|property)[^\n]*\bnot (defined|found)\b/i.test(
     msg,
   );
 }
@@ -3851,6 +3864,9 @@ export class LocalBackend {
 
     // Map diff hunks to indexed symbols via range overlap
     const changedSymbols: any[] = [];
+    // Set if a swallowed graph query fails below — surfaces `partial:true` so a
+    // degraded run cannot report a false-clean `risk_level:'low'` (#2283).
+    let queryDegraded = false;
     for (const fileDiff of fileDiffs) {
       if (fileDiff.hunks.length === 0) continue;
 
@@ -3898,6 +3914,12 @@ export class LocalBackend {
         }
       } catch (e) {
         logQueryError('detect-changes:file-symbols', e);
+        // The symbol query failed: changedSymbols stays empty and the result
+        // would otherwise look like a clean no-op (`changed_count:0`,
+        // `risk_level:'low'`). detect_changes is the pre-commit safety gate, so
+        // flag the result `partial` rather than let a swallowed failure
+        // masquerade as "nothing changed" (#2283).
+        queryDegraded = true;
       }
     }
 
@@ -3936,6 +3958,7 @@ export class LocalBackend {
         }
       } catch (e) {
         logQueryError('detect-changes:process-lookup', e);
+        queryDegraded = true;
       }
     }
 
@@ -3958,6 +3981,9 @@ export class LocalBackend {
       },
       changed_symbols: changedSymbols,
       affected_processes: Array.from(affectedProcesses.values()),
+      // A swallowed query failure makes the counts/risk above incomplete — tell
+      // the caller so the safety gate isn't trusted as a clean result (#2283).
+      ...(queryDegraded && { partial: true }),
     };
   }
 
@@ -4158,6 +4184,7 @@ export class LocalBackend {
     const allChanges = Array.from(changes.values());
     const totalEdits = allChanges.reduce((sum, c) => sum + c.edits.length, 0);
 
+    const failedFiles: string[] = [];
     if (!dry_run) {
       // Apply edits to files
       for (const change of allChanges) {
@@ -4168,13 +4195,17 @@ export class LocalBackend {
           content = content.replace(regex, new_name);
           await fs.writeFile(fullPath, content, 'utf-8');
         } catch (e) {
+          // A swallowed write failure must not be reported as a full success
+          // (#2283): record the file so the result can degrade to 'partial'
+          // with the unwritten files listed, rather than masquerading as done.
           logQueryError('rename:apply-edit', e);
+          failedFiles.push(change.file_path);
         }
       }
     }
 
     return {
-      status: 'success',
+      status: failedFiles.length > 0 ? 'partial' : 'success',
       old_name: oldName,
       new_name,
       files_affected: allChanges.length,
@@ -4183,6 +4214,7 @@ export class LocalBackend {
       text_search_edits: astSearchEdits,
       changes: allChanges,
       applied: !dry_run,
+      ...(failedFiles.length > 0 && { failed_files: failedFiles }),
     };
   }
 
@@ -4878,7 +4910,11 @@ export class LocalBackend {
         symType,
         direction,
         maxDepth,
-        line: params.line,
+        // Use the normalized line, not raw params.line, so the gate and the
+        // engine share one source of truth (#2283). Identity in pdg mode today
+        // — effectiveLine === params.line when mode === 'pdg' — but this stays
+        // correct if the normalization ever stops being an identity here.
+        line: effectiveLine,
         limit: Number.isFinite(params.limit) ? params.limit : 100,
         // KTD2 extraction-seam discipline: hand the engine its DB dependency
         // explicitly rather than `this.`-binding it. LocalBackend owns repo
