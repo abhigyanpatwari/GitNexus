@@ -723,6 +723,116 @@ func main() {
         symbolName: 'healthHandler',
       });
     });
+
+    it('resolves a Laravel closure route nested in a method to that method (#2276)', async () => {
+      const dir = path.join(tmpDir, 'php-closure-in-method');
+      fs.mkdirSync(path.join(dir, 'app'), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'app/RouteServiceProvider.php'),
+        `<?php
+class RouteServiceProvider {
+    public function boot() {
+        Route::get('/api/closure', function () {
+            return 1;
+        });
+    }
+}
+`,
+      );
+      // boot() spans source lines 3-7 → 0-based [2,6]; the closure registration
+      // is on line 4 (row 3), inside boot's span.
+      const mockDbExecutor = async (
+        query: string,
+        params?: Record<string, unknown>,
+      ): Promise<Record<string, unknown>[]> => {
+        if (
+          query.includes('UNION ALL') &&
+          String(params?.filePath ?? '').includes('RouteServiceProvider.php')
+        ) {
+          return [
+            {
+              uid: 'method-boot',
+              name: 'boot',
+              filePath: 'app/RouteServiceProvider.php',
+              startLine: 2,
+              endLine: 6,
+              labels: ['Method'],
+            },
+          ];
+        }
+        return [];
+      };
+      const contracts = await extractor.extract(mockDbExecutor, dir, makeRepo(dir));
+      const provider = contracts.find(
+        (c) => c.role === 'provider' && c.contractId === 'http::GET::/api/closure',
+      );
+      expect(provider).toMatchObject({
+        symbolUid: 'method-boot',
+        symbolName: 'boot',
+        meta: { extractionStrategy: 'source_scan_resolved' },
+      });
+    });
+
+    it('resolves a Laravel arrow-fn closure route by containment (#2276)', async () => {
+      const dir = path.join(tmpDir, 'php-arrow-in-method');
+      fs.mkdirSync(path.join(dir, 'app'), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'app/RouteServiceProvider.php'),
+        `<?php
+class RouteServiceProvider {
+    public function boot() {
+        Route::post('/api/arrow', fn() => response());
+    }
+}
+`,
+      );
+      const mockDbExecutor = async (
+        query: string,
+        params?: Record<string, unknown>,
+      ): Promise<Record<string, unknown>[]> => {
+        if (
+          query.includes('UNION ALL') &&
+          String(params?.filePath ?? '').includes('RouteServiceProvider.php')
+        ) {
+          return [
+            {
+              uid: 'method-boot',
+              name: 'boot',
+              filePath: 'app/RouteServiceProvider.php',
+              startLine: 2,
+              endLine: 4,
+              labels: ['Method'],
+            },
+          ];
+        }
+        return [];
+      };
+      const contracts = await extractor.extract(mockDbExecutor, dir, makeRepo(dir));
+      const provider = contracts.find(
+        (c) => c.role === 'provider' && c.contractId === 'http::POST::/api/arrow',
+      );
+      expect(provider).toMatchObject({ symbolUid: 'method-boot', symbolName: 'boot' });
+    });
+
+    it('leaves a Laravel NAMED-controller route at the prior behavior (no closure path) (#2276)', async () => {
+      const dir = path.join(tmpDir, 'php-named-controller');
+      fs.mkdirSync(path.join(dir, 'routes'), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'routes/web.php'),
+        `<?php
+Route::put('/api/named', [UserController::class, 'update']);
+`,
+      );
+      // No closure → name stays 'route' (not null); the 'route' label resolves
+      // to no symbol, so symbolUid stays empty (file-level). Behavior unchanged.
+      const mockDbExecutor = async (): Promise<Record<string, unknown>[]> => [];
+      const contracts = await extractor.extract(mockDbExecutor, dir, makeRepo(dir));
+      const provider = contracts.find(
+        (c) => c.role === 'provider' && c.contractId === 'http::PUT::/api/named',
+      );
+      expect(provider).toBeDefined();
+      expect(provider?.symbolUid).toBe('');
+    });
   });
 
   describe('provider extraction — graph-first (Strategy A)', () => {
