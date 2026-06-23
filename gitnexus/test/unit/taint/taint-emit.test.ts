@@ -18,6 +18,7 @@
 import { describe, it, expect } from 'vitest';
 import { cfgsOf, importsFor } from '../../helpers/ts-cfg-harness.js';
 import { emitFileCfgs } from '../../../src/core/ingestion/cfg/emit.js';
+import type { FunctionCfg } from '../../../src/core/ingestion/cfg/types.js';
 import type { SourceSinkSanitizerSpec } from '../../../src/core/ingestion/taint/source-sink-config.js';
 import {
   emitFileTaint,
@@ -42,6 +43,19 @@ const MECH: SourceSinkSanitizerSpec = {
 const MECH_ALL_ARGS: SourceSinkSanitizerSpec = {
   ...MECH,
   sinks: [{ name: 'exec', kind: 'command-injection', global: true }],
+};
+
+const CALL_RESULT_SOURCE_SPEC: SourceSinkSanitizerSpec = {
+  sources: [
+    {
+      type: 'call-result',
+      kind: 'remote-input',
+      receivers: ['request'],
+      methods: ['getParameter'],
+    },
+  ],
+  sinks: [{ name: 'exec', kind: 'command-injection', args: [0], global: true }],
+  sanitizers: [],
 };
 
 interface RunResult {
@@ -98,6 +112,36 @@ function handler(req: { body: string }) {
     expect(ids.has(tainted[0].sourceId)).toBe(true);
     expect(ids.has(tainted[0].targetId)).toBe(true);
     expect(tainted[0].id.startsWith('TAINTED:fixture.ts:')).toBe(true);
+  });
+
+  it('preserves the legacy member-read TAINTED edge identity', () => {
+    const { tainted } = run(CODE);
+    expect(tainted[0].id).toBe(
+      'TAINTED:fixture.ts:2:0:command-injection:2:0.0:req:2:17:2:1.0.0:cmd:3:8:exec:body',
+    );
+  });
+
+  it('persists a call-result source TAINTED edge with deterministic identity', () => {
+    const { result, tainted } = run(
+      `
+function handler(request: { getParameter(name: string): string }) {
+  const cmd = request.getParameter('cmd');
+  exec(cmd);
+}`,
+      { spec: CALL_RESULT_SOURCE_SPEC },
+    );
+    expect(result.functionsAnalyzed).toBe(1);
+    expect(result.findingsEmitted).toBe(1);
+    expect(tainted).toHaveLength(1);
+    expect(tainted[0].id).toBe(
+      'TAINTED:fixture.ts:2:0:command-injection:2:0.0:call-result:cmd:3:8:request.getParameter:2:1.0.0:cmd:3:8:exec',
+    );
+    const decoded = decodeTaintPath(tainted[0].reason);
+    expect(decoded.ok).toBe(true);
+    if (decoded.ok) {
+      expect(decoded.kind).toBe('command-injection');
+      expect(decoded.hops.map((h) => `${h.variable}@${h.line}`)).toEqual(['cmd@3', 'cmd@4']);
+    }
   });
 
   it('the persisted reason decodes via the shared codec with ordered hops + variables', () => {

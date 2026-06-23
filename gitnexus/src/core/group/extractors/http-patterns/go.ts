@@ -180,6 +180,7 @@ export const GO_HTTP_PLUGIN: HttpLanguagePlugin = {
         method: httpMethod,
         path,
         name: null,
+        line: pathNode.startPosition.row + 1,
         confidence: 0.7,
       });
     }
@@ -198,6 +199,7 @@ export const GO_HTTP_PLUGIN: HttpLanguagePlugin = {
         method: method.toUpperCase(),
         path,
         name: null,
+        line: pathNode.startPosition.row + 1,
         confidence: 0.7,
       });
     }
@@ -215,6 +217,7 @@ export const GO_HTTP_PLUGIN: HttpLanguagePlugin = {
         method: methodNode.text.toUpperCase(),
         path,
         name: null,
+        line: pathNode.startPosition.row + 1,
         confidence: 0.7,
       });
     }

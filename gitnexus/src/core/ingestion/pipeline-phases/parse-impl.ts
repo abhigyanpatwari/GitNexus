@@ -40,6 +40,7 @@ import { DEFAULT_PDG_MAX_FUNCTION_LINES } from '../cfg/collect.js';
 import type { WorkerExtractedData } from '../parsing-processor.js';
 import {
   processRoutesFromExtracted,
+  resolveRouteHandlerSymbols,
   buildExportedTypeMapFromGraph,
   type ExportedTypeMap,
 } from '../call-processor.js';
@@ -370,6 +371,10 @@ export async function runChunkedParseAndResolve(
   allToolDefs: ExtractedToolDef[];
   allORMQueries: ExtractedORMQuery[];
   bindingAccumulator: BindingAccumulator;
+  /** Route URL → resolved handler symbol UID (Part 2, #2138). Lets the routes
+   *  phase stamp `handlerSymbolId` on Route nodes so contract extraction can
+   *  read the handler from the graph instead of re-parsing source. */
+  routeHandlerSymbols: ReadonlyMap<string, string>;
   /** SemanticModel populated during parse — scope-resolution reads its
    *  TypeRegistry / MethodRegistry / SymbolTable indexes. */
   model: MutableSemanticModel;
@@ -1282,6 +1287,13 @@ export async function runChunkedParseAndResolve(
     'parse-impl-return',
     `exportedTypeMap=${exportedTypeMap.size} parsedFiles=${allParsedFiles.length} nodes=${graph.nodeCount}`,
   );
+  // Part 2 (#2138): resolve each route's handler to a real symbol UID now that
+  // the model is fully populated and decorator-route prefixes are finalized.
+  const routeHandlerSymbols = resolveRouteHandlerSymbols(
+    model,
+    allExtractedRoutes,
+    allDecoratorRoutes,
+  );
   return {
     exportedTypeMap,
     allFetchCalls,
@@ -1291,6 +1303,7 @@ export async function runChunkedParseAndResolve(
     allToolDefs,
     allORMQueries,
     bindingAccumulator,
+    routeHandlerSymbols,
     model,
     // Whether a worker pool was actually constructed for this run. False means
     // no pool was needed: a warm all-cache-hit run replays cached worker output

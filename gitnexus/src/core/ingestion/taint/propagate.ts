@@ -157,18 +157,32 @@ export interface TaintHop {
 }
 
 /**
- * The KTD6 rule-(b) source identity material: the matched member-read
- * occurrence itself — statement point + site index + object/property. For
- * worklist findings this is the ROOT source the taint chain was seeded from.
+ * The source identity material for a finding: either the matched member-read
+ * occurrence itself (statement point + site index + object/property) or an
+ * assigned call-result source. For worklist findings this is the ROOT source
+ * the taint chain was seeded from.
  */
-export interface TaintSourceOccurrence {
+interface BaseSourceOccurrence {
   readonly point: ProgramPoint;
   /** Index into the source statement's `sites` array. */
   readonly siteIndex: number;
-  readonly objectBindingIdx: number;
-  readonly property: string;
+  readonly type: 'member-read' | 'call-result';
   readonly kind: SourceKind;
 }
+
+interface MemberReadSourceOccurrence extends BaseSourceOccurrence {
+  readonly type: 'member-read';
+  readonly objectBindingIdx: number;
+  readonly property: string;
+}
+
+interface CallResultSourceOccurrence extends BaseSourceOccurrence {
+  readonly type: 'call-result';
+  readonly resultBindingIdx: number;
+  readonly calleeName: string;
+}
+
+export type TaintSourceOccurrence = MemberReadSourceOccurrence | CallResultSourceOccurrence;
 
 /** The sink side of a finding's identity: point + site + argument + binding. */
 export interface TaintSinkOccurrence {
@@ -514,18 +528,33 @@ export function computeTaintFlows(
     sinkKind: SinkKind,
     source: TaintSourceOccurrence,
     sink: Pick<TaintSinkOccurrence, 'point' | 'siteIndex' | 'argIndex' | 'bindingIdx'>,
-  ): string =>
-    [
+  ): string => {
+    if (source.type === 'member-read') {
+      return [
+        sinkKind,
+        pointKey(source.point),
+        source.siteIndex,
+        source.objectBindingIdx,
+        source.property,
+        pointKey(sink.point),
+        sink.siteIndex,
+        sink.argIndex,
+        sink.bindingIdx,
+      ].join('|');
+    }
+    return [
       sinkKind,
       pointKey(source.point),
       source.siteIndex,
-      source.objectBindingIdx,
-      source.property,
+      source.type,
+      source.resultBindingIdx,
+      source.calleeName,
       pointKey(sink.point),
       sink.siteIndex,
       sink.argIndex,
       sink.bindingIdx,
     ].join('|');
+  };
 
   const recordFinding = (
     sinkKind: SinkKind,
@@ -704,11 +733,29 @@ export function computeTaintFlows(
     const ctx = contextAt(sm.blockIndex, sm.statementIndex);
     if (!ctx) continue;
     for (const src of sm.sources) {
+      if (src.type === 'call-result') {
+        const srcSite = ctx.sites[src.siteIndex];
+        if (srcSite?.callee === undefined) continue;
+        const calleeName = srcSite.callee;
+        for (const d of src.resultDefs) {
+          const sourceOcc: CallResultSourceOccurrence = {
+            point: ctx.point,
+            siteIndex: src.siteIndex,
+            type: 'call-result',
+            resultBindingIdx: d,
+            calleeName,
+            kind: src.entry.kind,
+          };
+          deriveTaint(d, ctx.point, EMPTY_KINDS, undefined, sourceOcc, false);
+        }
+        continue;
+      }
       const srcSite = ctx.sites[src.siteIndex];
       if (srcSite?.object === undefined || srcSite.property === undefined) continue;
-      const sourceOcc: TaintSourceOccurrence = {
+      const sourceOcc: MemberReadSourceOccurrence = {
         point: ctx.point,
         siteIndex: src.siteIndex,
+        type: 'member-read',
         objectBindingIdx: srcSite.object,
         property: srcSite.property,
         kind: src.entry.kind,

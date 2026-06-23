@@ -791,7 +791,11 @@ WHEN TO USE: Debugging "how does A reach B?" — answers in one call what would 
 
 Traverses CALLS edges plus HAS_METHOD (class → member) edges, so a trace can descend from a class into its methods. Each hop's edge type is reported in edges[], so call hops and containment hops remain distinguishable.
 
-Returns: ordered hops with file:line, and an aligned edges[] of edge type + confidence. When no path exists, reports the furthest reachable node so you know where the chain breaks (and truncated: true if a traversal cap was hit first).`,
+Returns: ordered hops with file:line, and an aligned edges[] of edge type + confidence. When no path exists, reports the furthest reachable node so you know where the chain breaks (and truncated: true if a traversal cap was hit first).
+
+CROSS-REPO (experimental): pass repo as "@groupName" to trace across repositories in a group. When from/to live in different member repos, the trace stitches the two repo-local segments across a single ContractLink boundary (e.g. an HTTP consumer→provider link), clamped to one crossing. The result adds crossings[] (the bridged contract with matchType/confidence), tags each hop with its member repo, and a notes[] channel for degraded states. The boundary hop is reported with edge type CONTRACT_LINK. Pass pdg:true to also attach the intra-procedural data-flow (REACHING_DEF) for boundary-adjacent segments when those repos were indexed with --pdg; absent a PDG layer it degrades to call-level hops with a note.
+
+DESTINATION TRACE (cross-repo): for an "@groupName" trace, OMIT to/to_uid/to_file to trace 'from' to wherever its outgoing HTTP call lands. The result ends at the provider endpoint (reported by route + file even when the handler is an anonymous function with no nameable symbol). This is the way to follow a client call to a backend handler you cannot name.`,
     annotations: READ_ONLY_TOOL_ANNOTATIONS,
     inputSchema: {
       type: 'object',
@@ -799,7 +803,11 @@ Returns: ordered hops with file:line, and an aligned edges[] of edge type + conf
         from: { type: 'string', description: 'Source symbol name' },
         from_uid: { type: 'string', description: 'Source symbol UID (zero-ambiguity)' },
         from_file: { type: 'string', description: 'Source file path hint for disambiguation' },
-        to: { type: 'string', description: 'Target symbol name' },
+        to: {
+          type: 'string',
+          description:
+            "Target symbol name. Omit (with to_uid/to_file) on an @group trace to trace 'from' to its HTTP destination.",
+        },
         to_uid: { type: 'string', description: 'Target symbol UID (zero-ambiguity)' },
         to_file: { type: 'string', description: 'Target file path hint for disambiguation' },
         maxDepth: {
@@ -814,9 +822,32 @@ Returns: ordered hops with file:line, and an aligned edges[] of edge type + conf
           description: 'Include test-file symbols in traversal (default: false)',
           default: false,
         },
+        pdg: {
+          type: 'boolean',
+          description:
+            'Cross-repo only (experimental): attach intra-procedural REACHING_DEF data-flow for boundary-adjacent segments when the repo has a --pdg layer. Default false.',
+          default: false,
+        },
+        crossDepth: {
+          type: 'number',
+          description:
+            'Cross-repo only: number of ContractLink boundaries to cross. Only 1 is supported today (multi-hop deferred); a direct caller that passes a higher value gets it clamped to 1 with a notes[] entry.',
+          default: 1,
+          minimum: 1,
+          maximum: 1,
+        },
+        limit: {
+          type: 'number',
+          description:
+            'Cross-repo + pdg:true only: max REACHING_DEF data-flow hops attached per boundary-adjacent segment (default 50, max 200). When a segment dataFlow is truncated, re-issue with a higher limit.',
+          default: 50,
+          minimum: 1,
+          maximum: 200,
+        },
         repo: {
           type: 'string',
-          description: 'Repository name or path. Omit if only one repo is indexed.',
+          description:
+            'Repository name or path, or "@groupName" / "@groupName/memberPath" for a cross-repo trace over a group. Omit if only one repo is indexed.',
         },
       },
       required: [],

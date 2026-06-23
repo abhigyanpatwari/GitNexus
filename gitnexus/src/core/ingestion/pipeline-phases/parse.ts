@@ -51,6 +51,9 @@ export interface ParseOutput {
   readonly allDecoratorRoutes: readonly ExtractedDecoratorRoute[];
   readonly allToolDefs: readonly ExtractedToolDef[];
   readonly allORMQueries: readonly ExtractedORMQuery[];
+  /** Route URL → resolved handler symbol UID (Part 2, #2138). Consumed by the
+   *  routes phase to stamp `handlerSymbolId` on Route nodes. */
+  readonly routeHandlerSymbols: ReadonlyMap<string, string>;
   bindingAccumulator: BindingAccumulator;
   /** SemanticModel populated during parse — scope-resolution reads its
    *  TypeRegistry / MethodRegistry / SymbolTable indexes. */

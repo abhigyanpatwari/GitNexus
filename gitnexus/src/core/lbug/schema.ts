@@ -195,6 +195,7 @@ CREATE NODE TABLE Route (
   errorKeys STRING[],
   middleware STRING[],
   method STRING,
+  handlerSymbolId STRING,
   PRIMARY KEY (id)
 )`;
 

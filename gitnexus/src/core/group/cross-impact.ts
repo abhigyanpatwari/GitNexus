@@ -63,7 +63,7 @@ RETURN provider.repo AS neighborRepo,
        provider.type AS contractType
 `;
 
-type BridgeNeighborRow = {
+export type BridgeNeighborRow = {
   neighborRepo: string;
   neighborUid: string;
   neighborFilePath?: string;
@@ -352,7 +352,7 @@ export function mergeRisk(localRisk: string, cross: CrossRepoImpact[]): string {
   return localRisk;
 }
 
-async function ensureBridgeReady(
+export async function ensureBridgeReady(
   groupDir: string,
 ): Promise<{ handle: BridgeHandle } | { error: string }> {
   const meta = await readBridgeMeta(groupDir);
@@ -392,6 +392,39 @@ function rowToNeighbor(r: Record<string, unknown>): BridgeNeighborRow | null {
     contractId: String(r.contractId ?? r[5] ?? ''),
     contractType: String(r.contractType ?? r[6] ?? 'custom'),
   };
+}
+
+/**
+ * Resolve cross-repo neighbors over `ContractLink` for a set of local symbol
+ * UIDs, in a single direction, sorted by descending confidence.
+ *
+ * This is the one shared consumer↔provider bridge join. `runGroupImpact`'s
+ * Phase-2 fan-out uses it directly; the cross-repo trace path (`cross-trace.ts`)
+ * reuses the same `queryBridge` + row-normalization primitives but issues a
+ * distinct *pair* query, because a trace must keep BOTH endpoints of a crossing
+ * (this neighbor join intentionally returns only the far side, which is lossy
+ * for stitching a path). Keeping this helper as the single uid-filtered join
+ * means impact never forks its own copy of the neighbor Cypher.
+ *
+ * Returns `[]` for an empty `uids` set without touching the DB.
+ */
+export async function resolveBridgeNeighbors(
+  handle: BridgeHandle,
+  opts: { localRepo: string; uids: string[]; direction: 'upstream' | 'downstream' },
+): Promise<BridgeNeighborRow[]> {
+  if (opts.uids.length === 0) return [];
+  const cypher = opts.direction === 'upstream' ? CY_NEIGHBORS_UPSTREAM : CY_NEIGHBORS_DOWNSTREAM;
+  const rows = await queryBridge<Record<string, unknown>>(handle, cypher, {
+    localRepo: opts.localRepo,
+    uids: opts.uids,
+  });
+  const neighbors: BridgeNeighborRow[] = [];
+  for (const raw of rows) {
+    const n = rowToNeighbor(raw);
+    if (n) neighbors.push(n);
+  }
+  neighbors.sort((a, b) => b.confidence - a.confidence);
+  return neighbors;
 }
 
 export async function runGroupImpact(
@@ -537,18 +570,11 @@ export async function runGroupImpact(
   const truncatedRepos: string[] = [];
 
   try {
-    const cypher = direction === 'upstream' ? CY_NEIGHBORS_UPSTREAM : CY_NEIGHBORS_DOWNSTREAM;
-    const rows = await queryBridge<Record<string, unknown>>(handle, cypher, {
+    const neighbors = await resolveBridgeNeighbors(handle, {
       localRepo: repoPath,
       uids,
+      direction,
     });
-
-    const neighbors: BridgeNeighborRow[] = [];
-    for (const raw of rows) {
-      const n = rowToNeighbor(raw);
-      if (n) neighbors.push(n);
-    }
-    neighbors.sort((a, b) => b.confidence - a.confidence);
 
     const seen = new Set<string>();
 
