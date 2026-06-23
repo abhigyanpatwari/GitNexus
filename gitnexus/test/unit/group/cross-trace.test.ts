@@ -558,6 +558,165 @@ describe('runGroupTrace', () => {
     },
   );
 
+  itLbugReopen('destination trace success still flags a degraded member', async () => {
+    // reg-fe resolves `from` and the destination follows an HTTP link to an
+    // anonymous backend handler; reg-be throws during resolveSymbol. The ok
+    // result must still carry the degraded note, keeping the no-`to` path aligned
+    // with explicit `to` traces (authoritative only among queryable members).
+    const consumer = makeContract({
+      repo: 'app/frontend',
+      role: 'consumer',
+      symbolUid: 'callUsers-uid',
+      symbolRef: { filePath: 'src/api.ts', name: 'callUsers' },
+      symbolName: 'callUsers',
+      contractId: 'http::GET::/api/users',
+    });
+    const provider = makeContract({
+      repo: 'app/backend',
+      role: 'provider',
+      symbolUid: '',
+      symbolRef: { filePath: 'src/routes.ts', name: 'handler' },
+      symbolName: 'handler',
+      contractId: 'http::GET::/api/users',
+    });
+    const link: CrossLink = {
+      from: { repo: 'app/frontend', symbolUid: 'callUsers-uid', symbolRef: consumer.symbolRef },
+      to: { repo: 'app/backend', symbolUid: '', symbolRef: provider.symbolRef },
+      type: 'http',
+      contractId: 'http::GET::/api/users',
+      matchType: 'exact',
+      confidence: 1,
+    };
+    await writeBridge(groupDir, {
+      contracts: [consumer, provider],
+      crossLinks: [link],
+      repoSnapshots: {},
+      missingRepos: [],
+    });
+
+    const feSyms: Record<string, GroupSymbolResolution> = {
+      callUsers: okSym('callUsers-uid', 'callUsers', 'src/api.ts', 3),
+    };
+    const responders: Record<string, (q: { name?: string }) => Promise<GroupSymbolResolution>> = {
+      'reg-be': () => Promise.reject(new Error('DB locked')),
+      'reg-fe': (q) => Promise.resolve(feSyms[q.name ?? ''] ?? { kind: 'not_found' }),
+    };
+    const base = makePort(
+      {},
+      {
+        'reg-fe:callUsers-uid->callUsers-uid': okTrace(
+          [{ name: 'callUsers', filePath: 'src/api.ts', startLine: 3 }],
+          [],
+        ),
+      },
+    );
+    const port: GroupToolPort = {
+      ...base,
+      resolveSymbol: async (repo, q) =>
+        (responders[repo.name] ?? (() => Promise.resolve({ kind: 'not_found' })))(q),
+    };
+    const r = await runGroupTrace({ port, gitnexusDir: tmpDir }, { name: 'g1', from: 'callUsers' });
+    expect(r).toMatchObject({
+      status: 'ok',
+      to: { name: '<http::GET::/api/users handler>' },
+      notes: expect.arrayContaining([
+        expect.stringContaining('anonymous'),
+        expect.stringContaining('could not be queried'),
+      ]),
+    });
+  });
+
+  itLbugReopen(
+    'destination trace is AMBIGUOUS when `from` reaches multiple PRECISE endpoints',
+    async () => {
+      // `dispatch` reaches two consumer functions, each with a resolved uid and
+      // linked to a different provider route. This pins the PRECISE ambiguity tier
+      // (distinct from the file-level case) so a future change cannot silently pick
+      // the highest-confidence destination.
+      const mk = (
+        cid: string,
+        consName: string,
+        consUid: string,
+        consFile: string,
+        prov: string,
+      ) => ({
+        consumer: makeContract({
+          repo: 'app/frontend',
+          role: 'consumer',
+          symbolUid: consUid,
+          symbolRef: { filePath: consFile, name: consName },
+          symbolName: consName,
+          contractId: cid,
+        }),
+        provider: makeContract({
+          repo: 'app/backend',
+          role: 'provider',
+          symbolUid: `uid-${prov}`,
+          symbolRef: { filePath: 'src/routes.ts', name: prov },
+          symbolName: prov,
+          contractId: cid,
+        }),
+      });
+      const a = mk('http::GET::/api/a', 'fetchA', 'fetchA-uid', 'src/a.ts', 'handlerA');
+      const b = mk('http::GET::/api/b', 'fetchB', 'fetchB-uid', 'src/b.ts', 'handlerB');
+      const link = (c: typeof a): CrossLink => ({
+        from: {
+          repo: 'app/frontend',
+          symbolUid: c.consumer.symbolUid,
+          symbolRef: c.consumer.symbolRef,
+        },
+        to: {
+          repo: 'app/backend',
+          symbolUid: c.provider.symbolUid,
+          symbolRef: c.provider.symbolRef,
+        },
+        type: 'http',
+        contractId: c.consumer.contractId,
+        matchType: 'exact',
+        confidence: 1,
+      });
+      await writeBridge(groupDir, {
+        contracts: [a.consumer, a.provider, b.consumer, b.provider],
+        crossLinks: [link(a), link(b)],
+        repoSnapshots: {},
+        missingRepos: [],
+      });
+
+      const port = makePort(
+        { 'reg-fe:dispatch': okSym('dispatch-uid', 'dispatch', 'src/main.ts', 1) },
+        {
+          'reg-fe:dispatch-uid->fetchA-uid': okTrace(
+            [
+              { name: 'dispatch', filePath: 'src/main.ts', startLine: 1 },
+              { name: 'fetchA', filePath: 'src/a.ts', startLine: 1 },
+            ],
+            [{ relType: 'CALLS', confidence: 1 }],
+          ),
+          'reg-fe:dispatch-uid->fetchB-uid': okTrace(
+            [
+              { name: 'dispatch', filePath: 'src/main.ts', startLine: 1 },
+              { name: 'fetchB', filePath: 'src/b.ts', startLine: 1 },
+            ],
+            [{ relType: 'CALLS', confidence: 1 }],
+          ),
+        },
+      );
+      const r = await runGroupTrace(
+        { port, gitnexusDir: tmpDir },
+        { name: 'g1', from: 'dispatch' },
+      );
+      expect(r).toMatchObject({
+        status: 'ambiguous',
+        role: 'to',
+        candidates: expect.arrayContaining([
+          expect.objectContaining({ id: 'http::GET::/api/a' }),
+          expect.objectContaining({ id: 'http::GET::/api/b' }),
+        ]),
+        notes: expect.arrayContaining([expect.stringContaining('more than one HTTP endpoint')]),
+      });
+    },
+  );
+
   itLbugReopen('same-repo endpoints trace locally with no crossing', async () => {
     await writeLinkedBridge(groupDir);
     const port = makePort(
