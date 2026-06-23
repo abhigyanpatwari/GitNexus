@@ -362,13 +362,24 @@ export const kotlinMethodConfig: MethodExtractionConfig = {
   },
 
   extractReceiverType(node) {
-    // Extension function: user_type appears before the simple_identifier (name)
-    // e.g., fun String.format(template: String) → receiver is "String"
+    // Extension function receiver. Newer tree-sitter-kotlin exposes it as a
+    // `receiver` field wrapping a `receiver_type` (which wraps the user_type);
+    // older grammars emitted a bare user_type/nullable_type child before the
+    // name (e.g. fun String.format(...) → receiver is "String").
+    const receiverField = node.childForFieldName('receiver');
+    if (receiverField) {
+      const inner = receiverField.namedChild(0) ?? receiverField;
+      return extractSimpleTypeName(inner) ?? inner.text?.trim();
+    }
     for (let i = 0; i < node.namedChildCount; i++) {
       const child = node.namedChild(i);
       if (!child) continue;
       if (child.type === 'simple_identifier') break; // past the name — no receiver
-      if (child.type === 'user_type' || child.type === 'nullable_type') {
+      if (
+        child.type === 'receiver_type' ||
+        child.type === 'user_type' ||
+        child.type === 'nullable_type'
+      ) {
         return extractSimpleTypeName(child) ?? child.text?.trim();
       }
     }

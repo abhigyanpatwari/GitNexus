@@ -12,7 +12,8 @@
     },
     "kotlin": {
       "name": "tree-sitter-kotlin",
-      "upstream": { "npm": "tree-sitter-kotlin" }
+      "upstream": { "npm": "tree-sitter-kotlin" },
+      "hold": "pinned to unreleased fwcd main commit c8ac3d26 for `fun interface` support (fwcd/tree-sitter-kotlin#169, closes #87) — npm latest (0.3.8) lacks the fix, so the monitor must NOT auto-revert (isNewer is strict-inequality: 0.3.8 != 0.4.0). Drop this hold and bump when upstream cuts a release that includes the fix"
     },
     "dart": {
       "name": "tree-sitter-dart",

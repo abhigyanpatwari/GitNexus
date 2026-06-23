@@ -23,6 +23,18 @@ rules:
       # comment in the file documents the split.
       - pr-autofix-publish.yml
 
+      # workflow_run is the trusted half of the vendored-grammar prebuild
+      # pipeline (commit-fork-prebuilds.yml). The untrusted producer
+      # (build-tree-sitter-prebuilds.yml on a fork pull_request) builds +
+      # validates the .node prebuilds and uploads them as artifacts. This
+      # consumer downloads ONLY those artifacts + metadata.json,
+      # allowlist-validates every metadata field, cross-checks identity against
+      # the workflow_run authority (head_sha / head_repo / pr_number), and
+      # checks out the fork head pinned to that HEAD SHA solely to ADD prebuild
+      # files (never executes fork code) before pushing. Header comment in the
+      # file documents the split.
+      - commit-fork-prebuilds.yml
+
       # pull_request_target needed by claude-code-action to access secrets
       # and post review comments on fork PRs. Mitigated by: PR checkouts pin
       # the fork's HEAD SHA (not the branch ref) to prevent TOCTOU races,

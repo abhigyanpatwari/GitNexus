@@ -79,10 +79,14 @@ describe('GRAMMARS registry', () => {
     expect(mod.GRAMMARS.dart.github).toContain('tree-sitter-dart');
   });
 
-  it('monitors c but marks it report-only (ABI-pinned hold); the rest are auto-updatable', () => {
+  it('marks c and kotlin report-only (holds); swift/dart/proto are auto-updatable', () => {
     expect(mod.GRAMMARS.c.npm).toBe('tree-sitter-c');
-    expect(mod.GRAMMARS.c.hold).toBeTruthy(); // detected/reported, never auto-applied
-    for (const k of ['swift', 'kotlin', 'dart', 'proto']) {
+    expect(mod.GRAMMARS.c.hold).toBeTruthy(); // ABI-pinned: detected/reported, never auto-applied
+    // kotlin is pinned to an unreleased fwcd main commit for `fun interface`
+    // support (#169); npm latest (0.3.8) lacks it, so the strict-inequality
+    // isNewer would auto-revert the pin without this hold.
+    expect(mod.GRAMMARS.kotlin.hold).toBeTruthy();
+    for (const k of ['swift', 'dart', 'proto']) {
       expect(mod.GRAMMARS[k].hold).toBeUndefined();
     }
   });
