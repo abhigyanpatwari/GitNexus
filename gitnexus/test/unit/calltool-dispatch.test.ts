@@ -1866,15 +1866,27 @@ describe('LocalBackend impact mode (KTD1/KTD5/KTD12)', () => {
       criterionLine: 8,
     });
     const bfsSpy = vi.spyOn(backend as any, '_runImpactBFS');
-    const result = await backend.callTool('impact', {
-      target: 'main',
-      direction: 'downstream',
-      mode: 'pdg',
-      line: 8,
-    });
-    // The error was swallowed: no bridge passed to the BFS, and no error surfaced.
-    expect(result.error).toBeUndefined();
-    expect(bfsSpy.mock.calls[0][4].pdgBridge).toBeUndefined();
+    const cap = _captureLogger();
+    try {
+      const result = await backend.callTool('impact', {
+        target: 'main',
+        direction: 'downstream',
+        mode: 'pdg',
+        line: 8,
+      });
+      // The error was swallowed: no bridge passed to the BFS, and no error surfaced.
+      expect(result.error).toBeUndefined();
+      expect(bfsSpy.mock.calls[0][4].pdgBridge).toBeUndefined();
+      // The swallowed, gracefully-degraded query failure is logged at warn (40),
+      // never error (50): it degraded to a safe fallback and is not an operation
+      // failure. Pinning the severity guards against a regression to a false
+      // ERROR alarm that would drown genuine, operation-aborting failures.
+      const slice = cap.records().find((r) => r.context === 'impact:pdg-slice-callees');
+      expect(slice).toBeDefined();
+      expect(slice?.level).toBe(40);
+    } finally {
+      cap.restore();
+    }
   });
 
   it("mode:'pdg' + crossDepth → hard {error} (single-repo PDG impact)", async () => {

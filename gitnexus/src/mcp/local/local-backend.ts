@@ -266,10 +266,31 @@ export const IMPACT_RELATION_CONFIDENCE: Readonly<Record<string, number>> = {
 const confidenceForRelType = (relType: string | undefined): number =>
   IMPACT_RELATION_CONFIDENCE[relType ?? ''] ?? 0.5;
 
-/** Structured error logging for query failures — replaces empty catch blocks */
+/**
+ * Structured logging for *swallowed* query failures — replaces empty catch
+ * blocks. Every caller of this helper catches the failure and degrades to a
+ * safe fallback (the operation still returns a result), so these are NOT
+ * operation-level errors and must not be logged at `error`:
+ *
+ *  - A benign missing optional table/label/column — a repo analyzed without
+ *    processes/communities, or a pre-v3 PDG index lacking the `calleeIds`
+ *    column — is a normal configuration, not a failure. Logged at `debug`
+ *    (suppressed at the default `info` level; surfaced only when troubleshooting).
+ *  - Any other swallowed failure is an unexpected-but-handled degradation:
+ *    logged at `warn` so it stays observable without raising a false `error`
+ *    alarm that would drown genuine, operation-aborting failures.
+ *
+ * `error` is intentionally NOT used here — it is reserved for failures that
+ * actually abort an operation, which log directly rather than through this
+ * best-effort-degradation helper.
+ */
 function logQueryError(context: string, err: unknown): void {
   const msg = err instanceof Error ? err.message : String(err);
-  logger.error({ context, err: msg }, 'GitNexus query failed');
+  if (isBenignMissingTableError(err)) {
+    logger.debug({ context, err: msg }, 'GitNexus query skipped (missing optional data)');
+    return;
+  }
+  logger.warn({ context, err: msg }, 'GitNexus query failed (degraded)');
 }
 
 /**
@@ -1955,9 +1976,14 @@ export class LocalBackend {
     try {
       ftsResponse = await searchFTSFromLbug(query, limit, repo.lbugPath);
     } catch (err: any) {
-      logger.error(
+      // Swallowed, gracefully-degraded failure: the search falls back to
+      // semantic-only (a valid result), and the most common cause is simply an
+      // un-indexed FTS extension — a normal configuration, not an operation
+      // error. Logged at warn (matching the sibling import-failure fallback
+      // above), never error, so it does not raise a false alarm.
+      logger.warn(
         { err: err.message },
-        'GitNexus: BM25/FTS search failed (FTS indexes may not exist) -',
+        'GitNexus: BM25/FTS search failed (FTS indexes may not exist) — falling back to semantic-only',
       );
       return { results: [], ftsUsed: false };
     }
