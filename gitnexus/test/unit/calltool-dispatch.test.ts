@@ -395,12 +395,23 @@ describe('LocalBackend.callTool', () => {
     vi.mocked(searchFTSFromLbug).mockRejectedValueOnce(new Error('bm25Results is not iterable'));
     (executeParameterized as any).mockResolvedValue([]);
 
-    const result = await backend.callTool('query', { query: 'auth' });
+    const cap = _captureLogger();
+    try {
+      const result = await backend.callTool('query', { query: 'auth' });
 
-    // Should still return a valid result shape (semantic-only fallback)
-    expect(result).toHaveProperty('processes');
-    expect(result).toHaveProperty('definitions');
-    expect(result).not.toHaveProperty('error');
+      // Should still return a valid result shape (semantic-only fallback)
+      expect(result).toHaveProperty('processes');
+      expect(result).toHaveProperty('definitions');
+      expect(result).not.toHaveProperty('error');
+      // The FTS fallback is a gracefully-degraded result, not an operation failure:
+      // it must log at warn (40), never error (50), matching its sibling
+      // import-failure fallback. Pins the severity against regression.
+      const fts = cap.records().find((r) => /BM25\/FTS search failed/.test(String(r.msg ?? '')));
+      expect(fts).toBeDefined();
+      expect(fts?.level).toBe(40);
+    } finally {
+      cap.restore();
+    }
   });
 
   it('skips vector index query when VECTOR is unsupported by the platform', async () => {
@@ -1655,7 +1666,7 @@ describe('LocalBackend impact mode (KTD1/KTD5/KTD12)', () => {
       const result = await backend.callTool('impact', {
         target: 'main',
         direction: 'upstream',
-        mode: mode as any,
+        mode: mode as 'callgraph' | undefined,
         line: 0,
       });
       // No PDG-only error, no positive-integer error — line:0 is swallowed.
@@ -1884,6 +1895,56 @@ describe('LocalBackend impact mode (KTD1/KTD5/KTD12)', () => {
       const slice = cap.records().find((r) => r.context === 'impact:pdg-slice-callees');
       expect(slice).toBeDefined();
       expect(slice?.level).toBe(40);
+    } finally {
+      cap.restore();
+    }
+  });
+
+  it("mode:'pdg' slice-callees failing with a benign missing-table error logs at debug, not warn", async () => {
+    // A repo analyzed without the optional column/table (e.g. a pre-v3 PDG index
+    // missing `calleeIds`, or a BasicBlock table that simply isn't there) makes the
+    // slice-callees query fail with a benign "missing optional data" error. That is a
+    // normal configuration, not a degradation, so logQueryError routes it to debug —
+    // suppressed at the default info level. The capture logger runs at info, so a
+    // debug record never reaches it: the assertion is that NO info+ record (warn/error)
+    // appears for this context, distinguishing the benign branch from the warn branch
+    // pinned by the test above.
+    resolveSingleTarget();
+    vi.mocked(executeParameterized).mockImplementation(async (_repo, query) => {
+      if (query.includes('RETURN b.callees')) throw new Error('Table BasicBlock does not exist');
+      return [{ id: 'func:main', name: 'main', type: 'Function', filePath: 'src/index.ts' }];
+    });
+    vi.spyOn(backend as any, '_runImpactPDG').mockResolvedValueOnce({
+      mode: 'pdg',
+      target: { id: 'func:main', name: 'main', type: 'Function', filePath: 'src/index.ts' },
+      direction: 'downstream',
+      risk: 'UNKNOWN',
+      impactedCount: 0,
+      epistemic: 'pdg-intra-procedural',
+      reachableBlocks: ['BasicBlock:src/index.ts:8:0:1'],
+      intraReachableBlocks: ['BasicBlock:src/index.ts:8:0:1'],
+      seedBlocks: ['BasicBlock:src/index.ts:8:0:0'],
+      blockCount: 1,
+      affectedStatements: [{ line: 8, filePath: 'src/index.ts', text: 'callee()' }],
+      affectedStatementCount: 1,
+      criterionLine: 8,
+    });
+    const bfsSpy = vi.spyOn(backend as any, '_runImpactBFS');
+    const cap = _captureLogger();
+    try {
+      const result = await backend.callTool('impact', {
+        target: 'main',
+        direction: 'downstream',
+        mode: 'pdg',
+        line: 8,
+      });
+      // Still degrades cleanly to no bridge / no surfaced error.
+      expect(result.error).toBeUndefined();
+      expect(bfsSpy.mock.calls[0][4].pdgBridge).toBeUndefined();
+      // The benign failure was routed to debug (suppressed at info): no warn/error
+      // record for this context. A regression to warn/error would surface here.
+      const slice = cap.records().find((r) => r.context === 'impact:pdg-slice-callees');
+      expect(slice).toBeUndefined();
     } finally {
       cap.restore();
     }
