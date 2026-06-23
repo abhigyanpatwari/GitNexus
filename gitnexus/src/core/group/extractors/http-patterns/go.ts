@@ -31,7 +31,7 @@ const FRAMEWORK_ROUTE_PATTERNS = compilePatterns({
             field: (field_identifier) @http_method (#match? @http_method "^(GET|POST|PUT|DELETE|PATCH)$"))
           arguments: (argument_list
             (interpreted_string_literal) @path
-            (identifier) @handler))
+            [(identifier) (func_literal)] @handler))
       `,
     },
   ],
@@ -51,7 +51,7 @@ const HANDLE_FUNC_PATTERNS = compilePatterns({
             field: (field_identifier) @fn (#eq? @fn "HandleFunc"))
           arguments: (argument_list
             (interpreted_string_literal) @path
-            (identifier) @handler))
+            [(identifier) (func_literal)] @handler))
       `,
     },
   ],
@@ -138,12 +138,18 @@ export const GO_HTTP_PLUGIN: HttpLanguagePlugin = {
       if (!methodNode || !pathNode) continue;
       const path = unquoteLiteral(pathNode.text);
       if (path === null) continue;
+      // An inline `func(){…}` handler has no name → emit `name: null` and a
+      // `line` so it resolves to its containing/closure symbol by line-span
+      // containment (like a consumer). A named identifier handler keeps its
+      // name and resolves by name; `line` is harmless there.
+      const isInlineHandler = handlerNode?.type === 'func_literal';
       out.push({
         role: 'provider',
         framework: 'go-framework',
         method: methodNode.text.toUpperCase(),
         path,
-        name: handlerNode?.text ?? null,
+        name: isInlineHandler ? null : (handlerNode?.text ?? null),
+        line: (handlerNode ?? pathNode).startPosition.row + 1,
         confidence: 0.8,
       });
     }
@@ -155,12 +161,16 @@ export const GO_HTTP_PLUGIN: HttpLanguagePlugin = {
       if (!pathNode) continue;
       const path = unquoteLiteral(pathNode.text);
       if (path === null) continue;
+      // Inline `func(){…}` handler → resolve by containment (see go-framework
+      // note above); a named handler resolves by name.
+      const isInlineHandler = handlerNode?.type === 'func_literal';
       out.push({
         role: 'provider',
         framework: 'go-stdlib',
         method: 'GET',
         path,
-        name: handlerNode?.text ?? null,
+        name: isInlineHandler ? null : (handlerNode?.text ?? null),
+        line: (handlerNode ?? pathNode).startPosition.row + 1,
         confidence: 0.8,
       });
     }

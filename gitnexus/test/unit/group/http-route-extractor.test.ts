@@ -579,6 +579,150 @@ app.add_url_rule('/api/users', view_func=handle_users)
       expect(provider).toMatchObject({ symbolUid: 'fn-list_users', symbolName: 'list_users' });
       expect(queriedNames).not.toContain('module:handle_users');
     });
+
+    // ── Inline / closure provider handlers (#2276) ──────────────────────
+    // An inline provider handler has no name, so it must resolve by line-span
+    // containment to the symbol it lives in — exactly like a consumer. Mirrors
+    // the Node/Express inline-arrow behavior for the non-Node plugins.
+
+    it('resolves a Go inline http.HandleFunc closure to its containing function (#2276)', async () => {
+      const dir = path.join(tmpDir, 'go-inline-handlefunc');
+      fs.mkdirSync(path.join(dir, 'cmd'), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'cmd/server.go'),
+        `package main
+
+func main() {
+  http.HandleFunc("/api/inline", func(w http.ResponseWriter, r *http.Request) {
+    w.Write([]byte("ok"))
+  })
+}
+`,
+      );
+      // main() spans source lines 3-7 → 0-based [2,6]; the HandleFunc
+      // registration and its anonymous func are on line 4 (row 3), inside span.
+      const mockDbExecutor = async (
+        query: string,
+        params?: Record<string, unknown>,
+      ): Promise<Record<string, unknown>[]> => {
+        if (query.includes('UNION ALL') && String(params?.filePath ?? '').includes('server.go')) {
+          return [
+            {
+              uid: 'fn-main',
+              name: 'main',
+              filePath: 'cmd/server.go',
+              startLine: 2,
+              endLine: 6,
+              labels: ['Function'],
+            },
+          ];
+        }
+        return [];
+      };
+      const contracts = await extractor.extract(mockDbExecutor, dir, makeRepo(dir));
+      const provider = contracts.find(
+        (c) => c.role === 'provider' && c.contractId === 'http::GET::/api/inline',
+      );
+      expect(provider).toMatchObject({
+        symbolUid: 'fn-main',
+        symbolName: 'main',
+        meta: { extractionStrategy: 'source_scan_resolved' },
+      });
+    });
+
+    it('resolves a Go inline gin framework-route closure to its containing function (#2276)', async () => {
+      const dir = path.join(tmpDir, 'go-inline-gin');
+      fs.mkdirSync(path.join(dir, 'cmd'), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'cmd/server.go'),
+        `package main
+
+func registerRoutes(r *gin.Engine) {
+  r.GET("/api/ping", func(c *gin.Context) {
+    c.String(200, "pong")
+  })
+}
+`,
+      );
+      const mockDbExecutor = async (
+        query: string,
+        params?: Record<string, unknown>,
+      ): Promise<Record<string, unknown>[]> => {
+        if (query.includes('UNION ALL') && String(params?.filePath ?? '').includes('server.go')) {
+          return [
+            {
+              uid: 'fn-registerRoutes',
+              name: 'registerRoutes',
+              filePath: 'cmd/server.go',
+              startLine: 2,
+              endLine: 6,
+              labels: ['Function'],
+            },
+          ];
+        }
+        return [];
+      };
+      const contracts = await extractor.extract(mockDbExecutor, dir, makeRepo(dir));
+      const provider = contracts.find(
+        (c) => c.role === 'provider' && c.contractId === 'http::GET::/api/ping',
+      );
+      expect(provider).toMatchObject({
+        symbolUid: 'fn-registerRoutes',
+        symbolName: 'registerRoutes',
+      });
+    });
+
+    it('keeps Go NAMED HandleFunc handler resolving by name, not containment (#2276)', async () => {
+      const dir = path.join(tmpDir, 'go-named-handlefunc');
+      fs.mkdirSync(path.join(dir, 'cmd'), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'cmd/server.go'),
+        `package main
+
+func healthHandler(w http.ResponseWriter, r *http.Request) {}
+
+func main() {
+  http.HandleFunc("/api/health", healthHandler)
+}
+`,
+      );
+      // Both the named handler and the registrar main() are indexed. A named
+      // provider must resolve to the HANDLER by name, never to main by line.
+      const mockDbExecutor = async (
+        query: string,
+        params?: Record<string, unknown>,
+      ): Promise<Record<string, unknown>[]> => {
+        if (query.includes('UNION ALL') && String(params?.filePath ?? '').includes('server.go')) {
+          return [
+            {
+              uid: 'fn-healthHandler',
+              name: 'healthHandler',
+              filePath: 'cmd/server.go',
+              startLine: 2,
+              endLine: 2,
+              labels: ['Function'],
+            },
+            {
+              uid: 'fn-main',
+              name: 'main',
+              filePath: 'cmd/server.go',
+              startLine: 4,
+              endLine: 6,
+              labels: ['Function'],
+            },
+          ];
+        }
+        return [];
+      };
+      const contracts = await extractor.extract(mockDbExecutor, dir, makeRepo(dir));
+      const provider = contracts.find(
+        (c) => c.role === 'provider' && c.contractId === 'http::GET::/api/health',
+      );
+      expect(provider).toMatchObject({
+        symbolUid: 'fn-healthHandler',
+        symbolName: 'healthHandler',
+      });
+    });
   });
 
   describe('provider extraction — graph-first (Strategy A)', () => {
