@@ -134,17 +134,22 @@ describe('GITNEXUS_TOOLS', () => {
     expect(impactTool.inputSchema.required).toContain('direction');
   });
 
-  it('impact tool advertises the PDG-only `line` statement anchor (integer, min 1, not required)', () => {
+  it('impact tool advertises the PDG-only `line` statement anchor (integer, min 0, not required)', () => {
     const impactTool = GITNEXUS_TOOLS.find((t) => t.name === 'impact')!;
     const line = (impactTool.inputSchema.properties as Record<string, any>).line;
     expect(line).toBeDefined();
     expect(line.type).toBe('integer');
-    expect(line.minimum).toBe(1);
+    // minimum is 0 (not 1) so strict adapters that materialize an omitted
+    // optional numeric field as `0` are not rejected client-side (#2279); a
+    // positive line is enforced backend-side for a real pdg anchor.
+    expect(line.minimum).toBe(0);
     // Statement-anchored slice is optional — never required.
     expect(impactTool.inputSchema.required).not.toContain('line');
-    // The description names the mode:'pdg' statement-anchor semantics.
+    // The description names the mode:'pdg' statement-anchor semantics and the
+    // 0/omitted = no-anchor compatibility convention.
     expect(line.description).toMatch(/statement anchor/i);
     expect(line.description).toMatch(/pdg/i);
+    expect(line.description).toMatch(/0 \(or omitted\) means no statement anchor/i);
     // The top-level description mentions the statement-anchored slice and result shape.
     expect(impactTool.description).toMatch(/statement-anchored|STATEMENT-ANCHORED/);
     expect(impactTool.description).toContain('affectedStatements');

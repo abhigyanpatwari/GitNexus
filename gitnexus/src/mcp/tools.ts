@@ -469,9 +469,14 @@ SERVICE: optional monorepo path prefix (case-sensitive path segments). When "rep
         },
         line: {
           type: 'integer',
-          minimum: 1,
+          // `minimum: 0` (not 1) so strict client/agent adapters that materialize
+          // an omitted optional numeric field as `0` do not reject the request
+          // before sending (#2279). A positive line is still required for a real
+          // pdg anchor — the backend enforces that — but `0`/omitted means "no
+          // statement anchor" and is tolerated on the callgraph path.
+          minimum: 0,
           description:
-            "1-based source line — PDG statement anchor (mode:'pdg'). Seeds affectedStatements on the statement at this line; inter-procedural symbols are still returned in interproceduralByDepth/pdgInterprocedural and the compatibility byDepth bucket.",
+            "1-based source line — PDG statement anchor (mode:'pdg'). Seeds affectedStatements on the statement at this line; inter-procedural symbols are still returned in interproceduralByDepth/pdgInterprocedural and the compatibility byDepth bucket. 0 (or omitted) means no statement anchor; mode:'pdg' requires a positive line.",
         },
         file_path: {
           type: 'string',
