@@ -4490,9 +4490,21 @@ export class LocalBackend {
     }
     const mode = modeResult.mode;
 
+    // #2279: some MCP client/agent adapters serialize an *omitted* optional
+    // numeric field as `0` rather than dropping it, so callgraph calls arrive
+    // carrying a spurious `line: 0`. `line` is meaningless on the callgraph path
+    // (the symbol→symbol BFS has no statement notion), so treat a literal `0`
+    // there as omitted and let the normal traversal run. The coercion is
+    // deliberately narrow — only the literal `0`, only when mode !== 'pdg':
+    // a genuine positive `line` on callgraph still errors (real mode mistake),
+    // negative/fractional values still error, and pdg mode is untouched (the
+    // normalization is an identity there, so `line: 0` is still rejected below —
+    // there is no 1-based source line `0` to anchor on).
+    const effectiveLine = mode !== 'pdg' && params.line === 0 ? undefined : params.line;
+
     // `line` is a PDG-only statement anchor. Reject it on the callgraph path
     // rather than silently ignore (the symbol→symbol BFS has no statement notion).
-    if (params.line !== undefined && mode !== 'pdg') {
+    if (effectiveLine !== undefined && mode !== 'pdg') {
       return {
         error: `Parameter 'line' is only supported with mode:'pdg' (it anchors the dependence slice on a statement). Remove it or set mode:'pdg'.`,
         target: { name: params.target },
@@ -4503,8 +4515,8 @@ export class LocalBackend {
     }
     // A provided `line` must be a positive integer.
     if (
-      params.line !== undefined &&
-      (!Number.isInteger(params.line) || (params.line as number) < 1)
+      effectiveLine !== undefined &&
+      (!Number.isInteger(effectiveLine) || (effectiveLine as number) < 1)
     ) {
       // Line param fails validation before target resolution → partial-but-typed
       // target on the pdg path (typed PdgImpactTarget, not an inline literal).

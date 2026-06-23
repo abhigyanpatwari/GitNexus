@@ -1642,6 +1642,51 @@ describe('LocalBackend impact mode (KTD1/KTD5/KTD12)', () => {
     },
   );
 
+  // #2279: some MCP client/agent adapters serialize an *omitted* optional
+  // numeric field as `0`. On the callgraph path `line` is meaningless, so a
+  // literal `line: 0` must be tolerated as omitted (NOT the PDG-only error) and
+  // route to the normal BFS — distinct from a genuine positive `line` (above),
+  // which stays a hard error.
+  it.each([['callgraph'], [undefined]])(
+    'mode:%j + adapter-materialized line:0 is treated as omitted and runs the BFS (#2279)',
+    async (mode) => {
+      resolveSingleTarget();
+      const bfsSpy = vi.spyOn(backend as any, '_runImpactBFS');
+      const result = await backend.callTool('impact', {
+        target: 'main',
+        direction: 'upstream',
+        mode: mode as any,
+        line: 0,
+      });
+      // No PDG-only error, no positive-integer error — line:0 is swallowed.
+      expect(result.error ?? '').not.toMatch(/'line' is only supported with mode:'pdg'/);
+      expect(result.error ?? '').not.toMatch(/'line' must be a positive integer/);
+      expect(result.target).toBeDefined();
+      expect(bfsSpy).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it("mode:'callgraph'/undefined + line:0 is byte-identical to omitting line (#2279)", async () => {
+    resolveSingleTarget();
+    const omitted = await backend.callTool('impact', { target: 'main', direction: 'upstream' });
+    const callgraphZero = await backend.callTool('impact', {
+      target: 'main',
+      direction: 'upstream',
+      mode: 'callgraph',
+      line: 0,
+    });
+    const undefZero = await backend.callTool('impact', {
+      target: 'main',
+      direction: 'upstream',
+      mode: undefined,
+      line: 0,
+    });
+    // The normalization must leave the callgraph result indistinguishable from a
+    // call that never carried `line` — the spurious 0 must not leak into output.
+    expect(callgraphZero).toEqual(omitted);
+    expect(undefZero).toEqual(omitted);
+  });
+
   it.each([[0], [-1], [1.5]])(
     "mode:'pdg' + non-positive-integer line %j → structured {error}, never routed to traversal",
     async (badLine) => {
