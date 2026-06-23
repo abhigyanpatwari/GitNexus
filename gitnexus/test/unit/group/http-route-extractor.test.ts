@@ -880,6 +880,78 @@ def list_items():
         meta: { extractionStrategy: 'source_scan_resolved' },
       });
     });
+
+    // Documented limitations pinned by tests (#2276): a closure with no
+    // enclosing function symbol, and a multi-decorator FastAPI handler whose
+    // detection line falls above the def-span, both degrade to file-level
+    // rather than mis-attributing. These lock the comments in php.ts/python.ts.
+
+    it('leaves a FILE-scope Laravel closure at file-level (no enclosing symbol) (#2276)', async () => {
+      const dir = path.join(tmpDir, 'php-closure-file-scope');
+      fs.mkdirSync(path.join(dir, 'routes'), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'routes/web.php'),
+        `<?php
+Route::get('/api/home', function () {
+    return view('home');
+});
+`,
+      );
+      // No enclosing function/method at file scope, and PHP closures are not
+      // indexed as symbols → containment finds nothing → symbolUid stays empty.
+      const mockDbExecutor = async (): Promise<Record<string, unknown>[]> => [];
+      const contracts = await extractor.extract(mockDbExecutor, dir, makeRepo(dir));
+      const provider = contracts.find(
+        (c) => c.role === 'provider' && c.contractId === 'http::GET::/api/home',
+      );
+      expect(provider).toBeDefined();
+      expect(provider?.symbolUid).toBe('');
+    });
+
+    it('leaves a multi-decorator FastAPI handler at file-level (line above def-span) (#2276)', async () => {
+      const dir = path.join(tmpDir, 'py-fastapi-multidecorator');
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'main.py'),
+        `from fastapi import FastAPI
+app = FastAPI()
+
+@app.get("/api/items")
+@require_auth
+def list_items():
+    return []
+`,
+      );
+      // The path literal is on line 4 (row 3) → detection line = row 3 + 1 = 4.
+      // With a second decorator the `def` is on line 6 (row 5), so list_items
+      // spans 0-based [5,6]. The resolver probes row 3 (line-1) then row 4
+      // (line); both fall ABOVE the [5,6] span → no containment → file-level.
+      // (Single-decorator resolves because there the def sits at the line probe.)
+      const mockDbExecutor = async (
+        query: string,
+        params?: Record<string, unknown>,
+      ): Promise<Record<string, unknown>[]> => {
+        if (query.includes('UNION ALL') && String(params?.filePath ?? '').includes('main.py')) {
+          return [
+            {
+              uid: 'fn-list_items',
+              name: 'list_items',
+              filePath: 'main.py',
+              startLine: 5,
+              endLine: 6,
+              labels: ['Function'],
+            },
+          ];
+        }
+        return [];
+      };
+      const contracts = await extractor.extract(mockDbExecutor, dir, makeRepo(dir));
+      const provider = contracts.find(
+        (c) => c.role === 'provider' && c.contractId === 'http::GET::/api/items',
+      );
+      expect(provider).toBeDefined();
+      expect(provider?.symbolUid).toBe('');
+    });
   });
 
   describe('provider extraction — graph-first (Strategy A)', () => {
