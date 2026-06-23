@@ -139,6 +139,9 @@ export function extractSpringRoutes(
     if (routePath === null) continue;
     const enclosingClass = findEnclosingClass(node);
     const classPrefix = enclosingClass ? (prefixByClassId.get(enclosingClass.id) ?? '') : '';
+    // `node` is the annotated `method_declaration`; its name field is the
+    // handler method name (resolved to a symbol UID later by the routes phase).
+    const handlerName = node.childForFieldName('name')?.text;
 
     routes.push({
       filePath,
@@ -147,6 +150,7 @@ export function extractSpringRoutes(
       decoratorName: ann,
       lineNumber: annNode.startPosition.row + lineOffset,
       ...(classPrefix ? { prefix: classPrefix } : {}),
+      ...(handlerName ? { handlerName } : {}),
     });
   }
 

@@ -130,6 +130,17 @@ function isHttpUrlLiteral(path: string): boolean {
 export const PHP_HTTP_PLUGIN: HttpLanguagePlugin = {
   name: 'php-http',
   language: PHP.php_only,
+  // Laravel `Route::<verb>(...)` definitions are emitted as Route nodes by
+  // ingestion, so the graph is authoritative for PHP providers (#2138 Part 2).
+  routeCoverage: 'complete',
+  // Consumer signals scan() can detect: Laravel `Http::<verb>`, Guzzle client
+  // `->get/post/.../request(...)`, and `file_get_contents` of an HTTP URL. A
+  // provider-covered file with any of these must still be parsed (ingestion
+  // emits no FETCHES for PHP). Conservative — the `->verb(` shape over-matches
+  // ordinary method calls, which only costs a parse, never data.
+  hasConsumerSignals(content) {
+    return /Http::|file_get_contents|->\s*(get|post|put|delete|patch|request)\s*\(/i.test(content);
+  },
   scan(tree) {
     const out: HttpDetection[] = [];
 
