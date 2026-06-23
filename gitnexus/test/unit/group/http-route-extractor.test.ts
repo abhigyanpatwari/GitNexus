@@ -724,6 +724,62 @@ func main() {
       });
     });
 
+    it('keeps a NAMED gin framework-route handler resolving by name, not its registrar (#2276)', async () => {
+      // The framework-route query was also widened to accept func literals; this
+      // pins that a NAMED identifier handler still resolves by name even though
+      // a `line` is now emitted and the enclosing registrar span covers it.
+      const dir = path.join(tmpDir, 'go-named-gin');
+      fs.mkdirSync(path.join(dir, 'cmd'), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'cmd/server.go'),
+        `package main
+
+func listOrders(c *gin.Context) {}
+
+func registerRoutes(r *gin.Engine) {
+  r.GET("/api/orders", listOrders)
+}
+`,
+      );
+      // listOrders spans [2,2]; registerRoutes spans [4,6] and its span CONTAINS
+      // the r.GET line (row 5). A named provider must resolve to listOrders by
+      // name — never to registerRoutes by line-span containment.
+      const mockDbExecutor = async (
+        query: string,
+        params?: Record<string, unknown>,
+      ): Promise<Record<string, unknown>[]> => {
+        if (query.includes('UNION ALL') && String(params?.filePath ?? '').includes('server.go')) {
+          return [
+            {
+              uid: 'fn-listOrders',
+              name: 'listOrders',
+              filePath: 'cmd/server.go',
+              startLine: 2,
+              endLine: 2,
+              labels: ['Function'],
+            },
+            {
+              uid: 'fn-registerRoutes',
+              name: 'registerRoutes',
+              filePath: 'cmd/server.go',
+              startLine: 4,
+              endLine: 6,
+              labels: ['Function'],
+            },
+          ];
+        }
+        return [];
+      };
+      const contracts = await extractor.extract(mockDbExecutor, dir, makeRepo(dir));
+      const provider = contracts.find(
+        (c) => c.role === 'provider' && c.contractId === 'http::GET::/api/orders',
+      );
+      expect(provider).toMatchObject({
+        symbolUid: 'fn-listOrders',
+        symbolName: 'listOrders',
+      });
+    });
+
     it('resolves a Laravel closure route nested in a method to that method (#2276)', async () => {
       const dir = path.join(tmpDir, 'php-closure-in-method');
       fs.mkdirSync(path.join(dir, 'app'), { recursive: true });
