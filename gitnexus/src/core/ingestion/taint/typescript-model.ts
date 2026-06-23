@@ -1,8 +1,8 @@
 /**
  * Built-in TS/JS taint model (#2083 M3 U2, plan KTD7).
  *
- * The canonical Express/Node source/sink/sanitizer set, registered for the
- * `typescript` and `javascript` language ids via the EXPLICIT
+ * The canonical Express/Node source/sink/sanitizer set plus the Java and
+ * Python models, registered for their language ids via the EXPLICIT
  * {@link registerBuiltinTaintModels} seam — deliberately not an import
  * side-effect, so the U4 emit path controls WHEN registration happens (call
  * it once before the pdg window runs; it is idempotent — the registry is
@@ -18,6 +18,7 @@
 import { createHash } from 'node:crypto';
 import { SupportedLanguages } from 'gitnexus-shared';
 import type { SourceSinkSanitizerSpec } from './source-sink-config.js';
+import { JAVA_TAINT_MODEL } from './java-model.js';
 import { PYTHON_TAINT_MODEL } from './python-model.js';
 import { registerSourceSinkConfig } from './source-sink-registry.js';
 
@@ -99,6 +100,7 @@ function canonicalJson(value: unknown): string {
 }
 
 export const BUILTIN_TAINT_MODELS = {
+  [SupportedLanguages.Java]: JAVA_TAINT_MODEL,
   [SupportedLanguages.JavaScript]: TS_JS_TAINT_MODEL,
   [SupportedLanguages.Python]: PYTHON_TAINT_MODEL,
   [SupportedLanguages.TypeScript]: TS_JS_TAINT_MODEL,
@@ -111,12 +113,13 @@ export const BUILTIN_TAINT_MODELS = {
 export const taintModelVersion: string = computeModelDigest(BUILTIN_TAINT_MODELS);
 
 /**
- * Register the built-in models for TypeScript, JavaScript, and Python.
+ * Register the built-in models for Java, TypeScript, JavaScript, and Python.
  * Explicit init seam for the U4 emit path (call before the pdg window
  * consumes the registry); idempotent. Other language ids remain unregistered
  * until they have a dedicated model.
  */
 export function registerBuiltinTaintModels(): void {
+  registerSourceSinkConfig(SupportedLanguages.Java, JAVA_TAINT_MODEL);
   registerSourceSinkConfig(SupportedLanguages.TypeScript, TS_JS_TAINT_MODEL);
   registerSourceSinkConfig(SupportedLanguages.JavaScript, TS_JS_TAINT_MODEL);
   registerSourceSinkConfig(SupportedLanguages.Python, PYTHON_TAINT_MODEL);

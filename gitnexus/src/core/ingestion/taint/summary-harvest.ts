@@ -297,18 +297,27 @@ export function harvestFunctionSummary(
       stmtIndex: sm.statementIndex,
       line: facts.line,
     };
+    const memberSources = sm.sources.filter((src) => src.type === 'member-read');
     if (returnUseStmtKeys.has(stmtKey)) {
-      for (const src of sm.sources) sourceReturn.add(src.entry.kind);
+      for (const src of memberSources) sourceReturn.add(src.entry.kind);
     }
-    for (const d of [...facts.defs, ...(facts.mayDefs ?? [])]) {
-      enqueue({ bindingIdx: d, point, seedId: -1, exclusions: new Set() });
+    if (memberSources.length > 0) {
+      for (const d of [...facts.defs, ...(facts.mayDefs ?? [])]) {
+        enqueue({ bindingIdx: d, point, seedId: -1, exclusions: new Set() });
+      }
+    }
+    for (const src of sm.sources) {
+      if (src.type !== 'call-result') continue;
+      for (const d of src.resultDefs) {
+        enqueue({ bindingIdx: d, point, seedId: -1, exclusions: new Set() });
+      }
     }
     // DIRECT source-in-call-arg (`runIt(req.body)`): no intermediate binding is
     // defined, so the floor seed above records nothing. Climb the source
     // member-read's `parent` chain — each enclosing call/new site is a
     // `sourceToCallArg` (the cross-function fixpoint seed). A sink ancestor is
     // M3's intra-procedural concern and harmless to also record here.
-    for (const src of sm.sources) {
+    for (const src of memberSources) {
       let cur: SiteRecord | undefined = facts.sites?.[src.siteIndex];
       const guard = new Set<number>([src.siteIndex]);
       while (cur?.parent) {

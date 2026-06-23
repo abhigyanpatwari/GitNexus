@@ -28,6 +28,19 @@ const SPEC: SourceSinkSanitizerSpec = {
   sanitizers: [{ name: 'escape', neutralizes: ['command-injection'], global: true }],
 };
 
+const CALL_RESULT_SOURCE_SPEC: SourceSinkSanitizerSpec = {
+  sources: [
+    {
+      type: 'call-result',
+      kind: 'remote-input',
+      receivers: ['request'],
+      methods: ['getParameter'],
+    },
+  ],
+  sinks: [],
+  sanitizers: [],
+};
+
 function harvest(code: string, spec: SourceSinkSanitizerSpec = SPEC, fnIndex = 0) {
   const cfg: FunctionCfg = cfgOf(code, fnIndex);
   const defUse = computeReachingDefs(cfg);
@@ -93,15 +106,15 @@ describe('harvestFunctionSummary — call-arg sanitizer exclusions (#2084 review
     // records that command-injection was neutralised on the path.
     const f = harvest(`function f(x: string) { const y = escape(x); helper(y); }`);
     const edge = f.paramToCallArg.find((c) => c.calleeName === 'helper');
-    expect(edge).toBeDefined();
-    expect(edge!.neutralized).toEqual(['command-injection']);
+    if (edge === undefined) throw new Error('expected helper call-arg edge');
+    expect(edge.neutralized).toEqual(['command-injection']);
   });
 
   it('records no neutralized when the param reaches the call directly', () => {
     const f = harvest(`function f(x: string) { helper(x); }`);
     const edge = f.paramToCallArg.find((c) => c.calleeName === 'helper');
-    expect(edge).toBeDefined();
-    expect(edge!.neutralized).toBeUndefined();
+    if (edge === undefined) throw new Error('expected helper call-arg edge');
+    expect(edge.neutralized).toBeUndefined();
   });
 });
 
@@ -114,6 +127,19 @@ describe('harvestFunctionSummary — source→callee-arg (fixpoint seed)', () =>
   it('records a source passed via a local into a callee argument', () => {
     const f = harvest(`function f() { const u = req.body; runIt(u); }`);
     expect(f.sourceToCallArg.some((s) => s.calleeName === 'runIt')).toBe(true);
+  });
+
+  it('records an assigned call-result source passed via a local into a callee argument', () => {
+    const f = harvest(
+      `function f(request: { getParameter(name: string): string }) {
+        const u = request.getParameter('path');
+        runIt(u);
+      }`,
+      CALL_RESULT_SOURCE_SPEC,
+    );
+    expect(f.sourceToCallArg).toEqual([
+      { sourceKind: 'remote-input', callLine: 3, argIndex: 0, calleeName: 'runIt' },
+    ]);
   });
 });
 
@@ -164,6 +190,17 @@ describe('harvestFunctionSummary — source→return', () => {
     expect(f.sourceToReturn).toEqual([{ sourceKind: 'remote-input' }]);
   });
 
+  it('records an assigned call-result source returned via a local', () => {
+    const f = harvest(
+      `function f(request: { getParameter(name: string): string }) {
+        const u = request.getParameter('path');
+        return u;
+      }`,
+      CALL_RESULT_SOURCE_SPEC,
+    );
+    expect(f.sourceToReturn).toEqual([{ sourceKind: 'remote-input' }]);
+  });
+
   it('is empty when no source is present', () => {
     const f = harvest(`function f(x: string) { return x; }`);
     expect(f.sourceToReturn).toEqual([]);
@@ -185,9 +222,9 @@ describe('harvestFunctionSummary — documented limitations', () => {
     // fix (formal-param index from the worker) is deferred.
     const f = harvest(`function f([a, b]: string[], x: string) { exec(x); }`);
     const xSink = f.paramToSink.find((s) => s.sinkKind === 'command-injection');
-    expect(xSink).toBeDefined();
+    if (xSink === undefined) throw new Error('expected command-injection param sink');
     // Current (limited) behaviour: ordinal index 2, NOT the formal index 1.
-    expect(xSink!.param).toBe(2);
+    expect(xSink.param).toBe(2);
   });
 });
 

@@ -9,13 +9,14 @@ import { createPythonCfgVisitor } from '../../../src/core/ingestion/cfg/visitors
 import { emitPythonScopeCaptures } from '../../../src/core/ingestion/languages/python/captures.js';
 import { interpretPythonImport } from '../../../src/core/ingestion/languages/python/interpret.js';
 import { PYTHON_TAINT_MODEL } from '../../../src/core/ingestion/taint/python-model.js';
+import type { SourceSinkSanitizerSpec } from '../../../src/core/ingestion/taint/source-sink-config.js';
 import { hasTaintSafeSites } from '../../../src/core/ingestion/taint/site-safety.js';
 import {
   buildTaintImportIndex,
   matchFunctionSites,
   type FunctionSiteMatches,
   type MatchedSinkCall,
-  type MatchedSourceRead,
+  type MatchedSource,
 } from '../../../src/core/ingestion/taint/match.js';
 import { makeCfgHarness } from '../../helpers/cfg-harness.js';
 
@@ -28,15 +29,19 @@ function importsFor(src: string): ParsedImport[] {
     .filter((p): p is ParsedImport => p !== null);
 }
 
-function matchesOf(code: string, fnIndex = 0): FunctionSiteMatches {
+function matchesOf(
+  code: string,
+  fnIndex = 0,
+  spec: SourceSinkSanitizerSpec = PYTHON_TAINT_MODEL,
+): FunctionSiteMatches {
   const cfg = harness.cfgOf(code, fnIndex);
   expect(hasTaintSafeSites(cfg)).toBe(true);
-  return matchFunctionSites(cfg, PYTHON_TAINT_MODEL, buildTaintImportIndex(importsFor(code)));
+  return matchFunctionSites(cfg, spec, buildTaintImportIndex(importsFor(code)));
 }
 
 const allSinks = (m: FunctionSiteMatches): MatchedSinkCall[] =>
   m.statements.flatMap((s) => [...s.sinks]);
-const allSources = (m: FunctionSiteMatches): MatchedSourceRead[] =>
+const allSources = (m: FunctionSiteMatches): MatchedSource[] =>
   m.statements.flatMap((s) => [...s.sources]);
 
 describe('Python taint model (#2204)', () => {
@@ -73,6 +78,25 @@ def f(request):
     sp.run(request.args)
 `);
     expect(allSinks(m).map((s) => s.entry.name)).toEqual(['run']);
+  });
+
+  it('does not dedupe named imports from a same-tail module path', () => {
+    const spec: SourceSinkSanitizerSpec = {
+      sources: [],
+      sinks: [{ name: 'read_string', kind: 'path-traversal', args: [0], module: 'pkg.Files' }],
+      sanitizers: [],
+    };
+    const m = matchesOf(
+      `
+from pkg.Files import Files
+
+def f(p):
+    Files.read_string(p)
+`,
+      0,
+      spec,
+    );
+    expect(allSinks(m)).toHaveLength(0);
   });
 
   it('does not guess positional sink slots for keyword arguments', () => {
