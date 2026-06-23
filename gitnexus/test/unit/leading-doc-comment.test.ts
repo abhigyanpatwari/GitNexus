@@ -82,6 +82,11 @@ public class Probe {
     expect(extractLeadingDocComment(method)).toBeUndefined();
   });
 
+  it('returns undefined for the degenerate empty comment /**/ (no spurious slash)', () => {
+    const method = firstNode(Java, `class P {\n/**/\nvoid m() {}\n}`, 'method_declaration');
+    expect(extractLeadingDocComment(method)).toBeUndefined();
+  });
+
   it('strips the */ delimiters and per-line * gutter markers', () => {
     const cls = firstNode(
       Java,

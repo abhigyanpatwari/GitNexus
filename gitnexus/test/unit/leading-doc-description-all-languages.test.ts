@@ -171,4 +171,102 @@ describe('leading-doc descriptionExtractor — behavior per comment family', () 
     );
     expect(d).toBeUndefined();
   });
+
+  it('collects a multi-line /// run (Rust)', () => {
+    const d = describeFromProvider(
+      SupportedLanguages.Rust,
+      Rust,
+      `/// First line.\n/// Second line, marker MULTILINE.\nfn add(a: i32) -> i32 { a }`,
+      'function_item',
+      'definition.function',
+      'Function',
+      'add',
+    );
+    expect(d).toContain('First line');
+    expect(d).toContain('MULTILINE');
+  });
+
+  it('collects a //! inner doc comment (Rust)', () => {
+    const d = describeFromProvider(
+      SupportedLanguages.Rust,
+      Rust,
+      `//! Inner doc, marker INNERMARK.\nfn add(a: i32) -> i32 { a }`,
+      'function_item',
+      'definition.function',
+      'Function',
+      'add',
+    );
+    expect(d).toContain('INNERMARK');
+  });
+
+  it('collects a /*! Doxygen bang block (C++)', () => {
+    const d = describeFromProvider(
+      SupportedLanguages.CPlusPlus,
+      CPP,
+      `/*! Bang block, marker BANGMARK. */\nint add(int a) { return a; }`,
+      'function_definition',
+      'definition.function',
+      'Function',
+      'add',
+    );
+    expect(d).toContain('BANGMARK');
+  });
+});
+
+describe('leading-doc descriptionExtractor — line-comment adjacency (issue #2270 review fix)', () => {
+  it('does NOT attach a // comment separated from the function by a blank line (Go)', () => {
+    const d = describeFromProvider(
+      SupportedLanguages.Go,
+      Go,
+      `package p\n// Detached note, marker DETACHED.\n\nfunc Add(a int) int { return a }`,
+      'function_declaration',
+      'definition.function',
+      'Function',
+      'Add',
+    );
+    expect(d).toBeUndefined();
+  });
+
+  it('collects only the adjacent // block when an earlier block is blank-separated (Go)', () => {
+    const d = describeFromProvider(
+      SupportedLanguages.Go,
+      Go,
+      `package p\n// Unrelated earlier block, marker EARLIER.\n\n// Adjacent doc, marker ADJACENT.\nfunc Add(a int) int { return a }`,
+      'function_declaration',
+      'definition.function',
+      'Function',
+      'Add',
+    );
+    expect(d).toContain('ADJACENT');
+    expect(d).not.toContain('EARLIER');
+  });
+
+  it('does NOT absorb a Ruby magic comment separated from the first method by a blank line', () => {
+    const d = describeFromProvider(
+      SupportedLanguages.Ruby,
+      Ruby,
+      `# frozen_string_literal: true\n\ndef add(a)\n a\nend`,
+      'method',
+      'definition.method',
+      'Method',
+      'add',
+    );
+    expect(d).toBeUndefined();
+  });
+});
+
+describe('phpDescriptionExtractor — Eloquent metadata wins over PHPDoc fallback', () => {
+  it('returns the Eloquent relation, not the docblock prose, when both are present', () => {
+    const d = describeFromProvider(
+      SupportedLanguages.PHP,
+      PHP.php,
+      `<?php\nclass User {\n/** Prose docblock, marker DOCPROSE. */\npublic function orders() { return $this->hasMany(Order::class); }\n}`,
+      'method_declaration',
+      'definition.method',
+      'Method',
+      'orders',
+    );
+    expect(d).toBe('hasMany(Order)');
+    expect(d).not.toContain('DOCPROSE');
+  });
 });

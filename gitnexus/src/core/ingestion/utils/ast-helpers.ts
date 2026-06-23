@@ -932,7 +932,9 @@ export function findChild(node: SyntaxNode, type: string): SyntaxNode | null {
 const normalizeBlockDocComment = (text: string): string | undefined => {
   const inner = text
     .replace(/^\/\*[*!]/, '')
-    .replace(/\*\/\s*$/, '')
+    // Close delimiter: tolerate the degenerate empty comment `/**/`, where the
+    // opening strip already consumed the shared `*`, leaving a lone `/`.
+    .replace(/\*?\/\s*$/, '')
     .replace(/^[ \t]*\*[ \t]?/gm, ' ')
     .replace(/\s+/g, ' ')
     .trim();
@@ -957,10 +959,18 @@ export const DEFAULT_LINE_DOC_PREFIXES: readonly string[] = ['///', '//!'];
  * grammars (`block_comment`, `multiline_comment`, `comment`, `line_comment`).
  * Annotations and modifiers live inside the definition node, so the doc comment
  * remains the definition's `previousNamedSibling` even on annotated/decorated
- * declarations. Adjacency is intentionally not enforced — intervening package,
- * import, or code siblings already separate a file-level license header from
- * the first declaration, and some grammars fold the trailing newline into the
- * comment node, which would make a strict row check unreliable.
+ * declarations.
+ *
+ * Block comments are taken as the immediately-preceding sibling (intervening
+ * package/import/code siblings already shield a file-level license block from
+ * the first declaration). Line doc comments enforce row-adjacency: the first
+ * comment must sit on the line directly above the definition, and each comment
+ * walked further up must sit directly above the previous one — so a run stops
+ * at a blank line. This matches godoc/RDoc/rustdoc convention and prevents an
+ * unrelated comment block (a license header, a Ruby shebang + magic comment)
+ * separated by a blank line from being absorbed. Adjacency is checked on
+ * `startPosition.row` (reliable) rather than `endPosition.row`, since some
+ * grammars fold the trailing newline into the comment node.
  *
  * Normalization mirrors Python docstring handling: strip the comment delimiters
  * / per-line markers, then collapse whitespace to single spaces so tag content
@@ -978,18 +988,19 @@ export function extractLeadingDocComment(
     return normalizeBlockDocComment(prev.text);
   }
 
-  // Run of contiguous preceding line doc comments (e.g. `///` or `//`).
+  // Run of row-adjacent preceding line doc comments (e.g. `///` or `//`).
   const matchedPrefix = (text: string): string | undefined =>
     lineCommentPrefixes.find((prefix) => text.trimStart().startsWith(prefix));
 
-  if (matchedPrefix(prev.text) === undefined) return undefined;
-
   const lines: string[] = [];
   let current: SyntaxNode | null = prev;
+  let expectedRow = node.startPosition.row - 1;
   while (current) {
-    const prefix = matchedPrefix(current.text);
-    if (prefix === undefined) break;
-    lines.unshift(current.text.trimStart().slice(prefix.length));
+    const text = current.text;
+    const prefix = matchedPrefix(text);
+    if (prefix === undefined || current.startPosition.row !== expectedRow) break;
+    lines.unshift(text.trimStart().slice(prefix.length));
+    expectedRow = current.startPosition.row - 1;
     current = current.previousNamedSibling;
   }
 
@@ -1025,23 +1036,21 @@ export const DOC_BEARING_LABELS: ReadonlySet<NodeLabel> = new Set<NodeLabel>([
  * leading doc comment as its `description` (issue #2270), so the doc text
  * reaches the embedding metadata header and becomes semantically searchable.
  *
- * Language-neutral factory (names no language): callers pass the doc-bearing
- * label set (defaults to {@link DOC_BEARING_LABELS}) and the line-comment doc
- * prefixes (defaults to {@link DEFAULT_LINE_DOC_PREFIXES}; Go passes `['//']`,
- * Ruby passes `['#']`).
+ * Language-neutral factory (names no language): guards on
+ * {@link DOC_BEARING_LABELS}; callers pass the line-comment doc prefixes
+ * (defaults to {@link DEFAULT_LINE_DOC_PREFIXES}; Go passes `['//']`, Ruby
+ * passes `['#']`).
  */
 export const createLeadingDocDescriptionExtractor = (opts?: {
-  labels?: ReadonlySet<NodeLabel>;
   lineCommentPrefixes?: readonly string[];
 }): ((
   nodeLabel: NodeLabel,
   nodeName: string,
   captureMap: Record<string, SyntaxNode | undefined>,
 ) => string | undefined) => {
-  const labels = opts?.labels ?? DOC_BEARING_LABELS;
   const lineCommentPrefixes = opts?.lineCommentPrefixes ?? DEFAULT_LINE_DOC_PREFIXES;
   return (nodeLabel, _nodeName, captureMap) => {
-    if (!labels.has(nodeLabel)) return undefined;
+    if (!DOC_BEARING_LABELS.has(nodeLabel)) return undefined;
     const definitionNode = getDefinitionNodeFromCaptures(captureMap);
     return definitionNode
       ? extractLeadingDocComment(definitionNode, lineCommentPrefixes)

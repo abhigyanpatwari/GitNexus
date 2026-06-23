@@ -21,7 +21,11 @@ import { SupportedLanguages } from 'gitnexus-shared';
 import { createClassExtractor } from '../class-extractors/generic.js';
 import { phpClassConfig } from '../class-extractors/configs/php.js';
 import { createPhpCfgVisitor } from '../cfg/visitors/php.js';
-import { defineLanguage, type AstFrameworkPatternConfig } from '../language-provider.js';
+import {
+  defineLanguage,
+  type AstFrameworkPatternConfig,
+  type CaptureMap,
+} from '../language-provider.js';
 import { typeConfig as phpConfig } from '../type-extractors/php.js';
 import { phpExportChecker } from '../export-detection.js';
 import { createImportResolver } from '../import-resolvers/resolver-factory.js';
@@ -30,9 +34,7 @@ import { PHP_QUERIES } from '../tree-sitter-queries.js';
 import {
   findDescendant,
   extractStringContent,
-  extractLeadingDocComment,
-  getDefinitionNodeFromCaptures,
-  DOC_BEARING_LABELS,
+  createLeadingDocDescriptionExtractor,
   type SyntaxNode,
 } from '../utils/ast-helpers.js';
 import type { NodeLabel } from 'gitnexus-shared';
@@ -228,6 +230,9 @@ function extractEloquentRelationDescription(methodNode: SyntaxNode): string | nu
   return null;
 }
 
+/** PHPDoc-docblock fallback, shared with the other leading-comment languages. */
+const phpLeadingDocFallback = createLeadingDocDescriptionExtractor();
+
 /**
  * LanguageProvider.descriptionExtractor implementation for PHP.
  * Eloquent model property metadata and relationship descriptions take
@@ -238,24 +243,19 @@ function extractEloquentRelationDescription(methodNode: SyntaxNode): string | nu
 function phpDescriptionExtractor(
   nodeLabel: NodeLabel,
   nodeName: string,
-  captureMap: Record<string, SyntaxNode>,
+  captureMap: CaptureMap,
 ): string | undefined {
-  if (nodeLabel === 'Property' && captureMap['definition.property']) {
-    const eloquentProperty = extractPhpPropertyDescription(
-      nodeName,
-      captureMap['definition.property'],
-    );
+  const propertyNode = captureMap['definition.property'];
+  if (nodeLabel === 'Property' && propertyNode) {
+    const eloquentProperty = extractPhpPropertyDescription(nodeName, propertyNode);
     if (eloquentProperty) return eloquentProperty;
   }
-  if (nodeLabel === 'Method' && captureMap['definition.method']) {
-    const eloquentRelation = extractEloquentRelationDescription(captureMap['definition.method']);
+  const methodNode = captureMap['definition.method'];
+  if (nodeLabel === 'Method' && methodNode) {
+    const eloquentRelation = extractEloquentRelationDescription(methodNode);
     if (eloquentRelation) return eloquentRelation;
   }
-  if (DOC_BEARING_LABELS.has(nodeLabel)) {
-    const definitionNode = getDefinitionNodeFromCaptures(captureMap);
-    if (definitionNode) return extractLeadingDocComment(definitionNode);
-  }
-  return undefined;
+  return phpLeadingDocFallback(nodeLabel, nodeName, captureMap);
 }
 
 /** Detect Laravel route files by path convention. */
