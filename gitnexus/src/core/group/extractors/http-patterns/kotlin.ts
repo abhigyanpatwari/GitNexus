@@ -1019,6 +1019,11 @@ function buildKotlinPlugin(language: unknown): HttpLanguagePlugin {
             method: httpMethod,
             path: joinPath(prefix, rawPath),
             name: nameNode?.text ?? null,
+            // Spring providers are named controller methods resolved BY NAME;
+            // `line` is wired for parity with the consumer emits (and a future
+            // inline DSL) and is inert for current resolution — a named provider
+            // never falls through to line-span containment.
+            line: methodNode.startPosition.row + 1,
             confidence: 0.8,
           });
         }
