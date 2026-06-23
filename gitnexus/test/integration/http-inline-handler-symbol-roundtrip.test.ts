@@ -32,7 +32,9 @@ let storagePath: string;
 let dbPath: string;
 
 beforeAll(async () => {
-  tmpBase = path.join(os.tmpdir(), `gitnexus-http-inline-e2e-${Date.now()}-${process.pid}`);
+  // Atomic, unique temp dir (fs.mkdtemp) — avoids the predictable
+  // os.tmpdir()+name pattern CodeQL flags as an insecure temporary file.
+  tmpBase = await fs.mkdtemp(path.join(os.tmpdir(), 'gitnexus-http-inline-e2e-'));
   repoDir = path.join(tmpBase, 'repo');
   storagePath = path.join(tmpBase, '.gitnexus');
   dbPath = path.join(storagePath, 'lbug');
