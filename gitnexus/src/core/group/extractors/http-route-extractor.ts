@@ -80,6 +80,67 @@ WHERE sym.filePath = $filePath AND sym.startLine IS NOT NULL AND sym.endLine IS 
 RETURN sym.id AS uid, sym.name AS name, sym.filePath AS filePath,
        sym.startLine AS startLine, sym.endLine AS endLine, labels(sym) AS labels`;
 
+// Repo-wide lookup of a symbol by exact name (label-union, as in
+// manifest-extractor.ts). Used to resolve a provider's named handler when it is
+// defined in a file OTHER than its route registration — and only honored when
+// the result is unique (see resolveSymbolByNameUnique).
+//
+// `n.filePath <> ''` excludes synthetic non-source `CodeElement` nodes that
+// carry no real file — ORM model/table nodes (orm.ts emits `filePath: ''`) and
+// similar — so a handler name colliding with an ORM model neither resolves to a
+// degenerate edge-less node NOR inflates the uniqueness count and masks the real
+// handler. `LIMIT 2` bounds materialization: distinguishing unique (1) from
+// ambiguous (>=2) never needs more than two rows (the count guard stays exact).
+const RESOLVE_BY_NAME_QUERY = `
+MATCH (n:Function|Method|CodeElement)
+WHERE n.name = $name AND n.filePath <> ''
+RETURN n.id AS uid, n.name AS name, n.filePath AS filePath
+LIMIT 2`;
+
+// Resolve an IMPORTED handler by pinning it to the import's target module: the
+// declared export `$name` whose file is the module the handler was imported from
+// (`$fileDot` matches `mod.ext`, `$fileSlash` matches `mod/index.ext`). This is
+// the precise rung — it survives aliases and local same-name collisions that a
+// repo-wide name lookup cannot, and only resolves on a unique match within that
+// module. `LIMIT 2` keeps the uniqueness count exact (see RESOLVE_BY_NAME_QUERY).
+const RESOLVE_IN_MODULE_QUERY = `
+MATCH (n:Function|Method|CodeElement)
+WHERE n.name = $name AND (n.filePath STARTS WITH $fileDot OR n.filePath STARTS WITH $fileSlash)
+RETURN n.id AS uid, n.name AS name, n.filePath AS filePath
+LIMIT 2`;
+
+// Source-file extensions an import specifier may resolve to (stripped before
+// building the module file-prefix so `./h/users` and `./h/users.ts` agree).
+const SOURCE_EXT_RE = /\.(?:m|c)?[jt]sx?$/;
+
+/**
+ * Resolve an import specifier to a repo-relative FILE BASE (path without
+ * extension) so the target module can be matched by `filePath STARTS WITH`.
+ * Handles two relative-import dialects and returns null for bare/absolute
+ * imports (which fall back to a repo-wide name lookup):
+ *   - path-style (JS/TS): `./handlers/users`, `../x` → joined against the
+ *     importing file's directory.
+ *   - dotted-relative (Python): `.users`, `..pkg.users` → leading dots are
+ *     package levels (one dot = the file's own package), the rest dot→slash.
+ */
+function resolveModuleBase(fromFile: string, module: string): string | null {
+  const dir = path.posix.dirname(fromFile.replace(/\\/g, '/'));
+  if (module.includes('/')) {
+    // path-style relative import
+    if (!module.startsWith('.')) return null;
+    return path.posix.normalize(path.posix.join(dir, module)).replace(SOURCE_EXT_RE, '');
+  }
+  if (module.startsWith('.')) {
+    // Python dotted-relative import
+    const dots = module.length - module.replace(/^\.+/, '').length;
+    const rest = module.slice(dots).replace(/\./g, '/');
+    let base = dir;
+    for (let i = 1; i < dots; i++) base = path.posix.dirname(base);
+    return rest ? path.posix.normalize(path.posix.join(base, rest)) : base;
+  }
+  return null; // bare / absolute import — repo-wide fallback
+}
+
 interface ResolvedSymbol {
   uid: string;
   name: string;
@@ -357,22 +418,114 @@ export class HttpRouteExtractor implements ContractExtractor {
       fileSymbolCache.set(filePath, rows);
       return rows;
     };
+    // Repo-wide UNAMBIGUOUS resolution for a provider handler defined in a file
+    // other than its route registration (e.g. `router.get('/x', listUsers)` with
+    // `listUsers` imported from another module). Returns the symbol ONLY when
+    // exactly one Function/Method/CodeElement carries that name across the repo.
+    // The strict uniqueness guard is intentionally conservative: when a name is
+    // shared across files (homonyms like `handler`/`index`), we prefer a
+    // false-negative (no attribution → file-level fallback) over a false-positive
+    // (wrong symbol).
+    //
+    // An IMPORTED handler (the common cross-file case) is pinned to its source
+    // module first by resolveImportedSymbol, so an alias or a name colliding with
+    // a local symbol resolves correctly; this repo-wide-by-name rung is the
+    // fallback for non-relative/bare imports and for plugins that supply only a
+    // name. Cached by name for the lifetime of this extract().
+    const globalNameCache = new Map<string, ResolvedSymbol | null>();
+    const toResolvedSymbol = (rows: Record<string, unknown>[]): ResolvedSymbol | null => {
+      const norm = (x: unknown): string => String(x ?? '');
+      const uid = rows.length === 1 ? norm(rows[0]!.uid ?? rows[0]![0]) : '';
+      const filePath = uid ? norm(rows[0]!.filePath ?? rows[0]![2]) : '';
+      // Reject a unique match that carries no real file (a synthetic ORM /
+      // non-source node) so it can never anchor a cross-trace on an edge-less
+      // node — defence in depth alongside the queries' filePath predicates.
+      return uid && filePath ? { uid, name: norm(rows[0]!.name ?? rows[0]![1]), filePath } : null;
+    };
+    const resolveSymbolByNameUnique = async (name: string): Promise<ResolvedSymbol | null> => {
+      if (!dbExecutor) return null;
+      const cached = globalNameCache.get(name);
+      if (cached !== undefined) return cached;
+      let rows: Record<string, unknown>[] = [];
+      try {
+        rows = await dbExecutor(RESOLVE_BY_NAME_QUERY, { name });
+      } catch {
+        rows = [];
+      }
+      const result = toResolvedSymbol(rows);
+      globalNameCache.set(name, result);
+      return result;
+    };
+    // Resolve a handler imported from a RELATIVE module to the unique declared
+    // symbol of that name inside the import's target file. Returns null for
+    // non-relative (bare/aliased-path) imports — those fall back to the repo-wide
+    // name lookup. Cached by (target-file-prefix, declared name).
+    const importedSymbolCache = new Map<string, ResolvedSymbol | null>();
+    const resolveImportedSymbol = async (
+      fromFile: string,
+      imp: { name: string; module: string },
+    ): Promise<ResolvedSymbol | null> => {
+      if (!dbExecutor) return null;
+      const base = resolveModuleBase(fromFile, imp.module);
+      if (base === null) return null; // bare/absolute import → repo-wide fallback
+      const cacheKey = JSON.stringify([base, imp.name]);
+      const cached = importedSymbolCache.get(cacheKey);
+      if (cached !== undefined) return cached;
+      let rows: Record<string, unknown>[] = [];
+      try {
+        rows = await dbExecutor(RESOLVE_IN_MODULE_QUERY, {
+          name: imp.name,
+          fileDot: `${base}.`,
+          fileSlash: `${base}/`,
+        });
+      } catch {
+        rows = [];
+      }
+      const result = toResolvedSymbol(rows);
+      importedSymbolCache.set(cacheKey, result);
+      return result;
+    };
     const resolveDetectionSymbol = async (
       filePath: string,
       d: HttpDetection,
     ): Promise<ResolvedSymbol | null> => {
       if (!dbExecutor) return null;
       const syms = await loadFileSymbols(filePath);
-      if (syms.length === 0) return null;
       // Name resolution does NOT need a detection line — a named provider
       // handler (Spring/Go/etc. method name) resolves by name even when the
-      // plugin didn't set `line`. Try it FIRST; only the containment fallback
-      // requires a line.
+      // plugin didn't set `line`. Try the registration file FIRST; then, for a
+      // handler defined in another file, the unique repo-wide match. Only the
+      // containment fallback requires a line.
       if (d.role === 'provider' && d.name) {
+        // IMPORTED handler: pin to the import's target module first. This is the
+        // precise rung — it survives aliases and names that collide with a local
+        // symbol. The handler is defined ELSEWHERE, so a file-scoped lookup of
+        // its (declared) name would be wrong; on a miss go straight to a unique
+        // repo-wide match on the declared name, never file-scoped.
+        if (d.handlerImport) {
+          const byImport = await resolveImportedSymbol(filePath, d.handlerImport);
+          if (byImport) return byImport;
+          const byGlobal = await resolveSymbolByNameUnique(d.handlerImport.name);
+          if (byGlobal) return byGlobal;
+          return null;
+        }
         const byName = resolveSymbolByName(syms, d.name);
         if (byName) return byName;
+        const byGlobal = await resolveSymbolByNameUnique(d.name);
+        if (byGlobal) return byGlobal;
+        // A NAMED handler we could not resolve by name (neither file-scoped nor
+        // the unique repo-wide match) must NOT fall through to line-span
+        // containment: `d.line` is the route REGISTRATION site, so containment
+        // would attach the route to the enclosing registrar (e.g. a
+        // `setupRoutes()` wrapper) rather than the handler. Leave it empty →
+        // file-level boundary fallback, upholding the invariant that a
+        // zero/ambiguous name match never yields a wrong-symbol attribution.
+        return null;
       }
-      if (d.line == null) return null;
+      // Consumers (the function making the fetch) and inline-arrow providers
+      // (d.name === null) DO resolve by containment — there the enclosing symbol
+      // is the right one.
+      if (syms.length === 0 || d.line == null) return null;
       return resolveContainingSymbol(syms, d.line);
     };
 

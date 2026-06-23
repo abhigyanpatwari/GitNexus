@@ -13,7 +13,7 @@ node bench/cross-repo-trace/verify.mjs
 
 `verify.mjs` is self-contained — it generates each fixture inline, runs the real
 analyze → sync → trace/impact pipeline, and prints PASS/FAIL per assertion
-(exit non-zero on any failure). Expected verdict: **9/9 checks passed**.
+(exit non-zero on any failure). Expected verdict: **16/16 checks passed**.
 
 ## Cases covered (one scenario each)
 
@@ -32,6 +32,18 @@ analyze → sync → trace/impact pipeline, and prints PASS/FAIL per assertion
 4. **Multi-language (Python)** — a Flask provider + `requests` consumer; asserts
    the Python line wiring resolves the consumer and the cross-repo `trace`
    stitches `fetch_items -> list_items`.
+5. **Cross-file named handler** (#2275) — a route whose handler (`listUsers`) is
+   imported from another file than its registration. Asserts the provider
+   resolves to the handler via the import-pinned module lookup, and the trace is
+   symbol-precise (no file-level fallback).
+6. **Aliased cross-file import** (#2275) — `import { listUsers as handleUsers }`
+   with an unrelated decoy `handleUsers` elsewhere. Asserts the route resolves
+   through the import to the declared `listUsers` (not the alias or the decoy),
+   proving import-pinned resolution.
+7. **Python aliased import** (#2275) — a Flask `add_url_rule('/api/users',
+   view_func=handle_users)` whose view is `from .handlers.users import list_users
+   as handle_users`. Asserts the handler resolves through Python's dotted
+   relative module to `list_users`, symbol-precise.
 
 The **ambiguous-destination** (a file making several HTTP calls whose consumer
 contracts have no resolved uid) and **degraded-member** (a member DB that throws

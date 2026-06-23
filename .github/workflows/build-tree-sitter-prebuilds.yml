@@ -14,8 +14,9 @@ name: Build tree-sitter prebuilds
 #                         REQUIRED grammar)
 #   - tree-sitter-dart   (vendored source; built from gitnexus/vendor/)
 #   - tree-sitter-proto  (vendored source; built from gitnexus/vendor/)
-#   - tree-sitter-kotlin (vendored source; built from the published npm package —
-#                         upstream ships source only)
+#   - tree-sitter-kotlin (vendored source; built from gitnexus/vendor/ — pinned to
+#                         an unreleased main commit for `fun interface` support
+#                         (#169) that no npm release carries yet)
 #   - tree-sitter-swift  (vendored source; built from gitnexus/vendor/ — its
 #                         prebuilds were originally upstream-shipped, now
 #                         GitNexus-cross-built like the rest for uniformity)
@@ -28,12 +29,20 @@ name: Build tree-sitter prebuilds
 # incl. macOS + arm64). It is DELIBERATELY NOT wired into normal PR/push CI. It
 # runs only:
 #   1. on manual dispatch (workflow_dispatch); or
-#   2. when a covered grammar's recorded version actually CHANGES — the `guard`
-#      job is the real gate (it diffs the recorded version vs the PR base); the
-#      `paths:` filter below only makes ordinary code PRs cost ZERO matrix time.
-# Net effect: an ordinary code PR triggers nothing; bumping one grammar costs
-# exactly one matrix run for that grammar, which opens a PR committing its rebuilt
-# binaries.
+#   2. when a covered grammar's VENDORED SOURCE changes in a PR — a version bump
+#      OR an edit to the grammar's build-affecting source (parser.c / grammar.js /
+#      binding.gyp / scanner / bindings). The `guard` job is the real gate (it
+#      diffs BOTH the recorded version AND the source files vs the PR base); the
+#      `paths:` filter below keeps ordinary code PRs at ZERO matrix time and
+#      excludes the prebuilds the job commits back, so it never retriggers itself.
+# Net effect: an ordinary code PR triggers nothing; touching one grammar's source
+# costs exactly one matrix run for that grammar. Delivery of the rebuilt binaries:
+#   - same-repo PR  -> committed straight onto the PR's own branch (in the SAME PR);
+#   - manual dispatch (open_pr=true) -> a fresh chore/ PR;
+#   - fork PR -> the trusted commit-fork-prebuilds.yml (workflow_run) pushes them
+#                onto the fork branch when "Allow edits by maintainers" is on, else
+#                comments download-and-commit instructions. That consumer must be
+#                on the DEFAULT branch to run, so it activates once merged to main.
 #
 # Concurrency convention: see CONTRIBUTING.md -> "GitHub Actions — Concurrency Convention".
 #
@@ -68,13 +77,16 @@ on:
   pull_request:
     branches: [main]
     paths:
-      # Vendored grammars: their version lives in the vendor snapshot package.json.
-      - 'gitnexus/vendor/tree-sitter-c/package.json'
-      - 'gitnexus/vendor/tree-sitter-dart/package.json'
-      - 'gitnexus/vendor/tree-sitter-proto/package.json'
-      - 'gitnexus/vendor/tree-sitter-kotlin/package.json'
-      - 'gitnexus/vendor/tree-sitter-swift/package.json'
-      # Transition window: kotlin's pin still lives here until it is vendored.
+      # Any build-affecting change under a vendored grammar triggers a rebuild —
+      # not just a version bump — so editing the vendored source (parser.c,
+      # grammar.js, binding.gyp, scanner, bindings) re-cuts the prebuilds too.
+      # The prebuilds we commit back are EXCLUDED (negated last) so the bot's own
+      # in-PR commit can never retrigger this workflow (no build->commit->build loop).
+      - 'gitnexus/vendor/tree-sitter-*/**'
+      - '!gitnexus/vendor/tree-sitter-*/prebuilds/**'
+      # Self-test: re-run the guard if a future grammar pin is reintroduced in
+      # the main package.json (optionalDependencies fallback). No-op otherwise —
+      # all five grammars are now fully vendored (kotlin included).
       - 'gitnexus/package.json'
       # Self-test: re-run the guard (normally a no-op) when the recipe changes.
       - '.github/workflows/build-tree-sitter-prebuilds.yml'
@@ -135,7 +147,12 @@ jobs:
             c:      { name: 'tree-sitter-c',      kind: 'npm' },
             dart:   { name: 'tree-sitter-dart',   kind: 'vendored' },
             proto:  { name: 'tree-sitter-proto',  kind: 'vendored' },
-            kotlin: { name: 'tree-sitter-kotlin', kind: 'npm' },
+            // kotlin is vendored WITH its source (parser.c/scanner.c/binding.gyp),
+            // so it builds from gitnexus/vendor/ like dart/proto/swift. It was
+            // 'npm' while tracking released versions, but is now pinned to an
+            // unreleased main commit for `fun interface` support (#169) that no
+            // npm release carries yet — so it must build from the vendored source.
+            kotlin: { name: 'tree-sitter-kotlin', kind: 'vendored' },
             // swift is vendored WITH its source (parser.c/scanner.c/binding.gyp),
             // so it builds from gitnexus/vendor/ like dart/proto. Its prebuilds
             // were originally upstream-shipped; rebuilding them here unifies it.
@@ -184,8 +201,13 @@ jobs:
           // Resolve the base-ref recorded versions (pull_request only) so we can
           // diff. On dispatch, base is irrelevant (manual intent / force wins).
           const baseRoot = `${process.env.RUNNER_TEMP}/base`;
+          const baseSha = process.env.BASE_SHA;
+          // Defense in depth: baseSha is interpolated into git commands below, so
+          // reject anything that is not a plain commit-ish before we touch a shell.
+          if (event === 'pull_request' && baseSha && !/^[0-9a-fA-F]{7,40}$/.test(baseSha)) {
+            throw new Error(`unexpected base sha '${baseSha}'`);
+          }
           if (event === 'pull_request') {
-            const baseSha = process.env.BASE_SHA;
             for (const s of selected) {
               const name = REGISTRY[s].name;
               for (const rel of [`gitnexus/vendor/${name}/package.json`, `gitnexus/package.json`]) {
@@ -219,9 +241,24 @@ jobs:
             if (event === 'workflow_dispatch') {
               build = true; // manual intent (force toggles only the unchanged-guard, which is bypassed here)
             } else {
+              // pull_request: build when the recorded version changed OR any
+              // build-affecting source file under the vendored grammar changed vs
+              // the PR base. The prebuilds/ subtree is excluded from the diff so
+              // the bot's own in-PR commit (which adds ONLY prebuilds) never reads
+              // as a source change — this is the other half of the no-loop guard.
               const base = recordedVersion(baseRoot, name);
-              build = !!head && head !== base;
-              console.log(`${short}: head='${head || '<absent>'}' base='${base || '<absent>'}' -> ${build ? 'BUILD' : 'skip'}`);
+              const versionChanged = !!head && head !== base;
+              let sourceChanged = false;
+              try {
+                const diff = execSync(
+                  `git diff --name-only ${baseSha} -- gitnexus/vendor/${name} ` +
+                  `':(exclude)gitnexus/vendor/${name}/prebuilds/**'`,
+                  { stdio: ['ignore', 'pipe', 'ignore'] },
+                ).toString().trim();
+                sourceChanged = diff.length > 0;
+              } catch { /* base unavailable -> fall back to the version gate */ }
+              build = versionChanged || sourceChanged;
+              console.log(`${short}: version ${versionChanged ? 'changed' : 'same'}, source ${sourceChanged ? 'changed' : 'same'} -> ${build ? 'BUILD' : 'skip'}`);
             }
             if (force) build = true;
             if (!build) continue;
@@ -254,6 +291,47 @@ jobs:
           if [ "$HAS_APP" != "true" ]; then
             echo "::notice::Release GitHub App secrets (RELEASE_APP_ID / RELEASE_APP_PRIVATE_KEY) are not configured — prebuilds will build and upload as artifacts, but the auto-PR is skipped. Provision the App, or run with open_pr=false to suppress this notice."
           fi
+
+      # ── Fork PRs: emit the PR identity so the trusted `commit-fork-prebuilds`
+      #    workflow_run job can push the rebuilt prebuilds back onto the fork's
+      #    branch. That job has no PR context of its own (workflow_run.pull_requests
+      #    is empty for forks), so it reads this. Same-repo PRs don't need it — the
+      #    aggregate job below commits straight onto their branch. This artifact is
+      #    untrusted producer output: every field is allowlist-validated again on
+      #    the consumer side AND cross-checked against the workflow_run authority.
+      - name: Record fork PR identity
+        id: forkmeta
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.fork == true && steps.decide.outputs.any == 'true'
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          BASE_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/pr-meta"
+          # Values flow through env + jq so an exotic head_ref is quoted, never
+          # interpolated into a shell command.
+          jq -n \
+            --arg     schema    "gitnexus.ts-prebuild/v1" \
+            --argjson pr_number "$PR_NUMBER" \
+            --arg     head_sha  "$HEAD_SHA" \
+            --arg     head_ref  "$HEAD_REF" \
+            --arg     head_repo "$HEAD_REPO" \
+            --arg     base_repo "$BASE_REPO" \
+            '{schema:$schema, pr_number:$pr_number, head_sha:$head_sha, head_ref:$head_ref, head_repo:$head_repo, base_repo:$base_repo}' \
+            > "$RUNNER_TEMP/pr-meta/metadata.json"
+          cat "$RUNNER_TEMP/pr-meta/metadata.json"
+
+      - name: Upload fork PR meta
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.fork == true && steps.decide.outputs.any == 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: pr-meta
+          path: ${{ runner.temp }}/pr-meta/metadata.json
+          if-no-files-found: error
+          retention-days: 7
 
   # ── Build one native prebuild per (grammar, platform-arch). No cross-compile. ─
   build:
@@ -402,16 +480,18 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-  # ── Aggregate every grammar's six prebuilds, assert completeness, open a PR. ─
+  # ── Aggregate every grammar's six prebuilds, assert completeness, deliver them. ─
   aggregate:
-    name: Vendor prebuilds + open PR
+    name: Vendor prebuilds + deliver
     needs: [guard, build]
-    # Open the prebuild PR on a non-fork pull_request that bumped a grammar
-    # version (the documented version-change -> prebuild-PR flow), or on a manual
-    # dispatch with open_pr=true. Event-gating is explicit so we never rely on
-    # GHA coercing a null `inputs.open_pr` on pull_request events (Codex F4):
-    # `inputs.open_pr` is null off-dispatch, and `null != false` is direction-
-    # ambiguous, so `open_pr` is only consulted on workflow_dispatch.
+    # Runs on a non-fork pull_request whose vendored grammar source changed — the
+    # rebuilt prebuilds are committed straight onto that PR's own branch (same PR)
+    # — or on a manual dispatch with open_pr=true, which opens a fresh chore/ PR.
+    # Fork PRs are excluded: a bot cannot push into a fork branch, so they get
+    # artifacts only. Event-gating is explicit so we never rely on GHA coercing a
+    # null `inputs.open_pr` on pull_request events (Codex F4): `inputs.open_pr` is
+    # null off-dispatch, and `null != false` is direction-ambiguous, so `open_pr`
+    # is only consulted on workflow_dispatch.
     if: >-
       needs.guard.outputs.any == 'true' &&
       needs.guard.outputs.release_app == 'true' &&
@@ -434,6 +514,10 @@ jobs:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           token: ${{ steps.app-token.outputs.token }}
+          # On a (non-fork) PR, check out the PR's HEAD branch — not the merge ref —
+          # so the rebuilt-prebuilds commit lands on the PR's own branch (same PR).
+          # Empty on manual dispatch -> the workflow's default ref.
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.ref || '' }}
           persist-credentials: false
 
       - name: Download all prebuild artifacts
@@ -481,7 +565,7 @@ jobs:
         with:
           subject-path: 'gitnexus/vendor/tree-sitter-*/prebuilds/**/*.node'
 
-      - name: Create or update PR
+      - name: Deliver rebuilt prebuilds
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
           GRAMMARS: ${{ steps.place.outputs.grammars }}
@@ -493,8 +577,8 @@ jobs:
             const { execSync } = require('node:child_process');
             const run = (c) => execSync(c, { stdio: ['ignore', 'pipe', 'inherit'] }).toString().trim();
             const grammars = process.env.GRAMMARS;
-            const slug = grammars.replace(/[^a-z0-9]+/gi, '-');
-            const branch = `chore/vendor-ts-prebuilds-${slug}-${context.runId}`;
+            const { owner, repo } = context.repo;
+            const remote = `https://x-access-token:${process.env.GH_TOKEN}@github.com/${owner}/${repo}.git`;
 
             run('git add gitnexus/vendor/tree-sitter-*/prebuilds');
             if (!run('git status --porcelain -- gitnexus/vendor/tree-sitter-*/prebuilds')) {
@@ -503,16 +587,35 @@ jobs:
             }
             run('git config user.name "gitnexus-release-bot[bot]"');
             run('git config user.email "gitnexus-release-bot[bot]@users.noreply.github.com"');
+            run(`git commit -m "chore(vendor): rebuild native prebuilds (${grammars})" -m "Built by ${process.env.RUN_URL}"`);
+
+            // ── Same-repo PR: ride the rebuilt prebuilds into the SAME PR by
+            //    pushing one commit onto its head branch. The aggregate checkout
+            //    used `ref: head.ref`, so HEAD is the PR branch tip (NOT the merge
+            //    ref) and this is a clean fast-forward of exactly our new commit.
+            //    Plain push (NOT --force): we only ever ADD on top of head, so we
+            //    must never clobber the contributor's commits. If the branch
+            //    advanced mid-build the push is rejected — and the PR's
+            //    cancel-in-progress concurrency will already have started a fresher
+            //    run against the new head — so a rejection is a no-op we just note.
+            if (context.eventName === 'pull_request') {
+              const headRef = context.payload.pull_request.head.ref;
+              try {
+                run(`git push "${remote}" "HEAD:${headRef}"`);
+                core.notice(`Pushed rebuilt prebuilds onto PR branch '${headRef}' (included in this PR).`);
+              } catch (e) {
+                core.warning(`Could not fast-forward '${headRef}' (it likely advanced mid-build); a fresher run will rebuild. ${e.message}`);
+              }
+              return;
+            }
+
+            // ── Manual dispatch: there is no PR to attach to, so open a fresh one
+            //    off an ephemeral, run-unique branch. Plain --force is safe here:
+            //    the branch is keyed by context.runId and written ONLY by this job,
+            //    so there is no concurrent writer to protect against.
+            const slug = grammars.replace(/[^a-z0-9]+/gi, '-');
+            const branch = `chore/vendor-ts-prebuilds-${slug}-${context.runId}`;
             run(`git checkout -b "${branch}"`);
-            run(`git commit -m "chore(vendor): rebuild native prebuilds (${grammars})\n\nBuilt by ${process.env.RUN_URL}"`);
-            const { owner, repo } = context.repo;
-            const remote = `https://x-access-token:${process.env.GH_TOKEN}@github.com/${owner}/${repo}.git`;
-            // Plain --force, not --force-with-lease: the branch is ephemeral and
-            // unique per run (keyed by context.runId), written ONLY by this job, so
-            // there is no concurrent writer to protect against. --force-with-lease
-            // would compare against a remote-tracking ref this fresh checkout never
-            // fetched, so re-running the SAME run (branch already pushed by attempt
-            // 1) fails with "stale info" instead of overwriting.
             run(`git push --force "${remote}" "HEAD:${branch}"`);
             const body = [
               `Rebuilt the vendored native prebuilds for: **${grammars}**.`,
