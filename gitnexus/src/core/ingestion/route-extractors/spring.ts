@@ -39,6 +39,15 @@ import {
  *   @node  → enclosing declaration (class_declaration | method_declaration)
  *   @value → the string-literal argument
  *   @key   → the named-argument member key (absent for positional form)
+ *
+ * Method-level routes accept both the bare string form `@GetMapping("/x")` and
+ * the array form `@GetMapping({"/a","/b"})` (positional or `path =`/`value =`):
+ * a multi-element array yields one match per element, so the Phase 2 loop emits
+ * one route per path with no special-casing. This mirrors the group-layer
+ * `java.ts` query so the two Spring extractors stay in parity (#2138 follow-up;
+ * the divergence here was the root of the #2265 array-form gap). Array form on a
+ * class-level `@RequestMapping` prefix is not matched here yet (rare; left to a
+ * follow-up) — `@value` on the class branches stays a single string literal.
  */
 const ROUTE_ANNOTATION_QUERY = new Parser.Query(
   Java,
@@ -61,7 +70,9 @@ const ROUTE_ANNOTATION_QUERY = new Parser.Query(
       (modifiers
         (annotation
           name: (identifier) @ann
-          arguments: (annotation_argument_list (string_literal) @value)))) @node
+          arguments: (annotation_argument_list
+            [(string_literal) @value
+             (element_value_array_initializer (string_literal) @value)])))) @node
     (method_declaration
       (modifiers
         (annotation
@@ -69,7 +80,8 @@ const ROUTE_ANNOTATION_QUERY = new Parser.Query(
           arguments: (annotation_argument_list
             (element_value_pair
               key: (identifier) @key
-              value: (string_literal) @value))))) @node
+              value: [(string_literal) @value
+                      (element_value_array_initializer (string_literal) @value)]))))) @node
   ]
 `,
 );
