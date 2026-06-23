@@ -1133,6 +1133,100 @@ def list_items():
       expect(provider).toBeDefined();
       expect(provider?.symbolUid).toBe('');
     });
+
+    // The @router/APIRouter provider emit also carries `line` (#2276), but only
+    // @app was covered above. These pin the @router containment path: a
+    // single-decorator router handler resolves to its function, and a
+    // multi-decorator one degrades to file-level — same as @app.
+
+    it('resolves a FastAPI @router provider to its decorated function (source-scan fallback) (#2276)', async () => {
+      const dir = path.join(tmpDir, 'py-fastapi-router');
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'main.py'),
+        `from fastapi import APIRouter
+router = APIRouter()
+
+@router.get("/api/items")
+def list_items():
+    return []
+`,
+      );
+      // Same shape as the @app case: @router.get is on line 4 (row 3), `def`
+      // on line 5 → list_items spans 0-based [4,5]; the `line` probe lands in
+      // the def span and resolves via source_scan_resolved. No include_router
+      // prefix in scope, so the unprefixed path is emitted.
+      const mockDbExecutor = async (
+        query: string,
+        params?: Record<string, unknown>,
+      ): Promise<Record<string, unknown>[]> => {
+        if (query.includes('UNION ALL') && String(params?.filePath ?? '').includes('main.py')) {
+          return [
+            {
+              uid: 'fn-list_items',
+              name: 'list_items',
+              filePath: 'main.py',
+              startLine: 4,
+              endLine: 5,
+              labels: ['Function'],
+            },
+          ];
+        }
+        return [];
+      };
+      const contracts = await extractor.extract(mockDbExecutor, dir, makeRepo(dir));
+      const provider = contracts.find(
+        (c) => c.role === 'provider' && c.contractId === 'http::GET::/api/items',
+      );
+      expect(provider).toMatchObject({
+        symbolUid: 'fn-list_items',
+        symbolName: 'list_items',
+        meta: { extractionStrategy: 'source_scan_resolved' },
+      });
+    });
+
+    it('leaves a module-scope multi-decorator @router handler at file-level (#2276)', async () => {
+      const dir = path.join(tmpDir, 'py-fastapi-router-multidecorator');
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'main.py'),
+        `from fastapi import APIRouter
+router = APIRouter()
+
+@router.post("/api/items")
+@require_auth
+def create_item():
+    return {}
+`,
+      );
+      // With a second decorator the `def` is on line 6 → create_item spans
+      // 0-based [5,6]; the path-line probe falls ABOVE that span → no
+      // containment → file-level (symbolUid stays empty), matching @app.
+      const mockDbExecutor = async (
+        query: string,
+        params?: Record<string, unknown>,
+      ): Promise<Record<string, unknown>[]> => {
+        if (query.includes('UNION ALL') && String(params?.filePath ?? '').includes('main.py')) {
+          return [
+            {
+              uid: 'fn-create_item',
+              name: 'create_item',
+              filePath: 'main.py',
+              startLine: 5,
+              endLine: 6,
+              labels: ['Function'],
+            },
+          ];
+        }
+        return [];
+      };
+      const contracts = await extractor.extract(mockDbExecutor, dir, makeRepo(dir));
+      const provider = contracts.find(
+        (c) => c.role === 'provider' && c.contractId === 'http::POST::/api/items',
+      );
+      expect(provider).toBeDefined();
+      expect(provider?.symbolUid).toBe('');
+    });
   });
 
   describe('provider extraction — graph-first (Strategy A)', () => {
