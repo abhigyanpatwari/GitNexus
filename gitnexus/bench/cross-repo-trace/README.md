@@ -13,7 +13,7 @@ node bench/cross-repo-trace/verify.mjs
 
 `verify.mjs` is self-contained — it generates each fixture inline, runs the real
 analyze → sync → trace/impact pipeline, and prints PASS/FAIL per assertion
-(exit non-zero on any failure). Expected verdict: **9/9 checks passed**.
+(exit non-zero on any failure). Expected verdict: **12/12 checks passed**.
 
 ## Cases covered (one scenario each)
 

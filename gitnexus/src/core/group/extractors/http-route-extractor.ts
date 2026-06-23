@@ -84,10 +84,18 @@ RETURN sym.id AS uid, sym.name AS name, sym.filePath AS filePath,
 // manifest-extractor.ts). Used to resolve a provider's named handler when it is
 // defined in a file OTHER than its route registration — and only honored when
 // the result is unique (see resolveSymbolByNameUnique).
+//
+// `n.filePath <> ''` excludes synthetic non-source `CodeElement` nodes that
+// carry no real file — ORM model/table nodes (orm.ts emits `filePath: ''`) and
+// similar — so a handler name colliding with an ORM model neither resolves to a
+// degenerate edge-less node NOR inflates the uniqueness count and masks the real
+// handler. `LIMIT 2` bounds materialization: distinguishing unique (1) from
+// ambiguous (>=2) never needs more than two rows (the count guard stays exact).
 const RESOLVE_BY_NAME_QUERY = `
 MATCH (n:Function|Method|CodeElement)
-WHERE n.name = $name
-RETURN n.id AS uid, n.name AS name, n.filePath AS filePath`;
+WHERE n.name = $name AND n.filePath <> ''
+RETURN n.id AS uid, n.name AS name, n.filePath AS filePath
+LIMIT 2`;
 
 interface ResolvedSymbol {
   uid: string;
@@ -373,8 +381,16 @@ export class HttpRouteExtractor implements ContractExtractor {
     // The strict uniqueness guard is intentionally conservative: when a name is
     // shared across files (homonyms like `handler`/`index`), we prefer a
     // false-negative (no attribution → file-level fallback) over a false-positive
-    // (wrong symbol). Import-path narrowing of the ambiguous case is a deferred
-    // follow-up (#2275). Cached by name for the lifetime of this extract().
+    // (wrong symbol).
+    //
+    // KNOWN LIMITATION (deferred to #2275 import-path narrowing): `name` is the
+    // route-site identifier, which for an ALIASED import is the local alias, not
+    // the handler's declared symbol name — `import { listUsers as handleUsers };
+    // router.get('/x', handleUsers)` looks up `handleUsers`. With no other
+    // `handleUsers` this degrades safely to file-level fallback; only if an
+    // UNRELATED symbol is uniquely named `handleUsers` can it mis-resolve. The
+    // real fix (resolving the import target) needs the scope-resolution layer and
+    // is out of scope here. Cached by name for the lifetime of this extract().
     const globalNameCache = new Map<string, ResolvedSymbol | null>();
     const resolveSymbolByNameUnique = async (name: string): Promise<ResolvedSymbol | null> => {
       if (!dbExecutor) return null;
@@ -388,13 +404,12 @@ export class HttpRouteExtractor implements ContractExtractor {
       }
       const norm = (x: unknown): string => String(x ?? '');
       const uid = rows.length === 1 ? norm(rows[0]!.uid ?? rows[0]![0]) : '';
-      const result: ResolvedSymbol | null = uid
-        ? {
-            uid,
-            name: norm(rows[0]!.name ?? rows[0]![1]),
-            filePath: norm(rows[0]!.filePath ?? rows[0]![2]),
-          }
-        : null;
+      const filePath = uid ? norm(rows[0]!.filePath ?? rows[0]![2]) : '';
+      // Defence in depth alongside the query's `n.filePath <> ''`: reject a
+      // resolved symbol that carries no real file (a synthetic ORM/non-source
+      // node) so it can never anchor a cross-trace on an edge-less node.
+      const result: ResolvedSymbol | null =
+        uid && filePath ? { uid, name: norm(rows[0]!.name ?? rows[0]![1]), filePath } : null;
       globalNameCache.set(name, result);
       return result;
     };
@@ -414,7 +429,18 @@ export class HttpRouteExtractor implements ContractExtractor {
         if (byName) return byName;
         const byGlobal = await resolveSymbolByNameUnique(d.name);
         if (byGlobal) return byGlobal;
+        // A NAMED handler we could not resolve by name (neither file-scoped nor
+        // the unique repo-wide match) must NOT fall through to line-span
+        // containment: `d.line` is the route REGISTRATION site, so containment
+        // would attach the route to the enclosing registrar (e.g. a
+        // `setupRoutes()` wrapper) rather than the handler. Leave it empty →
+        // file-level boundary fallback, upholding the invariant that a
+        // zero/ambiguous name match never yields a wrong-symbol attribution.
+        return null;
       }
+      // Consumers (the function making the fetch) and inline-arrow providers
+      // (d.name === null) DO resolve by containment — there the enclosing symbol
+      // is the right one.
       if (syms.length === 0 || d.line == null) return null;
       return resolveContainingSymbol(syms, d.line);
     };

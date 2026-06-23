@@ -372,6 +372,92 @@ export default router;
       expect(consumer?.symbolName).toBe('fetchUsers');
       expect(globalQueries).toBe(0);
     });
+
+    it('does NOT attach a named provider to its registrar when the name is unresolvable', async () => {
+      // router.get(...) is registered INSIDE setupRoutes(); the handler
+      // `listUsers` is ambiguous repo-wide (2 matches) so name resolution fails.
+      // The route must NOT fall through to line-span containment and attach to
+      // the enclosing `setupRoutes` wrapper — it stays empty (file fallback).
+      const dir = path.join(tmpDir, 'xfile-wrapper-no-attach');
+      fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'src/routes.ts'),
+        `import { Router } from 'express';
+import { listUsers } from './handlers/users';
+const router = Router();
+export function setupRoutes() {
+  router.get('/api/users', listUsers);
+}
+export default router;
+`,
+      );
+      const mockDbExecutor = async (
+        query: string,
+        params?: Record<string, unknown>,
+      ): Promise<Record<string, unknown>[]> => {
+        if (query.includes('UNION ALL'))
+          return String(params?.filePath ?? '').includes('routes.ts')
+            ? [
+                {
+                  uid: 'fn-setupRoutes',
+                  name: 'setupRoutes',
+                  filePath: 'src/routes.ts',
+                  startLine: 1,
+                  endLine: 99,
+                  labels: ['Function'],
+                },
+              ]
+            : [];
+        if (query.includes('n.name = $name'))
+          return [
+            { uid: 'fn-a', name: 'listUsers', filePath: 'src/a.ts' },
+            { uid: 'fn-b', name: 'listUsers', filePath: 'src/b.ts' },
+          ];
+        return [];
+      };
+      const provider = providerOf(await extractor.extract(mockDbExecutor, dir, makeRepo(dir)));
+      expect(provider?.symbolUid).toBe('');
+    });
+
+    it('rejects a unique repo-wide match that carries no real file (synthetic node)', async () => {
+      // A handler name colliding with an ORM model node (orm.ts emits
+      // filePath: '') yields a single match with no file. It must be rejected,
+      // not attached as an edge-less cross-trace anchor.
+      const dir = writeCrossFile('xfile-empty-filepath');
+      const mockDbExecutor = async (
+        query: string,
+        params?: Record<string, unknown>,
+      ): Promise<Record<string, unknown>[]> => {
+        if (query.includes('UNION ALL'))
+          return String(params?.filePath ?? '').includes('routes.ts') ? routesFileSyms : [];
+        if (query.includes('n.name = $name'))
+          return [{ uid: 'orm-listUsers', name: 'listUsers', filePath: '' }];
+        return [];
+      };
+      const provider = providerOf(await extractor.extract(mockDbExecutor, dir, makeRepo(dir)));
+      expect(provider?.symbolUid).toBe('');
+    });
+
+    it('resolves via the repo-wide lookup when the registration file has NO indexed symbols', async () => {
+      // Pins the reordered early-return: CONTAINING_QUERY returns [] for the
+      // registration file (no in-file symbols at all), yet the unique repo-wide
+      // match still resolves the cross-file handler. Before the reorder, the
+      // `syms.length === 0` guard short-circuited above the provider name branch.
+      const dir = writeCrossFile('xfile-empty-regfile');
+      const mockDbExecutor = async (
+        query: string,
+        params?: Record<string, unknown>,
+      ): Promise<Record<string, unknown>[]> => {
+        if (query.includes('UNION ALL')) return [];
+        if (query.includes('n.name = $name'))
+          return params?.name === 'listUsers'
+            ? [{ uid: 'fn-listUsers-xfile', name: 'listUsers', filePath: 'src/handlers/users.ts' }]
+            : [];
+        return [];
+      };
+      const provider = providerOf(await extractor.extract(mockDbExecutor, dir, makeRepo(dir)));
+      expect(provider).toMatchObject({ symbolUid: 'fn-listUsers-xfile', symbolName: 'listUsers' });
+    });
   });
 
   describe('provider extraction — graph-first (Strategy A)', () => {
