@@ -1019,6 +1019,13 @@ function buildKotlinPlugin(language: unknown): HttpLanguagePlugin {
             method: httpMethod,
             path: joinPath(prefix, rawPath),
             name: nameNode?.text ?? null,
+            // Spring providers are named controller methods resolved BY NAME, so
+            // `line` is inert — a named provider never falls through to line-span
+            // containment. Gate it on a present name so a (grammar-impossible)
+            // nameless provider degrades to file-level rather than resolving by
+            // containment to the enclosing class. Wired for consumer-emit parity
+            // and a future inline DSL.
+            line: nameNode?.text ? methodNode.startPosition.row + 1 : undefined,
             confidence: 0.8,
           });
         }

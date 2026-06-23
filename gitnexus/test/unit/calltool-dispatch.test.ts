@@ -9,6 +9,7 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
+import fsPromises from 'fs/promises';
 import os from 'os';
 import path from 'path';
 
@@ -395,12 +396,23 @@ describe('LocalBackend.callTool', () => {
     vi.mocked(searchFTSFromLbug).mockRejectedValueOnce(new Error('bm25Results is not iterable'));
     (executeParameterized as any).mockResolvedValue([]);
 
-    const result = await backend.callTool('query', { query: 'auth' });
+    const cap = _captureLogger();
+    try {
+      const result = await backend.callTool('query', { query: 'auth' });
 
-    // Should still return a valid result shape (semantic-only fallback)
-    expect(result).toHaveProperty('processes');
-    expect(result).toHaveProperty('definitions');
-    expect(result).not.toHaveProperty('error');
+      // Should still return a valid result shape (semantic-only fallback)
+      expect(result).toHaveProperty('processes');
+      expect(result).toHaveProperty('definitions');
+      expect(result).not.toHaveProperty('error');
+      // The FTS fallback is a gracefully-degraded result, not an operation failure:
+      // it must log at warn (40), never error (50), matching its sibling
+      // import-failure fallback. Pins the severity against regression.
+      const fts = cap.records().find((r) => /BM25\/FTS search failed/.test(String(r.msg ?? '')));
+      expect(fts).toBeDefined();
+      expect(fts?.level).toBe(40);
+    } finally {
+      cap.restore();
+    }
   });
 
   it('skips vector index query when VECTOR is unsupported by the platform', async () => {
@@ -1288,6 +1300,46 @@ describe('LocalBackend.callTool', () => {
     expect(result.error).toContain('Either symbol_name or symbol_uid');
   });
 
+  it('rename: a swallowed apply-edit write failure degrades to status:partial + failed_files (#2283)', async () => {
+    // Resolve the definition, no graph refs. readFile succeeds (so a def edit is
+    // recorded), but writeFile fails on apply — the failure is swallowed via
+    // logQueryError. The result must NOT report a clean success: it degrades to
+    // 'partial' and lists the unwritten file, instead of status:'success'.
+    (executeParameterized as any)
+      .mockResolvedValueOnce([
+        {
+          id: 'func:oldName',
+          name: 'oldName',
+          type: 'Function',
+          filePath: 'src/target.ts',
+          startLine: 1,
+          endLine: 5,
+        },
+      ])
+      .mockResolvedValue([]);
+    const readSpy = vi
+      .spyOn(fsPromises, 'readFile')
+      .mockResolvedValue('function oldName() {}\n' as unknown as Buffer);
+    const writeSpy = vi
+      .spyOn(fsPromises, 'writeFile')
+      .mockRejectedValue(new Error('EACCES: permission denied'));
+    try {
+      const result = await backend.callTool('rename', {
+        symbol_name: 'oldName',
+        new_name: 'newName',
+        dry_run: false,
+      });
+      expect(result.status).toBe('partial');
+      expect(result.failed_files).toContain('src/target.ts');
+      // It DID attempt to apply (not a dry run) — `applied` stays true; the
+      // honest signal is the 'partial' status + failed_files, not `applied`.
+      expect(result.applied).toBe(true);
+    } finally {
+      readSpy.mockRestore();
+      writeSpy.mockRestore();
+    }
+  });
+
   // api_impact tool
   it('dispatches api_impact tool with route param', async () => {
     (executeParameterized as any).mockResolvedValue([
@@ -1642,6 +1694,67 @@ describe('LocalBackend impact mode (KTD1/KTD5/KTD12)', () => {
     },
   );
 
+  // #2279: some MCP client/agent adapters serialize an *omitted* optional
+  // numeric field as `0`. On the callgraph path `line` is meaningless, so a
+  // literal `line: 0` must be tolerated as omitted (NOT the PDG-only error) and
+  // route to the normal BFS — distinct from a genuine positive `line` (above),
+  // which stays a hard error.
+  it.each<['callgraph' | undefined]>([['callgraph'], [undefined]])(
+    'mode:%j + adapter-materialized line:0 is treated as omitted and runs the BFS (#2279)',
+    async (mode) => {
+      resolveSingleTarget();
+      const bfsSpy = vi.spyOn(backend as any, '_runImpactBFS');
+      const result = await backend.callTool('impact', {
+        target: 'main',
+        direction: 'upstream',
+        mode,
+        line: 0,
+      });
+      // No PDG-only error, no positive-integer error — line:0 is swallowed.
+      expect(result.error ?? '').not.toMatch(/'line' is only supported with mode:'pdg'/);
+      expect(result.error ?? '').not.toMatch(/'line' must be a positive integer/);
+      expect(result.target).toBeDefined();
+      expect(bfsSpy).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it.each<['callgraph' | undefined]>([['callgraph'], [undefined]])(
+    'mode:%j + line:-1 still errors — the line:0 coercion is narrow, only literal 0 (#2279)',
+    async (mode) => {
+      resolveSingleTarget();
+      const result = await backend.callTool('impact', {
+        target: 'main',
+        direction: 'upstream',
+        mode,
+        line: -1,
+      });
+      // A negative line is a real mistake, not an adapter-materialized "omitted":
+      // it must NOT be swallowed like line:0, and stays the PDG-only hard error.
+      expect(result.error).toMatch(/'line' is only supported with mode:'pdg'/);
+    },
+  );
+
+  it("mode:'callgraph'/undefined + line:0 is byte-identical to omitting line (#2279)", async () => {
+    resolveSingleTarget();
+    const omitted = await backend.callTool('impact', { target: 'main', direction: 'upstream' });
+    const callgraphZero = await backend.callTool('impact', {
+      target: 'main',
+      direction: 'upstream',
+      mode: 'callgraph',
+      line: 0,
+    });
+    const undefZero = await backend.callTool('impact', {
+      target: 'main',
+      direction: 'upstream',
+      mode: undefined,
+      line: 0,
+    });
+    // The normalization must leave the callgraph result indistinguishable from a
+    // call that never carried `line` — the spurious 0 must not leak into output.
+    expect(callgraphZero).toEqual(omitted);
+    expect(undefZero).toEqual(omitted);
+  });
+
   it.each([[0], [-1], [1.5]])(
     "mode:'pdg' + non-positive-integer line %j → structured {error}, never routed to traversal",
     async (badLine) => {
@@ -1821,15 +1934,121 @@ describe('LocalBackend impact mode (KTD1/KTD5/KTD12)', () => {
       criterionLine: 8,
     });
     const bfsSpy = vi.spyOn(backend as any, '_runImpactBFS');
-    const result = await backend.callTool('impact', {
-      target: 'main',
-      direction: 'downstream',
-      mode: 'pdg',
-      line: 8,
+    const cap = _captureLogger();
+    try {
+      const result = await backend.callTool('impact', {
+        target: 'main',
+        direction: 'downstream',
+        mode: 'pdg',
+        line: 8,
+      });
+      // The error was swallowed: no bridge passed to the BFS, and no error surfaced.
+      expect(result.error).toBeUndefined();
+      expect(bfsSpy.mock.calls[0][4].pdgBridge).toBeUndefined();
+      // The swallowed, gracefully-degraded query failure is logged at warn (40),
+      // never error (50): it degraded to a safe fallback and is not an operation
+      // failure. Pinning the severity guards against a regression to a false
+      // ERROR alarm that would drown genuine, operation-aborting failures.
+      const slice = cap.records().find((r) => r.context === 'impact:pdg-slice-callees');
+      expect(slice).toBeDefined();
+      expect(slice?.level).toBe(40);
+    } finally {
+      cap.restore();
+    }
+  });
+
+  it("mode:'pdg' slice-callees failing with a benign missing-table error logs at debug, not warn", async () => {
+    // A repo analyzed without the optional column/table (e.g. a pre-v3 PDG index
+    // missing `calleeIds`, or a BasicBlock table that simply isn't there) makes the
+    // slice-callees query fail with a benign "missing optional data" error. That is a
+    // normal configuration, not a degradation, so logQueryError routes it to debug —
+    // suppressed at the default info level. We capture AT debug so the record is
+    // visible: the assertion is that it was emitted AND at debug (level 10), which
+    // distinguishes "logged at debug" from "not logged at all" — an info-level
+    // absence check could not tell those apart and would pass vacuously if the
+    // logQueryError call were deleted.
+    resolveSingleTarget();
+    vi.mocked(executeParameterized).mockImplementation(async (_repo, query) => {
+      if (query.includes('RETURN b.callees')) throw new Error('Table BasicBlock does not exist');
+      return [{ id: 'func:main', name: 'main', type: 'Function', filePath: 'src/index.ts' }];
     });
-    // The error was swallowed: no bridge passed to the BFS, and no error surfaced.
-    expect(result.error).toBeUndefined();
-    expect(bfsSpy.mock.calls[0][4].pdgBridge).toBeUndefined();
+    vi.spyOn(backend as any, '_runImpactPDG').mockResolvedValueOnce({
+      mode: 'pdg',
+      target: { id: 'func:main', name: 'main', type: 'Function', filePath: 'src/index.ts' },
+      direction: 'downstream',
+      risk: 'UNKNOWN',
+      impactedCount: 0,
+      epistemic: 'pdg-intra-procedural',
+      reachableBlocks: ['BasicBlock:src/index.ts:8:0:1'],
+      intraReachableBlocks: ['BasicBlock:src/index.ts:8:0:1'],
+      seedBlocks: ['BasicBlock:src/index.ts:8:0:0'],
+      blockCount: 1,
+      affectedStatements: [{ line: 8, filePath: 'src/index.ts', text: 'callee()' }],
+      affectedStatementCount: 1,
+      criterionLine: 8,
+    });
+    const bfsSpy = vi.spyOn(backend as any, '_runImpactBFS');
+    const cap = _captureLogger('debug');
+    try {
+      const result = await backend.callTool('impact', {
+        target: 'main',
+        direction: 'downstream',
+        mode: 'pdg',
+        line: 8,
+      });
+      // Still degrades cleanly to no bridge / no surfaced error.
+      expect(result.error).toBeUndefined();
+      expect(bfsSpy.mock.calls[0][4].pdgBridge).toBeUndefined();
+      // The benign failure was emitted at debug (20) — NOT warn (40)/error (50).
+      // Capturing at debug proves the call fired and chose the suppressed level.
+      const slice = cap.records().find((r) => r.context === 'impact:pdg-slice-callees');
+      expect(slice).toBeDefined();
+      expect(slice?.level).toBe(20);
+    } finally {
+      cap.restore();
+    }
+  });
+
+  it("mode:'pdg' slice-callees failing with a non-schema 'not found' error logs at warn, not debug (#2283)", async () => {
+    // "Symbol not found" is an operation failure, not a benign missing optional
+    // table — isBenignMissingTableError must NOT match an unscoped "not found"
+    // (only "<table|column|property|…> … not found"), so it stays visible at warn
+    // rather than being demoted to the suppressed debug level.
+    resolveSingleTarget();
+    vi.mocked(executeParameterized).mockImplementation(async (_repo, query) => {
+      if (query.includes('RETURN b.callees')) throw new Error('Symbol not found');
+      return [{ id: 'func:main', name: 'main', type: 'Function', filePath: 'src/index.ts' }];
+    });
+    vi.spyOn(backend as any, '_runImpactPDG').mockResolvedValueOnce({
+      mode: 'pdg',
+      target: { id: 'func:main', name: 'main', type: 'Function', filePath: 'src/index.ts' },
+      direction: 'downstream',
+      risk: 'UNKNOWN',
+      impactedCount: 0,
+      epistemic: 'pdg-intra-procedural',
+      reachableBlocks: ['BasicBlock:src/index.ts:8:0:1'],
+      intraReachableBlocks: ['BasicBlock:src/index.ts:8:0:1'],
+      seedBlocks: ['BasicBlock:src/index.ts:8:0:0'],
+      blockCount: 1,
+      affectedStatements: [{ line: 8, filePath: 'src/index.ts', text: 'callee()' }],
+      affectedStatementCount: 1,
+      criterionLine: 8,
+    });
+    vi.spyOn(backend as any, '_runImpactBFS');
+    const cap = _captureLogger();
+    try {
+      await backend.callTool('impact', {
+        target: 'main',
+        direction: 'downstream',
+        mode: 'pdg',
+        line: 8,
+      });
+      const slice = cap.records().find((r) => r.context === 'impact:pdg-slice-callees');
+      expect(slice).toBeDefined();
+      expect(slice?.level).toBe(40);
+    } finally {
+      cap.restore();
+    }
   });
 
   it("mode:'pdg' + crossDepth → hard {error} (single-repo PDG impact)", async () => {

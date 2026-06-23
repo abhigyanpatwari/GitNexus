@@ -1057,6 +1057,12 @@ export const PYTHON_HTTP_PLUGIN: HttpLanguagePlugin = {
         method: httpMethod,
         path,
         name: null,
+        // The decorated handler has no captured name → resolve by line-span
+        // containment. Best-effort fallback: FastAPI routes are graph-backed
+        // (ingestion decorator routes) and the function span starts at `def`
+        // (decorators excluded), so this lands the single-decorator case and
+        // degrades to file-level for multi-decorator stacks.
+        line: pathNode.startPosition.row + 1,
         confidence: 0.8,
       });
     }
@@ -1101,6 +1107,8 @@ export const PYTHON_HTTP_PLUGIN: HttpLanguagePlugin = {
           method: httpMethod,
           path: p,
           name: null,
+          // Best-effort containment fallback — see the @app provider note above.
+          line: pathNode.startPosition.row + 1,
           confidence: 0.8,
         });
       }

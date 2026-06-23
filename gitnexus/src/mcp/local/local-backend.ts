@@ -266,10 +266,39 @@ export const IMPACT_RELATION_CONFIDENCE: Readonly<Record<string, number>> = {
 const confidenceForRelType = (relType: string | undefined): number =>
   IMPACT_RELATION_CONFIDENCE[relType ?? ''] ?? 0.5;
 
-/** Structured error logging for query failures — replaces empty catch blocks */
+/**
+ * Structured logging for *swallowed* query failures — replaces empty catch
+ * blocks. The level reflects telemetry severity, NOT a promise about the
+ * caller: most callers catch the failure and degrade to a genuinely safe
+ * fallback (a usable result, usually with a caller-visible `partial`/`ftsUsed`
+ * flag), so these are not operation-level errors and must not log at `error`:
+ *
+ *  - A benign missing optional table/label/column — a repo analyzed without
+ *    processes/communities, or a pre-v3 PDG index lacking the `calleeIds`
+ *    column — is a normal configuration, not a failure. Logged at `debug`
+ *    (suppressed at the default `info` level; surfaced only when troubleshooting).
+ *  - Any other swallowed failure is an unexpected-but-handled degradation:
+ *    logged at `warn` so it stays observable without raising a false `error`
+ *    alarm that would drown genuine, operation-aborting failures.
+ *
+ * `error` is intentionally NOT used here — it is reserved for failures that
+ * actually abort an operation, which log directly rather than through this
+ * best-effort-degradation helper.
+ *
+ * Contract for callers (#2283 review): only route a failure here when the
+ * caller ALSO surfaces the degradation in its result (a `partial` flag,
+ * `failed_files`, `traversalComplete:false`, …). A mutating or safety-critical
+ * path that would otherwise report success/clean (e.g. `rename` apply, the
+ * `detect_changes` safety gate) MUST set that result-level signal — `warn`
+ * alone is not a substitute for an honest result.
+ */
 function logQueryError(context: string, err: unknown): void {
   const msg = err instanceof Error ? err.message : String(err);
-  logger.error({ context, err: msg }, 'GitNexus query failed');
+  if (isBenignMissingTableError(err)) {
+    logger.debug({ context, err: msg }, 'GitNexus query skipped (missing optional data)');
+    return;
+  }
+  logger.warn({ context, err: msg }, 'GitNexus query failed (degraded)');
 }
 
 /**
@@ -282,7 +311,12 @@ function logQueryError(context: string, err: unknown): void {
  */
 function isBenignMissingTableError(err: unknown): boolean {
   const msg = err instanceof Error ? err.message : String(err ?? '');
-  return /does not exist|no such (table|label|rel)|unknown (table|label)|not (defined|found)/i.test(
+  // The `not (defined|found)` arm is scoped to a schema object (table/label/
+  // rel/column/property), mirroring lbug-adapter's isMissingColumnError
+  // (`/(table|column|property).*not found/i`): an unscoped "not found" matched
+  // operation failures like `rg: not found` (ripgrep absent) or `Symbol not
+  // found`, which this helper would then silently demote to `debug` (#2283).
+  return /does not exist|no such (table|label|rel)|unknown (table|label)|(table|label|rel|column|property)[^\n]*\bnot (defined|found)\b/i.test(
     msg,
   );
 }
@@ -1955,9 +1989,14 @@ export class LocalBackend {
     try {
       ftsResponse = await searchFTSFromLbug(query, limit, repo.lbugPath);
     } catch (err: any) {
-      logger.error(
+      // Swallowed, gracefully-degraded failure: the search falls back to
+      // semantic-only (a valid result), and the most common cause is simply an
+      // un-indexed FTS extension — a normal configuration, not an operation
+      // error. Logged at warn (matching the sibling import-failure fallback
+      // above), never error, so it does not raise a false alarm.
+      logger.warn(
         { err: err.message },
-        'GitNexus: BM25/FTS search failed (FTS indexes may not exist) -',
+        'GitNexus: BM25/FTS search failed (FTS indexes may not exist) — falling back to semantic-only',
       );
       return { results: [], ftsUsed: false };
     }
@@ -3825,6 +3864,9 @@ export class LocalBackend {
 
     // Map diff hunks to indexed symbols via range overlap
     const changedSymbols: any[] = [];
+    // Set if a swallowed graph query fails below — surfaces `partial:true` so a
+    // degraded run cannot report a false-clean `risk_level:'low'` (#2283).
+    let queryDegraded = false;
     for (const fileDiff of fileDiffs) {
       if (fileDiff.hunks.length === 0) continue;
 
@@ -3872,6 +3914,12 @@ export class LocalBackend {
         }
       } catch (e) {
         logQueryError('detect-changes:file-symbols', e);
+        // The symbol query failed: changedSymbols stays empty and the result
+        // would otherwise look like a clean no-op (`changed_count:0`,
+        // `risk_level:'low'`). detect_changes is the pre-commit safety gate, so
+        // flag the result `partial` rather than let a swallowed failure
+        // masquerade as "nothing changed" (#2283).
+        queryDegraded = true;
       }
     }
 
@@ -3910,6 +3958,7 @@ export class LocalBackend {
         }
       } catch (e) {
         logQueryError('detect-changes:process-lookup', e);
+        queryDegraded = true;
       }
     }
 
@@ -3932,6 +3981,9 @@ export class LocalBackend {
       },
       changed_symbols: changedSymbols,
       affected_processes: Array.from(affectedProcesses.values()),
+      // A swallowed query failure makes the counts/risk above incomplete — tell
+      // the caller so the safety gate isn't trusted as a clean result (#2283).
+      ...(queryDegraded && { partial: true }),
     };
   }
 
@@ -4132,6 +4184,7 @@ export class LocalBackend {
     const allChanges = Array.from(changes.values());
     const totalEdits = allChanges.reduce((sum, c) => sum + c.edits.length, 0);
 
+    const failedFiles: string[] = [];
     if (!dry_run) {
       // Apply edits to files
       for (const change of allChanges) {
@@ -4142,13 +4195,17 @@ export class LocalBackend {
           content = content.replace(regex, new_name);
           await fs.writeFile(fullPath, content, 'utf-8');
         } catch (e) {
+          // A swallowed write failure must not be reported as a full success
+          // (#2283): record the file so the result can degrade to 'partial'
+          // with the unwritten files listed, rather than masquerading as done.
           logQueryError('rename:apply-edit', e);
+          failedFiles.push(change.file_path);
         }
       }
     }
 
     return {
-      status: 'success',
+      status: failedFiles.length > 0 ? 'partial' : 'success',
       old_name: oldName,
       new_name,
       files_affected: allChanges.length,
@@ -4157,6 +4214,7 @@ export class LocalBackend {
       text_search_edits: astSearchEdits,
       changes: allChanges,
       applied: !dry_run,
+      ...(failedFiles.length > 0 && { failed_files: failedFiles }),
     };
   }
 
@@ -4490,9 +4548,21 @@ export class LocalBackend {
     }
     const mode = modeResult.mode;
 
+    // #2279: some MCP client/agent adapters serialize an *omitted* optional
+    // numeric field as `0` rather than dropping it, so callgraph calls arrive
+    // carrying a spurious `line: 0`. `line` is meaningless on the callgraph path
+    // (the symbol→symbol BFS has no statement notion), so treat a literal `0`
+    // there as omitted and let the normal traversal run. The coercion is
+    // deliberately narrow — only the literal `0`, only when mode !== 'pdg':
+    // a genuine positive `line` on callgraph still errors (real mode mistake),
+    // negative/fractional values still error, and pdg mode is untouched (the
+    // normalization is an identity there, so `line: 0` is still rejected below —
+    // there is no 1-based source line `0` to anchor on).
+    const effectiveLine = mode !== 'pdg' && params.line === 0 ? undefined : params.line;
+
     // `line` is a PDG-only statement anchor. Reject it on the callgraph path
     // rather than silently ignore (the symbol→symbol BFS has no statement notion).
-    if (params.line !== undefined && mode !== 'pdg') {
+    if (effectiveLine !== undefined && mode !== 'pdg') {
       return {
         error: `Parameter 'line' is only supported with mode:'pdg' (it anchors the dependence slice on a statement). Remove it or set mode:'pdg'.`,
         target: { name: params.target },
@@ -4503,8 +4573,8 @@ export class LocalBackend {
     }
     // A provided `line` must be a positive integer.
     if (
-      params.line !== undefined &&
-      (!Number.isInteger(params.line) || (params.line as number) < 1)
+      effectiveLine !== undefined &&
+      (!Number.isInteger(effectiveLine) || (effectiveLine as number) < 1)
     ) {
       // Line param fails validation before target resolution → partial-but-typed
       // target on the pdg path (typed PdgImpactTarget, not an inline literal).
@@ -4840,7 +4910,11 @@ export class LocalBackend {
         symType,
         direction,
         maxDepth,
-        line: params.line,
+        // Use the normalized line, not raw params.line, so the gate and the
+        // engine share one source of truth (#2283). Identity in pdg mode today
+        // — effectiveLine === params.line when mode === 'pdg' — but this stays
+        // correct if the normalization ever stops being an identity here.
+        line: effectiveLine,
         limit: Number.isFinite(params.limit) ? params.limit : 100,
         // KTD2 extraction-seam discipline: hand the engine its DB dependency
         // explicitly rather than `this.`-binding it. LocalBackend owns repo
