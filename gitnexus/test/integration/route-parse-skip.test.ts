@@ -1,20 +1,22 @@
 /**
- * #2138 Part 2 · U4 — parse-skip proof.
+ * #2138 Part 2 · parse-skip proof + P1 regression guards.
  *
- * The win: for files whose provider routes are fully covered by the graph in a
- * `routeCoverage: 'complete'` language (Java/Spring here), `HttpRouteExtractor`
- * must skip the source scan AND the tree-sitter parse — the graph is
- * authoritative. This is the measurable reduction #2167 could not demonstrate.
+ * The win: for a file whose provider routes are fully covered by the graph in a
+ * `routeCoverage: 'complete'` language, `HttpRouteExtractor` skips the source
+ * scan AND the tree-sitter parse — the graph is authoritative. We spy the real
+ * `parseSourceSafe` to COUNT parses (deterministic, not wall-time).
  *
- * We spy the real `parseSourceSafe` to COUNT parses (deterministic, not
- * wall-time), over a real temp repo of Java controllers, with a mock DB that
- * returns resolved HANDLES_ROUTE rows. Three scenarios:
- *   1. no graph (baseline)  → every Java file is parsed.
- *   2. fully covered        → ZERO Java files parsed (the win).
- *   3. one unresolved route → that file falls back to a scan (parsed); the
- *      resolved file stays skipped (fail-open is per-file, not per-repo).
+ * PHP/Laravel is the language used for the *win* scenarios: ingestion's Laravel
+ * route extraction is a superset of the group PHP scan, so PHP is `'complete'`.
+ *
+ * Java is deliberately `'partial'` (the graph provider set is a strict subset of
+ * the group Java scan — array-form, interface-inherited, and same-URL multi-verb
+ * routes have no graph Route node). The Java cases below are REGRESSION GUARDS:
+ * they prove those group-only routes survive because Java is never parse-skipped.
+ * If someone flips Java to `'complete'` without making ingestion provider-
+ * complete, these tests fail — exactly the #2138 P1 data-loss class.
  */
-import { describe, it, expect, vi, beforeAll, afterAll, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -26,8 +28,6 @@ vi.mock('../../src/core/tree-sitter/safe-parse.js', async (importActual) => {
   return {
     ...actual,
     parseSourceSafe: (parser: unknown, src: unknown) => {
-      // src is the file content string; record it so tests can attribute the
-      // parse to a specific controller by class name.
       parseCalls.push(typeof src === 'string' ? src : '<non-string>');
       return (actual.parseSourceSafe as (p: unknown, s: unknown) => unknown)(parser, src);
     },
@@ -36,178 +36,214 @@ vi.mock('../../src/core/tree-sitter/safe-parse.js', async (importActual) => {
 
 import { HttpRouteExtractor } from '../../src/core/group/extractors/http-route-extractor.js';
 
-let repoDir: string;
-
-const CONTROLLER_A = `package com.example;
-import org.springframework.web.bind.annotation.*;
-@RestController
-@RequestMapping("/api/a")
-public class AController {
-  @GetMapping("/list")
-  public Object list() { return null; }
-}
-`;
-const CONTROLLER_B = `package com.example;
-import org.springframework.web.bind.annotation.*;
-@RestController
-@RequestMapping("/api/b")
-public class BController {
-  @PostMapping("/make")
-  public Object make() { return null; }
-}
-`;
-// A provider that ALSO calls out via RestTemplate — fully provider-covered by
-// the graph, but its consumer contract (/api/inventory) lives only in source.
-const CONTROLLER_C = `package com.example;
-import org.springframework.web.bind.annotation.*;
-import org.springframework.web.client.RestTemplate;
-@RestController
-@RequestMapping("/api/c")
-public class CController {
-  private RestTemplate restTemplate;
-  @GetMapping("/list")
-  public Object list() { return restTemplate.getForObject("/api/inventory", Object.class); }
-}
-`;
-
-beforeAll(() => {
-  repoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'route-parse-skip-'));
-  fs.writeFileSync(path.join(repoDir, 'AController.java'), CONTROLLER_A);
-  fs.writeFileSync(path.join(repoDir, 'BController.java'), CONTROLLER_B);
-});
-
-afterAll(() => {
-  fs.rmSync(repoDir, { recursive: true, force: true });
-});
+const repo = { name: 'r', url: 'r' } as never;
 
 beforeEach(() => {
   parseCalls.length = 0;
 });
 
-const repo = { name: 'r', url: 'r' } as never;
+function mkRepo(files: Record<string, string>): string {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'route-parse-skip-'));
+  for (const [name, content] of Object.entries(files)) {
+    fs.writeFileSync(path.join(dir, name), content);
+  }
+  return dir;
+}
 
-/** A mock DB whose HANDLES_ROUTE rows resolve (or not) per file. */
-function makeDb(opts: { resolved: Record<string, boolean> }) {
+/** HANDLES_ROUTE rows from a compact spec; CONTAINS/FETCHES return empty. */
+function makeDb(
+  rows: Array<{ file: string; routePath: string; method: string; resolved: boolean }>,
+) {
   return vi.fn(async (query: string) => {
     if (query.includes('HANDLES_ROUTE')) {
-      return [
-        {
-          fileId: 'File:AController.java',
-          filePath: 'AController.java',
-          routePath: '/api/a/list',
-          routeMethod: 'GET',
-          handlerSymbolId: opts.resolved['AController.java'] ? 'Method:AController.java:list' : '',
-          routeSource: 'framework-route',
-        },
-        {
-          fileId: 'File:BController.java',
-          filePath: 'BController.java',
-          routePath: '/api/b/make',
-          routeMethod: 'POST',
-          handlerSymbolId: opts.resolved['BController.java'] ? 'Method:BController.java:make' : '',
-          routeSource: 'framework-route',
-        },
-      ];
+      return rows.map((r, i) => ({
+        fileId: `File:${r.file}`,
+        filePath: r.file,
+        routePath: r.routePath,
+        routeMethod: r.method,
+        handlerSymbolId: r.resolved ? `Method:${r.file}:h${i}` : '',
+        routeSource: 'framework-route',
+      }));
     }
-    if (query.includes('CONTAINS')) {
-      // Return both handler symbols; the extractor picks by id.
-      return [
-        {
-          uid: 'Method:AController.java:list',
-          name: 'list',
-          filePath: 'AController.java',
-          labels: ['Method'],
-        },
-        {
-          uid: 'Method:BController.java:make',
-          name: 'make',
-          filePath: 'BController.java',
-          labels: ['Method'],
-        },
-      ];
-    }
-    return []; // FETCHES → no consumers
+    return []; // CONTAINS (basename fallback is fine) + FETCHES (no consumers)
   });
 }
 
-describe('HttpRouteExtractor — parse-skip for graph-covered files (#2138 U4)', () => {
-  it('baseline: with no graph, every Java file is parsed', async () => {
-    const out = await new HttpRouteExtractor().extract(null, repoDir, repo);
-    // Both controllers discovered via source scan.
-    const paths = out.filter((c) => c.role === 'provider').map((c) => c.meta.path);
-    expect(paths).toEqual(expect.arrayContaining(['/api/a/list', '/api/b/make']));
-    // Both files were parsed.
-    expect(parseCalls.length).toBeGreaterThanOrEqual(2);
+const providerPaths = (out: Awaited<ReturnType<HttpRouteExtractor['extract']>>) =>
+  out.filter((c) => c.role === 'provider').map((c) => `${c.meta.method}::${c.meta.path}`);
+
+// ── PHP / Laravel — the `'complete'` language where the skip engages ──────────
+
+const ROUTES_A = `<?php
+Route::get('/api/a/list', 'AController@list');
+`;
+const ROUTES_B = `<?php
+Route::post('/api/b/make', 'BController@make');
+`;
+
+describe('HttpRouteExtractor — PHP parse-skip for graph-covered files (#2138)', () => {
+  it('baseline: with no graph, every PHP file is parsed', async () => {
+    const dir = mkRepo({ 'routes_a.php': ROUTES_A, 'routes_b.php': ROUTES_B });
+    try {
+      const out = await new HttpRouteExtractor().extract(null, dir, repo);
+      expect(providerPaths(out)).toEqual(
+        expect.arrayContaining(['GET::/api/a/list', 'POST::/api/b/make']),
+      );
+      expect(parseCalls.length).toBeGreaterThanOrEqual(2);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 
-  it('fully covered: zero Java files parsed (the win)', async () => {
-    const out = await new HttpRouteExtractor().extract(
-      makeDb({ resolved: { 'AController.java': true, 'BController.java': true } }),
-      repoDir,
-      repo,
-    );
-    // Providers still produced — from the graph.
-    const providers = out.filter((c) => c.role === 'provider');
-    expect(providers.map((c) => c.meta.path)).toEqual(
-      expect.arrayContaining(['/api/a/list', '/api/b/make']),
-    );
-    expect(providers.every((c) => c.meta.extractionStrategy === 'graph_assisted')).toBe(true);
-    // The whole point: no source parse happened for the covered files.
-    expect(parseCalls.length).toBe(0);
+  it('fully covered: zero PHP files parsed (the win)', async () => {
+    const dir = mkRepo({ 'routes_a.php': ROUTES_A, 'routes_b.php': ROUTES_B });
+    try {
+      const out = await new HttpRouteExtractor().extract(
+        makeDb([
+          { file: 'routes_a.php', routePath: '/api/a/list', method: 'GET', resolved: true },
+          { file: 'routes_b.php', routePath: '/api/b/make', method: 'POST', resolved: true },
+        ]),
+        dir,
+        repo,
+      );
+      const providers = out.filter((c) => c.role === 'provider');
+      expect(providers.map((c) => c.meta.path)).toEqual(
+        expect.arrayContaining(['/api/a/list', '/api/b/make']),
+      );
+      expect(providers.every((c) => c.meta.extractionStrategy === 'graph_assisted')).toBe(true);
+      expect(parseCalls.length).toBe(0);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it('mixed: an unresolved route falls back to a scan; the resolved file stays skipped', async () => {
-    await new HttpRouteExtractor().extract(
-      makeDb({ resolved: { 'AController.java': true, 'BController.java': false } }),
-      repoDir,
-      repo,
-    );
-    const parsedA = parseCalls.some((s) => s.includes('class AController'));
-    const parsedB = parseCalls.some((s) => s.includes('class BController'));
-    // B (unresolved) falls back to a source scan → parsed.
-    expect(parsedB).toBe(true);
-    // A (resolved + complete-coverage language) stays skipped → NOT parsed.
-    expect(parsedA).toBe(false);
+    const dir = mkRepo({ 'routes_a.php': ROUTES_A, 'routes_b.php': ROUTES_B });
+    try {
+      await new HttpRouteExtractor().extract(
+        makeDb([
+          { file: 'routes_a.php', routePath: '/api/a/list', method: 'GET', resolved: true },
+          { file: 'routes_b.php', routePath: '/api/b/make', method: 'POST', resolved: false },
+        ]),
+        dir,
+        repo,
+      );
+      expect(parseCalls.some((s) => s.includes('/api/b/make'))).toBe(true); // B scanned
+      expect(parseCalls.some((s) => s.includes('/api/a/list'))).toBe(false); // A skipped
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it('provider-covered file that ALSO calls out is still parsed (consumer not dropped)', async () => {
-    // Own repo dir so the file set is exactly one provider+consumer controller.
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'route-parse-skip-consumer-'));
-    fs.writeFileSync(path.join(dir, 'CController.java'), CONTROLLER_C);
+    // routes_c.php is a Laravel provider AND a Laravel Http:: consumer.
+    const ROUTES_C = `<?php
+Route::get('/api/c/list', 'CController@list');
+Http::get('/api/inventory');
+`;
+    const dir = mkRepo({ 'routes_c.php': ROUTES_C });
     try {
-      const db = vi.fn(async (query: string) => {
-        if (query.includes('HANDLES_ROUTE')) {
-          return [
-            {
-              fileId: 'File:CController.java',
-              filePath: 'CController.java',
-              routePath: '/api/c/list',
-              routeMethod: 'GET',
-              handlerSymbolId: 'Method:CController.java:list', // fully resolved
-              routeSource: 'framework-route',
-            },
-          ];
-        }
-        if (query.includes('CONTAINS')) {
-          return [
-            {
-              uid: 'Method:CController.java:list',
-              name: 'list',
-              filePath: 'CController.java',
-              labels: ['Method'],
-            },
-          ];
-        }
-        return [];
-      });
-      const out = await new HttpRouteExtractor().extract(db, dir, repo);
-
-      // Provider still produced from the graph.
+      const out = await new HttpRouteExtractor().extract(
+        makeDb([{ file: 'routes_c.php', routePath: '/api/c/list', method: 'GET', resolved: true }]),
+        dir,
+        repo,
+      );
       expect(out.some((c) => c.role === 'provider' && c.meta.path === '/api/c/list')).toBe(true);
-      // The consumer call lives only in source — it MUST survive because the
-      // file's consumer signal kept it in the scan set (so it was parsed).
-      expect(parseCalls.some((s) => s.includes('class CController'))).toBe(true);
+      // The Http:: consumer lives only in source — it MUST survive because the
+      // consumer signal kept the file in the scan set (so it was parsed).
+      expect(parseCalls.some((s) => s.includes('/api/inventory'))).toBe(true);
       expect(out.some((c) => c.role === 'consumer' && c.meta.path === '/api/inventory')).toBe(true);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+// ── Java — `'partial'`, so the P1 group-only shapes must never be dropped ─────
+
+describe('HttpRouteExtractor — Java parse-skip P1 regression guards (#2138)', () => {
+  it('array-form @GetMapping({"/a","/b"}) survives a co-located resolved route', async () => {
+    const AC = `package com.example;
+import org.springframework.web.bind.annotation.*;
+@RestController
+public class AController {
+  @GetMapping("/covered") public Object covered() { return null; }
+  @GetMapping({"/a","/b"}) public Object multi() { return null; }
+}
+`;
+    const dir = mkRepo({ 'AController.java': AC });
+    try {
+      // Graph resolves only /covered (ingestion has no array-form Route node).
+      const out = await new HttpRouteExtractor().extract(
+        makeDb([
+          { file: 'AController.java', routePath: '/covered', method: 'GET', resolved: true },
+        ]),
+        dir,
+        repo,
+      );
+      const paths = providerPaths(out);
+      // The array-form routes are graph-only-absent but survive via source scan.
+      expect(paths).toEqual(expect.arrayContaining(['GET::/a', 'GET::/b']));
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('same-URL multi-verb (GET+POST /orders) keeps both verbs', async () => {
+    const OC = `package com.example;
+import org.springframework.web.bind.annotation.*;
+@RestController
+public class OrderController {
+  @GetMapping("/orders") public Object list() { return null; }
+  @PostMapping("/orders") public Object make() { return null; }
+}
+`;
+    const dir = mkRepo({ 'OrderController.java': OC });
+    try {
+      // Ingestion's URL-keyed Route node collapses to one verb; resolve only GET.
+      const out = await new HttpRouteExtractor().extract(
+        makeDb([
+          { file: 'OrderController.java', routePath: '/orders', method: 'GET', resolved: true },
+        ]),
+        dir,
+        repo,
+      );
+      const paths = providerPaths(out);
+      expect(paths).toEqual(expect.arrayContaining(['GET::/orders', 'POST::/orders']));
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('interface-inherited Spring route survives on the implementing controller', async () => {
+    const IFACE = `package com.example;
+import org.springframework.web.bind.annotation.*;
+@RequestMapping("/orders")
+public interface OrderApi {
+  @GetMapping("/{id}") Object get(Long id);
+}
+`;
+    const CTRL = `package com.example;
+import org.springframework.web.bind.annotation.*;
+@RestController
+public class OrderController implements OrderApi {
+  @GetMapping("/direct") public Object direct() { return null; }
+  public Object get(Long id) { return null; }
+}
+`;
+    const dir = mkRepo({ 'OrderApi.java': IFACE, 'OrderController.java': CTRL });
+    try {
+      // Graph resolves only the controller-direct route; the inherited route is
+      // composed only by the group scanProject pass.
+      const out = await new HttpRouteExtractor().extract(
+        makeDb([
+          { file: 'OrderController.java', routePath: '/direct', method: 'GET', resolved: true },
+        ]),
+        dir,
+        repo,
+      );
+      const paths = providerPaths(out);
+      expect(paths).toEqual(expect.arrayContaining(['GET::/orders/{param}']));
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }

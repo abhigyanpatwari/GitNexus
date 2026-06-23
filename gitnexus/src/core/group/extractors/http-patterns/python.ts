@@ -920,14 +920,21 @@ function joinPrefix(prefix: string, route: string): string {
 export const PYTHON_HTTP_PLUGIN: HttpLanguagePlugin = {
   name: 'python-http',
   language: Python,
-  // FastAPI @app/@router route decorators are emitted as Route nodes by
-  // ingestion, so the graph is authoritative for Python providers (#2138 Part 2).
-  routeCoverage: 'complete',
-  // Consumer signals scan() can detect: `requests.<verb>`/`requests.request` and
-  // `httpx` (sync/async client) calls. A provider-covered file with any of these
-  // must still be parsed (ingestion emits no FETCHES for Python). Conservative.
+  // routeCoverage intentionally LEFT at the default 'partial' (#2138 Part 2).
+  // It would be a no-op even if set to 'complete': FastAPI decorator routes set
+  // no handlerName (generic worker path) and Django sets methodName: null, so no
+  // Python file ever resolves a handlerSymbolId and none would be parse-skipped.
+  // Declaring 'complete' now is only a latent trap for the moment a follow-up
+  // gives FastAPI routes a handlerName. `hasConsumerSignals` is kept (and is a
+  // true superset of scan()'s consumer shapes) so the precondition already holds
+  // when Python is later flipped to 'complete'.
+  // Consumer signals scan() can detect: `requests.<verb>`/`requests.request`,
+  // `httpx` (sync/async client), the `uri=`/`url=` keyword/variable wrapper
+  // calls, plus aiohttp/urllib. Conservative — over-matching only costs a parse.
   hasConsumerSignals(content) {
-    return /\brequests\s*\.|\bhttpx\b/.test(content);
+    return /\brequests\s*\.|\bhttpx\b|\baiohttp\b|\burllib\b|\burlopen\b|\buri\s*=|\burl\s*=/.test(
+      content,
+    );
   },
   prepareRepo({ files, parser, readFile, parseSource }): RepoContext {
     return buildPythonRepoContext(files, parser, readFile, parseSource);

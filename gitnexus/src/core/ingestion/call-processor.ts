@@ -261,10 +261,13 @@ export const processRoutesFromExtracted = async (
  *     directly in the route's own file.
  *
  * First-writer-wins per URL, matching the routes phase's dedup (it keeps the
- * first route registered for a URL and counts the rest as duplicates). Routes
- * whose handler cannot be uniquely resolved are simply omitted — the Route node
- * then carries no `handlerSymbolId` and the extractor falls back to source scan
- * for that route (fail-open, no regression).
+ * first route registered for a URL and counts the rest as duplicates). The first
+ * route to claim a URL reserves it **even when its handler is unresolvable**, so
+ * a later same-URL route can never stamp its handler onto the first route's Route
+ * node (the routes phase made that first route the node-winner). Routes whose
+ * handler cannot be *uniquely* resolved (no name, zero matches, or an ambiguous
+ * same-name match) carry no `handlerSymbolId`; the extractor then falls back to
+ * source scan for that route (fail-open, no regression, never a wrong handler).
  */
 export function resolveRouteHandlerSymbols(
   model: SemanticModel,
@@ -272,36 +275,48 @@ export function resolveRouteHandlerSymbols(
   decoratorRoutes: readonly ExtractedDecoratorRoute[],
 ): Map<string, string> {
   const out = new Map<string, string>();
+  // URLs already claimed by an earlier route (resolved or not). Mirrors the
+  // routes phase `addRoute` first-writer-wins so the handler we stamp always
+  // belongs to the route that actually won the Route node.
+  const claimed = new Set<string>();
 
-  const put = (routePath: string | null, prefix: string | null, symbolId: string | undefined) => {
-    if (!routePath || !symbolId) return;
+  // Resolve a single same-file symbol by name, refusing to guess on ambiguity:
+  // exactly one match → its nodeId; zero or many → undefined (fail-open).
+  const uniqueSymbolId = (filePath: string, name: string): string | undefined => {
+    const defs = model.symbols.lookupExactAll(filePath, name);
+    return defs.length === 1 ? defs[0]?.nodeId : undefined;
+  };
+
+  const claim = (routePath: string | null, prefix: string | null, symbolId: string | undefined) => {
+    if (!routePath) return;
     const url = normalizeExtractedRoutePath(routePath, prefix);
-    if (!out.has(url)) out.set(url, symbolId);
+    if (claimed.has(url)) return; // first-writer-wins: later same-URL routes can't override
+    claimed.add(url);
+    if (symbolId) out.set(url, symbolId);
   };
 
   // Laravel framework routes — controller class + method name.
   for (const route of extractedRoutes) {
-    if (!route.controllerName || !route.methodName) continue;
-    let controllerDef: SymbolDefinition | undefined;
-    if (route.controllerQualifiedName) {
-      controllerDef = resolveControllerByQualifiedName(model, route.controllerQualifiedName);
+    let methodId: string | undefined;
+    if (route.controllerName && route.methodName) {
+      let controllerDef: SymbolDefinition | undefined;
+      if (route.controllerQualifiedName) {
+        controllerDef = resolveControllerByQualifiedName(model, route.controllerQualifiedName);
+      }
+      if (!controllerDef) {
+        const controllerDefs = model.types.lookupClassByName(route.controllerName);
+        if (controllerDefs.length === 1) controllerDef = controllerDefs[0];
+      }
+      if (controllerDef) methodId = uniqueSymbolId(controllerDef.filePath, route.methodName);
     }
-    if (!controllerDef) {
-      const controllerDefs = model.types.lookupClassByName(route.controllerName);
-      if (controllerDefs.length !== 1) continue;
-      controllerDef = controllerDefs[0];
-    }
-    const methodId = model.symbols.lookupExactAll(controllerDef.filePath, route.methodName)[0]
-      ?.nodeId;
-    put(route.routePath, route.prefix ?? null, methodId);
+    claim(route.routePath, route.prefix ?? null, methodId);
   }
 
   // Decorator routes (Spring / FastAPI / generic) — the decorated handler in
   // the route's own file.
   for (const dr of decoratorRoutes) {
-    if (!dr.handlerName) continue;
-    const handlerId = model.symbols.lookupExactAll(dr.filePath, dr.handlerName)[0]?.nodeId;
-    put(dr.routePath, dr.prefix ?? null, handlerId);
+    const handlerId = dr.handlerName ? uniqueSymbolId(dr.filePath, dr.handlerName) : undefined;
+    claim(dr.routePath, dr.prefix ?? null, handlerId);
   }
 
   return out;

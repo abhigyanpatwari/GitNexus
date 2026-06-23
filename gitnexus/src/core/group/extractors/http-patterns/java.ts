@@ -676,10 +676,15 @@ function scanSpringProject(files: readonly HttpScanInput[]): HttpFileDetections[
 export const JAVA_HTTP_PLUGIN: HttpLanguagePlugin = {
   name: 'java-http',
   language: Java,
-  // Spring @(Get|Post|...)Mapping providers are emitted as Route nodes by the
-  // ingestion routes phase (#2078), so the graph is authoritative for Java
-  // providers — see HttpRouteExtractor's parse-skip (#2138 Part 2).
-  routeCoverage: 'complete',
+  // routeCoverage intentionally LEFT at the default 'partial' (#2138 Part 2).
+  // The graph provider set is a strict *subset* of this scan()'s provider set —
+  // ingestion does NOT emit a Route node for (1) array-form `@GetMapping({...})`,
+  // (2) interface-inherited Spring routes, or (3) the 2nd verb of a same-URL
+  // GET+POST pair (Route nodes are URL-keyed). Declaring 'complete' here would
+  // let the parse-skip drop those group-only providers. Java flips to 'complete'
+  // only once ingestion provider extraction matches this scan (a follow-up:
+  // array-form query branch + interface-inheritance emission + per-verb Route
+  // identity). `hasConsumerSignals` below is kept ready for that flip.
   // Consumer signals this plugin's scan() can detect: RestTemplate / WebClient /
   // OkHttp / Java-HttpClient / Apache-HttpClient call sites, OpenFeign
   // (`@FeignClient` + `@RequestLine`) interfaces, and Spring 6 HTTP Interface
