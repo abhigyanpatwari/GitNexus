@@ -146,10 +146,15 @@ describe('GITNEXUS_TOOLS', () => {
     // Statement-anchored slice is optional — never required.
     expect(impactTool.inputSchema.required).not.toContain('line');
     // The description names the mode:'pdg' statement-anchor semantics and the
-    // 0/omitted = no-anchor compatibility convention.
+    // literal-0 compatibility convention — without contradicting the top-level
+    // "omit line for whole-symbol pdg" contract (#2283).
     expect(line.description).toMatch(/statement anchor/i);
     expect(line.description).toMatch(/pdg/i);
-    expect(line.description).toMatch(/0 \(or omitted\) means no statement anchor/i);
+    expect(line.description).toMatch(/literal 0 is tolerated only .* on the callgraph path/i);
+    expect(line.description).toMatch(/omit line for whole-symbol pdg/i);
+    // Must NOT claim pdg "requires a positive line" — that contradicts the valid
+    // no-line whole-symbol pdg call documented in the top-level description.
+    expect(line.description).not.toMatch(/requires a positive line/i);
     // The top-level description mentions the statement-anchored slice and result shape.
     expect(impactTool.description).toMatch(/statement-anchored|STATEMENT-ANCHORED/);
     expect(impactTool.description).toContain('affectedStatements');

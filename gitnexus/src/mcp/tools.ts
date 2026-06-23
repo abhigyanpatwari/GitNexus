@@ -476,7 +476,7 @@ SERVICE: optional monorepo path prefix (case-sensitive path segments). When "rep
           // statement anchor" and is tolerated on the callgraph path.
           minimum: 0,
           description:
-            "1-based source line — PDG statement anchor (mode:'pdg'). Seeds affectedStatements on the statement at this line; inter-procedural symbols are still returned in interproceduralByDepth/pdgInterprocedural and the compatibility byDepth bucket. 0 (or omitted) means no statement anchor; mode:'pdg' requires a positive line.",
+            "1-based source line — PDG statement anchor (mode:'pdg'). Seeds affectedStatements on the statement at this line; inter-procedural symbols are still returned in interproceduralByDepth/pdgInterprocedural and the compatibility byDepth bucket. Omit line for whole-symbol pdg (whole-symbol reach + diagnostics); a positive line anchors a statement slice. Literal 0 is tolerated only as an omitted-line compatibility sentinel on the callgraph path and is rejected for mode:'pdg'.",
         },
         file_path: {
           type: 'string',
