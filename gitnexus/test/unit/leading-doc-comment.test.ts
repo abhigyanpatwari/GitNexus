@@ -99,6 +99,35 @@ public class Probe {
     expect(doc).not.toContain('/');
   });
 
+  it('skips a file-top SPDX license header (no package/import shield)', () => {
+    const cls = firstNode(
+      Java,
+      `/** SPDX-License-Identifier: MIT */\npublic class Foo {}`,
+      'class_declaration',
+    );
+    expect(extractLeadingDocComment(cls)).toBeUndefined();
+  });
+
+  it('skips a file-top copyright header block', () => {
+    const cls = firstNode(
+      Java,
+      `/**\n * Copyright (c) 2026 Acme Corp. All rights reserved.\n * Licensed under the Apache License 2.0.\n */\npublic class Foo {}`,
+      'class_declaration',
+    );
+    expect(extractLeadingDocComment(cls)).toBeUndefined();
+  });
+
+  it('does NOT over-fire: a real doc that merely mentions copyright is preserved', () => {
+    const method = firstNode(
+      Java,
+      `class P {\n/** Returns the copyright owner name, marker KEEPME. */\nString owner() { return null; }\n}`,
+      'method_declaration',
+    );
+    const doc = extractLeadingDocComment(method);
+    expect(doc).toContain('KEEPME');
+    expect(doc).toContain('copyright owner');
+  });
+
   it('extracts a Kotlin KDoc (grammar-agnostic prefix match, multiline_comment)', () => {
     const src = `package demo
 class Probe {

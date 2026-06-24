@@ -946,6 +946,15 @@ const normalizeBlockDocComment = (text: string): string | undefined => {
  *  Go (`//`) and Ruby (`#`) opt into their conventional markers explicitly. */
 export const DEFAULT_LINE_DOC_PREFIXES: readonly string[] = ['///', '//!'];
 
+/** A file-top `/** … *\/` license/copyright/file-overview block has no
+ *  package/import sibling to shield it, so it would otherwise be absorbed as the
+ *  first declaration's description (PR #2286 review). These markers identify such
+ *  headers; they are specific enough not to fire on an ordinary symbol doc that
+ *  merely mentions the word "copyright". `@file`/`@fileoverview` are explicitly
+ *  file-level JSDoc tags, so a block carrying them is not a symbol doc. */
+const FILE_HEADER_MARKER =
+  /SPDX-License-Identifier|@licen[sc]e\b|@fileoverview\b|@file\b|Licen[sc]ed under|copyright\s*(\(c\)|©|\d{4})/i;
+
 /**
  * Extract the normalized text of a leading doc comment immediately preceding a
  * definition node — covering both block doc comments (Javadoc / KDoc / JSDoc /
@@ -1004,6 +1013,11 @@ export function extractLeadingDocComment(
 
     // Block doc comment: /** ... */ or /*! ... */
     if (prev.text.startsWith('/**') || prev.text.startsWith('/*!')) {
+      // Skip a file-top license/copyright/overview header (no package/import
+      // sibling shields it from the first declaration). A strict row-adjacency
+      // check is unreliable here — some grammars fold the trailing newline into
+      // the comment node — so match header markers instead.
+      if (FILE_HEADER_MARKER.test(prev.text)) return undefined;
       return normalizeBlockDocComment(prev.text);
     }
 
