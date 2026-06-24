@@ -303,6 +303,7 @@ Each language implements `LanguageProvider` (`language-provider.ts`). Key fields
 | `exportChecker` | Public/exported symbol detection |
 | `typeConfig` | Type annotation extraction rules |
 | `mroStrategy` | `first-wins` / `c3` / `none` |
+| `descriptionExtractor` | Optional hook returning a symbol's doc-comment text as its `description`; feeds the embedding metadata header so doc-only terms are semantically searchable (issue #2270). Most languages register `createLeadingDocDescriptionExtractor` (shared, language-neutral; per-language comment/wrapper config passed at the call site) |
 
 16 providers in `languages/index.ts` via `satisfies Record<SupportedLanguages, LanguageProvider>` — missing a language is a compile error.
 

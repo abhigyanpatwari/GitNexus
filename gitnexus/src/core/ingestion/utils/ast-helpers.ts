@@ -87,7 +87,7 @@ export const DEFINITION_CAPTURE_KEYS = [
 
 /** Extract the definition node from a tree-sitter query capture map. */
 export const getDefinitionNodeFromCaptures = (
-  captureMap: Record<string, SyntaxNode>,
+  captureMap: Record<string, SyntaxNode | undefined>,
 ): SyntaxNode | null => {
   for (const key of DEFINITION_CAPTURE_KEYS) {
     if (captureMap[key]) return captureMap[key];
@@ -310,7 +310,7 @@ export function findAncestorBeforeBoundary(
  * Returns null if the capture should be skipped (import, call, C/C++ duplicate, missing name).
  */
 export function getLabelFromCaptures(
-  captureMap: Record<string, SyntaxNode>,
+  captureMap: Record<string, SyntaxNode | undefined>,
   provider: LanguageProvider,
 ): NodeLabel | null {
   if (captureMap['import'] || captureMap['call']) return null;
@@ -925,6 +925,227 @@ export function findChild(node: SyntaxNode, type: string): SyntaxNode | null {
   }
   return null;
 }
+
+/** Remove bidi-override and zero-width control characters. Doc text is
+ *  attacker-influenced (any indexed repo) and is returned verbatim to MCP
+ *  clients, so strip Trojan-Source-style hidden controls from the description
+ *  before it leaves the extractor (#2286 review). Scoped to the doc-comment path
+ *  only — global `sanitizeUTF8` is intentionally untouched. */
+const stripBidiAndZeroWidth = (text: string): string =>
+  Array.from(text)
+    .filter((ch) => {
+      const c = ch.codePointAt(0) ?? 0;
+      // Bidi overrides/isolates (U+202A–202E, U+2066–2069), zero-width
+      // space/joiners (U+200B–200D), and BOM/zero-width-no-break (U+FEFF).
+      return !(
+        (c >= 0x202a && c <= 0x202e) ||
+        (c >= 0x2066 && c <= 0x2069) ||
+        (c >= 0x200b && c <= 0x200d) ||
+        c === 0xfeff
+      );
+    })
+    .join('');
+
+/** Normalize a block doc comment body: strip the opening (double-star or
+ *  bang) delimiter, the closing delimiter, and per-line gutter stars, then
+ *  collapse whitespace so tag content stays as searchable words. */
+const normalizeBlockDocComment = (text: string): string | undefined => {
+  const inner = stripBidiAndZeroWidth(
+    text
+      .replace(/^\/\*[*!]/, '')
+      // Close delimiter: tolerate the degenerate empty comment `/**/`, where the
+      // opening strip already consumed the shared `*`, leaving a lone `/`.
+      .replace(/\*?\/\s*$/, '')
+      .replace(/^[ \t]*\*[ \t]?/gm, ' ')
+      .replace(/\s+/g, ' ')
+      .trim(),
+  );
+  return inner.length > 0 ? inner : undefined;
+};
+
+/** Default line-comment prefixes treated as documentation: the universal
+ *  triple-slash / bang-slash doc markers (Rust, C#, Dart, Swift, Doxygen).
+ *  Go (`//`) and Ruby (`#`) opt into their conventional markers explicitly. */
+const DEFAULT_LINE_DOC_PREFIXES: readonly string[] = ['///', '//!'];
+
+/** Default block-comment doc openers: Javadoc/JSDoc-style `/**` and Doxygen
+ *  `/*!`. Rust opts out of `/*!` (and `//!`) because those are *inner* docs that
+ *  document the enclosing item, not the following one. */
+const DEFAULT_BLOCK_DOC_PREFIXES: readonly string[] = ['/**', '/*!'];
+
+/** A file-top `/** … *\/` license/copyright/file-overview block has no
+ *  package/import sibling to shield it, so it would otherwise be absorbed as the
+ *  first declaration's description (PR #2286 review). These markers identify such
+ *  headers; they are specific enough not to fire on an ordinary symbol doc that
+ *  merely mentions the word "copyright". `@file`/`@fileoverview` are explicitly
+ *  file-level JSDoc tags, so a block carrying them is not a symbol doc. */
+const FILE_HEADER_MARKER =
+  /SPDX-License-Identifier|@licen[sc]e\b|@fileoverview\b|@file\b|Licen[sc]ed under|copyright\s*(\(c\)|©|\d{4})/i;
+
+/**
+ * Extract the normalized text of a leading doc comment immediately preceding a
+ * definition node — covering both block doc comments (Javadoc / KDoc / JSDoc /
+ * PHPDoc / Doxygen, opened by `/**` or `/*!`) and runs of line doc comments
+ * (`///`, `//!`, or the caller-supplied prefixes such as Go's `//` or Ruby's
+ * `#`). Returns `undefined` when there is no preceding doc comment or it is
+ * empty.
+ *
+ * Grammar-agnostic by design: matches on the comment text prefix rather than a
+ * grammar node type, because the comment node is named differently across
+ * grammars (`block_comment`, `multiline_comment`, `comment`, `line_comment`).
+ * Annotations and modifiers live inside the definition node, so the doc comment
+ * remains the definition's `previousNamedSibling` even on annotated/decorated
+ * declarations.
+ *
+ * Block comments are taken as the immediately-preceding sibling (intervening
+ * package/import/code siblings already shield a file-level license block from
+ * the first declaration). Line doc comments enforce row-adjacency: the first
+ * comment must sit on the line directly above the definition, and each comment
+ * walked further up must sit directly above the previous one — so a run stops
+ * at a blank line. This matches godoc/RDoc/rustdoc convention and prevents an
+ * unrelated comment block (a license header, a Ruby shebang + magic comment)
+ * separated by a blank line from being absorbed. Adjacency is checked on
+ * `startPosition.row` (reliable) rather than `endPosition.row`, since some
+ * grammars fold the trailing newline into the comment node.
+ *
+ * Normalization mirrors Python docstring handling: strip the comment delimiters
+ * / per-line markers, then collapse whitespace to single spaces so tag content
+ * (`@param`, `@deprecated since 2.0, use computeBalanceV2`) survives.
+ *
+ * When the captured definition is an inner node and its own preceding sibling
+ * carries no doc, the search retries from a wrapping node whose type is listed in
+ * `opts.wrapperNodeTypes` (e.g. an `export_statement` wrapping an exported
+ * function/class — the JSDoc precedes the wrapper, not the inner declaration).
+ */
+export interface LeadingDocCommentOptions {
+  /** Line-comment doc prefixes (defaults to {@link DEFAULT_LINE_DOC_PREFIXES};
+   *  Go passes `['//']`, Ruby passes `['#']`). */
+  lineCommentPrefixes?: readonly string[];
+  /** Grammar node types that wrap a definition such that the doc comment is the
+   *  wrapper's preceding sibling rather than the definition's. TS/JS pass
+   *  `['export_statement']`. Empty by default → no wrapper retry. */
+  wrapperNodeTypes?: readonly string[];
+  /** Line-comment prefixes that are tool/build directives or magic comments
+   *  rather than documentation (Go passes `['//go:', '// +build', …]`, Ruby
+   *  passes `['# frozen_string_literal:', '#!', …]`). A matching line is skipped
+   *  in the doc run rather than absorbed. Empty by default. */
+  lineDirectivePrefixes?: readonly string[];
+  /** Block-comment doc openers (defaults to `['/**', '/*!']`). Rust passes
+   *  `['/**']` so its inner-doc `/*!` does not attach to the following item. */
+  blockDocPrefixes?: readonly string[];
+}
+
+export function extractLeadingDocComment(
+  node: SyntaxNode,
+  opts: LeadingDocCommentOptions = {},
+): string | undefined {
+  const lineCommentPrefixes = opts.lineCommentPrefixes ?? DEFAULT_LINE_DOC_PREFIXES;
+  const wrapperNodeTypes = opts.wrapperNodeTypes ?? [];
+  const lineDirectivePrefixes = opts.lineDirectivePrefixes ?? [];
+  const blockDocPrefixes = opts.blockDocPrefixes ?? DEFAULT_BLOCK_DOC_PREFIXES;
+
+  const fromNode = (anchor: SyntaxNode): string | undefined => {
+    const prev = anchor.previousNamedSibling;
+    if (!prev) return undefined;
+
+    // Block doc comment: /** ... */ or /*! ... */
+    if (blockDocPrefixes.some((p) => prev.text.startsWith(p))) {
+      // Skip a file-top license/copyright/overview header (no package/import
+      // sibling shields it from the first declaration). A strict row-adjacency
+      // check is unreliable here — some grammars fold the trailing newline into
+      // the comment node — so match header markers instead.
+      if (FILE_HEADER_MARKER.test(prev.text)) return undefined;
+      return normalizeBlockDocComment(prev.text);
+    }
+
+    // Run of row-adjacent preceding line doc comments (e.g. `///` or `//`).
+    const matchedPrefix = (text: string): string | undefined =>
+      lineCommentPrefixes.find((prefix) => text.trimStart().startsWith(prefix));
+    const isDirective = (text: string): boolean =>
+      lineDirectivePrefixes.some((prefix) => text.trimStart().startsWith(prefix));
+
+    const lines: string[] = [];
+    let current: SyntaxNode | null = prev;
+    let expectedRow = anchor.startPosition.row - 1;
+    while (current) {
+      const text = current.text;
+      const prefix = matchedPrefix(text);
+      if (prefix === undefined || current.startPosition.row !== expectedRow) break;
+      // A build/tool directive or magic comment (e.g. `//go:build`,
+      // `# frozen_string_literal:`) is not documentation: skip it but keep
+      // walking the adjacent run, so a real doc above it is still collected.
+      if (!isDirective(text)) lines.unshift(text.trimStart().slice(prefix.length));
+      expectedRow = current.startPosition.row - 1;
+      current = current.previousNamedSibling;
+    }
+
+    const joined = stripBidiAndZeroWidth(lines.join(' ').replace(/\s+/g, ' ').trim());
+    return joined.length > 0 ? joined : undefined;
+  };
+
+  const direct = fromNode(node);
+  if (direct !== undefined) return direct;
+
+  const parent = node.parent;
+  if (parent && wrapperNodeTypes.includes(parent.type)) {
+    return fromNode(parent);
+  }
+  return undefined;
+}
+
+/** Node labels that can carry a leading doc comment — callables and type-like
+ *  declarations. Field/property/variable/const doc is intentionally excluded
+ *  (issue #2270 scopes this to method/type documentation). Language-neutral:
+ *  a label a given grammar never emits simply never matches.
+ *
+ *  Bounded to labels that are also in `embeddings/types.ts` `EMBEDDABLE_LABELS`:
+ *  the description is only useful once it reaches the embedding metadata header,
+ *  and the embedding pipeline only queries embeddable labels. Extracting docs
+ *  for a non-embeddable label is a wasted write that never becomes searchable.
+ *  A subset invariant in the unit tests guards against drift. Making currently-
+ *  non-embeddable doc-bearing labels (Module, Delegate, Annotation, and C++
+ *  `Template`) searchable is tracked as a follow-up — it needs an embedding-
+ *  pipeline/schema change beyond this fix. */
+export const DOC_BEARING_LABELS: ReadonlySet<NodeLabel> = new Set<NodeLabel>([
+  'Function',
+  'Method',
+  'Constructor',
+  'Class',
+  'Interface',
+  'Enum',
+  'Struct',
+  'Trait',
+  'Record',
+  'Union',
+  'Namespace',
+  'TypeAlias',
+  'Macro',
+]);
+
+/**
+ * Build a `LanguageProvider.descriptionExtractor` that surfaces a definition's
+ * leading doc comment as its `description` (issue #2270). For labels in
+ * {@link DOC_BEARING_LABELS} (which is bounded to embeddable labels) the text
+ * then reaches the embedding metadata header and becomes semantically searchable.
+ *
+ * Language-neutral factory (names no language): guards on
+ * {@link DOC_BEARING_LABELS}; callers pass per-language doc-comment behavior via
+ * {@link LeadingDocCommentOptions} (line prefixes, export-style wrappers, …)
+ * which is threaded straight through to {@link extractLeadingDocComment}.
+ */
+export const createLeadingDocDescriptionExtractor = (
+  opts: LeadingDocCommentOptions = {},
+): ((
+  nodeLabel: NodeLabel,
+  nodeName: string,
+  captureMap: Record<string, SyntaxNode | undefined>,
+) => string | undefined) => {
+  return (nodeLabel, _nodeName, captureMap) => {
+    if (!DOC_BEARING_LABELS.has(nodeLabel)) return undefined;
+    const definitionNode = getDefinitionNodeFromCaptures(captureMap);
+    return definitionNode ? extractLeadingDocComment(definitionNode, opts) : undefined;
+  };
+};
 
 // ============================================================================
 // Capture + range helpers (formerly python/ast-utils.ts — language-agnostic)

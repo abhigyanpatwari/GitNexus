@@ -13,7 +13,7 @@ import { createClassExtractor } from '../class-extractors/generic.js';
 import { rubyClassConfig } from '../class-extractors/configs/ruby.js';
 import { defineLanguage } from '../language-provider.js';
 import type { AstFrameworkPatternConfig } from '../language-provider.js';
-import type { SyntaxNode } from '../utils/ast-helpers.js';
+import { createLeadingDocDescriptionExtractor, type SyntaxNode } from '../utils/ast-helpers.js';
 import { typeConfig as rubyConfig } from '../type-extractors/ruby.js';
 import { routeRubyCall } from '../call-routing.js';
 import { rubyExportChecker } from '../export-detection.js';
@@ -197,6 +197,20 @@ export const rubyProvider = defineLanguage({
   }),
   variableExtractor: createVariableExtractor(rubyVariableConfig),
   classExtractor: createClassExtractor(rubyClassConfig),
+  // ── Leading `#` comments (RDoc/YARD) → description (issue #2270). Magic
+  //    comments and the shebang are not documentation. ──
+  descriptionExtractor: createLeadingDocDescriptionExtractor({
+    lineCommentPrefixes: ['#'],
+    lineDirectivePrefixes: [
+      '# frozen_string_literal:',
+      '# encoding:',
+      '# coding:',
+      '# -*-',
+      '#!',
+      '# rubocop:',
+      '# typed:',
+    ],
+  }),
   labelOverride: rubyLabelOverride,
   // Ruby MRO is kind-aware: prepend providers beat the class's own method,
   // which in turn beats include providers. The graph-level MRO phase

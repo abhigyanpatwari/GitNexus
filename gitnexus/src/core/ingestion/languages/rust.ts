@@ -13,7 +13,7 @@ import type { NodeLabel } from 'gitnexus-shared';
 import { createClassExtractor } from '../class-extractors/generic.js';
 import { rustClassConfig } from '../class-extractors/configs/rust.js';
 import { defineLanguage } from '../language-provider.js';
-import type { SyntaxNode } from '../utils/ast-helpers.js';
+import { createLeadingDocDescriptionExtractor, type SyntaxNode } from '../utils/ast-helpers.js';
 import { typeConfig as rustConfig } from '../type-extractors/rust.js';
 import { rustExportChecker } from '../export-detection.js';
 import { createImportResolver } from '../import-resolvers/resolver-factory.js';
@@ -176,6 +176,13 @@ export const rustProvider = defineLanguage({
   }),
   variableExtractor: createVariableExtractor(rustVariableConfig),
   classExtractor: createClassExtractor(rustClassConfig),
+  // ── Rust outer doc comments (`///`, `/** */`) → description (issue #2270).
+  //    `//!` / `/*!` are INNER docs (document the enclosing item), so they must
+  //    not attach to the following item — opt out of both. ──
+  descriptionExtractor: createLeadingDocDescriptionExtractor({
+    lineCommentPrefixes: ['///'],
+    blockDocPrefixes: ['/**'],
+  }),
   builtInNames: BUILT_INS,
   // ── RFC #909 Ring 3: scope-based resolution hooks ──────────
   emitScopeCaptures: emitRustScopeCaptures,
