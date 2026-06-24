@@ -12,13 +12,14 @@
  * ./query.ts (TYPESCRIPT_SCOPE_QUERY constant).
  */
 
-import type { ParsedFile } from 'gitnexus-shared';
+import type { ParsedFile, ScopeId } from 'gitnexus-shared';
 import { SupportedLanguages } from 'gitnexus-shared';
 import { generateId } from '../../../../lib/utils.js';
 import { buildMro, defaultLinearize } from '../../scope-resolution/passes/mro.js';
 import { populateClassOwnedMembers } from '../../scope-resolution/scope/walkers.js';
 import type { ScopeResolver } from '../../scope-resolution/contract/scope-resolver.js';
 import { simpleKey } from '../../scope-resolution/graph-bridge/node-lookup.js';
+import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
 import { typescriptProvider } from '../typescript.js';
 import { loadTsconfigPaths, type TsconfigPaths } from '../../language-config.js';
 import { buildSuffixIndex, type SuffixIndex } from '../../import-resolvers/utils.js';
@@ -28,7 +29,12 @@ import {
   resolveTsTarget,
   type TsResolveContext,
 } from './index.js';
-import { loadNuxtAutoImports, type NuxtAutoImportConfig } from './nuxt-auto-imports.js';
+import {
+  getNuxtAutoImportEntry,
+  hasNuxtAutoImports,
+  loadNuxtAutoImports,
+  type NuxtAutoImportConfig,
+} from './nuxt-auto-imports.js';
 
 /** Shape the orchestrator threads in via `RunScopeResolutionInput.resolutionConfig`. */
 interface TypescriptResolutionConfig {
@@ -169,71 +175,66 @@ const typescriptScopeResolver: ScopeResolver = {
    * For each TypeScript file the hook:
    *   1. Builds the set of files already explicitly imported (to avoid
    *      creating duplicate edges for symbols imported conventionally).
-   *   2. Scans the raw source for identifier call-patterns (`name(`) and
-   *      checks each against the auto-import map.
-   *   3. For each hit that is not already explicitly imported, emits a CALLS
-   *      edge from the file's File node to the target function node, and an
-   *      IMPORTS edge from the caller file to the source file (once per pair).
+   *   2. Iterates parsed free-call reference sites and checks each against the
+   *      auto-import map selected for the caller's Nuxt/Nitro scope.
+   *   3. For each hit that is not shadowed by a local binding or explicit
+   *      import, emits a CALLS edge from the file's File node to the target
+   *      function node, and an IMPORTS edge from the caller file to the source
+   *      file (once per pair).
    *
    * Confidence is 0.75 (below the 0.9 used for fully resolved edges) to
-   * signal that these edges are heuristic: the content scanner does not
-   * filter string literals or comments.
+   * signal that these edges are heuristic rather than type-checked.
    */
   emitPostResolutionEdges(graph, parsedFiles, nodeLookup, indexes, ctx) {
     const cfg = ctx.resolutionConfig as TypescriptResolutionConfig | undefined;
     const autoImports = cfg?.nuxtAutoImports;
-    if (!autoImports || autoImports.byLocalName.size === 0) return;
+    if (!autoImports || !hasNuxtAutoImports(autoImports)) return;
 
-    // Pre-index: localName -> entry for fast lookup during content scan.
-    const { byLocalName } = autoImports;
-
-    // Pre-build a file -> explicit-import-targets index so the per-file
-    // lookup below is O(1) rather than scanning all import edges every iteration.
-    const explicitImportsByFile = new Map<string, Set<string>>();
+    // Pre-build a file -> explicit imported local names index so importing one
+    // symbol from a source does not suppress other auto-imported symbols from it.
+    const explicitImportNamesByFile = new Map<string, Set<string>>();
     for (const [scopeId, edges] of indexes.imports) {
       const scope = indexes.scopeTree.getScope(scopeId);
       if (!scope?.filePath) continue;
-      let targets = explicitImportsByFile.get(scope.filePath);
-      if (!targets) {
-        targets = new Set<string>();
-        explicitImportsByFile.set(scope.filePath, targets);
+      let names = explicitImportNamesByFile.get(scope.filePath);
+      if (!names) {
+        names = new Set<string>();
+        explicitImportNamesByFile.set(scope.filePath, names);
       }
       for (const edge of edges) {
-        if (edge.targetFile !== null) targets.add(edge.targetFile);
+        if (edge.targetFile !== null) names.add(edge.localName);
       }
     }
-
-    // Regex matches bare identifier call sites: word-boundary + name + "(".
-    // Excludes `new X(` (constructor calls are not free-function auto-imports).
-    const CALL_RE = /(?<![.\w])([A-Za-z_$][A-Za-z0-9_$]*)\s*\(/g;
 
     for (const parsedFile of parsedFiles) {
       const { filePath } = parsedFile;
       if (!filePath.endsWith('.ts') && !filePath.endsWith('.tsx')) continue;
 
-      const content = ctx.fileContents.get(filePath);
-      if (!content) continue;
-
-      const explicitImports = explicitImportsByFile.get(filePath) ?? new Set<string>();
-
       const fileId = generateId('File', filePath);
+      const explicitImports = explicitImportNamesByFile.get(filePath) ?? new Set<string>();
       // Track (sourceFile) pairs already handled for this caller to avoid
       // emitting duplicate IMPORTS edges and duplicate CALLS edges per symbol.
       const emittedImports = new Set<string>();
       const emittedCalls = new Set<string>();
 
-      CALL_RE.lastIndex = 0;
-      let m: RegExpExecArray | null;
-      while ((m = CALL_RE.exec(content)) !== null) {
-        const localName = m[1]!;
-        const entry = byLocalName.get(localName);
+      for (const site of parsedFile.referenceSites) {
+        if (site.kind !== 'call' || site.callForm !== 'free') continue;
+
+        const localName = site.name;
+        const entry = getNuxtAutoImportEntry(autoImports, localName, filePath);
         if (!entry) continue;
 
         const { exportName, sourceFile } = entry;
 
-        // Skip when the file already has an explicit import from this source,
-        // or when the file IS the source (a file cannot auto-import itself).
-        if (explicitImports.has(sourceFile) || sourceFile === filePath) continue;
+        // Skip when the file already binds this name explicitly, when the file
+        // IS the source, or when a lexical same-file binding shadows it.
+        if (
+          explicitImports.has(localName) ||
+          sourceFile === filePath ||
+          hasLocalBindingInScopeChain(site.inScope, localName, filePath, indexes)
+        ) {
+          continue;
+        }
 
         // Emit one IMPORTS edge per (caller, sourceFile) pair.
         if (!emittedImports.has(sourceFile)) {
@@ -276,5 +277,33 @@ const typescriptScopeResolver: ScopeResolver = {
     }
   },
 };
+
+
+function hasLocalBindingInScopeChain(
+  scopeId: ScopeId,
+  name: string,
+  filePath: string,
+  indexes: ScopeResolutionIndexes,
+): boolean {
+  const visited = new Set<ScopeId>();
+  let cursor: ScopeId | null | undefined = scopeId;
+
+  while (cursor !== null && cursor !== undefined && !visited.has(cursor)) {
+    visited.add(cursor);
+    const scope = indexes.scopeTree.getScope(cursor);
+    if (!scope) return false;
+
+    const localBindings = scope.bindings.get(name);
+    if (
+      localBindings?.some((binding) => binding.origin === 'local' && binding.def.filePath === filePath)
+    ) {
+      return true;
+    }
+
+    cursor = scope.parent;
+  }
+
+  return false;
+}
 
 export { typescriptScopeResolver };

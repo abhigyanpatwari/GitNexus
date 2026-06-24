@@ -14,8 +14,9 @@
  *      `server/middleware/` file. These are not included in `imports.d.ts`
  *      because they are server-only.
  *
- * Both sources produce the same `NuxtAutoImportEntry` shape so the edge-
- * emission pass can treat them uniformly.
+ * The two sources are kept in separate maps because their visibility scopes
+ * differ: app/client files do not see `server/utils`, while Nitro server
+ * handlers prefer same-named server utilities over client composables.
  *
  * Detection: if `.nuxt/imports.d.ts` is absent the repo is not a Nuxt project
  * and this module returns null immediately, adding zero overhead to non-Nuxt
@@ -23,9 +24,8 @@
  * detection succeeds, so it also costs nothing for non-Nuxt repos.
  *
  * Limitations:
- *   - Calls inside string literals or single-line comments are not excluded
- *     by the content scanner. False-positive edges are tagged with
- *     confidence 0.75 to signal that they are heuristic, not type-checked.
+ *   - Auto-import edges are still heuristic rather than type-checked. The
+ *     emitter tags them with confidence 0.75.
  *   - Re-exports with non-matching aliases (e.g. `flatUnwrap as unwrapSlot`
  *     where `flatUnwrap` is the graph node name) try both the original export
  *     name and the local alias when looking up the graph node.
@@ -38,6 +38,8 @@ import path from 'path';
 
 // ---- types ------------------------------------------------------------------
 
+export type NuxtAutoImportScope = 'client' | 'server';
+
 /** A single auto-imported symbol and where it lives in the repo. */
 export interface NuxtAutoImportEntry {
   /** The name used at call sites (the alias when `export { X as Y }` form). */
@@ -46,15 +48,36 @@ export interface NuxtAutoImportEntry {
   readonly exportName: string;
   /** Repo-relative POSIX path to the source file (with extension). */
   readonly sourceFile: string;
+  /** Which Nuxt/Nitro visibility scope supplied this entry. */
+  readonly scope: NuxtAutoImportScope;
 }
 
 /**
- * Aggregated auto-import map for one Nuxt workspace, keyed by the local
- * name used in calling code.
+ * Aggregated auto-import maps for one Nuxt workspace, keyed by the local
+ * name used in calling code. Client/shared entries come from
+ * `.nuxt/imports.d.ts`; server entries come from `server/utils`.
  */
 export interface NuxtAutoImportConfig {
-  readonly byLocalName: ReadonlyMap<string, NuxtAutoImportEntry>;
+  readonly clientByLocalName: ReadonlyMap<string, NuxtAutoImportEntry>;
+  readonly serverByLocalName: ReadonlyMap<string, NuxtAutoImportEntry>;
 }
+
+const FILE_EXTENSIONS = ['.ts', '.tsx', '.js', '.jsx'] as const;
+const GENERATED_DIR_NAMES = new Set([
+  '.git',
+  '.nuxt',
+  '.output',
+  '.next',
+  'build',
+  'coverage',
+  'dist',
+  'node_modules',
+]);
+const IMPORTS_DTS_EXPORT_RE = /^export\s*\{([^}]+)\}\s*from\s*['"]([^'"]+)['"]/gm;
+const NITRO_DECLARATION_EXPORT_RE =
+  /^export\s+(?:default\s+)?(?:async\s+)?function\s+([A-Za-z_$][A-Za-z0-9_$]*)|^export\s+(?:default\s+)?class\s+([A-Za-z_$][A-Za-z0-9_$]*)/gm;
+const NITRO_VARIABLE_EXPORT_RE = /^export\s+(?:const|let|var)\s+([^;\n]+)/gm;
+const VARIABLE_DECLARATOR_RE = /\b([A-Za-z_$][A-Za-z0-9_$]*)\s*(?::[^=,]+)?=/g;
 
 // ---- loader -----------------------------------------------------------------
 
@@ -72,18 +95,44 @@ export interface NuxtAutoImportConfig {
  * are not Nuxt projects.
  */
 export async function loadNuxtAutoImports(repoRoot: string): Promise<NuxtAutoImportConfig | null> {
-  const byLocalName = new Map<string, NuxtAutoImportEntry>();
+  const clientByLocalName = new Map<string, NuxtAutoImportEntry>();
+  const serverByLocalName = new Map<string, NuxtAutoImportEntry>();
 
-  const nuxtInitialized = await collectImportsDts(repoRoot, byLocalName);
+  const nuxtInitialized = await collectImportsDts(repoRoot, clientByLocalName);
 
   // Only scan server/utils when imports.d.ts was present, confirming this is
   // an initialized Nuxt project. Without this gate, a non-Nuxt repo with a
   // server/utils directory would get spurious Nitro auto-import edges.
   if (nuxtInitialized) {
-    await collectNitroServerUtils(repoRoot, byLocalName);
+    await collectNitroServerUtils(repoRoot, serverByLocalName);
   }
 
-  return byLocalName.size > 0 ? { byLocalName } : null;
+  const config = { clientByLocalName, serverByLocalName };
+  return hasNuxtAutoImports(config) ? config : null;
+}
+
+export function hasNuxtAutoImports(config: NuxtAutoImportConfig): boolean {
+  return config.clientByLocalName.size > 0 || config.serverByLocalName.size > 0;
+}
+
+export function getNuxtAutoImportEntry(
+  config: NuxtAutoImportConfig,
+  localName: string,
+  callerFile: string,
+): NuxtAutoImportEntry | undefined {
+  if (isNitroServerRuntimeFile(callerFile)) {
+    return config.serverByLocalName.get(localName) ?? config.clientByLocalName.get(localName);
+  }
+  return config.clientByLocalName.get(localName);
+}
+
+export function isNitroServerRuntimeFile(filePath: string): boolean {
+  const normalized = filePath.replace(/\\/g, '/');
+  return (
+    normalized.startsWith('server/api/') ||
+    normalized.startsWith('server/routes/') ||
+    normalized.startsWith('server/middleware/')
+  );
 }
 
 // ---- .nuxt/imports.d.ts -----------------------------------------------------
@@ -113,11 +162,10 @@ async function collectImportsDts(
   }
 
   const nuxtDir = path.join(repoRoot, '.nuxt');
-  // Matches: export { name1, name2 as alias } from 'source'
-  const lineRe = /^export\s*\{([^}]+)\}\s*from\s*['"]([^'"]+)['"]/gm;
+  IMPORTS_DTS_EXPORT_RE.lastIndex = 0;
   let m: RegExpExecArray | null;
 
-  while ((m = lineRe.exec(content)) !== null) {
+  while ((m = IMPORTS_DTS_EXPORT_RE.exec(content)) !== null) {
     const symbolsRaw = m[1]!;
     const source = m[2]!;
 
@@ -139,7 +187,7 @@ async function collectImportsDts(
       if (!localName || !exportName) continue;
 
       if (!byLocalName.has(localName)) {
-        byLocalName.set(localName, { localName, exportName, sourceFile });
+        byLocalName.set(localName, { localName, exportName, sourceFile, scope: 'client' });
       }
     }
   }
@@ -172,17 +220,9 @@ async function collectNitroServerUtils(
 
     const sourceFile = toRepoPosix(repoRoot, absPath);
 
-    // Match top-level exported functions and constants.
-    // Handles: export function X, export async function X, export const X =
-    // Does NOT attempt to match re-exports from other modules.
-    const exportRe =
-      /^export\s+(?:async\s+)?function\s+(\w+)|^export\s+const\s+(\w+)\s*[=:]/gm;
-    let m: RegExpExecArray | null;
-
-    while ((m = exportRe.exec(content)) !== null) {
-      const name = (m[1] ?? m[2])!;
+    for (const name of extractNitroExportNames(content)) {
       if (!byLocalName.has(name)) {
-        byLocalName.set(name, { localName: name, exportName: name, sourceFile });
+        byLocalName.set(name, { localName: name, exportName: name, sourceFile, scope: 'server' });
       }
     }
   }
@@ -197,16 +237,25 @@ function isProjectLocalPath(source: string): boolean {
 }
 
 async function resolveExtension(base: string): Promise<string | null> {
-  for (const ext of ['.ts', '.tsx', '.js', '.jsx', '']) {
-    const candidate = ext ? base + ext : base;
-    try {
-      await fs.access(candidate);
-      return candidate;
-    } catch {
-      // try next
-    }
+  const directFile = await firstExistingFile([...FILE_EXTENSIONS.map((ext) => base + ext), base]);
+  if (directFile !== null) return directFile;
+  return firstExistingFile(FILE_EXTENSIONS.map((ext) => path.join(base, `index${ext}`)));
+}
+
+async function firstExistingFile(candidates: readonly string[]): Promise<string | null> {
+  const matches = await Promise.all(
+    candidates.map(async (candidate) => ((await isFile(candidate)) ? candidate : null)),
+  );
+  return matches.find((candidate): candidate is string => candidate !== null) ?? null;
+}
+
+async function isFile(filePath: string): Promise<boolean> {
+  try {
+    const stat = await fs.stat(filePath);
+    return stat.isFile();
+  } catch {
+    return false;
   }
-  return null;
 }
 
 function toRepoPosix(repoRoot: string, absPath: string): string {
@@ -232,6 +281,7 @@ async function collectTsFiles(dir: string): Promise<string[]> {
     return results;
   }
   for (const entry of entries) {
+    if (entry.isDirectory() && GENERATED_DIR_NAMES.has(entry.name)) continue;
     const full = path.join(dir, entry.name);
     if (entry.isDirectory()) {
       results.push(...(await collectTsFiles(full)));
@@ -240,4 +290,28 @@ async function collectTsFiles(dir: string): Promise<string[]> {
     }
   }
   return results;
+}
+
+function extractNitroExportNames(content: string): string[] {
+  const names = new Set<string>();
+
+  NITRO_DECLARATION_EXPORT_RE.lastIndex = 0;
+  let declaration: RegExpExecArray | null;
+  while ((declaration = NITRO_DECLARATION_EXPORT_RE.exec(content)) !== null) {
+    const name = declaration[1] ?? declaration[2];
+    if (name) names.add(name);
+  }
+
+  NITRO_VARIABLE_EXPORT_RE.lastIndex = 0;
+  let variableDeclaration: RegExpExecArray | null;
+  while ((variableDeclaration = NITRO_VARIABLE_EXPORT_RE.exec(content)) !== null) {
+    const declarationText = variableDeclaration[1]!;
+    VARIABLE_DECLARATOR_RE.lastIndex = 0;
+    let declarator: RegExpExecArray | null;
+    while ((declarator = VARIABLE_DECLARATOR_RE.exec(declarationText)) !== null) {
+      names.add(declarator[1]!);
+    }
+  }
+
+  return [...names];
 }
