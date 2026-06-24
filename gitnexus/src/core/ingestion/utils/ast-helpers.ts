@@ -946,6 +946,11 @@ const normalizeBlockDocComment = (text: string): string | undefined => {
  *  Go (`//`) and Ruby (`#`) opt into their conventional markers explicitly. */
 export const DEFAULT_LINE_DOC_PREFIXES: readonly string[] = ['///', '//!'];
 
+/** Default block-comment doc openers: Javadoc/JSDoc-style `/**` and Doxygen
+ *  `/*!`. Rust opts out of `/*!` (and `//!`) because those are *inner* docs that
+ *  document the enclosing item, not the following one. */
+const DEFAULT_BLOCK_DOC_PREFIXES: readonly string[] = ['/**', '/*!'];
+
 /** A file-top `/** … *\/` license/copyright/file-overview block has no
  *  package/import sibling to shield it, so it would otherwise be absorbed as the
  *  first declaration's description (PR #2286 review). These markers identify such
@@ -1003,6 +1008,9 @@ export interface LeadingDocCommentOptions {
    *  passes `['# frozen_string_literal:', '#!', …]`). A matching line is skipped
    *  in the doc run rather than absorbed. Empty by default. */
   lineDirectivePrefixes?: readonly string[];
+  /** Block-comment doc openers (defaults to `['/**', '/*!']`). Rust passes
+   *  `['/**']` so its inner-doc `/*!` does not attach to the following item. */
+  blockDocPrefixes?: readonly string[];
 }
 
 export function extractLeadingDocComment(
@@ -1012,13 +1020,14 @@ export function extractLeadingDocComment(
   const lineCommentPrefixes = opts.lineCommentPrefixes ?? DEFAULT_LINE_DOC_PREFIXES;
   const wrapperNodeTypes = opts.wrapperNodeTypes ?? [];
   const lineDirectivePrefixes = opts.lineDirectivePrefixes ?? [];
+  const blockDocPrefixes = opts.blockDocPrefixes ?? DEFAULT_BLOCK_DOC_PREFIXES;
 
   const fromNode = (anchor: SyntaxNode): string | undefined => {
     const prev = anchor.previousNamedSibling;
     if (!prev) return undefined;
 
     // Block doc comment: /** ... */ or /*! ... */
-    if (prev.text.startsWith('/**') || prev.text.startsWith('/*!')) {
+    if (blockDocPrefixes.some((p) => prev.text.startsWith(p))) {
       // Skip a file-top license/copyright/overview header (no package/import
       // sibling shields it from the first declaration). A strict row-adjacency
       // check is unreliable here — some grammars fold the trailing newline into

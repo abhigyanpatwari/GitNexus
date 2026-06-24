@@ -177,8 +177,13 @@ export const rustProvider = defineLanguage({
   }),
   variableExtractor: createVariableExtractor(rustVariableConfig),
   classExtractor: createClassExtractor(rustClassConfig),
-  // ── Rust doc comments (`///`, `//!`, `/** */`) → description (issue #2270) ──
-  descriptionExtractor: createLeadingDocDescriptionExtractor(),
+  // ── Rust outer doc comments (`///`, `/** */`) → description (issue #2270).
+  //    `//!` / `/*!` are INNER docs (document the enclosing item), so they must
+  //    not attach to the following item — opt out of both. ──
+  descriptionExtractor: createLeadingDocDescriptionExtractor({
+    lineCommentPrefixes: ['///'],
+    blockDocPrefixes: ['/**'],
+  }),
   builtInNames: BUILT_INS,
   // ── RFC #909 Ring 3: scope-based resolution hooks ──────────
   emitScopeCaptures: emitRustScopeCaptures,

@@ -196,7 +196,7 @@ describe('leading-doc descriptionExtractor — behavior per comment family', () 
     expect(d).toContain('MULTILINE');
   });
 
-  it('collects a //! inner doc comment (Rust)', () => {
+  it('does NOT attach a Rust //! inner doc to the following item (inner-doc semantics)', () => {
     const d = describeFromProvider(
       SupportedLanguages.Rust,
       Rust,
@@ -206,7 +206,20 @@ describe('leading-doc descriptionExtractor — behavior per comment family', () 
       'Function',
       'add',
     );
-    expect(d).toContain('INNERMARK');
+    expect(d).toBeUndefined();
+  });
+
+  it('does NOT attach a Rust /*! inner block doc to the following item', () => {
+    const d = describeFromProvider(
+      SupportedLanguages.Rust,
+      Rust,
+      `/*! Inner block doc, marker INNERBLOCK. */\nfn add(a: i32) -> i32 { a }`,
+      'function_item',
+      'definition.function',
+      'Function',
+      'add',
+    );
+    expect(d).toBeUndefined();
   });
 
   it('collects a /*! Doxygen bang block (C++)', () => {
