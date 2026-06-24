@@ -162,8 +162,9 @@ export function isNitroServerRuntimeFile(filePath: string): boolean {
  * (starts with `./` or `../` AND does not contain `node_modules`) are
  * included. Nuxt runtime paths (`#app/...`) and third-party packages are
  * intentionally skipped because they have no graph nodes in the repo.
+ *
+ * @returns true when `.nuxt/imports.d.ts` was successfully read.
  */
-/** Returns true when `.nuxt/imports.d.ts` was successfully read. */
 async function collectImportsDts(
   repoRoot: string,
   byLocalName: Map<string, NuxtAutoImportEntry>,
