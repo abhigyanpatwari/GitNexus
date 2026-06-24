@@ -77,7 +77,9 @@ const IMPORTS_DTS_EXPORT_RE = /^export\s*\{([^}]+)\}\s*from\s*['"]([^'"]+)['"]/g
 const NITRO_DECLARATION_EXPORT_RE =
   /^export\s+(?:default\s+)?(?:async\s+)?function\s+([A-Za-z_$][A-Za-z0-9_$]*)|^export\s+(?:default\s+)?class\s+([A-Za-z_$][A-Za-z0-9_$]*)/gm;
 const NITRO_VARIABLE_EXPORT_RE = /^export\s+(?:const|let|var)\s+([^;\n]+)/gm;
-const VARIABLE_DECLARATOR_RE = /\b([A-Za-z_$][A-Za-z0-9_$]*)\s*(?::[^=,]+)?=/g;
+// Matches the binding name at the head of a single declarator (`name`, `name:`, `name =`).
+// A leading `{`/`[` (destructuring) does not match, so destructured exports are skipped.
+const DECLARATOR_NAME_RE = /^\s*([A-Za-z_$][A-Za-z0-9_$]*)/;
 
 // ---- loader -----------------------------------------------------------------
 
@@ -309,13 +311,41 @@ function extractNitroExportNames(content: string): string[] {
   NITRO_VARIABLE_EXPORT_RE.lastIndex = 0;
   let variableDeclaration: RegExpExecArray | null;
   while ((variableDeclaration = NITRO_VARIABLE_EXPORT_RE.exec(content)) !== null) {
-    const declarationText = variableDeclaration[1]!;
-    VARIABLE_DECLARATOR_RE.lastIndex = 0;
-    let declarator: RegExpExecArray | null;
-    while ((declarator = VARIABLE_DECLARATOR_RE.exec(declarationText)) !== null) {
-      names.add(declarator[1]!);
+    // Only the LHS binding name of each top-level declarator is a Nitro export.
+    // Splitting on top-level commas and reading the leading identifier avoids
+    // capturing RHS tokens (arrow params, object keys, operands) as export names,
+    // and tolerates commas inside generic type annotations (`x: Map<a, b> = …`).
+    for (const declarator of splitTopLevelDeclarators(variableDeclaration[1]!)) {
+      const name = DECLARATOR_NAME_RE.exec(declarator);
+      if (name) names.add(name[1]!);
     }
   }
 
   return [...names];
+}
+
+/**
+ * Split a `const`/`let`/`var` declarator list on top-level commas, tracking
+ * `()`, `[]`, `{}`, and `<>` nesting so commas inside call args, object/array
+ * literals, and generic type arguments do not split a declarator. Errs toward
+ * under-splitting on pathological RHS (a missed binding name, never a spurious
+ * one) — Nitro only auto-imports real top-level binding names.
+ */
+function splitTopLevelDeclarators(text: string): string[] {
+  const parts: string[] = [];
+  let depth = 0;
+  let start = 0;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (ch === '(' || ch === '[' || ch === '{' || ch === '<') {
+      depth++;
+    } else if (ch === ')' || ch === ']' || ch === '}' || ch === '>') {
+      if (depth > 0) depth--;
+    } else if (ch === ',' && depth === 0) {
+      parts.push(text.slice(start, i));
+      start = i + 1;
+    }
+  }
+  parts.push(text.slice(start));
+  return parts;
 }

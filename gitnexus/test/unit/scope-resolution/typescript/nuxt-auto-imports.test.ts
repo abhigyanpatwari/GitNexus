@@ -118,6 +118,36 @@ describe('loadNuxtAutoImports', () => {
       sourceFile: 'server/utils/jsHelper.js',
     });
   });
+
+  it('captures only LHS binding names from server/utils const exports', async () => {
+    const root = makeRepo();
+    writeFile(root, '.nuxt/imports.d.ts', '');
+    writeFile(
+      root,
+      'server/utils/forms.ts',
+      [
+        'export const createUser = async (event: H3Event) => {};',
+        'export const config = { onError: () => {} };',
+        'export const eq = a === b;',
+        'export const helper: Record<string, unknown> = {};',
+        'export const first = 1, second = 2;',
+      ].join('\n'),
+    );
+
+    const config = await loadNuxtAutoImports(root);
+
+    // Only declared binding names — never RHS arrow params (`event`), object
+    // keys (`onError`), operands (`a`/`b`), nor a generic-typed name dropped at
+    // the comma inside `Record<string, unknown>`.
+    expect([...config!.serverByLocalName.keys()].sort()).toEqual([
+      'config',
+      'createUser',
+      'eq',
+      'first',
+      'helper',
+      'second',
+    ]);
+  });
 });
 
 describe('isNitroServerRuntimeFile', () => {
