@@ -143,7 +143,11 @@ public class Probe {
   });
 
   it('leaves a plain ASCII doc comment unchanged', () => {
-    const cls = firstNode(Java, `/** Plain doc, marker ASCIIMARK. */\nclass Foo {}`, 'class_declaration');
+    const cls = firstNode(
+      Java,
+      `/** Plain doc, marker ASCIIMARK. */\nclass Foo {}`,
+      'class_declaration',
+    );
     expect(extractLeadingDocComment(cls)).toBe('Plain doc, marker ASCIIMARK.');
   });
 
