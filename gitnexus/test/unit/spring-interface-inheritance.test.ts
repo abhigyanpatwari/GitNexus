@@ -20,6 +20,7 @@ import {
   extractSpringTypes,
 } from '../../src/core/ingestion/route-extractors/spring.js';
 import { resolveInheritedSpringRoutes } from '../../src/core/ingestion/route-extractors/spring-shared.js';
+import { JAVA_HTTP_PLUGIN } from '../../src/core/group/extractors/http-patterns/java.js';
 
 function parse(src: string): Parser.Tree {
   const p = new Parser();
@@ -35,6 +36,23 @@ function inherited(files: Array<{ path: string; src: string }>) {
     methodName: r.methodName,
     key: `${r.method} ${r.path}`,
   }));
+}
+
+/** ingestion inherited routes as a `METHOD path` set (cross-file pass result). */
+function ingestionInheritedKeys(files: Array<{ path: string; src: string }>): Set<string> {
+  return new Set(inherited(files).map((r) => r.key));
+}
+
+/** group inherited provider routes via the project-level scan, as a `METHOD path` set. */
+function groupInheritedKeys(files: Array<{ path: string; src: string }>): Set<string> {
+  const inputs = files.map((f) => ({ filePath: f.path, tree: parse(f.src) }));
+  const out = new Set<string>();
+  for (const fileDet of JAVA_HTTP_PLUGIN.scanProject?.(inputs) ?? []) {
+    for (const d of fileDet.detections) {
+      if (d.role === 'provider') out.add(`${d.method} ${d.path}`);
+    }
+  }
+  return out;
 }
 
 describe('Spring interface-inheritance resolution (ingestion, #2288)', () => {
@@ -142,5 +160,118 @@ public class C {
     const routes = extractSpringRoutes(parse(ctrl), 'C.java');
     expect(routes).toHaveLength(1);
     expect(routes[0]).toMatchObject({ routePath: '/x', httpMethod: 'GET', prefix: '/api' });
+  });
+});
+
+describe('Spring interface-inheritance parity — ingestion vs group scanProject (#2078)', () => {
+  // The strongest anti-drift guard: the same fixture must yield the same
+  // inherited provider routes from the ingestion cross-file pass and the group
+  // project-level scan. Both call the shared resolveInheritedSpringRoutes, so
+  // this pins that the two SharedSpringType collectors agree on every shape.
+
+  it('agrees on a plain interface-inherited route', () => {
+    const files = [
+      {
+        path: 'OrderApi.java',
+        src: `package com.example;
+import org.springframework.web.bind.annotation.*;
+public interface OrderApi { @GetMapping("/orders") Object list(); }
+`,
+      },
+      {
+        path: 'OrderController.java',
+        src: `package com.example;
+import org.springframework.web.bind.annotation.*;
+@RestController
+public class OrderController implements OrderApi { public Object list() { return null; } }
+`,
+      },
+    ];
+    expect(ingestionInheritedKeys(files)).toEqual(groupInheritedKeys(files));
+    expect(groupInheritedKeys(files)).toEqual(new Set(['GET /orders']));
+  });
+
+  it('agrees with interface + controller prefixes and an array mapping', () => {
+    const files = [
+      {
+        path: 'Api.java',
+        src: `package com.example;
+import org.springframework.web.bind.annotation.*;
+@RequestMapping("/api")
+public interface Api {
+  @GetMapping("/list") Object list();
+  @PostMapping({"/a", "/b"}) Object multi();
+}
+`,
+      },
+      {
+        path: 'C.java',
+        src: `package com.example;
+import org.springframework.web.bind.annotation.*;
+@RestController
+@RequestMapping("/v1")
+public class C implements Api {
+  public Object list() { return null; }
+  public Object multi() { return null; }
+}
+`,
+      },
+    ];
+    expect(ingestionInheritedKeys(files)).toEqual(groupInheritedKeys(files));
+  });
+
+  it('agrees on fully-qualified annotation names', () => {
+    // Both sides normalise an FQN annotation to its trailing segment, so an
+    // interface using `@org.springframework...GetMapping` still resolves.
+    const files = [
+      {
+        path: 'Api.java',
+        src: `package com.example;
+@org.springframework.web.bind.annotation.RequestMapping("/api")
+public interface Api {
+  @org.springframework.web.bind.annotation.GetMapping("/list") Object list();
+}
+`,
+      },
+      {
+        path: 'C.java',
+        src: `package com.example;
+@org.springframework.web.bind.annotation.RestController
+public class C implements Api { public Object list() { return null; } }
+`,
+      },
+    ];
+    expect(ingestionInheritedKeys(files)).toEqual(groupInheritedKeys(files));
+    expect(groupInheritedKeys(files)).toEqual(new Set(['GET /api/list']));
+  });
+
+  it('agrees that an ambiguous (duplicated) interface name drops its routes', () => {
+    const files = [
+      {
+        path: 'a/Api.java',
+        src: `package a;
+import org.springframework.web.bind.annotation.*;
+public interface Api { @GetMapping("/x") Object x(); }
+`,
+      },
+      {
+        path: 'b/Api.java',
+        src: `package b;
+import org.springframework.web.bind.annotation.*;
+public interface Api { @GetMapping("/y") Object x(); }
+`,
+      },
+      {
+        path: 'C.java',
+        src: `package com.example;
+import org.springframework.web.bind.annotation.*;
+@RestController
+public class C implements Api { public Object x() { return null; } }
+`,
+      },
+    ];
+    // Ambiguous interface name → both sides drop the inherited routes.
+    expect(ingestionInheritedKeys(files)).toEqual(groupInheritedKeys(files));
+    expect(ingestionInheritedKeys(files)).toEqual(new Set());
   });
 });

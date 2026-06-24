@@ -230,8 +230,14 @@ function declarationAnnotations(node: Parser.SyntaxNode): Parser.SyntaxNode[] {
   );
 }
 
-const annotationName = (ann: Parser.SyntaxNode): string | undefined =>
-  ann.childForFieldName('name')?.text;
+const annotationName = (ann: Parser.SyntaxNode): string | undefined => {
+  // Trailing segment of a possibly fully-qualified annotation name
+  // (`org.springframework.web.bind.annotation.GetMapping` → `GetMapping`), so a
+  // FQN annotation is classified the same as its simple form — matching the
+  // group layer's `simpleName` normalization. A simple name maps to itself.
+  const text = ann.childForFieldName('name')?.text;
+  return text?.split('.').pop() ?? text;
+};
 
 /**
  * Collect the route path(s) carried by an annotation's argument list, honoring
