@@ -274,4 +274,87 @@ public class C implements Api { public Object x() { return null; } }
     expect(ingestionInheritedKeys(files)).toEqual(groupInheritedKeys(files));
     expect(ingestionInheritedKeys(files)).toEqual(new Set());
   });
+
+  it('agrees on a controller implementing multiple interfaces', () => {
+    const files = [
+      {
+        path: 'ReadApi.java',
+        src: `package com.example;
+import org.springframework.web.bind.annotation.*;
+public interface ReadApi { @GetMapping("/read") Object read(); }
+`,
+      },
+      {
+        path: 'WriteApi.java',
+        src: `package com.example;
+import org.springframework.web.bind.annotation.*;
+public interface WriteApi { @PostMapping("/write") Object write(); }
+`,
+      },
+      {
+        path: 'C.java',
+        src: `package com.example;
+import org.springframework.web.bind.annotation.*;
+@RestController
+@RequestMapping("/api")
+public class C implements ReadApi, WriteApi {
+  public Object read() { return null; }
+  public Object write() { return null; }
+}
+`,
+      },
+    ];
+    expect(ingestionInheritedKeys(files)).toEqual(groupInheritedKeys(files));
+    expect(groupInheritedKeys(files)).toEqual(new Set(['GET /api/read', 'POST /api/write']));
+  });
+
+  it('agrees that a non-controller class does NOT inherit interface routes', () => {
+    const files = [
+      {
+        path: 'Api.java',
+        src: `package com.example;
+import org.springframework.web.bind.annotation.*;
+public interface Api { @GetMapping("/x") Object x(); }
+`,
+      },
+      {
+        path: 'PlainImpl.java',
+        src: `package com.example;
+// No @RestController/@Controller — not a provider, must inherit nothing.
+public class PlainImpl implements Api { public Object x() { return null; } }
+`,
+      },
+    ];
+    expect(ingestionInheritedKeys(files)).toEqual(groupInheritedKeys(files));
+    expect(ingestionInheritedKeys(files)).toEqual(new Set());
+  });
+
+  it('agrees when a controller mixes its own mapping with an inherited one', () => {
+    // `own()` carries its own @*Mapping (resolved by extractSpringRoutes, NOT the
+    // inheritance pass); `inh()` inherits from the interface. The inheritance
+    // result must contain only the inherited route on both sides.
+    const files = [
+      {
+        path: 'Api.java',
+        src: `package com.example;
+import org.springframework.web.bind.annotation.*;
+public interface Api { @GetMapping("/inherited") Object inh(); }
+`,
+      },
+      {
+        path: 'C.java',
+        src: `package com.example;
+import org.springframework.web.bind.annotation.*;
+@RestController
+@RequestMapping("/api")
+public class C implements Api {
+  @GetMapping("/own") public Object own() { return null; }
+  public Object inh() { return null; }
+}
+`,
+      },
+    ];
+    expect(ingestionInheritedKeys(files)).toEqual(groupInheritedKeys(files));
+    expect(groupInheritedKeys(files)).toEqual(new Set(['GET /api/inherited']));
+  });
 });
