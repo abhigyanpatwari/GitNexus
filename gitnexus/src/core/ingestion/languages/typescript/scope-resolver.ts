@@ -322,6 +322,26 @@ function hasLocalBindingInScopeChain(
       return true;
     }
 
+    // Type-annotated function parameters — and other value-space type facts
+    // such as `self` and variable annotations — live in `scope.typeBindings`,
+    // not `scope.bindings`. A parameter named like a composable genuinely
+    // shadows the auto-import, and typeBindings never holds a pure type that
+    // belongs to callable space, so a same-file presence check here cannot
+    // over-suppress a legitimate auto-import.
+    //
+    // Residual (known limitation): this catches parameters whose annotation the
+    // TS scope query records as a type-binding (`p: Named`, generics, unions,
+    // predefined, arrays). Function-typed params (`p: () => void`), untyped
+    // params, destructured locals (`const { x } = …`), and catch-clause vars
+    // are captured by NEITHER map — the scope query emits no `@declaration` /
+    // `@type-binding` for them — so those shadow forms still leak an edge.
+    // Closing that needs shared TS scope-query/extractor changes that alter call
+    // resolution beyond Nuxt, so it is deferred to a follow-up rather than fixed
+    // here.
+    if (scope.filePath === filePath && scope.typeBindings.has(name)) {
+      return true;
+    }
+
     cursor = scope.parent;
   }
 

@@ -103,9 +103,22 @@ describe('Nuxt/Nitro auto-import scope resolution', () => {
 
   it('does not emit auto-import edges for local shadowing or lexical noise', () => {
     const calls = nuxtCalls();
+    // Guard against a vacuous pass: the feature must have emitted edges elsewhere.
+    expect(calls.length).toBeGreaterThan(0);
 
     expect(calls.filter((edge) => edge.sourceFilePath.endsWith('pages/local.ts'))).toHaveLength(0);
     expect(calls.filter((edge) => edge.sourceFilePath.endsWith('pages/noise.ts'))).toHaveLength(0);
+  });
+
+  it('does not emit an auto-import edge when a typed parameter shadows the name', () => {
+    const calls = nuxtCalls();
+    expect(calls.length).toBeGreaterThan(0);
+    // pages/param-typed.ts has `function renderTyped(validate: ValidateFn)` and
+    // calls validate() — the type-annotated parameter (in scope.typeBindings)
+    // shadows the composable, so no nuxt edge is emitted.
+    expect(
+      calls.filter((edge) => edge.sourceFilePath.endsWith('pages/param-typed.ts')),
+    ).toHaveLength(0);
   });
 
   it('allows type-only local declarations to coexist with value auto-import calls', () => {
