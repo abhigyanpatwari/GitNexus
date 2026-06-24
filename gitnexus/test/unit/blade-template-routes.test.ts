@@ -131,6 +131,7 @@ describe('Blade/template static route extraction', () => {
           },
         ],
         allDecoratorRoutes: [],
+        routeHandlerSymbols: new Map(),
       } as unknown as ParseOutput;
 
       const output = await routesPhase.execute(

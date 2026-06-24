@@ -62,6 +62,10 @@ const LBUG_NATIVE = [
   'test/integration/lbug-orphan-sidecar-recovery.test.ts',
   'test/integration/lbug-readonly-init.test.ts',
   'test/integration/lbug-non-ascii-path.test.ts',
+  // Cross-repo trace e2e: builds two real lbug indexes + a real bridge and
+  // opens them through the pool adapter (native addon + bridge file locking).
+  // Windows is skipped in-file (describeReopen) due to the bridge reopen lock.
+  'test/integration/group/cross-trace-e2e.test.ts',
   'test/integration/local-backend.test.ts',
   'test/integration/local-backend-calltool.test.ts',
   'test/integration/search-core.test.ts',

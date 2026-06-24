@@ -676,6 +676,26 @@ function scanSpringProject(files: readonly HttpScanInput[]): HttpFileDetections[
 export const JAVA_HTTP_PLUGIN: HttpLanguagePlugin = {
   name: 'java-http',
   language: Java,
+  // routeCoverage intentionally LEFT at the default 'partial' (#2138 Part 2).
+  // The graph provider set is a strict *subset* of this scan()'s provider set —
+  // ingestion does NOT emit a Route node for (1) array-form `@GetMapping({...})`,
+  // (2) interface-inherited Spring routes, or (3) the 2nd verb of a same-URL
+  // GET+POST pair (Route nodes are URL-keyed). Declaring 'complete' here would
+  // let the parse-skip drop those group-only providers. Java flips to 'complete'
+  // only once ingestion provider extraction matches this scan (a follow-up:
+  // array-form query branch + interface-inheritance emission + per-verb Route
+  // identity). `hasConsumerSignals` below is kept ready for that flip.
+  // Consumer signals this plugin's scan() can detect: RestTemplate / WebClient /
+  // OkHttp / Java-HttpClient / Apache-HttpClient call sites, OpenFeign
+  // (`@FeignClient` + `@RequestLine`) interfaces, and Spring 6 HTTP Interface
+  // `@(Get|...)Exchange` / `@HttpExchange`. A provider-covered file containing
+  // any of these must still be parsed so its consumer contracts are not dropped
+  // (ingestion emits no FETCHES for Java). Conservative by design.
+  hasConsumerSignals(content) {
+    return /\brestTemplate\b|\bwebClient\b|Request\.Builder|HttpRequest|HttpMethod\.|new\s+Http(Get|Post|Put|Delete|Patch)\b|@RequestLine|@FeignClient|Exchange/.test(
+      content,
+    );
+  },
   scan(tree) {
     const out: HttpDetection[] = [];
 
@@ -708,6 +728,7 @@ export const JAVA_HTTP_PLUGIN: HttpLanguagePlugin = {
             method: route.httpMethod,
             path: joinPath(prefix, route.rawPath),
             name: route.methodName,
+            line: route.methodNode.startPosition.row + 1,
             confidence: FEIGN_CONFIDENCE,
           });
         }
@@ -725,6 +746,13 @@ export const JAVA_HTTP_PLUGIN: HttpLanguagePlugin = {
           method: route.httpMethod,
           path: joinPath(prefix, route.rawPath),
           name: route.methodName,
+          // Spring providers are named controller methods resolved BY NAME, so
+          // `line` is inert — a named provider never falls through to line-span
+          // containment. Gate it on a present name so a (grammar-impossible)
+          // nameless provider degrades to file-level rather than resolving by
+          // containment to the enclosing class. Wired for consumer-emit parity
+          // and a future inline DSL.
+          line: route.methodName ? route.methodNode.startPosition.row + 1 : undefined,
           confidence: 0.8,
         });
       }
@@ -751,6 +779,7 @@ export const JAVA_HTTP_PLUGIN: HttpLanguagePlugin = {
           method: requestLine.parsed.method,
           path: joinPath(prefix, requestLine.parsed.path),
           name: requestLine.methodName,
+          line: requestLine.methodNode.startPosition.row + 1,
           confidence: REQUEST_LINE_CONFIDENCE,
         });
       }
@@ -772,6 +801,7 @@ export const JAVA_HTTP_PLUGIN: HttpLanguagePlugin = {
           method: route.httpMethod,
           path: joinPath(prefix, route.rawPath),
           name: route.methodName,
+          line: route.methodNode.startPosition.row + 1,
           confidence: EXCHANGE_CONFIDENCE,
         });
       }
@@ -792,6 +822,7 @@ export const JAVA_HTTP_PLUGIN: HttpLanguagePlugin = {
         method: httpMethod,
         path,
         name: null,
+        line: pathNode.startPosition.row + 1,
         confidence: 0.7,
       });
     }
@@ -808,6 +839,7 @@ export const JAVA_HTTP_PLUGIN: HttpLanguagePlugin = {
         method: httpMethodNode.text.toUpperCase(),
         path,
         name: null,
+        line: pathNode.startPosition.row + 1,
         confidence: 0.7,
       });
     }
@@ -830,6 +862,7 @@ export const JAVA_HTTP_PLUGIN: HttpLanguagePlugin = {
         method: httpMethod,
         path,
         name: null,
+        line: pathNode.startPosition.row + 1,
         confidence: 0.7,
       });
     }
@@ -853,6 +886,7 @@ export const JAVA_HTTP_PLUGIN: HttpLanguagePlugin = {
         method: verbText,
         path,
         name: null,
+        line: pathNode.startPosition.row + 1,
         confidence: 0.7,
       });
     }
@@ -879,6 +913,7 @@ export const JAVA_HTTP_PLUGIN: HttpLanguagePlugin = {
         method,
         path,
         name: null,
+        line: pathNode.startPosition.row + 1,
         confidence: 0.7,
       });
     }

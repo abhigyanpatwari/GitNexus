@@ -90,6 +90,79 @@ export interface GroupToolPort {
       include_content?: boolean;
     },
   ): Promise<unknown>;
+  // ── Cross-repo trace support (optional on the port) ────────────────
+  // These are optional so existing GroupToolPort test mocks (which predate
+  // the trace path and only stub impact/query/context/impactByUid) keep
+  // type-checking. The real LocalBackend port supplies all three; runGroupTrace
+  // guards on their presence and degrades to a clear error/note when absent.
+  //
+  // Single-repo directed-path trace over CALLS + HAS_METHOD. Returns the same
+  // shape as the `trace` MCP tool (`{ status, from, to, hopCount, hops, edges }`).
+  trace?(
+    repo: GroupRepoHandle,
+    params: {
+      from?: string;
+      to?: string;
+      from_uid?: string;
+      to_uid?: string;
+      from_file?: string;
+      to_file?: string;
+      maxDepth?: number;
+      includeTests?: boolean;
+    },
+  ): Promise<unknown>;
+  // Resolve a symbol within one repo to its node id (== bridge symbolUid) and
+  // location, or report ambiguity / absence. Wraps the same resolver the
+  // context()/trace() tools use.
+  resolveSymbol?(
+    repo: GroupRepoHandle,
+    query: { name?: string; uid?: string; file_path?: string },
+  ): Promise<GroupSymbolResolution>;
+  // Intra-procedural REACHING_DEF data-flow from an anchor symbol, used to
+  // enrich a boundary-adjacent trace segment. `available:false` signals the
+  // repo has no PDG `flows` layer (degraded, not an error).
+  pdgFlows?(
+    repo: GroupRepoHandle,
+    anchor: { name?: string; uid?: string; file_path?: string },
+    opts: { limit?: number },
+  ): Promise<GroupPdgFlowResult>;
+}
+
+export type GroupSymbolResolution =
+  | {
+      kind: 'ok';
+      symbol: {
+        id: string;
+        name: string;
+        type: string;
+        filePath: string;
+        startLine: number;
+        endLine: number;
+      };
+    }
+  | {
+      kind: 'ambiguous';
+      candidates: Array<{
+        id: string;
+        name: string;
+        type: string;
+        filePath: string;
+        startLine: number;
+      }>;
+    }
+  | { kind: 'not_found' };
+
+export interface GroupPdgFlowHop {
+  line: number;
+  text: string;
+  variable?: string;
+}
+
+export interface GroupPdgFlowResult {
+  available: boolean;
+  variable?: string;
+  hops: GroupPdgFlowHop[];
+  truncated?: boolean;
 }
 
 function isStoredContract(raw: unknown): raw is StoredContract {
@@ -311,6 +384,11 @@ export class GroupService {
   async groupImpact(params: Record<string, unknown>): Promise<unknown> {
     const { runGroupImpact } = await import('./cross-impact.js');
     return runGroupImpact({ port: this.port, gitnexusDir: getDefaultGitnexusDir() }, params);
+  }
+
+  async groupTrace(params: Record<string, unknown>): Promise<unknown> {
+    const { runGroupTrace } = await import('./cross-trace.js');
+    return runGroupTrace({ port: this.port, gitnexusDir: getDefaultGitnexusDir() }, params);
   }
 
   async groupContext(params: Record<string, unknown>): Promise<GroupContextResult> {

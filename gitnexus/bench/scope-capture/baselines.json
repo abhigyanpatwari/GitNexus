@@ -80,9 +80,10 @@
     "_rebaselined": "#1956 synth-widening: + javascript-qualified-base fixture; synthesizeJsInheritanceReferences now handles a member_expression base (class S extends ns.Base -> Base), matching the #1940 legacy leg + the TS terminalTsTypeNameNode property_identifier case, at parity. Linear (~1.05). | #942: scope-resolution-only cleanup reworded fixture comments; capture byte-positions shift, capture LOGIC unchanged."
   },
   "kotlin": {
-    "fingerprint": "90aa832978d9744e50058e77a04748390a7e34e36b309f6c1d178eb07280b7ea",
+    "fingerprint": "4900431791f2b9280009deb2b82659c26ead8aa6fb8731190a7c505dec5a9041",
     "scaling_budget": 1.5,
     "_added": "#1951: bench coverage added (was ungated); scale source heritage-bearing (: Base()); js/kotlin O(n^2) findNodeAtRange-per-match fixed to threaded captured node, now linear.",
-    "_rebaselined": "#1919 review CF3 fix: extended kotlin-local-property-owner (init/accessor destructuring) + new dart-accessor-owner fixture (getter/setter ownership). Fingerprint-only corpus drift; scaling ~1.0."
+    "_rebaselined": "#1919 review CF3 fix: extended kotlin-local-property-owner (init/accessor destructuring) + new dart-accessor-owner fixture (getter/setter ownership). Fingerprint-only corpus drift; scaling ~1.0.",
+    "_rebaselined_2271": "PR #2271: re-vendored tree-sitter-kotlin 0.3.8 -> unreleased fwcd main c8ac3d26 for `fun interface` support + new kotlin-fun-interface fixture in the corpus. Drift is both corpus-additive (the fixture) and grammar-driven (the new grammar parses `fun interface` as a class_declaration, not an ERROR node). Baselined to the NEW grammar's fingerprint, so this --check passes only once the regenerated prebuilds land — until then CI loads the committed 0.3.8 binary and the bench is red, same as the kotlin fun-interface integration tests. scaling ~0.83 (linear)."
   }
 }

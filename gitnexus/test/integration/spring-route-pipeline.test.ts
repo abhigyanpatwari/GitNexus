@@ -104,4 +104,27 @@ describe('Spring @RequestMapping route ingestion pipeline', () => {
     const userRoutes = handlesRouteEdges.filter((e) => e.filePath.includes('UserController.java'));
     expect(userRoutes.length).toBeGreaterThanOrEqual(1);
   });
+
+  it('resolves the decorated handler method to a symbol UID on the Route node (Part 2 #2138)', () => {
+    // Find the Route node for the @GetMapping("/list") handler.
+    let routeNode: { properties: Record<string, unknown> } | undefined;
+    result.graph.forEachNode((n) => {
+      if (n.label === 'Route' && n.properties.name === '/api/users/list') {
+        routeNode = n;
+      }
+    });
+    expect(routeNode, 'Route node /api/users/list should exist').toBeTruthy();
+
+    // U0+U1: the decorated handler (listUsers) was captured and resolved to a
+    // real symbol UID, stamped on the Route node.
+    const handlerSymbolId = routeNode!.properties.handlerSymbolId;
+    expect(handlerSymbolId, 'Route node should carry handlerSymbolId').toBeTruthy();
+
+    // The id resolves to the listUsers handler symbol in UserController.java.
+    const handler = result.graph.getNode(String(handlerSymbolId));
+    expect(handler, 'handlerSymbolId should resolve to a graph node').toBeTruthy();
+    expect(handler!.properties.name).toBe('listUsers');
+    expect(String(handler!.properties.filePath)).toContain('UserController.java');
+    expect(['Method', 'Function']).toContain(handler!.label);
+  });
 });

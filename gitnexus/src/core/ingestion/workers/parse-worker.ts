@@ -317,6 +317,16 @@ export interface ExtractedDecoratorRoute {
    * absent ⇒ no prefix applies.
    */
   prefix?: string | null;
+  /**
+   * Name of the handler the route decorator sits on (the decorated
+   * method/function — e.g. `create` for `@PostMapping("/orders") Order create()`).
+   * Captured at extraction where the decorated definition node is in hand, so
+   * the routes phase can resolve it to a real handler symbol UID via the
+   * SemanticModel (same `(filePath, name) → nodeId` lookup Laravel routes use).
+   * Absent when the extractor could not identify the decorated definition;
+   * resolution then falls back (the Route node simply carries no handlerSymbolId).
+   */
+  handlerName?: string;
 }
 
 export interface ExtractedToolDef {

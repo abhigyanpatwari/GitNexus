@@ -22,21 +22,21 @@ import type { CrossLink } from '../../../src/core/group/types.js';
 import { makeContract } from './fixtures.js';
 
 /**
- * LadybugDB 0.16.0 has a known Windows-only regression: `Database.close()`
- * does not release the underlying file lock until the process exits, so any
- * read-after-write within the same process fails with Win32 Error 33
- * ("process cannot access the file because another process has locked a
- * portion of the file"). This blocks the close-then-reopen pattern that
- * `writeBridge → openBridgeDbReadOnly` relies on.
+ * In-process close-then-reopen of `bridge.lbug` (`writeBridge →
+ * openBridgeDbReadOnly`, and the read path's open→query→close→reopen) — exactly
+ * what a long-lived MCP server does on repeated `@group` impact/trace calls.
  *
- * Production code paths are unaffected: `gitnexus analyze`, `serve`, and
- * `mcp` each open the database exactly once per process and close it at
- * exit. The pattern only manifests in tests and in worker pool reuse.
+ * On Linux/macOS this is now a supported, exercised pattern thanks to the
+ * `closeBridgeDb` fix that skips CHECKPOINT on read-only handles (a CHECKPOINT
+ * on a read-only connection left a lock artifact that failed the next open).
  *
- * Upstream: see kuzudb/kuzu#3872 / #3883 / #4730 (file-lock UX gaps on
- * Windows). Skipping these specific tests on Windows lets the segfault fix
- * (the original motivation for the 0.16.0 upgrade) ship while we wait for
- * an upstream fix or pivot to a single-process bridge writer.
+ * On WINDOWS the writable-close → read-open handoff still does not release the
+ * OS file handle before the read open races (the existing open-side
+ * `LBUG_OPEN_RETRY_*` only retries lock-pattern errors, not the post-rename
+ * sidecar database-id mismatch), so these tests stay Windows-skipped — the
+ * pre-existing limitation. A close-side `waitForWindowsHandleRelease` +
+ * `finalizeLbugSidecarsAfterClose` probe was tried and did not close the gap on
+ * Windows CI, so it was not kept.
  */
 const itLbugReopen = process.platform === 'win32' ? it.skip : it;
 
@@ -217,6 +217,38 @@ describe('writeBridge + read', () => {
     );
     expect(rows).toHaveLength(2);
     await closeBridgeDb(handle!);
+  });
+
+  itLbugReopen('test_openBridgeDbReadOnly_can_reopen_in_same_process', async () => {
+    // Regression: closeBridgeDb used to issue CHECKPOINT on read-only handles
+    // too, which left a WAL/shadow lock artifact that made the next read-only
+    // open of the same file fail in-process — breaking repeated @group
+    // impact/trace calls in a long-lived MCP server. closeBridgeDb now skips
+    // the checkpoint for read-only handles, so open→query→close→open works.
+    await writeBridge(tmpDir, {
+      contracts: [makeContract()],
+      crossLinks: [],
+      repoSnapshots: {},
+      missingRepos: [],
+    });
+
+    const first = await openBridgeDbReadOnly(tmpDir);
+    expect(first).not.toBeNull();
+    const r1 = await queryBridge<{ n: number }>(first!, 'MATCH (c:Contract) RETURN count(c) AS n');
+    expect(r1[0].n).toBe(1);
+    await closeBridgeDb(first!);
+
+    // Second open in the SAME process must succeed (previously returned null).
+    const second = await openBridgeDbReadOnly(tmpDir);
+    expect(second).not.toBeNull();
+    const r2 = await queryBridge<{ n: number }>(second!, 'MATCH (c:Contract) RETURN count(c) AS n');
+    expect(r2[0].n).toBe(1);
+    await closeBridgeDb(second!);
+
+    // And a third, to confirm it is not a one-shot.
+    const third = await openBridgeDbReadOnly(tmpDir);
+    expect(third).not.toBeNull();
+    await closeBridgeDb(third!);
   });
 
   it('test_writeBridge_meta_json_persists_missingRepos', async () => {

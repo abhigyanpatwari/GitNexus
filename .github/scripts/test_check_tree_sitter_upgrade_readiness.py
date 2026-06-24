@@ -61,9 +61,10 @@ def _physical_vendor_grammars() -> set[str]:
 def _render_report() -> tuple[str, int]:
     """Run main() with network mocked to mirror PRODUCTION; return (md, exit_code).
 
-    - npm grammars resolve to a permissive "Ready" peer dep, so the ONLY blocker
-      left is the held vendored tree-sitter-c — letting us assert the hold is
-      load-bearing (exit code stays non-zero because of it).
+    - npm grammars resolve to a permissive "Ready" peer dep, so the only blockers
+      left are the held vendored grammars (tree-sitter-c, tree-sitter-kotlin) plus
+      the intentionally-pinned tree-sitter-cpp — letting us assert holds are
+      load-bearing (exit code stays non-zero because of them).
     - npm_view_json records its calls so we can prove vendored grammars are never
       npm-queried.
     - fetch_text mirrors the real workflow: upstream parser.c resolves to a real
@@ -363,13 +364,15 @@ class ReportRendering(TestCase):
         # Counts are derived from _render_report()'s mock corpus (all npm peer
         # deps mocked permissive): of the 10 npm-installed grammars, 9 render
         # Ready and 1 — tree-sitter-cpp — is the intentional pin (#1242), so it is
-        # not counted ready. The 2 blockers are that same pinned tree-sitter-cpp
-        # plus the vendored, ABI-held tree-sitter-c (the only out-of-range
-        # vendored grammar). If a grammar is added/removed or a pin/hold changes,
+        # not counted ready. The 3 blockers are that same pinned tree-sitter-cpp
+        # plus two held vendored grammars: ABI-held tree-sitter-c (#1242/#858) and
+        # tree-sitter-kotlin (pinned to an unreleased fwcd main commit for `fun
+        # interface` support — ABI 14 is in range, but a hold counts as a blocker
+        # until it is lifted). If a grammar is added/removed or a pin/hold changes,
         # update _render_report()'s mock AND these expected counts together; a
         # mismatch here means the report prose drifted, not the regex.
         self.assertEqual(ready.groups(), ("9", "10"))
-        self.assertEqual(blockers.group(1), "2")
+        self.assertEqual(blockers.group(1), "3")
 
     def _matrix_row(self, name: str) -> str:
         for line in self.report.splitlines():

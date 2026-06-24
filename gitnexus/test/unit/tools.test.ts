@@ -134,17 +134,27 @@ describe('GITNEXUS_TOOLS', () => {
     expect(impactTool.inputSchema.required).toContain('direction');
   });
 
-  it('impact tool advertises the PDG-only `line` statement anchor (integer, min 1, not required)', () => {
+  it('impact tool advertises the PDG-only `line` statement anchor (integer, min 0, not required)', () => {
     const impactTool = GITNEXUS_TOOLS.find((t) => t.name === 'impact')!;
     const line = (impactTool.inputSchema.properties as Record<string, any>).line;
     expect(line).toBeDefined();
     expect(line.type).toBe('integer');
-    expect(line.minimum).toBe(1);
+    // minimum is 0 (not 1) so strict adapters that materialize an omitted
+    // optional numeric field as `0` are not rejected client-side (#2279); a
+    // positive line is enforced backend-side for a real pdg anchor.
+    expect(line.minimum).toBe(0);
     // Statement-anchored slice is optional — never required.
     expect(impactTool.inputSchema.required).not.toContain('line');
-    // The description names the mode:'pdg' statement-anchor semantics.
+    // The description names the mode:'pdg' statement-anchor semantics and the
+    // literal-0 compatibility convention — without contradicting the top-level
+    // "omit line for whole-symbol pdg" contract (#2283).
     expect(line.description).toMatch(/statement anchor/i);
     expect(line.description).toMatch(/pdg/i);
+    expect(line.description).toMatch(/literal 0 is tolerated only .* on the callgraph path/i);
+    expect(line.description).toMatch(/omit line for whole-symbol pdg/i);
+    // Must NOT claim pdg "requires a positive line" — that contradicts the valid
+    // no-line whole-symbol pdg call documented in the top-level description.
+    expect(line.description).not.toMatch(/requires a positive line/i);
     // The top-level description mentions the statement-anchored slice and result shape.
     expect(impactTool.description).toMatch(/statement-anchored|STATEMENT-ANCHORED/);
     expect(impactTool.description).toContain('affectedStatements');
@@ -155,6 +165,25 @@ describe('GITNEXUS_TOOLS', () => {
   it('rename tool requires new_name', () => {
     const renameTool = GITNEXUS_TOOLS.find((t) => t.name === 'rename')!;
     expect(renameTool.inputSchema.required).toContain('new_name');
+  });
+
+  it('trace tool advertises cross-repo @group support plus pdg/crossDepth flags (U3)', () => {
+    const traceTool = GITNEXUS_TOOLS.find((t) => t.name === 'trace')!;
+    const props = traceTool.inputSchema.properties as Record<
+      string,
+      { type?: string; default?: unknown; minimum?: number; description?: string }
+    >;
+    // Experimental cross-repo flags are advertised and optional.
+    expect(props.pdg).toBeDefined();
+    expect(props.pdg.type).toBe('boolean');
+    expect(props.crossDepth).toBeDefined();
+    expect(props.crossDepth.type).toBe('number');
+    expect(traceTool.inputSchema.required).toEqual([]);
+    // The repo param and top-level description both name the @group entry point.
+    expect(props.repo.description).toMatch(/@groupName/);
+    expect(traceTool.description).toMatch(/CROSS-REPO/i);
+    expect(traceTool.description).toContain('ContractLink');
+    expect(traceTool.description).toContain('crossings');
   });
 
   it('detect_changes tool has no required parameters', () => {

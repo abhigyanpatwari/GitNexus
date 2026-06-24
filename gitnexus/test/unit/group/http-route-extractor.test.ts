@@ -43,6 +43,1192 @@ describe('HttpRouteExtractor', () => {
 
   const toPosixPath = (filePath: string): string => filePath.replace(/\\/g, '/');
 
+  describe('symbolUid resolution via containment', () => {
+    it('resolves a source-scan consumer to the function CONTAINING the fetch', async () => {
+      const dir = path.join(tmpDir, 'consumer-containment');
+      fs.mkdirSync(path.join(dir, 'src/api'), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'src/api/users.ts'),
+        `export async function fetchUsers() {
+  const r = await fetch('/api/users');
+  return r.json();
+}
+`,
+      );
+      // The DEFINES query (CONTAINING_QUERY) returns the function span; every
+      // other query (HANDLES_ROUTE / FETCHES / CONTAINS) is empty, so only the
+      // source-scan + line-span containment path resolves the symbol.
+      const mockDbExecutor = async (
+        query: string,
+        params?: Record<string, unknown>,
+      ): Promise<Record<string, unknown>[]> => {
+        if (query.includes('UNION ALL') && String(params?.filePath ?? '').includes('users.ts')) {
+          return [
+            {
+              uid: 'fn-fetchUsers',
+              name: 'fetchUsers',
+              filePath: 'src/api/users.ts',
+              startLine: 1,
+              endLine: 4,
+              labels: ['Function'],
+            },
+          ];
+        }
+        return [];
+      };
+
+      const contracts = await extractor.extract(mockDbExecutor, dir, makeRepo(dir));
+      const consumer = contracts.find((c) => c.role === 'consumer');
+      expect(consumer).toMatchObject({
+        symbolUid: 'fn-fetchUsers',
+        symbolName: 'fetchUsers',
+        meta: { extractionStrategy: 'source_scan_resolved' },
+      });
+    });
+
+    it('does NOT resolve an anonymous express handler to a sibling fn named "handler"', async () => {
+      const dir = path.join(tmpDir, 'anon-handler-no-false-name');
+      fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+      // An unrelated function literally named `handler`, plus an ANONYMOUS route
+      // handler. The anonymous handler must not be mis-attached to `handler`.
+      fs.writeFileSync(
+        path.join(dir, 'src/routes.ts'),
+        `import { Router } from 'express';
+const router = Router();
+function handler() { return 1; }
+router.get('/api/x', (req, res) => { res.json([]); });
+export default router;
+`,
+      );
+      const mockDbExecutor = async (
+        query: string,
+        params?: Record<string, unknown>,
+      ): Promise<Record<string, unknown>[]> => {
+        if (query.includes('UNION ALL') && String(params?.filePath ?? '').includes('routes.ts')) {
+          // `function handler` is on source line 3 → 0-based span [2,2]. The
+          // anonymous route handler is on line 4, so it is NOT inside this span.
+          return [
+            {
+              uid: 'uid-unrelated-handler',
+              name: 'handler',
+              filePath: 'src/routes.ts',
+              startLine: 2,
+              endLine: 2,
+              labels: ['Function'],
+            },
+          ];
+        }
+        return [];
+      };
+
+      const contracts = await extractor.extract(mockDbExecutor, dir, makeRepo(dir));
+      const provider = contracts.find(
+        (c) => c.role === 'provider' && c.contractId === 'http::GET::/api/x',
+      );
+      expect(provider).toBeDefined();
+      // The anonymous arrow (line ~4) is NOT inside `handler`'s span [3,3], so it
+      // must not borrow that uid — name resolution is skipped for anonymous.
+      expect(provider?.symbolUid).not.toBe('uid-unrelated-handler');
+    });
+
+    it('resolves an express provider to its named handler symbol', async () => {
+      const dir = path.join(tmpDir, 'provider-named-handler');
+      fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'src/routes.ts'),
+        `import { Router } from 'express';
+const router = Router();
+export function listUsers(req, res) { res.json([]); }
+router.get('/api/users', listUsers);
+export default router;
+`,
+      );
+      const mockDbExecutor = async (
+        query: string,
+        params?: Record<string, unknown>,
+      ): Promise<Record<string, unknown>[]> => {
+        if (query.includes('UNION ALL') && String(params?.filePath ?? '').includes('routes.ts')) {
+          return [
+            {
+              uid: 'fn-listUsers',
+              name: 'listUsers',
+              filePath: 'src/routes.ts',
+              startLine: 3,
+              endLine: 3,
+              labels: ['Function'],
+            },
+          ];
+        }
+        return [];
+      };
+
+      const contracts = await extractor.extract(mockDbExecutor, dir, makeRepo(dir));
+      const provider = contracts.find(
+        (c) => c.role === 'provider' && c.contractId === 'http::GET::/api/users',
+      );
+      expect(provider).toMatchObject({
+        symbolUid: 'fn-listUsers',
+        symbolName: 'listUsers',
+      });
+    });
+
+    // A handler defined in a different file than its route registration: the
+    // registration file's symbols do not contain it, so resolution falls through
+    // to the unique repo-wide name lookup (#2275).
+    const crossFileRoutes = `import { Router } from 'express';
+import { listUsers } from './handlers/users';
+const router = Router();
+router.get('/api/users', listUsers);
+export default router;
+`;
+    const routesFileSyms = [
+      {
+        uid: 'const-router',
+        name: 'router',
+        filePath: 'src/routes.ts',
+        startLine: 3,
+        endLine: 3,
+        labels: ['Const'],
+      },
+    ];
+    const writeCrossFile = (sub: string) => {
+      const dir = path.join(tmpDir, sub);
+      fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+      fs.writeFileSync(path.join(dir, 'src/routes.ts'), crossFileRoutes);
+      return dir;
+    };
+    const providerOf = (contracts: Awaited<ReturnType<typeof extractor.extract>>) =>
+      contracts.find((c) => c.role === 'provider' && c.contractId === 'http::GET::/api/users');
+
+    it('resolves a cross-file named handler via the unique repo-wide lookup', async () => {
+      const dir = writeCrossFile('xfile-unique');
+      const mockDbExecutor = async (
+        query: string,
+        params?: Record<string, unknown>,
+      ): Promise<Record<string, unknown>[]> => {
+        if (query.includes('UNION ALL'))
+          return String(params?.filePath ?? '').includes('routes.ts') ? routesFileSyms : [];
+        if (query.includes('n.name = $name'))
+          return params?.name === 'listUsers'
+            ? [{ uid: 'fn-listUsers-xfile', name: 'listUsers', filePath: 'src/handlers/users.ts' }]
+            : [];
+        return [];
+      };
+      const provider = providerOf(await extractor.extract(mockDbExecutor, dir, makeRepo(dir)));
+      expect(provider).toMatchObject({ symbolUid: 'fn-listUsers-xfile', symbolName: 'listUsers' });
+    });
+
+    it('leaves symbolUid empty when the repo-wide name is AMBIGUOUS (multiple matches)', async () => {
+      const dir = writeCrossFile('xfile-ambiguous');
+      const mockDbExecutor = async (
+        query: string,
+        params?: Record<string, unknown>,
+      ): Promise<Record<string, unknown>[]> => {
+        if (query.includes('UNION ALL'))
+          return String(params?.filePath ?? '').includes('routes.ts') ? routesFileSyms : [];
+        if (query.includes('n.name = $name'))
+          return [
+            { uid: 'fn-a', name: 'listUsers', filePath: 'src/a.ts' },
+            { uid: 'fn-b', name: 'listUsers', filePath: 'src/b.ts' },
+          ];
+        return [];
+      };
+      const provider = providerOf(await extractor.extract(mockDbExecutor, dir, makeRepo(dir)));
+      expect(provider?.symbolUid).toBe('');
+    });
+
+    it('leaves symbolUid empty when no repo-wide name matches', async () => {
+      const dir = writeCrossFile('xfile-zero');
+      const mockDbExecutor = async (
+        query: string,
+        params?: Record<string, unknown>,
+      ): Promise<Record<string, unknown>[]> => {
+        if (query.includes('UNION ALL'))
+          return String(params?.filePath ?? '').includes('routes.ts') ? routesFileSyms : [];
+        return [];
+      };
+      const provider = providerOf(await extractor.extract(mockDbExecutor, dir, makeRepo(dir)));
+      expect(provider?.symbolUid).toBe('');
+    });
+
+    it('prefers a LOCALLY-DEFINED handler and never consults the repo-wide lookup', async () => {
+      // Handler defined in the registration file itself (not imported) → no
+      // handlerImport → file-scoped resolution wins; the global / module lookups
+      // are never consulted.
+      const dir = path.join(tmpDir, 'local-handler-wins');
+      fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'src/routes.ts'),
+        `import { Router } from 'express';
+const router = Router();
+function listUsers(req, res) {
+  res.json([]);
+}
+router.get('/api/users', listUsers);
+export default router;
+`,
+      );
+      let globalQueries = 0;
+      const mockDbExecutor = async (
+        query: string,
+        params?: Record<string, unknown>,
+      ): Promise<Record<string, unknown>[]> => {
+        if (query.includes('UNION ALL'))
+          return String(params?.filePath ?? '').includes('routes.ts')
+            ? [
+                {
+                  uid: 'fn-samefile',
+                  name: 'listUsers',
+                  filePath: 'src/routes.ts',
+                  startLine: 3,
+                  endLine: 5,
+                  labels: ['Function'],
+                },
+              ]
+            : [];
+        if (query.includes('n.name = $name')) {
+          globalQueries += 1;
+          return [{ uid: 'fn-global', name: 'listUsers', filePath: 'src/elsewhere.ts' }];
+        }
+        return [];
+      };
+      const provider = providerOf(await extractor.extract(mockDbExecutor, dir, makeRepo(dir)));
+      expect(provider?.symbolUid).toBe('fn-samefile');
+      expect(globalQueries).toBe(0);
+    });
+
+    it('leaves symbolUid empty (no exception) when the repo-wide query throws', async () => {
+      const dir = writeCrossFile('xfile-throws');
+      const mockDbExecutor = async (
+        query: string,
+        params?: Record<string, unknown>,
+      ): Promise<Record<string, unknown>[]> => {
+        if (query.includes('UNION ALL'))
+          return String(params?.filePath ?? '').includes('routes.ts') ? routesFileSyms : [];
+        if (query.includes('n.name = $name')) throw new Error('DB locked');
+        return [];
+      };
+      const provider = providerOf(await extractor.extract(mockDbExecutor, dir, makeRepo(dir)));
+      expect(provider?.symbolUid).toBe('');
+    });
+
+    it('caches the repo-wide lookup by name across detections in one extract()', async () => {
+      // Two routes in the same file referencing the SAME cross-file handler must
+      // issue the by-name query at most once (memoized by name).
+      const dir = path.join(tmpDir, 'xfile-cache');
+      fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'src/routes.ts'),
+        `import { Router } from 'express';
+import { listUsers } from './handlers/users';
+const router = Router();
+router.get('/api/users', listUsers);
+router.post('/api/users', listUsers);
+export default router;
+`,
+      );
+      let globalQueries = 0;
+      const mockDbExecutor = async (
+        query: string,
+        params?: Record<string, unknown>,
+      ): Promise<Record<string, unknown>[]> => {
+        if (query.includes('UNION ALL'))
+          return String(params?.filePath ?? '').includes('routes.ts') ? routesFileSyms : [];
+        if (query.includes('n.name = $name')) {
+          globalQueries += 1;
+          return [{ uid: 'fn-listUsers-x', name: 'listUsers', filePath: 'src/handlers/users.ts' }];
+        }
+        return [];
+      };
+      await extractor.extract(mockDbExecutor, dir, makeRepo(dir));
+      expect(globalQueries).toBe(1);
+    });
+
+    it('does NOT consult the repo-wide lookup for consumers', async () => {
+      // A consumer (the function making a fetch) resolves by containment in its
+      // own file; the provider-only repo-wide lookup must never fire for it.
+      const dir = path.join(tmpDir, 'xfile-consumer-gate');
+      fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'src/api.ts'),
+        `export async function fetchUsers() {
+  const r = await fetch('/api/users');
+  return r.json();
+}
+`,
+      );
+      let globalQueries = 0;
+      const mockDbExecutor = async (
+        query: string,
+        params?: Record<string, unknown>,
+      ): Promise<Record<string, unknown>[]> => {
+        if (query.includes('UNION ALL'))
+          return String(params?.filePath ?? '').includes('api.ts')
+            ? [
+                {
+                  uid: 'fn-fetchUsers',
+                  name: 'fetchUsers',
+                  filePath: 'src/api.ts',
+                  startLine: 1,
+                  endLine: 4,
+                  labels: ['Function'],
+                },
+              ]
+            : [];
+        if (query.includes('n.name = $name')) {
+          globalQueries += 1;
+          return [{ uid: 'should-not-be-used', name: 'fetchUsers', filePath: 'src/x.ts' }];
+        }
+        return [];
+      };
+      const contracts = await extractor.extract(mockDbExecutor, dir, makeRepo(dir));
+      const consumer = contracts.find((c) => c.role === 'consumer');
+      expect(consumer?.symbolName).toBe('fetchUsers');
+      expect(globalQueries).toBe(0);
+    });
+
+    it('does NOT attach a named provider to its registrar when the name is unresolvable', async () => {
+      // router.get(...) is registered INSIDE setupRoutes(); the handler
+      // `listUsers` is ambiguous repo-wide (2 matches) so name resolution fails.
+      // The route must NOT fall through to line-span containment and attach to
+      // the enclosing `setupRoutes` wrapper — it stays empty (file fallback).
+      const dir = path.join(tmpDir, 'xfile-wrapper-no-attach');
+      fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'src/routes.ts'),
+        `import { Router } from 'express';
+import { listUsers } from './handlers/users';
+const router = Router();
+export function setupRoutes() {
+  router.get('/api/users', listUsers);
+}
+export default router;
+`,
+      );
+      const mockDbExecutor = async (
+        query: string,
+        params?: Record<string, unknown>,
+      ): Promise<Record<string, unknown>[]> => {
+        if (query.includes('UNION ALL'))
+          return String(params?.filePath ?? '').includes('routes.ts')
+            ? [
+                {
+                  uid: 'fn-setupRoutes',
+                  name: 'setupRoutes',
+                  filePath: 'src/routes.ts',
+                  startLine: 1,
+                  endLine: 99,
+                  labels: ['Function'],
+                },
+              ]
+            : [];
+        if (query.includes('n.name = $name'))
+          return [
+            { uid: 'fn-a', name: 'listUsers', filePath: 'src/a.ts' },
+            { uid: 'fn-b', name: 'listUsers', filePath: 'src/b.ts' },
+          ];
+        return [];
+      };
+      const provider = providerOf(await extractor.extract(mockDbExecutor, dir, makeRepo(dir)));
+      expect(provider?.symbolUid).toBe('');
+    });
+
+    it('rejects a unique repo-wide match that carries no real file (synthetic node)', async () => {
+      // A handler name colliding with an ORM model node (orm.ts emits
+      // filePath: '') yields a single match with no file. It must be rejected,
+      // not attached as an edge-less cross-trace anchor.
+      const dir = writeCrossFile('xfile-empty-filepath');
+      const mockDbExecutor = async (
+        query: string,
+        params?: Record<string, unknown>,
+      ): Promise<Record<string, unknown>[]> => {
+        if (query.includes('UNION ALL'))
+          return String(params?.filePath ?? '').includes('routes.ts') ? routesFileSyms : [];
+        if (query.includes('n.name = $name'))
+          return [{ uid: 'orm-listUsers', name: 'listUsers', filePath: '' }];
+        return [];
+      };
+      const provider = providerOf(await extractor.extract(mockDbExecutor, dir, makeRepo(dir)));
+      expect(provider?.symbolUid).toBe('');
+    });
+
+    it('resolves via the repo-wide lookup when the registration file has NO indexed symbols', async () => {
+      // Pins the reordered early-return: CONTAINING_QUERY returns [] for the
+      // registration file (no in-file symbols at all), yet the unique repo-wide
+      // match still resolves the cross-file handler. Before the reorder, the
+      // `syms.length === 0` guard short-circuited above the provider name branch.
+      const dir = writeCrossFile('xfile-empty-regfile');
+      const mockDbExecutor = async (
+        query: string,
+        params?: Record<string, unknown>,
+      ): Promise<Record<string, unknown>[]> => {
+        if (query.includes('UNION ALL')) return [];
+        if (query.includes('n.name = $name'))
+          return params?.name === 'listUsers'
+            ? [{ uid: 'fn-listUsers-xfile', name: 'listUsers', filePath: 'src/handlers/users.ts' }]
+            : [];
+        return [];
+      };
+      const provider = providerOf(await extractor.extract(mockDbExecutor, dir, makeRepo(dir)));
+      expect(provider).toMatchObject({ symbolUid: 'fn-listUsers-xfile', symbolName: 'listUsers' });
+    });
+
+    it('resolves an ALIASED import to its declared name in the target module (not the alias)', async () => {
+      // import { listUsers as handleUsers } from './handlers/users';
+      // router.get('/api/users', handleUsers);  + an UNRELATED function handleUsers
+      // elsewhere. The route must resolve to the imported `listUsers`, and the
+      // local alias `handleUsers` must NEVER be looked up.
+      const dir = path.join(tmpDir, 'xfile-alias');
+      fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'src/routes.ts'),
+        `import { Router } from 'express';
+import { listUsers as handleUsers } from './handlers/users';
+const router = Router();
+router.get('/api/users', handleUsers);
+export default router;
+`,
+      );
+      const queriedNames: string[] = [];
+      const mockDbExecutor = async (
+        query: string,
+        params?: Record<string, unknown>,
+      ): Promise<Record<string, unknown>[]> => {
+        if (query.includes('STARTS WITH')) {
+          queriedNames.push(`module:${String(params?.name)}`);
+          return params?.name === 'listUsers' &&
+            String(params?.fileDot ?? '').startsWith('src/handlers/users')
+            ? [{ uid: 'fn-listUsers', name: 'listUsers', filePath: 'src/handlers/users.ts' }]
+            : [];
+        }
+        if (query.includes('n.name = $name')) {
+          queriedNames.push(`global:${String(params?.name)}`);
+          return params?.name === 'handleUsers'
+            ? [{ uid: 'fn-unrelated', name: 'handleUsers', filePath: 'src/other.ts' }]
+            : [];
+        }
+        return [];
+      };
+      const provider = providerOf(await extractor.extract(mockDbExecutor, dir, makeRepo(dir)));
+      expect(provider).toMatchObject({ symbolUid: 'fn-listUsers', symbolName: 'listUsers' });
+      expect(queriedNames).not.toContain('module:handleUsers');
+      expect(queriedNames).not.toContain('global:handleUsers');
+    });
+
+    it('pins an imported handler to its module, resolving a name that is ambiguous repo-wide', async () => {
+      // `listUsers` exists in two files; the import pins to ./handlers/users, so
+      // the module-scoped query returns exactly one even though a repo-wide
+      // name lookup would be ambiguous (and would decline).
+      const dir = writeCrossFile('xfile-module-pin');
+      const mockDbExecutor = async (
+        query: string,
+        params?: Record<string, unknown>,
+      ): Promise<Record<string, unknown>[]> => {
+        if (query.includes('STARTS WITH'))
+          return String(params?.fileDot ?? '').startsWith('src/handlers/users')
+            ? [{ uid: 'fn-the-right-one', name: 'listUsers', filePath: 'src/handlers/users.ts' }]
+            : [];
+        if (query.includes('n.name = $name'))
+          return [
+            { uid: 'fn-a', name: 'listUsers', filePath: 'src/handlers/users.ts' },
+            { uid: 'fn-b', name: 'listUsers', filePath: 'src/admin/users.ts' },
+          ];
+        return [];
+      };
+      const provider = providerOf(await extractor.extract(mockDbExecutor, dir, makeRepo(dir)));
+      expect(provider?.symbolUid).toBe('fn-the-right-one');
+    });
+
+    it('resolves a Python Flask add_url_rule ALIASED view through the import (relative module)', async () => {
+      // from .handlers.users import list_users as handle_users
+      // app.add_url_rule('/api/users', view_func=handle_users)
+      // resolves to the declared `list_users` in app/handlers/users.py — the
+      // relative dotted module `.handlers.users` is pinned, the alias never used.
+      const dir = path.join(tmpDir, 'py-flask-alias');
+      fs.mkdirSync(path.join(dir, 'app', 'handlers'), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'app/routes.py'),
+        `from flask import Flask
+from .handlers.users import list_users as handle_users
+app = Flask(__name__)
+app.add_url_rule('/api/users', view_func=handle_users)
+`,
+      );
+      const queriedNames: string[] = [];
+      const mockDbExecutor = async (
+        query: string,
+        params?: Record<string, unknown>,
+      ): Promise<Record<string, unknown>[]> => {
+        if (query.includes('STARTS WITH')) {
+          queriedNames.push(`module:${String(params?.name)}`);
+          return params?.name === 'list_users' &&
+            String(params?.fileDot ?? '').startsWith('app/handlers/users')
+            ? [{ uid: 'fn-list_users', name: 'list_users', filePath: 'app/handlers/users.py' }]
+            : [];
+        }
+        if (query.includes('n.name = $name')) {
+          queriedNames.push(`global:${String(params?.name)}`);
+          return [];
+        }
+        return [];
+      };
+      const contracts = await extractor.extract(mockDbExecutor, dir, makeRepo(dir));
+      const provider = contracts.find(
+        (c) => c.role === 'provider' && c.contractId === 'http::GET::/api/users',
+      );
+      expect(provider).toMatchObject({ symbolUid: 'fn-list_users', symbolName: 'list_users' });
+      expect(queriedNames).not.toContain('module:handle_users');
+    });
+
+    // ── Inline / closure provider handlers (#2276) ──────────────────────
+    // An inline provider handler has no name, so it must resolve by line-span
+    // containment to the symbol it lives in — exactly like a consumer. Mirrors
+    // the Node/Express inline-arrow behavior for the non-Node plugins.
+
+    it('resolves a Go inline http.HandleFunc closure to its containing function (#2276)', async () => {
+      const dir = path.join(tmpDir, 'go-inline-handlefunc');
+      fs.mkdirSync(path.join(dir, 'cmd'), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'cmd/server.go'),
+        `package main
+
+func main() {
+  http.HandleFunc("/api/inline", func(w http.ResponseWriter, r *http.Request) {
+    w.Write([]byte("ok"))
+  })
+}
+`,
+      );
+      // main() spans source lines 3-7 → 0-based [2,6]; the HandleFunc
+      // registration and its anonymous func are on line 4 (row 3), inside span.
+      const mockDbExecutor = async (
+        query: string,
+        params?: Record<string, unknown>,
+      ): Promise<Record<string, unknown>[]> => {
+        if (query.includes('UNION ALL') && String(params?.filePath ?? '').includes('server.go')) {
+          return [
+            {
+              uid: 'fn-main',
+              name: 'main',
+              filePath: 'cmd/server.go',
+              startLine: 2,
+              endLine: 6,
+              labels: ['Function'],
+            },
+          ];
+        }
+        return [];
+      };
+      const contracts = await extractor.extract(mockDbExecutor, dir, makeRepo(dir));
+      const provider = contracts.find(
+        (c) => c.role === 'provider' && c.contractId === 'http::GET::/api/inline',
+      );
+      expect(provider).toMatchObject({
+        symbolUid: 'fn-main',
+        symbolName: 'main',
+        meta: { extractionStrategy: 'source_scan_resolved' },
+      });
+    });
+
+    it('resolves a Go inline gin framework-route closure to its containing function (#2276)', async () => {
+      const dir = path.join(tmpDir, 'go-inline-gin');
+      fs.mkdirSync(path.join(dir, 'cmd'), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'cmd/server.go'),
+        `package main
+
+func registerRoutes(r *gin.Engine) {
+  r.GET("/api/ping", func(c *gin.Context) {
+    c.String(200, "pong")
+  })
+}
+`,
+      );
+      const mockDbExecutor = async (
+        query: string,
+        params?: Record<string, unknown>,
+      ): Promise<Record<string, unknown>[]> => {
+        if (query.includes('UNION ALL') && String(params?.filePath ?? '').includes('server.go')) {
+          return [
+            {
+              uid: 'fn-registerRoutes',
+              name: 'registerRoutes',
+              filePath: 'cmd/server.go',
+              startLine: 2,
+              endLine: 6,
+              labels: ['Function'],
+            },
+          ];
+        }
+        return [];
+      };
+      const contracts = await extractor.extract(mockDbExecutor, dir, makeRepo(dir));
+      const provider = contracts.find(
+        (c) => c.role === 'provider' && c.contractId === 'http::GET::/api/ping',
+      );
+      expect(provider).toMatchObject({
+        symbolUid: 'fn-registerRoutes',
+        symbolName: 'registerRoutes',
+      });
+    });
+
+    it('keeps Go NAMED HandleFunc handler resolving by name, not containment (#2276)', async () => {
+      const dir = path.join(tmpDir, 'go-named-handlefunc');
+      fs.mkdirSync(path.join(dir, 'cmd'), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'cmd/server.go'),
+        `package main
+
+func healthHandler(w http.ResponseWriter, r *http.Request) {}
+
+func main() {
+  http.HandleFunc("/api/health", healthHandler)
+}
+`,
+      );
+      // Both the named handler and the registrar main() are indexed. A named
+      // provider must resolve to the HANDLER by name, never to main by line.
+      const mockDbExecutor = async (
+        query: string,
+        params?: Record<string, unknown>,
+      ): Promise<Record<string, unknown>[]> => {
+        if (query.includes('UNION ALL') && String(params?.filePath ?? '').includes('server.go')) {
+          return [
+            {
+              uid: 'fn-healthHandler',
+              name: 'healthHandler',
+              filePath: 'cmd/server.go',
+              startLine: 2,
+              endLine: 2,
+              labels: ['Function'],
+            },
+            {
+              uid: 'fn-main',
+              name: 'main',
+              filePath: 'cmd/server.go',
+              startLine: 4,
+              endLine: 6,
+              labels: ['Function'],
+            },
+          ];
+        }
+        return [];
+      };
+      const contracts = await extractor.extract(mockDbExecutor, dir, makeRepo(dir));
+      const provider = contracts.find(
+        (c) => c.role === 'provider' && c.contractId === 'http::GET::/api/health',
+      );
+      expect(provider).toMatchObject({
+        symbolUid: 'fn-healthHandler',
+        symbolName: 'healthHandler',
+      });
+    });
+
+    it('keeps a NAMED gin framework-route handler resolving by name, not its registrar (#2276)', async () => {
+      // The framework-route query was also widened to accept func literals; this
+      // pins that a NAMED identifier handler still resolves by name even though
+      // a `line` is now emitted and the enclosing registrar span covers it.
+      const dir = path.join(tmpDir, 'go-named-gin');
+      fs.mkdirSync(path.join(dir, 'cmd'), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'cmd/server.go'),
+        `package main
+
+func listOrders(c *gin.Context) {}
+
+func registerRoutes(r *gin.Engine) {
+  r.GET("/api/orders", listOrders)
+}
+`,
+      );
+      // listOrders spans [2,2]; registerRoutes spans [4,6] and its span CONTAINS
+      // the r.GET line (row 5). A named provider must resolve to listOrders by
+      // name — never to registerRoutes by line-span containment.
+      const mockDbExecutor = async (
+        query: string,
+        params?: Record<string, unknown>,
+      ): Promise<Record<string, unknown>[]> => {
+        if (query.includes('UNION ALL') && String(params?.filePath ?? '').includes('server.go')) {
+          return [
+            {
+              uid: 'fn-listOrders',
+              name: 'listOrders',
+              filePath: 'cmd/server.go',
+              startLine: 2,
+              endLine: 2,
+              labels: ['Function'],
+            },
+            {
+              uid: 'fn-registerRoutes',
+              name: 'registerRoutes',
+              filePath: 'cmd/server.go',
+              startLine: 4,
+              endLine: 6,
+              labels: ['Function'],
+            },
+          ];
+        }
+        return [];
+      };
+      const contracts = await extractor.extract(mockDbExecutor, dir, makeRepo(dir));
+      const provider = contracts.find(
+        (c) => c.role === 'provider' && c.contractId === 'http::GET::/api/orders',
+      );
+      expect(provider).toMatchObject({
+        symbolUid: 'fn-listOrders',
+        symbolName: 'listOrders',
+      });
+    });
+
+    it('binds the LAST arg as handler for a middleware + inline route, not the middleware (#2276)', async () => {
+      // `r.GET(path, mw, func(){})` — gin/echo variadic middleware before an
+      // inline handler. The trailing-anchor on @handler must select the closure
+      // (→ containment to the enclosing fn), NOT the middleware identifier. With
+      // the prior unanchored capture this emitted a second detection for `mw`
+      // that won the contractId merge and mis-attributed the route to it.
+      const dir = path.join(tmpDir, 'go-mw-inline-gin');
+      fs.mkdirSync(path.join(dir, 'cmd'), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'cmd/server.go'),
+        `package main
+
+func authMiddleware(c *gin.Context) {}
+
+func registerRoutes(r *gin.Engine) {
+  r.GET("/api/guarded", authMiddleware, func(c *gin.Context) {
+    c.String(200, "ok")
+  })
+}
+`,
+      );
+      // Both the middleware and the enclosing registrar are indexed. The closure
+      // sits at line 6, contained by registerRoutes [5,9]; authMiddleware [3,3]
+      // does not contain it. The route must resolve to registerRoutes.
+      const mockDbExecutor = async (
+        query: string,
+        params?: Record<string, unknown>,
+      ): Promise<Record<string, unknown>[]> => {
+        if (query.includes('UNION ALL') && String(params?.filePath ?? '').includes('server.go')) {
+          return [
+            {
+              uid: 'fn-authMiddleware',
+              name: 'authMiddleware',
+              filePath: 'cmd/server.go',
+              startLine: 3,
+              endLine: 3,
+              labels: ['Function'],
+            },
+            {
+              uid: 'fn-registerRoutes',
+              name: 'registerRoutes',
+              filePath: 'cmd/server.go',
+              startLine: 5,
+              endLine: 9,
+              labels: ['Function'],
+            },
+          ];
+        }
+        return [];
+      };
+      const contracts = await extractor.extract(mockDbExecutor, dir, makeRepo(dir));
+      const providers = contracts.filter(
+        (c) => c.role === 'provider' && c.contractId === 'http::GET::/api/guarded',
+      );
+      // Exactly one provider (no middleware over-match), resolved by containment.
+      expect(providers).toHaveLength(1);
+      expect(providers[0]).toMatchObject({
+        symbolUid: 'fn-registerRoutes',
+        symbolName: 'registerRoutes',
+      });
+    });
+
+    it('binds the LAST arg as handler for a middleware + NAMED route, not the middleware (#2276)', async () => {
+      // `r.GET(path, mw, namedHandler)` — the named handler is the last arg and
+      // must resolve by name; the leading middleware identifier must not win.
+      const dir = path.join(tmpDir, 'go-mw-named-gin');
+      fs.mkdirSync(path.join(dir, 'cmd'), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'cmd/server.go'),
+        `package main
+
+func authMiddleware(c *gin.Context) {}
+
+func listOrders(c *gin.Context) {}
+
+func registerRoutes(r *gin.Engine) {
+  r.GET("/api/orders", authMiddleware, listOrders)
+}
+`,
+      );
+      const mockDbExecutor = async (
+        query: string,
+        params?: Record<string, unknown>,
+      ): Promise<Record<string, unknown>[]> => {
+        if (query.includes('UNION ALL') && String(params?.filePath ?? '').includes('server.go')) {
+          return [
+            {
+              uid: 'fn-authMiddleware',
+              name: 'authMiddleware',
+              filePath: 'cmd/server.go',
+              startLine: 3,
+              endLine: 3,
+              labels: ['Function'],
+            },
+            {
+              uid: 'fn-listOrders',
+              name: 'listOrders',
+              filePath: 'cmd/server.go',
+              startLine: 5,
+              endLine: 5,
+              labels: ['Function'],
+            },
+            {
+              uid: 'fn-registerRoutes',
+              name: 'registerRoutes',
+              filePath: 'cmd/server.go',
+              startLine: 7,
+              endLine: 9,
+              labels: ['Function'],
+            },
+          ];
+        }
+        return [];
+      };
+      const contracts = await extractor.extract(mockDbExecutor, dir, makeRepo(dir));
+      const providers = contracts.filter(
+        (c) => c.role === 'provider' && c.contractId === 'http::GET::/api/orders',
+      );
+      expect(providers).toHaveLength(1);
+      expect(providers[0]).toMatchObject({
+        symbolUid: 'fn-listOrders',
+        symbolName: 'listOrders',
+      });
+    });
+
+    it('resolves a Laravel closure route nested in a method to that method (#2276)', async () => {
+      const dir = path.join(tmpDir, 'php-closure-in-method');
+      fs.mkdirSync(path.join(dir, 'app'), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'app/RouteServiceProvider.php'),
+        `<?php
+class RouteServiceProvider {
+    public function boot() {
+        Route::get('/api/closure', function () {
+            return 1;
+        });
+    }
+}
+`,
+      );
+      // boot() spans source lines 3-7 → 0-based [2,6]; the closure registration
+      // is on line 4 (row 3), inside boot's span.
+      const mockDbExecutor = async (
+        query: string,
+        params?: Record<string, unknown>,
+      ): Promise<Record<string, unknown>[]> => {
+        if (
+          query.includes('UNION ALL') &&
+          String(params?.filePath ?? '').includes('RouteServiceProvider.php')
+        ) {
+          return [
+            {
+              uid: 'method-boot',
+              name: 'boot',
+              filePath: 'app/RouteServiceProvider.php',
+              startLine: 2,
+              endLine: 6,
+              labels: ['Method'],
+            },
+          ];
+        }
+        return [];
+      };
+      const contracts = await extractor.extract(mockDbExecutor, dir, makeRepo(dir));
+      const provider = contracts.find(
+        (c) => c.role === 'provider' && c.contractId === 'http::GET::/api/closure',
+      );
+      expect(provider).toMatchObject({
+        symbolUid: 'method-boot',
+        symbolName: 'boot',
+        meta: { extractionStrategy: 'source_scan_resolved' },
+      });
+    });
+
+    it('resolves a Laravel arrow-fn closure route by containment (#2276)', async () => {
+      const dir = path.join(tmpDir, 'php-arrow-in-method');
+      fs.mkdirSync(path.join(dir, 'app'), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'app/RouteServiceProvider.php'),
+        `<?php
+class RouteServiceProvider {
+    public function boot() {
+        Route::post('/api/arrow', fn() => response());
+    }
+}
+`,
+      );
+      const mockDbExecutor = async (
+        query: string,
+        params?: Record<string, unknown>,
+      ): Promise<Record<string, unknown>[]> => {
+        if (
+          query.includes('UNION ALL') &&
+          String(params?.filePath ?? '').includes('RouteServiceProvider.php')
+        ) {
+          return [
+            {
+              uid: 'method-boot',
+              name: 'boot',
+              filePath: 'app/RouteServiceProvider.php',
+              startLine: 2,
+              endLine: 4,
+              labels: ['Method'],
+            },
+          ];
+        }
+        return [];
+      };
+      const contracts = await extractor.extract(mockDbExecutor, dir, makeRepo(dir));
+      const provider = contracts.find(
+        (c) => c.role === 'provider' && c.contractId === 'http::POST::/api/arrow',
+      );
+      expect(provider).toMatchObject({ symbolUid: 'method-boot', symbolName: 'boot' });
+    });
+
+    it('leaves a Laravel NAMED-controller route at the prior behavior (no closure path) (#2276)', async () => {
+      const dir = path.join(tmpDir, 'php-named-controller');
+      fs.mkdirSync(path.join(dir, 'routes'), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'routes/web.php'),
+        `<?php
+Route::put('/api/named', [UserController::class, 'update']);
+`,
+      );
+      // No closure → name stays 'route' (not null); the 'route' label resolves
+      // to no symbol, so symbolUid stays empty (file-level). Behavior unchanged.
+      const mockDbExecutor = async (): Promise<Record<string, unknown>[]> => [];
+      const contracts = await extractor.extract(mockDbExecutor, dir, makeRepo(dir));
+      const provider = contracts.find(
+        (c) => c.role === 'provider' && c.contractId === 'http::PUT::/api/named',
+      );
+      expect(provider).toBeDefined();
+      expect(provider?.symbolUid).toBe('');
+    });
+
+    it('resolves a FastAPI @app provider to its decorated function (source-scan fallback) (#2276)', async () => {
+      const dir = path.join(tmpDir, 'py-fastapi-app');
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'main.py'),
+        `from fastapi import FastAPI
+app = FastAPI()
+
+@app.get("/api/items")
+def list_items():
+    return []
+`,
+      );
+      // The decorator is on line 4 (row 3); `def list_items` is on line 5
+      // (row 4). tree-sitter records the function_definition span from `def`,
+      // so list_items spans 0-based [4,5]. The detection line is the decorator
+      // row + 1 = 5, and the resolver's direct `line` probe (row 4) lands in
+      // the def span. (Graph routes are authoritative; this is the fallback.)
+      const mockDbExecutor = async (
+        query: string,
+        params?: Record<string, unknown>,
+      ): Promise<Record<string, unknown>[]> => {
+        if (query.includes('UNION ALL') && String(params?.filePath ?? '').includes('main.py')) {
+          return [
+            {
+              uid: 'fn-list_items',
+              name: 'list_items',
+              filePath: 'main.py',
+              startLine: 4,
+              endLine: 5,
+              labels: ['Function'],
+            },
+          ];
+        }
+        return [];
+      };
+      const contracts = await extractor.extract(mockDbExecutor, dir, makeRepo(dir));
+      const provider = contracts.find(
+        (c) => c.role === 'provider' && c.contractId === 'http::GET::/api/items',
+      );
+      expect(provider).toMatchObject({
+        symbolUid: 'fn-list_items',
+        symbolName: 'list_items',
+        meta: { extractionStrategy: 'source_scan_resolved' },
+      });
+    });
+
+    // Documented limitations pinned by tests (#2276): a closure with no
+    // enclosing function symbol, and a multi-decorator FastAPI handler whose
+    // detection line falls above the def-span, both degrade to file-level
+    // rather than mis-attributing. These lock the comments in php.ts/python.ts.
+
+    it('leaves a FILE-scope Laravel closure at file-level (no enclosing symbol) (#2276)', async () => {
+      const dir = path.join(tmpDir, 'php-closure-file-scope');
+      fs.mkdirSync(path.join(dir, 'routes'), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'routes/web.php'),
+        `<?php
+Route::get('/api/home', function () {
+    return view('home');
+});
+`,
+      );
+      // No enclosing function/method at file scope, and PHP closures are not
+      // indexed as symbols → containment finds nothing → symbolUid stays empty.
+      const mockDbExecutor = async (): Promise<Record<string, unknown>[]> => [];
+      const contracts = await extractor.extract(mockDbExecutor, dir, makeRepo(dir));
+      const provider = contracts.find(
+        (c) => c.role === 'provider' && c.contractId === 'http::GET::/api/home',
+      );
+      expect(provider).toBeDefined();
+      expect(provider?.symbolUid).toBe('');
+    });
+
+    it('leaves a multi-decorator FastAPI handler at file-level (line above def-span) (#2276)', async () => {
+      const dir = path.join(tmpDir, 'py-fastapi-multidecorator');
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'main.py'),
+        `from fastapi import FastAPI
+app = FastAPI()
+
+@app.get("/api/items")
+@require_auth
+def list_items():
+    return []
+`,
+      );
+      // The path literal is on line 4 (row 3) → detection line = row 3 + 1 = 4.
+      // With a second decorator the `def` is on line 6 (row 5), so list_items
+      // spans 0-based [5,6]. The resolver probes row 3 (line-1) then row 4
+      // (line); both fall ABOVE the [5,6] span → no containment → file-level.
+      // (Single-decorator resolves because there the def sits at the line probe.)
+      const mockDbExecutor = async (
+        query: string,
+        params?: Record<string, unknown>,
+      ): Promise<Record<string, unknown>[]> => {
+        if (query.includes('UNION ALL') && String(params?.filePath ?? '').includes('main.py')) {
+          return [
+            {
+              uid: 'fn-list_items',
+              name: 'list_items',
+              filePath: 'main.py',
+              startLine: 5,
+              endLine: 6,
+              labels: ['Function'],
+            },
+          ];
+        }
+        return [];
+      };
+      const contracts = await extractor.extract(mockDbExecutor, dir, makeRepo(dir));
+      const provider = contracts.find(
+        (c) => c.role === 'provider' && c.contractId === 'http::GET::/api/items',
+      );
+      expect(provider).toBeDefined();
+      expect(provider?.symbolUid).toBe('');
+    });
+
+    // The @router/APIRouter provider emit also carries `line` (#2276), but only
+    // @app was covered above. These pin the @router containment path: a
+    // single-decorator router handler resolves to its function, and a
+    // multi-decorator one degrades to file-level — same as @app.
+
+    it('resolves a FastAPI @router provider to its decorated function (source-scan fallback) (#2276)', async () => {
+      const dir = path.join(tmpDir, 'py-fastapi-router');
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'main.py'),
+        `from fastapi import APIRouter
+router = APIRouter()
+
+@router.get("/api/items")
+def list_items():
+    return []
+`,
+      );
+      // Same shape as the @app case: @router.get is on line 4 (row 3), `def`
+      // on line 5 → list_items spans 0-based [4,5]; the `line` probe lands in
+      // the def span and resolves via source_scan_resolved. No include_router
+      // prefix in scope, so the unprefixed path is emitted.
+      const mockDbExecutor = async (
+        query: string,
+        params?: Record<string, unknown>,
+      ): Promise<Record<string, unknown>[]> => {
+        if (query.includes('UNION ALL') && String(params?.filePath ?? '').includes('main.py')) {
+          return [
+            {
+              uid: 'fn-list_items',
+              name: 'list_items',
+              filePath: 'main.py',
+              startLine: 4,
+              endLine: 5,
+              labels: ['Function'],
+            },
+          ];
+        }
+        return [];
+      };
+      const contracts = await extractor.extract(mockDbExecutor, dir, makeRepo(dir));
+      const provider = contracts.find(
+        (c) => c.role === 'provider' && c.contractId === 'http::GET::/api/items',
+      );
+      expect(provider).toMatchObject({
+        symbolUid: 'fn-list_items',
+        symbolName: 'list_items',
+        meta: { extractionStrategy: 'source_scan_resolved' },
+      });
+    });
+
+    it('leaves a module-scope multi-decorator @router handler at file-level (#2276)', async () => {
+      const dir = path.join(tmpDir, 'py-fastapi-router-multidecorator');
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'main.py'),
+        `from fastapi import APIRouter
+router = APIRouter()
+
+@router.post("/api/items")
+@require_auth
+def create_item():
+    return {}
+`,
+      );
+      // With a second decorator the `def` is on line 6 → create_item spans
+      // 0-based [5,6]; the path-line probe falls ABOVE that span → no
+      // containment → file-level (symbolUid stays empty), matching @app.
+      const mockDbExecutor = async (
+        query: string,
+        params?: Record<string, unknown>,
+      ): Promise<Record<string, unknown>[]> => {
+        if (query.includes('UNION ALL') && String(params?.filePath ?? '').includes('main.py')) {
+          return [
+            {
+              uid: 'fn-create_item',
+              name: 'create_item',
+              filePath: 'main.py',
+              startLine: 5,
+              endLine: 6,
+              labels: ['Function'],
+            },
+          ];
+        }
+        return [];
+      };
+      const contracts = await extractor.extract(mockDbExecutor, dir, makeRepo(dir));
+      const provider = contracts.find(
+        (c) => c.role === 'provider' && c.contractId === 'http::POST::/api/items',
+      );
+      expect(provider).toBeDefined();
+      expect(provider?.symbolUid).toBe('');
+    });
+  });
+
   describe('provider extraction — graph-first (Strategy A)', () => {
     it('extracts routes from Route/HANDLES_ROUTE graph + source scan for method', async () => {
       const dir = path.join(tmpDir, 'graph-first');
@@ -75,7 +1261,7 @@ public class UserController {
             },
           ];
         }
-        if (query.includes('CONTAINS')) {
+        if (query.includes('UNION ALL')) {
           return [
             {
               uid: 'uid-ctrl-list',
@@ -145,7 +1331,7 @@ func main() {
           ];
         }
         if (query.includes('FETCHES')) return [];
-        if (query.includes('CONTAINS')) {
+        if (query.includes('UNION ALL')) {
           return [
             {
               uid: 'uid-ctrl-list',
@@ -5805,10 +6991,19 @@ async def standalone():
   });
 
   describe('consumer extraction — graph-first (Strategy A)', () => {
-    it('extracts consumers from FETCHES graph edges', async () => {
+    it('extracts consumers from FETCHES graph edges, resolved to the containing fn', async () => {
       const dir = path.join(tmpDir, 'graph-consumers');
       fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
-      fs.writeFileSync(path.join(dir, 'src/api.ts'), 'export const api = {};');
+      // A real fetch so the plugin produces a consumer detection with a line;
+      // the graph path then resolves it to the CONTAINING function by line-span.
+      fs.writeFileSync(
+        path.join(dir, 'src/api.ts'),
+        `export async function fetchUsers() {
+  const r = await fetch('/api/users');
+  return r.json();
+}
+`,
+      );
 
       const mockDbExecutor = async (query: string) => {
         if (query.includes('HANDLES_ROUTE')) return [];
@@ -5823,12 +7018,14 @@ async def standalone():
             },
           ];
         }
-        if (query.includes('CONTAINS')) {
+        if (query.includes('UNION ALL') && String(query).includes('filePath')) {
           return [
             {
               uid: 'uid-fn-fetch',
               name: 'fetchUsers',
               filePath: 'src/api.ts',
+              startLine: 1,
+              endLine: 4,
               labels: ['Function'],
             },
           ];
@@ -5842,12 +7039,20 @@ async def standalone():
       expect(consumers.length).toBeGreaterThanOrEqual(1);
       expect(consumers[0].confidence).toBe(0.9);
       expect(consumers[0].symbolName).toBe('fetchUsers');
+      expect(consumers[0].symbolUid).toBe('uid-fn-fetch');
     });
 
     it('supplements graph consumers with source-scan consumers from other files', async () => {
       const dir = path.join(tmpDir, 'graph-source-consumer-union');
       fs.mkdirSync(path.join(dir, 'src/api'), { recursive: true });
-      fs.writeFileSync(path.join(dir, 'src/api/graph.ts'), 'export const api = {};');
+      fs.writeFileSync(
+        path.join(dir, 'src/api/graph.ts'),
+        `export async function fetchUsers() {
+  const r = await fetch('/api/users');
+  return r.json();
+}
+`,
+      );
       fs.writeFileSync(
         path.join(dir, 'src/api/health.ts'),
         `
@@ -5858,7 +7063,7 @@ export async function fetchHealth() {
 `,
       );
 
-      const mockDbExecutor = async (query: string) => {
+      const mockDbExecutor = async (query: string, params?: Record<string, unknown>) => {
         if (query.includes('HANDLES_ROUTE')) return [];
         if (query.includes('FETCHES')) {
           return [
@@ -5871,15 +7076,14 @@ export async function fetchHealth() {
             },
           ];
         }
-        if (query.includes('CONTAINS')) {
-          return [
-            {
-              uid: 'uid-fn-fetch',
-              name: 'fetchUsers',
-              filePath: 'src/api/graph.ts',
-              labels: ['Function'],
-            },
-          ];
+        if (query.includes('UNION ALL')) {
+          const fp = String(params?.filePath ?? '');
+          const row = fp.includes('graph.ts')
+            ? { uid: 'uid-fn-fetch', name: 'fetchUsers', filePath: 'src/api/graph.ts' }
+            : fp.includes('health.ts')
+              ? { uid: 'uid-fn-health', name: 'fetchHealth', filePath: 'src/api/health.ts' }
+              : null;
+          return row ? [{ ...row, startLine: 1, endLine: 4, labels: ['Function'] }] : [];
         }
         return [];
       };
@@ -5894,7 +7098,7 @@ export async function fetchHealth() {
 
       const sourceConsumer = consumers.find((c) => c.contractId === 'http::GET::/api/health');
       expect(sourceConsumer).toBeDefined();
-      expect(sourceConsumer?.meta.extractionStrategy).toBe('source_scan');
+      expect(sourceConsumer?.meta.extractionStrategy).toBe('source_scan_resolved');
     });
   });
 

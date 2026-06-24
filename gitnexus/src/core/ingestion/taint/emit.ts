@@ -232,7 +232,6 @@ export function emitFileTaint(
       const b = bindings[idx];
       return b === undefined ? `#${idx}` : bindingKey(b);
     };
-
     // SANITIZES — one edge per kill, REGARDLESS of findings (kills can and do
     // exist with zero findings: a fully-sanitized flow IS the kill evidence).
     for (const kill of flows.kills) {
@@ -263,13 +262,27 @@ export function emitFileTaint(
       // `exec(req.body, req.query)`'s two findings; `property` is free-text
       // (string-literal subscripts) and rides LAST so it cannot collide into
       // another component.
-      const id = generateId(
-        'TAINTED',
-        `${fnAnchor}:${finding.sinkKind}:` +
-          `${pointKey(source.point)}.${source.siteIndex}:${bKey(source.objectBindingIdx)}:` +
-          `${pointKey(sink.point)}.${sink.siteIndex}.${sink.argIndex}:${bKey(sink.bindingIdx)}:` +
-          `${sink.entryName}:${source.property}`,
-      );
+      const id =
+        source.type === 'member-read'
+          ? generateId(
+              'TAINTED',
+              `${fnAnchor}:${finding.sinkKind}:` +
+                `${pointKey(source.point)}.${source.siteIndex}:${bKey(source.objectBindingIdx)}:` +
+                `${pointKey(sink.point)}.${sink.siteIndex}.${sink.argIndex}:${bKey(
+                  sink.bindingIdx,
+                )}:` +
+                `${sink.entryName}:${source.property}`,
+            )
+          : generateId(
+              'TAINTED',
+              `${fnAnchor}:${finding.sinkKind}:` +
+                `${pointKey(source.point)}.${source.siteIndex}:call-result:` +
+                `${bKey(source.resultBindingIdx)}:${source.calleeName}:` +
+                `${pointKey(sink.point)}.${sink.siteIndex}.${sink.argIndex}:${bKey(
+                  sink.bindingIdx,
+                )}:` +
+                `${sink.entryName}`,
+            );
       if (seenEdgeIds.has(id)) continue;
       seenEdgeIds.add(id);
       // `kind` rides the reason's `;<kind>` header — the only persisted
