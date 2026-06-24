@@ -173,7 +173,11 @@ public class AController {
 `;
     const dir = mkRepo({ 'AController.java': AC });
     try {
-      // Graph resolves only /covered (ingestion has no array-form Route node).
+      // The mock DB resolves only /covered; it deliberately omits the array-form
+      // routes to exercise the source-scan fallback. (Ingestion now DOES emit
+      // array-form Route nodes under a scalar/absent class prefix — see #2280 —
+      // but this test asserts the group extractor still recovers them via scan
+      // when the graph happens to lack them, which is what 'partial' guarantees.)
       const out = await new HttpRouteExtractor().extract(
         makeDb([
           { file: 'AController.java', routePath: '/covered', method: 'GET', resolved: true },
@@ -182,7 +186,7 @@ public class AController {
         repo,
       );
       const paths = providerPaths(out);
-      // The array-form routes are graph-only-absent but survive via source scan.
+      // The array-form routes are absent from this mock graph but survive via source scan.
       expect(paths).toEqual(expect.arrayContaining(['GET::/a', 'GET::/b']));
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
