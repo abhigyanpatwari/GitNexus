@@ -9,9 +9,12 @@
  *     The hook resolves the enclosing function by inspecting the previous sibling.
  */
 
-import type { SyntaxNode } from '../utils/ast-helpers.js';
+import {
+  createLeadingDocDescriptionExtractor,
+  FUNCTION_NODE_TYPES,
+  type SyntaxNode,
+} from '../utils/ast-helpers.js';
 import type { NodeLabel } from 'gitnexus-shared';
-import { FUNCTION_NODE_TYPES } from '../utils/ast-helpers.js';
 import { SupportedLanguages } from 'gitnexus-shared';
 import { createClassExtractor } from '../class-extractors/generic.js';
 import { dartClassConfig } from '../class-extractors/configs/dart.js';
@@ -124,6 +127,8 @@ export const dartProvider = defineLanguage({
   methodExtractor: createMethodExtractor(dartMethodConfig),
   variableExtractor: createVariableExtractor(dartVariableConfig),
   classExtractor: createClassExtractor(dartClassConfig),
+  // ── Dartdoc (`///`) → description (issue #2270) ──
+  descriptionExtractor: createLeadingDocDescriptionExtractor(),
   enclosingFunctionFinder: dartEnclosingFunctionFinder,
   builtInNames: DART_BUILT_INS,
 
