@@ -128,6 +128,25 @@ public class Probe {
     expect(doc).toContain('copyright owner');
   });
 
+  it('strips bidi-override and zero-width controls from the description', () => {
+    const rlo = String.fromCharCode(0x202e); // right-to-left override
+    const zwsp = String.fromCharCode(0x200b); // zero-width space
+    const cls = firstNode(
+      Java,
+      `/** Doc ${rlo}with${zwsp} hidden controls, marker BIDIMARK. */\npublic class Foo {}`,
+      'class_declaration',
+    );
+    const doc = extractLeadingDocComment(cls);
+    expect(doc).toContain('BIDIMARK');
+    expect(doc).not.toContain(rlo);
+    expect(doc).not.toContain(zwsp);
+  });
+
+  it('leaves a plain ASCII doc comment unchanged', () => {
+    const cls = firstNode(Java, `/** Plain doc, marker ASCIIMARK. */\nclass Foo {}`, 'class_declaration');
+    expect(extractLeadingDocComment(cls)).toBe('Plain doc, marker ASCIIMARK.');
+  });
+
   it('extracts a Kotlin KDoc (grammar-agnostic prefix match, multiline_comment)', () => {
     const src = `package demo
 class Probe {

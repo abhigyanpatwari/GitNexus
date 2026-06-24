@@ -926,18 +926,40 @@ export function findChild(node: SyntaxNode, type: string): SyntaxNode | null {
   return null;
 }
 
+/** Remove bidi-override and zero-width control characters. Doc text is
+ *  attacker-influenced (any indexed repo) and is returned verbatim to MCP
+ *  clients, so strip Trojan-Source-style hidden controls from the description
+ *  before it leaves the extractor (#2286 review). Scoped to the doc-comment path
+ *  only — global `sanitizeUTF8` is intentionally untouched. */
+const stripBidiAndZeroWidth = (text: string): string =>
+  Array.from(text)
+    .filter((ch) => {
+      const c = ch.codePointAt(0) ?? 0;
+      // Bidi overrides/isolates (U+202A–202E, U+2066–2069), zero-width
+      // space/joiners (U+200B–200D), and BOM/zero-width-no-break (U+FEFF).
+      return !(
+        (c >= 0x202a && c <= 0x202e) ||
+        (c >= 0x2066 && c <= 0x2069) ||
+        (c >= 0x200b && c <= 0x200d) ||
+        c === 0xfeff
+      );
+    })
+    .join('');
+
 /** Normalize a block doc comment body: strip the opening (double-star or
  *  bang) delimiter, the closing delimiter, and per-line gutter stars, then
  *  collapse whitespace so tag content stays as searchable words. */
 const normalizeBlockDocComment = (text: string): string | undefined => {
-  const inner = text
-    .replace(/^\/\*[*!]/, '')
-    // Close delimiter: tolerate the degenerate empty comment `/**/`, where the
-    // opening strip already consumed the shared `*`, leaving a lone `/`.
-    .replace(/\*?\/\s*$/, '')
-    .replace(/^[ \t]*\*[ \t]?/gm, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
+  const inner = stripBidiAndZeroWidth(
+    text
+      .replace(/^\/\*[*!]/, '')
+      // Close delimiter: tolerate the degenerate empty comment `/**/`, where the
+      // opening strip already consumed the shared `*`, leaving a lone `/`.
+      .replace(/\*?\/\s*$/, '')
+      .replace(/^[ \t]*\*[ \t]?/gm, ' ')
+      .replace(/\s+/g, ' ')
+      .trim(),
+  );
   return inner.length > 0 ? inner : undefined;
 };
 
@@ -1057,7 +1079,7 @@ export function extractLeadingDocComment(
       current = current.previousNamedSibling;
     }
 
-    const joined = lines.join(' ').replace(/\s+/g, ' ').trim();
+    const joined = stripBidiAndZeroWidth(lines.join(' ').replace(/\s+/g, ' ').trim());
     return joined.length > 0 ? joined : undefined;
   };
 
