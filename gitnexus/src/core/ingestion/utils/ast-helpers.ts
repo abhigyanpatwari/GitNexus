@@ -310,7 +310,7 @@ export function findAncestorBeforeBoundary(
  * Returns null if the capture should be skipped (import, call, C/C++ duplicate, missing name).
  */
 export function getLabelFromCaptures(
-  captureMap: Record<string, SyntaxNode>,
+  captureMap: Record<string, SyntaxNode | undefined>,
   provider: LanguageProvider,
 ): NodeLabel | null {
   if (captureMap['import'] || captureMap['call']) return null;
@@ -966,7 +966,7 @@ const normalizeBlockDocComment = (text: string): string | undefined => {
 /** Default line-comment prefixes treated as documentation: the universal
  *  triple-slash / bang-slash doc markers (Rust, C#, Dart, Swift, Doxygen).
  *  Go (`//`) and Ruby (`#`) opt into their conventional markers explicitly. */
-export const DEFAULT_LINE_DOC_PREFIXES: readonly string[] = ['///', '//!'];
+const DEFAULT_LINE_DOC_PREFIXES: readonly string[] = ['///', '//!'];
 
 /** Default block-comment doc openers: Javadoc/JSDoc-style `/**` and Doxygen
  *  `/*!`. Rust opts out of `/*!` (and `//!`) because those are *inner* docs that
