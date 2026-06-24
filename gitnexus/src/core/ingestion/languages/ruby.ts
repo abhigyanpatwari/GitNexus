@@ -198,8 +198,20 @@ export const rubyProvider = defineLanguage({
   }),
   variableExtractor: createVariableExtractor(rubyVariableConfig),
   classExtractor: createClassExtractor(rubyClassConfig),
-  // ── Leading `#` comments (RDoc/YARD) → description (issue #2270) ──
-  descriptionExtractor: createLeadingDocDescriptionExtractor({ lineCommentPrefixes: ['#'] }),
+  // ── Leading `#` comments (RDoc/YARD) → description (issue #2270). Magic
+  //    comments and the shebang are not documentation. ──
+  descriptionExtractor: createLeadingDocDescriptionExtractor({
+    lineCommentPrefixes: ['#'],
+    lineDirectivePrefixes: [
+      '# frozen_string_literal:',
+      '# encoding:',
+      '# coding:',
+      '# -*-',
+      '#!',
+      '# rubocop:',
+      '# typed:',
+    ],
+  }),
   labelOverride: rubyLabelOverride,
   // Ruby MRO is kind-aware: prepend providers beat the class's own method,
   // which in turn beats include providers. The graph-level MRO phase

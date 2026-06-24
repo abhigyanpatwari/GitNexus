@@ -998,6 +998,11 @@ export interface LeadingDocCommentOptions {
    *  wrapper's preceding sibling rather than the definition's. TS/JS pass
    *  `['export_statement']`. Empty by default → no wrapper retry. */
   wrapperNodeTypes?: readonly string[];
+  /** Line-comment prefixes that are tool/build directives or magic comments
+   *  rather than documentation (Go passes `['//go:', '// +build', …]`, Ruby
+   *  passes `['# frozen_string_literal:', '#!', …]`). A matching line is skipped
+   *  in the doc run rather than absorbed. Empty by default. */
+  lineDirectivePrefixes?: readonly string[];
 }
 
 export function extractLeadingDocComment(
@@ -1006,6 +1011,7 @@ export function extractLeadingDocComment(
 ): string | undefined {
   const lineCommentPrefixes = opts.lineCommentPrefixes ?? DEFAULT_LINE_DOC_PREFIXES;
   const wrapperNodeTypes = opts.wrapperNodeTypes ?? [];
+  const lineDirectivePrefixes = opts.lineDirectivePrefixes ?? [];
 
   const fromNode = (anchor: SyntaxNode): string | undefined => {
     const prev = anchor.previousNamedSibling;
@@ -1024,6 +1030,8 @@ export function extractLeadingDocComment(
     // Run of row-adjacent preceding line doc comments (e.g. `///` or `//`).
     const matchedPrefix = (text: string): string | undefined =>
       lineCommentPrefixes.find((prefix) => text.trimStart().startsWith(prefix));
+    const isDirective = (text: string): boolean =>
+      lineDirectivePrefixes.some((prefix) => text.trimStart().startsWith(prefix));
 
     const lines: string[] = [];
     let current: SyntaxNode | null = prev;
@@ -1032,7 +1040,10 @@ export function extractLeadingDocComment(
       const text = current.text;
       const prefix = matchedPrefix(text);
       if (prefix === undefined || current.startPosition.row !== expectedRow) break;
-      lines.unshift(text.trimStart().slice(prefix.length));
+      // A build/tool directive or magic comment (e.g. `//go:build`,
+      // `# frozen_string_literal:`) is not documentation: skip it but keep
+      // walking the adjacent run, so a real doc above it is still collected.
+      if (!isDirective(text)) lines.unshift(text.trimStart().slice(prefix.length));
       expectedRow = current.startPosition.row - 1;
       current = current.previousNamedSibling;
     }

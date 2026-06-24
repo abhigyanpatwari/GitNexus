@@ -319,6 +319,48 @@ describe('leading-doc descriptionExtractor — line-comment adjacency (issue #22
   });
 });
 
+describe('leading-doc descriptionExtractor — directive & magic comments (issue #2270 review fix)', () => {
+  it('does NOT absorb a Go //go: build directive directly above a function', () => {
+    const d = describeFromProvider(
+      SupportedLanguages.Go,
+      Go,
+      `package p\n//go:build linux\nfunc Add(a int) int { return a }`,
+      'function_declaration',
+      'definition.function',
+      'Function',
+      'Add',
+    );
+    expect(d).toBeUndefined();
+  });
+
+  it('keeps a real godoc line and skips an interleaved //go:generate directive', () => {
+    const d = describeFromProvider(
+      SupportedLanguages.Go,
+      Go,
+      `package p\n// Add returns the sum, marker GODOC.\n//go:generate stringer -type=T\nfunc Add(a int) int { return a }`,
+      'function_declaration',
+      'definition.function',
+      'Function',
+      'Add',
+    );
+    expect(d).toContain('GODOC');
+    expect(d).not.toContain('go:generate');
+  });
+
+  it('does NOT absorb a Ruby magic comment directly above the first method (no blank line)', () => {
+    const d = describeFromProvider(
+      SupportedLanguages.Ruby,
+      Ruby,
+      `# frozen_string_literal: true\ndef add(a)\n a\nend`,
+      'method',
+      'definition.method',
+      'Method',
+      'add',
+    );
+    expect(d).toBeUndefined();
+  });
+});
+
 describe('phpDescriptionExtractor — Eloquent metadata wins over PHPDoc fallback', () => {
   it('returns the Eloquent relation, not the docblock prose, when both are present', () => {
     const d = describeFromProvider(
