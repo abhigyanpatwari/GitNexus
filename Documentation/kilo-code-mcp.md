@@ -4,7 +4,7 @@ This guide shows how to connect GitNexus to the Kilo Code VS Code extension usin
 
 ## Prerequisites
 
-GitNexus should already be installed globally and working on the target repository, and the repository should be indexed successfully with `gitnexus analyze` before testing inside Kilo. 
+GitNexus should already be installed globally and working on the target repository, and the repository should be indexed successfully with `gitnexus analyze` before testing inside Kilo.
 
 ## Tested Versions
 
@@ -25,7 +25,7 @@ Kilo Code stores MCP server configuration in its main config file. For the VS Co
 | Global | `~/.config/kilo/kilo.jsonc` |
 | Project | `kilo.jsonc` or `.kilo/kilo.jsonc` in the project root |
 
-Check latest path : https://kilo.ai/docs/automate/mcp/using-in-kilo-code 
+Check latest path : https://kilo.ai/docs/automate/mcp/using-in-kilo-code
 
 ## Add GitNexus as an MCP Server
 
