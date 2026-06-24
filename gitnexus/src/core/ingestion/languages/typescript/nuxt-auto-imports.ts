@@ -271,7 +271,7 @@ async function dirExists(dirPath: string): Promise<boolean> {
   }
 }
 
-/** Recursively collect `.ts` and `.tsx` files under a directory. */
+/** Recursively collect supported TypeScript/JavaScript files under a directory. */
 async function collectTsFiles(dir: string): Promise<string[]> {
   const results: string[] = [];
   let entries: import('fs').Dirent[];
@@ -285,11 +285,15 @@ async function collectTsFiles(dir: string): Promise<string[]> {
     const full = path.join(dir, entry.name);
     if (entry.isDirectory()) {
       results.push(...(await collectTsFiles(full)));
-    } else if (entry.isFile() && (entry.name.endsWith('.ts') || entry.name.endsWith('.tsx'))) {
+    } else if (entry.isFile() && hasSupportedSourceExtension(entry.name)) {
       results.push(full);
     }
   }
   return results;
+}
+
+function hasSupportedSourceExtension(fileName: string): boolean {
+  return FILE_EXTENSIONS.some((ext) => fileName.endsWith(ext));
 }
 
 function extractNitroExportNames(content: string): string[] {

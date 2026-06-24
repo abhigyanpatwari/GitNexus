@@ -12,7 +12,7 @@
  * ./query.ts (TYPESCRIPT_SCOPE_QUERY constant).
  */
 
-import type { ParsedFile, ScopeId } from 'gitnexus-shared';
+import type { NodeLabel, ParsedFile, ScopeId } from 'gitnexus-shared';
 import { SupportedLanguages } from 'gitnexus-shared';
 import { generateId } from '../../../../lib/utils.js';
 import { buildMro, defaultLinearize } from '../../scope-resolution/passes/mro.js';
@@ -42,6 +42,16 @@ interface TypescriptResolutionConfig {
   /** Nuxt/Nitro auto-import map. Null for non-Nuxt projects. */
   readonly nuxtAutoImports: NuxtAutoImportConfig | null;
 }
+
+const TYPESCRIPT_TYPE_ONLY_BINDING_TYPES = new Set<NodeLabel>([
+  'Interface',
+  'Type',
+  'TypeAlias',
+  'Typedef',
+  'Trait',
+  'Annotation',
+  'Decorator',
+]);
 
 /**
  * Build a `resolveImportTarget` adapter that memoizes the workspace
@@ -278,6 +288,9 @@ const typescriptScopeResolver: ScopeResolver = {
   },
 };
 
+function occupiesTypeScriptValueSpace(type: NodeLabel): boolean {
+  return !TYPESCRIPT_TYPE_ONLY_BINDING_TYPES.has(type);
+}
 
 function hasLocalBindingInScopeChain(
   scopeId: ScopeId,
@@ -295,7 +308,12 @@ function hasLocalBindingInScopeChain(
 
     const localBindings = scope.bindings.get(name);
     if (
-      localBindings?.some((binding) => binding.origin === 'local' && binding.def.filePath === filePath)
+      localBindings?.some(
+        (binding) =>
+          binding.origin === 'local' &&
+          binding.def.filePath === filePath &&
+          occupiesTypeScriptValueSpace(binding.def.type),
+      )
     ) {
       return true;
     }

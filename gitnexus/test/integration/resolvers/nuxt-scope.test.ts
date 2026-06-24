@@ -1,11 +1,6 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 import path from 'path';
-import {
-  FIXTURES,
-  getRelationships,
-  runPipelineFromRepo,
-  type PipelineResult,
-} from './helpers.js';
+import { FIXTURES, getRelationships, runPipelineFromRepo, type PipelineResult } from './helpers.js';
 
 describe('Nuxt/Nitro auto-import scope resolution', () => {
   let result: PipelineResult;
@@ -17,7 +12,9 @@ describe('Nuxt/Nitro auto-import scope resolution', () => {
   }, 60000);
 
   function nuxtCalls() {
-    return getRelationships(result, 'CALLS').filter((edge) => edge.rel.reason === 'nuxt-auto-import');
+    return getRelationships(result, 'CALLS').filter(
+      (edge) => edge.rel.reason === 'nuxt-auto-import',
+    );
   }
 
   it('prefers server/utils over client composables for same-named server calls', () => {
@@ -86,6 +83,19 @@ describe('Nuxt/Nitro auto-import scope resolution', () => {
 
     expect(calls.filter((edge) => edge.sourceFilePath.endsWith('pages/local.ts'))).toHaveLength(0);
     expect(calls.filter((edge) => edge.sourceFilePath.endsWith('pages/noise.ts'))).toHaveLength(0);
+  });
+
+  it('allows type-only local declarations to coexist with value auto-import calls', () => {
+    const calls = nuxtCalls();
+
+    expect(
+      calls.find(
+        (edge) =>
+          edge.sourceFilePath.endsWith('pages/type-only.ts') &&
+          edge.target === 'useAuto' &&
+          edge.targetFilePath.endsWith('composables/useAuto.ts'),
+      ),
+    ).toBeDefined();
   });
 
   it('suppresses only explicitly imported local names, not every symbol from the same source', () => {

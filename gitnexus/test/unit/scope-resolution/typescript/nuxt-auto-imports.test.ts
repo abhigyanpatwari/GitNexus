@@ -98,6 +98,7 @@ describe('loadNuxtAutoImports', () => {
         'export var delta = () => {};',
       ].join('\n'),
     );
+    writeFile(root, 'server/utils/jsHelper.js', 'export function jsServerTool() {}');
     writeFile(root, 'server/utils/dist/generated.ts', 'export function generatedUtility() {}');
 
     const config = await loadNuxtAutoImports(root);
@@ -111,7 +112,11 @@ describe('loadNuxtAutoImports', () => {
       'delta',
       'fn',
       'gamma',
+      'jsServerTool',
     ]);
+    expect(config!.serverByLocalName.get('jsServerTool')).toMatchObject({
+      sourceFile: 'server/utils/jsHelper.js',
+    });
   });
 });
 
