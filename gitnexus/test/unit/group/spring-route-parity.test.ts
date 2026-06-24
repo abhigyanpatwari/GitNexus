@@ -13,8 +13,17 @@
  * otherwise the graph under-covers what the group scan sees, which is exactly
  * the divergence behind the #2265 array-form gap (the group query matched
  * `@GetMapping({"/a","/b"})`, ingestion's didn't). This test runs one shared
- * fixture through both and asserts the provider sets are identical, so the two
- * can't silently drift again.
+ * fixture through both and asserts the provider sets are identical for the
+ * shapes ingestion claims to cover: bare, named-arg, and array-form method
+ * routes under a *scalar* (or absent) class prefix.
+ *
+ * Known, deliberate divergence (NOT covered by the equality assertions): a
+ * method-level array route nested under a class-level *array-form*
+ * @RequestMapping. Ingestion suppresses it (it can't resolve which of several
+ * class prefixes to apply, and a dropped-prefix route is a wrong signal), while
+ * the group layer emits the full cross-product. The last test pins this so the
+ * suppression can't silently regress into emitting wrong routes; full
+ * class-array support is tracked in #2280.
  */
 import { describe, it, expect } from 'vitest';
 import Parser from 'tree-sitter';
@@ -93,5 +102,98 @@ public class PlainController {
 }
 `;
     expect(ingestionProviders(src)).toEqual(groupProviders(src));
+  });
+
+  it('agree on named-arg ARRAY forms (path = {...} / value = {...})', () => {
+    // Guards the spring.ts named-array query branch specifically: positional
+    // arrays alone would not exercise it.
+    const src = `package com.example;
+import org.springframework.web.bind.annotation.*;
+
+@RestController
+@RequestMapping("/api")
+public class NamedArrayController {
+  @PutMapping(value = {"/update", "/modify"}) public Object upd() { return null; }
+  @DeleteMapping(path = {"/x", "/y"}) public Object del() { return null; }
+}
+`;
+    const group = groupProviders(src);
+    expect(group).toEqual(
+      new Set(['PUT /api/update', 'PUT /api/modify', 'DELETE /api/x', 'DELETE /api/y']),
+    );
+    expect(ingestionProviders(src)).toEqual(group);
+  });
+
+  it('do not leak non-route arrays (consumes/produces) as routes — array analogue', () => {
+    // The scalar `produces` anti-regression already exists in the route tests;
+    // this is its array form. `consumes`/`produces` arrays must never surface as
+    // provider routes; only the path value does.
+    const src = `package com.example;
+import org.springframework.web.bind.annotation.*;
+
+@RestController
+public class ContentTypeController {
+  @GetMapping(value = "/v", consumes = {"application/json", "application/xml"}, produces = {"application/json"})
+  public Object v() { return null; }
+  @PostMapping(consumes = {"application/json"})
+  public Object noPath() { return null; }
+}
+`;
+    const ingestion = ingestionProviders(src);
+    const group = groupProviders(src);
+    // Only the explicit path leaks through; the consumes/produces arrays do not,
+    // and the path-less @PostMapping contributes nothing.
+    expect(group).toEqual(new Set(['GET /v']));
+    expect(ingestion).toEqual(group);
+
+    // Pure-consumes controller (no path anywhere) → EMPTY provider set on both
+    // sides: a consumes/produces array must never be misread as a route path.
+    const consumesOnly = `package com.example;
+import org.springframework.web.bind.annotation.*;
+
+@RestController
+public class ConsumesOnlyController {
+  @PostMapping(consumes = {"application/json", "application/xml"})
+  public Object a() { return null; }
+  @PutMapping(produces = {"application/json"})
+  public Object b() { return null; }
+}
+`;
+    expect(groupProviders(consumesOnly)).toEqual(new Set());
+    expect(ingestionProviders(consumesOnly)).toEqual(new Set());
+  });
+
+  it('pins the deliberate class-array divergence: ingestion suppresses, group emits cross-product (#2280)', () => {
+    // A method-level array under a class-level ARRAY-form @RequestMapping. There
+    // is no single class prefix to apply, so ingestion suppresses the route
+    // rather than emit it unprefixed (a wrong signal). The group layer emits the
+    // full cross-product. This is a KNOWN gap (#2280), pinned here so the
+    // suppression can't silently regress into emitting wrong unprefixed routes.
+    const src = `package com.example;
+import org.springframework.web.bind.annotation.*;
+
+@RestController
+@RequestMapping({"/base/one", "/base/two"})
+public class MultiPrefixController {
+  @GetMapping({"/primary", "/alias"}) public Object x() { return null; }
+}
+`;
+    const ingestion = ingestionProviders(src);
+    const group = groupProviders(src);
+
+    // group: correct cross-product of the two class prefixes × two method paths.
+    expect(group).toEqual(
+      new Set([
+        'GET /base/one/primary',
+        'GET /base/two/primary',
+        'GET /base/one/alias',
+        'GET /base/two/alias',
+      ]),
+    );
+    // ingestion: suppressed — emits NO route for the array method (never a wrong
+    // unprefixed `GET /primary` / `GET /alias`).
+    expect(ingestion).toEqual(new Set());
+    // And the divergence is asymmetric-by-design: ingestion ⊊ group here.
+    expect(ingestion).not.toEqual(group);
   });
 });
