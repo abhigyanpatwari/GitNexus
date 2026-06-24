@@ -123,7 +123,11 @@ export function getNuxtAutoImportEntry(
   callerFile: string,
 ): NuxtAutoImportEntry | undefined {
   if (isNitroServerRuntimeFile(callerFile)) {
-    return config.serverByLocalName.get(localName) ?? config.clientByLocalName.get(localName);
+    // Nitro auto-imports only `server/utils/**` into the server context; app
+    // `composables/` are Vue-app-only. Server callers therefore resolve the
+    // server map only — no client fallback, which would emit cross-context
+    // CALLS edges Nitro never actually creates.
+    return config.serverByLocalName.get(localName);
   }
   return config.clientByLocalName.get(localName);
 }

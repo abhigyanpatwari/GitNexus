@@ -68,6 +68,8 @@ describe('loadNuxtAutoImports', () => {
     expect(getNuxtAutoImportEntry(config!, 'validate', 'app.vue')).toMatchObject({
       sourceFile: 'composables/clientValidate.ts',
     });
+    // A Nitro server caller does NOT fall back to a client-only composable.
+    expect(getNuxtAutoImportEntry(config!, 'useAlias', 'server/api/users.ts')).toBeUndefined();
   });
 
   it('resolves extensionless directory imports to index files', async () => {

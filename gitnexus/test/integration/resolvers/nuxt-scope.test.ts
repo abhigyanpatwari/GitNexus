@@ -64,7 +64,7 @@ describe('Nuxt/Nitro auto-import scope resolution', () => {
     expect(
       calls.find(
         (edge) =>
-          edge.sourceFilePath.endsWith('server/api/route.ts') &&
+          edge.sourceFilePath.endsWith('app.ts') &&
           edge.target === 'useBarrel' &&
           edge.targetFilePath.endsWith('composables/group/index.ts'),
       ),
@@ -72,8 +72,31 @@ describe('Nuxt/Nitro auto-import scope resolution', () => {
     expect(
       imports.find(
         (edge) =>
-          edge.sourceFilePath.endsWith('server/api/route.ts') &&
+          edge.sourceFilePath.endsWith('app.ts') &&
           edge.targetFilePath.endsWith('composables/group/index.ts'),
+      ),
+    ).toBeDefined();
+  });
+
+  it('does not resolve client composables from Nitro server callers (no client fallback)', () => {
+    const calls = nuxtCalls();
+    // server/api/route.ts calls validate() (a real server/util), useAuto() and
+    // useBarrel() (client-only composables). Only the server/util resolves;
+    // Nitro does not auto-import composables/ server-side, so no edge is emitted
+    // to either composable.
+    const composableEdges = calls.filter(
+      (edge) =>
+        edge.sourceFilePath.endsWith('server/api/route.ts') &&
+        edge.targetFilePath.includes('/composables/'),
+    );
+    expect(composableEdges).toHaveLength(0);
+    // The legitimate server/util edge still resolves.
+    expect(
+      calls.find(
+        (edge) =>
+          edge.sourceFilePath.endsWith('server/api/route.ts') &&
+          edge.target === 'validate' &&
+          edge.targetFilePath.endsWith('server/utils/serverValidate.ts'),
       ),
     ).toBeDefined();
   });
