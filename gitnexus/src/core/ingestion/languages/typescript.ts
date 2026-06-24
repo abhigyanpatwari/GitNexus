@@ -345,8 +345,11 @@ export const typescriptProvider = defineLanguage({
   }),
   variableExtractor: createVariableExtractor(typescriptVariableConfig),
   classExtractor: createClassExtractor(typescriptClassConfig),
-  // ── JSDoc → description (issue #2270) ──
-  descriptionExtractor: createLeadingDocDescriptionExtractor(),
+  // ── JSDoc → description (issue #2270). An exported decl is captured as the
+  //    inner declaration; its JSDoc precedes the wrapping `export_statement`. ──
+  descriptionExtractor: createLeadingDocDescriptionExtractor({
+    wrapperNodeTypes: ['export_statement'],
+  }),
   builtInNames: BUILT_INS,
 
   // ── RFC #909 Ring 3: scope-based resolution hooks (RFC §5) ──────────
@@ -409,8 +412,11 @@ export const javascriptProvider = defineLanguage({
   }),
   variableExtractor: createVariableExtractor(javascriptVariableConfig),
   classExtractor: createClassExtractor(javascriptClassConfig),
-  // ── JSDoc → description (issue #2270) ──
-  descriptionExtractor: createLeadingDocDescriptionExtractor(),
+  // ── JSDoc → description (issue #2270). An exported decl is captured as the
+  //    inner declaration; its JSDoc precedes the wrapping `export_statement`. ──
+  descriptionExtractor: createLeadingDocDescriptionExtractor({
+    wrapperNodeTypes: ['export_statement'],
+  }),
   builtInNames: BUILT_INS,
 
   // ── RFC #909 Ring 3: scope-based resolution hooks (RFC §5) ──────────

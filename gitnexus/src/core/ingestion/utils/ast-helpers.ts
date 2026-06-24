@@ -975,37 +975,66 @@ export const DEFAULT_LINE_DOC_PREFIXES: readonly string[] = ['///', '//!'];
  * Normalization mirrors Python docstring handling: strip the comment delimiters
  * / per-line markers, then collapse whitespace to single spaces so tag content
  * (`@param`, `@deprecated since 2.0, use computeBalanceV2`) survives.
+ *
+ * When the captured definition is an inner node and its own preceding sibling
+ * carries no doc, the search retries from a wrapping node whose type is listed in
+ * `opts.wrapperNodeTypes` (e.g. an `export_statement` wrapping an exported
+ * function/class — the JSDoc precedes the wrapper, not the inner declaration).
  */
+export interface LeadingDocCommentOptions {
+  /** Line-comment doc prefixes (defaults to {@link DEFAULT_LINE_DOC_PREFIXES};
+   *  Go passes `['//']`, Ruby passes `['#']`). */
+  lineCommentPrefixes?: readonly string[];
+  /** Grammar node types that wrap a definition such that the doc comment is the
+   *  wrapper's preceding sibling rather than the definition's. TS/JS pass
+   *  `['export_statement']`. Empty by default → no wrapper retry. */
+  wrapperNodeTypes?: readonly string[];
+}
+
 export function extractLeadingDocComment(
   node: SyntaxNode,
-  lineCommentPrefixes: readonly string[] = DEFAULT_LINE_DOC_PREFIXES,
+  opts: LeadingDocCommentOptions = {},
 ): string | undefined {
-  const prev = node.previousNamedSibling;
-  if (!prev) return undefined;
+  const lineCommentPrefixes = opts.lineCommentPrefixes ?? DEFAULT_LINE_DOC_PREFIXES;
+  const wrapperNodeTypes = opts.wrapperNodeTypes ?? [];
 
-  // Block doc comment: /** ... */ or /*! ... */
-  if (prev.text.startsWith('/**') || prev.text.startsWith('/*!')) {
-    return normalizeBlockDocComment(prev.text);
+  const fromNode = (anchor: SyntaxNode): string | undefined => {
+    const prev = anchor.previousNamedSibling;
+    if (!prev) return undefined;
+
+    // Block doc comment: /** ... */ or /*! ... */
+    if (prev.text.startsWith('/**') || prev.text.startsWith('/*!')) {
+      return normalizeBlockDocComment(prev.text);
+    }
+
+    // Run of row-adjacent preceding line doc comments (e.g. `///` or `//`).
+    const matchedPrefix = (text: string): string | undefined =>
+      lineCommentPrefixes.find((prefix) => text.trimStart().startsWith(prefix));
+
+    const lines: string[] = [];
+    let current: SyntaxNode | null = prev;
+    let expectedRow = anchor.startPosition.row - 1;
+    while (current) {
+      const text = current.text;
+      const prefix = matchedPrefix(text);
+      if (prefix === undefined || current.startPosition.row !== expectedRow) break;
+      lines.unshift(text.trimStart().slice(prefix.length));
+      expectedRow = current.startPosition.row - 1;
+      current = current.previousNamedSibling;
+    }
+
+    const joined = lines.join(' ').replace(/\s+/g, ' ').trim();
+    return joined.length > 0 ? joined : undefined;
+  };
+
+  const direct = fromNode(node);
+  if (direct !== undefined) return direct;
+
+  const parent = node.parent;
+  if (parent && wrapperNodeTypes.includes(parent.type)) {
+    return fromNode(parent);
   }
-
-  // Run of row-adjacent preceding line doc comments (e.g. `///` or `//`).
-  const matchedPrefix = (text: string): string | undefined =>
-    lineCommentPrefixes.find((prefix) => text.trimStart().startsWith(prefix));
-
-  const lines: string[] = [];
-  let current: SyntaxNode | null = prev;
-  let expectedRow = node.startPosition.row - 1;
-  while (current) {
-    const text = current.text;
-    const prefix = matchedPrefix(text);
-    if (prefix === undefined || current.startPosition.row !== expectedRow) break;
-    lines.unshift(text.trimStart().slice(prefix.length));
-    expectedRow = current.startPosition.row - 1;
-    current = current.previousNamedSibling;
-  }
-
-  const joined = lines.join(' ').replace(/\s+/g, ' ').trim();
-  return joined.length > 0 ? joined : undefined;
+  return undefined;
 }
 
 /** Node labels that can carry a leading doc comment — callables and type-like
@@ -1037,24 +1066,21 @@ export const DOC_BEARING_LABELS: ReadonlySet<NodeLabel> = new Set<NodeLabel>([
  * reaches the embedding metadata header and becomes semantically searchable.
  *
  * Language-neutral factory (names no language): guards on
- * {@link DOC_BEARING_LABELS}; callers pass the line-comment doc prefixes
- * (defaults to {@link DEFAULT_LINE_DOC_PREFIXES}; Go passes `['//']`, Ruby
- * passes `['#']`).
+ * {@link DOC_BEARING_LABELS}; callers pass per-language doc-comment behavior via
+ * {@link LeadingDocCommentOptions} (line prefixes, export-style wrappers, …)
+ * which is threaded straight through to {@link extractLeadingDocComment}.
  */
-export const createLeadingDocDescriptionExtractor = (opts?: {
-  lineCommentPrefixes?: readonly string[];
-}): ((
+export const createLeadingDocDescriptionExtractor = (
+  opts: LeadingDocCommentOptions = {},
+): ((
   nodeLabel: NodeLabel,
   nodeName: string,
   captureMap: Record<string, SyntaxNode | undefined>,
 ) => string | undefined) => {
-  const lineCommentPrefixes = opts?.lineCommentPrefixes ?? DEFAULT_LINE_DOC_PREFIXES;
   return (nodeLabel, _nodeName, captureMap) => {
     if (!DOC_BEARING_LABELS.has(nodeLabel)) return undefined;
     const definitionNode = getDefinitionNodeFromCaptures(captureMap);
-    return definitionNode
-      ? extractLeadingDocComment(definitionNode, lineCommentPrefixes)
-      : undefined;
+    return definitionNode ? extractLeadingDocComment(definitionNode, opts) : undefined;
   };
 };
 

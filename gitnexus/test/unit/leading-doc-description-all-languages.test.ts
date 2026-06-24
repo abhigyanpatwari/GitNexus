@@ -213,6 +213,60 @@ describe('leading-doc descriptionExtractor — behavior per comment family', () 
   });
 });
 
+describe('leading-doc descriptionExtractor — exported TS/JS decls (issue #2270 review fix)', () => {
+  it('attaches JSDoc to an exported function (JSDoc precedes export_statement)', () => {
+    const d = describeFromProvider(
+      SupportedLanguages.TypeScript,
+      TypeScript.typescript,
+      `/** Exported adder, marker EXPFN. */\nexport function add(a: number) { return a; }`,
+      'function_declaration',
+      'definition.function',
+      'Function',
+      'add',
+    );
+    expect(d).toContain('EXPFN');
+  });
+
+  it('attaches JSDoc to an exported class', () => {
+    const d = describeFromProvider(
+      SupportedLanguages.TypeScript,
+      TypeScript.typescript,
+      `/** Exported widget, marker EXPCLASS. */\nexport class Widget { run() {} }`,
+      'class_declaration',
+      'definition.class',
+      'Class',
+      'Widget',
+    );
+    expect(d).toContain('EXPCLASS');
+  });
+
+  it('attaches JSDoc to an export default function', () => {
+    const d = describeFromProvider(
+      SupportedLanguages.TypeScript,
+      TypeScript.typescript,
+      `/** Default export, marker EXPDEFAULT. */\nexport default function add(a: number) { return a; }`,
+      'function_declaration',
+      'definition.function',
+      'Function',
+      'add',
+    );
+    expect(d).toContain('EXPDEFAULT');
+  });
+
+  it('still attaches JSDoc to a bare (non-exported) function', () => {
+    const d = describeFromProvider(
+      SupportedLanguages.TypeScript,
+      TypeScript.typescript,
+      `/** Bare adder, marker BAREFN. */\nfunction add(a: number) { return a; }`,
+      'function_declaration',
+      'definition.function',
+      'Function',
+      'add',
+    );
+    expect(d).toContain('BAREFN');
+  });
+});
+
 describe('leading-doc descriptionExtractor — line-comment adjacency (issue #2270 review fix)', () => {
   it('does NOT attach a // comment separated from the function by a blank line (Go)', () => {
     const d = describeFromProvider(
