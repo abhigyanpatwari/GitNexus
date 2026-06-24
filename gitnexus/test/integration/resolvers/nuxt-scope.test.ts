@@ -121,6 +121,18 @@ describe('Nuxt/Nitro auto-import scope resolution', () => {
     ).toBeDefined();
   });
 
+  it('suppresses an auto-import shadowed by an explicit unresolved external import', () => {
+    const calls = nuxtCalls();
+    // Guard against a vacuous pass: the feature must have emitted edges elsewhere.
+    expect(calls.length).toBeGreaterThan(0);
+    // pages/external-import.ts does `import { useAuto } from '@vueuse/core'` (an
+    // unresolved external) then calls useAuto(). The explicit import shadows the
+    // Nuxt auto-import, so no nuxt edge is emitted from that file.
+    expect(
+      calls.filter((edge) => edge.sourceFilePath.endsWith('pages/external-import.ts')),
+    ).toHaveLength(0);
+  });
+
   it('suppresses only explicitly imported local names, not every symbol from the same source', () => {
     const calls = nuxtCalls();
 

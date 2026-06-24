@@ -212,7 +212,11 @@ const typescriptScopeResolver: ScopeResolver = {
         explicitImportNamesByFile.set(scope.filePath, names);
       }
       for (const edge of edges) {
-        if (edge.targetFile !== null) names.add(edge.localName);
+        // Record the local name whether or not the import resolved to a file.
+        // An explicit import of a name — even from an unresolved external
+        // package (`import { useAuto } from '@vueuse/core'`) — is authoritative
+        // shadowing intent and must suppress the auto-import for that name.
+        if (edge.localName) names.add(edge.localName);
       }
     }
 
