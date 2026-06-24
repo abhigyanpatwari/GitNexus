@@ -23,6 +23,8 @@ import CPP from 'tree-sitter-cpp';
 import PHP from 'tree-sitter-php';
 import { SupportedLanguages } from '../../src/config/supported-languages.js';
 import { getProvider } from '../../src/core/ingestion/languages/index.js';
+import { DOC_BEARING_LABELS } from '../../src/core/ingestion/utils/ast-helpers.js';
+import { EMBEDDABLE_LABELS } from '../../src/core/embeddings/types.js';
 import type { CaptureMap } from '../../src/core/ingestion/language-provider.js';
 import type { NodeLabel } from 'gitnexus-shared';
 
@@ -60,6 +62,14 @@ const DOCUMENTABLE_LANGUAGES: readonly SupportedLanguages[] = [
   SupportedLanguages.Swift,
   SupportedLanguages.Dart,
 ];
+
+describe('DOC_BEARING_LABELS is bounded to embeddable labels (issue #2270 review fix)', () => {
+  it('every doc-bearing label is in EMBEDDABLE_LABELS so its description is searchable', () => {
+    const embeddable = new Set<string>(EMBEDDABLE_LABELS);
+    const notEmbeddable = [...DOC_BEARING_LABELS].filter((label) => !embeddable.has(label));
+    expect(notEmbeddable).toEqual([]);
+  });
+});
 
 describe('leading-doc descriptionExtractor — registration coverage', () => {
   it.each(DOCUMENTABLE_LANGUAGES)('%s provider registers descriptionExtractor', (language) => {

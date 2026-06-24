@@ -1040,7 +1040,16 @@ export function extractLeadingDocComment(
 /** Node labels that can carry a leading doc comment — callables and type-like
  *  declarations. Field/property/variable/const doc is intentionally excluded
  *  (issue #2270 scopes this to method/type documentation). Language-neutral:
- *  a label a given grammar never emits simply never matches. */
+ *  a label a given grammar never emits simply never matches.
+ *
+ *  Bounded to labels that are also in `embeddings/types.ts` `EMBEDDABLE_LABELS`:
+ *  the description is only useful once it reaches the embedding metadata header,
+ *  and the embedding pipeline only queries embeddable labels. Extracting docs
+ *  for a non-embeddable label is a wasted write that never becomes searchable.
+ *  A subset invariant in the unit tests guards against drift. Making currently-
+ *  non-embeddable doc-bearing labels (Module, Delegate, Annotation, and C++
+ *  `Template`) searchable is tracked as a follow-up — it needs an embedding-
+ *  pipeline/schema change beyond this fix. */
 export const DOC_BEARING_LABELS: ReadonlySet<NodeLabel> = new Set<NodeLabel>([
   'Function',
   'Method',
@@ -1053,17 +1062,15 @@ export const DOC_BEARING_LABELS: ReadonlySet<NodeLabel> = new Set<NodeLabel>([
   'Record',
   'Union',
   'Namespace',
-  'Module',
   'TypeAlias',
-  'Delegate',
-  'Annotation',
   'Macro',
 ]);
 
 /**
  * Build a `LanguageProvider.descriptionExtractor` that surfaces a definition's
- * leading doc comment as its `description` (issue #2270), so the doc text
- * reaches the embedding metadata header and becomes semantically searchable.
+ * leading doc comment as its `description` (issue #2270). For labels in
+ * {@link DOC_BEARING_LABELS} (which is bounded to embeddable labels) the text
+ * then reaches the embedding metadata header and becomes semantically searchable.
  *
  * Language-neutral factory (names no language): guards on
  * {@link DOC_BEARING_LABELS}; callers pass per-language doc-comment behavior via
