@@ -39,6 +39,18 @@ import {
  *   @node  → enclosing declaration (class_declaration | method_declaration)
  *   @value → the string-literal argument
  *   @key   → the named-argument member key (absent for positional form)
+ *
+ * Method-level routes accept both the bare string form `@GetMapping("/x")` and
+ * the array form `@GetMapping({"/a","/b"})` (positional or `path =`/`value =`):
+ * a multi-element array yields one match per element, so the Phase 2 loop emits
+ * one route per path with no special-casing. This mirrors the group-layer
+ * `java.ts` query so the two Spring extractors stay in parity (#2138 follow-up;
+ * the divergence here was the root of the #2265 array-form gap). The class-level
+ * `@RequestMapping` branches also match the array form, but only to *detect* it:
+ * an array-form class prefix can't be resolved to a single string, so Phase 2
+ * suppresses that class's method-level array routes rather than emit them with a
+ * dropped prefix (a wrong route). Full class-array cross-product support is left
+ * to a follow-up (#2280).
  */
 const ROUTE_ANNOTATION_QUERY = new Parser.Query(
   Java,
@@ -48,7 +60,9 @@ const ROUTE_ANNOTATION_QUERY = new Parser.Query(
       (modifiers
         (annotation
           name: (identifier) @ann
-          arguments: (annotation_argument_list (string_literal) @value)))) @node
+          arguments: (annotation_argument_list
+            [(string_literal) @value
+             (element_value_array_initializer (string_literal) @value)])))) @node
     (class_declaration
       (modifiers
         (annotation
@@ -56,12 +70,15 @@ const ROUTE_ANNOTATION_QUERY = new Parser.Query(
           arguments: (annotation_argument_list
             (element_value_pair
               key: (identifier) @key
-              value: (string_literal) @value))))) @node
+              value: [(string_literal) @value
+                      (element_value_array_initializer (string_literal) @value)]))))) @node
     (method_declaration
       (modifiers
         (annotation
           name: (identifier) @ann
-          arguments: (annotation_argument_list (string_literal) @value)))) @node
+          arguments: (annotation_argument_list
+            [(string_literal) @value
+             (element_value_array_initializer (string_literal) @value)])))) @node
     (method_declaration
       (modifiers
         (annotation
@@ -69,7 +86,8 @@ const ROUTE_ANNOTATION_QUERY = new Parser.Query(
           arguments: (annotation_argument_list
             (element_value_pair
               key: (identifier) @key
-              value: (string_literal) @value))))) @node
+              value: [(string_literal) @value
+                      (element_value_array_initializer (string_literal) @value)]))))) @node
   ]
 `,
 );
@@ -93,8 +111,15 @@ export function extractSpringRoutes(
 ): ExtractedDecoratorRoute[] {
   const matches = ROUTE_ANNOTATION_QUERY.matches(tree.rootNode);
 
-  // Phase 1: collect class-level @RequestMapping prefixes keyed by node id
+  // Phase 1: collect class-level @RequestMapping prefixes keyed by node id.
+  // A scalar prefix (`@RequestMapping("/base")`) is stored in prefixByClassId.
+  // A class whose @RequestMapping uses the array form (`@RequestMapping({...})`)
+  // is instead recorded in classesWithArrayPrefix: there is no single prefix to
+  // store, and Phase 2 uses this to suppress that class's method-level array
+  // routes rather than emit them unprefixed (a wrong route — see #2280). Full
+  // class-array cross-product support is out of scope here.
   const prefixByClassId = new Map<number, string>();
+  const classesWithArrayPrefix = new Set<number>();
 
   for (const match of matches) {
     const caps: Record<string, Parser.SyntaxNode> = {};
@@ -109,6 +134,10 @@ export function extractSpringRoutes(
 
     if (node.type === 'class_declaration' && annNode.text === 'RequestMapping') {
       if (!isRouteMemberKey(keyNode)) continue;
+      if (valueNode.parent?.type === 'element_value_array_initializer') {
+        classesWithArrayPrefix.add(node.id);
+        continue;
+      }
       const prefix = unquoteSpringLiteral(valueNode.text);
       if (prefix !== null) prefixByClassId.set(node.id, prefix);
     }
@@ -138,6 +167,20 @@ export function extractSpringRoutes(
     const routePath = unquoteSpringLiteral(valueNode.text);
     if (routePath === null) continue;
     const enclosingClass = findEnclosingClass(node);
+
+    // Suppress a method-level *array-form* route nested under a class-level
+    // array-form @RequestMapping. The class prefix is one of several values that
+    // cannot be resolved to a single string here, so emitting the route would
+    // drop the prefix and yield a wrong unprefixed Route (a false signal, worse
+    // than a missing one). Skipping keeps ingestion a strict subset of the group
+    // scan — safe under routeCoverage:'partial'. Full class-array cross-product
+    // support is tracked in #2280. (Scalar method paths under an array class
+    // prefix are left unchanged: that pre-existing divergence is out of scope.)
+    const isArrayElement = valueNode.parent?.type === 'element_value_array_initializer';
+    if (isArrayElement && enclosingClass && classesWithArrayPrefix.has(enclosingClass.id)) {
+      continue;
+    }
+
     const classPrefix = enclosingClass ? (prefixByClassId.get(enclosingClass.id) ?? '') : '';
     // `node` is the annotated `method_declaration`; its name field is the
     // handler method name (resolved to a symbol UID later by the routes phase).
