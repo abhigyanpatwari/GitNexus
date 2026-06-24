@@ -132,13 +132,22 @@ export function getNuxtAutoImportEntry(
   return config.clientByLocalName.get(localName);
 }
 
+/**
+ * Directories whose files run in the Nitro server context and so receive
+ * `server/utils` auto-imports without an explicit import: API routes, server
+ * routes, middleware, plugins, and (Nitro 2.6+) tasks.
+ */
+const NITRO_RUNTIME_DIR_PREFIXES = [
+  'server/api/',
+  'server/routes/',
+  'server/middleware/',
+  'server/plugins/',
+  'server/tasks/',
+] as const;
+
 export function isNitroServerRuntimeFile(filePath: string): boolean {
   const normalized = filePath.replace(/\\/g, '/');
-  return (
-    normalized.startsWith('server/api/') ||
-    normalized.startsWith('server/routes/') ||
-    normalized.startsWith('server/middleware/')
-  );
+  return NITRO_RUNTIME_DIR_PREFIXES.some((prefix) => normalized.startsWith(prefix));
 }
 
 // ---- .nuxt/imports.d.ts -----------------------------------------------------

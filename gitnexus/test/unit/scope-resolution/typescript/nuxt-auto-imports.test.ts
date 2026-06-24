@@ -157,6 +157,8 @@ describe('isNitroServerRuntimeFile', () => {
     expect(isNitroServerRuntimeFile('server/api/users.ts')).toBe(true);
     expect(isNitroServerRuntimeFile('server/routes/feed.ts')).toBe(true);
     expect(isNitroServerRuntimeFile('server/middleware/auth.ts')).toBe(true);
+    expect(isNitroServerRuntimeFile('server/plugins/init.ts')).toBe(true);
+    expect(isNitroServerRuntimeFile('server/tasks/cleanup.ts')).toBe(true);
     expect(isNitroServerRuntimeFile('server/utils/auth.ts')).toBe(false);
     expect(isNitroServerRuntimeFile('pages/index.ts')).toBe(false);
   });
