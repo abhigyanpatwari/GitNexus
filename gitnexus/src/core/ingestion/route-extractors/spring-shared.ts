@@ -60,6 +60,24 @@ export function findEnclosingClass(node: Parser.SyntaxNode): Parser.SyntaxNode |
 }
 
 /**
+ * Find the nearest enclosing Java type declaration (class OR interface) for a
+ * node, reporting its kind. Used by the ingestion route extractor to tell an
+ * interface-declared `@*Mapping` (handled by the cross-file inheritance pass,
+ * #2288) apart from a concrete class route, and by the type collector.
+ */
+export function findEnclosingType(
+  node: Parser.SyntaxNode,
+): { node: Parser.SyntaxNode; kind: 'class' | 'interface' } | null {
+  let cur: Parser.SyntaxNode | null = node.parent;
+  while (cur) {
+    if (cur.type === 'class_declaration') return { node: cur, kind: 'class' };
+    if (cur.type === 'interface_declaration') return { node: cur, kind: 'interface' };
+    cur = cur.parent;
+  }
+  return null;
+}
+
+/**
  * Strip enclosing quotes from a tree-sitter string-literal node's text.
  * Handles single / double / template (backtick) quotes and triple-quoted
  * strings. Mirrors the safer semantics of the group layer's `unquoteLiteral`:

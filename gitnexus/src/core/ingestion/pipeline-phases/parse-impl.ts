@@ -80,6 +80,10 @@ import type {
   ExtractedRouterInclude,
   ExtractedRouterModuleAlias,
 } from '../route-extractors/fastapi-router-bindings.js';
+import {
+  resolveInheritedSpringRoutes,
+  type SharedSpringType,
+} from '../route-extractors/spring-shared.js';
 import type { KnowledgeGraph } from '../../graph/types.js';
 import type { PipelineOptions } from '../pipeline.js';
 import fs from 'node:fs';
@@ -620,6 +624,7 @@ export async function runChunkedParseAndResolve(
   const allRouterIncludes: ExtractedRouterInclude[] = [];
   const allRouterImports: ExtractedRouterImport[] = [];
   const allRouterModuleAliases: ExtractedRouterModuleAlias[] = [];
+  const allSpringTypes: SharedSpringType[] = [];
   const allToolDefs: ExtractedToolDef[] = [];
   const allORMQueries: ExtractedORMQuery[] = [];
   // Aggregated per-file ParsedFile artifacts produced by workers' calls
@@ -776,6 +781,9 @@ export async function runChunkedParseAndResolve(
         }
         if (chunkWorkerData.routerModuleAliases?.length) {
           for (const item of chunkWorkerData.routerModuleAliases) allRouterModuleAliases.push(item);
+        }
+        if (chunkWorkerData.springTypes?.length) {
+          for (const item of chunkWorkerData.springTypes) allSpringTypes.push(item);
         }
         if (chunkWorkerData.toolDefs?.length) {
           for (const item of chunkWorkerData.toolDefs) allToolDefs.push(item);
@@ -1280,6 +1288,26 @@ export async function runChunkedParseAndResolve(
       }
       allDecoratorRoutes.length = 0;
       for (const dr of expanded) allDecoratorRoutes.push(dr);
+    }
+  }
+
+  // Cross-file Spring interface-inheritance pass (#2288): a concrete
+  // `@RestController` inherits the `@*Mapping`s declared on the interfaces it
+  // implements. The per-file `SharedSpringType` views collected by the Java
+  // provider's `extractRouteInheritanceTypes` hook are resolved here, project-
+  // wide, into decorator routes attributed to the implementing controller (the
+  // interface's own per-file routes were suppressed at extraction). Mirrors the
+  // group layer via the shared `resolveInheritedSpringRoutes` so both agree.
+  if (allSpringTypes.length > 0) {
+    for (const inherited of resolveInheritedSpringRoutes(allSpringTypes)) {
+      allDecoratorRoutes.push({
+        filePath: inherited.filePath,
+        routePath: inherited.path,
+        httpMethod: inherited.method,
+        decoratorName: 'inherited-mapping',
+        lineNumber: 0,
+        handlerName: inherited.methodName,
+      });
     }
   }
 
