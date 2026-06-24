@@ -168,4 +168,3 @@ export function scanSpringInheritanceProject(types: SharedSpringType[]): HttpFil
     detections,
   }));
 }
-
