@@ -134,17 +134,27 @@ describe('GITNEXUS_TOOLS', () => {
     expect(impactTool.inputSchema.required).toContain('direction');
   });
 
-  it('impact tool advertises the PDG-only `line` statement anchor (integer, min 1, not required)', () => {
+  it('impact tool advertises the PDG-only `line` statement anchor (integer, min 0, not required)', () => {
     const impactTool = GITNEXUS_TOOLS.find((t) => t.name === 'impact')!;
     const line = (impactTool.inputSchema.properties as Record<string, any>).line;
     expect(line).toBeDefined();
     expect(line.type).toBe('integer');
-    expect(line.minimum).toBe(1);
+    // minimum is 0 (not 1) so strict adapters that materialize an omitted
+    // optional numeric field as `0` are not rejected client-side (#2279); a
+    // positive line is enforced backend-side for a real pdg anchor.
+    expect(line.minimum).toBe(0);
     // Statement-anchored slice is optional — never required.
     expect(impactTool.inputSchema.required).not.toContain('line');
-    // The description names the mode:'pdg' statement-anchor semantics.
+    // The description names the mode:'pdg' statement-anchor semantics and the
+    // literal-0 compatibility convention — without contradicting the top-level
+    // "omit line for whole-symbol pdg" contract (#2283).
     expect(line.description).toMatch(/statement anchor/i);
     expect(line.description).toMatch(/pdg/i);
+    expect(line.description).toMatch(/literal 0 is tolerated only .* on the callgraph path/i);
+    expect(line.description).toMatch(/omit line for whole-symbol pdg/i);
+    // Must NOT claim pdg "requires a positive line" — that contradicts the valid
+    // no-line whole-symbol pdg call documented in the top-level description.
+    expect(line.description).not.toMatch(/requires a positive line/i);
     // The top-level description mentions the statement-anchored slice and result shape.
     expect(impactTool.description).toMatch(/statement-anchored|STATEMENT-ANCHORED/);
     expect(impactTool.description).toContain('affectedStatements');
