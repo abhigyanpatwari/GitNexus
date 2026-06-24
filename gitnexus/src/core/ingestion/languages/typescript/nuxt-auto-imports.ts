@@ -187,7 +187,13 @@ async function collectImportsDts(
 
     if (!isProjectLocalPath(source)) continue;
 
-    const resolvedFile = await resolveExtension(path.resolve(nuxtDir, source));
+    // Containment guard: a crafted source (`from '../../../../etc/passwd'`)
+    // passes the relative-path check but escapes the repo. Skip anything that
+    // resolves outside repoRoot before touching the filesystem.
+    const resolvedBase = path.resolve(nuxtDir, source);
+    if (!isWithinRepo(repoRoot, resolvedBase)) continue;
+
+    const resolvedFile = await resolveExtension(resolvedBase);
     if (resolvedFile === null) continue;
 
     const sourceFile = toRepoPosix(repoRoot, resolvedFile);
@@ -250,6 +256,12 @@ function isProjectLocalPath(source: string): boolean {
   if (!source.startsWith('./') && !source.startsWith('../')) return false;
   if (source.includes('node_modules')) return false;
   return true;
+}
+
+/** True when `absPath` is `repoRoot` itself or lives beneath it. */
+function isWithinRepo(repoRoot: string, absPath: string): boolean {
+  const root = path.resolve(repoRoot);
+  return absPath === root || absPath.startsWith(root + path.sep);
 }
 
 async function resolveExtension(base: string): Promise<string | null> {

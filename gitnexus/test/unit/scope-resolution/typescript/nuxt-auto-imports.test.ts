@@ -150,6 +150,39 @@ describe('loadNuxtAutoImports', () => {
       'second',
     ]);
   });
+
+  it('ignores imports.d.ts sources that resolve outside the repo root', async () => {
+    const root = makeRepo();
+    // A real file in its own temp dir OUTSIDE the repo, reachable from .nuxt only
+    // by directory traversal. Its own mkdtemp dir is tracked for cleanup.
+    const outsideDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-nuxt-escape-'));
+    tempRoots.push(outsideDir);
+    const outside = path.join(outsideDir, 'escape.ts');
+    fs.writeFileSync(outside, 'export function escape() {}', 'utf8');
+
+    // Relative traversal from root/.nuxt to the out-of-repo file (extensionless).
+    const traversal = path
+      .relative(path.join(root, '.nuxt'), outside)
+      .replace(/\\/g, '/')
+      .replace(/\.ts$/, '');
+    writeFile(
+      root,
+      '.nuxt/imports.d.ts',
+      [
+        `export { escape } from '${traversal}'`,
+        "export { useGood } from '../composables/good'",
+      ].join('\n'),
+    );
+    writeFile(root, 'composables/good.ts', 'export function useGood() {}');
+
+    const config = await loadNuxtAutoImports(root);
+
+    // The traversal source is skipped (no entry, no throw); the in-repo one resolves.
+    expect(config!.clientByLocalName.has('escape')).toBe(false);
+    expect(config!.clientByLocalName.get('useGood')).toMatchObject({
+      sourceFile: 'composables/good.ts',
+    });
+  });
 });
 
 describe('isNitroServerRuntimeFile', () => {
