@@ -10,6 +10,8 @@ import {
   METHOD_ANNOTATION_TO_HTTP,
   isRouteMemberKey,
   findEnclosingClass,
+  joinPath,
+  type SharedSpringType,
 } from '../../../ingestion/route-extractors/spring-shared.js';
 import {
   REST_TEMPLATE_TO_HTTP,
@@ -18,9 +20,7 @@ import {
   EXCHANGE_ANNOTATION_TO_HTTP,
   parseRequestLine,
   pushPrefix,
-  joinPath,
   scanSpringInheritanceProject,
-  type SharedSpringType,
   OPENFEIGN_FRAMEWORK,
   HTTP_INTERFACE_FRAMEWORK,
   FEIGN_CONFIDENCE,

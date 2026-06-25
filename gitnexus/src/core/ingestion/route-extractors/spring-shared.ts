@@ -179,6 +179,16 @@ interface InheritedSpringRoute {
 }
 
 /**
+ * An interface route with its own class prefix already baked in. `ownerPrefix`
+ * records that prefix so the controller side avoids doubling it (#2057).
+ */
+interface IntermediateRoute {
+  method: string;
+  path: string;
+  ownerPrefix: string;
+}
+
+/**
  * Resolve interface-based-controller provider routes (#1743): a concrete
  * `@RestController`/`@Controller` class inherits the `@(Get|...)Mapping` routes
  * declared on the interface it implements. Pure and language-agnostic — shared
@@ -192,10 +202,8 @@ interface InheritedSpringRoute {
  * `(method, path)` results per controller method are de-duped.
  */
 export function resolveInheritedSpringRoutes(types: SharedSpringType[]): InheritedSpringRoute[] {
-  // interface name → (method name → routes). `ownerPrefix` records the
-  // interface's own class prefix so the controller side avoids doubling it
-  // (#2057). `null` marks an ambiguous (duplicated) interface name.
-  type IntermediateRoute = { method: string; path: string; ownerPrefix: string };
+  // interface name → (method name → routes). `null` marks an ambiguous
+  // (duplicated) interface name. `IntermediateRoute` is declared at module scope.
   const interfaceRoutes = new Map<string, Map<string, IntermediateRoute[]> | null>();
   for (const type of types) {
     if (type.kind !== 'interface') continue;

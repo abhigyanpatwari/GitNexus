@@ -17,19 +17,9 @@
 
 import type { HttpDetection, HttpFileDetections } from './types.js';
 import {
-  joinPath,
-  joinInheritedSpringPath,
   resolveInheritedSpringRoutes,
   type SharedSpringType,
 } from '../../../ingestion/route-extractors/spring-shared.js';
-
-// `joinPath` / `joinInheritedSpringPath` / `SharedSpringType` now live in the
-// lower shared layer (`ingestion/route-extractors/spring-shared.ts`) so the
-// ingestion route extractor and the group plugins share one implementation.
-// Re-exported here so this module's existing importers (java.ts / kotlin.ts)
-// keep importing them from `spring-consumer-shared.ts` unchanged.
-export { joinPath, joinInheritedSpringPath };
-export type { SharedSpringType };
 
 /**
  * RestTemplate method-name → HTTP verb. Source-scan only: the receiver must be

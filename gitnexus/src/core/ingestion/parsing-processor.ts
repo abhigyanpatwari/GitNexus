@@ -124,7 +124,7 @@ export const mergeChunkResults = (
     for (const item of result.routerIncludes ?? []) allRouterIncludes.push(item);
     for (const item of result.routerImports ?? []) allRouterImports.push(item);
     for (const item of result.routerModuleAliases ?? []) allRouterModuleAliases.push(item);
-    if (result.springTypes) for (const item of result.springTypes) allSpringTypes.push(item);
+    for (const item of result.springTypes ?? []) allSpringTypes.push(item);
     for (const item of result.toolDefs) allToolDefs.push(item);
     if (result.ormQueries) for (const item of result.ormQueries) allORMQueries.push(item);
     if (result.fileScopeBindings)
