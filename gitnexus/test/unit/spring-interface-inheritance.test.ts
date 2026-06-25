@@ -217,7 +217,11 @@ public class C implements Api {
 `,
       },
     ];
-    expect(ingestionInheritedKeys(files)).toEqual(groupInheritedKeys(files));
+    const group = groupInheritedKeys(files);
+    // Pin the expected set — this is the array-form fixture (the #2265 root),
+    // so the parity assertion must not be vacuously true on two empty sets.
+    expect(group).toEqual(new Set(['POST /v1/api/a', 'POST /v1/api/b', 'GET /v1/api/list']));
+    expect(ingestionInheritedKeys(files)).toEqual(group);
   });
 
   it('agrees on fully-qualified annotation names', () => {

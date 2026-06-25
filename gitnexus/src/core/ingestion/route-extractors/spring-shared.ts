@@ -169,7 +169,7 @@ export interface SharedSpringType {
 }
 
 /** One provider route a concrete controller inherits from an interface. */
-export interface InheritedSpringRoute {
+interface InheritedSpringRoute {
   /** File of the implementing controller (where the route should be attributed). */
   filePath: string;
   /** Name of the controller method that inherits the route. */
