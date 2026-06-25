@@ -25,8 +25,9 @@ import type { ExtractedDecoratorRoute } from '../workers/parse-worker.js';
 import {
   METHOD_ANNOTATION_TO_HTTP,
   isRouteMemberKey,
-  findEnclosingClass,
+  findEnclosingType,
   unquoteSpringLiteral,
+  type SharedSpringType,
 } from './spring-shared.js';
 
 /**
@@ -166,7 +167,15 @@ export function extractSpringRoutes(
 
     const routePath = unquoteSpringLiteral(valueNode.text);
     if (routePath === null) continue;
-    const enclosingClass = findEnclosingClass(node);
+    const enclosingType = findEnclosingType(node);
+
+    // Interface-declared `@*Mapping`s are not concrete routes on their own — the
+    // implementing controller inherits them. Skip here; the cross-file
+    // inheritance pass (#2288) re-emits them attributed to the controller, with
+    // both the interface's and the controller's class prefixes resolved. Emitting
+    // the interface route directly would be wrong (unprefixed, wrong owner).
+    if (enclosingType?.kind === 'interface') continue;
+    const enclosingClass = enclosingType?.kind === 'class' ? enclosingType.node : null;
 
     // Suppress a method-level *array-form* route nested under a class-level
     // array-form @RequestMapping. The class prefix is one of several values that
@@ -198,4 +207,168 @@ export function extractSpringRoutes(
   }
 
   return routes;
+}
+
+/**
+ * Tree-sitter query capturing every Java type declaration (class + interface),
+ * used by `extractSpringTypes` to build the project-wide `SharedSpringType`
+ * view the cross-file interface-inheritance pass consumes (#2288).
+ */
+const TYPE_DECLARATION_QUERY = new Parser.Query(
+  Java,
+  `[(class_declaration) @type (interface_declaration) @type]`,
+);
+
+/** Direct annotations on a type/method declaration (reads its `modifiers` child). */
+function declarationAnnotations(node: Parser.SyntaxNode): Parser.SyntaxNode[] {
+  // `modifiers` is a NAMED CHILD of the declaration (not a named field) in
+  // tree-sitter-java — matching the group layer's `hasAnnotation`.
+  const modifiers = node.namedChildren.find((c) => c.type === 'modifiers');
+  if (!modifiers) return [];
+  return modifiers.namedChildren.filter(
+    (c) => c.type === 'annotation' || c.type === 'marker_annotation',
+  );
+}
+
+const annotationName = (ann: Parser.SyntaxNode): string | undefined => {
+  // Trailing segment of a possibly fully-qualified annotation name
+  // (`org.springframework.web.bind.annotation.GetMapping` → `GetMapping`), so a
+  // FQN annotation is classified the same as its simple form — matching the
+  // group layer's `simpleName` normalization. A simple name maps to itself.
+  const text = ann.childForFieldName('name')?.text;
+  return text?.split('.').pop() ?? text;
+};
+
+/**
+ * Collect the route path(s) carried by an annotation's argument list, honoring
+ * both positional and `path =`/`value =` named arguments and both the bare
+ * string and array forms. Non-route named args (`consumes`, `produces`, …) are
+ * dropped via `isRouteMemberKey`. Returns one entry per string element.
+ */
+function annotationRoutePaths(ann: Parser.SyntaxNode): string[] {
+  const args = ann.childForFieldName('arguments');
+  if (!args) return [];
+  const out: string[] = [];
+  const pushLiteral = (lit: Parser.SyntaxNode): void => {
+    const v = unquoteSpringLiteral(lit.text);
+    if (v !== null) out.push(v);
+  };
+  const pushFromValue = (valueNode: Parser.SyntaxNode): void => {
+    if (valueNode.type === 'string_literal') pushLiteral(valueNode);
+    else if (valueNode.type === 'element_value_array_initializer') {
+      for (const el of valueNode.namedChildren) if (el.type === 'string_literal') pushLiteral(el);
+    }
+  };
+  for (const child of args.namedChildren) {
+    if (child.type === 'string_literal' || child.type === 'element_value_array_initializer') {
+      pushFromValue(child); // positional
+    } else if (child.type === 'element_value_pair') {
+      const key = child.childForFieldName('key');
+      if (!isRouteMemberKey(key ?? undefined)) continue;
+      const value = child.childForFieldName('value');
+      if (value) pushFromValue(value);
+    }
+  }
+  return out;
+}
+
+/** Class-level `@RequestMapping` prefixes for a type (array-aware; may be []). */
+function typeClassPrefixes(typeNode: Parser.SyntaxNode): string[] {
+  const prefixes: string[] = [];
+  for (const ann of declarationAnnotations(typeNode)) {
+    if (annotationName(ann) === 'RequestMapping') prefixes.push(...annotationRoutePaths(ann));
+  }
+  return prefixes;
+}
+
+/** The simple names of the interfaces a class declares via `implements`. */
+function implementedInterfaceNames(typeNode: Parser.SyntaxNode): string[] {
+  const interfacesNode = typeNode.childForFieldName('interfaces');
+  if (!interfacesNode) return [];
+  const out: string[] = [];
+  const visit = (node: Parser.SyntaxNode): void => {
+    if (node.type === 'type_identifier' || node.type === 'scoped_type_identifier') {
+      out.push(node.text.split('.').pop() ?? node.text);
+      return;
+    }
+    for (const child of node.namedChildren) visit(child);
+  };
+  visit(interfacesNode);
+  return out;
+}
+
+/** Direct `method_declaration` children of a type (not methods of nested types). */
+function directMethods(typeNode: Parser.SyntaxNode): Parser.SyntaxNode[] {
+  const out: Parser.SyntaxNode[] = [];
+  const visit = (node: Parser.SyntaxNode): void => {
+    for (const child of node.namedChildren) {
+      if (child.type === 'method_declaration') {
+        out.push(child);
+        continue;
+      }
+      // Don't descend into a nested type — its methods aren't this type's.
+      if (
+        child !== typeNode &&
+        (child.type === 'class_declaration' || child.type === 'interface_declaration')
+      ) {
+        continue;
+      }
+      visit(child);
+    }
+  };
+  visit(typeNode);
+  return out;
+}
+
+/**
+ * Build the project-wide `SharedSpringType` view for one Java file: every class
+ * and interface with its class prefixes, implemented interfaces, controller
+ * flag, and per-method route annotations. The cross-file inheritance pass
+ * (#2288) feeds these into the shared `resolveInheritedSpringRoutes` so a
+ * concrete controller inherits the `@*Mapping`s declared on its interfaces.
+ *
+ * This is the ingestion counterpart of the group layer's `collectSpringTypes`
+ * (`group/extractors/http-patterns/java.ts`); both produce the same neutral
+ * shape so the two layers resolve inheritance identically (#2078 parity).
+ */
+export function extractSpringTypes(tree: Parser.Tree, filePath: string): SharedSpringType[] {
+  const out: SharedSpringType[] = [];
+  for (const match of TYPE_DECLARATION_QUERY.matches(tree.rootNode)) {
+    const typeNode = match.captures.find((c) => c.name === 'type')?.node;
+    if (!typeNode) continue;
+    const name = typeNode.childForFieldName('name')?.text;
+    if (!name) continue;
+    const kind = typeNode.type === 'interface_declaration' ? 'interface' : 'class';
+
+    const annNames = declarationAnnotations(typeNode).map(annotationName);
+    const isController =
+      kind === 'class' && (annNames.includes('RestController') || annNames.includes('Controller'));
+
+    const methods = directMethods(typeNode)
+      .map((methodNode) => {
+        const methodName = methodNode.childForFieldName('name')?.text;
+        if (!methodName) return null;
+        const routes: Array<{ method: string; path: string }> = [];
+        for (const ann of declarationAnnotations(methodNode)) {
+          const verb = METHOD_ANNOTATION_TO_HTTP[annotationName(ann) ?? ''];
+          if (!verb) continue;
+          for (const path of annotationRoutePaths(ann)) routes.push({ method: verb, path });
+        }
+        return { name: methodName, routes };
+      })
+      .filter(
+        (m): m is { name: string; routes: Array<{ method: string; path: string }> } => m !== null,
+      );
+
+    out.push({
+      filePath,
+      kind,
+      name,
+      classPrefixes: typeClassPrefixes(typeNode),
+      implementedInterfaces: kind === 'class' ? implementedInterfaceNames(typeNode) : [],
+      isController,
+      methods,
+    });
+  }
+  return out;
 }

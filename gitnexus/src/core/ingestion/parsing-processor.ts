@@ -26,6 +26,7 @@ import type {
   ExtractedRouterInclude,
   ExtractedRouterModuleAlias,
 } from './route-extractors/fastapi-router-bindings.js';
+import type { SharedSpringType } from './route-extractors/spring-shared.js';
 
 export type FileProgressCallback = (current: number, total: number, filePath: string) => void;
 
@@ -39,6 +40,8 @@ export interface WorkerExtractedData {
   routerModuleAliases: ExtractedRouterModuleAlias[];
   toolDefs: ExtractedToolDef[];
   ormQueries: ExtractedORMQuery[];
+  /** Project-wide Spring class/interface views for the #2288 inheritance pass. */
+  springTypes: SharedSpringType[];
   fileScopeBindings: FileScopeBindings[];
   /**
    * Per-file `ParsedFile` artifacts from the new scope-based resolution
@@ -78,6 +81,7 @@ export const mergeChunkResults = (
   const allRouterIncludes: ExtractedRouterInclude[] = [];
   const allRouterImports: ExtractedRouterImport[] = [];
   const allRouterModuleAliases: ExtractedRouterModuleAlias[] = [];
+  const allSpringTypes: SharedSpringType[] = [];
   const allToolDefs: ExtractedToolDef[] = [];
   const allORMQueries: ExtractedORMQuery[] = [];
   const fileScopeBindingsByFile: FileScopeBindings[] = [];
@@ -120,6 +124,7 @@ export const mergeChunkResults = (
     for (const item of result.routerIncludes ?? []) allRouterIncludes.push(item);
     for (const item of result.routerImports ?? []) allRouterImports.push(item);
     for (const item of result.routerModuleAliases ?? []) allRouterModuleAliases.push(item);
+    for (const item of result.springTypes ?? []) allSpringTypes.push(item);
     for (const item of result.toolDefs) allToolDefs.push(item);
     if (result.ormQueries) for (const item of result.ormQueries) allORMQueries.push(item);
     if (result.fileScopeBindings)
@@ -137,6 +142,7 @@ export const mergeChunkResults = (
     routerModuleAliases: allRouterModuleAliases,
     toolDefs: allToolDefs,
     ormQueries: allORMQueries,
+    springTypes: allSpringTypes,
     fileScopeBindings: fileScopeBindingsByFile,
     parsedFiles: allParsedFiles,
   };
