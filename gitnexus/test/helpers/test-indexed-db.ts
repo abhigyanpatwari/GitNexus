@@ -74,12 +74,15 @@ export function withTestLbugDB(
   // init on Windows CI regularly exceeds 30s due to native resource setup.
   const timeout = options?.timeout ?? 120_000;
 
-  // Suites that seed FTS indexes need the optional FTS extension. It is not
-  // guaranteed on every machine (e.g. the macOS platform-sensitive CI runner,
-  // where it is neither pre-installed nor installable). Track availability so
-  // setup can skip FTS seeding instead of throwing, and so every test in the
-  // suite is skipped rather than failing against a missing index. (PR #1161.)
+  // Suites that seed FTS indexes need the optional FTS extension. On a dev
+  // machine it may be neither pre-installed nor installable (offline), so we
+  // track availability and skip the suite rather than fail against a missing
+  // index (PR #1161). In CI this graceful skip is dangerous: an FTS-dependent
+  // integration suite would silently vanish while the job stays green. When
+  // GITNEXUS_REQUIRE_FTS=1 (set by the CI test jobs), an unavailable extension
+  // is a HARD FAILURE so these tests can never silently stop protecting.
   const ftsRequired = !!options?.ftsIndexes?.length;
+  const ftsMustBeAvailable = process.env.GITNEXUS_REQUIRE_FTS === '1';
   let ftsAvailable = true;
   let ftsSkipWarned = false;
 
@@ -97,11 +100,21 @@ export function withTestLbugDB(
     // 1b. Probe the FTS extension for suites that need it, mirroring the
     //     analyze write path (`auto`: LOAD-first, then one bounded INSTALL).
     //     When it still cannot load, the suite is skipped (see beforeEach)
-    //     and FTS seeding below is bypassed so setup never throws.
+    //     and FTS seeding below is bypassed so setup never throws — UNLESS
+    //     GITNEXUS_REQUIRE_FTS=1, in which case CI fails loudly instead of
+    //     letting an FTS-dependent integration suite silently disappear.
     if (ftsRequired) {
       ftsAvailable = await adapter.loadFTSExtension(undefined, {
         policy: resolveAnalyzeInstallPolicy(),
       });
+      if (!ftsAvailable && ftsMustBeAvailable) {
+        throw new Error(
+          `[withTestLbugDB(${prefix})] FTS extension is required (GITNEXUS_REQUIRE_FTS=1) ` +
+            'but could not be loaded or installed. FTS-dependent integration tests must not ' +
+            'be silently skipped in CI — install/repair the LadybugDB FTS extension ' +
+            '(see `gitnexus doctor`) or unset GITNEXUS_REQUIRE_FTS for offline/local runs.',
+        );
+      }
     }
 
     // 2. Drop stale FTS indexes from previous test file
