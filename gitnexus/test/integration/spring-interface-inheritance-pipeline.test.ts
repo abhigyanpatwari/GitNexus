@@ -55,10 +55,10 @@ describe('Spring interface-inheritance route ingestion pipeline (#2288)', () => 
     return out.sort();
   }
 
-  it('emits Route nodes for the inherited interface routes, with the interface prefix joined', () => {
-    const names = routeNames();
-    expect(names).toContain('/orders/list');
-    expect(names).toContain('/orders/create');
+  it('emits exactly the two inherited Route nodes, with the interface prefix joined', () => {
+    // Full set-equality (not toContain) so a spurious extra Route node — e.g. a
+    // leaked unprefixed interface route — would fail this assertion.
+    expect(new Set(routeNames())).toEqual(new Set(['/orders/create', '/orders/list']));
   });
 
   it('attributes the inherited Route handler to the controller method', () => {

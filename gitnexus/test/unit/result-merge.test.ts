@@ -58,6 +58,28 @@ describe('mergeResult', () => {
     expect(target.skippedPaths).toBeUndefined();
   });
 
+  it('unions springTypes across sub-batch results, initializing the target when absent (#2288)', () => {
+    const mkType = (name: string, filePath: string) => ({
+      filePath,
+      kind: 'interface' as const,
+      name,
+      classPrefixes: [],
+      implementedInterfaces: [],
+      isController: false,
+      methods: [],
+    });
+    const target = emptyResult(); // no springTypes on the target (the `??=` path)
+    mergeResult(target, { ...emptyResult(), springTypes: [mkType('A', 'A.java')], fileCount: 1 });
+    mergeResult(target, { ...emptyResult(), springTypes: [mkType('B', 'B.java')], fileCount: 1 });
+    expect(target.springTypes?.map((t) => t.name)).toEqual(['A', 'B']);
+  });
+
+  it('leaves springTypes undefined when no source carries any (#2288)', () => {
+    const target = emptyResult();
+    mergeResult(target, { ...emptyResult(), fileCount: 1 });
+    expect(target.springTypes).toBeUndefined();
+  });
+
   it('also sums skippedLanguages and appends node arrays (sanity of the rest of the merge)', () => {
     const target = { ...emptyResult(), skippedLanguages: { rust: 1 } };
     mergeResult(target, {
