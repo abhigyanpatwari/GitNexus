@@ -52,3 +52,41 @@ withTestLbugDB(
     ftsIndexes: PRODUCTION_FTS_INDEXES,
   },
 );
+
+// Second scenario: simulate a pre-#2299 database — FTS indexes built with the old
+// name+content-only schema, and no Struct index at all — then run the real
+// createSearchFTSIndexes() exactly as an incremental re-analyze / --repair-fts
+// would. This proves the drop-then-create behavior actually UPGRADES a live stale
+// index (the whole reason U2 exists): the old code's idempotent-by-name create
+// would skip the existing class_fts and description search would stay broken.
+const OLD_SCHEMA_FTS_INDEXES = [
+  { table: 'File', indexName: 'file_fts', columns: ['name', 'content'] },
+  { table: 'Class', indexName: 'class_fts', columns: ['name', 'content'] },
+  // Struct intentionally omitted — pre-#2299 had no FTS index for it.
+];
+
+withTestLbugDB(
+  'fts-description-reindex-upgrade',
+  () => {
+    describe('re-analyze upgrades stale FTS indexes so description becomes searchable (#2299)', () => {
+      it('finds a class by description keywords after re-indexing an old name+content-only DB', async () => {
+        const { results } = await searchFTSFromLbug('circuit breaker fault tolerance', 20);
+        expect(results.map((r) => r.filePath)).toContain('src/RetryScheduler.java');
+      });
+
+      it('makes a previously un-indexed table (Struct) searchable after re-indexing', async () => {
+        const { results } = await searchFTSFromLbug('least recently used eviction', 20);
+        expect(results.map((r) => r.filePath)).toContain('src/cache.rs');
+      });
+    });
+  },
+  {
+    seed: SEED,
+    ftsIndexes: OLD_SCHEMA_FTS_INDEXES,
+    afterSetup: async () => {
+      // Real production index build over the now-stale DB — drops then recreates.
+      const { createSearchFTSIndexes } = await import('../../src/core/search/fts-indexes.js');
+      await createSearchFTSIndexes();
+    },
+  },
+);
