@@ -39,28 +39,51 @@ describe('BM25 search', () => {
       );
     });
 
-    it('verifies all configured FTS indexes are queryable', async () => {
-      const executeQuery = vi.fn().mockResolvedValue([]);
+    it('returns no missing indexes when every configured index covers its columns', async () => {
+      // One SHOW_INDEXES call returns a catalog row per configured index, each
+      // covering exactly its expected properties.
+      const showIndexesRows = FTS_INDEXES.map((i) => ({
+        index_name: i.indexName,
+        property_names: [...i.properties],
+      }));
+      const executeQuery = vi.fn().mockResolvedValue(showIndexesRows);
       const { verifySearchFTSIndexes } = await import('../../src/core/search/fts-indexes.js');
 
       const missing = await verifySearchFTSIndexes(executeQuery);
 
       expect(missing).toEqual([]);
-      expect(executeQuery).toHaveBeenCalledTimes(FTS_INDEXES.length);
+      expect(executeQuery).toHaveBeenCalledTimes(1);
     });
 
-    it('reports missing indexes when an FTS probe fails', async () => {
-      // FTS_INDEXES[1] is Function; fail only that probe, resolve all others.
-      const executeQuery = vi
-        .fn()
-        .mockResolvedValue([])
-        .mockResolvedValueOnce([])
-        .mockRejectedValueOnce(new Error('index does not exist'));
+    it('reports an index that exists but does not cover its configured columns', async () => {
+      // Model a pre-#2299 stale Function index: present, but name+content only,
+      // missing `description`. Every other index covers its columns.
+      const staleIndex = 'function_fts';
+      const showIndexesRows = FTS_INDEXES.map((i) => ({
+        index_name: i.indexName,
+        property_names: i.indexName === staleIndex ? ['name', 'content'] : [...i.properties],
+      }));
+      const executeQuery = vi.fn().mockResolvedValue(showIndexesRows);
       const { verifySearchFTSIndexes } = await import('../../src/core/search/fts-indexes.js');
 
       const missing = await verifySearchFTSIndexes(executeQuery);
 
       expect(missing).toEqual(['Function.function_fts']);
+    });
+
+    it('reports an index that is absent from the catalog entirely', async () => {
+      // Every configured index present and covering, except const_fts is missing.
+      const absentIndex = 'const_fts';
+      const showIndexesRows = FTS_INDEXES.filter((i) => i.indexName !== absentIndex).map((i) => ({
+        index_name: i.indexName,
+        property_names: [...i.properties],
+      }));
+      const executeQuery = vi.fn().mockResolvedValue(showIndexesRows);
+      const { verifySearchFTSIndexes } = await import('../../src/core/search/fts-indexes.js');
+
+      const missing = await verifySearchFTSIndexes(executeQuery);
+
+      expect(missing).toEqual(['Const.const_fts']);
     });
   });
 
