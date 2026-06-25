@@ -38,7 +38,7 @@
     "graphology-utils": "^2.3.0",
     "i18next": "^26.3.0",
     "i18next-browser-languagedetector": "^8.2.1",
-    "langchain": "^1.4.4",
+    "langchain": "^1.4.6",
     "lru-cache": "^11.5.1",
     "lucide-react": "^1.17.0",
     "mermaid": "^11.15.0",
