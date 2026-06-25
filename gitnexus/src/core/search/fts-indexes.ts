@@ -1,4 +1,4 @@
-import { createFTSIndex } from '../lbug/lbug-adapter.js';
+import { createFTSIndex, dropFTSIndex } from '../lbug/lbug-adapter.js';
 import { FTS_INDEXES } from './fts-schema.js';
 
 export interface CreateSearchFTSIndexesOptions {
@@ -11,6 +11,18 @@ export async function createSearchFTSIndexes(
 ): Promise<void> {
   for (const { table, indexName, properties } of FTS_INDEXES) {
     options?.onIndexStart?.(table, indexName);
+    // Drop first so the live `properties` always win. `createFTSIndex` is
+    // idempotent-by-name (skips when the index already exists), so without the
+    // drop a schema change — e.g. adding `description` (#2299) — would never
+    // reach an existing `.lbug` DB on an incremental re-analyze or `--repair-fts`;
+    // the old name+content index would silently persist. `dropFTSIndex` no-ops
+    // when the index is absent (first-ever analyze) and clears the per-connection
+    // memo so the create below actually runs.
+    // ponytail: this rebuilds every FTS index on every analyze instead of
+    // skipping when present; FTS build is proportional to symbol-table size and
+    // runs inside the existing FTS phase. Gate on a stored schema fingerprint if
+    // this rebuild cost ever shows up in analyze profiles.
+    await dropFTSIndex(table, indexName);
     await createFTSIndex(table, indexName, [...properties]);
     options?.onIndexReady?.(table, indexName);
   }
