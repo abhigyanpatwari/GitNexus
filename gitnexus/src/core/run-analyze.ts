@@ -658,6 +658,22 @@ export async function runFullAnalysis(
     }
     try {
       await initLbug(lbugPath);
+      // Gate on FTS availability BEFORE touching any index. createSearchFTSIndexes
+      // now DROPs each index before recreating it (so schema changes reach existing
+      // DBs); if the extension were unavailable, the drops would run and leave the
+      // DB index-less, only failing at the create step. Fail loudly first — mirrors
+      // the analyze path's `if (ftsAvailable)` gate below — so an unavailable
+      // extension never destroys the existing indexes.
+      const repairFtsAvailable = await loadFTSExtension(undefined, {
+        policy: resolveAnalyzeInstallPolicy(),
+      });
+      if (!repairFtsAvailable) {
+        throw new Error(
+          'Cannot repair FTS indexes: the LadybugDB FTS extension is unavailable ' +
+            '(not pre-installed and could not be installed on this machine). ' +
+            'Run `gitnexus doctor` to install it, then retry `--repair-fts`.',
+        );
+      }
       progress('fts', 85, 'Repairing search indexes...');
       await createSearchFTSIndexes({
         onIndexStart: options.verbose

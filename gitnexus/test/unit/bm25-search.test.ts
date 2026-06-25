@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { searchFTSFromLbug, type BM25SearchResult } from '../../src/core/search/bm25-index.js';
+import { FTS_INDEXES } from '../../src/core/search/fts-schema.js';
 
 vi.mock('../../src/core/lbug/lbug-adapter.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../src/core/lbug/lbug-adapter.js')>();
@@ -7,6 +8,7 @@ vi.mock('../../src/core/lbug/lbug-adapter.js', async (importOriginal) => {
     ...actual,
     queryFTS: vi.fn().mockResolvedValue([]),
     createFTSIndex: vi.fn().mockResolvedValue(undefined),
+    dropFTSIndex: vi.fn().mockResolvedValue(undefined),
   };
 });
 
@@ -26,44 +28,62 @@ describe('BM25 search', () => {
       vi.clearAllMocks();
     });
 
-    it('creates the configured indexes on the writable analysis path', async () => {
+    it('creates every configured index on the writable analysis path', async () => {
       const { createFTSIndex } = await import('../../src/core/lbug/lbug-adapter.js');
       const { createSearchFTSIndexes } = await import('../../src/core/search/fts-indexes.js');
 
       await createSearchFTSIndexes();
 
-      expect(vi.mocked(createFTSIndex).mock.calls).toEqual([
-        ['File', 'file_fts', ['name', 'content']],
-        ['Function', 'function_fts', ['name', 'content']],
-        ['Class', 'class_fts', ['name', 'content']],
-        ['Method', 'method_fts', ['name', 'content']],
-        ['Interface', 'interface_fts', ['name', 'content']],
-      ]);
+      expect(vi.mocked(createFTSIndex).mock.calls).toEqual(
+        FTS_INDEXES.map((i) => [i.table, i.indexName, [...i.properties]]),
+      );
     });
 
-    it('verifies all configured FTS indexes are queryable', async () => {
-      const executeQuery = vi.fn().mockResolvedValue([]);
+    it('returns no missing indexes when every configured index covers its columns', async () => {
+      // One SHOW_INDEXES call returns a catalog row per configured index, each
+      // covering exactly its expected properties.
+      const showIndexesRows = FTS_INDEXES.map((i) => ({
+        index_name: i.indexName,
+        property_names: [...i.properties],
+      }));
+      const executeQuery = vi.fn().mockResolvedValue(showIndexesRows);
       const { verifySearchFTSIndexes } = await import('../../src/core/search/fts-indexes.js');
 
       const missing = await verifySearchFTSIndexes(executeQuery);
 
       expect(missing).toEqual([]);
-      expect(executeQuery).toHaveBeenCalledTimes(5);
+      expect(executeQuery).toHaveBeenCalledTimes(1);
     });
 
-    it('reports missing indexes when an FTS probe fails', async () => {
-      const executeQuery = vi
-        .fn()
-        .mockResolvedValueOnce([])
-        .mockRejectedValueOnce(new Error('index does not exist'))
-        .mockResolvedValueOnce([])
-        .mockResolvedValueOnce([])
-        .mockResolvedValueOnce([]);
+    it('reports an index that exists but does not cover its configured columns', async () => {
+      // Model a pre-#2299 stale Function index: present, but name+content only,
+      // missing `description`. Every other index covers its columns.
+      const staleIndex = 'function_fts';
+      const showIndexesRows = FTS_INDEXES.map((i) => ({
+        index_name: i.indexName,
+        property_names: i.indexName === staleIndex ? ['name', 'content'] : [...i.properties],
+      }));
+      const executeQuery = vi.fn().mockResolvedValue(showIndexesRows);
       const { verifySearchFTSIndexes } = await import('../../src/core/search/fts-indexes.js');
 
       const missing = await verifySearchFTSIndexes(executeQuery);
 
       expect(missing).toEqual(['Function.function_fts']);
+    });
+
+    it('reports an index that is absent from the catalog entirely', async () => {
+      // Every configured index present and covering, except const_fts is missing.
+      const absentIndex = 'const_fts';
+      const showIndexesRows = FTS_INDEXES.filter((i) => i.indexName !== absentIndex).map((i) => ({
+        index_name: i.indexName,
+        property_names: [...i.properties],
+      }));
+      const executeQuery = vi.fn().mockResolvedValue(showIndexesRows);
+      const { verifySearchFTSIndexes } = await import('../../src/core/search/fts-indexes.js');
+
+      const missing = await verifySearchFTSIndexes(executeQuery);
+
+      expect(missing).toEqual(['Const.const_fts']);
     });
   });
 
@@ -289,13 +309,9 @@ describe('BM25 search', () => {
       const queryCalls = mockExecuteParameterized.mock.calls.filter((c) =>
         String(c[1]).includes('QUERY_FTS_INDEX'),
       );
-      expect(queryCalls.map((c) => String(c[1]).match(/QUERY_FTS_INDEX\('([^']+)'/)?.[1])).toEqual([
-        'File',
-        'Function',
-        'Class',
-        'Method',
-        'Interface',
-      ]);
+      expect(queryCalls.map((c) => String(c[1]).match(/QUERY_FTS_INDEX\('([^']+)'/)?.[1])).toEqual(
+        FTS_INDEXES.map((i) => i.table),
+      );
     });
   });
 });

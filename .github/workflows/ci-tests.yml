@@ -11,6 +11,10 @@ jobs:
     name: ubuntu / coverage
     runs-on: ubuntu-latest
     timeout-minutes: 25
+    # Fail loudly (don't silently skip) if the FTS extension is unavailable, so
+    # FTS-dependent lbug integration suites are guaranteed to run in CI.
+    env:
+      GITNEXUS_REQUIRE_FTS: '1'
     steps:
       # persist-credentials: false — this job runs tests and uploads a
       # test-reports artifact (if: always()). The default-persisted token in
@@ -77,6 +81,10 @@ jobs:
         os: [windows-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
+    # Same guarantee on the platform-sensitive runners: FTS-dependent suites in
+    # the cross-platform subset must run, not silently skip.
+    env:
+      GITNEXUS_REQUIRE_FTS: '1'
     steps:
       # persist-credentials: false — runs tests only, never pushes (zizmor
       # credential-persistence / artipacked audit).

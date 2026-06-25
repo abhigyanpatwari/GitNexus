@@ -117,6 +117,8 @@ describe('runFullAnalysis FTS repair and verification failure paths', () => {
       deleteNodesForFile: vi.fn(async () => undefined),
       deleteAllCommunitiesAndProcesses: vi.fn(async () => undefined),
       queryImporters: vi.fn(async () => []),
+      // Repair path now gates on FTS availability before drop-then-create.
+      loadFTSExtension: vi.fn(async () => true),
     }));
     vi.doMock('../../src/core/search/fts-indexes.js', () => ({
       createSearchFTSIndexes: vi.fn(async () => undefined),
@@ -164,6 +166,8 @@ describe('runFullAnalysis FTS repair and verification failure paths', () => {
       deleteNodesForFile: vi.fn(async () => undefined),
       deleteAllCommunitiesAndProcesses: vi.fn(async () => undefined),
       queryImporters: vi.fn(async () => []),
+      // Extension loads; the throw under test comes from index creation itself.
+      loadFTSExtension: vi.fn(async () => true),
     }));
     vi.doMock('../../src/core/search/fts-indexes.js', () => ({
       createSearchFTSIndexes: vi.fn(async () => {
@@ -195,6 +199,55 @@ describe('runFullAnalysis FTS repair and verification failure paths', () => {
           },
         ),
       ).rejects.toThrow(/FTS extension unavailable/i);
+    } finally {
+      await tmpRepo.cleanup();
+    }
+  });
+
+  it('fails repair mode loudly WITHOUT dropping indexes when the FTS extension is unavailable', async () => {
+    // Regression guard (#2299): createSearchFTSIndexes now drops each index
+    // before recreating it. If the extension is unavailable, the repair path must
+    // bail before any drop runs — otherwise it would destroy the existing indexes
+    // and then fail to recreate them, leaving the DB worse off.
+    const createSearchFTSIndexes = vi.fn(async () => undefined);
+    vi.doMock('../../src/core/lbug/lbug-adapter.js', () => ({
+      initLbug: vi.fn(async () => undefined),
+      loadGraphToLbug: vi.fn(async () => undefined),
+      getLbugStats: vi.fn(async () => ({})),
+      executeQuery: vi.fn(async () => []),
+      executeWithReusedStatement: vi.fn(async () => []),
+      closeLbug: vi.fn(async () => undefined),
+      loadCachedEmbeddings: vi.fn(async () => ({ embeddingNodeIds: new Set(), embeddings: [] })),
+      deleteNodesForFile: vi.fn(async () => undefined),
+      deleteAllCommunitiesAndProcesses: vi.fn(async () => undefined),
+      queryImporters: vi.fn(async () => []),
+      // Extension cannot load — the guard must fail BEFORE any index is touched.
+      loadFTSExtension: vi.fn(async () => false),
+    }));
+    vi.doMock('../../src/core/search/fts-indexes.js', () => ({
+      createSearchFTSIndexes,
+      verifySearchFTSIndexes: vi.fn(async () => []),
+    }));
+
+    const tmpRepo = await createTempDir('gitnexus-run-analyze-repair-fts-unavailable-');
+    try {
+      const { storagePath, lbugPath } = getStoragePaths(tmpRepo.dbPath);
+      await fs.mkdir(storagePath, { recursive: true });
+      await saveMeta(storagePath, {
+        repoPath: tmpRepo.dbPath,
+        lastCommit: '',
+        indexedAt: new Date().toISOString(),
+        stats: {},
+      });
+      await createPlaceholderGraphStore(lbugPath);
+
+      const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
+
+      await expect(
+        runFullAnalysis(tmpRepo.dbPath, { repairFts: true }, { onProgress: () => {} }),
+      ).rejects.toThrow(/FTS extension is unavailable[\s\S]*gitnexus doctor/i);
+      // The guard fires before drop-then-create, so no index is dropped.
+      expect(createSearchFTSIndexes).not.toHaveBeenCalled();
     } finally {
       await tmpRepo.cleanup();
     }
