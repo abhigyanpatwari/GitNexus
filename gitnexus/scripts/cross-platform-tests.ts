@@ -70,6 +70,7 @@ const LBUG_NATIVE = [
   'test/integration/local-backend-calltool.test.ts',
   'test/integration/search-core.test.ts',
   'test/integration/search-pool.test.ts',
+  'test/integration/fts-description-search.test.ts',
   'test/integration/staleness-and-stability.test.ts',
   'test/integration/analyze-wal-checkpoint-failure.test.ts',
 ];
