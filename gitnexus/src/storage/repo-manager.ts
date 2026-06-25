@@ -244,8 +244,14 @@ export interface RepoMeta {
  * so the engine would silently UNDER-REPORT return-value ascent on an
  * incremental top-up; force a full re-analyze instead (same contract as v2/v3).
  * This single bump covers the whole FU-C re-index window (and the later FU-B-2).
+ * v5: `Route` node identity changed to `(method, url)` (#2289 — a same-URL
+ * GET/POST pair is now two distinct Route nodes). Every declarative-route node
+ * id moved from `Route:/x` to `Route:GET /x` (filesystem routes keep their
+ * URL-only id). The incremental writeback preserves unchanged-file rows, so a
+ * top-up against a pre-v5 index would strand old url-keyed Route nodes alongside
+ * new composite-keyed ones — force a full re-analyze instead.
  */
-export const INCREMENTAL_SCHEMA_VERSION = 4;
+export const INCREMENTAL_SCHEMA_VERSION = 5;
 
 export interface IndexedRepo {
   repoPath: string;

@@ -17,6 +17,7 @@ import type { ToolsOutput } from './tools.js';
 import type { StructureOutput } from './structure.js';
 import { processProcesses, type ProcessDetectionResult } from '../process-processor.js';
 import { generateId } from '../../../lib/utils.js';
+import { routeNodeKey } from '../route-extractors/route-path.js';
 import { isDev } from '../utils/env.js';
 
 import { logger } from '../../logger.js';
@@ -107,13 +108,16 @@ export const processesPhase: PipelinePhase<ProcessesOutput> = {
     // Link Route and Tool nodes to Processes
     if (routeRegistry.size > 0 || toolDefs.length > 0) {
       const routesByFile = new Map<string, string[]>();
-      for (const [url, entry] of routeRegistry) {
+      for (const [, entry] of routeRegistry) {
         let list = routesByFile.get(entry.filePath);
         if (!list) {
           list = [];
           routesByFile.set(entry.filePath, list);
         }
-        list.push(url);
+        // Push the Route node identity (`routeNodeKey`), not the bare URL, so the
+        // ENTRY_POINT_OF edge targets the same node id the routes phase created
+        // (#2289: a same-URL GET/POST pair is two distinct Route nodes).
+        list.push(routeNodeKey(entry.method, entry.url));
       }
       const toolsByHandlerId = new Map<string, string[]>();
       const toolsWithoutHandlerByFile = new Map<string, string[]>();
@@ -136,10 +140,10 @@ export const processesPhase: PipelinePhase<ProcessesOutput> = {
         const entryFile = entryNode.properties.filePath;
         if (!entryFile) continue;
 
-        const routeURLs = routesByFile.get(entryFile);
-        if (routeURLs) {
-          for (const routeURL of routeURLs) {
-            const routeNodeId = generateId('Route', routeURL);
+        const routeKeys = routesByFile.get(entryFile);
+        if (routeKeys) {
+          for (const routeKey of routeKeys) {
+            const routeNodeId = generateId('Route', routeKey);
             ctx.graph.addRelationship({
               id: generateId('ENTRY_POINT_OF', `${routeNodeId}->${proc.id}`),
               sourceId: routeNodeId,

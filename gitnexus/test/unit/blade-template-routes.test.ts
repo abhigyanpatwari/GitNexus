@@ -6,6 +6,7 @@ import {
   extractTemplateStaticFetchCalls,
   isTemplateRouteCandidate,
   normalizeExtractedRoutePath,
+  routeNodeKey,
   routesPhase,
 } from '../../src/core/ingestion/pipeline-phases/routes.js';
 import type { ParseOutput } from '../../src/core/ingestion/pipeline-phases/parse.js';
@@ -144,9 +145,12 @@ describe('Blade/template static route extraction', () => {
         new Map([['parse', { phaseName: 'parse', output: parseOutput, durationMs: 0 }]]),
       );
 
-      expect(output.routeRegistry.get('/admin/orders')).toEqual({
+      // The registry is keyed by the `(method, url)` identity (#2289); the URL
+      // is carried on the entry's `url` field (the Route node's display name).
+      expect(output.routeRegistry.get(routeNodeKey('POST', '/admin/orders'))).toEqual({
         filePath: 'routes/web.php',
         source: 'framework-route',
+        url: '/admin/orders',
         method: 'POST',
       });
 
