@@ -514,6 +514,41 @@ interface ImpactParams {
   summaryOnly?: boolean;
 }
 
+/** One route in an `api_impact` result. `executionFlows` are process names. */
+interface ApiImpactRoute {
+  route: string;
+  method: string | null;
+  handler: string;
+  responseShape: { success: string[]; error: string[] };
+  middleware: string[];
+  middlewareDetection?: 'partial';
+  middlewareNote?: string;
+  consumers: Array<{ name: string; file: string; accesses: string[]; attributionNote?: string }>;
+  mismatches?: Array<{
+    consumer: string;
+    field: string;
+    reason: string;
+    confidence: 'high' | 'low';
+  }>;
+  executionFlows: string[];
+  impactSummary: {
+    directConsumers: number;
+    affectedFlows: number;
+    riskLevel: 'LOW' | 'MEDIUM' | 'HIGH';
+    warning?: string;
+  };
+}
+
+/**
+ * `api_impact` is polymorphic by match count: a single matched route returns the
+ * route object directly; two or more return the wrapped `{ routes, total }`
+ * form; any guard failure returns `{ error }`.
+ */
+type ApiImpactResult =
+  | ApiImpactRoute
+  | { routes: ApiImpactRoute[]; total: number }
+  | { error: string };
+
 /**
  * One repository entry as returned by {@link LocalBackend.listRepos} and in each
  * `list_repos` page. Named so the `listRepos`/`listReposPage` return types read
@@ -6512,7 +6547,7 @@ export class LocalBackend {
   private async apiImpact(
     repo: RepoHandle,
     params: { route?: string; file?: string; method?: unknown },
-  ): Promise<any> {
+  ): Promise<ApiImpactResult> {
     await this.ensureInitialized(repo);
 
     if (!params.route && !params.file) {
@@ -6571,7 +6606,7 @@ export class LocalBackend {
       }
     }
 
-    const results = routes.map((r) => {
+    const results: ApiImpactRoute[] = routes.map((r) => {
       // Keys already normalized by fetchRoutesWithConsumers (quotes stripped)
       const responseKeys = r.responseKeys ?? [];
       const errorKeys = r.errorKeys ?? [];
