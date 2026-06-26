@@ -24,16 +24,26 @@ import { withTestLbugDB } from '../helpers/test-indexed-db.js';
 import { buildTestGraph } from '../helpers/test-graph.js';
 import { streamAllCSVsToDisk } from '../../src/core/lbug/csv-generator.js';
 import { HANDLES_ROUTE_QUERY } from '../../src/core/group/extractors/http-route-extractor.js';
+import { generateId } from '../../src/lib/utils.js';
+import { routeNodeKey } from '../../src/core/ingestion/route-extractors/route-path.js';
+
+// Composite Route id — what the routes phase emits post-#2289 for a
+// method-bearing declarative route. Hand-pinning the pre-#2289 URL-only
+// `Route:/api/orders` shape would no longer cover the production
+// CSV→COPY→`HANDLES_ROUTE_QUERY` path the COPY query has to load.
+const ROUTE_ID = generateId('Route', routeNodeKey('POST', '/api/orders'));
 
 withTestLbugDB('route-method-roundtrip', (handle) => {
   it('persists Route.method through CSV→COPY and HANDLES_ROUTE_QUERY returns it', async () => {
     const adapter = await import('../../src/core/lbug/lbug-adapter.js');
 
     // 1. Build a graph with a single framework Route node carrying `method`,
-    //    mirroring what the routes phase now emits for a Spring controller.
+    //    keyed by the composite `(method, url)` id the routes phase now emits
+    //    so the CSV row + COPY load exercise the post-#2289 id shape (a value
+    //    containing a literal space — `Route:POST /api/orders`).
     const graph = buildTestGraph([
       {
-        id: 'Route:/api/orders',
+        id: ROUTE_ID,
         label: 'Route',
         name: '/api/orders',
         filePath: 'OrderController.java',
@@ -53,10 +63,13 @@ withTestLbugDB('route-method-roundtrip', (handle) => {
     await fs.mkdir(repoDir, { recursive: true });
     await streamAllCSVsToDisk(graph, repoDir, csvDir);
 
-    // Sanity: the generated route.csv header + row include the method column.
+    // Sanity: the generated route.csv header + row include the method column,
+    // and the composite id (with its literal space) round-trips into the CSV
+    // — a space-in-id COPY failure on the new id format would surface here.
     const routeCsv = await fs.readFile(path.join(csvDir, 'route.csv'), 'utf-8');
     expect(routeCsv.split('\n')[0]).toContain('method');
     expect(routeCsv).toContain('POST');
+    expect(routeCsv).toContain(ROUTE_ID);
 
     // 3. COPY the Route node into the real DB via the production COPY query
     //    (exercises the new `method` column in getCopyQuery('Route')).
@@ -68,7 +81,7 @@ withTestLbugDB('route-method-roundtrip', (handle) => {
       `CREATE (:File {id: 'File:OrderController.java', name: 'OrderController.java', filePath: 'OrderController.java'})`,
     );
     await adapter.executeQuery(
-      `MATCH (f:File {id: 'File:OrderController.java'}), (r:Route {id: 'Route:/api/orders'})
+      `MATCH (f:File {id: 'File:OrderController.java'}), (r:Route {id: '${ROUTE_ID}'})
        CREATE (f)-[:CodeRelation {type: 'HANDLES_ROUTE', confidence: 1.0, reason: 'framework-route', step: 0}]->(r)`,
     );
 

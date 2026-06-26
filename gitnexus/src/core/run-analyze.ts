@@ -749,6 +749,30 @@ export async function runFullAnalysis(
     options = { ...options, force: true };
   }
 
+  // ── schema-version mismatch forces full rebuild (#2289 P1) ────────
+  // Mirrors the pdg-mode block above: a stamp from an older
+  // INCREMENTAL_SCHEMA_VERSION (e.g. pre-v5 URL-only Route ids) cannot be
+  // reconciled by an incremental top-up — same-commit re-analyze would
+  // strand stale rows next to new-schema writes. MUST sit before the
+  // alreadyUpToDate fast path below: an unchanged-commit clean tree would
+  // otherwise early-return without ever reaching the `isIncremental` gate
+  // that consults `schemaVersion`, defeating the bump's whole point.
+  //
+  // `schemaVersion === undefined` covers two cases that should still trip
+  // this guard: a non-git repo (which never stamps the field) and very old
+  // meta from before the field existed. Non-git repos take the
+  // `currentCommit === ''` rebuild branch below regardless, so the redundant
+  // force here is harmless; the friendlier `'pre-versioning'` log avoids a
+  // user-visible "stamped vundefined" line in that edge case.
+  if (existingMeta && existingMeta.schemaVersion !== INCREMENTAL_SCHEMA_VERSION) {
+    const stampedVersion = existingMeta.schemaVersion ?? 'pre-versioning';
+    log(
+      `index schema changed (stamped v${stampedVersion}, this build is v${INCREMENTAL_SCHEMA_VERSION}); ` +
+        `forcing a full rebuild so persisted rows match the current schema.`,
+    );
+    options = { ...options, force: true };
+  }
+
   // ── Early-return: already up to date ──────────────────────────────
   if (existingMeta && !options.force && existingMeta.lastCommit === currentCommit) {
     // Non-git folders have currentCommit = '' — always rebuild since we can't detect changes

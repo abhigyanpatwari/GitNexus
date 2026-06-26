@@ -224,4 +224,45 @@ describe('runFullAnalysis — incremental orchestration', () => {
       await repo.cleanup();
     }
   }, 300_000);
+
+  // Regression for #2289 review P1: a pre-v5 stamp (e.g. v4 with url-only
+  // Route ids) re-analyzed on the SAME commit must NOT early-return on the
+  // `alreadyUpToDate` fast path — otherwise the v5 schema bump's
+  // re-keyed-Route migration is silently bypassed and stale URL-only Route
+  // rows persist alongside any new composite-keyed writes. The schemaVersion
+  // gate (mirrors pdgModeMismatch's slot above the fast path) must force a
+  // full rebuild before lastCommit-equality short-circuits the pipeline.
+  it('a pre-v5 schemaVersion stamp forces a full rebuild on an unchanged-commit re-analyze', async () => {
+    const repo = await setupMiniRepo();
+    try {
+      const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
+      // First run stamps schemaVersion = INCREMENTAL_SCHEMA_VERSION (v5).
+      await runFullAnalysis(repo.dbPath, { skipAgentsMd: true }, { onProgress: () => {} });
+      const { storagePath } = getStoragePaths(repo.dbPath);
+      const meta = await loadMeta(storagePath);
+      expect(meta).not.toBeNull();
+      expect(meta!.schemaVersion).toBe(INCREMENTAL_SCHEMA_VERSION);
+
+      // Simulate a repo indexed at the SAME commit by a pre-v5 GitNexus
+      // build: rewrite meta.json with schemaVersion = 4. lastCommit and
+      // working tree are untouched, so without the schemaVersion gate the
+      // run-analyze fast path would early-return `alreadyUpToDate=true`
+      // and never touch the stale Route rows.
+      const downgraded: RepoMeta = { ...meta!, schemaVersion: 4 };
+      await saveMeta(storagePath, downgraded);
+
+      const reanalyzed = await runFullAnalysis(
+        repo.dbPath,
+        { skipAgentsMd: true },
+        { onProgress: () => {} },
+      );
+      // Pipeline actually ran (schemaVersion mismatch → force=true).
+      expect(reanalyzed.alreadyUpToDate).toBeUndefined();
+      // And the meta is stamped back to v5 (the rebuild path runs saveMeta).
+      const restamped = await loadMeta(storagePath);
+      expect(restamped!.schemaVersion).toBe(INCREMENTAL_SCHEMA_VERSION);
+    } finally {
+      await repo.cleanup();
+    }
+  }, 300_000);
 });
