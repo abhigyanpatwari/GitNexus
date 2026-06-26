@@ -5,10 +5,12 @@ import path from 'path';
 import {
   extractTemplateStaticFetchCalls,
   isTemplateRouteCandidate,
-  normalizeExtractedRoutePath,
-  routeNodeKey,
   routesPhase,
 } from '../../src/core/ingestion/pipeline-phases/routes.js';
+import {
+  normalizeExtractedRoutePath,
+  routeNodeKey,
+} from '../../src/core/ingestion/route-extractors/route-path.js';
 import type { ParseOutput } from '../../src/core/ingestion/pipeline-phases/parse.js';
 import { createKnowledgeGraph } from '../../src/core/graph/graph.js';
 import { generateId } from '../../src/lib/utils.js';

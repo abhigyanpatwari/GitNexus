@@ -7,7 +7,12 @@ import {
   deriveEmbeddingCap,
   DEFAULT_EMBEDDING_NODE_LIMIT,
 } from '../../src/core/embedding-mode.js';
-import { getStoragePaths, saveMeta, type RepoMeta } from '../../src/storage/repo-manager.js';
+import {
+  getStoragePaths,
+  saveMeta,
+  INCREMENTAL_SCHEMA_VERSION,
+  type RepoMeta,
+} from '../../src/storage/repo-manager.js';
 import { taintModelVersion } from '../../src/core/ingestion/taint/typescript-model.js';
 import { createTempDir } from '../helpers/test-db.js';
 
@@ -40,6 +45,10 @@ describe('run-analyze module', () => {
         repoPath: tmpRepo.dbPath,
         lastCommit: currentCommit,
         indexedAt: new Date().toISOString(),
+        // Stamp current schema version so the run-analyze schema-mismatch
+        // guard (#2289 P1) does not force a rebuild and short-circuit the
+        // alreadyUpToDate fast path this test exercises.
+        schemaVersion: INCREMENTAL_SCHEMA_VERSION,
       };
       await saveMeta(storagePath, meta);
 
@@ -79,12 +88,16 @@ describe('run-analyze module', () => {
       }).trim();
 
       // Flat slot owned by main; feature/x has its own up-to-date branch index.
+      // Both metas stamp the current schema version so the run-analyze
+      // schema-mismatch guard (#2289 P1) does not force a rebuild before the
+      // fast path runs.
       const flat = getStoragePaths(tmpRepo.dbPath);
       await saveMeta(flat.storagePath, {
         repoPath: tmpRepo.dbPath,
         lastCommit: commit,
         indexedAt: new Date().toISOString(),
         branch: 'main',
+        schemaVersion: INCREMENTAL_SCHEMA_VERSION,
       });
       const branch = getStoragePaths(tmpRepo.dbPath, 'feature/x');
       await saveMeta(path.dirname(branch.metaPath), {
@@ -92,6 +105,7 @@ describe('run-analyze module', () => {
         lastCommit: commit,
         indexedAt: new Date().toISOString(),
         branch: 'feature/x',
+        schemaVersion: INCREMENTAL_SCHEMA_VERSION,
       });
 
       const { runFullAnalysis } = await import('../../src/core/run-analyze.js');

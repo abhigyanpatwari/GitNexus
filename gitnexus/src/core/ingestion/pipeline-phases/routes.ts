@@ -149,9 +149,6 @@ function escapeRegex(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
-// Re-exported for existing consumers/tests that import them from the routes phase.
-export { normalizeExtractedRoutePath, normalizeRouteMethod, routeNodeKey };
-
 export const routesPhase: PipelinePhase<RoutesOutput> = {
   name: 'routes',
   deps: ['parse'],
