@@ -1,14 +1,58 @@
 import { createFTSIndex, dropFTSIndex } from '../lbug/lbug-adapter.js';
 import { FTS_INDEXES } from './fts-schema.js';
 
+const DEFAULT_FTS_STEMMER = 'porter';
+const SUPPORTED_FTS_STEMMERS = new Set<string>([
+  'arabic',
+  'basque',
+  'catalan',
+  'danish',
+  'dutch',
+  'english',
+  'finnish',
+  'french',
+  'german',
+  'greek',
+  'hindi',
+  'hungarian',
+  'indonesian',
+  'irish',
+  'italian',
+  'lithuanian',
+  'nepali',
+  'norwegian',
+  'none',
+  'porter',
+  'portuguese',
+  'romanian',
+  'russian',
+  'serbian',
+  'spanish',
+  'swedish',
+  'tamil',
+  'turkish',
+]);
+
 export interface CreateSearchFTSIndexesOptions {
   onIndexStart?: (table: string, indexName: string) => void;
   onIndexReady?: (table: string, indexName: string) => void;
 }
 
+export function getSearchFTSStemmer(): string {
+  const raw = process.env.GITNEXUS_FTS_STEMMER?.trim().toLowerCase();
+  if (!raw) return DEFAULT_FTS_STEMMER;
+  if (SUPPORTED_FTS_STEMMERS.has(raw)) return raw;
+
+  throw new Error(
+    `Invalid GITNEXUS_FTS_STEMMER "${process.env.GITNEXUS_FTS_STEMMER}". ` +
+      `Expected one of: ${[...SUPPORTED_FTS_STEMMERS].sort().join(', ')}.`,
+  );
+}
+
 export async function createSearchFTSIndexes(
   options?: CreateSearchFTSIndexesOptions,
 ): Promise<void> {
+  const stemmer = getSearchFTSStemmer();
   for (const { table, indexName, properties } of FTS_INDEXES) {
     options?.onIndexStart?.(table, indexName);
     // Drop first so the live `properties` always win. `createFTSIndex` is
@@ -23,7 +67,7 @@ export async function createSearchFTSIndexes(
     // runs inside the existing FTS phase. Gate on a stored schema fingerprint if
     // this rebuild cost ever shows up in analyze profiles.
     await dropFTSIndex(table, indexName);
-    await createFTSIndex(table, indexName, [...properties]);
+    await createFTSIndex(table, indexName, [...properties], stemmer);
     options?.onIndexReady?.(table, indexName);
   }
 }

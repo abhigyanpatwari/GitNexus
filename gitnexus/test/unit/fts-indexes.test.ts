@@ -7,17 +7,21 @@ vi.mock('../../src/core/lbug/lbug-adapter.js', () => ({
   dropFTSIndex: vi.fn(async (table: string, indexName: string) => {
     calls.push(`drop:${table}.${indexName}`);
   }),
-  createFTSIndex: vi.fn(async (table: string, indexName: string) => {
-    calls.push(`create:${table}.${indexName}`);
-  }),
+  createFTSIndex: vi.fn(
+    async (table: string, indexName: string, _props: string[], stemmer: string) => {
+      calls.push(`create:${table}.${indexName}:${stemmer}`);
+    },
+  ),
 }));
 
-const { createSearchFTSIndexes } = await import('../../src/core/search/fts-indexes.js');
+const { createSearchFTSIndexes, getSearchFTSStemmer } =
+  await import('../../src/core/search/fts-indexes.js');
 const { FTS_INDEXES } = await import('../../src/core/search/fts-schema.js');
 
 afterEach(() => {
   calls.length = 0;
   vi.clearAllMocks();
+  vi.unstubAllEnvs();
 });
 
 describe('createSearchFTSIndexes', () => {
@@ -25,7 +29,7 @@ describe('createSearchFTSIndexes', () => {
     await createSearchFTSIndexes();
     const expected = FTS_INDEXES.flatMap((i) => [
       `drop:${i.table}.${i.indexName}`,
-      `create:${i.table}.${i.indexName}`,
+      `create:${i.table}.${i.indexName}:porter`,
     ]);
     expect(calls).toEqual(expected);
   });
@@ -40,5 +44,34 @@ describe('createSearchFTSIndexes', () => {
     const expectedNames = FTS_INDEXES.map((i) => i.indexName);
     expect(started).toEqual(expectedNames);
     expect(ready).toEqual(expectedNames);
+  });
+
+  it('passes the configured FTS stemmer to every index', async () => {
+    vi.stubEnv('GITNEXUS_FTS_STEMMER', ' none ');
+
+    await createSearchFTSIndexes();
+
+    expect(calls.filter((call) => call.startsWith('create:'))).toEqual(
+      FTS_INDEXES.map((i) => `create:${i.table}.${i.indexName}:none`),
+    );
+  });
+
+  it('rejects unsupported stemmer names before creating indexes', async () => {
+    vi.stubEnv('GITNEXUS_FTS_STEMMER', "none'); DROP TABLE File; --");
+
+    await expect(createSearchFTSIndexes()).rejects.toThrow('Invalid GITNEXUS_FTS_STEMMER');
+    expect(calls).toEqual([]);
+  });
+});
+
+describe('getSearchFTSStemmer', () => {
+  it('defaults to porter when unset', () => {
+    expect(getSearchFTSStemmer()).toBe('porter');
+  });
+
+  it('normalizes configured stemmer names', () => {
+    vi.stubEnv('GITNEXUS_FTS_STEMMER', ' German ');
+
+    expect(getSearchFTSStemmer()).toBe('german');
   });
 });
