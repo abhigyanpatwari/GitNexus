@@ -1520,6 +1520,42 @@ describe('LocalBackend.callTool', () => {
     expect(result.error).not.toContain('with method');
   });
 
+  // #2308: the shared `method` field also surfaces on route_map and shape_check
+  // (same fetchRoutesWithConsumers query), so both are documented + covered here.
+  it('route_map surfaces each route method', async () => {
+    vi.mocked(executeParameterized).mockResolvedValue([
+      verbRow('GET', '/api/orders', 'api/orders.ts'),
+      verbRow('POST', '/api/orders', 'api/orders.ts'),
+    ]);
+    const result = await backend.callTool('route_map', { route: '/api/orders' });
+    expect(result.routes.map((r: { method: string | null }) => r.method).sort()).toEqual([
+      'GET',
+      'POST',
+    ]);
+  });
+
+  it('route_map surfaces a null method for verbless routes', async () => {
+    vi.mocked(executeParameterized).mockResolvedValue([
+      verbRow(null, '/blog/[slug]', 'app/blog/[slug]/route.ts'),
+    ]);
+    const result = await backend.callTool('route_map', { route: '/blog/[slug]' });
+    expect(result.routes[0].method).toBeNull();
+  });
+
+  it('shape_check surfaces each route method', async () => {
+    vi.mocked(executeParameterized).mockResolvedValue([
+      {
+        ...verbRow('GET', '/api/orders', 'api/orders.ts'),
+        responseKeys: ['data', 'total'],
+        consumerName: 'OrdersList',
+        consumerFile: 'src/OrdersList.tsx',
+        fetchReason: 'fetch-url-match|keys:data',
+      },
+    ]);
+    const result = await backend.callTool('shape_check', { route: '/api/orders' });
+    expect(result.routes[0].method).toBe('GET');
+  });
+
   it('api_impact returns the wrapped form for a same-handler multi-verb file lookup', async () => {
     vi.mocked(executeParameterized).mockResolvedValue([
       verbRow('GET', '/api/orders', 'app/api/orders/route.ts'),
