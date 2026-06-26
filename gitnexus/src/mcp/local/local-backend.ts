@@ -6655,7 +6655,7 @@ export class LocalBackend {
           ? {
               middlewareDetection: 'partial' as const,
               middlewareNote:
-                'Middleware captured from first HTTP method export only — other methods in this handler may use different middleware chains.',
+                'Middleware captured from the first route export only — other route exports in this handler may use different middleware chains.',
             }
           : {}),
         consumers,
