@@ -6267,9 +6267,10 @@ export class LocalBackend {
       const consumerName = row.consumerName ?? row[6];
       const consumerFile = row.consumerFile ?? row[7];
       const fetchReason: string | null = row.fetchReason ?? row[8] ?? null;
-      // Verb is absent (null) for method-less routes (filesystem, Laravel
-      // resource, Django wildcard). Appended last in RETURN so positional
-      // fallbacks for the consumer/reason columns above stay stable.
+      // Verb is the literal '*' for method-agnostic routes (Django function
+      // views) and absent (null) for method-less routes (filesystem, Laravel
+      // resource). Appended last in RETURN so positional fallbacks for the
+      // consumer/reason columns above stay stable.
       const method: string | null = row.method ?? row[9] ?? null;
 
       if (!routeMap.has(id)) {
@@ -6532,10 +6533,13 @@ export class LocalBackend {
 
     // After #2302 the same URL/handler can expose one Route node per HTTP verb.
     // An optional `method` narrows to that one verb so the response collapses to
-    // the singular shape; verbless routes (null method) never match a selector.
+    // the singular shape. A method-agnostic route (method `'*'`, e.g. a Django
+    // function view) matches any selector; verbless routes (null method) never do.
     const wantedMethod = params.method?.toUpperCase();
     const matched = await this.fetchRoutesWithConsumers(repo.lbugPath, routeFilter, queryParams);
-    const routes = matched.filter((r) => !wantedMethod || r.method?.toUpperCase() === wantedMethod);
+    const routes = matched.filter(
+      (r) => !wantedMethod || r.method === '*' || r.method?.toUpperCase() === wantedMethod,
+    );
 
     if (routes.length === 0) {
       const target = params.route || params.file;

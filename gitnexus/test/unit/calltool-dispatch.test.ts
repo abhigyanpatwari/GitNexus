@@ -1558,6 +1558,39 @@ describe('LocalBackend.callTool', () => {
     expect(result.routes).toBeUndefined();
   });
 
+  // A method-agnostic route persists with method '*' (Django function views) and
+  // handles every verb — unlike a verbless (null) route, a method selector MUST
+  // match it, or api_impact reports a false "no routes" for a live handler.
+  it('api_impact matches a wildcard (*) route against a specific method selector', async () => {
+    vi.mocked(executeParameterized).mockResolvedValue([verbRow('*', '/django/view', 'views.py')]);
+    const result = await backend.callTool('api_impact', { route: '/django/view', method: 'POST' });
+    expect(result.method).toBe('*');
+    expect(result.route).toBe('/django/view');
+    expect(result.error).toBeUndefined();
+    expect(result.routes).toBeUndefined();
+  });
+
+  it('api_impact matches a wildcard (*) route case-insensitively for any verb', async () => {
+    vi.mocked(executeParameterized).mockResolvedValue([verbRow('*', '/django/view', 'views.py')]);
+    const result = await backend.callTool('api_impact', { route: '/django/view', method: 'get' });
+    expect(result.method).toBe('*');
+    expect(result.error).toBeUndefined();
+    expect(result.routes).toBeUndefined();
+  });
+
+  it('api_impact includes a wildcard (*) route alongside a concrete verb under a selector', async () => {
+    vi.mocked(executeParameterized).mockResolvedValue([
+      verbRow('*', '/api/orders', 'api/orders.ts'),
+      verbRow('GET', '/api/orders', 'api/orders.ts'),
+    ]);
+    const result = await backend.callTool('api_impact', { route: '/api/orders', method: 'GET' });
+    expect(result.total).toBe(2);
+    expect(result.routes.map((r: { method: string | null }) => r.method).sort()).toEqual([
+      '*',
+      'GET',
+    ]);
+  });
+
   it('api_impact HIGH risk for 10+ consumers', async () => {
     const rows = [];
     for (let i = 0; i < 10; i++) {
