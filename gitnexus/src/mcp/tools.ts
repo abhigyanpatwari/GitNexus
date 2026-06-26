@@ -741,13 +741,18 @@ WHEN TO USE: BEFORE modifying any API route handler. Shows what consumers depend
 
 Risk levels: LOW (0-3 consumers), MEDIUM (4-9 or any mismatches), HIGH (10+ consumers or mismatches with 4+ consumers). Mismatches with confidence "low" indicate the consumer file fetches multiple routes — property attribution is approximate.
 
-Returns: single route object when one match, or { routes: [...], total: N } for multiple matches. Combines route_map, shape_check, and impact data.`,
+Response shape is keyed on how many routes match, not on the data: exactly one match returns a single route object; two or more return { routes: [...], total: N }. The same URL can expose multiple HTTP verbs (e.g. GET and POST /api/orders are distinct routes that share the URL), so a bare-URL lookup may return the wrapped form — every route object carries its own "method" so verbs are distinguishable. Pass "method" to target one verb and force the single-object shape; a URL/file that exists but has no route for that verb returns an error. Each route's "method" is null for method-less routes (filesystem, Laravel resource, Django wildcard). Combines route_map, shape_check, and impact data.`,
     annotations: READ_ONLY_TOOL_ANNOTATIONS,
     inputSchema: {
       type: 'object',
       properties: {
         route: { type: 'string', description: 'Route path (e.g., "/api/grants")' },
         file: { type: 'string', description: 'Handler file path (alternative to route)' },
+        method: {
+          type: 'string',
+          description:
+            'Optional HTTP verb (e.g. "POST") to disambiguate a same-URL multi-verb route and force the single-object response.',
+        },
         repo: { type: 'string', description: 'Repository name or path.' },
       },
       required: [],

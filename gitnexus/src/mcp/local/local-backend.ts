@@ -6206,6 +6206,7 @@ export class LocalBackend {
     Array<{
       id: string;
       name: string;
+      method: string | null;
       filePath: string;
       responseKeys: string[] | null;
       errorKeys: string[] | null;
@@ -6228,7 +6229,7 @@ export class LocalBackend {
       RETURN n.id AS routeId, n.name AS routeName, n.filePath AS handlerFile,
              n.responseKeys AS responseKeys, n.errorKeys AS errorKeys, n.middleware AS middleware,
              consumer.name AS consumerName, consumer.filePath AS consumerFile,
-             r.reason AS fetchReason
+             r.reason AS fetchReason, n.method AS method
     `,
       params,
     );
@@ -6243,6 +6244,7 @@ export class LocalBackend {
       {
         id: string;
         name: string;
+        method: string | null;
         filePath: string;
         responseKeys: string[] | null;
         errorKeys: string[] | null;
@@ -6265,11 +6267,16 @@ export class LocalBackend {
       const consumerName = row.consumerName ?? row[6];
       const consumerFile = row.consumerFile ?? row[7];
       const fetchReason: string | null = row.fetchReason ?? row[8] ?? null;
+      // Verb is absent (null) for method-less routes (filesystem, Laravel
+      // resource, Django wildcard). Appended last in RETURN so positional
+      // fallbacks for the consumer/reason columns above stay stable.
+      const method: string | null = row.method ?? row[9] ?? null;
 
       if (!routeMap.has(id)) {
         routeMap.set(id, {
           id,
           name,
+          method,
           filePath,
           responseKeys,
           errorKeys,
@@ -6501,7 +6508,7 @@ export class LocalBackend {
 
   private async apiImpact(
     repo: RepoHandle,
-    params: { route?: string; file?: string },
+    params: { route?: string; file?: string; method?: string },
   ): Promise<any> {
     await this.ensureInitialized(repo);
 
@@ -6521,11 +6528,18 @@ export class LocalBackend {
       queryParams.file = params.file;
     }
 
-    const routes = await this.fetchRoutesWithConsumers(repo.lbugPath, routeFilter, queryParams);
+    // After #2302 the same URL/handler can expose one Route node per HTTP verb.
+    // An optional `method` narrows to that one verb so the response collapses to
+    // the singular shape; verbless routes (null method) never match a selector.
+    const wantedMethod = params.method?.toUpperCase();
+    const routes = (
+      await this.fetchRoutesWithConsumers(repo.lbugPath, routeFilter, queryParams)
+    ).filter((r) => !wantedMethod || r.method?.toUpperCase() === wantedMethod);
 
     if (routes.length === 0) {
       const target = params.route || params.file;
-      return { error: `No routes found matching "${target}".` };
+      const verb = wantedMethod ? ` with method "${wantedMethod}"` : '';
+      return { error: `No routes found matching "${target}"${verb}.` };
     }
 
     const flowMap = await this.fetchLinkedFlowsBatch(
@@ -6614,6 +6628,7 @@ export class LocalBackend {
 
       return {
         route: r.name,
+        method: r.method,
         handler: r.filePath,
         responseShape: {
           success: responseKeys,
