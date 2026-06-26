@@ -27,6 +27,9 @@ export const TYPESCRIPT_QUERIES = `
 (function_declaration
   name: (identifier) @name) @definition.function
 
+(generator_function_declaration
+  name: (identifier) @name) @definition.function
+
 ; TypeScript overload signatures (function_signature is a separate node type from function_declaration)
 (function_signature
   name: (identifier) @name) @definition.function
@@ -372,6 +375,9 @@ export const JAVASCRIPT_QUERIES = `
   name: (identifier) @name) @definition.class
 
 (function_declaration
+  name: (identifier) @name) @definition.function
+
+(generator_function_declaration
   name: (identifier) @name) @definition.function
 
 (method_definition
