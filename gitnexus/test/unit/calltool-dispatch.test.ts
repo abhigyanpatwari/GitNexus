@@ -1457,14 +1457,19 @@ describe('LocalBackend.callTool', () => {
   // After #2302 a same URL exposes one Route node per HTTP verb. A bare-URL (or
   // bare-file) api_impact lookup therefore returns the wrapped { routes, total }
   // form; passing `method` collapses it back to the singular shape.
-  const verbRow = (method: string | null, routeName: string, handlerFile: string) => ({
+  const verbRow = (
+    method: string | null,
+    routeName: string,
+    handlerFile: string,
+    middleware: string[] | null = null,
+  ) => ({
     routeId: `Route:${method ? `${method} ` : ''}${routeName}`,
     routeName,
     method,
     handlerFile,
     responseKeys: null,
     errorKeys: null,
-    middleware: null,
+    middleware,
     consumerName: null,
     consumerFile: null,
     fetchReason: null,
@@ -1554,6 +1559,20 @@ describe('LocalBackend.callTool', () => {
     ]);
     const result = await backend.callTool('shape_check', { route: '/api/orders' });
     expect(result.routes[0].method).toBe('GET');
+  });
+
+  // The partial-middleware warning is driven by a per-handler verb count taken
+  // from the UNFILTERED match, so a method-scoped query on a multi-verb handler
+  // still flags partial middleware. Counting the filtered set would drop it.
+  it('api_impact keeps middlewareDetection partial under a method filter', async () => {
+    vi.mocked(executeParameterized).mockResolvedValue([
+      verbRow('GET', '/api/orders', 'api/orders.ts', ['withAuth']),
+      verbRow('POST', '/api/orders', 'api/orders.ts', ['withAuth']),
+    ]);
+    const result = await backend.callTool('api_impact', { route: '/api/orders', method: 'GET' });
+    expect(result.method).toBe('GET');
+    expect(result.middlewareDetection).toBe('partial');
+    expect(result.middlewareNote).toContain('route exports');
   });
 
   it('api_impact returns the wrapped form for a same-handler multi-verb file lookup', async () => {
