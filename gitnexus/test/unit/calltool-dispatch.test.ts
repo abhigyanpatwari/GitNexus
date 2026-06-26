@@ -1453,6 +1453,86 @@ describe('LocalBackend.callTool', () => {
     expect(result.total).toBe(2);
   });
 
+  // ── #2308: same-URL multi-verb route contract ──
+  // After #2302 a same URL exposes one Route node per HTTP verb. A bare-URL (or
+  // bare-file) api_impact lookup therefore returns the wrapped { routes, total }
+  // form; passing `method` collapses it back to the singular shape.
+  const verbRow = (method: string | null, routeName: string, handlerFile: string) => ({
+    routeId: `Route:${method ? `${method} ` : ''}${routeName}`,
+    routeName,
+    method,
+    handlerFile,
+    responseKeys: null,
+    errorKeys: null,
+    middleware: null,
+    consumerName: null,
+    consumerFile: null,
+    fetchReason: null,
+  });
+  const ordersVerbRows = [
+    verbRow('GET', '/api/orders', 'api/orders.ts'),
+    verbRow('POST', '/api/orders', 'api/orders.ts'),
+  ];
+
+  it('api_impact returns the wrapped form for same-URL multi-verb routes, each with its method', async () => {
+    vi.mocked(executeParameterized).mockResolvedValue(ordersVerbRows);
+    const result = await backend.callTool('api_impact', { route: '/api/orders' });
+    expect(result.total).toBe(2);
+    expect(result.routes).toHaveLength(2);
+    expect(result.routes.map((r: { method: string | null }) => r.method).sort()).toEqual([
+      'GET',
+      'POST',
+    ]);
+    expect(result.routes.every((r: { route: string }) => r.route === '/api/orders')).toBe(true);
+  });
+
+  it('api_impact narrows a multi-verb URL to one route when method is given', async () => {
+    vi.mocked(executeParameterized).mockResolvedValue(ordersVerbRows);
+    const result = await backend.callTool('api_impact', { route: '/api/orders', method: 'POST' });
+    expect(result.method).toBe('POST');
+    expect(result.route).toBe('/api/orders');
+    expect(result.routes).toBeUndefined();
+    expect(result.total).toBeUndefined();
+  });
+
+  it('api_impact matches the method selector case-insensitively', async () => {
+    vi.mocked(executeParameterized).mockResolvedValue(ordersVerbRows);
+    const result = await backend.callTool('api_impact', { route: '/api/orders', method: 'post' });
+    expect(result.method).toBe('POST');
+    expect(result.routes).toBeUndefined();
+  });
+
+  it('api_impact returns a verb-not-found error when method matches no route at the URL', async () => {
+    vi.mocked(executeParameterized).mockResolvedValue(ordersVerbRows);
+    const result = await backend.callTool('api_impact', { route: '/api/orders', method: 'DELETE' });
+    expect(result.error).toContain('/api/orders');
+    expect(result.error).toContain('DELETE');
+    expect(result.routes).toBeUndefined();
+  });
+
+  it('api_impact returns the wrapped form for a same-handler multi-verb file lookup', async () => {
+    vi.mocked(executeParameterized).mockResolvedValue([
+      verbRow('GET', '/api/orders', 'app/api/orders/route.ts'),
+      verbRow('POST', '/api/orders', 'app/api/orders/route.ts'),
+    ]);
+    const result = await backend.callTool('api_impact', { file: 'app/api/orders/route.ts' });
+    expect(result.total).toBe(2);
+    expect(result.routes.map((r: { method: string | null }) => r.method).sort()).toEqual([
+      'GET',
+      'POST',
+    ]);
+  });
+
+  it('api_impact surfaces a null method for method-less (verbless) routes', async () => {
+    vi.mocked(executeParameterized).mockResolvedValue([
+      verbRow(null, '/blog/[slug]', 'app/blog/[slug]/route.ts'),
+    ]);
+    const result = await backend.callTool('api_impact', { route: '/blog/[slug]' });
+    expect(result.method).toBeNull();
+    expect(result.route).toBe('/blog/[slug]');
+    expect(result.routes).toBeUndefined();
+  });
+
   it('api_impact HIGH risk for 10+ consumers', async () => {
     const rows = [];
     for (let i = 0; i < 10; i++) {
