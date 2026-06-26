@@ -61,6 +61,7 @@ function output(data: any): void {
 export async function queryCommand(
   queryText: string,
   options?: {
+    query?: string;
     repo?: string;
     branch?: string;
     context?: string;
@@ -69,7 +70,8 @@ export async function queryCommand(
     content?: boolean;
   },
 ): Promise<void> {
-  if (!queryText?.trim()) {
+  const resolvedQuery = queryText?.trim() || options?.query?.trim();
+  if (!resolvedQuery) {
     cliErrorKey('tool.usage.query');
     process.exit(1);
   }
@@ -77,7 +79,7 @@ export async function queryCommand(
   const backend = await getBackend();
   const result = await backend.callTool('query', {
     // #2175: canonical param is search_query; the backend still accepts legacy "query".
-    search_query: queryText,
+    search_query: resolvedQuery,
     task_context: options?.context,
     goal: options?.goal,
     limit: options?.limit ? parseInt(options.limit) : undefined,
@@ -95,6 +97,7 @@ export async function contextCommand(
     branch?: string;
     file?: string;
     uid?: string;
+    limit?: string;
     content?: boolean;
   },
 ): Promise<void> {
@@ -108,6 +111,7 @@ export async function contextCommand(
     process.exit(1);
   }
 
+  const limit = options?.limit ? Math.max(0, parseInt(options.limit, 10)) : undefined;
   const backend = await getBackend();
   const result = await backend.callTool('context', {
     name: name || undefined,
@@ -117,6 +121,15 @@ export async function contextCommand(
     repo: options?.repo,
     branch: options?.branch,
   });
+  if (limit) {
+    if (result.incoming?.calls && Array.isArray(result.incoming.calls))
+      result.incoming.calls = result.incoming.calls.slice(0, limit);
+    if (result.outgoing?.calls && Array.isArray(result.outgoing.calls))
+      result.outgoing.calls = result.outgoing.calls.slice(0, limit);
+    if (result.outgoing?.accesses && Array.isArray(result.outgoing.accesses))
+      result.outgoing.accesses = result.outgoing.accesses.slice(0, limit);
+    if (Array.isArray(result.processes)) result.processes = result.processes.slice(0, limit);
+  }
   output(result);
 }
 
@@ -209,6 +222,7 @@ export async function cypherCommand(
   options?: {
     repo?: string;
     branch?: string;
+    limit?: string;
   },
 ): Promise<void> {
   if (!query?.trim()) {
@@ -216,6 +230,7 @@ export async function cypherCommand(
     process.exit(1);
   }
 
+  const limit = options?.limit ? Math.max(0, parseInt(options.limit, 10)) : undefined;
   const backend = await getBackend();
   const result = await backend.callTool('cypher', {
     // #2175: canonical param is statement; the backend still accepts legacy "query".
@@ -223,6 +238,15 @@ export async function cypherCommand(
     repo: options?.repo,
     branch: options?.branch,
   });
+  if (limit) {
+    if (Array.isArray(result)) {
+      result.splice(limit);
+    } else if (result && typeof result === 'object' && typeof result.row_count === 'number') {
+      // Cypher returns {markdown, row_count} — rows are embedded in markdown string.
+      // We can't slice the markdown, but cap the reported row_count.
+      result.row_count = Math.min(result.row_count, limit);
+    }
+  }
   output(result);
 }
 
@@ -231,7 +255,9 @@ export async function detectChangesCommand(options?: {
   baseRef?: string;
   repo?: string;
   branch?: string;
+  limit?: string;
 }): Promise<void> {
+  const limit = options?.limit ? Math.max(0, parseInt(options.limit, 10)) : undefined;
   const backend = await getBackend();
   const result = await backend.callTool('detect_changes', {
     scope: options?.scope || 'unstaged',
@@ -239,6 +265,12 @@ export async function detectChangesCommand(options?: {
     repo: options?.repo,
     branch: options?.branch,
   });
+  if (limit) {
+    if (Array.isArray(result.changed_symbols))
+      result.changed_symbols = result.changed_symbols.slice(0, limit);
+    if (Array.isArray(result.affected_processes))
+      result.affected_processes = result.affected_processes.slice(0, limit);
+  }
   output(formatDetectChangesResult(result));
 }
 

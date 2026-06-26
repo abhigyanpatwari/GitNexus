@@ -244,6 +244,8 @@ export const en = {
   'help.option.branch': 'Scope to a specific branch index (multi-branch repos)',
   'help.option.context.uid': 'Direct symbol UID (zero-ambiguity lookup)',
   'help.option.context.file': 'File path to disambiguate common names',
+  'help.option.context.limit': 'Max callers/callees/processes to return',
+  'help.option.query.flag': 'Search query (alias for positional argument)',
   'help.option.impact.kind':
     'Kind filter to disambiguate common names (e.g. Function, Class, Method)',
   'help.option.impact.direction': 'upstream (dependants) or downstream (dependencies)',
@@ -260,6 +262,8 @@ export const en = {
   'help.option.trace.includeTests': 'Traverse through test-file symbols (default: false)',
   'help.option.detectChanges.scope': 'What to analyze: unstaged, staged, all, or compare',
   'help.option.detectChanges.baseRef': 'Branch/commit for compare scope (e.g. main)',
+  'help.option.detectChanges.limit': 'Max changed symbols to return',
+  'help.option.cypher.limit': 'Max result rows to return',
   'help.option.check.cycles': 'Detect circular imports and fail when any are found',
   'help.option.evalServer.host':
     'Bind address (default: 127.0.0.1, use 0.0.0.0 to expose to all interfaces)',
