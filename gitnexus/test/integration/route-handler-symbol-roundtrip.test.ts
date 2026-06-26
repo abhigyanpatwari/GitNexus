@@ -19,18 +19,25 @@ import { withTestLbugDB } from '../helpers/test-indexed-db.js';
 import { buildTestGraph } from '../helpers/test-graph.js';
 import { streamAllCSVsToDisk } from '../../src/core/lbug/csv-generator.js';
 import { HANDLES_ROUTE_QUERY } from '../../src/core/group/extractors/http-route-extractor.js';
+import { generateId } from '../../src/lib/utils.js';
+import { routeNodeKey } from '../../src/core/ingestion/route-extractors/route-path.js';
 
 const HANDLER_UID = 'Method:OrderController.java:create';
+// Composite Route id — post-#2289 the routes phase emits this shape for a
+// method-bearing declarative route, so the CSV→COPY round-trip below
+// exercises both the new column AND the new id format.
+const ROUTE_ID = generateId('Route', routeNodeKey('POST', '/api/orders'));
 
 withTestLbugDB('route-handler-symbol-roundtrip', (handle) => {
   it('persists Route.handlerSymbolId through CSV→COPY and HANDLES_ROUTE_QUERY returns it', async () => {
     const adapter = await import('../../src/core/lbug/lbug-adapter.js');
 
-    // 1. Route node carrying a resolved handlerSymbolId (what the routes phase
-    //    now stamps when resolveRouteHandlerSymbols resolves the handler).
+    // 1. Route node carrying a resolved handlerSymbolId, keyed by the
+    //    composite `(method, url)` id the routes phase now stamps when
+    //    `resolveRouteHandlerSymbols` resolves the handler.
     const graph = buildTestGraph([
       {
-        id: 'Route:/api/orders',
+        id: ROUTE_ID,
         label: 'Route',
         name: '/api/orders',
         filePath: 'OrderController.java',
@@ -50,10 +57,12 @@ withTestLbugDB('route-handler-symbol-roundtrip', (handle) => {
     await fs.mkdir(repoDir, { recursive: true });
     await streamAllCSVsToDisk(graph, repoDir, csvDir);
 
-    // Sanity: route.csv header + row include the handlerSymbolId column/value.
+    // Sanity: route.csv header + row include the handlerSymbolId column/value,
+    // and the composite id round-trips into the CSV verbatim.
     const routeCsv = await fs.readFile(path.join(csvDir, 'route.csv'), 'utf-8');
     expect(routeCsv.split('\n')[0]).toContain('handlerSymbolId');
     expect(routeCsv).toContain(HANDLER_UID);
+    expect(routeCsv).toContain(ROUTE_ID);
 
     // 3. COPY the Route node via the production COPY query.
     const routeCsvPath = path.join(csvDir, 'route.csv').replace(/\\/g, '/');
@@ -64,7 +73,7 @@ withTestLbugDB('route-handler-symbol-roundtrip', (handle) => {
       `CREATE (:File {id: 'File:OrderController.java', name: 'OrderController.java', filePath: 'OrderController.java'})`,
     );
     await adapter.executeQuery(
-      `MATCH (f:File {id: 'File:OrderController.java'}), (r:Route {id: 'Route:/api/orders'})
+      `MATCH (f:File {id: 'File:OrderController.java'}), (r:Route {id: '${ROUTE_ID}'})
        CREATE (f)-[:CodeRelation {type: 'HANDLES_ROUTE', confidence: 1.0, reason: 'framework-route', step: 0}]->(r)`,
     );
 

@@ -73,21 +73,25 @@ describe('CALL_SUMMARY relation-type exclusion (U-C1)', () => {
 });
 
 describe('CALL_SUMMARY incremental reuse gate (U-C5)', () => {
-  it('INCREMENTAL_SCHEMA_VERSION is bumped to 4 (CALL_SUMMARY re-index window)', () => {
-    expect(INCREMENTAL_SCHEMA_VERSION).toBe(4);
+  it('INCREMENTAL_SCHEMA_VERSION is bumped to 5 (multi-verb Route identity re-index window)', () => {
+    expect(INCREMENTAL_SCHEMA_VERSION).toBe(5);
   });
 
-  it('a pre-v4 (v3) stamp fails the `=== INCREMENTAL_SCHEMA_VERSION` reuse gate → forces full re-analyze', () => {
+  it('a pre-current stamp fails the `=== INCREMENTAL_SCHEMA_VERSION` reuse gate → forces full re-analyze', () => {
     // The reuse gate at run-analyze.ts:920 is exactly this strict equality on
     // the persisted `existingMeta.schemaVersion` (a plain number, possibly
     // absent on a legacy stamp). Replicate it as a typed predicate.
     const passesReuseGate = (stampedSchemaVersion: number | undefined): boolean =>
       stampedSchemaVersion === INCREMENTAL_SCHEMA_VERSION;
-    // A pre-v4 (v3) index has no CALL_SUMMARY edges → must NOT reuse → full re-analyze.
+    // A pre-v4 (v3) index has no CALL_SUMMARY edges → must NOT reuse.
     expect(passesReuseGate(3)).toBe(false);
+    // A pre-v5 (v4) index predates the multi-verb Route identity change → its
+    // persisted Route nodes use the old url-only ids, so an incremental top-up
+    // would strand them → must NOT reuse.
+    expect(passesReuseGate(4)).toBe(false);
     // A legacy stamp with no schemaVersion at all is likewise rejected.
     expect(passesReuseGate(undefined)).toBe(false);
     // A current-version stamp passes the gate (incremental top-up eligible).
-    expect(passesReuseGate(4)).toBe(true);
+    expect(passesReuseGate(5)).toBe(true);
   });
 });

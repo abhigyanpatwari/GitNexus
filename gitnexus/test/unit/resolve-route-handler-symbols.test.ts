@@ -4,15 +4,18 @@
  * Pins the P2 fixes from the review:
  *   - ambiguity → fail-open: a same-name lookup returning ≠1 yields NO
  *     handlerSymbolId (never an arbitrary `[0]` guess).
- *   - first-writer-wins reservation: the first route to claim a URL reserves it
- *     even when its handler is unresolvable, so a later same-URL route can't
- *     stamp its handler onto the (node-winning) first route's slot.
- *   - happy path: a uniquely-resolvable handler is stamped, keyed by the
- *     normalized URL.
+ *   - first-writer-wins reservation: the first route to claim a route identity
+ *     reserves it even when its handler is unresolvable, so a later same-identity
+ *     route can't stamp its handler onto the (node-winning) first route's slot.
+ *   - happy path: a uniquely-resolvable handler is stamped, keyed by the route's
+ *     `(method, url)` identity (`routeNodeKey`).
+ *   - multi-verb identity (#2289): `GET /x` and `POST /x` are distinct keys, so
+ *     each verb's handler is resolved independently.
  */
 import { describe, it, expect } from 'vitest';
 import { createSemanticModel } from '../../src/core/ingestion/model/index.js';
 import { resolveRouteHandlerSymbols } from '../../src/core/ingestion/call-processor.js';
+import { routeNodeKey } from '../../src/core/ingestion/route-extractors/route-path.js';
 import type { ExtractedDecoratorRoute } from '../../src/core/ingestion/workers/parse-worker.js';
 import type { ExtractedRoute } from '../../src/core/ingestion/route-extractors/laravel.js';
 
@@ -31,13 +34,15 @@ function decoratorRoute(overrides: Partial<ExtractedDecoratorRoute> = {}): Extra
 }
 
 describe('resolveRouteHandlerSymbols — decorator routes', () => {
-  it('uniquely-resolvable handler is stamped, keyed by normalized URL', () => {
+  const GET_ORDERS = routeNodeKey('GET', '/orders');
+
+  it('uniquely-resolvable handler is stamped, keyed by (method, url) identity', () => {
     const model = createSemanticModel();
     model.symbols.add(FILE, 'list', 'method:OrderController.list', 'Method');
 
     const out = resolveRouteHandlerSymbols(model, [], [decoratorRoute()]);
 
-    expect(out.get('/orders')).toBe('method:OrderController.list');
+    expect(out.get(GET_ORDERS)).toBe('method:OrderController.list');
   });
 
   it('ambiguous same-name handler (overloads) → fail-open, no stamp', () => {
@@ -48,7 +53,7 @@ describe('resolveRouteHandlerSymbols — decorator routes', () => {
 
     const out = resolveRouteHandlerSymbols(model, [], [decoratorRoute()]);
 
-    expect(out.has('/orders')).toBe(false);
+    expect(out.has(GET_ORDERS)).toBe(false);
   });
 
   it('unknown handler name → fail-open, no stamp', () => {
@@ -56,10 +61,10 @@ describe('resolveRouteHandlerSymbols — decorator routes', () => {
 
     const out = resolveRouteHandlerSymbols(model, [], [decoratorRoute({ handlerName: 'ghost' })]);
 
-    expect(out.has('/orders')).toBe(false);
+    expect(out.has(GET_ORDERS)).toBe(false);
   });
 
-  it('same-URL collision: an unresolvable first route reserves the slot so a later resolvable route cannot stamp it', () => {
+  it('same-identity collision: an unresolvable first route reserves the slot so a later resolvable route cannot stamp it', () => {
     const model = createSemanticModel();
     // Only the SECOND route's handler exists in the model.
     model.symbols.add(FILE, 'second', 'method:OrderController.second', 'Method');
@@ -68,20 +73,20 @@ describe('resolveRouteHandlerSymbols — decorator routes', () => {
       model,
       [],
       [
-        // First route at /orders is unresolvable (no such symbol) — but it is the
-        // route the routes phase makes the Route-node winner, so its slot must be
-        // reserved (empty), NOT filled by the later same-URL route.
+        // First route at GET /orders is unresolvable (no such symbol) — but it is
+        // the route the routes phase makes the Route-node winner, so its slot must
+        // be reserved (empty), NOT filled by the later same-identity route.
         decoratorRoute({ handlerName: 'first_missing' }),
         decoratorRoute({ handlerName: 'second' }),
       ],
     );
 
-    // Reservation holds: the URL carries no (wrong) handler. Pre-fix this would
-    // have stamped `method:OrderController.second` onto the first route's node.
-    expect(out.has('/orders')).toBe(false);
+    // Reservation holds: the identity carries no (wrong) handler. Pre-fix this
+    // would have stamped `method:OrderController.second` onto the first node.
+    expect(out.has(GET_ORDERS)).toBe(false);
   });
 
-  it('first-writer-wins among resolvable same-URL routes', () => {
+  it('first-writer-wins among resolvable same-identity routes', () => {
     const model = createSemanticModel();
     model.symbols.add(FILE, 'winner', 'method:OrderController.winner', 'Method');
     model.symbols.add(FILE, 'loser', 'method:OrderController.loser', 'Method');
@@ -92,7 +97,27 @@ describe('resolveRouteHandlerSymbols — decorator routes', () => {
       [decoratorRoute({ handlerName: 'winner' }), decoratorRoute({ handlerName: 'loser' })],
     );
 
-    expect(out.get('/orders')).toBe('method:OrderController.winner');
+    expect(out.get(GET_ORDERS)).toBe('method:OrderController.winner');
+  });
+
+  it('multi-verb same URL (#2289): GET /orders and POST /orders resolve to distinct keys', () => {
+    const model = createSemanticModel();
+    model.symbols.add(FILE, 'list', 'method:OrderController.list', 'Method');
+    model.symbols.add(FILE, 'create', 'method:OrderController.create', 'Method');
+
+    const out = resolveRouteHandlerSymbols(
+      model,
+      [],
+      [
+        decoratorRoute({ httpMethod: 'GET', handlerName: 'list' }),
+        decoratorRoute({ httpMethod: 'POST', decoratorName: 'PostMapping', handlerName: 'create' }),
+      ],
+    );
+
+    // Two independent identities — neither evicts the other (the pre-#2289
+    // URL-only key would have dropped POST /orders as a duplicate of GET /orders).
+    expect(out.get(routeNodeKey('GET', '/orders'))).toBe('method:OrderController.list');
+    expect(out.get(routeNodeKey('POST', '/orders'))).toBe('method:OrderController.create');
   });
 });
 
@@ -123,7 +148,7 @@ describe('resolveRouteHandlerSymbols — Laravel framework routes', () => {
 
     const out = resolveRouteHandlerSymbols(model, [laravelRoute()], []);
 
-    expect(out.get('/orders')).toBe('method:OrderController.index');
+    expect(out.get(routeNodeKey('GET', '/orders'))).toBe('method:OrderController.index');
   });
 
   it('ambiguous controller short-name (>1) → fail-open, no stamp', () => {
@@ -143,6 +168,6 @@ describe('resolveRouteHandlerSymbols — Laravel framework routes', () => {
 
     const out = resolveRouteHandlerSymbols(model, [laravelRoute()], []);
 
-    expect(out.has('/orders')).toBe(false);
+    expect(out.has(routeNodeKey('GET', '/orders'))).toBe(false);
   });
 });

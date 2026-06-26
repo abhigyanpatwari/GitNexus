@@ -4,6 +4,7 @@ import {
   FIXTURES,
   getRelationships,
   getNodesByLabel,
+  getNodesByLabelFull,
   runPipelineFromRepo,
   type PipelineResult,
 } from './helpers.js';
@@ -40,11 +41,15 @@ describe('Express/Hono route detection', () => {
     expect(itemsRoute!.sourceFilePath).toContain('app.js');
   });
 
-  it('detects multiple HTTP methods on same path as single route', () => {
-    // /api/users has GET and POST but route registry deduplicates by path
-    const routes = getNodesByLabel(result, 'Route');
-    const usersRoutes = routes.filter((r) => r === '/api/users');
-    expect(usersRoutes).toHaveLength(1);
+  it('splits same-path GET/POST into one Route node per verb (#2289)', () => {
+    // /api/users carries both GET and POST. Route identity is now `(method, url)`,
+    // so the pair becomes TWO Route nodes — each keeps `/api/users` as its display
+    // name and is distinguished by its `method` property. (Pre-#2289 the registry
+    // deduplicated by URL and collapsed them into a single node.)
+    const usersNodes = getNodesByLabelFull(result, 'Route').filter((n) => n.name === '/api/users');
+    expect(usersNodes).toHaveLength(2);
+    const methods = usersNodes.map((n) => n.properties.method).sort();
+    expect(methods).toEqual(['GET', 'POST']);
   });
 
   it('detects router.get() routes (not just app.get())', () => {

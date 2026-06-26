@@ -192,10 +192,12 @@ export class ManifestExtractor {
     try {
       let rows: Record<string, unknown>[];
       if (link.type === 'http') {
-        // Route.name is the canonicalized URL path (see
-        // core/ingestion/pipeline.ts ensureSlash + generateId('Route', ...)).
-        // Normalize the manifest contract the same way so a user-written
-        // "/api/orders" matches "api/orders" in the graph.
+        // Route.name is the canonicalized URL path. Since #2289 a Route node's
+        // *id* is `(method, url)`-composite (`routeNodeKey`), but `route.name`
+        // continues to carry the bare URL so URL-keyed group queries like this
+        // one keep working without a schema change. Normalize the manifest
+        // contract the same way so a user-written "/api/orders" matches
+        // "api/orders" in the graph.
         //
         // The contract may also use the explicit-method form "GET::/api/orders"
         // recommended by buildContractId. Strip the METHOD:: prefix before
