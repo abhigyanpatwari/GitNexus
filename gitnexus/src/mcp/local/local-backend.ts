@@ -6511,7 +6511,7 @@ export class LocalBackend {
 
   private async apiImpact(
     repo: RepoHandle,
-    params: { route?: string; file?: string; method?: string },
+    params: { route?: string; file?: string; method?: unknown },
   ): Promise<any> {
     await this.ensureInitialized(repo);
 
@@ -6535,7 +6535,15 @@ export class LocalBackend {
     // An optional `method` narrows to that one verb so the response collapses to
     // the singular shape. A method-agnostic route (method `'*'`, e.g. a Django
     // function view) matches any selector; verbless routes (null method) never do.
-    const wantedMethod = params.method?.toUpperCase();
+    // `method` arrives unvalidated from the MCP envelope (the JSON schema is
+    // advisory), so reject a non-string verb with a structured error instead of
+    // throwing on `.toUpperCase()`; empty/whitespace collapses to no selector.
+    const rawMethod = params.method;
+    if (rawMethod !== undefined && typeof rawMethod !== 'string') {
+      return { error: '"method" must be a string (e.g. "GET", "POST").' };
+    }
+    const wantedMethod =
+      typeof rawMethod === 'string' ? rawMethod.trim().toUpperCase() || undefined : undefined;
     const matched = await this.fetchRoutesWithConsumers(repo.lbugPath, routeFilter, queryParams);
     const routes = matched.filter(
       (r) => !wantedMethod || r.method === '*' || r.method?.toUpperCase() === wantedMethod,

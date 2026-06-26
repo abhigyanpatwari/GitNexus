@@ -1591,6 +1591,31 @@ describe('LocalBackend.callTool', () => {
     ]);
   });
 
+  // The `method` param is not schema-validated at the transport, so api_impact
+  // must reject a non-string verb with a structured error (not a thrown
+  // TypeError) and treat empty/whitespace as no selector.
+  it('api_impact returns a structured error for a non-string method', async () => {
+    vi.mocked(executeParameterized).mockResolvedValue(ordersVerbRows);
+    const result = await backend.callTool('api_impact', { route: '/api/orders', method: 5 });
+    expect(result.error).toContain('method');
+    expect(result.error).toContain('string');
+    expect(result.routes).toBeUndefined();
+  });
+
+  it('api_impact treats an empty-string method as no selector', async () => {
+    vi.mocked(executeParameterized).mockResolvedValue(ordersVerbRows);
+    const result = await backend.callTool('api_impact', { route: '/api/orders', method: '' });
+    expect(result.total).toBe(2);
+    expect(result.error).toBeUndefined();
+  });
+
+  it('api_impact treats a whitespace-only method as no selector', async () => {
+    vi.mocked(executeParameterized).mockResolvedValue(ordersVerbRows);
+    const result = await backend.callTool('api_impact', { route: '/api/orders', method: '  ' });
+    expect(result.total).toBe(2);
+    expect(result.error).toBeUndefined();
+  });
+
   it('api_impact HIGH risk for 10+ consumers', async () => {
     const rows = [];
     for (let i = 0; i < 10; i++) {
