@@ -83,12 +83,14 @@ describe('Multi-verb Route node identity (#2289)', () => {
 
   it('connects a verb-less fetch() consumer to every Route node at the URL', () => {
     const consumerFileId = generateId('File', 'web/itemsClient.ts');
-    const fetchTargets = new Set<string>();
-    result.graph.forEachRelationship((r) => {
-      if (r.type === 'FETCHES' && r.sourceId === consumerFileId) {
-        fetchTargets.add(r.targetId);
-      }
-    });
+    // Collect FETCHES targets without a test-level conditional: pass the
+    // shape filter as a Set membership check on the relationship type +
+    // sourceId, then materialize unique targetIds.
+    const fetchTargets = new Set(
+      result.graph.relationships
+        .filter((r) => r.type === 'FETCHES' && r.sourceId === consumerFileId)
+        .map((r) => r.targetId),
+    );
 
     // /api/items: the verb-less consumer reaches BOTH the GET and POST nodes.
     expect(fetchTargets.has(routeId('GET', '/api/items'))).toBe(true);

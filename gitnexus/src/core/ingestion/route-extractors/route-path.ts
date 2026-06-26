@@ -2,10 +2,11 @@
  * Shared route-path normalization.
  *
  * Extracted from the routes phase so both the routes phase (which creates the
- * `Route` graph node, keyed by the normalized URL) and the parse phase (which
- * resolves each route's handler symbol and needs the SAME key to associate the
- * resolved id back to the route) can compute an identical route URL without a
- * phase-to-phase import cycle. Pure string logic, no dependencies.
+ * `Route` graph node, keyed by `(method, url)` via `routeNodeKey` — #2289) and
+ * the parse phase (which resolves each route's handler symbol and needs the
+ * SAME key to associate the resolved id back to the route) can compute an
+ * identical route identity without a phase-to-phase import cycle. Pure string
+ * logic, no dependencies.
  */
 
 /**
