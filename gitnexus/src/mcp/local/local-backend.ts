@@ -6551,7 +6551,9 @@ export class LocalBackend {
 
     if (routes.length === 0) {
       const target = params.route || params.file;
-      const verb = wantedMethod ? ` with method "${wantedMethod}"` : '';
+      // Only append the verb when the URL/file matched routes but none used it;
+      // a non-existent URL/file gets the plain "no routes found" message.
+      const verb = wantedMethod && matched.length > 0 ? ` with method "${wantedMethod}"` : '';
       return { error: `No routes found matching "${target}"${verb}.` };
     }
 

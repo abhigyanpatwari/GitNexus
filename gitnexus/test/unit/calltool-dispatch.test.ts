@@ -1510,6 +1510,16 @@ describe('LocalBackend.callTool', () => {
     expect(result.routes).toBeUndefined();
   });
 
+  it('api_impact omits the verb clause when the URL itself does not exist', async () => {
+    vi.mocked(executeParameterized).mockResolvedValue([]);
+    const result = await backend.callTool('api_impact', {
+      route: '/does/not/exist',
+      method: 'GET',
+    });
+    expect(result.error).toContain('/does/not/exist');
+    expect(result.error).not.toContain('with method');
+  });
+
   it('api_impact returns the wrapped form for a same-handler multi-verb file lookup', async () => {
     vi.mocked(executeParameterized).mockResolvedValue([
       verbRow('GET', '/api/orders', 'app/api/orders/route.ts'),
