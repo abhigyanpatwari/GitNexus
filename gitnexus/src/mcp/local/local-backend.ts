@@ -6374,6 +6374,7 @@ export class LocalBackend {
     return {
       routes: routes.map((r) => ({
         route: r.name,
+        method: r.method,
         handler: r.filePath,
         middleware: r.middleware || [],
         consumers: r.consumers,
@@ -6441,6 +6442,7 @@ export class LocalBackend {
 
         return {
           route: r.name,
+          method: r.method,
           handler: r.filePath,
           ...(responseKeys.length > 0 ? { responseKeys } : {}),
           ...(errorKeys.length > 0 ? { errorKeys } : {}),
@@ -6532,9 +6534,8 @@ export class LocalBackend {
     // An optional `method` narrows to that one verb so the response collapses to
     // the singular shape; verbless routes (null method) never match a selector.
     const wantedMethod = params.method?.toUpperCase();
-    const routes = (
-      await this.fetchRoutesWithConsumers(repo.lbugPath, routeFilter, queryParams)
-    ).filter((r) => !wantedMethod || r.method?.toUpperCase() === wantedMethod);
+    const matched = await this.fetchRoutesWithConsumers(repo.lbugPath, routeFilter, queryParams);
+    const routes = matched.filter((r) => !wantedMethod || r.method?.toUpperCase() === wantedMethod);
 
     if (routes.length === 0) {
       const target = params.route || params.file;
@@ -6547,9 +6548,10 @@ export class LocalBackend {
       routes.map((r) => r.id),
     );
 
-    // Count how many routes share the same handler file (for middleware partial detection)
+    // Count verbs per handler from the FULL match (before the method filter) so a
+    // method-scoped query still flags a multi-verb handler's partial middleware.
     const routeCountByHandler = new Map<string, number>();
-    for (const r of routes) {
+    for (const r of matched) {
       if (r.filePath) {
         routeCountByHandler.set(r.filePath, (routeCountByHandler.get(r.filePath) ?? 0) + 1);
       }

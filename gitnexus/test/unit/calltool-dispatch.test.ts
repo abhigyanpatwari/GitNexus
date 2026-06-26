@@ -1483,7 +1483,7 @@ describe('LocalBackend.callTool', () => {
       'GET',
       'POST',
     ]);
-    expect(result.routes.every((r: { route: string }) => r.route === '/api/orders')).toBe(true);
+    expect(result.routes).toMatchObject([{ route: '/api/orders' }, { route: '/api/orders' }]);
   });
 
   it('api_impact narrows a multi-verb URL to one route when method is given', async () => {
@@ -1504,7 +1504,7 @@ describe('LocalBackend.callTool', () => {
 
   it('api_impact returns a verb-not-found error when method matches no route at the URL', async () => {
     vi.mocked(executeParameterized).mockResolvedValue(ordersVerbRows);
-    const result = await backend.callTool('api_impact', { route: '/api/orders', method: 'DELETE' });
+    const result = await backend.callTool('api_impact', { route: '/api/orders', method: 'delete' });
     expect(result.error).toContain('/api/orders');
     expect(result.error).toContain('DELETE');
     expect(result.routes).toBeUndefined();
@@ -1530,6 +1530,31 @@ describe('LocalBackend.callTool', () => {
     const result = await backend.callTool('api_impact', { route: '/blog/[slug]' });
     expect(result.method).toBeNull();
     expect(result.route).toBe('/blog/[slug]');
+    expect(result.routes).toBeUndefined();
+  });
+
+  it('api_impact narrows a multi-verb file lookup to one route when method is given', async () => {
+    vi.mocked(executeParameterized).mockResolvedValue([
+      verbRow('GET', '/api/orders', 'app/api/orders/route.ts'),
+      verbRow('POST', '/api/orders', 'app/api/orders/route.ts'),
+    ]);
+    const result = await backend.callTool('api_impact', {
+      file: 'app/api/orders/route.ts',
+      method: 'POST',
+    });
+    expect(result.method).toBe('POST');
+    expect(result.route).toBe('/api/orders');
+    expect(result.routes).toBeUndefined();
+  });
+
+  it('api_impact excludes verbless routes from a method selector', async () => {
+    vi.mocked(executeParameterized).mockResolvedValue([
+      verbRow(null, '/api/orders', 'api/orders.ts'),
+      verbRow('GET', '/api/orders', 'api/orders.ts'),
+    ]);
+    const result = await backend.callTool('api_impact', { route: '/api/orders', method: 'GET' });
+    expect(result.method).toBe('GET');
+    expect(result.route).toBe('/api/orders');
     expect(result.routes).toBeUndefined();
   });
 
