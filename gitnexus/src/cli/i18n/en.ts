@@ -51,7 +51,8 @@ export const en = {
   'remove.removed': 'Removed: {{name}}',
   'remove.failed': 'Failed to remove {{name}}: {{message}}',
   'tool.noIndexed': 'GitNexus: No indexed repositories found. Run: gitnexus analyze',
-  'tool.usage.query': 'Usage: gitnexus query <search_query>',
+  'tool.usage.query':
+    'Usage: gitnexus query <search_query>  or  gitnexus query -q, --query <search_query>',
   'tool.usage.context': 'Usage: gitnexus context <symbol_name> [--uid <uid>] [--file <path>]',
   'tool.usage.impact':
     'Usage: gitnexus impact <symbol_name> [--uid <uid>] [--file <path>] [--kind <kind>] [--direction upstream|downstream]',
