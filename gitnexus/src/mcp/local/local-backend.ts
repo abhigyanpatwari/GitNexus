@@ -514,6 +514,41 @@ interface ImpactParams {
   summaryOnly?: boolean;
 }
 
+/** One route in an `api_impact` result. `executionFlows` are process names. */
+interface ApiImpactRoute {
+  route: string;
+  method: string | null;
+  handler: string;
+  responseShape: { success: string[]; error: string[] };
+  middleware: string[];
+  middlewareDetection?: 'partial';
+  middlewareNote?: string;
+  consumers: Array<{ name: string; file: string; accesses: string[]; attributionNote?: string }>;
+  mismatches?: Array<{
+    consumer: string;
+    field: string;
+    reason: string;
+    confidence: 'high' | 'low';
+  }>;
+  executionFlows: string[];
+  impactSummary: {
+    directConsumers: number;
+    affectedFlows: number;
+    riskLevel: 'LOW' | 'MEDIUM' | 'HIGH';
+    warning?: string;
+  };
+}
+
+/**
+ * `api_impact` is polymorphic by match count: a single matched route returns the
+ * route object directly; two or more return the wrapped `{ routes, total }`
+ * form; any guard failure returns `{ error }`.
+ */
+type ApiImpactResult =
+  | ApiImpactRoute
+  | { routes: ApiImpactRoute[]; total: number }
+  | { error: string };
+
 /**
  * One repository entry as returned by {@link LocalBackend.listRepos} and in each
  * `list_repos` page. Named so the `listRepos`/`listReposPage` return types read
@@ -6206,6 +6241,7 @@ export class LocalBackend {
     Array<{
       id: string;
       name: string;
+      method: string | null;
       filePath: string;
       responseKeys: string[] | null;
       errorKeys: string[] | null;
@@ -6228,7 +6264,7 @@ export class LocalBackend {
       RETURN n.id AS routeId, n.name AS routeName, n.filePath AS handlerFile,
              n.responseKeys AS responseKeys, n.errorKeys AS errorKeys, n.middleware AS middleware,
              consumer.name AS consumerName, consumer.filePath AS consumerFile,
-             r.reason AS fetchReason
+             r.reason AS fetchReason, n.method AS method
     `,
       params,
     );
@@ -6243,6 +6279,7 @@ export class LocalBackend {
       {
         id: string;
         name: string;
+        method: string | null;
         filePath: string;
         responseKeys: string[] | null;
         errorKeys: string[] | null;
@@ -6265,11 +6302,17 @@ export class LocalBackend {
       const consumerName = row.consumerName ?? row[6];
       const consumerFile = row.consumerFile ?? row[7];
       const fetchReason: string | null = row.fetchReason ?? row[8] ?? null;
+      // Verb is the literal '*' for method-agnostic routes (Django function
+      // views) and absent (null) for method-less routes (filesystem, Laravel
+      // resource). Appended last in RETURN so positional fallbacks for the
+      // consumer/reason columns above stay stable.
+      const method: string | null = row.method ?? row[9] ?? null;
 
       if (!routeMap.has(id)) {
         routeMap.set(id, {
           id,
           name,
+          method,
           filePath,
           responseKeys,
           errorKeys,
@@ -6367,6 +6410,7 @@ export class LocalBackend {
     return {
       routes: routes.map((r) => ({
         route: r.name,
+        method: r.method,
         handler: r.filePath,
         middleware: r.middleware || [],
         consumers: r.consumers,
@@ -6434,6 +6478,7 @@ export class LocalBackend {
 
         return {
           route: r.name,
+          method: r.method,
           handler: r.filePath,
           ...(responseKeys.length > 0 ? { responseKeys } : {}),
           ...(errorKeys.length > 0 ? { errorKeys } : {}),
@@ -6501,8 +6546,8 @@ export class LocalBackend {
 
   private async apiImpact(
     repo: RepoHandle,
-    params: { route?: string; file?: string },
-  ): Promise<any> {
+    params: { route?: string; file?: string; method?: unknown },
+  ): Promise<ApiImpactResult> {
     await this.ensureInitialized(repo);
 
     if (!params.route && !params.file) {
@@ -6521,11 +6566,30 @@ export class LocalBackend {
       queryParams.file = params.file;
     }
 
-    const routes = await this.fetchRoutesWithConsumers(repo.lbugPath, routeFilter, queryParams);
+    // After #2302 the same URL/handler can expose one Route node per HTTP verb.
+    // An optional `method` narrows to that one verb so the response collapses to
+    // the singular shape. A method-agnostic route (method `'*'`, e.g. a Django
+    // function view) matches any selector; verbless routes (null method) never do.
+    // `method` arrives unvalidated from the MCP envelope (the JSON schema is
+    // advisory), so reject a non-string verb with a structured error instead of
+    // throwing on `.toUpperCase()`; empty/whitespace collapses to no selector.
+    const rawMethod = params.method;
+    if (rawMethod !== undefined && typeof rawMethod !== 'string') {
+      return { error: '"method" must be a string (e.g. "GET", "POST").' };
+    }
+    const wantedMethod =
+      typeof rawMethod === 'string' ? rawMethod.trim().toUpperCase() || undefined : undefined;
+    const matched = await this.fetchRoutesWithConsumers(repo.lbugPath, routeFilter, queryParams);
+    const routes = matched.filter(
+      (r) => !wantedMethod || r.method === '*' || r.method?.toUpperCase() === wantedMethod,
+    );
 
     if (routes.length === 0) {
       const target = params.route || params.file;
-      return { error: `No routes found matching "${target}".` };
+      // Only append the verb when the URL/file matched routes but none used it;
+      // a non-existent URL/file gets the plain "no routes found" message.
+      const verb = wantedMethod && matched.length > 0 ? ` with method "${wantedMethod}"` : '';
+      return { error: `No routes found matching "${target}"${verb}.` };
     }
 
     const flowMap = await this.fetchLinkedFlowsBatch(
@@ -6533,15 +6597,16 @@ export class LocalBackend {
       routes.map((r) => r.id),
     );
 
-    // Count how many routes share the same handler file (for middleware partial detection)
+    // Count verbs per handler from the FULL match (before the method filter) so a
+    // method-scoped query still flags a multi-verb handler's partial middleware.
     const routeCountByHandler = new Map<string, number>();
-    for (const r of routes) {
+    for (const r of matched) {
       if (r.filePath) {
         routeCountByHandler.set(r.filePath, (routeCountByHandler.get(r.filePath) ?? 0) + 1);
       }
     }
 
-    const results = routes.map((r) => {
+    const results: ApiImpactRoute[] = routes.map((r) => {
       // Keys already normalized by fetchRoutesWithConsumers (quotes stripped)
       const responseKeys = r.responseKeys ?? [];
       const errorKeys = r.errorKeys ?? [];
@@ -6614,6 +6679,7 @@ export class LocalBackend {
 
       return {
         route: r.name,
+        method: r.method,
         handler: r.filePath,
         responseShape: {
           success: responseKeys,
@@ -6624,7 +6690,7 @@ export class LocalBackend {
           ? {
               middlewareDetection: 'partial' as const,
               middlewareNote:
-                'Middleware captured from first HTTP method export only — other methods in this handler may use different middleware chains.',
+                'Middleware captured from the first route export only — other route exports in this handler may use different middleware chains.',
             }
           : {}),
         consumers,

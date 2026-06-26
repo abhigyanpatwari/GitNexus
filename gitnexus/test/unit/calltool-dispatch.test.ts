@@ -1453,6 +1453,234 @@ describe('LocalBackend.callTool', () => {
     expect(result.total).toBe(2);
   });
 
+  // ── #2308: same-URL multi-verb route contract ──
+  // After #2302 a same URL exposes one Route node per HTTP verb. A bare-URL (or
+  // bare-file) api_impact lookup therefore returns the wrapped { routes, total }
+  // form; passing `method` collapses it back to the singular shape.
+  const verbRow = (
+    method: string | null,
+    routeName: string,
+    handlerFile: string,
+    middleware: string[] | null = null,
+  ) => ({
+    routeId: `Route:${method ? `${method} ` : ''}${routeName}`,
+    routeName,
+    method,
+    handlerFile,
+    responseKeys: null,
+    errorKeys: null,
+    middleware,
+    consumerName: null,
+    consumerFile: null,
+    fetchReason: null,
+  });
+  const ordersVerbRows = [
+    verbRow('GET', '/api/orders', 'api/orders.ts'),
+    verbRow('POST', '/api/orders', 'api/orders.ts'),
+  ];
+
+  it('api_impact returns the wrapped form for same-URL multi-verb routes, each with its method', async () => {
+    vi.mocked(executeParameterized).mockResolvedValue(ordersVerbRows);
+    const result = await backend.callTool('api_impact', { route: '/api/orders' });
+    expect(result.total).toBe(2);
+    expect(result.routes).toHaveLength(2);
+    expect(result.routes.map((r: { method: string | null }) => r.method).sort()).toEqual([
+      'GET',
+      'POST',
+    ]);
+    expect(result.routes).toMatchObject([{ route: '/api/orders' }, { route: '/api/orders' }]);
+  });
+
+  it('api_impact narrows a multi-verb URL to one route when method is given', async () => {
+    vi.mocked(executeParameterized).mockResolvedValue(ordersVerbRows);
+    const result = await backend.callTool('api_impact', { route: '/api/orders', method: 'POST' });
+    expect(result.method).toBe('POST');
+    expect(result.route).toBe('/api/orders');
+    expect(result.routes).toBeUndefined();
+    expect(result.total).toBeUndefined();
+  });
+
+  it('api_impact matches the method selector case-insensitively', async () => {
+    vi.mocked(executeParameterized).mockResolvedValue(ordersVerbRows);
+    const result = await backend.callTool('api_impact', { route: '/api/orders', method: 'post' });
+    expect(result.method).toBe('POST');
+    expect(result.routes).toBeUndefined();
+  });
+
+  it('api_impact returns a verb-not-found error when method matches no route at the URL', async () => {
+    vi.mocked(executeParameterized).mockResolvedValue(ordersVerbRows);
+    const result = await backend.callTool('api_impact', { route: '/api/orders', method: 'delete' });
+    expect(result.error).toContain('/api/orders');
+    expect(result.error).toContain('DELETE');
+    expect(result.routes).toBeUndefined();
+  });
+
+  it('api_impact omits the verb clause when the URL itself does not exist', async () => {
+    vi.mocked(executeParameterized).mockResolvedValue([]);
+    const result = await backend.callTool('api_impact', {
+      route: '/does/not/exist',
+      method: 'GET',
+    });
+    expect(result.error).toContain('/does/not/exist');
+    expect(result.error).not.toContain('with method');
+  });
+
+  // #2308: the shared `method` field also surfaces on route_map and shape_check
+  // (same fetchRoutesWithConsumers query), so both are documented + covered here.
+  it('route_map surfaces each route method', async () => {
+    vi.mocked(executeParameterized).mockResolvedValue([
+      verbRow('GET', '/api/orders', 'api/orders.ts'),
+      verbRow('POST', '/api/orders', 'api/orders.ts'),
+    ]);
+    const result = await backend.callTool('route_map', { route: '/api/orders' });
+    expect(result.routes.map((r: { method: string | null }) => r.method).sort()).toEqual([
+      'GET',
+      'POST',
+    ]);
+  });
+
+  it('route_map surfaces a null method for verbless routes', async () => {
+    vi.mocked(executeParameterized).mockResolvedValue([
+      verbRow(null, '/blog/[slug]', 'app/blog/[slug]/route.ts'),
+    ]);
+    const result = await backend.callTool('route_map', { route: '/blog/[slug]' });
+    expect(result.routes[0].method).toBeNull();
+  });
+
+  it('shape_check surfaces each route method', async () => {
+    vi.mocked(executeParameterized).mockResolvedValue([
+      {
+        ...verbRow('GET', '/api/orders', 'api/orders.ts'),
+        responseKeys: ['data', 'total'],
+        consumerName: 'OrdersList',
+        consumerFile: 'src/OrdersList.tsx',
+        fetchReason: 'fetch-url-match|keys:data',
+      },
+    ]);
+    const result = await backend.callTool('shape_check', { route: '/api/orders' });
+    expect(result.routes[0].method).toBe('GET');
+  });
+
+  // The partial-middleware warning is driven by a per-handler verb count taken
+  // from the UNFILTERED match, so a method-scoped query on a multi-verb handler
+  // still flags partial middleware. Counting the filtered set would drop it.
+  it('api_impact keeps middlewareDetection partial under a method filter', async () => {
+    vi.mocked(executeParameterized).mockResolvedValue([
+      verbRow('GET', '/api/orders', 'api/orders.ts', ['withAuth']),
+      verbRow('POST', '/api/orders', 'api/orders.ts', ['withAuth']),
+    ]);
+    const result = await backend.callTool('api_impact', { route: '/api/orders', method: 'GET' });
+    expect(result.method).toBe('GET');
+    expect(result.middlewareDetection).toBe('partial');
+    expect(result.middlewareNote).toContain('route exports');
+  });
+
+  it('api_impact returns the wrapped form for a same-handler multi-verb file lookup', async () => {
+    vi.mocked(executeParameterized).mockResolvedValue([
+      verbRow('GET', '/api/orders', 'app/api/orders/route.ts'),
+      verbRow('POST', '/api/orders', 'app/api/orders/route.ts'),
+    ]);
+    const result = await backend.callTool('api_impact', { file: 'app/api/orders/route.ts' });
+    expect(result.total).toBe(2);
+    expect(result.routes.map((r: { method: string | null }) => r.method).sort()).toEqual([
+      'GET',
+      'POST',
+    ]);
+  });
+
+  it('api_impact surfaces a null method for method-less (verbless) routes', async () => {
+    vi.mocked(executeParameterized).mockResolvedValue([
+      verbRow(null, '/blog/[slug]', 'app/blog/[slug]/route.ts'),
+    ]);
+    const result = await backend.callTool('api_impact', { route: '/blog/[slug]' });
+    expect(result.method).toBeNull();
+    expect(result.route).toBe('/blog/[slug]');
+    expect(result.routes).toBeUndefined();
+  });
+
+  it('api_impact narrows a multi-verb file lookup to one route when method is given', async () => {
+    vi.mocked(executeParameterized).mockResolvedValue([
+      verbRow('GET', '/api/orders', 'app/api/orders/route.ts'),
+      verbRow('POST', '/api/orders', 'app/api/orders/route.ts'),
+    ]);
+    const result = await backend.callTool('api_impact', {
+      file: 'app/api/orders/route.ts',
+      method: 'POST',
+    });
+    expect(result.method).toBe('POST');
+    expect(result.route).toBe('/api/orders');
+    expect(result.routes).toBeUndefined();
+  });
+
+  it('api_impact excludes verbless routes from a method selector', async () => {
+    vi.mocked(executeParameterized).mockResolvedValue([
+      verbRow(null, '/api/orders', 'api/orders.ts'),
+      verbRow('GET', '/api/orders', 'api/orders.ts'),
+    ]);
+    const result = await backend.callTool('api_impact', { route: '/api/orders', method: 'GET' });
+    expect(result.method).toBe('GET');
+    expect(result.route).toBe('/api/orders');
+    expect(result.routes).toBeUndefined();
+  });
+
+  // A method-agnostic route persists with method '*' (Django function views) and
+  // handles every verb — unlike a verbless (null) route, a method selector MUST
+  // match it, or api_impact reports a false "no routes" for a live handler.
+  it('api_impact matches a wildcard (*) route against a specific method selector', async () => {
+    vi.mocked(executeParameterized).mockResolvedValue([verbRow('*', '/django/view', 'views.py')]);
+    const result = await backend.callTool('api_impact', { route: '/django/view', method: 'POST' });
+    expect(result.method).toBe('*');
+    expect(result.route).toBe('/django/view');
+    expect(result.error).toBeUndefined();
+    expect(result.routes).toBeUndefined();
+  });
+
+  it('api_impact matches a wildcard (*) route case-insensitively for any verb', async () => {
+    vi.mocked(executeParameterized).mockResolvedValue([verbRow('*', '/django/view', 'views.py')]);
+    const result = await backend.callTool('api_impact', { route: '/django/view', method: 'get' });
+    expect(result.method).toBe('*');
+    expect(result.error).toBeUndefined();
+    expect(result.routes).toBeUndefined();
+  });
+
+  it('api_impact includes a wildcard (*) route alongside a concrete verb under a selector', async () => {
+    vi.mocked(executeParameterized).mockResolvedValue([
+      verbRow('*', '/api/orders', 'api/orders.ts'),
+      verbRow('GET', '/api/orders', 'api/orders.ts'),
+    ]);
+    const result = await backend.callTool('api_impact', { route: '/api/orders', method: 'GET' });
+    expect(result.total).toBe(2);
+    expect(result.routes.map((r: { method: string | null }) => r.method).sort()).toEqual([
+      '*',
+      'GET',
+    ]);
+  });
+
+  // The `method` param is not schema-validated at the transport, so api_impact
+  // must reject a non-string verb with a structured error (not a thrown
+  // TypeError) and treat empty/whitespace as no selector.
+  it('api_impact returns a structured error for a non-string method', async () => {
+    vi.mocked(executeParameterized).mockResolvedValue(ordersVerbRows);
+    const result = await backend.callTool('api_impact', { route: '/api/orders', method: 5 });
+    expect(result.error).toContain('method');
+    expect(result.error).toContain('string');
+    expect(result.routes).toBeUndefined();
+  });
+
+  it('api_impact treats an empty-string method as no selector', async () => {
+    vi.mocked(executeParameterized).mockResolvedValue(ordersVerbRows);
+    const result = await backend.callTool('api_impact', { route: '/api/orders', method: '' });
+    expect(result.total).toBe(2);
+    expect(result.error).toBeUndefined();
+  });
+
+  it('api_impact treats a whitespace-only method as no selector', async () => {
+    vi.mocked(executeParameterized).mockResolvedValue(ordersVerbRows);
+    const result = await backend.callTool('api_impact', { route: '/api/orders', method: '  ' });
+    expect(result.total).toBe(2);
+    expect(result.error).toBeUndefined();
+  });
+
   it('api_impact HIGH risk for 10+ consumers', async () => {
     const rows = [];
     for (let i = 0; i < 10; i++) {
