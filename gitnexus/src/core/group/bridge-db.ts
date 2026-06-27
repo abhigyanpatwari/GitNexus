@@ -13,7 +13,9 @@ import {
 import { dedupeContracts, dedupeCrossLinks } from './normalization.js';
 import { createLogger } from '../logger.js';
 
-const bridgeLogger = createLogger('bridge-db', { debugEnvVar: 'GITNEXUS_DEBUG_BRIDGE' });
+const bridgeLogger = createLogger('bridge-db', {
+  debugEnvVar: 'GITNEXUS_DEBUG_BRIDGE',
+});
 
 /**
  * Sidecar files that LadybugDB creates next to a `bridge.lbug` file.
@@ -32,6 +34,163 @@ const bridgeLogger = createLogger('bridge-db', { debugEnvVar: 'GITNEXUS_DEBUG_BR
  * cleaned up explicitly or the next writer trips the database-id check.
  */
 const LBUG_SIDECAR_SUFFIXES = ['.wal', '.shadow'] as const;
+
+/* ------------------------------------------------------------------ */
+/*  Read-only bridge handle cache                                     */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Cache of read-only bridge handles keyed by groupDir. Keeps one RO handle
+ * per groupDir alive across @group tool calls so a long-lived MCP server
+ * never reopens the same bridge.lbug in-process — reopening fails on Windows
+ * because the OS file handle isn't fully released before the next open races
+ * in (see PR #2269, #2274).
+ *
+ * deliberation: mtime-based invalidation was chosen over a simpler
+ * time-to-live or explicit-close model because:
+ *   1. TTL would force a reopen on a timer even when nothing changed.
+ *   2. Explicit-close requires every caller to know about the cache.
+ *   3. A cheap `fsp.stat` (uncached, but typically a single inode lookup on
+ *      modern kernels) before each `ensureBridgeReady` call detects external
+ *      writers (e.g. another process ran group sync) with zero false
+ *      positives and no timer complication.
+ *   4. Same-process writes invalidate explicitly via `invalidateBridgeCache`
+ *      before the atomic rename so the cached RO handle does not block it.
+ */
+interface CachedBridgeEntry {
+  handle: BridgeHandle;
+  mtime: number;
+}
+
+const cachedBridgeHandles = new Map<string, CachedBridgeEntry>();
+
+/**
+ * In-flight opens keyed by groupDir. Prevents the TOCTOU race where two
+ * concurrent cache-miss calls both open a fresh handle and the second
+ * overwrites the first in `cachedBridgeHandles` — leaking the first
+ * handle. Mirrors the `local-backend.ts:1293` reinitPromises pattern.
+ */
+const inFlightOpens = new Map<string, Promise<BridgeHandle | null>>();
+
+function bridgeCacheKey(groupDir: string): string {
+  return path.resolve(groupDir);
+}
+
+/**
+ * Close a BridgeHandle's native resources without touching the cache.
+ * Shared by `closeBridgeDb` (uncached handles) and the cache invalidation
+ * / shutdown paths so neither duplicates the close logic.
+ */
+async function closeBridgeHandle(handle: BridgeHandle): Promise<void> {
+  if (!handle._readOnly) {
+    try {
+      await (handle._conn as lbug.Connection).query('CHECKPOINT');
+    } catch {
+      /* ignore — older LadybugDB or schemaless DB may not accept it */
+    }
+  }
+  try {
+    await (handle._conn as lbug.Connection).close();
+  } catch {
+    /* ignore */
+  }
+  try {
+    await (handle._db as lbug.Database).close();
+  } catch {
+    /* ignore */
+  }
+}
+
+/**
+ * Get or create a cached read-only bridge handle for `groupDir`.
+ *
+ * - First call: delegates to `openBridgeDbReadOnly`, records the file's
+ *   `mtimeMs`, and caches the handle.
+ * - Subsequent calls (mtime unchanged): returns the cached handle — no
+ *   reopen, no OS file-handle churn.
+ * - After the file's mtime changes (external writer, e.g. another process
+ *   ran `gitnexus group sync`): closes the stale handle, opens a fresh
+ *   one, and updates the cache.
+ * - After the file disappears (ENOENT): invalidates cache, returns null.
+ *
+ * Returns `null` when the bridge file is missing, has an incompatible
+ * schema version, or cannot be opened even after the retry loop in
+ * `openBridgeDbReadOnly`.
+ */
+export async function getCachedBridgeReadOnly(groupDir: string): Promise<BridgeHandle | null> {
+  const key = bridgeCacheKey(groupDir);
+  const dbPath = path.join(groupDir, 'bridge.lbug');
+
+  // Fast path: cache hit and mtime unchanged → return cached handle.
+  const entry = cachedBridgeHandles.get(key);
+  if (entry) {
+    try {
+      const stat = await fsp.stat(dbPath);
+      if (stat.mtimeMs === entry.mtime) {
+        return entry.handle;
+      }
+    } catch {
+      // File disappeared (ENOENT) — fall through to close stale handle
+    }
+    // mtime changed or file gone — close the old handle
+    cachedBridgeHandles.delete(key);
+    await closeBridgeHandle(entry.handle);
+  }
+
+  // TOCTOU guard: if another caller is already opening for this key,
+  // await their in-flight promise instead of starting a second open.
+  const inFlight = inFlightOpens.get(key);
+  if (inFlight) return inFlight;
+
+  const openPromise: Promise<BridgeHandle | null> = (async () => {
+    try {
+      const handle = await openBridgeDbReadOnly(groupDir);
+      if (!handle) return null;
+
+      let mtime = 0;
+      try {
+        const stat = await fsp.stat(dbPath);
+        mtime = stat.mtimeMs;
+      } catch {
+        /* bridge.lbug absent — keep mtime 0 so next call re-opens */
+      }
+
+      cachedBridgeHandles.set(key, { handle, mtime });
+      return handle;
+    } finally {
+      inFlightOpens.delete(key);
+    }
+  })();
+  inFlightOpens.set(key, openPromise);
+  return openPromise;
+}
+
+/** Invalidate (close + drop) the cached read-only handle for `groupDir`. */
+export async function invalidateBridgeCache(groupDir: string): Promise<void> {
+  const key = bridgeCacheKey(groupDir);
+  const entry = cachedBridgeHandles.get(key);
+  if (entry) {
+    cachedBridgeHandles.delete(key);
+    await closeBridgeHandle(entry.handle);
+  }
+}
+
+/** Close ALL cached bridge handles. Call on process shutdown. */
+export async function closeAllCachedBridges(): Promise<void> {
+  const entries = [...cachedBridgeHandles.values()];
+  cachedBridgeHandles.clear();
+  await Promise.all(entries.map((e) => closeBridgeHandle(e.handle)));
+}
+
+// Best-effort process-exit cleanup. 'beforeExit' fires before 'exit' and
+// lets async work drain (unlike 'exit' which is synchronous-only). The OS
+// will reclaim all handles regardless, but closing them explicitly avoids
+// LadybugDB warning logs about abandoned WAL/sidecar files on the next
+// open. If you need deterministic shutdown (e.g. in a test runner), call
+// closeAllCachedBridges() explicitly before the process ends.
+process.once('beforeExit', () => {
+  void closeAllCachedBridges();
+});
 
 async function removeLbugFile(basePath: string): Promise<void> {
   const candidates = [basePath, ...LBUG_SIDECAR_SUFFIXES.map((s) => `${basePath}${s}`)];
@@ -231,46 +390,27 @@ function unwrapQueryResult(queryResult: lbug.QueryResult | lbug.QueryResult[]): 
 }
 
 export async function closeBridgeDb(handle: BridgeHandle): Promise<void> {
-  // CHECKPOINT before close so the WAL/.shadow contents are flushed into
-  // the main database file. Without this, LadybugDB 0.16.0's non-blocking
-  // checkpoint thread can outlive the close call and leave sidecar pages
-  // pending on disk, which makes a subsequent read-side open either race
-  // with the WAL replay or trip the database-id check on the sidecars.
-  // CHECKPOINT is a no-op when there's nothing pending, so it's cheap.
-  //
-  // ONLY on a writable handle. A read-only connection has nothing to flush,
-  // and issuing CHECKPOINT on it leaves a WAL/shadow lock artifact that makes
-  // the very next read-only open of the same path fail in-process — which broke
-  // repeated `@group` impact/trace calls in a long-lived MCP server (the read
-  // path opens read-only, queries, and closes per call).
-  if (!handle._readOnly) {
-    try {
-      await (handle._conn as lbug.Connection).query('CHECKPOINT');
-    } catch {
-      /* ignore — older LadybugDB or schemaless DB may not accept it */
-    }
+  // If this handle is the currently cached RO handle, the cache owns its
+  // lifetime. Only close on explicit invalidation or process shutdown.
+  const key = bridgeCacheKey(handle.groupDir);
+  const cached = cachedBridgeHandles.get(key);
+  if (cached && cached.handle === handle) {
+    return; // cache owns this handle
   }
-  try {
-    await (handle._conn as lbug.Connection).close();
-  } catch {
-    /* ignore */
-  }
-  try {
-    await (handle._db as lbug.Database).close();
-  } catch {
-    /* ignore */
-  }
-  // NOTE: Windows in-process write→read reopen of the SAME bridge.lbug is still a
-  // known limitation (the writable close's OS file handle is not released before
-  // the read open races; the existing open-side LBUG_OPEN_RETRY only retries
-  // lock-pattern errors, not the post-rename sidecar database-id mismatch). The
-  // bridge's close-then-reopen tests stay Windows-skipped. A close-side
-  // waitForWindowsHandleRelease + finalizeLbugSidecarsAfterClose probe (mirroring
-  // safeClose) was tried and did NOT close that gap on Windows CI, so it was
-  // removed rather than carry latency/duplication for no Windows benefit. The
-  // read-only CHECKPOINT skip above is the load-bearing fix and works on
-  // Linux/macOS (the platforms where in-process reopen is supported).
+  await closeBridgeHandle(handle);
 }
+
+// NOTE: Windows in-process write→read reopen of the SAME bridge.lbug is still a
+// known limitation (the writable close's OS file handle is not released before
+// the read open races; the existing open-side LBUG_OPEN_RETRY only retries
+// lock-pattern errors, not the post-rename sidecar database-id mismatch). The
+// bridge's close-then-reopen tests stay Windows-skipped. A close-side
+// waitForWindowsHandleRelease + finalizeLbugSidecarsAfterClose probe (mirroring
+// safeClose) was tried and did NOT close that gap on Windows CI, so it was
+// removed rather than carry latency/duplication for no Windows benefit. The
+// read-only CHECKPOINT skip above was the load-bearing fix on Linux/macOS; the
+// RO bridge-handle cache (getCachedBridgeReadOnly) now closes the Windows gap
+// by keeping one handle alive across calls instead of reopening per call.
 
 /* ------------------------------------------------------------------ */
 /*  retryRename — handles transient EBUSY/EPERM/EACCES on Windows    */
@@ -379,6 +519,13 @@ export async function writeBridge(
   input: WriteBridgeInput,
 ): Promise<WriteBridgeReport> {
   await fsp.mkdir(groupDir, { recursive: true });
+
+  // Invalidate the RO cache before writing. On Windows the cached handle
+  // would block the atomic rename (tmp → bridge.lbug) because the OS keeps
+  // a shared-mode lock on the open file. Closing it first guarantees the
+  // rename succeeds without EBUSY.
+  await invalidateBridgeCache(groupDir);
+
   const contracts = dedupeContracts(input.contracts);
   const crossLinks = dedupeCrossLinks(input.crossLinks);
 
@@ -731,7 +878,12 @@ export async function openBridgeDbReadOnly(groupDir: string): Promise<BridgeHand
       // (where we can retry) instead of on the first user query.
       await handle.db.init();
       await handle.conn.init();
-      return { _db: handle.db, _conn: handle.conn, groupDir, _readOnly: true } as BridgeHandle;
+      return {
+        _db: handle.db,
+        _conn: handle.conn,
+        groupDir,
+        _readOnly: true,
+      } as BridgeHandle;
     } catch (err) {
       lastErr = err;
       if (handle) await closeLbugConnection(handle);
@@ -748,7 +900,11 @@ export async function openBridgeDbReadOnly(groupDir: string): Promise<BridgeHand
   const safeErrMsg =
     lastErr instanceof Error ? String(lastErr.message).replace(/[\r\n]/g, ' ') : undefined;
   bridgeLogger.debug(
-    { groupDir: safeGroupDir, errMsg: safeErrMsg, attempts: LBUG_OPEN_RETRY_ATTEMPTS },
+    {
+      groupDir: safeGroupDir,
+      errMsg: safeErrMsg,
+      attempts: LBUG_OPEN_RETRY_ATTEMPTS,
+    },
     'openBridgeDbReadOnly gave up',
   );
   return null;

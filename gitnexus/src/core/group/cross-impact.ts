@@ -22,7 +22,12 @@ import {
   repoInSubgroup,
 } from './group-path-utils.js';
 import { getGroupDir } from './storage.js';
-import { closeBridgeDb, openBridgeDbReadOnly, queryBridge, readBridgeMeta } from './bridge-db.js';
+import {
+  closeBridgeDb,
+  getCachedBridgeReadOnly,
+  queryBridge,
+  readBridgeMeta,
+} from './bridge-db.js';
 import { BRIDGE_SCHEMA_VERSION } from './bridge-schema.js';
 
 // High limit for the local phase of group impact so collectImpactSymbolUids
@@ -137,7 +142,10 @@ export function validateGroupImpactParams(params: Record<string, unknown>):
   const target = String(params.target ?? '').trim();
   if (!name) return { ok: false, error: 'name is required' };
   if (!repoPath)
-    return { ok: false, error: 'repo is required (group repo path, e.g. app/backend)' };
+    return {
+      ok: false,
+      error: 'repo is required (group repo path, e.g. app/backend)',
+    };
   if (!target) return { ok: false, error: 'target is required' };
   if (
     params.service !== undefined &&
@@ -369,7 +377,10 @@ export async function ensureBridgeReady(
       error: `No bridge.lbug in this group directory. Run gitnexus group sync (schema ${BRIDGE_SCHEMA_VERSION}).`,
     };
   }
-  const handle = await openBridgeDbReadOnly(groupDir);
+  // Use the cached read-only handle if available — avoids reopening the same
+  // bridge.lbug in a long-lived MCP server, which fails on Windows because
+  // the OS handle isn't fully released before the next open races in.
+  const handle = await getCachedBridgeReadOnly(groupDir);
   if (!handle) {
     return {
       error: `Could not open bridge.lbug read-only (schema ${BRIDGE_SCHEMA_VERSION}). Run gitnexus group sync.`,
@@ -410,7 +421,11 @@ function rowToNeighbor(r: Record<string, unknown>): BridgeNeighborRow | null {
  */
 export async function resolveBridgeNeighbors(
   handle: BridgeHandle,
-  opts: { localRepo: string; uids: string[]; direction: 'upstream' | 'downstream' },
+  opts: {
+    localRepo: string;
+    uids: string[];
+    direction: 'upstream' | 'downstream';
+  },
 ): Promise<BridgeNeighborRow[]> {
   if (opts.uids.length === 0) return [];
   const cypher = opts.direction === 'upstream' ? CY_NEIGHBORS_UPSTREAM : CY_NEIGHBORS_DOWNSTREAM;
@@ -456,7 +471,9 @@ export async function runGroupImpact(
     config = await loadGroupConfig(groupDir);
   } catch (e) {
     if (e instanceof GroupNotFoundError)
-      return { error: `Group "${name}" not found. Run group_list to see configured groups.` };
+      return {
+        error: `Group "${name}" not found. Run group_list to see configured groups.`,
+      };
     return { error: e instanceof Error ? e.message : String(e) };
   }
 
