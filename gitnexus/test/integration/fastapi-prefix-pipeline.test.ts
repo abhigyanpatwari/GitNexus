@@ -30,6 +30,9 @@
  *    ingestion regex. The group-layer counterpart is pinned by the
  *    `non-app host` cases in `http-route-extractor.test.ts`.
  *
+ * 5. **Same-file `APIRouter(prefix=…)`** is applied to `@router`
+ *    decorators, and stacks with an outer `include_router(prefix=…)`.
+ *
  * The fixture lives at `test/fixtures/fastapi-prefix-app/` so the
  * pipeline can scan a real on-disk repo (mirroring how `gitnexus
  * analyze` is used in production) and so reviewers can inspect the
@@ -96,6 +99,18 @@ describe('FastAPI include_router(prefix=…) — ingestion pipeline', () => {
     expect(names).toContain('/rel/info');
   });
 
+  it('joins same-file APIRouter(prefix=…) with router decorator paths', () => {
+    const names = routeNames();
+    expect(names).toContain('/local');
+    expect(names.filter((n) => n === '/')).toHaveLength(0);
+  });
+
+  it('stacks same-file APIRouter(prefix=…) with include_router(prefix=…)', () => {
+    const names = routeNames();
+    expect(names).toContain('/v1/items/{item_id}');
+    expect(names.filter((n) => n === '/items/{item_id}')).toHaveLength(0);
+  });
+
   it('does NOT bleed `/users` prefix onto the same-name `admin/users.py`', () => {
     // FINDING 3: `api/users.py` and `admin/users.py` collide on the
     // short module key `users`. main.py only mounts the `api/users`
@@ -118,6 +133,8 @@ describe('FastAPI include_router(prefix=…) — ingestion pipeline', () => {
     expect(counts.get('/users/create')).toBe(1);
     expect(counts.get('/calls/list')).toBe(1);
     expect(counts.get('/rel/info')).toBe(1);
+    expect(counts.get('/local')).toBe(1);
+    expect(counts.get('/v1/items/{item_id}')).toBe(1);
     expect(counts.get('/audit')).toBe(1);
   });
 });

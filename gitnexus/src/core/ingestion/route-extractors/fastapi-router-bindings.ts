@@ -105,6 +105,12 @@ export interface ExtractedRouterModuleAlias {
   moduleKeyLong: string;
 }
 
+export interface ExtractedRouterConstructorPrefix {
+  filePath: string;
+  routerName: string;
+  prefix: string;
+}
+
 // `<host>.include_router(<module>.router, ..., prefix='/x')` (Shape A).
 // `<host>` is left unrestricted — common production names include
 // `app`, `api`, `application`, `asgi_app`. Pinning to the literal
@@ -122,6 +128,8 @@ const INCLUDE_ROUTER_NAME_RE =
 // The latter is the common case and the only one we can map back to
 // a module stem.
 const FROM_IMPORT_ROUTER_RE = /^\s*from\s+(\.+|\.*[A-Za-z_][\w.]*)\s+import\s+([^#\n]+)/gm;
+const APIRouter_PREFIX_RE =
+  /\b([A-Za-z_]\w*)\s*=\s*APIRouter\s*\([^)]*?\bprefix\s*=\s*(['"])([^'"]*)\2/g;
 
 /**
  * Last `.`-separated segment of a (possibly relative) Python module
@@ -176,6 +184,7 @@ export function extractFastAPIRouterBindings(
   outIncludes: ExtractedRouterInclude[],
   outImports: ExtractedRouterImport[],
   outModuleAliases?: ExtractedRouterModuleAlias[],
+  outConstructorPrefixes?: ExtractedRouterConstructorPrefix[],
 ): void {
   if (!content.includes('include_router') && !content.includes('router')) return;
 
@@ -236,6 +245,18 @@ export function extractFastAPIRouterBindings(
           moduleKeyLong: aliasLong,
         });
       }
+    }
+  }
+
+  if (outConstructorPrefixes && content.includes('APIRouter') && content.includes('prefix')) {
+    APIRouter_PREFIX_RE.lastIndex = 0;
+    let m: RegExpExecArray | null;
+    while ((m = APIRouter_PREFIX_RE.exec(content)) !== null) {
+      outConstructorPrefixes.push({
+        filePath,
+        routerName: m[1],
+        prefix: m[3],
+      });
     }
   }
 

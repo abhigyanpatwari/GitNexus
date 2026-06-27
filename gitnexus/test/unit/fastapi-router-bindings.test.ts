@@ -29,8 +29,10 @@ import {
   extractFastAPIRouterBindings,
   lastDottedSegment,
   lastTwoSegmentsAsPath,
+  type ExtractedRouterConstructorPrefix,
   type ExtractedRouterInclude,
   type ExtractedRouterImport,
+  type ExtractedRouterModuleAlias,
 } from '../../src/core/ingestion/route-extractors/fastapi-router-bindings.js';
 
 function run(filePath: string, content: string) {
@@ -38,6 +40,22 @@ function run(filePath: string, content: string) {
   const imports: ExtractedRouterImport[] = [];
   extractFastAPIRouterBindings(filePath, content, includes, imports);
   return { includes, imports };
+}
+
+function runFull(filePath: string, content: string) {
+  const includes: ExtractedRouterInclude[] = [];
+  const imports: ExtractedRouterImport[] = [];
+  const moduleAliases: ExtractedRouterModuleAlias[] = [];
+  const constructorPrefixes: ExtractedRouterConstructorPrefix[] = [];
+  extractFastAPIRouterBindings(
+    filePath,
+    content,
+    includes,
+    imports,
+    moduleAliases,
+    constructorPrefixes,
+  );
+  return { includes, imports, moduleAliases, constructorPrefixes };
 }
 
 describe('lastDottedSegment', () => {
@@ -283,5 +301,26 @@ describe('extractFastAPIRouterBindings — negative cases', () => {
     expect(imports).toHaveLength(1);
     expect(imports[0].localName).toBe('router');
     expect(imports[0].moduleKey).toBe('users');
+  });
+});
+
+describe('extractFastAPIRouterBindings — APIRouter constructor prefix', () => {
+  it('captures same-file APIRouter(prefix=...) declarations', () => {
+    const { constructorPrefixes } = runFull(
+      'api/items.py',
+      [
+        'from fastapi import APIRouter',
+        'router = APIRouter(prefix="/api/items", tags=["items"])',
+        '',
+        '@router.get("")',
+        'def list_items():',
+        '    return []',
+        '',
+      ].join('\n'),
+    );
+
+    expect(constructorPrefixes).toEqual([
+      { filePath: 'api/items.py', routerName: 'router', prefix: '/api/items' },
+    ]);
   });
 });

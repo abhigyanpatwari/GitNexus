@@ -162,6 +162,26 @@ const INCLUDE_ROUTER_NAME_PATTERNS = compilePatterns({
   ],
 } satisfies LanguagePatterns<Record<string, never>>);
 
+const APIRouter_PREFIX_PATTERNS = compilePatterns({
+  name: 'python-fastapi-apirouter-prefix',
+  language: Python,
+  patterns: [
+    {
+      meta: {},
+      query: `
+        (assignment
+          left: (identifier) @router_name (#eq? @router_name "router")
+          right: (call
+            function: (identifier) @factory (#eq? @factory "APIRouter")
+            arguments: (argument_list
+              (keyword_argument
+                name: (identifier) @kw (#eq? @kw "prefix")
+                value: (string) @prefix))))
+      `,
+    },
+  ],
+} satisfies LanguagePatterns<Record<string, never>>);
+
 // `from .api.assistant import router` style — used together with
 // INCLUDE_ROUTER_NAME so we can map a local name back to its module
 // path, then back to the file the router was declared in.
@@ -837,6 +857,10 @@ interface PythonRepoContext {
   prefixesByLongKey: Map<string, Set<string>>;
   /** stem only → set of prefixes (basename fallback, may collide) */
   prefixesByShortKey: Map<string, Set<string>>;
+  /** `<parent>/<stem>` → APIRouter(prefix=...) declared in that router file */
+  constructorPrefixesByLongKey: Map<string, string>;
+  /** stem only → APIRouter(prefix=...) fallback for root/single-segment files */
+  constructorPrefixesByShortKey: Map<string, string>;
 }
 
 /** Strip `.py` and return the bare basename (e.g. `api/users.py` → `users`). */
@@ -904,6 +928,8 @@ function buildPythonRepoContext(
 ): PythonRepoContext {
   const prefixesByLongKey = new Map<string, Set<string>>();
   const prefixesByShortKey = new Map<string, Set<string>>();
+  const constructorPrefixesByLongKey = new Map<string, string>();
+  const constructorPrefixesByShortKey = new Map<string, string>();
 
   // Pre-pass over .py files. We deliberately run this even on files
   // that don't contain `include_router` — the cost of an extra parse
@@ -913,10 +939,29 @@ function buildPythonRepoContext(
     if (!rel.endsWith('.py')) continue;
     const src = readFile(rel);
     if (!src) continue;
-    if (!src.includes('include_router')) continue;
+    if (!src.includes('include_router') && !src.includes('APIRouter')) continue;
     parser.setLanguage(Python);
     const tree = parseSource(parser, src);
     if (!tree) continue;
+
+    // Same-file FastAPI router prefix:
+    //   router = APIRouter(prefix="/items")
+    //   @router.get("/{id}")  -> /items/{id}
+    // This stacks with include_router(prefix=...) later in scan().
+    for (const m of runCompiledPatterns(APIRouter_PREFIX_PATTERNS, tree)) {
+      const prefixNode = m.captures.prefix;
+      if (!prefixNode) continue;
+      const prefix = unquoteLiteral(prefixNode.text);
+      if (prefix === null) continue;
+      const longKey = fileLongKey(rel);
+      if (longKey) {
+        constructorPrefixesByLongKey.set(longKey, prefix);
+      } else {
+        constructorPrefixesByShortKey.set(fileShortKey(rel), prefix);
+      }
+    }
+
+    if (!src.includes('include_router')) continue;
 
     // Local name → (short, long) map for the current file, populated
     // from `from <module> import router [as <alias>]` statements. The
@@ -1001,7 +1046,12 @@ function buildPythonRepoContext(
     }
   }
 
-  return { prefixesByLongKey, prefixesByShortKey };
+  return {
+    prefixesByLongKey,
+    prefixesByShortKey,
+    constructorPrefixesByLongKey,
+    constructorPrefixesByShortKey,
+  };
 }
 
 function joinPrefix(prefix: string, route: string): string {
@@ -1095,10 +1145,14 @@ export const PYTHON_HTTP_PLUGIN: HttpLanguagePlugin = {
       const shortPrefixes =
         longPrefixes || !shortKey ? undefined : ctx?.prefixesByShortKey.get(shortKey);
       const prefixSet = longPrefixes ?? shortPrefixes;
+      const constructorPrefix =
+        (longKey ? ctx?.constructorPrefixesByLongKey.get(longKey) : undefined) ??
+        (shortKey ? ctx?.constructorPrefixesByShortKey.get(shortKey) : undefined);
+      const localPath = constructorPrefix ? joinPrefix(constructorPrefix, rawPath) : rawPath;
       const paths =
         prefixSet && prefixSet.size > 0
-          ? [...prefixSet].map((p) => joinPrefix(p, rawPath))
-          : [rawPath];
+          ? [...prefixSet].map((p) => joinPrefix(p, localPath))
+          : [localPath];
 
       for (const p of paths) {
         out.push({
