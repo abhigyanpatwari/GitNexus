@@ -1328,11 +1328,16 @@ export async function runChunkedParseAndResolve(
           ? undefined
           : prefixesByShortKey.get(fileShortKey(dr.filePath));
         const prefixes = longPrefixes ?? shortPrefixes;
-        const constructorPrefix =
-          (longKey
-            ? constructorPrefixesByLongKey.get(longKey)?.get(dr.decoratorReceiver)
-            : undefined) ??
-          constructorPrefixesByShortKey.get(fileShortKey(dr.filePath))?.get(dr.decoratorReceiver);
+        // Constructor prefixes are keyed like include_router prefixes:
+        // long-key entries are precise, while short-key entries are only
+        // valid for repo-root/single-segment files where `fileLongKey`
+        // returns ''. Do not fall back from a missing long-key match to the
+        // short key or a root `users.py` prefix can leak onto
+        // `admin/users.py`.
+        const constructorPrefixesForFile = longKey
+          ? constructorPrefixesByLongKey.get(longKey)
+          : constructorPrefixesByShortKey.get(fileShortKey(dr.filePath));
+        const constructorPrefix = constructorPrefixesForFile?.get(dr.decoratorReceiver);
         const routePath = constructorPrefix
           ? normalizeExtractedRoutePath(dr.routePath, constructorPrefix)
           : dr.routePath;

@@ -1145,9 +1145,16 @@ export const PYTHON_HTTP_PLUGIN: HttpLanguagePlugin = {
       const shortPrefixes =
         longPrefixes || !shortKey ? undefined : ctx?.prefixesByShortKey.get(shortKey);
       const prefixSet = longPrefixes ?? shortPrefixes;
-      const constructorPrefix =
-        (longKey ? ctx?.constructorPrefixesByLongKey.get(longKey) : undefined) ??
-        (shortKey ? ctx?.constructorPrefixesByShortKey.get(shortKey) : undefined);
+      // Constructor prefixes follow the same keying contract as
+      // include_router prefixes: the short-key map is only a fallback for
+      // repo-root/single-segment files. If `longKey` exists and has no
+      // constructor prefix, do not fall back or a root `users.py` prefix can
+      // bleed onto `admin/users.py`.
+      const constructorPrefix = longKey
+        ? ctx?.constructorPrefixesByLongKey.get(longKey)
+        : shortKey
+          ? ctx?.constructorPrefixesByShortKey.get(shortKey)
+          : undefined;
       const localPath = constructorPrefix ? joinPrefix(constructorPrefix, rawPath) : rawPath;
       const paths =
         prefixSet && prefixSet.size > 0

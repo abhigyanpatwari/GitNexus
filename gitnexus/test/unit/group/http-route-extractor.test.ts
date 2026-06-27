@@ -6999,6 +6999,43 @@ async def update_item(item_id: str):
       expect(providers.find((c) => c.contractId === 'http::POST::/{param}')).toBeUndefined();
     });
 
+    it('does not bleed root APIRouter(prefix=...) onto nested same-stem files', async () => {
+      const dir = path.join(tmpDir, 'fastapi-router-constructor-prefix-no-bleed');
+      fs.mkdirSync(path.join(dir, 'admin'), { recursive: true });
+      fs.writeFileSync(path.join(dir, 'main.py'), `app = None\n`);
+      fs.writeFileSync(
+        path.join(dir, 'users.py'),
+        `from fastapi import APIRouter
+router = APIRouter(prefix="/root-users")
+
+@router.get("/landing")
+async def root_users_landing():
+    return {}
+`,
+      );
+      fs.writeFileSync(
+        path.join(dir, 'admin/users.py'),
+        `from fastapi import APIRouter
+router = APIRouter()
+
+@router.get("/audit")
+async def audit():
+    return {}
+`,
+      );
+
+      const contracts = await extractor.extract(null, dir, makeRepo(dir));
+      const providers = contracts.filter((c) => c.role === 'provider');
+
+      expect(
+        providers.find((c) => c.contractId === 'http::GET::/root-users/landing'),
+      ).toBeDefined();
+      expect(providers.find((c) => c.contractId === 'http::GET::/audit')).toBeDefined();
+      expect(
+        providers.find((c) => c.contractId === 'http::GET::/root-users/audit'),
+      ).toBeUndefined();
+    });
+
     it('stacks FastAPI APIRouter(prefix=...) with include_router(prefix=...)', async () => {
       const dir = path.join(tmpDir, 'fastapi-router-stacked-prefix');
       fs.mkdirSync(path.join(dir, 'api'), { recursive: true });

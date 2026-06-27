@@ -33,6 +33,10 @@
  * 5. **Same-file `APIRouter(prefix=…)`** is applied to `@router`
  *    decorators, and stacks with an outer `include_router(prefix=…)`.
  *
+ * 6. **Root-file constructor prefixes do not bleed into nested same-stem
+ *    files.** A repo-root `users.py` can use `APIRouter(prefix=…)`, but
+ *    `admin/users.py` must not inherit that constructor prefix.
+ *
  * The fixture lives at `test/fixtures/fastapi-prefix-app/` so the
  * pipeline can scan a real on-disk repo (mirroring how `gitnexus
  * analyze` is used in production) and so reviewers can inspect the
@@ -102,6 +106,7 @@ describe('FastAPI include_router(prefix=…) — ingestion pipeline', () => {
   it('joins same-file APIRouter(prefix=…) with router decorator paths', () => {
     const names = routeNames();
     expect(names).toContain('/local');
+    expect(names).toContain('/root-users/landing');
     expect(names.filter((n) => n === '/')).toHaveLength(0);
   });
 
@@ -119,6 +124,13 @@ describe('FastAPI include_router(prefix=…) — ingestion pipeline', () => {
     const names = routeNames();
     expect(names).toContain('/audit');
     expect(names.filter((n) => n === '/users/audit')).toHaveLength(0);
+  });
+
+  it('does NOT bleed root same-file APIRouter(prefix=…) onto nested same-stem files', () => {
+    const names = routeNames();
+    expect(names).toContain('/root-users/landing');
+    expect(names).toContain('/audit');
+    expect(names.filter((n) => n === '/root-users/audit')).toHaveLength(0);
   });
 
   it('emits exactly one Route node per (router method, prefix) pair', () => {
