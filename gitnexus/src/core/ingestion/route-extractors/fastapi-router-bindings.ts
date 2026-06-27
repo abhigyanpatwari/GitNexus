@@ -128,8 +128,8 @@ const INCLUDE_ROUTER_NAME_RE =
 // The latter is the common case and the only one we can map back to
 // a module stem.
 const FROM_IMPORT_ROUTER_RE = /^\s*from\s+(\.+|\.*[A-Za-z_][\w.]*)\s+import\s+([^#\n]+)/gm;
-const APIRouter_PREFIX_RE =
-  /\b([A-Za-z_]\w*)\s*=\s*APIRouter\s*\([^)]*?\bprefix\s*=\s*(['"])([^'"]*)\2/g;
+const APIRouter_ASSIGN_RE = /\b([A-Za-z_]\w*)\s*=\s*APIRouter\s*\(/g;
+const APIRouter_PREFIX_ARG_RE = /\bprefix\s*=\s*(['"])([^'"]*)\1/;
 
 /**
  * Last `.`-separated segment of a (possibly relative) Python module
@@ -163,6 +163,35 @@ export function lastTwoSegmentsAsPath(text: string): string {
   const prev = beforeLast.lastIndexOf('.');
   const parent = prev >= 0 ? beforeLast.slice(prev + 1) : beforeLast;
   return `${parent}/${stem}`;
+}
+
+function findMatchingParen(content: string, openIndex: number): number {
+  let depth = 0;
+  let quote: string | null = null;
+  for (let i = openIndex; i < content.length; i++) {
+    const ch = content[i];
+    if (quote) {
+      if (ch === '\\') {
+        i++;
+        continue;
+      }
+      if (ch === quote) quote = null;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      quote = ch;
+      continue;
+    }
+    if (ch === '(' || ch === '[' || ch === '{') {
+      depth++;
+      continue;
+    }
+    if (ch === ')' || ch === ']' || ch === '}') {
+      depth--;
+      if (depth === 0 && ch === ')') return i;
+    }
+  }
+  return -1;
 }
 
 /**
@@ -249,13 +278,19 @@ export function extractFastAPIRouterBindings(
   }
 
   if (outConstructorPrefixes && content.includes('APIRouter') && content.includes('prefix')) {
-    APIRouter_PREFIX_RE.lastIndex = 0;
+    APIRouter_ASSIGN_RE.lastIndex = 0;
     let m: RegExpExecArray | null;
-    while ((m = APIRouter_PREFIX_RE.exec(content)) !== null) {
+    while ((m = APIRouter_ASSIGN_RE.exec(content)) !== null) {
+      const openParen = APIRouter_ASSIGN_RE.lastIndex - 1;
+      const closeParen = findMatchingParen(content, openParen);
+      if (closeParen < 0) continue;
+      const args = content.slice(openParen + 1, closeParen);
+      const prefixMatch = APIRouter_PREFIX_ARG_RE.exec(args);
+      if (!prefixMatch) continue;
       outConstructorPrefixes.push({
         filePath,
         routerName: m[1],
-        prefix: m[3],
+        prefix: prefixMatch[2],
       });
     }
   }

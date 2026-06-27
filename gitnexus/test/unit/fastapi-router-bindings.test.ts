@@ -323,4 +323,23 @@ describe('extractFastAPIRouterBindings — APIRouter constructor prefix', () => 
       { filePath: 'api/items.py', routerName: 'router', prefix: '/api/items' },
     ]);
   });
+
+  it('captures prefix after nested APIRouter arguments', () => {
+    const { constructorPrefixes } = runFull(
+      'api/items.py',
+      [
+        'from fastapi import APIRouter, Depends',
+        'router = APIRouter(dependencies=[Depends(get_db)], prefix="/api/items")',
+        '',
+        '@router.get("")',
+        'def list_items():',
+        '    return []',
+        '',
+      ].join('\n'),
+    );
+
+    expect(constructorPrefixes).toEqual([
+      { filePath: 'api/items.py', routerName: 'router', prefix: '/api/items' },
+    ]);
+  });
 });
