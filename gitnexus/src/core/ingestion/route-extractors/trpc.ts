@@ -1,7 +1,5 @@
 import type { ExtractedRoute } from './laravel.js';
 
-const TRPC_PROCEDURE_METHODS = new Set(['query', 'mutation', 'subscription']);
-
 const HTTP_METHOD_MAP: Record<string, string> = {
   query: 'GET',
   mutation: 'POST',
@@ -61,29 +59,42 @@ export function extractTrpcRoutes(filePath: string, content: string): ExtractedR
   if (!isTrpcRouterFile(content)) return [];
 
   const routes: ExtractedRoute[] = [];
+  const seen = new Set<string>();
   const { routerName, prefix } = extractRouterInfo(content, filePath);
 
-  const pattern = /(\w+)\s*:\s*\w+\s*\.\s*(query|mutation|subscription)\s*\(/g;
-  let match: RegExpExecArray | null;
-  while ((match = pattern.exec(content)) !== null) {
-    const procedureName = match[1];
-    const method = match[2];
+  const lines = content.split('\n');
+  let currentProcedure: { name: string; line: number } | null = null;
 
-    if (!TRPC_PROCEDURE_METHODS.has(method)) continue;
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
 
-    const procedurePath = prefix ? `${prefix}.${procedureName}` : procedureName;
+    const keyMatch = line.match(/^\s{2,4}(\w+)\s*:\s*(\w*Procedure|t\.procedure)\b/);
+    if (keyMatch) {
+      currentProcedure = { name: keyMatch[1], line: i + 1 };
+    }
 
-    routes.push({
-      filePath,
-      httpMethod: HTTP_METHOD_MAP[method] ?? 'POST',
-      routePath: `/trpc/${procedurePath}`,
-      routeName: procedurePath,
-      controllerName: routerName,
-      methodName: procedureName,
-      middleware: [],
-      prefix: null,
-      lineNumber: content.substring(0, match.index).split('\n').length,
-    });
+    const terminalMatch = line.match(/\.\s*(query|mutation|subscription)\s*\(/);
+    if (terminalMatch && currentProcedure) {
+      const method = terminalMatch[1];
+      const procedureName = currentProcedure.name;
+      const procedurePath = prefix ? `${prefix}.${procedureName}` : procedureName;
+
+      if (!seen.has(procedurePath)) {
+        seen.add(procedurePath);
+        routes.push({
+          filePath,
+          httpMethod: HTTP_METHOD_MAP[method] ?? 'POST',
+          routePath: `/trpc/${procedurePath}`,
+          routeName: procedurePath,
+          controllerName: routerName,
+          methodName: procedureName,
+          middleware: [],
+          prefix: null,
+          lineNumber: currentProcedure.line,
+        });
+      }
+      currentProcedure = null;
+    }
   }
 
   return routes;
