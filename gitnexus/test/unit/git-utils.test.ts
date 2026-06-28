@@ -8,7 +8,18 @@ import { describe, it, expect, vi } from 'vitest';
 import path from 'path';
 import os from 'os';
 import fs from 'fs';
-import { execSync } from 'child_process';
+import { execFileSync, execSync } from 'child_process';
+
+const gitExecutable = (() => {
+  if (process.platform !== 'win32') return 'git';
+  try {
+    return (
+      execFileSync('where.exe', ['git'], { encoding: 'utf8' }).split(/\r?\n/).find(Boolean) ?? 'git'
+    );
+  } catch {
+    return 'git';
+  }
+})();
 
 // ─── hasGitDir ────────────────────────────────────────────────────────────
 //
@@ -150,10 +161,12 @@ describe('getGitRoot', () => {
   it('preserves a trailing-space repository directory name (#2190)', async () => {
     const { getGitRoot } = await import('../../src/storage/git.js');
     const parentDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-space-root-'));
+    const initDir = path.join(parentDir, 'repo-init');
     const repoDir = path.join(parentDir, 'repo ');
     try {
-      fs.mkdirSync(repoDir);
-      execSync('git init -q', { cwd: repoDir });
+      fs.mkdirSync(initDir);
+      execFileSync(gitExecutable, ['init', '-q'], { cwd: initDir, stdio: 'ignore' });
+      fs.renameSync(initDir, repoDir);
 
       expect(getGitRoot(repoDir)).toBe(path.resolve(repoDir));
     } finally {
@@ -276,7 +289,7 @@ describe('getCanonicalRepoRoot', () => {
     const { getCanonicalRepoRoot, getGitRoot } = await import('../../src/storage/git.js');
     const repoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-canonical-wt-'));
     try {
-      execSync('git init -q', { cwd: repoDir });
+      execFileSync(gitExecutable, ['init', '-q'], { cwd: repoDir, stdio: 'ignore' });
       // `git worktree add` requires at least one commit on a real branch.
       execSync('git config user.email "test@example.com"', { cwd: repoDir });
       execSync('git config user.name "Test"', { cwd: repoDir });

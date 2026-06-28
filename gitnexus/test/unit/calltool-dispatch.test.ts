@@ -1317,6 +1317,13 @@ describe('LocalBackend.callTool', () => {
         },
       ])
       .mockResolvedValue([]);
+    const repoDir = mkdtempSync(path.join(os.tmpdir(), 'gnx-rename-'));
+    (listRegisteredRepos as any).mockResolvedValue([
+      { ...MOCK_REPO_ENTRY, path: repoDir, storagePath: path.join(repoDir, '.gitnexus') },
+    ]);
+    backend = new LocalBackend();
+    await backend.init();
+
     const readSpy = vi
       .spyOn(fsPromises, 'readFile')
       .mockResolvedValue('function oldName() {}\n' as unknown as Buffer);
@@ -1337,6 +1344,7 @@ describe('LocalBackend.callTool', () => {
     } finally {
       readSpy.mockRestore();
       writeSpy.mockRestore();
+      rmSync(repoDir, { recursive: true, force: true });
     }
   });
 

@@ -65,7 +65,7 @@ describe('literal-collectors', () => {
         (f) =>
           f.field === 'pattern' &&
           f.receiverNodeType === 'is_pattern_expression' &&
-          f.file.endsWith('type-extractors/csharp.ts'),
+          f.file.replace(/\\/g, '/').endsWith('type-extractors/csharp.ts'),
       );
       expect(scoped).toBeDefined();
       // a childForFieldName NOT inside a single positive type-guard stays unscoped
