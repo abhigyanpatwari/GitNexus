@@ -107,7 +107,6 @@ export interface ExtractedRouterModuleAlias {
 
 export interface ExtractedRouterConstructorPrefix {
   filePath: string;
-  routerName: string;
   prefix: string;
 }
 
@@ -279,8 +278,9 @@ export function extractFastAPIRouterBindings(
 
   if (outConstructorPrefixes && content.includes('APIRouter') && content.includes('prefix')) {
     APIRouter_ASSIGN_RE.lastIndex = 0;
-    let _m: RegExpExecArray | null;
-    while ((_m = APIRouter_ASSIGN_RE.exec(content)) !== null) {
+    // Only `router = APIRouter(...)` is captured (the apply gate and the
+    // group-layer tree-sitter both pin to the literal name `router`).
+    while (APIRouter_ASSIGN_RE.exec(content) !== null) {
       const openParen = APIRouter_ASSIGN_RE.lastIndex - 1;
       const closeParen = findMatchingParen(content, openParen);
       if (closeParen < 0) continue;
@@ -289,7 +289,6 @@ export function extractFastAPIRouterBindings(
       if (!prefixMatch) continue;
       outConstructorPrefixes.push({
         filePath,
-        routerName: 'router',
         prefix: prefixMatch[2],
       });
     }

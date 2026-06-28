@@ -1212,8 +1212,11 @@ export async function runChunkedParseAndResolve(
     // without a corresponding import statement).
     const prefixesByLongKey = new Map<string, Set<string>>();
     const prefixesByShortKey = new Map<string, Set<string>>();
-    const constructorPrefixesByLongKey = new Map<string, Map<string, string>>();
-    const constructorPrefixesByShortKey = new Map<string, Map<string, string>>();
+    // Constructor prefixes are `router`-only (the apply gate below and the
+    // group-layer tree-sitter both pin to the literal name `router`), so a
+    // flat file-key → prefix map suffices — mirrors the group layer's shape.
+    const constructorPrefixesByLongKey = new Map<string, string>();
+    const constructorPrefixesByShortKey = new Map<string, string>();
 
     const recordPrefix = (target: Map<string, Set<string>>, key: string, prefix: string): void => {
       let set = target.get(key);
@@ -1222,20 +1225,6 @@ export async function runChunkedParseAndResolve(
         target.set(key, set);
       }
       set.add(prefix);
-    };
-
-    const recordConstructorPrefix = (
-      target: Map<string, Map<string, string>>,
-      key: string,
-      routerName: string,
-      prefix: string,
-    ): void => {
-      let byRouter = target.get(key);
-      if (!byRouter) {
-        byRouter = new Map();
-        target.set(key, byRouter);
-      }
-      byRouter.set(routerName, prefix);
     };
 
     for (const inc of allRouterIncludes) {
@@ -1297,19 +1286,9 @@ export async function runChunkedParseAndResolve(
       for (const ctor of allRouterConstructorPrefixes) {
         const longKey = fileLongKey(ctor.filePath);
         if (longKey) {
-          recordConstructorPrefix(
-            constructorPrefixesByLongKey,
-            longKey,
-            ctor.routerName,
-            ctor.prefix,
-          );
+          constructorPrefixesByLongKey.set(longKey, ctor.prefix);
         } else {
-          recordConstructorPrefix(
-            constructorPrefixesByShortKey,
-            fileShortKey(ctor.filePath),
-            ctor.routerName,
-            ctor.prefix,
-          );
+          constructorPrefixesByShortKey.set(fileShortKey(ctor.filePath), ctor.prefix);
         }
       }
 
@@ -1334,10 +1313,9 @@ export async function runChunkedParseAndResolve(
         // returns ''. Do not fall back from a missing long-key match to the
         // short key or a root `users.py` prefix can leak onto
         // `admin/users.py`.
-        const constructorPrefixesForFile = longKey
+        const constructorPrefix = longKey
           ? constructorPrefixesByLongKey.get(longKey)
           : constructorPrefixesByShortKey.get(fileShortKey(dr.filePath));
-        const constructorPrefix = constructorPrefixesForFile?.get(dr.decoratorReceiver);
         const routePath = constructorPrefix
           ? normalizeExtractedRoutePath(dr.routePath, constructorPrefix)
           : dr.routePath;

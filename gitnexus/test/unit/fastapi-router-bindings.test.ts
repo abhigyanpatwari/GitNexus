@@ -319,9 +319,7 @@ describe('extractFastAPIRouterBindings — APIRouter constructor prefix', () => 
       ].join('\n'),
     );
 
-    expect(constructorPrefixes).toEqual([
-      { filePath: 'api/items.py', routerName: 'router', prefix: '/api/items' },
-    ]);
+    expect(constructorPrefixes).toEqual([{ filePath: 'api/items.py', prefix: '/api/items' }]);
   });
 
   it('captures prefix after nested APIRouter arguments', () => {
@@ -338,9 +336,7 @@ describe('extractFastAPIRouterBindings — APIRouter constructor prefix', () => 
       ].join('\n'),
     );
 
-    expect(constructorPrefixes).toEqual([
-      { filePath: 'api/items.py', routerName: 'router', prefix: '/api/items' },
-    ]);
+    expect(constructorPrefixes).toEqual([{ filePath: 'api/items.py', prefix: '/api/items' }]);
   });
 
   it('does not emit constructor prefixes for non-router receivers yet', () => {
