@@ -1,7 +1,10 @@
-import { createFTSIndex, dropFTSIndex } from '../lbug/lbug-adapter.js';
+import { createFTSIndex, dropFTSIndex, DEFAULT_FTS_STEMMER } from '../lbug/lbug-adapter.js';
 import { FTS_INDEXES } from './fts-schema.js';
 
-const DEFAULT_FTS_STEMMER = 'porter';
+// Stemmers shipped by the LadybugDB FTS extension. Mirrors the lowercase token
+// set in the extension bundled with @ladybugdb/core 0.17.x (see package.json).
+// Keep in sync on a LadybugDB minor bump — a value here that the installed
+// extension rejects would pass validation but fail at CREATE_FTS_INDEX.
 const SUPPORTED_FTS_STEMMERS = new Set<string>([
   'arabic',
   'basque',
@@ -38,7 +41,10 @@ export interface CreateSearchFTSIndexesOptions {
   onIndexReady?: (table: string, indexName: string) => void;
 }
 
-export function getSearchFTSStemmer(): string {
+let resolvedStemmer: string | undefined;
+
+/** Read + validate `GITNEXUS_FTS_STEMMER`. Throws on an unsupported value. */
+function resolveFTSStemmer(): string {
   const raw = process.env.GITNEXUS_FTS_STEMMER?.trim().toLowerCase();
   if (!raw) return DEFAULT_FTS_STEMMER;
   if (SUPPORTED_FTS_STEMMERS.has(raw)) return raw;
@@ -47,6 +53,27 @@ export function getSearchFTSStemmer(): string {
     `Invalid GITNEXUS_FTS_STEMMER "${process.env.GITNEXUS_FTS_STEMMER}". ` +
       `Expected one of: ${[...SUPPORTED_FTS_STEMMERS].sort().join(', ')}.`,
   );
+}
+
+/**
+ * Resolve + validate `GITNEXUS_FTS_STEMMER` once, up front at analyze startup,
+ * and cache it. An invalid value throws here — in milliseconds — instead of
+ * ~85% into a run (after the expensive parse/scope-resolution work). The cached
+ * value is what {@link getSearchFTSStemmer} returns for the rest of the run, so
+ * config is read and validated in exactly one place.
+ */
+export function initialiseSearchFTSStemmer(): string {
+  resolvedStemmer = resolveFTSStemmer();
+  return resolvedStemmer;
+}
+
+/**
+ * Return the stemmer resolved by {@link initialiseSearchFTSStemmer}. Falls back
+ * to resolving on demand when init was never called (read-only hosts, unit
+ * tests) so validation always applies.
+ */
+export function getSearchFTSStemmer(): string {
+  return resolvedStemmer ?? resolveFTSStemmer();
 }
 
 export async function createSearchFTSIndexes(

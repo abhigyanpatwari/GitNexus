@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 const { calls } = vi.hoisted(() => ({ calls: [] as string[] }));
 
 vi.mock('../../src/core/lbug/lbug-adapter.js', () => ({
+  DEFAULT_FTS_STEMMER: 'porter',
   dropFTSIndex: vi.fn(async (table: string, indexName: string) => {
     calls.push(`drop:${table}.${indexName}`);
   }),
@@ -14,7 +15,7 @@ vi.mock('../../src/core/lbug/lbug-adapter.js', () => ({
   ),
 }));
 
-const { createSearchFTSIndexes, getSearchFTSStemmer } =
+const { createSearchFTSIndexes, getSearchFTSStemmer, initialiseSearchFTSStemmer } =
   await import('../../src/core/search/fts-indexes.js');
 const { FTS_INDEXES } = await import('../../src/core/search/fts-schema.js');
 
@@ -72,6 +73,23 @@ describe('getSearchFTSStemmer', () => {
   it('normalizes configured stemmer names', () => {
     vi.stubEnv('GITNEXUS_FTS_STEMMER', ' German ');
 
+    expect(getSearchFTSStemmer()).toBe('german');
+  });
+});
+
+// Caches module state via initialise; keep last so no later test reads it.
+describe('initialiseSearchFTSStemmer', () => {
+  it('throws on an unsupported stemmer', () => {
+    vi.stubEnv('GITNEXUS_FTS_STEMMER', 'porterr');
+
+    expect(() => initialiseSearchFTSStemmer()).toThrow('Invalid GITNEXUS_FTS_STEMMER');
+  });
+
+  it('resolves once so later reads ignore a changed env', () => {
+    vi.stubEnv('GITNEXUS_FTS_STEMMER', 'german');
+    expect(initialiseSearchFTSStemmer()).toBe('german');
+
+    vi.stubEnv('GITNEXUS_FTS_STEMMER', 'french');
     expect(getSearchFTSStemmer()).toBe('german');
   });
 });

@@ -151,7 +151,7 @@ describe('runFullAnalysis FTS repair and verification failure paths', () => {
       loadFTSExtension: vi.fn(async () => true),
     }));
     vi.doMock('../../src/core/search/fts-indexes.js', () => ({
-      getSearchFTSStemmer: vi.fn(() => 'porter'),
+      initialiseSearchFTSStemmer: vi.fn(() => 'porter'),
       createSearchFTSIndexes: vi.fn(async () => undefined),
       verifySearchFTSIndexes: vi.fn(async () => [SIMULATED_MISSING_FTS_INDEX_NAME]),
     }));
@@ -201,7 +201,7 @@ describe('runFullAnalysis FTS repair and verification failure paths', () => {
       loadFTSExtension: vi.fn(async () => true),
     }));
     vi.doMock('../../src/core/search/fts-indexes.js', () => ({
-      getSearchFTSStemmer: vi.fn(() => 'porter'),
+      initialiseSearchFTSStemmer: vi.fn(() => 'porter'),
       createSearchFTSIndexes: vi.fn(async () => {
         throw new Error('FTS extension unavailable');
       }),
@@ -257,7 +257,7 @@ describe('runFullAnalysis FTS repair and verification failure paths', () => {
       loadFTSExtension: vi.fn(async () => false),
     }));
     vi.doMock('../../src/core/search/fts-indexes.js', () => ({
-      getSearchFTSStemmer: vi.fn(() => 'porter'),
+      initialiseSearchFTSStemmer: vi.fn(() => 'porter'),
       createSearchFTSIndexes,
       verifySearchFTSIndexes: vi.fn(async () => []),
     }));
@@ -302,7 +302,7 @@ describe('runFullAnalysis FTS repair and verification failure paths', () => {
       loadFTSExtension: vi.fn(async () => true),
     }));
     vi.doMock('../../src/core/search/fts-indexes.js', () => ({
-      getSearchFTSStemmer: vi.fn(() => 'porter'),
+      initialiseSearchFTSStemmer: vi.fn(() => 'porter'),
       createSearchFTSIndexes: vi.fn(async () => undefined),
       verifySearchFTSIndexes: vi.fn(async () => ['Function.function_fts']),
     }));
@@ -352,7 +352,7 @@ describe('runFullAnalysis FTS repair and verification failure paths', () => {
       loadFTSExtension: vi.fn(async () => false),
     }));
     vi.doMock('../../src/core/search/fts-indexes.js', () => ({
-      getSearchFTSStemmer: vi.fn(() => 'porter'),
+      initialiseSearchFTSStemmer: vi.fn(() => 'porter'),
       createSearchFTSIndexes,
       verifySearchFTSIndexes,
     }));
