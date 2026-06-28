@@ -128,7 +128,7 @@ const INCLUDE_ROUTER_NAME_RE =
 // The latter is the common case and the only one we can map back to
 // a module stem.
 const FROM_IMPORT_ROUTER_RE = /^\s*from\s+(\.+|\.*[A-Za-z_][\w.]*)\s+import\s+([^#\n]+)/gm;
-const APIRouter_ASSIGN_RE = /\b([A-Za-z_]\w*)\s*=\s*APIRouter\s*\(/g;
+const APIRouter_ASSIGN_RE = /\brouter\s*=\s*APIRouter\s*\(/g;
 const APIRouter_PREFIX_ARG_RE = /\bprefix\s*=\s*(['"])([^'"]*)\1/;
 
 /**
@@ -279,8 +279,8 @@ export function extractFastAPIRouterBindings(
 
   if (outConstructorPrefixes && content.includes('APIRouter') && content.includes('prefix')) {
     APIRouter_ASSIGN_RE.lastIndex = 0;
-    let m: RegExpExecArray | null;
-    while ((m = APIRouter_ASSIGN_RE.exec(content)) !== null) {
+    let _m: RegExpExecArray | null;
+    while ((_m = APIRouter_ASSIGN_RE.exec(content)) !== null) {
       const openParen = APIRouter_ASSIGN_RE.lastIndex - 1;
       const closeParen = findMatchingParen(content, openParen);
       if (closeParen < 0) continue;
@@ -289,7 +289,7 @@ export function extractFastAPIRouterBindings(
       if (!prefixMatch) continue;
       outConstructorPrefixes.push({
         filePath,
-        routerName: m[1],
+        routerName: 'router',
         prefix: prefixMatch[2],
       });
     }
