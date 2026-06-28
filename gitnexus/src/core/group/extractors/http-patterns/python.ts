@@ -6,6 +6,7 @@ import {
   unquoteLiteral,
   type LanguagePatterns,
 } from '../tree-sitter-scanner.js';
+import { normalizeExtractedRoutePath } from '../../../ingestion/route-extractors/route-path.js';
 import type { HttpDetection, HttpLanguagePlugin, RepoContext } from './types.js';
 
 /**
@@ -162,7 +163,7 @@ const INCLUDE_ROUTER_NAME_PATTERNS = compilePatterns({
   ],
 } satisfies LanguagePatterns<Record<string, never>>);
 
-const APIRouter_PREFIX_PATTERNS = compilePatterns({
+const API_ROUTER_PREFIX_PATTERNS = compilePatterns({
   name: 'python-fastapi-apirouter-prefix',
   language: Python,
   patterns: [
@@ -857,10 +858,6 @@ interface PythonRepoContext {
   prefixesByLongKey: Map<string, Set<string>>;
   /** stem only → set of prefixes (basename fallback, may collide) */
   prefixesByShortKey: Map<string, Set<string>>;
-  /** `<parent>/<stem>` → APIRouter(prefix=...) declared in that router file */
-  constructorPrefixesByLongKey: Map<string, string>;
-  /** stem only → APIRouter(prefix=...) fallback for root/single-segment files */
-  constructorPrefixesByShortKey: Map<string, string>;
 }
 
 /** Strip `.py` and return the bare basename (e.g. `api/users.py` → `users`). */
@@ -928,40 +925,19 @@ function buildPythonRepoContext(
 ): PythonRepoContext {
   const prefixesByLongKey = new Map<string, Set<string>>();
   const prefixesByShortKey = new Map<string, Set<string>>();
-  const constructorPrefixesByLongKey = new Map<string, string>();
-  const constructorPrefixesByShortKey = new Map<string, string>();
 
-  // Pre-pass over .py files. We deliberately run this even on files
-  // that don't contain `include_router` — the cost of an extra parse
-  // is bounded by the file count, and detecting `include_router`
-  // beforehand would require its own grep/scan.
+  // Cross-file pre-pass: only `include_router` sites need it — they bind a
+  // prefix declared in one file to a router defined in another. Same-file
+  // `APIRouter(prefix=...)` is resolved in scan() from the file's own tree, so
+  // APIRouter-only files are left out here and never parsed twice.
   for (const rel of files) {
     if (!rel.endsWith('.py')) continue;
     const src = readFile(rel);
     if (!src) continue;
-    if (!src.includes('include_router') && !src.includes('APIRouter')) continue;
+    if (!src.includes('include_router')) continue;
     parser.setLanguage(Python);
     const tree = parseSource(parser, src);
     if (!tree) continue;
-
-    // Same-file FastAPI router prefix:
-    //   router = APIRouter(prefix="/items")
-    //   @router.get("/{id}")  -> /items/{id}
-    // This stacks with include_router(prefix=...) later in scan().
-    for (const m of runCompiledPatterns(APIRouter_PREFIX_PATTERNS, tree)) {
-      const prefixNode = m.captures.prefix;
-      if (!prefixNode) continue;
-      const prefix = unquoteLiteral(prefixNode.text);
-      if (prefix === null) continue;
-      const longKey = fileLongKey(rel);
-      if (longKey) {
-        constructorPrefixesByLongKey.set(longKey, prefix);
-      } else {
-        constructorPrefixesByShortKey.set(fileShortKey(rel), prefix);
-      }
-    }
-
-    if (!src.includes('include_router')) continue;
 
     // Local name → (short, long) map for the current file, populated
     // from `from <module> import router [as <alias>]` statements. The
@@ -1049,17 +1025,14 @@ function buildPythonRepoContext(
   return {
     prefixesByLongKey,
     prefixesByShortKey,
-    constructorPrefixesByLongKey,
-    constructorPrefixesByShortKey,
   };
 }
 
 function joinPrefix(prefix: string, route: string): string {
-  // Mirror FastAPI's path joining: trim trailing slash off prefix,
-  // ensure exactly one leading slash on the result.
-  const p = prefix.replace(/\/+$/, '');
-  const r = route.startsWith('/') ? route : `/${route}`;
-  return `${p}${r}`;
+  // Delegate to the shared route-path normalizer so the group contract and the
+  // ingestion Route node join prefixes identically — one helper, no
+  // trailing-slash drift on empty routes (`APIRouter(prefix="/x")` + `@get("")`).
+  return normalizeExtractedRoutePath(route, prefix);
 }
 export const PYTHON_HTTP_PLUGIN: HttpLanguagePlugin = {
   name: 'python-http',
@@ -1121,6 +1094,18 @@ export const PYTHON_HTTP_PLUGIN: HttpLanguagePlugin = {
     // the ingestion route extractor), not a per-file source scan — see the note
     // at the top of this file.
 
+    // Same-file `router = APIRouter(prefix="/x")` (router-only). Read from this
+    // file's own tree, so there is no cross-file map and no prefix bleed across
+    // same-stem files; it stacks under any include_router(prefix=...) below.
+    let constructorPrefix: string | undefined;
+    for (const m of runCompiledPatterns(API_ROUTER_PREFIX_PATTERNS, tree)) {
+      const prefixNode = m.captures.prefix;
+      if (!prefixNode) continue;
+      const p = unquoteLiteral(prefixNode.text);
+      if (p === null) continue;
+      constructorPrefix = p;
+    }
+
     // Providers: FastAPI @router.<verb>("/path") — must be joined
     // with the prefix(es) declared at the include_router site. When
     // no prefix is found we still emit the unprefixed path so this
@@ -1145,16 +1130,8 @@ export const PYTHON_HTTP_PLUGIN: HttpLanguagePlugin = {
       const shortPrefixes =
         longPrefixes || !shortKey ? undefined : ctx?.prefixesByShortKey.get(shortKey);
       const prefixSet = longPrefixes ?? shortPrefixes;
-      // Constructor prefixes follow the same keying contract as
-      // include_router prefixes: the short-key map is only a fallback for
-      // repo-root/single-segment files. If `longKey` exists and has no
-      // constructor prefix, do not fall back or a root `users.py` prefix can
-      // bleed onto `admin/users.py`.
-      const constructorPrefix = longKey
-        ? ctx?.constructorPrefixesByLongKey.get(longKey)
-        : shortKey
-          ? ctx?.constructorPrefixesByShortKey.get(shortKey)
-          : undefined;
+      // Stack the same-file APIRouter(prefix=...) under any cross-file
+      // include_router prefix.
       const localPath = constructorPrefix ? joinPrefix(constructorPrefix, rawPath) : rawPath;
       const paths =
         prefixSet && prefixSet.size > 0

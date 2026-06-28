@@ -6999,6 +6999,28 @@ async def update_item(item_id: str):
       expect(providers.find((c) => c.contractId === 'http::POST::/{param}')).toBeUndefined();
     });
 
+    it('treats an empty APIRouter(prefix="") as no prefix', async () => {
+      const dir = path.join(tmpDir, 'fastapi-router-empty-prefix');
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(path.join(dir, 'main.py'), `app = None\n`);
+      fs.writeFileSync(
+        path.join(dir, 'items.py'),
+        `from fastapi import APIRouter
+router = APIRouter(prefix="")
+
+@router.get("/list")
+async def list_items():
+    return []
+`,
+      );
+
+      const contracts = await extractor.extract(null, dir, makeRepo(dir));
+      const providers = contracts.filter((c) => c.role === 'provider');
+
+      // Empty prefix is a clean no-op — the route keeps its bare decorator path.
+      expect(providers.find((c) => c.contractId === 'http::GET::/list')).toBeDefined();
+    });
+
     it('does not bleed root APIRouter(prefix=...) onto nested same-stem files', async () => {
       const dir = path.join(tmpDir, 'fastapi-router-constructor-prefix-no-bleed');
       fs.mkdirSync(path.join(dir, 'admin'), { recursive: true });

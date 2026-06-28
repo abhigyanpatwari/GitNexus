@@ -127,8 +127,8 @@ const INCLUDE_ROUTER_NAME_RE =
 // The latter is the common case and the only one we can map back to
 // a module stem.
 const FROM_IMPORT_ROUTER_RE = /^\s*from\s+(\.+|\.*[A-Za-z_][\w.]*)\s+import\s+([^#\n]+)/gm;
-const APIRouter_ASSIGN_RE = /\brouter\s*=\s*APIRouter\s*\(/g;
-const APIRouter_PREFIX_ARG_RE = /\bprefix\s*=\s*(['"])([^'"]*)\1/;
+const API_ROUTER_ASSIGN_RE = /\brouter\s*=\s*APIRouter\s*\(/g;
+const API_ROUTER_PREFIX_ARG_RE = /\bprefix\s*=\s*(['"])([^'"]*)\1/;
 
 /**
  * Last `.`-separated segment of a (possibly relative) Python module
@@ -277,15 +277,15 @@ export function extractFastAPIRouterBindings(
   }
 
   if (outConstructorPrefixes && content.includes('APIRouter') && content.includes('prefix')) {
-    APIRouter_ASSIGN_RE.lastIndex = 0;
+    API_ROUTER_ASSIGN_RE.lastIndex = 0;
     // Only `router = APIRouter(...)` is captured (the apply gate and the
     // group-layer tree-sitter both pin to the literal name `router`).
-    while (APIRouter_ASSIGN_RE.exec(content) !== null) {
-      const openParen = APIRouter_ASSIGN_RE.lastIndex - 1;
+    while (API_ROUTER_ASSIGN_RE.exec(content) !== null) {
+      const openParen = API_ROUTER_ASSIGN_RE.lastIndex - 1;
       const closeParen = findMatchingParen(content, openParen);
       if (closeParen < 0) continue;
       const args = content.slice(openParen + 1, closeParen);
-      const prefixMatch = APIRouter_PREFIX_ARG_RE.exec(args);
+      const prefixMatch = API_ROUTER_PREFIX_ARG_RE.exec(args);
       if (!prefixMatch) continue;
       outConstructorPrefixes.push({
         filePath,

@@ -111,9 +111,14 @@ describe('FastAPI include_router(prefix=…) — ingestion pipeline', () => {
   });
 
   it('stacks same-file APIRouter(prefix=…) with include_router(prefix=…)', () => {
+    // api/items.py declares `APIRouter(dependencies=[Depends(get_db)], prefix="/items")`
+    // — a router-level dependency BEFORE prefix=. This pins the balanced-paren
+    // scan end-to-end: the old `[^)]*?` regex stopped at the `)` of `Depends(...)`
+    // and dropped `/items`, leaving the graph Route node at `/v1/{item_id}`.
     const names = routeNames();
     expect(names).toContain('/v1/items/{item_id}');
     expect(names.filter((n) => n === '/items/{item_id}')).toHaveLength(0);
+    expect(names.filter((n) => n === '/v1/{item_id}')).toHaveLength(0);
   });
 
   it('does NOT bleed `/users` prefix onto the same-name `admin/users.py`', () => {
