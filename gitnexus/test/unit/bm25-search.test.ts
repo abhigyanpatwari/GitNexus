@@ -35,7 +35,7 @@ describe('BM25 search', () => {
       await createSearchFTSIndexes();
 
       expect(vi.mocked(createFTSIndex).mock.calls).toEqual(
-        FTS_INDEXES.map((i) => [i.table, i.indexName, [...i.properties]]),
+        FTS_INDEXES.map((i) => [i.table, i.indexName, [...i.properties], 'porter']),
       );
     });
 

@@ -22,6 +22,7 @@ import type {
   FetchWrapperDef,
 } from './workers/parse-worker.js';
 import type {
+  ExtractedRouterConstructorPrefix,
   ExtractedRouterImport,
   ExtractedRouterInclude,
   ExtractedRouterModuleAlias,
@@ -37,6 +38,7 @@ export interface WorkerExtractedData {
   decoratorRoutes: ExtractedDecoratorRoute[];
   routerIncludes: ExtractedRouterInclude[];
   routerImports: ExtractedRouterImport[];
+  routerConstructorPrefixes: ExtractedRouterConstructorPrefix[];
   routerModuleAliases: ExtractedRouterModuleAlias[];
   toolDefs: ExtractedToolDef[];
   ormQueries: ExtractedORMQuery[];
@@ -80,6 +82,7 @@ export const mergeChunkResults = (
   const allDecoratorRoutes: ExtractedDecoratorRoute[] = [];
   const allRouterIncludes: ExtractedRouterInclude[] = [];
   const allRouterImports: ExtractedRouterImport[] = [];
+  const allRouterConstructorPrefixes: ExtractedRouterConstructorPrefix[] = [];
   const allRouterModuleAliases: ExtractedRouterModuleAlias[] = [];
   const allSpringTypes: SharedSpringType[] = [];
   const allToolDefs: ExtractedToolDef[] = [];
@@ -123,6 +126,9 @@ export const mergeChunkResults = (
     for (const item of result.decoratorRoutes) allDecoratorRoutes.push(item);
     for (const item of result.routerIncludes ?? []) allRouterIncludes.push(item);
     for (const item of result.routerImports ?? []) allRouterImports.push(item);
+    for (const item of result.routerConstructorPrefixes ?? []) {
+      allRouterConstructorPrefixes.push(item);
+    }
     for (const item of result.routerModuleAliases ?? []) allRouterModuleAliases.push(item);
     for (const item of result.springTypes ?? []) allSpringTypes.push(item);
     for (const item of result.toolDefs) allToolDefs.push(item);
@@ -139,6 +145,7 @@ export const mergeChunkResults = (
     decoratorRoutes: allDecoratorRoutes,
     routerIncludes: allRouterIncludes,
     routerImports: allRouterImports,
+    routerConstructorPrefixes: allRouterConstructorPrefixes,
     routerModuleAliases: allRouterModuleAliases,
     toolDefs: allToolDefs,
     ormQueries: allORMQueries,
