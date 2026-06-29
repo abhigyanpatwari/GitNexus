@@ -21,6 +21,18 @@ const gitExecutable = (() => {
   }
 })();
 
+const isolatedTmpRoot = (() => {
+  const root =
+    process.platform === 'win32'
+      ? path.join(path.parse(os.tmpdir()).root, 'gitnexus-outside-git')
+      : path.join(os.tmpdir(), 'gitnexus-outside-git');
+  fs.mkdirSync(root, { recursive: true });
+  return root;
+})();
+
+const makeIsolatedTempDir = (prefix = 'gitnexus-test-'): string =>
+  fs.mkdtempSync(path.join(isolatedTmpRoot, prefix));
+
 // ─── hasGitDir ────────────────────────────────────────────────────────────
 //
 // hasGitDir is a synchronous fs.statSync check — we test it by actually
@@ -82,7 +94,7 @@ describe('hasGitDir', () => {
 describe('isGitRepo', () => {
   it('returns false for a plain (non-git) directory', async () => {
     const { isGitRepo } = await import('../../src/storage/git.js');
-    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-test-'));
+    const tmpDir = makeIsolatedTempDir();
     try {
       expect(isGitRepo(tmpDir)).toBe(false);
     } finally {
@@ -135,7 +147,7 @@ describe('getCurrentCommit', () => {
 describe('getGitRoot', () => {
   it('returns null for a plain temp directory', async () => {
     const { getGitRoot } = await import('../../src/storage/git.js');
-    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-test-'));
+    const tmpDir = makeIsolatedTempDir();
     try {
       expect(getGitRoot(tmpDir)).toBeNull();
     } finally {
@@ -254,7 +266,7 @@ describe('getRemoteUrl', () => {
 describe('getCanonicalRepoRoot', () => {
   it('returns null for a plain temp directory (not a git repo)', async () => {
     const { getCanonicalRepoRoot } = await import('../../src/storage/git.js');
-    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-canonical-'));
+    const tmpDir = makeIsolatedTempDir('gitnexus-canonical-');
     try {
       expect(getCanonicalRepoRoot(tmpDir)).toBeNull();
     } finally {

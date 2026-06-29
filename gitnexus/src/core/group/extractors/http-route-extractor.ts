@@ -253,7 +253,7 @@ function contractIdFor(method: string, pathNorm: string): string {
   return `http::${method.toUpperCase()}::${pathNorm}`;
 }
 
-function normalizeRepoRelPath(filePath: string): string {
+export function normalizeRepoRelPath(filePath: string): string {
   return filePath.replace(/\\/g, '/').replace(/^\.\//, '');
 }
 

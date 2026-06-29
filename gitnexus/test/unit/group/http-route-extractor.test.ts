@@ -10,7 +10,10 @@ vi.mock('../../../src/core/tree-sitter/safe-parse.js', async () => {
   return buildSafeParseMock(parseSourceSafeSpy);
 });
 
-import { HttpRouteExtractor } from '../../../src/core/group/extractors/http-route-extractor.js';
+import {
+  HttpRouteExtractor,
+  normalizeRepoRelPath,
+} from '../../../src/core/group/extractors/http-route-extractor.js';
 import { getPluginForFile } from '../../../src/core/group/extractors/http-patterns/index.js';
 import type { RepoHandle } from '../../../src/core/group/types.js';
 
@@ -42,6 +45,14 @@ describe('HttpRouteExtractor', () => {
   });
 
   const toPosixPath = (filePath: string): string => filePath.replace(/\\/g, '/');
+
+  describe('repo-relative path normalization', () => {
+    it('normalizes Windows source-scan paths before symbol lookup', () => {
+      expect(normalizeRepoRelPath('src\\api\\users.ts')).toBe('src/api/users.ts');
+      expect(normalizeRepoRelPath('.\\src\\api\\users.ts')).toBe('src/api/users.ts');
+      expect(normalizeRepoRelPath('./src/api/users.ts')).toBe('src/api/users.ts');
+    });
+  });
 
   describe('symbolUid resolution via containment', () => {
     it('resolves a source-scan consumer to the function CONTAINING the fetch', async () => {
