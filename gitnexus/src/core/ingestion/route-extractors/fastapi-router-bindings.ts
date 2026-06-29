@@ -105,6 +105,11 @@ export interface ExtractedRouterModuleAlias {
   moduleKeyLong: string;
 }
 
+export interface ExtractedRouterConstructorPrefix {
+  filePath: string;
+  prefix: string;
+}
+
 // `<host>.include_router(<module>.router, ..., prefix='/x')` (Shape A).
 // `<host>` is left unrestricted — common production names include
 // `app`, `api`, `application`, `asgi_app`. Pinning to the literal
@@ -122,6 +127,8 @@ const INCLUDE_ROUTER_NAME_RE =
 // The latter is the common case and the only one we can map back to
 // a module stem.
 const FROM_IMPORT_ROUTER_RE = /^\s*from\s+(\.+|\.*[A-Za-z_][\w.]*)\s+import\s+([^#\n]+)/gm;
+const API_ROUTER_ASSIGN_RE = /\brouter\s*=\s*APIRouter\s*\(/g;
+const API_ROUTER_PREFIX_ARG_RE = /\bprefix\s*=\s*(['"])([^'"]*)\1/;
 
 /**
  * Last `.`-separated segment of a (possibly relative) Python module
@@ -157,6 +164,35 @@ export function lastTwoSegmentsAsPath(text: string): string {
   return `${parent}/${stem}`;
 }
 
+function findMatchingParen(content: string, openIndex: number): number {
+  let depth = 0;
+  let quote: string | null = null;
+  for (let i = openIndex; i < content.length; i++) {
+    const ch = content[i];
+    if (quote) {
+      if (ch === '\\') {
+        i++;
+        continue;
+      }
+      if (ch === quote) quote = null;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      quote = ch;
+      continue;
+    }
+    if (ch === '(' || ch === '[' || ch === '{') {
+      depth++;
+      continue;
+    }
+    if (ch === ')' || ch === ']' || ch === '}') {
+      depth--;
+      if (depth === 0 && ch === ')') return i;
+    }
+  }
+  return -1;
+}
+
 /**
  * Scan a single Python file's source text for FastAPI router
  * `include_router` sites and `from <module> import router` imports,
@@ -176,6 +212,7 @@ export function extractFastAPIRouterBindings(
   outIncludes: ExtractedRouterInclude[],
   outImports: ExtractedRouterImport[],
   outModuleAliases?: ExtractedRouterModuleAlias[],
+  outConstructorPrefixes?: ExtractedRouterConstructorPrefix[],
 ): void {
   if (!content.includes('include_router') && !content.includes('router')) return;
 
@@ -236,6 +273,24 @@ export function extractFastAPIRouterBindings(
           moduleKeyLong: aliasLong,
         });
       }
+    }
+  }
+
+  if (outConstructorPrefixes && content.includes('APIRouter') && content.includes('prefix')) {
+    API_ROUTER_ASSIGN_RE.lastIndex = 0;
+    // Only `router = APIRouter(...)` is captured (the apply gate and the
+    // group-layer tree-sitter both pin to the literal name `router`).
+    while (API_ROUTER_ASSIGN_RE.exec(content) !== null) {
+      const openParen = API_ROUTER_ASSIGN_RE.lastIndex - 1;
+      const closeParen = findMatchingParen(content, openParen);
+      if (closeParen < 0) continue;
+      const args = content.slice(openParen + 1, closeParen);
+      const prefixMatch = API_ROUTER_PREFIX_ARG_RE.exec(args);
+      if (!prefixMatch) continue;
+      outConstructorPrefixes.push({
+        filePath,
+        prefix: prefixMatch[2],
+      });
     }
   }
 

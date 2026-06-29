@@ -30,7 +30,11 @@ import {
   queryImporters,
   loadFTSExtension,
 } from './lbug/lbug-adapter.js';
-import { createSearchFTSIndexes, verifySearchFTSIndexes } from './search/fts-indexes.js';
+import {
+  createSearchFTSIndexes,
+  initialiseSearchFTSStemmer,
+  verifySearchFTSIndexes,
+} from './search/fts-indexes.js';
 import { resolveAnalyzeInstallPolicy } from './lbug/extension-loader.js';
 import {
   startWalCheckpointDriver,
@@ -546,6 +550,11 @@ export async function runFullAnalysis(
   const log = (msg: string) => callbacks.onLog?.(msg);
   const progress = (phase: string, percent: number, message: string) =>
     callbacks.onProgress(phase, percent, message);
+
+  // Resolve + validate operator-provided FTS config once, before the expensive
+  // parse/load phases. A typo fails here in ms; createSearchFTSIndexes reuses
+  // the cached value via getSearchFTSStemmer.
+  initialiseSearchFTSStemmer();
 
   // Scope the degraded-parse log throttle to this run. On a reused process
   // (e.g. tests, or any host that calls runFullAnalysis more than once) the

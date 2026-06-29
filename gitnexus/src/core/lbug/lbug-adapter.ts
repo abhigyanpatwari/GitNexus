@@ -2335,6 +2335,13 @@ export const loadVectorExtension = async (
   return loaded;
 };
 /**
+ * Default stemmer for FTS indexes. Single source so the analyze path
+ * (`getSearchFTSStemmer`) and the read-only `createFTSIndex`/`ensureFTSIndex`
+ * defaults can never silently diverge.
+ */
+export const DEFAULT_FTS_STEMMER = 'porter';
+
+/**
  * Create a full-text search index on a table
  * @param tableName - The node table name (e.g., 'File', 'CodeSymbol')
  * @param indexName - Name for the FTS index
@@ -2345,7 +2352,7 @@ export const createFTSIndex = async (
   tableName: string,
   indexName: string,
   properties: string[],
-  stemmer: string = 'porter',
+  stemmer: string = DEFAULT_FTS_STEMMER,
 ): Promise<void> => {
   if (!conn) {
     throw new Error('LadybugDB not initialized. Call initLbug first.');
@@ -2441,7 +2448,7 @@ export const ensureFTSIndex = async (
   tableName: string,
   indexName: string,
   properties: string[],
-  stemmer: string = 'porter',
+  stemmer: string = DEFAULT_FTS_STEMMER,
 ): Promise<void> => {
   const key = ftsIndexKey(tableName, indexName);
   if (ensuredFTSIndexes.has(key)) return;

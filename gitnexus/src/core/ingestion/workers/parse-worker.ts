@@ -30,6 +30,7 @@ import { postResultCloneSafe } from './post-result.js';
 import { mergeResult } from './result-merge.js';
 import type { SymbolTableReader } from '../model/symbol-table.js';
 import type {
+  ExtractedRouterConstructorPrefix,
   ExtractedRouterInclude,
   ExtractedRouterImport,
   ExtractedRouterModuleAlias,
@@ -394,6 +395,7 @@ export interface ParseWorkerResult {
   decoratorRoutes: ExtractedDecoratorRoute[];
   routerIncludes: ExtractedRouterInclude[];
   routerImports: ExtractedRouterImport[];
+  routerConstructorPrefixes?: ExtractedRouterConstructorPrefix[];
   /**
    * Optional. Project-wide `SharedSpringType` view of route-defining
    * class/interface declarations, produced by the provider's
@@ -906,6 +908,7 @@ const processBatch = (
     decoratorRoutes: [],
     routerIncludes: [],
     routerImports: [],
+    routerConstructorPrefixes: [],
     routerModuleAliases: [],
     toolDefs: [],
     ormQueries: [],
@@ -2423,6 +2426,7 @@ const processFileGroup = (
         result.routerIncludes,
         result.routerImports,
         (result.routerModuleAliases ??= []),
+        (result.routerConstructorPrefixes ??= []),
       );
     }
 
@@ -2475,6 +2479,7 @@ let accumulated: ParseWorkerResult = {
   decoratorRoutes: [],
   routerIncludes: [],
   routerImports: [],
+  routerConstructorPrefixes: [],
   routerModuleAliases: [],
   toolDefs: [],
   ormQueries: [],
@@ -2615,6 +2620,7 @@ parentPort!.on('message', (msg: WorkerIncomingMessage) => {
         decoratorRoutes: [],
         routerIncludes: [],
         routerImports: [],
+        routerConstructorPrefixes: [],
         routerModuleAliases: [],
         toolDefs: [],
         ormQueries: [],

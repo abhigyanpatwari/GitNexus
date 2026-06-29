@@ -22,6 +22,7 @@ describe('runFullAnalysis FTS repair and verification failure paths', () => {
     vi.doUnmock('../../src/storage/repo-manager.js');
     vi.resetModules();
     vi.clearAllMocks();
+    vi.unstubAllEnvs();
   });
 
   it('fails repair mode when no base meta exists', async () => {
@@ -38,6 +39,35 @@ describe('runFullAnalysis FTS repair and verification failure paths', () => {
           },
         ),
       ).rejects.toThrow(/has not been analyzed yet/i);
+    } finally {
+      await tmpRepo.cleanup();
+    }
+  });
+
+  it('validates configured FTS stemmer before full analyze pipeline work', async () => {
+    const runPipelineFromRepo = vi.fn(async (repoPath: string) => ({
+      repoPath,
+      graph: { forEachNode: () => undefined },
+    }));
+    vi.doMock('../../src/core/ingestion/pipeline.js', () => ({
+      runPipelineFromRepo,
+    }));
+    vi.stubEnv('GITNEXUS_FTS_STEMMER', 'porterr');
+
+    const tmpRepo = await createTempDir('gitnexus-run-analyze-invalid-fts-stemmer-');
+    try {
+      const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
+
+      await expect(
+        runFullAnalysis(
+          tmpRepo.dbPath,
+          { force: true },
+          {
+            onProgress: () => {},
+          },
+        ),
+      ).rejects.toThrow(/Invalid GITNEXUS_FTS_STEMMER/i);
+      expect(runPipelineFromRepo).not.toHaveBeenCalled();
     } finally {
       await tmpRepo.cleanup();
     }
@@ -121,6 +151,7 @@ describe('runFullAnalysis FTS repair and verification failure paths', () => {
       loadFTSExtension: vi.fn(async () => true),
     }));
     vi.doMock('../../src/core/search/fts-indexes.js', () => ({
+      initialiseSearchFTSStemmer: vi.fn(() => 'porter'),
       createSearchFTSIndexes: vi.fn(async () => undefined),
       verifySearchFTSIndexes: vi.fn(async () => [SIMULATED_MISSING_FTS_INDEX_NAME]),
     }));
@@ -170,6 +201,7 @@ describe('runFullAnalysis FTS repair and verification failure paths', () => {
       loadFTSExtension: vi.fn(async () => true),
     }));
     vi.doMock('../../src/core/search/fts-indexes.js', () => ({
+      initialiseSearchFTSStemmer: vi.fn(() => 'porter'),
       createSearchFTSIndexes: vi.fn(async () => {
         throw new Error('FTS extension unavailable');
       }),
@@ -225,6 +257,7 @@ describe('runFullAnalysis FTS repair and verification failure paths', () => {
       loadFTSExtension: vi.fn(async () => false),
     }));
     vi.doMock('../../src/core/search/fts-indexes.js', () => ({
+      initialiseSearchFTSStemmer: vi.fn(() => 'porter'),
       createSearchFTSIndexes,
       verifySearchFTSIndexes: vi.fn(async () => []),
     }));
@@ -269,6 +302,7 @@ describe('runFullAnalysis FTS repair and verification failure paths', () => {
       loadFTSExtension: vi.fn(async () => true),
     }));
     vi.doMock('../../src/core/search/fts-indexes.js', () => ({
+      initialiseSearchFTSStemmer: vi.fn(() => 'porter'),
       createSearchFTSIndexes: vi.fn(async () => undefined),
       verifySearchFTSIndexes: vi.fn(async () => ['Function.function_fts']),
     }));
@@ -318,6 +352,7 @@ describe('runFullAnalysis FTS repair and verification failure paths', () => {
       loadFTSExtension: vi.fn(async () => false),
     }));
     vi.doMock('../../src/core/search/fts-indexes.js', () => ({
+      initialiseSearchFTSStemmer: vi.fn(() => 'porter'),
       createSearchFTSIndexes,
       verifySearchFTSIndexes,
     }));
