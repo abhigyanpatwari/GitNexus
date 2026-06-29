@@ -977,81 +977,8 @@ describe('findContractNode', () => {
   });
 });
 
-/**
- * Cross-process rename clash probe (B2).
- *
- * Exists to PROVE/DISPROVE whether a held-open cached read-only bridge handle
- * blocks an external atomic rename of bridge.lbug on Windows. This is a
- * research test, not a correctness fix — see deliberation in bridge-db.ts.
- *
- * On POSIX (macOS/Linux) this always passes because the kernel allows
- * renaming over a file that has open descriptors (the old inode stays alive).
- * On Windows the beforeEach calls writeBridge, which puts the test in the
- * in-process write→read reopen class (the unfixed LadybugDB Windows limitation)
- * before the rename probe even runs. The B2 probe is therefore gated on the
- * same itCacheReopen skip — the external rename part of the test is subsumed
- * by the inability to open RO after write in the same process.
- *
- * Run on macOS/Linux CI to confirm the behaviour; Windows CI cannot exercise
- * this probe until the underlying LadybugDB reopen is fixed.
- */
-describe('cross-process rename clash (B2 evidence)', () => {
-  let tmpDir: string;
-
-  beforeEach(async () => {
-    tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'bridge-clash-'));
-    await writeBridge(tmpDir, {
-      contracts: [makeContract()],
-      crossLinks: [],
-      repoSnapshots: {},
-      missingRepos: [],
-    });
-  });
-
-  afterEach(async () => {
-    const { closeAllCachedBridges } = await import('../../../src/core/group/bridge-db.js');
-    await closeAllCachedBridges();
-    await cleanupTempDir(tmpDir);
-  });
-
-  // Same write→read reopen limitation as itCacheReopen above.
-  const itB2Probe = process.platform === 'win32' ? it.skip : it;
-
-  itB2Probe('external rename succeeds while cached RO handle is held', async () => {
-    const { getCachedBridgeReadOnly } = await import('../../../src/core/group/bridge-db.js');
-
-    // Open and hold a cached RO handle (simulating a long-lived MCP server).
-    const handle = await getCachedBridgeReadOnly(tmpDir);
-    expect(handle).not.toBeNull();
-
-    // Attempt an atomic rename as an external `gitnexus group sync` would:
-    // create a temp file at the same path, then rename it over bridge.lbug.
-    const dbPath = path.join(tmpDir, 'bridge.lbug');
-    const tmpPath = path.join(tmpDir, 'bridge.lbug.tmp');
-    await fsp.writeFile(tmpPath, await fsp.readFile(dbPath));
-
-    let renameError: string | null = null;
-    try {
-      await fsp.rename(tmpPath, dbPath);
-    } catch (err: unknown) {
-      renameError = err instanceof Error ? err.message : String(err);
-    }
-
-    // No `if`-branch in the test body (repo convention). The diagnostic — on
-    // POSIX this should never fail; on Windows a failure means the share mode is
-    // insufficient (FILE_SHARE_DELETE not set) — rides on the assertion message.
-    expect(
-      renameError,
-      `[B2] rename failed while cached RO handle held: ${renameError}`,
-    ).toBeNull();
-
-    // The handle should still be valid for queries (the OS kept the old
-    // inode alive on POSIX; on Windows the renamed file is the same one).
-    const { queryBridge } = await import('../../../src/core/group/bridge-db.js');
-    const rows = await queryBridge<{ repo: string }>(
-      handle!,
-      'MATCH (c:Contract) RETURN c.repo AS repo',
-    );
-    expect(rows).toHaveLength(1);
-  });
-});
+// The B2 cross-process rename-clash probe moved to
+// test/integration/group/bridge-cache-reopen.test.ts, where a cross-process
+// seed lets it run on win32 (the in-process write→read reopen no longer gates
+// it). It empirically answers whether an open cached RO handle blocks an
+// external atomic rename of bridge.lbug on Windows.

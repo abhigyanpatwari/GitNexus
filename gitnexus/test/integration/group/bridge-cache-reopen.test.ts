@@ -26,6 +26,7 @@ import {
   queryBridge,
   closeBridgeDb,
   closeAllCachedBridges,
+  retryRename,
 } from '../../../src/core/group/bridge-db.js';
 import { cleanupTempDir } from '../../helpers/test-db.js';
 
@@ -94,5 +95,51 @@ describe('bridge RO-handle cache — cross-process seed (Windows reopen fix, #22
     expect(handles).toMatchObject(Array.from({ length: N }, () => first));
 
     for (const h of handles) await closeBridgeDb(h!);
+  });
+
+  // B2 probe — moved here from the unit suite so it RUNS ON WIN32. bridge.lbug is
+  // seeded cross-process (beforeEach), so opening RO is a clean cross-process
+  // open, not the in-process write→read reopen that forced the old probe to be
+  // win32-skipped. This settles, on Windows CI, the assumption under
+  // writeBridge's invalidate-before-rename and the win32 drain: does an open
+  // cached RO handle block an external atomic rename over bridge.lbug?
+  // LadybugDB opens RO with FILE_SHARE_DELETE, which should permit the rename;
+  // a failure on Windows CI means it does not, and invalidate-before-rename is
+  // load-bearing rather than belt-and-suspenders.
+  it('external rename over bridge.lbug succeeds while a cached RO handle is held', async () => {
+    const dbPath = path.join(groupDir, 'bridge.lbug');
+    const tmpPath = path.join(groupDir, 'bridge.lbug.tmp');
+
+    // Stage the byte-identical replacement BEFORE opening the RO handle, so we
+    // never hold a SECOND OS handle on bridge.lbug while LadybugDB has it open
+    // (reading it concurrently would probe FILE_SHARE_READ — a different
+    // question — and could red for the wrong reason).
+    await fsp.copyFile(dbPath, tmpPath);
+
+    // Hold the cached RO handle open (a long-lived MCP serve process's state).
+    const handle = await getCachedBridgeReadOnly(groupDir);
+    expect(handle).not.toBeNull();
+
+    // Rename the staged copy over bridge.lbug WHILE the RO handle is held —
+    // exactly what a concurrent `gitnexus group sync` does. Use production's
+    // retryRename policy (writeBridge uses it), so transient EBUSY/EPERM from
+    // the Windows AV/indexer scanning the fresh temp file is absorbed. A RED is
+    // then the real steady-state answer: an open RO handle blocks the atomic
+    // rename on Windows (FILE_SHARE_DELETE not set) → writeBridge's
+    // invalidate-before-rename and the win32 drain are load-bearing. (The
+    // handle-survives-rename property is covered by the reuse test above; this
+    // probe's sole verdict is whether the rename itself is blocked.)
+    let renameError: string | null = null;
+    try {
+      await retryRename(tmpPath, dbPath);
+    } catch (err: unknown) {
+      renameError = err instanceof Error ? err.message : String(err);
+    }
+    expect(
+      renameError,
+      `[B2] external rename blocked while cached RO handle held: ${renameError}`,
+    ).toBeNull();
+
+    await closeBridgeDb(handle!);
   });
 });
