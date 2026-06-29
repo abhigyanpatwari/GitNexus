@@ -36,6 +36,7 @@ const PLATFORM_LOGIC = [
   'test/unit/lbug-pool-fts-load.test.ts',
   'test/unit/repo-manager.test.ts',
   'test/unit/repo-manager-finalize-invariant.test.ts',
+  'test/unit/git-utils.test.ts',
   'test/unit/hooks.test.ts',
   'test/unit/hook-db-lock-probe.test.ts',
   'test/unit/cursor-hook.test.ts',

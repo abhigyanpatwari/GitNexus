@@ -103,6 +103,12 @@ export const getRemoteUrl = (repoPath: string): string | undefined => {
  * Find the git repository root from any path inside the repo
  */
 export const getGitRoot = (fromPath: string): string | null => {
+  const resolved = path.resolve(fromPath);
+  // Avoid git rev-parse --show-toplevel trimming trailing spaces from the
+  // repository root on Windows; callers that need identity keys canonicalize
+  // this value with realpath before comparing it.
+  if (hasGitDir(resolved)) return resolved;
+
   try {
     const raw = chompGitOutput(
       execSync('git rev-parse --show-toplevel', {

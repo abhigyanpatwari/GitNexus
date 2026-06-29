@@ -253,6 +253,10 @@ function contractIdFor(method: string, pathNorm: string): string {
   return `http::${method.toUpperCase()}::${pathNorm}`;
 }
 
+export function normalizeRepoRelPath(filePath: string): string {
+  return filePath.replace(/\\/g, '/').replace(/^\.\//, '');
+}
+
 // ─── Graph row helpers ───────────────────────────────────────────────
 
 function methodFromRouteReason(reason: string): string | null {
@@ -764,20 +768,21 @@ export class HttpRouteExtractor implements ContractExtractor {
     const out: ExtractedContract[] = [];
     for (const rel of files) {
       const detections = await getDetections(rel);
+      const filePath = normalizeRepoRelPath(rel);
       for (const d of detections) {
         if (d.role !== 'provider') continue;
         const pathNorm = normalizeHttpPath(d.path);
         // Resolve the handler to a real symbol (named handler, or the inline
         // arrow that encloses the registration line) so the contract carries a
         // real symbolUid; fall back to the file + detection name otherwise.
-        const resolved = await resolveSymbol(rel, d);
+        const resolved = await resolveSymbol(filePath, d);
         out.push({
           contractId: contractIdFor(d.method, pathNorm),
           type: 'http',
           role: 'provider',
           symbolUid: resolved?.uid ?? '',
           symbolRef: {
-            filePath: resolved?.filePath || rel,
+            filePath: resolved?.filePath || filePath,
             name: resolved?.name ?? d.name ?? 'handler',
           },
           symbolName: resolved?.name ?? d.name ?? 'handler',
@@ -883,19 +888,20 @@ export class HttpRouteExtractor implements ContractExtractor {
     const out: ExtractedContract[] = [];
     for (const rel of files) {
       const detections = await getDetections(rel);
+      const filePath = normalizeRepoRelPath(rel);
       for (const d of detections) {
         if (d.role !== 'consumer') continue;
         const pathNorm = normalizeConsumerPath(d.path);
         // Resolve the function CONTAINING the fetch/axios call so the consumer
         // contract carries a real symbolUid (was always '' — the gap that left
         // cross-repo trace/impact unable to traverse HTTP links).
-        const resolved = await resolveSymbol(rel, d);
+        const resolved = await resolveSymbol(filePath, d);
         out.push({
           contractId: contractIdFor(d.method, pathNorm),
           type: 'http',
           role: 'consumer',
           symbolUid: resolved?.uid ?? '',
-          symbolRef: { filePath: resolved?.filePath || rel, name: resolved?.name ?? 'fetch' },
+          symbolRef: { filePath: resolved?.filePath || filePath, name: resolved?.name ?? 'fetch' },
           symbolName: resolved?.name ?? 'fetch',
           confidence: d.confidence,
           meta: {
