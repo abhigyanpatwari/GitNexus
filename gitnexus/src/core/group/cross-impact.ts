@@ -142,10 +142,7 @@ export function validateGroupImpactParams(params: Record<string, unknown>):
   const target = String(params.target ?? '').trim();
   if (!name) return { ok: false, error: 'name is required' };
   if (!repoPath)
-    return {
-      ok: false,
-      error: 'repo is required (group repo path, e.g. app/backend)',
-    };
+    return { ok: false, error: 'repo is required (group repo path, e.g. app/backend)' };
   if (!target) return { ok: false, error: 'target is required' };
   if (
     params.service !== undefined &&
@@ -421,11 +418,7 @@ function rowToNeighbor(r: Record<string, unknown>): BridgeNeighborRow | null {
  */
 export async function resolveBridgeNeighbors(
   handle: BridgeHandle,
-  opts: {
-    localRepo: string;
-    uids: string[];
-    direction: 'upstream' | 'downstream';
-  },
+  opts: { localRepo: string; uids: string[]; direction: 'upstream' | 'downstream' },
 ): Promise<BridgeNeighborRow[]> {
   if (opts.uids.length === 0) return [];
   const cypher = opts.direction === 'upstream' ? CY_NEIGHBORS_UPSTREAM : CY_NEIGHBORS_DOWNSTREAM;
@@ -471,9 +464,7 @@ export async function runGroupImpact(
     config = await loadGroupConfig(groupDir);
   } catch (e) {
     if (e instanceof GroupNotFoundError)
-      return {
-        error: `Group "${name}" not found. Run group_list to see configured groups.`,
-      };
+      return { error: `Group "${name}" not found. Run group_list to see configured groups.` };
     return { error: e instanceof Error ? e.message : String(e) };
   }
 
