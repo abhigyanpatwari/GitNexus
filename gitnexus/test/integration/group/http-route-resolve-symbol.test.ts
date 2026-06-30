@@ -1,15 +1,21 @@
 /**
- * Regression test for issue #2325 (http-route extractor half):
- * `RESOLVE_BY_NAME_QUERY` and `RESOLVE_IN_MODULE_QUERY` used the multi-label
- * disjunction `MATCH (n:Function|Method|CodeElement)` which LadybugDB rejects.
- * The surrounding try/catch swallowed the parser error, so cross-file handler
- * resolution silently returned null — and no test ran these query strings
- * against a real LadybugDB, which is why the bug shipped (#2275/#2277).
+ * Issue #2325 (http-route extractor half): `RESOLVE_BY_NAME_QUERY` and
+ * `RESOLVE_IN_MODULE_QUERY` were converted from the `MATCH (n:A|B)` multi-label
+ * disjunction to the `labels(n) IN [...]` allowlist form, for consistency with
+ * the manifest custom-branch fix.
  *
- * These cases run the EXPORTED production query strings against a real
- * LadybugDB. The existing unit tests (test/unit/group/http-route-extractor.test.ts)
- * cover the resolution *logic* with a fake executor; these cover the query
- * *parsing + filtering* against the real parser.
+ * IMPORTANT nuance (verified against the real parser): the actual #2325 failure
+ * was triggered by *reserved-keyword* labels. LadybugDB's parser rejects a
+ * disjunction that names a reserved keyword — `Macro` and `Union` both are — so
+ * the manifest custom branch (whose 21-label list contains `Macro`/`Union`)
+ * genuinely threw, and the resolver's try/catch swallowed it. The http-route
+ * 3-label disjunction `(n:Function|Method|CodeElement)` contains no reserved
+ * keyword and actually PARSES — so this half was a consistency conversion, not a
+ * parser fix. The value of these cases is verifying the EXPORTED production
+ * queries resolve and filter correctly against a real LadybugDB (the unit tests
+ * cover the resolution *logic* with a fake executor; these cover *parsing +
+ * filtering*). The last case pins the real reserved-keyword trigger so a future
+ * query that reintroduces a `MATCH (n:…|Macro|…)` disjunction is caught.
  */
 import { it, expect, afterEach } from 'vitest';
 import {
@@ -80,6 +86,22 @@ withTestLbugDB(
       // Three matches exist; LIMIT 2 returns exactly two so the caller treats it
       // as ambiguous (>=2) without over-materializing.
       expect(rows).toHaveLength(2);
+    });
+
+    it('LadybugDB rejects a disjunction naming a reserved-keyword label (the real #2325 trigger)', async () => {
+      await initLbug(handle.repoId, handle.dbPath);
+      // The genuine #2325 failure: a `MATCH (n:A|B)` disjunction whose label set
+      // includes a reserved keyword (`Macro`/`Union`) is a parser error the
+      // resolver's try/catch silently swallowed. The exported queries avoid this
+      // by using the `labels(n) IN [...]` allowlist form. (The http-route
+      // `Function|Method|CodeElement` form parses — this guards the real cause.)
+      await expect(
+        executeParameterized(
+          handle.repoId,
+          `MATCH (n:Function|Macro|Union) WHERE n.name = $name RETURN n.id AS uid LIMIT 2`,
+          { name: 'getOrders' },
+        ),
+      ).rejects.toThrow(/Parser exception|Invalid input|Prepare failed/i);
     });
   },
   {
