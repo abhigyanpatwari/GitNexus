@@ -51,6 +51,8 @@ import { collectBestChunks } from '../../core/embeddings/types.js';
 import {
   DEFAULT_MCP_VECTOR_MAX_DISTANCE,
   getVectorMaxDistance,
+} from '../../core/embeddings/config.js';
+import {
   rankExactEmbeddingRows,
   type ExactEmbeddingRow,
 } from '../../core/embeddings/exact-search.js';

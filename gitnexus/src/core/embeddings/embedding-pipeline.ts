@@ -34,13 +34,12 @@ import {
   STRUCTURAL_LABELS,
   collectBestChunks,
 } from './types.js';
-import { resolveEmbeddingConfig } from './config.js';
 import {
   DEFAULT_VECTOR_MAX_DISTANCE,
   getVectorMaxDistance,
-  rankExactEmbeddingRows,
-  type ExactEmbeddingRow,
-} from './exact-search.js';
+  resolveEmbeddingConfig,
+} from './config.js';
+import { rankExactEmbeddingRows, type ExactEmbeddingRow } from './exact-search.js';
 import { EMBEDDING_TABLE_NAME, EMBEDDING_INDEX_NAME, STALE_HASH_SENTINEL } from '../lbug/schema.js';
 import { loadVectorExtension, createVectorIndex } from '../lbug/lbug-adapter.js';
 import type { ExtensionInstallPolicy } from '../lbug/extension-loader.js';

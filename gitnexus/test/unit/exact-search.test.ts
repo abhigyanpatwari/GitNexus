@@ -1,15 +1,22 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../../src/core/logger.js', () => ({
-  logger: { warn: vi.fn(), info: vi.fn(), error: vi.fn(), debug: vi.fn(), trace: vi.fn(), fatal: vi.fn() },
+  logger: {
+    warn: vi.fn(),
+    info: vi.fn(),
+    error: vi.fn(),
+    debug: vi.fn(),
+    trace: vi.fn(),
+    fatal: vi.fn(),
+  },
 }));
 
 import { logger } from '../../src/core/logger.js';
 import {
   DEFAULT_VECTOR_MAX_DISTANCE,
   getVectorMaxDistance,
-  rankExactEmbeddingRows,
-} from '../../src/core/embeddings/exact-search.js';
+} from '../../src/core/embeddings/config.js';
+import { rankExactEmbeddingRows } from '../../src/core/embeddings/exact-search.js';
 
 const withVectorDistanceEnv = (value: string | undefined, run: () => void) => {
   const previous = process.env.GITNEXUS_VECTOR_MAX_DISTANCE;
