@@ -61,7 +61,7 @@
     "@scarf/scarf": "^1.4.0",
     "busboy": "^1.6.0",
     "cli-progress": "^3.12.0",
-    "commander": "^14.0.3",
+    "commander": "^15.0.0",
     "cors": "^2.8.5",
     "express": "^5.2.1",
     "express-rate-limit": "^8.4.1",
