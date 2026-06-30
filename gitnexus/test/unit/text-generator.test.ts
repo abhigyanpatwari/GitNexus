@@ -19,32 +19,30 @@ const baseNode: EmbeddableNode = {
 
 describe('text-generator', () => {
   describe('generateEmbeddingText', () => {
-    it('includes metadata header for Function', () => {
+    it('leads with name and code, dropping verbose metadata lines (#2333)', () => {
       const node: EmbeddableNode = {
         ...baseNode,
         isExported: true,
         repoName: 'backend-user-ms',
       };
       const text = generateEmbeddingText(node, node.content);
+      // Compact embedding header: name + code remain.
       expect(text).toContain('Function: parseJSON');
-      expect(text).toContain('Repo: backend-user-ms');
-      expect(text).toContain('Path: src/utils/parser.ts');
-      expect(text).toContain('Export: true');
       expect(text).toContain('function parseJSON');
+      // Low-signal metadata lines are intentionally excluded from embedding text.
+      expect(text).not.toContain('Repo: backend-user-ms');
+      expect(text).not.toContain('Path: src/utils/parser.ts');
+      expect(text).not.toContain('Export: true');
     });
 
-    it('includes Server line when serverName is set', () => {
+    it('excludes the Server line from embedding text even when serverName is set (#2333)', () => {
       const node: EmbeddableNode = {
         ...baseNode,
         repoName: 'backend-user-ms',
         serverName: 'user-service',
       };
       const text = generateEmbeddingText(node, node.content);
-      expect(text).toContain('Server: user-service');
-    });
-
-    it('omits Server line when serverName is undefined', () => {
-      const text = generateEmbeddingText(baseNode, baseNode.content);
+      expect(text).not.toContain('Server: user-service');
       expect(text).not.toContain('Server:');
     });
 
@@ -55,6 +53,105 @@ describe('text-generator', () => {
       };
       const text = generateEmbeddingText(node, node.content);
       expect(text).toContain('This function parses JSON text');
+    });
+
+    // #2333: short doc comments must not be diluted by metadata. The description
+    // is hoisted directly under the name, ahead of the code body, and the
+    // low-signal metadata lines are dropped from embedding text entirely.
+    it('hoists a short English description above the code body (#2333)', () => {
+      const node: EmbeddableNode = {
+        ...baseNode,
+        label: 'Method',
+        name: 'updateMaterialExpiryDate',
+        description: 'validate user',
+        isExported: false,
+        repoName: 'my-project',
+        content:
+          'function updateMaterialExpiryDate(paramMap) {\n  // ... a long method body ...\n  return doWork(paramMap);\n}',
+      };
+      const text = generateEmbeddingText(node, node.content);
+      expect(text).toContain('validate user');
+      // Description appears before the code body.
+      expect(text.indexOf('validate user')).toBeLessThan(text.indexOf('return doWork'));
+      // Metadata noise removed.
+      expect(text).not.toContain('Repo: my-project');
+      expect(text).not.toContain('Path:');
+      expect(text).not.toContain('Export:');
+    });
+
+    it('hoists a short CJK description above the code body (#2333)', () => {
+      const node: EmbeddableNode = {
+        ...baseNode,
+        label: 'Method',
+        name: 'updateMaterialExpiryDate',
+        description: '更新物料有效期',
+        isExported: false,
+        repoName: 'my-project',
+        content:
+          'function updateMaterialExpiryDate(paramMap) {\n  // ... a long method body ...\n  return doWork(paramMap);\n}',
+      };
+      const text = generateEmbeddingText(node, node.content);
+      expect(text).toContain('更新物料有效期');
+      expect(text.indexOf('更新物料有效期')).toBeLessThan(text.indexOf('return doWork'));
+      expect(text).not.toContain('Repo: my-project');
+      expect(text).not.toContain('Path:');
+      expect(text).not.toContain('Export:');
+    });
+
+    it('hoists description in short-label nodes too (#2333)', () => {
+      const node: EmbeddableNode = {
+        ...baseNode,
+        label: 'Const',
+        name: 'MAX_RETRIES',
+        description: 'retry ceiling',
+        content: 'const MAX_RETRIES = 5;',
+      };
+      const text = generateEmbeddingText(node, node.content);
+      expect(text).toContain('Const: MAX_RETRIES');
+      expect(text).toContain('retry ceiling');
+      expect(text.indexOf('retry ceiling')).toBeLessThan(text.indexOf('const MAX_RETRIES = 5;'));
+      expect(text).not.toContain('Path:');
+    });
+
+    it('keeps structural Methods/Properties lines under the compact header (#2333)', () => {
+      const node: EmbeddableNode = {
+        ...baseNode,
+        label: 'Class',
+        name: 'Parser',
+        description: 'JSON parser',
+        repoName: 'my-project',
+        methodNames: ['parseJSON', 'validate'],
+        fieldNames: ['options', 'cache'],
+        content: `class Parser {
+  options: ParserOptions;
+  private cache: Map<string, any>;
+  parseJSON(text: string) { return JSON.parse(text); }
+  validate() { return true; }
+}`,
+      };
+      const text = generateEmbeddingText(node, node.content);
+      expect(text).toContain('Class: Parser');
+      expect(text).toContain('JSON parser');
+      // Structural signal must survive the compact-header change.
+      expect(text).toContain('Methods: parseJSON, validate');
+      expect(text).toContain('Properties: options, cache');
+      // Metadata noise still dropped.
+      expect(text).not.toContain('Repo: my-project');
+    });
+
+    it('emits no description line and no metadata when description is absent (#2333)', () => {
+      const node: EmbeddableNode = {
+        ...baseNode,
+        isExported: true,
+        repoName: 'my-project',
+        description: undefined,
+      };
+      const text = generateEmbeddingText(node, node.content);
+      // Header is just the name line, then a blank line, then the code body —
+      // no stray empty description line, no metadata.
+      expect(text.startsWith('Function: parseJSON\n\nfunction parseJSON')).toBe(true);
+      expect(text).not.toContain('Repo:');
+      expect(text).not.toContain('Export:');
     });
 
     it('generates short node text for TypeAlias without chunking', () => {

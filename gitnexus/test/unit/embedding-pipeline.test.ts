@@ -101,11 +101,14 @@ describe('contentHashForNode', () => {
     expect(contentHashForNode(original)).not.toBe(contentHashForNode(edited));
   });
 
-  it('changes when filePath differs', () => {
+  it('is independent of filePath (#2333 — path dropped from embedding text)', () => {
     const a = makeNode({ filePath: 'src/a.ts' });
     const b = makeNode({ filePath: 'src/b.ts' });
-    // Different filePaths lead to different embedding text ⇒ different hashes
-    expect(contentHashForNode(a)).not.toBe(contentHashForNode(b));
+    // filePath is no longer part of the embedding text, so a path-only move
+    // produces an identical vector and therefore an identical hash. This is
+    // correct: a moved symbol gets a new nodeId (path is part of the id), so
+    // it is a fresh CodeEmbedding row regardless of the content hash.
+    expect(contentHashForNode(a)).toBe(contentHashForNode(b));
   });
 
   it('produces identical hash regardless of config vs finalConfig when config is empty', () => {
@@ -116,7 +119,7 @@ describe('contentHashForNode', () => {
   });
 
   it('exports a text template version marker', () => {
-    expect(EMBEDDING_TEXT_VERSION).toBe('v2');
+    expect(EMBEDDING_TEXT_VERSION).toBe('v3');
   });
 });
 
@@ -410,9 +413,14 @@ describe('runEmbeddingPipeline incremental filter', () => {
     const classText = embeddedTexts.find((text) => text.includes('Class: Parser'));
     const enumText = embeddedTexts.find((text) => text.includes('Enum: Status'));
 
-    expect(classText).toContain('Export: true');
+    // #2333 dropped Export/metadata from embedding text, but the description
+    // assertions still prove the positional column mapping is correct: the Class
+    // row carries isExported at index 7 and description at index 8, so an
+    // off-by-one would surface the boolean `true` as the description instead of
+    // the real text below. The Enum row has no isExported column (description at
+    // index 7), exercising the other mapping branch.
     expect(classText).toContain('Parses typed payloads.');
-    expect(enumText).not.toContain('Export:');
+    expect(classText).not.toContain('\ntrue');
     expect(enumText).toContain('Represents user status.');
   });
 

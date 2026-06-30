@@ -76,7 +76,7 @@ const ensureVectorExtensionAvailable = async (): Promise<boolean> => {
  * invalidate existing vectors, such as metadata/header shape changes,
  * structural container context changes, or preceding-context formatting rules.
  */
-export const EMBEDDING_TEXT_VERSION = 'v2';
+export const EMBEDDING_TEXT_VERSION = 'v3';
 
 /**
  * Compute a stable content fingerprint for an embeddable node.

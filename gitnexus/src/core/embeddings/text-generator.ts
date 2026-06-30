@@ -58,7 +58,23 @@ const cleanContent = (content: string): string => {
 };
 
 /**
- * Build metadata header for a node
+ * Build a compact, description-forward header for embedding text.
+ *
+ * Issue #2333 (sub-issue of #2326), Option A: lead the embedding text with the
+ * symbol name + doc-comment description and intentionally drop the low-signal
+ * metadata lines (`Repo`/`Server`/`Export` and the full `Path`). For short doc
+ * comments those lines used to be ~25-30% of the embedding text, diluting the
+ * description's semantic weight in the vector and weakening description-shaped
+ * search — worst for CJK, where a complete concept is often 4-20 characters.
+ *
+ * Full metadata is unaffected: it lives on the graph node properties, which is
+ * what display/context tools read. Only the embedding text changes here.
+ *
+ * Option B (reorder only, keep metadata) was rejected — mean-pooled embeddings
+ * weight by token proportion, not position, so reordering alone barely moves the
+ * signal. Option C (a separate description-only embedding + hybrid merge) is
+ * deferred to follow-up; build it only if Option A proves insufficient against
+ * real measurement. Any change to this template MUST bump EMBEDDING_TEXT_VERSION.
  */
 const buildMetadataHeader = (node: EmbeddableNode, config: Partial<EmbeddingConfig>): string => {
   const parts: string[] = [];
@@ -66,25 +82,8 @@ const buildMetadataHeader = (node: EmbeddableNode, config: Partial<EmbeddingConf
   // Label + name
   parts.push(`${node.label}: ${node.name}`);
 
-  // Repo name
-  if (node.repoName) {
-    parts.push(`Repo: ${node.repoName}`);
-  }
-
-  // Server name (optional)
-  if (node.serverName) {
-    parts.push(`Server: ${node.serverName}`);
-  }
-
-  // Full file path
-  parts.push(`Path: ${node.filePath}`);
-
-  // Export status
-  if (node.isExported !== undefined) {
-    parts.push(`Export: ${node.isExported}`);
-  }
-
-  // Description (truncated)
+  // Description hoisted above everything else so its semantic signal dominates
+  // the embedding vector and is never the part lost to token-limit truncation.
   if (node.description) {
     const maxLen = config.maxDescriptionLength ?? DEFAULT_EMBEDDING_CONFIG.maxDescriptionLength;
     const truncated = truncateDescription(node.description, maxLen);
