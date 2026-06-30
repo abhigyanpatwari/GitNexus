@@ -166,6 +166,30 @@ describe('streamAllCSVsToDisk', () => {
     expect(content).toContain('"index.ts"');
   });
 
+  it('keeps full text file content searchable past 10KB', async () => {
+    const lateNeedle = 'late_text_file_needle_after_10kb';
+    await fs.writeFile(
+      path.join(repoDir, 'src', 'large.txt'),
+      `${'filler line for large text indexing\n'.repeat(400)}${lateNeedle}\n`,
+    );
+    const graph = buildTestGraph([
+      {
+        id: 'file:src/large.txt',
+        label: 'File',
+        name: 'large.txt',
+        filePath: 'src/large.txt',
+      },
+    ]);
+
+    const result = await streamAllCSVsToDisk(graph, repoDir, csvDir);
+    const fileCsv = result.nodeFiles.get('File');
+    expect(fileCsv).toBeDefined();
+
+    const content = await fs.readFile(fileCsv!.csvPath, 'utf-8');
+    expect(content).toContain(lateNeedle);
+    expect(content).not.toContain('[truncated]');
+  });
+
   it('handles community nodes with keywords', async () => {
     const graph = buildTestGraph([
       {

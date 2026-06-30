@@ -156,10 +156,7 @@ const extractContent = async (node: GraphNode, contentCache: FileContentCache): 
   if (isBinaryContent(content)) return '[Binary file - content not stored]';
 
   if (node.label === 'File') {
-    const MAX_FILE_CONTENT = 10000;
-    return content.length > MAX_FILE_CONTENT
-      ? content.slice(0, MAX_FILE_CONTENT) + '\n... [truncated]'
-      : content;
+    return content;
   }
 
   const startLine = node.properties.startLine;
