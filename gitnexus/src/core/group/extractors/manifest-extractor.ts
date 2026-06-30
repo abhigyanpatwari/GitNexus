@@ -7,6 +7,18 @@ export interface ManifestExtractResult {
   crossLinks: CrossLink[];
 }
 
+// Repo-wide symbol lookup for `custom` workspace contracts. Exported so the
+// #2325 integration test can run the EXACT production query against a real
+// LadybugDB — a hand-copied query string in the test would silently drift
+// from this allowlist. `labels(n) IN [...]` is the LadybugDB-compatible
+// allowlist form, NOT the `MATCH (n:A|B)` disjunction LadybugDB rejects (#2325).
+export const CUSTOM_CONTRACT_RESOLVE_QUERY = `MATCH (n)
+   WHERE labels(n) IN ['Function','Method','Class','Interface','Struct','Enum','Trait','Constructor','TypeAlias','Impl','Macro','Union','Typedef','Property','Record','Delegate','Annotation','Template','Const','Static','CodeElement']
+     AND n.name = $symbolName
+   RETURN n.id AS uid, n.name AS name, n.filePath AS filePath
+   ORDER BY n.filePath ASC
+   LIMIT 1`;
+
 /**
  * Canonicalize an HTTP path for matching against Route.name in the graph.
  * Mirrors core/ingestion/pipeline.ts ensureSlash semantics:
@@ -298,15 +310,7 @@ export class ManifestExtractor {
         const symbolName = link.contract.includes('::')
           ? link.contract.split('::').pop()!
           : link.contract;
-        rows = await executor(
-          `MATCH (n)
-           WHERE labels(n) IN ['Function','Method','Class','Interface','Struct','Enum','Trait','Constructor','TypeAlias','Impl','Macro','Union','Typedef','Property','Record','Delegate','Annotation','Template','Const','Static','CodeElement']
-             AND n.name = $symbolName
-           RETURN n.id AS uid, n.name AS name, n.filePath AS filePath
-           ORDER BY n.filePath ASC
-           LIMIT 1`,
-          { symbolName },
-        );
+        rows = await executor(CUSTOM_CONTRACT_RESOLVE_QUERY, { symbolName });
       } else {
         return null;
       }

@@ -14,7 +14,10 @@
  * assertion — making the exclusion check non-vacuous.
  */
 import { it, expect, afterEach } from 'vitest';
-import { ManifestExtractor } from '../../../src/core/group/extractors/manifest-extractor.js';
+import {
+  ManifestExtractor,
+  CUSTOM_CONTRACT_RESOLVE_QUERY,
+} from '../../../src/core/group/extractors/manifest-extractor.js';
 import type { GroupManifestLink } from '../../../src/core/group/types.js';
 import type { CypherExecutor } from '../../../src/core/group/contract-extractor.js';
 import { initLbug, executeParameterized, closeLbug } from '../../../src/core/lbug/pool-adapter.js';
@@ -46,13 +49,9 @@ const MULTI_LABEL_CUSTOM_QUERY = `MATCH (n:Function|Method|Class|Interface|Struc
  ORDER BY n.filePath ASC
  LIMIT 1`;
 
-/** Direct-query canary for the `labels(n)`-is-a-string assumption the whole fix relies on. */
-const LABELS_CUSTOM_QUERY = `MATCH (n)
- WHERE labels(n) IN ['Function','Method','Class','Interface','Struct','Enum','Trait','Constructor','TypeAlias','Impl','Macro','Union','Typedef','Property','Record','Delegate','Annotation','Template','Const','Static','CodeElement']
- AND n.name = $symbolName
- RETURN n.id AS uid, n.name AS name, n.filePath AS filePath
- ORDER BY n.filePath ASC
- LIMIT 1`;
+// Direct-query canary for the `labels(n)`-is-a-string assumption the whole fix
+// relies on. Uses the EXACT production query (imported, not hand-copied) so the
+// canary can never silently drift from the real allowlist.
 
 withTestLbugDB(
   'issue-2325-manifest-resolveSymbol',
@@ -100,7 +99,7 @@ withTestLbugDB(
 
     it('direct labels(n) IN query resolves the symbol (canary for labels()-is-a-string)', async () => {
       await initLbug(handle.repoId, handle.dbPath);
-      const rows = await executeParameterized(handle.repoId, LABELS_CUSTOM_QUERY, {
+      const rows = await executeParameterized(handle.repoId, CUSTOM_CONTRACT_RESOLVE_QUERY, {
         symbolName: 'MyServiceFacade',
       });
       expect(rows).toHaveLength(1);
