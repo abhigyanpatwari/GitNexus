@@ -153,6 +153,24 @@ class FileContentCache {
   }
 }
 
+/**
+ * Flatten newlines and tabs to single spaces for FTS-indexed text columns
+ * (`content`, `description`) — the real fix for #2317.
+ *
+ * Ladybug's full-text-search tokenizer splits ONLY on the space character —
+ * `\n`, `\r`, and `\t` are NOT token delimiters. So multiline text indexes as
+ * a handful of giant tokens (each whole line, joined across lines), and a
+ * word query matches none of them: `searchFTSFromLbug('foo')` misses a file
+ * whose content is `... \nfoo\n ...`. Removing the 10KB cap (#2333/#2317)
+ * stores the full body but leaves it unsearchable; collapsing intra-text
+ * whitespace to spaces is what actually makes every word searchable.
+ *
+ * This rewrites the STORED column too (the same value is COPYed in), so File
+ * content returned via the graph API is space-flattened — an accepted trade
+ * for making file/symbol text searchable. Leading/trailing/empty are no-ops.
+ */
+const normalizeFtsText = (text: string): string => text.replace(/[\r\n\t]+/g, ' ');
+
 const extractContent = async (node: GraphNode, contentCache: FileContentCache): Promise<string> => {
   const filePath = node.properties.filePath;
   const content = await contentCache.get(filePath);
@@ -161,7 +179,7 @@ const extractContent = async (node: GraphNode, contentCache: FileContentCache): 
   if (isBinaryContent(content)) return '[Binary file - content not stored]';
 
   if (node.label === 'File') {
-    return content;
+    return normalizeFtsText(content);
   }
 
   const startLine = node.properties.startLine;
@@ -173,9 +191,9 @@ const extractContent = async (node: GraphNode, contentCache: FileContentCache): 
   const end = Math.min(lines.length - 1, endLine + 2);
   const snippet = lines.slice(start, end + 1).join('\n');
   const MAX_SNIPPET = 5000;
-  return snippet.length > MAX_SNIPPET
-    ? snippet.slice(0, MAX_SNIPPET) + '\n... [truncated]'
-    : snippet;
+  const capped =
+    snippet.length > MAX_SNIPPET ? snippet.slice(0, MAX_SNIPPET) + '\n... [truncated]' : snippet;
+  return normalizeFtsText(capped);
 };
 
 // ============================================================================
@@ -490,7 +508,7 @@ export const streamAllCSVsToDisk = async (
               escapeCSVField(node.properties.name || ''),
               escapeCSVField(node.properties.heuristicLabel || ''),
               keywordsStr,
-              escapeCSVField(node.properties.description || ''),
+              escapeCSVField(normalizeFtsText(node.properties.description || '')),
               escapeCSVField(node.properties.enrichedBy || 'heuristic'),
               escapeCSVNumber(node.properties.cohesion, 0),
               escapeCSVNumber(node.properties.symbolCount, 0),
@@ -526,7 +544,7 @@ export const streamAllCSVsToDisk = async (
               escapeCSVNumber(node.properties.endLine, -1),
               node.properties.isExported ? 'true' : 'false',
               escapeCSVField(content),
-              escapeCSVField(node.properties.description || ''),
+              escapeCSVField(normalizeFtsText(node.properties.description || '')),
               escapeCSVNumber(node.properties.parameterCount, 0),
               escapeCSVField(node.properties.returnType || ''),
             ].join(','),
@@ -544,7 +562,7 @@ export const streamAllCSVsToDisk = async (
               escapeCSVNumber(node.properties.endLine, -1),
               escapeCSVNumber(node.properties.level, 1),
               escapeCSVField(content),
-              escapeCSVField(node.properties.description || ''),
+              escapeCSVField(normalizeFtsText(node.properties.description || '')),
             ].join(','),
           );
           break;
@@ -578,7 +596,7 @@ export const streamAllCSVsToDisk = async (
               escapeCSVField(node.id),
               escapeCSVField(node.properties.name || ''),
               escapeCSVField(node.properties.filePath || ''),
-              escapeCSVField(node.properties.description || ''),
+              escapeCSVField(normalizeFtsText(node.properties.description || '')),
             ].join(','),
           );
           break;
@@ -599,7 +617,7 @@ export const streamAllCSVsToDisk = async (
                 escapeCSVNumber(node.properties.endLine, -1),
                 node.properties.isExported ? 'true' : 'false',
                 escapeCSVField(content),
-                escapeCSVField(node.properties.description || ''),
+                escapeCSVField(normalizeFtsText(node.properties.description || '')),
               ].join(','),
             );
           } else {
@@ -615,7 +633,7 @@ export const streamAllCSVsToDisk = async (
                   escapeCSVNumber(node.properties.startLine, -1),
                   escapeCSVNumber(node.properties.endLine, -1),
                   escapeCSVField(content),
-                  escapeCSVField(node.properties.description || ''),
+                  escapeCSVField(normalizeFtsText(node.properties.description || '')),
                   ...(node.label === 'Property'
                     ? [escapeCSVField(node.properties.declaredType || '')]
                     : []),
