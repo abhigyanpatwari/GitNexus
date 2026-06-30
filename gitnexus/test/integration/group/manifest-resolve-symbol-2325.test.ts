@@ -15,7 +15,8 @@
  */
 import { it, expect, afterEach } from 'vitest';
 import { ManifestExtractor } from '../../../src/core/group/extractors/manifest-extractor.js';
-import type { GroupManifestLink, CypherExecutor } from '../../../src/core/group/types.js';
+import type { GroupManifestLink } from '../../../src/core/group/types.js';
+import type { CypherExecutor } from '../../../src/core/group/contract-extractor.js';
 import { initLbug, executeParameterized, closeLbug } from '../../../src/core/lbug/pool-adapter.js';
 import { withTestLbugDB } from '../../helpers/test-indexed-db.js';
 
