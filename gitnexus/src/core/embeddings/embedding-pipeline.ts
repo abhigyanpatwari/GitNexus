@@ -259,7 +259,9 @@ export interface EmbeddingPipelineResult {
  * @param onProgress - Callback for progress updates
  * @param config - Optional configuration override
  * @param skipNodeIds - Optional set of node IDs that already have embeddings (incremental mode)
- * @param context - Optional repo/server context for metadata enrichment
+ * @param context - Optional repo/server context. No longer applied to embedding
+ *        text (#2333 dropped the metadata header); retained for call-signature
+ *        stability. See the follow-up note about removing this plumbing entirely.
  * @param existingEmbeddings - Optional map of nodeId → contentHash for incremental mode.
  *        Nodes whose hash matches are skipped; nodes with a changed hash are DELETE'd
  *        and re-embedded; nodes not in the map are embedded fresh.
@@ -317,13 +319,10 @@ export const runEmbeddingPipeline = async (
     // Phase 2: Query embeddable nodes
     let nodes = await queryEmbeddableNodes(executeQuery);
 
-    // Apply context metadata
-    if (context?.repoName) {
-      for (const node of nodes) {
-        node.repoName = context.repoName;
-        node.serverName = context.serverName;
-      }
-    }
+    // #2333: the compact embedding header no longer reads node.repoName/serverName,
+    // so the previous context-injection loop here was dead. `context` is kept on the
+    // signature for call-site stability; it does not affect embedding text or hashes.
+    void context;
 
     // Incremental mode: compare content hashes, delete stale rows, skip fresh ones.
     // Computed hashes for stale nodes are cached so batchInsertEmbeddings can reuse them

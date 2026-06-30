@@ -135,6 +135,10 @@ describe('text-generator', () => {
       // Structural signal must survive the compact-header change.
       expect(text).toContain('Methods: parseJSON, validate');
       expect(text).toContain('Properties: options, cache');
+      // Description is hoisted ahead of the structural lines (ordering guard for
+      // the structural path, mirroring the function/method ordering checks).
+      expect(text.indexOf('JSON parser')).toBeLessThan(text.indexOf('Container:'));
+      expect(text.indexOf('JSON parser')).toBeLessThan(text.indexOf('Methods:'));
       // Metadata noise still dropped.
       expect(text).not.toContain('Repo: my-project');
     });

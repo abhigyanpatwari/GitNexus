@@ -1,7 +1,7 @@
 /**
  * Text Generator Module
  *
- * Generates enriched embedding text from code nodes with metadata.
+ * Generates compact, description-forward embedding text from code nodes.
  * Supports chunkable labels (Function/Method with AST chunking),
  * Class-specific structural text, and short-node direct embed.
  *
@@ -76,7 +76,7 @@ const cleanContent = (content: string): string => {
  * deferred to follow-up; build it only if Option A proves insufficient against
  * real measurement. Any change to this template MUST bump EMBEDDING_TEXT_VERSION.
  */
-const buildMetadataHeader = (node: EmbeddableNode, config: Partial<EmbeddingConfig>): string => {
+const buildEmbeddingHeader = (node: EmbeddableNode, config: Partial<EmbeddingConfig>): string => {
   const parts: string[] = [];
 
   // Label + name
@@ -101,7 +101,7 @@ const generateCodeBodyText = (
   config: Partial<EmbeddingConfig>,
   prevTail?: string,
 ): string => {
-  const header = buildMetadataHeader(node, config);
+  const header = buildEmbeddingHeader(node, config);
   const parts = [header];
   if (prevTail) {
     parts.push(`[preceding context]: ...${cleanContent(prevTail)}`);
@@ -127,7 +127,7 @@ const generateStructuralTypeText = (
   chunkIndex?: number,
   prevTail?: string,
 ): string => {
-  const header = buildMetadataHeader(node, config);
+  const header = buildEmbeddingHeader(node, config);
   const parts: string[] = [header];
   const isFirstChunk = chunkIndex === undefined || chunkIndex === 0;
   const cleanedContent = cleanContent(node.content);
@@ -252,7 +252,7 @@ export const generateEmbeddingText = (
   prevTail?: string,
 ): string => {
   if (isShortLabel(node.label)) {
-    const header = buildMetadataHeader(node, config);
+    const header = buildEmbeddingHeader(node, config);
     const cleaned = cleanContent(node.content);
     return `${header}\n\n${cleaned}`;
   }

@@ -111,6 +111,15 @@ describe('contentHashForNode', () => {
     expect(contentHashForNode(a)).toBe(contentHashForNode(b));
   });
 
+  it('is independent of repoName/serverName/isExported (#2333 — dropped from header)', () => {
+    // #2333 dropped these three (alongside filePath) from the embedding header.
+    // The hash must not depend on them; if any were re-added to the header, this
+    // assertion flips and flags the silent re-coupling before it ships.
+    const a = makeNode({ repoName: 'repo-a', serverName: 'svc-a', isExported: true });
+    const b = makeNode({ repoName: 'repo-b', serverName: 'svc-b', isExported: false });
+    expect(contentHashForNode(a)).toBe(contentHashForNode(b));
+  });
+
   it('produces identical hash regardless of config vs finalConfig when config is empty', () => {
     const node = makeNode();
     const hashWithEmptyConfig = contentHashForNode(node, {});
@@ -414,11 +423,14 @@ describe('runEmbeddingPipeline incremental filter', () => {
     const enumText = embeddedTexts.find((text) => text.includes('Enum: Status'));
 
     // #2333 dropped Export/metadata from embedding text, but the description
-    // assertions still prove the positional column mapping is correct: the Class
-    // row carries isExported at index 7 and description at index 8, so an
-    // off-by-one would surface the boolean `true` as the description instead of
-    // the real text below. The Enum row has no isExported column (description at
-    // index 7), exercising the other mapping branch.
+    // assertions still prove the positional column mapping is correct. The Class
+    // row carries isExported at index 7 and description at index 8; the Enum row
+    // has no isExported column (description at index 7), exercising the other
+    // mapping branch. The toContain checks below are the primary guard: an
+    // off-by-one would put the boolean from index 7 into description, so the real
+    // text would be absent (and truncateDescription would throw on a non-string),
+    // failing here. The not.toContain('\ntrue') line is supplementary defense for
+    // a future string-coercion path only.
     expect(classText).toContain('Parses typed payloads.');
     expect(classText).not.toContain('\ntrue');
     expect(enumText).toContain('Represents user status.');
