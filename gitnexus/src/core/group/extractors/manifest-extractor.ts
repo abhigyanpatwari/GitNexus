@@ -189,6 +189,13 @@ export class ManifestExtractor {
     // Cross-impact still works: the bridge query joins on the synthetic
     // uid, and the local impact engine derives the same uid for the
     // unresolved symbol — name-based hints are the additional safety net.
+    //
+    // Label filtering uses `MATCH (n) WHERE labels(n) IN [...]`, NOT the
+    // openCypher disjunction `MATCH (n:A|B|C)`: LadybugDB's parser rejects
+    // the `:A|B` form outright (#2325), and the whole try/catch below would
+    // swallow that as an unresolvable contract. `labels(n)` returns the
+    // node's single label as a string here, so `IN [...]` is an exact
+    // allowlist that includes listed labels and excludes everything else.
     try {
       let rows: Record<string, unknown>[];
       if (link.type === 'http') {
@@ -222,7 +229,7 @@ export class ManifestExtractor {
         // avoid cross-matching Files/Variables/Imports that happen to
         // share the topic name.
         rows = await executor(
-          `MATCH (n:Function|Method|Class|Interface) WHERE n.name = $contract
+          `MATCH (n) WHERE labels(n) IN ['Function','Method','Class','Interface'] AND n.name = $contract
            RETURN n.id AS uid, n.name AS name, n.filePath AS filePath
            ORDER BY n.filePath ASC
            LIMIT 1`,
@@ -246,7 +253,7 @@ export class ManifestExtractor {
         const methodName = parts[1]?.trim() ?? '';
         if (methodName) {
           rows = await executor(
-            `MATCH (n:Function|Method) WHERE n.name = $methodName
+            `MATCH (n) WHERE labels(n) IN ['Function','Method'] AND n.name = $methodName
              RETURN n.id AS uid, n.name AS name, n.filePath AS filePath
              ORDER BY n.filePath ASC
              LIMIT 1`,
@@ -254,7 +261,7 @@ export class ManifestExtractor {
           );
         } else if (serviceName) {
           rows = await executor(
-            `MATCH (n:Class|Interface) WHERE n.name = $serviceName
+            `MATCH (n) WHERE labels(n) IN ['Class','Interface'] AND n.name = $serviceName
              RETURN n.id AS uid, n.name AS name, n.filePath AS filePath
              ORDER BY n.filePath ASC
              LIMIT 1`,
@@ -270,7 +277,7 @@ export class ManifestExtractor {
         // package-level labels so we don't return arbitrary symbols
         // named after a library.
         rows = await executor(
-          `MATCH (n:Package|Module) WHERE n.name = $contract
+          `MATCH (n) WHERE labels(n) IN ['Package','Module'] AND n.name = $contract
            RETURN n.id AS uid, n.name AS name, n.filePath AS filePath
            ORDER BY n.filePath ASC
            LIMIT 1`,
@@ -292,8 +299,9 @@ export class ManifestExtractor {
           ? link.contract.split('::').pop()!
           : link.contract;
         rows = await executor(
-          `MATCH (n:Function|Method|Class|Interface|Struct|Enum|Trait|Constructor|TypeAlias|Impl|Macro|Union|Typedef|Property|Record|Delegate|Annotation|Template|Const|Static|CodeElement)
-           WHERE n.name = $symbolName
+          `MATCH (n)
+           WHERE labels(n) IN ['Function','Method','Class','Interface','Struct','Enum','Trait','Constructor','TypeAlias','Impl','Macro','Union','Typedef','Property','Record','Delegate','Annotation','Template','Const','Static','CodeElement']
+             AND n.name = $symbolName
            RETURN n.id AS uid, n.name AS name, n.filePath AS filePath
            ORDER BY n.filePath ASC
            LIMIT 1`,

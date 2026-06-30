@@ -839,7 +839,13 @@ describe('ManifestExtractor', () => {
 
     await extractor.extractFromManifest(links, dbExecutors);
 
-    expect(capturedCypher).toContain('Function|Method|Class|Interface|Struct|Enum|Trait');
+    // LadybugDB rejects the openCypher disjunction `MATCH (n:A|B|C)` (#2325), so
+    // the allowlist is carried as `labels(n) IN [...]`, not `n:A|B`.
+    expect(capturedCypher).toContain('labels(n) IN [');
+    expect(capturedCypher).toContain(
+      "'Function','Method','Class','Interface','Struct','Enum','Trait'",
+    );
+    expect(capturedCypher).not.toContain('Function|Method');
     expect(capturedCypher).not.toContain('NOT n:File');
   });
 

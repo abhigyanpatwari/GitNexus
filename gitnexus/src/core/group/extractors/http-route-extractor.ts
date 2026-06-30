@@ -80,10 +80,17 @@ WHERE sym.filePath = $filePath AND sym.startLine IS NOT NULL AND sym.endLine IS 
 RETURN sym.id AS uid, sym.name AS name, sym.filePath AS filePath,
        sym.startLine AS startLine, sym.endLine AS endLine, labels(sym) AS labels`;
 
-// Repo-wide lookup of a symbol by exact name (label-union, as in
-// manifest-extractor.ts). Used to resolve a provider's named handler when it is
-// defined in a file OTHER than its route registration — and only honored when
-// the result is unique (see resolveSymbolByNameUnique).
+// Repo-wide lookup of a symbol by exact name. Used to resolve a provider's
+// named handler when it is defined in a file OTHER than its route registration —
+// and only honored when the result is unique (see resolveSymbolByNameUnique).
+//
+// Label filtering uses `labels(n) IN [...]`, NOT the openCypher disjunction
+// `MATCH (n:A|B|C)`: LadybugDB's parser rejects the `:A|B` form (#2325), and the
+// surrounding try/catch would silently swallow that as an unresolvable handler.
+// `labels(n)` returns the node's single label as a string here, so `IN [...]` is
+// an exact allowlist. (Exported so integration tests can run the exact
+// production query against a real LadybugDB — the bug shipped because no test
+// did.)
 //
 // `n.filePath <> ''` excludes synthetic non-source `CodeElement` nodes that
 // carry no real file — ORM model/table nodes (orm.ts emits `filePath: ''`) and
@@ -91,9 +98,9 @@ RETURN sym.id AS uid, sym.name AS name, sym.filePath AS filePath,
 // degenerate edge-less node NOR inflates the uniqueness count and masks the real
 // handler. `LIMIT 2` bounds materialization: distinguishing unique (1) from
 // ambiguous (>=2) never needs more than two rows (the count guard stays exact).
-const RESOLVE_BY_NAME_QUERY = `
-MATCH (n:Function|Method|CodeElement)
-WHERE n.name = $name AND n.filePath <> ''
+export const RESOLVE_BY_NAME_QUERY = `
+MATCH (n) WHERE labels(n) IN ['Function','Method','CodeElement']
+  AND n.name = $name AND n.filePath <> ''
 RETURN n.id AS uid, n.name AS name, n.filePath AS filePath
 LIMIT 2`;
 
@@ -103,9 +110,9 @@ LIMIT 2`;
 // the precise rung — it survives aliases and local same-name collisions that a
 // repo-wide name lookup cannot, and only resolves on a unique match within that
 // module. `LIMIT 2` keeps the uniqueness count exact (see RESOLVE_BY_NAME_QUERY).
-const RESOLVE_IN_MODULE_QUERY = `
-MATCH (n:Function|Method|CodeElement)
-WHERE n.name = $name AND (n.filePath STARTS WITH $fileDot OR n.filePath STARTS WITH $fileSlash)
+export const RESOLVE_IN_MODULE_QUERY = `
+MATCH (n) WHERE labels(n) IN ['Function','Method','CodeElement']
+  AND n.name = $name AND (n.filePath STARTS WITH $fileDot OR n.filePath STARTS WITH $fileSlash)
 RETURN n.id AS uid, n.name AS name, n.filePath AS filePath
 LIMIT 2`;
 
