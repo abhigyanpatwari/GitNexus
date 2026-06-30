@@ -14,6 +14,17 @@ export interface ExactSearchChunk {
   distance: number;
 }
 
+export const DEFAULT_VECTOR_MAX_DISTANCE = 0.5;
+export const DEFAULT_MCP_VECTOR_MAX_DISTANCE = 0.6;
+
+export const getVectorMaxDistance = (fallback: number = DEFAULT_VECTOR_MAX_DISTANCE): number => {
+  const raw = process.env.GITNEXUS_VECTOR_MAX_DISTANCE;
+  if (raw === undefined || raw.trim() === '') return fallback;
+
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+};
+
 const cosineDistance = (a: readonly number[], b: readonly number[]): number => {
   let dot = 0;
   let aNorm = 0;
