@@ -130,6 +130,18 @@ withTestLbugDB(
       expect(r.symbolUid.startsWith('manifest::')).toBe(false);
     });
 
+    it('thrift service contract strips the package prefix before resolving the Class', async () => {
+      // The thrift-only branch strips `package.` from the service name
+      // (`com.example.AuthService` -> `AuthService`). Without the strip the
+      // lookup would query for `com.example.AuthService`, match nothing, and
+      // fall back to a synthetic `manifest::` uid — so this resolving to the
+      // real Class is the load-bearing assertion for the package-strip path.
+      const r = await resolveVia('thrift', 'com.example.AuthService');
+      expect(r.symbolUid).toBe('cls:AuthService');
+      expect(r.filePath).toBe('src/auth_service.ts');
+      expect(r.symbolUid.startsWith('manifest::')).toBe(false);
+    });
+
     it('lib contract resolves a Module, excluding a same-named Function', async () => {
       const r = await resolveVia('lib', 'mylib');
       expect(r.symbolUid).toBe('mod:mylib');
