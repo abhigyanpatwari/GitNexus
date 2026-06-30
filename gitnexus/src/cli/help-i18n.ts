@@ -121,7 +121,7 @@ const OPTION_DESCRIPTION_KEYS = {
   'impact|--kind <kind>': 'help.option.impact.kind',
   'impact|--depth <n>': 'help.option.impact.depth',
   'impact|--include-tests': 'help.option.impact.includeTests',
-  'impact|--limit <n>': 'help.option.impact.limit',
+  'impact|-l, --limit <n>': 'help.option.impact.limit',
   'impact|--offset <n>': 'help.option.impact.offset',
   'impact|--summary-only': 'help.option.impact.summaryOnly',
   'cypher|-r, --repo <name>': 'help.option.repo.target',

@@ -360,7 +360,7 @@ program
   .option('--depth <n>', 'Max relationship depth (default: 3)')
   .option('--include-tests', 'Include test files in results')
   .option(
-    '--limit <n>',
+    '-l, --limit <n>',
     'Max symbols per depth level and affected processes/modules to return (default: 100)',
   )
   .option('--offset <n>', 'Skip N symbols per depth level for pagination')
