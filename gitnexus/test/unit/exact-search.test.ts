@@ -1,4 +1,10 @@
-import { describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+vi.mock('../../src/core/logger.js', () => ({
+  logger: { warn: vi.fn(), info: vi.fn(), error: vi.fn(), debug: vi.fn(), trace: vi.fn(), fatal: vi.fn() },
+}));
+
+import { logger } from '../../src/core/logger.js';
 import {
   DEFAULT_VECTOR_MAX_DISTANCE,
   getVectorMaxDistance,
@@ -57,6 +63,10 @@ describe('rankExactEmbeddingRows', () => {
 });
 
 describe('getVectorMaxDistance', () => {
+  beforeEach(() => {
+    vi.mocked(logger.warn).mockClear();
+  });
+
   it('returns the caller fallback when the env var is unset', () => {
     withVectorDistanceEnv(undefined, () => {
       expect(getVectorMaxDistance(0.6)).toBe(0.6);
@@ -75,5 +85,43 @@ describe('getVectorMaxDistance', () => {
         expect(getVectorMaxDistance(0.6)).toBe(0.6);
       });
     }
+  });
+
+  it('stays silent for unset, empty, and whitespace values', () => {
+    for (const value of [undefined, '', '   ']) {
+      withVectorDistanceEnv(value, () => {
+        expect(getVectorMaxDistance(0.6)).toBe(0.6);
+      });
+    }
+    expect(vi.mocked(logger.warn)).not.toHaveBeenCalled();
+  });
+
+  it('falls back and warns once for a non-finite value', () => {
+    withVectorDistanceEnv('Infinity', () => {
+      expect(getVectorMaxDistance(0.6)).toBe(0.6);
+    });
+    expect(vi.mocked(logger.warn)).toHaveBeenCalledTimes(1);
+  });
+
+  it('clamps values above the cosine ceiling to 2 and warns', () => {
+    withVectorDistanceEnv('5', () => {
+      expect(getVectorMaxDistance(0.6)).toBe(2);
+    });
+    expect(vi.mocked(logger.warn)).toHaveBeenCalledTimes(1);
+  });
+
+  it('accepts the ceiling value 2 without warning', () => {
+    withVectorDistanceEnv('2', () => {
+      expect(getVectorMaxDistance(0.6)).toBe(2);
+    });
+    expect(vi.mocked(logger.warn)).not.toHaveBeenCalled();
+  });
+
+  it('warns only once per offending value across repeated calls', () => {
+    withVectorDistanceEnv('7', () => {
+      expect(getVectorMaxDistance(0.6)).toBe(2);
+      expect(getVectorMaxDistance(0.6)).toBe(2);
+    });
+    expect(vi.mocked(logger.warn)).toHaveBeenCalledTimes(1);
   });
 });
