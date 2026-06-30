@@ -74,6 +74,17 @@ function parseLimit(raw: string | undefined): number | undefined {
   return Number.isInteger(n) && n > 0 ? n : undefined;
 }
 
+/**
+ * Parse an `--offset` CLI option into a non-negative pagination start, or
+ * `undefined` when the flag is absent or invalid. Mirrors {@link parseLimit};
+ * offset `0` is valid ("start at the beginning"), so the guard is `>= 0`.
+ */
+function parseOffset(raw: string | undefined): number | undefined {
+  if (raw === undefined) return undefined;
+  const n = Number(raw);
+  return Number.isInteger(n) && n >= 0 ? n : undefined;
+}
+
 export async function queryCommand(
   queryText: string | undefined,
   options?: {
@@ -198,9 +209,8 @@ export async function impactCommand(
 
   try {
     const backend = await getBackend();
-    const rawOffset = parseInt(options?.offset ?? '', 10);
     const parsedLimit = parseLimit(options?.limit);
-    const parsedOffset = Number.isFinite(rawOffset) ? rawOffset : undefined;
+    const parsedOffset = parseOffset(options?.offset);
     // `--line` is a PDG-only statement anchor (1-based source line). Parse it to
     // an integer when provided and thread it ONLY when present, so the backend's
     // line-without-pdg / non-positive-integer validation fires on the real value
