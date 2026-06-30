@@ -285,11 +285,12 @@ export class ManifestExtractor {
       } else if (link.type === 'lib') {
         // Only exact match on the symbol's name. Previous fallback to
         // CONTAINS on n.filePath would promote "react" to "react-native"
-        // or "@types/react" — silent wrong attribution. Restrict to
-        // package-level labels so we don't return arbitrary symbols
-        // named after a library.
+        // or "@types/react" — silent wrong attribution. Restrict to the
+        // package-level `Module` label so we don't return arbitrary symbols
+        // named after a library. (There is no `Package` node table — see
+        // NODE_TABLES — so a `Package` entry only ever matched nothing.)
         rows = await executor(
-          `MATCH (n) WHERE labels(n) IN ['Package','Module'] AND n.name = $contract
+          `MATCH (n) WHERE labels(n) IN ['Module'] AND n.name = $contract
            RETURN n.id AS uid, n.name AS name, n.filePath AS filePath
            ORDER BY n.filePath ASC
            LIMIT 1`,
