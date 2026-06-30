@@ -26,7 +26,6 @@ import {
   type EmbeddableNode,
   type SemanticSearchResult,
   type ModelProgress,
-  type EmbeddingContext,
   EMBEDDABLE_LABELS,
   isShortLabel,
   LABEL_METHOD,
@@ -259,13 +258,9 @@ export interface EmbeddingPipelineResult {
  * @param onProgress - Callback for progress updates
  * @param config - Optional configuration override
  * @param skipNodeIds - Optional set of node IDs that already have embeddings (incremental mode)
- * @param context - Optional repo/server context. No longer applied to embedding
- *        text (#2333 dropped the metadata header); retained for call-signature
- *        stability. See the follow-up note about removing this plumbing entirely.
  * @param existingEmbeddings - Optional map of nodeId → contentHash for incremental mode.
  *        Nodes whose hash matches are skipped; nodes with a changed hash are DELETE'd
  *        and re-embedded; nodes not in the map are embedded fresh.
-
  */
 export const runEmbeddingPipeline = async (
   executeQuery: (cypher: string) => Promise<any[]>,
@@ -276,7 +271,6 @@ export const runEmbeddingPipeline = async (
   onProgress: EmbeddingProgressCallback,
   config: Partial<EmbeddingConfig> = {},
   skipNodeIds?: Set<string>,
-  context?: EmbeddingContext,
   existingEmbeddings?: Map<string, string>,
 ): Promise<EmbeddingPipelineResult> => {
   const finalConfig = resolveEmbeddingConfig(config);
@@ -318,11 +312,6 @@ export const runEmbeddingPipeline = async (
 
     // Phase 2: Query embeddable nodes
     let nodes = await queryEmbeddableNodes(executeQuery);
-
-    // #2333: the compact embedding header no longer reads node.repoName/serverName,
-    // so the previous context-injection loop here was dead. `context` is kept on the
-    // signature for call-site stability; it does not affect embedding text or hashes.
-    void context;
 
     // Incremental mode: compare content hashes, delete stale rows, skip fresh ones.
     // Computed hashes for stale nodes are cached so batchInsertEmbeddings can reuse them

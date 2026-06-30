@@ -308,7 +308,6 @@ describe('runEmbeddingPipeline incremental filter', () => {
       onProgress,
       {},
       undefined, // skipNodeIds
-      undefined, // context
       existingEmbeddings,
     );
 
@@ -344,7 +343,6 @@ describe('runEmbeddingPipeline incremental filter', () => {
       onProgress,
       {},
       undefined, // skipNodeIds
-      undefined, // context
       existingEmbeddings,
     );
 
@@ -420,7 +418,6 @@ describe('runEmbeddingPipeline incremental filter', () => {
       onProgress,
       {},
       undefined,
-      undefined,
       new Map(),
     );
 
@@ -461,7 +458,6 @@ describe('runEmbeddingPipeline incremental filter', () => {
       onProgress,
       {},
       undefined, // skipNodeIds
-      undefined, // context
       existingEmbeddings,
     );
 
@@ -494,7 +490,6 @@ describe('runEmbeddingPipeline incremental filter', () => {
       onProgress,
       {},
       undefined, // skipNodeIds
-      undefined, // context
       existingEmbeddings,
     );
 
@@ -527,7 +522,6 @@ describe('runEmbeddingPipeline incremental filter', () => {
       onProgress,
       {},
       undefined, // skipNodeIds
-      undefined, // context
       existingEmbeddings,
     );
 
@@ -649,7 +643,6 @@ describe('runEmbeddingPipeline incremental filter', () => {
       onProgress,
       { chunkSize: 90, overlap: 0 },
       undefined,
-      undefined,
       new Map(),
     );
 
@@ -704,7 +697,6 @@ describe('runEmbeddingPipeline incremental filter', () => {
       onProgress,
       { chunkSize: CLASS_CHUNK_SIZE, overlap: CLASS_OVERLAP },
       undefined,
-      undefined,
       new Map(),
     );
 
@@ -740,7 +732,6 @@ describe('runEmbeddingPipeline incremental filter', () => {
         onProgress,
         {},
         undefined, // skipNodeIds
-        undefined, // context
         existingEmbeddings,
       ),
     ).rejects.toThrow('vector-index corruption');
