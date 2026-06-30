@@ -112,11 +112,14 @@ flowchart TD
   EMIT --> BRIDGE[(bridge.lbug<br/>#795)]
 ```
 
-Label-scoped queries in `resolveSymbol` keep accidental cross-matches
-out:
-- `topic` → `(n:Function|Method|Class|Interface)`
-- `grpc` method → `(n:Function|Method)`, service → `(n:Class|Interface)`
-- `lib` → `(n:Package|Module)`
+Label-scoped queries in `resolveSymbol` keep accidental cross-matches out.
+They use the `MATCH (n) WHERE labels(n) IN [...]` allowlist form, NOT the
+`MATCH (n:A|B)` disjunction — LadybugDB's parser rejects a disjunction that
+names a reserved keyword (e.g. `Macro`, `Union`), which is what broke the
+`custom` branch in #2325:
+- `topic` → `labels(n) IN ['Function','Method','Class','Interface']`
+- `grpc`/`thrift` method → `labels(n) IN ['Function','Method']`, service → `labels(n) IN ['Class','Interface']`
+- `lib` → `labels(n) IN ['Module']`
 
 ## Cross-impact query (PR #606)
 
