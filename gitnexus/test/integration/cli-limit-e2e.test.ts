@@ -43,17 +43,13 @@ function cliEnv(extraEnv: Record<string, string> = {}) {
 }
 
 function runCliRaw(extraArgs: string[], cwd: string, timeoutMs = 30000) {
-  return spawnSync(
-    process.execPath,
-    ['--import', tsxImportUrl, cliEntry, ...extraArgs],
-    {
-      cwd,
-      encoding: 'utf8',
-      timeout: timeoutMs,
-      stdio: ['pipe', 'pipe', 'pipe'],
-      env: cliEnv(),
-    },
-  );
+  return spawnSync(process.execPath, ['--import', tsxImportUrl, cliEntry, ...extraArgs], {
+    cwd,
+    encoding: 'utf8',
+    timeout: timeoutMs,
+    stdio: ['pipe', 'pipe', 'pipe'],
+    env: cliEnv(),
+  });
 }
 
 /**
@@ -148,10 +144,7 @@ describe('CLI --limit flag E2E', () => {
         ['context', 'validateInput', '--limit', '1', '--repo', 'mini-repo'],
         MINI_REPO,
       );
-      const baseline = runCliRaw(
-        ['context', 'validateInput', '--repo', 'mini-repo'],
-        MINI_REPO,
-      );
+      const baseline = runCliRaw(['context', 'validateInput', '--repo', 'mini-repo'], MINI_REPO);
       if (limited.status === null || baseline.status === null) return;
 
       expect(limited.status).toBe(0);
@@ -188,10 +181,7 @@ describe('CLI --limit flag E2E', () => {
         ['context', 'validateInput', '--limit', '0', '--repo', 'mini-repo'],
         MINI_REPO,
       );
-      const baseline = runCliRaw(
-        ['context', 'validateInput', '--repo', 'mini-repo'],
-        MINI_REPO,
-      );
+      const baseline = runCliRaw(['context', 'validateInput', '--repo', 'mini-repo'], MINI_REPO);
       if (limited.status === null || baseline.status === null) return;
 
       const limitedData = parseStdout(limited) as Record<string, unknown> | null;
@@ -210,7 +200,16 @@ describe('CLI --limit flag E2E', () => {
   describe('impact --limit', () => {
     it('truncates affected_processes/modules to --limit 1', () => {
       const result = runCliRaw(
-        ['impact', 'validateInput', '--direction', 'upstream', '--limit', '1', '--repo', 'mini-repo'],
+        [
+          'impact',
+          'validateInput',
+          '--direction',
+          'upstream',
+          '--limit',
+          '1',
+          '--repo',
+          'mini-repo',
+        ],
         MINI_REPO,
       );
       if (result.status === null) return;
@@ -230,7 +229,16 @@ describe('CLI --limit flag E2E', () => {
 
     it('baseline has >= limited results (comparison)', () => {
       const limited = runCliRaw(
-        ['impact', 'validateInput', '--direction', 'upstream', '--limit', '1', '--repo', 'mini-repo'],
+        [
+          'impact',
+          'validateInput',
+          '--direction',
+          'upstream',
+          '--limit',
+          '1',
+          '--repo',
+          'mini-repo',
+        ],
         MINI_REPO,
       );
       const baseline = runCliRaw(
@@ -257,7 +265,16 @@ describe('CLI --limit flag E2E', () => {
 
     it('treats --limit 0 as no limit (falsy, skipped)', () => {
       const limited = runCliRaw(
-        ['impact', 'validateInput', '--direction', 'upstream', '--limit', '0', '--repo', 'mini-repo'],
+        [
+          'impact',
+          'validateInput',
+          '--direction',
+          'upstream',
+          '--limit',
+          '0',
+          '--repo',
+          'mini-repo',
+        ],
         MINI_REPO,
       );
       const baseline = runCliRaw(
@@ -270,7 +287,10 @@ describe('CLI --limit flag E2E', () => {
       const baselineData = parseStdout(baseline) as Record<string, unknown> | null;
       if (!limitedData || !baselineData) return;
 
-      if (Array.isArray(limitedData.affected_processes) && Array.isArray(baselineData.affected_processes)) {
+      if (
+        Array.isArray(limitedData.affected_processes) &&
+        Array.isArray(baselineData.affected_processes)
+      ) {
         expect(limitedData.affected_processes.length).toBe(baselineData.affected_processes.length);
       }
     });
@@ -366,9 +386,7 @@ describe('CLI --limit flag E2E', () => {
 
       // The formatted output lists symbols as "  Type name → filePath"
       // With --limit 1, there should be at most 1 such line
-      const symbolLines = stdout.split('\n').filter(
-        (line) => line.match(/^\s+\w+\s+\w+\s+→/),
-      );
+      const symbolLines = stdout.split('\n').filter((line) => line.match(/^\s+\w+\s+\w+\s+→/));
       expect(symbolLines.length).toBeLessThanOrEqual(1);
     });
 
@@ -379,10 +397,7 @@ describe('CLI --limit flag E2E', () => {
         ['detect-changes', '--limit', '1', '--repo', 'mini-repo'],
         MINI_REPO,
       );
-      const baseline = runCliRaw(
-        ['detect-changes', '--repo', 'mini-repo'],
-        MINI_REPO,
-      );
+      const baseline = runCliRaw(['detect-changes', '--repo', 'mini-repo'], MINI_REPO);
       if (limited.status === null || baseline.status === null) return;
 
       expect(limited.status).toBe(0);
@@ -404,10 +419,7 @@ describe('CLI --limit flag E2E', () => {
         ['detect-changes', '--limit', '0', '--repo', 'mini-repo'],
         MINI_REPO,
       );
-      const baseline = runCliRaw(
-        ['detect-changes', '--repo', 'mini-repo'],
-        MINI_REPO,
-      );
+      const baseline = runCliRaw(['detect-changes', '--repo', 'mini-repo'], MINI_REPO);
       if (limited.status === null || baseline.status === null) return;
 
       const countSymbols = (stdout: string) =>
@@ -444,10 +456,7 @@ describe('CLI --limit flag E2E', () => {
         ['query', 'validate', '--limit', '1', '--repo', 'mini-repo'],
         MINI_REPO,
       );
-      const baseline = runCliRaw(
-        ['query', 'validate', '--repo', 'mini-repo'],
-        MINI_REPO,
-      );
+      const baseline = runCliRaw(['query', 'validate', '--repo', 'mini-repo'], MINI_REPO);
       if (limited.status === null || baseline.status === null) return;
 
       expect(limited.status).toBe(0);
@@ -458,9 +467,7 @@ describe('CLI --limit flag E2E', () => {
       if (!limitedData || !baselineData) return;
 
       if (Array.isArray(limitedData.processes) && Array.isArray(baselineData.processes)) {
-        expect(baselineData.processes.length).toBeGreaterThanOrEqual(
-          limitedData.processes.length,
-        );
+        expect(baselineData.processes.length).toBeGreaterThanOrEqual(limitedData.processes.length);
       }
     });
   });
