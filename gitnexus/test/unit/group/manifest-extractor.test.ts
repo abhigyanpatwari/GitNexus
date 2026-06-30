@@ -839,8 +839,9 @@ describe('ManifestExtractor', () => {
 
     await extractor.extractFromManifest(links, dbExecutors);
 
-    // LadybugDB rejects the openCypher disjunction `MATCH (n:A|B|C)` (#2325), so
-    // the allowlist is carried as `labels(n) IN [...]`, not `n:A|B`.
+    // This `custom`-branch list contains the reserved keywords `Macro`/`Union`,
+    // which make LadybugDB's parser reject the `MATCH (n:A|B|C)` disjunction
+    // (#2325), so the allowlist is carried as `labels(n) IN [...]`, not `n:A|B`.
     expect(capturedCypher).toContain('labels(n) IN [');
     // Membership checks that tolerate label order/spacing changes in the
     // production allowlist (the negative guards below are the real regression
