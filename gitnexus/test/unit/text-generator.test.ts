@@ -151,11 +151,81 @@ describe('text-generator', () => {
         description: undefined,
       };
       const text = generateEmbeddingText(node, node.content);
-      // Header is just the name line, then a blank line, then the code body —
-      // no stray empty description line, no metadata.
-      expect(text.startsWith('Function: parseJSON\n\nfunction parseJSON')).toBe(true);
+      // Header is the name line, then the bounded location line, then a blank
+      // line, then the code body — no stray empty description line, no verbose
+      // metadata.
+      expect(
+        text.startsWith('Function: parseJSON\nLoc: utils/parser.ts\n\nfunction parseJSON'),
+      ).toBe(true);
       expect(text).not.toContain('Repo:');
       expect(text).not.toContain('Export:');
+      // Only the bounded last-1-2 segments — never the verbose deep path.
+      expect(text).not.toContain('Path:');
+      expect(text).not.toContain('src/utils/parser.ts');
+    });
+
+    // U3 (#2333 PR #2334 tri-review): a BOUNDED location signal (last 1-2 path
+    // segments) is reinstated so path/service-qualified semantic search keeps a
+    // discriminator, since FTS does not index filePath.
+    it('emits a bounded location (last 2 segments), not the full deep path (#2333 U3)', () => {
+      const node: EmbeddableNode = {
+        ...baseNode,
+        label: 'Method',
+        name: 'updateMaterialExpiryDate',
+        filePath: 'src/main/java/com/example/service/MaterialServiceImpl.java',
+        content: 'function updateMaterialExpiryDate() { return doWork(); }',
+      };
+      const text = generateEmbeddingText(node, node.content);
+      expect(text).toContain('Loc: service/MaterialServiceImpl.java');
+      // The deep prefix is dropped entirely.
+      expect(text).not.toContain('src/main/java/com/example');
+    });
+
+    it('emits just the basename for a root-level file (#2333 U3)', () => {
+      const node: EmbeddableNode = { ...baseNode, filePath: 'index.ts' };
+      const text = generateEmbeddingText(node, node.content);
+      expect(text).toContain('Loc: index.ts');
+      // No leading slash and no stray "undefined/" prefix from slicing one segment.
+      expect(text).not.toContain('Loc: /index.ts');
+      expect(text).not.toContain('undefined');
+    });
+
+    it('disambiguates same-named symbols in different service folders (#2333 U3)', () => {
+      const billing = generateEmbeddingText(
+        { ...baseNode, name: 'handler', filePath: 'billing/handler.ts' },
+        'function handler() {}',
+      );
+      const identity = generateEmbeddingText(
+        { ...baseNode, name: 'handler', filePath: 'identity/handler.ts' },
+        'function handler() {}',
+      );
+      expect(billing).toContain('Loc: billing/handler.ts');
+      expect(identity).toContain('Loc: identity/handler.ts');
+      // The two embedding texts differ — the regression the tri-review flagged
+      // (both collapsing to identical vectors) is fixed.
+      expect(billing).not.toBe(identity);
+    });
+
+    it('keeps the description ahead of the location signal (#2333 U3)', () => {
+      const node: EmbeddableNode = {
+        ...baseNode,
+        label: 'Method',
+        name: 'doThing',
+        description: 'batch import rows',
+        filePath: 'svc/importer.ts',
+        content: 'function doThing() { return run(); }',
+      };
+      const text = generateEmbeddingText(node, node.content);
+      // description leads, then the location line, then the code body.
+      expect(text.indexOf('batch import rows')).toBeLessThan(text.indexOf('Loc: svc/importer.ts'));
+      expect(text.indexOf('Loc: svc/importer.ts')).toBeLessThan(text.indexOf('return run()'));
+    });
+
+    it('normalizes Windows path separators in the location signal (#2333 U3)', () => {
+      const node: EmbeddableNode = { ...baseNode, filePath: 'src\\svc\\Foo.ts' };
+      const text = generateEmbeddingText(node, node.content);
+      expect(text).toContain('Loc: svc/Foo.ts');
+      expect(text).not.toContain('\\');
     });
 
     it('generates short node text for TypeAlias without chunking', () => {

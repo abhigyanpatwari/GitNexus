@@ -101,14 +101,20 @@ describe('contentHashForNode', () => {
     expect(contentHashForNode(original)).not.toBe(contentHashForNode(edited));
   });
 
-  it('is independent of filePath (#2333 — path dropped from embedding text)', () => {
-    const a = makeNode({ filePath: 'src/a.ts' });
-    const b = makeNode({ filePath: 'src/b.ts' });
-    // filePath is no longer part of the embedding text, so a path-only move
-    // produces an identical vector and therefore an identical hash. This is
-    // correct: a moved symbol gets a new nodeId (path is part of the id), so
-    // it is a fresh CodeEmbedding row regardless of the content hash.
-    expect(contentHashForNode(a)).toBe(contentHashForNode(b));
+  it('depends on the bounded location (last 1-2 segments) but not the deep path prefix (#2333 U3)', () => {
+    // U3 reinstated a BOUNDED location signal (last 1-2 path segments) in the
+    // embedding header, so the hash now tracks that signal — but only it, not the
+    // full deep prefix. Same last-2-segments ⇒ identical embedding text ⇒ identical
+    // hash, even with a totally different prefix.
+    const samePrefixA = makeNode({ filePath: 'src/very/deep/nested/svc/Impl.ts' });
+    const samePrefixB = makeNode({ filePath: 'other/svc/Impl.ts' });
+    expect(contentHashForNode(samePrefixA)).toBe(contentHashForNode(samePrefixB));
+
+    // Different last segments (e.g. a real service-folder move) ⇒ different bounded
+    // location ⇒ different hash, so the re-embed correctly picks up the new location.
+    const billing = makeNode({ filePath: 'billing/handler.ts' });
+    const identity = makeNode({ filePath: 'identity/handler.ts' });
+    expect(contentHashForNode(billing)).not.toBe(contentHashForNode(identity));
   });
 
   it('is independent of repoName/serverName/isExported (#2333 — dropped from header)', () => {
@@ -128,7 +134,7 @@ describe('contentHashForNode', () => {
   });
 
   it('exports a text template version marker', () => {
-    expect(EMBEDDING_TEXT_VERSION).toBe('v3');
+    expect(EMBEDDING_TEXT_VERSION).toBe('v4');
   });
 });
 

@@ -58,14 +58,36 @@ const cleanContent = (content: string): string => {
 };
 
 /**
+ * Compact location signal for the embedding header: the last 1-2 path segments
+ * (immediate parent dir + basename), never the full deep path.
+ *
+ * #2333 / PR #2334 tri-review: U1 dropped the location entirely, which regressed
+ * path/service-qualified semantic search (e.g. `billing/handler` vs
+ * `identity/handler` in a monorepo) — and FTS indexes only name/content/description,
+ * never `filePath`, so there is no keyword backfill. The bounded form restores the
+ * discriminating tokens (service dir + filename-concept) at a fraction of the
+ * dilution the full path caused.
+ */
+const boundedLocation = (filePath: string): string => {
+  const segments = filePath
+    .replace(/\\/g, '/')
+    .split('/')
+    .filter(Boolean);
+  return segments.slice(-2).join('/');
+};
+
+/**
  * Build a compact, description-forward header for embedding text.
  *
  * Issue #2333 (sub-issue of #2326), Option A: lead the embedding text with the
- * symbol name + doc-comment description and intentionally drop the low-signal
- * metadata lines (`Repo`/`Server`/`Export` and the full `Path`). For short doc
- * comments those lines used to be ~25-30% of the embedding text, diluting the
- * description's semantic weight in the vector and weakening description-shaped
- * search — worst for CJK, where a complete concept is often 4-20 characters.
+ * symbol name + doc-comment description and drop the low-signal metadata lines
+ * (`Repo`/`Server`/`Export` and the verbose full `Path`). For short doc comments
+ * those lines used to be ~25-30% of the embedding text, diluting the description's
+ * semantic weight in the vector and weakening description-shaped search — worst
+ * for CJK, where a complete concept is often 4-20 characters.
+ *
+ * A *bounded* location signal (last 1-2 path segments) is kept after the
+ * description — see `boundedLocation` for why the full path drop was reversed.
  *
  * Full metadata is unaffected: it lives on the graph node properties, which is
  * what display/context tools read. Only the embedding text changes here.
@@ -89,6 +111,16 @@ const buildEmbeddingHeader = (node: EmbeddableNode, config: Partial<EmbeddingCon
     const truncated = truncateDescription(node.description, maxLen);
     if (truncated) {
       parts.push(truncated);
+    }
+  }
+
+  // Bounded location signal — placed after the description so the description
+  // still leads the vector. Restores path/service disambiguation lost when the
+  // full Path line was dropped (FTS does not index filePath to backfill it).
+  if (node.filePath) {
+    const loc = boundedLocation(node.filePath);
+    if (loc) {
+      parts.push(`Loc: ${loc}`);
     }
   }
 
