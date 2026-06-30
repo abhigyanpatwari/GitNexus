@@ -81,6 +81,7 @@ const LBUG_NATIVE = [
 // quoting, path resolution, signal handling)
 const SPAWN_CLI = [
   'test/integration/cli-e2e.test.ts',
+  'test/integration/cli-limit-e2e.test.ts',
   'test/integration/hooks-e2e.test.ts',
   'test/integration/skills-e2e.test.ts',
   'test/integration/server-http-startup.test.ts',
