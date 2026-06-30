@@ -178,6 +178,11 @@ const extractContent = async (node: GraphNode, contentCache: FileContentCache): 
   if (node.label === 'Folder') return '';
   if (isBinaryContent(content)) return '[Binary file - content not stored]';
 
+  // File content is stored in full — intentionally NOT length-capped here, so
+  // text past the old 10KB cutoff stays FTS-searchable (#2317). It is already
+  // bounded upstream by the walker's max-file-size cap (512KB default / 32MB),
+  // and only whitespace-normalized for the tokenizer. The symbol snippet path
+  // below, by contrast, deliberately stays capped at MAX_SNIPPET.
   if (node.label === 'File') {
     return normalizeFtsText(content);
   }
