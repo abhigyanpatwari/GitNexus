@@ -234,7 +234,7 @@ export const zhCN = {
   'help.option.impact.direction': 'upstream（依赖它的项）或 downstream（它依赖的项）',
   'help.option.impact.depth': '最大关系遍历深度（默认：3）',
   'help.option.impact.includeTests': '在结果中包含测试文件',
-  'help.option.impact.limit': '每层深度最大符号数（默认：100）',
+  'help.option.impact.limit': '每层深度最大符号数及最多返回的受影响流程/模块数（默认：100）',
   'help.option.impact.offset': '每层深度跳过 N 个符号（分页用）',
   'help.option.impact.summaryOnly': '仅返回计数和风险等级，省略符号列表',
   'help.option.trace.fromUid': '源符号 UID（零歧义查找）',

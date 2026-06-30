@@ -359,7 +359,10 @@ program
   )
   .option('--depth <n>', 'Max relationship depth (default: 3)')
   .option('--include-tests', 'Include test files in results')
-  .option('--limit <n>', 'Max symbols per depth level (default: 100)')
+  .option(
+    '--limit <n>',
+    'Max symbols per depth level and affected processes/modules to return (default: 100)',
+  )
   .option('--offset <n>', 'Skip N symbols per depth level for pagination')
   .option('--summary-only', 'Return counts and risk only, omit symbol list')
   .action(createLbugLazyAction(() => import('./tool.js'), 'impactCommand'));

@@ -251,7 +251,8 @@ export const en = {
   'help.option.impact.direction': 'upstream (dependants) or downstream (dependencies)',
   'help.option.impact.depth': 'Max relationship depth (default: 3)',
   'help.option.impact.includeTests': 'Include test files in results',
-  'help.option.impact.limit': 'Max symbols per depth level (default: 100)',
+  'help.option.impact.limit':
+    'Max symbols per depth level and affected processes/modules to return (default: 100)',
   'help.option.impact.offset': 'Skip N symbols per depth level for pagination',
   'help.option.impact.summaryOnly': 'Return counts and risk only, omit symbol list',
   'help.option.trace.fromUid': 'Source symbol UID (zero-ambiguity lookup)',

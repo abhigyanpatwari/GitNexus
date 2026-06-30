@@ -218,19 +218,13 @@ export async function impactCommand(
       summaryOnly: options?.summaryOnly ?? undefined,
     });
     // Client-side cap of the affected-list payload to --limit (parity with the
-    // other tool commands). The backend already paginates byDepth per level; this
-    // additionally bounds affected_processes/modules to the same cap.
+    // other tool commands). The backend already paginates byDepth per level to
+    // the same limit, so byDepth needs no client-side re-slice.
     if (parsedLimit !== undefined) {
       if (Array.isArray(result.affected_processes))
         result.affected_processes = result.affected_processes.slice(0, parsedLimit);
       if (Array.isArray(result.affected_modules))
         result.affected_modules = result.affected_modules.slice(0, parsedLimit);
-      if (result.byDepth && typeof result.byDepth === 'object') {
-        for (const depth of Object.keys(result.byDepth)) {
-          if (Array.isArray(result.byDepth[depth]))
-            result.byDepth[depth] = result.byDepth[depth].slice(0, parsedLimit);
-        }
-      }
     }
     output(result);
   } catch (err: unknown) {
