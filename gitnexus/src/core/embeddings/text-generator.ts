@@ -69,10 +69,7 @@ const cleanContent = (content: string): string => {
  * dilution the full path caused.
  */
 const boundedLocation = (filePath: string): string => {
-  const segments = filePath
-    .replace(/\\/g, '/')
-    .split('/')
-    .filter(Boolean);
+  const segments = filePath.replace(/\\/g, '/').split('/').filter(Boolean);
   return segments.slice(-2).join('/');
 };
 
