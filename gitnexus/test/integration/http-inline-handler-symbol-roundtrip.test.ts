@@ -62,7 +62,7 @@ func main() {
   const result = await runPipelineFromRepo(repoDir, () => {}, {});
   const adapter = await import('../../src/core/lbug/lbug-adapter.js');
   await adapter.initLbug(dbPath);
-  await adapter.loadGraphToLbug(result.graph, tmpBase, storagePath);
+  await adapter.loadGraphToLbug(result.graph, repoDir, storagePath);
 }, 120_000);
 
 afterAll(async () => {
