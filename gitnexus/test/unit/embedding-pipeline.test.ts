@@ -504,6 +504,87 @@ describe('runEmbeddingPipeline incremental filter', () => {
     expect(createCalls.length).toBeGreaterThanOrEqual(1);
   });
 
+  it('deletes each batch stale rows interleaved with its insert, not all up front (#2333 U6)', async () => {
+    mockEmbedderSetup();
+
+    const n1 = makeNode({ id: 'Function:a:src/a.ts', name: 'a', filePath: 'src/a.ts' });
+    const n2 = makeNode({ id: 'Function:b:src/b.ts', name: 'b', filePath: 'src/b.ts' });
+    // Both stale (hash mismatch) → both re-embed.
+    const existingEmbeddings = new Map<string, string>([
+      [n1.id, 'wronghash1'],
+      [n2.id, 'wronghash2'],
+    ]);
+
+    const executeQuery = mockExecuteQuery([n1, n2]);
+    const executeWithReusedStatement = mockExecuteWithReusedStatement();
+
+    const { runEmbeddingPipeline } =
+      await import('../../src/core/embeddings/embedding-pipeline.js');
+
+    await runEmbeddingPipeline(
+      executeQuery,
+      executeWithReusedStatement,
+      onProgress,
+      { batchSize: 1 }, // one node per batch → two batches
+      undefined, // skipNodeIds
+      existingEmbeddings,
+    );
+
+    // U6 / KTD7: per-batch interleaving means TWO separate DELETE calls (one per
+    // batch), not one up-front bulk delete of both stale rows.
+    const deleteCalls = stmtCalls.filter((c) => c.cypher.includes('DELETE'));
+    expect(deleteCalls.length).toBe(2);
+
+    // Ordering proof: batch 1's INSERT lands BEFORE batch 2's DELETE. An up-front
+    // bulk delete would put both DELETEs before any INSERT, failing this — so an
+    // interrupted re-embed can lose at most one batch, never the whole index.
+    const insertN1 = stmtCalls.findIndex(
+      (c) => c.cypher.includes('CREATE') && c.params.some((p) => p.nodeId === n1.id),
+    );
+    const deleteN2 = stmtCalls.findIndex(
+      (c) => c.cypher.includes('DELETE') && c.params.some((p) => p.nodeId === n2.id),
+    );
+    expect(insertN1).toBeGreaterThanOrEqual(0);
+    expect(deleteN2).toBeGreaterThanOrEqual(0);
+    expect(insertN1).toBeLessThan(deleteN2);
+  });
+
+  it('deletes only stale nodes — new and unchanged nodes are never deleted (#2333 U6)', async () => {
+    mockEmbedderSetup();
+
+    const unchanged = makeNode({ id: 'Function:u:src/u.ts', name: 'u', filePath: 'src/u.ts' });
+    const stale = makeNode({ id: 'Function:s:src/s.ts', name: 's', filePath: 'src/s.ts' });
+    const brandNew = makeNode({ id: 'Function:n:src/n.ts', name: 'n', filePath: 'src/n.ts' });
+    const unchangedHash = contentHashForNode(unchanged, DEFAULT_EMBEDDING_CONFIG);
+    const existingEmbeddings = new Map<string, string>([
+      [unchanged.id, unchangedHash], // hash matches → skipped, no delete
+      [stale.id, 'wronghash'], // hash mismatch → deleted + re-embed
+      // brandNew absent from the map → new → embedded, no delete
+    ]);
+
+    const executeQuery = mockExecuteQuery([unchanged, stale, brandNew]);
+    const executeWithReusedStatement = mockExecuteWithReusedStatement();
+
+    const { runEmbeddingPipeline } =
+      await import('../../src/core/embeddings/embedding-pipeline.js');
+
+    await runEmbeddingPipeline(
+      executeQuery,
+      executeWithReusedStatement,
+      onProgress,
+      { batchSize: 1 },
+      undefined, // skipNodeIds
+      existingEmbeddings,
+    );
+
+    const deletedIds = stmtCalls
+      .filter((c) => c.cypher.includes('DELETE'))
+      .flatMap((c) => c.params.map((p) => p.nodeId));
+    expect(deletedIds).toContain(stale.id);
+    expect(deletedIds).not.toContain(brandNew.id);
+    expect(deletedIds).not.toContain(unchanged.id);
+  });
+
   it('calls createVectorIndex even when zero nodes need embedding after filter', async () => {
     mockEmbedderSetup();
 

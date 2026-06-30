@@ -251,6 +251,42 @@ export interface EmbeddingPipelineResult {
 }
 
 /**
+ * DELETE stale embedding rows for the given nodeIds so they can be re-inserted.
+ *
+ * Kuzu forbids SET on vector-indexed properties; DELETE-then-INSERT is the
+ * sanctioned pattern. A `"does not exist"` error means the rows are already gone
+ * (safe to proceed); any other error risks vector-index corruption, so it
+ * propagates and aborts the pipeline.
+ *
+ * Called per-batch (just before each batch's INSERT), not once up front — see
+ * the caller comment / KTD7: an up-front bulk delete of every stale row leaves
+ * the whole index deleted-not-reinserted if the re-embed is interrupted. Per-batch
+ * interleaving bounds that window to a single batch.
+ */
+const deleteStaleEmbeddingRows = async (
+  executeWithReusedStatement: (
+    cypher: string,
+    paramsList: Array<Record<string, any>>,
+  ) => Promise<void>,
+  nodeIds: string[],
+): Promise<void> => {
+  if (nodeIds.length === 0) return;
+  try {
+    await executeWithReusedStatement(
+      `MATCH (e:${EMBEDDING_TABLE_NAME} {nodeId: $nodeId}) DELETE e`,
+      nodeIds.map((nodeId) => ({ nodeId })),
+    );
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    if (!msg.includes('does not exist')) {
+      throw new Error(
+        `[embed] Failed to delete stale embedding rows — aborting to prevent vector-index corruption: ${msg}`,
+      );
+    }
+  }
+};
+
+/**
  * Run the embedding pipeline
  *
  * @param executeQuery - Function to execute Cypher queries against LadybugDB
@@ -317,9 +353,12 @@ export const runEmbeddingPipeline = async (
     // Computed hashes for stale nodes are cached so batchInsertEmbeddings can reuse them
     // (avoids double computation).
     const computedStaleHashes = new Map<string, string>();
+    // Stale rows are DELETE'd per-batch (just before each batch's INSERT) rather
+    // than all up front — see U6 / KTD7. `staleNodeIds` is consulted inside the
+    // batch loop; it stays empty in full (non-incremental) mode so no deletes fire.
+    const staleNodeIds = new Set<string>();
     if (existingEmbeddings && existingEmbeddings.size > 0) {
       const beforeCount = nodes.length;
-      const staleNodeIds: string[] = [];
       nodes = nodes.filter((n) => {
         const existingHash = existingEmbeddings.get(n.id);
         if (existingHash === undefined) {
@@ -330,40 +369,16 @@ export const runEmbeddingPipeline = async (
         if (currentHash !== existingHash) {
           // Content changed — cache hash for reuse during insert, mark for DELETE + re-embed
           computedStaleHashes.set(n.id, currentHash);
-          staleNodeIds.push(n.id);
+          staleNodeIds.add(n.id);
           return true;
         }
         // Hash matches — skip (fresh); no need to cache hash for skipped nodes
         return false;
       });
 
-      // DELETE stale embedding rows so they can be re-inserted
-      // (Kuzu forbids SET on vector-indexed properties; DELETE-then-INSERT is the sanctioned pattern)
-      if (staleNodeIds.length > 0) {
-        if (isDev) {
-          logger.info(`🔄 Deleting ${staleNodeIds.length} stale embedding rows for re-embed`);
-        }
-        try {
-          await executeWithReusedStatement(
-            `MATCH (e:${EMBEDDING_TABLE_NAME} {nodeId: $nodeId}) DELETE e`,
-            staleNodeIds.map((nodeId) => ({ nodeId })),
-          );
-        } catch (err) {
-          // "does not exist" = rows already gone — safe to proceed.
-          // All other errors risk vector-index corruption (Kuzu requires DELETE-before-INSERT
-          // for vector-indexed properties) — propagate so the pipeline aborts cleanly.
-          const msg = err instanceof Error ? err.message : String(err);
-          if (!msg.includes('does not exist')) {
-            throw new Error(
-              `[embed] Failed to delete stale embedding rows — aborting to prevent vector-index corruption: ${msg}`,
-            );
-          }
-        }
-      }
-
       if (isDev) {
         logger.info(
-          `📦 Incremental embeddings: ${beforeCount} total, ${existingEmbeddings.size} cached, ${staleNodeIds.length} stale, ${nodes.length} to embed`,
+          `📦 Incremental embeddings: ${beforeCount} total, ${existingEmbeddings.size} cached, ${staleNodeIds.size} stale, ${nodes.length} to embed`,
         );
       }
     }
@@ -487,6 +502,12 @@ export const runEmbeddingPipeline = async (
           prevTail = overlap > 0 ? chunk.text.slice(-overlap) : '';
         }
       }
+
+      // U6 / KTD7: delete this batch's stale rows immediately before its inserts,
+      // so an interrupted re-embed loses at most one batch (not the whole index).
+      // Preserves Kuzu's required DELETE-before-INSERT for vector-indexed rows.
+      const batchStaleIds = batch.filter((n) => staleNodeIds.has(n.id)).map((n) => n.id);
+      await deleteStaleEmbeddingRows(executeWithReusedStatement, batchStaleIds);
 
       // Embed chunk texts in sub-batches to control memory
       const EMBED_SUB_BATCH = finalConfig.subBatchSize;
