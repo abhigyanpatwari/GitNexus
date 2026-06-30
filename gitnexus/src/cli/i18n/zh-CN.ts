@@ -55,7 +55,7 @@ export const zhCN = {
   'remove.removed': '已移除：{{name}}',
   'remove.failed': '移除 {{name}} 失败：{{message}}',
   'tool.noIndexed': 'GitNexus：未找到已索引仓库。请运行：gitnexus analyze',
-  'tool.usage.query': '用法：gitnexus query <搜索词>  或  gitnexus query -q, --query <搜索词>',
+  'tool.usage.query': '用法：gitnexus query [搜索词]  或  gitnexus query --query <文本>',
   'tool.usage.context': '用法：gitnexus context <符号名> [--uid <uid>] [--file <路径>]',
   'tool.usage.impact':
     '用法：gitnexus impact <符号名> [--uid <uid>] [--file <路径>] [--kind <类型>] [--direction upstream|downstream]',

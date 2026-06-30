@@ -193,6 +193,39 @@ describe('CLI --limit flag E2E', () => {
         expect(limitedData.processes.length).toBe(baselineData.processes.length);
       }
     });
+
+    it('treats a non-numeric --limit as no limit (no silent empty)', () => {
+      // Regression for the headline bug: `--limit abc` used to parse to NaN →
+      // slice(0, NaN) === [] → results silently emptied with exit 0. parseLimit()
+      // now rejects non-numeric input, so it must behave exactly like no --limit.
+      const invalid = runCliRaw(
+        ['context', 'validateInput', '--limit', 'abc', '--repo', 'mini-repo'],
+        MINI_REPO,
+      );
+      const baseline = runCliRaw(['context', 'validateInput', '--repo', 'mini-repo'], MINI_REPO);
+
+      expect(invalid.status).toBe(0);
+      const invalidData = parseStdout(invalid) as Record<string, unknown> | null;
+      const baselineData = parseStdout(baseline) as Record<string, unknown> | null;
+      expect(invalidData).toBeTruthy();
+      expect(baselineData).toBeTruthy();
+
+      // Order-independent payload size; an emptied/truncated result would diverge.
+      const truncatableCount = (d: Record<string, unknown> | null) => {
+        const r = (d ?? {}) as {
+          incoming?: { calls?: unknown[] };
+          outgoing?: { calls?: unknown[]; accesses?: unknown[] };
+          processes?: unknown[];
+        };
+        return (
+          (r.incoming?.calls?.length ?? 0) +
+          (r.outgoing?.calls?.length ?? 0) +
+          (r.outgoing?.accesses?.length ?? 0) +
+          (r.processes?.length ?? 0)
+        );
+      };
+      expect(truncatableCount(invalidData)).toBe(truncatableCount(baselineData));
+    });
   });
 
   // ─── impact ─────────────────────────────────────────────────────────────
