@@ -147,7 +147,14 @@ describe('CLI --limit flag E2E', () => {
 
   describe('context --limit', () => {
     it('truncates incoming/outgoing calls and processes to --limit 1', () => {
-      const limited = runJson<ContextResult>(['context', 'logMessage', '--limit', '1', '--repo', 'mini-repo']);
+      const limited = runJson<ContextResult>([
+        'context',
+        'logMessage',
+        '--limit',
+        '1',
+        '--repo',
+        'mini-repo',
+      ]);
       expect(len(limited.incoming?.calls)).toBe(1);
       expect(len(limited.outgoing?.calls)).toBe(1);
       expect(len(limited.processes)).toBe(1);
@@ -161,7 +168,14 @@ describe('CLI --limit flag E2E', () => {
     });
 
     it('treats --limit 0 as no limit (resolves to undefined)', () => {
-      const zero = runJson<ContextResult>(['context', 'logMessage', '--limit', '0', '--repo', 'mini-repo']);
+      const zero = runJson<ContextResult>([
+        'context',
+        'logMessage',
+        '--limit',
+        '0',
+        '--repo',
+        'mini-repo',
+      ]);
       const base = runJson<ContextResult>(['context', 'logMessage', '--repo', 'mini-repo']);
       expect(len(zero.processes)).toBe(len(base.processes));
       expect(len(zero.incoming?.calls)).toBe(len(base.incoming?.calls));
@@ -171,10 +185,20 @@ describe('CLI --limit flag E2E', () => {
       // Regression for the headline bug: `--limit abc` used to parse to NaN →
       // slice(0, NaN) === [] → results silently emptied with exit 0. parseLimit()
       // now rejects non-numeric input, so it must behave exactly like no --limit.
-      const invalid = runJson<ContextResult>(['context', 'logMessage', '--limit', 'abc', '--repo', 'mini-repo']);
+      const invalid = runJson<ContextResult>([
+        'context',
+        'logMessage',
+        '--limit',
+        'abc',
+        '--repo',
+        'mini-repo',
+      ]);
       const base = runJson<ContextResult>(['context', 'logMessage', '--repo', 'mini-repo']);
       const total = (d: ContextResult) =>
-        len(d.incoming?.calls) + len(d.outgoing?.calls) + len(d.outgoing?.accesses) + len(d.processes);
+        len(d.incoming?.calls) +
+        len(d.outgoing?.calls) +
+        len(d.outgoing?.accesses) +
+        len(d.processes);
       expect(total(invalid)).toBe(total(base));
       expect(total(invalid)).toBeGreaterThan(0); // not the old silent-empty
     });
@@ -185,7 +209,14 @@ describe('CLI --limit flag E2E', () => {
   describe('impact --limit', () => {
     it('truncates affected_processes/modules to --limit 1', () => {
       const limited = runJson<ImpactResult>([
-        'impact', 'logMessage', '--direction', 'upstream', '--limit', '1', '--repo', 'mini-repo',
+        'impact',
+        'logMessage',
+        '--direction',
+        'upstream',
+        '--limit',
+        '1',
+        '--repo',
+        'mini-repo',
       ]);
       expect(len(limited.affected_processes)).toBe(1);
       expect(len(limited.affected_modules)).toBe(1);
@@ -193,7 +224,12 @@ describe('CLI --limit flag E2E', () => {
 
     it('returns the full affected set without --limit (baseline exceeds the limit)', () => {
       const base = runJson<ImpactResult>([
-        'impact', 'logMessage', '--direction', 'upstream', '--repo', 'mini-repo',
+        'impact',
+        'logMessage',
+        '--direction',
+        'upstream',
+        '--repo',
+        'mini-repo',
       ]);
       expect(len(base.affected_processes)).toBe(2);
       expect(len(base.affected_modules)).toBe(2);
@@ -201,10 +237,22 @@ describe('CLI --limit flag E2E', () => {
 
     it('treats --limit 0 as no limit', () => {
       const zero = runJson<ImpactResult>([
-        'impact', 'logMessage', '--direction', 'upstream', '--limit', '0', '--repo', 'mini-repo',
+        'impact',
+        'logMessage',
+        '--direction',
+        'upstream',
+        '--limit',
+        '0',
+        '--repo',
+        'mini-repo',
       ]);
       const base = runJson<ImpactResult>([
-        'impact', 'logMessage', '--direction', 'upstream', '--repo', 'mini-repo',
+        'impact',
+        'logMessage',
+        '--direction',
+        'upstream',
+        '--repo',
+        'mini-repo',
       ]);
       expect(len(zero.affected_processes)).toBe(len(base.affected_processes));
       expect(len(zero.affected_modules)).toBe(len(base.affected_modules));
@@ -216,7 +264,12 @@ describe('CLI --limit flag E2E', () => {
   describe('cypher --limit', () => {
     it('truncates tabular result rows to --limit and keeps row_count honest', () => {
       const limited = runJson<CypherTabular>([
-        'cypher', 'MATCH (n:Function) RETURN n.name AS name LIMIT 100', '--limit', '2', '--repo', 'mini-repo',
+        'cypher',
+        'MATCH (n:Function) RETURN n.name AS name LIMIT 100',
+        '--limit',
+        '2',
+        '--repo',
+        'mini-repo',
       ]);
       expect(limited.row_count).toBe(2);
       // header + separator + exactly 2 data rows
@@ -229,7 +282,10 @@ describe('CLI --limit flag E2E', () => {
       const limited = runJson<CypherTabular>([
         'cypher',
         'MATCH (n:Function) RETURN n.name AS name, n.content AS content LIMIT 8',
-        '--limit', '3', '--repo', 'mini-repo',
+        '--limit',
+        '3',
+        '--repo',
+        'mini-repo',
       ]);
       expect(limited.row_count).toBe(3);
       const lines = (limited.markdown ?? '').split('\n');
@@ -239,7 +295,10 @@ describe('CLI --limit flag E2E', () => {
 
     it('returns more rows without --limit (baseline exceeds the limit)', () => {
       const base = runJson<CypherTabular>([
-        'cypher', 'MATCH (n:Function) RETURN n.name AS name LIMIT 100', '--repo', 'mini-repo',
+        'cypher',
+        'MATCH (n:Function) RETURN n.name AS name LIMIT 100',
+        '--repo',
+        'mini-repo',
       ]);
       expect(base.row_count).toBeGreaterThan(2);
     });
@@ -254,13 +313,20 @@ describe('CLI --limit flag E2E', () => {
     function makeTwoSymbolChange() {
       const edits: Array<[string, RegExp, string]> = [
         ['src/logger.ts', /export function logMessage\([^)]*\)[^{]*\{/, '\n  const _touchLog = 1;'],
-        ['src/middleware.ts', /export function processRequest\([^)]*\)[^{]*\{/, '\n  const _touchMw = 1;'],
+        [
+          'src/middleware.ts',
+          /export function processRequest\([^)]*\)[^{]*\{/,
+          '\n  const _touchMw = 1;',
+        ],
       ];
       for (const [rel, re, insert] of edits) {
         const p = path.join(MINI_REPO, rel);
         const src = fs.readFileSync(p, 'utf8');
         if (src.includes(insert.trim())) continue; // idempotent
-        fs.writeFileSync(p, src.replace(re, (m) => m + insert));
+        fs.writeFileSync(
+          p,
+          src.replace(re, (m) => m + insert),
+        );
       }
     }
 
@@ -282,6 +348,16 @@ describe('CLI --limit flag E2E', () => {
       const base = runText(['detect-changes', '--repo', 'mini-repo']);
       expect(countChangedSymbolLines(zero)).toBe(countChangedSymbolLines(base));
     });
+
+    it('header total, listed count, and overflow marker stay consistent under --limit', () => {
+      // Header keeps the TRUE total (2 symbols), the list is capped to 1, and the
+      // overflow marker reports the real remainder (1) — not the sliced length.
+      makeTwoSymbolChange();
+      const stdout = runText(['detect-changes', '--limit', '1', '--repo', 'mini-repo']);
+      expect(countChangedSymbolLines(stdout)).toBe(1);
+      expect(stdout).toMatch(/2 symbols/);
+      expect(stdout).toMatch(/and 1 more/);
+    });
   });
 
   // ─── query ──────────────────────────────────────────────────────────────
@@ -289,7 +365,14 @@ describe('CLI --limit flag E2E', () => {
   describe('query --limit', () => {
     it('truncates processes to --limit 1', () => {
       // "message" matches logMessage / createLogEntry / formatLogEntry → 4 processes
-      const limited = runJson<QueryResult>(['query', 'message', '--limit', '1', '--repo', 'mini-repo']);
+      const limited = runJson<QueryResult>([
+        'query',
+        'message',
+        '--limit',
+        '1',
+        '--repo',
+        'mini-repo',
+      ]);
       expect(len(limited.processes)).toBe(1);
     });
 
