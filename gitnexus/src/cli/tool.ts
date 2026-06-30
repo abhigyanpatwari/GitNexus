@@ -138,12 +138,21 @@ export async function contextCommand(
     branch: options?.branch,
   });
   if (limit !== undefined) {
-    if (result.incoming?.calls && Array.isArray(result.incoming.calls))
-      result.incoming.calls = result.incoming.calls.slice(0, limit);
-    if (result.outgoing?.calls && Array.isArray(result.outgoing.calls))
-      result.outgoing.calls = result.outgoing.calls.slice(0, limit);
-    if (result.outgoing?.accesses && Array.isArray(result.outgoing.accesses))
-      result.outgoing.accesses = result.outgoing.accesses.slice(0, limit);
+    // Bound every array-valued category under incoming/outgoing (calls, accesses,
+    // imports, extends, uses, …) — categorize() buckets by relType, so the prior
+    // hardcoded calls/accesses missed the rest (e.g. incoming.accesses) — plus
+    // typed_properties and processes, so --limit caps the whole context payload.
+    for (const dir of [result.incoming, result.outgoing] as Array<
+      Record<string, unknown> | undefined
+    >) {
+      if (!dir) continue;
+      for (const key of Object.keys(dir)) {
+        const bucket = dir[key];
+        if (Array.isArray(bucket)) dir[key] = bucket.slice(0, limit);
+      }
+    }
+    if (Array.isArray(result.typed_properties))
+      result.typed_properties = result.typed_properties.slice(0, limit);
     if (Array.isArray(result.processes)) result.processes = result.processes.slice(0, limit);
   }
   output(result);
