@@ -10,8 +10,11 @@ export interface ManifestExtractResult {
 // Repo-wide symbol lookup for `custom` workspace contracts. Exported so the
 // #2325 integration test can run the EXACT production query against a real
 // LadybugDB — a hand-copied query string in the test would silently drift
-// from this allowlist. `labels(n) IN [...]` is the LadybugDB-compatible
-// allowlist form, NOT the `MATCH (n:A|B)` disjunction LadybugDB rejects (#2325).
+// from this allowlist. Uses the `labels(n) IN [...]` allowlist form rather
+// than a `MATCH (n:A|B)` disjunction: this 21-label list contains the
+// reserved-keyword labels `Macro` and `Union`, and LadybugDB's parser rejects
+// a disjunction that names a reserved keyword (#2325) — which the resolver's
+// try/catch then swallowed. `labels(n) IN` has no such collision.
 export const CUSTOM_CONTRACT_RESOLVE_QUERY = `MATCH (n)
    WHERE labels(n) IN ['Function','Method','Class','Interface','Struct','Enum','Trait','Constructor','TypeAlias','Impl','Macro','Union','Typedef','Property','Record','Delegate','Annotation','Template','Const','Static','CodeElement']
      AND n.name = $symbolName
@@ -203,11 +206,16 @@ export class ManifestExtractor {
     // unresolved symbol — name-based hints are the additional safety net.
     //
     // Label filtering uses `MATCH (n) WHERE labels(n) IN [...]`, NOT the
-    // openCypher disjunction `MATCH (n:A|B|C)`: LadybugDB's parser rejects
-    // the `:A|B` form outright (#2325), and the whole try/catch below would
-    // swallow that as an unresolvable contract. `labels(n)` returns the
-    // node's single label as a string here, so `IN [...]` is an exact
-    // allowlist that includes listed labels and excludes everything else.
+    // openCypher disjunction `MATCH (n:A|B|C)`. LadybugDB's parser rejects a
+    // disjunction that names a reserved keyword (`Macro` and `Union` both are)
+    // OR a label with no node table (e.g. the old `lib` branch's `Package`).
+    // The `custom` branch (reserved keywords in its list) and `lib` branch
+    // (missing `Package` table) genuinely threw (#2325) and the whole try/catch
+    // below swallowed it; the other branches parsed but use the same form for
+    // consistency and future-proofing. `labels(n)` returns the node's single
+    // label as a string here, so `IN [...]` is an exact allowlist that includes
+    // listed labels and excludes everything else — and is immune to both
+    // failure modes (no keyword collision; an unknown label is just a non-match).
     try {
       let rows: Record<string, unknown>[];
       if (link.type === 'http') {

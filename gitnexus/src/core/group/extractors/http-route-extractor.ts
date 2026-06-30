@@ -84,13 +84,17 @@ RETURN sym.id AS uid, sym.name AS name, sym.filePath AS filePath,
 // named handler when it is defined in a file OTHER than its route registration —
 // and only honored when the result is unique (see resolveSymbolByNameUnique).
 //
-// Label filtering uses `labels(n) IN [...]`, NOT the openCypher disjunction
-// `MATCH (n:A|B|C)`: LadybugDB's parser rejects the `:A|B` form (#2325), and the
-// surrounding try/catch would silently swallow that as an unresolvable handler.
-// `labels(n)` returns the node's single label as a string here, so `IN [...]` is
-// an exact allowlist. (Exported so integration tests can run the exact
-// production query against a real LadybugDB — the bug shipped because no test
-// did.)
+// Label filtering uses `labels(n) IN [...]` rather than the openCypher
+// disjunction `MATCH (n:A|B|C)`. NOTE: this 3-label set (Function/Method/
+// CodeElement) actually PARSES — LadybugDB only rejects a disjunction that
+// names a reserved keyword (e.g. `Macro`, `Union`) or a missing node table,
+// neither of which applies here. So this query was NOT broken by #2325; it
+// uses the `labels(n) IN` form for consistency with the manifest custom-branch
+// fix (which WAS broken) and to stay immune if a reserved-keyword label is
+// added later. `labels(n)` returns the node's single label as a string here, so
+// `IN [...]` is an exact allowlist. (Exported so integration tests can run the
+// exact production query against a real LadybugDB — the bug shipped because no
+// test ran these strings against the real parser.)
 //
 // `n.filePath <> ''` excludes synthetic non-source `CodeElement` nodes that
 // carry no real file — ORM model/table nodes (orm.ts emits `filePath: ''`) and
