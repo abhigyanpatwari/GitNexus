@@ -338,6 +338,56 @@ describe('text-generator', () => {
       expect(text).toContain('struct User {');
     });
 
+    // U5 (#2333 PR #2334): Interface and Struct route through the same
+    // generateStructuralTypeText path as Class, so the description-forward
+    // ordering must hold for them too — guards against a future per-label
+    // specialization silently reordering the header.
+    it('keeps an Interface description ahead of its structural lines (#2333 U5)', () => {
+      const node: EmbeddableNode = {
+        ...baseNode,
+        label: 'Interface',
+        name: 'Handler',
+        description: 'event handler contract',
+        methodNames: ['handle', 'validate'],
+        fieldNames: ['name'],
+        content: `interface Handler {
+  handle(event: Event): void;
+  readonly name: string;
+}`,
+      };
+      const text = generateEmbeddingText(node, node.content);
+      expect(text).toContain('Interface: Handler');
+      expect(text).toContain('event handler contract');
+      expect(text).toContain('Methods: handle, validate');
+      expect(text).toContain('Properties: name');
+      expect(text.indexOf('event handler contract')).toBeLessThan(text.indexOf('Container:'));
+      expect(text.indexOf('event handler contract')).toBeLessThan(text.indexOf('Methods:'));
+      expect(text).toContain('Loc: utils/parser.ts');
+      expect(text).not.toContain('Repo:');
+    });
+
+    it('keeps a Struct description ahead of its structural lines (#2333 U5)', () => {
+      const node: EmbeddableNode = {
+        ...baseNode,
+        label: 'Struct',
+        name: 'User',
+        description: 'user record',
+        fieldNames: ['name', 'age'],
+        content: `struct User {
+  name: String,
+  age: u32,
+}`,
+      };
+      const text = generateEmbeddingText(node, node.content);
+      expect(text).toContain('Struct: User');
+      expect(text).toContain('user record');
+      expect(text).toContain('Properties: name, age');
+      expect(text).toContain('Container: struct User {');
+      expect(text.indexOf('user record')).toBeLessThan(text.indexOf('Container:'));
+      expect(text.indexOf('user record')).toBeLessThan(text.indexOf('Properties:'));
+      expect(text).toContain('Loc: utils/parser.ts');
+    });
+
     it('keeps compact container context on later structural chunks', () => {
       const node: EmbeddableNode = {
         ...baseNode,

@@ -431,11 +431,13 @@ describe('runEmbeddingPipeline incremental filter', () => {
     // has no isExported column (description at index 7), exercising the other
     // mapping branch. The toContain checks below are the primary guard: an
     // off-by-one would put the boolean from index 7 into description, so the real
-    // text would be absent (and truncateDescription would throw on a non-string),
-    // failing here. The not.toContain('\ntrue') line is supplementary defense for
-    // a future string-coercion path only.
+    // text would be absent, failing here.
     expect(classText).toContain('Parses typed payloads.');
-    expect(classText).not.toContain('\ntrue');
+    // Header-integrity guard (#2333 U5): the embedding text must start with the
+    // `Label: name` header. A positional mis-map that corrupted the header line
+    // (e.g. the name column shifting) is caught here directly, instead of via the
+    // old narrow `not.toContain('\ntrue')` coincidence.
+    expect(classText).toMatch(/^Class: Parser\n/);
     expect(enumText).toContain('Represents user status.');
   });
 
