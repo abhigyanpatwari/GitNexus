@@ -378,6 +378,35 @@ describe('BM25 search', () => {
         expect(call[2]).toBe(longQuery);
       }
     });
+
+    it('segments a query at exactly the 2000-character cap', async () => {
+      vi.stubEnv('GITNEXUS_FTS_CJK_SEGMENTATION', 'bigram');
+      const { queryFTS } = await import('../../src/core/lbug/lbug-adapter.js');
+      vi.mocked(queryFTS).mockResolvedValue([]);
+
+      const atCapQuery = '审'.repeat(2000);
+      await searchFTSFromLbug(atCapQuery);
+
+      expect(vi.mocked(queryFTS).mock.calls.length).toBeGreaterThan(0);
+      for (const call of vi.mocked(queryFTS).mock.calls) {
+        expect(call[2]).not.toBe(atCapQuery); // segmented, not passed through raw
+        expect(call[2]).toContain(' ');
+      }
+    });
+
+    it('does not segment a query at exactly 2001 characters, one past the cap', async () => {
+      vi.stubEnv('GITNEXUS_FTS_CJK_SEGMENTATION', 'bigram');
+      const { queryFTS } = await import('../../src/core/lbug/lbug-adapter.js');
+      vi.mocked(queryFTS).mockResolvedValue([]);
+
+      const overCapQuery = '审'.repeat(2001);
+      await searchFTSFromLbug(overCapQuery);
+
+      expect(vi.mocked(queryFTS).mock.calls.length).toBeGreaterThan(0);
+      for (const call of vi.mocked(queryFTS).mock.calls) {
+        expect(call[2]).toBe(overCapQuery); // passed through raw, unsegmented
+      }
+    });
   });
 
   // #2339: the query path previously never called normalizeFtsText (only

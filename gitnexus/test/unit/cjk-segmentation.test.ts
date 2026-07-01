@@ -3,6 +3,7 @@ import {
   applyCjkSegmentationIfEnabled,
   CJK_BIGRAM_WORST_CASE_GROWTH_FACTOR,
   cjkSegmentationModeMismatch,
+  containsCjkIdeograph,
   containsSegmentableCjkRun,
   getSearchFTSCjkSegmentation,
   initialiseSearchFTSCjkSegmentation,
@@ -104,6 +105,33 @@ describe('segmentCjkSpans', () => {
     // for noise; quadratic scaling would mean ~64x time. 20x catches the
     // regression while tolerating CI timing variance.
     expect(largeMs).toBeLessThan(Math.max(smallMs, 1) * 20);
+  });
+});
+
+describe('containsCjkIdeograph', () => {
+  it('returns true for a CJK Unified Ideograph, including a single character', () => {
+    expect(containsCjkIdeograph('审')).toBe(true);
+    expect(containsCjkIdeograph('采购订单自动审批流程')).toBe(true);
+  });
+
+  it('returns false for Hiragana', () => {
+    expect(containsCjkIdeograph('あ')).toBe(false);
+  });
+
+  it('returns false for Katakana', () => {
+    expect(containsCjkIdeograph('ア')).toBe(false);
+  });
+
+  it('returns false for Hangul Syllables', () => {
+    expect(containsCjkIdeograph('가')).toBe(false);
+  });
+
+  it('returns false for plain ASCII/Latin text', () => {
+    expect(containsCjkIdeograph('hello world')).toBe(false);
+  });
+
+  it('returns false for an empty string', () => {
+    expect(containsCjkIdeograph('')).toBe(false);
   });
 });
 
