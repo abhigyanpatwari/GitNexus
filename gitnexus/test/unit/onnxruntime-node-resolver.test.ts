@@ -16,17 +16,55 @@ const RESOLVER = '../../src/core/embeddings/onnxruntime-node-resolver.js';
 const REAL_PLATFORM = process.platform;
 const REAL_ENV = { ...process.env };
 
+/** Three fake, distinct onnxruntime-node locations for driving decide() into redirect:true. */
+interface FakeDirs {
+  /** gitnexus' own top-level onnxruntime-node dir (resolved via the module's own require). */
+  ourDir: string;
+  /** transformers' pinned/nested onnxruntime-node dir (resolved via createRequire(transformersMain)). */
+  defaultDir: string;
+  /** fake resolved path for require.resolve('@huggingface/transformers'). */
+  transformersMain: string;
+}
+
 interface LoadOpts {
   registerHooks?: unknown;
   platform?: NodeJS.Platform;
   execFileSync?: (cmd: string, args: string[]) => string;
   existsSync?: (p: string) => boolean;
+  fakeDirs?: FakeDirs;
+}
+
+/** A require()-like function whose .resolve() is driven entirely by a specifier -> path map. */
+function fakeRequire(resolveMap: Record<string, string>) {
+  return Object.assign(
+    (specifier: string) => {
+      throw new Error(`fakeRequire: unexpected require(${specifier})`);
+    },
+    {
+      resolve: (specifier: string) => {
+        const hit = resolveMap[specifier];
+        if (!hit) {
+          throw Object.assign(new Error(`Cannot find module '${specifier}'`), {
+            code: 'MODULE_NOT_FOUND',
+          });
+        }
+        return hit;
+      },
+    },
+  );
 }
 
 /**
  * (Re)load the resolver with detection primitives + `registerHooks` mocked.
  * `vi.resetModules()` clears the module-level decision cache and one-shot guard,
  * so each test gets a pristine resolver.
+ *
+ * When `fakeDirs` is supplied, `createRequire` is also mocked so the module's
+ * two CJS resolve-walks (`resolveOurOrtNodeDir`/`resolveDefaultOrtNodeDir`, and
+ * the nodeUrl/commonUrl lookup inside `ensureOnnxRuntimeNodeMatchesSystem`) each
+ * resolve against a distinct fake directory instead of whatever's actually
+ * installed in this test's real node_modules — the only way to drive
+ * `decide() -> redirect:true` deterministically without touching production code.
  */
 async function loadResolver(opts: LoadOpts = {}) {
   vi.resetModules();
@@ -43,12 +81,34 @@ async function loadResolver(opts: LoadOpts = {}) {
       throw Object.assign(new Error('enoent'), { code: 'ENOENT' });
     },
     existsSync = () => false,
+    fakeDirs,
   } = opts;
 
-  vi.doMock('node:module', async (io) => ({
-    ...(await io<typeof import('node:module')>()),
-    registerHooks,
-  }));
+  vi.doMock('node:module', async (io) => {
+    const orig = await io<typeof import('node:module')>();
+    if (!fakeDirs) return { ...orig, registerHooks };
+
+    const ourRequire = fakeRequire({
+      '@huggingface/transformers': fakeDirs.transformersMain,
+      'onnxruntime-node/package.json': `${fakeDirs.ourDir}/package.json`,
+    });
+    const defaultRequire = fakeRequire({
+      'onnxruntime-node/package.json': `${fakeDirs.defaultDir}/package.json`,
+    });
+    const effectiveRequire = fakeRequire({
+      'onnxruntime-node': `${fakeDirs.ourDir}/index.js`,
+      'onnxruntime-common': `${fakeDirs.ourDir}/node_modules/onnxruntime-common/index.js`,
+    });
+    return {
+      ...orig,
+      registerHooks,
+      createRequire: (from: string) => {
+        if (from === fakeDirs.transformersMain) return defaultRequire;
+        if (from === `${fakeDirs.ourDir}/package.json`) return effectiveRequire;
+        return ourRequire;
+      },
+    };
+  });
   vi.doMock('node:child_process', async (io) => ({
     ...(await io<typeof import('node:child_process')>()),
     execFileSync: (cmd: string, args: string[]) => execFileSync(cmd, args),
@@ -190,5 +250,85 @@ describe('decide() — registerHooks gating (#2341 follow-up)', () => {
     expect(() => mod.getEffectiveOnnxRuntimeNodeDir()).not.toThrow();
     expect(execFileSync).not.toHaveBeenCalled();
     expect(existsSync).not.toHaveBeenCalled();
+  });
+});
+
+describe('ensureOnnxRuntimeNodeMatchesSystem — redirect:true (#2341 follow-up)', () => {
+  // The prior test suite never drove decide() into redirect:true (it never
+  // faked createRequire), so the actual installed resolve() closure — the PR's
+  // real shipped behavior — had zero test coverage. Reproduce the PR's own
+  // documented common case: system has CUDA 13, transformers' default build is
+  // CUDA 12, gitnexus' own top-level build is CUDA 13.
+  const fakeDirs = {
+    ourDir: '/fake/our/onnxruntime-node',
+    defaultDir: '/fake/transformers-nested/onnxruntime-node',
+    transformersMain: '/fake/transformers/dist/transformers.node.mjs',
+  };
+
+  const soPath = (dir: string) => `${dir}/bin/napi-v6/linux`; // arch-agnostic prefix match below
+
+  function loadRedirectActiveResolver(registerHooksSpy: unknown) {
+    return loadResolver({
+      registerHooks: registerHooksSpy,
+      platform: 'linux',
+      fakeDirs,
+      existsSync: (p) => p.startsWith(soPath(fakeDirs.ourDir)) || p.startsWith(soPath(fakeDirs.defaultDir)),
+      execFileSync: (cmd, args) => {
+        if (cmd === 'ldconfig') return 'libcublasLt.so.13 (libc6,x86-64) => /usr/local/cuda/lib64/libcublasLt.so.13';
+        if (cmd === 'ldd') {
+          const target = args[0] ?? '';
+          if (target.startsWith(soPath(fakeDirs.ourDir))) {
+            return 'libcublasLt.so.13 => /usr/local/cuda-13/lib64/libcublasLt.so.13';
+          }
+          if (target.startsWith(soPath(fakeDirs.defaultDir))) {
+            return 'libcublasLt.so.12 => /usr/local/cuda-12/lib64/libcublasLt.so.12';
+          }
+        }
+        throw new Error(`unexpected execFileSync(${cmd}, ${JSON.stringify(args)})`);
+      },
+    });
+  }
+
+  it('reports the redirect-active effective dir as our own CUDA-13 build', async () => {
+    const mod = await loadRedirectActiveResolver(vi.fn());
+    expect(mod.getEffectiveOnnxRuntimeNodeDir()).toBe(fakeDirs.ourDir);
+  });
+
+  it('installs registerHooks exactly once when the redirect is active', async () => {
+    const spy = vi.fn();
+    const mod = await loadRedirectActiveResolver(spy);
+    mod.ensureOnnxRuntimeNodeMatchesSystem();
+    expect(spy).toHaveBeenCalledTimes(1);
+    expect(typeof spy.mock.calls[0][0].resolve).toBe('function');
+  });
+
+  it("the installed resolve() closure redirects onnxruntime-node and onnxruntime-common, and passes through everything else", async () => {
+    const spy = vi.fn();
+    const mod = await loadRedirectActiveResolver(spy);
+    mod.ensureOnnxRuntimeNodeMatchesSystem();
+    const resolve = spy.mock.calls[0][0].resolve as (
+      s: string,
+      c: never,
+      n: (s: string, c: never) => unknown,
+    ) => unknown;
+    const ctx = {} as never;
+    const next = vi.fn(() => ({ url: 'file:///should-not-be-used', shortCircuit: true }));
+
+    const nodeResult = resolve('onnxruntime-node', ctx, next) as { url: string; shortCircuit: boolean };
+    expect(nodeResult).toEqual({
+      url: expect.stringContaining('/fake/our/onnxruntime-node/index.js'),
+      shortCircuit: true,
+    });
+    expect(next).not.toHaveBeenCalled();
+
+    const commonResult = resolve('onnxruntime-common', ctx, next) as { url: string; shortCircuit: boolean };
+    expect(commonResult).toEqual({
+      url: expect.stringContaining('/fake/our/onnxruntime-node/node_modules/onnxruntime-common/index.js'),
+      shortCircuit: true,
+    });
+    expect(next).not.toHaveBeenCalled();
+
+    resolve('some-other-package', ctx, next);
+    expect(next).toHaveBeenCalledWith('some-other-package', ctx);
   });
 });
