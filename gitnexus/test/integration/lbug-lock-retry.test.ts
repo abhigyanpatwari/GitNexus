@@ -135,7 +135,8 @@ withTestLbugDB('lock-retry', (handle) => {
         }),
       ).rejects.toThrow('Could not set lock');
 
-      // DB_LOCK_RETRY_ATTEMPTS = 3 (default in the implementation)
+      // Matches DB_LOCK_RETRY_ATTEMPTS in lbug-adapter.ts. If that budget
+      // changes, this assertion — not this comment — is the source of truth.
       expect(callCount).toBe(3);
     });
   });
