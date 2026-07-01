@@ -3462,6 +3462,24 @@ describe('cypher result formatting', () => {
     expect(result.row_count).toBe(2);
   });
 
+  it('keeps one markdown line per row when a cell value contains newlines (#2310)', async () => {
+    // A multi-line `content` value must not split its row across physical lines —
+    // otherwise the rendered table is corrupt and the CLI `--limit` line-slice
+    // keeps the wrong number of rows.
+    (executeParameterized as any).mockResolvedValue([
+      { name: 'a', content: 'export function a() {\n  return 1;\n}' },
+      { name: 'b', content: 'line1\nline2' },
+    ]);
+    const result = await backend.callTool('cypher', {
+      query: 'MATCH (n:Function) RETURN n.name AS name, n.content AS content',
+    });
+    const lines = result.markdown.split('\n');
+    // header + separator + exactly one line per data row, no embedded newlines.
+    expect(lines).toHaveLength(2 + result.row_count);
+    expect(result.row_count).toBe(2);
+    expect(result.markdown).not.toMatch(/\n[^|]/);
+  });
+
   it('returns empty array as-is', async () => {
     (executeParameterized as any).mockResolvedValue([]);
     const result = await backend.callTool('cypher', {
