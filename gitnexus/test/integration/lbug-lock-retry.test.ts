@@ -14,7 +14,7 @@ import { withTestLbugDB } from '../helpers/test-indexed-db.js';
 
 // Pure-function tests — no DB needed, but grouped here for cohesion
 // with the retry logic they guard.
-import { isDbBusyError } from '../../src/core/lbug/lbug-config.js';
+import { isDbBusyError, openLbugConnection } from '../../src/core/lbug/lbug-config.js';
 
 describe('isDbBusyError', () => {
   it('returns true for "busy" errors (case-insensitive)', () => {
@@ -71,6 +71,48 @@ describe('isDbBusyError', () => {
     expect(isDbBusyError('BUSY error')).toBe(true);
     expect(isDbBusyError(42)).toBe(false);
     expect(isDbBusyError({ message: 'locked' })).toBe(false); // plain object not Error
+  });
+});
+
+// ─── openLbugConnection construction-time retry ────────────────────────────
+
+// Minimal stub of the `lbug` module surface used by openLbugConnection.
+// Duplicated locally (see lbug-open-retry.test.ts's makeStubLbug) rather
+// than shared, matching this codebase's existing per-test-file convention.
+interface StubModuleControl {
+  databaseThrows: Array<Error | null>;
+  databaseCallCount: number;
+}
+
+const makeStubLbug = (control: StubModuleControl) => {
+  class FakeDatabase {
+    constructor(_path: string, ..._rest: unknown[]) {
+      control.databaseCallCount++;
+      const next = control.databaseThrows.shift();
+      if (next instanceof Error) throw next;
+    }
+    async close(): Promise<void> {}
+  }
+  class FakeConnection {
+    constructor(_db: FakeDatabase) {}
+    async close(): Promise<void> {}
+  }
+  return { Database: FakeDatabase, Connection: FakeConnection } as any;
+};
+
+describe('openLbugConnection — write-transaction contention retry', () => {
+  it('retries on write-transaction contention and succeeds on a later attempt', async () => {
+    const control: StubModuleControl = {
+      databaseThrows: [
+        new Error('Only one write transaction at a time is allowed in the system.'),
+        null,
+      ],
+      databaseCallCount: 0,
+    };
+    const stub = makeStubLbug(control);
+    const handle = await openLbugConnection(stub, '/some/path/lbug');
+    expect(handle.db).toBeDefined();
+    expect(control.databaseCallCount).toBe(2);
   });
 });
 
