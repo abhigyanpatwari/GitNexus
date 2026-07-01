@@ -195,6 +195,49 @@ describe('ortCudaMajor', () => {
     });
     expect(mod.ortCudaMajor('/pkg/onnxruntime-node')).toBe(12);
   });
+
+  it('warns (detection failed) when ldd produces no usable output at all, distinct from the silent no-provider case (#2341 follow-up)', async () => {
+    // Capture AFTER loadResolver() so the capture targets the same (freshly
+    // reset) logger.js instance the resolver module itself imports — the
+    // module registry is cleared by loadResolver()'s vi.resetModules().
+    const mod = await loadResolver({
+      existsSync: () => true,
+      // Simulates a missing `ldd` binary (ENOENT) or a permission-denied
+      // `.so`: execFileSync throws with no `stdout` at all, unlike the
+      // "=> not found" case above which still yields usable text.
+      execFileSync: () => {
+        throw Object.assign(new Error('spawn ldd ENOENT'), { code: 'ENOENT' });
+      },
+    });
+    const { _captureLogger } = await import('../../src/core/logger.js');
+    const cap = _captureLogger();
+    try {
+      expect(mod.ortCudaMajor('/pkg/onnxruntime-node')).toBeNull();
+
+      const records = cap.records();
+      expect(records.some((r) => r.msg?.includes('Could not read CUDA provider dependencies'))).toBe(
+        true,
+      );
+    } finally {
+      cap.restore();
+    }
+  });
+
+  it('does not warn when the CUDA provider .so is simply absent (no detection was even attempted)', async () => {
+    const mod = await loadResolver({ existsSync: () => false });
+    const { _captureLogger } = await import('../../src/core/logger.js');
+    const cap = _captureLogger();
+    try {
+      expect(mod.ortCudaMajor('/pkg/onnxruntime-node')).toBeNull();
+
+      const records = cap.records();
+      expect(records.some((r) => r.msg?.includes('Could not read CUDA provider dependencies'))).toBe(
+        false,
+      );
+    } finally {
+      cap.restore();
+    }
+  });
 });
 
 describe('ensureOnnxRuntimeNodeMatchesSystem', () => {

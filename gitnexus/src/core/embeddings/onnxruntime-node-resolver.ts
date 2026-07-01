@@ -54,13 +54,25 @@ export type CudaMajor = 12 | 13;
 
 const require = createRequire(import.meta.url);
 
-/** Read a shared object's NEEDED entries, tolerating ldd's non-zero exit when a lib is unresolved. */
-const readSoNeeded = (soPath: string): string => {
+/**
+ * Read a shared object's NEEDED entries, tolerating ldd's non-zero exit when a
+ * lib is unresolved (that case still yields a usable "=> not found" stdout).
+ * `failed: true` means ldd produced no usable output at all (missing `ldd`
+ * binary, permission-denied `.so`, sandboxed exec) — distinct from "ldd ran
+ * fine and simply found no matching NEEDED entry" (`failed: false`, `needed: ''`),
+ * so callers don't have to treat "detection failed" identically to "definitely
+ * no CUDA provider".
+ */
+const readSoNeeded = (soPath: string): { needed: string; failed: boolean } => {
   try {
-    return execFileSync('ldd', [soPath], { timeout: 5000, encoding: 'utf-8', windowsHide: true });
+    return {
+      needed: execFileSync('ldd', [soPath], { timeout: 5000, encoding: 'utf-8', windowsHide: true }),
+      failed: false,
+    };
   } catch (err) {
     const out = (err as { stdout?: string } | null | undefined)?.stdout;
-    return typeof out === 'string' ? out : '';
+    if (typeof out === 'string' && out.length > 0) return { needed: out, failed: false };
+    return { needed: '', failed: true };
   }
 };
 
@@ -74,8 +86,20 @@ export const ortCudaMajor = (ortNodeDir: string): CudaMajor | null => {
     process.arch,
     'libonnxruntime_providers_cuda.so',
   );
+  // A pre-PR CUDA-12 host relied only on this existence check (no `ldd`
+  // dependency) — retained here as the first, unconditional signal so a host
+  // whose CUDA provider `.so` is genuinely present but merely un-inspectable
+  // (see the `failed` case below) is never treated identically to a host that
+  // never shipped a CUDA provider at all.
   if (!existsSync(so)) return null;
-  const needed = readSoNeeded(so);
+  const { needed, failed } = readSoNeeded(so);
+  if (failed) {
+    logger.warn(
+      { so },
+      'Could not read CUDA provider dependencies (ldd failed to run) — CUDA-major detection ' +
+        'is unknown, not necessarily absent; embeddings will fall back to CPU either way',
+    );
+  }
   if (/libcublasLt\.so\.13/.test(needed)) return 13;
   if (/libcublasLt\.so\.12/.test(needed)) return 12;
   return null;
