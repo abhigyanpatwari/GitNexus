@@ -5,12 +5,16 @@
  * `beginAutoTransaction()` — the race #605 fixes — under a shape close to
  * GitNexus's real concurrent-writer load.
  *
- * Deliberately bypasses `conn-lock.ts`/`lbug-adapter.ts`: this test opens its
- * own `Database` at a fresh temp path and multiple raw `Connection`s directly
- * against `@ladybugdb/core`, so it proves the *native* engine no longer
- * deadlocks — not merely that GitNexus's app-level serialization hides the
- * problem. Production still routes every write through the single serialized
- * connection (see `conn-lock.ts`); this test does not change that.
+ * Deliberately bypasses `conn-lock.ts`/`lbug-adapter.ts`'s singleton: this
+ * test opens its own `Database` at a fresh temp path and multiple raw
+ * `Connection`s directly against `@ladybugdb/core`, so it proves the
+ * *native* engine no longer deadlocks — not merely that GitNexus's app-level
+ * serialization hides the problem. Production still routes every write
+ * through the single serialized connection (see `conn-lock.ts`); this test
+ * does not change that. It does reuse `lbug-config.ts`'s `createLbugDatabase`
+ * for the constructor call itself, so it stays in sync with any future
+ * signature change instead of hand-maintaining a second copy of the
+ * positional arg list.
  *
  * Empirical grounding (see plan docs/plans/2026-07-01-001-...):
  *  - A pure-writer connection loop, even with a tiny `checkpointThreshold`,
@@ -28,6 +32,12 @@
  *    checkpoint a gap to find zero active writers. 2 writers with a small
  *    jittered retry delay (validated across 5 consecutive local runs) avoids
  *    that guard while still reliably forcing the checkpoint-vs-reader race.
+ *    NOTE: `isDbBusyError` (lbug-config.ts) does NOT recognize this specific
+ *    "Only one write transaction..." message (its substring list is 'busy'/
+ *    'lock'/'already in use') — GitNexus's production write-retry path
+ *    (`withLbugDb`) would not retry on it today. Flagged as a residual
+ *    finding in the PR description; out of scope to fix here since it's a
+ *    production-code change beyond this validation test.
  *  - This exact test configuration was run against @ladybugdb/core 0.17.1
  *    (pre-#605) as a comparison: 1 of 4 runs hung for the full
  *    DEADLOCK_TIMEOUT_MS and failed — a direct reproduction of the
@@ -41,6 +51,8 @@ import fs from 'fs';
 import path from 'path';
 import { describe, it, expect } from 'vitest';
 import { createTempDir } from '../helpers/test-db.js';
+import { createLbugDatabase } from '../../src/core/lbug/lbug-config.js';
+import { closeQueryResults } from '../../src/core/lbug/query-result-utils.js';
 
 const WRITER_COUNT = 2;
 const READER_COUNT = 3;
@@ -49,9 +61,10 @@ const ROWS_PER_WRITER = 800;
 // Small enough to force frequent auto-checkpoints under the write volume
 // above (empirically confirmed locally: reliably produces multiple
 // checkpoints, including at least one racing a concurrent reader, across 5
-// consecutive runs).
+// consecutive runs). Set via the same env var `createLbugDatabase` itself
+// reads, rather than a raw constructor call, so this test tracks the real
+// constructor signature instead of a hand-copied duplicate of it.
 const CHECKPOINT_THRESHOLD_BYTES = 32 * 1024;
-const MAX_DB_SIZE_BYTES = 512 * 1024 * 1024;
 
 const isOnlyOneWriteTransactionError = (err: unknown): boolean =>
   (err instanceof Error ? err.message : String(err)).includes('Only one write transaction');
@@ -72,7 +85,8 @@ async function writeWithRetry(
 ): Promise<void> {
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     try {
-      await conn.query(query);
+      const result = await conn.query(query);
+      await closeQueryResults(result);
       return;
     } catch (err) {
       if (!isOnlyOneWriteTransactionError(err) || attempt === maxAttempts) throw err;
@@ -106,37 +120,36 @@ describe('concurrent multi-connection writes do not deadlock (#2338, LadybugDB #
     async () => {
       const tmp = await createTempDir('gitnexus-lbug-multiwriter-');
       const dbPath = path.join(tmp.dbPath, 'lbug');
+      const previousThreshold = process.env.GITNEXUS_WAL_CHECKPOINT_THRESHOLD;
+      process.env.GITNEXUS_WAL_CHECKPOINT_THRESHOLD = String(CHECKPOINT_THRESHOLD_BYTES);
+
+      let db: InstanceType<typeof import('@ladybugdb/core').Database> | undefined;
+      let writers: InstanceType<typeof import('@ladybugdb/core').Connection>[] = [];
+      let readers: InstanceType<typeof import('@ladybugdb/core').Connection>[] = [];
+      let timeoutHandle: NodeJS.Timeout | undefined;
+      let shadowWatcher: NodeJS.Timeout | undefined;
 
       try {
         const lbug = (await import('@ladybugdb/core')).default;
 
-        // Raw constructor — deliberately not lbug-config.ts's
-        // createLbugDatabase, so checkpointThreshold isn't pinned to
-        // GitNexus's production default.
-        const db = new lbug.Database(
-          dbPath,
-          0, // bufferManagerSize
-          false, // enableCompression
-          false, // readOnly
-          MAX_DB_SIZE_BYTES,
-          true, // autoCheckpoint
-          CHECKPOINT_THRESHOLD_BYTES,
-          true, // throwOnWalReplayFailure
-          true, // enableChecksums
-        );
+        db = createLbugDatabase(lbug, dbPath);
+        const dbHandle = db;
 
-        const setupConn = new lbug.Connection(db);
-        await setupConn.query('CREATE NODE TABLE T(id INT64 PRIMARY KEY, val STRING)');
+        const setupConn = new lbug.Connection(dbHandle);
+        const setupResult = await setupConn.query(
+          'CREATE NODE TABLE T(id INT64 PRIMARY KEY, val STRING)',
+        );
+        await closeQueryResults(setupResult);
         await setupConn.close();
 
         const shadowPath = `${dbPath}.shadow`;
         let shadowSeen = false;
-        const shadowWatcher = setInterval(() => {
+        shadowWatcher = setInterval(() => {
           if (fs.existsSync(shadowPath)) shadowSeen = true;
         }, 5);
 
-        const writers = Array.from({ length: WRITER_COUNT }, () => new lbug.Connection(db));
-        const readers = Array.from({ length: READER_COUNT }, () => new lbug.Connection(db));
+        writers = Array.from({ length: WRITER_COUNT }, () => new lbug.Connection(dbHandle));
+        readers = Array.from({ length: READER_COUNT }, () => new lbug.Connection(dbHandle));
 
         const writeLoops = writers.map((conn, writerIdx) =>
           (async () => {
@@ -150,20 +163,17 @@ describe('concurrent multi-connection writes do not deadlock (#2338, LadybugDB #
           (async () => {
             for (let i = 0; i < ROWS_PER_WRITER; i++) {
               const res = await conn.query('MATCH (n:T) RETURN count(n) AS c');
-              await res.getAll();
+              await closeQueryResults(res);
             }
           })(),
         );
 
-        let timeoutHandle: NodeJS.Timeout | undefined;
         const raceResult = await Promise.race([
           Promise.all([...writeLoops, ...readLoops]).then(() => 'completed' as const),
           new Promise<'timeout'>((resolve) => {
             timeoutHandle = setTimeout(() => resolve('timeout'), DEADLOCK_TIMEOUT_MS);
           }),
         ]);
-        clearTimeout(timeoutHandle);
-        clearInterval(shadowWatcher);
 
         expect(
           raceResult,
@@ -178,19 +188,25 @@ describe('concurrent multi-connection writes do not deadlock (#2338, LadybugDB #
           'expected a .shadow checkpoint sidecar to appear during the run — the checkpoint/reader race this test targets was never entered',
         ).toBe(true);
 
-        for (const conn of [...writers, ...readers]) {
-          await conn.close();
-        }
-
         const verifyConn = new lbug.Connection(db);
         const countRes = await verifyConn.query('MATCH (n:T) RETURN count(n) AS c');
         const rows = await countRes.getAll();
+        await closeQueryResults(countRes);
         await verifyConn.close();
 
         expect(rows[0].c).toBe(WRITER_COUNT * ROWS_PER_WRITER);
-
-        await db.close();
       } finally {
+        clearTimeout(timeoutHandle);
+        clearInterval(shadowWatcher);
+        for (const conn of [...writers, ...readers]) {
+          await conn.close().catch(() => {});
+        }
+        await db?.close().catch(() => {});
+        if (previousThreshold === undefined) {
+          delete process.env.GITNEXUS_WAL_CHECKPOINT_THRESHOLD;
+        } else {
+          process.env.GITNEXUS_WAL_CHECKPOINT_THRESHOLD = previousThreshold;
+        }
         await tmp.cleanup();
       }
     },
