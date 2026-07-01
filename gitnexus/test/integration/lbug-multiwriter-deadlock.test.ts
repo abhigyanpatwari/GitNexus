@@ -54,6 +54,9 @@ import { createTempDir } from '../helpers/test-db.js';
 import { createLbugDatabase } from '../../src/core/lbug/lbug-config.js';
 import { closeQueryResults } from '../../src/core/lbug/query-result-utils.js';
 
+type LbugDatabase = InstanceType<typeof import('@ladybugdb/core').Database>;
+type LbugConnection = InstanceType<typeof import('@ladybugdb/core').Connection>;
+
 const WRITER_COUNT = 2;
 const READER_COUNT = 3;
 const ROWS_PER_WRITER = 800;
@@ -79,7 +82,7 @@ const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout
  * stress the commit()-vs-beginAutoTransaction() handoff #605 fixes.
  */
 async function writeWithRetry(
-  conn: InstanceType<typeof import('@ladybugdb/core').Connection>,
+  conn: LbugConnection,
   query: string,
   maxAttempts = 500,
 ): Promise<void> {
@@ -123,9 +126,9 @@ describe('concurrent multi-connection writes do not deadlock (#2338, LadybugDB #
       const previousThreshold = process.env.GITNEXUS_WAL_CHECKPOINT_THRESHOLD;
       process.env.GITNEXUS_WAL_CHECKPOINT_THRESHOLD = String(CHECKPOINT_THRESHOLD_BYTES);
 
-      let db: InstanceType<typeof import('@ladybugdb/core').Database> | undefined;
-      let writers: InstanceType<typeof import('@ladybugdb/core').Connection>[] = [];
-      let readers: InstanceType<typeof import('@ladybugdb/core').Connection>[] = [];
+      let db: LbugDatabase | undefined;
+      let writers: LbugConnection[] = [];
+      let readers: LbugConnection[] = [];
       let timeoutHandle: NodeJS.Timeout | undefined;
       let shadowWatcher: NodeJS.Timeout | undefined;
 
@@ -189,10 +192,15 @@ describe('concurrent multi-connection writes do not deadlock (#2338, LadybugDB #
         ).toBe(true);
 
         const verifyConn = new lbug.Connection(db);
+        readers.push(verifyConn); // closed by the outer finally even if the query below throws
         const countRes = await verifyConn.query('MATCH (n:T) RETURN count(n) AS c');
-        const rows = await countRes.getAll();
+        // `query()` types as QueryResult | QueryResult[] (array only for
+        // multi-statement scripts); this is a single statement, so narrow to
+        // the single-result case rather than calling `.getAll()` on a type
+        // that doesn't declare it.
+        const singleCountRes = Array.isArray(countRes) ? countRes[0] : countRes;
+        const rows = await singleCountRes.getAll();
         await closeQueryResults(countRes);
-        await verifyConn.close();
 
         expect(rows[0].c).toBe(WRITER_COUNT * ROWS_PER_WRITER);
       } finally {

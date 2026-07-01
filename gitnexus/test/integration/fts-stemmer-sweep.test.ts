@@ -10,29 +10,8 @@
  */
 import { describe, it, expect } from 'vitest';
 import { withTestLbugDB } from '../helpers/test-indexed-db.js';
+import { skipUnlessFtsAvailable } from '../helpers/fts-availability.js';
 import { SUPPORTED_FTS_STEMMERS } from '../../src/core/search/fts-indexes.js';
-
-const FTS_UNAVAILABLE_NOTE =
-  'FTS extension unavailable (load-only policy; not pre-installed on this machine)';
-
-/**
- * Honors GITNEXUS_REQUIRE_FTS=1 the same way `withTestLbugDB` and
- * `lbug-core-adapter.test.ts` do: CI sets it, so an unavailable extension is a
- * hard failure, never a silent skip. Offline/local runs (no env var) skip
- * gracefully (#2299).
- */
-const skipUnlessFtsAvailable = async (ctx: { skip: (note?: string) => void }): Promise<void> => {
-  const { loadFTSExtension } = await import('../../src/core/lbug/lbug-adapter.js');
-  if (await loadFTSExtension()) return;
-  if (process.env.GITNEXUS_REQUIRE_FTS === '1') {
-    throw new Error(
-      'FTS extension is required (GITNEXUS_REQUIRE_FTS=1) but could not be loaded or installed. ' +
-        'FTS-dependent tests must not be silently skipped in CI — install/repair the LadybugDB ' +
-        'FTS extension (see `gitnexus doctor`) or unset GITNEXUS_REQUIRE_FTS for offline/local runs.',
-    );
-  }
-  ctx.skip(FTS_UNAVAILABLE_NOTE);
-};
 
 withTestLbugDB('fts-stemmer-sweep', () => {
   describe('every SUPPORTED_FTS_STEMMERS entry is accepted by the bundled extension (#2338)', () => {
