@@ -172,6 +172,23 @@ describe('detectSystemCudaMajor', () => {
     const mod = await loadResolver({ execFileSync: () => 'libfoo.so => /x/libfoo.so' });
     expect(mod.detectSystemCudaMajor()).toBeNull();
   });
+
+  it('prefers a CUDA 13 found later in the search path over a CUDA 12 found earlier (#2341 follow-up)', async () => {
+    // A stale CUDA_PATH entry (e.g. left over from a prior install) only has
+    // .so.12; LD_LIBRARY_PATH, scanned after it, has the genuine .so.13. The
+    // scan must not stop at the first match — it must keep looking for a
+    // better (13) answer across the WHOLE search space.
+    process.env.CUDA_PATH = '/opt/old-cuda-12';
+    process.env.LD_LIBRARY_PATH = '/opt/cuda-13/lib64';
+    const mod = await loadResolver({
+      execFileSync: () => {
+        throw new Error('ldconfig missing');
+      },
+      existsSync: (p) =>
+        p === '/opt/old-cuda-12/libcublasLt.so.12' || p === '/opt/cuda-13/lib64/libcublasLt.so.13',
+    });
+    expect(mod.detectSystemCudaMajor()).toBe(13);
+  });
 });
 
 describe('ortCudaMajor', () => {

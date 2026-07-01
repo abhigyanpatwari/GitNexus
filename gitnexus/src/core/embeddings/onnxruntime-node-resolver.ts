@@ -119,15 +119,24 @@ export const detectSystemCudaMajor = (): CudaMajor | null => {
   } catch {
     // ldconfig not available (e.g. non-standard container) — fall through to path scan.
   }
+  // Prefer CUDA 13 across the ENTIRE search space, not just within one
+  // dir/sub pair — a `.so.12` found early (e.g. a stale CUDA_PATH entry from
+  // a prior install) must not shadow a genuine `.so.13` found later in
+  // LD_LIBRARY_PATH. Return immediately on a 13 (the best possible answer);
+  // remember a 12 and keep scanning in case a later entry still has a 13.
+  let found: CudaMajor | null = null;
   for (const envVar of ['CUDA_PATH', 'LD_LIBRARY_PATH']) {
     const val = process.env[envVar];
     if (!val) continue;
     for (const dir of val.split(':').filter(Boolean))
       for (const sub of ['lib64', 'lib', ''])
         for (const maj of [13, 12] as const)
-          if (existsSync(join(dir, sub, `libcublasLt.so.${maj}`))) return maj;
+          if (existsSync(join(dir, sub, `libcublasLt.so.${maj}`))) {
+            if (maj === 13) return 13;
+            found = maj;
+          }
   }
-  return null;
+  return found;
 };
 
 /** onnxruntime-node dir transformers loads by default (its own nested/pinned copy). */
