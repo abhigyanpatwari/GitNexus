@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
+import path from 'node:path';
 
 /**
  * Tests for the CUDA-build-matching onnxruntime-node redirect.
@@ -15,6 +16,17 @@ const RESOLVER = '../../src/core/embeddings/onnxruntime-node-resolver.js';
 
 const REAL_PLATFORM = process.platform;
 const REAL_ENV = { ...process.env };
+
+/**
+ * Node's `path` module is bound to `path.win32` or `path.posix` based on the
+ * REAL host OS at process start — stubbing `process.platform` later (as this
+ * file's tests do, for the resolver's OWN platform branching) has no effect
+ * on it. So on a genuine Windows CI runner, the resolver's `join(...)` calls
+ * normalize our forward-slash fake dirs to backslash-separated strings,
+ * which would silently fail to match the forward-slash fixtures/prefixes
+ * below. Normalize before every comparison so these tests are host-OS-agnostic.
+ */
+const toPosix = (p: string): string => p.replace(/\\/g, '/');
 
 /** Three fake, distinct onnxruntime-node locations for driving decide() into redirect:true. */
 interface FakeDirs {
@@ -35,6 +47,11 @@ interface LoadOpts {
   execFileSync?: (cmd: string, args: string[]) => string;
   existsSync?: (p: string) => boolean;
   fakeDirs?: FakeDirs;
+  /** Force the resolver's `join`/`dirname` calls to use `path.win32` semantics
+   *  (backslash-normalized output) regardless of the real host OS — proves the
+   *  `toPosix()` normalization above actually works, rather than merely being
+   *  argued for (#2341 follow-up). */
+  forceWin32Path?: boolean;
 }
 
 /** A require()-like function whose .resolve() is driven entirely by a specifier -> path map. */
@@ -85,7 +102,12 @@ async function loadResolver(opts: LoadOpts = {}) {
     },
     existsSync = () => false,
     fakeDirs,
+    forceWin32Path = false,
   } = opts;
+
+  if (forceWin32Path) {
+    vi.doMock('node:path', () => ({ ...path.win32, default: path.win32 }));
+  }
 
   vi.doMock('node:module', async (io) => {
     const orig = await io<typeof import('node:module')>();
@@ -108,19 +130,26 @@ async function loadResolver(opts: LoadOpts = {}) {
       ...orig,
       registerHooks,
       createRequire: (from: string) => {
-        if (from === fakeDirs.transformersMain) return defaultRequire;
-        if (from === `${fakeDirs.ourDir}/package.json`) return effectiveRequire;
+        // `from` is produced by the resolver's own `join(effectiveDir, 'package.json')`
+        // call — backslash-normalized on a real Windows host even though
+        // `fakeDirs.ourDir` etc. are forward-slash fixtures; normalize before comparing.
+        const normalizedFrom = toPosix(from);
+        if (normalizedFrom === fakeDirs.transformersMain) return defaultRequire;
+        if (normalizedFrom === `${fakeDirs.ourDir}/package.json`) return effectiveRequire;
         return ourRequire;
       },
     };
   });
   vi.doMock('node:child_process', async (io) => ({
     ...(await io<typeof import('node:child_process')>()),
-    execFileSync: (cmd: string, args: string[]) => execFileSync(cmd, args),
+    // Normalize args (the `.so` path for `ldd`) so callers' forward-slash
+    // prefix checks match regardless of which path module the resolver's
+    // own `join(...)` calls were bound to on the host running this test.
+    execFileSync: (cmd: string, args: string[]) => execFileSync(cmd, args.map(toPosix)),
   }));
   vi.doMock('node:fs', async (io) => ({
     ...(await io<typeof import('node:fs')>()),
-    existsSync: (p: unknown) => existsSync(String(p)),
+    existsSync: (p: unknown) => existsSync(toPosix(String(p))),
   }));
 
   Object.defineProperty(process, 'platform', { value: platform, configurable: true });
@@ -131,6 +160,7 @@ afterEach(() => {
   vi.doUnmock('node:module');
   vi.doUnmock('node:child_process');
   vi.doUnmock('node:fs');
+  vi.doUnmock('node:path');
   Object.defineProperty(process, 'platform', { value: REAL_PLATFORM, configurable: true });
   process.env = { ...REAL_ENV };
 });
@@ -609,5 +639,64 @@ describe('decide() — ourDir checked independently of defaultDir (#2341 follow-
     // `if (systemMajor != null && defaultDir)`, so a null defaultDir skipped
     // checking ourDir entirely and this would incorrectly return null.
     expect(mod.getEffectiveOnnxRuntimeNodeDir()).toBe(fakeDirs.ourDir);
+  });
+});
+
+describe('cross-platform path handling (#2341 follow-up)', () => {
+  // This test file was added to cross-platform-tests.ts's PLATFORM_LOGIC list
+  // (so it now runs on the Windows CI matrix, not just Ubuntu). Node's `path`
+  // module is bound to path.win32 on a real Windows host regardless of any
+  // process.platform stub — so the resolver's own join(effectiveDir,
+  // 'package.json') calls backslash-normalize even when these tests fake
+  // platform: 'linux'. forceWin32Path proves the toPosix() normalization
+  // added above actually handles that, rather than merely being argued for.
+  const fakeDirs = {
+    ourDir: '/fake/our/onnxruntime-node',
+    defaultDir: '/fake/transformers-nested/onnxruntime-node',
+    transformersMain: '/fake/transformers/dist/transformers.node.mjs',
+  };
+  const soPath = (dir: string) => `${dir}/bin/napi-v6/linux`;
+
+  it('resolves the redirect-active dir and installs the resolve() closure correctly even when join()/dirname() backslash-normalize (simulated real Windows)', async () => {
+    const spy = vi.fn();
+    const mod = await loadResolver({
+      registerHooks: spy,
+      platform: 'linux',
+      fakeDirs,
+      forceWin32Path: true,
+      existsSync: (p) => p.startsWith(soPath(fakeDirs.ourDir)) || p.startsWith(soPath(fakeDirs.defaultDir)),
+      execFileSync: (cmd, args) => {
+        if (cmd === 'ldconfig') return 'libcublasLt.so.13 (libc6,x86-64) => /usr/local/cuda/lib64/libcublasLt.so.13';
+        if (cmd === 'ldd') {
+          const target = args[0] ?? '';
+          if (target.startsWith(soPath(fakeDirs.ourDir))) return 'libcublasLt.so.13 => /a/libcublasLt.so.13';
+          if (target.startsWith(soPath(fakeDirs.defaultDir))) return 'libcublasLt.so.12 => /a/libcublasLt.so.12';
+        }
+        throw new Error(`unexpected execFileSync(${cmd}, ${JSON.stringify(args)})`);
+      },
+    });
+
+    expect(mod.getEffectiveOnnxRuntimeNodeDir()).toBe(fakeDirs.ourDir);
+    expect(mod.isEffectiveCudaAvailable()).toBe(true);
+
+    mod.ensureOnnxRuntimeNodeMatchesSystem();
+    // The real proof: registerHooks must actually fire. Before the toPosix()
+    // fix, the createRequire dispatcher's `from === ...` comparison would
+    // mismatch against a backslash-joined `from` under forceWin32Path,
+    // ensureOnnxRuntimeNodeMatchesSystem's outer try/catch would silently
+    // swallow the resulting MODULE_NOT_FOUND, and this would never fire.
+    expect(spy).toHaveBeenCalledTimes(1);
+
+    const resolve = spy.mock.calls[0][0].resolve as (
+      s: string,
+      c: never,
+      n: (s: string, c: never) => unknown,
+    ) => unknown;
+    const ctx = {} as never;
+    const next = vi.fn();
+    const nodeResult = resolve('onnxruntime-node', ctx, next) as { url: string; shortCircuit: boolean };
+    expect(nodeResult.shortCircuit).toBe(true);
+    expect(toPosix(nodeResult.url)).toContain('/fake/our/onnxruntime-node/index.js');
+    expect(next).not.toHaveBeenCalled();
   });
 });
