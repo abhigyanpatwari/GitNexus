@@ -46,9 +46,30 @@ const WHITESPACE_RE = /\s/;
 export const CJK_BIGRAM_WORST_CASE_GROWTH_FACTOR = 7 / 3;
 
 /**
- * True if `text` contains at least one CJK Unified Ideograph. Callers use
- * this to warn when a query looks like it could benefit from
- * `GITNEXUS_FTS_CJK_SEGMENTATION=bigram` but the resolved mode is `none`.
+ * A real search query is always a short phrase — unlike indexed File content
+ * (deliberately uncapped, #2317/#2323), nothing else bounds a query's length
+ * before it reaches `segmentCjkSpans`. Without a cap, a pathologically long
+ * query string (accidental or adversarial) would pay `segmentCjkSpans`'s
+ * per-character allocation cost on every search request. 2000 characters
+ * comfortably covers any real natural-language query.
+ *
+ * Lives here rather than in `bm25-index.ts` (its only other consumer) so
+ * `local-backend.ts` can import it statically alongside this module's other
+ * symbols — `bm25-index.ts` transitively imports `@ladybugdb/core` (a native
+ * binding, via `lbug-adapter.js`), which is exactly the kind of module
+ * `local-backend.ts`'s `bm25Search` deliberately dynamic-imports instead of
+ * statically (#1489: can fail in sandboxed MCP contexts). A static import of
+ * even one constant from `bm25-index.ts` would force that native binding to
+ * load at MCP-server startup instead of at first query.
+ */
+export const MAX_CJK_SEGMENTATION_QUERY_LENGTH = 2000;
+
+/**
+ * True if `text` contains at least one CJK Unified Ideograph, including a
+ * single character. Generic presence check — for gating the "enable bigram
+ * mode" query warning specifically, use {@link containsSegmentableCjkRun}
+ * instead (#2339): a lone CJK character can never be bigram-segmented, so
+ * this broader check would misleadingly flag queries bigram mode can't help.
  */
 export const containsCjkIdeograph = (text: string): boolean => CJK_CHAR_RE.test(text);
 

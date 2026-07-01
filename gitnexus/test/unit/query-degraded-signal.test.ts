@@ -273,4 +273,31 @@ describe('query: degraded-enrichment signal', () => {
       cap.restore();
     }
   });
+
+  it('an invalid GITNEXUS_FTS_CJK_SEGMENTATION value on an already-analyzed repo also logs via the mode-drift catch', async () => {
+    // Distinct from the test above: that one relies on loadMetaMock's default
+    // (resolves null), which short-circuits the `meta &&` guard in the
+    // reverse-direction check BEFORE getSearchFTSCjkSegmentation() throws a
+    // second time — so it never exercises the 'query:cjk-mode-drift' catch.
+    // A real, already-analyzed repo has a real persisted meta, so both
+    // independent checks hit the same throw (found via code review — #2339).
+    vi.stubEnv('GITNEXUS_FTS_CJK_SEGMENTATION', 'not-a-real-mode');
+    loadMetaMock.mockResolvedValueOnce({ cjkSegmentation: 'none' } as any);
+    const cap: LoggerCapture = _captureLogger();
+    try {
+      const b = makeBackend(true);
+      executeParameterizedMock.mockResolvedValue([]);
+
+      const result = await runQuery(b, { query: '审批流程' });
+
+      expect(result).not.toHaveProperty('error');
+      const warningRecord = cap.records().find((r) => r.context === 'query:cjk-warning');
+      const driftRecord = cap.records().find((r) => r.context === 'query:cjk-mode-drift');
+      expect(warningRecord).toBeDefined();
+      expect(driftRecord).toBeDefined();
+      expect(driftRecord!.msg).toBe('GitNexus query failed (degraded)');
+    } finally {
+      cap.restore();
+    }
+  });
 });

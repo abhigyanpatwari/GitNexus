@@ -66,8 +66,8 @@ import {
   cjkSegmentationModeMismatch,
   containsSegmentableCjkRun,
   getSearchFTSCjkSegmentation,
+  MAX_CJK_SEGMENTATION_QUERY_LENGTH,
 } from '../../core/search/cjk-segmentation.js';
-import { MAX_CJK_SEGMENTATION_QUERY_LENGTH } from '../../core/search/bm25-index.js';
 import { checkStalenessAsync, checkCwdMatch } from '../../core/git-staleness.js';
 import { logger } from '../../core/logger.js';
 import {
@@ -2040,7 +2040,10 @@ export class LocalBackend {
         warnings.push(
           `Index was built with CJK segmentation mode '${meta.cjkSegmentation ?? 'none'}', but this ` +
             `server is resolving '${getSearchFTSCjkSegmentation()}' — sub-phrase CJK search results ` +
-            'may be incomplete until `gitnexus analyze --force` rebuilds the index under the current mode.',
+            'may be incomplete. Set GITNEXUS_FTS_CJK_SEGMENTATION to the same value for both the ' +
+            '`analyze` process and this server, then run `gitnexus analyze --force` to rebuild under ' +
+            "the agreed mode (do not assume the live server's mode is the one to keep — re-analyzing " +
+            'under the wrong mode can strip an already-working bigram-segmented index back to `none`).',
         );
       }
     } catch (err) {

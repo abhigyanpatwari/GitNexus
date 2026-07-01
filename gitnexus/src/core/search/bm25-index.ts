@@ -8,7 +8,10 @@
 import { queryFTS } from '../lbug/lbug-adapter.js';
 import { normalizeFtsText } from '../lbug/csv-generator.js';
 import { FTS_INDEXES } from './fts-schema.js';
-import { applyCjkSegmentationIfEnabled } from './cjk-segmentation.js';
+import {
+  applyCjkSegmentationIfEnabled,
+  MAX_CJK_SEGMENTATION_QUERY_LENGTH,
+} from './cjk-segmentation.js';
 
 export interface BM25SearchResult {
   filePath: string;
@@ -22,16 +25,6 @@ export interface FTSSearchResponse {
   /** True when at least one FTS index query succeeded (index exists). */
   ftsAvailable: boolean;
 }
-
-/**
- * A real search query is always a short phrase — unlike indexed File content
- * (deliberately uncapped, #2317/#2323), nothing else bounds `query`'s length
- * before it reaches `applyCjkSegmentationIfEnabled`. Without a cap here, a
- * pathologically long query string (accidental or adversarial) would pay
- * `segmentCjkSpans`'s per-character allocation cost on every search request.
- * 2000 characters comfortably covers any real natural-language query.
- */
-export const MAX_CJK_SEGMENTATION_QUERY_LENGTH = 2000;
 
 /**
  * Execute a single FTS query via a custom executor (for MCP connection pool).
