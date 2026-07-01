@@ -57,11 +57,16 @@ export function formatDetectChangesResult(result: unknown): string {
   const changed = Array.isArray(payload.changed_symbols) ? payload.changed_symbols : [];
   if (changed.length > 0) {
     lines.push(t('tool.detectChanges.changedSymbols'));
-    for (const symbol of changed.slice(0, 15)) {
+    const shown = changed.slice(0, 15);
+    for (const symbol of shown) {
       lines.push(`  ${symbol.type ?? 'Symbol'} ${symbol.name ?? '?'} → ${symbol.filePath ?? '?'}`);
     }
-    if (changed.length > 15) {
-      lines.push(t('tool.detectChanges.overflowMore', { count: changed.length - 15 }));
+    // Overflow is measured against the TRUE total (summary.changed_count), not
+    // the array length — the array may already be `--limit`-sliced, so using its
+    // length would under-report (or hide) how many symbols are not shown.
+    const totalChanged = summary.changed_count ?? changed.length;
+    if (totalChanged > shown.length) {
+      lines.push(t('tool.detectChanges.overflowMore', { count: totalChanged - shown.length }));
     }
     lines.push('');
   }
@@ -69,7 +74,8 @@ export function formatDetectChangesResult(result: unknown): string {
   const affected = Array.isArray(payload.affected_processes) ? payload.affected_processes : [];
   if (affected.length > 0) {
     lines.push(t('tool.detectChanges.affectedExecutionFlows'));
-    for (const processInfo of affected.slice(0, 10)) {
+    const shownAffected = affected.slice(0, 10);
+    for (const processInfo of shownAffected) {
       const changedSteps = Array.isArray(processInfo.changed_steps)
         ? processInfo.changed_steps
         : [];
@@ -78,6 +84,12 @@ export function formatDetectChangesResult(result: unknown): string {
         `  • ${processInfo.name ?? '?'} (${t('tool.detectChanges.steps', {
           count: processInfo.step_count ?? 0,
         })}) — ${t('tool.detectChanges.changedSteps', { steps })}`,
+      );
+    }
+    const totalAffected = summary.affected_count ?? affected.length;
+    if (totalAffected > shownAffected.length) {
+      lines.push(
+        t('tool.detectChanges.overflowMore', { count: totalAffected - shownAffected.length }),
       );
     }
   }

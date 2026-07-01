@@ -108,17 +108,25 @@ const warnOnce = (logger: SidecarRecoveryLogger, key: string, message: string): 
   logger.warn(`${message} (${ordinal(next)} occurrence of this condition)`);
 };
 
-// LADYBUGDB-CONTRACT: matches @ladybugdb/core ^0.16.1 native error text.
+// LADYBUGDB-CONTRACT: matches @ladybugdb/core ^0.18.0 native error text.
 // When bumping LadybugDB, re-validate this regex against the new error format
 // — `git grep "LADYBUGDB-CONTRACT"` enumerates every version-coupled spot.
+// Verified by upstream source/changelog diff only — forcing a genuine
+// `.shadow`-missing state via a live crash to trigger this error is not
+// reliably reproducible (a SIGKILL at the exact moment `.shadow` exists on
+// disk still recovers via `.wal.checkpoint` alone), so this matcher does not
+// have live-trigger test coverage.
 export const isMissingShadowSidecarError = (err: unknown): boolean => {
   const msg = err instanceof Error ? err.message : String(err);
   return /Cannot open file .*\.shadow: No such file or directory/i.test(msg);
 };
 
-// LADYBUGDB-CONTRACT: matches @ladybugdb/core ^0.16.1 native error text.
+// LADYBUGDB-CONTRACT: matches @ladybugdb/core ^0.18.0 native error text.
 // When bumping LadybugDB, re-validate this regex against the new error format
 // — `git grep "LADYBUGDB-CONTRACT"` enumerates every version-coupled spot.
+// Verified by upstream source/changelog diff only — a reliable cross-platform
+// live trigger for a read-only shadow-replay state isn't practical to
+// construct, so this matcher does not have live-trigger test coverage.
 export const isReadOnlyShadowReplayError = (err: unknown): boolean => {
   const msg = err instanceof Error ? err.message : String(err);
   return /replay shadow pages under read-only mode/i.test(msg);
