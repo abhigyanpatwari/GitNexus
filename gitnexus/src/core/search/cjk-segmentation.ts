@@ -83,13 +83,23 @@ export const segmentCjkSpans = (text: string): string => {
   const runs = splitIntoRuns(chars);
   const rendered = runs.map((run) => (run.isCjk ? renderCjkRun(run.chars) : run.chars.join('')));
 
-  let result = rendered[0] ?? '';
+  // Build via array + one join, tracking the previous segment's last character
+  // in a plain variable rather than indexing into the accumulated output.
+  // Indexing a string built by repeated `+=` forces V8 to flatten its
+  // internal rope representation on every access — O(current length) each
+  // time, making this loop O(n^2) on realistic content that alternates CJK
+  // and non-CJK runs (e.g. source code with inline CJK comments). Each
+  // `rendered[i]` is already a small, independently-flat string (produced by
+  // its own `.join()`), so indexing into it here is cheap.
+  const parts: string[] = [rendered[0] ?? ''];
+  let prevLastChar = parts[0][parts[0].length - 1];
   for (let i = 1; i < rendered.length; i++) {
     const next = rendered[i];
-    const needsSeparator = !isWhitespace(result[result.length - 1]) && !isWhitespace(next[0]);
-    result += (needsSeparator ? ' ' : '') + next;
+    if (!isWhitespace(prevLastChar) && !isWhitespace(next[0])) parts.push(' ');
+    parts.push(next);
+    prevLastChar = next[next.length - 1];
   }
-  return result;
+  return parts.join('');
 };
 
 // ============================================================================
