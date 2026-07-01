@@ -30,7 +30,7 @@ export interface FTSSearchResponse {
  * `segmentCjkSpans`'s per-character allocation cost on every search request.
  * 2000 characters comfortably covers any real natural-language query.
  */
-const MAX_CJK_SEGMENTATION_QUERY_LENGTH = 2000;
+export const MAX_CJK_SEGMENTATION_QUERY_LENGTH = 2000;
 
 /**
  * Execute a single FTS query via a custom executor (for MCP connection pool).

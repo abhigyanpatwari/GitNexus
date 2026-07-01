@@ -66,6 +66,7 @@ import {
   containsSegmentableCjkRun,
   getSearchFTSCjkSegmentation,
 } from '../../core/search/cjk-segmentation.js';
+import { MAX_CJK_SEGMENTATION_QUERY_LENGTH } from '../../core/search/bm25-index.js';
 import { checkStalenessAsync, checkCwdMatch } from '../../core/git-staleness.js';
 import { logger } from '../../core/logger.js';
 import {
@@ -1998,9 +1999,24 @@ export class LocalBackend {
     // matches with no other signal — this is the only place an agent driving
     // GitNexus through the query tool can learn the capability exists.
     try {
-      if (containsSegmentableCjkRun(searchQuery) && getSearchFTSCjkSegmentation() !== 'bigram') {
+      const cjkMode = getSearchFTSCjkSegmentation();
+      if (containsSegmentableCjkRun(searchQuery) && cjkMode !== 'bigram') {
         warnings.push(
           'Query contains CJK characters — sub-phrase matches require GITNEXUS_FTS_CJK_SEGMENTATION=bigram set for both `analyze` and this server process, then `gitnexus analyze --force`.',
+        );
+      } else if (
+        cjkMode === 'bigram' &&
+        searchQuery.length > MAX_CJK_SEGMENTATION_QUERY_LENGTH &&
+        containsSegmentableCjkRun(searchQuery)
+      ) {
+        // #2339: bigram mode is enabled, but the query exceeds the length
+        // cap that guards segmentCjkSpans's per-character allocation cost —
+        // applyCjkSegmentationIfEnabled silently skips segmentation above
+        // this length, so an over-cap CJK query returns zero results for
+        // text that IS indexed and present verbatim, with no other signal.
+        warnings.push(
+          `Query exceeds the ${MAX_CJK_SEGMENTATION_QUERY_LENGTH}-character CJK segmentation cap — ` +
+            'sub-phrase matches are skipped for this query even though GITNEXUS_FTS_CJK_SEGMENTATION=bigram is enabled. Shorten the query to search within the cap.',
         );
       }
     } catch (err) {

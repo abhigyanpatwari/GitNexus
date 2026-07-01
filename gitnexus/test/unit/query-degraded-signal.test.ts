@@ -171,6 +171,39 @@ describe('query: degraded-enrichment signal', () => {
     }
   });
 
+  it('warns when bigram mode is on but the query exceeds the segmentation length cap (#2339)', async () => {
+    vi.stubEnv('GITNEXUS_FTS_CJK_SEGMENTATION', 'bigram');
+    const b = makeBackend(true);
+    executeParameterizedMock.mockResolvedValue([]);
+    const overCapQuery = '审'.repeat(2001);
+
+    const result = await runQuery(b, { query: overCapQuery });
+
+    expect(result.warning).toMatch(/exceeds the 2000-character CJK segmentation cap/);
+  });
+
+  it('does not warn on the length-cap boundary itself (exactly at the cap, bigram mode on)', async () => {
+    vi.stubEnv('GITNEXUS_FTS_CJK_SEGMENTATION', 'bigram');
+    const b = makeBackend(true);
+    executeParameterizedMock.mockResolvedValue([]);
+    const atCapQuery = '审'.repeat(2000);
+
+    const result = await runQuery(b, { query: atCapQuery });
+
+    expect(result.warning).toBeUndefined();
+  });
+
+  it('an over-cap query with bigram mode OFF triggers only the mode-off warning, not both', async () => {
+    const b = makeBackend(true);
+    executeParameterizedMock.mockResolvedValue([]);
+    const overCapQuery = '审'.repeat(2001);
+
+    const result = await runQuery(b, { query: overCapQuery });
+
+    expect(result.warning).toMatch(/GITNEXUS_FTS_CJK_SEGMENTATION=bigram/);
+    expect(result.warning).not.toMatch(/exceeds the 2000-character CJK segmentation cap/);
+  });
+
   it('an invalid GITNEXUS_FTS_CJK_SEGMENTATION value is logged via logQueryError, not silently swallowed', async () => {
     // The MCP query path never calls initialiseSearchFTSCjkSegmentation(), so
     // getSearchFTSCjkSegmentation() re-resolves from env on every call here —
