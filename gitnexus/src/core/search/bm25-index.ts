@@ -23,6 +23,16 @@ export interface FTSSearchResponse {
 }
 
 /**
+ * A real search query is always a short phrase — unlike indexed File content
+ * (deliberately uncapped, #2317/#2323), nothing else bounds `query`'s length
+ * before it reaches `applyCjkSegmentationIfEnabled`. Without a cap here, a
+ * pathologically long query string (accidental or adversarial) would pay
+ * `segmentCjkSpans`'s per-character allocation cost on every search request.
+ * 2000 characters comfortably covers any real natural-language query.
+ */
+const MAX_CJK_SEGMENTATION_QUERY_LENGTH = 2000;
+
+/**
  * Execute a single FTS query via a custom executor (for MCP connection pool).
  * Returns `null` when the query fails (e.g. FTS index does not exist) so the
  * caller can distinguish "zero matches" from "index missing".
@@ -76,8 +86,13 @@ export const searchFTSFromLbug = async (
   // same text the index was built from (#2331) — index-time and query-time
   // segmentation must never diverge, since QUERY_FTS_INDEX cannot derive a
   // tokenizer from the index it queries. No-op when segmentation is disabled
-  // (default).
-  const searchQuery = applyCjkSegmentationIfEnabled(query);
+  // (default). Skipped for pathologically long queries (see
+  // MAX_CJK_SEGMENTATION_QUERY_LENGTH) — the query still searches correctly,
+  // just without CJK sub-phrase segmentation.
+  const searchQuery =
+    query.length <= MAX_CJK_SEGMENTATION_QUERY_LENGTH
+      ? applyCjkSegmentationIfEnabled(query)
+      : query;
   const resultsByIndex: any[][] = [];
   let queriesSucceeded = 0;
 

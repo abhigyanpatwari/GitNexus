@@ -53,6 +53,10 @@ describe('segmentCjkSpans', () => {
     expect(segmentCjkSpans('ERP 审批')).toBe('ERP 审批');
   });
 
+  it('does not double an existing whitespace boundary in the reverse direction', () => {
+    expect(segmentCjkSpans('流程 ERP')).toBe('流程 ERP');
+  });
+
   it('matches the ~7n/3-bytes-per-input-byte growth-factor formula for long CJK runs', () => {
     // Implementation Unit 3's CSV-flush margin math depends on this ratio —
     // a silent change to the expansion factor should fail this test loudly.

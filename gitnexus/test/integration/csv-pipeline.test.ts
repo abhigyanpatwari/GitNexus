@@ -200,8 +200,17 @@ describe('streamAllCSVsToDisk', () => {
       vi.unstubAllEnvs();
     });
 
+    // The description phrase is deliberately different from anything in the
+    // file's own source text (and the function's startLine/endLine keep the
+    // extracted content snippet away from the file-level comment). If
+    // description and content were segmented via the same accidental code
+    // path, or formatFtsDescription silently used the wrong property, a
+    // description-only phrase could not appear in either CSV row.
+    const FILE_CJK_PHRASE = '采购订单自动审批流程';
+    const DESCRIPTION_CJK_PHRASE = '库存管理系统更新';
+
     it('leaves File content and Function description byte-identical by default (mode: none)', async () => {
-      const cjkContent = '// 采购订单自动审批流程\nexport function approve() {}\n';
+      const cjkContent = `// ${FILE_CJK_PHRASE}\nexport function approve() {\n  return true;\n}\n`;
       await fs.writeFile(path.join(repoDir, 'src', 'cjk.ts'), cjkContent);
       const graph = buildTestGraph([
         { id: 'file:src/cjk.ts', label: 'File', name: 'cjk.ts', filePath: 'src/cjk.ts' },
@@ -210,23 +219,24 @@ describe('streamAllCSVsToDisk', () => {
           label: 'Function',
           name: 'approve',
           filePath: 'src/cjk.ts',
-          extra: { description: '采购订单自动审批流程', startLine: 2, endLine: 2 },
+          extra: { description: DESCRIPTION_CJK_PHRASE, startLine: 3, endLine: 3 },
         },
       ]);
 
       const result = await streamAllCSVsToDisk(graph, repoDir, csvDir);
       const fileContent = await fs.readFile(result.nodeFiles.get('File')!.csvPath, 'utf-8');
       const funcContent = await fs.readFile(result.nodeFiles.get('Function')!.csvPath, 'utf-8');
-      expect(fileContent).toContain('采购订单自动审批流程');
-      expect(funcContent).toContain('采购订单自动审批流程');
+      expect(fileContent).toContain(FILE_CJK_PHRASE);
+      expect(funcContent).toContain(DESCRIPTION_CJK_PHRASE);
+      expect(funcContent).not.toContain(FILE_CJK_PHRASE);
       // No bigram-separator spaces inserted into the CJK run.
       expect(fileContent).not.toContain('采购 购订');
-      expect(funcContent).not.toContain('采购 购订');
+      expect(funcContent).not.toContain('库存 存管');
     });
 
     it('bigram-segments both File content and Function description when enabled', async () => {
       vi.stubEnv('GITNEXUS_FTS_CJK_SEGMENTATION', 'bigram');
-      const cjkContent = '// 采购订单自动审批流程\nexport function approve() {}\n';
+      const cjkContent = `// ${FILE_CJK_PHRASE}\nexport function approve() {\n  return true;\n}\n`;
       await fs.writeFile(path.join(repoDir, 'src', 'cjk-bigram.ts'), cjkContent);
       const graph = buildTestGraph([
         {
@@ -240,7 +250,7 @@ describe('streamAllCSVsToDisk', () => {
           label: 'Function',
           name: 'approveBigram',
           filePath: 'src/cjk-bigram.ts',
-          extra: { description: '采购订单自动审批流程', startLine: 2, endLine: 2 },
+          extra: { description: DESCRIPTION_CJK_PHRASE, startLine: 3, endLine: 3 },
         },
       ]);
 
@@ -248,8 +258,8 @@ describe('streamAllCSVsToDisk', () => {
       const fileContent = await fs.readFile(result.nodeFiles.get('File')!.csvPath, 'utf-8');
       const funcContent = await fs.readFile(result.nodeFiles.get('Function')!.csvPath, 'utf-8');
       // Every expected overlapping bigram from the issue's own example must
-      // be present as a real, space-delimited FTS token in the stored row.
-      const expectedBigrams = [
+      // be present as a real, space-delimited FTS token in the File row.
+      const expectedFileBigrams = [
         '采购',
         '购订',
         '订单',
@@ -260,8 +270,13 @@ describe('streamAllCSVsToDisk', () => {
         '批流',
         '流程',
       ];
-      for (const bigram of expectedBigrams) {
+      for (const bigram of expectedFileBigrams) {
         expect(fileContent).toContain(bigram);
+      }
+      // The Function row's description column is segmented independently —
+      // proven against its own (distinct) phrase, not the file's.
+      const expectedDescriptionBigrams = ['库存', '存管', '管理', '理系', '系统', '统更', '更新'];
+      for (const bigram of expectedDescriptionBigrams) {
         expect(funcContent).toContain(bigram);
       }
     });

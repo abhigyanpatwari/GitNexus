@@ -3,8 +3,9 @@
  *
  * LadybugDB's bundled FTS tokenizer splits only on the space character, so a
  * contiguous CJK (Chinese/Japanese/Korean) span indexes as one giant token and
- * sub-phrase queries never match. `segmentCjkSpans` rewrites each contiguous
- * run of CJK Unified Ideographs into space-separated overlapping character
+ * sub-phrase queries never match. `segmentCjkSpans` addresses the Han-ideograph
+ * case (Chinese text and Japanese Kanji — see scope note below) by rewriting
+ * each contiguous run of CJK Unified Ideographs into space-separated overlapping character
  * bigrams (`采购订单` -> `采购 购订 订单`), the same technique MySQL's `ngram`
  * fulltext parser, Elasticsearch's `cjk` analyzer, and Lucene's
  * `CJKBigramFilter` use by default. For any exact contiguous substring query

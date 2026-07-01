@@ -364,5 +364,19 @@ describe('BM25 search', () => {
         expect(call[2]).toEqual({ query: '审批 批流 流程' });
       }
     });
+
+    it('skips segmentation for a pathologically long query, searching it unchanged', async () => {
+      vi.stubEnv('GITNEXUS_FTS_CJK_SEGMENTATION', 'bigram');
+      const { queryFTS } = await import('../../src/core/lbug/lbug-adapter.js');
+      vi.mocked(queryFTS).mockResolvedValue([]);
+
+      const longQuery = '审批流程'.repeat(1000); // well past the 2000-char cap
+      await searchFTSFromLbug(longQuery);
+
+      expect(vi.mocked(queryFTS).mock.calls.length).toBeGreaterThan(0);
+      for (const call of vi.mocked(queryFTS).mock.calls) {
+        expect(call[2]).toBe(longQuery);
+      }
+    });
   });
 });
