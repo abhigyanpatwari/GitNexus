@@ -29,8 +29,9 @@
  *    Zero-delay hammering across 4 concurrent writers instead tripped a
  *    different native guard ("Timeout waiting for active write transactions
  *    to leave the system before checkpointing") by never giving the
- *    checkpoint a gap to find zero active writers. 2 writers with a small
- *    jittered retry delay (validated across 5 consecutive local runs) avoids
+ *    checkpoint a gap to find zero active writers. 2 writers with a small,
+ *    guaranteed non-zero jittered retry delay (1-3ms via `withRetry`'s
+ *    `afterMs` override — validated across 12 consecutive local runs) avoids
  *    that guard while still reliably forcing the checkpoint-vs-reader race.
  *    NOTE: `isDbBusyError` (lbug-config.ts) does NOT recognize this specific
  *    "Only one write transaction..." message (its substring list is 'busy'/
@@ -97,7 +98,10 @@ async function writeWithRetry(
       maxAttempts,
       baseDelayMs: 1,
       capDelayMs: 3,
-      isRetryable: (err) => ({ retry: isOnlyOneWriteTransactionError(err) }),
+      isRetryable: (err) =>
+        isOnlyOneWriteTransactionError(err)
+          ? { retry: true, afterMs: 1 + Math.floor(Math.random() * 3) }
+          : { retry: false },
     },
   );
 }
