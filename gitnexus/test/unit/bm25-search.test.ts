@@ -379,4 +379,63 @@ describe('BM25 search', () => {
       }
     });
   });
+
+  // #2339: the query path previously never called normalizeFtsText (only
+  // applyCjkSegmentationIfEnabled), unlike the write path which always
+  // composes both — a literal tab/newline in a query wouldn't match
+  // whitespace-normalized indexed text.
+  describe('normalizeFtsText query-side composition (#2339)', () => {
+    beforeEach(() => {
+      vi.clearAllMocks();
+    });
+
+    afterEach(() => {
+      vi.unstubAllEnvs();
+    });
+
+    it('collapses a literal tab in the query to a space (mode: none)', async () => {
+      const { queryFTS } = await import('../../src/core/lbug/lbug-adapter.js');
+      vi.mocked(queryFTS).mockResolvedValue([]);
+
+      await searchFTSFromLbug('审批\t流程');
+
+      expect(vi.mocked(queryFTS).mock.calls.length).toBeGreaterThan(0);
+      for (const call of vi.mocked(queryFTS).mock.calls) {
+        expect(call[2]).toBe('审批 流程');
+      }
+    });
+
+    it('composes segmentation THEN normalization, matching the write path order (mode: bigram)', async () => {
+      vi.stubEnv('GITNEXUS_FTS_CJK_SEGMENTATION', 'bigram');
+      const { queryFTS } = await import('../../src/core/lbug/lbug-adapter.js');
+      vi.mocked(queryFTS).mockResolvedValue([]);
+
+      await searchFTSFromLbug('审批流程\t自动');
+
+      expect(vi.mocked(queryFTS).mock.calls.length).toBeGreaterThan(0);
+      for (const call of vi.mocked(queryFTS).mock.calls) {
+        // "审批流程" bigram-segments to "审批 批流 流程"; the tab (untouched
+        // by segmentCjkSpans, since neither run's boundary needs an extra
+        // space next to an already-whitespace neighbor) is then collapsed
+        // to a space by normalizeFtsText, keeping "自动" a separate token.
+        expect(call[2]).toBe('审批 批流 流程 自动');
+      }
+    });
+
+    it('applies normalization regardless of the 2000-char segmentation cap', async () => {
+      vi.stubEnv('GITNEXUS_FTS_CJK_SEGMENTATION', 'bigram');
+      const { queryFTS } = await import('../../src/core/lbug/lbug-adapter.js');
+      vi.mocked(queryFTS).mockResolvedValue([]);
+
+      const longQueryWithTab = '审'.repeat(2001) + '\t' + '批';
+      await searchFTSFromLbug(longQueryWithTab);
+
+      expect(vi.mocked(queryFTS).mock.calls.length).toBeGreaterThan(0);
+      for (const call of vi.mocked(queryFTS).mock.calls) {
+        // Segmentation is skipped (over the cap), but normalizeFtsText still
+        // runs unconditionally — no per-character cost concern there.
+        expect(call[2]).toBe('审'.repeat(2001) + ' ' + '批');
+      }
+    });
+  });
 });

@@ -201,7 +201,7 @@ class FileContentCache {
  * bigram (run detection resets at whitespace) — an accepted limitation, see
  * the plan's Scope Boundaries.
  */
-const normalizeFtsText = (text: string): string => text.replace(/[\r\n\t]+/g, ' ');
+export const normalizeFtsText = (text: string): string => text.replace(/[\r\n\t]+/g, ' ');
 
 /** Composes both FTS-text transforms for the `description` column — one place for the six emission sites below to call, instead of repeating the composition. */
 const formatFtsDescription = (description: string): string =>
