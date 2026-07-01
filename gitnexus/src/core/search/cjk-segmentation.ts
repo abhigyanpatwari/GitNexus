@@ -126,6 +126,18 @@ const SUPPORTED_FTS_CJK_SEGMENTATION_MODES = new Set<string>(['none', 'bigram'])
 
 export const DEFAULT_FTS_CJK_SEGMENTATION = 'none';
 
+/**
+ * True if `value` is one of the recognized segmentation modes. Callers that
+ * interpolate a persisted `RepoMeta.cjkSegmentation` value into agent-visible
+ * text (e.g. the MCP query-tool's mode-drift warning, #2339) must validate
+ * with this first — that field comes from `meta.json`, a schema-less
+ * `JSON.parse` of on-disk state inside the analyzed repo, not a trusted
+ * input, so an unvalidated value could otherwise be echoed verbatim into
+ * tool output an agent is expected to trust and act on.
+ */
+export const isSupportedCjkSegmentationMode = (value: unknown): value is string =>
+  typeof value === 'string' && SUPPORTED_FTS_CJK_SEGMENTATION_MODES.has(value);
+
 let resolvedCjkSegmentation: string | undefined;
 
 /** Read + validate `GITNEXUS_FTS_CJK_SEGMENTATION`. Throws on an unsupported value. */

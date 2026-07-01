@@ -66,6 +66,7 @@ import {
   cjkSegmentationModeMismatch,
   containsSegmentableCjkRun,
   getSearchFTSCjkSegmentation,
+  isSupportedCjkSegmentationMode,
   MAX_CJK_SEGMENTATION_QUERY_LENGTH,
 } from '../../core/search/cjk-segmentation.js';
 import { checkStalenessAsync, checkCwdMatch } from '../../core/git-staleness.js';
@@ -2033,7 +2034,18 @@ export class LocalBackend {
     // a separate, unconditional check — not folded into the branches above.
     try {
       const meta = await loadMeta(path.dirname(repo.lbugPath));
-      if (
+      // meta.json is on-disk state inside the analyzed repo, read via a
+      // schema-less JSON.parse — not trusted input. Validate before
+      // interpolating it into agent-visible tool output (#2339): an
+      // unrecognized value is itself evidence of a corrupt/foreign index,
+      // reported generically rather than echoed verbatim.
+      const persistedMode = meta?.cjkSegmentation;
+      if (meta && persistedMode !== undefined && !isSupportedCjkSegmentationMode(persistedMode)) {
+        warnings.push(
+          "This repo's index metadata has an unrecognized CJK segmentation mode stamp — the index " +
+            'may be corrupt or from an incompatible GitNexus version. Run `gitnexus analyze --force` to rebuild it.',
+        );
+      } else if (
         meta &&
         cjkSegmentationModeMismatch(meta.cjkSegmentation, getSearchFTSCjkSegmentation())
       ) {

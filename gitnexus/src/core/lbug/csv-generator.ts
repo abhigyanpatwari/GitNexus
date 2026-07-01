@@ -200,6 +200,11 @@ class FileContentCache {
  * this flatten, so a CJK phrase split across a line-wrap loses its boundary
  * bigram (run detection resets at whitespace) — an accepted limitation, see
  * the plan's Scope Boundaries.
+ *
+ * Exported (#2339) so `bm25-index.ts`'s query path can compose it in the
+ * same order on incoming search queries, keeping index-time and query-time
+ * text transforms symmetric — a literal tab/newline in a query would
+ * otherwise fail to match whitespace-normalized indexed content.
  */
 export const normalizeFtsText = (text: string): string => text.replace(/[\r\n\t]+/g, ' ');
 
