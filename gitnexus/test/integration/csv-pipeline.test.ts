@@ -4,7 +4,7 @@
  * Tests: streamAllCSVsToDisk with real graph data.
  * Covers hardening fixes: LRU cache (#24), BufferedCSVWriter flush
  */
-import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, beforeEach, afterAll, afterEach, vi } from 'vitest';
 import fs from 'fs/promises';
 import { readdirSync } from 'node:fs';
 import { finished } from 'stream/promises';
@@ -23,6 +23,7 @@ import { splitRelCsvByLabelPair } from '../../src/core/lbug/lbug-adapter.js';
 import { getNodeLabel } from '../../src/core/lbug/rel-pair-routing.js';
 import { NODE_TABLES } from '../../src/core/lbug/schema.js';
 import { TREE_SITTER_MAX_BUFFER } from '../../src/core/ingestion/constants.js';
+import { CJK_BIGRAM_WORST_CASE_GROWTH_FACTOR } from '../../src/core/search/cjk-segmentation.js';
 
 let tmpHandle: TestDBHandle;
 let csvDir: string;
@@ -194,6 +195,101 @@ describe('streamAllCSVsToDisk', () => {
     expect(content).not.toContain('[truncated]');
   });
 
+  describe('GITNEXUS_FTS_CJK_SEGMENTATION (#2331)', () => {
+    afterEach(() => {
+      vi.unstubAllEnvs();
+    });
+
+    // The description phrase is deliberately different from anything in the
+    // file's own source text (and the function's startLine/endLine keep the
+    // extracted content snippet away from the file-level comment). If
+    // description and content were segmented via the same accidental code
+    // path, or formatFtsDescription silently used the wrong property, a
+    // description-only phrase could not appear in either CSV row.
+    const FILE_CJK_PHRASE = '采购订单自动审批流程';
+    const DESCRIPTION_CJK_PHRASE = '库存管理系统更新';
+
+    it('leaves File content and Function description byte-identical by default (mode: none)', async () => {
+      const cjkContent = `// ${FILE_CJK_PHRASE}\nexport function approve() {\n  return true;\n}\n`;
+      await fs.writeFile(path.join(repoDir, 'src', 'cjk.ts'), cjkContent);
+      const graph = buildTestGraph([
+        { id: 'file:src/cjk.ts', label: 'File', name: 'cjk.ts', filePath: 'src/cjk.ts' },
+        {
+          id: 'func:approve',
+          label: 'Function',
+          name: 'approve',
+          filePath: 'src/cjk.ts',
+          extra: { description: DESCRIPTION_CJK_PHRASE, startLine: 3, endLine: 3 },
+        },
+      ]);
+
+      const result = await streamAllCSVsToDisk(graph, repoDir, csvDir);
+      const fileContent = await fs.readFile(result.nodeFiles.get('File')!.csvPath, 'utf-8');
+      const funcContent = await fs.readFile(result.nodeFiles.get('Function')!.csvPath, 'utf-8');
+      expect(fileContent).toContain(FILE_CJK_PHRASE);
+      expect(funcContent).toContain(DESCRIPTION_CJK_PHRASE);
+      expect(funcContent).not.toContain(FILE_CJK_PHRASE);
+      // No bigram-separator spaces inserted into the CJK run.
+      expect(fileContent).not.toContain('采购 购订');
+      expect(funcContent).not.toContain('库存 存管');
+    });
+
+    it('bigram-segments both File content and Function description when enabled', async () => {
+      vi.stubEnv('GITNEXUS_FTS_CJK_SEGMENTATION', 'bigram');
+      const cjkContent = `// ${FILE_CJK_PHRASE}\nexport function approve() {\n  return true;\n}\n`;
+      await fs.writeFile(path.join(repoDir, 'src', 'cjk-bigram.ts'), cjkContent);
+      const graph = buildTestGraph([
+        {
+          id: 'file:src/cjk-bigram.ts',
+          label: 'File',
+          name: 'cjk-bigram.ts',
+          filePath: 'src/cjk-bigram.ts',
+        },
+        {
+          id: 'func:approve-bigram',
+          label: 'Function',
+          name: 'approveBigram',
+          filePath: 'src/cjk-bigram.ts',
+          extra: { description: DESCRIPTION_CJK_PHRASE, startLine: 3, endLine: 3 },
+        },
+      ]);
+
+      const result = await streamAllCSVsToDisk(graph, repoDir, csvDir);
+      const fileContent = await fs.readFile(result.nodeFiles.get('File')!.csvPath, 'utf-8');
+      const funcContent = await fs.readFile(result.nodeFiles.get('Function')!.csvPath, 'utf-8');
+      // Every expected overlapping bigram from the issue's own example must
+      // be present as a real, space-delimited FTS token in the File row.
+      const expectedFileBigrams = [
+        '采购',
+        '购订',
+        '订单',
+        '单自',
+        '自动',
+        '动审',
+        '审批',
+        '批流',
+        '流程',
+      ];
+      for (const bigram of expectedFileBigrams) {
+        expect(fileContent).toContain(bigram);
+      }
+      // The Function row's description column is segmented independently —
+      // proven against its own (distinct) phrase, not the file's.
+      const expectedDescriptionBigrams = ['库存', '存管', '管理', '理系', '系统', '统更', '更新'];
+      for (const bigram of expectedDescriptionBigrams) {
+        expect(funcContent).toContain(bigram);
+      }
+      // #2339: every one of the bigram substrings above is ALSO a literal
+      // substring of the original unsegmented phrase (bigrams are
+      // overlapping substrings by construction), so the positive assertions
+      // alone would pass even if applyCjkSegmentationIfEnabled silently
+      // became a no-op. Mirror the `mode: none` test's negative-assertion
+      // pattern above: the original contiguous run must NOT survive intact.
+      expect(fileContent).not.toContain(FILE_CJK_PHRASE);
+      expect(funcContent).not.toContain(DESCRIPTION_CJK_PHRASE);
+    });
+  });
+
   it('handles community nodes with keywords', async () => {
     const graph = buildTestGraph([
       {
@@ -316,10 +412,14 @@ describe('streamAllCSVsToDisk', () => {
   it('shouldFlushCSVBuffer stays within the V8 string-length ceiling', () => {
     // One more max-size row (TREE_SITTER_MAX_BUFFER, hard-clamped — see
     // max-file-size.ts) can land right after the buffer was just under
-    // FLUSH_BYTES; escapeCSVField's quote-doubling can at most double it.
-    // The resulting join() must stay well under Node's MAX_STRING_LENGTH,
-    // or BufferedCSVWriter.flush() throws `RangeError: Invalid string length`.
-    const worstCaseJoinSize = FLUSH_BYTES + 2 * TREE_SITTER_MAX_BUFFER;
+    // FLUSH_BYTES. Two transforms can each grow that row before it's joined:
+    // applyCjkSegmentationIfEnabled (#2331, ~7/3x worst case on an all-CJK
+    // row with GITNEXUS_FTS_CJK_SEGMENTATION=bigram) and escapeCSVField's
+    // quote-doubling (2x). The resulting join() must stay well under Node's
+    // MAX_STRING_LENGTH, or BufferedCSVWriter.flush() throws
+    // `RangeError: Invalid string length`.
+    const worstCaseJoinSize =
+      FLUSH_BYTES + 2 * CJK_BIGRAM_WORST_CASE_GROWTH_FACTOR * TREE_SITTER_MAX_BUFFER;
     expect(worstCaseJoinSize).toBeLessThan(bufferConstants.MAX_STRING_LENGTH / 2);
   });
 });

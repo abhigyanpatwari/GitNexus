@@ -73,6 +73,35 @@ describe('runFullAnalysis FTS repair and verification failure paths', () => {
     }
   });
 
+  it('validates configured FTS CJK segmentation mode before full analyze pipeline work (#2331)', async () => {
+    const runPipelineFromRepo = vi.fn(async (repoPath: string) => ({
+      repoPath,
+      graph: { forEachNode: () => undefined },
+    }));
+    vi.doMock('../../src/core/ingestion/pipeline.js', () => ({
+      runPipelineFromRepo,
+    }));
+    vi.stubEnv('GITNEXUS_FTS_CJK_SEGMENTATION', 'jieba');
+
+    const tmpRepo = await createTempDir('gitnexus-run-analyze-invalid-fts-cjk-segmentation-');
+    try {
+      const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
+
+      await expect(
+        runFullAnalysis(
+          tmpRepo.dbPath,
+          { force: true },
+          {
+            onProgress: () => {},
+          },
+        ),
+      ).rejects.toThrow(/Invalid GITNEXUS_FTS_CJK_SEGMENTATION/i);
+      expect(runPipelineFromRepo).not.toHaveBeenCalled();
+    } finally {
+      await tmpRepo.cleanup();
+    }
+  });
+
   it('fails repair mode when graph store is missing', async () => {
     const tmpRepo = await createTempDir('gitnexus-run-analyze-repair-missing-store-');
     try {
