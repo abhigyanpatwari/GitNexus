@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   applyCjkSegmentationIfEnabled,
+  CJK_BIGRAM_WORST_CASE_GROWTH_FACTOR,
   getSearchFTSCjkSegmentation,
   initialiseSearchFTSCjkSegmentation,
   segmentCjkSpans,
@@ -61,7 +62,7 @@ describe('segmentCjkSpans', () => {
     const inputBytes = Buffer.byteLength(input, 'utf8');
     const output = segmentCjkSpans(input);
     const outputBytes = Buffer.byteLength(output, 'utf8');
-    const expectedBytes = (7 * inputBytes) / 3;
+    const expectedBytes = inputBytes * CJK_BIGRAM_WORST_CASE_GROWTH_FACTOR;
     expect(outputBytes).toBeGreaterThan(expectedBytes * 0.95);
     expect(outputBytes).toBeLessThan(expectedBytes * 1.05);
   });

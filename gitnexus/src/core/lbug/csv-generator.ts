@@ -57,10 +57,13 @@ const orderedRelationships = (
  * just under this threshold, before the flush fires. That row is capped at
  * TREE_SITTER_MAX_BUFFER (32MB, hard-clamped — GITNEXUS_MAX_FILE_SIZE cannot
  * raise it). Two transforms can each grow it before it reaches the buffer:
- * `applyCjkSegmentationIfEnabled` (#2331, ~7/3x on an all-CJK row when
- * `GITNEXUS_FTS_CJK_SEGMENTATION=bigram`) and `escapeCSVField`'s worst-case
- * quote-doubling (2x). So the peak joined-string size is bounded by
- *   FLUSH_BYTES + 2 * (7/3) * TREE_SITTER_MAX_BUFFER ≈ 8MB + 157MB ≈ 165MB,
+ * `applyCjkSegmentationIfEnabled` (#2331, `CJK_BIGRAM_WORST_CASE_GROWTH_FACTOR`
+ * on an all-CJK row when `GITNEXUS_FTS_CJK_SEGMENTATION=bigram` — the single
+ * source of truth for that ratio, imported by the paired test) and
+ * `escapeCSVField`'s worst-case quote-doubling (2x). So the peak joined-string
+ * size is bounded by
+ *   FLUSH_BYTES + 2 * CJK_BIGRAM_WORST_CASE_GROWTH_FACTOR * TREE_SITTER_MAX_BUFFER
+ *     ≈ 8MB + 149MB ≈ 157MB,
  * versus Node's `buffer.constants.MAX_STRING_LENGTH` (~512MB) — the test
  * actually enforces half of that (~256MB), for a ~1.63x margin (see the
  * `shouldFlushCSVBuffer stays within the V8 string-length ceiling` test,
@@ -199,6 +202,10 @@ class FileContentCache {
  * the plan's Scope Boundaries.
  */
 const normalizeFtsText = (text: string): string => text.replace(/[\r\n\t]+/g, ' ');
+
+/** Composes both FTS-text transforms for the `description` column — one place for the six emission sites below to call, instead of repeating the composition. */
+const formatFtsDescription = (description: string): string =>
+  normalizeFtsText(applyCjkSegmentationIfEnabled(description));
 
 const extractContent = async (node: GraphNode, contentCache: FileContentCache): Promise<string> => {
   const filePath = node.properties.filePath;
@@ -542,9 +549,7 @@ export const streamAllCSVsToDisk = async (
               escapeCSVField(node.properties.name || ''),
               escapeCSVField(node.properties.heuristicLabel || ''),
               keywordsStr,
-              escapeCSVField(
-                normalizeFtsText(applyCjkSegmentationIfEnabled(node.properties.description || '')),
-              ),
+              escapeCSVField(formatFtsDescription(node.properties.description || '')),
               escapeCSVField(node.properties.enrichedBy || 'heuristic'),
               escapeCSVNumber(node.properties.cohesion, 0),
               escapeCSVNumber(node.properties.symbolCount, 0),
@@ -580,9 +585,7 @@ export const streamAllCSVsToDisk = async (
               escapeCSVNumber(node.properties.endLine, -1),
               node.properties.isExported ? 'true' : 'false',
               escapeCSVField(content),
-              escapeCSVField(
-                normalizeFtsText(applyCjkSegmentationIfEnabled(node.properties.description || '')),
-              ),
+              escapeCSVField(formatFtsDescription(node.properties.description || '')),
               escapeCSVNumber(node.properties.parameterCount, 0),
               escapeCSVField(node.properties.returnType || ''),
             ].join(','),
@@ -600,9 +603,7 @@ export const streamAllCSVsToDisk = async (
               escapeCSVNumber(node.properties.endLine, -1),
               escapeCSVNumber(node.properties.level, 1),
               escapeCSVField(content),
-              escapeCSVField(
-                normalizeFtsText(applyCjkSegmentationIfEnabled(node.properties.description || '')),
-              ),
+              escapeCSVField(formatFtsDescription(node.properties.description || '')),
             ].join(','),
           );
           break;
@@ -636,9 +637,7 @@ export const streamAllCSVsToDisk = async (
               escapeCSVField(node.id),
               escapeCSVField(node.properties.name || ''),
               escapeCSVField(node.properties.filePath || ''),
-              escapeCSVField(
-                normalizeFtsText(applyCjkSegmentationIfEnabled(node.properties.description || '')),
-              ),
+              escapeCSVField(formatFtsDescription(node.properties.description || '')),
             ].join(','),
           );
           break;
@@ -659,11 +658,7 @@ export const streamAllCSVsToDisk = async (
                 escapeCSVNumber(node.properties.endLine, -1),
                 node.properties.isExported ? 'true' : 'false',
                 escapeCSVField(content),
-                escapeCSVField(
-                  normalizeFtsText(
-                    applyCjkSegmentationIfEnabled(node.properties.description || ''),
-                  ),
-                ),
+                escapeCSVField(formatFtsDescription(node.properties.description || '')),
               ].join(','),
             );
           } else {
@@ -679,11 +674,7 @@ export const streamAllCSVsToDisk = async (
                   escapeCSVNumber(node.properties.startLine, -1),
                   escapeCSVNumber(node.properties.endLine, -1),
                   escapeCSVField(content),
-                  escapeCSVField(
-                    normalizeFtsText(
-                      applyCjkSegmentationIfEnabled(node.properties.description || ''),
-                    ),
-                  ),
+                  escapeCSVField(formatFtsDescription(node.properties.description || '')),
                   ...(node.label === 'Property'
                     ? [escapeCSVField(node.properties.declaredType || '')]
                     : []),

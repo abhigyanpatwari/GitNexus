@@ -23,6 +23,7 @@ import { splitRelCsvByLabelPair } from '../../src/core/lbug/lbug-adapter.js';
 import { getNodeLabel } from '../../src/core/lbug/rel-pair-routing.js';
 import { NODE_TABLES } from '../../src/core/lbug/schema.js';
 import { TREE_SITTER_MAX_BUFFER } from '../../src/core/ingestion/constants.js';
+import { CJK_BIGRAM_WORST_CASE_GROWTH_FACTOR } from '../../src/core/search/cjk-segmentation.js';
 
 let tmpHandle: TestDBHandle;
 let csvDir: string;
@@ -394,9 +395,8 @@ describe('streamAllCSVsToDisk', () => {
     // quote-doubling (2x). The resulting join() must stay well under Node's
     // MAX_STRING_LENGTH, or BufferedCSVWriter.flush() throws
     // `RangeError: Invalid string length`.
-    const CJK_SEGMENTATION_GROWTH_FACTOR = 7 / 3;
     const worstCaseJoinSize =
-      FLUSH_BYTES + 2 * CJK_SEGMENTATION_GROWTH_FACTOR * TREE_SITTER_MAX_BUFFER;
+      FLUSH_BYTES + 2 * CJK_BIGRAM_WORST_CASE_GROWTH_FACTOR * TREE_SITTER_MAX_BUFFER;
     expect(worstCaseJoinSize).toBeLessThan(bufferConstants.MAX_STRING_LENGTH / 2);
   });
 });

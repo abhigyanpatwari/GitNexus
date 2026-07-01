@@ -21,6 +21,18 @@
 const CJK_UNIFIED_IDEOGRAPHS_START = 0x4e00;
 const CJK_UNIFIED_IDEOGRAPHS_END = 0x9fff;
 
+/**
+ * Worst-case output/input byte ratio for `segmentCjkSpans` on an all-CJK run:
+ * each adjacent character pair becomes a 2-character bigram plus a 1-byte
+ * separator, i.e. ~7 output bytes per 3 input bytes of UTF-8 CJK text (each
+ * CJK character is 3 bytes). Single source of truth — imported by both the
+ * CSV-flush safety-margin test (`csv-pipeline.test.ts`) and the growth-factor
+ * regression guard (`cjk-segmentation.test.ts`), and referenced by name in
+ * `csv-generator.ts`'s `FLUSH_BYTES` margin comment, so all three stay in
+ * sync if the algorithm's expansion ratio ever changes.
+ */
+export const CJK_BIGRAM_WORST_CASE_GROWTH_FACTOR = 7 / 3;
+
 const isCjkIdeograph = (codePoint: number): boolean =>
   codePoint >= CJK_UNIFIED_IDEOGRAPHS_START && codePoint <= CJK_UNIFIED_IDEOGRAPHS_END;
 
