@@ -1,0 +1,210 @@
+/**
+ * Redirect `@huggingface/transformers`' `onnxruntime-node` import to whichever
+ * bundled copy's CUDA build matches this host's CUDA runtime (CUDA 12 vs 13).
+ *
+ * ## Why
+ * transformers exact-pins `onnxruntime-node` (e.g. `1.24.3`, a CUDA **12**
+ * build), while gitnexus' own `onnxruntime-node: ^1.24.0` floats to the latest
+ * 1.x (a CUDA **13** build). npm/pnpm cannot dedupe an exact pin against a
+ * range, so a `npm i -g` install ends up with TWO copies: gitnexus' top-level
+ * CUDA-13 build (unused) and transformers' nested CUDA-12 build (the one that
+ * actually loads). gitnexus' `overrides` block that would collapse them is
+ * honoured only from a *root* manifest, so it is inert once gitnexus is a
+ * dependency — the same transitive-override limitation documented in
+ * {@link ./onnxruntime-common-resolver.ts} (#307).
+ *
+ * The consequence on a CUDA-13-only host: the nested CUDA-12 provider cannot
+ * find `libcublasLt.so.12`, the CUDA execution provider fails to load, and
+ * embeddings silently fall back to CPU (~5-6x slower) even with
+ * `--embedding-device cuda`.
+ *
+ * ## What this does
+ * Best-effort, before transformers is imported: if the system's cuBLASLt major
+ * (12 or 13) does NOT match the CUDA build transformers would load by default,
+ * but gitnexus' own top-level `onnxruntime-node` copy DOES match, install a
+ * synchronous ESM resolution hook (`module.registerHooks`, Node >= 22.15) that
+ * redirects both `onnxruntime-node` and `onnxruntime-common` to that matching
+ * copy. onnxruntime-common is redirected alongside so the `Tensor` surface
+ * stays a single identity, version-matched to the redirected binding.
+ *
+ * ## Safety
+ * Detection-based and conservative — it acts ONLY when it is a net improvement:
+ *   - system CUDA major == default build major  -> NO-OP (already correct)
+ *   - no system CUDA libs / non-linux           -> NO-OP (CPU path)
+ *   - only one copy present                     -> NO-OP
+ *   - neither copy matches the system           -> NO-OP (never makes it worse)
+ * So CUDA-12 hosts, Windows (DirectML), macOS, and CPU-only hosts are
+ * untouched. Idempotent; any failure is swallowed and leaves the default
+ * resolution exactly as before. `module.registerHooks` requires Node >= 22.15
+ * (the gitnexus engines floor is >= 22.0.0); on older runtimes this is a no-op.
+ *
+ * The CUDA-major decision is exposed via {@link getEffectiveOnnxRuntimeNodeDir}
+ * so the embedder's CUDA probe can inspect the SAME copy that will actually be
+ * loaded (the probe uses CJS `require.resolve`, which an ESM hook does not
+ * affect) — keeping probe and runtime consistent.
+ */
+import { registerHooks, createRequire } from 'node:module';
+import { pathToFileURL } from 'node:url';
+import { existsSync } from 'node:fs';
+import { join, dirname } from 'node:path';
+import { execFileSync } from 'node:child_process';
+import { logger } from '../logger.js';
+
+export type CudaMajor = 12 | 13;
+
+const require = createRequire(import.meta.url);
+
+/** Read a shared object's NEEDED entries, tolerating ldd's non-zero exit when a lib is unresolved. */
+const readSoNeeded = (soPath: string): string => {
+  try {
+    return execFileSync('ldd', [soPath], { timeout: 5000, encoding: 'utf-8', windowsHide: true });
+  } catch (err) {
+    const out = (err as { stdout?: string } | null | undefined)?.stdout;
+    return typeof out === 'string' ? out : '';
+  }
+};
+
+/** The CUDA major an onnxruntime-node copy's CUDA provider links against, or null (Linux/x64 only ships one). */
+export const ortCudaMajor = (ortNodeDir: string): CudaMajor | null => {
+  const so = join(
+    ortNodeDir,
+    'bin',
+    'napi-v6',
+    'linux',
+    process.arch,
+    'libonnxruntime_providers_cuda.so',
+  );
+  if (!existsSync(so)) return null;
+  const needed = readSoNeeded(so);
+  if (/libcublasLt\.so\.13/.test(needed)) return 13;
+  if (/libcublasLt\.so\.12/.test(needed)) return 12;
+  return null;
+};
+
+/** The cuBLASLt major installed on this system, or null. Linux only. */
+export const detectSystemCudaMajor = (): CudaMajor | null => {
+  if (process.platform !== 'linux') return null;
+  try {
+    const out = execFileSync('ldconfig', ['-p'], {
+      timeout: 3000,
+      encoding: 'utf-8',
+      windowsHide: true,
+    });
+    if (out.includes('libcublasLt.so.13')) return 13;
+    if (out.includes('libcublasLt.so.12')) return 12;
+  } catch {
+    // ldconfig not available (e.g. non-standard container) — fall through to path scan.
+  }
+  for (const envVar of ['CUDA_PATH', 'LD_LIBRARY_PATH']) {
+    const val = process.env[envVar];
+    if (!val) continue;
+    for (const dir of val.split(':').filter(Boolean))
+      for (const sub of ['lib64', 'lib', ''])
+        for (const maj of [13, 12] as const)
+          if (existsSync(join(dir, sub, `libcublasLt.so.${maj}`))) return maj;
+  }
+  return null;
+};
+
+/** onnxruntime-node dir transformers loads by default (its own nested/pinned copy). */
+const resolveDefaultOrtNodeDir = (): string | null => {
+  try {
+    const transformersMain = require.resolve('@huggingface/transformers');
+    return dirname(createRequire(transformersMain).resolve('onnxruntime-node/package.json'));
+  } catch {
+    return null;
+  }
+};
+
+/** gitnexus' own direct top-level onnxruntime-node dir. */
+const resolveOurOrtNodeDir = (): string | null => {
+  try {
+    return dirname(require.resolve('onnxruntime-node/package.json'));
+  } catch {
+    return null;
+  }
+};
+
+interface Decision {
+  redirect: boolean;
+  effectiveDir: string | null; // the onnxruntime-node dir that WILL be used (default, or ours)
+  systemMajor: CudaMajor | null;
+}
+
+let cached: Decision | null = null;
+
+const decide = (): Decision => {
+  if (cached) return cached;
+  const systemMajor = detectSystemCudaMajor();
+  const defaultDir = resolveDefaultOrtNodeDir();
+  let decision: Decision = { redirect: false, effectiveDir: defaultDir, systemMajor };
+
+  if (systemMajor != null && defaultDir) {
+    const defaultMajor = ortCudaMajor(defaultDir);
+    if (defaultMajor !== systemMajor) {
+      const ourDir = resolveOurOrtNodeDir();
+      if (ourDir && ourDir !== defaultDir && ortCudaMajor(ourDir) === systemMajor) {
+        decision = { redirect: true, effectiveDir: ourDir, systemMajor };
+      }
+    }
+  }
+  cached = decision;
+  return decision;
+};
+
+/**
+ * The onnxruntime-node dir that will actually back transformers at runtime once
+ * {@link ensureOnnxRuntimeNodeMatchesSystem} has run — i.e. the redirected copy
+ * when a redirect applies, otherwise transformers' default. The CUDA probe must
+ * inspect THIS dir (not transformers' CJS-resolved default) so probe and
+ * runtime agree. Returns null only when neither copy resolves.
+ */
+export const getEffectiveOnnxRuntimeNodeDir = (): string | null => decide().effectiveDir;
+
+let attempted = false;
+
+/**
+ * Idempotently install the CUDA-build-matching redirect. Call once immediately
+ * before the dynamic `import('@huggingface/transformers')` on the local
+ * embedding path (after the runtime guard, alongside the onnxruntime-common
+ * fallback). No-op unless a strictly-better matching copy exists.
+ */
+export const ensureOnnxRuntimeNodeMatchesSystem = (): void => {
+  if (attempted) return;
+  attempted = true;
+  try {
+    if (typeof registerHooks !== 'function') return; // Node < 22.15: graceful no-op
+    const d = decide();
+    if (!d.redirect || !d.effectiveDir) return;
+
+    const nodeUrl = pathToFileURL(
+      createRequire(join(d.effectiveDir, 'package.json')).resolve('onnxruntime-node'),
+    ).href;
+    let commonUrl: string | null = null;
+    try {
+      commonUrl = pathToFileURL(
+        createRequire(join(d.effectiveDir, 'package.json')).resolve('onnxruntime-common'),
+      ).href;
+    } catch {
+      commonUrl = null; // fall back to the onnxruntime-common-resolver for common
+    }
+
+    registerHooks({
+      resolve(specifier, context, nextResolve) {
+        if (specifier === 'onnxruntime-node') return { url: nodeUrl, shortCircuit: true };
+        if (commonUrl && specifier === 'onnxruntime-common')
+          return { url: commonUrl, shortCircuit: true };
+        return nextResolve(specifier, context);
+      },
+    });
+    logger.debug(
+      { systemMajor: d.systemMajor, effectiveDir: d.effectiveDir },
+      'Redirected onnxruntime-node to system-matched CUDA build',
+    );
+  } catch (err) {
+    logger.debug(
+      { err: err instanceof Error ? err.message : String(err) },
+      'onnxruntime-node CUDA-build redirect not installed',
+    );
+  }
+};
