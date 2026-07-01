@@ -33,7 +33,11 @@ import {
   STRUCTURAL_LABELS,
   collectBestChunks,
 } from './types.js';
-import { resolveEmbeddingConfig } from './config.js';
+import {
+  DEFAULT_VECTOR_MAX_DISTANCE,
+  getVectorMaxDistance,
+  resolveEmbeddingConfig,
+} from './config.js';
 import { rankExactEmbeddingRows, type ExactEmbeddingRow } from './exact-search.js';
 import { EMBEDDING_TABLE_NAME, EMBEDDING_INDEX_NAME, STALE_HASH_SENTINEL } from '../lbug/schema.js';
 import { loadVectorExtension, createVectorIndex } from '../lbug/lbug-adapter.js';
@@ -604,7 +608,7 @@ export const semanticSearch = async (
   executeQuery: (cypher: string) => Promise<any[]>,
   query: string,
   k: number = 10,
-  maxDistance: number = 0.5,
+  maxDistance: number = getVectorMaxDistance(DEFAULT_VECTOR_MAX_DISTANCE),
 ): Promise<SemanticSearchResult[]> => {
   if (!isEmbedderReady()) {
     throw new Error('Embedding model not initialized. Run embedding pipeline first.');
@@ -750,7 +754,7 @@ export const semanticSearchWithContext = async (
   k: number = 5,
   _hops: number = 1,
 ): Promise<any[]> => {
-  const results = await semanticSearch(executeQuery, query, k, 0.5);
+  const results = await semanticSearch(executeQuery, query, k);
 
   return results.map((r) => ({
     matchId: r.nodeId,

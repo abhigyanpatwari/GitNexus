@@ -465,6 +465,32 @@ describe('LocalBackend.callTool', () => {
 
     const queries = (executeQuery as any).mock.calls.map(([, cypher]: [string, string]) => cypher);
     expect(queries.some((cypher: string) => cypher.includes('QUERY_VECTOR_INDEX'))).toBe(true);
+    // The configured threshold must reach the WHERE clause (MCP default 0.6), guarding
+    // against a regression that drops the filter or re-hardcodes a different value.
+    expect(queries.some((cypher: string) => cypher.includes('distance < 0.6'))).toBe(true);
+  });
+
+  it('threads GITNEXUS_VECTOR_MAX_DISTANCE into the vector index WHERE clause', async () => {
+    platformMocks.isVectorExtensionSupportedByPlatform.mockReturnValue(true);
+    vi.mocked(executeQuery).mockImplementation(async (_repoId: string, cypher: string) => {
+      if (cypher.includes('COUNT(*) AS cnt')) return [{ cnt: 1 }];
+      return [];
+    });
+    vi.mocked(executeParameterized).mockResolvedValue([]);
+
+    const previous = process.env.GITNEXUS_VECTOR_MAX_DISTANCE;
+    process.env.GITNEXUS_VECTOR_MAX_DISTANCE = '0.42';
+    try {
+      await backend.callTool('query', { query: 'auth' });
+      const queries = vi
+        .mocked(executeQuery)
+        .mock.calls.map(([, cypher]: [string, string]) => cypher);
+      expect(queries.some((cypher: string) => cypher.includes('distance < 0.42'))).toBe(true);
+      expect(queries.some((cypher: string) => cypher.includes('distance < 0.6'))).toBe(false);
+    } finally {
+      if (previous === undefined) delete process.env.GITNEXUS_VECTOR_MAX_DISTANCE;
+      else process.env.GITNEXUS_VECTOR_MAX_DISTANCE = previous;
+    }
   });
 
   it('query tool returns error for empty query', async () => {
