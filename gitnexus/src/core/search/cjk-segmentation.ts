@@ -16,11 +16,14 @@
  * Scoped to the core CJK Unified Ideographs block (U+4E00-U+9FFF) only —
  * covers Chinese text and Japanese Kanji. Hiragana, Katakana, and Hangul
  * Syllables are deliberately excluded for now (see plan Scope Boundaries);
- * add their ranges to `isCjkIdeograph` if that need arises.
+ * extend `CJK_UNIFIED_IDEOGRAPHS` below if that need arises.
  */
 
-const CJK_UNIFIED_IDEOGRAPHS_START = 0x4e00;
-const CJK_UNIFIED_IDEOGRAPHS_END = 0x9fff;
+/** The core CJK Unified Ideographs block — single source of truth for both regexes below. */
+const CJK_UNIFIED_IDEOGRAPHS = '[\\u4e00-\\u9fff]';
+const CJK_CHAR_RE = new RegExp(CJK_UNIFIED_IDEOGRAPHS);
+const CJK_RUN_RE = new RegExp(`${CJK_UNIFIED_IDEOGRAPHS}{2,}`, 'g');
+const WHITESPACE_RE = /\s/;
 
 /**
  * Worst-case output/input byte ratio for `segmentCjkSpans` on an all-CJK run:
@@ -34,86 +37,37 @@ const CJK_UNIFIED_IDEOGRAPHS_END = 0x9fff;
  */
 export const CJK_BIGRAM_WORST_CASE_GROWTH_FACTOR = 7 / 3;
 
-const isCjkIdeograph = (codePoint: number): boolean =>
-  codePoint >= CJK_UNIFIED_IDEOGRAPHS_START && codePoint <= CJK_UNIFIED_IDEOGRAPHS_END;
-
 /**
  * True if `text` contains at least one CJK Unified Ideograph. Callers use
  * this to warn when a query looks like it could benefit from
  * `GITNEXUS_FTS_CJK_SEGMENTATION=bigram` but the resolved mode is `none`.
  */
-export const containsCjkIdeograph = (text: string): boolean => {
-  for (const ch of text) {
-    if (isCjkIdeograph(ch.codePointAt(0) ?? 0)) return true;
-  }
-  return false;
-};
-
-const isWhitespace = (ch: string | undefined): boolean => ch !== undefined && /\s/.test(ch);
-
-/** A run of one script class (CJK or not), in original order. */
-interface ScriptRun {
-  readonly isCjk: boolean;
-  readonly chars: readonly string[];
-}
-
-const splitIntoRuns = (chars: readonly string[]): ScriptRun[] => {
-  const runs: { isCjk: boolean; chars: string[] }[] = [];
-  for (const ch of chars) {
-    const isCjk = isCjkIdeograph(ch.codePointAt(0) ?? 0);
-    const last = runs[runs.length - 1];
-    if (last && last.isCjk === isCjk) {
-      last.chars.push(ch);
-    } else {
-      runs.push({ isCjk, chars: [ch] });
-    }
-  }
-  return runs;
-};
-
-/** Overlapping two-character windows, space-joined. A run of 0-1 chars has no bigram, so it is returned unchanged. */
-const renderCjkRun = (chars: readonly string[]): string => {
-  if (chars.length < 2) return chars.join('');
-  const bigrams: string[] = [];
-  for (let i = 0; i < chars.length - 1; i++) {
-    bigrams.push(chars[i] + chars[i + 1]);
-  }
-  return bigrams.join(' ');
-};
+export const containsCjkIdeograph = (text: string): boolean => CJK_CHAR_RE.test(text);
 
 /**
  * Rewrite contiguous CJK spans in `text` into space-separated overlapping
- * bigrams. Non-CJK runs (Latin, digits, punctuation, existing whitespace)
- * pass through unchanged. A single space is inserted at a CJK/non-CJK run
- * boundary when neither side already ends/starts with whitespace, so the
- * whitespace-splitting FTS tokenizer treats the two runs as separate tokens
- * (`ERP审批流程` -> `ERP 审批 批流 流程`, not `ERP审批 批流 流程`).
+ * bigrams (a run of exactly 2 chars becomes a single bigram; a lone CJK
+ * char has no possible pairing and passes through unchanged). Non-CJK text
+ * is never touched by `replace` in the first place, so a run's boundary
+ * spacing is decided by peeking at the *original* string's neighboring
+ * character (via the callback's `offset`/`full` args) rather than tracking
+ * state across matches — each match stays independent even when two CJK
+ * runs sit close together, and a space is added only when the neighbor
+ * isn't already whitespace, so the whitespace-splitting FTS tokenizer
+ * treats runs as separate tokens (`ERP审批流程` -> `ERP 审批 批流 流程`,
+ * not `ERP审批 批流 流程`).
  */
-export const segmentCjkSpans = (text: string): string => {
-  const chars = Array.from(text);
-  if (chars.length === 0) return text;
+export const segmentCjkSpans = (text: string): string =>
+  text.replace(CJK_RUN_RE, (run: string, offset: number, full: string) => {
+    const bigrams: string[] = [];
+    for (let i = 0; i < run.length - 1; i++) bigrams.push(run.slice(i, i + 2));
 
-  const runs = splitIntoRuns(chars);
-  const rendered = runs.map((run) => (run.isCjk ? renderCjkRun(run.chars) : run.chars.join('')));
-
-  // Build via array + one join, tracking the previous segment's last character
-  // in a plain variable rather than indexing into the accumulated output.
-  // Indexing a string built by repeated `+=` forces V8 to flatten its
-  // internal rope representation on every access — O(current length) each
-  // time, making this loop O(n^2) on realistic content that alternates CJK
-  // and non-CJK runs (e.g. source code with inline CJK comments). Each
-  // `rendered[i]` is already a small, independently-flat string (produced by
-  // its own `.join()`), so indexing into it here is cheap.
-  const parts: string[] = [rendered[0] ?? ''];
-  let prevLastChar = parts[0][parts[0].length - 1];
-  for (let i = 1; i < rendered.length; i++) {
-    const next = rendered[i];
-    if (!isWhitespace(prevLastChar) && !isWhitespace(next[0])) parts.push(' ');
-    parts.push(next);
-    prevLastChar = next[next.length - 1];
-  }
-  return parts.join('');
-};
+    const before = full[offset - 1];
+    const after = full[offset + run.length];
+    const leadingSpace = before !== undefined && !WHITESPACE_RE.test(before) ? ' ' : '';
+    const trailingSpace = after !== undefined && !WHITESPACE_RE.test(after) ? ' ' : '';
+    return leadingSpace + bigrams.join(' ') + trailingSpace;
+  });
 
 // ============================================================================
 // GITNEXUS_FTS_CJK_SEGMENTATION — env var validation and the segmentation gate
