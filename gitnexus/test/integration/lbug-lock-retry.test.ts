@@ -38,6 +38,9 @@ describe('isDbBusyError', () => {
     expect(
       isDbBusyError(new Error('Only one write transaction at a time is allowed in the system.')),
     ).toBe(true);
+    expect(isDbBusyError('only one write transaction at a time is allowed in the system.')).toBe(
+      true,
+    );
   });
 
   it('returns true for "could not set lock" errors', () => {
