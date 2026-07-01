@@ -34,7 +34,7 @@ describe('isDbBusyError', () => {
     expect(isDbBusyError('already in use')).toBe(true);
   });
 
-  it('returns true for LadybugDB single-writer transaction contention', () => {
+  it('returns true for "only one write transaction at a time" errors', () => {
     expect(
       isDbBusyError(new Error('Only one write transaction at a time is allowed in the system.')),
     ).toBe(true);
