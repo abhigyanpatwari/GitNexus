@@ -390,9 +390,7 @@ export const isDbBusyError = (err: unknown): boolean => {
   // contention without the words "busy" or "lock".
   //
   // "only one write transaction at a time" was observed against LadybugDB
-  // 0.18.0 (see gitnexus/package.json @ladybugdb/core, currently pinned to
-  // ^0.17.0 — this documents where the message was seen, not a claim about
-  // the currently-pinned version).
+  // 0.18.0 (see gitnexus/package.json @ladybugdb/core).
   //
   // If a non-transient lock-shaped error ever surfaces (e.g., "lock file
   // missing" during recovery), tighten this matcher rather than raising the
