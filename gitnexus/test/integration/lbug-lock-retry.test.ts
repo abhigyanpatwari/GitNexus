@@ -34,6 +34,12 @@ describe('isDbBusyError', () => {
     expect(isDbBusyError('already in use')).toBe(true);
   });
 
+  it('returns true for LadybugDB single-writer transaction contention', () => {
+    expect(
+      isDbBusyError(new Error('Only one write transaction at a time is allowed in the system.')),
+    ).toBe(true);
+  });
+
   it('returns true for "could not set lock" errors', () => {
     expect(isDbBusyError(new Error('Could not set lock on the database file'))).toBe(true);
   });
@@ -81,6 +87,21 @@ withTestLbugDB('lock-retry', (handle) => {
       const result = await withLbugDb(handle.dbPath, async () => {
         callCount++;
         if (callCount === 1) throw new Error('database is BUSY');
+        return 'recovered';
+      });
+
+      expect(result).toBe('recovered');
+      expect(callCount).toBe(2);
+    });
+
+    it('retries on LadybugDB single-writer transaction contention', async () => {
+      const { withLbugDb } = await import('../../src/core/lbug/lbug-adapter.js');
+      let callCount = 0;
+      const result = await withLbugDb(handle.dbPath, async () => {
+        callCount++;
+        if (callCount === 1) {
+          throw new Error('Only one write transaction at a time is allowed in the system.');
+        }
         return 'recovered';
       });
 

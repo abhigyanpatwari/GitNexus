@@ -383,10 +383,18 @@ export const isDbBusyError = (err: unknown): boolean => {
   // `lock` already subsumes `could not set lock`; the broader term is kept
   // because graph-DB transient errors include "deadlock", "lock contention",
   // and the LadybugDB native module's "could not set lock on file" — all of
-  // which deserve a retry. If a non-transient lock-shaped error ever
-  // surfaces (e.g., "lock file missing" during recovery), tighten this
-  // matcher rather than raising the retry budget.
-  return msg.includes('busy') || msg.includes('lock') || msg.includes('already in use');
+  // which deserve a retry. LadybugDB also reports same-process writer
+  // contention without the words "busy" or "lock".
+  //
+  // If a non-transient lock-shaped error ever surfaces (e.g., "lock file
+  // missing" during recovery), tighten this matcher rather than raising the
+  // retry budget.
+  return (
+    msg.includes('busy') ||
+    msg.includes('lock') ||
+    msg.includes('already in use') ||
+    msg.includes('only one write transaction at a time')
+  );
 };
 
 export function createLbugDatabase(
