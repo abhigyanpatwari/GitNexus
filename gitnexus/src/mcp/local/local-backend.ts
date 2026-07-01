@@ -63,7 +63,7 @@ import {
 } from '../../core/platform/capabilities.js';
 import { PhaseTimer } from '../../core/search/phase-timer.js';
 import {
-  containsCjkIdeograph,
+  containsSegmentableCjkRun,
   getSearchFTSCjkSegmentation,
 } from '../../core/search/cjk-segmentation.js';
 import { checkStalenessAsync, checkCwdMatch } from '../../core/git-staleness.js';
@@ -1998,7 +1998,7 @@ export class LocalBackend {
     // matches with no other signal — this is the only place an agent driving
     // GitNexus through the query tool can learn the capability exists.
     try {
-      if (containsCjkIdeograph(searchQuery) && getSearchFTSCjkSegmentation() !== 'bigram') {
+      if (containsSegmentableCjkRun(searchQuery) && getSearchFTSCjkSegmentation() !== 'bigram') {
         warnings.push(
           'Query contains CJK characters — sub-phrase matches require GITNEXUS_FTS_CJK_SEGMENTATION=bigram set for both `analyze` and this server process, then `gitnexus analyze --force`.',
         );

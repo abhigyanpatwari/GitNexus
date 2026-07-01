@@ -130,6 +130,24 @@ describe('query: degraded-enrichment signal', () => {
     expect(result.warning).toMatch(/GITNEXUS_FTS_CJK_SEGMENTATION=bigram/);
   });
 
+  it('does not warn for a single-character CJK query — bigram mode could never segment it (#2339)', async () => {
+    const b = makeBackend(true);
+    executeParameterizedMock.mockResolvedValue([]);
+
+    const result = await runQuery(b, { query: '审' });
+
+    expect(result.warning).toBeUndefined();
+  });
+
+  it('still warns for a 2+-character CJK query', async () => {
+    const b = makeBackend(true);
+    executeParameterizedMock.mockResolvedValue([]);
+
+    const result = await runQuery(b, { query: '审批' });
+
+    expect(result.warning).toMatch(/GITNEXUS_FTS_CJK_SEGMENTATION=bigram/);
+  });
+
   it('does not warn for a plain-ASCII query', async () => {
     const b = makeBackend(true);
     executeParameterizedMock.mockResolvedValue([]);

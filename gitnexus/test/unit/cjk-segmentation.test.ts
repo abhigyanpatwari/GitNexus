@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   applyCjkSegmentationIfEnabled,
   CJK_BIGRAM_WORST_CASE_GROWTH_FACTOR,
+  containsSegmentableCjkRun,
   getSearchFTSCjkSegmentation,
   initialiseSearchFTSCjkSegmentation,
   segmentCjkSpans,
@@ -102,6 +103,31 @@ describe('segmentCjkSpans', () => {
     // for noise; quadratic scaling would mean ~64x time. 20x catches the
     // regression while tolerating CI timing variance.
     expect(largeMs).toBeLessThan(Math.max(smallMs, 1) * 20);
+  });
+});
+
+describe('containsSegmentableCjkRun', () => {
+  it('returns false for a single CJK character (no possible pairing)', () => {
+    expect(containsSegmentableCjkRun('审')).toBe(false);
+  });
+
+  it('returns true for a 2+-character contiguous CJK run', () => {
+    expect(containsSegmentableCjkRun('审批')).toBe(true);
+    expect(containsSegmentableCjkRun('采购订单自动审批流程')).toBe(true);
+  });
+
+  it('returns false for non-CJK text', () => {
+    expect(containsSegmentableCjkRun('hello world')).toBe(false);
+  });
+
+  it('is not stateful across repeated calls on the same input (regression guard)', () => {
+    // A prior implementation called .test() on the shared, global-flagged
+    // CJK_RUN_RE directly, which mutates lastIndex between calls and
+    // alternates true/false/true on repeated calls with the same string.
+    const text = '审批流程';
+    expect(containsSegmentableCjkRun(text)).toBe(true);
+    expect(containsSegmentableCjkRun(text)).toBe(true);
+    expect(containsSegmentableCjkRun(text)).toBe(true);
   });
 });
 

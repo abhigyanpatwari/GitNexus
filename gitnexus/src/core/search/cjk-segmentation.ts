@@ -23,6 +23,14 @@
 const CJK_UNIFIED_IDEOGRAPHS = '[\\u4e00-\\u9fff]';
 const CJK_CHAR_RE = new RegExp(CJK_UNIFIED_IDEOGRAPHS);
 const CJK_RUN_RE = new RegExp(`${CJK_UNIFIED_IDEOGRAPHS}{2,}`, 'g');
+// Same pattern as CJK_RUN_RE, but WITHOUT the 'g' flag — kept as a separate
+// instance deliberately. RegExp.prototype.test() on a global-flagged regex
+// is stateful (mutates lastIndex between calls); CJK_RUN_RE only stays safe
+// today because its one consumer (segmentCjkSpans) drives it exclusively via
+// String.prototype.replace, which always resets matching from index 0. A
+// second consumer calling .test() on that same shared instance would leak
+// state across calls (and across requests, in a long-lived process).
+const CJK_SEGMENTABLE_RUN_RE = new RegExp(`${CJK_UNIFIED_IDEOGRAPHS}{2,}`);
 const WHITESPACE_RE = /\s/;
 
 /**
@@ -43,6 +51,18 @@ export const CJK_BIGRAM_WORST_CASE_GROWTH_FACTOR = 7 / 3;
  * `GITNEXUS_FTS_CJK_SEGMENTATION=bigram` but the resolved mode is `none`.
  */
 export const containsCjkIdeograph = (text: string): boolean => CJK_CHAR_RE.test(text);
+
+/**
+ * True if `text` contains a CJK run of 2+ contiguous ideographs —
+ * i.e. a span `segmentCjkSpans` can actually bigram-segment. A lone CJK
+ * character can never be segmented (no possible pairing), so callers
+ * warning "enable bigram mode" for a query should gate on this, not on
+ * `containsCjkIdeograph` (#2339). Uses its own non-global RegExp instance
+ * (see `CJK_SEGMENTABLE_RUN_RE` above) — never call `.test()` on the
+ * shared, global-flagged `CJK_RUN_RE` directly.
+ */
+export const containsSegmentableCjkRun = (text: string): boolean =>
+  CJK_SEGMENTABLE_RUN_RE.test(text);
 
 /**
  * Rewrite contiguous CJK spans in `text` into space-separated overlapping
