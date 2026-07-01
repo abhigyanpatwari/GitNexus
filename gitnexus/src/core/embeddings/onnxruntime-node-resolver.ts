@@ -135,8 +135,20 @@ let cached: Decision | null = null;
 
 const decide = (): Decision => {
   if (cached) return cached;
-  const systemMajor = detectSystemCudaMajor();
   const defaultDir = resolveDefaultOrtNodeDir();
+
+  // Node < 22.15 has no `registerHooks` API, so a redirect can never actually
+  // install (see ensureOnnxRuntimeNodeMatchesSystem below) — the probe must
+  // agree with that up front. Without this guard, isCudaAvailable() could
+  // report a redirect target that never gets loaded, requesting CUDA against
+  // the wrong (default) onnxruntime-node build.
+  if (typeof registerHooks !== 'function') {
+    const decision: Decision = { redirect: false, effectiveDir: defaultDir, systemMajor: null };
+    cached = decision;
+    return decision;
+  }
+
+  const systemMajor = detectSystemCudaMajor();
   let decision: Decision = { redirect: false, effectiveDir: defaultDir, systemMajor };
 
   if (systemMajor != null && defaultDir) {

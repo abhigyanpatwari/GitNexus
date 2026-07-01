@@ -30,8 +30,14 @@ interface LoadOpts {
  */
 async function loadResolver(opts: LoadOpts = {}) {
   vi.resetModules();
+  // Destructuring defaults (`= vi.fn()`) only apply when the property is
+  // `undefined` — but callers pass `registerHooks: undefined` specifically to
+  // simulate Node < 22.15 (no synchronous-hooks API), so a plain destructuring
+  // default would silently substitute a real mock function and defeat that.
+  // `'registerHooks' in opts` distinguishes "omitted → default to a spy" from
+  // "explicitly undefined → simulate its absence".
+  const registerHooks = 'registerHooks' in opts ? opts.registerHooks : vi.fn();
   const {
-    registerHooks = vi.fn(),
     platform = 'linux',
     execFileSync = () => {
       throw Object.assign(new Error('enoent'), { code: 'ENOENT' });
@@ -159,5 +165,30 @@ describe('ensureOnnxRuntimeNodeMatchesSystem', () => {
     // Non-linux: no redirect, so the effective dir is transformers' default
     // (a string when resolvable in the test tree) or null — never throws.
     expect(() => mod.getEffectiveOnnxRuntimeNodeDir()).not.toThrow();
+  });
+});
+
+describe('decide() — registerHooks gating (#2341 follow-up)', () => {
+  // getEffectiveOnnxRuntimeNodeDir()/isCudaAvailable() must agree with whether
+  // ensureOnnxRuntimeNodeMatchesSystem() can actually install a redirect. On
+  // Node < 22.15 (registerHooks unavailable) it never can, so the decision must
+  // fall back to the default dir — and skip CUDA-major probing entirely, since
+  // the answer wouldn't change the outcome — rather than reporting a redirect
+  // target that will never be loaded.
+  it('reports no redirect (and never probes CUDA majors) when registerHooks is unavailable', async () => {
+    const execFileSync = vi.fn(() => {
+      throw Object.assign(new Error('enoent'), { code: 'ENOENT' });
+    });
+    const existsSync = vi.fn(() => false);
+    const mod = await loadResolver({
+      registerHooks: undefined,
+      platform: 'linux',
+      execFileSync,
+      existsSync,
+    });
+
+    expect(() => mod.getEffectiveOnnxRuntimeNodeDir()).not.toThrow();
+    expect(execFileSync).not.toHaveBeenCalled();
+    expect(existsSync).not.toHaveBeenCalled();
   });
 });
