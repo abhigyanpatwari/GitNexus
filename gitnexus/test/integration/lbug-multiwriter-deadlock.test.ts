@@ -118,16 +118,16 @@ async function writeWithRetry(
 // LBUG_NATIVE run times rather than guessing again.
 const DEADLOCK_TIMEOUT_MS = 60_000;
 
-const itLbugMultiwriter = process.platform === 'win32' ? it.skip : it;
-// ^ Windows LadybugDB file-lock/handle-release timing (documented elsewhere
-// in this suite, e.g. lbug-core-adapter.test.ts) is a distinct, known
-// platform quirk from what this test targets. Skipping here mirrors that
-// established pattern rather than trying to disentangle the two failure
-// modes in one assertion; a Windows-specific pass is tracked as follow-up
-// once real LBUG_NATIVE CI timing data is available to size the timeout.
+// Unlike lbug-core-adapter.test.ts / lbug-close-handle-release.test.ts /
+// lbug-orphan-sidecar-recovery.test.ts, this test never closes and reopens
+// the Database mid-test (it opens once, holds connections for the run, and
+// closes only in the teardown `finally`) — so their Win32 Error 33
+// close-then-reopen lock-lingering quirk does not apply here. Runs on all
+// three platforms, matching its LBUG_NATIVE registration in
+// cross-platform-tests.ts and vitest.config.ts.
 
 describe('concurrent multi-connection writes do not deadlock (#2338, LadybugDB #605)', () => {
-  itLbugMultiwriter(
+  it(
     'writer + reader connections on one Database complete without deadlock, forcing a real checkpoint-vs-reader race',
     async () => {
       const tmp = await createTempDir('gitnexus-lbug-multiwriter-');
