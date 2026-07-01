@@ -139,5 +139,20 @@ withTestLbugDB('lock-retry', (handle) => {
       // changes, this assertion — not this comment — is the source of truth.
       expect(callCount).toBe(3);
     });
+
+    it('throws after max retry attempts on write-transaction contention', async () => {
+      const { withLbugDb } = await import('../../src/core/lbug/lbug-adapter.js');
+      let callCount = 0;
+      await expect(
+        withLbugDb(handle.dbPath, async () => {
+          callCount++;
+          throw new Error('Only one write transaction at a time is allowed in the system.');
+        }),
+      ).rejects.toThrow('Only one write transaction at a time is allowed in the system.');
+
+      // Matches DB_LOCK_RETRY_ATTEMPTS in lbug-adapter.ts. If that budget
+      // changes, this assertion — not this comment — is the source of truth.
+      expect(callCount).toBe(3);
+    });
   });
 });
