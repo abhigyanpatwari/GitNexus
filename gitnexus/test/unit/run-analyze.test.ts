@@ -452,24 +452,8 @@ describe('pdgModeMismatch / resolvePdgConfig (#2099 F1)', () => {
   });
 });
 
-describe('cjkSegmentationModeMismatch (#2331/#2339)', () => {
-  it('legacy meta (no recorded stamp) + default live mode → no mismatch', async () => {
-    const { cjkSegmentationModeMismatch } = await import('../../src/core/run-analyze.js');
-    expect(cjkSegmentationModeMismatch(undefined, 'none')).toBe(false);
-  });
-
-  it('legacy meta + bigram live mode → mismatch (feature newly enabled)', async () => {
-    const { cjkSegmentationModeMismatch } = await import('../../src/core/run-analyze.js');
-    expect(cjkSegmentationModeMismatch(undefined, 'bigram')).toBe(true);
-  });
-
-  it('recorded bigram + live none → mismatch (on→off flip)', async () => {
-    const { cjkSegmentationModeMismatch } = await import('../../src/core/run-analyze.js');
-    expect(cjkSegmentationModeMismatch('bigram', 'none')).toBe(true);
-  });
-
-  it('recorded bigram + live bigram → no mismatch (unchanged)', async () => {
-    const { cjkSegmentationModeMismatch } = await import('../../src/core/run-analyze.js');
-    expect(cjkSegmentationModeMismatch('bigram', 'bigram')).toBe(false);
-  });
-});
+// cjkSegmentationModeMismatch's pure-function tests moved to
+// cjk-segmentation.test.ts (#2339) — it now lives in cjk-segmentation.ts,
+// not here, so callers that only need this comparator (e.g. the MCP query
+// path) don't have to import the full analyze-pipeline module. run-analyze.ts
+// still imports and uses it (see the mismatch check above the early-return).

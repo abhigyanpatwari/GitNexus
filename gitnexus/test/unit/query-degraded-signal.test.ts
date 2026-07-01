@@ -28,6 +28,19 @@ vi.mock('../../src/mcp/core/lbug-adapter.js', async (importOriginal) => {
   };
 });
 
+// Mock loadMeta so U10's reverse-direction CJK-mode-drift check can be
+// exercised without a real repo.lbugPath / meta.json on disk — the test's
+// fake repoHandle path doesn't exist, so the real loadMeta would always
+// return null (it swallows read/parse failures internally).
+const loadMetaMock = vi.fn().mockResolvedValue(null);
+vi.mock('../../src/storage/repo-manager.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../src/storage/repo-manager.js')>();
+  return {
+    ...actual,
+    loadMeta: (...args: any[]) => loadMetaMock(...args),
+  };
+});
+
 import { LocalBackend } from '../../src/mcp/local/local-backend';
 
 // A backend whose hybrid search yields exactly one matched symbol, so the
@@ -202,6 +215,41 @@ describe('query: degraded-enrichment signal', () => {
 
     expect(result.warning).toMatch(/GITNEXUS_FTS_CJK_SEGMENTATION=bigram/);
     expect(result.warning).not.toMatch(/exceeds the 2000-character CJK segmentation cap/);
+  });
+
+  it('warns on a persisted/live CJK mode mismatch, independent of query content (#2339)', async () => {
+    vi.stubEnv('GITNEXUS_FTS_CJK_SEGMENTATION', 'bigram');
+    loadMetaMock.mockResolvedValueOnce({ cjkSegmentation: 'none' } as any);
+    const b = makeBackend(true);
+    executeParameterizedMock.mockResolvedValue([]);
+
+    // Plain-ASCII query — the mismatch warning must fire regardless.
+    const result = await runQuery(b, { query: 'approve request' });
+
+    expect(result.warning).toMatch(/Index was built with CJK segmentation mode 'none'/);
+    expect(result.warning).toMatch(/this server is resolving 'bigram'/);
+  });
+
+  it('does not warn when the persisted and live CJK modes match', async () => {
+    vi.stubEnv('GITNEXUS_FTS_CJK_SEGMENTATION', 'bigram');
+    loadMetaMock.mockResolvedValueOnce({ cjkSegmentation: 'bigram' } as any);
+    const b = makeBackend(true);
+    executeParameterizedMock.mockResolvedValue([]);
+
+    const result = await runQuery(b, { query: 'approve request' });
+
+    expect(result.warning).toBeUndefined();
+  });
+
+  it('does not throw when no persisted meta exists yet (first-ever query before any analyze)', async () => {
+    loadMetaMock.mockResolvedValueOnce(null);
+    const b = makeBackend(true);
+    executeParameterizedMock.mockResolvedValue([]);
+
+    const result = await runQuery(b, { query: 'approve request' });
+
+    expect(result).not.toHaveProperty('error');
+    expect(result.warning).toBeUndefined();
   });
 
   it('an invalid GITNEXUS_FTS_CJK_SEGMENTATION value is logged via logQueryError, not silently swallowed', async () => {

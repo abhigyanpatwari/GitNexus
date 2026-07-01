@@ -63,6 +63,7 @@ import {
 } from '../../core/platform/capabilities.js';
 import { PhaseTimer } from '../../core/search/phase-timer.js';
 import {
+  cjkSegmentationModeMismatch,
   containsSegmentableCjkRun,
   getSearchFTSCjkSegmentation,
 } from '../../core/search/cjk-segmentation.js';
@@ -2022,6 +2023,33 @@ export class LocalBackend {
     } catch (err) {
       // Best-effort diagnostic only — never fail the query over it.
       logQueryError('query:cjk-warning', err);
+    }
+    // #2339: the checks above only compare the QUERY's own content against
+    // the live process's mode — they can't detect "server mode is 'bigram'
+    // but the on-disk index was actually built under 'none'/legacy" (env var
+    // changed without a full --force re-analyze, or a plain/--repair-fts
+    // analyze ran instead). That mismatch affects every CJK query against
+    // this repo, not just one whose own text happens to contain CJK, so it's
+    // a separate, unconditional check — not folded into the branches above.
+    try {
+      const meta = await loadMeta(path.dirname(repo.lbugPath));
+      if (
+        meta &&
+        cjkSegmentationModeMismatch(meta.cjkSegmentation, getSearchFTSCjkSegmentation())
+      ) {
+        warnings.push(
+          `Index was built with CJK segmentation mode '${meta.cjkSegmentation ?? 'none'}', but this ` +
+            `server is resolving '${getSearchFTSCjkSegmentation()}' — sub-phrase CJK search results ` +
+            'may be incomplete until `gitnexus analyze --force` rebuilds the index under the current mode.',
+        );
+      }
+    } catch (err) {
+      // loadMeta() itself never throws (it returns null on any read/parse
+      // failure) — the actual throw source here is getSearchFTSCjkSegmentation()
+      // on an invalid env value, same root cause as the catch above. This is
+      // a separate, independently-guarded diagnostic though, so it gets its
+      // own log context rather than sharing 'query:cjk-warning'.
+      logQueryError('query:cjk-mode-drift', err);
     }
     if (enrichmentDegraded) {
       warnings.push(

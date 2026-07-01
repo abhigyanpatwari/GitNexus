@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   applyCjkSegmentationIfEnabled,
   CJK_BIGRAM_WORST_CASE_GROWTH_FACTOR,
+  cjkSegmentationModeMismatch,
   containsSegmentableCjkRun,
   getSearchFTSCjkSegmentation,
   initialiseSearchFTSCjkSegmentation,
@@ -181,5 +182,23 @@ describe('initialiseSearchFTSCjkSegmentation', () => {
 
     vi.stubEnv('GITNEXUS_FTS_CJK_SEGMENTATION', 'none');
     expect(getSearchFTSCjkSegmentation()).toBe('bigram');
+  });
+});
+
+describe('cjkSegmentationModeMismatch (#2331/#2339)', () => {
+  it('legacy meta (no recorded stamp) + default live mode → no mismatch', () => {
+    expect(cjkSegmentationModeMismatch(undefined, 'none')).toBe(false);
+  });
+
+  it('legacy meta + bigram live mode → mismatch (feature newly enabled)', () => {
+    expect(cjkSegmentationModeMismatch(undefined, 'bigram')).toBe(true);
+  });
+
+  it('recorded bigram + live none → mismatch (on→off flip)', () => {
+    expect(cjkSegmentationModeMismatch('bigram', 'none')).toBe(true);
+  });
+
+  it('recorded bigram + live bigram → no mismatch (unchanged)', () => {
+    expect(cjkSegmentationModeMismatch('bigram', 'bigram')).toBe(false);
   });
 });

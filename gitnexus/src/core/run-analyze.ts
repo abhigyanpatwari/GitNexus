@@ -36,6 +36,7 @@ import {
   verifySearchFTSIndexes,
 } from './search/fts-indexes.js';
 import {
+  cjkSegmentationModeMismatch,
   getSearchFTSCjkSegmentation,
   initialiseSearchFTSCjkSegmentation,
 } from './search/cjk-segmentation.js';
@@ -545,19 +546,6 @@ export const pdgModeMismatch = (recorded: RepoMeta['pdg'], options: PdgOptions):
   }
   return false;
 };
-
-/**
- * Whether the CJK segmentation mode the existing index was built under differs
- * from the mode the live process resolves (#2331/#2339). A single scalar, so a
- * plain equality check suffices — unlike `pdgModeMismatch`, no key-union
- * comparator is needed. An absent recorded stamp defaults to 'none' (the
- * feature's own default), so a repo that never touched this feature never
- * mismatches. Pure + exported for testing.
- */
-export const cjkSegmentationModeMismatch = (
-  recorded: string | undefined,
-  resolved: string,
-): boolean => (recorded ?? 'none') !== resolved;
 
 export async function runFullAnalysis(
   repoPath: string,

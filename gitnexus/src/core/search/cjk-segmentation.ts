@@ -141,6 +141,24 @@ export function getSearchFTSCjkSegmentation(): string {
 }
 
 /**
+ * Whether the CJK segmentation mode an index was built under (as persisted in
+ * `RepoMeta.cjkSegmentation`) differs from the mode the live process resolves
+ * (#2331/#2339) — used by `run-analyze.ts` to force a full rebuild on drift,
+ * and by the MCP query path to warn when a repo's index and the serving
+ * process disagree. A single scalar, so a plain equality check suffices —
+ * unlike `pdgModeMismatch` in `run-analyze.ts`, no key-union comparator is
+ * needed. An absent recorded stamp defaults to 'none' (this feature's own
+ * default), so a repo that never touched this feature never mismatches.
+ * Pure + exported for testing. Lives here (not `run-analyze.ts`) so callers
+ * that only need this comparator — e.g. the MCP query path — don't have to
+ * pull in the full analyze-pipeline module.
+ */
+export const cjkSegmentationModeMismatch = (
+  recorded: string | undefined,
+  resolved: string,
+): boolean => (recorded ?? 'none') !== resolved;
+
+/**
  * The single entry point the write path (`csv-generator.ts`) and read path
  * (`bm25-index.ts`) both call, so indexed text and query text are always
  * segmented identically. No-ops when the resolved mode is `none` (default).
