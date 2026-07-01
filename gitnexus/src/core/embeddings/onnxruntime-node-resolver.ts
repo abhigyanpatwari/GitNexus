@@ -37,6 +37,11 @@
  * untouched. Idempotent; any failure is swallowed and leaves the default
  * resolution exactly as before. `module.registerHooks` requires Node >= 22.15
  * (the gitnexus engines floor is >= 22.0.0); on older runtimes this is a no-op.
+ * `npm link` / symlinked local-dev checkouts are a known caveat: `resolveOurOrtNodeDir`/
+ * `resolveDefaultOrtNodeDir` are anchored to this module's own real (post-symlink)
+ * location via `import.meta.url`, so a linked dev checkout may resolve against
+ * its own `node_modules` rather than the consuming app's — narrow, dev-only
+ * blast radius; regular npm/pnpm installs are unaffected.
  *
  * The CUDA-major decision is exposed via {@link getEffectiveOnnxRuntimeNodeDir}
  * so the embedder's CUDA probe can inspect the SAME copy that will actually be
