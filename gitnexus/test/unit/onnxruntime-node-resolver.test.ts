@@ -24,6 +24,9 @@ interface FakeDirs {
   defaultDir: string;
   /** fake resolved path for require.resolve('@huggingface/transformers'). */
   transformersMain: string;
+  /** When false, createRequire(transformersMain).resolve('onnxruntime-node/package.json') throws
+   *  (simulating resolveDefaultOrtNodeDir() failing outright) instead of resolving to `defaultDir`. */
+  defaultResolvable?: boolean;
 }
 
 interface LoadOpts {
@@ -92,9 +95,11 @@ async function loadResolver(opts: LoadOpts = {}) {
       '@huggingface/transformers': fakeDirs.transformersMain,
       'onnxruntime-node/package.json': `${fakeDirs.ourDir}/package.json`,
     });
-    const defaultRequire = fakeRequire({
-      'onnxruntime-node/package.json': `${fakeDirs.defaultDir}/package.json`,
-    });
+    const defaultRequire = fakeRequire(
+      fakeDirs.defaultResolvable === false
+        ? {}
+        : { 'onnxruntime-node/package.json': `${fakeDirs.defaultDir}/package.json` },
+    );
     const effectiveRequire = fakeRequire({
       'onnxruntime-node': `${fakeDirs.ourDir}/index.js`,
       'onnxruntime-common': `${fakeDirs.ourDir}/node_modules/onnxruntime-common/index.js`,
@@ -373,5 +378,38 @@ describe('ensureOnnxRuntimeNodeMatchesSystem — redirect:true (#2341 follow-up)
 
     resolve('some-other-package', ctx, next);
     expect(next).toHaveBeenCalledWith('some-other-package', ctx);
+  });
+});
+
+describe('decide() — ourDir checked independently of defaultDir (#2341 follow-up)', () => {
+  it("picks ourDir as the effective target when transformers' own onnxruntime-node resolution fails outright", async () => {
+    const fakeDirs = {
+      ourDir: '/fake/our/onnxruntime-node-u5',
+      defaultDir: '/fake/unreachable/onnxruntime-node-u5',
+      transformersMain: '/fake/transformers/u5/index.js',
+      defaultResolvable: false, // createRequire(transformersMain).resolve(...) throws -> defaultDir stays null
+    };
+    const soPrefix = (dir: string) => `${dir}/bin/napi-v6/linux`;
+
+    const mod = await loadResolver({
+      registerHooks: vi.fn(),
+      platform: 'linux',
+      fakeDirs,
+      existsSync: (p) => p.startsWith(soPrefix(fakeDirs.ourDir)),
+      execFileSync: (cmd, args) => {
+        if (cmd === 'ldconfig') {
+          return 'libcublasLt.so.13 (libc6,x86-64) => /usr/local/cuda/lib64/libcublasLt.so.13';
+        }
+        if (cmd === 'ldd' && (args[0] ?? '').startsWith(soPrefix(fakeDirs.ourDir))) {
+          return 'libcublasLt.so.13 => /usr/local/cuda-13/lib64/libcublasLt.so.13';
+        }
+        throw new Error(`unexpected execFileSync(${cmd}, ${JSON.stringify(args)})`);
+      },
+    });
+
+    // Before this fix, the ourDir fallback lookup was nested inside
+    // `if (systemMajor != null && defaultDir)`, so a null defaultDir skipped
+    // checking ourDir entirely and this would incorrectly return null.
+    expect(mod.getEffectiveOnnxRuntimeNodeDir()).toBe(fakeDirs.ourDir);
   });
 });

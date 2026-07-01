@@ -175,8 +175,13 @@ const decide = (): Decision => {
   const systemMajor = detectSystemCudaMajor();
   let decision: Decision = { redirect: false, effectiveDir: defaultDir, systemMajor };
 
-  if (systemMajor != null && defaultDir) {
-    const defaultMajor = ortCudaMajor(defaultDir);
+  if (systemMajor != null) {
+    // `defaultDir` resolving is NOT a precondition for checking `ourDir` — if
+    // transformers' own resolution fails outright (defaultMajor stays null),
+    // that still counts as "the default doesn't match", so a working `ourDir`
+    // should still be picked up as the effective target instead of leaving
+    // `effectiveDir` stuck at `null`.
+    const defaultMajor = defaultDir ? ortCudaMajor(defaultDir) : null;
     if (defaultMajor !== systemMajor) {
       const ourDir = resolveOurOrtNodeDir();
       if (ourDir && ourDir !== defaultDir && ortCudaMajor(ourDir) === systemMajor) {
