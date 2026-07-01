@@ -451,3 +451,25 @@ describe('pdgModeMismatch / resolvePdgConfig (#2099 F1)', () => {
     );
   });
 });
+
+describe('cjkSegmentationModeMismatch (#2331/#2339)', () => {
+  it('legacy meta (no recorded stamp) + default live mode → no mismatch', async () => {
+    const { cjkSegmentationModeMismatch } = await import('../../src/core/run-analyze.js');
+    expect(cjkSegmentationModeMismatch(undefined, 'none')).toBe(false);
+  });
+
+  it('legacy meta + bigram live mode → mismatch (feature newly enabled)', async () => {
+    const { cjkSegmentationModeMismatch } = await import('../../src/core/run-analyze.js');
+    expect(cjkSegmentationModeMismatch(undefined, 'bigram')).toBe(true);
+  });
+
+  it('recorded bigram + live none → mismatch (on→off flip)', async () => {
+    const { cjkSegmentationModeMismatch } = await import('../../src/core/run-analyze.js');
+    expect(cjkSegmentationModeMismatch('bigram', 'none')).toBe(true);
+  });
+
+  it('recorded bigram + live bigram → no mismatch (unchanged)', async () => {
+    const { cjkSegmentationModeMismatch } = await import('../../src/core/run-analyze.js');
+    expect(cjkSegmentationModeMismatch('bigram', 'bigram')).toBe(false);
+  });
+});

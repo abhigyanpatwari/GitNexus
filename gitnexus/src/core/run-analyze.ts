@@ -35,7 +35,10 @@ import {
   initialiseSearchFTSStemmer,
   verifySearchFTSIndexes,
 } from './search/fts-indexes.js';
-import { initialiseSearchFTSCjkSegmentation } from './search/cjk-segmentation.js';
+import {
+  getSearchFTSCjkSegmentation,
+  initialiseSearchFTSCjkSegmentation,
+} from './search/cjk-segmentation.js';
 import { resolveAnalyzeInstallPolicy } from './lbug/extension-loader.js';
 import {
   startWalCheckpointDriver,
@@ -543,6 +546,19 @@ export const pdgModeMismatch = (recorded: RepoMeta['pdg'], options: PdgOptions):
   return false;
 };
 
+/**
+ * Whether the CJK segmentation mode the existing index was built under differs
+ * from the mode the live process resolves (#2331/#2339). A single scalar, so a
+ * plain equality check suffices — unlike `pdgModeMismatch`, no key-union
+ * comparator is needed. An absent recorded stamp defaults to 'none' (the
+ * feature's own default), so a repo that never touched this feature never
+ * mismatches. Pure + exported for testing.
+ */
+export const cjkSegmentationModeMismatch = (
+  recorded: string | undefined,
+  resolved: string,
+): boolean => (recorded ?? 'none') !== resolved;
+
 export async function runFullAnalysis(
   repoPath: string,
   options: AnalyzeOptions,
@@ -780,6 +796,18 @@ export async function runFullAnalysis(
     log(
       `index schema changed (stamped v${stampedVersion}, this build is v${INCREMENTAL_SCHEMA_VERSION}); ` +
         `forcing a full rebuild so persisted rows match the current schema.`,
+    );
+    options = { ...options, force: true };
+  }
+
+  if (
+    existingMeta &&
+    cjkSegmentationModeMismatch(existingMeta.cjkSegmentation, getSearchFTSCjkSegmentation())
+  ) {
+    log(
+      `CJK segmentation mode changed (index built with '${existingMeta.cjkSegmentation ?? 'none'}', ` +
+        `this run resolves '${getSearchFTSCjkSegmentation()}'); forcing a full rebuild so indexed ` +
+        `text and query-time segmentation stay in sync.`,
     );
     options = { ...options, force: true };
   }
@@ -1481,6 +1509,10 @@ export async function runFullAnalysis(
       // incrementalInProgress to undefined explicitly clears any prior
       // dirty flag (full and incremental success paths converge here).
       schemaVersion: hasGitDir(repoPath) ? INCREMENTAL_SCHEMA_VERSION : undefined,
+      // Always stamped with the live resolved mode (#2331/#2339) — unlike
+      // `pdg` below, 'none' is a meaningful value to compare, not an
+      // absence, so this is never conditionally omitted.
+      cjkSegmentation: getSearchFTSCjkSegmentation(),
       fileHashes: hasGitDir(repoPath) ? newFileHashesRecord : undefined,
       // This branch's full live chunk-key set (#2106 R6). `usedKeys` is every
       // chunk hash touched in this scan — cache HITS included (see parse-impl
