@@ -315,13 +315,10 @@ export function isWalCorruptionError(err: unknown): boolean {
 //
 // Matched against LadybugDB v0.18.0 (see `gitnexus/package.json`
 // @ladybugdb/core). Strict regexes encode local_file_system.cpp wording
-// verified at that version — re-confirmed on the v0.16.1→v0.18.0 bump (#2338)
-// by diffing `src/common/file_system/{local,virtual}_file_system.cpp` upstream;
-// the rename/remove error text these regexes match is untouched by that diff
-// (only the separate file-lock error path gained extra detail). Two-tier
-// strategy: strict matchers first so we only fire on real checkpoint-rotation
-// shapes; a permissive fallback catches future Ladybug message drift so the
-// recovery hint keeps surfacing even if upstream wording changes.
+// verified at that version. Two-tier strategy: strict matchers first so we
+// only fire on real checkpoint-rotation shapes; a permissive fallback
+// catches future Ladybug message drift so the recovery hint keeps surfacing
+// even if upstream wording changes.
 //
 // From Ladybug native LocalFileSystem exceptions (`local_file_system.cpp`),
 // surfaced in Node as:
@@ -433,8 +430,7 @@ export function createLbugDatabase(
 // AV-scanner hold without masking real cross-process conflicts.
 //
 // Source: https://github.com/LadybugDB/ladybug/blob/v0.18.0/src/common/file_system/local_file_system.cpp#L127
-// (re-confirmed on the v0.16.1→v0.18.0 bump, #2338: message gained an
-// appended " (Error: <code>)" / " (Lock is held by PID X)" suffix on POSIX,
+// (v0.18.0 appends " (Error: <code>)" / " (Lock is held by PID X)" on POSIX,
 // but the "Could not set lock on file : " prefix `isDbBusyError` substring-
 // matches on is unchanged.)
 const OPEN_LOCK_RETRY_ATTEMPTS = 5;

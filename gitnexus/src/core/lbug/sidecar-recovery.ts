@@ -111,14 +111,11 @@ const warnOnce = (logger: SidecarRecoveryLogger, key: string, message: string): 
 // LADYBUGDB-CONTRACT: matches @ladybugdb/core ^0.18.0 native error text.
 // When bumping LadybugDB, re-validate this regex against the new error format
 // — `git grep "LADYBUGDB-CONTRACT"` enumerates every version-coupled spot.
-// Re-confirmed on the v0.16.1→v0.18.0 bump (#2338) by diffing upstream
-// `src/common/file_system/{local,virtual}_file_system.cpp` — the "Cannot open
-// file" wording this regex matches is untouched by that diff. A live trigger
-// was attempted (open a real 0.18.0 DB, force a checkpoint racing a concurrent
-// reader to produce a genuine `.shadow` file, delete it, reopen) but even a
-// SIGKILL-simulated crash at the exact moment `.shadow` existed did not
-// reproduce this specific error on reopen — the engine recovered via
-// `.wal.checkpoint` alone. Verified by source/changelog diff only.
+// Verified by upstream source/changelog diff only — forcing a genuine
+// `.shadow`-missing state via a live crash to trigger this error is not
+// reliably reproducible (a SIGKILL at the exact moment `.shadow` exists on
+// disk still recovers via `.wal.checkpoint` alone), so this matcher does not
+// have live-trigger test coverage.
 export const isMissingShadowSidecarError = (err: unknown): boolean => {
   const msg = err instanceof Error ? err.message : String(err);
   return /Cannot open file .*\.shadow: No such file or directory/i.test(msg);
@@ -127,9 +124,9 @@ export const isMissingShadowSidecarError = (err: unknown): boolean => {
 // LADYBUGDB-CONTRACT: matches @ladybugdb/core ^0.18.0 native error text.
 // When bumping LadybugDB, re-validate this regex against the new error format
 // — `git grep "LADYBUGDB-CONTRACT"` enumerates every version-coupled spot.
-// Re-confirmed on the v0.16.1→v0.18.0 bump (#2338) via source/changelog diff
-// only — a reliable cross-platform live trigger for a read-only shadow-replay
-// state isn't practical to construct.
+// Verified by upstream source/changelog diff only — a reliable cross-platform
+// live trigger for a read-only shadow-replay state isn't practical to
+// construct, so this matcher does not have live-trigger test coverage.
 export const isReadOnlyShadowReplayError = (err: unknown): boolean => {
   const msg = err instanceof Error ? err.message : String(err);
   return /replay shadow pages under read-only mode/i.test(msg);
