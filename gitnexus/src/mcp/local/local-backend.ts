@@ -2003,8 +2003,9 @@ export class LocalBackend {
           'Query contains CJK characters — sub-phrase matches require GITNEXUS_FTS_CJK_SEGMENTATION=bigram set for both `analyze` and this server process, then `gitnexus analyze --force`.',
         );
       }
-    } catch {
+    } catch (err) {
       // Best-effort diagnostic only — never fail the query over it.
+      logQueryError('query:cjk-warning', err);
     }
     if (enrichmentDegraded) {
       warnings.push(

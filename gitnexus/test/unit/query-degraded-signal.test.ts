@@ -1,4 +1,5 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { _captureLogger, type LoggerCapture } from '../../src/core/logger.js';
 
 // Mock the pool adapter (and its re-export shim) so executeParameterized is fully
 // controllable — the proven seam from impact-batching-grouping.test.ts. This is a
@@ -64,6 +65,7 @@ const runQuery = (b: any, params: any = { query: 'x' }) =>
 
 describe('query: degraded-enrichment signal', () => {
   beforeEach(() => vi.clearAllMocks());
+  afterEach(() => vi.unstubAllEnvs());
 
   it('a REAL enrichment failure surfaces warning + partial, and still returns the symbol', async () => {
     const b = makeBackend(true);
@@ -135,5 +137,41 @@ describe('query: degraded-enrichment signal', () => {
     const result = await runQuery(b, { query: 'approve request' });
 
     expect(result.warning).toBeUndefined();
+  });
+
+  it('a valid GITNEXUS_FTS_CJK_SEGMENTATION value does not log via logQueryError', async () => {
+    const cap: LoggerCapture = _captureLogger();
+    try {
+      const b = makeBackend(true);
+      executeParameterizedMock.mockResolvedValue([]);
+
+      await runQuery(b, { query: '审批流程' });
+
+      expect(cap.records().some((r) => r.context === 'query:cjk-warning')).toBe(false);
+    } finally {
+      cap.restore();
+    }
+  });
+
+  it('an invalid GITNEXUS_FTS_CJK_SEGMENTATION value is logged via logQueryError, not silently swallowed', async () => {
+    // The MCP query path never calls initialiseSearchFTSCjkSegmentation(), so
+    // getSearchFTSCjkSegmentation() re-resolves from env on every call here —
+    // no module-cache priming needed for this to throw.
+    vi.stubEnv('GITNEXUS_FTS_CJK_SEGMENTATION', 'not-a-real-mode');
+    const cap: LoggerCapture = _captureLogger();
+    try {
+      const b = makeBackend(true);
+      executeParameterizedMock.mockResolvedValue([]);
+
+      const result = await runQuery(b, { query: '审批流程' });
+
+      // The throw is caught and logged — the query itself must still succeed.
+      expect(result).not.toHaveProperty('error');
+      const record = cap.records().find((r) => r.context === 'query:cjk-warning');
+      expect(record).toBeDefined();
+      expect(record!.msg).toBe('GitNexus query failed (degraded)');
+    } finally {
+      cap.restore();
+    }
   });
 });
