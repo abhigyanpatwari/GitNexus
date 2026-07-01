@@ -117,4 +117,23 @@ describe('query: degraded-enrichment signal', () => {
     expect(result.warning).toMatch(/FTS indexes missing|repair-fts/i);
     expect(result.warning.toLowerCase()).toContain('enrichment');
   });
+
+  it('warns when a CJK query hits a server resolving segmentation to none (#2331)', async () => {
+    const b = makeBackend(true);
+    executeParameterizedMock.mockResolvedValue([]);
+
+    const result = await runQuery(b, { query: '审批流程' });
+
+    expect(typeof result.warning).toBe('string');
+    expect(result.warning).toMatch(/GITNEXUS_FTS_CJK_SEGMENTATION=bigram/);
+  });
+
+  it('does not warn for a plain-ASCII query', async () => {
+    const b = makeBackend(true);
+    executeParameterizedMock.mockResolvedValue([]);
+
+    const result = await runQuery(b, { query: 'approve request' });
+
+    expect(result.warning).toBeUndefined();
+  });
 });

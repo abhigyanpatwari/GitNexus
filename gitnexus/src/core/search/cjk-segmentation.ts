@@ -37,6 +37,18 @@ export const CJK_BIGRAM_WORST_CASE_GROWTH_FACTOR = 7 / 3;
 const isCjkIdeograph = (codePoint: number): boolean =>
   codePoint >= CJK_UNIFIED_IDEOGRAPHS_START && codePoint <= CJK_UNIFIED_IDEOGRAPHS_END;
 
+/**
+ * True if `text` contains at least one CJK Unified Ideograph. Callers use
+ * this to warn when a query looks like it could benefit from
+ * `GITNEXUS_FTS_CJK_SEGMENTATION=bigram` but the resolved mode is `none`.
+ */
+export const containsCjkIdeograph = (text: string): boolean => {
+  for (const ch of text) {
+    if (isCjkIdeograph(ch.codePointAt(0) ?? 0)) return true;
+  }
+  return false;
+};
+
 const isWhitespace = (ch: string | undefined): boolean => ch !== undefined && /\s/.test(ch);
 
 /** A run of one script class (CJK or not), in original order. */

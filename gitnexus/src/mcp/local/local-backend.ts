@@ -1989,6 +1989,21 @@ export class LocalBackend {
         'FTS indexes missing — keyword search degraded. Run: gitnexus analyze --repair-fts (or gitnexus analyze --force) to rebuild indexes.',
       );
     }
+    // #2331: a CJK query against a server process resolving
+    // GITNEXUS_FTS_CJK_SEGMENTATION to 'none' silently misses sub-phrase
+    // matches with no other signal — this is the only place an agent driving
+    // GitNexus through the query tool can learn the capability exists.
+    try {
+      const { containsCjkIdeograph, getSearchFTSCjkSegmentation } =
+        await import('../../core/search/cjk-segmentation.js');
+      if (containsCjkIdeograph(searchQuery) && getSearchFTSCjkSegmentation() !== 'bigram') {
+        warnings.push(
+          'Query contains CJK characters — sub-phrase matches require GITNEXUS_FTS_CJK_SEGMENTATION=bigram set for both `analyze` and this server process, then `gitnexus analyze --force`.',
+        );
+      }
+    } catch {
+      // Best-effort diagnostic only — never fail the query over it.
+    }
     if (enrichmentDegraded) {
       warnings.push(
         'Symbol enrichment partially failed — some process/cohesion/content data may be missing from these results (see server logs).',
