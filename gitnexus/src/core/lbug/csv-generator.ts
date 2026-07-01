@@ -3,7 +3,7 @@
  *
  * Streams CSV rows directly to disk files in a single pass over graph nodes.
  * File contents are lazy-read from disk per-node to avoid holding the entire
- * repo in RAM. Rows are buffered (FLUSH_EVERY) before writing to minimize
+ * repo in RAM. Rows are buffered (FLUSH_BYTES) before writing to minimize
  * per-row Promise overhead.
  *
  * RFC 4180 Compliant:
@@ -44,13 +44,33 @@ const orderedRelationships = (
 ): Iterable<GraphRelationship> =>
   sorted ? [...graph.iterRelationships()].sort(byGraphId) : graph.iterRelationships();
 
-/** Flush buffered rows to disk every N rows */
-const FLUSH_EVERY = 500;
-/** Also flush before a single CSV chunk grows too large after full File content rows. */
-const FLUSH_BYTES = 8 * 1024 * 1024;
+/**
+ * Flush buffered rows to disk once the buffered chunk reaches this many bytes.
+ * Byte-bounded rather than row-count-bounded: row size ranges from a few dozen
+ * bytes (typical symbol/relationship rows) up to a full File's content
+ * (#2317/#2323), so a row-count-only cap lets a handful of huge rows build an
+ * unbounded `buffer.join('\n')` string before ever tripping it.
+ *
+ * Not an env knob — fixed by a safety margin, not a preference. The one worst
+ * case that matters: one more oversized row lands right after the buffer was
+ * just under this threshold, before the flush fires. That row is capped at
+ * TREE_SITTER_MAX_BUFFER (32MB, hard-clamped — GITNEXUS_MAX_FILE_SIZE cannot
+ * raise it), and escapeCSVField's quote-doubling can at most double it. So the
+ * peak joined-string size is bounded by
+ *   FLUSH_BYTES + 2 * TREE_SITTER_MAX_BUFFER ≈ 8MB + 64MB = 72MB,
+ * versus Node's `buffer.constants.MAX_STRING_LENGTH` (~512MB) that throws
+ * `RangeError: Invalid string length` past it — a >7x margin (see the
+ * `shouldFlushCSVBuffer stays within the V8 string-length ceiling` test,
+ * which fails loudly if either constant ever moves this margin the wrong
+ * way). Raising FLUSH_BYTES trades fewer/larger flushes for less margin;
+ * lowering it trades the reverse for lower peak transient memory. Change the
+ * constant directly if a real workload needs a different point on that
+ * curve — a per-host env var would let the margin get silently reintroduced
+ * by an operator with no way to know why 512MB is dangerous.
+ */
+export const FLUSH_BYTES = 8 * 1024 * 1024;
 
-export const shouldFlushCSVBuffer = (rowCount: number, byteCount: number): boolean =>
-  rowCount >= FLUSH_EVERY || byteCount >= FLUSH_BYTES;
+export const shouldFlushCSVBuffer = (byteCount: number): boolean => byteCount >= FLUSH_BYTES;
 
 /**
  * Yield the event loop every N relationship rows during the emit pass (#2226 F4)
@@ -220,7 +240,7 @@ class BufferedCSVWriter {
   }
 
   /**
-   * Buffer a row. Returns a promise ONLY when the buffer crossed FLUSH_EVERY
+   * Buffer a row. Returns a promise ONLY when the buffer crossed FLUSH_BYTES
    * and a disk write was issued; otherwise returns `undefined` so the caller
    * can skip awaiting (#2203 U3) — avoiding a microtask tick on every buffered
    * row (millions at scale). The flush promise still resolves on drain, so
@@ -230,7 +250,7 @@ class BufferedCSVWriter {
     this.buffer.push(row);
     this.bufferedBytes += Buffer.byteLength(row) + 1;
     this.rows++;
-    if (shouldFlushCSVBuffer(this.buffer.length, this.bufferedBytes)) {
+    if (shouldFlushCSVBuffer(this.bufferedBytes)) {
       return this.flush();
     }
     return undefined;
@@ -480,7 +500,7 @@ export const streamAllCSVsToDisk = async (
 
       // addRow returns a promise only when it flushes; awaiting it once after the
       // switch (instead of `await`-ing every addRow) skips a per-row microtask
-      // tick on the ~FLUSH_EVERY-1 buffered rows between flushes (#2203 U3).
+      // tick on the rows buffered between byte-bounded flushes (#2203 U3).
       let pending: Promise<void> | undefined;
       switch (node.label) {
         case 'File': {

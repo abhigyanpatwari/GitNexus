@@ -9,6 +9,7 @@ import fs from 'fs/promises';
 import { readdirSync } from 'node:fs';
 import { finished } from 'stream/promises';
 import path from 'path';
+import { constants as bufferConstants } from 'node:buffer';
 import { createTempDir, type TestDBHandle } from '../helpers/test-db.js';
 import { buildTestGraph, type TestNodeInput, type TestRelInput } from '../helpers/test-graph.js';
 import {
@@ -16,10 +17,12 @@ import {
   buildRelRow,
   REL_CSV_HEADER,
   shouldFlushCSVBuffer,
+  FLUSH_BYTES,
 } from '../../src/core/lbug/csv-generator.js';
 import { splitRelCsvByLabelPair } from '../../src/core/lbug/lbug-adapter.js';
 import { getNodeLabel } from '../../src/core/lbug/rel-pair-routing.js';
 import { NODE_TABLES } from '../../src/core/lbug/schema.js';
+import { TREE_SITTER_MAX_BUFFER } from '../../src/core/ingestion/constants.js';
 
 let tmpHandle: TestDBHandle;
 let csvDir: string;
@@ -280,17 +283,21 @@ describe('streamAllCSVsToDisk', () => {
     expect(fileCsv!.rows).toBe(1);
   });
 
-  it('crosses the BufferedCSVWriter FLUSH_EVERY boundary without losing rows', async () => {
-    // FLUSH_EVERY=500; a >500-node graph forces ≥1 mid-stream flush, exercising
-    // addRow's flush-promise return + the loop's `if (pending) await pending`
-    // path that the small fixtures above never reach (only the bench did).
-    const N = 600;
-    const nodes = Array.from({ length: N }, (_, i) => ({
-      id: `File:src/f${i}.ts`,
-      label: 'File' as const,
-      name: `f${i}.ts`,
-      filePath: `src/f${i}.ts`,
-    }));
+  it('crosses the BufferedCSVWriter FLUSH_BYTES boundary without losing rows', async () => {
+    // FLUSH_BYTES=8MB; real File content totalling >8MB forces ≥1 mid-stream
+    // flush, exercising addRow's flush-promise return + the loop's
+    // `if (pending) await pending` path that the small fixtures above never
+    // reach (only the bench did).
+    const N = 10;
+    const CONTENT_SIZE = 1024 * 1024; // 1MB/file, 10MB total > FLUSH_BYTES
+    const bigContent = 'x'.repeat(CONTENT_SIZE);
+    await fs.mkdir(path.join(repoDir, 'src', 'big'), { recursive: true });
+    const nodes: TestNodeInput[] = [];
+    for (let i = 0; i < N; i++) {
+      const filePath = `src/big/f${i}.ts`;
+      await fs.writeFile(path.join(repoDir, filePath), bigContent);
+      nodes.push({ id: `File:${filePath}`, label: 'File', name: `f${i}.ts`, filePath });
+    }
     const result = await streamAllCSVsToDisk(buildTestGraph(nodes), repoDir, csvDir);
 
     const fileCsv = result.nodeFiles.get('File');
@@ -301,10 +308,19 @@ describe('streamAllCSVsToDisk', () => {
     expect(new Set(dataRows).size).toBe(N); // all distinct — no flush-boundary corruption
   });
 
-  it('flushes buffered CSV chunks by byte size before the row-count boundary', () => {
-    expect(shouldFlushCSVBuffer(499, 8 * 1024 * 1024 - 1)).toBe(false);
-    expect(shouldFlushCSVBuffer(500, 1)).toBe(true);
-    expect(shouldFlushCSVBuffer(2, 8 * 1024 * 1024)).toBe(true);
+  it('flushes the buffered CSV chunk once the byte threshold is reached', () => {
+    expect(shouldFlushCSVBuffer(FLUSH_BYTES - 1)).toBe(false);
+    expect(shouldFlushCSVBuffer(FLUSH_BYTES)).toBe(true);
+  });
+
+  it('shouldFlushCSVBuffer stays within the V8 string-length ceiling', () => {
+    // One more max-size row (TREE_SITTER_MAX_BUFFER, hard-clamped — see
+    // max-file-size.ts) can land right after the buffer was just under
+    // FLUSH_BYTES; escapeCSVField's quote-doubling can at most double it.
+    // The resulting join() must stay well under Node's MAX_STRING_LENGTH,
+    // or BufferedCSVWriter.flush() throws `RangeError: Invalid string length`.
+    const worstCaseJoinSize = FLUSH_BYTES + 2 * TREE_SITTER_MAX_BUFFER;
+    expect(worstCaseJoinSize).toBeLessThan(bufferConstants.MAX_STRING_LENGTH / 2);
   });
 });
 
