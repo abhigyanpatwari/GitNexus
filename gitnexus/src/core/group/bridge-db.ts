@@ -32,6 +32,10 @@ const bridgeLogger = createLogger('bridge-db', {
  * `bridge-db` writes to a `bridge.lbug.tmp.<random>` file and then atomically renames
  * it into place. The rename only moves the main file; sidecars must be
  * cleaned up explicitly or the next writer trips the database-id check.
+ *
+ * Re-validated on the @ladybugdb/core 0.17.0→0.18.0 bump (#2338): the
+ * "Database ID for temporary file" diagnostic text above is unchanged in
+ * upstream's v0.16.1→v0.18.0 source diff.
  */
 const LBUG_SIDECAR_SUFFIXES = ['.wal', '.shadow'] as const;
 
@@ -1036,6 +1040,11 @@ export async function writeBridge(
  * 33 ("The process cannot access the file because another process has
  * locked a portion of the file"). Retrying with a small back-off lets the
  * background thread settle and the OS release the handle.
+ *
+ * Re-validated on the @ladybugdb/core 0.17.0→0.18.0 bump (#2338): the
+ * "Could not set lock" file-lock error text gained an appended detail
+ * suffix upstream (see `lbug-config.ts`'s `OPEN_LOCK_RETRY_ATTEMPTS`
+ * comment) but the substrings matched here are unaffected by that change.
  */
 const LBUG_OPEN_RETRY_PATTERNS = [
   'process cannot access the file',

@@ -15,6 +15,19 @@
  * embedding writeback, and the PDG edge deletes are mutually exclusive — the
  * property that makes a strictly-serial workload stable.
  *
+ * Rationale re-affirmed on the @ladybugdb/core 0.17.0→0.18.0 bump (#2338).
+ * That release bundles three fixes worth checking against this lock's
+ * justification: LadybugDB/ladybug#605 (the `TransactionManager`
+ * lock-order-inversion deadlock between concurrent connections/transactions
+ * — a different scenario from the one below), #612 (an out-of-bounds CSR
+ * index bug after delete+checkpoint — a single-threaded correctness bug, not
+ * concurrency-related), and #623 ("narrow solution" for a database
+ * close/destroy-vs-GC race — a different race than concurrent queries on one
+ * live connection, and the PR itself notes a full fix would need atomics on
+ * every conn/database pointer dereference). None of the three address
+ * dispatching two queries on ONE connection concurrently — this lock's
+ * justification is unchanged and still required.
+ *
  * Implementation: a promise chain. Each caller installs a fresh unresolved tail,
  * awaits the previous holder's tail, runs, then releases its own in `finally`
  * (so a thrown op never wedges the connection). FIFO and non-reentrant: a wrapped

@@ -662,13 +662,15 @@ const runSchemaCreationQueries = async (dbPath: string): Promise<unknown | null>
       const msg = err instanceof Error ? err.message : String(err);
       // Suppression list:
       //   - "already exists": expected idempotent re-create on existing DBs
-      //   - "could not set lock on file": LadybugDB v0.16.1 emits this on
+      //   - "could not set lock on file": LadybugDB v0.18.0 emits this on
       //     Windows when CREATE NODE TABLE runs against a path that was
       //     just opened (the WAL handle from a fresh Database briefly
       //     contests the table's first-write lock). The table is created
       //     anyway and any genuine cross-process lock contention surfaces
       //     on the next operation via withLbugDb's retry. Logging it here
-      //     would just be noise in CI.
+      //     would just be noise in CI. Re-validated on the v0.16.1→v0.18.0
+      //     bump (#2338): the "Could not set lock on file : " prefix this
+      //     substring-matches is unchanged upstream.
       //
       // WAL corruption: the first DDL write after DB open triggers WAL
       // replay — if the WAL file was left in a corrupt state by an
