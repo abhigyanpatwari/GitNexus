@@ -46,6 +46,11 @@ const orderedRelationships = (
 
 /** Flush buffered rows to disk every N rows */
 const FLUSH_EVERY = 500;
+/** Also flush before a single CSV chunk grows too large after full File content rows. */
+const FLUSH_BYTES = 8 * 1024 * 1024;
+
+export const shouldFlushCSVBuffer = (rowCount: number, byteCount: number): boolean =>
+  rowCount >= FLUSH_EVERY || byteCount >= FLUSH_BYTES;
 
 /**
  * Yield the event loop every N relationship rows during the emit pass (#2226 F4)
@@ -180,6 +185,7 @@ const extractContent = async (node: GraphNode, contentCache: FileContentCache): 
 class BufferedCSVWriter {
   private ws: WriteStream;
   private buffer: string[] = [];
+  private bufferedBytes = 0;
   rows = 0;
 
   constructor(filePath: string, header: string) {
@@ -187,6 +193,7 @@ class BufferedCSVWriter {
     // Large repos flush many times — raise listener cap to avoid MaxListenersExceededWarning
     this.ws.setMaxListeners(50);
     this.buffer.push(header);
+    this.bufferedBytes = Buffer.byteLength(header) + 1;
   }
 
   /**
@@ -198,8 +205,9 @@ class BufferedCSVWriter {
    */
   addRow(row: string): Promise<void> | undefined {
     this.buffer.push(row);
+    this.bufferedBytes += Buffer.byteLength(row) + 1;
     this.rows++;
-    if (this.buffer.length >= FLUSH_EVERY) {
+    if (shouldFlushCSVBuffer(this.buffer.length, this.bufferedBytes)) {
       return this.flush();
     }
     return undefined;
@@ -209,6 +217,7 @@ class BufferedCSVWriter {
     if (this.buffer.length === 0) return Promise.resolve();
     const chunk = this.buffer.join('\n') + '\n';
     this.buffer.length = 0;
+    this.bufferedBytes = 0;
     return new Promise((resolve, reject) => {
       this.ws.once('error', reject);
       const ok = this.ws.write(chunk);

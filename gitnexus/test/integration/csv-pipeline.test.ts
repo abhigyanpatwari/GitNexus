@@ -15,6 +15,7 @@ import {
   streamAllCSVsToDisk,
   buildRelRow,
   REL_CSV_HEADER,
+  shouldFlushCSVBuffer,
 } from '../../src/core/lbug/csv-generator.js';
 import { splitRelCsvByLabelPair } from '../../src/core/lbug/lbug-adapter.js';
 import { getNodeLabel } from '../../src/core/lbug/rel-pair-routing.js';
@@ -298,6 +299,12 @@ describe('streamAllCSVsToDisk', () => {
     const dataRows = dataRowsOf(await fs.readFile(fileCsv!.csvPath, 'utf-8'));
     expect(dataRows).toHaveLength(N);
     expect(new Set(dataRows).size).toBe(N); // all distinct — no flush-boundary corruption
+  });
+
+  it('flushes buffered CSV chunks by byte size before the row-count boundary', () => {
+    expect(shouldFlushCSVBuffer(499, 8 * 1024 * 1024 - 1)).toBe(false);
+    expect(shouldFlushCSVBuffer(500, 1)).toBe(true);
+    expect(shouldFlushCSVBuffer(2, 8 * 1024 * 1024)).toBe(true);
   });
 });
 
