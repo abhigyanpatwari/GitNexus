@@ -35,6 +35,7 @@ import {
   initialiseSearchFTSStemmer,
   verifySearchFTSIndexes,
 } from './search/fts-indexes.js';
+import { initialiseSearchFTSCjkSegmentation } from './search/cjk-segmentation.js';
 import { resolveAnalyzeInstallPolicy } from './lbug/extension-loader.js';
 import {
   startWalCheckpointDriver,
@@ -555,6 +556,7 @@ export async function runFullAnalysis(
   // parse/load phases. A typo fails here in ms; createSearchFTSIndexes reuses
   // the cached value via getSearchFTSStemmer.
   initialiseSearchFTSStemmer();
+  initialiseSearchFTSCjkSegmentation();
 
   // Scope the degraded-parse log throttle to this run. On a reused process
   // (e.g. tests, or any host that calls runFullAnalysis more than once) the

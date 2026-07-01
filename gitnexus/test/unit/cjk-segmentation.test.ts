@@ -1,5 +1,14 @@
-import { describe, expect, it } from 'vitest';
-import { segmentCjkSpans } from '../../src/core/search/cjk-segmentation.js';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import {
+  applyCjkSegmentationIfEnabled,
+  getSearchFTSCjkSegmentation,
+  initialiseSearchFTSCjkSegmentation,
+  segmentCjkSpans,
+} from '../../src/core/search/cjk-segmentation.js';
+
+afterEach(() => {
+  vi.unstubAllEnvs();
+});
 
 describe('segmentCjkSpans', () => {
   it('segments a pure CJK phrase into overlapping bigrams', () => {
@@ -55,5 +64,58 @@ describe('segmentCjkSpans', () => {
     const expectedBytes = (7 * inputBytes) / 3;
     expect(outputBytes).toBeGreaterThan(expectedBytes * 0.95);
     expect(outputBytes).toBeLessThan(expectedBytes * 1.05);
+  });
+});
+
+// NOTE ON ORDERING: `getSearchFTSCjkSegmentation`'s on-demand fallback only
+// applies while the module-level cache is still unset. The describe blocks
+// below are ordered so every test relying on that fallback (via `vi.stubEnv`)
+// runs before `initialiseSearchFTSCjkSegmentation`'s "caches" test, which
+// permanently sets the cache for the rest of this file — mirrors the same
+// ordering constraint in fts-indexes.test.ts's sibling suite.
+
+describe('getSearchFTSCjkSegmentation', () => {
+  it('defaults to none when unset', () => {
+    expect(getSearchFTSCjkSegmentation()).toBe('none');
+  });
+
+  it('normalizes a configured mode (case-insensitive, trimmed)', () => {
+    vi.stubEnv('GITNEXUS_FTS_CJK_SEGMENTATION', ' Bigram ');
+    expect(getSearchFTSCjkSegmentation()).toBe('bigram');
+  });
+
+  it('throws on an unsupported value, listing valid options', () => {
+    vi.stubEnv('GITNEXUS_FTS_CJK_SEGMENTATION', 'jieba');
+    expect(() => getSearchFTSCjkSegmentation()).toThrow('Invalid GITNEXUS_FTS_CJK_SEGMENTATION');
+    expect(() => getSearchFTSCjkSegmentation()).toThrow('bigram, none');
+  });
+});
+
+describe('applyCjkSegmentationIfEnabled', () => {
+  it('is a no-op when the resolved mode is none (default)', () => {
+    const text = '采购订单自动审批流程';
+    expect(applyCjkSegmentationIfEnabled(text)).toBe(text);
+  });
+
+  it('delegates to segmentCjkSpans when the resolved mode is bigram', () => {
+    vi.stubEnv('GITNEXUS_FTS_CJK_SEGMENTATION', 'bigram');
+    expect(applyCjkSegmentationIfEnabled('审批流程')).toBe(segmentCjkSpans('审批流程'));
+  });
+});
+
+describe('initialiseSearchFTSCjkSegmentation', () => {
+  it('throws on an unsupported value without poisoning the cache', () => {
+    vi.stubEnv('GITNEXUS_FTS_CJK_SEGMENTATION', 'jieba');
+    expect(() => initialiseSearchFTSCjkSegmentation()).toThrow(
+      'Invalid GITNEXUS_FTS_CJK_SEGMENTATION',
+    );
+  });
+
+  it('resolves once so later reads ignore a changed env', () => {
+    vi.stubEnv('GITNEXUS_FTS_CJK_SEGMENTATION', 'bigram');
+    expect(initialiseSearchFTSCjkSegmentation()).toBe('bigram');
+
+    vi.stubEnv('GITNEXUS_FTS_CJK_SEGMENTATION', 'none');
+    expect(getSearchFTSCjkSegmentation()).toBe('bigram');
   });
 });

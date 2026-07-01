@@ -79,3 +79,62 @@ export const segmentCjkSpans = (text: string): string => {
   }
   return result;
 };
+
+// ============================================================================
+// GITNEXUS_FTS_CJK_SEGMENTATION — env var validation and the segmentation gate
+// ============================================================================
+
+/**
+ * Modes shipped by this plan. Deliberately does not include a `'jieba'`
+ * value: LadybugDB's native `tokenizer := 'jieba'` parameter FATAL-crashes
+ * the process without a bundled dictionary (no such dictionary ships with
+ * `@ladybugdb/core`), and `QUERY_FTS_INDEX` has no way to apply it to a query
+ * string anyway — see the plan's Key Technical Decision 1. Stubbing an
+ * unimplemented option here would misrepresent it as available.
+ */
+const SUPPORTED_FTS_CJK_SEGMENTATION_MODES = new Set<string>(['none', 'bigram']);
+
+export const DEFAULT_FTS_CJK_SEGMENTATION = 'none';
+
+let resolvedCjkSegmentation: string | undefined;
+
+/** Read + validate `GITNEXUS_FTS_CJK_SEGMENTATION`. Throws on an unsupported value. */
+function resolveFTSCjkSegmentation(): string {
+  const raw = process.env.GITNEXUS_FTS_CJK_SEGMENTATION?.trim().toLowerCase();
+  if (!raw) return DEFAULT_FTS_CJK_SEGMENTATION;
+  if (SUPPORTED_FTS_CJK_SEGMENTATION_MODES.has(raw)) return raw;
+
+  throw new Error(
+    `Invalid GITNEXUS_FTS_CJK_SEGMENTATION "${process.env.GITNEXUS_FTS_CJK_SEGMENTATION}". ` +
+      `Expected one of: ${[...SUPPORTED_FTS_CJK_SEGMENTATION_MODES].sort().join(', ')}.`,
+  );
+}
+
+/**
+ * Resolve + validate `GITNEXUS_FTS_CJK_SEGMENTATION` once, up front at analyze
+ * startup, and cache it — mirrors `initialiseSearchFTSStemmer` so an invalid
+ * value fails in milliseconds instead of partway through a run. The cached
+ * value is what {@link getSearchFTSCjkSegmentation} returns for the rest of
+ * the run, so config is read and validated in exactly one place.
+ */
+export function initialiseSearchFTSCjkSegmentation(): string {
+  resolvedCjkSegmentation = resolveFTSCjkSegmentation();
+  return resolvedCjkSegmentation;
+}
+
+/**
+ * Return the mode resolved by {@link initialiseSearchFTSCjkSegmentation}.
+ * Falls back to resolving on demand when init was never called (read-only
+ * hosts, unit tests) so validation always applies.
+ */
+export function getSearchFTSCjkSegmentation(): string {
+  return resolvedCjkSegmentation ?? resolveFTSCjkSegmentation();
+}
+
+/**
+ * The single entry point the write path (`csv-generator.ts`) and read path
+ * (`bm25-index.ts`) both call, so indexed text and query text are always
+ * segmented identically. No-ops when the resolved mode is `none` (default).
+ */
+export const applyCjkSegmentationIfEnabled = (text: string): string =>
+  getSearchFTSCjkSegmentation() === 'bigram' ? segmentCjkSpans(text) : text;
