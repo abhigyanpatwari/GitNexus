@@ -279,6 +279,14 @@ describe('streamAllCSVsToDisk', () => {
       for (const bigram of expectedDescriptionBigrams) {
         expect(funcContent).toContain(bigram);
       }
+      // #2339: every one of the bigram substrings above is ALSO a literal
+      // substring of the original unsegmented phrase (bigrams are
+      // overlapping substrings by construction), so the positive assertions
+      // alone would pass even if applyCjkSegmentationIfEnabled silently
+      // became a no-op. Mirror the `mode: none` test's negative-assertion
+      // pattern above: the original contiguous run must NOT survive intact.
+      expect(fileContent).not.toContain(FILE_CJK_PHRASE);
+      expect(funcContent).not.toContain(DESCRIPTION_CJK_PHRASE);
     });
   });
 
