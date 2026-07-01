@@ -368,10 +368,13 @@ export interface LbugConnectionHandle {
 }
 
 /**
- * Return true when the error message indicates that a LadybugDB file lock
- * could not be acquired — either at construction time
- * (`new lbug.Database(...)` raises from `local_file_system.cpp`) or during
- * a query (another writer holds the exclusive lock).
+ * Return true when the error message indicates that a LadybugDB write
+ * transaction could not proceed due to lock contention — either a file
+ * lock that could not be acquired (either at construction time,
+ * `new lbug.Database(...)` raising from `local_file_system.cpp`, or during
+ * a query, another writer holds the exclusive lock), or a same-process
+ * write transaction rejected because another write transaction is already
+ * active on the connection.
  *
  * Lives here (not in `lbug-adapter.ts`) so both the construction-time
  * retry (`openWithLockRetry` in this file) and the query-time retry
