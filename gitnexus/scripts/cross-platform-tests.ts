@@ -75,6 +75,8 @@ const LBUG_NATIVE = [
   'test/integration/fts-description-search.test.ts',
   'test/integration/staleness-and-stability.test.ts',
   'test/integration/analyze-wal-checkpoint-failure.test.ts',
+  'test/integration/fts-stemmer-sweep.test.ts',
+  'test/integration/lbug-multiwriter-deadlock.test.ts',
 ];
 
 // Process spawning and CLI tests — exercise child_process with real
@@ -82,6 +84,7 @@ const LBUG_NATIVE = [
 // quoting, path resolution, signal handling)
 const SPAWN_CLI = [
   'test/integration/cli-e2e.test.ts',
+  'test/integration/cli-limit-e2e.test.ts',
   'test/integration/hooks-e2e.test.ts',
   'test/integration/skills-e2e.test.ts',
   'test/integration/server-http-startup.test.ts',

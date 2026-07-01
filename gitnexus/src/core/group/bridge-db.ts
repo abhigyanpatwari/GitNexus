@@ -1036,6 +1036,11 @@ export async function writeBridge(
  * 33 ("The process cannot access the file because another process has
  * locked a portion of the file"). Retrying with a small back-off lets the
  * background thread settle and the OS release the handle.
+ *
+ * As of v0.18.0 the "Could not set lock" file-lock error text gained an
+ * appended detail suffix upstream (see `lbug-config.ts`'s
+ * `OPEN_LOCK_RETRY_ATTEMPTS` comment), but the substrings matched here are
+ * unaffected by that change.
  */
 const LBUG_OPEN_RETRY_PATTERNS = [
   'process cannot access the file',

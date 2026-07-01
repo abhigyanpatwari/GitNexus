@@ -61,7 +61,7 @@ Format: **Trigger → Instruction → Reason**. Append new Signs when the same m
 
 - **Trigger:** Errors opening `.gitnexus/lbug` while MCP and analyze both run.
 - **Do:** Stop overlapping processes (one writer at a time). Retry analyze or restart MCP.
-- **Why:** Embedded DB expects single-process ownership.
+- **Why:** Embedded DB expects single-process ownership. Known gap: as of `@ladybugdb/core` 0.18.0, one contention error — `"Only one write transaction at a time is allowed in the system."` — isn't recognized by our busy/lock retry matcher (`isDbBusyError` in `src/core/lbug/lbug-config.ts`), so it surfaces as a raw failure instead of a retried one. If you see that exact message, it's the same "one writer at a time" issue above, not a new failure mode.
 
 ---
 

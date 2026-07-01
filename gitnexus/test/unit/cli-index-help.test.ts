@@ -141,7 +141,7 @@ describe('CLI help surface', () => {
     const result = runHelp('query', { GITNEXUS_LANG: 'zh-CN' } as NodeJS.ProcessEnv);
 
     expect(result.status).toBe(0);
-    expect(result.stdout).toContain('用法： gitnexus query [options] <search_query>');
+    expect(result.stdout).toContain('用法： gitnexus query [options] [search_query]');
     expect(result.stdout).toContain('搜索知识图谱中与概念相关的执行流程');
     expect(result.stdout).toContain('-r, --repo <name>     目标仓库（仅有一个已索引仓库时可省略）');
     expect(result.stdout).toContain('-l, --limit <n>       最多返回的流程数（默认：5）');
