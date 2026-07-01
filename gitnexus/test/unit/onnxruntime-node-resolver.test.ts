@@ -136,8 +136,8 @@ afterEach(() => {
 });
 
 describe('detectSystemCudaMajor', () => {
-  it('returns null on non-linux platforms', async () => {
-    const mod = await loadResolver({ platform: 'darwin' });
+  it.each(['darwin', 'win32'] as const)('returns null on non-linux platforms (%s)', async (platform) => {
+    const mod = await loadResolver({ platform });
     expect(mod.detectSystemCudaMajor()).toBeNull();
   });
 
@@ -170,6 +170,26 @@ describe('detectSystemCudaMajor', () => {
 
   it('returns null when no cuBLASLt is found anywhere', async () => {
     const mod = await loadResolver({ execFileSync: () => 'libfoo.so => /x/libfoo.so' });
+    expect(mod.detectSystemCudaMajor()).toBeNull();
+  });
+
+  it('falls back to a CUDA_PATH scan when ldconfig is unavailable (#2341 follow-up)', async () => {
+    // Mirrors the existing LD_LIBRARY_PATH-only test above — CUDA_PATH is
+    // scanned first in the fallback loop and was previously untested on its own.
+    process.env.CUDA_PATH = '/opt/cuda';
+    const mod = await loadResolver({
+      execFileSync: () => {
+        throw new Error('ldconfig missing');
+      },
+      existsSync: (p) => p === '/opt/cuda/lib64/libcublasLt.so.13',
+    });
+    expect(mod.detectSystemCudaMajor()).toBe(13);
+  });
+
+  it('returns null (not a false match) when the ldconfig output is garbled/unrecognized', async () => {
+    const mod = await loadResolver({
+      execFileSync: () => 'some-corrupted-binary-output-\x00\xff-not-a-cuda-lib-line',
+    });
     expect(mod.detectSystemCudaMajor()).toBeNull();
   });
 
@@ -218,6 +238,14 @@ describe('ortCudaMajor', () => {
     expect(mod.ortCudaMajor('/pkg/onnxruntime-node')).toBe(12);
   });
 
+  it('returns null (not a false match) when the ldd output is garbled/unrecognized (#2341 follow-up)', async () => {
+    const mod = await loadResolver({
+      existsSync: () => true,
+      execFileSync: () => 'libunrelated.so.1 => /x/libunrelated.so.1\nlibc.so.6 => /lib/libc.so.6',
+    });
+    expect(mod.ortCudaMajor('/pkg/onnxruntime-node')).toBeNull();
+  });
+
   it('warns (detection failed) when ldd produces no usable output at all, distinct from the silent no-provider case (#2341 follow-up)', async () => {
     // Capture AFTER loadResolver() so the capture targets the same (freshly
     // reset) logger.js instance the resolver module itself imports — the
@@ -263,9 +291,13 @@ describe('ortCudaMajor', () => {
 });
 
 describe('ensureOnnxRuntimeNodeMatchesSystem', () => {
-  it('no-ops gracefully (never throws) when registerHooks is unavailable (Node < 22.15)', async () => {
+  it('no-ops gracefully when registerHooks is unavailable (Node < 22.15), leaving the module otherwise functional', async () => {
     const mod = await loadResolver({ registerHooks: undefined });
     expect(() => mod.ensureOnnxRuntimeNodeMatchesSystem()).not.toThrow();
+    // The one-shot guard tripping (or not) must not corrupt decide()'s cache —
+    // subsequent calls to the other exports still work normally afterward.
+    expect(() => mod.getEffectiveOnnxRuntimeNodeDir()).not.toThrow();
+    expect(mod.isEffectiveCudaAvailable()).toBe(false); // redirect can never be active without registerHooks
   });
 
   it('installs no hook when there is no system CUDA (no redirect needed)', async () => {
@@ -276,20 +308,28 @@ describe('ensureOnnxRuntimeNodeMatchesSystem', () => {
     expect(spy).not.toHaveBeenCalled();
   });
 
-  it('is best-effort and idempotent — never throws, and a second call is a no-op', async () => {
+  it('is idempotent in the no-redirect case: a second call is still a no-op (registerHooks never called)', async () => {
     const spy = vi.fn();
     const mod = await loadResolver({ registerHooks: spy, platform: 'darwin' });
-    expect(() => {
-      mod.ensureOnnxRuntimeNodeMatchesSystem();
-      mod.ensureOnnxRuntimeNodeMatchesSystem();
-    }).not.toThrow();
+    mod.ensureOnnxRuntimeNodeMatchesSystem();
+    mod.ensureOnnxRuntimeNodeMatchesSystem();
+    // (True install-once idempotency, where a redirect WOULD fire without the
+    // guard, is covered by "installs registerHooks exactly once when the
+    // redirect is active" below — this case only proves repeated calls stay
+    // side-effect-free when there's nothing to install.)
+    expect(spy).not.toHaveBeenCalled();
   });
 
-  it('exposes an effective onnxruntime-node dir (or null) for the CUDA probe', async () => {
+  it('exposes an effective onnxruntime-node dir (string or null) for the CUDA probe, never throwing', async () => {
     const mod = await loadResolver({ platform: 'darwin' });
-    // Non-linux: no redirect, so the effective dir is transformers' default
-    // (a string when resolvable in the test tree) or null — never throws.
-    expect(() => mod.getEffectiveOnnxRuntimeNodeDir()).not.toThrow();
+    // Non-linux: no redirect, so the effective dir is transformers' default —
+    // a string when resolvable in the test tree (it really is, in this repo),
+    // or null if resolution ever genuinely fails.
+    let result: string | null | undefined;
+    expect(() => {
+      result = mod.getEffectiveOnnxRuntimeNodeDir();
+    }).not.toThrow();
+    expect(result === null || typeof result === 'string').toBe(true);
   });
 });
 
