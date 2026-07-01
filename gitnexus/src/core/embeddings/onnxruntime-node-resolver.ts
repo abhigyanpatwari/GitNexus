@@ -237,6 +237,33 @@ export const isEffectiveCudaAvailable = (): boolean => {
   return d.systemMajor !== null && d.systemMajor === d.effectiveMajor;
 };
 
+/**
+ * CUDA-build-redirect status for the `doctor` Embeddings section — pure
+ * summary of decide()'s already-computed decision, matching
+ * doctor.ts's `localEmbeddingDoctorStatus`'s `{status, detail}` shape so an
+ * operator can tell "why is my CUDA-13 host still on CPU" apart from
+ * "there's no system CUDA to redirect for" at a glance.
+ */
+export const cudaRedirectDoctorStatus = (): { status: string; detail: string | null } => {
+  const d = decide();
+  if (d.systemMajor === null) {
+    return { status: 'n/a (no system CUDA detected)', detail: null };
+  }
+  if (d.redirect) {
+    return {
+      status: `✓ redirected onnxruntime-node to the CUDA ${d.systemMajor} build`,
+      detail: d.effectiveDir,
+    };
+  }
+  if (d.systemMajor === d.effectiveMajor) {
+    return { status: `✓ default onnxruntime-node build already matches CUDA ${d.systemMajor}`, detail: null };
+  }
+  return {
+    status: `✗ no CUDA ${d.systemMajor}-matched onnxruntime-node build found (falling back to CPU)`,
+    detail: d.effectiveDir,
+  };
+};
+
 let attempted = false;
 
 /**
@@ -273,7 +300,10 @@ export const ensureOnnxRuntimeNodeMatchesSystem = (): void => {
         return nextResolve(specifier, context);
       },
     });
-    logger.debug(
+    // info (not debug): this is the one signal an operator has that CUDA
+    // embeddings are actually using the GPU on this host — the common/no-op
+    // paths below stay at debug since they're the expected default.
+    logger.info(
       { systemMajor: d.systemMajor, effectiveDir: d.effectiveDir },
       'Redirected onnxruntime-node to system-matched CUDA build',
     );

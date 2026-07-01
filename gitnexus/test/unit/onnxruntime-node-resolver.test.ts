@@ -401,6 +401,93 @@ describe('ensureOnnxRuntimeNodeMatchesSystem — redirect:true (#2341 follow-up)
     const mod = await loadRedirectActiveResolver(vi.fn());
     expect(mod.isEffectiveCudaAvailable()).toBe(true);
   });
+
+  it('logs the successful redirect at info level (#2341 follow-up)', async () => {
+    const mod = await loadRedirectActiveResolver(vi.fn());
+    const { _captureLogger } = await import('../../src/core/logger.js');
+    const cap = _captureLogger();
+    try {
+      mod.ensureOnnxRuntimeNodeMatchesSystem();
+      const record = cap
+        .records()
+        .find((r) => r.msg?.includes('Redirected onnxruntime-node to system-matched CUDA build'));
+      expect(record).toBeDefined();
+      expect(record?.level).toBe(30); // pino 'info'
+    } finally {
+      cap.restore();
+    }
+  });
+
+  it('does not log at info when no redirect is needed (common, expected path)', async () => {
+    // Non-linux -> no system CUDA -> decide() never redirects.
+    const mod = await loadResolver({ registerHooks: vi.fn(), platform: 'darwin' });
+    const { _captureLogger } = await import('../../src/core/logger.js');
+    const cap = _captureLogger('debug'); // capture below the default 'info' to prove nothing else fires either
+    try {
+      mod.ensureOnnxRuntimeNodeMatchesSystem();
+      const infoOrAboveRecords = cap.records().filter((r) => (r.level ?? 0) >= 30);
+      expect(infoOrAboveRecords).toHaveLength(0);
+    } finally {
+      cap.restore();
+    }
+  });
+});
+
+describe('cudaRedirectDoctorStatus (#2341 follow-up)', () => {
+  it('reports n/a when there is no system CUDA', async () => {
+    const mod = await loadResolver({ registerHooks: vi.fn(), platform: 'darwin' });
+    expect(mod.cudaRedirectDoctorStatus()).toEqual({
+      status: 'n/a (no system CUDA detected)',
+      detail: null,
+    });
+  });
+
+  it('reports the redirect-active status with the effective dir as detail', async () => {
+    const fakeDirs = {
+      ourDir: '/fake/our/onnxruntime-node-doctor',
+      defaultDir: '/fake/transformers-nested/onnxruntime-node-doctor',
+      transformersMain: '/fake/transformers/doctor/index.js',
+    };
+    const soPath = (dir: string) => `${dir}/bin/napi-v6/linux`;
+    const mod = await loadResolver({
+      registerHooks: vi.fn(),
+      platform: 'linux',
+      fakeDirs,
+      existsSync: (p) => p.startsWith(soPath(fakeDirs.ourDir)) || p.startsWith(soPath(fakeDirs.defaultDir)),
+      execFileSync: (cmd, args) => {
+        if (cmd === 'ldconfig') return 'libcublasLt.so.13 (libc6,x86-64) => /usr/local/cuda/lib64/libcublasLt.so.13';
+        if (cmd === 'ldd') {
+          const target = args[0] ?? '';
+          if (target.startsWith(soPath(fakeDirs.ourDir))) return 'libcublasLt.so.13 => /a/libcublasLt.so.13';
+          if (target.startsWith(soPath(fakeDirs.defaultDir))) return 'libcublasLt.so.12 => /a/libcublasLt.so.12';
+        }
+        throw new Error(`unexpected execFileSync(${cmd}, ${JSON.stringify(args)})`);
+      },
+    });
+
+    expect(mod.cudaRedirectDoctorStatus()).toEqual({
+      status: expect.stringContaining('redirected onnxruntime-node to the CUDA 13 build'),
+      detail: fakeDirs.ourDir,
+    });
+  });
+
+  it('reports a mismatch status (with no fix available) when neither copy ships a matching CUDA provider', async () => {
+    const mod = await loadResolver({
+      registerHooks: vi.fn(),
+      platform: 'linux',
+      existsSync: () => false, // no onnxruntime-node copy ships a CUDA provider .so at all
+      execFileSync: (cmd) => {
+        if (cmd === 'ldconfig') return 'libcublasLt.so.13 (libc6,x86-64) => /usr/local/cuda/lib64/libcublasLt.so.13';
+        throw new Error('ldd should not be reached when existsSync is false');
+      },
+    });
+
+    // `detail` (the resolved effectiveDir) isn't asserted here — resolveDefaultOrtNodeDir()
+    // isn't mocked in this test, so it resolves against this sandbox's real
+    // node_modules and its exact value isn't the point of this case; the
+    // redirect-active test above already covers `detail` precisely.
+    expect(mod.cudaRedirectDoctorStatus().status).toContain('no CUDA 13-matched onnxruntime-node build found');
+  });
 });
 
 describe('isEffectiveCudaAvailable — no redundant subprocess spawns (#2341 follow-up)', () => {
