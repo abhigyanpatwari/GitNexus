@@ -1,5 +1,5 @@
 /**
- * Integration test for issue #2338 (LadybugDB PR #605 validation, plan U4):
+ * Integration test for issue #2338 (LadybugDB/ladybug#605 validation):
  * directly exercises the `TransactionManager` lock-order-inversion deadlock
  * between a `commit()`-triggered auto-checkpoint and a concurrent
  * `beginAutoTransaction()` — the race #605 fixes — under a shape close to
@@ -16,7 +16,7 @@
  * signature change instead of hand-maintaining a second copy of the
  * positional arg list.
  *
- * Empirical grounding (see plan docs/plans/2026-07-01-001-...):
+ * Empirical grounding:
  *  - A pure-writer connection loop, even with a tiny `checkpointThreshold`,
  *    never produced a `.shadow` sidecar in local probing — `.shadow` is a
  *    "non-blocking concurrent checkpoint sidecar" (bridge-db.ts) that only
@@ -36,8 +36,8 @@
  *    NOTE: `isDbBusyError` (lbug-config.ts) does NOT recognize this specific
  *    "Only one write transaction..." message (its substring list is 'busy'/
  *    'lock'/'already in use') — GitNexus's production write-retry path
- *    (`withLbugDb`) would not retry on it today. Flagged as a residual
- *    finding in the PR description; out of scope to fix here since it's a
+ *    (`withLbugDb`) would not retry on it today. Documented as a known gap
+ *    in GUARDRAILS.md/RUNBOOK.md; out of scope to fix here since it's a
  *    production-code change beyond this validation test.
  *  - This exact test configuration was run against @ladybugdb/core 0.17.1
  *    (pre-#605) as a comparison: 1 of 4 runs hung for the full
@@ -46,7 +46,8 @@
  *    of it as timing-dependent, not deterministic. 9 consecutive runs
  *    against 0.18.0 (post-#605) all passed cleanly (~2.5-4s each). This
  *    comparison is not asserted in CI (a 0.17.1 install isn't part of this
- *    suite going forward) — see the PR description for the full record.
+ *    suite going forward); see commit 91e583a5's message for the full
+ *    run-count record.
  */
 import fs from 'fs';
 import path from 'path';
