@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { searchFTSFromLbug, type BM25SearchResult } from '../../src/core/search/bm25-index.js';
 import { FTS_INDEXES } from '../../src/core/search/fts-schema.js';
 
@@ -312,6 +312,57 @@ describe('BM25 search', () => {
       expect(queryCalls.map((c) => String(c[1]).match(/QUERY_FTS_INDEX\('([^']+)'/)?.[1])).toEqual(
         FTS_INDEXES.map((i) => i.table),
       );
+    });
+  });
+
+  describe('GITNEXUS_FTS_CJK_SEGMENTATION query-side transform (#2331)', () => {
+    const CJK_REPO = 'test-repo-cjk-query';
+
+    beforeEach(() => {
+      vi.clearAllMocks();
+    });
+
+    afterEach(() => {
+      vi.unstubAllEnvs();
+    });
+
+    it('leaves the query unchanged by default (mode: none)', async () => {
+      const { queryFTS } = await import('../../src/core/lbug/lbug-adapter.js');
+      vi.mocked(queryFTS).mockResolvedValue([]);
+
+      await searchFTSFromLbug('审批流程');
+
+      expect(vi.mocked(queryFTS).mock.calls.length).toBeGreaterThan(0);
+      for (const call of vi.mocked(queryFTS).mock.calls) {
+        expect(call[2]).toBe('审批流程');
+      }
+    });
+
+    it('bigram-segments the query before it reaches queryFTS when enabled', async () => {
+      vi.stubEnv('GITNEXUS_FTS_CJK_SEGMENTATION', 'bigram');
+      const { queryFTS } = await import('../../src/core/lbug/lbug-adapter.js');
+      vi.mocked(queryFTS).mockResolvedValue([]);
+
+      await searchFTSFromLbug('审批流程');
+
+      expect(vi.mocked(queryFTS).mock.calls.length).toBeGreaterThan(0);
+      for (const call of vi.mocked(queryFTS).mock.calls) {
+        expect(call[2]).toBe('审批 批流 流程');
+      }
+    });
+
+    it('bigram-segments the query in pool mode too, still bound via $query', async () => {
+      vi.stubEnv('GITNEXUS_FTS_CJK_SEGMENTATION', 'bigram');
+      mockExecuteParameterized.mockResolvedValue([]);
+
+      await searchFTSFromLbug('审批流程', 5, CJK_REPO);
+
+      expect(mockExecuteParameterized).toHaveBeenCalled();
+      for (const call of mockExecuteParameterized.mock.calls) {
+        expect(String(call[1])).toContain('$query');
+        expect(String(call[1])).not.toContain('审批流程');
+        expect(call[2]).toEqual({ query: '审批 批流 流程' });
+      }
     });
   });
 });
