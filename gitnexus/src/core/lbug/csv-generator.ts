@@ -20,6 +20,7 @@ import { KnowledgeGraph } from '../graph/types.js';
 import { NodeTableName, NODE_TABLES } from './schema.js';
 import { RelPairRouter } from './rel-pair-routing.js';
 import { parseTruthyEnv } from '../ingestion/utils/env.js';
+import { applyCjkSegmentationIfEnabled } from '../search/cjk-segmentation.js';
 
 /**
  * Deterministic output ordering — optional (out-of-core / windowed-resolve
@@ -55,18 +56,24 @@ const orderedRelationships = (
  * case that matters: one more oversized row lands right after the buffer was
  * just under this threshold, before the flush fires. That row is capped at
  * TREE_SITTER_MAX_BUFFER (32MB, hard-clamped — GITNEXUS_MAX_FILE_SIZE cannot
- * raise it), and escapeCSVField's quote-doubling can at most double it. So the
- * peak joined-string size is bounded by
- *   FLUSH_BYTES + 2 * TREE_SITTER_MAX_BUFFER ≈ 8MB + 64MB = 72MB,
- * versus Node's `buffer.constants.MAX_STRING_LENGTH` (~512MB) that throws
- * `RangeError: Invalid string length` past it — a >7x margin (see the
+ * raise it). Two transforms can each grow it before it reaches the buffer:
+ * `applyCjkSegmentationIfEnabled` (#2331, `CJK_BIGRAM_WORST_CASE_GROWTH_FACTOR`
+ * on an all-CJK row when `GITNEXUS_FTS_CJK_SEGMENTATION=bigram` — the single
+ * source of truth for that ratio, imported by the paired test) and
+ * `escapeCSVField`'s worst-case quote-doubling (2x). So the peak joined-string
+ * size is bounded by
+ *   FLUSH_BYTES + 2 * CJK_BIGRAM_WORST_CASE_GROWTH_FACTOR * TREE_SITTER_MAX_BUFFER
+ *     ≈ 8MB + 149MB ≈ 157MB,
+ * versus Node's `buffer.constants.MAX_STRING_LENGTH` (~512MB) — the test
+ * actually enforces half of that (~256MB), for a ~1.63x margin (see the
  * `shouldFlushCSVBuffer stays within the V8 string-length ceiling` test,
- * which fails loudly if either constant ever moves this margin the wrong
- * way). Raising FLUSH_BYTES trades fewer/larger flushes for less margin;
- * lowering it trades the reverse for lower peak transient memory. Change the
- * constant directly if a real workload needs a different point on that
- * curve — a per-host env var would let the margin get silently reintroduced
- * by an operator with no way to know why 512MB is dangerous.
+ * which fails loudly if any of these constants ever moves this margin the
+ * wrong way). With segmentation disabled (default), the old ~3.56x margin
+ * still applies. Raising FLUSH_BYTES trades fewer/larger flushes for less
+ * margin; lowering it trades the reverse for lower peak transient memory.
+ * Change the constant directly if a real workload needs a different point on
+ * that curve — a per-host env var would let the margin get silently
+ * reintroduced by an operator with no way to know why 512MB is dangerous.
  */
 export const FLUSH_BYTES = 8 * 1024 * 1024;
 
@@ -188,8 +195,22 @@ class FileContentCache {
  * This rewrites the STORED column too (the same value is COPYed in), so File
  * content returned via the graph API is space-flattened — an accepted trade
  * for making file/symbol text searchable. Leading/trailing/empty are no-ops.
+ *
+ * Callers apply `applyCjkSegmentationIfEnabled` (#2331) to the text *before*
+ * this flatten, so a CJK phrase split across a line-wrap loses its boundary
+ * bigram (run detection resets at whitespace) — an accepted limitation, see
+ * the plan's Scope Boundaries.
+ *
+ * Exported (#2339) so `bm25-index.ts`'s query path can compose it in the
+ * same order on incoming search queries, keeping index-time and query-time
+ * text transforms symmetric — a literal tab/newline in a query would
+ * otherwise fail to match whitespace-normalized indexed content.
  */
-const normalizeFtsText = (text: string): string => text.replace(/[\r\n\t]+/g, ' ');
+export const normalizeFtsText = (text: string): string => text.replace(/[\r\n\t]+/g, ' ');
+
+/** Composes both FTS-text transforms for the `description` column — one place for the six emission sites below to call, instead of repeating the composition. */
+const formatFtsDescription = (description: string): string =>
+  normalizeFtsText(applyCjkSegmentationIfEnabled(description));
 
 const extractContent = async (node: GraphNode, contentCache: FileContentCache): Promise<string> => {
   const filePath = node.properties.filePath;
@@ -204,7 +225,7 @@ const extractContent = async (node: GraphNode, contentCache: FileContentCache): 
   // and only whitespace-normalized for the tokenizer. The symbol snippet path
   // below, by contrast, deliberately stays capped at MAX_SNIPPET.
   if (node.label === 'File') {
-    return normalizeFtsText(content);
+    return normalizeFtsText(applyCjkSegmentationIfEnabled(content));
   }
 
   const startLine = node.properties.startLine;
@@ -218,7 +239,7 @@ const extractContent = async (node: GraphNode, contentCache: FileContentCache): 
   const MAX_SNIPPET = 5000;
   const capped =
     snippet.length > MAX_SNIPPET ? snippet.slice(0, MAX_SNIPPET) + '\n... [truncated]' : snippet;
-  return normalizeFtsText(capped);
+  return normalizeFtsText(applyCjkSegmentationIfEnabled(capped));
 };
 
 // ============================================================================
@@ -533,7 +554,7 @@ export const streamAllCSVsToDisk = async (
               escapeCSVField(node.properties.name || ''),
               escapeCSVField(node.properties.heuristicLabel || ''),
               keywordsStr,
-              escapeCSVField(normalizeFtsText(node.properties.description || '')),
+              escapeCSVField(formatFtsDescription(node.properties.description || '')),
               escapeCSVField(node.properties.enrichedBy || 'heuristic'),
               escapeCSVNumber(node.properties.cohesion, 0),
               escapeCSVNumber(node.properties.symbolCount, 0),
@@ -569,7 +590,7 @@ export const streamAllCSVsToDisk = async (
               escapeCSVNumber(node.properties.endLine, -1),
               node.properties.isExported ? 'true' : 'false',
               escapeCSVField(content),
-              escapeCSVField(normalizeFtsText(node.properties.description || '')),
+              escapeCSVField(formatFtsDescription(node.properties.description || '')),
               escapeCSVNumber(node.properties.parameterCount, 0),
               escapeCSVField(node.properties.returnType || ''),
             ].join(','),
@@ -587,7 +608,7 @@ export const streamAllCSVsToDisk = async (
               escapeCSVNumber(node.properties.endLine, -1),
               escapeCSVNumber(node.properties.level, 1),
               escapeCSVField(content),
-              escapeCSVField(normalizeFtsText(node.properties.description || '')),
+              escapeCSVField(formatFtsDescription(node.properties.description || '')),
             ].join(','),
           );
           break;
@@ -621,7 +642,7 @@ export const streamAllCSVsToDisk = async (
               escapeCSVField(node.id),
               escapeCSVField(node.properties.name || ''),
               escapeCSVField(node.properties.filePath || ''),
-              escapeCSVField(normalizeFtsText(node.properties.description || '')),
+              escapeCSVField(formatFtsDescription(node.properties.description || '')),
             ].join(','),
           );
           break;
@@ -642,7 +663,7 @@ export const streamAllCSVsToDisk = async (
                 escapeCSVNumber(node.properties.endLine, -1),
                 node.properties.isExported ? 'true' : 'false',
                 escapeCSVField(content),
-                escapeCSVField(normalizeFtsText(node.properties.description || '')),
+                escapeCSVField(formatFtsDescription(node.properties.description || '')),
               ].join(','),
             );
           } else {
@@ -658,7 +679,7 @@ export const streamAllCSVsToDisk = async (
                   escapeCSVNumber(node.properties.startLine, -1),
                   escapeCSVNumber(node.properties.endLine, -1),
                   escapeCSVField(content),
-                  escapeCSVField(normalizeFtsText(node.properties.description || '')),
+                  escapeCSVField(formatFtsDescription(node.properties.description || '')),
                   ...(node.label === 'Property'
                     ? [escapeCSVField(node.properties.declaredType || '')]
                     : []),

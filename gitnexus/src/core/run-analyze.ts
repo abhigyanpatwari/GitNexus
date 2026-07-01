@@ -35,6 +35,11 @@ import {
   initialiseSearchFTSStemmer,
   verifySearchFTSIndexes,
 } from './search/fts-indexes.js';
+import {
+  cjkSegmentationModeMismatch,
+  getSearchFTSCjkSegmentation,
+  initialiseSearchFTSCjkSegmentation,
+} from './search/cjk-segmentation.js';
 import { resolveAnalyzeInstallPolicy } from './lbug/extension-loader.js';
 import {
   startWalCheckpointDriver,
@@ -555,6 +560,7 @@ export async function runFullAnalysis(
   // parse/load phases. A typo fails here in ms; createSearchFTSIndexes reuses
   // the cached value via getSearchFTSStemmer.
   initialiseSearchFTSStemmer();
+  initialiseSearchFTSCjkSegmentation();
 
   // Scope the degraded-parse log throttle to this run. On a reused process
   // (e.g. tests, or any host that calls runFullAnalysis more than once) the
@@ -778,6 +784,18 @@ export async function runFullAnalysis(
     log(
       `index schema changed (stamped v${stampedVersion}, this build is v${INCREMENTAL_SCHEMA_VERSION}); ` +
         `forcing a full rebuild so persisted rows match the current schema.`,
+    );
+    options = { ...options, force: true };
+  }
+
+  if (
+    existingMeta &&
+    cjkSegmentationModeMismatch(existingMeta.cjkSegmentation, getSearchFTSCjkSegmentation())
+  ) {
+    log(
+      `CJK segmentation mode changed (index built with '${existingMeta.cjkSegmentation ?? 'none'}', ` +
+        `this run resolves '${getSearchFTSCjkSegmentation()}'); forcing a full rebuild so indexed ` +
+        `text and query-time segmentation stay in sync.`,
     );
     options = { ...options, force: true };
   }
@@ -1479,6 +1497,10 @@ export async function runFullAnalysis(
       // incrementalInProgress to undefined explicitly clears any prior
       // dirty flag (full and incremental success paths converge here).
       schemaVersion: hasGitDir(repoPath) ? INCREMENTAL_SCHEMA_VERSION : undefined,
+      // Always stamped with the live resolved mode (#2331/#2339) — unlike
+      // `pdg` below, 'none' is a meaningful value to compare, not an
+      // absence, so this is never conditionally omitted.
+      cjkSegmentation: getSearchFTSCjkSegmentation(),
       fileHashes: hasGitDir(repoPath) ? newFileHashesRecord : undefined,
       // This branch's full live chunk-key set (#2106 R6). `usedKeys` is every
       // chunk hash touched in this scan — cache HITS included (see parse-impl

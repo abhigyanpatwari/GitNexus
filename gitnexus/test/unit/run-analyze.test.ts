@@ -451,3 +451,9 @@ describe('pdgModeMismatch / resolvePdgConfig (#2099 F1)', () => {
     );
   });
 });
+
+// cjkSegmentationModeMismatch's pure-function tests moved to
+// cjk-segmentation.test.ts (#2339) — it now lives in cjk-segmentation.ts,
+// not here, so callers that only need this comparator (e.g. the MCP query
+// path) don't have to import the full analyze-pipeline module. run-analyze.ts
+// still imports and uses it (see the mismatch check above the early-return).

@@ -62,6 +62,13 @@ import {
   isVectorExtensionSupportedByPlatform,
 } from '../../core/platform/capabilities.js';
 import { PhaseTimer } from '../../core/search/phase-timer.js';
+import {
+  cjkSegmentationModeMismatch,
+  containsSegmentableCjkRun,
+  getSearchFTSCjkSegmentation,
+  isSupportedCjkSegmentationMode,
+  MAX_CJK_SEGMENTATION_QUERY_LENGTH,
+} from '../../core/search/cjk-segmentation.js';
 import { checkStalenessAsync, checkCwdMatch } from '../../core/git-staleness.js';
 import { logger } from '../../core/logger.js';
 import {
@@ -1988,6 +1995,76 @@ export class LocalBackend {
       warnings.push(
         'FTS indexes missing — keyword search degraded. Run: gitnexus analyze --repair-fts (or gitnexus analyze --force) to rebuild indexes.',
       );
+    }
+    // #2331: a CJK query against a server process resolving
+    // GITNEXUS_FTS_CJK_SEGMENTATION to 'none' silently misses sub-phrase
+    // matches with no other signal — this is the only place an agent driving
+    // GitNexus through the query tool can learn the capability exists.
+    try {
+      const cjkMode = getSearchFTSCjkSegmentation();
+      if (containsSegmentableCjkRun(searchQuery) && cjkMode !== 'bigram') {
+        warnings.push(
+          'Query contains CJK characters — sub-phrase matches require GITNEXUS_FTS_CJK_SEGMENTATION=bigram set for both `analyze` and this server process, then `gitnexus analyze --force`.',
+        );
+      } else if (
+        cjkMode === 'bigram' &&
+        searchQuery.length > MAX_CJK_SEGMENTATION_QUERY_LENGTH &&
+        containsSegmentableCjkRun(searchQuery)
+      ) {
+        // #2339: bigram mode is enabled, but the query exceeds the length
+        // cap that guards segmentCjkSpans's per-character allocation cost —
+        // applyCjkSegmentationIfEnabled silently skips segmentation above
+        // this length, so an over-cap CJK query returns zero results for
+        // text that IS indexed and present verbatim, with no other signal.
+        warnings.push(
+          `Query exceeds the ${MAX_CJK_SEGMENTATION_QUERY_LENGTH}-character CJK segmentation cap — ` +
+            'sub-phrase matches are skipped for this query even though GITNEXUS_FTS_CJK_SEGMENTATION=bigram is enabled. Shorten the query to search within the cap.',
+        );
+      }
+    } catch (err) {
+      // Best-effort diagnostic only — never fail the query over it.
+      logQueryError('query:cjk-warning', err);
+    }
+    // #2339: the checks above only compare the QUERY's own content against
+    // the live process's mode — they can't detect "server mode is 'bigram'
+    // but the on-disk index was actually built under 'none'/legacy" (env var
+    // changed without a full --force re-analyze, or a plain/--repair-fts
+    // analyze ran instead). That mismatch affects every CJK query against
+    // this repo, not just one whose own text happens to contain CJK, so it's
+    // a separate, unconditional check — not folded into the branches above.
+    try {
+      const meta = await loadMeta(path.dirname(repo.lbugPath));
+      // meta.json is on-disk state inside the analyzed repo, read via a
+      // schema-less JSON.parse — not trusted input. Validate before
+      // interpolating it into agent-visible tool output (#2339): an
+      // unrecognized value is itself evidence of a corrupt/foreign index,
+      // reported generically rather than echoed verbatim.
+      const persistedMode = meta?.cjkSegmentation;
+      if (meta && persistedMode !== undefined && !isSupportedCjkSegmentationMode(persistedMode)) {
+        warnings.push(
+          "This repo's index metadata has an unrecognized CJK segmentation mode stamp — the index " +
+            'may be corrupt or from an incompatible GitNexus version. Run `gitnexus analyze --force` to rebuild it.',
+        );
+      } else if (
+        meta &&
+        cjkSegmentationModeMismatch(meta.cjkSegmentation, getSearchFTSCjkSegmentation())
+      ) {
+        warnings.push(
+          `Index was built with CJK segmentation mode '${meta.cjkSegmentation ?? 'none'}', but this ` +
+            `server is resolving '${getSearchFTSCjkSegmentation()}' — sub-phrase CJK search results ` +
+            'may be incomplete. Set GITNEXUS_FTS_CJK_SEGMENTATION to the same value for both the ' +
+            '`analyze` process and this server, then run `gitnexus analyze --force` to rebuild under ' +
+            "the agreed mode (do not assume the live server's mode is the one to keep — re-analyzing " +
+            'under the wrong mode can strip an already-working bigram-segmented index back to `none`).',
+        );
+      }
+    } catch (err) {
+      // loadMeta() itself never throws (it returns null on any read/parse
+      // failure) — the actual throw source here is getSearchFTSCjkSegmentation()
+      // on an invalid env value, same root cause as the catch above. This is
+      // a separate, independently-guarded diagnostic though, so it gets its
+      // own log context rather than sharing 'query:cjk-warning'.
+      logQueryError('query:cjk-mode-drift', err);
     }
     if (enrichmentDegraded) {
       warnings.push(

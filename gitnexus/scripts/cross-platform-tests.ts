@@ -74,6 +74,8 @@ const LBUG_NATIVE = [
   'test/integration/fts-description-search.test.ts',
   'test/integration/staleness-and-stability.test.ts',
   'test/integration/analyze-wal-checkpoint-failure.test.ts',
+  'test/integration/fts-stemmer-sweep.test.ts',
+  'test/integration/lbug-multiwriter-deadlock.test.ts',
 ];
 
 // Process spawning and CLI tests — exercise child_process with real

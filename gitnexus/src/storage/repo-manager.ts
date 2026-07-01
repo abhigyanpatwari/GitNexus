@@ -100,6 +100,16 @@ export interface RepoMeta {
    */
   schemaVersion?: number;
   /**
+   * The resolved GITNEXUS_FTS_CJK_SEGMENTATION mode ('none' | 'bigram') the
+   * existing index's content/description columns were last written under
+   * (#2331/#2339). On mismatch with the live process's resolved mode,
+   * runFullAnalysis forces a full rebuild so indexed text and query-time
+   * segmentation never diverge. Always stamped (never omitted), unlike
+   * `pdg` below — the default 'none' is itself a meaningful value to
+   * compare, not an absence.
+   */
+  cjkSegmentation?: string;
+  /**
    * SHA-256 of every file's content at the time of the last successful
    * indexing run. The next run computes current hashes and diffs against
    * this map to determine which files' DB rows must be replaced.
