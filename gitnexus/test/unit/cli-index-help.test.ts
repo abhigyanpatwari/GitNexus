@@ -31,6 +31,7 @@ function runRootHelp(env: NodeJS.ProcessEnv = {}) {
 const allHelpCommands = [
   [],
   ['setup'],
+  ['ci-setup'],
   ['analyze'],
   ['index'],
   ['serve'],

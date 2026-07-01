@@ -122,6 +122,8 @@ export const zhCN = {
   'help.command.setup.description': '一次性设置：为 Cursor、Claude Code、OpenCode、Codex 配置 MCP',
   'help.command.uninstall.description':
     '撤销 `setup`：从所有检测到的编辑器中移除 GitNexus 的 MCP 配置、技能和钩子',
+  'help.command.ciSetup.description':
+    '为团队共享 GitNexus 服务器生成 CI/CD 工作流、Docker Compose 和 MCP 配置',
   'help.command.analyze.description': '索引仓库（完整分析）',
   'help.command.index.description': '将现有 .gitnexus/ 文件夹注册到全局注册表（无需重新分析）',
   'help.command.serve.description': '启动供 Web UI 连接的本地 HTTP 服务器',
@@ -157,6 +159,15 @@ export const zhCN = {
   'help.command.group.query.description': '跨仓库组所有仓库搜索执行流程',
   'help.command.group.contracts.description': '查看 Contract Registry',
   'help.option.setup.codingAgent': '仅配置这些编码代理（逗号分隔或重复传入）',
+  'help.option.ciSetup.ci': 'CI/CD 系统：github-actions、azure-devops 或 both',
+  'help.option.ciSetup.deploy': '部署目标：docker、azure-container-app 或 both',
+  'help.option.ciSetup.port': '绑定的主机端口（容器始终运行在 4747）',
+  'help.option.ciSetup.auth': '认证模式：token（Caddy 代理）或 none（默认 token）',
+  'help.option.ciSetup.branchStrategy': '索引策略：pr-scoped 或 main-only（默认 pr-scoped）',
+  'help.option.ciSetup.dryRun': '打印生成的文件而不写入（未指定模式标志时的默认行为）',
+  'help.option.ciSetup.apply': '写入文件，每个文件有独立确认步骤',
+  'help.option.ciSetup.yes': '跳过逐文件确认提示（与 --apply 配合使用）',
+  'help.option.ciSetup.outputDir': '生成文件的写入目录（默认：git 根目录）',
   'help.option.analyze.force': '即使已是最新也强制完整重建索引',
   'help.option.analyze.repairFts': '修复/重建搜索 FTS 索引，不执行完整重新分析',
   'help.option.analyze.embeddings':
