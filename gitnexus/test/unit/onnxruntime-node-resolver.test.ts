@@ -396,6 +396,60 @@ describe('ensureOnnxRuntimeNodeMatchesSystem — redirect:true (#2341 follow-up)
     resolve('some-other-package', ctx, next);
     expect(next).toHaveBeenCalledWith('some-other-package', ctx);
   });
+
+  it('isEffectiveCudaAvailable() reports true when the redirect-active effective build matches the system', async () => {
+    const mod = await loadRedirectActiveResolver(vi.fn());
+    expect(mod.isEffectiveCudaAvailable()).toBe(true);
+  });
+});
+
+describe('isEffectiveCudaAvailable — no redundant subprocess spawns (#2341 follow-up)', () => {
+  it('probes ldconfig/ldd only once total, regardless of how many times the effective dir and CUDA match are queried', async () => {
+    const fakeDirs = {
+      ourDir: '/fake/our/onnxruntime-node-u8',
+      defaultDir: '/fake/transformers-nested/onnxruntime-node-u8',
+      transformersMain: '/fake/transformers/u8/index.js',
+    };
+    const soPath = (dir: string) => `${dir}/bin/napi-v6/linux`;
+    const existsSyncSpy = vi.fn(
+      (p: string) => p.startsWith(soPath(fakeDirs.ourDir)) || p.startsWith(soPath(fakeDirs.defaultDir)),
+    );
+    const execFileSyncSpy = vi.fn((cmd: string, args: string[]) => {
+      if (cmd === 'ldconfig') return 'libcublasLt.so.13 (libc6,x86-64) => /usr/local/cuda/lib64/libcublasLt.so.13';
+      if (cmd === 'ldd') {
+        const target = args[0] ?? '';
+        if (target.startsWith(soPath(fakeDirs.ourDir))) {
+          return 'libcublasLt.so.13 => /usr/local/cuda-13/lib64/libcublasLt.so.13';
+        }
+        if (target.startsWith(soPath(fakeDirs.defaultDir))) {
+          return 'libcublasLt.so.12 => /usr/local/cuda-12/lib64/libcublasLt.so.12';
+        }
+      }
+      throw new Error(`unexpected execFileSync(${cmd}, ${JSON.stringify(args)})`);
+    });
+
+    const mod = await loadResolver({
+      registerHooks: vi.fn(),
+      platform: 'linux',
+      fakeDirs,
+      existsSync: existsSyncSpy,
+      execFileSync: execFileSyncSpy,
+    });
+
+    // Query the decision through both public entry points, each more than once.
+    mod.getEffectiveOnnxRuntimeNodeDir();
+    mod.isEffectiveCudaAvailable();
+    mod.getEffectiveOnnxRuntimeNodeDir();
+    expect(mod.isEffectiveCudaAvailable()).toBe(true);
+
+    // decide() is memoized: exactly one ldconfig call (system major) and one
+    // ldd call per onnxruntime-node dir actually probed (default + ours) —
+    // never re-invoked across the 4 queries above.
+    const ldconfigCalls = execFileSyncSpy.mock.calls.filter(([cmd]) => cmd === 'ldconfig');
+    const lddCalls = execFileSyncSpy.mock.calls.filter(([cmd]) => cmd === 'ldd');
+    expect(ldconfigCalls).toHaveLength(1);
+    expect(lddCalls).toHaveLength(2); // defaultDir once, ourDir once
+  });
 });
 
 describe('decide() — ourDir checked independently of defaultDir (#2341 follow-up)', () => {

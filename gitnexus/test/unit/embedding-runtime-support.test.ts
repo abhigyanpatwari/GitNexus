@@ -32,9 +32,7 @@ const { resolverHookInstalled } = vi.hoisted(() => ({ resolverHookInstalled: vi.
 
 vi.mock('../../src/core/embeddings/onnxruntime-node-resolver.js', () => ({
   ensureOnnxRuntimeNodeMatchesSystem: () => resolverHookInstalled(),
-  getEffectiveOnnxRuntimeNodeDir: () => null,
-  ortCudaMajor: () => null,
-  detectSystemCudaMajor: () => null,
+  isEffectiveCudaAvailable: () => false,
 }));
 
 const EMBED_ENV_KEYS = [

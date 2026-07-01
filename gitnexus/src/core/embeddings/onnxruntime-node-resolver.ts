@@ -161,6 +161,7 @@ const resolveOurOrtNodeDir = (): string | null => {
 interface Decision {
   redirect: boolean;
   effectiveDir: string | null; // the onnxruntime-node dir that WILL be used (default, or ours)
+  effectiveMajor: CudaMajor | null; // effectiveDir's own CUDA major, already probed — never re-probe it
   systemMajor: CudaMajor | null;
 }
 
@@ -172,29 +173,41 @@ const decide = (): Decision => {
 
   // Node < 22.15 has no `registerHooks` API, so a redirect can never actually
   // install (see ensureOnnxRuntimeNodeMatchesSystem below) — the probe must
-  // agree with that up front. Without this guard, isCudaAvailable() could
-  // report a redirect target that never gets loaded, requesting CUDA against
-  // the wrong (default) onnxruntime-node build.
+  // agree with that up front. Without this guard, isEffectiveCudaAvailable()
+  // could report a redirect target that never gets loaded, requesting CUDA
+  // against the wrong (default) onnxruntime-node build.
   if (typeof registerHooks !== 'function') {
-    const decision: Decision = { redirect: false, effectiveDir: defaultDir, systemMajor: null };
+    const decision: Decision = {
+      redirect: false,
+      effectiveDir: defaultDir,
+      effectiveMajor: null,
+      systemMajor: null,
+    };
     cached = decision;
     return decision;
   }
 
   const systemMajor = detectSystemCudaMajor();
-  let decision: Decision = { redirect: false, effectiveDir: defaultDir, systemMajor };
+  // `defaultDir` resolving is NOT a precondition for checking `ourDir` below —
+  // if transformers' own resolution fails outright (defaultMajor stays null),
+  // that still counts as "the default doesn't match", so a working `ourDir`
+  // should still be picked up as the effective target instead of leaving
+  // `effectiveDir` stuck at `null`. Gated behind `systemMajor != null` (as
+  // before) so a non-CUDA host never pays for a provider-.so probe at all.
+  const defaultMajor = systemMajor != null && defaultDir ? ortCudaMajor(defaultDir) : null;
+  let decision: Decision = {
+    redirect: false,
+    effectiveDir: defaultDir,
+    effectiveMajor: defaultMajor,
+    systemMajor,
+  };
 
-  if (systemMajor != null) {
-    // `defaultDir` resolving is NOT a precondition for checking `ourDir` — if
-    // transformers' own resolution fails outright (defaultMajor stays null),
-    // that still counts as "the default doesn't match", so a working `ourDir`
-    // should still be picked up as the effective target instead of leaving
-    // `effectiveDir` stuck at `null`.
-    const defaultMajor = defaultDir ? ortCudaMajor(defaultDir) : null;
-    if (defaultMajor !== systemMajor) {
-      const ourDir = resolveOurOrtNodeDir();
-      if (ourDir && ourDir !== defaultDir && ortCudaMajor(ourDir) === systemMajor) {
-        decision = { redirect: true, effectiveDir: ourDir, systemMajor };
+  if (systemMajor != null && defaultMajor !== systemMajor) {
+    const ourDir = resolveOurOrtNodeDir();
+    if (ourDir && ourDir !== defaultDir) {
+      const ourMajor = ortCudaMajor(ourDir);
+      if (ourMajor === systemMajor) {
+        decision = { redirect: true, effectiveDir: ourDir, effectiveMajor: ourMajor, systemMajor };
       }
     }
   }
@@ -210,6 +223,19 @@ const decide = (): Decision => {
  * runtime agree. Returns null only when neither copy resolves.
  */
 export const getEffectiveOnnxRuntimeNodeDir = (): string | null => decide().effectiveDir;
+
+/**
+ * Whether the onnxruntime-node copy that will actually load ships a CUDA
+ * provider matching this host's CUDA major — reads straight from the cached
+ * `decide()` result rather than re-probing `ortCudaMajor`/`detectSystemCudaMajor`
+ * a second time (both are already computed above). `systemMajor` is checked
+ * for non-null explicitly so two absent majors (null === null) never count
+ * as a match.
+ */
+export const isEffectiveCudaAvailable = (): boolean => {
+  const d = decide();
+  return d.systemMajor !== null && d.systemMajor === d.effectiveMajor;
+};
 
 let attempted = false;
 

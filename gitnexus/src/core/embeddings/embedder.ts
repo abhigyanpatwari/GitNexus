@@ -27,34 +27,9 @@ import { getLocalEmbeddingRuntimeBlocker } from './runtime-support.js';
 import { ensureOnnxRuntimeCommonResolvable } from './onnxruntime-common-resolver.js';
 import {
   ensureOnnxRuntimeNodeMatchesSystem,
-  getEffectiveOnnxRuntimeNodeDir,
-  ortCudaMajor,
-  detectSystemCudaMajor,
+  isEffectiveCudaAvailable,
 } from './onnxruntime-node-resolver.js';
 import { logger } from '../logger.js';
-
-/**
- * Check whether local CUDA embedding will actually work on this host.
- *
- * ONNX Runtime's native layer crashes (uncatchable) if we request CUDA without
- * the required shared libraries, so we probe first. Both checks target the
- * onnxruntime-node copy transformers.js will ACTUALLY load — which on CUDA-13
- * hosts is the system-matched copy selected by ensureOnnxRuntimeNodeMatchesSystem()
- * (see onnxruntime-node-resolver), NOT necessarily transformers' pinned build:
- *   1. that copy ships a CUDA execution provider binary, and
- *   2. the system ships the cuBLASLt major (12 or 13) that binary links against.
- *
- * Historically only libcublasLt.so.12 was probed, which silently forced CPU on
- * CUDA-13-only hosts even though a CUDA-13 onnxruntime-node build ships in the
- * tree (transformers pins a CUDA-12 build; gitnexus' own dep floats to CUDA-13).
- */
-function isCudaAvailable(): boolean {
-  const ortDir = getEffectiveOnnxRuntimeNodeDir();
-  if (!ortDir) return false;
-  const providerMajor = ortCudaMajor(ortDir);
-  if (providerMajor === null) return false;
-  return detectSystemCudaMajor() === providerMajor;
-}
 
 // Module-level state for singleton pattern
 let embedderInstance: FeatureExtractionPipeline | null = null;
@@ -121,7 +96,7 @@ export const initEmbedder = async (
   // provider libraries are missing. DirectML stays opt-in for the same reason.
   // Probe for CUDA first — ONNX Runtime crashes (uncatchable native error)
   // if we attempt CUDA without the required shared libraries
-  const gpuDevice = isCudaAvailable() ? 'cuda' : 'cpu';
+  const gpuDevice = isEffectiveCudaAvailable() ? 'cuda' : 'cpu';
   const requestedDevice =
     forceDevice || (finalConfig.device === 'auto' ? gpuDevice : finalConfig.device);
 
