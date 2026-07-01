@@ -50,6 +50,7 @@
 import fs from 'fs';
 import path from 'path';
 import { describe, it, expect } from 'vitest';
+import { withRetry } from 'gitnexus-shared';
 import { createTempDir } from '../helpers/test-db.js';
 import { createLbugDatabase } from '../../src/core/lbug/lbug-config.js';
 import { closeQueryResults } from '../../src/core/lbug/query-result-utils.js';
@@ -72,30 +73,33 @@ const CHECKPOINT_THRESHOLD_BYTES = 32 * 1024;
 const isOnlyOneWriteTransactionError = (err: unknown): boolean =>
   (err instanceof Error ? err.message : String(err)).includes('Only one write transaction');
 
-const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
-
 /**
  * LadybugDB fast-fails a write attempt with "Only one write transaction..."
  * when another connection currently holds the write slot, rather than
  * blocking. Retrying with a small jittered delay is what actually produces
  * overlapping write *attempts* across connections — the shape needed to
- * stress the commit()-vs-beginAutoTransaction() handoff #605 fixes.
+ * stress the commit()-vs-beginAutoTransaction() handoff #605 fixes. Uses
+ * gitnexus-shared's `withRetry` (already the project's general-purpose
+ * bounded-retry helper, see `embeddings/hf-env.ts`) instead of a hand-rolled
+ * loop.
  */
 async function writeWithRetry(
   conn: LbugConnection,
   query: string,
   maxAttempts = 500,
 ): Promise<void> {
-  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-    try {
+  await withRetry(
+    async () => {
       const result = await conn.query(query);
       await closeQueryResults(result);
-      return;
-    } catch (err) {
-      if (!isOnlyOneWriteTransactionError(err) || attempt === maxAttempts) throw err;
-      await sleep(1 + Math.floor(Math.random() * 3));
-    }
-  }
+    },
+    {
+      maxAttempts,
+      baseDelayMs: 1,
+      capDelayMs: 3,
+      isRetryable: (err) => ({ retry: isOnlyOneWriteTransactionError(err) }),
+    },
+  );
 }
 
 // Bounded timeout so a genuine deadlock fails the test instead of hanging CI
