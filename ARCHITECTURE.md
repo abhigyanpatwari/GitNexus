@@ -17,7 +17,7 @@ Monorepo: **CLI/MCP** (`gitnexus/`) + **browser UI** (`gitnexus-web/`).
 
 1. **Ingestion** — `analyze.ts` → `runFullAnalysis` (`run-analyze.ts`) → `runPipelineFromRepo` (`pipeline.ts`). DAG of 14 phases builds a `KnowledgeGraph` in memory, then loads into LadybugDB under `.gitnexus/`. Repo registered in `~/.gitnexus/registry.json` for MCP discovery.
 
-2. **Persistence** — `repo-manager.ts` (paths, registry, KuzuDB cleanup). `lbug-adapter.ts` (graph load, queries, embedding batches).
+2. **Persistence** — `repo-manager.ts` (paths, registry, LadybugDB cleanup). `lbug-adapter.ts` (graph load, queries, embedding batches).
 
 3. **Query layer** — three interfaces to the same backend:
    - **MCP (stdio):** `mcp.ts` → `LocalBackend` → tools (`tools.ts`) + resources (`resources.ts`)
