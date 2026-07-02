@@ -1,22 +1,28 @@
 /**
- * Unit tests for the Spring DI pipeline phase.
+ * Unit tests for the framework-neutral `di` pipeline phase and the Spring
+ * DI field matcher registered behind it (`di-extractors/spring.ts`).
  *
- * Verifies that injection-annotated (@Autowired / @Inject) collection-typed
- * fields (List<T>, Set<T>, Collection<T>, Map<K,T>) produce INJECTS edges
- * from the consumer class to every class implementing interface T — using
- * only graph data, no filesystem access. Non-annotated and @Resource fields
- * produce no edges.
+ * Phase-level: verifies that injection-annotated (@Autowired / @Inject)
+ * collection-typed fields (List<T>, Set<T>, Collection<T>, Map<K,T>) produce
+ * INJECTS edges from the consumer class to every class implementing
+ * interface T — using only graph data, no filesystem access — and that
+ * Property nodes whose language has no registered matcher are skipped.
+ * Non-annotated and @Resource fields produce no edges.
+ *
+ * Matcher-level: pins `springDiFieldMatcher`'s gate + parse behavior
+ * directly, node-shape in / match-or-null out.
  */
 import { describe, expect, it } from 'vitest';
 import { createKnowledgeGraph } from '../../../src/core/graph/graph.js';
-import { springDiPhase } from '../../../src/core/ingestion/pipeline-phases/spring-di.js';
+import { diPhase } from '../../../src/core/ingestion/pipeline-phases/di.js';
+import { springDiFieldMatcher } from '../../../src/core/ingestion/di-extractors/spring.js';
 import { generateId } from '../../../src/lib/utils.js';
 import type {
   PhaseResult,
   PipelineContext,
 } from '../../../src/core/ingestion/pipeline-phases/types.js';
 import type { KnowledgeGraph } from '../../../src/core/graph/types.js';
-import type { NodeLabel } from 'gitnexus-shared';
+import type { GraphNode, NodeLabel } from 'gitnexus-shared';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -124,7 +130,7 @@ function injectsEdges(graph: KnowledgeGraph) {
 // Tests
 // ---------------------------------------------------------------------------
 
-describe('spring-di phase', () => {
+describe('di phase', () => {
   it('creates INJECTS edges from consumer to every implementer of T', async () => {
     const graph = createKnowledgeGraph();
 
@@ -141,7 +147,7 @@ describe('spring-di phase', () => {
     addClass(graph, 'MyService', 'java');
     addProperty(graph, 'MyService', 'foos', 'List<IFoo>');
 
-    const output = await springDiPhase.execute(
+    const output = await diPhase.execute(
       makeCtx(graph),
       new Map([['mro', phaseResult('mro', { entries: [] })]]),
     );
@@ -184,7 +190,7 @@ describe('spring-di phase', () => {
     addImplements(graph, 'MyService', 'IFoo');
     addProperty(graph, 'MyService', 'foos', 'List<IFoo>');
 
-    await springDiPhase.execute(makeCtx(graph), new Map());
+    await diPhase.execute(makeCtx(graph), new Map());
 
     const edges = injectsEdges(graph);
     const myServiceId = generateId('Class', 'MyService');
@@ -209,7 +215,7 @@ describe('spring-di phase', () => {
     // A non-collection field — should be ignored
     addProperty(graph, 'MyService', 'foo', 'IFoo');
 
-    const output = await springDiPhase.execute(makeCtx(graph), new Map());
+    const output = await diPhase.execute(makeCtx(graph), new Map());
 
     expect(injectsEdges(graph)).toHaveLength(0);
     expect(output.injectsEdges).toBe(0);
@@ -252,7 +258,7 @@ describe('spring-di phase', () => {
       reason: '',
     });
 
-    const output = await springDiPhase.execute(makeCtx(graph), new Map());
+    const output = await diPhase.execute(makeCtx(graph), new Map());
 
     expect(injectsEdges(graph)).toHaveLength(0);
     expect(output.injectsEdges).toBe(0);
@@ -271,7 +277,7 @@ describe('spring-di phase', () => {
     addClass(graph, 'TsConsumer', 'typescript');
     addProperty(graph, 'TsConsumer', 'foos', 'List<IFoo>', 'typescript');
 
-    const output = await springDiPhase.execute(makeCtx(graph), new Map());
+    const output = await diPhase.execute(makeCtx(graph), new Map());
 
     expect(injectsEdges(graph)).toHaveLength(0);
     expect(output.injectsEdges).toBe(0);
@@ -298,7 +304,7 @@ describe('spring-di phase', () => {
     // Map<K,V> — V (IPlugin) is the injected bean type
     addProperty(graph, 'MapConsumer', 'plugins', 'Map<String,IPlugin>');
 
-    await springDiPhase.execute(makeCtx(graph), new Map());
+    await diPhase.execute(makeCtx(graph), new Map());
 
     const edges = injectsEdges(graph);
 
@@ -322,7 +328,7 @@ describe('spring-di phase', () => {
     addClass(graph, 'PyConsumer', 'python');
     addProperty(graph, 'PyConsumer', 'foos', 'List<IFoo>', 'python');
 
-    const output = await springDiPhase.execute(makeCtx(graph), new Map());
+    const output = await diPhase.execute(makeCtx(graph), new Map());
 
     expect(output.injectsEdges).toBe(0);
     expect(output.fieldsScanned).toBe(0);
@@ -336,7 +342,7 @@ describe('spring-di phase', () => {
     addClass(graph, 'MyService', 'java');
     addProperty(graph, 'MyService', 'things', 'List<INobody>');
 
-    const output = await springDiPhase.execute(makeCtx(graph), new Map());
+    const output = await diPhase.execute(makeCtx(graph), new Map());
 
     expect(injectsEdges(graph)).toHaveLength(0);
     expect(output.injectsEdges).toBe(0);
@@ -356,7 +362,7 @@ describe('spring-di phase', () => {
     addProperty(graph, 'MyService', 'foos1', 'List<IFoo>');
     addProperty(graph, 'MyService', 'foos2', 'List<IFoo>');
 
-    await springDiPhase.execute(makeCtx(graph), new Map());
+    await diPhase.execute(makeCtx(graph), new Map());
 
     // Only 1 edge MyService → FooImpl1 (deduped by edge ID)
     const edges = injectsEdges(graph);
@@ -378,7 +384,7 @@ describe('spring-di phase', () => {
     addClass(graph, 'MyService', 'java');
     addProperty(graph, 'MyService', 'foos', 'List<IFoo>', 'java', ['@Inject']);
 
-    const output = await springDiPhase.execute(makeCtx(graph), new Map());
+    const output = await diPhase.execute(makeCtx(graph), new Map());
 
     const edges = injectsEdges(graph);
     expect(edges).toHaveLength(1);
@@ -401,7 +407,7 @@ describe('spring-di phase', () => {
     // injection annotation is never injected by the container.
     addProperty(graph, 'MyService', 'cache', 'List<IFoo>', 'java', []);
 
-    const output = await springDiPhase.execute(makeCtx(graph), new Map());
+    const output = await diPhase.execute(makeCtx(graph), new Map());
 
     expect(injectsEdges(graph)).toHaveLength(0);
     expect(output.injectsEdges).toBe(0);
@@ -421,7 +427,7 @@ describe('spring-di phase', () => {
     // the gate is deliberate; this test pins it.
     addProperty(graph, 'MyService', 'named', 'List<IFoo>', 'java', ['@Resource']);
 
-    const output = await springDiPhase.execute(makeCtx(graph), new Map());
+    const output = await diPhase.execute(makeCtx(graph), new Map());
 
     expect(injectsEdges(graph)).toHaveLength(0);
     expect(output.injectsEdges).toBe(0);
@@ -443,7 +449,7 @@ describe('spring-di phase', () => {
       '@Qualifier',
     ]);
 
-    const output = await springDiPhase.execute(makeCtx(graph), new Map());
+    const output = await diPhase.execute(makeCtx(graph), new Map());
 
     const edges = injectsEdges(graph);
     expect(edges).toHaveLength(1);
@@ -453,5 +459,145 @@ describe('spring-di phase', () => {
       reason: 'Spring DI: @Autowired List<IFoo>',
     });
     expect(output.fieldsScanned).toBe(1);
+  });
+
+  // -------------------------------------------------------------------------
+  // Matcher registry routing (PR #2200 U3)
+  // -------------------------------------------------------------------------
+
+  it('skips Property nodes whose language has no registered matcher', async () => {
+    const graph = createKnowledgeGraph();
+
+    addInterface(graph, 'IFoo');
+    addClass(graph, 'FooImpl1', 'java');
+    addImplements(graph, 'FooImpl1', 'IFoo');
+
+    // A supported language with NO DI_MATCHERS entry: the node carries the
+    // full annotated-collection shape, but no matcher is registered for
+    // 'python', so the phase must produce zero candidates.
+    addClass(graph, 'PyConsumer', 'python');
+    addProperty(graph, 'PyConsumer', 'foos', 'List<IFoo>', 'python', ['@Autowired']);
+
+    const output = await diPhase.execute(makeCtx(graph), new Map());
+
+    expect(injectsEdges(graph)).toHaveLength(0);
+    expect(output.injectsEdges).toBe(0);
+    expect(output.fieldsScanned).toBe(0);
+  });
+
+  it('skips Property nodes whose language string is not a SupportedLanguages value', async () => {
+    const graph = createKnowledgeGraph();
+
+    addInterface(graph, 'IFoo');
+    addClass(graph, 'FooImpl1', 'java');
+    addImplements(graph, 'FooImpl1', 'IFoo');
+
+    // An arbitrary language string outside the enum exercises the
+    // isSupportedLanguage narrowing guard in the phase's routing.
+    addClass(graph, 'FortranConsumer', 'fortran');
+    addProperty(graph, 'FortranConsumer', 'foos', 'List<IFoo>', 'fortran', ['@Autowired']);
+
+    const output = await diPhase.execute(makeCtx(graph), new Map());
+
+    expect(injectsEdges(graph)).toHaveLength(0);
+    expect(output.injectsEdges).toBe(0);
+    expect(output.fieldsScanned).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Matcher-level tests (di-extractors/spring.ts)
+// ---------------------------------------------------------------------------
+
+/** Hand-build a Property GraphNode for direct matcher calls. */
+function matcherNode(properties: {
+  name: string;
+  rawDeclaredType?: string;
+  annotations?: string[];
+  language?: string;
+}): GraphNode {
+  const { name, ...rest } = properties;
+  return {
+    id: generateId('Property', name),
+    label: 'Property',
+    properties: { name, filePath: `src/Owner.java`, language: 'java', ...rest },
+  };
+}
+
+describe('springDiFieldMatcher', () => {
+  it('returns the parsed match for an @Autowired collection field', () => {
+    const match = springDiFieldMatcher(
+      matcherNode({ name: 'foos', rawDeclaredType: 'List<IFoo>', annotations: ['@Autowired'] }),
+    );
+    expect(match).toEqual({
+      collectionType: 'List',
+      elementTypeName: 'IFoo',
+      matchedAnnotation: '@Autowired',
+      reason: 'Spring DI: @Autowired List<IFoo>',
+    });
+  });
+
+  it('parses Map<K,T> to the value type T', () => {
+    const match = springDiFieldMatcher(
+      matcherNode({
+        name: 'plugins',
+        rawDeclaredType: 'Map<String,IPlugin>',
+        annotations: ['@Inject'],
+      }),
+    );
+    expect(match).toEqual({
+      collectionType: 'Map',
+      elementTypeName: 'IPlugin',
+      matchedAnnotation: '@Inject',
+      reason: 'Spring DI: @Inject Map<IPlugin>',
+    });
+  });
+
+  it('returns null for a non-annotated collection field', () => {
+    expect(
+      springDiFieldMatcher(matcherNode({ name: 'cache', rawDeclaredType: 'List<IFoo>' })),
+    ).toBe(null);
+  });
+
+  it('returns null for @Resource (deliberate exclusion) and other non-injection annotations', () => {
+    expect(
+      springDiFieldMatcher(
+        matcherNode({ name: 'named', rawDeclaredType: 'List<IFoo>', annotations: ['@Resource'] }),
+      ),
+    ).toBe(null);
+    expect(
+      springDiFieldMatcher(
+        matcherNode({ name: 'q', rawDeclaredType: 'List<IFoo>', annotations: ['@Qualifier'] }),
+      ),
+    ).toBe(null);
+  });
+
+  it('returns null for an annotated non-collection field', () => {
+    expect(
+      springDiFieldMatcher(
+        matcherNode({ name: 'foo', rawDeclaredType: 'IFoo', annotations: ['@Autowired'] }),
+      ),
+    ).toBe(null);
+  });
+
+  it('returns null for an annotated field with no rawDeclaredType (plumbing breach)', () => {
+    expect(springDiFieldMatcher(matcherNode({ name: 'foos', annotations: ['@Autowired'] }))).toBe(
+      null,
+    );
+  });
+
+  it("ignores node language — routing is the DI_MATCHERS registry's job", () => {
+    // The matcher never reads properties.language: a valid Spring shape on a
+    // 'python'-tagged node still matches. The phase-level registry routing
+    // (tested above) is what keeps non-Java nodes away from this matcher.
+    const match = springDiFieldMatcher(
+      matcherNode({
+        name: 'foos',
+        rawDeclaredType: 'List<IFoo>',
+        annotations: ['@Autowired'],
+        language: 'python',
+      }),
+    );
+    expect(match).toMatchObject({ collectionType: 'List', elementTypeName: 'IFoo' });
   });
 });

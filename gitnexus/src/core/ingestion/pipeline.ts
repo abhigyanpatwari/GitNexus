@@ -35,7 +35,7 @@ import {
   taintSummariesPhase,
   callSummariesPhase,
   mroPhase,
-  springDiPhase,
+  diPhase,
   communitiesPhase,
   processesPhase,
   PhaseRegistry,
@@ -244,7 +244,7 @@ export interface PipelineOptions {
  *
  *   scan → structure → [markdown, cobol] → parse → [routes, tools, orm]
  *     → crossFile → scopeResolution → pruneLocalSymbols
- *     → mro → spring-di → communities → processes
+ *     → mro → di → communities → processes
  *
  * To add a new phase: create a file in pipeline-phases/, export the phase
  * object, and `.register()` it at the appropriate position below. Opt-in
@@ -276,7 +276,7 @@ export function buildPhaseList(options?: PipelineOptions): PipelinePhase[] {
       .register(taintSummariesPhase, { enabledWhen: (o) => o.pdg === true })
       .register(callSummariesPhase, { enabledWhen: (o) => o.pdg === true })
       .register(mroPhase, { enabledWhen: (o) => !o.skipGraphPhases })
-      .register(springDiPhase, { enabledWhen: (o) => !o.skipGraphPhases })
+      .register(diPhase, { enabledWhen: (o) => !o.skipGraphPhases })
       .register(communitiesPhase, { enabledWhen: (o) => !o.skipGraphPhases })
       .register(processesPhase, { enabledWhen: (o) => !o.skipGraphPhases })
       // Normalize a missing options object once here so phase predicates above
