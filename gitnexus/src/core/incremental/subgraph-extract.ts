@@ -68,8 +68,21 @@ const isGraphWide = (label: string): boolean => label === 'Community' || label =
 // re-included from the FULL fresh graph (which the emit phase recomputes every
 // run) or an unchanged function's summary would be lost. Cheap: one self-loop
 // edge per return-flowing function.
+//
+// `INJECTS` (DI collection injection, #2200) is the same class as TAINT_PATH
+// (the #2084 M4 U6 pattern above): its validity is a whole-program property —
+// a change to a THIRD file (the interface itself, or a new/removed
+// implementer) creates or invalidates edges between two files that were never
+// touched, so the endpoint-writability rule would strand a stale
+// consumer→implementer edge (or miss a new one). Always re-extracted from the
+// fresh graph; the orchestrator unconditionally delete-alls the old rows
+// first (`deleteAllInjects`). Crash-recovery: delete-then-COPY is not atomic
+// by design — a crash between them loses INJECTS edges until the next
+// analyze, and the `incrementalInProgress` dirty flag (saved before any
+// delete) forces a full rebuild on the next run. Temporary absence is
+// possible; duplicates are not.
 const isGraphWideRelType = (type: string): boolean =>
-  type === 'TAINT_PATH' || type === 'CALL_SUMMARY';
+  type === 'TAINT_PATH' || type === 'CALL_SUMMARY' || type === 'INJECTS';
 
 /**
  * Build a Map<nodeId, filePath> for every File-bound node in the graph.

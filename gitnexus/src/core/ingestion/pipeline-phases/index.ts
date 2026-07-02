@@ -24,6 +24,7 @@ export { pruneLocalSymbolsPhase, type PruneLocalSymbolsOutput } from './prune-lo
 export { taintSummariesPhase, type TaintSummariesOutput } from './taint-summaries.js';
 export { callSummariesPhase, type CallSummariesOutput } from './call-summaries.js';
 export { mroPhase, type MROOutput } from './mro.js';
+export { diPhase, type DIOutput } from './di.js';
 export { communitiesPhase, type CommunitiesOutput } from './communities.js';
 export { processesPhase, type ProcessesOutput } from './processes.js';
 

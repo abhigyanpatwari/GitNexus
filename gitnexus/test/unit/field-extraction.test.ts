@@ -7,7 +7,7 @@ import { goConfig } from '../../src/core/ingestion/field-extractors/configs/go.j
 import { cppConfig } from '../../src/core/ingestion/field-extractors/configs/c-cpp.js';
 import { rubyConfig } from '../../src/core/ingestion/field-extractors/configs/ruby.js';
 import { dartConfig } from '../../src/core/ingestion/field-extractors/configs/dart.js';
-import { kotlinConfig } from '../../src/core/ingestion/field-extractors/configs/jvm.js';
+import { javaConfig, kotlinConfig } from '../../src/core/ingestion/field-extractors/configs/jvm.js';
 import { swiftConfig } from '../../src/core/ingestion/field-extractors/configs/swift.js';
 import type { FieldExtractorContext } from '../../src/core/ingestion/field-types.js';
 import type { TypeEnvironment } from '../../src/core/ingestion/type-env.js';
@@ -18,6 +18,7 @@ import Python from 'tree-sitter-python';
 import Go from 'tree-sitter-go';
 import Cpp from 'tree-sitter-cpp';
 import Ruby from 'tree-sitter-ruby';
+import Java from 'tree-sitter-java';
 import CSharp from 'tree-sitter-c-sharp';
 import { requireVendoredGrammar } from '../../src/core/tree-sitter/vendored-grammars.js';
 
@@ -1179,6 +1180,135 @@ describe('GenericFieldExtractor — Dart', () => {
     expect(p!.visibility).toBe('private');
     expect(p!.isStatic).toBe(true);
     expect(p!.isReadonly).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Java config — rawDeclaredType: verbatim generic type text (PR #2200 U1)
+// and annotations: '@Name' strings from the modifiers child (PR #2200 U2)
+// ---------------------------------------------------------------------------
+
+describe('GenericFieldExtractor — Java (rawDeclaredType + annotations)', () => {
+  const parser = new Parser();
+  const extractor = createFieldExtractor(javaConfig);
+  const mockContext = createMockContext();
+  mockContext.language = SupportedLanguages.Java;
+  mockContext.filePath = 'Test.java';
+
+  /** Parse `src` and return the first class_declaration node. */
+  function classNode(src: string) {
+    parser.setLanguage(Java);
+    const tree = parser.parse(src);
+    const node = tree.rootNode.child(0);
+    if (!node) throw new Error('no class node');
+    return node;
+  }
+
+  it.each([
+    {
+      field: 'private List<Shape> shapes;',
+      name: 'shapes',
+      type: 'List',
+      rawDeclaredType: 'List<Shape>',
+    },
+    {
+      field: 'private Set<T> items;',
+      name: 'items',
+      type: 'Set',
+      rawDeclaredType: 'Set<T>',
+    },
+    {
+      field: 'private Map<String, Foo> byName;',
+      name: 'byName',
+      type: 'Map',
+      rawDeclaredType: 'Map<String, Foo>',
+    },
+    {
+      // Non-generic field: rawDeclaredType is PRESENT and equals the type text.
+      field: 'private String name;',
+      name: 'name',
+      type: 'String',
+      rawDeclaredType: 'String',
+    },
+    {
+      // Qualified generic: raw text preserved verbatim; simple name still last segment.
+      field: 'private java.util.List<Shape> shapes;',
+      name: 'shapes',
+      type: 'List',
+      rawDeclaredType: 'java.util.List<Shape>',
+    },
+  ])(
+    'extracts type "$type" and rawDeclaredType "$rawDeclaredType" from `$field`',
+    ({ field, name, type, rawDeclaredType }) => {
+      const result = extractor.extract(classNode(`class C { ${field} }`), mockContext);
+
+      expect(result).not.toBeNull();
+      expect(result!.fields).toHaveLength(1);
+      expect(result!.fields[0]).toMatchObject({ name, type, rawDeclaredType });
+    },
+  );
+
+  it.each([
+    {
+      // marker_annotation node type (no arguments).
+      field: '@Autowired private List<Shape> shapes;',
+      annotations: ['@Autowired'],
+    },
+    {
+      // `annotation` node type (with arguments), not `marker_annotation` —
+      // the name comes from the annotation's `name` field.
+      field: '@Autowired(required=false) private List<Shape> shapes;',
+      annotations: ['@Autowired'],
+    },
+    {
+      // Multiple annotations on one field — all are collected, in order.
+      field: '@Nullable @Autowired @Qualifier("shapeBeans") private List<Shape> shapes;',
+      annotations: ['@Nullable', '@Autowired', '@Qualifier'],
+    },
+  ])('extracts annotations $annotations from `$field`', ({ field, annotations }) => {
+    const result = extractor.extract(classNode(`class C { ${field} }`), mockContext);
+
+    expect(result).not.toBeNull();
+    expect(result!.fields).toHaveLength(1);
+    expect(result!.fields[0]).toMatchObject({ name: 'shapes', annotations });
+  });
+
+  it('omits annotations entirely for a non-annotated field', () => {
+    const result = extractor.extract(
+      classNode('class C { private List<Shape> shapes; }'),
+      mockContext,
+    );
+
+    expect(result).not.toBeNull();
+    expect(result!.fields).toHaveLength(1);
+    expect(result!.fields[0]).not.toHaveProperty('annotations');
+  });
+
+  it('still extracts the field when extractRawType/extractAnnotations throw (per-hook isolation)', () => {
+    // A throwing hook must degrade to a field WITHOUT raw/annotations — never
+    // escape buildField: an escaped throw reaches the language-group catch
+    // upstream (processFileGroup) and silently drops every remaining file in
+    // the group (#2286-review guard pattern).
+    const throwingExtractor = createFieldExtractor({
+      ...javaConfig,
+      extractRawType: () => {
+        throw new Error('unexpected node shape');
+      },
+      extractAnnotations: () => {
+        throw new Error('unexpected node shape');
+      },
+    });
+
+    const result = throwingExtractor.extract(
+      classNode('class C { @Autowired private List<Shape> shapes; }'),
+      mockContext,
+    );
+
+    expect(result).not.toBeNull();
+    expect(result!.fields).toHaveLength(1);
+    expect(result!.fields[0]).toMatchObject({ name: 'shapes', type: 'List' });
+    expect(result!.fields[0]).not.toHaveProperty('rawDeclaredType');
+    expect(result!.fields[0]).not.toHaveProperty('annotations');
   });
 });
 

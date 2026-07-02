@@ -111,6 +111,25 @@ describe('extractChangedSubgraph', () => {
 
     expect(sub.relationships.map((r) => r.id)).toEqual(['tp1']);
   });
+
+  it('always includes INJECTS edges even between two unchanged files (#2200)', () => {
+    // A DI consumer→implementer INJECTS edge whose endpoints (consumer.java,
+    // impl.java) are both unchanged, but the interface (or a sibling
+    // implementer) on the changed third.java altered the fan-out.
+    // Endpoint-writability alone would strand the stale edge; INJECTS is
+    // graph-wide so it is always re-extracted (the orchestrator
+    // unconditionally delete-alls the old rows first). A plain CALLS edge
+    // between the same unchanged files stays excluded.
+    const g = createKnowledgeGraph();
+    g.addNode(makeFileNode('consumer:Class', '/repo/consumer.java'));
+    g.addNode(makeFileNode('impl:Class', '/repo/impl.java'));
+    g.addRelationship(makeRel('inj1', 'consumer:Class', 'impl:Class', 'INJECTS'));
+    g.addRelationship(makeRel('call1', 'consumer:Class', 'impl:Class', 'CALLS'));
+
+    const sub = extractChangedSubgraph(g, new Set(['/repo/third.java']));
+
+    expect(sub.relationships.map((r) => r.id)).toEqual(['inj1']);
+  });
 });
 
 describe('computeEffectiveWriteSet (Finding 1)', () => {

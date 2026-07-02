@@ -24,6 +24,7 @@ import { getNodeLabel as deriveNodeLabel, type WriteStreamFactory } from './rel-
 import type { CachedEmbedding } from '../embeddings/types.js';
 import { extensionManager, type ExtensionEnsureOptions } from './extension-loader.js';
 import {
+  classifyDeleteAllError,
   closeLbugConnection,
   isDbBusyError,
   isOpenRetryExhausted,
@@ -2148,6 +2149,72 @@ export const deleteAllCommunitiesAndProcesses = async (): Promise<{
 };
 
 /**
+ * Shared mechanics for the delete-all-relationships-of-one-type family
+ * ({@link deleteAllInterprocTaintPaths}, {@link deleteAllCallSummaries},
+ * {@link deleteAllInjects}): count the typed CodeRelation rows, then DELETE
+ * them (relationship-level — these are edge types, not node labels, so
+ * endpoints are untouched).
+ *
+ * count + DELETE run as one critical section on the singleton connection so a
+ * concurrent WAL-checkpoint cannot corrupt native state mid-delete (#pdg).
+ *
+ * @param relType       the CodeRelation `type` value to delete (e.g. 'INJECTS')
+ * @param logTag        the `[tag]` prefix on the abort error message
+ * @param duplicateNoun what the abort message says would be duplicated
+ */
+const deleteAllRelationshipsOfType = async (
+  relType: string,
+  logTag: string,
+  duplicateNoun: string,
+): Promise<{ edgesDeleted: number }> => {
+  const c = conn;
+  if (!c) {
+    throw new Error('LadybugDB not initialized. Call initLbug first.');
+  }
+  return withConnLock(async () => {
+    let edgesDeleted = 0;
+    let countResult: lbug.QueryResult | lbug.QueryResult[] | undefined;
+    try {
+      countResult = await c.query(
+        `MATCH ()-[r:CodeRelation]->() WHERE r.type = '${relType}' RETURN count(r) AS cnt`,
+      );
+      const result = Array.isArray(countResult) ? countResult[0] : countResult;
+      const rows = await result.getAll();
+      const count = Number(rows[0]?.cnt ?? rows[0]?.[0] ?? 0);
+      if (count > 0) {
+        await closeQueryResults(
+          await c.query(`MATCH ()-[r:CodeRelation]->() WHERE r.type = '${relType}' DELETE r`),
+        );
+        edgesDeleted = count;
+      }
+    } catch (err) {
+      // A missing table on a freshly-initialized DB is the benign, expected case
+      // (the count query above is what throws) — stay silent. Any OTHER failure
+      // (lock, disk, native error) would leave stale rows that the subsequent
+      // re-extract then DUPLICATES (CodeRelation has no PK), so it must ABORT
+      // the writeback (#2084 review P2-5): re-throw so the caller's crash-
+      // recovery dirty flag forces a clean full rebuild on the next run, rather
+      // than silently writing duplicate rows. The benign-vs-rethrow branch is
+      // pure, extracted, and pinned by unit tests: `classifyDeleteAllError`
+      // (lbug-config.ts, test/unit/lbug-delete-all-error.test.ts).
+      const msg = err instanceof Error ? err.message : String(err);
+      if (classifyDeleteAllError(err) === 'benign-missing-table') {
+        if (countResult) await closeQueryResults(countResult);
+        return { edgesDeleted };
+      }
+      if (countResult) await closeQueryResults(countResult);
+      throw new Error(
+        `[${logTag}] failed to clear existing ${relType} edges before incremental ` +
+          `re-write (${msg}) — aborting to avoid ${duplicateNoun}; ` +
+          `the next run will full-rebuild`,
+      );
+    }
+    if (countResult) await closeQueryResults(countResult);
+    return { edgesDeleted };
+  });
+};
+
+/**
  * Drop every interprocedural `TAINT_PATH` relationship (#2084 M4 U6). Used at
  * the start of an incremental `--pdg` writeback so the `taintSummaries` phase
  * re-materialises them from scratch on the FULL recomputed graph.
@@ -2162,53 +2229,12 @@ export const deleteAllCommunitiesAndProcesses = async (): Promise<{
  * run. Relationship-level (TAINT_PATH is an edge type, not a node label), so a
  * plain DELETE on the typed CodeRelation rows — endpoints are untouched.
  */
-export const deleteAllInterprocTaintPaths = async (): Promise<{ edgesDeleted: number }> => {
-  const c = conn;
-  if (!c) {
-    throw new Error('LadybugDB not initialized. Call initLbug first.');
-  }
-  // count + DELETE run as one critical section on the singleton connection so a
-  // concurrent WAL-checkpoint cannot corrupt native state mid-delete (#pdg).
-  return withConnLock(async () => {
-    let edgesDeleted = 0;
-    let countResult: lbug.QueryResult | lbug.QueryResult[] | undefined;
-    try {
-      countResult = await c.query(
-        `MATCH ()-[r:CodeRelation]->() WHERE r.type = 'TAINT_PATH' RETURN count(r) AS cnt`,
-      );
-      const result = Array.isArray(countResult) ? countResult[0] : countResult;
-      const rows = await result.getAll();
-      const count = Number(rows[0]?.cnt ?? rows[0]?.[0] ?? 0);
-      if (count > 0) {
-        await closeQueryResults(
-          await c.query(`MATCH ()-[r:CodeRelation]->() WHERE r.type = 'TAINT_PATH' DELETE r`),
-        );
-        edgesDeleted = count;
-      }
-    } catch (err) {
-      // A missing table on a freshly-initialized DB is the benign, expected case
-      // (the count query above is what throws) — stay silent. Any OTHER failure
-      // (lock, disk, native error) would leave stale TAINT_PATH rows that the
-      // subsequent re-extract then DUPLICATES (CodeRelation has no PK), so it
-      // must ABORT the writeback (#2084 review P2-5): re-throw so the caller's
-      // crash-recovery dirty flag forces a clean full rebuild on the next run,
-      // rather than silently writing duplicate cross-function findings.
-      const msg = err instanceof Error ? err.message : String(err);
-      if (/no table|not exist|not found|does not exist|Table .* does not exist/i.test(msg)) {
-        if (countResult) await closeQueryResults(countResult);
-        return { edgesDeleted };
-      }
-      if (countResult) await closeQueryResults(countResult);
-      throw new Error(
-        `[taint-interproc] failed to clear existing TAINT_PATH edges before incremental ` +
-          `re-write (${msg}) — aborting to avoid duplicate cross-function findings; ` +
-          `the next run will full-rebuild`,
-      );
-    }
-    if (countResult) await closeQueryResults(countResult);
-    return { edgesDeleted };
-  });
-};
+export const deleteAllInterprocTaintPaths = async (): Promise<{ edgesDeleted: number }> =>
+  deleteAllRelationshipsOfType(
+    'TAINT_PATH',
+    'taint-interproc',
+    'duplicate cross-function findings',
+  );
 
 /**
  * Drop every `CALL_SUMMARY` relationship (PDG FU-C, U-C3). Used at the start of
@@ -2221,51 +2247,27 @@ export const deleteAllInterprocTaintPaths = async (): Promise<{ edgesDeleted: nu
  * from the fresh graph (`isGraphWideRelType`), so delete-all-then-rebuild keeps
  * an unchanged function's summary from being lost.
  */
-export const deleteAllCallSummaries = async (): Promise<{ edgesDeleted: number }> => {
-  const c = conn;
-  if (!c) {
-    throw new Error('LadybugDB not initialized. Call initLbug first.');
-  }
-  // count + DELETE run as one critical section on the singleton connection so a
-  // concurrent WAL-checkpoint cannot corrupt native state mid-delete (#pdg).
-  return withConnLock(async () => {
-    let edgesDeleted = 0;
-    let countResult: lbug.QueryResult | lbug.QueryResult[] | undefined;
-    try {
-      countResult = await c.query(
-        `MATCH ()-[r:CodeRelation]->() WHERE r.type = 'CALL_SUMMARY' RETURN count(r) AS cnt`,
-      );
-      const result = Array.isArray(countResult) ? countResult[0] : countResult;
-      const rows = await result.getAll();
-      const count = Number(rows[0]?.cnt ?? rows[0]?.[0] ?? 0);
-      if (count > 0) {
-        await closeQueryResults(
-          await c.query(`MATCH ()-[r:CodeRelation]->() WHERE r.type = 'CALL_SUMMARY' DELETE r`),
-        );
-        edgesDeleted = count;
-      }
-    } catch (err) {
-      // A missing table on a freshly-initialized DB is the benign, expected case
-      // (the count query is what throws) — stay silent. Any OTHER failure would
-      // leave stale rows that the re-extract then DUPLICATES (CodeRelation has no
-      // PK), so it must ABORT the writeback: re-throw so the caller's crash-
-      // recovery dirty flag forces a clean full rebuild on the next run.
-      const msg = err instanceof Error ? err.message : String(err);
-      if (/no table|not exist|not found|does not exist|Table .* does not exist/i.test(msg)) {
-        if (countResult) await closeQueryResults(countResult);
-        return { edgesDeleted };
-      }
-      if (countResult) await closeQueryResults(countResult);
-      throw new Error(
-        `[call-summary] failed to clear existing CALL_SUMMARY edges before incremental ` +
-          `re-write (${msg}) — aborting to avoid duplicate summaries; ` +
-          `the next run will full-rebuild`,
-      );
-    }
-    if (countResult) await closeQueryResults(countResult);
-    return { edgesDeleted };
-  });
-};
+export const deleteAllCallSummaries = async (): Promise<{ edgesDeleted: number }> =>
+  deleteAllRelationshipsOfType('CALL_SUMMARY', 'call-summary', 'duplicate summaries');
+
+/**
+ * Drop every `INJECTS` relationship (DI collection injection, #2200). Used at
+ * the start of an incremental writeback — UNCONDITIONALLY, unlike the
+ * pdg-gated twins above, because the `di` phase runs on every persisting
+ * analyze — so the phase re-materialises them from scratch on the FULL
+ * recomputed graph.
+ *
+ * Mirrors {@link deleteAllInterprocTaintPaths}: INJECTS validity is a
+ * whole-program property (a change to the interface, or a new/removed
+ * implementer, on a THIRD file creates/invalidates edges between two
+ * untouched files), so endpoint-writability extraction can't refresh them.
+ * `extractChangedSubgraph` re-includes ALL of them from the fresh graph
+ * (`isGraphWideRelType`), so delete-all-then-rebuild is the sound move.
+ * Relationship-level (INJECTS is an edge type, not a node label), so a plain
+ * DELETE on the typed CodeRelation rows — endpoints are untouched.
+ */
+export const deleteAllInjects = async (): Promise<{ edgesDeleted: number }> =>
+  deleteAllRelationshipsOfType('INJECTS', 'di', 'duplicate INJECTS edges');
 
 // ============================================================================
 // Full-Text Search (FTS) Functions

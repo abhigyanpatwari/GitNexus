@@ -6,6 +6,7 @@
  */
 
 import type { ToolAnnotations } from '@modelcontextprotocol/sdk/types.js';
+import { REL_TYPES } from 'gitnexus-shared';
 
 export interface ToolDefinition {
   name: string;
@@ -207,7 +208,7 @@ SCHEMA:
 - Nodes: File, Folder, Function, Class, Interface, Method, CodeElement, Community, Process, Route, Tool
 - Multi-language nodes (use backticks): \`Struct\`, \`Enum\`, \`Trait\`, \`Impl\`, etc.
 - All edges via single CodeRelation table with 'type' property
-- Edge types: CONTAINS, DEFINES, CALLS, IMPORTS, EXTENDS, IMPLEMENTS, HAS_METHOD, HAS_PROPERTY, ACCESSES, METHOD_OVERRIDES, METHOD_IMPLEMENTS, MEMBER_OF, STEP_IN_PROCESS, HANDLES_ROUTE, FETCHES, HANDLES_TOOL, ENTRY_POINT_OF
+- Edge types: ${REL_TYPES.join(', ')} — CFG, REACHING_DEF, TAINTED, SANITIZES, TAINT_PATH, CDG, POST_DOMINATE are populated ONLY on indexes built with \`gitnexus analyze --pdg\` (zero rows on a default index); OVERRIDES is a legacy alias — rows are written as METHOD_OVERRIDES
 - Edge properties: type (STRING), confidence (DOUBLE), reason (STRING), step (INT32)
 
 EXAMPLES:
@@ -231,6 +232,9 @@ EXAMPLES:
 
 • Find method overrides (MRO resolution):
   MATCH (winner:Method)-[r:CodeRelation {type: 'METHOD_OVERRIDES'}]->(loser:Method) RETURN winner.name, winner.filePath, loser.filePath, r.reason
+
+• Find DI-injected implementations (beans injected into a consumer class):
+  MATCH (c:Class {name: 'OrderService'})-[r:CodeRelation]->(impl:Class) WHERE r.type = 'INJECTS' RETURN impl.name, r.reason
 
 • Detect diamond inheritance:
   MATCH (d:Class)-[:CodeRelation {type: 'EXTENDS'}]->(b1), (d)-[:CodeRelation {type: 'EXTENDS'}]->(b2), (b1)-[:CodeRelation {type: 'EXTENDS'}]->(a), (b2)-[:CodeRelation {type: 'EXTENDS'}]->(a) WHERE b1 <> b2 RETURN d.name, b1.name, b2.name, a.name
@@ -512,7 +516,7 @@ SERVICE: optional monorepo path prefix (case-sensitive path segments). When "rep
           type: 'array',
           items: { type: 'string' },
           description:
-            'Filter: CALLS, IMPORTS, EXTENDS, IMPLEMENTS, HAS_METHOD, HAS_PROPERTY, METHOD_OVERRIDES, METHOD_IMPLEMENTS, ACCESSES (default: usage-based, ACCESSES excluded by default)',
+            'Filter: CALLS, IMPORTS, EXTENDS, IMPLEMENTS, HAS_METHOD, HAS_PROPERTY, METHOD_OVERRIDES, METHOD_IMPLEMENTS, ACCESSES (default: usage-based, ACCESSES excluded by default). DI fan-out (consumer→implementer) requires explicitly including INJECTS.',
         },
         includeTests: { type: 'boolean', description: 'Include test files (default: false)' },
         minConfidence: {

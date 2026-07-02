@@ -221,6 +221,14 @@ export const VALID_RELATION_TYPES = new Set([
   'HANDLES_TOOL',
   'ENTRY_POINT_OF',
   'WRAPS',
+  // Emitted by the `di` pipeline phase (#2200 — DI collection injection,
+  // consumer Class → implementer Class). Valid here for explicit
+  // `relationTypes` filters, but deliberately NOT in the default impact()
+  // relTypes nor the context() incoming/outgoing lists — traversal is opt-in,
+  // like WRAPS/FETCHES. Also deliberately NO IMPACT_RELATION_CONFIDENCE entry
+  // (WRAPS/FETCHES precedent): the 0.5 unknown-type floor applies there,
+  // and the edges carry their own confidence (0.8) in the graph.
+  'INJECTS',
 ]);
 
 /**

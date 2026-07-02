@@ -15,7 +15,7 @@ Monorepo: **CLI/MCP** (`gitnexus/`) + **browser UI** (`gitnexus-web/`).
 
 ## End-to-end flow: index → graph → tools
 
-1. **Ingestion** — `analyze.ts` → `runFullAnalysis` (`run-analyze.ts`) → `runPipelineFromRepo` (`pipeline.ts`). DAG of 14 phases builds a `KnowledgeGraph` in memory, then loads into LadybugDB under `.gitnexus/`. Repo registered in `~/.gitnexus/registry.json` for MCP discovery.
+1. **Ingestion** — `analyze.ts` → `runFullAnalysis` (`run-analyze.ts`) → `runPipelineFromRepo` (`pipeline.ts`). DAG of 15 phases builds a `KnowledgeGraph` in memory, then loads into LadybugDB under `.gitnexus/`. Repo registered in `~/.gitnexus/registry.json` for MCP discovery.
 
 2. **Persistence** — `repo-manager.ts` (paths, registry, LadybugDB cleanup). `lbug-adapter.ts` (graph load, queries, embedding batches).
 
@@ -82,11 +82,11 @@ Group-mode `trace` (`gitnexus/src/core/group/cross-trace.ts`) stitches a path th
 
 ## Pipeline Phase DAG
 
-14 phases defined in `gitnexus/src/core/ingestion/pipeline-phases/`, each with explicit `deps` and typed output.
+15 phases defined in `gitnexus/src/core/ingestion/pipeline-phases/`, each with explicit `deps` and typed output.
 
 ```
 scan → structure → [markdown, cobol] → parse → [routes, tools, orm]
-  → crossFile → scopeResolution → pruneLocalSymbols → mro → communities → processes
+  → crossFile → scopeResolution → pruneLocalSymbols → mro → di → communities → processes
 ```
 
 | Phase | File | Deps | Output |
@@ -103,6 +103,7 @@ scan → structure → [markdown, cobol] → parse → [routes, tools, orm]
 | `scopeResolution` | `scope-resolution/pipeline/phase.ts` | `parse`, `crossFile`, `structure` | Binding/reference + inheritance edges; disposes BindingAccumulator |
 | `pruneLocalSymbols` | `prune-local-symbols.ts` | `scopeResolution` | Drops inert block-local `Const`/`Variable`/`Static` nodes (only a `File→DEFINES` edge) post-resolution |
 | `mro` | `mro.ts` | `crossFile`, `scopeResolution`, `pruneLocalSymbols`, `structure` | METHOD_OVERRIDES + METHOD_IMPLEMENTS edges |
+| `di` | `di.ts` | `mro` | INJECTS edges (framework-neutral DI resolution; per-language matchers registered in `di-extractors/`) |
 | `communities` | `communities.ts` | `mro`, `pruneLocalSymbols`, `structure` | Community nodes + MEMBER_OF edges (Leiden algorithm) |
 | `processes` | `processes.ts` | `communities`, `routes`, `tools`, `pruneLocalSymbols`, `structure` | Process nodes + STEP_IN_PROCESS edges |
 
@@ -126,7 +127,7 @@ scan → structure → [markdown, cobol] → parse → [routes, tools, orm]
 - **Single graph accumulator** — all phases mutate the same `KnowledgeGraph` in `ctx`; the graph is the primary output.
 - **Typed phase access** — `getPhaseOutput<T>(deps, 'name')` for type-safe upstream results.
 - **Binding accumulator lifecycle** — created in `parse`, disposed by `crossFile` (in `finally`). No other phase should take ownership.
-- **Skippable phases** — `skipGraphPhases` omits MRO/communities/processes (faster tests); `pruneLocalSymbols` still runs (it is graph cleanup, not analysis). `skipWorkers` is no longer a sequential escape hatch — it (like `--workers 0` / `GITNEXUS_WORKER_POOL_SIZE=0`) is rejected with an actionable error, since the worker pool is the sole parse path (§ Chunked parse-and-resolve).
+- **Skippable phases** — `skipGraphPhases` omits MRO/di/communities/processes (faster tests); `pruneLocalSymbols` still runs (it is graph cleanup, not analysis). `skipWorkers` is no longer a sequential escape hatch — it (like `--workers 0` / `GITNEXUS_WORKER_POOL_SIZE=0`) is rejected with an actionable error, since the worker pool is the sole parse path (§ Chunked parse-and-resolve).
 - **Local-symbol pruning** — `pruneLocalSymbols` removes inert block-local value symbols after scope resolution has consumed them. Opt out per-call with `PipelineOptions.keepLocalValueSymbols` or globally with the `GITNEXUS_KEEP_LOCAL_VALUE_SYMBOLS` env var.
 
 ### How to add a new phase

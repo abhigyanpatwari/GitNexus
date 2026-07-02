@@ -1698,6 +1698,13 @@ const processFileGroup = (
                         : routedFieldInfo?.type
                           ? { declaredType: routedFieldInfo.type }
                           : {}),
+                      ...(routedFieldInfo?.rawDeclaredType !== undefined
+                        ? { rawDeclaredType: routedFieldInfo.rawDeclaredType }
+                        : {}),
+                      ...(routedFieldInfo?.annotations !== undefined &&
+                      routedFieldInfo.annotations.length > 0
+                        ? { annotations: routedFieldInfo.annotations }
+                        : {}),
                       ...(routedFieldInfo?.visibility !== undefined
                         ? { visibility: routedFieldInfo.visibility }
                         : {}),
@@ -2249,6 +2256,15 @@ const processFileGroup = (
             const info = fieldMap?.get(nodeName);
             if (info) {
               declaredType = info.type ?? undefined;
+              // Mutate methodProps BEFORE the `{...methodProps}` spread below —
+              // rawDeclaredType is the verbatim generic type text (U1, PR #2200).
+              if (info.rawDeclaredType !== undefined) {
+                methodProps.rawDeclaredType = info.rawDeclaredType;
+              }
+              // Field annotations ('@Name' strings, U2 PR #2200) — omit when empty.
+              if (info.annotations !== undefined && info.annotations.length > 0) {
+                methodProps.annotations = info.annotations;
+              }
               methodProps.visibility = info.visibility;
               methodProps.isStatic = info.isStatic;
               methodProps.isReadonly = info.isReadonly;
