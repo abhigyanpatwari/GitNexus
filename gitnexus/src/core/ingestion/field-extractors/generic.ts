@@ -51,6 +51,13 @@ export interface FieldExtractionConfig {
   extractNames?: (node: SyntaxNode) => string[];
   /** Extract type annotation from a field declaration node */
   extractType: (node: SyntaxNode) => string | undefined;
+  /**
+   * Extract the verbatim declared-type source text (trimmed) from a field
+   * declaration node, preserving generic arguments (`List<Shape>` stays
+   * `List<Shape>`). Unlike `extractType`, the result bypasses
+   * `normalizeType`/`resolveType` entirely — it is the untouched source text.
+   */
+  extractRawType?: (node: SyntaxNode) => string | undefined;
   /** Extract visibility from a field declaration node */
   extractVisibility: (node: SyntaxNode) => FieldVisibility;
   /** Extract visibility for one field name from a multi-name declaration. */
@@ -183,9 +190,14 @@ export function createFieldExtractor(config: FieldExtractionConfig): FieldExtrac
         if (resolved) type = resolved;
       }
 
+      // Raw declared type deliberately bypasses normalizeType/resolveType —
+      // it is the verbatim source text (generics preserved).
+      const rawDeclaredType = config.extractRawType?.(node);
+
       return {
         name,
         type,
+        ...(rawDeclaredType !== undefined ? { rawDeclaredType } : {}),
         visibility: config.extractVisibilityForName?.(node, name) ?? config.extractVisibility(node),
         isStatic: config.isStatic(node),
         isReadonly: config.isReadonly(node),

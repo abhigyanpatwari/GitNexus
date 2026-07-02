@@ -78,6 +78,9 @@ export type NodeProperties = {
   level?: number;
   returnType?: string;
   declaredType?: string;
+  /** Verbatim declared-type source text with generics preserved
+   *  (e.g. `List<Shape>` where `declaredType` is the stripped `List`). */
+  rawDeclaredType?: string;
   visibility?: string;
   isStatic?: boolean;
   isReadonly?: boolean;

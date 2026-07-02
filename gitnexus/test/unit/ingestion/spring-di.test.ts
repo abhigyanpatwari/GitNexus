@@ -70,17 +70,23 @@ function addImplements(graph: KnowledgeGraph, className: string, ifaceName: stri
 
 /**
  * Add a Property node (a field) to a class and link it via HAS_PROPERTY.
- * `declaredType` is the raw type text as the parser stores it.
+ *
+ * Mirrors the production extraction shape: `rawDeclaredType` is the verbatim
+ * type source text with generics preserved (e.g. `List<IFoo>`), while
+ * `declaredType` is the generics-stripped simple name (e.g. `List`) — derived
+ * here from the raw text. The phase matches on `rawDeclaredType` only.
  */
 function addProperty(
   graph: KnowledgeGraph,
   ownerClassName: string,
   fieldName: string,
-  declaredType: string,
+  rawDeclaredType: string,
   language = 'java',
 ): string {
   const ownerId = generateId('Class', ownerClassName);
   const propId = generateId('Property', `${ownerClassName}.${fieldName}`);
+  // Production `declaredType` is the simple name with generic args stripped.
+  const declaredType = rawDeclaredType.split('<')[0].trim();
   graph.addNode({
     id: propId,
     label: 'Property',
@@ -89,6 +95,7 @@ function addProperty(
       filePath: `src/${ownerClassName}.${language}`,
       language,
       declaredType,
+      rawDeclaredType,
     },
   });
   graph.addRelationship({
@@ -195,6 +202,45 @@ describe('spring-di phase', () => {
     addClass(graph, 'MyService', 'java');
     // A non-collection field — should be ignored
     addProperty(graph, 'MyService', 'foo', 'IFoo');
+
+    const output = await springDiPhase.execute(makeCtx(graph), new Map());
+
+    expect(injectsEdges(graph)).toHaveLength(0);
+    expect(output.injectsEdges).toBe(0);
+    expect(output.fieldsScanned).toBe(0);
+  });
+
+  it('creates no edges for a node carrying only the generics-stripped declaredType', async () => {
+    const graph = createKnowledgeGraph();
+
+    addInterface(graph, 'IFoo');
+    addClass(graph, 'FooImpl1', 'java');
+    addImplements(graph, 'FooImpl1', 'IFoo');
+    addClass(graph, 'MyService', 'java');
+
+    // Production shape when rawDeclaredType plumbing regresses: only the
+    // stripped simple name ("List") reaches the graph. The phase must NOT
+    // fall back to declaredType — zero edges, zero fields scanned.
+    const ownerId = generateId('Class', 'MyService');
+    const propId = generateId('Property', 'MyService.foos');
+    graph.addNode({
+      id: propId,
+      label: 'Property',
+      properties: {
+        name: 'foos',
+        filePath: 'src/MyService.java',
+        language: 'java',
+        declaredType: 'List',
+      },
+    });
+    graph.addRelationship({
+      id: generateId('HAS_PROPERTY', `${ownerId}->${propId}`),
+      sourceId: ownerId,
+      targetId: propId,
+      type: 'HAS_PROPERTY',
+      confidence: 1.0,
+      reason: '',
+    });
 
     const output = await springDiPhase.execute(makeCtx(graph), new Map());
 

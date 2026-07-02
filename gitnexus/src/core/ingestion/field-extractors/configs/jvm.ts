@@ -55,6 +55,14 @@ export const javaConfig: FieldExtractionConfig = {
     return undefined;
   },
 
+  extractRawType(node) {
+    // Verbatim type-node text — preserves generic arguments (`List<Shape>`)
+    // and qualifiers (`java.util.List<Shape>`) that extractType strips.
+    // Precedent: the JVM method extractor keeps raw `.text` for the same
+    // reason (method-extractors/configs/jvm.ts).
+    return node.childForFieldName('type')?.text?.trim();
+  },
+
   extractVisibility(node) {
     return findVisibility(node, JAVA_VIS, 'package', 'modifiers');
   },

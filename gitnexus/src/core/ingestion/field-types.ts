@@ -33,6 +33,12 @@ export interface FieldInfo {
   name: string;
   /** Resolved type (may be primitive, FQN, or generic) */
   type: string | null;
+  /**
+   * Verbatim declared-type source text (trimmed), preserving generic
+   * arguments and qualifiers — e.g. `List<Shape>` where `type` is `List`.
+   * Never passes through simple-name extraction or type resolution.
+   */
+  rawDeclaredType?: string;
   /** Visibility modifier */
   visibility: FieldVisibility;
   /** Is this a static member? */

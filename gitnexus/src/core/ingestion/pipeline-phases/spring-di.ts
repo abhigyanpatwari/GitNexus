@@ -8,10 +8,13 @@
  * relationship as `INJECTS` edges from the consumer Class node to each
  * implementing Class node.
  *
- * The resolution uses ONLY graph data — Property nodes (with `declaredType`
- * + `language`), `HAS_PROPERTY` edges, `IMPLEMENTS` edges, and Interface
- * nodes. No filesystem access is performed: the structural information was
- * already extracted by earlier parse / structure phases.
+ * The resolution uses ONLY graph data — Property nodes (with
+ * `rawDeclaredType` + `language`), `HAS_PROPERTY` edges, `IMPLEMENTS` edges,
+ * and Interface nodes. Matching happens on `rawDeclaredType` (the verbatim
+ * type text, generics preserved) — NOT `declaredType`, which is
+ * generics-stripped by design (`List<Shape>` → `List`) and can never match
+ * the collection patterns. No filesystem access is performed: the structural
+ * information was already extracted by earlier parse / structure phases.
  *
  * @deps    mro
  * @reads   graph (Property nodes, HAS_PROPERTY edges, IMPLEMENTS edges, Interface nodes)
@@ -35,20 +38,20 @@ const COLLECTION_TYPE_PATTERN = /^(List|Set|Collection)<(.+)>$/;
 const MAP_TYPE_PATTERN = /^Map<[^,]+,\s*(.+)>$/;
 
 /**
- * Parse a Spring DI collection field's declared type and return the injected
- * bean type name.
+ * Parse a Spring DI collection field's raw declared type (verbatim source
+ * text, generics preserved) and return the injected bean type name.
  *
  * @returns the collection wrapper name + element type name, or `null` when
- *          the declared type is not a recognized Spring collection shape.
+ *          the raw declared type is not a recognized Spring collection shape.
  */
 function parseSpringCollectionType(
-  declaredType: string,
+  rawDeclaredType: string,
 ): { collectionType: string; elementTypeName: string } | null {
-  const listMatch = COLLECTION_TYPE_PATTERN.exec(declaredType);
+  const listMatch = COLLECTION_TYPE_PATTERN.exec(rawDeclaredType);
   if (listMatch) {
     return { collectionType: listMatch[1], elementTypeName: listMatch[2] };
   }
-  const mapMatch = MAP_TYPE_PATTERN.exec(declaredType);
+  const mapMatch = MAP_TYPE_PATTERN.exec(rawDeclaredType);
   if (mapMatch) {
     return { collectionType: 'Map', elementTypeName: mapMatch[1] };
   }
@@ -85,9 +88,13 @@ export const springDiPhase: PipelinePhase<SpringDIOutput> = {
     ctx.graph.forEachNode((node) => {
       if (node.label !== 'Property') return;
       if (node.properties.language !== 'java') return;
-      const declaredType = node.properties.declaredType;
-      if (!declaredType) return;
-      const parsed = parseSpringCollectionType(declaredType);
+      // Match on rawDeclaredType ONLY — no `?? declaredType` fallback:
+      // production `declaredType` is generics-stripped by design, so a
+      // fallback can never match real data and would only mask plumbing
+      // regressions as quiet no-ops.
+      const rawDeclaredType = node.properties.rawDeclaredType;
+      if (!rawDeclaredType) return;
+      const parsed = parseSpringCollectionType(rawDeclaredType);
       if (!parsed) return;
       candidates.push({
         propertyId: node.id,
