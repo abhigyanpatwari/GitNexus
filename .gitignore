@@ -10,6 +10,7 @@ dist/
 # IDE
 .vscode/
 .idea/
+*.iml
 *.swp
 *.swo
 
