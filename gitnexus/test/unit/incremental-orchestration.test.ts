@@ -20,6 +20,7 @@
  * (Windows LadybugDB handle release can lag; `cleanupTempDir` retries).
  */
 
+import { execSync } from 'child_process';
 import { writeFile, readFile } from 'fs/promises';
 import path from 'path';
 import { afterEach, describe, it, expect, vi } from 'vitest';
@@ -33,6 +34,56 @@ import {
 import { setupMiniRepo as setupSharedMiniRepo } from '../helpers/mini-repo.js';
 
 const setupMiniRepo = () => setupSharedMiniRepo('gitnexus-incr-orch-');
+
+/** Stage + commit everything in the temp repo (mirrors mini-repo.ts's git calls). */
+const gitCommitAll = (cwd: string, message: string): void => {
+  execSync('git -c user.name=test -c user.email=t@t -c commit.gpgsign=false add -A', {
+    cwd,
+    stdio: 'pipe',
+  });
+  execSync(
+    `git -c user.name=test -c user.email=t@t -c commit.gpgsign=false commit -q -m "${message}"`,
+    { cwd, stdio: 'pipe' },
+  );
+};
+
+/**
+ * Direct count over INJECTS CodeRelation rows — mirrors pdg-mode-flip's
+ * countBasicBlocks: reopen the repo DB, count, close (runFullAnalysis closes
+ * the singleton on completion, so each count owns its own open/close).
+ */
+async function countInjects(repoPath: string): Promise<number> {
+  const adapter = await import('../../src/core/lbug/lbug-adapter.js');
+  const { lbugPath } = getStoragePaths(repoPath);
+  await adapter.initLbug(lbugPath);
+  try {
+    const rows = (await adapter.executeQuery(
+      `MATCH ()-[r:CodeRelation]->() WHERE r.type = 'INJECTS' RETURN count(r) AS c`,
+    )) as Array<{ c: number | bigint }>;
+    return Number(rows[0]?.c ?? 0);
+  } finally {
+    await adapter.closeLbug();
+  }
+}
+
+/** Java DI fixture (#2200): `@Autowired List<IFoo>` + 2 implementers ⇒ exactly
+ *  2 INJECTS edges (Consumer→FooA, Consumer→FooB). Same shapes as the
+ *  spring-di-pipeline integration fixture. */
+const JAVA_DI_FIXTURE: ReadonlyArray<readonly [string, string]> = [
+  ['IFoo.java', 'package com.example;\n\npublic interface IFoo {}\n'],
+  ['FooA.java', 'package com.example;\n\npublic class FooA implements IFoo {}\n'],
+  ['FooB.java', 'package com.example;\n\npublic class FooB implements IFoo {}\n'],
+  [
+    'Consumer.java',
+    'package com.example;\n' +
+      'import java.util.List;\n' +
+      'import org.springframework.beans.factory.annotation.Autowired;\n' +
+      '\n' +
+      'public class Consumer {\n' +
+      '  @Autowired private List<IFoo> foos;\n' +
+      '}\n',
+  ],
+];
 
 describe('runFullAnalysis — incremental orchestration', () => {
   afterEach(() => {
@@ -330,4 +381,57 @@ describe('runFullAnalysis — incremental orchestration', () => {
       await repo.cleanup();
     }
   }, 300_000);
+
+  // U7 (#2200): the INJECTS delete-before-writeback must be UNCONDITIONAL.
+  // extractChangedSubgraph re-includes ALL INJECTS edges from the fresh graph
+  // on every incremental run (isGraphWideRelType), and CodeRelation has no PK
+  // and no read-side dedup — so a pdg-gated delete (literal TAINT_PATH
+  // mirroring) would append without deleting on every non-pdg incremental
+  // run: N runs = N copies of every INJECTS row. This test is the assertion
+  // that catches exactly that mistake.
+  it('incremental runs neither strand nor duplicate INJECTS edges (delete-all is not pdg-gated) (#2200)', async () => {
+    const repo = await setupMiniRepo();
+    try {
+      const src = path.join(repo.dbPath, 'src');
+      for (const [name, content] of JAVA_DI_FIXTURE) {
+        await writeFile(path.join(src, name), content, 'utf-8');
+      }
+      gitCommitAll(repo.dbPath, 'add java di fixture');
+
+      const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
+
+      // Full index: Consumer.foos fans out to the two IFoo implementers.
+      await runFullAnalysis(repo.dbPath, { skipAgentsMd: true }, { onProgress: () => {} });
+      expect(await countInjects(repo.dbPath)).toBe(2);
+
+      // Incremental run 1: comment-only touch of an UNRELATED file (none of
+      // the Java DI files change), committed so lastCommit moves.
+      const target = path.join(src, 'logger.ts');
+      const beforeFirstTouch = await readFile(target, 'utf-8');
+      await writeFile(target, beforeFirstTouch + '\n// di idempotency touch 1\n', 'utf-8');
+      gitCommitAll(repo.dbPath, 'unrelated touch 1');
+      const run1 = await runFullAnalysis(
+        repo.dbPath,
+        { skipAgentsMd: true },
+        { onProgress: () => {} },
+      );
+      expect(run1.alreadyUpToDate).toBeUndefined();
+      expect(await countInjects(repo.dbPath)).toBe(2);
+
+      // Incremental run 2: second unrelated touch. A gated delete would have
+      // appended two more rows per writeback (4 by now) — must still be 2.
+      const beforeSecondTouch = await readFile(target, 'utf-8');
+      await writeFile(target, beforeSecondTouch + '\n// di idempotency touch 2\n', 'utf-8');
+      gitCommitAll(repo.dbPath, 'unrelated touch 2');
+      const run2 = await runFullAnalysis(
+        repo.dbPath,
+        { skipAgentsMd: true },
+        { onProgress: () => {} },
+      );
+      expect(run2.alreadyUpToDate).toBeUndefined();
+      expect(await countInjects(repo.dbPath)).toBe(2);
+    } finally {
+      await repo.cleanup();
+    }
+  }, 600_000);
 });

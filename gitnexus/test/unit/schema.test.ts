@@ -107,6 +107,10 @@ describe('LadybugDB Schema', () => {
         expect(REL_TYPES).toContain(t);
       }
     });
+
+    it('includes the DI collection-injection edge type (#2200)', () => {
+      expect(REL_TYPES).toContain('INJECTS');
+    });
   });
 
   describe('node schema DDL', () => {

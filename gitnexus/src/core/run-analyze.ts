@@ -27,6 +27,7 @@ import {
   deleteAllCommunitiesAndProcesses,
   deleteAllInterprocTaintPaths,
   deleteAllCallSummaries,
+  deleteAllInjects,
   queryImporters,
   loadFTSExtension,
 } from './lbug/lbug-adapter.js';
@@ -1216,6 +1217,19 @@ export async function runFullAnalysis(
       //    from the fresh pipeline output below. Required for the
       //    "Leiden runs on the FULL graph" correctness invariant.
       await deleteAllCommunitiesAndProcesses();
+      // 2a. Drop INJECTS edges (DI collection injection, #2200) — their
+      //     validity is a whole-program property (a third-file change to the
+      //     interface or an implementer creates/invalidates edges between two
+      //     untouched files), so endpoint-writability extraction can't refresh
+      //     them; extractChangedSubgraph re-includes all of them from the
+      //     fresh graph (isGraphWideRelType). UNCONDITIONAL, next to the
+      //     Communities delete — NOT inside the `options.pdg` block below: the
+      //     di phase runs on every persisting analyze (same !skipGraphPhases
+      //     regime as communities/processes) while the graph-wide re-include
+      //     is unconditional, so a pdg-gated delete would append without
+      //     deleting on every non-pdg incremental run (N runs = N copies of
+      //     every INJECTS row; CodeRelation has no PK and no read-side dedup).
+      await deleteAllInjects();
       // 2b. Drop interprocedural TAINT_PATH edges (#2084 M4 U6) when pdg is on
       //     — their validity is a whole-program property (an A→C flow can be
       //     invalidated by a change to an intermediate function on a third
