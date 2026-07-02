@@ -2373,3 +2373,89 @@ describe('Java User implements Validator — interface default method (SM-11)', 
     expect(validateCall!.source).toBe('run');
   });
 });
+
+// ---------------------------------------------------------------------------
+// Cast-wrapped receivers: ((Type) expr).method() resolves via the CAST type
+// (#2353). Every scenario pairs the cast target with a decoy class owning a
+// same-named method on the receiver's declared type, so a regression that
+// ignores the cast produces a detectably wrong edge instead of a silent pass.
+// ---------------------------------------------------------------------------
+
+describe('Java cast receiver resolution', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'java-cast-receiver'), () => {});
+  }, 60000);
+
+  it('detects the caller plus target and decoy classes', () => {
+    expect(getNodesByLabel(result, 'Class')).toEqual([
+      'App',
+      'Box',
+      'Fallback',
+      'Shape',
+      'Target',
+      'Wrapper',
+    ]);
+  });
+
+  it('resolves simple cast ((Box) obj).open() to Box.open, not declared-type Wrapper.open', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const openCall = calls.find((c) => c.target === 'open' && c.source === 'castSimple');
+    expect(openCall).toBeDefined();
+    expect(openCall!.targetFilePath).toBe('models/Box.java');
+  });
+
+  it('does not emit an open() edge to the decoy Wrapper', () => {
+    const calls = getRelationships(result, 'CALLS');
+    expect(
+      calls.some((c) => c.target === 'open' && c.targetFilePath === 'models/Wrapper.java'),
+    ).toBe(false);
+  });
+
+  it('resolves nested CFR cast ((Target)((Object)expr)).render() to Target.render', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const renderCall = calls.find((c) => c.target === 'render' && c.source === 'castNested');
+    expect(renderCall).toBeDefined();
+    expect(renderCall!.targetFilePath).toBe('models/Target.java');
+  });
+
+  it('does not emit a render() edge to the inner cast or to the decoy Shape (expr declared type)', () => {
+    const calls = getRelationships(result, 'CALLS');
+    expect(
+      calls.some((c) => c.target === 'render' && c.targetFilePath === 'models/Shape.java'),
+    ).toBe(false);
+  });
+
+  it('resolves cast + this.field ((Target)((Object)this.held)).draw() to Target.draw', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const drawCall = calls.find((c) => c.target === 'draw' && c.source === 'castThisField');
+    expect(drawCall).toBeDefined();
+    expect(drawCall!.targetFilePath).toBe('models/Target.java');
+  });
+
+  it('does not emit a draw() edge to the decoy Shape (field declared type)', () => {
+    const calls = getRelationships(result, 'CALLS');
+    expect(calls.some((c) => c.target === 'draw' && c.targetFilePath === 'models/Shape.java')).toBe(
+      false,
+    );
+  });
+
+  // ((String) obj).act(): `String` is a resolvable-SHAPE cast type (simple
+  // identifier) that is not locally indexed, so resolution deliberately falls
+  // back to obj's OWN declared type (Fallback). This is intentionally kept,
+  // unlike the unparseable-cast case (#2353 review F1), whose criterion is:
+  // a paren group that is type-shaped but UNPARSEABLE (generic / array / FQN)
+  // must resolve to nothing, because falling through to the pre-cast
+  // expression's declared type emits a confident wrong edge. Here the cast IS
+  // parseable — it just names a type we didn't index — so no better
+  // information exists, and upcast casts make the declared type a plausible
+  // dispatch target. Residual risk kept visible: a cross-cast to an unindexed
+  // sibling type would still emit this declared-type fallback edge.
+  it('falls back to the declared type for a cast to an unindexed simple type (String)', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const actCall = calls.find((c) => c.target === 'act' && c.source === 'castUnindexedType');
+    expect(actCall).toBeDefined();
+    expect(actCall!.targetFilePath).toBe('models/Fallback.java');
+  });
+});
