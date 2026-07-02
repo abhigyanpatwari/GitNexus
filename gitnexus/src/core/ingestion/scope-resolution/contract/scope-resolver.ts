@@ -110,11 +110,17 @@
  *     in this order; the FIRST that emits an edge wins:
  *       1. super branch (`provider.isSuperReceiver(receiverName)`)
  *       2. Case 0 compound (`receiverName` has `.` or `(`)
- *       3. Case 1 namespace-receiver
- *       4. Case 2 class-name receiver
- *       5. Case 3 dotted typeBinding for namespace prefix
- *       6. Case 3b chain-typebinding (compound resolver)
- *       7. Case 4 simple typeBinding (MRO walk + findOwnedMember)
+ *       3. Case 0.5 implicit-`this` chain walk — GATED: fires only for
+ *          languages that set `resolveThisViaEnclosingClass === true`;
+ *          it intercepts every bare-`this` call/read/write site ahead of
+ *          Case 4 and does NOT emit Case 4's interface-dispatch fan-out,
+ *          so enabling the toggle for a language changes that language's
+ *          `this` dispatch semantics (see the toggle's doc below)
+ *       4. Case 1 namespace-receiver
+ *       5. Case 2 class-name receiver
+ *       6. Case 3 dotted typeBinding for namespace prefix
+ *       7. Case 3b chain-typebinding (compound resolver)
+ *       8. Case 4 simple typeBinding (MRO walk + findOwnedMember)
  *     Reordering or merging cases changes resolution semantics. The
  *     numbering is part of the contract — keep the comments.
  *
@@ -926,6 +932,44 @@ export interface ScopeResolver {
    * level bindings.
    */
   readonly hoistTypeBindingsToModule?: boolean;
+
+  /**
+   * Whether the compound-receiver resolver should strip C-style cast
+   * expressions from receiver-position text before resolving it —
+   * `((Target)((Object)expr)).method()` peels to receiver `expr` with
+   * cast type `Target`, and the outermost captured cast type wins as
+   * the receiver's class. Default `false`.
+   *
+   * Java opts in: decompiler output is dense with cast-wrapped
+   * receivers, and Java's `(Type) expr` cast syntax makes the paren
+   * group textually classifiable. Keep disabled elsewhere:
+   * `(...)`-prefixed receiver text is ambiguous across languages
+   * (grouping, tuples, IIFEs, C-style declarations), so treating it
+   * as a cast would fabricate receiver types — non-opting languages
+   * must see receiver text completely untouched.
+   *
+   * Classifier grammar (exact): a peeled paren group whose content is
+   * a simple identifier (`/^[a-zA-Z_]\w*$/`) is captured as the cast
+   * type; content matching `Ident(.Ident)*(<...>)?([])*` — dotted,
+   * generic, and/or array shapes — is recognized as a cast whose
+   * target type cannot be looked up, and the resolver resolves
+   * NOTHING for that receiver (never the pre-cast expression's own
+   * declared type). Any other paren-group content is not a cast and
+   * the text falls through to the normal resolver.
+   *
+   * A second opting language must extend the classifier grammar or
+   * convert this toggle into a per-language classifier hook (the
+   * `unwrapCollectionAccessor` pattern) — do not flip this flag for
+   * another language as-is.
+   *
+   * Known non-goal: the compound-receiver options built from this
+   * toggle also feed Case 3b (chain-typeBinding rawNames — declared
+   * types / member paths, never cast RHS for Java) and Case 4's
+   * compound fallback (`receiverName`, paren-free because Case 0
+   * intercepts receivers containing `(` or `.` first), so the
+   * stripper is structurally inert on those inputs.
+   */
+  readonly stripReceiverCastExpressions?: boolean;
 
   /**
    * Optional: detect structural (duck-typing) interface implementations.
