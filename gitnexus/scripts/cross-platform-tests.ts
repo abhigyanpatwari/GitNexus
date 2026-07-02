@@ -47,6 +47,7 @@ const PLATFORM_LOGIC = [
   'test/unit/ignore-service.test.ts',
   'test/unit/group/bridge-db.test.ts',
   'test/unit/group/bridge-db-edge.test.ts',
+  'test/unit/onnxruntime-node-resolver.test.ts',
 ];
 
 // Native LadybugDB integration tests — exercise the @ladybugdb/core

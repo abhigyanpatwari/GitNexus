@@ -23,6 +23,7 @@ import {
 } from '../../core/embeddings/hf-env.js';
 import { getLocalEmbeddingRuntimeBlocker } from '../../core/embeddings/runtime-support.js';
 import { ensureOnnxRuntimeCommonResolvable } from '../../core/embeddings/onnxruntime-common-resolver.js';
+import { ensureOnnxRuntimeNodeMatchesSystem } from '../../core/embeddings/onnxruntime-node-resolver.js';
 import { silenceStdout, restoreStdout, realStderrWrite } from '../../core/lbug/pool-adapter.js';
 
 import { logger } from '../../core/logger.js';
@@ -69,6 +70,13 @@ export const initEmbedder = async (): Promise<FeatureExtractionPipeline> => {
       // Under pnpm-strict / `pnpm dlx`, transformers' phantom `onnxruntime-common`
       // import is unresolvable; register the fallback resolver first (#307).
       ensureOnnxRuntimeCommonResolvable();
+      // Registered AFTER the common fallback so this hook resolves FIRST (Node
+      // runs the most-recently-registered hook first): on CUDA-13 hosts it
+      // redirects onnxruntime-node to the system-matched build before
+      // transformers imports it. No-op on matching layouts, non-CUDA,
+      // Windows/DirectML, and macOS. Mirrors the core embedder's call site so
+      // MCP query-time embedding gets the same CUDA-13 fix.
+      ensureOnnxRuntimeNodeMatchesSystem();
       const { pipeline, env } = await import('@huggingface/transformers');
 
       env.allowLocalModels = false;
