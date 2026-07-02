@@ -2459,3 +2459,50 @@ describe('Java cast receiver resolution', () => {
     expect(actCall!.targetFilePath).toBe('models/Fallback.java');
   });
 });
+
+// ---------------------------------------------------------------------------
+// Unparseable casts (#2353 review F1): a receiver whose paren group is
+// TYPE-SHAPED but unparseable — generic (Box<String>), array (Box[]),
+// fully-qualified (models.Box) — is a cast the resolver cannot look up.
+// It must resolve to NOTHING (pre-#2353 behavior): stripping the parens and
+// falling through resolves the pre-cast expression's own declared type and
+// emits a confident wrong CALLS edge (reason "import-resolved") to the decoy.
+// Every assertion is source-scoped (c.source === caller method) so it cannot
+// collide with the positive-shape scenarios pinned above.
+// ---------------------------------------------------------------------------
+
+describe('Java unparseable cast receiver resolution', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'java-cast-receiver'), () => {});
+  }, 60000);
+
+  const callTargets = (source: string, target: string): string[] =>
+    getRelationships(result, 'CALLS')
+      .filter((c) => c.source === source && c.target === target)
+      .map((c) => `${c.source} → ${c.target} @ ${c.targetFilePath}`);
+
+  it('emits no open() edge for a generic cast ((Box<String>) obj) — declared-type decoy Wrapper', () => {
+    expect(callTargets('castGeneric', 'open')).toEqual([]);
+  });
+
+  it('emits no act2() edge for an array cast ((Box[]) obj) — declared-type decoy Wrapper', () => {
+    expect(callTargets('castArray', 'act2')).toEqual([]);
+  });
+
+  it('emits no act3() edge for a fully-qualified cast ((models.Box) obj) — declared-type decoy Wrapper', () => {
+    expect(callTargets('castQualified', 'act3')).toEqual([]);
+  });
+
+  it('emits no act4() edge for a generic-FQN cast over this.field — field declared-type decoy Shape', () => {
+    expect(callTargets('castGenericFqnThisField', 'act4')).toEqual([]);
+  });
+
+  it('leaves a non-cast parenthesized receiver untouched — no crash, no fabricated edge', () => {
+    const fromNonCast = getRelationships(result, 'CALLS')
+      .filter((c) => c.source === 'nonCastParen')
+      .map((c) => `${c.source} → ${c.target} @ ${c.targetFilePath}`);
+    expect(fromNonCast).toEqual([]);
+  });
+});

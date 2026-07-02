@@ -42,6 +42,22 @@ const COMPOUND_RECEIVER_MAX_DEPTH = 8;
 
 const MAP_TUPLE_SENTINEL_RE = /^__MAP_TUPLE_(\d+)__:(.+)$/;
 
+/** Cast type the resolver can look up directly: a simple identifier. */
+const SIMPLE_CAST_TYPE_RE = /^[a-zA-Z_]\w*$/;
+
+/** Classification-only shape for a cast type that is recognizable but
+ *  NOT resolvable here: dotted qualifier (`com.example.Foo`), generic
+ *  (`List<String>`), array (`Foo[]`), or combinations
+ *  (`java.util.List<Foo>[]`) — shape `Ident(.Ident)*(<…>)?([])*`,
+ *  whitespace-tolerant. No attempt is made to parse generic contents;
+ *  `[^()]*` merely keeps expression-like paren content from matching.
+ *  Matching this shape (when the simple-identifier shape doesn't)
+ *  means the paren group IS a C-style cast whose target type we cannot
+ *  look up — the only safe outcome is to resolve nothing, never to
+ *  fall through to the pre-cast expression's own declared type. */
+const UNPARSEABLE_CAST_TYPE_RE =
+  /^[a-zA-Z_]\w*(?:\s*\.\s*[a-zA-Z_]\w*)*(?:\s*<[^()]*>)?(?:\s*\[\s*\])*$/;
+
 function parseMapTupleSentinel(text: string): { tupleIdx: number; rhs: string } | null {
   const match = MAP_TUPLE_SENTINEL_RE.exec(text);
   if (match === null) return null;
@@ -84,13 +100,26 @@ export function resolveCompoundReceiverClass(
   if (text.length === 0) return undefined;
   const fieldFallback = options.fieldFallback ?? true;
 
-  // ── Pre-processing: strip Java-style cast expressions ───────────
-  // Java cast-wrapped receivers like ((Type)((Object)this.field)).method()
-  // produce parenthesized_expression receiver text. Peel outer (Type)
+  // ── Pre-processing: strip C-style cast expressions ───────────────
+  // Cast-wrapped receivers like ((Type)((Object)this.field)).method()
+  // produce parenthesized-expression receiver text. Peel outer (Type)
   // layers so the resolver sees the actual receiver (e.g. this.field).
   // Track the outermost meaningful cast type — the cast narrows the
   // receiver's declared type, so we resolve to the CAST type, not the
   // underlying expression's type.
+  //
+  // Each peeled paren group with a non-empty trailing expression (a
+  // cast candidate) is classified three ways:
+  //   (a) simple identifier → cast type captured (outermost capture
+  //       wins; later simple groups are noise casts, as in decompiler
+  //       output like ((Target)((Object)expr)));
+  //   (b) type-shaped but unparseable here (dotted / generic / array)
+  //       → this IS a cast, but its type cannot be looked up: resolve
+  //       nothing rather than fall through to the pre-cast
+  //       expression's own declared type, which would emit a
+  //       confident wrong edge;
+  //   (c) anything else → not a cast: leave the text untouched for
+  //       the normal resolver.
   let castType: string | null = null;
   let workingText = text;
   while (true) {
@@ -108,27 +137,35 @@ export function resolveCompoundReceiverClass(
       }
     }
     if (closeIdx === -1) break;
-    // Extract the type from inside this cast's parens — only capture
-    // the FIRST (outermost) non-parenthesized simple type name as the
-    // effective cast target. CFR patterns like ((Target)((Object)expr))
-    // have a meaningful outer cast and a noise inner cast; we want the
-    // meaningful outer one.
     const insideParens = workingText.slice(1, closeIdx).trim();
-    if (castType === null && !insideParens.startsWith('(') && /^[a-zA-Z_]\w*$/.test(insideParens)) {
-      castType = insideParens;
-    }
     const remainder = workingText.slice(closeIdx + 1).trim();
-    // CFR decompiler patterns: (Type)expr, ((Object)expr), etc.
-    if (
-      remainder.length === 0 ||
-      remainder.startsWith('(') ||
-      remainder.startsWith('this') ||
-      /^[a-zA-Z_]/.test(remainder)
-    ) {
-      workingText = remainder.length === 0 ? workingText.slice(1, closeIdx).trim() : remainder;
+    // Empty remainder: redundant outer parens — `((…))`, or a plain
+    // parenthesized expression like `(foo)`. Unwrap and re-scan.
+    // Never a cast candidate: a cast needs a trailing expression, so
+    // nothing is captured from this group.
+    if (remainder.length === 0) {
+      workingText = insideParens;
       continue;
     }
-    break;
+    // A cast operand starts with `(`, an identifier, or `this`. Any
+    // other remainder shape (e.g. `.member` access on the paren
+    // group) means this group is not a cast — leave the text for the
+    // normal resolver.
+    if (!remainder.startsWith('(') && !/^[a-zA-Z_]/.test(remainder)) break;
+    if (SIMPLE_CAST_TYPE_RE.test(insideParens)) {
+      // (a) Resolvable cast type — capture the FIRST (outermost) one.
+      if (castType === null) castType = insideParens;
+    } else if (UNPARSEABLE_CAST_TYPE_RE.test(insideParens)) {
+      // (b) Type-shaped but unparseable cast. Once a simple cast type
+      // has been captured, later unparseable groups are noise casts
+      // and the captured type wins; otherwise bail out of the whole
+      // resolution — the pre-#2353 safe no-op for these shapes.
+      if (castType === null) return undefined;
+    } else {
+      // (c) Not a cast.
+      break;
+    }
+    workingText = remainder;
   }
 
   // If we found a cast type, resolve it directly — the cast tells us
