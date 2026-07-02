@@ -2,6 +2,7 @@ import { getRuntimeCapabilities, getRuntimeFingerprint } from '../core/platform/
 import { resolveEmbeddingConfig } from '../core/embeddings/config.js';
 import { isHttpMode } from '../core/embeddings/http-client.js';
 import { getLocalEmbeddingRuntimeBlocker } from '../core/embeddings/runtime-support.js';
+import { cudaRedirectDoctorStatus } from '../core/embeddings/onnxruntime-node-resolver.js';
 import { checkLbugNative } from '../core/lbug/native-check.js';
 import { getExtensionInstallPolicy } from '../core/lbug/extension-loader.js';
 import { t } from './i18n/index.js';
@@ -138,5 +139,15 @@ export const doctorCommand = async () => {
   console.log(`  ${padDisplayEnd('Support:', 12)}${support.status}`);
   if (support.detail) {
     process.stderr.write(`\n${support.detail.replace(/^/gm, '  ')}\n\n`);
+  }
+  // Surface the CUDA-build-redirect decision so "why is my CUDA-13 host
+  // still on CPU" is visible without digging through debug logs (#2341
+  // follow-up). Only meaningful on the local runtime path.
+  if (!isHttpMode()) {
+    const cudaRedirect = cudaRedirectDoctorStatus();
+    console.log(`  ${padDisplayEnd('CUDA:', 12)}${cudaRedirect.status}`);
+    if (cudaRedirect.detail) {
+      console.log(`  ${padDisplayEnd('', 12)}${cudaRedirect.detail}`);
+    }
   }
 };

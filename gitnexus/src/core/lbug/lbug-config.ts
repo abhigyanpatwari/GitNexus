@@ -368,10 +368,13 @@ export interface LbugConnectionHandle {
 }
 
 /**
- * Return true when the error message indicates that a LadybugDB file lock
- * could not be acquired — either at construction time
- * (`new lbug.Database(...)` raises from `local_file_system.cpp`) or during
- * a query (another writer holds the exclusive lock).
+ * Return true when the error message indicates that a LadybugDB write
+ * transaction could not proceed due to lock contention — either a file
+ * lock that could not be acquired (either at construction time,
+ * `new lbug.Database(...)` raising from `local_file_system.cpp`, or during
+ * a query, another writer holds the exclusive lock), or a same-process
+ * write transaction rejected because another write transaction is already
+ * active on the connection.
  *
  * Lives here (not in `lbug-adapter.ts`) so both the construction-time
  * retry (`openWithLockRetry` in this file) and the query-time retry
@@ -383,10 +386,21 @@ export const isDbBusyError = (err: unknown): boolean => {
   // `lock` already subsumes `could not set lock`; the broader term is kept
   // because graph-DB transient errors include "deadlock", "lock contention",
   // and the LadybugDB native module's "could not set lock on file" — all of
-  // which deserve a retry. If a non-transient lock-shaped error ever
-  // surfaces (e.g., "lock file missing" during recovery), tighten this
-  // matcher rather than raising the retry budget.
-  return msg.includes('busy') || msg.includes('lock') || msg.includes('already in use');
+  // which deserve a retry. LadybugDB also reports same-process writer
+  // contention without the words "busy" or "lock".
+  //
+  // "only one write transaction at a time" was observed against LadybugDB
+  // 0.18.0 (see gitnexus/package.json @ladybugdb/core).
+  //
+  // If a non-transient lock-shaped error ever surfaces (e.g., "lock file
+  // missing" during recovery), tighten this matcher rather than raising the
+  // retry budget.
+  return (
+    msg.includes('busy') ||
+    msg.includes('lock') ||
+    msg.includes('already in use') ||
+    msg.includes('only one write transaction at a time')
+  );
 };
 
 export function createLbugDatabase(

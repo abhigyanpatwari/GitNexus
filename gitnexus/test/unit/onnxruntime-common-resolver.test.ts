@@ -17,13 +17,27 @@ const RESOLVER = '../../src/core/embeddings/onnxruntime-common-resolver.js';
  * (Re)load the resolver with a chosen `registerHooks` mocked into node:module.
  * `vi.resetModules()` + the fresh `import()` re-initialises the module-level
  * one-shot guard, so each test gets a pristine resolver with no shared state.
+ *
+ * When `getEffectiveOnnxRuntimeNodeDir` is supplied, the sibling
+ * onnxruntime-node-resolver.js is also mocked with it — letting a test drive
+ * (or spy on) whichever onnxruntime-node dir this hook's own onnxruntime-common
+ * lookup defers to, instead of independently re-deriving transformers'
+ * default (#2341 follow-up).
  */
-async function loadResolver(registerHooks: unknown) {
+async function loadResolver(
+  registerHooks: unknown,
+  getEffectiveOnnxRuntimeNodeDir?: () => string | null,
+) {
   vi.resetModules();
   vi.doMock('node:module', async (importOriginal) => {
     const orig = await importOriginal<typeof import('node:module')>();
     return { ...orig, registerHooks };
   });
+  if (getEffectiveOnnxRuntimeNodeDir) {
+    vi.doMock('../../src/core/embeddings/onnxruntime-node-resolver.js', () => ({
+      getEffectiveOnnxRuntimeNodeDir,
+    }));
+  }
   return import(RESOLVER);
 }
 
@@ -36,6 +50,7 @@ const moduleNotFound = (): Error => {
 
 afterEach(() => {
   vi.doUnmock('node:module');
+  vi.doUnmock('../../src/core/embeddings/onnxruntime-node-resolver.js');
 });
 
 describe('ensureOnnxRuntimeCommonResolvable — installation', () => {
@@ -70,9 +85,9 @@ describe('ensureOnnxRuntimeCommonResolvable — installation', () => {
 
 describe('ensureOnnxRuntimeCommonResolvable — resolve hook behaviour', () => {
   /** Install the fallback and return the resolve closure handed to registerHooks. */
-  async function captureResolve() {
+  async function captureResolve(getEffectiveOnnxRuntimeNodeDir?: () => string | null) {
     const spy = vi.fn();
-    const mod = await loadResolver(spy);
+    const mod = await loadResolver(spy, getEffectiveOnnxRuntimeNodeDir);
     mod.ensureOnnxRuntimeCommonResolvable();
     return spy.mock.calls[0][0].resolve as (
       s: string,
@@ -128,5 +143,24 @@ describe('ensureOnnxRuntimeCommonResolvable — resolve hook behaviour', () => {
     });
 
     expect(() => resolve('onnxruntime-common', ctx, next)).toThrow(err);
+  });
+
+  it("defers to getEffectiveOnnxRuntimeNodeDir() instead of independently re-deriving transformers' default (#2341 follow-up)", async () => {
+    const effectiveDirSpy = vi.fn(() => null as string | null);
+    const resolve = await captureResolve(effectiveDirSpy);
+    const next = vi.fn(() => {
+      throw moduleNotFound();
+    });
+
+    const res = resolve('onnxruntime-common', ctx, next) as { url: string; shortCircuit: boolean };
+
+    // The sibling module's decision is consulted (not bypassed)...
+    expect(effectiveDirSpy).toHaveBeenCalled();
+    // ...and since it reported no effective dir here, the code falls back to
+    // gitnexus' own direct dependency (the same fallback as "default
+    // resolution fails") rather than independently re-deriving a different
+    // path from @huggingface/transformers on its own.
+    expect(res.shortCircuit).toBe(true);
+    expect(res.url).toMatch(/^file:\/\/.*\/node_modules\/onnxruntime-common\/.*\.js$/);
   });
 });
