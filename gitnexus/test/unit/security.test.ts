@@ -67,7 +67,7 @@ describe('VALID_RELATION_TYPES', () => {
     // Cross-function TAINT_PATH (Function→Function) is the interprocedural
     // analogue of TAINTED — surfaced ONLY via `explain` (its interprocedural
     // findings), never impact()'s BFS. Pinned so a future allow-all sweep
-    // can't drag it in, and the set size stays fixed at 16.
+    // can't drag it in — the size assertion tracks EXPECTED_RELATION_TYPES.
     expect(VALID_RELATION_TYPES.has('TAINT_PATH')).toBe(false);
     // Size should match the expected types list — not a hardcoded number.
     expect(VALID_RELATION_TYPES.size).toBe(EXPECTED_RELATION_TYPES.length);
@@ -76,8 +76,9 @@ describe('VALID_RELATION_TYPES', () => {
   it('CDG control-dependence edge types stay OUT of the impact allow-list (#2085 M5)', () => {
     // CDG and POST_DOMINATE are BasicBlock→BasicBlock (block space), like the
     // taint substrate — they must not enter impact()'s symbol-space BFS. Pinned
-    // explicitly (not just via the size==16 guard) so a future "add all emitted
-    // types" sweep can't drag them in, mirroring the TAINTED/TAINT_PATH pins.
+    // explicitly (not just via the EXPECTED_RELATION_TYPES-derived size guard)
+    // so a future "add all emitted types" sweep can't drag them in, mirroring
+    // the TAINTED/TAINT_PATH pins.
     expect(VALID_RELATION_TYPES.has('CDG')).toBe(false);
     expect(VALID_RELATION_TYPES.has('POST_DOMINATE')).toBe(false);
     // REACHING_DEF is the other BasicBlock→BasicBlock PDG edge (#2086 impact

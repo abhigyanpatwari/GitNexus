@@ -127,14 +127,18 @@ export type RelationshipType =
   | 'ENTRY_POINT_OF'
   | 'WRAPS'
   | 'QUERIES'
-  /** Spring DI injection edge: a consumer class with an `@Autowired`
-   *  collection-typed field (`List<T>`, `Set<T>`, `Collection<T>`, or
-   *  `Map<K,T>`) receives every bean implementing interface `T`.
+  /** Dependency-injection edge: a consumer class receives every implementer
+   *  of interface `T` via a container-injected collection-typed field
+   *  (`List<T>`, `Set<T>`, `Collection<T>`, or `Map<K,T>`). Precondition: the
+   *  field carries an injection annotation recognized by a per-language
+   *  matcher registered in `di-extractors/` (Java/Spring today: `@Autowired`
+   *  or `@Inject`; `@Resource` is excluded — by-name-first semantics).
    *  Source = the consumer Class node (the one owning the field).
    *  Target = an implementing Class node.
-   *  `reason` encodes the collection shape: `Spring DI: @Autowired <Collection<T>>`.
-   *  Lets Cypher queries trace which beans Spring injects into a given consumer,
-   *  complementing the structural `IMPLEMENTS` heritage edges. */
+   *  Framework specifics live in the `reason` payload (e.g.
+   *  `Spring DI: @Autowired List<T>`), not in this type contract.
+   *  Lets Cypher queries trace which beans the container injects into a given
+   *  consumer, complementing the structural `IMPLEMENTS` heritage edges. */
   | 'INJECTS'
   /** Vue component event system: a handler function in a parent component is
    *  bound to an event emitted by a child component (`@event="handlerFn"`).
