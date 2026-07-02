@@ -52,19 +52,50 @@ function addClass(
   return id;
 }
 
-function addInterface(graph: KnowledgeGraph, name: string, language = 'java'): string {
-  const id = generateId('Interface', name);
+/**
+ * Add an Interface node. `qualifiedName` mirrors the production shape for
+ * languages with a file-scope package declaration (e.g. Java's
+ * `com.a.Shape`); when omitted the node carries only the simple `name`, like
+ * production interfaces without a package qualifier.
+ *
+ * The node id is keyed by `language` + the most qualified identity available
+ * (production ids embed file path + qualified name), so two same-simple-name
+ * interfaces — cross-package or cross-language — are distinct graph nodes,
+ * not a silent `addNode` no-op on a duplicate id.
+ */
+function addInterface(
+  graph: KnowledgeGraph,
+  name: string,
+  language = 'java',
+  qualifiedName?: string,
+): string {
+  const id = generateId('Interface', `${language}:${qualifiedName ?? name}`);
   graph.addNode({
     id,
     label: 'Interface',
-    properties: { name, filePath: `src/${name}.java`, language },
+    properties: {
+      name,
+      filePath: `src/${name}.${language}`,
+      language,
+      ...(qualifiedName !== undefined ? { qualifiedName } : {}),
+    },
   });
   return id;
 }
 
-function addImplements(graph: KnowledgeGraph, className: string, ifaceName: string): void {
+/**
+ * Link `className` IMPLEMENTS the interface added via `addInterface` with the
+ * same (`ifaceName`, `ifaceLanguage`, `ifaceQualifiedName`) identity.
+ */
+function addImplements(
+  graph: KnowledgeGraph,
+  className: string,
+  ifaceName: string,
+  ifaceLanguage = 'java',
+  ifaceQualifiedName?: string,
+): void {
   const classId = generateId('Class', className);
-  const ifaceId = generateId('Interface', ifaceName);
+  const ifaceId = generateId('Interface', `${ifaceLanguage}:${ifaceQualifiedName ?? ifaceName}`);
   graph.addRelationship({
     id: generateId('IMPLEMENTS', `${classId}->${ifaceId}`),
     sourceId: classId,
@@ -502,6 +533,142 @@ describe('di phase', () => {
     expect(injectsEdges(graph)).toHaveLength(0);
     expect(output.injectsEdges).toBe(0);
     expect(output.fieldsScanned).toBe(0);
+  });
+
+  // -------------------------------------------------------------------------
+  // Language- and qualified-name-scoped interface resolution (PR #2200 U4)
+  // -------------------------------------------------------------------------
+
+  it.each([
+    ['com.a.Shape inserted first', ['com.a.Shape', 'com.b.Shape'] as const],
+    ['com.b.Shape inserted first', ['com.b.Shape', 'com.a.Shape'] as const],
+  ])(
+    'fails closed on a two-package same-simple-name collision (%s)',
+    async (_label, [firstQn, secondQn]) => {
+      const graph = createKnowledgeGraph();
+
+      // Two Java interfaces named `Shape` in different packages. Insertion
+      // order is the it.each parameter: identical assertions across both
+      // orders pin order-independence (never last-writer-wins).
+      addInterface(graph, 'Shape', 'java', firstQn);
+      addInterface(graph, 'Shape', 'java', secondQn);
+      addClass(graph, 'ShapeAImpl', 'java');
+      addImplements(graph, 'ShapeAImpl', 'Shape', 'java', 'com.a.Shape');
+      addClass(graph, 'ShapeBImpl', 'java');
+      addImplements(graph, 'ShapeBImpl', 'Shape', 'java', 'com.b.Shape');
+
+      addClass(graph, 'MyService', 'java');
+      addProperty(graph, 'MyService', 'shapes', 'List<Shape>');
+
+      const output = await diPhase.execute(makeCtx(graph), new Map());
+
+      // Bare `Shape` is ambiguous within Java → fail closed, observable skip.
+      expect(injectsEdges(graph)).toHaveLength(0);
+      expect(output).toMatchObject({
+        injectsEdges: 0,
+        fieldsScanned: 1,
+        ambiguousSkipped: 1,
+      });
+    },
+  );
+
+  it.each([
+    ['typescript interface inserted first', ['typescript', 'java'] as const],
+    ['java interface inserted first', ['java', 'typescript'] as const],
+  ])(
+    'resolves a bare name only within the candidate language (%s)',
+    async (_label, [firstLang, secondLang]) => {
+      const graph = createKnowledgeGraph();
+
+      // A TS `interface Shape` and a Java `interface Shape` (unique WITHIN
+      // Java). The Java consumer's bare `Shape` must resolve to the Java
+      // interface regardless of which language's node was inserted first.
+      addInterface(graph, 'Shape', firstLang);
+      addInterface(graph, 'Shape', secondLang);
+      addClass(graph, 'TsShapeImpl', 'typescript');
+      addImplements(graph, 'TsShapeImpl', 'Shape', 'typescript');
+      addClass(graph, 'JavaShapeImpl', 'java');
+      addImplements(graph, 'JavaShapeImpl', 'Shape', 'java');
+
+      addClass(graph, 'MyService', 'java');
+      addProperty(graph, 'MyService', 'shapes', 'List<Shape>');
+
+      const output = await diPhase.execute(makeCtx(graph), new Map());
+
+      // Edges ONLY to the Java implementer — the TS implementer never
+      // participates in a Java candidate's resolution.
+      const edges = injectsEdges(graph);
+      expect(edges).toHaveLength(1);
+      expect(edges[0]).toMatchObject({
+        sourceId: generateId('Class', 'MyService'),
+        targetId: generateId('Class', 'JavaShapeImpl'),
+      });
+      expect(output).toMatchObject({
+        injectsEdges: 1,
+        fieldsScanned: 1,
+        ambiguousSkipped: 0,
+      });
+    },
+  );
+
+  it('resolves a qualified element type via qualifiedName despite simple-name ambiguity', async () => {
+    const graph = createKnowledgeGraph();
+
+    addInterface(graph, 'Shape', 'java', 'com.a.Shape');
+    addInterface(graph, 'Shape', 'java', 'com.b.Shape');
+    addClass(graph, 'ShapeAImpl', 'java');
+    addImplements(graph, 'ShapeAImpl', 'Shape', 'java', 'com.a.Shape');
+    addClass(graph, 'ShapeBImpl', 'java');
+    addImplements(graph, 'ShapeBImpl', 'Shape', 'java', 'com.b.Shape');
+
+    // The field spells the element type fully qualified — exact qualifiedName
+    // lookup, unaffected by the bare-name ambiguity.
+    addClass(graph, 'MyService', 'java');
+    addProperty(graph, 'MyService', 'shapes', 'List<com.a.Shape>');
+
+    const output = await diPhase.execute(makeCtx(graph), new Map());
+
+    const edges = injectsEdges(graph);
+    expect(edges).toHaveLength(1);
+    expect(edges[0]).toMatchObject({
+      sourceId: generateId('Class', 'MyService'),
+      targetId: generateId('Class', 'ShapeAImpl'),
+      reason: 'Spring DI: @Autowired List<com.a.Shape>',
+    });
+    expect(output).toMatchObject({
+      injectsEdges: 1,
+      fieldsScanned: 1,
+      ambiguousSkipped: 0,
+    });
+  });
+
+  it('fails closed even when the consumer shares a package with one collision party (pinned)', async () => {
+    const graph = createKnowledgeGraph();
+
+    addInterface(graph, 'Shape', 'java', 'com.a.Shape');
+    addInterface(graph, 'Shape', 'java', 'com.b.Shape');
+    addClass(graph, 'ShapeAImpl', 'java');
+    addImplements(graph, 'ShapeAImpl', 'Shape', 'java', 'com.a.Shape');
+    addClass(graph, 'ShapeBImpl', 'java');
+    addImplements(graph, 'ShapeBImpl', 'Shape', 'java', 'com.b.Shape');
+
+    // The consumer lives in com.a — Java source would resolve its bare
+    // `Shape` to com.a.Shape. Resolution has NO package awareness today, so
+    // this is still an ambiguous fail-closed skip. PINNED as current
+    // behavior: the same-package tiebreaker is a deliberate, documented
+    // follow-up (see the plan's Deferred work); implementing it must flip
+    // this test knowingly.
+    addClass(graph, 'MyService', 'java', 'Class', { qualifiedName: 'com.a.MyService' });
+    addProperty(graph, 'MyService', 'shapes', 'List<Shape>');
+
+    const output = await diPhase.execute(makeCtx(graph), new Map());
+
+    expect(injectsEdges(graph)).toHaveLength(0);
+    expect(output).toMatchObject({
+      injectsEdges: 0,
+      fieldsScanned: 1,
+      ambiguousSkipped: 1,
+    });
   });
 });
 
