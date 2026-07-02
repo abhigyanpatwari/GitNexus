@@ -519,6 +519,18 @@ function matchingOpenParen(text: string): number {
   return -1;
 }
 
+/** Max peel iterations for `stripCastWrappers`. Real cast nesting —
+ *  including decompiler output like `((Target)((Object)expr))` —
+ *  is a handful of levels, and each cast level costs at most two
+ *  peels (a redundant-paren unwrap plus the cast group itself), so
+ *  16 covers 8-level nesting with headroom. Each peel rescans the
+ *  working text for its matching close paren, so pathological input
+ *  like `((((…))))` would otherwise cost O(N²); the cap bounds it at
+ *  O(N · MAX_CAST_PEEL). Exceeding the cap bails with the not-a-cast
+ *  outcome and the ORIGINAL text — all-or-nothing, never a
+ *  partially-peeled result. */
+const MAX_CAST_PEEL = 16;
+
 /**
  * Peel C-style cast layers off a receiver-position expression:
  * `((Target)((Other)expr))` → `workingText` `expr`, `castType`
@@ -551,6 +563,7 @@ function matchingOpenParen(text: string): number {
  * the group boundary. Such shapes classify as not-a-cast and fall
  * through safely to the normal resolver.
  */
+
 export function stripCastWrappers(text: string): {
   workingText: string;
   castType: string | undefined;
@@ -558,8 +571,13 @@ export function stripCastWrappers(text: string): {
 } {
   let castType: string | undefined;
   let workingText = text;
+  let peels = 0;
   while (true) {
     if (!workingText.startsWith('(')) break;
+    peels++;
+    if (peels > MAX_CAST_PEEL) {
+      return { workingText: text, castType: undefined, unresolvableCast: false };
+    }
     let d = 1;
     let closeIdx = -1;
     for (let i = 1; i < workingText.length; i++) {
