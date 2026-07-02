@@ -87,6 +87,7 @@ const KEY_SPECS: Record<string, KeySpec> = {
   skipSkills: { target: 'skipSkills', kind: 'boolean' },
   pdg: { target: 'pdg', kind: 'boolean' },
   indexOnly: { target: 'indexOnly', kind: 'boolean' },
+  ignoreBranches: { target: 'ignoreBranches', kind: 'boolean' },
   stats: { target: 'stats', kind: 'boolean' },
   noStats: { target: 'stats', kind: 'boolean-negate' },
   embeddings: { target: 'embeddings', kind: 'embeddings' },

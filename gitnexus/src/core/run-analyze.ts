@@ -215,6 +215,13 @@ export interface AnalyzeOptions {
    */
   branch?: string;
   /**
+   * Branch-agnostic workspace mode (#2354). When true, analyze ignores the
+   * checked-out git branch for index placement and updates the flat slot from
+   * the current on-disk workspace. Explicit `branch` remains mutually exclusive
+   * because it labels a branch-specific snapshot.
+   */
+  ignoreBranches?: boolean;
+  /**
    * User-provided alias for the registry `name` (#829). When set,
    * forwarded to `registerRepo` so the indexed repo is stored under
    * this alias instead of the path-derived basename.
@@ -597,9 +604,13 @@ export async function runFullAnalysis(
   // `~ ^ : ? *`, leading `-`, `..`) becomes `null` → the flat slot, matching
   // that a later `--branch <that-ref>` query would also be rejected. A normal
   // ref passes through unchanged so index-time and query-time labels round-trip.
-  const checkedOutBranch = repoHasGit
-    ? (sanitizeDetectedBranch(getCurrentBranch(repoPath)) ?? null)
-    : null;
+  if (options.ignoreBranches && options.branch) {
+    throw new Error('--disk-only / ignoreBranches cannot be combined with --branch.');
+  }
+  const checkedOutBranch =
+    repoHasGit && !options.ignoreBranches
+      ? (sanitizeDetectedBranch(getCurrentBranch(repoPath)) ?? null)
+      : null;
   // Analyze indexes the working tree, not an arbitrary ref. An explicit
   // `--branch X` while a DIFFERENT branch Y is checked out would write Y's
   // content (and Y's commit) into X's index slot, corrupting X (#2106). Refuse
@@ -611,7 +622,7 @@ export async function runFullAnalysis(
         `Check out "${options.branch}" before indexing it, or omit --branch to index the current branch.`,
     );
   }
-  const branchLabel = options.branch ?? checkedOutBranch;
+  const branchLabel = options.ignoreBranches ? null : (options.branch ?? checkedOutBranch);
   const placement = await resolveBranchPlacement(repoPath, branchLabel);
   const { lbugPath, metaPath } = getStoragePaths(repoPath, placement.branch);
   // Directory that owns this run's meta.json (flat `.gitnexus` for the primary
@@ -620,18 +631,17 @@ export async function runFullAnalysis(
   const metaDir = path.dirname(metaPath);
 
   const existingMeta = await loadMeta(metaDir);
+  const branchStamp = options.ignoreBranches ? undefined : (branchLabel ?? existingMeta?.branch);
 
   // ── #2106 (R8): warn when the repo's default branch is not the primary ──
   // A non-default branch can own the flat slot (it was indexed first). That
   // index is still fully queryable via `--branch`, so this is an ergonomics
   // wart, not data loss — we only warn (no risky relocation of a live DB).
-  if (repoHasGit) {
+  if (repoHasGit && !options.ignoreBranches) {
     // Who owns the flat slot after this run? For a flat/primary run it is this
     // run's resolved label (carrying an existing stamp forward); for a branch
     // run the flat owner is unchanged, so read the flat meta.
-    const flatOwner = placement.branch
-      ? (await loadMeta(storagePath))?.branch
-      : (branchLabel ?? existingMeta?.branch);
+    const flatOwner = placement.branch ? (await loadMeta(storagePath))?.branch : branchStamp;
     const warning = primaryInversionWarning(getDefaultBranch(repoPath), flatOwner);
     if (warning) log(warning);
   }
@@ -862,17 +872,32 @@ export async function runFullAnalysis(
       const healUnregistered =
         options.allowDuplicateName === true && !(await isRepoRegistered(repoPath));
       if (!dirty && !healUnregistered) {
+        let fastPathMeta = existingMeta;
+        let repoName =
+          options.registryName ??
+          getInferredRepoName(repoPath) ??
+          path.basename(resolveRepoIdentityRoot(repoPath));
+        if (options.ignoreBranches === true && existingMeta.branch !== undefined) {
+          fastPathMeta = {
+            ...existingMeta,
+            indexedAt: new Date().toISOString(),
+            branch: undefined,
+          };
+          await saveMeta(metaDir, fastPathMeta);
+          repoName = await registerRepo(repoPath, fastPathMeta, {
+            name: options.registryName,
+            allowDuplicateName: options.allowDuplicateName,
+            branch: placement.branch,
+          });
+        }
         await ensureGitNexusIgnored(repoPath);
         return {
           // `resolveRepoIdentityRoot` collapses worktree roots to the
           // canonical repo basename (#1259) but leaves arbitrary subdirs
           // and `--skip-git` paths unchanged (#1232/#1233 intent preserved).
-          repoName:
-            options.registryName ??
-            getInferredRepoName(repoPath) ??
-            path.basename(resolveRepoIdentityRoot(repoPath)),
+          repoName,
           repoPath,
-          stats: existingMeta.stats ?? {},
+          stats: fastPathMeta.stats ?? {},
           alreadyUpToDate: true,
           isPrimaryBranch: !placement.branch,
         };
@@ -1466,14 +1491,13 @@ export async function runFullAnalysis(
       repoPath,
       lastCommit: currentCommit,
       indexedAt: new Date().toISOString(),
-      // Branch identity this index represents (#2106). Recorded for the flat
-      // slot too (so resolveBranchPlacement knows which branch owns it). When
-      // the label is null (detached HEAD / non-git re-analyze) we PRESERVE an
-      // existing stamp rather than stripping it — otherwise a detached re-index
-      // of the primary (e.g. CI's `actions/checkout` default) would un-claim the
-      // flat slot and let the next branch analyze overwrite the primary index.
-      // Stays absent only when never stamped (fresh detached/non-git repo).
-      branch: branchLabel ?? existingMeta?.branch,
+      // Branch identity this index represents (#2106). Disk-only mode (#2354)
+      // intentionally clears the stamp so the flat DB is a branch-agnostic
+      // workspace snapshot. Outside disk-only, preserve an existing stamp when
+      // the label is null (detached HEAD / non-git re-analyze); otherwise a CI
+      // detached re-index of the primary would un-claim the flat slot and let
+      // the next branch analyze overwrite the primary index.
+      branch: branchStamp,
       // Captured here (not at registration) so it travels with the
       // on-disk meta.json — sibling-clone fingerprinting works for
       // out-of-tree consumers (group-status, future tooling) without

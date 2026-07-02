@@ -128,6 +128,53 @@ describe('analyzeCommand .gitnexusrc wiring (#243)', () => {
     expect(opts.skipSkills).toBe(true);
   });
 
+  it('threads .gitnexusrc ignoreBranches into runFullAnalysis (#2354)', async () => {
+    await writeRc({ ignoreBranches: true });
+    const { analyzeCommand } = await import('../../src/cli/analyze.js');
+
+    await analyzeCommand(dir, {});
+
+    expect(runFullAnalysisMock).toHaveBeenCalledTimes(1);
+    const opts = runFullAnalysisMock.mock.calls[0][1];
+    expect(opts.ignoreBranches).toBe(true);
+    expect(opts.branch).toBeUndefined();
+  });
+
+  it('lets explicit --branch override .gitnexusrc ignoreBranches (#2354)', async () => {
+    await writeRc({ ignoreBranches: true });
+    const { analyzeCommand } = await import('../../src/cli/analyze.js');
+
+    await analyzeCommand(dir, { branch: 'feature/x' });
+
+    expect(runFullAnalysisMock).toHaveBeenCalledTimes(1);
+    const opts = runFullAnalysisMock.mock.calls[0][1];
+    expect(opts.branch).toBe('feature/x');
+    expect(opts.ignoreBranches).toBe(false);
+  });
+
+  it('maps --disk-only to ignoreBranches for runFullAnalysis (#2354)', async () => {
+    const { analyzeCommand } = await import('../../src/cli/analyze.js');
+
+    await analyzeCommand(dir, { diskOnly: true });
+
+    expect(runFullAnalysisMock).toHaveBeenCalledTimes(1);
+    const opts = runFullAnalysisMock.mock.calls[0][1];
+    expect(opts.ignoreBranches).toBe(true);
+    expect(opts.branch).toBeUndefined();
+  });
+
+  it('rejects --disk-only with --branch before analysis starts (#2354)', async () => {
+    const { analyzeCommand } = await import('../../src/cli/analyze.js');
+
+    await analyzeCommand(dir, { diskOnly: true, branch: 'feature/x' });
+
+    expect(process.exitCode).toBe(1);
+    expect(runFullAnalysisMock).not.toHaveBeenCalled();
+    expect(cliErrorMock).toHaveBeenCalledWith(
+      expect.stringMatching(/Cannot combine `--disk-only`/),
+    );
+  });
+
   it('uses .gitnexusrc defaultBranch for generated context', async () => {
     await writeRc({ defaultBranch: 'develop' });
     const { analyzeCommand } = await import('../../src/cli/analyze.js');

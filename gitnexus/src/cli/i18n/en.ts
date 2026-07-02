@@ -181,6 +181,8 @@ export const en = {
     'Skip installing standard GitNexus skill files under .claude/skills/gitnexus/. Does not suppress community skills from --skills (those use .claude/skills/generated/). Use --index-only to skip all AI-context file injection.',
   'help.option.analyze.indexOnly':
     'Pure index mode: skip all file injection (AGENTS.md, CLAUDE.md, skills)',
+  'help.option.analyze.diskOnly':
+    'Ignore the checked-out git branch for index placement and update the flat index from the current workspace files',
   'help.option.skipGit':
     'Treat the provided path/cwd as the index root and skip parent git-root discovery',
   'help.option.analyze.name':

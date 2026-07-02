@@ -57,6 +57,7 @@ const OPTION_DESCRIPTION_KEYS = {
   'analyze|--no-stats': 'help.option.analyze.noStats',
   'analyze|--skip-skills': 'help.option.analyze.skipSkills',
   'analyze|--index-only': 'help.option.analyze.indexOnly',
+  'analyze|--disk-only': 'help.option.analyze.diskOnly',
   'analyze|--skip-git': 'help.option.skipGit',
   'analyze|--name <alias>': 'help.option.analyze.name',
   'analyze|--allow-duplicate-name': 'help.option.analyze.allowDuplicateName',

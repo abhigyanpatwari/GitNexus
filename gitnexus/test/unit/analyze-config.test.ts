@@ -100,6 +100,14 @@ describe('analyze-config (.gitnexusrc support, #243)', () => {
     expect(() => loadAnalyzeConfig(dir)).toThrow(/must be a boolean/);
   });
 
+  it('normalizes ignoreBranches for branch-agnostic workspace indexing (#2354)', async () => {
+    await writeRc(JSON.stringify({ ignoreBranches: true }));
+    expect(loadAnalyzeConfig(dir)).toEqual({ ignoreBranches: true });
+
+    await writeRc(JSON.stringify({ ignoreBranches: 'yes' }));
+    expect(() => loadAnalyzeConfig(dir)).toThrow(/must be a boolean/);
+  });
+
   it('parses the nested analyze form', async () => {
     await writeRc(JSON.stringify({ analyze: { defaultBranch: 'master', skipSkills: true } }));
     expect(loadAnalyzeConfig(dir)).toEqual({ defaultBranch: 'master', skipSkills: true });
@@ -263,6 +271,13 @@ describe('analyze-config (.gitnexusrc support, #243)', () => {
   it('mergeAnalyzeOptions: an explicit CLI false overrides a config true', () => {
     const merged = mergeAnalyzeOptions({ skipSkills: false }, { skipSkills: true });
     expect(merged.skipSkills).toBe(false);
+  });
+
+  it('mergeAnalyzeOptions: config ignoreBranches fills only when CLI leaves it unset', () => {
+    expect(mergeAnalyzeOptions({}, { ignoreBranches: true }).ignoreBranches).toBe(true);
+    expect(
+      mergeAnalyzeOptions({ ignoreBranches: false }, { ignoreBranches: true }).ignoreBranches,
+    ).toBe(false);
   });
 
   it('mergeAnalyzeOptions: config stats applies unless --no-stats was passed', () => {

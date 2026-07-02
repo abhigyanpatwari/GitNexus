@@ -641,6 +641,13 @@ export interface AnalyzeOptions {
    * the checked-out branch inside `runFullAnalysis` when omitted.
    */
   branch?: string;
+  /**
+   * Branch-agnostic workspace mode (#2354). From `--disk-only` or
+   * `.gitnexusrc` `ignoreBranches`. Uses the flat index slot for the current
+   * on-disk files instead of routing by checked-out git branch.
+   */
+  diskOnly?: boolean;
+  ignoreBranches?: boolean;
   /** Pure index mode: skip all file injection (AGENTS.md, CLAUDE.md, skills). */
   indexOnly?: boolean;
   /** Index the folder even when no .git directory is present. */
@@ -824,6 +831,11 @@ const analyzeCommandImpl = async (
       return;
     }
   }
+  if (cliOptions?.diskOnly === true && cliOptions.branch !== undefined) {
+    cliError('  Cannot combine `--disk-only` with `--branch`. Use one index placement mode.\n');
+    process.exitCode = 1;
+    return;
+  }
 
   // ── Load .gitnexusrc and merge: CLI flags override config (#243) ───
   // Parse/validate before the progress bar so a malformed config produces an
@@ -833,6 +845,14 @@ const analyzeCommandImpl = async (
   try {
     const fileConfig = loadAnalyzeConfig(repoPath);
     options = mergeAnalyzeOptions(cliOptions ?? {}, fileConfig);
+    if (cliOptions?.branch !== undefined) {
+      // An explicit --branch is the stronger, branch-aware request. This lets a
+      // repo-level ignoreBranches default be overridden for one targeted run.
+      options.ignoreBranches = false;
+      options.diskOnly = false;
+    } else if (options.diskOnly === true) {
+      options.ignoreBranches = true;
+    }
 
     // Resolve the default branch threaded into generated context:
     //   CLI --default-branch > .gitnexusrc defaultBranch/branch
@@ -1271,6 +1291,7 @@ const analyzeCommandImpl = async (
         // the .gitnexusrc-merged options) so the cosmetic defaultBranch config
         // can never change index placement. Undefined → auto-detect in pipeline.
         branch: cliOptions?.branch,
+        ignoreBranches: options.ignoreBranches === true,
         // commander.js `.option('--no-stats', …)` registers the flag as
         // `options.stats` (boolean, default true; `false` when the user
         // passed --no-stats). Reading `options.noStats` here returns

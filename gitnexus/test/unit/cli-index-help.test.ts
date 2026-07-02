@@ -157,6 +157,15 @@ describe('CLI help surface', () => {
     expect(result.stdout).toContain('-c, --coding-agent <agents>');
   });
 
+  it('analyze help exposes disk-only branch-agnostic indexing (#2354)', () => {
+    const result = runHelp('analyze');
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain('--disk-only');
+    expect(result.stdout).toContain('Ignore the checked-out git branch for');
+    expect(result.stdout).toContain('index placement and update the flat index');
+  });
+
   it('localizes every registered CLI command and option description in zh-CN help', () => {
     const zhHelpOutput = allHelpCommands
       .map((args) => {

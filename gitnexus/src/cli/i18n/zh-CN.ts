@@ -170,6 +170,7 @@ export const zhCN = {
   'help.option.analyze.skipSkills':
     '跳过安装 .claude/skills/gitnexus/ 下的标准 GitNexus skill 文件。不抑制 --skills 生成的社区 skill（位于 .claude/skills/generated/）。使用 --index-only 可跳过所有 AI 上下文文件注入。',
   'help.option.analyze.indexOnly': '纯索引模式：跳过所有文件注入（AGENTS.md、CLAUDE.md、skills）',
+  'help.option.analyze.diskOnly': '忽略当前 Git 分支的索引位置，并用当前工作区文件更新扁平索引',
   'help.option.skipGit': '将提供的路径/cwd 视为索引根目录，并跳过向上查找 git 根目录',
   'help.option.analyze.name':
     '在 ~/.gitnexus/registry.json 中使用自定义名称注册该仓库（用于区分路径 basename 相同的仓库，例如两个不同的 .../app 目录）',

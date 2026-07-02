@@ -10,6 +10,8 @@ import {
 import {
   getStoragePaths,
   saveMeta,
+  loadMeta,
+  readRegistry,
   INCREMENTAL_SCHEMA_VERSION,
   type RepoMeta,
 } from '../../src/storage/repo-manager.js';
@@ -117,6 +119,57 @@ describe('run-analyze module', () => {
     }
   });
 
+  it('ignoreBranches uses the flat slot regardless of checked-out branch (#2354)', async () => {
+    const tmpRepo = await createTempDir('gitnexus-run-analyze-disk-only-');
+    const oldHome = process.env.GITNEXUS_HOME;
+    try {
+      process.env.GITNEXUS_HOME = path.join(tmpRepo.dbPath, '.gn-home');
+      execSync('git init', { cwd: tmpRepo.dbPath, stdio: 'pipe' });
+      execSync('git -c user.name=t -c user.email=t@t commit --allow-empty -m init', {
+        cwd: tmpRepo.dbPath,
+        stdio: 'pipe',
+      });
+      execSync('git branch -M main', { cwd: tmpRepo.dbPath, stdio: 'pipe' });
+      execSync('git checkout -b feature/x', { cwd: tmpRepo.dbPath, stdio: 'pipe' });
+      const commit = execSync('git rev-parse HEAD', {
+        cwd: tmpRepo.dbPath,
+        encoding: 'utf-8',
+      }).trim();
+
+      const flat = getStoragePaths(tmpRepo.dbPath);
+      await saveMeta(flat.storagePath, {
+        repoPath: tmpRepo.dbPath,
+        lastCommit: commit,
+        indexedAt: new Date().toISOString(),
+        branch: 'main',
+        schemaVersion: INCREMENTAL_SCHEMA_VERSION,
+      });
+
+      const logs: string[] = [];
+      const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
+      const result = await runFullAnalysis(
+        tmpRepo.dbPath,
+        { ignoreBranches: true },
+        { onProgress: () => {}, onLog: (msg) => logs.push(msg) },
+      );
+
+      expect(result.alreadyUpToDate).toBe(true);
+      expect(result.isPrimaryBranch).toBe(true);
+      expect(logs.join('\n')).not.toContain('owns the flat slot');
+
+      const flatMeta = await loadMeta(flat.storagePath);
+      expect(flatMeta?.branch).toBeUndefined();
+      const entry = (await readRegistry()).find(
+        (repo) => repo.path === path.resolve(tmpRepo.dbPath),
+      );
+      expect(entry?.branch).toBeUndefined();
+    } finally {
+      if (oldHome === undefined) delete process.env.GITNEXUS_HOME;
+      else process.env.GITNEXUS_HOME = oldHome;
+      await tmpRepo.cleanup();
+    }
+  });
+
   it('rejects --branch that does not match the checked-out branch (#2106)', async () => {
     const tmpRepo = await createTempDir('gitnexus-run-analyze-branch-mismatch-');
     try {
@@ -133,6 +186,28 @@ describe('run-analyze module', () => {
       await expect(
         runFullAnalysis(tmpRepo.dbPath, { branch: 'feature/x' }, { onProgress: () => {} }),
       ).rejects.toThrow(/does not match the checked-out branch/);
+    } finally {
+      await tmpRepo.cleanup();
+    }
+  });
+
+  it('rejects ignoreBranches combined with an explicit branch label (#2354)', async () => {
+    const tmpRepo = await createTempDir('gitnexus-run-analyze-disk-only-branch-');
+    try {
+      execSync('git init', { cwd: tmpRepo.dbPath, stdio: 'pipe' });
+      execSync('git -c user.name=test -c user.email=test@test commit --allow-empty -m init', {
+        cwd: tmpRepo.dbPath,
+        stdio: 'pipe',
+      });
+
+      const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
+      await expect(
+        runFullAnalysis(
+          tmpRepo.dbPath,
+          { ignoreBranches: true, branch: 'main' },
+          { onProgress: () => {} },
+        ),
+      ).rejects.toThrow(/cannot be combined with --branch/);
     } finally {
       await tmpRepo.cleanup();
     }

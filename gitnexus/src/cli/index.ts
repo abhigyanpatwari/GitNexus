@@ -87,6 +87,10 @@ program
       'Defaults to the checked-out branch; the primary/first-indexed branch keeps the ' +
       'flat index and others get their own. Distinct from --default-branch (cosmetic base_ref).',
   )
+  .option(
+    '--disk-only',
+    'Ignore the checked-out git branch for index placement and update the flat index from the current workspace files.',
+  )
   .option('--no-stats', 'Omit volatile file/symbol counts from AGENTS.md and CLAUDE.md')
   .option(
     '--skip-skills',
