@@ -175,58 +175,6 @@ export function resolveCompoundReceiverClass(
     if (cls !== undefined) return cls;
   }
 
-  // Handle this.field[.subfield] — walk enclosing class's field typeBindings
-  if (workingText.startsWith('this.')) {
-    const enclosingClass = findEnclosingClassDef(inScope, scopes);
-    if (enclosingClass !== undefined) {
-      const chainRest = workingText.slice(5); // after 'this.'
-      const parts = chainRest.split('.');
-      let curClass: SymbolDefinition | undefined = enclosingClass;
-      for (let i = 0; i < parts.length && curClass !== undefined; i++) {
-        const seg = parts[i];
-        if (seg === undefined) break;
-        const cleanName = seg.endsWith(')') ? seg.slice(0, seg.indexOf('(')) : seg;
-        if (cleanName.length === 0) continue;
-        const cs = classScopeByDefId.get(curClass.nodeId);
-        if (cs === undefined) {
-          curClass = undefined;
-          break;
-        }
-        let memberType = cs.typeBindings.get(cleanName);
-        if (memberType === undefined && options.hoistTypeBindingsToModule === true) {
-          let curId: ScopeId | null = cs.parent;
-          while (curId !== null) {
-            const curScope = scopes.scopeTree.getScope(curId);
-            if (curScope === undefined) break;
-            const cand = curScope.typeBindings.get(cleanName);
-            if (cand !== undefined) {
-              memberType = cand;
-              break;
-            }
-            curId = curScope.parent;
-          }
-        }
-        if (memberType === undefined && fieldFallback) {
-          for (const [, mb] of cs.typeBindings) {
-            const fb = findClassBindingInScope(mb.declaredAtScope, mb.rawName, scopes);
-            if (fb === undefined) continue;
-            const fcs = classScopeByDefId.get(fb.nodeId);
-            const found = fcs?.typeBindings.get(cleanName);
-            if (found !== undefined) {
-              memberType = found;
-              break;
-            }
-          }
-        }
-        if (memberType === undefined) {
-          curClass = undefined;
-          break;
-        }
-        curClass = findClassBindingInScope(memberType.declaredAtScope, memberType.rawName, scopes);
-      }
-      if (curClass !== undefined) return curClass;
-    }
-  }
   // ── End pre-processing ─────────────────────────────────────────
 
   // Bare identifier — resolve via typeBinding first, then fall back to
@@ -481,6 +429,15 @@ export function resolveCompoundReceiverClass(
   let currentClass: SymbolDefinition | undefined = headType
     ? findClassBindingInScope(headType.declaredAtScope, headType.rawName, scopes)
     : findClassBindingInScope(inScope, headMemberName, scopes);
+  // Head seed for a literal `this` head with no receiver typeBinding in
+  // scope: languages synthesize `this` typeBindings per function scope,
+  // so a chain site outside any function scope (a field initializer or
+  // an instance initializer block) has none — there, the enclosing
+  // class definition IS the receiver type. Head resolution only; the
+  // per-segment walk below is shared with every other chain shape.
+  if (currentClass === undefined && headType === undefined && headMemberName === 'this') {
+    currentClass = findEnclosingClassDef(inScope, scopes);
+  }
   // `const user = getUser(); user.address` — the typeBinding for `user`
   // is an alias to the callee name (`getUser`), not a class. When
   // `findClassBinding` on that rawName fails, treat it as a zero-arg

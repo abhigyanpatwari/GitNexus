@@ -2506,3 +2506,99 @@ describe('Java unparseable cast receiver resolution', () => {
     expect(fromNonCast).toEqual([]);
   });
 });
+
+// ---------------------------------------------------------------------------
+// this.field chains (#2353 review F4/F5/F7): resolved by the generic
+// per-segment chain walker — the head `this` segment resolves via the
+// synthesized Function-scope typeBinding, each following segment via
+// class-scope typeBindings. Initializer-context sites (instance
+// initializer block / field initializer) have no function scope and
+// therefore no synthesized `this` binding; they resolve via the
+// literal-`this` head seed (enclosing class def) and attribute their
+// CALLS edge to the enclosing Class node. Every scenario has a decoy
+// class (Decoy) owning a same-named method, so a wrong resolution
+// emits a detectable edge.
+// ---------------------------------------------------------------------------
+
+describe('Java this.field chain resolution', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'java-this-field-chain'), () => {});
+  }, 60000);
+
+  it('detects the caller plus target and decoy classes', () => {
+    expect(getNodesByLabel(result, 'Class')).toEqual([
+      'App',
+      'Core',
+      'Decoy',
+      'Engine',
+      'Mapper',
+      'Monitor',
+      'Report',
+      'ReportFactory',
+      'Result',
+    ]);
+  });
+
+  it('resolves one-hop this.engine.start() to Engine.start', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const edge = calls.find((c) => c.source === 'chainOneHop' && c.target === 'start');
+    expect(edge).toBeDefined();
+    expect(edge!.targetFilePath).toBe('models/Engine.java');
+  });
+
+  it('resolves two-hop this.engine.core.ignite() through two typed fields to Core.ignite', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const edge = calls.find((c) => c.source === 'chainTwoHop' && c.target === 'ignite');
+    expect(edge).toBeDefined();
+    expect(edge!.targetFilePath).toBe('models/Core.java');
+  });
+
+  it('resolves this.monitor.watch() inside an instance initializer block to Monitor.watch', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const edge = calls.find((c) => c.source === 'App' && c.target === 'watch');
+    expect(edge).toBeDefined();
+    expect(edge!.targetFilePath).toBe('models/Monitor.java');
+  });
+
+  it('resolves the field initializer this.factory.make() to ReportFactory.make', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const edge = calls.find((c) => c.source === 'App' && c.target === 'make');
+    expect(edge).toBeDefined();
+    expect(edge!.targetFilePath).toBe('models/ReportFactory.java');
+  });
+
+  // #2353 review F5: the dot inside the string argument must not break
+  // chain segmentation — both the middle-of-chain lookup() call and the
+  // chained run() call resolve to their declaring classes.
+  it('resolves a chain whose call argument contains a dot — this.mapper.lookup("a.b").run()', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const lookupEdge = calls.find((c) => c.source === 'chainDottedArg' && c.target === 'lookup');
+    expect(lookupEdge).toBeDefined();
+    expect(lookupEdge!.targetFilePath).toBe('models/Mapper.java');
+    const runEdge = calls.find((c) => c.source === 'chainDottedArg' && c.target === 'run');
+    expect(runEdge).toBeDefined();
+    expect(runEdge!.targetFilePath).toBe('models/Result.java');
+  });
+
+  // Consistency guard: no this-only special-casing — an identically-shaped
+  // parameter-receiver chain (same classes) resolves to the same target.
+  it('resolves an identically-shaped obj.field.method() chain the same way as the this. variant', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const paramEdge = calls.find((c) => c.source === 'chainOneHopParam' && c.target === 'start');
+    expect(paramEdge).toBeDefined();
+    expect(paramEdge!.targetFilePath).toBe('models/Engine.java');
+    const thisEdge = calls.find((c) => c.source === 'chainOneHop' && c.target === 'start');
+    expect(thisEdge).toBeDefined();
+    expect(thisEdge!.targetFilePath).toBe(paramEdge!.targetFilePath);
+  });
+
+  it('emits no CALLS edge to any decoy method', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const decoyEdges = calls
+      .filter((c) => c.targetFilePath === 'models/Decoy.java')
+      .map((c) => `${c.source} → ${c.target} @ ${c.targetFilePath}`);
+    expect(decoyEdges).toEqual([]);
+  });
+});
