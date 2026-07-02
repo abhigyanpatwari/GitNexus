@@ -6,6 +6,7 @@ import {
   unquoteLiteral,
   type LanguagePatterns,
 } from '../tree-sitter-scanner.js';
+import { normalizeExtractedRoutePath } from '../../../ingestion/route-extractors/route-path.js';
 import type { HttpDetection, HttpLanguagePlugin, RepoContext } from './types.js';
 
 /**
@@ -157,6 +158,26 @@ const INCLUDE_ROUTER_NAME_PATTERNS = compilePatterns({
             (keyword_argument
               name: (identifier) @kw (#eq? @kw "prefix")
               value: (string) @prefix)))
+      `,
+    },
+  ],
+} satisfies LanguagePatterns<Record<string, never>>);
+
+const API_ROUTER_PREFIX_PATTERNS = compilePatterns({
+  name: 'python-fastapi-apirouter-prefix',
+  language: Python,
+  patterns: [
+    {
+      meta: {},
+      query: `
+        (assignment
+          left: (identifier) @router_name (#eq? @router_name "router")
+          right: (call
+            function: (identifier) @factory (#eq? @factory "APIRouter")
+            arguments: (argument_list
+              (keyword_argument
+                name: (identifier) @kw (#eq? @kw "prefix")
+                value: (string) @prefix))))
       `,
     },
   ],
@@ -905,10 +926,10 @@ function buildPythonRepoContext(
   const prefixesByLongKey = new Map<string, Set<string>>();
   const prefixesByShortKey = new Map<string, Set<string>>();
 
-  // Pre-pass over .py files. We deliberately run this even on files
-  // that don't contain `include_router` — the cost of an extra parse
-  // is bounded by the file count, and detecting `include_router`
-  // beforehand would require its own grep/scan.
+  // Cross-file pre-pass: only `include_router` sites need it — they bind a
+  // prefix declared in one file to a router defined in another. Same-file
+  // `APIRouter(prefix=...)` is resolved in scan() from the file's own tree, so
+  // APIRouter-only files are left out here and never parsed twice.
   for (const rel of files) {
     if (!rel.endsWith('.py')) continue;
     const src = readFile(rel);
@@ -1001,15 +1022,17 @@ function buildPythonRepoContext(
     }
   }
 
-  return { prefixesByLongKey, prefixesByShortKey };
+  return {
+    prefixesByLongKey,
+    prefixesByShortKey,
+  };
 }
 
 function joinPrefix(prefix: string, route: string): string {
-  // Mirror FastAPI's path joining: trim trailing slash off prefix,
-  // ensure exactly one leading slash on the result.
-  const p = prefix.replace(/\/+$/, '');
-  const r = route.startsWith('/') ? route : `/${route}`;
-  return `${p}${r}`;
+  // Delegate to the shared route-path normalizer so the group contract and the
+  // ingestion Route node join prefixes identically — one helper, no
+  // trailing-slash drift on empty routes (`APIRouter(prefix="/x")` + `@get("")`).
+  return normalizeExtractedRoutePath(route, prefix);
 }
 export const PYTHON_HTTP_PLUGIN: HttpLanguagePlugin = {
   name: 'python-http',
@@ -1071,6 +1094,18 @@ export const PYTHON_HTTP_PLUGIN: HttpLanguagePlugin = {
     // the ingestion route extractor), not a per-file source scan — see the note
     // at the top of this file.
 
+    // Same-file `router = APIRouter(prefix="/x")` (router-only). Read from this
+    // file's own tree, so there is no cross-file map and no prefix bleed across
+    // same-stem files; it stacks under any include_router(prefix=...) below.
+    let constructorPrefix: string | undefined;
+    for (const m of runCompiledPatterns(API_ROUTER_PREFIX_PATTERNS, tree)) {
+      const prefixNode = m.captures.prefix;
+      if (!prefixNode) continue;
+      const p = unquoteLiteral(prefixNode.text);
+      if (p === null) continue;
+      constructorPrefix = p;
+    }
+
     // Providers: FastAPI @router.<verb>("/path") — must be joined
     // with the prefix(es) declared at the include_router site. When
     // no prefix is found we still emit the unprefixed path so this
@@ -1095,10 +1130,13 @@ export const PYTHON_HTTP_PLUGIN: HttpLanguagePlugin = {
       const shortPrefixes =
         longPrefixes || !shortKey ? undefined : ctx?.prefixesByShortKey.get(shortKey);
       const prefixSet = longPrefixes ?? shortPrefixes;
+      // Stack the same-file APIRouter(prefix=...) under any cross-file
+      // include_router prefix.
+      const localPath = constructorPrefix ? joinPrefix(constructorPrefix, rawPath) : rawPath;
       const paths =
         prefixSet && prefixSet.size > 0
-          ? [...prefixSet].map((p) => joinPrefix(p, rawPath))
-          : [rawPath];
+          ? [...prefixSet].map((p) => joinPrefix(p, localPath))
+          : [localPath];
 
       for (const p of paths) {
         out.push({

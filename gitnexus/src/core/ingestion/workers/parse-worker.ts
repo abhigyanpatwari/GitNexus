@@ -30,6 +30,7 @@ import { postResultCloneSafe } from './post-result.js';
 import { mergeResult } from './result-merge.js';
 import type { SymbolTableReader } from '../model/symbol-table.js';
 import type {
+  ExtractedRouterConstructorPrefix,
   ExtractedRouterInclude,
   ExtractedRouterImport,
   ExtractedRouterModuleAlias,
@@ -130,6 +131,7 @@ import {
   persistDurableParsedFileShardSync,
 } from '../../../storage/parsedfile-store.js';
 import { extractLaravelRoutes, type ExtractedRoute } from '../route-extractors/laravel.js';
+import type { SharedSpringType } from '../route-extractors/spring-shared.js';
 import {
   collectFunctionCfgs,
   DEFAULT_PDG_MAX_FUNCTION_LINES,
@@ -393,6 +395,16 @@ export interface ParseWorkerResult {
   decoratorRoutes: ExtractedDecoratorRoute[];
   routerIncludes: ExtractedRouterInclude[];
   routerImports: ExtractedRouterImport[];
+  routerConstructorPrefixes?: ExtractedRouterConstructorPrefix[];
+  /**
+   * Optional. Project-wide `SharedSpringType` view of route-defining
+   * class/interface declarations, produced by the provider's
+   * `extractRouteInheritanceTypes` hook (Java/Spring). parse-impl aggregates
+   * these and runs a cross-file pass that resolves interface-inherited routes
+   * into additional `decoratorRoutes` (#2288). Optional for cache backward
+   * compatibility; consumers must guard with `?? []`.
+   */
+  springTypes?: SharedSpringType[];
   /**
    * Optional. `from <pkg> import <module>` records from Python files
    * where `<module>` is later used as a Shape-A include receiver
@@ -896,6 +908,7 @@ const processBatch = (
     decoratorRoutes: [],
     routerIncludes: [],
     routerImports: [],
+    routerConstructorPrefixes: [],
     routerModuleAliases: [],
     toolDefs: [],
     ormQueries: [],
@@ -2413,6 +2426,7 @@ const processFileGroup = (
         result.routerIncludes,
         result.routerImports,
         (result.routerModuleAliases ??= []),
+        (result.routerConstructorPrefixes ??= []),
       );
     }
 
@@ -2423,6 +2437,14 @@ const processFileGroup = (
     if (provider.extractDecoratorRoutes) {
       const frameworkRoutes = provider.extractDecoratorRoutes(tree, file.path, lineOffset);
       for (const r of frameworkRoutes) result.decoratorRoutes.push(r);
+    }
+
+    // Project-wide route-inheritance type collection via provider hook (#2288).
+    // The per-file SharedSpringType views are aggregated by the parse phase,
+    // which then resolves interface-inherited routes cross-file.
+    if (provider.extractRouteInheritanceTypes) {
+      const springTypes = provider.extractRouteInheritanceTypes(tree, file.path);
+      if (springTypes.length > 0) (result.springTypes ??= []).push(...springTypes);
     }
 
     // Vue: emit CALLS edges for components used in <template>
@@ -2457,6 +2479,7 @@ let accumulated: ParseWorkerResult = {
   decoratorRoutes: [],
   routerIncludes: [],
   routerImports: [],
+  routerConstructorPrefixes: [],
   routerModuleAliases: [],
   toolDefs: [],
   ormQueries: [],
@@ -2597,6 +2620,7 @@ parentPort!.on('message', (msg: WorkerIncomingMessage) => {
         decoratorRoutes: [],
         routerIncludes: [],
         routerImports: [],
+        routerConstructorPrefixes: [],
         routerModuleAliases: [],
         toolDefs: [],
         ormQueries: [],

@@ -22,7 +22,7 @@
 
 import { writeFile, readFile } from 'fs/promises';
 import path from 'path';
-import { describe, it, expect } from 'vitest';
+import { afterEach, describe, it, expect, vi } from 'vitest';
 import {
   getStoragePaths,
   saveMeta,
@@ -35,6 +35,10 @@ import { setupMiniRepo as setupSharedMiniRepo } from '../helpers/mini-repo.js';
 const setupMiniRepo = () => setupSharedMiniRepo('gitnexus-incr-orch-');
 
 describe('runFullAnalysis — incremental orchestration', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
   it('first run populates fileHashes + schemaVersion and clears incrementalInProgress on success', async () => {
     const repo = await setupMiniRepo();
     try {
@@ -220,6 +224,108 @@ describe('runFullAnalysis — incremental orchestration', () => {
 
       const after = await loadMeta(storagePath);
       expect(after!.incrementalInProgress).toBeUndefined();
+    } finally {
+      await repo.cleanup();
+    }
+  }, 300_000);
+
+  // Regression for #2289 review P1: a pre-v5 stamp (e.g. v4 with url-only
+  // Route ids) re-analyzed on the SAME commit must NOT early-return on the
+  // `alreadyUpToDate` fast path — otherwise the v5 schema bump's
+  // re-keyed-Route migration is silently bypassed and stale URL-only Route
+  // rows persist alongside any new composite-keyed writes. The schemaVersion
+  // gate (mirrors pdgModeMismatch's slot above the fast path) must force a
+  // full rebuild before lastCommit-equality short-circuits the pipeline.
+  it('a pre-v5 schemaVersion stamp forces a full rebuild on an unchanged-commit re-analyze', async () => {
+    const repo = await setupMiniRepo();
+    try {
+      const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
+      // First run stamps schemaVersion = INCREMENTAL_SCHEMA_VERSION (v5).
+      await runFullAnalysis(repo.dbPath, { skipAgentsMd: true }, { onProgress: () => {} });
+      const { storagePath } = getStoragePaths(repo.dbPath);
+      const meta = await loadMeta(storagePath);
+      expect(meta).not.toBeNull();
+      expect(meta!.schemaVersion).toBe(INCREMENTAL_SCHEMA_VERSION);
+
+      // Simulate a repo indexed at the SAME commit by a pre-v5 GitNexus
+      // build: rewrite meta.json with schemaVersion = 4. lastCommit and
+      // working tree are untouched, so without the schemaVersion gate the
+      // run-analyze fast path would early-return `alreadyUpToDate=true`
+      // and never touch the stale Route rows.
+      const downgraded: RepoMeta = { ...meta!, schemaVersion: 4 };
+      await saveMeta(storagePath, downgraded);
+
+      const reanalyzed = await runFullAnalysis(
+        repo.dbPath,
+        { skipAgentsMd: true },
+        { onProgress: () => {} },
+      );
+      // Pipeline actually ran (schemaVersion mismatch → force=true).
+      expect(reanalyzed.alreadyUpToDate).toBeUndefined();
+      // And the meta is stamped back to v5 (the rebuild path runs saveMeta).
+      const restamped = await loadMeta(storagePath);
+      expect(restamped!.schemaVersion).toBe(INCREMENTAL_SCHEMA_VERSION);
+    } finally {
+      await repo.cleanup();
+    }
+  }, 300_000);
+
+  // #2331/#2339: mirrors the schemaVersion mismatch test above, but for the
+  // CJK segmentation mode stamp. Uses a non-default mode ('bigram') rather
+  // than 'none' — with the default, (undefined ?? 'none') !== 'none' is
+  // false regardless of whether the stamp was ever actually written, so a
+  // dropped-stamp bug would pass this test vacuously. 'bigram' makes an
+  // omitted stamp manifest as a real comparator mismatch instead.
+  it('a stale cjkSegmentation stamp forces a full rebuild on an unchanged-commit re-analyze', async () => {
+    const repo = await setupMiniRepo();
+    try {
+      vi.stubEnv('GITNEXUS_FTS_CJK_SEGMENTATION', 'bigram');
+      const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
+      await runFullAnalysis(repo.dbPath, { skipAgentsMd: true }, { onProgress: () => {} });
+      const { storagePath } = getStoragePaths(repo.dbPath);
+      const meta = await loadMeta(storagePath);
+      expect(meta).not.toBeNull();
+      expect(meta!.cjkSegmentation).toBe('bigram');
+
+      // Simulate a repo indexed under 'none' (or a pre-#2339 build with no
+      // stamp at all) that's now being served/re-analyzed with bigram mode.
+      const downgraded: RepoMeta = { ...meta!, cjkSegmentation: 'none' };
+      await saveMeta(storagePath, downgraded);
+
+      const reanalyzed = await runFullAnalysis(
+        repo.dbPath,
+        { skipAgentsMd: true },
+        { onProgress: () => {} },
+      );
+      // Pipeline actually ran (cjkSegmentation mismatch → force=true).
+      expect(reanalyzed.alreadyUpToDate).toBeUndefined();
+      // And the meta is restamped to the live resolved mode.
+      const restamped = await loadMeta(storagePath);
+      expect(restamped!.cjkSegmentation).toBe('bigram');
+    } finally {
+      await repo.cleanup();
+    }
+  }, 300_000);
+
+  it('first-ever analyze of a brand-new repo proceeds without a spurious CJK mode force-rebuild', async () => {
+    const repo = await setupMiniRepo();
+    try {
+      const { storagePath } = getStoragePaths(repo.dbPath);
+      // No meta.json exists yet — existingMeta is falsy, so the
+      // cjkSegmentationModeMismatch guard is skipped entirely (never calls
+      // the comparator), same as the pdg/schemaVersion guards above it.
+      expect(await loadMeta(storagePath)).toBeNull();
+
+      const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
+      const result = await runFullAnalysis(
+        repo.dbPath,
+        { skipAgentsMd: true },
+        { onProgress: () => {} },
+      );
+      expect(result.alreadyUpToDate).toBeUndefined();
+
+      const meta = await loadMeta(storagePath);
+      expect(meta!.cjkSegmentation).toBe('none');
     } finally {
       await repo.cleanup();
     }

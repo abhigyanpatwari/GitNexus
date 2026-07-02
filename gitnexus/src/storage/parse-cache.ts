@@ -55,7 +55,7 @@ import type { ParseWorkerResult } from '../core/ingestion/workers/parse-worker.j
 // the main thread (the #1983 OOM). Because the two stores share this version,
 // any future change to the `ParsedFile` serialization shape MUST bump
 // SCHEMA_BUMP so both invalidate in lockstep.
-const SCHEMA_BUMP = 7; // #2138 Part 2: ExtractedDecoratorRoute gained `handlerName` (route handler symbol resolution)
+const SCHEMA_BUMP = 9; // #2312: ParseWorkerResult gained `routerConstructorPrefixes` for FastAPI APIRouter(prefix=...) replay
 const GITNEXUS_PKG_VERSION = (() => {
   try {
     // package.json sits at gitnexus/package.json — two levels up from

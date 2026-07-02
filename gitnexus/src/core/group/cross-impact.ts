@@ -22,7 +22,12 @@ import {
   repoInSubgroup,
 } from './group-path-utils.js';
 import { getGroupDir } from './storage.js';
-import { closeBridgeDb, openBridgeDbReadOnly, queryBridge, readBridgeMeta } from './bridge-db.js';
+import {
+  closeBridgeDb,
+  getCachedBridgeReadOnly,
+  queryBridge,
+  readBridgeMeta,
+} from './bridge-db.js';
 import { BRIDGE_SCHEMA_VERSION } from './bridge-schema.js';
 
 // High limit for the local phase of group impact so collectImpactSymbolUids
@@ -369,7 +374,10 @@ export async function ensureBridgeReady(
       error: `No bridge.lbug in this group directory. Run gitnexus group sync (schema ${BRIDGE_SCHEMA_VERSION}).`,
     };
   }
-  const handle = await openBridgeDbReadOnly(groupDir);
+  // Use the cached read-only handle if available — avoids reopening the same
+  // bridge.lbug in a long-lived MCP server, which fails on Windows because
+  // the OS handle isn't fully released before the next open races in.
+  const handle = await getCachedBridgeReadOnly(groupDir);
   if (!handle) {
     return {
       error: `Could not open bridge.lbug read-only (schema ${BRIDGE_SCHEMA_VERSION}). Run gitnexus group sync.`,

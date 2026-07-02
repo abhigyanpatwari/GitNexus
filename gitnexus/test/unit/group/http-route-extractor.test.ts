@@ -10,7 +10,10 @@ vi.mock('../../../src/core/tree-sitter/safe-parse.js', async () => {
   return buildSafeParseMock(parseSourceSafeSpy);
 });
 
-import { HttpRouteExtractor } from '../../../src/core/group/extractors/http-route-extractor.js';
+import {
+  HttpRouteExtractor,
+  normalizeRepoRelPath,
+} from '../../../src/core/group/extractors/http-route-extractor.js';
 import { getPluginForFile } from '../../../src/core/group/extractors/http-patterns/index.js';
 import type { RepoHandle } from '../../../src/core/group/types.js';
 
@@ -42,6 +45,14 @@ describe('HttpRouteExtractor', () => {
   });
 
   const toPosixPath = (filePath: string): string => filePath.replace(/\\/g, '/');
+
+  describe('repo-relative path normalization', () => {
+    it('normalizes Windows source-scan paths before symbol lookup', () => {
+      expect(normalizeRepoRelPath('src\\api\\users.ts')).toBe('src/api/users.ts');
+      expect(normalizeRepoRelPath('.\\src\\api\\users.ts')).toBe('src/api/users.ts');
+      expect(normalizeRepoRelPath('./src/api/users.ts')).toBe('src/api/users.ts');
+    });
+  });
 
   describe('symbolUid resolution via containment', () => {
     it('resolves a source-scan consumer to the function CONTAINING the fetch', async () => {
@@ -6967,6 +6978,124 @@ async def concurrent():
       const providers = contracts.filter((c) => c.role === 'provider');
 
       expect(providers.find((c) => c.contractId === 'http::GET::/ai/concurrent')).toBeDefined();
+    });
+
+    it('joins FastAPI @router.<verb> path with APIRouter(prefix=...) in the same file', async () => {
+      const dir = path.join(tmpDir, 'fastapi-router-constructor-prefix');
+      fs.mkdirSync(path.join(dir, 'api'), { recursive: true });
+      fs.writeFileSync(path.join(dir, 'main.py'), `app = None\n`);
+      fs.writeFileSync(
+        path.join(dir, 'api/items.py'),
+        `from fastapi import APIRouter
+router = APIRouter(prefix="/api/items", tags=["items"])
+
+@router.get("")
+async def list_items():
+    return []
+
+@router.post("/{item_id}")
+async def update_item(item_id: str):
+    return {}
+`,
+      );
+
+      const contracts = await extractor.extract(null, dir, makeRepo(dir));
+      const providers = contracts.filter((c) => c.role === 'provider');
+
+      expect(providers.find((c) => c.contractId === 'http::GET::/api/items')).toBeDefined();
+      expect(
+        providers.find((c) => c.contractId === 'http::POST::/api/items/{param}'),
+      ).toBeDefined();
+      expect(providers.find((c) => c.contractId === 'http::GET::/')).toBeUndefined();
+      expect(providers.find((c) => c.contractId === 'http::POST::/{param}')).toBeUndefined();
+    });
+
+    it('treats an empty APIRouter(prefix="") as no prefix', async () => {
+      const dir = path.join(tmpDir, 'fastapi-router-empty-prefix');
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(path.join(dir, 'main.py'), `app = None\n`);
+      fs.writeFileSync(
+        path.join(dir, 'items.py'),
+        `from fastapi import APIRouter
+router = APIRouter(prefix="")
+
+@router.get("/list")
+async def list_items():
+    return []
+`,
+      );
+
+      const contracts = await extractor.extract(null, dir, makeRepo(dir));
+      const providers = contracts.filter((c) => c.role === 'provider');
+
+      // Empty prefix is a clean no-op — the route keeps its bare decorator path.
+      expect(providers.find((c) => c.contractId === 'http::GET::/list')).toBeDefined();
+    });
+
+    it('does not bleed root APIRouter(prefix=...) onto nested same-stem files', async () => {
+      const dir = path.join(tmpDir, 'fastapi-router-constructor-prefix-no-bleed');
+      fs.mkdirSync(path.join(dir, 'admin'), { recursive: true });
+      fs.writeFileSync(path.join(dir, 'main.py'), `app = None\n`);
+      fs.writeFileSync(
+        path.join(dir, 'users.py'),
+        `from fastapi import APIRouter
+router = APIRouter(prefix="/root-users")
+
+@router.get("/landing")
+async def root_users_landing():
+    return {}
+`,
+      );
+      fs.writeFileSync(
+        path.join(dir, 'admin/users.py'),
+        `from fastapi import APIRouter
+router = APIRouter()
+
+@router.get("/audit")
+async def audit():
+    return {}
+`,
+      );
+
+      const contracts = await extractor.extract(null, dir, makeRepo(dir));
+      const providers = contracts.filter((c) => c.role === 'provider');
+
+      expect(
+        providers.find((c) => c.contractId === 'http::GET::/root-users/landing'),
+      ).toBeDefined();
+      expect(providers.find((c) => c.contractId === 'http::GET::/audit')).toBeDefined();
+      expect(
+        providers.find((c) => c.contractId === 'http::GET::/root-users/audit'),
+      ).toBeUndefined();
+    });
+
+    it('stacks FastAPI APIRouter(prefix=...) with include_router(prefix=...)', async () => {
+      const dir = path.join(tmpDir, 'fastapi-router-stacked-prefix');
+      fs.mkdirSync(path.join(dir, 'api'), { recursive: true });
+      fs.writeFileSync(
+        path.join(dir, 'main.py'),
+        `from fastapi import FastAPI
+from api import items
+app = FastAPI()
+app.include_router(items.router, prefix="/v1")
+`,
+      );
+      fs.writeFileSync(
+        path.join(dir, 'api/items.py'),
+        `from fastapi import APIRouter
+router = APIRouter(prefix="/items")
+
+@router.get("/{item_id}")
+async def get_item(item_id: str):
+    return {}
+`,
+      );
+
+      const contracts = await extractor.extract(null, dir, makeRepo(dir));
+      const providers = contracts.filter((c) => c.role === 'provider');
+
+      expect(providers.find((c) => c.contractId === 'http::GET::/v1/items/{param}')).toBeDefined();
+      expect(providers.find((c) => c.contractId === 'http::GET::/items/{param}')).toBeUndefined();
     });
 
     it('emits @router.<verb> path unmodified when no include_router prefix is configured', async () => {

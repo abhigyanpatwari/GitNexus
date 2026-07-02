@@ -38,6 +38,7 @@ import type { SyntaxNode } from './utils/ast-helpers.js';
 import type { CfgVisitor } from './cfg/types.js';
 import type { NodeLabel } from 'gitnexus-shared';
 import type { ExtractedRoute } from './route-extractors/laravel.js';
+import type { SharedSpringType } from './route-extractors/spring-shared.js';
 import type Parser from 'tree-sitter';
 import type { ExtractedDecoratorRoute } from './workers/parse-worker.js';
 
@@ -287,6 +288,23 @@ interface LanguageProviderConfig {
     filePath: string,
     lineOffset: number,
   ) => ExtractedDecoratorRoute[];
+
+  /**
+   * Collect a project-wide, language-agnostic view of route-defining
+   * class/interface declarations (`SharedSpringType`) from a parsed file.
+   *
+   * When defined, the parse worker calls this per file and the parse phase
+   * aggregates the results, then runs a cross-file pass that resolves
+   * interface-inherited routes (a concrete controller inherits the `@*Mapping`s
+   * its interfaces declare) and appends them to `decoratorRoutes`. Separate from
+   * `extractDecoratorRoutes` because inheritance needs all files, not one.
+   *
+   * Default: undefined (no interface-inheritance route resolution).
+   */
+  readonly extractRouteInheritanceTypes?: (
+    tree: Parser.Tree,
+    filePath: string,
+  ) => SharedSpringType[];
 
   // ── Noise filtering ────────────────────────────────────────────────
   /** Built-in/stdlib names that should be filtered from the call graph for this language.

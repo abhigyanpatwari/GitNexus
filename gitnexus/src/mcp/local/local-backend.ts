@@ -49,6 +49,10 @@ import {
 import { resolveAtGroupMemberRepoPath } from '../../core/group/resolve-at-member.js';
 import { collectBestChunks } from '../../core/embeddings/types.js';
 import {
+  DEFAULT_MCP_VECTOR_MAX_DISTANCE,
+  getVectorMaxDistance,
+} from '../../core/embeddings/config.js';
+import {
   rankExactEmbeddingRows,
   type ExactEmbeddingRow,
 } from '../../core/embeddings/exact-search.js';
@@ -58,6 +62,13 @@ import {
   isVectorExtensionSupportedByPlatform,
 } from '../../core/platform/capabilities.js';
 import { PhaseTimer } from '../../core/search/phase-timer.js';
+import {
+  cjkSegmentationModeMismatch,
+  containsSegmentableCjkRun,
+  getSearchFTSCjkSegmentation,
+  isSupportedCjkSegmentationMode,
+  MAX_CJK_SEGMENTATION_QUERY_LENGTH,
+} from '../../core/search/cjk-segmentation.js';
 import { checkStalenessAsync, checkCwdMatch } from '../../core/git-staleness.js';
 import { logger } from '../../core/logger.js';
 import {
@@ -513,6 +524,41 @@ interface ImpactParams {
   offset?: number;
   summaryOnly?: boolean;
 }
+
+/** One route in an `api_impact` result. `executionFlows` are process names. */
+interface ApiImpactRoute {
+  route: string;
+  method: string | null;
+  handler: string;
+  responseShape: { success: string[]; error: string[] };
+  middleware: string[];
+  middlewareDetection?: 'partial';
+  middlewareNote?: string;
+  consumers: Array<{ name: string; file: string; accesses: string[]; attributionNote?: string }>;
+  mismatches?: Array<{
+    consumer: string;
+    field: string;
+    reason: string;
+    confidence: 'high' | 'low';
+  }>;
+  executionFlows: string[];
+  impactSummary: {
+    directConsumers: number;
+    affectedFlows: number;
+    riskLevel: 'LOW' | 'MEDIUM' | 'HIGH';
+    warning?: string;
+  };
+}
+
+/**
+ * `api_impact` is polymorphic by match count: a single matched route returns the
+ * route object directly; two or more return the wrapped `{ routes, total }`
+ * form; any guard failure returns `{ error }`.
+ */
+type ApiImpactResult =
+  | ApiImpactRoute
+  | { routes: ApiImpactRoute[]; total: number }
+  | { error: string };
 
 /**
  * One repository entry as returned by {@link LocalBackend.listRepos} and in each
@@ -1950,6 +1996,76 @@ export class LocalBackend {
         'FTS indexes missing — keyword search degraded. Run: gitnexus analyze --repair-fts (or gitnexus analyze --force) to rebuild indexes.',
       );
     }
+    // #2331: a CJK query against a server process resolving
+    // GITNEXUS_FTS_CJK_SEGMENTATION to 'none' silently misses sub-phrase
+    // matches with no other signal — this is the only place an agent driving
+    // GitNexus through the query tool can learn the capability exists.
+    try {
+      const cjkMode = getSearchFTSCjkSegmentation();
+      if (containsSegmentableCjkRun(searchQuery) && cjkMode !== 'bigram') {
+        warnings.push(
+          'Query contains CJK characters — sub-phrase matches require GITNEXUS_FTS_CJK_SEGMENTATION=bigram set for both `analyze` and this server process, then `gitnexus analyze --force`.',
+        );
+      } else if (
+        cjkMode === 'bigram' &&
+        searchQuery.length > MAX_CJK_SEGMENTATION_QUERY_LENGTH &&
+        containsSegmentableCjkRun(searchQuery)
+      ) {
+        // #2339: bigram mode is enabled, but the query exceeds the length
+        // cap that guards segmentCjkSpans's per-character allocation cost —
+        // applyCjkSegmentationIfEnabled silently skips segmentation above
+        // this length, so an over-cap CJK query returns zero results for
+        // text that IS indexed and present verbatim, with no other signal.
+        warnings.push(
+          `Query exceeds the ${MAX_CJK_SEGMENTATION_QUERY_LENGTH}-character CJK segmentation cap — ` +
+            'sub-phrase matches are skipped for this query even though GITNEXUS_FTS_CJK_SEGMENTATION=bigram is enabled. Shorten the query to search within the cap.',
+        );
+      }
+    } catch (err) {
+      // Best-effort diagnostic only — never fail the query over it.
+      logQueryError('query:cjk-warning', err);
+    }
+    // #2339: the checks above only compare the QUERY's own content against
+    // the live process's mode — they can't detect "server mode is 'bigram'
+    // but the on-disk index was actually built under 'none'/legacy" (env var
+    // changed without a full --force re-analyze, or a plain/--repair-fts
+    // analyze ran instead). That mismatch affects every CJK query against
+    // this repo, not just one whose own text happens to contain CJK, so it's
+    // a separate, unconditional check — not folded into the branches above.
+    try {
+      const meta = await loadMeta(path.dirname(repo.lbugPath));
+      // meta.json is on-disk state inside the analyzed repo, read via a
+      // schema-less JSON.parse — not trusted input. Validate before
+      // interpolating it into agent-visible tool output (#2339): an
+      // unrecognized value is itself evidence of a corrupt/foreign index,
+      // reported generically rather than echoed verbatim.
+      const persistedMode = meta?.cjkSegmentation;
+      if (meta && persistedMode !== undefined && !isSupportedCjkSegmentationMode(persistedMode)) {
+        warnings.push(
+          "This repo's index metadata has an unrecognized CJK segmentation mode stamp — the index " +
+            'may be corrupt or from an incompatible GitNexus version. Run `gitnexus analyze --force` to rebuild it.',
+        );
+      } else if (
+        meta &&
+        cjkSegmentationModeMismatch(meta.cjkSegmentation, getSearchFTSCjkSegmentation())
+      ) {
+        warnings.push(
+          `Index was built with CJK segmentation mode '${meta.cjkSegmentation ?? 'none'}', but this ` +
+            `server is resolving '${getSearchFTSCjkSegmentation()}' — sub-phrase CJK search results ` +
+            'may be incomplete. Set GITNEXUS_FTS_CJK_SEGMENTATION to the same value for both the ' +
+            '`analyze` process and this server, then run `gitnexus analyze --force` to rebuild under ' +
+            "the agreed mode (do not assume the live server's mode is the one to keep — re-analyzing " +
+            'under the wrong mode can strip an already-working bigram-segmented index back to `none`).',
+        );
+      }
+    } catch (err) {
+      // loadMeta() itself never throws (it returns null on any read/parse
+      // failure) — the actual throw source here is getSearchFTSCjkSegmentation()
+      // on an invalid env value, same root cause as the catch above. This is
+      // a separate, independently-guarded diagnostic though, so it gets its
+      // own log context rather than sharing 'query:cjk-warning'.
+      logQueryError('query:cjk-mode-drift', err);
+    }
     if (enrichmentDegraded) {
       warnings.push(
         'Symbol enrichment partially failed — some process/cohesion/content data may be missing from these results (see server logs).',
@@ -2092,6 +2208,7 @@ export class LocalBackend {
       const queryVec = await embedQuery(query);
       const dims = getEmbeddingDims();
       const queryVecStr = `[${queryVec.join(',')}]`;
+      const maxDistance = getVectorMaxDistance(DEFAULT_MCP_VECTOR_MAX_DISTANCE);
 
       let bestChunks = new Map<
         string,
@@ -2105,7 +2222,7 @@ export class LocalBackend {
               CAST(${queryVecStr} AS FLOAT[${dims}]), ${fetchLimit})
             YIELD node AS emb, distance
             WITH emb, distance
-            WHERE distance < 0.6
+            WHERE distance < ${maxDistance}
             RETURN emb.nodeId AS nodeId, emb.chunkIndex AS chunkIndex,
                    emb.startLine AS startLine, emb.endLine AS endLine, distance
             ORDER BY distance
@@ -2155,7 +2272,7 @@ export class LocalBackend {
           embedding: row.embedding ?? row[4] ?? [],
         }));
         bestChunks = new Map(
-          rankExactEmbeddingRows(exactRows, queryVec, limit, 0.6).map((row) => [
+          rankExactEmbeddingRows(exactRows, queryVec, limit, maxDistance).map((row) => [
             row.nodeId,
             {
               distance: row.distance,
@@ -2284,7 +2401,11 @@ export class LocalBackend {
             const v = row[k];
             if (v === null || v === undefined) return '';
             if (typeof v === 'object') return JSON.stringify(v);
-            return String(v);
+            // Collapse newlines so a multi-line cell value (e.g. a symbol's
+            // `content`) stays on one physical line. Otherwise the rendered row
+            // spans multiple lines, which corrupts the table and breaks the
+            // CLI's `--limit` line-based slicing (#2310 review).
+            return String(v).replace(/\r?\n/g, ' ');
           })
           .join(' | ') +
         ' |',
@@ -6206,6 +6327,7 @@ export class LocalBackend {
     Array<{
       id: string;
       name: string;
+      method: string | null;
       filePath: string;
       responseKeys: string[] | null;
       errorKeys: string[] | null;
@@ -6228,7 +6350,7 @@ export class LocalBackend {
       RETURN n.id AS routeId, n.name AS routeName, n.filePath AS handlerFile,
              n.responseKeys AS responseKeys, n.errorKeys AS errorKeys, n.middleware AS middleware,
              consumer.name AS consumerName, consumer.filePath AS consumerFile,
-             r.reason AS fetchReason
+             r.reason AS fetchReason, n.method AS method
     `,
       params,
     );
@@ -6243,6 +6365,7 @@ export class LocalBackend {
       {
         id: string;
         name: string;
+        method: string | null;
         filePath: string;
         responseKeys: string[] | null;
         errorKeys: string[] | null;
@@ -6265,11 +6388,17 @@ export class LocalBackend {
       const consumerName = row.consumerName ?? row[6];
       const consumerFile = row.consumerFile ?? row[7];
       const fetchReason: string | null = row.fetchReason ?? row[8] ?? null;
+      // Verb is the literal '*' for method-agnostic routes (Django function
+      // views) and absent (null) for method-less routes (filesystem, Laravel
+      // resource). Appended last in RETURN so positional fallbacks for the
+      // consumer/reason columns above stay stable.
+      const method: string | null = row.method ?? row[9] ?? null;
 
       if (!routeMap.has(id)) {
         routeMap.set(id, {
           id,
           name,
+          method,
           filePath,
           responseKeys,
           errorKeys,
@@ -6367,6 +6496,7 @@ export class LocalBackend {
     return {
       routes: routes.map((r) => ({
         route: r.name,
+        method: r.method,
         handler: r.filePath,
         middleware: r.middleware || [],
         consumers: r.consumers,
@@ -6434,6 +6564,7 @@ export class LocalBackend {
 
         return {
           route: r.name,
+          method: r.method,
           handler: r.filePath,
           ...(responseKeys.length > 0 ? { responseKeys } : {}),
           ...(errorKeys.length > 0 ? { errorKeys } : {}),
@@ -6501,8 +6632,8 @@ export class LocalBackend {
 
   private async apiImpact(
     repo: RepoHandle,
-    params: { route?: string; file?: string },
-  ): Promise<any> {
+    params: { route?: string; file?: string; method?: unknown },
+  ): Promise<ApiImpactResult> {
     await this.ensureInitialized(repo);
 
     if (!params.route && !params.file) {
@@ -6521,11 +6652,30 @@ export class LocalBackend {
       queryParams.file = params.file;
     }
 
-    const routes = await this.fetchRoutesWithConsumers(repo.lbugPath, routeFilter, queryParams);
+    // After #2302 the same URL/handler can expose one Route node per HTTP verb.
+    // An optional `method` narrows to that one verb so the response collapses to
+    // the singular shape. A method-agnostic route (method `'*'`, e.g. a Django
+    // function view) matches any selector; verbless routes (null method) never do.
+    // `method` arrives unvalidated from the MCP envelope (the JSON schema is
+    // advisory), so reject a non-string verb with a structured error instead of
+    // throwing on `.toUpperCase()`; empty/whitespace collapses to no selector.
+    const rawMethod = params.method;
+    if (rawMethod !== undefined && typeof rawMethod !== 'string') {
+      return { error: '"method" must be a string (e.g. "GET", "POST").' };
+    }
+    const wantedMethod =
+      typeof rawMethod === 'string' ? rawMethod.trim().toUpperCase() || undefined : undefined;
+    const matched = await this.fetchRoutesWithConsumers(repo.lbugPath, routeFilter, queryParams);
+    const routes = matched.filter(
+      (r) => !wantedMethod || r.method === '*' || r.method?.toUpperCase() === wantedMethod,
+    );
 
     if (routes.length === 0) {
       const target = params.route || params.file;
-      return { error: `No routes found matching "${target}".` };
+      // Only append the verb when the URL/file matched routes but none used it;
+      // a non-existent URL/file gets the plain "no routes found" message.
+      const verb = wantedMethod && matched.length > 0 ? ` with method "${wantedMethod}"` : '';
+      return { error: `No routes found matching "${target}"${verb}.` };
     }
 
     const flowMap = await this.fetchLinkedFlowsBatch(
@@ -6533,15 +6683,16 @@ export class LocalBackend {
       routes.map((r) => r.id),
     );
 
-    // Count how many routes share the same handler file (for middleware partial detection)
+    // Count verbs per handler from the FULL match (before the method filter) so a
+    // method-scoped query still flags a multi-verb handler's partial middleware.
     const routeCountByHandler = new Map<string, number>();
-    for (const r of routes) {
+    for (const r of matched) {
       if (r.filePath) {
         routeCountByHandler.set(r.filePath, (routeCountByHandler.get(r.filePath) ?? 0) + 1);
       }
     }
 
-    const results = routes.map((r) => {
+    const results: ApiImpactRoute[] = routes.map((r) => {
       // Keys already normalized by fetchRoutesWithConsumers (quotes stripped)
       const responseKeys = r.responseKeys ?? [];
       const errorKeys = r.errorKeys ?? [];
@@ -6614,6 +6765,7 @@ export class LocalBackend {
 
       return {
         route: r.name,
+        method: r.method,
         handler: r.filePath,
         responseShape: {
           success: responseKeys,
@@ -6624,7 +6776,7 @@ export class LocalBackend {
           ? {
               middlewareDetection: 'partial' as const,
               middlewareNote:
-                'Middleware captured from first HTTP method export only — other methods in this handler may use different middleware chains.',
+                'Middleware captured from the first route export only — other route exports in this handler may use different middleware chains.',
             }
           : {}),
         consumers,

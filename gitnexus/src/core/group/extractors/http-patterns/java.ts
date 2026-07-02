@@ -10,6 +10,8 @@ import {
   METHOD_ANNOTATION_TO_HTTP,
   isRouteMemberKey,
   findEnclosingClass,
+  joinPath,
+  type SharedSpringType,
 } from '../../../ingestion/route-extractors/spring-shared.js';
 import {
   REST_TEMPLATE_TO_HTTP,
@@ -18,9 +20,7 @@ import {
   EXCHANGE_ANNOTATION_TO_HTTP,
   parseRequestLine,
   pushPrefix,
-  joinPath,
   scanSpringInheritanceProject,
-  type SharedSpringType,
   OPENFEIGN_FRAMEWORK,
   HTTP_INTERFACE_FRAMEWORK,
   FEIGN_CONFIDENCE,
@@ -678,15 +678,16 @@ export const JAVA_HTTP_PLUGIN: HttpLanguagePlugin = {
   language: Java,
   // routeCoverage intentionally LEFT at the default 'partial' (#2138 Part 2).
   // The graph provider set is a strict *subset* of this scan()'s provider set —
-  // ingestion does NOT emit a Route node for (1) a method-level array route
-  // nested under a class-level array-form `@RequestMapping` (ingestion suppresses
-  // it rather than drop the prefix; bare/scalar-prefixed array methods ARE now
-  // emitted — see #2280), (2) interface-inherited Spring routes, or (3) the 2nd
-  // verb of a same-URL GET+POST pair (Route nodes are URL-keyed). Declaring
-  // 'complete' here would let the parse-skip drop those group-only providers.
-  // Java flips to 'complete' only once ingestion provider extraction matches this
-  // scan (a follow-up: class-level array-form prefix support + interface-
-  // inheritance emission + per-verb Route identity — tracked in #2280).
+  // ingestion does NOT emit a Route node for a method-level array route nested
+  // under a class-level array-form `@RequestMapping` (ingestion suppresses it
+  // rather than drop the prefix; bare/scalar-prefixed array methods ARE now
+  // emitted — see #2280). Interface-inherited Spring routes ARE now emitted by
+  // ingestion (#2288), and same-URL multi-verb routes are now per-`(method,url)`
+  // Route nodes (#2289), so they are no longer coverage gaps. Declaring
+  // 'complete' here would let the parse-skip drop the remaining group-only
+  // providers (the array-prefix gap above). Java flips to 'complete' only once
+  // ingestion provider extraction matches this scan — class-level array-form
+  // prefix support is the final follow-up tracked in #2280.
   // `hasConsumerSignals` below is kept ready for that flip.
   // Consumer signals this plugin's scan() can detect: RestTemplate / WebClient /
   // OkHttp / Java-HttpClient / Apache-HttpClient call sites, OpenFeign

@@ -839,7 +839,17 @@ describe('ManifestExtractor', () => {
 
     await extractor.extractFromManifest(links, dbExecutors);
 
-    expect(capturedCypher).toContain('Function|Method|Class|Interface|Struct|Enum|Trait');
+    // This `custom`-branch list contains the reserved keywords `Macro`/`Union`,
+    // which make LadybugDB's parser reject the `MATCH (n:A|B|C)` disjunction
+    // (#2325), so the allowlist is carried as `labels(n) IN [...]`, not `n:A|B`.
+    expect(capturedCypher).toContain('labels(n) IN [');
+    // Membership checks that tolerate label order/spacing changes in the
+    // production allowlist (the negative guards below are the real regression
+    // check — a re-introduced `:A|B` disjunction has no quoted labels at all).
+    expect(capturedCypher).toContain("'Function'");
+    expect(capturedCypher).toContain("'Method'");
+    expect(capturedCypher).toContain("'CodeElement'");
+    expect(capturedCypher).not.toContain('Function|Method');
     expect(capturedCypher).not.toContain('NOT n:File');
   });
 

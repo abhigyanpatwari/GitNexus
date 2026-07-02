@@ -100,6 +100,16 @@ export interface RepoMeta {
    */
   schemaVersion?: number;
   /**
+   * The resolved GITNEXUS_FTS_CJK_SEGMENTATION mode ('none' | 'bigram') the
+   * existing index's content/description columns were last written under
+   * (#2331/#2339). On mismatch with the live process's resolved mode,
+   * runFullAnalysis forces a full rebuild so indexed text and query-time
+   * segmentation never diverge. Always stamped (never omitted), unlike
+   * `pdg` below — the default 'none' is itself a meaningful value to
+   * compare, not an absence.
+   */
+  cjkSegmentation?: string;
+  /**
    * SHA-256 of every file's content at the time of the last successful
    * indexing run. The next run computes current hashes and diffs against
    * this map to determine which files' DB rows must be replaced.
@@ -244,8 +254,14 @@ export interface RepoMeta {
  * so the engine would silently UNDER-REPORT return-value ascent on an
  * incremental top-up; force a full re-analyze instead (same contract as v2/v3).
  * This single bump covers the whole FU-C re-index window (and the later FU-B-2).
+ * v5: `Route` node identity changed to `(method, url)` (#2289 — a same-URL
+ * GET/POST pair is now two distinct Route nodes). Every declarative-route node
+ * id moved from `Route:/x` to `Route:GET /x` (filesystem routes keep their
+ * URL-only id). The incremental writeback preserves unchanged-file rows, so a
+ * top-up against a pre-v5 index would strand old url-keyed Route nodes alongside
+ * new composite-keyed ones — force a full re-analyze instead.
  */
-export const INCREMENTAL_SCHEMA_VERSION = 4;
+export const INCREMENTAL_SCHEMA_VERSION = 5;
 
 export interface IndexedRepo {
   repoPath: string;

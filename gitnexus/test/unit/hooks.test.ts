@@ -356,8 +356,16 @@ describe('windowsHide regression', () => {
     ['gitnexus/src/cli/setup.ts', path.resolve(__dirname, '..', '..', 'src', 'cli', 'setup.ts')],
     ['gitnexus/src/cli/wiki.ts', path.resolve(__dirname, '..', '..', 'src', 'cli', 'wiki.ts')],
     [
-      'gitnexus/src/core/embeddings/embedder.ts',
-      path.resolve(__dirname, '..', '..', 'src', 'core', 'embeddings', 'embedder.ts'),
+      'gitnexus/src/core/embeddings/onnxruntime-node-resolver.ts',
+      path.resolve(
+        __dirname,
+        '..',
+        '..',
+        'src',
+        'core',
+        'embeddings',
+        'onnxruntime-node-resolver.ts',
+      ),
     ],
     [
       'gitnexus/src/core/git-staleness.ts',

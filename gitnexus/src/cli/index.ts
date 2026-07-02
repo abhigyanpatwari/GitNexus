@@ -314,8 +314,9 @@ program
 // These invoke LocalBackend directly for use in eval, scripts, and CI.
 
 program
-  .command('query <search_query>')
+  .command('query [search_query]')
   .description('Search the knowledge graph for execution flows related to a concept')
+  .option('-q, --query <text>', 'Search query (alias for positional argument)')
   .option('-r, --repo <name>', 'Target repository (omit if only one indexed)')
   .option('--branch <name>', 'Scope to a specific branch index (multi-branch repos)')
   .option('-c, --context <text>', 'Task context to improve ranking')
@@ -331,6 +332,7 @@ program
   .option('--branch <name>', 'Scope to a specific branch index (multi-branch repos)')
   .option('-u, --uid <uid>', 'Direct symbol UID (zero-ambiguity lookup)')
   .option('-f, --file <path>', 'File path to disambiguate common names')
+  .option('-l, --limit <n>', 'Max callers/callees/processes to return')
   .option('--content', 'Include full symbol source code')
   .action(createLbugLazyAction(() => import('./tool.js'), 'contextCommand'));
 
@@ -357,7 +359,10 @@ program
   )
   .option('--depth <n>', 'Max relationship depth (default: 3)')
   .option('--include-tests', 'Include test files in results')
-  .option('--limit <n>', 'Max symbols per depth level (default: 100)')
+  .option(
+    '-l, --limit <n>',
+    'Max symbols per depth level and affected processes/modules to return (default: 100)',
+  )
   .option('--offset <n>', 'Skip N symbols per depth level for pagination')
   .option('--summary-only', 'Return counts and risk only, omit symbol list')
   .action(createLbugLazyAction(() => import('./tool.js'), 'impactCommand'));
@@ -380,6 +385,7 @@ program
   .description('Execute raw Cypher query against the knowledge graph')
   .option('-r, --repo <name>', 'Target repository')
   .option('--branch <name>', 'Scope to a specific branch index (multi-branch repos)')
+  .option('-l, --limit <n>', 'Max result rows to return')
   .action(createLbugLazyAction(() => import('./tool.js'), 'cypherCommand'));
 
 program
@@ -390,6 +396,7 @@ program
   .option('-b, --base-ref <ref>', 'Branch/commit for compare scope (e.g. main)')
   .option('-r, --repo <name>', 'Target repository')
   .option('--branch <name>', 'Scope to a specific branch index (multi-branch repos)')
+  .option('-l, --limit <n>', 'Max changed symbols to return')
   .action(createLbugLazyAction(() => import('./tool.js'), 'detectChangesCommand'));
 
 program

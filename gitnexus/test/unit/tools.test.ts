@@ -128,6 +128,16 @@ describe('GITNEXUS_TOOLS', () => {
     expect(contextTool.inputSchema.required).toEqual([]);
   });
 
+  it('api_impact tool expresses the route-or-file requirement via anyOf (#2308)', () => {
+    const apiImpactTool = GITNEXUS_TOOLS.find((t) => t.name === 'api_impact')!;
+    expect(apiImpactTool.inputSchema.anyOf).toEqual([
+      { required: ['route'] },
+      { required: ['file'] },
+    ]);
+    // route/file stay optional in `required` (anyOf carries the cross-field rule)
+    expect(apiImpactTool.inputSchema.required).toEqual([]);
+  });
+
   it('impact tool requires target and direction', () => {
     const impactTool = GITNEXUS_TOOLS.find((t) => t.name === 'impact')!;
     expect(impactTool.inputSchema.required).toContain('target');

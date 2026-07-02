@@ -313,7 +313,7 @@ export function isWalCorruptionError(err: unknown): boolean {
 
 // ─── Ladybug WAL checkpoint IO error matchers ───────────────────────────────
 //
-// Matched against LadybugDB v0.16.1 (see `gitnexus/package.json`
+// Matched against LadybugDB v0.18.0 (see `gitnexus/package.json`
 // @ladybugdb/core). Strict regexes encode local_file_system.cpp wording
 // verified at that version. Two-tier strategy: strict matchers first so we
 // only fire on real checkpoint-rotation shapes; a permissive fallback
@@ -368,10 +368,13 @@ export interface LbugConnectionHandle {
 }
 
 /**
- * Return true when the error message indicates that a LadybugDB file lock
- * could not be acquired — either at construction time
- * (`new lbug.Database(...)` raises from `local_file_system.cpp`) or during
- * a query (another writer holds the exclusive lock).
+ * Return true when the error message indicates that a LadybugDB write
+ * transaction could not proceed due to lock contention — either a file
+ * lock that could not be acquired (either at construction time,
+ * `new lbug.Database(...)` raising from `local_file_system.cpp`, or during
+ * a query, another writer holds the exclusive lock), or a same-process
+ * write transaction rejected because another write transaction is already
+ * active on the connection.
  *
  * Lives here (not in `lbug-adapter.ts`) so both the construction-time
  * retry (`openWithLockRetry` in this file) and the query-time retry
@@ -383,10 +386,21 @@ export const isDbBusyError = (err: unknown): boolean => {
   // `lock` already subsumes `could not set lock`; the broader term is kept
   // because graph-DB transient errors include "deadlock", "lock contention",
   // and the LadybugDB native module's "could not set lock on file" — all of
-  // which deserve a retry. If a non-transient lock-shaped error ever
-  // surfaces (e.g., "lock file missing" during recovery), tighten this
-  // matcher rather than raising the retry budget.
-  return msg.includes('busy') || msg.includes('lock') || msg.includes('already in use');
+  // which deserve a retry. LadybugDB also reports same-process writer
+  // contention without the words "busy" or "lock".
+  //
+  // "only one write transaction at a time" was observed against LadybugDB
+  // 0.18.0 (see gitnexus/package.json @ladybugdb/core).
+  //
+  // If a non-transient lock-shaped error ever surfaces (e.g., "lock file
+  // missing" during recovery), tighten this matcher rather than raising the
+  // retry budget.
+  return (
+    msg.includes('busy') ||
+    msg.includes('lock') ||
+    msg.includes('already in use') ||
+    msg.includes('only one write transaction at a time')
+  );
 };
 
 export function createLbugDatabase(
@@ -429,7 +443,10 @@ export function createLbugDatabase(
 // of 10–50ms each = ~1.0–1.2s worst case) clears the typical
 // AV-scanner hold without masking real cross-process conflicts.
 //
-// Source: https://github.com/LadybugDB/ladybug/blob/v0.16.1/src/common/file_system/local_file_system.cpp#L126
+// Source: https://github.com/LadybugDB/ladybug/blob/v0.18.0/src/common/file_system/local_file_system.cpp#L127
+// (v0.18.0 appends " (Error: <code>)" / " (Lock is held by PID X)" on POSIX,
+// but the "Could not set lock on file : " prefix `isDbBusyError` substring-
+// matches on is unchanged.)
 const OPEN_LOCK_RETRY_ATTEMPTS = 5;
 const OPEN_LOCK_RETRY_DELAY_MS = 100;
 

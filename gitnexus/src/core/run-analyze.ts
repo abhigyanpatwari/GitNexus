@@ -30,7 +30,16 @@ import {
   queryImporters,
   loadFTSExtension,
 } from './lbug/lbug-adapter.js';
-import { createSearchFTSIndexes, verifySearchFTSIndexes } from './search/fts-indexes.js';
+import {
+  createSearchFTSIndexes,
+  initialiseSearchFTSStemmer,
+  verifySearchFTSIndexes,
+} from './search/fts-indexes.js';
+import {
+  cjkSegmentationModeMismatch,
+  getSearchFTSCjkSegmentation,
+  initialiseSearchFTSCjkSegmentation,
+} from './search/cjk-segmentation.js';
 import { resolveAnalyzeInstallPolicy } from './lbug/extension-loader.js';
 import {
   startWalCheckpointDriver,
@@ -547,6 +556,12 @@ export async function runFullAnalysis(
   const progress = (phase: string, percent: number, message: string) =>
     callbacks.onProgress(phase, percent, message);
 
+  // Resolve + validate operator-provided FTS config once, before the expensive
+  // parse/load phases. A typo fails here in ms; createSearchFTSIndexes reuses
+  // the cached value via getSearchFTSStemmer.
+  initialiseSearchFTSStemmer();
+  initialiseSearchFTSCjkSegmentation();
+
   // Scope the degraded-parse log throttle to this run. On a reused process
   // (e.g. tests, or any host that calls runFullAnalysis more than once) the
   // module-level counter would otherwise stay saturated and suppress every
@@ -658,6 +673,22 @@ export async function runFullAnalysis(
     }
     try {
       await initLbug(lbugPath);
+      // Gate on FTS availability BEFORE touching any index. createSearchFTSIndexes
+      // now DROPs each index before recreating it (so schema changes reach existing
+      // DBs); if the extension were unavailable, the drops would run and leave the
+      // DB index-less, only failing at the create step. Fail loudly first — mirrors
+      // the analyze path's `if (ftsAvailable)` gate below — so an unavailable
+      // extension never destroys the existing indexes.
+      const repairFtsAvailable = await loadFTSExtension(undefined, {
+        policy: resolveAnalyzeInstallPolicy(),
+      });
+      if (!repairFtsAvailable) {
+        throw new Error(
+          'Cannot repair FTS indexes: the LadybugDB FTS extension is unavailable ' +
+            '(not pre-installed and could not be installed on this machine). ' +
+            'Run `gitnexus doctor` to install it, then retry `--repair-fts`.',
+        );
+      }
       progress('fts', 85, 'Repairing search indexes...');
       await createSearchFTSIndexes({
         onIndexStart: options.verbose
@@ -729,6 +760,42 @@ export async function runFullAnalysis(
         `${capsOnly ? ', but with different caps' : ''}); forcing a full ` +
         `rebuild so the CFG layer is ${pdgOn ? 'fully persisted' : 'fully removed'}. ` +
         `Tip: set \`pdg: ${pdgOn}\` in .gitnexusrc to pin the mode across runs.`,
+    );
+    options = { ...options, force: true };
+  }
+
+  // ── schema-version mismatch forces full rebuild (#2289 P1) ────────
+  // Mirrors the pdg-mode block above: a stamp from an older
+  // INCREMENTAL_SCHEMA_VERSION (e.g. pre-v5 URL-only Route ids) cannot be
+  // reconciled by an incremental top-up — same-commit re-analyze would
+  // strand stale rows next to new-schema writes. MUST sit before the
+  // alreadyUpToDate fast path below: an unchanged-commit clean tree would
+  // otherwise early-return without ever reaching the `isIncremental` gate
+  // that consults `schemaVersion`, defeating the bump's whole point.
+  //
+  // `schemaVersion === undefined` covers two cases that should still trip
+  // this guard: a non-git repo (which never stamps the field) and very old
+  // meta from before the field existed. Non-git repos take the
+  // `currentCommit === ''` rebuild branch below regardless, so the redundant
+  // force here is harmless; the friendlier `'pre-versioning'` log avoids a
+  // user-visible "stamped vundefined" line in that edge case.
+  if (existingMeta && existingMeta.schemaVersion !== INCREMENTAL_SCHEMA_VERSION) {
+    const stampedVersion = existingMeta.schemaVersion ?? 'pre-versioning';
+    log(
+      `index schema changed (stamped v${stampedVersion}, this build is v${INCREMENTAL_SCHEMA_VERSION}); ` +
+        `forcing a full rebuild so persisted rows match the current schema.`,
+    );
+    options = { ...options, force: true };
+  }
+
+  if (
+    existingMeta &&
+    cjkSegmentationModeMismatch(existingMeta.cjkSegmentation, getSearchFTSCjkSegmentation())
+  ) {
+    log(
+      `CJK segmentation mode changed (index built with '${existingMeta.cjkSegmentation ?? 'none'}', ` +
+        `this run resolves '${getSearchFTSCjkSegmentation()}'); forcing a full rebuild so indexed ` +
+        `text and query-time segmentation stay in sync.`,
     );
     options = { ...options, force: true };
   }
@@ -1320,21 +1387,6 @@ export async function runFullAnalysis(
         }
       }
 
-      const { readServerMapping } = await import('./embeddings/server-mapping.js');
-      // Mirror the registry's name-resolution chain so the server-mapping
-      // lookup key stays aligned with the final registry name (#1259):
-      //   --name → remote-derived → canonical-root basename
-      // (preserved-alias is intentionally NOT consulted here — server
-      // mappings are addressed by the operationally-meaningful name the
-      // user configures, not by a sticky registry-only alias they may not
-      // know about. The previous canonical-only logic ignored both --name
-      // and remote-derived names, silently breaking server-mapping for
-      // anyone with a `--name` alias or remote-named repo.)
-      const projectName =
-        options.registryName ??
-        getInferredRepoName(repoPath) ??
-        path.basename(resolveRepoIdentityRoot(repoPath));
-      const serverName = await readServerMapping(projectName);
       const embeddingResult = await runEmbeddingPipeline(
         executeQuery,
         executeWithReusedStatement,
@@ -1350,7 +1402,6 @@ export async function runFullAnalysis(
         },
         {},
         cachedEmbeddingNodeIds.size > 0 ? cachedEmbeddingNodeIds : undefined,
-        { repoName: projectName, serverName },
         existingEmbeddings,
       );
       if (embeddingResult.semanticMode === 'exact-scan') {
@@ -1446,6 +1497,10 @@ export async function runFullAnalysis(
       // incrementalInProgress to undefined explicitly clears any prior
       // dirty flag (full and incremental success paths converge here).
       schemaVersion: hasGitDir(repoPath) ? INCREMENTAL_SCHEMA_VERSION : undefined,
+      // Always stamped with the live resolved mode (#2331/#2339) — unlike
+      // `pdg` below, 'none' is a meaningful value to compare, not an
+      // absence, so this is never conditionally omitted.
+      cjkSegmentation: getSearchFTSCjkSegmentation(),
       fileHashes: hasGitDir(repoPath) ? newFileHashesRecord : undefined,
       // This branch's full live chunk-key set (#2106 R6). `usedKeys` is every
       // chunk hash touched in this scan — cache HITS included (see parse-impl
