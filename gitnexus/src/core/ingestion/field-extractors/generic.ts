@@ -58,6 +58,12 @@ export interface FieldExtractionConfig {
    * `normalizeType`/`resolveType` entirely — it is the untouched source text.
    */
   extractRawType?: (node: SyntaxNode) => string | undefined;
+  /**
+   * Extract `'@Name'`-prefixed annotation names from a field declaration
+   * node (e.g. `['@Autowired']`). Optional — only languages with
+   * field-level annotations implement it.
+   */
+  extractAnnotations?: (node: SyntaxNode) => string[];
   /** Extract visibility from a field declaration node */
   extractVisibility: (node: SyntaxNode) => FieldVisibility;
   /** Extract visibility for one field name from a multi-name declaration. */
@@ -194,10 +200,13 @@ export function createFieldExtractor(config: FieldExtractionConfig): FieldExtrac
       // it is the verbatim source text (generics preserved).
       const rawDeclaredType = config.extractRawType?.(node);
 
+      const annotations = config.extractAnnotations?.(node);
+
       return {
         name,
         type,
         ...(rawDeclaredType !== undefined ? { rawDeclaredType } : {}),
+        ...(annotations !== undefined && annotations.length > 0 ? { annotations } : {}),
         visibility: config.extractVisibilityForName?.(node, name) ?? config.extractVisibility(node),
         isStatic: config.isStatic(node),
         isReadonly: config.isReadonly(node),

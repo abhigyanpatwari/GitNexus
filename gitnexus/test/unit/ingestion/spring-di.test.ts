@@ -1,10 +1,11 @@
 /**
  * Unit tests for the Spring DI pipeline phase.
  *
- * Verifies that @Autowired collection-typed fields (List<T>, Set<T>,
- * Collection<T>, Map<K,T>) produce INJECTS edges from the consumer class
- * to every class implementing interface T — using only graph data, no
- * filesystem access.
+ * Verifies that injection-annotated (@Autowired / @Inject) collection-typed
+ * fields (List<T>, Set<T>, Collection<T>, Map<K,T>) produce INJECTS edges
+ * from the consumer class to every class implementing interface T — using
+ * only graph data, no filesystem access. Non-annotated and @Resource fields
+ * produce no edges.
  */
 import { describe, expect, it } from 'vitest';
 import { createKnowledgeGraph } from '../../../src/core/graph/graph.js';
@@ -74,7 +75,10 @@ function addImplements(graph: KnowledgeGraph, className: string, ifaceName: stri
  * Mirrors the production extraction shape: `rawDeclaredType` is the verbatim
  * type source text with generics preserved (e.g. `List<IFoo>`), while
  * `declaredType` is the generics-stripped simple name (e.g. `List`) — derived
- * here from the raw text. The phase matches on `rawDeclaredType` only.
+ * here from the raw text. `annotations` carries '@Name' strings and is
+ * OMITTED when empty (production conditional-spread shape); it defaults to
+ * `['@Autowired']` so the common annotated case stays terse. The phase
+ * matches on `rawDeclaredType` and gates on `annotations`.
  */
 function addProperty(
   graph: KnowledgeGraph,
@@ -82,6 +86,7 @@ function addProperty(
   fieldName: string,
   rawDeclaredType: string,
   language = 'java',
+  annotations: string[] = ['@Autowired'],
 ): string {
   const ownerId = generateId('Class', ownerClassName);
   const propId = generateId('Property', `${ownerClassName}.${fieldName}`);
@@ -96,6 +101,7 @@ function addProperty(
       language,
       declaredType,
       rawDeclaredType,
+      ...(annotations.length > 0 ? { annotations } : {}),
     },
   });
   graph.addRelationship({
@@ -219,8 +225,11 @@ describe('spring-di phase', () => {
     addClass(graph, 'MyService', 'java');
 
     // Production shape when rawDeclaredType plumbing regresses: only the
-    // stripped simple name ("List") reaches the graph. The phase must NOT
-    // fall back to declaredType — zero edges, zero fields scanned.
+    // stripped simple name ("List") reaches the graph. The field IS
+    // injection-annotated (it passes the annotation gate), so this pins the
+    // rawDeclaredType-missing skip path: the phase must NOT fall back to
+    // declaredType — zero edges, zero fields scanned (and an isDev warning
+    // flags the plumbing-contract breach).
     const ownerId = generateId('Class', 'MyService');
     const propId = generateId('Property', 'MyService.foos');
     graph.addNode({
@@ -231,6 +240,7 @@ describe('spring-di phase', () => {
         filePath: 'src/MyService.java',
         language: 'java',
         declaredType: 'List',
+        annotations: ['@Autowired'],
       },
     });
     graph.addRelationship({
@@ -353,5 +363,95 @@ describe('spring-di phase', () => {
     expect(edges).toHaveLength(1);
     expect(edges[0].sourceId).toBe(generateId('Class', 'MyService'));
     expect(edges[0].targetId).toBe(generateId('Class', 'FooImpl1'));
+  });
+
+  // -------------------------------------------------------------------------
+  // Injection-annotation gate (PR #2200 U2)
+  // -------------------------------------------------------------------------
+
+  it('creates edges for @Inject fields and states @Inject in the reason', async () => {
+    const graph = createKnowledgeGraph();
+
+    addInterface(graph, 'IFoo');
+    addClass(graph, 'FooImpl1', 'java');
+    addImplements(graph, 'FooImpl1', 'IFoo');
+    addClass(graph, 'MyService', 'java');
+    addProperty(graph, 'MyService', 'foos', 'List<IFoo>', 'java', ['@Inject']);
+
+    const output = await springDiPhase.execute(makeCtx(graph), new Map());
+
+    const edges = injectsEdges(graph);
+    expect(edges).toHaveLength(1);
+    expect(edges[0]).toMatchObject({
+      sourceId: generateId('Class', 'MyService'),
+      targetId: generateId('Class', 'FooImpl1'),
+      reason: 'Spring DI: @Inject List<IFoo>',
+    });
+    expect(output.fieldsScanned).toBe(1);
+  });
+
+  it('creates no edges for a plain (non-annotated) collection field of a known interface', async () => {
+    const graph = createKnowledgeGraph();
+
+    addInterface(graph, 'IFoo');
+    addClass(graph, 'FooImpl1', 'java');
+    addImplements(graph, 'FooImpl1', 'IFoo');
+    addClass(graph, 'MyService', 'java');
+    // The false-positive class the review flagged: a collection field with NO
+    // injection annotation is never injected by the container.
+    addProperty(graph, 'MyService', 'cache', 'List<IFoo>', 'java', []);
+
+    const output = await springDiPhase.execute(makeCtx(graph), new Map());
+
+    expect(injectsEdges(graph)).toHaveLength(0);
+    expect(output.injectsEdges).toBe(0);
+    expect(output.fieldsScanned).toBe(0);
+  });
+
+  it('creates no edges for @Resource fields (deliberate exclusion)', async () => {
+    const graph = createKnowledgeGraph();
+
+    addInterface(graph, 'IFoo');
+    addClass(graph, 'FooImpl1', 'java');
+    addImplements(graph, 'FooImpl1', 'IFoo');
+    addClass(graph, 'MyService', 'java');
+    // @Resource (JSR-250) resolves by bean NAME first (defaulting to the
+    // field name), injecting a single named collection bean — the opposite of
+    // the collect-all-implementers fan-out INJECTS models. Its exclusion from
+    // the gate is deliberate; this test pins it.
+    addProperty(graph, 'MyService', 'named', 'List<IFoo>', 'java', ['@Resource']);
+
+    const output = await springDiPhase.execute(makeCtx(graph), new Map());
+
+    expect(injectsEdges(graph)).toHaveLength(0);
+    expect(output.injectsEdges).toBe(0);
+    expect(output.fieldsScanned).toBe(0);
+  });
+
+  it('matches any injection annotation when the field carries multiple annotations', async () => {
+    const graph = createKnowledgeGraph();
+
+    addInterface(graph, 'IFoo');
+    addClass(graph, 'FooImpl1', 'java');
+    addImplements(graph, 'FooImpl1', 'IFoo');
+    addClass(graph, 'MyService', 'java');
+    // Non-injection annotations surround the injection one — the gate must
+    // match @Autowired anywhere in the set, not just first position.
+    addProperty(graph, 'MyService', 'foos', 'List<IFoo>', 'java', [
+      '@Nullable',
+      '@Autowired',
+      '@Qualifier',
+    ]);
+
+    const output = await springDiPhase.execute(makeCtx(graph), new Map());
+
+    const edges = injectsEdges(graph);
+    expect(edges).toHaveLength(1);
+    expect(edges[0]).toMatchObject({
+      sourceId: generateId('Class', 'MyService'),
+      targetId: generateId('Class', 'FooImpl1'),
+      reason: 'Spring DI: @Autowired List<IFoo>',
+    });
+    expect(output.fieldsScanned).toBe(1);
   });
 });

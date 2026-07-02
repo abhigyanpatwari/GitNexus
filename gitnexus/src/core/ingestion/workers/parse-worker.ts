@@ -1701,6 +1701,10 @@ const processFileGroup = (
                       ...(routedFieldInfo?.rawDeclaredType !== undefined
                         ? { rawDeclaredType: routedFieldInfo.rawDeclaredType }
                         : {}),
+                      ...(routedFieldInfo?.annotations !== undefined &&
+                      routedFieldInfo.annotations.length > 0
+                        ? { annotations: routedFieldInfo.annotations }
+                        : {}),
                       ...(routedFieldInfo?.visibility !== undefined
                         ? { visibility: routedFieldInfo.visibility }
                         : {}),
@@ -2256,6 +2260,10 @@ const processFileGroup = (
               // rawDeclaredType is the verbatim generic type text (U1, PR #2200).
               if (info.rawDeclaredType !== undefined) {
                 methodProps.rawDeclaredType = info.rawDeclaredType;
+              }
+              // Field annotations ('@Name' strings, U2 PR #2200) — omit when empty.
+              if (info.annotations !== undefined && info.annotations.length > 0) {
+                methodProps.annotations = info.annotations;
               }
               methodProps.visibility = info.visibility;
               methodProps.isStatic = info.isStatic;

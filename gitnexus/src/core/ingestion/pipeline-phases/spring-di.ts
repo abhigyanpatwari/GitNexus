@@ -2,19 +2,27 @@
  * Phase: spring-di
  *
  * Resolves Spring dependency-injection collection fields. When a Java class
- * declares an `@Autowired` field typed as `List<T>`, `Set<T>`,
- * `Collection<T>`, or `Map<K,T>`, the Spring container injects EVERY bean
- * implementing interface `T`. This phase materializes that semantic
- * relationship as `INJECTS` edges from the consumer Class node to each
- * implementing Class node.
+ * declares a field carrying an injection annotation (`@Autowired` or
+ * `@Inject`) typed as `List<T>`, `Set<T>`, `Collection<T>`, or `Map<K,T>`,
+ * the Spring container injects EVERY bean implementing interface `T`. This
+ * phase materializes that semantic relationship as `INJECTS` edges from the
+ * consumer Class node to each implementing Class node.
+ *
+ * The injection annotation is a hard precondition: a plain (non-annotated)
+ * collection field is never injected by the container and produces no edges.
+ * `@Resource` (JSR-250) is DELIBERATELY excluded: it resolves by bean NAME
+ * first (defaulting to the field name), which injects a single named
+ * collection bean — the opposite of the collect-all-implementers fan-out
+ * INJECTS models. Including it would emit false edges.
  *
  * The resolution uses ONLY graph data — Property nodes (with
- * `rawDeclaredType` + `language`), `HAS_PROPERTY` edges, `IMPLEMENTS` edges,
- * and Interface nodes. Matching happens on `rawDeclaredType` (the verbatim
- * type text, generics preserved) — NOT `declaredType`, which is
- * generics-stripped by design (`List<Shape>` → `List`) and can never match
- * the collection patterns. No filesystem access is performed: the structural
- * information was already extracted by earlier parse / structure phases.
+ * `rawDeclaredType` + `annotations` + `language`), `HAS_PROPERTY` edges,
+ * `IMPLEMENTS` edges, and Interface nodes. Matching happens on
+ * `rawDeclaredType` (the verbatim type text, generics preserved) — NOT
+ * `declaredType`, which is generics-stripped by design (`List<Shape>` →
+ * `List`) and can never match the collection patterns. No filesystem access
+ * is performed: the structural information was already extracted by earlier
+ * parse / structure phases.
  *
  * @deps    mro
  * @reads   graph (Property nodes, HAS_PROPERTY edges, IMPLEMENTS edges, Interface nodes)
@@ -29,6 +37,15 @@ export interface SpringDIOutput {
   injectsEdges: number;
   fieldsScanned: number;
 }
+
+/**
+ * Annotations that trigger Spring's collect-all-implementers collection
+ * injection. `@Resource` is deliberately absent — JSR-250 resolves by bean
+ * NAME first (defaulting to the field name), injecting a single named
+ * collection bean rather than fanning out to every implementer, so an
+ * INJECTS fan-out for it would be a false edge.
+ */
+const INJECTION_ANNOTATIONS: ReadonlySet<string> = new Set(['@Autowired', '@Inject']);
 
 /** Matches `List<T>`, `Set<T>`, `Collection<T>` — captures the collection
  *  wrapper and the single element type. */
@@ -58,11 +75,14 @@ function parseSpringCollectionType(
   return null;
 }
 
-/** A Java Property node whose declared type is a Spring DI collection. */
+/** A Java Property node carrying an injection annotation whose declared
+ *  type is a Spring DI collection. */
 interface CandidateField {
   propertyId: string;
   collectionType: string;
   elementTypeName: string;
+  /** The injection annotation that gated this candidate (e.g. '@Autowired'). */
+  matchedAnnotation: string;
 }
 
 export const springDiPhase: PipelinePhase<SpringDIOutput> = {
@@ -88,18 +108,37 @@ export const springDiPhase: PipelinePhase<SpringDIOutput> = {
     ctx.graph.forEachNode((node) => {
       if (node.label !== 'Property') return;
       if (node.properties.language !== 'java') return;
+      // Injection-annotation gate: only fields the container actually
+      // injects (@Autowired / @Inject) are candidates. Plain collection
+      // fields are never injected; @Resource is deliberately excluded
+      // (by-name-first semantics — see INJECTION_ANNOTATIONS).
+      const matchedAnnotation = node.properties.annotations?.find((a) =>
+        INJECTION_ANNOTATIONS.has(a),
+      );
+      if (matchedAnnotation === undefined) return;
       // Match on rawDeclaredType ONLY — no `?? declaredType` fallback:
       // production `declaredType` is generics-stripped by design, so a
       // fallback can never match real data and would only mask plumbing
       // regressions as quiet no-ops.
       const rawDeclaredType = node.properties.rawDeclaredType;
-      if (!rawDeclaredType) return;
+      if (!rawDeclaredType) {
+        // An injection-annotated field with NO rawDeclaredType means the
+        // extraction plumbing broke its contract (U1 threads the raw type
+        // wherever annotations are threaded) — surface it, don't silently drop.
+        if (isDev) {
+          logger.warn(
+            `Spring DI: annotated field '${node.properties.name}' (${node.properties.filePath}) has no rawDeclaredType — extraction plumbing contract breach; skipping`,
+          );
+        }
+        return;
+      }
       const parsed = parseSpringCollectionType(rawDeclaredType);
       if (!parsed) return;
       candidates.push({
         propertyId: node.id,
         collectionType: parsed.collectionType,
         elementTypeName: parsed.elementTypeName,
+        matchedAnnotation,
       });
     });
 
@@ -169,7 +208,8 @@ export const springDiPhase: PipelinePhase<SpringDIOutput> = {
           targetId: implId,
           type: 'INJECTS',
           confidence: 0.8,
-          reason: `Spring DI: @Autowired ${candidate.collectionType}<${candidate.elementTypeName}>`,
+          // Honest reason: states the annotation actually found on the field.
+          reason: `Spring DI: ${candidate.matchedAnnotation} ${candidate.collectionType}<${candidate.elementTypeName}>`,
         });
         injectsEdges++;
       }
@@ -177,7 +217,7 @@ export const springDiPhase: PipelinePhase<SpringDIOutput> = {
 
     if (isDev && injectsEdges > 0) {
       logger.info(
-        `🌱 Spring DI: ${injectsEdges} INJECTS edges from ${candidates.length} @Autowired collection fields`,
+        `🌱 Spring DI: ${injectsEdges} INJECTS edges from ${candidates.length} injection-annotated collection fields`,
       );
     }
 

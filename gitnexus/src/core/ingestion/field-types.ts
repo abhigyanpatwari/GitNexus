@@ -39,6 +39,13 @@ export interface FieldInfo {
    * Never passes through simple-name extraction or type resolution.
    */
   rawDeclaredType?: string;
+  /**
+   * Annotation names found on the field declaration, `'@Name'`-prefixed
+   * (e.g. `['@Autowired']`), matching the method-extractor convention.
+   * Omitted when the language config does not extract annotations or the
+   * field has none.
+   */
+  annotations?: string[];
   /** Visibility modifier */
   visibility: FieldVisibility;
   /** Is this a static member? */

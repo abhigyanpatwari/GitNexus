@@ -1185,9 +1185,10 @@ describe('GenericFieldExtractor — Dart', () => {
 
 // ---------------------------------------------------------------------------
 // Java config — rawDeclaredType: verbatim generic type text (PR #2200 U1)
+// and annotations: '@Name' strings from the modifiers child (PR #2200 U2)
 // ---------------------------------------------------------------------------
 
-describe('GenericFieldExtractor — Java (rawDeclaredType)', () => {
+describe('GenericFieldExtractor — Java (rawDeclaredType + annotations)', () => {
   const parser = new Parser();
   const extractor = createFieldExtractor(javaConfig);
   const mockContext = createMockContext();
@@ -1246,6 +1247,42 @@ describe('GenericFieldExtractor — Java (rawDeclaredType)', () => {
       expect(result!.fields[0]).toMatchObject({ name, type, rawDeclaredType });
     },
   );
+
+  it.each([
+    {
+      // marker_annotation node type (no arguments).
+      field: '@Autowired private List<Shape> shapes;',
+      annotations: ['@Autowired'],
+    },
+    {
+      // `annotation` node type (with arguments), not `marker_annotation` —
+      // the name comes from the annotation's `name` field.
+      field: '@Autowired(required=false) private List<Shape> shapes;',
+      annotations: ['@Autowired'],
+    },
+    {
+      // Multiple annotations on one field — all are collected, in order.
+      field: '@Nullable @Autowired @Qualifier("shapeBeans") private List<Shape> shapes;',
+      annotations: ['@Nullable', '@Autowired', '@Qualifier'],
+    },
+  ])('extracts annotations $annotations from `$field`', ({ field, annotations }) => {
+    const result = extractor.extract(classNode(`class C { ${field} }`), mockContext);
+
+    expect(result).not.toBeNull();
+    expect(result!.fields).toHaveLength(1);
+    expect(result!.fields[0]).toMatchObject({ name: 'shapes', annotations });
+  });
+
+  it('omits annotations entirely for a non-annotated field', () => {
+    const result = extractor.extract(
+      classNode('class C { private List<Shape> shapes; }'),
+      mockContext,
+    );
+
+    expect(result).not.toBeNull();
+    expect(result!.fields).toHaveLength(1);
+    expect(result!.fields[0]).not.toHaveProperty('annotations');
+  });
 });
 
 // ---------------------------------------------------------------------------
