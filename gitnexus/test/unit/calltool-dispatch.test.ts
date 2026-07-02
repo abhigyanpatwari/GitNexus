@@ -465,6 +465,32 @@ describe('LocalBackend.callTool', () => {
 
     const queries = (executeQuery as any).mock.calls.map(([, cypher]: [string, string]) => cypher);
     expect(queries.some((cypher: string) => cypher.includes('QUERY_VECTOR_INDEX'))).toBe(true);
+    // The configured threshold must reach the WHERE clause (MCP default 0.6), guarding
+    // against a regression that drops the filter or re-hardcodes a different value.
+    expect(queries.some((cypher: string) => cypher.includes('distance < 0.6'))).toBe(true);
+  });
+
+  it('threads GITNEXUS_VECTOR_MAX_DISTANCE into the vector index WHERE clause', async () => {
+    platformMocks.isVectorExtensionSupportedByPlatform.mockReturnValue(true);
+    vi.mocked(executeQuery).mockImplementation(async (_repoId: string, cypher: string) => {
+      if (cypher.includes('COUNT(*) AS cnt')) return [{ cnt: 1 }];
+      return [];
+    });
+    vi.mocked(executeParameterized).mockResolvedValue([]);
+
+    const previous = process.env.GITNEXUS_VECTOR_MAX_DISTANCE;
+    process.env.GITNEXUS_VECTOR_MAX_DISTANCE = '0.42';
+    try {
+      await backend.callTool('query', { query: 'auth' });
+      const queries = vi
+        .mocked(executeQuery)
+        .mock.calls.map(([, cypher]: [string, string]) => cypher);
+      expect(queries.some((cypher: string) => cypher.includes('distance < 0.42'))).toBe(true);
+      expect(queries.some((cypher: string) => cypher.includes('distance < 0.6'))).toBe(false);
+    } finally {
+      if (previous === undefined) delete process.env.GITNEXUS_VECTOR_MAX_DISTANCE;
+      else process.env.GITNEXUS_VECTOR_MAX_DISTANCE = previous;
+    }
   });
 
   it('query tool returns error for empty query', async () => {
@@ -1317,6 +1343,13 @@ describe('LocalBackend.callTool', () => {
         },
       ])
       .mockResolvedValue([]);
+    const repoDir = mkdtempSync(path.join(os.tmpdir(), 'gnx-rename-'));
+    (listRegisteredRepos as any).mockResolvedValue([
+      { ...MOCK_REPO_ENTRY, path: repoDir, storagePath: path.join(repoDir, '.gitnexus') },
+    ]);
+    backend = new LocalBackend();
+    await backend.init();
+
     const readSpy = vi
       .spyOn(fsPromises, 'readFile')
       .mockResolvedValue('function oldName() {}\n' as unknown as Buffer);
@@ -1337,6 +1370,7 @@ describe('LocalBackend.callTool', () => {
     } finally {
       readSpy.mockRestore();
       writeSpy.mockRestore();
+      rmSync(repoDir, { recursive: true, force: true });
     }
   });
 
@@ -3426,6 +3460,24 @@ describe('cypher result formatting', () => {
     expect(result.markdown).toContain('name');
     expect(result.markdown).toContain('main');
     expect(result.row_count).toBe(2);
+  });
+
+  it('keeps one markdown line per row when a cell value contains newlines (#2310)', async () => {
+    // A multi-line `content` value must not split its row across physical lines —
+    // otherwise the rendered table is corrupt and the CLI `--limit` line-slice
+    // keeps the wrong number of rows.
+    (executeParameterized as any).mockResolvedValue([
+      { name: 'a', content: 'export function a() {\n  return 1;\n}' },
+      { name: 'b', content: 'line1\nline2' },
+    ]);
+    const result = await backend.callTool('cypher', {
+      query: 'MATCH (n:Function) RETURN n.name AS name, n.content AS content',
+    });
+    const lines = result.markdown.split('\n');
+    // header + separator + exactly one line per data row, no embedded newlines.
+    expect(lines).toHaveLength(2 + result.row_count);
+    expect(result.row_count).toBe(2);
+    expect(result.markdown).not.toMatch(/\n[^|]/);
   });
 
   it('returns empty array as-is', async () => {

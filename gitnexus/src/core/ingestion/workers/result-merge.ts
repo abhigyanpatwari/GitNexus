@@ -37,6 +37,10 @@ export const mergeResult = (target: ParseWorkerResult, src: ParseWorkerResult): 
   appendAll(target.decoratorRoutes, src.decoratorRoutes);
   if (src.routerIncludes) appendAll(target.routerIncludes, src.routerIncludes);
   if (src.routerImports) appendAll(target.routerImports, src.routerImports);
+  if (src.routerConstructorPrefixes) {
+    target.routerConstructorPrefixes ??= [];
+    appendAll(target.routerConstructorPrefixes, src.routerConstructorPrefixes);
+  }
   if (src.routerModuleAliases) {
     target.routerModuleAliases ??= [];
     appendAll(target.routerModuleAliases, src.routerModuleAliases);

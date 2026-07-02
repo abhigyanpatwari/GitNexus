@@ -191,10 +191,18 @@ describe('node-COPY ‖ rel-emit overlap persists identical content (#2203)', ()
   });
 
   it('multiline content/text fields round-trip identically (byte-for-byte)', () => {
+    // The #2203 invariant — overlap path == serial path — holds byte-for-byte
+    // for both fields regardless of any content transform.
     expect(overlapSnap.bbText).toBe(serialSnap.bbText);
-    expect(overlapSnap.bbText).toBe(BB_TEXT);
     expect(overlapSnap.fileContent).toBe(serialSnap.fileContent);
-    expect(overlapSnap.fileContent).toBe(FILE_SRC);
+
+    // BasicBlock text is NOT FTS-indexed, so it round-trips raw (newlines kept).
+    expect(overlapSnap.bbText).toBe(BB_TEXT);
+    // File content IS FTS-indexed and is whitespace-normalized for the
+    // space-only tokenizer (#2317): newlines/tabs collapse to single spaces.
+    // So it round-trips as the source with intra-text whitespace flattened,
+    // not byte-identical to the original multiline source.
+    expect(overlapSnap.fileContent).toBe(FILE_SRC.replace(/[\r\n\t]+/g, ' '));
   });
 
   it('loadGraphToLbug accounting (insertedRels/skippedRels/warnings) is identical', () => {

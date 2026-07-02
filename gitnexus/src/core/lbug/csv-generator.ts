@@ -3,7 +3,7 @@
  *
  * Streams CSV rows directly to disk files in a single pass over graph nodes.
  * File contents are lazy-read from disk per-node to avoid holding the entire
- * repo in RAM. Rows are buffered (FLUSH_EVERY) before writing to minimize
+ * repo in RAM. Rows are buffered (FLUSH_BYTES) before writing to minimize
  * per-row Promise overhead.
  *
  * RFC 4180 Compliant:
@@ -20,6 +20,7 @@ import { KnowledgeGraph } from '../graph/types.js';
 import { NodeTableName, NODE_TABLES } from './schema.js';
 import { RelPairRouter } from './rel-pair-routing.js';
 import { parseTruthyEnv } from '../ingestion/utils/env.js';
+import { applyCjkSegmentationIfEnabled } from '../search/cjk-segmentation.js';
 
 /**
  * Deterministic output ordering — optional (out-of-core / windowed-resolve
@@ -44,8 +45,39 @@ const orderedRelationships = (
 ): Iterable<GraphRelationship> =>
   sorted ? [...graph.iterRelationships()].sort(byGraphId) : graph.iterRelationships();
 
-/** Flush buffered rows to disk every N rows */
-const FLUSH_EVERY = 500;
+/**
+ * Flush buffered rows to disk once the buffered chunk reaches this many bytes.
+ * Byte-bounded rather than row-count-bounded: row size ranges from a few dozen
+ * bytes (typical symbol/relationship rows) up to a full File's content
+ * (#2317/#2323), so a row-count-only cap lets a handful of huge rows build an
+ * unbounded `buffer.join('\n')` string before ever tripping it.
+ *
+ * Not an env knob — fixed by a safety margin, not a preference. The one worst
+ * case that matters: one more oversized row lands right after the buffer was
+ * just under this threshold, before the flush fires. That row is capped at
+ * TREE_SITTER_MAX_BUFFER (32MB, hard-clamped — GITNEXUS_MAX_FILE_SIZE cannot
+ * raise it). Two transforms can each grow it before it reaches the buffer:
+ * `applyCjkSegmentationIfEnabled` (#2331, `CJK_BIGRAM_WORST_CASE_GROWTH_FACTOR`
+ * on an all-CJK row when `GITNEXUS_FTS_CJK_SEGMENTATION=bigram` — the single
+ * source of truth for that ratio, imported by the paired test) and
+ * `escapeCSVField`'s worst-case quote-doubling (2x). So the peak joined-string
+ * size is bounded by
+ *   FLUSH_BYTES + 2 * CJK_BIGRAM_WORST_CASE_GROWTH_FACTOR * TREE_SITTER_MAX_BUFFER
+ *     ≈ 8MB + 149MB ≈ 157MB,
+ * versus Node's `buffer.constants.MAX_STRING_LENGTH` (~512MB) — the test
+ * actually enforces half of that (~256MB), for a ~1.63x margin (see the
+ * `shouldFlushCSVBuffer stays within the V8 string-length ceiling` test,
+ * which fails loudly if any of these constants ever moves this margin the
+ * wrong way). With segmentation disabled (default), the old ~3.56x margin
+ * still applies. Raising FLUSH_BYTES trades fewer/larger flushes for less
+ * margin; lowering it trades the reverse for lower peak transient memory.
+ * Change the constant directly if a real workload needs a different point on
+ * that curve — a per-host env var would let the margin get silently
+ * reintroduced by an operator with no way to know why 512MB is dangerous.
+ */
+export const FLUSH_BYTES = 8 * 1024 * 1024;
+
+export const shouldFlushCSVBuffer = (byteCount: number): boolean => byteCount >= FLUSH_BYTES;
 
 /**
  * Yield the event loop every N relationship rows during the emit pass (#2226 F4)
@@ -148,6 +180,38 @@ class FileContentCache {
   }
 }
 
+/**
+ * Flatten newlines and tabs to single spaces for FTS-indexed text columns
+ * (`content`, `description`) — the real fix for #2317.
+ *
+ * Ladybug's full-text-search tokenizer splits ONLY on the space character —
+ * `\n`, `\r`, and `\t` are NOT token delimiters. So multiline text indexes as
+ * a handful of giant tokens (each whole line, joined across lines), and a
+ * word query matches none of them: `searchFTSFromLbug('foo')` misses a file
+ * whose content is `... \nfoo\n ...`. Removing the 10KB cap (#2333/#2317)
+ * stores the full body but leaves it unsearchable; collapsing intra-text
+ * whitespace to spaces is what actually makes every word searchable.
+ *
+ * This rewrites the STORED column too (the same value is COPYed in), so File
+ * content returned via the graph API is space-flattened — an accepted trade
+ * for making file/symbol text searchable. Leading/trailing/empty are no-ops.
+ *
+ * Callers apply `applyCjkSegmentationIfEnabled` (#2331) to the text *before*
+ * this flatten, so a CJK phrase split across a line-wrap loses its boundary
+ * bigram (run detection resets at whitespace) — an accepted limitation, see
+ * the plan's Scope Boundaries.
+ *
+ * Exported (#2339) so `bm25-index.ts`'s query path can compose it in the
+ * same order on incoming search queries, keeping index-time and query-time
+ * text transforms symmetric — a literal tab/newline in a query would
+ * otherwise fail to match whitespace-normalized indexed content.
+ */
+export const normalizeFtsText = (text: string): string => text.replace(/[\r\n\t]+/g, ' ');
+
+/** Composes both FTS-text transforms for the `description` column — one place for the six emission sites below to call, instead of repeating the composition. */
+const formatFtsDescription = (description: string): string =>
+  normalizeFtsText(applyCjkSegmentationIfEnabled(description));
+
 const extractContent = async (node: GraphNode, contentCache: FileContentCache): Promise<string> => {
   const filePath = node.properties.filePath;
   const content = await contentCache.get(filePath);
@@ -155,11 +219,13 @@ const extractContent = async (node: GraphNode, contentCache: FileContentCache): 
   if (node.label === 'Folder') return '';
   if (isBinaryContent(content)) return '[Binary file - content not stored]';
 
+  // File content is stored in full — intentionally NOT length-capped here, so
+  // text past the old 10KB cutoff stays FTS-searchable (#2317). It is already
+  // bounded upstream by the walker's max-file-size cap (512KB default / 32MB),
+  // and only whitespace-normalized for the tokenizer. The symbol snippet path
+  // below, by contrast, deliberately stays capped at MAX_SNIPPET.
   if (node.label === 'File') {
-    const MAX_FILE_CONTENT = 10000;
-    return content.length > MAX_FILE_CONTENT
-      ? content.slice(0, MAX_FILE_CONTENT) + '\n... [truncated]'
-      : content;
+    return normalizeFtsText(applyCjkSegmentationIfEnabled(content));
   }
 
   const startLine = node.properties.startLine;
@@ -171,9 +237,9 @@ const extractContent = async (node: GraphNode, contentCache: FileContentCache): 
   const end = Math.min(lines.length - 1, endLine + 2);
   const snippet = lines.slice(start, end + 1).join('\n');
   const MAX_SNIPPET = 5000;
-  return snippet.length > MAX_SNIPPET
-    ? snippet.slice(0, MAX_SNIPPET) + '\n... [truncated]'
-    : snippet;
+  const capped =
+    snippet.length > MAX_SNIPPET ? snippet.slice(0, MAX_SNIPPET) + '\n... [truncated]' : snippet;
+  return normalizeFtsText(applyCjkSegmentationIfEnabled(capped));
 };
 
 // ============================================================================
@@ -183,6 +249,7 @@ const extractContent = async (node: GraphNode, contentCache: FileContentCache): 
 class BufferedCSVWriter {
   private ws: WriteStream;
   private buffer: string[] = [];
+  private bufferedBytes = 0;
   rows = 0;
 
   constructor(filePath: string, header: string) {
@@ -190,10 +257,11 @@ class BufferedCSVWriter {
     // Large repos flush many times — raise listener cap to avoid MaxListenersExceededWarning
     this.ws.setMaxListeners(50);
     this.buffer.push(header);
+    this.bufferedBytes = Buffer.byteLength(header) + 1;
   }
 
   /**
-   * Buffer a row. Returns a promise ONLY when the buffer crossed FLUSH_EVERY
+   * Buffer a row. Returns a promise ONLY when the buffer crossed FLUSH_BYTES
    * and a disk write was issued; otherwise returns `undefined` so the caller
    * can skip awaiting (#2203 U3) — avoiding a microtask tick on every buffered
    * row (millions at scale). The flush promise still resolves on drain, so
@@ -201,8 +269,9 @@ class BufferedCSVWriter {
    */
   addRow(row: string): Promise<void> | undefined {
     this.buffer.push(row);
+    this.bufferedBytes += Buffer.byteLength(row) + 1;
     this.rows++;
-    if (this.buffer.length >= FLUSH_EVERY) {
+    if (shouldFlushCSVBuffer(this.bufferedBytes)) {
       return this.flush();
     }
     return undefined;
@@ -212,6 +281,7 @@ class BufferedCSVWriter {
     if (this.buffer.length === 0) return Promise.resolve();
     const chunk = this.buffer.join('\n') + '\n';
     this.buffer.length = 0;
+    this.bufferedBytes = 0;
     return new Promise((resolve, reject) => {
       this.ws.once('error', reject);
       const ok = this.ws.write(chunk);
@@ -451,7 +521,7 @@ export const streamAllCSVsToDisk = async (
 
       // addRow returns a promise only when it flushes; awaiting it once after the
       // switch (instead of `await`-ing every addRow) skips a per-row microtask
-      // tick on the ~FLUSH_EVERY-1 buffered rows between flushes (#2203 U3).
+      // tick on the rows buffered between byte-bounded flushes (#2203 U3).
       let pending: Promise<void> | undefined;
       switch (node.label) {
         case 'File': {
@@ -484,7 +554,7 @@ export const streamAllCSVsToDisk = async (
               escapeCSVField(node.properties.name || ''),
               escapeCSVField(node.properties.heuristicLabel || ''),
               keywordsStr,
-              escapeCSVField(node.properties.description || ''),
+              escapeCSVField(formatFtsDescription(node.properties.description || '')),
               escapeCSVField(node.properties.enrichedBy || 'heuristic'),
               escapeCSVNumber(node.properties.cohesion, 0),
               escapeCSVNumber(node.properties.symbolCount, 0),
@@ -520,7 +590,7 @@ export const streamAllCSVsToDisk = async (
               escapeCSVNumber(node.properties.endLine, -1),
               node.properties.isExported ? 'true' : 'false',
               escapeCSVField(content),
-              escapeCSVField(node.properties.description || ''),
+              escapeCSVField(formatFtsDescription(node.properties.description || '')),
               escapeCSVNumber(node.properties.parameterCount, 0),
               escapeCSVField(node.properties.returnType || ''),
             ].join(','),
@@ -538,7 +608,7 @@ export const streamAllCSVsToDisk = async (
               escapeCSVNumber(node.properties.endLine, -1),
               escapeCSVNumber(node.properties.level, 1),
               escapeCSVField(content),
-              escapeCSVField(node.properties.description || ''),
+              escapeCSVField(formatFtsDescription(node.properties.description || '')),
             ].join(','),
           );
           break;
@@ -572,7 +642,7 @@ export const streamAllCSVsToDisk = async (
               escapeCSVField(node.id),
               escapeCSVField(node.properties.name || ''),
               escapeCSVField(node.properties.filePath || ''),
-              escapeCSVField(node.properties.description || ''),
+              escapeCSVField(formatFtsDescription(node.properties.description || '')),
             ].join(','),
           );
           break;
@@ -593,7 +663,7 @@ export const streamAllCSVsToDisk = async (
                 escapeCSVNumber(node.properties.endLine, -1),
                 node.properties.isExported ? 'true' : 'false',
                 escapeCSVField(content),
-                escapeCSVField(node.properties.description || ''),
+                escapeCSVField(formatFtsDescription(node.properties.description || '')),
               ].join(','),
             );
           } else {
@@ -609,7 +679,7 @@ export const streamAllCSVsToDisk = async (
                   escapeCSVNumber(node.properties.startLine, -1),
                   escapeCSVNumber(node.properties.endLine, -1),
                   escapeCSVField(content),
-                  escapeCSVField(node.properties.description || ''),
+                  escapeCSVField(formatFtsDescription(node.properties.description || '')),
                   ...(node.label === 'Property'
                     ? [escapeCSVField(node.properties.declaredType || '')]
                     : []),

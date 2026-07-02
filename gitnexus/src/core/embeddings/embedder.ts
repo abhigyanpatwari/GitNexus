@@ -19,93 +19,17 @@ if (!process.env.ORT_LOG_LEVEL) {
 // runtime. The runtime values (pipeline, env) are dynamically imported inside
 // initEmbedder, after the platform guard has passed (#1515).
 import type { FeatureExtractionPipeline, ProgressInfo } from '@huggingface/transformers';
-import { existsSync } from 'fs';
-import { execFileSync } from 'child_process';
-import { join, dirname } from 'path';
-import { createRequire } from 'module';
 import { DEFAULT_EMBEDDING_CONFIG, type EmbeddingConfig, type ModelProgress } from './types.js';
 import { isHttpMode, getHttpDimensions, httpEmbed } from './http-client.js';
 import { resolveEmbeddingConfig } from './config.js';
 import { applyHfEnvOverrides, isHfDownloadFailure, withHfDownloadRetry } from './hf-env.js';
 import { getLocalEmbeddingRuntimeBlocker } from './runtime-support.js';
 import { ensureOnnxRuntimeCommonResolvable } from './onnxruntime-common-resolver.js';
+import {
+  ensureOnnxRuntimeNodeMatchesSystem,
+  isEffectiveCudaAvailable,
+} from './onnxruntime-node-resolver.js';
 import { logger } from '../logger.js';
-
-/**
- * Check whether the onnxruntime-node package that @huggingface/transformers
- * will actually load at runtime ships the CUDA execution provider.
- *
- * Critical: we resolve from transformers' own module scope, NOT from ours.
- * npm may install two copies — a top-level 1.24.x (our dep) and a nested
- * 1.21.0 (transformers' pinned dep). The guard must inspect whichever copy
- * transformers.js will dlopen, otherwise the check is meaningless.
- */
-function hasOrtCudaProvider(): boolean {
-  try {
-    const require = createRequire(import.meta.url);
-    // Resolve from @huggingface/transformers' scope so we find the same
-    // onnxruntime-node binary that transformers.js will use at runtime
-    const transformersDir = dirname(require.resolve('@huggingface/transformers/package.json'));
-    const ortRequire = createRequire(join(transformersDir, 'package.json'));
-    const ortPath = dirname(ortRequire.resolve('onnxruntime-node/package.json'));
-    // ORT 1.24.x only ships CUDA binaries for linux/x64 (downloaded from NuGet
-    // at postinstall). arm64 will correctly return false here until ORT adds support.
-    const arch = process.arch;
-    return existsSync(
-      join(ortPath, 'bin', 'napi-v6', 'linux', arch, 'libonnxruntime_providers_cuda.so'),
-    );
-  } catch {
-    return false;
-  }
-}
-
-/**
- * Check whether CUDA libraries are actually available on this system.
- * ONNX Runtime's native layer crashes (uncatchable) if we attempt CUDA
- * without the required shared libraries, so we probe first.
- *
- * Checks both:
- * 1. That system CUDA libraries (libcublasLt) are present
- * 2. That onnxruntime-node ships the CUDA execution provider binary
- *
- * Both conditions must be true — system CUDA libs alone are not enough
- * if onnxruntime-node is a CPU-only build (versions < 1.24.0).
- */
-function isCudaAvailable(): boolean {
-  // First, verify onnxruntime-node has the CUDA provider binary.
-  // Without this, requesting CUDA causes an uncatchable native crash.
-  if (!hasOrtCudaProvider()) return false;
-
-  // Primary: query the dynamic linker cache — covers all architectures,
-  // distro layouts, and custom install paths registered with ldconfig
-  try {
-    const out = execFileSync('ldconfig', ['-p'], {
-      timeout: 3000,
-      encoding: 'utf-8',
-      windowsHide: true,
-    });
-    if (out.includes('libcublasLt.so.12')) return true;
-  } catch {
-    // ldconfig not available (e.g. non-standard container)
-  }
-
-  // Fallback: check CUDA_PATH and LD_LIBRARY_PATH for environments where
-  // ldconfig doesn't know about the CUDA install (conda, manual /opt/cuda, etc.)
-  for (const envVar of ['CUDA_PATH', 'LD_LIBRARY_PATH']) {
-    const val = process.env[envVar];
-    if (!val) continue;
-    for (const dir of val.split(':').filter(Boolean)) {
-      if (
-        existsSync(join(dir, 'lib64', 'libcublasLt.so.12')) ||
-        existsSync(join(dir, 'lib', 'libcublasLt.so.12')) ||
-        existsSync(join(dir, 'libcublasLt.so.12'))
-      )
-        return true;
-    }
-  }
-
-  return false;
-}
 
 // Module-level state for singleton pattern
 let embedderInstance: FeatureExtractionPipeline | null = null;
@@ -172,7 +96,7 @@ export const initEmbedder = async (
   // provider libraries are missing. DirectML stays opt-in for the same reason.
   // Probe for CUDA first — ONNX Runtime crashes (uncatchable native error)
   // if we attempt CUDA without the required shared libraries
-  const gpuDevice = isCudaAvailable() ? 'cuda' : 'cpu';
+  const gpuDevice = isEffectiveCudaAvailable() ? 'cuda' : 'cpu';
   const requestedDevice =
     forceDevice || (finalConfig.device === 'auto' ? gpuDevice : finalConfig.device);
 
@@ -183,6 +107,12 @@ export const initEmbedder = async (
       // Under pnpm-strict / `pnpm dlx`, transformers' phantom `onnxruntime-common`
       // import is unresolvable; register the fallback resolver first (#307).
       ensureOnnxRuntimeCommonResolvable();
+      // Registered AFTER the common fallback so this hook resolves FIRST (Node
+      // runs the most-recently-registered hook first): on CUDA-13 hosts it
+      // redirects onnxruntime-node (and its version-matched onnxruntime-common)
+      // to the CUDA-13 build before transformers imports them. No-op on matching
+      // layouts, non-CUDA, Windows/DirectML, and macOS.
+      ensureOnnxRuntimeNodeMatchesSystem();
       const { pipeline, env } = await import('@huggingface/transformers');
 
       // Configure transformers.js environment

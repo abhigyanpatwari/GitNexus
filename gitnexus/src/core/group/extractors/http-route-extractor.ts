@@ -80,10 +80,21 @@ WHERE sym.filePath = $filePath AND sym.startLine IS NOT NULL AND sym.endLine IS 
 RETURN sym.id AS uid, sym.name AS name, sym.filePath AS filePath,
        sym.startLine AS startLine, sym.endLine AS endLine, labels(sym) AS labels`;
 
-// Repo-wide lookup of a symbol by exact name (label-union, as in
-// manifest-extractor.ts). Used to resolve a provider's named handler when it is
-// defined in a file OTHER than its route registration — and only honored when
-// the result is unique (see resolveSymbolByNameUnique).
+// Repo-wide lookup of a symbol by exact name. Used to resolve a provider's
+// named handler when it is defined in a file OTHER than its route registration —
+// and only honored when the result is unique (see resolveSymbolByNameUnique).
+//
+// Label filtering uses `labels(n) IN [...]` rather than the openCypher
+// disjunction `MATCH (n:A|B|C)`. NOTE: this 3-label set (Function/Method/
+// CodeElement) actually PARSES — LadybugDB only rejects a disjunction that
+// names a reserved keyword (e.g. `Macro`, `Union`) or a missing node table,
+// neither of which applies here. So this query was NOT broken by #2325; it
+// uses the `labels(n) IN` form for consistency with the manifest custom-branch
+// fix (which WAS broken) and to stay immune if a reserved-keyword label is
+// added later. `labels(n)` returns the node's single label as a string here, so
+// `IN [...]` is an exact allowlist. (Exported so integration tests can run the
+// exact production query against a real LadybugDB — the bug shipped because no
+// test ran these strings against the real parser.)
 //
 // `n.filePath <> ''` excludes synthetic non-source `CodeElement` nodes that
 // carry no real file — ORM model/table nodes (orm.ts emits `filePath: ''`) and
@@ -91,9 +102,9 @@ RETURN sym.id AS uid, sym.name AS name, sym.filePath AS filePath,
 // degenerate edge-less node NOR inflates the uniqueness count and masks the real
 // handler. `LIMIT 2` bounds materialization: distinguishing unique (1) from
 // ambiguous (>=2) never needs more than two rows (the count guard stays exact).
-const RESOLVE_BY_NAME_QUERY = `
-MATCH (n:Function|Method|CodeElement)
-WHERE n.name = $name AND n.filePath <> ''
+export const RESOLVE_BY_NAME_QUERY = `
+MATCH (n) WHERE labels(n) IN ['Function','Method','CodeElement']
+  AND n.name = $name AND n.filePath <> ''
 RETURN n.id AS uid, n.name AS name, n.filePath AS filePath
 LIMIT 2`;
 
@@ -103,9 +114,9 @@ LIMIT 2`;
 // the precise rung — it survives aliases and local same-name collisions that a
 // repo-wide name lookup cannot, and only resolves on a unique match within that
 // module. `LIMIT 2` keeps the uniqueness count exact (see RESOLVE_BY_NAME_QUERY).
-const RESOLVE_IN_MODULE_QUERY = `
-MATCH (n:Function|Method|CodeElement)
-WHERE n.name = $name AND (n.filePath STARTS WITH $fileDot OR n.filePath STARTS WITH $fileSlash)
+export const RESOLVE_IN_MODULE_QUERY = `
+MATCH (n) WHERE labels(n) IN ['Function','Method','CodeElement']
+  AND n.name = $name AND (n.filePath STARTS WITH $fileDot OR n.filePath STARTS WITH $fileSlash)
 RETURN n.id AS uid, n.name AS name, n.filePath AS filePath
 LIMIT 2`;
 
@@ -251,6 +262,10 @@ function normalizeConsumerPath(url: string): string {
 
 function contractIdFor(method: string, pathNorm: string): string {
   return `http::${method.toUpperCase()}::${pathNorm}`;
+}
+
+export function normalizeRepoRelPath(filePath: string): string {
+  return filePath.replace(/\\/g, '/').replace(/^\.\//, '');
 }
 
 // ─── Graph row helpers ───────────────────────────────────────────────
@@ -764,20 +779,21 @@ export class HttpRouteExtractor implements ContractExtractor {
     const out: ExtractedContract[] = [];
     for (const rel of files) {
       const detections = await getDetections(rel);
+      const filePath = normalizeRepoRelPath(rel);
       for (const d of detections) {
         if (d.role !== 'provider') continue;
         const pathNorm = normalizeHttpPath(d.path);
         // Resolve the handler to a real symbol (named handler, or the inline
         // arrow that encloses the registration line) so the contract carries a
         // real symbolUid; fall back to the file + detection name otherwise.
-        const resolved = await resolveSymbol(rel, d);
+        const resolved = await resolveSymbol(filePath, d);
         out.push({
           contractId: contractIdFor(d.method, pathNorm),
           type: 'http',
           role: 'provider',
           symbolUid: resolved?.uid ?? '',
           symbolRef: {
-            filePath: resolved?.filePath || rel,
+            filePath: resolved?.filePath || filePath,
             name: resolved?.name ?? d.name ?? 'handler',
           },
           symbolName: resolved?.name ?? d.name ?? 'handler',
@@ -883,19 +899,20 @@ export class HttpRouteExtractor implements ContractExtractor {
     const out: ExtractedContract[] = [];
     for (const rel of files) {
       const detections = await getDetections(rel);
+      const filePath = normalizeRepoRelPath(rel);
       for (const d of detections) {
         if (d.role !== 'consumer') continue;
         const pathNorm = normalizeConsumerPath(d.path);
         // Resolve the function CONTAINING the fetch/axios call so the consumer
         // contract carries a real symbolUid (was always '' — the gap that left
         // cross-repo trace/impact unable to traverse HTTP links).
-        const resolved = await resolveSymbol(rel, d);
+        const resolved = await resolveSymbol(filePath, d);
         out.push({
           contractId: contractIdFor(d.method, pathNorm),
           type: 'http',
           role: 'consumer',
           symbolUid: resolved?.uid ?? '',
-          symbolRef: { filePath: resolved?.filePath || rel, name: resolved?.name ?? 'fetch' },
+          symbolRef: { filePath: resolved?.filePath || filePath, name: resolved?.name ?? 'fetch' },
           symbolName: resolved?.name ?? 'fetch',
           confidence: d.confidence,
           meta: {

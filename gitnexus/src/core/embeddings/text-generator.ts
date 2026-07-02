@@ -1,7 +1,7 @@
 /**
  * Text Generator Module
  *
- * Generates enriched embedding text from code nodes with metadata.
+ * Generates compact, description-forward embedding text from code nodes.
  * Supports chunkable labels (Function/Method with AST chunking),
  * Class-specific structural text, and short-node direct embed.
  *
@@ -58,38 +58,66 @@ const cleanContent = (content: string): string => {
 };
 
 /**
- * Build metadata header for a node
+ * Compact location signal for the embedding header: the last 1-2 path segments
+ * (immediate parent dir + basename), never the full deep path.
+ *
+ * #2333 / PR #2334 tri-review: U1 dropped the location entirely, which regressed
+ * path/service-qualified semantic search (e.g. `billing/handler` vs
+ * `identity/handler` in a monorepo) — and FTS indexes only name/content/description,
+ * never `filePath`, so there is no keyword backfill. The bounded form restores the
+ * discriminating tokens (service dir + filename-concept) at a fraction of the
+ * dilution the full path caused.
  */
-const buildMetadataHeader = (node: EmbeddableNode, config: Partial<EmbeddingConfig>): string => {
+const boundedLocation = (filePath: string): string => {
+  const segments = filePath.replace(/\\/g, '/').split('/').filter(Boolean);
+  return segments.slice(-2).join('/');
+};
+
+/**
+ * Build a compact, description-forward header for embedding text.
+ *
+ * Issue #2333 (sub-issue of #2326), Option A: lead the embedding text with the
+ * symbol name + doc-comment description and drop the low-signal metadata lines
+ * (`Repo`/`Server`/`Export` and the verbose full `Path`). For short doc comments
+ * those lines used to be ~25-30% of the embedding text, diluting the description's
+ * semantic weight in the vector and weakening description-shaped search — worst
+ * for CJK, where a complete concept is often 4-20 characters.
+ *
+ * A *bounded* location signal (last 1-2 path segments) is kept after the
+ * description — see `boundedLocation` for why the full path drop was reversed.
+ *
+ * Full metadata is unaffected: it lives on the graph node properties, which is
+ * what display/context tools read. Only the embedding text changes here.
+ *
+ * Option B (reorder only, keep metadata) was rejected — mean-pooled embeddings
+ * weight by token proportion, not position, so reordering alone barely moves the
+ * signal. Option C (a separate description-only embedding + hybrid merge) is
+ * deferred to follow-up; build it only if Option A proves insufficient against
+ * real measurement. Any change to this template MUST bump EMBEDDING_TEXT_VERSION.
+ */
+const buildEmbeddingHeader = (node: EmbeddableNode, config: Partial<EmbeddingConfig>): string => {
   const parts: string[] = [];
 
   // Label + name
   parts.push(`${node.label}: ${node.name}`);
 
-  // Repo name
-  if (node.repoName) {
-    parts.push(`Repo: ${node.repoName}`);
-  }
-
-  // Server name (optional)
-  if (node.serverName) {
-    parts.push(`Server: ${node.serverName}`);
-  }
-
-  // Full file path
-  parts.push(`Path: ${node.filePath}`);
-
-  // Export status
-  if (node.isExported !== undefined) {
-    parts.push(`Export: ${node.isExported}`);
-  }
-
-  // Description (truncated)
+  // Description hoisted above everything else so its semantic signal dominates
+  // the embedding vector and is never the part lost to token-limit truncation.
   if (node.description) {
     const maxLen = config.maxDescriptionLength ?? DEFAULT_EMBEDDING_CONFIG.maxDescriptionLength;
     const truncated = truncateDescription(node.description, maxLen);
     if (truncated) {
       parts.push(truncated);
+    }
+  }
+
+  // Bounded location signal — placed after the description so the description
+  // still leads the vector. Restores path/service disambiguation lost when the
+  // full Path line was dropped (FTS does not index filePath to backfill it).
+  if (node.filePath) {
+    const loc = boundedLocation(node.filePath);
+    if (loc) {
+      parts.push(`Loc: ${loc}`);
     }
   }
 
@@ -102,7 +130,7 @@ const generateCodeBodyText = (
   config: Partial<EmbeddingConfig>,
   prevTail?: string,
 ): string => {
-  const header = buildMetadataHeader(node, config);
+  const header = buildEmbeddingHeader(node, config);
   const parts = [header];
   if (prevTail) {
     parts.push(`[preceding context]: ...${cleanContent(prevTail)}`);
@@ -128,7 +156,7 @@ const generateStructuralTypeText = (
   chunkIndex?: number,
   prevTail?: string,
 ): string => {
-  const header = buildMetadataHeader(node, config);
+  const header = buildEmbeddingHeader(node, config);
   const parts: string[] = [header];
   const isFirstChunk = chunkIndex === undefined || chunkIndex === 0;
   const cleanedContent = cleanContent(node.content);
@@ -253,7 +281,7 @@ export const generateEmbeddingText = (
   prevTail?: string,
 ): string => {
   if (isShortLabel(node.label)) {
-    const header = buildMetadataHeader(node, config);
+    const header = buildEmbeddingHeader(node, config);
     const cleaned = cleanContent(node.content);
     return `${header}\n\n${cleaned}`;
   }

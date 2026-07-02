@@ -37,12 +37,21 @@ export interface FTSIndexDef {
 /**
  * Options for withTestLbugDB lifecycle.
  *
- * Lifecycle: initLbug → loadFTS → dropFTS → clearData → seed
+ * Lifecycle: initLbug → loadFTS → dropFTS → clearData → seed → beforeFTS
  *            → createFTS → [closeCoreLbug + poolInitLbug] → afterSetup
  */
 export interface WithTestLbugDBOptions {
   /** Cypher CREATE queries to insert seed data (runs before core adapter opens). */
   seed?: string[];
+  /**
+   * Custom load step run after Cypher `seed` and BEFORE the gated FTS build, so
+   * `createFTSIndex` indexes whatever this loads. Use it to exercise the real
+   * CSV→COPY path (`loadGraphToLbug`) instead of Cypher CREATE. Receives the
+   * core adapter's `dbPath`; colocate scratch files under `path.dirname(dbPath)`
+   * to inherit the suite's temp-dir cleanup. Runs unconditionally (no FTS
+   * needed); the FTS build below stays gated on extension availability.
+   */
+  beforeFTS?: (dbPath: string) => Promise<void>;
   /** FTS indexes to create after seeding. */
   ftsIndexes?: FTSIndexDef[];
   /** Close core adapter and open pool adapter (read-only) after FTS setup. */
@@ -139,6 +148,14 @@ export function withTestLbugDB(
       for (const q of options.seed) {
         await adapter.executeQuery(q);
       }
+    }
+
+    // 4b. Custom load step (e.g. loadGraphToLbug COPY path) before the FTS
+    //     build, so createFTSIndex below indexes the loaded rows. Runs
+    //     unconditionally — no FTS extension needed to COPY — while the FTS
+    //     build stays gated on ftsAvailable.
+    if (options?.beforeFTS) {
+      await options.beforeFTS(dbPath);
     }
 
     // 5. Create FTS indexes on fresh data (only when the extension loaded;

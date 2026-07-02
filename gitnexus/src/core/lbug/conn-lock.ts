@@ -15,6 +15,12 @@
  * embedding writeback, and the PDG edge deletes are mutually exclusive — the
  * property that makes a strictly-serial workload stable.
  *
+ * As of v0.18.0, none of LadybugDB's upstream fixes touch this specific risk
+ * (concurrent queries on ONE connection) — the closest are a deadlock fix
+ * between concurrent *connections* (LadybugDB/ladybug#605) and a narrow
+ * database close/destroy-vs-GC race fix (#623), both different scenarios
+ * from the one above. This lock's justification is unchanged.
+ *
  * Implementation: a promise chain. Each caller installs a fresh unresolved tail,
  * awaits the previous holder's tail, runs, then releases its own in `finally`
  * (so a thrown op never wedges the connection). FIFO and non-reentrant: a wrapped

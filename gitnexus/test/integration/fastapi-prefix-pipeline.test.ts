@@ -30,6 +30,13 @@
  *    ingestion regex. The group-layer counterpart is pinned by the
  *    `non-app host` cases in `http-route-extractor.test.ts`.
  *
+ * 5. **Same-file `APIRouter(prefix=…)`** is applied to `@router`
+ *    decorators, and stacks with an outer `include_router(prefix=…)`.
+ *
+ * 6. **Root-file constructor prefixes do not bleed into nested same-stem
+ *    files.** A repo-root `users.py` can use `APIRouter(prefix=…)`, but
+ *    `admin/users.py` must not inherit that constructor prefix.
+ *
  * The fixture lives at `test/fixtures/fastapi-prefix-app/` so the
  * pipeline can scan a real on-disk repo (mirroring how `gitnexus
  * analyze` is used in production) and so reviewers can inspect the
@@ -96,6 +103,24 @@ describe('FastAPI include_router(prefix=…) — ingestion pipeline', () => {
     expect(names).toContain('/rel/info');
   });
 
+  it('joins same-file APIRouter(prefix=…) with router decorator paths', () => {
+    const names = routeNames();
+    expect(names).toContain('/local');
+    expect(names).toContain('/root-users/landing');
+    expect(names.filter((n) => n === '/')).toHaveLength(0);
+  });
+
+  it('stacks same-file APIRouter(prefix=…) with include_router(prefix=…)', () => {
+    // api/items.py declares `APIRouter(dependencies=[Depends(get_db)], prefix="/items")`
+    // — a router-level dependency BEFORE prefix=. This pins the balanced-paren
+    // scan end-to-end: the old `[^)]*?` regex stopped at the `)` of `Depends(...)`
+    // and dropped `/items`, leaving the graph Route node at `/v1/{item_id}`.
+    const names = routeNames();
+    expect(names).toContain('/v1/items/{item_id}');
+    expect(names.filter((n) => n === '/items/{item_id}')).toHaveLength(0);
+    expect(names.filter((n) => n === '/v1/{item_id}')).toHaveLength(0);
+  });
+
   it('does NOT bleed `/users` prefix onto the same-name `admin/users.py`', () => {
     // FINDING 3: `api/users.py` and `admin/users.py` collide on the
     // short module key `users`. main.py only mounts the `api/users`
@@ -104,6 +129,13 @@ describe('FastAPI include_router(prefix=…) — ingestion pipeline', () => {
     const names = routeNames();
     expect(names).toContain('/audit');
     expect(names.filter((n) => n === '/users/audit')).toHaveLength(0);
+  });
+
+  it('does NOT bleed root same-file APIRouter(prefix=…) onto nested same-stem files', () => {
+    const names = routeNames();
+    expect(names).toContain('/root-users/landing');
+    expect(names).toContain('/audit');
+    expect(names.filter((n) => n === '/root-users/audit')).toHaveLength(0);
   });
 
   it('emits exactly one Route node per (router method, prefix) pair', () => {
@@ -118,6 +150,8 @@ describe('FastAPI include_router(prefix=…) — ingestion pipeline', () => {
     expect(counts.get('/users/create')).toBe(1);
     expect(counts.get('/calls/list')).toBe(1);
     expect(counts.get('/rel/info')).toBe(1);
+    expect(counts.get('/local')).toBe(1);
+    expect(counts.get('/v1/items/{item_id}')).toBe(1);
     expect(counts.get('/audit')).toBe(1);
   });
 });
