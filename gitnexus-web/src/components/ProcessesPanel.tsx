@@ -18,7 +18,7 @@ import {
   Sparkles,
   Lightbulb,
   Layers,
-} from 'lucide-react';
+} from '@/lib/lucide-icons';
 import { useAppState } from '../hooks/useAppState';
 import { ProcessFlowModal } from './ProcessFlowModal';
 import type { ProcessData, ProcessStep } from '../lib/mermaid-generator';

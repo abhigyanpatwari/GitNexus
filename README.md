@@ -149,6 +149,7 @@ Built by the community — not officially maintained, but worth checking out.
 | ----------------------------------------------------------------------------- | ------------------------------------------------------ | ----------------------------------------------------------------------- |
 | [pi-gitnexus](https://github.com/tintinweb/pi-gitnexus)                       | [@tintinweb](https://github.com/tintinweb)             | GitNexus plugin for [pi](https://pi.dev) — `pi install npm:pi-gitnexus` |
 | [gitnexus-stable-ops](https://github.com/ShunsukeHayashi/gitnexus-stable-ops) | [@ShunsukeHayashi](https://github.com/ShunsukeHayashi) | Stable ops & deployment workflows (Miyabi ecosystem)                    |
+| [KiloCode MCP workflow ](Documentation/kilo-code-mcp.md) | [@oktanishq](https://github.com/oktanishq) | Guide to connect GitNexus MCP to Kilo Code and verify tools. |
 
 > Have a project built on GitNexus? Open a PR to add it here!
 

@@ -42,7 +42,7 @@ export const getCurrentCommit = (repoPath: string): string => {
  * Get a stable canonical identifier for the repo's `origin` remote, if any.
  *
  * Used to fingerprint two on-disk clones as the same logical repository
- * (issue #XXX — silent graph drift across sibling clones). `path` alone
+ * (prevents silent graph drift across sibling clones — see #2054). `path` alone
  * is unreliable: worktrees, "clean clone for indexing" hygiene, and
  * multi-agent workspaces routinely have the same repo at multiple
  * absolute paths. The remote URL is the only on-disk signal that
