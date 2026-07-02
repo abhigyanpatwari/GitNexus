@@ -15,7 +15,10 @@
 import { describe, expect, it } from 'vitest';
 import { createKnowledgeGraph } from '../../../src/core/graph/graph.js';
 import { diPhase } from '../../../src/core/ingestion/pipeline-phases/di.js';
-import { springDiFieldMatcher } from '../../../src/core/ingestion/di-extractors/spring.js';
+import {
+  parseSpringCollectionType,
+  springDiFieldMatcher,
+} from '../../../src/core/ingestion/di-extractors/spring.js';
 import { generateId } from '../../../src/lib/utils.js';
 import type {
   PhaseResult,
@@ -751,6 +754,98 @@ describe('springDiFieldMatcher', () => {
     expect(springDiFieldMatcher(matcherNode({ name: 'foos', annotations: ['@Autowired'] }))).toBe(
       null,
     );
+  });
+
+  // -------------------------------------------------------------------------
+  // Collection-type parser (PR #2200 U5) — table-driven, exact outputs.
+  // Every ACCEPT/REJECT shape here was executed as a failing (or must-keep-
+  // passing) case during the review; the module docstring documents each
+  // rejection.
+  // -------------------------------------------------------------------------
+
+  it.each<[string, string, { collectionType: string; elementTypeName: string }]>([
+    // Existing happy shapes — must keep parsing identically.
+    ['plain List', 'List<IFoo>', { collectionType: 'List', elementTypeName: 'IFoo' }],
+    ['plain Set', 'Set<IFoo>', { collectionType: 'Set', elementTypeName: 'IFoo' }],
+    [
+      'plain Collection',
+      'Collection<IFoo>',
+      { collectionType: 'Collection', elementTypeName: 'IFoo' },
+    ],
+    ['plain Map', 'Map<String,IPlugin>', { collectionType: 'Map', elementTypeName: 'IPlugin' }],
+    // Generic Map KEY: the old `[^,]+` regex stopped at the nested comma and
+    // captured garbage — the depth-aware split must yield the value type.
+    ['generic Map key', 'Map<Pair<A,B>, IFoo>', { collectionType: 'Map', elementTypeName: 'IFoo' }],
+    // Bounded wildcards — idiomatic Spring collection injection.
+    [
+      'upper-bounded wildcard',
+      'List<? extends IFoo>',
+      { collectionType: 'List', elementTypeName: 'IFoo' },
+    ],
+    [
+      'lower-bounded wildcard',
+      'List<? super IFoo>',
+      { collectionType: 'List', elementTypeName: 'IFoo' },
+    ],
+    // Whitespace normalization: padded generics, padded Map comma, and a
+    // multi-line declaration (raw tree-sitter .text can span lines).
+    ['padded element', 'List< IFoo >', { collectionType: 'List', elementTypeName: 'IFoo' }],
+    ['padded Map comma', 'Map<String , IFoo>', { collectionType: 'Map', elementTypeName: 'IFoo' }],
+    [
+      'multi-line declaration',
+      'Map<\n    String,\n    IFoo\n>',
+      { collectionType: 'Map', elementTypeName: 'IFoo' },
+    ],
+    // Package-qualified WRAPPER: recognized by its last dotted segment; the
+    // qualifier is stripped from the wrapper only.
+    [
+      'qualified wrapper',
+      'java.util.List<IFoo>',
+      { collectionType: 'List', elementTypeName: 'IFoo' },
+    ],
+    [
+      'qualified Map wrapper',
+      'java.util.Map<String, IFoo>',
+      { collectionType: 'Map', elementTypeName: 'IFoo' },
+    ],
+    // Dotted ELEMENT keeps its dots — resolved via qualifiedName downstream.
+    [
+      'qualified element',
+      'List<com.a.Shape>',
+      { collectionType: 'List', elementTypeName: 'com.a.Shape' },
+    ],
+    [
+      'wildcard + qualified element',
+      'Set<? extends com.a.Shape>',
+      { collectionType: 'Set', elementTypeName: 'com.a.Shape' },
+    ],
+  ])('parseSpringCollectionType accepts %s: %j', (_label, raw, expected) => {
+    expect(parseSpringCollectionType(raw)).toEqual(expected);
+  });
+
+  it.each<[string, string]>([
+    // Element itself generic — unresolvable as a single interface.
+    ['nested-generic element', 'Map<String, List<IFoo>>'],
+    ['nested-generic behind wildcard', 'List<? extends List<IFoo>>'],
+    // Unbounded wildcard — no element type to fan out to.
+    ['unbounded wildcard', 'List<?>'],
+    // Arrays — not the collect-all-implementers shape INJECTS models.
+    ['array type', 'IFoo[]'],
+    ['array of collections', 'List<IFoo>[]'],
+    ['array element', 'List<IFoo[]>'],
+    // Non-collection types.
+    ['bare interface', 'IFoo'],
+    ['non-collection wrapper', 'Optional<IFoo>'],
+    // Wrong generic arity.
+    ['Map with one argument', 'Map<String>'],
+    ['List with two arguments', 'List<A, B>'],
+    ['empty argument list', 'List<>'],
+    // Block comments inside generics are not stripped — fail closed.
+    ['block comment in generics', 'List</*x*/IFoo>'],
+    // Unbalanced brackets — fail closed.
+    ['unbalanced brackets', 'List<IFoo>>'],
+  ])('parseSpringCollectionType rejects %s: %j → null', (_label, raw) => {
+    expect(parseSpringCollectionType(raw)).toBeNull();
   });
 
   it("ignores node language — routing is the DI_MATCHERS registry's job", () => {
