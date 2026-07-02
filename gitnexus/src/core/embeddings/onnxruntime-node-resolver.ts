@@ -36,7 +36,10 @@
  * So CUDA-12 hosts, Windows (DirectML), macOS, and CPU-only hosts are
  * untouched. Idempotent; any failure is swallowed and leaves the default
  * resolution exactly as before. `module.registerHooks` requires Node >= 22.15
- * (the gitnexus engines floor is >= 22.0.0); on older runtimes this is a no-op.
+ * (the gitnexus engines floor is >= 22.0.0); on older runtimes the redirect is
+ * a no-op, but the default copy's CUDA major is still probed so an
+ * already-matching host (e.g. CUDA 12 + transformers' CUDA-12 build) keeps
+ * auto-selecting the GPU.
  * `npm link` / symlinked local-dev checkouts are a known caveat: `resolveOurOrtNodeDir`/
  * `resolveDefaultOrtNodeDir` are anchored to this module's own real (post-symlink)
  * location via `import.meta.url`, so a linked dev checkout may resolve against
@@ -182,19 +185,12 @@ const decide = (): Decision => {
 
   // Node < 22.15 has no `registerHooks` API, so a redirect can never actually
   // install (see ensureOnnxRuntimeNodeMatchesSystem below) — the probe must
-  // agree with that up front. Without this guard, isEffectiveCudaAvailable()
-  // could report a redirect target that never gets loaded, requesting CUDA
-  // against the wrong (default) onnxruntime-node build.
-  if (typeof registerHooks !== 'function') {
-    const decision: Decision = {
-      redirect: false,
-      effectiveDir: defaultDir,
-      effectiveMajor: null,
-      systemMajor: null,
-    };
-    cached = decision;
-    return decision;
-  }
+  // agree with that up front, never reporting a redirect target that won't be
+  // loaded. But the DEFAULT copy still loads and needs no hook, so its CUDA
+  // major is still probed: a CUDA-12 host on Node 22.0–22.14 whose default
+  // build already matches must keep auto-selecting the GPU exactly as it did
+  // before this redirect existed.
+  const canRedirect = typeof registerHooks === 'function';
 
   const systemMajor = detectSystemCudaMajor();
   // `defaultDir` resolving is NOT a precondition for checking `ourDir` below —
@@ -211,7 +207,7 @@ const decide = (): Decision => {
     systemMajor,
   };
 
-  if (systemMajor != null && defaultMajor !== systemMajor) {
+  if (canRedirect && systemMajor != null && defaultMajor !== systemMajor) {
     const ourDir = resolveOurOrtNodeDir();
     if (ourDir && ourDir !== defaultDir) {
       const ourMajor = ortCudaMajor(ourDir);

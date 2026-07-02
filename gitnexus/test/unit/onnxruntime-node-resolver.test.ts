@@ -367,27 +367,55 @@ describe('ensureOnnxRuntimeNodeMatchesSystem', () => {
 });
 
 describe('decide() — registerHooks gating (#2341 follow-up)', () => {
-  // getEffectiveOnnxRuntimeNodeDir()/isCudaAvailable() must agree with whether
-  // ensureOnnxRuntimeNodeMatchesSystem() can actually install a redirect. On
-  // Node < 22.15 (registerHooks unavailable) it never can, so the decision must
-  // fall back to the default dir — and skip CUDA-major probing entirely, since
-  // the answer wouldn't change the outcome — rather than reporting a redirect
-  // target that will never be loaded.
-  it('reports no redirect (and never probes CUDA majors) when registerHooks is unavailable', async () => {
-    const execFileSync = vi.fn(() => {
-      throw Object.assign(new Error('enoent'), { code: 'ENOENT' });
-    });
-    const existsSync = vi.fn(() => false);
-    const mod = await loadResolver({
+  // ensureOnnxRuntimeNodeMatchesSystem() can never install a redirect on
+  // Node < 22.15 (no registerHooks), so decide() must never report `ourDir`
+  // as the effective target there. But transformers' DEFAULT copy still loads
+  // without any hook, so its CUDA major must still be probed: a CUDA-12 host
+  // on Node 22.0–22.14 whose default build already matches has to keep the
+  // GPU it auto-selected before this redirect existed (pre-PR
+  // isCudaAvailable() behavior), not silently fall back to CPU.
+  const fakeDirs = {
+    ourDir: '/fake/our/onnxruntime-node',
+    defaultDir: '/fake/transformers-nested/onnxruntime-node',
+    transformersMain: '/fake/transformers/dist/transformers.node.mjs',
+  };
+  const soPrefix = (dir: string) => `${dir}/bin/napi-v6/linux`;
+
+  // System CUDA major is the parameter; the two bundled copies are fixed at
+  // ours=13 / default=12 (the PR's own documented layout).
+  function loadOldNodeResolver(systemMajor: 12 | 13) {
+    return loadResolver({
       registerHooks: undefined,
       platform: 'linux',
-      execFileSync,
-      existsSync,
+      fakeDirs,
+      existsSync: (p) =>
+        p.startsWith(soPrefix(fakeDirs.ourDir)) || p.startsWith(soPrefix(fakeDirs.defaultDir)),
+      execFileSync: (cmd, args) => {
+        if (cmd === 'ldconfig')
+          return `libcublasLt.so.${systemMajor} (libc6,x86-64) => /usr/local/cuda/lib64/libcublasLt.so.${systemMajor}`;
+        if (cmd === 'ldd') {
+          const target = args[0] ?? '';
+          if (target.startsWith(soPrefix(fakeDirs.ourDir)))
+            return 'libcublasLt.so.13 => /usr/local/cuda-13/lib64/libcublasLt.so.13';
+          if (target.startsWith(soPrefix(fakeDirs.defaultDir)))
+            return 'libcublasLt.so.12 => /usr/local/cuda-12/lib64/libcublasLt.so.12';
+        }
+        throw new Error(`unexpected execFileSync(${cmd}, ${JSON.stringify(args)})`);
+      },
     });
+  }
 
-    expect(() => mod.getEffectiveOnnxRuntimeNodeDir()).not.toThrow();
-    expect(execFileSync).not.toHaveBeenCalled();
-    expect(existsSync).not.toHaveBeenCalled();
+  it('never reports a redirect target that cannot be installed (CUDA-13 host, mismatched default)', async () => {
+    const mod = await loadOldNodeResolver(13);
+    expect(toPosix(String(mod.getEffectiveOnnxRuntimeNodeDir()))).toBe(fakeDirs.defaultDir);
+    expect(mod.isEffectiveCudaAvailable()).toBe(false);
+    expect(() => mod.ensureOnnxRuntimeNodeMatchesSystem()).not.toThrow();
+  });
+
+  it('still probes the default copy: a CUDA-12 host whose default build matches keeps the GPU', async () => {
+    const mod = await loadOldNodeResolver(12);
+    expect(toPosix(String(mod.getEffectiveOnnxRuntimeNodeDir()))).toBe(fakeDirs.defaultDir);
+    expect(mod.isEffectiveCudaAvailable()).toBe(true);
   });
 });
 
