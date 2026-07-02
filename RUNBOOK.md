@@ -154,7 +154,7 @@ Analyze re-execs Node with a **large old-space heap** when needed (`analyze.ts`)
 
 Only one process should open a repo's `.gitnexus/lbug` store at a time. If MCP and a second `analyze` run conflict, stop one process, then retry `analyze` or restart MCP.
 
-If the error text is `"Only one write transaction at a time is allowed in the system."` instead of a lock/busy message, it's the same underlying conflict — our retry matcher doesn't currently recognize that exact string (see `isDbBusyError` in `src/core/lbug/lbug-config.ts`), so it isn't auto-retried. The fix is the same: stop the overlapping process.
+If the error text is `"Only one write transaction at a time is allowed in the system."` instead of a lock/busy message, it's the same underlying conflict — our retry matcher (`isDbBusyError` in `src/core/lbug/lbug-config.ts`) recognizes this exact string and auto-retries it. The fix if it still surfaces after retries is the same: stop the overlapping process.
 
 ---
 
