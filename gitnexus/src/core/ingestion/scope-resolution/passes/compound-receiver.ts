@@ -25,6 +25,7 @@ import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexe
 import type { WorkspaceResolutionIndex } from '../workspace-index.js';
 import {
   findClassBindingInScope,
+  findEnclosingClassDef,
   findExportedDefByName,
   findReceiverTypeBinding,
 } from '../scope/walkers.js';
@@ -83,12 +84,107 @@ export function resolveCompoundReceiverClass(
   if (text.length === 0) return undefined;
   const fieldFallback = options.fieldFallback ?? true;
 
+  // ── Pre-processing: strip Java-style cast expressions ───────────
+  // Java cast-wrapped receivers like ((Type)((Object)this.field)).method()
+  // produce parenthesized_expression receiver text. Peel outer (Type)
+  // layers so the resolver sees the actual receiver (e.g. this.field).
+  // Track the outermost meaningful cast type — the cast narrows the
+  // receiver's declared type, so we resolve to the CAST type, not the
+  // underlying expression's type.
+  let castType: string | null = null;
+  let workingText = text;
+  while (true) {
+    if (!workingText.startsWith('(')) break;
+    let d = 1;
+    let closeIdx = -1;
+    for (let i = 1; i < workingText.length; i++) {
+      if (workingText[i] === '(') d++;
+      else if (workingText[i] === ')') {
+        d--;
+        if (d === 0) { closeIdx = i; break; }
+      }
+    }
+    if (closeIdx === -1) break;
+    // Extract the type from inside this cast's parens — only capture
+    // the FIRST (outermost) non-parenthesized simple type name as the
+    // effective cast target. CFR patterns like ((Target)((Object)expr))
+    // have a meaningful outer cast and a noise inner cast; we want the
+    // meaningful outer one.
+    const insideParens = workingText.slice(1, closeIdx).trim();
+    if (castType === null && !insideParens.startsWith('(') && /^[a-zA-Z_]\w*$/.test(insideParens)) {
+      castType = insideParens;
+    }
+    const remainder = workingText.slice(closeIdx + 1).trim();
+    // CFR decompiler patterns: (Type)expr, ((Object)expr), etc.
+    if (
+      remainder.length === 0 ||
+      remainder.startsWith('(') ||
+      remainder.startsWith('this') ||
+      /^[a-zA-Z_]/.test(remainder)
+    ) {
+      workingText = remainder.length === 0
+        ? workingText.slice(1, closeIdx).trim()
+        : remainder;
+      continue;
+    }
+    break;
+  }
+
+  // If we found a cast type, resolve it directly — the cast tells us
+  // the exact receiver type for method resolution.
+  if (castType !== null) {
+    const cls = findClassBindingInScope(inScope, castType, scopes);
+    if (cls !== undefined) return cls;
+  }
+
+  // Handle this.field[.subfield] — walk enclosing class's field typeBindings
+  if (workingText.startsWith('this.')) {
+    const enclosingClass = findEnclosingClassDef(inScope, scopes);
+    if (enclosingClass !== undefined) {
+      const chainRest = workingText.slice(5); // after 'this.'
+      const parts = chainRest.split('.');
+      let curClass: SymbolDefinition | undefined = enclosingClass;
+      for (let i = 0; i < parts.length && curClass !== undefined; i++) {
+        const seg = parts[i];
+        if (seg === undefined) break;
+        const cleanName = seg.endsWith(')') ? seg.slice(0, seg.indexOf('(')) : seg;
+        if (cleanName.length === 0) continue;
+        const cs = classScopeByDefId.get(curClass.nodeId);
+        if (cs === undefined) { curClass = undefined; break; }
+        let memberType = cs.typeBindings.get(cleanName);
+        if (memberType === undefined && options.hoistTypeBindingsToModule === true) {
+          let curId: ScopeId | null = cs.parent;
+          while (curId !== null) {
+            const curScope = scopes.scopeTree.getScope(curId);
+            if (curScope === undefined) break;
+            const cand = curScope.typeBindings.get(cleanName);
+            if (cand !== undefined) { memberType = cand; break; }
+            curId = curScope.parent;
+          }
+        }
+        if (memberType === undefined && fieldFallback) {
+          for (const [, mb] of cs.typeBindings) {
+            const fb = findClassBindingInScope(mb.declaredAtScope, mb.rawName, scopes);
+            if (fb === undefined) continue;
+            const fcs = classScopeByDefId.get(fb.nodeId);
+            const found = fcs?.typeBindings.get(cleanName);
+            if (found !== undefined) { memberType = found; break; }
+          }
+        }
+        if (memberType === undefined) { curClass = undefined; break; }
+        curClass = findClassBindingInScope(memberType.declaredAtScope, memberType.rawName, scopes);
+      }
+      if (curClass !== undefined) return curClass;
+    }
+  }
+  // ── End pre-processing ─────────────────────────────────────────
+
   // Bare identifier — resolve via typeBinding first, then fall back to
   // a direct class-name lookup. The class-name fallback handles
   // "static receiver" shapes like `UserService.findUser()` where
   // `UserService` isn't a variable but a class imported into scope.
-  if (!text.includes('.') && !text.includes('(')) {
-    const mapTuple = parseMapTupleSentinel(text);
+  if (!workingText.includes('.') && !workingText.includes('(')) {
+    const mapTuple = parseMapTupleSentinel(workingText);
     if (mapTuple !== null) {
       const rhsTb = findReceiverTypeBinding(inScope, mapTuple.rhs, scopes);
       if (rhsTb === undefined) return undefined;
@@ -97,7 +193,7 @@ export function resolveCompoundReceiverClass(
       return findClassBindingInScope(rhsTb.declaredAtScope, arg, scopes);
     }
 
-    const tb = findReceiverTypeBinding(inScope, text, scopes);
+    const tb = findReceiverTypeBinding(inScope, workingText, scopes);
     if (tb !== undefined) {
       // Map for-of: binding name is `user` but rawType is
       // `__MAP_TUPLE_i__:entries` (see captures.ts) — same extraction as
@@ -167,17 +263,17 @@ export function resolveCompoundReceiverClass(
         if (compound !== undefined) return compound;
       }
     }
-    return findClassBindingInScope(inScope, text, scopes);
+    return findClassBindingInScope(inScope, workingText, scopes);
   }
 
   // Trailing `()` — call expression. Strip it and resolve the function
   // expression's return type. We only handle the canonical `f()` /
   // `obj.method()` shape; nested-arg expressions like `f(g())` are
   // out of scope for V1 (depth-capped recursion catches infinite loops).
-  if (text.endsWith(')')) {
-    const openIdx = matchingOpenParen(text);
+  if (workingText.endsWith(')')) {
+    const openIdx = matchingOpenParen(workingText);
     if (openIdx === -1) return undefined;
-    const fnExpr = text.slice(0, openIdx).trim();
+    const fnExpr = workingText.slice(0, openIdx).trim();
     if (fnExpr.length === 0) return undefined;
 
     const lastDot = fnExpr.lastIndexOf('.');
@@ -286,7 +382,7 @@ export function resolveCompoundReceiverClass(
   // (method return-type). We accept both on each hop because class
   // scopes store both method return types and field types under
   // `typeBindings` keyed by the member name.
-  const parts = splitChainAtTopLevel(text);
+  const parts = splitChainAtTopLevel(workingText);
 
   // Language-specific collection-accessor suffix (C#'s `data.Values`
   // on Dictionary<K,V>, etc.). When the provider hook recognizes

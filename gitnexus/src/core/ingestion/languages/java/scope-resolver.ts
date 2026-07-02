@@ -52,6 +52,7 @@ const javaScopeResolver: ScopeResolver = {
   populateOwners: (parsed: ParsedFile) => populateClassOwnedMembers(parsed),
 
   isSuperReceiver: (text) => text.trim() === 'super',
+  resolveThisViaEnclosingClass: true,
 
   fieldFallbackOnMethodLookup: false,
   propagatesReturnTypesAcrossImports: true,
