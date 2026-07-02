@@ -115,7 +115,7 @@ export function resolveCompoundReceiverClass(
   // the toggle is off, the text reaches the resolver untouched and no
   // cast logic runs.
   let workingText = text;
-  if (options.stripReceiverCastExpressions === true) {
+  if (options.stripReceiverCastExpressions === true && text.startsWith('(')) {
     const stripped = stripCastWrappers(text);
     // A recognized cast whose target type cannot be looked up here:
     // the only safe outcome is to resolve nothing — falling through
@@ -595,7 +595,6 @@ const MAX_CAST_PEEL = 16;
  * the group boundary. Such shapes classify as not-a-cast and fall
  * through safely to the normal resolver.
  */
-
 export function stripCastWrappers(text: string): {
   workingText: string;
   castType: string | undefined;
