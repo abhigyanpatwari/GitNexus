@@ -928,6 +928,44 @@ export interface ScopeResolver {
   readonly hoistTypeBindingsToModule?: boolean;
 
   /**
+   * Whether the compound-receiver resolver should strip C-style cast
+   * expressions from receiver-position text before resolving it —
+   * `((Target)((Object)expr)).method()` peels to receiver `expr` with
+   * cast type `Target`, and the outermost captured cast type wins as
+   * the receiver's class. Default `false`.
+   *
+   * Java opts in: decompiler output is dense with cast-wrapped
+   * receivers, and Java's `(Type) expr` cast syntax makes the paren
+   * group textually classifiable. Keep disabled elsewhere:
+   * `(...)`-prefixed receiver text is ambiguous across languages
+   * (grouping, tuples, IIFEs, C-style declarations), so treating it
+   * as a cast would fabricate receiver types — non-opting languages
+   * must see receiver text completely untouched.
+   *
+   * Classifier grammar (exact): a peeled paren group whose content is
+   * a simple identifier (`/^[a-zA-Z_]\w*$/`) is captured as the cast
+   * type; content matching `Ident(.Ident)*(<...>)?([])*` — dotted,
+   * generic, and/or array shapes — is recognized as a cast whose
+   * target type cannot be looked up, and the resolver resolves
+   * NOTHING for that receiver (never the pre-cast expression's own
+   * declared type). Any other paren-group content is not a cast and
+   * the text falls through to the normal resolver.
+   *
+   * A second opting language must extend the classifier grammar or
+   * convert this toggle into a per-language classifier hook (the
+   * `unwrapCollectionAccessor` pattern) — do not flip this flag for
+   * another language as-is.
+   *
+   * Known non-goal: the compound-receiver options built from this
+   * toggle also feed Case 3b (chain-typeBinding rawNames — declared
+   * types / member paths, never cast RHS for Java) and Case 4's
+   * compound fallback (`receiverName`, paren-free because Case 0
+   * intercepts receivers containing `(` or `.` first), so the
+   * stripper is structurally inert on those inputs.
+   */
+  readonly stripReceiverCastExpressions?: boolean;
+
+  /**
    * Optional: detect structural (duck-typing) interface implementations.
    * Languages like Go use structural typing — a struct satisfies an
    * interface if its method set is a superset, without an explicit
