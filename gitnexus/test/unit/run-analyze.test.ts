@@ -139,6 +139,134 @@ describe('run-analyze module', () => {
   });
 });
 
+describe('diskOnly / --disk-only mode (#no-branch)', () => {
+  /**
+   * Sets up a two-branch repo where:
+   *   - The flat `.gitnexus/` slot is owned by `main`
+   *   - `feature/x` has its own up-to-date branch sub-index
+   *   - The repo is currently checked out on `feature/x`
+   *
+   * This is the minimal fixture needed to verify routing: both branches are
+   * stamped with the current schema version so the fast-path runs and we
+   * never need the full analysis pipeline.
+   */
+  const setupDiskOnlyRepo = async (prefix: string) => {
+    const tmpRepo = await createTempDir(prefix);
+    execSync('git init', { cwd: tmpRepo.dbPath, stdio: 'pipe' });
+    execSync('git -c user.name=t -c user.email=t@t commit --allow-empty -m init', {
+      cwd: tmpRepo.dbPath,
+      stdio: 'pipe',
+    });
+    execSync('git branch -M main', { cwd: tmpRepo.dbPath, stdio: 'pipe' });
+    execSync('git checkout -b feature/x', { cwd: tmpRepo.dbPath, stdio: 'pipe' });
+    const commit = execSync('git rev-parse HEAD', {
+      cwd: tmpRepo.dbPath,
+      encoding: 'utf-8',
+    }).trim();
+
+    // Write flat-slot meta owned by `main`.
+    const flat = getStoragePaths(tmpRepo.dbPath);
+    await saveMeta(flat.storagePath, {
+      repoPath: tmpRepo.dbPath,
+      lastCommit: commit,
+      indexedAt: new Date().toISOString(),
+      branch: 'main',
+      schemaVersion: INCREMENTAL_SCHEMA_VERSION,
+    });
+
+    // Write feature/x branch-slot meta so a normal (non-disk-only) run also
+    // hits the fast path and we can compare isPrimaryBranch in both cases.
+    const branchPaths = getStoragePaths(tmpRepo.dbPath, 'feature/x');
+    await saveMeta(path.dirname(branchPaths.metaPath), {
+      repoPath: tmpRepo.dbPath,
+      lastCommit: commit,
+      indexedAt: new Date().toISOString(),
+      branch: 'feature/x',
+      schemaVersion: INCREMENTAL_SCHEMA_VERSION,
+    });
+
+    return { tmpRepo, branchPaths, flat };
+  };
+
+  it('diskOnly:true routes to the flat/primary slot when on a feature branch', async () => {
+    const { tmpRepo } = await setupDiskOnlyRepo('gitnexus-disk-only-flat-');
+    try {
+      const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
+      // With diskOnly the branchLabel is forced to null → flat slot → isPrimaryBranch true.
+      const result = await runFullAnalysis(
+        tmpRepo.dbPath,
+        { diskOnly: true },
+        { onProgress: () => {} },
+      );
+      expect(result.alreadyUpToDate).toBe(true);
+      expect(result.isPrimaryBranch).toBe(true);
+    } finally {
+      await tmpRepo.cleanup();
+    }
+  });
+
+  it('diskOnly:true does not create a branches/ sub-directory', async () => {
+    // Fresh two-branch repo: flat slot owned by main, feature/x checked out,
+    // but NO pre-existing feature/x branch index. diskOnly must write only to
+    // the flat slot — no branches/ sub-directory should be created.
+    const tmpRepo = await createTempDir('gitnexus-disk-only-no-subdir-');
+    try {
+      execSync('git init', { cwd: tmpRepo.dbPath, stdio: 'pipe' });
+      execSync('git -c user.name=t -c user.email=t@t commit --allow-empty -m init', {
+        cwd: tmpRepo.dbPath,
+        stdio: 'pipe',
+      });
+      execSync('git branch -M main', { cwd: tmpRepo.dbPath, stdio: 'pipe' });
+      execSync('git checkout -b feature/x', { cwd: tmpRepo.dbPath, stdio: 'pipe' });
+      const commit = execSync('git rev-parse HEAD', {
+        cwd: tmpRepo.dbPath,
+        encoding: 'utf-8',
+      }).trim();
+
+      // Only the flat slot is pre-populated; feature/x has no prior index.
+      const flat = getStoragePaths(tmpRepo.dbPath);
+      await saveMeta(flat.storagePath, {
+        repoPath: tmpRepo.dbPath,
+        lastCommit: commit,
+        indexedAt: new Date().toISOString(),
+        branch: 'main',
+        schemaVersion: INCREMENTAL_SCHEMA_VERSION,
+      });
+
+      const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
+      const result = await runFullAnalysis(
+        tmpRepo.dbPath,
+        { diskOnly: true },
+        { onProgress: () => {} },
+      );
+
+      // Flat slot fast-path: primary, no branches/ sub-directory created.
+      expect(result.isPrimaryBranch).toBe(true);
+      const branchesDir = path.join(tmpRepo.dbPath, '.gitnexus', 'branches');
+      await expect(fs.access(branchesDir)).rejects.toThrow();
+    } finally {
+      await tmpRepo.cleanup();
+    }
+  });
+
+  it('a normal analyze (no diskOnly) on the same fixture routes to the branch sub-directory', async () => {
+    const { tmpRepo } = await setupDiskOnlyRepo('gitnexus-disk-only-normal-contrast-');
+    try {
+      const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
+      // Without diskOnly, feature/x resolves to its own sub-directory → isPrimaryBranch false.
+      const result = await runFullAnalysis(
+        tmpRepo.dbPath,
+        {},
+        { onProgress: () => {} },
+      );
+      expect(result.alreadyUpToDate).toBe(true);
+      expect(result.isPrimaryBranch).toBe(false);
+    } finally {
+      await tmpRepo.cleanup();
+    }
+  });
+});
+
 describe('collectBranchCacheKeys (#2106 R6)', () => {
   const writeMeta = async (dir: string, cacheKeys: unknown) => {
     await fs.mkdir(dir, { recursive: true });

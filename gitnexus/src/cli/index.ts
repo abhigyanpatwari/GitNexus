@@ -87,6 +87,13 @@ program
       'Defaults to the checked-out branch; the primary/first-indexed branch keeps the ' +
       'flat index and others get their own. Distinct from --default-branch (cosmetic base_ref).',
   )
+  .option(
+    '--disk-only',
+    'Bypass Git branch-matching: always write to the flat/primary index slot, regardless ' +
+      'of which branch is checked out. Equivalent to forcing a null branch label — ' +
+      'byte-identical to detached-HEAD / single-branch behavior. Useful in CI environments ' +
+      'where branch auto-detection should be suppressed (also available as --no-branch).',
+  )
   .option('--no-stats', 'Omit volatile file/symbol counts from AGENTS.md and CLAUDE.md')
   .option(
     '--skip-skills',

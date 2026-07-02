@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<module type="JAVA_MODULE" version="4">
+  <component name="NewModuleRootManager" inherit-compiler-output="true">
+    <exclude-output />
+    <content url="file://$MODULE_DIR$">
+      <sourceFolder url="file://$MODULE_DIR$/java-ambiguous" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/java-assignment-chain" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/java-call-result-binding" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/java-calls" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/java-chain-call" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/java-constructor-calls" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/java-constructor-type-inference" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/java-deep-field-chain" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/java-explicit-constructor" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/java-field-types" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/java-foreach" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/java-foreach-call-expr" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/java-heritage" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/java-instanceof-pattern" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/java-interface-default-method" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/java-interface-dispatch" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/java-map-keys-values" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/java-member-calls" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/java-method-chain-binding" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/java-method-chain-cross-class" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/java-method-enrichment" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/java-method-reference" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/java-mixed-chain" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/java-named-imports" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/java-nullable-receiver" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/java-optional-receiver" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/java-overload-dispatch" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/java-overload-param-types" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/java-overload-typed-args" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/java-qualified-constructor" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/java-qualified-types" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/java-receiver-resolution" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/java-return-type-inference" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/java-same-arity-cross-file" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/java-switch-pattern" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/java-variadic-resolution" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/java-virtual-dispatch" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/java-wildcard-import" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/java-write-access" isTestSource="false" />
+    </content>
+    <orderEntry type="inheritedJdk" />
+    <orderEntry type="sourceFolder" forTests="false" />
+  </component>
+</module>

@@ -214,6 +214,16 @@ export interface AnalyzeOptions {
    */
   branch?: string;
   /**
+   * Disk-only (--disk-only / --no-branch) mode: bypass Git branch-matching
+   * logic and always write to the flat/primary index slot, regardless of which
+   * branch is checked out. The resolved `branchLabel` is forced to `null`
+   * before `resolveBranchPlacement` so the flat slot is used unconditionally —
+   * byte-identical to single-branch / detached-HEAD behavior. The branch
+   * mismatch guard (explicit `--branch` vs checked-out branch) is also skipped
+   * so the mode composes cleanly with unattended / disk-only CI workflows.
+   */
+  diskOnly?: boolean;
+  /**
    * User-provided alias for the registry `name` (#829). When set,
    * forwarded to `registerRepo` so the indexed repo is stored under
    * this alias instead of the path-derived basename.
@@ -604,13 +614,17 @@ export async function runFullAnalysis(
   // content (and Y's commit) into X's index slot, corrupting X (#2106). Refuse
   // the mismatch. Detached HEAD / non-git (checkedOutBranch === null) still
   // allow an explicit label so CI checkouts can name their snapshot.
-  if (options.branch && checkedOutBranch && options.branch !== checkedOutBranch) {
+  if (!options.diskOnly && options.branch && checkedOutBranch && options.branch !== checkedOutBranch) {
     throw new Error(
       `--branch "${options.branch}" does not match the checked-out branch "${checkedOutBranch}". ` +
         `Check out "${options.branch}" before indexing it, or omit --branch to index the current branch.`,
     );
   }
-  const branchLabel = options.branch ?? checkedOutBranch;
+  // --disk-only / --no-branch: bypass branch-routing entirely by forcing the
+  // resolved label to null. `resolveBranchPlacement(repoPath, null)` always
+  // returns `{}` (flat slot), so the index is written in-place regardless of
+  // which branch is checked out — byte-identical to detached-HEAD behavior.
+  const branchLabel = options.diskOnly ? null : (options.branch ?? checkedOutBranch);
   const placement = await resolveBranchPlacement(repoPath, branchLabel);
   const { lbugPath, metaPath } = getStoragePaths(repoPath, placement.branch);
   // Directory that owns this run's meta.json (flat `.gitnexus` for the primary

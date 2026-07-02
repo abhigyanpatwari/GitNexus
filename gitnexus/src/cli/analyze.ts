@@ -641,6 +641,12 @@ export interface AnalyzeOptions {
    * the checked-out branch inside `runFullAnalysis` when omitted.
    */
   branch?: string;
+  /**
+   * Disk-only mode (`--disk-only` / `--no-branch`). Bypasses Git branch-matching
+   * logic so the index always writes to the flat/primary slot regardless of which
+   * branch is checked out. Maps to `diskOnly` in the core `AnalyzeOptions`.
+   */
+  diskOnly?: boolean;
   /** Pure index mode: skip all file injection (AGENTS.md, CLAUDE.md, skills). */
   indexOnly?: boolean;
   /** Index the folder even when no .git directory is present. */
@@ -1271,6 +1277,10 @@ const analyzeCommandImpl = async (
         // the .gitnexusrc-merged options) so the cosmetic defaultBranch config
         // can never change index placement. Undefined → auto-detect in pipeline.
         branch: cliOptions?.branch,
+        // Disk-only mode (--disk-only / --no-branch): bypass branch-routing so
+        // the index always writes to the flat/primary slot regardless of which
+        // branch is checked out. Read from the CLI flag; never from .gitnexusrc.
+        diskOnly: cliOptions?.diskOnly,
         // commander.js `.option('--no-stats', …)` registers the flag as
         // `options.stats` (boolean, default true; `false` when the user
         // passed --no-stats). Reading `options.noStats` here returns
