@@ -25,6 +25,7 @@ import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexe
 import type { WorkspaceResolutionIndex } from '../workspace-index.js';
 import {
   findClassBindingInScope,
+  findEnclosingClassDef,
   findExportedDefByName,
   findReceiverTypeBinding,
 } from '../scope/walkers.js';
@@ -40,6 +41,22 @@ import {
 const COMPOUND_RECEIVER_MAX_DEPTH = 8;
 
 const MAP_TUPLE_SENTINEL_RE = /^__MAP_TUPLE_(\d+)__:(.+)$/;
+
+/** Cast type the resolver can look up directly: a simple identifier. */
+const SIMPLE_CAST_TYPE_RE = /^[a-zA-Z_]\w*$/;
+
+/** Classification-only shape for a cast type that is recognizable but
+ *  NOT resolvable here: dotted qualifier (`com.example.Foo`), generic
+ *  (`List<String>`), array (`Foo[]`), or combinations
+ *  (`com.example.List<Foo>[]`) — shape `Ident(.Ident)*(<…>)?([])*`,
+ *  whitespace-tolerant. No attempt is made to parse generic contents;
+ *  `[^()]*` merely keeps expression-like paren content from matching.
+ *  Matching this shape (when the simple-identifier shape doesn't)
+ *  means the paren group IS a C-style cast whose target type we cannot
+ *  look up — the only safe outcome is to resolve nothing, never to
+ *  fall through to the pre-cast expression's own declared type. */
+const UNPARSEABLE_CAST_TYPE_RE =
+  /^[a-zA-Z_]\w*(?:\s*\.\s*[a-zA-Z_]\w*)*(?:\s*<[^()]*>)?(?:\s*\[\s*\])*$/;
 
 function parseMapTupleSentinel(text: string): { tupleIdx: number; rhs: string } | null {
   const match = MAP_TUPLE_SENTINEL_RE.exec(text);
@@ -67,6 +84,12 @@ interface ResolveCompoundReceiverOptions {
    *  languages that hoist return-type bindings to Module scope (C#);
    *  otherwise we risk picking up unrelated module-level bindings. */
   readonly hoistTypeBindingsToModule?: boolean;
+  /** Strip C-style cast expressions from the receiver text before
+   *  resolving it (`stripCastWrappers`). Default `false` — the text
+   *  reaches the resolver untouched and no cast logic runs. See the
+   *  `ScopeResolver` contract toggle of the same name for the
+   *  classifier grammar and per-language opt-in rules. */
+  readonly stripReceiverCastExpressions?: boolean;
 }
 
 export function resolveCompoundReceiverClass(
@@ -83,12 +106,40 @@ export function resolveCompoundReceiverClass(
   if (text.length === 0) return undefined;
   const fieldFallback = options.fieldFallback ?? true;
 
+  // ── Pre-processing: strip C-style cast expressions (opt-in) ──────
+  // Cast-wrapped receivers like ((Type)((Object)this.field)).method()
+  // produce parenthesized-expression receiver text. For languages that
+  // opt in via `stripReceiverCastExpressions`, peel outer (Type)
+  // layers so the resolver sees the actual receiver (e.g. this.field)
+  // — `stripCastWrappers` documents the classification rules. When
+  // the toggle is off, the text reaches the resolver untouched and no
+  // cast logic runs.
+  let workingText = text;
+  if (options.stripReceiverCastExpressions === true && text.startsWith('(')) {
+    const stripped = stripCastWrappers(text);
+    // A recognized cast whose target type cannot be looked up here:
+    // the only safe outcome is to resolve nothing — falling through
+    // to the pre-cast expression's own declared type would emit a
+    // confident wrong edge.
+    if (stripped.unresolvableCast) return undefined;
+    workingText = stripped.workingText;
+    // A captured cast type names the exact receiver type for method
+    // resolution — the cast narrows the receiver's declared type, so
+    // resolve to the CAST type, not the underlying expression's type.
+    if (stripped.castType !== undefined) {
+      const cls = findClassBindingInScope(inScope, stripped.castType, scopes);
+      if (cls !== undefined) return cls;
+    }
+  }
+
+  // ── End pre-processing ─────────────────────────────────────────
+
   // Bare identifier — resolve via typeBinding first, then fall back to
   // a direct class-name lookup. The class-name fallback handles
   // "static receiver" shapes like `UserService.findUser()` where
   // `UserService` isn't a variable but a class imported into scope.
-  if (!text.includes('.') && !text.includes('(')) {
-    const mapTuple = parseMapTupleSentinel(text);
+  if (!workingText.includes('.') && !workingText.includes('(')) {
+    const mapTuple = parseMapTupleSentinel(workingText);
     if (mapTuple !== null) {
       const rhsTb = findReceiverTypeBinding(inScope, mapTuple.rhs, scopes);
       if (rhsTb === undefined) return undefined;
@@ -97,7 +148,7 @@ export function resolveCompoundReceiverClass(
       return findClassBindingInScope(rhsTb.declaredAtScope, arg, scopes);
     }
 
-    const tb = findReceiverTypeBinding(inScope, text, scopes);
+    const tb = findReceiverTypeBinding(inScope, workingText, scopes);
     if (tb !== undefined) {
       // Map for-of: binding name is `user` but rawType is
       // `__MAP_TUPLE_i__:entries` (see captures.ts) — same extraction as
@@ -167,17 +218,17 @@ export function resolveCompoundReceiverClass(
         if (compound !== undefined) return compound;
       }
     }
-    return findClassBindingInScope(inScope, text, scopes);
+    return findClassBindingInScope(inScope, workingText, scopes);
   }
 
   // Trailing `()` — call expression. Strip it and resolve the function
   // expression's return type. We only handle the canonical `f()` /
   // `obj.method()` shape; nested-arg expressions like `f(g())` are
   // out of scope for V1 (depth-capped recursion catches infinite loops).
-  if (text.endsWith(')')) {
-    const openIdx = matchingOpenParen(text);
+  if (workingText.endsWith(')')) {
+    const openIdx = matchingOpenParen(workingText);
     if (openIdx === -1) return undefined;
-    const fnExpr = text.slice(0, openIdx).trim();
+    const fnExpr = workingText.slice(0, openIdx).trim();
     if (fnExpr.length === 0) return undefined;
 
     const lastDot = fnExpr.lastIndexOf('.');
@@ -286,7 +337,7 @@ export function resolveCompoundReceiverClass(
   // (method return-type). We accept both on each hop because class
   // scopes store both method return types and field types under
   // `typeBindings` keyed by the member name.
-  const parts = splitChainAtTopLevel(text);
+  const parts = splitChainAtTopLevel(workingText);
 
   // Language-specific collection-accessor suffix (C#'s `data.Values`
   // on Dictionary<K,V>, etc.). When the provider hook recognizes
@@ -335,6 +386,26 @@ export function resolveCompoundReceiverClass(
   let currentClass: SymbolDefinition | undefined = headType
     ? findClassBindingInScope(headType.declaredAtScope, headType.rawName, scopes)
     : findClassBindingInScope(inScope, headMemberName, scopes);
+  // Head seed for a literal `this` head with no receiver typeBinding in
+  // scope: languages synthesize `this` typeBindings per function scope,
+  // so a chain site outside any function scope (a field initializer or
+  // an instance initializer block) has none — there, the enclosing
+  // class definition IS the receiver type. Restricted to initializer
+  // contexts (no Function scope between the site and its class): a
+  // Function scope WITHOUT a `this` typeBinding means the language
+  // deliberately left `this` unbound there (object-literal methods,
+  // nested plain functions, static contexts), and seeding the
+  // lexically enclosing class would fabricate edges. Head resolution
+  // only; the per-segment walk below is shared with every other
+  // chain shape.
+  if (
+    currentClass === undefined &&
+    headType === undefined &&
+    headMemberName === 'this' &&
+    isInitializerContext(inScope, scopes)
+  ) {
+    currentClass = findEnclosingClassDef(inScope, scopes);
+  }
   // `const user = getUser(); user.address` — the typeBinding for `user`
   // is an alias to the callee name (`getUser`), not a class. When
   // `findClassBinding` on that rawName fails, treat it as a zero-arg
@@ -443,6 +514,27 @@ function stripCallParens(segment: string): string {
   return segment.slice(0, open);
 }
 
+/** True when `startScope` sits under a Class scope with no Function
+ *  scope in between — a field-initializer or instance-initializer
+ *  context, the only place a literal `this` chain head may be seeded
+ *  from the lexically enclosing class. Function bodies are excluded
+ *  on purpose: a Function scope carrying no `this` typeBinding means
+ *  the language deliberately left `this` unbound there. */
+function isInitializerContext(startScope: ScopeId, scopes: ScopeResolutionIndexes): boolean {
+  let currentId: ScopeId | null = startScope;
+  const visited = new Set<ScopeId>();
+  while (currentId !== null) {
+    if (visited.has(currentId)) return false;
+    visited.add(currentId);
+    const scope = scopes.scopeTree.getScope(currentId);
+    if (scope === undefined) return false;
+    if (scope.kind === 'Class') return true;
+    if (scope.kind === 'Function') return false;
+    currentId = scope.parent;
+  }
+  return false;
+}
+
 /** Find the index of the `(` that matches the trailing `)` of a
  *  call-expression text. Returns -1 if unbalanced. */
 function matchingOpenParen(text: string): number {
@@ -457,6 +549,112 @@ function matchingOpenParen(text: string): number {
     }
   }
   return -1;
+}
+
+/** Max peel iterations for `stripCastWrappers`. Real cast nesting —
+ *  including decompiler output like `((Target)((Object)expr))` —
+ *  is a handful of levels, and each cast level costs at most two
+ *  peels (a redundant-paren unwrap plus the cast group itself), so
+ *  16 covers 8-level nesting with headroom. Each peel rescans the
+ *  working text for its matching close paren, so pathological input
+ *  like `((((…))))` would otherwise cost O(N²); the cap bounds it at
+ *  O(N · MAX_CAST_PEEL). Exceeding the cap bails with the not-a-cast
+ *  outcome and the ORIGINAL text — all-or-nothing, never a
+ *  partially-peeled result. */
+const MAX_CAST_PEEL = 16;
+
+/**
+ * Peel C-style cast layers off a receiver-position expression:
+ * `((Target)((Other)expr))` → `workingText` `expr`, `castType`
+ * `Target`. Pure text scan — no scope or index access — consumed by
+ * `resolveCompoundReceiverClass` when a language opts in via
+ * `stripReceiverCastExpressions`. Track the outermost meaningful cast
+ * type: the cast narrows the receiver's declared type, so the caller
+ * resolves the CAST type, not the underlying expression's type.
+ *
+ * Each peeled paren group with a non-empty trailing expression (a
+ * cast candidate) is classified three ways:
+ *   (a) simple identifier (`SIMPLE_CAST_TYPE_RE`) → cast type
+ *       captured (outermost capture wins; later simple groups are
+ *       noise casts, as in decompiler output like
+ *       `((Target)((Object)expr))`);
+ *   (b) type-shaped but unparseable here — dotted / generic / array
+ *       (`UNPARSEABLE_CAST_TYPE_RE`) → this IS a cast, but its type
+ *       cannot be looked up: report `unresolvableCast: true` so the
+ *       caller resolves nothing rather than falling through to the
+ *       pre-cast expression's own declared type (the pre-#2353 safe
+ *       no-op for these shapes);
+ *   (c) anything else → not a cast: stop scanning and return the
+ *       text peeled so far for the normal resolver.
+ * A paren group with an EMPTY remainder is never a cast candidate —
+ * `((…))` / `(foo)` is a redundant-paren unwrap: unwrap and re-scan
+ * without capturing anything.
+ *
+ * Known limitation: the paren scan is not string-literal-aware — a
+ * `)` inside a quoted call argument (e.g. `((T)f(")")).g`) mis-scans
+ * the group boundary. Such shapes classify as not-a-cast and fall
+ * through safely to the normal resolver.
+ */
+export function stripCastWrappers(text: string): {
+  workingText: string;
+  castType: string | undefined;
+  unresolvableCast: boolean;
+} {
+  let castType: string | undefined;
+  let workingText = text;
+  let peels = 0;
+  while (true) {
+    if (!workingText.startsWith('(')) break;
+    peels++;
+    if (peels > MAX_CAST_PEEL) {
+      return { workingText: text, castType: undefined, unresolvableCast: false };
+    }
+    let d = 1;
+    let closeIdx = -1;
+    for (let i = 1; i < workingText.length; i++) {
+      if (workingText[i] === '(') d++;
+      else if (workingText[i] === ')') {
+        d--;
+        if (d === 0) {
+          closeIdx = i;
+          break;
+        }
+      }
+    }
+    if (closeIdx === -1) break;
+    const insideParens = workingText.slice(1, closeIdx).trim();
+    const remainder = workingText.slice(closeIdx + 1).trim();
+    // Empty remainder: redundant outer parens — `((…))`, or a plain
+    // parenthesized expression like `(foo)`. Unwrap and re-scan.
+    // Never a cast candidate: a cast needs a trailing expression, so
+    // nothing is captured from this group.
+    if (remainder.length === 0) {
+      workingText = insideParens;
+      continue;
+    }
+    // A cast operand starts with `(`, an identifier, or `this`. Any
+    // other remainder shape (e.g. `.member` access on the paren
+    // group) means this group is not a cast — leave the text for the
+    // normal resolver.
+    if (!remainder.startsWith('(') && !/^[a-zA-Z_]/.test(remainder)) break;
+    if (SIMPLE_CAST_TYPE_RE.test(insideParens)) {
+      // (a) Resolvable cast type — capture the FIRST (outermost) one.
+      if (castType === undefined) castType = insideParens;
+    } else if (UNPARSEABLE_CAST_TYPE_RE.test(insideParens)) {
+      // (b) Type-shaped but unparseable cast. Once a simple cast type
+      // has been captured, later unparseable groups are noise casts
+      // and the captured type wins; otherwise report the whole
+      // expression as an unresolvable cast so the caller bails out.
+      if (castType === undefined) {
+        return { workingText, castType: undefined, unresolvableCast: true };
+      }
+    } else {
+      // (c) Not a cast.
+      break;
+    }
+    workingText = remainder;
+  }
+  return { workingText, castType, unresolvableCast: false };
 }
 
 /** Type arguments of a shallow `Map<K,V>` / `ReadonlyMap<K,V>` (depth-aware). */
