@@ -166,10 +166,13 @@ afterEach(() => {
 });
 
 describe('detectSystemCudaMajor', () => {
-  it.each(['darwin', 'win32'] as const)('returns null on non-linux platforms (%s)', async (platform) => {
-    const mod = await loadResolver({ platform });
-    expect(mod.detectSystemCudaMajor()).toBeNull();
-  });
+  it.each(['darwin', 'win32'] as const)(
+    'returns null on non-linux platforms (%s)',
+    async (platform) => {
+      const mod = await loadResolver({ platform });
+      expect(mod.detectSystemCudaMajor()).toBeNull();
+    },
+  );
 
   it('prefers CUDA 13 over 12 when ldconfig lists both', async () => {
     const mod = await loadResolver({
@@ -295,9 +298,9 @@ describe('ortCudaMajor', () => {
       expect(mod.ortCudaMajor('/pkg/onnxruntime-node')).toBeNull();
 
       const records = cap.records();
-      expect(records.some((r) => r.msg?.includes('Could not read CUDA provider dependencies'))).toBe(
-        true,
-      );
+      expect(
+        records.some((r) => r.msg?.includes('Could not read CUDA provider dependencies')),
+      ).toBe(true);
     } finally {
       cap.restore();
     }
@@ -311,9 +314,9 @@ describe('ortCudaMajor', () => {
       expect(mod.ortCudaMajor('/pkg/onnxruntime-node')).toBeNull();
 
       const records = cap.records();
-      expect(records.some((r) => r.msg?.includes('Could not read CUDA provider dependencies'))).toBe(
-        false,
-      );
+      expect(
+        records.some((r) => r.msg?.includes('Could not read CUDA provider dependencies')),
+      ).toBe(false);
     } finally {
       cap.restore();
     }
@@ -407,9 +410,11 @@ describe('ensureOnnxRuntimeNodeMatchesSystem — redirect:true (#2341 follow-up)
       registerHooks: registerHooksSpy,
       platform: 'linux',
       fakeDirs,
-      existsSync: (p) => p.startsWith(soPath(fakeDirs.ourDir)) || p.startsWith(soPath(fakeDirs.defaultDir)),
+      existsSync: (p) =>
+        p.startsWith(soPath(fakeDirs.ourDir)) || p.startsWith(soPath(fakeDirs.defaultDir)),
       execFileSync: (cmd, args) => {
-        if (cmd === 'ldconfig') return 'libcublasLt.so.13 (libc6,x86-64) => /usr/local/cuda/lib64/libcublasLt.so.13';
+        if (cmd === 'ldconfig')
+          return 'libcublasLt.so.13 (libc6,x86-64) => /usr/local/cuda/lib64/libcublasLt.so.13';
         if (cmd === 'ldd') {
           const target = args[0] ?? '';
           if (target.startsWith(soPath(fakeDirs.ourDir))) {
@@ -437,7 +442,7 @@ describe('ensureOnnxRuntimeNodeMatchesSystem — redirect:true (#2341 follow-up)
     expect(typeof spy.mock.calls[0][0].resolve).toBe('function');
   });
 
-  it("the installed resolve() closure redirects onnxruntime-node and onnxruntime-common, and passes through everything else", async () => {
+  it('the installed resolve() closure redirects onnxruntime-node and onnxruntime-common, and passes through everything else', async () => {
     const spy = vi.fn();
     const mod = await loadRedirectActiveResolver(spy);
     mod.ensureOnnxRuntimeNodeMatchesSystem();
@@ -449,16 +454,24 @@ describe('ensureOnnxRuntimeNodeMatchesSystem — redirect:true (#2341 follow-up)
     const ctx = {} as never;
     const next = vi.fn(() => ({ url: 'file:///should-not-be-used', shortCircuit: true }));
 
-    const nodeResult = resolve('onnxruntime-node', ctx, next) as { url: string; shortCircuit: boolean };
+    const nodeResult = resolve('onnxruntime-node', ctx, next) as {
+      url: string;
+      shortCircuit: boolean;
+    };
     expect(nodeResult).toEqual({
       url: expect.stringContaining('/fake/our/onnxruntime-node/index.js'),
       shortCircuit: true,
     });
     expect(next).not.toHaveBeenCalled();
 
-    const commonResult = resolve('onnxruntime-common', ctx, next) as { url: string; shortCircuit: boolean };
+    const commonResult = resolve('onnxruntime-common', ctx, next) as {
+      url: string;
+      shortCircuit: boolean;
+    };
     expect(commonResult).toEqual({
-      url: expect.stringContaining('/fake/our/onnxruntime-node/node_modules/onnxruntime-common/index.js'),
+      url: expect.stringContaining(
+        '/fake/our/onnxruntime-node/node_modules/onnxruntime-common/index.js',
+      ),
       shortCircuit: true,
     });
     expect(next).not.toHaveBeenCalled();
@@ -523,13 +536,17 @@ describe('cudaRedirectDoctorStatus (#2341 follow-up)', () => {
       registerHooks: vi.fn(),
       platform: 'linux',
       fakeDirs,
-      existsSync: (p) => p.startsWith(soPath(fakeDirs.ourDir)) || p.startsWith(soPath(fakeDirs.defaultDir)),
+      existsSync: (p) =>
+        p.startsWith(soPath(fakeDirs.ourDir)) || p.startsWith(soPath(fakeDirs.defaultDir)),
       execFileSync: (cmd, args) => {
-        if (cmd === 'ldconfig') return 'libcublasLt.so.13 (libc6,x86-64) => /usr/local/cuda/lib64/libcublasLt.so.13';
+        if (cmd === 'ldconfig')
+          return 'libcublasLt.so.13 (libc6,x86-64) => /usr/local/cuda/lib64/libcublasLt.so.13';
         if (cmd === 'ldd') {
           const target = args[0] ?? '';
-          if (target.startsWith(soPath(fakeDirs.ourDir))) return 'libcublasLt.so.13 => /a/libcublasLt.so.13';
-          if (target.startsWith(soPath(fakeDirs.defaultDir))) return 'libcublasLt.so.12 => /a/libcublasLt.so.12';
+          if (target.startsWith(soPath(fakeDirs.ourDir)))
+            return 'libcublasLt.so.13 => /a/libcublasLt.so.13';
+          if (target.startsWith(soPath(fakeDirs.defaultDir)))
+            return 'libcublasLt.so.12 => /a/libcublasLt.so.12';
         }
         throw new Error(`unexpected execFileSync(${cmd}, ${JSON.stringify(args)})`);
       },
@@ -547,7 +564,8 @@ describe('cudaRedirectDoctorStatus (#2341 follow-up)', () => {
       platform: 'linux',
       existsSync: () => false, // no onnxruntime-node copy ships a CUDA provider .so at all
       execFileSync: (cmd) => {
-        if (cmd === 'ldconfig') return 'libcublasLt.so.13 (libc6,x86-64) => /usr/local/cuda/lib64/libcublasLt.so.13';
+        if (cmd === 'ldconfig')
+          return 'libcublasLt.so.13 (libc6,x86-64) => /usr/local/cuda/lib64/libcublasLt.so.13';
         throw new Error('ldd should not be reached when existsSync is false');
       },
     });
@@ -556,7 +574,9 @@ describe('cudaRedirectDoctorStatus (#2341 follow-up)', () => {
     // isn't mocked in this test, so it resolves against this sandbox's real
     // node_modules and its exact value isn't the point of this case; the
     // redirect-active test above already covers `detail` precisely.
-    expect(mod.cudaRedirectDoctorStatus().status).toContain('no CUDA 13-matched onnxruntime-node build found');
+    expect(mod.cudaRedirectDoctorStatus().status).toContain(
+      'no CUDA 13-matched onnxruntime-node build found',
+    );
   });
 });
 
@@ -569,10 +589,12 @@ describe('isEffectiveCudaAvailable — no redundant subprocess spawns (#2341 fol
     };
     const soPath = (dir: string) => `${dir}/bin/napi-v6/linux`;
     const existsSyncSpy = vi.fn(
-      (p: string) => p.startsWith(soPath(fakeDirs.ourDir)) || p.startsWith(soPath(fakeDirs.defaultDir)),
+      (p: string) =>
+        p.startsWith(soPath(fakeDirs.ourDir)) || p.startsWith(soPath(fakeDirs.defaultDir)),
     );
     const execFileSyncSpy = vi.fn((cmd: string, args: string[]) => {
-      if (cmd === 'ldconfig') return 'libcublasLt.so.13 (libc6,x86-64) => /usr/local/cuda/lib64/libcublasLt.so.13';
+      if (cmd === 'ldconfig')
+        return 'libcublasLt.so.13 (libc6,x86-64) => /usr/local/cuda/lib64/libcublasLt.so.13';
       if (cmd === 'ldd') {
         const target = args[0] ?? '';
         if (target.startsWith(soPath(fakeDirs.ourDir))) {
@@ -664,13 +686,17 @@ describe('cross-platform path handling (#2341 follow-up)', () => {
       platform: 'linux',
       fakeDirs,
       forceWin32Path: true,
-      existsSync: (p) => p.startsWith(soPath(fakeDirs.ourDir)) || p.startsWith(soPath(fakeDirs.defaultDir)),
+      existsSync: (p) =>
+        p.startsWith(soPath(fakeDirs.ourDir)) || p.startsWith(soPath(fakeDirs.defaultDir)),
       execFileSync: (cmd, args) => {
-        if (cmd === 'ldconfig') return 'libcublasLt.so.13 (libc6,x86-64) => /usr/local/cuda/lib64/libcublasLt.so.13';
+        if (cmd === 'ldconfig')
+          return 'libcublasLt.so.13 (libc6,x86-64) => /usr/local/cuda/lib64/libcublasLt.so.13';
         if (cmd === 'ldd') {
           const target = args[0] ?? '';
-          if (target.startsWith(soPath(fakeDirs.ourDir))) return 'libcublasLt.so.13 => /a/libcublasLt.so.13';
-          if (target.startsWith(soPath(fakeDirs.defaultDir))) return 'libcublasLt.so.12 => /a/libcublasLt.so.12';
+          if (target.startsWith(soPath(fakeDirs.ourDir)))
+            return 'libcublasLt.so.13 => /a/libcublasLt.so.13';
+          if (target.startsWith(soPath(fakeDirs.defaultDir)))
+            return 'libcublasLt.so.12 => /a/libcublasLt.so.12';
         }
         throw new Error(`unexpected execFileSync(${cmd}, ${JSON.stringify(args)})`);
       },
@@ -694,7 +720,10 @@ describe('cross-platform path handling (#2341 follow-up)', () => {
     ) => unknown;
     const ctx = {} as never;
     const next = vi.fn();
-    const nodeResult = resolve('onnxruntime-node', ctx, next) as { url: string; shortCircuit: boolean };
+    const nodeResult = resolve('onnxruntime-node', ctx, next) as {
+      url: string;
+      shortCircuit: boolean;
+    };
     expect(nodeResult.shortCircuit).toBe(true);
     expect(toPosix(nodeResult.url)).toContain('/fake/our/onnxruntime-node/index.js');
     expect(next).not.toHaveBeenCalled();

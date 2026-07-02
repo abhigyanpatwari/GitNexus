@@ -71,7 +71,11 @@ const require = createRequire(import.meta.url);
 const readSoNeeded = (soPath: string): { needed: string; failed: boolean } => {
   try {
     return {
-      needed: execFileSync('ldd', [soPath], { timeout: 5000, encoding: 'utf-8', windowsHide: true }),
+      needed: execFileSync('ldd', [soPath], {
+        timeout: 5000,
+        encoding: 'utf-8',
+        windowsHide: true,
+      }),
       failed: false,
     };
   } catch (err) {
@@ -261,7 +265,10 @@ export const cudaRedirectDoctorStatus = (): { status: string; detail: string | n
     };
   }
   if (d.systemMajor === d.effectiveMajor) {
-    return { status: `✓ default onnxruntime-node build already matches CUDA ${d.systemMajor}`, detail: null };
+    return {
+      status: `✓ default onnxruntime-node build already matches CUDA ${d.systemMajor}`,
+      detail: null,
+    };
   }
   return {
     status: `✗ no CUDA ${d.systemMajor}-matched onnxruntime-node build found (falling back to CPU)`,
