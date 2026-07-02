@@ -2,10 +2,12 @@ import { createFTSIndex, dropFTSIndex, DEFAULT_FTS_STEMMER } from '../lbug/lbug-
 import { FTS_INDEXES } from './fts-schema.js';
 
 // Stemmers shipped by the LadybugDB FTS extension. Mirrors the lowercase token
-// set in the extension bundled with @ladybugdb/core 0.17.x (see package.json).
+// set in the extension bundled with @ladybugdb/core 0.18.x (see package.json).
 // Keep in sync on a LadybugDB minor bump — a value here that the installed
 // extension rejects would pass validation but fail at CREATE_FTS_INDEX.
-const SUPPORTED_FTS_STEMMERS = new Set<string>([
+// Exported so the re-validation sweep in fts-stemmer-sweep.test.ts iterates the
+// canonical list rather than a copy that could silently drift from it.
+export const SUPPORTED_FTS_STEMMERS: ReadonlySet<string> = new Set<string>([
   'arabic',
   'basque',
   'catalan',
