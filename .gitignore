@@ -110,3 +110,9 @@ local_docs/
 .agents/
 .context/
 gitnexus/web/
+
+**/.DS_Store
+CLAUDE.md
+.gitnexus/
+AGENTS.md
+.claude/skills/gitnexus/
