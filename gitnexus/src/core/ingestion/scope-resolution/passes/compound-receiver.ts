@@ -390,9 +390,20 @@ export function resolveCompoundReceiverClass(
   // scope: languages synthesize `this` typeBindings per function scope,
   // so a chain site outside any function scope (a field initializer or
   // an instance initializer block) has none — there, the enclosing
-  // class definition IS the receiver type. Head resolution only; the
-  // per-segment walk below is shared with every other chain shape.
-  if (currentClass === undefined && headType === undefined && headMemberName === 'this') {
+  // class definition IS the receiver type. Restricted to initializer
+  // contexts (no Function scope between the site and its class): a
+  // Function scope WITHOUT a `this` typeBinding means the language
+  // deliberately left `this` unbound there (object-literal methods,
+  // nested plain functions, static contexts), and seeding the
+  // lexically enclosing class would fabricate edges. Head resolution
+  // only; the per-segment walk below is shared with every other
+  // chain shape.
+  if (
+    currentClass === undefined &&
+    headType === undefined &&
+    headMemberName === 'this' &&
+    isInitializerContext(inScope, scopes)
+  ) {
     currentClass = findEnclosingClassDef(inScope, scopes);
   }
   // `const user = getUser(); user.address` — the typeBinding for `user`
@@ -501,6 +512,27 @@ function stripCallParens(segment: string): string {
   const open = segment.indexOf('(');
   if (open === -1) return segment;
   return segment.slice(0, open);
+}
+
+/** True when `startScope` sits under a Class scope with no Function
+ *  scope in between — a field-initializer or instance-initializer
+ *  context, the only place a literal `this` chain head may be seeded
+ *  from the lexically enclosing class. Function bodies are excluded
+ *  on purpose: a Function scope carrying no `this` typeBinding means
+ *  the language deliberately left `this` unbound there. */
+function isInitializerContext(startScope: ScopeId, scopes: ScopeResolutionIndexes): boolean {
+  let currentId: ScopeId | null = startScope;
+  const visited = new Set<ScopeId>();
+  while (currentId !== null) {
+    if (visited.has(currentId)) return false;
+    visited.add(currentId);
+    const scope = scopes.scopeTree.getScope(currentId);
+    if (scope === undefined) return false;
+    if (scope.kind === 'Class') return true;
+    if (scope.kind === 'Function') return false;
+    currentId = scope.parent;
+  }
+  return false;
 }
 
 /** Find the index of the `(` that matches the trailing `)` of a

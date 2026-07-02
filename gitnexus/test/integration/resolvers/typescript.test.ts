@@ -3072,3 +3072,27 @@ describe('TypeScript factory-pattern singleton resolution (issue #1358 sub-case)
     ]);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Dynamic-this contexts are never seeded from the lexically enclosing class
+// (#2353 follow-up): an object-literal method's `this` is the literal, not
+// the class instance — the compound resolver's literal-`this` head seed is
+// restricted to initializer contexts and must not fire here.
+// ---------------------------------------------------------------------------
+
+describe('TS dynamic-this receiver seeding guard', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'ts-dynamic-this-no-seed'), () => {});
+  }, 60000);
+
+  it('detects the App and Router classes', () => {
+    expect(getNodesByLabel(result, 'Class')).toEqual(['App', 'Router']);
+  });
+
+  it('emits no CALLS edge from the object-literal method to Router.go', () => {
+    const calls = getRelationships(result, 'CALLS');
+    expect(calls.some((c) => c.target === 'go' && c.source === 'onClick')).toBe(false);
+  });
+});
