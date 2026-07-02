@@ -101,7 +101,10 @@ export function resolveCompoundReceiverClass(
       if (workingText[i] === '(') d++;
       else if (workingText[i] === ')') {
         d--;
-        if (d === 0) { closeIdx = i; break; }
+        if (d === 0) {
+          closeIdx = i;
+          break;
+        }
       }
     }
     if (closeIdx === -1) break;
@@ -122,9 +125,7 @@ export function resolveCompoundReceiverClass(
       remainder.startsWith('this') ||
       /^[a-zA-Z_]/.test(remainder)
     ) {
-      workingText = remainder.length === 0
-        ? workingText.slice(1, closeIdx).trim()
-        : remainder;
+      workingText = remainder.length === 0 ? workingText.slice(1, closeIdx).trim() : remainder;
       continue;
     }
     break;
@@ -150,7 +151,10 @@ export function resolveCompoundReceiverClass(
         const cleanName = seg.endsWith(')') ? seg.slice(0, seg.indexOf('(')) : seg;
         if (cleanName.length === 0) continue;
         const cs = classScopeByDefId.get(curClass.nodeId);
-        if (cs === undefined) { curClass = undefined; break; }
+        if (cs === undefined) {
+          curClass = undefined;
+          break;
+        }
         let memberType = cs.typeBindings.get(cleanName);
         if (memberType === undefined && options.hoistTypeBindingsToModule === true) {
           let curId: ScopeId | null = cs.parent;
@@ -158,7 +162,10 @@ export function resolveCompoundReceiverClass(
             const curScope = scopes.scopeTree.getScope(curId);
             if (curScope === undefined) break;
             const cand = curScope.typeBindings.get(cleanName);
-            if (cand !== undefined) { memberType = cand; break; }
+            if (cand !== undefined) {
+              memberType = cand;
+              break;
+            }
             curId = curScope.parent;
           }
         }
@@ -168,10 +175,16 @@ export function resolveCompoundReceiverClass(
             if (fb === undefined) continue;
             const fcs = classScopeByDefId.get(fb.nodeId);
             const found = fcs?.typeBindings.get(cleanName);
-            if (found !== undefined) { memberType = found; break; }
+            if (found !== undefined) {
+              memberType = found;
+              break;
+            }
           }
         }
-        if (memberType === undefined) { curClass = undefined; break; }
+        if (memberType === undefined) {
+          curClass = undefined;
+          break;
+        }
         curClass = findClassBindingInScope(memberType.declaredAtScope, memberType.rawName, scopes);
       }
       if (curClass !== undefined) return curClass;
