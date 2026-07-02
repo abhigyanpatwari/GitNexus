@@ -2602,3 +2602,126 @@ describe('Java this.field chain resolution', () => {
     expect(decoyEdges).toEqual([]);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Bare-`this` dispatch pinning (#2353 review F6): Java `this.member` sites
+// resolve through Case 4 — the synthesized Function-scope `this` typeBinding
+// (languages/java/receiver-binding.ts) feeding the MRO walk — NOT through the
+// C++-authored Case 0.5 chain walk gated by `resolveThisViaEnclosingClass`
+// (receiver-bound-calls.ts). PR #2353 briefly enabled that flag for Java; U7
+// reverted it per the toggle's own contract doc. These scenarios characterize
+// the Case 4 baseline (characterization, not idealization — two deliberate
+// baseline quirks are pinned with deferred-item comments below), and the
+// interface-default fan-out scenario is the A/B discriminator: Case 0.5
+// provably drops the interface-dispatch edges that only Case 4 emits.
+// ---------------------------------------------------------------------------
+
+describe('Java bare-this dispatch (Case 4 pinning)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'java-this-dispatch'), () => {});
+  }, 60000);
+
+  it('detects the hierarchy, collision, and interface fixture types', () => {
+    expect(getNodesByLabel(result, 'Class')).toEqual([
+      'Base',
+      'Derived',
+      'FastTask',
+      'Runner',
+      'SizeDecoy',
+      'SlowTask',
+      'Widget',
+    ]);
+    expect(getNodesByLabel(result, 'Interface')).toEqual(['Task']);
+  });
+
+  // Characterization, not idealization: `this.greet("world")` (arity 1)
+  // inside Derived binds to Derived.greet(String, int) — Case 4's
+  // `pickFirstNonStaticOnly` short-circuits on a single-overload owner
+  // without arity narrowing, so the inherited Base.greet(String) never gets
+  // a look. The ideal Base.greet target is the deferred Case 4 arity item
+  // (docs/plans/2026-07-02-001 § Deferred). Under PR #2353's Case 0.5, the
+  // `hiddenByName` C++ name-hiding rule dropped this member site entirely
+  // and a free-call fallback edge (reason 'local-call') to the same target
+  // masked the drop.
+  it('pins this.greet("world") in Derived to Derived.greet(String,int) — arity-blind shortcut', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const greetEdges = [
+      ...new Set(
+        calls
+          .filter((c) => c.source === 'announce' && c.target === 'greet')
+          .map((c) => `${c.targetFilePath} reason=${c.rel.reason}`),
+      ),
+    ].sort();
+    expect(greetEdges).toEqual(['models/Derived.java reason=global']);
+  });
+
+  // Characterization, not idealization: with field `size` AND method
+  // `size()` on Widget, the bare-this READ `this.size` emits ACCESSES
+  // reason 'read' targeting the METHOD node — `pickFirstNonStaticOnly`
+  // consults methods before fields for every site kind, so methods shadow
+  // fields on read sites too. The read-should-target-the-Property fix is
+  // the deferred Case 4 methods-shadow-fields item
+  // (docs/plans/2026-07-02-001 § Deferred).
+  it('pins the this.size field read to the size() Method node (methods-shadow-fields)', () => {
+    const accesses = getRelationships(result, 'ACCESSES');
+    const sizeReads = accesses.filter((e) => e.source === 'describe' && e.target === 'size');
+    expect(sizeReads.length).toBe(1);
+    expect(sizeReads[0].rel.reason).toBe('read');
+    expect(sizeReads[0].targetLabel).toBe('Method');
+    expect(sizeReads[0].targetFilePath).toBe('models/Widget.java');
+  });
+
+  it('resolves the this.size() call beside the size field to Widget.size()', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const sizeCalls = [
+      ...new Set(
+        calls
+          .filter((c) => c.source === 'measure' && c.target === 'size')
+          .map((c) => `${c.targetLabel} @ ${c.targetFilePath}`),
+      ),
+    ].sort();
+    expect(sizeCalls).toEqual(['Method @ models/Widget.java']);
+  });
+
+  // The A/B discriminator: only Case 4 emits interface-dispatch fan-out
+  // (`emitInterfaceDispatchFor`); Case 0.5 resolved this same site to
+  // Task.run WITHOUT the implementor edges. Target-SET assertions rather
+  // than edge counts, per the deferred duplicate-reference-site quirk.
+  it('emits the primary this.run() edge from the default method to Task.run', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const primaries = [
+      ...new Set(
+        calls
+          .filter(
+            (c) =>
+              c.source === 'runAll' && c.target === 'run' && c.rel.reason !== 'interface-dispatch',
+          )
+          .map((c) => c.targetFilePath),
+      ),
+    ].sort();
+    expect(primaries).toEqual(['models/Task.java']);
+  });
+
+  it('fans this.run() out to exactly the implementors via interface-dispatch edges', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const fanout = [
+      ...new Set(
+        calls
+          .filter((c) => c.source === 'runAll' && c.rel.reason === 'interface-dispatch')
+          .map((c) => c.targetFilePath),
+      ),
+    ].sort();
+    expect(fanout).toEqual(['models/FastTask.java', 'models/SlowTask.java']);
+  });
+
+  it('interface-dispatch fan-out excludes the interface itself and the non-implementor Runner', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const fanout = calls.filter((c) => c.rel.reason === 'interface-dispatch');
+    for (const edge of fanout) {
+      expect(edge.targetFilePath).not.toBe('models/Task.java');
+      expect(edge.targetFilePath).not.toBe('models/Runner.java');
+    }
+  });
+});

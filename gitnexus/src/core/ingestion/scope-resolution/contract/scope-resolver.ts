@@ -110,11 +110,17 @@
  *     in this order; the FIRST that emits an edge wins:
  *       1. super branch (`provider.isSuperReceiver(receiverName)`)
  *       2. Case 0 compound (`receiverName` has `.` or `(`)
- *       3. Case 1 namespace-receiver
- *       4. Case 2 class-name receiver
- *       5. Case 3 dotted typeBinding for namespace prefix
- *       6. Case 3b chain-typebinding (compound resolver)
- *       7. Case 4 simple typeBinding (MRO walk + findOwnedMember)
+ *       3. Case 0.5 implicit-`this` chain walk — GATED: fires only for
+ *          languages that set `resolveThisViaEnclosingClass === true`;
+ *          it intercepts every bare-`this` call/read/write site ahead of
+ *          Case 4 and does NOT emit Case 4's interface-dispatch fan-out,
+ *          so enabling the toggle for a language changes that language's
+ *          `this` dispatch semantics (see the toggle's doc below)
+ *       4. Case 1 namespace-receiver
+ *       5. Case 2 class-name receiver
+ *       6. Case 3 dotted typeBinding for namespace prefix
+ *       7. Case 3b chain-typebinding (compound resolver)
+ *       8. Case 4 simple typeBinding (MRO walk + findOwnedMember)
  *     Reordering or merging cases changes resolution semantics. The
  *     numbering is part of the contract — keep the comments.
  *
