@@ -403,6 +403,34 @@ export const isDbBusyError = (err: unknown): boolean => {
   );
 };
 
+/** See {@link classifyDeleteAllError}. */
+export type DeleteAllErrorClass = 'benign-missing-table' | 'rethrow';
+
+/**
+ * Classify an error thrown while clearing all relationships of one type
+ * before an incremental re-write (`deleteAllRelationshipsOfType` in
+ * `lbug-adapter.ts` — the `deleteAllInjects` / `deleteAllCallSummaries` /
+ * `deleteAllInterprocTaintPaths` family).
+ *
+ * - `'benign-missing-table'`: the CodeRelation table does not exist yet
+ *   (freshly-initialized DB) — the delete-all is a no-op, stay silent.
+ * - `'rethrow'`: ANY other failure (lock, disk, closed connection, native
+ *   error) leaves stale rows that the subsequent re-extract then DUPLICATES
+ *   (CodeRelation has no PK), so the caller must abort the writeback
+ *   (#2084 review P2-5).
+ *
+ * Pure classification, extracted here (next to the other error matchers) so
+ * the load-bearing regex/branch is unit-testable without a native DB —
+ * driving a synthetic failure through the real singleton connection would
+ * break every later test in the shared integration suite (#2200 review).
+ */
+export const classifyDeleteAllError = (err: unknown): DeleteAllErrorClass => {
+  const msg = err instanceof Error ? err.message : String(err);
+  return /no table|not exist|not found|does not exist|Table .* does not exist/i.test(msg)
+    ? 'benign-missing-table'
+    : 'rethrow';
+};
+
 export function createLbugDatabase(
   lbugModule: LbugModule,
   databasePath: string,

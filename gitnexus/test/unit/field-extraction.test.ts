@@ -1283,6 +1283,33 @@ describe('GenericFieldExtractor — Java (rawDeclaredType + annotations)', () =>
     expect(result!.fields).toHaveLength(1);
     expect(result!.fields[0]).not.toHaveProperty('annotations');
   });
+
+  it('still extracts the field when extractRawType/extractAnnotations throw (per-hook isolation)', () => {
+    // A throwing hook must degrade to a field WITHOUT raw/annotations — never
+    // escape buildField: an escaped throw reaches the language-group catch
+    // upstream (processFileGroup) and silently drops every remaining file in
+    // the group (#2286-review guard pattern).
+    const throwingExtractor = createFieldExtractor({
+      ...javaConfig,
+      extractRawType: () => {
+        throw new Error('unexpected node shape');
+      },
+      extractAnnotations: () => {
+        throw new Error('unexpected node shape');
+      },
+    });
+
+    const result = throwingExtractor.extract(
+      classNode('class C { @Autowired private List<Shape> shapes; }'),
+      mockContext,
+    );
+
+    expect(result).not.toBeNull();
+    expect(result!.fields).toHaveLength(1);
+    expect(result!.fields[0]).toMatchObject({ name: 'shapes', type: 'List' });
+    expect(result!.fields[0]).not.toHaveProperty('rawDeclaredType');
+    expect(result!.fields[0]).not.toHaveProperty('annotations');
+  });
 });
 
 // ---------------------------------------------------------------------------

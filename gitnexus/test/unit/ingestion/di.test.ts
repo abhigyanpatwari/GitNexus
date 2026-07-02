@@ -630,6 +630,76 @@ describe('di phase', () => {
     });
   });
 
+  it.each([
+    ['module A inserted first', ['moduleA', 'moduleB'] as const],
+    ['module B inserted first', ['moduleB', 'moduleA'] as const],
+  ])(
+    'fails closed on a duplicate-qualifiedName collision (%s)',
+    async (_label, [firstModule, secondModule]) => {
+      const graph = createKnowledgeGraph();
+
+      // Two Java interfaces BOTH carrying qualifiedName `com.a.Shape` — the
+      // realistic monorepo shape where the same package+name is duplicated
+      // across modules or main/test source roots (a Java qualifiedName has no
+      // file-path component). Distinct node ids (production ids embed the
+      // file path), identical qualifiedName; insertion order is the it.each
+      // parameter: identical assertions across both orders pin
+      // order-independence (never last-writer-wins).
+      const addModuleShape = (module: string): string => {
+        const id = generateId('Interface', `java:${module}:com.a.Shape`);
+        graph.addNode({
+          id,
+          label: 'Interface',
+          properties: {
+            name: 'Shape',
+            filePath: `${module}/src/Shape.java`,
+            language: 'java',
+            qualifiedName: 'com.a.Shape',
+          },
+        });
+        return id;
+      };
+      const firstIfaceId = addModuleShape(firstModule);
+      const secondIfaceId = addModuleShape(secondModule);
+
+      // One implementer per module's interface, so a wrong (last-writer-wins)
+      // resolution WOULD have implementers to fan out to.
+      const implAId = addClass(graph, 'ShapeAImpl', 'java');
+      const implBId = addClass(graph, 'ShapeBImpl', 'java');
+      graph.addRelationship({
+        id: generateId('IMPLEMENTS', `${implAId}->${firstIfaceId}`),
+        sourceId: implAId,
+        targetId: firstIfaceId,
+        type: 'IMPLEMENTS',
+        confidence: 1.0,
+        reason: '',
+      });
+      graph.addRelationship({
+        id: generateId('IMPLEMENTS', `${implBId}->${secondIfaceId}`),
+        sourceId: implBId,
+        targetId: secondIfaceId,
+        type: 'IMPLEMENTS',
+        confidence: 1.0,
+        reason: '',
+      });
+
+      // The field spells the element type fully qualified — the dotted branch.
+      addClass(graph, 'MyService', 'java');
+      addProperty(graph, 'MyService', 'shapes', 'List<com.a.Shape>');
+
+      const output = await diPhase.execute(makeCtx(graph), new Map());
+
+      // Qualified `com.a.Shape` is ambiguous within Java → fail closed,
+      // observable skip — regardless of which module's node indexed first.
+      expect(injectsEdges(graph)).toHaveLength(0);
+      expect(output).toMatchObject({
+        injectsEdges: 0,
+        fieldsScanned: 1,
+        ambiguousSkipped: 1,
+      });
+    },
+  );
+
   it('fails closed even when the consumer shares a package with one collision party (pinned)', async () => {
     const graph = createKnowledgeGraph();
 

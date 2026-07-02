@@ -132,8 +132,10 @@ withTestLbugDB(
         // Mirrors the deleteAllInterprocTaintPaths test above (same contract:
         // COUNT-then-DELETE, missing-table carve-out, re-throw otherwise).
         // The re-throw path is not simulated here — doing so would require
-        // breaking the shared singleton connection mid-suite; the taint twin
-        // sets the coverage bar and has the same shape.
+        // breaking the shared singleton connection mid-suite. Its benign-vs-
+        // rethrow classification is pinned as a pure function instead:
+        // `classifyDeleteAllError` (lbug-config.ts), exhaustively covered in
+        // test/unit/lbug-delete-all-error.test.ts.
         const { executeQuery: coreExecuteQuery, deleteAllInjects } =
           await import('../../src/core/lbug/lbug-adapter.js');
 

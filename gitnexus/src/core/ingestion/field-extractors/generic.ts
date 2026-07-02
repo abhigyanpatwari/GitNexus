@@ -198,9 +198,27 @@ export function createFieldExtractor(config: FieldExtractionConfig): FieldExtrac
 
       // Raw declared type deliberately bypasses normalizeType/resolveType —
       // it is the verbatim source text (generics preserved).
-      const rawDeclaredType = config.extractRawType?.(node);
+      let rawDeclaredType: string | undefined;
+      try {
+        rawDeclaredType = config.extractRawType?.(node);
+      } catch {
+        // A throw here (an unexpected tree-sitter node shape, a config bug)
+        // must NOT propagate — it would escape processFileGroup to the
+        // language-group catch, which treats any throw as "parser unavailable"
+        // and silently drops every remaining file in the group. Degrade to a
+        // field without the raw type instead. Mirrors the descriptionExtractor
+        // / extractTemplateConstraints guards in parse-worker.ts (#2286 review).
+        rawDeclaredType = undefined;
+      }
 
-      const annotations = config.extractAnnotations?.(node);
+      let annotations: string[] | undefined;
+      try {
+        annotations = config.extractAnnotations?.(node);
+      } catch {
+        // Same group-drop rationale as the extractRawType guard above —
+        // degrade to a field without annotations (#2286 review).
+        annotations = undefined;
+      }
 
       return {
         name,

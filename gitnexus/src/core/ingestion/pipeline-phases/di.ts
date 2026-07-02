@@ -23,7 +23,9 @@
  * Interface resolution is scoped to the CANDIDATE'S OWN language and prefers
  * qualified names: a dotted element type resolves via the language's
  * `qualifiedName` index; a bare simple name resolves only while unique within
- * that language. Ambiguous simple names fail CLOSED — no edge, never
+ * that language. Ambiguous names — simple OR qualified (a qualifiedName has
+ * no file-path component, so the same package+name duplicated across monorepo
+ * modules collides too) — fail CLOSED — no edge, never
  * last-writer-wins — but observably: skips are counted in the phase output's
  * `ambiguousSkipped` and named in an isDev debug log, so "no DI fields" is
  * distinguishable from "all candidates ambiguous". Same-package/import-aware
@@ -43,21 +45,27 @@ import { logger } from '../../logger.js';
 export interface DIOutput {
   injectsEdges: number;
   fieldsScanned: number;
-  /** Candidates skipped because their bare element type name matched more
-   *  than one Interface within the candidate's language (fail-closed). */
+  /** Candidates skipped because their element type name — bare simple name
+   *  or dotted qualified name — matched more than one Interface within the
+   *  candidate's language (fail-closed). */
   ambiguousSkipped: number;
 }
 
-/** Sentinel marking a simple interface name claimed by more than one
- *  Interface node within a language — resolution must fail closed. */
+/** Sentinel marking an interface name (simple or qualified) claimed by more
+ *  than one Interface node within a language — resolution must fail closed. */
 const AMBIGUOUS: unique symbol = Symbol('ambiguous');
 
 /** Per-language interface lookup: qualified names resolve exactly; bare
- *  simple names resolve only while unique within the language. */
+ *  simple names resolve only while unique within the language. Both indexes
+ *  fail closed on their own duplicates. */
 interface InterfaceIndex {
   /** `properties.qualifiedName` → Interface node id (when extracted — e.g.
-   *  package-qualified for languages with a file-scope package declaration). */
-  byQualifiedName: Map<string, string>;
+   *  package-qualified for languages with a file-scope package declaration),
+   *  or {@link AMBIGUOUS} once a second Interface claims the same qualified
+   *  name in the same language — realistic in monorepos, where the same
+   *  package+name is duplicated across modules or main/test source roots
+   *  (a qualifiedName carries no file-path component). */
+  byQualifiedName: Map<string, string | typeof AMBIGUOUS>;
   /** `properties.name` → Interface node id, or {@link AMBIGUOUS} once a
    *  second same-name Interface appears in the same language. */
   bySimpleName: Map<string, string | typeof AMBIGUOUS>;
@@ -141,9 +149,10 @@ export const diPhase: PipelinePhase<DIOutput> = {
 
     // language → InterfaceIndex  (from Interface-labeled nodes). Scoped per
     // language so an Interface in one language can never satisfy a candidate
-    // from another. Within a language, `qualifiedName` resolves exactly; a
-    // bare simple name resolves only while unique — a second same-name
-    // Interface flips the entry to AMBIGUOUS and resolution fails closed.
+    // from another. Within a language, a name resolves only while unique —
+    // a second Interface claiming the same simple OR qualified name flips
+    // that entry to AMBIGUOUS and resolution fails closed (never
+    // last-writer-wins).
     // Index only languages that can resolve: an Interface in a language with
     // no candidate can never be looked up in Pass 3.
     const candidateLanguages = new Set<string>(candidates.map((c) => c.language));
@@ -162,7 +171,10 @@ export const diPhase: PipelinePhase<DIOutput> = {
       // signature, so narrow it explicitly (no `any`).
       const qualifiedName = node.properties.qualifiedName;
       if (typeof qualifiedName === 'string') {
-        index.byQualifiedName.set(qualifiedName, node.id);
+        index.byQualifiedName.set(
+          qualifiedName,
+          index.byQualifiedName.has(qualifiedName) ? AMBIGUOUS : node.id,
+        );
       }
       const simpleName = node.properties.name;
       index.bySimpleName.set(simpleName, index.bySimpleName.has(simpleName) ? AMBIGUOUS : node.id);
@@ -186,13 +198,21 @@ export const diPhase: PipelinePhase<DIOutput> = {
 
       // A dotted element type is a qualified name (e.g. `com.a.Shape`) —
       // exact qualifiedName lookup, unaffected by simple-name ambiguity.
-      // A bare name uses the simple-name index and fails CLOSED on
-      // ambiguity: no edge (never last-writer-wins), but counted and
-      // logged so the skip is observable. Same-package/import-aware
-      // disambiguation is a deliberate follow-up (plan: Deferred work).
+      // A bare name uses the simple-name index. BOTH lookups fail CLOSED
+      // on their own ambiguity (a qualified name too can be claimed twice —
+      // same package+name across monorepo modules): no edge (never
+      // last-writer-wins), but counted and logged so the skip is
+      // observable. Same-package/import-aware disambiguation is a
+      // deliberate follow-up (plan: Deferred work).
       let interfaceId: string | undefined;
       if (candidate.elementTypeName.includes('.')) {
-        interfaceId = index.byQualifiedName.get(candidate.elementTypeName);
+        const entry = index.byQualifiedName.get(candidate.elementTypeName);
+        if (entry === AMBIGUOUS) {
+          ambiguousSkipped++;
+          ambiguousElementTypes.add(candidate.elementTypeName);
+          continue;
+        }
+        interfaceId = entry;
       } else {
         const entry = index.bySimpleName.get(candidate.elementTypeName);
         if (entry === AMBIGUOUS) {

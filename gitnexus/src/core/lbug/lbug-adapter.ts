@@ -24,6 +24,7 @@ import { getNodeLabel as deriveNodeLabel, type WriteStreamFactory } from './rel-
 import type { CachedEmbedding } from '../embeddings/types.js';
 import { extensionManager, type ExtensionEnsureOptions } from './extension-loader.js';
 import {
+  classifyDeleteAllError,
   closeLbugConnection,
   isDbBusyError,
   isOpenRetryExhausted,
@@ -2193,9 +2194,11 @@ const deleteAllRelationshipsOfType = async (
       // re-extract then DUPLICATES (CodeRelation has no PK), so it must ABORT
       // the writeback (#2084 review P2-5): re-throw so the caller's crash-
       // recovery dirty flag forces a clean full rebuild on the next run, rather
-      // than silently writing duplicate rows.
+      // than silently writing duplicate rows. The benign-vs-rethrow branch is
+      // pure, extracted, and pinned by unit tests: `classifyDeleteAllError`
+      // (lbug-config.ts, test/unit/lbug-delete-all-error.test.ts).
       const msg = err instanceof Error ? err.message : String(err);
-      if (/no table|not exist|not found|does not exist|Table .* does not exist/i.test(msg)) {
+      if (classifyDeleteAllError(err) === 'benign-missing-table') {
         if (countResult) await closeQueryResults(countResult);
         return { edgesDeleted };
       }
