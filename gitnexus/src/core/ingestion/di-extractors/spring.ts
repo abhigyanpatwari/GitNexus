@@ -5,9 +5,10 @@
  * collection injection: when a Java class declares a field carrying an
  * injection annotation (`@Autowired` or `@Inject`) typed as `List<T>`,
  * `Set<T>`, `Collection<T>`, or `Map<K,T>`, the container injects EVERY bean
- * implementing interface `T`. The matcher reports the collection wrapper, the
- * element type name `T`, and the annotation that gated the match; the shared
- * `di` phase turns that into `INJECTS` edges.
+ * implementing interface `T`. The matcher reports the element type name `T`
+ * plus a human-readable reason naming the collection wrapper and the
+ * annotation that gated the match; the shared `di` phase turns that into
+ * `INJECTS` edges.
  *
  * The injection annotation is a hard precondition: a plain (non-annotated)
  * collection field is never injected by the container and produces no match.
@@ -129,14 +130,11 @@ function parseElementTypeName(segment: string): string | null {
   } else if (element.startsWith(WILDCARD_SUPER_PREFIX)) {
     element = element.slice(WILDCARD_SUPER_PREFIX.length);
   }
-  // Nested generic element (`Map<String, List<IFoo>>`) — not resolvable as a
-  // single interface. Documented rejection.
-  if (element.includes('<')) return null;
-  // Array element (`List<IFoo[]>`) — not the fan-out shape INJECTS models.
-  // Documented rejection.
-  if (element.includes('[')) return null;
-  // Final gate: a plain (possibly dotted) type name. Rejects the unbounded
-  // wildcard `?`, un-stripped comments, and any other residue — fail closed.
+  // Final gate: a plain (possibly dotted) type name. Rejects nested generics
+  // (`Map<String, List<IFoo>>` — not resolvable as a single interface),
+  // arrays (`List<IFoo[]>` — not the fan-out shape INJECTS models), the
+  // unbounded wildcard `?`, un-stripped comments, and any other residue —
+  // all documented rejections; fail closed.
   if (!JAVA_TYPE_NAME_PATTERN.test(element)) return null;
   return element;
 }
@@ -215,11 +213,10 @@ export const springDiFieldMatcher: DiFieldMatcher = (node: GraphNode): DiFieldMa
   const parsed = parseSpringCollectionType(rawDeclaredType);
   if (!parsed) return null;
   return {
-    collectionType: parsed.collectionType,
     elementTypeName: parsed.elementTypeName,
-    matchedAnnotation,
-    // Honest reason: states the annotation actually found on the field.
-    // Framework specifics live HERE, in the payload — never in the phase.
+    // Honest reason: states the annotation actually found on the field and
+    // the collection wrapper it gated. Framework specifics live HERE, in the
+    // payload — never in the phase.
     reason: `Spring DI: ${matchedAnnotation} ${parsed.collectionType}<${parsed.elementTypeName}>`,
   };
 };

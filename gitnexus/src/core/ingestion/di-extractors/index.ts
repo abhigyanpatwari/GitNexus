@@ -24,14 +24,11 @@ import { springDiFieldMatcher } from './spring.js';
 
 /** A successful DI field match, produced by a per-language matcher. */
 export interface DiFieldMatch {
-  /** The collection wrapper name (e.g. `List`, `Set`, `Collection`, `Map`). */
-  collectionType: string;
   /** The element type name `T` — the injected bean interface. */
   elementTypeName: string;
-  /** The injection annotation that gated this match (e.g. '@Autowired'). */
-  matchedAnnotation: string;
-  /** Human-readable edge reason. Framework specifics (names, idioms) live in
-   *  this payload so the shared `di` phase stays framework-neutral. */
+  /** Human-readable edge reason. Framework specifics (names, idioms,
+   *  collection wrapper, gating annotation) live in this payload so the
+   *  shared `di` phase stays framework-neutral. */
   reason: string;
 }
 

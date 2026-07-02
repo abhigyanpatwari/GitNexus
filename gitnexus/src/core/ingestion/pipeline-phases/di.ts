@@ -69,10 +69,7 @@ interface CandidateField {
   /** The candidate's language — interface resolution (Pass 3) looks up ONLY
    *  this language's interface index. */
   language: SupportedLanguages;
-  collectionType: string;
   elementTypeName: string;
-  /** The injection annotation that gated this candidate (e.g. '@Autowired'). */
-  matchedAnnotation: string;
   /** Matcher-supplied edge reason (carries the framework specifics). */
   reason: string;
 }
@@ -108,9 +105,7 @@ export const diPhase: PipelinePhase<DIOutput> = {
       candidates.push({
         propertyId: node.id,
         language,
-        collectionType: match.collectionType,
         elementTypeName: match.elementTypeName,
-        matchedAnnotation: match.matchedAnnotation,
         reason: match.reason,
       });
     });
@@ -149,11 +144,15 @@ export const diPhase: PipelinePhase<DIOutput> = {
     // from another. Within a language, `qualifiedName` resolves exactly; a
     // bare simple name resolves only while unique — a second same-name
     // Interface flips the entry to AMBIGUOUS and resolution fails closed.
+    // Index only languages that can resolve: an Interface in a language with
+    // no candidate can never be looked up in Pass 3.
+    const candidateLanguages = new Set<string>(candidates.map((c) => c.language));
     const interfacesByLanguage = new Map<string, InterfaceIndex>();
     ctx.graph.forEachNode((node) => {
       if (node.label !== 'Interface') return;
       const language = node.properties.language;
       if (typeof language !== 'string') return; // no language ⇒ unindexable
+      if (!candidateLanguages.has(language)) return;
       let index = interfacesByLanguage.get(language);
       if (index === undefined) {
         index = { byQualifiedName: new Map(), bySimpleName: new Map() };

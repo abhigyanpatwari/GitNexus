@@ -112,26 +112,31 @@ function addImplements(
 /**
  * Add a Property node (a field) to a class and link it via HAS_PROPERTY.
  *
- * Mirrors the production extraction shape: `rawDeclaredType` is the verbatim
- * type source text with generics preserved (e.g. `List<IFoo>`), while
- * `declaredType` is the generics-stripped simple name (e.g. `List`) — derived
- * here from the raw text. `annotations` carries '@Name' strings and is
- * OMITTED when empty (production conditional-spread shape); it defaults to
- * `['@Autowired']` so the common annotated case stays terse. The phase
- * matches on `rawDeclaredType` and gates on `annotations`.
+ * Mirrors the production extraction shape: `typeText` is the verbatim type
+ * source text with generics preserved (e.g. `List<IFoo>`), stored as
+ * `rawDeclaredType`, while `declaredType` is the generics-stripped simple
+ * name (e.g. `List`) — derived here from the raw text. `annotations` carries
+ * '@Name' strings and is OMITTED when empty (production conditional-spread
+ * shape); it defaults to `['@Autowired']` so the common annotated case stays
+ * terse. The phase matches on `rawDeclaredType` and gates on `annotations`.
+ *
+ * `rawDeclaredType` defaults to `typeText`; pass `null` to OMIT the property
+ * entirely — the shape a rawDeclaredType-plumbing regression produces, where
+ * only the stripped `declaredType` reaches the graph.
  */
 function addProperty(
   graph: KnowledgeGraph,
   ownerClassName: string,
   fieldName: string,
-  rawDeclaredType: string,
+  typeText: string,
   language = 'java',
   annotations: string[] = ['@Autowired'],
+  rawDeclaredType: string | null = typeText,
 ): string {
   const ownerId = generateId('Class', ownerClassName);
   const propId = generateId('Property', `${ownerClassName}.${fieldName}`);
   // Production `declaredType` is the simple name with generic args stripped.
-  const declaredType = rawDeclaredType.split('<')[0].trim();
+  const declaredType = typeText.split('<')[0].trim();
   graph.addNode({
     id: propId,
     label: 'Property',
@@ -140,7 +145,7 @@ function addProperty(
       filePath: `src/${ownerClassName}.${language}`,
       language,
       declaredType,
-      rawDeclaredType,
+      ...(rawDeclaredType !== null ? { rawDeclaredType } : {}),
       ...(annotations.length > 0 ? { annotations } : {}),
     },
   });
@@ -265,32 +270,12 @@ describe('di phase', () => {
     addClass(graph, 'MyService', 'java');
 
     // Production shape when rawDeclaredType plumbing regresses: only the
-    // stripped simple name ("List") reaches the graph. The field IS
-    // injection-annotated (it passes the annotation gate), so this pins the
-    // rawDeclaredType-missing skip path: the phase must NOT fall back to
-    // declaredType — zero edges, zero fields scanned (and an isDev warning
-    // flags the plumbing-contract breach).
-    const ownerId = generateId('Class', 'MyService');
-    const propId = generateId('Property', 'MyService.foos');
-    graph.addNode({
-      id: propId,
-      label: 'Property',
-      properties: {
-        name: 'foos',
-        filePath: 'src/MyService.java',
-        language: 'java',
-        declaredType: 'List',
-        annotations: ['@Autowired'],
-      },
-    });
-    graph.addRelationship({
-      id: generateId('HAS_PROPERTY', `${ownerId}->${propId}`),
-      sourceId: ownerId,
-      targetId: propId,
-      type: 'HAS_PROPERTY',
-      confidence: 1.0,
-      reason: '',
-    });
+    // stripped simple name ("List") reaches the graph (rawDeclaredType: null
+    // opt-out). The field IS injection-annotated (it passes the annotation
+    // gate), so this pins the rawDeclaredType-missing skip path: the phase
+    // must NOT fall back to declaredType — zero edges, zero fields scanned
+    // (and an isDev warning flags the plumbing-contract breach).
+    addProperty(graph, 'MyService', 'foos', 'List<IFoo>', 'java', ['@Autowired'], null);
 
     const output = await diPhase.execute(makeCtx(graph), new Map());
 
@@ -699,10 +684,9 @@ describe('springDiFieldMatcher', () => {
     const match = springDiFieldMatcher(
       matcherNode({ name: 'foos', rawDeclaredType: 'List<IFoo>', annotations: ['@Autowired'] }),
     );
+    // Wrapper identity and the gating annotation are visible in the reason.
     expect(match).toEqual({
-      collectionType: 'List',
       elementTypeName: 'IFoo',
-      matchedAnnotation: '@Autowired',
       reason: 'Spring DI: @Autowired List<IFoo>',
     });
   });
@@ -715,10 +699,9 @@ describe('springDiFieldMatcher', () => {
         annotations: ['@Inject'],
       }),
     );
+    // The Map wrapper and the @Inject annotation are visible in the reason.
     expect(match).toEqual({
-      collectionType: 'Map',
       elementTypeName: 'IPlugin',
-      matchedAnnotation: '@Inject',
       reason: 'Spring DI: @Inject Map<IPlugin>',
     });
   });
@@ -860,6 +843,9 @@ describe('springDiFieldMatcher', () => {
         language: 'python',
       }),
     );
-    expect(match).toMatchObject({ collectionType: 'List', elementTypeName: 'IFoo' });
+    expect(match).toMatchObject({
+      elementTypeName: 'IFoo',
+      reason: 'Spring DI: @Autowired List<IFoo>',
+    });
   });
 });
