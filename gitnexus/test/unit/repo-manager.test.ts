@@ -445,7 +445,10 @@ describe('reconcileMetadataFiles stale-shadow regression', () => {
     );
     // A dangling symlink sorts between the two healthy dirs ('feat-a' <
     // 'feat-ax' < 'feat-b'), so pre-fix it would starve feat-b every run.
-    await fs.symlink(path.join(tmpRepo.dbPath, 'does-not-exist'), path.join(branchesDir, 'feat-ax'));
+    await fs.symlink(
+      path.join(tmpRepo.dbPath, 'does-not-exist'),
+      path.join(branchesDir, 'feat-ax'),
+    );
 
     const cap = _captureLogger();
     try {

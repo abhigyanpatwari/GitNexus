@@ -247,7 +247,10 @@ describe('antigravity hook adapter e2e', () => {
       const gitnexusJsonPath = path.join(gitNexusDir, 'gitnexus.json');
       const metaJsonPath = path.join(gitNexusDir, 'meta.json');
       fs.writeFileSync(gitnexusJsonPath, JSON.stringify({ lastCommit: 'f'.repeat(40), stats: {} }));
-      fs.writeFileSync(metaJsonPath, JSON.stringify({ lastCommit: 'stale'.padEnd(40, '0'), stats: {} }));
+      fs.writeFileSync(
+        metaJsonPath,
+        JSON.stringify({ lastCommit: 'stale'.padEnd(40, '0'), stats: {} }),
+      );
 
       try {
         const result = runHook(installedHook, {
