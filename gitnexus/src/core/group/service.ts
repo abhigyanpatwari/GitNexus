@@ -6,7 +6,7 @@
 import fsp from 'node:fs/promises';
 import path from 'node:path';
 import { checkStaleness } from '../git-staleness.js';
-import { loadMeta } from '../../storage/repo-manager.js';
+import { loadMeta, type RepoMeta } from '../../storage/repo-manager.js';
 import { GroupNotFoundError, loadGroupConfig } from './config-parser.js';
 import {
   fileMatchesServicePrefix,
@@ -577,10 +577,8 @@ export class GroupService {
     for (const [repoPath, registryName] of Object.entries(config.repos)) {
       try {
         const repoObj = await this.port.resolveRepo(registryName);
-        const meta = ((await loadMeta(repoObj.storagePath)) ?? {}) as {
-          lastCommit?: string;
-          indexedAt?: string;
-        };
+        const meta: Partial<Pick<RepoMeta, 'lastCommit' | 'indexedAt'>> =
+          (await loadMeta(repoObj.storagePath)) ?? {};
 
         const staleness = meta.lastCommit
           ? checkStaleness(repoObj.repoPath, meta.lastCommit)
