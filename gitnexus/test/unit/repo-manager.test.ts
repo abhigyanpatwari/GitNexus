@@ -409,6 +409,62 @@ describe('reconcileMetadataFiles stale-shadow regression', () => {
     await expect(reconcileMetadataFiles(tmpRepo.dbPath)).resolves.toBe(true);
     await expect(reconcileMetadataFiles(tmpRepo.dbPath)).resolves.toBe(false);
   });
+
+  it('one bad branch dir does not abort reconciliation for sibling branches (F9)', async () => {
+    const branchesDir = path.join(storagePath, 'branches');
+    const goodA = path.join(branchesDir, 'feat-a');
+    const goodB = path.join(branchesDir, 'feat-b');
+    await fs.mkdir(goodA, { recursive: true });
+    await fs.mkdir(goodB, { recursive: true });
+    await fs.writeFile(
+      path.join(goodA, 'meta.json'),
+      JSON.stringify(metaAt('2026-06-01T00:00:00.000Z', 'branch-a')),
+    );
+    await fs.writeFile(
+      path.join(goodB, 'meta.json'),
+      JSON.stringify(metaAt('2026-06-01T00:00:00.000Z', 'branch-b')),
+    );
+    // A dangling symlink sorts between the two healthy dirs ('feat-a' <
+    // 'feat-ax' < 'feat-b'), so pre-fix it would starve feat-b every run.
+    await fs.symlink(path.join(tmpRepo.dbPath, 'does-not-exist'), path.join(branchesDir, 'feat-ax'));
+
+    const cap = _captureLogger();
+    try {
+      await expect(reconcileMetadataFiles(tmpRepo.dbPath)).resolves.toBe(true);
+    } finally {
+      cap.restore();
+    }
+
+    // Both healthy branches were bootstrapped despite the bad sibling…
+    await expect(fs.access(path.join(goodA, 'gitnexus.json'))).resolves.toBeUndefined();
+    await expect(fs.access(path.join(goodB, 'gitnexus.json'))).resolves.toBeUndefined();
+    // …and the skip is observable, naming the offending branch dir.
+    expect(
+      cap
+        .records()
+        .some(
+          (r) =>
+            r.level === 40 &&
+            r.branchDir === 'feat-ax' &&
+            String(r.msg ?? '').includes('Skipping branch directory'),
+        ),
+    ).toBe(true);
+  });
+
+  it('stays silent when branches/ does not exist (not a multi-branch repo)', async () => {
+    await fs.writeFile(
+      path.join(storagePath, 'meta.json'),
+      JSON.stringify(metaAt('2026-06-01T00:00:00.000Z', 'flat-only')),
+    );
+
+    const cap = _captureLogger();
+    try {
+      await reconcileMetadataFiles(tmpRepo.dbPath);
+    } finally {
+      cap.restore();
+    }
+    expect(cap.records().filter((r) => r.level === 40)).toEqual([]);
+  });
 });
 
 // ─── GitNexus ignore rules (#1233) ─────────────────────────────────────

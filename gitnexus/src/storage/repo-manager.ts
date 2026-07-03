@@ -611,16 +611,30 @@ export const reconcileMetadataFiles = async (repoPath: string): Promise<boolean>
   let changed = await reconcileMetaDir(storagePath);
 
   const branchesDir = path.join(storagePath, BRANCHES_DIR);
+  let branchDirs: string[];
   try {
-    const branchDirs = await fs.readdir(branchesDir);
-    for (const branchDir of branchDirs) {
-      const branchPath = path.join(branchesDir, branchDir);
+    branchDirs = await fs.readdir(branchesDir);
+  } catch {
+    // branchesDir may not exist (not a multi-branch repo) — expected, silent.
+    return changed;
+  }
+
+  for (const branchDir of branchDirs) {
+    const branchPath = path.join(branchesDir, branchDir);
+    // Per-branch isolation: one bad branch dir (dangling symlink, EACCES)
+    // must not silently abort reconciliation for every branch after it —
+    // readdir order is stable, so an unguarded throw here would permanently
+    // starve the same trailing branches on every run.
+    try {
       const stat = await fs.stat(branchPath);
       if (!stat.isDirectory()) continue;
       if (await reconcileMetaDir(branchPath)) changed = true;
+    } catch (err) {
+      logger.warn(
+        { branchDir, err },
+        'Skipping branch directory during metadata reconciliation (non-critical)',
+      );
     }
-  } catch {
-    // branchesDir may not exist - ignore
   }
 
   return changed;
