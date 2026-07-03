@@ -195,6 +195,49 @@ describe('run-analyze module', () => {
     }
   });
 
+  it('a detached HEAD at the same commit skips the fast-path restamp (#2364 F3 gap 6)', async () => {
+    const tmpRepo = await createTempDir('gitnexus-run-analyze-detached-');
+    const tmpHome = await createTempDir('gitnexus-run-analyze-detached-home-');
+    const savedHome = process.env.GITNEXUS_HOME;
+    process.env.GITNEXUS_HOME = tmpHome.dbPath;
+    try {
+      execSync('git init', { cwd: tmpRepo.dbPath, stdio: 'pipe' });
+      execSync('git -c user.name=t -c user.email=t@t commit --allow-empty -m init', {
+        cwd: tmpRepo.dbPath,
+        stdio: 'pipe',
+      });
+      execSync('git branch -M main', { cwd: tmpRepo.dbPath, stdio: 'pipe' });
+      execSync('git checkout --detach', { cwd: tmpRepo.dbPath, stdio: 'pipe' });
+      const commit = execSync('git rev-parse HEAD', {
+        cwd: tmpRepo.dbPath,
+        encoding: 'utf-8',
+      }).trim();
+
+      const flat = getStoragePaths(tmpRepo.dbPath);
+      await saveMeta(flat.storagePath, {
+        repoPath: tmpRepo.dbPath,
+        lastCommit: commit,
+        indexedAt: new Date().toISOString(),
+        branch: 'main',
+        schemaVersion: INCREMENTAL_SCHEMA_VERSION,
+      });
+
+      // Detached HEAD → branchLabel is null → the restamp block must not
+      // fire: the existing stamp survives, mirroring the end-of-run write.
+      const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
+      const result = await runFullAnalysis(tmpRepo.dbPath, {}, { onProgress: () => {} });
+      expect(result.alreadyUpToDate).toBe(true);
+      const { loadMeta } = await import('../../src/storage/repo-manager.js');
+      const flatMeta = await loadMeta(flat.storagePath);
+      expect(flatMeta?.branch).toBe('main');
+    } finally {
+      if (savedHome === undefined) delete process.env.GITNEXUS_HOME;
+      else process.env.GITNEXUS_HOME = savedHome;
+      await tmpHome.cleanup();
+      await tmpRepo.cleanup();
+    }
+  });
+
   it('reports isPrimaryBranch false for an up-to-date explicit --branch run (#2106 R2)', async () => {
     const tmpRepo = await createTempDir('gitnexus-run-analyze-nonprimary-');
     try {

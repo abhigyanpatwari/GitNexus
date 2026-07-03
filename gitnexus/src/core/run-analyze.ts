@@ -54,6 +54,7 @@ import {
   ensureGitNexusIgnored,
   registerRepo,
   adoptFlatBranchLabel,
+  isReadOnlyFilesystemError,
   isRepoRegistered,
   cleanupOldKuzuFiles,
   reconcileMetadataFiles,
@@ -862,8 +863,27 @@ export async function runFullAnalysis(
         // Detached HEAD / non-git (branchLabel === null) keeps the existing
         // stamp, mirroring the end-of-run meta write.
         if (!placement.branch && branchLabel && existingMeta.branch !== branchLabel) {
-          await saveMeta(metaDir, { ...existingMeta, branch: branchLabel });
-          await adoptFlatBranchLabel(repoPath, branchLabel);
+          // Adopt first, stamp last (#2364 review F3): this block's retry
+          // guard is `existingMeta.branch !== branchLabel`, so stamping the
+          // meta before the registry/shadow cleanup would flip the guard and
+          // lock in any partial failure — with saveMeta last, a failed adopt
+          // leaves the guard true and the next same-commit run self-heals
+          // (adopt is idempotent). The whole sync is best-effort: the label
+          // is informational and the flat DB content is byte-valid for both
+          // labels here (same commit, clean tree), so an "Already up to
+          // date" run must not fail over it; read-only storage — the
+          // documented Docker :ro workflow (#1549) — degrades to a warning.
+          try {
+            await adoptFlatBranchLabel(repoPath, branchLabel);
+            await saveMeta(metaDir, { ...existingMeta, branch: branchLabel });
+          } catch (err) {
+            const reason = isReadOnlyFilesystemError(err)
+              ? 'GitNexus storage is read-only (#1549)'
+              : (err as Error).message;
+            log(
+              `Warning: could not restamp the workspace branch label (${reason}); will retry on the next run.`,
+            );
+          }
         }
         await ensureGitNexusIgnored(repoPath);
         return {

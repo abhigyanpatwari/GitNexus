@@ -657,7 +657,7 @@ export const findRepo = async (startPath: string): Promise<IndexedRepo | null> =
   return null;
 };
 
-function isReadOnlyFilesystemError(err: unknown): boolean {
+export function isReadOnlyFilesystemError(err: unknown): boolean {
   const code = (err as NodeJS.ErrnoException)?.code;
   return code === 'EROFS' || code === 'EACCES' || code === 'EPERM';
 }
