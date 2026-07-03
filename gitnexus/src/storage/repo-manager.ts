@@ -1139,11 +1139,11 @@ export const removeBranchIndex = async (repoPath: string, branch: string): Promi
  */
 export const adoptFlatBranchLabel = async (repoPath: string, branch: string): Promise<void> => {
   const canonicalInput = canonicalizePath(repoPath);
-  const entries = await readRegistry();
-  const idx = entries.findIndex((e) =>
-    registryPathEquals(canonicalizePath(e.path), canonicalInput),
-  );
-  if (idx < 0) return; // unregistered → no-op, disk included (no self-heal)
+  const isRegistered = (list: RegistryEntry[]): number =>
+    list.findIndex((e) => registryPathEquals(canonicalizePath(e.path), canonicalInput));
+  // Cheap membership gate only (#2364 review F2): never touch the disk for an
+  // unregistered repo. The mutate below re-reads its own fresh snapshot.
+  if (isRegistered(await readRegistry()) < 0) return; // no-op, disk included (no self-heal)
 
   const resolved = path.resolve(repoPath);
   const { storagePath } = getStoragePaths(resolved);
@@ -1178,6 +1178,13 @@ export const adoptFlatBranchLabel = async (repoPath: string, branch: string): Pr
     }
   }
 
+  // Re-read AFTER the potentially slow recursive rm: the registry is a
+  // multi-writer whole-file overwrite, and writing a pre-rm snapshot would
+  // silently clobber concurrent registerRepo/removeBranchIndex writers —
+  // the #2106 R9 re-read-before-write discipline registerRepo follows.
+  const entries = await readRegistry();
+  const idx = isRegistered(entries);
+  if (idx < 0) return; // unregistered concurrently → still a no-op
   const entry = entries[idx];
   const remaining = dirGone ? entry.branches?.filter((b) => b.branch !== branch) : entry.branches;
   const droppedSummary = (entry.branches?.length ?? 0) !== (remaining?.length ?? 0);
