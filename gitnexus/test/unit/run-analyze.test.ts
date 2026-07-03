@@ -72,8 +72,8 @@ describe('run-analyze module', () => {
     }
   });
 
-  it('reports isPrimaryBranch false for an up-to-date non-primary branch (#2106 R2)', async () => {
-    const tmpRepo = await createTempDir('gitnexus-run-analyze-nonprimary-');
+  it('plain analyze on another branch adopts the flat workspace slot (#2354)', async () => {
+    const tmpRepo = await createTempDir('gitnexus-run-analyze-workspace-');
     try {
       execSync('git init', { cwd: tmpRepo.dbPath, stdio: 'pipe' });
       execSync('git -c user.name=t -c user.email=t@t commit --allow-empty -m init', {
@@ -87,7 +87,7 @@ describe('run-analyze module', () => {
         encoding: 'utf-8',
       }).trim();
 
-      // Flat slot owned by main; feature/x has its own up-to-date branch index.
+      // Flat slot last analyzed on main; feature/x also has a pinned sub-index.
       // Both metas stamp the current schema version so the run-analyze
       // schema-mismatch guard (#2289 P1) does not force a rebuild before the
       // fast path runs.
@@ -108,10 +108,66 @@ describe('run-analyze module', () => {
         schemaVersion: INCREMENTAL_SCHEMA_VERSION,
       });
 
+      // A plain analyze ignores the pinned sub-index and serves the flat
+      // workspace slot; the same-commit clean-tree fast path restamps the
+      // slot's branch label and removes the now-shadowed sub-index.
       const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
       const result = await runFullAnalysis(tmpRepo.dbPath, {}, { onProgress: () => {} });
       expect(result.alreadyUpToDate).toBe(true);
+      expect(result.isPrimaryBranch).toBe(true);
+      const { loadMeta } = await import('../../src/storage/repo-manager.js');
+      const flatMeta = await loadMeta(flat.storagePath);
+      expect(flatMeta?.branch).toBe('feature/x');
+      await expect(fs.access(path.dirname(branch.metaPath))).rejects.toThrow();
+    } finally {
+      await tmpRepo.cleanup();
+    }
+  });
+
+  it('reports isPrimaryBranch false for an up-to-date explicit --branch run (#2106 R2)', async () => {
+    const tmpRepo = await createTempDir('gitnexus-run-analyze-nonprimary-');
+    try {
+      execSync('git init', { cwd: tmpRepo.dbPath, stdio: 'pipe' });
+      execSync('git -c user.name=t -c user.email=t@t commit --allow-empty -m init', {
+        cwd: tmpRepo.dbPath,
+        stdio: 'pipe',
+      });
+      execSync('git branch -M main', { cwd: tmpRepo.dbPath, stdio: 'pipe' });
+      execSync('git checkout -b feature/x', { cwd: tmpRepo.dbPath, stdio: 'pipe' });
+      const commit = execSync('git rev-parse HEAD', {
+        cwd: tmpRepo.dbPath,
+        encoding: 'utf-8',
+      }).trim();
+
+      // Flat slot recorded for main; feature/x has its own up-to-date pinned
+      // sub-index, so an explicit `--branch feature/x` run routes there.
+      const flat = getStoragePaths(tmpRepo.dbPath);
+      await saveMeta(flat.storagePath, {
+        repoPath: tmpRepo.dbPath,
+        lastCommit: commit,
+        indexedAt: new Date().toISOString(),
+        branch: 'main',
+        schemaVersion: INCREMENTAL_SCHEMA_VERSION,
+      });
+      const branch = getStoragePaths(tmpRepo.dbPath, 'feature/x');
+      await saveMeta(path.dirname(branch.metaPath), {
+        repoPath: tmpRepo.dbPath,
+        lastCommit: commit,
+        indexedAt: new Date().toISOString(),
+        branch: 'feature/x',
+        schemaVersion: INCREMENTAL_SCHEMA_VERSION,
+      });
+
+      const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
+      const result = await runFullAnalysis(
+        tmpRepo.dbPath,
+        { branch: 'feature/x' },
+        { onProgress: () => {} },
+      );
+      expect(result.alreadyUpToDate).toBe(true);
       expect(result.isPrimaryBranch).toBe(false);
+      // The pinned sub-index is untouched by an explicit branch run.
+      await expect(fs.access(path.dirname(branch.metaPath))).resolves.toBeUndefined();
     } finally {
       await tmpRepo.cleanup();
     }
@@ -195,36 +251,6 @@ describe('collectBranchCacheKeys (#2106 R6)', () => {
     } finally {
       await tmp.cleanup();
     }
-  });
-});
-
-describe('primaryInversionWarning (#2106 R8)', () => {
-  it('warns when the default branch is not the flat-slot owner', async () => {
-    const { primaryInversionWarning } = await import('../../src/core/run-analyze.js');
-    const w = primaryInversionWarning('main', 'feature/x');
-    expect(w).toContain('default branch "main"');
-    expect(w).toContain('"feature/x" owns the flat slot');
-    expect(w).toContain('clean --branch feature/x');
-  });
-
-  it('does not warn when the default branch is null (no origin/HEAD)', async () => {
-    const { primaryInversionWarning } = await import('../../src/core/run-analyze.js');
-    expect(primaryInversionWarning(null, 'feature/x')).toBeUndefined();
-  });
-
-  it('does not warn when the default owns the flat slot', async () => {
-    const { primaryInversionWarning } = await import('../../src/core/run-analyze.js');
-    expect(primaryInversionWarning('main', 'main')).toBeUndefined();
-  });
-
-  it('trims both sides so trivial whitespace does not false-warn', async () => {
-    const { primaryInversionWarning } = await import('../../src/core/run-analyze.js');
-    expect(primaryInversionWarning(' main ', 'main')).toBeUndefined();
-  });
-
-  it('does not warn when there is no flat owner yet', async () => {
-    const { primaryInversionWarning } = await import('../../src/core/run-analyze.js');
-    expect(primaryInversionWarning('main', undefined)).toBeUndefined();
   });
 });
 

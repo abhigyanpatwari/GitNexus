@@ -155,7 +155,7 @@ flowchart TB
 | `group_list`     | List configured repository groups                                     |
 | `group_sync`     | Rebuild a group's Contract Registry and cross-repo links              |
 
-> Per-repo tools take an optional `repo` parameter (omit it when only one repo is indexed) and an optional `branch` for multi-branch indexes. `explain` and `pdg_query` need an index built with `gitnexus analyze --pdg`.
+> Per-repo tools take an optional `repo` parameter (omit it when only one repo is indexed) and an optional `branch` for indexes pinned with `gitnexus analyze --branch`. Omitting `branch` queries the workspace index, which follows your checked-out working tree — switching branches and re-running `gitnexus analyze` updates it incrementally. `explain` and `pdg_query` need an index built with `gitnexus analyze --pdg`.
 
 ### Resources for instant context
 

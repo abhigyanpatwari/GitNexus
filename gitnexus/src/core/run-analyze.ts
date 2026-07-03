@@ -53,6 +53,7 @@ import {
   loadMeta,
   ensureGitNexusIgnored,
   registerRepo,
+  adoptFlatBranchLabel,
   isRepoRegistered,
   cleanupOldKuzuFiles,
   INCREMENTAL_SCHEMA_VERSION,
@@ -94,7 +95,6 @@ import {
 import {
   getCurrentCommit,
   getCurrentBranch,
-  getDefaultBranch,
   getRemoteUrl,
   hasGitDir,
   getInferredRepoName,
@@ -205,13 +205,13 @@ export interface AnalyzeOptions {
    */
   defaultBranch?: string;
   /**
-   * Index-branch selector (#2106). Distinct from `defaultBranch` (which only
-   * affects generated AGENTS.md/CLAUDE.md base_ref text). When set, this run is
-   * labelled as that branch and routed to a per-branch index slot unless it is
-   * the primary branch. When `undefined`, the branch is auto-detected from the
-   * checked-out HEAD (the flat/primary slot for the first-indexed branch, a
-   * `branches/<slug>/` sub-directory otherwise). Detached HEAD / non-git always
-   * maps to the flat slot.
+   * Index-branch selector (#2106, #2354). Distinct from `defaultBranch` (which
+   * only affects generated AGENTS.md/CLAUDE.md base_ref text). When set, this
+   * run is pinned to a per-branch index slot (`branches/<slug>/`) unless the
+   * label matches the flat slot's recorded branch. When `undefined`, the run
+   * always targets the flat workspace slot, which follows the checked-out
+   * working tree; the auto-detected branch is only recorded as the slot's
+   * informational label. Detached HEAD / non-git also map to the flat slot.
    */
   branch?: string;
   /**
@@ -340,27 +340,6 @@ export const PHASE_LABELS: Record<string, string> = {
  * the {@link AnalyzeCallbacks} interface — it never writes to stdout/stderr
  * directly and never calls `process.exit()`.
  */
-/**
- * Build the primary-inversion warning (#2106 R8), or `undefined` when there is
- * nothing to warn about. Pure + exported for testing. Both inputs are trimmed
- * (a diagnostic — a missed warning is low-harm; a false warning is the thing to
- * avoid). `defaultBranch` is the repo's `origin/HEAD` branch (null when unset,
- * e.g. fresh clones / CI), `flatOwner` is the branch that owns the flat slot.
- */
-export const primaryInversionWarning = (
-  defaultBranch: string | null | undefined,
-  flatOwner: string | null | undefined,
-): string | undefined => {
-  const norm = (s: string | null | undefined): string | undefined => s?.trim() || undefined;
-  const d = norm(defaultBranch);
-  const o = norm(flatOwner);
-  if (!d || !o || d === o) return undefined;
-  return (
-    `Warning: the default branch "${d}" is not the primary index — "${o}" owns the flat slot. ` +
-    `Run \`gitnexus clean --branch ${o}\` then re-index on "${d}", or query it explicitly with \`--branch ${d}\`.`
-  );
-};
-
 /**
  * Collect the recorded parse-cache chunk keys across the flat + every branch
  * meta under a flat `.gitnexus` storage, EXCLUDING `excludeDir` (the current
@@ -585,13 +564,15 @@ export async function runFullAnalysis(
   const repoHasGit = hasGitDir(repoPath);
   const currentCommit = repoHasGit ? getCurrentCommit(repoPath) : '';
 
-  // ── #2106: resolve which branch slot this run writes to ───────────────
+  // ── #2106/#2354: resolve which branch slot this run writes to ─────────
   // `branchLabel` is the branch identity recorded in meta.json (incl. the
-  // primary). `placement.branch` is undefined for the flat/primary slot (the
-  // lbug/meta paths stay byte-identical to single-branch behavior) and set for
-  // a `branches/<slug>/` sub-directory. Explicit `--branch` is always honored;
-  // otherwise auto-detect the checked-out branch (null for detached HEAD /
-  // non-git → flat slot).
+  // flat workspace slot). `placement.branch` is undefined for the flat slot
+  // (the lbug/meta paths stay byte-identical to single-branch behavior) and
+  // set for a `branches/<slug>/` sub-directory. Only an explicit `--branch`
+  // can route to a sub-directory; a plain analyze ALWAYS targets the flat
+  // slot, which follows the checked-out working tree (#2354) — the
+  // auto-detected branch (null for detached HEAD / non-git) is recorded as
+  // the slot's informational label only.
   // Normalize the auto-detected branch the same way an explicit `--branch` is
   // validated (#2106 R1): a git ref the branch-name rules forbid (backtick,
   // `~ ^ : ? *`, leading `-`, `..`) becomes `null` → the flat slot, matching
@@ -612,7 +593,7 @@ export async function runFullAnalysis(
     );
   }
   const branchLabel = options.branch ?? checkedOutBranch;
-  const placement = await resolveBranchPlacement(repoPath, branchLabel);
+  const placement = options.branch ? await resolveBranchPlacement(repoPath, branchLabel) : {};
   const { lbugPath, metaPath } = getStoragePaths(repoPath, placement.branch);
   // Directory that owns this run's meta.json (flat `.gitnexus` for the primary
   // slot, `branches/<slug>/` otherwise). loadMeta/saveMeta operate on it so
@@ -620,21 +601,6 @@ export async function runFullAnalysis(
   const metaDir = path.dirname(metaPath);
 
   const existingMeta = await loadMeta(metaDir);
-
-  // ── #2106 (R8): warn when the repo's default branch is not the primary ──
-  // A non-default branch can own the flat slot (it was indexed first). That
-  // index is still fully queryable via `--branch`, so this is an ergonomics
-  // wart, not data loss — we only warn (no risky relocation of a live DB).
-  if (repoHasGit) {
-    // Who owns the flat slot after this run? For a flat/primary run it is this
-    // run's resolved label (carrying an existing stamp forward); for a branch
-    // run the flat owner is unchanged, so read the flat meta.
-    const flatOwner = placement.branch
-      ? (await loadMeta(storagePath))?.branch
-      : (branchLabel ?? existingMeta?.branch);
-    const warning = primaryInversionWarning(getDefaultBranch(repoPath), flatOwner);
-    if (warning) log(warning);
-  }
 
   // ── FTS-only repair path ────────────────────────────────────────────
   if (options.repairFts) {
@@ -862,6 +828,17 @@ export async function runFullAnalysis(
       const healUnregistered =
         options.allowDuplicateName === true && !(await isRepoRegistered(repoPath));
       if (!dirty && !healUnregistered) {
+        // ── #2354: restamp the workspace label on a same-commit branch flip ──
+        // The flat slot follows the checked-out working tree; a branch switch
+        // at the SAME commit with a clean tree changes nothing the pipeline
+        // must rebuild, but the slot's informational `branch` label (and the
+        // registry copy that query-side branch scoping reads) would go stale.
+        // Detached HEAD / non-git (branchLabel === null) keeps the existing
+        // stamp, mirroring the end-of-run meta write.
+        if (!placement.branch && branchLabel && existingMeta.branch !== branchLabel) {
+          await saveMeta(metaDir, { ...existingMeta, branch: branchLabel });
+          await adoptFlatBranchLabel(repoPath, branchLabel);
+        }
         await ensureGitNexusIgnored(repoPath);
         return {
           // `resolveRepoIdentityRoot` collapses worktree roots to the
@@ -1593,6 +1570,14 @@ export async function runFullAnalysis(
       // top-level fields (#2106).
       branch: placement.branch,
     });
+
+    // ── #2354: the flat workspace slot has adopted this run's branch ──────
+    // Drop a now-shadowed `branches/<slug>/` sub-index for the same label
+    // (unreachable once the flat slot serves it) and align the registry's
+    // top-level branch label.
+    if (!placement.branch && branchLabel) {
+      await adoptFlatBranchLabel(repoPath, branchLabel);
+    }
 
     // Keep generated .gitnexus contents ignored without editing the user's root .gitignore.
     await ensureGitNexusIgnored(repoPath);

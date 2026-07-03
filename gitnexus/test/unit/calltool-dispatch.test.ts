@@ -3579,6 +3579,40 @@ describe('LocalBackend.resolveRepo branch scope (#2106)', () => {
     }
   });
 
+  it('a stale cached handle still resolves the restamped workspace branch via flat meta (#2354)', async () => {
+    // The flat workspace slot follows the checked-out working tree: a plain
+    // analyze after a branch switch restamps the flat meta.json without any
+    // repo-resolution miss that would refresh a long-lived server's handle.
+    // The cached handle still says branch 'main'; the on-disk flat meta is the
+    // truth ('feature/z') and must win over a stale "not indexed" error.
+    const dir = mkdtempSync(path.join(os.tmpdir(), 'gnx-2354-restamp-'));
+    const storagePath = path.join(dir, '.gitnexus');
+    mkdirSync(storagePath, { recursive: true });
+    writeFileSync(
+      path.join(storagePath, 'meta.json'),
+      JSON.stringify({ repoPath: dir, lastCommit: 'zzz', indexedAt: 'now', branch: 'feature/z' }),
+    );
+    try {
+      (listRegisteredRepos as any).mockResolvedValue([
+        {
+          name: 'flipped',
+          path: dir,
+          storagePath,
+          indexedAt: 'now',
+          lastCommit: 'aaa',
+          branch: 'main',
+        },
+      ]);
+      await backend.init();
+      const handle = await backend.resolveRepo('flipped', 'feature/z');
+      expect(handle.lbugPath).toBe(path.join(storagePath, 'lbug'));
+      // A genuinely unindexed branch still errors (never serves the wrong DB).
+      await expect(backend.resolveRepo('flipped', 'nope')).rejects.toThrow(/not indexed/i);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('callTool threads the branch param through resolveRepo (un-indexed branch errors)', async () => {
     // If callTool dropped `branch` from repoParams, this would resolve the flat
     // handle and NOT throw — so the rejection proves the param is threaded.

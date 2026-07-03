@@ -1120,10 +1120,10 @@ export class LocalBackend {
   /**
    * Re-point a resolved repo handle at a specific branch index (#2106).
    *
-   * - No `branch` (default) → the primary/flat handle, unchanged (backward
+   * - No `branch` (default) → the flat workspace handle, unchanged (backward
    *   compatible: every existing caller passes no branch).
-   * - `branch` equal to the known primary → the flat handle.
-   * - `branch` matching an indexed non-primary branch → a handle whose
+   * - `branch` equal to the flat slot's recorded branch → the flat handle.
+   * - `branch` matching an indexed pinned branch → a handle whose
    *   `lbugPath` points at `branches/<slug>/lbug`; the connection pool keys by
    *   `lbugPath`, so this is the only change needed to scope every tool.
    * - `branch` that was never indexed → a clear error (never a silently-empty
@@ -1143,15 +1143,17 @@ export class LocalBackend {
         stats: summary.stats,
       };
     }
-    // Legacy entry (pre-#2106): the registry has no recorded primary `branch`,
-    // so a `--branch <primary>` request misses the checks above. Read the flat
-    // meta.json (next to the flat handle's lbug) to learn the primary and serve
-    // the flat handle only when it actually matches — never serve flat for an
-    // arbitrary unindexed branch (#2106 R4).
-    if (!handle.branch) {
-      const flatMeta = await loadMeta(path.dirname(handle.lbugPath));
-      if (flatMeta?.branch && flatMeta.branch === branch) return handle;
-    }
+    // The cached handle's branch label can lag the on-disk truth: the flat
+    // workspace slot follows the checked-out working tree (#2354), so a plain
+    // analyze after a branch switch restamps the flat meta without any repo-
+    // resolution miss that would refresh this handle. Also covers legacy
+    // pre-#2106 entries with no recorded primary `branch`. Read the flat
+    // meta.json (next to the flat handle's lbug) and serve the flat handle
+    // only when it actually matches — never serve flat for an arbitrary
+    // unindexed branch (#2106 R4). Error path only, so the extra read costs
+    // nothing on scoped-query hits.
+    const flatMeta = await loadMeta(path.dirname(handle.lbugPath));
+    if (flatMeta?.branch && flatMeta.branch === branch) return handle;
     const indexed = [handle.branch, ...(handle.branches?.map((b) => b.branch) ?? [])].filter(
       Boolean,
     );

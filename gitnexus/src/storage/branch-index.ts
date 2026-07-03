@@ -45,18 +45,20 @@ export const branchSlug = (rawRef: string): string => {
 };
 
 /**
- * Decide where a freshly-analyzed branch's index lives: the flat (primary) slot
- * or a per-branch sub-directory (#2106 KTD2).
+ * Decide where an EXPLICIT `--branch` run's index lives: the flat workspace
+ * slot or a per-branch sub-directory (#2106 KTD2, #2354).
  *
- * Returns `{}` for the flat/primary placement (byte-identical layout) or
- * `{ branch }` for a `branches/<slug>/` sub-directory. The flat slot is owned by
- * the FIRST branch indexed, recorded as `branch` in the flat `meta.json`; a
- * different checked-out branch then auto-routes to its own sub-directory so it
- * never overwrites the primary index.
+ * Only explicit `--branch` runs consult this — a plain analyze always targets
+ * the flat slot, which follows the checked-out working tree (#2354; gated at
+ * the `runFullAnalysis` call site). Returns `{}` for the flat placement
+ * (byte-identical layout) or `{ branch }` for a `branches/<slug>/`
+ * sub-directory: when the requested label matches the flat slot's recorded
+ * `branch` label the run updates the flat slot in place (identical content —
+ * `--branch` requires the label to be checked out); any other label gets its
+ * own pinned sub-directory that plain analyzes won't touch.
  *
- * `label` is the resolved index-branch (explicit `--branch`, else the
- * checked-out branch, else `null`). A `null` label — detached HEAD, non-git
- * folder, or CI checkout — always maps to the flat slot.
+ * A `null` label — detached HEAD, non-git folder, or CI checkout — always
+ * maps to the flat slot.
  */
 export const resolveBranchPlacement = async (
   repoPath: string,

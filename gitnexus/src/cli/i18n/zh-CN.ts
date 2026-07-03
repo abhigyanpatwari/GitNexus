@@ -32,8 +32,8 @@ export const zhCN = {
   'status.currentCommit': '当前提交',
   'status.branch': '分支',
   'status.detached': '（分离 HEAD）',
-  'status.branchNotIndexed':
-    "⚠️ 当前分支未索引（主索引对应 '{{primary}}'；请运行 gitnexus analyze）",
+  'status.workspaceIndexLabel':
+    "工作区索引：最近在 '{{primary}}' 分支上分析（gitnexus analyze 会跟随当前分支）",
   'status.status': '状态',
   'status.upToDate': '✅ 已是最新',
   'status.stale': '⚠️ 已过期（重新运行 gitnexus analyze）',
@@ -199,7 +199,7 @@ export const zhCN = {
   'help.option.force.confirmation': '跳过确认提示',
   'help.option.uninstall.force': '应用更改（默认仅为预演预览）',
   'help.option.clean.all': '清理所有已索引仓库',
-  'help.option.clean.branch': '仅删除指定分支的索引（不影响主索引）',
+  'help.option.clean.branch': '仅删除指定分支的索引（不影响工作区索引）',
   'help.option.clean.lbugSidecars': '清理已隔离的 LadybugDB missing-shadow WAL sidecar',
   'help.option.wiki.force': '即使已是最新也强制完整重新生成',
   'help.option.wiki.provider':

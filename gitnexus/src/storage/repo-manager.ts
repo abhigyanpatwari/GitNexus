@@ -911,6 +911,53 @@ export const removeBranchIndex = async (repoPath: string, branch: string): Promi
 };
 
 /**
+ * Record that the flat workspace slot now serves `branch` (#2354).
+ *
+ * The flat index follows the checked-out working tree, so when a plain
+ * analyze lands on a branch that also has a pinned `branches/<slug>/`
+ * sub-index, that sub-index becomes permanently shadowed — explicit
+ * `--branch` runs re-resolve to the flat slot and query-side branch scoping
+ * serves the flat handle first. Delete the shadowed directory and drop its
+ * registry summary in the same pass (leaving either half behind would strand
+ * un-cleanable disk bloat), and refresh the entry's top-level `branch` label
+ * so `list`/`list_repos`/branch-scoped queries stay coherent.
+ *
+ * Deliberately narrow for the analyze fast path: a missing registry entry is
+ * a no-op (never self-heals an unregistered repo, per #2264/#1169), and no
+ * subprocess is spawned.
+ */
+export const adoptFlatBranchLabel = async (repoPath: string, branch: string): Promise<void> => {
+  const resolved = path.resolve(repoPath);
+  const { storagePath } = getStoragePaths(resolved);
+  // Remove a shadowed sub-index directory, mirroring `clean --branch`'s
+  // containment guard: the target MUST live under .gitnexus/branches/.
+  const branchDir = path.join(storagePath, BRANCHES_DIR, branchSlug(branch));
+  const branchesRoot = path.join(storagePath, BRANCHES_DIR) + path.sep;
+  if (branchDir.startsWith(branchesRoot)) {
+    await fs.rm(branchDir, { recursive: true, force: true }).catch(() => {});
+    // Non-recursive by design: only removes the parent when no other pinned
+    // sub-index remains, so an empty branches/ dir doesn't read as "pinned".
+    await fs.rmdir(path.join(storagePath, BRANCHES_DIR)).catch(() => {});
+  }
+
+  const canonicalInput = canonicalizePath(repoPath);
+  const entries = await readRegistry();
+  const idx = entries.findIndex((e) =>
+    registryPathEquals(canonicalizePath(e.path), canonicalInput),
+  );
+  if (idx < 0) return; // unregistered → no-op (no self-heal)
+  const entry = entries[idx];
+  const remaining = entry.branches?.filter((b) => b.branch !== branch);
+  const droppedSummary = (entry.branches?.length ?? 0) !== (remaining?.length ?? 0);
+  if (entry.branch === branch && !droppedSummary) return; // already coherent
+  entry.branch = branch;
+  if (remaining && remaining.length > 0) entry.branches = remaining;
+  else delete entry.branches;
+  entries[idx] = entry;
+  await writeRegistry(entries);
+};
+
+/**
  * Thrown by {@link resolveRegistryEntry} when no registered repo matches
  * the caller's target string (by alias, basename, remote-inferred name,
  * or resolved path). CLI callers that want idempotent "remove" semantics

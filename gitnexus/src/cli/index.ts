@@ -83,9 +83,9 @@ program
   )
   .option(
     '--branch <name>',
-    'Index the working tree under a specific branch slot (multi-branch indexing). ' +
-      'Defaults to the checked-out branch; the primary/first-indexed branch keeps the ' +
-      'flat index and others get their own. Distinct from --default-branch (cosmetic base_ref).',
+    'Pin the working tree into a dedicated per-branch index slot (multi-branch indexing). ' +
+      'Without this flag, analyze always updates the workspace index, which follows the ' +
+      'checked-out working tree. Distinct from --default-branch (cosmetic base_ref).',
   )
   .option('--no-stats', 'Omit volatile file/symbol counts from AGENTS.md and CLAUDE.md')
   .option(
@@ -245,7 +245,7 @@ program
   .description('Delete GitNexus index for current repo')
   .option('-f, --force', 'Skip confirmation prompt')
   .option('--all', 'Clean all indexed repos')
-  .option('--branch <name>', 'Delete only the named branch index (not the primary)')
+  .option('--branch <name>', 'Delete only the named branch index (not the workspace index)')
   .option('--lbug-sidecars', 'Clean quarantined LadybugDB missing-shadow WAL sidecars')
   .action(createLazyAction(() => import('./clean.js'), 'cleanCommand'));
 

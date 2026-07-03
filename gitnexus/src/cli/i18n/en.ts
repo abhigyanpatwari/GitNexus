@@ -28,8 +28,8 @@ export const en = {
   'status.currentCommit': 'Current commit',
   'status.branch': 'Branch',
   'status.detached': '(detached HEAD)',
-  'status.branchNotIndexed':
-    "⚠️ current branch not indexed (primary index is for '{{primary}}'; run gitnexus analyze)",
+  'status.workspaceIndexLabel':
+    "Workspace index: last analyzed on '{{primary}}' (gitnexus analyze follows this branch)",
   'status.status': 'Status',
   'status.upToDate': '✅ up-to-date',
   'status.stale': '⚠️ stale (re-run gitnexus analyze)',
@@ -212,7 +212,7 @@ export const en = {
   'help.option.force.confirmation': 'Skip confirmation prompt',
   'help.option.uninstall.force': 'Apply the changes (default is a dry-run preview)',
   'help.option.clean.all': 'Clean all indexed repos',
-  'help.option.clean.branch': 'Delete only the named branch index (not the primary)',
+  'help.option.clean.branch': 'Delete only the named branch index (not the workspace index)',
   'help.option.clean.lbugSidecars': 'Clean quarantined LadybugDB missing-shadow WAL sidecars',
   'help.option.wiki.force': 'Force full regeneration even if up to date',
   'help.option.wiki.provider':

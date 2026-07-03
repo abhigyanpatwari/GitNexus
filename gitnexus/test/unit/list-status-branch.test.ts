@@ -112,16 +112,31 @@ describe('status branch rendering (#2106)', () => {
     expect(out).toContain('up-to-date');
   });
 
-  it('reports when the checked-out branch is not indexed', async () => {
+  it('falls through to the workspace index when the branch has no pinned index (#2354)', async () => {
     (findRepo as any).mockResolvedValue(baseRepo);
     (getCurrentBranch as any).mockReturnValue('feature/y');
     (getCurrentCommit as any).mockReturnValue('headsha9');
-    (loadMeta as any).mockResolvedValue(null); // feature/y has no index
+    (loadMeta as any).mockResolvedValue(null); // feature/y has no pinned index
 
     await statusCommand();
     const out = output();
     expect(out).toContain('Branch: feature/y');
-    expect(out).toContain('current branch not indexed');
+    // The flat workspace index (last analyzed on main) is reported, with the
+    // commit comparison saying it lags this branch's tree.
+    expect(out).toContain("Workspace index: last analyzed on 'main'");
+    expect(out).toContain('stale');
+  });
+
+  it('same-commit branch flip reports up-to-date against the workspace index (#2354)', async () => {
+    (findRepo as any).mockResolvedValue(baseRepo);
+    (getCurrentBranch as any).mockReturnValue('feature/y');
+    (getCurrentCommit as any).mockReturnValue('headsha0'); // same commit as flat meta
+    (loadMeta as any).mockResolvedValue(null); // feature/y has no pinned index
+
+    await statusCommand();
+    const out = output();
+    expect(out).toContain("Workspace index: last analyzed on 'main'");
+    expect(out).toContain('up-to-date');
   });
 
   it('compares against the branch index when the current branch has one', async () => {
