@@ -125,4 +125,31 @@ describe('Header', () => {
     expect(screen.getByText('No repositories found for missing')).toBeInTheDocument();
     expect(screen.queryByText('repo-1')).not.toBeInTheDocument();
   });
+
+  it('does not leave stale rows when duplicate repository names are filtered', async () => {
+    const user = userEvent.setup();
+    render(
+      <Header
+        availableRepos={[
+          { ...makeRepo(0), name: 'search_sync', path: '/workspace/group-a/search_sync' },
+          { ...makeRepo(1), name: 'tab_server', path: '/workspace/group-a/tab_server' },
+          { ...makeRepo(2), name: 'feed_sync', path: '/workspace/group-a/feed_sync' },
+          { ...makeRepo(3), name: 'search_sync', path: '/workspace/group-b/search_sync' },
+          { ...makeRepo(4), name: 'tab_server', path: '/workspace/group-b/tab_server' },
+          { ...makeRepo(5), name: 'reels', path: '/workspace/group-b/reels' },
+        ]}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: /reels/i }));
+
+    await user.type(screen.getByRole('textbox', { name: 'Search repositories...' }), 'tab');
+
+    const repoList = screen.getAllByText('tab_server')[0].closest('.scrollbar-thin');
+    expect(repoList).not.toBeNull();
+    expect(repoList).toHaveTextContent('tab_server');
+    expect(repoList).not.toHaveTextContent('search_sync');
+    expect(repoList).not.toHaveTextContent('feed_sync');
+    expect(repoList).not.toHaveTextContent('reels');
+  });
 });

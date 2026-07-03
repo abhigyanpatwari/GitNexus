@@ -250,7 +250,7 @@ export const Header = ({
                           ) : (
                             filteredRepos.map((repo) => (
                               <div
-                                key={repo.name}
+                                key={repo.path || repo.name}
                                 className={`group flex items-center gap-2 px-4 py-2 transition-colors ${
                                   repo.name === projectName
                                     ? 'border-l-2 border-accent bg-accent/10'
