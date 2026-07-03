@@ -18,6 +18,21 @@ import { describe, it, expect, afterAll } from 'vitest';
 import fs from 'fs/promises';
 import path from 'path';
 import { initLbug, executeQuery, closeLbug } from '../../src/mcp/core/lbug-adapter.js';
+
+// Passthrough spies on the pool adapter: real behavior, observable calls —
+// the staleness tests assert a fresher metadata stamp actually triggers a
+// pool reinit (closeLbug + initLbug), not merely "didn't crash". The mock
+// targets core/lbug/pool-adapter.js (LocalBackend's direct import);
+// mcp/core/lbug-adapter.js is a re-export shim over the same module, so the
+// spies are visible through both specifiers.
+vi.mock('../../src/core/lbug/pool-adapter.js', async (importActual) => {
+  const actual = await importActual<typeof import('../../src/core/lbug/pool-adapter.js')>();
+  return {
+    ...actual,
+    initLbug: vi.fn(actual.initLbug),
+    closeLbug: vi.fn(actual.closeLbug),
+  };
+});
 import { withTestLbugDB } from '../helpers/test-indexed-db.js';
 import {
   LOCAL_BACKEND_SEED_DATA,
@@ -27,7 +42,15 @@ import { LocalBackend } from '../../src/mcp/local/local-backend.js';
 import { listRegisteredRepos } from '../../src/storage/repo-manager.js';
 import { vi } from 'vitest';
 
-vi.mock('../../src/storage/repo-manager.js', () => ({
+// Partial mock: registry access is faked, but everything else — critically
+// `loadMeta`, which the staleness check in LocalBackend.ensureInitialized
+// calls on every throttled window — stays REAL, so the staleness tests
+// below exercise the true read path against the fixture metadata files.
+// (A factory that omitted loadMeta made that call site throw a TypeError
+// that the staleness check's catch silently swallowed — the whole "detects
+// stale index" block passed without ever running the detection.)
+vi.mock('../../src/storage/repo-manager.js', async (importActual) => ({
+  ...(await importActual<typeof import('../../src/storage/repo-manager.js')>()),
   listRegisteredRepos: vi.fn().mockResolvedValue([]),
   cleanupOldKuzuFiles: vi.fn().mockResolvedValue({ found: false, needsReindex: false }),
   findSiblingClones: vi.fn().mockResolvedValue([]),
@@ -163,7 +186,7 @@ withTestLbugDB(
         expect(result.row_count).toBeGreaterThanOrEqual(3);
       });
 
-      it('detects stale index when meta.json indexedAt changes', async () => {
+      it('detects stale index when meta.json indexedAt changes and reinits the pool', async () => {
         const metaPath = path.join(storagePath, 'meta.json');
         await fs.writeFile(
           metaPath,
@@ -174,15 +197,48 @@ withTestLbugDB(
           }),
         );
 
-        // Next call triggers re-init. May fail but must NOT crash.
+        const initCallsBefore = vi.mocked(initLbug).mock.calls.length;
+        // Beat the 5s staleness throttle without freezing real timers/IO.
+        vi.useFakeTimers({ toFake: ['Date'] });
+        vi.setSystemTime(new Date(Date.now() + 10_000));
         try {
           const result = await backend.callTool('cypher', {
             query: 'MATCH (n:Function) RETURN COUNT(n) AS cnt',
           });
-          expect(result).toBeDefined();
-        } catch (err: any) {
-          expect(err.message).not.toMatch(/SIGSEGV/i);
+          // The pool was re-inited AND the query on the fresh pool succeeded.
+          expect(result).toHaveProperty('row_count');
+        } finally {
+          vi.useRealTimers();
         }
+        expect(vi.mocked(initLbug).mock.calls.length).toBeGreaterThan(initCallsBefore);
+        expect(vi.mocked(closeLbug)).toHaveBeenCalled();
+      });
+
+      it('prefers a fresher gitnexus.json over meta.json in the staleness check', async () => {
+        // The primary metadata filename is consulted first; the stale
+        // meta.json mirror left behind must not mask the newer stamp.
+        await fs.writeFile(
+          path.join(storagePath, 'gitnexus.json'),
+          JSON.stringify({
+            indexedAt: new Date(Date.now() + 120_000).toISOString(),
+            lastCommit: 'primary-newer-commit',
+            stats: { files: 2, nodes: 3, communities: 1, processes: 1 },
+          }),
+        );
+
+        const initCallsBefore = vi.mocked(initLbug).mock.calls.length;
+        vi.useFakeTimers({ toFake: ['Date'] });
+        vi.setSystemTime(new Date(Date.now() + 20_000));
+        try {
+          const result = await backend.callTool('cypher', {
+            query: 'MATCH (n:Function) RETURN COUNT(n) AS cnt',
+          });
+          expect(result).toHaveProperty('row_count');
+        } finally {
+          vi.useRealTimers();
+          await fs.rm(path.join(storagePath, 'gitnexus.json'), { force: true });
+        }
+        expect(vi.mocked(initLbug).mock.calls.length).toBeGreaterThan(initCallsBefore);
       });
 
       it('throttle: no re-read within 5s window', async () => {
