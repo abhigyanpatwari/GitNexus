@@ -879,8 +879,11 @@ export async function runFullAnalysis(
             await adoptFlatBranchLabel(repoPath, branchLabel);
             await saveMeta(metaDir, { ...existingMeta, branch: branchLabel });
           } catch (err) {
+            // EACCES/EPERM also arise from ownership problems and transient
+            // Windows locks, so keep the real error visible alongside the
+            // #1549 read-only hint instead of replacing it.
             const reason = isReadOnlyFilesystemError(err)
-              ? 'GitNexus storage is read-only (#1549)'
+              ? `${(err as Error).message} — storage may be read-only (#1549)`
               : (err as Error).message;
             log(
               `Warning: could not restamp the workspace branch label (${reason}); will retry on the next run.`,
@@ -1623,9 +1626,12 @@ export async function runFullAnalysis(
     // Drop a now-shadowed `branches/<slug>/` sub-index for the same label
     // (unreachable once the flat slot serves it) and align the registry's
     // top-level branch label. Best-effort like the parse-cache save above
-    // (#2364 review F5): the index is already complete and registered, and
-    // adopt retries unconditionally on the next plain analyze — a registry
-    // write failure must not fail an otherwise successful multi-minute run.
+    // (#2364 review F5): the index is complete and registered, and a failure
+    // here leaves only a stale registry label / undeleted shadowed dir —
+    // never wrong routing, because the flat meta this run already stamped is
+    // what applyBranchScope trusts. Retried by the next content-changing run
+    // (same-commit fast-path runs skip it: their guard compares the
+    // already-stamped meta label).
     if (!placement.branch && branchLabel) {
       try {
         await adoptFlatBranchLabel(repoPath, branchLabel);
