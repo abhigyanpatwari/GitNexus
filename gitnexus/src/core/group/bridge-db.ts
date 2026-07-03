@@ -643,16 +643,6 @@ export async function closeBridgeDb(handle: BridgeHandle): Promise<void> {
 // Linux/macOS.
 
 /* ------------------------------------------------------------------ */
-/*  retryRename — handles transient EBUSY/EPERM/EACCES on Windows    */
-/* ------------------------------------------------------------------ */
-
-// Moved to storage/fs-atomic.ts so storage/repo-manager.ts can use it
-// without a storage/ -> core/group/ import. Re-exported here (rather than
-// only re-imported) so existing consumers of `retryRename` from this module
-// keep working unchanged.
-export { retryRename };
-
-/* ------------------------------------------------------------------ */
 /*  writeBridgeMeta / readBridgeMeta                                  */
 /* ------------------------------------------------------------------ */
 
