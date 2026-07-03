@@ -243,6 +243,34 @@ describe('antigravity hook adapter e2e', () => {
       expect(output!.additionalContext).toContain('npx gitnexus@latest analyze --embeddings');
     });
 
+    it('prefers gitnexus.json over meta.json when both are present (dual-write steady state)', () => {
+      const gitnexusJsonPath = path.join(gitNexusDir, 'gitnexus.json');
+      const metaJsonPath = path.join(gitNexusDir, 'meta.json');
+      fs.writeFileSync(gitnexusJsonPath, JSON.stringify({ lastCommit: 'f'.repeat(40), stats: {} }));
+      fs.writeFileSync(
+        metaJsonPath,
+        JSON.stringify({ lastCommit: 'stale'.padEnd(40, '0'), stats: {} }),
+      );
+
+      try {
+        const result = runHook(installedHook, {
+          hook_event_name: 'AfterTool',
+          tool_name: 'run_shell_command',
+          tool_input: { command: 'git commit -m "test"' },
+          tool_response: { llmContent: '[committed]' },
+          cwd: tmpDir,
+        });
+
+        const output = parseHookOutput(result.stdout);
+        expect(output).not.toBeNull();
+        // Reports staleness against gitnexus.json's commit — proves it's consulted first.
+        expect(output!.additionalContext).toContain('fffffff');
+      } finally {
+        fs.rmSync(gitnexusJsonPath, { force: true });
+        fs.writeFileSync(metaJsonPath, JSON.stringify({ lastCommit: 'old', stats: {} }));
+      }
+    });
+
     it('treats missing meta.json as stale', () => {
       const metaPath = path.join(gitNexusDir, 'meta.json');
       if (fs.existsSync(metaPath)) fs.unlinkSync(metaPath);

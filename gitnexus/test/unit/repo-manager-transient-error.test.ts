@@ -183,6 +183,84 @@ describe('listRegisteredRepos({ validate: true }) — transient error safety (PR
     expect(await readRegistryFromDisk()).toHaveLength(1);
   });
 
+  it.each(['EACCES', 'EIO', 'EBUSY'])(
+    '%s from gitnexus.json keeps the entry even when legacy meta.json is ENOENT',
+    async (newMetadataCode) => {
+      await registerRepo(tmpRepo.dbPath, mockMeta);
+      const before = await listRegisteredRepos();
+      expect(before).toHaveLength(1);
+
+      const newMetadataPath = path.join(tmpRepo.dbPath, '.gitnexus', 'gitnexus.json');
+      const legacyMetadataPath = path.join(tmpRepo.dbPath, '.gitnexus', 'meta.json');
+
+      const originalAccess = fs.access;
+      vi.spyOn(fs, 'access').mockImplementation(async (p, mode) => {
+        const pStr = typeof p === 'string' ? p : p.toString();
+
+        if (pStr === newMetadataPath) {
+          const err = new Error(newMetadataCode) as NodeJS.ErrnoException;
+          err.code = newMetadataCode;
+          throw err;
+        }
+
+        if (pStr === legacyMetadataPath) {
+          const err = new Error('no such file') as NodeJS.ErrnoException;
+          err.code = 'ENOENT';
+          throw err;
+        }
+
+        return (originalAccess as any).call(fs, p, mode);
+      });
+
+      const after = await listRegisteredRepos({ validate: true });
+      expect(after).toHaveLength(1);
+      expect(after[0].name).toBe(before[0].name);
+
+      const onDisk = await readRegistryFromDisk();
+      expect(onDisk).toHaveLength(1);
+      expect(onDisk[0].name).toBe(before[0].name);
+    },
+  );
+
+  it.each(['EACCES', 'EIO', 'EBUSY'])(
+    '%s from legacy meta.json keeps the entry when gitnexus.json is ENOENT',
+    async (legacyMetadataCode) => {
+      await registerRepo(tmpRepo.dbPath, mockMeta);
+      const before = await listRegisteredRepos();
+      expect(before).toHaveLength(1);
+
+      const newMetadataPath = path.join(tmpRepo.dbPath, '.gitnexus', 'gitnexus.json');
+      const legacyMetadataPath = path.join(tmpRepo.dbPath, '.gitnexus', 'meta.json');
+
+      const originalAccess = fs.access;
+      vi.spyOn(fs, 'access').mockImplementation(async (p, mode) => {
+        const pStr = typeof p === 'string' ? p : p.toString();
+
+        if (pStr === newMetadataPath) {
+          const err = new Error('no such file') as NodeJS.ErrnoException;
+          err.code = 'ENOENT';
+          throw err;
+        }
+
+        if (pStr === legacyMetadataPath) {
+          const err = new Error(legacyMetadataCode) as NodeJS.ErrnoException;
+          err.code = legacyMetadataCode;
+          throw err;
+        }
+
+        return (originalAccess as any).call(fs, p, mode);
+      });
+
+      const after = await listRegisteredRepos({ validate: true });
+      expect(after).toHaveLength(1);
+      expect(after[0].name).toBe(before[0].name);
+
+      const onDisk = await readRegistryFromDisk();
+      expect(onDisk).toHaveLength(1);
+      expect(onDisk[0].name).toBe(before[0].name);
+    },
+  );
+
   it('mixed batch persists only the survivor (ENOENT pruned, EIO kept)', async () => {
     // Two registered repos: one whose index is genuinely gone (ENOENT) and one
     // that hits a transient I/O error (EIO) in the SAME validation call. This is

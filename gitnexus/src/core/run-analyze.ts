@@ -56,6 +56,9 @@ import {
   adoptFlatBranchLabel,
   isRepoRegistered,
   cleanupOldKuzuFiles,
+  reconcileMetadataFiles,
+  isMissingFilesystemError,
+  INDEX_METADATA_FILE,
   INCREMENTAL_SCHEMA_VERSION,
   type RepoMeta,
 } from '../storage/repo-manager.js';
@@ -342,11 +345,14 @@ export const PHASE_LABELS: Record<string, string> = {
  */
 /**
  * Collect the recorded parse-cache chunk keys across the flat + every branch
- * meta under a flat `.gitnexus` storage, EXCLUDING `excludeDir` (the current
- * run's own meta dir) so a single-branch repo collects nothing and its prune
- * stays byte-identical to today (#2106 R6). `complete` is false when a sibling
- * meta.json exists but fails to parse — callers then retain the whole shared
- * cache rather than over-evict another branch's still-live shards. Exported for
+ * metadata directory under a flat `.gitnexus` storage, EXCLUDING `excludeDir`
+ * (the current run's own meta dir) so a single-branch repo collects nothing and
+ * its prune stays byte-identical to today (#2106 R6 — the byte-identity claim
+ * is about the PRUNE result; the metadata FILENAME read here changed with
+ * PR #2363's rename, checking `gitnexus.json` first then the legacy
+ * `meta.json` mirror). `complete` is false when a sibling metadata file exists
+ * but fails to read or parse — callers then retain the whole shared cache
+ * rather than over-evict another branch's still-live shards. Exported for
  * testing.
  */
 export const collectBranchCacheKeys = async (
@@ -363,9 +369,18 @@ export const collectBranchCacheKeys = async (
     if (excludeDir && path.resolve(dir) === path.resolve(excludeDir)) continue;
     let raw: string;
     try {
-      raw = await fs.readFile(path.join(dir, 'meta.json'), 'utf-8');
-    } catch {
-      continue; // no meta here — not a branch index, not a failure
+      raw = await fs.readFile(path.join(dir, INDEX_METADATA_FILE), 'utf-8');
+    } catch (newErr) {
+      if (!isMissingFilesystemError(newErr)) {
+        complete = false;
+        continue;
+      }
+      try {
+        raw = await fs.readFile(path.join(dir, 'meta.json'), 'utf-8');
+      } catch (legacyErr) {
+        if (!isMissingFilesystemError(legacyErr)) complete = false;
+        continue; // no metadata here — not a branch index, not a failure
+      }
     }
     try {
       const parsed = JSON.parse(raw) as { cacheKeys?: unknown };
@@ -595,10 +610,21 @@ export async function runFullAnalysis(
   const branchLabel = options.branch ?? checkedOutBranch;
   const placement = options.branch ? await resolveBranchPlacement(repoPath, branchLabel) : {};
   const { lbugPath, metaPath } = getStoragePaths(repoPath, placement.branch);
-  // Directory that owns this run's meta.json (flat `.gitnexus` for the primary
-  // slot, `branches/<slug>/` otherwise). loadMeta/saveMeta operate on it so
-  // each branch keeps its own lastCommit / fileHashes / incremental dirty flag.
+  // metaPath now points to the metadata file (gitnexus.json) in a branch-specific directory.
+  // metaDir is the directory containing the metadata file (and branch-specific DBs).
   const metaDir = path.dirname(metaPath);
+
+  // Keep gitnexus.json and the legacy meta.json mirror in sync (fresher
+  // indexedAt wins; nothing is deleted). Best-effort: loadMeta has its own
+  // legacy fallback, so a reconciliation failure (read-only mount, full disk)
+  // must never abort the analyze run — a repo that indexed fine read-only
+  // before the rename must keep doing so.
+  try {
+    await reconcileMetadataFiles(repoPath);
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException)?.code;
+    log(`Metadata reconciliation failed (non-critical${code ? `, ${code}` : ''}); continuing.`);
+  }
 
   const existingMeta = await loadMeta(metaDir);
 

@@ -14,7 +14,7 @@ Canonical agent instructions: **[AGENTS.md](../AGENTS.md)** (GitNexus MCP rules,
 - NEVER rename symbols with find-and-replace — use `gitnexus_rename`.
 - NEVER commit without running `gitnexus_detect_changes()`.
 - NEVER ignore HIGH/CRITICAL risk warnings from impact analysis.
-- NEVER run `npx gitnexus analyze` without `--embeddings` if `.gitnexus/meta.json` shows stored embeddings.
+- NEVER run `npx gitnexus analyze` without `--embeddings` if the index metadata (`.gitnexus/gitnexus.json` / legacy `meta.json`) shows stored embeddings.
 
 Full rules: **[AGENTS.md](../AGENTS.md)** (`gitnexus:start` block, Cursor Cloud section).
 

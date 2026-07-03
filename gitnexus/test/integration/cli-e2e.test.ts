@@ -390,11 +390,21 @@ describe('CLI end-to-end', () => {
         ].join('\n'),
       ).toBe(0);
 
+      // Both metadata filenames must exist after a successful analyze:
+      // gitnexus.json is the primary (what assertAnalysisFinalized checks —
+      // its absence is the #1169 silent-finalize symptom) and meta.json is
+      // the dual-written legacy mirror older consumers still read.
+      const primaryMetaPath = path.join(repo, '.gitnexus', 'gitnexus.json');
+      expect(
+        fs.existsSync(primaryMetaPath),
+        `gitnexus.json missing at ${primaryMetaPath} after analyze exited 0 — this is the #1169 silent-finalize symptom`,
+      ).toBe(true);
       const metaPath = path.join(repo, '.gitnexus', 'meta.json');
       expect(
         fs.existsSync(metaPath),
-        `meta.json missing at ${metaPath} after analyze exited 0 — this is the #1169 silent-finalize symptom`,
+        `legacy meta.json mirror missing at ${metaPath} after analyze exited 0 — dual-write regressed`,
       ).toBe(true);
+      expect(fs.readFileSync(primaryMetaPath, 'utf-8')).toBe(fs.readFileSync(metaPath, 'utf-8'));
 
       const registryPath = path.join(gnHome, 'registry.json');
       expect(
@@ -439,10 +449,11 @@ describe('CLI end-to-end', () => {
 
       const metaPath = path.join(repo, '.gitnexus', 'meta.json');
       expect(fs.existsSync(metaPath)).toBe(true);
+      expect(fs.existsSync(path.join(repo, '.gitnexus', 'gitnexus.json'))).toBe(true);
 
-      // Simulate the half-finalized state from the review: meta.json is
-      // present and lastCommit matches, but the repo is not discoverable
-      // because the global registry entry is missing.
+      // Simulate the half-finalized state from the review: the metadata
+      // (both filenames) is present and lastCommit matches, but the repo is
+      // not discoverable because the global registry entry is missing.
       fs.writeFileSync(path.join(gnHome, 'registry.json'), '[]', 'utf-8');
 
       const second = runCliWithEnv(['analyze'], repo, { GITNEXUS_HOME: gnHome }, 60000);

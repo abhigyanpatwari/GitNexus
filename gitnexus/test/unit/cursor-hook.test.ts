@@ -213,6 +213,10 @@ describe('Cursor hook source regressions', () => {
     expect(source).toContain('isGlobalRegistryDir');
   });
 
+  it('isGlobalRegistryDir recognizes gitnexus.json as well as legacy meta.json', () => {
+    expect(source).toContain('gitnexus.json');
+  });
+
   it('handles linked git worktrees via git rev-parse --git-common-dir', () => {
     expect(source).toContain('--git-common-dir');
   });

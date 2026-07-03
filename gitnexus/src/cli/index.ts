@@ -195,7 +195,7 @@ program
   .description(
     'Register an existing .gitnexus/ folder into the global registry (no re-analysis needed)',
   )
-  .option('-f, --force', 'Register even if meta.json is missing (stats will be empty)')
+  .option('-f, --force', 'Register even if index metadata is missing (stats will be empty)')
   .option('--allow-non-git', 'Allow registering folders that are not Git repositories')
   .action(createLazyAction(() => import('./index-repo.js'), 'indexCommand'));
 

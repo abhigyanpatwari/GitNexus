@@ -414,10 +414,13 @@ describe('runFullAnalysis FTS repair and verification failure paths', () => {
       expect(verifySearchFTSIndexes).not.toHaveBeenCalled();
       expect(logs.join('\n')).toMatch(/FTS extension unavailable; skipping search-index creation/i);
 
-      // The degraded state is persisted so meta.json / doctor stay honest.
+      // The degraded state is persisted so the metadata / doctor stay honest —
+      // in BOTH filenames (gitnexus.json primary + dual-written meta.json mirror).
       const { storagePath } = getStoragePaths(tmpRepo.dbPath);
       const meta = JSON.parse(await fs.readFile(`${storagePath}/meta.json`, 'utf-8'));
       expect(meta.capabilities.fts.status).toBe('unavailable');
+      const primaryMeta = JSON.parse(await fs.readFile(`${storagePath}/gitnexus.json`, 'utf-8'));
+      expect(primaryMeta.capabilities.fts.status).toBe('unavailable');
     } finally {
       await tmpRepo.cleanup();
     }
