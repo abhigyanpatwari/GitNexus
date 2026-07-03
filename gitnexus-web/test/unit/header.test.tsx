@@ -1,4 +1,5 @@
 import { fireEvent, render, screen } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 import { Header } from '../../src/components/Header';
 import type { BackendRepo } from '../../src/services/backend-client';
@@ -47,6 +48,9 @@ vi.mock('react-i18next', () => ({
       if (key === 'header:reanalyzeRepo') return `Re-analyze ${options?.repoName ?? ''}`;
       if (key === 'header:deleteRepo') return `Delete ${options?.repoName ?? ''}`;
       if (key === 'header:analyzeNew') return 'Analyze new';
+      if (key === 'header:searchRepositories') return 'Search repositories...';
+      if (key === 'header:noRepositoriesFound')
+        return `No repositories found for ${options?.query}`;
       return key;
     },
   }),
@@ -81,5 +85,44 @@ describe('Header', () => {
     expect(scrollableRepoList).not.toBeNull();
     expect(scrollableRepoList).toHaveClass('overflow-y-auto');
     expect(scrollableRepoList).toHaveClass('flex-1');
+  });
+
+  it('filters repositories locally by name and path', async () => {
+    const user = userEvent.setup();
+    render(
+      <Header
+        availableRepos={[
+          { ...makeRepo(0), name: 'reels', path: '/workspace/apps/reels' },
+          { ...makeRepo(1), name: 'gitnexus-web', path: '/workspace/GitNexus/gitnexus-web' },
+          { ...makeRepo(2), name: 'api-server', path: '/workspace/services/api' },
+        ]}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: /reels/i }));
+
+    const input = screen.getByRole('textbox', { name: 'Search repositories...' });
+    await user.type(input, 'gitnexus');
+
+    expect(screen.getByText('gitnexus-web')).toBeInTheDocument();
+    expect(screen.queryByText('api-server')).not.toBeInTheDocument();
+
+    await user.clear(input);
+    await user.type(input, 'services');
+
+    expect(screen.getByText('api-server')).toBeInTheDocument();
+    expect(screen.queryByText('gitnexus-web')).not.toBeInTheDocument();
+  });
+
+  it('shows an empty state when no repositories match the local search', async () => {
+    const user = userEvent.setup();
+    render(<Header availableRepos={Array.from({ length: 3 }, (_, index) => makeRepo(index))} />);
+
+    fireEvent.click(screen.getByRole('button', { name: /reels/i }));
+
+    await user.type(screen.getByRole('textbox', { name: 'Search repositories...' }), 'missing');
+
+    expect(screen.getByText('No repositories found for missing')).toBeInTheDocument();
+    expect(screen.queryByText('repo-1')).not.toBeInTheDocument();
   });
 });
