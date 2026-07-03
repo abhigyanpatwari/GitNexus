@@ -1620,9 +1620,18 @@ export async function runFullAnalysis(
     // ── #2354: the flat workspace slot has adopted this run's branch ──────
     // Drop a now-shadowed `branches/<slug>/` sub-index for the same label
     // (unreachable once the flat slot serves it) and align the registry's
-    // top-level branch label.
+    // top-level branch label. Best-effort like the parse-cache save above
+    // (#2364 review F5): the index is already complete and registered, and
+    // adopt retries unconditionally on the next plain analyze — a registry
+    // write failure must not fail an otherwise successful multi-minute run.
     if (!placement.branch && branchLabel) {
-      await adoptFlatBranchLabel(repoPath, branchLabel);
+      try {
+        await adoptFlatBranchLabel(repoPath, branchLabel);
+      } catch (e) {
+        log(
+          `Warning: could not sync the workspace branch label (${(e as Error).message}); continuing.`,
+        );
+      }
     }
 
     // Keep generated .gitnexus contents ignored without editing the user's root .gitignore.
