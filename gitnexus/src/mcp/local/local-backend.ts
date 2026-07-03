@@ -1138,19 +1138,44 @@ export class LocalBackend {
    *   cached summary must not route to the deleted path.
    * - Cached `handle.branch` is trusted only when there is no readable flat
    *   meta to contradict it (legacy shapes, #2106 R4).
-   * - `branch` that was never indexed → a clear error (never a silently-empty
-   *   result against the wrong DB), after one `refreshRepos()` when a cached
-   *   label or summary was detected stale.
+   * - Any miss → a clear error (never a silently-empty result against the
+   *   wrong DB), after exactly one `refreshRepos()` so newly-pinned branches
+   *   and restamped labels the cached handle predates resolve on the next
+   *   call.
    */
   private async applyBranchScope(handle: RepoHandle, branch?: string): Promise<RepoHandle> {
     if (!branch) return handle;
+    // At most one cache refresh per resolution: enough for the NEXT call to
+    // see fresh handles, without paying two registry re-scans when several
+    // stale arms fire in one degraded resolution.
+    let refreshed = false;
+    const refreshOnce = async (): Promise<void> => {
+      if (refreshed) return;
+      refreshed = true;
+      await this.refreshRepos().catch(() => {});
+    };
     // One small JSON read per scoped call; mid-run meta writes preserve the
     // old label until the end-of-run atomic stamp (run-analyze dirty stamps
     // spread the existing meta), so this read never runs ahead of the DB.
     const flatMeta = await loadMeta(path.dirname(handle.lbugPath));
-    if (flatMeta?.branch && flatMeta.branch === branch) return handle;
+    if (flatMeta?.branch && flatMeta.branch === branch) {
+      // The disk meta decides routing, so it also supplies the metadata —
+      // the cached handle's label/commit/stats can predate the restamp.
+      return {
+        ...handle,
+        branch: flatMeta.branch,
+        indexedAt: flatMeta.indexedAt ?? handle.indexedAt,
+        lastCommit: flatMeta.lastCommit ?? handle.lastCommit,
+        stats: flatMeta.stats ?? handle.stats,
+      };
+    }
 
-    const summary = handle.branches?.find((b) => b.branch === branch);
+    // A registry entry claiming `branch` both as the flat label AND as a
+    // pinned summary is an adopt-degraded state (rm kept the summary while
+    // the label restamped) — never serve the possibly stale-vintage pin for
+    // a label the flat slot claims; fall through to the honest error.
+    const summary =
+      handle.branch !== branch ? handle.branches?.find((b) => b.branch === branch) : undefined;
     if (summary) {
       const { lbugPath } = getStoragePaths(handle.repoPath, branch);
       // The lbug is the artifact the pool opens, so its presence is the
@@ -1175,7 +1200,7 @@ export class LocalBackend {
       }
       // Stale summary (sub-index adopted/deleted): refresh so later calls see
       // fresh handles, then fall through — the flat meta above is the truth.
-      await this.refreshRepos().catch(() => {});
+      await refreshOnce();
     }
 
     if (handle.branch && handle.branch === branch) {
@@ -1183,11 +1208,21 @@ export class LocalBackend {
       // pre-#2354 trust in the cached label (#2106 R4 legacy shapes). A
       // readable meta that names another branch means the label is stale.
       if (!flatMeta?.branch) return handle;
-      await this.refreshRepos().catch(() => {});
     }
 
-    const indexed = [handle.branch, ...(handle.branches?.map((b) => b.branch) ?? [])].filter(
-      Boolean,
+    // Every miss refreshes once before erroring: newly-pinned branches and
+    // restamped labels the cached handle predates become resolvable on the
+    // caller's next attempt (the cache otherwise only refreshes on repo-
+    // resolution misses and list_repos).
+    await refreshOnce();
+
+    // The flat slot's label comes from the authoritative meta when readable —
+    // never echo a cached label the meta just contradicted (a "not indexed:
+    // main / indexed: main" self-contradiction). Cached summaries may still
+    // lag; they are a hint, not a promise.
+    const flatLabel = flatMeta?.branch ?? handle.branch;
+    const indexed = [flatLabel, ...(handle.branches?.map((b) => b.branch) ?? [])].filter(
+      (b) => Boolean(b) && b !== branch,
     );
     const available = indexed.length > 0 ? indexed.join(', ') : '(workspace only)';
     // Post-#2354 a bare `analyze --branch <X>` refuses to run unless X is
