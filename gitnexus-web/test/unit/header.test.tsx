@@ -87,14 +87,14 @@ describe('Header', () => {
     expect(scrollableRepoList).toHaveClass('flex-1');
   });
 
-  it('filters repositories locally by name and path', async () => {
+  it('filters repositories locally by displayed name', async () => {
     const user = userEvent.setup();
     render(
       <Header
         availableRepos={[
           { ...makeRepo(0), name: 'reels', path: '/workspace/apps/reels' },
           { ...makeRepo(1), name: 'gitnexus-web', path: '/workspace/GitNexus/gitnexus-web' },
-          { ...makeRepo(2), name: 'api-server', path: '/workspace/services/api' },
+          { ...makeRepo(2), name: 'api-server', path: '/workspace/gitnexus/api' },
         ]}
       />,
     );
@@ -108,7 +108,7 @@ describe('Header', () => {
     expect(screen.queryByText('api-server')).not.toBeInTheDocument();
 
     await user.clear(input);
-    await user.type(input, 'services');
+    await user.type(input, 'api');
 
     expect(screen.getByText('api-server')).toBeInTheDocument();
     expect(screen.queryByText('gitnexus-web')).not.toBeInTheDocument();

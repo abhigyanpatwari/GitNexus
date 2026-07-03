@@ -101,9 +101,7 @@ export const Header = ({
     const query = repoSearchQuery.trim().toLowerCase();
     if (!query) return availableRepos;
 
-    return availableRepos.filter((repo) =>
-      [repo.name, repo.path].some((value) => value?.toLowerCase().includes(query)),
-    );
+    return availableRepos.filter((repo) => repo.name.toLowerCase().includes(query));
   }, [availableRepos, repoSearchQuery]);
 
   // Handle clicking outside search or repo dropdown to close them
