@@ -56,6 +56,7 @@ import {
   isRepoRegistered,
   cleanupOldKuzuFiles,
   reconcileMetadataFiles,
+  isMissingFilesystemError,
   INDEX_METADATA_FILE,
   INCREMENTAL_SCHEMA_VERSION,
   type RepoMeta,
@@ -367,10 +368,13 @@ export const primaryInversionWarning = (
  * Collect the recorded parse-cache chunk keys across the flat + every branch
  * metadata directory under a flat `.gitnexus` storage, EXCLUDING `excludeDir`
  * (the current run's own meta dir) so a single-branch repo collects nothing and
- * its prune stays byte-identical to today (#2106 R6). `complete` is false when
- * a sibling metadata file exists but fails to read or parse — callers then
- * retain the whole shared cache rather than over-evict another branch's
- * still-live shards. Exported for testing.
+ * its prune stays byte-identical to today (#2106 R6 — the byte-identity claim
+ * is about the PRUNE result; the metadata FILENAME read here changed with
+ * PR #2363's rename, checking `gitnexus.json` first then the legacy
+ * `meta.json` mirror). `complete` is false when a sibling metadata file exists
+ * but fails to read or parse — callers then retain the whole shared cache
+ * rather than over-evict another branch's still-live shards. Exported for
+ * testing.
  */
 export const collectBranchCacheKeys = async (
   storagePath: string,
@@ -388,16 +392,14 @@ export const collectBranchCacheKeys = async (
     try {
       raw = await fs.readFile(path.join(dir, INDEX_METADATA_FILE), 'utf-8');
     } catch (newErr) {
-      const newCode = (newErr as NodeJS.ErrnoException)?.code;
-      if (newCode !== 'ENOENT' && newCode !== 'ENOTDIR') {
+      if (!isMissingFilesystemError(newErr)) {
         complete = false;
         continue;
       }
       try {
         raw = await fs.readFile(path.join(dir, 'meta.json'), 'utf-8');
       } catch (legacyErr) {
-        const legacyCode = (legacyErr as NodeJS.ErrnoException)?.code;
-        if (legacyCode !== 'ENOENT' && legacyCode !== 'ENOTDIR') complete = false;
+        if (!isMissingFilesystemError(legacyErr)) complete = false;
         continue; // no metadata here — not a branch index, not a failure
       }
     }

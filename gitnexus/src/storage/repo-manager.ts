@@ -662,7 +662,13 @@ function isReadOnlyFilesystemError(err: unknown): boolean {
   return code === 'EROFS' || code === 'EACCES' || code === 'EPERM';
 }
 
-function isMissingFilesystemError(err: unknown): boolean {
+/**
+ * True for errors that prove a path is absent (ENOENT/ENOTDIR) — as opposed
+ * to transient/permission failures (EIO/EACCES/EBUSY…) where the file may
+ * well still exist. Exported for consumers that need the same "provably
+ * missing vs not provably absent" distinction (e.g. collectBranchCacheKeys).
+ */
+export function isMissingFilesystemError(err: unknown): boolean {
   const code = (err as NodeJS.ErrnoException)?.code;
   return code === 'ENOENT' || code === 'ENOTDIR';
 }
