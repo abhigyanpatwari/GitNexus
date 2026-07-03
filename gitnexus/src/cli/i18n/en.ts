@@ -29,7 +29,7 @@ export const en = {
   'status.branch': 'Branch',
   'status.detached': '(detached HEAD)',
   'status.workspaceIndexLabel':
-    "Workspace index: last analyzed on '{{primary}}' (gitnexus analyze follows this branch)",
+    "Workspace index: last analyzed on '{{primary}}' (re-run gitnexus analyze to follow the current branch)",
   'status.status': 'Status',
   'status.upToDate': '✅ up-to-date',
   'status.stale': '⚠️ stale (re-run gitnexus analyze)',

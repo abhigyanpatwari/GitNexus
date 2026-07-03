@@ -33,7 +33,7 @@ export const zhCN = {
   'status.branch': '分支',
   'status.detached': '（分离 HEAD）',
   'status.workspaceIndexLabel':
-    "工作区索引：最近在 '{{primary}}' 分支上分析（gitnexus analyze 会跟随当前分支）",
+    "工作区索引：最近在 '{{primary}}' 分支上分析（重新运行 gitnexus analyze 以跟随当前分支）",
   'status.status': '状态',
   'status.upToDate': '✅ 已是最新',
   'status.stale': '⚠️ 已过期（重新运行 gitnexus analyze）',
