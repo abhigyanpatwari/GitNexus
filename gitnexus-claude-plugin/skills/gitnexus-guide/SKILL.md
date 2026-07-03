@@ -77,13 +77,13 @@ Notes: `offset` ≥ `total` returns an empty page (with `total` still reported).
 
 ### Taint findings (`explain`)
 
-`explain` returns intra-procedural taint findings (`TAINTED` edges) recorded by `gitnexus analyze --pdg` — each with a sink category (command-injection, code-injection, path-traversal, sql-injection, xss), source/sink lines, and the ordered hop path with the variable carried on each hop.
+`explain` returns taint findings recorded by `gitnexus analyze --pdg` — intra-procedural `TAINTED` edges plus cross-function `TAINT_PATH` hops where the interprocedural taint phase found a function-level source→sink chain. Each finding includes a sink category (command-injection, code-injection, path-traversal, sql-injection, xss), source/sink lines, and the ordered hop path with the variable carried on each hop.
 
 - `explain {}` — enumerate all findings for the repo (bounded by `limit`, deterministic order)
 - `explain { target: "src/vuln.ts" }` — findings in a file (suffix path match accepted)
 - `explain { target: "runUserCommand" }` — findings in a function (resolved like `context`; ambiguous names return ranked candidates)
 
-A repo indexed without `--pdg` returns a clear "no taint layer" note. Caveats: findings are intra-procedural only — cross-function, closure/callback, property/field, and implicit flows are not modeled, so the absence of a finding is **not** proof of safety. `SANITIZES` (sanitizer-kill) edges are queryable via `cypher`.
+A repo indexed without `--pdg` returns a clear "no taint layer" note. Caveats: closure/callback, property/field, and implicit flows are not modeled, and interprocedural findings are function-level `TAINT_PATH` hops rather than statement-level path proof, so the absence of a finding is **not** proof of safety. `SANITIZES` (sanitizer-kill) edges are queryable via `cypher`.
 
 ### Control & data dependence (`pdg_query`)
 
