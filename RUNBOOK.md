@@ -56,7 +56,7 @@ npx gitnexus list
 npx gitnexus analyze --embeddings
 ```
 
-**Important:** If you already had embeddings, **always** pass `--embeddings` on later analyzes, or they can be dropped. See `stats.embeddings` in `.gitnexus/meta.json` (0 means none).
+**Important:** If you already had embeddings, **always** pass `--embeddings` on later analyzes, or they can be dropped. See `stats.embeddings` in `.gitnexus/gitnexus.json` (or its legacy `meta.json` mirror; 0 means none).
 
 **Large repos:** Analyze may skip or limit embedding work when node counts are very high; watch CLI output.
 
