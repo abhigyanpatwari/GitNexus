@@ -283,10 +283,12 @@ export interface AnalyzeResult {
    */
   ftsSkipped?: boolean;
   /**
-   * True when the index this run produced/validated is the primary/flat slot
-   * (#2106 R2). `false` for a non-primary branch index. Lets the CLI skip
-   * repo-root AGENTS.md/CLAUDE.md refreshes (e.g. the base_ref fast-path) for a
+   * True when the index this run produced/validated is the flat workspace
+   * slot (#2106 R2, inverted by #2354 to follow the checked-out branch).
+   * `false` for a pinned `--branch` sub-index. Lets the CLI skip repo-root
+   * AGENTS.md/CLAUDE.md refreshes (e.g. the base_ref fast-path) for a pinned
    * branch analyze, mirroring the in-pipeline `if (!placement.branch)` gate.
+   * (The historical "primary" name is kept — it is public API surface.)
    */
   isPrimaryBranch?: boolean;
 }

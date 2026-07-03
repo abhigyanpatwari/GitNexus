@@ -1317,10 +1317,11 @@ const analyzeCommandImpl = async (
       // preserving the rest of the block (incl. --skills community rows). No-op
       // when the value already matches, so a routine up-to-date run is silent
       // (#1996 tri-review P2).
-      // Only refresh the repo-root AGENTS.md/CLAUDE.md base_ref for the
-      // PRIMARY/flat index (#2106 R2). A non-primary branch's up-to-date
-      // analyze must not churn the committed AGENTS.md — this mirrors the
-      // in-pipeline `if (!placement.branch)` gate around generateAIContextFiles.
+      // Only refresh the repo-root AGENTS.md/CLAUDE.md base_ref for the flat
+      // WORKSPACE index (#2106 R2, #2354). A pinned --branch sub-index's
+      // up-to-date analyze must not churn the committed AGENTS.md — this
+      // mirrors the in-pipeline `if (!placement.branch)` gate around
+      // generateAIContextFiles.
       let baseRefRefreshed: string[] = [];
       if (result.isPrimaryBranch !== false) {
         try {

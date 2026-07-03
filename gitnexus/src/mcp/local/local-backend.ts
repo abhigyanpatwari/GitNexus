@@ -396,7 +396,7 @@ interface RepoHandle {
   stats?: RegistryEntry['stats'];
   /** Primary/flat branch name, when known (#2106). */
   branch?: string;
-  /** Non-primary branch indexes available for this repo (#2106). */
+  /** Pinned `--branch` sub-indexes available for this repo, distinct from the flat workspace slot (#2106/#2354). */
   branches?: BranchSummary[];
 }
 
@@ -584,7 +584,7 @@ export interface RepoListing {
   siblings?: Array<{ name: string; path: string; lastCommit: string }>;
   /** Primary/flat branch name, when known (#2106). */
   branch?: string;
-  /** Non-primary branch indexes available for this repo (#2106). */
+  /** Pinned `--branch` sub-indexes available for this repo, distinct from the flat workspace slot (#2106/#2354). */
   branches?: Array<Omit<BranchSummary, 'stats'>>;
 }
 

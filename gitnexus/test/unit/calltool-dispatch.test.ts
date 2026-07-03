@@ -3535,17 +3535,17 @@ describe('LocalBackend.resolveRepo branch scope (#2106)', () => {
     rmSync(BRANCH_ENTRY.storagePath, { recursive: true, force: true });
   });
 
-  it('no branch param resolves the flat/primary lbug', async () => {
+  it('no branch param resolves the flat workspace lbug', async () => {
     const handle = await backend.resolveRepo('multi');
     expect(handle.lbugPath).toBe(flatLbug);
   });
 
-  it('the primary branch name resolves the flat lbug', async () => {
+  it('the workspace-recorded branch name resolves the flat lbug', async () => {
     const handle = await backend.resolveRepo('multi', 'main');
     expect(handle.lbugPath).toBe(flatLbug);
   });
 
-  it('an indexed non-primary branch resolves a branches/<slug> lbug', async () => {
+  it('an indexed pinned branch resolves a branches/<slug> lbug', async () => {
     const handle = await backend.resolveRepo('multi', 'feature/x');
     expect(handle.lbugPath).not.toBe(flatLbug);
     expect(handle.lbugPath).toContain(path.join('.gitnexus', 'branches'));
@@ -3575,10 +3575,11 @@ describe('LocalBackend.resolveRepo branch scope (#2106)', () => {
     expect(handle.lbugPath).toContain(path.join('.gitnexus', 'branches'));
   });
 
-  it('a legacy entry resolves --branch <primary> via the flat meta (#2106 R4)', async () => {
+  it('a legacy entry resolves --branch <workspace-branch> via the flat meta (#2106 R4)', async () => {
     // Pre-#2106 flat index: registry entry has no `branch`/`branches`, but the
-    // flat meta.json records the primary. `--branch <primary>` must resolve to
-    // the flat handle (read from meta), while an unindexed branch still errors.
+    // flat meta.json records the workspace branch. `--branch <that branch>`
+    // must resolve to the flat handle (read from meta), while an unindexed
+    // branch still errors.
     const dir = mkdtempSync(path.join(os.tmpdir(), 'gnx-2106-legacy-'));
     const storagePath = path.join(dir, '.gitnexus');
     mkdirSync(storagePath, { recursive: true });
