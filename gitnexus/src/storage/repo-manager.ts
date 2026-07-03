@@ -15,7 +15,9 @@ import fs from 'fs/promises';
 import { realpathSync } from 'fs';
 import path from 'path';
 import os from 'os';
+import { randomBytes } from 'crypto';
 import { getInferredRepoName, resolveRepoIdentityRoot } from './git.js';
+import { retryRename } from './fs-atomic.js';
 import { logger } from '../core/logger.js';
 import {
   branchSlug,
@@ -305,6 +307,9 @@ export interface RegistryEntry {
 const GITNEXUS_DIR = '.gitnexus';
 const GITNEXUS_EXCLUDE_ENTRY = `${GITNEXUS_DIR}/`;
 export const INDEX_METADATA_FILE = 'gitnexus.json';
+// Dual-written mirror of INDEX_METADATA_FILE, kept for backward compatibility
+// with consumers that only know the pre-rename filename (see MIGRATION.md).
+const LEGACY_METADATA_FILE = 'meta.json';
 
 // ─── Local Storage Helpers ─────────────────────────────────────────────
 
@@ -428,7 +433,28 @@ export const loadMeta = async (metaDir: string): Promise<RepoMeta | null> => {
 };
 
 /**
- * Save metadata to the metadata file (gitnexus.json) in the given directory.
+ * Atomically write `meta` to `<dir>/<filename>`. Tmp name includes a random
+ * suffix (not a fixed `.tmp`) so two concurrent writers targeting the same
+ * directory never collide on the same tmp path — mirrors the pattern in
+ * core/group/bridge-db.ts's `writeBridgeMeta` (`'wx'` + `0o600` closes the
+ * symlink-race/permissions holes CodeQL flags as `js/insecure-temporary-file`;
+ * `retryRename` absorbs a transient EBUSY/EPERM/EACCES on the rename itself).
+ */
+async function writeMetaFile(dir: string, filename: string, meta: RepoMeta): Promise<void> {
+  const targetPath = path.join(dir, filename);
+  const tmpPath = `${targetPath}.tmp.${randomBytes(8).toString('hex')}`;
+  const handle = await fs.open(tmpPath, 'wx', 0o600);
+  try {
+    await handle.writeFile(JSON.stringify(meta, null, 2), 'utf-8');
+  } finally {
+    await handle.close();
+  }
+  await retryRename(tmpPath, targetPath);
+}
+
+/**
+ * Save metadata to the metadata file (gitnexus.json) in the given directory,
+ * dual-writing the legacy `meta.json` mirror for backward compatibility.
  *
  * Atomic via tmp-file + rename (matches `saveParseCache`'s pattern). The
  * `incrementalInProgress` dirty flag travels through this file — a crash
@@ -438,13 +464,20 @@ export const loadMeta = async (metaDir: string): Promise<RepoMeta | null> => {
  * that out: the rename is atomic on POSIX and on Windows (`fs.rename`
  * on `node:fs/promises` uses `MoveFileEx(REPLACE_EXISTING)`), so either
  * the old or the new file is observed at every moment.
+ *
+ * `gitnexus.json` is the primary write and must succeed. `meta.json` is a
+ * best-effort mirror kept for consumers that only know the legacy filename
+ * (see MIGRATION.md) — its write failure is logged, not thrown, so a
+ * mirror-write hiccup never fails the caller's analyze run.
  */
 export const saveMeta = async (metaDir: string, meta: RepoMeta): Promise<void> => {
   await fs.mkdir(metaDir, { recursive: true });
-  const metaPath = path.join(metaDir, INDEX_METADATA_FILE);
-  const tmpPath = `${metaPath}.tmp`;
-  await fs.writeFile(tmpPath, JSON.stringify(meta, null, 2), 'utf-8');
-  await fs.rename(tmpPath, metaPath);
+  await writeMetaFile(metaDir, INDEX_METADATA_FILE, meta);
+  try {
+    await writeMetaFile(metaDir, LEGACY_METADATA_FILE, meta);
+  } catch (err) {
+    logger.warn({ err, metaDir }, 'Failed to write legacy meta.json mirror (non-critical)');
+  }
 };
 
 /**

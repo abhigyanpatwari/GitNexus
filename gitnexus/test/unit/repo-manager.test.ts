@@ -188,6 +188,89 @@ describe('resolveBranchPlacement (#2106)', () => {
   });
 });
 
+// ─── saveMeta: dual-write + collision-safe tmp (review fix, F2/F8) ──────
+
+describe('saveMeta dual-write', () => {
+  let tmpRepo: Awaited<ReturnType<typeof createTempDir>>;
+
+  beforeEach(async () => {
+    tmpRepo = await createTempDir('gitnexus-savemeta-dualwrite-');
+  });
+
+  afterEach(async () => {
+    vi.restoreAllMocks();
+    await tmpRepo.cleanup();
+  });
+
+  const meta: RepoMeta = {
+    repoPath: '/some/repo',
+    lastCommit: 'abc123',
+    indexedAt: new Date(0).toISOString(),
+  };
+
+  it('writes identical content to gitnexus.json and legacy meta.json', async () => {
+    const { storagePath } = getStoragePaths(tmpRepo.dbPath);
+    await saveMeta(storagePath, meta);
+
+    const primary = await fs.readFile(path.join(storagePath, 'gitnexus.json'), 'utf-8');
+    const legacy = await fs.readFile(path.join(storagePath, 'meta.json'), 'utf-8');
+    expect(JSON.parse(primary)).toEqual(meta);
+    expect(JSON.parse(legacy)).toEqual(meta);
+  });
+
+  it('leaves no stray tmp files behind after a successful write', async () => {
+    const { storagePath } = getStoragePaths(tmpRepo.dbPath);
+    await saveMeta(storagePath, meta);
+
+    const entries = await fs.readdir(storagePath);
+    expect(entries.filter((f) => f.includes('.tmp.'))).toEqual([]);
+  });
+
+  it('two concurrent saveMeta calls on the same directory both succeed (no tmp-name collision)', async () => {
+    const { storagePath } = getStoragePaths(tmpRepo.dbPath);
+
+    const results = await Promise.allSettled([
+      saveMeta(storagePath, { ...meta, lastCommit: 'writerA' }),
+      saveMeta(storagePath, { ...meta, lastCommit: 'writerB' }),
+    ]);
+
+    expect(results.map((r) => r.status)).toEqual(['fulfilled', 'fulfilled']);
+  });
+
+  it('a legacy meta.json write failure is logged and does not fail the caller', async () => {
+    const { storagePath } = getStoragePaths(tmpRepo.dbPath);
+    const realOpen = fs.open;
+    // Fail only the write whose tmp path is for the legacy file.
+    vi.spyOn(fs, 'open').mockImplementation(
+      async (filePath: Parameters<typeof fs.open>[0], ...rest) => {
+        if (String(filePath).includes(`${path.sep}meta.json.tmp.`)) {
+          const err = new Error('simulated legacy-write failure') as NodeJS.ErrnoException;
+          err.code = 'EACCES';
+          throw err;
+        }
+        return realOpen(filePath, ...rest);
+      },
+    );
+
+    const cap = _captureLogger();
+    try {
+      await expect(saveMeta(storagePath, meta)).resolves.not.toThrow();
+
+      const primary = await fs.readFile(path.join(storagePath, 'gitnexus.json'), 'utf-8');
+      expect(JSON.parse(primary)).toEqual(meta);
+      await expect(fs.readFile(path.join(storagePath, 'meta.json'), 'utf-8')).rejects.toThrow();
+
+      expect(
+        cap
+          .records()
+          .some((r) => r.level === 40 && String(r.msg ?? '').includes('legacy meta.json mirror')),
+      ).toBe(true);
+    } finally {
+      cap.restore();
+    }
+  });
+});
+
 // ─── GitNexus ignore rules (#1233) ─────────────────────────────────────
 
 describe('ensureGitNexusIgnored (#1233)', () => {

@@ -12,6 +12,7 @@ import {
 } from '../lbug/lbug-config.js';
 import { dedupeContracts, dedupeCrossLinks } from './normalization.js';
 import { createLogger } from '../logger.js';
+import { retryRename } from '../../storage/fs-atomic.js';
 
 const bridgeLogger = createLogger('bridge-db', {
   debugEnvVar: 'GITNEXUS_DEBUG_BRIDGE',
@@ -645,20 +646,11 @@ export async function closeBridgeDb(handle: BridgeHandle): Promise<void> {
 /*  retryRename — handles transient EBUSY/EPERM/EACCES on Windows    */
 /* ------------------------------------------------------------------ */
 
-const RETRY_CODES = new Set(['EBUSY', 'EPERM', 'EACCES']);
-
-export async function retryRename(src: string, dst: string, attempts = 3): Promise<void> {
-  for (let i = 1; i <= attempts; i++) {
-    try {
-      await fsp.rename(src, dst);
-      return;
-    } catch (err: unknown) {
-      const code = (err as NodeJS.ErrnoException).code;
-      if (!code || !RETRY_CODES.has(code) || i === attempts) throw err;
-      await new Promise((r) => setTimeout(r, 100 * Math.pow(2, i - 1)));
-    }
-  }
-}
+// Moved to storage/fs-atomic.ts so storage/repo-manager.ts can use it
+// without a storage/ -> core/group/ import. Re-exported here (rather than
+// only re-imported) so existing consumers of `retryRename` from this module
+// keep working unchanged.
+export { retryRename };
 
 /* ------------------------------------------------------------------ */
 /*  writeBridgeMeta / readBridgeMeta                                  */
