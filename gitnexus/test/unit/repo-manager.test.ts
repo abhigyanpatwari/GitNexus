@@ -15,6 +15,8 @@ import {
   branchSlug,
   resolveBranchPlacement,
   saveMeta,
+  loadMeta,
+  reconcileMetadataFiles,
   ensureGitNexusIgnored,
   readRegistry,
   loadCLIConfig,
@@ -268,6 +270,144 @@ describe('saveMeta dual-write', () => {
     } finally {
       cap.restore();
     }
+  });
+});
+
+// ─── loadMeta: strict legacy fallback (review fix, F4) ──────────────────
+
+describe('loadMeta strict fallback', () => {
+  let tmpRepo: Awaited<ReturnType<typeof createTempDir>>;
+  let storagePath: string;
+
+  beforeEach(async () => {
+    tmpRepo = await createTempDir('gitnexus-loadmeta-fallback-');
+    storagePath = getStoragePaths(tmpRepo.dbPath).storagePath;
+    await fs.mkdir(storagePath, { recursive: true });
+  });
+
+  afterEach(async () => {
+    vi.restoreAllMocks();
+    await tmpRepo.cleanup();
+  });
+
+  const meta: RepoMeta = {
+    repoPath: '/some/repo',
+    lastCommit: 'abc123',
+    indexedAt: new Date(0).toISOString(),
+  };
+
+  it('reads gitnexus.json directly when present', async () => {
+    await fs.writeFile(path.join(storagePath, 'gitnexus.json'), JSON.stringify(meta));
+    await expect(loadMeta(storagePath)).resolves.toEqual(meta);
+  });
+
+  it('falls back to legacy meta.json when gitnexus.json is absent (ENOENT)', async () => {
+    await fs.writeFile(path.join(storagePath, 'meta.json'), JSON.stringify(meta));
+    await expect(loadMeta(storagePath)).resolves.toEqual(meta);
+  });
+
+  it('returns null (NOT legacy content) when gitnexus.json is corrupt', async () => {
+    // Pre-fix behavior silently resurrected the stale legacy baseline here,
+    // masking the corruption; post-fix a corrupt primary forces the same safe
+    // full-rebuild path a missing index would.
+    await fs.writeFile(path.join(storagePath, 'gitnexus.json'), '{ not valid json');
+    await fs.writeFile(path.join(storagePath, 'meta.json'), JSON.stringify(meta));
+    await expect(loadMeta(storagePath)).resolves.toBeNull();
+  });
+
+  it('returns null (NOT legacy content) when gitnexus.json read fails with EACCES', async () => {
+    await fs.writeFile(path.join(storagePath, 'gitnexus.json'), JSON.stringify(meta));
+    await fs.writeFile(path.join(storagePath, 'meta.json'), JSON.stringify(meta));
+
+    const realReadFile = fs.readFile;
+    vi.spyOn(fs, 'readFile').mockImplementation(async (...args: Parameters<typeof fs.readFile>) => {
+      if (String(args[0]).endsWith('gitnexus.json')) {
+        const err = new Error('permission denied') as NodeJS.ErrnoException;
+        err.code = 'EACCES';
+        throw err;
+      }
+      return realReadFile(...args);
+    });
+
+    await expect(loadMeta(storagePath)).resolves.toBeNull();
+  });
+
+  it('returns null when neither file exists', async () => {
+    await expect(loadMeta(storagePath)).resolves.toBeNull();
+  });
+});
+
+// ─── reconcileMetadataFiles: stale-shadow regression (review fix, F3) ───
+
+describe('reconcileMetadataFiles stale-shadow regression', () => {
+  let tmpRepo: Awaited<ReturnType<typeof createTempDir>>;
+  let storagePath: string;
+
+  beforeEach(async () => {
+    tmpRepo = await createTempDir('gitnexus-reconcile-shadow-');
+    storagePath = getStoragePaths(tmpRepo.dbPath).storagePath;
+    await fs.mkdir(storagePath, { recursive: true });
+  });
+
+  afterEach(async () => {
+    await tmpRepo.cleanup();
+  });
+
+  const metaAt = (indexedAt: string, lastCommit: string): RepoMeta => ({
+    repoPath: '/some/repo',
+    lastCommit,
+    indexedAt,
+  });
+
+  it('a FRESHER legacy meta.json wins over a stale gitnexus.json (both rewritten)', async () => {
+    // The reproduced PR #2363 bug: an older binary re-analyzes and writes only
+    // meta.json AFTER gitnexus.json exists; the one-shot existence gate then
+    // ignored the fresher state forever (stale lastCommit won, dirty flag lost).
+    await fs.writeFile(
+      path.join(storagePath, 'gitnexus.json'),
+      JSON.stringify(metaAt('2026-01-01T00:00:00.000Z', 'stale-commit')),
+    );
+    await fs.writeFile(
+      path.join(storagePath, 'meta.json'),
+      JSON.stringify(metaAt('2026-06-01T00:00:00.000Z', 'fresh-commit')),
+    );
+
+    await expect(reconcileMetadataFiles(tmpRepo.dbPath)).resolves.toBe(true);
+
+    const primary = JSON.parse(
+      await fs.readFile(path.join(storagePath, 'gitnexus.json'), 'utf-8'),
+    ) as RepoMeta;
+    const legacy = JSON.parse(
+      await fs.readFile(path.join(storagePath, 'meta.json'), 'utf-8'),
+    ) as RepoMeta;
+    expect(primary.lastCommit).toBe('fresh-commit');
+    expect(legacy.lastCommit).toBe('fresh-commit');
+  });
+
+  it('bootstraps gitnexus.json from a legacy-only directory (pre-rename repo)', async () => {
+    await fs.writeFile(
+      path.join(storagePath, 'meta.json'),
+      JSON.stringify(metaAt('2026-06-01T00:00:00.000Z', 'legacy-commit')),
+    );
+
+    await expect(reconcileMetadataFiles(tmpRepo.dbPath)).resolves.toBe(true);
+
+    const primary = JSON.parse(
+      await fs.readFile(path.join(storagePath, 'gitnexus.json'), 'utf-8'),
+    ) as RepoMeta;
+    expect(primary.lastCommit).toBe('legacy-commit');
+    // Legacy file is NOT deleted — it stays as the in-sync mirror.
+    await expect(fs.access(path.join(storagePath, 'meta.json'))).resolves.toBeUndefined();
+  });
+
+  it('is idempotent — a second run with no intervening writes is a no-op', async () => {
+    await fs.writeFile(
+      path.join(storagePath, 'meta.json'),
+      JSON.stringify(metaAt('2026-06-01T00:00:00.000Z', 'legacy-commit')),
+    );
+
+    await expect(reconcileMetadataFiles(tmpRepo.dbPath)).resolves.toBe(true);
+    await expect(reconcileMetadataFiles(tmpRepo.dbPath)).resolves.toBe(false);
   });
 });
 

@@ -55,7 +55,7 @@ import {
   registerRepo,
   isRepoRegistered,
   cleanupOldKuzuFiles,
-  migrateToCommittedIndex,
+  reconcileMetadataFiles,
   INDEX_METADATA_FILE,
   INCREMENTAL_SCHEMA_VERSION,
   type RepoMeta,
@@ -631,8 +631,17 @@ export async function runFullAnalysis(
   // metaDir is the directory containing the metadata file (and branch-specific DBs).
   const metaDir = path.dirname(metaPath);
 
-  // Auto-migrate from legacy .gitnexus/meta.json to gitnexus.json.
-  await migrateToCommittedIndex(repoPath);
+  // Keep gitnexus.json and the legacy meta.json mirror in sync (fresher
+  // indexedAt wins; nothing is deleted). Best-effort: loadMeta has its own
+  // legacy fallback, so a reconciliation failure (read-only mount, full disk)
+  // must never abort the analyze run — a repo that indexed fine read-only
+  // before the rename must keep doing so.
+  try {
+    await reconcileMetadataFiles(repoPath);
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException)?.code;
+    log(`Metadata reconciliation failed (non-critical${code ? `, ${code}` : ''}); continuing.`);
+  }
 
   const existingMeta = await loadMeta(metaDir);
 

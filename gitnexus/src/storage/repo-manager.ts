@@ -2,13 +2,16 @@
  * Repository Manager
  *
  * Manages GitNexus index storage:
- * - Per-worktree metadata files (gitnexus.json) under .gitnexus/ for worktree compatibility
+ * - Per-repo metadata file (gitnexus.json) under .gitnexus/, dual-written to a
+ *   legacy meta.json mirror for backward compatibility (see MIGRATION.md)
  * - .gitnexus/ directory for local metadata and caches (parse-cache, parsedfile-store)
  * - Global registry at ~/.gitnexus/registry.json for MCP server discovery
  *
- * The per-worktree metadata files enable git worktree compatibility: each worktree
- * has its own index stored locally in .gitnexus/, avoiding centralized storage
- * conflicts. The .gitnexus/ directory is git-ignored so indexes don't pollute the repo.
+ * gitnexus.json is simply a filename distinct from the generic meta.json — it
+ * has no bearing on git worktree behavior. .gitnexus/ remains fully git-ignored
+ * in every case; each worktree already has its own independent .gitnexus/ by
+ * construction (getStoragePath is per-checkout), regardless of which filename
+ * the metadata inside it uses.
  */
 
 import fs from 'fs/promises';
@@ -327,16 +330,19 @@ export const getStoragePath = (repoPath: string): string => {
  * `storagePath` is ALWAYS the flat `<repo>/.gitnexus` — content-addressed
  * caches (`parse-cache/`, `parsedfile-store/`) live there and are shared
  * across branches (#2106 KTD7). When `branch` is provided, both `lbugPath`
- * and `metaPath` are scoped under `branches/<slug>/`; the flat call (no `branch`)
- * returns byte-identical paths to the pre-multi-branch behavior.
+ * and `metaPath` are scoped under `branches/<slug>/`. For the flat call
+ * (no `branch`), `storagePath` and `lbugPath` remain byte-identical to the
+ * pre-multi-branch behavior (#2106); `metaPath`'s FILENAME changed from
+ * `meta.json` to `gitnexus.json` (PR #2363) — `saveMeta` keeps a `meta.json`
+ * mirror in sync for consumers that still read the legacy name.
  *
- * `metaPath` now points to a per-worktree metadata file (gitnexus.json) that enables
- * worktree compatibility. Each branch has its own metadata file:
+ * Each branch slot has its own metadata file:
  * - Primary/flat: <repo>/.gitnexus/gitnexus.json
  * - Feature branches: <repo>/.gitnexus/branches/<slug>/gitnexus.json
  *
- * For legacy compatibility, callers should use `loadMeta(metaDir)` and
- * `saveMeta(metaDir, meta)` where metaDir is the directory containing the metadata file.
+ * Callers should use `loadMeta(metaDir)` and `saveMeta(metaDir, meta)` where
+ * metaDir is the directory containing the metadata file — both handle the
+ * legacy mirror automatically.
  */
 export const getStoragePaths = (repoPath: string, branch?: string) => {
   const storagePath = getStoragePath(repoPath);
@@ -402,33 +408,39 @@ export const cleanupOldKuzuFiles = async (
 };
 
 /**
- * Load metadata from an indexed repo (legacy .gitnexus/meta.json location)
+ * Load metadata from the legacy `meta.json` mirror in the given directory.
+ * Returns null when the file is absent, unreadable, or unparseable — a
+ * corrupt legacy file is treated the same as a missing one (safe rebuild).
  */
-export const loadMetaLegacy = async (storagePath: string): Promise<RepoMeta | null> => {
-  try {
-    const metaPath = path.join(storagePath, 'meta.json');
-    const raw = await fs.readFile(metaPath, 'utf-8');
-    return JSON.parse(raw) as RepoMeta;
-  } catch {
-    return null;
-  }
-};
+export const loadMetaLegacy = async (metaDir: string): Promise<RepoMeta | null> =>
+  tryReadMetaFile(metaDir, LEGACY_METADATA_FILE);
 
 /**
  * Load metadata from a directory containing the metadata file (gitnexus.json).
  * For primary/flat: metaDir = <repo>/.gitnexus
  * For feature branches: metaDir = <repo>/.gitnexus/branches/<slug>
- * Falls back to legacy meta.json if gitnexus.json doesn't exist.
+ *
+ * Falls back to the legacy `meta.json` mirror ONLY when `gitnexus.json` is
+ * provably absent (ENOENT/ENOTDIR). Any other failure — a parse error, EACCES,
+ * EIO — returns null instead of silently resurrecting possibly-stale legacy
+ * content: a corrupt primary file must trigger the same safe full-rebuild path
+ * a missing index would (the fail-safe `saveMeta`'s docstring relies on), not
+ * an incremental run over a stale legacy baseline.
  */
 export const loadMeta = async (metaDir: string): Promise<RepoMeta | null> => {
-  // Try new metadata file first
+  let raw: string;
   try {
-    const metaPath = path.join(metaDir, INDEX_METADATA_FILE);
-    const raw = await fs.readFile(metaPath, 'utf-8');
+    raw = await fs.readFile(path.join(metaDir, INDEX_METADATA_FILE), 'utf-8');
+  } catch (err) {
+    // Provably absent → the legacy mirror is the source of truth (pre-rename
+    // repo, or a mirror-only state). Anything else → fail safe with null.
+    return isMissingFilesystemError(err) ? loadMetaLegacy(metaDir) : null;
+  }
+  try {
     return JSON.parse(raw) as RepoMeta;
   } catch {
-    // Fall back to legacy location
-    return loadMetaLegacy(metaDir);
+    // Corrupt primary file — do NOT mask it with legacy content.
+    return null;
   }
 };
 
@@ -516,37 +528,88 @@ export const loadRepo = async (repoPath: string): Promise<IndexedRepo | null> =>
 };
 
 /**
- * Migrate metadata from legacy .gitnexus/meta.json to gitnexus.json.
- * Returns true if migration occurred, false if not needed.
- * Migrates both primary and branch-specific metadata.
+ * Best-effort read of one specific metadata filename — no fallback, null on
+ * any failure (absent, unreadable, or unparseable).
  */
-export const migrateToCommittedIndex = async (repoPath: string): Promise<boolean> => {
-  const storagePath = getStoragePath(repoPath);
-  let migrated = false;
-
-  // Migrate primary/flat metadata
-  const primaryMetadataPath = path.join(storagePath, INDEX_METADATA_FILE);
-  const primaryLegacyPath = path.join(storagePath, 'meta.json');
-
+const tryReadMetaFile = async (dir: string, filename: string): Promise<RepoMeta | null> => {
   try {
-    await fs.access(primaryMetadataPath);
+    const raw = await fs.readFile(path.join(dir, filename), 'utf-8');
+    return JSON.parse(raw) as RepoMeta;
   } catch {
-    // Metadata file doesn't exist, check for legacy
-    const legacyMeta = await loadMetaLegacy(storagePath);
-    if (legacyMeta) {
-      await saveMeta(storagePath, legacyMeta);
-      logger.info(`Migrated primary index from ${primaryLegacyPath} to ${primaryMetadataPath}`);
+    return null;
+  }
+};
+
+/** `indexedAt` as epoch millis; 0 when absent/unparseable (i.e. oldest). */
+const metaTimestamp = (meta: RepoMeta): number => {
+  const t = Date.parse(meta.indexedAt ?? '');
+  return Number.isFinite(t) ? t : 0;
+};
+
+/**
+ * Reconcile `gitnexus.json` and the legacy `meta.json` mirror in one
+ * directory: whichever parses and is fresher (by `indexedAt`) wins and is
+ * re-written to BOTH files via `saveMeta`. Never deletes anything.
+ * Returns true when a write occurred.
+ */
+const reconcileMetaDir = async (dir: string): Promise<boolean> => {
+  const primary = await tryReadMetaFile(dir, INDEX_METADATA_FILE);
+  const legacy = await tryReadMetaFile(dir, LEGACY_METADATA_FILE);
+
+  if (!primary && !legacy) {
+    // Fresh directory (neither file) is a silent no-op; a file that exists
+    // but doesn't parse deserves a warning — loadMeta will treat it as "no
+    // prior index" and the next successful saveMeta self-heals it.
+    for (const filename of [INDEX_METADATA_FILE, LEGACY_METADATA_FILE]) {
       try {
-        await fs.unlink(primaryLegacyPath);
-        logger.info(`Cleaned up legacy ${primaryLegacyPath}`);
-      } catch (err) {
-        logger.warn({ err }, 'Failed to clean up legacy meta.json (non-critical)');
+        await fs.access(path.join(dir, filename));
+        logger.warn(
+          { dir, filename },
+          'Metadata file exists but is unreadable/corrupt; leaving as-is (next successful analyze rewrites it)',
+        );
+      } catch {
+        // absent — expected for a fresh directory
       }
-      migrated = true;
     }
+    return false;
   }
 
-  // Migrate branch-specific metadata
+  if (primary && legacy) {
+    if (JSON.stringify(primary) === JSON.stringify(legacy)) return false; // converged
+    // Both parse but differ — the fresher one wins (an older binary may have
+    // re-analyzed and written only meta.json AFTER gitnexus.json was created;
+    // blind-preferring the primary would permanently shadow that fresher
+    // state, silently certifying a stale index as up to date).
+    const winner = metaTimestamp(legacy) > metaTimestamp(primary) ? legacy : primary;
+    await saveMeta(dir, winner);
+    logger.info(
+      { dir, winner: winner === legacy ? LEGACY_METADATA_FILE : INDEX_METADATA_FILE },
+      'Reconciled diverged metadata files (fresher indexedAt wins, written to both)',
+    );
+    return true;
+  }
+
+  // Exactly one parses — establish/repair the other so both stay in sync.
+  const survivor = (primary ?? legacy) as RepoMeta;
+  await saveMeta(dir, survivor);
+  return true;
+};
+
+/**
+ * Reconcile the metadata files for a repo's flat slot and every
+ * `branches/<slug>/` slot. Runs once per `analyze` (see run-analyze.ts).
+ *
+ * This is a best-effort compatibility sync, NOT a one-way migration: the
+ * legacy `meta.json` mirror is kept in sync indefinitely (removal happens at
+ * a future major version — see MIGRATION.md), so older binaries, still-running
+ * MCP servers, and the shipped editor hooks keep working, and a rollback to a
+ * pre-rename version sees current metadata instead of "no prior index".
+ * Returns true when any file was written.
+ */
+export const reconcileMetadataFiles = async (repoPath: string): Promise<boolean> => {
+  const storagePath = getStoragePath(repoPath);
+  let changed = await reconcileMetaDir(storagePath);
+
   const branchesDir = path.join(storagePath, BRANCHES_DIR);
   try {
     const branchDirs = await fs.readdir(branchesDir);
@@ -554,32 +617,13 @@ export const migrateToCommittedIndex = async (repoPath: string): Promise<boolean
       const branchPath = path.join(branchesDir, branchDir);
       const stat = await fs.stat(branchPath);
       if (!stat.isDirectory()) continue;
-
-      const branchMetadataPath = path.join(branchPath, INDEX_METADATA_FILE);
-      const branchLegacyPath = path.join(branchPath, 'meta.json');
-
-      try {
-        await fs.access(branchMetadataPath);
-      } catch {
-        const branchLegacyMeta = await loadMetaLegacy(branchPath);
-        if (branchLegacyMeta) {
-          await saveMeta(branchPath, branchLegacyMeta);
-          logger.info(`Migrated branch index from ${branchLegacyPath} to ${branchMetadataPath}`);
-          try {
-            await fs.unlink(branchLegacyPath);
-            logger.info(`Cleaned up legacy ${branchLegacyPath}`);
-          } catch (err) {
-            logger.warn({ err }, 'Failed to clean up legacy branch meta.json (non-critical)');
-          }
-          migrated = true;
-        }
-      }
+      if (await reconcileMetaDir(branchPath)) changed = true;
     }
   } catch {
     // branchesDir may not exist - ignore
   }
 
-  return migrated;
+  return changed;
 };
 
 /**
