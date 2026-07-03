@@ -7,7 +7,7 @@
  * These are pure unit tests that mock the LadybugDB layer to test
  * the dispatch and error handling logic in isolation.
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterAll } from 'vitest';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import fsPromises from 'fs/promises';
 import os from 'os';
@@ -3505,10 +3505,14 @@ describe('cypher result formatting', () => {
 describe('LocalBackend.resolveRepo branch scope (#2106)', () => {
   let backend: LocalBackend;
 
+  // Per-run unique dir: a fixed shared os.tmpdir() path lets concurrent
+  // vitest runs on one host rm each other's materialized sub-index stub
+  // mid-test (the documented parallel-agents workflow).
+  const MULTI_DIR = mkdtempSync(path.join(os.tmpdir(), 'gnx-2106-multi-'));
   const BRANCH_ENTRY = {
     name: 'multi',
-    path: path.join(os.tmpdir(), 'gnx-2106-multi'),
-    storagePath: path.join(os.tmpdir(), 'gnx-2106-multi', '.gitnexus'),
+    path: MULTI_DIR,
+    storagePath: path.join(MULTI_DIR, '.gitnexus'),
     indexedAt: '2026-06-10T12:00:00Z',
     lastCommit: 'mainsha',
     branch: 'main',
@@ -3533,6 +3537,10 @@ describe('LocalBackend.resolveRepo branch scope (#2106)', () => {
 
   afterEach(() => {
     rmSync(BRANCH_ENTRY.storagePath, { recursive: true, force: true });
+  });
+
+  afterAll(() => {
+    rmSync(MULTI_DIR, { recursive: true, force: true });
   });
 
   it('no branch param resolves the flat workspace lbug', async () => {

@@ -9,6 +9,8 @@ import {
 } from '../../src/core/embedding-mode.js';
 import {
   getStoragePaths,
+  loadMeta,
+  registerRepo,
   saveMeta,
   INCREMENTAL_SCHEMA_VERSION,
   type RepoMeta,
@@ -114,7 +116,6 @@ describe('run-analyze module', () => {
       // Register the repo in an isolated registry: the shadow cleanup only
       // runs for registered repos (#2364 review F2 — unregistered repos must
       // never lose a pinned sub-index).
-      const { registerRepo, loadMeta } = await import('../../src/storage/repo-manager.js');
       await registerRepo(tmpRepo.dbPath, flatMetaSeed);
       await registerRepo(
         tmpRepo.dbPath,
@@ -181,7 +182,6 @@ describe('run-analyze module', () => {
       const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
       const result = await runFullAnalysis(tmpRepo.dbPath, {}, { onProgress: () => {} });
       expect(result.alreadyUpToDate).toBe(true);
-      const { loadMeta } = await import('../../src/storage/repo-manager.js');
       const flatMeta = await loadMeta(flat.storagePath);
       // The informational flat label still restamps…
       expect(flatMeta?.branch).toBe('feature/x');
@@ -227,7 +227,6 @@ describe('run-analyze module', () => {
       const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
       const result = await runFullAnalysis(tmpRepo.dbPath, {}, { onProgress: () => {} });
       expect(result.alreadyUpToDate).toBe(true);
-      const { loadMeta } = await import('../../src/storage/repo-manager.js');
       const flatMeta = await loadMeta(flat.storagePath);
       expect(flatMeta?.branch).toBe('main');
     } finally {
