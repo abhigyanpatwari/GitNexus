@@ -1156,11 +1156,15 @@ export class LocalBackend {
       // The lbug is the artifact the pool opens, so its presence is the
       // serviceability truth — a half-deleted dir can outlive its meta.json
       // while the lbug is gone, and vice versa (#2364 review F1 arm ii).
-      const subIndexExists = await fs.access(lbugPath).then(
-        () => true,
-        () => false,
+      // Only provably-absent errno counts as missing: a transient EACCES/EIO
+      // on a healthy pinned sub-index must serve the handle (the pool open
+      // surfaces the real error) rather than a false "not indexed".
+      const probeCode = await fs.access(lbugPath).then(
+        () => null,
+        (e: unknown) => (e as NodeJS.ErrnoException)?.code ?? 'UNKNOWN',
       );
-      if (subIndexExists) {
+      const subIndexMissing = probeCode === 'ENOENT' || probeCode === 'ENOTDIR';
+      if (!subIndexMissing) {
         return {
           ...handle,
           lbugPath,
