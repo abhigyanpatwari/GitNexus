@@ -1133,10 +1133,18 @@ export const removeBranchIndex = async (repoPath: string, branch: string): Promi
  * so `list`/`list_repos`/branch-scoped queries stay coherent.
  *
  * Deliberately narrow for the analyze fast path: a missing registry entry is
- * a no-op (never self-heals an unregistered repo, per #2264/#1169), and no
- * subprocess is spawned.
+ * a no-op — including the sub-index deletion, which only runs for registered
+ * repos (never self-heals an unregistered repo, per #2264/#1169; the registry
+ * check precedes the rm per #2364 review F2) — and no subprocess is spawned.
  */
 export const adoptFlatBranchLabel = async (repoPath: string, branch: string): Promise<void> => {
+  const canonicalInput = canonicalizePath(repoPath);
+  const entries = await readRegistry();
+  const idx = entries.findIndex((e) =>
+    registryPathEquals(canonicalizePath(e.path), canonicalInput),
+  );
+  if (idx < 0) return; // unregistered → no-op, disk included (no self-heal)
+
   const resolved = path.resolve(repoPath);
   const { storagePath } = getStoragePaths(resolved);
   // Remove a shadowed sub-index directory, mirroring `clean --branch`'s
@@ -1150,12 +1158,6 @@ export const adoptFlatBranchLabel = async (repoPath: string, branch: string): Pr
     await fs.rmdir(path.join(storagePath, BRANCHES_DIR)).catch(() => {});
   }
 
-  const canonicalInput = canonicalizePath(repoPath);
-  const entries = await readRegistry();
-  const idx = entries.findIndex((e) =>
-    registryPathEquals(canonicalizePath(e.path), canonicalInput),
-  );
-  if (idx < 0) return; // unregistered → no-op (no self-heal)
   const entry = entries[idx];
   const remaining = entry.branches?.filter((b) => b.branch !== branch);
   const droppedSummary = (entry.branches?.length ?? 0) !== (remaining?.length ?? 0);

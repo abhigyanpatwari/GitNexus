@@ -1003,8 +1003,16 @@ describe('registerRepo branch nesting (#2106)', () => {
 
   it('adoptFlatBranchLabel never self-heals an unregistered repo', async () => {
     // No registerRepo call — the registry has no entry for this path (#2264/#1169).
+    // The no-op must cover the disk too: a materialized pinned sub-index
+    // survives, because the shadow rm only runs for registered repos
+    // (#2364 review F2 — the rm used to fire before the registry check).
+    const { metaPath } = getStoragePaths(tmpRepo.dbPath, 'feature/x');
+    await saveMeta(path.dirname(metaPath), metaFor('feature/x', 'bbb2222'));
+
     await adoptFlatBranchLabel(tmpRepo.dbPath, 'feature/x');
+
     expect(await listRegisteredRepos()).toHaveLength(0);
+    await expect(fs.access(path.dirname(metaPath))).resolves.toBeUndefined(); // dir survives
   });
 
   // ─── re-read-before-write merge (#2106 R9) ──────────────────────────

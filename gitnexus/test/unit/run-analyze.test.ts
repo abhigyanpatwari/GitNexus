@@ -74,6 +74,9 @@ describe('run-analyze module', () => {
 
   it('plain analyze on another branch adopts the flat workspace slot (#2354)', async () => {
     const tmpRepo = await createTempDir('gitnexus-run-analyze-workspace-');
+    const tmpHome = await createTempDir('gitnexus-run-analyze-workspace-home-');
+    const savedHome = process.env.GITNEXUS_HOME;
+    process.env.GITNEXUS_HOME = tmpHome.dbPath;
     try {
       execSync('git init', { cwd: tmpRepo.dbPath, stdio: 'pipe' });
       execSync('git -c user.name=t -c user.email=t@t commit --allow-empty -m init', {
@@ -92,6 +95,70 @@ describe('run-analyze module', () => {
       // schema-mismatch guard (#2289 P1) does not force a rebuild before the
       // fast path runs.
       const flat = getStoragePaths(tmpRepo.dbPath);
+      const flatMetaSeed: RepoMeta = {
+        repoPath: tmpRepo.dbPath,
+        lastCommit: commit,
+        indexedAt: new Date().toISOString(),
+        branch: 'main',
+        schemaVersion: INCREMENTAL_SCHEMA_VERSION,
+      };
+      await saveMeta(flat.storagePath, flatMetaSeed);
+      const branch = getStoragePaths(tmpRepo.dbPath, 'feature/x');
+      await saveMeta(path.dirname(branch.metaPath), {
+        repoPath: tmpRepo.dbPath,
+        lastCommit: commit,
+        indexedAt: new Date().toISOString(),
+        branch: 'feature/x',
+        schemaVersion: INCREMENTAL_SCHEMA_VERSION,
+      });
+      // Register the repo in an isolated registry: the shadow cleanup only
+      // runs for registered repos (#2364 review F2 — unregistered repos must
+      // never lose a pinned sub-index).
+      const { registerRepo, loadMeta } = await import('../../src/storage/repo-manager.js');
+      await registerRepo(tmpRepo.dbPath, flatMetaSeed);
+      await registerRepo(
+        tmpRepo.dbPath,
+        { ...flatMetaSeed, branch: 'feature/x' },
+        { branch: 'feature/x' },
+      );
+
+      // A plain analyze ignores the pinned sub-index and serves the flat
+      // workspace slot; the same-commit clean-tree fast path restamps the
+      // slot's branch label and removes the now-shadowed sub-index.
+      const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
+      const result = await runFullAnalysis(tmpRepo.dbPath, {}, { onProgress: () => {} });
+      expect(result.alreadyUpToDate).toBe(true);
+      expect(result.isPrimaryBranch).toBe(true);
+      const flatMeta = await loadMeta(flat.storagePath);
+      expect(flatMeta?.branch).toBe('feature/x');
+      await expect(fs.access(path.dirname(branch.metaPath))).rejects.toThrow();
+    } finally {
+      if (savedHome === undefined) delete process.env.GITNEXUS_HOME;
+      else process.env.GITNEXUS_HOME = savedHome;
+      await tmpHome.cleanup();
+      await tmpRepo.cleanup();
+    }
+  });
+
+  it('the fast-path restamp leaves an unregistered repo pinned sub-index intact (#2364 F2)', async () => {
+    const tmpRepo = await createTempDir('gitnexus-run-analyze-unregistered-');
+    const tmpHome = await createTempDir('gitnexus-run-analyze-unregistered-home-');
+    const savedHome = process.env.GITNEXUS_HOME;
+    process.env.GITNEXUS_HOME = tmpHome.dbPath;
+    try {
+      execSync('git init', { cwd: tmpRepo.dbPath, stdio: 'pipe' });
+      execSync('git -c user.name=t -c user.email=t@t commit --allow-empty -m init', {
+        cwd: tmpRepo.dbPath,
+        stdio: 'pipe',
+      });
+      execSync('git branch -M main', { cwd: tmpRepo.dbPath, stdio: 'pipe' });
+      execSync('git checkout -b feature/x', { cwd: tmpRepo.dbPath, stdio: 'pipe' });
+      const commit = execSync('git rev-parse HEAD', {
+        cwd: tmpRepo.dbPath,
+        encoding: 'utf-8',
+      }).trim();
+
+      const flat = getStoragePaths(tmpRepo.dbPath);
       await saveMeta(flat.storagePath, {
         repoPath: tmpRepo.dbPath,
         lastCommit: commit,
@@ -107,19 +174,23 @@ describe('run-analyze module', () => {
         branch: 'feature/x',
         schemaVersion: INCREMENTAL_SCHEMA_VERSION,
       });
+      // Deliberately NO registerRepo: the empty isolated registry makes this
+      // repo unregistered, so the adopt must be a full no-op on disk
+      // (#2264/#1169 no-self-heal, #2364 review F2).
 
-      // A plain analyze ignores the pinned sub-index and serves the flat
-      // workspace slot; the same-commit clean-tree fast path restamps the
-      // slot's branch label and removes the now-shadowed sub-index.
       const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
       const result = await runFullAnalysis(tmpRepo.dbPath, {}, { onProgress: () => {} });
       expect(result.alreadyUpToDate).toBe(true);
-      expect(result.isPrimaryBranch).toBe(true);
       const { loadMeta } = await import('../../src/storage/repo-manager.js');
       const flatMeta = await loadMeta(flat.storagePath);
+      // The informational flat label still restamps…
       expect(flatMeta?.branch).toBe('feature/x');
-      await expect(fs.access(path.dirname(branch.metaPath))).rejects.toThrow();
+      // …but the pinned sub-index survives untouched.
+      await expect(fs.access(path.dirname(branch.metaPath))).resolves.toBeUndefined();
     } finally {
+      if (savedHome === undefined) delete process.env.GITNEXUS_HOME;
+      else process.env.GITNEXUS_HOME = savedHome;
+      await tmpHome.cleanup();
       await tmpRepo.cleanup();
     }
   });
