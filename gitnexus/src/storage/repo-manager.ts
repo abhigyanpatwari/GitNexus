@@ -127,12 +127,13 @@ export interface RepoMeta {
    */
   fileHashes?: Record<string, string>;
   /**
-   * Crash-recovery dirty flag — a generic marker written to meta.json
-   * BEFORE any destructive DB mutation by BOTH writeback branches
-   * (incremental since its introduction; full rebuilds over an existing
-   * meta since #2099 F1); cleared on success by overwriting meta.json.
-   * If a run crashes between, the next run sees the flag and forces a
-   * full rebuild — the cheapest path back to a known-good index.
+   * Crash-recovery dirty flag — a generic marker written to the metadata
+   * file (gitnexus.json + its meta.json mirror) BEFORE any destructive DB
+   * mutation by BOTH writeback branches (incremental since its introduction;
+   * full rebuilds over an existing meta since #2099 F1); cleared on success
+   * by overwriting the metadata file. If a run crashes between, the next
+   * run sees the flag and forces a full rebuild — the cheapest path back
+   * to a known-good index.
    */
   incrementalInProgress?: {
     /** When the run started (epoch ms). */
@@ -143,9 +144,9 @@ export interface RepoMeta {
   };
   /**
    * Name of the git branch this index represents (#2106). Absent for the
-   * default/legacy single-branch case so the flat `meta.json` stays
+   * default/legacy single-branch case so the flat metadata file stays
    * byte-identical to pre-multi-branch output. When present in the FLAT
-   * `meta.json`, it records which branch "owns" the flat slot (the first
+   * metadata file, it records which branch "owns" the flat slot (the first
    * branch indexed); per-branch indexes under `branches/<slug>/` always carry
    * their own `branch`.
    */
@@ -412,7 +413,7 @@ export const cleanupOldKuzuFiles = async (
  * Returns null when the file is absent, unreadable, or unparseable — a
  * corrupt legacy file is treated the same as a missing one (safe rebuild).
  */
-export const loadMetaLegacy = async (metaDir: string): Promise<RepoMeta | null> =>
+const loadMetaLegacy = async (metaDir: string): Promise<RepoMeta | null> =>
   tryReadMetaFile(metaDir, LEGACY_METADATA_FILE);
 
 /**
@@ -504,7 +505,7 @@ export const hasIndex = async (repoPath: string): Promise<boolean> => {
   } catch {
     // Fall back to legacy location
     try {
-      await fs.access(path.join(paths.storagePath, 'meta.json'));
+      await fs.access(path.join(paths.storagePath, LEGACY_METADATA_FILE));
       return true;
     } catch {
       return false;
@@ -1165,11 +1166,11 @@ export class RegistryAmbiguousTargetError extends Error {
 
 /**
  * Thrown by {@link assertAnalysisFinalized} when a successful `analyze`
- * run did not actually persist `meta.json` or did not register the repo
- * in `~/.gitnexus/registry.json` (#1169).
+ * run did not actually persist the index metadata file or did not register
+ * the repo in `~/.gitnexus/registry.json` (#1169).
  *
  * Why this exists: on Windows, `gitnexus analyze` has been observed to
- * exit cleanly (code 0) with `lbug.wal` written but no `meta.json`,
+ * exit cleanly (code 0) with `lbug.wal` written but no metadata file,
  * leaving the repo invisible to `gitnexus list`/`status` and downstream
  * MCP discovery. The only signal to the user was an empty banner —
  * which is indistinguishable from a no-op early return. This invariant
@@ -1188,7 +1189,7 @@ export class AnalysisNotFinalizedError extends Error {
   ) {
     const detail =
       missing === 'meta'
-        ? `meta.json was not written to ${path.join(storagePath, 'meta.json')}`
+        ? `${INDEX_METADATA_FILE} was not written to ${path.join(storagePath, INDEX_METADATA_FILE)}`
         : `registry entry for ${repoPath} was not added to ${registryPath}`;
     super(
       `Analysis did not finalize for ${repoPath}: ${detail}. ` +
@@ -1216,7 +1217,9 @@ export const isRepoRegistered = async (repoPath: string): Promise<boolean> => {
  * Verify that a successful `analyze` call actually produced an indexed,
  * registered repo on disk. Two checks, both strictly required:
  *
- *   1. `meta.json` must exist at `<repoPath>/.gitnexus/meta.json`.
+ *   1. `gitnexus.json` must exist at `<repoPath>/.gitnexus/gitnexus.json`
+ *      (the primary metadata file; the legacy `meta.json` mirror is not
+ *      sufficient — a finalized analyze always writes the primary).
  *   2. The global registry (`getGlobalRegistryPath()`) must contain an
  *      entry whose canonical path matches `repoPath`.
  *
@@ -1401,31 +1404,32 @@ export const listRegisteredRepos = async (opts?: {
   // Validate each entry still has a .gitnexus/ directory with metadata
   const valid: RegistryEntry[] = [];
   for (const entry of entries) {
-    let hasIndex = false;
+    // Named to avoid shadowing the exported `hasIndex` function above.
+    let indexFound = false;
     let firstNonMissingError: NodeJS.ErrnoException | null = null;
     let lastMissingError: NodeJS.ErrnoException | null = null;
 
     // Check for new metadata file first
     try {
       await fs.access(path.join(entry.storagePath, INDEX_METADATA_FILE));
-      hasIndex = true;
+      indexFound = true;
     } catch (err: any) {
       if (isMissingFilesystemError(err)) lastMissingError = err;
       else firstNonMissingError = err;
     }
 
     // Fall back to legacy meta.json
-    if (!hasIndex) {
+    if (!indexFound) {
       try {
-        await fs.access(path.join(entry.storagePath, 'meta.json'));
-        hasIndex = true;
+        await fs.access(path.join(entry.storagePath, LEGACY_METADATA_FILE));
+        indexFound = true;
       } catch (err: any) {
         if (isMissingFilesystemError(err)) lastMissingError = err;
         else if (!firstNonMissingError) firstNonMissingError = err;
       }
     }
 
-    if (hasIndex) {
+    if (indexFound) {
       valid.push(entry);
     } else if (!firstNonMissingError && lastMissingError) {
       // Index genuinely removed — safe to prune

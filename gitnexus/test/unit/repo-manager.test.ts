@@ -17,6 +17,8 @@ import {
   saveMeta,
   loadMeta,
   reconcileMetadataFiles,
+  AnalysisNotFinalizedError,
+  INDEX_METADATA_FILE,
   ensureGitNexusIgnored,
   readRegistry,
   loadCLIConfig,
@@ -270,6 +272,23 @@ describe('saveMeta dual-write', () => {
     } finally {
       cap.restore();
     }
+  });
+});
+
+// ─── AnalysisNotFinalizedError message names the checked file (F10) ─────
+
+describe('AnalysisNotFinalizedError diagnostic', () => {
+  it("the 'meta' variant names the file assertAnalysisFinalized actually checks", () => {
+    const err = new AnalysisNotFinalizedError(
+      '/repo',
+      '/repo/.gitnexus',
+      'meta',
+      '/home/user/.gitnexus/registry.json',
+    );
+    // Built from INDEX_METADATA_FILE so a future rename can't silently desync
+    // the diagnostic from the check again (#1169 misdirection regression).
+    expect(err.message).toContain(INDEX_METADATA_FILE);
+    expect(err.message).toContain(path.join('/repo/.gitnexus', INDEX_METADATA_FILE));
   });
 });
 
