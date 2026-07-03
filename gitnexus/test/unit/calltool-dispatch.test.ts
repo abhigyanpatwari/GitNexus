@@ -114,7 +114,9 @@ import { CALLEES_TRUNCATED_SENTINEL } from '../../src/core/ingestion/cfg/emit.js
 import {
   listRegisteredRepos,
   cleanupOldKuzuFiles,
+  getStoragePaths,
   loadMeta,
+  type RegistryEntry,
 } from '../../src/storage/repo-manager.js';
 import { getGitRoot } from '../../src/storage/git.js';
 import { _captureLogger } from '../../src/core/logger.js';
@@ -3515,12 +3517,22 @@ describe('LocalBackend.resolveRepo branch scope (#2106)', () => {
   };
 
   const flatLbug = path.join(BRANCH_ENTRY.storagePath, 'lbug');
+  // The pinned sub-index must exist on disk: applyBranchScope serves a
+  // branches[] summary only when its lbug is really there (#2364 review F1
+  // arm ii — a stale summary must not route to an adopt-deleted dir).
+  const branchLbug = getStoragePaths(BRANCH_ENTRY.path, 'feature/x').lbugPath;
 
   beforeEach(async () => {
     vi.clearAllMocks();
+    mkdirSync(path.dirname(branchLbug), { recursive: true });
+    writeFileSync(branchLbug, 'stub');
     backend = new LocalBackend();
     (listRegisteredRepos as any).mockResolvedValue([BRANCH_ENTRY]);
     await backend.init();
+  });
+
+  afterEach(() => {
+    rmSync(BRANCH_ENTRY.storagePath, { recursive: true, force: true });
   });
 
   it('no branch param resolves the flat/primary lbug', async () => {
@@ -3608,6 +3620,98 @@ describe('LocalBackend.resolveRepo branch scope (#2106)', () => {
       expect(handle.lbugPath).toBe(path.join(storagePath, 'lbug'));
       // A genuinely unindexed branch still errors (never serves the wrong DB).
       await expect(backend.resolveRepo('flipped', 'nope')).rejects.toThrow(/not indexed/i);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('a stale cached label errors instead of serving the flat handle (#2364 F1 arm i)', async () => {
+    // Long-lived server cached branch 'main'; a plain analyze on feature/z
+    // restamped the flat meta (and the pool reinit will hot-swap content).
+    // Requesting the OLD label must error — the flat DB no longer holds main.
+    const dir = mkdtempSync(path.join(os.tmpdir(), 'gnx-2364-stale-label-'));
+    const storagePath = path.join(dir, '.gitnexus');
+    mkdirSync(storagePath, { recursive: true });
+    writeFileSync(
+      path.join(storagePath, 'meta.json'),
+      JSON.stringify({ repoPath: dir, lastCommit: 'zzz', indexedAt: 'now', branch: 'feature/z' }),
+    );
+    try {
+      const entry: RegistryEntry = {
+        name: 'flipped',
+        path: dir,
+        storagePath,
+        indexedAt: 'now',
+        lastCommit: 'aaa',
+        branch: 'main',
+      };
+      vi.mocked(listRegisteredRepos).mockResolvedValue([entry]);
+      await backend.init();
+      const callsBefore = vi.mocked(listRegisteredRepos).mock.calls.length;
+      await expect(backend.resolveRepo('flipped', 'main')).rejects.toThrow(/not indexed/i);
+      // Exactly one refreshRepos fired for cache coherence (observed via its
+      // unconditional first call — refreshRepos itself is private).
+      expect(vi.mocked(listRegisteredRepos).mock.calls.length - callsBefore).toBe(1);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('a stale summary whose sub-index was adopted falls through to the flat handle (#2364 F1 arm ii)', async () => {
+    // The cached branches[] summary still lists feature/z, but adopt deleted
+    // branches/<slug>/ and the flat slot now owns the label: serve flat.
+    const dir = mkdtempSync(path.join(os.tmpdir(), 'gnx-2364-adopted-'));
+    const storagePath = path.join(dir, '.gitnexus');
+    mkdirSync(storagePath, { recursive: true });
+    writeFileSync(
+      path.join(storagePath, 'meta.json'),
+      JSON.stringify({ repoPath: dir, lastCommit: 'zzz', indexedAt: 'now', branch: 'feature/z' }),
+    );
+    try {
+      const entry: RegistryEntry = {
+        name: 'adopted',
+        path: dir,
+        storagePath,
+        indexedAt: 'now',
+        lastCommit: 'aaa',
+        branch: 'main',
+        branches: [{ branch: 'feature/z', indexedAt: 'now', lastCommit: 'zzz' }],
+      };
+      vi.mocked(listRegisteredRepos).mockResolvedValue([entry]);
+      await backend.init();
+      const handle = await backend.resolveRepo('adopted', 'feature/z');
+      expect(handle.lbugPath).toBe(path.join(storagePath, 'lbug'));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('a dangling summary with a disagreeing flat meta errors honestly (#2364 F3 window)', async () => {
+    // Partial fast-path failure: adopt deleted the sub-index but the flat
+    // meta was never restamped (saveMeta runs last). The degraded state must
+    // yield the not-indexed error — no ghost route, no wrong data.
+    const dir = mkdtempSync(path.join(os.tmpdir(), 'gnx-2364-dangling-'));
+    const storagePath = path.join(dir, '.gitnexus');
+    mkdirSync(storagePath, { recursive: true });
+    writeFileSync(
+      path.join(storagePath, 'meta.json'),
+      JSON.stringify({ repoPath: dir, lastCommit: 'aaa', indexedAt: 'now', branch: 'main' }),
+    );
+    try {
+      const entry: RegistryEntry = {
+        name: 'dangling',
+        path: dir,
+        storagePath,
+        indexedAt: 'now',
+        lastCommit: 'aaa',
+        branch: 'main',
+        branches: [{ branch: 'feature/z', indexedAt: 'now', lastCommit: 'zzz' }],
+      };
+      vi.mocked(listRegisteredRepos).mockResolvedValue([entry]);
+      await backend.init();
+      const callsBefore = vi.mocked(listRegisteredRepos).mock.calls.length;
+      await expect(backend.resolveRepo('dangling', 'feature/z')).rejects.toThrow(/not indexed/i);
+      expect(vi.mocked(listRegisteredRepos).mock.calls.length - callsBefore).toBe(1);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

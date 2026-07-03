@@ -1122,38 +1122,66 @@ export class LocalBackend {
    *
    * - No `branch` (default) → the flat workspace handle, unchanged (backward
    *   compatible: every existing caller passes no branch).
-   * - `branch` equal to the flat slot's recorded branch → the flat handle.
+   * - `branch` equal to the flat slot's **on-disk** recorded branch → the
+   *   flat handle. The disk meta is read before any cached state is trusted
+   *   (#2364 review F1): the flat slot follows the checked-out working tree
+   *   (#2354), so a plain analyze after a branch switch restamps the meta
+   *   without any repo-resolution miss that would refresh a long-lived
+   *   server's cached handle — the cached label can otherwise serve another
+   *   branch's content under the old name (the pool staleness reinit
+   *   hot-swaps content without updating `handle.branch`).
    * - `branch` matching an indexed pinned branch → a handle whose
    *   `lbugPath` points at `branches/<slug>/lbug`; the connection pool keys by
-   *   `lbugPath`, so this is the only change needed to scope every tool.
+   *   `lbugPath`, so this is the only change needed to scope every tool. The
+   *   sub-index lbug must actually exist on disk — `adoptFlatBranchLabel`
+   *   deletes the whole dir when the flat slot takes ownership, and a stale
+   *   cached summary must not route to the deleted path.
+   * - Cached `handle.branch` is trusted only when there is no readable flat
+   *   meta to contradict it (legacy shapes, #2106 R4).
    * - `branch` that was never indexed → a clear error (never a silently-empty
-   *   result against the wrong DB).
+   *   result against the wrong DB), after one `refreshRepos()` when a cached
+   *   label or summary was detected stale.
    */
   private async applyBranchScope(handle: RepoHandle, branch?: string): Promise<RepoHandle> {
     if (!branch) return handle;
-    if (handle.branch && handle.branch === branch) return handle;
+    // One small JSON read per scoped call; mid-run meta writes preserve the
+    // old label until the end-of-run atomic stamp (run-analyze dirty stamps
+    // spread the existing meta), so this read never runs ahead of the DB.
+    const flatMeta = await loadMeta(path.dirname(handle.lbugPath));
+    if (flatMeta?.branch && flatMeta.branch === branch) return handle;
+
     const summary = handle.branches?.find((b) => b.branch === branch);
     if (summary) {
       const { lbugPath } = getStoragePaths(handle.repoPath, branch);
-      return {
-        ...handle,
-        lbugPath,
-        indexedAt: summary.indexedAt,
-        lastCommit: summary.lastCommit,
-        stats: summary.stats,
-      };
+      // The lbug is the artifact the pool opens, so its presence is the
+      // serviceability truth — a half-deleted dir can outlive its meta.json
+      // while the lbug is gone, and vice versa (#2364 review F1 arm ii).
+      const subIndexExists = await fs.access(lbugPath).then(
+        () => true,
+        () => false,
+      );
+      if (subIndexExists) {
+        return {
+          ...handle,
+          lbugPath,
+          indexedAt: summary.indexedAt,
+          lastCommit: summary.lastCommit,
+          stats: summary.stats,
+        };
+      }
+      // Stale summary (sub-index adopted/deleted): refresh so later calls see
+      // fresh handles, then fall through — the flat meta above is the truth.
+      await this.refreshRepos().catch(() => {});
     }
-    // The cached handle's branch label can lag the on-disk truth: the flat
-    // workspace slot follows the checked-out working tree (#2354), so a plain
-    // analyze after a branch switch restamps the flat meta without any repo-
-    // resolution miss that would refresh this handle. Also covers legacy
-    // pre-#2106 entries with no recorded primary `branch`. Read the flat
-    // meta.json (next to the flat handle's lbug) and serve the flat handle
-    // only when it actually matches — never serve flat for an arbitrary
-    // unindexed branch (#2106 R4). Error path only, so the extra read costs
-    // nothing on scoped-query hits.
-    const flatMeta = await loadMeta(path.dirname(handle.lbugPath));
-    if (flatMeta?.branch && flatMeta.branch === branch) return handle;
+
+    if (handle.branch && handle.branch === branch) {
+      // No readable flat meta (missing/corrupt — loadMeta → null): keep the
+      // pre-#2354 trust in the cached label (#2106 R4 legacy shapes). A
+      // readable meta that names another branch means the label is stale.
+      if (!flatMeta?.branch) return handle;
+      await this.refreshRepos().catch(() => {});
+    }
+
     const indexed = [handle.branch, ...(handle.branches?.map((b) => b.branch) ?? [])].filter(
       Boolean,
     );
