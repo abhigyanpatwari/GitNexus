@@ -1151,15 +1151,35 @@ export const adoptFlatBranchLabel = async (repoPath: string, branch: string): Pr
   // containment guard: the target MUST live under .gitnexus/branches/.
   const branchDir = path.join(storagePath, BRANCHES_DIR, branchSlug(branch));
   const branchesRoot = path.join(storagePath, BRANCHES_DIR) + path.sep;
+  let dirGone = false;
   if (branchDir.startsWith(branchesRoot)) {
-    await fs.rm(branchDir, { recursive: true, force: true }).catch(() => {});
-    // Non-recursive by design: only removes the parent when no other pinned
-    // sub-index remains, so an empty branches/ dir doesn't read as "pinned".
-    await fs.rmdir(path.join(storagePath, BRANCHES_DIR)).catch(() => {});
+    let rmError: NodeJS.ErrnoException | undefined;
+    await fs.rm(branchDir, { recursive: true, force: true }).catch((err: unknown) => {
+      rmError = err as NodeJS.ErrnoException;
+    });
+    // Trust the disk, not the rm result: the registry summary may be dropped
+    // only for a verifiably-gone directory. `clean --branch` resolves its
+    // target solely via the recorded summary, so dropping it while the dir
+    // survives (e.g. Windows EBUSY on an lbug held open by a live MCP server)
+    // would strand un-cleanable disk bloat (#2364 review F4).
+    dirGone = await fs.access(branchDir).then(
+      () => false,
+      () => true,
+    );
+    if (dirGone) {
+      // Non-recursive by design: only removes the parent when no other pinned
+      // sub-index remains, so an empty branches/ dir doesn't read as "pinned".
+      await fs.rmdir(path.join(storagePath, BRANCHES_DIR)).catch(() => {});
+    } else {
+      logger.warn(
+        { path: branchDir, code: rmError?.code },
+        'Could not remove the shadowed branch sub-index; keeping its registry summary so `gitnexus clean --branch` can still target it.',
+      );
+    }
   }
 
   const entry = entries[idx];
-  const remaining = entry.branches?.filter((b) => b.branch !== branch);
+  const remaining = dirGone ? entry.branches?.filter((b) => b.branch !== branch) : entry.branches;
   const droppedSummary = (entry.branches?.length ?? 0) !== (remaining?.length ?? 0);
   if (entry.branch === branch && !droppedSummary) return; // already coherent
   entry.branch = branch;
