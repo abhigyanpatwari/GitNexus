@@ -100,9 +100,7 @@ describe('indexCommand', () => {
 
     expect(mockRegisterRepo).not.toHaveBeenCalled();
     expect(process.exitCode).toBe(1);
-    expect(logSpy).toHaveBeenCalledWith(
-      '  Index exists but contains no LadybugDB database.',
-    );
+    expect(logSpy).toHaveBeenCalledWith('  Index exists but contains no LadybugDB database.');
   });
 
   it('fails when meta.json is missing and --force is not set', async () => {
