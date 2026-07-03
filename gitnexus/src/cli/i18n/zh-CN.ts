@@ -187,7 +187,7 @@ export const zhCN = {
   'help.option.analyze.embeddingBatchSize': '每个嵌入批次的节点数',
   'help.option.analyze.embeddingSubBatchSize': '每次嵌入模型调用的分块数',
   'help.option.analyze.embeddingDevice': '嵌入设备：auto、cpu、dml、cuda 或 wasm',
-  'help.option.index.force': '即使缺少 meta.json 也注册（统计为空）',
+  'help.option.index.force': '即使缺少索引元数据也注册（统计为空）',
   'help.option.index.allowNonGit': '允许注册非 Git 仓库文件夹',
   'help.option.port': '端口号',
   'help.option.serve.host': '绑定地址（默认：127.0.0.1；远程访问可用 0.0.0.0）',
