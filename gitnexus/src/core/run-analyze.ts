@@ -55,6 +55,8 @@ import {
   registerRepo,
   isRepoRegistered,
   cleanupOldKuzuFiles,
+  migrateToCommittedIndex,
+  INDEX_METADATA_FILE,
   INCREMENTAL_SCHEMA_VERSION,
   type RepoMeta,
 } from '../storage/repo-manager.js';
@@ -363,12 +365,12 @@ export const primaryInversionWarning = (
 
 /**
  * Collect the recorded parse-cache chunk keys across the flat + every branch
- * meta under a flat `.gitnexus` storage, EXCLUDING `excludeDir` (the current
- * run's own meta dir) so a single-branch repo collects nothing and its prune
- * stays byte-identical to today (#2106 R6). `complete` is false when a sibling
- * meta.json exists but fails to parse — callers then retain the whole shared
- * cache rather than over-evict another branch's still-live shards. Exported for
- * testing.
+ * metadata directory under a flat `.gitnexus` storage, EXCLUDING `excludeDir`
+ * (the current run's own meta dir) so a single-branch repo collects nothing and
+ * its prune stays byte-identical to today (#2106 R6). `complete` is false when
+ * a sibling metadata file exists but fails to read or parse — callers then
+ * retain the whole shared cache rather than over-evict another branch's
+ * still-live shards. Exported for testing.
  */
 export const collectBranchCacheKeys = async (
   storagePath: string,
@@ -384,9 +386,20 @@ export const collectBranchCacheKeys = async (
     if (excludeDir && path.resolve(dir) === path.resolve(excludeDir)) continue;
     let raw: string;
     try {
-      raw = await fs.readFile(path.join(dir, 'meta.json'), 'utf-8');
-    } catch {
-      continue; // no meta here — not a branch index, not a failure
+      raw = await fs.readFile(path.join(dir, INDEX_METADATA_FILE), 'utf-8');
+    } catch (newErr) {
+      const newCode = (newErr as NodeJS.ErrnoException)?.code;
+      if (newCode !== 'ENOENT' && newCode !== 'ENOTDIR') {
+        complete = false;
+        continue;
+      }
+      try {
+        raw = await fs.readFile(path.join(dir, 'meta.json'), 'utf-8');
+      } catch (legacyErr) {
+        const legacyCode = (legacyErr as NodeJS.ErrnoException)?.code;
+        if (legacyCode !== 'ENOENT' && legacyCode !== 'ENOTDIR') complete = false;
+        continue; // no metadata here — not a branch index, not a failure
+      }
     }
     try {
       const parsed = JSON.parse(raw) as { cacheKeys?: unknown };
@@ -614,10 +627,12 @@ export async function runFullAnalysis(
   const branchLabel = options.branch ?? checkedOutBranch;
   const placement = await resolveBranchPlacement(repoPath, branchLabel);
   const { lbugPath, metaPath } = getStoragePaths(repoPath, placement.branch);
-  // Directory that owns this run's meta.json (flat `.gitnexus` for the primary
-  // slot, `branches/<slug>/` otherwise). loadMeta/saveMeta operate on it so
-  // each branch keeps its own lastCommit / fileHashes / incremental dirty flag.
+  // metaPath now points to the metadata file (gitnexus.json) in a branch-specific directory.
+  // metaDir is the directory containing the metadata file (and branch-specific DBs).
   const metaDir = path.dirname(metaPath);
+
+  // Auto-migrate from legacy .gitnexus/meta.json to gitnexus.json.
+  await migrateToCommittedIndex(repoPath);
 
   const existingMeta = await loadMeta(metaDir);
 

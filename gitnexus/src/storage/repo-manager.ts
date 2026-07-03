@@ -1,9 +1,14 @@
 /**
  * Repository Manager
  *
- * Manages GitNexus index storage in .gitnexus/ at repo root.
- * Also maintains a global registry at ~/.gitnexus/registry.json
- * so the MCP server can discover indexed repos from any cwd.
+ * Manages GitNexus index storage:
+ * - Per-worktree metadata files (gitnexus.json) under .gitnexus/ for worktree compatibility
+ * - .gitnexus/ directory for local metadata and caches (parse-cache, parsedfile-store)
+ * - Global registry at ~/.gitnexus/registry.json for MCP server discovery
+ *
+ * The per-worktree metadata files enable git worktree compatibility: each worktree
+ * has its own index stored locally in .gitnexus/, avoiding centralized storage
+ * conflicts. The .gitnexus/ directory is git-ignored so indexes don't pollute the repo.
  */
 
 import fs from 'fs/promises';
@@ -299,11 +304,13 @@ export interface RegistryEntry {
 
 const GITNEXUS_DIR = '.gitnexus';
 const GITNEXUS_EXCLUDE_ENTRY = `${GITNEXUS_DIR}/`;
+export const INDEX_METADATA_FILE = 'gitnexus.json';
 
 // ─── Local Storage Helpers ─────────────────────────────────────────────
 
 /**
- * Get the .gitnexus storage path for a repository
+ * Get the .gitnexus storage path for a repository.
+ * Used for local metadata and caches that are not committed.
  */
 export const getStoragePath = (repoPath: string): string => {
   return path.join(path.resolve(repoPath), GITNEXUS_DIR);
@@ -314,9 +321,17 @@ export const getStoragePath = (repoPath: string): string => {
  *
  * `storagePath` is ALWAYS the flat `<repo>/.gitnexus` — content-addressed
  * caches (`parse-cache/`, `parsedfile-store/`) live there and are shared
- * across branches (#2106 KTD7). When `branch` is provided, only `lbugPath` and
- * `metaPath` are scoped under `branches/<slug>/`; the flat call (no `branch`)
+ * across branches (#2106 KTD7). When `branch` is provided, both `lbugPath`
+ * and `metaPath` are scoped under `branches/<slug>/`; the flat call (no `branch`)
  * returns byte-identical paths to the pre-multi-branch behavior.
+ *
+ * `metaPath` now points to a per-worktree metadata file (gitnexus.json) that enables
+ * worktree compatibility. Each branch has its own metadata file:
+ * - Primary/flat: <repo>/.gitnexus/gitnexus.json
+ * - Feature branches: <repo>/.gitnexus/branches/<slug>/gitnexus.json
+ *
+ * For legacy compatibility, callers should use `loadMeta(metaDir)` and
+ * `saveMeta(metaDir, meta)` where metaDir is the directory containing the metadata file.
  */
 export const getStoragePaths = (repoPath: string, branch?: string) => {
   const storagePath = getStoragePath(repoPath);
@@ -324,7 +339,7 @@ export const getStoragePaths = (repoPath: string, branch?: string) => {
   return {
     storagePath,
     lbugPath: path.join(baseDir, 'lbug'),
-    metaPath: path.join(baseDir, 'meta.json'),
+    metaPath: path.join(baseDir, INDEX_METADATA_FILE), // Branch-specific metadata file
   };
 };
 
@@ -382,9 +397,9 @@ export const cleanupOldKuzuFiles = async (
 };
 
 /**
- * Load metadata from an indexed repo
+ * Load metadata from an indexed repo (legacy .gitnexus/meta.json location)
  */
-export const loadMeta = async (storagePath: string): Promise<RepoMeta | null> => {
+export const loadMetaLegacy = async (storagePath: string): Promise<RepoMeta | null> => {
   try {
     const metaPath = path.join(storagePath, 'meta.json');
     const raw = await fs.readFile(metaPath, 'utf-8');
@@ -395,40 +410,65 @@ export const loadMeta = async (storagePath: string): Promise<RepoMeta | null> =>
 };
 
 /**
- * Save metadata to storage.
+ * Load metadata from a directory containing the metadata file (gitnexus.json).
+ * For primary/flat: metaDir = <repo>/.gitnexus
+ * For feature branches: metaDir = <repo>/.gitnexus/branches/<slug>
+ * Falls back to legacy meta.json if gitnexus.json doesn't exist.
+ */
+export const loadMeta = async (metaDir: string): Promise<RepoMeta | null> => {
+  // Try new metadata file first
+  try {
+    const metaPath = path.join(metaDir, INDEX_METADATA_FILE);
+    const raw = await fs.readFile(metaPath, 'utf-8');
+    return JSON.parse(raw) as RepoMeta;
+  } catch {
+    // Fall back to legacy location
+    return loadMetaLegacy(metaDir);
+  }
+};
+
+/**
+ * Save metadata to the metadata file (gitnexus.json) in the given directory.
  *
  * Atomic via tmp-file + rename (matches `saveParseCache`'s pattern). The
  * `incrementalInProgress` dirty flag travels through this file — a crash
- * mid-write would leave a corrupt `meta.json` that the next run's
+ * mid-write would leave a corrupt `gitnexus.json` that the next run's
  * `loadMeta` would silently treat as "no prior index", losing the dirty
  * flag and skipping the recovery full-rebuild. Write-and-rename rules
  * that out: the rename is atomic on POSIX and on Windows (`fs.rename`
  * on `node:fs/promises` uses `MoveFileEx(REPLACE_EXISTING)`), so either
  * the old or the new file is observed at every moment.
  */
-export const saveMeta = async (storagePath: string, meta: RepoMeta): Promise<void> => {
-  await fs.mkdir(storagePath, { recursive: true });
-  const metaPath = path.join(storagePath, 'meta.json');
+export const saveMeta = async (metaDir: string, meta: RepoMeta): Promise<void> => {
+  await fs.mkdir(metaDir, { recursive: true });
+  const metaPath = path.join(metaDir, INDEX_METADATA_FILE);
   const tmpPath = `${metaPath}.tmp`;
   await fs.writeFile(tmpPath, JSON.stringify(meta, null, 2), 'utf-8');
   await fs.rename(tmpPath, metaPath);
 };
 
 /**
- * Check if a path has a GitNexus index
+ * Check if a path has a GitNexus index (metadata file or legacy location)
  */
 export const hasIndex = async (repoPath: string): Promise<boolean> => {
-  const { metaPath } = getStoragePaths(repoPath);
+  const paths = getStoragePaths(repoPath);
+  // Check new metadata file first
   try {
-    await fs.access(metaPath);
+    await fs.access(paths.metaPath);
     return true;
   } catch {
-    return false;
+    // Fall back to legacy location
+    try {
+      await fs.access(path.join(paths.storagePath, 'meta.json'));
+      return true;
+    } catch {
+      return false;
+    }
   }
 };
 
 /**
- * Load an indexed repo from a path
+ * Load an indexed repo from a path (checks metadata file first, then legacy)
  */
 export const loadRepo = async (repoPath: string): Promise<IndexedRepo | null> => {
   const paths = getStoragePaths(repoPath);
@@ -440,6 +480,73 @@ export const loadRepo = async (repoPath: string): Promise<IndexedRepo | null> =>
     ...paths,
     meta,
   };
+};
+
+/**
+ * Migrate metadata from legacy .gitnexus/meta.json to gitnexus.json.
+ * Returns true if migration occurred, false if not needed.
+ * Migrates both primary and branch-specific metadata.
+ */
+export const migrateToCommittedIndex = async (repoPath: string): Promise<boolean> => {
+  const storagePath = getStoragePath(repoPath);
+  let migrated = false;
+
+  // Migrate primary/flat metadata
+  const primaryMetadataPath = path.join(storagePath, INDEX_METADATA_FILE);
+  const primaryLegacyPath = path.join(storagePath, 'meta.json');
+
+  try {
+    await fs.access(primaryMetadataPath);
+  } catch {
+    // Metadata file doesn't exist, check for legacy
+    const legacyMeta = await loadMetaLegacy(storagePath);
+    if (legacyMeta) {
+      await saveMeta(storagePath, legacyMeta);
+      logger.info(`Migrated primary index from ${primaryLegacyPath} to ${primaryMetadataPath}`);
+      try {
+        await fs.unlink(primaryLegacyPath);
+        logger.info(`Cleaned up legacy ${primaryLegacyPath}`);
+      } catch (err) {
+        logger.warn({ err }, 'Failed to clean up legacy meta.json (non-critical)');
+      }
+      migrated = true;
+    }
+  }
+
+  // Migrate branch-specific metadata
+  const branchesDir = path.join(storagePath, BRANCHES_DIR);
+  try {
+    const branchDirs = await fs.readdir(branchesDir);
+    for (const branchDir of branchDirs) {
+      const branchPath = path.join(branchesDir, branchDir);
+      const stat = await fs.stat(branchPath);
+      if (!stat.isDirectory()) continue;
+
+      const branchMetadataPath = path.join(branchPath, INDEX_METADATA_FILE);
+      const branchLegacyPath = path.join(branchPath, 'meta.json');
+
+      try {
+        await fs.access(branchMetadataPath);
+      } catch {
+        const branchLegacyMeta = await loadMetaLegacy(branchPath);
+        if (branchLegacyMeta) {
+          await saveMeta(branchPath, branchLegacyMeta);
+          logger.info(`Migrated branch index from ${branchLegacyPath} to ${branchMetadataPath}`);
+          try {
+            await fs.unlink(branchLegacyPath);
+            logger.info(`Cleaned up legacy ${branchLegacyPath}`);
+          } catch (err) {
+            logger.warn({ err }, 'Failed to clean up legacy branch meta.json (non-critical)');
+          }
+          migrated = true;
+        }
+      }
+    }
+  } catch {
+    // branchesDir may not exist - ignore
+  }
+
+  return migrated;
 };
 
 /**
@@ -463,8 +570,13 @@ function isReadOnlyFilesystemError(err: unknown): boolean {
   return code === 'EROFS' || code === 'EACCES' || code === 'EPERM';
 }
 
+function isMissingFilesystemError(err: unknown): boolean {
+  const code = (err as NodeJS.ErrnoException)?.code;
+  return code === 'ENOENT' || code === 'ENOTDIR';
+}
+
 /**
- * Keep generated index files ignored without modifying the user's root .gitignore.
+ * Keep .gitnexus/ ignored. It contains local index state and caches.
  */
 export const ensureGitNexusIgnored = async (repoPath: string): Promise<void> => {
   const gitignorePath = path.join(getStoragePath(repoPath), '.gitignore');
@@ -490,7 +602,7 @@ export const ensureGitNexusIgnored = async (repoPath: string): Promise<void> => 
     if (isReadOnlyFilesystemError(err)) {
       logger.warn(
         { path: gitignorePath, code: err.code },
-        'GitNexus storage filesystem is not writable; skipping .gitnexus/.gitignore. Generated files may appear as untracked in this repo locally.',
+        'GitNexus storage filesystem is not writable; skipping .gitnexus/.gitignore. Cache files may appear as untracked in this repo locally.',
       );
     } else {
       throw err;
@@ -532,7 +644,7 @@ const ensureGitInfoExclude = async (repoPath: string): Promise<void> => {
     if (isReadOnlyFilesystemError(err)) {
       logger.warn(
         { path: excludePath, code: err.code },
-        'GitNexus storage filesystem is not writable; skipping .git/info/exclude update. .gitnexus/ may appear as untracked in `git status` locally.',
+        'GitNexus storage filesystem is not writable; skipping .git/info/exclude update. .gitnexus/ cache directory may appear as untracked in `git status` locally.',
       );
     } else {
       throw err;
@@ -1181,13 +1293,13 @@ export const resolveRegistryEntry = (entries: RegistryEntry[], target: string): 
 /**
  * List all registered repos from the global registry.
  *
- * With `validate: true`, prunes only entries whose index is *provably* gone
- * (fs.access on .gitnexus/meta.json fails with ENOENT or ENOTDIR) and persists
- * the result. Entries that are merely "not provably absent" — any other
- * fs.access failure (EIO/EAGAIN/EBUSY/EACCES, etc.) — are KEPT, so a transient
- * I/O storm cannot wipe the registry. A kept entry is therefore "not confirmed
- * present," not "confirmed present"; downstream DB opens are independently and
- * lazily guarded.
+ * With `validate: true`, prunes only entries whose metadata is *provably* gone
+ * (fs.access on both gitnexus.json and legacy meta.json fails with ENOENT or
+ * ENOTDIR) and persists the result. Entries that are merely "not provably
+ * absent" — any other fs.access failure (EIO/EAGAIN/EBUSY/EACCES, etc.) — are
+ * KEPT, so a transient I/O storm cannot wipe the registry. A kept entry is
+ * therefore "not confirmed present," not "confirmed present"; downstream DB
+ * opens are independently and lazily guarded.
  */
 export const listRegisteredRepos = async (opts?: {
   validate?: boolean;
@@ -1195,36 +1307,46 @@ export const listRegisteredRepos = async (opts?: {
   const entries = await readRegistry();
   if (!opts?.validate) return entries;
 
-  // Validate each entry still has a .gitnexus/ directory
+  // Validate each entry still has a .gitnexus/ directory with metadata
   const valid: RegistryEntry[] = [];
   for (const entry of entries) {
+    let hasIndex = false;
+    let firstNonMissingError: NodeJS.ErrnoException | null = null;
+    let lastMissingError: NodeJS.ErrnoException | null = null;
+
+    // Check for new metadata file first
     try {
-      await fs.access(path.join(entry.storagePath, 'meta.json'));
-      valid.push(entry);
+      await fs.access(path.join(entry.storagePath, INDEX_METADATA_FILE));
+      hasIndex = true;
     } catch (err: any) {
-      // Prune ONLY when the index is provably gone: ENOENT (file absent) or
-      // ENOTDIR (a path component is no longer a directory). Every other
-      // fs.access failure keeps the entry, because the file may well still
-      // exist and we must not wipe the registry on a transient I/O storm
-      // (EIO/EAGAIN/EBUSY under swap pressure, NFS hiccups, etc.).
-      //
-      // Note: some kept codes are NOT necessarily transient — EACCES, for
-      // example, can be permanent (a chmod'd directory). Keeping is still the
-      // correct conservative choice: a stale-but-kept entry is harmless (DB
-      // opens are lazily guarded) and removable via `gitnexus remove`, whereas
-      // an over-eager prune destroys data. When in doubt, keep.
-      if (err?.code === 'ENOENT' || err?.code === 'ENOTDIR') {
-        // Index genuinely removed — safe to prune
-      } else {
-        // Not provably absent — keep entry to prevent mass registry wipe.
-        // Warn so an I/O storm becomes observable instead of silently
-        // keeping (or, pre-fix, silently wiping) entries.
-        logger.warn(
-          { name: entry.name, storagePath: entry.storagePath, code: err?.code },
-          'Keeping registry entry despite fs.access failure (not provably absent); not pruning to avoid mass registry wipe.',
-        );
-        valid.push(entry);
+      if (isMissingFilesystemError(err)) lastMissingError = err;
+      else firstNonMissingError = err;
+    }
+
+    // Fall back to legacy meta.json
+    if (!hasIndex) {
+      try {
+        await fs.access(path.join(entry.storagePath, 'meta.json'));
+        hasIndex = true;
+      } catch (err: any) {
+        if (isMissingFilesystemError(err)) lastMissingError = err;
+        else if (!firstNonMissingError) firstNonMissingError = err;
       }
+    }
+
+    if (hasIndex) {
+      valid.push(entry);
+    } else if (!firstNonMissingError && lastMissingError) {
+      // Index genuinely removed — safe to prune
+    } else {
+      // Not provably absent — keep entry to prevent mass registry wipe.
+      // Warn so an I/O storm becomes observable instead of silently
+      // keeping (or, pre-fix, silently wiping) entries.
+      logger.warn(
+        { name: entry.name, storagePath: entry.storagePath, code: firstNonMissingError?.code },
+        'Keeping registry entry despite fs.access failure (not provably absent); not pruning to avoid mass registry wipe.',
+      );
+      valid.push(entry);
     }
   }
 

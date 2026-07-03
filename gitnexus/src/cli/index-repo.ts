@@ -1,10 +1,14 @@
 /**
  * Index Command
  *
- * Registers an existing .gitnexus/ folder into the global registry so the
+ * Registers an existing GitNexus index into the global registry so the
  * MCP server can discover the repo without running a full `gitnexus analyze`.
  *
- * Useful when a pre-built .gitnexus/ directory is already present (e.g. after
+ * The index can be either:
+ * - A per-worktree gitnexus.json file under .gitnexus/ (new format, worktree-compatible)
+ * - A legacy .gitnexus/meta.json file (auto-migrated on analyze)
+ *
+ * Useful when a pre-built index is already present (e.g. after
  * cloning a repo that ships its index, restoring from backup, or using a
  * shared team index).
  */
@@ -13,6 +17,7 @@ import path from 'path';
 import fs from 'fs/promises';
 import {
   getStoragePaths,
+  INDEX_METADATA_FILE,
   loadMeta,
   ensureGitNexusIgnored,
   registerRepo,
@@ -66,21 +71,37 @@ export const indexCommand = async (inputPathParts?: string[], options?: IndexOpt
 
   const { storagePath, lbugPath } = getStoragePaths(repoPath);
 
-  // ── Verify .gitnexus/ exists ──────────────────────────────────────
+  // ── Verify index exists (metadata file, legacy metadata, or restorable DB) ─
+  let hasMetadataIndex = false;
+  let hasLegacyIndex = false;
+  let hasLbugIndex = false;
+
   try {
-    await fs.access(storagePath);
-  } catch {
-    console.log(`  No .gitnexus/ folder found at: ${storagePath}`);
+    await fs.access(path.join(storagePath, INDEX_METADATA_FILE));
+    hasMetadataIndex = true;
+  } catch {}
+
+  try {
+    await fs.access(path.join(storagePath, 'meta.json'));
+    hasLegacyIndex = true;
+  } catch {}
+
+  try {
+    await fs.access(lbugPath);
+    hasLbugIndex = true;
+  } catch {}
+
+  if (!hasMetadataIndex && !hasLegacyIndex && !hasLbugIndex) {
+    console.log(`  No GitNexus index found.`);
+    console.log(`  Expected gitnexus.json, .gitnexus/meta.json, or LadybugDB at: ${storagePath}`);
     console.log('  Run `gitnexus analyze` to build the index first.\n');
     process.exitCode = 1;
     return;
   }
 
   // ── Verify lbug database exists ───────────────────────────────────
-  try {
-    await fs.access(lbugPath);
-  } catch {
-    console.log(`  .gitnexus/ folder exists but contains no LadybugDB index.`);
+  if (!hasLbugIndex) {
+    console.log(`  Index exists but contains no LadybugDB database.`);
     console.log('  Run `gitnexus analyze` to build the index.\n');
     process.exitCode = 1;
     return;
@@ -91,7 +112,7 @@ export const indexCommand = async (inputPathParts?: string[], options?: IndexOpt
 
   if (!meta) {
     if (!options?.force) {
-      console.log(`  .gitnexus/ exists but meta.json is missing.`);
+      console.log(`  gitnexus.json or .gitnexus/meta.json is missing.`);
       console.log('  Use --force to register anyway (stats will be empty),');
       console.log('  or run `gitnexus analyze` to rebuild properly.\n');
       process.exitCode = 1;

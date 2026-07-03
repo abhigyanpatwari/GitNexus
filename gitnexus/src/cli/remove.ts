@@ -1,9 +1,12 @@
 /**
  * Remove Command (#664)
  *
- * Delete the `.gitnexus/` index for a registered repo and unregister it
- * from the global registry (~/.gitnexus/registry.json). The target is
- * identified by alias / basename-derived name / remote-inferred name /
+ * Delete the GitNexus index for a registered repo and unregister it
+ * from the global registry (~/.gitnexus/registry.json). This includes:
+ * - The gitnexus.json metadata file (new format)
+ * - The .gitnexus/ directory
+ *
+ * The target is identified by alias / basename-derived name / remote-inferred name /
  * absolute path — no `--repo` flag, just a positional argument so the
  * destructive-command ergonomics match `clean` (which is also
  * destructive but scoped to `process.cwd()`).
@@ -27,6 +30,7 @@
  */
 
 import fs from 'fs/promises';
+import path from 'path';
 import { logger } from '../core/logger.js';
 import { cliError } from './cli-message.js';
 import { t } from './i18n/index.js';
@@ -35,6 +39,7 @@ import {
   resolveRegistryEntry,
   assertSafeStoragePath,
   unregisterRepo,
+  INDEX_METADATA_FILE,
   RegistryNotFoundError,
   RegistryAmbiguousTargetError,
   UnsafeStoragePathError,
@@ -101,7 +106,17 @@ export const removeCommand = async (target: string, options?: { force?: boolean 
   // orphaned — `listRegisteredRepos({ validate: true })` prunes those on
   // next read, so the failure is self-healing.
   try {
+    // Delete the metadata file first so a partial rm cannot leave a valid-looking index.
+    const metadataPath = path.join(entry.storagePath, INDEX_METADATA_FILE);
+    try {
+      await fs.unlink(metadataPath);
+    } catch {
+      // File may not exist (legacy format) - ignore
+    }
+
+    // Delete the .gitnexus/ directory.
     await fs.rm(entry.storagePath, { recursive: true, force: true });
+
     await unregisterRepo(entry.path);
     console.log(t('remove.removed', { name: entry.name }));
     console.log(`   ${t('common.path')}:    ${entry.path}`);

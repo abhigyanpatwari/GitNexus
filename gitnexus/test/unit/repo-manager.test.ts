@@ -58,7 +58,7 @@ describe('getStoragePaths', () => {
     const paths = getStoragePaths('/home/user/project');
     expect(paths.storagePath).toContain('.gitnexus');
     expect(paths.lbugPath).toContain('lbug');
-    expect(paths.metaPath).toContain('meta.json');
+    expect(paths.metaPath).toContain('gitnexus.json');
   });
 
   it('all paths are under storagePath', () => {
@@ -88,7 +88,7 @@ describe('getStoragePaths', () => {
     expect(path.dirname(branched.lbugPath)).toBe(expectedDir);
     expect(path.dirname(branched.metaPath)).toBe(expectedDir);
     expect(path.basename(branched.lbugPath)).toBe('lbug');
-    expect(path.basename(branched.metaPath)).toBe('meta.json');
+    expect(path.basename(branched.metaPath)).toBe('gitnexus.json');
   });
 });
 

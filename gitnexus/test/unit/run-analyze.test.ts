@@ -140,9 +140,9 @@ describe('run-analyze module', () => {
 });
 
 describe('collectBranchCacheKeys (#2106 R6)', () => {
-  const writeMeta = async (dir: string, cacheKeys: unknown) => {
+  const writeMeta = async (dir: string, cacheKeys: unknown, filename = 'gitnexus.json') => {
     await fs.mkdir(dir, { recursive: true });
-    await fs.writeFile(path.join(dir, 'meta.json'), JSON.stringify({ cacheKeys }));
+    await fs.writeFile(path.join(dir, filename), JSON.stringify({ cacheKeys }));
   };
 
   it('collects sibling branch keys, excluding the current run dir', async () => {
@@ -188,10 +188,25 @@ describe('collectBranchCacheKeys (#2106 R6)', () => {
       await writeMeta(storagePath, ['a']);
       const branchDir = path.join(storagePath, 'branches', 'feat');
       await fs.mkdir(branchDir, { recursive: true });
-      await fs.writeFile(path.join(branchDir, 'meta.json'), '{ not valid json');
+      await fs.writeFile(path.join(branchDir, 'gitnexus.json'), '{ not valid json');
       const { collectBranchCacheKeys } = await import('../../src/core/run-analyze.js');
       const r = await collectBranchCacheKeys(storagePath, storagePath);
       expect(r.complete).toBe(false);
+    } finally {
+      await tmp.cleanup();
+    }
+  });
+
+  it('falls back to legacy meta.json sibling keys during migration', async () => {
+    const tmp = await createTempDir('gnx-cachekeys-legacy-');
+    try {
+      const storagePath = path.join(tmp.dbPath, '.gitnexus');
+      await writeMeta(storagePath, ['a']);
+      await writeMeta(path.join(storagePath, 'branches', 'legacy'), ['legacy'], 'meta.json');
+      const { collectBranchCacheKeys } = await import('../../src/core/run-analyze.js');
+      const r = await collectBranchCacheKeys(storagePath, storagePath);
+      expect([...r.keys]).toEqual(['legacy']);
+      expect(r.complete).toBe(true);
     } finally {
       await tmp.cleanup();
     }

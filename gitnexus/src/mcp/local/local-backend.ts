@@ -1295,14 +1295,14 @@ export class LocalBackend {
 
       this.lastStalenessCheck.set(poolKey, now);
       try {
-        // Read the meta.json that sits next to THIS handle's lbug. For the
-        // flat/primary handle this is `<storagePath>/meta.json` (unchanged);
-        // for a branch handle it is `<storagePath>/branches/<slug>/meta.json`.
+        // Read the metadata that sits next to THIS handle's lbug. For the
+        // flat/primary handle this is `<storagePath>/gitnexus.json`; for a
+        // branch handle it is `<storagePath>/branches/<slug>/gitnexus.json`.
+        // loadMeta falls back to legacy meta.json during migration.
         // Reading the flat meta for a branch handle would compare the branch
         // index's indexedAt against the primary's and thrash the pool (#2106).
-        const metaPath = path.join(path.dirname(repo.lbugPath), 'meta.json');
-        const metaRaw = await fs.readFile(metaPath, 'utf-8');
-        const meta = JSON.parse(metaRaw);
+        const meta = await loadMeta(path.dirname(repo.lbugPath));
+        if (!meta) return;
         // Compare against the last indexedAt OBSERVED for this pool (keyed by
         // lbugPath), not the handle's — branch handles are fresh spreads so a
         // handle mutation would not persist and would reinit on every check.
