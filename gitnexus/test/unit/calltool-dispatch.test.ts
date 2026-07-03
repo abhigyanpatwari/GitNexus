@@ -3556,6 +3556,14 @@ describe('LocalBackend.resolveRepo branch scope (#2106)', () => {
 
   it('an un-indexed branch throws a clear error', async () => {
     await expect(backend.resolveRepo('multi', 'nope')).rejects.toThrow(/not indexed/i);
+    // Post-#2354 guidance: a bare `analyze --branch <X>` refuses unless X is
+    // checked out, so the message must lead with the checkout (#2364 F6).
+    await expect(backend.resolveRepo('multi', 'nope')).rejects.toThrow(
+      /workspace index follows the checked-out branch/,
+    );
+    await expect(backend.resolveRepo('multi', 'nope')).rejects.toThrow(
+      /check out "nope" and re-run: gitnexus analyze/,
+    );
   });
 
   it('a legacy entry with no top-level branch still routes an indexed branch', async () => {

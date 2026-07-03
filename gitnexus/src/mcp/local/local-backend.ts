@@ -1185,10 +1185,14 @@ export class LocalBackend {
     const indexed = [handle.branch, ...(handle.branches?.map((b) => b.branch) ?? [])].filter(
       Boolean,
     );
-    const available = indexed.length > 0 ? indexed.join(', ') : '(primary only)';
+    const available = indexed.length > 0 ? indexed.join(', ') : '(workspace only)';
+    // Post-#2354 a bare `analyze --branch <X>` refuses to run unless X is
+    // checked out, so the guidance must lead with the checkout (#2364 F6).
     throw new Error(
       `Branch "${branch}" is not indexed for "${handle.name}". ` +
-        `Indexed branches: ${available}. Run: gitnexus analyze --branch ${branch}`,
+        `Indexed branches: ${available}. The workspace index follows the ` +
+        `checked-out branch — check out "${branch}" and re-run: gitnexus analyze ` +
+        `(add --branch ${branch} while it is checked out to pin a separate sub-index).`,
     );
   }
 
