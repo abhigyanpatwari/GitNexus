@@ -796,6 +796,21 @@ describe('Codex hooks (installClaudeSchemaHooks)', () => {
 
     await expect(fs.access(hooksJsonPath())).rejects.toThrow();
   });
+
+  it('leaves a corrupt hooks.json untouched and reports it (fail closed)', async () => {
+    const corrupt = '{ this is not valid json !!!';
+    await fs.writeFile(hooksJsonPath(), corrupt, 'utf-8');
+
+    const { setupCommand } = await import('../../src/cli/setup.js');
+    await setupCommand();
+
+    const logged = vi
+      .mocked(console.log)
+      .mock.calls.map((call) => call.join(' '))
+      .join('\n');
+    expect(await fs.readFile(hooksJsonPath(), 'utf-8')).toBe(corrupt);
+    expect(logged).toContain('Codex hooks: hooks.json is corrupt');
+  });
 });
 
 describe('setup — non-ENOENT read/stat failures are surfaced, not masked', () => {
@@ -929,6 +944,30 @@ describe('setup — non-ENOENT read/stat failures are surfaced, not masked', () 
     vi.mocked(fs.readFile).mockRestore();
     expect(await fs.readFile(configPath, 'utf-8')).toBe(raw);
     expect(logLines()).toContain('Codex: EACCES');
+  });
+
+  it('does not rewrite an unreadable ~/.codex/hooks.json as hooks-only (fail closed)', async () => {
+    await fs.mkdir(path.join(tempHome, '.codex'), { recursive: true });
+    const hooksPath = path.join(tempHome, '.codex', 'hooks.json');
+    const raw = JSON.stringify({
+      hooks: { PreToolUse: [{ matcher: 'Read', hooks: [{ type: 'command', command: 'mine' }] }] },
+    });
+    await fs.writeFile(hooksPath, raw, 'utf-8');
+
+    const realReadFile = fs.readFile;
+    vi.spyOn(fs, 'readFile').mockImplementation(((file: any, ...rest: any[]) => {
+      if (String(file) === hooksPath) return Promise.reject(errnoError('EACCES'));
+      return (realReadFile as any)(file, ...rest);
+    }) as typeof fs.readFile);
+
+    const { setupCommand } = await import('../../src/cli/setup.js');
+    await setupCommand();
+
+    vi.mocked(fs.readFile).mockRestore();
+    // The user's hooks survive; the installer reports instead of replacing
+    // the whole file with a gitnexus-only document.
+    expect(await fs.readFile(hooksPath, 'utf-8')).toBe(raw);
+    expect(logLines()).toContain('Codex hooks: EACCES');
   });
 });
 
