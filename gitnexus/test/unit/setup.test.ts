@@ -10,6 +10,13 @@ const PKG_VERSION = (createRequire(import.meta.url)('../../package.json') as { v
   .version;
 const MCP_PINNED_REF = `gitnexus@${PKG_VERSION}`;
 
+/** Flatten the spied console.log calls into one searchable string. */
+const logLines = () =>
+  vi
+    .mocked(console.log)
+    .mock.calls.map((call) => call.join(' '))
+    .join('\n');
+
 const execFileMock = vi.fn((...args: any[]) => {
   const callback = args.at(-1);
   if (typeof callback === 'function') {
@@ -804,12 +811,8 @@ describe('Codex hooks (installClaudeSchemaHooks)', () => {
     const { setupCommand } = await import('../../src/cli/setup.js');
     await setupCommand();
 
-    const logged = vi
-      .mocked(console.log)
-      .mock.calls.map((call) => call.join(' '))
-      .join('\n');
     expect(await fs.readFile(hooksJsonPath(), 'utf-8')).toBe(corrupt);
-    expect(logged).toContain('Codex hooks: hooks.json is corrupt');
+    expect(logLines()).toContain('Codex hooks: hooks.json is corrupt');
   });
 });
 
@@ -820,12 +823,6 @@ describe('setup — non-ENOENT read/stat failures are surfaced, not masked', () 
 
   const errnoError = (code: string) =>
     Object.assign(new Error(`${code}: simulated failure`), { code });
-
-  const logLines = () =>
-    vi
-      .mocked(console.log)
-      .mock.calls.map((call) => call.join(' '))
-      .join('\n');
 
   beforeEach(async () => {
     vi.resetModules();
