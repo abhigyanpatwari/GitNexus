@@ -199,13 +199,13 @@ flowchart TB
 | **Claude Code**          | Yes | Yes    | Yes (PreToolUse + PostToolUse)                                                           | **Full**     |
 | **Cursor**               | Yes | Yes    | Yes (postToolUse, [manual install](gitnexus-cursor-integration/README.md#hook-install))  | **Full**     |
 | **Antigravity** (Google) | Yes | Yes    | Yes (AfterTool, [Gemini CLI hooks schema](https://geminicli.com/docs/hooks/reference/))[¹](#fn-antigravity-hooks) | **Full**     |
-| **Codex**                | Yes | Yes    | —                                                                                        | MCP + Skills |
+| **Codex**                | Yes | Yes    | Yes (PreToolUse + PostToolUse, [Codex hooks](https://developers.openai.com/codex/hooks)) | **Full**     |
 | **OpenCode**             | Yes | Yes    | —                                                                                        | MCP + Skills |
 | **CodeBuddy** (Tencent)  | Yes | Yes    | —                                                                                        | MCP + Skills |
 | **Qoder** (Alibaba)      | Yes | Yes    | —                                                                                        | MCP + Skills |
 | **Windsurf**             | Yes | —      | —                                                                                        | MCP          |
 
-> **Claude Code** gets the deepest integration: MCP tools + agent skills + PreToolUse hooks that enrich searches with graph context + PostToolUse hooks that detect a stale index after commits and prompt the agent to reindex.
+> **Claude Code** and **Codex** get the deepest integration: MCP tools + agent skills + PreToolUse hooks that enrich searches with graph context + PostToolUse hooks that detect a stale index after commits and prompt the agent to reindex.
 
 <a id="fn-antigravity-hooks"></a>
 > ¹ **Antigravity hooks** follow the [Gemini CLI hooks reference](https://geminicli.com/docs/hooks/reference/) (Antigravity 2.0 is the documented successor to Gemini CLI). Augmentation runs in `AfterTool` because `BeforeTool` has no context-injection channel in the Gemini contract — the agent sees graph context appended to the tool result via `hookSpecificOutput.additionalContext`. Stale-index hints land in the same channel after a successful `git commit/merge/rebase/cherry-pick/pull`. The schema may evolve if Antigravity-specific hook docs diverge from Gemini CLI's; the implementation will track those changes.
@@ -223,7 +223,7 @@ claude mcp add gitnexus -- npx -y gitnexus@latest mcp
 claude mcp add gitnexus -- cmd /c npx -y gitnexus@latest mcp
 ```
 
-**Codex** (MCP + skills):
+**Codex** (full support — MCP + skills + hooks):
 
 ```bash
 codex mcp add gitnexus -- npx -y gitnexus@latest mcp
@@ -235,6 +235,15 @@ Or via `~/.codex/config.toml` (system scope) / `.codex/config.toml` (project sco
 [mcp_servers.gitnexus]
 command = "npx"
 args = ["-y", "gitnexus@latest", "mcp"]
+```
+
+Codex hooks (PreToolUse graph enrichment + PostToolUse stale-index detection in `~/.codex/hooks.json`, [same schema as Claude Code](https://developers.openai.com/codex/hooks)) need the bundled adapter script, so they are installed by `gitnexus setup -c codex` rather than manually.
+
+Alternatively, install everything as a [Codex plugin](https://developers.openai.com/codex/plugins/build) (MCP + skills + hooks in one step):
+
+```bash
+codex plugin marketplace add abhigyanpatwari/GitNexus
+# then inside Codex: /plugins → install "GitNexus"
 ```
 
 **Cursor** (`~/.cursor/mcp.json` — global, works for all projects):
