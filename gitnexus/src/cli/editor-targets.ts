@@ -215,6 +215,16 @@ export function hookTarget(id: EditorId, home?: string): HookTarget {
 }
 
 /**
+ * True when err is a Node fs error with code ENOENT (file/dir absent).
+ * Shared by setup and uninstall: both must swallow ONLY absence when reading
+ * editor configs — any other read/stat failure (EACCES, EIO) is surfaced so an
+ * unreadable config is never treated as empty and rewritten gitnexus-only.
+ */
+export function isEnoent(err: unknown): boolean {
+  return (err as NodeJS.ErrnoException)?.code === 'ENOENT';
+}
+
+/**
  * Detect indentation style from file content so JSONC edits preserve the file's
  * existing formatting. Shared by setup (writes) and uninstall (removes).
  */

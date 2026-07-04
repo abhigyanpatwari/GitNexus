@@ -42,16 +42,11 @@ import {
   type ParseError,
   type JSONPath,
 } from 'jsonc-parser';
-import { getEditorTargets, detectIndentation } from './editor-targets.js';
+import { getEditorTargets, detectIndentation, isEnoent } from './editor-targets.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const execFileAsync = promisify(execFile);
-
-/** True when err is a Node fs error with code ENOENT (file/dir absent). */
-function isEnoent(err: unknown): boolean {
-  return (err as NodeJS.ErrnoException)?.code === 'ENOENT';
-}
 
 interface UninstallResult {
   removed: string[];

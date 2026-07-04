@@ -21,6 +21,7 @@ import {
   skillTarget,
   hookTarget,
   detectIndentation,
+  isEnoent,
   type EditorId,
 } from './editor-targets.js';
 
@@ -201,11 +202,6 @@ function getOpenCodeMcpEntry() {
     return { type: 'local', command: ['cmd', '/c', 'npx', '-y', MCP_PINNED_REF, 'mcp'] };
   }
   return { type: 'local', command: ['npx', '-y', MCP_PINNED_REF, 'mcp'] };
-}
-
-/** True when err is a Node fs error with code ENOENT (file/dir absent). */
-function isEnoent(err: unknown): boolean {
-  return (err as NodeJS.ErrnoException)?.code === 'ENOENT';
 }
 
 /**
