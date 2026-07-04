@@ -86,6 +86,8 @@ codex plugin marketplace add abhigyanpatwari/GitNexus
 # then inside Codex: /plugins → install "GitNexus"
 ```
 
+> **Codex notes:** SessionStart is intentionally not registered — Codex reads [AGENTS.md natively](https://developers.openai.com/codex/guides/agents-md), which already carries the GitNexus context block. Newly installed hooks need a one-time approval in Codex via `/hooks` before they run. Pick **one** install route (`gitnexus setup -c codex` **or** the plugin): plugin hooks load alongside `~/.codex/hooks.json`, so installing both can fire duplicate hooks per tool call.
+
 ### Cursor / Windsurf
 
 Add to `~/.cursor/mcp.json` (global — works for all projects):
