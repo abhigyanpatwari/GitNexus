@@ -130,7 +130,12 @@ describe('CLI help surface', () => {
     expect(result.stdout).toContain('-h, --help                               显示命令帮助');
     expect(result.stdout).toContain('命令：');
     expect(result.stdout).toContain('setup');
-    expect(result.stdout).toContain('一次性设置：为 Cursor、Claude Code、OpenCode、Codex 配置 MCP');
+    // Stable fragments rather than the full editor roster: the roster grows
+    // over time (see PR #2368), and the dynamic test below ("localizes every
+    // registered CLI command...") already fails on any untranslated
+    // description, so freezing the roster here only creates churn.
+    expect(result.stdout).toContain('一次性设置');
+    expect(result.stdout).toContain('配置 MCP');
     expect(result.stdout).toContain('detect-changes|detect_changes [options]');
     expect(result.stdout).toContain('将 git diff hunk 映射到已索引符号和受影响执行流程');
     expect(result.stdout).not.toContain('GitNexus local CLI and MCP server');
