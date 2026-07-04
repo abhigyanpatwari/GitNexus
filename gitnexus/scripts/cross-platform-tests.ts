@@ -30,6 +30,7 @@ const PLATFORM_LOGIC = [
   'test/unit/setup-jsonc.test.ts',
   'test/unit/setup-codex.test.ts',
   'test/unit/setup-antigravity.test.ts',
+  'test/integration/setup-uninstall-roundtrip.test.ts',
   'test/unit/resolve-invocation.test.ts',
   'test/unit/platform-capabilities.test.ts',
   'test/unit/worker-pool-windows-quarantine.test.ts',
