@@ -278,6 +278,32 @@ args = ["-y", "gitnexus@latest", "mcp"]
 }
 ```
 
+**CodeBuddy** (Tencent) — priority chain, edit the **first non-empty file that exists**: `~/.codebuddy/.mcp.json` (recommended) → `~/.codebuddy/mcp.json` (deprecated) → `~/.codebuddy.json` (legacy). CodeBuddy reads only the first existing file, so adding servers to a higher-priority file than the one currently in use would hide the servers below it. Create `~/.codebuddy/.mcp.json` only if none exist:
+
+```json
+{
+  "mcpServers": {
+    "gitnexus": {
+      "command": "npx",
+      "args": ["-y", "gitnexus@latest", "mcp"]
+    }
+  }
+}
+```
+
+**Qoder** (Alibaba) — `~/.qoder.json`:
+
+```json
+{
+  "mcpServers": {
+    "gitnexus": {
+      "command": "npx",
+      "args": ["-y", "gitnexus@latest", "mcp"]
+    }
+  }
+}
+```
+
 </details>
 
 ## CLI Reference

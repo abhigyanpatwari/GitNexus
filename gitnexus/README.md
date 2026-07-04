@@ -107,6 +107,36 @@ Add to `~/.config/opencode/config.json`:
 }
 ```
 
+### CodeBuddy
+
+CodeBuddy reads only the **first existing file** in its config priority chain: `~/.codebuddy/.mcp.json` (recommended) → `~/.codebuddy/mcp.json` (deprecated) → `~/.codebuddy.json` (legacy). Edit the first non-empty file that exists — creating a higher-priority file would hide the servers in the ones below it. If none exist, create `~/.codebuddy/.mcp.json`:
+
+```json
+{
+  "mcpServers": {
+    "gitnexus": {
+      "command": "npx",
+      "args": ["-y", "gitnexus@latest", "mcp"]
+    }
+  }
+}
+```
+
+### Qoder
+
+Add to `~/.qoder.json`:
+
+```json
+{
+  "mcpServers": {
+    "gitnexus": {
+      "command": "npx",
+      "args": ["-y", "gitnexus@latest", "mcp"]
+    }
+  }
+}
+```
+
 ## How It Works
 
 GitNexus builds a complete knowledge graph of your codebase through a multi-phase indexing pipeline:
