@@ -481,7 +481,7 @@ describe('setupCodeBuddy', () => {
     await expect(fs.access(recommendedPath())).rejects.toThrow();
   });
 
-  it('writes into a legacy ~/.codebuddy.json when only it exists', async () => {
+  it('writes into a legacy ~/.codebuddy.json when it is the only config file (dir present)', async () => {
     await fs.writeFile(
       legacyPath(),
       JSON.stringify({ mcpServers: { other: { command: 'foo' } } }),
@@ -512,6 +512,36 @@ describe('setupCodeBuddy', () => {
     expect(recommended.mcpServers.gitnexus).toBeDefined();
     const deprecated = JSON.parse(await fs.readFile(deprecatedPath(), 'utf-8'));
     expect(deprecated.mcpServers.gitnexus).toBeUndefined();
+  });
+
+  it('configures via a legacy ~/.codebuddy.json even when ~/.codebuddy/ is absent', async () => {
+    await fs.rm(path.join(tempHome, '.codebuddy'), { recursive: true, force: true });
+    await fs.writeFile(
+      legacyPath(),
+      JSON.stringify({ mcpServers: { other: { command: 'foo' } } }),
+      'utf-8',
+    );
+
+    const { setupCommand } = await import('../../src/cli/setup.js');
+    await setupCommand();
+
+    const config = JSON.parse(await fs.readFile(legacyPath(), 'utf-8'));
+    expect(config.mcpServers.other).toEqual({ command: 'foo' });
+    expect(config.mcpServers.gitnexus).toBeDefined();
+    // MCP-only shape: neither the recommended file nor the directory (and thus
+    // no skills tree) may be manufactured.
+    await expect(fs.access(path.join(tempHome, '.codebuddy'))).rejects.toThrow();
+  });
+
+  it('stays "not installed" when the only trace is a 0-byte legacy file (no dir manufactured)', async () => {
+    await fs.rm(path.join(tempHome, '.codebuddy'), { recursive: true, force: true });
+    await fs.writeFile(legacyPath(), '', 'utf-8');
+
+    const { setupCommand } = await import('../../src/cli/setup.js');
+    await setupCommand();
+
+    expect(await fs.readFile(legacyPath(), 'utf-8')).toBe('');
+    await expect(fs.access(path.join(tempHome, '.codebuddy'))).rejects.toThrow();
   });
 
   it('skips when ~/.codebuddy directory does not exist', async () => {
@@ -589,6 +619,23 @@ describe('setupQoder', () => {
     expect(config.existingKey).toBe('keep-me');
     expect(config.mcpServers.other).toEqual({ command: 'foo' });
     expect(config.mcpServers.gitnexus).toBeDefined();
+  });
+
+  it('configures via ~/.qoder.json even when ~/.qoder/ is absent', async () => {
+    await fs.rm(path.join(tempHome, '.qoder'), { recursive: true, force: true });
+    await fs.writeFile(
+      configPath(),
+      JSON.stringify({ mcpServers: { other: { command: 'foo' } } }),
+      'utf-8',
+    );
+
+    const { setupCommand } = await import('../../src/cli/setup.js');
+    await setupCommand();
+
+    const config = JSON.parse(await fs.readFile(configPath(), 'utf-8'));
+    expect(config.mcpServers.other).toEqual({ command: 'foo' });
+    expect(config.mcpServers.gitnexus).toBeDefined();
+    await expect(fs.access(path.join(tempHome, '.qoder'))).rejects.toThrow();
   });
 
   it('skips when ~/.qoder directory does not exist', async () => {

@@ -264,6 +264,24 @@ async function dirExists(dirPath: string): Promise<boolean> {
   }
 }
 
+/**
+ * Detection probe: is there a non-empty regular file at this path?
+ * Swallows ALL errors (like dirExists) — detection gates run outside the
+ * per-editor try blocks, so a rethrowing probe would abort setup for every
+ * remaining editor. Size > 0 keeps detection aligned with the config-chain
+ * resolver: an empty config file is not evidence of an install, and treating
+ * it as one would route the write to a fresh file whose mkdir manufactures
+ * the editor's directory.
+ */
+async function isNonEmptyFile(filePath: string): Promise<boolean> {
+  try {
+    const stat = await fs.stat(filePath);
+    return stat.isFile() && stat.size > 0;
+  } catch {
+    return false;
+  }
+}
+
 // ─── Editor-specific setup ─────────────────────────────────────────
 
 async function setupCursor(result: SetupResult): Promise<void> {
@@ -829,12 +847,18 @@ async function resolveMcpConfigFile(target: {
 
 async function setupCodeBuddy(result: SetupResult): Promise<void> {
   const codebuddyDir = path.join(os.homedir(), '.codebuddy');
-  if (!(await dirExists(codebuddyDir))) {
+  const target = mcpTarget('codebuddy');
+  // Installed = the config dir exists OR any registered MCP config file does.
+  // A user whose only trace is a root-level config (e.g. a legacy
+  // ~/.codebuddy.json) still gets configured — uninstall already handles that
+  // shape, so setup skipping it was an asymmetry (PR #2368 review I4).
+  const chainCandidates = [target.file, ...(target.legacyFiles ?? [])];
+  const chainHits = await Promise.all(chainCandidates.map(isNonEmptyFile));
+  if (!(await dirExists(codebuddyDir)) && !chainHits.includes(true)) {
     result.skipped.push('CodeBuddy (not installed)');
     return;
   }
 
-  const target = mcpTarget('codebuddy');
   try {
     const configFile = await resolveMcpConfigFile(target);
     const ok = await mergeJsoncFile(configFile, target.keyPath, getMcpEntry());
@@ -852,12 +876,13 @@ async function setupCodeBuddy(result: SetupResult): Promise<void> {
 
 async function setupQoder(result: SetupResult): Promise<void> {
   const qoderDir = path.join(os.homedir(), '.qoder');
-  if (!(await dirExists(qoderDir))) {
+  const { file: mcpPath, keyPath } = mcpTarget('qoder');
+  // Same chain-aware detection as CodeBuddy: ~/.qoder.json alone counts.
+  if (!(await dirExists(qoderDir)) && !(await isNonEmptyFile(mcpPath))) {
     result.skipped.push('Qoder (not installed)');
     return;
   }
 
-  const { file: mcpPath, keyPath } = mcpTarget('qoder');
   try {
     const ok = await mergeJsoncFile(mcpPath, keyPath, getMcpEntry());
     if (ok) {
