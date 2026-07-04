@@ -500,9 +500,9 @@ async function installClaudeSchemaHooks(
   result: SetupResult,
   id: 'claude' | 'codex',
 ): Promise<void> {
-  const claudeHook = hookTarget(id);
-  const settingsPath = claudeHook.settingsFile;
-  const label = `${claudeHook.label} hooks`;
+  const hookCfg = hookTarget(id);
+  const settingsPath = hookCfg.settingsFile;
+  const label = `${hookCfg.label} hooks`;
 
   // Gate on the editor's own config dir (~/.claude, ~/.codex) existing.
   if (!(await dirExists(path.dirname(settingsPath)))) return;
@@ -511,7 +511,7 @@ async function installClaudeSchemaHooks(
   const pluginHooksPath = path.join(__dirname, '..', '..', 'hooks', 'claude');
 
   // Copy unified hook script to the editor's hooks/gitnexus/ dir
-  const destHooksDir = claudeHook.scriptDir;
+  const destHooksDir = hookCfg.scriptDir;
 
   try {
     await fs.mkdir(destHooksDir, { recursive: true });
@@ -571,7 +571,7 @@ async function installClaudeSchemaHooks(
     // and Codex reads AGENTS.md natively. Session context is delivered via
     // CLAUDE.md / AGENTS.md / skills instead.
 
-    if (!hasGitnexusHook(parsed?.hooks, 'PreToolUse', claudeHook.needle)) {
+    if (!hasGitnexusHook(parsed?.hooks, 'PreToolUse', hookCfg.needle)) {
       hookEntries.push({
         eventName: 'PreToolUse',
         value: {
@@ -587,7 +587,7 @@ async function installClaudeSchemaHooks(
         },
       });
     }
-    if (!hasGitnexusHook(parsed?.hooks, 'PostToolUse', claudeHook.needle)) {
+    if (!hasGitnexusHook(parsed?.hooks, 'PostToolUse', hookCfg.needle)) {
       hookEntries.push({
         eventName: 'PostToolUse',
         value: {
