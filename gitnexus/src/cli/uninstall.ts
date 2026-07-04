@@ -420,21 +420,30 @@ export const uninstallCommand = async (options?: { force?: boolean }) => {
   const result: UninstallResult = { removed: [], skipped: [], errors: [] };
 
   // ─── MCP server entries (JSONC editors) ──────────────────────────
+  // Sweep legacyFiles too: setup writes into the first existing file of the
+  // editor's priority chain, so the gitnexus entry may live in a deprecated
+  // location (e.g. CodeBuddy's ~/.codebuddy/mcp.json).
   for (const target of targets.mcpJsonc) {
-    try {
-      const status = await removeJsoncKey(target.file, target.keyPath, dryRun);
-      if (status === 'removed')
-        result.removed.push(
-          `${target.label} MCP server — ${target.keyPath.join('.')} in ${target.file}`,
-        );
-      else if (status === 'corrupt')
-        result.errors.push(
-          `${target.label}: ${path.basename(target.file)} is corrupt — left untouched`,
-        );
-      else result.skipped.push(`${target.label} MCP (not configured)`);
-    } catch (err: any) {
-      result.errors.push(`${target.label}: ${err.message}`);
+    let removedAny = false;
+    let erroredAny = false;
+    for (const file of [target.file, ...(target.legacyFiles ?? [])]) {
+      try {
+        const status = await removeJsoncKey(file, target.keyPath, dryRun);
+        if (status === 'removed') {
+          removedAny = true;
+          result.removed.push(
+            `${target.label} MCP server — ${target.keyPath.join('.')} in ${file}`,
+          );
+        } else if (status === 'corrupt') {
+          erroredAny = true;
+          result.errors.push(`${target.label}: ${path.basename(file)} is corrupt — left untouched`);
+        }
+      } catch (err) {
+        erroredAny = true;
+        result.errors.push(`${target.label}: ${err instanceof Error ? err.message : String(err)}`);
+      }
     }
+    if (!removedAny && !erroredAny) result.skipped.push(`${target.label} MCP (not configured)`);
   }
 
   await uninstallCodex(result, dryRun, targets.codex.configFile, targets.codex.tomlSection);

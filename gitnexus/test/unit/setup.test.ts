@@ -418,6 +418,199 @@ describe('setupClaudeCode', () => {
   });
 });
 
+describe('setupCodeBuddy', () => {
+  let tempHome: string;
+  let originalHome: string | undefined;
+  let originalUserProfile: string | undefined;
+
+  const recommendedPath = () => path.join(tempHome, '.codebuddy', '.mcp.json');
+  const deprecatedPath = () => path.join(tempHome, '.codebuddy', 'mcp.json');
+  const legacyPath = () => path.join(tempHome, '.codebuddy.json');
+
+  beforeEach(async () => {
+    vi.resetModules();
+    vi.clearAllMocks();
+
+    originalHome = process.env.HOME;
+    originalUserProfile = process.env.USERPROFILE;
+    tempHome = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-codebuddy-setup-'));
+    process.env.HOME = tempHome;
+    process.env.USERPROFILE = tempHome;
+
+    // Only create ~/.codebuddy — no other editor directories so their
+    // setup functions skip and don't pollute assertions.
+    await fs.mkdir(path.join(tempHome, '.codebuddy'), { recursive: true });
+
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+  });
+
+  afterEach(async () => {
+    vi.restoreAllMocks();
+    process.env.HOME = originalHome;
+    process.env.USERPROFILE = originalUserProfile;
+    await fs.rm(tempHome, { recursive: true, force: true });
+  });
+
+  it('creates the recommended ~/.codebuddy/.mcp.json when no config exists', async () => {
+    const { setupCommand } = await import('../../src/cli/setup.js');
+    await setupCommand();
+
+    const config = JSON.parse(await fs.readFile(recommendedPath(), 'utf-8'));
+    // Entry shape (binary vs npx vs cmd-wrapper) is covered by the Claude
+    // suite; here we only care that it landed in the recommended file.
+    expect(config.mcpServers.gitnexus).toBeDefined();
+    await expect(fs.access(deprecatedPath())).rejects.toThrow();
+  });
+
+  it('writes into an existing deprecated ~/.codebuddy/mcp.json instead of shadowing it', async () => {
+    // CodeBuddy reads only the FIRST existing file in its priority chain
+    // (.mcp.json > mcp.json > ~/.codebuddy.json). Creating .mcp.json above a
+    // populated mcp.json would make the user's other servers disappear.
+    await fs.writeFile(
+      deprecatedPath(),
+      JSON.stringify({ mcpServers: { other: { command: 'foo' } } }),
+      'utf-8',
+    );
+
+    const { setupCommand } = await import('../../src/cli/setup.js');
+    await setupCommand();
+
+    const config = JSON.parse(await fs.readFile(deprecatedPath(), 'utf-8'));
+    expect(config.mcpServers.other).toEqual({ command: 'foo' });
+    expect(config.mcpServers.gitnexus).toBeDefined();
+    await expect(fs.access(recommendedPath())).rejects.toThrow();
+  });
+
+  it('writes into a legacy ~/.codebuddy.json when only it exists', async () => {
+    await fs.writeFile(
+      legacyPath(),
+      JSON.stringify({ mcpServers: { other: { command: 'foo' } } }),
+      'utf-8',
+    );
+
+    const { setupCommand } = await import('../../src/cli/setup.js');
+    await setupCommand();
+
+    const config = JSON.parse(await fs.readFile(legacyPath(), 'utf-8'));
+    expect(config.mcpServers.other).toEqual({ command: 'foo' });
+    expect(config.mcpServers.gitnexus).toBeDefined();
+    await expect(fs.access(recommendedPath())).rejects.toThrow();
+  });
+
+  it('prefers the recommended file over deprecated ones when both exist', async () => {
+    await fs.writeFile(recommendedPath(), JSON.stringify({ mcpServers: {} }), 'utf-8');
+    await fs.writeFile(
+      deprecatedPath(),
+      JSON.stringify({ mcpServers: { other: { command: 'foo' } } }),
+      'utf-8',
+    );
+
+    const { setupCommand } = await import('../../src/cli/setup.js');
+    await setupCommand();
+
+    const recommended = JSON.parse(await fs.readFile(recommendedPath(), 'utf-8'));
+    expect(recommended.mcpServers.gitnexus).toBeDefined();
+    const deprecated = JSON.parse(await fs.readFile(deprecatedPath(), 'utf-8'));
+    expect(deprecated.mcpServers.gitnexus).toBeUndefined();
+  });
+
+  it('skips when ~/.codebuddy directory does not exist', async () => {
+    await fs.rm(path.join(tempHome, '.codebuddy'), { recursive: true, force: true });
+
+    const { setupCommand } = await import('../../src/cli/setup.js');
+    await setupCommand();
+
+    await expect(fs.access(recommendedPath())).rejects.toThrow();
+    await expect(fs.access(legacyPath())).rejects.toThrow();
+  });
+
+  it('leaves a corrupt config untouched', async () => {
+    const corrupt = '{ this is not valid json !!!';
+    await fs.writeFile(recommendedPath(), corrupt, 'utf-8');
+
+    const { setupCommand } = await import('../../src/cli/setup.js');
+    await setupCommand();
+
+    expect(await fs.readFile(recommendedPath(), 'utf-8')).toBe(corrupt);
+  });
+});
+
+describe('setupQoder', () => {
+  let tempHome: string;
+  let originalHome: string | undefined;
+  let originalUserProfile: string | undefined;
+
+  const configPath = () => path.join(tempHome, '.qoder.json');
+
+  beforeEach(async () => {
+    vi.resetModules();
+    vi.clearAllMocks();
+
+    originalHome = process.env.HOME;
+    originalUserProfile = process.env.USERPROFILE;
+    tempHome = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-qoder-setup-'));
+    process.env.HOME = tempHome;
+    process.env.USERPROFILE = tempHome;
+
+    // Only create ~/.qoder — no other editor directories so their
+    // setup functions skip and don't pollute assertions.
+    await fs.mkdir(path.join(tempHome, '.qoder'), { recursive: true });
+
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+  });
+
+  afterEach(async () => {
+    vi.restoreAllMocks();
+    process.env.HOME = originalHome;
+    process.env.USERPROFILE = originalUserProfile;
+    await fs.rm(tempHome, { recursive: true, force: true });
+  });
+
+  it('writes the MCP entry to ~/.qoder.json', async () => {
+    const { setupCommand } = await import('../../src/cli/setup.js');
+    await setupCommand();
+
+    const config = JSON.parse(await fs.readFile(configPath(), 'utf-8'));
+    // Entry shape is covered by the Claude suite; assert placement only.
+    expect(config.mcpServers.gitnexus).toBeDefined();
+  });
+
+  it('preserves existing keys in ~/.qoder.json', async () => {
+    await fs.writeFile(
+      configPath(),
+      JSON.stringify({ existingKey: 'keep-me', mcpServers: { other: { command: 'foo' } } }),
+      'utf-8',
+    );
+
+    const { setupCommand } = await import('../../src/cli/setup.js');
+    await setupCommand();
+
+    const config = JSON.parse(await fs.readFile(configPath(), 'utf-8'));
+    expect(config.existingKey).toBe('keep-me');
+    expect(config.mcpServers.other).toEqual({ command: 'foo' });
+    expect(config.mcpServers.gitnexus).toBeDefined();
+  });
+
+  it('skips when ~/.qoder directory does not exist', async () => {
+    await fs.rm(path.join(tempHome, '.qoder'), { recursive: true, force: true });
+
+    const { setupCommand } = await import('../../src/cli/setup.js');
+    await setupCommand();
+
+    await expect(fs.access(configPath())).rejects.toThrow();
+  });
+
+  it('leaves a corrupt ~/.qoder.json untouched', async () => {
+    const corrupt = '{ this is not valid json !!!';
+    await fs.writeFile(configPath(), corrupt, 'utf-8');
+
+    const { setupCommand } = await import('../../src/cli/setup.js');
+    await setupCommand();
+
+    expect(await fs.readFile(configPath(), 'utf-8')).toBe(corrupt);
+  });
+});
+
 describe('formatHookCommand (hook command escaping, #1945)', () => {
   let mod: typeof import('../../src/cli/setup.js');
 

@@ -82,7 +82,9 @@ describe('setupCommand coding-agent selection', () => {
 
     expect(process.exitCode).toBe(1);
     expect(stderr).toHaveBeenCalledWith(
-      expect.stringContaining('Valid values: cursor, claude, antigravity, opencode, codex'),
+      expect.stringContaining(
+        'Valid values: cursor, claude, antigravity, opencode, codebuddy, qoder, codex',
+      ),
     );
     await expect(
       fs.access(path.join(tempHome, '.config', 'opencode', 'opencode.json')),

@@ -19,7 +19,14 @@
 import os from 'os';
 import path from 'path';
 
-export type EditorId = 'cursor' | 'claude' | 'antigravity' | 'opencode' | 'codex';
+export type EditorId =
+  | 'cursor'
+  | 'claude'
+  | 'antigravity'
+  | 'opencode'
+  | 'codebuddy'
+  | 'qoder'
+  | 'codex';
 
 /** An editor whose MCP config is a JSONC document (server keyed by name). */
 export interface McpJsoncTarget {
@@ -34,6 +41,14 @@ export interface McpJsoncTarget {
    * without either side needing a cast.
    */
   keyPath: string[];
+  /**
+   * Older config locations the editor still reads when `file` is absent
+   * (CodeBuddy reads only the FIRST existing file in its priority chain).
+   * Setup writes into the first existing candidate of [file, ...legacyFiles]
+   * so it never shadows a user's servers living in a deprecated file;
+   * uninstall sweeps all of them.
+   */
+  legacyFiles?: string[];
 }
 
 /** Codex stores MCP config as a TOML table, not JSONC. */
@@ -67,7 +82,7 @@ export interface HookTarget {
 }
 
 export interface EditorTargets {
-  /** JSONC-format MCP entries: Cursor, Claude Code, Antigravity, OpenCode. */
+  /** JSONC-format MCP entries: Cursor, Claude Code, Antigravity, OpenCode, CodeBuddy, Qoder. */
   mcpJsonc: McpJsoncTarget[];
   /** Codex MCP (TOML). */
   codex: CodexMcpTarget;
@@ -110,6 +125,26 @@ export function getEditorTargets(home: string = os.homedir()): EditorTargets {
       // OpenCode nests servers under `mcp`, not `mcpServers`.
       keyPath: ['mcp', 'gitnexus'],
     },
+    {
+      id: 'codebuddy',
+      label: 'CodeBuddy',
+      // Recommended user-scope path per https://www.codebuddy.ai/docs/cli/mcp;
+      // CodeBuddy reads only the first existing file in this priority chain.
+      file: path.join(home, '.codebuddy', '.mcp.json'),
+      legacyFiles: [
+        path.join(home, '.codebuddy', 'mcp.json'), // deprecated
+        path.join(home, '.codebuddy.json'), // legacy
+      ],
+      keyPath: ['mcpServers', 'gitnexus'],
+    },
+    {
+      id: 'qoder',
+      label: 'Qoder',
+      // Qoder's documented user-scope MCP config (https://docs.qoder.com/cli/using-cli);
+      // the IDE manages MCP via its Settings UI with no documented file path.
+      file: path.join(home, '.qoder.json'),
+      keyPath: ['mcpServers', 'gitnexus'],
+    },
   ];
 
   const codex: CodexMcpTarget = {
@@ -128,6 +163,10 @@ export function getEditorTargets(home: string = os.homedir()): EditorTargets {
     },
     { id: 'cursor', label: 'Cursor', dir: path.join(home, '.cursor', 'skills') },
     { id: 'opencode', label: 'OpenCode', dir: path.join(home, '.config', 'opencode', 'skills') },
+    { id: 'codebuddy', label: 'CodeBuddy', dir: path.join(home, '.codebuddy', 'skills') },
+    // Qoder skills live at ~/.qoder/skills/{name}/SKILL.md
+    // (https://docs.qoder.com/extensions/skills).
+    { id: 'qoder', label: 'Qoder', dir: path.join(home, '.qoder', 'skills') },
     // Codex reads skills from ~/.agents/skills (not ~/.codex).
     { id: 'codex', label: 'Codex', dir: path.join(home, '.agents', 'skills') },
   ];

@@ -24,7 +24,7 @@ program.name('gitnexus').description('GitNexus local CLI and MCP server').versio
 program
   .command('setup')
   .description(
-    'One-time setup: configure MCP for Cursor, Claude Code, Antigravity, OpenCode, Codex',
+    'One-time setup: configure MCP for Cursor, Claude Code, Antigravity, OpenCode, CodeBuddy, Qoder, Codex',
   )
   .option(
     '-c, --coding-agent <agents>',

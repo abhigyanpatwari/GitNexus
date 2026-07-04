@@ -201,6 +201,8 @@ flowchart TB
 | **Antigravity** (Google) | Yes | Yes    | Yes (AfterTool, [Gemini CLI hooks schema](https://geminicli.com/docs/hooks/reference/))[¹](#fn-antigravity-hooks) | **Full**     |
 | **Codex**                | Yes | Yes    | —                                                                                        | MCP + Skills |
 | **OpenCode**             | Yes | Yes    | —                                                                                        | MCP + Skills |
+| **CodeBuddy** (Tencent)  | Yes | Yes    | —                                                                                        | MCP + Skills |
+| **Qoder** (Alibaba)      | Yes | Yes    | —                                                                                        | MCP + Skills |
 | **Windsurf**             | Yes | —      | —                                                                                        | MCP          |
 
 > **Claude Code** gets the deepest integration: MCP tools + agent skills + PreToolUse hooks that enrich searches with graph context + PostToolUse hooks that detect a stale index after commits and prompt the agent to reindex.
