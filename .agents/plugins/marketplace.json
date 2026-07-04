@@ -1,0 +1,21 @@
+{
+  "name": "gitnexus-marketplace",
+  "interface": {
+    "displayName": "GitNexus"
+  },
+  "plugins": [
+    {
+      "name": "gitnexus",
+      "version": "1.6.9",
+      "source": {
+        "source": "local",
+        "path": "./gitnexus-claude-plugin"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Developer Tools"
+    }
+  ]
+}
