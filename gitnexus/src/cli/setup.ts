@@ -834,7 +834,10 @@ async function resolveMcpConfigFile(target: {
   for (const candidate of [target.file, ...(target.legacyFiles ?? [])]) {
     try {
       const stat = await fs.stat(candidate);
-      if (stat.isFile()) return candidate;
+      // Non-empty regular files only: a 0-byte recommended file must not
+      // shadow a populated deprecated one (mergeJsoncFile treats empty as a
+      // fresh document anyway), and directories are never config candidates.
+      if (stat.isFile() && stat.size > 0) return candidate;
     } catch (err) {
       // ENOENT = candidate absent — try the next one. Anything else (EACCES
       // on the file or a parent) is surfaced: silently skipping could route

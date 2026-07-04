@@ -544,6 +544,56 @@ describe('setupCodeBuddy', () => {
     await expect(fs.access(path.join(tempHome, '.codebuddy'))).rejects.toThrow();
   });
 
+  it('skips a 0-byte recommended file so it cannot shadow a populated deprecated one', async () => {
+    await fs.writeFile(recommendedPath(), '', 'utf-8');
+    await fs.writeFile(
+      deprecatedPath(),
+      JSON.stringify({ mcpServers: { other: { command: 'foo' } } }),
+      'utf-8',
+    );
+
+    const { setupCommand } = await import('../../src/cli/setup.js');
+    await setupCommand();
+
+    const deprecated = JSON.parse(await fs.readFile(deprecatedPath(), 'utf-8'));
+    expect(deprecated.mcpServers.other).toEqual({ command: 'foo' });
+    expect(deprecated.mcpServers.gitnexus).toBeDefined();
+    // The empty recommended file is left exactly as it was.
+    expect(await fs.readFile(recommendedPath(), 'utf-8')).toBe('');
+  });
+
+  it('skips a directory-shaped candidate and writes the next chain file', async () => {
+    await fs.mkdir(deprecatedPath(), { recursive: true });
+    await fs.writeFile(
+      legacyPath(),
+      JSON.stringify({ mcpServers: { other: { command: 'foo' } } }),
+      'utf-8',
+    );
+
+    const { setupCommand } = await import('../../src/cli/setup.js');
+    await setupCommand();
+
+    const legacy = JSON.parse(await fs.readFile(legacyPath(), 'utf-8'));
+    expect(legacy.mcpServers.other).toEqual({ command: 'foo' });
+    expect(legacy.mcpServers.gitnexus).toBeDefined();
+    // The directory is untouched and the recommended file was not created
+    // above the chain (only chain-resolution decided the destination).
+    expect((await fs.stat(deprecatedPath())).isDirectory()).toBe(true);
+    await expect(fs.access(recommendedPath())).rejects.toThrow();
+  });
+
+  it('reports a corrupt deprecated file without creating the recommended file above it', async () => {
+    const corrupt = '{ this is not valid json !!!';
+    await fs.writeFile(deprecatedPath(), corrupt, 'utf-8');
+
+    const { setupCommand } = await import('../../src/cli/setup.js');
+    await setupCommand();
+
+    expect(await fs.readFile(deprecatedPath(), 'utf-8')).toBe(corrupt);
+    // Creating .mcp.json above the corrupt file would shadow it once fixed.
+    await expect(fs.access(recommendedPath())).rejects.toThrow();
+  });
+
   it('skips when ~/.codebuddy directory does not exist', async () => {
     await fs.rm(path.join(tempHome, '.codebuddy'), { recursive: true, force: true });
 
