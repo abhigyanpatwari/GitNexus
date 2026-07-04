@@ -559,6 +559,81 @@ describe('uninstallCommand', () => {
     await expect(fs.access(path.join(opencodeSkills, 'keep-me'))).resolves.toBeUndefined();
   });
 
+  // ── corrupt legacy chain files are informational, not failures ──
+
+  it('reports a corrupt legacy ~/.codebuddy.json informationally and exits 0 (--force)', async () => {
+    const legacy = path.join(tempHome, '.codebuddy.json');
+    const corrupt = '{ not valid json !!!';
+    await fs.writeFile(legacy, corrupt, 'utf-8');
+
+    const uninstallCommand = await importUninstall();
+    await uninstallCommand({ force: true });
+
+    expect(await fs.readFile(legacy, 'utf-8')).toBe(corrupt);
+    expect(process.exitCode).not.toBe(1);
+    expect(logLines()).toContain(
+      'CodeBuddy MCP (legacy .codebuddy.json is corrupt — left untouched)',
+    );
+    // Configuration status is unknowable — neither claim may appear.
+    expect(logLines()).not.toContain('CodeBuddy MCP (not configured)');
+    expect(logLines()).not.toContain('not configured in any detected editor');
+  });
+
+  it('reports a corrupt legacy ~/.codebuddy.json informationally in dry-run too', async () => {
+    const legacy = path.join(tempHome, '.codebuddy.json');
+    const corrupt = '{ not valid json !!!';
+    await fs.writeFile(legacy, corrupt, 'utf-8');
+
+    const uninstallCommand = await importUninstall();
+    await uninstallCommand(); // dry-run
+
+    expect(await fs.readFile(legacy, 'utf-8')).toBe(corrupt);
+    expect(process.exitCode).not.toBe(1);
+    expect(logLines()).toContain(
+      'CodeBuddy MCP (legacy .codebuddy.json is corrupt — left untouched)',
+    );
+  });
+
+  it('still errors and exits 1 when the PRIMARY config file is corrupt', async () => {
+    const recommended = path.join(tempHome, '.codebuddy', '.mcp.json');
+    await fs.mkdir(path.dirname(recommended), { recursive: true });
+    const corrupt = '{ not valid json !!!';
+    await fs.writeFile(recommended, corrupt, 'utf-8');
+
+    const uninstallCommand = await importUninstall();
+    await uninstallCommand({ force: true });
+
+    expect(await fs.readFile(recommended, 'utf-8')).toBe(corrupt);
+    expect(logLines()).toContain('.mcp.json is corrupt — left untouched');
+    expect(process.exitCode).toBe(1);
+  });
+
+  it('still errors and exits 1 when a legacy file is UNREADABLE (intentional asymmetry)', async () => {
+    const legacy = path.join(tempHome, '.codebuddy.json');
+    const raw = JSON.stringify({ mcpServers: { gitnexus: { command: 'gitnexus' } } });
+    await fs.writeFile(legacy, raw, 'utf-8');
+
+    const realReadFile = fs.readFile;
+    vi.spyOn(fs, 'readFile').mockImplementation(((file: any, ...rest: any[]) => {
+      if (String(file) === legacy) {
+        return Promise.reject(
+          Object.assign(new Error('EACCES: simulated failure'), { code: 'EACCES' }),
+        );
+      }
+      return (realReadFile as any)(file, ...rest);
+    }) as typeof fs.readFile);
+
+    const uninstallCommand = await importUninstall();
+    await uninstallCommand({ force: true });
+
+    vi.mocked(fs.readFile).mockRestore();
+    // Corrupt-but-readable proves no removable entry; unreadable proves
+    // nothing — an environmental problem worth failing over.
+    expect(await fs.readFile(legacy, 'utf-8')).toBe(raw);
+    expect(logLines()).toContain('CodeBuddy: EACCES');
+    expect(process.exitCode).toBe(1);
+  });
+
   // ── ENOENT narrowing: non-ENOENT read failures must surface, not mask ──
 
   const errnoError = (code: string) =>

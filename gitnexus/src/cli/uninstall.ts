@@ -446,6 +446,7 @@ export const uninstallCommand = async (options?: { force?: boolean }) => {
   for (const target of targets.mcpJsonc) {
     let removedAny = false;
     let erroredAny = false;
+    let corruptLegacyAny = false;
     for (const file of [target.file, ...(target.legacyFiles ?? [])]) {
       try {
         const status = await removeJsoncKey(file, target.keyPath, dryRun);
@@ -455,15 +456,35 @@ export const uninstallCommand = async (options?: { force?: boolean }) => {
             `${target.label} MCP server — ${target.keyPath.join('.')} in ${file}`,
           );
         } else if (status === 'corrupt') {
-          erroredAny = true;
-          result.errors.push(`${target.label}: ${path.basename(file)} is corrupt — left untouched`);
+          if (file === target.file) {
+            // The primary path is where gitnexus itself writes — corruption
+            // there is an error worth failing the command over.
+            erroredAny = true;
+            result.errors.push(
+              `${target.label}: ${path.basename(file)} is corrupt — left untouched`,
+            );
+          } else {
+            // Legacy chain files are vendor locations gitnexus may never have
+            // touched (e.g. a corrupt ~/.codebuddy.json from an old install).
+            // Report informationally without failing uninstall. Deliberate
+            // asymmetry: an UNREADABLE (non-ENOENT) legacy file still errors —
+            // that's an environmental problem worth surfacing, while corrupt-
+            // but-readable proves there is no removable gitnexus entry.
+            corruptLegacyAny = true;
+            result.skipped.push(
+              `${target.label} MCP (legacy ${path.basename(file)} is corrupt — left untouched)`,
+            );
+          }
         }
       } catch (err) {
         erroredAny = true;
         result.errors.push(`${target.label}: ${err instanceof Error ? err.message : String(err)}`);
       }
     }
-    if (!removedAny && !erroredAny) result.skipped.push(`${target.label} MCP (not configured)`);
+    // A corrupt legacy file makes "not configured" unknowable — suppress it.
+    if (!removedAny && !erroredAny && !corruptLegacyAny) {
+      result.skipped.push(`${target.label} MCP (not configured)`);
+    }
   }
 
   await uninstallCodex(result, dryRun, targets.codex.configFile, targets.codex.tomlSection);
@@ -511,6 +532,9 @@ export const uninstallCommand = async (options?: { force?: boolean }) => {
   if (result.removed.length > 0) {
     console.log(`  ${verb}:`);
     for (const name of result.removed) console.log(`    - ${name}`);
+  } else if (result.skipped.some((entry) => entry.includes('is corrupt'))) {
+    // A corrupt legacy config makes "not configured" unknowable — don't claim it.
+    console.log('  Nothing removed.');
   } else {
     console.log('  Nothing to remove — GitNexus is not configured in any detected editor.');
   }
