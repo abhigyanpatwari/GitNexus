@@ -487,21 +487,30 @@ export async function copyHookHelpers(
 }
 
 /**
- * Install GitNexus hooks to ~/.claude/settings.json for Claude Code.
- * Merges hook config without overwriting existing hooks, preserving
- * comments and formatting in the JSONC file.
+ * Install GitNexus hooks for editors that use Claude Code's hooks schema.
+ *
+ * Claude Code registers hooks in ~/.claude/settings.json; Codex uses a
+ * dedicated ~/.codex/hooks.json with the identical {hooks: {Event: [...]}}
+ * JSON shape, stdin payload, and hookSpecificOutput response contract
+ * (https://developers.openai.com/codex/hooks), so both runtimes share this
+ * installer and the same bundled adapter script. Merges hook config without
+ * overwriting existing hooks, preserving comments and formatting.
  */
-async function installClaudeCodeHooks(result: SetupResult): Promise<void> {
-  const claudeDir = path.join(os.homedir(), '.claude');
-  if (!(await dirExists(claudeDir))) return;
-
-  const claudeHook = hookTarget('claude');
+async function installClaudeSchemaHooks(
+  result: SetupResult,
+  id: 'claude' | 'codex',
+): Promise<void> {
+  const claudeHook = hookTarget(id);
   const settingsPath = claudeHook.settingsFile;
+  const label = `${claudeHook.label} hooks`;
+
+  // Gate on the editor's own config dir (~/.claude, ~/.codex) existing.
+  if (!(await dirExists(path.dirname(settingsPath)))) return;
 
   // Source hooks bundled within the gitnexus package (hooks/claude/)
   const pluginHooksPath = path.join(__dirname, '..', '..', 'hooks', 'claude');
 
-  // Copy unified hook script to ~/.claude/hooks/gitnexus/
+  // Copy unified hook script to the editor's hooks/gitnexus/ dir
   const destHooksDir = claudeHook.scriptDir;
 
   try {
@@ -516,7 +525,7 @@ async function installClaudeCodeHooks(result: SetupResult): Promise<void> {
       const jsonCli = JSON.stringify(normalizedCli);
       if (!content.includes(CLI_PATH_SOURCE_LITERAL)) {
         result.errors.push(
-          'Claude Code hooks: gitnexus-hook.cjs no longer contains the cliPath literal to patch — the installed hook may fail to resolve the CLI. Update CLI_PATH_SOURCE_LITERAL in setup.ts.',
+          `${label}: gitnexus-hook.cjs no longer contains the cliPath literal to patch — the installed hook may fail to resolve the CLI. Update CLI_PATH_SOURCE_LITERAL in setup.ts.`,
         );
       }
       content = content.replace(CLI_PATH_SOURCE_LITERAL, `let cliPath = ${jsonCli};`);
@@ -531,21 +540,14 @@ async function installClaudeCodeHooks(result: SetupResult): Promise<void> {
     try {
       await fs.access(dest);
     } catch {
-      result.errors.push(
-        'Claude Code hooks: adapter script was not installed — skipping hook registration',
-      );
+      result.errors.push(`${label}: adapter script was not installed — skipping hook registration`);
       return;
     }
 
-    const failedRequired = await copyHookHelpers(
-      pluginHooksPath,
-      destHooksDir,
-      'Claude Code hooks',
-      result,
-    );
+    const failedRequired = await copyHookHelpers(pluginHooksPath, destHooksDir, label, result);
     if (failedRequired.length > 0) {
       result.errors.push(
-        `Claude Code hooks: required helper(s) ${failedRequired.join(', ')} failed to copy — skipping hook registration`,
+        `${label}: required helper(s) ${failedRequired.join(', ')} failed to copy — skipping hook registration`,
       );
       return;
     }
@@ -565,8 +567,9 @@ async function installClaudeCodeHooks(result: SetupResult): Promise<void> {
 
     const hookEntries: Array<{ eventName: string; value: unknown }> = [];
 
-    // NOTE: SessionStart hooks are broken on Windows (Claude Code bug #23576).
-    // Session context is delivered via CLAUDE.md / skills instead.
+    // NOTE: SessionStart hooks are broken on Windows (Claude Code bug #23576),
+    // and Codex reads AGENTS.md natively. Session context is delivered via
+    // CLAUDE.md / AGENTS.md / skills instead.
 
     if (!hasGitnexusHook(parsed?.hooks, 'PreToolUse', claudeHook.needle)) {
       hookEntries.push({
@@ -602,20 +605,20 @@ async function installClaudeCodeHooks(result: SetupResult): Promise<void> {
     }
 
     if (hookEntries.length === 0) {
-      result.configured.push('Claude Code hooks (already configured)');
+      result.configured.push(`${label} (already configured)`);
       return;
     }
 
     const ok = await mergeHooksJsonc(settingsPath, hookEntries);
     if (ok) {
-      result.configured.push('Claude Code hooks (PreToolUse, PostToolUse)');
+      result.configured.push(`${label} (PreToolUse, PostToolUse)`);
     } else {
       result.errors.push(
-        'Claude Code hooks: settings.json is corrupt — skipping to preserve existing content',
+        `${label}: ${path.basename(settingsPath)} is corrupt — skipping to preserve existing content`,
       );
     }
   } catch (err: any) {
-    result.errors.push(`Claude Code hooks: ${err.message}`);
+    result.errors.push(`${label}: ${err.message}`);
   }
 }
 
@@ -1198,7 +1201,7 @@ export const setupCommand = async (options?: { codingAgent?: string[] | string }
   // Install global skills for platforms that support them
   if (selected.has('claude')) {
     await installClaudeCodeSkills(result);
-    await installClaudeCodeHooks(result);
+    await installClaudeSchemaHooks(result, 'claude');
   }
   if (selected.has('antigravity')) {
     await installAntigravitySkills(result);
@@ -1208,7 +1211,10 @@ export const setupCommand = async (options?: { codingAgent?: string[] | string }
   if (selected.has('opencode')) await installOpenCodeSkills(result);
   if (selected.has('codebuddy')) await installCodeBuddySkills(result);
   if (selected.has('qoder')) await installQoderSkills(result);
-  if (selected.has('codex')) await installCodexSkills(result);
+  if (selected.has('codex')) {
+    await installCodexSkills(result);
+    await installClaudeSchemaHooks(result, 'codex');
+  }
 
   // Print results
   if (result.configured.length > 0) {
