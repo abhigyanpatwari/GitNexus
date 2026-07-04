@@ -1,7 +1,11 @@
 import { getRuntimeCapabilities, getRuntimeFingerprint } from '../core/platform/capabilities.js';
 import { resolveEmbeddingConfig } from '../core/embeddings/config.js';
 import { isHttpMode } from '../core/embeddings/http-client.js';
-import { getLocalEmbeddingRuntimeBlocker } from '../core/embeddings/runtime-support.js';
+import {
+  getLocalEmbeddingRuntimeBlocker,
+  isLocalEmbeddingStackInstalled,
+  localEmbeddingStackMissingMessage,
+} from '../core/embeddings/runtime-support.js';
 import { cudaRedirectDoctorStatus } from '../core/embeddings/onnxruntime-node-resolver.js';
 import { checkLbugNative } from '../core/lbug/native-check.js';
 import { getExtensionInstallPolicy } from '../core/lbug/extension-loader.js';
@@ -66,6 +70,8 @@ export function localEmbeddingDoctorStatus(opts: {
   httpMode: boolean;
   platform?: NodeJS.Platform;
   arch?: NodeJS.Architecture;
+  /** Injectable for tests; defaults to probing the real install. */
+  stackInstalled?: boolean;
 }): { status: string; detail: string | null } {
   if (opts.httpMode) {
     return { status: '✓ http endpoint configured', detail: null };
@@ -75,6 +81,15 @@ export function localEmbeddingDoctorStatus(opts: {
   const blocker = getLocalEmbeddingRuntimeBlocker({ platform, arch });
   if (blocker) {
     return { status: `✗ local embeddings unavailable on ${platform}/${arch}`, detail: blocker };
+  }
+  // The stack is an optionalDependency — npm prunes it when onnxruntime-node's
+  // postinstall can't download its CUDA binaries (proxy/firewall, #2370).
+  const stackInstalled = opts.stackInstalled ?? isLocalEmbeddingStackInstalled();
+  if (!stackInstalled) {
+    return {
+      status: '✗ optional embedding stack not installed',
+      detail: localEmbeddingStackMissingMessage(),
+    };
   }
   return { status: '✓ local embeddings supported', detail: null };
 }

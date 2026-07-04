@@ -21,7 +21,10 @@ import {
   isHfDownloadFailure,
   withHfDownloadRetry,
 } from '../../core/embeddings/hf-env.js';
-import { getLocalEmbeddingRuntimeBlocker } from '../../core/embeddings/runtime-support.js';
+import {
+  getLocalEmbeddingRuntimeBlocker,
+  getMissingLocalEmbeddingStackMessage,
+} from '../../core/embeddings/runtime-support.js';
 import { ensureOnnxRuntimeCommonResolvable } from '../../core/embeddings/onnxruntime-common-resolver.js';
 import { ensureOnnxRuntimeNodeMatchesSystem } from '../../core/embeddings/onnxruntime-node-resolver.js';
 import { silenceStdout, restoreStdout, realStderrWrite } from '../../core/lbug/pool-adapter.js';
@@ -77,7 +80,14 @@ export const initEmbedder = async (): Promise<FeatureExtractionPipeline> => {
       // Windows/DirectML, and macOS. Mirrors the core embedder's call site so
       // MCP query-time embedding gets the same CUDA-13 fix.
       ensureOnnxRuntimeNodeMatchesSystem();
-      const { pipeline, env } = await import('@huggingface/transformers');
+      // The stack is an optionalDependency: npm prunes it when onnxruntime-node's
+      // postinstall can't reach api.nuget.org (#2370). Rethrow with actionable
+      // reinstall guidance instead of a raw ERR_MODULE_NOT_FOUND.
+      const { pipeline, env } = await import('@huggingface/transformers').catch((err: unknown) => {
+        const missing = getMissingLocalEmbeddingStackMessage(err);
+        if (missing) throw new Error(missing);
+        throw err;
+      });
 
       env.allowLocalModels = false;
       // Bridge user-controlled env vars to transformers.js: HF_HOME →

@@ -14,7 +14,11 @@
  * module scope or inside its functions) so it can be consulted *before* the
  * dynamic import that would crash. HTTP embedding mode never touches the native
  * runtime, so callers in HTTP mode must skip this guard.
+ * (`require.resolve` below only resolves paths — it never loads the modules.)
  */
+import { createRequire } from 'node:module';
+
+const require = createRequire(import.meta.url);
 
 /**
  * Stable lead line of the macOS-Intel blocker message. Also used to recognise
@@ -77,3 +81,86 @@ export const getLocalEmbeddingRuntimeBlocker = (
  */
 export const isLocalEmbeddingRuntimeBlockerMessage = (message: string): boolean =>
   message.includes(LOCAL_EMBEDDING_BLOCKER_LEAD);
+
+/**
+ * Stable lead line of the missing-optional-stack message. Mirrors
+ * {@link LOCAL_EMBEDDING_BLOCKER_LEAD}: the CLI error handler matches on this
+ * line (see {@link isMissingLocalEmbeddingStackMessage}).
+ */
+const LOCAL_EMBEDDING_STACK_MISSING_LEAD =
+  'Local semantic embeddings are unavailable: the optional embedding stack is not installed.';
+
+/**
+ * The full guidance shown when the optional local embedding stack
+ * (`@huggingface/transformers` → `onnxruntime-node`) is missing at runtime.
+ *
+ * Both packages are `optionalDependencies` (#2370): `onnxruntime-node`'s
+ * postinstall downloads CUDA support binaries from api.nuget.org, which fails
+ * behind HTTP proxies and regional firewalls (its `global-agent` proxy layer
+ * ignores the standard HTTP_PROXY/HTTPS_PROXY vars and rejects 302 redirects).
+ * npm then skips the optional subtree instead of failing the whole install —
+ * every GitNexus feature except local embeddings keeps working.
+ */
+export const localEmbeddingStackMissingMessage = (): string =>
+  [
+    LOCAL_EMBEDDING_STACK_MISSING_LEAD,
+    'npm skipped the optional packages @huggingface/transformers / onnxruntime-node',
+    "during install — usually because onnxruntime-node's postinstall could not",
+    'download its CUDA support binaries from api.nuget.org (common behind HTTP',
+    'proxies and regional firewalls, #2370). Everything except local embeddings',
+    'still works.',
+    '',
+    'To enable local embeddings:',
+    '  - Reinstall with the CUDA download skipped (CPU embeddings need no CUDA):',
+    '      ONNXRUNTIME_NODE_INSTALL=skip npm install -g gitnexus',
+    '      (Windows: set ONNXRUNTIME_NODE_INSTALL=skip && npm install -g gitnexus)',
+    '  - GPU (CUDA) hosts behind a proxy: set GLOBAL_AGENT_HTTPS_PROXY=<proxy-url>',
+    '    and reinstall, so the CUDA binaries download through your proxy.',
+    '  - Or point GITNEXUS_EMBEDDING_URL (with GITNEXUS_EMBEDDING_MODEL) at an',
+    '    OpenAI-compatible /v1/embeddings endpoint to embed over HTTP.',
+  ].join('\n');
+
+/** Module specifiers whose absence means the optional embedding stack was pruned. */
+const EMBEDDING_STACK_SPECIFIERS = ['@huggingface/transformers', 'onnxruntime-node'] as const;
+
+/**
+ * When `err` is a module-not-found failure for the optional local embedding
+ * stack, return the actionable {@link localEmbeddingStackMissingMessage};
+ * otherwise `null` so genuine load errors surface unchanged.
+ *
+ * Matches on the error `code` (ERR_MODULE_NOT_FOUND for ESM `import()`,
+ * MODULE_NOT_FOUND for CJS require) plus the missing specifier in the message,
+ * so an unrelated module-not-found inside transformers.js is not misreported
+ * as a pruned install.
+ */
+export const getMissingLocalEmbeddingStackMessage = (err: unknown): string | null => {
+  if (!(err instanceof Error)) return null;
+  const code = (err as NodeJS.ErrnoException).code;
+  if (code !== 'ERR_MODULE_NOT_FOUND' && code !== 'MODULE_NOT_FOUND') return null;
+  const namesStack = EMBEDDING_STACK_SPECIFIERS.some((s) => err.message.includes(`'${s}'`));
+  return namesStack ? localEmbeddingStackMissingMessage() : null;
+};
+
+/**
+ * True when `message` is the missing-optional-stack message produced by
+ * {@link localEmbeddingStackMissingMessage}. CLI counterpart of
+ * {@link isLocalEmbeddingRuntimeBlockerMessage}.
+ */
+export const isMissingLocalEmbeddingStackMessage = (message: string): boolean =>
+  message.includes(LOCAL_EMBEDDING_STACK_MISSING_LEAD);
+
+/**
+ * True when the optional local embedding stack resolves from this install.
+ * Resolution only — nothing is imported, so this is safe on every platform
+ * (including macOS Intel, where *loading* onnxruntime-node would crash).
+ * Used by `doctor` to surface a pruned optional install (#2370) up front.
+ */
+export const isLocalEmbeddingStackInstalled = (): boolean => {
+  try {
+    require.resolve('@huggingface/transformers');
+    require.resolve('onnxruntime-node');
+    return true;
+  } catch {
+    return false;
+  }
+};

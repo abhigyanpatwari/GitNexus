@@ -54,4 +54,34 @@ describe('doctor embedding-runtime support status', () => {
     expect(status).toBe('✓ http endpoint configured');
     expect(detail).toBeNull();
   });
+
+  it('flags a pruned optional embedding stack with reinstall guidance (#2370)', () => {
+    const { status, detail } = localEmbeddingDoctorStatus({
+      httpMode: false,
+      platform: 'linux',
+      arch: 'x64',
+      stackInstalled: false,
+    });
+    expect(status).toBe('✗ optional embedding stack not installed');
+    expect(detail).toContain('ONNXRUNTIME_NODE_INSTALL=skip');
+  });
+
+  it('prefers the platform blocker over the missing-stack report on macOS Intel', () => {
+    const { status } = localEmbeddingDoctorStatus({
+      httpMode: false,
+      platform: 'darwin',
+      arch: 'x64',
+      stackInstalled: false,
+    });
+    expect(status).toBe('✗ local embeddings unavailable on darwin/x64');
+  });
+
+  it('never reports a missing stack in HTTP mode', () => {
+    const { status, detail } = localEmbeddingDoctorStatus({
+      httpMode: true,
+      stackInstalled: false,
+    });
+    expect(status).toBe('✓ http endpoint configured');
+    expect(detail).toBeNull();
+  });
 });

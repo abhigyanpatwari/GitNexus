@@ -420,6 +420,22 @@ If `npm install -g gitnexus` fails on native modules:
 npm install -g gitnexus
 ```
 
+### Installation fails behind an HTTP proxy (`onnxruntime-node` postinstall)
+
+`onnxruntime-node`'s postinstall downloads optional CUDA GPU binaries from `api.nuget.org` — outside the npm registry, so registry mirrors don't cover it, and its proxy layer (`global-agent`) ignores the standard `HTTP_PROXY`/`HTTPS_PROXY` variables and rejects 302 redirects ([#2370](https://github.com/abhigyanpatwari/GitNexus/issues/2370)).
+
+Since the packages are optional dependencies, a failed download no longer breaks `npm install -g gitnexus` — npm skips the embedding stack and everything else works. To keep **local embeddings** working behind a proxy, skip the CUDA download instead (CPU embeddings don't need it):
+
+```bash
+# Linux/macOS
+ONNXRUNTIME_NODE_INSTALL=skip npm install -g gitnexus
+
+# Windows (cmd)
+set ONNXRUNTIME_NODE_INSTALL=skip && npm install -g gitnexus
+```
+
+CUDA GPU hosts behind a proxy can route the download through it instead: `GLOBAL_AGENT_HTTPS_PROXY=<proxy-url> npm install -g gitnexus`. Check the result any time with `gitnexus doctor` (Embeddings → Support line).
+
 ### Analyze warns about unavailable FTS or VECTOR extensions
 
 GitNexus uses optional DuckDB extensions for BM25 and vector search. The `gitnexus serve` and MCP read paths only ever try to `LOAD` the extensions — they never block on a network install. The `analyze` command, by default, attempts one bounded out-of-process `INSTALL` if `LOAD` fails and proceeds even when that install times out, so the index is always written to disk; BM25/vector search degrade gracefully until the extensions become available.
