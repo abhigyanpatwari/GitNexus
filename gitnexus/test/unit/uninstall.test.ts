@@ -634,6 +634,65 @@ describe('uninstallCommand', () => {
     expect(process.exitCode).toBe(1);
   });
 
+  // ── multi-candidate sweep combinations ──
+
+  it('removes a gitnexus entry from BOTH chain files when present in both', async () => {
+    const recommended = path.join(tempHome, '.codebuddy', '.mcp.json');
+    const legacy = path.join(tempHome, '.codebuddy.json');
+    await fs.mkdir(path.dirname(recommended), { recursive: true });
+    await fs.writeFile(
+      recommended,
+      JSON.stringify({
+        mcpServers: { gitnexus: { command: 'gitnexus' }, keepA: { command: 'a' } },
+      }),
+      'utf-8',
+    );
+    await fs.writeFile(
+      legacy,
+      JSON.stringify({
+        mcpServers: { gitnexus: { command: 'gitnexus' }, keepB: { command: 'b' } },
+      }),
+      'utf-8',
+    );
+
+    const uninstallCommand = await importUninstall();
+    await uninstallCommand({ force: true });
+
+    const rec = JSON.parse(await fs.readFile(recommended, 'utf-8'));
+    const leg = JSON.parse(await fs.readFile(legacy, 'utf-8'));
+    expect(rec.mcpServers.gitnexus).toBeUndefined();
+    expect(rec.mcpServers.keepA).toEqual({ command: 'a' });
+    expect(leg.mcpServers.gitnexus).toBeUndefined();
+    expect(leg.mcpServers.keepB).toEqual({ command: 'b' });
+    // One removal line per file.
+    expect(logLines()).toContain(`in ${recommended}`);
+    expect(logLines()).toContain(`in ${legacy}`);
+    expect(process.exitCode).not.toBe(1);
+  });
+
+  it('does not abort the sweep on a corrupt legacy file: later chain entries are still removed', async () => {
+    const deprecated = path.join(tempHome, '.codebuddy', 'mcp.json');
+    const legacy = path.join(tempHome, '.codebuddy.json');
+    await fs.mkdir(path.dirname(deprecated), { recursive: true });
+    const corrupt = '{ not valid json !!!';
+    await fs.writeFile(deprecated, corrupt, 'utf-8');
+    await fs.writeFile(
+      legacy,
+      JSON.stringify({ mcpServers: { gitnexus: { command: 'gitnexus' }, mine: { command: 'm' } } }),
+      'utf-8',
+    );
+
+    const uninstallCommand = await importUninstall();
+    await uninstallCommand({ force: true });
+
+    expect(await fs.readFile(deprecated, 'utf-8')).toBe(corrupt);
+    const leg = JSON.parse(await fs.readFile(legacy, 'utf-8'));
+    expect(leg.mcpServers.gitnexus).toBeUndefined();
+    expect(leg.mcpServers.mine).toEqual({ command: 'm' });
+    expect(logLines()).toContain('CodeBuddy MCP (legacy mcp.json is corrupt — left untouched)');
+    expect(process.exitCode).not.toBe(1);
+  });
+
   // ── ENOENT narrowing: non-ENOENT read failures must surface, not mask ──
 
   const errnoError = (code: string) =>

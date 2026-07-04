@@ -178,6 +178,32 @@ describe('setup → uninstall round-trip', () => {
     }
   });
 
+  it('round-trips a CodeBuddy entry living in the home-level legacy ~/.codebuddy.json (chain position 3)', async () => {
+    const targets = getEditorTargets(tempHome);
+    const codebuddy = targets.mcpJsonc.find((t) => t.id === 'codebuddy')!;
+    const legacyHomeFile = codebuddy.legacyFiles![1];
+
+    await fs.writeFile(
+      legacyHomeFile,
+      JSON.stringify({ mcpServers: { mine: { command: 'mine' } } }),
+      'utf-8',
+    );
+
+    const { setupCommand } = await import('../../src/cli/setup.js');
+    await setupCommand();
+
+    const cfg = await readJsonc(legacyHomeFile);
+    expect(valueAtPath(cfg, codebuddy.keyPath)).toBeDefined();
+    expect(await exists(codebuddy.file)).toBe(false);
+
+    const { uninstallCommand } = await import('../../src/cli/uninstall.js');
+    await uninstallCommand({ force: true });
+
+    const after = await readJsonc(legacyHomeFile);
+    expect(valueAtPath(after, codebuddy.keyPath)).toBeUndefined();
+    expect(after.mcpServers.mine).toEqual({ command: 'mine' });
+  });
+
   it('round-trips a CodeBuddy entry living in the deprecated mcp.json (legacyFiles sweep)', async () => {
     const targets = getEditorTargets(tempHome);
     const codebuddy = targets.mcpJsonc.find((t) => t.id === 'codebuddy')!;
