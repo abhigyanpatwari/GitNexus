@@ -611,6 +611,140 @@ describe('setupQoder', () => {
   });
 });
 
+describe('setup — non-ENOENT read/stat failures are surfaced, not masked', () => {
+  let tempHome: string;
+  let originalHome: string | undefined;
+  let originalUserProfile: string | undefined;
+
+  const errnoError = (code: string) =>
+    Object.assign(new Error(`${code}: simulated failure`), { code });
+
+  const logLines = () =>
+    vi
+      .mocked(console.log)
+      .mock.calls.map((call) => call.join(' '))
+      .join('\n');
+
+  beforeEach(async () => {
+    vi.resetModules();
+    vi.clearAllMocks();
+
+    originalHome = process.env.HOME;
+    originalUserProfile = process.env.USERPROFILE;
+    tempHome = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-enoent-narrow-'));
+    process.env.HOME = tempHome;
+    process.env.USERPROFILE = tempHome;
+
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+  });
+
+  afterEach(async () => {
+    vi.restoreAllMocks();
+    process.env.HOME = originalHome;
+    process.env.USERPROFILE = originalUserProfile;
+    await fs.rm(tempHome, { recursive: true, force: true });
+  });
+
+  it('does not clobber an unreadable MCP config and still configures other editors', async () => {
+    await fs.mkdir(path.join(tempHome, '.codebuddy'), { recursive: true });
+    await fs.mkdir(path.join(tempHome, '.cursor'), { recursive: true });
+    const codebuddyMcp = path.join(tempHome, '.codebuddy', '.mcp.json');
+    const raw = JSON.stringify({ mcpServers: { mine: { command: 'mine' } } });
+    await fs.writeFile(codebuddyMcp, raw, 'utf-8');
+
+    // Readable-by-stat but unreadable-by-read (the reproduced clobber shape).
+    const realReadFile = fs.readFile;
+    vi.spyOn(fs, 'readFile').mockImplementation(((file: any, ...rest: any[]) => {
+      if (String(file) === codebuddyMcp) return Promise.reject(errnoError('EACCES'));
+      return (realReadFile as any)(file, ...rest);
+    }) as typeof fs.readFile);
+
+    const { setupCommand } = await import('../../src/cli/setup.js');
+    await setupCommand();
+
+    vi.mocked(fs.readFile).mockRestore();
+    // The populated config survives byte-identical instead of becoming
+    // a gitnexus-only document reported as success.
+    expect(await fs.readFile(codebuddyMcp, 'utf-8')).toBe(raw);
+    expect(logLines()).toContain('CodeBuddy: EACCES');
+    const cursorCfg = JSON.parse(
+      await fs.readFile(path.join(tempHome, '.cursor', 'mcp.json'), 'utf-8'),
+    );
+    expect(cursorCfg.mcpServers.gitnexus).toBeDefined();
+  });
+
+  it('surfaces a chain-candidate stat failure instead of writing a lower-priority file', async () => {
+    await fs.mkdir(path.join(tempHome, '.codebuddy'), { recursive: true });
+    const legacy = path.join(tempHome, '.codebuddy.json');
+    const raw = JSON.stringify({ mcpServers: { mine: { command: 'mine' } } });
+    await fs.writeFile(legacy, raw, 'utf-8');
+    const recommended = path.join(tempHome, '.codebuddy', '.mcp.json');
+
+    const realStat = fs.stat;
+    vi.spyOn(fs, 'stat').mockImplementation(((file: any, ...rest: any[]) => {
+      if (String(file) === recommended) return Promise.reject(errnoError('EACCES'));
+      return (realStat as any)(file, ...rest);
+    }) as typeof fs.stat);
+
+    const { setupCommand } = await import('../../src/cli/setup.js');
+    await setupCommand();
+
+    vi.mocked(fs.stat).mockRestore();
+    expect(logLines()).toContain('CodeBuddy: EACCES');
+    // Neither silently routed to the legacy file nor created the recommended one.
+    expect(await fs.readFile(legacy, 'utf-8')).toBe(raw);
+    await expect(fs.access(recommended)).rejects.toThrow();
+  });
+
+  it('does not rewrite an unreadable settings.json as hooks-only (fail closed)', async () => {
+    await fs.mkdir(path.join(tempHome, '.claude'), { recursive: true });
+    const settingsPath = path.join(tempHome, '.claude', 'settings.json');
+    const raw = JSON.stringify({ mySetting: true, hooks: { PreToolUse: [] } });
+    await fs.writeFile(settingsPath, raw, 'utf-8');
+
+    const realReadFile = fs.readFile;
+    vi.spyOn(fs, 'readFile').mockImplementation(((file: any, ...rest: any[]) => {
+      if (String(file) === settingsPath) return Promise.reject(errnoError('EACCES'));
+      return (realReadFile as any)(file, ...rest);
+    }) as typeof fs.readFile);
+
+    const { setupCommand } = await import('../../src/cli/setup.js');
+    await setupCommand();
+
+    vi.mocked(fs.readFile).mockRestore();
+    // The user's settings survive; the hook installer reports instead of
+    // replacing the whole file with a hooks-only document.
+    expect(await fs.readFile(settingsPath, 'utf-8')).toBe(raw);
+    expect(logLines()).toContain('Claude Code hooks: EACCES');
+  });
+
+  it('reports a Codex error instead of rewriting an unreadable config.toml', async () => {
+    await fs.mkdir(path.join(tempHome, '.codex'), { recursive: true });
+    const configPath = path.join(tempHome, '.codex', 'config.toml');
+    const raw = '[mcp_servers.other]\ncommand = "other"\n';
+    await fs.writeFile(configPath, raw, 'utf-8');
+
+    // Force the TOML fallback (default execFile mock succeeds → CLI path).
+    execFileMock.mockImplementationOnce((...args: any[]) => {
+      const callback = args.at(-1);
+      if (typeof callback === 'function') callback(new Error('codex not found'), '', '');
+    });
+
+    const realReadFile = fs.readFile;
+    vi.spyOn(fs, 'readFile').mockImplementation(((file: any, ...rest: any[]) => {
+      if (String(file) === configPath) return Promise.reject(errnoError('EACCES'));
+      return (realReadFile as any)(file, ...rest);
+    }) as typeof fs.readFile);
+
+    const { setupCommand } = await import('../../src/cli/setup.js');
+    await setupCommand();
+
+    vi.mocked(fs.readFile).mockRestore();
+    expect(await fs.readFile(configPath, 'utf-8')).toBe(raw);
+    expect(logLines()).toContain('Codex: EACCES');
+  });
+});
+
 describe('formatHookCommand (hook command escaping, #1945)', () => {
   let mod: typeof import('../../src/cli/setup.js');
 

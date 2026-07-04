@@ -48,6 +48,11 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const execFileAsync = promisify(execFile);
 
+/** True when err is a Node fs error with code ENOENT (file/dir absent). */
+function isEnoent(err: unknown): boolean {
+  return (err as NodeJS.ErrnoException)?.code === 'ENOENT';
+}
+
 interface UninstallResult {
   removed: string[];
   skipped: string[];
@@ -72,7 +77,12 @@ async function removeJsoncKey(
   let raw: string;
   try {
     raw = await fs.readFile(filePath, 'utf-8');
-  } catch {
+  } catch (err) {
+    // ENOENT = genuinely not configured. Any other read failure (EACCES,
+    // locks) must not report 'missing' — the file may hold a real gitnexus
+    // entry the dry-run would then deny exists. Rethrow into the caller's
+    // per-file catch.
+    if (!isEnoent(err)) throw err;
     return 'missing';
   }
 
@@ -116,7 +126,11 @@ async function removeHookEntries(
   let raw: string;
   try {
     raw = await fs.readFile(filePath, 'utf-8');
-  } catch {
+  } catch (err) {
+    // Masking a non-ENOENT read failure as 'missing' would also let the
+    // caller delete the hook scriptDir while the unreadable settings file
+    // still references it. Rethrow into the hook uninstaller's catch.
+    if (!isEnoent(err)) throw err;
     return { status: 'missing', count: 0 };
   }
 
@@ -365,8 +379,14 @@ async function uninstallCodex(
   let raw: string;
   try {
     raw = await fs.readFile(configPath, 'utf-8');
-  } catch {
-    result.skipped.push('Codex MCP (not configured)');
+  } catch (err) {
+    // Catch locally: this call site has no surrounding try, so a rethrow
+    // would abort the hooks/skills cleanup that runs after Codex.
+    if (isEnoent(err)) {
+      result.skipped.push('Codex MCP (not configured)');
+    } else {
+      result.errors.push(`Codex: ${err instanceof Error ? err.message : String(err)}`);
+    }
     return;
   }
 

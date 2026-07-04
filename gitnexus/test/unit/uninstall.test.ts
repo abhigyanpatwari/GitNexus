@@ -558,4 +558,103 @@ describe('uninstallCommand', () => {
     await expect(fs.access(path.join(opencodeSkills, 'gitnexus-dir-skill'))).rejects.toThrow();
     await expect(fs.access(path.join(opencodeSkills, 'keep-me'))).resolves.toBeUndefined();
   });
+
+  // ── ENOENT narrowing: non-ENOENT read failures must surface, not mask ──
+
+  const errnoError = (code: string) =>
+    Object.assign(new Error(`${code}: simulated failure`), { code });
+
+  const logLines = () =>
+    vi
+      .mocked(console.log)
+      .mock.calls.map((call) => call.join(' '))
+      .join('\n');
+
+  it('reports an error (not "not configured") when an MCP config read fails with EACCES', async () => {
+    const claudeJson = path.join(tempHome, '.claude.json');
+    const raw = JSON.stringify({
+      mcpServers: { gitnexus: { command: 'gitnexus', args: ['mcp'] } },
+    });
+    await fs.writeFile(claudeJson, raw, 'utf-8');
+
+    const realReadFile = fs.readFile;
+    vi.spyOn(fs, 'readFile').mockImplementation(((file: any, ...rest: any[]) => {
+      if (String(file) === claudeJson) return Promise.reject(errnoError('EACCES'));
+      return (realReadFile as any)(file, ...rest);
+    }) as typeof fs.readFile);
+
+    const uninstallCommand = await importUninstall();
+    await uninstallCommand({ force: true });
+
+    vi.mocked(fs.readFile).mockRestore();
+    // The file may hold a real gitnexus entry — reporting "not configured"
+    // would make the dry-run users trust lie about it.
+    expect(await fs.readFile(claudeJson, 'utf-8')).toBe(raw);
+    expect(logLines()).toContain('Claude Code: EACCES');
+    expect(logLines()).not.toContain('Claude Code MCP (not configured)');
+    expect(process.exitCode).toBe(1);
+  });
+
+  it('keeps the hook-script dir when settings.json is unreadable (EACCES)', async () => {
+    const settingsPath = path.join(tempHome, '.claude', 'settings.json');
+    await fs.mkdir(path.join(tempHome, '.claude'), { recursive: true });
+    const raw = JSON.stringify({
+      hooks: {
+        PreToolUse: [
+          {
+            matcher: 'Bash',
+            hooks: [{ type: 'command', command: 'node ".../gitnexus-hook.cjs"' }],
+          },
+        ],
+      },
+    });
+    await fs.writeFile(settingsPath, raw, 'utf-8');
+    const hookDir = path.join(tempHome, '.claude', 'hooks', 'gitnexus');
+    await fs.mkdir(hookDir, { recursive: true });
+    await fs.writeFile(path.join(hookDir, 'gitnexus-hook.cjs'), '// hook', 'utf-8');
+
+    const realReadFile = fs.readFile;
+    vi.spyOn(fs, 'readFile').mockImplementation(((file: any, ...rest: any[]) => {
+      if (String(file) === settingsPath) return Promise.reject(errnoError('EACCES'));
+      return (realReadFile as any)(file, ...rest);
+    }) as typeof fs.readFile);
+
+    const uninstallCommand = await importUninstall();
+    await uninstallCommand({ force: true });
+
+    vi.mocked(fs.readFile).mockRestore();
+    // Masking the failure as 'missing' would delete the scriptDir while the
+    // unreadable settings file still references the hook.
+    expect(await fs.readFile(settingsPath, 'utf-8')).toBe(raw);
+    await expect(fs.access(hookDir)).resolves.toBeUndefined();
+    expect(process.exitCode).toBe(1);
+  });
+
+  it('records a Codex read error and still cleans up other targets', async () => {
+    const configPath = path.join(tempHome, '.codex', 'config.toml');
+    await fs.mkdir(path.dirname(configPath), { recursive: true });
+    const raw = ['[mcp_servers.gitnexus]', 'command = "gitnexus"', ''].join('\n');
+    await fs.writeFile(configPath, raw, 'utf-8');
+
+    const skillsDir = path.join(tempHome, '.claude', 'skills', 'gitnexus-cli');
+    await fs.mkdir(skillsDir, { recursive: true });
+    await fs.writeFile(path.join(skillsDir, 'SKILL.md'), '# y', 'utf-8');
+
+    const realReadFile = fs.readFile;
+    vi.spyOn(fs, 'readFile').mockImplementation(((file: any, ...rest: any[]) => {
+      if (String(file) === configPath) return Promise.reject(errnoError('EACCES'));
+      return (realReadFile as any)(file, ...rest);
+    }) as typeof fs.readFile);
+
+    const uninstallCommand = await importUninstall();
+    await uninstallCommand({ force: true });
+
+    vi.mocked(fs.readFile).mockRestore();
+    // uninstallCodex catches locally: the failure is recorded but the
+    // hooks/skills cleanup that runs after Codex still executes.
+    expect(await fs.readFile(configPath, 'utf-8')).toBe(raw);
+    expect(logLines()).toContain('Codex: EACCES');
+    await expect(fs.access(skillsDir)).rejects.toThrow();
+    expect(process.exitCode).toBe(1);
+  });
 });

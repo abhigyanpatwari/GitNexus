@@ -203,6 +203,11 @@ function getOpenCodeMcpEntry() {
   return { type: 'local', command: ['npx', '-y', MCP_PINNED_REF, 'mcp'] };
 }
 
+/** True when err is a Node fs error with code ENOENT (file/dir absent). */
+function isEnoent(err: unknown): boolean {
+  return (err as NodeJS.ErrnoException)?.code === 'ENOENT';
+}
+
 /**
  * Merge a key/value pair into a JSONC config file, preserving comments and formatting.
  * If the file is genuinely corrupt (not valid JSONC), leaves it untouched.
@@ -215,7 +220,12 @@ async function mergeJsoncFile(
   let raw: string;
   try {
     raw = await fs.readFile(filePath, 'utf-8');
-  } catch {
+  } catch (err) {
+    // Only an absent file means "start fresh". Any other read failure (EACCES,
+    // EIO, cloud-placeholder faults) must not be treated as empty — the write
+    // below would replace the user's existing config with a gitnexus-only
+    // document and report success. Rethrow into the per-editor catch instead.
+    if (!isEnoent(err)) throw err;
     raw = '';
   }
 
@@ -348,7 +358,11 @@ async function mergeHooksJsonc(
   let raw: string;
   try {
     raw = await fs.readFile(filePath, 'utf-8');
-  } catch {
+  } catch (err) {
+    // Same contract as mergeJsoncFile: an unreadable (non-ENOENT) settings
+    // file must not be rewritten as hooks-only — that would destroy every
+    // user setting in it. Rethrow into the hook installer's catch.
+    if (!isEnoent(err)) throw err;
     raw = '';
   }
 
@@ -803,8 +817,11 @@ async function resolveMcpConfigFile(target: {
     try {
       const stat = await fs.stat(candidate);
       if (stat.isFile()) return candidate;
-    } catch {
-      // Candidate absent — try the next one.
+    } catch (err) {
+      // ENOENT = candidate absent — try the next one. Anything else (EACCES
+      // on the file or a parent) is surfaced: silently skipping could route
+      // the write to a lower-priority file the editor never reads.
+      if (!isEnoent(err)) throw err;
     }
   }
   return target.file;
@@ -910,7 +927,11 @@ async function upsertCodexConfigToml(configPath: string): Promise<void> {
   let existing = '';
   try {
     existing = await fs.readFile(configPath, 'utf-8');
-  } catch {
+  } catch (err) {
+    // TOML variant of the mergeJsoncFile contract: treating a non-ENOENT read
+    // failure as an empty config would rewrite config.toml with only the
+    // gitnexus section. Rethrow into setupCodex's catch.
+    if (!isEnoent(err)) throw err;
     existing = '';
   }
 
