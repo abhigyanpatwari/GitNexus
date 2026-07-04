@@ -278,6 +278,21 @@ async function isNonEmptyFile(filePath: string): Promise<boolean> {
   }
 }
 
+/**
+ * Detection probe: does any file in the target's MCP config chain look like an
+ * install trace? Always walks [file, ...legacyFiles] so an editor gaining
+ * legacyFiles later is automatically covered (CodeBuddy and Qoder share this —
+ * a per-editor copy is how the root-config-only detection gap crept in, see
+ * PR #2368 review I4).
+ */
+async function anyChainConfigFile(target: {
+  file: string;
+  legacyFiles?: string[];
+}): Promise<boolean> {
+  const hits = await Promise.all([target.file, ...(target.legacyFiles ?? [])].map(isNonEmptyFile));
+  return hits.includes(true);
+}
+
 // ─── Editor-specific setup ─────────────────────────────────────────
 
 async function setupCursor(result: SetupResult): Promise<void> {
@@ -851,9 +866,7 @@ async function setupCodeBuddy(result: SetupResult): Promise<void> {
   // A user whose only trace is a root-level config (e.g. a legacy
   // ~/.codebuddy.json) still gets configured — uninstall already handles that
   // shape, so setup skipping it was an asymmetry (PR #2368 review I4).
-  const chainCandidates = [target.file, ...(target.legacyFiles ?? [])];
-  const chainHits = await Promise.all(chainCandidates.map(isNonEmptyFile));
-  if (!(await dirExists(codebuddyDir)) && !chainHits.includes(true)) {
+  if (!(await dirExists(codebuddyDir)) && !(await anyChainConfigFile(target))) {
     result.skipped.push('CodeBuddy (not installed)');
     return;
   }
@@ -875,9 +888,10 @@ async function setupCodeBuddy(result: SetupResult): Promise<void> {
 
 async function setupQoder(result: SetupResult): Promise<void> {
   const qoderDir = path.join(os.homedir(), '.qoder');
-  const { file: mcpPath, keyPath } = mcpTarget('qoder');
+  const target = mcpTarget('qoder');
+  const { file: mcpPath, keyPath } = target;
   // Same chain-aware detection as CodeBuddy: ~/.qoder.json alone counts.
-  if (!(await dirExists(qoderDir)) && !(await isNonEmptyFile(mcpPath))) {
+  if (!(await dirExists(qoderDir)) && !(await anyChainConfigFile(target))) {
     result.skipped.push('Qoder (not installed)');
     return;
   }
