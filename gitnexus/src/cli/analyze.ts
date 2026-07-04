@@ -1458,6 +1458,22 @@ const analyzeCommandImpl = async (
     );
     console.log(`  ${repoPath}`);
 
+    // Discoverability (#577/#1011/#1265/#1663): name the working-tree writes
+    // and the durable opt-out at the moment they happen, not only in the
+    // README. Mirrors the `!placement.branch` gate around
+    // generateAIContextFiles in runFullAnalysis (pinned --branch runs and
+    // skip-flags write nothing, so they print nothing).
+    const contextWrites = [
+      ...(skipAgentsMd ? [] : ['AGENTS.md', 'CLAUDE.md']),
+      ...(skipSkills ? [] : ['.claude/skills/gitnexus/']),
+    ];
+    if (result.isPrimaryBranch !== false && contextWrites.length > 0) {
+      console.log(
+        `  AI context updated: ${contextWrites.join(', ')} — opt out with --index-only ` +
+          `or a committed .gitnexusrc {"indexOnly": true}`,
+      );
+    }
+
     // Persistent (non-scrolling) warning when FTS indexing was skipped — the
     // progress-bar log() that fired mid-run has already scrolled away, so the
     // degraded-search state must also appear in the final summary (#1161).
