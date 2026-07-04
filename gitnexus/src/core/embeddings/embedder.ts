@@ -28,6 +28,7 @@ import {
   getMissingLocalEmbeddingStackMessage,
 } from './runtime-support.js';
 import { ensureOnnxRuntimeCommonResolvable } from './onnxruntime-common-resolver.js';
+import { ensureEmbeddingStackResolvable } from './runtime-install.js';
 import {
   ensureOnnxRuntimeNodeMatchesSystem,
   isEffectiveCudaAvailable,
@@ -107,6 +108,11 @@ export const initEmbedder = async (
     try {
       // Lazy-load transformers.js only after the runtime guard has passed, so
       // unsupported platforms never reach the native ONNX import (#1515).
+      // Registered FIRST so it sits last in the hook chain (registerHooks runs
+      // the most recent hook first): when the optional stack was pruned at
+      // install time (#2370), its bare specifiers fall back to the on-demand
+      // runtime prefix.
+      ensureEmbeddingStackResolvable();
       // Under pnpm-strict / `pnpm dlx`, transformers' phantom `onnxruntime-common`
       // import is unresolvable; register the fallback resolver first (#307).
       ensureOnnxRuntimeCommonResolvable();

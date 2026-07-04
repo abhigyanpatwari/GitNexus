@@ -192,6 +192,7 @@ describe('getMissingLocalEmbeddingStackMessage (#2370 pruned optional stack)', (
 
   it('produces guidance naming every recovery path', () => {
     const msg = localEmbeddingStackMissingMessage();
+    expect(msg).toContain('gitnexus embeddings install');
     expect(msg).toContain('ONNXRUNTIME_NODE_INSTALL=skip');
     expect(msg).toContain('GLOBAL_AGENT_HTTPS_PROXY');
     expect(msg).toContain('GITNEXUS_EMBEDDING_URL');

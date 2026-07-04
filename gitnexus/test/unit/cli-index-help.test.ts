@@ -49,6 +49,8 @@ const allHelpCommands = [
   ['cypher'],
   ['detect-changes'],
   ['eval-server'],
+  ['embeddings'],
+  ['embeddings', 'install'],
   ['group'],
   ['group', 'create'],
   ['group', 'add'],

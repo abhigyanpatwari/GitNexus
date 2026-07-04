@@ -45,11 +45,17 @@ import { cliError } from './cli-message.js';
 import { EMBEDDING_DIMS_ERROR, normalizeEmbeddingDims } from './embedding-dims.js';
 import { formatElapsed } from './format-elapsed.js';
 import { isHfDownloadFailure } from '../core/embeddings/hf-env.js';
-import { safeUrl } from '../core/embeddings/http-client.js';
+import { isHttpMode, safeUrl } from '../core/embeddings/http-client.js';
 import {
   isLocalEmbeddingRuntimeBlockerMessage,
   isMissingLocalEmbeddingStackMessage,
+  localEmbeddingStackMissingMessage,
 } from '../core/embeddings/runtime-support.js';
+import {
+  getEmbeddingRuntimeDir,
+  installEmbeddingRuntime,
+  resolveEmbeddingRuntime,
+} from '../core/embeddings/runtime-install.js';
 import { warnIfNpm11NpxRisk } from './resolve-invocation.js';
 
 // Capture stderr.write at module load BEFORE anything (LadybugDB native
@@ -1088,6 +1094,32 @@ const analyzeCommandImpl = async (
       '  Note: custom HTTP embeddings require BOTH --embedding-base-url and --embedding-model ' +
         '(or the matching env vars). Falling back to local ONNX embeddings.\n',
     );
+  }
+
+  // On-demand embedding runtime (#2370): when the optional stack was pruned at
+  // install time (proxy-blocked NuGet download in onnxruntime-node's
+  // postinstall), heal it here instead of failing later in the pipeline. The
+  // install goes through the user's npm registry config (mirrors/proxies
+  // apply) with --ignore-scripts, so no NuGet download is attempted. Runs
+  // before bar.start() like the sibling validations above.
+  if (embeddingsEnabled && !isHttpMode() && resolveEmbeddingRuntime() === null) {
+    console.log(
+      `  Local embedding runtime is not installed (optional packages were skipped at install time).\n` +
+        `  Downloading it now from your npm registry into ${getEmbeddingRuntimeDir()} …\n` +
+        `  (one-time; rerun manually anytime with \`gitnexus embeddings install\`)\n`,
+    );
+    try {
+      await installEmbeddingRuntime();
+      console.log('  Embedding runtime installed.\n');
+    } catch (err) {
+      cliError(
+        `  Could not install the embedding runtime: ${err instanceof Error ? err.message : String(err)}\n\n` +
+          `  ${localEmbeddingStackMissingMessage().replace(/\n/g, '\n  ')}\n`,
+        { recoveryHint: 'local-embedding-stack-missing' },
+      );
+      process.exitCode = 1;
+      return;
+    }
   }
 
   if (options.repairFts && options.force) {

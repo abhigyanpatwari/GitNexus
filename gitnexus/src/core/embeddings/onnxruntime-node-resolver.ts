@@ -57,6 +57,7 @@ import { existsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { logger } from '../logger.js';
+import { getEmbeddingRuntimeDir } from './runtime-install.js';
 
 export type CudaMajor = 12 | 13;
 
@@ -157,7 +158,17 @@ const resolveDefaultOrtNodeDir = (): string | null => {
     const transformersMain = require.resolve('@huggingface/transformers');
     return dirname(createRequire(transformersMain).resolve('onnxruntime-node/package.json'));
   } catch {
-    return null;
+    // On-demand runtime prefix (#2370): when the optional stack was pruned at
+    // install time and fetched on demand, the copy that actually loads (via
+    // ensureEmbeddingStackResolvable's fallback hook) lives in the prefix — so
+    // it IS the effective default and must be the one the CUDA probe inspects.
+    try {
+      const prefixRequire = createRequire(join(getEmbeddingRuntimeDir(), 'noop.js'));
+      const transformersMain = prefixRequire.resolve('@huggingface/transformers');
+      return dirname(createRequire(transformersMain).resolve('onnxruntime-node/package.json'));
+    } catch {
+      return null;
+    }
   }
 };
 

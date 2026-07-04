@@ -424,17 +424,17 @@ npm install -g gitnexus
 
 `onnxruntime-node`'s postinstall downloads optional CUDA GPU binaries from `api.nuget.org` — outside the npm registry, so registry mirrors don't cover it, and its proxy layer (`global-agent`) ignores the standard `HTTP_PROXY`/`HTTPS_PROXY` variables and rejects 302 redirects ([#2370](https://github.com/abhigyanpatwari/GitNexus/issues/2370)).
 
-Since the packages are optional dependencies, a failed download no longer breaks `npm install -g gitnexus` — npm skips the embedding stack and everything else works. To keep **local embeddings** working behind a proxy, skip the CUDA download instead (CPU embeddings don't need it):
+Since the packages are optional dependencies, a failed download no longer breaks `npm install -g gitnexus` — npm skips the embedding stack and everything else works. The stack then **self-heals on demand**: the first `gitnexus analyze --embeddings` (or an explicit `gitnexus embeddings install`) fetches it through your configured npm registry — mirrors and proxies apply, no NuGet download involved — into `~/.gitnexus/embedding-runtime`.
 
 ```bash
-# Linux/macOS
-ONNXRUNTIME_NODE_INSTALL=skip npm install -g gitnexus
+# heal a proxy-degraded install manually (CPU embeddings; registry-only)
+gitnexus embeddings install
 
-# Windows (cmd)
-set ONNXRUNTIME_NODE_INSTALL=skip && npm install -g gitnexus
+# CUDA GPU hosts: also fetch GPU binaries (NuGet; set the proxy global-agent reads)
+GLOBAL_AGENT_HTTPS_PROXY=<proxy-url> gitnexus embeddings install --cuda
 ```
 
-CUDA GPU hosts behind a proxy can route the download through it instead: `GLOBAL_AGENT_HTTPS_PROXY=<proxy-url> npm install -g gitnexus`. Check the result any time with `gitnexus doctor` (Embeddings → Support line).
+Alternatively, keep everything in the regular install by skipping only the CUDA download (CPU embeddings don't need it): `ONNXRUNTIME_NODE_INSTALL=skip npm install -g gitnexus` (Windows: `set ONNXRUNTIME_NODE_INSTALL=skip && npm install -g gitnexus`). Check the result any time with `gitnexus doctor` (Embeddings → Support line).
 
 ### Analyze warns about unavailable FTS or VECTOR extensions
 

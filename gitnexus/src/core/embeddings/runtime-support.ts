@@ -14,11 +14,10 @@
  * module scope or inside its functions) so it can be consulted *before* the
  * dynamic import that would crash. HTTP embedding mode never touches the native
  * runtime, so callers in HTTP mode must skip this guard.
- * (`require.resolve` below only resolves paths — it never loads the modules.)
+ * (The runtime-install import below only resolves paths — it never loads the
+ * embedding stack.)
  */
-import { createRequire } from 'node:module';
-
-const require = createRequire(import.meta.url);
+import { resolveEmbeddingRuntime } from './runtime-install.js';
 
 /**
  * Stable lead line of the macOS-Intel blocker message. Also used to recognise
@@ -111,11 +110,14 @@ export const localEmbeddingStackMissingMessage = (): string =>
     'still works.',
     '',
     'To enable local embeddings:',
-    '  - Reinstall with the CUDA download skipped (CPU embeddings need no CUDA):',
+    '  - Run `gitnexus embeddings install` — fetches the stack on demand through',
+    '    your npm registry config (mirrors and proxies apply; no NuGet download).',
+    '    `gitnexus analyze --embeddings` does this automatically.',
+    '    Add --cuda on CUDA GPU hosts (behind a proxy, also set',
+    '    GLOBAL_AGENT_HTTPS_PROXY=<proxy-url> for the NuGet download).',
+    '  - Or reinstall with the CUDA download skipped (CPU embeddings need no CUDA):',
     '      ONNXRUNTIME_NODE_INSTALL=skip npm install -g gitnexus',
     '      (Windows: set ONNXRUNTIME_NODE_INSTALL=skip && npm install -g gitnexus)',
-    '  - GPU (CUDA) hosts behind a proxy: set GLOBAL_AGENT_HTTPS_PROXY=<proxy-url>',
-    '    and reinstall, so the CUDA binaries download through your proxy.',
     '  - Or point GITNEXUS_EMBEDDING_URL (with GITNEXUS_EMBEDDING_MODEL) at an',
     '    OpenAI-compatible /v1/embeddings endpoint to embed over HTTP.',
   ].join('\n');
@@ -150,17 +152,10 @@ export const isMissingLocalEmbeddingStackMessage = (message: string): boolean =>
   message.includes(LOCAL_EMBEDDING_STACK_MISSING_LEAD);
 
 /**
- * True when the optional local embedding stack resolves from this install.
+ * True when the optional local embedding stack resolves from this install —
+ * either the normally-installed packages or the on-demand runtime prefix.
  * Resolution only — nothing is imported, so this is safe on every platform
  * (including macOS Intel, where *loading* onnxruntime-node would crash).
  * Used by `doctor` to surface a pruned optional install (#2370) up front.
  */
-export const isLocalEmbeddingStackInstalled = (): boolean => {
-  try {
-    require.resolve('@huggingface/transformers');
-    require.resolve('onnxruntime-node');
-    return true;
-  } catch {
-    return false;
-  }
-};
+export const isLocalEmbeddingStackInstalled = (): boolean => resolveEmbeddingRuntime() !== null;
