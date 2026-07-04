@@ -57,6 +57,13 @@ interface UninstallResult {
   removed: string[];
   skipped: string[];
   errors: string[];
+  /**
+   * A corrupt LEGACY chain file was seen. It is reported informationally
+   * (skipped, no exit code), but it makes "not configured" unknowable, so the
+   * final report must not claim it. Kept as a first-class flag — the report
+   * must never re-derive this by sniffing skipped-entry message text.
+   */
+  corruptLegacy: boolean;
 }
 
 type RemovalStatus = 'removed' | 'absent' | 'corrupt' | 'missing';
@@ -437,7 +444,7 @@ export const uninstallCommand = async (options?: { force?: boolean }) => {
     console.log('');
   }
 
-  const result: UninstallResult = { removed: [], skipped: [], errors: [] };
+  const result: UninstallResult = { removed: [], skipped: [], errors: [], corruptLegacy: false };
 
   // ─── MCP server entries (JSONC editors) ──────────────────────────
   // Sweep legacyFiles too: setup writes into the first existing file of the
@@ -471,6 +478,7 @@ export const uninstallCommand = async (options?: { force?: boolean }) => {
             // that's an environmental problem worth surfacing, while corrupt-
             // but-readable proves there is no removable gitnexus entry.
             corruptLegacyAny = true;
+            result.corruptLegacy = true;
             result.skipped.push(
               `${target.label} MCP (legacy ${path.basename(file)} is corrupt — left untouched)`,
             );
@@ -532,8 +540,10 @@ export const uninstallCommand = async (options?: { force?: boolean }) => {
   if (result.removed.length > 0) {
     console.log(`  ${verb}:`);
     for (const name of result.removed) console.log(`    - ${name}`);
-  } else if (result.skipped.some((entry) => entry.includes('is corrupt'))) {
-    // A corrupt legacy config makes "not configured" unknowable — don't claim it.
+  } else if (result.errors.length > 0 || result.corruptLegacy) {
+    // Errors (corrupt primary files, unreadable configs) or corrupt legacy
+    // configs make "not configured" unknowable — claiming it right above an
+    // Errors block would be a contradiction users learn to distrust.
     console.log('  Nothing removed.');
   } else {
     console.log('  Nothing to remove — GitNexus is not configured in any detected editor.');

@@ -608,6 +608,24 @@ describe('uninstallCommand', () => {
     expect(process.exitCode).toBe(1);
   });
 
+  it('does not claim "not configured" when the only finding is a corrupt PRIMARY file', async () => {
+    // Qoder has no legacyFiles — its only config is the primary ~/.qoder.json.
+    const qoderJson = path.join(tempHome, '.qoder.json');
+    const corrupt = '{ not valid json !!!';
+    await fs.writeFile(qoderJson, corrupt, 'utf-8');
+
+    const uninstallCommand = await importUninstall();
+    await uninstallCommand({ force: true });
+
+    expect(await fs.readFile(qoderJson, 'utf-8')).toBe(corrupt);
+    expect(process.exitCode).toBe(1);
+    expect(logLines()).toContain('.qoder.json is corrupt — left untouched');
+    // The error makes configuration status unknowable — the reassuring
+    // headline must not print right above the Errors block.
+    expect(logLines()).not.toContain('not configured in any detected editor');
+    expect(logLines()).toContain('Nothing removed.');
+  });
+
   it('still errors and exits 1 when a legacy file is UNREADABLE (intentional asymmetry)', async () => {
     const legacy = path.join(tempHome, '.codebuddy.json');
     const raw = JSON.stringify({ mcpServers: { gitnexus: { command: 'gitnexus' } } });
@@ -726,6 +744,7 @@ describe('uninstallCommand', () => {
     expect(await fs.readFile(claudeJson, 'utf-8')).toBe(raw);
     expect(logLines()).toContain('Claude Code: EACCES');
     expect(logLines()).not.toContain('Claude Code MCP (not configured)');
+    expect(logLines()).not.toContain('not configured in any detected editor');
     expect(process.exitCode).toBe(1);
   });
 
