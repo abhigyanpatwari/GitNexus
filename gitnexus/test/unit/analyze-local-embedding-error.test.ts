@@ -32,7 +32,7 @@ vi.mock('../../src/core/embeddings/runtime-install.js', async (importOriginal) =
   ...(await importOriginal<typeof import('../../src/core/embeddings/runtime-install.js')>()),
   resolveEmbeddingRuntime: () => resolveEmbeddingRuntimeMock(),
   isPrefixRuntimeLoadable: () => isPrefixRuntimeLoadableMock(),
-  installEmbeddingRuntime: () => installEmbeddingRuntimeMock(),
+  installEmbeddingRuntime: (...args: unknown[]) => installEmbeddingRuntimeMock(...args),
   getEmbeddingRuntimeDir: () => '/fake/embedding-runtime',
 }));
 
@@ -218,7 +218,7 @@ describe('analyzeCommand — prefix-runtime capability gate (#2372)', () => {
     cap.restore();
   });
 
-  it('installs when nothing is installed and the prefix is loadable (existing path preserved)', async () => {
+  it('installs with a shorter-than-default timeout when nothing is installed and the prefix is loadable', async () => {
     resolveEmbeddingRuntimeMock.mockReturnValue(null);
     isPrefixRuntimeLoadableMock.mockReturnValue(true);
     // Reject afterwards so analyze bails right after the install, isolating the gate.
@@ -226,10 +226,16 @@ describe('analyzeCommand — prefix-runtime capability gate (#2372)', () => {
 
     const { _captureLogger } = await import('../../src/core/logger.js');
     const cap = _captureLogger();
+    const { ANALYZE_EMBEDDING_INSTALL_TIMEOUT_MS } =
+      await import('../../src/core/embeddings/runtime-install.js');
     const { analyzeCommand } = await import('../../src/cli/analyze.js');
     await analyzeCommand(undefined, { embeddings: true });
 
     expect(installEmbeddingRuntimeMock).toHaveBeenCalledTimes(1);
+    // analyze must pass the shorter deadline so a blackholed proxy can't stall
+    // the run for the 10-minute default.
+    const timeoutArg = installEmbeddingRuntimeMock.mock.calls[0][1] as number;
+    expect(timeoutArg).toBe(ANALYZE_EMBEDDING_INSTALL_TIMEOUT_MS);
     cap.restore();
   });
 });

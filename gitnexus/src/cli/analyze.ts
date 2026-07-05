@@ -53,6 +53,8 @@ import {
   localEmbeddingStackMissingMessage,
 } from '../core/embeddings/runtime-support.js';
 import {
+  ANALYZE_EMBEDDING_INSTALL_TIMEOUT_MS,
+  getEmbeddingInstallTimeoutMs,
   getEmbeddingRuntimeDir,
   installEmbeddingRuntime,
   isPrefixRuntimeLoadable,
@@ -1132,7 +1134,13 @@ const analyzeCommandImpl = async (
           `  (one-time; rerun manually anytime with \`gitnexus embeddings install\`)\n`,
       );
       try {
-        await installEmbeddingRuntime();
+        // Short deadline (env override still wins): analyze is interactive, so a
+        // blackholed proxy must not stall the whole index run for the 10-minute
+        // default — fail over to the guidance below instead.
+        await installEmbeddingRuntime(
+          {},
+          getEmbeddingInstallTimeoutMs(ANALYZE_EMBEDDING_INSTALL_TIMEOUT_MS),
+        );
         console.log('  Embedding runtime installed.\n');
       } catch (err) {
         cliError(

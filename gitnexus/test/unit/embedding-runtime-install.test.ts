@@ -4,8 +4,10 @@ import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { createRequire } from 'node:module';
 import {
+  ANALYZE_EMBEDDING_INSTALL_TIMEOUT_MS,
   buildEmbeddingInstallCommand,
   composeWin32NpmCommand,
+  getEmbeddingInstallTimeoutMs,
   getEmbeddingRuntimeDir,
   getEmbeddingStackSpecs,
   installEmbeddingRuntime,
@@ -120,6 +122,26 @@ describe('resolveEmbeddingRuntime', () => {
   it('finds the normally-installed stack (package source wins over the prefix)', () => {
     process.env.GITNEXUS_EMBEDDING_RUNTIME_DIR = '/nonexistent/for/this/test';
     expect(resolveEmbeddingRuntime()).toEqual({ source: 'package' });
+  });
+});
+
+describe('getEmbeddingInstallTimeoutMs', () => {
+  it('returns the caller default when the env override is unset', () => {
+    expect(getEmbeddingInstallTimeoutMs(ANALYZE_EMBEDDING_INSTALL_TIMEOUT_MS)).toBe(
+      ANALYZE_EMBEDDING_INSTALL_TIMEOUT_MS,
+    );
+  });
+
+  it('lets the env override win over the caller default (user can raise a short deadline)', () => {
+    process.env.GITNEXUS_EMBEDDING_INSTALL_TIMEOUT_MS = '900000';
+    expect(getEmbeddingInstallTimeoutMs(ANALYZE_EMBEDDING_INSTALL_TIMEOUT_MS)).toBe(900000);
+  });
+
+  it('ignores a non-positive env override and uses the caller default', () => {
+    process.env.GITNEXUS_EMBEDDING_INSTALL_TIMEOUT_MS = '-5';
+    expect(getEmbeddingInstallTimeoutMs(ANALYZE_EMBEDDING_INSTALL_TIMEOUT_MS)).toBe(
+      ANALYZE_EMBEDDING_INSTALL_TIMEOUT_MS,
+    );
   });
 });
 

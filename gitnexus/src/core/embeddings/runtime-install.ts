@@ -28,17 +28,24 @@ import { getRegisterHooks } from './node-module-compat.js';
 
 const DEFAULT_EMBEDDING_INSTALL_TIMEOUT_MS = 10 * 60 * 1000;
 
+/** Shorter deadline for analyze's auto-install (interactive; must not stall the index run). */
+export const ANALYZE_EMBEDDING_INSTALL_TIMEOUT_MS = 2 * 60 * 1000;
+
 /**
- * Deadline for the on-demand npm install, env-overridable via
- * `GITNEXUS_EMBEDDING_INSTALL_TIMEOUT_MS`. Generous by default — the ONNX stack
- * is a large registry fetch — but callers on latency-sensitive paths (analyze's
- * auto-install) pass a shorter value so a blackholed proxy can't stall for the
- * full default. Mirrors `getExtensionInstallTimeoutMs`.
+ * Deadline for the on-demand npm install. An explicit
+ * `GITNEXUS_EMBEDDING_INSTALL_TIMEOUT_MS` always wins (so a user on a slow
+ * mirror can raise it); otherwise `defaultMs` applies. The default is generous
+ * (the ONNX stack is a large registry fetch), but latency-sensitive callers
+ * (analyze's auto-install) pass a shorter `defaultMs` so a blackholed proxy
+ * can't stall the whole run for the full ten minutes. Mirrors
+ * `getExtensionInstallTimeoutMs`.
  */
-export const getEmbeddingInstallTimeoutMs = (): number => {
+export const getEmbeddingInstallTimeoutMs = (
+  defaultMs: number = DEFAULT_EMBEDDING_INSTALL_TIMEOUT_MS,
+): number => {
   const raw = process.env.GITNEXUS_EMBEDDING_INSTALL_TIMEOUT_MS;
   const parsed = raw ? Number(raw) : NaN;
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_EMBEDDING_INSTALL_TIMEOUT_MS;
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : defaultMs;
 };
 
 /**
