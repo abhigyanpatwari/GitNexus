@@ -102,6 +102,18 @@ describe('buildEmbeddingInstallCommand', () => {
     expect(args).not.toContain('--ignore-scripts');
     expect(env.ONNXRUNTIME_NODE_INSTALL).toBeUndefined();
   });
+
+  it('with cuda: clears an inherited ONNXRUNTIME_NODE_INSTALL=skip', () => {
+    process.env.ONNXRUNTIME_NODE_INSTALL = 'skip';
+    const { env } = buildEmbeddingInstallCommand({ cuda: true });
+    expect(env.ONNXRUNTIME_NODE_INSTALL).toBeUndefined();
+  });
+
+  it('without cuda: sets the skip env even when the ambient value differs', () => {
+    process.env.ONNXRUNTIME_NODE_INSTALL = 'something-else';
+    const { env } = buildEmbeddingInstallCommand();
+    expect(env.ONNXRUNTIME_NODE_INSTALL).toBe('skip');
+  });
 });
 
 describe('resolveEmbeddingRuntime', () => {

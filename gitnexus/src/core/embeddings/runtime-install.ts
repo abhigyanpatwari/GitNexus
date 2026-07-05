@@ -227,9 +227,15 @@ export const buildEmbeddingInstallCommand = (
     ...(opts.cuda ? [] : ['--ignore-scripts']),
     ...Object.entries(specs).map(([name, spec]) => `${name}@${spec}`),
   ];
-  const env: NodeJS.ProcessEnv = opts.cuda
-    ? { ...process.env }
-    : { ...process.env, ONNXRUNTIME_NODE_INSTALL: 'skip' };
+  const env: NodeJS.ProcessEnv = { ...process.env };
+  if (opts.cuda) {
+    // --cuda opts into the NuGet CUDA download. A user who exported
+    // ONNXRUNTIME_NODE_INSTALL=skip per our proxy docs must not have it silently
+    // suppress that download and then be told the install succeeded.
+    delete env.ONNXRUNTIME_NODE_INSTALL;
+  } else {
+    env.ONNXRUNTIME_NODE_INSTALL = 'skip';
+  }
   return { args, env };
 };
 
