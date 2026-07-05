@@ -3,6 +3,18 @@ import { getExtensionCapabilities } from '../lbug/extension-loader.js';
 import { FTS_INDEXES } from './fts-schema.js';
 
 /**
+ * Strip filesystem paths from a LadybugDB error before it reaches the HTTP
+ * `/api/search` and MCP query surfaces (#2374, PR #2375): the raw LOAD error
+ * embeds the absolute extension path (username, home dir) which must not leak to
+ * a network client. The error class words ("Failed to load library", "invalid
+ * ELF header", "has not been installed") have no leading path separator and
+ * survive. CLI/doctor/log surfaces keep the full path (they read the reason
+ * directly, not through this function).
+ */
+const redactPaths = (reason: string): string =>
+  reason.replace(/(?:[A-Za-z]:\\|\/)[^\s'"]+/g, '<path>');
+
+/**
  * Warning attached to search responses when BM25/FTS is degraded. Prefers the
  * live extension-load failure (with LadybugDB's real reason, #2374) over the
  * generic indexes-missing message, so "indexes exist but the extension broke"
@@ -11,7 +23,7 @@ import { FTS_INDEXES } from './fts-schema.js';
 export const ftsDegradedWarning = (): string => {
   const fts = getExtensionCapabilities().find((c) => c.name === 'fts');
   if (fts && !fts.loaded) {
-    const reason = fts.reason?.replace(/\.$/, '');
+    const reason = fts.reason ? redactPaths(fts.reason).replace(/\.$/, '') : undefined;
     return (
       'FTS extension failed to load — keyword search degraded' +
       (reason ? ` (${reason})` : '') +
