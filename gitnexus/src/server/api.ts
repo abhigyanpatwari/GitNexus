@@ -28,6 +28,7 @@ import { isValidQueryParams } from '../core/lbug/query-params.js';
 import { NODE_TABLES, type GraphNode, type GraphRelationship } from 'gitnexus-shared';
 import { searchFTSFromLbug } from '../core/search/bm25-index.js';
 import { hybridSearch } from '../core/search/hybrid-search.js';
+import { ftsDegradedWarning } from '../core/search/fts-indexes.js';
 import { LocalBackend } from '../mcp/local/local-backend.js';
 import { mountMCPEndpoints } from './mcp-http.js';
 import { fileURLToPath } from 'url';
@@ -1318,8 +1319,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
       );
       const response: any = { results: results.searchResults ?? results };
       if (results.ftsAvailable === false) {
-        response.warning =
-          'FTS indexes missing — keyword search degraded. Run: gitnexus analyze --repair-fts (or gitnexus analyze --force) to rebuild indexes.';
+        response.warning = ftsDegradedWarning();
       }
       res.json(response);
     } catch (err: any) {

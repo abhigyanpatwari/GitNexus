@@ -89,3 +89,38 @@ export function checkLbugNative(overridePkgDir?: string): NativeCheckResult {
 
   return { ok: true, binaryPath };
 }
+
+export interface FtsProbeResult {
+  loaded: boolean;
+  /** Collapsed LadybugDB error when `loaded` is false. */
+  reason?: string;
+}
+
+/**
+ * Live-probe `LOAD EXTENSION fts` on a throwaway in-memory database.
+ *
+ * `doctor` used to print the static platform capability, which contradicted
+ * analyze whenever the extension file was missing or unloadable (#2374).
+ * LOAD never touches the network, so the probe is safe offline, and it
+ * surfaces LadybugDB's real error — which distinguishes a missing extension
+ * file from a present-but-broken one (wrong platform, truncated download).
+ * Dynamic import so doctor still runs when the native module itself is broken.
+ */
+export async function probeFtsExtensionLoad(): Promise<FtsProbeResult> {
+  try {
+    const { default: lbug } = await import('@ladybugdb/core');
+    const db = new lbug.Database(':memory:');
+    const conn = new lbug.Connection(db);
+    try {
+      const result = await conn.query('LOAD EXTENSION fts');
+      for (const r of Array.isArray(result) ? result : [result]) r.close();
+      return { loaded: true };
+    } finally {
+      await conn.close().catch(() => {});
+      await db.close().catch(() => {});
+    }
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return { loaded: false, reason: message.replace(/\s+/g, ' ').trim() };
+  }
+}

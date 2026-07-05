@@ -1,5 +1,25 @@
 import { createFTSIndex, dropFTSIndex, DEFAULT_FTS_STEMMER } from '../lbug/lbug-adapter.js';
+import { getExtensionCapabilities } from '../lbug/extension-loader.js';
 import { FTS_INDEXES } from './fts-schema.js';
+
+/**
+ * Warning attached to search responses when BM25/FTS is degraded. Prefers the
+ * live extension-load failure (with LadybugDB's real reason, #2374) over the
+ * generic indexes-missing message, so "indexes exist but the extension broke"
+ * is not misreported as missing indexes.
+ */
+export const ftsDegradedWarning = (): string => {
+  const fts = getExtensionCapabilities().find((c) => c.name === 'fts');
+  if (fts && !fts.loaded) {
+    const reason = fts.reason?.replace(/\.$/, '');
+    return (
+      'FTS extension failed to load — keyword search degraded' +
+      (reason ? ` (${reason})` : '') +
+      '. Run `gitnexus doctor` for details, then `gitnexus analyze --repair-fts` with network access to reinstall.'
+    );
+  }
+  return 'FTS indexes missing — keyword search degraded. Run: gitnexus analyze --repair-fts (or gitnexus analyze --force) to rebuild indexes.';
+};
 
 // Stemmers shipped by the LadybugDB FTS extension. Mirrors the lowercase token
 // set in the extension bundled with @ladybugdb/core 0.18.x (see package.json).

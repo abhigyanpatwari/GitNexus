@@ -41,7 +41,7 @@ import {
   getSearchFTSCjkSegmentation,
   initialiseSearchFTSCjkSegmentation,
 } from './search/cjk-segmentation.js';
-import { resolveAnalyzeInstallPolicy } from './lbug/extension-loader.js';
+import { getExtensionCapabilities, resolveAnalyzeInstallPolicy } from './lbug/extension-loader.js';
 import {
   startWalCheckpointDriver,
   type WalCheckpointDriver,
@@ -679,10 +679,17 @@ export async function runFullAnalysis(
         policy: resolveAnalyzeInstallPolicy(),
       });
       if (!repairFtsAvailable) {
+        // Surface the load-side reason (#2374): "not pre-installed" was wrong
+        // and doctor never installed anything, so the old message trapped
+        // users in a query → repair-fts → doctor loop with no way out.
+        const ftsReason = getExtensionCapabilities()
+          .find((c) => c.name === 'fts')
+          ?.reason?.replace(/\.$/, '');
         throw new Error(
-          'Cannot repair FTS indexes: the LadybugDB FTS extension is unavailable ' +
-            '(not pre-installed and could not be installed on this machine). ' +
-            'Run `gitnexus doctor` to install it, then retry `--repair-fts`.',
+          'Cannot repair FTS indexes: the LadybugDB FTS extension failed to load' +
+            (ftsReason ? ` — ${ftsReason}` : '') +
+            '. Retry with network access and GITNEXUS_LBUG_EXTENSION_INSTALL=auto to install it, ' +
+            'or pre-install the extension file; run `gitnexus doctor` for live FTS status.',
         );
       }
       progress('fts', 85, 'Repairing search indexes...');

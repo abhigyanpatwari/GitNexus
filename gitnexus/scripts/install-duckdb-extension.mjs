@@ -46,7 +46,12 @@ async function installDuckDbExtension(extensionName, verifyOnly = false) {
         `[install-ext] LOAD-only verify OK for '${extensionName}' (HOME=${process.env.HOME})`,
       );
     } else {
-      await conn.query(`INSTALL ${extensionName}`);
+      // FORCE: this installer only runs after LOAD already failed, so any
+      // existing extension file is broken (truncated/wrong-platform, #2374).
+      // Plain INSTALL sees the file exists, reports success without
+      // re-downloading, and LOAD keeps failing forever. (`UPDATE <ext>` is the
+      // Kuzu-documented re-download verb; both behave identically on LadybugDB.)
+      await conn.query(`FORCE INSTALL ${extensionName}`);
     }
   } finally {
     if (conn) await conn.close().catch(() => {});

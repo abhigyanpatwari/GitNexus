@@ -50,6 +50,9 @@ const alreadyAvailable = (message: string): boolean =>
   message.includes('already installed') ||
   message.includes('already exists');
 
+/** LadybugDB errors are multi-line; collapse for single-line warn/reason strings. */
+const oneLine = (value: string): string => value.replace(/\s+/g, ' ').trim();
+
 const resolvePolicyFromEnv = (): ExtensionInstallPolicy => {
   const raw = process.env.GITNEXUS_LBUG_EXTENSION_INSTALL;
   if (raw === 'load-only' || raw === 'never' || raw === 'auto') return raw;
@@ -218,13 +221,19 @@ export class ExtensionManager {
       return false;
     }
 
-    if (await this.tryLoad(query, name)) {
+    const loadError = await this.tryLoad(query, name);
+    if (loadError === null) {
       this.markLoaded(name);
       return true;
     }
 
     if (policy === 'load-only') {
-      this.markUnavailable(name, label, 'load-only policy: extension not pre-installed', warn);
+      this.markUnavailable(
+        name,
+        label,
+        `load-only policy (no install attempted); LOAD ${name} failed: ${loadError}`,
+        warn,
+      );
       return false;
     }
 
@@ -236,26 +245,48 @@ export class ExtensionManager {
     }
 
     if (!install.success) {
-      this.markUnavailable(name, label, install.message, warn);
+      this.markUnavailable(
+        name,
+        label,
+        `${install.message}; LOAD ${name} had failed: ${loadError}`,
+        warn,
+      );
       return false;
     }
 
-    if (await this.tryLoad(query, name)) {
+    const retryError = await this.tryLoad(query, name);
+    if (retryError === null) {
       this.markLoaded(name);
       return true;
     }
 
-    this.markUnavailable(name, label, `LOAD ${name} failed after successful INSTALL`, warn);
+    this.markUnavailable(
+      name,
+      label,
+      `LOAD ${name} failed after successful INSTALL: ${retryError}`,
+      warn,
+    );
     return false;
   }
 
-  private async tryLoad(query: (sql: string) => Promise<unknown>, name: string): Promise<boolean> {
+  /**
+   * Attempt `LOAD EXTENSION <name>`; returns `null` on success and the
+   * collapsed error message on failure. The message is the load-side ground
+   * truth — LadybugDB distinguishes a missing extension file from a present
+   * but unloadable one (wrong platform, truncated download, version mismatch),
+   * and discarding it left users staring at "not pre-installed" when the file
+   * existed all along (#2374).
+   */
+  private async tryLoad(
+    query: (sql: string) => Promise<unknown>,
+    name: string,
+  ): Promise<string | null> {
     try {
       await query(`LOAD EXTENSION ${name}`);
-      return true;
+      return null;
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      return alreadyAvailable(msg);
+      return alreadyAvailable(msg) ? null : oneLine(msg);
     }
   }
 

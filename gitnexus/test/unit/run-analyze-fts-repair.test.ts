@@ -307,7 +307,7 @@ describe('runFullAnalysis FTS repair and verification failure paths', () => {
 
       await expect(
         runFullAnalysis(tmpRepo.dbPath, { repairFts: true }, { onProgress: () => {} }),
-      ).rejects.toThrow(/FTS extension is unavailable[\s\S]*gitnexus doctor/i);
+      ).rejects.toThrow(/FTS extension failed to load[\s\S]*gitnexus doctor/i);
       // The guard fires before drop-then-create, so no index is dropped.
       expect(createSearchFTSIndexes).not.toHaveBeenCalled();
     } finally {
