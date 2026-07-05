@@ -55,10 +55,12 @@ const PLATFORM_LOGIC = [
   // platform branch and derive expected paths via the real fns, so they pass on
   // any host (see the platform stubs + resolve() in the test file).
   'test/unit/embedding-runtime-install.test.ts',
-  // Real-cmd.exe round-trip: proves the quoting survives cmd.exe -> .cmd %* ->
-  // node argv on a genuine Windows host (the pure/mocked tests only check our
-  // model of cmd.exe). Windows-gated internally; skipped on the POSIX runners.
-  'test/unit/embedding-install-win32-quoting.test.ts',
+  // Real-spawn arg-delivery round-trip: proves the install spawn delivers args
+  // to the child intact on each platform — win32 via the cmd.exe -> .cmd %* ->
+  // node chain (real cmd.exe, not just our model), macos/linux via the no-shell
+  // array form. Runs on every platform (the ubuntu suite covers Linux; this
+  // registration adds windows + macos).
+  'test/unit/embedding-install-arg-delivery.test.ts',
 ];
 
 // Native LadybugDB integration tests — exercise the @ladybugdb/core
