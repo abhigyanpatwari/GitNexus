@@ -178,7 +178,18 @@ const resolveOurOrtNodeDir = (): string | null => {
   try {
     return dirname(require.resolve('onnxruntime-node/package.json'));
   } catch {
-    return null;
+    // On-demand runtime prefix (#2370): when gitnexus' own onnxruntime-node was
+    // pruned at install time and fetched on demand, the prefix copy IS our
+    // effective top-level build — so the CUDA-major redirect must be able to
+    // target it (mirrors resolveDefaultOrtNodeDir's fallback above). Without
+    // this, `embeddings install --cuda` on a pruned install downloads the GPU
+    // binaries but the probe still can't see them and embeddings run on CPU.
+    try {
+      const prefixRequire = createRequire(join(getEmbeddingRuntimeDir(), 'noop.js'));
+      return dirname(prefixRequire.resolve('onnxruntime-node/package.json'));
+    } catch {
+      return null;
+    }
   }
 };
 
