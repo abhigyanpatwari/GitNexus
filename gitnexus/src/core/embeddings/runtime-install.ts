@@ -18,12 +18,13 @@
  * Resolution is package-first: a normally-installed stack always wins, and the
  * runtime prefix is only consulted when the bare specifier does not resolve.
  */
-import { createRequire, registerHooks } from 'node:module';
+import { createRequire } from 'node:module';
 import { spawn } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { logger } from '../logger.js';
+import { getRegisterHooks } from './node-module-compat.js';
 
 const require = createRequire(import.meta.url);
 
@@ -60,6 +61,17 @@ export interface EmbeddingRuntimeResolution {
   /** 'package': the normally-installed copy; 'runtime-prefix': the on-demand copy. */
   source: 'package' | 'runtime-prefix';
 }
+
+/**
+ * Whether a runtime-prefix-sourced stack can actually be loaded on this Node
+ * (#2372). The prefix mechanism re-anchors bare specifiers via
+ * `module.registerHooks`, absent before Node 22.15 / 23.5 — so on 22.0–22.14 and
+ * 23.0–23.4 a populated prefix exists but the ESM loader can never reach it. A
+ * package-sourced stack never needs the hook and is unaffected. CLI code
+ * consumes this predicate (never the compat module directly) to keep messaging
+ * truthful instead of promising a prefix runtime the loader can't use.
+ */
+export const isPrefixRuntimeLoadable = (): boolean => typeof getRegisterHooks() === 'function';
 
 /** Resolution anchored inside the runtime prefix (`<dir>/node_modules`). */
 const prefixRequire = () => createRequire(join(getEmbeddingRuntimeDir(), 'noop.js'));
@@ -103,9 +115,12 @@ export const ensureEmbeddingStackResolvable = (): void => {
   hookAttempted = true;
 
   try {
-    // Node < 22.15 (engines floor is >= 22.0.0): no synchronous hooks API.
-    // Degrade gracefully — normally-installed stacks still resolve; only the
-    // runtime-prefix fallback is unavailable.
+    // Node < 22.15 / < 23.5 (engines floor is >= 22.0.0): no synchronous hooks
+    // API. Degrade gracefully — normally-installed stacks still resolve; only
+    // the runtime-prefix fallback is unavailable. Reachable now that the import
+    // is a namespace access (see node-module-compat.ts) rather than a static
+    // named import that would fail at link time.
+    const registerHooks = getRegisterHooks();
     if (typeof registerHooks !== 'function') return;
 
     const prefixAnchor = pathToFileURL(join(getEmbeddingRuntimeDir(), 'noop.js')).href;

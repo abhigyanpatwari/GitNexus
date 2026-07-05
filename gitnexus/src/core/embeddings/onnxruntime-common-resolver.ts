@@ -57,11 +57,12 @@
  * as before — fine on hoisted layouts. Any failure during installation is
  * swallowed.
  */
-import { registerHooks, createRequire } from 'node:module';
+import { createRequire } from 'node:module';
 import { pathToFileURL } from 'node:url';
 import { join } from 'node:path';
 import { getEffectiveOnnxRuntimeNodeDir } from './onnxruntime-node-resolver.js';
 import { logger } from '../logger.js';
+import { getRegisterHooks } from './node-module-compat.js';
 
 let attempted = false;
 
@@ -99,8 +100,10 @@ export const ensureOnnxRuntimeCommonResolvable = (): void => {
   attempted = true;
 
   try {
-    // Node < 22.15 (the gitnexus engines floor is >= 22.0.0): no synchronous
-    // hooks API. Degrade gracefully — the import still works on hoisted layouts.
+    // Node < 22.15 / < 23.5 (the gitnexus engines floor is >= 22.0.0): no
+    // synchronous hooks API. Degrade gracefully — the import still works on
+    // hoisted layouts.
+    const registerHooks = getRegisterHooks();
     if (typeof registerHooks !== 'function') return;
 
     const redirectUrl = resolveOnnxRuntimeCommonUrl();
