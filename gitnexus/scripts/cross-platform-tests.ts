@@ -49,6 +49,12 @@ const PLATFORM_LOGIC = [
   'test/unit/group/bridge-db.test.ts',
   'test/unit/group/bridge-db-edge.test.ts',
   'test/unit/onnxruntime-node-resolver.test.ts',
+  // Windows cmd.exe arg-quoting + compose-and-spawn for the npm install (#2372):
+  // the quoting rules and win32 single-string spawn shape are OS-sensitive, so
+  // exercise them on real windows-latest. The spawn-shape/path tests force their
+  // platform branch and derive expected paths via the real fns, so they pass on
+  // any host (see the platform stubs + resolve() in the test file).
+  'test/unit/embedding-runtime-install.test.ts',
 ];
 
 // Native LadybugDB integration tests — exercise the @ladybugdb/core

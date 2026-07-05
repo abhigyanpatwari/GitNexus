@@ -55,8 +55,10 @@ afterEach(() => {
 describe('getEmbeddingRuntimeDir', () => {
   it('defaults to ~/.gitnexus/embedding-runtime and honours the env override', () => {
     expect(getEmbeddingRuntimeDir()).toBe(join(homedir(), '.gitnexus', 'embedding-runtime'));
-    process.env.GITNEXUS_EMBEDDING_RUNTIME_DIR = '/custom/runtime';
-    expect(getEmbeddingRuntimeDir()).toBe('/custom/runtime');
+    // resolve() so the expectation matches on Windows too (where an absolute
+    // POSIX path picks up the cwd drive letter).
+    process.env.GITNEXUS_EMBEDDING_RUNTIME_DIR = resolve('/custom/runtime');
+    expect(getEmbeddingRuntimeDir()).toBe(resolve('/custom/runtime'));
   });
 
   it('resolves a relative override to an absolute path', () => {
@@ -89,9 +91,9 @@ describe('getEmbeddingStackSpecs', () => {
 
 describe('buildEmbeddingInstallCommand', () => {
   it('defaults to a registry-only install: --ignore-scripts and the CUDA-download skip env', () => {
-    process.env.GITNEXUS_EMBEDDING_RUNTIME_DIR = '/custom/runtime';
+    process.env.GITNEXUS_EMBEDDING_RUNTIME_DIR = resolve('/custom/runtime');
     const { args, env } = buildEmbeddingInstallCommand();
-    expect(args.slice(0, 3)).toEqual(['install', '--prefix', '/custom/runtime']);
+    expect(args.slice(0, 3)).toEqual(['install', '--prefix', resolve('/custom/runtime')]);
     expect(args).toContain('--ignore-scripts');
     const specs = getEmbeddingStackSpecs();
     expect(args).toContain(`@huggingface/transformers@${specs['@huggingface/transformers']}`);
@@ -263,18 +265,20 @@ describe('installEmbeddingRuntime — spawn lifecycle', () => {
     const realPlatform = process.platform;
     Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
     try {
-      // Absolute spaced path so path.resolve() leaves it unchanged on the POSIX
-      // test host (a Windows-style path would get cwd-prepended here); the point
-      // is that a spaced prefix flows through compose+quote into one string arg.
-      process.env.GITNEXUS_EMBEDDING_RUNTIME_DIR = '/opt/John Doe/rt';
+      // A spaced prefix must flow through compose+quote into ONE string arg. Use
+      // resolve() so the path is absolute on the real host too (a bare POSIX path
+      // picks up the cwd drive on Windows); the space survives either way.
+      process.env.GITNEXUS_EMBEDDING_RUNTIME_DIR = resolve('/opt/John Doe/rt');
       const child = new FakeChild();
       spawnMock.mockReturnValue(child);
       const p = installEmbeddingRuntime({}, 10_000);
       child.emit('close', 0, null);
       await p;
       const call = spawnMock.mock.calls[0] as [unknown, unknown];
-      expect(typeof call[0]).toBe('string');
-      expect(call[0]).toContain('"/opt/John Doe/rt"');
+      // Byte-identical to the pure compose of the same args, and the spaced
+      // prefix appears quoted — host-independent (both sides use the real fns).
+      expect(call[0]).toBe(composeWin32NpmCommand(buildEmbeddingInstallCommand().args));
+      expect(call[0]).toContain(quoteWin32Arg(getEmbeddingRuntimeDir()));
       expect(call[1]).toMatchObject({ shell: true });
     } finally {
       Object.defineProperty(process, 'platform', { value: realPlatform, configurable: true });
@@ -282,24 +286,37 @@ describe('installEmbeddingRuntime — spawn lifecycle', () => {
   });
 
   it('on posix spawns the array form with no shell', async () => {
-    const child = new FakeChild();
-    spawnMock.mockReturnValue(child);
-    const p = installEmbeddingRuntime({}, 10_000);
-    child.emit('close', 0, null);
-    await p;
-    const call = spawnMock.mock.calls[0] as [unknown, unknown, unknown];
-    expect(call[0]).toBe('npm');
-    expect(Array.isArray(call[1])).toBe(true);
-    expect(call[2]).not.toMatchObject({ shell: true });
+    const realPlatform = process.platform;
+    Object.defineProperty(process, 'platform', { value: 'linux', configurable: true });
+    try {
+      const child = new FakeChild();
+      spawnMock.mockReturnValue(child);
+      const p = installEmbeddingRuntime({}, 10_000);
+      child.emit('close', 0, null);
+      await p;
+      const call = spawnMock.mock.calls[0] as [unknown, unknown, unknown];
+      expect(call[0]).toBe('npm');
+      expect(Array.isArray(call[1])).toBe(true);
+      expect(call[2]).not.toMatchObject({ shell: true });
+    } finally {
+      Object.defineProperty(process, 'platform', { value: realPlatform, configurable: true });
+    }
   });
 
   it('spawns with cwd set to homedir(), independent of process.cwd()', async () => {
-    const child = new FakeChild();
-    spawnMock.mockReturnValue(child);
-    const p = installEmbeddingRuntime({}, 10_000);
-    child.emit('close', 0, null);
-    await p;
-    const call = spawnMock.mock.calls[0] as [unknown, unknown, unknown];
-    expect(call[2]).toMatchObject({ cwd: homedir() });
+    const realPlatform = process.platform;
+    // Force the posix branch so the options object is at a stable arg position.
+    Object.defineProperty(process, 'platform', { value: 'linux', configurable: true });
+    try {
+      const child = new FakeChild();
+      spawnMock.mockReturnValue(child);
+      const p = installEmbeddingRuntime({}, 10_000);
+      child.emit('close', 0, null);
+      await p;
+      const call = spawnMock.mock.calls[0] as [unknown, unknown, unknown];
+      expect(call[2]).toMatchObject({ cwd: homedir() });
+    } finally {
+      Object.defineProperty(process, 'platform', { value: realPlatform, configurable: true });
+    }
   });
 });
