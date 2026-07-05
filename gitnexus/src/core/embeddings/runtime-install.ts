@@ -224,6 +224,53 @@ export const buildEmbeddingInstallCommand = (
   return { args, env };
 };
 
+/** cmd.exe metacharacters that force quoting (plus whitespace), per Colascione. */
+const WIN32_NEEDS_QUOTING = /[\s&|<>^()%!]/;
+
+/**
+ * Quote a single argument for the Windows `cmd.exe` shell (#2372). npm is a
+ * `.cmd` shim, so the spawn must go through a shell (EINVAL otherwise since
+ * CVE-2024-27980), and Node does NOT escape args under `shell: true` — a spaced
+ * `--prefix` path splits, and cmd eats the `^` in `@pkg@^1.0.0` semver ranges.
+ *
+ * Rules (validated against Node source, MS cmd/CRT docs, BatBadBut, Rust std):
+ * reject NUL/CR/LF and embedded `"` (both unrepresentable/unsafe at the cmd
+ * layer, and `"` is illegal in Windows paths and npm specs); wrap in double
+ * quotes when empty or containing whitespace/metacharacters; double the trailing
+ * backslash run so the added closing quote is not itself escaped (`C:\` →
+ * `"C:\\"`). `^` is literal inside cmd double quotes across all three parse
+ * layers (cmd `/c` → npm.cmd's `%*` re-parse → node CRT argv). Two documented
+ * ceilings quoting can't close: a defined `%VAR%` expands once at the first cmd
+ * parse, and `!` expands only under registry-enabled delayed expansion — both
+ * are the env-var owner's trust, out of the malicious-repo threat model.
+ */
+export const quoteWin32Arg = (arg: string): string => {
+  if (/[\0\r\n]/.test(arg)) {
+    throw new Error(
+      `argument contains NUL/CR/LF, unsafe for the Windows shell: ${JSON.stringify(arg)}`,
+    );
+  }
+  if (arg.includes('"')) {
+    throw new Error(
+      `argument contains a double quote, unsafe for the Windows shell: ${JSON.stringify(arg)}`,
+    );
+  }
+  if (arg !== '' && !WIN32_NEEDS_QUOTING.test(arg)) return arg;
+  const trailingBackslashes = /\\*$/.exec(arg)?.[0].length ?? 0;
+  return `"${arg}${'\\'.repeat(trailingBackslashes)}"`;
+};
+
+/**
+ * Compose the full `cmd.exe` command line for the win32 npm spawn. The command
+ * (`npm`) stays unquoted so PATH/PATHEXT still resolves the `.cmd` shim; args
+ * are individually quoted. Passing this as spawn's first (only) string argument
+ * — no args array — yields a byte-identical `cmd.exe /d /s /c "…"` line while
+ * avoiding DEP0190 (the runtime deprecation warning Node >=24 emits for
+ * `spawn(file, args, {shell:true})`).
+ */
+export const composeWin32NpmCommand = (args: string[]): string =>
+  ['npm', ...args.map(quoteWin32Arg)].join(' ');
+
 /**
  * Install (or update) the embedding stack into the runtime prefix via the
  * user's npm — registry, mirror, and proxy configuration all apply. Rejects
@@ -241,14 +288,23 @@ export const installEmbeddingRuntime = async (
 ): Promise<void> => {
   const { args, env } = buildEmbeddingInstallCommand(opts);
   await new Promise<void>((resolve, reject) => {
-    const child = spawn('npm', args, {
-      env,
-      windowsHide: true,
-      // Windows `npm` is a `.cmd` shim; without a shell spawn ENOENTs
-      // (mirrors getNpmMajorVersion in cli/resolve-invocation.ts).
-      shell: process.platform === 'win32',
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
+    // Windows `npm` is a `.cmd` shim, so the spawn must go through a shell.
+    // Compose the quoted command line ourselves and pass it as spawn's single
+    // string arg (no args array) so cmd.exe receives correctly-quoted paths/
+    // specs and Node >=24 doesn't warn (DEP0190). POSIX uses the array form.
+    const child =
+      process.platform === 'win32'
+        ? spawn(composeWin32NpmCommand(args), {
+            env,
+            windowsHide: true,
+            shell: true,
+            stdio: ['ignore', 'pipe', 'pipe'],
+          })
+        : spawn('npm', args, {
+            env,
+            windowsHide: true,
+            stdio: ['ignore', 'pipe', 'pipe'],
+          });
     let tail = '';
     const onChunk = (chunk: Buffer) => {
       const text = chunk.toString();

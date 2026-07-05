@@ -5,9 +5,11 @@ import { join } from 'node:path';
 import { createRequire } from 'node:module';
 import {
   buildEmbeddingInstallCommand,
+  composeWin32NpmCommand,
   getEmbeddingRuntimeDir,
   getEmbeddingStackSpecs,
   installEmbeddingRuntime,
+  quoteWin32Arg,
   resolveEmbeddingRuntime,
 } from '../../src/core/embeddings/runtime-install.js';
 
@@ -96,6 +98,50 @@ describe('resolveEmbeddingRuntime', () => {
   });
 });
 
+describe('quoteWin32Arg', () => {
+  it('quotes a spaced path as a single token', () => {
+    expect(quoteWin32Arg('C:\\Users\\John Doe\\.gitnexus\\rt')).toBe(
+      '"C:\\Users\\John Doe\\.gitnexus\\rt"',
+    );
+  });
+
+  it('quotes a caret semver spec so cmd.exe cannot eat the ^', () => {
+    expect(quoteWin32Arg('@huggingface/transformers@^4.1.0')).toBe(
+      '"@huggingface/transformers@^4.1.0"',
+    );
+  });
+
+  it('doubles the trailing backslash run so the closing quote is not escaped', () => {
+    // A spaced path (needs quoting) ending in a backslash: the added closing
+    // quote must not be escaped by that trailing backslash.
+    expect(quoteWin32Arg('C:\\Users\\John Doe\\')).toBe('"C:\\Users\\John Doe\\\\"');
+  });
+
+  it('quotes the empty string', () => {
+    expect(quoteWin32Arg('')).toBe('""');
+  });
+
+  it('leaves plain args untouched', () => {
+    expect(quoteWin32Arg('install')).toBe('install');
+    expect(quoteWin32Arg('--no-fund')).toBe('--no-fund');
+  });
+
+  it('throws on an embedded double quote', () => {
+    expect(() => quoteWin32Arg('a"b')).toThrow(/double quote/);
+  });
+
+  it('throws on NUL/CR/LF', () => {
+    expect(() => quoteWin32Arg('a\nb')).toThrow(/NUL\/CR\/LF/);
+    expect(() => quoteWin32Arg('a\rb')).toThrow(/NUL\/CR\/LF/);
+    expect(() => quoteWin32Arg('a\0b')).toThrow(/NUL\/CR\/LF/);
+  });
+
+  it('composeWin32NpmCommand leaves npm unquoted and quotes the args', () => {
+    const line = composeWin32NpmCommand(['install', '--prefix', 'C:\\a b\\rt']);
+    expect(line).toBe('npm install --prefix "C:\\a b\\rt"');
+  });
+});
+
 describe('installEmbeddingRuntime — spawn lifecycle', () => {
   beforeEach(() => {
     vi.useFakeTimers();
@@ -164,5 +210,36 @@ describe('installEmbeddingRuntime — spawn lifecycle', () => {
     child.emit('error', new Error('spawn npm ENOENT'));
     await assertion;
     expect(() => child.emit('close', 1, null)).not.toThrow();
+  });
+
+  it('on win32 spawns a single composed command string, no args array (DEP0190-free)', async () => {
+    const realPlatform = process.platform;
+    Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
+    try {
+      process.env.GITNEXUS_EMBEDDING_RUNTIME_DIR = 'C:\\Users\\John Doe\\rt';
+      const child = new FakeChild();
+      spawnMock.mockReturnValue(child);
+      const p = installEmbeddingRuntime({}, 10_000);
+      child.emit('close', 0, null);
+      await p;
+      const call = spawnMock.mock.calls[0] as [unknown, unknown];
+      expect(typeof call[0]).toBe('string');
+      expect(call[0]).toContain('"C:\\Users\\John Doe\\rt"');
+      expect(call[1]).toMatchObject({ shell: true });
+    } finally {
+      Object.defineProperty(process, 'platform', { value: realPlatform, configurable: true });
+    }
+  });
+
+  it('on posix spawns the array form with no shell', async () => {
+    const child = new FakeChild();
+    spawnMock.mockReturnValue(child);
+    const p = installEmbeddingRuntime({}, 10_000);
+    child.emit('close', 0, null);
+    await p;
+    const call = spawnMock.mock.calls[0] as [unknown, unknown, unknown];
+    expect(call[0]).toBe('npm');
+    expect(Array.isArray(call[1])).toBe(true);
+    expect(call[2]).not.toMatchObject({ shell: true });
   });
 });
