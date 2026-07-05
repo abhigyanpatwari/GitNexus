@@ -1,8 +1,36 @@
 import { describe, it, expect } from 'vitest';
+import { createKnowledgeGraph } from '../../src/core/graph/graph.js';
+import type { GraphNode, GraphRelationship } from '../../src/core/graph/types.js';
 import {
   getCommunityColor,
   COMMUNITY_COLORS,
+  buildCommunityCsr,
+  buildCommunityProjection,
+  processCommunities,
+  resolveCommunityDetectionEngine,
 } from '../../src/core/ingestion/community-processor.js';
+
+function makeNode(
+  id: string,
+  name: string,
+  label: GraphNode['label'] = 'Function',
+  filePath = `/src/${name}.ts`,
+): GraphNode {
+  return {
+    id,
+    label,
+    properties: { name, filePath, startLine: 1, endLine: 10, isExported: false },
+  };
+}
+
+function makeRel(
+  id: string,
+  sourceId: string,
+  targetId: string,
+  type: GraphRelationship['type'] = 'CALLS',
+): GraphRelationship {
+  return { id, sourceId, targetId, type, confidence: 1.0, reason: '' };
+}
 
 describe('community-processor', () => {
   describe('COMMUNITY_COLORS', () => {
@@ -36,6 +64,83 @@ describe('community-processor', () => {
       const c0 = getCommunityColor(0);
       const c1 = getCommunityColor(1);
       expect(c0).not.toBe(c1);
+    });
+  });
+
+  describe('community engine selection', () => {
+    it('defaults unknown engine values to graphology', () => {
+      expect(resolveCommunityDetectionEngine(undefined)).toBe('graphology');
+      expect(resolveCommunityDetectionEngine('')).toBe('graphology');
+      expect(resolveCommunityDetectionEngine('native')).toBe('graphology');
+    });
+
+    it('accepts graphology, icebug, and auto engine values', () => {
+      expect(resolveCommunityDetectionEngine('graphology')).toBe('graphology');
+      expect(resolveCommunityDetectionEngine('icebug')).toBe('icebug');
+      expect(resolveCommunityDetectionEngine('auto')).toBe('auto');
+      expect(resolveCommunityDetectionEngine(' ICEBUG ')).toBe('icebug');
+    });
+  });
+
+  describe('community projection and CSR', () => {
+    it('projects only connected community symbols and deduplicates undirected edges', () => {
+      const graph = createKnowledgeGraph();
+      graph.addNode(makeNode('fn:a', 'a'));
+      graph.addNode(makeNode('fn:b', 'b', 'Method'));
+      graph.addNode(makeNode('file:a', 'file', 'File'));
+      graph.addNode(makeNode('fn:isolated', 'isolated'));
+
+      graph.addRelationship(makeRel('rel:ab', 'fn:a', 'fn:b'));
+      graph.addRelationship(makeRel('rel:ba', 'fn:b', 'fn:a'));
+      graph.addRelationship(makeRel('rel:file', 'fn:a', 'file:a'));
+
+      const projection = buildCommunityProjection(graph);
+
+      expect(projection.nodes.map((node) => node.id)).toEqual(['fn:a', 'fn:b']);
+      expect(projection.edges).toEqual([[0, 1]]);
+      expect(projection.symbolCount).toBe(3);
+    });
+
+    it('exports a deterministic undirected CSR adjacency', () => {
+      const projection = {
+        nodes: [
+          { id: 'a', name: 'a', filePath: '/a.ts', type: 'Function' as const },
+          { id: 'b', name: 'b', filePath: '/b.ts', type: 'Function' as const },
+          { id: 'c', name: 'c', filePath: '/c.ts', type: 'Function' as const },
+        ],
+        edges: [
+          [0, 2],
+          [0, 1],
+        ] as Array<readonly [number, number]>,
+        symbolCount: 3,
+        isLarge: false,
+      };
+
+      const csr = buildCommunityCsr(projection);
+
+      expect([...csr.indptr].map(Number)).toEqual([0, 2, 3, 4]);
+      expect([...csr.indices].map(Number)).toEqual([1, 2, 0, 0]);
+    });
+  });
+
+  describe('processCommunities engine fallback', () => {
+    it('falls back to graphology when explicit icebug engine is unavailable', async () => {
+      const graph = createKnowledgeGraph();
+      graph.addNode(makeNode('fn:a', 'a', 'Function', '/src/group/a.ts'));
+      graph.addNode(makeNode('fn:b', 'b', 'Function', '/src/group/b.ts'));
+      graph.addRelationship(makeRel('rel:ab', 'fn:a', 'fn:b'));
+
+      const progress: string[] = [];
+      const result = await processCommunities(graph, (message) => progress.push(message), {
+        engine: 'icebug',
+      });
+
+      expect(result.stats.engineRequested).toBe('icebug');
+      expect(result.stats.engine).toBe('graphology');
+      expect(result.stats.fallbackReason).toBeTruthy();
+      expect(progress.some((message) => message.includes('falling back to Graphology'))).toBe(true);
+      expect(result.communities).toHaveLength(1);
+      expect(result.memberships).toHaveLength(2);
     });
   });
 });

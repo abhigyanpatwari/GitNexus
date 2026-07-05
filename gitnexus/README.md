@@ -163,6 +163,16 @@ GitNexus builds a complete knowledge graph of your codebase through a multi-phas
 
 The result is a **LadybugDB graph database** stored locally in `.gitnexus/` with full-text search and semantic embeddings.
 
+### Experimental community detection engine
+
+Community detection uses the bundled Graphology Leiden implementation by default. To test the #2337 Icebug migration path without changing default analyze behavior, set:
+
+```bash
+GITNEXUS_COMMUNITY_ENGINE=icebug npx gitnexus analyze
+```
+
+Supported values are `graphology`, `icebug`, and `auto`. The Icebug path is an experimental probe: GitNexus does not bundle an Icebug native package yet, and if a separately resolvable module is unavailable or its API does not match the expected `Graph.fromCSR` / `ParallelLeidenView` shape, analyze falls back to Graphology and reports the fallback in progress output.
+
 ## MCP Tools
 
 Your AI agent gets **17 tools** (15 per-repo + 2 group) automatically:
