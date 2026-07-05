@@ -320,15 +320,19 @@ export const quoteWin32Arg = (arg: string): string => {
 };
 
 /**
- * Compose the full `cmd.exe` command line for the win32 npm spawn. The command
- * (`npm`) stays unquoted so PATH/PATHEXT still resolves the `.cmd` shim; args
- * are individually quoted. Passing this as spawn's first (only) string argument
- * — no args array — yields a byte-identical `cmd.exe /d /s /c "…"` line while
- * avoiding DEP0190 (the runtime deprecation warning Node >=24 emits for
- * `spawn(file, args, {shell:true})`).
+ * Compose a full `cmd.exe` command line: the command stays unquoted (so
+ * PATH/PATHEXT resolves a bare name or `.cmd` shim), args are individually
+ * quoted. Passing this as spawn's first (only) string argument — no args array
+ * — yields a byte-identical `cmd.exe /d /s /c "…"` line while avoiding DEP0190
+ * (the runtime deprecation warning Node >=24 emits for
+ * `spawn(file, args, {shell:true})`). Exported generically so the real-cmd.exe
+ * round-trip test drives the exact same composition the npm spawn uses.
  */
-export const composeWin32NpmCommand = (args: string[]): string =>
-  ['npm', ...args.map(quoteWin32Arg)].join(' ');
+export const composeWin32Command = (command: string, args: string[]): string =>
+  [command, ...args.map(quoteWin32Arg)].join(' ');
+
+/** {@link composeWin32Command} for the on-demand npm install (`npm` stays unquoted). */
+export const composeWin32NpmCommand = (args: string[]): string => composeWin32Command('npm', args);
 
 /**
  * Install (or update) the embedding stack into the runtime prefix via the
