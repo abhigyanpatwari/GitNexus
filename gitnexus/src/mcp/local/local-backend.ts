@@ -72,6 +72,10 @@ import {
 import { checkStalenessAsync, checkCwdMatch } from '../../core/git-staleness.js';
 import { logger } from '../../core/logger.js';
 import {
+  isLocalEmbeddingRuntimeBlockerMessage,
+  isMissingLocalEmbeddingStackMessage,
+} from '../../core/embeddings/runtime-support.js';
+import {
   LIST_REPOS_DEFAULT_LIMIT,
   LIST_REPOS_MAX_LIMIT,
   EXPLAIN_DEFAULT_LIMIT,
@@ -678,6 +682,13 @@ export class LocalBackend {
    * stderr noisy per DoD §2.8.
    */
   private warnedVectorUnsupported = false;
+
+  /**
+   * One-shot warning when a pruned or Node-unloadable optional embedding stack
+   * (#2370/#2372) forces semantic search to fall back to BM25 — so the
+   * degradation is visible once instead of silent.
+   */
+  private warnedMissingEmbeddingStack = false;
 
   /**
    * Cross-repo group tools (CLI). Shares logic with MCP `group_*` handlers.
@@ -2399,8 +2410,22 @@ export class LocalBackend {
       }
 
       return results;
-    } catch {
-      // Expected when embeddings are disabled — silently fall back to BM25-only
+    } catch (err) {
+      // Embeddings disabled is the common, silent case. But a pruned or
+      // Node-unloadable optional stack (#2370/#2372) also lands here — surface it
+      // once so semantic search doesn't silently degrade to BM25 with no hint
+      // (the exact silent-degradation mode #2370 exists to fix). Emitted once per
+      // LocalBackend instance to keep stderr quiet on hot paths (like the VECTOR
+      // fallback above). All other errors stay silent, as before.
+      const message = err instanceof Error ? err.message : '';
+      if (
+        !this.warnedMissingEmbeddingStack &&
+        (isMissingLocalEmbeddingStackMessage(message) ||
+          isLocalEmbeddingRuntimeBlockerMessage(message))
+      ) {
+        this.warnedMissingEmbeddingStack = true;
+        logger.warn(`GitNexus [query:vector]: ${message}`);
+      }
       return [];
     }
   }
