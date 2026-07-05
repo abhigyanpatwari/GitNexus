@@ -61,7 +61,9 @@ describe('ExtensionManager — install policies', () => {
       true,
     );
 
-    expect(installExtension).toHaveBeenCalledWith('fts', 1234);
+    // The LOAD failure reason is threaded to the installer so it can pick
+    // INSTALL vs FORCE INSTALL from the error class (#2374, PR #2375).
+    expect(installExtension).toHaveBeenCalledWith('fts', 1234, 'Extension "fts" not found');
     expect(query.mock.calls.map(([sql]) => sql)).toEqual([
       'LOAD EXTENSION fts',
       'LOAD EXTENSION fts',

@@ -41,7 +41,11 @@ export interface ExtensionEnsureOptions {
 export interface ExtensionManagerOptions {
   policy?: ExtensionInstallPolicy;
   installTimeoutMs?: number;
-  installExtension?: (extensionName: string, timeoutMs: number) => Promise<ExtensionInstallResult>;
+  installExtension?: (
+    extensionName: string,
+    timeoutMs: number,
+    loadError?: string,
+  ) => Promise<ExtensionInstallResult>;
   warn?: (message: string) => void;
 }
 
@@ -106,6 +110,7 @@ export const getExtensionInstallChildProcessArgs = (
 export const installDuckDbExtensionOutOfProcess = async (
   extensionName: string,
   timeoutMs: number = getExtensionInstallTimeoutMs(),
+  loadError?: string,
 ): Promise<ExtensionInstallResult> => {
   if (!EXTENSION_NAME_PATTERN.test(extensionName)) {
     throw new Error(`Invalid DuckDB extension name: ${extensionName}`);
@@ -116,6 +121,9 @@ export const installDuckDbExtensionOutOfProcess = async (
       env: {
         ...process.env,
         GITNEXUS_LBUG_EXTENSION_NAME: extensionName,
+        // The child picks INSTALL vs FORCE INSTALL from this LOAD error so it
+        // only re-downloads when the on-disk extension file is actually broken.
+        ...(loadError ? { GITNEXUS_LBUG_EXTENSION_LOAD_ERROR: loadError } : {}),
       },
       stdio: ['ignore', 'ignore', 'pipe'],
       windowsHide: true,
@@ -135,7 +143,7 @@ export const installDuckDbExtensionOutOfProcess = async (
       resolve({
         success: false,
         timedOut: true,
-        message: `INSTALL ${extensionName} timed out after ${timeoutMs}ms`,
+        message: `extension install for ${extensionName} timed out after ${timeoutMs}ms`,
       });
     }, timeoutMs);
 
@@ -155,8 +163,8 @@ export const installDuckDbExtensionOutOfProcess = async (
         timedOut: false,
         message:
           code === 0
-            ? `INSTALL ${extensionName} completed`
-            : `INSTALL ${extensionName} failed with ${signal ?? `exit code ${code}`}${stderr ? `: ${stderr.trim()}` : ''}`,
+            ? `extension install for ${extensionName} completed`
+            : `extension install for ${extensionName} failed with ${signal ?? `exit code ${code}`}${stderr ? `: ${stderr.trim()}` : ''}`,
       });
     });
   });
@@ -240,7 +248,9 @@ export class ExtensionManager {
     let install = this.installAttempted.get(name);
     if (!install) {
       const installFn = this.options.installExtension ?? installDuckDbExtensionOutOfProcess;
-      install = await installFn(name, timeoutMs);
+      // Hand the child the LOAD error so it re-downloads (FORCE) only when the
+      // present extension file is provably broken, not on every LOAD failure.
+      install = await installFn(name, timeoutMs, loadError);
       this.installAttempted.set(name, install);
     }
 
