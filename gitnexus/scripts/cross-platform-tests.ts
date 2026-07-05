@@ -100,6 +100,10 @@ const SPAWN_CLI = [
   'test/integration/cli-limit-e2e.test.ts',
   'test/integration/hooks-e2e.test.ts',
   'test/integration/skills-e2e.test.ts',
+  // Spawns the real CLI across hermetic HOME/USERPROFILE homes to exercise the
+  // FTS extension lifecycle — the #2374 bug was Windows-reported, so this must
+  // run on the Windows/macOS matrix, not just the Ubuntu full suite.
+  'test/integration/fts-extension-e2e.test.ts',
   'test/integration/server-http-startup.test.ts',
   'test/integration/mcp/server-startup.test.ts',
   'test/integration/analyze-heap-oom-e2e.test.ts',
