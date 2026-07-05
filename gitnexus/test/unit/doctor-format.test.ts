@@ -60,10 +60,46 @@ describe('doctor embedding-runtime support status', () => {
       httpMode: false,
       platform: 'linux',
       arch: 'x64',
-      stackInstalled: false,
+      resolution: null,
     });
     expect(status).toBe('✗ optional embedding stack not installed');
     expect(detail).toContain('ONNXRUNTIME_NODE_INSTALL=skip');
+  });
+
+  it('reports a package-sourced stack as supported regardless of Node loadability', () => {
+    const { status, detail } = localEmbeddingDoctorStatus({
+      httpMode: false,
+      platform: 'linux',
+      arch: 'x64',
+      resolution: { source: 'package' },
+      prefixLoadable: false,
+    });
+    expect(status).toBe('✓ local embeddings supported');
+    expect(detail).toBeNull();
+  });
+
+  it('flags a prefix-sourced stack that this Node cannot load (#2372)', () => {
+    const { status, detail } = localEmbeddingDoctorStatus({
+      httpMode: false,
+      platform: 'linux',
+      arch: 'x64',
+      resolution: { source: 'runtime-prefix' },
+      prefixLoadable: false,
+    });
+    expect(status).toBe('✗ embedding stack installed in the prefix but not loadable on this Node');
+    expect(detail).toContain('module.registerHooks');
+  });
+
+  it('reports a prefix-sourced stack as supported when this Node can load it', () => {
+    const { status, detail } = localEmbeddingDoctorStatus({
+      httpMode: false,
+      platform: 'linux',
+      arch: 'x64',
+      resolution: { source: 'runtime-prefix' },
+      prefixLoadable: true,
+    });
+    expect(status).toBe('✓ local embeddings supported');
+    expect(detail).toBeNull();
   });
 
   it('prefers the platform blocker over the missing-stack report on macOS Intel', () => {
@@ -71,7 +107,7 @@ describe('doctor embedding-runtime support status', () => {
       httpMode: false,
       platform: 'darwin',
       arch: 'x64',
-      stackInstalled: false,
+      resolution: null,
     });
     expect(status).toBe('✗ local embeddings unavailable on darwin/x64');
   });
@@ -79,7 +115,7 @@ describe('doctor embedding-runtime support status', () => {
   it('never reports a missing stack in HTTP mode', () => {
     const { status, detail } = localEmbeddingDoctorStatus({
       httpMode: true,
-      stackInstalled: false,
+      resolution: null,
     });
     expect(status).toBe('✓ http endpoint configured');
     expect(detail).toBeNull();

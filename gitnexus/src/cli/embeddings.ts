@@ -1,10 +1,12 @@
-import { cliError, cliInfo } from './cli-message.js';
+import { cliError, cliInfo, cliWarn } from './cli-message.js';
 import {
   getEmbeddingRuntimeDir,
   getEmbeddingStackSpecs,
   installEmbeddingRuntime,
+  isPrefixRuntimeLoadable,
   resolveEmbeddingRuntime,
 } from '../core/embeddings/runtime-install.js';
+import { localEmbeddingPrefixUnloadableMessage } from '../core/embeddings/runtime-support.js';
 
 export interface EmbeddingsInstallOptions {
   cuda?: boolean;
@@ -51,9 +53,17 @@ export const embeddingsInstallCommand = async (
     return;
   }
 
-  cliInfo(
-    resolveEmbeddingRuntime() !== null
-      ? '✓ Embedding runtime installed. `gitnexus analyze --embeddings` is ready.'
-      : '✗ Install completed but the stack still does not resolve — check the output above.',
-  );
+  const postInstall = resolveEmbeddingRuntime();
+  if (postInstall === null) {
+    cliInfo('✗ Install completed but the stack still does not resolve — check the output above.');
+    process.exitCode = 1;
+    return;
+  }
+  if (postInstall.source === 'runtime-prefix' && !isPrefixRuntimeLoadable()) {
+    // The packages are in the prefix, but this Node has no module.registerHooks
+    // to load them — don't claim readiness the loader can't honour.
+    cliWarn(`${localEmbeddingPrefixUnloadableMessage()}\n`);
+    return;
+  }
+  cliInfo('✓ Embedding runtime installed. `gitnexus analyze --embeddings` is ready.');
 };

@@ -49,11 +49,13 @@ import { isHttpMode, safeUrl } from '../core/embeddings/http-client.js';
 import {
   isLocalEmbeddingRuntimeBlockerMessage,
   isMissingLocalEmbeddingStackMessage,
+  localEmbeddingPrefixUnloadableMessage,
   localEmbeddingStackMissingMessage,
 } from '../core/embeddings/runtime-support.js';
 import {
   getEmbeddingRuntimeDir,
   installEmbeddingRuntime,
+  isPrefixRuntimeLoadable,
   resolveEmbeddingRuntime,
 } from '../core/embeddings/runtime-install.js';
 import { warnIfNpm11NpxRisk } from './resolve-invocation.js';
@@ -1102,23 +1104,45 @@ const analyzeCommandImpl = async (
   // install goes through the user's npm registry config (mirrors/proxies
   // apply) with --ignore-scripts, so no NuGet download is attempted. Runs
   // before bar.start() like the sibling validations above.
-  if (embeddingsEnabled && !isHttpMode() && resolveEmbeddingRuntime() === null) {
-    console.log(
-      `  Local embedding runtime is not installed (optional packages were skipped at install time).\n` +
-        `  Downloading it now from your npm registry into ${getEmbeddingRuntimeDir()} …\n` +
-        `  (one-time; rerun manually anytime with \`gitnexus embeddings install\`)\n`,
-    );
-    try {
-      await installEmbeddingRuntime();
-      console.log('  Embedding runtime installed.\n');
-    } catch (err) {
-      cliError(
-        `  Could not install the embedding runtime: ${err instanceof Error ? err.message : String(err)}\n\n` +
-          `  ${localEmbeddingStackMissingMessage().replace(/\n/g, '\n  ')}\n`,
-        { recoveryHint: 'local-embedding-stack-missing' },
-      );
+  if (embeddingsEnabled && !isHttpMode()) {
+    const resolved = resolveEmbeddingRuntime();
+    // Resolved-but-unloadable (a populated prefix on a Node with no
+    // module.registerHooks), or nothing installed on such a Node: fail fast with
+    // capability guidance instead of dying mid-pipeline over an unusable prefix
+    // or downloading a runtime the loader can't reach. A package-sourced stack
+    // never needs the hook, so it is excluded. --embeddings was explicitly
+    // requested and this failure is deterministic, so fail fast rather than
+    // silently degrading to BM25 (distinct from a transient install timeout).
+    if (!isPrefixRuntimeLoadable() && (resolved === null || resolved.source === 'runtime-prefix')) {
+      cliError(`  ${localEmbeddingPrefixUnloadableMessage().replace(/\n/g, '\n  ')}\n`, {
+        recoveryHint: 'local-embedding-stack-missing',
+      });
       process.exitCode = 1;
       return;
+    }
+    // On-demand embedding runtime (#2370): when the optional stack was pruned at
+    // install time (proxy-blocked NuGet download in onnxruntime-node's
+    // postinstall), heal it here instead of failing later in the pipeline. The
+    // install goes through the user's npm registry config (mirrors/proxies
+    // apply) with --ignore-scripts, so no NuGet download is attempted.
+    if (resolved === null) {
+      console.log(
+        `  Local embedding runtime is not installed (optional packages were skipped at install time).\n` +
+          `  Downloading it now from your npm registry into ${getEmbeddingRuntimeDir()} …\n` +
+          `  (one-time; rerun manually anytime with \`gitnexus embeddings install\`)\n`,
+      );
+      try {
+        await installEmbeddingRuntime();
+        console.log('  Embedding runtime installed.\n');
+      } catch (err) {
+        cliError(
+          `  Could not install the embedding runtime: ${err instanceof Error ? err.message : String(err)}\n\n` +
+            `  ${localEmbeddingStackMissingMessage().replace(/\n/g, '\n  ')}\n`,
+          { recoveryHint: 'local-embedding-stack-missing' },
+        );
+        process.exitCode = 1;
+        return;
+      }
     }
   }
 

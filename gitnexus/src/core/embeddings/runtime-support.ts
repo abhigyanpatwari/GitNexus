@@ -122,6 +122,29 @@ export const localEmbeddingStackMissingMessage = (): string =>
     '    OpenAI-compatible /v1/embeddings endpoint to embed over HTTP.',
   ].join('\n');
 
+/** Stable lead line of the prefix-unloadable message (mirrors the leads above). */
+const LOCAL_EMBEDDING_PREFIX_UNLOADABLE_LEAD =
+  'The on-demand embedding runtime is installed but cannot be loaded on this Node build.';
+
+/**
+ * Guidance when the runtime-prefix stack is present but this Node lacks
+ * `module.registerHooks` (added in 22.15 / 23.5), so the prefix copy exists but
+ * the ESM loader can never reach it (#2372). A normally-installed (package)
+ * stack never needs the hook and never hits this. Capability-first wording — a
+ * bare ">= 22.15" is untruthful for a 23.0–23.4 user whose version is
+ * numerically greater yet still lacks the API.
+ */
+export const localEmbeddingPrefixUnloadableMessage = (): string =>
+  [
+    LOCAL_EMBEDDING_PREFIX_UNLOADABLE_LEAD,
+    'The runtime prefix loads via module.registerHooks, which needs Node',
+    '>= 22.15 (on the 22.x line) or >= 23.5 (on the 23.x line). Either:',
+    '  - Upgrade Node to a build that has module.registerHooks, or',
+    '  - Reinstall the packages normally (works on every supported Node):',
+    '      ONNXRUNTIME_NODE_INSTALL=skip npm install -g gitnexus',
+    '      (Windows: set ONNXRUNTIME_NODE_INSTALL=skip && npm install -g gitnexus)',
+  ].join('\n');
+
 /** Module specifiers whose absence means the optional embedding stack was pruned. */
 const EMBEDDING_STACK_SPECIFIERS = ['@huggingface/transformers', 'onnxruntime-node'] as const;
 
