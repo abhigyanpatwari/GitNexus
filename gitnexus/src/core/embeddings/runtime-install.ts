@@ -19,12 +19,47 @@
  * runtime prefix is only consulted when the bare specifier does not resolve.
  */
 import { createRequire } from 'node:module';
-import { spawn } from 'node:child_process';
+import { spawn, execFileSync, type ChildProcess } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { logger } from '../logger.js';
 import { getRegisterHooks } from './node-module-compat.js';
+
+const DEFAULT_EMBEDDING_INSTALL_TIMEOUT_MS = 10 * 60 * 1000;
+
+/**
+ * Deadline for the on-demand npm install, env-overridable via
+ * `GITNEXUS_EMBEDDING_INSTALL_TIMEOUT_MS`. Generous by default — the ONNX stack
+ * is a large registry fetch — but callers on latency-sensitive paths (analyze's
+ * auto-install) pass a shorter value so a blackholed proxy can't stall for the
+ * full default. Mirrors `getExtensionInstallTimeoutMs`.
+ */
+export const getEmbeddingInstallTimeoutMs = (): number => {
+  const raw = process.env.GITNEXUS_EMBEDDING_INSTALL_TIMEOUT_MS;
+  const parsed = raw ? Number(raw) : NaN;
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_EMBEDDING_INSTALL_TIMEOUT_MS;
+};
+
+/**
+ * SIGKILL the npm child and its whole tree. npm spawns a node grandchild, and a
+ * plain SIGTERM to the direct child lets the grandchild escape (pr-2169), so on
+ * Windows use `taskkill /T /F` (mirrors `killChildTree` in local-cli-client.ts).
+ */
+const killNpmChild = (child: ChildProcess): void => {
+  if (process.platform === 'win32' && child.pid !== undefined) {
+    try {
+      execFileSync('taskkill', ['/T', '/F', '/PID', String(child.pid)], {
+        stdio: 'ignore',
+        windowsHide: true,
+      });
+      return;
+    } catch {
+      // Already exited — fall through to child.kill().
+    }
+  }
+  child.kill('SIGKILL');
+};
 
 const require = createRequire(import.meta.url);
 
@@ -192,10 +227,17 @@ export const buildEmbeddingInstallCommand = (
 /**
  * Install (or update) the embedding stack into the runtime prefix via the
  * user's npm — registry, mirror, and proxy configuration all apply. Rejects
- * with npm's tail output when the install fails.
+ * with npm's tail output on failure or timeout.
+ *
+ * The child is bounded by `timeoutMs` (default {@link getEmbeddingInstallTimeoutMs})
+ * and SIGKILLed — with its grandchildren — if it overruns, so a blackholed
+ * proxy (the exact #2370 environment) can't hang the caller forever. It is also
+ * killed if the parent exits mid-install, so a leftover npm can't keep writing
+ * into the shared prefix.
  */
 export const installEmbeddingRuntime = async (
   opts: EmbeddingInstallOptions = {},
+  timeoutMs: number = getEmbeddingInstallTimeoutMs(),
 ): Promise<void> => {
   const { args, env } = buildEmbeddingInstallCommand(opts);
   await new Promise<void>((resolve, reject) => {
@@ -213,14 +255,51 @@ export const installEmbeddingRuntime = async (
       tail = (tail + text).slice(-2000);
       if (opts.onOutput) text.split('\n').filter(Boolean).forEach(opts.onOutput);
     };
-    child.stdout.on('data', onChunk);
-    child.stderr.on('data', onChunk);
-    child.on('error', reject);
-    child.on('close', (exitCode) => {
+    child.stdout?.on('data', onChunk);
+    child.stderr?.on('data', onChunk);
+
+    let settled = false;
+    // Kill a still-running npm if the parent exits (analyze's SIGINT handler, or
+    // a crash) so it can't keep writing into the shared prefix. Removed on settle.
+    const onParentExit = (): void => killNpmChild(child);
+    process.on('exit', onParentExit);
+    const cleanup = (): void => {
+      process.removeListener('exit', onParentExit);
+    };
+
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      killNpmChild(child);
+      reject(
+        new Error(
+          `npm install of the embedding runtime timed out after ${timeoutMs}ms ` +
+            `(override with GITNEXUS_EMBEDDING_INSTALL_TIMEOUT_MS) — check your proxy/registry:\n${tail}`,
+        ),
+      );
+    }, timeoutMs);
+
+    child.on('error', (err) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      cleanup();
+      reject(err);
+    });
+
+    child.on('close', (exitCode, signal) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      cleanup();
       if (exitCode === 0) resolve();
       else
         reject(
-          new Error(`npm install of the embedding runtime failed (exit ${exitCode}):\n${tail}`),
+          new Error(
+            `npm install of the embedding runtime failed ` +
+              `(${signal ? `killed with ${signal}` : `exit ${exitCode}`}):\n${tail}`,
+          ),
         );
     });
   });
