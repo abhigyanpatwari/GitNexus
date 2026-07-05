@@ -292,16 +292,22 @@ export const installEmbeddingRuntime = async (
     // Compose the quoted command line ourselves and pass it as spawn's single
     // string arg (no args array) so cmd.exe receives correctly-quoted paths/
     // specs and Node >=24 doesn't warn (DEP0190). POSIX uses the array form.
+    // cwd: homedir() so npm reads its config from the user's home, never the
+    // analyzed repo's cwd — a project-local .npmrc there can't redirect the
+    // registry into the prefix we then load in-process (legacy npm; refuted on
+    // npm 10, but this closes the class regardless of npm version).
     const child =
       process.platform === 'win32'
         ? spawn(composeWin32NpmCommand(args), {
             env,
+            cwd: homedir(),
             windowsHide: true,
             shell: true,
             stdio: ['ignore', 'pipe', 'pipe'],
           })
         : spawn('npm', args, {
             env,
+            cwd: homedir(),
             windowsHide: true,
             stdio: ['ignore', 'pipe', 'pipe'],
           });

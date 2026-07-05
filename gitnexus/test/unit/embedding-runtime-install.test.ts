@@ -242,4 +242,14 @@ describe('installEmbeddingRuntime — spawn lifecycle', () => {
     expect(Array.isArray(call[1])).toBe(true);
     expect(call[2]).not.toMatchObject({ shell: true });
   });
+
+  it('spawns with cwd set to homedir(), independent of process.cwd()', async () => {
+    const child = new FakeChild();
+    spawnMock.mockReturnValue(child);
+    const p = installEmbeddingRuntime({}, 10_000);
+    child.emit('close', 0, null);
+    await p;
+    const call = spawnMock.mock.calls[0] as [unknown, unknown, unknown];
+    expect(call[2]).toMatchObject({ cwd: homedir() });
+  });
 });
