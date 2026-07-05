@@ -241,6 +241,13 @@ program
   .action(createLazyAction(() => import('./doctor.js'), 'doctorCommand'));
 
 program
+  .command('governance [path]')
+  .description('Detect repository governance boundaries and sensitive operation paths')
+  .option('--json', 'Emit the governance report as JSON')
+  .option('--max-files <n>', 'Maximum files to scan (default: 5000)')
+  .action(createLazyAction(() => import('./governance.js'), 'governanceCommand'));
+
+program
   .command('clean')
   .description('Delete GitNexus index for current repo')
   .option('-f, --force', 'Skip confirmation prompt')
