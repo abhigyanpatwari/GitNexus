@@ -86,16 +86,33 @@ const NEW_QUALIFIED_CTOR_SPEC: PatternSpec<Record<string, never>> = {
 // proto loader). Matches either a bare call or an `obj.loadPackageDefinition(...)`
 // call. Plugin gates the qualified-constructor consumer on this —
 // structural check avoids materializing `tree.rootNode.text` for every file.
-const LOAD_PACKAGE_DEFINITION_SPEC: PatternSpec<Record<string, never>> = {
-  meta: {},
-  query: `
-    (call_expression
-      function: [
-        (identifier) @fn (#eq? @fn "loadPackageDefinition")
-        (member_expression property: (property_identifier) @fn (#eq? @fn "loadPackageDefinition"))
-      ])
-  `,
-};
+//
+// These are TWO separate specs, NOT one `function: [ (identifier) ... (member_expression) ... ]`
+// alternation. Under the pinned tree-sitter@0.21.1 binding a top-level alternation
+// whose branches reuse the same capture name (`@fn`) collapses to one pattern with
+// a shared predicate bucket; the second branch's `@fn` is left unbound and its
+// `#eq?` is never enforced, so the member-expression branch would match EVERY
+// `obj.method(...)` call (e.g. `console.log(...)`) — turning this gate always-on
+// and emitting spurious qualified-constructor consumers. Two specs compile to two
+// queries with independent predicate buckets; `runCompiledPatterns` concatenates
+// their matches, so the `.length > 0` gate still means "either form is present".
+const LOAD_PACKAGE_DEFINITION_SPECS: PatternSpec<Record<string, never>>[] = [
+  {
+    meta: {},
+    query: `
+      (call_expression
+        function: (identifier) @fn (#eq? @fn "loadPackageDefinition"))
+    `,
+  },
+  {
+    meta: {},
+    query: `
+      (call_expression
+        function: (member_expression
+          property: (property_identifier) @fn (#eq? @fn "loadPackageDefinition")))
+    `,
+  },
+];
 
 interface NodeGrpcPatternBundle {
   grpcMethod: CompiledPatterns<Record<string, never>>;
@@ -107,11 +124,14 @@ interface NodeGrpcPatternBundle {
 }
 
 function compileBundle(language: unknown, name: string): NodeGrpcPatternBundle {
-  const mk = (spec: PatternSpec<Record<string, never>>, suffix: string) =>
+  const mk = (
+    spec: PatternSpec<Record<string, never>> | PatternSpec<Record<string, never>>[],
+    suffix: string,
+  ) =>
     compilePatterns({
       name: `${name}-${suffix}`,
       language,
-      patterns: [spec],
+      patterns: Array.isArray(spec) ? spec : [spec],
     } satisfies LanguagePatterns<Record<string, never>>);
   return {
     grpcMethod: mk(GRPC_METHOD_SPEC, 'grpc-method'),
@@ -119,7 +139,7 @@ function compileBundle(language: unknown, name: string): NodeGrpcPatternBundle {
     getService: mk(GET_SERVICE_SPEC, 'get-service'),
     newSimpleCtor: mk(NEW_SIMPLE_CTOR_SPEC, 'new-simple-ctor'),
     newQualifiedCtor: mk(NEW_QUALIFIED_CTOR_SPEC, 'new-qualified-ctor'),
-    loadPackageDefinition: mk(LOAD_PACKAGE_DEFINITION_SPEC, 'load-package-definition'),
+    loadPackageDefinition: mk(LOAD_PACKAGE_DEFINITION_SPECS, 'load-package-definition'),
   };
 }
 

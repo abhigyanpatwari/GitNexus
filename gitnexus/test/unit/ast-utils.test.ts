@@ -1,10 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { createParserForLanguage, getLanguageFromFilename } = vi.hoisted(() => ({
+const { createParserForLanguage, getLanguageFromFilename, parseSourceSafeSpy } = vi.hoisted(() => ({
   createParserForLanguage: vi.fn(),
   getLanguageFromFilename: vi.fn((filePath: string) =>
     filePath.endsWith('.py') ? 'python' : 'typescript',
   ),
+  parseSourceSafeSpy: vi.fn(),
 }));
 
 vi.mock('../../src/core/tree-sitter/parser-loader.js', () => ({
@@ -14,6 +15,11 @@ vi.mock('../../src/core/tree-sitter/parser-loader.js', () => ({
     language === 'typescript' && filePath?.endsWith('.tsx') ? 'typescript:tsx' : language,
   ),
 }));
+
+vi.mock('../../src/core/tree-sitter/safe-parse.js', async () => {
+  const { buildSafeParseMock } = await import('../helpers/parse-source-safe-mock.js');
+  return buildSafeParseMock(parseSourceSafeSpy);
+});
 
 vi.mock('gitnexus-shared', () => ({
   getLanguageFromFilename,
@@ -71,5 +77,26 @@ describe('ensureAndParse', () => {
     expect(createParserForLanguage).toHaveBeenCalledTimes(2);
     expect(tsParse).toHaveBeenCalledTimes(2);
     expect(tsxParse).toHaveBeenCalledTimes(1);
+  });
+
+  // Windows SIGSEGV regression: ensureAndParse must route through parseSourceSafe
+  // so >32 767-char inputs do not crash the process. Direct parser.parse(content)
+  // on strings that size SIGSEGVs on Windows; the spy assertion is what catches
+  // a bypass since parser.parse(40 000 chars) succeeds on Linux/macOS.
+  it('routes >32 767-char input through parseSourceSafe', async () => {
+    parseSourceSafeSpy.mockClear();
+
+    const fakeParse = vi.fn().mockReturnValue({ rootNode: { type: 'module' } });
+    createParserForLanguage.mockResolvedValue({ parse: fakeParse });
+
+    const { ensureAndParse } = await import('../../src/core/embeddings/ast-utils.js');
+
+    const largeInput = 'const x = 1;\n'.repeat(4000); // ~52 000 chars
+    expect(largeInput.length).toBeGreaterThan(40_000);
+
+    const result = await ensureAndParse(largeInput, 'big.ts');
+
+    expect(parseSourceSafeSpy).toHaveBeenCalled();
+    expect(result).not.toBeNull();
   });
 });

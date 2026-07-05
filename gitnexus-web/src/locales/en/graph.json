@@ -1,0 +1,190 @@
+{
+  "statusBar": {
+    "sponsor": "Sponsor",
+    "sponsorHint": "need to buy some API credits to run SWE-bench 😅"
+  },
+  "loading": {
+    "filesProgress": "{{processed}} / {{total}} files"
+  },
+  "toolCall": {
+    "status": {
+      "running": "running",
+      "completed": "completed",
+      "error": "error",
+      "stopped": "stopped"
+    },
+    "tools": {
+      "search": "🔍 Search Code",
+      "cypher": "🔗 Cypher Query",
+      "grep": "🔎 Pattern Search",
+      "read": "📄 Read File",
+      "overview": "🗺️ Codebase Overview",
+      "explore": "🔬 Deep Dive",
+      "impact": "💥 Impact Analysis"
+    },
+    "query": "Query",
+    "input": "Input",
+    "result": "Result",
+    "searchPrefix": "Search: \"{{query}}\""
+  },
+  "embedding": {
+    "generateTitle": "Generate embeddings for semantic search",
+    "enable": "Enable Semantic Search",
+    "loadingModel": "Loading AI model...",
+    "embeddingNodes": "Embedding {{processed}}/{{total}} nodes",
+    "creatingIndex": "Creating vector index...",
+    "readyTitle": "Semantic search is ready! Use natural language in the AI chat.",
+    "ready": "Semantic Ready",
+    "errorTitle": "Embedding failed. Click to retry.",
+    "failedRetry": "Failed - Retry",
+    "fallback": {
+      "title": "WebGPU said \"nope\"",
+      "subtitle": "Your browser doesn't support GPU acceleration",
+      "description": "Couldn't create embeddings with WebGPU, so semantic search (Graph RAG) won't be as smart. The graph still works fine though!",
+      "options": "Your options:",
+      "useCpu": "Use CPU",
+      "useCpuDescriptionSmall": "Works but a bit slower",
+      "useCpuDescriptionLarge": "Works but way slower",
+      "estimated": "(~{{minutes}} min for {{count}} nodes)",
+      "skipIt": "Skip it",
+      "skipDescription": "Graph works, just no AI semantic search",
+      "smallCodebase": "Small codebase detected! CPU should be fine.",
+      "tip": "💡 Tip: Try Chrome or Edge for WebGPU support",
+      "skipEmbeddings": "Skip Embeddings",
+      "useCpuRecommended": "Use CPU (Recommended)",
+      "useCpuSlow": "Use CPU (Slow)"
+    }
+  },
+  "queryFab": {
+    "query": "Query",
+    "cypherQuery": "Cypher Query",
+    "examples": "Examples",
+    "run": "Run",
+    "noProject": "No project loaded. Load a project first.",
+    "dbNotReady": "Database not ready. Please wait for loading to complete.",
+    "executionFailed": "Query execution failed",
+    "exampleLabels": {
+      "functions": "All Functions",
+      "classes": "All Classes",
+      "interfaces": "All Interfaces",
+      "calls": "Function Calls",
+      "imports": "Import Dependencies"
+    },
+    "clear": "Clear",
+    "rows": "rows",
+    "highlighted": "highlighted",
+    "showingRows": "Showing 50 of {{count}} rows"
+  },
+  "fileTree": {
+    "expandPanel": "Expand Panel",
+    "fileExplorer": "File Explorer",
+    "filters": "Filters",
+    "collapsePanel": "Collapse Panel",
+    "searchFiles": "Search files...",
+    "noFilesLoaded": "No files loaded",
+    "all": "All",
+    "selectNodeDepth": "Select a node to apply depth filter",
+    "explorer": "Explorer",
+    "nodeTypes": "Node Types",
+    "nodeTypesDesc": "Toggle visibility of node types in the graph",
+    "edgeTypes": "Edge Types",
+    "edgeTypesDesc": "Toggle visibility of relationship types",
+    "focusDepth": "Focus Depth",
+    "focusDepthDesc": "Show nodes within N hops of selection",
+    "hops_one": "{{count}} hop",
+    "hops_other": "{{count}} hops",
+    "colorLegend": "Color Legend"
+  },
+  "codePanel": {
+    "expand": "Expand Code Panel",
+    "dragResize": "Drag to resize",
+    "title": "Code Inspector",
+    "clearCitations": "Clear AI citations",
+    "clearSelection": "Clear selection",
+    "loadingSource": "Loading source...",
+    "selectFile": "Select a file node to preview its contents.",
+    "code": "Code",
+    "selected": "Selected",
+    "aiCitations": "AI Citations",
+    "references_one": "{{count}} reference",
+    "references_other": "{{count}} references",
+    "lines_one": "{{count}} line",
+    "lines_other": "{{count}} lines",
+    "codeNotAvailable": "Code not available in memory for {{path}}"
+  },
+  "canvas": {
+    "viewModes": {
+      "label": "Graph view mode",
+      "force": "Force Graph",
+      "tree": "Sequential Layout",
+      "circles": "Radial Layout"
+    },
+    "zoomIn": "Zoom In",
+    "zoomOut": "Zoom Out",
+    "fit": "Fit to Screen",
+    "focusSelected": "Focus on Selected Node",
+    "clearSelection": "Clear Selection",
+    "clear": "Clear",
+    "stopLayout": "Stop Layout",
+    "runLayout": "Run Layout Again",
+    "layoutOptimizing": "Layout optimizing...",
+    "turnOffHighlights": "Turn off all highlights",
+    "turnOnHighlights": "Turn on AI highlights",
+    "chatOnly": {
+      "title": "Graph not loaded",
+      "description": "This is a large project, so the graph was skipped to keep the browser responsive. AI chat works normally.",
+      "descriptionWithCount": "This project has {{count}} nodes, so the graph was skipped to keep the browser responsive. AI chat works normally.",
+      "citationNote": "While the graph is unloaded, inline file citations from chat won't auto-open in the Code panel.",
+      "loadAnyway": "Load graph anyway",
+      "loadAnywayWarning": "This project has {{count}} nodes. Loading the full graph may make the browser slow or unresponsive. Continue?",
+      "loadAnywayWarningUnknown": "This may be a large project. Loading the full graph may make the browser slow or unresponsive. Continue?"
+    }
+  },
+  "processes": {
+    "unknownStep": "Unknown",
+    "allProcessesLabel_one": "All Processes ({{count}} combined)",
+    "allProcessesLabel_other": "All Processes ({{count}} combined)",
+    "emptyTitle": "No Processes Detected",
+    "emptyDescription": "Processes are execution flows traced from entry points. Load a codebase to see detected processes.",
+    "filterPlaceholder": "Filter processes...",
+    "detected_one": "{{count}} process detected",
+    "detected_other": "{{count}} processes detected",
+    "fullMap": "Full Process Map",
+    "viewCombined_one": "View combined map of {{count}} process",
+    "viewCombined_other": "View combined map of {{count}} processes",
+    "crossCommunity": "Cross-Community",
+    "intraCommunity": "Intra-Community",
+    "steps_one": "{{count}} step",
+    "steps_other": "{{count}} steps",
+    "clusters_one": "{{count}} cluster",
+    "clusters_other": "{{count}} clusters",
+    "highlightTitle": "Click to highlight in graph",
+    "removeHighlightTitle": "Click to remove highlight from graph",
+    "loading": "Loading...",
+    "viewing": "Viewing",
+    "view": "View"
+  },
+  "processFlow": {
+    "title": "Process: {{label}}",
+    "diagramTooLarge": "📊 Diagram Too Large",
+    "renderError": "⚠️ Render Error",
+    "tooComplex_one": "This diagram has {{count}} step and is too complex to render. Try viewing individual processes instead of \"All Processes\".",
+    "tooComplex_other": "This diagram has {{count}} steps and is too complex to render. Try viewing individual processes instead of \"All Processes\".",
+    "unableToRender_one": "Unable to render diagram. Steps: {{count}}",
+    "unableToRender_other": "Unable to render diagram. Steps: {{count}}",
+    "zoomOutTitle": "Zoom out (-)",
+    "zoomInTitle": "Zoom in (+)",
+    "resetTitle": "Reset zoom and pan",
+    "resetView": "Reset View",
+    "toggleFocus": "Toggle Focus",
+    "copyMermaid": "Copy Mermaid"
+  },
+  "diagram": {
+    "aiGenerated": "AI Generated Diagram",
+    "error": "Diagram Error",
+    "showSource": "Show source",
+    "label": "Diagram",
+    "expandTitle": "Expand",
+    "loading": "Loading diagram…"
+  }
+}

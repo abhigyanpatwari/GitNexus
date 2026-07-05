@@ -14,9 +14,14 @@
  *   Agent bash cmd → curl localhost:PORT/tool/query → eval-server → LocalBackend → format → text
  *
  * Usage:
- *   gitnexus eval-server                    # default port 4848
- *   gitnexus eval-server --port 4848        # explicit port
- *   gitnexus eval-server --idle-timeout 300 # auto-shutdown after 300s idle
+ *   gitnexus eval-server                        # default port 4848, binds 127.0.0.1
+ *   gitnexus eval-server --port 4848            # explicit port
+ *   gitnexus eval-server --host 0.0.0.0         # reachable from other VMs / containers
+ *   gitnexus eval-server --idle-timeout 300     # auto-shutdown after 300s idle
+ *
+ * READY signal format: GITNEXUS_EVAL_SERVER_READY:<host>:<port>
+ *   IPv4: GITNEXUS_EVAL_SERVER_READY:127.0.0.1:4848
+ *   IPv6: GITNEXUS_EVAL_SERVER_READY:[::1]:4848
  *
  * API:
  *   POST /tool/:name   — Call a tool. Body is JSON arguments. Returns formatted text.
@@ -25,12 +30,36 @@
  */
 
 import http from 'http';
+import crypto from 'node:crypto';
+import { isIPv4, isIPv6 } from 'node:net';
 import { writeSync } from 'node:fs';
-import { LocalBackend } from '../mcp/local/local-backend.js';
+import {
+  LocalBackend,
+  type RepoListing,
+  type ListReposPagination,
+} from '../mcp/local/local-backend.js';
+import { logger } from '../core/logger.js';
+import { cliInfo, cliWarn, cliError } from './cli-message.js';
+import { formatDetectChangesResult } from './detect-changes-format.js';
+
+export { formatDetectChangesResult } from './detect-changes-format.js';
 
 export interface EvalServerOptions {
   port?: string;
+  host?: string;
   idleTimeout?: string;
+}
+
+/**
+ * Validate the --host value. Accepts IPv4, IPv6, or "localhost".
+ * Returns the host string unchanged, or null if invalid.
+ * "localhost" is passed through so the OS resolves it to the correct loopback
+ * address (127.0.0.1 or ::1) at bind time rather than forcing IPv4.
+ */
+export function validateHost(raw: string): string | null {
+  if (raw === 'localhost') return raw;
+  if (isIPv4(raw) || isIPv6(raw)) return raw;
+  return null;
 }
 
 // ─── Text Formatters ──────────────────────────────────────────────────
@@ -150,6 +179,18 @@ export function formatContextResult(result: any): string {
   return lines.join('\n').trim();
 }
 
+function formatTruncationSuffix(result: {
+  truncatedBy?: unknown;
+  truncatedByReasons?: unknown;
+}): string {
+  const label = Array.isArray(result.truncatedByReasons)
+    ? result.truncatedByReasons.join(', ')
+    : typeof result.truncatedBy === 'string'
+      ? result.truncatedBy
+      : '';
+  return label ? ` (by ${label})` : '';
+}
+
 export function formatImpactResult(result: any): string {
   if (result.error) {
     const suggestion = result.suggestion ? `\nSuggestion: ${result.suggestion}` : '';
@@ -161,7 +202,267 @@ export function formatImpactResult(result: any): string {
   const byDepth = result.byDepth || {};
   const total = result.impactedCount || 0;
 
+  // #2129 — an ambiguous bare name must not print the "isolated / safe to
+  // refactor" headline. Surface the per-candidate blast radius + the maximum,
+  // mirroring formatContextResult, so the real impact under whichever symbol the
+  // caller meant is visible on the text surface, not just in the JSON.
+  if (result.status === 'ambiguous') {
+    if (result.mode === 'pdg') {
+      const shown = result.candidates?.length ?? 0;
+      const totalCandidates = result.totalCandidates ?? shown;
+      const countPhrase =
+        totalCandidates > shown
+          ? `${totalCandidates} symbols (showing ${shown})`
+          : `${totalCandidates} symbols`;
+      const lines = [
+        `${target?.name || '?'}: AMBIGUOUS — ${countPhrase} share this name. ` +
+          `PDG impact was not computed until the target is disambiguated. ` +
+          `Use --uid, file_path, or kind for one authoritative PDG result.`,
+      ];
+      if (result.message) lines.push(String(result.message));
+      for (const c of result.candidates || []) {
+        const score = typeof c.score === 'number' ? ` score ${c.score}` : '';
+        lines.push(
+          `  ${c.kind} ${c.name} → ${c.filePath}:${c.line || '?'}${score}  (uid: ${c.uid})`,
+        );
+      }
+      return lines.join('\n');
+    }
+
+    // #2129 review F11 — report the FULL match count (`totalCandidates`), not the
+    // truncated `candidates[]` length; note when the candidate list is capped.
+    const shown = result.candidates?.length ?? 0;
+    const total = result.totalCandidates ?? shown;
+    const countPhrase = total > shown ? `${total} symbols (showing ${shown})` : `${total} symbols`;
+    const lines = [
+      `${target?.name || '?'}: AMBIGUOUS — ${countPhrase} share this name. ` +
+        `Max blast radius ${result.maxImpactedCount ?? 0} (${result.maxRisk ?? 'UNKNOWN'} risk). ` +
+        `Disambiguate with --uid for one authoritative result:`,
+    ];
+    for (const c of result.candidates || []) {
+      lines.push(
+        `  ${c.kind} ${c.name} → ${c.filePath}:${c.line || '?'}  ` +
+          `[${c.impactedCount ?? 0} ${direction}, risk ${c.risk ?? 'UNKNOWN'}]  (uid: ${c.uid})`,
+      );
+    }
+    // #2129 review F1 — a failed per-candidate probe makes the max a lower bound.
+    if (result.partialProbe) {
+      lines.push(
+        '  ⚠️  One or more candidate probes failed — max blast radius / risk are lower bounds.',
+      );
+    }
+    return lines.join('\n');
+  }
+
+  // ─── PDG mode (mode:'pdg') ────────────────────────────────────────────
+  // KTD8 presentation half. PDG results are intra-procedural Program
+  // Dependence Graph blast radii: the single collapsed `byDepth[1]` bucket
+  // has NO call-hop depth meaning (block-hops ≠ call-hops), so we must NOT
+  // reuse the callgraph "depth N / WILL BREAK (direct)" framing, the
+  // callgraph DI/dynamic-dispatch lower-bound copy, or the confident
+  // "isolated" zero. A degraded / no-body PDG result is INCONCLUSIVE, not
+  // safe-to-refactor — it gets the explicit caveat + remediation, never an
+  // empty blast radius. Detect on `mode:'pdg'` (every PDG return path —
+  // findings, degradation, no-body, no-dependence — carries it). Ambiguous
+  // PDG results carry `status:'ambiguous'` and are handled above; they never
+  // reach here.
+  if (result.mode === 'pdg') {
+    const name = target?.name || '?';
+    const appendPdgInterproceduralSymbols = (lines: string[]): boolean => {
+      const byDepth =
+        result.interproceduralByDepth || result.pdgInterprocedural?.byDepth || result.byDepth || {};
+      const byDepthCounts =
+        result.interproceduralByDepthCounts ||
+        result.pdgInterprocedural?.byDepthCounts ||
+        result.byDepthCounts ||
+        {};
+      const depthKeys = Array.from(
+        new Set([...Object.keys(byDepthCounts), ...Object.keys(byDepth)]),
+      )
+        .map((d) => Number(d))
+        .filter((d) => Number.isFinite(d))
+        .sort((a, b) => a - b);
+      const hasReach = depthKeys.some((depth) => {
+        const items = byDepth[depth] || byDepth[String(depth)] || [];
+        const count = byDepthCounts[depth] ?? byDepthCounts[String(depth)] ?? items.length;
+        return count > 0;
+      });
+      if (!hasReach) return false;
+
+      const totalSymbols =
+        result.pdgInterprocedural?.impactedCount ??
+        (typeof result.impactedCount === 'number' ? result.impactedCount : 0);
+      lines.push('');
+      lines.push(`Inter-procedural symbol reach (${totalSymbols}):`);
+      for (const depth of depthKeys) {
+        const items = byDepth[depth] || byDepth[String(depth)] || [];
+        const count = byDepthCounts[depth] ?? byDepthCounts[String(depth)] ?? items.length;
+        if (count <= 0) continue;
+        lines.push(`  d=${depth} (${count})`);
+        const shown = Math.min(items.length, 12);
+        for (const item of items.slice(0, shown)) {
+          const flags: string[] = [];
+          if (item.unresolved) flags.push('unresolved');
+          if (item.ambiguous) flags.push('ambiguous');
+          const flagStr = flags.length ? ` [${flags.join(', ')}]` : '';
+          lines.push(`    ${item.type || ''} ${item.name} → ${item.filePath}${flagStr}`);
+        }
+        if (count > shown) lines.push(`    ... and ${count - shown} more`);
+      }
+      return true;
+    };
+
+    // (1) Degradation — the PDG layer (or a sub-layer) is absent/unreadable.
+    // `pdgLayer` is the non-'ready' state from `pdgLayerStatus`. Print the
+    // honest remediation, NOT a zero/empty blast radius.
+    if (result.pdgLayer) {
+      const subLayer = result.missingSubLayer
+        ? ` (missing sub-layer: ${result.missingSubLayer})`
+        : '';
+      return (
+        `${name}: PDG impact unavailable — the index has no usable PDG layer ` +
+        `[${result.pdgLayer}]${subLayer}. This is NOT "no impact". ` +
+        `Re-index with \`gitnexus analyze --pdg\` to build the control/data ` +
+        `dependence layer, or use \`--mode callgraph\` for the call-graph blast radius.` +
+        (result.note ? `\n${result.note}` : '')
+      );
+    }
+
+    // (2) No-body symbol (KTD6) — interface / type alias / abstract / ambient
+    // member / one-line declaration with no CFG. Show the caveat, never
+    // "isolated / no dependencies".
+    if (result.epistemic === 'no-pdg-body') {
+      const noBodyLines = [
+        `${name}: local PDG slice not applicable to this symbol — it has no PDG body ` +
+          `(no control/data dependence edges; e.g. an interface, type alias, ` +
+          `abstract/ambient member, or a one-line declaration). This is NOT a ` +
+          `confident "no impact".`,
+      ];
+      appendPdgInterproceduralSymbols(noBodyLines);
+      if (result.note) noBodyLines.push(result.note);
+      return noBodyLines.join('\n');
+    }
+
+    // (2b) STATEMENT-ANCHORED SLICE (mode:'pdg' + line). When `criterionLine` is
+    // present the result is a statement slice: the seeded line plus the list of
+    // dependent statements (`affectedStatements: {line,filePath,text}[]`). Render
+    // those statements directly — this IS the useful output of statement mode —
+    // rather than the symbol-projection bucket below. Empty cases:
+    //   - `pdg-no-block-at-line`: the line is blank / a comment / outside the
+    //     body (no statement block) — print the steering note.
+    //   - empty `affectedStatements` with `pdg-intra-procedural`: the line has no
+    //     dependents in this direction — print the steering note.
+    // Each non-empty case also surfaces truncation honestly.
+    if (typeof result.criterionLine === 'number') {
+      const slice: any[] = Array.isArray(result.affectedStatements)
+        ? result.affectedStatements
+        : [];
+      const count =
+        typeof result.affectedStatementCount === 'number'
+          ? result.affectedStatementCount
+          : slice.length;
+      // File anchor for the heading — the seeded statement's file (every slice
+      // statement shares the function's file). Fall back to the target's file.
+      const anchorFile = slice[0]?.filePath || target?.filePath || name;
+
+      if (count === 0 || slice.length === 0) {
+        // No statement block at the line, or no dependents in this direction.
+        // Print the honest note (pdg-no-block-at-line or the no-dependence note)
+        // verbatim — never an empty "isolated" headline.
+        const emptySliceLines = [
+          `No statements ${direction}-dependent on ${anchorFile}:${result.criterionLine}.`,
+        ];
+        if (result.truncated) {
+          const by = formatTruncationSuffix(result);
+          emptySliceLines.push(
+            `⚠️  Truncated${by} — the dependence slice was bounded; deeper PDG-dependent statements may exist.`,
+          );
+        }
+        appendPdgInterproceduralSymbols(emptySliceLines);
+        if (result.note) emptySliceLines.push(result.note);
+        return emptySliceLines.join('\n');
+      }
+
+      const slLines: string[] = [];
+      slLines.push(
+        `Statements ${direction}-dependent on ${anchorFile}:${result.criterionLine} (${count}):`,
+      );
+      for (const s of slice) {
+        const text = typeof s.text === 'string' ? s.text : '';
+        slLines.push(`  L${s.line}: ${text}`);
+      }
+      // Truncation honesty — the slice may be a lower bound (depth or per-step
+      // LIMIT bound). Surface it the same way the symbol render does.
+      if (result.truncated) {
+        const by = formatTruncationSuffix(result);
+        slLines.push(
+          `⚠️  Truncated${by} — the dependence slice was bounded; deeper PDG-dependent statements may exist.`,
+        );
+      }
+      appendPdgInterproceduralSymbols(slLines);
+      if (result.note) {
+        slLines.push('');
+        slLines.push(`ℹ️  ${result.note}`);
+      }
+      return slLines.join('\n').trim();
+    }
+
+    const pdgLines: string[] = [];
+
+    if (!appendPdgInterproceduralSymbols(pdgLines)) {
+      pdgLines.push(
+        `${name} (${direction}): no inter-procedural symbols reached. ` +
+          `The local PDG statement slice may still report affectedStatements when seeded with line:<N>.`,
+      );
+    }
+
+    // The assembled note carries the local-PDG framing plus the unified
+    // inter-procedural symbol-reach contract; surface it verbatim so the CLI
+    // reader sees the same honesty the JSON consumer does.
+    if (result.note) {
+      pdgLines.push('');
+      pdgLines.push(`ℹ️  ${result.note}`);
+    } else {
+      pdgLines.push('');
+      pdgLines.push(
+        'ℹ️  Program Dependence Graph result — statement reach is reported in affectedStatements and inter-procedural symbol reach in interproceduralByDepth/byDepth.',
+      );
+    }
+
+    // Honest incompleteness signals (block-attribution + truncation).
+    if (result.ambiguousProjectionCount > 0) {
+      pdgLines.push(
+        `⚠️  ${result.ambiguousProjectionCount} block(s) could not be attributed to a ` +
+          `unique owning symbol (same-line functions) — all colliding symbols are shown.`,
+      );
+    }
+    if (result.unresolvedBlockCount > 0) {
+      pdgLines.push(
+        `⚠️  ${result.unresolvedBlockCount} dependence block(s) map to no owning ` +
+          `Function/Method/Constructor (top-level statement / closure) — surfaced under their file.`,
+      );
+    }
+    if (result.truncated) {
+      const by = formatTruncationSuffix(result);
+      pdgLines.push(
+        `⚠️  Truncated${by} — the dependence traversal was bounded; deeper PDG impacts may exist.`,
+      );
+    }
+
+    return pdgLines.join('\n').trim();
+  }
+
   if (total === 0) {
+    // #1858 — "isolated" is a confident claim. If an interface / indirection
+    // boundary is on the path, the true count is a lower bound, not zero;
+    // callers binding via DI / dynamic dispatch were not traced. Say so instead.
+    if (result.epistemic === 'lower-bound') {
+      const lines = [
+        `${target?.name || '?'}: no direct ${direction} dependencies traced, but this is a LOWER BOUND — unresolved indirection on the path (actual impact may be higher):`,
+      ];
+      for (const b of result.boundaries || []) lines.push(`    • ${b}`);
+      return lines.join('\n');
+    }
     return `${target?.name || '?'}: No ${direction} dependencies found. This symbol appears isolated.`;
   }
 
@@ -174,6 +475,14 @@ export function formatImpactResult(result: any): string {
   if (result.partial) {
     lines.push('⚠️  Partial results — graph traversal was interrupted. Deeper impacts may exist.');
   }
+  // #1858 — an interface / indirection boundary on the path makes this a lower
+  // bound; surface it so the count is not read as exhaustive.
+  if (result.epistemic === 'lower-bound') {
+    lines.push(
+      '⚠️  Lower bound — unresolved indirection on the path (callers binding via DI / dynamic dispatch are not traced; actual impact may be higher):',
+    );
+    for (const b of result.boundaries || []) lines.push(`    • ${b}`);
+  }
   lines.push('');
 
   const depthLabels: Record<number, string> = {
@@ -182,19 +491,39 @@ export function formatImpactResult(result: any): string {
     3: 'MAY NEED TESTING (transitive)',
   };
 
-  for (const depth of [1, 2, 3]) {
-    const items = byDepth[depth];
-    if (!items || items.length === 0) continue;
-
-    lines.push(`d=${depth}: ${depthLabels[depth] || ''} (${items.length})`);
-    for (const item of items.slice(0, 12)) {
-      const conf = item.confidence < 1 ? ` (conf: ${item.confidence})` : '';
-      lines.push(`  ${item.type} ${item.name} → ${item.filePath} [${item.relationType}]${conf}`);
-    }
-    if (items.length > 12) {
-      lines.push(`  ... and ${items.length - 12} more`);
+  if (!result.byDepth && result.byDepthCounts) {
+    lines.push('(summary only — use summaryOnly: false to see symbol lists)');
+    const depthCounts = result.byDepthCounts;
+    for (const depth of [1, 2, 3]) {
+      const count = depthCounts[depth] ?? 0;
+      if (count === 0) continue;
+      lines.push(`d=${depth}: ${depthLabels[depth] || ''} (${count})`);
     }
     lines.push('');
+  } else {
+    const depthCounts = result.byDepthCounts || {};
+    for (const depth of [1, 2, 3]) {
+      const items = byDepth[depth] || [];
+      const trueCount = depthCounts[depth] ?? items.length;
+      if (trueCount === 0) continue;
+
+      lines.push(`d=${depth}: ${depthLabels[depth] || ''} (${trueCount})`);
+      if (items.length === 0) {
+        lines.push(`  (0 items on this page — adjust offset)`);
+      } else {
+        const shown = Math.min(items.length, 12);
+        for (const item of items.slice(0, shown)) {
+          const conf = item.confidence < 1 ? ` (conf: ${item.confidence})` : '';
+          lines.push(
+            `  ${item.type} ${item.name} → ${item.filePath} [${item.relationType}]${conf}`,
+          );
+        }
+        if (trueCount > shown) {
+          lines.push(`  ... and ${trueCount - shown} more`);
+        }
+      }
+      lines.push('');
+    }
   }
 
   return lines.join('\n').trim();
@@ -221,55 +550,35 @@ export function formatCypherResult(result: any): string {
   return typeof result === 'string' ? result : JSON.stringify(result, null, 2);
 }
 
-export function formatDetectChangesResult(result: any): string {
-  if (result.error) return `Error: ${result.error}`;
+export function formatListReposResult(result: {
+  repositories: RepoListing[];
+  pagination?: ListReposPagination;
+}): string {
+  // `list_repos` always returns the paginated { repositories, pagination } object (#2119).
+  const repos = result.repositories;
+  const pg = result.pagination;
 
-  const summary = result.summary || {};
-  const lines: string[] = [];
-
-  if (summary.changed_count === 0) {
-    return 'No changes detected.';
-  }
-
-  lines.push(`Changes: ${summary.changed_files || 0} files, ${summary.changed_count || 0} symbols`);
-  lines.push(`Affected processes: ${summary.affected_count || 0}`);
-  lines.push(`Risk level: ${summary.risk_level || 'unknown'}\n`);
-
-  const changed = result.changed_symbols || [];
-  if (changed.length > 0) {
-    lines.push(`Changed symbols:`);
-    for (const s of changed.slice(0, 15)) {
-      lines.push(`  ${s.type} ${s.name} → ${s.filePath}`);
-    }
-    if (changed.length > 15) lines.push(`  ... and ${changed.length - 15} more`);
-    lines.push('');
-  }
-
-  const affected = result.affected_processes || [];
-  if (affected.length > 0) {
-    lines.push(`Affected execution flows:`);
-    for (const p of affected.slice(0, 10)) {
-      const steps = (p.changed_steps || []).map((s: any) => s.symbol).join(', ');
-      lines.push(`  • ${p.name} (${p.step_count} steps) — changed: ${steps}`);
-    }
-  }
-
-  return lines.join('\n').trim();
-}
-
-export function formatListReposResult(result: any): string {
-  if (!Array.isArray(result) || result.length === 0) {
-    return 'No indexed repositories.';
+  if (repos.length === 0) {
+    return pg && pg.total > 0
+      ? `No repositories on this page (offset ${pg.offset} of ${pg.total} total).`
+      : 'No indexed repositories.';
   }
 
   const lines = ['Indexed repositories:\n'];
-  for (const r of result) {
+  for (const r of repos) {
     const stats = r.stats || {};
     lines.push(
       `  ${r.name} — ${stats.nodes || '?'} symbols, ${stats.edges || '?'} relationships, ${stats.processes || '?'} flows`,
     );
     lines.push(`    Path: ${r.path}`);
     lines.push(`    Indexed: ${r.indexedAt}`);
+  }
+  if (pg) {
+    lines.push('');
+    lines.push(
+      `  Showing ${repos.length} of ${pg.total} (offset ${pg.offset}).` +
+        (pg.hasMore ? ` More available — re-run with offset ${pg.nextOffset}.` : ''),
+    );
   }
   return lines.join('\n');
 }
@@ -300,7 +609,7 @@ function formatToolResult(toolName: string, result: any): string {
 // Guide the agent to the logical next tool call.
 // Critical for tool chaining: query → context → impact → fix.
 
-function getNextStepHint(toolName: string): string {
+export function getNextStepHint(toolName: string, result?: any): string {
   switch (toolName) {
     case 'query':
       return '\n---\nNext: Pick a symbol above and run gitnexus-context "<name>" to see all its callers, callees, and execution flows.';
@@ -309,6 +618,15 @@ function getNextStepHint(toolName: string): string {
       return '\n---\nNext: To check what breaks if you change this, run gitnexus-impact "<name>" upstream';
 
     case 'impact':
+      if (
+        result?.error ||
+        result?.status === 'ambiguous' ||
+        result?.mode === 'pdg' ||
+        result?.pdgLayer ||
+        typeof result?.criterionLine === 'number'
+      ) {
+        return '';
+      }
       return '\n---\nNext: Review d=1 items first (WILL BREAK). Read the source with cat to understand the code, then make your fix.';
 
     case 'cypher':
@@ -316,6 +634,9 @@ function getNextStepHint(toolName: string): string {
 
     case 'detect_changes':
       return '\n---\nNext: Run gitnexus-context "<symbol>" on high-risk changed symbols to check their callers.';
+
+    case 'list_repos':
+      return '\n---\nNext: READ gitnexus://repo/{name}/context for a repo above. If pagination.hasMore is true, re-run list_repos with offset set to pagination.nextOffset to page through the rest.';
 
     default:
       return '';
@@ -328,17 +649,39 @@ export async function evalServerCommand(options?: EvalServerOptions): Promise<vo
   const port = parseInt(options?.port || '4848');
   const idleTimeoutSec = parseInt(options?.idleTimeout || '0');
 
+  const rawHost = options?.host ?? '127.0.0.1';
+  const host = validateHost(rawHost);
+  if (!host) {
+    cliError(
+      `Invalid --host value "${rawHost}":\n` +
+        `  Must be an IP address or "localhost".\n\n` +
+        `  Examples:\n` +
+        `    gitnexus eval-server --host 127.0.0.1    (loopback only, default)\n` +
+        `    gitnexus eval-server --host 0.0.0.0      (all network interfaces)\n` +
+        `    gitnexus eval-server --host 192.168.1.5  (specific interface)\n` +
+        `    gitnexus eval-server --host localhost     (OS-resolved loopback)\n`,
+      { flag: '--host', value: rawHost },
+    );
+    process.exit(1);
+  }
+
   const backend = new LocalBackend();
   const ok = await backend.init();
 
   if (!ok) {
-    console.error('GitNexus eval-server: No indexed repositories found. Run: gitnexus analyze');
+    // Operator-actionable but the server cannot start; warn-level so log
+    // aggregators don't trip error alerts on a configuration miss. Use
+    // cliWarn so the diagnostic reaches stderr synchronously before
+    // process.exit() — direct logger.warn would be lost to the buffered
+    // pino destination on hard exit (skips beforeExit flush).
+    cliWarn('GitNexus eval-server: No indexed repositories found. Run: gitnexus analyze');
     process.exit(1);
   }
 
   const repos = await backend.listRepos();
-  console.error(
-    `GitNexus eval-server: ${repos.length} repo(s) loaded: ${repos.map((r) => r.name).join(', ')}`,
+  logger.info(
+    { repoCount: repos.length, repos: repos.map((r) => r.name) },
+    'GitNexus eval-server: repos loaded',
   );
 
   let idleTimer: ReturnType<typeof setTimeout> | null = null;
@@ -347,11 +690,19 @@ export async function evalServerCommand(options?: EvalServerOptions): Promise<vo
     if (idleTimeoutSec <= 0) return;
     if (idleTimer) clearTimeout(idleTimer);
     idleTimer = setTimeout(async () => {
-      console.error('GitNexus eval-server: Idle timeout reached, shutting down');
+      logger.info({ idleTimeoutSec }, 'GitNexus eval-server: idle timeout reached, shutting down');
       await backend.disconnect();
       process.exit(0);
     }, idleTimeoutSec * 1000);
   }
+
+  // Startup-generated shutdown token: a `POST /shutdown` must present it in the
+  // X-Shutdown-Token header. The local agent that launches the server reads it
+  // from the GITNEXUS_EVAL_SERVER_SHUTDOWN_TOKEN line on fd 1 (next to the READY
+  // signal); a client on another VM under `--host 0.0.0.0` cannot guess it, so it
+  // can no longer kill the server. (SIGINT/SIGTERM and the idle timeout still
+  // shut down locally without a token.)
+  const shutdownToken = crypto.randomBytes(24).toString('hex');
 
   const server = http.createServer(async (req, res) => {
     resetIdleTimer();
@@ -367,6 +718,12 @@ export async function evalServerCommand(options?: EvalServerOptions): Promise<vo
 
       // Shutdown
       if (req.method === 'POST' && req.url === '/shutdown') {
+        if (req.headers['x-shutdown-token'] !== shutdownToken) {
+          res.setHeader('Content-Type', 'application/json');
+          res.writeHead(403);
+          res.end(JSON.stringify({ error: 'forbidden: missing or invalid X-Shutdown-Token' }));
+          return;
+        }
         res.setHeader('Content-Type', 'application/json');
         res.writeHead(200);
         res.end(JSON.stringify({ status: 'shutting_down' }));
@@ -382,6 +739,14 @@ export async function evalServerCommand(options?: EvalServerOptions): Promise<vo
       const toolMatch = req.url?.match(/^\/tool\/(\w+)$/);
       if (req.method === 'POST' && toolMatch) {
         const toolName = toolMatch[1];
+        if (!EVAL_SERVER_TOOLS.has(toolName)) {
+          res.setHeader('Content-Type', 'text/plain');
+          res.writeHead(400);
+          res.end(
+            `Error: unsupported tool '${toolName}'. Supported: ${[...EVAL_SERVER_TOOLS].sort().join(', ')}`,
+          );
+          return;
+        }
 
         const body = await readBody(req);
         let args: Record<string, any> = {};
@@ -399,7 +764,7 @@ export async function evalServerCommand(options?: EvalServerOptions): Promise<vo
         // Call tool, format result as text, append next-step hint
         const result = await backend.callTool(toolName, args);
         const formatted = formatToolResult(toolName, result);
-        const hint = getNextStepHint(toolName);
+        const hint = getNextStepHint(toolName, result);
 
         res.setHeader('Content-Type', 'text/plain');
         res.writeHead(200);
@@ -418,20 +783,100 @@ export async function evalServerCommand(options?: EvalServerOptions): Promise<vo
     }
   });
 
-  server.listen(port, '127.0.0.1', () => {
-    console.error(`GitNexus eval-server: listening on http://127.0.0.1:${port}`);
-    console.error(`  POST /tool/query    — search execution flows`);
-    console.error(`  POST /tool/context  — 360-degree symbol view`);
-    console.error(`  POST /tool/impact   — blast radius analysis`);
-    console.error(`  POST /tool/cypher   — raw Cypher query`);
-    console.error(`  GET  /health        — health check`);
-    console.error(`  POST /shutdown      — graceful shutdown`);
-    if (idleTimeoutSec > 0) {
-      console.error(`  Auto-shutdown after ${idleTimeoutSec}s idle`);
+  server.on('error', (err: NodeJS.ErrnoException) => {
+    if (err.code === 'EADDRINUSE') {
+      cliError(
+        `\nGitNexus eval-server failed to start:\n` +
+          `  Port ${port} is already in use.\n\n` +
+          `  Either:\n` +
+          `    1. Stop the process already using port ${port}\n` +
+          `    2. Use a different port: gitnexus eval-server --port 4849\n`,
+        { code: err.code, port, host },
+      );
+    } else if (err.code === 'EADDRNOTAVAIL') {
+      // "localhost" may resolve to ::1 on IPv6-only systems; treat it as
+      // potentially IPv6 so the user gets the right diagnostic hint.
+      const isIPv6Host = isIPv6(host) || host === 'localhost';
+      cliError(
+        `\nGitNexus eval-server failed to start:\n` +
+          `  Address ${host} is not available on this machine.\n\n` +
+          (isIPv6Host
+            ? `  Address ${host} resolved but is not reachable — IPv6 may be disabled, or the loopback interface may be unavailable.\n` +
+              `  Docker containers and many CI environments disable IPv6 by default.\n\n`
+            : `  The --host value must be an IP assigned to a local network interface.\n` +
+              `  Run \`ip addr\` (Linux) or \`ipconfig\` (Windows) to list available addresses.\n\n`) +
+          `  Common fixes:\n` +
+          `    gitnexus eval-server --host 127.0.0.1  (loopback, this machine only)\n` +
+          `    gitnexus eval-server --host 0.0.0.0    (all interfaces, reachable from other VMs)\n`,
+        { code: err.code, port, host },
+      );
+    } else if (err.code === 'EACCES') {
+      cliError(
+        `\nGitNexus eval-server failed to start:\n` +
+          `  Permission denied binding to port ${port}.\n\n` +
+          `  Ports below 1024 require elevated privileges.\n` +
+          `  Use a port above 1024: gitnexus eval-server --port 4848\n`,
+        { code: err.code, port, host },
+      );
+    } else {
+      cliError(`\nGitNexus eval-server failed to start:\n  ${err.message}\n`, {
+        code: err.code,
+        port,
+        host,
+      });
     }
+    process.exit(1);
+  });
+
+  server.listen(port, host, () => {
+    // Plain-text banner for the human watching stderr; structured record
+    // for log aggregation (split into two so the user sees a real banner
+    // not `{"level":30,"msg":"...","port":4747,"endpoints":[...]}`).
+    // Use server.address() so the banner and READY signal reflect what the OS
+    // actually bound to, not the input host string. This matters when "localhost"
+    // is passed: the OS may resolve it to ::1 on some systems.
+    const addr = server.address();
+    // server.listen callback only fires after a successful TCP bind, so
+    // server.address() is guaranteed to return an AddressInfo object here.
+    if (typeof addr !== 'object' || addr === null) {
+      cliError(
+        `\nGitNexus eval-server: unexpected server.address() value after bind: ${JSON.stringify(addr)}\n`,
+      );
+      process.exit(1);
+    }
+    const boundPort = addr.port;
+    const boundAddress = addr.address;
+    const displayHost = boundAddress.includes(':') ? `[${boundAddress}]` : boundAddress;
+    const bannerLines = [
+      `GitNexus eval-server: listening on http://${displayHost}:${boundPort}`,
+      `  POST /tool/query    — search execution flows`,
+      `  POST /tool/context  — 360-degree symbol view`,
+      `  POST /tool/impact   — blast radius analysis`,
+      `  POST /tool/cypher   — raw Cypher query`,
+      `  GET  /health        — health check`,
+      `  POST /shutdown      — graceful shutdown`,
+    ];
+    if (idleTimeoutSec > 0) {
+      bannerLines.push(`  Auto-shutdown after ${idleTimeoutSec}s idle`);
+    }
+    cliInfo(bannerLines.join('\n'), {
+      port: boundPort,
+      host,
+      idleTimeoutSec: idleTimeoutSec > 0 ? idleTimeoutSec : undefined,
+      endpoints: [
+        'POST /tool/query',
+        'POST /tool/context',
+        'POST /tool/impact',
+        'POST /tool/cypher',
+        'GET  /health',
+        'POST /shutdown',
+      ],
+    });
     try {
       // Use fd 1 directly — LadybugDB captures process.stdout (#324)
-      writeSync(1, `GITNEXUS_EVAL_SERVER_READY:${port}\n`);
+      writeSync(1, `GITNEXUS_EVAL_SERVER_READY:${displayHost}:${boundPort}\n`);
+      // The launching agent reads this to authorize POST /shutdown.
+      writeSync(1, `GITNEXUS_EVAL_SERVER_SHUTDOWN_TOKEN:${shutdownToken}\n`);
     } catch {
       // stdout may not be available (e.g., broken pipe)
     }
@@ -440,7 +885,7 @@ export async function evalServerCommand(options?: EvalServerOptions): Promise<vo
   resetIdleTimer();
 
   const shutdown = async () => {
-    console.error('GitNexus eval-server: shutting down...');
+    logger.info('GitNexus eval-server: shutting down...');
     await backend.disconnect();
     server.close();
     process.exit(0);
@@ -449,6 +894,21 @@ export async function evalServerCommand(options?: EvalServerOptions): Promise<vo
   process.on('SIGINT', shutdown);
   process.on('SIGTERM', shutdown);
 }
+
+/**
+ * Tools the eval-server exposes over HTTP — the read-only query surface the
+ * banner advertises. `LocalBackend.callTool` ALSO dispatches write-side / heavier
+ * tools (rename, shape_check, tool_map, …); the allowlist keeps a stray
+ * `POST /tool/<name>` from reaching those through this Docker/eval-harness server.
+ */
+export const EVAL_SERVER_TOOLS: ReadonlySet<string> = new Set([
+  'query',
+  'context',
+  'impact',
+  'cypher',
+  'detect_changes',
+  'list_repos',
+]);
 
 export const MAX_BODY_SIZE = 1024 * 1024; // 1MB
 

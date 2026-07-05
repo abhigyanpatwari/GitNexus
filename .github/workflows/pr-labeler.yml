@@ -35,6 +35,9 @@ on:
   pull_request_target:
     types: [opened, edited, reopened]
 
+permissions:
+  contents: read
+
 # Concurrency convention: see CONTRIBUTING.md → "GitHub Actions — Concurrency Convention".
 # Include `github.event_name` so `pull_request` (validate-title) and
 # `pull_request_target` (autolabel) runs for the same PR do NOT share a slot
@@ -105,7 +108,7 @@ jobs:
       # Pinned to v7.2.0. Verify SHA via:
       #   gh api repos/release-drafter/release-drafter/git/refs/tags/v7.2.0
       # v7 removed `disable-releaser`; use `dry-run: true` to only autolabel.
-      - uses: release-drafter/release-drafter@563bf132657a13ded0b01fcb723c5a58cdd824e2 # v7.2.1
+      - uses: release-drafter/release-drafter@ed4bc48ec97379be2258e7b7ac2624a3e26ab809 # v7.4.0
         with:
           config-name: release-drafter.yml
           dry-run: true

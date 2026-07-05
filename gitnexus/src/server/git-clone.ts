@@ -1,26 +1,65 @@
 /**
  * Git Clone Utility
  *
- * Shallow-clones repositories into ~/.gitnexus/repos/{name}/.
+ * Shallow-clones repositories into the clone root (getGlobalDir()/repos/{name}/).
  * If already cloned, does git pull instead.
  */
 
 import { spawn } from 'child_process';
 import path from 'path';
-import os from 'os';
 import fs from 'fs/promises';
 import { isIP } from 'net';
+import { logger } from '../core/logger.js';
+import { parseRepoNameFromUrl } from '../storage/git.js';
+import { getGlobalDir } from '../storage/repo-manager.js';
 
-/** Extract the repository name from a git URL (HTTPS or SSH). */
+/**
+ * Root directory for all cloned repositories. Targets must resolve inside this.
+ *
+ * Sourced from getGlobalDir() so it honors GITNEXUS_HOME — the Docker image sets
+ * GITNEXUS_HOME=/data/gitnexus, the persistent volume that also holds the
+ * registry and indexes. Without this, clones landed in the container's
+ * ephemeral ~/.gitnexus/repos and were lost on container recreation while the
+ * registry still pointed at the dead path. Falls back to ~/.gitnexus when the
+ * env var is unset (CLI / local installs), matching the prior behavior exactly.
+ */
+const CLONE_ROOT = path.resolve(path.join(getGlobalDir(), 'repos'));
+
+// A valid git repository name is filesystem-safe: alphanumerics plus `. _ -`.
+// Rejecting anything else (including `..`, `/`, `\`, shell metacharacters)
+// guarantees getCloneDir(repoName) cannot escape CLONE_ROOT regardless of
+// how the caller derived repoName.
+export const REPO_NAME_PATTERN = /^[a-zA-Z0-9._-]+$/;
+
+/**
+ * Extract the repository name from a git URL (HTTPS or SSH).
+ *
+ * Throws if the URL does not yield a filesystem-safe last segment. A name
+ * like `..` or `foo/bar` would otherwise let `getCloneDir(name)` escape the
+ * clone root via path traversal.
+ */
 export function extractRepoName(url: string): string {
-  const cleaned = url.replace(/\/+$/, '');
-  const lastSegment = cleaned.split(/[/:]/).pop() || 'unknown';
-  return lastSegment.replace(/\.git$/, '');
+  const name = parseRepoNameFromUrl(url);
+  if (
+    !name ||
+    name === '.' ||
+    name === '..' ||
+    name === 'unknown' ||
+    !REPO_NAME_PATTERN.test(name)
+  ) {
+    throw new Error('Could not extract a valid repository name from URL');
+  }
+  return name;
 }
 
 /** Get the clone target directory for a repo name. */
 export function getCloneDir(repoName: string): string {
-  return path.join(os.homedir(), '.gitnexus', 'repos', repoName);
+  // Re-validate at the boundary even though extractRepoName already checked —
+  // callers may pass a repoName from another source (test fixtures, scripts).
+  if (!repoName || repoName === '.' || repoName === '..' || !REPO_NAME_PATTERN.test(repoName)) {
+    throw new Error('Invalid repository name');
+  }
+  return path.join(CLONE_ROOT, repoName);
 }
 
 // Cloud metadata hostnames that must never be reachable via user-supplied URLs
@@ -139,6 +178,39 @@ function assertNotPrivateIPv6(ip: string): void {
   if (lower.includes(':ffff:')) {
     throw new Error('Cloning from private/internal addresses is not allowed');
   }
+
+  // IPv4-compatible IPv6 (RFC 4291 § 2.5.5.1, deprecated form: ::w.x.y.z).
+  // Node's URL parser collapses http://[::127.0.0.1]/ to "::7f00:1" — the IPv4
+  // is hidden in the last 32 bits without the ::ffff: marker, so the check
+  // above misses it. The form is still routable to the embedded IPv4 on most
+  // network stacks, so any address compressed to ::xxxx[:yyyy] must be blocked.
+  if (/^::[0-9a-f]{1,4}(:[0-9a-f]{1,4})?$/.test(lower)) {
+    throw new Error('Cloning from private/internal addresses is not allowed');
+  }
+
+  // NAT64 well-known prefix (RFC 6052 § 2.1: 64:ff9b::/96, plus the local
+  // 64:ff9b:1::/48 from RFC 8215). Maps any IPv4 address — including private
+  // ranges — into IPv6, so a host with NAT64 can reach the embedded IPv4 via
+  // e.g. 64:ff9b::7f00:1 → 127.0.0.1.
+  // The check intentionally covers the full 64:ff9b::/32 block (broader than
+  // the two cited ranges): IANA reserves it for IPv4-IPv6 translation, so
+  // blocking the whole prefix is defensively sound and prevents a narrower
+  // CIDR check from quietly re-opening the bypass for 64:ff9b:1::/48 or any
+  // future translation assignment.
+  if (lower.startsWith('64:ff9b:')) {
+    throw new Error('Cloning from private/internal addresses is not allowed');
+  }
+
+  // 6to4 (RFC 3056, 2002::/16). Encodes an IPv4 address in bits 17-48, so
+  // 2002:7f00:0001::1 routes to 127.0.0.1 on 6to4-capable stacks. The
+  // protocol was deprecated by RFC 7526 and the public relay anycast
+  // (192.88.99.1) has been retired, so broad-blocking the prefix has near-
+  // zero false-positive cost while closing the IPv4-embedded bypass.
+  // Teredo (2001::/32) embeds IPv4 obfuscated by XOR; precise blocking is
+  // impractical and is out of scope here.
+  if (lower.startsWith('2002:')) {
+    throw new Error('Cloning from private/internal addresses is not allowed');
+  }
 }
 
 function assertNotPrivateIPv4(ip: string): void {
@@ -164,45 +236,418 @@ export interface CloneProgress {
 }
 
 /**
+ * Build the `git clone` argument list for a given URL and target directory.
+ *
+ * The `--` separator is non-negotiable: it stops git from parsing a URL that
+ * starts with `--` (e.g. `--upload-pack=evil`) as an option flag, which would
+ * otherwise execute an attacker-chosen subprocess (CodeQL
+ * js/second-order-command-line-injection, alerts #166/#167).
+ *
+ * Exported so the separator placement is testable without mocking spawn.
+ */
+/**
+ * Detect Azure DevOps URLs — both self-hosted (via AZURE_DEVOPS_URL env)
+ * and cloud (dev.azure.com / *.visualstudio.com).
+ *
+ * Self-hosted Azure DevOps Server instances use arbitrary hostnames
+ * (e.g. `http://tfs.corp.example/Collection/Project/_git/Repo`), so the
+ * function checks `AZURE_DEVOPS_URL` first. Cloud addresses are a
+ * hardcoded fallback so PAT injection works out-of-the-box for
+ * dev.azure.com without extra configuration.
+ */
+export function isAzureDevOpsUrl(url: string): boolean {
+  try {
+    // Strip a single trailing dot: `dev.azure.com.` is a valid absolute FQDN
+    // that resolves to the same host, so it must match too.
+    const host = new URL(url).hostname.toLowerCase().replace(/\.$/, '');
+
+    // Self-hosted: match against the configured base URL.
+    const configuredBase = process.env.AZURE_DEVOPS_URL;
+    if (configuredBase) {
+      try {
+        const baseHost = new URL(configuredBase).hostname.toLowerCase().replace(/\.$/, '');
+        if (host === baseHost) return true;
+      } catch {
+        /* invalid AZURE_DEVOPS_URL — fall through to cloud check */
+      }
+    }
+
+    // Cloud fallback.
+    return host === 'dev.azure.com' || host.endsWith('.visualstudio.com');
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * One-time startup warning when AZURE_DEVOPS_URL is configured over cleartext
+ * http:// — the Azure DevOps PAT would then be sent unencrypted on every
+ * clone. Self-hosted instances that only serve http are still supported (we
+ * do not refuse), but operators rarely read request-time logs, so surface it
+ * at boot too. Call once from server startup.
+ */
+export function warnIfInsecureAzureConfig(): void {
+  const base = process.env.AZURE_DEVOPS_URL;
+  if (!base) return;
+  try {
+    if (new URL(base).protocol === 'http:') {
+      logger.warn(
+        'AZURE_DEVOPS_URL is configured over cleartext http:// — the Azure DevOps PAT will be sent unencrypted. Prefer https:// where your instance supports it.',
+      );
+    }
+  } catch {
+    /* invalid AZURE_DEVOPS_URL — isAzureDevOpsUrl already tolerates this */
+  }
+}
+
+export function buildCloneArgs(url: string, targetDir: string): string[] {
+  return ['clone', '--depth', '1', '--', url, targetDir];
+}
+
+/**
+ * Normalize a git URL into a comparable form.
+ *
+ * Two URLs are considered the same repository when their normalized forms
+ * are identical: lowercased hostname, no trailing `.git`, no trailing
+ * slashes on the path, default port stripped. Path comparison stays
+ * case-sensitive because that's how Git hosts treat the path component on
+ * the wire (case-folding GitHub's web UI is a separate convenience).
+ *
+ * Returns the original input if URL parsing fails — the caller can still
+ * compare with the literal string for non-URL forms (e.g. SSH `git@host:`).
+ */
+export function normalizeGitUrlForCompare(url: string): string {
+  // Strip trailing slashes and a trailing `.git` for both URL and SSH forms.
+  let trimmed = url;
+  while (trimmed.length > 0 && trimmed[trimmed.length - 1] === '/') {
+    trimmed = trimmed.slice(0, -1);
+  }
+  if (trimmed.endsWith('.git')) trimmed = trimmed.slice(0, -4);
+
+  try {
+    const parsed = new URL(trimmed);
+    parsed.hostname = parsed.hostname.toLowerCase();
+    // strip default ports
+    if (
+      (parsed.protocol === 'https:' && parsed.port === '443') ||
+      (parsed.protocol === 'http:' && parsed.port === '80')
+    ) {
+      parsed.port = '';
+    }
+    // Strip credentials — never material to repo identity, and including
+    // them would let two equivalent URLs (with/without basic auth) compare
+    // unequal.
+    parsed.username = '';
+    parsed.password = '';
+    // Recompose without trailing slash on the path.
+    let pathname = parsed.pathname;
+    while (pathname.length > 1 && pathname[pathname.length - 1] === '/') {
+      pathname = pathname.slice(0, -1);
+    }
+    parsed.pathname = pathname;
+    return `${parsed.protocol}//${parsed.hostname}${parsed.port ? ':' + parsed.port : ''}${parsed.pathname}`;
+  } catch {
+    // Non-URL forms (e.g. `git@github.com:owner/repo`) — return the trimmed
+    // form lowercased on the hostname-ish prefix. SSH-form normalization
+    // is best-effort; exact-string compare is sufficient for the threat
+    // model (mismatched origins still differ at the literal level).
+    return trimmed.toLowerCase();
+  }
+}
+
+/**
+ * Read `remote.origin.url` from an existing clone using `git config --get`.
+ *
+ * Returns `null` if the config key is absent, the spawn fails, or the
+ * directory isn't a git repository. The caller decides what a missing
+ * remote means for its threat model — for cloneOrPull, a missing remote
+ * on an existing clone is treated as a refuse-to-pull condition.
+ */
+export function getRemoteOriginUrl(cwd: string): Promise<string | null> {
+  return new Promise((resolve) => {
+    const proc = spawn('git', ['config', '--get', 'remote.origin.url'], {
+      cwd,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      windowsHide: true,
+      env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
+    });
+    let stdout = '';
+    proc.stdout.on('data', (chunk: Buffer) => {
+      stdout += chunk;
+    });
+    proc.on('close', (code) => {
+      if (code === 0 && stdout.trim()) {
+        resolve(stdout.trim());
+      } else {
+        resolve(null);
+      }
+    });
+    proc.on('error', () => resolve(null));
+  });
+}
+
+/**
+ * Verify that an existing clone's `remote.origin.url` matches the requested
+ * URL (after normalization). Throws on mismatch or missing remote.
+ *
+ * Closes the wrong-repo silent-analysis vector that Codex's adversarial
+ * review on PR #1325 surfaced: clone dirs are keyed by URL basename, so a
+ * request for `https://gitlab.example/attacker/repo.git` would otherwise
+ * collide with an existing `~/.gitnexus/repos/repo` cloned from a different
+ * origin and `git pull --ff-only` would silently succeed against the wrong
+ * remote.
+ *
+ * Exported so the comparison logic is testable in isolation against any
+ * tmpdir-based fixture, without needing to populate CLONE_ROOT.
+ */
+export async function assertRemoteMatchesRequestedUrl(
+  targetDir: string,
+  requestedUrl: string,
+): Promise<void> {
+  const remoteUrl = await getRemoteOriginUrl(targetDir);
+  if (remoteUrl === null) {
+    throw new Error(`Existing clone at ${targetDir} has no remote.origin — refusing to pull`);
+  }
+  if (normalizeGitUrlForCompare(remoteUrl) !== normalizeGitUrlForCompare(requestedUrl)) {
+    throw new Error(
+      `Existing clone at ${targetDir} has remote ${remoteUrl}, not the requested URL ${requestedUrl}`,
+    );
+  }
+}
+
+/**
  * Clone or pull a git repository.
  * If targetDir doesn't exist: git clone --depth 1
- * If targetDir exists with .git: git pull --ff-only
+ * If targetDir exists with .git: git pull --ff-only (after verifying the
+ * existing clone's remote.origin matches the requested URL).
+ *
+ * Security:
+ *   - targetDir must resolve inside CLONE_ROOT (~/.gitnexus/repos/). The
+ *     path.relative containment barrier below is the inline canonical idiom
+ *     CodeQL's js/path-injection sanitizer recognizes.
+ *   - validateGitUrl runs unconditionally on the requested URL — both the
+ *     clone path and the pull path. An earlier shape only validated on the
+ *     clone branch; an existing clone with the same basename let an
+ *     attacker's URL skip the SSRF / scheme / private-IP checks (Codex
+ *     adversarial review on PR #1325).
+ *   - When the target already has `.git`, the existing clone's
+ *     remote.origin.url is fetched and compared (normalized) to the
+ *     requested URL. Refuses to pull if they differ — this closes the
+ *     wrong-repo silent-analysis vector where two URLs sharing a basename
+ *     would collide on the same on-disk clone dir.
+ *   - The git URL is passed after a `--` separator so a value beginning with
+ *     `--` (e.g. `--upload-pack=evil`) cannot be interpreted as a git option
+ *     (CodeQL js/second-order-command-line-injection).
  */
 export async function cloneOrPull(
   url: string,
   targetDir: string,
   onProgress?: (progress: CloneProgress) => void,
+  options?: { token?: string },
 ): Promise<string> {
-  const exists = await fs.access(path.join(targetDir, '.git')).then(
+  // Containment barrier — inline with the canonical path.relative idiom so
+  // CodeQL recognizes the sanitizer at every following filesystem and
+  // subprocess sink. The same `safeTarget` is used for every downstream
+  // path operation — no reassignment that the analyzer could lose track of.
+  //
+  // Limitation: this is a lexical containment check, not a realpath check.
+  // If an attacker can place a symlink under CLONE_ROOT pointing outside it,
+  // the lexical check passes but the clone lands at the symlink target. That
+  // requires pre-existing local write access to CLONE_ROOT, so the threat
+  // model considers it out of scope; CodeQL js/path-injection accepts the
+  // lexical form. Tracked as a follow-up if defense-in-depth is needed.
+  const safeTarget = path.resolve(targetDir);
+  const rel = path.relative(CLONE_ROOT, safeTarget);
+  if (rel === '' || rel.startsWith('..') || path.isAbsolute(rel)) {
+    throw new Error(`Clone target must be a subdirectory of ${CLONE_ROOT}`);
+  }
+
+  // Always validate the requested URL — the prior shape only ran this in
+  // the code path where the repo was cloned. Now it runs unconditionally,
+  // preventing SSRF / blocked-host bypasses even when targetDir already exists.
+  validateGitUrl(url);
+
+  const exists = await fs.access(path.join(safeTarget, '.git')).then(
     () => true,
     () => false,
   );
 
   if (exists) {
+    // Confirm the existing clone is actually the same repository the caller
+    // requested. Without this check, a pull would silently succeed against
+    // whatever remote the dir was originally cloned from.
+    await assertRemoteMatchesRequestedUrl(safeTarget, url);
     onProgress?.({ phase: 'pulling', message: 'Pulling latest changes...' });
-    await runGit(['pull', '--ff-only'], targetDir);
+    await runGit(['pull', '--ff-only'], safeTarget, { token: options?.token, url });
   } else {
-    validateGitUrl(url);
-    await fs.mkdir(path.dirname(targetDir), { recursive: true });
+    await fs.mkdir(path.dirname(safeTarget), { recursive: true });
     onProgress?.({ phase: 'cloning', message: `Cloning ${url}...` });
-    await runGit(['clone', '--depth', '1', url, targetDir]);
+    await runGit(buildCloneArgs(url, safeTarget), undefined, { token: options?.token, url });
   }
 
-  return targetDir;
+  return safeTarget;
 }
 
-function runGit(args: string[], cwd?: string): Promise<void> {
+/**
+ * Hosts the per-request GitHub PAT may be sent to. Exported so the
+ * /api/analyze boundary check and this injection-site check share one
+ * allowlist (they must agree, or a token accepted by the API could be
+ * silently dropped — or worse — at injection).
+ */
+export const GITHUB_TOKEN_HOSTS: ReadonlySet<string> = new Set(['github.com', 'www.github.com']);
+
+/**
+ * Resolve at most ONE git credential for a clone/pull, by server-side policy
+ * keyed on the clone host against a fixed allowlist (never a free-form user
+ * toggle):
+ *   1. a per-request GitHub PAT — only for hosts in GITHUB_TOKEN_HOSTS;
+ *   2. else the server's AZURE_DEVOPS_PAT — only for Azure DevOps hosts;
+ *   3. else none.
+ * The two host sets are disjoint, so at most one credential ever applies; the
+ * GitHub token taking precedence is deterministic for the pathological case
+ * where AZURE_DEVOPS_URL is itself configured to a github.com host. Returns
+ * the base64 of the Basic-auth `user:secret` pair, or undefined.
+ *
+ * Security note (re CodeQL js/user-controlled-bypass): the clone URL is
+ * user-controlled and selects WHICH credential applies, but it cannot
+ * redirect a credential to an arbitrary host — the host is matched against
+ * fixed server-side allowlists (GITHUB_TOKEN_HOSTS, isAzureDevOpsUrl's
+ * dev.azure.com/*.visualstudio.com/configured AZURE_DEVOPS_URL), and the
+ * emitted header is host-scoped (buildExtraHeaderKey). A URL outside the
+ * allowlists yields no credential. The selection is therefore server-policy,
+ * not a bypass the user can steer.
+ */
+function resolveGitCredential(options?: { token?: string; url?: string }): string | undefined {
+  const url = options?.url;
+  if (!url) return undefined;
+
+  let host: string;
+  try {
+    host = new URL(url).hostname.toLowerCase();
+  } catch {
+    return undefined;
+  }
+
+  // 1. Per-request GitHub PAT — github.com only (mirrors the /api/analyze
+  //    host-bind so the user's token is never sent off github.com).
+  if (options.token && GITHUB_TOKEN_HOSTS.has(host)) {
+    return Buffer.from(`x-access-token:${options.token}`).toString('base64');
+  }
+
+  // 2. Server-configured Azure DevOps PAT — Azure hosts only.
+  const azurePat = process.env.AZURE_DEVOPS_PAT;
+  if (azurePat && isAzureDevOpsUrl(url)) {
+    return Buffer.from(`:${azurePat}`).toString('base64');
+  }
+
+  return undefined;
+}
+
+/**
+ * Build the host-scoped git config key `http.<origin+path>.extraHeader` from
+ * the raw clone URL, so the Authorization header is attached only to the
+ * intended origin (and its clone sub-requests like /info/refs), never a
+ * redirect target. Derived from the SAME raw URL git clones from — not the
+ * normalize-for-compare form, which strips `.git` and would desync the key
+ * from the wire URL and silently disable the header. Userinfo/query/fragment
+ * are dropped (not part of git's URL match) and control characters stripped
+ * (git rejects a newline in a config key outright).
+ */
+function buildExtraHeaderKey(url: string): string | undefined {
+  let scoped: string;
+  try {
+    const u = new URL(url);
+    u.username = '';
+    u.password = '';
+    u.search = '';
+    u.hash = '';
+    scoped = `${u.protocol}//${u.host}${u.pathname}`;
+  } catch {
+    return undefined;
+  }
+  scoped = scoped.replace(/[\r\n\0]/g, '');
+  return `http.${scoped}.extraHeader`;
+}
+
+/**
+ * Warn (do not block) when a credential is about to be sent over cleartext
+ * http://. Base64 is encoding, not encryption, so an on-path observer can
+ * read the PAT. We keep http:// working for self-hosted Azure DevOps Server.
+ */
+function warnIfCleartextCredential(url?: string): void {
+  if (!url) return;
+  try {
+    const u = new URL(url);
+    if (u.protocol === 'http:') {
+      logger.warn(
+        `Sending a git credential over cleartext http:// (${u.host}) — base64 is not encryption. Prefer https:// where the host supports it.`,
+      );
+    }
+  } catch {
+    /* resolver already validated the URL */
+  }
+}
+
+/**
+ * Build the spawn env for `git`. Suppresses credential prompts and, when a
+ * credential resolves (see resolveGitCredential), injects a single
+ * host-scoped Authorization header via the `GIT_CONFIG_*` env protocol
+ * (git ≥2.31) so credentials never appear in argv or the URL. Appends after
+ * any existing `GIT_CONFIG_COUNT` rather than overwriting it. Exported for
+ * unit tests.
+ */
+export function buildGitEnv(
+  baseEnv: NodeJS.ProcessEnv,
+  options?: { token?: string; url?: string },
+): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = {
+    ...baseEnv,
+    // Prevent git from prompting for credentials (hangs the process)
+    GIT_TERMINAL_PROMPT: '0',
+    // Ensure no credential helper tries to open a GUI prompt
+    GIT_ASKPASS: process.platform === 'win32' ? 'echo' : '/bin/true',
+    // Scrub git's HTTP/transport trace vars: if inherited from the parent
+    // process they dump every request header — including the injected
+    // Authorization header — to stderr, which runGit captures and logs.
+    // `undefined` makes child_process omit the key from the child env.
+    GIT_TRACE: undefined,
+    GIT_TRACE_CURL: undefined,
+    GIT_TRACE_PACKET: undefined,
+    GIT_CURL_VERBOSE: undefined,
+  };
+
+  const credential = resolveGitCredential(options);
+  const key = options?.url ? buildExtraHeaderKey(options.url) : undefined;
+  if (credential && key) {
+    // Append after any GIT_CONFIG_* the operator already set, so we never
+    // clobber their git config (e.g. an enforced http.sslVerify).
+    const existing = Number.parseInt(env.GIT_CONFIG_COUNT ?? '', 10);
+    const base = Number.isInteger(existing) && existing > 0 ? existing : 0;
+    env.GIT_CONFIG_COUNT = String(base + 1);
+    env[`GIT_CONFIG_KEY_${base}`] = key;
+    env[`GIT_CONFIG_VALUE_${base}`] = `Authorization: Basic ${credential}`;
+    warnIfCleartextCredential(options?.url);
+  }
+
+  return env;
+}
+
+// `options` carries the inputs the credential resolver needs: a per-request
+// GitHub `token` and the clone `url`. buildGitEnv injects at most ONE
+// host-scoped Authorization header (GitHub PAT for github.com, else the
+// server's AZURE_DEVOPS_PAT for Azure hosts) via the GIT_CONFIG_* protocol —
+// never in argv. See resolveGitCredential / buildExtraHeaderKey.
+function runGit(
+  args: string[],
+  cwd?: string,
+  options?: { token?: string; url?: string },
+): Promise<void> {
   return new Promise((resolve, reject) => {
     const proc = spawn('git', args, {
       cwd,
       stdio: ['ignore', 'pipe', 'pipe'],
-      env: {
-        ...process.env,
-        // Prevent git from prompting for credentials (hangs the process)
-        GIT_TERMINAL_PROMPT: '0',
-        // Ensure no credential helper tries to open a GUI prompt
-        GIT_ASKPASS: process.platform === 'win32' ? 'echo' : '/bin/true',
-      },
+      windowsHide: true,
+      env: buildGitEnv(process.env, options),
     });
 
     let stderr = '';
@@ -214,7 +659,7 @@ function runGit(args: string[], cwd?: string): Promise<void> {
       if (code === 0) resolve();
       else {
         // Log full stderr internally but don't expose it to API callers (SSRF mitigation)
-        if (stderr.trim()) console.error(`git ${args[0]} stderr: ${stderr.trim()}`);
+        if (stderr.trim()) logger.error(`git ${args[0]} stderr: ${stderr.trim()}`);
         reject(new Error(`git ${args[0]} failed (exit code ${code})`));
       }
     });

@@ -96,7 +96,7 @@ describe('HttpRouteExtractor — graph-assisted multi-verb disambiguation', () =
           },
         ];
       }
-      if (query.includes('CONTAINS')) return containsFor(['listOrders']);
+      if (query.includes('UNION ALL')) return containsFor(['listOrders']);
       return [];
     });
 
@@ -125,7 +125,7 @@ describe('HttpRouteExtractor — graph-assisted multi-verb disambiguation', () =
           },
         ];
       }
-      if (query.includes('CONTAINS')) return containsFor(['listOrders', 'createOrder']);
+      if (query.includes('UNION ALL')) return containsFor(['listOrders', 'createOrder']);
       return [];
     });
 
@@ -155,7 +155,7 @@ describe('HttpRouteExtractor — graph-assisted multi-verb disambiguation', () =
           },
         ];
       }
-      if (query.includes('CONTAINS')) return containsFor(['listOrders', 'createOrder']);
+      if (query.includes('UNION ALL')) return containsFor(['listOrders', 'createOrder']);
       return [];
     });
 
@@ -225,7 +225,7 @@ describe('HttpRouteExtractor — graph-assisted multi-verb disambiguation', () =
           },
         ];
       }
-      if (query.includes('CONTAINS')) return containsFor(['listOrders', 'createOrder']);
+      if (query.includes('UNION ALL')) return containsFor(['listOrders', 'createOrder']);
       return [];
     });
 
@@ -264,7 +264,7 @@ describe('HttpRouteExtractor — graph-assisted multi-verb disambiguation', () =
           },
         ];
       }
-      if (query.includes('CONTAINS'))
+      if (query.includes('UNION ALL'))
         return containsFor(['listOrders', 'createOrder', 'replaceOrder']);
       return [];
     });
@@ -321,7 +321,7 @@ describe('HttpRouteExtractor — graph-assisted multi-verb disambiguation', () =
           },
         ];
       }
-      if (query.includes('CONTAINS')) return containsFor(['listOrders', 'createOrder']);
+      if (query.includes('UNION ALL')) return containsFor(['listOrders', 'createOrder']);
       return [];
     });
 

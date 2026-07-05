@@ -22,8 +22,8 @@ export const RESOLVE_CACHE_CAP = 100_000;
  * - TypeScript/JavaScript: rewrites tsconfig path aliases
  * - Rust: converts crate::/super::/self:: to relative paths
  *
- * Java wildcards and Go package imports are handled separately in processImports
- * because they resolve to multiple files.
+ * Java wildcards and Go package imports are handled by the scope-resolution
+ * phase because they resolve to multiple files.
  */
 export const resolveImportPath = (
   currentFile: string,
@@ -72,6 +72,13 @@ export const resolveImportPath = (
         const resolved = tryResolveWithExtensions(rewritten, allFiles);
         if (resolved) return cache(resolved);
 
+        // ESM fallback: strip .js/.jsx/.mjs/.cjs and retry with TS equivalents
+        const strippedAlias = stripJsExtension(rewritten);
+        if (strippedAlias !== null) {
+          const esmResolved = tryResolveWithExtensions(strippedAlias, allFiles);
+          if (esmResolved) return cache(esmResolved);
+        }
+
         // Try suffix matching as fallback
         const parts = rewritten.split('/').filter(Boolean);
         const suffixResult = suffixResolve(parts, normalizedFileList, allFileList, index);
@@ -91,8 +98,8 @@ export const resolveImportPath = (
     } else if (importPath.startsWith('{') && importPath.endsWith('}')) {
       // Top-level grouped imports: use {crate::a, crate::b}
       // Iterate each part and return the first that resolves. This function returns a single
-      // string, so callers that need ALL edges must intercept before reaching here (see the
-      // Rust grouped-import blocks in processImports / processImportsBatch). This fallback
+      // string, so callers that need ALL edges must intercept before reaching here (the
+      // scope-resolution phase handles Rust grouped-import blocks). This fallback
       // handles any path that reaches resolveImportPath directly.
       const inner = importPath.slice(1, -1);
       const parts = inner
@@ -128,11 +135,23 @@ export const resolveImportPath = (
 
   if (importPath.startsWith('.')) {
     const resolved = tryResolveWithExtensions(basePath, allFiles);
-    return cache(resolved);
+    if (resolved) return cache(resolved);
+
+    // TypeScript ESM: imports use .js/.jsx/.mjs/.cjs but source files are
+    // .ts/.tsx/.mts/.cts. Strip the JS-family extension and re-resolve.
+    if (language === SupportedLanguages.TypeScript || language === SupportedLanguages.JavaScript) {
+      const stripped = stripJsExtension(basePath);
+      if (stripped !== null) {
+        return cache(tryResolveWithExtensions(stripped, allFiles));
+      }
+    }
+
+    return cache(null);
   }
 
   // ---- Generic package/absolute import resolution (suffix matching) ----
-  // Java wildcards are handled in processImports, not here
+  // Java wildcards are handled by the scope-resolution phase, not here; this
+  // resolver returns null for `.*` so it never produces a single-file match.
   if (importPath.endsWith('.*')) {
     return cache(null);
   }
@@ -181,4 +200,20 @@ export function resolveStandard(
 /** Create a reusable standard-resolution strategy for a given language. */
 export function createStandardStrategy(language: SupportedLanguages): ImportResolverStrategy {
   return (raw, fp, ctx) => resolveStandard(raw, fp, ctx, language);
+}
+
+// ============================================================================
+// ESM extension helpers
+// ============================================================================
+
+/** JS-family extensions that TypeScript ESM maps to TS equivalents. */
+const JS_EXTENSION_PATTERN = /\.(js|jsx|mjs|cjs)$/;
+
+/**
+ * Strip a JS-family extension from a path, returning the stem.
+ * Returns `null` if the path does not end with a JS-family extension.
+ */
+export function stripJsExtension(path: string): string | null {
+  const match = JS_EXTENSION_PATTERN.exec(path);
+  return match ? path.slice(0, -match[0].length) : null;
 }

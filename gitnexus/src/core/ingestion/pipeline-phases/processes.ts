@@ -4,7 +4,7 @@
  * Detects execution flows (processes) and creates Process nodes +
  * STEP_IN_PROCESS edges. Also links Route/Tool nodes to processes.
  *
- * @deps    communities, routes, tools
+ * @deps    communities, routes, tools, pruneLocalSymbols
  * @reads   graph (all nodes and relationships), communityResult, routeRegistry, toolDefs
  * @writes  graph (Process nodes, STEP_IN_PROCESS edges, ENTRY_POINT_OF edges)
  */
@@ -17,8 +17,10 @@ import type { ToolsOutput } from './tools.js';
 import type { StructureOutput } from './structure.js';
 import { processProcesses, type ProcessDetectionResult } from '../process-processor.js';
 import { generateId } from '../../../lib/utils.js';
+import { routeNodeKey } from '../route-extractors/route-path.js';
 import { isDev } from '../utils/env.js';
 
+import { logger } from '../../logger.js';
 export interface ProcessesOutput {
   processResult: ProcessDetectionResult;
 }
@@ -26,8 +28,10 @@ export interface ProcessesOutput {
 export const processesPhase: PipelinePhase<ProcessesOutput> = {
   name: 'processes',
   // `structure` supplies `totalFiles` (progress counter) without the spurious
-  // structural data dependency on `parse`.
-  deps: ['communities', 'routes', 'tools', 'structure'],
+  // structural data dependency on `parse`. `pruneLocalSymbols` is declared
+  // explicitly so process extraction always reads the trimmed graph even if a
+  // future option drops the intervening `mro`/`communities` phases.
+  deps: ['communities', 'routes', 'tools', 'pruneLocalSymbols', 'structure'],
 
   async execute(
     ctx: PipelineContext,
@@ -40,7 +44,7 @@ export const processesPhase: PipelinePhase<ProcessesOutput> = {
 
     ctx.onProgress({
       phase: 'processes',
-      percent: 94,
+      percent: 99,
       message: 'Detecting execution flows...',
       stats: { filesProcessed: totalFiles, totalFiles, nodesCreated: ctx.graph.nodeCount },
     });
@@ -55,7 +59,7 @@ export const processesPhase: PipelinePhase<ProcessesOutput> = {
       ctx.graph,
       communityResult.memberships,
       (message, progress) => {
-        const processProgress = 94 + progress * 0.05;
+        const processProgress = 99 + progress * 0.01;
         ctx.onProgress({
           phase: 'processes',
           percent: Math.round(processProgress),
@@ -67,7 +71,7 @@ export const processesPhase: PipelinePhase<ProcessesOutput> = {
     );
 
     if (isDev) {
-      console.log(
+      logger.info(
         `🔄 Process detection: ${processResult.stats.totalProcesses} processes found (${processResult.stats.crossCommunityCount} cross-community)`,
       );
     }
@@ -103,14 +107,39 @@ export const processesPhase: PipelinePhase<ProcessesOutput> = {
 
     // Link Route and Tool nodes to Processes
     if (routeRegistry.size > 0 || toolDefs.length > 0) {
-      const routesByFile = new Map<string, string[]>();
-      for (const [url, entry] of routeRegistry) {
-        let list = routesByFile.get(entry.filePath);
+      // Two-tier route lookup, mirroring the tool tables 10 lines below.
+      // Routes whose handler resolved key by `handlerSymbolId` (read from
+      // the Route node's graph properties — routes.ts stamps it there) and
+      // link ONLY to the process whose entryPoint matches; routes without a
+      // resolved handler fall back to a per-file bucket so we still attach
+      // the Route node to a same-file process (best-effort).
+      //
+      // Pre-#2289-review-P2 this was a single per-file bucket: every verb
+      // on a file's controller was linked to every process in that file,
+      // cross-wiring same-file `GET /items` and `POST /items` to each
+      // other's handler processes. The per-verb `handlerSymbolId` the
+      // routes phase stamps on the Route node was never consulted.
+      const routesByHandlerId = new Map<string, string[]>();
+      const routesWithoutHandlerByFile = new Map<string, string[]>();
+      for (const [, entry] of routeRegistry) {
+        // Push the Route node identity (`routeNodeKey`), not the bare URL, so the
+        // ENTRY_POINT_OF edge targets the same node id the routes phase created
+        // (#2289: a same-URL GET/POST pair is two distinct Route nodes).
+        const routeKey = routeNodeKey(entry.method, entry.url);
+        // Source of truth for handlerSymbolId is the Route node in the
+        // graph (routes.ts populates it from `routeHandlerSymbols`); the
+        // routes phase runs before processes (see `deps`), so the node is
+        // always present here.
+        const routeNode = ctx.graph.getNode(generateId('Route', routeKey));
+        const handlerSymbolId = routeNode?.properties.handlerSymbolId as string | undefined;
+        const targetMap = handlerSymbolId ? routesByHandlerId : routesWithoutHandlerByFile;
+        const bucketKey = handlerSymbolId ?? entry.filePath;
+        let list = targetMap.get(bucketKey);
         if (!list) {
           list = [];
-          routesByFile.set(entry.filePath, list);
+          targetMap.set(bucketKey, list);
         }
-        list.push(url);
+        list.push(routeKey);
       }
       const toolsByHandlerId = new Map<string, string[]>();
       const toolsWithoutHandlerByFile = new Map<string, string[]>();
@@ -133,10 +162,12 @@ export const processesPhase: PipelinePhase<ProcessesOutput> = {
         const entryFile = entryNode.properties.filePath;
         if (!entryFile) continue;
 
-        const routeURLs = routesByFile.get(entryFile);
-        if (routeURLs) {
-          for (const routeURL of routeURLs) {
-            const routeNodeId = generateId('Route', routeURL);
+        const exactRouteKeys = routesByHandlerId.get(proc.entryPointId);
+        const fallbackRouteKeys = routesWithoutHandlerByFile.get(entryFile);
+        const routeKeys = exactRouteKeys ?? fallbackRouteKeys;
+        if (routeKeys) {
+          for (const routeKey of routeKeys) {
+            const routeNodeId = generateId('Route', routeKey);
             ctx.graph.addRelationship({
               id: generateId('ENTRY_POINT_OF', `${routeNodeId}->${proc.id}`),
               sourceId: routeNodeId,
@@ -167,7 +198,7 @@ export const processesPhase: PipelinePhase<ProcessesOutput> = {
         }
       }
       if (isDev && linked > 0) {
-        console.log(`🔗 Linked ${linked} Route/Tool nodes to execution flows`);
+        logger.info(`🔗 Linked ${linked} Route/Tool nodes to execution flows`);
       }
     }
 

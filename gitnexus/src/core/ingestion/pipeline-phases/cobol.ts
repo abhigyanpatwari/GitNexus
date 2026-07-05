@@ -15,6 +15,7 @@ import { readFileContents } from '../filesystem-walker.js';
 import type { StructureOutput } from './structure.js';
 import { isDev } from '../utils/env.js';
 
+import { logger } from '../../logger.js';
 export interface CobolOutput {
   programs: number;
   paragraphs: number;
@@ -47,7 +48,7 @@ export const cobolPhase: PipelinePhase<CobolOutput> = {
     const cobolResult = processCobol(ctx.graph, cobolFiles, allPathSet);
 
     if (isDev) {
-      console.log(
+      logger.info(
         `  COBOL: ${cobolResult.programs} programs, ${cobolResult.paragraphs} paragraphs, ${cobolResult.sections} sections from ${cobolFiles.length} files`,
       );
       if (
@@ -55,12 +56,12 @@ export const cobolPhase: PipelinePhase<CobolOutput> = {
         cobolResult.execCicsBlocks > 0 ||
         cobolResult.entryPoints > 0
       ) {
-        console.log(
+        logger.info(
           `  COBOL enriched: ${cobolResult.execSqlBlocks} SQL blocks, ${cobolResult.execCicsBlocks} CICS blocks, ${cobolResult.entryPoints} entry points, ${cobolResult.moves} moves, ${cobolResult.fileDeclarations} file declarations`,
         );
       }
       if (cobolResult.jclJobs > 0) {
-        console.log(`  JCL: ${cobolResult.jclJobs} jobs, ${cobolResult.jclSteps} steps`);
+        logger.info(`  JCL: ${cobolResult.jclJobs} jobs, ${cobolResult.jclSteps} steps`);
       }
     }
 

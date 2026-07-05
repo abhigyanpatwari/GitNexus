@@ -4,7 +4,7 @@
  * Computes Method Resolution Order (MRO) and creates METHOD_OVERRIDES
  * and METHOD_IMPLEMENTS edges.
  *
- * @deps    crossFile
+ * @deps    crossFile, scopeResolution, pruneLocalSymbols
  * @reads   graph (all nodes and relationships)
  * @writes  graph (METHOD_OVERRIDES, METHOD_IMPLEMENTS edges)
  */
@@ -15,6 +15,7 @@ import type { StructureOutput } from './structure.js';
 import { computeMRO } from '../mro-processor.js';
 import { isDev } from '../utils/env.js';
 
+import { logger } from '../../logger.js';
 export interface MROOutput {
   entries: number;
   ambiguityCount: number;
@@ -24,7 +25,7 @@ export interface MROOutput {
 
 export const mroPhase: PipelinePhase<MROOutput> = {
   name: 'mro',
-  deps: ['crossFile', 'structure'],
+  deps: ['crossFile', 'scopeResolution', 'pruneLocalSymbols', 'structure'],
 
   async execute(
     ctx: PipelineContext,
@@ -34,7 +35,7 @@ export const mroPhase: PipelinePhase<MROOutput> = {
 
     ctx.onProgress({
       phase: 'enriching',
-      percent: 83,
+      percent: 98,
       message: 'Computing method resolution order...',
       stats: { filesProcessed: totalFiles, totalFiles, nodesCreated: ctx.graph.nodeCount },
     });
@@ -42,7 +43,7 @@ export const mroPhase: PipelinePhase<MROOutput> = {
     const mroResult = computeMRO(ctx.graph);
 
     if (isDev && mroResult.entries.length > 0) {
-      console.log(
+      logger.info(
         `🔀 MRO: ${mroResult.entries.length} classes analyzed, ${mroResult.ambiguityCount} ambiguities, ${mroResult.overrideEdges} METHOD_OVERRIDES, ${mroResult.methodImplementsEdges} METHOD_IMPLEMENTS`,
       );
     }

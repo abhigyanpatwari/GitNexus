@@ -290,14 +290,6 @@ export interface CachedEmbedding {
 }
 
 /**
- * Context info for embedding pipeline (repo/server metadata enrichment)
- */
-export interface EmbeddingContext {
-  repoName?: string;
-  serverName?: string;
-}
-
-/**
  * Model download progress from transformers.js
  */
 export interface ModelProgress {

@@ -1,0 +1,82 @@
+{
+  "straight-line": {
+    "fingerprint": "792229965a726d2c6b527f9ee65440a2b3023839ee71cb51522fc30e2f2cb454",
+    "scaling_budget": 1.5,
+    "disk_bytes_budget": 1.2,
+    "heap_budget": 1.3,
+    "rd_scaling_budget": 2.0,
+    "disk_bytes_large_max": 1309481,
+    "_note": "#2081 M1 / #2082 M2: ONE function, N coalescing statements (extendBlock text accumulation + per-statement fact harvest). Runs at 2000->8000. M2 REWROTE the old 'output is constant 4 blocks' note: statement facts make disk/heap LINEAR in N (a free gate on the harvest payload); TIME still guards the concat path (array-join ~1.0; a genuine O(n^2) re-join accumulation is ~3.8). M2 adds rd_scaling_budget (measured ~0.74) and disk_bytes_large_max -- an ABSOLUTE ceiling ~1.35x the measured indexed-encoding bytes (969,986 at N=8000, ~121 B/stmt); a named-record encoding regression (~4x facts bytes) blows it. Re-baseline the fingerprint only on an intentional CFG/harvest-shape change (the canon now includes statements+bindings)."
+  },
+  "many-functions": {
+    "fingerprint": "3a83212717383c2f5cd3179ed28e28d2387ecc0c5ee17044d0290e07da20b8d7",
+    "scaling_budget": 1.5,
+    "disk_bytes_budget": 1.2,
+    "heap_budget": 1.3,
+    "rd_scaling_budget": 2.0,
+    "_note": "#2081 M1 / #2082 M2 / #2083 M3 U1: N small branchy functions (collect walk + per-function build + per-function solve). Time ~1.0, disk ~1.01, heap ~1.0, rd ~0.86 (solver is per-function; N functions scale linearly). M3 U1 re-fingerprinted: taint sites join StatementFacts (a()/b() call sites); disk_large 2565641->2721641 (+6.1% measured site-harvest cost at N=2000). #2227 U1 re-fingerprinted: SiteRecord.at call-site anchor [line,col] joins the statement-facts canon (resolved-callee-id stack); CFG construction/topology unchanged, only the additive serialized `at` byte drifts the JSON.stringify canon. FU-C re-fingerprinted: BindingEntry.formalIndex joins the binding facts canon (CALL_SUMMARY formal-position keying); CFG topology unchanged."
+  },
+  "branchy": {
+    "fingerprint": "414367e6b351ca9b3cd5df3d7229c607a6c203e600075b9dbaa55f3258e919d6",
+    "scaling_budget": 1.8,
+    "disk_bytes_budget": 1.2,
+    "heap_budget": 1.3,
+    "rd_scaling_budget": 2.0,
+    "_note": "#2081 M1 / #2082 M2 / #2083 M3 U1: ONE function, N sequential ifs (block/edge growth in one CFG). Time ~1.1-1.25 (noisiest scenario; budget 1.8 absorbs noise, catches ~4.0 quadratic), disk ~1.03, heap ~1.0, rd ~0.7. M3 U1 re-fingerprinted (s{i}() call sites); disk_large 908964->993854 (+9.3%). #2227 U1 re-fingerprinted: SiteRecord.at call-site anchor [line,col] joins the statement-facts canon (resolved-callee-id stack); CFG topology unchanged. FU-C re-fingerprinted: BindingEntry.formalIndex joins the binding facts canon (CALL_SUMMARY formal-position keying); CFG topology unchanged."
+  },
+  "dense-bindings": {
+    "fingerprint": "ddb5a3389fa629707960bc1892322c0c2735bbad627829d0685e2da89aeb35fa",
+    "scaling_budget": 1.8,
+    "disk_bytes_budget": 1.2,
+    "heap_budget": 1.3,
+    "rd_scaling_budget": 2.0,
+    "_note": "#2082 M2 / #2201 SSA: N bindings live across ~N blocks in one loop -- bindings x blocks scale JOINTLY (the solver-lattice stressor). The dense GEN/KILL worklist measured rd ~5.2 normalized here (the OUT spine copy is O(V) per block, quadratic when V scales with B). The #2201 SSA-sparse solver answers each use's reaching set from the def-use graph WITHOUT a per-block dense lattice, dropping rd to ~0.86 (linear; measured 5-23x faster absolute). Budget tightened 10->2: still absorbs noise + catches a regression to the per-item-rescan class (a per-use scan over all defs is O(n^3) here, ratio >=16), but now also catches a fall-back to the dense quadratic. FU-C re-fingerprinted: BindingEntry.formalIndex joins the binding facts canon (CALL_SUMMARY formal-position keying); CFG topology unchanged."
+  },
+  "deep-nest": {
+    "fingerprint": "f2ffa8305a59122f6b52e643f2272e3be882d35bccf87455520ae7fac0b88de2",
+    "scaling_budget": 1.8,
+    "disk_bytes_budget": 1.2,
+    "rd_scaling_budget": 2.0,
+    "facts_large_min": 150,
+    "_note": "#2201: N nested loops carrying ONE variable end-to-end (depth 40->160) -- the pathology the dense worklist is superlinear on and whose block-visit total drives it past the blocks×64 ceiling (it would TRUNCATE to empty). rd is measured under the PRODUCTION blocks×64 budget (rdProductionBudget) to prove the ceiling stops firing: the depth-INDEPENDENT SSA solver (phi-nodes capture loop merges statically; no fixpoint iteration) computes the full facts (measured 164 at large) with rd_scaling ~0.68 (linear in depth; measured ~0.57ms at depth 160). facts_large_min tightened 100->150 (#2201 review R7): a partial-truncation regression that still cleared the old floor of 100 (but lost facts of the measured 164) now fails, with ~9% headroom under 164 for noise; the companion rd_all_computed gate also catches any non-'computed' status. rd_scaling_budget 2.0 catches a regression back to superlinear. No heap_budget -- the deep-nest CFG payload is tiny and the retained-heap delta is GC-noise-dominated. Re-baseline the fingerprint only on an intentional CFG/visitor change. FU-C re-fingerprinted: BindingEntry.formalIndex joins the binding facts canon (CALL_SUMMARY formal-position keying); CFG topology unchanged."
+  },
+  "wide-merge": {
+    "fingerprint": "4135a740376068c3f2dedc4751c6588cbe9ae36026ddc9f2ae9112b188980cda",
+    "scaling_budget": 1.8,
+    "disk_bytes_budget": 1.2,
+    "heap_budget": 1.3,
+    "rd_scaling_budget": 2.0,
+    "facts_large_min": 24000,
+    "_note": "#2201 review R7: N bindings, EACH assigned in a 3-way branch (a wide multi-operand phi per binding) inside a loop, then all used after the merge. Distinct from dense-bindings (one CHAINED redef per `if`): every binding fans into its OWN wide phi, so this exercises phi-placement + renaming + the reachByScc condensation across MANY independent wide merges. N bindings x constant arms => O(N) facts (measured 26008 at the large size), so the gate is rd_scaling LINEARITY: measured ~1.07 (time 9.3->39.8ms over the 4x size step); budget 2.0 catches a regression to the per-binding-rescan O(N^2) class -- the recurring solver antipattern the reachByScc alias fast path (review R2) guards against. rd is measured under the PRODUCTION blocks×64 budget (rdProductionBudget): all functions report 'computed' (the SSA path does not truncate here), and facts_large_min 24000 (measured 26008, ~7% headroom) + the rd_all_computed gate assert the wide merges compute fully. fp_blocks 82 / fp_edges 112 at FP_SIZE=15. Re-baseline the fingerprint only on an intentional CFG/harvest-shape change. #2227 U1 re-fingerprinted: SiteRecord.at call-site anchor [line,col] joins the statement-facts canon (resolved-callee-id stack); CFG topology unchanged. FU-C re-fingerprinted: BindingEntry.formalIndex joins the binding facts canon (CALL_SUMMARY formal-position keying); CFG topology unchanged."
+  },
+  "fact-fanout": {
+    "fingerprint": "57fa834df795d8dba99947cdfba2bb86b3f9111d8bf86d38b77c155273ae5c93",
+    "scaling_budget": 1.8,
+    "disk_bytes_budget": 1.2,
+    "heap_budget": 1.3,
+    "rd_scaling_budget": 3.0,
+    "facts_large_max": 16000,
+    "_note": "#2082 M2 / #2083 M3 U1: N switch-arm defs of one variable + N later uses -- facts are O(defs x uses) BY SPEC, so the gate is BOUNDEDNESS, not linearity: with the production fact limit engaged (DEFAULT_PDG_MAX_REACHING_DEF_FACTS_PER_FUNCTION=16000) the materialized fact count stays pinned at the limit as N grows (facts_large_max), and rd time stays bounded (measured ~1.4). Losing the maxFacts early-stop shows as facts_large exploding quadratically. M3 U1 re-fingerprinted (u{i}(x) call sites); disk_large 996737->1107627 (+11.1%). #2227 U1 re-fingerprinted: SiteRecord.at call-site anchor [line,col] joins the statement-facts canon (resolved-callee-id stack); CFG topology unchanged. FU-C re-fingerprinted: BindingEntry.formalIndex joins the binding facts canon (CALL_SUMMARY formal-position keying); CFG topology unchanged."
+  },
+  "taint-dense": {
+    "fingerprint": "f4570c7ae8fde4b7e63b51b4ea641417f911b4267f1f9f2eafadc520020dbf15",
+    "scaling_budget": 1.5,
+    "disk_bytes_budget": 1.2,
+    "heap_budget": 1.3,
+    "rd_scaling_budget": 2.0,
+    "disk_bytes_large_max": 3150000,
+    "taint_findings_per_fn_pin": 8,
+    "taint_scaling_budget": 2.0,
+    "taint_reason_bytes_large_max": 198000,
+    "taint_zero_match_budget": 0.5,
+    "_note": "#2083 M3 U7 (R10): N functions, each with 12 req.body sources + a 4-hop chain + 13 eval sinks (13 deduped findings/fn) at 125->500 fns; the zero-match control (inp.payload/evalish) keeps the identical CFG shape with zero model hits. BOUNDEDNESS pin: kept findings/function == 8 (the scenario cap) at BOTH sizes -- above means the cap was lost, below means detection regressed; total findings grow linearly with N by design. disk_bytes_large_max is the LOAD-BEARING site-harvest absolute ceiling (densest sites of the suite; measured 2335772 at N=500, ceiling ~1.35x). taint_reason_bytes_large_max caps the persisted TAINTED reason bytes (measured 146827 = ~37 B/finding, ceiling ~1.35x; blows on hop-encoding bloat or cap loss). taint_zero_match_budget 0.5 vs measured 0.15: the zero-match pass (match gate only, no solver) must stay a small fraction of the match-dense pass. taint scaling measured ~0.93 (per-function work is N-linear); time/disk/heap/rd ratios all ~1.0. #2227 U1 re-fingerprinted: SiteRecord.at call-site anchor [line,col] joins the statement-facts canon (resolved-callee-id stack); CFG topology unchanged, disk stays under the 3,150,000 ceiling (measured 2,429,131). FU-C re-fingerprinted: BindingEntry.formalIndex joins the binding facts canon (CALL_SUMMARY formal-position keying); CFG topology unchanged."
+  },
+  "go:branchy": {
+    "fingerprint": "9baedb7efb61bf1c9d0d8eb51de653258fff52e991834da98de9fc6057f444df",
+    "scaling_budget": 1.8,
+    "disk_bytes_budget": 1.2,
+    "heap_budget": 1.3,
+    "rd_scaling_budget": 2.0,
+    "_note": "#2195 U7: the first NON-TS scaling scenario -- the C-family analogue of `branchy`, driven through the Go grammar + Go CFG visitor (lang:'go'). ONE Go function with N sequential `if`s (block/edge growth in a single CFG). The `go:` key namespace keeps it out of the TS baseline keyspace (no collision/re-baseline of a TS scenario). Measured time ~1.08, disk ~1.03, heap ~1.0, rd ~1.06 (budgets mirror the TS `branchy` scenario: scaling 1.8 absorbs single-CFG noise + catches a ~4.0 quadratic). Cross-check: fp_blocks 32 / fp_edges 46 are IDENTICAL to the TS branchy fingerprint shape -- the Go visitor builds the same per-`if` block/edge topology. CFG-only (Go has no registered taint model), so no taint gates. Re-baseline the fingerprint only on an intentional Go CFG/harvest-shape change. #2227 U1 re-fingerprinted: SiteRecord.at call-site anchor [line,col] joins the statement-facts canon (resolved-callee-id stack); Go CFG topology unchanged."
+  }
+}

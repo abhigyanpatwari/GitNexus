@@ -1,7 +1,9 @@
 import path from 'node:path';
 import http from 'node:http';
+import { readFileSync } from 'node:fs';
 import express from 'express';
 import { describe, expect, it, vi, beforeEach } from 'vitest';
+import { _captureLogger } from '../../src/core/logger.js';
 
 const { accessMock } = vi.hoisted(() => ({
   accessMock: vi.fn(),
@@ -213,7 +215,7 @@ describe('resolveWebDistDir', () => {
   });
 
   it('warns on non-ENOENT errors but continues', async () => {
-    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const cap = _captureLogger();
     accessMock.mockImplementation(async (p: string) => {
       if (p.includes('primary'))
         throw Object.assign(new Error('permission denied'), { code: 'EACCES' });
@@ -222,11 +224,16 @@ describe('resolveWebDistDir', () => {
     });
     const result = await resolveWebDistDir('/primary', '/fallback');
     expect(result).toBe('/fallback');
-    expect(warnSpy).toHaveBeenCalledWith(
-      expect.stringContaining('could not access web UI dir /primary'),
-      'permission denied',
-    );
-    warnSpy.mockRestore();
+    expect(
+      cap
+        .records()
+        .some(
+          (r) =>
+            String(r.msg ?? '').includes('could not access web UI dir /primary') &&
+            r.err === 'permission denied',
+        ),
+    ).toBe(true);
+    cap.restore();
   });
 
   it('prefers GITNEXUS_WEB_DIST env var when set', async () => {
@@ -316,5 +323,19 @@ describe('Real Express dispatch — API and asset isolation', () => {
     registerWebUI(app, null);
     const status = await makeRequest(app, 'GET', '/');
     expect(status).toBe(200);
+  });
+
+  it('does not register a legacy "*" OPTIONS route (Express 5 startup crash regression guard)', async () => {
+    // The original PR #1747 startup crash was `app.options('*', ...)` throwing
+    // under Express 5's stricter path parser. The fix on main is to NOT register
+    // any explicit OPTIONS route — cors() handles preflights automatically and
+    // the Access-Control-Allow-Private-Network header is set by global middleware
+    // before cors. This regression guard fails loudly if someone re-adds a legacy
+    // wildcard route to api.ts.
+    const apiSource = readFileSync(
+      path.join(__dirname, '..', '..', 'src', 'server', 'api.ts'),
+      'utf-8',
+    );
+    expect(apiSource).not.toMatch(/app\.options\(\s*['"`]\*['"`]/);
   });
 });

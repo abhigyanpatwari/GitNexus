@@ -14,8 +14,9 @@ import { typeConfig as csharpConfig } from '../type-extractors/csharp.js';
 import { csharpExportChecker } from '../export-detection.js';
 import { createImportResolver } from '../import-resolvers/resolver-factory.js';
 import { csharpImportConfig } from '../import-resolvers/configs/csharp.js';
-import { extractCSharpNamedBindings } from '../named-bindings/csharp.js';
 import { CSHARP_QUERIES } from '../tree-sitter-queries.js';
+import { createLeadingDocDescriptionExtractor } from '../utils/ast-helpers.js';
+import type { AstFrameworkPatternConfig } from '../language-provider.js';
 import { createCallExtractor } from '../call-extractors/generic.js';
 import { csharpCallConfig } from '../call-extractors/configs/csharp.js';
 import { createFieldExtractor } from '../field-extractors/generic.js';
@@ -24,7 +25,7 @@ import { createMethodExtractor } from '../method-extractors/generic.js';
 import { csharpMethodConfig } from '../method-extractors/configs/csharp.js';
 import { createVariableExtractor } from '../variable-extractors/generic.js';
 import { csharpVariableConfig } from '../variable-extractors/configs/csharp.js';
-import { createHeritageExtractor } from '../heritage-extractors/generic.js';
+import { createCsharpCfgVisitor } from '../cfg/visitors/csharp.js';
 import {
   emitCsharpScopeCaptures,
   interpretCsharpImport,
@@ -135,19 +136,67 @@ const BUILT_INS: ReadonlySet<string> = new Set([
 export const csharpProvider = defineLanguage({
   id: SupportedLanguages.CSharp,
   extensions: ['.cs'],
+  entryPointPatterns: [
+    /^(Get|Post|Put|Delete|Patch)/,
+    /Action$/,
+    /^On[A-Z]/,
+    /Async$/,
+    /^Configure$/,
+    /^ConfigureServices$/,
+    /^Handle$/,
+    /^Execute$/,
+    /^Invoke$/,
+    /^Map[A-Z]/,
+    /Service$/,
+    /^Seed/,
+  ],
+  astFrameworkPatterns: [
+    {
+      framework: 'aspnet',
+      entryPointMultiplier: 3.2,
+      reason: 'aspnet-attribute',
+      patterns: [
+        '[ApiController]',
+        '[HttpGet]',
+        '[HttpPost]',
+        '[HttpPut]',
+        '[HttpDelete]',
+        '[Route]',
+        '[Authorize]',
+        '[AllowAnonymous]',
+      ],
+    },
+    {
+      framework: 'signalr',
+      entryPointMultiplier: 2.8,
+      reason: 'signalr-attribute',
+      patterns: ['[HubMethodName]', ': Hub', ': Hub<'],
+    },
+    {
+      framework: 'blazor',
+      entryPointMultiplier: 2.5,
+      reason: 'blazor-attribute',
+      patterns: ['@page', '[Parameter]', '@inject'],
+    },
+    {
+      framework: 'efcore',
+      entryPointMultiplier: 2.0,
+      reason: 'efcore-pattern',
+      patterns: ['DbContext', 'DbSet<', 'OnModelCreating'],
+    },
+  ] satisfies AstFrameworkPatternConfig[],
   treeSitterQueries: CSHARP_QUERIES,
   typeConfig: csharpConfig,
   exportChecker: csharpExportChecker,
   importResolver: createImportResolver(csharpImportConfig),
-  namedBindingExtractor: extractCSharpNamedBindings,
-  interfaceNamePattern: /^I[A-Z]/,
   mroStrategy: 'implements-split',
   callExtractor: createCallExtractor(csharpCallConfig),
   fieldExtractor: createFieldExtractor(csharpFieldConfig),
   methodExtractor: createMethodExtractor(csharpMethodConfig),
   variableExtractor: createVariableExtractor(csharpVariableConfig),
   classExtractor: createClassExtractor(csharpClassConfig),
-  heritageExtractor: createHeritageExtractor(SupportedLanguages.CSharp),
+  // ── XML doc comments (`///`) → description (issue #2270) ──
+  descriptionExtractor: createLeadingDocDescriptionExtractor(),
   builtInNames: BUILT_INS,
 
   // ── RFC #909 Ring 3: scope-based resolution hooks (RFC §5) ──────────
@@ -155,6 +204,7 @@ export const csharpProvider = defineLanguage({
   // the full per-hook rationale and the canonical capture vocabulary
   // in ./csharp/query.ts (CSHARP_SCOPE_QUERY constant).
   emitScopeCaptures: emitCsharpScopeCaptures,
+  cfgVisitor: createCsharpCfgVisitor(),
   interpretImport: interpretCsharpImport,
   interpretTypeBinding: interpretCsharpTypeBinding,
   bindingScopeFor: csharpBindingScopeFor,

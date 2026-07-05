@@ -74,4 +74,50 @@ export interface ParsedFile {
    */
   readonly localDefs: readonly SymbolDefinition[];
   readonly referenceSites: readonly ReferenceSite[];
+  /**
+   * Opaque, language-private serialization of capture-time side-channel
+   * state that a provider's `emitScopeCaptures` populates into module-level
+   * maps as a SIDE EFFECT (not onto the scopes/defs of this `ParsedFile`).
+   *
+   * Such state is computed inside the parse worker (where `emitScopeCaptures`
+   * runs) and would otherwise be lost across the worker→main MessageChannel
+   * and the disk store, because scope-resolution reuses the serialized
+   * `ParsedFile` and SKIPS re-extraction on the main thread (#1983 — the
+   * whole point is to avoid a main-thread tree-sitter re-parse). Carrying the
+   * data here lets the main thread repopulate those maps WITHOUT re-parsing.
+   *
+   * Shared / ingestion code treats this as opaque (`unknown`) per AGENTS.md
+   * (no language names in shared code). The producing language fills it via
+   * the `LanguageProvider.collectCaptureSideChannel` hook (worker side) and
+   * consumes it via the `ScopeResolver.applyCaptureSideChannel` hook
+   * (main-thread resolution side). It MUST be plain JSON-serializable data
+   * (objects / arrays / primitives) so it round-trips through the disk-backed
+   * `parsedfile-store` (JSON.stringify + interning reviver).
+   *
+   * Optional: providers whose `emitScopeCaptures` is pure (no module-level
+   * side effects — the contract default) leave this undefined.
+   */
+  readonly captureSideChannel?: unknown;
+
+  /**
+   * Per-function control-flow graphs for this file (#2081 M1, PDG/taint
+   * substrate). A DISTINCT field from {@link captureSideChannel} — different
+   * producer, consumer, and lifecycle: the worker builds it from the
+   * tree-sitter AST via `LanguageProvider.cfgVisitor` (only on a `--pdg` run),
+   * and scope-resolution emits BasicBlock nodes + CFG edges from it while the
+   * disk-backed ParsedFile store is still live (it is NOT a capture-time
+   * marker the resolver restores into module maps). Kept separate so a future
+   * change to either channel's shape invalidates independently.
+   *
+   * Shared / ingestion code treats this as opaque (`unknown`) per AGENTS.md.
+   * Concretely it is a `readonly FunctionCfg[]` (see
+   * `core/ingestion/cfg/types.ts`) — plain JSON-serializable data (no AST
+   * refs, no class instances) so it round-trips through the parse cache and
+   * the `parsedfile-store` (whose interning reviver keys on `nodeId`, which
+   * these blocks/edges deliberately lack).
+   *
+   * Optional: `undefined` on non-`--pdg` runs and for languages with no
+   * `cfgVisitor` — the default for every run today.
+   */
+  readonly cfgSideChannel?: unknown;
 }

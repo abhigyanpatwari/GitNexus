@@ -1,0 +1,60 @@
+name: Gitleaks
+
+# Deterministic in-CI secret scanning. Defense-in-depth on top of GitHub's
+# native secret-scanning push protection (which is a repo Settings toggle —
+# see SECURITY.md for the recommended admin action).
+#
+# PR runs scan the diff (fast); main pushes scan full history.
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  gitleaks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          # Full history needed for the on-push full-history scan; on PRs the
+          # action diffs against the base ref so the cost is bounded by the PR.
+          fetch-depth: 0
+          # Don't bake the token into the cloned .git/config; downstream
+          # steps (and Gitleaks itself) don't need it for repo operations.
+          persist-credentials: false
+
+      # gitleaks-action builds `base^..head` for pull_request events; both SHAs
+      # must exist locally (fork PRs and shallow checkouts otherwise fail with
+      # "unknown revision" — see gitleaks/gitleaks-action#199).
+      - name: Fetch PR refs for gitleaks range
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          git fetch --no-tags origin "$BASE_SHA"
+          git fetch --no-tags origin "$HEAD_SHA"
+
+      # No GITLEAKS_LICENSE secret is required for OSS / public-repo usage.
+      # If this repo becomes private, the action will require a license key.
+      - name: Gitleaks
+        uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3.0.0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_ENABLE_UPLOAD_ARTIFACT: true
+          GITLEAKS_ENABLE_SUMMARY: true

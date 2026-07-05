@@ -15,9 +15,9 @@ Monorepo: **CLI/MCP** (`gitnexus/`) + **browser UI** (`gitnexus-web/`).
 
 ## End-to-end flow: index → graph → tools
 
-1. **Ingestion** — `analyze.ts` → `runFullAnalysis` (`run-analyze.ts`) → `runPipelineFromRepo` (`pipeline.ts`). DAG of 12 phases builds a `KnowledgeGraph` in memory, then loads into LadybugDB under `.gitnexus/`. Repo registered in `~/.gitnexus/registry.json` for MCP discovery.
+1. **Ingestion** — `analyze.ts` → `runFullAnalysis` (`run-analyze.ts`) → `runPipelineFromRepo` (`pipeline.ts`). DAG of 15 phases builds a `KnowledgeGraph` in memory, then loads into LadybugDB under `.gitnexus/`. Repo registered in `~/.gitnexus/registry.json` for MCP discovery.
 
-2. **Persistence** — `repo-manager.ts` (paths, registry, KuzuDB cleanup). `lbug-adapter.ts` (graph load, queries, embedding batches).
+2. **Persistence** — `repo-manager.ts` (paths, registry, LadybugDB cleanup). `lbug-adapter.ts` (graph load, queries, embedding batches).
 
 3. **Query layer** — three interfaces to the same backend:
    - **MCP (stdio):** `mcp.ts` → `LocalBackend` → tools (`tools.ts`) + resources (`resources.ts`)
@@ -38,13 +38,18 @@ Monorepo: **CLI/MCP** (`gitnexus/`) + **browser UI** (`gitnexus-web/`).
 | `detect_changes` | Map git diffs to affected symbols and processes |
 | `rename` | Graph-assisted multi-file rename with `dry_run` preview |
 | `api_impact` | Pre-change impact report for an API route handler |
+| `trace` | Shortest directed path between two symbols (call + class-member edges); group-aware (`repo: "@<group>"`) for cross-repo traces |
 | `route_map` | API route → handler → consumer mappings |
 | `tool_map` | MCP/RPC tool definitions and handlers |
 | `shape_check` | Response shape vs consumer property access mismatches |
+| `explain` | Persisted taint findings (source→sink data flows) — needs `analyze --pdg` |
+| `pdg_query` | Control/data dependence — CDG (`mode: controls`) / REACHING_DEF (`mode: flows`) — needs `analyze --pdg` |
 | `group_list` | List repo groups or details for one group |
 | `group_sync` | Rebuild group Contract Registry (`contracts.json`) and bridge graph |
 
-`query`, `context`, and `impact` are group-aware: pass `repo: "@<groupName>"` (or `"@<groupName>/<memberPath>"` to scope to one member) plus optional `service: "<monorepo/path>"`. Group-mode `query` merges per-repo results via Reciprocal Rank Fusion; group-mode `impact` runs the local walk in the chosen member and fans out across boundaries via the Contract Bridge (`gitnexus/src/core/group/cross-impact.ts`). The previously-planned `group_query`, `group_context`, `group_impact`, `group_contracts`, `group_status` MCP tools are intentionally not introduced — group-level state is exposed via resources instead:
+`query`, `context`, and `impact` are group-aware: pass `repo: "@<groupName>"` (or `"@<groupName>/<memberPath>"` to scope to one member) plus optional `service: "<monorepo/path>"`. Group-mode `query` merges per-repo results via Reciprocal Rank Fusion; group-mode `impact` runs the local walk in the chosen member and fans out across boundaries via the Contract Bridge (`gitnexus/src/core/group/cross-impact.ts`). `trace` is also group-aware via `repo: "@<groupName>"` — but, unlike the others, it resolves `from`/`to` across **all** members (a `@<groupName>/<memberPath>` suffix is advisory for trace, not a scope); pass `from_uid`/`to_uid` to disambiguate a symbol name that occurs in more than one member.
+
+Group-mode `trace` (`gitnexus/src/core/group/cross-trace.ts`) stitches a path that crosses repositories: it resolves `from`/`to` across all members, and when they live in different repos it joins the home-repo segment to the target-repo segment over a single `ContractLink` boundary (an HTTP consumer→provider link, joined on `Contract.symbolUid`), reported as a `CONTRACT_LINK` hop in `crossings[]`. The crossing is clamped to one boundary (`MAX_SUPPORTED_CROSS_DEPTH`, shared with cross-impact); deeper `crossDepth` is reported via `notes[]`. With `pdg: true` (experimental, opt-in), each boundary-adjacent segment is enriched with its intra-procedural REACHING_DEF data-flow when that repo was indexed with `--pdg` (reusing the same anchored `flows` query as `pdg_query`); data flow never crosses the repo boundary, and a missing PDG layer degrades to call-level hops with a note. Two stores meet only at the `symbolUid` grain — the per-repo PDG/call graph and the group bridge — so this is the documented join; full cross-program (SDG-like) data flow across the boundary remains deferred (see `docs/plans/2026-06-18-002-feat-unified-pdg-impact-evaluation-plan.md`). The previously-planned `group_query`, `group_context`, `group_impact`, `group_contracts`, `group_status` MCP tools are intentionally not introduced — group-level state is exposed via resources instead:
 
 | Resource URI | Purpose |
 |--------------|---------|
@@ -65,7 +70,7 @@ Monorepo: **CLI/MCP** (`gitnexus/`) + **browser UI** (`gitnexus-web/`).
 | Wiki generation | `src/core/wiki/` |
 | Language support | `src/core/ingestion/languages/` + `tree-sitter-queries.ts` + `gitnexus-shared/src/languages.ts` |
 | Import resolution | `src/core/ingestion/import-processor.ts` + `import-resolvers/configs/` + `model/resolution-context.ts` |
-| Call resolution/MRO | `src/core/ingestion/call-processor.ts` + `model/resolve.ts` |
+| Call resolution/inheritance/MRO | `src/core/ingestion/scope-resolution/` (pipeline, passes, graph-bridge) |
 | Type extraction | `src/core/ingestion/type-extractors/` |
 | Worker pool | `src/core/ingestion/workers/` |
 | Web UI | `gitnexus-web/src/` |
@@ -77,11 +82,11 @@ Monorepo: **CLI/MCP** (`gitnexus/`) + **browser UI** (`gitnexus-web/`).
 
 ## Pipeline Phase DAG
 
-12 phases defined in `gitnexus/src/core/ingestion/pipeline-phases/`, each with explicit `deps` and typed output.
+15 phases defined in `gitnexus/src/core/ingestion/pipeline-phases/`, each with explicit `deps` and typed output.
 
 ```
 scan → structure → [markdown, cobol] → parse → [routes, tools, orm]
-  → crossFile → mro → communities → processes
+  → crossFile → scopeResolution → pruneLocalSymbols → mro → di → communities → processes
 ```
 
 | Phase | File | Deps | Output |
@@ -95,11 +100,14 @@ scan → structure → [markdown, cobol] → parse → [routes, tools, orm]
 | `tools` | `tools.ts` | `parse` | Tool nodes + HANDLES_TOOL edges |
 | `orm` | `orm.ts` | `parse` | QUERIES edges (Prisma, Supabase) |
 | `crossFile` | `cross-file.ts` + `cross-file-impl.ts` | `parse`, `routes`, `tools`, `orm` | Cross-file type propagation in topological import order |
-| `mro` | `mro.ts` | `crossFile`, `structure` | METHOD_OVERRIDES + METHOD_IMPLEMENTS edges |
-| `communities` | `communities.ts` | `mro`, `structure` | Community nodes + MEMBER_OF edges (Leiden algorithm) |
-| `processes` | `processes.ts` | `communities`, `routes`, `tools`, `structure` | Process nodes + STEP_IN_PROCESS edges |
+| `scopeResolution` | `scope-resolution/pipeline/phase.ts` | `parse`, `crossFile`, `structure` | Binding/reference + inheritance edges; disposes BindingAccumulator |
+| `pruneLocalSymbols` | `prune-local-symbols.ts` | `scopeResolution` | Drops inert block-local `Const`/`Variable`/`Static` nodes (only a `File→DEFINES` edge) post-resolution |
+| `mro` | `mro.ts` | `crossFile`, `scopeResolution`, `pruneLocalSymbols`, `structure` | METHOD_OVERRIDES + METHOD_IMPLEMENTS edges |
+| `di` | `di.ts` | `mro` | INJECTS edges (framework-neutral DI resolution; per-language matchers registered in `di-extractors/`) |
+| `communities` | `communities.ts` | `mro`, `pruneLocalSymbols`, `structure` | Community nodes + MEMBER_OF edges (Leiden algorithm) |
+| `processes` | `processes.ts` | `communities`, `routes`, `tools`, `pruneLocalSymbols`, `structure` | Process nodes + STEP_IN_PROCESS edges |
 
-**Non-phase files in the same directory:** `parse-impl.ts`, `cross-file-impl.ts` (implementation), `wildcard-synthesis.ts` (whole-module import expansion), `orm-extraction.ts` (sequential ORM fallback), `types.ts`, `runner.ts`, `index.ts`.
+**Non-phase files in the same directory:** `parse-impl.ts`, `cross-file-impl.ts` (implementation), `wildcard-synthesis.ts` (whole-module import expansion), `types.ts`, `runner.ts`, `index.ts`.
 
 ### DAG runner
 
@@ -119,7 +127,8 @@ scan → structure → [markdown, cobol] → parse → [routes, tools, orm]
 - **Single graph accumulator** — all phases mutate the same `KnowledgeGraph` in `ctx`; the graph is the primary output.
 - **Typed phase access** — `getPhaseOutput<T>(deps, 'name')` for type-safe upstream results.
 - **Binding accumulator lifecycle** — created in `parse`, disposed by `crossFile` (in `finally`). No other phase should take ownership.
-- **Skippable phases** — `skipGraphPhases` omits MRO/communities/processes (faster tests). `skipWorkers` forces sequential parsing.
+- **Skippable phases** — `skipGraphPhases` omits MRO/di/communities/processes (faster tests); `pruneLocalSymbols` still runs (it is graph cleanup, not analysis). `skipWorkers` is no longer a sequential escape hatch — it (like `--workers 0` / `GITNEXUS_WORKER_POOL_SIZE=0`) is rejected with an actionable error, since the worker pool is the sole parse path (§ Chunked parse-and-resolve).
+- **Local-symbol pruning** — `pruneLocalSymbols` removes inert block-local value symbols after scope resolution has consumed them. Opt out per-call with `PipelineOptions.keepLocalValueSymbols` or globally with the `GITNEXUS_KEEP_LOCAL_VALUE_SYMBOLS` env var.
 
 ### How to add a new phase
 
@@ -147,105 +156,18 @@ export const myPhase: PipelinePhase<MyPhaseOutput> = {
 
 ---
 
-## Call-Resolution DAG
+## Semantic model
 
-Typed 6-stage pipeline in `call-processor.ts` (inside the `parse` phase) that resolves method/function calls and emits CALLS edges. Language behavior plugs in at two `LanguageProvider` hook points (stages 3–4); shared code names no languages. Scope: call resolution only — import resolution, type extraction, heritage, and symbol-table population live in other phases.
+`SemanticModel` (`gitnexus/src/core/ingestion/model/semantic-model.ts`) is the authoritative store for every symbol-indexed lookup (by `nodeId`, `simpleName`, `qualifiedName`, or `filePath`). The scope-resolution pipeline reads from here: `findOwnedMember`, `pickOverload`, and `findExportedDefByName` all consult `model.methods` / `model.fields` / `model.symbols`.
 
-### Stages
-
-```
-extract-call ──▶ classify-form ──▶ infer-receiver ──▶ select-dispatch ──▶ resolve-target ──▶ emit-edge
-     (1)              (2)            (3)  [hook]       (4)  [hook]         (5)                 (6)
-```
-
-| Stage | Produces | Location |
-|-------|----------|----------|
-| **extract-call** | `ExtractedCallSite` (name, form, receiver, argCount) | `call-extractors/` (per-language); runs in worker |
-| **classify-form** | callForm (`free`/`member`/`constructor`) + arity | `call-analysis.ts` → `inferCallForm`; shared, runs in worker |
-| **infer-receiver** | `ReceiverEnriched` (receiver type finalized) | `call-processor.ts`; shared default chain, then `inferImplicitReceiver` hook |
-| **select-dispatch** | `DispatchDecision` (primary, fallback, ancestryView) | `selectDispatch` hook, falls back to shared default |
-| **resolve-target** | `TieredCandidates` | `model/resolve.ts` → `lookupMethodByOwnerWithMRO` (MRO walk) |
-| **emit-edge** | CALLS edge in graph | `call-processor.ts`; writes edge with confidence tier |
-
-### Provider hooks
-
-Both hooks are optional on `LanguageProvider`. Ruby is the only current implementer.
-
-**`inferImplicitReceiver`** — called after shared infer-receiver defaults. Returns `ImplicitReceiverOverride | null`.
-
-| | |
-|---|---|
-| Inputs | `calledName`, `callForm`, `receiverName`, `receiverTypeName`, `callNode` (AST), `filePath` |
-| Non-null fields | `callForm`, `receiverName`, `receiverTypeName` (required); `receiverSource: 'implicit-self'` (fixed); `hint?` (opaque, passed to `selectDispatch`) |
-| Null | Keep existing `ReceiverEnriched` state |
-
-**`selectDispatch`** — called after infer-receiver (including hook). Returns `DispatchDecision | null`; null uses shared default (constructor → `primary:'constructor'`; typed receiver → `primary:'owner-scoped'`; else → `primary:'free'`).
-
-| | |
-|---|---|
-| Inputs | `calledName`, `callForm`, `receiverName`, `receiverTypeName`, `receiverSource`, `hint` |
-| Non-null fields | `primary: 'owner-scoped' \| 'free' \| 'constructor'`; `fallback?: 'free-arity-narrowed'`; `ancestryView?: 'instance' \| 'singleton'`; `hint?` |
-
-**`DispatchDecision` field semantics:**
-- `primary: 'owner-scoped'` — MRO walk from receiver's type; used when receiver type is known.
-- `fallback: 'free-arity-narrowed'` — after owner-scoped miss, search free-call candidates by arity only (Ruby uses this for implicit-self calls that miss their owner's MRO).
-- `ancestryView: 'singleton'` — walk singleton/class ancestry instead of instance ancestry (Ruby `def self.foo` bodies, so `extend`-ed methods are found).
-
-### Adding language behavior
-
-1. **Implicit receivers** — implement `inferImplicitReceiver`: return null if call already has a receiver; otherwise use `findEnclosingClassInfo` (`ast-helpers.ts`) to find the enclosing context, return `ImplicitReceiverOverride` with `receiverSource: 'implicit-self'`, and optionally set `hint` for `selectDispatch`.
-2. **Custom dispatch** — implement `selectDispatch`: inspect `receiverSource` and `hint`, return `DispatchDecision` with `primary`, optional `fallback`, optional `ancestryView`; return null to keep shared defaults.
-3. **MRO strategy** — confirm `mroStrategy` is `'first-wins'`, `'c3'`, `'ruby-mixin'`, or `'none'`; consumed by `lookupMethodByOwnerWithMRO`.
-
-**Ruby example** (`languages/ruby.ts` + `utils/ruby-self-call.ts`): `inferImplicitReceiver` rewrites bare-identifier calls to `self.method` and sets `hint` to `'instance'`/`'singleton'`; `selectDispatch` uses hint for `ancestryView` and adds `fallback: 'free-arity-narrowed'` for implicit-self calls.
-
-### Code references
-
-| Module | Purpose |
-|--------|---------|
-| `core/ingestion/call-types.ts` | DAG types: `ReceiverEnriched`, `DispatchDecision`, `ImplicitReceiverOverride` |
-| `core/ingestion/language-provider.ts` | Hook signatures: `inferImplicitReceiver`, `selectDispatch` |
-| `core/ingestion/call-processor.ts` | `processCalls`: stages 3–6 |
-| `core/ingestion/model/resolve.ts` | `lookupMethodByOwnerWithMRO`: stage 5 MRO walk |
-| `core/ingestion/languages/ruby.ts` | Both hooks + `mroStrategy: 'ruby-mixin'` |
-| `core/ingestion/utils/ruby-self-call.ts` | Bare-call rewrite for `inferImplicitReceiver` |
-
-### Coexistence with the scope-resolution pipeline
-
-The Call-Resolution DAG is the **legacy path**. RFC #909 Ring 3 introduces a parallel **scope-resolution pipeline** (next section) that replaces stages 1–6 with a scope-indexed registry lookup. Both paths ship side-by-side and are gated per-language via `MIGRATED_LANGUAGES` + the `REGISTRY_PRIMARY_<LANG>` env var.
-
-- **Unmigrated language** → Call-Resolution DAG runs; scope-resolution phase is a no-op.
-- **Migrated language** (currently: Python, C#) → scope-resolution owns CALLS/ACCESSES/USES emission; the legacy DAG gates off for that language via `isRegistryPrimary(lang)` checks in `call-processor.ts` and `import-processor.ts`.
-- `import-processor` still populates `importMap` for migrated languages — heritage's `ctx.resolve` reads it to disambiguate parent classes. Only edge emission is gated.
-- CI runs BOTH paths for every migrated language on every PR (`.github/workflows/ci-scope-parity.yml`); both must pass.
-
-#### Same-graph guarantee
-
-Edges emitted by the scope-resolution pipeline and edges emitted by the legacy DAG are indistinguishable to downstream consumers (MCP tools, HTTP API, embeddings, group bridge):
-
-- **Node identity** — both paths use `generateId(...)` from `lib/utils.ts`, the same qualified-name keyspace, and the same node labels (`File`, `Folder`, `Class`, `Method`, `Function`, …). Overload disambiguation suffixes `parameterTypes` into the id consistently — see `scope-resolution/graph-bridge/ids.ts` and the legacy emitter in `call-processor.ts`.
-- **Edge vocabulary** — both paths emit the same reasons: `'import-resolved' | 'global' | 'local-call' | 'same-file' | 'interface-dispatch' | 'read' | 'write'`. Migrating a language must not change which reasons consumers see for previously-resolved edges.
-- **Confidence tier** — both paths attach a numeric `confidence` to each edge using the same scale.
-
-The CI parity workflow (`.github/workflows/ci-scope-parity.yml`) runs both paths against every migrated language's fixture corpus and fails on any divergence.
-
-#### Semantic-model source of truth
-
-Two independent invariants.
-
-**ParsedFile = the AST-level truth.** `ParsedFile` (`gitnexus-shared/src/scope-resolution/parsed-file.ts`) is the single per-file artifact both resolution paths consume. Scope-resolution passes MUST NOT build a parallel parse representation. If a per-language hook needs AST-level facts that `ParsedFile` doesn't expose, it should reuse the orchestrator's `treeCache` (`RunScopeResolutionInput.treeCache`) rather than re-invoking `parser.parse(...)` on its own — the C# `populateNamespaceSiblings` hook is the reference implementation of this pattern.
-
-**SemanticModel = the symbol-level truth.** `SemanticModel` (`gitnexus/src/core/ingestion/model/semantic-model.ts`) is the authoritative store for every symbol-indexed lookup (by `nodeId`, `simpleName`, `qualifiedName`, or `filePath`). Both paths read from here:
-
-- Legacy Call-Resolution DAG → `call-processor` Tier 1/2/3 via `model.symbols.lookupExactAll`, `model.methods.lookupMethodByName`, `model.types.lookupClassByName`, `lookupMethodByOwnerWithMRO`.
-- Scope-resolution pipeline → `findOwnedMember`, `pickOverload`, `findExportedDefByName` all consult `model.methods` / `model.fields` / `model.symbols`.
+`ParsedFile` (`gitnexus-shared/src/scope-resolution/parsed-file.ts`) is the single per-file artifact the scope-resolution pipeline consumes. Scope-resolution passes MUST NOT build a parallel parse representation. If a per-language hook needs AST-level facts that `ParsedFile` doesn't expose, it should reuse the orchestrator's `treeCache` (`RunScopeResolutionInput.treeCache`) rather than re-invoking `parser.parse(...)` on its own — the C# `populateNamespaceSiblings` hook is the reference implementation of this pattern.
 
 The scope-resolution pipeline additionally carries `WorkspaceResolutionIndex` for `Scope`-valued lookups (`classScopeByDefId`, `moduleScopeByFile`) that `SemanticModel` structurally cannot hold. No symbol-indexed duplicates exist outside `SemanticModel`.
 
 **Write / read phase contract.** The model is mutable during three ordered phases and read-only afterward:
 
 ```
- Phase 1: legacy parse     ──► symbolTable.add fans into types/methods/fields
+ Phase 1: parse            ──► symbolTable.add fans into types/methods/fields
  Phase 2: scope-resolution ──► reconcileOwnership() registers corrected ownerIds
  Phase 3: finalize         ──► model.attachScopeIndexes(bundle) — one-shot freeze
  ─────────────────────────── phase boundary ───────────────────────────
@@ -255,7 +177,7 @@ The scope-resolution pipeline additionally carries `WorkspaceResolutionIndex` fo
 
 `runScopeResolution` narrows `MutableSemanticModel` → `SemanticModel` at the phase boundary so downstream passes physically cannot mutate the model even accidentally.
 
-**Transitional: reconciliation pass.** `reconcileOwnership` (`scope-resolution/pipeline/reconcile-ownership.ts`) is a shim for languages whose legacy extractor doesn't resolve `enclosingClassId` at parse time (Python class-body methods are the canonical case). It walks `parsed.localDefs[i].ownerId` after `populateOwners` and registers any missed methods/fields into the model. Idempotent — safe to re-run, safe alongside languages whose legacy extractor already carries `ownerId` (C#).
+**Reconciliation pass.** `reconcileOwnership` (`scope-resolution/pipeline/reconcile-ownership.ts`) is a shim for languages whose parse-time extractor doesn't resolve `enclosingClassId` at parse time (Python class-body methods are the canonical case). It walks `parsed.localDefs[i].ownerId` after `populateOwners` and registers any missed methods/fields into the model. Idempotent — safe to re-run, safe alongside languages whose extractor already carries `ownerId` (C#).
 
 The architectural end state is for every language's parse-time extractor to emit the correct `ownerId` directly, making reconciliation a no-op (tracked as a follow-up refactor). The dev-mode validator `validateOwnershipParity` surfaces any drift via `onWarn` under `NODE_ENV !== 'production' && VALIDATE_SEMANTIC_MODEL !== '0'`.
 
@@ -265,7 +187,7 @@ References: `semantic-model.ts` file-head (full write/read contract); `contract/
 
 ## Scope-Resolution Pipeline (RFC #909 Ring 3)
 
-Language-agnostic registry-primary resolver. Replaces the Call-Resolution DAG for migrated languages. Adding a language is one interface implementation (`ScopeResolver`) plus two registrations — no changes to shared code, no new pipeline phase.
+Language-agnostic scope-resolution resolver. This is the resolution path for every language — it owns CALLS/ACCESSES/USES emission and inheritance edges. Adding a language is one interface implementation (`ScopeResolver`) plus one registration in the `SCOPE_RESOLVERS` map — no changes to shared code, no new pipeline phase. (RING4-1 #942 removed the legacy call-resolution DAG and the per-language `MIGRATED_LANGUAGES` flag, so `SCOPE_RESOLVERS` registration is all that's needed.)
 
 ### Pipeline stages
 
@@ -286,7 +208,20 @@ Language-agnostic registry-primary resolver. Replaces the Call-Resolution DAG fo
 ```
 
 Orchestrator: `runScopeResolution(input, provider)` in `scope-resolution/pipeline/run.ts`.
-Pipeline phase: `scopeResolutionPhase` in `scope-resolution/pipeline/phase.ts` — iterates `SCOPE_RESOLVERS ∩ MIGRATED_LANGUAGES`, reads per-file Trees from the parse phase's `scopeTreeCache`, disposes the cache at the end.
+Pipeline phase: `scopeResolutionPhase` in `scope-resolution/pipeline/phase.ts` — iterates the registered `SCOPE_RESOLVERS` over the worker-serialized `ParsedFile`s. (Per-language `emitScopeCaptures` hooks may reuse a cached Tree via the orchestrator's `treeCache`, but in worker-pool runs that cache is empty — Trees can't cross MessageChannels — so they consume the pre-extracted `ParsedFile` instead; § Performance notes.)
+
+### Optional CFG/PDG emission (`--pdg`, #2081–#2086)
+
+On a `--pdg` run the parse worker builds a per-function control-flow graph from the tree-sitter AST (`LanguageProvider.cfgVisitor`; TypeScript/JavaScript today) and serializes it onto `ParsedFile.cfgSideChannel` as plain data. Scope-resolution then emits the program-dependence layers from that side-channel **inside Phase 4 of `runScopeResolution`, while the disk-backed ParsedFile store is still live** — the only window where the worker-built CFGs are loaded (the store is cleared right after the phase returns). A standalone post-`mro` phase would read an empty store, so the emit deliberately lives in-phase, mirroring the `applyCaptureSideChannel` pattern. The opt-in is off by default (graph byte-identical), folded into the parse-cache key (a pdg-off warm cache is never reused on a `--pdg` run), and each layer is bounded by a per-function edge cap that logs any dropped edges. All layers are `BasicBlock → BasicBlock` edges in the single `CodeRelation` table, keyed by `type`; there is **no** `Function → BasicBlock` edge — the symbol↔block join is reconstructed from the BasicBlock id prefix + line span. The layers build on each other:
+
+- **M1 — CFG** (#2081): `BasicBlock` nodes + `CFG` edges. Edge *kind* (`seq`/`cond-true`/`loop-back`/…) rides the `reason` column (CFG is one `CodeRelation` type, not one per kind).
+- **M2 — REACHING_DEF** (#2082): GEN/KILL def→use data dependence from a pure fixpoint solver; the variable name rides `reason`.
+- **M3/M4 — TAINTED / SANITIZES / TAINT_PATH** (#2083–#2084): intra- and inter-procedural taint (source→sink) — the `explain` tool's data.
+- **M5 — CDG** (#2085): Ferrante control dependence over a Cooper–Harvey–Kennedy post-dominator tree (the EXIT-rooted reverse CFG); branch sense (`'T'`/`'F'`) rides `reason`. A CFG whose EXIT is unreachable from some block is skipped for CDG (post-dominance would be unsound) while its CFG/REACHING_DEF layers are kept.
+- **M6 — read surface** (#2086): the `pdg_query` MCP tool answers "what gates X?" (CDG, `mode: controls`) and "where does Y flow?" (REACHING_DEF, `mode: flows`); `explain` is the taint consumer. Both are always anchored + `LIMIT`-bounded (LadybugDB has no rel-property index) and share one `resolveBlockAnchor` helper. These PDG edge types are deliberately kept out of the default `VALID_RELATION_TYPES` / web schema.
+- **Cross-repo trace enrichment**: group-mode `trace` (`pdg: true`) reuses the same anchored REACHING_DEF `flows` query to annotate a boundary-adjacent segment with how a value reaches the cross-repo call — strictly intra-procedural (data flow never crosses the repo boundary). See the group-aware tools note above.
+
+See `core/ingestion/cfg/` (emit + the pure CFG / post-dominator / control-dependence / reaching-defs / taint passes) and `mcp/local/local-backend.ts` (`_pdgQueryImpl`, `_explainImpl`, the shared `resolveBlockAnchor`).
 
 ### `ScopeResolver` contract
 
@@ -312,7 +247,6 @@ Single interface a language implements to plug into the pipeline. Contract fully
 
 1. Implement `ScopeResolver` in `languages/<lang>/scope-resolver.ts`.
 2. Add entry to `SCOPE_RESOLVERS` in `scope-resolution/pipeline/registry.ts`.
-3. Add the language to `MIGRATED_LANGUAGES` in `registry-primary-flag.ts` when the shadow-harness corpus parity ≥ 99% fixtures / ≥ 98% corpus.
 
 CI auto-discovers the set via `tsx`. No workflow edit required.
 
@@ -328,7 +262,6 @@ CI auto-discovers the set via `tsx`. No workflow edit required.
 | `scope-resolution/graph-bridge/*.ts` | CLI-local translation from resolved references → `KnowledgeGraph` edges |
 | `scope-resolution/scope/*.ts` | Generic scope-chain walkers + namespace targets |
 | `scope-resolution/workspace-index.ts` | Build-once O(1) lookup index |
-| `registry-primary-flag.ts` | `MIGRATED_LANGUAGES` set + `isRegistryPrimary(lang)` |
 | `languages/python/index.ts` | Python `ScopeResolver` hooks + known-limitation docs |
 | `languages/python/captures.ts` | `emitPythonScopeCaptures` (honors cross-phase Tree cache) |
 | `languages/csharp/index.ts` | C# `ScopeResolver` hooks + known-limitation docs |
@@ -337,7 +270,7 @@ CI auto-discovers the set via `tsx`. No workflow edit required.
 
 ### Performance notes
 
-- **Cross-phase Tree cache**: parse phase writes Trees into `scopeTreeCache` (separate from the chunk-local `astCache`) ONLY for languages with `emitScopeCaptures`. Scope-resolution reads from it to skip the second parse. Cleared at end of the phase. Workers leave the cache empty — Trees can't cross MessageChannels; cache miss = fresh parse. `PROF_SCOPE_RESOLUTION=1` emits hit/miss counters and a worker-engaged warning.
+- **Cross-phase Tree cache**: the orchestrator's `treeCache` (`RunScopeResolutionInput.treeCache`) lets a scope-resolution per-language hook (`emitScopeCaptures`) reuse a tree instead of re-parsing. Workers leave it empty — Trees can't cross MessageChannels — so in normal (worker-pool) runs scope-resolution does NOT rely on it: workers serialize each file's `ParsedFile` (+ capture side-channel) and stream them in, so scope-resolution consumes the pre-extracted artifact rather than re-parsing on the main thread (§ Chunked parse-and-resolve). `PROF_SCOPE_RESOLUTION=1` emits hit/miss counters and a worker-engaged warning.
 - **Typed relationship iteration**: heritage + MRO walk only the EXTENDS / IMPLEMENTS / HAS_METHOD edges via `iterRelationshipsByType`, not the full relationship map.
 - **Workspace-resolution-index**: O(1) `findOwnedMember` / `findExportedDef` / `classScopeByDefId` built once per run.
 - **SCC-ordered cross-file return-type propagation** (PR #1050): `propagateImportedReturnTypes` walks `indexes.sccs` in reverse-topological order (leaves first), so multi-hop alias chains like `models.User → service.user → app.user` collapse to the terminal class in a single linear pass. Within each importer, the source module's `typeBindings` is chain-followed BEFORE mirroring (so we mirror terminal types, not intermediate refs), and the importer's own `typeBindings` is chain-followed AFTER mirroring (so local `const x = importedFn()` resolves before downstream importers run). Cyclic SCCs reach a partial fixpoint within a single pass without iterating to convergence — see the `ts-circular` cross-file-binding fixture which only asserts pipeline-no-throw. PROF output (`PROF_SCOPE_RESOLUTION=1`) splits `finalize` from `propagate` so quadratic regressions in the chain-follow surface independently.
@@ -351,7 +284,7 @@ CI auto-discovers the set via `tsx`. No workflow edit required.
 ```
  Unified Graph Schema (44 node types, 21 relationship types)
            ↑
- Unified Resolution (3-tier name lookup + MRO walk)
+ Scope-Resolution Pipeline (registry lookup + 3-tier import resolution + MRO)
            ↑
  Language Providers (import semantics, type config, export checker, MRO strategy)
            ↑
@@ -371,12 +304,13 @@ Each language implements `LanguageProvider` (`language-provider.ts`). Key fields
 | `exportChecker` | Public/exported symbol detection |
 | `typeConfig` | Type annotation extraction rules |
 | `mroStrategy` | `first-wins` / `c3` / `none` |
+| `descriptionExtractor` | Optional hook returning a symbol's doc-comment text as its `description`; feeds the embedding metadata header so doc-only terms are semantically searchable (issue #2270). Most languages register `createLeadingDocDescriptionExtractor` (shared, language-neutral; per-language comment/wrapper config passed at the call site) |
 
 16 providers in `languages/index.ts` via `satisfies Record<SupportedLanguages, LanguageProvider>` — missing a language is a compile error.
 
 ### Unified capture tags
 
-Per-language tree-sitter queries use different AST node names but produce the **same semantic capture tags**: `@definition.class`, `@definition.function`, `@call.name`, `@import.source`, `@heritage.extends`. Downstream extraction needs no language branching. Defined in `tree-sitter-queries.ts`.
+Per-language tree-sitter queries use different AST node names but produce the **same semantic capture tags**: `@definition.class`, `@definition.function`, `@call.name`, `@import.source`, `@reference.inherits`. Downstream extraction needs no language branching. Defined in `tree-sitter-queries.ts`.
 
 ### Import resolution
 
@@ -400,22 +334,25 @@ Unified 3-tier algorithm (`model/resolution-context.ts`), per-language `importSe
 ### Chunked parse-and-resolve
 
 `parse` processes files in ~20 MB byte-budget chunks to bound memory. Per chunk:
-1. Worker pool dispatches files (or sequential fallback via `skipWorkers`)
+1. Worker pool dispatches files (the sole parse path — there is no sequential fallback; `skipWorkers`, `--workers 0`, and `GITNEXUS_WORKER_POOL_SIZE=0` are rejected with an actionable error)
 2. Each worker: detect language → load grammar → run queries → return unified `ParseWorkerResult`
 3. Synthesize wildcard bindings (`wildcard-synthesis.ts`)
-4. Resolve imports and heritage
+4. Resolve imports
 5. Collect `BindingAccumulator` entries for cross-file propagation
+
+Inheritance edges are emitted later, by the scope-resolution phase (`preEmitInheritanceEdges` + `emitHeritageEdges`), not during `parse`.
 
 Workers: `workers/worker-pool.ts`, `workers/parse-worker.ts`.
 
-### Heritage and MRO
+**Worker-serialized ParsedFiles (#2038).** To index very large repos (e.g. the Linux kernel) without OOM, the worker pool is the *sole* parse path and workers serialize each file's `ParsedFile` (plus its capture side-channel) in parallel, streaming them to scope-resolution through a disk-backed store. Scope-resolution consumes the pre-extracted artifact instead of re-parsing every file on the main thread — tree-sitter's native input buffers are not GC-reclaimable, so the former main-thread re-parse leaked native memory until the process died. Pool creation is lazy / cache-miss-gated, so a warm all-cache-hit run replays cached worker output without spawning a worker (hence `usedWorkerPool` can be false even when the repo has parseable files).
 
-All languages emit unified `ExtractedHeritage` (child, parent, `EXTENDS`/`IMPLEMENTS`). MRO phase walks the heritage graph using per-language strategy:
+### Inheritance and MRO
+
+Inheritance is captured by the `@reference.inherits` tag and emitted by the scope-resolution phase: `preEmitInheritanceEdges` resolves each base in scope, then `emitHeritageEdges` writes the `EXTENDS`/`IMPLEMENTS` edges. The phase then computes method resolution order via each `ScopeResolver`'s `buildMro` hook, feeding a `MethodDispatchIndex` used for owner-scoped lookups. Per-language strategy:
 - **`first-wins`** — Java, C#, C++, TS, Ruby, Go
 - **`c3`** — Python (C3 linearization)
+- **`ruby-mixin`** — Ruby (mixin-aware linearization)
 - **`none`** — single-inheritance languages
-
-Unified walk: `lookupMethodByOwnerWithMRO()` in `model/resolve.ts`.
 
 ---
 
@@ -446,7 +383,8 @@ CLI (analyze.ts) → runFullAnalysis(repoPath, options, callbacks)
   ├── lbug           # LadybugDB database
   ├── lbug.wal       # Write-ahead log
   ├── lbug.lock      # Single-writer lock
-  └── meta.json      # lastCommit, indexedAt, stats
+  ├── gitnexus.json  # lastCommit, indexedAt, stats (primary metadata file)
+  └── meta.json      # legacy mirror of gitnexus.json, kept in sync (see MIGRATION.md)
 
 ~/.gitnexus/
   └── registry.json  # Global repo registry (MCP discovery)
@@ -461,6 +399,8 @@ Defined in `lbug/schema.ts`. Separate node tables per type, single `CodeRelation
 **Node tables:** File, Folder, Function, Class, Interface, Method, Constructor, CodeElement, Struct, Enum, Macro, Typedef, Union, Namespace, Trait, Impl, TypeAlias, Const, Static, Property, Record, Delegate, Annotation, Template, Module, Community, Process, Route, Tool, Section, Embedding.
 
 **Relation types** (`CodeRelation.type`): CONTAINS, DEFINES, CALLS, IMPORTS, EXTENDS, IMPLEMENTS, HAS_METHOD, HAS_PROPERTY, ACCESSES, METHOD_OVERRIDES, METHOD_IMPLEMENTS, MEMBER_OF, STEP_IN_PROCESS, HANDLES_ROUTE, FETCHES, HANDLES_TOOL, ENTRY_POINT_OF.
+
+**Optional `--pdg` additions** (off by default, opt-in via `gitnexus analyze --pdg`; see _Optional CFG/PDG emission_ above): a `BasicBlock` node table, plus the PDG relation types `CFG`, `REACHING_DEF`, `CDG`, `TAINTED`, `SANITIZES`, and `TAINT_PATH` on the same `CodeRelation` table. These are deliberately kept out of the default `VALID_RELATION_TYPES` / web graph schema — query them via `cypher`, `explain`, or `pdg_query`.
 
 ## Embeddings and search
 

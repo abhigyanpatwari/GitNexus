@@ -2,54 +2,10 @@
  * Shared test helpers for language resolution integration tests.
  */
 import path from 'path';
-import { it as vitestIt } from 'vitest';
 import { runPipelineFromRepo } from '../../../src/core/ingestion/pipeline.js';
 import type { PipelineOptions } from '../../../src/core/ingestion/pipeline.js';
 import type { PipelineResult } from '../../../src/types/pipeline.js';
 import type { GraphRelationship } from 'gitnexus-shared';
-
-const LEGACY_RESOLVER_PARITY_EXPECTED_FAILURES: Readonly<Record<string, ReadonlySet<string>>> = {
-  csharp: new Set([
-    'emits the using-import edge App/Program.cs -> Models/User.cs through the scope-resolution path',
-  ]),
-};
-
-type ResolverParityEnv = Readonly<Record<string, string | undefined>>;
-type VitestIt = typeof vitestIt;
-type CallableIt = (name: string, ...args: unknown[]) => unknown;
-
-export function resolverParityFlagName(languageSlug: string): string {
-  return `REGISTRY_PRIMARY_${languageSlug.toUpperCase().replace(/-/g, '_')}`;
-}
-
-export function isLegacyResolverParityRun(
-  languageSlug: string,
-  env: ResolverParityEnv = process.env,
-): boolean {
-  const value = env[resolverParityFlagName(languageSlug)]?.trim().toLowerCase();
-  return value === '0' || value === 'false' || value === 'no';
-}
-
-export function isLegacyResolverParityExpectedFailure(
-  languageSlug: string,
-  testName: string,
-  env: ResolverParityEnv = process.env,
-): boolean {
-  if (!isLegacyResolverParityRun(languageSlug, env)) return false;
-  return LEGACY_RESOLVER_PARITY_EXPECTED_FAILURES[languageSlug]?.has(testName) ?? false;
-}
-
-export function createResolverParityIt(languageSlug: string): VitestIt {
-  const wrapped = ((name: string, ...args: unknown[]) => {
-    const runner = isLegacyResolverParityExpectedFailure(languageSlug, name)
-      ? vitestIt.skip
-      : vitestIt;
-    return (runner as unknown as CallableIt)(name, ...args);
-  }) as VitestIt;
-
-  Object.assign(wrapped, vitestIt);
-  return wrapped;
-}
 
 export const FIXTURES = path.resolve(__dirname, '..', '..', 'fixtures', 'lang-resolution');
 export const CROSS_FILE_FIXTURES = path.resolve(
@@ -88,6 +44,47 @@ export function getRelationships(result: PipelineResult, type: string): RelEdge[
     }
   }
   return edges;
+}
+
+export function getResolutionOutcomes(result: PipelineResult) {
+  return result.resolutionOutcomes ?? [];
+}
+
+/**
+ * Relationships whose source or target id does not resolve to a live graph node.
+ * A non-empty result means the graph has dangling edges (an endpoint that was
+ * never materialized) — e.g. a HAS_METHOD edge owned by a class node that the
+ * structure phase failed to create. Pass `types` to scope the check to specific
+ * relationship types (e.g. `['HAS_METHOD']`).
+ */
+export function findDanglingEdges(
+  result: PipelineResult,
+  types?: string[],
+): Array<{
+  type: string;
+  sourceId: string;
+  targetId: string;
+  missing: 'source' | 'target' | 'both';
+}> {
+  const out: Array<{
+    type: string;
+    sourceId: string;
+    targetId: string;
+    missing: 'source' | 'target' | 'both';
+  }> = [];
+  for (const rel of result.graph.iterRelationships()) {
+    if (types && !types.includes(rel.type)) continue;
+    const src = result.graph.getNode(rel.sourceId);
+    const tgt = result.graph.getNode(rel.targetId);
+    if (src && tgt) continue;
+    out.push({
+      type: rel.type,
+      sourceId: rel.sourceId,
+      targetId: rel.targetId,
+      missing: !src && !tgt ? 'both' : !src ? 'source' : 'target',
+    });
+  }
+  return out;
 }
 
 export function getNodesByLabel(result: PipelineResult, label: string): string[] {

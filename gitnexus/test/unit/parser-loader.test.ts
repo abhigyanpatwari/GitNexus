@@ -80,6 +80,81 @@ describe('parser-loader', () => {
     });
   });
 
+  // #1242: regression coverage for the Windows tree-sitter@0.21.1 + tree-sitter-c
+  // ABI mismatch. setLanguage alone could pass while the first non-trivial
+  // traversal/query produced "Cannot read properties of undefined (reading
+  // '161')" inside unmarshalNode (or a native segfault under the worker).
+  describe('C parser ABI compatibility (#1242)', () => {
+    const C_SOURCE = `#include <stdio.h>
+struct Foo { int a; int b; };
+typedef struct Foo Bar;
+static int helper(int x) { return x * 2; }
+int add(int a, int b) { return a + b; }
+int main(void) {
+  Bar b = {1, 2};
+  return add(b.a, helper(b.b));
+}
+`;
+
+    it('parses a non-trivial C translation unit and walks the tree', async () => {
+      const parser = await loadParser();
+      await loadLanguage(SupportedLanguages.C);
+      const tree = parser.parse(C_SOURCE);
+
+      expect(tree.rootNode.type).toBe('translation_unit');
+
+      let nodeCount = 0;
+      const walk = (node: { type: string; children: any[] }): void => {
+        nodeCount += 1;
+        // Touching `.type` here is what triggered the original
+        // unmarshalNode crash on incompatible ABIs.
+        expect(typeof node.type).toBe('string');
+        for (const child of node.children) walk(child);
+      };
+      walk(tree.rootNode as any);
+      expect(nodeCount).toBeGreaterThan(20);
+    });
+
+    it('extracts function definitions and call expressions via a query', async () => {
+      const Parser = (await import('tree-sitter')).default;
+      const parser = await loadParser();
+      await loadLanguage(SupportedLanguages.C);
+      const tree = parser.parse(C_SOURCE);
+      const language = parser.getLanguage();
+
+      const query = new (Parser as any).Query(
+        language,
+        '(function_definition declarator: (function_declarator declarator: (identifier) @name)) ' +
+          '(call_expression function: (identifier) @callee)',
+      );
+      const captures = query.captures(tree.rootNode);
+      const names = captures.filter((c: any) => c.name === 'name').map((c: any) => c.node.text);
+      const callees = captures.filter((c: any) => c.name === 'callee').map((c: any) => c.node.text);
+
+      expect(names).toEqual(expect.arrayContaining(['helper', 'add', 'main']));
+      expect(callees).toEqual(expect.arrayContaining(['add', 'helper']));
+    });
+
+    it('walks a TreeCursor without throwing (catches unmarshalNode regressions)', async () => {
+      const parser = await loadParser();
+      await loadLanguage(SupportedLanguages.C);
+      const tree = parser.parse(C_SOURCE);
+      const cursor = tree.walk();
+      let visited = 0;
+      const descend = (): void => {
+        visited += 1;
+        if (cursor.gotoFirstChild()) {
+          do {
+            descend();
+          } while (cursor.gotoNextSibling());
+          cursor.gotoParent();
+        }
+      };
+      descend();
+      expect(visited).toBeGreaterThan(20);
+    });
+  });
+
   describe('Swift optional dependency', () => {
     it('loads Swift from the default optional dependency and parses source', async () => {
       const parser = await loadParser();

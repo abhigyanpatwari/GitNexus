@@ -170,6 +170,43 @@ describe('calculateEntryPointScore', () => {
       const result = calculateEntryPointScore(name, 'cpp', false, 0, 2);
       expect(result.reasons).toContain('entry-pattern');
     });
+
+    // Kotlin-specific patterns (Android lifecycle, ViewModel, Service)
+    it.each([
+      'onCreate',
+      'onStart',
+      'onResume',
+      'onPause',
+      'onStop',
+      'onDestroy',
+      'doWork',
+      'createComponent',
+      'buildGraph',
+      'UserViewModel',
+      'module',
+      'AuthService',
+    ])('recognizes Kotlin pattern "%s"', (name) => {
+      const result = calculateEntryPointScore(name, 'kotlin', false, 0, 2);
+      expect(result.reasons).toContain('entry-pattern');
+    });
+
+    // Dart-specific patterns (Flutter widget lifecycle, BLoC)
+    // Note: didChangeDependencies/didUpdateWidget/mapEventToState are listed in
+    // the Dart provider but pre-empted by UTILITY_PATTERNS (`did[A-Z]`, `^map`)
+    // before the entry-pattern check, so they are not asserted here.
+    it.each(['main', 'build', 'createState', 'initState', 'dispose', 'runApp', 'onEvent'])(
+      'recognizes Dart pattern "%s"',
+      (name) => {
+        const result = calculateEntryPointScore(name, 'dart', false, 0, 2);
+        expect(result.reasons).toContain('entry-pattern');
+      },
+    );
+
+    // Ruby-specific patterns (Rails callable/job/service objects)
+    it.each(['call', 'perform', 'execute'])('recognizes Ruby pattern "%s"', (name) => {
+      const result = calculateEntryPointScore(name, 'ruby', false, 0, 2);
+      expect(result.reasons).toContain('entry-pattern');
+    });
   });
 
   describe('utility pattern penalty', () => {

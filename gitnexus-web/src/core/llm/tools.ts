@@ -16,6 +16,20 @@ import { z } from 'zod';
 import { NODE_TABLES, REL_TYPES } from 'gitnexus-shared';
 import type { EnrichedSearchResult, GrepResult } from '../../services/backend-client';
 
+/**
+ * Tool names registered by createGraphRAGTools — kept in sync with each tool's `name`
+ * field (enforced by agent-prompt.test.ts) and with BASE_SYSTEM_PROMPT in agent.ts.
+ */
+export const GRAPH_RAG_TOOL_NAMES = [
+  'search',
+  'cypher',
+  'grep',
+  'read',
+  'overview',
+  'explore',
+  'impact',
+] as const;
+
 const validLabel = (label: string): boolean => (NODE_TABLES as readonly string[]).includes(label);
 
 const validRelType = (t: string): boolean => (REL_TYPES as readonly string[]).includes(t);
@@ -278,8 +292,11 @@ export const createGraphRAGTools = (backend: GraphRAGBackend) => {
                 const val = row[col];
                 if (val === null || val === undefined) return '';
                 if (typeof val === 'object') return JSON.stringify(val);
-                // Truncate long values and escape pipe characters
-                const str = String(val).replace(/\|/g, '\\|');
+                // Truncate long values and escape pipe characters. Escape
+                // backslashes FIRST so the subsequent pipe escape isn't
+                // unescaped by a trailing backslash (CodeQL
+                // js/incomplete-sanitization).
+                const str = String(val).replace(/\\/g, '\\\\').replace(/\|/g, '\\|');
                 return str.length > 60 ? str.slice(0, 57) + '...' : str;
               });
               return `| ${values.join(' | ')} |`;

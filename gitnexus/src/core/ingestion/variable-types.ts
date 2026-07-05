@@ -59,6 +59,9 @@ export interface VariableExtractor {
   /** Extract variable metadata from a declaration node.
    *  Returns null if the node is not a recognized variable declaration. */
   extract(node: SyntaxNode, context: VariableExtractorContext): VariableInfo | null;
+  /** Extract every variable metadata entry from a declaration node.
+   *  Returns [] if the node is not a recognized variable declaration. */
+  extractAll(node: SyntaxNode, context: VariableExtractorContext): VariableInfo[];
   /** Check if a node is a recognized variable declaration type. */
   isVariableDeclaration(node: SyntaxNode): boolean;
 }
@@ -78,10 +81,16 @@ export interface VariableExtractionConfig {
   variableNodeTypes: string[];
   /** Extract the variable name from a declaration node */
   extractName: (node: SyntaxNode) => string | undefined;
+  /** Extract multiple variable names from a declaration node. */
+  extractNames?: (node: SyntaxNode) => string[];
   /** Extract type annotation from a declaration node */
   extractType: (node: SyntaxNode) => string | undefined;
+  /** Extract type annotation for one variable name from a multi-name declaration. */
+  extractTypeForName?: (node: SyntaxNode, name: string) => string | undefined;
   /** Extract visibility from a declaration node */
   extractVisibility: (node: SyntaxNode) => VariableVisibility;
+  /** Extract visibility for one variable name from a multi-name declaration. */
+  extractVisibilityForName?: (node: SyntaxNode, name: string) => VariableVisibility;
   /** Check if a declaration is const/immutable */
   isConst: (node: SyntaxNode) => boolean;
   /** Check if a declaration is static */

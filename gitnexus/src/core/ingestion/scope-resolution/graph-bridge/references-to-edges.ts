@@ -24,6 +24,7 @@ import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexe
 import { resolveCallerGraphId, resolveDefGraphId } from '../graph-bridge/ids.js';
 import { mapReferenceKindToEdgeType } from '../graph-bridge/edges.js';
 import type { GraphNodeLookup } from '../graph-bridge/node-lookup.js';
+import type { CalleeIdSink } from '../graph-bridge/callee-id-sink.js';
 
 /**
  * Optional opaque skip key — providers may pre-emit edges (e.g. via
@@ -40,6 +41,10 @@ export function emitReferencesViaLookup(
   referenceIndex: { readonly bySourceScope: ReadonlyMap<ScopeId, readonly Reference[]> },
   nodeLookup: GraphNodeLookup,
   skipSites?: ReferenceSiteSkipSet,
+  /** Resolved-callee-id capture sink (#2227 U2). Threaded in only under
+   *  `--pdg`; `undefined` ⇒ zero overhead, byte-identity (R4). Captured at the
+   *  CALLS emit below BEFORE this loop's `seen` dedup (KTD6/R8). */
+  calleeIdSink?: CalleeIdSink,
 ): { emitted: number; skipped: number } {
   let emitted = 0;
   let skipped = 0;
@@ -78,6 +83,15 @@ export function emitReferencesViaLookup(
       if (edgeType === undefined) {
         skipped++;
         continue;
+      }
+
+      // Resolved-callee-id capture (#2227 U2/KTD6/R8): record this CALLS site's
+      // resolved target BEFORE the `seen` dedup, keyed on `ref.atRange`
+      // (byte-equal to U1's SiteRecord.at: 1-based line / 0-based col). Only
+      // CALLS feeds the bridge; ACCESSES/USES/EXTENDS are skipped. `fromFilePath`
+      // is the call-site (caller) file — the same file U1 stamps the site on.
+      if (calleeIdSink !== undefined && edgeType === 'CALLS' && fromFilePath !== undefined) {
+        calleeIdSink.add(fromFilePath, ref.atRange.startLine, ref.atRange.startCol, targetGraphId);
       }
 
       const dedupKey = `${edgeType}:${callerGraphId}->${targetGraphId}:${ref.atRange.startLine}:${ref.atRange.startCol}`;

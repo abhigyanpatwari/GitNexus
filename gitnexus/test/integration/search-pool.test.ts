@@ -19,7 +19,7 @@ withTestLbugDB(
   (handle) => {
     describe('searchFTSFromLbug — MCP pool adapter (with repoId)', () => {
       it('returns ranked results via pool adapter', async () => {
-        const results = await searchFTSFromLbug('user authentication', 10, handle.repoId);
+        const { results } = await searchFTSFromLbug('user authentication', 10, handle.repoId);
 
         expect(results.length).toBeGreaterThan(0);
 
@@ -35,7 +35,7 @@ withTestLbugDB(
       });
 
       it('results are ordered by descending score via pool adapter', async () => {
-        const results = await searchFTSFromLbug('user authentication', 10, handle.repoId);
+        const { results } = await searchFTSFromLbug('user authentication', 10, handle.repoId);
 
         for (let i = 1; i < results.length; i++) {
           expect(results[i - 1].score).toBeGreaterThanOrEqual(results[i].score);
@@ -43,12 +43,12 @@ withTestLbugDB(
       });
 
       it('returns empty array for non-matching query via pool adapter', async () => {
-        const results = await searchFTSFromLbug('xyzzyplughtwisty', 10, handle.repoId);
+        const { results } = await searchFTSFromLbug('xyzzyplughtwisty', 10, handle.repoId);
         expect(results).toEqual([]);
       });
 
       it('respects limit parameter via pool adapter', async () => {
-        const results = await searchFTSFromLbug('user authentication', 1, handle.repoId);
+        const { results } = await searchFTSFromLbug('user authentication', 1, handle.repoId);
         expect(results.length).toBeLessThanOrEqual(1);
       });
     });
@@ -57,22 +57,22 @@ withTestLbugDB(
 
     describe('unhappy paths', () => {
       it('returns empty array for empty query via pool', async () => {
-        const results = await searchFTSFromLbug('', 10, handle.repoId);
+        const { results } = await searchFTSFromLbug('', 10, handle.repoId);
         expect(results).toEqual([]);
       });
 
       it('returns empty array for whitespace-only query via pool', async () => {
-        const results = await searchFTSFromLbug('   ', 10, handle.repoId);
+        const { results } = await searchFTSFromLbug('   ', 10, handle.repoId);
         expect(results).toEqual([]);
       });
 
       it('handles special characters in query via pool', async () => {
-        const results = await searchFTSFromLbug('user* OR auth+', 10, handle.repoId);
+        const { results } = await searchFTSFromLbug('user* OR auth+', 10, handle.repoId);
         expect(Array.isArray(results)).toBe(true);
       });
 
       it('handles limit of 0 via pool', async () => {
-        const results = await searchFTSFromLbug('user authentication', 0, handle.repoId);
+        const { results } = await searchFTSFromLbug('user authentication', 0, handle.repoId);
         expect(results).toEqual([]);
       });
     });

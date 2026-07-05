@@ -1,0 +1,21 @@
+{
+  "unknown": "Unknown error",
+  "connectFailed": "Failed to connect to server",
+  "loadGraphFailed": "Failed to load graph",
+  "failedToConnect": "Failed to connect",
+  "analysisFailed": "Analysis failed. Check server logs.",
+  "startAnalysisFailed": "Failed to start analysis",
+  "invalidGithubUrl": "Please enter a valid GitHub repository URL.",
+  "invalidAzureDevOpsUrl": "Please enter a valid Azure DevOps repository URL.",
+  "missingFolderPath": "Please enter a folder path.",
+  "backend": {
+    "reconnecting": "Server connection lost. Reconnecting…",
+    "network": "Unable to reach the GitNexus server. Make sure `gitnexus serve` is running.",
+    "timeout": "The server took too long to respond. Try again in a moment.",
+    "rateLimited": "Too many requests. Try again in {{seconds}}s.",
+    "notFound": "The requested repository or resource was not found.",
+    "originBlocked": "This action isn't available from the hosted UI. Open GitNexus from the server's own address (e.g. http://localhost:4747) to continue.",
+    "client": "Request failed: {{message}}",
+    "server": "Server error: {{message}}"
+  }
+}

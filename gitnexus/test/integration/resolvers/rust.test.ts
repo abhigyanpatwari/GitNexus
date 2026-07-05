@@ -9,6 +9,7 @@ import {
   getRelationships,
   getNodesByLabel,
   getNodesByLabelFull,
+  findDanglingEdges,
   edgeSet,
   runPipelineFromRepo,
   type PipelineResult,
@@ -72,6 +73,98 @@ describe('Rust trait implementation resolution', () => {
       expect(target).toBeDefined();
       expect(target!.label).not.toBe('Property');
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Cross-module collision (#1951 review): two `struct User` in separate modules,
+// each `impl Drawable`. The legacy global last-write-wins simple-name index
+// collapsed both impl sites onto ONE `User`, sourcing one (or both) edges from
+// the wrong module's struct. Scope-aware resolution sources each edge from the
+// `User` defined in that impl's own module, so BOTH edges are present and
+// correctly sourced.
+// ---------------------------------------------------------------------------
+
+describe('Rust cross-module trait-impl collision resolution (#1951)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'rust-cross-module-collision'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects 2 User structs in separate modules and 1 Drawable trait', () => {
+    const structs: string[] = [];
+    result.graph.forEachNode((n) => {
+      if (n.label === 'Struct') structs.push(`${n.properties.name}@${n.properties.filePath}`);
+    });
+    const users = structs.filter((s) => s.startsWith('User@')).sort();
+    expect(users).toEqual(['User@src/a.rs', 'User@src/b.rs']);
+    expect(getNodesByLabel(result, 'Trait')).toEqual(['Drawable']);
+  });
+
+  it('emits one IMPLEMENTS edge per module, each sourced from its OWN User', () => {
+    const implements_ = getRelationships(result, 'IMPLEMENTS');
+    expect(implements_.length).toBe(2);
+    expect(edgeSet(implements_)).toEqual(['User → Drawable', 'User → Drawable']);
+    // The fix: each edge sources from the User in its own module — not a single
+    // last-write-wins struct. Before the fix, both edges collapsed onto one file.
+    const sourceFiles = implements_.map((e) => e.sourceFilePath).sort();
+    expect(sourceFiles).toEqual(['src/a.rs', 'src/b.rs']);
+    for (const edge of implements_) {
+      expect(edge.rel.reason).toBe('trait-impl');
+      expect(edge.targetFilePath).toBe('src/traits.rs');
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Qualified/scoped trait paths (#1956 tri-review U1): `impl crate::traits::Foo
+// for S` and `impl crate::traits::Wrapped<T> for S`. The base is a
+// `scoped_type_identifier` (or a generic_type wrapping one). The synth
+// (rust/captures.ts `bareTypeIdentifier`) resolves it by its trailing bare name
+// (KTD-1). The traits are unique, so resolution is unambiguous. (Ambiguous
+// scoped bases reuse the same refuse-on-ambiguity path as bare names, already
+// covered by rust-cross-module-collision / rust-ambiguous; that path is
+// intentionally not added to this fixture.) Scope-resolution owns these edges
+// since #942.
+// ---------------------------------------------------------------------------
+
+describe('Rust qualified/scoped trait-impl resolution (#1956 U1)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'rust-qualified-trait'), () => {});
+  }, 60000);
+
+  it('detects the structs and traits', () => {
+    expect(getNodesByLabel(result, 'Struct')).toEqual(['Gadget', 'Widget']);
+    expect(getNodesByLabel(result, 'Trait')).toEqual(['Drawable', 'Wrapped']);
+  });
+
+  it('emits IMPLEMENTS edges for qualified and qualified-generic trait paths', () => {
+    const implements_ = getRelationships(result, 'IMPLEMENTS');
+    // `impl crate::traits::Drawable for Widget` (scoped) and
+    // `impl crate::traits::Wrapped<u32> for Gadget` (generic-of-scoped) both
+    // resolve by their trailing bare name.
+    expect(edgeSet(implements_)).toEqual(['Gadget → Wrapped', 'Widget → Drawable']);
+    for (const edge of implements_) {
+      expect(edge.rel.reason).toBe('trait-impl');
+    }
+  });
+
+  it('sources each edge from its struct file and targets the trait module', () => {
+    const implements_ = getRelationships(result, 'IMPLEMENTS');
+    for (const edge of implements_) {
+      expect(edge.sourceFilePath).toBe('src/widget.rs');
+      expect(edge.targetFilePath).toBe('src/traits.rs');
+    }
+  });
+
+  it('does not emit EXTENDS edges (Rust trait impls are IMPLEMENTS)', () => {
+    expect(getRelationships(result, 'EXTENDS').length).toBe(0);
   });
 });
 
@@ -1864,8 +1957,8 @@ describe('Rust abstract dispatch (Repository trait)', () => {
 // Companion integration test for the unit-level Rust qualified-syntax tests
 // in symbol-table.test.ts. Validates end-to-end that:
 //
-//   1. Direct `impl` methods on a struct resolve through the D0 owner-scoped
-//      path (`resolveMemberCall`) — the positive control.
+//   1. Direct `impl` methods on a struct resolve through the owner-scoped
+//      path — the positive control.
 //
 //   2. Trait-inherited default methods are NOT reachable via direct
 //      `obj.trait_method()` syntax. Rust requires the trait to be in scope
@@ -1873,9 +1966,9 @@ describe('Rust abstract dispatch (Repository trait)', () => {
 //      treats direct member calls as opaque to trait ancestry.
 //
 //      Previously this case emitted a false-positive CALLS edge via the
-//      permissive tail-return in resolveCallTarget — Codex review finding
-//      R3 (PR #744). The tail-return is now null-routed when D1-D4 receiver
-//      filtering produces zero matches on both file and owner dimensions.
+//      permissive tail-return in the legacy resolver — Codex review finding
+//      R3 (PR #744). It is now null-routed when receiver filtering produces
+//      zero matches on both file and owner dimensions.
 // ---------------------------------------------------------------------------
 
 describe('Rust Child extends Parent — qualified-syntax MRO (SM-11)', () => {
@@ -1908,15 +2001,327 @@ describe('Rust Child extends Parent — qualified-syntax MRO (SM-11)', () => {
     // ancestry. `c.trait_only()` must null-route because `trait_only` is
     // defined on the trait, not on the Child struct.
     //
-    // The resolveCallTarget tail-return tightening (R3) is what makes this
-    // assertion testable: before the fix, resolveCallTarget would fall
-    // through D1-D4 (zero file matches, zero owner matches) and silently
-    // pick the single fuzzy candidate as a false-positive edge.
+    // The tail-return tightening (R3) is what makes this assertion testable:
+    // before the fix, the resolver would fall through the fuzzy tiers (zero
+    // file matches, zero owner matches) and silently pick the single fuzzy
+    // candidate as a false-positive edge.
     const calls = getRelationships(result, 'CALLS');
     const traitCall = calls.find(
       (c) =>
         c.target === 'trait_only' && c.source === 'run' && c.targetFilePath.includes('parent.rs'),
     );
     expect(traitCall).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Scoped inherent impl targets — ownership + collision (issue #1975)
+//
+// `impl a::Inner { ... }` (scoped_type_identifier target) now materializes an
+// Impl node keyed by the full scoped text, so its methods own through a real
+// node. A same-tail target in another module (`impl b::Inner`) stays a DISTINCT
+// Impl node — no merge, no mis-attribution. (Trait impls on a scoped struct path
+// — `impl T for a::Inner` — need qualified struct-node identity, deferred to #1978.)
+// ---------------------------------------------------------------------------
+
+describe('Rust scoped inherent impl — ownership + collision (issue #1975)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'rust-scoped-impl'), () => {});
+  }, 60000);
+
+  it('owns each scoped inherent-impl method with no dangling HAS_METHOD edges', () => {
+    expect(findDanglingEdges(result, ['HAS_METHOD'])).toEqual([]);
+  });
+
+  // R3: a::Inner and b::Inner share a tail but must own through distinct Impl nodes.
+  it('keeps a::Inner and b::Inner impls distinct (no cross-wired methods)', () => {
+    const hasMethod = getRelationships(result, 'HAS_METHOD');
+    const fromA = hasMethod.find((e) => e.target === 'from_a');
+    const fromB = hasMethod.find((e) => e.target === 'from_b');
+    expect(fromA).toBeDefined();
+    expect(fromB).toBeDefined();
+    expect(fromA!.source).toBe('a::Inner');
+    expect(fromB!.source).toBe('b::Inner');
+    expect(fromA!.source).not.toBe(fromB!.source);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Inline mod-nested same-tail collision — distinct nodes (issue #1978)
+//
+// `mod outer { struct Inner; impl Inner }` + `mod other { struct Inner; impl Inner }`
+// must own their methods through TWO distinct nodes. On the pre-fix base both
+// `Inner` structs merge into one simple-keyed node and from_outer/from_other
+// cross-wire onto it (dangling:0 but wrong). Asserts the two methods resolve to
+// DISTINCT owner node ids (R7), not just dangle-free.
+//
+// DEFERRED (skip): the generic qualifiedNodeId mechanism (#1978) qualifies
+// class-like *type declarations* via the class-extractor. Rust methods live in
+// `impl Inner` blocks, and the inherent-impl owner branch in ast-helpers keys
+// the Impl node by the impl target's RAW text ("Inner") and returns BEFORE the
+// generic qualified-owner path — so it can't reuse `extractQualifiedName` (an
+// `impl_item` isn't a typeDeclaration). Qualifying the impl target by its
+// enclosing `mod` scope, plus matching it on the registry-primary graph bridge,
+// is separate machinery tracked as a follow-up. C++/Ruby land first (KTD-6).
+// ---------------------------------------------------------------------------
+
+// #1982: Rust same-tail nested-mod inherent-impl methods now own through DISTINCT
+// Impl nodes — mod outer's `impl Inner` → `Impl:...:outer.Inner`, mod other's →
+// `other.Inner`. The inherent-impl owner walk (ast-helpers `findEnclosingClassInfo`)
+// and the Impl-node materialization (parsing-processor / parse-worker) both qualify
+// an UNSCOPED impl target by its enclosing `mod_item` scope, byte-identically, so
+// the HAS_METHOD owner edge stays anchored. Structure-phase, so it holds on both
+// resolver legs. (Scoped `impl a::Inner` is unchanged — #1975.)
+describe('Rust inline mod-nested same-tail collision — distinct nodes (issue #1978/#1982)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'rust-nested-tail-collision'), () => {});
+  }, 60000);
+
+  it('owns from_outer / from_other through distinct mod-qualified Impl nodes (no merge)', () => {
+    expect(findDanglingEdges(result, ['HAS_METHOD'])).toEqual([]);
+    const hm = getRelationships(result, 'HAS_METHOD');
+    const a = hm.find((e) => e.target === 'from_outer');
+    const b = hm.find((e) => e.target === 'from_other');
+    expect(a, 'HAS_METHOD -> from_outer').toBeDefined();
+    expect(b, 'HAS_METHOD -> from_other').toBeDefined();
+    // Pre-fix the two same-tail `Inner` impls merged onto one `Impl:...:Inner`
+    // node. KTD3: discriminate on the node id — each now carries its mod path.
+    expect(a!.rel.sourceId).not.toBe(b!.rel.sourceId);
+    expect(a!.rel.sourceId).toContain('outer.Inner');
+    expect(b!.rel.sourceId).toContain('other.Inner');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #1992: GENERIC inherent-impl ownership — `impl<T> Inner<T>` methods own through
+// the mod-qualified Impl node, not orphaned to File.
+//
+// PR #1981 / `bc4a560d` qualified the UNSCOPED bare `impl Inner` target. A GENERIC
+// inherent-impl target (`impl<T> Inner<T>`) is a `generic_type` node, which the
+// inherent-impl owner walk (ast-helpers `findEnclosingClassInfo`) did not match —
+// so the walk returned null and the method got `File -> DEFINES` with NO HAS_METHOD
+// (orphaned; invisible to findDanglingEdges). The Impl NODE was already correctly
+// mod-qualified (the @name capture drills into the inner type_identifier,
+// tree-sitter-queries.ts), so the fix is owner-walk-only and the owner id == the
+// node id (`a.Inner` / `b.Inner`) by construction. Holds on both resolver legs
+// (structure-phase).
+// ---------------------------------------------------------------------------
+
+describe('Rust generic inherent-impl same-tail ownership — distinct nodes (issue #1992)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'rust-nested-tail-collision-generic'),
+      () => {},
+    );
+  }, 60000);
+
+  it('owns fa / fb through distinct mod-qualified Impl nodes (generic impl, no orphan)', () => {
+    const hm = getRelationships(result, 'HAS_METHOD');
+    const a = hm.find((e) => e.target === 'fa');
+    const b = hm.find((e) => e.target === 'fb');
+    // Pre-fix the generic-impl owner walk returns null, so fa/fb orphan to File
+    // (File -> DEFINES, no HAS_METHOD) — toBeDefined() fails on the pre-fix base.
+    expect(a, 'HAS_METHOD -> fa').toBeDefined();
+    expect(b, 'HAS_METHOD -> fb').toBeDefined();
+    // Owner id is the mod-qualified Impl node, byte-identical to the node id.
+    expect(a!.rel.sourceId).not.toBe(b!.rel.sourceId);
+    expect(a!.rel.sourceId).toContain('a.Inner');
+    expect(b!.rel.sourceId).toContain('b.Inner');
+    expect(findDanglingEdges(result, ['HAS_METHOD'])).toEqual([]);
+  });
+
+  // R6: scoped-generic `impl<T> crate::c::Scoped<T>` materializes no Impl node, so
+  // `fd` must NOT own through a phantom `c.Scoped` node — it stays orphaned
+  // (deferred). Guards against the owner walk minting an owner id for an
+  // unmaterialized node.
+  it('does not mint a phantom owner for a scoped-generic impl (fd orphaned, deferred)', () => {
+    const hm = getRelationships(result, 'HAS_METHOD');
+    expect(hm.find((e) => e.target === 'fd')).toBeUndefined();
+  });
+});
+
+// Same fixture forced through the WORKER pool (parse-worker.ts). The inherent-impl
+// owner walk is shared structure-phase logic, so generic-impl ownership must hold
+// on BOTH the sequential and worker paths.
+describe('Rust generic inherent-impl ownership — worker path parity (issue #1992)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'rust-nested-tail-collision-generic'),
+      () => {},
+      { workerPoolSize: 2 },
+    );
+  }, 120000);
+
+  it('genuinely used the worker pool', () => {
+    expect(result.usedWorkerPool).toBe(true);
+  });
+
+  it('owns fa / fb through distinct mod-qualified Impl nodes on the worker path', () => {
+    const hm = getRelationships(result, 'HAS_METHOD');
+    const a = hm.find((e) => e.target === 'fa');
+    const b = hm.find((e) => e.target === 'fb');
+    expect(a, 'HAS_METHOD -> fa').toBeDefined();
+    expect(b, 'HAS_METHOD -> fb').toBeDefined();
+    expect(a!.rel.sourceId).not.toBe(b!.rel.sourceId);
+    expect(a!.rel.sourceId).toContain('a.Inner');
+    expect(b!.rel.sourceId).toContain('b.Inner');
+    expect(findDanglingEdges(result, ['HAS_METHOD'])).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// F3 (#1992 follow-up) — same-tail generic impls that ALSO share a method name
+// must materialize DISTINCT method (Function) nodes.
+//
+// `${className}.${methodName}` keys the method node id (Rust `fn`s carry the
+// `Function` label). Before this fix the bare inherent-impl arm set `className` to
+// the bare tail (`Inner`), so two same-tail generic impls under sibling mods that
+// each define `fn m` both keyed `Function:…:Inner.m#0` and collapsed onto ONE node
+// (graph addNode is first-write-wins) — the second `m` was silently dropped and
+// both HAS_METHOD edges targeted the survivor. The owner `classId` was already
+// mod-qualified, so HAS_METHOD *sources* stayed distinct, which masked the
+// collision (sourceId-only assertions passed). Qualifying `className`
+// (`a.Inner` / `b.Inner`) keys `a.Inner.m` / `b.Inner.m`, so both nodes survive
+// with distinct ids. Structure-phase, so it holds on both resolver legs and the
+// worker path.
+// ---------------------------------------------------------------------------
+
+describe('Rust same-tail generic impls with shared method name — distinct nodes (issue #1992)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'rust-generic-impl-same-method-name'),
+      () => {},
+    );
+  }, 60000);
+
+  it('materializes two distinct `m` method nodes (no first-write-wins collapse)', () => {
+    // Pre-fix: only one `m` Function node survives (the second is dropped on the
+    // colliding id) — length is 1, so toBe(2) fails on the pre-fix base.
+    const methods = getNodesByLabel(result, 'Function').filter((n) => n === 'm');
+    expect(methods.length).toBe(2);
+  });
+
+  it('owns each `m` through its own mod-qualified Impl node (distinct source AND target)', () => {
+    const hm = getRelationships(result, 'HAS_METHOD').filter((e) => e.target === 'm');
+    expect(hm.length).toBe(2);
+    // Owner edges were always distinct (classId is mod-qualified)…
+    expect(hm[0].rel.sourceId).not.toBe(hm[1].rel.sourceId);
+    const sources = [hm[0].rel.sourceId, hm[1].rel.sourceId].sort();
+    expect(sources[0]).toContain('a.Inner');
+    expect(sources[1]).toContain('b.Inner');
+    // …but the TARGET node collapsed pre-fix — this is the F3 assertion.
+    expect(hm[0].rel.targetId).not.toBe(hm[1].rel.targetId);
+    expect(findDanglingEdges(result, ['HAS_METHOD'])).toEqual([]);
+  });
+});
+
+// Same fixture forced through the WORKER pool — the impl owner walk + node-id
+// keying is shared structure-phase logic, so the distinct-node guarantee must hold
+// on the worker path too (parse-worker.ts mirrors parsing-processor.ts).
+describe('Rust same-tail generic impls with shared method name — worker path parity (issue #1992)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'rust-generic-impl-same-method-name'),
+      () => {},
+      { workerPoolSize: 2 },
+    );
+  }, 120000);
+
+  it('genuinely used the worker pool', () => {
+    expect(result.usedWorkerPool).toBe(true);
+  });
+
+  it('materializes two distinct `m` method nodes on the worker path', () => {
+    const methods = getNodesByLabel(result, 'Function').filter((n) => n === 'm');
+    expect(methods.length).toBe(2);
+    const hm = getRelationships(result, 'HAS_METHOD').filter((e) => e.target === 'm');
+    expect(hm.length).toBe(2);
+    expect(hm[0].rel.sourceId).not.toBe(hm[1].rel.sourceId);
+    expect(hm[0].rel.targetId).not.toBe(hm[1].rel.targetId);
+    expect(findDanglingEdges(result, ['HAS_METHOD'])).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// F71 — union declarations resolve as Struct nodes (issue #1934)
+//
+// A `union` is deliberately captured as a Struct-labeled node (see the
+// rationale in languages/rust/query.ts): every resolution gate includes
+// Struct but excludes Union, so a Union-labeled node would be an unresolvable
+// orphan. These pipeline-level assertions pin BOTH that the node is labeled
+// Struct AND that it is genuinely resolvable (the union literal is a real
+// constructor).
+// ---------------------------------------------------------------------------
+
+describe('Rust union resolution (issue #1934 F71)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'rust-union'), () => {});
+  }, 60000);
+
+  it('captures the union as a Struct node named MyUnion (not Union)', () => {
+    expect(getNodesByLabel(result, 'Struct')).toContain('MyUnion');
+    expect(getNodesByLabel(result, 'Union')).toEqual([]);
+  });
+
+  it('resolves the union literal MyUnion { .. } as a CALLS edge to the Struct', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const ctor = calls.find((e) => e.source === 'make' && e.target === 'MyUnion');
+    expect(ctor).toBeDefined();
+    expect(ctor!.targetLabel).toBe('Struct');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// F72 — macro invocations resolve to their definition (issue #1934)
+//
+// A `macro_rules! greet` invocation (`greet!(...)`) resolves via the
+// MacroRegistry to the Macro node, emitting a USES edge — NEVER a CALLS
+// edge, and NEVER binding to a same-named free function `fn greet`. Macro
+// resolution is owned by scope-resolution (the legacy DAG, removed in #942,
+// did not resolve macros).
+// ---------------------------------------------------------------------------
+
+describe('Rust macro resolution (issue #1934 F72)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'rust-macro'), () => {});
+  }, 60000);
+
+  it('materializes both a Macro and a same-named Function node', () => {
+    expect(getNodesByLabel(result, 'Macro')).toContain('greet');
+    expect(getNodesByLabel(result, 'Function')).toContain('greet');
+  });
+
+  it('resolves greet!(..) as a USES edge to the Macro (not the Function)', () => {
+    const uses = getRelationships(result, 'USES');
+    const macroUse = uses.find((e) => e.source === 'run' && e.target === 'greet');
+    expect(macroUse).toBeDefined();
+    expect(macroUse!.targetLabel).toBe('Macro');
+  });
+
+  it('does NOT emit a CALLS edge from the macro invocation to fn greet', () => {
+    const calls = getRelationships(result, 'CALLS');
+    // The only run -> greet CALLS edge is the genuine fn call; it must target
+    // the Function, and there must be exactly one (the macro adds no CALLS).
+    const greetCalls = calls.filter((e) => e.source === 'run' && e.target === 'greet');
+    expect(greetCalls.length).toBe(1);
+    expect(greetCalls[0].targetLabel).toBe('Function');
+    // And no CALLS edge anywhere targets the Macro node.
+    expect(calls.every((e) => e.targetLabel !== 'Macro')).toBe(true);
   });
 });

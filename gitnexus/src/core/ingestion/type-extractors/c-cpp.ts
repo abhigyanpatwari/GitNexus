@@ -19,6 +19,7 @@ import {
   methodToTypeArgPosition,
   type TypeArgPosition,
 } from './shared.js';
+import { CPP_BRACED_INIT_TYPE_PREFIX } from '../languages/cpp/conversion-rank.js';
 
 const DECLARATION_NODE_TYPES: ReadonlySet<string> = new Set(['declaration']);
 
@@ -142,14 +143,14 @@ const extractInitializer: InitializerExtractor = (
       const templateFunc =
         func.type === 'template_function'
           ? func
-          : func.type === 'qualified_identifier' || func.type === 'scoped_identifier'
+          : func.type === 'qualified_identifier'
             ? (func.namedChildren.find((c: SyntaxNode) => c.type === 'template_function') ?? null)
             : null;
       if (templateFunc) {
         const nameNode = templateFunc.firstNamedChild;
         if (nameNode) {
           const funcName =
-            nameNode.type === 'qualified_identifier' || nameNode.type === 'scoped_identifier'
+            nameNode.type === 'qualified_identifier'
               ? (nameNode.lastNamedChild?.text ?? '')
               : nameNode.text;
           if (SMART_PTR_FACTORIES.has(funcName)) {
@@ -214,7 +215,7 @@ const scanConstructorBinding: ConstructorBindingScanner = (node) => {
   if (!value || value.type !== 'call_expression') return undefined;
   const func = value.childForFieldName('function');
   if (!func) return undefined;
-  if (func.type === 'qualified_identifier' || func.type === 'scoped_identifier') {
+  if (func.type === 'qualified_identifier') {
     const last = func.lastNamedChild;
     if (!last) return undefined;
     const nameNode = declarator.childForFieldName('declarator');
@@ -331,17 +332,13 @@ const extractCppElementTypeFromTypeNode = (
     const args = extractCppTemplateTypeArgs(typeNode);
     if (args.length >= 1) return pos === 'first' ? args[0] : args[args.length - 1];
   }
-  // reference/pointer types: unwrap and recurse (vector<User>& → vector<User>)
-  if (
-    typeNode.type === 'reference_type' ||
-    typeNode.type === 'pointer_type' ||
-    typeNode.type === 'type_descriptor'
-  ) {
+  // type_descriptor wrapper: unwrap and recurse (vector<User>& → vector<User>)
+  if (typeNode.type === 'type_descriptor') {
     const inner = typeNode.lastNamedChild;
     if (inner) return extractCppElementTypeFromTypeNode(inner, pos, depth + 1);
   }
-  // qualified/scoped types: std::vector<User> → unwrap to template_type child
-  if (typeNode.type === 'qualified_identifier' || typeNode.type === 'scoped_type_identifier') {
+  // qualified types: std::vector<User> → unwrap to template_type child
+  if (typeNode.type === 'qualified_identifier') {
     const inner = typeNode.lastNamedChild;
     if (inner) return extractCppElementTypeFromTypeNode(inner, pos, depth + 1);
   }
@@ -483,6 +480,8 @@ const extractForLoopBinding: ForLoopExtractor = (
 /** Infer the type of a literal AST node for C++ overload disambiguation. */
 const inferLiteralType: LiteralTypeInferrer = (node) => {
   switch (node.type) {
+    case 'initializer_list':
+      return inferBracedInitLiteralType(node);
     case 'number_literal': {
       const t = node.text;
       // Float suffixes
@@ -509,6 +508,23 @@ const inferLiteralType: LiteralTypeInferrer = (node) => {
   }
 };
 
+function inferBracedInitLiteralType(node: SyntaxNode): string | undefined {
+  const elementTypes: string[] = [];
+  for (const child of node.children) {
+    if (child.type === ',' || child.type === '{' || child.type === '}') continue;
+    const elementType = inferLiteralType(child);
+    if (elementType === undefined || elementType.startsWith(CPP_BRACED_INIT_TYPE_PREFIX)) {
+      return `${CPP_BRACED_INIT_TYPE_PREFIX}unknown:${elementTypes.length + 1}`;
+    }
+    elementTypes.push(elementType);
+  }
+  if (elementTypes.length === 0) return `${CPP_BRACED_INIT_TYPE_PREFIX}unknown:0`;
+  const first = elementTypes[0];
+  return elementTypes.every((type) => type === first)
+    ? `${CPP_BRACED_INIT_TYPE_PREFIX}${first}:${elementTypes.length}`
+    : `${CPP_BRACED_INIT_TYPE_PREFIX}unknown:${elementTypes.length}`;
+}
+
 /** C++: detect constructor type from smart pointer factory calls (make_shared<Dog>()).
  *  Extracts the template type argument as the constructor type for virtual dispatch. */
 const detectCppConstructorType: ConstructorTypeDetector = (node, classNames) => {
@@ -527,7 +543,7 @@ const detectCppConstructorType: ConstructorTypeDetector = (node, classNames) => 
   const nameNode = func.firstNamedChild;
   if (!nameNode) return undefined;
   let funcName: string;
-  if (nameNode.type === 'qualified_identifier' || nameNode.type === 'scoped_identifier') {
+  if (nameNode.type === 'qualified_identifier') {
     funcName = nameNode.lastNamedChild?.text ?? '';
   } else {
     funcName = nameNode.text;

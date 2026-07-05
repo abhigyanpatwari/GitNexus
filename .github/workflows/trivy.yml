@@ -1,0 +1,82 @@
+name: Trivy Image Scan
+
+# Builds Dockerfile.cli and Dockerfile.web, then scans the resulting images
+# for OS-package and language-package CVEs at MEDIUM+ severity.
+# Findings upload to the Security tab; record-only (does not block merges).
+#
+# Trigger on Dockerfile changes in PRs so base-image/npm-layer remediation can
+# be verified before merge without running image scans on every PR.
+
+on:
+  pull_request:
+    paths:
+      - 'Dockerfile.cli'
+      - 'Dockerfile.web'
+      - 'gitnexus/Dockerfile.test'
+      - '.github/workflows/trivy.yml'
+  push:
+    branches: [main]
+  schedule:
+    - cron: '0 8 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  scan:
+    name: Trivy (${{ matrix.image.name }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      security-events: write
+
+    strategy:
+      fail-fast: false
+      matrix:
+        image:
+          - { dockerfile: Dockerfile.cli, name: gitnexus-cli }
+          - { dockerfile: Dockerfile.web, name: gitnexus-web }
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Setup Buildx
+        uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4.1.0
+
+      - name: Build image (load locally for scan)
+        uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf # v7.2.0
+        with:
+          context: .
+          file: ${{ matrix.image.dockerfile }}
+          load: true
+          push: false
+          tags: scan-target:${{ matrix.image.name }}
+
+      # aquasecurity/trivy-action versions < 0.35.0 are flagged by
+      # GHSA-69fq-xp46-6x23 (briefly compromised supply chain). Pinned to
+      # v0.36.0 (post-incident clean release) by commit SHA.
+      - name: Run Trivy
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: scan-target:${{ matrix.image.name }}
+          format: sarif
+          output: trivy-${{ matrix.image.name }}.sarif
+          severity: MEDIUM,HIGH,CRITICAL
+          # Hides CVEs with no available fix in the base image.
+          ignore-unfixed: true
+          exit-code: '0'
+
+      - name: Upload to Security tab
+        uses: github/codeql-action/upload-sarif@8aad20d150bbac5944a9f9d289da16a4b0d87c1e # v4.36.2
+        with:
+          sarif_file: trivy-${{ matrix.image.name }}.sarif
+          category: trivy-${{ matrix.image.name }}

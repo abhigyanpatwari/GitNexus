@@ -1,0 +1,18 @@
+{
+  "name": "tree-sitter-c",
+  "version": "0.21.4",
+  "description": "C grammar for tree-sitter",
+  "repository": "https://github.com/tree-sitter/tree-sitter-c",
+  "license": "MIT",
+  "main": "bindings/node/index.js",
+  "types": "bindings/node/index.d.ts",
+  "_vendoredBy": "gitnexus - runtime package derived from tree-sitter-c@0.21.4 (tree-sitter/tree-sitter-c). HELD at 0.21.4 for ABI compatibility with the bundled tree-sitter@0.21.1 runtime (#1242/#858) — do not bump without the runtime upgrade. Vendored because upstream ships native prebuilds for only 4 of 6 platforms (no linux-arm64/win32-arm64, #2116), and tree-sitter-c is a REQUIRED grammar whose source build hard-fails `npm install` on a toolchain-less ARM host. GitNexus cross-builds all six prebuilds via .github/workflows/build-tree-sitter-prebuilds.yml; the C source (binding.gyp + src/) is ALSO vendored so build-tree-sitter-grammars.cjs can source-build the binding on a toolchain host when no prebuild matches (e.g. CI before prebuilds land). Loaded from vendor/ by absolute path at runtime (vendored-grammars.ts) — NEVER copied to node_modules (#2111) (no scripts.install here — #836/#1728).",
+  "peerDependencies": {
+    "tree-sitter": "^0.21.0"
+  },
+  "peerDependenciesMeta": {
+    "tree-sitter": {
+      "optional": true
+    }
+  }
+}

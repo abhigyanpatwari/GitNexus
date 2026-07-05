@@ -7,8 +7,8 @@
  * call-processor so that the classification logic lives in one place.
  *
  * Heritage (mixins: include/extend/prepend) was previously routed here
- * but is now handled by heritageExtractor.extractFromCall before the
- * call router runs.  The router still returns 'skip' for these calls.
+ * but is now emitted by the scope-resolution pipeline. The router still
+ * returns 'skip' for these calls so they don't become spurious call edges.
  *
  * NOTE: This file is intentionally duplicated in gitnexus-web/ because the
  * two packages have separate build targets (Node native vs WASM/browser).
@@ -24,9 +24,10 @@ export type CallRoutingResult = RubyCallRouting | null;
 
 /**
  * Per-language call router.
- * IMPORTANT: Call-routed imports bypass preprocessImportPath(), so any router that
- * returns an importPath MUST validate it independently (length cap, control-char
- * rejection). See routeRubyCall for the reference implementation.
+ * IMPORTANT: Call-routed imports are NOT sanitized by the standard import-path
+ * cleaner, so any router that returns an importPath MUST validate it
+ * independently (length cap, control-char rejection). See routeRubyCall for the
+ * reference implementation.
  */
 export type CallRouter = (calledName: string, callNode: SyntaxNode) => CallRoutingResult;
 
@@ -82,10 +83,10 @@ export function routeRubyCall(calledName: string, callNode: SyntaxNode): RubyCal
     return { kind: 'import', importPath, isRelative };
   }
 
-  // ── include / extend / prepend — heritage (now handled by heritageExtractor) ─
-  // Call-based heritage is intercepted by heritageExtractor.extractFromCall
-  // before the call router runs.  Return SKIP_RESULT so these calls don't
-  // fall through to normal call processing.
+  // ── include / extend / prepend — heritage (emitted by scope-resolution) ─
+  // Call-based heritage (Ruby mixins) is emitted by the scope-resolution
+  // pipeline. Return SKIP_RESULT so these calls don't fall through to normal
+  // call processing and become spurious call edges.
   if (calledName === 'include' || calledName === 'extend' || calledName === 'prepend') {
     return SKIP_RESULT;
   }

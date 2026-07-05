@@ -1,0 +1,190 @@
+{
+  "statusBar": {
+    "sponsor": "赞助",
+    "sponsorHint": "需要买点 API 额度跑 SWE-bench 😅"
+  },
+  "loading": {
+    "filesProgress": "{{processed}} / {{total}} 个文件"
+  },
+  "toolCall": {
+    "status": {
+      "running": "运行中",
+      "completed": "已完成",
+      "error": "错误",
+      "stopped": "已停止"
+    },
+    "tools": {
+      "search": "🔍 搜索代码",
+      "cypher": "🔗 Cypher 查询",
+      "grep": "🔎 模式搜索",
+      "read": "📄 读取文件",
+      "overview": "🗺️ 代码库概览",
+      "explore": "🔬 深入分析",
+      "impact": "💥 影响分析"
+    },
+    "query": "查询",
+    "input": "输入",
+    "result": "结果",
+    "searchPrefix": "搜索：\"{{query}}\""
+  },
+  "embedding": {
+    "generateTitle": "为语义搜索生成嵌入向量",
+    "enable": "启用语义搜索",
+    "loadingModel": "正在加载 AI 模型...",
+    "embeddingNodes": "正在嵌入 {{processed}}/{{total}} 个节点",
+    "creatingIndex": "正在创建向量索引...",
+    "readyTitle": "语义搜索已就绪！可在 AI 聊天中使用自然语言。",
+    "ready": "语义就绪",
+    "errorTitle": "嵌入失败，点击重试。",
+    "failedRetry": "失败 - 重试",
+    "fallback": {
+      "title": "WebGPU 拒绝了请求",
+      "subtitle": "你的浏览器不支持 GPU 加速",
+      "description": "无法用 WebGPU 创建嵌入向量，因此语义搜索（Graph RAG）不会那么智能，但图谱仍可正常使用。",
+      "options": "可选方案：",
+      "useCpu": "使用 CPU",
+      "useCpuDescriptionSmall": "可用，但会稍慢",
+      "useCpuDescriptionLarge": "可用，但会慢很多",
+      "estimated": "（约 {{minutes}} 分钟，{{count}} 个节点）",
+      "skipIt": "跳过",
+      "skipDescription": "图谱可用，但没有 AI 语义搜索",
+      "smallCodebase": "检测到小型代码库！CPU 应该没问题。",
+      "tip": "💡 提示：可尝试 Chrome 或 Edge 以获得 WebGPU 支持",
+      "skipEmbeddings": "跳过嵌入",
+      "useCpuRecommended": "使用 CPU（推荐）",
+      "useCpuSlow": "使用 CPU（较慢）"
+    }
+  },
+  "queryFab": {
+    "query": "查询",
+    "cypherQuery": "Cypher 查询",
+    "examples": "示例",
+    "run": "运行",
+    "noProject": "未加载项目，请先加载项目。",
+    "dbNotReady": "数据库尚未就绪，请等待加载完成。",
+    "executionFailed": "查询执行失败",
+    "exampleLabels": {
+      "functions": "所有函数",
+      "classes": "所有类",
+      "interfaces": "所有接口",
+      "calls": "函数调用",
+      "imports": "导入依赖"
+    },
+    "clear": "清除",
+    "rows": "行",
+    "highlighted": "已高亮",
+    "showingRows": "显示 {{count}} 行中的前 50 行"
+  },
+  "fileTree": {
+    "expandPanel": "展开面板",
+    "fileExplorer": "文件浏览器",
+    "filters": "过滤器",
+    "collapsePanel": "折叠面板",
+    "searchFiles": "搜索文件...",
+    "noFilesLoaded": "未加载文件",
+    "all": "全部",
+    "selectNodeDepth": "选择节点后才能应用深度过滤",
+    "explorer": "浏览器",
+    "nodeTypes": "节点类型",
+    "nodeTypesDesc": "切换图中节点类型的可见性",
+    "edgeTypes": "边类型",
+    "edgeTypesDesc": "切换关系类型的可见性",
+    "focusDepth": "聚焦深度",
+    "focusDepthDesc": "显示所选节点 N 跳内的节点",
+    "hops_one": "{{count}} 跳",
+    "hops_other": "{{count}} 跳",
+    "colorLegend": "颜色图例"
+  },
+  "codePanel": {
+    "expand": "展开代码面板",
+    "dragResize": "拖动调整大小",
+    "title": "代码检查器",
+    "clearCitations": "清除 AI 引用",
+    "clearSelection": "清除选择",
+    "loadingSource": "正在加载源码...",
+    "selectFile": "选择文件节点以预览其内容。",
+    "code": "代码",
+    "selected": "已选择",
+    "aiCitations": "AI 引用",
+    "references_one": "{{count}} 条引用",
+    "references_other": "{{count}} 条引用",
+    "lines_one": "{{count}} 行",
+    "lines_other": "{{count}} 行",
+    "codeNotAvailable": "内存中没有 {{path}} 的代码内容"
+  },
+  "canvas": {
+    "viewModes": {
+      "label": "图形视图模式",
+      "force": "力导向图",
+      "tree": "顺序布局",
+      "circles": "径向布局"
+    },
+    "zoomIn": "放大",
+    "zoomOut": "缩小",
+    "fit": "适应屏幕",
+    "focusSelected": "聚焦所选节点",
+    "clearSelection": "清除选择",
+    "clear": "清除",
+    "stopLayout": "停止布局",
+    "runLayout": "重新运行布局",
+    "layoutOptimizing": "正在优化布局...",
+    "turnOffHighlights": "关闭全部高亮",
+    "turnOnHighlights": "开启 AI 高亮",
+    "chatOnly": {
+      "title": "图谱未加载",
+      "description": "这是一个大型项目，已跳过图谱加载以保持浏览器响应。AI 对话功能正常可用。",
+      "descriptionWithCount": "该项目包含 {{count}} 个节点，已跳过图谱加载以保持浏览器响应。AI 对话功能正常可用。",
+      "citationNote": "图谱未加载时，对话中的内联文件引用不会自动在代码面板中打开。",
+      "loadAnyway": "仍然加载图谱",
+      "loadAnywayWarning": "该项目包含 {{count}} 个节点。加载完整图谱可能导致浏览器变慢或无响应。是否继续？",
+      "loadAnywayWarningUnknown": "这可能是一个大型项目。加载完整图谱可能导致浏览器变慢或无响应。是否继续？"
+    }
+  },
+  "processes": {
+    "unknownStep": "未知",
+    "allProcessesLabel_one": "全部流程（合并 {{count}} 个）",
+    "allProcessesLabel_other": "全部流程（合并 {{count}} 个）",
+    "emptyTitle": "未检测到流程",
+    "emptyDescription": "流程是从入口点追踪出的执行链路。加载代码库后即可查看检测到的流程。",
+    "filterPlaceholder": "过滤流程...",
+    "detected_one": "检测到 {{count}} 个流程",
+    "detected_other": "检测到 {{count}} 个流程",
+    "fullMap": "完整流程图",
+    "viewCombined_one": "查看 {{count}} 个流程的合并图",
+    "viewCombined_other": "查看 {{count}} 个流程的合并图",
+    "crossCommunity": "跨社区",
+    "intraCommunity": "社区内",
+    "steps_one": "{{count}} 步",
+    "steps_other": "{{count}} 步",
+    "clusters_one": "{{count}} 个聚类",
+    "clusters_other": "{{count}} 个聚类",
+    "highlightTitle": "在图谱中高亮",
+    "removeHighlightTitle": "移除图谱高亮",
+    "loading": "加载中...",
+    "viewing": "查看中",
+    "view": "查看"
+  },
+  "processFlow": {
+    "title": "流程：{{label}}",
+    "diagramTooLarge": "📊 图表过大",
+    "renderError": "⚠️ 渲染错误",
+    "tooComplex_one": "该图表包含 {{count}} 个步骤，复杂度过高无法渲染。请查看单个流程，而不是“全部流程”。",
+    "tooComplex_other": "该图表包含 {{count}} 个步骤，复杂度过高无法渲染。请查看单个流程，而不是“全部流程”。",
+    "unableToRender_one": "无法渲染图表。步骤数：{{count}}",
+    "unableToRender_other": "无法渲染图表。步骤数：{{count}}",
+    "zoomOutTitle": "缩小 (-)",
+    "zoomInTitle": "放大 (+)",
+    "resetTitle": "重置缩放和平移",
+    "resetView": "重置视图",
+    "toggleFocus": "切换聚焦",
+    "copyMermaid": "复制 Mermaid"
+  },
+  "diagram": {
+    "aiGenerated": "AI 生成图表",
+    "error": "图表错误",
+    "showSource": "显示源码",
+    "label": "图表",
+    "expandTitle": "展开",
+    "loading": "正在加载图表…"
+  }
+}

@@ -2,7 +2,7 @@
  * LLM Provider Types
  *
  * Type definitions for multi-provider LLM support.
- * Supports OpenAI, Azure OpenAI, Gemini, Anthropic, Ollama, OpenRouter, MiniMax, and GLM5.
+ * Supports OpenAI, Azure OpenAI, Gemini, Anthropic, Ollama, OpenRouter, MiniMax, GLM, and DeepSeek.
  */
 
 /**
@@ -17,7 +17,8 @@ export type LLMProvider =
   | 'ollama'
   | 'openrouter'
   | 'minimax'
-  | 'glm';
+  | 'glm'
+  | 'deepseek';
 
 /**
  * Base configuration shared by all providers
@@ -107,6 +108,15 @@ export interface GLMConfig extends BaseProviderConfig {
 }
 
 /**
+ * DeepSeek configuration — OpenAI-compatible API
+ */
+export interface DeepSeekConfig extends BaseProviderConfig {
+  provider: 'deepseek';
+  apiKey: string;
+  model: string; // e.g., 'deepseek-v4-flash', 'deepseek-v4-pro'
+}
+
+/**
  * Union type for all provider configurations
  */
 export type ProviderConfig =
@@ -117,7 +127,8 @@ export type ProviderConfig =
   | OllamaConfig
   | OpenRouterConfig
   | MiniMaxConfig
-  | GLMConfig;
+  | GLMConfig
+  | DeepSeekConfig;
 
 /**
  * Stored settings (what goes to localStorage)
@@ -136,6 +147,7 @@ export interface LLMSettings {
   openrouter?: Partial<Omit<OpenRouterConfig, 'provider'>>;
   minimax?: Partial<Omit<MiniMaxConfig, 'provider'>>;
   glm?: Partial<Omit<GLMConfig, 'provider'>>;
+  deepseek?: Partial<Omit<DeepSeekConfig, 'provider'>>;
 
   // Intelligent Clustering Settings
   intelligentClustering: boolean;
@@ -197,6 +209,11 @@ export const DEFAULT_LLM_SETTINGS: LLMSettings = {
     baseUrl: 'https://api.z.ai/api/coding/paas/v4',
     temperature: 0.1,
   },
+  deepseek: {
+    apiKey: '',
+    model: 'deepseek-v4-flash',
+    temperature: 0.1,
+  },
 };
 
 /**
@@ -219,6 +236,8 @@ export interface ChatMessage {
   id: string;
   role: 'user' | 'assistant' | 'tool';
   content: string;
+  /** Hidden raw transcript for reconstructing future agent turns */
+  historyMessages?: AgentHistoryMessage[];
   /** @deprecated Use steps instead for proper ordering */
   toolCalls?: ToolCallInfo[];
   /** Ordered steps: reasoning, tool calls, and final content interleaved */
@@ -235,24 +254,49 @@ export interface ToolCallInfo {
   name: string;
   args: Record<string, unknown>;
   result?: string;
-  status: 'pending' | 'running' | 'completed' | 'error';
+  status: 'pending' | 'running' | 'completed' | 'error' | 'stopped';
 }
 
 /**
- * Streaming chunk from agent
- * Now supports step-based streaming where each step is a distinct message
+ * Minimal tool-call payload needed to reconstruct prior assistant turns.
  */
-export interface AgentStreamChunk {
-  type: 'reasoning' | 'tool_call' | 'tool_result' | 'content' | 'error' | 'done';
-  /** LLM's reasoning/thinking text (shown as a step) */
-  reasoning?: string;
-  /** Final answer content (streamed token by token) */
-  content?: string;
-  /** Tool call information */
-  toolCall?: ToolCallInfo;
-  /** Error message */
-  error?: string;
+export interface AgentToolCall {
+  id?: string;
+  name: string;
+  args: Record<string, unknown>;
+  type: 'tool_call';
 }
+
+/**
+ * Hidden per-turn transcript we keep so providers like DeepSeek can replay
+ * the original assistant/tool exchange on later user turns.
+ */
+export type AgentHistoryMessage =
+  | {
+      role: 'assistant';
+      content: string;
+      reasoningContent?: string;
+      toolCalls?: AgentToolCall[];
+    }
+  | {
+      role: 'tool';
+      content: string;
+      toolCallId: string;
+      name?: string;
+    };
+
+/**
+ * Streaming chunk from agent (discriminated union).
+ * Each variant carries only its relevant fields, enabling exhaustive switch handling.
+ */
+export type AgentStreamChunk =
+  | { type: 'reasoning'; reasoning: string }
+  | { type: 'tool_call'; toolCall: ToolCallInfo }
+  | { type: 'tool_result'; toolCall: ToolCallInfo }
+  | { type: 'content'; content: string }
+  | { type: 'error'; error: string }
+  | { type: 'done'; historyMessages?: AgentHistoryMessage[] }
+  | { type: 'cancelled' };
 
 /**
  * A single step in the agent's execution

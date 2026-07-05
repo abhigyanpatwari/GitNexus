@@ -1,0 +1,78 @@
+{
+  "success": {
+    "title": "服务器已连接",
+    "description": "正在准备代码知识图谱..."
+  },
+  "loading": {
+    "largeRepoHint": "大型仓库可能需要一些时间"
+  },
+  "guide": {
+    "copyAria": "复制到剪贴板",
+    "copiedAria": "已复制！",
+    "startServer": "启动本地服务器",
+    "devDescription": "在另一个终端启动 Express 后端，即可启用完整图谱。",
+    "prodDescription": "只需一条命令，浏览器会自动连接。",
+    "copyCommand": "复制命令",
+    "copyCommandDescription": "点击终端右侧图标复制。",
+    "done": "完成",
+    "orInstallGlobally": "或全局安装",
+    "globalInstall": "全局安装",
+    "startBackend": "启动后端",
+    "terminal": "终端",
+    "waitingForServer": "等待服务器启动",
+    "pasteAndRun": "粘贴并在终端运行",
+    "pasteAndRunDescription": "在项目根目录打开终端，粘贴命令并回车。",
+    "listeningForServer": "正在监听服务器",
+    "willAutoConnect": "检测到后会自动连接",
+    "autoConnects": "自动连接并打开图谱",
+    "autoConnectsDescription": "无需刷新，页面会自动检测服务器。",
+    "requires": "需要",
+    "port": "端口 4747"
+  },
+  "analyzeFirst": {
+    "title": "分析你的第一个仓库",
+    "description": "粘贴仓库 URL，GitNexus 会克隆仓库、解析代码，并直接在浏览器中构建实时知识图谱。",
+    "footer": "仅支持公开仓库 · 服务器本地克隆 · 数据不会离开你的机器"
+  },
+  "landing": {
+    "chooseRepository": "选择仓库",
+    "description": "选择一个已索引仓库开始探索，或分析一个新仓库。",
+    "indexed": "索引于 {{time}}",
+    "orAnalyzeNew": "或分析新仓库",
+    "footer": "支持公开与私有仓库 · 服务器本地克隆 · 数据不会离开你的机器",
+    "time": {
+      "justNow": "刚刚",
+      "minutesAgo": "{{count}} 分钟前",
+      "hoursAgo": "{{count}} 小时前",
+      "daysAgo": "{{count}} 天前"
+    }
+  },
+  "repoAnalyzer": {
+    "inputType": "输入类型",
+    "githubUrl": "GitHub URL",
+    "gitlabUrl": "GitLab URL",
+    "azureDevOpsUrl": "Azure DevOps",
+    "localFolder": "本地文件夹",
+    "starting": "正在启动分析...",
+    "analyzeRepository": "分析仓库",
+    "complete": "分析完成",
+    "loadingGraph": "正在加载图数据...",
+    "defaultRepoName": "仓库",
+    "githubRepositoryUrl": "GitHub 仓库 URL",
+    "githubTokenLabel": "个人访问令牌（可选）",
+    "githubTokenPlaceholder": "ghp_… 或 github_pat_…",
+    "githubTokenHelp": "私有仓库需要此项。需 'repo' 范围（或细粒度 Contents:read）。仅发送一次，不会保存。",
+    "gitlabRepositoryUrl": "GitLab 仓库 URL",
+    "gitlabSupported": "支持 GitLab.com 和自托管 GitLab 实例。",
+    "azureDevOpsRepositoryUrl": "Azure DevOps 仓库 URL",
+    "azureDevOpsSupported": "格式: http://server/Collection/Project/_git/Repository",
+    "localFolderPath": "本地文件夹路径",
+    "hideBackground": "隐藏（分析继续在后台进行）",
+    "upload": {
+      "button": "上传文件夹",
+      "uploading": "上传中…",
+      "selected": "已准备 {{fileCount}} 个文件（已跳过 {{dropped}} 个：.git、node_modules、构建产物）",
+      "empty": "该文件夹中未找到可分析的文件。"
+    }
+  }
+}

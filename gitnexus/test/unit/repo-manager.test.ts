@@ -4,16 +4,27 @@
  * Tests: getStoragePath, getStoragePaths, readRegistry, registerRepo, unregisterRepo
  * Covers hardening fixes #29 (API key file permissions) and #30 (case-insensitive paths on Windows)
  */
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import path from 'path';
 import os from 'os';
 import fs from 'fs/promises';
+import { _captureLogger } from '../../src/core/logger.js';
 import {
   getStoragePath,
   getStoragePaths,
+  branchSlug,
+  resolveBranchPlacement,
+  saveMeta,
+  loadMeta,
+  reconcileMetadataFiles,
+  AnalysisNotFinalizedError,
+  INDEX_METADATA_FILE,
+  ensureGitNexusIgnored,
   readRegistry,
   loadCLIConfig,
   registerRepo,
+  removeBranchIndex,
+  adoptFlatBranchLabel,
   listRegisteredRepos,
   resolveRegistryEntry,
   canonicalizePath,
@@ -52,7 +63,7 @@ describe('getStoragePaths', () => {
     const paths = getStoragePaths('/home/user/project');
     expect(paths.storagePath).toContain('.gitnexus');
     expect(paths.lbugPath).toContain('lbug');
-    expect(paths.metaPath).toContain('meta.json');
+    expect(paths.metaPath).toContain('gitnexus.json');
   });
 
   it('all paths are under storagePath', () => {
@@ -60,6 +71,573 @@ describe('getStoragePaths', () => {
     expect(paths.lbugPath.startsWith(paths.storagePath)).toBe(true);
     expect(paths.metaPath.startsWith(paths.storagePath)).toBe(true);
   });
+
+  // ─── #2106: branch-scoped paths ──────────────────────────────────────
+
+  it('no/empty branch returns the flat layout (byte-identical)', () => {
+    const flat = getStoragePaths('/home/user/project');
+    const explicitEmpty = getStoragePaths('/home/user/project', '');
+    expect(explicitEmpty.storagePath).toBe(flat.storagePath);
+    expect(explicitEmpty.lbugPath).toBe(flat.lbugPath);
+    expect(explicitEmpty.metaPath).toBe(flat.metaPath);
+    expect(path.basename(flat.lbugPath)).toBe('lbug');
+    expect(path.dirname(flat.lbugPath)).toBe(flat.storagePath);
+  });
+
+  it('a branch scopes lbug/meta under branches/<slug> but keeps storagePath flat', () => {
+    const flat = getStoragePaths('/home/user/project');
+    const branched = getStoragePaths('/home/user/project', 'feature/login');
+    // storagePath stays flat so shared content-addressed caches are shared.
+    expect(branched.storagePath).toBe(flat.storagePath);
+    const expectedDir = path.join(flat.storagePath, 'branches', branchSlug('feature/login'));
+    expect(path.dirname(branched.lbugPath)).toBe(expectedDir);
+    expect(path.dirname(branched.metaPath)).toBe(expectedDir);
+    expect(path.basename(branched.lbugPath)).toBe('lbug');
+    expect(path.basename(branched.metaPath)).toBe('gitnexus.json');
+  });
+});
+
+// ─── branchSlug (#2106) ──────────────────────────────────────────────
+
+describe('branchSlug (#2106)', () => {
+  it('is deterministic for the same ref', () => {
+    expect(branchSlug('feature/x')).toBe(branchSlug('feature/x'));
+  });
+
+  it('avoids the feature/x vs feature_x collision', () => {
+    expect(branchSlug('feature/x')).not.toBe(branchSlug('feature_x'));
+  });
+
+  it('keeps a readable, filesystem-safe prefix', () => {
+    const slug = branchSlug('feature/login');
+    expect(slug.startsWith('feature_login-')).toBe(true);
+    // No path separators or unsafe characters.
+    expect(slug).not.toContain('/');
+    expect(/^[A-Za-z0-9._-]+$/.test(slug)).toBe(true);
+  });
+
+  it('contains adversarial / traversal branch names to a single safe segment', () => {
+    // branchSlug feeds getStoragePaths directly on the server path (the MCP
+    // `branch` param is NOT gated by validateBranchName), so containment must
+    // hold for hostile inputs. A `..` substring inside a longer name is
+    // harmless; only a standalone `..` segment traverses, and sanitizeRepoName
+    // collapses separators so that can never happen.
+    const base = path.join('/repo', '.gitnexus', 'branches');
+    for (const payload of ['../..', '../../etc/passwd', '..', '...', '/abs/path', 'x y']) {
+      const slug = branchSlug(payload);
+      expect(slug, payload).toMatch(/^[A-Za-z0-9._-]+$/);
+      expect(slug, payload).not.toContain('/');
+      // path.join keeps the result a direct child of the branches dir.
+      expect(path.dirname(path.join(base, slug)), payload).toBe(base);
+    }
+  });
+});
+
+// ─── resolveBranchPlacement (#2106 KTD2) ─────────────────────────────
+// Since #2354 only explicit `--branch` runs consult this (a plain analyze
+// always targets the flat workspace slot); these cases pin the explicit-run
+// contract.
+
+describe('resolveBranchPlacement (#2106)', () => {
+  let tmpRepo: Awaited<ReturnType<typeof createTempDir>>;
+
+  beforeEach(async () => {
+    tmpRepo = await createTempDir('gitnexus-branch-placement-');
+  });
+
+  afterEach(async () => {
+    await tmpRepo.cleanup();
+  });
+
+  const baseMeta = (branch?: string): RepoMeta => ({
+    repoPath: tmpRepo.dbPath,
+    lastCommit: 'abc123',
+    indexedAt: new Date(0).toISOString(),
+    ...(branch ? { branch } : {}),
+  });
+
+  it('null label (detached HEAD / non-git) → flat', async () => {
+    expect(await resolveBranchPlacement(tmpRepo.dbPath, null)).toEqual({});
+  });
+
+  it('fresh repo with no flat index → flat (claims primary)', async () => {
+    expect(await resolveBranchPlacement(tmpRepo.dbPath, 'main')).toEqual({});
+  });
+
+  it('legacy flat index without a recorded branch → flat (adopts)', async () => {
+    const { storagePath } = getStoragePaths(tmpRepo.dbPath);
+    await saveMeta(storagePath, baseMeta());
+    expect(await resolveBranchPlacement(tmpRepo.dbPath, 'feature')).toEqual({});
+  });
+
+  it('label equal to the recorded primary → flat', async () => {
+    const { storagePath } = getStoragePaths(tmpRepo.dbPath);
+    await saveMeta(storagePath, baseMeta('main'));
+    expect(await resolveBranchPlacement(tmpRepo.dbPath, 'main')).toEqual({});
+  });
+
+  it('explicit label differing from the recorded flat branch → its own sub-directory', async () => {
+    const { storagePath } = getStoragePaths(tmpRepo.dbPath);
+    await saveMeta(storagePath, baseMeta('main'));
+    expect(await resolveBranchPlacement(tmpRepo.dbPath, 'feature')).toEqual({ branch: 'feature' });
+  });
+
+  it('empty-string flatMeta.branch is not trusted → flat (R5)', async () => {
+    const { storagePath } = getStoragePaths(tmpRepo.dbPath);
+    await saveMeta(storagePath, { ...baseMeta(), branch: '' });
+    expect(await resolveBranchPlacement(tmpRepo.dbPath, 'feature')).toEqual({});
+  });
+
+  it('non-string flatMeta.branch (corrupt) is not trusted → flat (R5)', async () => {
+    const { storagePath } = getStoragePaths(tmpRepo.dbPath);
+    // Simulate a hand-edited/corrupt meta where branch is a number.
+    await saveMeta(storagePath, { ...baseMeta(), branch: 42 as unknown as string });
+    expect(await resolveBranchPlacement(tmpRepo.dbPath, 'feature')).toEqual({});
+  });
+});
+
+// ─── saveMeta: dual-write + collision-safe tmp (review fix, F2/F8) ──────
+
+describe('saveMeta dual-write', () => {
+  let tmpRepo: Awaited<ReturnType<typeof createTempDir>>;
+
+  beforeEach(async () => {
+    tmpRepo = await createTempDir('gitnexus-savemeta-dualwrite-');
+  });
+
+  afterEach(async () => {
+    vi.restoreAllMocks();
+    await tmpRepo.cleanup();
+  });
+
+  const meta: RepoMeta = {
+    repoPath: '/some/repo',
+    lastCommit: 'abc123',
+    indexedAt: new Date(0).toISOString(),
+  };
+
+  it('writes identical content to gitnexus.json and legacy meta.json', async () => {
+    const { storagePath } = getStoragePaths(tmpRepo.dbPath);
+    await saveMeta(storagePath, meta);
+
+    const primary = await fs.readFile(path.join(storagePath, 'gitnexus.json'), 'utf-8');
+    const legacy = await fs.readFile(path.join(storagePath, 'meta.json'), 'utf-8');
+    expect(JSON.parse(primary)).toEqual(meta);
+    expect(JSON.parse(legacy)).toEqual(meta);
+  });
+
+  it('leaves no stray tmp files behind after a successful write', async () => {
+    const { storagePath } = getStoragePaths(tmpRepo.dbPath);
+    await saveMeta(storagePath, meta);
+
+    const entries = await fs.readdir(storagePath);
+    expect(entries.filter((f) => f.includes('.tmp.'))).toEqual([]);
+  });
+
+  it('two concurrent saveMeta calls on the same directory both succeed (no tmp-name collision)', async () => {
+    const { storagePath } = getStoragePaths(tmpRepo.dbPath);
+
+    const results = await Promise.allSettled([
+      saveMeta(storagePath, { ...meta, lastCommit: 'writerA' }),
+      saveMeta(storagePath, { ...meta, lastCommit: 'writerB' }),
+    ]);
+
+    expect(results.map((r) => r.status)).toEqual(['fulfilled', 'fulfilled']);
+  });
+
+  it('a legacy meta.json write failure is logged and does not fail the caller', async () => {
+    const { storagePath } = getStoragePaths(tmpRepo.dbPath);
+    const realOpen = fs.open;
+    // Fail only the write whose tmp path is for the legacy file.
+    vi.spyOn(fs, 'open').mockImplementation(
+      async (filePath: Parameters<typeof fs.open>[0], ...rest) => {
+        if (String(filePath).includes(`${path.sep}meta.json.tmp.`)) {
+          const err = new Error('simulated legacy-write failure') as NodeJS.ErrnoException;
+          err.code = 'EACCES';
+          throw err;
+        }
+        return realOpen(filePath, ...rest);
+      },
+    );
+
+    const cap = _captureLogger();
+    try {
+      await expect(saveMeta(storagePath, meta)).resolves.not.toThrow();
+
+      const primary = await fs.readFile(path.join(storagePath, 'gitnexus.json'), 'utf-8');
+      expect(JSON.parse(primary)).toEqual(meta);
+      await expect(fs.readFile(path.join(storagePath, 'meta.json'), 'utf-8')).rejects.toThrow();
+
+      expect(
+        cap
+          .records()
+          .some((r) => r.level === 40 && String(r.msg ?? '').includes('legacy meta.json mirror')),
+      ).toBe(true);
+    } finally {
+      cap.restore();
+    }
+  });
+});
+
+// ─── AnalysisNotFinalizedError message names the checked file (F10) ─────
+
+describe('AnalysisNotFinalizedError diagnostic', () => {
+  it("the 'meta' variant names the file assertAnalysisFinalized actually checks", () => {
+    const err = new AnalysisNotFinalizedError(
+      '/repo',
+      '/repo/.gitnexus',
+      'meta',
+      '/home/user/.gitnexus/registry.json',
+    );
+    // Built from INDEX_METADATA_FILE so a future rename can't silently desync
+    // the diagnostic from the check again (#1169 misdirection regression).
+    expect(err.message).toContain(INDEX_METADATA_FILE);
+    expect(err.message).toContain(path.join('/repo/.gitnexus', INDEX_METADATA_FILE));
+  });
+});
+
+// ─── loadMeta: strict legacy fallback (review fix, F4) ──────────────────
+
+describe('loadMeta strict fallback', () => {
+  let tmpRepo: Awaited<ReturnType<typeof createTempDir>>;
+  let storagePath: string;
+
+  beforeEach(async () => {
+    tmpRepo = await createTempDir('gitnexus-loadmeta-fallback-');
+    storagePath = getStoragePaths(tmpRepo.dbPath).storagePath;
+    await fs.mkdir(storagePath, { recursive: true });
+  });
+
+  afterEach(async () => {
+    vi.restoreAllMocks();
+    await tmpRepo.cleanup();
+  });
+
+  const meta: RepoMeta = {
+    repoPath: '/some/repo',
+    lastCommit: 'abc123',
+    indexedAt: new Date(0).toISOString(),
+  };
+
+  it('reads gitnexus.json directly when present', async () => {
+    await fs.writeFile(path.join(storagePath, 'gitnexus.json'), JSON.stringify(meta));
+    await expect(loadMeta(storagePath)).resolves.toEqual(meta);
+  });
+
+  it('falls back to legacy meta.json when gitnexus.json is absent (ENOENT)', async () => {
+    await fs.writeFile(path.join(storagePath, 'meta.json'), JSON.stringify(meta));
+    await expect(loadMeta(storagePath)).resolves.toEqual(meta);
+  });
+
+  it('returns null (NOT legacy content) when gitnexus.json is corrupt', async () => {
+    // Pre-fix behavior silently resurrected the stale legacy baseline here,
+    // masking the corruption; post-fix a corrupt primary forces the same safe
+    // full-rebuild path a missing index would.
+    await fs.writeFile(path.join(storagePath, 'gitnexus.json'), '{ not valid json');
+    await fs.writeFile(path.join(storagePath, 'meta.json'), JSON.stringify(meta));
+    await expect(loadMeta(storagePath)).resolves.toBeNull();
+  });
+
+  it('returns null (NOT legacy content) when gitnexus.json read fails with EACCES', async () => {
+    await fs.writeFile(path.join(storagePath, 'gitnexus.json'), JSON.stringify(meta));
+    await fs.writeFile(path.join(storagePath, 'meta.json'), JSON.stringify(meta));
+
+    const realReadFile = fs.readFile;
+    vi.spyOn(fs, 'readFile').mockImplementation(async (...args: Parameters<typeof fs.readFile>) => {
+      if (String(args[0]).endsWith('gitnexus.json')) {
+        const err = new Error('permission denied') as NodeJS.ErrnoException;
+        err.code = 'EACCES';
+        throw err;
+      }
+      return realReadFile(...args);
+    });
+
+    await expect(loadMeta(storagePath)).resolves.toBeNull();
+  });
+
+  it('returns null when neither file exists', async () => {
+    await expect(loadMeta(storagePath)).resolves.toBeNull();
+  });
+});
+
+// ─── reconcileMetadataFiles: stale-shadow regression (review fix, F3) ───
+
+describe('reconcileMetadataFiles stale-shadow regression', () => {
+  let tmpRepo: Awaited<ReturnType<typeof createTempDir>>;
+  let storagePath: string;
+
+  beforeEach(async () => {
+    tmpRepo = await createTempDir('gitnexus-reconcile-shadow-');
+    storagePath = getStoragePaths(tmpRepo.dbPath).storagePath;
+    await fs.mkdir(storagePath, { recursive: true });
+  });
+
+  afterEach(async () => {
+    await tmpRepo.cleanup();
+  });
+
+  const metaAt = (indexedAt: string, lastCommit: string): RepoMeta => ({
+    repoPath: '/some/repo',
+    lastCommit,
+    indexedAt,
+  });
+
+  it('a FRESHER legacy meta.json wins over a stale gitnexus.json (both rewritten)', async () => {
+    // The reproduced PR #2363 bug: an older binary re-analyzes and writes only
+    // meta.json AFTER gitnexus.json exists; the one-shot existence gate then
+    // ignored the fresher state forever (stale lastCommit won, dirty flag lost).
+    await fs.writeFile(
+      path.join(storagePath, 'gitnexus.json'),
+      JSON.stringify(metaAt('2026-01-01T00:00:00.000Z', 'stale-commit')),
+    );
+    await fs.writeFile(
+      path.join(storagePath, 'meta.json'),
+      JSON.stringify(metaAt('2026-06-01T00:00:00.000Z', 'fresh-commit')),
+    );
+
+    await expect(reconcileMetadataFiles(tmpRepo.dbPath)).resolves.toBe(true);
+
+    const primary = JSON.parse(
+      await fs.readFile(path.join(storagePath, 'gitnexus.json'), 'utf-8'),
+    ) as RepoMeta;
+    const legacy = JSON.parse(
+      await fs.readFile(path.join(storagePath, 'meta.json'), 'utf-8'),
+    ) as RepoMeta;
+    expect(primary.lastCommit).toBe('fresh-commit');
+    expect(legacy.lastCommit).toBe('fresh-commit');
+  });
+
+  it('bootstraps gitnexus.json from a legacy-only directory (pre-rename repo)', async () => {
+    await fs.writeFile(
+      path.join(storagePath, 'meta.json'),
+      JSON.stringify(metaAt('2026-06-01T00:00:00.000Z', 'legacy-commit')),
+    );
+
+    await expect(reconcileMetadataFiles(tmpRepo.dbPath)).resolves.toBe(true);
+
+    const primary = JSON.parse(
+      await fs.readFile(path.join(storagePath, 'gitnexus.json'), 'utf-8'),
+    ) as RepoMeta;
+    expect(primary.lastCommit).toBe('legacy-commit');
+    // Legacy file is NOT deleted — it stays as the in-sync mirror.
+    await expect(fs.access(path.join(storagePath, 'meta.json'))).resolves.toBeUndefined();
+  });
+
+  it('is idempotent — a second run with no intervening writes is a no-op', async () => {
+    await fs.writeFile(
+      path.join(storagePath, 'meta.json'),
+      JSON.stringify(metaAt('2026-06-01T00:00:00.000Z', 'legacy-commit')),
+    );
+
+    await expect(reconcileMetadataFiles(tmpRepo.dbPath)).resolves.toBe(true);
+    await expect(reconcileMetadataFiles(tmpRepo.dbPath)).resolves.toBe(false);
+  });
+
+  it('one bad branch dir does not abort reconciliation for sibling branches (F9)', async () => {
+    const branchesDir = path.join(storagePath, 'branches');
+    const goodA = path.join(branchesDir, 'feat-a');
+    const goodB = path.join(branchesDir, 'feat-b');
+    await fs.mkdir(goodA, { recursive: true });
+    await fs.mkdir(goodB, { recursive: true });
+    await fs.writeFile(
+      path.join(goodA, 'meta.json'),
+      JSON.stringify(metaAt('2026-06-01T00:00:00.000Z', 'branch-a')),
+    );
+    await fs.writeFile(
+      path.join(goodB, 'meta.json'),
+      JSON.stringify(metaAt('2026-06-01T00:00:00.000Z', 'branch-b')),
+    );
+    // A dangling symlink sorts between the two healthy dirs ('feat-a' <
+    // 'feat-ax' < 'feat-b'), so pre-fix it would starve feat-b every run.
+    await fs.symlink(
+      path.join(tmpRepo.dbPath, 'does-not-exist'),
+      path.join(branchesDir, 'feat-ax'),
+    );
+
+    const cap = _captureLogger();
+    try {
+      await expect(reconcileMetadataFiles(tmpRepo.dbPath)).resolves.toBe(true);
+    } finally {
+      cap.restore();
+    }
+
+    // Both healthy branches were bootstrapped despite the bad sibling…
+    await expect(fs.access(path.join(goodA, 'gitnexus.json'))).resolves.toBeUndefined();
+    await expect(fs.access(path.join(goodB, 'gitnexus.json'))).resolves.toBeUndefined();
+    // …and the skip is observable, naming the offending branch dir.
+    expect(
+      cap
+        .records()
+        .some(
+          (r) =>
+            r.level === 40 &&
+            r.branchDir === 'feat-ax' &&
+            String(r.msg ?? '').includes('Skipping branch directory'),
+        ),
+    ).toBe(true);
+  });
+
+  it('stays silent when branches/ does not exist (not a multi-branch repo)', async () => {
+    await fs.writeFile(
+      path.join(storagePath, 'meta.json'),
+      JSON.stringify(metaAt('2026-06-01T00:00:00.000Z', 'flat-only')),
+    );
+
+    const cap = _captureLogger();
+    try {
+      await reconcileMetadataFiles(tmpRepo.dbPath);
+    } finally {
+      cap.restore();
+    }
+    expect(cap.records().filter((r) => r.level === 40)).toEqual([]);
+  });
+});
+
+// ─── GitNexus ignore rules (#1233) ─────────────────────────────────────
+
+describe('ensureGitNexusIgnored (#1233)', () => {
+  let tmpRepo: Awaited<ReturnType<typeof createTempDir>>;
+
+  beforeEach(async () => {
+    tmpRepo = await createTempDir('gitnexus-internal-gitignore-');
+  });
+
+  afterEach(async () => {
+    vi.restoreAllMocks();
+    await tmpRepo.cleanup();
+  });
+
+  it('creates .gitnexus/.gitignore containing a catch-all ignore rule', async () => {
+    await ensureGitNexusIgnored(tmpRepo.dbPath);
+
+    await expect(
+      fs.readFile(path.join(tmpRepo.dbPath, '.gitnexus', '.gitignore'), 'utf-8'),
+    ).resolves.toBe('*\n');
+  });
+
+  it('does not create or modify the repository root .gitignore', async () => {
+    const rootGitignorePath = path.join(tmpRepo.dbPath, '.gitignore');
+    await fs.writeFile(rootGitignorePath, 'node_modules/\n');
+
+    await ensureGitNexusIgnored(tmpRepo.dbPath);
+
+    await expect(fs.readFile(rootGitignorePath, 'utf-8')).resolves.toBe('node_modules/\n');
+  });
+
+  it('adds .gitnexus/ to .git/info/exclude when the repo has a real .git directory', async () => {
+    const excludePath = path.join(tmpRepo.dbPath, '.git', 'info', 'exclude');
+    await fs.mkdir(path.dirname(excludePath), { recursive: true });
+
+    await ensureGitNexusIgnored(tmpRepo.dbPath);
+
+    await expect(fs.readFile(excludePath, 'utf-8')).resolves.toBe('.gitnexus/\n');
+  });
+
+  it('appends .gitnexus/ to .git/info/exclude once without disturbing existing rules', async () => {
+    const excludePath = path.join(tmpRepo.dbPath, '.git', 'info', 'exclude');
+    await fs.mkdir(path.dirname(excludePath), { recursive: true });
+    await fs.writeFile(excludePath, '# local excludes\nnode_modules/\n');
+
+    await ensureGitNexusIgnored(tmpRepo.dbPath);
+    await ensureGitNexusIgnored(tmpRepo.dbPath);
+
+    await expect(fs.readFile(excludePath, 'utf-8')).resolves.toBe(
+      '# local excludes\nnode_modules/\n.gitnexus/\n',
+    );
+  });
+
+  it('does not create .git/info/exclude when .git is not a directory', async () => {
+    await fs.writeFile(path.join(tmpRepo.dbPath, '.git'), 'gitdir: ../real-git-dir\n');
+
+    await ensureGitNexusIgnored(tmpRepo.dbPath);
+
+    await expect(fs.access(path.join(tmpRepo.dbPath, '.git', 'info', 'exclude'))).rejects.toThrow();
+  });
+
+  it('keeps generated .gitnexus files out of git status', async () => {
+    execSync('git init', { cwd: tmpRepo.dbPath, stdio: 'pipe' });
+    execSync('git -c user.name=test -c user.email=test@test commit --allow-empty -m init', {
+      cwd: tmpRepo.dbPath,
+      stdio: 'pipe',
+    });
+
+    await ensureGitNexusIgnored(tmpRepo.dbPath);
+    await fs.writeFile(path.join(tmpRepo.dbPath, '.gitnexus', 'meta.json'), '{}\n');
+
+    const status = execSync('git status --short', {
+      cwd: tmpRepo.dbPath,
+      encoding: 'utf-8',
+    });
+    expect(status).toBe('');
+  });
+
+  // ─ Read-only workspace tolerance (#1549) ────────────────────────────
+  // The documented Docker workflow mounts the host workspace at /workspace:ro
+  // and runs `gitnexus index /workspace/<repo>`. The host has already created
+  // the .gitnexus dir during a prior `analyze`, so the gitignore file already
+  // exists with the correct content — there's no real work to do. The tests
+  // below pin two pieces of behaviour that make that workflow work:
+  //   (a) the function short-circuits when the file is already correct
+  //       (no write attempt, no mtime bump);
+  //   (b) when a write *is* needed but the FS is not writable
+  //       (EROFS / EACCES / EPERM), the function logs and continues instead of
+  //       throwing — so the caller's `registerRepo` work stays committed.
+
+  it('does not re-write .gitnexus/.gitignore when it already has the desired content', async () => {
+    await ensureGitNexusIgnored(tmpRepo.dbPath);
+    const gitignorePath = path.join(tmpRepo.dbPath, '.gitnexus', '.gitignore');
+    const before = await fs.stat(gitignorePath);
+
+    await new Promise((resolve) => setTimeout(resolve, 25));
+
+    await ensureGitNexusIgnored(tmpRepo.dbPath);
+
+    const after = await fs.stat(gitignorePath);
+    expect(after.mtimeMs).toBe(before.mtimeMs);
+  });
+
+  it.skipIf(process.platform === 'win32' || process.getuid?.() === 0)(
+    'does not throw when .gitnexus/.gitignore is already correct and the storage dir is read-only',
+    async () => {
+      await ensureGitNexusIgnored(tmpRepo.dbPath);
+      const storagePath = path.join(tmpRepo.dbPath, '.gitnexus');
+
+      await fs.chmod(storagePath, 0o555);
+      try {
+        await expect(ensureGitNexusIgnored(tmpRepo.dbPath)).resolves.not.toThrow();
+      } finally {
+        await fs.chmod(storagePath, 0o755);
+      }
+    },
+  );
+
+  it.skipIf(process.platform === 'win32' || process.getuid?.() === 0)(
+    'warns and continues when the storage dir is read-only and the file does not yet exist',
+    async () => {
+      const storagePath = path.join(tmpRepo.dbPath, '.gitnexus');
+      await fs.mkdir(storagePath, { recursive: true });
+      await fs.chmod(storagePath, 0o555);
+
+      const cap = _captureLogger();
+      try {
+        await expect(ensureGitNexusIgnored(tmpRepo.dbPath)).resolves.not.toThrow();
+        expect(
+          cap
+            .records()
+            .some(
+              (r) =>
+                r.level === 40 &&
+                (r.code === 'EACCES' || r.code === 'EPERM') &&
+                String(r.msg ?? '').includes('.gitnexus/.gitignore') &&
+                String(r.path ?? '').includes('.gitnexus'),
+            ),
+        ).toBe(true);
+      } finally {
+        cap.restore();
+        await fs.chmod(storagePath, 0o755);
+      }
+    },
+  );
 });
 
 // ─── readRegistry ────────────────────────────────────────────────────
@@ -278,6 +856,177 @@ describe('registerRepo name override + collision guard (#829)', () => {
       await parentA.cleanup();
       await parentB.cleanup();
     }
+  });
+});
+
+// ─── registerRepo branch nesting (#2106) ─────────────────────────────
+
+describe('registerRepo branch nesting (#2106)', () => {
+  let tmpHome: Awaited<ReturnType<typeof createTempDir>>;
+  let tmpRepo: Awaited<ReturnType<typeof createTempDir>>;
+  let savedGitnexusHome: string | undefined;
+
+  const metaFor = (branch: string, lastCommit: string): RepoMeta => ({
+    repoPath: '',
+    lastCommit,
+    indexedAt: '2026-06-10T12:00:00.000Z',
+    branch,
+    stats: { files: 1, nodes: 1 },
+  });
+
+  beforeEach(async () => {
+    tmpHome = await createTempDir('gitnexus-registry-branch-home-');
+    tmpRepo = await createTempDir('gitnexus-registry-branch-repo-');
+    savedGitnexusHome = process.env.GITNEXUS_HOME;
+    process.env.GITNEXUS_HOME = tmpHome.dbPath;
+  });
+
+  afterEach(async () => {
+    if (savedGitnexusHome === undefined) delete process.env.GITNEXUS_HOME;
+    else process.env.GITNEXUS_HOME = savedGitnexusHome;
+    await tmpHome.cleanup();
+    await tmpRepo.cleanup();
+  });
+
+  it('primary run records branch at top level and no branches[]', async () => {
+    await registerRepo(tmpRepo.dbPath, metaFor('main', 'aaa1111'));
+    const [entry] = await listRegisteredRepos();
+    expect(entry.branch).toBe('main');
+    expect(entry.lastCommit).toBe('aaa1111');
+    expect(entry.branches).toBeUndefined();
+  });
+
+  it('branch run nests under branches[] without clobbering the primary', async () => {
+    await registerRepo(tmpRepo.dbPath, metaFor('main', 'aaa1111'));
+    await registerRepo(tmpRepo.dbPath, metaFor('feature/x', 'bbb2222'), { branch: 'feature/x' });
+
+    const entries = await listRegisteredRepos();
+    expect(entries).toHaveLength(1); // one entry per path preserved
+    const [entry] = entries;
+    // Primary top-level fields untouched.
+    expect(entry.branch).toBe('main');
+    expect(entry.lastCommit).toBe('aaa1111');
+    // Branch summary nested.
+    expect(entry.branches).toHaveLength(1);
+    expect(entry.branches?.[0]).toMatchObject({ branch: 'feature/x', lastCommit: 'bbb2222' });
+  });
+
+  it('re-registering the same branch updates in place (no duplicate)', async () => {
+    await registerRepo(tmpRepo.dbPath, metaFor('main', 'aaa1111'));
+    await registerRepo(tmpRepo.dbPath, metaFor('feature/x', 'bbb2222'), { branch: 'feature/x' });
+    await registerRepo(tmpRepo.dbPath, metaFor('feature/x', 'ccc3333'), { branch: 'feature/x' });
+
+    const [entry] = await listRegisteredRepos();
+    expect(entry.branches).toHaveLength(1);
+    expect(entry.branches?.[0].lastCommit).toBe('ccc3333');
+  });
+
+  it('primary re-analyze preserves existing branch summaries', async () => {
+    await registerRepo(tmpRepo.dbPath, metaFor('main', 'aaa1111'));
+    await registerRepo(tmpRepo.dbPath, metaFor('feature/x', 'bbb2222'), { branch: 'feature/x' });
+    // Re-analyze the primary at a newer commit.
+    await registerRepo(tmpRepo.dbPath, metaFor('main', 'aaa9999'));
+
+    const [entry] = await listRegisteredRepos();
+    expect(entry.lastCommit).toBe('aaa9999');
+    expect(entry.branches).toHaveLength(1);
+    expect(entry.branches?.[0].branch).toBe('feature/x');
+  });
+
+  // ─── removeBranchIndex (#2106 R7) ──────────────────────────────────
+
+  it('removeBranchIndex drops a recorded branch summary, leaves the primary', async () => {
+    await registerRepo(tmpRepo.dbPath, metaFor('main', 'aaa1111'));
+    await registerRepo(tmpRepo.dbPath, metaFor('feature/x', 'bbb2222'), { branch: 'feature/x' });
+
+    const removed = await removeBranchIndex(tmpRepo.dbPath, 'feature/x');
+    expect(removed).toBe(true);
+    const [entry] = await listRegisteredRepos();
+    expect(entry.branch).toBe('main'); // primary intact
+    expect(entry.lastCommit).toBe('aaa1111');
+    expect(entry.branches).toBeUndefined(); // empty branches[] dropped
+  });
+
+  it('removeBranchIndex returns false for an unknown branch (no crash)', async () => {
+    await registerRepo(tmpRepo.dbPath, metaFor('main', 'aaa1111'));
+    await registerRepo(tmpRepo.dbPath, metaFor('feature/x', 'bbb2222'), { branch: 'feature/x' });
+
+    expect(await removeBranchIndex(tmpRepo.dbPath, 'nope')).toBe(false);
+    const [entry] = await listRegisteredRepos();
+    expect(entry.branches).toHaveLength(1); // unchanged
+  });
+
+  it('removeBranchIndex returns false when the repo has no branch indexes', async () => {
+    await registerRepo(tmpRepo.dbPath, metaFor('main', 'aaa1111'));
+    expect(await removeBranchIndex(tmpRepo.dbPath, 'feature/x')).toBe(false);
+  });
+
+  it('removeBranchIndex keeps other branch summaries when removing one', async () => {
+    await registerRepo(tmpRepo.dbPath, metaFor('main', 'aaa1111'));
+    await registerRepo(tmpRepo.dbPath, metaFor('feature/x', 'bbb2222'), { branch: 'feature/x' });
+    await registerRepo(tmpRepo.dbPath, metaFor('feature/y', 'ccc3333'), { branch: 'feature/y' });
+
+    await removeBranchIndex(tmpRepo.dbPath, 'feature/x');
+    const [entry] = await listRegisteredRepos();
+    expect(entry.branches?.map((b) => b.branch)).toEqual(['feature/y']);
+  });
+
+  // ─── adoptFlatBranchLabel (#2354) ───────────────────────────────────
+
+  it('adoptFlatBranchLabel relabels the entry and removes a shadowed sub-index', async () => {
+    await registerRepo(tmpRepo.dbPath, metaFor('main', 'aaa1111'));
+    await registerRepo(tmpRepo.dbPath, metaFor('feature/x', 'bbb2222'), { branch: 'feature/x' });
+    // Materialize the pinned sub-index on disk so the shadow cleanup has a
+    // real directory to remove.
+    const { metaPath } = getStoragePaths(tmpRepo.dbPath, 'feature/x');
+    await saveMeta(path.dirname(metaPath), metaFor('feature/x', 'bbb2222'));
+
+    await adoptFlatBranchLabel(tmpRepo.dbPath, 'feature/x');
+
+    const [entry] = await listRegisteredRepos();
+    expect(entry.branch).toBe('feature/x');
+    expect(entry.branches).toBeUndefined(); // shadowed summary dropped
+    await expect(fs.access(path.dirname(metaPath))).rejects.toThrow(); // dir deleted
+  });
+
+  it('adoptFlatBranchLabel keeps other pinned branch summaries', async () => {
+    await registerRepo(tmpRepo.dbPath, metaFor('main', 'aaa1111'));
+    await registerRepo(tmpRepo.dbPath, metaFor('feature/x', 'bbb2222'), { branch: 'feature/x' });
+    await registerRepo(tmpRepo.dbPath, metaFor('feature/y', 'ccc3333'), { branch: 'feature/y' });
+
+    await adoptFlatBranchLabel(tmpRepo.dbPath, 'feature/x');
+
+    const [entry] = await listRegisteredRepos();
+    expect(entry.branch).toBe('feature/x');
+    expect(entry.branches?.map((b) => b.branch)).toEqual(['feature/y']);
+  });
+
+  it('adoptFlatBranchLabel never self-heals an unregistered repo', async () => {
+    // No registerRepo call — the registry has no entry for this path (#2264/#1169).
+    // The no-op must cover the disk too: a materialized pinned sub-index
+    // survives, because the shadow rm only runs for registered repos
+    // (#2364 review F2 — the rm used to fire before the registry check).
+    const { metaPath } = getStoragePaths(tmpRepo.dbPath, 'feature/x');
+    await saveMeta(path.dirname(metaPath), metaFor('feature/x', 'bbb2222'));
+
+    await adoptFlatBranchLabel(tmpRepo.dbPath, 'feature/x');
+
+    expect(await listRegisteredRepos()).toHaveLength(0);
+    await expect(fs.access(path.dirname(metaPath))).resolves.toBeUndefined(); // dir survives
+  });
+
+  // ─── re-read-before-write merge (#2106 R9) ──────────────────────────
+
+  it('a branch run preserves the freshest top-level fields (alias survives)', async () => {
+    // A primary run set an alias; a later branch run must keep it (re-derives
+    // against the fresh snapshot, not a stale entry-time view).
+    await registerRepo(tmpRepo.dbPath, metaFor('main', 'aaa1111'), { name: 'my-alias' });
+    await registerRepo(tmpRepo.dbPath, metaFor('feature/x', 'bbb2222'), { branch: 'feature/x' });
+
+    const [entry] = await listRegisteredRepos();
+    expect(entry.name).toBe('my-alias'); // top-level alias survived the branch run
+    expect(entry.branch).toBe('main');
+    expect(entry.branches?.map((b) => b.branch)).toEqual(['feature/x']);
   });
 });
 
@@ -789,5 +1538,171 @@ describe('assertSafeStoragePath (#1003)', () => {
     };
     // Should accept because Windows paths are case-insensitive.
     expect(() => assertSafeStoragePath(entry)).not.toThrow();
+  });
+});
+
+// ─── Worktree-aware registry-name fallback (#1259) ─────────────────────
+//
+// The first @claude review on PR #1296 caught a critical gap: my initial
+// fix only patched the early-return path in `runFullAnalysis`, leaving
+// the full-analysis path (which calls `registerRepo` directly) still
+// using the worktree-slug basename when no `--name` and no remote are
+// configured. This block proves `registerRepo`'s OWN basename fallback
+// now uses the canonical repo root via `getCanonicalRepoRoot` — the
+// regression-guard for the wiring at the registry layer, complementing
+// the helper-level coverage in `git-utils.test.ts`.
+
+describe('registerRepo worktree-aware basename fallback (#1259)', () => {
+  let tmpHome: Awaited<ReturnType<typeof createTempDir>>;
+  let tmpRepo: Awaited<ReturnType<typeof createTempDir>>;
+  let savedGitnexusHome: string | undefined;
+
+  const meta: RepoMeta = {
+    repoPath: '',
+    lastCommit: 'abc1234',
+    indexedAt: '2026-05-03T00:00:00.000Z',
+    stats: { files: 1, nodes: 1 },
+  };
+
+  beforeEach(async () => {
+    tmpHome = await createTempDir('gitnexus-registry-home-');
+    tmpRepo = await createTempDir('gitnexus-canonical-repo-');
+    savedGitnexusHome = process.env.GITNEXUS_HOME;
+    process.env.GITNEXUS_HOME = tmpHome.dbPath;
+  });
+
+  afterEach(async () => {
+    if (savedGitnexusHome === undefined) delete process.env.GITNEXUS_HOME;
+    else process.env.GITNEXUS_HOME = savedGitnexusHome;
+    await tmpHome.cleanup();
+    await tmpRepo.cleanup();
+  });
+
+  it('registerRepo from a linked worktree uses canonical repo basename, not worktree slug', async () => {
+    // Set up a real git repo with at least one commit (worktree add requires
+    // a non-empty branch). No remote is configured — that's the trigger for
+    // the basename fallback this test guards.
+    execSync('git init -q', { cwd: tmpRepo.dbPath });
+    execSync('git config user.email "test@example.com"', { cwd: tmpRepo.dbPath });
+    execSync('git config user.name "Test"', { cwd: tmpRepo.dbPath });
+    execSync('git commit --allow-empty -q -m "initial"', { cwd: tmpRepo.dbPath });
+
+    const worktreeDir = path.join(tmpRepo.dbPath, 'wt-feature');
+    execSync(`git worktree add -q -b feature "${worktreeDir}"`, { cwd: tmpRepo.dbPath });
+
+    try {
+      // Call registerRepo with the WORKTREE path and NO --name. Pre-fix this
+      // would register under the worktree's basename ("wt-feature"). The
+      // canonical-root fallback in registerRepo now resolves it to the
+      // canonical repo's basename (whatever `tmpRepo`'s temp-dir basename
+      // happens to be).
+      await registerRepo(worktreeDir, meta);
+
+      const entries = await listRegisteredRepos();
+      expect(entries).toHaveLength(1);
+      // The registered name MUST NOT be the worktree slug.
+      expect(entries[0].name).not.toBe('wt-feature');
+      // It MUST match the canonical repo dir's basename. We compare via
+      // basename (not full-path equality) for the same Windows 8.3
+      // short-name reason as the `getCanonicalRepoRoot` helper tests:
+      // git and `fs.realpathSync` may resolve to different long/short
+      // forms of the same path on Windows runners, but both have the
+      // same `basename`.
+      expect(entries[0].name).toBe(path.basename(tmpRepo.dbPath));
+    } finally {
+      // Best-effort worktree teardown before the temp-dir cleanup runs.
+      try {
+        execSync(`git worktree remove -f "${worktreeDir}"`, { cwd: tmpRepo.dbPath });
+      } catch {
+        // Falls through to recursive rm in afterEach.
+      }
+    }
+  });
+
+  // Pinned by the second @claude review on PR #1296: the FIRST review-fix
+  // commit (`7ceb839b`) introduced a regression in `hasCustomAlias`. Once
+  // a worktree is registered with the canonical basename
+  // (`{name: 'repo', path: '/repo/wt-feature'}`), `hasCustomAlias` saw
+  // `'repo' !== path.basename('/repo/wt-feature') = 'wt-feature'` and
+  // wrongly classified the canonical-root name as a sticky user alias.
+  // On re-analyze the duplicate-name guard then fired against the
+  // canonical checkout's entry → `RegistryNameCollisionError` blocking
+  // the primary "per-task worktree, repeated re-analyze" workflow this
+  // PR is supposed to FIX. This test exercises the full sequence:
+  // canonical → worktree → re-worktree, with both paths registered.
+  it('canonical → worktree → re-worktree re-register does not throw collision (#1259 hasCustomAlias regression)', async () => {
+    execSync('git init -q', { cwd: tmpRepo.dbPath });
+    execSync('git config user.email "test@example.com"', { cwd: tmpRepo.dbPath });
+    execSync('git config user.name "Test"', { cwd: tmpRepo.dbPath });
+    execSync('git commit --allow-empty -q -m "initial"', { cwd: tmpRepo.dbPath });
+
+    const worktreeDir = path.join(tmpRepo.dbPath, 'wt-feature');
+    execSync(`git worktree add -q -b feature "${worktreeDir}"`, { cwd: tmpRepo.dbPath });
+
+    try {
+      // 1. Register the canonical checkout — gets the canonical basename.
+      await registerRepo(tmpRepo.dbPath, meta);
+      // 2. Register the worktree — gets the SAME canonical basename
+      //    (because of the `resolveRepoIdentityRoot` fix). Two entries
+      //    coexist with the same name but different paths; this is the
+      //    documented "silent basename collision" behavior, not an error.
+      await registerRepo(worktreeDir, meta);
+      // 3. Re-register the worktree. Pre-`hasCustomAlias`-fix this threw
+      //    `RegistryNameCollisionError` because the existing worktree
+      //    entry (`{name: 'repo', path: worktreeDir}`) was misclassified
+      //    as a custom alias by `hasCustomAlias`, fired the guard
+      //    against the canonical entry. With the fix it must complete
+      //    without throwing.
+      await expect(registerRepo(worktreeDir, meta)).resolves.toBeDefined();
+
+      // Both registry entries should still be present and named
+      // canonically.
+      const entries = await listRegisteredRepos();
+      expect(entries).toHaveLength(2);
+      const canonicalBasename = path.basename(tmpRepo.dbPath);
+      for (const entry of entries) {
+        expect(entry.name).toBe(canonicalBasename);
+      }
+    } finally {
+      try {
+        execSync(`git worktree remove -f "${worktreeDir}"`, { cwd: tmpRepo.dbPath });
+      } catch {
+        // Falls through to recursive rm in afterEach.
+      }
+    }
+  });
+
+  // Pinned by the third @claude review on PR #1296 (MEDIUM #2): the
+  // `hasGitDir` gate inside `resolveRepoIdentityRoot` is the safeguard
+  // that keeps the #1232/#1233 `--skip-git` behaviour working — an
+  // arbitrary subdir under a parent git repo (no `.git` of its own)
+  // must NOT collapse to the parent's canonical root, otherwise users
+  // who analyze a subdir get the parent repo's basename in the
+  // registry. The COOLIO `--skip-git` integration test in
+  // `skip-git-cli.test.ts` already proves this end-to-end, but no
+  // direct test sat at the `registerRepo` layer to guard the gate
+  // against future refactors. This is that direct test.
+  it('registerRepo on an arbitrary subdir under a git repo preserves the subdir basename (#1232 / #1233 gate)', async () => {
+    execSync('git init -q', { cwd: tmpRepo.dbPath });
+    execSync('git config user.email "test@example.com"', { cwd: tmpRepo.dbPath });
+    execSync('git config user.name "Test"', { cwd: tmpRepo.dbPath });
+    execSync('git commit --allow-empty -q -m "initial"', { cwd: tmpRepo.dbPath });
+
+    // A subdir of the canonical checkout, NOT a worktree (no `.git` file
+    // here — `mkdirSync` only). `resolveRepoIdentityRoot` must keep
+    // returning this exact path (basename used for the registry name)
+    // rather than collapsing to the parent repo's canonical root.
+    const subdir = path.join(tmpRepo.dbPath, 'arbitrary-subdir');
+    await fs.mkdir(subdir, { recursive: true });
+
+    await registerRepo(subdir, meta);
+
+    const entries = await listRegisteredRepos();
+    expect(entries).toHaveLength(1);
+    // Registered name must be the SUBDIR's basename, NOT the parent
+    // canonical repo's basename — the inverse of what worktree
+    // collapse does.
+    expect(entries[0].name).toBe('arbitrary-subdir');
+    expect(entries[0].name).not.toBe(path.basename(tmpRepo.dbPath));
   });
 });

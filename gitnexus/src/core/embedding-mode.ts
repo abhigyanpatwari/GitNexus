@@ -30,6 +30,38 @@ export interface EmbeddingMode {
   shouldLoadCache: boolean;
 }
 
+/** Default safety cap on graph node count for embedding generation. */
+export const DEFAULT_EMBEDDING_NODE_LIMIT = 50_000;
+
+export interface EmbeddingCapDecision {
+  /** True when the node-count cap blocks generation for this graph. */
+  skipForCap: boolean;
+  /** True when the user explicitly disabled the cap (`--embeddings 0`). */
+  capDisabled: boolean;
+  /** Effective node limit applied (`0` means disabled). */
+  nodeLimit: number;
+}
+
+/**
+ * Decide whether the node-count safety cap blocks embedding generation.
+ *
+ * - `embeddingsNodeLimit === undefined` → use {@link DEFAULT_EMBEDDING_NODE_LIMIT}
+ * - `embeddingsNodeLimit === 0` → cap disabled, generation always proceeds
+ * - any positive integer → custom cap (skip if `nodeCount > limit`)
+ *
+ * Lives in `embedding-mode.ts` (not `run-analyze.ts`) so the branching
+ * contract is unit-testable without spinning up LadybugDB or the pipeline.
+ */
+export function deriveEmbeddingCap(
+  nodeCount: number,
+  embeddingsNodeLimit: number | undefined,
+): EmbeddingCapDecision {
+  const nodeLimit = embeddingsNodeLimit ?? DEFAULT_EMBEDDING_NODE_LIMIT;
+  const capDisabled = nodeLimit === 0;
+  const skipForCap = !capDisabled && nodeCount > nodeLimit;
+  return { skipForCap, capDisabled, nodeLimit };
+}
+
 export function deriveEmbeddingMode(
   options: EmbeddingModeInput,
   existingEmbeddingCount: number,

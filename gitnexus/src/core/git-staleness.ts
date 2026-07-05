@@ -3,10 +3,13 @@
  * Lives in core/ so application code does not depend on the MCP package layer.
  */
 
-import { execFileSync } from 'node:child_process';
+import { execFile, execFileSync } from 'node:child_process';
+import { promisify } from 'node:util';
 import path from 'path';
 import { readRegistry, type RegistryEntry, type CwdMatch } from '../storage/repo-manager.js';
-import { getGitRoot, getCurrentCommit, getRemoteUrl } from '../storage/git.js';
+import { findGitRootByDotGit, getCurrentCommit, getRemoteUrl } from '../storage/git.js';
+
+const execFileAsync = promisify(execFile);
 
 export interface StalenessInfo {
   isStale: boolean;
@@ -23,9 +26,44 @@ export function checkStaleness(repoPath: string, lastCommit: string): StalenessI
       cwd: repoPath,
       encoding: 'utf-8',
       stdio: ['pipe', 'pipe', 'pipe'],
+      windowsHide: true,
     }).trim();
 
     const commitsBehind = parseInt(result, 10) || 0;
+
+    if (commitsBehind > 0) {
+      return {
+        isStale: true,
+        commitsBehind,
+        hint: `⚠️ Index is ${commitsBehind} commit${commitsBehind > 1 ? 's' : ''} behind HEAD. Run analyze tool to update.`,
+      };
+    }
+
+    return { isStale: false, commitsBehind: 0 };
+  } catch {
+    return { isStale: false, commitsBehind: 0 };
+  }
+}
+
+/**
+ * Async variant of {@link checkStaleness} — spawns git as a child process
+ * instead of blocking the event loop.  Used by `listRepos()` to check many
+ * repos in parallel (issue #1363: 200 repos × sync spawn ≈ 50 s).
+ */
+export async function checkStalenessAsync(
+  repoPath: string,
+  lastCommit: string,
+): Promise<StalenessInfo> {
+  try {
+    // Note: promisified execFile captures stdout/stderr by default (no stdio option needed,
+    // unlike the sync variant which requires explicit stdio: ['pipe','pipe','pipe']).
+    const { stdout } = await execFileAsync('git', ['rev-list', '--count', `${lastCommit}..HEAD`], {
+      cwd: repoPath,
+      encoding: 'utf-8',
+      windowsHide: true,
+    });
+
+    const commitsBehind = parseInt(stdout.trim(), 10) || 0;
 
     if (commitsBehind > 0) {
       return {
@@ -54,6 +92,7 @@ function commitsAheadOfIndexed(siblingPath: string, indexedCommit: string): numb
       cwd: siblingPath,
       encoding: 'utf-8',
       stdio: ['pipe', 'pipe', 'pipe'],
+      windowsHide: true,
     }).trim();
     return parseInt(result, 10) || 0;
   } catch {
@@ -101,9 +140,10 @@ export async function checkCwdMatch(cwd: string): Promise<CwdMatch> {
   }
   if (bestPath) return { match: 'path', entry: bestPath };
 
-  // 2) Sibling-by-remote: locate the cwd's git root, get its remote
-  //    URL, and look for any registered entry with the same fingerprint.
-  const cwdGitRoot = getGitRoot(cwdResolved);
+  // 2) Sibling-by-remote: locate the cwd's git root using only ancestor
+  //    `.git` checks before shelling out. This keeps MCP startup from
+  //    running git in an unrelated launch cwd such as $HOME (#1138).
+  const cwdGitRoot = findGitRootByDotGit(cwdResolved);
   if (!cwdGitRoot) return { match: 'none' };
 
   const cwdRemote = getRemoteUrl(cwdGitRoot);

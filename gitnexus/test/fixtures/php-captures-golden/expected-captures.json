@@ -1,0 +1,566 @@
+{
+  "php-abstract-dispatch/src/Contracts/Repository.php": {
+    "captureGroups": 10,
+    "digest": "3459af9360d51aaaba72963fc49bb79edc188e97f9831421d6504c7919b61dc5"
+  },
+  "php-abstract-dispatch/src/Repositories/SqlRepository.php": {
+    "captureGroups": 14,
+    "digest": "5905bb450b29d4e186d74b50f70f07a54c8e0d4b8c3748c998c1579e72283215"
+  },
+  "php-abstract-dispatch/src/app.php": {
+    "captureGroups": 10,
+    "digest": "52ce761f1d53a56034124fa5e674863bce9092c1b523f6d71139c4f335e8b9f0"
+  },
+  "php-alias-imports/app/Models/Repo.php": {
+    "captureGroups": 14,
+    "digest": "4fd03e4a19a7a7c2da925f850563b6dccd21b898223c00278bc2753e8841d844"
+  },
+  "php-alias-imports/app/Models/User.php": {
+    "captureGroups": 14,
+    "digest": "5a20d985b3f1c04e998feb586e8b9b382ab069829db69b156ab2636867096a93"
+  },
+  "php-alias-imports/app/Services/Main.php": {
+    "captureGroups": 15,
+    "digest": "bf8e1b8079956e7ef9ebfcb3ca38f547e9760da5c83856e93163efe6961067b9"
+  },
+  "php-ambiguous/app/Models/Dispatchable.php": {
+    "captureGroups": 6,
+    "digest": "d2c8aabf58d4917fd0c9a6ab0a512473a41d449bdd24f7fb5e5cc5e854b5de04"
+  },
+  "php-ambiguous/app/Models/Handler.php": {
+    "captureGroups": 7,
+    "digest": "0bb9adefa360767db1741b884bf3265b81ad70bce4cd8391d3049763d5282715"
+  },
+  "php-ambiguous/app/Other/Dispatchable.php": {
+    "captureGroups": 6,
+    "digest": "e1c80e8c21166f4156beb3f22d3bffc7c67dc072b3a9d2f454dd2aacaa845a01"
+  },
+  "php-ambiguous/app/Other/Handler.php": {
+    "captureGroups": 7,
+    "digest": "f6ad05a50da70b32744792da353d520d63722bca7c0802e603af5eb13a223c5c"
+  },
+  "php-ambiguous/app/Services/UserHandler.php": {
+    "captureGroups": 12,
+    "digest": "1c47e7020939a6cd6bb18f3732b51a16f4c75ded0fe9883a87d6706a2c624d1f"
+  },
+  "php-anonymous-class/anon.php": {
+    "captureGroups": 5,
+    "digest": "0628d6520b02da49ace196f582704c3ffe88aadb3ea20cff642699aa122d5f7f"
+  },
+  "php-app/app/Contracts/Loggable.php": {
+    "captureGroups": 7,
+    "digest": "46cf7e385db7656514b796908134a50f4a536f3adda64196e17d8c54f5cd5e3a"
+  },
+  "php-app/app/Contracts/Repository.php": {
+    "captureGroups": 10,
+    "digest": "40bbdb3fc0ec9b5a9bb8fbdf4a053099ac926951ecd746f2436569add3f0e3d5"
+  },
+  "php-app/app/Enums/UserRole.php": {
+    "captureGroups": 10,
+    "digest": "203eb6943ff7527cc52ad93df040a4d15dbcf16beb9e78914401069c54f20bb8"
+  },
+  "php-app/app/Models/BaseModel.php": {
+    "captureGroups": 18,
+    "digest": "be7ca5be7e28417afdef2e45c8cfed9e04594b341b0d676e7a00fdd84c94e42a"
+  },
+  "php-app/app/Models/User.php": {
+    "captureGroups": 27,
+    "digest": "b6b08be1af66cbd757cfd715389725952c0e2a8e5e910ed715594c0b07570a37"
+  },
+  "php-app/app/Services/UserService.php": {
+    "captureGroups": 38,
+    "digest": "80b8557e183052f25222cfda8879e08b1613752001f58670ce7b3dbf4b8bee28"
+  },
+  "php-app/app/Traits/HasTimestamps.php": {
+    "captureGroups": 11,
+    "digest": "d114ed0515e28b83b72ead59ab33114ade0b4fc9ac417ce3bd56acab4046371d"
+  },
+  "php-app/app/Traits/SoftDeletes.php": {
+    "captureGroups": 15,
+    "digest": "0a697e33e1c98fd092918fb96d72f3fbd0d3c56158c74fe166976fd4f6a5b676"
+  },
+  "php-assignment-chain/app/Models/Repo.php": {
+    "captureGroups": 7,
+    "digest": "f083497f2ec111e8d396abeb4117e1495035334c25f050959c89aae5d05f76e3"
+  },
+  "php-assignment-chain/app/Models/User.php": {
+    "captureGroups": 7,
+    "digest": "5e6b0b6f2bbe05e8ee310e5a91163b087b846c38a07dc22ab3ba165b939d7691"
+  },
+  "php-assignment-chain/app/Services/AppService.php": {
+    "captureGroups": 15,
+    "digest": "36c5358d7f724cc0906e087828c86d9a29fe0629e2bad6105967fe8d671aa6fe"
+  },
+  "php-call-result-binding/App.php": {
+    "captureGroups": 23,
+    "digest": "48c7af06cd4c12f07f308d8804c1c3652c2af87d155831fc5ee915fd984737d2"
+  },
+  "php-calls/app/Services/UserService.php": {
+    "captureGroups": 7,
+    "digest": "94f1cdfb0c444dc9e8116d1bbf824dc88584046539b2cbc48297729eb49e41a1"
+  },
+  "php-calls/app/Utils/OneArg/log.php": {
+    "captureGroups": 5,
+    "digest": "bd3d0b4f7da34edfa86b3e5e9cd6664439baf7cf07318098ac562f48c40f2a72"
+  },
+  "php-calls/app/Utils/ZeroArg/log.php": {
+    "captureGroups": 4,
+    "digest": "c9c4d8553aece69141049625b2fd36b0b0d4946eacd8eac6b0e2231922e82d48"
+  },
+  "php-child-extends-parent/src/App.php": {
+    "captureGroups": 11,
+    "digest": "0c8a7c7edaa20009b71f22fef98230119a4738d2a21c8b88d64047c3c932fd36"
+  },
+  "php-child-extends-parent/src/Child.php": {
+    "captureGroups": 5,
+    "digest": "07f4216630a17fddb627eff217aa81f089b5e1fc6a9f82d727a6ae91693f8e38"
+  },
+  "php-child-extends-parent/src/Parent.php": {
+    "captureGroups": 7,
+    "digest": "e7bbcd72127b97475851b17cf7fbc5a86786091b2117313dfb24deab8a0d6d09"
+  },
+  "php-constructor-calls/Models/User.php": {
+    "captureGroups": 14,
+    "digest": "a7d4f11e20fb687f537d1ca0735f8e85c9ea8a2b29867bb57326f02da3bb63d1"
+  },
+  "php-constructor-calls/app.php": {
+    "captureGroups": 8,
+    "digest": "23ef0f05446126892e598872a0b3c3d2f96e3b0dc50e301f1fa784a56ebc81d4"
+  },
+  "php-constructor-promotion-fields/Models.php": {
+    "captureGroups": 22,
+    "digest": "ac49ef4de6665d63a0bef9449e1c685f2fd20fbb01c5d26c924ee0d469f614c5"
+  },
+  "php-constructor-promotion-fields/Service.php": {
+    "captureGroups": 8,
+    "digest": "d7093850a8c703a5aefbcd584e5bc8e7ac5668e14ff79e27b1db401f72e83073"
+  },
+  "php-constructor-type-inference/app/Models/Repo.php": {
+    "captureGroups": 7,
+    "digest": "44921bb2ae5aba27957cd45a7d3e515425f27f8e93af5d6285125b94f5d9ba88"
+  },
+  "php-constructor-type-inference/app/Models/User.php": {
+    "captureGroups": 7,
+    "digest": "cec22d127d637784baa722787a0a5e5402970ca2dc23a20f07e644762492d8bd"
+  },
+  "php-constructor-type-inference/app/Services/AppService.php": {
+    "captureGroups": 15,
+    "digest": "26181127fe9e9bf04431a7cc801624bde9dd284049627bb7ca0a4c9234141eec"
+  },
+  "php-coverage/enum-and-anon.php": {
+    "captureGroups": 9,
+    "digest": "83318a2833a16be704f15c2a32c0bbc9cfe0aacf693d1b82413a2eabf5ffed24"
+  },
+  "php-coverage/multi-import.php": {
+    "captureGroups": 7,
+    "digest": "4d72fbfba40f2e083aa55d1c48bb500aeb7dd615de18b48b00eaca5b26a2001e"
+  },
+  "php-deep-field-chain/Models.php": {
+    "captureGroups": 26,
+    "digest": "f20d780f2bc95ed438047c8e9bb694f5a020454161d8a20f8d5e02be68e4a602"
+  },
+  "php-deep-field-chain/Service.php": {
+    "captureGroups": 9,
+    "digest": "0026ff9cbad4125b5c27ce356b7c954d369604c5129460d9a0f51cd1c46afbca"
+  },
+  "php-default-params/app.php": {
+    "captureGroups": 9,
+    "digest": "c5b100802ae7d78869f099ab886133d16f865a653e05bdc477e6b4e523accf91"
+  },
+  "php-dynamic-calls/app/Services/Dynamic.php": {
+    "captureGroups": 52,
+    "digest": "1a15600d585851ee1f05927c27e6ce6ccaf6a3f56aecf36e27f84a20a65bb9b2"
+  },
+  "php-dynamic-calls/app/Services/OtherTargets.php": {
+    "captureGroups": 6,
+    "digest": "f27d95bd651a23664a440e8264d793f30ed46dfea915b18300f51448db025528"
+  },
+  "php-dynamic-calls/app/Services/Targets.php": {
+    "captureGroups": 31,
+    "digest": "7f089e347f1f690400afb890637eb960c70ea5afcb843c534c5d80f650e613a2"
+  },
+  "php-field-types/Models.php": {
+    "captureGroups": 17,
+    "digest": "23e6855d9ac081c156d7f273a6ca4076c878d900d97822b436d2f190e2272064"
+  },
+  "php-field-types/Service.php": {
+    "captureGroups": 8,
+    "digest": "d7093850a8c703a5aefbcd584e5bc8e7ac5668e14ff79e27b1db401f72e83073"
+  },
+  "php-foreach-call-expr/Repo.php": {
+    "captureGroups": 17,
+    "digest": "f6082a43eb279f1de8f8ffea93c1a8ee05b7c5b39fdf2eb0a308c8170b7ab7d1"
+  },
+  "php-foreach-call-expr/User.php": {
+    "captureGroups": 17,
+    "digest": "799e12a9ebddde34f030e0612724f8a31893d33d45421607e619070036e30937"
+  },
+  "php-foreach-call-expr/main.php": {
+    "captureGroups": 11,
+    "digest": "ce332b01f1bbdfaf0e03a3d77f7f708e9f7e5fd41eaa795be8fd2584ab86711a"
+  },
+  "php-foreach-generic/App.php": {
+    "captureGroups": 16,
+    "digest": "6f5355bc0d315224e3ce2696f3fac3b067f90771f291ce73e2cfc9c5c9ece59c"
+  },
+  "php-foreach-generic/Repo.php": {
+    "captureGroups": 13,
+    "digest": "0ba7bc5bc2387e1f07898a288a4d856349b777c9be12ace6ebd2ccf39124c446"
+  },
+  "php-foreach-generic/User.php": {
+    "captureGroups": 13,
+    "digest": "eb34a7e89368d13116de3cb7b0430bc2d1b9c982e3b3f7c9511dae8a73759af6"
+  },
+  "php-foreach-loop/App.php": {
+    "captureGroups": 10,
+    "digest": "0a648289cb93a52808d1d6ee8b519fa28c413227607deb0c3d3a9a0cdaa52e02"
+  },
+  "php-foreach-loop/Repo.php": {
+    "captureGroups": 13,
+    "digest": "0ba7bc5bc2387e1f07898a288a4d856349b777c9be12ace6ebd2ccf39124c446"
+  },
+  "php-foreach-loop/User.php": {
+    "captureGroups": 13,
+    "digest": "eb34a7e89368d13116de3cb7b0430bc2d1b9c982e3b3f7c9511dae8a73759af6"
+  },
+  "php-foreach-member-access/App.php": {
+    "captureGroups": 14,
+    "digest": "44e6f810de40d566b5c909d91dcc50de5282fde2f597bf38302edbcb8d825ca3"
+  },
+  "php-foreach-member-access/Repo.php": {
+    "captureGroups": 13,
+    "digest": "0ba7bc5bc2387e1f07898a288a4d856349b777c9be12ace6ebd2ccf39124c446"
+  },
+  "php-foreach-member-access/User.php": {
+    "captureGroups": 13,
+    "digest": "eb34a7e89368d13116de3cb7b0430bc2d1b9c982e3b3f7c9511dae8a73759af6"
+  },
+  "php-fqn-cross-namespace/app/Models/User.php": {
+    "captureGroups": 7,
+    "digest": "56f9e84d179973e9700a0768c291415a7e75795443ebc2940c32bf6665761430"
+  },
+  "php-fqn-cross-namespace/app/Other/User.php": {
+    "captureGroups": 7,
+    "digest": "9989dd5b86b705df941fc63dfd7fcbe4520dd1378a16a50b5f3dfd0ebed7bd90"
+  },
+  "php-fqn-cross-namespace/app/Services/Service.php": {
+    "captureGroups": 15,
+    "digest": "94a2bec57ccde7aa663ce2027c7f36151d18ee257830663365bc14f9d4d5f703"
+  },
+  "php-grandparent-resolution/app/Models/A.php": {
+    "captureGroups": 9,
+    "digest": "47af1c30a957f15a2a5ebbddd80c0214a4f68c15f08699fc81cdbfaefa4a70b5"
+  },
+  "php-grandparent-resolution/app/Models/B.php": {
+    "captureGroups": 5,
+    "digest": "eea22a8993a483f264d7bed26999be9d4d0cb9ad48a30ef85bc09b5049b274c8"
+  },
+  "php-grandparent-resolution/app/Models/C.php": {
+    "captureGroups": 5,
+    "digest": "497307bd7e5c75da828297baabfc1dc2a36865ba358583a4bc39b605ddaacc16"
+  },
+  "php-grandparent-resolution/app/Models/Greeting.php": {
+    "captureGroups": 7,
+    "digest": "dd6504594d3d997d93dd44a0de354f4c7a9d564613596ef2da2e13eef7b012ed"
+  },
+  "php-grandparent-resolution/app/Services/App.php": {
+    "captureGroups": 12,
+    "digest": "5d0c3524e1ca41ee57bd05fd0a2831804598fca8079ea4ece38045d9c4bb1113"
+  },
+  "php-grouped-imports/app/Models/Repo.php": {
+    "captureGroups": 7,
+    "digest": "82b2bc7323990945f9f3c122812d1ada5cf12d7f2b2e829dbb5e9366bb2b3602"
+  },
+  "php-grouped-imports/app/Models/User.php": {
+    "captureGroups": 7,
+    "digest": "4028b426d00caf369e42e1fbfaa1a11440a598fe15734d2eb03cf017ae5f0a1f"
+  },
+  "php-grouped-imports/app/Services/Main.php": {
+    "captureGroups": 15,
+    "digest": "b315d87f85f0899ed3883ec529b86a57f2d1a88d41b2b615e707307e2889c049"
+  },
+  "php-local-shadow/app/Services/Main.php": {
+    "captureGroups": 9,
+    "digest": "b4b3e35399501d98521dc9d9281a4e5c94449b580cc6cb9b3ed4187e79ee2c07"
+  },
+  "php-local-shadow/app/Utils/Logger.php": {
+    "captureGroups": 5,
+    "digest": "7434c0a1b2282daf8d60334a85523d603bffd256eaaf5c241509e72c0a6d1e5d"
+  },
+  "php-member-calls/app/Models/User.php": {
+    "captureGroups": 7,
+    "digest": "cec22d127d637784baa722787a0a5e5402970ca2dc23a20f07e644762492d8bd"
+  },
+  "php-member-calls/app/Services/UserService.php": {
+    "captureGroups": 11,
+    "digest": "6f6d5d34edd1cd4e32ea77db7e4b07b73de9ca09bb658123455820af8228d0cc"
+  },
+  "php-method-chain-binding/App.php": {
+    "captureGroups": 48,
+    "digest": "8cab0917ecbbd65f43046dcc3c03f7af2d8e1a51780d4dbf3f7bc29ccabd2fa2"
+  },
+  "php-method-enrichment/src/Models/Animal.php": {
+    "captureGroups": 12,
+    "digest": "f32de8a30558f2678e73c68d7db9c6eab827fd8d5f7655b906a76066c8421bef"
+  },
+  "php-method-enrichment/src/Models/Dog.php": {
+    "captureGroups": 9,
+    "digest": "04aabc879f65c14e581ab782acfedf74335ba2905402a5fbfcf15bf5308f57d5"
+  },
+  "php-method-enrichment/src/app.php": {
+    "captureGroups": 11,
+    "digest": "52791f6945c8c4ae083b816bd3af239bce44f0e97cbf80cdc119f4f366015138"
+  },
+  "php-mro-arity-mismatch/app/Models/ChildModel.php": {
+    "captureGroups": 16,
+    "digest": "eabbdb94047d99d03b7e5cafcde4b0f89666695ca4c3b97ea7e68148999c1c00"
+  },
+  "php-mro-arity-mismatch/app/Models/Orphan.php": {
+    "captureGroups": 9,
+    "digest": "29d2e5732698a9951194a6be3d788e337a142c5ea174c5356d375cf9c9e9ff58"
+  },
+  "php-mro-arity-mismatch/app/Models/ParentModel.php": {
+    "captureGroups": 12,
+    "digest": "e16afaad3145133dce0f2de89d0f58eec33492b6a67741013eaf27e35ce6aa07"
+  },
+  "php-mro-arity-mismatch/app/Services/Caller.php": {
+    "captureGroups": 22,
+    "digest": "d51fdbcf226f31f9220a506cceb9f538642ff99d238a1828b6b43fce6193f664"
+  },
+  "php-namespace-fallback-isolation/src/App/Caller.php": {
+    "captureGroups": 13,
+    "digest": "d5040d068fd8227388da7f25cc471f154adb37cd6bbfb78b5cac00f44bf45734"
+  },
+  "php-namespace-fallback-isolation/src/App/Utils/Caller.php": {
+    "captureGroups": 8,
+    "digest": "7f7a357fb5d758f9d4686b072c4d5df82026701ed28bdce042c5c7950a893c41"
+  },
+  "php-namespace-fallback-isolation/src/App/Utils/Format.php": {
+    "captureGroups": 5,
+    "digest": "dc33b55ffcef13d75972ca695921ce75c88ea21f37960ad138ee04267f3ccba4"
+  },
+  "php-namespace-fallback-isolation/src/Vendor/Utils/Format.php": {
+    "captureGroups": 7,
+    "digest": "eff9d04520000bfc5fd7ae87721965e3000d1b478786f95b4f51e001ad877faf"
+  },
+  "php-nullable-receiver/app/Models/Repo.php": {
+    "captureGroups": 7,
+    "digest": "44921bb2ae5aba27957cd45a7d3e515425f27f8e93af5d6285125b94f5d9ba88"
+  },
+  "php-nullable-receiver/app/Models/User.php": {
+    "captureGroups": 7,
+    "digest": "cec22d127d637784baa722787a0a5e5402970ca2dc23a20f07e644762492d8bd"
+  },
+  "php-nullable-receiver/app/Services/AppService.php": {
+    "captureGroups": 13,
+    "digest": "cea6ae3f9e32a3e0448a279034bcf039b1d5af6334ab1b1ae43d9c55b6ca094d"
+  },
+  "php-overload-dispatch/src/Services/Formatter.php": {
+    "captureGroups": 7,
+    "digest": "5a4979e230bd666c0dc35e8e9611adf67d770858d1897ea113610f0698ccea7d"
+  },
+  "php-overload-dispatch/src/Services/FormatterExtended.php": {
+    "captureGroups": 9,
+    "digest": "17dadd44959529ba4533df45561025d00be7ae2f0a2503cbde4a69e9b72614c1"
+  },
+  "php-overload-dispatch/src/app.php": {
+    "captureGroups": 10,
+    "digest": "d11621fbaec9f5015e61f35b5c2747b9f2da090a346adc5fcc10f191af61f048"
+  },
+  "php-parent-resolution/app/Models/BaseModel.php": {
+    "captureGroups": 7,
+    "digest": "6c2081e07e8b2ea2492acfe6dcacb99505faf92749f9c570636434abda9625a1"
+  },
+  "php-parent-resolution/app/Models/Serializable.php": {
+    "captureGroups": 6,
+    "digest": "e047de645ae2b8029a4bb31a61bbc556f58da066d346a2e57101d22cb8dcbb6a"
+  },
+  "php-parent-resolution/app/Models/User.php": {
+    "captureGroups": 10,
+    "digest": "9e8891046e8311bcc07fd1f726e8f28dac37c2c2a6e28ed08b780ff475dbe60a"
+  },
+  "php-parent-vs-trait/app/Auditable.php": {
+    "captureGroups": 7,
+    "digest": "e11a6f4e2e3eaac87cf26fe038d370672525ab4d2925125e9494eb0e275cc19c"
+  },
+  "php-parent-vs-trait/app/Base.php": {
+    "captureGroups": 7,
+    "digest": "d7f05cb3f8cf09740fd7063932cc4fccb5b6fff553093b64a341e2503ec42f2d"
+  },
+  "php-parent-vs-trait/app/Child.php": {
+    "captureGroups": 16,
+    "digest": "e3e9273efaf6c06ed241dc88d0754b167a64197731a4ccc18be43672fab07547"
+  },
+  "php-phpdoc-attribute-return-type/Models.php": {
+    "captureGroups": 11,
+    "digest": "8c5cd8fb19d4f3964c68533834db49d85eb5f93e04ba067a617f5a6c655a0046"
+  },
+  "php-phpdoc-attribute-return-type/Services.php": {
+    "captureGroups": 37,
+    "digest": "d857f9bc514191f222a2e0880c67ab958f2689fc1c6ac0a55af9c8e26fd9c0c0"
+  },
+  "php-phpdoc-return-type/Models.php": {
+    "captureGroups": 11,
+    "digest": "8c5cd8fb19d4f3964c68533834db49d85eb5f93e04ba067a617f5a6c655a0046"
+  },
+  "php-phpdoc-return-type/Services.php": {
+    "captureGroups": 37,
+    "digest": "17ba0088f086c768d5ab6a07de513669a41787ca5f26c33114e6647ef683c920"
+  },
+  "php-property-promotion/UserService.php": {
+    "captureGroups": 19,
+    "digest": "872830776a740cf97c1eafac5e3413aae99e0e951b1b5b46d1aa0df821eac8bc"
+  },
+  "php-receiver-resolution/app/Models/Repo.php": {
+    "captureGroups": 7,
+    "digest": "44921bb2ae5aba27957cd45a7d3e515425f27f8e93af5d6285125b94f5d9ba88"
+  },
+  "php-receiver-resolution/app/Models/User.php": {
+    "captureGroups": 7,
+    "digest": "cec22d127d637784baa722787a0a5e5402970ca2dc23a20f07e644762492d8bd"
+  },
+  "php-receiver-resolution/app/Services/AppService.php": {
+    "captureGroups": 13,
+    "digest": "59783c7af75e9075f00f425984ca1ba7a4c556bb0301e2eb2c3fdcaa94cd547f"
+  },
+  "php-response-shapes/api/items.php": {
+    "captureGroups": 11,
+    "digest": "84e64331d581f16103b3b0c8c95819e41c36ca2e16b6186ccfa73a13729577a1"
+  },
+  "php-response-shapes/api/submit.php": {
+    "captureGroups": 17,
+    "digest": "f5d1af2ad313f4639fbad558eed65d3fa0c218eefc55843ea9e07156a1554883"
+  },
+  "php-response-shapes/includes/auth.php": {
+    "captureGroups": 4,
+    "digest": "7734a9fee1a2a34df7a8857bda37e0930affce7966165023e76c83a71c9f214f"
+  },
+  "php-return-type/app/Models/Repo.php": {
+    "captureGroups": 7,
+    "digest": "f04e8cb824fba439cea5fdab461ade906b49953b7e8cd2777e724f8fa66e9b31"
+  },
+  "php-return-type/app/Models/User.php": {
+    "captureGroups": 14,
+    "digest": "5b41d9519e2d696436cb5e6a1337619def5882c2bc442af74ac15a8570b6e168"
+  },
+  "php-return-type/app/Services/UserService.php": {
+    "captureGroups": 17,
+    "digest": "fcc2d78ac4bdde1ac5179e6623a35299465bcbf9bb016375100bcb636624d043"
+  },
+  "php-self-this-resolution/app/Models/Repo.php": {
+    "captureGroups": 7,
+    "digest": "70b05bbb0ad6e8c1ba62d3355dbc1ffa6ac01c9e85ac22e43a07e387eddf401e"
+  },
+  "php-self-this-resolution/app/Models/User.php": {
+    "captureGroups": 11,
+    "digest": "86fea63dd23c57956769db89241351af6a86acc69e9c226a8ee859ab531b18ca"
+  },
+  "php-super-resolution/app/Models/BaseModel.php": {
+    "captureGroups": 7,
+    "digest": "6c2081e07e8b2ea2492acfe6dcacb99505faf92749f9c570636434abda9625a1"
+  },
+  "php-super-resolution/app/Models/Repo.php": {
+    "captureGroups": 7,
+    "digest": "70b05bbb0ad6e8c1ba62d3355dbc1ffa6ac01c9e85ac22e43a07e387eddf401e"
+  },
+  "php-super-resolution/app/Models/User.php": {
+    "captureGroups": 10,
+    "digest": "56d657425e80ae4e58ffe139f90afab5a8527e191bc4b76662f5ce4cbbca4cbb"
+  },
+  "php-this-receiver-disambiguation/AdminService.php": {
+    "captureGroups": 15,
+    "digest": "db9ba7004ba7b98984307f2b3e1a71154b5a7d60403286d7f308c03ed351b18a"
+  },
+  "php-this-receiver-disambiguation/Models.php": {
+    "captureGroups": 11,
+    "digest": "8c5cd8fb19d4f3964c68533834db49d85eb5f93e04ba067a617f5a6c655a0046"
+  },
+  "php-this-receiver-disambiguation/UserService.php": {
+    "captureGroups": 15,
+    "digest": "147924d3638edc63eef1a009943fae66a87ac85d02ae533428646c644e81c2bb"
+  },
+  "php-transitive-traits/app/Models/Consumer.php": {
+    "captureGroups": 18,
+    "digest": "c4524f4fa18f6e7f0fd76a11920a6a65ab547ab4cf0fa5799b42b7678e14db08"
+  },
+  "php-transitive-traits/app/Traits/TraitA.php": {
+    "captureGroups": 8,
+    "digest": "485735b607fbe569527952fe697b33723626de3e974807e0bd9d84f63b789f65"
+  },
+  "php-transitive-traits/app/Traits/TraitB.php": {
+    "captureGroups": 8,
+    "digest": "ad387364baf5195af56688cf53956d40b4da193bad28a37b148963fbea68cbea"
+  },
+  "php-transitive-traits/app/Traits/TraitC.php": {
+    "captureGroups": 7,
+    "digest": "9d55a120a79ead7605f2e05c80b36615c228acd5cf83db5417a5efe4c9ed9e7f"
+  },
+  "php-typed-properties/app/Models/UserRepo.php": {
+    "captureGroups": 11,
+    "digest": "19089a297be5f83a4a7610a2111a1fb1b84806cda5fa7d6dbb16c9dfc137b6d6"
+  },
+  "php-typed-properties/app/Services/UserService.php": {
+    "captureGroups": 12,
+    "digest": "2ec84482a3e2332f3f15ebb3f2d8d01d1d56e62da256127ece571a8c2e0c070c"
+  },
+  "php-typed-property-dedup/app/Models/UserRepo.php": {
+    "captureGroups": 7,
+    "digest": "4b0043ea779b33cabc12f79cb4aef32759284137f20838346e9f5ef82076be7b"
+  },
+  "php-typed-property-dedup/app/Services/Mixed.php": {
+    "captureGroups": 14,
+    "digest": "9f4ba6bd183c20acaad547b6a713e80498eb70eaabaa7b416650bb64098bde0d"
+  },
+  "php-unresolved-receiver-arity/app/Models/Handler.php": {
+    "captureGroups": 21,
+    "digest": "0e45194dc4a1bf420d4325756a780b0574129517e70d83a82c5dd68b921a0f67"
+  },
+  "php-unresolved-receiver-arity/app/Services/Caller.php": {
+    "captureGroups": 28,
+    "digest": "a3d316585e67b65ac85a63991735c1324911c709a6d9714f9c3eb4ca6a95f807"
+  },
+  "php-use-function-const/app/Config/constants.php": {
+    "captureGroups": 2,
+    "digest": "c045ce0a40c3396cdfbbf0fbbe24792fe2bba6dfba14f739b15a4bb5ae90a778"
+  },
+  "php-use-function-const/app/Models/User.php": {
+    "captureGroups": 10,
+    "digest": "ace0bf7cac67791143d870792b7b870ecc04730bbd98249d8113dc246e90113f"
+  },
+  "php-use-function-const/app/Services/Calculator.php": {
+    "captureGroups": 15,
+    "digest": "d6996da68f917c3ae6b52b530d166e8266f5053ce6c9b76e1643cb61edcafa38"
+  },
+  "php-use-function-const/app/Utils/helpers.php": {
+    "captureGroups": 6,
+    "digest": "98ebf5b3427b39b619e78eaf11a46376eba5ce7fef202508ce169afd8c8e979e"
+  },
+  "php-variadic-arity-minimum/app/Services/Caller.php": {
+    "captureGroups": 29,
+    "digest": "d5669fe609abae6b7db19c15c0cb795859e0b4b0570ae83fbe80a392f3775ca8"
+  },
+  "php-variadic-arity-minimum/app/Utils/Logger.php": {
+    "captureGroups": 18,
+    "digest": "dbcc7f0bf265a950952c4d192bef14924b29b31326942f4f1600aa8bbe22e9a9"
+  },
+  "php-variadic-resolution/app/Services/AppService.php": {
+    "captureGroups": 9,
+    "digest": "8b5298358fba8f578b2470f9d93ffbc1089d1ef3208c1142185880b4dc174751"
+  },
+  "php-variadic-resolution/app/Utils/Logger.php": {
+    "captureGroups": 7,
+    "digest": "8e075546630b3057577932dcf8a876b450950a5accd7df3f8a87079cdc401139"
+  },
+  "php-write-access/models.php": {
+    "captureGroups": 13,
+    "digest": "b7f00a2f5e9c64d9823d11279d831bf9320c697e69184f368d288348fc9ac39e"
+  },
+  "php-write-access/service.php": {
+    "captureGroups": 8,
+    "digest": "5ef6b1687663e4cd9acb880a570fc32388961e735ad38d8ea9906da173971362"
+  },
+  "synthetic:dao-20": {
+    "captureGroups": 221,
+    "digest": "e29ee5132bb30bf939508cf3741159856b78881c01447acd290e18b1c5121225"
+  }
+}

@@ -69,3 +69,44 @@ normal full re-index.
 
 The `OVERRIDES` compat alias will remain until a future major version. Removal
 will be announced in this file and in the changelog before it happens.
+
+## meta.json → gitnexus.json (PR #2363)
+
+The per-repo index metadata file's primary name changed from
+`.gitnexus/meta.json` to `.gitnexus/gitnexus.json` (and from
+`branches/<slug>/meta.json` to `branches/<slug>/gitnexus.json` for
+multi-branch indexes). This is purely a filename change — the JSON content
+and every field in it are identical.
+
+### Do I need to migrate?
+
+**No.** Backward compatibility is handled automatically at runtime:
+
+- `saveMeta` dual-writes both filenames on every analyze, so `meta.json`
+  keeps existing and staying current. Older GitNexus binaries, still-running
+  MCP servers, and the shipped editor hooks that read `meta.json` continue
+  to work unchanged.
+- `loadMeta` reads `gitnexus.json` first and falls back to `meta.json` when
+  the primary file is absent, so a repo indexed by an older version works
+  without re-analysis.
+- Each `analyze` run also reconciles the two files (the fresher `indexedAt`
+  wins and is written to both), so even a repo written by a mix of old and
+  new versions converges. Nothing is ever deleted.
+
+### What happens on re-index?
+
+Running `npx gitnexus analyze` writes both `gitnexus.json` and `meta.json`
+with identical content. A pre-existing repo that only has `meta.json` gets
+`gitnexus.json` bootstrapped from it on the first run.
+
+### What about rollback?
+
+Downgrading to an older GitNexus version is safe: `meta.json` is always
+present and current, so the older binary sees the existing index (including
+the `incrementalInProgress` crash-recovery flag) instead of treating the
+repo as never analyzed.
+
+### When will the legacy mirror be removed?
+
+The `meta.json` mirror will remain until a future major version. Removal
+will be announced in this file and in the changelog before it happens.

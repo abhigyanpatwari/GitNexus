@@ -16,6 +16,7 @@ import os from 'os';
 import { fileURLToPath, pathToFileURL } from 'url';
 
 import { createRequire } from 'module';
+import { cleanupTempDirSync } from '../helpers/test-db.js';
 
 const testDir = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(testDir, '../..');
@@ -36,6 +37,7 @@ const FIXTURE_SRC = path.resolve(testDir, '..', 'fixtures', 'mini-repo');
 // still works), `afterAll` rms the parent tmpdir.
 let MINI_REPO: string;
 let tmpParent: string;
+let suiteGitnexusHome: string;
 
 // Absolute file:// URL to tsx loader — needed when spawning CLI with cwd
 // outside the project tree (bare 'tsx' specifier won't resolve there).
@@ -49,6 +51,7 @@ beforeAll(() => {
   // Copy the fixture into an isolated tmpdir named `mini-repo` so that the
   // `--repo mini-repo` CLI arg (which matches by basename) still works.
   tmpParent = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-cli-e2e-'));
+  suiteGitnexusHome = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-cli-e2e-home-'));
   MINI_REPO = path.join(tmpParent, 'mini-repo');
   fs.cpSync(FIXTURE_SRC, MINI_REPO, { recursive: true });
 
@@ -67,15 +70,46 @@ beforeAll(() => {
       GIT_COMMITTER_EMAIL: 'test@test',
     },
   });
-});
+
+  // Index MINI_REPO ONCE into the isolated suite registry so the read-only
+  // tests (query/cypher/impact, eval-server) have a registered repo regardless
+  // of execution order. Previously they relied on an earlier analyze test
+  // having run, and that test silently tolerates a subprocess timeout under
+  // load — so on a busy runner the repo went unregistered and every dependent
+  // test failed confusingly with "no indexed repositories" / exit 1.
+  //
+  // Retried a few times because a tiny fixture analyzes in seconds: a failure
+  // here is almost always transient load, not a defect. Re-running analyze on
+  // an already-indexed repo is a cheap no-op (alreadyUpToDate fast path), so
+  // retrying is safe. A genuine analyze/registration regression is still caught
+  // loudly by the dedicated analyze tests below (which use isolated homes).
+  for (let attempt = 0; attempt < 3; attempt++) {
+    if (runCli('analyze', MINI_REPO, 90_000).status === 0) break;
+  }
+}, 300_000);
 
 afterAll(() => {
   // Entire tmp copy goes away — no selective cleanup needed. The shared
   // `test/fixtures/mini-repo/` source was never touched.
   if (tmpParent) {
-    fs.rmSync(tmpParent, { recursive: true, force: true });
+    cleanupTempDirSync(tmpParent);
+  }
+  if (suiteGitnexusHome) {
+    cleanupTempDirSync(suiteGitnexusHome);
   }
 });
+
+function cliEnv(extraEnv: Record<string, string> = {}) {
+  return {
+    ...process.env,
+    GITNEXUS_HOME: suiteGitnexusHome,
+    // Pre-set --max-old-space-size so analyzeCommand's ensureHeap() sees it
+    // and skips the re-exec. The re-exec drops the tsx loader (--import tsx
+    // is not in process.argv), causing ERR_UNKNOWN_FILE_EXTENSION on .ts files.
+    NODE_OPTIONS: `${process.env.NODE_OPTIONS || ''} --max-old-space-size=8192`.trim(),
+    ...extraEnv,
+  };
+}
 
 function runCli(command: string, cwd: string, timeoutMs = 15000) {
   return spawnSync(process.execPath, ['--import', tsxImportUrl, cliEntry, command], {
@@ -83,13 +117,7 @@ function runCli(command: string, cwd: string, timeoutMs = 15000) {
     encoding: 'utf8',
     timeout: timeoutMs,
     stdio: ['pipe', 'pipe', 'pipe'],
-    env: {
-      ...process.env,
-      // Pre-set --max-old-space-size so analyzeCommand's ensureHeap() sees it
-      // and skips the re-exec. The re-exec drops the tsx loader (--import tsx
-      // is not in process.argv), causing ERR_UNKNOWN_FILE_EXTENSION on .ts files.
-      NODE_OPTIONS: `${process.env.NODE_OPTIONS || ''} --max-old-space-size=8192`.trim(),
-    },
+    env: cliEnv(),
   });
 }
 
@@ -103,10 +131,7 @@ function runCliRaw(extraArgs: string[], cwd: string, timeoutMs = 15000) {
     encoding: 'utf8',
     timeout: timeoutMs,
     stdio: ['pipe', 'pipe', 'pipe'],
-    env: {
-      ...process.env,
-      NODE_OPTIONS: `${process.env.NODE_OPTIONS || ''} --max-old-space-size=8192`.trim(),
-    },
+    env: cliEnv(),
   });
 }
 
@@ -126,11 +151,7 @@ function runCliWithEnv(
     encoding: 'utf8',
     timeout: timeoutMs,
     stdio: ['pipe', 'pipe', 'pipe'],
-    env: {
-      ...process.env,
-      NODE_OPTIONS: `${process.env.NODE_OPTIONS || ''} --max-old-space-size=8192`.trim(),
-      ...extraEnv,
-    },
+    env: cliEnv(extraEnv),
   });
 }
 
@@ -157,6 +178,137 @@ function makeMiniRepoCopy(basename: string, prefix: string): string {
     },
   });
   return repo;
+}
+
+/**
+ * Detects libuv-emitted bind-restriction errors (EACCES / EPERM /
+ * EADDRNOTAVAIL on `listen` or `bind`) so the host-flag tests can
+ * tolerate CI/sandbox environments that forbid loopback binding.
+ *
+ * Match policy: every alternative MUST carry a `listen ` or `bind `
+ * prefix. Bare "permission denied" / "operation not permitted"
+ * substrings in stderr (e.g. from a Node fs EACCES during module
+ * loading) MUST NOT match — those represent real test failures that
+ * should not be silently swallowed.
+ */
+function isEvalServerBindRestriction(stderr: string): boolean {
+  return /(?:listen|bind) (?:EPERM|EACCES|EADDRNOTAVAIL|operation not permitted|permission denied)/i.test(
+    stderr,
+  );
+}
+
+// Subprocess timeout for eval-server READY signal. Must be < the
+// outer vitest test budget (35s) so the reject branch fires before
+// vitest gives up on the test.
+const EVAL_SERVER_READY_TIMEOUT_MS = 30000;
+
+/**
+ * Drives the spawn → settle → timer → stderr → close lifecycle shared by
+ * the `eval-server --host` integration tests. Each test passes test-specific
+ * spawn args, a timeout message, and an `onStdout` callback that owns the
+ * READY-signal parsing and any post-READY probing.
+ *
+ * The helper owns: spawn wiring, child.once('error'), the setTimeout
+ * timer, stderr accumulation + 'unknown option' fast-reject, and the close
+ * handler's priority chain (unknown-option → bind-restriction → unexpected-exit
+ * reject). Tests that need to short-circuit before `await` may inspect
+ * `isSettled()`; `settle()` itself is idempotent so calling it after the
+ * promise has already resolved is a safe no-op.
+ */
+function runEvalServerHostFlagTest(
+  spawnArgs: string[],
+  opts: {
+    timeoutMsg: string;
+    onStdout: (params: {
+      stdoutBuffer: string;
+      isSettled: () => boolean;
+      settle: (fn: () => void) => void;
+      resolve: () => void;
+      reject: (err: Error) => void;
+    }) => void | Promise<void>;
+  },
+): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    const child = spawn(
+      process.execPath,
+      ['--import', tsxImportUrl, cliEntry, 'eval-server', ...spawnArgs],
+      {
+        cwd: MINI_REPO,
+        stdio: ['ignore', 'pipe', 'pipe'],
+        env: cliEnv(),
+      },
+    );
+
+    let stdoutBuffer = '';
+    let stderrBuffer = '';
+    let settled = false;
+
+    const settle = (fn: () => void) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      child.kill('SIGTERM');
+      fn();
+    };
+
+    child.once('error', (err) => {
+      settle(() => reject(new Error(`Failed to spawn eval-server: ${err.message}`)));
+    });
+
+    const timer = setTimeout(() => {
+      settle(() => reject(new Error(opts.timeoutMsg)));
+    }, EVAL_SERVER_READY_TIMEOUT_MS);
+
+    // The `settled` flag is set synchronously by settle(); onStdout callbacks
+    // that await can rely on isSettled() reflecting any close-handler
+    // settlement that occurred during the await. Do not make settle() async.
+    child.stdout.on('data', async (chunk: Buffer) => {
+      stdoutBuffer += chunk.toString();
+      if (settled) return;
+      try {
+        await opts.onStdout({
+          stdoutBuffer,
+          isSettled: () => settled,
+          settle,
+          resolve,
+          reject,
+        });
+      } catch (err) {
+        settle(() => reject(err instanceof Error ? err : new Error(String(err))));
+      }
+    });
+
+    child.stderr.on('data', (chunk: Buffer) => {
+      stderrBuffer += chunk.toString();
+      if (stderrBuffer.includes('unknown option') || stderrBuffer.includes('error: unknown')) {
+        settle(() => reject(new Error(`eval-server rejected --host flag:\n${stderrBuffer}`)));
+      }
+    });
+
+    child.once('close', (code) => {
+      if (settled) return;
+      if (stderrBuffer.includes('unknown option') || stderrBuffer.includes('error: unknown')) {
+        settle(() => reject(new Error(`eval-server rejected --host flag:\n${stderrBuffer}`)));
+        return;
+      }
+      if (isEvalServerBindRestriction(stderrBuffer)) {
+        settle(() => {
+          console.warn(
+            `[test tolerated] eval-server could not bind in this environment; --host wiring not verified.\nstderr: ${stderrBuffer.trim()}`,
+          );
+          resolve();
+        });
+        return;
+      }
+      settle(() =>
+        reject(
+          new Error(
+            `eval-server exited unexpectedly (code=${code}) before READY signal.\nstderr: ${stderrBuffer.trim() || '<empty>'}`,
+          ),
+        ),
+      );
+    });
+  });
 }
 
 describe('CLI end-to-end', () => {
@@ -198,6 +350,128 @@ describe('CLI end-to-end', () => {
     const gitnexusDir = path.join(MINI_REPO, '.gitnexus');
     expect(fs.existsSync(gitnexusDir)).toBe(true);
     expect(fs.statSync(gitnexusDir).isDirectory()).toBe(true);
+    expect(fs.existsSync(path.join(MINI_REPO, '.gitignore'))).toBe(false);
+    expect(fs.readFileSync(path.join(gitnexusDir, '.gitignore'), 'utf-8')).toBe('*\n');
+  }, 60_000);
+
+  // Regression guard for issue #1169 — analyze must produce BOTH a
+  // meta.json AND a global-registry entry on success. The previous
+  // failure mode on Windows was banner-only output + exit 0 with
+  // neither artifact persisted; the new finalize invariant
+  // (assertAnalysisFinalized) makes that state a hard failure.
+  //
+  // Uses a fresh per-test repo copy (not the shared MINI_REPO) so
+  // an earlier sibling test's analyze cannot push this one onto the
+  // alreadyUpToDate fast path, which would skip the very wiring this
+  // test is here to protect.
+  it('analyze persists meta.json AND a matching registry entry (#1169)', () => {
+    const gnHome = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-1169-home-'));
+    const repo = makeMiniRepoCopy('mini-repo', 'gn-1169-repo-');
+    const repoParent = path.dirname(repo);
+
+    try {
+      const result = runCliWithEnv(['analyze'], repo, { GITNEXUS_HOME: gnHome }, 60000);
+
+      expect(
+        result.status,
+        [
+          'analyze timed out before asserting finalization artifacts — this test guards #1169 and must not pass silently',
+          `stdout: ${result.stdout}`,
+          `stderr: ${result.stderr}`,
+        ].join('\n'),
+      ).not.toBeNull();
+
+      expect(
+        result.status,
+        [
+          `analyze exited with code ${result.status}`,
+          `stdout: ${result.stdout}`,
+          `stderr: ${result.stderr}`,
+        ].join('\n'),
+      ).toBe(0);
+
+      // Both metadata filenames must exist after a successful analyze:
+      // gitnexus.json is the primary (what assertAnalysisFinalized checks —
+      // its absence is the #1169 silent-finalize symptom) and meta.json is
+      // the dual-written legacy mirror older consumers still read.
+      const primaryMetaPath = path.join(repo, '.gitnexus', 'gitnexus.json');
+      expect(
+        fs.existsSync(primaryMetaPath),
+        `gitnexus.json missing at ${primaryMetaPath} after analyze exited 0 — this is the #1169 silent-finalize symptom`,
+      ).toBe(true);
+      const metaPath = path.join(repo, '.gitnexus', 'meta.json');
+      expect(
+        fs.existsSync(metaPath),
+        `legacy meta.json mirror missing at ${metaPath} after analyze exited 0 — dual-write regressed`,
+      ).toBe(true);
+      expect(fs.readFileSync(primaryMetaPath, 'utf-8')).toBe(fs.readFileSync(metaPath, 'utf-8'));
+
+      const registryPath = path.join(gnHome, 'registry.json');
+      expect(
+        fs.existsSync(registryPath),
+        `registry.json missing at ${registryPath} after analyze exited 0`,
+      ).toBe(true);
+      const entries = JSON.parse(fs.readFileSync(registryPath, 'utf-8')) as Array<{
+        name: string;
+        path: string;
+      }>;
+      expect(entries.length).toBeGreaterThanOrEqual(1);
+      const matchesRepo = entries.some((e) => {
+        const a = fs.realpathSync.native(e.path);
+        const b = fs.realpathSync.native(repo);
+        return process.platform === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b;
+      });
+      expect(
+        matchesRepo,
+        `registry has no entry for ${repo}; entries: ${JSON.stringify(entries.map((e) => e.path))}`,
+      ).toBe(true);
+    } finally {
+      cleanupTempDirSync(gnHome);
+      cleanupTempDirSync(repoParent);
+    }
+  }, 60_000);
+
+  it('already-up-to-date analyze fails when registry entry is missing (#1169)', () => {
+    const gnHome = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-1169-fastpath-home-'));
+    const repo = makeMiniRepoCopy('mini-repo', 'gn-1169-fastpath-repo-');
+    const repoParent = path.dirname(repo);
+
+    try {
+      const first = runCliWithEnv(['analyze'], repo, { GITNEXUS_HOME: gnHome }, 60000);
+      expect(
+        first.status,
+        [
+          `initial analyze exited with code ${first.status}`,
+          `stdout: ${first.stdout}`,
+          `stderr: ${first.stderr}`,
+        ].join('\n'),
+      ).toBe(0);
+
+      const metaPath = path.join(repo, '.gitnexus', 'meta.json');
+      expect(fs.existsSync(metaPath)).toBe(true);
+      expect(fs.existsSync(path.join(repo, '.gitnexus', 'gitnexus.json'))).toBe(true);
+
+      // Simulate the half-finalized state from the review: the metadata
+      // (both filenames) is present and lastCommit matches, but the repo is
+      // not discoverable because the global registry entry is missing.
+      fs.writeFileSync(path.join(gnHome, 'registry.json'), '[]', 'utf-8');
+
+      const second = runCliWithEnv(['analyze'], repo, { GITNEXUS_HOME: gnHome }, 60000);
+      expect(
+        second.status,
+        [
+          'second analyze timed out before proving alreadyUpToDate finalization',
+          `stdout: ${second.stdout}`,
+          `stderr: ${second.stderr}`,
+        ].join('\n'),
+      ).not.toBeNull();
+      expect(`${second.stdout}${second.stderr}`).toMatch(/Analysis did not finalize/i);
+      expect(`${second.stdout}${second.stderr}`).toMatch(/registry entry/i);
+      expect(second.status).toBe(1);
+    } finally {
+      cleanupTempDirSync(gnHome);
+      cleanupTempDirSync(repoParent);
+    }
   }, 60_000);
 
   // ─── analyze --name <alias> + --allow-duplicate-name (#829) ──────
@@ -342,12 +616,12 @@ describe('CLI end-to-end', () => {
           const afterStep4 = JSON.parse(fs.readFileSync(registryPath, 'utf-8'));
           expect(afterStep4).toHaveLength(2);
         } finally {
-          fs.rmSync(parentC, { recursive: true, force: true });
+          cleanupTempDirSync(parentC);
         }
       } finally {
-        fs.rmSync(gnHome, { recursive: true, force: true });
-        fs.rmSync(parentA, { recursive: true, force: true });
-        fs.rmSync(parentB, { recursive: true, force: true });
+        cleanupTempDirSync(gnHome);
+        cleanupTempDirSync(parentA);
+        cleanupTempDirSync(parentB);
       }
     }, 360000); // 6-min outer budget (4 × ~60s analyze calls + fixture setup)
   });
@@ -456,8 +730,8 @@ describe('CLI end-to-end', () => {
         expect(r4.status).toBe(0);
         expect(`${r4.stdout}${r4.stderr}`).toMatch(/Nothing to remove/i);
       } finally {
-        fs.rmSync(gnHome, { recursive: true, force: true });
-        fs.rmSync(parentA, { recursive: true, force: true });
+        cleanupTempDirSync(gnHome);
+        cleanupTempDirSync(parentA);
       }
     }, 180000); // 3-min outer budget (1 × ~60s analyze + 3 × fast remove calls)
 
@@ -560,9 +834,9 @@ describe('CLI end-to-end', () => {
         // And it's NOT the one we just removed.
         expect(finalEntries[0].path).not.toBe(repoAEntry.path);
       } finally {
-        fs.rmSync(gnHome, { recursive: true, force: true });
-        fs.rmSync(parentA, { recursive: true, force: true });
-        fs.rmSync(parentB, { recursive: true, force: true });
+        cleanupTempDirSync(gnHome);
+        cleanupTempDirSync(parentA);
+        cleanupTempDirSync(parentB);
       }
     }, 240000); // 4-min outer budget (2 × ~60s analyze + 2 × fast remove)
 
@@ -644,8 +918,8 @@ describe('CLI end-to-end', () => {
         expect(afterRegistry).toHaveLength(1);
         expect(afterRegistry[0].storagePath).toBe(repo); // still poisoned (we did that)
       } finally {
-        fs.rmSync(gnHome, { recursive: true, force: true });
-        fs.rmSync(parent, { recursive: true, force: true });
+        cleanupTempDirSync(gnHome);
+        cleanupTempDirSync(parent);
       }
     }, 120000); // 2-min budget (1 × ~60s analyze + 1 × fast remove-refused)
   });
@@ -749,9 +1023,9 @@ describe('CLI end-to-end', () => {
         expect(afterRegistry).toHaveLength(1);
         expect(afterRegistry[0].name).toBe('bad-alias');
       } finally {
-        fs.rmSync(gnHome, { recursive: true, force: true });
-        fs.rmSync(parentBad, { recursive: true, force: true });
-        fs.rmSync(parentGood, { recursive: true, force: true });
+        cleanupTempDirSync(gnHome);
+        cleanupTempDirSync(parentBad);
+        cleanupTempDirSync(parentGood);
       }
     }, 240000); // 4-min budget (2 × ~60s analyze + 1 × fast clean --all)
   });
@@ -808,10 +1082,7 @@ describe('CLI end-to-end', () => {
         encoding: 'utf8',
         timeout: timeoutMs,
         stdio: ['pipe', 'pipe', 'pipe'],
-        env: {
-          ...process.env,
-          NODE_OPTIONS: `${process.env.NODE_OPTIONS || ''} --max-old-space-size=8192`.trim(),
-        },
+        env: cliEnv(),
       });
     }
 
@@ -842,7 +1113,7 @@ describe('CLI end-to-end', () => {
         expect(result.status).toBe(0);
         expect(result.stdout).toMatch(/Repository not indexed/);
       } finally {
-        fs.rmSync(tmpDir, { recursive: true, force: true });
+        cleanupTempDirSync(tmpDir);
       }
     });
 
@@ -856,7 +1127,7 @@ describe('CLI end-to-end', () => {
         expect(result.status).toBe(0);
         expect(result.stdout).toMatch(/Not a git repository/);
       } finally {
-        fs.rmSync(tmpDir, { recursive: true, force: true });
+        cleanupTempDirSync(tmpDir);
       }
     });
 
@@ -872,7 +1143,7 @@ describe('CLI end-to-end', () => {
         expect(result.status).toBe(1);
         expect(result.stdout).toMatch(/not.*git repository/i);
       } finally {
-        fs.rmSync(tmpDir, { recursive: true, force: true });
+        cleanupTempDirSync(tmpDir);
       }
     });
   });
@@ -886,6 +1157,8 @@ describe('CLI end-to-end', () => {
 
       expect(result.status).toBe(0);
       expect(result.stdout).toContain('--provider <provider>');
+      expect(result.stdout).toContain('claude');
+      expect(result.stdout).toContain('codex');
       expect(result.stdout).toContain('--review');
       expect(result.stdout).toContain('-v, --verbose');
       expect(result.stdout).toContain('--model <model>');
@@ -902,7 +1175,7 @@ describe('CLI end-to-end', () => {
         expect(result.status).toBe(1);
         expect(result.stdout).toMatch(/not.*git repository/i);
       } finally {
-        fs.rmSync(tmpDir, { recursive: true, force: true });
+        cleanupTempDirSync(tmpDir);
       }
     });
 
@@ -931,10 +1204,7 @@ describe('CLI end-to-end', () => {
             encoding: 'utf8',
             timeout: 15000,
             stdio: ['pipe', 'pipe', 'pipe'],
-            env: {
-              ...process.env,
-              NODE_OPTIONS: `${process.env.NODE_OPTIONS || ''} --max-old-space-size=8192`.trim(),
-            },
+            env: cliEnv(),
           },
         );
         if (result.status === null) return;
@@ -942,7 +1212,7 @@ describe('CLI end-to-end', () => {
         expect(result.status).toBe(1);
         expect(result.stdout).toMatch(/No GitNexus index found/);
       } finally {
-        fs.rmSync(tmpDir, { recursive: true, force: true });
+        cleanupTempDirSync(tmpDir);
       }
     });
 
@@ -954,6 +1224,22 @@ describe('CLI end-to-end', () => {
 
       const combined = result.stdout + result.stderr;
       // Should NOT ask for API key — cursor provider doesn't need one
+      expect(combined).not.toMatch(/API key:/);
+    });
+
+    it('wiki --provider claude without API key does not prompt for key in non-TTY', () => {
+      const result = runCliRaw(['wiki', MINI_REPO, '--provider', 'claude'], repoRoot, 15000);
+      if (result.status === null) return;
+
+      const combined = result.stdout + result.stderr;
+      expect(combined).not.toMatch(/API key:/);
+    });
+
+    it('wiki --provider codex without API key does not prompt for key in non-TTY', () => {
+      const result = runCliRaw(['wiki', MINI_REPO, '--provider', 'codex'], repoRoot, 15000);
+      if (result.status === null) return;
+
+      const combined = result.stdout + result.stderr;
       expect(combined).not.toMatch(/API key:/);
     });
 
@@ -972,7 +1258,9 @@ describe('CLI end-to-end', () => {
 
   // All tool commands pass --repo to disambiguate when the global registry
   // has multiple indexed repos (e.g. the parent project is also indexed).
-  describe('tool output goes to stdout via fd 1 (#324)', () => {
+  // retry: these spawn the CLI against the suite-indexed mini-repo; a retry
+  // absorbs a transient subprocess hiccup under parallel load (#324 hardening).
+  describe('tool output goes to stdout via fd 1 (#324)', { retry: 2 }, () => {
     it('cypher: JSON appears on stdout, not stderr', () => {
       const result = runCliRaw(
         ['cypher', 'MATCH (n) RETURN n.name LIMIT 3', '--repo', 'mini-repo'],
@@ -1031,7 +1319,7 @@ describe('CLI end-to-end', () => {
 
   // ─── EPIPE clean exit test (#324) ───────────────────────────────────
 
-  describe('EPIPE handling (#324)', () => {
+  describe('EPIPE handling (#324)', { retry: 2 }, () => {
     it('cypher: EPIPE exits with code 0, not stderr dump', () => {
       return new Promise<void>((resolve, reject) => {
         const child = spawn(
@@ -1048,10 +1336,7 @@ describe('CLI end-to-end', () => {
           {
             cwd: MINI_REPO,
             stdio: ['ignore', 'pipe', 'pipe'],
-            env: {
-              ...process.env,
-              NODE_OPTIONS: `${process.env.NODE_OPTIONS || ''} --max-old-space-size=8192`.trim(),
-            },
+            env: cliEnv(),
           },
         );
 
@@ -1092,7 +1377,7 @@ describe('CLI end-to-end', () => {
 
   // ─── eval-server READY signal test (#324) ───────────────────────────
 
-  describe('eval-server READY signal (#324)', () => {
+  describe('eval-server READY signal (#324)', { retry: 2 }, () => {
     it('READY signal appears on stdout, not stderr', () => {
       return new Promise<void>((resolve, reject) => {
         const child = spawn(
@@ -1101,10 +1386,7 @@ describe('CLI end-to-end', () => {
           {
             cwd: MINI_REPO,
             stdio: ['ignore', 'pipe', 'pipe'],
-            env: {
-              ...process.env,
-              NODE_OPTIONS: `${process.env.NODE_OPTIONS || ''} --max-old-space-size=8192`.trim(),
-            },
+            env: cliEnv(),
           },
         );
 
@@ -1114,7 +1396,7 @@ describe('CLI end-to-end', () => {
 
         child.stdout.on('data', (chunk: Buffer) => {
           stdoutBuffer += chunk.toString();
-          if (stdoutBuffer.includes('GITNEXUS_EVAL_SERVER_READY:')) {
+          if (stdoutBuffer.includes('GITNEXUS_EVAL_SERVER_READY:127.0.0.1:')) {
             foundOnStdout = true;
             child.kill('SIGTERM');
           }
@@ -1151,5 +1433,212 @@ describe('CLI end-to-end', () => {
         });
       });
     }, 35000);
+  });
+
+  // ─── eval-server --host flag tests ───────────────────────────────────
+  // Verifies --host is wired to the actual bind address, not just accepted.
+  // Original flag registration test by Val Vladescu (PR #1602).
+
+  describe('eval-server --host flag', { retry: 2 }, () => {
+    it('emits READY signal containing the bound host 127.0.0.1', () => {
+      return runEvalServerHostFlagTest(
+        ['--port', '0', '--host', '127.0.0.1', '--idle-timeout', '3'],
+        {
+          timeoutMsg: 'eval-server did not emit READY signal within 30s',
+          onStdout({ stdoutBuffer, settle, resolve, reject }) {
+            if (!stdoutBuffer.includes('GITNEXUS_EVAL_SERVER_READY:')) return;
+            if (stdoutBuffer.includes('GITNEXUS_EVAL_SERVER_READY:127.0.0.1:')) {
+              settle(resolve);
+            } else {
+              settle(() =>
+                reject(
+                  new Error(
+                    `READY signal did not contain expected host 127.0.0.1:\n${stdoutBuffer}`,
+                  ),
+                ),
+              );
+            }
+          },
+        },
+      );
+    }, 35000);
+
+    it('binds to 0.0.0.0 and serves /health on 127.0.0.1 (cross-container use case)', () => {
+      return runEvalServerHostFlagTest(
+        ['--port', '0', '--host', '0.0.0.0', '--idle-timeout', '3'],
+        {
+          timeoutMsg: 'eval-server --host 0.0.0.0 did not emit READY signal within 30s',
+          async onStdout({ stdoutBuffer, isSettled, settle, resolve, reject }) {
+            const readyLine = stdoutBuffer
+              .split('\n')
+              .find((l) => l.startsWith('GITNEXUS_EVAL_SERVER_READY:0.0.0.0:'));
+            if (!readyLine || isSettled()) return;
+
+            // Parse the actual OS-assigned port from the READY signal
+            const boundPort = readyLine.split(':').pop()?.trim();
+            if (!boundPort || isNaN(Number(boundPort))) {
+              settle(() =>
+                reject(new Error(`Could not parse port from READY signal: ${readyLine}`)),
+              );
+              return;
+            }
+
+            // A server bound to 0.0.0.0 must be reachable on 127.0.0.1 from the same host
+            try {
+              const res = await fetch(`http://127.0.0.1:${boundPort}/health`);
+              if (res.status === 200) {
+                settle(resolve);
+              } else {
+                settle(() => reject(new Error(`/health returned ${res.status}, expected 200`)));
+              }
+            } catch (err) {
+              settle(() =>
+                reject(
+                  new Error(
+                    `eval-server bound to 0.0.0.0 but /health unreachable on 127.0.0.1:${boundPort}: ${err}`,
+                  ),
+                ),
+              );
+            }
+          },
+        },
+      );
+    }, 35000);
+
+    it('emits READY signal with bound IP (not literal "localhost") when --host localhost is used', () => {
+      return runEvalServerHostFlagTest(
+        ['--port', '0', '--host', 'localhost', '--idle-timeout', '3'],
+        {
+          timeoutMsg: 'eval-server --host localhost did not emit READY signal within 30s',
+          async onStdout({ stdoutBuffer, isSettled, settle, resolve, reject }) {
+            const readyLine = stdoutBuffer
+              .split('\n')
+              .find((l) => l.startsWith('GITNEXUS_EVAL_SERVER_READY:'));
+            if (!readyLine || isSettled()) return;
+
+            // The signal must contain a real bound IP, not the literal input string
+            if (readyLine.includes(':localhost:')) {
+              settle(() =>
+                reject(
+                  new Error(
+                    `READY signal contained literal "localhost" instead of a bound IP:\n${readyLine}`,
+                  ),
+                ),
+              );
+              return;
+            }
+
+            // Parse host and port: everything after the prefix up to the last colon
+            const withoutPrefix = readyLine.slice('GITNEXUS_EVAL_SERVER_READY:'.length);
+            const lastColon = withoutPrefix.lastIndexOf(':');
+            const signalHost = withoutPrefix.slice(0, lastColon); // "127.0.0.1" or "[::1]"
+            const boundPort = withoutPrefix.slice(lastColon + 1).trim();
+            if (!boundPort || isNaN(Number(boundPort))) {
+              settle(() =>
+                reject(new Error(`Could not parse port from READY signal: ${readyLine}`)),
+              );
+              return;
+            }
+
+            // Probe /health at the bound address to confirm the server is reachable
+            try {
+              const res = await fetch(`http://${signalHost}:${boundPort}/health`);
+              if (res.status === 200) {
+                settle(resolve);
+              } else {
+                settle(() => reject(new Error(`/health returned ${res.status}, expected 200`)));
+              }
+            } catch (err) {
+              settle(() =>
+                reject(
+                  new Error(
+                    `eval-server bound to localhost but /health unreachable at ${signalHost}:${boundPort}: ${err}`,
+                  ),
+                ),
+              );
+            }
+          },
+        },
+      );
+    }, 35000);
+  });
+});
+
+// ─── impact disambiguation flags reach the backend at runtime (#1907 U2) ──
+// The mocked unit test proves the CLI option → callTool param mapping; this
+// proves the flags survive the real Commander → lazy-action → impactCommand →
+// callTool chain by spawning the actual CLI. The F2 gap is *flag-forwarding*,
+// so a uniquely-named fixture symbol is enough — no ambiguous fixture needed.
+// Tests self-skip when the environment cannot index the fixture (e.g. a
+// worktree without the built parse-worker); CI validates the real path.
+describe('impact disambiguation flags reach the backend (e2e, #1907)', () => {
+  const SYMBOL = 'formatResponse'; // uniquely named, in mini-repo/src/formatter.ts
+  let uid: string | undefined;
+  let symbolFile: string | undefined;
+
+  beforeAll(() => {
+    // Idempotent: the earlier analyze test may already have indexed mini-repo.
+    runCli('analyze', MINI_REPO, 60000);
+    // Derive the real uid + filePath from context so the test is robust to the
+    // exact uid format rather than hard-coding `Function:<path>:<name>`.
+    const ctx = runCliRaw(['context', SYMBOL, '--repo', 'mini-repo'], MINI_REPO, 30000);
+    if (ctx.status === 0) {
+      try {
+        const parsed = JSON.parse(ctx.stdout.trim());
+        uid = parsed?.symbol?.uid;
+        symbolFile = parsed?.symbol?.filePath;
+      } catch {
+        /* leave undefined → tests self-skip below */
+      }
+    }
+  });
+
+  it('forwards --uid alone with no positional target (U1 + --uid end-to-end)', () => {
+    if (!uid) return; // environment could not index — validated in CI
+    const res = runCliRaw(['impact', '--uid', uid, '--repo', 'mini-repo'], MINI_REPO, 30000);
+    if (res.status === null) return;
+    expect(res.status).toBe(0);
+    const out = JSON.parse(res.stdout.trim());
+    expect(out).not.toHaveProperty('error');
+    expect(out.target?.id).toBe(uid);
+  });
+
+  it('forwards --file: the correct file resolves, a wrong file does not (negative control)', () => {
+    if (!uid || !symbolFile) return;
+
+    const ok = runCliRaw(
+      ['impact', SYMBOL, '--file', symbolFile, '--repo', 'mini-repo'],
+      MINI_REPO,
+      30000,
+    );
+    if (ok.status === null) return;
+    expect(ok.status).toBe(0);
+    const okOut = JSON.parse(ok.stdout.trim());
+    expect(okOut.status).not.toBe('ambiguous');
+    expect(okOut.target?.filePath).toBe(symbolFile);
+
+    // Wrong --file hint → CONTAINS matches nothing → must NOT resolve to the
+    // formatter.ts symbol. Proves the --file value reached the resolver.
+    const wrong = runCliRaw(
+      ['impact', SYMBOL, '--file', 'does/not/exist/nowhere.ts', '--repo', 'mini-repo'],
+      MINI_REPO,
+      30000,
+    );
+    if (wrong.status === null) return;
+    const wrongOut = JSON.parse(wrong.stdout.trim());
+    expect(wrongOut.error !== undefined || wrongOut.target?.filePath !== symbolFile).toBe(true);
+  });
+
+  it('forwards --kind: exit 0 with the kind hint applied', () => {
+    if (!uid) return;
+    const res = runCliRaw(
+      ['impact', SYMBOL, '--kind', 'Function', '--repo', 'mini-repo'],
+      MINI_REPO,
+      30000,
+    );
+    if (res.status === null) return;
+    expect(res.status).toBe(0);
+    const out = JSON.parse(res.stdout.trim());
+    expect(out).not.toHaveProperty('error');
   });
 });

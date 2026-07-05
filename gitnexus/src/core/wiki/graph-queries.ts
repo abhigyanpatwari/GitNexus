@@ -5,7 +5,7 @@
  * Uses the MCP-style pooled lbug-adapter for connection management.
  */
 
-import { initLbug, executeQuery, closeLbug, touchRepo } from '../lbug/pool-adapter.js';
+import { initLbug, executeQuery, closeLbug, touchRepo, pinRepo } from '../lbug/pool-adapter.js';
 
 const REPO_ID = '__wiki__';
 
@@ -14,6 +14,15 @@ const REPO_ID = '__wiki__';
  */
 export function touchWikiDb(): void {
   touchRepo(REPO_ID);
+}
+
+/**
+ * Keep the wiki DB resident for a full generation run. Wiki generation can spend
+ * minutes inside LLM calls, and the pooled DB must survive both idle cleanup and
+ * unrelated LRU pressure until the run reaches its final graph queries.
+ */
+export function pinWikiDb(): () => void {
+  return pinRepo(REPO_ID);
 }
 
 export interface FileWithExports {
@@ -57,6 +66,9 @@ export async function closeWikiDb(): Promise<void> {
 
 /**
  * Get all source files with their exported symbol names and types.
+ * Includes top-level exports (File→DEFINES→n) and exported class members
+ * (File→DEFINES→Class→HAS_METHOD/HAS_PROPERTY→n) since class members no
+ * longer have a direct File→DEFINES edge.
  */
 export async function getFilesWithExports(): Promise<FileWithExports[]> {
   const rows = await executeQuery(
@@ -65,7 +77,12 @@ export async function getFilesWithExports(): Promise<FileWithExports[]> {
     MATCH (f:File)-[:CodeRelation {type: 'DEFINES'}]->(n)
     WHERE n.isExported = true
     RETURN f.filePath AS filePath, n.name AS name, labels(n)[0] AS type
-    ORDER BY f.filePath
+    UNION
+    MATCH (f:File)-[:CodeRelation {type: 'DEFINES'}]->(c)
+          -[mr:CodeRelation]->(n)
+    WHERE mr.type IN ['HAS_METHOD', 'HAS_PROPERTY'] AND n.isExported = true
+    RETURN f.filePath AS filePath, n.name AS name, labels(n)[0] AS type
+    ORDER BY filePath
   `,
   );
 

@@ -1,5 +1,7 @@
 import { spawn } from 'child_process';
 import { fileURLToPath } from 'node:url';
+import { LBUG_MAX_DB_SIZE } from './lbug-config.js';
+import { logger } from '../logger.js';
 
 const DEFAULT_EXTENSION_INSTALL_TIMEOUT_MS = 15_000;
 const EXTENSION_NAME_PATTERN = /^[A-Za-z][A-Za-z0-9_]*$/;
@@ -51,6 +53,28 @@ const alreadyAvailable = (message: string): boolean =>
 const resolvePolicyFromEnv = (): ExtensionInstallPolicy => {
   const raw = process.env.GITNEXUS_LBUG_EXTENSION_INSTALL;
   if (raw === 'load-only' || raw === 'never' || raw === 'auto') return raw;
+  return 'load-only';
+};
+
+export const getExtensionInstallPolicy = (): ExtensionInstallPolicy => resolvePolicyFromEnv();
+
+/**
+ * Install policy for the **analyze (write) path**.
+ *
+ * The global default (`resolvePolicyFromEnv`) is `load-only` so serve/query
+ * read paths never require outbound network access (PR #1161, offline-first).
+ * The analyze path is different: it owns building the search indexes, so it
+ * defaults to `auto` — LOAD the extension if present, otherwise attempt one
+ * bounded out-of-process INSTALL. This keeps FTS symmetric with the
+ * VECTOR/embeddings path (which already defaults to `auto`) and matches the
+ * #726 contract. An explicit `GITNEXUS_LBUG_EXTENSION_INSTALL` value still
+ * wins, so operators can force `load-only`/`never` for fully offline analyze;
+ * `auto` LOADs-first, so offline machines still degrade gracefully when the
+ * INSTALL cannot reach the network.
+ */
+export const resolveAnalyzeInstallPolicy = (): ExtensionInstallPolicy => {
+  const raw = process.env.GITNEXUS_LBUG_EXTENSION_INSTALL;
+  if (raw === 'load-only' || raw === 'never' || raw === 'auto') return raw;
   return 'auto';
 };
 
@@ -60,9 +84,12 @@ export const getExtensionInstallTimeoutMs = (): number => {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_EXTENSION_INSTALL_TIMEOUT_MS;
 };
 
-export const getExtensionInstallChildProcessArgs = (extensionName: string): string[] => {
+export const getExtensionInstallChildProcessArgs = (
+  extensionName: string,
+  maxDbSize: number = LBUG_MAX_DB_SIZE,
+): string[] => {
   const childScript = new URL('../../../scripts/install-duckdb-extension.mjs', import.meta.url);
-  return [fileURLToPath(childScript), extensionName];
+  return [fileURLToPath(childScript), extensionName, String(maxDbSize)];
 };
 
 /**
@@ -143,7 +170,7 @@ export const installDuckDbExtensionOutOfProcess = async (
  * subsequent analyze or query calls.
  *
  * Policy precedence (most specific wins):
- *   per-call `opts.policy` → constructor `options.policy` → env → `auto`
+ *   per-call `opts.policy` → constructor `options.policy` → env → `load-only`
  */
 export class ExtensionManager {
   private readonly capabilities = new Map<string, ExtensionCapability>();
@@ -184,7 +211,7 @@ export class ExtensionManager {
     const policy = opts.policy ?? this.options.policy ?? resolvePolicyFromEnv();
     const timeoutMs =
       opts.installTimeoutMs ?? this.options.installTimeoutMs ?? getExtensionInstallTimeoutMs();
-    const warn = this.options.warn ?? console.warn;
+    const warn = this.options.warn ?? ((msg: string) => logger.warn(msg));
 
     if (policy === 'never') {
       this.markUnavailable(name, label, 'extension install policy is "never"', warn);

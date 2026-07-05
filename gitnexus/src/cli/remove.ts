@@ -1,9 +1,12 @@
 /**
  * Remove Command (#664)
  *
- * Delete the `.gitnexus/` index for a registered repo and unregister it
- * from the global registry (~/.gitnexus/registry.json). The target is
- * identified by alias / basename-derived name / remote-inferred name /
+ * Delete the `.gitnexus/` index directory for a registered repo (including
+ * both metadata filenames — gitnexus.json and its legacy meta.json mirror —
+ * which live inside it) and unregister it from the global registry
+ * (~/.gitnexus/registry.json).
+ *
+ * The target is identified by alias / basename-derived name / remote-inferred name /
  * absolute path — no `--repo` flag, just a positional argument so the
  * destructive-command ergonomics match `clean` (which is also
  * destructive but scoped to `process.cwd()`).
@@ -27,6 +30,9 @@
  */
 
 import fs from 'fs/promises';
+import { logger } from '../core/logger.js';
+import { cliError } from './cli-message.js';
+import { t } from './i18n/index.js';
 import {
   readRegistry,
   resolveRegistryEntry,
@@ -51,14 +57,14 @@ export const removeCommand = async (target: string, options?: { force?: boolean 
       // Idempotent: missing target is a no-op warning, not an error.
       // The `availableNames` hint comes from the error itself so users
       // can see what they might have meant.
-      console.warn(`Nothing to remove: ${err.message}`);
+      logger.warn(t('remove.nothingToRemove', { message: err.message }));
       return;
     }
     if (err instanceof RegistryAmbiguousTargetError) {
       // Duplicate aliases are allowed via --allow-duplicate-name (#829);
       // refuse to guess which one the user meant — surface the full list
       // and exit non-zero so scripts don't silently pick the wrong repo.
-      console.error(`Error: ${err.message}`);
+      cliError(t('common.error', { message: err.message }));
       process.exit(1);
     }
     throw err;
@@ -67,10 +73,10 @@ export const removeCommand = async (target: string, options?: { force?: boolean 
   // Confirmation gate — same shape as `clean`. Default is a dry-run
   // that describes what would be deleted; `--force` actually deletes.
   if (!options?.force) {
-    console.log(`This will delete the GitNexus index for: ${entry.name}`);
-    console.log(`   Path:    ${entry.path}`);
-    console.log(`   Storage: ${entry.storagePath}`);
-    console.log('\nRun with --force to confirm deletion.');
+    console.log(t('remove.deleteTarget', { name: entry.name }));
+    console.log(`   ${t('common.path')}:    ${entry.path}`);
+    console.log(`   ${t('common.storage')}: ${entry.storagePath}`);
+    console.log(`\n${t('common.runForceConfirm')}`);
     return;
   }
 
@@ -86,7 +92,7 @@ export const removeCommand = async (target: string, options?: { force?: boolean 
     assertSafeStoragePath(entry);
   } catch (err) {
     if (err instanceof UnsafeStoragePathError) {
-      console.error(`Error: ${err.message}`);
+      cliError(t('common.error', { message: err.message }));
       process.exit(1);
     }
     throw err;
@@ -100,11 +106,12 @@ export const removeCommand = async (target: string, options?: { force?: boolean 
   try {
     await fs.rm(entry.storagePath, { recursive: true, force: true });
     await unregisterRepo(entry.path);
-    console.log(`Removed: ${entry.name}`);
-    console.log(`   Path:    ${entry.path}`);
-    console.log(`   Storage: ${entry.storagePath}`);
+    console.log(t('remove.removed', { name: entry.name }));
+    console.log(`   ${t('common.path')}:    ${entry.path}`);
+    console.log(`   ${t('common.storage')}: ${entry.storagePath}`);
   } catch (err) {
-    console.error(`Failed to remove ${entry.name}:`, err);
+    const msg = err instanceof Error ? err.message : String(err);
+    cliError(t('remove.failed', { name: entry.name, message: msg }), { err });
     process.exit(1);
   }
 };

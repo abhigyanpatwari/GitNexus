@@ -1,0 +1,78 @@
+{
+  "success": {
+    "title": "Server Connected",
+    "description": "Preparing your code knowledge graph..."
+  },
+  "loading": {
+    "largeRepoHint": "This may take a moment for large repositories"
+  },
+  "guide": {
+    "copyAria": "Copy to clipboard",
+    "copiedAria": "Copied!",
+    "startServer": "Start your local server",
+    "devDescription": "Fire up the Express backend in a separate terminal to unlock the full graph.",
+    "prodDescription": "One command is all it takes. The browser connects automatically.",
+    "copyCommand": "Copy the command",
+    "copyCommandDescription": "Click the icon in the terminal to copy.",
+    "done": "done",
+    "orInstallGlobally": "or install globally",
+    "globalInstall": "Global install",
+    "startBackend": "Start backend",
+    "terminal": "Terminal",
+    "waitingForServer": "Waiting for server to start",
+    "pasteAndRun": "Paste and run in your terminal",
+    "pasteAndRunDescription": "Open a terminal at the project root, paste, and hit Enter.",
+    "listeningForServer": "Listening for server",
+    "willAutoConnect": "Will auto-connect when detected",
+    "autoConnects": "Auto-connects and opens the graph",
+    "autoConnectsDescription": "No refresh needed — the page detects the server automatically.",
+    "requires": "Requires",
+    "port": "Port 4747"
+  },
+  "analyzeFirst": {
+    "title": "Analyze your first repository",
+    "description": "Paste a repository URL and GitNexus will clone it, parse the code, and build a live knowledge graph — right in your browser.",
+    "footer": "Public repos only · Cloned locally by the server · No data leaves your machine"
+  },
+  "landing": {
+    "chooseRepository": "Choose a repository",
+    "description": "Select an indexed repository to explore, or analyze a new one.",
+    "indexed": "Indexed {{time}}",
+    "orAnalyzeNew": "or analyze new",
+    "footer": "Public & private repos · Cloned locally by the server · No data leaves your machine",
+    "time": {
+      "justNow": "just now",
+      "minutesAgo": "{{count}}m ago",
+      "hoursAgo": "{{count}}h ago",
+      "daysAgo": "{{count}}d ago"
+    }
+  },
+  "repoAnalyzer": {
+    "inputType": "Input type",
+    "githubUrl": "GitHub URL",
+    "gitlabUrl": "GitLab URL",
+    "azureDevOpsUrl": "Azure DevOps",
+    "localFolder": "Local Folder",
+    "starting": "Starting analysis...",
+    "analyzeRepository": "Analyze Repository",
+    "complete": "Analysis complete",
+    "loadingGraph": "Loading graph...",
+    "defaultRepoName": "repository",
+    "githubRepositoryUrl": "GitHub Repository URL",
+    "githubTokenLabel": "Personal Access Token (optional)",
+    "githubTokenPlaceholder": "ghp_… or github_pat_…",
+    "githubTokenHelp": "Required for private repos. Needs the 'repo' (or fine-grained Contents:read) scope. Sent once, not stored.",
+    "gitlabRepositoryUrl": "GitLab Repository URL",
+    "gitlabSupported": "Supports GitLab.com and self-hosted GitLab instances.",
+    "azureDevOpsRepositoryUrl": "Azure DevOps Repository URL",
+    "azureDevOpsSupported": "Format: https://dev.azure.com/organization/project/_git/repository",
+    "localFolderPath": "Local Folder Path",
+    "hideBackground": "Hide (analysis continues in background)",
+    "upload": {
+      "button": "Upload a folder",
+      "uploading": "Uploading…",
+      "selected": "{{fileCount}} files ready ({{dropped}} skipped: .git, node_modules, build output)",
+      "empty": "No analyzable files found in that folder."
+    }
+  }
+}

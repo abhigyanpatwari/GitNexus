@@ -90,6 +90,37 @@ describe('Go package import & call resolution', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Qualified / generic / pointer / interface embeds (#1951)
+//
+// An earlier inheritance synth (languages/go/captures.ts) emitted edges ONLY
+// for a bare `type_identifier` struct embed, silently DROPPING the qualified
+// (`pkg.Base`), pointer (`*pkg.Base`), qualified-generic (`pkg.Box[T]`) struct
+// embeds and ALL interface embeds. The synth was widened so every base reduces
+// to its bare simple name, struct bases resolve to EXTENDS and interface bases
+// to IMPLEMENTS. The bare-name struct embed (T → Local) is the unchanged
+// simple-base path, kept here as a regression guard. Scope-resolution owns
+// these edges since #942.
+// ---------------------------------------------------------------------------
+
+describe('Go qualified-base embed resolution (#1951)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'go-qualified-base'), () => {});
+  }, 60000);
+
+  it('emits EXTENDS for qualified / pointer / generic / bare struct embeds (tail-resolved)', () => {
+    const extends_ = getRelationships(result, 'EXTENDS');
+    expect(edgeSet(extends_)).toEqual(['G → Box', 'P → Base', 'S → Base', 'T → Local']);
+  });
+
+  it('emits IMPLEMENTS for qualified and bare interface embeds (tail-resolved)', () => {
+    const implements_ = getRelationships(result, 'IMPLEMENTS');
+    expect(edgeSet(implements_)).toEqual(['R → Reader', 'RLocal → LocalIface']);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Ambiguous: Handler struct in two packages, package import disambiguates
 // ---------------------------------------------------------------------------
 
@@ -179,7 +210,7 @@ describe('Go receiver method free-call resolution', () => {
     result = await runPipelineFromRepo(
       path.join(FIXTURES, 'go-receiver-method-free-call'),
       () => {},
-      { workerThresholdsForTest: { minFiles: 1, minBytes: 0 } },
+      {},
     );
   }, 60000);
 
@@ -304,6 +335,156 @@ describe('Go receiver-constrained resolution', () => {
   });
 });
 
+describe('Go structural interface dispatch', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'go-structural-interface-dispatch'),
+      () => {},
+    );
+  }, 60000);
+
+  function owningTypeName(methodId: string): string {
+    for (const rel of result.graph.iterRelationshipsByType('HAS_METHOD')) {
+      if (rel.targetId !== methodId) continue;
+      const owner = result.graph.getNode(rel.sourceId);
+      return (owner?.properties.name ?? rel.sourceId) as string;
+    }
+    return '';
+  }
+
+  it('emits signature-checked structural IMPLEMENTS edges only for valid implementors', () => {
+    const implementsEdges = getRelationships(result, 'IMPLEMENTS').filter(
+      (edge) => edge.rel.reason === 'go-structural-implements',
+    );
+    expect(edgeSet(implementsEdges)).toEqual([
+      'File → ReadCloser',
+      'File → Reader',
+      'FileBase → Reader',
+      'MemoryRepository → Repository',
+      'SqlRepository → Repository',
+    ]);
+    expect(implementsEdges.every((edge) => edge.rel.confidence === 0.85)).toBe(true);
+  });
+
+  it('feeds structural IMPLEMENTS into METHOD_IMPLEMENTS edges', () => {
+    const methodEdges = getRelationships(result, 'METHOD_IMPLEMENTS').filter(
+      (edge) => edge.target === 'Save',
+    );
+    const sourceOwners = methodEdges.map((edge) => owningTypeName(edge.rel.sourceId)).sort();
+    expect(sourceOwners).toEqual(['MemoryRepository', 'SqlRepository']);
+  });
+
+  it('prefers the concrete local assignment over interface fan-out', () => {
+    const saveCalls = getRelationships(result, 'CALLS').filter(
+      (edge) => edge.source === 'precise' && edge.target === 'Save',
+    );
+    const targetOwners = saveCalls.map((edge) => owningTypeName(edge.rel.targetId));
+    expect(targetOwners).toEqual(['SqlRepository']);
+  });
+
+  it('fans out interface-typed receiver calls to all known implementors', () => {
+    const saveCalls = getRelationships(result, 'CALLS').filter(
+      (edge) => edge.source === 'fallback' && edge.target === 'Save',
+    );
+    const dispatchTargets = saveCalls
+      .filter((edge) => edge.rel.reason === 'interface-dispatch')
+      .map((edge) => owningTypeName(edge.rel.targetId))
+      .sort();
+    expect(dispatchTargets).toEqual(['MemoryRepository', 'SqlRepository']);
+  });
+
+  it('includes embedded interface methods before emitting structural IMPLEMENTS edges', () => {
+    const implementsEdges = getRelationships(result, 'IMPLEMENTS');
+    expect(edgeSet(implementsEdges)).toContain('File → ReadCloser');
+    expect(edgeSet(implementsEdges)).not.toContain('CloseOnly → ReadCloser');
+  });
+
+  it('includes promoted embedded struct methods before emitting structural IMPLEMENTS edges', () => {
+    const implementsEdges = getRelationships(result, 'IMPLEMENTS');
+    expect(edgeSet(implementsEdges)).toContain('File → Reader');
+    expect(edgeSet(implementsEdges)).toContain('File → ReadCloser');
+    expect(edgeSet(implementsEdges)).not.toContain('ShadowReadFile → Reader');
+    expect(edgeSet(implementsEdges)).not.toContain('ShadowReadFile → ReadCloser');
+  });
+
+  it('does not emit value-type IMPLEMENTS for pointer-receiver-only methods', () => {
+    const implementsEdges = getRelationships(result, 'IMPLEMENTS');
+    expect(edgeSet(implementsEdges)).not.toContain('PointerOnlyThing → PointerOnly');
+  });
+
+  it('fans out embedded-interface receivers only to complete implementors', () => {
+    const closeCalls = getRelationships(result, 'CALLS').filter(
+      (edge) => edge.source === 'fallbackReadCloser' && edge.target === 'Close',
+    );
+    const dispatchTargets = closeCalls
+      .filter((edge) => edge.rel.reason === 'interface-dispatch')
+      .map((edge) => owningTypeName(edge.rel.targetId))
+      .sort();
+    expect(dispatchTargets).toEqual(['File']);
+  });
+});
+
+describe('Go cross-package structural interface dispatch', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'go-structural-interface-cross-package'),
+      () => {},
+    );
+  }, 60000);
+
+  function owningTypeName(methodId: string): string {
+    for (const rel of result.graph.iterRelationshipsByType('HAS_METHOD')) {
+      if (rel.targetId !== methodId) continue;
+      const owner = result.graph.getNode(rel.sourceId);
+      return (owner?.properties.name ?? rel.sourceId) as string;
+    }
+    return '';
+  }
+
+  it('matches local interface types against package-qualified implementation signatures', () => {
+    const implementsEdges = getRelationships(result, 'IMPLEMENTS').filter(
+      (edge) => edge.rel.reason === 'go-structural-implements',
+    );
+    expect(edgeSet(implementsEdges)).toEqual([
+      'File → ReadCloser',
+      'File → Reader',
+      'GoodStore → Saver',
+    ]);
+  });
+
+  it('merges methods from package-qualified embedded interfaces before matching implementors', () => {
+    const implementsEdges = getRelationships(result, 'IMPLEMENTS');
+    expect(edgeSet(implementsEdges)).toContain('File → ReadCloser');
+    expect(edgeSet(implementsEdges)).not.toContain('CloseOnly → ReadCloser');
+  });
+
+  it('fans out cross-package interface receivers only to valid implementors', () => {
+    const saveCalls = getRelationships(result, 'CALLS').filter(
+      (edge) => edge.source === 'fallback' && edge.target === 'Save',
+    );
+    const dispatchTargets = saveCalls
+      .filter((edge) => edge.rel.reason === 'interface-dispatch')
+      .map((edge) => owningTypeName(edge.rel.targetId))
+      .sort();
+    expect(dispatchTargets).toEqual(['GoodStore']);
+  });
+
+  it('dispatches package-qualified embedded-interface receivers only to complete implementors', () => {
+    const closeCalls = getRelationships(result, 'CALLS').filter(
+      (edge) => edge.source === 'fallbackReadCloser' && edge.target === 'Close',
+    );
+    const dispatchTargets = closeCalls
+      .filter((edge) => edge.rel.reason === 'interface-dispatch')
+      .map((edge) => owningTypeName(edge.rel.targetId))
+      .sort();
+    expect(dispatchTargets).toEqual(['File']);
+  });
+});
+
 // ---------------------------------------------------------------------------
 // Variadic resolution: ...interface{} doesn't get filtered by arity
 // ---------------------------------------------------------------------------
@@ -361,6 +542,7 @@ describe('Go constructor-inferred type resolution', () => {
   it('detects User and Repo structs, both with Save methods', () => {
     expect(getNodesByLabel(result, 'Struct')).toContain('User');
     expect(getNodesByLabel(result, 'Struct')).toContain('Repo');
+    expect(getNodesByLabel(result, 'Struct')).toContain('Box');
     const saveMethods = getNodesByLabel(result, 'Method').filter((m) => m === 'Save');
     expect(saveMethods.length).toBe(2);
   });
@@ -381,6 +563,17 @@ describe('Go constructor-inferred type resolution', () => {
     );
     expect(repoSave).toBeDefined();
     expect(repoSave!.source).toBe('processEntities');
+  });
+
+  it('resolves Box[models.User]{} as a generic composite-literal constructor call', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const boxCtor = calls.find(
+      (c) =>
+        c.target === 'Box' &&
+        c.source === 'processEntities' &&
+        c.targetFilePath === 'models/user.go',
+    );
+    expect(boxCtor).toBeDefined();
   });
 
   it('emits exactly 2 Save() CALLS edges (one per receiver type)', () => {
@@ -607,6 +800,30 @@ describe('Go return type inference via explicit function return type', () => {
         c.targetFilePath.includes('user.go'),
     );
     expect(saveCall).toBeDefined();
+  });
+});
+
+describe('Go same-package factory return type inference', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'go-same-package-factory'), () => {});
+  }, 60000);
+
+  it('resolves user.Save() through same-package NewUser() return type', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const userSave = calls.find(
+      (c) => c.target === 'Save' && c.source === 'processUser' && c.targetFilePath === 'user.go',
+    );
+    expect(userSave).toBeDefined();
+  });
+
+  it('does not resolve user.Save() to Repo.Save', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const repoSave = calls.find(
+      (c) => c.target === 'Save' && c.source === 'processUser' && c.targetFilePath === 'repo.go',
+    );
+    expect(repoSave).toBeUndefined();
   });
 });
 
@@ -1261,6 +1478,47 @@ describe('Go cross-file binding propagation', () => {
   });
 });
 
+describe('Go aliased package selector resolution', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'go-aliased-package-import'), () => {});
+  }, 60000);
+
+  it('resolves util.Log() through an aliased package import', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const logCall = calls.find(
+      (c) =>
+        c.target === 'Log' && c.source === 'main' && c.targetFilePath === 'internal/util/log.go',
+    );
+    expect(logCall).toBeDefined();
+  });
+});
+
+describe('Go method owner resolution across package files', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'go-split-method-owner'), () => {});
+  }, 60000);
+
+  it('resolves user.Save() to the method whose receiver type is declared in another package file', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const userSave = calls.find(
+      (c) => c.target === 'Save' && c.source === 'process' && c.targetFilePath === 'save.go',
+    );
+    expect(userSave).toBeDefined();
+  });
+
+  it('does not resolve user.Save() to Repo.Save', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const repoSave = calls.find(
+      (c) => c.target === 'Save' && c.source === 'process' && c.targetFilePath === 'repo.go',
+    );
+    expect(repoSave).toBeUndefined();
+  });
+});
+
 // ---------------------------------------------------------------------------
 // Go cmd/ helper files should NOT get entry-point multiplier (P0-1 fix)
 // Only main.go files should get the 3.0 entry-point boost, not arbitrary
@@ -1367,7 +1625,7 @@ describe('Go method enrichment', () => {
 });
 
 // ---------------------------------------------------------------------------
-// SM-9/SM-10: lookupMethodByOwnerWithMRO + D0 fast path — Go struct embedding
+// SM-9/SM-10: inherited method resolution — Go struct embedding
 // ---------------------------------------------------------------------------
 
 describe('Go Child embeds Parent — inherited method resolution (SM-9)', () => {

@@ -15,6 +15,7 @@ import { readFileContents } from '../filesystem-walker.js';
 import type { StructureOutput } from './structure.js';
 import { isDev } from '../utils/env.js';
 
+import { logger } from '../../logger.js';
 export interface MarkdownOutput {
   /** Number of markdown sections extracted. */
   sections: number;
@@ -48,7 +49,7 @@ export const markdownPhase: PipelinePhase<MarkdownOutput> = {
     const mdResult = processMarkdown(ctx.graph, mdFiles, allPathSet);
 
     if (isDev) {
-      console.log(
+      logger.info(
         `  Markdown: ${mdResult.sections} sections, ${mdResult.links} cross-links from ${mdFiles.length} files`,
       );
     }

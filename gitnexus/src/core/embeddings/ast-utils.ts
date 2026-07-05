@@ -10,6 +10,7 @@ import {
   isLanguageAvailable,
   resolveLanguageKey,
 } from '../tree-sitter/parser-loader.js';
+import { parseSourceSafe } from '../tree-sitter/safe-parse.js';
 
 const parserCache = new Map<string, any>();
 
@@ -29,7 +30,7 @@ export const ensureAndParse = async (content: string, filePath: string): Promise
     parserCache.set(parserKey, parserInstance);
   }
 
-  return parserInstance.parse(content);
+  return parseSourceSafe(parserInstance, content);
 };
 
 const FUNCTION_LIKE_TYPES = new Set([

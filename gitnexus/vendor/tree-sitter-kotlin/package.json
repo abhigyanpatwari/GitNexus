@@ -1,0 +1,18 @@
+{
+  "name": "tree-sitter-kotlin",
+  "version": "0.4.0",
+  "description": "Kotlin grammar for tree-sitter",
+  "repository": "https://github.com/fwcd/tree-sitter-kotlin",
+  "license": "MIT",
+  "main": "bindings/node/index.js",
+  "types": "bindings/node/index.d.ts",
+  "_vendoredBy": "gitnexus - runtime package derived from tree-sitter-kotlin (fwcd) at unreleased main commit c8ac3d2627240160b999a2c100de3babbdb8f419 (package.json version 0.4.0; latest npm/tag is still 0.3.8). Pinned to main rather than a release to pull in `fun interface` (functional/SAM interface) support — PR fwcd/tree-sitter-kotlin#169, fixing issue #87 — which 0.3.8 (tagged 2024-08-03) lacks: it parsed `fun interface Foo` as an ERROR node and dropped the declaration. Because the fix is unreleased on npm, the prebuild workflow builds kotlin from THIS vendored source (kind 'vendored', like swift), NOT from the npm package. The grammar source (parser.c/scanner.c/binding.gyp + src/) is vendored so build-tree-sitter-grammars.cjs can source-build the binding on a toolchain host when no prebuild matches; the native prebuilds/ are GitNexus-cross-built by .github/workflows/build-tree-sitter-prebuilds.yml (regenerated whenever this `version` changes). The generated parser.c is large (~33 MB on disk; it compresses heavily in git). Loaded from vendor/ by absolute path at runtime (vendored-grammars.ts) — NEVER copied to node_modules (#2111) (no scripts.install here — #836/#1728). To re-pin: bump `version`, refresh src/ + bindings/node/ from the new upstream ref, update this note, and let the prebuild workflow rebuild the binaries.",
+  "peerDependencies": {
+    "tree-sitter": "^0.21.0"
+  },
+  "peerDependenciesMeta": {
+    "tree-sitter": {
+      "optional": true
+    }
+  }
+}

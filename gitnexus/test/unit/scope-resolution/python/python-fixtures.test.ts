@@ -87,6 +87,20 @@ describe('Python scopes — module / class / function', () => {
     expect(findDef(f, 'after_padding')?.type).toBe('Function');
   });
 
+  it('case 01d: scope query failures are skipped through the bridge with context', () => {
+    const warnings: string[] = [];
+    const parsed = extractParsedFile(
+      pythonProvider,
+      'def broken():\n    return 1\n',
+      'broken.py',
+      (msg) => warnings.push(msg),
+      { rootNode: undefined },
+    );
+
+    expect(parsed).toBeUndefined();
+    expect(warnings.join('\n')).toMatch(/tree-sitter scope query failed for broken\.py/);
+  });
+
   it('case 02: module-level assignment produces a Variable declaration in Module scope', () => {
     const f = parse('x = 1\n');
     expect(scopesByKind(f, 'Module')).toHaveLength(1);

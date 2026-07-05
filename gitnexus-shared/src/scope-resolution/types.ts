@@ -105,6 +105,13 @@ export type ParsedImport =
       readonly localName: string;
       readonly importedName: string;
       readonly targetRaw: string;
+      /**
+       * Set by providers when `targetRaw` already names the imported symbol
+       * rather than only its containing module. Consumers that compose
+       * `<local>.<member>` paths can then use `targetRaw.<member>` instead of
+       * duplicating `importedName`.
+       */
+      readonly targetIncludesImportedName?: boolean;
     }
   /**
    * Per-name import with rename.
@@ -119,6 +126,8 @@ export type ParsedImport =
       readonly importedName: string;
       readonly alias: string;
       readonly targetRaw: string;
+      /** See the same field on the `named` variant. */
+      readonly targetIncludesImportedName?: boolean;
     }
   /**
    * Qualified module handle, with or without rename. `importedName` is the
@@ -267,8 +276,11 @@ export interface ScopeLookup {
 
 /** Call-site description passed to `arityCompatibility`. */
 export interface Callsite {
-  /** Number of arguments at the call site. */
-  readonly arity: number;
+  /** Number of arguments at the call site, if available. */
+  readonly arity?: number;
+  /** Inferred argument types at the call site, one per argument.
+   *  An empty string entry means the type was not inferred. */
+  readonly argumentTypes?: readonly string[];
 }
 
 // ─── §2.4 ImportEdge ────────────────────────────────────────────────────────
@@ -436,7 +448,7 @@ export interface Reference {
   readonly toDef: DefId;
   /** Location of the reference in source. */
   readonly atRange: Range;
-  readonly kind: 'call' | 'read' | 'write' | 'type-reference' | 'inherits' | 'import-use';
+  readonly kind: 'call' | 'read' | 'write' | 'type-reference' | 'inherits' | 'import-use' | 'macro';
   readonly confidence: number;
   readonly evidence: readonly ResolutionEvidence[];
 }

@@ -1,5 +1,6 @@
 import { TREE_SITTER_MAX_BUFFER } from '../constants.js';
 
+import { logger } from '../../logger.js';
 /** Default threshold (512 KB). Files larger than this are skipped by the walker. */
 export const DEFAULT_MAX_FILE_SIZE_BYTES = 512 * 1024;
 
@@ -11,7 +12,7 @@ const warned = new Set<string>();
 const warnOnce = (key: string, message: string): void => {
   if (warned.has(key)) return;
   warned.add(key);
-  console.warn(message);
+  logger.warn(message);
 };
 
 /**

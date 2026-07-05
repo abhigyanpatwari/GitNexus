@@ -3,69 +3,84 @@
 import { SupportedLanguages } from 'gitnexus-shared';
 import type { VariableExtractionConfig } from '../../variable-types.js';
 import type { VariableVisibility } from '../../variable-types.js';
-import { extractSimpleTypeName } from '../../type-extractors/shared.js';
 import type { SyntaxNode } from '../../utils/ast-helpers.js';
 
 /**
  * Dart variable extraction config.
  *
- * Dart has top-level variable and constant declarations:
- * - `const maxSize = 100;`
- * - `final String name = "dart";`
- * - `var counter = 0;`
- * - `int x = 5;`
+ * Top-level Dart variables are NOT wrapped in a `declaration` node (that wrapper
+ * only occurs for class-body members). The structure query (`DART_QUERIES`)
+ * captures them as `@definition.variable` on the loose container node, which is
+ * one of two real shapes:
  *
- * tree-sitter-dart uses:
- * - declaration (with initialized_identifier_list) for file-scope variables
+ *   - `var name = 'x';` / `int x = 5;`
+ *       → initialized_identifier_list > initialized_identifier > identifier
+ *   - `final int count = 3;` / `const a = 1, b = 2;`
+ *       → static_final_declaration_list > static_final_declaration > identifier
+ *
+ * The variable extractor is invoked on that captured container node to enrich
+ * the Variable symbol with name(s)/type/const/mutable metadata.
+ *
+ * NOTE: the const/final modifier (`const_builtin` / `final_builtin`) and the
+ * type annotation (`type_identifier`) are siblings of the captured container —
+ * they live on the parent (program), NOT inside it — so const-ness and the type
+ * are read from the captured node's parent. (This is why the previous
+ * `type_identifier`-as-direct-child read found nothing.)
  */
 
-function extractDartVarName(node: SyntaxNode): string | undefined {
-  // declaration → initialized_variable_definition → identifier
-  for (let i = 0; i < node.namedChildCount; i++) {
-    const child = node.namedChild(i);
-    if (child?.type === 'initialized_variable_definition') {
-      const name = child.childForFieldName('name');
-      if (name) return name.text;
-      // Fallback: first identifier
-      for (let j = 0; j < child.namedChildCount; j++) {
-        const gc = child.namedChild(j);
-        if (gc?.type === 'identifier') return gc.text;
-      }
-    }
-    // declaration → initialized_identifier_list → initialized_identifier → identifier
-    if (child?.type === 'initialized_identifier_list') {
-      for (let j = 0; j < child.namedChildCount; j++) {
-        const gc = child.namedChild(j);
-        if (gc?.type === 'initialized_identifier') {
-          const ident = gc.namedChildren.find((c: SyntaxNode) => c.type === 'identifier');
-          if (ident) return ident.text;
-        }
-      }
+/** The `initialized_identifier` / `static_final_declaration` name children. */
+function nameNodes(container: SyntaxNode): SyntaxNode[] {
+  const out: SyntaxNode[] = [];
+  for (let i = 0; i < container.namedChildCount; i++) {
+    const entry = container.namedChild(i);
+    if (!entry) continue;
+    if (entry.type === 'initialized_identifier' || entry.type === 'static_final_declaration') {
+      const ident = entry.firstNamedChild;
+      if (ident?.type === 'identifier') out.push(ident);
     }
   }
-  return undefined;
+  return out;
 }
 
+function extractDartVarNames(node: SyntaxNode): string[] {
+  return nameNodes(node).map((n) => n.text);
+}
+
+/**
+ * Scan the container's immediately-preceding siblings (the modifier / type
+ * nodes of THIS declaration), stopping at the previous statement's `;` so a
+ * neighbouring declaration's modifiers/type never bleed in. Top-level Dart
+ * declarations sit as loose siblings under `program` separated by `;`:
+ *   final int count = 3; var name = 'x'; const a = 1, b = 2;
+ * so the leading `type_identifier` / `const_builtin` / `final_builtin` of a
+ * declaration are the siblings between the prior `;` and the captured container.
+ */
+function scanLeadingSiblings(node: SyntaxNode): SyntaxNode[] {
+  const out: SyntaxNode[] = [];
+  let sib = node.previousSibling;
+  while (sib !== null && sib.type !== ';') {
+    out.push(sib);
+    sib = sib.previousSibling;
+  }
+  return out;
+}
+
+/**
+ * The declared type annotation, read from the captured container's leading
+ * sibling `type_identifier`. Returns undefined for inferred (`var`)
+ * declarations, which have an `inferred_type` sibling instead.
+ */
 function extractDartVarType(node: SyntaxNode): string | undefined {
-  for (let i = 0; i < node.namedChildCount; i++) {
-    const child = node.namedChild(i);
-    if (child?.type === 'initialized_variable_definition') {
-      const typeNode = child.childForFieldName('type');
-      if (typeNode) return extractSimpleTypeName(typeNode) ?? typeNode.text?.trim();
-    }
-  }
-  // Look for type_identifier directly on the node
-  for (let i = 0; i < node.namedChildCount; i++) {
-    const child = node.namedChild(i);
-    if (child?.type === 'type_identifier') return child.text;
+  for (const sib of scanLeadingSiblings(node)) {
+    if (sib.type === 'type_identifier') return sib.text;
   }
   return undefined;
 }
 
-function hasDartKeyword(node: SyntaxNode, keyword: string): boolean {
-  for (let i = 0; i < node.childCount; i++) {
-    const child = node.child(i);
-    if (child?.text === keyword) return true;
+/** Whether a `const_builtin` / `final_builtin` leads this declaration. */
+function hasReadonlyModifier(node: SyntaxNode): boolean {
+  for (const sib of scanLeadingSiblings(node)) {
+    if (sib.type === 'const_builtin' || sib.type === 'final_builtin') return true;
   }
   return false;
 }
@@ -74,28 +89,32 @@ export const dartVariableConfig: VariableExtractionConfig = {
   language: SupportedLanguages.Dart,
   constNodeTypes: [],
   staticNodeTypes: [],
-  variableNodeTypes: ['declaration'],
+  // The two real top-level container shapes captured as @definition.variable.
+  variableNodeTypes: ['initialized_identifier_list', 'static_final_declaration_list'],
 
-  extractName: extractDartVarName,
+  extractName: (node) => extractDartVarNames(node)[0],
+  extractNames: extractDartVarNames,
   extractType: extractDartVarType,
 
-  extractVisibility(node): VariableVisibility {
-    const name = extractDartVarName(node);
-    if (!name) return 'public';
-    // Dart convention: underscore prefix = library-private
+  extractVisibilityForName(_node, name): VariableVisibility {
+    // Dart convention: underscore prefix = library-private.
     return name.startsWith('_') ? 'private' : 'public';
   },
 
-  isConst(node) {
-    return hasDartKeyword(node, 'const') || hasDartKeyword(node, 'final');
+  extractVisibility(node): VariableVisibility {
+    const first = extractDartVarNames(node)[0];
+    if (!first) return 'public';
+    return first.startsWith('_') ? 'private' : 'public';
   },
 
+  isConst: hasReadonlyModifier,
+
   isStatic(_node) {
-    // Top-level Dart variables are not static
+    // Top-level Dart variables are not static.
     return false;
   },
 
   isMutable(node) {
-    return !hasDartKeyword(node, 'const') && !hasDartKeyword(node, 'final');
+    return !hasReadonlyModifier(node);
   },
 };

@@ -1,0 +1,86 @@
+{
+  "app": {
+    "name": "GitNexus",
+    "nexusAI": "Nexus AI"
+  },
+  "actions": {
+    "cancel": "取消",
+    "dismiss": "关闭",
+    "tryAgain": "重试",
+    "hide": "隐藏",
+    "retry": "重试",
+    "copy": "复制",
+    "copied": "已复制",
+    "close": "关闭",
+    "run": "运行",
+    "clear": "清空",
+    "remove": "移除",
+    "focusInGraph": "在图中聚焦",
+    "expand": "展开",
+    "collapse": "折叠"
+  },
+  "chat": {
+    "viewNodeInCodePanel": "在代码面板中查看 {{inner}}",
+    "openInCodePanel": "在代码面板中打开 • {{inner}}",
+    "waitForVectorIndex": "请稍候，正在创建向量索引。"
+  },
+  "counts": {
+    "files_one": "{{count}} 个文件",
+    "files_other": "{{count}} 个文件",
+    "nodes_one": "{{count}} 个节点",
+    "nodes_other": "{{count}} 个节点",
+    "edges_one": "{{count}} 条边",
+    "edges_other": "{{count}} 条边",
+    "symbols_one": "{{count}} 个符号",
+    "symbols_other": "{{count}} 个符号",
+    "flows_one": "{{count}} 条流程",
+    "flows_other": "{{count}} 条流程"
+  },
+  "progress": {
+    "connecting": "正在连接服务器...",
+    "connectingShort": "正在连接...",
+    "validatingServer": "正在验证服务器",
+    "validatingServerEllipsis": "正在验证服务器...",
+    "downloadingGraph": "正在下载图数据...",
+    "downloadedMb": "已下载 {{mb}} MB",
+    "downloadingWithPercent": "正在下载图数据... {{percent}}%",
+    "downloadingMb": "正在下载... {{mb}} MB",
+    "processing": "正在处理...",
+    "processingGraph": "正在处理图数据...",
+    "extractingFileContents": "正在提取文件内容",
+    "loadingGraph": "正在加载图数据...",
+    "starting": "正在启动...",
+    "executing": "正在执行...",
+    "truncated": "...（已截断）",
+    "ready": "就绪",
+    "switchingRepository": "正在切换仓库...",
+    "loadingRepository": "正在加载 {{repo}}",
+    "validating": "正在验证",
+    "failedSwitchRepository": "切换仓库失败",
+    "unknownError": "未知错误"
+  },
+  "analyzePhases": {
+    "queued": "已排队",
+    "cloning": "正在克隆仓库",
+    "pulling": "正在拉取最新代码",
+    "extracting": "正在扫描文件",
+    "structure": "正在构建结构",
+    "parsing": "正在解析代码",
+    "imports": "正在解析导入",
+    "calls": "正在追踪调用",
+    "heritage": "正在提取继承关系",
+    "scopeResolution": "正在解析类型",
+    "communities": "正在检测社区",
+    "processes": "正在检测流程",
+    "complete": "流水线完成",
+    "lbug": "正在加载数据库",
+    "fts": "正在创建搜索索引",
+    "embeddings": "正在生成嵌入向量",
+    "done": "完成",
+    "retrying": "崩溃后正在重试"
+  },
+  "units": {
+    "elapsedSeconds": "{{seconds}} 秒",
+    "elapsedMinutesSeconds": "{{minutes}} 分 {{seconds}} 秒"
+  }
+}

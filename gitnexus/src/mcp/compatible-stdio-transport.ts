@@ -4,6 +4,7 @@ import type {
   TransportSendOptions,
 } from '@modelcontextprotocol/sdk/shared/transport.js';
 import { JSONRPCMessageSchema, type JSONRPCMessage } from '@modelcontextprotocol/sdk/types.js';
+import { withMcpWrite } from './stdio-context.js';
 
 export type StdioFraming = 'content-length' | 'newline';
 
@@ -47,11 +48,15 @@ const MAX_BUFFER_SIZE = 10 * 1024 * 1024; // 10 MB — generous for JSON-RPC
 export class CompatibleStdioServerTransport implements Transport {
   private _readBuffer: Buffer | undefined;
   private _started = false;
+  private _closed = false;
   private _framing: StdioFraming | null = null;
 
   onmessage?: (message: JSONRPCMessage) => void;
   onerror?: (error: Error) => void;
   onclose?: () => void;
+
+  /** Stable bound reference so `on`/`off` always use the same function. */
+  private readonly _boundClose = this.close.bind(this);
 
   constructor(
     private readonly _stdin: NodeJS.ReadableStream = process.stdin,
@@ -76,10 +81,27 @@ export class CompatibleStdioServerTransport implements Transport {
     if (this._started) {
       throw new Error('CompatibleStdioServerTransport already started!');
     }
+    if (this._closed) {
+      throw new Error('CompatibleStdioServerTransport has been permanently closed');
+    }
+
+    // If stdin is already closed (parent died before we registered listeners),
+    // the 'end'/'close' event was already emitted and will never fire again.
+    // Close the transport immediately to avoid orphaned processes.
+    if (
+      (this._stdin as NodeJS.ReadStream).readableEnded ||
+      (this._stdin as NodeJS.ReadStream).destroyed
+    ) {
+      this._started = true;
+      await this.close();
+      return;
+    }
 
     this._started = true;
     this._stdin.on('data', this._ondata);
     this._stdin.on('error', this._onerror);
+    this._stdin.on('end', this._boundClose);
+    this._stdin.on('close', this._boundClose);
   }
 
   private detectFraming(): StdioFraming | null {
@@ -200,8 +222,13 @@ export class CompatibleStdioServerTransport implements Transport {
   }
 
   async close() {
+    if (this._closed) return;
+    this._closed = true;
+
     this._stdin.off('data', this._ondata);
     this._stdin.off('error', this._onerror);
+    this._stdin.off('end', this._boundClose);
+    this._stdin.off('close', this._boundClose);
 
     const remainingDataListeners = this._stdin.listenerCount('data');
     if (remainingDataListeners === 0) {
@@ -232,7 +259,12 @@ export class CompatibleStdioServerTransport implements Transport {
 
       this._stdout.on('error', onError);
 
-      if (this._stdout.write(payload)) {
+      // Tag the write with the MCP transport context so the sentinel
+      // (server.ts createStdoutSentinel Proxy) recognizes it as a legitimate
+      // JSON-RPC frame and passes it through to the real stdout instead of
+      // redirecting to stderr.
+      const writeOk = withMcpWrite(() => this._stdout.write(payload));
+      if (writeOk) {
         this._stdout.removeListener('error', onError);
         resolve();
       } else {

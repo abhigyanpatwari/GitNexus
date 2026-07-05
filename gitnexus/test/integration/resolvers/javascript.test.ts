@@ -15,6 +15,30 @@ import {
 } from './helpers.js';
 
 // ---------------------------------------------------------------------------
+// Qualified (namespaced) base (#1951): `extends ns.Base` parses as a
+// class_heritage holding a member_expression (object: `ns`, property: `Base`).
+// An earlier synth (synthesizeJsInheritanceReferences) dropped member_expression
+// bases, emitting only for a direct identifier base, so production silently
+// omitted this EXTENDS edge. It is now resolved by the base's trailing
+// property_identifier (`Base`), matching the documented per-shape reduction.
+// `Plain extends Base` is the bare control (its simple-base handling is
+// unchanged). Scope-resolution owns these edges since #942.
+// ---------------------------------------------------------------------------
+
+describe('JavaScript qualified-base heritage resolution (#1951)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'javascript-qualified-base'), () => {});
+  }, 60000);
+
+  it('emits EXTENDS for the qualified base (ns.Base) and the bare control (Base)', () => {
+    const extends_ = getRelationships(result, 'EXTENDS');
+    expect(edgeSet(extends_)).toEqual(['Plain → Base', 'Service → Base']);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // skipGraphPhases: verify pipeline works correctly when graph phases are skipped
 // ---------------------------------------------------------------------------
 
@@ -508,7 +532,7 @@ describe('JavaScript method enrichment', () => {
 });
 
 // ---------------------------------------------------------------------------
-// SM-9: lookupMethodByOwnerWithMRO — child.parentMethod() via first-wins walk
+// SM-9: inherited method resolution — child.parentMethod() via first-wins walk
 // ---------------------------------------------------------------------------
 
 describe('JavaScript Child extends Parent — inherited method resolution (SM-9)', () => {
@@ -539,5 +563,103 @@ describe('JavaScript Child extends Parent — inherited method resolution (SM-9)
     );
     expect(parentMethodCall).toBeDefined();
     expect(parentMethodCall!.source).toBe('run');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Issue #1358: class-instance singleton (`export const x = new C()`)
+// PR #1718 closed the object-literal-shorthand sub-case; this fixture covers
+// the class-instance sub-case for JavaScript. Same resolution chain as TS but
+// the receiver type comes from the `new ClassName()` initializer (no JSDoc
+// annotation needed — the @type-binding.constructor capture handles it).
+// ---------------------------------------------------------------------------
+
+describe('JavaScript class-instance singleton resolution (issue #1358 sub-case)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'javascript-class-instance-singleton'),
+      () => {},
+      { skipGraphPhases: true },
+    );
+  }, 60000);
+
+  it('detects FooService class, getUser method, caller function, fooService Const', () => {
+    expect(getNodesByLabel(result, 'Class')).toContain('FooService');
+    expect(getNodesByLabel(result, 'Method')).toContain('getUser');
+    expect(getNodesByLabel(result, 'Function')).toContain('caller');
+    expect(getNodesByLabel(result, 'Const')).toContain('fooService');
+  });
+
+  it('emits HAS_METHOD edge from FooService to getUser', () => {
+    const hasMethod = getRelationships(result, 'HAS_METHOD');
+    const fromClass = hasMethod.filter((e) => e.source === 'FooService').map((e) => e.target);
+    expect(fromClass).toEqual(['getUser']);
+  });
+
+  it('resolves caller.fooService.getUser() to FooService.getUser via constructor-inferred typeBinding', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const projected = calls
+      .filter((e) => e.source === 'caller' && e.target === 'getUser')
+      .map((e) => ({
+        targetFilePath: e.targetFilePath,
+        reason: e.rel.reason,
+        confidence: e.rel.confidence,
+      }));
+
+    expect(projected).toEqual([
+      {
+        targetFilePath: 'src/service.js',
+        reason: 'import-resolved',
+        confidence: 0.85,
+      },
+    ]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Issue #1358: factory-pattern singleton (`export const x = makeC()`)
+// Tests the @type-binding.alias chain-follow for JS — fooService aliases the
+// return of makeFooService(), whose JSDoc @returns {FooService} ties the chain
+// back to the class. Resolution propagates cross-file via
+// propagateImportedReturnTypes followChainPostFinalize.
+// ---------------------------------------------------------------------------
+
+describe('JavaScript factory-pattern singleton resolution (issue #1358 sub-case)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'javascript-factory-singleton'),
+      () => {},
+      { skipGraphPhases: true },
+    );
+  }, 60000);
+
+  it('detects FooService class, makeFooService function, fooService Const, caller function', () => {
+    expect(getNodesByLabel(result, 'Class')).toContain('FooService');
+    expect(getNodesByLabel(result, 'Function')).toContain('makeFooService');
+    expect(getNodesByLabel(result, 'Function')).toContain('caller');
+    expect(getNodesByLabel(result, 'Const')).toContain('fooService');
+  });
+
+  it('resolves caller.fooService.getUser() through the factory chain to FooService.getUser', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const projected = calls
+      .filter((e) => e.source === 'caller' && e.target === 'getUser')
+      .map((e) => ({
+        targetFilePath: e.targetFilePath,
+        reason: e.rel.reason,
+        confidence: e.rel.confidence,
+      }));
+
+    expect(projected).toEqual([
+      {
+        targetFilePath: 'src/service.js',
+        reason: 'import-resolved',
+        confidence: 0.85,
+      },
+    ]);
   });
 });

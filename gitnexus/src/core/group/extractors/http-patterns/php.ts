@@ -37,7 +37,9 @@ const LARAVEL_ROUTE_SPEC: PatternSpec<Record<string, never>> = {
     (scoped_call_expression
       scope: (name) @scope (#eq? @scope "Route")
       name: (name) @method (#match? @method "^(get|post|put|delete|patch)$")
-      arguments: (arguments . (argument (string) @path)))
+      arguments: (arguments
+        . (argument (string) @path)
+        (argument [(anonymous_function) (arrow_function)] @closure)?))
   `,
 };
 
@@ -130,6 +132,17 @@ function isHttpUrlLiteral(path: string): boolean {
 export const PHP_HTTP_PLUGIN: HttpLanguagePlugin = {
   name: 'php-http',
   language: PHP.php_only,
+  // Laravel `Route::<verb>(...)` definitions are emitted as Route nodes by
+  // ingestion, so the graph is authoritative for PHP providers (#2138 Part 2).
+  routeCoverage: 'complete',
+  // Consumer signals scan() can detect: Laravel `Http::<verb>`, Guzzle client
+  // `->get/post/.../request(...)`, and `file_get_contents` of an HTTP URL. A
+  // provider-covered file with any of these must still be parsed (ingestion
+  // emits no FETCHES for PHP). Conservative — the `->verb(` shape over-matches
+  // ordinary method calls, which only costs a parse, never data.
+  hasConsumerSignals(content) {
+    return /Http::|file_get_contents|->\s*(get|post|put|delete|patch|request)\s*\(/i.test(content);
+  },
   scan(tree) {
     const out: HttpDetection[] = [];
 
@@ -139,12 +152,22 @@ export const PHP_HTTP_PLUGIN: HttpLanguagePlugin = {
       if (!methodNode || !pathNode) continue;
       const path = phpStringText(pathNode);
       if (path === null) continue;
+      // A closure handler (`Route::get('/x', function(){…})` / `fn() => …`) has
+      // no name → emit `name: null` + the registration line so it resolves to
+      // its containing symbol (e.g. a service-provider `boot()` or controller
+      // method) by line-span containment. A named-controller route keeps the
+      // `'route'` label — resolving its array/string handler to a real method is
+      // a separate, graph-backed concern. NOTE: a closure at FILE scope
+      // (routes/web.php) has no enclosing function and PHP closures are not yet
+      // indexed as symbols, so it still degrades to file-level (see #2276).
+      const closureNode = match.captures.closure;
       out.push({
         role: 'provider',
         framework: 'laravel',
         method: methodNode.text.toUpperCase(),
         path,
-        name: 'route',
+        name: closureNode ? null : 'route',
+        line: (closureNode ?? pathNode).startPosition.row + 1,
         confidence: 0.8,
       });
     }
@@ -161,6 +184,7 @@ export const PHP_HTTP_PLUGIN: HttpLanguagePlugin = {
         method: methodNode.text.toUpperCase(),
         path,
         name: null,
+        line: pathNode.startPosition.row + 1,
         confidence: 0.7,
       });
     }
@@ -177,6 +201,7 @@ export const PHP_HTTP_PLUGIN: HttpLanguagePlugin = {
         method: methodNode.text.toUpperCase(),
         path,
         name: null,
+        line: pathNode.startPosition.row + 1,
         confidence: 0.7,
       });
     }
@@ -192,6 +217,7 @@ export const PHP_HTTP_PLUGIN: HttpLanguagePlugin = {
         method: 'GET',
         path,
         name: null,
+        line: pathNode.startPosition.row + 1,
         confidence: 0.7,
       });
     }

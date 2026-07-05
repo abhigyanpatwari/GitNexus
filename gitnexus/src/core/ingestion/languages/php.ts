@@ -5,18 +5,38 @@
  * and standard export/import resolution. PHP files can use a variety of
  * extensions from legacy versions through modern PHP 8.
  */
+import {
+  emitPhpScopeCaptures,
+  interpretPhpImport,
+  interpretPhpTypeBinding,
+  phpArityCompatibility,
+  phpMergeBindings,
+  resolvePhpImportTarget,
+  phpBindingScopeFor,
+  phpImportOwningScope,
+  phpReceiverBinding,
+} from './php/index.js';
 
 import { SupportedLanguages } from 'gitnexus-shared';
 import { createClassExtractor } from '../class-extractors/generic.js';
 import { phpClassConfig } from '../class-extractors/configs/php.js';
-import { defineLanguage } from '../language-provider.js';
+import { createPhpCfgVisitor } from '../cfg/visitors/php.js';
+import {
+  defineLanguage,
+  type AstFrameworkPatternConfig,
+  type CaptureMap,
+} from '../language-provider.js';
 import { typeConfig as phpConfig } from '../type-extractors/php.js';
 import { phpExportChecker } from '../export-detection.js';
 import { createImportResolver } from '../import-resolvers/resolver-factory.js';
 import { phpImportConfig } from '../import-resolvers/configs/php.js';
-import { extractPhpNamedBindings } from '../named-bindings/php.js';
 import { PHP_QUERIES } from '../tree-sitter-queries.js';
-import { findDescendant, extractStringContent, type SyntaxNode } from '../utils/ast-helpers.js';
+import {
+  findDescendant,
+  extractStringContent,
+  createLeadingDocDescriptionExtractor,
+  type SyntaxNode,
+} from '../utils/ast-helpers.js';
 import type { NodeLabel } from 'gitnexus-shared';
 import { createFieldExtractor } from '../field-extractors/generic.js';
 import { phpConfig as phpFieldConfig } from '../field-extractors/configs/php.js';
@@ -26,7 +46,6 @@ import { createVariableExtractor } from '../variable-extractors/generic.js';
 import { phpVariableConfig } from '../variable-extractors/configs/php.js';
 import { createCallExtractor } from '../call-extractors/generic.js';
 import { phpCallConfig } from '../call-extractors/configs/php.js';
-import { createHeritageExtractor } from '../heritage-extractors/generic.js';
 
 const BUILT_INS: ReadonlySet<string> = new Set([
   'echo',
@@ -211,22 +230,32 @@ function extractEloquentRelationDescription(methodNode: SyntaxNode): string | nu
   return null;
 }
 
+/** PHPDoc-docblock fallback, shared with the other leading-comment languages. */
+const phpLeadingDocFallback = createLeadingDocDescriptionExtractor();
+
 /**
  * LanguageProvider.descriptionExtractor implementation for PHP.
- * Extracts Eloquent model property metadata and relationship descriptions.
+ * Eloquent model property metadata and relationship descriptions take
+ * precedence (they are richer than prose); otherwise documentable symbols fall
+ * back to their leading PHPDoc docblock (issue #2270), mirroring the other
+ * leading-comment languages.
  */
 function phpDescriptionExtractor(
   nodeLabel: NodeLabel,
   nodeName: string,
-  captureMap: Record<string, SyntaxNode>,
+  captureMap: CaptureMap,
 ): string | undefined {
-  if (nodeLabel === 'Property' && captureMap['definition.property']) {
-    return extractPhpPropertyDescription(nodeName, captureMap['definition.property']) ?? undefined;
+  const propertyNode = captureMap['definition.property'];
+  if (nodeLabel === 'Property' && propertyNode) {
+    const eloquentProperty = extractPhpPropertyDescription(nodeName, propertyNode);
+    if (eloquentProperty) return eloquentProperty;
   }
-  if (nodeLabel === 'Method' && captureMap['definition.method']) {
-    return extractEloquentRelationDescription(captureMap['definition.method']) ?? undefined;
+  const methodNode = captureMap['definition.method'];
+  if (nodeLabel === 'Method' && methodNode) {
+    const eloquentRelation = extractEloquentRelationDescription(methodNode);
+    if (eloquentRelation) return eloquentRelation;
   }
-  return undefined;
+  return phpLeadingDocFallback(nodeLabel, nodeName, captureMap);
 }
 
 /** Detect Laravel route files by path convention. */
@@ -239,18 +268,66 @@ function isPhpRouteFile(filePath: string): boolean {
 export const phpProvider = defineLanguage({
   id: SupportedLanguages.PHP,
   extensions: ['.php', '.phtml', '.php3', '.php4', '.php5', '.php8'],
+  entryPointPatterns: [
+    /Controller$/,
+    /^handle$/,
+    /^execute$/,
+    /^boot$/,
+    /^register$/,
+    /^__invoke$/,
+    /^(index|show|store|update|destroy|create|edit)$/,
+    /^(get|post|put|delete|patch)[A-Z]/,
+    /^run$/,
+    /^fire$/,
+    /^dispatch$/,
+    /Service$/,
+    /Repository$/,
+    /^find$/,
+    /^findAll$/,
+    /^save$/,
+    /^delete$/,
+  ],
+  astFrameworkPatterns: [
+    {
+      framework: 'laravel',
+      entryPointMultiplier: 3.0,
+      reason: 'php-route-attribute',
+      patterns: [
+        'Route::get',
+        'Route::post',
+        'Route::put',
+        'Route::delete',
+        'Route::resource',
+        'Route::apiResource',
+        '#[Route(',
+      ],
+    },
+  ] satisfies AstFrameworkPatternConfig[],
   treeSitterQueries: PHP_QUERIES,
   typeConfig: phpConfig,
   exportChecker: phpExportChecker,
   importResolver: createImportResolver(phpImportConfig),
-  namedBindingExtractor: extractPhpNamedBindings,
   callExtractor: createCallExtractor(phpCallConfig),
   fieldExtractor: createFieldExtractor(phpFieldConfig),
   methodExtractor: createMethodExtractor(phpMethodConfig),
   variableExtractor: createVariableExtractor(phpVariableConfig),
   classExtractor: createClassExtractor(phpClassConfig),
-  heritageExtractor: createHeritageExtractor(SupportedLanguages.PHP),
   descriptionExtractor: phpDescriptionExtractor,
   isRouteFile: isPhpRouteFile,
   builtInNames: BUILT_INS,
+  // ── RFC #909 Ring 3: scope-based resolution hooks ──────────────────────
+  emitScopeCaptures: emitPhpScopeCaptures,
+  cfgVisitor: createPhpCfgVisitor(),
+  interpretImport: interpretPhpImport,
+  interpretTypeBinding: interpretPhpTypeBinding,
+  // LanguageProvider uses (def, callsite); phpArityCompatibility uses (def, callsite) — same.
+  arityCompatibility: phpArityCompatibility,
+  // LanguageProvider adapter: (parsedImport, workspaceIndex) → string | null
+  resolveImportTarget: resolvePhpImportTarget,
+  // mergeBindings on LanguageProvider: (scope, bindings) — ignore scope id,
+  // delegate to phpMergeBindings which uses binding origin tiers.
+  mergeBindings: (_scope, bindings) => [...phpMergeBindings(bindings)],
+  bindingScopeFor: phpBindingScopeFor,
+  importOwningScope: phpImportOwningScope,
+  receiverBinding: phpReceiverBinding,
 });

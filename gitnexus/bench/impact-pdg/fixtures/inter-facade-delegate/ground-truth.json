@@ -1,0 +1,33 @@
+{
+  "schemaVersion": 1,
+  "criterion": {
+    "name": "processOrder",
+    "filePath": "src/facade.ts",
+    "direction": "downstream",
+    "line": 21,
+    "marker": "enrich(order)",
+    "pdgEdgeKinds": ["REACHING_DEF", "CDG"]
+  },
+  "locus": "inter",
+  "provenance": "manual",
+  "analyzerVersion": "1.6.7",
+  "intra_AIS": [],
+  "inter_AIS": [
+    {
+      "symbol": "validate",
+      "filePath": "src/facade.ts",
+      "note": "the guard delegate; processOrder's behavior depends on it"
+    },
+    {
+      "symbol": "enrich",
+      "filePath": "src/facade.ts",
+      "note": "transforms the order before persistence"
+    },
+    {
+      "symbol": "persist",
+      "filePath": "src/facade.ts",
+      "note": "the terminal delegate in the sequence"
+    }
+  ],
+  "rationale": "criterion.line=21 — the facade's first body statement, the guard `if (!validate(order))` (source semantics: the facade's work begins here). intra_AIS is EMPTY BY DESIGN: `processOrder` sequences three delegates (validate, enrich, persist) with one guard; its true blast radius is the delegation chain — inter_AIS — not its own body, which only routes values between calls. The guard return and the local `enriched` binding carry no independent work beyond shuttling delegate results, so there is no meaningful intra ground truth. Step-0 reconciliation: the statement-anchored PDG slice from line 21 returns the guard's control-dependent body statements, but those are noise relative to the (empty) intra ground truth — PDG is intra-procedural and cannot reach the cross-function delegates. The call-graph mode walks validate->enrich->persist exactly. Anchors the `inter` stratum with a sequential-delegation shape (distinct from the dispatcher's branching shape). The single guard gives `processOrder` a CDG edge so the smoke test's edge-presence requirement is met."
+}

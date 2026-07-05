@@ -1,3 +1,5 @@
+import { logger } from '../logger.js';
+import { CircuitOpenError, ResilientFetchExhaustedError, resilientFetch } from 'gitnexus-shared';
 /**
  * LLM Client for Wiki Generation
  *
@@ -7,7 +9,15 @@
  * Config priority: CLI flags > env vars > defaults
  */
 
-export type LLMProvider = 'openai' | 'openrouter' | 'azure' | 'custom' | 'cursor';
+export type LLMProvider =
+  | 'openai'
+  | 'openrouter'
+  | 'azure'
+  | 'custom'
+  | 'cursor'
+  | 'claude'
+  | 'codex'
+  | 'opencode';
 
 export interface LLMConfig {
   apiKey: string;
@@ -16,11 +26,15 @@ export interface LLMConfig {
   maxTokens: number;
   temperature: number;
   /** Provider type — controls auth header behaviour */
-  provider?: 'openai' | 'openrouter' | 'azure' | 'custom' | 'cursor';
+  provider?: LLMProvider;
   /** Azure api-version query param (e.g. '2024-10-21'). Appended to URL when set. */
   apiVersion?: string;
   /** When true, strips sampling params and uses max_completion_tokens instead of max_tokens */
   isReasoningModel?: boolean;
+  /** Per-attempt fetch timeout in ms. Omit to disable request timeouts. */
+  requestTimeoutMs?: number;
+  /** Max fetch attempts before giving up (default: 3). */
+  maxAttempts?: number;
 }
 
 export interface LLMResponse {
@@ -38,6 +52,22 @@ export interface LLMResponse {
 export async function resolveLLMConfig(overrides?: Partial<LLMConfig>): Promise<LLMConfig> {
   const { loadCLIConfig } = await import('../../storage/repo-manager.js');
   const savedConfig = await loadCLIConfig();
+  const savedProvider = overrides?.provider ?? savedConfig.provider;
+  const savedLocalModel =
+    savedProvider === 'cursor'
+      ? savedConfig.cursorModel
+      : savedProvider === 'claude'
+        ? savedConfig.claudeModel
+        : savedProvider === 'codex'
+          ? savedConfig.codexModel
+          : savedProvider === 'opencode'
+            ? savedConfig.opencodeModel
+            : undefined;
+  const localProvider =
+    savedProvider === 'cursor' ||
+    savedProvider === 'claude' ||
+    savedProvider === 'codex' ||
+    savedProvider === 'opencode';
 
   const apiKey =
     overrides?.apiKey ||
@@ -55,13 +85,12 @@ export async function resolveLLMConfig(overrides?: Partial<LLMConfig>): Promise<
       'https://openrouter.ai/api/v1',
     model:
       overrides?.model ||
-      process.env.GITNEXUS_MODEL ||
-      (savedConfig.provider === 'cursor' ? savedConfig.cursorModel : undefined) ||
-      savedConfig.model ||
-      'minimax/minimax-m2.5',
+      (localProvider ? undefined : process.env.GITNEXUS_MODEL) ||
+      savedLocalModel ||
+      (localProvider ? '' : savedConfig.model || 'minimax/minimax-m2.5'),
     maxTokens: overrides?.maxTokens ?? 16_384,
     temperature: overrides?.temperature ?? 0,
-    provider: overrides?.provider ?? savedConfig.provider ?? 'openai',
+    provider: savedProvider ?? 'openai',
     apiVersion:
       overrides?.apiVersion || process.env.GITNEXUS_AZURE_API_VERSION || savedConfig.apiVersion,
     isReasoningModel: overrides?.isReasoningModel ?? savedConfig.isReasoningModel,
@@ -75,6 +104,62 @@ export function estimateTokens(text: string): number {
   return Math.ceil(text.length / 4);
 }
 
+function formatTimeoutDuration(timeoutMs: number): string {
+  if (timeoutMs >= 1000 && timeoutMs % 1000 === 0) {
+    return `${timeoutMs / 1000}s`;
+  }
+  return `${timeoutMs}ms`;
+}
+
+function isTimeoutLikeError(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  if (err.name === 'TimeoutError' || err.name === 'AbortError') return true;
+  return /time(d)?\s*out|timeout/i.test(err.message);
+}
+
+/**
+ * Validate that a base URL supplied for LLM API calls is a safe HTTP/HTTPS
+ * endpoint (CWE-918 / CodeQL js/http-to-file-access).
+ *
+ * Allowed:
+ *  - https:// with any hostname (public LLM APIs, Azure, OpenRouter, …)
+ *  - http:// restricted to localhost / 127.0.0.1 (local servers: Ollama, LiteLLM, …)
+ *
+ * Rejected:
+ *  - file://, data:, javascript:, and any other non-HTTP scheme
+ *  - http:// aimed at non-loopback hosts (avoids SSRF against internal networks)
+ *
+ * Throws with a descriptive message on validation failure so callers surface a
+ * clear error rather than an opaque network error.
+ */
+export function validateLLMBaseUrl(baseUrl: string): void {
+  let parsed: URL;
+  try {
+    parsed = new URL(baseUrl);
+  } catch {
+    // Do not include the raw input in the message — it may contain credentials.
+    throw new Error('Invalid LLM base URL: must be a well-formed http:// or https:// URL');
+  }
+
+  if (!['https:', 'http:'].includes(parsed.protocol)) {
+    // Use parsed.protocol only (scheme), not the full URL, to avoid leaking credentials.
+    throw new Error(`LLM base URL must use http:// or https:// (got ${parsed.protocol})`);
+  }
+
+  if (parsed.protocol === 'http:') {
+    // Node's URL parser preserves IPv6 brackets in hostname (e.g. "[::1]"),
+    // so strip them before comparing to bare address literals.
+    const host = parsed.hostname.toLowerCase().replace(/^\[|\]$/g, '');
+    if (host !== 'localhost' && host !== '127.0.0.1' && host !== '::1') {
+      // Use parsed.origin (scheme+host+port, no credentials) instead of the full URL.
+      throw new Error(
+        `Insecure http:// LLM base URLs are only allowed for localhost/127.0.0.1. ` +
+          `Use https:// for remote endpoints (got ${parsed.origin})`,
+      );
+    }
+  }
+}
+
 /**
  * Returns true if the given base URL is an Azure OpenAI endpoint.
  * Uses proper hostname matching to avoid spoofed URLs like
@@ -85,8 +170,10 @@ export function isAzureProvider(baseUrl: string): boolean {
     const { hostname } = new URL(baseUrl);
     return hostname.endsWith('.openai.azure.com') || hostname.endsWith('.services.ai.azure.com');
   } catch {
-    // If URL is malformed, fall back to substring check
-    return baseUrl.includes('.openai.azure.com') || baseUrl.includes('.services.ai.azure.com');
+    // Malformed URL — refuse to call this Azure rather than fall back to a
+    // substring check, which is bypassable by `https://evil.com/?u=.openai.azure.com`
+    // (CodeQL js/incomplete-url-substring-sanitization).
+    return false;
   }
 }
 
@@ -124,6 +211,9 @@ export async function callLLM(
   systemPrompt?: string,
   options?: CallLLMOptions,
 ): Promise<LLMResponse> {
+  // Validate base URL before any fetch (CodeQL js/http-to-file-access)
+  validateLLMBaseUrl(config.baseUrl);
+
   const messages: Array<{ role: string; content: string }> = [];
   if (systemPrompt) {
     messages.push({ role: 'system', content: systemPrompt });
@@ -135,7 +225,7 @@ export async function callLLM(
 
   // Warn when using Azure legacy deployment URL without api-version
   if (azure && !config.apiVersion && config.baseUrl.includes('/deployments/')) {
-    console.warn(
+    logger.warn(
       '[gitnexus] Warning: Azure legacy deployment URL detected but no api-version set. Add --api-version 2024-10-21 or use the v1 API format.',
     );
   }
@@ -167,86 +257,92 @@ export async function callLLM(
     ? { 'api-key': config.apiKey }
     : { Authorization: `Bearer ${config.apiKey}` };
 
-  const MAX_RETRIES = 3;
-  let lastError: Error | null = null;
-
-  for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
-    try {
-      const response = await fetch(url, {
+  // Network resilience (bounded retries with exponential-backoff jitter,
+  // 5xx + 429 + Retry-After handling, in-process circuit breaker on the
+  // LLM endpoint) is delegated to resilientFetch. Provider-specific
+  // error parsing (Azure content filter, empty-content checks) stays
+  // here since it requires response-body inspection.
+  let response: Response;
+  try {
+    response = await resilientFetch(
+      url,
+      {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           ...authHeaders,
         },
         body: JSON.stringify(body),
-      });
-
-      if (!response.ok) {
-        const errorText = await response.text().catch(() => 'unknown error');
-
-        // Azure content filter — surface a clear message instead of a generic API error
-        if (
-          azure &&
-          response.status === 400 &&
-          (errorText.includes('content_filter') ||
-            errorText.includes('ResponsibleAIPolicyViolation'))
-        ) {
-          throw new Error(
-            `Azure content filter blocked this request. The prompt triggered content policy. Details: ${errorText.slice(0, 300)}`,
-          );
-        }
-
-        // Rate limit — wait with exponential backoff and retry
-        if (response.status === 429 && attempt < MAX_RETRIES - 1) {
-          const retryAfter = parseInt(response.headers.get('retry-after') || '0', 10);
-          const delay = retryAfter > 0 ? retryAfter * 1000 : 2 ** attempt * 3000;
-          await sleep(delay);
-          continue;
-        }
-
-        // Server error — retry with backoff
-        if (response.status >= 500 && attempt < MAX_RETRIES - 1) {
-          await sleep((attempt + 1) * 2000);
-          continue;
-        }
-
-        throw new Error(`LLM API error (${response.status}): ${errorText.slice(0, 500)}`);
-      }
-
-      // Streaming path
-      if (useStream && response.body) {
-        return await readSSEStream(response.body, options!.onChunk!);
-      }
-
-      // Non-streaming path
-      const json = (await response.json()) as any;
-      const choice = json.choices?.[0];
-      if (!choice?.message?.content) {
-        throw new Error('LLM returned empty response');
-      }
-
-      return {
-        content: choice.message.content,
-        promptTokens: json.usage?.prompt_tokens,
-        completionTokens: json.usage?.completion_tokens,
-      };
-    } catch (err: any) {
-      lastError = err;
-
-      // Network error — retry with backoff
-      if (
-        attempt < MAX_RETRIES - 1 &&
-        (err.code === 'ECONNREFUSED' || err.code === 'ETIMEDOUT' || err.message?.includes('fetch'))
-      ) {
-        await sleep((attempt + 1) * 3000);
-        continue;
-      }
-
-      throw err;
+        // Request timeout is opt-in for wiki generation. Large local
+        // model runs can legitimately take well over a minute, so the
+        // default runtime path must not impose a hidden 60s ceiling.
+        signal:
+          config.requestTimeoutMs !== undefined
+            ? AbortSignal.timeout(config.requestTimeoutMs)
+            : undefined,
+      },
+      {
+        breakerKey: `wiki-llm-${new URL(url).host}`,
+        retry: { maxAttempts: config.maxAttempts ?? 3, baseDelayMs: 2_000, capDelayMs: 30_000 },
+      },
+    );
+  } catch (err) {
+    if (err instanceof CircuitOpenError) {
+      throw new Error(
+        `LLM endpoint circuit open: retry in ${Math.ceil(err.retryAfterMs / 1000)}s. ${err.message}`,
+      );
     }
+    if (err instanceof ResilientFetchExhaustedError) {
+      const errorText = await err.response.text().catch(() => 'unknown error');
+      throw new Error(
+        `LLM API error (${err.response.status} after retries): ${errorText.slice(0, 500)}`,
+      );
+    }
+    if (config.requestTimeoutMs !== undefined && isTimeoutLikeError(err)) {
+      throw new Error(
+        `LLM request timed out after ${formatTimeoutDuration(config.requestTimeoutMs)}. ` +
+          'Increase --timeout or omit it to disable the request timeout.',
+      );
+    }
+    throw err;
   }
 
-  throw lastError || new Error('LLM call failed after retries');
+  if (!response.ok) {
+    const errorText = await response.text().catch(() => 'unknown error');
+
+    // Azure content filter — surface a clear message instead of a generic API error.
+    if (
+      azure &&
+      response.status === 400 &&
+      (errorText.includes('content_filter') || errorText.includes('ResponsibleAIPolicyViolation'))
+    ) {
+      throw new Error(
+        `Azure content filter blocked this request. The prompt triggered content policy. Details: ${errorText.slice(0, 300)}`,
+      );
+    }
+
+    // Any other non-OK response here is a terminal 4xx — resilientFetch
+    // already retried 5xx/429 to exhaustion and would have thrown above.
+    throw new Error(`LLM API error (${response.status}): ${errorText.slice(0, 500)}`);
+  }
+
+  // Streaming path
+  if (useStream && response.body) {
+    return await readSSEStream(response.body, options!.onChunk!);
+  }
+
+  // Non-streaming path
+  const json = (await response.json()) as any;
+  const choice = json.choices?.[0];
+  if (!choice?.message?.content) {
+    throw new Error('LLM returned empty response');
+  }
+
+  return {
+    content: choice.message.content,
+    promptTokens: json.usage?.prompt_tokens,
+    completionTokens: json.usage?.completion_tokens,
+  };
 }
 
 /**
@@ -308,8 +404,4 @@ async function readSSEStream(
   }
 
   return { content };
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
 }

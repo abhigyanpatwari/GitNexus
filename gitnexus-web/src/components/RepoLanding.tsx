@@ -15,26 +15,29 @@
 import { Sparkles, ArrowRight, GitBranch, FileCode, Layers } from '@/lib/lucide-icons';
 import { RepoAnalyzer } from './RepoAnalyzer';
 import type { BackendRepo } from '../services/backend-client';
+import type { TFunction } from 'i18next';
+import { useTranslation } from 'react-i18next';
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
-function formatRelativeTime(dateStr: string): string {
+function formatRelativeTime(dateStr: string, t: TFunction): string {
   const date = new Date(dateStr);
   const now = new Date();
   const diffMs = now.getTime() - date.getTime();
   const diffMins = Math.floor(diffMs / 60_000);
-  if (diffMins < 1) return 'just now';
-  if (diffMins < 60) return `${diffMins}m ago`;
+  if (diffMins < 1) return t('onboarding:landing.time.justNow');
+  if (diffMins < 60) return t('onboarding:landing.time.minutesAgo', { count: diffMins });
   const diffHours = Math.floor(diffMins / 60);
-  if (diffHours < 24) return `${diffHours}h ago`;
+  if (diffHours < 24) return t('onboarding:landing.time.hoursAgo', { count: diffHours });
   const diffDays = Math.floor(diffHours / 24);
-  if (diffDays < 30) return `${diffDays}d ago`;
+  if (diffDays < 30) return t('onboarding:landing.time.daysAgo', { count: diffDays });
   return date.toLocaleDateString();
 }
 
 // ── Repo card ────────────────────────────────────────────────────────────────
 
 function RepoCard({ repo, onClick }: { repo: BackendRepo; onClick: () => void }) {
+  const { t } = useTranslation(['common', 'onboarding']);
   const stats = repo.stats;
 
   return (
@@ -53,7 +56,7 @@ function RepoCard({ repo, onClick }: { repo: BackendRepo; onClick: () => void })
           </div>
           {repo.indexedAt && (
             <p className="mt-1 pl-6 text-xs text-text-muted">
-              Indexed {formatRelativeTime(repo.indexedAt)}
+              {t('onboarding:landing.indexed', { time: formatRelativeTime(repo.indexedAt, t) })}
             </p>
           )}
         </div>
@@ -64,17 +67,18 @@ function RepoCard({ repo, onClick }: { repo: BackendRepo; onClick: () => void })
         <div className="mt-3 flex flex-wrap gap-2 pl-6">
           {stats.files != null && (
             <span className="inline-flex items-center gap-1 rounded-md bg-void px-2 py-0.5 text-[11px] text-text-muted">
-              <FileCode className="h-3 w-3" /> {stats.files.toLocaleString()} files
+              <FileCode className="h-3 w-3" /> {t('common:counts.files', { count: stats.files })}
             </span>
           )}
           {stats.nodes != null && (
             <span className="inline-flex items-center gap-1 rounded-md bg-void px-2 py-0.5 text-[11px] text-text-muted">
-              <Layers className="h-3 w-3" /> {stats.nodes.toLocaleString()} symbols
+              <Layers className="h-3 w-3" /> {t('common:counts.symbols', { count: stats.nodes })}
             </span>
           )}
           {stats.processes != null && stats.processes > 0 && (
             <span className="inline-flex items-center gap-1 rounded-md bg-void px-2 py-0.5 text-[11px] text-text-muted">
-              <Sparkles className="h-3 w-3" /> {stats.processes} flows
+              <Sparkles className="h-3 w-3" />{' '}
+              {t('common:counts.flows', { count: stats.processes })}
             </span>
           )}
         </div>
@@ -92,6 +96,8 @@ interface RepoLandingProps {
 }
 
 export const RepoLanding = ({ repos, onSelectRepo, onAnalyzeComplete }: RepoLandingProps) => {
+  const { t } = useTranslation('onboarding');
+
   return (
     <div className="relative animate-fade-in overflow-hidden rounded-3xl border border-border-default bg-surface p-7">
       {/* Ambient glows — mirrors OnboardingGuide aesthetic */}
@@ -109,10 +115,10 @@ export const RepoLanding = ({ repos, onSelectRepo, onAnalyzeComplete }: RepoLand
           </div>
 
           <h2 className="text-lg leading-snug font-semibold text-text-primary">
-            Choose a repository
+            {t('landing.chooseRepository')}
           </h2>
           <p className="mx-auto mt-1.5 max-w-xs text-sm leading-relaxed text-text-secondary">
-            Select an indexed repository to explore, or analyze a new one.
+            {t('landing.description')}
           </p>
         </div>
       </div>
@@ -128,7 +134,7 @@ export const RepoLanding = ({ repos, onSelectRepo, onAnalyzeComplete }: RepoLand
       <div className="mb-5 flex items-center gap-3">
         <div className="h-px flex-1 bg-border-subtle" />
         <span className="text-[11px] tracking-widest text-text-muted uppercase">
-          or analyze new
+          {t('landing.orAnalyzeNew')}
         </span>
         <div className="h-px flex-1 bg-border-subtle" />
       </div>
@@ -140,8 +146,7 @@ export const RepoLanding = ({ repos, onSelectRepo, onAnalyzeComplete }: RepoLand
 
       {/* Footer hint */}
       <p className="mt-5 text-center text-[11px] leading-relaxed text-text-muted">
-        Public &amp; private repos &middot; Cloned locally by the server &middot; No data leaves
-        your machine
+        {t('landing.footer')}
       </p>
     </div>
   );

@@ -8,7 +8,7 @@
  * 4. Run `tsc --noEmit` to verify
  */
 
-import { SupportedLanguages } from 'gitnexus-shared';
+import { SupportedLanguages, isBladeTemplateFilename } from 'gitnexus-shared';
 import type { LanguageProvider } from '../language-provider.js';
 
 import { typescriptProvider, javascriptProvider } from './typescript.js';
@@ -61,18 +61,10 @@ for (const provider of Object.values(providers)) {
 /** Look up a language provider from a file path by extension.
  *  Returns null if the file extension is not recognized. */
 export function getProviderForFile(filePath: string): LanguageProvider | null {
+  if (isBladeTemplateFilename(filePath)) return null;
+
   const lastDot = filePath.lastIndexOf('.');
   const ext = lastDot >= 0 ? filePath.slice(lastDot).toLowerCase() : '';
   const basename = filePath.slice(filePath.lastIndexOf('/') + 1);
   return extensionMap.get(ext) ?? extensionMap.get(basename) ?? null;
 }
-
-/** Pre-computed list of providers that have implicit import wiring (e.g., Swift).
- *  Built once at module load — avoids iterating all 13 providers per call. */
-export const providersWithImplicitWiring = Object.values(providers).filter(
-  (
-    p,
-  ): p is LanguageProvider & {
-    implicitImportWirer: NonNullable<LanguageProvider['implicitImportWirer']>;
-  } => p.implicitImportWirer != null,
-);

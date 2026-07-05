@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   ExtensionManager,
   getExtensionInstallChildProcessArgs,
+  getExtensionInstallPolicy,
   getExtensionInstallTimeoutMs,
   type ExtensionInstallResult,
 } from '../../src/core/lbug/extension-loader.js';
@@ -213,7 +214,70 @@ describe('installDuckDbExtensionOutOfProcess child process', () => {
     expect(args).not.toContain('--input-type=module');
     expect(args[0]).toContain('scripts');
     expect(args[0]).toContain('install-duckdb-extension.mjs');
-    expect(args.at(-1)).toBe('fts');
+    expect(args[1]).toBe('fts');
+    expect(Number(args[2])).toBeGreaterThan(0);
+  });
+
+  it('passes the resolved LadybugDB max DB size to the installer child', () => {
+    expect(getExtensionInstallChildProcessArgs('fts', 1234).at(-1)).toBe('1234');
+  });
+});
+
+describe('getExtensionInstallPolicy', () => {
+  it('defaults to load-only when env var is unset', () => {
+    const original = process.env.GITNEXUS_LBUG_EXTENSION_INSTALL;
+    delete process.env.GITNEXUS_LBUG_EXTENSION_INSTALL;
+    try {
+      expect(getExtensionInstallPolicy()).toBe('load-only');
+    } finally {
+      if (original === undefined) {
+        delete process.env.GITNEXUS_LBUG_EXTENSION_INSTALL;
+      } else {
+        process.env.GITNEXUS_LBUG_EXTENSION_INSTALL = original;
+      }
+    }
+  });
+
+  it('returns auto when env var is set to auto', () => {
+    const original = process.env.GITNEXUS_LBUG_EXTENSION_INSTALL;
+    process.env.GITNEXUS_LBUG_EXTENSION_INSTALL = 'auto';
+    try {
+      expect(getExtensionInstallPolicy()).toBe('auto');
+    } finally {
+      if (original === undefined) {
+        delete process.env.GITNEXUS_LBUG_EXTENSION_INSTALL;
+      } else {
+        process.env.GITNEXUS_LBUG_EXTENSION_INSTALL = original;
+      }
+    }
+  });
+
+  it('returns never when env var is set to never', () => {
+    const original = process.env.GITNEXUS_LBUG_EXTENSION_INSTALL;
+    process.env.GITNEXUS_LBUG_EXTENSION_INSTALL = 'never';
+    try {
+      expect(getExtensionInstallPolicy()).toBe('never');
+    } finally {
+      if (original === undefined) {
+        delete process.env.GITNEXUS_LBUG_EXTENSION_INSTALL;
+      } else {
+        process.env.GITNEXUS_LBUG_EXTENSION_INSTALL = original;
+      }
+    }
+  });
+
+  it('falls back to load-only for invalid env var values', () => {
+    const original = process.env.GITNEXUS_LBUG_EXTENSION_INSTALL;
+    process.env.GITNEXUS_LBUG_EXTENSION_INSTALL = 'bogus';
+    try {
+      expect(getExtensionInstallPolicy()).toBe('load-only');
+    } finally {
+      if (original === undefined) {
+        delete process.env.GITNEXUS_LBUG_EXTENSION_INSTALL;
+      } else {
+        process.env.GITNEXUS_LBUG_EXTENSION_INSTALL = original;
+      }
+    }
   });
 });
 
