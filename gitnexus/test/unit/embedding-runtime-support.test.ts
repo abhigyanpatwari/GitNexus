@@ -39,6 +39,23 @@ vi.mock('../../src/core/embeddings/onnxruntime-node-resolver.js', () => ({
   isEffectiveCudaAvailable: () => false,
 }));
 
+/**
+ * Mock `module.registerHooks` with a spy (#2372). Without this, a successful
+ * local `initEmbedder()` calls the REAL `ensureEmbeddingStackResolvable` /
+ * onnxruntime-common resolver, which register process-global resolution hooks in
+ * the vitest worker — and `vi.resetModules()` (beforeEach) resets their one-shot
+ * guards, so each test re-registers real hooks that are never deregistered,
+ * silently redirecting resolution for every later test in the worker. Spreading
+ * `importOriginal` keeps `createRequire` real, so the CJS resolution probes still
+ * work.
+ */
+const { registerHooksSpy } = vi.hoisted(() => ({ registerHooksSpy: vi.fn() }));
+
+vi.mock('node:module', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('node:module')>()),
+  registerHooks: registerHooksSpy,
+}));
+
 const EMBED_ENV_KEYS = [
   'GITNEXUS_EMBEDDING_URL',
   'GITNEXUS_EMBEDDING_MODEL',
@@ -63,6 +80,7 @@ beforeEach(() => {
   vi.resetModules();
   transformersImported.mockClear();
   resolverHookInstalled.mockClear();
+  registerHooksSpy.mockClear();
   for (const key of EMBED_ENV_KEYS) delete process.env[key];
 });
 
@@ -394,6 +412,20 @@ describe('CUDA-13 resolver hook installation (both local-embedding entrypoints)'
       await expect(initEmbedder()).resolves.toBeDefined();
 
       expect(resolverHookInstalled).toHaveBeenCalled();
+    } finally {
+      restore();
+    }
+  });
+
+  it('registers the runtime-prefix fallback through the mocked registerHooks, not the real global API (#2372)', async () => {
+    // The whole point of the node:module mock: a successful local init exercises
+    // ensureEmbeddingStackResolvable's registration via the spy, so no real
+    // process-global resolution hook leaks into other tests in the worker.
+    const restore = stubPlatform('linux', 'x64');
+    try {
+      const { initEmbedder } = await import('../../src/core/embeddings/embedder.js');
+      await expect(initEmbedder()).resolves.toBeDefined();
+      expect(registerHooksSpy).toHaveBeenCalled();
     } finally {
       restore();
     }

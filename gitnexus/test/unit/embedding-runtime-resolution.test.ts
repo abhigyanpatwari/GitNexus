@@ -103,6 +103,8 @@ type ResolveHook = (
 const HOOK_CTX = { conditions: [] as string[], importAttributes: {} };
 const esmMiss = (): Error =>
   Object.assign(new Error("Cannot find package 'x'"), { code: 'ERR_MODULE_NOT_FOUND' });
+const exportsMiss = (): Error =>
+  Object.assign(new Error('No known export'), { code: 'ERR_PACKAGE_PATH_NOT_EXPORTED' });
 const cjsMiss = (): Error =>
   Object.assign(new Error("Cannot find module 'x'"), { code: 'MODULE_NOT_FOUND' });
 
@@ -166,6 +168,21 @@ describe('ensureEmbeddingStackResolvable — onnxruntime-common source gate', ()
       .fn()
       .mockImplementationOnce(() => {
         throw esmMiss();
+      })
+      .mockImplementationOnce(() => ({ url: 'ok', shortCircuit: true }));
+    resolve('@huggingface/transformers', HOOK_CTX, next);
+    expect(next).toHaveBeenCalledTimes(2);
+    const anchor = (next.mock.calls[1][1] as { parentURL: string }).parentURL;
+    expect(anchor).toMatch(/^file:\/\//);
+    expect(anchor).toContain('noop.js');
+  });
+
+  it('re-anchors on ERR_PACKAGE_PATH_NOT_EXPORTED as well as ERR_MODULE_NOT_FOUND', async () => {
+    const { resolve } = await loadWithHook(BOTH, NONE);
+    const next = vi
+      .fn()
+      .mockImplementationOnce(() => {
+        throw exportsMiss();
       })
       .mockImplementationOnce(() => ({ url: 'ok', shortCircuit: true }));
     resolve('@huggingface/transformers', HOOK_CTX, next);
