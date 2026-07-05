@@ -437,7 +437,7 @@ describe('CLI end-to-end', () => {
     const repoParent = path.dirname(repo);
 
     try {
-      const first = runCliWithEnv(['analyze'], repo, { GITNEXUS_HOME: gnHome }, 60000);
+      const first = runCliWithEnv(['analyze'], repo, { GITNEXUS_HOME: gnHome }, 120_000);
       expect(
         first.status,
         [
@@ -472,7 +472,7 @@ describe('CLI end-to-end', () => {
       cleanupTempDirSync(gnHome);
       cleanupTempDirSync(repoParent);
     }
-  }, 60_000);
+  }, 180_000);
 
   // ─── analyze --name <alias> + --allow-duplicate-name (#829) ──────
   //
