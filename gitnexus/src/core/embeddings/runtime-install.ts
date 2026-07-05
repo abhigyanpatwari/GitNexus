@@ -22,7 +22,7 @@ import { createRequire } from 'node:module';
 import { spawn, execFileSync, type ChildProcess } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { logger } from '../logger.js';
 import { getRegisterHooks } from './node-module-compat.js';
 
@@ -70,9 +70,18 @@ const EMBEDDING_STACK_PACKAGES = [
   'onnxruntime-common',
 ] as const;
 
-/** User-level prefix the on-demand stack installs into. */
-export const getEmbeddingRuntimeDir = (): string =>
-  process.env.GITNEXUS_EMBEDDING_RUNTIME_DIR ?? join(homedir(), '.gitnexus', 'embedding-runtime');
+/**
+ * User-level prefix the on-demand stack installs into. The env override is
+ * `path.resolve`d once here (the single chokepoint) so a relative or empty
+ * value can't poison the probes downstream — `createRequire` throws
+ * `ERR_INVALID_ARG_VALUE` on a relative anchor, which otherwise made every
+ * resolution report "not installed" and reinstall on every run. An empty or
+ * whitespace-only value falls through to the default.
+ */
+export const getEmbeddingRuntimeDir = (): string => {
+  const override = process.env.GITNEXUS_EMBEDDING_RUNTIME_DIR?.trim();
+  return override ? resolve(override) : join(homedir(), '.gitnexus', 'embedding-runtime');
+};
 
 /**
  * The version specs to install — read from gitnexus' own package.json

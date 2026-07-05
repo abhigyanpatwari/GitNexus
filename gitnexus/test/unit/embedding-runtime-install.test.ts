@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { EventEmitter } from 'node:events';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { createRequire } from 'node:module';
 import {
   buildEmbeddingInstallCommand,
@@ -55,6 +55,19 @@ describe('getEmbeddingRuntimeDir', () => {
     expect(getEmbeddingRuntimeDir()).toBe(join(homedir(), '.gitnexus', 'embedding-runtime'));
     process.env.GITNEXUS_EMBEDDING_RUNTIME_DIR = '/custom/runtime';
     expect(getEmbeddingRuntimeDir()).toBe('/custom/runtime');
+  });
+
+  it('resolves a relative override to an absolute path', () => {
+    process.env.GITNEXUS_EMBEDDING_RUNTIME_DIR = 'rel/runtime';
+    expect(getEmbeddingRuntimeDir()).toBe(resolve('rel/runtime'));
+  });
+
+  it('falls through to the default for an empty or whitespace override', () => {
+    const fallback = join(homedir(), '.gitnexus', 'embedding-runtime');
+    process.env.GITNEXUS_EMBEDDING_RUNTIME_DIR = '';
+    expect(getEmbeddingRuntimeDir()).toBe(fallback);
+    process.env.GITNEXUS_EMBEDDING_RUNTIME_DIR = '   ';
+    expect(getEmbeddingRuntimeDir()).toBe(fallback);
   });
 });
 
@@ -216,7 +229,10 @@ describe('installEmbeddingRuntime — spawn lifecycle', () => {
     const realPlatform = process.platform;
     Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
     try {
-      process.env.GITNEXUS_EMBEDDING_RUNTIME_DIR = 'C:\\Users\\John Doe\\rt';
+      // Absolute spaced path so path.resolve() leaves it unchanged on the POSIX
+      // test host (a Windows-style path would get cwd-prepended here); the point
+      // is that a spaced prefix flows through compose+quote into one string arg.
+      process.env.GITNEXUS_EMBEDDING_RUNTIME_DIR = '/opt/John Doe/rt';
       const child = new FakeChild();
       spawnMock.mockReturnValue(child);
       const p = installEmbeddingRuntime({}, 10_000);
@@ -224,7 +240,7 @@ describe('installEmbeddingRuntime — spawn lifecycle', () => {
       await p;
       const call = spawnMock.mock.calls[0] as [unknown, unknown];
       expect(typeof call[0]).toBe('string');
-      expect(call[0]).toContain('"C:\\Users\\John Doe\\rt"');
+      expect(call[0]).toContain('"/opt/John Doe/rt"');
       expect(call[1]).toMatchObject({ shell: true });
     } finally {
       Object.defineProperty(process, 'platform', { value: realPlatform, configurable: true });
