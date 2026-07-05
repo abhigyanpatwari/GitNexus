@@ -93,3 +93,141 @@ describe('resolveEmbeddingRuntime — tier resolution', () => {
     expect(runtimeSupport.isLocalEmbeddingStackInstalled()).toBe(false);
   });
 });
+
+type ResolveHook = (
+  specifier: string,
+  context: unknown,
+  next: (s: string, c: unknown) => unknown,
+) => unknown;
+
+const HOOK_CTX = { conditions: [] as string[], importAttributes: {} };
+const esmMiss = (): Error =>
+  Object.assign(new Error("Cannot find package 'x'"), { code: 'ERR_MODULE_NOT_FOUND' });
+const cjsMiss = (): Error =>
+  Object.assign(new Error("Cannot find module 'x'"), { code: 'MODULE_NOT_FOUND' });
+
+/** Load runtime-install with a registerHooks spy + createRequire routing, and return the resolve closure. */
+async function loadWithHook(pkg: Record<string, string>, prefix: Record<string, string>) {
+  vi.resetModules();
+  process.env.GITNEXUS_EMBEDDING_RUNTIME_DIR = PREFIX;
+  const spy = vi.fn();
+  const packageRequire = fakeRequire(pkg);
+  const prefixRequire = fakeRequire(prefix);
+  vi.doMock('node:module', async (io) => {
+    const orig = await io<typeof import('node:module')>();
+    return {
+      ...orig,
+      registerHooks: spy,
+      createRequire: (from: string | URL) =>
+        toPosix(String(from)) === `${PREFIX}/noop.js` ? prefixRequire : packageRequire,
+    };
+  });
+  const runtimeInstall = await import(RUNTIME_INSTALL);
+  runtimeInstall.ensureEmbeddingStackResolvable();
+  const resolve = (spy.mock.calls[0][0] as { resolve: ResolveHook }).resolve;
+  return { resolve };
+}
+
+describe('ensureEmbeddingStackResolvable — onnxruntime-common source gate', () => {
+  it('package-sourced stack: an onnxruntime-common miss rethrows (leaves #307 in control)', async () => {
+    const { resolve } = await loadWithHook(BOTH, NONE);
+    const next = vi.fn(() => {
+      throw esmMiss();
+    });
+    expect(() => resolve('onnxruntime-common', HOOK_CTX, next)).toThrow();
+    expect(next).toHaveBeenCalledTimes(1);
+  });
+
+  it('prefix-sourced stack: an onnxruntime-common miss re-anchors to the prefix', async () => {
+    const { resolve } = await loadWithHook(NONE, BOTH);
+    const next = vi
+      .fn()
+      .mockImplementationOnce(() => {
+        throw esmMiss();
+      })
+      .mockImplementationOnce(() => ({ url: 'redirected', shortCircuit: true }));
+    resolve('onnxruntime-common', HOOK_CTX, next);
+    expect(next).toHaveBeenCalledTimes(2);
+    expect((next.mock.calls[1][1] as { parentURL: string }).parentURL).toContain('noop.js');
+  });
+
+  it('null-sourced stack: an onnxruntime-common miss rethrows', async () => {
+    const { resolve } = await loadWithHook(NONE, NONE);
+    const next = vi.fn(() => {
+      throw esmMiss();
+    });
+    expect(() => resolve('onnxruntime-common', HOOK_CTX, next)).toThrow();
+    expect(next).toHaveBeenCalledTimes(1);
+  });
+
+  it('transformers miss re-anchors regardless of source', async () => {
+    const { resolve } = await loadWithHook(BOTH, NONE);
+    const next = vi
+      .fn()
+      .mockImplementationOnce(() => {
+        throw esmMiss();
+      })
+      .mockImplementationOnce(() => ({ url: 'ok', shortCircuit: true }));
+    resolve('@huggingface/transformers', HOOK_CTX, next);
+    expect(next).toHaveBeenCalledTimes(2);
+    expect((next.mock.calls[1][1] as { parentURL: string }).parentURL).toContain('noop.js');
+  });
+
+  it('a non-stack specifier passes straight through', async () => {
+    const { resolve } = await loadWithHook(BOTH, NONE);
+    const next = vi.fn(() => ({ url: 'x', shortCircuit: true }));
+    resolve('some-other-pkg', HOOK_CTX, next);
+    expect(next).toHaveBeenCalledTimes(1);
+  });
+
+  it('a CJS MODULE_NOT_FOUND (not ERR_) is rethrown, never re-anchored', async () => {
+    const { resolve } = await loadWithHook(NONE, BOTH);
+    const next = vi.fn(() => {
+      throw cjsMiss();
+    });
+    expect(() => resolve('onnxruntime-node', HOOK_CTX, next)).toThrow();
+    expect(next).toHaveBeenCalledTimes(1);
+  });
+
+  it('re-entrancy latch: a hook re-entered during the source probe passes straight through', async () => {
+    vi.resetModules();
+    process.env.GITNEXUS_EMBEDDING_RUNTIME_DIR = PREFIX;
+    const spy = vi.fn();
+    const reentrantNext = vi.fn(() => ({ url: 'passthrough', shortCircuit: true }));
+    const captured: { resolve?: ResolveHook } = {};
+
+    // A prefix require whose .resolve re-enters the closure — simulating a Node
+    // that routed require.resolve through the sync hook. The latch must make the
+    // re-entrant call pass straight through instead of recursing into the gate.
+    const prefixRequire = {
+      resolve: (specifier: string) => {
+        captured.resolve?.('onnxruntime-common', HOOK_CTX, reentrantNext);
+        return `/x/${specifier}`;
+      },
+    };
+    const packageRequire = fakeRequire(NONE);
+    vi.doMock('node:module', async (io) => {
+      const orig = await io<typeof import('node:module')>();
+      return {
+        ...orig,
+        registerHooks: spy,
+        createRequire: (from: string | URL) =>
+          toPosix(String(from)) === `${PREFIX}/noop.js` ? prefixRequire : packageRequire,
+      };
+    });
+    const runtimeInstall = await import(RUNTIME_INSTALL);
+    runtimeInstall.ensureEmbeddingStackResolvable();
+    captured.resolve = (spy.mock.calls[0][0] as { resolve: ResolveHook }).resolve;
+
+    const outerNext = vi
+      .fn()
+      .mockImplementationOnce(() => {
+        throw esmMiss();
+      })
+      .mockImplementationOnce(() => ({ url: 'redirected', shortCircuit: true }));
+    // Must not stack-overflow; the re-entrant probe call short-circuits.
+    captured.resolve('onnxruntime-common', HOOK_CTX, outerNext);
+    expect(reentrantNext).toHaveBeenCalled();
+    expect(outerNext).toHaveBeenCalledTimes(2);
+  });
+});

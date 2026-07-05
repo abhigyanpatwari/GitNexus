@@ -150,6 +150,22 @@ export const resolveEmbeddingRuntime = (): EmbeddingRuntimeResolution | null => 
 };
 
 let hookAttempted = false;
+// While set, the resolve hook passes straight through. It guards the
+// `resolveEmbeddingRuntime()` probe inside the onnxruntime-common gate below:
+// today `require.resolve` bypasses these sync hooks, so the probe can't re-enter
+// the chain — but the latch makes that acyclicity STRUCTURAL rather than relying
+// on that (undocumented, version-specific — verified on Node 22.16) behaviour.
+let hookReentrant = false;
+
+/** Whether the stack itself resolved from the runtime prefix — re-entrancy-guarded. */
+const stackIsPrefixSourced = (): boolean => {
+  hookReentrant = true;
+  try {
+    return resolveEmbeddingRuntime()?.source === 'runtime-prefix';
+  } finally {
+    hookReentrant = false;
+  }
+};
 
 /**
  * Idempotently register the resolution fallback that redirects the embedding
@@ -176,23 +192,35 @@ export const ensureEmbeddingStackResolvable = (): void => {
     const registerHooks = getRegisterHooks();
     if (typeof registerHooks !== 'function') return;
 
-    const prefixAnchor = pathToFileURL(join(getEmbeddingRuntimeDir(), 'noop.js')).href;
-
     registerHooks({
       resolve(specifier, context, nextResolve) {
-        if (!(EMBEDDING_STACK_PACKAGES as readonly string[]).includes(specifier)) {
+        if (hookReentrant || !(EMBEDDING_STACK_PACKAGES as readonly string[]).includes(specifier)) {
           return nextResolve(specifier, context);
         }
         try {
           return nextResolve(specifier, context);
         } catch (err) {
           const code = (err as { code?: string } | null | undefined)?.code;
-          if (code === 'ERR_MODULE_NOT_FOUND' || code === 'ERR_PACKAGE_PATH_NOT_EXPORTED') {
-            // Re-anchor at the runtime prefix so Node applies the package's
-            // own exports conditions (ESM/CJS) exactly as a normal install would.
-            return nextResolve(specifier, { ...context, parentURL: prefixAnchor });
+          // ESM-only allowlist: never add the CJS `MODULE_NOT_FOUND` — that is
+          // what keeps the source probe below (which uses `require.resolve`)
+          // from feeding its own miss back into the chain.
+          if (code !== 'ERR_MODULE_NOT_FOUND' && code !== 'ERR_PACKAGE_PATH_NOT_EXPORTED') {
+            throw err;
           }
-          throw err;
+          // onnxruntime-common is version-paired by the #307 resolver, which sits
+          // ABOVE this last-resort fallback. Only steal its phantom-import case
+          // when the stack itself came from the prefix — otherwise a leftover
+          // user-global prefix would hijack #307 for a package-sourced stack and
+          // pair a package onnxruntime-node with a version-drifted prefix common.
+          if (specifier === 'onnxruntime-common' && !stackIsPrefixSourced()) {
+            throw err;
+          }
+          // Re-anchor at the runtime prefix so Node applies the package's own
+          // exports conditions (ESM/CJS) exactly as a normal install would. The
+          // anchor is read here (not at registration) so it stays coherent with
+          // the current GITNEXUS_EMBEDDING_RUNTIME_DIR.
+          const prefixAnchor = pathToFileURL(join(getEmbeddingRuntimeDir(), 'noop.js')).href;
+          return nextResolve(specifier, { ...context, parentURL: prefixAnchor });
         }
       },
     });
