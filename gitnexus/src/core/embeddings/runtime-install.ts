@@ -121,23 +121,32 @@ export const isPrefixRuntimeLoadable = (): boolean => typeof getRegisterHooks() 
 const prefixRequire = () => createRequire(join(getEmbeddingRuntimeDir(), 'noop.js'));
 
 /**
- * Where the embedding stack resolves from, or `null` when it is not installed
- * at all. Resolution only — nothing is imported, so this never loads native
+ * True when BOTH load-bearing stack packages resolve from `req`. Probing
+ * `@huggingface/transformers` alone is not enough: an interrupted or partial
+ * prefix install (transformers extracted, `onnxruntime-node` not yet) would
+ * otherwise read as "installed", suppress the self-heal, and fail later at model
+ * load. `onnxruntime-common` stays un-probed — it is a regular dependency the
+ * #307 resolver owns, never pruned.
+ */
+const stackResolvesFrom = (req: ReturnType<typeof createRequire>): boolean => {
+  try {
+    req.resolve('@huggingface/transformers');
+    req.resolve('onnxruntime-node');
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+/**
+ * Where the embedding stack resolves from, or `null` when it is not (fully)
+ * installed. Resolution only — nothing is imported, so this never loads native
  * code and is safe on every platform.
  */
 export const resolveEmbeddingRuntime = (): EmbeddingRuntimeResolution | null => {
-  try {
-    require.resolve('@huggingface/transformers');
-    return { source: 'package' };
-  } catch {
-    /* fall through to the runtime prefix */
-  }
-  try {
-    prefixRequire().resolve('@huggingface/transformers');
-    return { source: 'runtime-prefix' };
-  } catch {
-    return null;
-  }
+  if (stackResolvesFrom(require)) return { source: 'package' };
+  if (stackResolvesFrom(prefixRequire())) return { source: 'runtime-prefix' };
+  return null;
 };
 
 let hookAttempted = false;
