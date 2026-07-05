@@ -124,13 +124,15 @@ export const localEmbeddingStackMissingMessage = (): string =>
 
 /** Stable lead line of the prefix-unloadable message (mirrors the leads above). */
 const LOCAL_EMBEDDING_PREFIX_UNLOADABLE_LEAD =
-  'The on-demand embedding runtime is installed but cannot be loaded on this Node build.';
+  'The on-demand embedding runtime cannot be loaded on this Node build.';
 
 /**
- * Guidance when the runtime-prefix stack is present but this Node lacks
- * `module.registerHooks` (added in 22.15 / 23.5), so the prefix copy exists but
- * the ESM loader can never reach it (#2372). A normally-installed (package)
- * stack never needs the hook and never hits this. Capability-first wording — a
+ * Guidance when the runtime-prefix stack cannot be used because this Node lacks
+ * `module.registerHooks` (added in 22.15 / 23.5) — whether the prefix is already
+ * populated or not, this Node's ESM loader can never reach a prefix-installed
+ * copy (#2372). A normally-installed (package) stack never needs the hook and
+ * never hits this. State-neutral lead (it applies both when the prefix is
+ * populated and when nothing is installed) plus capability-first wording — a
  * bare ">= 22.15" is untruthful for a 23.0–23.4 user whose version is
  * numerically greater yet still lacks the API.
  */
