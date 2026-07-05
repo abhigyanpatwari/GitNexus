@@ -153,8 +153,10 @@ async function loadResolver(opts: LoadOpts = {}) {
         const normalizedFrom = toPosix(from);
         if (normalizedFrom === fakeDirs.transformersMain) return defaultRequire;
         if (normalizedFrom === `${fakeDirs.ourDir}/package.json`) return effectiveRequire;
-        if (fakeDirs.prefixDir && normalizedFrom === `${toPosix(fakeDirs.prefixDir)}/noop.js`)
-          return prefixRequire;
+        // The runtime-prefix anchor is the only createRequire `from` ending in
+        // noop.js; match by suffix so a real-Windows `path.resolve` drive prefix
+        // (C:\…) on the env-set prefix dir doesn't defeat an exact-path compare.
+        if (fakeDirs.prefixDir && normalizedFrom.endsWith('/noop.js')) return prefixRequire;
         return ourRequire;
       },
     };
