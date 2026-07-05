@@ -53,7 +53,7 @@ send_cmd "$SESSION_NAME:overview" "$OVERVIEW_LOOP"
 
 tmux new-window -d -t "$SESSION_NAME:1" -n workspace -c "$REPO_ROOT"
 sleep 0.1
-send_cmd "$SESSION_NAME:1" "cd $(printf '%q' "$REPO_ROOT") && printf 'Open workspace:\\n  /Users/seanburdges/Dev/workspaces/gitnexus.code-workspace\\n\\nRead first:\\n  AGENTS.md\\n  GUARDRAILS.md\\n  ARCHITECTURE.md\\n'"
+send_cmd "$SESSION_NAME:1" "cd $(printf '%q' "$REPO_ROOT") && printf 'Open workspace:\\n  ../workspaces/gitnexus.code-workspace (optional Dev workspace)\\n\\nRead first:\\n  AGENTS.md\\n  GUARDRAILS.md\\n  ARCHITECTURE.md\\n'"
 
 tmux new-window -d -t "$SESSION_NAME:2" -n checks -c "$REPO_ROOT"
 sleep 0.1

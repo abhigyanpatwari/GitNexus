@@ -126,7 +126,7 @@ VERIFY_LOOP=$(make_watch_loop "printf 'VERIFY\\n======\\n'; date; printf '\\n'; 
 send_cmd "$SESSION_NAME:1" "$VERIFY_LOOP"
 
 tmux new-window -d -t "$SESSION_NAME:2" -n workspace -c "$REPO_ROOT"
-send_cmd "$SESSION_NAME:2" "cd $(printf '%q' "$REPO_ROOT") && printf 'Open workspace:\\n  /Users/seanburdges/Dev/workspaces/gitnexus.code-workspace\\n\\nRead first:\\n  AGENTS.md\\n  GUARDRAILS.md\\n  ARCHITECTURE.md\\n'"
+send_cmd "$SESSION_NAME:2" "cd $(printf '%q' "$REPO_ROOT") && printf 'Open workspace:\\n  ../workspaces/gitnexus.code-workspace (optional Dev workspace)\\n\\nRead first:\\n  AGENTS.md\\n  GUARDRAILS.md\\n  ARCHITECTURE.md\\n'"
 
 tmux new-window -d -t "$SESSION_NAME:3" -n handoff -c "$REPO_ROOT"
 send_cmd "$SESSION_NAME:3" "cd $(printf '%q' "$REPO_ROOT") && printf 'Handoff file: %s\\n\\n' $(printf '%q' "$HANDOFF") && tail -n 40 $(printf '%q' "$HANDOFF")"

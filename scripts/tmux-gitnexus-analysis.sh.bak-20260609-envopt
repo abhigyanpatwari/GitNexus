@@ -49,7 +49,7 @@ OVERVIEW_LOOP=$(make_watch_loop "printf 'GITNEXUS ANALYSIS\\n=================\\
 send_cmd "$SESSION_NAME:overview" "$OVERVIEW_LOOP"
 
 tmux new-window -d -t "$SESSION_NAME:1" -n workspace -c "$REPO_ROOT" bash
-send_cmd "$SESSION_NAME:1" "cd $(printf '%q' "$REPO_ROOT") && printf 'Open workspace:\\n  /Users/seanburdges/Dev/workspaces/gitnexus.code-workspace\\n\\nRead first:\\n  AGENTS.md\\n  GUARDRAILS.md\\n  ARCHITECTURE.md\\n'"
+send_cmd "$SESSION_NAME:1" "cd $(printf '%q' "$REPO_ROOT") && printf 'Open workspace:\\n  ../workspaces/gitnexus.code-workspace (optional Dev workspace)\\n\\nRead first:\\n  AGENTS.md\\n  GUARDRAILS.md\\n  ARCHITECTURE.md\\n'"
 
 tmux new-window -d -t "$SESSION_NAME:2" -n checks -c "$REPO_ROOT" bash
 CHECK_LOOP=$(make_watch_loop "printf 'CHECKS TO RUN MANUALLY\\n======================\\n'; printf 'cd gitnexus && npm test\\n'; printf 'cd gitnexus && npx tsc --noEmit\\n'; printf 'cd gitnexus && npx gitnexus analyze\\n'; printf '\\nTop-level dirs:\\n'; find . -maxdepth 2 -type d | head -40" 20)
