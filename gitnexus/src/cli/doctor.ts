@@ -1,7 +1,16 @@
 import { getRuntimeCapabilities, getRuntimeFingerprint } from '../core/platform/capabilities.js';
 import { resolveEmbeddingConfig } from '../core/embeddings/config.js';
 import { isHttpMode } from '../core/embeddings/http-client.js';
-import { getLocalEmbeddingRuntimeBlocker } from '../core/embeddings/runtime-support.js';
+import {
+  getLocalEmbeddingRuntimeBlocker,
+  localEmbeddingPrefixUnloadableMessage,
+  localEmbeddingStackMissingMessage,
+} from '../core/embeddings/runtime-support.js';
+import {
+  isPrefixRuntimeLoadable,
+  resolveEmbeddingRuntime,
+  type EmbeddingRuntimeResolution,
+} from '../core/embeddings/runtime-install.js';
 import { cudaRedirectDoctorStatus } from '../core/embeddings/onnxruntime-node-resolver.js';
 import { checkLbugNative } from '../core/lbug/native-check.js';
 import { getExtensionInstallPolicy } from '../core/lbug/extension-loader.js';
@@ -66,6 +75,10 @@ export function localEmbeddingDoctorStatus(opts: {
   httpMode: boolean;
   platform?: NodeJS.Platform;
   arch?: NodeJS.Architecture;
+  /** Injectable for tests; defaults to probing the real install. */
+  resolution?: EmbeddingRuntimeResolution | null;
+  /** Injectable for tests; defaults to this Node's registerHooks capability. */
+  prefixLoadable?: boolean;
 }): { status: string; detail: string | null } {
   if (opts.httpMode) {
     return { status: '✓ http endpoint configured', detail: null };
@@ -75,6 +88,25 @@ export function localEmbeddingDoctorStatus(opts: {
   const blocker = getLocalEmbeddingRuntimeBlocker({ platform, arch });
   if (blocker) {
     return { status: `✗ local embeddings unavailable on ${platform}/${arch}`, detail: blocker };
+  }
+  // The stack is an optionalDependency — npm prunes it when onnxruntime-node's
+  // postinstall can't download its CUDA binaries (proxy/firewall, #2370).
+  const resolution = opts.resolution !== undefined ? opts.resolution : resolveEmbeddingRuntime();
+  if (resolution === null) {
+    return {
+      status: '✗ optional embedding stack not installed',
+      detail: localEmbeddingStackMissingMessage(),
+    };
+  }
+  // A prefix-sourced stack needs module.registerHooks to load; on Node < 22.15 /
+  // < 23.5 it is present but unreachable (#2372). Report loadability, not bare
+  // presence, so the diagnostic stops claiming a ✓ the loader can't honour.
+  const prefixLoadable = opts.prefixLoadable ?? isPrefixRuntimeLoadable();
+  if (resolution.source === 'runtime-prefix' && !prefixLoadable) {
+    return {
+      status: '✗ embedding stack installed in the prefix but not loadable on this Node',
+      detail: localEmbeddingPrefixUnloadableMessage(),
+    };
   }
   return { status: '✓ local embeddings supported', detail: null };
 }

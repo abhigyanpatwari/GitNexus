@@ -50,6 +50,7 @@ export type RecoveryHint =
   | 'native-worker-abort'
   | 'hf-endpoint-unreachable'
   | 'local-embedding-unsupported'
+  | 'local-embedding-stack-missing'
   | 'large-repo'
   | 'npm-resolution'
   | 'module-not-found'

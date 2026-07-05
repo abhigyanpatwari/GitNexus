@@ -23,8 +23,12 @@ import { DEFAULT_EMBEDDING_CONFIG, type EmbeddingConfig, type ModelProgress } fr
 import { isHttpMode, getHttpDimensions, httpEmbed } from './http-client.js';
 import { resolveEmbeddingConfig } from './config.js';
 import { applyHfEnvOverrides, isHfDownloadFailure, withHfDownloadRetry } from './hf-env.js';
-import { getLocalEmbeddingRuntimeBlocker } from './runtime-support.js';
+import {
+  getLocalEmbeddingRuntimeBlocker,
+  getMissingLocalEmbeddingStackMessage,
+} from './runtime-support.js';
 import { ensureOnnxRuntimeCommonResolvable } from './onnxruntime-common-resolver.js';
+import { ensureEmbeddingStackResolvable } from './runtime-install.js';
 import {
   ensureOnnxRuntimeNodeMatchesSystem,
   isEffectiveCudaAvailable,
@@ -104,6 +108,11 @@ export const initEmbedder = async (
     try {
       // Lazy-load transformers.js only after the runtime guard has passed, so
       // unsupported platforms never reach the native ONNX import (#1515).
+      // Registered FIRST so it sits last in the hook chain (registerHooks runs
+      // the most recent hook first): when the optional stack was pruned at
+      // install time (#2370), its bare specifiers fall back to the on-demand
+      // runtime prefix.
+      ensureEmbeddingStackResolvable();
       // Under pnpm-strict / `pnpm dlx`, transformers' phantom `onnxruntime-common`
       // import is unresolvable; register the fallback resolver first (#307).
       ensureOnnxRuntimeCommonResolvable();
@@ -113,7 +122,14 @@ export const initEmbedder = async (
       // to the CUDA-13 build before transformers imports them. No-op on matching
       // layouts, non-CUDA, Windows/DirectML, and macOS.
       ensureOnnxRuntimeNodeMatchesSystem();
-      const { pipeline, env } = await import('@huggingface/transformers');
+      // The stack is an optionalDependency: npm prunes it when onnxruntime-node's
+      // postinstall can't reach api.nuget.org (#2370). Rethrow with actionable
+      // reinstall guidance instead of a raw ERR_MODULE_NOT_FOUND.
+      const { pipeline, env } = await import('@huggingface/transformers').catch((err: unknown) => {
+        const missing = getMissingLocalEmbeddingStackMessage(err);
+        if (missing) throw new Error(missing);
+        throw err;
+      });
 
       // Configure transformers.js environment
       env.allowLocalModels = false;

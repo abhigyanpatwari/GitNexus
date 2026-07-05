@@ -39,6 +39,14 @@ interface FakeDirs {
   /** When false, createRequire(transformersMain).resolve('onnxruntime-node/package.json') throws
    *  (simulating resolveDefaultOrtNodeDir() failing outright) instead of resolving to `defaultDir`. */
   defaultResolvable?: boolean;
+  /** When false, gitnexus' own top-level onnxruntime-node does NOT resolve (pruned install),
+   *  so resolveOurOrtNodeDir falls back to the on-demand prefix (#2372). */
+  ourResolvable?: boolean;
+  /** The runtime prefix dir the test set via GITNEXUS_EMBEDDING_RUNTIME_DIR; its `<dir>/noop.js`
+   *  createRequire anchor is routed to a require that resolves onnxruntime-node to `prefixOrtNodeDir`. */
+  prefixDir?: string;
+  /** onnxruntime-node dir the prefix-anchored require resolves to (the #2372 fallback target). */
+  prefixOrtNodeDir?: string;
 }
 
 interface LoadOpts {
@@ -115,7 +123,9 @@ async function loadResolver(opts: LoadOpts = {}) {
 
     const ourRequire = fakeRequire({
       '@huggingface/transformers': fakeDirs.transformersMain,
-      'onnxruntime-node/package.json': `${fakeDirs.ourDir}/package.json`,
+      ...(fakeDirs.ourResolvable === false
+        ? {}
+        : { 'onnxruntime-node/package.json': `${fakeDirs.ourDir}/package.json` }),
     });
     const defaultRequire = fakeRequire(
       fakeDirs.defaultResolvable === false
@@ -126,6 +136,13 @@ async function loadResolver(opts: LoadOpts = {}) {
       'onnxruntime-node': `${fakeDirs.ourDir}/index.js`,
       'onnxruntime-common': `${fakeDirs.ourDir}/node_modules/onnxruntime-common/index.js`,
     });
+    // The on-demand prefix's require (anchored at `<prefixDir>/noop.js`) resolves
+    // gitnexus' effective top-level onnxruntime-node when the real one was pruned (#2372).
+    const prefixRequire = fakeRequire(
+      fakeDirs.prefixOrtNodeDir
+        ? { 'onnxruntime-node/package.json': `${fakeDirs.prefixOrtNodeDir}/package.json` }
+        : {},
+    );
     return {
       ...orig,
       registerHooks,
@@ -136,6 +153,10 @@ async function loadResolver(opts: LoadOpts = {}) {
         const normalizedFrom = toPosix(from);
         if (normalizedFrom === fakeDirs.transformersMain) return defaultRequire;
         if (normalizedFrom === `${fakeDirs.ourDir}/package.json`) return effectiveRequire;
+        // The runtime-prefix anchor is the only createRequire `from` ending in
+        // noop.js; match by suffix so a real-Windows `path.resolve` drive prefix
+        // (C:\…) on the env-set prefix dir doesn't defeat an exact-path compare.
+        if (fakeDirs.prefixDir && normalizedFrom.endsWith('/noop.js')) return prefixRequire;
         return ourRequire;
       },
     };
@@ -541,6 +562,63 @@ describe('ensureOnnxRuntimeNodeMatchesSystem — redirect:true (#2341 follow-up)
     } finally {
       cap.restore();
     }
+  });
+});
+
+describe('resolveOurOrtNodeDir — on-demand prefix fallback (#2372)', () => {
+  // When gitnexus' own top-level onnxruntime-node was pruned and fetched into the
+  // runtime prefix, `embeddings install --cuda` puts the CUDA build there — so the
+  // redirect must be able to target the prefix copy, not silently run on CPU.
+  const prefixDir = '/fake/prefix-rt';
+  const prefixOrtNodeDir = '/fake/prefix-rt/node_modules/onnxruntime-node';
+  const defaultDir = '/fake/transformers-nested/onnxruntime-node';
+  const soPath = (dir: string): string => `${dir}/bin/napi-v6/linux`;
+
+  const baseFakeDirs = {
+    ourDir: '/fake/our/onnxruntime-node', // unused: ourResolvable=false
+    defaultDir,
+    transformersMain: '/fake/transformers/dist/transformers.node.mjs',
+    ourResolvable: false,
+    prefixDir,
+  };
+
+  const cudaEnv = {
+    existsSync: (p: string): boolean =>
+      p.startsWith(soPath(prefixOrtNodeDir)) || p.startsWith(soPath(defaultDir)),
+    execFileSync: (cmd: string, args: string[]): string => {
+      if (cmd === 'ldconfig')
+        return 'libcublasLt.so.13 (libc6,x86-64) => /usr/local/cuda/lib64/libcublasLt.so.13';
+      if (cmd === 'ldd') {
+        const target = args[0] ?? '';
+        if (target.startsWith(soPath(prefixOrtNodeDir)))
+          return 'libcublasLt.so.13 => /usr/local/cuda-13/lib64/libcublasLt.so.13';
+        if (target.startsWith(soPath(defaultDir)))
+          return 'libcublasLt.so.12 => /usr/local/cuda-12/lib64/libcublasLt.so.12';
+      }
+      throw new Error(`unexpected execFileSync(${cmd}, ${JSON.stringify(args)})`);
+    },
+  };
+
+  it('redirects to the prefix onnxruntime-node when our own top-level was pruned', async () => {
+    process.env.GITNEXUS_EMBEDDING_RUNTIME_DIR = prefixDir;
+    const mod = await loadResolver({
+      registerHooks: vi.fn(),
+      platform: 'linux',
+      fakeDirs: { ...baseFakeDirs, prefixOrtNodeDir },
+      ...cudaEnv,
+    });
+    expect(toPosix(String(mod.getEffectiveOnnxRuntimeNodeDir()))).toBe(prefixOrtNodeDir);
+  });
+
+  it('leaves the effective dir at the default when neither our copy nor the prefix resolves', async () => {
+    process.env.GITNEXUS_EMBEDDING_RUNTIME_DIR = prefixDir;
+    const mod = await loadResolver({
+      registerHooks: vi.fn(),
+      platform: 'linux',
+      fakeDirs: { ...baseFakeDirs }, // no prefixOrtNodeDir → prefix require misses too
+      ...cudaEnv,
+    });
+    expect(toPosix(String(mod.getEffectiveOnnxRuntimeNodeDir()))).toBe(defaultDir);
   });
 });
 

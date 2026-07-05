@@ -45,8 +45,21 @@ import { cliError } from './cli-message.js';
 import { EMBEDDING_DIMS_ERROR, normalizeEmbeddingDims } from './embedding-dims.js';
 import { formatElapsed } from './format-elapsed.js';
 import { isHfDownloadFailure } from '../core/embeddings/hf-env.js';
-import { safeUrl } from '../core/embeddings/http-client.js';
-import { isLocalEmbeddingRuntimeBlockerMessage } from '../core/embeddings/runtime-support.js';
+import { isHttpMode, safeUrl } from '../core/embeddings/http-client.js';
+import {
+  isLocalEmbeddingRuntimeBlockerMessage,
+  isMissingLocalEmbeddingStackMessage,
+  localEmbeddingPrefixUnloadableMessage,
+  localEmbeddingStackMissingMessage,
+} from '../core/embeddings/runtime-support.js';
+import {
+  ANALYZE_EMBEDDING_INSTALL_TIMEOUT_MS,
+  getEmbeddingInstallTimeoutMs,
+  getEmbeddingRuntimeDir,
+  installEmbeddingRuntime,
+  isPrefixRuntimeLoadable,
+  resolveEmbeddingRuntime,
+} from '../core/embeddings/runtime-install.js';
 import { warnIfNpm11NpxRisk } from './resolve-invocation.js';
 
 // Capture stderr.write at module load BEFORE anything (LadybugDB native
@@ -1087,6 +1100,60 @@ const analyzeCommandImpl = async (
     );
   }
 
+  // On-demand embedding runtime (#2370): when the optional stack was pruned at
+  // install time (proxy-blocked NuGet download in onnxruntime-node's
+  // postinstall), heal it here instead of failing later in the pipeline. The
+  // install goes through the user's npm registry config (mirrors/proxies
+  // apply) with --ignore-scripts, so no NuGet download is attempted. Runs
+  // before bar.start() like the sibling validations above.
+  if (embeddingsEnabled && !isHttpMode()) {
+    const resolved = resolveEmbeddingRuntime();
+    // Resolved-but-unloadable (a populated prefix on a Node with no
+    // module.registerHooks), or nothing installed on such a Node: fail fast with
+    // capability guidance instead of dying mid-pipeline over an unusable prefix
+    // or downloading a runtime the loader can't reach. A package-sourced stack
+    // never needs the hook, so it is excluded. --embeddings was explicitly
+    // requested and this failure is deterministic, so fail fast rather than
+    // silently degrading to BM25 (distinct from a transient install timeout).
+    if (!isPrefixRuntimeLoadable() && (resolved === null || resolved.source === 'runtime-prefix')) {
+      cliError(`  ${localEmbeddingPrefixUnloadableMessage().replace(/\n/g, '\n  ')}\n`, {
+        recoveryHint: 'local-embedding-stack-missing',
+      });
+      process.exitCode = 1;
+      return;
+    }
+    // On-demand embedding runtime (#2370): when the optional stack was pruned at
+    // install time (proxy-blocked NuGet download in onnxruntime-node's
+    // postinstall), heal it here instead of failing later in the pipeline. The
+    // install goes through the user's npm registry config (mirrors/proxies
+    // apply) with --ignore-scripts, so no NuGet download is attempted.
+    if (resolved === null) {
+      console.log(
+        `  Local embedding runtime is not installed (optional packages were skipped at install time).\n` +
+          `  Downloading it now from your npm registry into ${getEmbeddingRuntimeDir()} …\n` +
+          `  (one-time; rerun manually anytime with \`gitnexus embeddings install\`)\n`,
+      );
+      try {
+        // Short deadline (env override still wins): analyze is interactive, so a
+        // blackholed proxy must not stall the whole index run for the 10-minute
+        // default — fail over to the guidance below instead.
+        await installEmbeddingRuntime(
+          {},
+          getEmbeddingInstallTimeoutMs(ANALYZE_EMBEDDING_INSTALL_TIMEOUT_MS),
+        );
+        console.log('  Embedding runtime installed.\n');
+      } catch (err) {
+        cliError(
+          `  Could not install the embedding runtime: ${err instanceof Error ? err.message : String(err)}\n\n` +
+            `  ${localEmbeddingStackMissingMessage().replace(/\n/g, '\n  ')}\n`,
+          { recoveryHint: 'local-embedding-stack-missing' },
+        );
+        process.exitCode = 1;
+        return;
+      }
+    }
+  }
+
   if (options.repairFts && options.force) {
     cliError(
       '  Cannot combine `--repair-fts` with `--force`. ' +
@@ -1556,6 +1623,19 @@ const analyzeCommandImpl = async (
     if (isLocalEmbeddingRuntimeBlockerMessage(msg)) {
       cliError(`  ${msg.replace(/\n/g, '\n  ')}\n`, {
         recoveryHint: 'local-embedding-unsupported',
+      });
+      process.exitCode = 1;
+      return;
+    }
+
+    // The optional embedding stack (@huggingface/transformers → onnxruntime-node)
+    // was pruned at install time — usually a proxy-blocked NuGet download during
+    // onnxruntime-node's postinstall (#2370). Checked before the generic
+    // module-not-found "installation may be corrupt" hint below, which would
+    // otherwise misdiagnose a deliberate optional-dependency skip.
+    if (isMissingLocalEmbeddingStackMessage(msg)) {
+      cliError(`  ${msg.replace(/\n/g, '\n  ')}\n`, {
+        recoveryHint: 'local-embedding-stack-missing',
       });
       process.exitCode = 1;
       return;
