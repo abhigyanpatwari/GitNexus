@@ -87,27 +87,23 @@ export const safeUrl = (url: string): string => {
 /**
  * Error thrown by this module's HTTP embedding path (`httpEmbedBatch` /
  * `httpEmbed` / `httpEmbedQuery`) for any endpoint failure — a
- * connection/timeout/DNS error, an open circuit, a non-OK status, an empty
- * response, or a dimension mismatch.
+ * connection/timeout/DNS error, an open circuit, a non-OK status, an
+ * unparseable or wrong-shape response body, an empty response, or a dimension
+ * mismatch.
  *
- * Carrying a distinct type (rather than a plain `Error`) lets the CLI tell an
- * unreachable *custom endpoint* apart from a HuggingFace *model download*
- * failure without matching message text: the two share the same underlying
- * network substrings (`fetch failed`, `ECONNREFUSED`, …), which is exactly
- * why `isNetworkFetchError` in `hf-env.ts` cannot tell them apart. Keying on
- * the type instead of the message is also locale-proof and survives message
- * rewording. See #2385.
- *
- * `status` holds the HTTP status when the failure was a response (4xx/5xx);
- * it is `undefined` for connection/timeout/DNS failures, which never received
- * a response — the reason a plain status-code check cannot classify this bug.
+ * Carrying a distinct type (rather than a plain `Error`) lets the CLI tell a
+ * *custom endpoint* failure apart from a HuggingFace *model download* failure
+ * without matching message text: the two share the same underlying network
+ * substrings (`fetch failed`, `ECONNREFUSED`, …), which is exactly why
+ * `isNetworkFetchError` in `hf-env.ts` cannot tell them apart. Keying on the
+ * type instead of the message is also locale-proof and survives message
+ * rewording. The human-readable `.message` (built with `safeUrl` and the
+ * underlying reason) is what the CLI surfaces to the user. See #2385.
  */
 export class HttpEmbeddingError extends Error {
-  readonly status?: number;
-  constructor(message: string, options?: { status?: number; cause?: unknown }) {
+  constructor(message: string, options?: { cause?: unknown }) {
     super(message, options?.cause !== undefined ? { cause: options.cause } : undefined);
     this.name = 'HttpEmbeddingError';
-    this.status = options?.status;
   }
 }
 
@@ -193,7 +189,7 @@ const httpEmbedBatch = async (
     if (err instanceof ResilientFetchExhaustedError) {
       throw new HttpEmbeddingError(
         `Embedding endpoint returned ${err.response.status} (${safeUrl(url)}, batch ${batchIndex})`,
-        { status: err.response.status, cause: err },
+        { cause: err },
       );
     }
     const reason = err instanceof Error ? err.message : String(err);
@@ -208,11 +204,27 @@ const httpEmbedBatch = async (
     // a terminal client error (4xx other than 429).
     throw new HttpEmbeddingError(
       `Embedding endpoint returned ${resp.status} (${safeUrl(url)}, batch ${batchIndex})`,
-      { status: resp.status },
     );
   }
 
-  const data = (await resp.json()) as { data: EmbeddingItem[] };
+  // A reachable-but-wrong endpoint (e.g. a captive portal or a non-embeddings
+  // service) can answer 200 with an HTML/truncated body. Parse inside the
+  // typed-error boundary so that lands as an endpoint failure the CLI can
+  // classify, not a raw SyntaxError/TypeError on the generic stack-dump path.
+  let data: { data: EmbeddingItem[] };
+  try {
+    data = (await resp.json()) as { data: EmbeddingItem[] };
+  } catch (err) {
+    throw new HttpEmbeddingError(
+      `Embedding endpoint returned an unparseable response (${safeUrl(url)}, batch ${batchIndex})`,
+      { cause: err },
+    );
+  }
+  if (!Array.isArray(data?.data)) {
+    throw new HttpEmbeddingError(
+      `Embedding endpoint returned an unexpected response shape (${safeUrl(url)}, batch ${batchIndex})`,
+    );
+  }
   return data.data;
 };
 

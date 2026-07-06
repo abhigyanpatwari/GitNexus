@@ -107,12 +107,39 @@ describe('analyzeCommand custom HTTP endpoint error handling (#2385)', () => {
     await analyzeCommand(undefined, { embeddings: true });
 
     expect(process.exitCode).toBe(1);
-    const record = cap
-      .records()
-      .find((r) => r.recoveryHint === 'http-embedding-endpoint-unreachable');
+    const record = cap.records().find((r) => r.recoveryHint === 'http-embedding-endpoint-error');
     expect(record).toBeDefined();
     // The masked URL from the thrown message is surfaced verbatim.
     expect(typeof record?.msg === 'string' && record.msg).toContain('127.0.0.1:1');
+    cap.restore();
+  });
+
+  it('does not mislabel a reached-but-failed endpoint as "could not be reached"', async () => {
+    // A dimension mismatch means the endpoint WAS reached and answered — the
+    // message must not assert unreachability, and must surface the real reason
+    // (which itself carries the fix hint). Regression guard for the #2385 fix.
+    const { HttpEmbeddingError } = await import('../../src/core/embeddings/http-client.js');
+    runFullAnalysisMock.mockRejectedValue(
+      new HttpEmbeddingError(
+        'Embedding dimension mismatch: endpoint returned 512d vector, but expected 1024d. ' +
+          'Update GITNEXUS_EMBEDDING_DIMS to match your model output.',
+      ),
+    );
+
+    const { _captureLogger } = await import('../../src/core/logger.js');
+    const cap = _captureLogger();
+    const { analyzeCommand } = await import('../../src/cli/analyze.js');
+
+    await analyzeCommand(undefined, { embeddings: true });
+
+    expect(process.exitCode).toBe(1);
+    const record = cap.records().find((r) => r.recoveryHint === 'http-embedding-endpoint-error');
+    expect(record).toBeDefined();
+    const text = typeof record?.msg === 'string' ? record.msg : '';
+    // Surfaces the real reason...
+    expect(text).toContain('dimension mismatch');
+    // ...without falsely claiming the endpoint was unreachable.
+    expect(text).not.toMatch(/could not be reached|unreachable/i);
     cap.restore();
   });
 
@@ -134,9 +161,7 @@ describe('analyzeCommand custom HTTP endpoint error handling (#2385)', () => {
     await analyzeCommand(undefined, { embeddings: true });
 
     const records = cap.records();
-    expect(records.some((r) => r.recoveryHint === 'http-embedding-endpoint-unreachable')).toBe(
-      true,
-    );
+    expect(records.some((r) => r.recoveryHint === 'http-embedding-endpoint-error')).toBe(true);
     expect(records.some((r) => r.recoveryHint === 'hf-endpoint-unreachable')).toBe(false);
     expect(records.every((r) => !(typeof r.msg === 'string' && /huggingface/i.test(r.msg)))).toBe(
       true,
@@ -160,9 +185,7 @@ describe('analyzeCommand custom HTTP endpoint error handling (#2385)', () => {
 
     const records = cap.records();
     expect(records.some((r) => r.recoveryHint === 'hf-endpoint-unreachable')).toBe(false);
-    expect(records.some((r) => r.recoveryHint === 'http-embedding-endpoint-unreachable')).toBe(
-      false,
-    );
+    expect(records.some((r) => r.recoveryHint === 'http-embedding-endpoint-error')).toBe(false);
     cap.restore();
   });
 
@@ -182,9 +205,7 @@ describe('analyzeCommand custom HTTP endpoint error handling (#2385)', () => {
     expect(process.exitCode).toBe(1);
     const records = cap.records();
     expect(records.some((r) => r.recoveryHint === 'hf-endpoint-unreachable')).toBe(true);
-    expect(records.some((r) => r.recoveryHint === 'http-embedding-endpoint-unreachable')).toBe(
-      false,
-    );
+    expect(records.some((r) => r.recoveryHint === 'http-embedding-endpoint-error')).toBe(false);
     cap.restore();
   });
 
@@ -200,9 +221,7 @@ describe('analyzeCommand custom HTTP endpoint error handling (#2385)', () => {
 
     expect(process.exitCode).toBe(1);
     const records = cap.records();
-    expect(records.some((r) => r.recoveryHint === 'http-embedding-endpoint-unreachable')).toBe(
-      false,
-    );
+    expect(records.some((r) => r.recoveryHint === 'http-embedding-endpoint-error')).toBe(false);
     cap.restore();
   });
 });

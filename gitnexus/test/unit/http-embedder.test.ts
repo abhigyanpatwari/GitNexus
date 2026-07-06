@@ -200,7 +200,33 @@ describe('HTTP embedding backend', () => {
       vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: false, status: 500 }));
 
       const { embedText } = await import('../../src/core/embeddings/embedder.js');
-      await expect(embedText('test')).rejects.toThrow('500');
+      const { isHttpEmbeddingError } = await import('../../src/core/embeddings/http-client.js');
+      const err = await embedText('test').catch((e: unknown) => e);
+      expect(String(err)).toContain('500');
+      // Type-completeness fence: a non-OK-status failure must stay classifiable
+      // so the CLI routes it to the endpoint branch, not the HF branch (#2385).
+      expect(isHttpEmbeddingError(err)).toBe(true);
+    });
+
+    it('classifies a reachable endpoint that returns a non-JSON 200 body', async () => {
+      process.env.GITNEXUS_EMBEDDING_URL = 'http://test:8080/v1';
+      process.env.GITNEXUS_EMBEDDING_MODEL = 'test-model';
+      // A captive portal / wrong service answers 200 with HTML — resp.json() throws.
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockResolvedValue({
+          ok: true,
+          json: async () => {
+            throw new SyntaxError('Unexpected token < in JSON at position 0');
+          },
+        }),
+      );
+
+      const { embedText } = await import('../../src/core/embeddings/embedder.js');
+      const { isHttpEmbeddingError } = await import('../../src/core/embeddings/http-client.js');
+      const err = await embedText('test').catch((e: unknown) => e);
+      expect(isHttpEmbeddingError(err)).toBe(true);
+      expect(String(err)).toContain('unparseable response');
     });
 
     it('surfaces a connection failure as a typed HttpEmbeddingError (the #2385 case)', async () => {
@@ -414,7 +440,11 @@ describe('HTTP embedding backend', () => {
       vi.stubGlobal('fetch', vi.fn().mockRejectedValue(timeoutErr));
 
       const { embedText } = await import('../../src/core/embeddings/embedder.js');
-      await expect(embedText('test')).rejects.toThrow('timed out');
+      const { isHttpEmbeddingError } = await import('../../src/core/embeddings/http-client.js');
+      const err = await embedText('test').catch((e: unknown) => e);
+      expect(String(err)).toContain('timed out');
+      // Type-completeness fence: a timeout must stay classifiable (#2385).
+      expect(isHttpEmbeddingError(err)).toBe(true);
       expect(fetch).toHaveBeenCalledTimes(1);
     });
 
@@ -477,13 +507,6 @@ describe('HttpEmbeddingError classification', () => {
     const { HttpEmbeddingError, isHttpEmbeddingError } =
       await import('../../src/core/embeddings/http-client.js');
     expect(isHttpEmbeddingError(new HttpEmbeddingError('anything at all'))).toBe(true);
-  });
-
-  it('carries the HTTP status when the failure was a response', async () => {
-    const { HttpEmbeddingError } = await import('../../src/core/embeddings/http-client.js');
-    expect(new HttpEmbeddingError('returned 404', { status: 404 }).status).toBe(404);
-    // Connection/timeout/DNS failures never got a response — no status.
-    expect(new HttpEmbeddingError('fetch failed').status).toBeUndefined();
   });
 
   it('recognises a cross-realm error by name even when instanceof fails', async () => {
