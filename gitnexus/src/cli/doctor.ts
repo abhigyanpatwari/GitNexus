@@ -12,7 +12,7 @@ import {
   type EmbeddingRuntimeResolution,
 } from '../core/embeddings/runtime-install.js';
 import { cudaRedirectDoctorStatus } from '../core/embeddings/onnxruntime-node-resolver.js';
-import { checkLbugNative } from '../core/lbug/native-check.js';
+import { checkLbugNative, probeFtsExtensionLoad } from '../core/lbug/native-check.js';
 import { getExtensionInstallPolicy } from '../core/lbug/extension-loader.js';
 import { t } from './i18n/index.js';
 
@@ -133,7 +133,17 @@ export const doctorCommand = async () => {
   console.log('');
   console.log(t('doctor.capabilities'));
   console.log(`  ${label('doctor.labels.graphStore', 18)}${capabilities.graph}`);
-  console.log(`  ${label('doctor.labels.fullTextSearch', 18)}${capabilities.fts}`);
+  // Live LOAD probe, not the static platform capability — the static value
+  // said "available" while analyze failed to load the extension (#2374).
+  const ftsProbe = nativeCheck.ok
+    ? await probeFtsExtensionLoad()
+    : { loaded: false, reason: 'LadybugDB native module (lbugjs.node) failed to load' };
+  console.log(
+    `  ${label('doctor.labels.fullTextSearch', 18)}${ftsProbe.loaded ? 'available' : 'unavailable'}`,
+  );
+  if (!ftsProbe.loaded && ftsProbe.reason) {
+    console.log(`  ${padDisplayEnd('', 18)}${ftsProbe.reason}`);
+  }
   console.log(`  ${label('doctor.labels.vectorIndex', 18)}${capabilities.vector}`);
   console.log(`  ${label('doctor.labels.semanticMode', 18)}${capabilities.semanticMode}`);
   // Surface the optional-extension install policy so offline users can see

@@ -20,6 +20,7 @@ describe('runFullAnalysis FTS repair and verification failure paths', () => {
     vi.doUnmock('../../src/core/search/fts-indexes.js');
     vi.doUnmock('../../src/core/ingestion/pipeline.js');
     vi.doUnmock('../../src/storage/repo-manager.js');
+    vi.doUnmock('../../src/core/lbug/extension-loader.js');
     vi.resetModules();
     vi.clearAllMocks();
     vi.unstubAllEnvs();
@@ -290,6 +291,15 @@ describe('runFullAnalysis FTS repair and verification failure paths', () => {
       createSearchFTSIndexes,
       verifySearchFTSIndexes: vi.fn(async () => []),
     }));
+    // Populate the live capability so the repair error actually interpolates the
+    // real LOAD reason (#2374). Without this the branch is vacuous — the reason
+    // is undefined and the assertion passes whether or not interpolation fires.
+    vi.doMock('../../src/core/lbug/extension-loader.js', async (importActual) => ({
+      ...(await importActual<typeof import('../../src/core/lbug/extension-loader.js')>()),
+      getExtensionCapabilities: () => [
+        { name: 'fts', loaded: false, reason: 'LOAD fts failed: invalid ELF header' },
+      ],
+    }));
 
     const tmpRepo = await createTempDir('gitnexus-run-analyze-repair-fts-unavailable-');
     try {
@@ -307,7 +317,11 @@ describe('runFullAnalysis FTS repair and verification failure paths', () => {
 
       await expect(
         runFullAnalysis(tmpRepo.dbPath, { repairFts: true }, { onProgress: () => {} }),
-      ).rejects.toThrow(/FTS extension is unavailable[\s\S]*gitnexus doctor/i);
+        // The specific reason must appear between the headline and the remedy —
+        // proving the interpolation fired, not just that the base message exists.
+      ).rejects.toThrow(
+        /FTS extension failed to load[\s\S]*invalid ELF header[\s\S]*gitnexus doctor/i,
+      );
       // The guard fires before drop-then-create, so no index is dropped.
       expect(createSearchFTSIndexes).not.toHaveBeenCalled();
     } finally {

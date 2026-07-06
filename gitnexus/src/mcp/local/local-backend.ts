@@ -62,6 +62,7 @@ import {
   isVectorExtensionSupportedByPlatform,
 } from '../../core/platform/capabilities.js';
 import { PhaseTimer } from '../../core/search/phase-timer.js';
+import { ftsDegradedWarning } from '../../core/search/fts-indexes.js';
 import {
   cjkSegmentationModeMismatch,
   containsSegmentableCjkRun,
@@ -2084,9 +2085,7 @@ export class LocalBackend {
     // path, leaving the success-path response shape byte-identical.
     const warnings: string[] = [];
     if (!ftsUsed) {
-      warnings.push(
-        'FTS indexes missing — keyword search degraded. Run: gitnexus analyze --repair-fts (or gitnexus analyze --force) to rebuild indexes.',
-      );
+      warnings.push(ftsDegradedWarning());
     }
     // #2331: a CJK query against a server process resolving
     // GITNEXUS_FTS_CJK_SEGMENTATION to 'none' silently misses sub-phrase
