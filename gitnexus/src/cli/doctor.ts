@@ -13,7 +13,7 @@ import {
 } from '../core/embeddings/runtime-install.js';
 import { cudaRedirectDoctorStatus } from '../core/embeddings/onnxruntime-node-resolver.js';
 import { checkLbugNative, probeFtsExtensionLoad } from '../core/lbug/native-check.js';
-import { classifyExtensionLoadError } from '../core/lbug/extension-load-error.js';
+import { diagnoseExtensionLoad } from '../core/lbug/extension-load-error.js';
 import { getExtensionInstallPolicy } from '../core/lbug/extension-loader.js';
 import { t } from './i18n/index.js';
 
@@ -149,7 +149,7 @@ export const doctorCommand = async () => {
     // ("specified module could not be found") is opaque, so name the fix (VC++
     // redist, then OpenSSL) instead of leaving the user to reinstall in vain.
     // `unknown`'s remedy is "run doctor", which would be circular here.
-    const { kind, remedy } = classifyExtensionLoadError(ftsProbe.reason);
+    const { kind, remedy } = diagnoseExtensionLoad(ftsProbe.reason);
     if (kind !== 'unknown') {
       console.log(`  ${padDisplayEnd('', 18)}${remedy}`);
     }

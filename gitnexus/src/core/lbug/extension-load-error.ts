@@ -14,13 +14,16 @@
  * ftsDegradedWarning) can emit the right remedy instead of a one-size-fits-all
  * "reinstall over the network".
  *
- * Pure string logic — no `@ladybugdb/core` import, no filesystem, no
- * `process.platform` dependency. A Windows error is classified the same on any
- * host (the error text, not the running OS, carries the signal), which keeps
- * `native-check.ts` free of a static lbug dependency and lets every consumer
- * (`extension-loader`, `native-check`, `fts-indexes`, `run-analyze`, `doctor`)
- * import it safely.
+ * `classifyExtensionLoadError` is pure string logic — no `@ladybugdb/core`
+ * import, no filesystem — which keeps `native-check.ts` free of a static lbug
+ * dependency. `diagnoseExtensionLoad` layers a LANGUAGE-INDEPENDENT structural
+ * check on top: it pulls the extension's file path out of lbug's own (English)
+ * wrapper and inspects the binary header directly (PE/ELF/Mach-O magic +
+ * architecture), so corrupt-vs-valid is decided by the file itself, not by the
+ * localized OS error tail. It reads the file (node:fs core module only, still no
+ * lbug) and never throws — any read failure degrades to the string classifier.
  */
+import { closeSync, openSync, readSync } from 'node:fs';
 
 export type ExtensionLoadErrorKind =
   | 'missing_file'
@@ -173,4 +176,165 @@ export function classifyExtensionLoadError(
     return { kind: 'missing_dependency', remedy: HEDGED_LOAD_FAILURE_REMEDY };
   }
   return { kind: 'unknown', remedy: UNKNOWN_REMEDY };
+}
+
+// ── Language-independent structural layer ────────────────────────────────────
+
+/** Well-formedness of the extension binary for the host platform + arch. */
+export type ExtensionBinaryState = 'absent' | 'corrupt' | 'valid' | 'indeterminate';
+
+const STRUCTURAL_MISSING_DEPENDENCY_REMEDY =
+  'The FTS extension file is valid, so the failure is a missing or incompatible runtime dependency, ' +
+  'not the extension itself — reinstalling will NOT help. On Windows, install the Microsoft Visual ' +
+  'C++ 2015-2022 Redistributable (x64) from https://aka.ms/vs/17/release/vc_redist.x64.exe and ensure ' +
+  'OpenSSL 3 is available; on Linux/macOS install the shared library named in the error above.';
+
+/**
+ * Pull the extension file path out of lbug's load error. lbug's wrapper is
+ * English regardless of OS language — `Failed to load library: {path} which is
+ * needed by extension: {name}` (real lbug), or the quoted `Failed to load
+ * library '{path}': {reason}` variant — so the path is recoverable in any locale.
+ * Only paths ending in `.lbug_extension` are accepted, so a regex misfire can
+ * never point the inspector at an arbitrary file.
+ */
+export function extractExtensionPath(reason: string | undefined | null): string | null {
+  const text = reason ?? '';
+  const m = /failed to load library:?\s*['"]?(.+?\.lbug_extension)/i.exec(text);
+  const path = m?.[1]?.trim();
+  return path && path.length > 0 ? path : null;
+}
+
+/** Node `process.arch` → PE `Machine`. Undefined for arches we don't map. */
+const PE_MACHINE: Readonly<Record<string, number>> = { x64: 0x8664, arm64: 0xaa64 };
+/** Node `process.arch` → ELF `e_machine`. */
+const ELF_MACHINE: Readonly<Record<string, number>> = { x64: 0x3e, arm64: 0xb7 };
+/** Node `process.arch` → Mach-O `cputype`. */
+const MACHO_CPUTYPE: Readonly<Record<string, number>> = { x64: 0x01000007, arm64: 0x0100000c };
+
+function classifyPE(buf: Buffer, bytesRead: number, arch: string): 'valid' | 'corrupt' {
+  if (bytesRead < 0x40 || buf[0] !== 0x4d || buf[1] !== 0x5a) return 'corrupt'; // 'MZ'
+  const peOffset = buf.readUInt32LE(0x3c);
+  if (peOffset + 6 > bytesRead) return 'corrupt'; // truncated / garbage e_lfanew
+  const isPE =
+    buf[peOffset] === 0x50 &&
+    buf[peOffset + 1] === 0x45 &&
+    buf[peOffset + 2] === 0 &&
+    buf[peOffset + 3] === 0;
+  if (!isPE) return 'corrupt';
+  const expected = PE_MACHINE[arch];
+  if (expected === undefined) return 'valid'; // arch we don't map: don't claim corrupt
+  return buf.readUInt16LE(peOffset + 4) === expected ? 'valid' : 'corrupt';
+}
+
+function classifyELF(buf: Buffer, bytesRead: number, arch: string): 'valid' | 'corrupt' {
+  if (bytesRead < 20) return 'corrupt';
+  if (buf[0] !== 0x7f || buf[1] !== 0x45 || buf[2] !== 0x4c || buf[3] !== 0x46) return 'corrupt'; // 0x7F ELF
+  const littleEndian = buf[5] === 1; // EI_DATA
+  const eMachine = littleEndian ? buf.readUInt16LE(18) : buf.readUInt16BE(18);
+  const expected = ELF_MACHINE[arch];
+  if (expected === undefined) return 'valid';
+  return eMachine === expected ? 'valid' : 'corrupt';
+}
+
+function classifyMachO(buf: Buffer, bytesRead: number, arch: string): 'valid' | 'corrupt' {
+  if (bytesRead < 8) return 'corrupt';
+  const magicLE = buf.readUInt32LE(0);
+  const magicBE = buf.readUInt32BE(0);
+  // Universal ("fat") binary — assume it carries the host slice.
+  if (magicBE === 0xcafebabe || magicLE === 0xcafebabe) return 'valid';
+  const thin = magicLE === 0xfeedfacf || magicLE === 0xfeedface;
+  const thinSwapped = magicBE === 0xfeedfacf || magicBE === 0xfeedface;
+  if (!thin && !thinSwapped) return 'corrupt';
+  const cpuType = thin ? buf.readUInt32LE(4) : buf.readUInt32BE(4);
+  const expected = MACHO_CPUTYPE[arch];
+  if (expected === undefined) return 'valid';
+  return cpuType === expected ? 'valid' : 'corrupt';
+}
+
+/**
+ * Decide whether a binary header is a well-formed shared library for the given
+ * platform + architecture — using only the file's structure, no localized text.
+ * Pure and injectable (platform/arch as params) so every format+arch combination
+ * is unit-testable regardless of the host it runs on.
+ */
+export function classifyBinaryHeader(
+  buf: Buffer,
+  bytesRead: number,
+  platform: NodeJS.Platform,
+  arch: string,
+): 'valid' | 'corrupt' {
+  if (platform === 'win32') return classifyPE(buf, bytesRead, arch);
+  if (platform === 'linux') return classifyELF(buf, bytesRead, arch);
+  if (platform === 'darwin') return classifyMachO(buf, bytesRead, arch);
+  return 'valid'; // unknown host: never claim corrupt
+}
+
+const BINARY_HEADER_BYTES = 4096;
+
+/**
+ * Best-effort language-independent inspection of the extension file. Reads the
+ * header and classifies it; never throws — a missing file is `absent`, an
+ * unreadable one is `indeterminate`.
+ */
+export function inspectExtensionBinary(
+  extensionPath: string | null | undefined,
+): ExtensionBinaryState {
+  if (!extensionPath) return 'indeterminate';
+  let fd: number;
+  try {
+    fd = openSync(extensionPath, 'r');
+  } catch (err) {
+    return (err as NodeJS.ErrnoException)?.code === 'ENOENT' ? 'absent' : 'indeterminate';
+  }
+  try {
+    const buf = Buffer.alloc(BINARY_HEADER_BYTES);
+    const bytesRead = readSync(fd, buf, 0, BINARY_HEADER_BYTES, 0);
+    return classifyBinaryHeader(buf, bytesRead, process.platform, process.arch);
+  } catch {
+    return 'indeterminate';
+  } finally {
+    try {
+      closeSync(fd);
+    } catch {
+      /* closing the probe fd must never surface */
+    }
+  }
+}
+
+/**
+ * Diagnose a LadybugDB load failure, preferring a LANGUAGE-INDEPENDENT structural
+ * check of the extension binary over the localized error text:
+ *   - file absent             → missing_file
+ *   - present but malformed    → corrupt_file       (bad magic / wrong architecture)
+ *   - present and well-formed   → missing_dependency (a valid binary the loader rejected)
+ * The path comes from lbug's own English wrapper, so this holds in any OS display
+ * language. When the file cannot be located or read, it falls back to the string
+ * classifier (which still carries the language-independent hedged fallback). This
+ * is the entry point every surface should call.
+ */
+export function diagnoseExtensionLoad(reason: string | undefined | null): ExtensionLoadDiagnosis {
+  const text = reason ?? '';
+  const stringResult = classifyExtensionLoadError(text);
+  const fileState = inspectExtensionBinary(extractExtensionPath(text));
+
+  if (fileState === 'corrupt') {
+    return { kind: 'corrupt_file', remedy: CORRUPT_FILE_REMEDY };
+  }
+  if (fileState === 'valid') {
+    // A structurally sound binary that still failed to load ⇒ a dependency/runtime
+    // problem, decided WITHOUT the localized tail. Keep the string classifier's
+    // sharper remedy when it recognized the specific case (e.g. English 126).
+    const remedy =
+      stringResult.kind === 'missing_dependency'
+        ? stringResult.remedy
+        : STRUCTURAL_MISSING_DEPENDENCY_REMEDY;
+    return { kind: 'missing_dependency', remedy };
+  }
+  // 'absent' or 'indeterminate' → no positive structural evidence, so defer to the
+  // string classifier. Note a real never-installed extension has NO path in its
+  // reason (lbug says "has not been installed"), so it lands here via
+  // 'indeterminate' and the string classifier reports missing_file correctly; a
+  // path that lbug named but that is now gone (stale/racy) is better judged by
+  // what lbug actually reported than by re-deriving from disk.
+  return stringResult;
 }

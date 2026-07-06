@@ -42,7 +42,7 @@ import {
   initialiseSearchFTSCjkSegmentation,
 } from './search/cjk-segmentation.js';
 import { getExtensionCapabilities, resolveAnalyzeInstallPolicy } from './lbug/extension-loader.js';
-import { classifyExtensionLoadError } from './lbug/extension-load-error.js';
+import { diagnoseExtensionLoad } from './lbug/extension-load-error.js';
 import {
   startWalCheckpointDriver,
   type WalCheckpointDriver,
@@ -689,7 +689,7 @@ export async function runFullAnalysis(
         // by re-installing — the file is already present. Route that class to the
         // classified remedy (install VC++ redist / OpenSSL) instead of the old
         // "retry the network install" text that trapped the user in a loop.
-        const { kind, remedy } = classifyExtensionLoadError(rawFtsReason);
+        const { kind, remedy } = diagnoseExtensionLoad(rawFtsReason);
         const remedyTail =
           kind === 'missing_dependency'
             ? ` ${remedy}`
@@ -1356,7 +1356,7 @@ export async function runFullAnalysis(
       // (#2374) — the generic "install it with network access" guidance in
       // FTS_UNAVAILABLE_MESSAGE is wrong for that class (the file is present).
       const ftsReason = getExtensionCapabilities().find((c) => c.name === 'fts')?.reason;
-      const { kind, remedy } = classifyExtensionLoadError(ftsReason);
+      const { kind, remedy } = diagnoseExtensionLoad(ftsReason);
       log(
         kind === 'missing_dependency'
           ? `${FTS_UNAVAILABLE_MESSAGE} ${remedy}`

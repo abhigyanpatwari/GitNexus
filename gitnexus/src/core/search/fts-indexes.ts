@@ -1,6 +1,6 @@
 import { createFTSIndex, dropFTSIndex, DEFAULT_FTS_STEMMER } from '../lbug/lbug-adapter.js';
 import { getExtensionCapabilities } from '../lbug/extension-loader.js';
-import { classifyExtensionLoadError } from '../lbug/extension-load-error.js';
+import { diagnoseExtensionLoad } from '../lbug/extension-load-error.js';
 import { FTS_INDEXES } from './fts-schema.js';
 
 /**
@@ -29,7 +29,7 @@ export const ftsDegradedWarning = (): string => {
     // reinstalling (#2374) — surface the classified remedy instead of the
     // generic reinstall tail. Classify the raw reason (the class words survive
     // redaction), but only ever surface the redacted text.
-    const { kind, remedy } = classifyExtensionLoadError(fts.reason);
+    const { kind, remedy } = diagnoseExtensionLoad(fts.reason);
     const tail =
       kind === 'missing_dependency'
         ? ` ${remedy}`

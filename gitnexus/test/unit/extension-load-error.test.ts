@@ -1,16 +1,59 @@
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
+  classifyBinaryHeader,
   classifyExtensionLoadError,
+  diagnoseExtensionLoad,
+  extractExtensionPath,
   type ExtensionLoadErrorKind,
 } from '../../src/core/lbug/extension-load-error.js';
 
+// Minimal well-formed binary headers per format, for the structural check.
+function buildELF(eMachine: number): Buffer {
+  const b = Buffer.alloc(64);
+  b[0] = 0x7f;
+  b[1] = 0x45;
+  b[2] = 0x4c;
+  b[3] = 0x46; // 0x7F E L F
+  b[4] = 2; // 64-bit
+  b[5] = 1; // little-endian
+  b.writeUInt16LE(eMachine, 18);
+  return b;
+}
+function buildPE(machine: number): Buffer {
+  const peOff = 0x80;
+  const b = Buffer.alloc(peOff + 8);
+  b[0] = 0x4d;
+  b[1] = 0x5a; // MZ
+  b.writeUInt32LE(peOff, 0x3c);
+  b[peOff] = 0x50;
+  b[peOff + 1] = 0x45; // PE\0\0
+  b.writeUInt16LE(machine, peOff + 4);
+  return b;
+}
+function buildMachO(cpuType: number): Buffer {
+  const b = Buffer.alloc(32);
+  b.writeUInt32LE(0xfeedfacf, 0); // MH_MAGIC_64 (little-endian file)
+  b.writeUInt32LE(cpuType, 4);
+  return b;
+}
+function buildHostValidBinary(): Buffer {
+  const arm = process.arch === 'arm64';
+  if (process.platform === 'win32') return buildPE(arm ? 0xaa64 : 0x8664);
+  if (process.platform === 'linux') return buildELF(arm ? 0xb7 : 0x3e);
+  if (process.platform === 'darwin') return buildMachO(arm ? 0x0100000c : 0x01000007);
+  return Buffer.alloc(64); // unknown host: classifyBinaryHeader returns 'valid' anyway
+}
+
 /**
- * U1 (#2374): the four-way classifier and its Windows catch-all guard. The
- * guard is load-bearing — LadybugDB wraps every Windows load failure in the same
- * `Failed to load library … needed by extension` text, so only the specific
- * error-126 tail may route to `missing_dependency`; 127/5/1114 and the bare
- * wrapper must fall to `unknown`, and a corrupt/wrong-arch file must route to
- * `corrupt_file` first.
+ * U1 (#2374): the string classifier. The precise en/zh 126 tail gets the definite
+ * runtime remedy; other Windows tails (127/5/1114) and the bare wrapper match only
+ * lbug's language-independent `Failed to load library` wrapper, so they fall to the
+ * HEDGED `missing_dependency` remedy (never a wrong confident instruction); an
+ * English corrupt/wrong-arch tail routes to `corrupt_file` first. The structural
+ * layer (below) refines corrupt-vs-valid from the binary itself, in any language.
  */
 describe('classifyExtensionLoadError', () => {
   const kindCases: ReadonlyArray<readonly [string, string, ExtensionLoadErrorKind]> = [
@@ -119,5 +162,111 @@ describe('classifyExtensionLoadError', () => {
   it('missing-file remedy routes to the network install', () => {
     const { remedy } = classifyExtensionLoadError('has not been installed');
     expect(remedy).toMatch(/--repair-fts|GITNEXUS_LBUG_EXTENSION_INSTALL=auto/);
+  });
+});
+
+/**
+ * The language-independent structural layer: it decides corrupt-vs-valid from the
+ * binary's own header (PE/ELF/Mach-O magic + architecture), never from a localized
+ * OS-error string.
+ */
+describe('classifyBinaryHeader', () => {
+  const cases: ReadonlyArray<
+    readonly [string, Buffer, NodeJS.Platform, string, 'valid' | 'corrupt']
+  > = [
+    ['linux x64 valid ELF', buildELF(0x3e), 'linux', 'x64', 'valid'],
+    ['linux arm64 valid ELF', buildELF(0xb7), 'linux', 'arm64', 'valid'],
+    ['linux: arm64 ELF on x64 host → corrupt', buildELF(0xb7), 'linux', 'x64', 'corrupt'],
+    [
+      'linux: non-ELF bytes → corrupt',
+      Buffer.from('this is definitely not an ELF binary'),
+      'linux',
+      'x64',
+      'corrupt',
+    ],
+    ['win x64 valid PE', buildPE(0x8664), 'win32', 'x64', 'valid'],
+    ['win: arm64 PE on x64 host → corrupt', buildPE(0xaa64), 'win32', 'x64', 'corrupt'],
+    ['win: ELF file on a Windows host → corrupt', buildELF(0x3e), 'win32', 'x64', 'corrupt'],
+    ['darwin x64 valid Mach-O', buildMachO(0x01000007), 'darwin', 'x64', 'valid'],
+    ['darwin arm64 valid Mach-O', buildMachO(0x0100000c), 'darwin', 'arm64', 'valid'],
+    [
+      'darwin: x86_64 Mach-O on arm64 host → corrupt',
+      buildMachO(0x01000007),
+      'darwin',
+      'arm64',
+      'corrupt',
+    ],
+    [
+      'unknown host → valid (never claim corrupt)',
+      Buffer.from('whatever'),
+      'sunos' as NodeJS.Platform,
+      'x64',
+      'valid',
+    ],
+  ];
+
+  it.each(cases)('%s', (_name, buf, platform, arch, expected) => {
+    expect(classifyBinaryHeader(buf, buf.length, platform, arch)).toBe(expected);
+  });
+});
+
+describe('extractExtensionPath', () => {
+  const cases: ReadonlyArray<readonly [string, string, string | null]> = [
+    [
+      'real lbug wrapper (Windows, spaces + mixed separators)',
+      'Failed to load library: C:\\Users\\a b\\.lbdb\\extension\\0.18.0\\win_amd64\\fts\\libfts.lbug_extension which is needed by extension: fts. Error: x',
+      'C:\\Users\\a b\\.lbdb\\extension\\0.18.0\\win_amd64\\fts\\libfts.lbug_extension',
+    ],
+    [
+      'quoted variant',
+      "Failed to load library '/home/u/.lbdb/extension/0.18.0/linux_amd64/fts/libfts.lbug_extension': invalid ELF header",
+      '/home/u/.lbdb/extension/0.18.0/linux_amd64/fts/libfts.lbug_extension',
+    ],
+    ['no path (never installed)', 'Extension "fts" ... has not been installed.', null],
+    ['no .lbug_extension token', 'some unrelated error', null],
+  ];
+
+  it.each(cases)('%s', (_name, reason, expected) => {
+    expect(extractExtensionPath(reason)).toBe(expected);
+  });
+});
+
+describe('diagnoseExtensionLoad (structural, language-independent)', () => {
+  it('a valid host binary that still failed to load → missing_dependency', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ext-diag-valid-'));
+    const file = join(dir, 'libfts.lbug_extension');
+    writeFileSync(file, buildHostValidBinary());
+    try {
+      // A localized tail we do NOT enumerate — structural check decides it anyway.
+      const reason = `Failed to load library: ${file} which is needed by extension: fts. Error: <localized>`;
+      expect(diagnoseExtensionLoad(reason)).toMatchObject({ kind: 'missing_dependency' });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('a malformed host binary → corrupt_file regardless of the (localized) error text', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ext-diag-corrupt-'));
+    const file = join(dir, 'libfts.lbug_extension');
+    writeFileSync(file, Buffer.from('not a shared library'));
+    try {
+      const reason = `Failed to load library: ${file} which is needed by extension: fts. Error: Die Datei ist beschädigt.`;
+      expect(diagnoseExtensionLoad(reason)).toMatchObject({ kind: 'corrupt_file' });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('no readable file → falls back to the string classifier', () => {
+    // No path in the reason (never installed) → string classifier → missing_file.
+    expect(
+      diagnoseExtensionLoad('Extension "fts" is an official extension and has not been installed.'),
+    ).toMatchObject({ kind: 'missing_file' });
+    // Path present but absent on disk → defer to the string classifier (hedged here).
+    expect(
+      diagnoseExtensionLoad(
+        'Failed to load library: /nope/libfts.lbug_extension which is needed by extension: fts. Error: xyz',
+      ),
+    ).toMatchObject({ kind: 'missing_dependency' });
   });
 });
