@@ -211,6 +211,59 @@ describe('streamAllCSVsToDisk', () => {
     expect(content).not.toContain('const after = 2;');
   });
 
+  it('keeps legacy one-based mainframe spans on the buffered snippet path', async () => {
+    await fs.writeFile(
+      path.join(repoDir, 'src', 'job-window.jcl'),
+      ['//PRESTEP EXEC PGM=IEFBR14', '//LASTJOB JOB (ACCT),CLASS=A'].join('\n'),
+    );
+    await fs.writeFile(
+      path.join(repoDir, 'src', 'cobol-window.cbl'),
+      [
+        '       IDENTIFICATION DIVISION.',
+        '       PROGRAM-ID. DEMO.',
+        '       PROCEDURE DIVISION.',
+        '       TARGET-PARA.',
+        '           DISPLAY "target".',
+        '           EXIT.',
+        '       NEXT-PARA.',
+      ].join('\n'),
+    );
+    const graph = buildTestGraph([
+      {
+        id: 'code:job',
+        label: 'CodeElement',
+        name: 'LASTJOB',
+        filePath: 'src/job-window.jcl',
+        startLine: 2,
+        endLine: 2,
+      },
+      {
+        id: 'func:target-para',
+        label: 'Function',
+        name: 'TARGET-PARA',
+        filePath: 'src/cobol-window.cbl',
+        startLine: 4,
+        endLine: 6,
+      },
+    ]);
+
+    const result = await streamAllCSVsToDisk(graph, repoDir, csvDir);
+    const codeElementCsv = result.nodeFiles.get('CodeElement');
+    const functionCsv = result.nodeFiles.get('Function');
+    expect(codeElementCsv).toBeDefined();
+    expect(functionCsv).toBeDefined();
+    if (!codeElementCsv || !functionCsv) {
+      throw new Error('Expected mainframe snippet CSVs to be generated');
+    }
+
+    const codeElementContent = await fs.readFile(codeElementCsv.csvPath, 'utf-8');
+    expect(codeElementContent).toContain('//LASTJOB JOB (ACCT),CLASS=A');
+
+    const functionContent = await fs.readFile(functionCsv.csvPath, 'utf-8');
+    expect(functionContent).toContain('TARGET-PARA.');
+    expect(functionContent).toContain('DISPLAY ""target""');
+  });
+
   it('keeps full text file content searchable past 10KB', async () => {
     const lateNeedle = 'late_text_file_needle_after_10kb';
     await fs.writeFile(

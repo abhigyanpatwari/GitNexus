@@ -239,6 +239,21 @@ const EXACT_SYMBOL_CONTENT_LABELS = new Set([
   'Module',
 ]);
 
+const LEGACY_ONE_BASED_SNIPPET_EXTENSIONS = new Set([
+  '.cob',
+  '.cbl',
+  '.cobol',
+  '.cpy',
+  '.copybook',
+  '.jcl',
+  '.job',
+  '.proc',
+]);
+
+const usesLegacyOneBasedSnippetWindow = (filePath: unknown): boolean =>
+  typeof filePath === 'string' &&
+  LEGACY_ONE_BASED_SNIPPET_EXTENSIONS.has(path.extname(filePath).toLowerCase());
+
 const extractContent = async (node: GraphNode, contentCache: FileContentCache): Promise<string> => {
   const filePath = node.properties.filePath;
   const content = await contentCache.get(filePath);
@@ -260,7 +275,8 @@ const extractContent = async (node: GraphNode, contentCache: FileContentCache): 
   if (startLine === undefined || endLine === undefined) return '';
 
   const lines = content.split('\n');
-  const exactSymbolContent = EXACT_SYMBOL_CONTENT_LABELS.has(node.label);
+  const exactSymbolContent =
+    EXACT_SYMBOL_CONTENT_LABELS.has(node.label) && !usesLegacyOneBasedSnippetWindow(filePath);
   const start = Math.max(0, exactSymbolContent ? startLine : startLine - 2);
   const end = Math.min(lines.length - 1, exactSymbolContent ? endLine : endLine + 2);
   const snippet = lines.slice(start, end + 1).join('\n');
