@@ -52,7 +52,9 @@ const MISSING_FILE_SIGNATURES: readonly RegExp[] = [
  * application"), so a truncated Windows download is caught here, before the
  * missing-dependency branch.
  */
-const FILE_CORRUPTION_SIGNATURES: readonly RegExp[] = [
+// Exported so a parity test can assert this stays byte-identical to the copy in
+// scripts/install-duckdb-extension.mjs (that `.mjs` cannot import this `.ts`), #2383 F5b.
+export const FILE_CORRUPTION_SIGNATURES: readonly RegExp[] = [
   /invalid elf/i,
   /file too short/i,
   /not a valid/i,
