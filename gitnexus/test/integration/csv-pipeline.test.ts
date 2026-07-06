@@ -171,6 +171,46 @@ describe('streamAllCSVsToDisk', () => {
     expect(content).toContain('"index.ts"');
   });
 
+  it('stores exact symbol content without neighboring lines', async () => {
+    await fs.writeFile(
+      path.join(repoDir, 'src', 'symbol-window.ts'),
+      [
+        'const before = 1;',
+        '',
+        'export function target() {',
+        '  return before;',
+        '}',
+        '',
+        'const after = 2;',
+        '',
+      ].join('\n'),
+    );
+    const graph = buildTestGraph([
+      {
+        id: 'func:target',
+        label: 'Function',
+        name: 'target',
+        filePath: 'src/symbol-window.ts',
+        startLine: 2,
+        endLine: 4,
+        isExported: true,
+      },
+    ]);
+
+    const result = await streamAllCSVsToDisk(graph, repoDir, csvDir);
+    const functionCsv = result.nodeFiles.get('Function');
+    expect(functionCsv).toBeDefined();
+    if (!functionCsv) {
+      throw new Error('Function CSV was not generated');
+    }
+
+    const content = await fs.readFile(functionCsv.csvPath, 'utf-8');
+    expect(content).toContain('export function target()');
+    expect(content).toContain('return before;');
+    expect(content).not.toContain('const before = 1;');
+    expect(content).not.toContain('const after = 2;');
+  });
+
   it('keeps full text file content searchable past 10KB', async () => {
     const lateNeedle = 'late_text_file_needle_after_10kb';
     await fs.writeFile(

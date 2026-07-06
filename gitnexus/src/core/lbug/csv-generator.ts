@@ -212,6 +212,33 @@ export const normalizeFtsText = (text: string): string => text.replace(/[\r\n\t]
 const formatFtsDescription = (description: string): string =>
   normalizeFtsText(applyCjkSegmentationIfEnabled(description));
 
+const EXACT_SYMBOL_CONTENT_LABELS = new Set([
+  'Function',
+  'Method',
+  'Class',
+  'Interface',
+  'CodeElement',
+  'Struct',
+  'Enum',
+  'Macro',
+  'Typedef',
+  'Union',
+  'Namespace',
+  'Trait',
+  'Impl',
+  'TypeAlias',
+  'Const',
+  'Static',
+  'Variable',
+  'Property',
+  'Record',
+  'Delegate',
+  'Annotation',
+  'Constructor',
+  'Template',
+  'Module',
+]);
+
 const extractContent = async (node: GraphNode, contentCache: FileContentCache): Promise<string> => {
   const filePath = node.properties.filePath;
   const content = await contentCache.get(filePath);
@@ -233,8 +260,9 @@ const extractContent = async (node: GraphNode, contentCache: FileContentCache): 
   if (startLine === undefined || endLine === undefined) return '';
 
   const lines = content.split('\n');
-  const start = Math.max(0, startLine - 2);
-  const end = Math.min(lines.length - 1, endLine + 2);
+  const exactSymbolContent = EXACT_SYMBOL_CONTENT_LABELS.has(node.label);
+  const start = Math.max(0, exactSymbolContent ? startLine : startLine - 2);
+  const end = Math.min(lines.length - 1, exactSymbolContent ? endLine : endLine + 2);
   const snippet = lines.slice(start, end + 1).join('\n');
   const MAX_SNIPPET = 5000;
   const capped =
