@@ -171,6 +171,109 @@ describe('streamAllCSVsToDisk', () => {
     expect(content).toContain('"index.ts"');
   });
 
+  it('stores exact symbol content, pinned against a ±1 boundary shift', async () => {
+    // Neighbors sit DIRECTLY adjacent to the [2,4] span (no blank buffer), so a
+    // one-line slice shift at either edge — the #2379 COBOL/JCL failure mode —
+    // pulls a guard line into the snippet and fails an assertion.
+    await fs.writeFile(
+      path.join(repoDir, 'src', 'symbol-window.ts'),
+      [
+        'const guardTop = 0;',
+        'const before = 1;',
+        'export function target() {',
+        '  return before;',
+        '}',
+        'const after = 2;',
+        'const guardBottom = 3;',
+      ].join('\n'),
+    );
+    const graph = buildTestGraph([
+      {
+        id: 'func:target',
+        label: 'Function',
+        name: 'target',
+        filePath: 'src/symbol-window.ts',
+        startLine: 2,
+        endLine: 4,
+        isExported: true,
+      },
+    ]);
+
+    const result = await streamAllCSVsToDisk(graph, repoDir, csvDir);
+    const functionCsv = result.nodeFiles.get('Function');
+    expect(functionCsv).toBeDefined();
+    const content = await fs.readFile(functionCsv!.csvPath, 'utf-8');
+    expect(content).toContain('export function target()');
+    expect(content).toContain('return before;');
+    // Directly-adjacent neighbors must NOT leak — catches an off-by-one either way.
+    expect(content).not.toContain('const before = 1;');
+    expect(content).not.toContain('const after = 2;');
+  });
+
+  it('stores exact content for a one-line symbol (startLine === endLine)', async () => {
+    await fs.writeFile(
+      path.join(repoDir, 'src', 'one-line.ts'),
+      ['AAA_TOP', 'BBB_BEFORE', 'const only = 1;', 'CCC_AFTER', 'DDD_BOTTOM'].join('\n'),
+    );
+    const graph = buildTestGraph([
+      {
+        id: 'func:only',
+        label: 'Function',
+        name: 'only',
+        filePath: 'src/one-line.ts',
+        startLine: 2,
+        endLine: 2,
+        isExported: true,
+      },
+    ]);
+
+    const result = await streamAllCSVsToDisk(graph, repoDir, csvDir);
+    const functionCsv = result.nodeFiles.get('Function');
+    expect(functionCsv).toBeDefined();
+    const content = await fs.readFile(functionCsv!.csvPath, 'utf-8');
+    expect(content).toContain('const only = 1;');
+    expect(content).not.toContain('BBB_BEFORE');
+    expect(content).not.toContain('CCC_AFTER');
+  });
+
+  it('keeps ±2 neighbor context for non-exact labels (Section)', async () => {
+    // `Section` is NOT in EXACT_SYMBOL_CONTENT_LABELS, so it retains the ±2
+    // context window — the fallback branch the exact-content change left in place.
+    await fs.writeFile(
+      path.join(repoDir, 'src', 'section-window.ts'),
+      [
+        's0_alpha',
+        's1_bravo',
+        's2_charlie',
+        's3_delta',
+        's4_echo',
+        's5_foxtrot',
+        's6_golf',
+        's7_hotel',
+      ].join('\n'),
+    );
+    const graph = buildTestGraph([
+      {
+        id: 'sec:s',
+        label: 'Section',
+        name: 's',
+        filePath: 'src/section-window.ts',
+        startLine: 4,
+        endLine: 4,
+      },
+    ]);
+
+    const result = await streamAllCSVsToDisk(graph, repoDir, csvDir);
+    const sectionCsv = result.nodeFiles.get('Section');
+    expect(sectionCsv).toBeDefined();
+    const content = await fs.readFile(sectionCsv!.csvPath, 'utf-8');
+    expect(content).toContain('s4_echo'); // the section's own line
+    expect(content).toContain('s2_charlie'); // startLine - 2
+    expect(content).toContain('s6_golf'); // endLine + 2
+    expect(content).not.toContain('s1_bravo'); // outside the ±2 window
+    expect(content).not.toContain('s7_hotel');
+  });
+
   it('keeps full text file content searchable past 10KB', async () => {
     const lateNeedle = 'late_text_file_needle_after_10kb';
     await fs.writeFile(
