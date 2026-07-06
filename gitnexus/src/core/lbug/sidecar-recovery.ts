@@ -278,7 +278,9 @@ export const guardWalQuarantine = async (
 ): Promise<void> => {
   const state = await inspectLbugSidecars(dbPath);
   if (state.kind === 'wal-with-shadow') {
-    logger.warn(
+    warnOnce(
+      logger,
+      `${dbPath}:present-shadow-refuse:${mode}`,
       `GitNexus: refusing to quarantine WAL at ${dbPath}.wal during ${mode} recovery — ` +
         'the .shadow sidecar is present on disk, so the open likely failed on path reachability or a lock ' +
         'rather than a missing shadow. Run `gitnexus analyze --force <repo-path> --index-only` if the index is genuinely broken.',
@@ -286,7 +288,9 @@ export const guardWalQuarantine = async (
     throw new Error(presentShadowUnreachableMessage(dbPath, triggeringErr));
   }
   if (state.kind === 'orphan-wal') {
-    logger.warn(
+    warnOnce(
+      logger,
+      `${dbPath}:large-wal-refuse:${mode}`,
       `GitNexus: refusing to quarantine large WAL (${state.walBytes} bytes) at ${dbPath}.wal during ${mode} recovery; ` +
         'manual recovery required — run `gitnexus analyze --force <repo-path> --index-only`.',
     );

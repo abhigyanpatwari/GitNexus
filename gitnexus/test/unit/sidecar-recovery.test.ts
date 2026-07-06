@@ -6,6 +6,7 @@ import { readFileSync } from 'node:fs';
 import {
   _resetSidecarRecoveryWarningsForTest,
   finalizeLbugSidecarsAfterClose,
+  guardWalQuarantine,
   inspectLbugSidecars,
   isMissingShadowSidecarError,
   isPermissionRenameError,
@@ -366,6 +367,46 @@ describe('LadybugDB sidecar recovery', () => {
         "Runtime exception: Couldn't replay shadow pages under read-only mode.",
       );
       expect(isMissingShadowSidecarError(replay)).toBe(false);
+    });
+  });
+
+  describe('guardWalQuarantine warn anti-spam (warnOnce milestones — S2/S3)', () => {
+    it('warns once, not per-call, on a repeated present-shadow refusal', async () => {
+      await fs.writeFile(`${dbPath}.wal`, Buffer.alloc(128));
+      await fs.writeFile(`${dbPath}.shadow`, Buffer.alloc(64));
+      const log = logger();
+      const trigger = new Error('trigger');
+
+      await expect(guardWalQuarantine(dbPath, 'read-only', trigger, log)).rejects.toThrow(
+        /present but unreachable/,
+      );
+      await expect(guardWalQuarantine(dbPath, 'read-only', trigger, log)).rejects.toThrow(
+        /present but unreachable/,
+      );
+
+      // First refusal warns (milestone 1); the second same-key occurrence is
+      // downgraded to debug by warnOnce rather than warning every request.
+      expect(log.warn).toHaveBeenCalledTimes(1);
+      expect(log.warn).toHaveBeenCalledWith(
+        expect.stringContaining('the .shadow sidecar is present on disk'),
+      );
+      expect(log.debug).toHaveBeenCalled();
+    });
+
+    it('warns once, not per-call, on a repeated large-orphan-WAL refusal', async () => {
+      await fs.writeFile(`${dbPath}.wal`, Buffer.alloc(TINY_ORPHAN_WAL_BYTES + 1));
+      const log = logger();
+      const trigger = new Error('trigger');
+
+      await expect(guardWalQuarantine(dbPath, 'writable', trigger, log)).rejects.toThrow(
+        /Rebuild the index/,
+      );
+      await expect(guardWalQuarantine(dbPath, 'writable', trigger, log)).rejects.toThrow(
+        /Rebuild the index/,
+      );
+
+      expect(log.warn).toHaveBeenCalledTimes(1);
+      expect(log.debug).toHaveBeenCalled();
     });
   });
 
