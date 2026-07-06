@@ -41,7 +41,7 @@ import {
   getSearchFTSCjkSegmentation,
   initialiseSearchFTSCjkSegmentation,
 } from './search/cjk-segmentation.js';
-import { resolveAnalyzeInstallPolicy } from './lbug/extension-loader.js';
+import { getExtensionCapabilities, resolveAnalyzeInstallPolicy } from './lbug/extension-loader.js';
 import {
   startWalCheckpointDriver,
   type WalCheckpointDriver,
@@ -53,8 +53,13 @@ import {
   loadMeta,
   ensureGitNexusIgnored,
   registerRepo,
+  adoptFlatBranchLabel,
+  isReadOnlyFilesystemError,
   isRepoRegistered,
   cleanupOldKuzuFiles,
+  reconcileMetadataFiles,
+  isMissingFilesystemError,
+  INDEX_METADATA_FILE,
   INCREMENTAL_SCHEMA_VERSION,
   type RepoMeta,
 } from '../storage/repo-manager.js';
@@ -94,7 +99,6 @@ import {
 import {
   getCurrentCommit,
   getCurrentBranch,
-  getDefaultBranch,
   getRemoteUrl,
   hasGitDir,
   getInferredRepoName,
@@ -205,13 +209,13 @@ export interface AnalyzeOptions {
    */
   defaultBranch?: string;
   /**
-   * Index-branch selector (#2106). Distinct from `defaultBranch` (which only
-   * affects generated AGENTS.md/CLAUDE.md base_ref text). When set, this run is
-   * labelled as that branch and routed to a per-branch index slot unless it is
-   * the primary branch. When `undefined`, the branch is auto-detected from the
-   * checked-out HEAD (the flat/primary slot for the first-indexed branch, a
-   * `branches/<slug>/` sub-directory otherwise). Detached HEAD / non-git always
-   * maps to the flat slot.
+   * Index-branch selector (#2106, #2354). Distinct from `defaultBranch` (which
+   * only affects generated AGENTS.md/CLAUDE.md base_ref text). When set, this
+   * run is pinned to a per-branch index slot (`branches/<slug>/`) unless the
+   * label matches the flat slot's recorded branch. When `undefined`, the run
+   * always targets the flat workspace slot, which follows the checked-out
+   * working tree; the auto-detected branch is only recorded as the slot's
+   * informational label. Detached HEAD / non-git also map to the flat slot.
    */
   branch?: string;
   /**
@@ -279,10 +283,12 @@ export interface AnalyzeResult {
    */
   ftsSkipped?: boolean;
   /**
-   * True when the index this run produced/validated is the primary/flat slot
-   * (#2106 R2). `false` for a non-primary branch index. Lets the CLI skip
-   * repo-root AGENTS.md/CLAUDE.md refreshes (e.g. the base_ref fast-path) for a
+   * True when the index this run produced/validated is the flat workspace
+   * slot (#2106 R2, inverted by #2354 to follow the checked-out branch).
+   * `false` for a pinned `--branch` sub-index. Lets the CLI skip repo-root
+   * AGENTS.md/CLAUDE.md refreshes (e.g. the base_ref fast-path) for a pinned
    * branch analyze, mirroring the in-pipeline `if (!placement.branch)` gate.
+   * (The historical "primary" name is kept — it is public API surface.)
    */
   isPrimaryBranch?: boolean;
 }
@@ -341,33 +347,15 @@ export const PHASE_LABELS: Record<string, string> = {
  * directly and never calls `process.exit()`.
  */
 /**
- * Build the primary-inversion warning (#2106 R8), or `undefined` when there is
- * nothing to warn about. Pure + exported for testing. Both inputs are trimmed
- * (a diagnostic — a missed warning is low-harm; a false warning is the thing to
- * avoid). `defaultBranch` is the repo's `origin/HEAD` branch (null when unset,
- * e.g. fresh clones / CI), `flatOwner` is the branch that owns the flat slot.
- */
-export const primaryInversionWarning = (
-  defaultBranch: string | null | undefined,
-  flatOwner: string | null | undefined,
-): string | undefined => {
-  const norm = (s: string | null | undefined): string | undefined => s?.trim() || undefined;
-  const d = norm(defaultBranch);
-  const o = norm(flatOwner);
-  if (!d || !o || d === o) return undefined;
-  return (
-    `Warning: the default branch "${d}" is not the primary index — "${o}" owns the flat slot. ` +
-    `Run \`gitnexus clean --branch ${o}\` then re-index on "${d}", or query it explicitly with \`--branch ${d}\`.`
-  );
-};
-
-/**
  * Collect the recorded parse-cache chunk keys across the flat + every branch
- * meta under a flat `.gitnexus` storage, EXCLUDING `excludeDir` (the current
- * run's own meta dir) so a single-branch repo collects nothing and its prune
- * stays byte-identical to today (#2106 R6). `complete` is false when a sibling
- * meta.json exists but fails to parse — callers then retain the whole shared
- * cache rather than over-evict another branch's still-live shards. Exported for
+ * metadata directory under a flat `.gitnexus` storage, EXCLUDING `excludeDir`
+ * (the current run's own meta dir) so a single-branch repo collects nothing and
+ * its prune stays byte-identical to today (#2106 R6 — the byte-identity claim
+ * is about the PRUNE result; the metadata FILENAME read here changed with
+ * PR #2363's rename, checking `gitnexus.json` first then the legacy
+ * `meta.json` mirror). `complete` is false when a sibling metadata file exists
+ * but fails to read or parse — callers then retain the whole shared cache
+ * rather than over-evict another branch's still-live shards. Exported for
  * testing.
  */
 export const collectBranchCacheKeys = async (
@@ -384,9 +372,18 @@ export const collectBranchCacheKeys = async (
     if (excludeDir && path.resolve(dir) === path.resolve(excludeDir)) continue;
     let raw: string;
     try {
-      raw = await fs.readFile(path.join(dir, 'meta.json'), 'utf-8');
-    } catch {
-      continue; // no meta here — not a branch index, not a failure
+      raw = await fs.readFile(path.join(dir, INDEX_METADATA_FILE), 'utf-8');
+    } catch (newErr) {
+      if (!isMissingFilesystemError(newErr)) {
+        complete = false;
+        continue;
+      }
+      try {
+        raw = await fs.readFile(path.join(dir, 'meta.json'), 'utf-8');
+      } catch (legacyErr) {
+        if (!isMissingFilesystemError(legacyErr)) complete = false;
+        continue; // no metadata here — not a branch index, not a failure
+      }
     }
     try {
       const parsed = JSON.parse(raw) as { cacheKeys?: unknown };
@@ -585,13 +582,15 @@ export async function runFullAnalysis(
   const repoHasGit = hasGitDir(repoPath);
   const currentCommit = repoHasGit ? getCurrentCommit(repoPath) : '';
 
-  // ── #2106: resolve which branch slot this run writes to ───────────────
+  // ── #2106/#2354: resolve which branch slot this run writes to ─────────
   // `branchLabel` is the branch identity recorded in meta.json (incl. the
-  // primary). `placement.branch` is undefined for the flat/primary slot (the
-  // lbug/meta paths stay byte-identical to single-branch behavior) and set for
-  // a `branches/<slug>/` sub-directory. Explicit `--branch` is always honored;
-  // otherwise auto-detect the checked-out branch (null for detached HEAD /
-  // non-git → flat slot).
+  // flat workspace slot). `placement.branch` is undefined for the flat slot
+  // (the lbug/meta paths stay byte-identical to single-branch behavior) and
+  // set for a `branches/<slug>/` sub-directory. Only an explicit `--branch`
+  // can route to a sub-directory; a plain analyze ALWAYS targets the flat
+  // slot, which follows the checked-out working tree (#2354) — the
+  // auto-detected branch (null for detached HEAD / non-git) is recorded as
+  // the slot's informational label only.
   // Normalize the auto-detected branch the same way an explicit `--branch` is
   // validated (#2106 R1): a git ref the branch-name rules forbid (backtick,
   // `~ ^ : ? *`, leading `-`, `..`) becomes `null` → the flat slot, matching
@@ -612,29 +611,25 @@ export async function runFullAnalysis(
     );
   }
   const branchLabel = options.branch ?? checkedOutBranch;
-  const placement = await resolveBranchPlacement(repoPath, branchLabel);
+  const placement = options.branch ? await resolveBranchPlacement(repoPath, branchLabel) : {};
   const { lbugPath, metaPath } = getStoragePaths(repoPath, placement.branch);
-  // Directory that owns this run's meta.json (flat `.gitnexus` for the primary
-  // slot, `branches/<slug>/` otherwise). loadMeta/saveMeta operate on it so
-  // each branch keeps its own lastCommit / fileHashes / incremental dirty flag.
+  // metaPath now points to the metadata file (gitnexus.json) in a branch-specific directory.
+  // metaDir is the directory containing the metadata file (and branch-specific DBs).
   const metaDir = path.dirname(metaPath);
 
-  const existingMeta = await loadMeta(metaDir);
-
-  // ── #2106 (R8): warn when the repo's default branch is not the primary ──
-  // A non-default branch can own the flat slot (it was indexed first). That
-  // index is still fully queryable via `--branch`, so this is an ergonomics
-  // wart, not data loss — we only warn (no risky relocation of a live DB).
-  if (repoHasGit) {
-    // Who owns the flat slot after this run? For a flat/primary run it is this
-    // run's resolved label (carrying an existing stamp forward); for a branch
-    // run the flat owner is unchanged, so read the flat meta.
-    const flatOwner = placement.branch
-      ? (await loadMeta(storagePath))?.branch
-      : (branchLabel ?? existingMeta?.branch);
-    const warning = primaryInversionWarning(getDefaultBranch(repoPath), flatOwner);
-    if (warning) log(warning);
+  // Keep gitnexus.json and the legacy meta.json mirror in sync (fresher
+  // indexedAt wins; nothing is deleted). Best-effort: loadMeta has its own
+  // legacy fallback, so a reconciliation failure (read-only mount, full disk)
+  // must never abort the analyze run — a repo that indexed fine read-only
+  // before the rename must keep doing so.
+  try {
+    await reconcileMetadataFiles(repoPath);
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException)?.code;
+    log(`Metadata reconciliation failed (non-critical${code ? `, ${code}` : ''}); continuing.`);
   }
+
+  const existingMeta = await loadMeta(metaDir);
 
   // ── FTS-only repair path ────────────────────────────────────────────
   if (options.repairFts) {
@@ -684,10 +679,17 @@ export async function runFullAnalysis(
         policy: resolveAnalyzeInstallPolicy(),
       });
       if (!repairFtsAvailable) {
+        // Surface the load-side reason (#2374): "not pre-installed" was wrong
+        // and doctor never installed anything, so the old message trapped
+        // users in a query → repair-fts → doctor loop with no way out.
+        const ftsReason = getExtensionCapabilities()
+          .find((c) => c.name === 'fts')
+          ?.reason?.replace(/\.$/, '');
         throw new Error(
-          'Cannot repair FTS indexes: the LadybugDB FTS extension is unavailable ' +
-            '(not pre-installed and could not be installed on this machine). ' +
-            'Run `gitnexus doctor` to install it, then retry `--repair-fts`.',
+          'Cannot repair FTS indexes: the LadybugDB FTS extension failed to load' +
+            (ftsReason ? ` — ${ftsReason}` : '') +
+            '. Retry with network access and GITNEXUS_LBUG_EXTENSION_INSTALL=auto to install it, ' +
+            'or pre-install the extension file; run `gitnexus doctor` for live FTS status.',
         );
       }
       progress('fts', 85, 'Repairing search indexes...');
@@ -862,6 +864,39 @@ export async function runFullAnalysis(
       const healUnregistered =
         options.allowDuplicateName === true && !(await isRepoRegistered(repoPath));
       if (!dirty && !healUnregistered) {
+        // ── #2354: restamp the workspace label on a same-commit branch flip ──
+        // The flat slot follows the checked-out working tree; a branch switch
+        // at the SAME commit with a clean tree changes nothing the pipeline
+        // must rebuild, but the slot's informational `branch` label (and the
+        // registry copy that query-side branch scoping reads) would go stale.
+        // Detached HEAD / non-git (branchLabel === null) keeps the existing
+        // stamp, mirroring the end-of-run meta write.
+        if (!placement.branch && branchLabel && existingMeta.branch !== branchLabel) {
+          // Adopt first, stamp last (#2364 review F3): this block's retry
+          // guard is `existingMeta.branch !== branchLabel`, so stamping the
+          // meta before the registry/shadow cleanup would flip the guard and
+          // lock in any partial failure — with saveMeta last, a failed adopt
+          // leaves the guard true and the next same-commit run self-heals
+          // (adopt is idempotent). The whole sync is best-effort: the label
+          // is informational and the flat DB content is byte-valid for both
+          // labels here (same commit, clean tree), so an "Already up to
+          // date" run must not fail over it; read-only storage — the
+          // documented Docker :ro workflow (#1549) — degrades to a warning.
+          try {
+            await adoptFlatBranchLabel(repoPath, branchLabel);
+            await saveMeta(metaDir, { ...existingMeta, branch: branchLabel });
+          } catch (err) {
+            // EACCES/EPERM also arise from ownership problems and transient
+            // Windows locks, so keep the real error visible alongside the
+            // #1549 read-only hint instead of replacing it.
+            const reason = isReadOnlyFilesystemError(err)
+              ? `${(err as Error).message} — storage may be read-only (#1549)`
+              : (err as Error).message;
+            log(
+              `Warning: could not restamp the workspace branch label (${reason}); will retry on the next run.`,
+            );
+          }
+        }
         await ensureGitNexusIgnored(repoPath);
         return {
           // `resolveRepoIdentityRoot` collapses worktree roots to the
@@ -1593,6 +1628,26 @@ export async function runFullAnalysis(
       // top-level fields (#2106).
       branch: placement.branch,
     });
+
+    // ── #2354: the flat workspace slot has adopted this run's branch ──────
+    // Drop a now-shadowed `branches/<slug>/` sub-index for the same label
+    // (unreachable once the flat slot serves it) and align the registry's
+    // top-level branch label. Best-effort like the parse-cache save above
+    // (#2364 review F5): the index is complete and registered, and a failure
+    // here leaves only a stale registry label / undeleted shadowed dir —
+    // never wrong routing, because the flat meta this run already stamped is
+    // what applyBranchScope trusts. Retried by the next content-changing run
+    // (same-commit fast-path runs skip it: their guard compares the
+    // already-stamped meta label).
+    if (!placement.branch && branchLabel) {
+      try {
+        await adoptFlatBranchLabel(repoPath, branchLabel);
+      } catch (e) {
+        log(
+          `Warning: could not sync the workspace branch label (${(e as Error).message}); continuing.`,
+        );
+      }
+    }
 
     // Keep generated .gitnexus contents ignored without editing the user's root .gitignore.
     await ensureGitNexusIgnored(repoPath);

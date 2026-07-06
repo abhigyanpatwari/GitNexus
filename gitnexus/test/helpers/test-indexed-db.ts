@@ -226,7 +226,7 @@ export function withTestLbugDB(
           ftsSkipWarned = true;
           console.warn(
             `[withTestLbugDB(${prefix})] Skipping FTS-dependent tests — the LadybugDB ` +
-              `FTS extension is unavailable (not pre-installed and could not be installed).`,
+              `FTS extension is unavailable (LOAD failed and it could not be installed).`,
           );
         }
         ctx.skip();

@@ -1,4 +1,6 @@
+import fs from 'fs';
 import os from 'os';
+import path from 'path';
 import { createRequire } from 'module';
 
 const require = createRequire(import.meta.url);
@@ -28,7 +30,31 @@ const packageVersion = (name: string): string | undefined => {
   try {
     return require(`${name}/package.json`).version;
   } catch {
-    return undefined;
+    // Packages whose `exports` map omits ./package.json (e.g. @ladybugdb/core)
+    // reject the direct require with ERR_PACKAGE_PATH_NOT_EXPORTED, which made
+    // doctor print "LadybugDB: unknown" on every platform (#2374). Resolve the
+    // entry point instead and walk up to the package's own package.json.
+    try {
+      let dir = path.dirname(require.resolve(name));
+      // Entry points sit at the package root or a shallow dist/ dir; a few
+      // hops always reach the package's own package.json.
+      for (let hops = 0; hops < 5; hops++) {
+        const candidate = path.join(dir, 'package.json');
+        if (fs.existsSync(candidate)) {
+          const pkg = JSON.parse(fs.readFileSync(candidate, 'utf8')) as {
+            name?: string;
+            version?: string;
+          };
+          if (pkg.name === name) return pkg.version;
+        }
+        const parent = path.dirname(dir);
+        if (parent === dir) break;
+        dir = parent;
+      }
+      return undefined;
+    } catch {
+      return undefined;
+    }
   }
 };
 

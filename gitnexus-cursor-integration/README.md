@@ -8,8 +8,8 @@ Static config that adds GitNexus knowledge-graph augmentation and skill files to
 
 | Layer                     | What it does                                                                                                                              | How it's installed                                                              |
 | ------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------- |
-| **MCP**                   | `gitnexus` MCP server with 16 tools (`query`, `context`, `impact`, `detect_changes`, `rename`, …)                                         | `npx gitnexus setup` writes `~/.cursor/mcp.json` automatically.                 |
-| **Skills**                | `/gitnexus-exploring`, `/gitnexus-debugging`, `/gitnexus-impact-analysis`, `/gitnexus-refactoring`, `/gitnexus-pr-review` markdown skills | `npx gitnexus setup` copies them to `~/.cursor/skills/gitnexus/`.               |
+| **MCP**                   | `gitnexus` MCP server with 17 tools (`query`, `context`, `impact`, `detect_changes`, `rename`, …)                                         | `npx gitnexus setup` writes `~/.cursor/mcp.json` automatically.                 |
+| **Skills**                | All bundled markdown skills (`/gitnexus-exploring`, `/gitnexus-debugging`, `/gitnexus-impact-analysis`, `/gitnexus-refactoring`, `/gitnexus-guide`, `/gitnexus-cli`, `/gitnexus-pr-review`, `/gitnexus-pdg-query`, `/gitnexus-taint-analysis`) | `npx gitnexus setup` copies them to `~/.cursor/skills/gitnexus/`.               |
 | **Hooks** _(this README)_ | `postToolUse` hook that enriches `Shell` / `Read` / `Grep` tool calls with graph context — same augmentation Claude Code gets             | **Manual** — copy the files described below into your project's `.cursor/`. |
 
 ## Hook install

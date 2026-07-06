@@ -1,9 +1,12 @@
 /**
  * Remove Command (#664)
  *
- * Delete the `.gitnexus/` index for a registered repo and unregister it
- * from the global registry (~/.gitnexus/registry.json). The target is
- * identified by alias / basename-derived name / remote-inferred name /
+ * Delete the `.gitnexus/` index directory for a registered repo (including
+ * both metadata filenames — gitnexus.json and its legacy meta.json mirror —
+ * which live inside it) and unregister it from the global registry
+ * (~/.gitnexus/registry.json).
+ *
+ * The target is identified by alias / basename-derived name / remote-inferred name /
  * absolute path — no `--repo` flag, just a positional argument so the
  * destructive-command ergonomics match `clean` (which is also
  * destructive but scoped to `process.cwd()`).

@@ -32,8 +32,8 @@ export const zhCN = {
   'status.currentCommit': '当前提交',
   'status.branch': '分支',
   'status.detached': '（分离 HEAD）',
-  'status.branchNotIndexed':
-    "⚠️ 当前分支未索引（主索引对应 '{{primary}}'；请运行 gitnexus analyze）",
+  'status.workspaceIndexLabel':
+    "工作区索引：最近在 '{{primary}}' 分支上分析（重新运行 gitnexus analyze 以跟随当前分支）",
   'status.status': '状态',
   'status.upToDate': '✅ 已是最新',
   'status.stale': '⚠️ 已过期（重新运行 gitnexus analyze）',
@@ -119,7 +119,8 @@ export const zhCN = {
   'help.command.help.description': '显示命令帮助',
   'help.option.help': '显示命令帮助',
   'help.option.version': '输出版本号',
-  'help.command.setup.description': '一次性设置：为 Cursor、Claude Code、OpenCode、Codex 配置 MCP',
+  'help.command.setup.description':
+    '一次性设置：为 Cursor、Claude Code、Antigravity、OpenCode、CodeBuddy、Qoder、Codex 配置 MCP',
   'help.command.uninstall.description':
     '撤销 `setup`：从所有检测到的编辑器中移除 GitNexus 的 MCP 配置、技能和钩子',
   'help.command.analyze.description': '索引仓库（完整分析）',
@@ -130,6 +131,9 @@ export const zhCN = {
   'help.command.list.description': '列出所有已索引仓库',
   'help.command.status.description': '显示当前仓库的索引状态',
   'help.command.doctor.description': '显示运行平台能力和嵌入配置',
+  'help.command.embeddings.description': '管理按需安装的本地嵌入运行时',
+  'help.command.embeddings.install.description':
+    '按需安装本地嵌入组件（@huggingface/transformers + onnxruntime-node）。修复 npm 跳过可选包的安装（例如在 HTTP 代理后，#2370）。仅从你配置的 npm registry 下载 — 镜像和代理均生效。',
   'help.command.clean.description': '删除当前仓库的 GitNexus 索引',
   'help.command.remove.description':
     '删除已注册仓库的 GitNexus 索引（按别名、名称或绝对路径）。与 `clean` 不同，不要求位于仓库内；未知目标会幂等处理。',
@@ -187,7 +191,7 @@ export const zhCN = {
   'help.option.analyze.embeddingBatchSize': '每个嵌入批次的节点数',
   'help.option.analyze.embeddingSubBatchSize': '每次嵌入模型调用的分块数',
   'help.option.analyze.embeddingDevice': '嵌入设备：auto、cpu、dml、cuda 或 wasm',
-  'help.option.index.force': '即使缺少 meta.json 也注册（统计为空）',
+  'help.option.index.force': '即使缺少索引元数据也注册（统计为空）',
   'help.option.index.allowNonGit': '允许注册非 Git 仓库文件夹',
   'help.option.port': '端口号',
   'help.option.serve.host': '绑定地址（默认：127.0.0.1；远程访问可用 0.0.0.0）',
@@ -199,7 +203,7 @@ export const zhCN = {
   'help.option.force.confirmation': '跳过确认提示',
   'help.option.uninstall.force': '应用更改（默认仅为预演预览）',
   'help.option.clean.all': '清理所有已索引仓库',
-  'help.option.clean.branch': '仅删除指定分支的索引（不影响主索引）',
+  'help.option.clean.branch': '仅删除指定分支的索引（不影响工作区索引）',
   'help.option.clean.lbugSidecars': '清理已隔离的 LadybugDB missing-shadow WAL sidecar',
   'help.option.wiki.force': '即使已是最新也强制完整重新生成',
   'help.option.wiki.provider':
@@ -250,6 +254,9 @@ export const zhCN = {
   'help.option.check.cycles': '检测循环导入，并在发现循环时失败',
   'help.option.evalServer.host': '绑定地址（默认：127.0.0.1；用 0.0.0.0 暴露到所有网卡）',
   'help.option.evalServer.idleTimeout': '空闲 N 秒后自动关闭（0 = 禁用）',
+  'help.option.embeddings.install.cuda':
+    '同时下载 CUDA GPU 二进制文件（运行 onnxruntime-node 的 NuGet postinstall；代理后请设置 GLOBAL_AGENT_HTTPS_PROXY）',
+  'help.option.embeddings.install.force': '即使嵌入组件已可解析，也强制安装到运行时目录',
   'help.option.group.create.force': '覆盖现有仓库组',
   'help.option.group.sync.skipEmbeddings': '仅使用 exact + BM25（不使用嵌入回退）',
   'help.option.group.sync.exactOnly': '仅精确匹配',

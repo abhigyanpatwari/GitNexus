@@ -35,27 +35,25 @@ export const statusCommand = async () => {
   const currentCommit = getCurrentCommit(repo.repoPath);
   const currentBranch = getCurrentBranch(repo.repoPath);
 
-  // Pick the index matching the checked-out branch (#2106). The flat index
-  // belongs to the primary branch (repo.meta.branch); when the current branch
-  // differs and has its own index, report that one. Legacy/no-branch metas and
-  // detached HEAD fall through to the flat index (unchanged behavior).
+  // Pick the index matching the checked-out branch (#2106/#2354). A pinned
+  // `--branch` sub-index for the current branch wins; otherwise report the
+  // flat workspace index, which follows the checked-out working tree — the
+  // commit comparison below then says whether it needs a re-analyze. Legacy/
+  // no-branch metas and detached HEAD also fall through to the flat index.
   let activeMeta = repo.meta;
-  let currentBranchIndexed = true;
+  let workspaceLagsBranch = false;
   if (currentBranch && repo.meta.branch && currentBranch !== repo.meta.branch) {
     const { metaPath } = getStoragePaths(repo.repoPath, currentBranch);
     const branchMeta = await loadMeta(path.dirname(metaPath));
     if (branchMeta) activeMeta = branchMeta;
-    else currentBranchIndexed = false;
+    else workspaceLagsBranch = true;
   }
 
   console.log(`${t('status.repository')}: ${repo.repoPath}`);
   console.log(`${t('status.branch')}: ${currentBranch ?? t('status.detached')}`);
 
-  if (!currentBranchIndexed) {
-    console.log(
-      `${t('status.status')}: ${t('status.branchNotIndexed', { primary: repo.meta.branch ?? '' })}`,
-    );
-    return;
+  if (workspaceLagsBranch) {
+    console.log(t('status.workspaceIndexLabel', { primary: repo.meta.branch ?? '' }));
   }
 
   const isUpToDate = currentCommit === activeMeta.lastCommit;

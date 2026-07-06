@@ -49,6 +49,24 @@ describe('setupCommand coding-agent selection', () => {
     await fs.rm(tempHome, { recursive: true, force: true });
   });
 
+  it('explicit -c codebuddy succeeds when only a legacy root config exists (no dot-dir)', async () => {
+    const legacy = path.join(tempHome, '.codebuddy.json');
+    await fs.writeFile(
+      legacy,
+      JSON.stringify({ mcpServers: { other: { command: 'foo' } } }),
+      'utf-8',
+    );
+
+    const { setupCommand } = await import('../../src/cli/setup.js');
+    await setupCommand({ codingAgent: ['codebuddy'] });
+
+    const config = JSON.parse(await fs.readFile(legacy, 'utf-8'));
+    expect(config.mcpServers.gitnexus).toBeDefined();
+    expect(config.mcpServers.other).toEqual({ command: 'foo' });
+    // Explicit selection that configures something must not exit 1.
+    expect(process.exitCode).not.toBe(1);
+  });
+
   it('configures only the requested coding agent', async () => {
     const { setupCommand } = await import('../../src/cli/setup.js');
     await setupCommand({ codingAgent: ['opencode'] });
@@ -82,7 +100,9 @@ describe('setupCommand coding-agent selection', () => {
 
     expect(process.exitCode).toBe(1);
     expect(stderr).toHaveBeenCalledWith(
-      expect.stringContaining('Valid values: cursor, claude, antigravity, opencode, codex'),
+      expect.stringContaining(
+        'Valid values: cursor, claude, antigravity, opencode, codebuddy, qoder, codex',
+      ),
     );
     await expect(
       fs.access(path.join(tempHome, '.config', 'opencode', 'opencode.json')),

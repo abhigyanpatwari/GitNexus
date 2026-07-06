@@ -14,7 +14,13 @@ import {
   LOCAL_BACKEND_FTS_INDEXES,
 } from '../fixtures/local-backend-seed.js';
 
-vi.mock('../../src/storage/repo-manager.js', () => ({
+// Partial mock: registry access is faked, but everything else — critically
+// `loadMeta`, which the staleness check in LocalBackend.ensureInitialized
+// calls on every throttled window — stays REAL. A factory that omitted
+// loadMeta made that call site throw a TypeError that the staleness check's
+// catch silently swallowed, so the code path was never actually exercised.
+vi.mock('../../src/storage/repo-manager.js', async (importActual) => ({
+  ...(await importActual<typeof import('../../src/storage/repo-manager.js')>()),
   listRegisteredRepos: vi.fn().mockResolvedValue([]),
   cleanupOldKuzuFiles: vi.fn().mockResolvedValue({ found: false, needsReindex: false }),
   findSiblingClones: vi.fn().mockResolvedValue([]),

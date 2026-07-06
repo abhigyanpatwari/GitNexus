@@ -11,7 +11,7 @@
   "plugins": [
     {
       "name": "gitnexus",
-      "version": "1.6.8",
+      "version": "1.6.9",
       "source": "./gitnexus-claude-plugin",
       "description": "Code intelligence powered by a knowledge graph. Provides execution flow tracing, blast radius analysis, and augmented search across your codebase."
     }

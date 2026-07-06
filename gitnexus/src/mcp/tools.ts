@@ -906,11 +906,12 @@ for (const tool of GITNEXUS_TOOLS) {
   if (!BRANCH_SCOPED_TOOLS.has(tool.name)) continue;
   if (tool.inputSchema.properties.branch) continue;
   // Optional — `required` is left unchanged so omitting `branch` keeps today's
-  // default/primary-branch behavior. Ignored in group mode (repo starts "@").
+  // workspace-index behavior. Ignored in group mode (repo starts "@").
   tool.inputSchema.properties.branch = {
     type: 'string',
     description:
-      'Optional: scope to a specific branch index (multi-branch repos, #2106). ' +
-      'Omit for the default/primary branch. Ignored in group mode.',
+      'Optional: scope to a pinned branch index (multi-branch repos, #2106). ' +
+      'Omit for the workspace index, which follows the checked-out working tree. ' +
+      'Ignored in group mode.',
   };
 }

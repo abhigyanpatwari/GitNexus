@@ -82,7 +82,7 @@ describe('setup → uninstall round-trip', () => {
     process.env.USERPROFILE = tempHome;
 
     // Mark every editor as "installed" so setup configures all of them.
-    for (const dir of ['.cursor', '.claude', '.codex']) {
+    for (const dir of ['.cursor', '.claude', '.codex', '.codebuddy', '.qoder']) {
       await fs.mkdir(path.join(tempHome, dir), { recursive: true });
     }
     await fs.mkdir(path.join(tempHome, '.gemini', 'antigravity'), { recursive: true });
@@ -176,6 +176,60 @@ describe('setup → uninstall round-trip', () => {
         false,
       );
     }
+  });
+
+  it('round-trips a CodeBuddy entry living in the home-level legacy ~/.codebuddy.json (chain position 3)', async () => {
+    const targets = getEditorTargets(tempHome);
+    const codebuddy = targets.mcpJsonc.find((t) => t.id === 'codebuddy')!;
+    const legacyHomeFile = codebuddy.legacyFiles![1];
+
+    await fs.writeFile(
+      legacyHomeFile,
+      JSON.stringify({ mcpServers: { mine: { command: 'mine' } } }),
+      'utf-8',
+    );
+
+    const { setupCommand } = await import('../../src/cli/setup.js');
+    await setupCommand();
+
+    const cfg = await readJsonc(legacyHomeFile);
+    expect(valueAtPath(cfg, codebuddy.keyPath)).toBeDefined();
+    expect(await exists(codebuddy.file)).toBe(false);
+
+    const { uninstallCommand } = await import('../../src/cli/uninstall.js');
+    await uninstallCommand({ force: true });
+
+    const after = await readJsonc(legacyHomeFile);
+    expect(valueAtPath(after, codebuddy.keyPath)).toBeUndefined();
+    expect(after.mcpServers.mine).toEqual({ command: 'mine' });
+  });
+
+  it('round-trips a CodeBuddy entry living in the deprecated mcp.json (legacyFiles sweep)', async () => {
+    const targets = getEditorTargets(tempHome);
+    const codebuddy = targets.mcpJsonc.find((t) => t.id === 'codebuddy')!;
+    const deprecatedFile = codebuddy.legacyFiles![0];
+
+    // A populated deprecated config makes setup write there (CodeBuddy reads
+    // only the first existing file in its chain), not the recommended path.
+    await fs.writeFile(
+      deprecatedFile,
+      JSON.stringify({ mcpServers: { mine: { command: 'mine' } } }),
+      'utf-8',
+    );
+
+    const { setupCommand } = await import('../../src/cli/setup.js');
+    await setupCommand();
+
+    const cfg = await readJsonc(deprecatedFile);
+    expect(valueAtPath(cfg, codebuddy.keyPath)).toBeDefined();
+    expect(await exists(codebuddy.file)).toBe(false);
+
+    const { uninstallCommand } = await import('../../src/cli/uninstall.js');
+    await uninstallCommand({ force: true });
+
+    const after = await readJsonc(deprecatedFile);
+    expect(valueAtPath(after, codebuddy.keyPath)).toBeUndefined();
+    expect(after.mcpServers.mine).toEqual({ command: 'mine' });
   });
 
   it('uninstall preserves a co-located user MCP server and hook', async () => {

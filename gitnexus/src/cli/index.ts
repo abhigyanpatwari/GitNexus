@@ -24,7 +24,7 @@ program.name('gitnexus').description('GitNexus local CLI and MCP server').versio
 program
   .command('setup')
   .description(
-    'One-time setup: configure MCP for Cursor, Claude Code, Antigravity, OpenCode, Codex',
+    'One-time setup: configure MCP for Cursor, Claude Code, Antigravity, OpenCode, CodeBuddy, Qoder, Codex',
   )
   .option(
     '-c, --coding-agent <agents>',
@@ -83,9 +83,9 @@ program
   )
   .option(
     '--branch <name>',
-    'Index the working tree under a specific branch slot (multi-branch indexing). ' +
-      'Defaults to the checked-out branch; the primary/first-indexed branch keeps the ' +
-      'flat index and others get their own. Distinct from --default-branch (cosmetic base_ref).',
+    'Pin the working tree into a dedicated per-branch index slot (multi-branch indexing). ' +
+      'Without this flag, analyze always updates the workspace index, which follows the ' +
+      'checked-out working tree. Distinct from --default-branch (cosmetic base_ref).',
   )
   .option('--no-stats', 'Omit volatile file/symbol counts from AGENTS.md and CLAUDE.md')
   .option(
@@ -195,7 +195,7 @@ program
   .description(
     'Register an existing .gitnexus/ folder into the global registry (no re-analysis needed)',
   )
-  .option('-f, --force', 'Register even if meta.json is missing (stats will be empty)')
+  .option('-f, --force', 'Register even if index metadata is missing (stats will be empty)')
   .option('--allow-non-git', 'Allow registering folders that are not Git repositories')
   .action(createLazyAction(() => import('./index-repo.js'), 'indexCommand'));
 
@@ -241,11 +241,28 @@ program
   .action(createLazyAction(() => import('./doctor.js'), 'doctorCommand'));
 
 program
+  .command('embeddings')
+  .description('Manage the on-demand local embedding runtime')
+  .command('install')
+  .description(
+    'Install the local embedding stack (@huggingface/transformers + onnxruntime-node) on demand. ' +
+      'Heals installs where npm skipped the optional packages (e.g. behind an HTTP proxy, #2370). ' +
+      'Downloads only from your configured npm registry — mirrors and proxies apply.',
+  )
+  .option(
+    '--cuda',
+    "Also download the CUDA GPU binaries (runs onnxruntime-node's NuGet postinstall; " +
+      'set GLOBAL_AGENT_HTTPS_PROXY behind a proxy)',
+  )
+  .option('--force', 'Install into the runtime prefix even when the stack already resolves')
+  .action(createLazyAction(() => import('./embeddings.js'), 'embeddingsInstallCommand'));
+
+program
   .command('clean')
   .description('Delete GitNexus index for current repo')
   .option('-f, --force', 'Skip confirmation prompt')
   .option('--all', 'Clean all indexed repos')
-  .option('--branch <name>', 'Delete only the named branch index (not the primary)')
+  .option('--branch <name>', 'Delete only the named branch index (not the workspace index)')
   .option('--lbug-sidecars', 'Clean quarantined LadybugDB missing-shadow WAL sidecars')
   .action(createLazyAction(() => import('./clean.js'), 'cleanCommand'));
 

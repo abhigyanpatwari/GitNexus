@@ -558,4 +558,256 @@ describe('uninstallCommand', () => {
     await expect(fs.access(path.join(opencodeSkills, 'gitnexus-dir-skill'))).rejects.toThrow();
     await expect(fs.access(path.join(opencodeSkills, 'keep-me'))).resolves.toBeUndefined();
   });
+
+  // ── corrupt legacy chain files are informational, not failures ──
+
+  it('reports a corrupt legacy ~/.codebuddy.json informationally and exits 0 (--force)', async () => {
+    const legacy = path.join(tempHome, '.codebuddy.json');
+    const corrupt = '{ not valid json !!!';
+    await fs.writeFile(legacy, corrupt, 'utf-8');
+
+    const uninstallCommand = await importUninstall();
+    await uninstallCommand({ force: true });
+
+    expect(await fs.readFile(legacy, 'utf-8')).toBe(corrupt);
+    expect(process.exitCode).not.toBe(1);
+    expect(logLines()).toContain(
+      'CodeBuddy MCP (legacy .codebuddy.json is corrupt — left untouched)',
+    );
+    // Configuration status is unknowable — neither claim may appear.
+    expect(logLines()).not.toContain('CodeBuddy MCP (not configured)');
+    expect(logLines()).not.toContain('not configured in any detected editor');
+  });
+
+  it('reports a corrupt legacy ~/.codebuddy.json informationally in dry-run too', async () => {
+    const legacy = path.join(tempHome, '.codebuddy.json');
+    const corrupt = '{ not valid json !!!';
+    await fs.writeFile(legacy, corrupt, 'utf-8');
+
+    const uninstallCommand = await importUninstall();
+    await uninstallCommand(); // dry-run
+
+    expect(await fs.readFile(legacy, 'utf-8')).toBe(corrupt);
+    expect(process.exitCode).not.toBe(1);
+    expect(logLines()).toContain(
+      'CodeBuddy MCP (legacy .codebuddy.json is corrupt — left untouched)',
+    );
+  });
+
+  it('still errors and exits 1 when the PRIMARY config file is corrupt', async () => {
+    const recommended = path.join(tempHome, '.codebuddy', '.mcp.json');
+    await fs.mkdir(path.dirname(recommended), { recursive: true });
+    const corrupt = '{ not valid json !!!';
+    await fs.writeFile(recommended, corrupt, 'utf-8');
+
+    const uninstallCommand = await importUninstall();
+    await uninstallCommand({ force: true });
+
+    expect(await fs.readFile(recommended, 'utf-8')).toBe(corrupt);
+    expect(logLines()).toContain('.mcp.json is corrupt — left untouched');
+    expect(process.exitCode).toBe(1);
+  });
+
+  it('does not claim "not configured" when the only finding is a corrupt PRIMARY file', async () => {
+    // Qoder has no legacyFiles — its only config is the primary ~/.qoder.json.
+    const qoderJson = path.join(tempHome, '.qoder.json');
+    const corrupt = '{ not valid json !!!';
+    await fs.writeFile(qoderJson, corrupt, 'utf-8');
+
+    const uninstallCommand = await importUninstall();
+    await uninstallCommand({ force: true });
+
+    expect(await fs.readFile(qoderJson, 'utf-8')).toBe(corrupt);
+    expect(process.exitCode).toBe(1);
+    expect(logLines()).toContain('.qoder.json is corrupt — left untouched');
+    // The error makes configuration status unknowable — the reassuring
+    // headline must not print right above the Errors block.
+    expect(logLines()).not.toContain('not configured in any detected editor');
+    expect(logLines()).toContain('Nothing removed.');
+  });
+
+  it('still errors and exits 1 when a legacy file is UNREADABLE (intentional asymmetry)', async () => {
+    const legacy = path.join(tempHome, '.codebuddy.json');
+    const raw = JSON.stringify({ mcpServers: { gitnexus: { command: 'gitnexus' } } });
+    await fs.writeFile(legacy, raw, 'utf-8');
+
+    const realReadFile = fs.readFile;
+    vi.spyOn(fs, 'readFile').mockImplementation(((file: any, ...rest: any[]) => {
+      if (String(file) === legacy) {
+        return Promise.reject(
+          Object.assign(new Error('EACCES: simulated failure'), { code: 'EACCES' }),
+        );
+      }
+      return (realReadFile as any)(file, ...rest);
+    }) as typeof fs.readFile);
+
+    const uninstallCommand = await importUninstall();
+    await uninstallCommand({ force: true });
+
+    vi.mocked(fs.readFile).mockRestore();
+    // Corrupt-but-readable proves no removable entry; unreadable proves
+    // nothing — an environmental problem worth failing over.
+    expect(await fs.readFile(legacy, 'utf-8')).toBe(raw);
+    expect(logLines()).toContain('CodeBuddy: EACCES');
+    expect(process.exitCode).toBe(1);
+  });
+
+  // ── multi-candidate sweep combinations ──
+
+  it('removes a gitnexus entry from BOTH chain files when present in both', async () => {
+    const recommended = path.join(tempHome, '.codebuddy', '.mcp.json');
+    const legacy = path.join(tempHome, '.codebuddy.json');
+    await fs.mkdir(path.dirname(recommended), { recursive: true });
+    await fs.writeFile(
+      recommended,
+      JSON.stringify({
+        mcpServers: { gitnexus: { command: 'gitnexus' }, keepA: { command: 'a' } },
+      }),
+      'utf-8',
+    );
+    await fs.writeFile(
+      legacy,
+      JSON.stringify({
+        mcpServers: { gitnexus: { command: 'gitnexus' }, keepB: { command: 'b' } },
+      }),
+      'utf-8',
+    );
+
+    const uninstallCommand = await importUninstall();
+    await uninstallCommand({ force: true });
+
+    const rec = JSON.parse(await fs.readFile(recommended, 'utf-8'));
+    const leg = JSON.parse(await fs.readFile(legacy, 'utf-8'));
+    expect(rec.mcpServers.gitnexus).toBeUndefined();
+    expect(rec.mcpServers.keepA).toEqual({ command: 'a' });
+    expect(leg.mcpServers.gitnexus).toBeUndefined();
+    expect(leg.mcpServers.keepB).toEqual({ command: 'b' });
+    // One removal line per file.
+    expect(logLines()).toContain(`in ${recommended}`);
+    expect(logLines()).toContain(`in ${legacy}`);
+    expect(process.exitCode).not.toBe(1);
+  });
+
+  it('does not abort the sweep on a corrupt legacy file: later chain entries are still removed', async () => {
+    const deprecated = path.join(tempHome, '.codebuddy', 'mcp.json');
+    const legacy = path.join(tempHome, '.codebuddy.json');
+    await fs.mkdir(path.dirname(deprecated), { recursive: true });
+    const corrupt = '{ not valid json !!!';
+    await fs.writeFile(deprecated, corrupt, 'utf-8');
+    await fs.writeFile(
+      legacy,
+      JSON.stringify({ mcpServers: { gitnexus: { command: 'gitnexus' }, mine: { command: 'm' } } }),
+      'utf-8',
+    );
+
+    const uninstallCommand = await importUninstall();
+    await uninstallCommand({ force: true });
+
+    expect(await fs.readFile(deprecated, 'utf-8')).toBe(corrupt);
+    const leg = JSON.parse(await fs.readFile(legacy, 'utf-8'));
+    expect(leg.mcpServers.gitnexus).toBeUndefined();
+    expect(leg.mcpServers.mine).toEqual({ command: 'm' });
+    expect(logLines()).toContain('CodeBuddy MCP (legacy mcp.json is corrupt — left untouched)');
+    expect(process.exitCode).not.toBe(1);
+  });
+
+  // ── ENOENT narrowing: non-ENOENT read failures must surface, not mask ──
+
+  const errnoError = (code: string) =>
+    Object.assign(new Error(`${code}: simulated failure`), { code });
+
+  const logLines = () =>
+    vi
+      .mocked(console.log)
+      .mock.calls.map((call) => call.join(' '))
+      .join('\n');
+
+  it('reports an error (not "not configured") when an MCP config read fails with EACCES', async () => {
+    const claudeJson = path.join(tempHome, '.claude.json');
+    const raw = JSON.stringify({
+      mcpServers: { gitnexus: { command: 'gitnexus', args: ['mcp'] } },
+    });
+    await fs.writeFile(claudeJson, raw, 'utf-8');
+
+    const realReadFile = fs.readFile;
+    vi.spyOn(fs, 'readFile').mockImplementation(((file: any, ...rest: any[]) => {
+      if (String(file) === claudeJson) return Promise.reject(errnoError('EACCES'));
+      return (realReadFile as any)(file, ...rest);
+    }) as typeof fs.readFile);
+
+    const uninstallCommand = await importUninstall();
+    await uninstallCommand({ force: true });
+
+    vi.mocked(fs.readFile).mockRestore();
+    // The file may hold a real gitnexus entry — reporting "not configured"
+    // would make the dry-run users trust lie about it.
+    expect(await fs.readFile(claudeJson, 'utf-8')).toBe(raw);
+    expect(logLines()).toContain('Claude Code: EACCES');
+    expect(logLines()).not.toContain('Claude Code MCP (not configured)');
+    expect(logLines()).not.toContain('not configured in any detected editor');
+    expect(process.exitCode).toBe(1);
+  });
+
+  it('keeps the hook-script dir when settings.json is unreadable (EACCES)', async () => {
+    const settingsPath = path.join(tempHome, '.claude', 'settings.json');
+    await fs.mkdir(path.join(tempHome, '.claude'), { recursive: true });
+    const raw = JSON.stringify({
+      hooks: {
+        PreToolUse: [
+          {
+            matcher: 'Bash',
+            hooks: [{ type: 'command', command: 'node ".../gitnexus-hook.cjs"' }],
+          },
+        ],
+      },
+    });
+    await fs.writeFile(settingsPath, raw, 'utf-8');
+    const hookDir = path.join(tempHome, '.claude', 'hooks', 'gitnexus');
+    await fs.mkdir(hookDir, { recursive: true });
+    await fs.writeFile(path.join(hookDir, 'gitnexus-hook.cjs'), '// hook', 'utf-8');
+
+    const realReadFile = fs.readFile;
+    vi.spyOn(fs, 'readFile').mockImplementation(((file: any, ...rest: any[]) => {
+      if (String(file) === settingsPath) return Promise.reject(errnoError('EACCES'));
+      return (realReadFile as any)(file, ...rest);
+    }) as typeof fs.readFile);
+
+    const uninstallCommand = await importUninstall();
+    await uninstallCommand({ force: true });
+
+    vi.mocked(fs.readFile).mockRestore();
+    // Masking the failure as 'missing' would delete the scriptDir while the
+    // unreadable settings file still references the hook.
+    expect(await fs.readFile(settingsPath, 'utf-8')).toBe(raw);
+    await expect(fs.access(hookDir)).resolves.toBeUndefined();
+    expect(process.exitCode).toBe(1);
+  });
+
+  it('records a Codex read error and still cleans up other targets', async () => {
+    const configPath = path.join(tempHome, '.codex', 'config.toml');
+    await fs.mkdir(path.dirname(configPath), { recursive: true });
+    const raw = ['[mcp_servers.gitnexus]', 'command = "gitnexus"', ''].join('\n');
+    await fs.writeFile(configPath, raw, 'utf-8');
+
+    const skillsDir = path.join(tempHome, '.claude', 'skills', 'gitnexus-cli');
+    await fs.mkdir(skillsDir, { recursive: true });
+    await fs.writeFile(path.join(skillsDir, 'SKILL.md'), '# y', 'utf-8');
+
+    const realReadFile = fs.readFile;
+    vi.spyOn(fs, 'readFile').mockImplementation(((file: any, ...rest: any[]) => {
+      if (String(file) === configPath) return Promise.reject(errnoError('EACCES'));
+      return (realReadFile as any)(file, ...rest);
+    }) as typeof fs.readFile);
+
+    const uninstallCommand = await importUninstall();
+    await uninstallCommand({ force: true });
+
+    vi.mocked(fs.readFile).mockRestore();
+    // uninstallCodex catches locally: the failure is recorded but the
+    // hooks/skills cleanup that runs after Codex still executes.
+    expect(await fs.readFile(configPath, 'utf-8')).toBe(raw);
+    expect(logLines()).toContain('Codex: EACCES');
+    await expect(fs.access(skillsDir)).rejects.toThrow();
+    expect(process.exitCode).toBe(1);
+  });
 });

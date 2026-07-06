@@ -9,7 +9,6 @@ import {
   queryBridge,
   closeBridgeDb,
   contractNodeId,
-  retryRename,
   writeBridge,
   openBridgeDbReadOnly,
   readBridgeMeta,
@@ -18,6 +17,7 @@ import {
   indexContract,
   findContractNode,
 } from '../../../src/core/group/bridge-db.js';
+import { retryRename } from '../../../src/storage/fs-atomic.js';
 import type { BridgeHandle, CrossLink } from '../../../src/core/group/types.js';
 import { makeContract } from './fixtures.js';
 

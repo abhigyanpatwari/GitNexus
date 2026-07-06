@@ -17,6 +17,7 @@ vi.mock('fs/promises', () => ({
 
 vi.mock('../../src/storage/repo-manager.js', () => ({
   getStoragePaths: mockGetStoragePaths,
+  INDEX_METADATA_FILE: 'gitnexus.json',
   loadMeta: mockLoadMeta,
   registerRepo: mockRegisterRepo,
   ensureGitNexusIgnored: mockEnsureGitNexusIgnored,
@@ -44,7 +45,7 @@ describe('indexCommand', () => {
     mockGetStoragePaths.mockImplementation((repoPath: string) => ({
       storagePath: `${repoPath}/.gitnexus`,
       lbugPath: `${repoPath}/.gitnexus/lbug`,
-      metaPath: `${repoPath}/.gitnexus/meta.json`,
+      metaPath: `${repoPath}/.gitnexus/gitnexus.json`,
     }));
     mockLoadMeta.mockResolvedValue({
       repoPath: resolvedRepo,
@@ -70,9 +71,12 @@ describe('indexCommand', () => {
     expect(logSpy).toHaveBeenCalledWith(`  Not a git repository: ${resolvedOutside}`);
   });
 
-  it('fails when .gitnexus folder does not exist', async () => {
+  it('fails when no metadata or LadybugDB index exists', async () => {
     const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
-    mockAccess.mockRejectedValueOnce(new Error('missing .gitnexus'));
+    mockAccess.mockImplementation(async (targetPath: string) => {
+      if (targetPath.includes('/.gitnexus/')) throw new Error(`missing ${targetPath}`);
+      return undefined;
+    });
 
     const { indexCommand } = await import('../../src/cli/index-repo.js');
     await indexCommand(['/repo']);
@@ -80,22 +84,23 @@ describe('indexCommand', () => {
     expect(mockRegisterRepo).not.toHaveBeenCalled();
     expect(process.exitCode).toBe(1);
     expect(logSpy).toHaveBeenCalledWith(
-      `  No .gitnexus/ folder found at: ${resolvedRepo}/.gitnexus`,
+      `  Expected gitnexus.json, .gitnexus/meta.json, or LadybugDB at: ${resolvedRepo}/.gitnexus`,
     );
   });
 
   it('fails when lbug database does not exist', async () => {
     const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
-    mockAccess.mockResolvedValueOnce(undefined).mockRejectedValueOnce(new Error('missing lbug'));
+    mockAccess.mockImplementation(async (targetPath: string) => {
+      if (targetPath === `${resolvedRepo}/.gitnexus/lbug`) throw new Error('missing lbug');
+      return undefined;
+    });
 
     const { indexCommand } = await import('../../src/cli/index-repo.js');
     await indexCommand(['/repo']);
 
     expect(mockRegisterRepo).not.toHaveBeenCalled();
     expect(process.exitCode).toBe(1);
-    expect(logSpy).toHaveBeenCalledWith(
-      '  .gitnexus/ folder exists but contains no LadybugDB index.',
-    );
+    expect(logSpy).toHaveBeenCalledWith('  Index exists but contains no LadybugDB database.');
   });
 
   it('fails when meta.json is missing and --force is not set', async () => {
@@ -123,6 +128,43 @@ describe('indexCommand', () => {
       }),
     );
     expect(process.exitCode).toBeUndefined();
+  });
+
+  it('registers with --force when LadybugDB exists but metadata is missing', async () => {
+    mockLoadMeta.mockResolvedValue(null);
+    mockAccess.mockImplementation(async (targetPath: string) => {
+      if (targetPath === `${resolvedRepo}/.gitnexus/lbug`) return undefined;
+      if (targetPath.includes('/.gitnexus/')) throw new Error(`missing ${targetPath}`);
+      return undefined;
+    });
+
+    const { indexCommand } = await import('../../src/cli/index-repo.js');
+    await indexCommand(['/repo'], { force: true });
+
+    expect(mockRegisterRepo).toHaveBeenCalledTimes(1);
+    expect(mockRegisterRepo).toHaveBeenCalledWith(
+      resolvedRepo,
+      expect.objectContaining({
+        repoPath: resolvedRepo,
+        lastCommit: '',
+      }),
+    );
+    expect(process.exitCode).toBeUndefined();
+  });
+
+  it('fails without --force when LadybugDB exists but metadata is missing', async () => {
+    mockLoadMeta.mockResolvedValue(null);
+    mockAccess.mockImplementation(async (targetPath: string) => {
+      if (targetPath === `${resolvedRepo}/.gitnexus/lbug`) return undefined;
+      if (targetPath.includes('/.gitnexus/')) throw new Error(`missing ${targetPath}`);
+      return undefined;
+    });
+
+    const { indexCommand } = await import('../../src/cli/index-repo.js');
+    await indexCommand(['/repo']);
+
+    expect(mockRegisterRepo).not.toHaveBeenCalled();
+    expect(process.exitCode).toBe(1);
   });
 
   it('registers successfully with existing metadata', async () => {

@@ -32,7 +32,9 @@ vi.mock('../../src/storage/repo-manager.js', async (importOriginal) => {
     cleanupOldKuzuFiles: vi.fn().mockResolvedValue({ found: false, needsReindex: false }),
     findSiblingClones: vi.fn().mockResolvedValue([]),
     // Default: meta unreadable (the seeded-DB reality — no on-disk meta.json).
-    // Individual tests override per state via mockResolvedValueOnce.
+    // Individual tests override per state via mockResolvedValue (reset in
+    // beforeEach; not Once — the staleness check in ensureInitialized also
+    // calls loadMeta and must not starve the PDG caps read of its value).
     loadMeta: vi.fn().mockResolvedValue(null),
   };
 });
@@ -74,7 +76,7 @@ withTestLbugDB(
     });
 
     // Reset the loadMeta mock to the default (unreadable) before each test so a
-    // mockResolvedValueOnce set in one test never leaks into the next.
+    // mockResolvedValue set in one test never leaks into the next.
     beforeEach(() => {
       vi.mocked(loadMeta).mockReset();
       vi.mocked(loadMeta).mockResolvedValue(null);
@@ -83,7 +85,7 @@ withTestLbugDB(
     describe('no-layer (meta readable, no pdg stamp)', () => {
       it('returns the definitive target-aware "run analyze --pdg" note', async () => {
         // Readable meta with no `pdg` key ⇒ the layer was never recorded.
-        vi.mocked(loadMeta).mockResolvedValueOnce(META(undefined));
+        vi.mocked(loadMeta).mockResolvedValue(META(undefined));
         const result = await backend.callTool('impact', {
           target: 'hot',
           direction: 'downstream',
@@ -110,7 +112,7 @@ withTestLbugDB(
 
     describe('sub-layer-missing (exactly one cap stamped)', () => {
       it('CDG present, RD absent → names REACHING_DEF as missing', async () => {
-        vi.mocked(loadMeta).mockResolvedValueOnce(META({ maxCdgEdgesPerFunction: 0 } as any));
+        vi.mocked(loadMeta).mockResolvedValue(META({ maxCdgEdgesPerFunction: 0 } as any));
         const result = await backend.callTool('impact', {
           target: 'hot',
           direction: 'downstream',
@@ -127,9 +129,7 @@ withTestLbugDB(
       });
 
       it('RD present, CDG absent → names CDG as missing', async () => {
-        vi.mocked(loadMeta).mockResolvedValueOnce(
-          META({ maxReachingDefEdgesPerFunction: 0 } as any),
-        );
+        vi.mocked(loadMeta).mockResolvedValue(META({ maxReachingDefEdgesPerFunction: 0 } as any));
         const result = await backend.callTool('impact', {
           target: 'hot',
           direction: 'downstream',
@@ -145,7 +145,7 @@ withTestLbugDB(
 
     describe('ready (both caps stamped)', () => {
       it('falls THROUGH the layer check to the real traversal (U3 _runImpactPDG)', async () => {
-        vi.mocked(loadMeta).mockResolvedValueOnce(
+        vi.mocked(loadMeta).mockResolvedValue(
           META({ maxCdgEdgesPerFunction: 0, maxReachingDefEdgesPerFunction: 0 } as any),
         );
         const result = await backend.callTool('impact', {
@@ -177,7 +177,7 @@ withTestLbugDB(
         // B0 reaches B1 via the CDG edge, so calleesOfBlocks runs over real
         // seed+reachable blocks; with no callee data it must yield an empty set
         // and degrade to callgraph-equal — no throw, no partial precision.
-        vi.mocked(loadMeta).mockResolvedValueOnce(
+        vi.mocked(loadMeta).mockResolvedValue(
           META({ maxCdgEdgesPerFunction: 0, maxReachingDefEdgesPerFunction: 0 } as any),
         );
         const result = await backend.callTool('impact', {
