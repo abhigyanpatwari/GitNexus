@@ -16,6 +16,7 @@ import {
   diagnoseExtensionLoad,
   inspectExtensionBinary,
 } from '../../src/core/lbug/extension-load-error.js';
+import { requireFtsResourceOrSkip } from '../helpers/fts-availability.js';
 
 /**
  * #2374: exercise the language-independent structural classifier against REAL
@@ -70,19 +71,21 @@ describe('structural classifier on real binaries (#2374)', () => {
     expect(inspectExtensionBinary(process.execPath)).toBe('valid');
   });
 
-  it.skipIf(!lbugNative)('the real lbugjs.node native addon is a valid host binary', () => {
+  // These inspect the extension FILE directly, so they gate on the artifact's
+  // presence — but under GITNEXUS_REQUIRE_FTS=1 a missing artifact is a HARD FAILURE,
+  // never a silent skip that could vanish from a green CI run (#2299, #2383 F6d).
+  it('the real lbugjs.node native addon is a valid host binary', (ctx) => {
+    requireFtsResourceOrSkip(ctx, lbugNative, 'lbugjs.node native addon');
     expect(inspectExtensionBinary(lbugNative)).toBe('valid');
   });
 
-  it.skipIf(!installedFts)(
-    'the installed FTS extension is valid → a load failure is missing_dependency, in any language',
-    () => {
-      expect(inspectExtensionBinary(installedFts)).toBe('valid');
-      // A localized OS tail we do not enumerate — the structural check decides it.
-      const reason = `Failed to load library: ${installedFts} which is needed by extension: fts. Error: <localized>`;
-      expect(diagnoseExtensionLoad(reason)).toMatchObject({ kind: 'missing_dependency' });
-    },
-  );
+  it('the installed FTS extension is valid → a load failure is missing_dependency, in any language', (ctx) => {
+    requireFtsResourceOrSkip(ctx, installedFts, 'installed FTS extension');
+    expect(inspectExtensionBinary(installedFts)).toBe('valid');
+    // A localized OS tail we do not enumerate — the structural check decides it.
+    const reason = `Failed to load library: ${installedFts} which is needed by extension: fts. Error: <localized>`;
+    expect(diagnoseExtensionLoad(reason)).toMatchObject({ kind: 'missing_dependency' });
+  });
 
   it('a real valid binary at a *.lbug_extension path diagnoses as missing_dependency', () => {
     const ext = makeTmpFile('real-valid-', 'libfts.lbug_extension');
