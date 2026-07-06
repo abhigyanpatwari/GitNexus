@@ -329,6 +329,61 @@ describe('runFullAnalysis FTS repair and verification failure paths', () => {
     }
   });
 
+  it('repair error carries the runtime-dependency remedy, not "retry the network install" (#2383 F6a)', async () => {
+    const createSearchFTSIndexes = vi.fn(async () => undefined);
+    vi.doMock('../../src/core/lbug/lbug-adapter.js', () => ({
+      initLbug: vi.fn(async () => undefined),
+      loadGraphToLbug: vi.fn(async () => undefined),
+      getLbugStats: vi.fn(async () => ({})),
+      executeQuery: vi.fn(async () => []),
+      executeWithReusedStatement: vi.fn(async () => []),
+      closeLbug: vi.fn(async () => undefined),
+      loadCachedEmbeddings: vi.fn(async () => ({ embeddingNodeIds: new Set(), embeddings: [] })),
+      deleteNodesForFile: vi.fn(async () => undefined),
+      deleteAllCommunitiesAndProcesses: vi.fn(async () => undefined),
+      queryImporters: vi.fn(async () => []),
+      loadFTSExtension: vi.fn(async () => false),
+    }));
+    vi.doMock('../../src/core/search/fts-indexes.js', () => ({
+      initialiseSearchFTSStemmer: vi.fn(() => 'porter'),
+      createSearchFTSIndexes,
+      verifySearchFTSIndexes: vi.fn(async () => []),
+    }));
+    // A Windows error-126 reason → the missing_dependency remedy branch.
+    vi.doMock('../../src/core/lbug/extension-loader.js', async (importActual) => ({
+      ...(await importActual<typeof import('../../src/core/lbug/extension-loader.js')>()),
+      getExtensionCapabilities: () => [
+        { name: 'fts', loaded: false, reason: 'LOAD fts failed: The specified module could not be found.' },
+      ],
+    }));
+
+    const tmpRepo = await createTempDir('gitnexus-run-analyze-repair-fts-dep-');
+    try {
+      const { storagePath, lbugPath } = getStoragePaths(tmpRepo.dbPath);
+      await fs.mkdir(storagePath, { recursive: true });
+      await saveMeta(storagePath, {
+        repoPath: tmpRepo.dbPath,
+        lastCommit: '',
+        indexedAt: new Date().toISOString(),
+        stats: {},
+      });
+      await createPlaceholderGraphStore(lbugPath);
+
+      const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
+
+      const run = runFullAnalysis(tmpRepo.dbPath, { repairFts: true }, { onProgress: () => {} });
+      const message = await run.catch((e: unknown) => (e instanceof Error ? e.message : String(e)));
+      // The classified runtime-dependency remedy (VC++ redist), interpolated into the throw.
+      expect(message).toMatch(/Visual C\+\+/);
+      expect(message).toMatch(/vc_redist\.x64\.exe/);
+      // The old generic "retry the network install" tail must not appear for this class.
+      expect(message).not.toMatch(/Retry with network access/i);
+      expect(createSearchFTSIndexes).not.toHaveBeenCalled();
+    } finally {
+      await tmpRepo.cleanup();
+    }
+  });
+
   it('fails full analyze when FTS verification reports missing indexes after creation', async () => {
     vi.doMock('../../src/core/lbug/lbug-adapter.js', () => ({
       initLbug: vi.fn(async () => undefined),
