@@ -51,12 +51,14 @@
  * loaded (the probe uses CJS `require.resolve`, which an ESM hook does not
  * affect) — keeping probe and runtime consistent.
  */
-import { registerHooks, createRequire } from 'node:module';
+import { createRequire } from 'node:module';
 import { pathToFileURL } from 'node:url';
 import { existsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { logger } from '../logger.js';
+import { getEmbeddingRuntimeDir } from './runtime-install.js';
+import { getRegisterHooks } from './node-module-compat.js';
 
 export type CudaMajor = 12 | 13;
 
@@ -157,7 +159,17 @@ const resolveDefaultOrtNodeDir = (): string | null => {
     const transformersMain = require.resolve('@huggingface/transformers');
     return dirname(createRequire(transformersMain).resolve('onnxruntime-node/package.json'));
   } catch {
-    return null;
+    // On-demand runtime prefix (#2370): when the optional stack was pruned at
+    // install time and fetched on demand, the copy that actually loads (via
+    // ensureEmbeddingStackResolvable's fallback hook) lives in the prefix — so
+    // it IS the effective default and must be the one the CUDA probe inspects.
+    try {
+      const prefixRequire = createRequire(join(getEmbeddingRuntimeDir(), 'noop.js'));
+      const transformersMain = prefixRequire.resolve('@huggingface/transformers');
+      return dirname(createRequire(transformersMain).resolve('onnxruntime-node/package.json'));
+    } catch {
+      return null;
+    }
   }
 };
 
@@ -166,7 +178,18 @@ const resolveOurOrtNodeDir = (): string | null => {
   try {
     return dirname(require.resolve('onnxruntime-node/package.json'));
   } catch {
-    return null;
+    // On-demand runtime prefix (#2370): when gitnexus' own onnxruntime-node was
+    // pruned at install time and fetched on demand, the prefix copy IS our
+    // effective top-level build — so the CUDA-major redirect must be able to
+    // target it (mirrors resolveDefaultOrtNodeDir's fallback above). Without
+    // this, `embeddings install --cuda` on a pruned install downloads the GPU
+    // binaries but the probe still can't see them and embeddings run on CPU.
+    try {
+      const prefixRequire = createRequire(join(getEmbeddingRuntimeDir(), 'noop.js'));
+      return dirname(prefixRequire.resolve('onnxruntime-node/package.json'));
+    } catch {
+      return null;
+    }
   }
 };
 
@@ -190,7 +213,7 @@ const decide = (): Decision => {
   // major is still probed: a CUDA-12 host on Node 22.0–22.14 whose default
   // build already matches must keep auto-selecting the GPU exactly as it did
   // before this redirect existed.
-  const canRedirect = typeof registerHooks === 'function';
+  const canRedirect = typeof getRegisterHooks() === 'function';
 
   const systemMajor = detectSystemCudaMajor();
   // `defaultDir` resolving is NOT a precondition for checking `ourDir` below —
@@ -284,7 +307,8 @@ export const ensureOnnxRuntimeNodeMatchesSystem = (): void => {
   if (attempted) return;
   attempted = true;
   try {
-    if (typeof registerHooks !== 'function') return; // Node < 22.15: graceful no-op
+    const registerHooks = getRegisterHooks();
+    if (typeof registerHooks !== 'function') return; // Node < 22.15 / < 23.5: graceful no-op
     const d = decide();
     if (!d.redirect || !d.effectiveDir) return;
 

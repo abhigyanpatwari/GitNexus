@@ -26,8 +26,8 @@ import {
   queryBridge,
   closeBridgeDb,
   closeAllCachedBridges,
-  retryRename,
 } from '../../../src/core/group/bridge-db.js';
+import { retryRename } from '../../../src/storage/fs-atomic.js';
 import { cleanupTempDir } from '../../helpers/test-db.js';
 
 // Absolute file:// URL to the tsx loader so the seed script runs under tsx in a

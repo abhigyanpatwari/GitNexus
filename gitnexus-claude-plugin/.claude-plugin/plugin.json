@@ -1,7 +1,7 @@
 {
   "name": "gitnexus",
   "description": "Code intelligence powered by a knowledge graph. Provides execution flow tracing, blast radius analysis, and augmented search across your codebase.",
-  "version": "1.6.8",
+  "version": "1.6.9",
   "author": {
     "name": "GitNexus"
   },

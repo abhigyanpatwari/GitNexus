@@ -2,7 +2,7 @@
 
 **Graph-powered code intelligence for AI agents.** Index any codebase into a knowledge graph, then query it via MCP or CLI.
 
-Works with **Cursor**, **Claude Code**, **Antigravity** (Google), **Codex**, **Windsurf**, **Cline**, **OpenCode**, and any MCP-compatible tool.
+Works with **Cursor**, **Claude Code**, **Antigravity** (Google), **Codex**, **Windsurf**, **Cline**, **OpenCode**, **CodeBuddy** (Tencent), **Qoder** (Alibaba), and any MCP-compatible tool.
 
 [![npm version](https://img.shields.io/npm/v/gitnexus.svg)](https://www.npmjs.com/package/gitnexus)
 [![License: PolyForm Noncommercial](https://img.shields.io/badge/License-PolyForm%20Noncommercial-blue.svg)](https://polyformproject.org/licenses/noncommercial/1.0.0/)
@@ -40,14 +40,16 @@ To configure MCP for your editor, run `npx gitnexus setup` once — or set it up
 
 | Editor                   | MCP | Skills | Hooks (auto-augment)                                                                       | Support      |
 | ------------------------ | --- | ------ | ------------------------------------------------------------------------------------------ | ------------ |
-| **Claude Code**          | Yes | Yes    | Yes (PreToolUse)                                                                           | **Full**     |
+| **Claude Code**          | Yes | Yes    | Yes (PreToolUse + PostToolUse)                                                             | **Full**     |
 | **Cursor**               | Yes | Yes    | Yes (postToolUse, [manual install](../gitnexus-cursor-integration/README.md#hook-install)) | **Full**     |
 | **Antigravity** (Google) | Yes | Yes    | Yes (AfterTool, [Gemini CLI hooks schema](https://geminicli.com/docs/hooks/reference/))    | **Full**     |
-| **Codex**                | Yes | Yes    | —                                                                                          | MCP + Skills |
-| **Windsurf**             | Yes | —      | —                                                                                          | MCP          |
+| **Codex**                | Yes | Yes    | Yes (PreToolUse + PostToolUse, [Codex hooks](https://developers.openai.com/codex/hooks))   | **Full**     |
 | **OpenCode**             | Yes | Yes    | —                                                                                          | MCP + Skills |
+| **CodeBuddy** (Tencent)  | Yes | Yes    | —                                                                                          | MCP + Skills |
+| **Qoder** (Alibaba)      | Yes | Yes    | —                                                                                          | MCP + Skills |
+| **Windsurf**             | Yes | —      | —                                                                                          | MCP          |
 
-> **Claude Code** gets the deepest integration: MCP tools + agent skills + PreToolUse hooks that automatically enrich grep/glob/bash calls with knowledge graph context.
+> **Claude Code** and **Codex** get the deepest integration: MCP tools + agent skills + PreToolUse hooks that automatically enrich grep/glob/bash calls with knowledge graph context + PostToolUse hooks that detect a stale index after commits and prompt the agent to reindex.
 
 ### Community Integrations
 
@@ -69,11 +71,22 @@ claude mcp add gitnexus -- npx -y gitnexus@latest mcp
 claude mcp add gitnexus -- cmd /c npx -y gitnexus@latest mcp
 ```
 
-### Codex (full support — MCP + skills)
+### Codex (full support — MCP + skills + hooks)
 
 ```bash
 codex mcp add gitnexus -- npx -y gitnexus@latest mcp
 ```
+
+Codex hooks (PreToolUse graph enrichment + PostToolUse stale-index detection in `~/.codex/hooks.json`, [same schema as Claude Code](https://developers.openai.com/codex/hooks)) need the bundled adapter script, so they are installed by `gitnexus setup -c codex` rather than manually.
+
+Alternatively, install everything as a [Codex plugin](https://developers.openai.com/codex/plugins/build) (MCP + skills + hooks in one step):
+
+```bash
+codex plugin marketplace add abhigyanpatwari/GitNexus
+# then inside Codex: /plugins → install "GitNexus"
+```
+
+> **Codex notes:** SessionStart is intentionally not registered — Codex reads [AGENTS.md natively](https://developers.openai.com/codex/guides/agents-md), which already carries the GitNexus context block. Newly installed hooks need a one-time approval in Codex via `/hooks` before they run. Pick **one** install route (`gitnexus setup -c codex` **or** the plugin): plugin hooks load alongside `~/.codex/hooks.json`, so installing both can fire duplicate hooks per tool call.
 
 ### Cursor / Windsurf
 
@@ -105,6 +118,36 @@ Add to `~/.config/opencode/config.json`:
 }
 ```
 
+### CodeBuddy
+
+CodeBuddy reads only the **first existing file** in its config priority chain: `~/.codebuddy/.mcp.json` (recommended) → `~/.codebuddy/mcp.json` (deprecated) → `~/.codebuddy.json` (legacy). Edit the first non-empty file that exists — creating a higher-priority file would hide the servers in the ones below it. If none exist, create `~/.codebuddy/.mcp.json`:
+
+```json
+{
+  "mcpServers": {
+    "gitnexus": {
+      "command": "npx",
+      "args": ["-y", "gitnexus@latest", "mcp"]
+    }
+  }
+}
+```
+
+### Qoder
+
+Add to `~/.qoder.json`:
+
+```json
+{
+  "mcpServers": {
+    "gitnexus": {
+      "command": "npx",
+      "args": ["-y", "gitnexus@latest", "mcp"]
+    }
+  }
+}
+```
+
 ## How It Works
 
 GitNexus builds a complete knowledge graph of your codebase through a multi-phase indexing pipeline:
@@ -122,31 +165,44 @@ The result is a **LadybugDB graph database** stored locally in `.gitnexus/` with
 
 ## MCP Tools
 
-Your AI agent gets these tools automatically:
+Your AI agent gets **17 tools** (15 per-repo + 2 group) automatically:
 
-| Tool             | What It Does                                                     | `repo` Param |
-| ---------------- | ---------------------------------------------------------------- | ------------ |
-| `list_repos`     | Discover all indexed repositories (paginated — `limit`/`offset`) | —            |
-| `query`          | Process-grouped hybrid search (BM25 + semantic + RRF)            | Optional     |
-| `context`        | 360-degree symbol view — categorized refs, process participation | Optional     |
-| `impact`         | Blast radius analysis with depth grouping and confidence         | Optional     |
-| `detect_changes` | Git-diff impact — maps changed lines to affected processes       | Optional     |
-| `rename`         | Multi-file coordinated rename with graph + text search           | Optional     |
-| `cypher`         | Raw Cypher graph queries                                         | Optional     |
+| Tool             | What It Does                                                           |
+| ---------------- | ---------------------------------------------------------------------- |
+| `list_repos`     | Discover all indexed repositories (paginated — `limit`/`offset`)       |
+| `query`          | Process-grouped hybrid search (BM25 + semantic + RRF)                  |
+| `context`        | 360-degree symbol view — categorized refs, process participation       |
+| `impact`         | Blast radius analysis with depth grouping and confidence               |
+| `trace`          | Shortest directed path between two symbols (call + class-member edges) |
+| `detect_changes` | Git-diff impact — maps changed lines to affected processes             |
+| `check`          | Read-only structural checks against the indexed graph                  |
+| `rename`         | Multi-file coordinated rename with graph + text search                 |
+| `cypher`         | Raw Cypher graph queries                                               |
+| `route_map`      | API route map — which components fetch which endpoints, and handlers   |
+| `tool_map`       | MCP/RPC tool definitions — where they're defined and handled           |
+| `shape_check`    | Validate API response shapes against consumers' property accesses      |
+| `api_impact`     | Pre-change impact report for an API route handler                      |
+| `explain`        | Explain persisted taint findings (source→sink flows, `--pdg` indexes)  |
+| `pdg_query`      | Query control/data dependence at statement level (`--pdg` indexes)     |
+| `group_list`     | List configured repository groups                                      |
+| `group_sync`     | Rebuild a group's Contract Registry and cross-repo links               |
 
-> With one indexed repo, the `repo` param is optional. With multiple, specify which: `query({search_query: "auth", repo: "my-app"})`.
+> With one indexed repo, the `repo` param is optional. With multiple, specify which: `query({search_query: "auth", repo: "my-app"})`. Per-repo tools also take an optional `branch` for indexes pinned with `gitnexus analyze --branch`; omitting it queries the workspace index, which follows your checked-out working tree. `explain` and `pdg_query` need an index built with `gitnexus analyze --pdg`.
 
 ## MCP Resources
 
 | Resource                                | Purpose                                              |
 | --------------------------------------- | ---------------------------------------------------- |
 | `gitnexus://repos`                      | List all indexed repositories (read first)           |
+| `gitnexus://setup`                      | Setup and usage guidance for agents                  |
 | `gitnexus://repo/{name}/context`        | Codebase stats, staleness check, and available tools |
 | `gitnexus://repo/{name}/clusters`       | All functional clusters with cohesion scores         |
 | `gitnexus://repo/{name}/cluster/{name}` | Cluster members and details                          |
 | `gitnexus://repo/{name}/processes`      | All execution flows                                  |
 | `gitnexus://repo/{name}/process/{name}` | Full process trace with steps                        |
 | `gitnexus://repo/{name}/schema`         | Graph schema for Cypher queries                      |
+| `gitnexus://group/{name}/contracts`     | A group's extracted contracts and cross-links        |
+| `gitnexus://group/{name}/status`        | Staleness of repos in a group                        |
 
 ## MCP Prompts
 
@@ -164,7 +220,12 @@ gitnexus analyze [path]          # Index a repository (or update stale index)
 gitnexus analyze --repair-fts    # Fast path: rebuild/verify only FTS indexes on existing index data
 gitnexus analyze --force         # Full rebuild: re-parse + graph rebuild + FTS rebuild
 gitnexus analyze --embeddings    # Enable embedding generation (slower, better search)
+gitnexus embeddings install      # Fetch the optional local embedding stack on demand (--cuda, --force)
+gitnexus analyze --skills        # Generate repo-specific skill files from detected communities
 gitnexus analyze --skip-agents-md  # Preserve custom AGENTS.md/CLAUDE.md gitnexus section edits
+gitnexus analyze --skip-skills   # Skip installing .claude/skills/gitnexus/ skill files
+gitnexus analyze --skip-git      # Index folders that are not Git repositories
+gitnexus analyze --workers <n>   # Parse worker pool size (>=1; default: cores-1, capped at 16)
 gitnexus analyze --verbose       # Log skipped files when parsers are unavailable
 gitnexus analyze --max-file-size 1024  # Skip files larger than N KB (default: 512, cap: 32768)
 gitnexus analyze --worker-timeout 60  # Increase worker idle timeout for slow parses
@@ -177,13 +238,16 @@ gitnexus status                  # Show index status for current repo
 gitnexus clean                   # Delete index for current repo
 gitnexus clean --all --force     # Delete all indexes
 gitnexus wiki [path]             # Generate LLM-powered docs from knowledge graph
-gitnexus wiki --model <model>    # Wiki with custom LLM model (default: gpt-4o-mini)
+gitnexus wiki --model <model>    # Wiki with custom LLM model (default: minimax/minimax-m2.5)
+gitnexus doctor                  # Show runtime platform capabilities and embedding configuration
 
 # Direct graph queries — the same tools the MCP server exposes, no MCP daemon needed
 gitnexus query "<concept>"                                    # Process-grouped hybrid search
 gitnexus context <symbol> [--uid <uid> | --file <path>]       # 360° symbol view; flags disambiguate a shared name
 gitnexus impact <symbol> [--uid <uid> | --file <path> | --kind <kind>]  # Blast radius; flags disambiguate a shared name
+gitnexus trace <from> <to>       # Shortest directed path between two symbols
 gitnexus detect-changes          # Map the working-tree diff to affected symbols and execution flows
+gitnexus check                   # Read-only structural checks against the indexed graph
 gitnexus cypher "<query>"        # Run a raw Cypher query against the knowledge graph
 
 # Repository groups (multi-repo / monorepo service tracking)
@@ -195,6 +259,7 @@ gitnexus group sync <name>                                     # Extract contrac
 gitnexus group contracts <name>  # Inspect extracted contracts and cross-links
 gitnexus group query <name> <q>  # Search execution flows across all repos in a group
 gitnexus group status <name>     # Check staleness of repos in a group
+gitnexus group impact <name> --target <symbol> --repo <groupPath>  # Cross-repo blast radius
 ```
 
 > **`gitnexus uninstall`** reverses `gitnexus setup` — it removes the GitNexus MCP entries, hooks, and skill directories it added to each detected editor. Skill directories are identified **by bundled gitnexus skill name** (e.g. `gitnexus-cli/`), so if you customized files inside an installed skill directory, back them up first. It is a dry-run preview by default and prints the exact paths it would remove; pass `--force` to apply. Per-repo indexes (`gitnexus clean --all`) and the global npm package (`npm uninstall -g gitnexus`) are left for you to remove.
@@ -219,7 +284,7 @@ GitNexus supports indexing multiple repositories. Each `gitnexus analyze` regist
 
 ## Supported Languages
 
-TypeScript, JavaScript, Python, Java, C, C++, C#, Go, Rust, PHP, Kotlin, Swift, Ruby
+TypeScript, JavaScript, Python, Java, C, C++, C#, Go, Rust, PHP, Kotlin, Swift, Ruby, Dart
 
 ### Language Feature Matrix
 
@@ -238,6 +303,7 @@ TypeScript, JavaScript, Python, Java, C, C++, C#, Go, Rust, PHP, Kotlin, Swift, 
 | Swift      | —       | —              | ✓       | ✓        | ✓                | ✓                     | ✓      | ✓          | ✓            |
 | C          | —       | —              | ✓       | —        | ✓                | ✓                     | —      | ✓          | ✓            |
 | C++        | —       | —              | ✓       | ✓        | ✓                | ✓                     | —      | ✓          | ✓            |
+| Dart       | ✓       | —              | ✓       | ✓        | ✓                | ✓                     | —      | ✓          | ✓            |
 
 **Imports** — cross-file import resolution · **Named Bindings** — `import { X as Y }` / re-export tracking · **Exports** — public/exported symbol detection · **Heritage** — class inheritance, interfaces, mixins · **Type Annotations** — explicit type extraction for receiver resolution · **Constructor Inference** — infer receiver type from constructor calls (`self`/`this` resolution included for all languages) · **Config** — language toolchain config parsing (tsconfig, go.mod, etc.) · **Frameworks** — AST-based framework pattern detection · **Entry Points** — entry point scoring heuristics
 
@@ -249,12 +315,14 @@ GitNexus ships with skill files that teach AI agents how to use the tools effect
 - **Debugging** — Trace bugs through call chains
 - **Impact Analysis** — Analyze blast radius before changes
 - **Refactoring** — Plan safe refactors using dependency mapping
+- **Guide** — GitNexus tool/resource/schema reference for the agent
+- **CLI** — Run analyze/status/clean/wiki commands on request
 
-Installed automatically by both `gitnexus analyze` (per-repo) and `gitnexus setup` (global).
+Installed automatically by both `gitnexus analyze` (per-repo) and `gitnexus setup` (global). Run `gitnexus analyze --skills` to additionally generate repo-specific skills for each detected functional area under `.claude/skills/generated/`.
 
 ## Requirements
 
-- Node.js >= 18
+- Node.js >= 22
 - Git repository (uses git for commit tracking)
 
 ## Release candidates
@@ -340,7 +408,7 @@ gitnexus serve
 
 ### Installation fails with native module errors
 
-Some optional language grammars (Dart, Kotlin, Swift) require native compilation. If they fail, GitNexus still works — those languages will be skipped.
+Some optional language grammars (Dart, Proto, Swift, Kotlin) require native compilation. If they fail, GitNexus still works — those languages will be skipped. To skip them intentionally (no C++ toolchain needed), set `GITNEXUS_SKIP_OPTIONAL_GRAMMARS=1` before installing.
 
 If `npm install -g gitnexus` fails on native modules:
 
@@ -353,19 +421,40 @@ If `npm install -g gitnexus` fails on native modules:
 npm install -g gitnexus
 ```
 
+### Installation fails behind an HTTP proxy (`onnxruntime-node` postinstall)
+
+`onnxruntime-node`'s postinstall downloads optional CUDA GPU binaries from `api.nuget.org` — outside the npm registry, so registry mirrors don't cover it, and its proxy layer (`global-agent`) ignores the standard `HTTP_PROXY`/`HTTPS_PROXY` variables and rejects 302 redirects ([#2370](https://github.com/abhigyanpatwari/GitNexus/issues/2370)).
+
+Since the packages are optional dependencies, a failed download no longer breaks `npm install -g gitnexus` — npm skips the embedding stack and everything else works. The stack then **self-heals on demand**: the first `gitnexus analyze --embeddings` (or an explicit `gitnexus embeddings install`) fetches it through your configured npm registry — mirrors and proxies apply, no NuGet download involved — into `~/.gitnexus/embedding-runtime`.
+
+```bash
+# heal a proxy-degraded install manually (CPU embeddings; registry-only)
+gitnexus embeddings install
+
+# reinstall into the prefix even when the stack already resolves
+gitnexus embeddings install --force
+
+# CUDA GPU hosts: also fetch GPU binaries (NuGet; set the proxy global-agent reads)
+GLOBAL_AGENT_HTTPS_PROXY=<proxy-url> gitnexus embeddings install --cuda
+```
+
+The prefix defaults to `~/.gitnexus/embedding-runtime`; set `GITNEXUS_EMBEDDING_RUNTIME_DIR` to install it elsewhere (e.g. a writable path in a container).
+
+> **Node requirement for the on-demand prefix:** the self-heal loads the prefixed packages via `module.registerHooks`, available on Node **≥ 22.15** (on the 22.x line) or **≥ 23.5** (on the 23.x line). On an older Node the packages install but can't be loaded from the prefix — reinstall them into the install itself instead (works on every supported Node): `ONNXRUNTIME_NODE_INSTALL=skip npm install -g gitnexus` (Windows: `set ONNXRUNTIME_NODE_INSTALL=skip && npm install -g gitnexus`). Skipping only the CUDA download keeps full CPU embeddings (CPU embeddings don't need it). Check the result any time with `gitnexus doctor` (Embeddings → Support line).
+
 ### Analyze warns about unavailable FTS or VECTOR extensions
 
-GitNexus uses optional DuckDB extensions for BM25 and vector search. The `gitnexus serve` and MCP read paths only ever try to `LOAD` the extensions — they never block on a network install. The `analyze` command, by default, attempts one bounded out-of-process `INSTALL` if `LOAD` fails and proceeds even when that install times out, so the index is always written to disk; BM25/vector search degrade gracefully until the extensions become available.
+GitNexus uses optional DuckDB extensions for BM25 and vector search. The `gitnexus serve` and MCP read paths only ever try to `LOAD` the extensions — they never block on a network install. The `analyze` command, by default, attempts one bounded out-of-process install if `LOAD` fails (a plain `INSTALL` to download a missing extension, escalating to `FORCE INSTALL` only when the `LOAD` error shows the existing file is broken or truncated, so a permanent non-file failure does not re-download on every run) and proceeds even when that install times out, so the index is always written to disk; BM25/vector search degrade gracefully until the extensions become available.
 
 Configure the behavior with these environment variables:
 
-| Variable                                     | Values                       | Default             | Effect                                                                                                                                                                                                                                                                                   |
-| -------------------------------------------- | ---------------------------- | ------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `GITNEXUS_LBUG_EXTENSION_INSTALL`            | `auto`, `load-only`, `never` | `auto`              | `auto` runs one bounded INSTALL if LOAD fails. `load-only` only uses already-installed extensions (recommended for offline / firewalled environments). `never` skips optional extensions entirely.                                                                                       |
-| `GITNEXUS_LBUG_EXTENSION_INSTALL_TIMEOUT_MS` | positive integer             | `15000`             | Wall-clock budget for the out-of-process `INSTALL` child before it is killed.                                                                                                                                                                                                            |
-| `GITNEXUS_FTS_STEMMER`                       | supported LadybugDB stemmer  | `porter`            | Stemmer used when rebuilding BM25/FTS indexes. Use `none` for CJK-heavy repositories, or a language stemmer such as `german`, `french`, or `spanish` when that better matches repository comments and identifiers. Re-run `gitnexus analyze --repair-fts` after changing it.              |
+| Variable                                     | Values                       | Default             | Effect                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| -------------------------------------------- | ---------------------------- | ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GITNEXUS_LBUG_EXTENSION_INSTALL`            | `auto`, `load-only`, `never` | `auto`              | `auto` runs one bounded install if LOAD fails — a plain `INSTALL`, escalating to `FORCE INSTALL` only when the LOAD error shows the present extension file is broken. `load-only` only uses already-installed extensions (recommended for offline / firewalled environments). `never` skips optional extensions entirely.                                                                                                                                                                                                                                                                                                                                                                                 |
+| `GITNEXUS_LBUG_EXTENSION_INSTALL_TIMEOUT_MS` | positive integer             | `15000`             | Wall-clock budget for the out-of-process extension-install child before it is killed.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| `GITNEXUS_FTS_STEMMER`                       | supported LadybugDB stemmer  | `porter`            | Stemmer used when rebuilding BM25/FTS indexes. Use `none` for CJK-heavy repositories, or a language stemmer such as `german`, `french`, or `spanish` when that better matches repository comments and identifiers. Re-run `gitnexus analyze --repair-fts` after changing it.                                                                                                                                                                                                                                                                                                                                                                                                                            |
 | `GITNEXUS_FTS_CJK_SEGMENTATION`              | `none`, `bigram`             | `none`              | `bigram` inserts overlapping character-bigram boundaries into Chinese/Japanese Han-ideograph spans in `content`/`description` before FTS indexing, so LadybugDB's space-only tokenizer can see sub-phrase word boundaries. Scoped to CJK Unified Ideographs only — Japanese Hiragana/Katakana and Korean Hangul are not currently segmented. Unlike `GITNEXUS_FTS_STEMMER`, this rewrites stored text — enabling it on an already-indexed repo requires a full `gitnexus analyze --force`; neither `--repair-fts` nor a plain incremental `analyze` applies it to previously-indexed files. Set the same value wherever `analyze` and search-serving processes (CLI query, MCP server, web server) run. |
-| `GITNEXUS_WAL_CHECKPOINT_THRESHOLD`          | integer `>= -1`              | `67108864` (64 MiB) | LadybugDB WAL auto-checkpoint threshold during analyze (bytes). Auto-checkpoint remains enabled; `-1` keeps Ladybug's stock ~16 MiB. Larger thresholds reduce checkpoint frequency but increase the WAL size at rotation time — choose a smaller value on disk-constrained environments. |
+| `GITNEXUS_WAL_CHECKPOINT_THRESHOLD`          | integer `>= -1`              | `67108864` (64 MiB) | LadybugDB WAL auto-checkpoint threshold during analyze (bytes). Auto-checkpoint remains enabled; `-1` keeps Ladybug's stock ~16 MiB. Larger thresholds reduce checkpoint frequency but increase the WAL size at rotation time — choose a smaller value on disk-constrained environments.                                                                                                                                                                                                                                                                                                                                                                                                                |
 
 ```bash
 # Offline/airgapped: never reach the network for extensions
@@ -440,9 +529,9 @@ Three env vars expose the pool's resilience layers (respawn budget, cumulative-t
 
 After scope resolution, analyze prunes inert block-local value symbols (a function-local `const`/`let`/`var` that ends up with only its structural `File→DEFINES` edge) to keep the graph focused on cross-symbol relationships. Module/file-scope symbols, class members, and any local with a real edge are always kept.
 
-| Variable                             | Default | Effect                                                                                                  |
-| ------------------------------------ | ------- | ------------------------------------------------------------------------------------------------------- |
-| `GITNEXUS_KEEP_LOCAL_VALUE_SYMBOLS`  | unset   | Set to `1`/`true` to keep inert block-local value symbols instead of pruning them.                      |
+| Variable                            | Default | Effect                                                                             |
+| ----------------------------------- | ------- | ---------------------------------------------------------------------------------- |
+| `GITNEXUS_KEEP_LOCAL_VALUE_SYMBOLS` | unset   | Set to `1`/`true` to keep inert block-local value symbols instead of pruning them. |
 
 Programmatic callers can pass `keepLocalValueSymbols: true` in `PipelineOptions` instead of setting the env var.
 

@@ -30,7 +30,12 @@ function readInput() {
 }
 
 function isGlobalRegistryDir(candidate) {
-  if (fs.existsSync(path.join(candidate, 'meta.json'))) return false;
+  if (
+    fs.existsSync(path.join(candidate, 'gitnexus.json')) ||
+    fs.existsSync(path.join(candidate, 'meta.json'))
+  ) {
+    return false;
+  }
   return (
     fs.existsSync(path.join(candidate, 'registry.json')) ||
     fs.existsSync(path.join(candidate, 'repos'))

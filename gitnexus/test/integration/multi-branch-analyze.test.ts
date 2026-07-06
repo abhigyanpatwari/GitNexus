@@ -7,10 +7,13 @@ import { getStoragePaths, loadMeta, listRegisteredRepos } from '../../src/storag
 import { createTempDir } from '../helpers/test-db.js';
 
 /**
- * #2106 — multi-branch indexing end-to-end. Proves that analyzing a second
- * branch creates its own index under `.gitnexus/branches/<slug>/` and does NOT
- * overwrite the primary (flat) index, and that the primary single-branch
- * layout stays at `.gitnexus/{lbug,meta.json}`.
+ * #2106/#2354 — branch handling end-to-end. Proves that a plain analyze
+ * always updates the flat workspace index (following the checked-out working
+ * tree, no `branches/` sub-directory, no slot-ownership friction), that an
+ * explicit `--branch` run pins a separate index under
+ * `.gitnexus/branches/<slug>/` without touching the flat slot, and that a
+ * pinned sub-index shadowed by a later plain analyze on the same branch is
+ * cleaned up.
  */
 const git = (args: string[], cwd: string): string =>
   execSync(['git', ...args].join(' '), { cwd, stdio: 'pipe', encoding: 'utf-8' }).trim();
@@ -37,7 +40,7 @@ describe('multi-branch analyze (#2106)', () => {
     await tmpHome.cleanup();
   });
 
-  it('indexes a second branch without overwriting the first', async () => {
+  it('a plain analyze follows a branch switch into the flat workspace slot (#2354)', async () => {
     const tmp = await createTempDir('gitnexus-multibranch-');
     const repo = tmp.dbPath;
     try {
@@ -52,16 +55,13 @@ describe('multi-branch analyze (#2106)', () => {
       const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
       await runFullAnalysis(repo, {}, { onProgress: () => {} });
 
-      // Primary branch lands in the flat slot, byte-identical layout.
+      // First analyze lands in the flat slot, byte-identical layout.
       const flat = getStoragePaths(repo);
       expect(path.dirname(flat.lbugPath)).toBe(flat.storagePath);
       expect(existsSync(flat.lbugPath)).toBe(true);
       const flatMeta = await loadMeta(flat.storagePath);
       expect(flatMeta?.branch).toBe('main');
       expect(flatMeta?.lastCommit).toBe(mainCommit);
-      // main records its live chunk keys so a later branch prune can keep them.
-      const mainCacheKeys = flatMeta?.cacheKeys ?? [];
-      expect(mainCacheKeys.length).toBeGreaterThan(0);
 
       // Switch to a feature branch with different content and re-analyze.
       git(['checkout', '-b', 'feature/x'], repo);
@@ -73,13 +73,60 @@ describe('multi-branch analyze (#2106)', () => {
 
       await runFullAnalysis(repo, {}, { onProgress: () => {} });
 
-      // The flat (main) index is untouched — NOT overwritten by the feature run.
+      // The flat workspace index followed the working tree — updated in place,
+      // no `branches/` sub-directory, no slot-ownership error or warning.
+      expect(existsSync(flat.lbugPath)).toBe(true);
+      const flatMetaAfter = await loadMeta(flat.storagePath);
+      expect(flatMetaAfter?.branch).toBe('feature/x');
+      expect(flatMetaAfter?.lastCommit).toBe(featureCommit);
+      expect(existsSync(path.join(flat.storagePath, 'branches'))).toBe(false);
+
+      // The registry follows along: one entry, relabelled, no branches[].
+      const entries = await listRegisteredRepos();
+      const entry = entries.find((e) => path.resolve(e.path) === path.resolve(repo));
+      expect(entry).toBeDefined();
+      expect(entry?.branch).toBe('feature/x');
+      expect(entry?.lastCommit).toBe(featureCommit);
+      expect(entry?.branches).toBeUndefined();
+    } finally {
+      await tmp.cleanup();
+    }
+  }, 180_000);
+
+  it('an explicit --branch run pins a sub-index; a later plain analyze on that branch reclaims it', async () => {
+    const tmp = await createTempDir('gitnexus-multibranch-pin-');
+    const repo = tmp.dbPath;
+    try {
+      git(['init'], repo);
+      await fs.writeFile(path.join(repo, 'a.ts'), 'export const a = 1;\n');
+      git(['add', '-A'], repo);
+      commit(repo, 'a');
+      git(['branch', '-M', 'main'], repo);
+      const mainCommit = git(['rev-parse', 'HEAD'], repo);
+
+      const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
+      await runFullAnalysis(repo, {}, { onProgress: () => {} });
+      const flat = getStoragePaths(repo);
+      // main records its live chunk keys so a later branch prune can keep them.
+      const mainCacheKeys = (await loadMeta(flat.storagePath))?.cacheKeys ?? [];
+      expect(mainCacheKeys.length).toBeGreaterThan(0);
+
+      // Pin the feature branch into its own sub-index with explicit --branch.
+      git(['checkout', '-b', 'feature/x'], repo);
+      await fs.writeFile(path.join(repo, 'b.ts'), 'export const b = 2;\n');
+      git(['add', '-A'], repo);
+      commit(repo, 'b');
+      const featureCommit = git(['rev-parse', 'HEAD'], repo);
+
+      await runFullAnalysis(repo, { branch: 'feature/x' }, { onProgress: () => {} });
+
+      // The flat (main) index is untouched — NOT overwritten by the pinned run.
       expect(existsSync(flat.lbugPath)).toBe(true);
       const flatMetaAfter = await loadMeta(flat.storagePath);
       expect(flatMetaAfter?.branch).toBe('main');
       expect(flatMetaAfter?.lastCommit).toBe(mainCommit);
 
-      // The feature index is a separate DB under branches/<slug>/.
+      // The pinned index is a separate DB under branches/<slug>/.
       const branchPaths = getStoragePaths(repo, 'feature/x');
       const branchDir = path.dirname(branchPaths.lbugPath);
       expect(branchDir.includes(path.join('.gitnexus', 'branches'))).toBe(true);
@@ -88,7 +135,7 @@ describe('multi-branch analyze (#2106)', () => {
       expect(branchMeta?.branch).toBe('feature/x');
       expect(branchMeta?.lastCommit).toBe(featureCommit);
 
-      // #2106 R6: the feature analyze must NOT have evicted main's chunks from
+      // #2106 R6: the pinned analyze must NOT have evicted main's chunks from
       // the SHARED parse cache (they were unioned in via main's recorded keys).
       const { loadParseCache } = await import('../../src/storage/parse-cache.js');
       const sharedCache = await loadParseCache(flat.storagePath);
@@ -97,14 +144,25 @@ describe('multi-branch analyze (#2106)', () => {
         expect(onDisk.has(k), `main chunk ${k} survives the feature prune`).toBe(true);
       }
 
-      // The global registry keeps one entry per path: primary at top level,
-      // the feature branch nested under branches[] (#2106 U4).
-      const entries = await listRegisteredRepos();
-      const entry = entries.find((e) => path.resolve(e.path) === path.resolve(repo));
-      expect(entry).toBeDefined();
+      // The global registry keeps one entry per path: flat label at top level,
+      // the pinned branch nested under branches[] (#2106 U4).
+      let entries = await listRegisteredRepos();
+      let entry = entries.find((e) => path.resolve(e.path) === path.resolve(repo));
       expect(entry?.branch).toBe('main');
-      expect(entry?.lastCommit).toBe(mainCommit);
       expect(entry?.branches?.map((b) => b.branch)).toEqual(['feature/x']);
+
+      // A plain analyze on the pinned branch adopts the flat workspace slot
+      // and removes the now-shadowed sub-index (#2354): the flat handle would
+      // always win for this label, leaving the sub-index unreachable bloat.
+      await runFullAnalysis(repo, {}, { onProgress: () => {} });
+      const reclaimed = await loadMeta(flat.storagePath);
+      expect(reclaimed?.branch).toBe('feature/x');
+      expect(reclaimed?.lastCommit).toBe(featureCommit);
+      expect(existsSync(branchDir)).toBe(false);
+      entries = await listRegisteredRepos();
+      entry = entries.find((e) => path.resolve(e.path) === path.resolve(repo));
+      expect(entry?.branch).toBe('feature/x');
+      expect(entry?.branches).toBeUndefined();
     } finally {
       await tmp.cleanup();
     }
@@ -132,17 +190,17 @@ describe('multi-branch analyze (#2106)', () => {
       await runFullAnalysis(repo, { force: true }, { onProgress: () => {} });
       expect((await loadMeta(flat.storagePath))?.branch).toBe('main');
 
-      // Now a feature analyze must still route to a sub-dir (the stamp survived),
-      // leaving the primary index intact rather than claiming the flat slot.
+      // Now an explicit --branch analyze must still route to a sub-dir (the
+      // stamp survived), leaving the flat index intact rather than updating it.
       git(['checkout', '-b', 'feature/y'], repo);
       await fs.writeFile(path.join(repo, 'b.ts'), 'export const b = 2;\n');
       git(['add', '-A'], repo);
       commit(repo, 'b');
-      await runFullAnalysis(repo, {}, { onProgress: () => {} });
+      await runFullAnalysis(repo, { branch: 'feature/y' }, { onProgress: () => {} });
 
       const flatMeta = await loadMeta(flat.storagePath);
       expect(flatMeta?.branch).toBe('main');
-      expect(flatMeta?.lastCommit).toBe(mainCommit); // primary NOT overwritten
+      expect(flatMeta?.lastCommit).toBe(mainCommit); // flat NOT touched by the pinned run
       expect(existsSync(getStoragePaths(repo, 'feature/y').lbugPath)).toBe(true);
     } finally {
       await tmp.cleanup();

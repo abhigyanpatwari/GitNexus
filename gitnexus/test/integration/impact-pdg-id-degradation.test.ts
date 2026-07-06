@@ -144,7 +144,7 @@ withTestLbugDB(
     });
 
     it('Scenario 1 (R3): empty calleeIds → bridge falls back to the leaf-NAME match', async () => {
-      vi.mocked(loadMeta).mockResolvedValueOnce(READY_META);
+      vi.mocked(loadMeta).mockResolvedValue(READY_META);
       const result = await backend.callTool('impact', {
         target: 'nameCaller',
         direction: 'downstream',
@@ -188,7 +188,7 @@ withTestLbugDB(
     });
 
     it('Scenario 3 (R7): a capped-sentinel slice block stays callgraph-equal', async () => {
-      vi.mocked(loadMeta).mockResolvedValueOnce(READY_META);
+      vi.mocked(loadMeta).mockResolvedValue(READY_META);
       const result = await backend.callTool('impact', {
         target: 'cappedCaller',
         direction: 'downstream',

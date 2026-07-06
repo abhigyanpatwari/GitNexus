@@ -19,7 +19,7 @@ Maintainer may widen scope per task.
 2. **Never rename with find-and-replace** in GitNexus-indexed projects — use `rename` MCP tool with `dry_run: true` first, review `graph` vs `text_search` edits. No separate `gitnexus rename` CLI exists.
 3. **Run impact analysis before editing shared symbols** — `impact` (upstream) for functions/classes/methods others call. Do not ignore HIGH/CRITICAL without maintainer sign-off.
 4. **Run `detect_changes` before commit** — confirm diffs map to expected symbols/processes when the graph is available.
-5. **Preserve embeddings** — plain `npx gitnexus analyze` now preserves any embeddings recorded in `.gitnexus/meta.json` (the previous behavior wiped them). Use `--embeddings` to also generate vectors for new/changed nodes; use `--drop-embeddings` only when an explicit wipe is intended (e.g., model swap).
+5. **Preserve embeddings** — plain `npx gitnexus analyze` now preserves any embeddings recorded in the index metadata (`.gitnexus/gitnexus.json`, mirrored to the legacy `meta.json`) — the previous behavior wiped them. Use `--embeddings` to also generate vectors for new/changed nodes; use `--drop-embeddings` only when an explicit wipe is intended (e.g., model swap).
 
 ---
 
@@ -35,13 +35,13 @@ Format: **Trigger → Instruction → Reason**. Append new Signs when the same m
 
 ### Index seems corrupt or "incremental" is misbehaving
 
-- **Trigger:** `analyze` produces unexpected results, or `meta.json.incrementalInProgress` is set, or the index is in a half-state after a crash.
+- **Trigger:** `analyze` produces unexpected results, or `incrementalInProgress` is set in the index metadata (`.gitnexus/gitnexus.json` / legacy `meta.json`), or the index is in a half-state after a crash.
 - **Do:** `npx gitnexus analyze --force` to rebuild from scratch. The dirty-flag check forces this automatically when a previous incremental run didn't complete cleanly, but `--force` is the manual escape hatch. Safe to delete the `.gitnexus/parse-cache/` directory (and any legacy `.gitnexus/parse-cache.json`) at any time — content-addressed, will be regenerated.
 - **Why:** Incremental writeback is selective DB row replacement; if the on-disk state is inconsistent for any reason, a full rebuild is the cheapest path back to a known-good index.
 
 ### Embeddings vanished after analyze
 
-- **Trigger:** Semantic search quality drops; `stats.embeddings` in `meta.json` is 0 after refresh.
+- **Trigger:** Semantic search quality drops; `stats.embeddings` in the index metadata (`gitnexus.json` / legacy `meta.json`) is 0 after refresh.
 - **Do:** Re-run `npx gitnexus analyze --embeddings` to regenerate. Check the analyze log for a `Warning: could not load cached embeddings` line — if present, the cache restore failed (corrupt DB / schema mismatch) and the rebuild had nothing to preserve. If you intentionally passed `--drop-embeddings`, this is expected.
 - **Why:** Plain `analyze` preserves prior vectors by re-inserting them after the rebuild; the only ways to end up at zero are an explicit `--drop-embeddings`, a cache-load failure (now logged), or a model/dimension change that invalidates the cache.
 

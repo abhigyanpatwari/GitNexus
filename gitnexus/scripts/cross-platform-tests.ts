@@ -30,6 +30,7 @@ const PLATFORM_LOGIC = [
   'test/unit/setup-jsonc.test.ts',
   'test/unit/setup-codex.test.ts',
   'test/unit/setup-antigravity.test.ts',
+  'test/integration/setup-uninstall-roundtrip.test.ts',
   'test/unit/resolve-invocation.test.ts',
   'test/unit/platform-capabilities.test.ts',
   'test/unit/worker-pool-windows-quarantine.test.ts',
@@ -48,6 +49,18 @@ const PLATFORM_LOGIC = [
   'test/unit/group/bridge-db.test.ts',
   'test/unit/group/bridge-db-edge.test.ts',
   'test/unit/onnxruntime-node-resolver.test.ts',
+  // Windows cmd.exe arg-quoting + compose-and-spawn for the npm install (#2372):
+  // the quoting rules and win32 single-string spawn shape are OS-sensitive, so
+  // exercise them on real windows-latest. The spawn-shape/path tests force their
+  // platform branch and derive expected paths via the real fns, so they pass on
+  // any host (see the platform stubs + resolve() in the test file).
+  'test/unit/embedding-runtime-install.test.ts',
+  // Real-spawn arg-delivery round-trip: proves the install spawn delivers args
+  // to the child intact on each platform — win32 via the cmd.exe -> .cmd %* ->
+  // node chain (real cmd.exe, not just our model), macos/linux via the no-shell
+  // array form. Runs on every platform (the ubuntu suite covers Linux; this
+  // registration adds windows + macos).
+  'test/unit/embedding-install-arg-delivery.test.ts',
 ];
 
 // Native LadybugDB integration tests — exercise the @ladybugdb/core
@@ -87,6 +100,10 @@ const SPAWN_CLI = [
   'test/integration/cli-limit-e2e.test.ts',
   'test/integration/hooks-e2e.test.ts',
   'test/integration/skills-e2e.test.ts',
+  // Spawns the real CLI across hermetic HOME/USERPROFILE homes to exercise the
+  // FTS extension lifecycle — the #2374 bug was Windows-reported, so this must
+  // run on the Windows/macOS matrix, not just the Ubuntu full suite.
+  'test/integration/fts-extension-e2e.test.ts',
   'test/integration/server-http-startup.test.ts',
   'test/integration/mcp/server-startup.test.ts',
   'test/integration/analyze-heap-oom-e2e.test.ts',

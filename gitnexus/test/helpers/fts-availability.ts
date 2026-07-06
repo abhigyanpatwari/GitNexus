@@ -1,5 +1,5 @@
 export const FTS_UNAVAILABLE_NOTE =
-  'FTS extension unavailable (load-only policy; not pre-installed on this machine)';
+  'FTS extension unavailable (load-only policy; LOAD failed on this machine)';
 
 /**
  * Dynamically skip an FTS-primitive test when the extension cannot load.

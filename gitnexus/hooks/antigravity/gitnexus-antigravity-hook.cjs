@@ -40,11 +40,33 @@ function readInput() {
 }
 
 function isGlobalRegistryDir(candidate) {
-  if (fs.existsSync(path.join(candidate, 'meta.json'))) return false;
+  if (
+    fs.existsSync(path.join(candidate, 'gitnexus.json')) ||
+    fs.existsSync(path.join(candidate, 'meta.json'))
+  ) {
+    return false;
+  }
   return (
     fs.existsSync(path.join(candidate, 'registry.json')) ||
     fs.existsSync(path.join(candidate, 'repos'))
   );
+}
+
+/**
+ * Read the index metadata file, preferring `gitnexus.json` (current format)
+ * and falling back to the legacy `meta.json` mirror. Returns `null` if
+ * neither exists or parses.
+ */
+function readIndexMeta(gitNexusDir) {
+  try {
+    return JSON.parse(fs.readFileSync(path.join(gitNexusDir, 'gitnexus.json'), 'utf-8'));
+  } catch {
+    try {
+      return JSON.parse(fs.readFileSync(path.join(gitNexusDir, 'meta.json'), 'utf-8'));
+    } catch {
+      return null;
+    }
+  }
 }
 
 function walkForGitNexusDir(startDir) {
@@ -426,12 +448,10 @@ function buildStaleIndexHint(gitNexusDir, cwd) {
 
   let lastCommit = '';
   let hadEmbeddings = false;
-  try {
-    const meta = JSON.parse(fs.readFileSync(path.join(gitNexusDir, 'meta.json'), 'utf-8'));
+  const meta = readIndexMeta(gitNexusDir);
+  if (meta) {
     lastCommit = meta.lastCommit || '';
     hadEmbeddings = meta.stats && meta.stats.embeddings > 0;
-  } catch {
-    /* no meta — treat as stale */
   }
 
   if (currentHead === lastCommit) return '';

@@ -36,7 +36,7 @@ All three are `BasicBlock → BasicBlock` edges in the single `CodeRelation` tab
 
 - `pdg_query({ mode: 'controls', target })` — CDG. For the anchored function,
   each edge: controlling predicate block → dependent block + branch sense in
-  `label` (`'T'` = predicate's true/taken arm, `'F'` = false/fall-through). An
+  `reason` (`'T'` = predicate's true/taken arm, `'F'` = false/fall-through). An
   edge into an early-return/throw block is flagged `guard: true`.
 - `pdg_query({ mode: 'flows', target, variable? })` — REACHING_DEF def→use
   edges; `variable` filters to one binding.

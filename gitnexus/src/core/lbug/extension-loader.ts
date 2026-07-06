@@ -41,7 +41,11 @@ export interface ExtensionEnsureOptions {
 export interface ExtensionManagerOptions {
   policy?: ExtensionInstallPolicy;
   installTimeoutMs?: number;
-  installExtension?: (extensionName: string, timeoutMs: number) => Promise<ExtensionInstallResult>;
+  installExtension?: (
+    extensionName: string,
+    timeoutMs: number,
+    loadError?: string,
+  ) => Promise<ExtensionInstallResult>;
   warn?: (message: string) => void;
 }
 
@@ -49,6 +53,9 @@ const alreadyAvailable = (message: string): boolean =>
   message.includes('already loaded') ||
   message.includes('already installed') ||
   message.includes('already exists');
+
+/** LadybugDB errors are multi-line; collapse for single-line warn/reason strings. */
+const oneLine = (value: string): string => value.replace(/\s+/g, ' ').trim();
 
 const resolvePolicyFromEnv = (): ExtensionInstallPolicy => {
   const raw = process.env.GITNEXUS_LBUG_EXTENSION_INSTALL;
@@ -103,6 +110,7 @@ export const getExtensionInstallChildProcessArgs = (
 export const installDuckDbExtensionOutOfProcess = async (
   extensionName: string,
   timeoutMs: number = getExtensionInstallTimeoutMs(),
+  loadError?: string,
 ): Promise<ExtensionInstallResult> => {
   if (!EXTENSION_NAME_PATTERN.test(extensionName)) {
     throw new Error(`Invalid DuckDB extension name: ${extensionName}`);
@@ -113,6 +121,9 @@ export const installDuckDbExtensionOutOfProcess = async (
       env: {
         ...process.env,
         GITNEXUS_LBUG_EXTENSION_NAME: extensionName,
+        // The child picks INSTALL vs FORCE INSTALL from this LOAD error so it
+        // only re-downloads when the on-disk extension file is actually broken.
+        ...(loadError ? { GITNEXUS_LBUG_EXTENSION_LOAD_ERROR: loadError } : {}),
       },
       stdio: ['ignore', 'ignore', 'pipe'],
       windowsHide: true,
@@ -132,7 +143,7 @@ export const installDuckDbExtensionOutOfProcess = async (
       resolve({
         success: false,
         timedOut: true,
-        message: `INSTALL ${extensionName} timed out after ${timeoutMs}ms`,
+        message: `extension install for ${extensionName} timed out after ${timeoutMs}ms`,
       });
     }, timeoutMs);
 
@@ -152,8 +163,8 @@ export const installDuckDbExtensionOutOfProcess = async (
         timedOut: false,
         message:
           code === 0
-            ? `INSTALL ${extensionName} completed`
-            : `INSTALL ${extensionName} failed with ${signal ?? `exit code ${code}`}${stderr ? `: ${stderr.trim()}` : ''}`,
+            ? `extension install for ${extensionName} completed`
+            : `extension install for ${extensionName} failed with ${signal ?? `exit code ${code}`}${stderr ? `: ${stderr.trim()}` : ''}`,
       });
     });
   });
@@ -218,44 +229,74 @@ export class ExtensionManager {
       return false;
     }
 
-    if (await this.tryLoad(query, name)) {
+    const loadError = await this.tryLoad(query, name);
+    if (loadError === null) {
       this.markLoaded(name);
       return true;
     }
 
     if (policy === 'load-only') {
-      this.markUnavailable(name, label, 'load-only policy: extension not pre-installed', warn);
+      this.markUnavailable(
+        name,
+        label,
+        `load-only policy (no install attempted); LOAD ${name} failed: ${loadError}`,
+        warn,
+      );
       return false;
     }
 
     let install = this.installAttempted.get(name);
     if (!install) {
       const installFn = this.options.installExtension ?? installDuckDbExtensionOutOfProcess;
-      install = await installFn(name, timeoutMs);
+      // Hand the child the LOAD error so it re-downloads (FORCE) only when the
+      // present extension file is provably broken, not on every LOAD failure.
+      install = await installFn(name, timeoutMs, loadError);
       this.installAttempted.set(name, install);
     }
 
     if (!install.success) {
-      this.markUnavailable(name, label, install.message, warn);
+      this.markUnavailable(
+        name,
+        label,
+        `${install.message}; LOAD ${name} had failed: ${loadError}`,
+        warn,
+      );
       return false;
     }
 
-    if (await this.tryLoad(query, name)) {
+    const retryError = await this.tryLoad(query, name);
+    if (retryError === null) {
       this.markLoaded(name);
       return true;
     }
 
-    this.markUnavailable(name, label, `LOAD ${name} failed after successful INSTALL`, warn);
+    this.markUnavailable(
+      name,
+      label,
+      `LOAD ${name} failed after successful INSTALL: ${retryError}`,
+      warn,
+    );
     return false;
   }
 
-  private async tryLoad(query: (sql: string) => Promise<unknown>, name: string): Promise<boolean> {
+  /**
+   * Attempt `LOAD EXTENSION <name>`; returns `null` on success and the
+   * collapsed error message on failure. The message is the load-side ground
+   * truth — LadybugDB distinguishes a missing extension file from a present
+   * but unloadable one (wrong platform, truncated download, version mismatch),
+   * and discarding it left users staring at "not pre-installed" when the file
+   * existed all along (#2374).
+   */
+  private async tryLoad(
+    query: (sql: string) => Promise<unknown>,
+    name: string,
+  ): Promise<string | null> {
     try {
       await query(`LOAD EXTENSION ${name}`);
-      return true;
+      return null;
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      return alreadyAvailable(msg);
+      return alreadyAvailable(msg) ? null : oneLine(msg);
     }
   }
 

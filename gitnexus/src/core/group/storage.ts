@@ -4,7 +4,7 @@ import * as path from 'node:path';
 import * as os from 'node:os';
 import { randomBytes } from 'node:crypto';
 import type { ContractRegistry } from './types.js';
-import { retryRename } from './bridge-db.js';
+import { retryRename } from '../../storage/fs-atomic.js';
 
 /**
  * Build an unpredictable suffix for atomic-write tmp files. Replaces the

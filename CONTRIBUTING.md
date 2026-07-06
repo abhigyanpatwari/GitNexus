@@ -169,7 +169,9 @@ routes between two modes based on the triggering event:
   not enforce branch reachability. No Docker build (RC-only). Before cutting a
   stable release, keep `gitnexus/package.json`,
   `gitnexus-claude-plugin/.claude-plugin/plugin.json`,
-  `.claude-plugin/marketplace.json`, and the matching `CHANGELOG.md` entry in
+  `.claude-plugin/marketplace.json`,
+  `gitnexus-claude-plugin/.codex-plugin/plugin.json`,
+  `.agents/plugins/marketplace.json`, and the matching `CHANGELOG.md` entry in
   lockstep — the always-on `gitnexus` unit suite now fails if those manifest
   versions drift.
 - **Release-candidate mode** — runs on every push to `main` (typically a

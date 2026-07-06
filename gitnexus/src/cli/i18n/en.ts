@@ -28,8 +28,8 @@ export const en = {
   'status.currentCommit': 'Current commit',
   'status.branch': 'Branch',
   'status.detached': '(detached HEAD)',
-  'status.branchNotIndexed':
-    "⚠️ current branch not indexed (primary index is for '{{primary}}'; run gitnexus analyze)",
+  'status.workspaceIndexLabel':
+    "Workspace index: last analyzed on '{{primary}}' (re-run gitnexus analyze to follow the current branch)",
   'status.status': 'Status',
   'status.upToDate': '✅ up-to-date',
   'status.stale': '⚠️ stale (re-run gitnexus analyze)',
@@ -117,7 +117,7 @@ export const en = {
   'help.option.help': 'display help for command',
   'help.option.version': 'output the version number',
   'help.command.setup.description':
-    'One-time setup: configure MCP for Cursor, Claude Code, OpenCode, Codex',
+    'One-time setup: configure MCP for Cursor, Claude Code, Antigravity, OpenCode, CodeBuddy, Qoder, Codex',
   'help.command.uninstall.description':
     'Reverse `setup`: remove GitNexus MCP entries, skills, and hooks from all detected editors',
   'help.command.analyze.description': 'Index a repository (full analysis)',
@@ -130,6 +130,9 @@ export const en = {
   'help.command.status.description': 'Show index status for current repo',
   'help.command.doctor.description':
     'Show runtime platform capabilities and embedding configuration',
+  'help.command.embeddings.description': 'Manage the on-demand local embedding runtime',
+  'help.command.embeddings.install.description':
+    'Install the local embedding stack (@huggingface/transformers + onnxruntime-node) on demand. Heals installs where npm skipped the optional packages (e.g. behind an HTTP proxy, #2370). Downloads only from your configured npm registry — mirrors and proxies apply.',
   'help.command.clean.description': 'Delete GitNexus index for current repo',
   'help.command.remove.description':
     'Delete the GitNexus index for a registered repo (by alias, name, or absolute path). Unlike `clean`, does not require being inside the repo. Idempotent on unknown targets.',
@@ -200,7 +203,7 @@ export const en = {
   'help.option.analyze.embeddingBatchSize': 'Number of nodes per embedding batch',
   'help.option.analyze.embeddingSubBatchSize': 'Number of chunks per embedding model call',
   'help.option.analyze.embeddingDevice': 'Embedding device: auto, cpu, dml, cuda, or wasm',
-  'help.option.index.force': 'Register even if meta.json is missing (stats will be empty)',
+  'help.option.index.force': 'Register even if index metadata is missing (stats will be empty)',
   'help.option.index.allowNonGit': 'Allow registering folders that are not Git repositories',
   'help.option.port': 'Port number',
   'help.option.serve.host': 'Bind address (default: 127.0.0.1, use 0.0.0.0 for remote access)',
@@ -212,7 +215,7 @@ export const en = {
   'help.option.force.confirmation': 'Skip confirmation prompt',
   'help.option.uninstall.force': 'Apply the changes (default is a dry-run preview)',
   'help.option.clean.all': 'Clean all indexed repos',
-  'help.option.clean.branch': 'Delete only the named branch index (not the primary)',
+  'help.option.clean.branch': 'Delete only the named branch index (not the workspace index)',
   'help.option.clean.lbugSidecars': 'Clean quarantined LadybugDB missing-shadow WAL sidecars',
   'help.option.wiki.force': 'Force full regeneration even if up to date',
   'help.option.wiki.provider':
@@ -269,6 +272,10 @@ export const en = {
   'help.option.evalServer.host':
     'Bind address (default: 127.0.0.1, use 0.0.0.0 to expose to all interfaces)',
   'help.option.evalServer.idleTimeout': 'Auto-shutdown after N seconds idle (0 = disabled)',
+  'help.option.embeddings.install.cuda':
+    "Also download the CUDA GPU binaries (runs onnxruntime-node's NuGet postinstall; set GLOBAL_AGENT_HTTPS_PROXY behind a proxy)",
+  'help.option.embeddings.install.force':
+    'Install into the runtime prefix even when the stack already resolves',
   'help.option.group.create.force': 'Overwrite existing group',
   'help.option.group.sync.skipEmbeddings': 'Exact + BM25 only (no embedding fallback)',
   'help.option.group.sync.exactOnly': 'Exact match only',

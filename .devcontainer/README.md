@@ -10,6 +10,8 @@ A cross-platform Dev Container that pre-installs Claude Code, OpenAI Codex CLI, 
 >
 > The trade-off of the copy model: host and container config **diverge after first create.** A skill or plugin you add on the host later won't appear in the container until you wipe the config volume and rebuild (see [§ Rebuild / reset](#rebuild--reset)). Edits you make inside the container persist across rebuilds but never reach the host.
 
+**Contents:** [Quick start](#quick-start) · [Windows 11 setup](#windows-11-setup) · [macOS](#macos) · [Linux](#linux) · [How CLI state flows from your host](#how-cli-state-flows-from-your-host) · [Session resume](#session-resume-across-container-recreation) · [Trust boundary](#trust-boundary-concretely) · [First-time CLI authentication](#first-time-cli-authentication) · [API key auth](#alternative-api-key-authentication-ci--headless) · [Port forwarding](#port-forwarding) · [Known gotchas](#known-gotchas) · [Rebuild / reset](#rebuild--reset) · [Bumping CLI versions](#bumping-cli-versions) · [What's not included (yet)](#whats-not-included-yet) · [Troubleshooting](#troubleshooting)
+
 ## Quick start
 
 1. Install [Docker Desktop](https://docs.docker.com/desktop/) (Windows/macOS) or Docker Engine (Linux).

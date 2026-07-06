@@ -383,7 +383,8 @@ CLI (analyze.ts) → runFullAnalysis(repoPath, options, callbacks)
   ├── lbug           # LadybugDB database
   ├── lbug.wal       # Write-ahead log
   ├── lbug.lock      # Single-writer lock
-  └── meta.json      # lastCommit, indexedAt, stats
+  ├── gitnexus.json  # lastCommit, indexedAt, stats (primary metadata file)
+  └── meta.json      # legacy mirror of gitnexus.json, kept in sync (see MIGRATION.md)
 
 ~/.gitnexus/
   └── registry.json  # Global repo registry (MCP discovery)

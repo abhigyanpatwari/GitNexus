@@ -118,6 +118,7 @@ export default defineConfig({
             'test/integration/group/manifest-resolve-symbol-2325.test.ts',
             'test/integration/group/http-route-resolve-symbol.test.ts',
             'test/integration/skills-e2e.test.ts',
+            'test/integration/fts-extension-e2e.test.ts',
             'test/integration/fts-stemmer-sweep.test.ts',
             'test/integration/lbug-multiwriter-deadlock.test.ts',
           ],
@@ -127,7 +128,12 @@ export default defineConfig({
         extends: true,
         test: {
           name: 'cli-e2e',
-          include: ['test/integration/skills-e2e.test.ts'],
+          include: [
+            'test/integration/skills-e2e.test.ts',
+            // Spawns the real CLI per test; runs sequentially (fileParallelism:
+            // false) so it doesn't aggravate the under-load timeout-flake class.
+            'test/integration/fts-extension-e2e.test.ts',
+          ],
           fileParallelism: false,
           sequence: { groupOrder: 2 },
         },
