@@ -1352,9 +1352,14 @@ describe('LocalBackend.callTool', () => {
     backend = new LocalBackend();
     await backend.init();
 
+    // The symbol is stored at 0-based startLine 1; context() presents it 1-based
+    // (line 2) and rename subtracts 1 to recover the 0-based file index (1), so
+    // `oldName` must sit on the file's 0-based line 1 for the definition edit to
+    // fire. (#2380: the mock previously put it on line 0, which stopped matching
+    // once context() went 1-based.)
     const readSpy = vi
       .spyOn(fsPromises, 'readFile')
-      .mockResolvedValue('function oldName() {}\n' as unknown as Buffer);
+      .mockResolvedValue('\nfunction oldName() {}\n' as unknown as Buffer);
     const writeSpy = vi
       .spyOn(fsPromises, 'writeFile')
       .mockRejectedValue(new Error('EACCES: permission denied'));
