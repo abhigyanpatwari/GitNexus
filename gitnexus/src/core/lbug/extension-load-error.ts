@@ -112,13 +112,20 @@ const CORRUPT_FILE_REMEDY =
   'platform). Re-download it with network access and GITNEXUS_LBUG_EXTENSION_INSTALL=auto ' +
   '(`gitnexus analyze --repair-fts`).';
 
+// Single source of truth for the VC++ runtime-install pointer, shared by the
+// Windows-126 and structural missing-dependency remedies so the name/URL cannot
+// drift between them (#2383 F5).
+const VC_REDIST_INSTALL_HINT =
+  'the Microsoft Visual C++ 2015-2022 Redistributable (x64) from ' +
+  'https://aka.ms/vs/17/release/vc_redist.x64.exe';
+
 // MSVC-first per DuckDB's canonical answer for this exact error; OpenSSL second.
 const WINDOWS_MISSING_DEPENDENCY_REMEDY =
   'The FTS extension is present but a required runtime library is missing (Windows error 126). ' +
-  'Reinstalling the extension will NOT help. Install the Microsoft Visual C++ 2015-2022 ' +
-  'Redistributable (x64) from https://aka.ms/vs/17/release/vc_redist.x64.exe; if the error ' +
-  'persists, the extension also needs OpenSSL 3 (libcrypto-3-x64.dll / libssl-3-x64.dll) on the ' +
-  'DLL search path.';
+  'Reinstalling the extension will NOT help. Install ' +
+  VC_REDIST_INSTALL_HINT +
+  '; if the error persists, the extension also needs OpenSSL 3 ' +
+  '(libcrypto-3-x64.dll / libssl-3-x64.dll) on the DLL search path.';
 
 const POSIX_MISSING_DEPENDENCY_REMEDY =
   'The FTS extension is present but a shared library it depends on could not be loaded (named in ' +
@@ -185,9 +192,9 @@ export type ExtensionBinaryState = 'absent' | 'corrupt' | 'valid' | 'indetermina
 
 const STRUCTURAL_MISSING_DEPENDENCY_REMEDY =
   'The FTS extension file is valid, so the failure is a missing or incompatible runtime dependency, ' +
-  'not the extension itself — reinstalling will NOT help. On Windows, install the Microsoft Visual ' +
-  'C++ 2015-2022 Redistributable (x64) from https://aka.ms/vs/17/release/vc_redist.x64.exe and ensure ' +
-  'OpenSSL 3 is available; on Linux/macOS install the shared library named in the error above.';
+  'not the extension itself — reinstalling will NOT help. On Windows, install ' +
+  VC_REDIST_INSTALL_HINT +
+  ' and ensure OpenSSL 3 is available; on Linux/macOS install the shared library named in the error above.';
 
 /**
  * Pull the extension file path out of lbug's load error. lbug's wrapper is

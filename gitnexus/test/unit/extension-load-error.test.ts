@@ -294,6 +294,23 @@ describe('diagnoseExtensionLoad (structural, language-independent)', () => {
     }
   });
 
+  it('a valid file with an unrecognized loader tail → structural remedy carrying the shared VC++ hint', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ext-diag-struct-'));
+    const file = join(dir, 'libfts.lbug_extension');
+    writeFileSync(file, buildHostValidBinary());
+    try {
+      // Wrapper present (so the path extracts) with a tail that maps to neither
+      // corrupt_file nor missing_dependency — exercises the STRUCTURAL remedy branch,
+      // and asserts it carries the same vc_redist URL as the Windows-126 remedy (#2383 F5).
+      const reason = `Failed to load library: ${file}. has not been installed`;
+      const { kind, remedy } = diagnoseExtensionLoad(reason);
+      expect(kind).toBe('missing_dependency');
+      expect(remedy).toMatch(/vc_redist\.x64\.exe/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('a malformed host binary → corrupt_file regardless of the (localized) error text', () => {
     const dir = mkdtempSync(join(tmpdir(), 'ext-diag-corrupt-'));
     const file = join(dir, 'libfts.lbug_extension');
