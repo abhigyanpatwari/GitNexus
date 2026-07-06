@@ -13,6 +13,7 @@ import {
 } from '../core/embeddings/runtime-install.js';
 import { cudaRedirectDoctorStatus } from '../core/embeddings/onnxruntime-node-resolver.js';
 import { checkLbugNative, probeFtsExtensionLoad } from '../core/lbug/native-check.js';
+import { diagnoseExtensionLoad } from '../core/lbug/extension-load-error.js';
 import { getExtensionInstallPolicy } from '../core/lbug/extension-loader.js';
 import { t } from './i18n/index.js';
 
@@ -143,6 +144,15 @@ export const doctorCommand = async () => {
   );
   if (!ftsProbe.loaded && ftsProbe.reason) {
     console.log(`  ${padDisplayEnd('', 18)}${ftsProbe.reason}`);
+    // Add an actionable remedy for recognized failure classes (#2374). The
+    // Windows missing-dependency case is the point of this: the raw error 126
+    // ("specified module could not be found") is opaque, so name the fix (VC++
+    // redist, then OpenSSL) instead of leaving the user to reinstall in vain.
+    // `unknown`'s remedy is "run doctor", which would be circular here.
+    const { kind, remedy } = diagnoseExtensionLoad(ftsProbe.reason);
+    if (kind !== 'unknown') {
+      console.log(`  ${padDisplayEnd('', 18)}${remedy}`);
+    }
   }
   console.log(`  ${label('doctor.labels.vectorIndex', 18)}${capabilities.vector}`);
   console.log(`  ${label('doctor.labels.semanticMode', 18)}${capabilities.semanticMode}`);
