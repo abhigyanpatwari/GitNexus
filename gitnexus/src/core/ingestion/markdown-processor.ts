@@ -8,6 +8,7 @@
 
 import path from 'node:path';
 import { generateId } from '../../lib/utils.js';
+import { toZeroBasedLine } from './utils/line-base.js';
 import type { GraphNode } from 'gitnexus-shared';
 import { KnowledgeGraph } from '../graph/types.js';
 
@@ -81,8 +82,8 @@ export const processMarkdown = (
         properties: {
           name: heading,
           filePath: file.path,
-          startLine: lineNum,
-          endLine,
+          startLine: toZeroBasedLine(lineNum),
+          endLine: toZeroBasedLine(endLine),
           level,
           description: `h${level}`,
         },
