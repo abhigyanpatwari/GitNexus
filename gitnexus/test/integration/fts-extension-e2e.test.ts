@@ -270,6 +270,9 @@ describe('unhappy path — extension file present but broken (the #2374 report)'
     // Old message sent users to doctor "to install it"; doctor never installed.
     expect(result.output).not.toContain('doctor` to install');
     expect(result.output).toContain('gitnexus doctor');
+    // #2374 (U2): a corrupt file classifies as corrupt_file, so the Windows
+    // missing-dependency remedy must not misfire on the repair path either.
+    expect(result.output).not.toContain('Visual C++');
   }, 180_000);
 
   it('query warns with the extension-load failure, not the misleading indexes-missing message', () => {
@@ -280,11 +283,17 @@ describe('unhappy path — extension file present but broken (the #2374 report)'
     expect(result.output).not.toContain('FTS indexes missing');
   }, 60_000);
 
-  it('doctor live-probes FTS as unavailable and prints the real error', () => {
+  it('doctor live-probes FTS as unavailable, prints the real error and an actionable remedy', () => {
     const result = runCli(['doctor'], repo, home, 'load-only');
     expect(result.status).toBe(0);
     expect(result.output).toContain('Full-text search: unavailable');
     expect(result.output).toContain('Failed to load library');
+    // #2374 (U2): doctor routes the reason through the classifier and prints a
+    // remedy. A broken file is corrupt_file → re-download guidance; the Windows
+    // missing-dependency remedy (VC++/OpenSSL) must NOT misfire on a corrupt file
+    // — the catch-all guard, verified end-to-end through the real CLI.
+    expect(result.output).toContain('Re-download it with network access');
+    expect(result.output).not.toContain('Visual C++');
   }, 60_000);
 });
 

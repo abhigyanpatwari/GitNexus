@@ -13,7 +13,9 @@ const EXTENSION_NAME_PATTERN = /^[A-Za-z][A-Za-z0-9_]*$/;
 // a missing file (plain INSTALL downloads it), or a permanent non-file failure a
 // re-download can never fix (missing runtime dep: "cannot open shared object") —
 // plain INSTALL avoids re-downloading ~2 MB on every analyze run forever.
-const FILE_CORRUPTION_SIGNATURES = [
+// Exported so a parity test keeps this byte-identical to the copy in
+// src/core/lbug/extension-load-error.ts (this `.mjs` cannot import that `.ts`), #2383 F5b.
+export const FILE_CORRUPTION_SIGNATURES = [
   /invalid elf/i,
   /file too short/i,
   /not a valid/i,

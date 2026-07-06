@@ -81,7 +81,7 @@ describe('ExtensionManager — install policies', () => {
 
     expect(installExtension).not.toHaveBeenCalled();
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('continuing without FTS features'));
-    expect(manager.getCapabilities()).toEqual([
+    expect(manager.getCapabilities()).toMatchObject([
       { name: 'fts', loaded: false, reason: expect.stringContaining('load-only') },
     ]);
   });
@@ -148,7 +148,7 @@ describe('ExtensionManager — reason strings carry the real LOAD error (#2374)'
 
     await expect(manager.ensure(query, 'fts', 'FTS')).resolves.toBe(false);
 
-    expect(manager.getCapabilities()).toEqual([
+    expect(manager.getCapabilities()).toMatchObject([
       {
         name: 'fts',
         loaded: false,
@@ -167,7 +167,7 @@ describe('ExtensionManager — reason strings carry the real LOAD error (#2374)'
 
     await expect(manager.ensure(query, 'fts', 'FTS')).resolves.toBe(false);
 
-    expect(manager.getCapabilities()).toEqual([
+    expect(manager.getCapabilities()).toMatchObject([
       {
         name: 'fts',
         loaded: false,
@@ -185,7 +185,7 @@ describe('ExtensionManager — reason strings carry the real LOAD error (#2374)'
 
     await expect(manager.ensure(query, 'fts', 'FTS')).resolves.toBe(false);
 
-    expect(manager.getCapabilities()).toEqual([
+    expect(manager.getCapabilities()).toMatchObject([
       {
         name: 'fts',
         loaded: false,
@@ -241,7 +241,7 @@ describe('ExtensionManager — observability', () => {
     await manager.ensure(okQuery, 'fts', 'FTS');
     await manager.ensure(failQuery, 'vector', 'VECTOR');
 
-    expect(manager.getCapabilities()).toEqual([
+    expect(manager.getCapabilities()).toMatchObject([
       { name: 'fts', loaded: true },
       { name: 'vector', loaded: false, reason: expect.stringContaining('load-only') },
     ]);
