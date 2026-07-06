@@ -20,6 +20,7 @@ import { KnowledgeGraph } from '../graph/types.js';
 import { NodeTableName, NODE_TABLES } from './schema.js';
 import { RelPairRouter } from './rel-pair-routing.js';
 import { parseTruthyEnv } from '../ingestion/utils/env.js';
+import { SYMBOL_NODE_LABELS } from '../ingestion/utils/symbol-labels.js';
 import { applyCjkSegmentationIfEnabled } from '../search/cjk-segmentation.js';
 
 /**
@@ -212,32 +213,10 @@ export const normalizeFtsText = (text: string): string => text.replace(/[\r\n\t]
 const formatFtsDescription = (description: string): string =>
   normalizeFtsText(applyCjkSegmentationIfEnabled(description));
 
-const EXACT_SYMBOL_CONTENT_LABELS = new Set([
-  'Function',
-  'Method',
-  'Class',
-  'Interface',
-  'CodeElement',
-  'Struct',
-  'Enum',
-  'Macro',
-  'Typedef',
-  'Union',
-  'Namespace',
-  'Trait',
-  'Impl',
-  'TypeAlias',
-  'Const',
-  'Static',
-  'Variable',
-  'Property',
-  'Record',
-  'Delegate',
-  'Annotation',
-  'Constructor',
-  'Template',
-  'Module',
-]);
+// Labels that get exact source-span content (no ±2 window). Single source of
+// truth in `symbol-labels.ts` — see there for why the exactness depends on the
+// 0-based line invariant. Kept as a named alias to read intent at the use site.
+const EXACT_SYMBOL_CONTENT_LABELS = SYMBOL_NODE_LABELS;
 
 const extractContent = async (node: GraphNode, contentCache: FileContentCache): Promise<string> => {
   const filePath = node.properties.filePath;
