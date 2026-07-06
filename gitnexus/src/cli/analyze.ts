@@ -45,7 +45,12 @@ import { cliError } from './cli-message.js';
 import { EMBEDDING_DIMS_ERROR, normalizeEmbeddingDims } from './embedding-dims.js';
 import { formatElapsed } from './format-elapsed.js';
 import { isHfDownloadFailure } from '../core/embeddings/hf-env.js';
-import { isHttpMode, safeUrl } from '../core/embeddings/http-client.js';
+import {
+  isHttpEmbeddingDimsError,
+  isHttpEmbeddingError,
+  isHttpMode,
+  safeUrl,
+} from '../core/embeddings/http-client.js';
 import {
   isLocalEmbeddingRuntimeBlockerMessage,
   isMissingLocalEmbeddingStackMessage,
@@ -1641,10 +1646,62 @@ const analyzeCommandImpl = async (
       return;
     }
 
+    // Malformed GITNEXUS_EMBEDDING_DIMS env var (#2385). readConfig() throws a
+    // plain Error (a config mistake, not an endpoint failure), surfacing here from
+    // httpEmbed()->readConfig() inside the analysis run. Show a clean config
+    // message rather than a raw stack dump. The --embedding-dims CLI flag is
+    // validated up front (EMBEDDING_DIMS_ERROR); this covers the env-var path.
+    // Checked before the endpoint/HF branches: it is a plain Error, so
+    // isHttpEmbeddingError() is false and the HF network heuristic must not claim it.
+    if (isHttpEmbeddingDimsError(msg)) {
+      cliError(`  ${msg.replace(/\n/g, '\n  ')}\n`, {
+        recoveryHint: 'embedding-dims-invalid',
+      });
+      process.exitCode = 1;
+      return;
+    }
+
+    // Custom HTTP embedding endpoint failure (#2385). When a `--embedding-base-url`
+    // is configured, HTTP mode never downloads a model — so a failure talking to
+    // that endpoint must NOT show the huggingface-download guidance. Keyed on the
+    // error *type* (HttpEmbeddingError), not its message text, so it stays correct
+    // regardless of locale or wording. Checked before the HF branch, whose network
+    // heuristic (`fetch failed` / `ECONNREFUSED`) would otherwise also match a
+    // wrapped endpoint-connection error. The header is deliberately neutral: this
+    // type covers both never-reached failures (connection/timeout/DNS) and
+    // reached-but-failed ones (4xx/5xx, dimension/shape mismatch), so it must not
+    // assert "unreachable". The thrown `msg` carries the specific reason (and the
+    // masked URL where one applies), so it is surfaced verbatim.
+    if (isHttpEmbeddingError(err)) {
+      cliError(
+        `  The custom embedding endpoint request failed.\n` +
+          `  ${msg.replace(/\n/g, '\n  ')}\n` +
+          `  Suggestions:\n` +
+          `    1. Verify the endpoint URL is reachable and running ` +
+          `(--embedding-base-url / GITNEXUS_EMBEDDING_URL: host, port, /v1 path).\n` +
+          `    2. Confirm the model name and embedding dimensions match what the endpoint serves.\n` +
+          `    3. Re-run without --embeddings to index without vectors.\n`,
+        { recoveryHint: 'http-embedding-endpoint-error' },
+      );
+      process.exitCode = 1;
+      return;
+    }
+
+    // isHttpMode() is a pure presence probe (URL+MODEL) that never throws — a
+    // malformed GITNEXUS_EMBEDDING_DIMS is handled by the dims branch above — so
+    // no defensive try/catch is needed here (#2385).
+    const inHttpMode = isHttpMode();
+
     // HF download failure — show clean guidance without the raw stack trace.
     // Checked before writeFatalToStderr so the user sees one focused message
     // rather than a stack-trace dump followed by a second remediation block.
-    if (isHfDownloadFailure(msg) || msg.includes('Failed to download embedding model')) {
+    // Gated on !inHttpMode: with a custom endpoint configured no model download
+    // is ever attempted, so a network error there is the endpoint's, handled by
+    // the HttpEmbeddingError branch above — never HF's (#2385).
+    if (
+      (isHfDownloadFailure(msg) || msg.includes('Failed to download embedding model')) &&
+      !inHttpMode
+    ) {
       cliError(
         `  The embedding model could not be downloaded.\n` +
           `  huggingface.co may be unreachable from your network\n` +
