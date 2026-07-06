@@ -32,9 +32,13 @@ vi.mock('../../src/storage/repo-manager.js', async (importOriginal) => {
 // Stored 0-based: this Class occupies 0-based lines 41..58 (editor lines 42..59).
 // TopFn sits on the file's first line (stored 0-based 0) — the #2380 falsy-`||`
 // case where `sym.startLine || sym[4]` would drop the line entirely.
+// Two DupFn symbols force impact()'s ambiguous branch, which is the only impact
+// response that surfaces a per-candidate line (#2380).
 const SEED = [
   `CREATE (c:Class {id:'Class:src/app.ts:App', name:'App', filePath:'src/app.ts', startLine:41, endLine:58, content:'class App {}', description:''})`,
   `CREATE (c:Class {id:'Class:src/top.ts:TopFn', name:'TopFn', filePath:'src/top.ts', startLine:0, endLine:0, content:'class TopFn {}', description:''})`,
+  `CREATE (f:Function {id:'Function:src/a.ts:DupFn', name:'DupFn', filePath:'src/a.ts', startLine:41, endLine:50, content:'function DupFn() {}', description:''})`,
+  `CREATE (f:Function {id:'Function:src/b.ts:DupFn', name:'DupFn', filePath:'src/b.ts', startLine:7, endLine:12, content:'function DupFn() {}', description:''})`,
 ];
 
 let backend: LocalBackend;
@@ -58,6 +62,16 @@ withTestLbugDB(
         expect(result.status).toBe('found');
         expect(result.symbol.startLine).toBe(1); // stored 0-based 0 -> display 1
         expect(result.symbol.endLine).toBe(1);
+      });
+
+      it('impact() ambiguous candidates report 1-based line (stored 41 -> 42)', async () => {
+        const result = await backend.callTool('impact', { target: 'DupFn' });
+        expect(result.status).toBe('ambiguous');
+        const cand = (result.candidates as Array<{ filePath: string; line: number }>).find(
+          (c) => c.filePath === 'src/a.ts',
+        );
+        expect(cand).toBeDefined();
+        expect(cand!.line).toBe(42); // stored 0-based 41 -> display 42
       });
 
       it('raw cypher returns the stored 0-based value unchanged', async () => {
