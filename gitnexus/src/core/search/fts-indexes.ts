@@ -35,7 +35,9 @@ export const ftsDegradedWarning = (): string => {
         ? ` ${remedy}`
         : '. Run `gitnexus doctor` for details, then `gitnexus analyze --repair-fts` with network access to reinstall.';
     return (
-      'FTS extension failed to load — keyword search degraded' + (reason ? ` (${reason})` : '') + tail
+      'FTS extension failed to load — keyword search degraded' +
+      (reason ? ` (${reason})` : '') +
+      tail
     );
   }
   return 'FTS indexes missing — keyword search degraded. Run: gitnexus analyze --repair-fts (or gitnexus analyze --force) to rebuild indexes.';

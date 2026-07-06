@@ -35,7 +35,10 @@ export interface ExtensionLoadDiagnosis {
 }
 
 /** LadybugDB says the extension file was never installed. INSTALL can heal it. */
-const MISSING_FILE_SIGNATURES: readonly RegExp[] = [/has not been installed/i, /not been installed/i];
+const MISSING_FILE_SIGNATURES: readonly RegExp[] = [
+  /has not been installed/i,
+  /not been installed/i,
+];
 
 /**
  * On-disk file corruption / wrong-platform. FORCE INSTALL re-downloads.
@@ -119,7 +122,9 @@ const matchesAny = (reason: string, signatures: readonly RegExp[]): boolean =>
  * Windows download (error 193, matched by `/not a valid/i`) routes to
  * FORCE-reinstall rather than to the runtime-install remedy.
  */
-export function classifyExtensionLoadError(reason: string | undefined | null): ExtensionLoadDiagnosis {
+export function classifyExtensionLoadError(
+  reason: string | undefined | null,
+): ExtensionLoadDiagnosis {
   const text = reason ?? '';
   if (matchesAny(text, MISSING_FILE_SIGNATURES)) {
     return { kind: 'missing_file', remedy: MISSING_FILE_REMEDY };

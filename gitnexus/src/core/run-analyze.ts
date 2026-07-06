@@ -1357,7 +1357,11 @@ export async function runFullAnalysis(
       // FTS_UNAVAILABLE_MESSAGE is wrong for that class (the file is present).
       const ftsReason = getExtensionCapabilities().find((c) => c.name === 'fts')?.reason;
       const { kind, remedy } = classifyExtensionLoadError(ftsReason);
-      log(kind === 'missing_dependency' ? `${FTS_UNAVAILABLE_MESSAGE} ${remedy}` : FTS_UNAVAILABLE_MESSAGE);
+      log(
+        kind === 'missing_dependency'
+          ? `${FTS_UNAVAILABLE_MESSAGE} ${remedy}`
+          : FTS_UNAVAILABLE_MESSAGE,
+      );
       progress('fts', 90, 'Search indexes skipped (FTS unavailable)');
     }
 
