@@ -319,7 +319,12 @@ export class ExtensionManager {
   ): void {
     // Classify once here (the single load-failure sink, run per Database not per
     // request) so the hot per-request warning path does no file I/O (#2383 F3).
-    this.capabilities.set(name, { name, loaded: false, reason, diagnosis: diagnoseExtensionLoad(reason) });
+    this.capabilities.set(name, {
+      name,
+      loaded: false,
+      reason,
+      diagnosis: diagnoseExtensionLoad(reason),
+    });
     const key = `${name}:${reason}`;
     if (this.warnedKeys.has(key)) return;
     this.warnedKeys.add(key);

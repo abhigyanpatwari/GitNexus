@@ -353,7 +353,11 @@ describe('runFullAnalysis FTS repair and verification failure paths', () => {
     vi.doMock('../../src/core/lbug/extension-loader.js', async (importActual) => ({
       ...(await importActual<typeof import('../../src/core/lbug/extension-loader.js')>()),
       getExtensionCapabilities: () => [
-        { name: 'fts', loaded: false, reason: 'LOAD fts failed: The specified module could not be found.' },
+        {
+          name: 'fts',
+          loaded: false,
+          reason: 'LOAD fts failed: The specified module could not be found.',
+        },
       ],
     }));
 
@@ -551,7 +555,9 @@ describe('runFullAnalysis FTS repair and verification failure paths', () => {
       );
 
       expect(result.ftsSkipped).toBe(true);
-      const degradeLine = logs.filter((l) => l.includes('skipping search-index creation')).join('\n');
+      const degradeLine = logs
+        .filter((l) => l.includes('skipping search-index creation'))
+        .join('\n');
       // Class-neutral lead + the classified VC++ remedy...
       expect(degradeLine).toMatch(/FTS extension unavailable; skipping search-index creation/i);
       expect(degradeLine).toMatch(/Visual C\+\+/);

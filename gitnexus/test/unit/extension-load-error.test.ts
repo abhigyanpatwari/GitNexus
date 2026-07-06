@@ -222,11 +222,23 @@ describe('classifyBinaryHeader', () => {
     ],
     // #2383 F1-secondary: a valid PE whose header sits past the read window is not
     // provably corrupt — return indeterminate so the caller defers to the loader.
-    ['win: PE header beyond read window → indeterminate', buildPEBeyondWindow(), 'win32', 'x64', 'indeterminate'],
+    [
+      'win: PE header beyond read window → indeterminate',
+      buildPEBeyondWindow(),
+      'win32',
+      'x64',
+      'indeterminate',
+    ],
     // Arch we don't map on a known platform: never claim corrupt (documents KTD5).
     ['linux: valid ELF, unmapped arch → valid', buildELF(0x3e), 'linux', 'mips', 'valid'],
     // Valid MZ but garbage where PE\0\0 should be, within the window → genuinely corrupt.
-    ['win: valid MZ but no PE signature → corrupt', buildPEGarbageSignature(), 'win32', 'x64', 'corrupt'],
+    [
+      'win: valid MZ but no PE signature → corrupt',
+      buildPEGarbageSignature(),
+      'win32',
+      'x64',
+      'corrupt',
+    ],
   ];
 
   it.each(cases)('%s', (_name, buf, platform, arch, expected) => {
