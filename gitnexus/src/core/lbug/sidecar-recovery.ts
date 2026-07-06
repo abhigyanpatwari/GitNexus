@@ -118,8 +118,10 @@ const warnOnce = (logger: SidecarRecoveryLogger, key: string, message: string): 
 // Windows OS text is localized on non-English installs (issue #2382 was filed
 // from a non-English Windows), so we key on the locale-invariant Win32 code
 // (2 = ERROR_FILE_NOT_FOUND), NOT the English phrase. The code is matched only
-// in the reason AFTER the `.shadow` token so a repo *path* containing e.g.
-// `\error 2\` cannot trip it. Deliberate exclusions:
+// in the reason AFTER the LAST `.shadow` token (the real failing sidecar; the
+// reason text never contains `.shadow`), so a repo *path* containing e.g.
+// `\error 2\` — even under a `.shadow`-suffixed parent directory — cannot trip
+// it. Deliberate exclusions:
 //   - `Error 3` (ERROR_PATH_NOT_FOUND): the #1811 non-ASCII path-garble
 //     artifact (see lbug-config.ts) where the shadow is PRESENT on disk;
 //     treating it as missing would quarantine a live WAL — data loss.
@@ -135,11 +137,16 @@ const warnOnce = (logger: SidecarRecoveryLogger, key: string, message: string): 
 export const isMissingShadowSidecarError = (err: unknown): boolean => {
   const msg = err instanceof Error ? err.message : String(err);
   if (!/cannot open file/i.test(msg)) return false;
-  const shadowAt = msg.search(/\.shadow\b/i);
-  if (shadowAt === -1) return false;
-  // Only the reason text from `.shadow` onward decides missing-vs-locked, so a
-  // path-embedded number/phrase before it can't satisfy the discriminator.
-  const reason = msg.slice(shadowAt);
+  // Anchor on the LAST `.shadow`, not the first: LadybugDB names the failing
+  // sidecar as the final `.shadow` token and its reason text (POSIX
+  // `: No such file or directory` / Windows ` - Error N: ...`) never contains
+  // `.shadow`. Slicing from the last match isolates the true reason, so an
+  // earlier `.shadow`-suffixed path segment (e.g. a `branch=subdir` directory
+  // like `snap.shadow\`) can't shift the anchor and let a path-embedded
+  // `error 2` be read as the Win32 code (issue #2382 review, Finding A).
+  const lastShadow = [...msg.matchAll(/\.shadow\b/gi)].at(-1);
+  if (lastShadow?.index === undefined) return false;
+  const reason = msg.slice(lastShadow.index);
   return /no such file or directory/i.test(reason) || /\berror\s+2\b/i.test(reason);
 };
 

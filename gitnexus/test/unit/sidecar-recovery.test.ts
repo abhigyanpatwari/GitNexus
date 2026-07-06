@@ -299,6 +299,43 @@ describe('LadybugDB sidecar recovery', () => {
       ).toBe(false);
     });
 
+    it('rejects an EARLIER .shadow-suffixed dir + later "error 2" segment with a real Error 32 (last-anchor — Finding A)', () => {
+      // Regression for the first-`.shadow` false-positive: a `.shadow`-suffixed
+      // parent dir (e.g. a branch=subdir dir) before the real `lbug.shadow`,
+      // plus a path-embedded `error 2`, must not read the path number as the
+      // Win32 code when the true trailing code is an excluded one (32 = locked).
+      expect(
+        isMissingShadowSidecarError(
+          new Error(
+            String.raw`IO exception: Cannot open file. path: F:\snap.shadow\error 2\repo\.gitnexus\lbug.shadow - Error 32: The process cannot access the file.`,
+          ),
+        ),
+      ).toBe(false);
+    });
+
+    it('rejects an earlier .shadow-suffixed dir + "error 2" segment with a real Error 5 (last-anchor — Finding A)', () => {
+      expect(
+        isMissingShadowSidecarError(
+          new Error(
+            String.raw`Cannot open file. path: F:\repos\.shadow\error 2\project\.gitnexus\lbug.shadow - Error 5: Access is denied.`,
+          ),
+        ),
+      ).toBe(false);
+    });
+
+    it('rejects a .shadow-backup dir (hyphen boundary) + "error 2" segment with a real Error 3 (last-anchor — Finding A)', () => {
+      // `.shadow-backup` matches `/\.shadow\b/` (hyphen is a word boundary), so
+      // first-match anchoring would slice from it; last-match must still land on
+      // the real `lbug.shadow` and read the true Error 3 (present-shadow garble).
+      expect(
+        isMissingShadowSidecarError(
+          new Error(
+            String.raw`Cannot open file. path: F:\repos\.shadow-backup\error 2\p\.gitnexus\lbug.shadow - Error 3: The system cannot find the path.`,
+          ),
+        ),
+      ).toBe(false);
+    });
+
     it('rejects POSIX permission-denied on the shadow', () => {
       expect(
         isMissingShadowSidecarError(
