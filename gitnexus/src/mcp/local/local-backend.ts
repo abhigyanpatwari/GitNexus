@@ -703,13 +703,31 @@ export class LocalBackend {
         query: (r, p) => this.query(r as RepoHandle, p),
         impactByUid: (id, uid, d, o) => this.impactByUid(id, uid, d, o),
         context: (r, p) => this.context(r as RepoHandle, p),
-        trace: (r, p) => this.trace(r as RepoHandle, p),
+        trace: (r, p) => this.traceForGroup(r as RepoHandle, p),
         resolveSymbol: (r, q) => this.resolveSymbolForGroup(r as RepoHandle, q),
         pdgFlows: (r, anchor, opts) => this.pdgFlowsForGroup(r as RepoHandle, anchor, opts),
       };
       this.groupToolSvc = new GroupService(port);
     }
     return this.groupToolSvc;
+  }
+
+  /**
+   * Adapt local `trace` to the group port. The assembled group/cross-repo trace
+   * presents 1-based endpoints (via resolveSymbolForGroup), so convert the hop
+   * lines here too — otherwise one response mixes 1-based endpoints with 0-based
+   * hops (#2380). Single-repo `trace` dispatches directly (not through this
+   * port) and stays 0-based (documented full-parity follow-up).
+   */
+  private async traceForGroup(repo: RepoHandle, params: TraceParams): Promise<unknown> {
+    const result = await this.trace(repo, params);
+    const hops = (result as { hops?: Array<{ startLine?: number | null }> }).hops;
+    if (Array.isArray(hops)) {
+      for (const hop of hops) {
+        hop.startLine = toDisplayLine(hop.startLine);
+      }
+    }
+    return result;
   }
 
   /**
