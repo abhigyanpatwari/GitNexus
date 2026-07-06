@@ -299,8 +299,12 @@ export interface AnalyzeResult {
  * a full analyze. Kept as a named constant so the env-var/command guidance
  * stays in one place (mirrors the VECTOR message in embedding-pipeline.ts).
  */
+// Class-neutral lead, reused for the missing-dependency degrade path (#2383 F2):
+// its remedy already explains that reinstalling will NOT help, so appending the
+// generic "install with network access" tail below would contradict it.
+const FTS_UNAVAILABLE_LEAD = 'FTS extension unavailable; skipping search-index creation.';
 const FTS_UNAVAILABLE_MESSAGE =
-  'FTS extension unavailable; skipping search-index creation. ' +
+  `${FTS_UNAVAILABLE_LEAD} ` +
   'Full-text/BM25 search will be disabled until the LadybugDB FTS extension is ' +
   'installed once with network access (GITNEXUS_LBUG_EXTENSION_INSTALL=auto) or ' +
   'pre-installed for offline use. Run `gitnexus doctor` for details.';
@@ -1352,14 +1356,15 @@ export async function runFullAnalysis(
       }
       progress('fts', 90, 'Search indexes ready');
     } else {
-      // Append the classified remedy when a runtime dependency is missing
-      // (#2374) — the generic "install it with network access" guidance in
-      // FTS_UNAVAILABLE_MESSAGE is wrong for that class (the file is present).
+      // For a missing runtime dependency (#2374) the file is present, so the
+      // generic "install it with network access" tail in FTS_UNAVAILABLE_MESSAGE
+      // contradicts the remedy's own "reinstalling will NOT help" (#2383 F2). Lead
+      // with the class-neutral sentence and append only the classified remedy.
       const ftsReason = getExtensionCapabilities().find((c) => c.name === 'fts')?.reason;
       const { kind, remedy } = diagnoseExtensionLoad(ftsReason);
       log(
         kind === 'missing_dependency'
-          ? `${FTS_UNAVAILABLE_MESSAGE} ${remedy}`
+          ? `${FTS_UNAVAILABLE_LEAD} ${remedy}`
           : FTS_UNAVAILABLE_MESSAGE,
       );
       progress('fts', 90, 'Search indexes skipped (FTS unavailable)');
