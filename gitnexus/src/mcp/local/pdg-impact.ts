@@ -11,6 +11,7 @@ import type { executeParameterized } from '../../core/lbug/pool-adapter.js';
 import { loadMeta } from '../../storage/repo-manager.js';
 import { IMPACT_MAX_DEPTH, PDG_QUERY_DEFAULT_LIMIT, PDG_QUERY_MAX_LIMIT } from '../tools.js';
 import { CALLEES_TRUNCATED_SENTINEL, CALLEE_ID_SEP } from '../../core/ingestion/cfg/emit.js';
+import { toDisplayLine } from './line-display.js';
 import { decodeCallSummary } from '../../core/ingestion/taint/call-summary-codec.js';
 import { decodeReachingDefReason } from '../../core/ingestion/cfg/reaching-def-reason-codec.js';
 import { getProviderForFile } from '../../core/ingestion/languages/index.js';
@@ -809,7 +810,7 @@ function assemblePdgImpactResult(input: {
     name: s.name,
     type: s.type,
     filePath: s.filePath,
-    ...(s.startLine !== undefined ? { startLine: s.startLine } : {}),
+    ...(s.startLine !== undefined ? { startLine: toDisplayLine(s.startLine) } : {}),
     ...(s.ambiguous ? { ambiguous: true } : {}),
     ...(s.id === null ? { unresolved: true } : {}),
     pdgEvidence: (s.id === null ? 'degraded' : 'owner-projection') as PdgImpactEvidence,

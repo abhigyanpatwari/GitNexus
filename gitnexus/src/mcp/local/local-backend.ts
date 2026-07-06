@@ -17,6 +17,7 @@ import {
   isLbugReady,
 } from '../../core/lbug/pool-adapter.js';
 import { isValidQueryParams } from '../../core/lbug/query-params.js';
+import { toDisplayLine } from './line-display.js';
 import { isWalCorruptionError, WAL_RECOVERY_SUGGESTION } from '../../core/lbug/lbug-config.js';
 // Embedding imports are lazy (dynamic import) to avoid loading onnxruntime-node
 // at MCP server startup — crashes on unsupported Node ABI versions (#89)
@@ -735,8 +736,8 @@ export class LocalBackend {
           name: s.name,
           type: s.type,
           filePath: s.filePath,
-          startLine: s.startLine,
-          endLine: s.endLine,
+          startLine: toDisplayLine(s.startLine),
+          endLine: toDisplayLine(s.endLine),
         },
       };
     }
@@ -748,7 +749,7 @@ export class LocalBackend {
           name: c.name,
           type: c.type,
           filePath: c.filePath,
-          startLine: c.startLine,
+          startLine: toDisplayLine(c.startLine),
         })),
       };
     }
@@ -1987,8 +1988,8 @@ export class LocalBackend {
         name: sym.name,
         type: sym.type,
         filePath: sym.filePath,
-        startLine: sym.startLine,
-        endLine: sym.endLine,
+        startLine: toDisplayLine(sym.startLine),
+        endLine: toDisplayLine(sym.endLine),
         ...(module ? { module } : {}),
         ...(includeContent && content ? { content } : {}),
       };
@@ -2255,8 +2256,8 @@ export class LocalBackend {
               name: sym.name || sym[1],
               type: sym.type || sym[2],
               filePath: sym.filePath || sym[3],
-              startLine: sym.startLine || sym[4],
-              endLine: sym.endLine || sym[5],
+              startLine: toDisplayLine(sym.startLine || sym[4]),
+              endLine: toDisplayLine(sym.endLine || sym[5]),
               bm25Score: bm25Result.score,
             });
           }
@@ -2989,7 +2990,7 @@ export class LocalBackend {
           name: c.name,
           kind: c.type,
           filePath: c.filePath,
-          line: c.startLine,
+          line: toDisplayLine(c.startLine),
           score: Number(c.score.toFixed(2)),
         })),
       };
@@ -3246,8 +3247,8 @@ export class LocalBackend {
         name: sym.name || sym[1],
         kind: symKind,
         filePath: sym.filePath || sym[3],
-        startLine: sym.startLine || sym[4],
-        endLine: sym.endLine || sym[5],
+        startLine: toDisplayLine(sym.startLine || sym[4]),
+        endLine: toDisplayLine(sym.endLine || sym[5]),
         ...(include_content && (sym.content || sym[6]) ? { content: sym.content || sym[6] } : {}),
         ...(methodMetadata ? { methodMetadata } : {}),
       },
@@ -3334,7 +3335,7 @@ export class LocalBackend {
             name: c.name,
             kind: c.type,
             filePath: c.filePath,
-            line: c.startLine,
+            line: toDisplayLine(c.startLine),
             score: Number(c.score.toFixed(2)),
           })),
         },
@@ -4951,7 +4952,7 @@ export class LocalBackend {
             name: c.name,
             kind: c.type,
             filePath: c.filePath,
-            line: c.startLine,
+            line: toDisplayLine(c.startLine),
             score: Number(c.score.toFixed(2)),
           })),
         };
@@ -5016,7 +5017,7 @@ export class LocalBackend {
             name: c.name,
             kind: c.type,
             filePath: c.filePath,
-            line: c.startLine,
+            line: toDisplayLine(c.startLine),
             score: Number(c.score.toFixed(2)),
             impactedCount: summary?.impactedCount ?? 0,
             risk: summary?.risk ?? 'UNKNOWN',
