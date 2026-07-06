@@ -663,6 +663,7 @@ async function doInitLbug(repoId: string, dbPath: string): Promise<void> {
 
         if (
           lastError.message.startsWith('LadybugDB checkpoint sidecar is missing') ||
+          lastError.message.startsWith('LadybugDB checkpoint sidecar is present but unreachable') ||
           lastError.message.startsWith('GitNexus could not move the LadybugDB WAL sidecar') ||
           isMissingShadowSidecarError(lastError)
         ) {

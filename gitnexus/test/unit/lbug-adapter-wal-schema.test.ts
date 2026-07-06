@@ -803,7 +803,9 @@ describe('Symmetric WAL-size gate during missing-shadow recovery (PR #1747 D2)',
 
     await expect(
       adapter.withLbugDb(dbPath, async () => 'unreached', { readOnly: true }),
-    ).rejects.toThrow(/LadybugDB checkpoint sidecar is missing/);
+      // Present-shadow refusal throws the present-but-unreachable message (S2),
+      // NOT the "sidecar is missing / rebuild" message — the shadow is present.
+    ).rejects.toThrow(/LadybugDB checkpoint sidecar is present but unreachable/);
     expect(fsMock.default.rename).not.toHaveBeenCalled();
     expect(warnMock).toHaveBeenCalledWith(
       expect.stringContaining('the .shadow sidecar is present on disk'),

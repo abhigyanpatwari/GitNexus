@@ -170,6 +170,27 @@ export const shadowSidecarRecoveryMessage = (dbPath: string, err: unknown): stri
   );
 };
 
+/**
+ * Actionable message for the case where LadybugDB reports a "missing shadow"
+ * but `inspectLbugSidecars` finds the `.shadow` PRESENT on disk — the open
+ * failed on path reachability or a lock, not a genuinely-missing sidecar (issue
+ * #2382 review, S2). Unlike `shadowSidecarRecoveryMessage` it does NOT tell the
+ * operator to rebuild the index (the remedy is fixing the lock/path). Keeps the
+ * `Original error:` tail so downstream `isMissingShadowSidecarError` recognition
+ * still matches the wrapped error.
+ */
+export const presentShadowUnreachableMessage = (dbPath: string, err: unknown): string => {
+  const msg = err instanceof Error ? err.message : String(err);
+  return (
+    `LadybugDB checkpoint sidecar is present but unreachable for ${dbPath}. ` +
+    'The .shadow file is on disk, so the open likely failed on path reachability or a file lock ' +
+    '(antivirus, another process holding a handle, or a non-ASCII path) rather than a missing sidecar. ' +
+    'Check filesystem access and locks; only run `gitnexus analyze --force <repo-path> --index-only` ' +
+    'if the index is genuinely broken.' +
+    `\n  Original error: ${msg.slice(0, 200)}`
+  );
+};
+
 const PERMISSION_RENAME_CODES = new Set(['EACCES', 'EPERM', 'EBUSY']);
 
 export const isPermissionRenameError = (err: unknown): boolean => {
@@ -262,7 +283,7 @@ export const guardWalQuarantine = async (
         'the .shadow sidecar is present on disk, so the open likely failed on path reachability or a lock ' +
         'rather than a missing shadow. Run `gitnexus analyze --force <repo-path> --index-only` if the index is genuinely broken.',
     );
-    throw new Error(shadowSidecarRecoveryMessage(dbPath, triggeringErr));
+    throw new Error(presentShadowUnreachableMessage(dbPath, triggeringErr));
   }
   if (state.kind === 'orphan-wal') {
     logger.warn(

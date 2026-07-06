@@ -12,6 +12,7 @@ import {
   isReadOnlyShadowReplayError,
   listQuarantinedMissingShadowWals,
   preflightLbugSidecars,
+  presentShadowUnreachableMessage,
   renameFailureMessage,
   shadowSidecarRecoveryMessage,
   TINY_ORPHAN_WAL_BYTES,
@@ -365,6 +366,30 @@ describe('LadybugDB sidecar recovery', () => {
         "Runtime exception: Couldn't replay shadow pages under read-only mode.",
       );
       expect(isMissingShadowSidecarError(replay)).toBe(false);
+    });
+  });
+
+  describe('presentShadowUnreachableMessage (present-but-locked, not missing — S2)', () => {
+    const dbPath = '/repo/.gitnexus/lbug';
+    const original = new Error(
+      String.raw`IO exception: Cannot open file. path: F:\repo\.gitnexus\lbug.shadow - Error 5: Access is denied.`,
+    );
+
+    it('describes a present-but-unreachable sidecar and does NOT instruct a rebuild', () => {
+      const message = presentShadowUnreachableMessage(dbPath, original);
+      expect(message).toMatch(/present but unreachable/);
+      expect(message).toMatch(/path reachability or a file lock/);
+      // The distinguishing property vs shadowSidecarRecoveryMessage: the shadow
+      // is present, so it must not tell the operator to rebuild the index.
+      expect(message).not.toMatch(/Rebuild the index/);
+    });
+
+    it('preserves the Original error tail so downstream recognition still matches', () => {
+      const message = presentShadowUnreachableMessage(dbPath, original);
+      expect(message).toContain('Original error:');
+      expect(isMissingShadowSidecarError(new Error(message))).toBe(false); // Error 5, still excluded
+      // Contrast: shadowSidecarRecoveryMessage tells the operator to rebuild.
+      expect(shadowSidecarRecoveryMessage(dbPath, original)).toMatch(/Rebuild the index/);
     });
   });
 

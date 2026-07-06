@@ -481,9 +481,11 @@ describe('Pool-adapter missing-shadow quarantine: TOCTOU + permission classifica
     connectionQueryMock.mockRejectedValueOnce(windowsError2(dbPath));
     (createLbugDatabase as any).mockReturnValueOnce(readOnlyDb1);
 
-    // Asserted generically (throws + no rename); the exact present-unreachable
-    // wording is pinned in U4 (S2) to keep this commit green.
-    await expect(initLbug('test-repo-pool-present-shadow', dbPath)).rejects.toThrow();
+    // Present shadow → the guard throws the present-but-unreachable message
+    // (S2), which propagates cleanly to the MCP caller — not a silent rename.
+    await expect(initLbug('test-repo-pool-present-shadow', dbPath)).rejects.toThrow(
+      /present but unreachable/,
+    );
     expect(fs.rename).not.toHaveBeenCalled();
   });
 
