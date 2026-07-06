@@ -45,7 +45,12 @@ import { cliError } from './cli-message.js';
 import { EMBEDDING_DIMS_ERROR, normalizeEmbeddingDims } from './embedding-dims.js';
 import { formatElapsed } from './format-elapsed.js';
 import { isHfDownloadFailure } from '../core/embeddings/hf-env.js';
-import { isHttpEmbeddingError, isHttpMode, safeUrl } from '../core/embeddings/http-client.js';
+import {
+  isHttpEmbeddingDimsError,
+  isHttpEmbeddingError,
+  isHttpMode,
+  safeUrl,
+} from '../core/embeddings/http-client.js';
 import {
   isLocalEmbeddingRuntimeBlockerMessage,
   isMissingLocalEmbeddingStackMessage,
@@ -1641,6 +1646,21 @@ const analyzeCommandImpl = async (
       return;
     }
 
+    // Malformed GITNEXUS_EMBEDDING_DIMS env var (#2385). readConfig() throws a
+    // plain Error (a config mistake, not an endpoint failure), surfacing here from
+    // httpEmbed()->readConfig() inside the analysis run. Show a clean config
+    // message rather than a raw stack dump. The --embedding-dims CLI flag is
+    // validated up front (EMBEDDING_DIMS_ERROR); this covers the env-var path.
+    // Checked before the endpoint/HF branches: it is a plain Error, so
+    // isHttpEmbeddingError() is false and the HF network heuristic must not claim it.
+    if (isHttpEmbeddingDimsError(msg)) {
+      cliError(`  ${msg.replace(/\n/g, '\n  ')}\n`, {
+        recoveryHint: 'embedding-dims-invalid',
+      });
+      process.exitCode = 1;
+      return;
+    }
+
     // Custom HTTP embedding endpoint failure (#2385). When a `--embedding-base-url`
     // is configured, HTTP mode never downloads a model — so a failure talking to
     // that endpoint must NOT show the huggingface-download guidance. Keyed on the
@@ -1667,27 +1687,17 @@ const analyzeCommandImpl = async (
       return;
     }
 
-    // Resolve HTTP mode once, defensively. isHttpMode() -> readConfig() throws on
-    // a malformed GITNEXUS_EMBEDDING_DIMS; letting that escape here would replace a
-    // clean recovery message with an unhandled-rejection stack dump. Default to
-    // false so a broken config still surfaces the (already-printed) real error.
-    const inHttpMode = ((): boolean => {
-      try {
-        return isHttpMode();
-      } catch {
-        return false;
-      }
-    })();
+    // isHttpMode() is a pure presence probe (URL+MODEL) that never throws — a
+    // malformed GITNEXUS_EMBEDDING_DIMS is handled by the dims branch above — so
+    // no defensive try/catch is needed here (#2385).
+    const inHttpMode = isHttpMode();
 
     // HF download failure — show clean guidance without the raw stack trace.
     // Checked before writeFatalToStderr so the user sees one focused message
     // rather than a stack-trace dump followed by a second remediation block.
     // Gated on !inHttpMode: with a custom endpoint configured no model download
     // is ever attempted, so a network error there is the endpoint's, handled by
-    // the HttpEmbeddingError branch above — never HF's (#2385). `inHttpMode` is
-    // resolved defensively (below) because isHttpMode()->readConfig() can throw
-    // on a malformed GITNEXUS_EMBEDDING_DIMS, and the error handler itself must
-    // never throw.
+    // the HttpEmbeddingError branch above — never HF's (#2385).
     if (
       (isHfDownloadFailure(msg) || msg.includes('Failed to download embedding model')) &&
       !inHttpMode

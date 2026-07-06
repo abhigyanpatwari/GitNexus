@@ -28,9 +28,28 @@ interface HttpConfig {
 }
 
 /**
+ * Stable lead of the {@link readConfig} malformed-`GITNEXUS_EMBEDDING_DIMS`
+ * error. `readConfig` throws a plain `Error` (not an {@link HttpEmbeddingError})
+ * because this is a *config* mistake, not an endpoint failure — so the CLI
+ * recognizes it by this lead ({@link isHttpEmbeddingDimsError}) and prints a
+ * clean config message instead of a raw stack dump. See #2385.
+ */
+const EMBEDDING_DIMS_ENV_ERROR_LEAD = 'GITNEXUS_EMBEDDING_DIMS must be a positive integer';
+
+/**
+ * @internal Exported for the CLI analyze error handler. True when `message` is
+ * the {@link readConfig} malformed-DIMS config error (a plain `Error`).
+ */
+export const isHttpEmbeddingDimsError = (message: string): boolean =>
+  message.includes(EMBEDDING_DIMS_ENV_ERROR_LEAD);
+
+/**
  * Build config from the current process.env snapshot.
  * Returns null when GITNEXUS_EMBEDDING_URL + GITNEXUS_EMBEDDING_MODEL are unset.
  * Not cached — env vars are read fresh so late configuration takes effect.
+ * Validates GITNEXUS_EMBEDDING_DIMS and throws on a malformed value; callers
+ * that only need to know whether HTTP mode is *configured* must use
+ * {@link isHttpMode} (a presence probe that never throws), not this.
  */
 const readConfig = (): HttpConfig | null => {
   const baseUrl = process.env.GITNEXUS_EMBEDDING_URL;
@@ -41,11 +60,11 @@ const readConfig = (): HttpConfig | null => {
   let dimensions: number | undefined;
   if (rawDims !== undefined) {
     if (!/^\d+$/.test(rawDims)) {
-      throw new Error(`GITNEXUS_EMBEDDING_DIMS must be a positive integer, got "${rawDims}"`);
+      throw new Error(`${EMBEDDING_DIMS_ENV_ERROR_LEAD}, got "${rawDims}"`);
     }
     const parsed = parseInt(rawDims, 10);
     if (parsed <= 0) {
-      throw new Error(`GITNEXUS_EMBEDDING_DIMS must be a positive integer, got "${rawDims}"`);
+      throw new Error(`${EMBEDDING_DIMS_ENV_ERROR_LEAD}, got "${rawDims}"`);
     }
     dimensions = parsed;
   }
@@ -59,9 +78,16 @@ const readConfig = (): HttpConfig | null => {
 };
 
 /**
- * Check whether HTTP embedding mode is active (env vars are set).
+ * Whether HTTP embedding mode is active — i.e. both `GITNEXUS_EMBEDDING_URL` and
+ * `GITNEXUS_EMBEDDING_MODEL` are set. A pure presence probe: it deliberately does
+ * NOT call {@link readConfig}, so it never throws on a malformed
+ * `GITNEXUS_EMBEDDING_DIMS`. This lets its ~13 call sites (analyze, doctor,
+ * run-analyze, embedder, mcp) probe the mode without a defensive try/catch; the
+ * DIMS value is validated where it is actually used (`readConfig` in
+ * `httpEmbed`/`httpEmbedQuery`), surfacing a recognizable config error. See #2385.
  */
-export const isHttpMode = (): boolean => readConfig() !== null;
+export const isHttpMode = (): boolean =>
+  Boolean(process.env.GITNEXUS_EMBEDDING_URL && process.env.GITNEXUS_EMBEDDING_MODEL);
 
 /**
  * Return the configured embedding dimensions for HTTP mode, or undefined

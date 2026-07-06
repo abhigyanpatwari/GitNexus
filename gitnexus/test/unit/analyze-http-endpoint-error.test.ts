@@ -114,6 +114,32 @@ describe('analyzeCommand custom HTTP endpoint error handling (#2385)', () => {
     cap.restore();
   });
 
+  it('routes a malformed GITNEXUS_EMBEDDING_DIMS to a clean config message, not endpoint/HF (R3)', async () => {
+    // readConfig() throws a plain Error on a malformed env DIMS; it surfaces from
+    // the embedding pipeline into this catch. It is a config mistake, not an
+    // endpoint failure, so it must get its own clean message — never the endpoint
+    // or HF branch. (isHttpMode() no longer throws, so the crash at analyze:1109
+    // that this used to be is gone; the error now reaches here.)
+    runFullAnalysisMock.mockRejectedValue(
+      new Error('GITNEXUS_EMBEDDING_DIMS must be a positive integer, got "1024abc"'),
+    );
+
+    const { _captureLogger } = await import('../../src/core/logger.js');
+    const cap = _captureLogger();
+    const { analyzeCommand } = await import('../../src/cli/analyze.js');
+
+    await analyzeCommand(undefined, { embeddings: true });
+
+    expect(process.exitCode).toBe(1);
+    const records = cap.records();
+    expect(records.some((r) => r.recoveryHint === 'embedding-dims-invalid')).toBe(true);
+    expect(records.some((r) => r.recoveryHint === 'http-embedding-endpoint-error')).toBe(false);
+    expect(records.some((r) => r.recoveryHint === 'hf-endpoint-unreachable')).toBe(false);
+    const record = records.find((r) => r.recoveryHint === 'embedding-dims-invalid');
+    expect(typeof record?.msg === 'string' && record.msg).toContain('GITNEXUS_EMBEDDING_DIMS');
+    cap.restore();
+  });
+
   it('does not mislabel a reached-but-failed endpoint as "could not be reached"', async () => {
     // A dimension mismatch means the endpoint WAS reached and answered — the
     // message must not assert unreachability, and must surface the real reason

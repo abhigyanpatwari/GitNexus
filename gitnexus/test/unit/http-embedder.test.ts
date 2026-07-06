@@ -601,3 +601,49 @@ describe('HttpEmbeddingError classification', () => {
     expect(isHttpEmbeddingError(value)).toBe(false);
   });
 });
+
+describe('HTTP mode config probe (#2385)', () => {
+  const ENV_KEYS = [
+    'GITNEXUS_EMBEDDING_URL',
+    'GITNEXUS_EMBEDDING_MODEL',
+    'GITNEXUS_EMBEDDING_DIMS',
+  ] as const;
+  const savedEnv = Object.fromEntries(ENV_KEYS.map((k) => [k, process.env[k]]));
+
+  afterEach(() => {
+    vi.resetModules();
+    for (const key of ENV_KEYS) {
+      if (savedEnv[key] === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = savedEnv[key];
+      }
+    }
+  });
+
+  it('isHttpMode() is a presence probe that does NOT throw on a malformed DIMS', async () => {
+    process.env.GITNEXUS_EMBEDDING_URL = 'http://test:8080/v1';
+    process.env.GITNEXUS_EMBEDDING_MODEL = 'test-model';
+    process.env.GITNEXUS_EMBEDDING_DIMS = '1024abc';
+
+    const { isHttpMode } = await import('../../src/core/embeddings/http-client.js');
+    // Root-cause fix: the mode probe must not validate DIMS, so ~13 unguarded
+    // call sites (analyze:1109, doctor, run-analyze, embedder, mcp) don't crash.
+    expect(isHttpMode()).toBe(true);
+  });
+
+  it('surfaces a malformed DIMS as a recognizable plain config error, not an endpoint error', async () => {
+    process.env.GITNEXUS_EMBEDDING_URL = 'http://test:8080/v1';
+    process.env.GITNEXUS_EMBEDDING_MODEL = 'test-model';
+    process.env.GITNEXUS_EMBEDDING_DIMS = '1024abc';
+
+    const { embedText } = await import('../../src/core/embeddings/embedder.js');
+    const { isHttpEmbeddingDimsError, isHttpEmbeddingError } =
+      await import('../../src/core/embeddings/http-client.js');
+    const err = await embedText('test').catch((e: unknown) => e);
+    // Validated where it's used (readConfig in httpEmbed) and recognizable...
+    expect(isHttpEmbeddingDimsError(String(err))).toBe(true);
+    // ...as a plain config Error, NOT an HttpEmbeddingError endpoint failure.
+    expect(isHttpEmbeddingError(err)).toBe(false);
+  });
+});
