@@ -10,13 +10,24 @@
 import { describe, expect, it, vi } from 'vitest';
 import { LocalBackend } from '../../src/mcp/local/local-backend.js';
 import { listRegisteredRepos } from '../../src/storage/repo-manager.js';
-import { withTestLbugDB } from '../helpers/test-indexed-db.js';
+import { withTestLbugDB, type IndexedDBHandle } from '../helpers/test-indexed-db.js';
+import { FTS_INDEXES } from '../../src/core/search/fts-schema.js';
 
-vi.mock('../../src/storage/repo-manager.js', () => ({
-  listRegisteredRepos: vi.fn().mockResolvedValue([]),
-  cleanupOldKuzuFiles: vi.fn().mockResolvedValue({ found: false, needsReindex: false }),
-  findSiblingClones: vi.fn().mockResolvedValue([]),
+const PRODUCTION_FTS_INDEXES = FTS_INDEXES.map((i) => ({
+  table: i.table,
+  indexName: i.indexName,
+  columns: [...i.properties],
 }));
+
+vi.mock('../../src/storage/repo-manager.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../src/storage/repo-manager.js')>();
+  return {
+    ...actual,
+    listRegisteredRepos: vi.fn().mockResolvedValue([]),
+    cleanupOldKuzuFiles: vi.fn().mockResolvedValue({ found: false, needsReindex: false }),
+    findSiblingClones: vi.fn().mockResolvedValue([]),
+  };
+});
 
 // Stored 0-based: this Class occupies 0-based lines 41..58 (editor lines 42..59).
 const SEED = [
@@ -63,6 +74,55 @@ withTestLbugDB(
       ]);
       backend = new LocalBackend();
       await backend.init();
+    },
+  },
+);
+
+// #2380 P1: `query()` must convert the line EXACTLY once. `bm25Search` returns
+// raw 0-based rows and `query()`'s aggregation applies `toDisplayLine` once — a
+// BM25-matched symbol stored 0-based 41 must read 42, not 43 (double-convert).
+// A distinctive content token guarantees the BM25/FTS retriever surfaces it.
+const SEED_BM25 = [
+  `CREATE (c:Class {id:'Class:src/svc.ts:Zqxwvbm', name:'Zqxwvbm', filePath:'src/svc.ts', startLine:41, endLine:58, content:'class Zqxwvbm zqxwvbmtoken', description:'zqxwvbmtoken service'})`,
+];
+
+withTestLbugDB(
+  'mcp-line-display-query-bm25',
+  (handle) => {
+    describe('query() BM25 path converts line numbers once (#2380 P1)', () => {
+      it('reports stored 0-based 41 as 42 (single conversion, not 43)', async () => {
+        const ext = handle as IndexedDBHandle & { _backend?: LocalBackend };
+        const backend = ext._backend!;
+        type QuerySymbol = { id: string; startLine?: number; endLine?: number };
+        type QueryResult = { definitions?: QuerySymbol[]; process_symbols?: QuerySymbol[] };
+        const result: QueryResult = await backend.callTool('query', { query: 'zqxwvbmtoken' });
+        const sym = [...(result.process_symbols ?? []), ...(result.definitions ?? [])].find(
+          (s) => s.id === 'Class:src/svc.ts:Zqxwvbm',
+        );
+        expect(sym).toBeDefined();
+        expect(sym!.startLine).toBe(42); // 41 + 1, converted exactly once
+        expect(sym!.endLine).toBe(59); // 58 + 1
+      });
+    });
+  },
+  {
+    seed: SEED_BM25,
+    ftsIndexes: PRODUCTION_FTS_INDEXES,
+    poolAdapter: true,
+    afterSetup: async (handle) => {
+      vi.mocked(listRegisteredRepos).mockResolvedValue([
+        {
+          name: 'test-repo',
+          path: '/test/repo',
+          storagePath: handle.tmpHandle.dbPath,
+          indexedAt: new Date().toISOString(),
+          lastCommit: 'abc123',
+          stats: { files: 1, nodes: 1, communities: 0, processes: 0 },
+        },
+      ]);
+      const backend = new LocalBackend();
+      await backend.init();
+      (handle as IndexedDBHandle & { _backend?: LocalBackend })._backend = backend;
     },
   },
 );
