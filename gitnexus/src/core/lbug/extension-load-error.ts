@@ -321,6 +321,16 @@ export function diagnoseExtensionLoad(reason: string | undefined | null): Extens
     return { kind: 'corrupt_file', remedy: CORRUPT_FILE_REMEDY };
   }
   if (fileState === 'valid') {
+    // The structural probe only inspects the first BINARY_HEADER_BYTES, so a file
+    // truncated AFTER its header still reads 'valid'. When the loader itself reported
+    // corruption (e.g. "file too short" / Windows error 193 "not a valid Win32
+    // application"), that whole-file verdict is stronger evidence than an intact-looking
+    // header — honor it and route to re-download, not a runtime-dependency install (#2383
+    // F1). Localized corrupt tails classify as hedged missing_dependency (not
+    // corrupt_file), so they still fall through to the dependency remedy below.
+    if (stringResult.kind === 'corrupt_file') {
+      return stringResult;
+    }
     // A structurally sound binary that still failed to load ⇒ a dependency/runtime
     // problem, decided WITHOUT the localized tail. Keep the string classifier's
     // sharper remedy when it recognized the specific case (e.g. English 126).

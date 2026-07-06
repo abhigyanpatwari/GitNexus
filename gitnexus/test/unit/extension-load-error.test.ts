@@ -245,6 +245,31 @@ describe('diagnoseExtensionLoad (structural, language-independent)', () => {
     }
   });
 
+  it('a header-valid file the loader calls "file too short" → corrupt_file, not missing_dependency (#2383 F1)', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ext-diag-trunc-'));
+    const file = join(dir, 'libfts.lbug_extension');
+    // Intact host header, but the loader reports a body-truncated download.
+    writeFileSync(file, buildHostValidBinary());
+    try {
+      const reason = `Failed to load library: ${file} which is needed by extension: fts. Error: file too short`;
+      expect(diagnoseExtensionLoad(reason)).toMatchObject({ kind: 'corrupt_file' });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('a header-valid file the loader calls "not a valid Win32 application" (error 193) → corrupt_file', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ext-diag-win193-'));
+    const file = join(dir, 'libfts.lbug_extension');
+    writeFileSync(file, buildHostValidBinary());
+    try {
+      const reason = `Failed to load library: ${file} which is needed by extension: fts. Error: %1 is not a valid Win32 application.`;
+      expect(diagnoseExtensionLoad(reason)).toMatchObject({ kind: 'corrupt_file' });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('a malformed host binary → corrupt_file regardless of the (localized) error text', () => {
     const dir = mkdtempSync(join(tmpdir(), 'ext-diag-corrupt-'));
     const file = join(dir, 'libfts.lbug_extension');
