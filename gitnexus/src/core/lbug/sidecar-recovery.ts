@@ -228,6 +228,51 @@ export async function inspectLbugSidecars(dbPath: string): Promise<LbugSidecarSt
   return { kind: 'clean', dbPath };
 }
 
+/**
+ * Reject the WAL-quarantine path when discarding the WAL would be unsafe or
+ * wrong. Shared by every reactive missing-shadow recovery consumer — serve (via
+ * lbug-adapter's `refuseLargeWalQuarantine`) and the MCP/wiki/augmentation pool
+ * (via pool-adapter's `tryQuarantineForMissingShadow`) — so the quarantine
+ * safety policy has a single source of truth (issue #2382 review, Finding B).
+ *
+ *   1. `wal-with-shadow` — the `.shadow` sidecar is PRESENT on disk. A
+ *      "missing shadow" error alongside a present shadow means the open failed
+ *      on path reachability or a lock (the #1811 non-ASCII path-garble on
+ *      Windows), not a genuinely-missing shadow; quarantining would move a live
+ *      WAL sitting next to its shadow — data loss.
+ *   2. `orphan-wal` — the orphan WAL is too large to safely discard
+ *      (>TINY_ORPHAN_WAL_BYTES); preserve the uncheckpointed pages for explicit
+ *      operator recovery.
+ *
+ * Throws `shadowSidecarRecoveryMessage` in either case. Returns silently only
+ * when the shadow is absent AND the WAL is absent or tiny — the states where
+ * the existing recovery path is safe to proceed. `mode` is a label used only in
+ * the warning text (e.g. 'read-only', 'writable', 'pool read-only recovery').
+ */
+export const guardWalQuarantine = async (
+  dbPath: string,
+  mode: string,
+  triggeringErr: unknown,
+  logger: SidecarRecoveryLogger,
+): Promise<void> => {
+  const state = await inspectLbugSidecars(dbPath);
+  if (state.kind === 'wal-with-shadow') {
+    logger.warn(
+      `GitNexus: refusing to quarantine WAL at ${dbPath}.wal during ${mode} recovery — ` +
+        'the .shadow sidecar is present on disk, so the open likely failed on path reachability or a lock ' +
+        'rather than a missing shadow. Run `gitnexus analyze --force <repo-path> --index-only` if the index is genuinely broken.',
+    );
+    throw new Error(shadowSidecarRecoveryMessage(dbPath, triggeringErr));
+  }
+  if (state.kind === 'orphan-wal') {
+    logger.warn(
+      `GitNexus: refusing to quarantine large WAL (${state.walBytes} bytes) at ${dbPath}.wal during ${mode} recovery; ` +
+        'manual recovery required — run `gitnexus analyze --force <repo-path> --index-only`.',
+    );
+    throw new Error(shadowSidecarRecoveryMessage(dbPath, triggeringErr));
+  }
+};
+
 export async function quarantineWalForMissingShadow(
   dbPath: string,
   options: {
