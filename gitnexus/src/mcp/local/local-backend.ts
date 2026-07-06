@@ -3377,11 +3377,14 @@ export class LocalBackend {
         anchorClause:
           'a.id STARTS WITH $idPrefix AND a.startLine >= $symStart AND a.startLine <= $symEnd',
         queryParams: { idPrefix, symStart: sym.startLine + 1, symEnd: sym.endLine + 1 },
+        // Display anchor is 1-based, matching the ambiguous-candidate branch and
+        // the context/query/impact tools (#2380). This is display-only — the
+        // BasicBlock join above uses the raw `sym.startLine + 1` in `symStart`.
         anchor: {
           file: sym.filePath,
           symbol: sym.name,
-          startLine: sym.startLine,
-          endLine: sym.endLine,
+          startLine: toDisplayLine(sym.startLine),
+          endLine: toDisplayLine(sym.endLine),
         },
       };
     }
