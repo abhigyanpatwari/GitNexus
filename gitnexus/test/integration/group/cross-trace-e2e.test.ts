@@ -321,6 +321,15 @@ matching:
       { name: 'getUsers', repo: 'app/backend' },
     ]);
 
+    // #2380: the whole group-trace response is 1-based — the hops share the same
+    // base as the endpoints (before the fix, endpoints were 1-based via
+    // resolveSymbol while hops stayed 0-based, mixing bases in one response).
+    const hopLines = (result.hops as Array<{ startLine: number }>).map((h) => h.startLine);
+    expect(hopLines[0]).toBe(11); // checkout stored 10 -> display 11
+    expect(hopLines[3]).toBe(2); // getUsers stored 1 -> display 2
+    expect((result.from as { startLine: number }).startLine).toBe(hopLines[0]);
+    expect((result.to as { startLine: number }).startLine).toBe(hopLines[3]);
+
     // The boundary hop carries the CONTRACT_LINK edge.
     const edgeTypes = (result.edges as Array<{ relType: string }>).map((e) => e.relType);
     expect(edgeTypes).toContain('CONTRACT_LINK');

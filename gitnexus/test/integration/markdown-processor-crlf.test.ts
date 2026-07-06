@@ -58,8 +58,8 @@ describe('markdown-processor CRLF tolerance', () => {
     const sections = getMarkdownSections(graph, filePath);
     expect(sections.map((s) => s.properties.name)).toEqual(['Title', 'Sub', 'SubSub']);
     expect(sections.map((s) => s.properties.level)).toEqual([1, 2, 3]);
-    expect(sections.map((s) => s.properties.startLine)).toEqual([1, 3, 5]);
-    expect(sections.map((s) => s.properties.endLine)).toEqual([7, 7, 7]);
+    expect(sections.map((s) => s.properties.startLine)).toEqual([0, 2, 4]);
+    expect(sections.map((s) => s.properties.endLine)).toEqual([6, 6, 6]);
     for (const s of sections) {
       expect(String(s.properties.name)).not.toMatch(/\r/);
     }
@@ -81,8 +81,8 @@ describe('markdown-processor CRLF tolerance', () => {
     const sections = getMarkdownSections(graph, filePath);
     expect(sections.map((s) => s.properties.name)).toEqual(['Title', 'Sub', 'SubSub']);
     expect(sections.map((s) => s.properties.level)).toEqual([1, 2, 3]);
-    expect(sections.map((s) => s.properties.startLine)).toEqual([1, 3, 5]);
-    expect(sections.map((s) => s.properties.endLine)).toEqual([7, 7, 7]);
+    expect(sections.map((s) => s.properties.startLine)).toEqual([0, 2, 4]);
+    expect(sections.map((s) => s.properties.endLine)).toEqual([6, 6, 6]);
     for (const s of sections) {
       expect(String(s.properties.name)).not.toMatch(/\r/);
     }
@@ -103,8 +103,8 @@ describe('markdown-processor CRLF tolerance', () => {
     const sections = getMarkdownSections(graph, filePath);
     expect(sections.map((s) => s.properties.name)).toEqual(['Title', 'Sub']);
     expect(sections.map((s) => s.properties.level)).toEqual([1, 2]);
-    expect(sections.map((s) => s.properties.startLine)).toEqual([1, 3]);
-    expect(sections.map((s) => s.properties.endLine)).toEqual([5, 5]);
+    expect(sections.map((s) => s.properties.startLine)).toEqual([0, 2]);
+    expect(sections.map((s) => s.properties.endLine)).toEqual([4, 4]);
     for (const s of sections) {
       expect(String(s.properties.name)).not.toMatch(/\r/);
     }
@@ -124,8 +124,8 @@ describe('markdown-processor CRLF tolerance', () => {
     const sections = getMarkdownSections(graph, filePath);
     expect(sections.map((s) => s.properties.name)).toEqual(['LF Title', 'CRLF Sub', 'Trailing LF']);
     expect(sections.map((s) => s.properties.level)).toEqual([1, 2, 3]);
-    expect(sections.map((s) => s.properties.startLine)).toEqual([1, 3, 5]);
-    expect(sections.map((s) => s.properties.endLine)).toEqual([7, 7, 7]);
+    expect(sections.map((s) => s.properties.startLine)).toEqual([0, 2, 4]);
+    expect(sections.map((s) => s.properties.endLine)).toEqual([6, 6, 6]);
     for (const s of sections) {
       expect(String(s.properties.name)).not.toMatch(/\r/);
     }
@@ -138,7 +138,8 @@ describe('markdown-processor CRLF tolerance', () => {
   it('reports correct startLine and endLine for CRLF content', () => {
     const filePath = 'crlf-lines.md';
     const graph = setupGraphWithFile(filePath);
-    // Lines 1, 3, 5 are headings (1-indexed)
+    // Headings sit on physical lines 1, 3, 5; graph nodes store 0-based
+    // startLine/endLine (the GraphNode convention, #2377) — so 0, 2, 4.
     const content = '# T\r\nbody\r\n## Sub\r\nmore\r\n### SubSub\r\ntail\r\n';
 
     processMarkdown(graph, [{ path: filePath, content }], new Set([filePath]));
@@ -148,11 +149,11 @@ describe('markdown-processor CRLF tolerance', () => {
     const subSection = sections.find((s) => s.properties.name === 'Sub');
     const subSubSection = sections.find((s) => s.properties.name === 'SubSub');
 
-    expect(titleSection?.properties.startLine).toBe(1);
-    expect(titleSection?.properties.endLine).toBe(7);
-    expect(subSection?.properties.startLine).toBe(3);
-    expect(subSection?.properties.endLine).toBe(7);
-    expect(subSubSection?.properties.startLine).toBe(5);
-    expect(subSubSection?.properties.endLine).toBe(7);
+    expect(titleSection?.properties.startLine).toBe(0);
+    expect(titleSection?.properties.endLine).toBe(6);
+    expect(subSection?.properties.startLine).toBe(2);
+    expect(subSection?.properties.endLine).toBe(6);
+    expect(subSubSection?.properties.startLine).toBe(4);
+    expect(subSubSection?.properties.endLine).toBe(6);
   });
 });

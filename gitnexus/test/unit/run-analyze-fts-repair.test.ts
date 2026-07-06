@@ -20,6 +20,7 @@ describe('runFullAnalysis FTS repair and verification failure paths', () => {
     vi.doUnmock('../../src/core/search/fts-indexes.js');
     vi.doUnmock('../../src/core/ingestion/pipeline.js');
     vi.doUnmock('../../src/storage/repo-manager.js');
+    vi.doUnmock('../../src/core/lbug/extension-loader.js');
     vi.resetModules();
     vi.clearAllMocks();
     vi.unstubAllEnvs();
@@ -290,6 +291,15 @@ describe('runFullAnalysis FTS repair and verification failure paths', () => {
       createSearchFTSIndexes,
       verifySearchFTSIndexes: vi.fn(async () => []),
     }));
+    // Populate the live capability so the repair error actually interpolates the
+    // real LOAD reason (#2374). Without this the branch is vacuous — the reason
+    // is undefined and the assertion passes whether or not interpolation fires.
+    vi.doMock('../../src/core/lbug/extension-loader.js', async (importActual) => ({
+      ...(await importActual<typeof import('../../src/core/lbug/extension-loader.js')>()),
+      getExtensionCapabilities: () => [
+        { name: 'fts', loaded: false, reason: 'LOAD fts failed: invalid ELF header' },
+      ],
+    }));
 
     const tmpRepo = await createTempDir('gitnexus-run-analyze-repair-fts-unavailable-');
     try {
@@ -307,8 +317,71 @@ describe('runFullAnalysis FTS repair and verification failure paths', () => {
 
       await expect(
         runFullAnalysis(tmpRepo.dbPath, { repairFts: true }, { onProgress: () => {} }),
-      ).rejects.toThrow(/FTS extension is unavailable[\s\S]*gitnexus doctor/i);
+        // The specific reason must appear between the headline and the remedy —
+        // proving the interpolation fired, not just that the base message exists.
+      ).rejects.toThrow(
+        /FTS extension failed to load[\s\S]*invalid ELF header[\s\S]*gitnexus doctor/i,
+      );
       // The guard fires before drop-then-create, so no index is dropped.
+      expect(createSearchFTSIndexes).not.toHaveBeenCalled();
+    } finally {
+      await tmpRepo.cleanup();
+    }
+  });
+
+  it('repair error carries the runtime-dependency remedy, not "retry the network install" (#2383 F6a)', async () => {
+    const createSearchFTSIndexes = vi.fn(async () => undefined);
+    vi.doMock('../../src/core/lbug/lbug-adapter.js', () => ({
+      initLbug: vi.fn(async () => undefined),
+      loadGraphToLbug: vi.fn(async () => undefined),
+      getLbugStats: vi.fn(async () => ({})),
+      executeQuery: vi.fn(async () => []),
+      executeWithReusedStatement: vi.fn(async () => []),
+      closeLbug: vi.fn(async () => undefined),
+      loadCachedEmbeddings: vi.fn(async () => ({ embeddingNodeIds: new Set(), embeddings: [] })),
+      deleteNodesForFile: vi.fn(async () => undefined),
+      deleteAllCommunitiesAndProcesses: vi.fn(async () => undefined),
+      queryImporters: vi.fn(async () => []),
+      loadFTSExtension: vi.fn(async () => false),
+    }));
+    vi.doMock('../../src/core/search/fts-indexes.js', () => ({
+      initialiseSearchFTSStemmer: vi.fn(() => 'porter'),
+      createSearchFTSIndexes,
+      verifySearchFTSIndexes: vi.fn(async () => []),
+    }));
+    // A Windows error-126 reason → the missing_dependency remedy branch.
+    vi.doMock('../../src/core/lbug/extension-loader.js', async (importActual) => ({
+      ...(await importActual<typeof import('../../src/core/lbug/extension-loader.js')>()),
+      getExtensionCapabilities: () => [
+        {
+          name: 'fts',
+          loaded: false,
+          reason: 'LOAD fts failed: The specified module could not be found.',
+        },
+      ],
+    }));
+
+    const tmpRepo = await createTempDir('gitnexus-run-analyze-repair-fts-dep-');
+    try {
+      const { storagePath, lbugPath } = getStoragePaths(tmpRepo.dbPath);
+      await fs.mkdir(storagePath, { recursive: true });
+      await saveMeta(storagePath, {
+        repoPath: tmpRepo.dbPath,
+        lastCommit: '',
+        indexedAt: new Date().toISOString(),
+        stats: {},
+      });
+      await createPlaceholderGraphStore(lbugPath);
+
+      const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
+
+      const run = runFullAnalysis(tmpRepo.dbPath, { repairFts: true }, { onProgress: () => {} });
+      const message = await run.catch((e: unknown) => (e instanceof Error ? e.message : String(e)));
+      // The classified runtime-dependency remedy (VC++ redist), interpolated into the throw.
+      expect(message).toMatch(/Visual C\+\+/);
+      expect(message).toMatch(/vc_redist\.x64\.exe/);
+      // The old generic "retry the network install" tail must not appear for this class.
+      expect(message).not.toMatch(/Retry with network access/i);
       expect(createSearchFTSIndexes).not.toHaveBeenCalled();
     } finally {
       await tmpRepo.cleanup();
@@ -421,6 +494,76 @@ describe('runFullAnalysis FTS repair and verification failure paths', () => {
       expect(meta.capabilities.fts.status).toBe('unavailable');
       const primaryMeta = JSON.parse(await fs.readFile(`${storagePath}/gitnexus.json`, 'utf-8'));
       expect(primaryMeta.capabilities.fts.status).toBe('unavailable');
+    } finally {
+      await tmpRepo.cleanup();
+    }
+  });
+
+  it('degrade log for a missing runtime dependency omits the contradictory reinstall guidance (#2383 F2)', async () => {
+    const createSearchFTSIndexes = vi.fn(async () => undefined);
+    const verifySearchFTSIndexes = vi.fn(async () => []);
+    vi.doMock('../../src/core/lbug/lbug-adapter.js', () => ({
+      initLbug: vi.fn(async () => undefined),
+      loadGraphToLbug: vi.fn(async () => undefined),
+      getLbugStats: vi.fn(async () => ({ nodes: 1, edges: 0, communities: 0, processes: 0 })),
+      executeQuery: vi.fn(async () => []),
+      executeWithReusedStatement: vi.fn(async () => []),
+      closeLbug: vi.fn(async () => undefined),
+      loadCachedEmbeddings: vi.fn(async () => ({ embeddingNodeIds: new Set(), embeddings: [] })),
+      deleteNodesForFile: vi.fn(async () => undefined),
+      deleteAllCommunitiesAndProcesses: vi.fn(async () => undefined),
+      queryImporters: vi.fn(async () => []),
+      loadFTSExtension: vi.fn(async () => false),
+    }));
+    vi.doMock('../../src/core/search/fts-indexes.js', () => ({
+      initialiseSearchFTSStemmer: vi.fn(() => 'porter'),
+      createSearchFTSIndexes,
+      verifySearchFTSIndexes,
+    }));
+    vi.doMock('../../src/core/ingestion/pipeline.js', () => ({
+      runPipelineFromRepo: vi.fn(async (repoPath: string) => ({
+        repoPath,
+        totalFileCount: 1,
+        graph: { forEachNode: () => undefined },
+      })),
+    }));
+    vi.doMock('../../src/storage/repo-manager.js', async (importActual) => ({
+      ...(await importActual<typeof import('../../src/storage/repo-manager.js')>()),
+      registerRepo: vi.fn(async () => 'degraded-repo'),
+      ensureGitNexusIgnored: vi.fn(async () => undefined),
+    }));
+    // A Windows error-126 reason routes the degrade log through the missing_dependency branch.
+    vi.doMock('../../src/core/lbug/extension-loader.js', async (importActual) => ({
+      ...(await importActual<typeof import('../../src/core/lbug/extension-loader.js')>()),
+      getExtensionCapabilities: () => [
+        {
+          name: 'fts',
+          loaded: false,
+          reason: 'LOAD fts failed: The specified module could not be found.',
+        },
+      ],
+    }));
+
+    const tmpRepo = await createTempDir('gitnexus-run-analyze-fts-degrade-dep-');
+    try {
+      const logs: string[] = [];
+      const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
+      const result = await runFullAnalysis(
+        tmpRepo.dbPath,
+        { force: true },
+        { onProgress: () => {}, onLog: (msg: string) => logs.push(msg) },
+      );
+
+      expect(result.ftsSkipped).toBe(true);
+      const degradeLine = logs
+        .filter((l) => l.includes('skipping search-index creation'))
+        .join('\n');
+      // Class-neutral lead + the classified VC++ remedy...
+      expect(degradeLine).toMatch(/FTS extension unavailable; skipping search-index creation/i);
+      expect(degradeLine).toMatch(/Visual C\+\+/);
+      // ...but NOT the generic install guidance that contradicts "reinstalling will NOT help".
+      expect(degradeLine).not.toMatch(/network access/i);
+      expect(degradeLine).not.toMatch(/pre-installed for offline use/i);
     } finally {
       await tmpRepo.cleanup();
     }

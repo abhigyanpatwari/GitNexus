@@ -61,6 +61,11 @@ const PLATFORM_LOGIC = [
   // array form. Runs on every platform (the ubuntu suite covers Linux; this
   // registration adds windows + macos).
   'test/unit/embedding-install-arg-delivery.test.ts',
+  // Structural FTS-extension classifier against REAL binaries (#2374): on this
+  // matrix `process.execPath` / `lbugjs.node` are a real PE (windows) and Mach-O
+  // (macos), so the header parsing is proven on genuine binaries, not synthetic
+  // buffers (the ubuntu suite covers the ELF path).
+  'test/integration/extension-binary-real.test.ts',
 ];
 
 // Native LadybugDB integration tests — exercise the @ladybugdb/core
@@ -100,6 +105,10 @@ const SPAWN_CLI = [
   'test/integration/cli-limit-e2e.test.ts',
   'test/integration/hooks-e2e.test.ts',
   'test/integration/skills-e2e.test.ts',
+  // Spawns the real CLI across hermetic HOME/USERPROFILE homes to exercise the
+  // FTS extension lifecycle — the #2374 bug was Windows-reported, so this must
+  // run on the Windows/macOS matrix, not just the Ubuntu full suite.
+  'test/integration/fts-extension-e2e.test.ts',
   'test/integration/server-http-startup.test.ts',
   'test/integration/mcp/server-startup.test.ts',
   'test/integration/analyze-heap-oom-e2e.test.ts',

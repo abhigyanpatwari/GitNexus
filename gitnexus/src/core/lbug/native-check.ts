@@ -89,3 +89,87 @@ export function checkLbugNative(overridePkgDir?: string): NativeCheckResult {
 
   return { ok: true, binaryPath };
 }
+
+export interface FtsProbeResult {
+  loaded: boolean;
+  /** Collapsed LadybugDB error when `loaded` is false. */
+  reason?: string;
+}
+
+const DEFAULT_FTS_PROBE_TIMEOUT_MS = 10_000;
+
+/** A LadybugDB query result exposes a synchronous `close()`. */
+interface CloseableResult {
+  close(): void;
+}
+
+/** Close each result, swallowing close-time errors so a successful LOAD is not
+ *  misreported as a failure (native-check keeps no static lbug dependency, so it
+ *  cannot reuse the adapter's closeQueryResults — that would eagerly load the
+ *  module and defeat the dynamic import below). */
+const closeProbeResults = (result: unknown): void => {
+  for (const r of Array.isArray(result) ? result : [result]) {
+    try {
+      (r as CloseableResult)?.close?.();
+    } catch {
+      // ignore — a close failure must not flip a successful LOAD to failed
+    }
+  }
+};
+
+/**
+ * Live-probe `LOAD EXTENSION fts` on a throwaway in-memory database.
+ *
+ * `doctor` used to print the static platform capability, which contradicted
+ * analyze whenever the extension file was missing or unloadable (#2374).
+ * LOAD never touches the network, so the probe is safe offline, and it
+ * surfaces LadybugDB's real error — which distinguishes a missing extension
+ * file from a present-but-broken one (wrong platform, truncated download).
+ * Dynamic import so doctor still runs when the native module itself is broken.
+ *
+ * Bounded by `timeoutMs`: an unresponsive extension file (e.g. on a hung
+ * network home dir) must never freeze `doctor` — the tool the degradation
+ * warnings send users to. `Promise.race` lets doctor report and move on; it
+ * cannot cancel an in-flight native call, so a future thread-blocking case
+ * would need an out-of-process probe.
+ */
+export async function probeFtsExtensionLoad(
+  timeoutMs: number = DEFAULT_FTS_PROBE_TIMEOUT_MS,
+): Promise<FtsProbeResult> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<FtsProbeResult>((resolve) => {
+    timer = setTimeout(
+      () =>
+        resolve({
+          loaded: false,
+          reason: 'probe timed out — extension file or filesystem unresponsive',
+        }),
+      timeoutMs,
+    );
+  });
+
+  const probe = (async (): Promise<FtsProbeResult> => {
+    try {
+      const { default: lbug } = await import('@ladybugdb/core');
+      const db = new lbug.Database(':memory:');
+      // Nested finallys so `db` is closed even if the Connection ctor throws.
+      try {
+        const conn = new lbug.Connection(db);
+        try {
+          const result = await conn.query('LOAD EXTENSION fts');
+          closeProbeResults(result);
+          return { loaded: true };
+        } finally {
+          await conn.close().catch(() => {});
+        }
+      } finally {
+        await db.close().catch(() => {});
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      return { loaded: false, reason: message.replace(/\s+/g, ' ').trim() };
+    }
+  })();
+
+  return await Promise.race([probe, timeout]).finally(() => clearTimeout(timer));
+}

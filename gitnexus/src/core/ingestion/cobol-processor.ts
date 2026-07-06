@@ -15,6 +15,7 @@
 
 import path from 'node:path';
 import { generateId } from '../../lib/utils.js';
+import { toZeroBasedLine } from './utils/line-base.js';
 import { SupportedLanguages } from 'gitnexus-shared';
 import type { KnowledgeGraph } from '../graph/types.js';
 import {
@@ -359,8 +360,8 @@ function mapToGraph(
       properties: {
         name: extracted.programName,
         filePath,
-        startLine: 1,
-        endLine: lines.length,
+        startLine: toZeroBasedLine(1),
+        endLine: toZeroBasedLine(lines.length),
         language: SupportedLanguages.Cobol,
         isExported: true,
         description: metaDesc || undefined,
@@ -394,8 +395,8 @@ function mapToGraph(
       properties: {
         name: prog.name,
         filePath,
-        startLine: prog.startLine,
-        endLine: prog.endLine,
+        startLine: toZeroBasedLine(prog.startLine),
+        endLine: toZeroBasedLine(prog.endLine),
         language: SupportedLanguages.Cobol,
         isExported: true,
         description: `nested-program${prog.isCommon ? ' common' : ''}`,
@@ -442,8 +443,8 @@ function mapToGraph(
       properties: {
         name: sec.name,
         filePath,
-        startLine: sec.line,
-        endLine: nextLine,
+        startLine: toZeroBasedLine(sec.line),
+        endLine: toZeroBasedLine(nextLine),
         language: SupportedLanguages.Cobol,
         isExported: true,
       },
@@ -477,8 +478,8 @@ function mapToGraph(
       properties: {
         name: para.name,
         filePath,
-        startLine: para.line,
-        endLine: nextLine,
+        startLine: toZeroBasedLine(para.line),
+        endLine: toZeroBasedLine(nextLine),
         language: SupportedLanguages.Cobol,
         isExported: true,
       },
@@ -511,8 +512,8 @@ function mapToGraph(
       properties: {
         name: item.name,
         filePath,
-        startLine: item.line,
-        endLine: item.line,
+        startLine: toZeroBasedLine(item.line),
+        endLine: toZeroBasedLine(item.line),
         language: SupportedLanguages.Cobol,
         description: `level:${item.level} section:${item.section}${item.pic ? ` pic:${item.pic}` : ''}`,
       },
@@ -614,8 +615,8 @@ function mapToGraph(
         properties: {
           name: `CALL ${call.target}`,
           filePath,
-          startLine: call.line,
-          endLine: call.line,
+          startLine: toZeroBasedLine(call.line),
+          endLine: toZeroBasedLine(call.line),
           language: SupportedLanguages.Cobol,
           description: 'dynamic-call (target is a data item, not resolvable statically)',
         },
@@ -742,8 +743,8 @@ function mapToGraph(
       properties: {
         name: `EXEC SQL ${sql.operation}`,
         filePath,
-        startLine: sql.line,
-        endLine: sql.line,
+        startLine: toZeroBasedLine(sql.line),
+        endLine: toZeroBasedLine(sql.line),
         language: SupportedLanguages.Cobol,
         description: `tables:[${sql.tables.join(',')}] cursors:[${sql.cursors.join(',')}]`,
       },
@@ -817,8 +818,8 @@ function mapToGraph(
       properties: {
         name: `EXEC CICS ${cics.command}`,
         filePath,
-        startLine: cics.line,
-        endLine: cics.line,
+        startLine: toZeroBasedLine(cics.line),
+        endLine: toZeroBasedLine(cics.line),
         language: SupportedLanguages.Cobol,
         description:
           [
@@ -856,8 +857,8 @@ function mapToGraph(
           properties: {
             name: `CICS ${cics.command} ${cics.programName}`,
             filePath,
-            startLine: cics.line,
-            endLine: cics.line,
+            startLine: toZeroBasedLine(cics.line),
+            endLine: toZeroBasedLine(cics.line),
             language: SupportedLanguages.Cobol,
             description: `cics-dynamic-program (target is data item ${cics.programName})`,
           },
@@ -1029,8 +1030,8 @@ function mapToGraph(
       properties: {
         name: entry.name,
         filePath,
-        startLine: entry.line,
-        endLine: entry.line,
+        startLine: toZeroBasedLine(entry.line),
+        endLine: toZeroBasedLine(entry.line),
         language: SupportedLanguages.Cobol,
         isExported: true,
         description:
@@ -1176,8 +1177,8 @@ function mapToGraph(
       properties: {
         name: `EXEC DLI ${dli.verb}`,
         filePath,
-        startLine: dli.line,
-        endLine: dli.line,
+        startLine: toZeroBasedLine(dli.line),
+        endLine: toZeroBasedLine(dli.line),
         language: SupportedLanguages.Cobol,
         description:
           [
@@ -1316,8 +1317,8 @@ function mapToGraph(
       properties: {
         name: fd.selectName,
         filePath,
-        startLine: fd.line,
-        endLine: fd.line,
+        startLine: toZeroBasedLine(fd.line),
+        endLine: toZeroBasedLine(fd.line),
         language: SupportedLanguages.Cobol,
         description: `assign:${fd.assignTo}${fd.isOptional ? ' optional' : ''}${fd.organization ? ` org:${fd.organization}` : ''}${fd.access ? ` access:${fd.access}` : ''}`,
       },
@@ -1406,8 +1407,8 @@ function mapToGraph(
         properties: {
           name: `CANCEL ${cancel.target}`,
           filePath,
-          startLine: cancel.line,
-          endLine: cancel.line,
+          startLine: toZeroBasedLine(cancel.line),
+          endLine: toZeroBasedLine(cancel.line),
           language: SupportedLanguages.Cobol,
           description: 'dynamic-cancel (target is a data item, not resolvable statically)',
         },

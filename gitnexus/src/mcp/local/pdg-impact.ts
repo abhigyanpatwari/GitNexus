@@ -11,6 +11,7 @@ import type { executeParameterized } from '../../core/lbug/pool-adapter.js';
 import { loadMeta } from '../../storage/repo-manager.js';
 import { IMPACT_MAX_DEPTH, PDG_QUERY_DEFAULT_LIMIT, PDG_QUERY_MAX_LIMIT } from '../tools.js';
 import { CALLEES_TRUNCATED_SENTINEL, CALLEE_ID_SEP } from '../../core/ingestion/cfg/emit.js';
+import { toDisplayLine } from './line-display.js';
 import { decodeCallSummary } from '../../core/ingestion/taint/call-summary-codec.js';
 import { decodeReachingDefReason } from '../../core/ingestion/cfg/reaching-def-reason-codec.js';
 import { getProviderForFile } from '../../core/ingestion/languages/index.js';
@@ -90,8 +91,10 @@ export function splitCalleeIds(raw: unknown): string[] {
  * Contract version of the mode:'pdg' impact result shape. A stable discriminator
  * for external MCP/agent consumers — distinct from the DB INCREMENTAL_SCHEMA_VERSION.
  * Bump on any breaking change to the PDG result fields.
+ * v2: `startLine` in the result is now 1-based display (#2380), matching the
+ * context/query/impact tools (was 0-based).
  */
-export const PDG_RESULT_VERSION = 1 as const;
+export const PDG_RESULT_VERSION = 2 as const;
 
 /** A reachable dependence block resolved to its source statement. */
 export interface PdgStatement {
@@ -582,7 +585,7 @@ export interface PdgInterproceduralImpact {
 export interface PdgImpactBaseResult extends PdgImpactParityFields {
   mode: 'pdg';
   /** Contract version of the mode:'pdg' impact result shape; bump on any breaking change to the PDG result fields. */
-  pdgResultVersion: 1;
+  pdgResultVersion: 2;
   target: PdgImpactTarget;
   direction: 'upstream' | 'downstream';
   impactedCount: number;
@@ -655,7 +658,7 @@ export interface PdgImpactDegradedResult extends PdgImpactBaseResult {
 export interface PdgImpactErrorResult {
   mode?: 'pdg';
   /** Contract version of the mode:'pdg' impact result shape; bump on any breaking change to the PDG result fields. */
-  pdgResultVersion: 1;
+  pdgResultVersion: 2;
   error: string;
   target: PdgImpactTarget;
   direction: 'upstream' | 'downstream';
@@ -809,7 +812,7 @@ function assemblePdgImpactResult(input: {
     name: s.name,
     type: s.type,
     filePath: s.filePath,
-    ...(s.startLine !== undefined ? { startLine: s.startLine } : {}),
+    ...(s.startLine !== undefined ? { startLine: toDisplayLine(s.startLine) } : {}),
     ...(s.ambiguous ? { ambiguous: true } : {}),
     ...(s.id === null ? { unresolved: true } : {}),
     pdgEvidence: (s.id === null ? 'degraded' : 'owner-projection') as PdgImpactEvidence,

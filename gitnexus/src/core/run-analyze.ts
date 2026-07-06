@@ -41,7 +41,8 @@ import {
   getSearchFTSCjkSegmentation,
   initialiseSearchFTSCjkSegmentation,
 } from './search/cjk-segmentation.js';
-import { resolveAnalyzeInstallPolicy } from './lbug/extension-loader.js';
+import { getExtensionCapabilities, resolveAnalyzeInstallPolicy } from './lbug/extension-loader.js';
+import { diagnoseExtensionLoad } from './lbug/extension-load-error.js';
 import {
   startWalCheckpointDriver,
   type WalCheckpointDriver,
@@ -298,8 +299,12 @@ export interface AnalyzeResult {
  * a full analyze. Kept as a named constant so the env-var/command guidance
  * stays in one place (mirrors the VECTOR message in embedding-pipeline.ts).
  */
+// Class-neutral lead, reused for the missing-dependency degrade path (#2383 F2):
+// its remedy already explains that reinstalling will NOT help, so appending the
+// generic "install with network access" tail below would contradict it.
+const FTS_UNAVAILABLE_LEAD = 'FTS extension unavailable; skipping search-index creation.';
 const FTS_UNAVAILABLE_MESSAGE =
-  'FTS extension unavailable; skipping search-index creation. ' +
+  `${FTS_UNAVAILABLE_LEAD} ` +
   'Full-text/BM25 search will be disabled until the LadybugDB FTS extension is ' +
   'installed once with network access (GITNEXUS_LBUG_EXTENSION_INSTALL=auto) or ' +
   'pre-installed for offline use. Run `gitnexus doctor` for details.';
@@ -679,10 +684,25 @@ export async function runFullAnalysis(
         policy: resolveAnalyzeInstallPolicy(),
       });
       if (!repairFtsAvailable) {
+        // Surface the load-side reason (#2374): "not pre-installed" was wrong
+        // and doctor never installed anything, so the old message trapped
+        // users in a query → repair-fts → doctor loop with no way out.
+        const rawFtsReason = getExtensionCapabilities().find((c) => c.name === 'fts')?.reason;
+        const ftsReason = rawFtsReason?.replace(/\.$/, '');
+        // A missing runtime dependency (Windows error 126, #2374) is not healed
+        // by re-installing — the file is already present. Route that class to the
+        // classified remedy (install VC++ redist / OpenSSL) instead of the old
+        // "retry the network install" text that trapped the user in a loop.
+        const { kind, remedy } = diagnoseExtensionLoad(rawFtsReason);
+        const remedyTail =
+          kind === 'missing_dependency'
+            ? ` ${remedy}`
+            : '. Retry with network access and GITNEXUS_LBUG_EXTENSION_INSTALL=auto to install it, ' +
+              'or pre-install the extension file; run `gitnexus doctor` for live FTS status.';
         throw new Error(
-          'Cannot repair FTS indexes: the LadybugDB FTS extension is unavailable ' +
-            '(not pre-installed and could not be installed on this machine). ' +
-            'Run `gitnexus doctor` to install it, then retry `--repair-fts`.',
+          'Cannot repair FTS indexes: the LadybugDB FTS extension failed to load' +
+            (ftsReason ? ` — ${ftsReason}` : '') +
+            remedyTail,
         );
       }
       progress('fts', 85, 'Repairing search indexes...');
@@ -1336,7 +1356,17 @@ export async function runFullAnalysis(
       }
       progress('fts', 90, 'Search indexes ready');
     } else {
-      log(FTS_UNAVAILABLE_MESSAGE);
+      // For a missing runtime dependency (#2374) the file is present, so the
+      // generic "install it with network access" tail in FTS_UNAVAILABLE_MESSAGE
+      // contradicts the remedy's own "reinstalling will NOT help" (#2383 F2). Lead
+      // with the class-neutral sentence and append only the classified remedy.
+      const ftsReason = getExtensionCapabilities().find((c) => c.name === 'fts')?.reason;
+      const { kind, remedy } = diagnoseExtensionLoad(ftsReason);
+      log(
+        kind === 'missing_dependency'
+          ? `${FTS_UNAVAILABLE_LEAD} ${remedy}`
+          : FTS_UNAVAILABLE_MESSAGE,
+      );
       progress('fts', 90, 'Search indexes skipped (FTS unavailable)');
     }
 

@@ -17,6 +17,7 @@ import {
   isLbugReady,
 } from '../../core/lbug/pool-adapter.js';
 import { isValidQueryParams } from '../../core/lbug/query-params.js';
+import { toDisplayLine } from './line-display.js';
 import { isWalCorruptionError, WAL_RECOVERY_SUGGESTION } from '../../core/lbug/lbug-config.js';
 // Embedding imports are lazy (dynamic import) to avoid loading onnxruntime-node
 // at MCP server startup — crashes on unsupported Node ABI versions (#89)
@@ -62,6 +63,7 @@ import {
   isVectorExtensionSupportedByPlatform,
 } from '../../core/platform/capabilities.js';
 import { PhaseTimer } from '../../core/search/phase-timer.js';
+import { ftsDegradedWarning } from '../../core/search/fts-indexes.js';
 import {
   cjkSegmentationModeMismatch,
   containsSegmentableCjkRun,
@@ -701,13 +703,31 @@ export class LocalBackend {
         query: (r, p) => this.query(r as RepoHandle, p),
         impactByUid: (id, uid, d, o) => this.impactByUid(id, uid, d, o),
         context: (r, p) => this.context(r as RepoHandle, p),
-        trace: (r, p) => this.trace(r as RepoHandle, p),
+        trace: (r, p) => this.traceForGroup(r as RepoHandle, p),
         resolveSymbol: (r, q) => this.resolveSymbolForGroup(r as RepoHandle, q),
         pdgFlows: (r, anchor, opts) => this.pdgFlowsForGroup(r as RepoHandle, anchor, opts),
       };
       this.groupToolSvc = new GroupService(port);
     }
     return this.groupToolSvc;
+  }
+
+  /**
+   * Adapt local `trace` to the group port. The assembled group/cross-repo trace
+   * presents 1-based endpoints (via resolveSymbolForGroup), so convert the hop
+   * lines here too — otherwise one response mixes 1-based endpoints with 0-based
+   * hops (#2380). Single-repo `trace` dispatches directly (not through this
+   * port) and stays 0-based (documented full-parity follow-up).
+   */
+  private async traceForGroup(repo: RepoHandle, params: TraceParams): Promise<unknown> {
+    const result = await this.trace(repo, params);
+    const hops = (result as { hops?: Array<{ startLine?: number | null }> }).hops;
+    if (Array.isArray(hops)) {
+      for (const hop of hops) {
+        hop.startLine = toDisplayLine(hop.startLine);
+      }
+    }
+    return result;
   }
 
   /**
@@ -734,8 +754,8 @@ export class LocalBackend {
           name: s.name,
           type: s.type,
           filePath: s.filePath,
-          startLine: s.startLine,
-          endLine: s.endLine,
+          startLine: toDisplayLine(s.startLine),
+          endLine: toDisplayLine(s.endLine),
         },
       };
     }
@@ -747,7 +767,7 @@ export class LocalBackend {
           name: c.name,
           type: c.type,
           filePath: c.filePath,
-          startLine: c.startLine,
+          startLine: toDisplayLine(c.startLine),
         })),
       };
     }
@@ -1986,8 +2006,8 @@ export class LocalBackend {
         name: sym.name,
         type: sym.type,
         filePath: sym.filePath,
-        startLine: sym.startLine,
-        endLine: sym.endLine,
+        startLine: toDisplayLine(sym.startLine),
+        endLine: toDisplayLine(sym.endLine),
         ...(module ? { module } : {}),
         ...(includeContent && content ? { content } : {}),
       };
@@ -2084,9 +2104,7 @@ export class LocalBackend {
     // path, leaving the success-path response shape byte-identical.
     const warnings: string[] = [];
     if (!ftsUsed) {
-      warnings.push(
-        'FTS indexes missing — keyword search degraded. Run: gitnexus analyze --repair-fts (or gitnexus analyze --force) to rebuild indexes.',
-      );
+      warnings.push(ftsDegradedWarning());
     }
     // #2331: a CJK query against a server process resolving
     // GITNEXUS_FTS_CJK_SEGMENTATION to 'none' silently misses sub-phrase
@@ -2256,8 +2274,11 @@ export class LocalBackend {
               name: sym.name || sym[1],
               type: sym.type || sym[2],
               filePath: sym.filePath || sym[3],
-              startLine: sym.startLine || sym[4],
-              endLine: sym.endLine || sym[5],
+              // Raw 0-based here — `bm25Search` is only called from `query()`,
+              // whose aggregation loop applies `toDisplayLine` once (see below).
+              // Converting here too would double-shift BM25-matched lines (#2380).
+              startLine: sym.startLine ?? sym[4],
+              endLine: sym.endLine ?? sym[5],
               bm25Score: bm25Result.score,
             });
           }
@@ -2990,7 +3011,7 @@ export class LocalBackend {
           name: c.name,
           kind: c.type,
           filePath: c.filePath,
-          line: c.startLine,
+          line: toDisplayLine(c.startLine),
           score: Number(c.score.toFixed(2)),
         })),
       };
@@ -3247,8 +3268,8 @@ export class LocalBackend {
         name: sym.name || sym[1],
         kind: symKind,
         filePath: sym.filePath || sym[3],
-        startLine: sym.startLine || sym[4],
-        endLine: sym.endLine || sym[5],
+        startLine: toDisplayLine(sym.startLine ?? sym[4]),
+        endLine: toDisplayLine(sym.endLine ?? sym[5]),
         ...(include_content && (sym.content || sym[6]) ? { content: sym.content || sym[6] } : {}),
         ...(methodMetadata ? { methodMetadata } : {}),
       },
@@ -3335,7 +3356,7 @@ export class LocalBackend {
             name: c.name,
             kind: c.type,
             filePath: c.filePath,
-            line: c.startLine,
+            line: toDisplayLine(c.startLine),
             score: Number(c.score.toFixed(2)),
           })),
         },
@@ -3356,11 +3377,14 @@ export class LocalBackend {
         anchorClause:
           'a.id STARTS WITH $idPrefix AND a.startLine >= $symStart AND a.startLine <= $symEnd',
         queryParams: { idPrefix, symStart: sym.startLine + 1, symEnd: sym.endLine + 1 },
+        // Display anchor is 1-based, matching the ambiguous-candidate branch and
+        // the context/query/impact tools (#2380). This is display-only — the
+        // BasicBlock join above uses the raw `sym.startLine + 1` in `symStart`.
         anchor: {
           file: sym.filePath,
           symbol: sym.name,
-          startLine: sym.startLine,
-          endLine: sym.endLine,
+          startLine: toDisplayLine(sym.startLine),
+          endLine: toDisplayLine(sym.endLine),
         },
       };
     }
@@ -4952,7 +4976,7 @@ export class LocalBackend {
             name: c.name,
             kind: c.type,
             filePath: c.filePath,
-            line: c.startLine,
+            line: toDisplayLine(c.startLine),
             score: Number(c.score.toFixed(2)),
           })),
         };
@@ -5017,7 +5041,7 @@ export class LocalBackend {
             name: c.name,
             kind: c.type,
             filePath: c.filePath,
-            line: c.startLine,
+            line: toDisplayLine(c.startLine),
             score: Number(c.score.toFixed(2)),
             impactedCount: summary?.impactedCount ?? 0,
             risk: summary?.risk ?? 'UNKNOWN',
