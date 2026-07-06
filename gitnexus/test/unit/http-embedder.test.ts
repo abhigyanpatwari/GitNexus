@@ -448,7 +448,12 @@ describe('HTTP embedding backend', () => {
       );
 
       const mod = await import('../../src/mcp/core/embedder.js');
-      await expect(mod.embedQuery('test')).rejects.toThrow('empty response');
+      const { isHttpEmbeddingError } = await import('../../src/core/embeddings/http-client.js');
+      const err = await mod.embedQuery('test').catch((e: unknown) => e);
+      expect(String(err)).toContain('empty response');
+      // Type-completeness fence: this conversion must stay typed so the CLI
+      // routes it to the endpoint branch, not the HF branch (#2385).
+      expect(isHttpEmbeddingError(err)).toBe(true);
     });
 
     it('throws when endpoint returns fewer embeddings than texts', async () => {
@@ -464,9 +469,11 @@ describe('HTTP embedding backend', () => {
       );
 
       const { embedBatch } = await import('../../src/core/embeddings/embedder.js');
-      await expect(embedBatch(['text1', 'text2', 'text3'])).rejects.toThrow(
-        '1 vectors for 3 texts',
-      );
+      const { isHttpEmbeddingError } = await import('../../src/core/embeddings/http-client.js');
+      const err = await embedBatch(['text1', 'text2', 'text3']).catch((e: unknown) => e);
+      expect(String(err)).toContain('1 vectors for 3 texts');
+      // Type-completeness fence (#2385).
+      expect(isHttpEmbeddingError(err)).toBe(true);
     });
 
     it('throws on dimension mismatch when GITNEXUS_EMBEDDING_DIMS is set', async () => {
@@ -483,7 +490,11 @@ describe('HTTP embedding backend', () => {
       );
 
       const { embedText } = await import('../../src/core/embeddings/embedder.js');
-      await expect(embedText('test')).rejects.toThrow('Embedding dimension mismatch');
+      const { isHttpEmbeddingError } = await import('../../src/core/embeddings/http-client.js');
+      const err = await embedText('test').catch((e: unknown) => e);
+      expect(String(err)).toContain('Embedding dimension mismatch');
+      // Type-completeness fence (#2385).
+      expect(isHttpEmbeddingError(err)).toBe(true);
     });
   });
 
@@ -552,7 +563,11 @@ describe('HTTP embedding backend', () => {
       );
 
       const mod = await import('../../src/mcp/core/embedder.js');
-      await expect(mod.embedQuery('test')).rejects.toThrow('dimension mismatch');
+      const { isHttpEmbeddingError } = await import('../../src/core/embeddings/http-client.js');
+      const err = await mod.embedQuery('test').catch((e: unknown) => e);
+      expect(String(err)).toContain('dimension mismatch');
+      // Type-completeness fence: the query-path conversion must stay typed (#2385).
+      expect(isHttpEmbeddingError(err)).toBe(true);
     });
 
     it('throws with Set hint when GITNEXUS_EMBEDDING_DIMS is unset', async () => {
