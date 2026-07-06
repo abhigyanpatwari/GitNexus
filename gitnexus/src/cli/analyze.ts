@@ -45,7 +45,7 @@ import { cliError } from './cli-message.js';
 import { EMBEDDING_DIMS_ERROR, normalizeEmbeddingDims } from './embedding-dims.js';
 import { formatElapsed } from './format-elapsed.js';
 import { isHfDownloadFailure } from '../core/embeddings/hf-env.js';
-import { isHttpMode, safeUrl } from '../core/embeddings/http-client.js';
+import { isHttpEmbeddingError, isHttpMode, safeUrl } from '../core/embeddings/http-client.js';
 import {
   isLocalEmbeddingRuntimeBlockerMessage,
   isMissingLocalEmbeddingStackMessage,
@@ -1641,10 +1641,38 @@ const analyzeCommandImpl = async (
       return;
     }
 
+    // Custom HTTP embedding endpoint failure (#2385). When a `--embedding-base-url`
+    // is configured, HTTP mode never downloads a model — so a connection/timeout/
+    // DNS failure to that endpoint must NOT show the huggingface-download guidance.
+    // Keyed on the error *type* (HttpEmbeddingError), not its message text, so it
+    // stays correct regardless of locale or wording. Checked before the HF branch,
+    // whose network heuristic (`fetch failed` / `ECONNREFUSED`) would otherwise
+    // also match a wrapped endpoint-connection error. The thrown message already
+    // carries the masked URL and underlying reason, so it is surfaced verbatim.
+    if (isHttpEmbeddingError(err)) {
+      cliError(
+        `  The custom embedding endpoint could not be reached.\n` +
+          `  ${msg.replace(/\n/g, '\n  ')}\n` +
+          `  Suggestions:\n` +
+          `    1. Confirm the endpoint is running and listening at the URL above.\n` +
+          `    2. Check --embedding-base-url / GITNEXUS_EMBEDDING_URL (host, port, and /v1 path).\n` +
+          `    3. Re-run without --embeddings to index without vectors.\n`,
+        { recoveryHint: 'http-embedding-endpoint-unreachable' },
+      );
+      process.exitCode = 1;
+      return;
+    }
+
     // HF download failure — show clean guidance without the raw stack trace.
     // Checked before writeFatalToStderr so the user sees one focused message
     // rather than a stack-trace dump followed by a second remediation block.
-    if (isHfDownloadFailure(msg) || msg.includes('Failed to download embedding model')) {
+    // Gated on !isHttpMode(): with a custom endpoint configured no model
+    // download is ever attempted, so a network error there is the endpoint's,
+    // handled by the HttpEmbeddingError branch above — never HF's (#2385).
+    if (
+      (isHfDownloadFailure(msg) || msg.includes('Failed to download embedding model')) &&
+      !isHttpMode()
+    ) {
       cliError(
         `  The embedding model could not be downloaded.\n` +
           `  huggingface.co may be unreachable from your network\n` +
