@@ -203,6 +203,23 @@ describe('HTTP embedding backend', () => {
       await expect(embedText('test')).rejects.toThrow('500');
     });
 
+    it('surfaces a connection failure as a typed HttpEmbeddingError (the #2385 case)', async () => {
+      process.env.GITNEXUS_EMBEDDING_URL = 'http://127.0.0.1:1/v1';
+      process.env.GITNEXUS_EMBEDDING_MODEL = 'test-model';
+      // Node's undici throws `TypeError: fetch failed` on a terminal connect error.
+      vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new TypeError('fetch failed')));
+
+      const { embedText } = await import('../../src/core/embeddings/embedder.js');
+      const { isHttpEmbeddingError } = await import('../../src/core/embeddings/http-client.js');
+
+      const err = await embedText('test').catch((e: unknown) => e);
+      // The endpoint failure carries the type — no message-text matching needed.
+      expect(isHttpEmbeddingError(err)).toBe(true);
+      // The masked URL is preserved for the CLI message; no HuggingFace text.
+      expect(String(err)).toContain('127.0.0.1:1');
+      expect(String(err)).not.toMatch(/huggingface/i);
+    });
+
     it('excludes API key from error messages', async () => {
       process.env.GITNEXUS_EMBEDDING_URL = 'http://test:8080/v1';
       process.env.GITNEXUS_EMBEDDING_MODEL = 'test-model';
@@ -452,5 +469,40 @@ describe('HTTP embedding backend', () => {
       const { embedText } = await import('../../src/core/embeddings/embedder.js');
       await expect(embedText('test')).rejects.toThrow('Set GITNEXUS_EMBEDDING_DIMS=768');
     });
+  });
+});
+
+describe('HttpEmbeddingError classification', () => {
+  it('recognises an HttpEmbeddingError instance', async () => {
+    const { HttpEmbeddingError, isHttpEmbeddingError } =
+      await import('../../src/core/embeddings/http-client.js');
+    expect(isHttpEmbeddingError(new HttpEmbeddingError('anything at all'))).toBe(true);
+  });
+
+  it('carries the HTTP status when the failure was a response', async () => {
+    const { HttpEmbeddingError } = await import('../../src/core/embeddings/http-client.js');
+    expect(new HttpEmbeddingError('returned 404', { status: 404 }).status).toBe(404);
+    // Connection/timeout/DNS failures never got a response — no status.
+    expect(new HttpEmbeddingError('fetch failed').status).toBeUndefined();
+  });
+
+  it('recognises a cross-realm error by name even when instanceof fails', async () => {
+    const { isHttpEmbeddingError } = await import('../../src/core/embeddings/http-client.js');
+    // Simulates an error that crossed a module boundary and lost its prototype
+    // chain: instanceof would be false, but the stable `name` still identifies it.
+    const crossRealm = new Error('endpoint down');
+    crossRealm.name = 'HttpEmbeddingError';
+    expect(isHttpEmbeddingError(crossRealm)).toBe(true);
+  });
+
+  it.each([
+    new Error('TypeError: fetch failed'),
+    new Error('Failed to download embedding model'),
+    new Error('connect ECONNREFUSED 127.0.0.1:443'),
+    'not even an error',
+    undefined,
+  ])('does not claim non-endpoint value: %s', async (value) => {
+    const { isHttpEmbeddingError } = await import('../../src/core/embeddings/http-client.js');
+    expect(isHttpEmbeddingError(value)).toBe(false);
   });
 });

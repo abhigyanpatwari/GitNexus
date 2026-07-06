@@ -84,6 +84,45 @@ export const safeUrl = (url: string): string => {
   }
 };
 
+/**
+ * Error thrown by this module's HTTP embedding path (`httpEmbedBatch` /
+ * `httpEmbed` / `httpEmbedQuery`) for any endpoint failure — a
+ * connection/timeout/DNS error, an open circuit, a non-OK status, an empty
+ * response, or a dimension mismatch.
+ *
+ * Carrying a distinct type (rather than a plain `Error`) lets the CLI tell an
+ * unreachable *custom endpoint* apart from a HuggingFace *model download*
+ * failure without matching message text: the two share the same underlying
+ * network substrings (`fetch failed`, `ECONNREFUSED`, …), which is exactly
+ * why `isNetworkFetchError` in `hf-env.ts` cannot tell them apart. Keying on
+ * the type instead of the message is also locale-proof and survives message
+ * rewording. See #2385.
+ *
+ * `status` holds the HTTP status when the failure was a response (4xx/5xx);
+ * it is `undefined` for connection/timeout/DNS failures, which never received
+ * a response — the reason a plain status-code check cannot classify this bug.
+ */
+export class HttpEmbeddingError extends Error {
+  readonly status?: number;
+  constructor(message: string, options?: { status?: number; cause?: unknown }) {
+    super(message, options?.cause !== undefined ? { cause: options.cause } : undefined);
+    this.name = 'HttpEmbeddingError';
+    this.status = options?.status;
+  }
+}
+
+/**
+ * @internal Exported for the CLI analyze error handler and unit tests.
+ *
+ * Type-guard for {@link HttpEmbeddingError}. The `name` fallback keeps the
+ * check working across module-realm boundaries where `instanceof` can fail
+ * (two loaded copies of the class) — mirroring the codebase's existing
+ * `err.name === 'TimeoutError'` idiom. Matches on the stable class
+ * discriminator, never on the human-readable (potentially localized) message.
+ */
+export const isHttpEmbeddingError = (err: unknown): boolean =>
+  err instanceof HttpEmbeddingError || (err instanceof Error && err.name === 'HttpEmbeddingError');
+
 interface EmbeddingItem {
   embedding: number[];
 }
@@ -140,29 +179,36 @@ const httpEmbedBatch = async (
     );
   } catch (err) {
     if (err instanceof CircuitOpenError) {
-      throw new Error(
+      throw new HttpEmbeddingError(
         `Embedding endpoint circuit open (${safeUrl(url)}, batch ${batchIndex}): retry in ${Math.ceil(err.retryAfterMs / 1000)}s`,
+        { cause: err },
       );
     }
     if (err instanceof DOMException && err.name === 'TimeoutError') {
-      throw new Error(
+      throw new HttpEmbeddingError(
         `Embedding request timed out after ${HTTP_TIMEOUT_MS}ms (${safeUrl(url)}, batch ${batchIndex})`,
+        { cause: err },
       );
     }
     if (err instanceof ResilientFetchExhaustedError) {
-      throw new Error(
+      throw new HttpEmbeddingError(
         `Embedding endpoint returned ${err.response.status} (${safeUrl(url)}, batch ${batchIndex})`,
+        { status: err.response.status, cause: err },
       );
     }
     const reason = err instanceof Error ? err.message : String(err);
-    throw new Error(`Embedding request failed (${safeUrl(url)}, batch ${batchIndex}): ${reason}`);
+    throw new HttpEmbeddingError(
+      `Embedding request failed (${safeUrl(url)}, batch ${batchIndex}): ${reason}`,
+      { cause: err },
+    );
   }
 
   if (!resp.ok) {
     // resilientFetch already retried 5xx/429; any non-OK response here is
     // a terminal client error (4xx other than 429).
-    throw new Error(
+    throw new HttpEmbeddingError(
       `Embedding endpoint returned ${resp.status} (${safeUrl(url)}, batch ${batchIndex})`,
+      { status: resp.status },
     );
   }
 
@@ -199,7 +245,7 @@ export const httpEmbed = async (texts: string[]): Promise<Float32Array[]> => {
     );
 
     if (items.length !== batch.length) {
-      throw new Error(
+      throw new HttpEmbeddingError(
         `Embedding endpoint returned ${items.length} vectors for ${batch.length} texts ` +
           `(${safeUrl(url)}, batch ${batchIndex})`,
       );
@@ -214,7 +260,7 @@ export const httpEmbed = async (texts: string[]): Promise<Float32Array[]> => {
         const hint = config.dimensions
           ? 'Update GITNEXUS_EMBEDDING_DIMS to match your model output.'
           : `Set GITNEXUS_EMBEDDING_DIMS=${vec.length} to match your model output.`;
-        throw new Error(
+        throw new HttpEmbeddingError(
           `Embedding dimension mismatch: endpoint returned ${vec.length}d vector, ` +
             `but expected ${expected}d. ${hint}`,
         );
@@ -248,7 +294,7 @@ export const httpEmbedQuery = async (text: string): Promise<number[]> => {
     config.dimensions,
   );
   if (!items.length) {
-    throw new Error(`Embedding endpoint returned empty response (${safeUrl(url)})`);
+    throw new HttpEmbeddingError(`Embedding endpoint returned empty response (${safeUrl(url)})`);
   }
 
   const embedding = items[0].embedding;
@@ -259,7 +305,7 @@ export const httpEmbedQuery = async (text: string): Promise<number[]> => {
     const hint = config.dimensions
       ? 'Update GITNEXUS_EMBEDDING_DIMS to match your model output.'
       : `Set GITNEXUS_EMBEDDING_DIMS=${embedding.length} to match your model output.`;
-    throw new Error(
+    throw new HttpEmbeddingError(
       `Embedding dimension mismatch: endpoint returned ${embedding.length}d vector, ` +
         `but expected ${expected}d. ${hint}`,
     );
