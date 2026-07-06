@@ -73,9 +73,11 @@ const FILE_CORRUPTION_SIGNATURES: readonly RegExp[] = [
  * the specific error-126 tail. Linux/macOS loaders name the missing library
  * directly, so their signals are unambiguous.
  *
- * Limitation: a non-UTF-8/mojibake rendering of the Chinese 126 text won't
- * match; those fall through to `unknown` (a safe generic remedy), never to a
- * wrong "reinstall" instruction.
+ * Localized Windows tails we do not enumerate (French, German, Japanese, …) and
+ * mojibake renderings of the Chinese text won't match here — but they still
+ * carry lbug's language-independent `Failed to load library` wrapper, so they
+ * are caught by the hedged fallback (LOAD_FAILURE_WRAPPER) with a non-committal
+ * remedy, never a wrong confident "reinstall" instruction.
  */
 const WINDOWS_MISSING_DEPENDENCY_SIGNATURES: readonly RegExp[] = [
   /找不到指定的模块/,
@@ -86,6 +88,17 @@ const POSIX_MISSING_DEPENDENCY_SIGNATURES: readonly RegExp[] = [
   /image not found/i, // macOS dyld
   /library not loaded/i, // macOS dyld
 ];
+
+/**
+ * LadybugDB's own English wrapper for a dlopen/LoadLibrary failure
+ * (extension.cpp: `Failed to load library: {path} which is needed by extension:
+ * {name}`). It is emitted for EVERY extension load failure regardless of the OS
+ * display language — the only localized part is the OS-error tail after it. So
+ * it is the language-independent fallback signal once the specific tails miss: a
+ * French/German/Japanese Windows 126 has a localized tail we cannot enumerate,
+ * but it still carries this wrapper. See HEDGED_LOAD_FAILURE_REMEDY.
+ */
+const LOAD_FAILURE_WRAPPER = /failed to load library/i;
 
 const MISSING_FILE_REMEDY =
   'The FTS extension is not installed. Re-run with network access and ' +
@@ -108,6 +121,19 @@ const POSIX_MISSING_DEPENDENCY_REMEDY =
   'The FTS extension is present but a shared library it depends on could not be loaded (named in ' +
   'the error above). Reinstalling the extension will NOT help — install that library or add it to ' +
   'your loader search path.';
+
+// Language-independent fallback: we know the extension failed to load, but the
+// OS-error tail is in a locale we did not enumerate, so we cannot say which class
+// it is. Hedge honestly — point at the user's own localized error and give both
+// branches — rather than confidently prescribing the wrong single fix. The clean
+// long-term fix is upstream: have LadybugDB include the numeric GetLastError/errno
+// in the message (as it already does elsewhere), so this becomes a code match.
+const HEDGED_LOAD_FAILURE_REMEDY =
+  'The FTS extension file was found but could not be loaded — see the "Error:" text above (shown ' +
+  "in your system's language). Reinstalling usually will not help. If it names a missing module or " +
+  'library, install the required runtime (on Windows: the Microsoft Visual C++ 2015-2022 ' +
+  'Redistributable x64 and OpenSSL 3); if it names a corrupt or invalid file, run ' +
+  '`gitnexus analyze --repair-fts` to re-download.';
 
 const UNKNOWN_REMEDY =
   'The FTS extension failed to load for an unrecognized reason. Run `gitnexus doctor` for live ' +
@@ -137,6 +163,14 @@ export function classifyExtensionLoadError(
   }
   if (matchesAny(text, POSIX_MISSING_DEPENDENCY_SIGNATURES)) {
     return { kind: 'missing_dependency', remedy: POSIX_MISSING_DEPENDENCY_REMEDY };
+  }
+  // Language-independent fallback: the extension demonstrably failed to load
+  // (lbug's English wrapper is present) but the localized OS tail matched no
+  // specific class. Treat as a dependency/runtime load failure with a hedged
+  // remedy — strictly better than the generic `unknown` for non-English hosts,
+  // and it never prescribes the wrong fix.
+  if (LOAD_FAILURE_WRAPPER.test(text)) {
+    return { kind: 'missing_dependency', remedy: HEDGED_LOAD_FAILURE_REMEDY };
   }
   return { kind: 'unknown', remedy: UNKNOWN_REMEDY };
 }
