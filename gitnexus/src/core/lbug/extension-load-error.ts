@@ -211,10 +211,21 @@ const ELF_MACHINE: Readonly<Record<string, number>> = { x64: 0x3e, arm64: 0xb7 }
 /** Node `process.arch` → Mach-O `cputype`. */
 const MACHO_CPUTYPE: Readonly<Record<string, number>> = { x64: 0x01000007, arm64: 0x0100000c };
 
-function classifyPE(buf: Buffer, bytesRead: number, arch: string): 'valid' | 'corrupt' {
+/**
+ * A structural verdict on a binary header. `indeterminate` means the probe could
+ * not prove validity OR corruption from what it read (e.g. the PE header sits past
+ * the BINARY_HEADER_BYTES window) — the caller defers to the string classifier
+ * rather than assert a false verdict.
+ */
+type HeaderVerdict = 'valid' | 'corrupt' | 'indeterminate';
+
+function classifyPE(buf: Buffer, bytesRead: number, arch: string): HeaderVerdict {
   if (bytesRead < 0x40 || buf[0] !== 0x4d || buf[1] !== 0x5a) return 'corrupt'; // 'MZ'
   const peOffset = buf.readUInt32LE(0x3c);
-  if (peOffset + 6 > bytesRead) return 'corrupt'; // truncated / garbage e_lfanew
+  // The PE header (e_lfanew) points beyond what we read. A large-DOS-stub VALID PE
+  // and a garbage e_lfanew are indistinguishable from here, so don't claim 'corrupt'
+  // — defer to the loader's own report (#2383 F1-secondary).
+  if (peOffset + 6 > bytesRead) return 'indeterminate';
   const isPE =
     buf[peOffset] === 0x50 &&
     buf[peOffset + 1] === 0x45 &&
@@ -226,7 +237,7 @@ function classifyPE(buf: Buffer, bytesRead: number, arch: string): 'valid' | 'co
   return buf.readUInt16LE(peOffset + 4) === expected ? 'valid' : 'corrupt';
 }
 
-function classifyELF(buf: Buffer, bytesRead: number, arch: string): 'valid' | 'corrupt' {
+function classifyELF(buf: Buffer, bytesRead: number, arch: string): HeaderVerdict {
   if (bytesRead < 20) return 'corrupt';
   if (buf[0] !== 0x7f || buf[1] !== 0x45 || buf[2] !== 0x4c || buf[3] !== 0x46) return 'corrupt'; // 0x7F ELF
   const littleEndian = buf[5] === 1; // EI_DATA
@@ -236,7 +247,7 @@ function classifyELF(buf: Buffer, bytesRead: number, arch: string): 'valid' | 'c
   return eMachine === expected ? 'valid' : 'corrupt';
 }
 
-function classifyMachO(buf: Buffer, bytesRead: number, arch: string): 'valid' | 'corrupt' {
+function classifyMachO(buf: Buffer, bytesRead: number, arch: string): HeaderVerdict {
   if (bytesRead < 8) return 'corrupt';
   const magicLE = buf.readUInt32LE(0);
   const magicBE = buf.readUInt32BE(0);
@@ -262,7 +273,7 @@ export function classifyBinaryHeader(
   bytesRead: number,
   platform: NodeJS.Platform,
   arch: string,
-): 'valid' | 'corrupt' {
+): HeaderVerdict {
   if (platform === 'win32') return classifyPE(buf, bytesRead, arch);
   if (platform === 'linux') return classifyELF(buf, bytesRead, arch);
   if (platform === 'darwin') return classifyMachO(buf, bytesRead, arch);

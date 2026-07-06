@@ -46,6 +46,23 @@ function buildHostValidBinary(): Buffer {
   if (process.platform === 'darwin') return buildMachO(arm ? 0x0100000c : 0x01000007);
   return Buffer.alloc(64); // unknown host: classifyBinaryHeader returns 'valid' anyway
 }
+// Valid MZ, but e_lfanew points far past the bytes we read → header unprovable.
+function buildPEBeyondWindow(): Buffer {
+  const b = Buffer.alloc(128); // > 0x40 so the MZ check passes
+  b[0] = 0x4d;
+  b[1] = 0x5a; // MZ
+  b.writeUInt32LE(4100, 0x3c); // e_lfanew far beyond the 128-byte buffer
+  return b;
+}
+// Valid MZ and an in-window e_lfanew, but no 'PE\0\0' signature there → corrupt.
+function buildPEGarbageSignature(): Buffer {
+  const peOff = 0x80;
+  const b = Buffer.alloc(peOff + 8);
+  b[0] = 0x4d;
+  b[1] = 0x5a; // MZ
+  b.writeUInt32LE(peOff, 0x3c); // e_lfanew within the buffer, but bytes there stay 0x00
+  return b;
+}
 
 /**
  * U1 (#2374): the string classifier. The precise en/zh 126 tail gets the definite
@@ -172,7 +189,7 @@ describe('classifyExtensionLoadError', () => {
  */
 describe('classifyBinaryHeader', () => {
   const cases: ReadonlyArray<
-    readonly [string, Buffer, NodeJS.Platform, string, 'valid' | 'corrupt']
+    readonly [string, Buffer, NodeJS.Platform, string, 'valid' | 'corrupt' | 'indeterminate']
   > = [
     ['linux x64 valid ELF', buildELF(0x3e), 'linux', 'x64', 'valid'],
     ['linux arm64 valid ELF', buildELF(0xb7), 'linux', 'arm64', 'valid'],
@@ -203,6 +220,13 @@ describe('classifyBinaryHeader', () => {
       'x64',
       'valid',
     ],
+    // #2383 F1-secondary: a valid PE whose header sits past the read window is not
+    // provably corrupt — return indeterminate so the caller defers to the loader.
+    ['win: PE header beyond read window → indeterminate', buildPEBeyondWindow(), 'win32', 'x64', 'indeterminate'],
+    // Arch we don't map on a known platform: never claim corrupt (documents KTD5).
+    ['linux: valid ELF, unmapped arch → valid', buildELF(0x3e), 'linux', 'mips', 'valid'],
+    // Valid MZ but garbage where PE\0\0 should be, within the window → genuinely corrupt.
+    ['win: valid MZ but no PE signature → corrupt', buildPEGarbageSignature(), 'win32', 'x64', 'corrupt'],
   ];
 
   it.each(cases)('%s', (_name, buf, platform, arch, expected) => {
