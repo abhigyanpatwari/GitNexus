@@ -208,6 +208,23 @@ describe('HTTP embedding backend', () => {
       expect(isHttpEmbeddingError(err)).toBe(true);
     });
 
+    it('classifies a terminal 4xx (404) as a typed endpoint error without retrying (#2385)', async () => {
+      process.env.GITNEXUS_EMBEDDING_URL = 'http://test:8080/v1';
+      process.env.GITNEXUS_EMBEDDING_MODEL = 'test-model';
+      // The most common --embedding-base-url misconfiguration: wrong path -> 404,
+      // bad key -> 401/403. resilientFetch returns a terminal 4xx (other than 429)
+      // without retrying, so httpEmbedBatch's !resp.ok branch is the sole
+      // classifier — distinct from 500 (ResilientFetchExhaustedError) and 429/503.
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: false, status: 404 }));
+
+      const { embedText } = await import('../../src/core/embeddings/embedder.js');
+      const { isHttpEmbeddingError } = await import('../../src/core/embeddings/http-client.js');
+      const err = await embedText('test').catch((e: unknown) => e);
+      expect(String(err)).toContain('404');
+      expect(isHttpEmbeddingError(err)).toBe(true);
+      expect(fetch).toHaveBeenCalledTimes(1);
+    });
+
     it('classifies a reachable endpoint that returns a non-JSON 200 body', async () => {
       process.env.GITNEXUS_EMBEDDING_URL = 'http://test:8080/v1';
       process.env.GITNEXUS_EMBEDDING_MODEL = 'test-model';
