@@ -30,8 +30,11 @@ vi.mock('../../src/storage/repo-manager.js', async (importOriginal) => {
 });
 
 // Stored 0-based: this Class occupies 0-based lines 41..58 (editor lines 42..59).
+// TopFn sits on the file's first line (stored 0-based 0) — the #2380 falsy-`||`
+// case where `sym.startLine || sym[4]` would drop the line entirely.
 const SEED = [
   `CREATE (c:Class {id:'Class:src/app.ts:App', name:'App', filePath:'src/app.ts', startLine:41, endLine:58, content:'class App {}', description:''})`,
+  `CREATE (c:Class {id:'Class:src/top.ts:TopFn', name:'TopFn', filePath:'src/top.ts', startLine:0, endLine:0, content:'class TopFn {}', description:''})`,
 ];
 
 let backend: LocalBackend;
@@ -45,6 +48,16 @@ withTestLbugDB(
         expect(result.status).toBe('found');
         expect(result.symbol.startLine).toBe(42); // stored 0-based 41 -> display 42
         expect(result.symbol.endLine).toBe(59); // stored 0-based 58 -> display 59
+      });
+
+      it('context() keeps a 0-based first-line symbol (startLine:0 -> 1, not dropped)', async () => {
+        // Before #2380 the falsy `sym.startLine || sym[4]` collapsed a valid 0 to
+        // undefined, so context() omitted startLine/endLine for first-line symbols
+        // (every COBOL Module, markdown h1). `??` preserves the 0.
+        const result = await backend.callTool('context', { uid: 'Class:src/top.ts:TopFn' });
+        expect(result.status).toBe('found');
+        expect(result.symbol.startLine).toBe(1); // stored 0-based 0 -> display 1
+        expect(result.symbol.endLine).toBe(1);
       });
 
       it('raw cypher returns the stored 0-based value unchanged', async () => {

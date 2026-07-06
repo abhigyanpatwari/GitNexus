@@ -2259,8 +2259,8 @@ export class LocalBackend {
               // Raw 0-based here — `bm25Search` is only called from `query()`,
               // whose aggregation loop applies `toDisplayLine` once (see below).
               // Converting here too would double-shift BM25-matched lines (#2380).
-              startLine: sym.startLine || sym[4],
-              endLine: sym.endLine || sym[5],
+              startLine: sym.startLine ?? sym[4],
+              endLine: sym.endLine ?? sym[5],
               bm25Score: bm25Result.score,
             });
           }
@@ -3250,8 +3250,8 @@ export class LocalBackend {
         name: sym.name || sym[1],
         kind: symKind,
         filePath: sym.filePath || sym[3],
-        startLine: toDisplayLine(sym.startLine || sym[4]),
-        endLine: toDisplayLine(sym.endLine || sym[5]),
+        startLine: toDisplayLine(sym.startLine ?? sym[4]),
+        endLine: toDisplayLine(sym.endLine ?? sym[5]),
         ...(include_content && (sym.content || sym[6]) ? { content: sym.content || sym[6] } : {}),
         ...(methodMetadata ? { methodMetadata } : {}),
       },
