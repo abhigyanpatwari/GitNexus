@@ -42,6 +42,7 @@ import {
   initialiseSearchFTSCjkSegmentation,
 } from './search/cjk-segmentation.js';
 import { getExtensionCapabilities, resolveAnalyzeInstallPolicy } from './lbug/extension-loader.js';
+import { classifyExtensionLoadError } from './lbug/extension-load-error.js';
 import {
   startWalCheckpointDriver,
   type WalCheckpointDriver,
@@ -682,14 +683,22 @@ export async function runFullAnalysis(
         // Surface the load-side reason (#2374): "not pre-installed" was wrong
         // and doctor never installed anything, so the old message trapped
         // users in a query → repair-fts → doctor loop with no way out.
-        const ftsReason = getExtensionCapabilities()
-          .find((c) => c.name === 'fts')
-          ?.reason?.replace(/\.$/, '');
+        const rawFtsReason = getExtensionCapabilities().find((c) => c.name === 'fts')?.reason;
+        const ftsReason = rawFtsReason?.replace(/\.$/, '');
+        // A missing runtime dependency (Windows error 126, #2374) is not healed
+        // by re-installing — the file is already present. Route that class to the
+        // classified remedy (install VC++ redist / OpenSSL) instead of the old
+        // "retry the network install" text that trapped the user in a loop.
+        const { kind, remedy } = classifyExtensionLoadError(rawFtsReason);
+        const remedyTail =
+          kind === 'missing_dependency'
+            ? ` ${remedy}`
+            : '. Retry with network access and GITNEXUS_LBUG_EXTENSION_INSTALL=auto to install it, ' +
+              'or pre-install the extension file; run `gitnexus doctor` for live FTS status.';
         throw new Error(
           'Cannot repair FTS indexes: the LadybugDB FTS extension failed to load' +
             (ftsReason ? ` — ${ftsReason}` : '') +
-            '. Retry with network access and GITNEXUS_LBUG_EXTENSION_INSTALL=auto to install it, ' +
-            'or pre-install the extension file; run `gitnexus doctor` for live FTS status.',
+            remedyTail,
         );
       }
       progress('fts', 85, 'Repairing search indexes...');
@@ -1343,7 +1352,12 @@ export async function runFullAnalysis(
       }
       progress('fts', 90, 'Search indexes ready');
     } else {
-      log(FTS_UNAVAILABLE_MESSAGE);
+      // Append the classified remedy when a runtime dependency is missing
+      // (#2374) — the generic "install it with network access" guidance in
+      // FTS_UNAVAILABLE_MESSAGE is wrong for that class (the file is present).
+      const ftsReason = getExtensionCapabilities().find((c) => c.name === 'fts')?.reason;
+      const { kind, remedy } = classifyExtensionLoadError(ftsReason);
+      log(kind === 'missing_dependency' ? `${FTS_UNAVAILABLE_MESSAGE} ${remedy}` : FTS_UNAVAILABLE_MESSAGE);
       progress('fts', 90, 'Search indexes skipped (FTS unavailable)');
     }
 

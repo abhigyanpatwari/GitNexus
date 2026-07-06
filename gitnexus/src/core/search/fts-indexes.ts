@@ -1,5 +1,6 @@
 import { createFTSIndex, dropFTSIndex, DEFAULT_FTS_STEMMER } from '../lbug/lbug-adapter.js';
 import { getExtensionCapabilities } from '../lbug/extension-loader.js';
+import { classifyExtensionLoadError } from '../lbug/extension-load-error.js';
 import { FTS_INDEXES } from './fts-schema.js';
 
 /**
@@ -24,10 +25,17 @@ export const ftsDegradedWarning = (): string => {
   const fts = getExtensionCapabilities().find((c) => c.name === 'fts');
   if (fts && !fts.loaded) {
     const reason = fts.reason ? redactPaths(fts.reason).replace(/\.$/, '') : undefined;
+    // A missing *runtime dependency* (Windows error 126, etc.) is not healed by
+    // reinstalling (#2374) — surface the classified remedy instead of the
+    // generic reinstall tail. Classify the raw reason (the class words survive
+    // redaction), but only ever surface the redacted text.
+    const { kind, remedy } = classifyExtensionLoadError(fts.reason);
+    const tail =
+      kind === 'missing_dependency'
+        ? ` ${remedy}`
+        : '. Run `gitnexus doctor` for details, then `gitnexus analyze --repair-fts` with network access to reinstall.';
     return (
-      'FTS extension failed to load — keyword search degraded' +
-      (reason ? ` (${reason})` : '') +
-      '. Run `gitnexus doctor` for details, then `gitnexus analyze --repair-fts` with network access to reinstall.'
+      'FTS extension failed to load — keyword search degraded' + (reason ? ` (${reason})` : '') + tail
     );
   }
   return 'FTS indexes missing — keyword search degraded. Run: gitnexus analyze --repair-fts (or gitnexus analyze --force) to rebuild indexes.';

@@ -74,4 +74,43 @@ describe('ftsDegradedWarning (#2374)', () => {
     expect(warning).not.toMatch(/C:\\Users\\/);
     expect(warning).toContain('not a valid Win32 application');
   });
+
+  it('surfaces the runtime-install remedy, not reinstall, for a Windows missing-dependency error', async () => {
+    await extensionManager.ensure(
+      vi
+        .fn()
+        .mockRejectedValue(
+          new Error(
+            "Failed to load library 'C:\\Users\\bob\\.lbdb\\extension\\0.18.0\\win_amd64\\fts\\libfts.lbug_extension' which is needed by extension: fts. Error: The specified module could not be found.",
+          ),
+        ),
+      'fts',
+      'FTS',
+      { policy: 'load-only' },
+    );
+
+    const warning = ftsDegradedWarning();
+    expect(warning).toContain('FTS extension failed to load');
+    expect(warning).toMatch(/Visual C\+\+/);
+    expect(warning).toMatch(/vc_redist\.x64\.exe/);
+    // The old "reinstall with network access" tail must not appear for this class.
+    expect(warning).not.toMatch(/with network access to reinstall/);
+    // Absolute path still redacted from the client-facing warning.
+    expect(warning).not.toMatch(/C:\\Users\\/);
+  });
+
+  it('keeps the reinstall guidance for a never-installed extension', async () => {
+    await extensionManager.ensure(
+      vi
+        .fn()
+        .mockRejectedValue(
+          new Error('Extension "fts" is an official extension and has not been installed.'),
+        ),
+      'fts',
+      'FTS',
+      { policy: 'load-only' },
+    );
+
+    expect(ftsDegradedWarning()).toContain('--repair-fts');
+  });
 });
