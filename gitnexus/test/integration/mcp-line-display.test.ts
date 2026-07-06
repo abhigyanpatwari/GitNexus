@@ -6,11 +6,14 @@
  * see ingestion/utils/line-base.ts). Human/LLM-facing tools (context, query,
  * impact) add 1 at the response boundary so the numbers line up with editors /
  * `sed`; the raw `cypher` passthrough stays 0-based and is documented.
+ *
+ * One shared LadybugDB (with FTS) backs every case so query()'s BM25 path is
+ * exercised without a second full DB+FTS setup.
  */
 import { describe, expect, it, vi } from 'vitest';
 import { LocalBackend } from '../../src/mcp/local/local-backend.js';
 import { listRegisteredRepos } from '../../src/storage/repo-manager.js';
-import { withTestLbugDB, type IndexedDBHandle } from '../helpers/test-indexed-db.js';
+import { withTestLbugDB } from '../helpers/test-indexed-db.js';
 import { FTS_INDEXES } from '../../src/core/search/fts-schema.js';
 
 const PRODUCTION_FTS_INDEXES = FTS_INDEXES.map((i) => ({
@@ -29,16 +32,18 @@ vi.mock('../../src/storage/repo-manager.js', async (importOriginal) => {
   };
 });
 
-// Stored 0-based: this Class occupies 0-based lines 41..58 (editor lines 42..59).
+// Stored 0-based: App occupies 0-based lines 41..58 (editor lines 42..59).
 // TopFn sits on the file's first line (stored 0-based 0) — the #2380 falsy-`||`
 // case where `sym.startLine || sym[4]` would drop the line entirely.
-// Two DupFn symbols force impact()'s ambiguous branch, which is the only impact
-// response that surfaces a per-candidate line (#2380).
+// Two DupFn symbols force impact()'s ambiguous branch, the only impact response
+// that surfaces a per-candidate line. Zqxwvbm carries a distinctive content
+// token so query()'s BM25/FTS retriever surfaces it (the #2380 P1 path).
 const SEED = [
   `CREATE (c:Class {id:'Class:src/app.ts:App', name:'App', filePath:'src/app.ts', startLine:41, endLine:58, content:'class App {}', description:''})`,
   `CREATE (c:Class {id:'Class:src/top.ts:TopFn', name:'TopFn', filePath:'src/top.ts', startLine:0, endLine:0, content:'class TopFn {}', description:''})`,
   `CREATE (f:Function {id:'Function:src/a.ts:DupFn', name:'DupFn', filePath:'src/a.ts', startLine:41, endLine:50, content:'function DupFn() {}', description:''})`,
   `CREATE (f:Function {id:'Function:src/b.ts:DupFn', name:'DupFn', filePath:'src/b.ts', startLine:7, endLine:12, content:'function DupFn() {}', description:''})`,
+  `CREATE (c:Class {id:'Class:src/svc.ts:Zqxwvbm', name:'Zqxwvbm', filePath:'src/svc.ts', startLine:41, endLine:58, content:'class Zqxwvbm zqxwvbmtoken', description:'zqxwvbmtoken service'})`,
 ];
 
 let backend: LocalBackend;
@@ -74,6 +79,20 @@ withTestLbugDB(
         expect(cand!.line).toBe(42); // stored 0-based 41 -> display 42
       });
 
+      it('query() BM25 path converts the line exactly once (stored 41 -> 42, not 43)', async () => {
+        // bm25Search returns raw 0-based rows; query()'s aggregation applies
+        // toDisplayLine once. Before #2380 both converted -> 43 (#2380 P1).
+        type QuerySymbol = { id: string; startLine?: number; endLine?: number };
+        type QueryResult = { definitions?: QuerySymbol[]; process_symbols?: QuerySymbol[] };
+        const result: QueryResult = await backend.callTool('query', { query: 'zqxwvbmtoken' });
+        const sym = [...(result.process_symbols ?? []), ...(result.definitions ?? [])].find(
+          (s) => s.id === 'Class:src/svc.ts:Zqxwvbm',
+        );
+        expect(sym).toBeDefined();
+        expect(sym!.startLine).toBe(42); // 41 + 1, converted exactly once
+        expect(sym!.endLine).toBe(59); // 58 + 1
+      });
+
       it('raw cypher returns the stored 0-based value unchanged', async () => {
         const result = await backend.callTool('cypher', {
           statement: "MATCH (n:Class {name:'App'}) RETURN n.startLine AS startLine",
@@ -87,53 +106,6 @@ withTestLbugDB(
   },
   {
     seed: SEED,
-    poolAdapter: true,
-    afterSetup: async (handle) => {
-      vi.mocked(listRegisteredRepos).mockResolvedValue([
-        {
-          name: 'test-repo',
-          path: '/test/repo',
-          storagePath: handle.tmpHandle.dbPath,
-          indexedAt: new Date().toISOString(),
-          lastCommit: 'abc123',
-          stats: { files: 1, nodes: 1, communities: 0, processes: 0 },
-        },
-      ]);
-      backend = new LocalBackend();
-      await backend.init();
-    },
-  },
-);
-
-// #2380 P1: `query()` must convert the line EXACTLY once. `bm25Search` returns
-// raw 0-based rows and `query()`'s aggregation applies `toDisplayLine` once — a
-// BM25-matched symbol stored 0-based 41 must read 42, not 43 (double-convert).
-// A distinctive content token guarantees the BM25/FTS retriever surfaces it.
-const SEED_BM25 = [
-  `CREATE (c:Class {id:'Class:src/svc.ts:Zqxwvbm', name:'Zqxwvbm', filePath:'src/svc.ts', startLine:41, endLine:58, content:'class Zqxwvbm zqxwvbmtoken', description:'zqxwvbmtoken service'})`,
-];
-
-withTestLbugDB(
-  'mcp-line-display-query-bm25',
-  (handle) => {
-    describe('query() BM25 path converts line numbers once (#2380 P1)', () => {
-      it('reports stored 0-based 41 as 42 (single conversion, not 43)', async () => {
-        const ext = handle as IndexedDBHandle & { _backend?: LocalBackend };
-        const backend = ext._backend!;
-        type QuerySymbol = { id: string; startLine?: number; endLine?: number };
-        type QueryResult = { definitions?: QuerySymbol[]; process_symbols?: QuerySymbol[] };
-        const result: QueryResult = await backend.callTool('query', { query: 'zqxwvbmtoken' });
-        const sym = [...(result.process_symbols ?? []), ...(result.definitions ?? [])].find(
-          (s) => s.id === 'Class:src/svc.ts:Zqxwvbm',
-        );
-        expect(sym).toBeDefined();
-        expect(sym!.startLine).toBe(42); // 41 + 1, converted exactly once
-        expect(sym!.endLine).toBe(59); // 58 + 1
-      });
-    });
-  },
-  {
-    seed: SEED_BM25,
     ftsIndexes: PRODUCTION_FTS_INDEXES,
     poolAdapter: true,
     afterSetup: async (handle) => {
@@ -144,12 +116,11 @@ withTestLbugDB(
           storagePath: handle.tmpHandle.dbPath,
           indexedAt: new Date().toISOString(),
           lastCommit: 'abc123',
-          stats: { files: 1, nodes: 1, communities: 0, processes: 0 },
+          stats: { files: 1, nodes: 5, communities: 0, processes: 0 },
         },
       ]);
-      const backend = new LocalBackend();
+      backend = new LocalBackend();
       await backend.init();
-      (handle as IndexedDBHandle & { _backend?: LocalBackend })._backend = backend;
     },
   },
 );
