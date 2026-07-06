@@ -299,6 +299,42 @@ describe('HTTP embedding backend', () => {
       }
     });
 
+    it('scrubs credentials embedded in the endpoint URL from the error message (#2385)', async () => {
+      process.env.GITNEXUS_EMBEDDING_URL = 'https://user:secret@host.example/v1';
+      process.env.GITNEXUS_EMBEDDING_MODEL = 'test-model';
+      // undici rejects a credential-bearing URL at Request construction, echoing
+      // the full URL (incl. user:secret) verbatim in err.message.
+      vi.stubGlobal(
+        'fetch',
+        vi
+          .fn()
+          .mockRejectedValue(
+            new TypeError(
+              'Request cannot be constructed from a URL that includes credentials: ' +
+                'https://user:secret@host.example/v1/embeddings',
+            ),
+          ),
+      );
+
+      const { embedText } = await import('../../src/core/embeddings/embedder.js');
+      const { isHttpEmbeddingError } = await import('../../src/core/embeddings/http-client.js');
+      const err = await embedText('test').catch((e: unknown) => e);
+      expect(isHttpEmbeddingError(err)).toBe(true);
+      // The secret is gone; the masked host is retained so the message stays useful.
+      expect(String(err)).not.toContain('secret');
+      expect(String(err)).toContain('host.example');
+    });
+
+    it('leaves a non-credential reason unchanged (no over-scrubbing)', async () => {
+      process.env.GITNEXUS_EMBEDDING_URL = 'http://test:8080/v1';
+      process.env.GITNEXUS_EMBEDDING_MODEL = 'test-model';
+      vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new TypeError('fetch failed')));
+
+      const { embedText } = await import('../../src/core/embeddings/embedder.js');
+      const err = await embedText('test').catch((e: unknown) => e);
+      expect(String(err)).toContain('fetch failed');
+    });
+
     it('includes abort signal for timeout', async () => {
       process.env.GITNEXUS_EMBEDDING_URL = 'http://test:8080/v1';
       process.env.GITNEXUS_EMBEDDING_MODEL = 'test-model';

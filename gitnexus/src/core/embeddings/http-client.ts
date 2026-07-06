@@ -85,6 +85,22 @@ export const safeUrl = (url: string): string => {
 };
 
 /**
+ * Strip credentials from an underlying transport error message before it is
+ * surfaced. A credential-bearing endpoint URL (`https://user:secret@host/v1`)
+ * makes undici throw `TypeError: Request cannot be constructed from a URL that
+ * includes credentials: <that full URL>`; interpolating `err.message` verbatim
+ * would re-leak the secret to stderr + logs even though the URL argument is
+ * already masked with {@link safeUrl}. First swap the exact configured `url` for
+ * its masked form, then strip any residual `scheme://userinfo@` the transport may
+ * have echoed in a normalized (non-exact) form. See #2385.
+ */
+const sanitizeReason = (reason: string, url: string): string =>
+  reason
+    .split(url)
+    .join(safeUrl(url))
+    .replace(/([a-z][a-z0-9+.-]*:\/\/)[^/@\s]*@/gi, '$1');
+
+/**
  * Error thrown by this module's HTTP embedding path (`httpEmbedBatch` /
  * `httpEmbed` / `httpEmbedQuery`) for any endpoint failure — a
  * connection/timeout/DNS error, an open circuit, a non-OK status, an
@@ -205,7 +221,7 @@ const httpEmbedBatch = async (
         { cause: err },
       );
     }
-    const reason = err instanceof Error ? err.message : String(err);
+    const reason = sanitizeReason(err instanceof Error ? err.message : String(err), url);
     throw new HttpEmbeddingError(
       `Embedding request failed (${safeUrl(url)}, batch ${batchIndex}): ${reason}`,
       { cause: err },
