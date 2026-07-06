@@ -191,6 +191,38 @@ describe('WAL corruption recovery in doInitLbug (#1402)', () => {
     );
   });
 
+  it('recognizes the Windows Error 2 shadow form and recovers (issue #2382, MCP pool)', async () => {
+    // Same missing-shadow recovery as above, but with the Windows native error
+    // format. Before the fix isMissingShadowSidecarError matched only the POSIX
+    // phrasing, so this string rethrew raw through the MCP/wiki/augmentation
+    // pool the same way it did on serve (R4 — one central matcher, all consumers).
+    const { initLbug } = await import('../../src/core/lbug/pool-adapter.js');
+    const dbPath = '/tmp/test-shadow-missing-win/lbug';
+
+    const readOnlyDb1 = makeMockDb();
+    const readOnlyDb2 = makeMockDb();
+    connectionQueryMock
+      .mockRejectedValueOnce(
+        new Error(
+          `IO exception: Cannot open file. path: ${dbPath}.shadow - Error 2: The system cannot find the file specified.`,
+        ),
+      )
+      .mockResolvedValue({
+        getAll: vi.fn().mockResolvedValue([]),
+        close: vi.fn(),
+      });
+    (createLbugDatabase as any).mockReturnValueOnce(readOnlyDb1).mockReturnValueOnce(readOnlyDb2);
+
+    await initLbug('test-repo-shadow-missing-win', dbPath);
+
+    expect(createLbugDatabase).toHaveBeenCalledTimes(2);
+    expect(readOnlyDb1.close).toHaveBeenCalled();
+    expect(fs.rename).toHaveBeenCalledWith(
+      dbPath + '.wal',
+      expect.stringContaining('.wal.missing-shadow.'),
+    );
+  });
+
   it('does not quarantine on lock error (preserves existing lock retry)', async () => {
     const { initLbug } = await import('../../src/core/lbug/pool-adapter.js');
     const setTimeoutSpy = vi.spyOn(global, 'setTimeout').mockImplementation((callback: any) => {

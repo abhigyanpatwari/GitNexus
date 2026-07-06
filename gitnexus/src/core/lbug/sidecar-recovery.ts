@@ -109,16 +109,38 @@ const warnOnce = (logger: SidecarRecoveryLogger, key: string, message: string): 
 };
 
 // LADYBUGDB-CONTRACT: matches @ladybugdb/core ^0.18.0 native error text.
-// When bumping LadybugDB, re-validate this regex against the new error format
+// When bumping LadybugDB, re-validate this against the new error format
 // — `git grep "LADYBUGDB-CONTRACT"` enumerates every version-coupled spot.
-// Verified by upstream source/changelog diff only — forcing a genuine
-// `.shadow`-missing state via a live crash to trigger this error is not
-// reliably reproducible (a SIGKILL at the exact moment `.shadow` exists on
-// disk still recovers via `.wal.checkpoint` alone), so this matcher does not
-// have live-trigger test coverage.
+//
+// Two native formats reach here for a genuinely-missing shadow sidecar:
+//   POSIX:   `Cannot open file <path>.shadow: No such file or directory`
+//   Windows: `Cannot open file. path: <path>.shadow - Error 2: <system text>`
+// Windows OS text is localized on non-English installs (issue #2382 was filed
+// from a non-English Windows), so we key on the locale-invariant Win32 code
+// (2 = ERROR_FILE_NOT_FOUND), NOT the English phrase. The code is matched only
+// in the reason AFTER the `.shadow` token so a repo *path* containing e.g.
+// `\error 2\` cannot trip it. Deliberate exclusions:
+//   - `Error 3` (ERROR_PATH_NOT_FOUND): the #1811 non-ASCII path-garble
+//     artifact (see lbug-config.ts) where the shadow is PRESENT on disk;
+//     treating it as missing would quarantine a live WAL — data loss.
+//   - `Error 5` / `Error 32` / POSIX `Permission denied`: present-but-locked;
+//     handled as permission/lock classes, must not quarantine.
+// The quarantine path adds a present-shadow disk check as a belt (see
+// refuseLargeWalQuarantine in lbug-adapter.ts).
+//
+// The Windows branch is derived from the issue #2382 reported string, not a
+// self-produced live crash; unit/consumer tests inject that same string, so
+// GREEN TESTS DO NOT PROVE the byte-exact 0.18.0 Windows format — confirm
+// against a real Windows run before closing #2382.
 export const isMissingShadowSidecarError = (err: unknown): boolean => {
   const msg = err instanceof Error ? err.message : String(err);
-  return /Cannot open file .*\.shadow: No such file or directory/i.test(msg);
+  if (!/cannot open file/i.test(msg)) return false;
+  const shadowAt = msg.search(/\.shadow\b/i);
+  if (shadowAt === -1) return false;
+  // Only the reason text from `.shadow` onward decides missing-vs-locked, so a
+  // path-embedded number/phrase before it can't satisfy the discriminator.
+  const reason = msg.slice(shadowAt);
+  return /no such file or directory/i.test(reason) || /\berror\s+2\b/i.test(reason);
 };
 
 // LADYBUGDB-CONTRACT: matches @ladybugdb/core ^0.18.0 native error text.

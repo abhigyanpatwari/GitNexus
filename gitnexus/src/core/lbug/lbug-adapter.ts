@@ -507,15 +507,26 @@ const queryAndDrain = async (targetConn: lbug.Connection, cypher: string): Promi
 const READ_ONLY_SHADOW_REPLAY_PROBE = 'MATCH (n) RETURN n LIMIT 1';
 
 /**
- * Reject the quarantine path when the orphan WAL is too large to safely
- * discard (>TINY_ORPHAN_WAL_BYTES). Mirrors the preflight policy at
- * sidecar-recovery.ts:153-160 ("warn, do not quarantine"). Symmetric across
- * read-only and writable recovery paths (PR #1747 review D2).
+ * Reject the quarantine path when discarding the WAL would be unsafe or wrong:
  *
- * Throws shadowSidecarRecoveryMessage immediately when the WAL is large,
- * preserving the uncheckpointed pages for explicit operator recovery.
- * Returns silently when the WAL is absent, tiny, or in any other state
- * where the existing recovery path is safe to proceed.
+ *   1. The `.shadow` sidecar is actually PRESENT on disk (`wal-with-shadow`).
+ *      A "missing shadow" error alongside a present shadow means the open
+ *      failed on path reachability or a lock — not a genuinely-missing
+ *      shadow. The prime case is the #1811 non-ASCII path-garble on Windows,
+ *      where CreateFileA reports the present shadow as unopenable. Quarantining
+ *      here would delete a live WAL sitting next to its shadow (issue #2382
+ *      review — data-loss guard; the belt to isMissingShadowSidecarError's
+ *      Error-2-only / Error-3-excluded suspenders in sidecar-recovery.ts).
+ *   2. The orphan WAL is too large to safely discard (>TINY_ORPHAN_WAL_BYTES).
+ *
+ * Mirrors the preflight policy at sidecar-recovery.ts ("warn, do not
+ * quarantine"). Symmetric across read-only and writable recovery paths
+ * (PR #1747 review D2).
+ *
+ * Throws shadowSidecarRecoveryMessage in either case, preserving the
+ * uncheckpointed pages for explicit operator recovery. Returns silently only
+ * when the shadow is absent AND the WAL is absent or tiny — the states where
+ * the existing recovery path is safe to proceed.
  */
 const refuseLargeWalQuarantine = async (
   dbPath: string,
@@ -523,6 +534,14 @@ const refuseLargeWalQuarantine = async (
   triggeringErr: unknown,
 ): Promise<void> => {
   const state = await inspectLbugSidecars(dbPath);
+  if (state.kind === 'wal-with-shadow') {
+    logger.warn(
+      `GitNexus: refusing to quarantine WAL at ${dbPath}.wal during ${mode} recovery — ` +
+        'the .shadow sidecar is present on disk, so the open likely failed on path reachability or a lock ' +
+        'rather than a missing shadow. Run `gitnexus analyze --force <repo-path> --index-only` if the index is genuinely broken.',
+    );
+    throw new Error(shadowSidecarRecoveryMessage(dbPath, triggeringErr));
+  }
   if (state.kind === 'orphan-wal') {
     logger.warn(
       `GitNexus: refusing to quarantine large WAL (${state.walBytes} bytes) at ${dbPath}.wal during ${mode} recovery; ` +
