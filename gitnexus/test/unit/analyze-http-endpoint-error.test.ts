@@ -237,7 +237,7 @@ describe('analyzeCommand custom HTTP endpoint error handling (#2385)', () => {
 
   it('does not capture unrelated HTTP-mode errors in the endpoint branch (R5)', async () => {
     isHttpModeMock.mockReturnValue(true);
-    runFullAnalysisMock.mockRejectedValue(new Error('Kuzu write failed'));
+    runFullAnalysisMock.mockRejectedValue(new Error('LadybugDB write failed'));
 
     const { _captureLogger } = await import('../../src/core/logger.js');
     const cap = _captureLogger();
