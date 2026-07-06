@@ -271,8 +271,13 @@ export interface RepoMeta {
  * URL-only id). The incremental writeback preserves unchanged-file rows, so a
  * top-up against a pre-v5 index would strand old url-keyed Route nodes alongside
  * new composite-keyed ones — force a full re-analyze instead.
+ * v6: line-number storage flipped to uniform 0-based for the last 1-based
+ * GraphNode emitters — COBOL/JCL/markdown/scope (#2377/#2379/#2380). Incremental
+ * writeback preserves unchanged-file rows, so a top-up against a pre-v6 index
+ * would MIX old 1-based rows with new 0-based ones — and the 1-based MCP display
+ * would render the stale rows one line too high — so force a full re-analyze.
  */
-export const INCREMENTAL_SCHEMA_VERSION = 5;
+export const INCREMENTAL_SCHEMA_VERSION = 6;
 
 export interface IndexedRepo {
   repoPath: string;

@@ -91,8 +91,10 @@ export function splitCalleeIds(raw: unknown): string[] {
  * Contract version of the mode:'pdg' impact result shape. A stable discriminator
  * for external MCP/agent consumers — distinct from the DB INCREMENTAL_SCHEMA_VERSION.
  * Bump on any breaking change to the PDG result fields.
+ * v2: `startLine` in the result is now 1-based display (#2380), matching the
+ * context/query/impact tools (was 0-based).
  */
-export const PDG_RESULT_VERSION = 1 as const;
+export const PDG_RESULT_VERSION = 2 as const;
 
 /** A reachable dependence block resolved to its source statement. */
 export interface PdgStatement {
@@ -583,7 +585,7 @@ export interface PdgInterproceduralImpact {
 export interface PdgImpactBaseResult extends PdgImpactParityFields {
   mode: 'pdg';
   /** Contract version of the mode:'pdg' impact result shape; bump on any breaking change to the PDG result fields. */
-  pdgResultVersion: 1;
+  pdgResultVersion: 2;
   target: PdgImpactTarget;
   direction: 'upstream' | 'downstream';
   impactedCount: number;
@@ -656,7 +658,7 @@ export interface PdgImpactDegradedResult extends PdgImpactBaseResult {
 export interface PdgImpactErrorResult {
   mode?: 'pdg';
   /** Contract version of the mode:'pdg' impact result shape; bump on any breaking change to the PDG result fields. */
-  pdgResultVersion: 1;
+  pdgResultVersion: 2;
   error: string;
   target: PdgImpactTarget;
   direction: 'upstream' | 'downstream';
