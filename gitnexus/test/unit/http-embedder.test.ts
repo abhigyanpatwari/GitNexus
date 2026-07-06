@@ -246,6 +246,42 @@ describe('HTTP embedding backend', () => {
       expect(String(err)).not.toMatch(/huggingface/i);
     });
 
+    // A reachable-but-wrong endpoint can answer 200 with a well-formed outer array
+    // whose items are malformed. The outer Array.isArray(data.data) guard passes;
+    // without per-item validation these crash at new Float32Array(item.embedding)
+    // (batch) / items[0].embedding (query) with a raw TypeError that escapes the
+    // typed boundary — the exact #2385 stack-dump class. (#2385)
+    it.each([
+      { label: 'a null item', body: { data: [null] } },
+      { label: 'an item with no embedding', body: { data: [{}] } },
+      { label: 'an item whose embedding is not an array', body: { data: [{ embedding: 'nope' }] } },
+    ])('types a malformed response item ($label) on the batch path', async ({ body }) => {
+      process.env.GITNEXUS_EMBEDDING_URL = 'http://test:8080/v1';
+      process.env.GITNEXUS_EMBEDDING_MODEL = 'test-model';
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, json: async () => body }));
+
+      const { embedText } = await import('../../src/core/embeddings/embedder.js');
+      const { isHttpEmbeddingError } = await import('../../src/core/embeddings/http-client.js');
+      const err = await embedText('test').catch((e: unknown) => e);
+      expect(isHttpEmbeddingError(err)).toBe(true);
+      expect(String(err)).toContain('unexpected response shape');
+    });
+
+    it('types a null item on the query path (httpEmbedQuery, #2385)', async () => {
+      process.env.GITNEXUS_EMBEDDING_URL = 'http://test:8080/v1';
+      process.env.GITNEXUS_EMBEDDING_MODEL = 'test-model';
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockResolvedValue({ ok: true, json: async () => ({ data: [null] }) }),
+      );
+
+      const { httpEmbedQuery, isHttpEmbeddingError } =
+        await import('../../src/core/embeddings/http-client.js');
+      const err = await httpEmbedQuery('test').catch((e: unknown) => e);
+      expect(isHttpEmbeddingError(err)).toBe(true);
+      expect(String(err)).toContain('unexpected response shape');
+    });
+
     it('excludes API key from error messages', async () => {
       process.env.GITNEXUS_EMBEDDING_URL = 'http://test:8080/v1';
       process.env.GITNEXUS_EMBEDDING_MODEL = 'test-model';

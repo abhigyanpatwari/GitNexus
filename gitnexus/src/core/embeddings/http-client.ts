@@ -124,6 +124,19 @@ interface EmbeddingItem {
 }
 
 /**
+ * Runtime guard for a single response item. The `Array.isArray(data.data)` shape
+ * check only validates the outer array — a 200 body like `{"data":[null]}` passes
+ * it, then crashes at `new Float32Array(item.embedding)` (`httpEmbed`) or
+ * `items[0].embedding` (`httpEmbedQuery`) with a raw `TypeError` that escapes the
+ * typed boundary, landing on the CLI's generic stack-dump path — the exact class
+ * #2385 closes. Validate each item so every wrong-shape body stays classifiable.
+ */
+const isEmbeddingItem = (item: unknown): item is EmbeddingItem =>
+  typeof item === 'object' &&
+  item !== null &&
+  Array.isArray((item as { embedding?: unknown }).embedding);
+
+/**
  * Send a single batch of texts to the embedding endpoint with retry.
  *
  * @param url - Full endpoint URL (e.g. https://host/v1/embeddings)
@@ -220,7 +233,7 @@ const httpEmbedBatch = async (
       { cause: err },
     );
   }
-  if (!Array.isArray(data?.data)) {
+  if (!Array.isArray(data?.data) || !data.data.every(isEmbeddingItem)) {
     throw new HttpEmbeddingError(
       `Embedding endpoint returned an unexpected response shape (${safeUrl(url)}, batch ${batchIndex})`,
     );
