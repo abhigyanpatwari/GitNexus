@@ -10,9 +10,9 @@ import { normalizeExtractedRoutePath } from '../../../ingestion/route-extractors
 import {
   extractPythonModuleConstants,
   parseConstOperands,
-  resolveConstant,
   resolveOperands,
   type ModuleConstants,
+  type Operand,
 } from '../../../ingestion/route-extractors/python-const-resolver.js';
 import type { HttpDetection, HttpLanguagePlugin, RepoContext } from './types.js';
 
@@ -1169,10 +1169,15 @@ export const PYTHON_HTTP_PLUGIN: HttpLanguagePlugin = {
     const resolveExprArg = (argNode: Parser.SyntaxNode): string | null => {
       const cbf = ctx?.constantsByFile;
       if (!cbf || !fileRel) return null;
-      // A bare constant name resolves through the by-name entry point; a
-      // `+`-concatenation parses to an operand list first.
-      if (argNode.type === 'identifier') return resolveConstant(fileRel, argNode.text, cbf);
-      const operands = parseConstOperands(argNode);
+      // Build an operand list and fold via `resolveOperands` — the SAME entry the
+      // ingestion side uses (parse-impl folds `routePathOperands`). Using the
+      // by-name `resolveConstant` here would enter `foldName` one depth shallower,
+      // so at the MAX_RESOLVE_DEPTH boundary the group would resolve a chain
+      // ingestion drops, breaking R4 parity (#2393).
+      const operands: Operand[] | null =
+        argNode.type === 'identifier'
+          ? [{ kind: 'ref', name: argNode.text }]
+          : parseConstOperands(argNode);
       return operands ? resolveOperands(fileRel, operands, cbf) : null;
     };
     const emitAppProvider = (httpMethod: string, pathVal: string, line: number): void => {

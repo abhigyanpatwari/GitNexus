@@ -97,6 +97,19 @@ describe('constant-resolver — language-agnostic core', () => {
     );
   });
 
+  it('by-name and operand-list entry differ at the depth boundary (#2393 parity)', () => {
+    // A hop chain that lands exactly at MAX_RESOLVE_DEPTH for the operand-list
+    // entry (one depth deeper than the by-name entry). This is why the group side
+    // must fold identifier args via resolveOperands([ref]) — the SAME entry the
+    // ingestion side uses — not resolveConstant, which would resolve here and
+    // break ingestion↔group parity at the boundary.
+    const exprs: Record<string, Operand[]> = {};
+    for (let i = 0; i < 4; i++) exprs[`A${i}`] = [ref(`A${i + 1}`)];
+    const repo: RepoConstants = new Map([['m', mc({ exprs, literals: { A4: '/end' } })]]);
+    expect(resolveOperands('m', [ref('A0')], repo, javaImport)).toBeNull();
+    expect(resolveConstant('m', 'A0', repo, javaImport)).toBe('/end');
+  });
+
   it('drops a pathological self-multiplying concat instead of exhausting memory (#2393)', () => {
     // Each level references the next 64×, so the true value is 64^4 chars — folding
     // it naively blows the heap (RangeError/OOM). The fold-length cap must floor it
