@@ -34,7 +34,17 @@ if (missing.length > 0) {
 // Windows runner is ~5x slower than macOS/Linux on this spawn-heavy suite (~50
 // CLI/worker process spawns), so a single shard was creeping past the watchdog
 // below; sharding keeps each runner well under it (see ci-tests.yml matrix).
-const shardArg = parseShardArg(process.argv.slice(2));
+// Fail loud on a malformed --shard arg (mirrors the missing-files check above):
+// a silently-dropped shard flag would run the full unsharded suite and re-trip
+// the watchdog. Kept outside the execFileSync try/catch below so the message
+// isn't swallowed by that catch's watchdog-only branch.
+let shardArg: string | undefined;
+try {
+  shardArg = parseShardArg(process.argv.slice(2));
+} catch (err) {
+  console.error(err instanceof Error ? err.message : String(err));
+  process.exit(1);
+}
 
 // Per-shard watchdog, 15 min. Sharding splits the file list by COUNT, not
 // runtime, so the heaviest spawn suites can cluster on one shard — what this

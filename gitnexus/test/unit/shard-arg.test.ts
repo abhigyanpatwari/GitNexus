@@ -18,4 +18,20 @@ describe('parseShardArg', () => {
   it('finds the --shard token amid other args', () => {
     expect(parseShardArg(['--reporter=dot', '--shard=2/2', '--bail'])).toBe('--shard=2/2');
   });
+
+  it('throws on a malformed --shard arg (missing /total)', () => {
+    expect(() => parseShardArg(['--shard=1'])).toThrow(/Malformed --shard/);
+  });
+
+  it('throws on a bare --shard with no value', () => {
+    expect(() => parseShardArg(['--shard'])).toThrow(/Malformed --shard/);
+  });
+
+  it('throws on a non-numeric --shard value', () => {
+    expect(() => parseShardArg(['--shard=abc'])).toThrow(/Malformed --shard/);
+  });
+
+  it('ignores flags that merely start with --shard (e.g. --shardx=)', () => {
+    expect(parseShardArg(['--shardx=1/2'])).toBeUndefined();
+  });
 });
