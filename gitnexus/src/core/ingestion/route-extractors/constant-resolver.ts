@@ -28,6 +28,13 @@
  * one; overrun floors to `null` (skip), never a wrong value. */
 const MAX_RESOLVE_DEPTH = 8;
 
+/** Max length of a folded path. Real route paths are well under this; a fold that
+ * exceeds it is a pathological self-multiplying concat (`X = A + A; A = B + B; …`)
+ * whose true value is genuinely huge — building it risks a `RangeError`/heap OOM,
+ * so we floor to `null` (skip) instead (#2393). The depth cap bounds recursion but
+ * NOT output size, which grows multiplicatively; this bounds the output. */
+const MAX_FOLD_LENGTH = 8192;
+
 /**
  * One term of a constant's right-hand side. A `+`-concatenation
  * (`A + "/b" + C`) becomes an ordered `Operand[]`; a bare literal is a
@@ -84,6 +91,7 @@ interface ResolveState {
   readonly repoKeys: ReadonlySet<string>;
   readonly resolveImport: ImportResolver;
   readonly visited: Set<string>;
+  readonly memo: Map<string, string>;
 }
 
 /**
@@ -101,11 +109,12 @@ function foldExpr(
   for (const op of operands) {
     if (op.kind === 'literal') {
       out += op.value;
-      continue;
+    } else {
+      const resolved = foldName(fileKey, op.name, state, depth + 1);
+      if (resolved === null) return null;
+      out += resolved;
     }
-    const resolved = foldName(fileKey, op.name, state, depth + 1);
-    if (resolved === null) return null;
-    out += resolved;
+    if (out.length > MAX_FOLD_LENGTH) return null; // pathological self-multiplying concat → drop
   }
   return out;
 }
@@ -118,39 +127,62 @@ function foldName(
 ): string | null {
   if (depth > MAX_RESOLVE_DEPTH) return null;
   const guard = `${fileKey}::${name}`;
-  // `visited` is the ACTIVE resolution stack, not a seen-ever set: a name is a
-  // cycle only while it is still being resolved on the current stack (#2393). We
-  // pop it in `finally` so a name reached twice in one fold (`A + A`, or a
-  // diamond `X = P + Q` where P and Q share a base) folds instead of being
-  // mis-flagged as a cycle and dropped. Re-computation is bounded by
-  // MAX_RESOLVE_DEPTH (≤ 2^8 folds), so no blowup is reintroduced.
-  if (state.visited.has(guard)) return null; // cycle
+  // Memoize successful folds. `visited` (below) is the ACTIVE resolution stack
+  // for cycle detection — popped on unwind so `A + A` / diamonds fold instead of
+  // false-cycling (#2393) — but popping it alone reintroduces recomputation: a
+  // wide shared-descendant DAG re-folds each child once per reference, O(fanout^depth),
+  // which can exhaust the heap. The never-popped `memo` caps that at O(nodes): a
+  // name resolved on one branch is returned directly on the next. Only SUCCESSES
+  // are cached — a `null` may be transient (a name that is a cycle on the current
+  // branch can resolve on another), so caching it would be unsound.
+  const memoized = state.memo.get(guard);
+  if (memoized !== undefined) return memoized;
+  if (state.visited.has(guard)) return null; // cycle: `name` is on the active stack
   state.visited.add(guard);
   try {
-    const mc = state.repo.get(fileKey);
-    if (!mc) return null;
-
-    const literal = mc.literals.get(name);
-    if (literal !== undefined) return literal;
-
-    const expr = mc.exprs.get(name);
-    if (expr !== undefined) return foldExpr(fileKey, expr, state, depth + 1);
-
-    const imp = mc.imports.get(name);
-    if (imp !== undefined) {
-      const targetKey = state.resolveImport(fileKey, imp.module, state.repoKeys);
-      if (targetKey === null) return null;
-      return foldName(targetKey, imp.originalName, state, depth + 1);
-    }
-
-    return null;
+    const result = computeFold(fileKey, name, state, depth);
+    if (result !== null) state.memo.set(guard, result);
+    return result;
   } finally {
     state.visited.delete(guard);
   }
 }
 
+/** The literal/expr/import resolution for one name. Cycle guard + memo live in
+ * {@link foldName}; this is the pure lookup body. */
+function computeFold(
+  fileKey: string,
+  name: string,
+  state: ResolveState,
+  depth: number,
+): string | null {
+  const mc = state.repo.get(fileKey);
+  if (!mc) return null;
+
+  const literal = mc.literals.get(name);
+  if (literal !== undefined) return literal;
+
+  const expr = mc.exprs.get(name);
+  if (expr !== undefined) return foldExpr(fileKey, expr, state, depth + 1);
+
+  const imp = mc.imports.get(name);
+  if (imp !== undefined) {
+    const targetKey = state.resolveImport(fileKey, imp.module, state.repoKeys);
+    if (targetKey === null) return null;
+    return foldName(targetKey, imp.originalName, state, depth + 1);
+  }
+
+  return null;
+}
+
 function newState(repo: RepoConstants, resolveImport: ImportResolver): ResolveState {
-  return { repo, repoKeys: new Set(repo.keys()), resolveImport, visited: new Set() };
+  return {
+    repo,
+    repoKeys: new Set(repo.keys()),
+    resolveImport,
+    visited: new Set(),
+    memo: new Map(),
+  };
 }
 
 /**

@@ -97,6 +97,17 @@ describe('constant-resolver — language-agnostic core', () => {
     );
   });
 
+  it('drops a pathological self-multiplying concat instead of exhausting memory (#2393)', () => {
+    // Each level references the next 64×, so the true value is 64^4 chars — folding
+    // it naively blows the heap (RangeError/OOM). The fold-length cap must floor it
+    // to null (drop). This resolves ~instantly; without the cap it OOMs.
+    const W = 64;
+    const exprs: Record<string, Operand[]> = {};
+    for (let i = 0; i < 4; i++) exprs[`L${i}`] = Array.from({ length: W }, () => ref(`L${i + 1}`));
+    const repo: RepoConstants = new Map([['m', mc({ exprs, literals: { L4: '/leaf' } })]]);
+    expect(resolveConstant('m', 'L0', repo, javaImport)).toBeNull();
+  });
+
   it('folds a diamond where two operands share a common base (#2393)', () => {
     const repo: RepoConstants = new Map([
       [
