@@ -14,6 +14,7 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { ALL_CROSS_PLATFORM } from './cross-platform-tests.js';
+import { parseShardArg } from './shard-arg.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..');
@@ -33,7 +34,7 @@ if (missing.length > 0) {
 // Windows runner is ~5x slower than macOS/Linux on this spawn-heavy suite (~50
 // CLI/worker process spawns), so a single shard was creeping past the watchdog
 // below; sharding keeps each runner well under it (see ci-tests.yml matrix).
-const shardArg = process.argv.slice(2).find((a) => /^--shard=\d+\/\d+$/.test(a));
+const shardArg = parseShardArg(process.argv.slice(2));
 
 // Per-shard watchdog, 15 min. Sharding splits the file list by COUNT, not
 // runtime, so the heaviest spawn suites can cluster on one shard — what this
