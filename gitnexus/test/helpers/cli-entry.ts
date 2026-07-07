@@ -64,7 +64,7 @@ export function computeSpawnPrefix(opts: {
   return ['--import', opts.tsxLoaderUrl, opts.srcEntry];
 }
 
-function tsxLoaderUrl(): string {
+export function tsxLoaderUrl(): string {
   // Absolute file:// URL to the tsx loader — a bare `tsx` specifier won't resolve
   // when the CLI is spawned with a cwd outside the project tree. The subpath
   // `tsx/dist/loader.mjs` isn't in tsx's `exports`, so resolve the package root
