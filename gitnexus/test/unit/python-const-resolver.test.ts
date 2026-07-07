@@ -267,3 +267,45 @@ describe('extractPythonModuleConstants', () => {
     expect(cloned.imports.get('Y')).toEqual({ module: '.c', originalName: 'Y' });
   });
 });
+
+describe('extractPythonModuleConstants — binding mutual-exclusivity (#2393)', () => {
+  it('drops an imported name that is then rebound to a dynamic value (never the stale import)', () => {
+    // Python: ROUTE's live value is the getenv result → unknowable → must DROP,
+    // not resolve to the stale import (the skip-floor / wrong-path invariant).
+    const mcs = extract('from .constants import ROUTE\nROUTE = os.getenv("X")\n');
+    expect(mcs.imports.has('ROUTE')).toBe(false);
+    expect(mcs.literals.has('ROUTE')).toBe(false);
+    expect(mcs.exprs.has('ROUTE')).toBe(false);
+    const r = repoFrom({
+      'app/constants.py': 'ROUTE = "/imported"\n',
+      'app/routes.py': 'from .constants import ROUTE\nROUTE = os.getenv("X")\n',
+    });
+    expect(resolveConstant('app/routes.py', 'ROUTE', r)).toBeNull();
+  });
+
+  it('uses the local literal when a later assignment shadows an import', () => {
+    const r = repoFrom({
+      'app/constants.py': 'ROUTE = "/imported"\n',
+      'app/routes.py': 'from .constants import ROUTE\nROUTE = "/local"\n',
+    });
+    expect(resolveConstant('app/routes.py', 'ROUTE', r)).toBe('/local');
+  });
+
+  it('uses the import when it shadows an earlier local assignment (source order)', () => {
+    const r = repoFrom({
+      'app/constants.py': 'ROUTE = "/imported"\n',
+      'app/routes.py': 'ROUTE = "/local"\nfrom .constants import ROUTE\n',
+    });
+    expect(resolveConstant('app/routes.py', 'ROUTE', r)).toBe('/imported');
+  });
+
+  it('drops (never stale-import) an augmented assignment onto an imported base', () => {
+    // Deferred: folding `imported_base + "/v1"` would need currentOps to follow
+    // the import binding. Until then the skip floor drops it — never the stale "/api".
+    const r = repoFrom({
+      'app/constants.py': 'BASE = "/api"\n',
+      'app/routes.py': 'from .constants import BASE\nBASE += "/v1"\n',
+    });
+    expect(resolveConstant('app/routes.py', 'BASE', r)).toBeNull();
+  });
+});

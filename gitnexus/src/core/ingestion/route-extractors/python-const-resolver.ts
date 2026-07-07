@@ -161,14 +161,33 @@ export function extractPythonModuleConstants(tree: Parser.Tree): ModuleConstants
   const exprs = new Map<string, readonly Operand[]>();
   const imports = new Map<string, { module: string; originalName: string }>();
 
+  // The three maps are ONE logical namespace keyed by local name: a write to any
+  // one clears the other two, so last-binding-in-source-order wins (matches
+  // Python) and a name never carries a stale binding from a different map (#2391,
+  // #2393). Without this, `from .c import X; X = <dynamic>` would keep the stale
+  // import and resolve a confidently WRONG path instead of dropping.
+
   // Apply an assignment result, honoring last-wins: clear any prior binding for
-  // `name`, then set the new one (a `null` rep leaves it cleared = unresolvable).
+  // `name` (including a shadowed import), then set the new one (a `null` rep
+  // leaves it cleared = unresolvable).
   const setName = (name: string, ops: Operand[] | null): void => {
     literals.delete(name);
     exprs.delete(name);
+    imports.delete(name);
     if (ops === null) return;
     if (ops.length === 1 && ops[0].kind === 'literal') literals.set(name, ops[0].value);
     else exprs.set(name, ops);
+  };
+
+  // Bind an import for `localName`, clearing any prior local literal/expr of the
+  // same name (an import shadows an earlier assignment, and vice versa).
+  const bindImport = (
+    localName: string,
+    binding: { module: string; originalName: string },
+  ): void => {
+    literals.delete(localName);
+    exprs.delete(localName);
+    imports.set(localName, binding);
   };
 
   const currentOps = (name: string): Operand[] | null => {
@@ -186,12 +205,12 @@ export function extractPythonModuleConstants(tree: Parser.Tree): ModuleConstants
       const child = node.namedChild(i);
       if (!child || child.id === moduleNode?.id) continue;
       if (child.type === 'dotted_name') {
-        imports.set(child.text, { module: moduleSpec, originalName: child.text });
+        bindImport(child.text, { module: moduleSpec, originalName: child.text });
       } else if (child.type === 'aliased_import') {
         const nameNode = child.childForFieldName('name');
         const aliasNode = child.childForFieldName('alias');
         if (nameNode && aliasNode) {
-          imports.set(aliasNode.text, { module: moduleSpec, originalName: nameNode.text });
+          bindImport(aliasNode.text, { module: moduleSpec, originalName: nameNode.text });
         }
       }
     }
