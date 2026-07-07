@@ -1,6 +1,6 @@
 /**
  * Unit tests for the PURE half of the Python constant resolver (#2391):
- * {@link resolveConstant} / {@link resolveOperands} / {@link resolveImportToFileKey}.
+ * {@link resolveConstant} / {@link resolveOperands} / {@link resolvePythonImport}.
  *
  * These operate on a hand-built {@link RepoConstants} map, so no tree-sitter is
  * involved — the tree → ModuleConstants extraction is covered separately in the
@@ -16,7 +16,7 @@ import Python from 'tree-sitter-python';
 import {
   resolveConstant,
   resolveOperands,
-  resolveImportToFileKey,
+  resolvePythonImport,
   extractPythonModuleConstants,
   type ModuleConstants,
   type Operand,
@@ -177,27 +177,27 @@ describe('resolveConstant — unresolvable → null', () => {
   });
 });
 
-describe('resolveImportToFileKey', () => {
+describe('resolvePythonImport', () => {
   const keys = new Set(['a/constants.py', 'b/constants.py', 'app/pkg/mod.py', 'app/routes.py']);
 
   it('resolves a relative import against the importing file package', () => {
-    expect(resolveImportToFileKey('a/routes.py', '.constants', keys)).toBe('a/constants.py');
+    expect(resolvePythonImport('a/routes.py', '.constants', keys)).toBe('a/constants.py');
   });
 
   it('walks up one level per extra leading dot', () => {
-    expect(resolveImportToFileKey('app/pkg/routes.py', '..routes', keys)).toBe('app/routes.py');
+    expect(resolvePythonImport('app/pkg/routes.py', '..routes', keys)).toBe('app/routes.py');
   });
 
   it('returns null for an ambiguous absolute suffix', () => {
-    expect(resolveImportToFileKey('a/routes.py', 'constants', keys)).toBeNull();
+    expect(resolvePythonImport('a/routes.py', 'constants', keys)).toBeNull();
   });
 
   it('resolves an unambiguous absolute multi-segment import', () => {
-    expect(resolveImportToFileKey('a/routes.py', 'app.pkg.mod', keys)).toBe('app/pkg/mod.py');
+    expect(resolvePythonImport('a/routes.py', 'app.pkg.mod', keys)).toBe('app/pkg/mod.py');
   });
 
   it('returns null when the target file does not exist', () => {
-    expect(resolveImportToFileKey('a/routes.py', '.missing', keys)).toBeNull();
+    expect(resolvePythonImport('a/routes.py', '.missing', keys)).toBeNull();
   });
 });
 

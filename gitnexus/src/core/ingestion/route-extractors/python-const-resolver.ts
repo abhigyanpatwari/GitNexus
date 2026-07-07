@@ -1,36 +1,14 @@
 /**
- * Python module-level string-constant resolver (#2391).
+ * Python binding for the language-agnostic constant resolver (#2391).
  *
- * FastAPI route decorators frequently build their path from a constant rather
- * than a string literal:
- *
- *   # constants.py
- *   API_V1 = "/api/v1"
- *   API_V1_WIDGETS = API_V1 + "/widgets"
- *   API_V1_WIDGETS_GET = API_V1_WIDGETS + "/get"
- *
- *   # routes.py
- *   from .constants import API_V1_WIDGETS_GET
- *   @router.post(API_V1_WIDGETS_GET)          # -> POST /api/v1/widgets/get
- *
- * Without folding these constants the route path is empty and the route is
- * indexed as `POST /` (or dropped entirely on the group-contract side). This
- * module folds such constants to their literal value, following `+`
- * concatenation and import chains across module files.
- *
- * Two halves live here:
- *   • the PURE resolver ({@link resolveConstant} / {@link resolveExpr}) that
- *     folds an already-extracted repo map — no tree-sitter dependency, unit
- *     testable directly; and
- *   • {@link extractPythonModuleConstants}, which walks a parsed tree into the
- *     {@link ModuleConstants} shape the resolver consumes (added in U2).
- *
- * Why a new module and not `core/scope-resolution` (`ScopeResolver`) or the
- * group's `buildLocalStringMap`: the scope-resolution machinery resolves symbol
- * IDENTITIES (call / inheritance edges), not literal string VALUES;
- * `buildLocalStringMap` folds a single same-file string literal into one local
- * variable (no `+`, no imports). Neither can produce a transitive cross-module
- * string value, so this is a genuinely new concern, not a re-implementation.
+ * Supplies the two Python-specific pieces the shared fold in
+ * `constant-resolver.ts` needs — {@link resolvePythonImport} (import-specifier →
+ * file, honoring leading-dot relative imports and `.py` module files) and
+ * {@link extractPythonModuleConstants} (tree → {@link ModuleConstants}) — plus
+ * pre-bound {@link resolveConstant}/{@link resolveOperands} wrappers so Python
+ * callers stay language-oblivious. The reusable fold, the cycle guard, and the
+ * depth cap all live in the agnostic core; a JVM/other language binding reuses
+ * that core with its own `ImportResolver` + extractor.
  *
  * Keying (KTD4): the repo map is keyed by unique POSIX file path, NOT the
  * dot-stripped module basename. `from .constants import X`,
@@ -45,47 +23,23 @@
 
 import { extractStringContent, type SyntaxNode } from '../utils/ast-helpers.js';
 import type Parser from 'tree-sitter';
+import {
+  resolveConstant as foldConstant,
+  resolveOperands as foldOperands,
+  type ImportResolver,
+  type ModuleConstants,
+  type Operand,
+  type RepoConstants,
+} from './constant-resolver.js';
 
-/** Depth ceiling for the import/constant chase. Mirrors `django.ts`'s
- * `MAX_INCLUDE_DEPTH` — a heuristic bound, not a proven one; overrun floors to
- * `null` (skip), never a wrong path. */
-const MAX_RESOLVE_DEPTH = 8;
-
-/**
- * One term of a constant's right-hand side. A `+`-concatenation
- * (`A + "/b" + C`) becomes an ordered `Operand[]`; a bare literal is a
- * single-element list.
- */
-export type Operand =
-  | { readonly kind: 'literal'; readonly value: string }
-  | { readonly kind: 'ref'; readonly name: string };
-
-/**
- * A `from <module> import <name> [as <local>]` binding. `module` keeps its
- * leading dots verbatim (`.constants`, `..pkg.constants`, `api.constants`) so
- * the resolver can distinguish relative from absolute imports; `originalName`
- * is the exported name in the target module (pre-alias).
- */
-export interface ImportBinding {
-  readonly module: string;
-  readonly originalName: string;
-}
-
-/**
- * String-valued module-level constants of one Python file. `literals` are
- * fully-resolved (`X = "/a"`); `exprs` are unresolved operand lists
- * (`X = A + "/b"`); `imports` maps a local name to the module it was imported
- * from. All string keys are the in-file (local) names.
- */
-export interface ModuleConstants {
-  readonly literals: Map<string, string>;
-  readonly exprs: Map<string, readonly Operand[]>;
-  readonly imports: Map<string, ImportBinding>;
-}
-
-/** Repo-wide map: unique POSIX file path (e.g. `app/constants.py`) →
- * that file's {@link ModuleConstants}. */
-export type RepoConstants = ReadonlyMap<string, ModuleConstants>;
+// Re-export the agnostic types so existing Python callers keep a single import
+// site (`import { …, type ModuleConstants } from './python-const-resolver.js'`).
+export type {
+  ImportBinding,
+  ModuleConstants,
+  Operand,
+  RepoConstants,
+} from './constant-resolver.js';
 
 function dirOf(fileKey: string): string {
   const slash = fileKey.lastIndexOf('/');
@@ -107,20 +61,9 @@ function normalizePosix(path: string): string {
   return out.join('/');
 }
 
-// ponytail: the fold core ({@link resolveExpr}/{@link resolveConstant}) is
-// language-agnostic — it walks an Operand[] + a file→ModuleConstants map. Only
-// this function and {@link extractPythonModuleConstants} encode PYTHON import
-// semantics (leading-dot relative imports, `.py` module files). Java/Kotlin/C#
-// route path constants (`@GetMapping(PathConstants.X)`, `@RequestMapping(PREFIX)`)
-// are the SAME problem and are currently literal-only (see http-patterns/java.ts,
-// kotlin.ts). When a second language needs this, generalize by parameterizing the
-// fold with a pluggable `(importingFileKey, moduleSpec) → fileKey` resolver plus a
-// per-language `extractModuleConstants` — the language-agnostic-primitive shape
-// used by route-path.ts / spring-shared.ts. Not done now (YAGNI: Python is the only
-// consumer, #2391), but this is the seam.
 /**
- * Resolve an import's module specifier to the unique file key it refers to, or
- * `null` when it cannot be pinned to exactly one file (KTD4).
+ * The Python {@link ImportResolver}: map an import specifier to the unique file
+ * key it refers to, or `null` when it cannot be pinned to exactly one file (KTD4).
  *
  * Relative imports (`.constants`, `..pkg.mod`) resolve against the importing
  * file's directory — one level up per leading dot beyond the first — and must
@@ -128,11 +71,7 @@ function normalizePosix(path: string): string {
  * matched by unique path suffix; a suffix shared by 2+ files is ambiguous and
  * returns `null` rather than an arbitrary winner.
  */
-export function resolveImportToFileKey(
-  importingFileKey: string,
-  moduleSpec: string,
-  repoKeys: ReadonlySet<string>,
-): string | null {
+export const resolvePythonImport: ImportResolver = (importingFileKey, moduleSpec, repoKeys) => {
   const dots = moduleSpec.length - moduleSpec.replace(/^\.+/, '').length;
   const bare = moduleSpec.slice(dots);
   const modPath = bare.replace(/\./g, '/');
@@ -156,97 +95,31 @@ export function resolveImportToFileKey(
     }
   }
   return hit;
-}
-
-interface ResolveState {
-  readonly repo: RepoConstants;
-  readonly repoKeys: ReadonlySet<string>;
-  readonly visited: Set<string>;
-}
+};
 
 /**
- * Fold an operand list to its concatenated literal, or `null` if any operand is
- * unresolvable (an unknown name, a non-string term, a cycle, or a depth
- * overrun). Shared by {@link resolveConstant} and by an inline `binary_operator`
- * decorator argument (U3 hands its operands straight here).
- */
-export function resolveExpr(
-  fileKey: string,
-  operands: readonly Operand[],
-  state: ResolveState,
-  depth: number,
-): string | null {
-  if (depth > MAX_RESOLVE_DEPTH) return null;
-  let out = '';
-  for (const op of operands) {
-    if (op.kind === 'literal') {
-      out += op.value;
-      continue;
-    }
-    const resolved = resolveName(fileKey, op.name, state, depth + 1);
-    if (resolved === null) return null;
-    out += resolved;
-  }
-  return out;
-}
-
-function resolveName(
-  fileKey: string,
-  name: string,
-  state: ResolveState,
-  depth: number,
-): string | null {
-  if (depth > MAX_RESOLVE_DEPTH) return null;
-  const guard = `${fileKey}::${name}`;
-  if (state.visited.has(guard)) return null; // cycle
-  state.visited.add(guard);
-
-  const mc = state.repo.get(fileKey);
-  if (!mc) return null;
-
-  const literal = mc.literals.get(name);
-  if (literal !== undefined) return literal;
-
-  const expr = mc.exprs.get(name);
-  if (expr !== undefined) return resolveExpr(fileKey, expr, state, depth + 1);
-
-  const imp = mc.imports.get(name);
-  if (imp !== undefined) {
-    const targetKey = resolveImportToFileKey(fileKey, imp.module, state.repoKeys);
-    if (targetKey === null) return null;
-    return resolveName(targetKey, imp.originalName, state, depth + 1);
-  }
-
-  return null;
-}
-
-/**
- * Resolve a single named constant referenced in `fileKey` to its literal string
- * value, folding `+` concatenation and following import chains, or `null` when
- * it cannot be fully folded. Each call uses a fresh cycle-guard.
+ * Resolve a single named Python constant referenced in `fileKey` to its literal
+ * value, or `null`. Python-bound wrapper over the agnostic fold.
  */
 export function resolveConstant(fileKey: string, name: string, repo: RepoConstants): string | null {
-  const state: ResolveState = { repo, repoKeys: new Set(repo.keys()), visited: new Set() };
-  return resolveName(fileKey, name, state, 0);
+  return foldConstant(fileKey, name, repo, resolvePythonImport);
 }
 
 /**
- * Resolve an inline operand list (an unnamed `+`-expression captured directly at
- * a decorator arg, e.g. `@router.get(API_V1 + "/widgets")`) against `fileKey`.
+ * Resolve an inline Python operand list (an unnamed `+`-expression at a decorator
+ * argument, e.g. `@router.get(API_V1 + "/widgets")`) against `fileKey`.
+ * Python-bound wrapper over the agnostic fold.
  */
 export function resolveOperands(
   fileKey: string,
   operands: readonly Operand[],
   repo: RepoConstants,
 ): string | null {
-  const state: ResolveState = { repo, repoKeys: new Set(repo.keys()), visited: new Set() };
-  return resolveExpr(fileKey, operands, state, 0);
+  return foldOperands(fileKey, operands, repo, resolvePythonImport);
 }
 
-// ─── Tree → ModuleConstants extraction (U2) ──────────────────────────────────
-
 /**
- * Parse a right-hand side into an operand list, or `null` when it is not a
+ * Parse a Python right-hand side into an operand list, or `null` when it is not a
  * foldable string expression. Handles a bare string literal, a bare identifier
  * (`X = Y`), and left-associative `+` chains of the two (`A + "/b" + C`).
  * Everything else — numbers, calls, attribute access (`settings.X`), f-strings,
@@ -286,7 +159,7 @@ export function parseConstOperands(node: SyntaxNode | null | undefined): Operand
 export function extractPythonModuleConstants(tree: Parser.Tree): ModuleConstants {
   const literals = new Map<string, string>();
   const exprs = new Map<string, readonly Operand[]>();
-  const imports = new Map<string, ImportBinding>();
+  const imports = new Map<string, { module: string; originalName: string }>();
 
   // Apply an assignment result, honoring last-wins: clear any prior binding for
   // `name`, then set the new one (a `null` rep leaves it cleared = unresolvable).
