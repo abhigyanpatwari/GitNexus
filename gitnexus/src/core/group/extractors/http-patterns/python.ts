@@ -974,13 +974,15 @@ function recordPrefix(target: Map<string, Set<string>>, key: string, prefix: str
 // Cheap cost-gate pre-filter: a `@router`/`@app.<verb>(` call whose first
 // argument is non-literal — either it STARTS with an identifier (a bare constant
 // or the head of `CONST + "/x"`), or it is a string-literal-LEADING concat
-// (`"/api" + SUFFIX`) detected by a `+` before the closing paren on the decorator
-// line (#2393). Gating the literal-leading case on the `+` (not merely a leading
-// quote) keeps a plain string route `@router.get("/x")` OFF the gate, so a
-// literal-only repo pays no parse pass. Deliberately loose — a false positive
-// only costs a parse; a false negative would silently drop the feature.
+// (`"/api" + SUFFIX`) detected by a `+` before the decorator's closing paren
+// (#2393). `[^)]*` spans the whole argument, including a Black-formatted concat
+// that wraps across lines, but stays bounded by the decorator's own `)`. Gating
+// the literal-leading case on the `+` (not merely a leading quote) keeps a plain
+// string route `@router.get("/x")` OFF the gate, so a literal-only repo pays no
+// parse pass. Deliberately loose — a false positive only costs a parse; a false
+// negative would silently drop the feature.
 const NONLITERAL_ROUTE_DECORATOR_RE =
-  /@\s*(?:app|router)\s*\.\s*(?:get|post|put|delete|patch)\s*\(\s*(?:[A-Za-z_]|["'][^)\n]*\+)/;
+  /@\s*(?:app|router)\s*\.\s*(?:get|post|put|delete|patch)\s*\(\s*(?:[A-Za-z_]|["'][^)]*\+)/;
 
 function buildPythonRepoContext(
   files: string[],

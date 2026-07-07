@@ -160,6 +160,24 @@ describe('group FastAPI composed-constant providers (#2391)', () => {
     expect(parseCalls).toBe(1);
   });
 
+  it('resolves a multiline (Black-formatted) literal-leading concat (#2393)', () => {
+    const { providers, parseCalls } = run({
+      'app/constants.py': 'SUFFIX = "/users"',
+      'app/routes.py': [
+        'from fastapi import APIRouter',
+        'from .constants import SUFFIX',
+        'router = APIRouter()',
+        '@router.get(',
+        '    "/api"',
+        '    + SUFFIX',
+        ')',
+        'async def list_users(): return {}',
+      ].join('\n'),
+    });
+    expect(parseCalls).toBeGreaterThan(0); // gate must fire across the line break
+    expect(providers).toContainEqual({ method: 'GET', path: '/api/users' });
+  });
+
   it('resolves a composed @app.<verb>(CONST) provider (#2393 EXPR-branch coverage)', () => {
     const { providers } = run({
       'app/constants.py': 'API_CONST = "/health"',
