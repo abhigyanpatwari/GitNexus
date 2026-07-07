@@ -16,6 +16,7 @@ import type {
   ExtractedRoute,
   ExtractedFetchCall,
   ExtractedDecoratorRoute,
+  ExtractedModuleConstants,
   ExtractedToolDef,
   FileScopeBindings,
   ExtractedORMQuery,
@@ -40,6 +41,8 @@ export interface WorkerExtractedData {
   routerImports: ExtractedRouterImport[];
   routerConstructorPrefixes: ExtractedRouterConstructorPrefix[];
   routerModuleAliases: ExtractedRouterModuleAlias[];
+  /** Per-file Python module constants for cross-file route-path resolution (#2391). */
+  moduleConstants: ExtractedModuleConstants[];
   toolDefs: ExtractedToolDef[];
   ormQueries: ExtractedORMQuery[];
   /** Project-wide Spring class/interface views for the #2288 inheritance pass. */
@@ -84,6 +87,7 @@ export const mergeChunkResults = (
   const allRouterImports: ExtractedRouterImport[] = [];
   const allRouterConstructorPrefixes: ExtractedRouterConstructorPrefix[] = [];
   const allRouterModuleAliases: ExtractedRouterModuleAlias[] = [];
+  const allModuleConstants: ExtractedModuleConstants[] = [];
   const allSpringTypes: SharedSpringType[] = [];
   const allToolDefs: ExtractedToolDef[] = [];
   const allORMQueries: ExtractedORMQuery[] = [];
@@ -130,6 +134,7 @@ export const mergeChunkResults = (
       allRouterConstructorPrefixes.push(item);
     }
     for (const item of result.routerModuleAliases ?? []) allRouterModuleAliases.push(item);
+    for (const item of result.moduleConstants ?? []) allModuleConstants.push(item);
     for (const item of result.springTypes ?? []) allSpringTypes.push(item);
     for (const item of result.toolDefs) allToolDefs.push(item);
     if (result.ormQueries) for (const item of result.ormQueries) allORMQueries.push(item);
@@ -147,6 +152,7 @@ export const mergeChunkResults = (
     routerImports: allRouterImports,
     routerConstructorPrefixes: allRouterConstructorPrefixes,
     routerModuleAliases: allRouterModuleAliases,
+    moduleConstants: allModuleConstants,
     toolDefs: allToolDefs,
     ormQueries: allORMQueries,
     springTypes: allSpringTypes,

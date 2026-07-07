@@ -7,6 +7,13 @@ import {
   type LanguagePatterns,
 } from '../tree-sitter-scanner.js';
 import { normalizeExtractedRoutePath } from '../../../ingestion/route-extractors/route-path.js';
+import {
+  extractPythonModuleConstants,
+  parseConstOperands,
+  resolveOperands,
+  type ModuleConstants,
+  type Operand,
+} from '../../../ingestion/route-extractors/python-const-resolver.js';
 import type { HttpDetection, HttpLanguagePlugin, RepoContext } from './types.js';
 
 /**
@@ -75,6 +82,46 @@ const FASTAPI_ROUTER_PATTERNS = compilePatterns({
               object: (identifier) @obj (#eq? @obj "router")
               attribute: (identifier) @method (#match? @method "^(get|post|put|delete|patch)$"))
             arguments: (argument_list . (string) @path)))
+      `,
+    },
+  ],
+} satisfies LanguagePatterns<Record<string, never>>);
+
+// #2391: `@router.<verb>` / `@app.<verb>` whose first argument is a non-literal
+// path — a bare imported constant or a `+`-concatenation. The path is resolved
+// against the repo-wide constant map (parity with the ingestion side) and, on
+// failure, the route is skipped (no provider contract) exactly like ingestion.
+const FASTAPI_ROUTER_EXPR_PATTERNS = compilePatterns({
+  name: 'python-fastapi-router-expr',
+  language: Python,
+  patterns: [
+    {
+      meta: {},
+      query: `
+        (decorator
+          (call
+            function: (attribute
+              object: (identifier) @obj (#eq? @obj "router")
+              attribute: (identifier) @method (#match? @method "^(get|post|put|delete|patch)$"))
+            arguments: (argument_list . [(identifier) (binary_operator)] @path)))
+      `,
+    },
+  ],
+} satisfies LanguagePatterns<Record<string, never>>);
+
+const FASTAPI_APP_EXPR_PATTERNS = compilePatterns({
+  name: 'python-fastapi-app-expr',
+  language: Python,
+  patterns: [
+    {
+      meta: {},
+      query: `
+        (decorator
+          (call
+            function: (attribute
+              object: (identifier) @obj (#eq? @obj "app")
+              attribute: (identifier) @method (#match? @method "^(get|post|put|delete|patch)$"))
+            arguments: (argument_list . [(identifier) (binary_operator)] @path)))
       `,
     },
   ],
@@ -858,6 +905,13 @@ interface PythonRepoContext {
   prefixesByLongKey: Map<string, Set<string>>;
   /** stem only → set of prefixes (basename fallback, may collide) */
   prefixesByShortKey: Map<string, Set<string>>;
+  /**
+   * File-path-keyed module string constants (#2391), for resolving non-literal
+   * `@router`/`@app` decorator paths. Empty when the repo has no composed-constant
+   * route (cost gate). Keyed identically to the ingestion aggregate so provider
+   * contracts and graph Route nodes resolve the same paths (R4 parity).
+   */
+  constantsByFile: Map<string, ModuleConstants>;
 }
 
 /** Strip `.py` and return the bare basename (e.g. `api/users.py` → `users`). */
@@ -917,6 +971,19 @@ function recordPrefix(target: Map<string, Set<string>>, key: string, prefix: str
   target.set(key, set);
 }
 
+// Cheap cost-gate pre-filter: a `@router`/`@app.<verb>(` call whose first
+// argument is non-literal — either it STARTS with an identifier (a bare constant
+// or the head of `CONST + "/x"`), or it is a string-literal-LEADING concat
+// (`"/api" + SUFFIX`) detected by a `+` before the decorator's closing paren
+// (#2393). `[^)]*` spans the whole argument, including a Black-formatted concat
+// that wraps across lines, but stays bounded by the decorator's own `)`. Gating
+// the literal-leading case on the `+` (not merely a leading quote) keeps a plain
+// string route `@router.get("/x")` OFF the gate, so a literal-only repo pays no
+// parse pass. Deliberately loose — a false positive only costs a parse; a false
+// negative would silently drop the feature.
+const NONLITERAL_ROUTE_DECORATOR_RE =
+  /@\s*(?:app|router)\s*\.\s*(?:get|post|put|delete|patch)\s*\(\s*(?:[A-Za-z_]|["'][^)]*\+)/;
+
 function buildPythonRepoContext(
   files: string[],
   parser: Parser,
@@ -926,98 +993,129 @@ function buildPythonRepoContext(
   const prefixesByLongKey = new Map<string, Set<string>>();
   const prefixesByShortKey = new Map<string, Set<string>>();
 
-  // Cross-file pre-pass: only `include_router` sites need it — they bind a
-  // prefix declared in one file to a router defined in another. Same-file
-  // `APIRouter(prefix=...)` is resolved in scan() from the file's own tree, so
-  // APIRouter-only files are left out here and never parsed twice.
+  // Single read pass (#2393): slurp every `.py` file's content ONCE. This used to
+  // be two passes — the include_router pre-pass below and the #2391 constant cost
+  // gate each re-read every `.py` file. The composed-route cost gate is computed
+  // in the same pass so a literal-only repo still does exactly one read and zero
+  // parses.
+  const pyContents = new Map<string, string>();
+  let hasComposedRoute = false;
   for (const rel of files) {
     if (!rel.endsWith('.py')) continue;
     const src = readFile(rel);
     if (!src) continue;
-    if (!src.includes('include_router')) continue;
+    pyContents.set(rel, src);
+    if (!hasComposedRoute && NONLITERAL_ROUTE_DECORATOR_RE.test(src)) hasComposedRoute = true;
+  }
+
+  // Single PARSE pass (#2391): parse each `.py` at most once and feed BOTH the
+  // include_router prefix pre-pass and the composed-constant map below. This used
+  // to be two loops, so an include_router file in a composed repo was parsed
+  // twice. A file that needs neither pass is not parsed at all (cost gates intact).
+  //
+  // Cross-file pre-pass: only `include_router` sites need it — they bind a prefix
+  // declared in one file to a router defined in another. Same-file
+  // `APIRouter(prefix=...)` is resolved in scan() from the file's own tree.
+  const constantsByFile = new Map<string, ModuleConstants>();
+  for (const [rel, src] of pyContents) {
+    const needsRouter = src.includes('include_router');
+    if (!needsRouter && !hasComposedRoute) continue;
     parser.setLanguage(Python);
     const tree = parseSource(parser, src);
     if (!tree) continue;
 
-    // Local name → (short, long) map for the current file, populated
-    // from `from <module> import router [as <alias>]` statements. The
-    // alias (or 'router' when there is no alias) is the local name
-    // we'll later see passed to `<host>.include_router`.
-    interface LocalImport {
-      moduleShort: string;
-      moduleLong: string;
-    }
-    const localNameToModule = new Map<string, LocalImport>();
-    for (const m of runCompiledPatterns(FROM_IMPORT_ROUTER_PATTERNS, tree)) {
-      const moduleNode = m.captures.module;
-      const aliasNode = m.captures.alias;
-      const importedNode = m.captures.imported;
-      if (!moduleNode || !importedNode) continue;
-      const localName = aliasNode?.text ?? importedNode.text;
-      const moduleShort = lastSegmentOfDotted(moduleNode.text);
-      if (!moduleShort) continue;
-      const moduleLong = lastTwoSegmentsAsLongKey(moduleNode.text);
-      localNameToModule.set(localName, { moduleShort, moduleLong });
-    }
+    if (needsRouter) {
+      // Local name → (short, long) map for the current file, populated
+      // from `from <module> import router [as <alias>]` statements. The
+      // alias (or 'router' when there is no alias) is the local name
+      // we'll later see passed to `<host>.include_router`.
+      interface LocalImport {
+        moduleShort: string;
+        moduleLong: string;
+      }
+      const localNameToModule = new Map<string, LocalImport>();
+      for (const m of runCompiledPatterns(FROM_IMPORT_ROUTER_PATTERNS, tree)) {
+        const moduleNode = m.captures.module;
+        const aliasNode = m.captures.alias;
+        const importedNode = m.captures.imported;
+        if (!moduleNode || !importedNode) continue;
+        const localName = aliasNode?.text ?? importedNode.text;
+        const moduleShort = lastSegmentOfDotted(moduleNode.text);
+        if (!moduleShort) continue;
+        const moduleLong = lastTwoSegmentsAsLongKey(moduleNode.text);
+        localNameToModule.set(localName, { moduleShort, moduleLong });
+      }
 
-    // Module-alias map: name imported from a multi-segment package →
-    // long key. Lets Shape A look up the precise file for `<name>.router`
-    // even when `<name>` collides with another package's basename.
-    const localNameToModuleAlias = new Map<string, string>();
-    for (const m of runCompiledPatterns(FROM_IMPORT_MODULE_PATTERNS, tree)) {
-      const moduleNode = m.captures.module;
-      const importedNode = m.captures.imported;
-      const aliasNode = m.captures.alias;
-      if (!moduleNode || !importedNode) continue;
-      // Skip the `router` shape — already handled by FROM_IMPORT_ROUTER_PATTERNS
-      // above and stored under its router-aware semantics.
-      if (importedNode.text === 'router') continue;
-      const moduleLong = lastTwoSegmentsAsLongKey(`${moduleNode.text}.${importedNode.text}`);
-      if (!moduleLong) continue;
-      const localName = aliasNode?.text ?? importedNode.text;
-      localNameToModuleAlias.set(localName, moduleLong);
-    }
+      // Module-alias map: name imported from a multi-segment package →
+      // long key. Lets Shape A look up the precise file for `<name>.router`
+      // even when `<name>` collides with another package's basename.
+      const localNameToModuleAlias = new Map<string, string>();
+      for (const m of runCompiledPatterns(FROM_IMPORT_MODULE_PATTERNS, tree)) {
+        const moduleNode = m.captures.module;
+        const importedNode = m.captures.imported;
+        const aliasNode = m.captures.alias;
+        if (!moduleNode || !importedNode) continue;
+        // Skip the `router` shape — already handled by FROM_IMPORT_ROUTER_PATTERNS
+        // above and stored under its router-aware semantics.
+        if (importedNode.text === 'router') continue;
+        const moduleLong = lastTwoSegmentsAsLongKey(`${moduleNode.text}.${importedNode.text}`);
+        if (!moduleLong) continue;
+        const localName = aliasNode?.text ?? importedNode.text;
+        localNameToModuleAlias.set(localName, moduleLong);
+      }
 
-    // Shape A: `<host>.include_router(<module>.router, prefix='/x')`.
-    // The call site gives us only a short module name. We promote to a
-    // long key when the same file imports `<module>` via either
-    // `from <pkg> import <module>` (recorded in `localNameToModuleAlias`
-    // — the typical pattern) or, less commonly, a router-aware import
-    // statement. Only fall back to the basename short key when neither
-    // alias is available.
-    for (const m of runCompiledPatterns(INCLUDE_ROUTER_ATTR_PATTERNS, tree)) {
-      const modNode = m.captures.router_module;
-      const prefixNode = m.captures.prefix;
-      if (!modNode || !prefixNode) continue;
-      const prefix = unquoteLiteral(prefixNode.text);
-      if (prefix === null) continue;
-      const moduleShort = modNode.text;
-      const aliasLong = localNameToModuleAlias.get(moduleShort);
-      const sameFileImport = localNameToModule.get(moduleShort);
-      const longKey = aliasLong ?? sameFileImport?.moduleLong;
-      if (longKey) {
-        recordPrefix(prefixesByLongKey, longKey, prefix);
-      } else {
-        recordPrefix(prefixesByShortKey, moduleShort, prefix);
+      // Shape A: `<host>.include_router(<module>.router, prefix='/x')`.
+      // The call site gives us only a short module name. We promote to a
+      // long key when the same file imports `<module>` via either
+      // `from <pkg> import <module>` (recorded in `localNameToModuleAlias`
+      // — the typical pattern) or, less commonly, a router-aware import
+      // statement. Only fall back to the basename short key when neither
+      // alias is available.
+      for (const m of runCompiledPatterns(INCLUDE_ROUTER_ATTR_PATTERNS, tree)) {
+        const modNode = m.captures.router_module;
+        const prefixNode = m.captures.prefix;
+        if (!modNode || !prefixNode) continue;
+        const prefix = unquoteLiteral(prefixNode.text);
+        if (prefix === null) continue;
+        const moduleShort = modNode.text;
+        const aliasLong = localNameToModuleAlias.get(moduleShort);
+        const sameFileImport = localNameToModule.get(moduleShort);
+        const longKey = aliasLong ?? sameFileImport?.moduleLong;
+        if (longKey) {
+          recordPrefix(prefixesByLongKey, longKey, prefix);
+        } else {
+          recordPrefix(prefixesByShortKey, moduleShort, prefix);
+        }
+      }
+
+      // Shape B: `<host>.include_router(my_router, prefix='/x')` — resolve
+      // `my_router` via the import map built above. Whenever the import
+      // statement supplied a multi-segment module path the long key is
+      // recorded, eliminating cross-package collisions.
+      for (const m of runCompiledPatterns(INCLUDE_ROUTER_NAME_PATTERNS, tree)) {
+        const nameNode = m.captures.router_name;
+        const prefixNode = m.captures.prefix;
+        if (!nameNode || !prefixNode) continue;
+        const localImp = localNameToModule.get(nameNode.text);
+        if (!localImp) continue;
+        const prefix = unquoteLiteral(prefixNode.text);
+        if (prefix === null) continue;
+        if (localImp.moduleLong) {
+          recordPrefix(prefixesByLongKey, localImp.moduleLong, prefix);
+        } else {
+          recordPrefix(prefixesByShortKey, localImp.moduleShort, prefix);
+        }
       }
     }
 
-    // Shape B: `<host>.include_router(my_router, prefix='/x')` — resolve
-    // `my_router` via the import map built above. Whenever the import
-    // statement supplied a multi-segment module path the long key is
-    // recorded, eliminating cross-package collisions.
-    for (const m of runCompiledPatterns(INCLUDE_ROUTER_NAME_PATTERNS, tree)) {
-      const nameNode = m.captures.router_name;
-      const prefixNode = m.captures.prefix;
-      if (!nameNode || !prefixNode) continue;
-      const localImp = localNameToModule.get(nameNode.text);
-      if (!localImp) continue;
-      const prefix = unquoteLiteral(prefixNode.text);
-      if (prefix === null) continue;
-      if (localImp.moduleLong) {
-        recordPrefix(prefixesByLongKey, localImp.moduleLong, prefix);
-      } else {
-        recordPrefix(prefixesByShortKey, localImp.moduleShort, prefix);
+    // #2391: build the repo-wide constant map for resolving non-literal decorator
+    // paths (KTD6 cost gate: only when `hasComposedRoute`). Parse EVERY `.py` so
+    // the resolvable set matches the ingestion aggregate (R4 parity) — a narrower
+    // set would return null where ingestion resolves.
+    if (hasComposedRoute) {
+      const mc = extractPythonModuleConstants(tree);
+      if (mc.literals.size > 0 || mc.exprs.size > 0 || mc.imports.size > 0) {
+        constantsByFile.set(rel, mc);
       }
     }
   }
@@ -1025,6 +1123,7 @@ function buildPythonRepoContext(
   return {
     prefixesByLongKey,
     prefixesByShortKey,
+    constantsByFile,
   };
 }
 
@@ -1065,6 +1164,41 @@ export const PYTHON_HTTP_PLUGIN: HttpLanguagePlugin = {
     // is an imported (possibly aliased) symbol resolves to its real definition.
     const importMap = buildPythonImportMap(tree);
 
+    // #2391: fold a non-literal decorator argument (bare constant or
+    // `+`-concatenation) to its literal path against the repo constant map, or
+    // `null` → skip (the same floor the ingestion side applies, so provider
+    // contracts and graph Route nodes agree on both resolved and dropped routes).
+    const resolveExprArg = (argNode: Parser.SyntaxNode): string | null => {
+      const cbf = ctx?.constantsByFile;
+      if (!cbf || !fileRel) return null;
+      // Build an operand list and fold via `resolveOperands` — the SAME entry the
+      // ingestion side uses (parse-impl folds `routePathOperands`). Using the
+      // by-name `resolveConstant` here would enter `foldName` one depth shallower,
+      // so at the MAX_RESOLVE_DEPTH boundary the group would resolve a chain
+      // ingestion drops, breaking R4 parity (#2393).
+      const operands: Operand[] | null =
+        argNode.type === 'identifier'
+          ? [{ kind: 'ref', name: argNode.text }]
+          : parseConstOperands(argNode);
+      return operands ? resolveOperands(fileRel, operands, cbf) : null;
+    };
+    const emitAppProvider = (httpMethod: string, pathVal: string, line: number): void => {
+      out.push({
+        role: 'provider',
+        framework: 'fastapi',
+        method: httpMethod,
+        path: pathVal,
+        name: null,
+        // The decorated handler has no captured name → resolve by line-span
+        // containment. Best-effort fallback: FastAPI routes are graph-backed
+        // (ingestion decorator routes) and the function span starts at `def`
+        // (decorators excluded), so this lands the single-decorator case and
+        // degrades to file-level for multi-decorator stacks.
+        line,
+        confidence: 0.8,
+      });
+    };
+
     // Providers: FastAPI @app.<verb>("/path") — already absolute path.
     for (const match of runCompiledPatterns(FASTAPI_APP_PATTERNS, tree)) {
       const methodNode = match.captures.method;
@@ -1074,20 +1208,18 @@ export const PYTHON_HTTP_PLUGIN: HttpLanguagePlugin = {
       if (!httpMethod) continue;
       const path = unquoteLiteral(pathNode.text);
       if (path === null) continue;
-      out.push({
-        role: 'provider',
-        framework: 'fastapi',
-        method: httpMethod,
-        path,
-        name: null,
-        // The decorated handler has no captured name → resolve by line-span
-        // containment. Best-effort fallback: FastAPI routes are graph-backed
-        // (ingestion decorator routes) and the function span starts at `def`
-        // (decorators excluded), so this lands the single-decorator case and
-        // degrades to file-level for multi-decorator stacks.
-        line: pathNode.startPosition.row + 1,
-        confidence: 0.8,
-      });
+      emitAppProvider(httpMethod, path, pathNode.startPosition.row + 1);
+    }
+    // Providers: FastAPI @app.<verb>(CONST | A + "/x") — resolved composed path.
+    for (const match of runCompiledPatterns(FASTAPI_APP_EXPR_PATTERNS, tree)) {
+      const methodNode = match.captures.method;
+      const pathNode = match.captures.path;
+      if (!methodNode || !pathNode) continue;
+      const httpMethod = FASTAPI_VERBS[methodNode.text];
+      if (!httpMethod) continue;
+      const resolved = resolveExprArg(pathNode);
+      if (resolved === null) continue; // skip floor
+      emitAppProvider(httpMethod, resolved, pathNode.startPosition.row + 1);
     }
 
     // Django providers come from the graph Route nodes (includes composed by
@@ -1112,15 +1244,11 @@ export const PYTHON_HTTP_PLUGIN: HttpLanguagePlugin = {
     // change is strictly additive vs. the prior @app-only behaviour;
     // when the same router is mounted under multiple prefixes we emit
     // one detection per prefix.
-    for (const match of runCompiledPatterns(FASTAPI_ROUTER_PATTERNS, tree)) {
-      const methodNode = match.captures.method;
-      const pathNode = match.captures.path;
-      if (!methodNode || !pathNode) continue;
-      const httpMethod = FASTAPI_VERBS[methodNode.text];
-      if (!httpMethod) continue;
-      const rawPath = unquoteLiteral(pathNode.text);
-      if (rawPath === null) continue;
-
+    // Join a `@router.<verb>` path with the include_router / APIRouter prefix(es)
+    // that apply to this file and emit one provider detection per prefix. Shared
+    // by the literal and the #2391 non-literal (resolved) router loops so both
+    // stack prefixes identically.
+    const emitRouterProvider = (httpMethod: string, rawPath: string, line: number): void => {
       // Long key first (precise, package-aware), short key as fallback.
       // Mirrors the ingestion-side resolution in parse-impl.ts so the
       // graph nodes and group contracts agree on which prefix applies.
@@ -1146,10 +1274,33 @@ export const PYTHON_HTTP_PLUGIN: HttpLanguagePlugin = {
           path: p,
           name: null,
           // Best-effort containment fallback — see the @app provider note above.
-          line: pathNode.startPosition.row + 1,
+          line,
           confidence: 0.8,
         });
       }
+    };
+
+    for (const match of runCompiledPatterns(FASTAPI_ROUTER_PATTERNS, tree)) {
+      const methodNode = match.captures.method;
+      const pathNode = match.captures.path;
+      if (!methodNode || !pathNode) continue;
+      const httpMethod = FASTAPI_VERBS[methodNode.text];
+      if (!httpMethod) continue;
+      const rawPath = unquoteLiteral(pathNode.text);
+      if (rawPath === null) continue;
+      emitRouterProvider(httpMethod, rawPath, pathNode.startPosition.row + 1);
+    }
+    // Providers: FastAPI @router.<verb>(CONST | A + "/x") — resolved composed path
+    // (#2391). Null resolution → skip, so provider/graph parity holds.
+    for (const match of runCompiledPatterns(FASTAPI_ROUTER_EXPR_PATTERNS, tree)) {
+      const methodNode = match.captures.method;
+      const pathNode = match.captures.path;
+      if (!methodNode || !pathNode) continue;
+      const httpMethod = FASTAPI_VERBS[methodNode.text];
+      if (!httpMethod) continue;
+      const resolved = resolveExprArg(pathNode);
+      if (resolved === null) continue;
+      emitRouterProvider(httpMethod, resolved, pathNode.startPosition.row + 1);
     }
 
     // Providers: Flask `app.add_url_rule('/path', view_func=handler, methods=[…])`.
