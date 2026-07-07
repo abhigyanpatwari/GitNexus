@@ -109,16 +109,45 @@ const warnOnce = (logger: SidecarRecoveryLogger, key: string, message: string): 
 };
 
 // LADYBUGDB-CONTRACT: matches @ladybugdb/core ^0.18.0 native error text.
-// When bumping LadybugDB, re-validate this regex against the new error format
+// When bumping LadybugDB, re-validate this against the new error format
 // — `git grep "LADYBUGDB-CONTRACT"` enumerates every version-coupled spot.
-// Verified by upstream source/changelog diff only — forcing a genuine
-// `.shadow`-missing state via a live crash to trigger this error is not
-// reliably reproducible (a SIGKILL at the exact moment `.shadow` exists on
-// disk still recovers via `.wal.checkpoint` alone), so this matcher does not
-// have live-trigger test coverage.
+//
+// Two native formats reach here for a genuinely-missing shadow sidecar:
+//   POSIX:   `Cannot open file <path>.shadow: No such file or directory`
+//   Windows: `Cannot open file. path: <path>.shadow - Error 2: <system text>`
+// Windows OS text is localized on non-English installs (issue #2382 was filed
+// from a non-English Windows), so we key on the locale-invariant Win32 code
+// (2 = ERROR_FILE_NOT_FOUND), NOT the English phrase. The code is matched only
+// in the reason AFTER the LAST `.shadow` token (the real failing sidecar; the
+// reason text never contains `.shadow`), so a repo *path* containing e.g.
+// `\error 2\` — even under a `.shadow`-suffixed parent directory — cannot trip
+// it. Deliberate exclusions:
+//   - `Error 3` (ERROR_PATH_NOT_FOUND): the #1811 non-ASCII path-garble
+//     artifact (see lbug-config.ts) where the shadow is PRESENT on disk;
+//     treating it as missing would quarantine a live WAL — data loss.
+//   - `Error 5` / `Error 32` / POSIX `Permission denied`: present-but-locked;
+//     handled as permission/lock classes, must not quarantine.
+// The quarantine path adds a present-shadow disk check as a belt (see
+// refuseLargeWalQuarantine in lbug-adapter.ts).
+//
+// The Windows branch is derived from the issue #2382 reported string, not a
+// self-produced live crash; unit/consumer tests inject that same string, so
+// GREEN TESTS DO NOT PROVE the byte-exact 0.18.0 Windows format — confirm
+// against a real Windows run before closing #2382.
 export const isMissingShadowSidecarError = (err: unknown): boolean => {
   const msg = err instanceof Error ? err.message : String(err);
-  return /Cannot open file .*\.shadow: No such file or directory/i.test(msg);
+  if (!/cannot open file/i.test(msg)) return false;
+  // Anchor on the LAST `.shadow`, not the first: LadybugDB names the failing
+  // sidecar as the final `.shadow` token and its reason text (POSIX
+  // `: No such file or directory` / Windows ` - Error N: ...`) never contains
+  // `.shadow`. Slicing from the last match isolates the true reason, so an
+  // earlier `.shadow`-suffixed path segment (e.g. a `branch=subdir` directory
+  // like `snap.shadow\`) can't shift the anchor and let a path-embedded
+  // `error 2` be read as the Win32 code (issue #2382 review, Finding A).
+  const lastShadow = [...msg.matchAll(/\.shadow\b/gi)].at(-1);
+  if (lastShadow?.index === undefined) return false;
+  const reason = msg.slice(lastShadow.index);
+  return /no such file or directory/i.test(reason) || /\berror\s+2\b/i.test(reason);
 };
 
 // LADYBUGDB-CONTRACT: matches @ladybugdb/core ^0.18.0 native error text.
@@ -137,6 +166,27 @@ export const shadowSidecarRecoveryMessage = (dbPath: string, err: unknown): stri
   return (
     `LadybugDB checkpoint sidecar is missing for ${dbPath}. ` +
     'Rebuild the index with `gitnexus analyze --force <repo-path> --index-only` and restart `gitnexus serve`.' +
+    `\n  Original error: ${msg.slice(0, 200)}`
+  );
+};
+
+/**
+ * Actionable message for the case where LadybugDB reports a "missing shadow"
+ * but `inspectLbugSidecars` finds the `.shadow` PRESENT on disk — the open
+ * failed on path reachability or a lock, not a genuinely-missing sidecar (issue
+ * #2382 review, S2). Unlike `shadowSidecarRecoveryMessage` it does NOT tell the
+ * operator to rebuild the index (the remedy is fixing the lock/path). Keeps the
+ * `Original error:` tail so downstream `isMissingShadowSidecarError` recognition
+ * still matches the wrapped error.
+ */
+export const presentShadowUnreachableMessage = (dbPath: string, err: unknown): string => {
+  const msg = err instanceof Error ? err.message : String(err);
+  return (
+    `LadybugDB checkpoint sidecar is present but unreachable for ${dbPath}. ` +
+    'The .shadow file is on disk, so the open likely failed on path reachability or a file lock ' +
+    '(antivirus, another process holding a handle, or a non-ASCII path) rather than a missing sidecar. ' +
+    'Check filesystem access and locks; only run `gitnexus analyze --force <repo-path> --index-only` ' +
+    'if the index is genuinely broken.' +
     `\n  Original error: ${msg.slice(0, 200)}`
   );
 };
@@ -198,6 +248,55 @@ export async function inspectLbugSidecars(dbPath: string): Promise<LbugSidecarSt
   }
   return { kind: 'clean', dbPath };
 }
+
+/**
+ * Reject the WAL-quarantine path when discarding the WAL would be unsafe or
+ * wrong. Shared by every reactive missing-shadow recovery consumer — serve (via
+ * lbug-adapter's `refuseLargeWalQuarantine`) and the MCP/wiki/augmentation pool
+ * (via pool-adapter's `tryQuarantineForMissingShadow`) — so the quarantine
+ * safety policy has a single source of truth (issue #2382 review, Finding B).
+ *
+ *   1. `wal-with-shadow` — the `.shadow` sidecar is PRESENT on disk. A
+ *      "missing shadow" error alongside a present shadow means the open failed
+ *      on path reachability or a lock (the #1811 non-ASCII path-garble on
+ *      Windows), not a genuinely-missing shadow; quarantining would move a live
+ *      WAL sitting next to its shadow — data loss.
+ *   2. `orphan-wal` — the orphan WAL is too large to safely discard
+ *      (>TINY_ORPHAN_WAL_BYTES); preserve the uncheckpointed pages for explicit
+ *      operator recovery.
+ *
+ * Throws `shadowSidecarRecoveryMessage` in either case. Returns silently only
+ * when the shadow is absent AND the WAL is absent or tiny — the states where
+ * the existing recovery path is safe to proceed. `mode` is a label used only in
+ * the warning text (e.g. 'read-only', 'writable', 'pool read-only recovery').
+ */
+export const guardWalQuarantine = async (
+  dbPath: string,
+  mode: string,
+  triggeringErr: unknown,
+  logger: SidecarRecoveryLogger,
+): Promise<void> => {
+  const state = await inspectLbugSidecars(dbPath);
+  if (state.kind === 'wal-with-shadow') {
+    warnOnce(
+      logger,
+      `${dbPath}:present-shadow-refuse:${mode}`,
+      `GitNexus: refusing to quarantine WAL at ${dbPath}.wal during ${mode} recovery — ` +
+        'the .shadow sidecar is present on disk, so the open likely failed on path reachability or a lock ' +
+        'rather than a missing shadow. Run `gitnexus analyze --force <repo-path> --index-only` if the index is genuinely broken.',
+    );
+    throw new Error(presentShadowUnreachableMessage(dbPath, triggeringErr));
+  }
+  if (state.kind === 'orphan-wal') {
+    warnOnce(
+      logger,
+      `${dbPath}:large-wal-refuse:${mode}`,
+      `GitNexus: refusing to quarantine large WAL (${state.walBytes} bytes) at ${dbPath}.wal during ${mode} recovery; ` +
+        'manual recovery required — run `gitnexus analyze --force <repo-path> --index-only`.',
+    );
+    throw new Error(shadowSidecarRecoveryMessage(dbPath, triggeringErr));
+  }
+};
 
 export async function quarantineWalForMissingShadow(
   dbPath: string,
