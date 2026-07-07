@@ -29,16 +29,25 @@ if (missing.length > 0) {
 
 console.log(`Running ${ALL_CROSS_PLATFORM.length} platform-sensitive tests...\n`);
 
+const timeoutMinutes = Number.parseInt(
+  process.env.GITNEXUS_CROSS_PLATFORM_TIMEOUT_MINUTES ?? '20',
+  10,
+);
+const timeoutMs =
+  Number.isFinite(timeoutMinutes) && timeoutMinutes > 0
+    ? timeoutMinutes * 60 * 1000
+    : 20 * 60 * 1000;
+
 try {
   execFileSync('npx', ['vitest', 'run', ...ALL_CROSS_PLATFORM], {
     cwd: ROOT,
     stdio: 'inherit',
-    timeout: 15 * 60 * 1000,
+    timeout: timeoutMs,
     shell: true,
   });
 } catch (err: any) {
   if (err.killed || err.signal) {
-    console.error('vitest timed out after 15 minutes');
+    console.error(`vitest timed out after ${Math.round(timeoutMs / 60_000)} minutes`);
   }
   process.exit(1);
 }

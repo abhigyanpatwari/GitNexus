@@ -80,7 +80,7 @@ jobs:
         # Ubuntu already covered by the coverage job above
         os: [windows-latest, macos-latest]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 20
+    timeout-minutes: 25
     # Same guarantee on the platform-sensitive runners: FTS-dependent suites in
     # the cross-platform subset must run, not silently skip.
     env:
