@@ -45,6 +45,10 @@ export const mergeResult = (target: ParseWorkerResult, src: ParseWorkerResult): 
     target.routerModuleAliases ??= [];
     appendAll(target.routerModuleAliases, src.routerModuleAliases);
   }
+  if (src.moduleConstants) {
+    target.moduleConstants ??= [];
+    appendAll(target.moduleConstants, src.moduleConstants);
+  }
   if (src.springTypes) {
     target.springTypes ??= [];
     appendAll(target.springTypes, src.springTypes);

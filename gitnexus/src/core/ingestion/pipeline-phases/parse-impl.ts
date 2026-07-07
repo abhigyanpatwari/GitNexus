@@ -84,6 +84,10 @@ import type {
 } from '../route-extractors/fastapi-router-bindings.js';
 import { normalizeExtractedRoutePath } from '../route-extractors/route-path.js';
 import {
+  resolveOperands,
+  type ModuleConstants,
+} from '../route-extractors/python-const-resolver.js';
+import {
   resolveInheritedSpringRoutes,
   type SharedSpringType,
 } from '../route-extractors/spring-shared.js';
@@ -1157,6 +1161,40 @@ export async function runChunkedParseAndResolve(
 
   // FastAPI router-prefix resolution (cross-file).
   //
+  // #2391: resolve non-literal FastAPI decorator route paths (imported/composed
+  // string constants) BEFORE the include_router/APIRouter prefix pass below, so a
+  // resolved path is then prefix-joined like any literal path. Each such route
+  // carries `routePathExpr`/`routePathOperands` and an empty `routePath`; we fold
+  // the operands against the repo-wide, file-path-keyed constant map. On failure
+  // we DROP the route (KTD5 skip floor) rather than emit a phantom `POST /`.
+  if (allDecoratorRoutes.some((dr) => dr.routePathExpr !== undefined)) {
+    const repoConstants = new Map<string, ModuleConstants>();
+    for (const { filePath, constants } of allModuleConstants) {
+      repoConstants.set(filePath, constants);
+    }
+    const resolvedRoutes: ExtractedDecoratorRoute[] = [];
+    let skipped = 0;
+    for (const dr of allDecoratorRoutes) {
+      if (dr.routePathExpr === undefined) {
+        resolvedRoutes.push(dr);
+        continue;
+      }
+      const value = dr.routePathOperands
+        ? resolveOperands(dr.filePath, dr.routePathOperands, repoConstants)
+        : null;
+      if (value === null) {
+        skipped++;
+        continue;
+      }
+      resolvedRoutes.push({ ...dr, routePath: value });
+    }
+    allDecoratorRoutes.length = 0;
+    for (const dr of resolvedRoutes) allDecoratorRoutes.push(dr);
+    if (isDev && skipped > 0) {
+      logger.info(`  🧩 Resolved composed route constants; ${skipped} unresolved route(s) skipped`);
+    }
+  }
+
   // Workers emit two kinds of records per Python file:
   //   • `routerIncludes` — every `app.include_router(<routerExpr>, prefix='/x')`
   //     site, where `routerExpr` is either `<module>.router` (Shape A) or a
