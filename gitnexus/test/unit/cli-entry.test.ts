@@ -60,10 +60,22 @@ describe('computeSpawnPrefix', () => {
     ).toEqual(['--import', TSX, SRC]);
   });
 
-  it('treats any unknown mode as tsx-on-source — never dist without an explicit opt-in', () => {
-    expect(
+  it('throws on an unknown mode — never dist without opt-in, never a silent tsx fallback', () => {
+    expect(() =>
       computeSpawnPrefix({
         mode: 'production',
+        distEntry: DIST,
+        srcEntry: SRC,
+        distExists: true,
+        tsxLoaderUrl: TSX,
+      }),
+    ).toThrow(/Unknown GITNEXUS_E2E_CLI/);
+  });
+
+  it('ignores distExists off the dist branch (mode unset, dist present) — still tsx', () => {
+    expect(
+      computeSpawnPrefix({
+        mode: undefined,
         distEntry: DIST,
         srcEntry: SRC,
         distExists: true,

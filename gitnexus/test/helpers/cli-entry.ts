@@ -33,9 +33,10 @@ const srcEntry = path.join(repoRoot, 'src', 'cli', 'index.ts');
 
 /**
  * Pure resolver, exported for unit testing. `mode` is the raw `GITNEXUS_E2E_CLI`
- * value: `'dist'` selects the built CLI (and requires it to exist); anything else
- * (unset, `'src'`, unknown) selects tsx-on-source. Kept side-effect-free so the
- * branch logic can be locked without env/filesystem gymnastics.
+ * value: `'dist'` selects the built CLI (and requires it to exist); unset / `''` /
+ * `'src'` select tsx-on-source; any other value throws (a typo shouldn't silently
+ * degrade to tsx). Kept side-effect-free so the branch logic can be locked
+ * without env/filesystem gymnastics.
  */
 export function computeSpawnPrefix(opts: {
   mode: string | undefined;
@@ -51,6 +52,14 @@ export function computeSpawnPrefix(opts: {
       );
     }
     return [opts.distEntry];
+  }
+  // Fail loud on a typo instead of silently degrading to tsx: an unknown value
+  // (e.g. `dsit`) would otherwise make CI believe it tests dist while running
+  // src. Unset / '' / 'src' remain the safe tsx-on-source default.
+  if (opts.mode !== undefined && opts.mode !== '' && opts.mode !== 'src') {
+    throw new Error(
+      `Unknown GITNEXUS_E2E_CLI value '${opts.mode}' — use 'dist', 'src', or leave unset.`,
+    );
   }
   return ['--import', opts.tsxLoaderUrl, opts.srcEntry];
 }
