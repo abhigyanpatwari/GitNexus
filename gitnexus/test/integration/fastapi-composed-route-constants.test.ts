@@ -99,6 +99,13 @@ describe('FastAPI composed route constants — ingestion pipeline (#2391)', () =
     expect(routes()).toContainEqual({ method: 'GET', url: '/b-shared' });
     expect(urls().filter((u) => u.endsWith('-shared'))).toEqual(['/a-shared', '/b-shared']);
   });
+
+  it('snapshots an aliased constant before a later mutation, end-to-end (#2393)', () => {
+    // app/snapshot.py: `SNAP = API_V1` (captures "/api/v1") then `API_V1 += "/mutated"`.
+    // SNAP's route must be the pre-mutation value, never the mutated one.
+    expect(routes()).toContainEqual({ method: 'GET', url: '/api/v1' });
+    expect(urls()).not.toContain('/api/v1/mutated');
+  });
 });
 
 // ─── R4 parity: the group HTTP-contract layer resolves the same paths ─────────
