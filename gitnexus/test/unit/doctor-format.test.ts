@@ -1,5 +1,10 @@
-import { describe, expect, it } from 'vitest';
-import { displayWidth, localEmbeddingDoctorStatus, padDisplayEnd } from '../../src/cli/doctor.js';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import {
+  displayWidth,
+  doctorCommand,
+  localEmbeddingDoctorStatus,
+  padDisplayEnd,
+} from '../../src/cli/doctor.js';
 
 describe('doctor output formatting', () => {
   it('keeps ASCII padding equivalent to String.padEnd', () => {
@@ -119,5 +124,37 @@ describe('doctor embedding-runtime support status', () => {
     });
     expect(status).toBe('✓ http endpoint configured');
     expect(detail).toBeNull();
+  });
+});
+
+describe('doctor survives a malformed GITNEXUS_EMBEDDING_DIMS (#2385)', () => {
+  const ENV_KEYS = [
+    'GITNEXUS_EMBEDDING_URL',
+    'GITNEXUS_EMBEDDING_MODEL',
+    'GITNEXUS_EMBEDDING_DIMS',
+  ] as const;
+  const savedEnv = Object.fromEntries(ENV_KEYS.map((k) => [k, process.env[k]]));
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    for (const key of ENV_KEYS) {
+      if (savedEnv[key] === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = savedEnv[key];
+      }
+    }
+  });
+
+  it('does not crash at the unguarded isHttpMode() call sites', async () => {
+    process.env.GITNEXUS_EMBEDDING_URL = 'http://test:8080/v1';
+    process.env.GITNEXUS_EMBEDDING_MODEL = 'test-model';
+    process.env.GITNEXUS_EMBEDDING_DIMS = '1024abc';
+    vi.spyOn(console, 'log').mockImplementation(() => undefined);
+
+    // Before the isHttpMode() root-cause fix (#2385) this threw at doctor.ts:167
+    // (isHttpMode -> readConfig -> throw on the malformed DIMS); now the presence
+    // probe never throws, so `gitnexus doctor` completes and reports the backend.
+    await expect(doctorCommand()).resolves.toBeUndefined();
   });
 });

@@ -64,8 +64,26 @@ function makeMockDb() {
   return { init: mockInit, close: mockClose, _isClosed: false } as any;
 }
 
+// Path-aware default sidecar state for the pool tests: `.shadow` absent,
+// `.wal` tiny-present, bare dbPath present → `tiny-orphan-wal`, the state the
+// missing-shadow recovery/permission tests model. This keeps `guardWalQuarantine`
+// (which now runs before the pool rename — issue #2382 review, Finding B) in its
+// "proceed" branch so the existing rename behavior is preserved. Refusal tests
+// override this per-case to drive `wal-with-shadow` / large `orphan-wal`.
+const ENOENT_STAT = Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+function statTinyOrphanWal(p: string): { size: number } {
+  if (p.endsWith('.shadow')) throw ENOENT_STAT;
+  if (p.endsWith('.wal')) return { size: 128 };
+  return { size: 0 };
+}
+
 describe('WAL corruption recovery in doInitLbug (#1402)', () => {
   beforeEach(() => {
+    // Preflight (which also classifies via inspectLbugSidecars) would quarantine
+    // a tiny orphan WAL before the probe even runs, dissolving the
+    // probe-fails-then-recover premise these tests are built on. Disable it so
+    // only the reactive path (which the guard gates) exercises the sidecars.
+    vi.stubEnv('GITNEXUS_DISABLE_LBUG_SIDECAR_PREFLIGHT', '1');
     (createLbugDatabase as any).mockReset();
     (fs.stat as any).mockReset();
     (fs.rename as any).mockReset();
@@ -78,7 +96,7 @@ describe('WAL corruption recovery in doInitLbug (#1402)', () => {
     });
     mockInit.mockResolvedValue(undefined);
     mockClose.mockResolvedValue(undefined);
-    (fs.stat as any).mockResolvedValue({});
+    (fs.stat as any).mockImplementation(async (p: string) => statTinyOrphanWal(p));
     (fs.rename as any).mockResolvedValue(undefined);
   });
 
@@ -86,6 +104,7 @@ describe('WAL corruption recovery in doInitLbug (#1402)', () => {
     vi.useRealTimers();
     await closeLbug().catch(() => {});
     vi.clearAllMocks();
+    vi.unstubAllEnvs();
   });
 
   it('retries with WAL quarantine on corrupted WAL init error', async () => {
@@ -191,6 +210,38 @@ describe('WAL corruption recovery in doInitLbug (#1402)', () => {
     );
   });
 
+  it('recognizes the Windows Error 2 shadow form and recovers (issue #2382, MCP pool)', async () => {
+    // Same missing-shadow recovery as above, but with the Windows native error
+    // format. Before the fix isMissingShadowSidecarError matched only the POSIX
+    // phrasing, so this string rethrew raw through the MCP/wiki/augmentation
+    // pool the same way it did on serve (R4 — one central matcher, all consumers).
+    const { initLbug } = await import('../../src/core/lbug/pool-adapter.js');
+    const dbPath = '/tmp/test-shadow-missing-win/lbug';
+
+    const readOnlyDb1 = makeMockDb();
+    const readOnlyDb2 = makeMockDb();
+    connectionQueryMock
+      .mockRejectedValueOnce(
+        new Error(
+          `IO exception: Cannot open file. path: ${dbPath}.shadow - Error 2: The system cannot find the file specified.`,
+        ),
+      )
+      .mockResolvedValue({
+        getAll: vi.fn().mockResolvedValue([]),
+        close: vi.fn(),
+      });
+    (createLbugDatabase as any).mockReturnValueOnce(readOnlyDb1).mockReturnValueOnce(readOnlyDb2);
+
+    await initLbug('test-repo-shadow-missing-win', dbPath);
+
+    expect(createLbugDatabase).toHaveBeenCalledTimes(2);
+    expect(readOnlyDb1.close).toHaveBeenCalled();
+    expect(fs.rename).toHaveBeenCalledWith(
+      dbPath + '.wal',
+      expect.stringContaining('.wal.missing-shadow.'),
+    );
+  });
+
   it('does not quarantine on lock error (preserves existing lock retry)', async () => {
     const { initLbug } = await import('../../src/core/lbug/pool-adapter.js');
     const setTimeoutSpy = vi.spyOn(global, 'setTimeout').mockImplementation((callback: any) => {
@@ -261,6 +312,11 @@ describe('WAL corruption recovery in doInitLbug (#1402)', () => {
 
 describe('Pool-adapter missing-shadow quarantine: TOCTOU + permission classification (PR #1747 review)', () => {
   beforeEach(() => {
+    // See the sibling describe: disable preflight and default to a
+    // `tiny-orphan-wal` state so guardWalQuarantine (now gating the pool rename)
+    // proceeds, preserving the pre-guard rename/permission behavior these tests
+    // assert. Refusal cases override `fs.stat` per-case.
+    vi.stubEnv('GITNEXUS_DISABLE_LBUG_SIDECAR_PREFLIGHT', '1');
     (createLbugDatabase as any).mockReset();
     (fs.stat as any).mockReset();
     (fs.rename as any).mockReset();
@@ -273,7 +329,7 @@ describe('Pool-adapter missing-shadow quarantine: TOCTOU + permission classifica
     });
     mockInit.mockResolvedValue(undefined);
     mockClose.mockResolvedValue(undefined);
-    (fs.stat as any).mockResolvedValue({ size: 128 });
+    (fs.stat as any).mockImplementation(async (p: string) => statTinyOrphanWal(p));
     (fs.rename as any).mockResolvedValue(undefined);
   });
 
@@ -281,6 +337,7 @@ describe('Pool-adapter missing-shadow quarantine: TOCTOU + permission classifica
     vi.useRealTimers();
     await closeLbug().catch(() => {});
     vi.clearAllMocks();
+    vi.unstubAllEnvs();
   });
 
   const enoent = (): NodeJS.ErrnoException => {
@@ -402,5 +459,52 @@ describe('Pool-adapter missing-shadow quarantine: TOCTOU + permission classifica
     // Since ENOENT does not match permission codes, classifier falls through to
     // shadowSidecarRecoveryMessage.
     await expect(initLbug('test-repo-pool-defensive', dbPath)).rejects.toThrow(/Rebuild the index/);
+  });
+
+  // ─── Present-shadow / large-WAL refusal on the pool path (issue #2382 Finding B) ───
+  // The broadened matcher now routes Windows Error 2 into the pool quarantine
+  // path; guardWalQuarantine must refuse (throw, no rename) when the shadow is
+  // present or the orphan WAL is large — parity with serve's refuseLargeWalQuarantine.
+  const windowsError2 = (dbPath: string): Error =>
+    new Error(
+      `IO exception: Cannot open file. path: ${dbPath}.shadow - Error 2: The system cannot find the file specified.`,
+    );
+
+  it('refuses to quarantine when the .shadow is present on disk (pool data-loss guard — Finding B)', async () => {
+    const { initLbug } = await import('../../src/core/lbug/pool-adapter.js');
+    const dbPath = '/tmp/test-pool-present-shadow/lbug';
+
+    // Both sidecars present → wal-with-shadow → guard refuses before any rename.
+    (fs.stat as any).mockImplementation(async () => ({ size: 128 }));
+
+    const readOnlyDb1 = makeMockDb();
+    connectionQueryMock.mockRejectedValueOnce(windowsError2(dbPath));
+    (createLbugDatabase as any).mockReturnValueOnce(readOnlyDb1);
+
+    // Present shadow → the guard throws the present-but-unreachable message
+    // (S2), which propagates cleanly to the MCP caller — not a silent rename.
+    await expect(initLbug('test-repo-pool-present-shadow', dbPath)).rejects.toThrow(
+      /present but unreachable/,
+    );
+    expect(fs.rename).not.toHaveBeenCalled();
+  });
+
+  it('refuses to quarantine a large orphan WAL on the pool path (Finding B)', async () => {
+    const { initLbug } = await import('../../src/core/lbug/pool-adapter.js');
+    const dbPath = '/tmp/test-pool-large-wal/lbug';
+
+    // Large orphan WAL (> TINY_ORPHAN_WAL_BYTES), shadow absent → orphan-wal → refuse.
+    (fs.stat as any).mockImplementation(async (p: string) => {
+      if (p.endsWith('.shadow')) throw ENOENT_STAT;
+      if (p.endsWith('.wal')) return { size: 8192 };
+      return { size: 0 };
+    });
+
+    const readOnlyDb1 = makeMockDb();
+    connectionQueryMock.mockRejectedValueOnce(windowsError2(dbPath));
+    (createLbugDatabase as any).mockReturnValueOnce(readOnlyDb1);
+
+    await expect(initLbug('test-repo-pool-large-wal', dbPath)).rejects.toThrow(/Rebuild the index/);
+    expect(fs.rename).not.toHaveBeenCalled();
   });
 });

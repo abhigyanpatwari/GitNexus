@@ -28,9 +28,28 @@ interface HttpConfig {
 }
 
 /**
+ * Stable lead of the {@link readConfig} malformed-`GITNEXUS_EMBEDDING_DIMS`
+ * error. `readConfig` throws a plain `Error` (not an {@link HttpEmbeddingError})
+ * because this is a *config* mistake, not an endpoint failure — so the CLI
+ * recognizes it by this lead ({@link isHttpEmbeddingDimsError}) and prints a
+ * clean config message instead of a raw stack dump. See #2385.
+ */
+const EMBEDDING_DIMS_ENV_ERROR_LEAD = 'GITNEXUS_EMBEDDING_DIMS must be a positive integer';
+
+/**
+ * @internal Exported for the CLI analyze error handler. True when `message` is
+ * the {@link readConfig} malformed-DIMS config error (a plain `Error`).
+ */
+export const isHttpEmbeddingDimsError = (message: string): boolean =>
+  message.includes(EMBEDDING_DIMS_ENV_ERROR_LEAD);
+
+/**
  * Build config from the current process.env snapshot.
  * Returns null when GITNEXUS_EMBEDDING_URL + GITNEXUS_EMBEDDING_MODEL are unset.
  * Not cached — env vars are read fresh so late configuration takes effect.
+ * Validates GITNEXUS_EMBEDDING_DIMS and throws on a malformed value; callers
+ * that only need to know whether HTTP mode is *configured* must use
+ * {@link isHttpMode} (a presence probe that never throws), not this.
  */
 const readConfig = (): HttpConfig | null => {
   const baseUrl = process.env.GITNEXUS_EMBEDDING_URL;
@@ -41,11 +60,11 @@ const readConfig = (): HttpConfig | null => {
   let dimensions: number | undefined;
   if (rawDims !== undefined) {
     if (!/^\d+$/.test(rawDims)) {
-      throw new Error(`GITNEXUS_EMBEDDING_DIMS must be a positive integer, got "${rawDims}"`);
+      throw new Error(`${EMBEDDING_DIMS_ENV_ERROR_LEAD}, got "${rawDims}"`);
     }
     const parsed = parseInt(rawDims, 10);
     if (parsed <= 0) {
-      throw new Error(`GITNEXUS_EMBEDDING_DIMS must be a positive integer, got "${rawDims}"`);
+      throw new Error(`${EMBEDDING_DIMS_ENV_ERROR_LEAD}, got "${rawDims}"`);
     }
     dimensions = parsed;
   }
@@ -59,9 +78,16 @@ const readConfig = (): HttpConfig | null => {
 };
 
 /**
- * Check whether HTTP embedding mode is active (env vars are set).
+ * Whether HTTP embedding mode is active — i.e. both `GITNEXUS_EMBEDDING_URL` and
+ * `GITNEXUS_EMBEDDING_MODEL` are set. A pure presence probe: it deliberately does
+ * NOT call {@link readConfig}, so it never throws on a malformed
+ * `GITNEXUS_EMBEDDING_DIMS`. This lets its ~13 call sites (analyze, doctor,
+ * run-analyze, embedder, mcp) probe the mode without a defensive try/catch; the
+ * DIMS value is validated where it is actually used (`readConfig` in
+ * `httpEmbed`/`httpEmbedQuery`), surfacing a recognizable config error. See #2385.
  */
-export const isHttpMode = (): boolean => readConfig() !== null;
+export const isHttpMode = (): boolean =>
+  Boolean(process.env.GITNEXUS_EMBEDDING_URL && process.env.GITNEXUS_EMBEDDING_MODEL);
 
 /**
  * Return the configured embedding dimensions for HTTP mode, or undefined
@@ -84,9 +110,73 @@ export const safeUrl = (url: string): string => {
   }
 };
 
+/**
+ * Strip credentials from an underlying transport error message before it is
+ * surfaced. A credential-bearing endpoint URL (`https://user:secret@host/v1`)
+ * makes undici throw `TypeError: Request cannot be constructed from a URL that
+ * includes credentials: <that full URL>`; interpolating `err.message` verbatim
+ * would re-leak the secret to stderr + logs even though the URL argument is
+ * already masked with {@link safeUrl}. First swap the exact configured `url` for
+ * its masked form, then strip any residual `scheme://userinfo@` the transport may
+ * have echoed in a normalized (non-exact) form. See #2385.
+ */
+const sanitizeReason = (reason: string, url: string): string =>
+  reason
+    .split(url)
+    .join(safeUrl(url))
+    .replace(/([a-z][a-z0-9+.-]*:\/\/)[^/@\s]*@/gi, '$1');
+
+/**
+ * Error thrown by this module's HTTP embedding path (`httpEmbedBatch` /
+ * `httpEmbed` / `httpEmbedQuery`) for any endpoint failure — a
+ * connection/timeout/DNS error, an open circuit, a non-OK status, an
+ * unparseable or wrong-shape response body, an empty response, or a dimension
+ * mismatch.
+ *
+ * Carrying a distinct type (rather than a plain `Error`) lets the CLI tell a
+ * *custom endpoint* failure apart from a HuggingFace *model download* failure
+ * without matching message text: the two share the same underlying network
+ * substrings (`fetch failed`, `ECONNREFUSED`, …), which is exactly why
+ * `isNetworkFetchError` in `hf-env.ts` cannot tell them apart. Keying on the
+ * type instead of the message is also locale-proof and survives message
+ * rewording. The human-readable `.message` (built with `safeUrl` and the
+ * underlying reason) is what the CLI surfaces to the user. See #2385.
+ */
+export class HttpEmbeddingError extends Error {
+  constructor(message: string, options?: { cause?: unknown }) {
+    super(message, options?.cause !== undefined ? { cause: options.cause } : undefined);
+    this.name = 'HttpEmbeddingError';
+  }
+}
+
+/**
+ * @internal Exported for the CLI analyze error handler and unit tests.
+ *
+ * Type-guard for {@link HttpEmbeddingError}. The `name` fallback keeps the
+ * check working across module-realm boundaries where `instanceof` can fail
+ * (two loaded copies of the class) — mirroring the codebase's existing
+ * `err.name === 'TimeoutError'` idiom. Matches on the stable class
+ * discriminator, never on the human-readable (potentially localized) message.
+ */
+export const isHttpEmbeddingError = (err: unknown): boolean =>
+  err instanceof HttpEmbeddingError || (err instanceof Error && err.name === 'HttpEmbeddingError');
+
 interface EmbeddingItem {
   embedding: number[];
 }
+
+/**
+ * Runtime guard for a single response item. The `Array.isArray(data.data)` shape
+ * check only validates the outer array — a 200 body like `{"data":[null]}` passes
+ * it, then crashes at `new Float32Array(item.embedding)` (`httpEmbed`) or
+ * `items[0].embedding` (`httpEmbedQuery`) with a raw `TypeError` that escapes the
+ * typed boundary, landing on the CLI's generic stack-dump path — the exact class
+ * #2385 closes. Validate each item so every wrong-shape body stays classifiable.
+ */
+const isEmbeddingItem = (item: unknown): item is EmbeddingItem =>
+  typeof item === 'object' &&
+  item !== null &&
+  Array.isArray((item as { embedding?: unknown }).embedding);
 
 /**
  * Send a single batch of texts to the embedding endpoint with retry.
@@ -140,33 +230,56 @@ const httpEmbedBatch = async (
     );
   } catch (err) {
     if (err instanceof CircuitOpenError) {
-      throw new Error(
+      throw new HttpEmbeddingError(
         `Embedding endpoint circuit open (${safeUrl(url)}, batch ${batchIndex}): retry in ${Math.ceil(err.retryAfterMs / 1000)}s`,
+        { cause: err },
       );
     }
     if (err instanceof DOMException && err.name === 'TimeoutError') {
-      throw new Error(
+      throw new HttpEmbeddingError(
         `Embedding request timed out after ${HTTP_TIMEOUT_MS}ms (${safeUrl(url)}, batch ${batchIndex})`,
+        { cause: err },
       );
     }
     if (err instanceof ResilientFetchExhaustedError) {
-      throw new Error(
+      throw new HttpEmbeddingError(
         `Embedding endpoint returned ${err.response.status} (${safeUrl(url)}, batch ${batchIndex})`,
+        { cause: err },
       );
     }
-    const reason = err instanceof Error ? err.message : String(err);
-    throw new Error(`Embedding request failed (${safeUrl(url)}, batch ${batchIndex}): ${reason}`);
+    const reason = sanitizeReason(err instanceof Error ? err.message : String(err), url);
+    throw new HttpEmbeddingError(
+      `Embedding request failed (${safeUrl(url)}, batch ${batchIndex}): ${reason}`,
+      { cause: err },
+    );
   }
 
   if (!resp.ok) {
     // resilientFetch already retried 5xx/429; any non-OK response here is
     // a terminal client error (4xx other than 429).
-    throw new Error(
+    throw new HttpEmbeddingError(
       `Embedding endpoint returned ${resp.status} (${safeUrl(url)}, batch ${batchIndex})`,
     );
   }
 
-  const data = (await resp.json()) as { data: EmbeddingItem[] };
+  // A reachable-but-wrong endpoint (e.g. a captive portal or a non-embeddings
+  // service) can answer 200 with an HTML/truncated body. Parse inside the
+  // typed-error boundary so that lands as an endpoint failure the CLI can
+  // classify, not a raw SyntaxError/TypeError on the generic stack-dump path.
+  let data: { data: EmbeddingItem[] };
+  try {
+    data = (await resp.json()) as { data: EmbeddingItem[] };
+  } catch (err) {
+    throw new HttpEmbeddingError(
+      `Embedding endpoint returned an unparseable response (${safeUrl(url)}, batch ${batchIndex})`,
+      { cause: err },
+    );
+  }
+  if (!Array.isArray(data?.data) || !data.data.every(isEmbeddingItem)) {
+    throw new HttpEmbeddingError(
+      `Embedding endpoint returned an unexpected response shape (${safeUrl(url)}, batch ${batchIndex})`,
+    );
+  }
   return data.data;
 };
 
@@ -199,7 +312,7 @@ export const httpEmbed = async (texts: string[]): Promise<Float32Array[]> => {
     );
 
     if (items.length !== batch.length) {
-      throw new Error(
+      throw new HttpEmbeddingError(
         `Embedding endpoint returned ${items.length} vectors for ${batch.length} texts ` +
           `(${safeUrl(url)}, batch ${batchIndex})`,
       );
@@ -214,7 +327,7 @@ export const httpEmbed = async (texts: string[]): Promise<Float32Array[]> => {
         const hint = config.dimensions
           ? 'Update GITNEXUS_EMBEDDING_DIMS to match your model output.'
           : `Set GITNEXUS_EMBEDDING_DIMS=${vec.length} to match your model output.`;
-        throw new Error(
+        throw new HttpEmbeddingError(
           `Embedding dimension mismatch: endpoint returned ${vec.length}d vector, ` +
             `but expected ${expected}d. ${hint}`,
         );
@@ -248,7 +361,7 @@ export const httpEmbedQuery = async (text: string): Promise<number[]> => {
     config.dimensions,
   );
   if (!items.length) {
-    throw new Error(`Embedding endpoint returned empty response (${safeUrl(url)})`);
+    throw new HttpEmbeddingError(`Embedding endpoint returned empty response (${safeUrl(url)})`);
   }
 
   const embedding = items[0].embedding;
@@ -259,7 +372,7 @@ export const httpEmbedQuery = async (text: string): Promise<number[]> => {
     const hint = config.dimensions
       ? 'Update GITNEXUS_EMBEDDING_DIMS to match your model output.'
       : `Set GITNEXUS_EMBEDDING_DIMS=${embedding.length} to match your model output.`;
-    throw new Error(
+    throw new HttpEmbeddingError(
       `Embedding dimension mismatch: endpoint returned ${embedding.length}d vector, ` +
         `but expected ${expected}d. ${hint}`,
     );

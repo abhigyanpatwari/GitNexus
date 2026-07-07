@@ -143,6 +143,7 @@ vi.mock('../../../src/core/lbug/lbug-config.js', () => ({
 
 vi.mock('../../../src/core/lbug/sidecar-recovery.js', () => ({
   preflightLbugSidecars: vi.fn().mockResolvedValue(undefined),
+  guardWalQuarantine: vi.fn().mockResolvedValue(undefined),
   isMissingFsError: vi.fn(() => false),
   isMissingShadowSidecarError: vi.fn(() => false),
   isReadOnlyShadowReplayError: vi.fn(() => false),

@@ -38,7 +38,7 @@ import {
 } from './lbug-config.js';
 import {
   finalizeLbugSidecarsAfterClose,
-  inspectLbugSidecars,
+  guardWalQuarantine,
   isMissingShadowSidecarError,
   isReadOnlyShadowReplayError,
   preflightLbugSidecars,
@@ -507,29 +507,18 @@ const queryAndDrain = async (targetConn: lbug.Connection, cypher: string): Promi
 const READ_ONLY_SHADOW_REPLAY_PROBE = 'MATCH (n) RETURN n LIMIT 1';
 
 /**
- * Reject the quarantine path when the orphan WAL is too large to safely
- * discard (>TINY_ORPHAN_WAL_BYTES). Mirrors the preflight policy at
- * sidecar-recovery.ts:153-160 ("warn, do not quarantine"). Symmetric across
- * read-only and writable recovery paths (PR #1747 review D2).
- *
- * Throws shadowSidecarRecoveryMessage immediately when the WAL is large,
- * preserving the uncheckpointed pages for explicit operator recovery.
- * Returns silently when the WAL is absent, tiny, or in any other state
- * where the existing recovery path is safe to proceed.
+ * Serve-side entry to the shared WAL-quarantine safety gate. Refuses (throws)
+ * when the `.shadow` is present on disk or the orphan WAL is too large to
+ * safely discard; returns silently otherwise. The policy itself lives in
+ * `guardWalQuarantine` (sidecar-recovery.ts) so serve and the MCP pool share
+ * one source of truth (PR #1747 review D2; issue #2382 review, Finding B).
  */
 const refuseLargeWalQuarantine = async (
   dbPath: string,
   mode: 'read-only' | 'writable',
   triggeringErr: unknown,
 ): Promise<void> => {
-  const state = await inspectLbugSidecars(dbPath);
-  if (state.kind === 'orphan-wal') {
-    logger.warn(
-      `GitNexus: refusing to quarantine large WAL (${state.walBytes} bytes) at ${dbPath}.wal during ${mode} recovery; ` +
-        'manual recovery required — run `gitnexus analyze --force <repo-path> --index-only`.',
-    );
-    throw new Error(shadowSidecarRecoveryMessage(dbPath, triggeringErr));
-  }
+  await guardWalQuarantine(dbPath, mode, triggeringErr, logger);
 };
 
 const reopenReadOnlyAfterMissingShadow = async (
