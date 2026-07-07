@@ -199,6 +199,22 @@ describe('resolvePythonImport', () => {
   it('returns null when the target file does not exist', () => {
     expect(resolvePythonImport('a/routes.py', '.missing', keys)).toBeNull();
   });
+
+  it('resolves `from . import` to the package __init__.py, not a sibling <dir>.py (#2393)', () => {
+    const k = new Set(['pkg/__init__.py', 'pkg/routes.py']);
+    expect(resolvePythonImport('pkg/routes.py', '.', k)).toBe('pkg/__init__.py');
+  });
+
+  it('returns null for `from . import` when the package __init__.py is absent (#2393)', () => {
+    expect(resolvePythonImport('pkg/routes.py', '.', new Set(['pkg/routes.py']))).toBeNull();
+  });
+
+  it('returns null for an over-deep relative import even if the clamped target exists (#2393)', () => {
+    // `from ...constants` from a repo-root file climbs two levels above the root.
+    // Without the guard it would clamp to a bare `constants.py`; it must return null.
+    const k = new Set(['constants.py', 'routes.py']);
+    expect(resolvePythonImport('routes.py', '...constants', k)).toBeNull();
+  });
 });
 
 // ─── U2: tree → ModuleConstants extraction (real parse) ──────────────────────

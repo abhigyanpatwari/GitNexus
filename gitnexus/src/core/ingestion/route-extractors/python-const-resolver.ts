@@ -78,10 +78,26 @@ export const resolvePythonImport: ImportResolver = (importingFileKey, moduleSpec
 
   if (dots > 0) {
     // 1 dot = current package (the importing file's dir); each extra dot walks
-    // up one more level.
-    let base = dirOf(importingFileKey);
-    for (let i = 1; i < dots; i++) base = dirOf(base);
-    const candidate = normalizePosix(`${base}/${modPath}`) + '.py';
+    // up one more level. If the walk would climb ABOVE the repo root (more extra
+    // dots than the importing file has directory levels), the import escapes the
+    // tree → null, rather than clamping to an unrelated root-level `<name>.py`.
+    const dir = dirOf(importingFileKey);
+    const depth = dir === '' ? 0 : dir.split('/').length;
+    const walk = dots - 1;
+    if (walk > depth) return null;
+
+    let base = dir;
+    for (let i = 0; i < walk; i++) base = dirOf(base);
+
+    // `from . import X` / `from .. import X` (no module after the dots): the
+    // module IS the package, whose file is `<base>/__init__.py`, not a sibling
+    // `<base>.py`.
+    const candidate =
+      modPath === ''
+        ? base === ''
+          ? '__init__.py'
+          : `${base}/__init__.py`
+        : normalizePosix(`${base}/${modPath}`) + '.py';
     return repoKeys.has(candidate) ? candidate : null;
   }
 
