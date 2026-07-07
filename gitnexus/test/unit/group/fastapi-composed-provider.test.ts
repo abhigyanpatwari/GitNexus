@@ -125,4 +125,35 @@ describe('group FastAPI composed-constant providers (#2391)', () => {
     });
     expect(parseCalls).toBeGreaterThan(0);
   });
+
+  it('resolves a string-literal-LEADING concat as the sole composed route (#2393 parity)', () => {
+    // `@router.get("/api" + SUFFIX)` starts with a quote, so the pre-widen cost
+    // gate missed it and the group dropped a route ingestion resolved.
+    const { providers, parseCalls } = run({
+      'app/constants.py': 'SUFFIX = "/users"',
+      'app/routes.py': [
+        'from fastapi import APIRouter',
+        'from .constants import SUFFIX',
+        'router = APIRouter()',
+        '@router.get("/api" + SUFFIX)',
+        'async def list_users(): return {}',
+      ].join('\n'),
+    });
+    expect(parseCalls).toBeGreaterThan(0); // gate now fires on the literal-leading concat
+    expect(providers).toContainEqual({ method: 'GET', path: '/api/users' });
+  });
+
+  it('resolves a composed @app.<verb>(CONST) provider (#2393 EXPR-branch coverage)', () => {
+    const { providers } = run({
+      'app/constants.py': 'API_CONST = "/health"',
+      'app/main.py': [
+        'from fastapi import FastAPI',
+        'from .constants import API_CONST',
+        'app = FastAPI()',
+        '@app.get(API_CONST)',
+        'async def health(): return {}',
+      ].join('\n'),
+    });
+    expect(providers).toContainEqual({ method: 'GET', path: '/health' });
+  });
 });
