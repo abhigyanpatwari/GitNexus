@@ -73,18 +73,36 @@ jobs:
   # See gitnexus/scripts/cross-platform-tests.ts for the file list and
   # rationale for each included test.
   cross-platform:
-    name: ${{ matrix.os }} (platform-sensitive)
+    name: ${{ matrix.os }} (platform-sensitive) ${{ matrix.shard }}/2
     strategy:
       fail-fast: false
       matrix:
         # Ubuntu already covered by the coverage job above
         os: [windows-latest, macos-latest]
+        # Shard the fixed file list across two runners per OS. The suite is
+        # dominated by ~50 CLI/worker process spawns; Windows is ~5x slower than
+        # macOS at those, so the unsharded run crept past the 15-min watchdog in
+        # run-cross-platform.ts. Two shards keep each runner at ~half the work
+        # with comfortable headroom (macOS/Ubuntu unaffected — they had margin).
+        # NOTE: the shard COUNT lives in three coupled places that must stay in
+        # sync — this list length, the `${{ matrix.shard }}/2` job-name suffix,
+        # and the `--shard=…/2` arg below. Change all three together.
+        shard: [1, 2]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     # Same guarantee on the platform-sensitive runners: FTS-dependent suites in
     # the cross-platform subset must run, not silently skip.
+    #
+    # GITNEXUS_E2E_CLI=dist: the e2e suites spawn the CLI ~50 times; each spawn via
+    # `node --import tsx src/cli/index.ts` re-transpiles the whole CLI, and Windows
+    # is ~5x slower at process startup. `build: true` below produces a fresh dist
+    # before tests, so opting these runners into the built CLI removes that
+    # per-spawn transpile (see test/helpers/cli-entry.ts). Deliberately scoped to
+    # THIS job: the Ubuntu coverage job leaves it unset, so it keeps exercising the
+    # tsx-on-source path in CI (both entry points stay covered).
     env:
       GITNEXUS_REQUIRE_FTS: '1'
+      GITNEXUS_E2E_CLI: dist
     steps:
       # persist-credentials: false — runs tests only, never pushes (zizmor
       # credential-persistence / artipacked audit).
@@ -95,7 +113,7 @@ jobs:
         with:
           build: 'true'
       - name: Run platform-sensitive tests
-        run: npx tsx scripts/run-cross-platform.ts
+        run: npx tsx scripts/run-cross-platform.ts --shard=${{ matrix.shard }}/2
         working-directory: gitnexus
 
   # Tree-sitter ABI gate (#1922). Two halves, both blocking:

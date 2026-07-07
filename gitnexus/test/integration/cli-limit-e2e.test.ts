@@ -21,23 +21,17 @@ import { spawnSync } from 'child_process';
 import path from 'path';
 import fs from 'fs';
 import os from 'os';
-import { fileURLToPath, pathToFileURL } from 'url';
+import { fileURLToPath } from 'url';
 
-import { createRequire } from 'module';
 import { cleanupTempDirSync } from '../helpers/test-db.js';
+import { CLI_SPAWN_PREFIX } from '../helpers/cli-entry.js';
 
 const testDir = path.dirname(fileURLToPath(import.meta.url));
-const repoRoot = path.resolve(testDir, '../..');
-const cliEntry = path.join(repoRoot, 'src/cli/index.ts');
 const FIXTURE_SRC = path.resolve(testDir, '..', 'fixtures', 'mini-repo');
 
 let MINI_REPO: string;
 let tmpParent: string;
 let suiteGitnexusHome: string;
-
-const _require = createRequire(import.meta.url);
-const tsxPkgDir = path.dirname(_require.resolve('tsx/package.json'));
-const tsxImportUrl = pathToFileURL(path.join(tsxPkgDir, 'dist', 'loader.mjs')).href;
 
 function cliEnv(extraEnv: Record<string, string> = {}) {
   return {
@@ -49,7 +43,7 @@ function cliEnv(extraEnv: Record<string, string> = {}) {
 }
 
 function runCliRaw(extraArgs: string[], cwd: string, timeoutMs = 30000) {
-  return spawnSync(process.execPath, ['--import', tsxImportUrl, cliEntry, ...extraArgs], {
+  return spawnSync(process.execPath, [...CLI_SPAWN_PREFIX, ...extraArgs], {
     cwd,
     encoding: 'utf8',
     timeout: timeoutMs,
