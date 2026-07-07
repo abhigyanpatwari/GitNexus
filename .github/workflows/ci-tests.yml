@@ -144,7 +144,14 @@ jobs:
           path: ~/.lbdb/extension
           key: lbug-fts-${{ runner.os }}-${{ hashFiles('gitnexus/package-lock.json') }}
       - name: Run platform-sensitive tests
-        run: npx tsx scripts/run-cross-platform.ts --shard=${{ matrix.shard }}/${{ needs.shard-plan.outputs.total }}
+        # Pass the shard through an env var (not `${{ }}` inlined into the shell)
+        # so it isn't a template-injection sink (zizmor). shell: bash makes the
+        # `"$SHARD"` expansion uniform across the windows + macOS matrix (the
+        # default run shell is pwsh on Windows, where `$SHARD` would be empty).
+        shell: bash
+        env:
+          SHARD: ${{ matrix.shard }}/${{ needs.shard-plan.outputs.total }}
+        run: npx tsx scripts/run-cross-platform.ts --shard="$SHARD"
         working-directory: gitnexus
 
   # Tree-sitter ABI gate (#1922). Two halves, both blocking:
