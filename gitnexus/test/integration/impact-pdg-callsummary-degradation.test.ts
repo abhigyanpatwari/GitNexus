@@ -17,7 +17,7 @@
  *      "complete" result.
  *
  * This golden asserts the EXACT degraded envelope (not just non-crash):
- *   - the result is still mode:'pdg' with pdgResultVersion:1 (the contract
+ *   - the result is still mode:'pdg' with pdgResultVersion:2 (the contract
  *     discriminator);
  *   - the intra slice is PRESENT (CALL_SUMMARY is NOT a required sub-layer — the
  *     index is `ready`, pdgLayer is undefined, risk is UNKNOWN, epistemic is the
@@ -75,14 +75,14 @@ withTestLbugDB(
       });
 
     describe('CALL_SUMMARY-absent (v3 / pre-FU-C index): the ascent is silent but the user is TOLD', () => {
-      it('returns the EXACT degraded envelope — mode:pdg, pdgResultVersion:1, intra slice present, risk UNKNOWN', async () => {
+      it('returns the EXACT degraded envelope — mode:pdg, pdgResultVersion:2, intra slice present, risk UNKNOWN', async () => {
         const result = await slice();
         // Golden envelope: the index is `ready` (CALL_SUMMARY is NOT a required
         // sub-layer), so this is a real traversal result — NOT a pdgLayer
         // degradation early-return. The intra slice ran and risk stays UNKNOWN.
         expect(result).toMatchObject({
           mode: 'pdg',
-          pdgResultVersion: 1,
+          pdgResultVersion: 2,
           risk: 'UNKNOWN',
           epistemic: 'pdg-intra-procedural',
           target: { id: 'func:fnA', name: 'fnA' },

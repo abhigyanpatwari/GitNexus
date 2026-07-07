@@ -20,6 +20,7 @@ import { KnowledgeGraph } from '../graph/types.js';
 import { NodeTableName, NODE_TABLES } from './schema.js';
 import { RelPairRouter } from './rel-pair-routing.js';
 import { parseTruthyEnv } from '../ingestion/utils/env.js';
+import { SYMBOL_NODE_LABELS } from '../ingestion/utils/symbol-labels.js';
 import { applyCjkSegmentationIfEnabled } from '../search/cjk-segmentation.js';
 
 /**
@@ -212,6 +213,11 @@ export const normalizeFtsText = (text: string): string => text.replace(/[\r\n\t]
 const formatFtsDescription = (description: string): string =>
   normalizeFtsText(applyCjkSegmentationIfEnabled(description));
 
+// Labels that get exact source-span content (no ±2 window). Single source of
+// truth in `symbol-labels.ts` — see there for why the exactness depends on the
+// 0-based line invariant. Kept as a named alias to read intent at the use site.
+const EXACT_SYMBOL_CONTENT_LABELS = SYMBOL_NODE_LABELS;
+
 const extractContent = async (node: GraphNode, contentCache: FileContentCache): Promise<string> => {
   const filePath = node.properties.filePath;
   const content = await contentCache.get(filePath);
@@ -233,8 +239,9 @@ const extractContent = async (node: GraphNode, contentCache: FileContentCache): 
   if (startLine === undefined || endLine === undefined) return '';
 
   const lines = content.split('\n');
-  const start = Math.max(0, startLine - 2);
-  const end = Math.min(lines.length - 1, endLine + 2);
+  const exactSymbolContent = EXACT_SYMBOL_CONTENT_LABELS.has(node.label);
+  const start = Math.max(0, exactSymbolContent ? startLine : startLine - 2);
+  const end = Math.min(lines.length - 1, exactSymbolContent ? endLine : endLine + 2);
   const snippet = lines.slice(start, end + 1).join('\n');
   const MAX_SNIPPET = 5000;
   const capped =

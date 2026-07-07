@@ -1,5 +1,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { extensionManager, resetExtensionState } from '../../src/core/lbug/extension-loader.js';
+import {
+  extensionManager,
+  getExtensionCapabilities,
+  resetExtensionState,
+} from '../../src/core/lbug/extension-loader.js';
 import { ftsDegradedWarning } from '../../src/core/search/fts-indexes.js';
 
 afterEach(() => {
@@ -73,5 +77,65 @@ describe('ftsDegradedWarning (#2374)', () => {
     const warning = ftsDegradedWarning();
     expect(warning).not.toMatch(/C:\\Users\\/);
     expect(warning).toContain('not a valid Win32 application');
+  });
+
+  it('surfaces the runtime-install remedy, not reinstall, for a Windows missing-dependency error', async () => {
+    await extensionManager.ensure(
+      vi
+        .fn()
+        .mockRejectedValue(
+          new Error(
+            "Failed to load library 'C:\\Users\\bob\\.lbdb\\extension\\0.18.0\\win_amd64\\fts\\libfts.lbug_extension' which is needed by extension: fts. Error: The specified module could not be found.",
+          ),
+        ),
+      'fts',
+      'FTS',
+      { policy: 'load-only' },
+    );
+
+    const warning = ftsDegradedWarning();
+    expect(warning).toContain('FTS extension failed to load');
+    expect(warning).toMatch(/Visual C\+\+/);
+    expect(warning).toMatch(/vc_redist\.x64\.exe/);
+    // The old "reinstall with network access" tail must not appear for this class.
+    expect(warning).not.toMatch(/with network access to reinstall/);
+    // Absolute path still redacted from the client-facing warning.
+    expect(warning).not.toMatch(/C:\\Users\\/);
+  });
+
+  it('keeps the reinstall guidance for a never-installed extension', async () => {
+    await extensionManager.ensure(
+      vi
+        .fn()
+        .mockRejectedValue(
+          new Error('Extension "fts" is an official extension and has not been installed.'),
+        ),
+      'fts',
+      'FTS',
+      { policy: 'load-only' },
+    );
+
+    expect(ftsDegradedWarning()).toContain('--repair-fts');
+  });
+
+  it('caches the load diagnosis on the capability so the warning does no per-request I/O (#2383 F3)', async () => {
+    await extensionManager.ensure(
+      vi
+        .fn()
+        .mockRejectedValue(
+          new Error(
+            "Failed to load library '/home/alice/.lbdb/extension/0.18.0/linux_amd64/fts/libfts.lbug_extension': The specified module could not be found.",
+          ),
+        ),
+      'fts',
+      'FTS',
+      { policy: 'load-only' },
+    );
+    // The diagnosis is computed ONCE at mark-unavailable time and cached on the
+    // capability, so ftsDegradedWarning (per-request on /api/search + MCP query)
+    // reads it instead of re-inspecting the extension file on every call.
+    const fts = getExtensionCapabilities().find((c) => c.name === 'fts');
+    expect(fts).toMatchObject({ loaded: false, diagnosis: { kind: 'missing_dependency' } });
+    expect(ftsDegradedWarning()).toMatch(/Visual C\+\+/);
   });
 });

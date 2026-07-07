@@ -49,6 +49,8 @@ export type RecoveryHint =
   | 'heap-oom-respawn'
   | 'native-worker-abort'
   | 'hf-endpoint-unreachable'
+  | 'http-embedding-endpoint-error'
+  | 'embedding-dims-invalid'
   | 'local-embedding-unsupported'
   | 'local-embedding-stack-missing'
   | 'large-repo'

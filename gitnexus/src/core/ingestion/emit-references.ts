@@ -57,6 +57,7 @@ import type {
 } from 'gitnexus-shared';
 import type { KnowledgeGraph } from '../graph/types.js';
 import type { ScopeResolutionIndexes } from './model/scope-resolution-indexes.js';
+import { toZeroBasedLine } from './utils/line-base.js';
 
 // ─── Public API ─────────────────────────────────────────────────────────────
 
@@ -140,8 +141,8 @@ export function emitScopeGraph(input: {
       properties: {
         name: scope.kind,
         filePath: scope.filePath,
-        startLine: scope.range.startLine,
-        endLine: scope.range.endLine,
+        startLine: toZeroBasedLine(scope.range.startLine),
+        endLine: toZeroBasedLine(scope.range.endLine),
         description: `Scope: ${scope.kind}`,
       } as unknown as Parameters<KnowledgeGraph['addNode']>[0]['properties'],
     });

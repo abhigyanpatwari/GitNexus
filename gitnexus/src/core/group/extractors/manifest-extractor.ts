@@ -15,6 +15,10 @@ export interface ManifestExtractResult {
 // reserved-keyword labels `Macro` and `Union`, and LadybugDB's parser rejects
 // a disjunction that names a reserved keyword (#2325) — which the resolver's
 // try/catch then swallowed. `labels(n) IN` has no such collision.
+// This list overlaps `ingestion/utils/symbol-labels.ts` (SYMBOL_NODE_LABELS) but
+// is a deliberate SUBSET — it omits `Namespace`/`Variable`/`Module`. Unifying the
+// two would widen which nodes resolve as contract symbols and must update the
+// #2325 test, so they are intentionally kept separate for now.
 export const CUSTOM_CONTRACT_RESOLVE_QUERY = `MATCH (n)
    WHERE labels(n) IN ['Function','Method','Class','Interface','Struct','Enum','Trait','Constructor','TypeAlias','Impl','Macro','Union','Typedef','Property','Record','Delegate','Annotation','Template','Const','Static','CodeElement']
      AND n.name = $symbolName

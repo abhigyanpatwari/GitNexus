@@ -450,6 +450,7 @@ additional_node_types: "Multi-language: Struct, Enum, Macro, Typedef, Union, Nam
 
 node_properties:
   common: "name (STRING), filePath (STRING), startLine (INT32), endLine (INT32)"
+  line_numbers: "startLine/endLine on symbol nodes are 0-BASED (tree-sitter rows) in storage AND in raw Cypher results. The context, query, impact, group/cross-repo trace, and explain/pdg_query (symbol anchor) tools present them 1-BASED (editor / sed / less -N aligned), so a symbol spans editor lines (startLine+1)..(endLine+1) — e.g. sed '<startLine+1>,<endLine+1>!d' <file>. Single-repo trace symbol lines stay 0-BASED for now (full-parity follow-up). content holds the exact symbol span. (BasicBlock / PDG statement lines are separately 1-based.) (#2377, #2380)"
   Method: "parameterCount (INT32), returnType (STRING), isVariadic (BOOL), visibility (STRING), isStatic (BOOL), isAbstract (BOOL), isFinal (BOOL), isVirtual (BOOL), isOverride (BOOL), isAsync (BOOL), isPartial (BOOL), requiredParameterCount (INT32), parameterTypes (STRING[]), annotations (STRING[])"
   Function: "parameterCount (INT32), returnType (STRING), isVariadic (BOOL), visibility (STRING), isStatic (BOOL), isAbstract (BOOL), isFinal (BOOL), isAsync (BOOL), parameterTypes (STRING[]), annotations (STRING[])"
   Property: "declaredType (STRING) — the field's type annotation (e.g., 'Address', 'City'). Used for field-access chain resolution."

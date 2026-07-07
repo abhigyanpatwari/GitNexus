@@ -1,6 +1,7 @@
 import { spawn } from 'child_process';
 import { fileURLToPath } from 'node:url';
 import { LBUG_MAX_DB_SIZE } from './lbug-config.js';
+import { diagnoseExtensionLoad, type ExtensionLoadDiagnosis } from './extension-load-error.js';
 import { logger } from '../logger.js';
 
 const DEFAULT_EXTENSION_INSTALL_TIMEOUT_MS = 15_000;
@@ -30,6 +31,12 @@ export interface ExtensionCapability {
   loaded: boolean;
   /** Human-readable reason when `loaded` is false. */
   reason?: string;
+  /**
+   * Classified diagnosis of `reason`, computed ONCE at mark-unavailable time so
+   * per-request surfaces (ftsDegradedWarning on /api/search + MCP query) read the
+   * cached remedy instead of re-inspecting the extension file on every call (#2383 F3).
+   */
+  diagnosis?: ExtensionLoadDiagnosis;
 }
 
 /** Per-call overrides applied on top of `ExtensionManager` defaults. */
@@ -310,7 +317,14 @@ export class ExtensionManager {
     reason: string,
     warn: (message: string) => void,
   ): void {
-    this.capabilities.set(name, { name, loaded: false, reason });
+    // Classify once here (the single load-failure sink, run per Database not per
+    // request) so the hot per-request warning path does no file I/O (#2383 F3).
+    this.capabilities.set(name, {
+      name,
+      loaded: false,
+      reason,
+      diagnosis: diagnoseExtensionLoad(reason),
+    });
     const key = `${name}:${reason}`;
     if (this.warnedKeys.has(key)) return;
     this.warnedKeys.add(key);
