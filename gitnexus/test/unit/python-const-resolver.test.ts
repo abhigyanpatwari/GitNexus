@@ -322,12 +322,27 @@ describe('extractPythonModuleConstants — binding mutual-exclusivity (#2393)', 
     expect(resolveConstant('app/routes.py', 'ROUTE', r)).toBe('/imported');
   });
 
-  it('drops (never stale-import) an augmented assignment onto an imported base', () => {
-    // Deferred: folding `imported_base + "/v1"` would need currentOps to follow
-    // the import binding. Until then the skip floor drops it — never the stale "/api".
+  it('folds an augmented assignment onto an imported base (#2393)', () => {
     const r = repoFrom({
       'app/constants.py': 'BASE = "/api"\n',
       'app/routes.py': 'from .constants import BASE\nBASE += "/v1"\n',
+    });
+    expect(resolveConstant('app/routes.py', 'BASE', r)).toBe('/api/v1');
+  });
+
+  it('folds a chain of += onto an imported base (#2393)', () => {
+    const r = repoFrom({
+      'app/constants.py': 'BASE = "/api"\n',
+      'app/routes.py': 'from .constants import BASE\nBASE += "/a"\nBASE += "/b"\n',
+    });
+    expect(resolveConstant('app/routes.py', 'BASE', r)).toBe('/api/a/b');
+  });
+
+  it('drops a += onto an imported base that itself cannot be resolved (skip floor holds)', () => {
+    const r = repoFrom({
+      // `.missing` does not exist → the imported base is unresolvable → drop, never
+      // a wrong path.
+      'app/routes.py': 'from .missing import BASE\nBASE += "/v1"\n',
     });
     expect(resolveConstant('app/routes.py', 'BASE', r)).toBeNull();
   });

@@ -186,6 +186,10 @@ export function extractPythonModuleConstants(tree: Parser.Tree): ModuleConstants
   const literals = new Map<string, string>();
   const exprs = new Map<string, readonly Operand[]>();
   const imports = new Map<string, { module: string; originalName: string }>();
+  // Monotonic counter for synthetic import-alias keys (see the `+=`-on-import
+  // case in the augmented-assignment branch below). Per-file, so keys are unique
+  // within this file's ModuleConstants.
+  let importAliasSeq = 0;
 
   // The three maps are ONE logical namespace keyed by local name: a write to any
   // one clears the other two, so last-binding-in-source-order wins (matches
@@ -260,10 +264,25 @@ export function extractPythonModuleConstants(tree: Parser.Tree): ModuleConstants
     } else if (inner.type === 'augmented_assignment') {
       const left = inner.childForFieldName('left');
       if (left?.type !== 'identifier') continue;
+      const name = left.text;
       const isPlusEq = inner.childForFieldName('operator')?.text === '+=';
-      const prior = currentOps(left.text);
       const rhs = parseConstOperands(inner.childForFieldName('right'));
-      setName(left.text, isPlusEq && prior && rhs ? [...prior, ...rhs] : null);
+      // `X += rhs` folds onto X's prior value. When X is a local literal/expr,
+      // currentOps returns it. When X is an IMPORT, preserve the imported value
+      // under a synthetic `$imp$N` key ($ can never appear in a Python
+      // identifier, so it cannot collide with a real name) and reference it — so
+      // `from .c import BASE; BASE += "/v1"` folds to `<imported BASE>/v1` instead
+      // of dropping (#2393). setName below then clears X's own import binding.
+      let prior = currentOps(name);
+      if (prior === null && isPlusEq) {
+        const imp = imports.get(name);
+        if (imp !== undefined) {
+          const aliasKey = `$imp$${importAliasSeq++}`;
+          imports.set(aliasKey, imp);
+          prior = [{ kind: 'ref', name: aliasKey }];
+        }
+      }
+      setName(name, isPlusEq && prior && rhs ? [...prior, ...rhs] : null);
     }
   }
 
