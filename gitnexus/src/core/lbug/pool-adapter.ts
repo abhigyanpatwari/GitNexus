@@ -26,6 +26,7 @@ import {
   WAL_RECOVERY_SUGGESTION,
 } from './lbug-config.js';
 import {
+  guardWalQuarantine,
   isMissingFsError,
   isMissingShadowSidecarError,
   isReadOnlyShadowReplayError,
@@ -437,8 +438,14 @@ type TryQuarantineResult = { kind: 'quarantined'; path: string } | { kind: 'peer
  */
 async function tryQuarantineForMissingShadow(
   dbPath: string,
-  opts: { reason: string },
+  opts: { reason: string; err: unknown },
 ): Promise<TryQuarantineResult> {
+  // Refuse (throw) before renaming a live WAL when the shadow is present on
+  // disk or the orphan WAL is too large — parity with the serve path's
+  // refuseLargeWalQuarantine (issue #2382 review, Finding B). Kept OUTSIDE the
+  // try so the actionable recovery message propagates to the MCP caller rather
+  // than being re-wrapped as a rename failure.
+  await guardWalQuarantine(dbPath, opts.reason, opts.err, poolSidecarLogger);
   try {
     const quarantinePath = await quarantineWalForMissingShadow(dbPath, {
       logger: poolSidecarLogger,
@@ -485,6 +492,7 @@ async function replayShadowPagesWithWritableOpen(dbPath: string): Promise<void> 
     if (isMissingShadowSidecarError(err)) {
       await tryQuarantineForMissingShadow(dbPath, {
         reason: 'pool writable replay recovery',
+        err,
       });
       return;
     }
@@ -516,6 +524,7 @@ async function openReadOnlyDatabase(dbPath: string): Promise<lbug.Database> {
         db = undefined;
         await tryQuarantineForMissingShadow(dbPath, {
           reason: 'pool read-only recovery',
+          err,
         });
         await preflightLbugSidecars(dbPath, {
           mode: 'read-only',
@@ -654,6 +663,7 @@ async function doInitLbug(repoId: string, dbPath: string): Promise<void> {
 
         if (
           lastError.message.startsWith('LadybugDB checkpoint sidecar is missing') ||
+          lastError.message.startsWith('LadybugDB checkpoint sidecar is present but unreachable') ||
           lastError.message.startsWith('GitNexus could not move the LadybugDB WAL sidecar') ||
           isMissingShadowSidecarError(lastError)
         ) {

@@ -6,11 +6,14 @@ import { readFileSync } from 'node:fs';
 import {
   _resetSidecarRecoveryWarningsForTest,
   finalizeLbugSidecarsAfterClose,
+  guardWalQuarantine,
   inspectLbugSidecars,
+  isMissingShadowSidecarError,
   isPermissionRenameError,
   isReadOnlyShadowReplayError,
   listQuarantinedMissingShadowWals,
   preflightLbugSidecars,
+  presentShadowUnreachableMessage,
   renameFailureMessage,
   shadowSidecarRecoveryMessage,
   TINY_ORPHAN_WAL_BYTES,
@@ -221,6 +224,213 @@ describe('LadybugDB sidecar recovery', () => {
       );
       const markers = source.match(/\/\/ LADYBUGDB-CONTRACT:/g) ?? [];
       expect(markers.length).toBe(2);
+    });
+  });
+
+  describe('isMissingShadowSidecarError (Windows-locale-robust, issue #2382)', () => {
+    // Non-ASCII-safe Windows shadow path used across the Windows-format cases.
+    const winShadow = String.raw`F:\McMod\repo\.gitnexus\lbug.shadow`;
+
+    it('matches the exact #2382 Windows (English) string', () => {
+      expect(
+        isMissingShadowSidecarError(
+          new Error(
+            `IO exception: Cannot open file. path: ${winShadow} - Error 2: The system cannot find the file specified.`,
+          ),
+        ),
+      ).toBe(true);
+    });
+
+    it('matches Windows Error 2 with LOCALIZED trailing text (keys on the code, not the phrase)', () => {
+      // Simulated non-English Windows: the OS reason is localized but the Win32
+      // code stays 2. R2 requires recognition here — the reporter's platform.
+      expect(
+        isMissingShadowSidecarError(
+          new Error(
+            `IO exception: Cannot open file. path: ${winShadow} - Error 2: 系统找不到指定的文件。`,
+          ),
+        ),
+      ).toBe(true);
+    });
+
+    it('matches the POSIX form (unchanged — R5)', () => {
+      expect(
+        isMissingShadowSidecarError(
+          new Error(
+            'Cannot open file /home/u/repo/.gitnexus/lbug.shadow: No such file or directory',
+          ),
+        ),
+      ).toBe(true);
+    });
+
+    it('rejects Error 3 path-not-found (non-ASCII garble artifact, shadow present — data-loss guard)', () => {
+      expect(
+        isMissingShadowSidecarError(
+          new Error(
+            `Cannot open file. path: ${winShadow} - Error 3: The system cannot find the path.`,
+          ),
+        ),
+      ).toBe(false);
+    });
+
+    it('rejects Error 5 access-denied (present-but-locked)', () => {
+      expect(
+        isMissingShadowSidecarError(
+          new Error(`Cannot open file. path: ${winShadow} - Error 5: Access is denied.`),
+        ),
+      ).toBe(false);
+    });
+
+    it('rejects Error 32 sharing-violation and does not confuse it with Error 2', () => {
+      expect(
+        isMissingShadowSidecarError(
+          new Error(
+            `Cannot open file. path: ${winShadow} - Error 32: The process cannot access the file because it is being used by another process.`,
+          ),
+        ),
+      ).toBe(false);
+    });
+
+    it('rejects a path-embedded "error 2" when the real reason is a locked code (suffix-anchored — KTD2)', () => {
+      expect(
+        isMissingShadowSidecarError(
+          new Error(
+            String.raw`Cannot open file. path: F:\error 2\repo\.gitnexus\lbug.shadow - Error 32: The process cannot access the file.`,
+          ),
+        ),
+      ).toBe(false);
+    });
+
+    it('rejects an EARLIER .shadow-suffixed dir + later "error 2" segment with a real Error 32 (last-anchor — Finding A)', () => {
+      // Regression for the first-`.shadow` false-positive: a `.shadow`-suffixed
+      // parent dir (e.g. a branch=subdir dir) before the real `lbug.shadow`,
+      // plus a path-embedded `error 2`, must not read the path number as the
+      // Win32 code when the true trailing code is an excluded one (32 = locked).
+      expect(
+        isMissingShadowSidecarError(
+          new Error(
+            String.raw`IO exception: Cannot open file. path: F:\snap.shadow\error 2\repo\.gitnexus\lbug.shadow - Error 32: The process cannot access the file.`,
+          ),
+        ),
+      ).toBe(false);
+    });
+
+    it('rejects an earlier .shadow-suffixed dir + "error 2" segment with a real Error 5 (last-anchor — Finding A)', () => {
+      expect(
+        isMissingShadowSidecarError(
+          new Error(
+            String.raw`Cannot open file. path: F:\repos\.shadow\error 2\project\.gitnexus\lbug.shadow - Error 5: Access is denied.`,
+          ),
+        ),
+      ).toBe(false);
+    });
+
+    it('rejects a .shadow-backup dir (hyphen boundary) + "error 2" segment with a real Error 3 (last-anchor — Finding A)', () => {
+      // `.shadow-backup` matches `/\.shadow\b/` (hyphen is a word boundary), so
+      // first-match anchoring would slice from it; last-match must still land on
+      // the real `lbug.shadow` and read the true Error 3 (present-shadow garble).
+      expect(
+        isMissingShadowSidecarError(
+          new Error(
+            String.raw`Cannot open file. path: F:\repos\.shadow-backup\error 2\p\.gitnexus\lbug.shadow - Error 3: The system cannot find the path.`,
+          ),
+        ),
+      ).toBe(false);
+    });
+
+    it('rejects POSIX permission-denied on the shadow', () => {
+      expect(
+        isMissingShadowSidecarError(
+          new Error('Cannot open file /home/u/repo/.gitnexus/lbug.shadow: Permission denied'),
+        ),
+      ).toBe(false);
+    });
+
+    it('rejects a missing non-shadow file (WAL / main DB)', () => {
+      expect(
+        isMissingShadowSidecarError(
+          new Error('Cannot open file /home/u/repo/.gitnexus/lbug.wal: No such file or directory'),
+        ),
+      ).toBe(false);
+    });
+
+    it('rejects unrelated errors', () => {
+      expect(isMissingShadowSidecarError(new Error('something else entirely'))).toBe(false);
+    });
+
+    it('stays distinct from isReadOnlyShadowReplayError (predicates did not merge — KTD5)', () => {
+      const winMissing = new Error(
+        `Cannot open file. path: ${winShadow} - Error 2: The system cannot find the file specified.`,
+      );
+      expect(isReadOnlyShadowReplayError(winMissing)).toBe(false);
+      const replay = new Error(
+        "Runtime exception: Couldn't replay shadow pages under read-only mode.",
+      );
+      expect(isMissingShadowSidecarError(replay)).toBe(false);
+    });
+  });
+
+  describe('guardWalQuarantine warn anti-spam (warnOnce milestones — S2/S3)', () => {
+    it('warns once, not per-call, on a repeated present-shadow refusal', async () => {
+      await fs.writeFile(`${dbPath}.wal`, Buffer.alloc(128));
+      await fs.writeFile(`${dbPath}.shadow`, Buffer.alloc(64));
+      const log = logger();
+      const trigger = new Error('trigger');
+
+      await expect(guardWalQuarantine(dbPath, 'read-only', trigger, log)).rejects.toThrow(
+        /present but unreachable/,
+      );
+      await expect(guardWalQuarantine(dbPath, 'read-only', trigger, log)).rejects.toThrow(
+        /present but unreachable/,
+      );
+
+      // First refusal warns (milestone 1); the second same-key occurrence is
+      // downgraded to debug by warnOnce rather than warning every request.
+      expect(log.warn).toHaveBeenCalledTimes(1);
+      expect(log.warn).toHaveBeenCalledWith(
+        expect.stringContaining('the .shadow sidecar is present on disk'),
+      );
+      expect(log.debug).toHaveBeenCalled();
+    });
+
+    it('warns once, not per-call, on a repeated large-orphan-WAL refusal', async () => {
+      await fs.writeFile(`${dbPath}.wal`, Buffer.alloc(TINY_ORPHAN_WAL_BYTES + 1));
+      const log = logger();
+      const trigger = new Error('trigger');
+
+      await expect(guardWalQuarantine(dbPath, 'writable', trigger, log)).rejects.toThrow(
+        /Rebuild the index/,
+      );
+      await expect(guardWalQuarantine(dbPath, 'writable', trigger, log)).rejects.toThrow(
+        /Rebuild the index/,
+      );
+
+      expect(log.warn).toHaveBeenCalledTimes(1);
+      expect(log.debug).toHaveBeenCalled();
+    });
+  });
+
+  describe('presentShadowUnreachableMessage (present-but-locked, not missing — S2)', () => {
+    const dbPath = '/repo/.gitnexus/lbug';
+    const original = new Error(
+      String.raw`IO exception: Cannot open file. path: F:\repo\.gitnexus\lbug.shadow - Error 5: Access is denied.`,
+    );
+
+    it('describes a present-but-unreachable sidecar and does NOT instruct a rebuild', () => {
+      const message = presentShadowUnreachableMessage(dbPath, original);
+      expect(message).toMatch(/present but unreachable/);
+      expect(message).toMatch(/path reachability or a file lock/);
+      // The distinguishing property vs shadowSidecarRecoveryMessage: the shadow
+      // is present, so it must not tell the operator to rebuild the index.
+      expect(message).not.toMatch(/Rebuild the index/);
+    });
+
+    it('preserves the Original error tail so downstream recognition still matches', () => {
+      const message = presentShadowUnreachableMessage(dbPath, original);
+      expect(message).toContain('Original error:');
+      expect(isMissingShadowSidecarError(new Error(message))).toBe(false); // Error 5, still excluded
+      // Contrast: shadowSidecarRecoveryMessage tells the operator to rebuild.
+      expect(shadowSidecarRecoveryMessage(dbPath, original)).toMatch(/Rebuild the index/);
     });
   });
 

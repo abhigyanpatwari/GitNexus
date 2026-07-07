@@ -43,6 +43,7 @@ const PLATFORM_LOGIC = [
   'test/unit/cursor-hook.test.ts',
   'test/unit/sidecar-recovery.test.ts',
   'test/unit/pool-wal-recovery.test.ts',
+  'test/unit/lbug-adapter-wal-schema.test.ts',
   'test/unit/detect-changes-worktree.test.ts',
   'test/unit/eval-server-bind-restriction.test.ts',
   'test/unit/ignore-service.test.ts',
@@ -61,6 +62,11 @@ const PLATFORM_LOGIC = [
   // array form. Runs on every platform (the ubuntu suite covers Linux; this
   // registration adds windows + macos).
   'test/unit/embedding-install-arg-delivery.test.ts',
+  // Structural FTS-extension classifier against REAL binaries (#2374): on this
+  // matrix `process.execPath` / `lbugjs.node` are a real PE (windows) and Mach-O
+  // (macos), so the header parsing is proven on genuine binaries, not synthetic
+  // buffers (the ubuntu suite covers the ELF path).
+  'test/integration/extension-binary-real.test.ts',
 ];
 
 // Native LadybugDB integration tests — exercise the @ladybugdb/core

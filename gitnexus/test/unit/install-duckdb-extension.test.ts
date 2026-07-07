@@ -2,7 +2,9 @@ import { describe, it, expect, vi } from 'vitest';
 import {
   chooseInstallVerb,
   installDuckDbExtension,
+  FILE_CORRUPTION_SIGNATURES as installerSignatures,
 } from '../../scripts/install-duckdb-extension.mjs';
+import { FILE_CORRUPTION_SIGNATURES as classifierSignatures } from '../../src/core/lbug/extension-load-error.js';
 
 /**
  * Offline, network-free regression guard for the install-verb decision (#2374,
@@ -78,5 +80,16 @@ describe('installDuckDbExtension issues the chosen SQL (#2374)', () => {
       /Invalid DuckDB extension name/,
     );
     expect(connect).not.toHaveBeenCalled();
+  });
+});
+
+describe('FILE_CORRUPTION_SIGNATURES parity (#2383 F5b)', () => {
+  it('the installer copy stays byte-identical to the classifier copy', () => {
+    // The two lists are deliberately duplicated (the .mjs cannot import the .ts).
+    // A one-sided edit would desync the FORCE-INSTALL verb from remedy classification;
+    // compare source + flags so a change to either regex fails here.
+    const describeRegexes = (res: readonly RegExp[]): string[] =>
+      res.map((re) => `${re.source}/${re.flags}`);
+    expect(describeRegexes(installerSignatures)).toEqual(describeRegexes(classifierSignatures));
   });
 });
