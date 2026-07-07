@@ -980,14 +980,26 @@ function buildPythonRepoContext(
   const prefixesByLongKey = new Map<string, Set<string>>();
   const prefixesByShortKey = new Map<string, Set<string>>();
 
-  // Cross-file pre-pass: only `include_router` sites need it — they bind a
-  // prefix declared in one file to a router defined in another. Same-file
-  // `APIRouter(prefix=...)` is resolved in scan() from the file's own tree, so
-  // APIRouter-only files are left out here and never parsed twice.
+  // Single read pass (#2393): slurp every `.py` file's content ONCE. This used to
+  // be two passes — the include_router pre-pass below and the #2391 constant cost
+  // gate each re-read every `.py` file. The composed-route cost gate is computed
+  // in the same pass so a literal-only repo still does exactly one read and zero
+  // parses.
+  const pyContents = new Map<string, string>();
+  let hasComposedRoute = false;
   for (const rel of files) {
     if (!rel.endsWith('.py')) continue;
     const src = readFile(rel);
     if (!src) continue;
+    pyContents.set(rel, src);
+    if (!hasComposedRoute && NONLITERAL_ROUTE_DECORATOR_RE.test(src)) hasComposedRoute = true;
+  }
+
+  // Cross-file pre-pass: only `include_router` sites need it — they bind a
+  // prefix declared in one file to a router defined in another. Same-file
+  // `APIRouter(prefix=...)` is resolved in scan() from the file's own tree, so
+  // APIRouter-only files are left out here and never parsed twice.
+  for (const src of pyContents.values()) {
     if (!src.includes('include_router')) continue;
     parser.setLanguage(Python);
     const tree = parseSource(parser, src);
@@ -1078,20 +1090,12 @@ function buildPythonRepoContext(
 
   // #2391: build the repo-wide constant map for resolving non-literal decorator
   // paths. Cost gate (KTD6): only PARSE for constants when some file actually has
-  // a non-literal `@router`/`@app` decorator (cheap content pre-filter); a
-  // literal-only repo pays just one read pass. When active, parse EVERY `.py`
-  // file so the resolvable set matches the ingestion aggregate (R4 parity) — a
-  // narrower set would return null where ingestion resolves.
+  // a non-literal `@router`/`@app` decorator (the `hasComposedRoute` pre-filter
+  // computed in the single read pass above); a literal-only repo does no parsing
+  // here. When active, parse EVERY `.py` file so the resolvable set matches the
+  // ingestion aggregate (R4 parity) — a narrower set would return null where
+  // ingestion resolves.
   const constantsByFile = new Map<string, ModuleConstants>();
-  const pyContents = new Map<string, string>();
-  let hasComposedRoute = false;
-  for (const rel of files) {
-    if (!rel.endsWith('.py')) continue;
-    const src = readFile(rel);
-    if (!src) continue;
-    pyContents.set(rel, src);
-    if (!hasComposedRoute && NONLITERAL_ROUTE_DECORATOR_RE.test(src)) hasComposedRoute = true;
-  }
   if (hasComposedRoute) {
     for (const [rel, src] of pyContents) {
       parser.setLanguage(Python);
