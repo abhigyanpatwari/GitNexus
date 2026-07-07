@@ -35,9 +35,11 @@ if (missing.length > 0) {
 // below; sharding keeps each runner well under it (see ci-tests.yml matrix).
 const shardArg = process.argv.slice(2).find((a) => /^--shard=\d+\/\d+$/.test(a));
 
-// Per-shard watchdog. Kept at 15 min: with sharding each runner does a fraction
-// of the suite, so this is generous headroom, not the tripwire it had become for
-// the whole unsharded Windows run.
+// Per-shard watchdog, 15 min. Sharding splits the file list by COUNT, not
+// runtime, so the heaviest spawn suites can cluster on one shard — what this
+// bounds is the *busiest* shard, not an even 1/n of wall-clock. With 3 shards
+// even that shard clears the watchdog, where the whole unsharded Windows run
+// used to trip it.
 const TIMEOUT_MIN = 15;
 
 console.log(

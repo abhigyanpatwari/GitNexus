@@ -81,7 +81,7 @@ jobs:
     steps:
       - id: gen
         run: |
-          TOTAL=2
+          TOTAL=3
           if [ "$TOTAL" -lt 1 ]; then echo "shard TOTAL must be >= 1" >&2; exit 1; fi
           echo "shards=$(jq -nc --argjson n "$TOTAL" '[range(1; $n + 1)]')" >> "$GITHUB_OUTPUT"
           echo "total=$TOTAL" >> "$GITHUB_OUTPUT"
@@ -97,11 +97,13 @@ jobs:
       matrix:
         # Ubuntu already covered by the coverage job above
         os: [windows-latest, macos-latest]
-        # Shard the fixed file list across two runners per OS. The suite is
-        # dominated by ~50 CLI/worker process spawns; Windows is ~5x slower than
-        # macOS at those, so the unsharded run crept past the 15-min watchdog in
-        # run-cross-platform.ts. Two shards keep each runner at ~half the work
-        # with comfortable headroom (macOS/Ubuntu unaffected — they had margin).
+        # Shard the fixed file list across N runners per OS (N = TOTAL in the
+        # shard-plan job). The suite is dominated by ~50 CLI/worker process
+        # spawns and Windows is ~5x slower than macOS at those, so the unsharded
+        # run crept past the 15-min watchdog in run-cross-platform.ts. vitest
+        # shards by file COUNT, not runtime, so the heaviest spawn suites can
+        # cluster on one shard; 3 shards keep even the busiest Windows shard
+        # comfortably under the watchdog (macOS had margin either way).
         # Shard indices come from the shard-plan job (single source of truth):
         # its TOTAL drives this list and the /N in the job name + --shard arg.
         shard: ${{ fromJSON(needs.shard-plan.outputs.shards) }}
