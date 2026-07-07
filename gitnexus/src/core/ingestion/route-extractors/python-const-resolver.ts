@@ -139,8 +139,9 @@ export function resolveOperands(
  * foldable string expression. Handles a bare string literal, a bare identifier
  * (`X = Y`), and left-associative `+` chains of the two (`A + "/b" + C`).
  * Everything else — numbers, calls, attribute access (`settings.X`), f-strings,
- * `concatenated_string` adjacency, and non-`+` operators — returns `null`, which
- * makes the constant unresolvable (→ skip floor), never a wrong value.
+ * conditional expressions (`x if c else y`), `concatenated_string` adjacency, and
+ * non-`+` operators — returns `null`, which makes the constant unresolvable
+ * (→ skip floor), never a wrong value.
  */
 export function parseConstOperands(
   node: SyntaxNode | null | undefined,

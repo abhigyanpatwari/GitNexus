@@ -971,6 +971,17 @@ function recordPrefix(target: Map<string, Set<string>>, key: string, prefix: str
   target.set(key, set);
 }
 
+// Cheap cost-gate pre-filter: a `@router`/`@app.<verb>(` call whose first
+// argument is non-literal — either it STARTS with an identifier (a bare constant
+// or the head of `CONST + "/x"`), or it is a string-literal-LEADING concat
+// (`"/api" + SUFFIX`) detected by a `+` before the closing paren on the decorator
+// line (#2393). Gating the literal-leading case on the `+` (not merely a leading
+// quote) keeps a plain string route `@router.get("/x")` OFF the gate, so a
+// literal-only repo pays no parse pass. Deliberately loose — a false positive
+// only costs a parse; a false negative would silently drop the feature.
+const NONLITERAL_ROUTE_DECORATOR_RE =
+  /@\s*(?:app|router)\s*\.\s*(?:get|post|put|delete|patch)\s*\(\s*(?:[A-Za-z_]|["'][^)\n]*\+)/;
+
 function buildPythonRepoContext(
   files: string[],
   parser: Parser,
@@ -1114,17 +1125,6 @@ function buildPythonRepoContext(
     constantsByFile,
   };
 }
-
-// Cheap cost-gate pre-filter: a `@router`/`@app.<verb>(` call whose first
-// argument is non-literal — either it STARTS with an identifier (a bare constant
-// or the head of `CONST + "/x"`), or it is a string-literal-LEADING concat
-// (`"/api" + SUFFIX`) detected by a `+` before the closing paren on the decorator
-// line (#2393). Gating the literal-leading case on the `+` (not merely a leading
-// quote) keeps a plain string route `@router.get("/x")` OFF the gate, so a
-// literal-only repo pays no parse pass. Deliberately loose — a false positive
-// only costs a parse; a false negative would silently drop the feature.
-const NONLITERAL_ROUTE_DECORATOR_RE =
-  /@\s*(?:app|router)\s*\.\s*(?:get|post|put|delete|patch)\s*\(\s*(?:[A-Za-z_]|["'][^)\n]*\+)/;
 
 function joinPrefix(prefix: string, route: string): string {
   // Delegate to the shared route-path normalizer so the group contract and the

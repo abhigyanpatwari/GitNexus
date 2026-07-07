@@ -142,9 +142,9 @@ describe('FastAPI composed route constants — ingestion↔group parity (#2391 R
 
     // Every composed route the ingestion side resolved is also a group provider
     // path, and vice versa — the two subsystems agree (R4), including the
-    // multi-hop and per-package-collision cases. (The `/v2` constructor-prefix
-    // route is ingestion-only garnish via APIRouter(prefix); the shared composed
-    // paths are what must match.)
+    // multi-hop and per-package-collision cases. (The `/v2` APIRouter(prefix)
+    // route is emitted by BOTH sides as well — asserted separately above; the
+    // four paths below are this block's shared-parity set.)
     for (const composed of ['/api/v1/widgets/get', '/root/mid/leaf', '/a-shared', '/b-shared']) {
       expect(ingestionUrls.has(composed)).toBe(true);
       expect(groupPaths.has(composed)).toBe(true);
