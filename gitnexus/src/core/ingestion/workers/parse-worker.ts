@@ -313,6 +313,21 @@ export interface ExtractedDecoratorRoute {
    */
   decoratorReceiver?: string;
   /**
+   * Raw text of a non-literal decorator path argument (`#2391`), e.g.
+   * `API_V1_WIDGETS_GET` or `API_V1 + "/widgets"`. Present only when the
+   * decorator's first argument was NOT a string literal, in which case
+   * `routePath` is empty and parse-impl resolves the constant cross-file (or
+   * drops the route on failure). Absent for ordinary string-literal routes.
+   */
+  routePathExpr?: string;
+  /**
+   * Parsed operand list for {@link routePathExpr} — an identifier reference or a
+   * `+`-concatenation, in the {@link Operand} shape the constant resolver folds.
+   * `undefined` when the expression was not a foldable string form (e.g. an
+   * attribute access), in which case the route is dropped at resolution.
+   */
+  routePathOperands?: Operand[];
+  /**
    * FastAPI `app.include_router(prefix='/x')` prefix that applies to
    * this route. Filled by parse-impl after cross-file aggregation; the
    * routes phase joins it via `normalizeExtractedRoutePath`. `null` /
@@ -329,6 +344,18 @@ export interface ExtractedDecoratorRoute {
    * resolution then falls back (the Route node simply carries no handlerSymbolId).
    */
   handlerName?: string;
+}
+
+/**
+ * One Python file's module-level string constants (#2391), used by parse-impl to
+ * resolve non-literal decorator route paths cross-file. `constants` is the
+ * `Map`-based {@link ModuleConstants} shape — it survives the worker
+ * `postMessage` boundary (structured clone) and the parse cache
+ * (`mapReplacer`/`mapReviver`) without conversion.
+ */
+export interface ExtractedModuleConstants {
+  filePath: string;
+  constants: ModuleConstants;
 }
 
 export interface ExtractedToolDef {
@@ -415,6 +442,13 @@ export interface ParseWorkerResult {
    * predate the field; consumers must guard with `if (… ?? [])`).
    */
   routerModuleAliases?: ExtractedRouterModuleAlias[];
+  /**
+   * Per-file Python module-level string constants (#2391). parse-impl aggregates
+   * these into a repo-wide, file-path-keyed map and resolves each decorator
+   * route's non-literal path expression against it. Optional for cache backward
+   * compatibility (older entries predate the field; consumers guard with `?? []`).
+   */
+  moduleConstants?: ExtractedModuleConstants[];
   toolDefs: ExtractedToolDef[];
   ormQueries: ExtractedORMQuery[];
   constructorBindings: FileConstructorBindings[];
@@ -1173,6 +1207,12 @@ export function extractORMQueries(
 // import the function and its types directly from `route-extractors/`.
 
 import { extractFastAPIRouterBindings } from '../route-extractors/fastapi-router-bindings.js';
+import {
+  extractPythonModuleConstants,
+  parseConstOperands,
+  type ModuleConstants,
+  type Operand,
+} from '../route-extractors/python-const-resolver.js';
 
 /**
  * Report a non-fatal worker issue to the pool over IPC so a caught error is not
@@ -1452,6 +1492,12 @@ const processFileGroup = (
       if (captureMap['decorator'] && captureMap['decorator.name']) {
         const decoratorName = captureMap['decorator.name'].text;
         const decoratorArg = captureMap['decorator.arg']?.text;
+        // #2391: the first positional arg captured as either a string node
+        // (`arg_str`, present even for the empty-string literal `""` which has no
+        // `string_content`) or a non-literal expression (`arg_expr`: an
+        // identifier or a `+`-concatenation).
+        const decoratorArgStr = captureMap['decorator.arg_str'];
+        const decoratorArgExpr = captureMap['decorator.arg_expr'];
         const decoratorReceiver = captureMap['decorator.receiver']?.text;
         const decoratorNode = captureMap['decorator'];
         // Store by the decorator's end line — the definition follows immediately after
@@ -1461,19 +1507,39 @@ const processFileGroup = (
         });
 
         if (ROUTE_DECORATOR_NAMES.has(decoratorName)) {
-          const routePath = decoratorArg || '';
           const method = decoratorName.replace('Mapping', '').toUpperCase();
           const httpMethod = ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'].includes(method)
             ? method
             : 'GET';
-          result.decoratorRoutes.push({
+          const base = {
             filePath: file.path,
-            routePath,
             httpMethod,
             decoratorName,
             lineNumber: decoratorNode.startPosition.row + lineOffset,
             ...(decoratorReceiver ? { decoratorReceiver } : {}),
-          });
+          };
+          if (decoratorArgStr) {
+            // String-literal path (the fast path, unchanged). Empty-string
+            // literal `""` has no `string_content` → `decoratorArg` undefined →
+            // routePath '' (a valid path under an APIRouter prefix).
+            result.decoratorRoutes.push({ ...base, routePath: decoratorArg ?? '' });
+          } else if (decoratorArgExpr) {
+            // #2391 non-literal path (imported/composed constant). Emit the raw
+            // expression + its operands for cross-file resolution in parse-impl;
+            // `routePath` stays empty until resolved (or the route is dropped).
+            const operands: Operand[] | null =
+              decoratorArgExpr.type === 'identifier'
+                ? [{ kind: 'ref', name: decoratorArgExpr.text }]
+                : parseConstOperands(decoratorArgExpr);
+            result.decoratorRoutes.push({
+              ...base,
+              routePath: '',
+              routePathExpr: decoratorArgExpr.text,
+              ...(operands ? { routePathOperands: operands } : {}),
+            });
+          }
+          // Otherwise the first arg is absent or an unsupported shape
+          // (attribute access, call, …) → skip; never a phantom `POST /`.
         }
         // MCP/RPC tool detection: @mcp.tool(), @app.tool(), @server.tool()
         if (decoratorName === 'tool') {
@@ -2444,6 +2510,14 @@ const processFileGroup = (
         (result.routerModuleAliases ??= []),
         (result.routerConstructorPrefixes ??= []),
       );
+      // #2391: harvest module-level string constants + from-imports so parse-impl
+      // can resolve non-literal decorator route paths cross-file. Only emit for
+      // files that carry something resolvable (a constant definition or an import
+      // binding) to keep the aggregate bounded on large repos.
+      const constants = extractPythonModuleConstants(tree);
+      if (constants.literals.size > 0 || constants.exprs.size > 0 || constants.imports.size > 0) {
+        (result.moduleConstants ??= []).push({ filePath: file.path, constants });
+      }
     }
 
     // Language-specific decorator route extraction via provider hook.

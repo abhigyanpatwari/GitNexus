@@ -55,7 +55,7 @@ import type { ParseWorkerResult } from '../core/ingestion/workers/parse-worker.j
 // the main thread (the #1983 OOM). Because the two stores share this version,
 // any future change to the `ParsedFile` serialization shape MUST bump
 // SCHEMA_BUMP so both invalidate in lockstep.
-const SCHEMA_BUMP = 10; // PR #2200: Property nodes gained `rawDeclaredType` + `annotations` (Spring DI); warm caches must invalidate or the DI phase silently no-ops on replayed pre-upgrade nodes
+const SCHEMA_BUMP = 11; // #2391: ExtractedDecoratorRoute gained `routePathExpr`/`routePathOperands` and ParseWorkerResult gained per-file `moduleConstants`; warm caches must invalidate or composed FastAPI routes silently stay `POST /` on replayed pre-upgrade shards. (10 = PR #2200: Property nodes gained `rawDeclaredType` + `annotations` for Spring DI)
 const GITNEXUS_PKG_VERSION = (() => {
   try {
     // package.json sits at gitnexus/package.json — two levels up from
