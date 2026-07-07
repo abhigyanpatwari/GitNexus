@@ -131,6 +131,18 @@ jobs:
       - uses: ./.github/actions/setup-gitnexus
         with:
           build: 'true'
+      # Warm-cache the installed LadybugDB FTS extension (~/.lbdb/extension) per
+      # OS + lockfile so a warm run skips the network install entirely, and the
+      # parallel shards share one download across runs. Pure reliability/speed:
+      # on a cache miss the tests self-install FTS on demand (see
+      # test/helpers/fts-availability.ts), so a miss just falls back to install —
+      # never a correctness dependency. Keyed by lockfile hash so a LadybugDB
+      # version bump re-installs; per-OS because the extension is a native binary.
+      - name: Cache LadybugDB FTS extension
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v5
+        with:
+          path: ~/.lbdb/extension
+          key: lbug-fts-${{ runner.os }}-${{ hashFiles('gitnexus/package-lock.json') }}
       - name: Run platform-sensitive tests
         run: npx tsx scripts/run-cross-platform.ts --shard=${{ matrix.shard }}/${{ needs.shard-plan.outputs.total }}
         working-directory: gitnexus
