@@ -69,11 +69,29 @@ jobs:
             gitnexus-web/web-test-results.json
           retention-days: 5
 
+  # Single source of truth for the platform-sensitive shard count. TOTAL below
+  # generates both the shard index list (the matrix) and the /N denominator (job
+  # name + --shard arg), so they can't drift — bump the shard count by editing
+  # TOTAL alone. Checkout-free (ubuntu ships jq), so no credential surface.
+  shard-plan:
+    runs-on: ubuntu-latest
+    outputs:
+      shards: ${{ steps.gen.outputs.shards }}
+      total: ${{ steps.gen.outputs.total }}
+    steps:
+      - id: gen
+        run: |
+          TOTAL=2
+          if [ "$TOTAL" -lt 1 ]; then echo "shard TOTAL must be >= 1" >&2; exit 1; fi
+          echo "shards=$(jq -nc --argjson n "$TOTAL" '[range(1; $n + 1)]')" >> "$GITHUB_OUTPUT"
+          echo "total=$TOTAL" >> "$GITHUB_OUTPUT"
+
   # Platform-sensitive subset only — the full suite runs on Ubuntu above.
   # See gitnexus/scripts/cross-platform-tests.ts for the file list and
   # rationale for each included test.
   cross-platform:
-    name: ${{ matrix.os }} (platform-sensitive) ${{ matrix.shard }}/2
+    name: ${{ matrix.os }} (platform-sensitive) ${{ matrix.shard }}/${{ needs.shard-plan.outputs.total }}
+    needs: shard-plan
     strategy:
       fail-fast: false
       matrix:
@@ -84,10 +102,9 @@ jobs:
         # macOS at those, so the unsharded run crept past the 15-min watchdog in
         # run-cross-platform.ts. Two shards keep each runner at ~half the work
         # with comfortable headroom (macOS/Ubuntu unaffected — they had margin).
-        # NOTE: the shard COUNT lives in three coupled places that must stay in
-        # sync — this list length, the `${{ matrix.shard }}/2` job-name suffix,
-        # and the `--shard=…/2` arg below. Change all three together.
-        shard: [1, 2]
+        # Shard indices come from the shard-plan job (single source of truth):
+        # its TOTAL drives this list and the /N in the job name + --shard arg.
+        shard: ${{ fromJSON(needs.shard-plan.outputs.shards) }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     # Same guarantee on the platform-sensitive runners: FTS-dependent suites in
@@ -113,7 +130,7 @@ jobs:
         with:
           build: 'true'
       - name: Run platform-sensitive tests
-        run: npx tsx scripts/run-cross-platform.ts --shard=${{ matrix.shard }}/2
+        run: npx tsx scripts/run-cross-platform.ts --shard=${{ matrix.shard }}/${{ needs.shard-plan.outputs.total }}
         working-directory: gitnexus
 
   # Tree-sitter ABI gate (#1922). Two halves, both blocking:
