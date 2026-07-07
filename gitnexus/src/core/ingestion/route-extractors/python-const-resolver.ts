@@ -107,6 +107,17 @@ function normalizePosix(path: string): string {
   return out.join('/');
 }
 
+// ponytail: the fold core ({@link resolveExpr}/{@link resolveConstant}) is
+// language-agnostic — it walks an Operand[] + a file→ModuleConstants map. Only
+// this function and {@link extractPythonModuleConstants} encode PYTHON import
+// semantics (leading-dot relative imports, `.py` module files). Java/Kotlin/C#
+// route path constants (`@GetMapping(PathConstants.X)`, `@RequestMapping(PREFIX)`)
+// are the SAME problem and are currently literal-only (see http-patterns/java.ts,
+// kotlin.ts). When a second language needs this, generalize by parameterizing the
+// fold with a pluggable `(importingFileKey, moduleSpec) → fileKey` resolver plus a
+// per-language `extractModuleConstants` — the language-agnostic-primitive shape
+// used by route-path.ts / spring-shared.ts. Not done now (YAGNI: Python is the only
+// consumer, #2391), but this is the seam.
 /**
  * Resolve an import's module specifier to the unique file key it refers to, or
  * `null` when it cannot be pinned to exactly one file (KTD4).
