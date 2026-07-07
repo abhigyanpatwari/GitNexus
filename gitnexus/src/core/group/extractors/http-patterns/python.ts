@@ -7,6 +7,13 @@ import {
   type LanguagePatterns,
 } from '../tree-sitter-scanner.js';
 import { normalizeExtractedRoutePath } from '../../../ingestion/route-extractors/route-path.js';
+import {
+  extractPythonModuleConstants,
+  parseConstOperands,
+  resolveOperands,
+  type ModuleConstants,
+  type Operand,
+} from '../../../ingestion/route-extractors/python-const-resolver.js';
 import type { HttpDetection, HttpLanguagePlugin, RepoContext } from './types.js';
 
 /**
@@ -75,6 +82,46 @@ const FASTAPI_ROUTER_PATTERNS = compilePatterns({
               object: (identifier) @obj (#eq? @obj "router")
               attribute: (identifier) @method (#match? @method "^(get|post|put|delete|patch)$"))
             arguments: (argument_list . (string) @path)))
+      `,
+    },
+  ],
+} satisfies LanguagePatterns<Record<string, never>>);
+
+// #2391: `@router.<verb>` / `@app.<verb>` whose first argument is a non-literal
+// path — a bare imported constant or a `+`-concatenation. The path is resolved
+// against the repo-wide constant map (parity with the ingestion side) and, on
+// failure, the route is skipped (no provider contract) exactly like ingestion.
+const FASTAPI_ROUTER_EXPR_PATTERNS = compilePatterns({
+  name: 'python-fastapi-router-expr',
+  language: Python,
+  patterns: [
+    {
+      meta: {},
+      query: `
+        (decorator
+          (call
+            function: (attribute
+              object: (identifier) @obj (#eq? @obj "router")
+              attribute: (identifier) @method (#match? @method "^(get|post|put|delete|patch)$"))
+            arguments: (argument_list . [(identifier) (binary_operator)] @path)))
+      `,
+    },
+  ],
+} satisfies LanguagePatterns<Record<string, never>>);
+
+const FASTAPI_APP_EXPR_PATTERNS = compilePatterns({
+  name: 'python-fastapi-app-expr',
+  language: Python,
+  patterns: [
+    {
+      meta: {},
+      query: `
+        (decorator
+          (call
+            function: (attribute
+              object: (identifier) @obj (#eq? @obj "app")
+              attribute: (identifier) @method (#match? @method "^(get|post|put|delete|patch)$"))
+            arguments: (argument_list . [(identifier) (binary_operator)] @path)))
       `,
     },
   ],
@@ -858,6 +905,13 @@ interface PythonRepoContext {
   prefixesByLongKey: Map<string, Set<string>>;
   /** stem only → set of prefixes (basename fallback, may collide) */
   prefixesByShortKey: Map<string, Set<string>>;
+  /**
+   * File-path-keyed module string constants (#2391), for resolving non-literal
+   * `@router`/`@app` decorator paths. Empty when the repo has no composed-constant
+   * route (cost gate). Keyed identically to the ingestion aggregate so provider
+   * contracts and graph Route nodes resolve the same paths (R4 parity).
+   */
+  constantsByFile: Map<string, ModuleConstants>;
 }
 
 /** Strip `.py` and return the bare basename (e.g. `api/users.py` → `users`). */
@@ -1022,11 +1076,48 @@ function buildPythonRepoContext(
     }
   }
 
+  // #2391: build the repo-wide constant map for resolving non-literal decorator
+  // paths. Cost gate (KTD6): only PARSE for constants when some file actually has
+  // a non-literal `@router`/`@app` decorator (cheap content pre-filter); a
+  // literal-only repo pays just one read pass. When active, parse EVERY `.py`
+  // file so the resolvable set matches the ingestion aggregate (R4 parity) — a
+  // narrower set would return null where ingestion resolves.
+  const constantsByFile = new Map<string, ModuleConstants>();
+  const pyContents = new Map<string, string>();
+  let hasComposedRoute = false;
+  for (const rel of files) {
+    if (!rel.endsWith('.py')) continue;
+    const src = readFile(rel);
+    if (!src) continue;
+    pyContents.set(rel, src);
+    if (!hasComposedRoute && NONLITERAL_ROUTE_DECORATOR_RE.test(src)) hasComposedRoute = true;
+  }
+  if (hasComposedRoute) {
+    for (const [rel, src] of pyContents) {
+      parser.setLanguage(Python);
+      const tree = parseSource(parser, src);
+      if (!tree) continue;
+      const mc = extractPythonModuleConstants(tree);
+      if (mc.literals.size > 0 || mc.exprs.size > 0 || mc.imports.size > 0) {
+        constantsByFile.set(rel, mc);
+      }
+    }
+  }
+
   return {
     prefixesByLongKey,
     prefixesByShortKey,
+    constantsByFile,
   };
 }
+
+// Cheap cost-gate pre-filter: a `@router`/`@app.<verb>(` call whose first
+// non-space argument character starts an identifier (not a quote or `)`), i.e. a
+// bare constant or the head of a `+`-concatenation. Deliberately loose — a false
+// positive only costs a parse pass; a false negative would silently drop the
+// feature, so it errs toward matching.
+const NONLITERAL_ROUTE_DECORATOR_RE =
+  /@\s*(?:app|router)\s*\.\s*(?:get|post|put|delete|patch)\s*\(\s*[A-Za-z_]/;
 
 function joinPrefix(prefix: string, route: string): string {
   // Delegate to the shared route-path normalizer so the group contract and the
@@ -1065,6 +1156,36 @@ export const PYTHON_HTTP_PLUGIN: HttpLanguagePlugin = {
     // is an imported (possibly aliased) symbol resolves to its real definition.
     const importMap = buildPythonImportMap(tree);
 
+    // #2391: fold a non-literal decorator argument (bare constant or
+    // `+`-concatenation) to its literal path against the repo constant map, or
+    // `null` → skip (the same floor the ingestion side applies, so provider
+    // contracts and graph Route nodes agree on both resolved and dropped routes).
+    const resolveExprArg = (argNode: Parser.SyntaxNode): string | null => {
+      const cbf = ctx?.constantsByFile;
+      if (!cbf || !fileRel) return null;
+      const operands: Operand[] | null =
+        argNode.type === 'identifier'
+          ? [{ kind: 'ref', name: argNode.text }]
+          : parseConstOperands(argNode);
+      return operands ? resolveOperands(fileRel, operands, cbf) : null;
+    };
+    const emitAppProvider = (httpMethod: string, pathVal: string, line: number): void => {
+      out.push({
+        role: 'provider',
+        framework: 'fastapi',
+        method: httpMethod,
+        path: pathVal,
+        name: null,
+        // The decorated handler has no captured name → resolve by line-span
+        // containment. Best-effort fallback: FastAPI routes are graph-backed
+        // (ingestion decorator routes) and the function span starts at `def`
+        // (decorators excluded), so this lands the single-decorator case and
+        // degrades to file-level for multi-decorator stacks.
+        line,
+        confidence: 0.8,
+      });
+    };
+
     // Providers: FastAPI @app.<verb>("/path") — already absolute path.
     for (const match of runCompiledPatterns(FASTAPI_APP_PATTERNS, tree)) {
       const methodNode = match.captures.method;
@@ -1074,20 +1195,18 @@ export const PYTHON_HTTP_PLUGIN: HttpLanguagePlugin = {
       if (!httpMethod) continue;
       const path = unquoteLiteral(pathNode.text);
       if (path === null) continue;
-      out.push({
-        role: 'provider',
-        framework: 'fastapi',
-        method: httpMethod,
-        path,
-        name: null,
-        // The decorated handler has no captured name → resolve by line-span
-        // containment. Best-effort fallback: FastAPI routes are graph-backed
-        // (ingestion decorator routes) and the function span starts at `def`
-        // (decorators excluded), so this lands the single-decorator case and
-        // degrades to file-level for multi-decorator stacks.
-        line: pathNode.startPosition.row + 1,
-        confidence: 0.8,
-      });
+      emitAppProvider(httpMethod, path, pathNode.startPosition.row + 1);
+    }
+    // Providers: FastAPI @app.<verb>(CONST | A + "/x") — resolved composed path.
+    for (const match of runCompiledPatterns(FASTAPI_APP_EXPR_PATTERNS, tree)) {
+      const methodNode = match.captures.method;
+      const pathNode = match.captures.path;
+      if (!methodNode || !pathNode) continue;
+      const httpMethod = FASTAPI_VERBS[methodNode.text];
+      if (!httpMethod) continue;
+      const resolved = resolveExprArg(pathNode);
+      if (resolved === null) continue; // skip floor
+      emitAppProvider(httpMethod, resolved, pathNode.startPosition.row + 1);
     }
 
     // Django providers come from the graph Route nodes (includes composed by
@@ -1112,15 +1231,11 @@ export const PYTHON_HTTP_PLUGIN: HttpLanguagePlugin = {
     // change is strictly additive vs. the prior @app-only behaviour;
     // when the same router is mounted under multiple prefixes we emit
     // one detection per prefix.
-    for (const match of runCompiledPatterns(FASTAPI_ROUTER_PATTERNS, tree)) {
-      const methodNode = match.captures.method;
-      const pathNode = match.captures.path;
-      if (!methodNode || !pathNode) continue;
-      const httpMethod = FASTAPI_VERBS[methodNode.text];
-      if (!httpMethod) continue;
-      const rawPath = unquoteLiteral(pathNode.text);
-      if (rawPath === null) continue;
-
+    // Join a `@router.<verb>` path with the include_router / APIRouter prefix(es)
+    // that apply to this file and emit one provider detection per prefix. Shared
+    // by the literal and the #2391 non-literal (resolved) router loops so both
+    // stack prefixes identically.
+    const emitRouterProvider = (httpMethod: string, rawPath: string, line: number): void => {
       // Long key first (precise, package-aware), short key as fallback.
       // Mirrors the ingestion-side resolution in parse-impl.ts so the
       // graph nodes and group contracts agree on which prefix applies.
@@ -1146,10 +1261,33 @@ export const PYTHON_HTTP_PLUGIN: HttpLanguagePlugin = {
           path: p,
           name: null,
           // Best-effort containment fallback — see the @app provider note above.
-          line: pathNode.startPosition.row + 1,
+          line,
           confidence: 0.8,
         });
       }
+    };
+
+    for (const match of runCompiledPatterns(FASTAPI_ROUTER_PATTERNS, tree)) {
+      const methodNode = match.captures.method;
+      const pathNode = match.captures.path;
+      if (!methodNode || !pathNode) continue;
+      const httpMethod = FASTAPI_VERBS[methodNode.text];
+      if (!httpMethod) continue;
+      const rawPath = unquoteLiteral(pathNode.text);
+      if (rawPath === null) continue;
+      emitRouterProvider(httpMethod, rawPath, pathNode.startPosition.row + 1);
+    }
+    // Providers: FastAPI @router.<verb>(CONST | A + "/x") — resolved composed path
+    // (#2391). Null resolution → skip, so provider/graph parity holds.
+    for (const match of runCompiledPatterns(FASTAPI_ROUTER_EXPR_PATTERNS, tree)) {
+      const methodNode = match.captures.method;
+      const pathNode = match.captures.path;
+      if (!methodNode || !pathNode) continue;
+      const httpMethod = FASTAPI_VERBS[methodNode.text];
+      if (!httpMethod) continue;
+      const resolved = resolveExprArg(pathNode);
+      if (resolved === null) continue;
+      emitRouterProvider(httpMethod, resolved, pathNode.startPosition.row + 1);
     }
 
     // Providers: Flask `app.add_url_rule('/path', view_func=handler, methods=[…])`.
