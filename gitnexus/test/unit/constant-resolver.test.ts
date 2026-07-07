@@ -83,4 +83,35 @@ describe('constant-resolver — language-agnostic core', () => {
     const deep: RepoConstants = new Map([['m', mc({ exprs, literals: { A20: '/end' } })]]);
     expect(resolveConstant('m', 'A0', deep, javaImport)).toBeNull();
   });
+
+  it('folds a constant referenced twice in one expression (not a false cycle) (#2393)', () => {
+    const repo: RepoConstants = new Map([['m', mc({ literals: { A: '/a' } })]]);
+    // `A + A` — the second reference must NOT be mistaken for a cycle.
+    expect(resolveOperands('m', [ref('A'), ref('A')], repo, javaImport)).toBe('/a/a');
+  });
+
+  it('folds a reused separator constant (#2393)', () => {
+    const repo: RepoConstants = new Map([['m', mc({ literals: { SLASH: '/', PATH: 'p' } })]]);
+    expect(resolveOperands('m', [ref('SLASH'), ref('PATH'), ref('SLASH')], repo, javaImport)).toBe(
+      '/p/',
+    );
+  });
+
+  it('folds a diamond where two operands share a common base (#2393)', () => {
+    const repo: RepoConstants = new Map([
+      [
+        'm',
+        mc({
+          literals: { BASE: '/base' },
+          exprs: {
+            P: [ref('BASE'), lit('/p')],
+            Q: [ref('BASE'), lit('/q')],
+            X: [ref('P'), ref('Q')],
+          },
+        }),
+      ],
+    ]);
+    // BASE is reached transitively via both P and Q within X's single fold.
+    expect(resolveConstant('m', 'X', repo, javaImport)).toBe('/base/p/base/q');
+  });
 });

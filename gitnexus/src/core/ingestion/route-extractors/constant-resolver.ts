@@ -118,26 +118,35 @@ function foldName(
 ): string | null {
   if (depth > MAX_RESOLVE_DEPTH) return null;
   const guard = `${fileKey}::${name}`;
+  // `visited` is the ACTIVE resolution stack, not a seen-ever set: a name is a
+  // cycle only while it is still being resolved on the current stack (#2393). We
+  // pop it in `finally` so a name reached twice in one fold (`A + A`, or a
+  // diamond `X = P + Q` where P and Q share a base) folds instead of being
+  // mis-flagged as a cycle and dropped. Re-computation is bounded by
+  // MAX_RESOLVE_DEPTH (≤ 2^8 folds), so no blowup is reintroduced.
   if (state.visited.has(guard)) return null; // cycle
   state.visited.add(guard);
+  try {
+    const mc = state.repo.get(fileKey);
+    if (!mc) return null;
 
-  const mc = state.repo.get(fileKey);
-  if (!mc) return null;
+    const literal = mc.literals.get(name);
+    if (literal !== undefined) return literal;
 
-  const literal = mc.literals.get(name);
-  if (literal !== undefined) return literal;
+    const expr = mc.exprs.get(name);
+    if (expr !== undefined) return foldExpr(fileKey, expr, state, depth + 1);
 
-  const expr = mc.exprs.get(name);
-  if (expr !== undefined) return foldExpr(fileKey, expr, state, depth + 1);
+    const imp = mc.imports.get(name);
+    if (imp !== undefined) {
+      const targetKey = state.resolveImport(fileKey, imp.module, state.repoKeys);
+      if (targetKey === null) return null;
+      return foldName(targetKey, imp.originalName, state, depth + 1);
+    }
 
-  const imp = mc.imports.get(name);
-  if (imp !== undefined) {
-    const targetKey = state.resolveImport(fileKey, imp.module, state.repoKeys);
-    if (targetKey === null) return null;
-    return foldName(targetKey, imp.originalName, state, depth + 1);
+    return null;
+  } finally {
+    state.visited.delete(guard);
   }
-
-  return null;
 }
 
 function newState(repo: RepoConstants, resolveImport: ImportResolver): ResolveState {
