@@ -181,6 +181,12 @@ export function parseConstOperands(
  * Assignment semantics are last-wins in source order (matches Python): a rebind
  * to a non-string (`X = "/a"; X = build()`) drops `X` to unresolvable rather than
  * keeping the stale literal; `X += "/b"` folds onto the prior representation.
+ *
+ * Assignment RHS references are SNAPSHOTTED at the assignment line (`snapshot`),
+ * not resolved lazily against a name's final binding — so `ROUTE = BASE; BASE +=
+ * "/v1"` leaves `ROUTE` at BASE's value AT the `ROUTE =` line, never the mutated
+ * one. Without this, an aliased-then-rebound constant resolved to a confidently
+ * wrong path (#2393).
  */
 export function extractPythonModuleConstants(tree: Parser.Tree): ModuleConstants {
   const literals = new Map<string, string>();
@@ -220,11 +226,46 @@ export function extractPythonModuleConstants(tree: Parser.Tree): ModuleConstants
     imports.set(localName, binding);
   };
 
-  const currentOps = (name: string): Operand[] | null => {
+  // Freeze a name's CURRENT binding into a stable operand list that is immune to
+  // any LATER rebind of `name`: a literal value, a copy of the current expr (whose
+  // refs are themselves already frozen, see `snapshot`), or an import preserved
+  // under a synthetic `$imp$N` key (`$` can never appear in a Python identifier, so
+  // it cannot collide with a real name). Returns null when `name` is not yet bound
+  // (a forward reference — left lazy).
+  const freeze = (name: string): Operand[] | null => {
     const lit = literals.get(name);
     if (lit !== undefined) return [{ kind: 'literal', value: lit }];
     const ex = exprs.get(name);
-    return ex !== undefined ? [...ex] : null;
+    if (ex !== undefined) return [...ex];
+    const imp = imports.get(name);
+    if (imp !== undefined) {
+      const aliasKey = `$imp$${importAliasSeq++}`;
+      imports.set(aliasKey, imp);
+      return [{ kind: 'ref', name: aliasKey }];
+    }
+    return null;
+  };
+
+  // Snapshot an assignment RHS: replace each ref to an ALREADY-BOUND name with that
+  // name's frozen value, so a later rebind of that name does not retroactively
+  // change this binding — Python assigns by value at this source line, so
+  // `ROUTE = BASE; BASE += "/v1"` must leave ROUTE at BASE's value AT the `ROUTE =`
+  // line, never the mutated one (#2393). Unbound refs (forward references) stay
+  // lazy. Because every assignment snapshots, stored exprs only ever contain
+  // literals, frozen `$imp$N` refs, or lazy forward refs — never a live mutable ref.
+  const snapshot = (ops: Operand[] | null): Operand[] | null => {
+    if (ops === null) return null;
+    const out: Operand[] = [];
+    for (const op of ops) {
+      if (op.kind === 'literal') {
+        out.push(op);
+        continue;
+      }
+      const frozen = freeze(op.name);
+      if (frozen === null) out.push(op);
+      else out.push(...frozen);
+    }
+    return out;
   };
 
   const handleImport = (node: SyntaxNode): void => {
@@ -260,28 +301,17 @@ export function extractPythonModuleConstants(tree: Parser.Tree): ModuleConstants
     if (inner.type === 'assignment') {
       const left = inner.childForFieldName('left');
       if (left?.type !== 'identifier') continue; // only bare-name module constants
-      setName(left.text, parseConstOperands(inner.childForFieldName('right')));
+      setName(left.text, snapshot(parseConstOperands(inner.childForFieldName('right'))));
     } else if (inner.type === 'augmented_assignment') {
       const left = inner.childForFieldName('left');
       if (left?.type !== 'identifier') continue;
       const name = left.text;
       const isPlusEq = inner.childForFieldName('operator')?.text === '+=';
-      const rhs = parseConstOperands(inner.childForFieldName('right'));
-      // `X += rhs` folds onto X's prior value. When X is a local literal/expr,
-      // currentOps returns it. When X is an IMPORT, preserve the imported value
-      // under a synthetic `$imp$N` key ($ can never appear in a Python
-      // identifier, so it cannot collide with a real name) and reference it — so
-      // `from .c import BASE; BASE += "/v1"` folds to `<imported BASE>/v1` instead
-      // of dropping (#2393). setName below then clears X's own import binding.
-      let prior = currentOps(name);
-      if (prior === null && isPlusEq) {
-        const imp = imports.get(name);
-        if (imp !== undefined) {
-          const aliasKey = `$imp$${importAliasSeq++}`;
-          imports.set(aliasKey, imp);
-          prior = [{ kind: 'ref', name: aliasKey }];
-        }
-      }
+      // `X += rhs` folds onto X's CURRENT frozen value (`freeze` handles a local
+      // literal/expr and an imported base via the `$imp$N` alias). Both sides are
+      // snapshotted so a later rebind cannot retroactively change this binding.
+      const prior = freeze(name);
+      const rhs = snapshot(parseConstOperands(inner.childForFieldName('right')));
       setName(name, isPlusEq && prior && rhs ? [...prior, ...rhs] : null);
     }
   }

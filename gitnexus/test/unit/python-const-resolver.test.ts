@@ -347,3 +347,33 @@ describe('extractPythonModuleConstants — binding mutual-exclusivity (#2393)', 
     expect(resolveConstant('app/routes.py', 'BASE', r)).toBeNull();
   });
 });
+
+describe('extractPythonModuleConstants — source-order snapshot (#2393)', () => {
+  it('snapshots an aliased imported base before a later += (no wrong path)', () => {
+    // Python: ROUTE captures BASE's value at the `ROUTE =` line ("/api"); the later
+    // `BASE += "/v1"` must NOT retroactively change ROUTE.
+    const r = repoFrom({
+      'app/constants.py': 'BASE = "/api"\n',
+      'app/routes.py': 'from .constants import BASE\nROUTE = BASE\nBASE += "/v1"\n',
+    });
+    expect(resolveConstant('app/routes.py', 'ROUTE', r)).toBe('/api');
+    expect(resolveConstant('app/routes.py', 'BASE', r)).toBe('/api/v1');
+  });
+
+  it('snapshots an aliased local constant before a later += (no wrong path)', () => {
+    const r = repoFrom({ 'm.py': 'API = "/api"\nROUTE = API\nAPI += "/x"\n' });
+    expect(resolveConstant('m.py', 'ROUTE', r)).toBe('/api');
+    expect(resolveConstant('m.py', 'API', r)).toBe('/api/x');
+  });
+
+  it('snapshots an aliased local constant before a later plain rebind (no wrong path)', () => {
+    const r = repoFrom({ 'm.py': 'API = "/api"\nROUTE = API\nAPI = "/other"\n' });
+    expect(resolveConstant('m.py', 'ROUTE', r)).toBe('/api');
+    expect(resolveConstant('m.py', 'API', r)).toBe('/other');
+  });
+
+  it('still folds a normal same-file reference chain (snapshot inlines bound refs)', () => {
+    const r = repoFrom({ 'm.py': 'A = "/a"\nB = A + "/b"\nC = B + "/c"\n' });
+    expect(resolveConstant('m.py', 'C', r)).toBe('/a/b/c');
+  });
+});
