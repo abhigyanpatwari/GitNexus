@@ -43,6 +43,9 @@
  * floor) when ambiguous.
  */
 
+import { extractStringContent, type SyntaxNode } from '../utils/ast-helpers.js';
+import type Parser from 'tree-sitter';
+
 /** Depth ceiling for the import/constant chase. Mirrors `django.ts`'s
  * `MAX_INCLUDE_DEPTH` — a heuristic bound, not a proven one; overrun floors to
  * `null` (skip), never a wrong path. */
@@ -227,4 +230,113 @@ export function resolveOperands(
 ): string | null {
   const state: ResolveState = { repo, repoKeys: new Set(repo.keys()), visited: new Set() };
   return resolveExpr(fileKey, operands, state, 0);
+}
+
+// ─── Tree → ModuleConstants extraction (U2) ──────────────────────────────────
+
+/**
+ * Parse a right-hand side into an operand list, or `null` when it is not a
+ * foldable string expression. Handles a bare string literal, a bare identifier
+ * (`X = Y`), and left-associative `+` chains of the two (`A + "/b" + C`).
+ * Everything else — numbers, calls, attribute access (`settings.X`), f-strings,
+ * `concatenated_string` adjacency, and non-`+` operators — returns `null`, which
+ * makes the constant unresolvable (→ skip floor), never a wrong value.
+ */
+export function parseConstOperands(node: SyntaxNode | null | undefined): Operand[] | null {
+  if (!node) return null;
+  if (node.type === 'string') {
+    const value = extractStringContent(node);
+    return value === null ? null : [{ kind: 'literal', value }];
+  }
+  if (node.type === 'identifier') {
+    return [{ kind: 'ref', name: node.text }];
+  }
+  if (node.type === 'binary_operator') {
+    const isPlus = (node.children ?? []).some((c) => c.type === '+');
+    if (!isPlus) return null;
+    const left = parseConstOperands(node.childForFieldName('left'));
+    const right = parseConstOperands(node.childForFieldName('right'));
+    if (left === null || right === null) return null;
+    return [...left, ...right];
+  }
+  return null;
+}
+
+/**
+ * Extract the module-level string constants and `from … import …` bindings of
+ * one parsed Python file into the {@link ModuleConstants} shape the resolver
+ * consumes. Only top-level (`module`-direct) statements are walked — function-
+ * and class-local names never become route path constants and must not leak in.
+ *
+ * Assignment semantics are last-wins in source order (matches Python): a rebind
+ * to a non-string (`X = "/a"; X = build()`) drops `X` to unresolvable rather than
+ * keeping the stale literal; `X += "/b"` folds onto the prior representation.
+ */
+export function extractPythonModuleConstants(tree: Parser.Tree): ModuleConstants {
+  const literals = new Map<string, string>();
+  const exprs = new Map<string, readonly Operand[]>();
+  const imports = new Map<string, ImportBinding>();
+
+  // Apply an assignment result, honoring last-wins: clear any prior binding for
+  // `name`, then set the new one (a `null` rep leaves it cleared = unresolvable).
+  const setName = (name: string, ops: Operand[] | null): void => {
+    literals.delete(name);
+    exprs.delete(name);
+    if (ops === null) return;
+    if (ops.length === 1 && ops[0].kind === 'literal') literals.set(name, ops[0].value);
+    else exprs.set(name, ops);
+  };
+
+  const currentOps = (name: string): Operand[] | null => {
+    const lit = literals.get(name);
+    if (lit !== undefined) return [{ kind: 'literal', value: lit }];
+    const ex = exprs.get(name);
+    return ex !== undefined ? [...ex] : null;
+  };
+
+  const handleImport = (node: SyntaxNode): void => {
+    const moduleNode = node.childForFieldName('module_name');
+    const moduleSpec = moduleNode?.text;
+    if (!moduleSpec) return;
+    for (let i = 0; i < node.namedChildCount; i++) {
+      const child = node.namedChild(i);
+      if (!child || child.id === moduleNode?.id) continue;
+      if (child.type === 'dotted_name') {
+        imports.set(child.text, { module: moduleSpec, originalName: child.text });
+      } else if (child.type === 'aliased_import') {
+        const nameNode = child.childForFieldName('name');
+        const aliasNode = child.childForFieldName('alias');
+        if (nameNode && aliasNode) {
+          imports.set(aliasNode.text, { module: moduleSpec, originalName: nameNode.text });
+        }
+      }
+    }
+  };
+
+  for (let i = 0; i < tree.rootNode.namedChildCount; i++) {
+    const stmt = tree.rootNode.namedChild(i);
+    if (!stmt) continue;
+    if (stmt.type === 'import_from_statement') {
+      handleImport(stmt);
+      continue;
+    }
+    if (stmt.type !== 'expression_statement') continue;
+    const inner = stmt.namedChild(0);
+    if (!inner) continue;
+
+    if (inner.type === 'assignment') {
+      const left = inner.childForFieldName('left');
+      if (left?.type !== 'identifier') continue; // only bare-name module constants
+      setName(left.text, parseConstOperands(inner.childForFieldName('right')));
+    } else if (inner.type === 'augmented_assignment') {
+      const left = inner.childForFieldName('left');
+      if (left?.type !== 'identifier') continue;
+      const isPlusEq = inner.childForFieldName('operator')?.text === '+=';
+      const prior = currentOps(left.text);
+      const rhs = parseConstOperands(inner.childForFieldName('right'));
+      setName(left.text, isPlusEq && prior && rhs ? [...prior, ...rhs] : null);
+    }
+  }
+
+  return { literals, exprs, imports };
 }

@@ -11,10 +11,13 @@
  */
 
 import { describe, it, expect } from 'vitest';
+import Parser from 'tree-sitter';
+import Python from 'tree-sitter-python';
 import {
   resolveConstant,
   resolveOperands,
   resolveImportToFileKey,
+  extractPythonModuleConstants,
   type ModuleConstants,
   type Operand,
   type ImportBinding,
@@ -195,5 +198,72 @@ describe('resolveImportToFileKey', () => {
 
   it('returns null when the target file does not exist', () => {
     expect(resolveImportToFileKey('a/routes.py', '.missing', keys)).toBeNull();
+  });
+});
+
+// ─── U2: tree → ModuleConstants extraction (real parse) ──────────────────────
+
+const parser = new Parser();
+parser.setLanguage(Python);
+const extract = (src: string): ModuleConstants => extractPythonModuleConstants(parser.parse(src));
+const repoFrom = (files: Record<string, string>): RepoConstants =>
+  new Map(Object.entries(files).map(([k, src]) => [k, extract(src)]));
+
+describe('extractPythonModuleConstants', () => {
+  it('extracts a bare string literal', () => {
+    const mcs = extract('X = "/a"\n');
+    expect(mcs.literals.get('X')).toBe('/a');
+  });
+
+  it('extracts a + concat as an ordered operand list', () => {
+    const mcs = extract('X = A + "/b"\n');
+    expect(mcs.exprs.get('X')).toEqual([
+      { kind: 'ref', name: 'A' },
+      { kind: 'literal', value: '/b' },
+    ]);
+  });
+
+  it('folds an augmented assignment (X += "/b")', () => {
+    const r = new Map([['m.py', extract('X = "/a"\nX += "/b"\n')]]);
+    expect(resolveConstant('m.py', 'X', r)).toBe('/a/b');
+  });
+
+  it('applies last-wins rebind and drops a non-string rebind', () => {
+    const r1 = new Map([['m.py', extract('X = "/a"\nX = "/b"\n')]]);
+    expect(resolveConstant('m.py', 'X', r1)).toBe('/b');
+    const r2 = new Map([['m.py', extract('X = "/a"\nX = build()\n')]]);
+    expect(resolveConstant('m.py', 'X', r2)).toBeNull();
+  });
+
+  it('extracts from-import bindings, including aliases and relative paths', () => {
+    const mcs = extract('from .constants import X\nfrom pkg.mod import Y as Z\n');
+    expect(mcs.imports.get('X')).toEqual({ module: '.constants', originalName: 'X' });
+    expect(mcs.imports.get('Z')).toEqual({ module: 'pkg.mod', originalName: 'Y' });
+  });
+
+  it('ignores non-string assignments', () => {
+    const mcs = extract('N = 5\ncfg = Settings()\nP = "/p"\n');
+    expect(mcs.literals.has('N')).toBe(false);
+    expect(mcs.exprs.has('cfg')).toBe(false);
+    expect(mcs.literals.get('P')).toBe('/p');
+  });
+
+  it('resolves the full issue repro end-to-end (extractor → resolver)', () => {
+    const r = repoFrom({
+      'app/constants.py': [
+        'API_V1 = "/api/v1"',
+        'API_V1_WIDGETS = API_V1 + "/widgets"',
+        'API_V1_WIDGETS_GET = API_V1_WIDGETS + "/get"',
+      ].join('\n'),
+      'app/routes.py': 'from .constants import API_V1_WIDGETS_GET\n',
+    });
+    expect(resolveConstant('app/routes.py', 'API_V1_WIDGETS_GET', r)).toBe('/api/v1/widgets/get');
+  });
+
+  it('survives a structured-clone round-trip (worker/cache boundary)', () => {
+    const cloned = structuredClone(extract('X = "/a"\nfrom .c import Y\n'));
+    const r = new Map([['m.py', cloned]]);
+    expect(resolveConstant('m.py', 'X', r)).toBe('/a');
+    expect(cloned.imports.get('Y')).toEqual({ module: '.c', originalName: 'Y' });
   });
 });
