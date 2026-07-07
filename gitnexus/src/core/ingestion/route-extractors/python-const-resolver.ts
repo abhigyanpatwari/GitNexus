@@ -142,8 +142,17 @@ export function resolveOperands(
  * `concatenated_string` adjacency, and non-`+` operators — returns `null`, which
  * makes the constant unresolvable (→ skip floor), never a wrong value.
  */
-export function parseConstOperands(node: SyntaxNode | null | undefined): Operand[] | null {
+export function parseConstOperands(
+  node: SyntaxNode | null | undefined,
+  depth = 0,
+): Operand[] | null {
   if (!node) return null;
+  // Defense-in-depth: bound the recursion so an adversarial deep `+`-chain floors
+  // to null (skip) rather than risking a stack overflow. 64 is far beyond any real
+  // route-path constant chain; tree-sitter caps expression nesting well below the
+  // JS stack limit today, so this is a belt-and-suspenders guard, not a reachable
+  // crash. Mirrors the fold engine's MAX_RESOLVE_DEPTH.
+  if (depth > 64) return null;
   if (node.type === 'string') {
     const value = extractStringContent(node);
     return value === null ? null : [{ kind: 'literal', value }];
@@ -154,8 +163,8 @@ export function parseConstOperands(node: SyntaxNode | null | undefined): Operand
   if (node.type === 'binary_operator') {
     const isPlus = (node.children ?? []).some((c) => c.type === '+');
     if (!isPlus) return null;
-    const left = parseConstOperands(node.childForFieldName('left'));
-    const right = parseConstOperands(node.childForFieldName('right'));
+    const left = parseConstOperands(node.childForFieldName('left'), depth + 1);
+    const right = parseConstOperands(node.childForFieldName('right'), depth + 1);
     if (left === null || right === null) return null;
     return [...left, ...right];
   }

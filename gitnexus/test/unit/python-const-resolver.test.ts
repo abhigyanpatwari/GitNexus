@@ -239,6 +239,13 @@ describe('extractPythonModuleConstants', () => {
     ]);
   });
 
+  it('caps recursion on a pathological deep + chain — null, not a throw (#2393)', () => {
+    const chain = Array.from({ length: 100 }, (_, i) => `A${i}`).join(' + ');
+    const mcs = extract(`X = ${chain}\n`); // depth > 64 → parseConstOperands floors to null
+    expect(mcs.exprs.has('X')).toBe(false);
+    expect(mcs.literals.has('X')).toBe(false);
+  });
+
   it('folds an augmented assignment (X += "/b")', () => {
     const r = new Map([['m.py', extract('X = "/a"\nX += "/b"\n')]]);
     expect(resolveConstant('m.py', 'X', r)).toBe('/a/b');
