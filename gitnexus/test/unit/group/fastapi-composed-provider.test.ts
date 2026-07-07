@@ -143,6 +143,23 @@ describe('group FastAPI composed-constant providers (#2391)', () => {
     expect(providers).toContainEqual({ method: 'GET', path: '/api/users' });
   });
 
+  it('parses a file that needs both the router pre-pass and the constant map once (#2393)', () => {
+    // The file has BOTH include_router and a composed route; before the single
+    // parse-pass merge it was parsed twice in prepareRepo, now once.
+    const { parseCalls } = run({
+      'app/main.py': [
+        'from fastapi import APIRouter',
+        'from .sub import sub_router',
+        'router = APIRouter()',
+        'API_CONST = "/y"',
+        'app.include_router(sub_router, prefix="/x")',
+        '@router.get(API_CONST)',
+        'async def f(): return {}',
+      ].join('\n'),
+    });
+    expect(parseCalls).toBe(1);
+  });
+
   it('resolves a composed @app.<verb>(CONST) provider (#2393 EXPR-branch coverage)', () => {
     const { providers } = run({
       'app/constants.py': 'API_CONST = "/health"',

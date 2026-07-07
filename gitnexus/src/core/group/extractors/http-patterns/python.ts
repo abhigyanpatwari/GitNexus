@@ -1006,112 +1006,111 @@ function buildPythonRepoContext(
     if (!hasComposedRoute && NONLITERAL_ROUTE_DECORATOR_RE.test(src)) hasComposedRoute = true;
   }
 
-  // Cross-file pre-pass: only `include_router` sites need it — they bind a
-  // prefix declared in one file to a router defined in another. Same-file
-  // `APIRouter(prefix=...)` is resolved in scan() from the file's own tree, so
-  // APIRouter-only files are left out here and never parsed twice.
-  for (const src of pyContents.values()) {
-    if (!src.includes('include_router')) continue;
+  // Single PARSE pass (#2391): parse each `.py` at most once and feed BOTH the
+  // include_router prefix pre-pass and the composed-constant map below. This used
+  // to be two loops, so an include_router file in a composed repo was parsed
+  // twice. A file that needs neither pass is not parsed at all (cost gates intact).
+  //
+  // Cross-file pre-pass: only `include_router` sites need it — they bind a prefix
+  // declared in one file to a router defined in another. Same-file
+  // `APIRouter(prefix=...)` is resolved in scan() from the file's own tree.
+  const constantsByFile = new Map<string, ModuleConstants>();
+  for (const [rel, src] of pyContents) {
+    const needsRouter = src.includes('include_router');
+    if (!needsRouter && !hasComposedRoute) continue;
     parser.setLanguage(Python);
     const tree = parseSource(parser, src);
     if (!tree) continue;
 
-    // Local name → (short, long) map for the current file, populated
-    // from `from <module> import router [as <alias>]` statements. The
-    // alias (or 'router' when there is no alias) is the local name
-    // we'll later see passed to `<host>.include_router`.
-    interface LocalImport {
-      moduleShort: string;
-      moduleLong: string;
-    }
-    const localNameToModule = new Map<string, LocalImport>();
-    for (const m of runCompiledPatterns(FROM_IMPORT_ROUTER_PATTERNS, tree)) {
-      const moduleNode = m.captures.module;
-      const aliasNode = m.captures.alias;
-      const importedNode = m.captures.imported;
-      if (!moduleNode || !importedNode) continue;
-      const localName = aliasNode?.text ?? importedNode.text;
-      const moduleShort = lastSegmentOfDotted(moduleNode.text);
-      if (!moduleShort) continue;
-      const moduleLong = lastTwoSegmentsAsLongKey(moduleNode.text);
-      localNameToModule.set(localName, { moduleShort, moduleLong });
-    }
+    if (needsRouter) {
+      // Local name → (short, long) map for the current file, populated
+      // from `from <module> import router [as <alias>]` statements. The
+      // alias (or 'router' when there is no alias) is the local name
+      // we'll later see passed to `<host>.include_router`.
+      interface LocalImport {
+        moduleShort: string;
+        moduleLong: string;
+      }
+      const localNameToModule = new Map<string, LocalImport>();
+      for (const m of runCompiledPatterns(FROM_IMPORT_ROUTER_PATTERNS, tree)) {
+        const moduleNode = m.captures.module;
+        const aliasNode = m.captures.alias;
+        const importedNode = m.captures.imported;
+        if (!moduleNode || !importedNode) continue;
+        const localName = aliasNode?.text ?? importedNode.text;
+        const moduleShort = lastSegmentOfDotted(moduleNode.text);
+        if (!moduleShort) continue;
+        const moduleLong = lastTwoSegmentsAsLongKey(moduleNode.text);
+        localNameToModule.set(localName, { moduleShort, moduleLong });
+      }
 
-    // Module-alias map: name imported from a multi-segment package →
-    // long key. Lets Shape A look up the precise file for `<name>.router`
-    // even when `<name>` collides with another package's basename.
-    const localNameToModuleAlias = new Map<string, string>();
-    for (const m of runCompiledPatterns(FROM_IMPORT_MODULE_PATTERNS, tree)) {
-      const moduleNode = m.captures.module;
-      const importedNode = m.captures.imported;
-      const aliasNode = m.captures.alias;
-      if (!moduleNode || !importedNode) continue;
-      // Skip the `router` shape — already handled by FROM_IMPORT_ROUTER_PATTERNS
-      // above and stored under its router-aware semantics.
-      if (importedNode.text === 'router') continue;
-      const moduleLong = lastTwoSegmentsAsLongKey(`${moduleNode.text}.${importedNode.text}`);
-      if (!moduleLong) continue;
-      const localName = aliasNode?.text ?? importedNode.text;
-      localNameToModuleAlias.set(localName, moduleLong);
-    }
+      // Module-alias map: name imported from a multi-segment package →
+      // long key. Lets Shape A look up the precise file for `<name>.router`
+      // even when `<name>` collides with another package's basename.
+      const localNameToModuleAlias = new Map<string, string>();
+      for (const m of runCompiledPatterns(FROM_IMPORT_MODULE_PATTERNS, tree)) {
+        const moduleNode = m.captures.module;
+        const importedNode = m.captures.imported;
+        const aliasNode = m.captures.alias;
+        if (!moduleNode || !importedNode) continue;
+        // Skip the `router` shape — already handled by FROM_IMPORT_ROUTER_PATTERNS
+        // above and stored under its router-aware semantics.
+        if (importedNode.text === 'router') continue;
+        const moduleLong = lastTwoSegmentsAsLongKey(`${moduleNode.text}.${importedNode.text}`);
+        if (!moduleLong) continue;
+        const localName = aliasNode?.text ?? importedNode.text;
+        localNameToModuleAlias.set(localName, moduleLong);
+      }
 
-    // Shape A: `<host>.include_router(<module>.router, prefix='/x')`.
-    // The call site gives us only a short module name. We promote to a
-    // long key when the same file imports `<module>` via either
-    // `from <pkg> import <module>` (recorded in `localNameToModuleAlias`
-    // — the typical pattern) or, less commonly, a router-aware import
-    // statement. Only fall back to the basename short key when neither
-    // alias is available.
-    for (const m of runCompiledPatterns(INCLUDE_ROUTER_ATTR_PATTERNS, tree)) {
-      const modNode = m.captures.router_module;
-      const prefixNode = m.captures.prefix;
-      if (!modNode || !prefixNode) continue;
-      const prefix = unquoteLiteral(prefixNode.text);
-      if (prefix === null) continue;
-      const moduleShort = modNode.text;
-      const aliasLong = localNameToModuleAlias.get(moduleShort);
-      const sameFileImport = localNameToModule.get(moduleShort);
-      const longKey = aliasLong ?? sameFileImport?.moduleLong;
-      if (longKey) {
-        recordPrefix(prefixesByLongKey, longKey, prefix);
-      } else {
-        recordPrefix(prefixesByShortKey, moduleShort, prefix);
+      // Shape A: `<host>.include_router(<module>.router, prefix='/x')`.
+      // The call site gives us only a short module name. We promote to a
+      // long key when the same file imports `<module>` via either
+      // `from <pkg> import <module>` (recorded in `localNameToModuleAlias`
+      // — the typical pattern) or, less commonly, a router-aware import
+      // statement. Only fall back to the basename short key when neither
+      // alias is available.
+      for (const m of runCompiledPatterns(INCLUDE_ROUTER_ATTR_PATTERNS, tree)) {
+        const modNode = m.captures.router_module;
+        const prefixNode = m.captures.prefix;
+        if (!modNode || !prefixNode) continue;
+        const prefix = unquoteLiteral(prefixNode.text);
+        if (prefix === null) continue;
+        const moduleShort = modNode.text;
+        const aliasLong = localNameToModuleAlias.get(moduleShort);
+        const sameFileImport = localNameToModule.get(moduleShort);
+        const longKey = aliasLong ?? sameFileImport?.moduleLong;
+        if (longKey) {
+          recordPrefix(prefixesByLongKey, longKey, prefix);
+        } else {
+          recordPrefix(prefixesByShortKey, moduleShort, prefix);
+        }
+      }
+
+      // Shape B: `<host>.include_router(my_router, prefix='/x')` — resolve
+      // `my_router` via the import map built above. Whenever the import
+      // statement supplied a multi-segment module path the long key is
+      // recorded, eliminating cross-package collisions.
+      for (const m of runCompiledPatterns(INCLUDE_ROUTER_NAME_PATTERNS, tree)) {
+        const nameNode = m.captures.router_name;
+        const prefixNode = m.captures.prefix;
+        if (!nameNode || !prefixNode) continue;
+        const localImp = localNameToModule.get(nameNode.text);
+        if (!localImp) continue;
+        const prefix = unquoteLiteral(prefixNode.text);
+        if (prefix === null) continue;
+        if (localImp.moduleLong) {
+          recordPrefix(prefixesByLongKey, localImp.moduleLong, prefix);
+        } else {
+          recordPrefix(prefixesByShortKey, localImp.moduleShort, prefix);
+        }
       }
     }
 
-    // Shape B: `<host>.include_router(my_router, prefix='/x')` — resolve
-    // `my_router` via the import map built above. Whenever the import
-    // statement supplied a multi-segment module path the long key is
-    // recorded, eliminating cross-package collisions.
-    for (const m of runCompiledPatterns(INCLUDE_ROUTER_NAME_PATTERNS, tree)) {
-      const nameNode = m.captures.router_name;
-      const prefixNode = m.captures.prefix;
-      if (!nameNode || !prefixNode) continue;
-      const localImp = localNameToModule.get(nameNode.text);
-      if (!localImp) continue;
-      const prefix = unquoteLiteral(prefixNode.text);
-      if (prefix === null) continue;
-      if (localImp.moduleLong) {
-        recordPrefix(prefixesByLongKey, localImp.moduleLong, prefix);
-      } else {
-        recordPrefix(prefixesByShortKey, localImp.moduleShort, prefix);
-      }
-    }
-  }
-
-  // #2391: build the repo-wide constant map for resolving non-literal decorator
-  // paths. Cost gate (KTD6): only PARSE for constants when some file actually has
-  // a non-literal `@router`/`@app` decorator (the `hasComposedRoute` pre-filter
-  // computed in the single read pass above); a literal-only repo does no parsing
-  // here. When active, parse EVERY `.py` file so the resolvable set matches the
-  // ingestion aggregate (R4 parity) — a narrower set would return null where
-  // ingestion resolves.
-  const constantsByFile = new Map<string, ModuleConstants>();
-  if (hasComposedRoute) {
-    for (const [rel, src] of pyContents) {
-      parser.setLanguage(Python);
-      const tree = parseSource(parser, src);
-      if (!tree) continue;
+    // #2391: build the repo-wide constant map for resolving non-literal decorator
+    // paths (KTD6 cost gate: only when `hasComposedRoute`). Parse EVERY `.py` so
+    // the resolvable set matches the ingestion aggregate (R4 parity) — a narrower
+    // set would return null where ingestion resolves.
+    if (hasComposedRoute) {
       const mc = extractPythonModuleConstants(tree);
       if (mc.literals.size > 0 || mc.exprs.size > 0 || mc.imports.size > 0) {
         constantsByFile.set(rel, mc);
