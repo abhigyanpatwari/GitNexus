@@ -270,11 +270,11 @@ export const processCommunities = async (
 };
 
 // ============================================================================
-// HELPER: Build graphology graph from knowledge graph
+// HELPER: Build community projection from knowledge graph
 // ============================================================================
 
 /**
- * Build a graphology graph containing only symbol nodes and clustering edges.
+ * Build a community projection containing only symbol nodes and clustering edges.
  * For large graphs (>10K symbols), filter out low-confidence fuzzy-global edges
  * and degree-1 nodes that add noise and massively increase Leiden runtime.
  */
@@ -470,6 +470,9 @@ const runIcebugLeiden = async (
   const csr = buildCommunityCsr(projection);
   const nativeResult = await runIcebugWorker(projection.nodes.length, csr, options);
   const partition = nativeResult.partition;
+  if (!Number.isFinite(nativeResult.modularity)) {
+    throw new Error('optional icebug modularity was not finite');
+  }
   if (
     partition.length !== projection.nodes.length ||
     partition.some((community) => !Number.isSafeInteger(community))
@@ -494,13 +497,21 @@ const runIcebugWorker = (
   csr: CommunityCsr,
   options: CommunityDetectionOptions,
 ): Promise<IcebugWorkerSuccess> => {
+  const threads = options.icebug?.threads ?? 1;
+  if (!Number.isSafeInteger(threads) || threads !== 1) {
+    throw new Error('optional icebug engine currently requires deterministic threads=1');
+  }
+  if (options.icebug?.randomize === true) {
+    throw new Error('optional icebug engine currently requires randomize=false');
+  }
+
   const worker = new Worker(ICEBUG_WORKER_SOURCE, {
     eval: true,
     workerData: {
       nodeCount,
       indices: csr.indices,
       indptr: csr.indptr,
-      threads: options.icebug?.threads ?? 1,
+      threads,
       seed: options.icebug?.seed ?? LEIDEN_SEED,
       iterations: options.icebug?.iterations ?? 4,
       gamma: options.icebug?.gamma ?? 1.0,
@@ -588,8 +599,11 @@ const readModularity = (runner) => {
     throw new Error('optional icebug module does not expose Graph.fromCSR/ParallelLeidenView');
   }
 
-  icebug.setNumberOfThreads?.(workerData.threads);
-  icebug.setSeed?.(workerData.seed, false);
+  if (typeof icebug.setNumberOfThreads !== 'function' || typeof icebug.setSeed !== 'function') {
+    throw new Error('optional icebug module does not expose deterministic thread/seed controls');
+  }
+  icebug.setNumberOfThreads(workerData.threads);
+  icebug.setSeed(workerData.seed, false);
 
   const nativeGraph = fromCSR(workerData.nodeCount, false, workerData.indices, workerData.indptr);
   let runner;

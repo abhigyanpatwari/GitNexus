@@ -1,4 +1,5 @@
-import { describe, it, expect } from 'vitest';
+import { EventEmitter } from 'node:events';
+import { describe, it, expect, vi } from 'vitest';
 import { createKnowledgeGraph } from '../../src/core/graph/graph.js';
 import type { GraphNode, GraphRelationship } from '../../src/core/graph/types.js';
 import {
@@ -141,6 +142,73 @@ describe('community-processor', () => {
       expect(progress.some((message) => message.includes('falling back to Graphology'))).toBe(true);
       expect(result.communities).toHaveLength(1);
       expect(result.memberships).toHaveLength(2);
+    });
+
+    it('falls back to graphology when icebug returns invalid modularity', async () => {
+      vi.resetModules();
+      vi.doMock('node:worker_threads', () => {
+        class MockWorker extends EventEmitter {
+          constructor() {
+            super();
+            queueMicrotask(() => {
+              this.emit('message', { ok: true, partition: [0, 0], modularity: Number.NaN });
+            });
+          }
+
+          terminate(): Promise<number> {
+            return Promise.resolve(0);
+          }
+        }
+
+        return { Worker: MockWorker };
+      });
+
+      try {
+        const { processCommunities: processCommunitiesWithMockWorker } =
+          await import('../../src/core/ingestion/community-processor.js');
+        const graph = createKnowledgeGraph();
+        graph.addNode(makeNode('fn:a', 'a', 'Function', '/src/group/a.ts'));
+        graph.addNode(makeNode('fn:b', 'b', 'Function', '/src/group/b.ts'));
+        graph.addRelationship(makeRel('rel:ab', 'fn:a', 'fn:b'));
+
+        const progress: string[] = [];
+        const result = await processCommunitiesWithMockWorker(
+          graph,
+          (message) => progress.push(message),
+          { engine: 'icebug' },
+        );
+
+        expect(result.stats.engineRequested).toBe('icebug');
+        expect(result.stats.engine).toBe('graphology');
+        expect(result.stats.fallbackReason).toContain('modularity');
+        expect(progress.some((message) => message.includes('falling back to Graphology'))).toBe(
+          true,
+        );
+      } finally {
+        vi.doUnmock('node:worker_threads');
+        vi.resetModules();
+      }
+    });
+
+    it('falls back before icebug worker launch for nondeterministic options', async () => {
+      const graph = createKnowledgeGraph();
+      graph.addNode(makeNode('fn:a', 'a', 'Function', '/src/group/a.ts'));
+      graph.addNode(makeNode('fn:b', 'b', 'Function', '/src/group/b.ts'));
+      graph.addRelationship(makeRel('rel:ab', 'fn:a', 'fn:b'));
+
+      const threadResult = await processCommunities(graph, undefined, {
+        engine: 'icebug',
+        icebug: { threads: 2 },
+      });
+      expect(threadResult.stats.engine).toBe('graphology');
+      expect(threadResult.stats.fallbackReason).toContain('threads=1');
+
+      const randomizeResult = await processCommunities(graph, undefined, {
+        engine: 'icebug',
+        icebug: { randomize: true },
+      });
+      expect(randomizeResult.stats.engine).toBe('graphology');
+      expect(randomizeResult.stats.fallbackReason).toContain('randomize=false');
     });
   });
 });
