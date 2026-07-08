@@ -19,24 +19,15 @@
  *  - heal:    FORCE INSTALL replaces a broken file over the network (auto)
  */
 import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'vitest';
+import { CLI_SPAWN_PREFIX } from '../helpers/cli-entry.js';
 import { spawnSync } from 'child_process';
 import path from 'path';
 import fs from 'fs';
 import os from 'os';
-import { fileURLToPath, pathToFileURL } from 'url';
-import { createRequire } from 'module';
 
 import lbug from '@ladybugdb/core';
 import { getExtensionInstallChildProcessArgs } from '../../src/core/lbug/extension-loader.js';
 import { cleanupTempDirSync } from '../helpers/test-db.js';
-
-const testDir = path.dirname(fileURLToPath(import.meta.url));
-const repoRoot = path.resolve(testDir, '../..');
-const cliEntry = path.join(repoRoot, 'src/cli/index.ts');
-
-const _require = createRequire(import.meta.url);
-const tsxPkgDir = path.dirname(_require.resolve('tsx/package.json'));
-const tsxImportUrl = pathToFileURL(path.join(tsxPkgDir, 'dist', 'loader.mjs')).href;
 
 /** `.lbdb/extension/<version>/<platform>/fts/libfts.lbug_extension`, discovered not hardcoded. */
 let extensionRelPath: string;
@@ -141,7 +132,7 @@ const runCli = (
   policy: 'load-only' | 'auto',
   timeoutMs = 180_000,
 ): CliResult => {
-  const result = spawnSync(process.execPath, ['--import', tsxImportUrl, cliEntry, ...args], {
+  const result = spawnSync(process.execPath, [...CLI_SPAWN_PREFIX, ...args], {
     cwd,
     encoding: 'utf8',
     timeout: timeoutMs,

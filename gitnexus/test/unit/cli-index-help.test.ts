@@ -5,19 +5,18 @@ import { fileURLToPath } from 'node:url';
 import { Command, Option } from 'commander';
 import * as ts from 'typescript';
 import { afterEach, describe, expect, it } from 'vitest';
+import { CLI_SPAWN_PREFIX } from '../helpers/cli-entry.js';
 import { localizeCliHelp } from '../../src/cli/help-i18n.js';
 import { setCliLanguage, type SupportedCliLanguage } from '../../src/cli/i18n/index.js';
 
 const testDir = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(testDir, '../..');
-const cliEntry = path.join(repoRoot, 'src/cli/index.ts');
-
 function runHelp(command: string, env: NodeJS.ProcessEnv = {}) {
   return runHelpArgs([command], env);
 }
 
 function runHelpArgs(args: string[], env: NodeJS.ProcessEnv = {}) {
-  return spawnSync(process.execPath, ['--import', 'tsx', cliEntry, ...args, '--help'], {
+  return spawnSync(process.execPath, [...CLI_SPAWN_PREFIX, ...args, '--help'], {
     cwd: repoRoot,
     encoding: 'utf8',
     env: { ...process.env, ...env },

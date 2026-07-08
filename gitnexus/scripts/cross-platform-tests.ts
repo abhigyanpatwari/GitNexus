@@ -32,6 +32,9 @@ const PLATFORM_LOGIC = [
   'test/unit/setup-antigravity.test.ts',
   'test/integration/setup-uninstall-roundtrip.test.ts',
   'test/unit/resolve-invocation.test.ts',
+  // CLI-spawn entry-point resolution; its path-separator assertion (cli[/\\]index)
+  // must exercise the Windows backslash branch, so run it on the OS matrix (#2394).
+  'test/unit/cli-entry.test.ts',
   'test/unit/platform-capabilities.test.ts',
   'test/unit/worker-pool-windows-quarantine.test.ts',
   'test/unit/lbug-pool-fts-load.test.ts',

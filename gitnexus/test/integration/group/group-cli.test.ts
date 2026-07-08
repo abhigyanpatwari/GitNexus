@@ -1,22 +1,18 @@
 /**
- * Smoke-test `gitnexus group` CLI via tsx (same pattern as cli-e2e.test.ts).
+ * Smoke-test `gitnexus group` CLI (same spawn pattern as cli-e2e.test.ts, via
+ * CLI_SPAWN_PREFIX: built dist in CI, tsx-on-source locally).
  * Does not exercise LadybugDB-backed commands end-to-end (needs indexed fixtures).
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { CLI_SPAWN_PREFIX } from '../../helpers/cli-entry.js';
 import { spawnSync } from 'node:child_process';
 import path from 'node:path';
 import fs from 'node:fs';
-import { fileURLToPath, pathToFileURL } from 'node:url';
-import { createRequire } from 'node:module';
+import { fileURLToPath } from 'node:url';
 import os from 'node:os';
 
 const testDir = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(testDir, '../../..');
-const cliEntry = path.join(repoRoot, 'src/cli/index.ts');
-const _require = createRequire(import.meta.url);
-const tsxPkgDir = path.dirname(_require.resolve('tsx/package.json'));
-const tsxImportUrl = pathToFileURL(path.join(tsxPkgDir, 'dist', 'loader.mjs')).href;
-
 let tmpHome: string;
 
 beforeAll(() => {
@@ -30,7 +26,7 @@ afterAll(() => {
 });
 
 function runGroup(args: string[]) {
-  return spawnSync(process.execPath, ['--import', tsxImportUrl, cliEntry, 'group', ...args], {
+  return spawnSync(process.execPath, [...CLI_SPAWN_PREFIX, 'group', ...args], {
     cwd: repoRoot,
     encoding: 'utf8',
     timeout: 20000,
@@ -85,9 +81,7 @@ describe('group CLI', () => {
       const r = spawnSync(
         process.execPath,
         [
-          '--import',
-          tsxImportUrl,
-          cliEntry,
+          ...CLI_SPAWN_PREFIX,
           'group',
           'impact',
           'test-group',

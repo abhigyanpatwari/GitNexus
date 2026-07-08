@@ -14,24 +14,16 @@
  * import, no pipeline, no DB, no network — just tsx startup + commander parse.
  * That makes these deterministic and fast, unlike the full-analyze e2e cases.
  *
- * Run via tsx (no build step), mirroring test/integration/cli-e2e.test.ts.
+ * Spawns the CLI via CLI_SPAWN_PREFIX (built dist in CI, tsx-on-source locally),
+ * mirroring test/integration/cli-e2e.test.ts.
  */
 import { spawnSync } from 'child_process';
-import { createRequire } from 'module';
 import os from 'os';
 import path from 'path';
 import fs from 'fs';
-import { fileURLToPath, pathToFileURL } from 'url';
 
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-
-const testDir = path.dirname(fileURLToPath(import.meta.url));
-const repoRoot = path.resolve(testDir, '../..');
-const cliEntry = path.join(repoRoot, 'src/cli/index.ts');
-
-const _require = createRequire(import.meta.url);
-const tsxPkgDir = path.dirname(_require.resolve('tsx/package.json'));
-const tsxImportUrl = pathToFileURL(path.join(tsxPkgDir, 'dist', 'loader.mjs')).href;
+import { CLI_SPAWN_PREFIX } from '../helpers/cli-entry.js';
 
 let cwd: string;
 
@@ -54,7 +46,7 @@ function runAnalyze(args: string[]) {
   // (would drop the tsx loader). Irrelevant on the invalid-dims path since the
   // hook exits first, but harmless and matches the cli-e2e harness.
   env.NODE_OPTIONS = `${process.env.NODE_OPTIONS || ''} --max-old-space-size=8192`.trim();
-  return spawnSync(process.execPath, ['--import', tsxImportUrl, cliEntry, 'analyze', ...args], {
+  return spawnSync(process.execPath, [...CLI_SPAWN_PREFIX, 'analyze', ...args], {
     cwd,
     encoding: 'utf8',
     timeout: 30_000,

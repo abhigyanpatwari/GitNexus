@@ -11,6 +11,14 @@ export const FTS_UNAVAILABLE_NOTE =
  * (registered in LBUG_NATIVE, so they run on the ubuntu/macOS/windows jobs that
  * all set GITNEXUS_REQUIRE_FTS=1) could vanish from a green run. Offline/local
  * runs (no env var) still skip gracefully (#2299).
+ *
+ * Self-sufficient under sharding: the default load path is `load-only`, so these
+ * primitives only pass when *some other* test already installed FTS into the
+ * shared home. That co-location is not guaranteed once the cross-platform suite
+ * is sharded (a load-only file can land in a shard with no installer sibling —
+ * exactly what broke `lbug-core-adapter` on shard 2/3). So under REQUIRE_FTS we
+ * install-on-miss with `auto` (LOAD-first, then one bounded network INSTALL),
+ * matching `withTestIndexedDB`, before treating it as a hard failure.
  */
 export const skipUnlessFtsAvailable = async (ctx: {
   skip: (note?: string) => void;
@@ -18,6 +26,10 @@ export const skipUnlessFtsAvailable = async (ctx: {
   const { loadFTSExtension } = await import('../../src/core/lbug/lbug-adapter.js');
   if (await loadFTSExtension()) return;
   if (process.env.GITNEXUS_REQUIRE_FTS === '1') {
+    // Not pre-installed in this (possibly-sharded) CI VM — install it once, then
+    // it stays available for the rest of this file's tests. `auto` is LOAD-first
+    // so a pre-installed extension still costs no network.
+    if (await loadFTSExtension(undefined, { policy: 'auto' })) return;
     throw new Error(
       'FTS extension is required (GITNEXUS_REQUIRE_FTS=1) but could not be loaded or installed. ' +
         'FTS-dependent tests must not be silently skipped in CI — install/repair the LadybugDB ' +
