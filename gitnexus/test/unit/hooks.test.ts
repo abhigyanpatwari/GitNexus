@@ -2012,6 +2012,87 @@ describe.skipIf(SKIP_LSOF_PATH)('MCP-owner hint throttle (#2396)', () => {
   }
 });
 
+// #2396: buildMcpQueryHint and its throttle are triplicated across the three hook
+// copies (the repo's deliberate no-shared-module hook convention). Guard against
+// silent drift with a source-level byte-identity check — runs on every platform,
+// unlike the owner-path behavior tests which are macOS-only.
+describe('hook copy drift guard (#2396)', () => {
+  const ANTIGRAVITY_HOOK = path.resolve(
+    __dirname,
+    '..',
+    '..',
+    'hooks',
+    'antigravity',
+    'gitnexus-antigravity-hook.cjs',
+  );
+  const HOOK_SOURCES: ReadonlyArray<readonly [string, string]> = [
+    ['claude', CJS_HOOK],
+    ['plugin', PLUGIN_HOOK],
+    ['antigravity', ANTIGRAVITY_HOOK],
+  ];
+
+  function extractFn(source: string, name: string): string {
+    const match = source.match(new RegExp(`function ${name}\\([^)]*\\) \\{[\\s\\S]*?\\n\\}`));
+    return match ? match[0] : `<${name} not found>`;
+  }
+
+  for (const fnName of ['buildMcpQueryHint', 'shouldEmitMcpHint']) {
+    it(`${fnName} is byte-identical across all three hook copies`, () => {
+      const [claude, plugin, antigravity] = HOOK_SOURCES.map(([, p]) =>
+        extractFn(fs.readFileSync(p, 'utf-8'), fnName),
+      );
+      expect(claude).toContain(`function ${fnName}`);
+      expect(plugin).toBe(claude);
+      expect(antigravity).toBe(claude);
+    });
+  }
+});
+
+// #2396: an adversarial search pattern (embedded quote + newline) must not break
+// the additionalContext JSON envelope — JSON.stringify in the emit path escapes it
+// structurally. Owner-path only (macOS/other-Unix lsof+ps lane, SKIP_LSOF_PATH).
+describe.skipIf(SKIP_LSOF_PATH)('MCP hint pattern escaping (#2396)', () => {
+  for (const [label, hookPath] of [
+    ['CJS', CJS_HOOK],
+    ['Plugin', PLUGIN_HOOK],
+  ] as const) {
+    it(`${label}: quote+newline pattern stays JSON-safe in additionalContext`, () => {
+      const markerPath = path.join(os.tmpdir(), `gn-hook-esc-${process.pid}-${label}`);
+      const lbugPath = path.join(gitNexusDir, 'lbug');
+      fs.writeFileSync(lbugPath, '');
+      fs.rmSync(markerPath, { force: true });
+      const binDir = createHookToolDir({
+        gitnexusMarkerPath: markerPath,
+        lsofOutput: '12345\n',
+        psOutput: 'node /tmp/node_modules/.bin/gitnexus mcp\n',
+      });
+      const evilPattern = 'foo"bar\nbaz';
+      try {
+        const result = runHook(
+          hookPath,
+          {
+            hook_event_name: 'PreToolUse',
+            tool_name: 'Grep',
+            tool_input: { pattern: evilPattern },
+            cwd: tmpDir,
+          },
+          undefined,
+          { env: hookEnv(binDir) },
+        );
+        // parseHookOutput JSON.parses stdout — a broken envelope would throw/return null.
+        const output = parseHookOutput(result.stdout);
+        expect(output!.additionalContext).toContain('foo"bar');
+        expect(output!.additionalContext).toContain('search_query');
+        expect(result.status).toBe(0);
+      } finally {
+        fs.rmSync(lbugPath, { force: true });
+        fs.rmSync(markerPath, { force: true });
+        fs.rmSync(binDir, { recursive: true, force: true });
+      }
+    });
+  }
+});
+
 describe.skipIf(SKIP_LSOF_PATH)(
   'Ladybug DB owner guard — production-shaped ps + failure modes (#1493)',
   () => {
