@@ -38,6 +38,7 @@ export const NODE_COLORS: Record<NodeLabel, string> = {
   Template: '#a78bfa', // Violet light - like Type
   Route: '#f43f5e', // Rose - like Process
   Tool: '#a855f7', // Purple - like Project
+  BasicBlock: '#475569', // Slate darker - control-flow node (muted, taint/PDG substrate)
 };
 
 // Node sizes by type - clear visual hierarchy with dramatic size differences
@@ -79,6 +80,7 @@ export const NODE_SIZES: Record<NodeLabel, number> = {
   Template: 3, // Like Type
   Route: 5, // Like Enum
   Tool: 5, // Like Enum
+  BasicBlock: 2, // Tiny - control-flow node (taint/PDG substrate)
 };
 
 // Community color palette for cluster-based coloring
@@ -101,7 +103,9 @@ export const getCommunityColor = (communityIndex: number): string => {
   return COMMUNITY_COLORS[communityIndex % COMMUNITY_COLORS.length];
 };
 
-// Labels to show by default (hide imports and variables by default as they clutter)
+// Labels to show by default (hide imports by default as they clutter).
+// Property/Const are the Kotlin/Java equivalents of Variable — include them so
+// Kotlin repos don't appear to have no leaf nodes.
 export const DEFAULT_VISIBLE_LABELS: NodeLabel[] = [
   'Project',
   'Package',
@@ -111,6 +115,8 @@ export const DEFAULT_VISIBLE_LABELS: NodeLabel[] = [
   'Class',
   'Function',
   'Method',
+  'Property', // Kotlin/Java fields (HAS_PROPERTY + DEFINES File→Property)
+  'Const', // Top-level constants
   'Interface',
   'Enum',
   'Type',
@@ -127,6 +133,8 @@ export const FILTERABLE_LABELS: NodeLabel[] = [
   'Function',
   'Method',
   'Variable',
+  'Property', // Kotlin/Java field nodes
+  'Const',
   'Decorator',
   'Import',
 ];

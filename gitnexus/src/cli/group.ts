@@ -1,6 +1,7 @@
 // gitnexus/src/cli/group.ts
 import { createRequire } from 'node:module';
 import type { Command } from 'commander';
+import { logger } from '../core/logger.js';
 
 const _require = createRequire(import.meta.url);
 const yaml = _require('js-yaml') as typeof import('js-yaml');
@@ -51,7 +52,7 @@ export function registerGroupCommands(program: Command): void {
       const groupDir = getGroupDir(getDefaultGitnexusDir(), groupName);
       const config = await loadGroupConfig(groupDir);
       if (!(repoPath in config.repos)) {
-        console.error(`Repo path "${repoPath}" not found in group "${groupName}"`);
+        logger.error(`Repo path "${repoPath}" not found in group "${groupName}"`);
         process.exitCode = 1;
         return;
       }
@@ -239,7 +240,7 @@ export function registerGroupCommands(program: Command): void {
 
         const raw = await backend.getGroupService().groupImpact(payload);
         if (raw && typeof raw === 'object' && 'error' in raw) {
-          console.error(String((raw as { error: string }).error));
+          logger.error(String((raw as { error: string }).error));
           process.exitCode = 1;
           return;
         }
@@ -333,7 +334,7 @@ export function registerGroupCommands(program: Command): void {
         });
 
         if (raw && typeof raw === 'object' && 'error' in raw) {
-          console.error(String((raw as { error: string }).error));
+          logger.error(String((raw as { error: string }).error));
           process.exitCode = 1;
           return;
         }

@@ -21,6 +21,7 @@ describe('Group types', () => {
       detect: {
         http: true,
         grpc: true,
+        thrift: true,
         topics: true,
         shared_libs: true,
         embedding_fallback: true,
@@ -61,6 +62,41 @@ describe('Group types', () => {
       };
       expect(contract.type).toBe(t);
     });
+  });
+
+  it('ExtractedContract accepts thrift contract type', () => {
+    const contract: ExtractedContract = {
+      contractId: 'thrift::billing.v1.OrderService/PlaceOrder',
+      type: 'thrift',
+      role: 'provider',
+      symbolUid: 'uid-thrift',
+      symbolRef: { filePath: 'idl/order.thrift', name: 'OrderService.PlaceOrder' },
+      symbolName: 'OrderService.PlaceOrder',
+      confidence: 0.9,
+      meta: {},
+    };
+    expect(contract.type).toBe('thrift');
+  });
+
+  it('DetectConfig includes thrift toggle', () => {
+    const config: GroupConfig = {
+      version: 1,
+      name: 'company',
+      description: 'All company microservices',
+      repos: { orders: 'orders-repo' },
+      links: [],
+      packages: {},
+      detect: {
+        http: true,
+        grpc: true,
+        thrift: true,
+        topics: true,
+        shared_libs: true,
+        embedding_fallback: true,
+      },
+      matching: { bm25_threshold: 0.7, embedding_threshold: 0.65, max_candidates_per_step: 3 },
+    };
+    expect(config.detect.thrift).toBe(true);
   });
 
   it('CrossLink stores match metadata', () => {

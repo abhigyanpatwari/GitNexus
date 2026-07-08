@@ -1,0 +1,19 @@
+title = "GitNexus"
+
+[extend]
+useDefault = true
+
+# Fake credentials in unit tests — none are real secrets:
+#   - embedding API keys in the http-embedder tests (regexes below)
+#   - synthetic GitHub PAT fixtures in the git-clone PAT-injection tests
+#     (e.g. ghp_secret123, ghp_uniqueRawSecret_98765) — allowlisted by path
+#     so the exception is bounded to that one test file.
+[allowlist]
+description = "fake credentials in unit tests (no real secrets)"
+regexes = [
+  '''secret-key-12345''',
+  '''test-api-key-redaction-check''',
+]
+paths = [
+  '''gitnexus/test/unit/git-clone\.test\.ts''',
+]

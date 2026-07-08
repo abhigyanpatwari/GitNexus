@@ -300,8 +300,7 @@ const findTsIterableElementType = (
   while (current) {
     if (TS_FUNCTION_NODE_TYPES.has(current.type)) {
       // Search function parameters
-      const paramsNode =
-        current.childForFieldName('parameters') ?? current.childForFieldName('formal_parameters');
+      const paramsNode = current.childForFieldName('parameters');
       if (paramsNode) {
         for (let i = 0; i < paramsNode.namedChildCount; i++) {
           const param = paramsNode.namedChild(i);

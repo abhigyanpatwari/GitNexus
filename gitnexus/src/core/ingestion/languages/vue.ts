@@ -19,7 +19,6 @@ import { typeConfig as typescriptConfig } from '../type-extractors/typescript.js
 import { tsExportChecker } from '../export-detection.js';
 import { createImportResolver } from '../import-resolvers/resolver-factory.js';
 import { vueImportConfig } from '../import-resolvers/configs/typescript-javascript.js';
-import { extractTsNamedBindings } from '../named-bindings/typescript.js';
 import { TYPESCRIPT_QUERIES } from '../tree-sitter-queries.js';
 import { typescriptFieldExtractor } from '../field-extractors/typescript.js';
 import { BUILT_INS as TS_BUILT_INS } from './typescript.js';
@@ -27,7 +26,18 @@ import { createVariableExtractor } from '../variable-extractors/generic.js';
 import { typescriptVariableConfig } from '../variable-extractors/configs/typescript-javascript.js';
 import { createCallExtractor } from '../call-extractors/generic.js';
 import { typescriptCallConfig } from '../call-extractors/configs/typescript-javascript.js';
-import { createHeritageExtractor } from '../heritage-extractors/generic.js';
+import {
+  interpretTsImport,
+  interpretTsTypeBinding,
+  tsBindingScopeFor,
+  tsImportOwningScope,
+  tsReceiverBinding,
+  typescriptMergeBindings,
+  typescriptArityCompatibility,
+  resolveTsImportTarget,
+} from './typescript/index.js';
+import { emitVueScopeCaptures } from './vue/captures.js';
+import { createTypeScriptCfgVisitor } from '../cfg/visitors/typescript.js';
 
 const VUE_SPECIFIC_BUILT_INS = [
   'ref',
@@ -68,15 +78,30 @@ const vueClassExtractor = createClassExtractor(vueClassConfig);
 export const vueProvider = defineLanguage({
   id: SupportedLanguages.Vue,
   extensions: ['.vue'],
+  entryPointPatterns: [],
+  astFrameworkPatterns: [],
   treeSitterQueries: TYPESCRIPT_QUERIES,
   typeConfig: typescriptConfig,
   exportChecker: tsExportChecker,
   importResolver: createImportResolver(vueImportConfig),
-  namedBindingExtractor: extractTsNamedBindings,
   callExtractor: createCallExtractor(typescriptCallConfig),
   fieldExtractor: typescriptFieldExtractor,
   variableExtractor: createVariableExtractor(typescriptVariableConfig),
   classExtractor: vueClassExtractor,
-  heritageExtractor: createHeritageExtractor(SupportedLanguages.TypeScript),
   builtInNames: VUE_BUILT_INS,
+  // Vue SFC <script> blocks are extracted and parsed with the TypeScript
+  // grammar (parse-worker GRAMMAR_BY_LANGUAGE[Vue] = TypeScript.typescript),
+  // so the TS CFG visitor builds CFGs for the script's functions verbatim —
+  // no Vue-specific visitor needed (#2195).
+  cfgVisitor: createTypeScriptCfgVisitor(),
+  // Scope-resolution pipeline hooks (RFC #909 Ring 3)
+  emitScopeCaptures: emitVueScopeCaptures,
+  interpretImport: interpretTsImport,
+  interpretTypeBinding: interpretTsTypeBinding,
+  bindingScopeFor: tsBindingScopeFor,
+  importOwningScope: tsImportOwningScope,
+  receiverBinding: tsReceiverBinding,
+  mergeBindings: (_scope, bindings) => typescriptMergeBindings(bindings),
+  arityCompatibility: typescriptArityCompatibility,
+  resolveImportTarget: resolveTsImportTarget,
 });

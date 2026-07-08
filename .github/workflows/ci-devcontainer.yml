@@ -1,0 +1,127 @@
+name: Devcontainer Smoke
+
+# Smoke-tests .devcontainer/ whenever it changes. Two things happen here.
+# First, unit tests run on the pure host->container config transforms: the
+# plugin-registry path translation, and the strip of the machine field from
+# $HOME/.claude.json. Second, the devcontainer image is built through the
+# standard @devcontainers/cli path. That CLI reads build.args from
+# devcontainer.json, so the version pin there stays the single source of truth.
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.devcontainer/**'
+      - '.github/workflows/ci-devcontainer.yml'
+  pull_request:
+    paths:
+      - '.devcontainer/**'
+      - '.github/workflows/ci-devcontainer.yml'
+
+permissions:
+  contents: read
+
+# Concurrency convention: see CONTRIBUTING.md → "GitHub Actions — Concurrency Convention".
+# Grouped per branch or tag. Cancel a PR run when a newer one replaces it.
+# Never cancel a push-to-main run.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  config-transforms:
+    name: Config-transform unit tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      # persist-credentials: false — this job only reads (tests and syntax
+      # checks) and never pushes. The setting keeps GITHUB_TOKEN out of
+      # .git/config, which zizmor flags as the "artipacked" issue.
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 22
+      - name: Unit-test the host->container config transforms
+        run: node --test .devcontainer/translate-plugin-registries.test.cjs
+      - name: Syntax-check the lifecycle shell scripts
+        run: |
+          bash -n .devcontainer/install-deps.sh
+          bash -n .devcontainer/post-create.sh
+
+  build:
+    name: Build devcontainer image
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      # persist-credentials: false — this is a read-only build smoke that
+      # never pushes. The setting keeps GITHUB_TOKEN out of .git/config,
+      # which zizmor flags as the "artipacked" issue.
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 22
+      # Builds the image the same way a developer's "Reopen in Container" does.
+      # @devcontainers/cli reads devcontainer.json (jsonc format), resolves
+      # build.args (the CLAUDE_CODE_VERSION / CODEX_VERSION pins), and runs the
+      # Dockerfile. This smoke catches Dockerfile regressions and any drift from
+      # the canonical version pins. The lifecycle hooks (post-create.sh) do not
+      # run here. They need the host config mounts, and CI has none.
+      #
+      # ARCH COVERAGE: this runs on an x64 runner with no --platform or QEMU, so
+      # it builds only the amd64 Cursor branch (CURSOR_SHA256_X64). The arm64
+      # branch (CURSOR_SHA256_ARM64 plus the arm64 tarball URL) is pinned by a
+      # sha256 checked against the published artifact, but it is not BUILT here.
+      # Cursor's extract-and-symlink step does not depend on the architecture, so
+      # the only remaining gap is a stale arm64 URL or hash. If that becomes a
+      # concern, add a linux/arm64 matrix leg (docker/setup-qemu-action plus
+      # `--platform`).
+      #
+      # The @devcontainers/cli version is pinned on purpose. A bare
+      # `npx --yes @devcontainers/cli` would resolve @latest at run time. A
+      # breaking or malicious publish could then change CI behavior, or change
+      # how devcontainer.json is read, with no diff to show for it. Bump this pin
+      # deliberately, alongside the Dockerfile and devcontainer.json pins.
+      #
+      # @devcontainers/cli wraps the Dockerfile with `# syntax=docker/dockerfile:1`,
+      # which BuildKit resolves from Docker Hub. Hub blips surface as
+      # `DeadlineExceeded` / `i/o timeout` on the syntax frontend (see run
+      # 26797815133). Build retry (2 attempts, 45s backoff) matches
+      # `.github/actions/docker-build-push-retry` (docker/build-push-action#1422).
+      # Pre-pull of docker/dockerfile:1 is extra hardening; best-effort so the
+      # build retry still runs if Hub is flaky only during pull.
+      - name: Pre-pull BuildKit Dockerfile frontend (retry)
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          img="docker/dockerfile:1"
+          for attempt in 1 2 3; do
+            if docker pull "$img"; then
+              exit 0
+            fi
+            echo "::warning::docker pull ${img} attempt ${attempt} failed"
+            if [ "$attempt" -lt 3 ]; then
+              sleep $((attempt * 15))
+            fi
+          done
+          echo "::warning::failed to pre-pull ${img} after 3 attempts; continuing — build step may still succeed"
+          exit 1
+      - name: Build devcontainer via @devcontainers/cli
+        run: |
+          set -euo pipefail
+          for attempt in 1 2; do
+            if npx --yes @devcontainers/cli@0.87.0 build --workspace-folder .; then
+              if [ "$attempt" -eq 2 ]; then
+                echo "::notice::devcontainer build retry succeeded (attempt 2); investigate if this recurs across runs."
+              fi
+              exit 0
+            fi
+            if [ "$attempt" -eq 2 ]; then
+              echo "::error::devcontainer build failed after 2 attempts"
+              exit 1
+            fi
+            echo "::warning::devcontainer build attempt ${attempt} failed; retrying in 45s…"
+            sleep 45
+          done

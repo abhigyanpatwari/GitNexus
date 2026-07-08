@@ -49,6 +49,34 @@ export function hasModifier(node: SyntaxNode, modifierType: string, keyword: str
 }
 
 /**
+ * Collect `'@Name'`-prefixed annotation names from a declaration node's
+ * modifier-wrapper children (e.g. Java `modifiers`). Handles both
+ * `marker_annotation` (`@Autowired`) and `annotation`
+ * (`@Autowired(required=false)`) node types. Node-type-agnostic: works for
+ * any declaration (method, field, ...) that groups annotations under a
+ * wrapper child of type `modifierType`.
+ *
+ * Shared by the JVM method- and field-extractor configs (moved verbatim from
+ * `method-extractors/configs/jvm.ts` in PR #2200 U2).
+ */
+export function extractAnnotations(node: SyntaxNode, modifierType: string): string[] {
+  const annotations: string[] = [];
+  for (let i = 0; i < node.namedChildCount; i++) {
+    const child = node.namedChild(i);
+    if (child && child.type === modifierType) {
+      for (let j = 0; j < child.namedChildCount; j++) {
+        const mod = child.namedChild(j);
+        if (mod && (mod.type === 'marker_annotation' || mod.type === 'annotation')) {
+          const nameNode = mod.childForFieldName('name') ?? mod.firstNamedChild;
+          if (nameNode) annotations.push('@' + nameNode.text);
+        }
+      }
+    }
+  }
+  return annotations;
+}
+
+/**
  * Return the first matching visibility keyword found either as a direct keyword
  * child or inside a modifier wrapper node.
  * Skips the `name` field child (same rationale as hasKeyword).

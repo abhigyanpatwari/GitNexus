@@ -64,6 +64,92 @@ repos:
     expect(config.matching.exclude_links_param_only_paths).toBe(false);
   });
 
+  it('defaults thrift detection to true', () => {
+    const minimal = `
+version: 1
+name: test
+repos:
+  app: my-app
+`;
+    const config = parseGroupConfig(minimal);
+    expect(config.detect.thrift).toBe(true);
+  });
+
+  // PR #1156 Codex follow-up: include extraction is opt-in. Existing
+  // group.yaml files that do not declare `detect.includes` must not gain
+  // a wave of new include::* contracts on the next sync after upgrade.
+  describe('detect.includes opt-in default', () => {
+    it('defaults includes detection to false when detect block omits it', () => {
+      const minimal = `
+version: 1
+name: test
+repos:
+  app: my-app
+`;
+      const config = parseGroupConfig(minimal);
+      expect(config.detect.includes).toBe(false);
+    });
+
+    it('defaults includes detection to false when detect block is present but omits the key', () => {
+      const yaml = `
+version: 1
+name: test
+repos:
+  app: my-app
+detect:
+  http: true
+  grpc: false
+`;
+      const config = parseGroupConfig(yaml);
+      expect(config.detect.includes).toBe(false);
+    });
+
+    it('honors explicit detect.includes: true (opt-in works)', () => {
+      const yaml = `
+version: 1
+name: test
+repos:
+  app: my-app
+detect:
+  includes: true
+`;
+      const config = parseGroupConfig(yaml);
+      expect(config.detect.includes).toBe(true);
+    });
+
+    it('honors explicit detect.includes: false', () => {
+      const yaml = `
+version: 1
+name: test
+repos:
+  app: my-app
+detect:
+  includes: false
+`;
+      const config = parseGroupConfig(yaml);
+      expect(config.detect.includes).toBe(false);
+    });
+  });
+
+  it('parses thrift manifest links', () => {
+    const yaml = `
+version: 1
+name: test
+repos:
+  gateway: gateway-repo
+  orders: orders-repo
+links:
+  - from: gateway
+    to: orders
+    type: thrift
+    contract: billing.v1.OrderService/PlaceOrder
+    role: consumer
+`;
+    const config = parseGroupConfig(yaml);
+    expect(config.links[0].type).toBe('thrift');
+    expect(config.links[0].contract).toBe('billing.v1.OrderService/PlaceOrder');
+  });
+
   it('throws on missing required fields', () => {
     expect(() => parseGroupConfig('version: 1')).toThrow(/name.*required/i);
     expect(() => parseGroupConfig('name: test')).toThrow(/version.*required/i);

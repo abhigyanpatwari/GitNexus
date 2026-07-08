@@ -18,8 +18,8 @@
  * undefined `ownerId` is reachable via either:
  *   - `model.methods.lookupAllByOwner(ownerId, simpleName)` — if the
  *     def is a Method / Function / Constructor, OR
- *   - `model.fields.lookupFieldByOwner(ownerId, simpleName)` — if the
- *     def is a Property / Variable.
+ *   - `model.fields.lookupAllByOwner(ownerId, simpleName)` — if the
+ *     def is a Property / Variable / Const / Static.
  *
  * This invariant is the foundation of Contract Invariant I9
  * (`contract/scope-resolver.ts`): scope-resolution passes MUST read
@@ -45,11 +45,29 @@ import type { ParsedFile } from 'gitnexus-shared';
 import type { MutableSemanticModel, SemanticModel } from '../../model/semantic-model.js';
 import { simpleQualifiedName } from '../graph-bridge/ids.js';
 
+const NESTED_TYPE_KINDS = new Set<string>([
+  'Class',
+  'Interface',
+  'Enum',
+  'Struct',
+  'Union',
+  'Trait',
+  'TypeAlias',
+  'Typedef',
+  'Record',
+  'Delegate',
+  'Annotation',
+  'Template',
+  'Namespace',
+]);
+
 export interface ReconcileStats {
   /** Method/Function/Constructor defs registered into MethodRegistry. */
   readonly methodsRegistered: number;
   /** Property/Variable defs registered into FieldRegistry. */
   readonly fieldsRegistered: number;
+  /** Class-like nested type defs registered into TypeRegistry by owner. */
+  readonly nestedTypesRegistered: number;
   /** Defs already present (idempotent skip). */
   readonly skippedAlreadyPresent: number;
 }
@@ -60,36 +78,96 @@ export function reconcileOwnership(
 ): ReconcileStats {
   let methodsRegistered = 0;
   let fieldsRegistered = 0;
+  let nestedTypesRegistered = 0;
   let skippedAlreadyPresent = 0;
 
   for (const parsed of parsedFiles) {
     for (const def of parsed.localDefs) {
       const ownerId = (def as { ownerId?: string }).ownerId;
-      if (ownerId === undefined) continue;
       const simple = simpleQualifiedName(def);
       if (simple === undefined) continue;
 
       if (def.type === 'Method' || def.type === 'Function' || def.type === 'Constructor') {
+        if (ownerId === undefined) {
+          if (def.isDeleted !== true) continue;
+          const existingDef = model.symbols
+            .lookupExactAll(def.filePath, simple)
+            .find((candidate) => callableSignatureMatches(candidate, def));
+          if (existingDef !== undefined) {
+            existingDef.isDeleted = true;
+            skippedAlreadyPresent++;
+            continue;
+          }
+          model.symbols.add(def.filePath, simple, def.nodeId, def.type, {
+            parameterCount: def.parameterCount,
+            requiredParameterCount: def.requiredParameterCount,
+            parameterTypes: def.parameterTypes,
+            parameterTypeClasses: def.parameterTypeClasses,
+            returnType: def.returnType,
+            qualifiedName: def.qualifiedName,
+            isDeleted: true,
+          });
+          continue;
+        }
         const existing = model.methods.lookupAllByOwner(ownerId, simple);
-        if (existing.some((e) => e.nodeId === def.nodeId)) {
+        const existingDef = existing.find(
+          (candidate) =>
+            candidate.nodeId === def.nodeId ||
+            (def.isDeleted === true && callableSignatureMatches(candidate, def)),
+        );
+        if (existingDef !== undefined) {
+          if (def.isDeleted === true) {
+            existingDef.isDeleted = true;
+          }
           skippedAlreadyPresent++;
           continue;
         }
         model.methods.register(ownerId, simple, def);
         methodsRegistered++;
-      } else if (def.type === 'Property' || def.type === 'Variable') {
-        const existing = model.fields.lookupFieldByOwner(ownerId, simple);
-        if (existing !== undefined && existing.nodeId === def.nodeId) {
+      } else if (
+        def.type === 'Property' ||
+        def.type === 'Variable' ||
+        def.type === 'Const' ||
+        def.type === 'Static'
+      ) {
+        const existing = model.fields.lookupAllByOwner(ownerId, simple);
+        if (existing.some((e) => e.nodeId === def.nodeId)) {
           skippedAlreadyPresent++;
           continue;
         }
         model.fields.register(ownerId, simple, def);
         fieldsRegistered++;
+      } else if (NESTED_TYPE_KINDS.has(def.type)) {
+        const existing = model.types.lookupAllByOwner(ownerId, simple);
+        if (existing.some((e) => e.nodeId === def.nodeId)) {
+          skippedAlreadyPresent++;
+          continue;
+        }
+        model.types.registerByOwner(ownerId, simple, def);
+        nestedTypesRegistered++;
       }
     }
   }
 
-  return { methodsRegistered, fieldsRegistered, skippedAlreadyPresent };
+  return { methodsRegistered, fieldsRegistered, nestedTypesRegistered, skippedAlreadyPresent };
+}
+
+function callableSignatureMatches(
+  left: ParsedFile['localDefs'][number],
+  right: ParsedFile['localDefs'][number],
+): boolean {
+  if (left.filePath !== right.filePath) return false;
+  if (left.parameterCount !== right.parameterCount) return false;
+  if (left.requiredParameterCount !== right.requiredParameterCount) return false;
+  const leftTypes = left.parameterTypes;
+  const rightTypes = right.parameterTypes;
+  if (leftTypes === undefined || rightTypes === undefined) {
+    return leftTypes === rightTypes;
+  }
+  return (
+    leftTypes.length === rightTypes.length &&
+    leftTypes.every((parameterType, index) => parameterType === rightTypes[index])
+  );
 }
 
 /**
@@ -131,12 +209,26 @@ export function validateOwnershipParity(
           );
           mismatches++;
         }
-      } else if (def.type === 'Property' || def.type === 'Variable') {
-        const found = model.fields.lookupFieldByOwner(ownerId, simple);
-        if (found === undefined || found.nodeId !== def.nodeId) {
+      } else if (
+        def.type === 'Property' ||
+        def.type === 'Variable' ||
+        def.type === 'Const' ||
+        def.type === 'Static'
+      ) {
+        const found = model.fields.lookupAllByOwner(ownerId, simple);
+        if (!found.some((d) => d.nodeId === def.nodeId)) {
           onWarn(
             `semantic-model parity: ${def.type} ${def.nodeId} (${parsed.filePath}) ` +
               `owned by ${ownerId} as "${simple}" not in FieldRegistry`,
+          );
+          mismatches++;
+        }
+      } else if (NESTED_TYPE_KINDS.has(def.type)) {
+        const found = model.types.lookupAllByOwner(ownerId, simple);
+        if (!found.some((d) => d.nodeId === def.nodeId)) {
+          onWarn(
+            `semantic-model parity: ${def.type} ${def.nodeId} (${parsed.filePath}) ` +
+              `owned by ${ownerId} as "${simple}" not in TypeRegistry owner index`,
           );
           mismatches++;
         }

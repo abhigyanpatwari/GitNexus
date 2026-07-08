@@ -17,6 +17,7 @@
 import type { ParsedImport, WorkspaceIndex } from 'gitnexus-shared';
 import { SupportedLanguages } from 'gitnexus-shared';
 import { resolveImportPath } from '../../import-resolvers/standard.js';
+import type { SuffixIndex } from '../../import-resolvers/utils.js';
 import type { TsconfigPaths } from '../../language-config.js';
 
 export interface TsResolveContext {
@@ -31,6 +32,8 @@ export interface TsResolveContext {
   readonly normalizedFileList?: readonly string[];
   /** Per-call resolution cache to dedupe repeated lookups. */
   readonly resolveCache?: Map<string, string | null>;
+  /** Prebuilt suffix index for O(1)-style package/absolute import matching. */
+  readonly index?: SuffixIndex;
   /** Parsed tsconfig path-aliases. `null` = no aliases configured. */
   readonly tsconfigPaths?: TsconfigPaths | null;
   /** JavaScript vs TypeScript switch — affects the extensions the
@@ -84,6 +87,7 @@ export function resolveTsTarget(targetRaw: string, ctx: TsResolveContext): strin
     resolveCache,
     language,
     ctx.tsconfigPaths ?? null,
+    ctx.index,
   );
 }
 

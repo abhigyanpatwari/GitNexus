@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { X, Snail, Rocket, SkipForward } from '@/lib/lucide-icons';
+import { useTranslation } from 'react-i18next';
 
 interface WebGPUFallbackDialogProps {
   isOpen: boolean;
@@ -20,6 +21,7 @@ export const WebGPUFallbackDialog = ({
   onSkip,
   nodeCount,
 }: WebGPUFallbackDialogProps) => {
+  const { t } = useTranslation('graph');
   const [isAnimating, setIsAnimating] = useState(true);
   const [isVisible, setIsVisible] = useState(false);
 
@@ -69,10 +71,10 @@ export const WebGPUFallbackDialog = ({
               🤔
             </div>
             <div>
-              <h2 className="text-lg font-semibold text-text-primary">WebGPU said "nope"</h2>
-              <p className="mt-0.5 text-sm text-text-muted">
-                Your browser doesn't support GPU acceleration
-              </p>
+              <h2 className="text-lg font-semibold text-text-primary">
+                {t('embedding.fallback.title')}
+              </h2>
+              <p className="mt-0.5 text-sm text-text-muted">{t('embedding.fallback.subtitle')}</p>
             </div>
           </div>
         </div>
@@ -80,24 +82,31 @@ export const WebGPUFallbackDialog = ({
         {/* Content */}
         <div className="space-y-4 px-6 py-5">
           <p className="text-sm leading-relaxed text-text-secondary">
-            Couldn't create embeddings with WebGPU, so semantic search (Graph RAG) won't be as
-            smart. The graph still works fine though!
+            {t('embedding.fallback.description')}
           </p>
 
           <div className="rounded-lg border border-border-subtle bg-elevated/50 p-4">
             <p className="text-sm text-text-secondary">
-              <span className="font-medium text-text-primary">Your options:</span>
+              <span className="font-medium text-text-primary">
+                {t('embedding.fallback.options')}
+              </span>
             </p>
             <ul className="mt-2 space-y-1.5 text-sm text-text-muted">
               <li className="flex items-start gap-2">
                 <Snail className="mt-0.5 h-4 w-4 flex-shrink-0 text-amber-400" />
                 <span>
-                  <strong className="text-text-secondary">Use CPU</strong> — Works but{' '}
-                  {isSmallCodebase ? 'a bit' : 'way'} slower
+                  <strong className="text-text-secondary">{t('embedding.fallback.useCpu')}</strong>{' '}
+                  —{' '}
+                  {isSmallCodebase
+                    ? t('embedding.fallback.useCpuDescriptionSmall')
+                    : t('embedding.fallback.useCpuDescriptionLarge')}
                   {nodeCount > 0 && (
                     <span className="text-text-muted">
                       {' '}
-                      (~{estimatedMinutes} min for {nodeCount} nodes)
+                      {t('embedding.fallback.estimated', {
+                        minutes: estimatedMinutes,
+                        count: nodeCount,
+                      })}
                     </span>
                   )}
                 </span>
@@ -105,8 +114,8 @@ export const WebGPUFallbackDialog = ({
               <li className="flex items-start gap-2">
                 <SkipForward className="mt-0.5 h-4 w-4 flex-shrink-0 text-blue-400" />
                 <span>
-                  <strong className="text-text-secondary">Skip it</strong> — Graph works, just no AI
-                  semantic search
+                  <strong className="text-text-secondary">{t('embedding.fallback.skipIt')}</strong>{' '}
+                  — {t('embedding.fallback.skipDescription')}
                 </span>
               </li>
             </ul>
@@ -115,11 +124,11 @@ export const WebGPUFallbackDialog = ({
           {isSmallCodebase && (
             <p className="flex items-center gap-1.5 rounded-lg bg-node-function/10 px-3 py-2 text-xs text-node-function">
               <Rocket className="h-3.5 w-3.5" />
-              Small codebase detected! CPU should be fine.
+              {t('embedding.fallback.smallCodebase')}
             </p>
           )}
 
-          <p className="text-xs text-text-muted">💡 Tip: Try Chrome or Edge for WebGPU support</p>
+          <p className="text-xs text-text-muted">{t('embedding.fallback.tip')}</p>
         </div>
 
         {/* Actions */}
@@ -129,7 +138,7 @@ export const WebGPUFallbackDialog = ({
             className="flex flex-1 items-center justify-center gap-2 rounded-lg border border-border-subtle bg-surface px-4 py-2.5 text-sm font-medium text-text-secondary transition-all hover:bg-hover hover:text-text-primary"
           >
             <SkipForward className="h-4 w-4" />
-            Skip Embeddings
+            {t('embedding.fallback.skipEmbeddings')}
           </button>
           <button
             onClick={onUseCPU}
@@ -140,7 +149,9 @@ export const WebGPUFallbackDialog = ({
             }`}
           >
             <Snail className="h-4 w-4" />
-            Use CPU {isSmallCodebase ? '(Recommended)' : '(Slow)'}
+            {isSmallCodebase
+              ? t('embedding.fallback.useCpuRecommended')
+              : t('embedding.fallback.useCpuSlow')}
           </button>
         </div>
       </div>

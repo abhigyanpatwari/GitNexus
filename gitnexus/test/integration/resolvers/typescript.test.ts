@@ -24,6 +24,58 @@ function writeFixtureRepo(root: string, files: Record<string, string>): void {
 }
 
 // ---------------------------------------------------------------------------
+// Generic-base heritage (#1951): extends Box<T> already worked (value: identifier
+// captures Base; type_args are a sibling), and `implements IFoo<T>` is resolved
+// to its bare name IFoo. Scope-resolution (the single path since #942) owns
+// these edges.
+// ---------------------------------------------------------------------------
+
+describe('TypeScript generic-base heritage resolution (#1951)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'typescript-generic-base'), () => {});
+  }, 60000);
+
+  it('emits EXTENDS Service → Box for a generic superclass (extends Box<string>)', () => {
+    const extends_ = getRelationships(result, 'EXTENDS');
+    expect(edgeSet(extends_)).toEqual(['Service → Box']);
+  });
+
+  it('emits IMPLEMENTS Service → IFoo for a generic interface (implements IFoo<string>)', () => {
+    const implements_ = getRelationships(result, 'IMPLEMENTS');
+    expect(edgeSet(implements_)).toEqual(['Service → IFoo']);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Qualified (namespaced) bases (#1956 tri-review U2): `extends ns.Box<string>`
+// + `implements ns.IFoo<string>` (qualified-generic, on Service) and `extends
+// ns.Base` + `implements ns.IBar` (qualified non-generic, on Plain). extends
+// uses a member_expression value; implements uses a nested_type_identifier
+// (plain) or a generic_type wrapping one. Scope-resolution resolves these by
+// their tail and owns these edges since #942.
+// ---------------------------------------------------------------------------
+
+describe('TypeScript qualified-base heritage resolution (#1956 U2)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'typescript-qualified-base'), () => {});
+  }, 60000);
+
+  it('emits EXTENDS for qualified and qualified-generic superclasses', () => {
+    const extends_ = getRelationships(result, 'EXTENDS');
+    expect(edgeSet(extends_)).toEqual(['Plain → Base', 'Service → Box']);
+  });
+
+  it('emits IMPLEMENTS for qualified and qualified-generic interfaces', () => {
+    const implements_ = getRelationships(result, 'IMPLEMENTS');
+    expect(edgeSet(implements_)).toEqual(['Plain → IBar', 'Service → IFoo']);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Heritage: class extends + implements interface
 // ---------------------------------------------------------------------------
 
@@ -371,14 +423,9 @@ describe('TypeScript named import disambiguation', () => {
 
 // ---------------------------------------------------------------------------
 // Side-effect imports: `import './polyfill'` produces an IMPORTS edge but
-// no local binding (parity with the legacy DAG, which counts side-effect
-// imports as module-reachability dependencies).
-//
-// This describe runs under both `REGISTRY_PRIMARY_TYPESCRIPT=0` (legacy
-// DAG) and `=1` (registry-primary) via the CI parity gate
-// (`.github/workflows/ci-scope-parity.yml`). Both modes must emit the
-// same IMPORTS edges; the registry-primary path emits no extra
-// `BindingRef`s for the side-effect kind.
+// no local binding (side-effect imports count as module-reachability
+// dependencies). The scope-resolution path emits no extra `BindingRef`s for
+// the side-effect kind.
 // ---------------------------------------------------------------------------
 
 describe('TypeScript side-effect imports', () => {
@@ -2649,7 +2696,7 @@ describe('TypeScript same-arity overload cross-file resolution', () => {
 });
 
 // ---------------------------------------------------------------------------
-// SM-9: lookupMethodByOwnerWithMRO — child.parentMethod() via first-wins walk
+// SM-9: inherited method resolution — child.parentMethod() via first-wins walk
 // ---------------------------------------------------------------------------
 
 describe('TypeScript Child extends Parent — inherited method resolution (SM-9)', () => {
@@ -2680,6 +2727,44 @@ describe('TypeScript Child extends Parent — inherited method resolution (SM-9)
     );
     expect(parentMethodCall).toBeDefined();
     expect(parentMethodCall!.source).toBe('run');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// PR #1657 finding #6: ambient base class — Step 2 MRO ancestor whose body
+// is never parsed (declare class). Probes whether the owner-keyed lookup
+// can still resolve inherited members on owners that reconcile-ownership
+// skipped because they have no parsed body.
+// ---------------------------------------------------------------------------
+
+describe('TypeScript Derived extends declare class AmbientBase — ambient MRO ancestor', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'typescript-ambient-base-class'),
+      () => {},
+    );
+  }, 60000);
+
+  it('detects AmbientBase and Derived classes', () => {
+    const classes = getNodesByLabel(result, 'Class');
+    expect(classes).toContain('AmbientBase');
+    expect(classes).toContain('Derived');
+  });
+
+  it('emits EXTENDS edge: Derived → AmbientBase', () => {
+    const extends_ = getRelationships(result, 'EXTENDS');
+    expect(edgeSet(extends_)).toContain('Derived → AmbientBase');
+  });
+
+  it('resolves d.ambientMethod() to AmbientBase.ambientMethod via MRO walk', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const ambientCall = calls.find(
+      (c) => c.target === 'ambientMethod' && c.targetFilePath.includes('ambient.ts'),
+    );
+    expect(ambientCall).toBeDefined();
+    expect(ambientCall!.source).toBe('run');
   });
 });
 
@@ -2774,16 +2859,10 @@ describe('TypeScript literal dynamic import resolution (registry-primary)', () =
     const imports = getRelationships(result, 'IMPORTS').filter(
       (e) => e.sourceFilePath === 'src/app.ts',
     );
-    // Literal dynamic-import resolution is a registry-primary feature
-    // (interpreter emits `dynamic-resolved`, finalize pre-finalizes it
-    // as a file-level terminal). The legacy DAG path
-    // (`REGISTRY_PRIMARY_TYPESCRIPT=0`) does not link literal
-    // `import('…')` calls to a target file — accept that here so the
-    // CI parity gate stays green; the registry-primary path remains the
-    // authoritative guarantee.
-    if (process.env['REGISTRY_PRIMARY_TYPESCRIPT'] !== '0') {
-      expect(imports.map((e) => e.targetFilePath)).toContain('src/feature.ts');
-    }
+    // Literal dynamic-import resolution: the interpreter emits
+    // `dynamic-resolved` and finalize pre-finalizes it as a file-level
+    // terminal, linking literal `import('…')` calls to a target file.
+    expect(imports.map((e) => e.targetFilePath)).toContain('src/feature.ts');
   });
 });
 
@@ -2863,9 +2942,7 @@ export function createUtf8User(): void {
 }
 `,
     });
-    result = await runPipelineFromRepo(repoDir, () => {}, {
-      workerThresholdsForTest: { minFiles: 1, minBytes: 0 },
-    });
+    result = await runPipelineFromRepo(repoDir, () => {}, {});
   }, 120000);
 
   afterAll(() => {
@@ -2896,5 +2973,126 @@ export function createUtf8User(): void {
       expect(save).toBeDefined();
       expect(save!.targetFilePath).toBe('src/models.ts');
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Issue #1358: class-instance singleton (`export const x = new C()`)
+// PR #1718 closed the object-literal-shorthand sub-case; this fixture covers
+// the class-instance sub-case. Resolution chain: @type-binding.constructor
+// (TS query) → propagateImportedReturnTypes (cross-file mirror) →
+// receiver-bound Case 4 (simple typeBinding) → MRO walk.
+// ---------------------------------------------------------------------------
+
+describe('TypeScript class-instance singleton resolution (issue #1358 sub-case)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'typescript-class-instance-singleton'),
+      () => {},
+      { skipGraphPhases: true },
+    );
+  }, 60000);
+
+  it('detects FooService class, getUser method, caller function, fooService Const', () => {
+    expect(getNodesByLabel(result, 'Class')).toContain('FooService');
+    expect(getNodesByLabel(result, 'Method')).toContain('getUser');
+    expect(getNodesByLabel(result, 'Function')).toContain('caller');
+    expect(getNodesByLabel(result, 'Const')).toContain('fooService');
+  });
+
+  it('emits HAS_METHOD edge from FooService to getUser', () => {
+    const hasMethod = getRelationships(result, 'HAS_METHOD');
+    const fromClass = hasMethod.filter((e) => e.source === 'FooService').map((e) => e.target);
+    expect(fromClass).toEqual(['getUser']);
+  });
+
+  it('resolves caller.fooService.getUser() to FooService.getUser via constructor-inferred typeBinding', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const projected = calls
+      .filter((e) => e.source === 'caller' && e.target === 'getUser')
+      .map((e) => ({
+        targetFilePath: e.targetFilePath,
+        reason: e.rel.reason,
+        confidence: e.rel.confidence,
+      }));
+
+    expect(projected).toEqual([
+      {
+        targetFilePath: 'src/service.ts',
+        reason: 'import-resolved',
+        confidence: 0.85,
+      },
+    ]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Issue #1358: factory-pattern singleton (`export const x = makeC()`)
+// Tests the @type-binding.alias chain-follow path through
+// propagateImportedReturnTypes (followChainPostFinalize) — fooService aliases
+// makeFooService's return type, which the constructor seeds as FooService.
+// ---------------------------------------------------------------------------
+
+describe('TypeScript factory-pattern singleton resolution (issue #1358 sub-case)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'typescript-factory-singleton'),
+      () => {},
+      { skipGraphPhases: true },
+    );
+  }, 60000);
+
+  it('detects FooService class, makeFooService function, fooService Const, caller function', () => {
+    expect(getNodesByLabel(result, 'Class')).toContain('FooService');
+    expect(getNodesByLabel(result, 'Function')).toContain('makeFooService');
+    expect(getNodesByLabel(result, 'Function')).toContain('caller');
+    expect(getNodesByLabel(result, 'Const')).toContain('fooService');
+  });
+
+  it('resolves caller.fooService.getUser() through the factory chain to FooService.getUser', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const projected = calls
+      .filter((e) => e.source === 'caller' && e.target === 'getUser')
+      .map((e) => ({
+        targetFilePath: e.targetFilePath,
+        reason: e.rel.reason,
+        confidence: e.rel.confidence,
+      }));
+
+    expect(projected).toEqual([
+      {
+        targetFilePath: 'src/service.ts',
+        reason: 'import-resolved',
+        confidence: 0.85,
+      },
+    ]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Dynamic-this contexts are never seeded from the lexically enclosing class
+// (#2353 follow-up): an object-literal method's `this` is the literal, not
+// the class instance — the compound resolver's literal-`this` head seed is
+// restricted to initializer contexts and must not fire here.
+// ---------------------------------------------------------------------------
+
+describe('TS dynamic-this receiver seeding guard', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'ts-dynamic-this-no-seed'), () => {});
+  }, 60000);
+
+  it('detects the App and Router classes', () => {
+    expect(getNodesByLabel(result, 'Class')).toEqual(['App', 'Router']);
+  });
+
+  it('emits no CALLS edge from the object-literal method to Router.go', () => {
+    const calls = getRelationships(result, 'CALLS');
+    expect(calls.some((c) => c.target === 'go' && c.source === 'onClick')).toBe(false);
   });
 });

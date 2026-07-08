@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   ExtensionManager,
   getExtensionInstallChildProcessArgs,
+  getExtensionInstallPolicy,
   getExtensionInstallTimeoutMs,
   type ExtensionInstallResult,
 } from '../../src/core/lbug/extension-loader.js';
@@ -60,7 +61,9 @@ describe('ExtensionManager — install policies', () => {
       true,
     );
 
-    expect(installExtension).toHaveBeenCalledWith('fts', 1234);
+    // The LOAD failure reason is threaded to the installer so it can pick
+    // INSTALL vs FORCE INSTALL from the error class (#2374, PR #2375).
+    expect(installExtension).toHaveBeenCalledWith('fts', 1234, 'Extension "fts" not found');
     expect(query.mock.calls.map(([sql]) => sql)).toEqual([
       'LOAD EXTENSION fts',
       'LOAD EXTENSION fts',
@@ -78,7 +81,7 @@ describe('ExtensionManager — install policies', () => {
 
     expect(installExtension).not.toHaveBeenCalled();
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('continuing without FTS features'));
-    expect(manager.getCapabilities()).toEqual([
+    expect(manager.getCapabilities()).toMatchObject([
       { name: 'fts', loaded: false, reason: expect.stringContaining('load-only') },
     ]);
   });
@@ -131,6 +134,68 @@ describe('ExtensionManager — install policies', () => {
   });
 });
 
+describe('ExtensionManager — reason strings carry the real LOAD error (#2374)', () => {
+  it('load-only failure reason includes the underlying LadybugDB error, collapsed to one line', async () => {
+    const warn = vi.fn();
+    const manager = new ExtensionManager({ policy: 'load-only', warn });
+    const query = vi
+      .fn()
+      .mockRejectedValue(
+        new Error(
+          'IO exception: Failed to load library: /x/libfts.lbug_extension.\ninvalid ELF header',
+        ),
+      );
+
+    await expect(manager.ensure(query, 'fts', 'FTS')).resolves.toBe(false);
+
+    expect(manager.getCapabilities()).toMatchObject([
+      {
+        name: 'fts',
+        loaded: false,
+        reason: expect.stringContaining(
+          'LOAD fts failed: IO exception: Failed to load library: /x/libfts.lbug_extension. invalid ELF header',
+        ),
+      },
+    ]);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('invalid ELF header'));
+  });
+
+  it('failed-install reason includes both the install message and the original LOAD error', async () => {
+    const installExtension = vi.fn().mockResolvedValue(failedInstall);
+    const manager = new ExtensionManager({ policy: 'auto', installExtension, warn: noopWarn });
+    const query = vi.fn().mockRejectedValue(new Error('Extension "fts" not found'));
+
+    await expect(manager.ensure(query, 'fts', 'FTS')).resolves.toBe(false);
+
+    expect(manager.getCapabilities()).toMatchObject([
+      {
+        name: 'fts',
+        loaded: false,
+        reason: 'install failed; LOAD fts had failed: Extension "fts" not found',
+      },
+    ]);
+  });
+
+  it('post-install LOAD failure reason includes the retry error', async () => {
+    const installExtension = vi.fn().mockResolvedValue(okInstall);
+    const manager = new ExtensionManager({ policy: 'auto', installExtension, warn: noopWarn });
+    const query = vi
+      .fn()
+      .mockRejectedValue(new Error('version mismatch: extension built for 0.17.0'));
+
+    await expect(manager.ensure(query, 'fts', 'FTS')).resolves.toBe(false);
+
+    expect(manager.getCapabilities()).toMatchObject([
+      {
+        name: 'fts',
+        loaded: false,
+        reason:
+          'LOAD fts failed after successful INSTALL: version mismatch: extension built for 0.17.0',
+      },
+    ]);
+  });
+});
+
 describe('ExtensionManager — caching', () => {
   it('caches install attempt outcome to avoid retrying within the same process', async () => {
     const installExtension = vi.fn().mockResolvedValue(timedOutInstall);
@@ -176,7 +241,7 @@ describe('ExtensionManager — observability', () => {
     await manager.ensure(okQuery, 'fts', 'FTS');
     await manager.ensure(failQuery, 'vector', 'VECTOR');
 
-    expect(manager.getCapabilities()).toEqual([
+    expect(manager.getCapabilities()).toMatchObject([
       { name: 'fts', loaded: true },
       { name: 'vector', loaded: false, reason: expect.stringContaining('load-only') },
     ]);
@@ -213,7 +278,70 @@ describe('installDuckDbExtensionOutOfProcess child process', () => {
     expect(args).not.toContain('--input-type=module');
     expect(args[0]).toContain('scripts');
     expect(args[0]).toContain('install-duckdb-extension.mjs');
-    expect(args.at(-1)).toBe('fts');
+    expect(args[1]).toBe('fts');
+    expect(Number(args[2])).toBeGreaterThan(0);
+  });
+
+  it('passes the resolved LadybugDB max DB size to the installer child', () => {
+    expect(getExtensionInstallChildProcessArgs('fts', 1234).at(-1)).toBe('1234');
+  });
+});
+
+describe('getExtensionInstallPolicy', () => {
+  it('defaults to load-only when env var is unset', () => {
+    const original = process.env.GITNEXUS_LBUG_EXTENSION_INSTALL;
+    delete process.env.GITNEXUS_LBUG_EXTENSION_INSTALL;
+    try {
+      expect(getExtensionInstallPolicy()).toBe('load-only');
+    } finally {
+      if (original === undefined) {
+        delete process.env.GITNEXUS_LBUG_EXTENSION_INSTALL;
+      } else {
+        process.env.GITNEXUS_LBUG_EXTENSION_INSTALL = original;
+      }
+    }
+  });
+
+  it('returns auto when env var is set to auto', () => {
+    const original = process.env.GITNEXUS_LBUG_EXTENSION_INSTALL;
+    process.env.GITNEXUS_LBUG_EXTENSION_INSTALL = 'auto';
+    try {
+      expect(getExtensionInstallPolicy()).toBe('auto');
+    } finally {
+      if (original === undefined) {
+        delete process.env.GITNEXUS_LBUG_EXTENSION_INSTALL;
+      } else {
+        process.env.GITNEXUS_LBUG_EXTENSION_INSTALL = original;
+      }
+    }
+  });
+
+  it('returns never when env var is set to never', () => {
+    const original = process.env.GITNEXUS_LBUG_EXTENSION_INSTALL;
+    process.env.GITNEXUS_LBUG_EXTENSION_INSTALL = 'never';
+    try {
+      expect(getExtensionInstallPolicy()).toBe('never');
+    } finally {
+      if (original === undefined) {
+        delete process.env.GITNEXUS_LBUG_EXTENSION_INSTALL;
+      } else {
+        process.env.GITNEXUS_LBUG_EXTENSION_INSTALL = original;
+      }
+    }
+  });
+
+  it('falls back to load-only for invalid env var values', () => {
+    const original = process.env.GITNEXUS_LBUG_EXTENSION_INSTALL;
+    process.env.GITNEXUS_LBUG_EXTENSION_INSTALL = 'bogus';
+    try {
+      expect(getExtensionInstallPolicy()).toBe('load-only');
+    } finally {
+      if (original === undefined) {
+        delete process.env.GITNEXUS_LBUG_EXTENSION_INSTALL;
+      } else {
+        process.env.GITNEXUS_LBUG_EXTENSION_INSTALL = original;
+      }
+    }
   });
 });
 

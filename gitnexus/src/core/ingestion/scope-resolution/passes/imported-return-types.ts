@@ -42,7 +42,12 @@
 import type { ParsedFile, ScopeId, TypeRef } from 'gitnexus-shared';
 import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
 import type { WorkspaceResolutionIndex } from '../workspace-index.js';
-import { lookupBindingsAt, namesAtScope } from '../scope/walkers.js';
+import {
+  lookupBindingsAt,
+  namesAtScope,
+  moduleScopeIdOf,
+  namespaceTypeBindingFor,
+} from '../scope/walkers.js';
 
 /**
  * Max chain depth for the post-finalize re-follow. Effective end-to-end
@@ -59,13 +64,16 @@ const RECHAIN_MAX_DEPTH = 8;
  *  `followChainedRef` but operates on post-finalize Scope objects so
  *  it can see imported return-types propagated by
  *  `propagateImportedReturnTypes`. */
-function followChainPostFinalize(
+export function followChainPostFinalize(
   start: TypeRef,
   fromScopeId: ScopeId,
   scopes: ScopeResolutionIndexes,
 ): TypeRef {
   let current = start;
   const visited = new Set<string>();
+  // The caller's module scope is fixed across the walk; resolve it once so the
+  // accessibility-gated per-namespace fallback below can be consulted cheaply.
+  const moduleScopeId = moduleScopeIdOf(fromScopeId, scopes);
   for (let depth = 0; depth < RECHAIN_MAX_DEPTH; depth++) {
     if (current.rawName.includes('.')) return current;
     let scopeId: ScopeId | null = fromScopeId;
@@ -77,6 +85,21 @@ function followChainPostFinalize(
       if (next !== undefined && next !== current) break;
       next = undefined;
       scopeId = scope.parent;
+    }
+    // Scope-independent fallbacks (#1871), mirroring findReceiverTypeBinding's
+    // precedence: named namespaces accessible from this file
+    // (`namespaceTypeBindings`, gated by accessibility) first — they lived in the
+    // chain pre-#1871 and so must outrank the flat global channel — then the
+    // global/default namespace (`workspaceTypeBindings`, visible everywhere).
+    // Both live in shared channels rather than each Scope.typeBindings to avoid
+    // the O(files × names) blow-up.
+    if (next === undefined) {
+      const nsHit = namespaceTypeBindingFor(moduleScopeId, current.rawName, scopes);
+      if (nsHit !== undefined && nsHit !== current) next = nsHit;
+    }
+    if (next === undefined) {
+      const ws = scopes.workspaceTypeBindings?.get(current.rawName);
+      if (ws !== undefined && ws !== current) next = ws;
     }
     if (next === undefined) return current;
     if (visited.has(next.rawName)) return current;
@@ -151,7 +174,8 @@ export function propagateImportedReturnTypes(
 
         const refs = lookupBindingsAt(importerModule.id, localName, indexes);
         for (const ref of refs) {
-          if (ref.origin !== 'import' && ref.origin !== 'reexport') continue;
+          if (ref.origin !== 'import' && ref.origin !== 'reexport' && ref.origin !== 'wildcard')
+            continue;
           const sourceModule = moduleScopeByFile.get(ref.def.filePath);
           if (sourceModule === undefined) continue;
 

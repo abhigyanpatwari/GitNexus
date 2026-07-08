@@ -22,6 +22,16 @@ describe('normalizeContractId', () => {
     );
   });
 
+  it('lowercases thrift package and service while preserving method case', () => {
+    expect(normalizeContractId('thrift::Billing.V1.OrderService/PlaceOrder')).toBe(
+      'thrift::billing.v1.orderservice/PlaceOrder',
+    );
+  });
+
+  it('preserves case for malformed thrift id with leading slash', () => {
+    expect(normalizeContractId('thrift::/PlaceOrder')).toBe('thrift::/PlaceOrder');
+  });
+
   it('preserves case for malformed gRPC id with leading slash (no full-string lowercasing)', () => {
     expect(normalizeContractId('grpc::/MyPkg/DoThing')).toBe('grpc::/MyPkg/DoThing');
   });
@@ -88,6 +98,22 @@ describe('runExactMatch', () => {
 
     const { matched } = runExactMatch(contracts);
     expect(matched).toHaveLength(2);
+  });
+
+  it('matches a specific-method consumer to a method-agnostic (wildcard) provider', () => {
+    // A Django function view is method-agnostic (provider method '*'); a POST
+    // consumer on the same path must still match it.
+    const contracts: StoredContract[] = [
+      makeContract('http::*::/api/items', 'provider', 'backend'),
+      makeContract('http::POST::/api/items', 'consumer', 'frontend'),
+    ];
+
+    const { matched, unmatched } = runExactMatch(contracts);
+
+    expect(matched).toHaveLength(1);
+    expect(matched[0].from.repo).toBe('frontend');
+    expect(matched[0].to.repo).toBe('backend');
+    expect(unmatched).toHaveLength(0);
   });
 
   it('reports unmatched contracts', () => {
@@ -219,6 +245,26 @@ function makeGrpcContract(
   };
 }
 
+function makeThriftContract(
+  id: string,
+  role: 'provider' | 'consumer',
+  repo: string,
+  overrides: Partial<StoredContract> = {},
+): StoredContract {
+  return {
+    contractId: id,
+    type: 'thrift',
+    role,
+    symbolUid: `uid-${repo}-${id}`,
+    symbolRef: { filePath: `src/${repo}.ts`, name: `fn-${id}` },
+    symbolName: `fn-${id}`,
+    confidence: 0.9,
+    meta: {},
+    repo,
+    ...overrides,
+  };
+}
+
 // ---------------------------------------------------------------------------
 // buildProviderIndex
 // ---------------------------------------------------------------------------
@@ -255,6 +301,18 @@ describe('runExactMatch — gRPC wildcard handling', () => {
     // gRPC wildcards should NOT be matched in exact pass
     expect(matched).toHaveLength(0);
     // Both should appear in unmatched
+    expect(unmatched).toHaveLength(2);
+  });
+
+  it('test_runExactMatch_skips_thrift_wildcard_contracts', () => {
+    const contracts: StoredContract[] = [
+      makeThriftContract('thrift::billing.v1.OrderService/*', 'consumer', 'frontend'),
+      makeThriftContract('thrift::billing.v1.OrderService/*', 'provider', 'backend'),
+    ];
+
+    const { matched, unmatched } = runExactMatch(contracts);
+
+    expect(matched).toHaveLength(0);
     expect(unmatched).toHaveLength(2);
   });
 
@@ -401,6 +459,161 @@ describe('runWildcardMatch', () => {
 
     expect(matched).toHaveLength(1);
     expect(matched[0].contractId).toBe('grpc::com.example.UserService/*');
+  });
+
+  it('matches thrift fully-qualified service wildcard to a thrift provider method', () => {
+    const consumer = makeThriftContract(
+      'thrift::billing.v1.OrderService/*',
+      'consumer',
+      'frontend',
+    );
+    const provider = makeThriftContract(
+      'thrift::billing.v1.OrderService/PlaceOrder',
+      'provider',
+      'backend',
+    );
+
+    const providerIndex = buildProviderIndex([provider]);
+    const { matched, remaining } = runWildcardMatch([consumer], providerIndex);
+
+    expect(matched).toHaveLength(1);
+    expect(matched[0].type).toBe('thrift');
+    expect(matched[0].from.repo).toBe('frontend');
+    expect(matched[0].to.repo).toBe('backend');
+    expect(remaining).toHaveLength(0);
+  });
+
+  it('matches bare thrift service wildcard to a package-qualified thrift provider', () => {
+    const consumer = makeThriftContract('thrift::OrderService/*', 'consumer', 'frontend');
+    const provider = makeThriftContract(
+      'thrift::billing.v1.OrderService/PlaceOrder',
+      'provider',
+      'backend',
+    );
+
+    const providerIndex = buildProviderIndex([provider]);
+    const { matched } = runWildcardMatch([consumer], providerIndex);
+
+    expect(matched).toHaveLength(1);
+    expect(matched[0].contractId).toBe('thrift::OrderService/*');
+  });
+
+  it('does not match bare thrift service wildcard when multiple package-qualified services match', () => {
+    const consumer = makeThriftContract('thrift::OrderService/*', 'consumer', 'frontend');
+    const billingProvider = makeThriftContract(
+      'thrift::billing.v1.OrderService/PlaceOrder',
+      'provider',
+      'billing',
+    );
+    const salesProvider = makeThriftContract(
+      'thrift::sales.v1.OrderService/PlaceOrder',
+      'provider',
+      'sales',
+    );
+
+    const providerIndex = buildProviderIndex([billingProvider, salesProvider]);
+    const { matched, remaining } = runWildcardMatch([consumer], providerIndex);
+
+    expect(matched).toHaveLength(0);
+    expect(remaining).toEqual([consumer]);
+  });
+
+  it('keeps fully-qualified thrift service wildcard matching when same bare service appears elsewhere', () => {
+    const consumer = makeThriftContract(
+      'thrift::billing.v1.OrderService/*',
+      'consumer',
+      'frontend',
+    );
+    const billingProvider = makeThriftContract(
+      'thrift::billing.v1.OrderService/PlaceOrder',
+      'provider',
+      'billing',
+    );
+    const salesProvider = makeThriftContract(
+      'thrift::sales.v1.OrderService/PlaceOrder',
+      'provider',
+      'sales',
+    );
+
+    const providerIndex = buildProviderIndex([billingProvider, salesProvider]);
+    const { matched, remaining } = runWildcardMatch([consumer], providerIndex);
+
+    expect(matched).toHaveLength(1);
+    expect(matched[0].to.repo).toBe('billing');
+    expect(remaining).toHaveLength(0);
+  });
+
+  it('matches bare thrift service method to a package-qualified thrift provider method', () => {
+    const consumer = makeThriftContract('thrift::OrderService/PlaceOrder', 'consumer', 'frontend');
+    const provider = makeThriftContract(
+      'thrift::billing.v1.OrderService/PlaceOrder',
+      'provider',
+      'backend',
+    );
+
+    const providerIndex = buildProviderIndex([provider]);
+    const { matched, unmatched } = runExactMatch([consumer, provider], providerIndex);
+
+    expect(matched).toHaveLength(1);
+    expect(matched[0].type).toBe('thrift');
+    expect(matched[0].matchType).toBe('exact');
+    expect(matched[0].contractId).toBe('thrift::OrderService/PlaceOrder');
+    expect(matched[0].from.repo).toBe('frontend');
+    expect(matched[0].to.repo).toBe('backend');
+    expect(unmatched).toHaveLength(0);
+  });
+
+  it('does not match bare thrift service method to a different provider method', () => {
+    const consumer = makeThriftContract('thrift::OrderService/PlaceOrder', 'consumer', 'frontend');
+    const provider = makeThriftContract(
+      'thrift::billing.v1.OrderService/GetOrderStatus',
+      'provider',
+      'backend',
+    );
+
+    const providerIndex = buildProviderIndex([provider]);
+    const { matched, unmatched } = runExactMatch([consumer, provider], providerIndex);
+
+    expect(matched).toHaveLength(0);
+    expect(unmatched).toEqual([consumer, provider]);
+  });
+
+  it('does not match bare thrift service method when multiple package-qualified providers match', () => {
+    const consumer = makeThriftContract('thrift::OrderService/PlaceOrder', 'consumer', 'frontend');
+    const billingProvider = makeThriftContract(
+      'thrift::billing.v1.OrderService/PlaceOrder',
+      'provider',
+      'billing',
+    );
+    const salesProvider = makeThriftContract(
+      'thrift::sales.v1.OrderService/PlaceOrder',
+      'provider',
+      'sales',
+    );
+
+    const providerIndex = buildProviderIndex([salesProvider, billingProvider]);
+    const { matched, unmatched } = runExactMatch(
+      [consumer, salesProvider, billingProvider],
+      providerIndex,
+    );
+
+    expect(matched).toHaveLength(0);
+    expect(unmatched).toEqual([consumer, salesProvider, billingProvider]);
+  });
+
+  it('does not match a thrift wildcard to a gRPC provider', () => {
+    const consumer = makeThriftContract('thrift::OrderService/*', 'consumer', 'frontend');
+    const provider = makeGrpcContract(
+      'grpc::billing.v1.OrderService/PlaceOrder',
+      'provider',
+      'backend',
+    );
+
+    const providerIndex = buildProviderIndex([provider]);
+    const { matched, remaining } = runWildcardMatch([consumer], providerIndex);
+
+    expect(matched).toHaveLength(0);
+    expect(remaining).toEqual([consumer]);
   });
 });
 

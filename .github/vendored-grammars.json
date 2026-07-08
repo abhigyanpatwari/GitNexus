@@ -1,0 +1,27 @@
+{
+  "_comment": "Single source of truth for the VENDORED SET + policy holds, read by BOTH .github/scripts/update-vendored-grammars.mjs (weekly auto-PR bot) and .github/scripts/check-tree-sitter-upgrade-readiness.py (daily readiness report -> issue #858). The monitor also resolves each grammar's upstream from the `upstream` field here; the readiness report reads vendored ABIs from gitnexus/vendor/<name>/src/parser.c and keeps its own upstream-drift coords. A consistency-guard test asserts this set equals the gitnexus/vendor/tree-sitter-* directories. See CONTRIBUTING.md.",
+  "grammars": {
+    "c": {
+      "name": "tree-sitter-c",
+      "upstream": { "npm": "tree-sitter-c" },
+      "hold": "ABI-pinned at 0.21.4 (#1242/#858) — needs a tree-sitter runtime upgrade before bumping"
+    },
+    "swift": {
+      "name": "tree-sitter-swift",
+      "upstream": { "npm": "tree-sitter-swift" }
+    },
+    "kotlin": {
+      "name": "tree-sitter-kotlin",
+      "upstream": { "npm": "tree-sitter-kotlin" },
+      "hold": "pinned to unreleased fwcd main commit c8ac3d26 for `fun interface` support (fwcd/tree-sitter-kotlin#169, closes #87) — npm latest (0.3.8) lacks the fix, so the monitor must NOT auto-revert (isNewer is strict-inequality: 0.3.8 != 0.4.0). Drop this hold and bump when upstream cuts a release that includes the fix"
+    },
+    "dart": {
+      "name": "tree-sitter-dart",
+      "upstream": { "github": "UserNobody14/tree-sitter-dart" }
+    },
+    "proto": {
+      "name": "tree-sitter-proto",
+      "upstream": { "github": "coder3101/tree-sitter-proto" }
+    }
+  }
+}

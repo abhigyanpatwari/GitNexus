@@ -5,7 +5,7 @@ const mockAccess = vi.fn();
 const mockGetStoragePaths = vi.fn();
 const mockLoadMeta = vi.fn();
 const mockRegisterRepo = vi.fn();
-const mockAddToGitignore = vi.fn();
+const mockEnsureGitNexusIgnored = vi.fn();
 const mockGetGitRoot = vi.fn();
 const mockIsGitRepo = vi.fn();
 
@@ -17,9 +17,10 @@ vi.mock('fs/promises', () => ({
 
 vi.mock('../../src/storage/repo-manager.js', () => ({
   getStoragePaths: mockGetStoragePaths,
+  INDEX_METADATA_FILE: 'gitnexus.json',
   loadMeta: mockLoadMeta,
   registerRepo: mockRegisterRepo,
-  addToGitignore: mockAddToGitignore,
+  ensureGitNexusIgnored: mockEnsureGitNexusIgnored,
 }));
 
 vi.mock('../../src/storage/git.js', () => ({
@@ -44,7 +45,7 @@ describe('indexCommand', () => {
     mockGetStoragePaths.mockImplementation((repoPath: string) => ({
       storagePath: `${repoPath}/.gitnexus`,
       lbugPath: `${repoPath}/.gitnexus/lbug`,
-      metaPath: `${repoPath}/.gitnexus/meta.json`,
+      metaPath: `${repoPath}/.gitnexus/gitnexus.json`,
     }));
     mockLoadMeta.mockResolvedValue({
       repoPath: resolvedRepo,
@@ -53,7 +54,7 @@ describe('indexCommand', () => {
       stats: { nodes: 10, edges: 20 },
     });
     mockAccess.mockResolvedValue(undefined);
-    mockAddToGitignore.mockResolvedValue(undefined);
+    mockEnsureGitNexusIgnored.mockResolvedValue(undefined);
     mockGetGitRoot.mockReturnValue(resolvedRepo);
     mockIsGitRepo.mockReturnValue(true);
   });
@@ -70,9 +71,12 @@ describe('indexCommand', () => {
     expect(logSpy).toHaveBeenCalledWith(`  Not a git repository: ${resolvedOutside}`);
   });
 
-  it('fails when .gitnexus folder does not exist', async () => {
+  it('fails when no metadata or LadybugDB index exists', async () => {
     const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
-    mockAccess.mockRejectedValueOnce(new Error('missing .gitnexus'));
+    mockAccess.mockImplementation(async (targetPath: string) => {
+      if (targetPath.includes('/.gitnexus/')) throw new Error(`missing ${targetPath}`);
+      return undefined;
+    });
 
     const { indexCommand } = await import('../../src/cli/index-repo.js');
     await indexCommand(['/repo']);
@@ -80,22 +84,23 @@ describe('indexCommand', () => {
     expect(mockRegisterRepo).not.toHaveBeenCalled();
     expect(process.exitCode).toBe(1);
     expect(logSpy).toHaveBeenCalledWith(
-      `  No .gitnexus/ folder found at: ${resolvedRepo}/.gitnexus`,
+      `  Expected gitnexus.json, .gitnexus/meta.json, or LadybugDB at: ${resolvedRepo}/.gitnexus`,
     );
   });
 
   it('fails when lbug database does not exist', async () => {
     const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
-    mockAccess.mockResolvedValueOnce(undefined).mockRejectedValueOnce(new Error('missing lbug'));
+    mockAccess.mockImplementation(async (targetPath: string) => {
+      if (targetPath === `${resolvedRepo}/.gitnexus/lbug`) throw new Error('missing lbug');
+      return undefined;
+    });
 
     const { indexCommand } = await import('../../src/cli/index-repo.js');
     await indexCommand(['/repo']);
 
     expect(mockRegisterRepo).not.toHaveBeenCalled();
     expect(process.exitCode).toBe(1);
-    expect(logSpy).toHaveBeenCalledWith(
-      '  .gitnexus/ folder exists but contains no LadybugDB index.',
-    );
+    expect(logSpy).toHaveBeenCalledWith('  Index exists but contains no LadybugDB database.');
   });
 
   it('fails when meta.json is missing and --force is not set', async () => {
@@ -125,6 +130,43 @@ describe('indexCommand', () => {
     expect(process.exitCode).toBeUndefined();
   });
 
+  it('registers with --force when LadybugDB exists but metadata is missing', async () => {
+    mockLoadMeta.mockResolvedValue(null);
+    mockAccess.mockImplementation(async (targetPath: string) => {
+      if (targetPath === `${resolvedRepo}/.gitnexus/lbug`) return undefined;
+      if (targetPath.includes('/.gitnexus/')) throw new Error(`missing ${targetPath}`);
+      return undefined;
+    });
+
+    const { indexCommand } = await import('../../src/cli/index-repo.js');
+    await indexCommand(['/repo'], { force: true });
+
+    expect(mockRegisterRepo).toHaveBeenCalledTimes(1);
+    expect(mockRegisterRepo).toHaveBeenCalledWith(
+      resolvedRepo,
+      expect.objectContaining({
+        repoPath: resolvedRepo,
+        lastCommit: '',
+      }),
+    );
+    expect(process.exitCode).toBeUndefined();
+  });
+
+  it('fails without --force when LadybugDB exists but metadata is missing', async () => {
+    mockLoadMeta.mockResolvedValue(null);
+    mockAccess.mockImplementation(async (targetPath: string) => {
+      if (targetPath === `${resolvedRepo}/.gitnexus/lbug`) return undefined;
+      if (targetPath.includes('/.gitnexus/')) throw new Error(`missing ${targetPath}`);
+      return undefined;
+    });
+
+    const { indexCommand } = await import('../../src/cli/index-repo.js');
+    await indexCommand(['/repo']);
+
+    expect(mockRegisterRepo).not.toHaveBeenCalled();
+    expect(process.exitCode).toBe(1);
+  });
+
   it('registers successfully with existing metadata', async () => {
     const { indexCommand } = await import('../../src/cli/index-repo.js');
     await indexCommand(['/repo']);
@@ -134,8 +176,8 @@ describe('indexCommand', () => {
       resolvedRepo,
       expect.objectContaining({ repoPath: resolvedRepo }),
     );
-    expect(mockAddToGitignore).toHaveBeenCalledTimes(1);
-    expect(mockAddToGitignore).toHaveBeenCalledWith(resolvedRepo);
+    expect(mockEnsureGitNexusIgnored).toHaveBeenCalledTimes(1);
+    expect(mockEnsureGitNexusIgnored).toHaveBeenCalledWith(resolvedRepo);
     expect(process.exitCode).toBeUndefined();
   });
 
@@ -170,7 +212,7 @@ describe('indexCommand', () => {
       resolvedRepo,
       expect.objectContaining({ repoPath: resolvedRepo }),
     );
-    expect(mockAddToGitignore).toHaveBeenCalledWith(resolvedRepo);
+    expect(mockEnsureGitNexusIgnored).toHaveBeenCalledWith(resolvedRepo);
     expect(process.exitCode).toBeUndefined();
   });
 
@@ -189,7 +231,7 @@ describe('indexCommand', () => {
     await indexCommand(['/repo', '/other']);
 
     expect(mockRegisterRepo).not.toHaveBeenCalled();
-    expect(mockAddToGitignore).not.toHaveBeenCalled();
+    expect(mockEnsureGitNexusIgnored).not.toHaveBeenCalled();
     expect(process.exitCode).toBe(1);
     expect(logSpy).toHaveBeenCalledWith('  The `index` command accepts a single path only.');
   });

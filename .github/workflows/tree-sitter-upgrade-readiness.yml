@@ -1,11 +1,20 @@
 name: Tree-sitter Upgrade Readiness
 
 # Monitors readiness for upgrading tree-sitter to 0.25.x. Tracks:
-#   1. Peer-dep compatibility — can each grammar install cleanly with
-#      tree-sitter@0.25.0 without --legacy-peer-deps?
-#   2. Vendored proto drift — has coder3101/tree-sitter-proto moved
-#      ahead of our vendored snapshot?
+#   1. Peer-dep compatibility — can each NPM-installed grammar install cleanly
+#      with tree-sitter@0.25.0 without --legacy-peer-deps?
+#   2. Vendored grammars — each grammar in .github/vendored-grammars.json
+#      (c/swift/kotlin/dart/proto) is classified by its vendored ABI, read
+#      straight from gitnexus/vendor/<name>/src/parser.c (NOT node_modules,
+#      which is never populated for vendored grammars — that mismatch is why
+#      the report used to render bare "?" placeholders, #858).
 # See .github/scripts/check-tree-sitter-upgrade-readiness.py for the logic.
+#
+# .github/vendored-grammars.json is the SHARED source of truth for the vendored
+# SET + policy holds: this readiness report and grammar-update-monitor.yml both
+# read it, so the two workflows can never disagree about which grammars are
+# vendored. (The monitor also resolves upstreams from it; this report keeps its
+# own upstream-drift coords and reads vendored ABIs from gitnexus/vendor/.)
 #
 # Concurrency convention: see CONTRIBUTING.md → "GitHub Actions — Concurrency Convention".
 
@@ -18,6 +27,8 @@ on:
   pull_request:
     paths:
       - '.github/scripts/check-tree-sitter-upgrade-readiness.py'
+      - '.github/scripts/test_check_tree_sitter_upgrade_readiness.py'
+      - '.github/vendored-grammars.json'
       - '.github/workflows/tree-sitter-upgrade-readiness.yml'
 
 concurrency:
@@ -28,20 +39,37 @@ permissions:
   contents: read
 
 jobs:
-  readiness:
+  report:
     name: Check upgrade readiness
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    # Least privilege: rendering the report needs no write. The issue mutation
+    # lives in the schedule-only `upsert-issue` job below, so PR runs (incl. forks)
+    # never receive `issues: write` (#2187 review).
     permissions:
       contents: read
-      # Needed to open/update the tracking issue on scheduled runs.
-      issues: write
+    outputs:
+      report: ${{ steps.readiness.outputs.report }}
+      exit_code: ${{ steps.readiness.outputs.exit_code }}
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
 
       - uses: ./.github/actions/setup-gitnexus
         with:
           build: 'false'
+
+      # Guard the readiness script's logic (vendored classification, no bare "?",
+      # the manifest⇄vendor-dir consistency guard). Stdlib-only, so no extra deps;
+      # node_modules is populated by setup-gitnexus above, which the npm-path ABI
+      # reads need. Runs only on validation events (PR / manual), not the daily
+      # scheduled report.
+      - name: Run readiness script unit tests
+        if: github.event_name != 'schedule'
+        shell: bash
+        working-directory: .github/scripts
+        run: python3 -m unittest test_check_tree_sitter_upgrade_readiness -v
 
       - name: Run upgrade readiness check
         id: readiness
@@ -54,10 +82,15 @@ jobs:
           code=$?
           set -e
           echo "exit_code=$code" >> "$GITHUB_OUTPUT"
+          # Unguessable per-run heredoc delimiter: the report includes the manifest's
+          # `hold` field, which a fork PR can edit — a fixed delimiter (e.g. DRIFT_EOF)
+          # in a hold value could close the heredoc early and inject $GITHUB_OUTPUT keys.
+          # A random hex delimiter the report cannot contain neutralizes that.
+          DELIM="DRIFT_EOF_$(openssl rand -hex 16)"
           {
-            echo 'report<<DRIFT_EOF'
+            echo "report<<${DELIM}"
             cat drift-report.md
-            echo 'DRIFT_EOF'
+            echo "${DELIM}"
           } >> "$GITHUB_OUTPUT"
           echo "=== Report ==="
           cat drift-report.md
@@ -69,13 +102,22 @@ jobs:
         run: |
           echo "::warning::Tree-sitter 0.25 upgrade has blockers. See job output for the full readiness report."
 
-      - name: Upsert tracking issue on scheduled runs
-        if: >
-          github.event_name == 'schedule' &&
-          steps.readiness.outputs.exit_code != '0'
+  # Issue mutation is isolated here so `issues: write` is only ever granted on the
+  # scheduled run (never on PRs). Consumes the report + exit_code via job outputs.
+  upsert-issue:
+    name: Upsert tracking issue
+    needs: report
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      issues: write
+    steps:
+      - name: Upsert tracking issue on blockers
+        if: needs.report.outputs.exit_code != '0'
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
-          REPORT: ${{ steps.readiness.outputs.report }}
+          REPORT: ${{ needs.report.outputs.report }}
         with:
           script: |
             const title = 'Tree-sitter 0.25 upgrade readiness';
@@ -93,11 +135,32 @@ jobs:
             const existing = open.find(i => i.title === title);
             if (existing) {
               // Extract ready/total count for the changelog comment.
-              const readyMatch = report.match(/\*\*(\d+)\/(\d+)\*\* grammars ready/);
-              const blockerMatch = report.match(/\*\*(\d+) blocker/);
-              const ready = readyMatch ? readyMatch[1] : '?';
-              const total = readyMatch ? readyMatch[2] : '?';
-              const blockers = blockerMatch ? blockerMatch[1] : '?';
+              // The two report.match() regexes below are mirrored as
+              // _ISSUE_READY_RE / _ISSUE_BLOCKER_RE in
+              // .github/scripts/test_check_tree_sitter_upgrade_readiness.py, which is
+              // the ONLY place the contract is asserted against the rendered report.
+              // Keep all three in sync: changing the report prose means updating both
+              // these literals AND the test mirror, or requireMatch throws on the next
+              // scheduled run (the silent "?" fallback that used to hide drift is gone).
+              const requireMatch = (name, match) => {
+                if (!match) {
+                  throw new Error(
+                    `Could not extract ${name} from tree-sitter readiness report`,
+                  );
+                }
+                return match;
+              };
+              const readyMatch = requireMatch(
+                'ready npm grammar count',
+                report.match(/- (\d+)\/(\d+) npm-installed grammars already accept tree-sitter@/),
+              );
+              const blockerMatch = requireMatch(
+                'blocker count',
+                report.match(/\*\*Blocked\*\* — (\d+) grammars? /),
+              );
+              const ready = readyMatch[1];
+              const total = readyMatch[2];
+              const blockers = blockerMatch[1];
 
               // Find grammars whose status changed by diffing the old and
               // new table rows.  Each row looks like:
@@ -105,7 +168,11 @@ jobs:
               //   | `tree-sitter-foo` | ... | Blocking |
               const parseRows = (md) => {
                 const map = {};
-                for (const m of md.matchAll(/\| `(tree-sitter-[^`]+)` \|.*?\| (\S+(?:\s\S+)*?) \|$/gm)) {
+                // Group 2 captures ONLY the Status cell ([^|]+? before the final
+                // `|$`), so change-detection fires on status transitions, not on
+                // unrelated cell drift (e.g. an upstream-ABI bump). Mirror this in
+                // _ROW_DIFF_RE in test_check_tree_sitter_upgrade_readiness.py.
+                for (const m of md.matchAll(/\| `(tree-sitter-[^`]+)` \|.*\| ([^|]+?) \|$/gm)) {
                   map[m[1]] = m[2].trim();
                 }
                 return map;
@@ -121,7 +188,7 @@ jobs:
               }
 
               const today = new Date().toISOString().slice(0, 10);
-              let comment = `**${today}:** ${ready}/${total} ready. ${blockers} blocker(s) remaining.`;
+              let comment = `**${today}:** ${ready}/${total} npm-installed ready. ${blockers} blocker(s) remaining.`;
               if (changes.length > 0) {
                 comment += '\n\nChanges:\n' + changes.map(c => `- ${c}`).join('\n');
               } else {
@@ -152,10 +219,8 @@ jobs:
               core.info(`Opened issue #${created.number}`);
             }
 
-      - name: Close tracking issue on clean scheduled runs
-        if: >
-          github.event_name == 'schedule' &&
-          steps.readiness.outputs.exit_code == '0'
+      - name: Close tracking issue on clean runs
+        if: needs.report.outputs.exit_code == '0'
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           script: |

@@ -1,4 +1,4 @@
-export type ContractType = 'http' | 'grpc' | 'topic' | 'lib' | 'custom';
+export type ContractType = 'http' | 'grpc' | 'thrift' | 'topic' | 'lib' | 'custom' | 'include';
 export type MatchType = 'exact' | 'manifest' | 'wildcard' | 'bm25' | 'embedding';
 export type ContractRole = 'provider' | 'consumer';
 
@@ -24,9 +24,12 @@ export interface GroupManifestLink {
 export interface DetectConfig {
   http: boolean;
   grpc: boolean;
+  thrift: boolean;
   topics: boolean;
   shared_libs: boolean;
   embedding_fallback: boolean;
+  includes: boolean;
+  workspace_deps: boolean;
 }
 
 export interface MatchingConfig {
@@ -189,6 +192,13 @@ export interface BridgeHandle {
   readonly _db: unknown;
   readonly _conn: unknown;
   readonly groupDir: string;
+  /**
+   * True when the handle was opened read-only. `closeBridgeDb` must NOT issue a
+   * CHECKPOINT on a read-only connection — doing so leaves a WAL/shadow lock
+   * artifact that makes the next read-only open of the same file fail in-process
+   * (repeated `@group` impact/trace calls in a long-lived server).
+   */
+  readonly _readOnly?: boolean;
 }
 
 export interface BridgeMeta {

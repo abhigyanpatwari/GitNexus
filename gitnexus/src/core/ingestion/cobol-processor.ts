@@ -15,6 +15,7 @@
 
 import path from 'node:path';
 import { generateId } from '../../lib/utils.js';
+import { toZeroBasedLine } from './utils/line-base.js';
 import { SupportedLanguages } from 'gitnexus-shared';
 import type { KnowledgeGraph } from '../graph/types.js';
 import {
@@ -24,6 +25,8 @@ import {
 } from './cobol/cobol-preprocessor.js';
 import { expandCopies } from './cobol/cobol-copy-expander.js';
 import { processJclFiles } from './cobol/jcl-processor.js';
+
+import { logger } from '../logger.js';
 
 // ---------------------------------------------------------------------------
 // File detection
@@ -60,6 +63,7 @@ export interface CobolProcessResult {
   sets: number;
   inspects: number;
   initializes: number;
+  arithmeticOps: number;
 }
 
 /** Returns true if the file is a COBOL or copybook file. */
@@ -114,6 +118,7 @@ export const processCobol = (
     sets: 0,
     inspects: 0,
     initializes: 0,
+    arithmeticOps: 0,
   };
 
   // ── 1. Separate programs, copybooks, and JCL ───────────────────────
@@ -150,16 +155,40 @@ export const processCobol = (
     const entry = copybookMap.get(name.toUpperCase());
     return entry ? entry.path : null;
   };
+  // Memoize preprocessed copybook content for the duration of this
+  // processCobol call. A single copybook is COPYed by many programs (and at
+  // many COPY sites within a program); without this cache
+  // preprocessCobolSource would re-run once per COPY site —
+  // O(programs × copybooks) preprocessing passes over the same content.
+  // Keyed by the resolved copybook path. REPLACING is applied later by the
+  // expander on the returned (pre-REPLACING) content (see
+  // cobol-copy-expander.ts readFile→applyReplacing), so caching the
+  // pre-REPLACING preprocessed text here is safe and per-call-scoped.
+  const preprocessedCopyCache = new Map<string, string>();
   const readCopy = (copyPath: string): string | null => {
+    const cached = preprocessedCopyCache.get(copyPath);
+    if (cached !== undefined) return cached;
     const content = copybookByPath.get(copyPath);
-    return content ? preprocessCobolSource(content) : null;
+    if (!content) return null; // preserves original falsy→null (missing/empty)
+    const preprocessed = preprocessCobolSource(content);
+    preprocessedCopyCache.set(copyPath, preprocessed);
+    return preprocessed;
   };
 
   // Track module names for cross-program CALL resolution
   const moduleNodeIds = new Map<string, string>(); // uppercase program name -> node id
 
   // ── 3. Process each COBOL program ──────────────────────────────────
+  const raw = parseInt(process.env.GITNEXUS_MAX_COBOL_FILE_SIZE_BYTES ?? '', 10);
+  const MAX_COBOL_FILE_SIZE = Number.isFinite(raw) && raw > 0 ? raw : 5 * 1024 * 1024;
   for (const file of programs) {
+    // File-size guard: skip excessively large files to prevent OOM
+    if (file.content.length > MAX_COBOL_FILE_SIZE) {
+      logger.warn(
+        `[cobol-processor] Skipping oversized file (${(file.content.length / 1024 / 1024).toFixed(1)}MB > ${(MAX_COBOL_FILE_SIZE / 1024 / 1024).toFixed(0)}MB): ${file.path}`,
+      );
+      continue;
+    }
     const fileNodeId = generateId('File', file.path);
     // Skip if file node doesn't exist (structure-processor creates it)
     if (!graph.getNode(fileNodeId)) continue;
@@ -199,6 +228,7 @@ export const processCobol = (
     result.sets += extracted.sets.length;
     result.inspects += extracted.inspects.length;
     result.initializes += extracted.initializes.length;
+    result.arithmeticOps += extracted.arithmeticOps.length;
   }
 
   // ── 4. Second pass: resolve cross-program CALL targets ─────────────
@@ -330,8 +360,8 @@ function mapToGraph(
       properties: {
         name: extracted.programName,
         filePath,
-        startLine: 1,
-        endLine: lines.length,
+        startLine: toZeroBasedLine(1),
+        endLine: toZeroBasedLine(lines.length),
         language: SupportedLanguages.Cobol,
         isExported: true,
         description: metaDesc || undefined,
@@ -365,8 +395,8 @@ function mapToGraph(
       properties: {
         name: prog.name,
         filePath,
-        startLine: prog.startLine,
-        endLine: prog.endLine,
+        startLine: toZeroBasedLine(prog.startLine),
+        endLine: toZeroBasedLine(prog.endLine),
         language: SupportedLanguages.Cobol,
         isExported: true,
         description: `nested-program${prog.isCommon ? ' common' : ''}`,
@@ -413,8 +443,8 @@ function mapToGraph(
       properties: {
         name: sec.name,
         filePath,
-        startLine: sec.line,
-        endLine: nextLine,
+        startLine: toZeroBasedLine(sec.line),
+        endLine: toZeroBasedLine(nextLine),
         language: SupportedLanguages.Cobol,
         isExported: true,
       },
@@ -448,8 +478,8 @@ function mapToGraph(
       properties: {
         name: para.name,
         filePath,
-        startLine: para.line,
-        endLine: nextLine,
+        startLine: toZeroBasedLine(para.line),
+        endLine: toZeroBasedLine(nextLine),
         language: SupportedLanguages.Cobol,
         isExported: true,
       },
@@ -482,8 +512,8 @@ function mapToGraph(
       properties: {
         name: item.name,
         filePath,
-        startLine: item.line,
-        endLine: item.line,
+        startLine: toZeroBasedLine(item.line),
+        endLine: toZeroBasedLine(item.line),
         language: SupportedLanguages.Cobol,
         description: `level:${item.level} section:${item.section}${item.pic ? ` pic:${item.pic}` : ''}`,
       },
@@ -585,8 +615,8 @@ function mapToGraph(
         properties: {
           name: `CALL ${call.target}`,
           filePath,
-          startLine: call.line,
-          endLine: call.line,
+          startLine: toZeroBasedLine(call.line),
+          endLine: toZeroBasedLine(call.line),
           language: SupportedLanguages.Cobol,
           description: 'dynamic-call (target is a data item, not resolvable statically)',
         },
@@ -713,8 +743,8 @@ function mapToGraph(
       properties: {
         name: `EXEC SQL ${sql.operation}`,
         filePath,
-        startLine: sql.line,
-        endLine: sql.line,
+        startLine: toZeroBasedLine(sql.line),
+        endLine: toZeroBasedLine(sql.line),
         language: SupportedLanguages.Cobol,
         description: `tables:[${sql.tables.join(',')}] cursors:[${sql.cursors.join(',')}]`,
       },
@@ -788,8 +818,8 @@ function mapToGraph(
       properties: {
         name: `EXEC CICS ${cics.command}`,
         filePath,
-        startLine: cics.line,
-        endLine: cics.line,
+        startLine: toZeroBasedLine(cics.line),
+        endLine: toZeroBasedLine(cics.line),
         language: SupportedLanguages.Cobol,
         description:
           [
@@ -827,8 +857,8 @@ function mapToGraph(
           properties: {
             name: `CICS ${cics.command} ${cics.programName}`,
             filePath,
-            startLine: cics.line,
-            endLine: cics.line,
+            startLine: toZeroBasedLine(cics.line),
+            endLine: toZeroBasedLine(cics.line),
             language: SupportedLanguages.Cobol,
             description: `cics-dynamic-program (target is data item ${cics.programName})`,
           },
@@ -1000,8 +1030,8 @@ function mapToGraph(
       properties: {
         name: entry.name,
         filePath,
-        startLine: entry.line,
-        endLine: entry.line,
+        startLine: toZeroBasedLine(entry.line),
+        endLine: toZeroBasedLine(entry.line),
         language: SupportedLanguages.Cobol,
         isExported: true,
         description:
@@ -1147,8 +1177,8 @@ function mapToGraph(
       properties: {
         name: `EXEC DLI ${dli.verb}`,
         filePath,
-        startLine: dli.line,
-        endLine: dli.line,
+        startLine: toZeroBasedLine(dli.line),
+        endLine: toZeroBasedLine(dli.line),
         language: SupportedLanguages.Cobol,
         description:
           [
@@ -1211,7 +1241,9 @@ function mapToGraph(
 
   // ── MOVE data flow -> ACCESSES edges (read/write) ──────────────
   for (const move of extracted.moves) {
-    const fromPropId = dataItemMap.get(move.from.toUpperCase());
+    // Strip any subscript from the source name for data item lookup
+    const fromBase = stripMoveSubscript(move.from);
+    const fromPropId = dataItemMap.get(fromBase.toUpperCase());
     const callerId = scopedCallerLookup(move.caller, move.line);
 
     // One read edge per MOVE (regardless of number of targets)
@@ -1228,7 +1260,8 @@ function mapToGraph(
 
     // One write edge per target
     for (const target of move.targets) {
-      const toPropId = dataItemMap.get(target.toUpperCase());
+      const toBase = stripMoveSubscript(target);
+      const toPropId = dataItemMap.get(toBase.toUpperCase());
       if (toPropId) {
         graph.addRelationship({
           id: generateId('ACCESSES', `${callerId}->write->${target}:L${move.line}`),
@@ -1237,6 +1270,39 @@ function mapToGraph(
           targetId: toPropId,
           confidence: 0.9,
           reason: move.corresponding ? 'cobol-move-corresponding-write' : 'cobol-move-write',
+        });
+      }
+    }
+  }
+
+  // ── Arithmetic operations -> ACCESSES edges ──────────────────
+  for (const arith of extracted.arithmeticOps) {
+    const callerId = scopedCallerLookup(arith.caller, arith.line);
+    // Write edge to target variable
+    const targetBase = stripMoveSubscript(arith.target);
+    const targetPropId = dataItemMap.get(targetBase.toUpperCase());
+    if (targetPropId) {
+      graph.addRelationship({
+        id: generateId('ACCESSES', `${callerId}->arith-write->${arith.target}:L${arith.line}`),
+        type: 'ACCESSES',
+        sourceId: callerId,
+        targetId: targetPropId,
+        confidence: 0.9,
+        reason: 'cobol-arithmetic-write',
+      });
+    }
+    // Read edge for each source operand
+    for (const src of arith.sources) {
+      const srcBase = stripMoveSubscript(src);
+      const srcPropId = dataItemMap.get(srcBase.toUpperCase());
+      if (srcPropId) {
+        graph.addRelationship({
+          id: generateId('ACCESSES', `${callerId}->arith-read->${src}:L${arith.line}`),
+          type: 'ACCESSES',
+          sourceId: callerId,
+          targetId: srcPropId,
+          confidence: 0.9,
+          reason: 'cobol-arithmetic-read',
         });
       }
     }
@@ -1251,8 +1317,8 @@ function mapToGraph(
       properties: {
         name: fd.selectName,
         filePath,
-        startLine: fd.line,
-        endLine: fd.line,
+        startLine: toZeroBasedLine(fd.line),
+        endLine: toZeroBasedLine(fd.line),
         language: SupportedLanguages.Cobol,
         description: `assign:${fd.assignTo}${fd.isOptional ? ' optional' : ''}${fd.organization ? ` org:${fd.organization}` : ''}${fd.access ? ` access:${fd.access}` : ''}`,
       },
@@ -1341,8 +1407,8 @@ function mapToGraph(
         properties: {
           name: `CANCEL ${cancel.target}`,
           filePath,
-          startLine: cancel.line,
-          endLine: cancel.line,
+          startLine: toZeroBasedLine(cancel.line),
+          endLine: toZeroBasedLine(cancel.line),
           language: SupportedLanguages.Cobol,
           description: 'dynamic-cancel (target is a data item, not resolvable statically)',
         },
@@ -1382,6 +1448,11 @@ function mapToGraph(
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/** Strip parenthesized subscript/reference-modification suffixes */
+function stripMoveSubscript(name: string): string {
+  return name.replace(/\([^)]*\)/g, '').trim();
+}
 
 /** Find the enclosing program name for a given line number (innermost wins). */
 function findOwningProgramName(

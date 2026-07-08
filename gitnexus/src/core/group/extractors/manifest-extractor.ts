@@ -1,10 +1,30 @@
 import type { ContractType, CrossLink, GroupManifestLink, StoredContract } from '../types.js';
 import type { CypherExecutor } from '../contract-extractor.js';
 
+import { logger } from '../../logger.js';
 export interface ManifestExtractResult {
   contracts: StoredContract[];
   crossLinks: CrossLink[];
 }
+
+// Repo-wide symbol lookup for `custom` workspace contracts. Exported so the
+// #2325 integration test can run the EXACT production query against a real
+// LadybugDB — a hand-copied query string in the test would silently drift
+// from this allowlist. Uses the `labels(n) IN [...]` allowlist form rather
+// than a `MATCH (n:A|B)` disjunction: this 21-label list contains the
+// reserved-keyword labels `Macro` and `Union`, and LadybugDB's parser rejects
+// a disjunction that names a reserved keyword (#2325) — which the resolver's
+// try/catch then swallowed. `labels(n) IN` has no such collision.
+// This list overlaps `ingestion/utils/symbol-labels.ts` (SYMBOL_NODE_LABELS) but
+// is a deliberate SUBSET — it omits `Namespace`/`Variable`/`Module`. Unifying the
+// two would widen which nodes resolve as contract symbols and must update the
+// #2325 test, so they are intentionally kept separate for now.
+export const CUSTOM_CONTRACT_RESOLVE_QUERY = `MATCH (n)
+   WHERE labels(n) IN ['Function','Method','Class','Interface','Struct','Enum','Trait','Constructor','TypeAlias','Impl','Macro','Union','Typedef','Property','Record','Delegate','Annotation','Template','Const','Static','CodeElement']
+     AND n.name = $symbolName
+   RETURN n.id AS uid, n.name AS name, n.filePath AS filePath
+   ORDER BY n.filePath ASC
+   LIMIT 1`;
 
 /**
  * Canonicalize an HTTP path for matching against Route.name in the graph.
@@ -177,7 +197,7 @@ export class ManifestExtractor {
 
     // NOTE: All lookups use EXACT equality on the relevant name field and
     // deterministic ORDER BY before LIMIT 1. Previous versions used CONTAINS
-    // for fuzzy matching (plus an unconditional ".proto" fallback for gRPC)
+    // for fuzzy matching (plus an unconditional IDL file fallback for gRPC)
     // which produced silent false positives: e.g. manifest "/orders" would
     // match "/suborders", and a gRPC manifest entry in a repo with any
     // .proto file would attach to a random proto symbol.
@@ -188,13 +208,27 @@ export class ManifestExtractor {
     // Cross-impact still works: the bridge query joins on the synthetic
     // uid, and the local impact engine derives the same uid for the
     // unresolved symbol — name-based hints are the additional safety net.
+    //
+    // Label filtering uses `MATCH (n) WHERE labels(n) IN [...]`, NOT the
+    // openCypher disjunction `MATCH (n:A|B|C)`. LadybugDB's parser rejects a
+    // disjunction that names a reserved keyword (`Macro` and `Union` both are)
+    // OR a label with no node table (e.g. the old `lib` branch's `Package`).
+    // The `custom` branch (reserved keywords in its list) and `lib` branch
+    // (missing `Package` table) genuinely threw (#2325) and the whole try/catch
+    // below swallowed it; the other branches parsed but use the same form for
+    // consistency and future-proofing. `labels(n)` returns the node's single
+    // label as a string here, so `IN [...]` is an exact allowlist that includes
+    // listed labels and excludes everything else — and is immune to both
+    // failure modes (no keyword collision; an unknown label is just a non-match).
     try {
       let rows: Record<string, unknown>[];
       if (link.type === 'http') {
-        // Route.name is the canonicalized URL path (see
-        // core/ingestion/pipeline.ts ensureSlash + generateId('Route', ...)).
-        // Normalize the manifest contract the same way so a user-written
-        // "/api/orders" matches "api/orders" in the graph.
+        // Route.name is the canonicalized URL path. Since #2289 a Route node's
+        // *id* is `(method, url)`-composite (`routeNodeKey`), but `route.name`
+        // continues to carry the bare URL so URL-keyed group queries like this
+        // one keep working without a schema change. Normalize the manifest
+        // contract the same way so a user-written "/api/orders" matches
+        // "api/orders" in the graph.
         //
         // The contract may also use the explicit-method form "GET::/api/orders"
         // recommended by buildContractId. Strip the METHOD:: prefix before
@@ -219,26 +253,31 @@ export class ManifestExtractor {
         // avoid cross-matching Files/Variables/Imports that happen to
         // share the topic name.
         rows = await executor(
-          `MATCH (n:Function|Method|Class|Interface) WHERE n.name = $contract
+          `MATCH (n) WHERE labels(n) IN ['Function','Method','Class','Interface'] AND n.name = $contract
            RETURN n.id AS uid, n.name AS name, n.filePath AS filePath
            ORDER BY n.filePath ASC
            LIMIT 1`,
           { contract: link.contract },
         );
-      } else if (link.type === 'grpc') {
+      } else if (link.type === 'grpc' || link.type === 'thrift') {
         // Contract is "Service/Method" or just "Service" (or package.Service
         // variants). Prefer matching by method name when present, otherwise
-        // by service name. NO .proto path fallback — that's guaranteed to
-        // return a wrong symbol in any repo with more than one proto file.
+        // by service name. Thrift generated Java classes often use
+        // package.Service in manifests while graph Class/Interface names are
+        // stored as bare Service, so strip the package prefix for thrift
+        // service-name lookups. NO IDL path fallback — that's guaranteed to
+        // return a wrong symbol in any repo with more than one IDL file.
         // Label filters scope lookups: methods → Function|Method, services
         // → Class|Interface (no label match = no silent wrong hits on
         // File/Variable nodes that happen to share the name).
         const parts = link.contract.split('/');
-        const serviceName = parts[0]?.trim() ?? '';
+        const rawServiceName = parts[0]?.trim() ?? '';
+        const serviceName =
+          link.type === 'thrift' ? (rawServiceName.split('.').pop() ?? '') : rawServiceName;
         const methodName = parts[1]?.trim() ?? '';
         if (methodName) {
           rows = await executor(
-            `MATCH (n:Function|Method) WHERE n.name = $methodName
+            `MATCH (n) WHERE labels(n) IN ['Function','Method'] AND n.name = $methodName
              RETURN n.id AS uid, n.name AS name, n.filePath AS filePath
              ORDER BY n.filePath ASC
              LIMIT 1`,
@@ -246,7 +285,7 @@ export class ManifestExtractor {
           );
         } else if (serviceName) {
           rows = await executor(
-            `MATCH (n:Class|Interface) WHERE n.name = $serviceName
+            `MATCH (n) WHERE labels(n) IN ['Class','Interface'] AND n.name = $serviceName
              RETURN n.id AS uid, n.name AS name, n.filePath AS filePath
              ORDER BY n.filePath ASC
              LIMIT 1`,
@@ -258,16 +297,33 @@ export class ManifestExtractor {
       } else if (link.type === 'lib') {
         // Only exact match on the symbol's name. Previous fallback to
         // CONTAINS on n.filePath would promote "react" to "react-native"
-        // or "@types/react" — silent wrong attribution. Restrict to
-        // package-level labels so we don't return arbitrary symbols
-        // named after a library.
+        // or "@types/react" — silent wrong attribution. Restrict to the
+        // package-level `Module` label so we don't return arbitrary symbols
+        // named after a library. (There is no `Package` node table — see
+        // NODE_TABLES — so a `Package` entry only ever matched nothing.)
         rows = await executor(
-          `MATCH (n:Package|Module) WHERE n.name = $contract
+          `MATCH (n) WHERE labels(n) IN ['Module'] AND n.name = $contract
            RETURN n.id AS uid, n.name AS name, n.filePath AS filePath
            ORDER BY n.filePath ASC
            LIMIT 1`,
           { contract: link.contract },
         );
+      } else if (link.type === 'include') {
+        rows = await executor(
+          `MATCH (f:File) WHERE f.filePath = $contract
+           RETURN f.id AS uid, f.name AS name, f.filePath AS filePath
+           ORDER BY f.filePath ASC
+           LIMIT 1`,
+          { contract: link.contract },
+        );
+      } else if (link.type === 'custom') {
+        // Workspace extractors produce qualified contracts like "mathlex::Expression".
+        // Graph nodes store the unqualified symbol name ("Expression"), so strip
+        // the "provider::" prefix before querying.
+        const symbolName = link.contract.includes('::')
+          ? link.contract.split('::').pop()!
+          : link.contract;
+        rows = await executor(CUSTOM_CONTRACT_RESOLVE_QUERY, { symbolName });
       } else {
         return null;
       }
@@ -283,7 +339,7 @@ export class ManifestExtractor {
       // fail the whole manifest extraction. Unresolved contracts still
       // get a synthetic symbolUid below, so cross-impact can proceed.
       const message = err instanceof Error ? err.message : String(err);
-      console.warn(
+      logger.warn(
         `[manifest-extractor] resolveSymbol failed for ${link.type}:${link.contract} ` +
           `in ${repoPathKey}: ${message}`,
       );
@@ -329,12 +385,16 @@ export class ManifestExtractor {
       }
       case 'grpc':
         return `grpc::${contract}`;
+      case 'thrift':
+        return `thrift::${contract}`;
       case 'topic':
         return `topic::${contract}`;
       case 'lib':
         return `lib::${contract}`;
       case 'custom':
         return `custom::${contract}`;
+      case 'include':
+        return `include::${contract}`;
       default: {
         const _exhaustive: never = type;
         throw new Error(`Unhandled ContractType: ${String(_exhaustive)}`);

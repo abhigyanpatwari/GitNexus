@@ -12,6 +12,25 @@ import { describe, it, expect } from 'vitest';
 import fs from 'fs/promises';
 import path from 'path';
 import { withTestLbugDB } from '../helpers/test-indexed-db.js';
+import { skipUnlessFtsAvailable } from '../helpers/fts-availability.js';
+
+/**
+ * LadybugDB 0.16.0 has a known Windows-only regression: `Database.close()`
+ * does not release the underlying file lock until the process exits, so any
+ * `closeLbug()` followed by `initLbug(samePath)` in the same process raises
+ * Win32 Error 33. Production paths are unaffected (single open per process).
+ *
+ * Tracking: kuzudb/kuzu#3872 / #3883 / #4730 (file-lock UX gaps on Windows).
+ */
+const itLbugReopen = process.platform === 'win32' ? it.skip : it;
+
+// The FTS extension is optional and defaults to a `load-only` install policy
+// (PR #1161 — offline-first), so on a machine where it was never pre-installed
+// it cannot load. The tests below exercise the FTS *primitives* directly and
+// have nothing to assert without the extension — skip them rather than fail.
+// Graceful degradation when FTS is unavailable is covered at the analyze /
+// query layer (see run-analyze.ts and the BM25 fallback tests).
+// See test/helpers/fts-availability.ts for skipUnlessFtsAvailable's contract.
 
 // ─── Core LadybugDB Adapter ─────────────────────────────────────────────
 
@@ -37,7 +56,8 @@ withTestLbugDB(
         expect(folderRows).toHaveLength(1);
       });
 
-      it('createFTSIndex: creates FTS index on Function table without error', async () => {
+      it('createFTSIndex: creates FTS index on Function table without error', async (ctx) => {
+        await skipUnlessFtsAvailable(ctx);
         const { createFTSIndex } = await import('../../src/core/lbug/lbug-adapter.js');
 
         await expect(
@@ -45,7 +65,8 @@ withTestLbugDB(
         ).resolves.toBeUndefined();
       });
 
-      it('loadFTSExtension(conn): loads on an explicit connection and returns true', async () => {
+      it('loadFTSExtension(conn): loads on an explicit connection and returns true', async (ctx) => {
+        await skipUnlessFtsAvailable(ctx);
         const lbug = (await import('@ladybugdb/core')).default;
         const { loadFTSExtension, getDatabase } =
           await import('../../src/core/lbug/lbug-adapter.js');
@@ -70,20 +91,6 @@ withTestLbugDB(
         }
       });
 
-      it('initLbug loads FTS so reopened HTTP-style sessions can query existing indexes', async () => {
-        const adapter = await import('../../src/core/lbug/lbug-adapter.js');
-        const indexName = 'function_fts_init_probe';
-
-        await adapter.createFTSIndex('Function', indexName, ['name', 'content']);
-        await adapter.closeLbug();
-
-        await adapter.initLbug(handle.dbPath);
-
-        await expect(adapter.queryFTS('Function', indexName, 'main', 5)).resolves.toEqual(
-          expect.arrayContaining([expect.objectContaining({ filePath: 'src/index.ts' })]),
-        );
-      });
-
       it('getLbugStats: returns correct node and edge counts for seeded data', async () => {
         const { getLbugStats } = await import('../../src/core/lbug/lbug-adapter.js');
 
@@ -94,6 +101,72 @@ withTestLbugDB(
 
         // 4 relationships (2 CALLS, 2 CONTAINS)
         expect(stats.edges).toBe(4);
+      });
+
+      it('deleteAllInterprocTaintPaths: removes TAINT_PATH edges and is benign when none exist (#2084 review P2-5)', async () => {
+        const { executeQuery: coreExecuteQuery, deleteAllInterprocTaintPaths } =
+          await import('../../src/core/lbug/lbug-adapter.js');
+
+        // Benign: no TAINT_PATH rows yet → returns 0, does NOT throw.
+        await expect(deleteAllInterprocTaintPaths()).resolves.toEqual({ edgesDeleted: 0 });
+
+        // Seed one TAINT_PATH edge between the two seeded Function nodes, then
+        // delete-all and confirm it is removed (the incremental-rebuild guard).
+        const fns = (await coreExecuteQuery('MATCH (n:Function) RETURN n.id AS id')) as {
+          id: string;
+        }[];
+        expect(fns.length).toBe(2);
+        await coreExecuteQuery(
+          `MATCH (a:Function {id: '${fns[0].id}'}), (b:Function {id: '${fns[1].id}'}) ` +
+            `CREATE (a)-[:CodeRelation {type: 'TAINT_PATH', confidence: 0.6, reason: '1', step: 0}]->(b)`,
+        );
+        const r = await deleteAllInterprocTaintPaths();
+        expect(r.edgesDeleted).toBe(1);
+        const left = await coreExecuteQuery(
+          `MATCH ()-[r:CodeRelation]->() WHERE r.type = 'TAINT_PATH' RETURN count(r) AS cnt`,
+        );
+        expect(Number((left[0] as { cnt: number }).cnt)).toBe(0);
+      });
+
+      it('deleteAllInjects: removes only INJECTS edges and is benign when none exist (#2200)', async () => {
+        // Mirrors the deleteAllInterprocTaintPaths test above (same contract:
+        // COUNT-then-DELETE, missing-table carve-out, re-throw otherwise).
+        // The re-throw path is not simulated here — doing so would require
+        // breaking the shared singleton connection mid-suite. Its benign-vs-
+        // rethrow classification is pinned as a pure function instead:
+        // `classifyDeleteAllError` (lbug-config.ts), exhaustively covered in
+        // test/unit/lbug-delete-all-error.test.ts.
+        const { executeQuery: coreExecuteQuery, deleteAllInjects } =
+          await import('../../src/core/lbug/lbug-adapter.js');
+
+        // Benign: no INJECTS rows yet → returns 0, does NOT throw.
+        await expect(deleteAllInjects()).resolves.toEqual({ edgesDeleted: 0 });
+
+        // Seed one INJECTS edge plus one edge of ANOTHER type between the two
+        // seeded Function nodes, then delete-all and confirm exactly the
+        // INJECTS row is removed while the other-typed row survives.
+        const fns = (await coreExecuteQuery('MATCH (n:Function) RETURN n.id AS id')) as {
+          id: string;
+        }[];
+        expect(fns.length).toBe(2);
+        await coreExecuteQuery(
+          `MATCH (a:Function {id: '${fns[0].id}'}), (b:Function {id: '${fns[1].id}'}) ` +
+            `CREATE (a)-[:CodeRelation {type: 'INJECTS', confidence: 0.8, reason: 'di', step: 0}]->(b)`,
+        );
+        await coreExecuteQuery(
+          `MATCH (a:Function {id: '${fns[0].id}'}), (b:Function {id: '${fns[1].id}'}) ` +
+            `CREATE (a)-[:CodeRelation {type: 'QUERIES', confidence: 0.8, reason: 'orm', step: 0}]->(b)`,
+        );
+        const r2 = await deleteAllInjects();
+        expect(r2.edgesDeleted).toBe(1);
+        const injectsLeft = await coreExecuteQuery(
+          `MATCH ()-[r:CodeRelation]->() WHERE r.type = 'INJECTS' RETURN count(r) AS cnt`,
+        );
+        expect(Number((injectsLeft[0] as { cnt: number }).cnt)).toBe(0);
+        const queriesLeft = await coreExecuteQuery(
+          `MATCH ()-[r:CodeRelation]->() WHERE r.type = 'QUERIES' RETURN count(r) AS cnt`,
+        );
+        expect(Number((queriesLeft[0] as { cnt: number }).cnt)).toBe(1);
       });
 
       describe('unhappy path', () => {
@@ -123,7 +196,8 @@ withTestLbugDB(
       });
 
       describe('error handling', () => {
-        it('createFTSIndex handles already-existing index gracefully', async () => {
+        it('createFTSIndex handles already-existing index gracefully', async (ctx) => {
+          await skipUnlessFtsAvailable(ctx);
           const { createFTSIndex } = await import('../../src/core/lbug/lbug-adapter.js');
 
           // First call creates the index (may already exist from earlier test)
@@ -132,6 +206,21 @@ withTestLbugDB(
           // Second call with same params should NOT throw — createFTSIndex catches "already exists"
           await expect(
             createFTSIndex('Function', 'function_fts_dup', ['name', 'content']),
+          ).resolves.toBeUndefined();
+        });
+
+        it('ensureFTSIndex is idempotent and caches across writable calls (#1224)', async (ctx) => {
+          await skipUnlessFtsAvailable(ctx);
+          const { ensureFTSIndex } = await import('../../src/core/lbug/lbug-adapter.js');
+
+          // First call creates the index. Second call must short-circuit on the
+          // in-process cache — guarantees the read-only guard added in #1224
+          // still respects the success path.
+          await expect(
+            ensureFTSIndex('Function', 'function_fts_ensure', ['name', 'content']),
+          ).resolves.toBeUndefined();
+          await expect(
+            ensureFTSIndex('Function', 'function_fts_ensure', ['name', 'content']),
           ).resolves.toBeUndefined();
         });
 
@@ -161,6 +250,24 @@ withTestLbugDB(
           expect(result).toEqual({ deletedNodes: 0 });
         });
       });
+
+      itLbugReopen(
+        'initLbug loads FTS so reopened HTTP-style sessions can query existing indexes',
+        async (ctx) => {
+          await skipUnlessFtsAvailable(ctx);
+          const adapter = await import('../../src/core/lbug/lbug-adapter.js');
+          const indexName = 'function_fts_init_probe';
+
+          await adapter.createFTSIndex('Function', indexName, ['name', 'content']);
+          await adapter.closeLbug();
+
+          await adapter.initLbug(handle.dbPath);
+
+          await expect(adapter.queryFTS('Function', indexName, 'main', 5)).resolves.toEqual(
+            expect.arrayContaining([expect.objectContaining({ filePath: 'src/index.ts' })]),
+          );
+        },
+      );
     });
   },
   {

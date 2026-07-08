@@ -6,6 +6,7 @@
 import fsp from 'node:fs/promises';
 import path from 'node:path';
 import { checkStaleness } from '../git-staleness.js';
+import { loadMeta, type RepoMeta } from '../../storage/repo-manager.js';
 import { GroupNotFoundError, loadGroupConfig } from './config-parser.js';
 import {
   fileMatchesServicePrefix,
@@ -14,6 +15,7 @@ import {
 } from './group-path-utils.js';
 import { getDefaultGitnexusDir, getGroupDir, listGroups, readContractRegistry } from './storage.js';
 import { syncGroup } from './sync.js';
+import { logger } from '../logger.js';
 import type {
   ContractRegistry,
   CrossLink,
@@ -42,11 +44,16 @@ export interface GroupToolPort {
       relationTypes?: string[];
       includeTests?: boolean;
       minConfidence?: number;
+      limit?: number;
     },
   ): Promise<unknown>;
   query(
     repo: GroupRepoHandle,
     params: {
+      // GroupService always supplies `query` as a string (it resolves the #2175
+      // search_query alias before calling the port), so the port contract keeps it
+      // required here even though the LocalBackend implementation accepts the wider
+      // `{ query?, search_query? }` shape for the direct MCP callTool path.
       query: string;
       task_context?: string;
       goal?: string;
@@ -64,6 +71,15 @@ export interface GroupToolPort {
       relationTypes: string[];
       minConfidence: number;
       includeTests: boolean;
+      // Optional cancellation signal. Callers (notably the cross-impact
+      // Phase-2 fanout) wrap this call in a Promise.race against a
+      // setTimeout-driven AbortController so a single hung neighbor
+      // cannot exceed the request's clamped timeout budget. Implementors
+      // may honor the signal cooperatively or simply let the caller's
+      // race resolve the await — the latter is sufficient for the
+      // resource-exhaustion mitigation. When the signal is absent or
+      // already aborted at call time, behavior is unchanged.
+      signal?: AbortSignal;
     },
   ): Promise<unknown | null>;
   context(
@@ -75,6 +91,79 @@ export interface GroupToolPort {
       include_content?: boolean;
     },
   ): Promise<unknown>;
+  // ── Cross-repo trace support (optional on the port) ────────────────
+  // These are optional so existing GroupToolPort test mocks (which predate
+  // the trace path and only stub impact/query/context/impactByUid) keep
+  // type-checking. The real LocalBackend port supplies all three; runGroupTrace
+  // guards on their presence and degrades to a clear error/note when absent.
+  //
+  // Single-repo directed-path trace over CALLS + HAS_METHOD. Returns the same
+  // shape as the `trace` MCP tool (`{ status, from, to, hopCount, hops, edges }`).
+  trace?(
+    repo: GroupRepoHandle,
+    params: {
+      from?: string;
+      to?: string;
+      from_uid?: string;
+      to_uid?: string;
+      from_file?: string;
+      to_file?: string;
+      maxDepth?: number;
+      includeTests?: boolean;
+    },
+  ): Promise<unknown>;
+  // Resolve a symbol within one repo to its node id (== bridge symbolUid) and
+  // location, or report ambiguity / absence. Wraps the same resolver the
+  // context()/trace() tools use.
+  resolveSymbol?(
+    repo: GroupRepoHandle,
+    query: { name?: string; uid?: string; file_path?: string },
+  ): Promise<GroupSymbolResolution>;
+  // Intra-procedural REACHING_DEF data-flow from an anchor symbol, used to
+  // enrich a boundary-adjacent trace segment. `available:false` signals the
+  // repo has no PDG `flows` layer (degraded, not an error).
+  pdgFlows?(
+    repo: GroupRepoHandle,
+    anchor: { name?: string; uid?: string; file_path?: string },
+    opts: { limit?: number },
+  ): Promise<GroupPdgFlowResult>;
+}
+
+export type GroupSymbolResolution =
+  | {
+      kind: 'ok';
+      symbol: {
+        id: string;
+        name: string;
+        type: string;
+        filePath: string;
+        startLine: number;
+        endLine: number;
+      };
+    }
+  | {
+      kind: 'ambiguous';
+      candidates: Array<{
+        id: string;
+        name: string;
+        type: string;
+        filePath: string;
+        startLine: number;
+      }>;
+    }
+  | { kind: 'not_found' };
+
+export interface GroupPdgFlowHop {
+  line: number;
+  text: string;
+  variable?: string;
+}
+
+export interface GroupPdgFlowResult {
+  available: boolean;
+  variable?: string;
+  hops: GroupPdgFlowHop[];
+  truncated?: boolean;
 }
 
 function isStoredContract(raw: unknown): raw is StoredContract {
@@ -170,11 +259,11 @@ async function loadContractRegistryResilient(
           contracts.push(row);
         } else {
           skippedCorrupt++;
-          console.warn('[group] skipping corrupt contract row in contracts.json');
+          logger.warn('[group] skipping corrupt contract row in contracts.json');
         }
       } catch {
         skippedCorrupt++;
-        console.warn('[group] skipping corrupt contract row in contracts.json');
+        logger.warn('[group] skipping corrupt contract row in contracts.json');
       }
     }
   }
@@ -187,11 +276,11 @@ async function loadContractRegistryResilient(
           crossLinks.push(row);
         } else {
           skippedCorrupt++;
-          console.warn('[group] skipping corrupt crossLinks row in contracts.json');
+          logger.warn('[group] skipping corrupt crossLinks row in contracts.json');
         }
       } catch {
         skippedCorrupt++;
-        console.warn('[group] skipping corrupt crossLinks row in contracts.json');
+        logger.warn('[group] skipping corrupt crossLinks row in contracts.json');
       }
     }
   }
@@ -296,6 +385,11 @@ export class GroupService {
   async groupImpact(params: Record<string, unknown>): Promise<unknown> {
     const { runGroupImpact } = await import('./cross-impact.js');
     return runGroupImpact({ port: this.port, gitnexusDir: getDefaultGitnexusDir() }, params);
+  }
+
+  async groupTrace(params: Record<string, unknown>): Promise<unknown> {
+    const { runGroupTrace } = await import('./cross-trace.js');
+    return runGroupTrace({ port: this.port, gitnexusDir: getDefaultGitnexusDir() }, params);
   }
 
   async groupContext(params: Record<string, unknown>): Promise<GroupContextResult> {
@@ -483,9 +577,8 @@ export class GroupService {
     for (const [repoPath, registryName] of Object.entries(config.repos)) {
       try {
         const repoObj = await this.port.resolveRepo(registryName);
-        const metaPath = path.join(repoObj.storagePath, 'meta.json');
-        const metaRaw = await fsp.readFile(metaPath, 'utf-8').catch(() => '{}');
-        const meta = JSON.parse(metaRaw) as { lastCommit?: string; indexedAt?: string };
+        const meta: Partial<Pick<RepoMeta, 'lastCommit' | 'indexedAt'>> =
+          (await loadMeta(repoObj.storagePath)) ?? {};
 
         const staleness = meta.lastCommit
           ? checkStaleness(repoObj.repoPath, meta.lastCommit)

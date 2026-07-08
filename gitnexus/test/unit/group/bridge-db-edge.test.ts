@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fsp from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
+import { cleanupTempDir } from '../../helpers/test-db.js';
 import {
   writeBridge,
   openBridgeDbReadOnly,
@@ -11,6 +12,14 @@ import {
 import type { CrossLink } from '../../../src/core/group/types.js';
 import { makeContract } from './fixtures.js';
 
+/**
+ * See bridge-db.test.ts header for context: LadybugDB 0.16.0 cannot release
+ * Windows file locks until process exit, so any close-then-reopen pattern
+ * (writeBridge → openBridgeDbReadOnly) raises Win32 Error 33 in-process.
+ * Production paths are unaffected (single open per process).
+ */
+const itLbugReopen = process.platform === 'win32' ? it.skip : it;
+
 describe('bridge-db edge cases', () => {
   let tmpDir: string;
 
@@ -19,7 +28,7 @@ describe('bridge-db edge cases', () => {
   });
 
   afterEach(async () => {
-    await fsp.rm(tmpDir, { recursive: true, force: true });
+    await cleanupTempDir(tmpDir);
   });
 
   it('test_openBridgeDbReadOnly_version_gate_returns_null_for_incompatible', async () => {
@@ -35,7 +44,7 @@ describe('bridge-db edge cases', () => {
     expect(handle).toBeNull();
   });
 
-  it('test_openBridgeDbReadOnly_bak_recovery_restores_bridge', async () => {
+  itLbugReopen('test_openBridgeDbReadOnly_bak_recovery_restores_bridge', async () => {
     // Write a valid bridge
     await writeBridge(tmpDir, {
       contracts: [makeContract()],
@@ -59,7 +68,7 @@ describe('bridge-db edge cases', () => {
     await closeBridgeDb(handle!);
   });
 
-  it('test_writeBridge_crossLink_with_missing_to_node_silently_skipped', async () => {
+  itLbugReopen('test_writeBridge_crossLink_with_missing_to_node_silently_skipped', async () => {
     const provider = makeContract({ repo: 'backend', role: 'provider' });
     const consumer = makeContract({
       repo: 'frontend',
@@ -110,69 +119,72 @@ describe('bridge-db edge cases', () => {
     await closeBridgeDb(handle!);
   });
 
-  it('test_writeBridge_manifest_grpc_link_with_symbol_uids_persists_queryable_contract_edge', async () => {
-    const provider = makeContract({
-      contractId: 'grpc::auth.AuthService/Login',
-      type: 'grpc',
-      role: 'provider',
-      repo: 'platform/auth',
-      symbolUid: 'uid-auth-login',
-      symbolRef: { filePath: 'src/auth.proto', name: 'Login' },
-      symbolName: 'auth.AuthService/Login',
-    });
-    const consumer = makeContract({
-      contractId: 'grpc::auth.AuthService/Login',
-      type: 'grpc',
-      role: 'consumer',
-      repo: 'platform/orders',
-      symbolUid: 'uid-orders-client',
-      symbolRef: { filePath: 'src/client.ts', name: 'AuthServiceClient' },
-      symbolName: 'auth.AuthService/Login',
-    });
-    const link: CrossLink = {
-      from: {
-        repo: 'platform/orders',
-        symbolUid: 'uid-orders-client',
-        symbolRef: { filePath: 'src/client.ts', name: 'AuthServiceClient' },
-      },
-      to: {
+  itLbugReopen(
+    'test_writeBridge_manifest_grpc_link_with_symbol_uids_persists_queryable_contract_edge',
+    async () => {
+      const provider = makeContract({
+        contractId: 'grpc::auth.AuthService/Login',
+        type: 'grpc',
+        role: 'provider',
         repo: 'platform/auth',
         symbolUid: 'uid-auth-login',
         symbolRef: { filePath: 'src/auth.proto', name: 'Login' },
-      },
-      type: 'grpc',
-      contractId: 'grpc::auth.AuthService/Login',
-      matchType: 'manifest',
-      confidence: 1.0,
-    };
-
-    await writeBridge(tmpDir, {
-      contracts: [provider, consumer],
-      crossLinks: [link],
-      repoSnapshots: {},
-      missingRepos: [],
-    });
-
-    const handle = await openBridgeDbReadOnly(tmpDir);
-    expect(handle).not.toBeNull();
-    const rows = await queryBridge<{
-      contractId: string;
-      matchType: string;
-      fromRepo: string;
-      toRepo: string;
-    }>(
-      handle!,
-      `MATCH (a:Contract)-[l:ContractLink]->(b:Contract)
-       RETURN l.contractId AS contractId, l.matchType AS matchType, l.fromRepo AS fromRepo, l.toRepo AS toRepo`,
-    );
-    expect(rows).toEqual([
-      {
+        symbolName: 'auth.AuthService/Login',
+      });
+      const consumer = makeContract({
+        contractId: 'grpc::auth.AuthService/Login',
+        type: 'grpc',
+        role: 'consumer',
+        repo: 'platform/orders',
+        symbolUid: 'uid-orders-client',
+        symbolRef: { filePath: 'src/client.ts', name: 'AuthServiceClient' },
+        symbolName: 'auth.AuthService/Login',
+      });
+      const link: CrossLink = {
+        from: {
+          repo: 'platform/orders',
+          symbolUid: 'uid-orders-client',
+          symbolRef: { filePath: 'src/client.ts', name: 'AuthServiceClient' },
+        },
+        to: {
+          repo: 'platform/auth',
+          symbolUid: 'uid-auth-login',
+          symbolRef: { filePath: 'src/auth.proto', name: 'Login' },
+        },
+        type: 'grpc',
         contractId: 'grpc::auth.AuthService/Login',
         matchType: 'manifest',
-        fromRepo: 'platform/orders',
-        toRepo: 'platform/auth',
-      },
-    ]);
-    await closeBridgeDb(handle!);
-  });
+        confidence: 1.0,
+      };
+
+      await writeBridge(tmpDir, {
+        contracts: [provider, consumer],
+        crossLinks: [link],
+        repoSnapshots: {},
+        missingRepos: [],
+      });
+
+      const handle = await openBridgeDbReadOnly(tmpDir);
+      expect(handle).not.toBeNull();
+      const rows = await queryBridge<{
+        contractId: string;
+        matchType: string;
+        fromRepo: string;
+        toRepo: string;
+      }>(
+        handle!,
+        `MATCH (a:Contract)-[l:ContractLink]->(b:Contract)
+       RETURN l.contractId AS contractId, l.matchType AS matchType, l.fromRepo AS fromRepo, l.toRepo AS toRepo`,
+      );
+      expect(rows).toEqual([
+        {
+          contractId: 'grpc::auth.AuthService/Login',
+          matchType: 'manifest',
+          fromRepo: 'platform/orders',
+          toRepo: 'platform/auth',
+        },
+      ]);
+      await closeBridgeDb(handle!);
+    },
+  );
 });

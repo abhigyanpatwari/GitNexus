@@ -32,9 +32,11 @@ const ref = (nodeId: string, origin: BindingRef['origin'] = 'local'): BindingRef
 function indexesWith({
   finalized,
   augmented,
+  workspace,
 }: {
   finalized?: readonly BindingRef[];
   augmented?: readonly BindingRef[];
+  workspace?: readonly BindingRef[];
 }): ScopeResolutionIndexes {
   const bindings = new Map<ScopeId, Map<string, readonly BindingRef[]>>();
   if (finalized !== undefined) {
@@ -43,7 +45,13 @@ function indexesWith({
   }
   const bindingAugmentations = new Map<ScopeId, Map<string, readonly BindingRef[]>>();
   if (augmented !== undefined) bindingAugmentations.set(SCOPE, new Map([['name', augmented]]));
-  return { bindings, bindingAugmentations } as unknown as ScopeResolutionIndexes;
+  const workspaceFqnBindings = new Map<string, readonly BindingRef[]>();
+  if (workspace !== undefined) workspaceFqnBindings.set('name', workspace);
+  return {
+    bindings,
+    bindingAugmentations,
+    workspaceFqnBindings,
+  } as unknown as ScopeResolutionIndexes;
 }
 
 function scope(id: ScopeId, bindings = new Map<string, readonly BindingRef[]>()): Scope {
@@ -102,6 +110,33 @@ describe('lookupBindingsAt', () => {
     const augmented = [ref('A', 'namespace'), ref('C', 'namespace')];
     const out = lookupBindingsAt(SCOPE, 'name', indexesWith({ finalized, augmented }));
     expect(out.map((b) => b.def.nodeId)).toEqual(['A', 'B', 'C']);
+    expect(out.find((b) => b.def.nodeId === 'A')!.origin).toBe('import');
+  });
+
+  // Third channel: workspaceFqnBindings (scope-independent — global-namespace
+  // C# types / PHP FQNs). Consulted LAST, after finalized + augmented.
+  it('returns the workspace bucket when it is the only channel', () => {
+    const workspace = [ref('W', 'namespace')];
+    const out = lookupBindingsAt(SCOPE, 'name', indexesWith({ workspace }));
+    expect(out).toEqual(workspace);
+    expect(out).toBe(workspace); // identity preserved when only one channel populates
+  });
+
+  it('appends workspace entries after finalized and augmented', () => {
+    const finalized = [ref('A', 'import')];
+    const augmented = [ref('B', 'namespace')];
+    const workspace = [ref('C', 'namespace')];
+    const out = lookupBindingsAt(SCOPE, 'name', indexesWith({ finalized, augmented, workspace }));
+    expect(out.map((b) => b.def.nodeId)).toEqual(['A', 'B', 'C']);
+  });
+
+  it('dedupes workspace entries already present in finalized/augmented (workspace loses)', () => {
+    const finalized = [ref('A', 'import')];
+    const augmented = [ref('B', 'namespace')];
+    const workspace = [ref('A', 'namespace'), ref('B', 'namespace'), ref('C', 'namespace')];
+    const out = lookupBindingsAt(SCOPE, 'name', indexesWith({ finalized, augmented, workspace }));
+    expect(out.map((b) => b.def.nodeId)).toEqual(['A', 'B', 'C']);
+    // The surviving A/B keep their finalized/augmented identity, not workspace's.
     expect(out.find((b) => b.def.nodeId === 'A')!.origin).toBe('import');
   });
 

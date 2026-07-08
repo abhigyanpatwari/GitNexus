@@ -1,0 +1,153 @@
+name: Vendored grammar update monitor
+
+# Periodically checks each vendored tree-sitter grammar against its
+# source-of-origin and opens a PR re-vendoring any update that is ABI-COMPATIBLE
+# with the pinned tree-sitter@0.21.1 (LANGUAGE_VERSION 13–14, #1922). The version
+# bump then triggers build-tree-sitter-prebuilds.yml, which cross-builds + ABI-
+# validates the prebuilds — so a re-vendor that is subtly wrong can never silently
+# ship: its PR's CI goes red.
+#
+# ABI-INCOMPATIBLE updates (the common case — upstreams move to newer tree-sitter)
+# are reported as a notice + job summary, NOT applied, so the monitor never opens
+# doomed PRs. tree-sitter-c is MONITORED but report-only: it is ABI-pinned at
+# 0.21.4 (#1242/#858), so an available c update is surfaced (notice + summary) but
+# never auto-bumped — a maintainer re-vendors it deliberately after a runtime
+# upgrade.
+#
+# The vendored set + per-grammar upstream coords + the tree-sitter-c hold live in
+# .github/vendored-grammars.json — the SHARED source of truth this monitor and
+# tree-sitter-upgrade-readiness.yml both read, so the two workflows can never
+# disagree about which grammars are vendored (#858). This monitor additionally
+# resolves each grammar's upstream from it; the readiness report reads vendored
+# ABIs from gitnexus/vendor/ and keeps its own upstream-drift coords.
+#
+# Concurrency convention: see CONTRIBUTING.md -> "GitHub Actions — Concurrency Convention".
+
+on:
+  schedule:
+    - cron: '17 6 * * 1' # weekly, Monday 06:17 UTC
+  workflow_dispatch:
+
+# Least privilege; the actual writes use a short-lived App token minted below.
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+jobs:
+  monitor:
+    name: Check upstreams + open update PRs
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 22
+
+      # secrets aren't usable in a job/step `if:`, so compute presence here.
+      - name: Check release App secret
+        id: relapp
+        env:
+          HAS_APP: ${{ secrets.RELEASE_APP_ID != '' && secrets.RELEASE_APP_PRIVATE_KEY != '' }}
+        run: echo "configured=$HAS_APP" >> "$GITHUB_OUTPUT"
+
+      - name: Mint GitHub App token
+        id: app-token
+        if: steps.relapp.outputs.configured == 'true'
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ secrets.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+
+      - name: Detect updates, re-vendor ABI-compatible ones, open PRs
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          HAS_APP: ${{ steps.relapp.outputs.configured }}
+          # App token writes; falls back to the read-only job token (PRs then skip).
+          GH_TOKEN: ${{ steps.app-token.outputs.token || github.token }}
+        with:
+          github-token: ${{ steps.app-token.outputs.token || github.token }}
+          script: |
+            const { execFileSync } = require('node:child_process');
+            const SCRIPT = '.github/scripts/update-vendored-grammars.mjs';
+            const run = (cmd, args, opts = {}) =>
+              execFileSync(cmd, args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], ...opts });
+
+            const report = JSON.parse(run('node', [SCRIPT]));
+            const { owner, repo } = context.repo;
+            const hasApp = process.env.HAS_APP === 'true';
+            const applied = [], held = [], errors = [], skipped = [];
+
+            run('git', ['config', 'user.name', 'gitnexus-release-bot[bot]']);
+            run('git', ['config', 'user.email', 'gitnexus-release-bot[bot]@users.noreply.github.com']);
+            const baseSha = run('git', ['rev-parse', 'HEAD']).trim();
+
+            for (const r of report) {
+              if (r.error) { errors.push(r); continue; }
+              if (!r.update) continue;
+              if (!r.applicable) { held.push(r); continue; } // ABI-incompatible / unknown
+
+              const name = `tree-sitter-${r.grammar}`;
+              const branch = `chore/update-${name}-${r.upstream}`.replace(/[^a-z0-9._/-]+/gi, '-');
+
+              // Idempotency: don't reopen an existing PR for this exact version.
+              const existing = await github.rest.pulls.list({ owner, repo, head: `${owner}:${branch}`, state: 'all' });
+              if (existing.data.length > 0) { skipped.push({ ...r, reason: 'PR exists' }); continue; }
+
+              // Re-vendor in place (refuses + exits non-zero if ABI turns out wrong).
+              try {
+                run('node', [SCRIPT, '--apply', r.grammar]);
+              } catch (e) {
+                errors.push({ ...r, error: `apply failed: ${String(e.message || e).slice(0, 200)}` });
+                run('git', ['checkout', '--', 'gitnexus/vendor']);
+                continue;
+              }
+
+              if (!hasApp) {
+                skipped.push({ ...r, reason: 'no RELEASE_APP secret — PR not opened' });
+                run('git', ['checkout', '--', 'gitnexus/vendor']);
+                continue;
+              }
+
+              const remote = `https://x-access-token:${process.env.GH_TOKEN}@github.com/${owner}/${repo}.git`;
+              run('git', ['checkout', '-B', branch, baseSha]);
+              run('git', ['add', `gitnexus/vendor/${name}`]);
+              run('git', ['commit', '-m', `chore(vendor): update ${name} to ${r.upstream}`]);
+              run('git', ['push', '--force-with-lease', remote, `HEAD:${branch}`]);
+              const body = [
+                `Automated re-vendor of **${name}** to \`${r.upstream}\` (from ${r.kind === 'npm' ? `npm \`${name}\`` : `\`${r.ref}\``}).`,
+                '',
+                `Verified ABI **${r.abi}** — compatible with the pinned \`tree-sitter@0.21.1\` (13–14).`,
+                'Source-build inputs refreshed; the GitNexus binding.gyp / README / prebuilds are preserved.',
+                'The version bump triggers `build-tree-sitter-prebuilds.yml` to rebuild + ABI-validate the',
+                'prebuilds — review its result before merging.',
+              ].join('\n');
+              const pr = await github.rest.pulls.create({
+                owner, repo, head: branch, base: 'main',
+                title: `chore(vendor): update ${name} to ${r.upstream}`, body,
+              });
+              applied.push({ ...r, pr: pr.data.number });
+              run('git', ['checkout', '--force', baseSha]);
+            }
+
+            // Summary
+            const s = core.summary.addHeading('Vendored grammar update monitor');
+            if (applied.length) s.addRaw(`\n**Opened PRs:** ${applied.map((a) => `${a.grammar}→${a.upstream} (#${a.pr})`).join(', ')}\n`);
+            if (held.length) s.addRaw(`\n**Held (not auto-applied):** ${held.map((h) => `${h.grammar} ${h.upstream} (${h.hold ? 'report-only: ' + h.hold : 'ABI ' + (h.abi ?? '?') + ' — needs the tree-sitter runtime upgrade'})`).join(', ')}\n`);
+            if (skipped.length) s.addRaw(`\n**Skipped:** ${skipped.map((x) => `${x.grammar} (${x.reason})`).join(', ')}\n`);
+            if (errors.length) s.addRaw(`\n**Errors:** ${errors.map((e) => `${e.grammar}: ${e.error}`).join('; ')}\n`);
+            if (!applied.length && !held.length && !skipped.length && !errors.length) s.addRaw('\nAll vendored grammars are up to date. ✅\n');
+            await s.write();
+
+            for (const h of held) core.notice(`${h.grammar}: update to ${h.upstream} available — ${h.hold ? `report-only (${h.hold})` : `ABI ${h.abi ?? 'unknown'} (need 13/14), held until the tree-sitter runtime upgrade`}.`);
+            if (!hasApp && (applied.length || skipped.some((x) => /secret/.test(x.reason)))) {
+              core.notice('RELEASE_APP_ID / RELEASE_APP_PRIVATE_KEY not configured — update PRs were not opened. Provision the App to enable auto-PRs.');
+            }

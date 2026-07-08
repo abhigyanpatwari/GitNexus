@@ -3,6 +3,11 @@ import fs from 'fs/promises';
 import os from 'os';
 import path from 'path';
 import { parse as parseJsonc } from 'jsonc-parser';
+import { createRequire } from 'module';
+
+const PKG_VERSION = (createRequire(import.meta.url)('../../package.json') as { version: string })
+  .version;
+const NPX_REF = `gitnexus@${PKG_VERSION}`;
 
 const execFileMock = vi.fn((...args: any[]) => {
   const callback = args.at(-1);
@@ -232,7 +237,51 @@ describe('setupOpenCode — JSONC preservation', () => {
 
     expect(config.mcp.gitnexus).toEqual({
       type: 'local',
-      command: ['npx', '-y', 'gitnexus@latest', 'mcp'],
+      command: ['npx', '-y', NPX_REF, 'mcp'],
+    });
+  });
+
+  it('uses Windows npx fallback when where returns only a non-wrapper shim', async () => {
+    setPlatform('win32');
+    execFileSyncMock.mockReturnValueOnce('C:\\Users\\dev\\AppData\\Roaming\\npm\\gitnexus\n');
+
+    const jsonc = `{
+  "model": "test",
+  "mcp": {}
+}`;
+    await fs.writeFile(opencodeJsonPath(), jsonc, 'utf-8');
+
+    const { setupCommand } = await import('../../src/cli/setup.js');
+    await setupCommand();
+
+    const raw = await fs.readFile(opencodeJsonPath(), 'utf-8');
+    const config = parseJsonc(raw);
+
+    expect(config.mcp.gitnexus).toEqual({
+      type: 'local',
+      command: ['cmd', '/c', 'npx', '-y', NPX_REF, 'mcp'],
+    });
+  });
+
+  it('uses Windows npx fallback when where returns only a .ps1 path', async () => {
+    setPlatform('win32');
+    execFileSyncMock.mockReturnValueOnce('C:\\Users\\dev\\AppData\\Roaming\\npm\\gitnexus.ps1\n');
+
+    const jsonc = `{
+  "model": "test",
+  "mcp": {}
+}`;
+    await fs.writeFile(opencodeJsonPath(), jsonc, 'utf-8');
+
+    const { setupCommand } = await import('../../src/cli/setup.js');
+    await setupCommand();
+
+    const raw = await fs.readFile(opencodeJsonPath(), 'utf-8');
+    const config = parseJsonc(raw);
+
+    expect(config.mcp.gitnexus).toEqual({
+      type: 'local',
+      command: ['cmd', '/c', 'npx', '-y', NPX_REF, 'mcp'],
     });
   });
 
@@ -354,6 +403,22 @@ describe('setupCursor — JSONC preservation', () => {
 
     const raw = await fs.readFile(mcpPath(), 'utf-8');
     expect(raw).toBe(corrupt);
+  });
+
+  it('uses Windows npx fallback when where returns only a non-wrapper shim', async () => {
+    setPlatform('win32');
+    execFileSyncMock.mockReturnValueOnce('C:\\Users\\dev\\AppData\\Roaming\\npm\\gitnexus\n');
+
+    const { setupCommand } = await import('../../src/cli/setup.js');
+    await setupCommand();
+
+    const raw = await fs.readFile(mcpPath(), 'utf-8');
+    const config = parseJsonc(raw);
+
+    expect(config.mcpServers.gitnexus).toEqual({
+      command: 'cmd',
+      args: ['/c', 'npx', '-y', NPX_REF, 'mcp'],
+    });
   });
 });
 

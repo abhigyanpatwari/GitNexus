@@ -18,8 +18,11 @@
  * format that downstream consumers (queries, edges, MCP) expect.
  */
 
-import type { NodeLabel } from 'gitnexus-shared';
+import type { NodeLabel, ParameterTypeClass } from 'gitnexus-shared';
 import type { KnowledgeGraph } from '../../../graph/types.js';
+import { isOverloadableCallable } from '../../utils/callable-labels.js';
+import { templateConstraintsIdTag } from '../../utils/template-arguments.js';
+import { parameterShapeIdTag } from '../../utils/method-props.js';
 
 export type GraphNodeLookup = ReadonlyMap<string, string>;
 
@@ -39,6 +42,10 @@ function parseQualifiedFromId(id: string, label: NodeLabel, filePath: string): s
   if (suffix.length === 0) return undefined;
   const hash = suffix.indexOf('#');
   return hash === -1 ? suffix : suffix.slice(0, hash);
+}
+
+function stripCallableDisambiguatorTags(qualifiedName: string): string {
+  return qualifiedName.replace(/~shape:.*$/, '').replace(/~c:[a-z0-9]+$/, '');
 }
 
 /**
@@ -67,6 +74,7 @@ export function buildGraphNodeLookup(graph: KnowledgeGraph): GraphNodeLookup {
       filePath?: string;
       name?: string;
       qualifiedName?: string;
+      templateArguments?: readonly string[];
     };
     if (props.filePath === undefined || props.name === undefined) continue;
     if (!isLinkableLabel(node.label)) continue;
@@ -82,7 +90,8 @@ export function buildGraphNodeLookup(graph: KnowledgeGraph): GraphNodeLookup {
     const qualified =
       props.qualifiedName ?? parseQualifiedFromId(node.id, node.label, props.filePath);
     if (qualified !== undefined && qualified.length > 0) {
-      const qKey = qualifiedKey(props.filePath, node.label, qualified);
+      const keyQualified = stripCallableDisambiguatorTags(qualified);
+      const qKey = qualifiedKey(props.filePath, node.label, keyQualified);
       if (!lookup.has(qKey)) lookup.set(qKey, node.id);
       // Overload-disambiguating key: include parameter types so two
       // same-arity overloads (e.g. `Lookup(int)` vs `Lookup(string)`)
@@ -91,10 +100,66 @@ export function buildGraphNodeLookup(graph: KnowledgeGraph): GraphNodeLookup {
       // a parameter-types-suffixed key so resolveDefGraphId can find
       // the right overload by matching its def's parameterTypes.
       const pTypes = (props as { parameterTypes?: readonly string[] }).parameterTypes;
-      if (pTypes !== undefined && pTypes.length > 0 && node.label === 'Method') {
-        const pKey = qualifiedKey(props.filePath, node.label, `${qualified}~${pTypes.join(',')}`);
+      if (pTypes !== undefined && pTypes.length > 0 && isOverloadableCallable(node.label)) {
+        const pKey = qualifiedKey(
+          props.filePath,
+          node.label,
+          `${keyQualified}~${pTypes.join(',')}`,
+        );
         // Each overload is unique — set unconditionally.
-        lookup.set(pKey, node.id);
+        if (!lookup.has(pKey)) lookup.set(pKey, node.id);
+      }
+      // Arity-disambiguating key: include the parameter count so two same-name
+      // overloads of DIFFERENT arity route to distinct graph nodes even when the
+      // shorter overload carries no parameter types (e.g. a Kotlin zero-arg
+      // secondary constructor vs a 2-arg one — both share the qualified key, whose
+      // first-write-wins assignment is source-order-dependent). The structure-phase
+      // node id encodes `#<arity>`; this mirrors it in the lookup keyspace so
+      // resolveDefGraphId can match by the def's own parameterCount. Same-arity
+      // overloads collapse onto one arity key (first-write-wins) — identical to the
+      // pre-existing qualified-key behavior, so no regression there.
+      const pCount = (props as { parameterCount?: number }).parameterCount;
+      if (pCount !== undefined && isOverloadableCallable(node.label)) {
+        const aKey = qualifiedKey(props.filePath, node.label, `${keyQualified}#${pCount}`);
+        if (!lookup.has(aKey)) lookup.set(aKey, node.id);
+      }
+      const pClasses = (props as { parameterTypeClasses?: readonly ParameterTypeClass[] })
+        .parameterTypeClasses;
+      const shapeTag = parameterShapeIdTag(pTypes, pClasses);
+      if (shapeTag !== '' && isOverloadableCallable(node.label)) {
+        const shapeKey = qualifiedKey(props.filePath, node.label, `${keyQualified}${shapeTag}`);
+        if (!lookup.has(shapeKey)) lookup.set(shapeKey, node.id);
+      }
+      // SFINAE / `requires`-clause disambiguation (issue #1579) — register
+      // a constraint-fingerprinted key so resolveDefGraphId can locate the
+      // correct overload by hashing the def's `templateConstraints`. Mirrors
+      // the parameter-types key but keys on the opaque constraint payload
+      // instead, separating two `process<T>` overloads whose
+      // `parameterTypes=['T']` would otherwise collide.
+      const tConstraints = (props as { templateConstraints?: unknown }).templateConstraints;
+      if (tConstraints !== undefined && (node.label === 'Function' || node.label === 'Method')) {
+        const cKey = qualifiedKey(
+          props.filePath,
+          node.label,
+          `${keyQualified}${templateConstraintsIdTag(tConstraints)}`,
+        );
+        lookup.set(cKey, node.id);
+      }
+      if (
+        (node.label === 'Class' ||
+          node.label === 'Struct' ||
+          node.label === 'Interface' ||
+          node.label === 'Enum' ||
+          node.label === 'Record') &&
+        props.templateArguments !== undefined &&
+        props.templateArguments.length > 0
+      ) {
+        const tKey = qualifiedKey(
+          props.filePath,
+          node.label,
+          `${keyQualified}~${props.templateArguments.join(',')}`,
+        );
+        if (!lookup.has(tKey)) lookup.set(tKey, node.id);
       }
     }
 
@@ -117,10 +182,26 @@ export function isLinkableLabel(label: NodeLabel): boolean {
     label === 'Interface' ||
     label === 'Struct' ||
     label === 'Enum' ||
+    // Trait nodes are linkable so MRO builders can bridge PHP/Rust trait
+    // defs between scope-resolution DefIds and the graph's node ids.
+    // IMPLEMENTS edges from classes to traits are otherwise invisible to
+    // the scope-resolution MRO pass.
+    label === 'Trait' ||
     // Variable / Property are linkable too — receiver-bound write/read
     // ACCESSES edges target field nodes (e.g. `user.name = "x"` →
     // ACCESSES edge to User's `name` Variable/Property node).
     label === 'Variable' ||
-    label === 'Property'
+    label === 'Property' ||
+    // Const is linkable so the value-receiver-owner bridge in
+    // `receiver-bound-calls.ts` Case 5 can translate the scope-resolution
+    // `Variable` def for `export const fooService = {...}` to the canonical
+    // `Const:filePath:name` graph node id, against which object-literal
+    // method symbols register their `ownerId` (PR #1718 / issue #1358).
+    label === 'Const' ||
+    // Macro nodes are linkable so a macro invocation (`log!(…)`) resolved
+    // via `MacroRegistry` can bridge its scope-resolution `Macro` def to
+    // the legacy `@definition.macro` graph node and emit the `USES` edge
+    // (Rust #1934 F72; also covers C/C++ `#define` macro defs).
+    label === 'Macro'
   );
 }

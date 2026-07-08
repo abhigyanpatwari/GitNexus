@@ -17,7 +17,24 @@
 
 import fs from 'fs/promises';
 import lbug from '@ladybugdb/core';
-import { loadFTSExtension } from './lbug-adapter.js';
+import { isReadOnlyDbError, loadFTSExtension } from './lbug-adapter.js';
+import { closeQueryResults } from './query-result-utils.js';
+import {
+  createLbugDatabase,
+  isWalCorruptionError,
+  toNativeSafePath,
+  WAL_RECOVERY_SUGGESTION,
+} from './lbug-config.js';
+import {
+  guardWalQuarantine,
+  isMissingFsError,
+  isMissingShadowSidecarError,
+  isReadOnlyShadowReplayError,
+  preflightLbugSidecars,
+  quarantineWalForMissingShadow,
+  renameFailureMessage,
+  statIfExists,
+} from './sidecar-recovery.js';
 
 /** Per-repo pool: one Database, many Connections */
 interface PoolEntry {
@@ -26,8 +43,14 @@ interface PoolEntry {
   available: lbug.Connection[];
   /** Number of connections currently checked out */
   checkedOut: number;
-  /** Queued waiters for when all connections are busy */
-  waiters: Array<(conn: lbug.Connection) => void>;
+  /** Queued waiters for when all connections are busy. Each carries `resolve`
+   *  (hand off a freed connection) and `reject` (fail fast when the pool is
+   *  closed before a connection frees, instead of hanging until the waiter
+   *  timeout — #2068 follow-up). */
+  waiters: Array<{
+    resolve: (conn: lbug.Connection) => void;
+    reject: (err: Error) => void;
+  }>;
   lastUsed: number;
   dbPath: string;
   /** Set to true when the pool entry is closed — checkin will close orphaned connections */
@@ -81,11 +104,61 @@ const IDLE_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
 /** Max connections per repo (caps concurrent queries per repo) */
 const MAX_CONNS_PER_REPO = 8;
 
+/**
+ * Repos exempt from AUTOMATIC eviction (LRU + idle timeout) until explicitly
+ * unpinned. Used by bounded multi-repo operations like `group sync`, which
+ * initializes one pool per repo and then resolves cross-repo manifest/workspace
+ * links against ALL of those pools after the init loop. Without pinning, a
+ * group larger than MAX_POOL_SIZE would LRU-evict the earliest repos before
+ * resolution runs, leaving the deferred executor closures pointing at dead pool
+ * entries (issue #2189).
+ *
+ * Pins are REFERENCE-COUNTED: the map holds repoId → active lease count. This
+ * lets overlapping holders (two windows of one sync, or two concurrent
+ * `group sync` calls sharing a repo) coexist safely — the repo stays exempt
+ * until the LAST holder releases. A boolean Set could not represent "two
+ * holders," so the first release would wrongly clear a pin another holder still
+ * needs (PR #2191 review, Finding 1).
+ *
+ * Pins block only automatic eviction (LRU + idle). Explicit teardown
+ * (closeOne / closeLbug) always closes the entry and force-clears its count —
+ * teardown is authoritative. A present key always means count ≥ 1. While every
+ * pooled repo is pinned, evictLRU finds no eligible victim and the pool may
+ * transiently exceed MAX_POOL_SIZE — the same soft-cap behavior that already
+ * occurs when every entry is checked out.
+ */
+const pinnedRepos = new Map<string, number>();
+
+// Behavior-neutral RSS tracing for the FTS evict→reload memory repro
+// (gitnexus/scripts/bench/fts-evict-reload-rss.mjs). Two invariants keep it safe
+// in the pool init/close hot path: it writes ONLY to stderr (stdout is the MCP
+// JSON-RPC channel), and the GITNEXUS_POOL_RSS_TRACE gate makes it a no-op — one
+// env-var compare per call, nothing else — unless a harness explicitly enables it.
+function traceRss(event: 'init' | 'close', repoId: string): void {
+  if (process.env.GITNEXUS_POOL_RSS_TRACE !== '1') return;
+  const rssMb = Math.round(process.memoryUsage().rss / (1024 * 1024));
+  process.stderr.write(
+    `[pool-rss] ${event} repo=${repoId} pool=${pool.size} dbCache=${dbCache.size} rssMB=${rssMb}\n`,
+  );
+}
+
 let idleTimer: ReturnType<typeof setInterval> | null = null;
 
-/** Saved real stdout/stderr write — used to silence native module output without race conditions */
-export const realStdoutWrite = process.stdout.write.bind(process.stdout);
-export const realStderrWrite = process.stderr.write.bind(process.stderr);
+// Stdout-capture state lives in `gitnexus/src/mcp/stdio-capture.ts` — a leaf
+// module with zero non-`node:` imports. We re-export the same symbols here
+// so the existing test mock seam (`gitnexus/src/mcp/core/lbug-adapter.ts`
+// re-exports * from this file, and 8+ test files use that path with
+// `vi.mock(...)`) continues to work without churn. The source of truth is
+// the leaf module; this re-export is a compatibility shim.
+//
+// Why the leaf module exists: Codex's adversarial review on PR #1383 found
+// that putting this state in pool-adapter.ts pulled `@ladybugdb/core` into
+// `cli/mcp.ts`'s static-import closure (via stdio-context → pool-adapter →
+// @ladybugdb/core), corrupting stdout in the pre-sentinel window. Routing
+// through the leaf breaks that chain.
+export { realStdoutWrite, realStderrWrite, setActiveStdoutWrite } from '../../mcp/stdio-capture.js';
+import { getActiveStdoutWrite, realStderrWrite } from '../../mcp/stdio-capture.js';
+
 let stdoutSilenceCount = 0;
 /** True while pre-warming connections — prevents watchdog from prematurely restoring stdout */
 let preWarmActive = false;
@@ -98,6 +171,7 @@ function ensureIdleTimer(): void {
   idleTimer = setInterval(() => {
     const now = Date.now();
     for (const [repoId, entry] of pool) {
+      if (pinnedRepos.has(repoId)) continue;
       if (now - entry.lastUsed > IDLE_TIMEOUT_MS && entry.checkedOut === 0) {
         closeOne(repoId);
       }
@@ -120,7 +194,64 @@ export const touchRepo = (repoId: string): void => {
 };
 
 /**
- * Evict the least-recently-used repo if pool is at capacity
+ * Acquire one eviction-exemption lease on a repo (LRU + idle timeout) by
+ * incrementing its reference count. The repoId must match the key passed to
+ * initLbug (e.g. group sync leases by handle.id — the same id it inits with).
+ * Leasing a repoId before it enters the pool is allowed and protects the entry
+ * once it is created, but the lease does NOT survive a teardown: closeOne
+ * force-clears the count, so a later re-init of the same repoId starts
+ * unpinned. Each pinRepo MUST be balanced by exactly one release (the repo
+ * stays exempt until the last lease is released). See the pinnedRepos docstring
+ * for the full contract.
+ *
+ * Returns a `release` disposer (mirroring addPoolCloseListener) that releases
+ * THIS lease exactly once — calling it twice is a no-op, so it can never
+ * over-decrement a sibling holder's count. Prefer the disposer
+ * (`const release = pinRepo(id); try { … } finally { release(); }`) so the
+ * pin/release pair is leak-proof; unpinRepo remains available for callers that
+ * pair explicitly.
+ */
+export const pinRepo = (repoId: string): (() => void) => {
+  pinnedRepos.set(repoId, (pinnedRepos.get(repoId) ?? 0) + 1);
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    unpinRepo(repoId);
+  };
+};
+
+/**
+ * Release one eviction-exemption lease on a repo. The repo becomes eligible for
+ * automatic eviction again only once its count reaches 0 (the key is deleted).
+ * Idempotent at the floor: releasing a repo with no active lease is a no-op (no
+ * negative counts). Does NOT close the repo's pool.
+ */
+export const unpinRepo = (repoId: string): void => {
+  const count = pinnedRepos.get(repoId);
+  if (count === undefined) return;
+  if (count <= 1) {
+    pinnedRepos.delete(repoId);
+  } else {
+    pinnedRepos.set(repoId, count - 1);
+  }
+};
+
+/**
+ * Maximum number of repos a bounded multi-repo operation (e.g. group sync's
+ * windowed manifest resolution) should hold resident at once. Equals
+ * MAX_POOL_SIZE today, but exposed under an intent-named accessor so callers
+ * size their working set against "max repos a bounded op should hold" rather
+ * than coupling to the LRU eviction-cap constant, which may be tuned
+ * independently.
+ */
+export const getMaxResidentRepos = (): number => MAX_POOL_SIZE;
+
+/**
+ * Evict the least-recently-used repo if pool is at capacity.
+ * Pinned repos are never chosen as the eviction victim — when every eligible
+ * entry is pinned, no eviction occurs and the pool transiently exceeds
+ * MAX_POOL_SIZE (see the pinnedRepos docstring).
  */
 function evictLRU(): void {
   if (pool.size < MAX_POOL_SIZE) return;
@@ -128,6 +259,7 @@ function evictLRU(): void {
   let oldestId: string | null = null;
   let oldestTime = Infinity;
   for (const [id, entry] of pool) {
+    if (pinnedRepos.has(id)) continue;
     if (entry.checkedOut === 0 && entry.lastUsed < oldestTime) {
       oldestTime = entry.lastUsed;
       oldestId = id;
@@ -148,6 +280,20 @@ function closeOne(repoId: string): void {
   if (!entry) return;
 
   entry.closed = true;
+
+  // Reject any callers still queued for a connection: the pool is going away
+  // (re-init / teardown / LRU eviction), so they must fail fast with an
+  // actionable error instead of hanging until WAITER_TIMEOUT_MS and then
+  // surfacing a misleading "pool exhausted" (#2068 follow-up). Draining the
+  // queue also guarantees checkin() below finds no waiter expecting a
+  // connection, so a connection returned after close is simply closed.
+  if (entry.waiters.length > 0) {
+    const closedErr = new Error(
+      `LadybugDB connection pool closed for repo "${repoId}" (re-init/teardown); retry the query.`,
+    );
+    for (const waiter of entry.waiters) waiter.reject(closedErr);
+    entry.waiters.length = 0;
+  }
 
   // Close available connections — fire-and-forget with .catch() to prevent
   // unhandled rejections.  Native close() returns Promise<void> but can crash
@@ -183,6 +329,11 @@ function closeOne(repoId: string): void {
 
   pool.delete(repoId);
 
+  // Clear any eviction pin — the entry is gone, so the pin is meaningless and
+  // would otherwise leak across operations in a long-lived process. Teardown
+  // is authoritative: an explicit close always wins over a pin.
+  pinnedRepos.delete(repoId);
+
   // Notify listeners AFTER the pool entry is gone so any cache-invalidation
   // they perform is consistent with `isLbugReady(repoId) === false`.
   for (const listener of poolCloseListeners) {
@@ -192,6 +343,8 @@ function closeOne(repoId: string): void {
       // Isolate listener failures — teardown must complete.
     }
   }
+
+  traceRss('close', repoId);
 }
 
 /**
@@ -208,6 +361,7 @@ let activeQueryCount = 0;
  */
 export function silenceStdout(): void {
   if (stdoutSilenceCount++ === 0) {
+    // eslint-disable-next-line no-restricted-syntax -- silencing infrastructure; replacement is a no-op
     process.stdout.write = (() => true) as any;
   }
 }
@@ -215,7 +369,8 @@ export function silenceStdout(): void {
 export function restoreStdout(): void {
   if (--stdoutSilenceCount <= 0) {
     stdoutSilenceCount = 0;
-    process.stdout.write = realStdoutWrite;
+    // eslint-disable-next-line no-restricted-syntax -- restoring the active stdout-write handler is the silencing API contract
+    process.stdout.write = getActiveStdoutWrite();
   }
 }
 
@@ -226,7 +381,8 @@ export function restoreStdout(): void {
 setInterval(() => {
   if (stdoutSilenceCount > 0 && !preWarmActive && activeQueryCount === 0) {
     stdoutSilenceCount = 0;
-    process.stdout.write = realStdoutWrite;
+    // eslint-disable-next-line no-restricted-syntax -- watchdog recovery for stuck silencing
+    process.stdout.write = getActiveStdoutWrite();
   }
 }, 1000).unref();
 
@@ -246,6 +402,186 @@ const WAITER_TIMEOUT_MS = 15_000;
 
 const LOCK_RETRY_ATTEMPTS = 3;
 const LOCK_RETRY_DELAY_MS = 2000;
+const SHADOW_REPLAY_PROBE_QUERY = 'MATCH (n) RETURN n LIMIT 1';
+
+const poolSidecarLogger = {
+  warn: (message: string): void => {
+    realStderrWrite(`${message}\n`);
+  },
+  debug: (_message: string): void => {},
+  info: (message: string): void => {
+    realStderrWrite(`${message}\n`);
+  },
+};
+
+type TryQuarantineResult = { kind: 'quarantined'; path: string } | { kind: 'peer-handled' };
+
+/**
+ * Pool-local quarantine guard that tolerates the concurrent-peer race the
+ * direct adapter does NOT face (the direct adapter holds `acquireInitLock`,
+ * a cross-process file lock, around its quarantine calls — so any ENOENT
+ * there is a real bug, not a benign race).
+ *
+ * On ENOENT from `fs.rename`, re-inspects via `statIfExists` to confirm the
+ * WAL really is gone. If gone, returns `{ kind: 'peer-handled' }`. If the
+ * WAL is somehow still present after the ENOENT (filesystem race we don't
+ * fully model), re-throws as a classified error rather than silently
+ * returning success — preserves the lock-invariant principle at the pool
+ * sites too.
+ *
+ * On any non-ENOENT failure, classifies through `renameFailureMessage`:
+ * EACCES/EPERM/EBUSY → permission-specific message; everything else
+ * (including the LadybugDB missing-shadow error if it ever propagates here)
+ * → `shadowSidecarRecoveryMessage`.
+ *
+ * See plan: docs/plans/2026-05-21-001-fix-pr-1747-quarantine-enoent-and-large-wal-plan.md (U2)
+ */
+async function tryQuarantineForMissingShadow(
+  dbPath: string,
+  opts: { reason: string; err: unknown },
+): Promise<TryQuarantineResult> {
+  // Refuse (throw) before renaming a live WAL when the shadow is present on
+  // disk or the orphan WAL is too large — parity with the serve path's
+  // refuseLargeWalQuarantine (issue #2382 review, Finding B). Kept OUTSIDE the
+  // try so the actionable recovery message propagates to the MCP caller rather
+  // than being re-wrapped as a rename failure.
+  await guardWalQuarantine(dbPath, opts.reason, opts.err, poolSidecarLogger);
+  try {
+    const quarantinePath = await quarantineWalForMissingShadow(dbPath, {
+      logger: poolSidecarLogger,
+      level: 'warn',
+      reason: opts.reason,
+    });
+    return { kind: 'quarantined', path: quarantinePath };
+  } catch (err) {
+    if (isMissingFsError(err)) {
+      const walStat = await statIfExists(`${dbPath}.wal`);
+      if (walStat === null) {
+        return { kind: 'peer-handled' };
+      }
+      // Defensive: ENOENT during rename but WAL still present afterwards.
+      // Don't silently swallow — surface a classified error. ENOENT falls
+      // through to shadowSidecarRecoveryMessage in renameFailureMessage.
+      throw new Error(renameFailureMessage(dbPath, err));
+    }
+    // Classify the rename failure itself — EACCES/EPERM/EBUSY get the
+    // permission-specific message; everything else falls through.
+    throw new Error(renameFailureMessage(dbPath, err));
+  }
+}
+
+async function probeDatabaseForShadowReplay(db: lbug.Database): Promise<void> {
+  const conn = createConnection(db);
+  try {
+    const queryResult = await conn.query(SHADOW_REPLAY_PROBE_QUERY);
+    const result = Array.isArray(queryResult) ? queryResult[0] : queryResult;
+    await result.getAll();
+    result.close?.();
+  } finally {
+    await conn.close().catch(() => {});
+  }
+}
+
+async function replayShadowPagesWithWritableOpen(dbPath: string): Promise<void> {
+  let db: lbug.Database | undefined;
+  try {
+    db = createLbugDatabase(lbug, toNativeSafePath(dbPath), { throwOnWalReplayFailure: false });
+    await db.init();
+    await probeDatabaseForShadowReplay(db);
+  } catch (err) {
+    if (isMissingShadowSidecarError(err)) {
+      await tryQuarantineForMissingShadow(dbPath, {
+        reason: 'pool writable replay recovery',
+        err,
+      });
+      return;
+    }
+    throw err;
+  } finally {
+    if (db) await db.close().catch(() => {});
+  }
+}
+
+async function openReadOnlyDatabase(dbPath: string): Promise<lbug.Database> {
+  let db: lbug.Database | undefined;
+  silenceStdout();
+  try {
+    await preflightLbugSidecars(dbPath, {
+      mode: 'read-only',
+      logger: poolSidecarLogger,
+      allowQuarantine: true,
+    });
+    db = createLbugDatabase(lbug, toNativeSafePath(dbPath), {
+      readOnly: true,
+      throwOnWalReplayFailure: false,
+    });
+    await db.init();
+    try {
+      await probeDatabaseForShadowReplay(db);
+    } catch (err) {
+      if (isMissingShadowSidecarError(err)) {
+        await db.close().catch(() => {});
+        db = undefined;
+        await tryQuarantineForMissingShadow(dbPath, {
+          reason: 'pool read-only recovery',
+          err,
+        });
+        await preflightLbugSidecars(dbPath, {
+          mode: 'read-only',
+          logger: poolSidecarLogger,
+          allowQuarantine: true,
+        });
+        db = createLbugDatabase(lbug, toNativeSafePath(dbPath), {
+          readOnly: true,
+          throwOnWalReplayFailure: false,
+        });
+        await db.init();
+        await probeDatabaseForShadowReplay(db);
+        return db;
+      }
+      if (!isReadOnlyShadowReplayError(err)) {
+        throw err;
+      }
+      await db.close().catch(() => {});
+      db = undefined;
+      await replayShadowPagesWithWritableOpen(dbPath);
+      db = createLbugDatabase(lbug, toNativeSafePath(dbPath), {
+        readOnly: true,
+        throwOnWalReplayFailure: false,
+      });
+      await db.init();
+      await probeDatabaseForShadowReplay(db);
+    }
+    return db;
+  } catch (err) {
+    if (db) await db.close().catch(() => {});
+    throw err;
+  } finally {
+    restoreStdout();
+  }
+}
+
+/**
+ * Quarantine the .wal file and retry opening the database.
+ * Used when the initial open fails with a WAL corruption error.
+ */
+async function tryQuarantineAndReopen(dbPath: string, repoId: string): Promise<lbug.Database> {
+  const walPath = dbPath + '.wal';
+  const quarantineName = `${walPath}.corrupt.${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  try {
+    await fs.rename(walPath, quarantineName);
+  } catch {
+    throw new Error(
+      `LadybugDB WAL corruption detected for ${repoId}. ` +
+        `Run \`gitnexus analyze\` to rebuild the index. (quarantine failed)`,
+    );
+  }
+  realStderrWrite(
+    `GitNexus: LadybugDB WAL quarantined for ${repoId}; graph may be stale. ` +
+      `Run \`gitnexus analyze\` to rebuild the index.\n`,
+  );
+  return await openReadOnlyDatabase(dbPath);
+}
 
 /** Deduplicates concurrent initLbug calls for the same repoId */
 const initPromises = new Map<string, Promise<void>>();
@@ -303,23 +639,40 @@ async function doInitLbug(repoId: string, dbPath: string): Promise<void> {
     // avoids lock conflicts when `gitnexus analyze` is writing.
     let lastError: Error | null = null;
     for (let attempt = 1; attempt <= LOCK_RETRY_ATTEMPTS; attempt++) {
-      silenceStdout();
       try {
-        const db = new lbug.Database(
-          dbPath,
-          0, // bufferManagerSize (default)
-          false, // enableCompression (default)
-          true, // readOnly
-        );
-        restoreStdout();
+        const db = await openReadOnlyDatabase(dbPath);
         shared = { db, refCount: 0, ftsLoaded: false };
         dbCache.set(dbPath, shared);
         break;
       } catch (err: any) {
-        restoreStdout();
         lastError = err instanceof Error ? err : new Error(String(err));
+
+        if (isWalCorruptionError(lastError)) {
+          try {
+            const db = await tryQuarantineAndReopen(dbPath, repoId);
+            shared = { db, refCount: 0, ftsLoaded: false };
+            dbCache.set(dbPath, shared);
+            break;
+          } catch (retryErr) {
+            throw new Error(
+              `LadybugDB WAL corruption detected for ${repoId}. ${WAL_RECOVERY_SUGGESTION} ` +
+                `(${retryErr instanceof Error ? retryErr.message : String(retryErr)})`,
+            );
+          }
+        }
+
+        if (
+          lastError.message.startsWith('LadybugDB checkpoint sidecar is missing') ||
+          lastError.message.startsWith('LadybugDB checkpoint sidecar is present but unreachable') ||
+          lastError.message.startsWith('GitNexus could not move the LadybugDB WAL sidecar') ||
+          isMissingShadowSidecarError(lastError)
+        ) {
+          throw lastError;
+        }
+
         const isLockError =
-          lastError.message.includes('Could not set lock') || lastError.message.includes('lock');
+          lastError.message.includes('Could not set lock') ||
+          /\block(\b|ed|ing)/i.test(lastError.message);
         if (!isLockError || attempt === LOCK_RETRY_ATTEMPTS) break;
         await new Promise((resolve) => setTimeout(resolve, LOCK_RETRY_DELAY_MS * attempt));
       }
@@ -372,6 +725,7 @@ async function doInitLbug(repoId: string, dbPath: string): Promise<void> {
     closed: false,
   });
   ensureIdleTimer();
+  traceRss('init', repoId);
 }
 
 /**
@@ -434,6 +788,7 @@ export async function initLbugWithDb(
     closed: false,
   });
   ensureIdleTimer();
+  traceRss('init', repoId);
 }
 
 /**
@@ -462,14 +817,20 @@ function checkout(entry: PoolEntry): Promise<lbug.Connection> {
 
   // At capacity — queue the caller with a timeout.
   return new Promise<lbug.Connection>((resolve, reject) => {
-    const waiter = (conn: lbug.Connection) => {
-      clearTimeout(timer);
-      resolve(conn);
+    const waiter = {
+      resolve: (conn: lbug.Connection) => {
+        clearTimeout(timer);
+        resolve(conn);
+      },
+      reject: (err: Error) => {
+        clearTimeout(timer);
+        reject(err);
+      },
     };
     const timer = setTimeout(() => {
       const idx = entry.waiters.indexOf(waiter);
       if (idx !== -1) entry.waiters.splice(idx, 1);
-      reject(
+      waiter.reject(
         new Error(
           `Connection pool exhausted: timed out after ${WAITER_TIMEOUT_MS}ms waiting for a free connection`,
         ),
@@ -495,7 +856,7 @@ function checkin(entry: PoolEntry, conn: lbug.Connection): void {
   if (entry.waiters.length > 0) {
     // Hand directly to the next waiter — no intermediate available state
     const waiter = entry.waiters.shift()!;
-    waiter(conn);
+    waiter.resolve(conn);
   } else {
     entry.checkedOut--;
     entry.available.push(conn);
@@ -516,30 +877,7 @@ function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise
 }
 
 export const executeQuery = async (repoId: string, cypher: string): Promise<any[]> => {
-  const entry = pool.get(repoId);
-  if (!entry) {
-    throw new Error(`LadybugDB not initialized for repo "${repoId}". Call initLbug first.`);
-  }
-
-  if (isWriteQuery(cypher)) {
-    throw new Error('Write operations are not allowed. The pool adapter is read-only.');
-  }
-
-  entry.lastUsed = Date.now();
-
-  const conn = await checkout(entry);
-  silenceStdout();
-  activeQueryCount++;
-  try {
-    const queryResult = await withTimeout(conn.query(cypher), QUERY_TIMEOUT_MS, 'Query');
-    const result = Array.isArray(queryResult) ? queryResult[0] : queryResult;
-    const rows = await result.getAll();
-    return rows;
-  } finally {
-    activeQueryCount--;
-    restoreStdout();
-    checkin(entry, conn);
-  }
+  return await executeParameterized(repoId, cypher, {});
 };
 
 /**
@@ -561,17 +899,33 @@ export const executeParameterized = async (
   const conn = await checkout(entry);
   silenceStdout();
   activeQueryCount++;
+  let queryResult: lbug.QueryResult | lbug.QueryResult[] | undefined;
   try {
     const stmt = await withTimeout(conn.prepare(cypher), QUERY_TIMEOUT_MS, 'Prepare');
     if (!stmt.isSuccess()) {
       const errMsg = await stmt.getErrorMessage();
       throw new Error(`Prepare failed: ${errMsg}`);
     }
-    const queryResult = await withTimeout(conn.execute(stmt, params), QUERY_TIMEOUT_MS, 'Execute');
+    queryResult = await withTimeout(conn.execute(stmt, params), QUERY_TIMEOUT_MS, 'Execute');
     const result = Array.isArray(queryResult) ? queryResult[0] : queryResult;
     const rows = await result.getAll();
     return rows;
+  } catch (err) {
+    if (isReadOnlyDbError(err)) {
+      // Preserve the native error as `cause` so the original frame/message is
+      // not lost behind the friendly read-only message (#2068 follow-up).
+      throw new Error('Write operations are not allowed. The pool adapter is read-only.', {
+        cause: err,
+      });
+    }
+    throw err;
   } finally {
+    // Close the native QueryResult cursor(s) before returning the connection —
+    // getAll() drains rows but does not release the native cursor, so without
+    // this the cursor leaks for the connection's lifetime (#2068 follow-up).
+    // Best-effort via the shared helper; never masks the query result or a real
+    // error.
+    if (queryResult) await closeQueryResults(queryResult);
     activeQueryCount--;
     restoreStdout();
     checkin(entry, conn);
@@ -603,15 +957,3 @@ export const closeLbug = async (repoId?: string): Promise<void> => {
  * Check if a specific repo's pool is active
  */
 export const isLbugReady = (repoId: string): boolean => pool.has(repoId);
-
-/** Regex to detect write operations in user-supplied Cypher queries.
- * Note: CALL is NOT blocked — it's used for read-only FTS (CALL QUERY_FTS_INDEX)
- * and vector search (CALL QUERY_VECTOR_INDEX). The database is opened in
- * read-only mode as defense-in-depth against write procedures. */
-export const CYPHER_WRITE_RE =
-  /(?<!:)\b(CREATE|DELETE|SET|MERGE|REMOVE|DROP|ALTER|COPY|DETACH|FOREACH|INSTALL|LOAD)\b/i;
-
-/** Check if a Cypher query contains write operations */
-export function isWriteQuery(query: string): boolean {
-  return CYPHER_WRITE_RE.test(query);
-}

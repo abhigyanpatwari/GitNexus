@@ -63,6 +63,7 @@ import type {
   BindingRef,
   CaptureMatch,
   ImportEdge,
+  ParameterTypeClass,
   ParsedFile,
   ParsedImport,
   ReferenceSite,
@@ -76,6 +77,7 @@ import type {
 } from 'gitnexus-shared';
 import { buildPositionIndex, buildScopeTree, canParentScope, makeScopeId } from 'gitnexus-shared';
 import type { LanguageProvider } from './language-provider.js';
+import { extractTemplateArguments } from './utils/template-arguments.js';
 
 // ─── Narrow hook surface the extractor actually uses ───────────────────────
 
@@ -107,10 +109,12 @@ export type ScopeExtractorHooks = Pick<
  * Drive the five extraction passes and return a `ParsedFile`.
  *
  * Throws `ScopeTreeInvariantError` (from #912) when the provider emits
- * captures that violate structural scope invariants. The error surfaces
- * upward rather than being silently corrected — a malformed capture set
- * is a bug in the provider's `emitScopeCaptures`, not a data condition
- * to tolerate.
+ * captures that violate structural scope invariants (e.g., overlapping
+ * sibling scopes). When no `@scope.module` capture is present, a
+ * synthetic Module scope is created spanning all captures, and orphan
+ * non-Module scopes are re-parented under it. This enables indexing of
+ * files where tree-sitter produces an ERROR root (e.g., complex .phtml
+ * templates with mixed PHP/HTML/JS).
  */
 export function extract(
   matches: readonly CaptureMatch[],
@@ -122,6 +126,16 @@ export function extract(
 
   // ── Pass 1: build the scope tree ─────────────────────────────────────
   const scopeDrafts = pass1BuildScopes(partitioned.scope, filePath, provider);
+  const moduleScope = ensureModuleScope(scopeDrafts, filePath, matches);
+  // Re-parent orphan drafts (parent === null, non-Module) under the
+  // Module scope. Replaces drafts with new ones carrying the correct
+  // parent — runs before content passes so bindings/ownedDefs are empty.
+  for (let i = 0; i < scopeDrafts.length; i++) {
+    const d = scopeDrafts[i];
+    if (d.parent === null && d.kind !== 'Module') {
+      scopeDrafts[i] = makeDraft(d.id, moduleScope.id, d.kind, d.range, d.filePath);
+    }
+  }
   const scopes = scopeDrafts.map(draftToScope);
   // buildScopeTree validates invariants (throws on violation) and exposes
   // the lookup contract consumed by Passes 2-5.
@@ -135,14 +149,6 @@ export function extract(
   // "what's the parent chain?" queries, not for content queries.
   const scopeTree = buildScopeTree(scopes);
   const positionIndex = buildPositionIndex(scopes);
-
-  const moduleScope = scopeDrafts.find((s) => s.kind === 'Module');
-  if (moduleScope === undefined) {
-    throw new Error(
-      `ScopeExtractor: no Module scope found for '${filePath}'. ` +
-        `Provider must emit at least one @scope.module capture per file.`,
-    );
-  }
 
   // ── Pass 2: attach declarations + local bindings ────────────────────
   const localDefs: SymbolDefinition[] = [];
@@ -281,6 +287,44 @@ interface ScopeDraft {
   readonly ownedDefs: SymbolDefinition[];
   readonly imports: ImportEdge[];
   readonly typeBindings: Map<string, TypeRef>;
+}
+
+function ensureModuleScope(
+  scopeDrafts: ScopeDraft[],
+  filePath: string,
+  allMatches: readonly CaptureMatch[],
+): ScopeDraft {
+  const moduleScope = scopeDrafts.find((s) => s.kind === 'Module');
+  if (moduleScope !== undefined) return moduleScope;
+
+  // Synthesize a Module scope spanning all captures in the file.
+  // Computed from ALL captures (scope, declaration, reference, etc.)
+  // so the range covers top-level references that appear after the
+  // last inner scope — not just inner Function/Class scopes.
+  let endLine = 0;
+  let endCol = 0;
+  for (const match of allMatches) {
+    for (const capture of Object.values(match)) {
+      if (
+        capture.range.endLine > endLine ||
+        (capture.range.endLine === endLine && capture.range.endCol > endCol)
+      ) {
+        endLine = capture.range.endLine;
+        endCol = capture.range.endCol;
+      }
+    }
+  }
+  const range: Range = { startLine: 0, startCol: 0, endLine, endCol };
+  const synthetic = makeDraft(
+    makeScopeId({ filePath, range, kind: 'Module' }),
+    null,
+    'Module',
+    range,
+    filePath,
+  );
+
+  scopeDrafts.push(synthetic);
+  return synthetic;
 }
 
 function draftToScope(draft: ScopeDraft): Scope {
@@ -513,6 +557,9 @@ function buildDefFromDeclarationMatch(
 
   const qualifiedCap = match['@declaration.qualified_name'];
   const qualifiedName = qualifiedCap?.text;
+  const templateArguments =
+    extractTemplateArguments(match['@declaration.template-arguments']?.text ?? '') ??
+    extractTemplateArguments(qualifiedName ?? nameCap.text);
 
   // Optional arity metadata — producers (e.g. Python emit-captures)
   // synthesize these on function/method declarations. Their absence is
@@ -521,6 +568,14 @@ function buildDefFromDeclarationMatch(
   const parameterCount = parseIntCapture(match['@declaration.parameter-count']);
   const requiredParameterCount = parseIntCapture(match['@declaration.required-parameter-count']);
   const parameterTypes = parseJsonStringArrayCapture(match['@declaration.parameter-types']);
+  const parameterTypeClasses = parseJsonParameterTypeClassesCapture(
+    match['@declaration.parameter-type-classes'],
+  );
+  const declaredType = match['@declaration.field-type']?.text;
+  const returnType = match['@declaration.return-type']?.text;
+  const templateConstraints = parseJsonCapture(match['@declaration.template-constraints']);
+  const isExplicit = parseBooleanCapture(match['@declaration.is-explicit']);
+  const isDeleted = parseBooleanCapture(match['@declaration.is-deleted']);
 
   return {
     nodeId: makeDefId(filePath, anchor.range, type, nameCap.text),
@@ -530,13 +585,93 @@ function buildDefFromDeclarationMatch(
     ...(parameterCount !== undefined ? { parameterCount } : {}),
     ...(requiredParameterCount !== undefined ? { requiredParameterCount } : {}),
     ...(parameterTypes !== undefined ? { parameterTypes } : {}),
+    ...(parameterTypeClasses !== undefined ? { parameterTypeClasses } : {}),
+    ...(declaredType !== undefined ? { declaredType } : {}),
+    ...(returnType !== undefined ? { returnType } : {}),
+    ...(templateArguments !== undefined ? { templateArguments } : {}),
+    ...(templateConstraints !== undefined ? { templateConstraints } : {}),
+    ...(isExplicit === true ? { isExplicit: true } : {}),
+    ...(isDeleted === true ? { isDeleted: true } : {}),
   };
+}
+
+/** Parse an opaque JSON payload synthesized by per-language captures
+ *  (e.g. C++ `@declaration.template-constraints`). Producer owns the
+ *  shape; shared code threads it through as `unknown` per the
+ *  `SymbolDefinition.templateConstraints` contract. */
+function parseJsonCapture(cap: { readonly text: string } | undefined): unknown {
+  if (cap === undefined) return undefined;
+  try {
+    return JSON.parse(cap.text);
+  } catch {
+    return undefined;
+  }
 }
 
 function parseIntCapture(cap: { readonly text: string } | undefined): number | undefined {
   if (cap === undefined) return undefined;
   const n = Number.parseInt(cap.text, 10);
   return Number.isFinite(n) ? n : undefined;
+}
+
+function parseBooleanCapture(cap: { readonly text: string } | undefined): boolean | undefined {
+  if (cap === undefined) return undefined;
+  if (cap.text === 'true') return true;
+  if (cap.text === 'false') return false;
+  return undefined;
+}
+
+function parseJsonParameterTypeClassesCapture(
+  cap: { readonly text: string } | undefined,
+): ParameterTypeClass[] | undefined {
+  if (cap === undefined) return undefined;
+  try {
+    const parsed = JSON.parse(cap.text);
+    if (!Array.isArray(parsed)) return undefined;
+    const out: ParameterTypeClass[] = [];
+    for (const item of parsed) {
+      if (item === null || typeof item !== 'object') return undefined;
+      const o = item as Record<string, unknown>;
+      if (typeof o.base !== 'string') return undefined;
+      if (
+        o.cv !== 'none' &&
+        o.cv !== 'const' &&
+        o.cv !== 'volatile' &&
+        o.cv !== 'const volatile' &&
+        o.cv !== 'unknown'
+      ) {
+        return undefined;
+      }
+      if (
+        o.indirection !== 'value' &&
+        o.indirection !== 'lvalue-ref' &&
+        o.indirection !== 'rvalue-ref' &&
+        o.indirection !== 'pointer' &&
+        o.indirection !== 'unknown'
+      ) {
+        return undefined;
+      }
+      if (typeof o.pointerDepth !== 'number' || !Number.isFinite(o.pointerDepth)) {
+        return undefined;
+      }
+      const shape: ParameterTypeClass = {
+        base: o.base,
+        cv: o.cv,
+        indirection: o.indirection,
+        pointerDepth: o.pointerDepth,
+      };
+      if (Array.isArray(o.templateArguments)) {
+        if (!o.templateArguments.every((x): x is string => typeof x === 'string')) {
+          return undefined;
+        }
+        shape.templateArguments = [...o.templateArguments];
+      }
+      out.push(shape);
+    }
+    return out;
+  } catch {
+    return undefined;
+  }
 }
 
 function parseJsonStringArrayCapture(
@@ -598,8 +733,14 @@ function normalizeNodeLabel(kindStr: string): SymbolDefinition['type'] | undefin
     case 'property':
       return 'Property';
     case 'variable':
-    case 'const':
       return 'Variable';
+    // `const` / `let` declarations align with the legacy DAG parse phase,
+    // which emits `Const` graph nodes via `@definition.const` capture for
+    // `lexical_declaration`. Returning `'Const'` here lets resolveDefGraphId's
+    // qualified-key path succeed for value receivers without relying on the
+    // simple-key fallback (PR #1718 review Finding 1 / 2026-05-21-002 U4).
+    case 'const':
+      return 'Const';
     case 'typealias':
     case 'type_alias':
       return 'TypeAlias';
@@ -613,9 +754,66 @@ function normalizeNodeLabel(kindStr: string): SymbolDefinition['type'] | undefin
       return 'Annotation';
     case 'namespace':
       return 'Namespace';
+    case 'macro':
+      return 'Macro';
     default:
       return undefined;
   }
+}
+
+/** Function-like labels: callable defs that must keep incoming CALLS edges. */
+const NODE_BEARING_FUNCTION_LABELS: ReadonlySet<SymbolDefinition['type']> = new Set([
+  'Function',
+  'Method',
+  'Constructor',
+]);
+
+/** Value labels: non-callable bindings (a `const`/`let`/`var` holds a value). */
+const NODE_BEARING_VALUE_LABELS: ReadonlySet<SymbolDefinition['type']> = new Set([
+  'Const',
+  'Variable',
+]);
+
+/**
+ * Collapse rule for the deferred node-creation migration (#1876).
+ *
+ * When graph-node creation moves from the legacy DAG onto the
+ * registry-primary path, a single source binding can carry more than one
+ * `SymbolDefinition` for the same name in the same scope — e.g. a direct
+ * arrow `const fn = () => {}` is classified BOTH as a `Function` (the
+ * arrow) and a `Variable` (the binding). Emitting one graph node per def
+ * would reproduce exactly the duplicate-node bug this issue tracks.
+ *
+ * `selectNodeBearingDef` picks the ONE def that should bear the graph node
+ * for such a binding group:
+ *
+ *   1. a function-like def (`Function` / `Method` / `Constructor`) if any —
+ *      the binding is callable and must keep incoming `CALLS` edges;
+ *   2. otherwise a value def (`Const` / `Variable`) — the binding holds a
+ *      value (e.g. an array-method result after the U1/U2 narrowing);
+ *   3. otherwise the first def — deterministic fallback for label sets this
+ *      rule does not rank.
+ *
+ * INPUT CONTRACT: `group` must be the defs bound to ONE name within ONE
+ * scope (a binding group). It deliberately does NOT dedup by range —
+ * `SymbolDefinition` carries no range and `makeDefId` encodes only the
+ * start position, so containment is uncomputable here; the caller forms the
+ * group (e.g. from a scope's `ownedDefs` keyed by name) before calling.
+ *
+ * Pure. No production call site yet — this dead export is intentional and
+ * tracked by #1876 (the deferred node-creation migration); it is the
+ * executable contract that follow-up will consume, pinned today by the
+ * scope-extractor unit test.
+ */
+export function selectNodeBearingDef(
+  group: readonly SymbolDefinition[],
+): SymbolDefinition | undefined {
+  if (group.length === 0) return undefined;
+  const functionLike = group.find((def) => NODE_BEARING_FUNCTION_LABELS.has(def.type));
+  if (functionLike !== undefined) return functionLike;
+  const value = group.find((def) => NODE_BEARING_VALUE_LABELS.has(def.type));
+  if (value !== undefined) return value;
+  return group[0];
 }
 
 function makeDefId(
@@ -804,6 +1002,11 @@ function pass5CollectReferences(
     if (kind === undefined) continue;
 
     const nameCap = match['@reference.name'] ?? anchor;
+    // Optional qualified form of the reference (e.g. a C++ base `Other::Inner`),
+    // threaded to resolution so a same-tail nested base resolves to the correct
+    // sibling via the full-path QualifiedNameIndex before the simple-tail walk
+    // (#1982). Absent for unqualified references — resolution stays unchanged.
+    const qualifiedCap = match['@reference.qualified-name'];
     const inScopeId = positionIndex.atPosition(
       filePath,
       anchor.range.startLine,
@@ -818,16 +1021,23 @@ function pass5CollectReferences(
     const explicitReceiver = extractExplicitReceiver(match);
     const arity = extractArity(match);
     const argumentTypes = extractArgumentTypes(match);
+    const argumentTypeClasses = parseJsonParameterTypeClassesCapture(
+      match['@reference.parameter-type-classes'],
+    );
 
     const site: ReferenceSite = {
       name: nameCap.text,
       atRange: anchor.range,
       inScope: inScopeId,
       kind,
+      ...(qualifiedCap?.text !== undefined && qualifiedCap.text.length > 0
+        ? { rawQualifiedName: qualifiedCap.text }
+        : {}),
       ...(callForm !== undefined ? { callForm } : {}),
       ...(explicitReceiver !== undefined ? { explicitReceiver } : {}),
       ...(arity !== undefined ? { arity } : {}),
       ...(argumentTypes !== undefined ? { argumentTypes } : {}),
+      ...(argumentTypeClasses !== undefined ? { argumentTypeClasses } : {}),
     };
     referenceSites.push(site);
   }
@@ -853,6 +1063,8 @@ function referenceKindFromAnchor(name: string): ReferenceKind | undefined {
     case 'import_use':
     case 'import-use':
       return 'import-use';
+    case 'macro':
+      return 'macro';
     default:
       return undefined;
   }
@@ -942,12 +1154,20 @@ const KNOWN_SUB_TAGS: ReadonlySet<string> = new Set<string>([
   '@type-binding.name',
   '@type-binding.type',
   '@reference.name',
+  '@reference.qualified-name',
   '@reference.receiver',
+  '@reference.operator',
   '@reference.arity',
   '@reference.parameter-types',
+  '@reference.parameter-type-classes',
   '@declaration.parameter-count',
   '@declaration.required-parameter-count',
   '@declaration.parameter-types',
+  '@declaration.parameter-type-classes',
+  '@declaration.return-type',
+  '@declaration.template-constraints',
+  '@declaration.is-explicit',
+  '@declaration.is-deleted',
 ]);
 
 /**

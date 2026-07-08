@@ -1,0 +1,40 @@
+{
+  "tabs": {
+    "chat": "Nexus AI",
+    "processes": "流程"
+  },
+  "suggestions": {
+    "architecture": "解释项目架构",
+    "whatDoes": "这个项目是做什么的？",
+    "importantFiles": "显示最重要的文件",
+    "apiHandlers": "查找所有 API 处理器"
+  },
+  "empty": {
+    "title": "可以问我任何问题",
+    "description": "我可以帮你理解架构、查找函数或解释连接关系。"
+  },
+  "input": {
+    "placeholder": "询问这个代码库...",
+    "initializing": "正在初始化 AI Agent...",
+    "configureProvider": "配置 LLM 提供商以启用聊天。"
+  },
+  "actions": {
+    "closePanel": "关闭面板",
+    "scrollBottom": "滚动到底部",
+    "clearChat": "清空聊天",
+    "stopResponse": "停止响应"
+  },
+  "stopped": "用户已停止",
+  "badges": {
+    "configureAI": "配置 AI",
+    "connecting": "连接中"
+  },
+  "chatOnly": {
+    "banner": "图谱未加载（大型项目）。对话功能正常；内联节点引用不会在图谱视图中高亮。"
+  },
+  "roles": {
+    "you": "你",
+    "assistant": "Nexus AI"
+  },
+  "newBadge": "新"
+}

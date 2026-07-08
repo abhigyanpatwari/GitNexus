@@ -26,7 +26,6 @@ import {
   type EmbeddableNode,
   type SemanticSearchResult,
   type ModelProgress,
-  type EmbeddingContext,
   EMBEDDABLE_LABELS,
   isShortLabel,
   LABEL_METHOD,
@@ -34,35 +33,53 @@ import {
   STRUCTURAL_LABELS,
   collectBestChunks,
 } from './types.js';
-import { resolveEmbeddingConfig } from './config.js';
-import { rankExactEmbeddingRows, type ExactEmbeddingRow } from './exact-search.js';
 import {
-  EMBEDDING_TABLE_NAME,
-  EMBEDDING_INDEX_NAME,
-  CREATE_VECTOR_INDEX_QUERY,
-  STALE_HASH_SENTINEL,
-} from '../lbug/schema.js';
-import { loadVectorExtension } from '../lbug/lbug-adapter.js';
+  DEFAULT_VECTOR_MAX_DISTANCE,
+  getVectorMaxDistance,
+  resolveEmbeddingConfig,
+} from './config.js';
+import { rankExactEmbeddingRows, type ExactEmbeddingRow } from './exact-search.js';
+import { EMBEDDING_TABLE_NAME, EMBEDDING_INDEX_NAME, STALE_HASH_SENTINEL } from '../lbug/schema.js';
+import { loadVectorExtension, createVectorIndex } from '../lbug/lbug-adapter.js';
+import type { ExtensionInstallPolicy } from '../lbug/extension-loader.js';
 import { getExactScanLimit } from '../platform/capabilities.js';
+import { logger } from '../logger.js';
 
 const isDev = process.env.NODE_ENV === 'development';
 
 const vectorUnavailableMessage =
-  'VECTOR extension is unavailable for this LadybugDB runtime; semantic search will use exact scan when embeddings exist.';
+  'VECTOR extension unavailable; semantic embeddings fall back to exact scan. ' +
+  'To enable vector search, install it once with network access ' +
+  '(GITNEXUS_LBUG_EXTENSION_INSTALL=auto), or pre-install it for offline use. ' +
+  'Set GITNEXUS_LBUG_EXTENSION_INSTALL=never to skip installs and silence this.';
+
+/**
+ * Resolve the extension-install policy for the embedding WRITE path (analyze).
+ *
+ * Generating embeddings is an explicit opt-in to a feature that requires the
+ * VECTOR extension, so when the operator has NOT pinned a policy we default to
+ * `auto` (one bounded, out-of-process INSTALL) — matching the documented
+ * "auto = default for analyze" intent in extension-loader.ts. An explicit
+ * GITNEXUS_LBUG_EXTENSION_INSTALL=load-only|never|auto always wins, so an
+ * offline or locked-down operator is never silently forced onto the network
+ * (the #1153 regression caused by hard-coding `auto` here). Read on every call
+ * (not memoized) so test env stubbing works.
+ */
+export const resolveEmbeddingInstallPolicy = (): ExtensionInstallPolicy => {
+  const raw = process.env.GITNEXUS_LBUG_EXTENSION_INSTALL;
+  if (raw === 'load-only' || raw === 'never' || raw === 'auto') return raw;
+  return 'auto';
+};
 
 const ensureVectorExtensionAvailable = async (): Promise<boolean> => {
-  const vectorReady = await loadVectorExtension();
-  if (!vectorReady) {
-    return false;
-  }
-  return true;
+  return loadVectorExtension(undefined, { policy: resolveEmbeddingInstallPolicy() });
 };
 /**
  * Bump this when the embedding text template changes in a way that should
  * invalidate existing vectors, such as metadata/header shape changes,
  * structural container context changes, or preceding-context formatting rules.
  */
-export const EMBEDDING_TEXT_VERSION = 'v2';
+export const EMBEDDING_TEXT_VERSION = 'v4';
 
 /**
  * Compute a stable content fingerprint for an embeddable node.
@@ -157,7 +174,7 @@ const queryEmbeddableNodes = async (
       }
     } catch (error) {
       if (isDev) {
-        console.warn(`Query for ${label} nodes failed:`, error);
+        logger.warn({ error }, `Query for ${label} nodes failed:`);
       }
     }
   }
@@ -196,24 +213,36 @@ export const batchInsertEmbeddings = async (
 };
 
 /**
- * Create the vector index for semantic search
-
- * Now indexes the separate CodeEmbedding table.
- * Delegates extension loading to lbug-adapter's loadVectorExtension(),
- * which owns the VECTOR extension lifecycle and state tracking.
-
+ * Create the vector index for semantic search (indexes the CodeEmbedding table).
+ *
+ * Keeps the embedding-specific extension-install policy gate here
+ * (ensureVectorExtensionAvailable → resolveEmbeddingInstallPolicy, default
+ * `auto` for the analyze write path), then delegates the actual
+ * `CALL CREATE_VECTOR_INDEX(...)` to the adapter, which runs it through the
+ * unprepared `conn.query()` path. It must NOT go through the injected
+ * `executeQuery` (prepared `conn.prepare()`): LadybugDB cannot prepare that
+ * procedure and fails with "We do not support prepare multiple statements" —
+ * the silent degrade in #2114.
  */
-const createVectorIndex = async (
-  executeQuery: (cypher: string) => Promise<any[]>,
-): Promise<boolean> => {
+const buildVectorIndex = async (): Promise<boolean> => {
+  // This pre-check applies the embedding-specific install policy
+  // (resolveEmbeddingInstallPolicy, default `auto` for analyze) before reaching
+  // the adapter. The adapter's createVectorIndex() calls loadVectorExtension()
+  // again, but that's a no-op here: once this gate loads VECTOR the module-level
+  // `vectorExtensionLoaded` flag is set, so the adapter's second call
+  // short-circuits without re-resolving the policy — no double install.
   if (!(await ensureVectorExtensionAvailable())) return false;
   try {
-    await executeQuery(CREATE_VECTOR_INDEX_QUERY);
-    return true;
+    return await createVectorIndex();
   } catch (error) {
-    if (isDev) {
-      console.warn('Vector index creation warning:', error);
-    }
+    // Surface this even outside dev: it silently downgrades a user-requested
+    // feature (semantic search) to exact scan. Log under `err` so pino's
+    // standard serializer captures the message/stack — logging under `error`
+    // serialized an Error to `{}` (the empty `{"error":{}}` reported in #2114).
+    logger.warn(
+      { err: error },
+      'Vector index creation failed; semantic search will use exact-scan fallback',
+    );
     return false;
   }
 };
@@ -226,6 +255,42 @@ export interface EmbeddingPipelineResult {
 }
 
 /**
+ * DELETE stale embedding rows for the given nodeIds so they can be re-inserted.
+ *
+ * Kuzu forbids SET on vector-indexed properties; DELETE-then-INSERT is the
+ * sanctioned pattern. A `"does not exist"` error means the rows are already gone
+ * (safe to proceed); any other error risks vector-index corruption, so it
+ * propagates and aborts the pipeline.
+ *
+ * Called per-batch (just before each batch's INSERT), not once up front — see
+ * the caller comment / KTD7: an up-front bulk delete of every stale row leaves
+ * the whole index deleted-not-reinserted if the re-embed is interrupted. Per-batch
+ * interleaving bounds that window to a single batch.
+ */
+const deleteStaleEmbeddingRows = async (
+  executeWithReusedStatement: (
+    cypher: string,
+    paramsList: Array<Record<string, any>>,
+  ) => Promise<void>,
+  nodeIds: string[],
+): Promise<void> => {
+  if (nodeIds.length === 0) return;
+  try {
+    await executeWithReusedStatement(
+      `MATCH (e:${EMBEDDING_TABLE_NAME} {nodeId: $nodeId}) DELETE e`,
+      nodeIds.map((nodeId) => ({ nodeId })),
+    );
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    if (!msg.includes('does not exist')) {
+      throw new Error(
+        `[embed] Failed to delete stale embedding rows — aborting to prevent vector-index corruption: ${msg}`,
+      );
+    }
+  }
+};
+
+/**
  * Run the embedding pipeline
  *
  * @param executeQuery - Function to execute Cypher queries against LadybugDB
@@ -233,11 +298,9 @@ export interface EmbeddingPipelineResult {
  * @param onProgress - Callback for progress updates
  * @param config - Optional configuration override
  * @param skipNodeIds - Optional set of node IDs that already have embeddings (incremental mode)
- * @param context - Optional repo/server context for metadata enrichment
  * @param existingEmbeddings - Optional map of nodeId → contentHash for incremental mode.
  *        Nodes whose hash matches are skipped; nodes with a changed hash are DELETE'd
  *        and re-embedded; nodes not in the map are embedded fresh.
-
  */
 export const runEmbeddingPipeline = async (
   executeQuery: (cypher: string) => Promise<any[]>,
@@ -248,7 +311,6 @@ export const runEmbeddingPipeline = async (
   onProgress: EmbeddingProgressCallback,
   config: Partial<EmbeddingConfig> = {},
   skipNodeIds?: Set<string>,
-  context?: EmbeddingContext,
   existingEmbeddings?: Map<string, string>,
 ): Promise<EmbeddingPipelineResult> => {
   const finalConfig = resolveEmbeddingConfig(config);
@@ -256,7 +318,9 @@ export const runEmbeddingPipeline = async (
 
   try {
     const vectorAvailable = await ensureVectorExtensionAvailable();
-    if (!vectorAvailable && isDev) console.warn(vectorUnavailableMessage);
+    if (!vectorAvailable) {
+      logger.warn(vectorUnavailableMessage);
+    }
 
     // Phase 1: Load embedding model
     onProgress({
@@ -283,27 +347,22 @@ export const runEmbeddingPipeline = async (
     });
 
     if (isDev) {
-      console.log('🔍 Querying embeddable nodes...');
+      logger.info('🔍 Querying embeddable nodes...');
     }
 
     // Phase 2: Query embeddable nodes
     let nodes = await queryEmbeddableNodes(executeQuery);
 
-    // Apply context metadata
-    if (context?.repoName) {
-      for (const node of nodes) {
-        node.repoName = context.repoName;
-        node.serverName = context.serverName;
-      }
-    }
-
     // Incremental mode: compare content hashes, delete stale rows, skip fresh ones.
     // Computed hashes for stale nodes are cached so batchInsertEmbeddings can reuse them
     // (avoids double computation).
     const computedStaleHashes = new Map<string, string>();
+    // Stale rows are DELETE'd per-batch (just before each batch's INSERT) rather
+    // than all up front — see U6 / KTD7. `staleNodeIds` is consulted inside the
+    // batch loop; it stays empty in full (non-incremental) mode so no deletes fire.
+    const staleNodeIds = new Set<string>();
     if (existingEmbeddings && existingEmbeddings.size > 0) {
       const beforeCount = nodes.length;
-      const staleNodeIds: string[] = [];
       nodes = nodes.filter((n) => {
         const existingHash = existingEmbeddings.get(n.id);
         if (existingHash === undefined) {
@@ -314,40 +373,16 @@ export const runEmbeddingPipeline = async (
         if (currentHash !== existingHash) {
           // Content changed — cache hash for reuse during insert, mark for DELETE + re-embed
           computedStaleHashes.set(n.id, currentHash);
-          staleNodeIds.push(n.id);
+          staleNodeIds.add(n.id);
           return true;
         }
         // Hash matches — skip (fresh); no need to cache hash for skipped nodes
         return false;
       });
 
-      // DELETE stale embedding rows so they can be re-inserted
-      // (Kuzu forbids SET on vector-indexed properties; DELETE-then-INSERT is the sanctioned pattern)
-      if (staleNodeIds.length > 0) {
-        if (isDev) {
-          console.log(`🔄 Deleting ${staleNodeIds.length} stale embedding rows for re-embed`);
-        }
-        try {
-          await executeWithReusedStatement(
-            `MATCH (e:${EMBEDDING_TABLE_NAME} {nodeId: $nodeId}) DELETE e`,
-            staleNodeIds.map((nodeId) => ({ nodeId })),
-          );
-        } catch (err) {
-          // "does not exist" = rows already gone — safe to proceed.
-          // All other errors risk vector-index corruption (Kuzu requires DELETE-before-INSERT
-          // for vector-indexed properties) — propagate so the pipeline aborts cleanly.
-          const msg = err instanceof Error ? err.message : String(err);
-          if (!msg.includes('does not exist')) {
-            throw new Error(
-              `[embed] Failed to delete stale embedding rows — aborting to prevent vector-index corruption: ${msg}`,
-            );
-          }
-        }
-      }
-
       if (isDev) {
-        console.log(
-          `📦 Incremental embeddings: ${beforeCount} total, ${existingEmbeddings.size} cached, ${staleNodeIds.length} stale, ${nodes.length} to embed`,
+        logger.info(
+          `📦 Incremental embeddings: ${beforeCount} total, ${existingEmbeddings.size} cached, ${staleNodeIds.size} stale, ${nodes.length} to embed`,
         );
       }
     }
@@ -355,14 +390,14 @@ export const runEmbeddingPipeline = async (
     const totalNodes = nodes.length;
 
     if (isDev) {
-      console.log(`📊 Found ${totalNodes} embeddable nodes`);
+      logger.info(`📊 Found ${totalNodes} embeddable nodes`);
     }
 
     if (totalNodes === 0) {
       // Ensure the vector index exists even when no new nodes need embedding.
       // A prior crash or first-time incremental run may have left CodeEmbedding
       // rows without ever reaching index creation.
-      const vectorIndexReady = await createVectorIndex(executeQuery);
+      const vectorIndexReady = await buildVectorIndex();
 
       onProgress({
         phase: 'ready',
@@ -442,9 +477,9 @@ export const runEmbeddingPipeline = async (
             );
           } catch (chunkErr) {
             if (isDev) {
-              console.warn(
+              logger.warn(
+                { chunkErr },
                 `⚠️ AST chunking failed for ${node.label} "${node.name}" (${node.filePath}), falling back to character-based chunking:`,
-                chunkErr,
               );
             }
             chunks = characterChunk(node.content, startLine, endLine, chunkSize, overlap);
@@ -472,6 +507,12 @@ export const runEmbeddingPipeline = async (
         }
       }
 
+      // U6 / KTD7: delete this batch's stale rows immediately before its inserts,
+      // so an interrupted re-embed loses at most one batch (not the whole index).
+      // Preserves Kuzu's required DELETE-before-INSERT for vector-indexed rows.
+      const batchStaleIds = batch.filter((n) => staleNodeIds.has(n.id)).map((n) => n.id);
+      await deleteStaleEmbeddingRows(executeWithReusedStatement, batchStaleIds);
+
       // Embed chunk texts in sub-batches to control memory
       const EMBED_SUB_BATCH = finalConfig.subBatchSize;
       for (let si = 0; si < allTexts.length; si += EMBED_SUB_BATCH) {
@@ -482,9 +523,9 @@ export const runEmbeddingPipeline = async (
         try {
           embeddings = await embedBatch(subTexts);
         } catch (embedErr) {
-          console.error(
+          logger.error(
+            { embedErr },
             `❌ embedBatch failed for ${subTexts.length} texts (first: "${subTexts[0]?.substring(0, 80)}..."):`,
-            embedErr,
           );
           throw embedErr;
         }
@@ -520,10 +561,10 @@ export const runEmbeddingPipeline = async (
     });
 
     if (isDev) {
-      console.log('📇 Creating vector index...');
+      logger.info('📇 Creating vector index...');
     }
 
-    const vectorIndexReady = await createVectorIndex(executeQuery);
+    const vectorIndexReady = await buildVectorIndex();
 
     onProgress({
       phase: 'ready',
@@ -533,7 +574,7 @@ export const runEmbeddingPipeline = async (
     });
 
     if (isDev) {
-      console.log(
+      logger.info(
         `✅ Embedding pipeline complete! (${totalChunks} chunks from ${totalNodes} nodes)`,
       );
     }
@@ -547,7 +588,7 @@ export const runEmbeddingPipeline = async (
     const errorMessage = error instanceof Error ? error.message : 'Unknown error';
 
     if (isDev) {
-      console.error('❌ Embedding pipeline error:', error);
+      logger.error({ error }, '❌ Embedding pipeline error:');
     }
 
     onProgress({
@@ -567,7 +608,7 @@ export const semanticSearch = async (
   executeQuery: (cypher: string) => Promise<any[]>,
   query: string,
   k: number = 10,
-  maxDistance: number = 0.5,
+  maxDistance: number = getVectorMaxDistance(DEFAULT_VECTOR_MAX_DISTANCE),
 ): Promise<SemanticSearchResult[]> => {
   if (!isEmbedderReady()) {
     throw new Error('Embedding model not initialized. Run embedding pipeline first.');
@@ -581,7 +622,11 @@ export const semanticSearch = async (
     string,
     { distance: number; chunkIndex: number; startLine: number; endLine: number }
   >();
-  if (await loadVectorExtension()) {
+  // Query/read path: NEVER spawn a network INSTALL on a user query. If the
+  // VECTOR extension was not pre-installed, fall back to exact scan rather than
+  // blocking the query on a download (offline-first; see extension-loader.ts
+  // "load-only" — used by all serve/MCP query paths).
+  if (await loadVectorExtension(undefined, { policy: 'load-only' })) {
     try {
       bestChunks = await collectBestChunks(k, async (fetchLimit) => {
         const vectorQuery = `
@@ -709,7 +754,7 @@ export const semanticSearchWithContext = async (
   k: number = 5,
   _hops: number = 1,
 ): Promise<any[]> => {
-  const results = await semanticSearch(executeQuery, query, k, 0.5);
+  const results = await semanticSearch(executeQuery, query, k);
 
   return results.map((r) => ({
     matchId: r.nodeId,

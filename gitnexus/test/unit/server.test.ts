@@ -13,7 +13,16 @@
  * directly through the MCP Server's handler dispatch.
  */
 import { describe, it, expect, vi } from 'vitest';
-import { createMCPServer } from '../../src/mcp/server.js';
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { Server } from '@modelcontextprotocol/sdk/server/index.js';
+import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
+import {
+  createMCPServer,
+  installSignalShutdown,
+  startMCPServer,
+  SHUTDOWN_EXIT_CODES,
+} from '../../src/mcp/server.js';
+import { GITNEXUS_TOOLS } from '../../src/mcp/tools.js';
 
 // ─── Mock backend ──────────────────────────────────────────────────
 
@@ -51,6 +60,28 @@ describe('createMCPServer', () => {
     const server = createMCPServer(backend);
     // The server has registered handlers — verify it was created without errors
     expect(server).toBeTruthy();
+  });
+
+  it('tools/list response includes tool annotations', async () => {
+    const backend = createMockBackend();
+    const server = createMCPServer(backend);
+    const client = new Client({ name: 'test-client', version: '0.0.0' });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+
+    try {
+      await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+
+      const response = await client.listTools();
+      expect(response.tools).toHaveLength(GITNEXUS_TOOLS.length);
+
+      for (const tool of response.tools) {
+        const definition = GITNEXUS_TOOLS.find((t) => t.name === tool.name)!;
+        expect(tool.annotations).toEqual(definition.annotations);
+      }
+    } finally {
+      await client.close();
+      await server.close();
+    }
   });
 });
 
@@ -98,5 +129,124 @@ describe('prompt registration', () => {
     // Creating the server registers all handlers including prompts
     const server = createMCPServer(backend);
     expect(server).toBeDefined();
+  });
+});
+
+// ─── startMCPServer ────────────────────────────────────────────────────
+
+describe('startMCPServer', () => {
+  it('registers stdin shutdown listeners before awaiting Server.prototype.connect', async () => {
+    // P1 finding: startMCPServer must register process.stdin end/close/error
+    // shutdown listeners before calling server.connect(), so that a stdin
+    // closure during transport setup is safely handled.
+    // This test asserts the listeners are present *during* the connect call.
+
+    // Capture baseline listener counts before startMCPServer adds anything
+    const closeBefore = process.stdin.listenerCount('close');
+    const endBefore = process.stdin.listenerCount('end');
+    const errorBefore = process.stdin.listenerCount('error');
+    const beforeListeners = {
+      stdinEnd: new Set(process.stdin.listeners('end')),
+      stdinClose: new Set(process.stdin.listeners('close')),
+      stdinError: new Set(process.stdin.listeners('error')),
+      stdoutError: new Set(process.stdout.listeners('error')),
+      sigint: new Set(process.listeners('SIGINT')),
+      sigterm: new Set(process.listeners('SIGTERM')),
+      exit: new Set(process.listeners('exit')),
+      uncaughtException: new Set(process.listeners('uncaughtException')),
+      unhandledRejection: new Set(process.listeners('unhandledRejection')),
+    };
+
+    // Stub process.exit to prevent actual termination if shutdown fires
+    const exitStub = vi.spyOn(process, 'exit').mockImplementation(() => undefined as never);
+
+    // Spy on Server.prototype.connect to inspect listener counts during the call
+    const connectSpy = vi.spyOn(Server.prototype, 'connect').mockImplementation(async function () {
+      expect(process.stdin.listenerCount('close')).toBeGreaterThan(closeBefore);
+      expect(process.stdin.listenerCount('end')).toBeGreaterThan(endBefore);
+      expect(process.stdin.listenerCount('error')).toBeGreaterThan(errorBefore);
+    });
+
+    const backend = createMockBackend();
+
+    try {
+      await startMCPServer(backend);
+    } finally {
+      connectSpy.mockRestore();
+      exitStub.mockRestore();
+      // Remove only listeners added by startMCPServer so no side effects leak.
+      for (const listener of process.stdin.listeners('end')) {
+        if (!beforeListeners.stdinEnd.has(listener)) process.stdin.removeListener('end', listener);
+      }
+      for (const listener of process.stdin.listeners('close')) {
+        if (!beforeListeners.stdinClose.has(listener)) {
+          process.stdin.removeListener('close', listener);
+        }
+      }
+      for (const listener of process.stdin.listeners('error')) {
+        if (!beforeListeners.stdinError.has(listener)) {
+          process.stdin.removeListener('error', listener);
+        }
+      }
+      for (const listener of process.stdout.listeners('error')) {
+        if (!beforeListeners.stdoutError.has(listener)) {
+          process.stdout.removeListener('error', listener);
+        }
+      }
+      for (const listener of process.listeners('SIGINT')) {
+        if (!beforeListeners.sigint.has(listener)) process.removeListener('SIGINT', listener);
+      }
+      for (const listener of process.listeners('SIGTERM')) {
+        if (!beforeListeners.sigterm.has(listener)) process.removeListener('SIGTERM', listener);
+      }
+      for (const listener of process.listeners('exit')) {
+        if (!beforeListeners.exit.has(listener)) process.removeListener('exit', listener);
+      }
+      for (const listener of process.listeners('uncaughtException')) {
+        if (!beforeListeners.uncaughtException.has(listener)) {
+          process.removeListener('uncaughtException', listener);
+        }
+      }
+      for (const listener of process.listeners('unhandledRejection')) {
+        if (!beforeListeners.unhandledRejection.has(listener)) {
+          process.removeListener('unhandledRejection', listener);
+        }
+      }
+    }
+  });
+});
+
+// ─── Graceful shutdown signal handling (#1132) ────────────────────────
+
+describe('installSignalShutdown (#1132)', () => {
+  it('maps SIGINT→130 / SIGTERM→143 and never passes the signal name to shutdown', () => {
+    // Node invokes signal listeners with the signal NAME string as the first
+    // argument. The old code registered `shutdown` directly, so that string
+    // reached process.exit() and crashed with ERR_INVALID_ARG_TYPE. Reproduce
+    // that exact invocation and assert a numeric code is used instead.
+    const received: unknown[] = [];
+    let onSigint: ((...args: unknown[]) => void) | undefined;
+    let onSigterm: ((...args: unknown[]) => void) | undefined;
+
+    installSignalShutdown(
+      (code) => received.push(code),
+      (event, listener) => {
+        if (event === 'SIGINT') onSigint = listener;
+        if (event === 'SIGTERM') onSigterm = listener;
+      },
+    );
+
+    expect(onSigint).toBeTypeOf('function');
+    expect(onSigterm).toBeTypeOf('function');
+
+    // Invoke exactly as Node does — with the signal name string as the arg.
+    onSigint?.('SIGINT');
+    onSigterm?.('SIGTERM');
+
+    expect(received).toEqual([SHUTDOWN_EXIT_CODES.SIGINT, SHUTDOWN_EXIT_CODES.SIGTERM]);
+    expect(received).toEqual([130, 143]);
+    for (const code of received) {
+      expect(typeof code).toBe('number');
+    }
   });
 });

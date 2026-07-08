@@ -1,10 +1,9 @@
-import { parentPort } from 'node:worker_threads';
+import { parentPort, threadId, workerData } from 'node:worker_threads';
 import Parser from 'tree-sitter';
 import JavaScript from 'tree-sitter-javascript';
 import TypeScript from 'tree-sitter-typescript';
 import Python from 'tree-sitter-python';
 import Java from 'tree-sitter-java';
-import C from 'tree-sitter-c';
 import CPP from 'tree-sitter-cpp';
 // Explicit subpath import — see parser-loader.ts for rationale (#1013).
 import CSharp from 'tree-sitter-c-sharp/bindings/node/index.js';
@@ -12,7 +11,7 @@ import Go from 'tree-sitter-go';
 import Rust from 'tree-sitter-rust';
 import PHP from 'tree-sitter-php';
 import Ruby from 'tree-sitter-ruby';
-import { createRequire } from 'node:module';
+import { requireVendoredGrammar } from '../../tree-sitter/vendored-grammars.js';
 import { SupportedLanguages } from 'gitnexus-shared';
 import { getProvider } from '../languages/index.js';
 import {
@@ -20,42 +19,81 @@ import {
   getTreeSitterContentByteLength,
   TREE_SITTER_MAX_BUFFER,
 } from '../constants.js';
+import {
+  ARRAY_METHOD_HOC_BLOCKLIST_SET,
+  DEFAULT_EXPORT_IDENTIFIER_BLOCKLIST_SET,
+  deriveDefaultExportHocName,
+} from '../ts-js-hoc-utils.js';
+import { parseSourceSafe } from '../../tree-sitter/safe-parse.js';
+import type { SkippedPath } from './clone-safety.js';
+import { postResultCloneSafe } from './post-result.js';
+import { mergeResult } from './result-merge.js';
 import type { SymbolTableReader } from '../model/symbol-table.js';
-import type { ExtractedHeritage } from '../model/heritage-map.js';
+import type {
+  ExtractedRouterConstructorPrefix,
+  ExtractedRouterInclude,
+  ExtractedRouterImport,
+  ExtractedRouterModuleAlias,
+} from '../route-extractors/fastapi-router-bindings.js';
 
 /** Language grammar type accepted by Parser.setLanguage(). */
 type TreeSitterLanguage = Parameters<typeof Parser.prototype.setLanguage>[0];
 
-// tree-sitter-swift is an optionalDependency — may not be installed
-const _require = createRequire(import.meta.url);
+// ── Worker grammar loading — enforcement boundary (#2091/#2093, #2101) ───────
+// The worker maintains its own grammar table (the guarded vendored-grammar
+// loads below + `languageMap`) and intentionally does NOT consult the runtime
+// `GITNEXUS_SKIP_OPTIONAL_GRAMMARS` opt-out. It does not need to: the MAIN
+// THREAD's `parseableScanned` filter (pipeline-phases/parse-impl.ts, gated on
+// `parser-loader.isLanguageAvailable`, which honors the runtime opt-out and a
+// genuinely-absent binding alike) excludes files of an unavailable/opted-out
+// language BEFORE any chunk is dispatched, so the worker never receives them.
+// That main-thread filter is the single enforcement point. Any future change
+// that dispatches files to the worker WITHOUT first passing them through
+// `isLanguageAvailable` must re-introduce the gate here. (The cleaner end-state
+// — routing this table through `parser-loader.getLanguageGrammar` so there is
+// one loader — is the deferred Tier-1 consolidation.)
+// Swift/Dart/Kotlin/C are vendored grammars loaded from `vendor/` by absolute
+// path (NEVER copied into node_modules — see vendored-grammars.ts / #2111). Each
+// may be absent on a platform without a prebuild or a toolchain-less /
+// `--ignore-scripts` install, so every load is guarded so a missing binding
+// cannot crash the worker at module-load (#2091/#2093, #2116).
 let Swift: TreeSitterLanguage | null = null;
 try {
-  Swift = _require('tree-sitter-swift');
+  Swift = requireVendoredGrammar('tree-sitter-swift') as TreeSitterLanguage;
 } catch {}
 
-// tree-sitter-dart is an optionalDependency — may not be installed
 let Dart: TreeSitterLanguage | null = null;
 try {
-  Dart = _require('tree-sitter-dart');
+  Dart = requireVendoredGrammar('tree-sitter-dart') as TreeSitterLanguage;
 } catch {}
 
-// tree-sitter-kotlin is an optionalDependency — may not be installed
 let Kotlin: TreeSitterLanguage | null = null;
 try {
-  Kotlin = _require('tree-sitter-kotlin');
+  Kotlin = requireVendoredGrammar('tree-sitter-kotlin') as TreeSitterLanguage;
+} catch {}
+
+let C: TreeSitterLanguage | null = null;
+try {
+  C = requireVendoredGrammar('tree-sitter-c') as TreeSitterLanguage;
 } catch {}
 import { getLanguageFromFilename } from 'gitnexus-shared';
 import {
+  buildConcreteTypedefDefinitionRanges,
   FUNCTION_NODE_TYPES,
+  findAncestorBeforeBoundary,
   getDefinitionNodeFromCaptures,
   findEnclosingClassInfo,
+  findObjectLiteralBindingInfo,
   type EnclosingClassInfo,
   getLabelFromCaptures,
-  findDescendant,
-  extractStringContent,
   genericFuncName,
   inferFunctionLabel,
+  isSuppressedConcreteTypedefDuplicate,
+  isQualifiableScopeLabel,
+  qualifyRustImplTargetByModScope,
   CLASS_CONTAINER_TYPES,
+  PARAMETER_LIST_NODE_TYPES,
+  LOCAL_SCOPE_BODY_NODE_TYPES,
   type SyntaxNode,
 } from '../utils/ast-helpers.js';
 import { extractCallArgTypes, type MixedChainStep } from '../utils/call-analysis.js';
@@ -63,28 +101,101 @@ import { buildTypeEnv } from '../type-env.js';
 import type { ConstructorBinding } from '../type-env.js';
 import { detectFrameworkFromAST } from '../framework-detection.js';
 import { generateId } from '../../../lib/utils.js';
-import { preprocessImportPath } from '../import-processor.js';
 import {
   extractVueScript,
   extractTemplateComponents,
   isVueSetupTopLevel,
 } from '../vue-sfc-extractor.js';
-import type { NamedBinding } from '../named-bindings/types.js';
-import type { NodeLabel } from 'gitnexus-shared';
+import type { NodeLabel, ParameterTypeClass } from 'gitnexus-shared';
 import type { FieldInfo, FieldExtractorContext } from '../field-types.js';
 import type { MethodInfo, MethodExtractorContext } from '../method-types.js';
-import type { VariableExtractorContext } from '../variable-types.js';
+import type { VariableExtractorContext, VariableInfo } from '../variable-types.js';
 import {
   buildMethodProps,
   arityForIdFromInfo,
   typeTagForId,
   constTagForId,
   buildCollisionGroups,
+  parameterShapeIdTag,
 } from '../utils/method-props.js';
+import {
+  extractTemplateArguments,
+  templateArgumentsIdTag,
+  templateConstraintsIdTag,
+} from '../utils/template-arguments.js';
 import type { LanguageProvider } from '../language-provider.js';
 import type { ParsedFile } from 'gitnexus-shared';
-import { extractParsedFile } from '../scope-extractor-bridge.js';
+import { extractParsedFile, type ScopeCaptureSourceKind } from '../scope-extractor-bridge.js';
+import {
+  persistParsedFileShardSync,
+  persistDurableParsedFileShardSync,
+} from '../../../storage/parsedfile-store.js';
+import { extractLaravelRoutes, type ExtractedRoute } from '../route-extractors/laravel.js';
+import type { SharedSpringType } from '../route-extractors/spring-shared.js';
+import {
+  collectFunctionCfgs,
+  DEFAULT_PDG_MAX_FUNCTION_LINES,
+  type CfgSkipCounts,
+} from '../cfg/collect.js';
 
+import { logger } from '../../logger.js';
+export type { ExtractedRoute } from '../route-extractors/laravel.js';
+
+// ── ParsedFile store (#1983 parallel serialization) ─────────────────────────
+// Read ONCE at worker init from `workerData` (immutable for the run, inherited
+// by respawned workers via the pool's factory closure). When set, this worker
+// writes its own ParsedFile shards to disk at each job flush instead of
+// returning them over the MessageChannel — parallelizing serialization off the
+// main thread. `undefined` ⇒ return ParsedFiles in the result (no-store
+// fallback). `shardSeq` makes each shard name unique within this worker; global
+// uniqueness for the run rests on the process-monotonic `threadId` (never reused
+// across respawns) plus the per-run store clear on the main thread.
+const PARSED_FILE_STORE_STORAGE_PATH: string | undefined = (
+  workerData as { parsedFileStoreStoragePath?: string } | undefined
+)?.parsedFileStoreStoragePath;
+// Durable, content-addressed ParsedFile store dir (#2038 warm-cache coverage).
+// When set AND the flush carries a chunk hash, the worker ALSO writes its
+// ParsedFiles to `<durableDir>/<chunkHash>/` so a future warm parse-cache hit
+// restores them without re-parsing. `undefined` ⇒ no durable write.
+const DURABLE_PARSED_FILE_STORAGE_PATH: string | undefined = (
+  workerData as { durableParsedFileStoragePath?: string } | undefined
+)?.durableParsedFileStoragePath;
+let shardSeq = 0;
+
+// ── PDG/CFG opt-in (#2081 M1) ───────────────────────────────────────────────
+// Read ONCE at worker init from `workerData` (the worker never sees
+// PipelineOptions — config arrives via the pool factory's `workerData`, see
+// KTD7 / U5). When `pdg` is set, the worker builds a per-function control-flow
+// graph from the tree-sitter AST (where it lives) and serializes it onto
+// `ParsedFile.cfgSideChannel`. Off ⇒ no CFG work and no field — the default for
+// every run today. `pdgMaxFunctionLines` bounds per-function CFG cost
+// (0/undefined ⇒ no cap; see collectFunctionCfgs).
+const PDG_ENABLED: boolean = (workerData as { pdg?: boolean } | undefined)?.pdg === true;
+const PDG_MAX_FUNCTION_LINES: number =
+  (workerData as { pdgMaxFunctionLines?: number } | undefined)?.pdgMaxFunctionLines ??
+  DEFAULT_PDG_MAX_FUNCTION_LINES;
+
+// ── Bootstrap-stage diagnostics (#1741) ────────────────────────────────────
+// When GITNEXUS_WORKER_BOOTSTRAP=1 (or --verbose sets GITNEXUS_VERBOSE), each
+// worker reports its startup stage timings to stderr — which the pool tees
+// and captures (worker-pool.ts captureWorkerStderr). This makes a slow or
+// crashing startup diagnosable: you can see whether a worker reached
+// "grammars loaded", "ready sent", or never emitted a line at all (=> it
+// crashed in a native binding load before this code ran). The pool then
+// attaches whatever stderr it captured to its readiness-failure message,
+// so the operator sees the real cause instead of "did not report ready".
+const BOOTSTRAP_LOG =
+  process.env.GITNEXUS_WORKER_BOOTSTRAP === '1' || process.env.GITNEXUS_VERBOSE === '1';
+const bootstrapStart = performance.now();
+const bootstrapLog = (stage: string): void => {
+  if (!BOOTSTRAP_LOG) return;
+  const ms = Math.round(performance.now() - bootstrapStart);
+  process.stderr.write(`[parse-worker bootstrap] thread=${threadId} ${stage} (+${ms}ms)\n`);
+};
+// First line we can emit: every static import above (tree-sitter native
+// bindings, language grammars, helper modules) has already resolved by the
+// time this module-body statement runs.
+bootstrapLog('imports + grammars loaded');
 // ============================================================================
 // Types for serializable results
 // ============================================================================
@@ -125,23 +236,18 @@ interface ParsedSymbol {
   parameterCount?: number;
   requiredParameterCount?: number;
   parameterTypes?: string[];
+  parameterTypeClasses?: ParameterTypeClass[];
   returnType?: string;
   declaredType?: string;
+  templateArguments?: string[];
   ownerId?: string;
   visibility?: string;
   isStatic?: boolean;
   isReadonly?: boolean;
   isAbstract?: boolean;
   isFinal?: boolean;
+  isDeleted?: boolean;
   annotations?: string[];
-}
-
-export interface ExtractedImport {
-  filePath: string;
-  rawImportPath: string;
-  language: SupportedLanguages;
-  /** Named bindings from the import (e.g., import {User as U} → [{local:'U', exported:'User'}]) */
-  namedBindings?: NamedBinding[];
 }
 
 export interface ExtractedCall {
@@ -179,20 +285,8 @@ export interface ExtractedAssignment {
   propertyName: string;
   /** Resolved type name of the receiver if available from TypeEnv */
   receiverTypeName?: string;
-}
-
-// `ExtractedHeritage` now lives in `../model/heritage-map.ts` and is
-// re-exported at the top of this file.
-
-export interface ExtractedRoute {
-  filePath: string;
-  httpMethod: string;
-  routePath: string | null;
-  controllerName: string | null;
-  methodName: string | null;
-  middleware: string[];
-  prefix: string | null;
-  lineNumber: number;
+  /** 1-indexed line number of the assignment site (used for per-site dedup) */
+  line?: number;
 }
 
 export interface ExtractedFetchCall {
@@ -201,12 +295,67 @@ export interface ExtractedFetchCall {
   lineNumber: number;
 }
 
+export interface FetchWrapperDef {
+  filePath: string;
+  functionName: string;
+}
+
 export interface ExtractedDecoratorRoute {
   filePath: string;
   routePath: string;
   httpMethod: string;
   decoratorName: string;
   lineNumber: number;
+  /**
+   * Decorator receiver identifier (e.g. `router` for `@router.get(...)`,
+   * `app` for `@app.get(...)`). Used by parse-impl to decide which routes
+   * participate in `include_router(prefix=...)` joining.
+   */
+  decoratorReceiver?: string;
+  /**
+   * Raw text of a non-literal decorator path argument (`#2391`), e.g.
+   * `API_V1_WIDGETS_GET` or `API_V1 + "/widgets"`. Present only when the
+   * decorator's first argument was NOT a string literal, in which case
+   * `routePath` is empty and parse-impl resolves the constant cross-file (or
+   * drops the route on failure). Absent for ordinary string-literal routes.
+   */
+  routePathExpr?: string;
+  /**
+   * Parsed operand list for {@link routePathExpr} — an identifier reference or a
+   * `+`-concatenation, in the {@link Operand} shape the constant resolver folds.
+   * `undefined` when the expression was not a foldable string form (e.g. an
+   * attribute access), in which case the route is dropped at resolution.
+   */
+  routePathOperands?: Operand[];
+  /**
+   * FastAPI `app.include_router(prefix='/x')` prefix that applies to
+   * this route. Filled by parse-impl after cross-file aggregation; the
+   * routes phase joins it via `normalizeExtractedRoutePath`. `null` /
+   * absent ⇒ no prefix applies.
+   */
+  prefix?: string | null;
+  /**
+   * Name of the handler the route decorator sits on (the decorated
+   * method/function — e.g. `create` for `@PostMapping("/orders") Order create()`).
+   * Captured at extraction where the decorated definition node is in hand, so
+   * the routes phase can resolve it to a real handler symbol UID via the
+   * SemanticModel (same `(filePath, name) → nodeId` lookup Laravel routes use).
+   * Absent when the extractor could not identify the decorated definition;
+   * resolution then falls back (the Route node simply carries no handlerSymbolId).
+   */
+  handlerName?: string;
+}
+
+/**
+ * One Python file's module-level string constants (#2391), used by parse-impl to
+ * resolve non-literal decorator route paths cross-file. `constants` is the
+ * `Map`-based {@link ModuleConstants} shape — it survives the worker
+ * `postMessage` boundary (structured clone) and the parse cache
+ * (`mapReplacer`/`mapReviver`) without conversion.
+ */
+export interface ExtractedModuleConstants {
+  filePath: string;
+  constants: ModuleConstants;
 }
 
 export interface ExtractedToolDef {
@@ -265,13 +414,41 @@ export interface ParseWorkerResult {
   nodes: ParsedNode[];
   relationships: ParsedRelationship[];
   symbols: ParsedSymbol[];
-  imports: ExtractedImport[];
   calls: ExtractedCall[];
   assignments: ExtractedAssignment[];
-  heritage: ExtractedHeritage[];
   routes: ExtractedRoute[];
   fetchCalls: ExtractedFetchCall[];
+  fetchWrapperDefs: FetchWrapperDef[];
   decoratorRoutes: ExtractedDecoratorRoute[];
+  routerIncludes: ExtractedRouterInclude[];
+  routerImports: ExtractedRouterImport[];
+  routerConstructorPrefixes?: ExtractedRouterConstructorPrefix[];
+  /**
+   * Optional. Project-wide `SharedSpringType` view of route-defining
+   * class/interface declarations, produced by the provider's
+   * `extractRouteInheritanceTypes` hook (Java/Spring). parse-impl aggregates
+   * these and runs a cross-file pass that resolves interface-inherited routes
+   * into additional `decoratorRoutes` (#2288). Optional for cache backward
+   * compatibility; consumers must guard with `?? []`.
+   */
+  springTypes?: SharedSpringType[];
+  /**
+   * Optional. `from <pkg> import <module>` records from Python files
+   * where `<module>` is later used as a Shape-A include receiver
+   * (`<host>.include_router(<module>.router, prefix='/x')`). parse-impl
+   * uses these to promote Shape-A short-key entries to long keys, so
+   * same-named modules in different packages don't share prefixes.
+   * Optional for cache backward compatibility (older cache entries
+   * predate the field; consumers must guard with `if (… ?? [])`).
+   */
+  routerModuleAliases?: ExtractedRouterModuleAlias[];
+  /**
+   * Per-file Python module-level string constants (#2391). parse-impl aggregates
+   * these into a repo-wide, file-path-keyed map and resolves each decorator
+   * route's non-literal path expression against it. Optional for cache backward
+   * compatibility (older entries predate the field; consumers guard with `?? []`).
+   */
+  moduleConstants?: ExtractedModuleConstants[];
   toolDefs: ExtractedToolDef[];
   ormQueries: ExtractedORMQuery[];
   constructorBindings: FileConstructorBindings[];
@@ -286,6 +463,26 @@ export interface ParseWorkerResult {
    */
   parsedFiles: ParsedFile[];
   skippedLanguages: Record<string, number>;
+  /**
+   * Files whose parse output carried a value the structured-clone algorithm
+   * couldn't serialize across the worker boundary (#2112). The clone-safety
+   * net stripped or dropped the offending value so the result could be
+   * delivered; these paths are surfaced to the operator so the (rare) data
+   * loss is visible. Optional for cache backward compatibility — older cache
+   * entries predate the field; consumers must guard with `?? []`.
+   */
+  skippedPaths?: SkippedPath[];
+  /**
+   * Per-language CFG-bearing functions skipped during the worker walk, bucketed
+   * by reason (#2195): too-many-lines, too-deeply-nested (the proactive
+   * depth-guard bail), or build-error. Survives the parse cache (a small number
+   * map, kept by `...result` in slimParseWorkerResultsForCache) and is merged +
+   * logged per-language in `dispatchChunkParse` (alongside `skippedLanguages`),
+   * so a CFG coverage gap is visible. Like that sibling telemetry the warn is
+   * emitted for freshly-parsed chunks, not re-emitted on a warm cache hit.
+   * Optional for cache backward-compatibility — older shards predate it.
+   */
+  cfgSkipped?: Record<string, CfgSkipCounts>;
   fileCount: number;
 }
 
@@ -296,8 +493,7 @@ export interface ParseWorkerInput {
 
 type WorkerIncomingMessage =
   | { type: 'sub-batch'; files: ParseWorkerInput[] }
-  | { type: 'flush' }
-  | ParseWorkerInput[];
+  | { type: 'flush'; chunkHash?: string };
 
 // ============================================================================
 // Worker-local parser + language map
@@ -311,7 +507,7 @@ const languageMap: Record<string, TreeSitterLanguage> = {
   [`${SupportedLanguages.TypeScript}:tsx`]: TypeScript.tsx,
   [SupportedLanguages.Python]: Python,
   [SupportedLanguages.Java]: Java,
-  [SupportedLanguages.C]: C,
+  ...(C ? { [SupportedLanguages.C]: C } : {}),
   [SupportedLanguages.CPlusPlus]: CPP,
   [SupportedLanguages.CSharp]: CSharp,
   [SupportedLanguages.Go]: Go,
@@ -557,7 +753,7 @@ const findEnclosingFunctionId = (
   let current = node.parent;
   while (current) {
     if (FUNCTION_NODE_TYPES.has(current.type)) {
-      const efnResult = provider.methodExtractor?.extractFunctionName?.(current);
+      const efnResult = provider.methodExtractor?.extractFunctionName?.(current, filePath);
       const funcName = efnResult?.funcName ?? genericFuncName(current);
       const label = efnResult?.label ?? inferFunctionLabel(current.type);
       if (funcName) {
@@ -693,11 +889,17 @@ const cachedFindEnclosingClassInfo = (
   node: SyntaxNode,
   filePath: string,
   resolveEnclosingOwner?: (node: SyntaxNode) => SyntaxNode | null,
+  getQualifiedOwnerName?: (node: SyntaxNode, simpleName: string) => string | null,
 ): EnclosingClassInfo | null => {
   const cached = classIdCache.get(node);
   if (cached !== undefined) return cached;
 
-  const result = findEnclosingClassInfo(node, filePath, resolveEnclosingOwner);
+  const result = findEnclosingClassInfo(
+    node,
+    filePath,
+    resolveEnclosingOwner,
+    getQualifiedOwnerName,
+  );
   classIdCache.set(node, result);
   return result;
 };
@@ -732,19 +934,23 @@ const processBatch = (
     nodes: [],
     relationships: [],
     symbols: [],
-    imports: [],
     calls: [],
     assignments: [],
-    heritage: [],
     routes: [],
     fetchCalls: [],
+    fetchWrapperDefs: [],
     decoratorRoutes: [],
+    routerIncludes: [],
+    routerImports: [],
+    routerConstructorPrefixes: [],
+    routerModuleAliases: [],
     toolDefs: [],
     ormQueries: [],
     constructorBindings: [],
     fileScopeBindings: [],
     parsedFiles: [],
     skippedLanguages: {},
+    cfgSkipped: {},
     fileCount: 0,
   };
 
@@ -778,9 +984,22 @@ const processBatch = (
   for (const [language, langFiles] of byLanguage) {
     const provider = getProvider(language);
     const queryString = provider.treeSitterQueries;
-    if (!queryString) continue;
-
-    // Track if we need to handle tsx separately
+    if (!queryString) {
+      // Standalone providers (regex-based, no tree-sitter) that implement
+      // emitScopeCaptures resolve via the scope-resolution pipeline, which
+      // re-extracts from source on the main thread.
+      if (provider.emitScopeCaptures) {
+        // The worker no longer builds `ParsedFile`s for standalone providers
+        // either — scope-resolution re-extracts on the main thread, and for
+        // standalone COBOL the graph nodes come from cobolPhase, not this
+        // artifact (#1983). Count one unit of progress per file, as before.
+        for (let i = 0; i < langFiles.length; i++) {
+          result.fileCount++;
+          onFileProcessed?.();
+        }
+      }
+      continue;
+    }
     const tsxFiles: ParseWorkerInput[] = [];
     const regularFiles: ParseWorkerInput[] = [];
 
@@ -804,8 +1023,13 @@ const processBatch = (
         try {
           setLanguage(language, regularFiles[0].path);
           processFileGroup(regularFiles, language, queryString, result, onFileProcessed);
-        } catch {
-          // parser unavailable — skip this language group
+        } catch (err) {
+          // A throw here drops the whole language group — surface it to the pool
+          // (#2264) instead of silently skipping. The old empty catch hid real
+          // extractor/parser failures, not just an unavailable grammar.
+          reportWarning(
+            `Skipped ${regularFiles.length} ${language} file(s) after a processing error: ${err instanceof Error ? err.message : String(err)}`,
+          );
         }
       } else {
         result.skippedLanguages[language] =
@@ -819,8 +1043,12 @@ const processBatch = (
         try {
           setLanguage(language, tsxFiles[0].path);
           processFileGroup(tsxFiles, language, queryString, result, onFileProcessed);
-        } catch {
-          // parser unavailable — skip this language group
+        } catch (err) {
+          // See above — surface a tsx-group processing failure rather than
+          // silently dropping every file in it (#2264).
+          reportWarning(
+            `Skipped ${tsxFiles.length} ${language} (tsx) file(s) after a processing error: ${err instanceof Error ? err.message : String(err)}`,
+          );
         }
       } else {
         result.skippedLanguages[language] =
@@ -836,29 +1064,6 @@ const processBatch = (
   return result;
 };
 
-// ============================================================================
-// Laravel Route Extraction (procedural AST walk)
-// ============================================================================
-
-interface RouteGroupContext {
-  middleware: string[];
-  prefix: string | null;
-  controller: string | null;
-}
-
-const ROUTE_HTTP_METHODS = new Set([
-  'get',
-  'post',
-  'put',
-  'patch',
-  'delete',
-  'options',
-  'any',
-  'match',
-]);
-
-const ROUTE_RESOURCE_METHODS = new Set(['resource', 'apiResource']);
-
 // Express/Hono method names that register routes
 const EXPRESS_ROUTE_METHODS = new Set([
   'get',
@@ -870,6 +1075,23 @@ const EXPRESS_ROUTE_METHODS = new Set([
   'use',
   'route',
 ]);
+
+/**
+ * Walk a tree-sitter AST subtree looking for a call to the global `fetch()` function.
+ * Returns `true` if found within `maxDepth` levels of nesting — keeps the check
+ * lightweight so it doesn't slow down parse-worker on large function bodies.
+ */
+const checkForFetchCall = (node: SyntaxNode, depth = 0, maxDepth = 5): boolean => {
+  if (depth > maxDepth) return false;
+  if (node.type === 'call_expression') {
+    const fn = node.childForFieldName('function');
+    if (fn?.type === 'identifier' && fn.text === 'fetch') return true;
+  }
+  for (let i = 0; i < node.childCount; i++) {
+    if (checkForFetchCall(node.child(i)!, depth + 1, maxDepth)) return true;
+  }
+  return false;
+};
 
 // HTTP client methods that are ONLY used by clients, not Express route registration.
 // Methods like get/post/put/delete/patch overlap with Express — those are captured by
@@ -918,403 +1140,8 @@ const ROUTE_DECORATOR_NAMES = new Set([
   'PostMapping',
   'PutMapping',
   'DeleteMapping',
+  'PatchMapping',
 ]);
-
-const RESOURCE_ACTIONS = ['index', 'create', 'store', 'show', 'edit', 'update', 'destroy'];
-const API_RESOURCE_ACTIONS = ['index', 'store', 'show', 'update', 'destroy'];
-
-/** Check if node is a scoped_call_expression with object 'Route' */
-function isRouteStaticCall(node: SyntaxNode): boolean {
-  if (node.type !== 'scoped_call_expression') return false;
-  const obj = node.childForFieldName?.('object') ?? node.children?.[0];
-  return obj?.text === 'Route';
-}
-
-/** Get the method name from a scoped_call_expression or member_call_expression */
-function getCallMethodName(node: SyntaxNode): string | null {
-  const nameNode =
-    node.childForFieldName?.('name') ?? node.children?.find((c: SyntaxNode) => c.type === 'name');
-  return nameNode?.text ?? null;
-}
-
-/** Get the arguments node from a call expression */
-function getArguments(node: SyntaxNode): SyntaxNode | null {
-  return node.children?.find((c: SyntaxNode) => c.type === 'arguments') ?? null;
-}
-
-/** Find the closure body inside arguments */
-function findClosureBody(argsNode: SyntaxNode | null): SyntaxNode | null {
-  if (!argsNode) return null;
-  for (const child of argsNode.children ?? []) {
-    if (child.type === 'argument') {
-      for (const inner of child.children ?? []) {
-        if (inner.type === 'anonymous_function' || inner.type === 'arrow_function') {
-          return (
-            inner.childForFieldName?.('body') ??
-            inner.children?.find((c: SyntaxNode) => c.type === 'compound_statement') ??
-            null
-          );
-        }
-      }
-    }
-    if (child.type === 'anonymous_function' || child.type === 'arrow_function') {
-      return (
-        child.childForFieldName?.('body') ??
-        child.children?.find((c: SyntaxNode) => c.type === 'compound_statement') ??
-        null
-      );
-    }
-  }
-  return null;
-}
-
-/** Extract first string argument from arguments node */
-function extractFirstStringArg(argsNode: SyntaxNode | null): string | null {
-  if (!argsNode) return null;
-  for (const child of argsNode.children ?? []) {
-    const target = child.type === 'argument' ? child.children?.[0] : child;
-    if (!target) continue;
-    if (target.type === 'string' || target.type === 'encapsed_string') {
-      return extractStringContent(target);
-    }
-  }
-  return null;
-}
-
-/** Extract middleware from arguments — handles string or array */
-function extractMiddlewareArg(argsNode: SyntaxNode | null): string[] {
-  if (!argsNode) return [];
-  for (const child of argsNode.children ?? []) {
-    const target = child.type === 'argument' ? child.children?.[0] : child;
-    if (!target) continue;
-    if (target.type === 'string' || target.type === 'encapsed_string') {
-      const val = extractStringContent(target);
-      return val ? [val] : [];
-    }
-    if (target.type === 'array_creation_expression') {
-      const items: string[] = [];
-      for (const el of target.children ?? []) {
-        if (el.type === 'array_element_initializer') {
-          const str = el.children?.find(
-            (c: SyntaxNode) => c.type === 'string' || c.type === 'encapsed_string',
-          );
-          const val = str ? extractStringContent(str) : null;
-          if (val) items.push(val);
-        }
-      }
-      return items;
-    }
-  }
-  return [];
-}
-
-/** Extract Controller::class from arguments */
-function extractClassArg(argsNode: SyntaxNode | null): string | null {
-  if (!argsNode) return null;
-  for (const child of argsNode.children ?? []) {
-    const target = child.type === 'argument' ? child.children?.[0] : child;
-    if (target?.type === 'class_constant_access_expression') {
-      return target.children?.find((c: SyntaxNode) => c.type === 'name')?.text ?? null;
-    }
-  }
-  return null;
-}
-
-/** Extract controller class name from arguments: [Controller::class, 'method'] or 'Controller@method' */
-function extractControllerTarget(argsNode: SyntaxNode | null): {
-  controller: string | null;
-  method: string | null;
-} {
-  if (!argsNode) return { controller: null, method: null };
-
-  const args: (SyntaxNode | undefined)[] = [];
-  for (const child of argsNode.children ?? []) {
-    if (child.type === 'argument') args.push(child.children?.[0]);
-    else if (child.type !== '(' && child.type !== ')' && child.type !== ',') args.push(child);
-  }
-
-  // Second arg is the handler
-  const handlerNode = args[1];
-  if (!handlerNode) return { controller: null, method: null };
-
-  // Array syntax: [UserController::class, 'index']
-  if (handlerNode.type === 'array_creation_expression') {
-    let controller: string | null = null;
-    let method: string | null = null;
-    const elements: SyntaxNode[] = [];
-    for (const el of handlerNode.children ?? []) {
-      if (el.type === 'array_element_initializer') elements.push(el);
-    }
-    if (elements[0]) {
-      const classAccess = findDescendant(elements[0], 'class_constant_access_expression');
-      if (classAccess) {
-        controller = classAccess.children?.find((c: SyntaxNode) => c.type === 'name')?.text ?? null;
-      }
-    }
-    if (elements[1]) {
-      const str = findDescendant(elements[1], 'string');
-      method = str ? extractStringContent(str) : null;
-    }
-    return { controller, method };
-  }
-
-  // String syntax: 'UserController@index'
-  if (handlerNode.type === 'string' || handlerNode.type === 'encapsed_string') {
-    const text = extractStringContent(handlerNode);
-    if (text?.includes('@')) {
-      const [controller, method] = text.split('@');
-      return { controller, method };
-    }
-  }
-
-  // Class reference: UserController::class (invokable controller)
-  if (handlerNode.type === 'class_constant_access_expression') {
-    const controller =
-      handlerNode.children?.find((c: SyntaxNode) => c.type === 'name')?.text ?? null;
-    return { controller, method: '__invoke' };
-  }
-
-  return { controller: null, method: null };
-}
-
-interface ChainedRouteCall {
-  isRouteFacade: boolean;
-  terminalMethod: string;
-  attributes: { method: string; argsNode: SyntaxNode | null }[];
-  terminalArgs: SyntaxNode | null;
-  node: SyntaxNode;
-}
-
-/**
- * Unwrap a chained call like Route::middleware('auth')->prefix('api')->group(fn)
- */
-function unwrapRouteChain(node: SyntaxNode): ChainedRouteCall | null {
-  if (node.type !== 'member_call_expression') return null;
-
-  const terminalMethod = getCallMethodName(node);
-  if (!terminalMethod) return null;
-
-  const terminalArgs = getArguments(node);
-  const attributes: { method: string; argsNode: SyntaxNode | null }[] = [];
-
-  let current = node.children?.[0];
-
-  while (current) {
-    if (current.type === 'member_call_expression') {
-      const method = getCallMethodName(current);
-      const args = getArguments(current);
-      if (method) attributes.unshift({ method, argsNode: args });
-      current = current.children?.[0];
-    } else if (current.type === 'scoped_call_expression') {
-      const obj = current.childForFieldName?.('object') ?? current.children?.[0];
-      if (obj?.text !== 'Route') return null;
-
-      const method = getCallMethodName(current);
-      const args = getArguments(current);
-      if (method) attributes.unshift({ method, argsNode: args });
-
-      return { isRouteFacade: true, terminalMethod, attributes, terminalArgs, node };
-    } else {
-      break;
-    }
-  }
-
-  return null;
-}
-
-/** Parse Route::group(['middleware' => ..., 'prefix' => ...], fn) array syntax */
-function parseArrayGroupArgs(argsNode: SyntaxNode | null): RouteGroupContext {
-  const ctx: RouteGroupContext = { middleware: [], prefix: null, controller: null };
-  if (!argsNode) return ctx;
-
-  for (const child of argsNode.children ?? []) {
-    const target = child.type === 'argument' ? child.children?.[0] : child;
-    if (target?.type === 'array_creation_expression') {
-      for (const el of target.children ?? []) {
-        if (el.type !== 'array_element_initializer') continue;
-        const children = el.children ?? [];
-        const arrowIdx = children.findIndex((c: SyntaxNode) => c.type === '=>');
-        if (arrowIdx === -1) continue;
-        const key = extractStringContent(children[arrowIdx - 1]);
-        const val = children[arrowIdx + 1];
-        if (key === 'middleware') {
-          if (val?.type === 'string') {
-            const s = extractStringContent(val);
-            if (s) ctx.middleware.push(s);
-          } else if (val?.type === 'array_creation_expression') {
-            for (const item of val.children ?? []) {
-              if (item.type === 'array_element_initializer') {
-                const str = item.children?.find((c: SyntaxNode) => c.type === 'string');
-                const s = str ? extractStringContent(str) : null;
-                if (s) ctx.middleware.push(s);
-              }
-            }
-          }
-        } else if (key === 'prefix') {
-          ctx.prefix = extractStringContent(val) ?? null;
-        } else if (key === 'controller') {
-          if (val?.type === 'class_constant_access_expression') {
-            ctx.controller = val.children?.find((c: SyntaxNode) => c.type === 'name')?.text ?? null;
-          }
-        }
-      }
-    }
-  }
-  return ctx;
-}
-
-function extractLaravelRoutes(tree: Parser.Tree, filePath: string): ExtractedRoute[] {
-  const routes: ExtractedRoute[] = [];
-
-  function resolveStack(stack: RouteGroupContext[]): {
-    middleware: string[];
-    prefix: string | null;
-    controller: string | null;
-  } {
-    const middleware: string[] = [];
-    let prefix: string | null = null;
-    let controller: string | null = null;
-    for (const ctx of stack) {
-      middleware.push(...ctx.middleware);
-      if (ctx.prefix) prefix = prefix ? `${prefix}/${ctx.prefix}`.replace(/\/+/g, '/') : ctx.prefix;
-      if (ctx.controller) controller = ctx.controller;
-    }
-    return { middleware, prefix, controller };
-  }
-
-  function emitRoute(
-    httpMethod: string,
-    argsNode: SyntaxNode | null,
-    lineNumber: number,
-    groupStack: RouteGroupContext[],
-    chainAttrs: { method: string; argsNode: SyntaxNode | null }[],
-  ) {
-    const effective = resolveStack(groupStack);
-
-    for (const attr of chainAttrs) {
-      if (attr.method === 'middleware')
-        effective.middleware.push(...extractMiddlewareArg(attr.argsNode));
-      if (attr.method === 'prefix') {
-        const p = extractFirstStringArg(attr.argsNode);
-        if (p) effective.prefix = effective.prefix ? `${effective.prefix}/${p}` : p;
-      }
-      if (attr.method === 'controller') {
-        const cls = extractClassArg(attr.argsNode);
-        if (cls) effective.controller = cls;
-      }
-    }
-
-    const routePath = extractFirstStringArg(argsNode);
-
-    if (ROUTE_RESOURCE_METHODS.has(httpMethod)) {
-      const target = extractControllerTarget(argsNode);
-      const actions = httpMethod === 'apiResource' ? API_RESOURCE_ACTIONS : RESOURCE_ACTIONS;
-      for (const action of actions) {
-        routes.push({
-          filePath,
-          httpMethod,
-          routePath,
-          controllerName: target.controller ?? effective.controller,
-          methodName: action,
-          middleware: [...effective.middleware],
-          prefix: effective.prefix,
-          lineNumber,
-        });
-      }
-    } else {
-      const target = extractControllerTarget(argsNode);
-      routes.push({
-        filePath,
-        httpMethod,
-        routePath,
-        controllerName: target.controller ?? effective.controller,
-        methodName: target.method,
-        middleware: [...effective.middleware],
-        prefix: effective.prefix,
-        lineNumber,
-      });
-    }
-  }
-
-  // Iterative traversal using an explicit stack to avoid V8 call stack overflow
-  // on deeply nested ASTs (e.g. Go stdlib, large Grafana components).
-  // Each frame tracks the node and a snapshot of the group stack at that depth.
-  interface WalkFrame {
-    node: SyntaxNode;
-    groupSnapshot: RouteGroupContext[];
-  }
-
-  const walkStack: WalkFrame[] = [{ node: tree.rootNode, groupSnapshot: [] }];
-
-  while (walkStack.length > 0) {
-    const { node, groupSnapshot } = walkStack.pop()!;
-
-    // Case 1: Simple Route::get(...), Route::post(...), etc.
-    if (isRouteStaticCall(node)) {
-      const method = getCallMethodName(node);
-      if (method && (ROUTE_HTTP_METHODS.has(method) || ROUTE_RESOURCE_METHODS.has(method))) {
-        emitRoute(method, getArguments(node), node.startPosition.row, groupSnapshot, []);
-        continue;
-      }
-      if (method === 'group') {
-        const argsNode = getArguments(node);
-        const groupCtx = parseArrayGroupArgs(argsNode);
-        const body = findClosureBody(argsNode);
-        if (body) {
-          const childSnapshot = [...groupSnapshot, groupCtx];
-          const children = body.children ?? [];
-          for (let i = children.length - 1; i >= 0; i--) {
-            walkStack.push({ node: children[i], groupSnapshot: childSnapshot });
-          }
-        }
-        continue;
-      }
-    }
-
-    // Case 2: Fluent chain — Route::middleware(...)->group(...) or Route::middleware(...)->get(...)
-    const chain = unwrapRouteChain(node);
-    if (chain) {
-      if (chain.terminalMethod === 'group') {
-        const groupCtx: RouteGroupContext = { middleware: [], prefix: null, controller: null };
-        for (const attr of chain.attributes) {
-          if (attr.method === 'middleware')
-            groupCtx.middleware.push(...extractMiddlewareArg(attr.argsNode));
-          if (attr.method === 'prefix') groupCtx.prefix = extractFirstStringArg(attr.argsNode);
-          if (attr.method === 'controller') groupCtx.controller = extractClassArg(attr.argsNode);
-        }
-        const body = findClosureBody(chain.terminalArgs);
-        if (body) {
-          const childSnapshot = [...groupSnapshot, groupCtx];
-          const children = body.children ?? [];
-          for (let i = children.length - 1; i >= 0; i--) {
-            walkStack.push({ node: children[i], groupSnapshot: childSnapshot });
-          }
-        }
-        continue;
-      }
-      if (
-        ROUTE_HTTP_METHODS.has(chain.terminalMethod) ||
-        ROUTE_RESOURCE_METHODS.has(chain.terminalMethod)
-      ) {
-        emitRoute(
-          chain.terminalMethod,
-          chain.terminalArgs,
-          node.startPosition.row,
-          groupSnapshot,
-          chain.attributes,
-        );
-        continue;
-      }
-    }
-
-    // Default: push children in reverse so leftmost is processed first
-    const children = node.children ?? [];
-    for (let i = children.length - 1; i >= 0; i--) {
-      walkStack.push({ node: children[i], groupSnapshot });
-    }
-  }
-  return routes;
-}
 
 // ============================================================================
 // ORM Query Detection (Prisma + Supabase)
@@ -1369,6 +1196,41 @@ export function extractORMQueries(
   }
 }
 
+// ============================================================================
+// FastAPI router prefix detection (Python)
+// ============================================================================
+//
+// The extraction lives in `../route-extractors/fastapi-router-bindings`
+// (a pure-function module — NOT a worker, no `worker_threads`, no
+// `parentPort`). It's imported here only so the worker entry can call it
+// per file; this module does not re-export it. Downstream consumers
+// import the function and its types directly from `route-extractors/`.
+
+import { extractFastAPIRouterBindings } from '../route-extractors/fastapi-router-bindings.js';
+import {
+  extractPythonModuleConstants,
+  parseConstOperands,
+  type ModuleConstants,
+  type Operand,
+} from '../route-extractors/python-const-resolver.js';
+
+/**
+ * Report a non-fatal worker issue to the pool over IPC so a caught error is not
+ * invisible to the operator (#2264). The pool logs it on the main thread AND
+ * resets the worker idle timer (so a worker grinding through failing files isn't
+ * falsely idle-evicted). Falls back to the local logger when there's no parent —
+ * this code also runs on the main thread in tests / the non-worker path. Fatal,
+ * group-aborting errors go through the message handler's
+ * `{ type: 'error', errorStack }` channel instead.
+ */
+function reportWarning(message: string): void {
+  if (parentPort) {
+    parentPort.postMessage({ type: 'warning', message });
+  } else {
+    logger.warn(message);
+  }
+}
+
 const processFileGroup = (
   files: ParseWorkerInput[],
   language: SupportedLanguages,
@@ -1381,12 +1243,9 @@ const processFileGroup = (
     const lang = parser.getLanguage();
     query = new Parser.Query(lang, queryString);
   } catch (err) {
-    const message = `Query compilation failed for ${language}: ${err instanceof Error ? err.message : String(err)}`;
-    if (parentPort) {
-      parentPort.postMessage({ type: 'warning', message });
-    } else {
-      console.warn(message);
-    }
+    reportWarning(
+      `Query compilation failed for ${language}: ${err instanceof Error ? err.message : String(err)}`,
+    );
     return;
   }
 
@@ -1394,27 +1253,43 @@ const processFileGroup = (
     // Skip files larger than the max tree-sitter buffer (32 MB)
     if (getTreeSitterContentByteLength(file.content) > TREE_SITTER_MAX_BUFFER) continue;
 
+    // Authoritative in-flight signal for the pool: lets `WorkerPool` exclude
+    // exactly this file if the worker dies during parse/extract, instead of
+    // guessing from `items[lastProgress]` (which the language-grouped order
+    // here would defeat). The pool gracefully ignores this when running an
+    // older worker build that doesn't emit it.
+    if (parentPort) {
+      parentPort.postMessage({ type: 'starting-file', path: file.path });
+    }
+
     // Vue SFC preprocessing: extract <script> block content
     let parseContent = file.content;
+    let scopeSourceKind: ScopeCaptureSourceKind = 'full-file';
     let lineOffset = 0;
     let isVueSetup = false;
     if (language === SupportedLanguages.Vue) {
       const extracted = extractVueScript(file.content);
       if (!extracted) continue; // skip .vue files with no script block
       parseContent = extracted.scriptContent;
+      scopeSourceKind = 'pre-extracted-script';
       lineOffset = extracted.lineOffset;
       isVueSetup = extracted.isSetup;
     }
+
+    // Per-language source-text transform (e.g., UE macro stripping for C++).
+    // Length-preserving — see LanguageProvider.preprocessSource contract.
+    parseContent =
+      getProvider(language).preprocessSource?.(parseContent, file.path) ?? parseContent;
 
     clearCaches(); // Reset memoization before each new file
 
     let tree;
     try {
-      tree = parser.parse(parseContent, undefined, {
+      tree = parseSourceSafe(parser, parseContent, undefined, {
         bufferSize: getTreeSitterBufferSize(parseContent),
       });
     } catch (err) {
-      console.warn(
+      reportWarning(
         `Failed to parse file ${file.path}: ${err instanceof Error ? err.message : String(err)}`,
       );
       continue;
@@ -1427,66 +1302,108 @@ const processFileGroup = (
     try {
       matches = query.matches(tree.rootNode);
     } catch (err) {
-      console.warn(
+      reportWarning(
         `Query execution failed for ${file.path}: ${err instanceof Error ? err.message : String(err)}`,
       );
       continue;
     }
+    const concreteTypedefRanges = buildConcreteTypedefDefinitionRanges(matches);
 
     const provider = getProvider(language);
 
-    // RFC #909 Ring 2: produce a `ParsedFile` for the new scope-based
-    // resolution pipeline. No-op (returns undefined) for every language
-    // today — only fires once a provider implements `emitScopeCaptures`.
-    // Runs BEFORE legacy extraction and its result is independent: a
-    // failure here is caught inside `extractParsedFile` and does NOT
-    // affect the legacy DAG path that follows.
+    // Produce the `ParsedFile` for the scope-resolution pipeline HERE, reusing
+    // the tree we just parsed (no second tree-sitter parse). Scope-resolution
+    // consumes these via the disk-backed parsedfile-store instead of
+    // re-extracting each file from source on the main thread — which
+    // accumulated an unbounded native tree-sitter leak on huge repos (#1983;
+    // see parsedfile-store.ts). parse-impl flushes `result.parsedFiles` to disk
+    // per chunk and does NOT retain them in main-thread heap, so this no longer
+    // costs ~1× the semantic model in RAM during parse.
     const parsedFile = extractParsedFile(
       provider,
       parseContent,
       file.path,
-      (message) => {
-        if (parentPort) parentPort.postMessage({ type: 'warning', message });
-        else console.warn(message);
-      },
+      reportWarning,
       tree,
+      scopeSourceKind,
     );
-    if (parsedFile !== undefined) result.parsedFiles.push(parsedFile);
+    if (parsedFile !== undefined) {
+      // Capture-time side-channel (#1983): `extractParsedFile` just ran the
+      // provider's `emitScopeCaptures`, which (for C++ ADL/namespace marks,
+      // C `static`-linkage names, and Kotlin companion scopes) populated
+      // module-level maps as a SIDE EFFECT that is NOT on `parsedFile`'s
+      // scopes/defs. Snapshot
+      // that per-file state as plain data onto `ParsedFile.captureSideChannel`
+      // so the main thread can restore it (via `ScopeResolver.applyCaptureSideChannel`)
+      // WITHOUT a re-parse, after this ParsedFile crosses the worker boundary /
+      // disk store. Providers without capture-time side effects leave the hook
+      // undefined and this is a no-op. `undefined` return ⇒ no field added.
+      //
+      // `extractParsedFile` returns a frozen ParsedFile, so re-wrap (shallow
+      // copy — scopes/defs are carried by reference) to attach the field rather
+      // than mutate the frozen object.
+      const sideChannel = provider.collectCaptureSideChannel?.(file.path);
+      let withChannels =
+        sideChannel !== undefined ? { ...parsedFile, captureSideChannel: sideChannel } : parsedFile;
 
-    // Pre-pass: extract heritage from query matches to build parentMap for buildTypeEnv.
-    // Heritage edges (EXTENDS/IMPLEMENTS) are created by heritage-processor which runs
-    // in PARALLEL with call-processor, so the graph edges don't exist when buildTypeEnv
-    // runs. This pre-pass makes parent class information available for type resolution.
-    const fileParentMap = new Map<string, string[]>();
-    if (provider.heritageExtractor) {
-      for (const match of matches) {
-        const captureMap: Record<string, SyntaxNode> = {};
-        for (const c of match.captures) {
-          captureMap[c.name] = c.node;
-        }
-        if (captureMap['heritage.class']) {
-          const heritageItems = provider.heritageExtractor.extract(captureMap, {
-            filePath: file.path,
-            language,
-          });
-          for (const item of heritageItems) {
-            if (item.kind === 'extends') {
-              let parents = fileParentMap.get(item.className);
-              if (!parents) {
-                parents = [];
-                fileParentMap.set(item.className, parents);
-              }
-              if (!parents.includes(item.parentName)) parents.push(item.parentName);
-            }
+      // CFG side-channel (#2081 M1): build the per-function control-flow graph
+      // here, where the tree-sitter AST is still in hand, and attach it as plain
+      // serializable data. Only on a --pdg run and only for languages with a
+      // cfgVisitor (TS/JS in M1). The same disk-store/warm-cache machinery that
+      // carries captureSideChannel carries this — its coherence rests on the
+      // SCHEMA_BUMP + the pdg-folded chunk-hash key (see parse-cache.ts).
+      if (PDG_ENABLED && provider.cfgVisitor) {
+        // Isolate the CFG build per file: a throw here (an unexpected tree-sitter
+        // node shape) must NOT propagate — it would escape processFileGroup to the
+        // language-group catch, which treats any throw as "parser unavailable" and
+        // silently drops EVERY remaining file in the group. Skip CFG for this one
+        // file; parsing + scope resolution proceed unaffected (CFG is a
+        // strictly-additive opt-in). collectFunctionCfgs ALSO isolates per
+        // FUNCTION now (#2195) — a deep-nesting bail or a single malformed function
+        // is counted in `skipped` and skipped, not allowed to lose the whole file.
+        try {
+          const { cfgs, skipped } = collectFunctionCfgs(
+            tree.rootNode,
+            provider.cfgVisitor,
+            file.path,
+            PDG_MAX_FUNCTION_LINES,
+            // Embedded scripts (Vue SFC <script>) parse at row 0 but live at
+            // `lineOffset` in the file — shift the CFG into file coordinates so
+            // it joins its graph node and BasicBlock lines map to source.
+            lineOffset,
+          );
+          if (cfgs.length) withChannels = { ...withChannels, cfgSideChannel: cfgs };
+          // Surface per-function CFG skips per-language (#2195): merged + logged
+          // in mergeChunkResults. Only accumulate when something was skipped so
+          // the common (nothing-skipped) case stays a no-op.
+          if (skipped.tooManyLines || skipped.tooDeeplyNested || skipped.buildError) {
+            const agg = (result.cfgSkipped ??= {});
+            const prev = agg[language] ?? { tooManyLines: 0, tooDeeplyNested: 0, buildError: 0 };
+            agg[language] = {
+              tooManyLines: prev.tooManyLines + skipped.tooManyLines,
+              tooDeeplyNested: prev.tooDeeplyNested + skipped.tooDeeplyNested,
+              buildError: prev.buildError + skipped.buildError,
+            };
           }
+        } catch (err) {
+          reportWarning(
+            `CFG build failed for ${file.path}: ${err instanceof Error ? err.message : String(err)}`,
+          );
         }
       }
+
+      result.parsedFiles.push(withChannels);
     }
 
     // Build per-file type environment + constructor bindings in a single AST walk.
-    // Constructor bindings are verified against the SymbolTable in processCallsFromExtracted.
-    const parentMap: ReadonlyMap<string, readonly string[]> = fileParentMap;
+    // The legacy heritage pre-pass that seeded a file-local parentMap for
+    // buildTypeEnv was removed in RING4-1 (#942) along with the rest of the
+    // call-resolution DAG. Inheritance is now emitted by scope-resolution
+    // (preEmitInheritanceEdges + @reference.inherits), so buildTypeEnv runs with
+    // an empty parentMap — cross-file inheritance was never resolved here anyway.
+    const parentMap: ReadonlyMap<string, readonly string[]> = new Map();
     const typeEnv = buildTypeEnv(tree, language, {
+      filePath: file.path,
       parentMap,
       enclosingFunctionFinder: provider?.enclosingFunctionFinder,
       extractFunctionName: provider?.methodExtractor?.extractFunctionName,
@@ -1525,7 +1442,8 @@ const processFileGroup = (
     // Track start indices of definition nodes already processed by higher-priority captures
     // (e.g. @definition.function) to avoid duplicate nodes when @definition.const/@definition.variable
     // patterns overlap with the same source range.
-    const processedDefinitionNodes = new Set<number>();
+    const processedDefinitionNodes = new Set<string>();
+    const variableInfoCache = new Map<number, Map<string, VariableInfo>>();
 
     for (const match of matches) {
       const captureMap: Record<string, SyntaxNode> = {};
@@ -1533,22 +1451,12 @@ const processFileGroup = (
         captureMap[c.name] = c.node;
       }
 
-      // Extract import paths before skipping
+      if (isSuppressedConcreteTypedefDuplicate(captureMap, concreteTypedefRanges)) continue;
+
+      // Import matches: IMPORTS edges are emitted by the scope-resolution
+      // phase from finalized ImportEdges (RING4-1 #942 / RING4-2 #943 removed
+      // the legacy per-file import-map extraction that ran here). Skip.
       if (captureMap['import'] && captureMap['import.source']) {
-        const rawImportPath = preprocessImportPath(
-          captureMap['import.source'].text,
-          captureMap['import'],
-          provider,
-        );
-        if (!rawImportPath) continue;
-        const extractor = provider.namedBindingExtractor;
-        const namedBindings = extractor ? extractor(captureMap['import']) : undefined;
-        result.imports.push({
-          filePath: file.path,
-          rawImportPath,
-          language: language,
-          ...(namedBindings ? { namedBindings } : {}),
-        });
         continue;
       }
 
@@ -1573,6 +1481,7 @@ const processFileGroup = (
             sourceId: srcId,
             receiverText,
             propertyName,
+            line: captureMap['assignment'].startPosition.row + 1,
             ...(receiverTypeName ? { receiverTypeName } : {}),
           });
         }
@@ -1583,6 +1492,13 @@ const processFileGroup = (
       if (captureMap['decorator'] && captureMap['decorator.name']) {
         const decoratorName = captureMap['decorator.name'].text;
         const decoratorArg = captureMap['decorator.arg']?.text;
+        // #2391: the first positional arg captured as either a string node
+        // (`arg_str`, present even for the empty-string literal `""` which has no
+        // `string_content`) or a non-literal expression (`arg_expr`: an
+        // identifier or a `+`-concatenation).
+        const decoratorArgStr = captureMap['decorator.arg_str'];
+        const decoratorArgExpr = captureMap['decorator.arg_expr'];
+        const decoratorReceiver = captureMap['decorator.receiver']?.text;
         const decoratorNode = captureMap['decorator'];
         // Store by the decorator's end line — the definition follows immediately after
         fileDecorators.set(decoratorNode.endPosition.row, {
@@ -1591,18 +1507,39 @@ const processFileGroup = (
         });
 
         if (ROUTE_DECORATOR_NAMES.has(decoratorName)) {
-          const routePath = decoratorArg || '';
           const method = decoratorName.replace('Mapping', '').toUpperCase();
           const httpMethod = ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'].includes(method)
             ? method
             : 'GET';
-          result.decoratorRoutes.push({
+          const base = {
             filePath: file.path,
-            routePath,
             httpMethod,
             decoratorName,
             lineNumber: decoratorNode.startPosition.row + lineOffset,
-          });
+            ...(decoratorReceiver ? { decoratorReceiver } : {}),
+          };
+          if (decoratorArgStr) {
+            // String-literal path (the fast path, unchanged). Empty-string
+            // literal `""` has no `string_content` → `decoratorArg` undefined →
+            // routePath '' (a valid path under an APIRouter prefix).
+            result.decoratorRoutes.push({ ...base, routePath: decoratorArg ?? '' });
+          } else if (decoratorArgExpr) {
+            // #2391 non-literal path (imported/composed constant). Emit the raw
+            // expression + its operands for cross-file resolution in parse-impl;
+            // `routePath` stays empty until resolved (or the route is dropped).
+            const operands: Operand[] | null =
+              decoratorArgExpr.type === 'identifier'
+                ? [{ kind: 'ref', name: decoratorArgExpr.text }]
+                : parseConstOperands(decoratorArgExpr);
+            result.decoratorRoutes.push({
+              ...base,
+              routePath: '',
+              routePathExpr: decoratorArgExpr.text,
+              ...(operands ? { routePathOperands: operands } : {}),
+            });
+          }
+          // Otherwise the first arg is absent or an unsupported shape
+          // (attribute access, call, …) → skip; never a phantom `POST /`.
         }
         // MCP/RPC tool detection: @mcp.tool(), @app.tool(), @server.tool()
         if (decoratorName === 'tool') {
@@ -1758,48 +1695,40 @@ const processFileGroup = (
           if (callNameNode) {
             const calledName = callNameNode.text;
 
-            // Check heritage extractor for call-based heritage (e.g., Ruby include/extend/prepend)
-            if (provider.heritageExtractor?.extractFromCall) {
-              const heritageItems = provider.heritageExtractor.extractFromCall(
-                calledName,
-                callNode,
-                { filePath: file.path, language },
-              );
-              if (heritageItems !== null) {
-                for (const item of heritageItems) {
-                  result.heritage.push({
-                    filePath: file.path,
-                    className: item.className,
-                    parentName: item.parentName,
-                    kind: item.kind,
-                  });
-                }
-                continue;
-              }
-            }
-
-            // Dispatch: route language-specific calls (properties, imports)
-            // Heritage routing is handled by heritageExtractor.extractFromCall above.
+            // Dispatch: route language-specific calls (properties, imports).
+            // Call-based heritage (Ruby include/extend/prepend) is no longer
+            // routed here — those calls return 'skip' from the router and the
+            // mixin edges are emitted by scope-resolution (emitHeritageEdges).
             const routed = callRouter?.(calledName, captureMap['call']);
             if (routed) {
               if (routed.kind === 'skip') continue;
 
               if (routed.kind === 'import') {
-                result.imports.push({
-                  filePath: file.path,
-                  rawImportPath: routed.importPath,
-                  language,
-                });
+                // Call-routed imports (e.g. Ruby `require`) are emitted as
+                // IMPORTS edges by the scope-resolution phase; the legacy
+                // per-file extraction that consumed these was removed in
+                // RING4-2 (#943). Skip.
                 continue;
               }
 
               if (routed.kind === 'properties') {
+                // #1978: thread the qualifier so a routed property's owner edge
+                // points at the *qualified* nested-class node (Outer.Inner) rather
+                // than a now-nonexistent simple `Class:file:Inner` id. Gated on the
+                // flag → byte-identical when off. Mirrors the main owner path.
+                const propGetQualifiedOwnerName =
+                  provider.classExtractor?.qualifiedNodeId === true
+                    ? (node: SyntaxNode, simpleName: string): string | null =>
+                        provider.classExtractor!.extractQualifiedName(node, simpleName)
+                    : undefined;
                 const propEnclosingInfo = cachedFindEnclosingClassInfo(
                   captureMap['call'],
                   file.path,
                   provider.resolveEnclosingOwner,
+                  propGetQualifiedOwnerName,
                 );
-                const propEnclosingClassId = propEnclosingInfo?.classId ?? null;
+                const propEnclosingClassId =
+                  propEnclosingInfo?.qualifiedClassId ?? propEnclosingInfo?.classId ?? null;
                 // Enrich routed properties with FieldExtractor metadata
                 let routedFieldMap: Map<string, FieldInfo> | undefined;
                 if (provider.fieldExtractor && typeEnv) {
@@ -1835,6 +1764,13 @@ const processFileGroup = (
                         : routedFieldInfo?.type
                           ? { declaredType: routedFieldInfo.type }
                           : {}),
+                      ...(routedFieldInfo?.rawDeclaredType !== undefined
+                        ? { rawDeclaredType: routedFieldInfo.rawDeclaredType }
+                        : {}),
+                      ...(routedFieldInfo?.annotations !== undefined &&
+                      routedFieldInfo.annotations.length > 0
+                        ? { annotations: routedFieldInfo.annotations }
+                        : {}),
                       ...(routedFieldInfo?.visibility !== undefined
                         ? { visibility: routedFieldInfo.visibility }
                         : {}),
@@ -1867,16 +1803,20 @@ const processFileGroup = (
                       ? { isReadonly: routedFieldInfo.isReadonly }
                       : {}),
                   });
-                  const fileId = generateId('File', file.path);
-                  const relId = generateId('DEFINES', `${fileId}->${nodeId}`);
-                  result.relationships.push({
-                    id: relId,
-                    sourceId: fileId,
-                    targetId: nodeId,
-                    type: 'DEFINES',
-                    confidence: 1.0,
-                    reason: '',
-                  });
+                  // Only emit File -> Property DEFINES for top-level properties
+                  // (issue #1944); class members are reached via HAS_PROPERTY.
+                  if (!propEnclosingClassId) {
+                    const fileId = generateId('File', file.path);
+                    const relId = generateId('DEFINES', `${fileId}->${nodeId}`);
+                    result.relationships.push({
+                      id: relId,
+                      sourceId: fileId,
+                      targetId: nodeId,
+                      type: 'DEFINES',
+                      confidence: 1.0,
+                      reason: '',
+                    });
+                  }
                   if (propEnclosingClassId) {
                     result.relationships.push({
                       id: generateId('HAS_PROPERTY', `${propEnclosingClassId}->${nodeId}`),
@@ -1946,38 +1886,6 @@ const processFileGroup = (
         continue;
       }
 
-      // Extract heritage (extends/implements) via provider heritage extractor
-      if (captureMap['heritage.class']) {
-        if (provider.heritageExtractor) {
-          const heritageItems = provider.heritageExtractor.extract(captureMap, {
-            filePath: file.path,
-            language,
-          });
-          for (const item of heritageItems) {
-            result.heritage.push({
-              filePath: file.path,
-              className: item.className,
-              parentName: item.parentName,
-              kind: item.kind,
-            });
-          }
-          // When the extractor consumes the match, skip symbol processing below.
-          if (heritageItems.length > 0) {
-            continue;
-          }
-        }
-        // Fallback: the extractor returned [] (or is absent), but the match still
-        // carries a heritage-specific capture. The match belongs to a heritage
-        // clause and must not fall through to generic symbol processing.
-        if (
-          captureMap['heritage.extends'] ||
-          captureMap['heritage.implements'] ||
-          captureMap['heritage.trait']
-        ) {
-          continue;
-        }
-      }
-
       const definitionNode = getDefinitionNodeFromCaptures(captureMap);
       const defaultNodeLabel = getLabelFromCaptures(captureMap, provider);
       if (!defaultNodeLabel) continue;
@@ -1991,24 +1899,84 @@ const processFileGroup = (
             })
           : null;
       const nodeLabel = extractedClassSymbol?.type ?? defaultNodeLabel;
-
-      // Dedup: variable captures (Const/Static/Variable) may overlap with higher-priority
-      // captures (e.g. `const fn = () => {}` matches both @definition.function and @definition.const).
-      // Skip variable captures whose definition node was already processed.
+      const isClassLikeLabel =
+        nodeLabel === 'Class' ||
+        nodeLabel === 'Struct' ||
+        nodeLabel === 'Interface' ||
+        nodeLabel === 'Enum' ||
+        nodeLabel === 'Record';
       if (
-        (nodeLabel === 'Const' || nodeLabel === 'Static' || nodeLabel === 'Variable') &&
-        definitionNode &&
-        processedDefinitionNodes.has(definitionNode.startIndex)
+        isClassLikeLabel &&
+        provider.classExtractor?.shouldSkipClassCapture?.({
+          captureMap,
+          definitionNode,
+          nameNode,
+          nodeLabel,
+        }) === true
       ) {
         continue;
       }
-      if (definitionNode) {
-        processedDefinitionNodes.add(definitionNode.startIndex);
-      }
+
+      const exportDefaultCall =
+        nodeLabel === 'Function' && definitionNode?.type === 'export_statement'
+          ? definitionNode.namedChildren.find((child) => child.type === 'call_expression')
+          : undefined;
+      const defaultExportHocName = (() => {
+        if (exportDefaultCall === undefined) return null;
+        const argList = exportDefaultCall.childForFieldName?.('arguments');
+        const callback = argList?.namedChildren.find(
+          (child) => child.type === 'arrow_function' || child.type === 'function_expression',
+        );
+        if (callback === undefined) return null;
+
+        const callee = exportDefaultCall.childForFieldName?.('function');
+        if (
+          callee?.type === 'identifier' &&
+          DEFAULT_EXPORT_IDENTIFIER_BLOCKLIST_SET.has(callee.text)
+        )
+          return null;
+        if (callee?.type === 'member_expression') {
+          const property = callee.childForFieldName?.('property');
+          if (
+            property?.type === 'property_identifier' &&
+            ARRAY_METHOD_HOC_BLOCKLIST_SET.has(property.text)
+          )
+            return null;
+        }
+
+        return deriveDefaultExportHocName(file.path);
+      })();
 
       // Synthesize name for constructors without explicit @name capture (e.g. Swift init)
-      if (!nameNode && nodeLabel !== 'Constructor' && !extractedClassSymbol) continue;
-      const nodeName = extractedClassSymbol?.name ?? (nameNode ? nameNode.text : 'init');
+      if (
+        !nameNode &&
+        nodeLabel !== 'Constructor' &&
+        !extractedClassSymbol &&
+        !defaultExportHocName
+      )
+        continue;
+
+      const nodeName =
+        extractedClassSymbol?.name ?? defaultExportHocName ?? (nameNode ? nameNode.text : 'init');
+      // Dedup: variable captures (Const/Static/Variable) may overlap with higher-priority
+      // captures (e.g. `const fn = () => {}` matches both @definition.function and @definition.const).
+      // Multi-name declarations share the same definition node, so include the emitted name.
+      if (definitionNode) {
+        const definitionBaseKey = `${definitionNode.startIndex}`;
+        if (nodeLabel === 'Const' || nodeLabel === 'Static' || nodeLabel === 'Variable') {
+          const definitionNameKey = `${definitionBaseKey}:${nodeName}`;
+          if (
+            processedDefinitionNodes.has(definitionBaseKey) ||
+            processedDefinitionNodes.has(definitionNameKey)
+          ) {
+            continue;
+          }
+          processedDefinitionNodes.add(definitionNameKey);
+        } else {
+          processedDefinitionNodes.add(definitionBaseKey);
+        }
+      }
+
       const startLine = definitionNode
         ? definitionNode.startPosition.row + lineOffset
         : nameNode
@@ -2021,19 +1989,117 @@ const processFileGroup = (
         nodeLabel === 'Constructor' ||
         nodeLabel === 'Property' ||
         nodeLabel === 'Function';
-      const enclosingClassInfo = needsOwner
-        ? cachedFindEnclosingClassInfo(
-            nameNode || definitionNode,
-            file.path,
-            provider.resolveEnclosingOwner,
-          )
-        : null;
-      const enclosingClassId = enclosingClassInfo?.classId ?? null;
+      // #1978: thread the class-extractor's qualifier into the owner walk when the
+      // language opts into qualified node ids, so a nested member's owner resolves
+      // to the *qualified* class id (Outer.Inner). Gated on the flag → byte-identical
+      // when off. Mirrors parsing-processor.ts.
+      const getQualifiedOwnerName =
+        provider.classExtractor?.qualifiedNodeId === true
+          ? (node: SyntaxNode, simpleName: string): string | null =>
+              // #1991: LOCKSTEP — a Ruby `module` owner is not a typeDeclaration, so
+              // extractQualifiedName returns null; fall back to the scope walk so a
+              // method inside a nested module owns through the SAME qualified Trait
+              // id its node uses on the worker path too.
+              provider.classExtractor!.extractQualifiedName(node, simpleName) ??
+              provider.classExtractor!.qualifyScopeName?.(node, simpleName) ??
+              null
+          : undefined;
+      // A Property declared inside a function/lambda BODY is a function-LOCAL
+      // binding (e.g. Kotlin `val (a,b) = pair` or a `for ((k,v) in m)` loop
+      // destructuring emitted as `@definition.property` to dodge the local-symbol
+      // pruner), NOT a class member. Such locals must not get a HAS_PROPERTY owner
+      // edge from the enclosing class. Detect them by walking from the def node:
+      // if a function-like ancestor is reached BEFORE any class container, the
+      // property is enclosed by a function. Language-agnostic — genuine class
+      // fields sit directly in the class body with no intervening function, so
+      // they are unaffected (#1919 review CF3).
+      //
+      // EXCEPTION: a constructor PARAMETER property (TypeScript
+      // `constructor(public name: string)`) is also enclosed by a function, but
+      // it IS a class member — it is reached through the parameter list, not the
+      // executable body. So only strip the owner when the property is NOT inside
+      // a parameter list of that function (i.e. it's a body local).
+      const propOwnerNode = nameNode || definitionNode;
+      // A Property is function-local (and must NOT get a class HAS_PROPERTY owner)
+      // when its nearest enclosing executable body — reached before any class
+      // container — is a function/accessor/initializer body, AND it is not a
+      // constructor parameter-property (rescued by the param-list carve-out).
+      // Uses LOCAL_SCOPE_BODY_NODE_TYPES (not FUNCTION_NODE_TYPES): the latter
+      // mis-includes Dart bare signatures (over-stripping accessors) and omits
+      // Kotlin/Swift init+accessor bodies (under-stripping their locals) — see
+      // the #1919 review of this guard.
+      const isFunctionLocalProperty =
+        nodeLabel === 'Property' &&
+        propOwnerNode !== undefined &&
+        findAncestorBeforeBoundary(
+          propOwnerNode,
+          LOCAL_SCOPE_BODY_NODE_TYPES,
+          CLASS_CONTAINER_TYPES,
+        ) !== null &&
+        findAncestorBeforeBoundary(
+          propOwnerNode,
+          PARAMETER_LIST_NODE_TYPES,
+          LOCAL_SCOPE_BODY_NODE_TYPES,
+        ) === null;
+      const enclosingClassInfo =
+        needsOwner && !isFunctionLocalProperty
+          ? cachedFindEnclosingClassInfo(
+              nameNode || definitionNode,
+              file.path,
+              provider.resolveEnclosingOwner,
+              getQualifiedOwnerName,
+            )
+          : null;
+      const enclosingClassId =
+        enclosingClassInfo?.qualifiedClassId ?? enclosingClassInfo?.classId ?? null;
+      const objectLiteralOwnerInfo =
+        !enclosingClassId && nodeLabel === 'Method' && definitionNode
+          ? findObjectLiteralBindingInfo(definitionNode, file.path)
+          : null;
 
-      // Qualify method/property IDs with enclosing class name to avoid collisions
-      const qualifiedName = enclosingClassInfo
-        ? `${enclosingClassInfo.className}.${nodeName}`
-        : nodeName;
+      // #1978: hoisted ABOVE qualifiedName/node-id (load-bearing order) so a
+      // class-like node can key its id by its fully-qualified path. Derived from
+      // the SAME extractQualifiedName the owner edge uses → owner id == node id.
+      const classNodeForSymbol = definitionNode || nameNode;
+      const qualifiedTypeName =
+        extractedClassSymbol?.qualifiedName ??
+        (classNodeForSymbol && provider.classExtractor?.isTypeDeclaration(classNodeForSymbol)
+          ? (provider.classExtractor.extractQualifiedName(classNodeForSymbol, nodeName) ?? nodeName)
+          : // #1991: LOCKSTEP with parsing-processor.ts — qualify a Ruby `module`
+            // (Trait) via the scope walk so same-tail nested mixin modules get
+            // distinct ids on the worker path too. Gated on qualifiedNodeId.
+            isQualifiableScopeLabel(nodeLabel) &&
+              provider.classExtractor?.qualifiedNodeId === true &&
+              classNodeForSymbol
+            ? (provider.classExtractor.qualifyScopeName?.(classNodeForSymbol, nodeName) ??
+              undefined)
+            : undefined);
+
+      // Qualify method/property IDs with enclosing class name to avoid collisions.
+      // Class-like nodes use their own fully-qualified path as the id key when the
+      // language enables qualifiedNodeId (#1978); everything else is unchanged.
+      // #1982: LOCKSTEP with parsing-processor.ts — a Rust inherent-impl with an
+      // UNSCOPED bare target is keyed by the enclosing `mod_item` scope so the
+      // worker-path Impl node id matches the sequential path and the owner walk.
+      const rustImplQualifiedName =
+        nodeLabel === 'Impl' &&
+        definitionNode?.type === 'impl_item' &&
+        nameNode?.type === 'type_identifier'
+          ? qualifyRustImplTargetByModScope(definitionNode, nodeName)
+          : undefined;
+
+      const qualifiedName =
+        rustImplQualifiedName !== undefined
+          ? rustImplQualifiedName
+          : // #1991: LOCKSTEP — include Trait so a Ruby mixin module's qualified
+            // scope id keys the worker-path node, matching the sequential path.
+            (isClassLikeLabel || isQualifiableScopeLabel(nodeLabel)) &&
+              provider.classExtractor?.qualifiedNodeId === true &&
+              qualifiedTypeName !== undefined
+            ? qualifiedTypeName
+            : enclosingClassInfo
+              ? `${enclosingClassInfo.className}.${nodeName}`
+              : nodeName;
 
       // Extract method metadata BEFORE generating node ID — parameterCount is needed
       // to disambiguate overloaded methods via #<arity> suffix in the ID.
@@ -2104,15 +2170,87 @@ const processFileGroup = (
         );
         arityTag += constTagForId(defMethodMap, nodeName, arityForId, defMethodInfo, groups);
       }
-      const nodeId = generateId(nodeLabel, `${file.path}:${qualifiedName}${arityTag}`);
-      const classNodeForSymbol = definitionNode || nameNode;
-      const qualifiedTypeName =
-        extractedClassSymbol?.qualifiedName ??
-        (classNodeForSymbol && provider.classExtractor?.isTypeDeclaration(classNodeForSymbol)
-          ? (provider.classExtractor.extractQualifiedName(classNodeForSymbol, nodeName) ?? nodeName)
-          : undefined);
+      const parameterShapeTag =
+        nodeLabel === 'Function' || nodeLabel === 'Method'
+          ? parameterShapeIdTag(
+              methodProps.parameterTypes as string[] | undefined,
+              methodProps.parameterTypeClasses as ParameterTypeClass[] | undefined,
+            )
+          : '';
+      const classTemplateArguments =
+        extractedClassSymbol?.templateArguments ??
+        provider.classExtractor?.extractTemplateArgumentsFromCapture?.({
+          captureMap,
+          definitionNode,
+          nameNode,
+        }) ??
+        (captureMap['template-arguments']
+          ? extractTemplateArguments(captureMap['template-arguments'].text)
+          : undefined) ??
+        (nameNode && nameNode.text ? extractTemplateArguments(nameNode.text) : undefined);
+      const classTemplateTag =
+        (nodeLabel === 'Class' ||
+          nodeLabel === 'Struct' ||
+          nodeLabel === 'Interface' ||
+          nodeLabel === 'Enum' ||
+          nodeLabel === 'Record') &&
+        classTemplateArguments !== undefined &&
+        classTemplateArguments.length > 0
+          ? templateArgumentsIdTag(classTemplateArguments)
+          : '';
+      // SFINAE / `requires`-clause aware ID disambiguation (issue #1579).
+      // Function-template overloads with identical parameterTypes but
+      // mutually-exclusive constraints (e.g. `enable_if_t<is_integral_v<T>>`
+      // vs `enable_if_t<is_floating_point_v<T>>`) need distinct graph nodes
+      // so the constraint-filter step in `narrowOverloadCandidates` has two
+      // candidates to narrow between. Without this tag they collapse to a
+      // single Function node and the SFINAE call resolves to only one edge
+      // regardless of which overload's constraint holds. This mirrors the
+      // sequential `parsing-processor` path removed in #1983 — the worker is
+      // now the sole parse path, so it must stamp the constraint tag and the
+      // `templateConstraints` node property the resolver looks up by re-
+      // hashing the def's constraints (see graph-bridge ids.ts / node-lookup.ts).
+      let parsedTemplateConstraints: unknown = undefined;
+      let constraintsTag = '';
+      if (
+        (nodeLabel === 'Function' || nodeLabel === 'Method') &&
+        provider.extractTemplateConstraints !== undefined &&
+        definitionNode
+      ) {
+        try {
+          parsedTemplateConstraints = provider.extractTemplateConstraints(definitionNode);
+          if (parsedTemplateConstraints !== undefined) {
+            constraintsTag = templateConstraintsIdTag(parsedTemplateConstraints);
+          }
+        } catch (err) {
+          // Optional C++ template-constraint enrichment: fall back to no tag, but
+          // surface the failure (#2264) — matches the CFG-build warning above.
+          reportWarning(
+            `Template-constraint extraction failed for ${file.path}: ${err instanceof Error ? err.message : String(err)}`,
+          );
+          parsedTemplateConstraints = undefined;
+          constraintsTag = '';
+        }
+      }
+      const nodeId = generateId(
+        nodeLabel,
+        `${file.path}:${qualifiedName}${classTemplateTag}${arityTag}${parameterShapeTag}${constraintsTag}`,
+      );
 
-      const description = provider.descriptionExtractor?.(nodeLabel, nodeName, captureMap);
+      let description: string | undefined;
+      try {
+        description = provider.descriptionExtractor?.(nodeLabel, nodeName, captureMap);
+      } catch (err) {
+        // A throw here (an unexpected tree-sitter node shape, a provider bug) must
+        // NOT propagate — it would escape processFileGroup to the language-group
+        // catch, which treats any throw as "parser unavailable" and silently drops
+        // every remaining file in the group. Mirrors the extractTemplateConstraints
+        // guard above (#2286 review).
+        reportWarning(
+          `Description extraction failed for ${file.path}: ${err instanceof Error ? err.message : String(err)}`,
+        );
+        description = undefined;
+      }
 
       let frameworkHint = definitionNode
         ? detectFrameworkFromAST(language, (definitionNode.text || '').slice(0, 300))
@@ -2184,6 +2322,15 @@ const processFileGroup = (
             const info = fieldMap?.get(nodeName);
             if (info) {
               declaredType = info.type ?? undefined;
+              // Mutate methodProps BEFORE the `{...methodProps}` spread below —
+              // rawDeclaredType is the verbatim generic type text (U1, PR #2200).
+              if (info.rawDeclaredType !== undefined) {
+                methodProps.rawDeclaredType = info.rawDeclaredType;
+              }
+              // Field annotations ('@Name' strings, U2 PR #2200) — omit when empty.
+              if (info.annotations !== undefined && info.annotations.length > 0) {
+                methodProps.annotations = info.annotations;
+              }
               methodProps.visibility = info.visibility;
               methodProps.isStatic = info.isStatic;
               methodProps.isReadonly = info.isReadonly;
@@ -2198,11 +2345,20 @@ const processFileGroup = (
         definitionNode &&
         provider.variableExtractor
       ) {
-        const varCtx: VariableExtractorContext = {
-          filePath: file.path,
-          language,
-        };
-        const varInfo = provider.variableExtractor.extract(definitionNode, varCtx);
+        let variableInfoByName = variableInfoCache.get(definitionNode.startIndex);
+        if (!variableInfoByName) {
+          const varCtx: VariableExtractorContext = {
+            filePath: file.path,
+            language,
+          };
+          variableInfoByName = new Map(
+            provider.variableExtractor
+              .extractAll(definitionNode, varCtx)
+              .map((info) => [info.name, info]),
+          );
+          variableInfoCache.set(definitionNode.startIndex, variableInfoByName);
+        }
+        const varInfo = variableInfoByName.get(nodeName);
         if (varInfo) {
           if (varInfo.type) declaredType = varInfo.type;
           methodProps.visibility = varInfo.visibility;
@@ -2227,6 +2383,12 @@ const processFileGroup = (
               ? isVueSetupTopLevel(nameNode || definitionNode)
               : cachedExportCheck(provider.exportChecker, nameNode || definitionNode, nodeName),
           ...(qualifiedTypeName !== undefined ? { qualifiedName: qualifiedTypeName } : {}),
+          ...(classTemplateArguments !== undefined && classTemplateArguments.length > 0
+            ? { templateArguments: classTemplateArguments }
+            : {}),
+          ...(parsedTemplateConstraints !== undefined
+            ? { templateConstraints: parsedTemplateConstraints }
+            : {}),
           ...(frameworkHint
             ? {
                 astFrameworkMultiplier: frameworkHint.entryPointMultiplier,
@@ -2240,6 +2402,7 @@ const processFileGroup = (
       });
 
       // enclosingClassId already computed above (before nodeId generation)
+      const ownerId = enclosingClassId ?? objectLiteralOwnerInfo?.ownerId;
 
       result.symbols.push({
         filePath: file.path,
@@ -2250,14 +2413,21 @@ const processFileGroup = (
         parameterCount: methodProps.parameterCount as number | undefined,
         requiredParameterCount: methodProps.requiredParameterCount as number | undefined,
         parameterTypes: methodProps.parameterTypes as string[] | undefined,
+        parameterTypeClasses: methodProps.parameterTypeClasses as ParameterTypeClass[] | undefined,
         returnType: methodProps.returnType as string | undefined,
         ...(declaredType !== undefined ? { declaredType } : {}),
-        ...(enclosingClassId ? { ownerId: enclosingClassId } : {}),
+        ...(classTemplateArguments !== undefined && classTemplateArguments.length > 0
+          ? { templateArguments: classTemplateArguments }
+          : {}),
+        ...(ownerId !== undefined ? { ownerId } : {}),
         visibility: methodProps.visibility as string | undefined,
         isStatic: methodProps.isStatic as boolean | undefined,
         isReadonly: methodProps.isReadonly as boolean | undefined,
         isAbstract: methodProps.isAbstract as boolean | undefined,
         isFinal: methodProps.isFinal as boolean | undefined,
+        ...(methodProps.isDeleted !== undefined
+          ? { isDeleted: methodProps.isDeleted as boolean }
+          : {}),
         ...(methodProps.isVirtual !== undefined
           ? { isVirtual: methodProps.isVirtual as boolean }
           : {}),
@@ -2273,28 +2443,48 @@ const processFileGroup = (
           : {}),
       });
 
-      const fileId = generateId('File', file.path);
-      const relId = generateId('DEFINES', `${fileId}->${nodeId}`);
-      result.relationships.push({
-        id: relId,
-        sourceId: fileId,
-        targetId: nodeId,
-        type: 'DEFINES',
-        confidence: 1.0,
-        reason: '',
-      });
-
-      // ── HAS_METHOD / HAS_PROPERTY: link member to enclosing class ──
-      if (enclosingClassId) {
-        const memberEdgeType = nodeLabel === 'Property' ? 'HAS_PROPERTY' : 'HAS_METHOD';
+      // Only emit File -> Symbol DEFINES for top-level symbols (issue #1944).
+      if (ownerId === undefined) {
+        const fileId = generateId('File', file.path);
+        const relId = generateId('DEFINES', `${fileId}->${nodeId}`);
         result.relationships.push({
-          id: generateId(memberEdgeType, `${enclosingClassId}->${nodeId}`),
-          sourceId: enclosingClassId,
+          id: relId,
+          sourceId: fileId,
           targetId: nodeId,
-          type: memberEdgeType,
+          type: 'DEFINES',
           confidence: 1.0,
           reason: '',
         });
+      }
+
+      // ── HAS_METHOD / HAS_PROPERTY: link member to enclosing class ──
+      if (ownerId !== undefined) {
+        const memberEdgeType = nodeLabel === 'Property' ? 'HAS_PROPERTY' : 'HAS_METHOD';
+        result.relationships.push({
+          id: generateId(memberEdgeType, `${ownerId}->${nodeId}`),
+          sourceId: ownerId,
+          targetId: nodeId,
+          type: memberEdgeType,
+          confidence: 1.0,
+          reason: objectLiteralOwnerInfo
+            ? 'object literal method belongs to exported object binding'
+            : '',
+        });
+      }
+
+      // ── Fetch wrapper detection: record functions that call fetch() internally ──
+      if (
+        nodeLabel === 'Function' &&
+        definitionNode &&
+        nameNode &&
+        (language === SupportedLanguages.TypeScript || language === SupportedLanguages.JavaScript)
+      ) {
+        if (checkForFetchCall(definitionNode)) {
+          result.fetchWrapperDefs.push({
+            filePath: file.path,
+            functionName: nameNode.text,
+          });
+        }
       }
     }
 
@@ -2306,6 +2496,46 @@ const processFileGroup = (
 
     // Extract ORM queries (Prisma, Supabase)
     extractORMQueries(file.path, parseContent, result.ormQueries);
+
+    // Extract FastAPI include_router(prefix=...) and `from <mod> import router`
+    // sites. parse-impl aggregates these into a per-module prefix map and
+    // injects the resolved prefix onto each ExtractedDecoratorRoute that
+    // came from a `@router.<verb>` decorator. Python-only.
+    if (language === SupportedLanguages.Python) {
+      extractFastAPIRouterBindings(
+        file.path,
+        parseContent,
+        result.routerIncludes,
+        result.routerImports,
+        (result.routerModuleAliases ??= []),
+        (result.routerConstructorPrefixes ??= []),
+      );
+      // #2391: harvest module-level string constants + from-imports so parse-impl
+      // can resolve non-literal decorator route paths cross-file. Only emit for
+      // files that carry something resolvable (a constant definition or an import
+      // binding) to keep the aggregate bounded on large repos.
+      const constants = extractPythonModuleConstants(tree);
+      if (constants.literals.size > 0 || constants.exprs.size > 0 || constants.imports.size > 0) {
+        (result.moduleConstants ??= []).push({ filePath: file.path, constants });
+      }
+    }
+
+    // Language-specific decorator route extraction via provider hook.
+    // The provider's extractDecoratorRoutes walks the AST for framework-specific
+    // route patterns (e.g., Java Spring class-level prefix joining). Routes are
+    // appended to decoratorRoutes for the routes phase to emit as Route nodes.
+    if (provider.extractDecoratorRoutes) {
+      const frameworkRoutes = provider.extractDecoratorRoutes(tree, file.path, lineOffset);
+      for (const r of frameworkRoutes) result.decoratorRoutes.push(r);
+    }
+
+    // Project-wide route-inheritance type collection via provider hook (#2288).
+    // The per-file SharedSpringType views are aggregated by the parse phase,
+    // which then resolves interface-inherited routes cross-file.
+    if (provider.extractRouteInheritanceTypes) {
+      const springTypes = provider.extractRouteInheritanceTypes(tree, file.path);
+      if (springTypes.length > 0) (result.springTypes ??= []).push(...springTypes);
+    }
 
     // Vue: emit CALLS edges for components used in <template>
     if (language === SupportedLanguages.Vue) {
@@ -2331,66 +2561,88 @@ let accumulated: ParseWorkerResult = {
   nodes: [],
   relationships: [],
   symbols: [],
-  imports: [],
   calls: [],
   assignments: [],
-  heritage: [],
   routes: [],
   fetchCalls: [],
+  fetchWrapperDefs: [],
   decoratorRoutes: [],
+  routerIncludes: [],
+  routerImports: [],
+  routerConstructorPrefixes: [],
+  routerModuleAliases: [],
   toolDefs: [],
   ormQueries: [],
   constructorBindings: [],
   fileScopeBindings: [],
   parsedFiles: [],
   skippedLanguages: {},
+  cfgSkipped: {},
   fileCount: 0,
 };
 let cumulativeProcessed = 0;
+// `mergeResult` (+ its `appendAll`) lives in ./result-merge.ts (extracted so it
+// can be unit-tested without importing this entry module).
 
-// Use a loop instead of push(...spread) to avoid hitting V8's argument limit
-// when merging large result sets (push(...arr) calls apply() under the hood
-// and blows the stack when arr has >~65k elements).
-const appendAll = <T>(target: T[], src: T[]) => {
-  for (let i = 0; i < src.length; i++) target.push(src[i]);
-};
+// Signal the pool that worker-side initialization (parser imports, language
+// grammars, type-env setup, all helper modules) is complete and the message
+// handler below is about to be attached. The pool's `waitForWorkerReady`
+// resolves on this handshake — without it, a worker that crashes during
+// top-of-script init slips past pool startup (Node's `online` event fires
+// before the script body runs) and the pool only notices via the first
+// dispatch's idle timeout (~30s). Emit once; the dispatch handler treats
+// any subsequent `ready` message as a benign no-op.
+//
+// Native postMessage carries the ready handshake — Node's structured
+// clone delivers `{type:'ready'}` to the pool's waitForWorkerReady
+// listener directly. The pool drops the slot if this isn't seen within
+// `WORKER_READY_TIMEOUT_MS` (5s), so emitting it AFTER all top-of-script
+// init (imports, native binding loads, type-env setup) completes is the
+// load-bearing signal that this worker is ready for dispatch.
+bootstrapLog('ready sent');
+parentPort!.postMessage({ type: 'ready' });
 
-const mergeResult = (target: ParseWorkerResult, src: ParseWorkerResult) => {
-  appendAll(target.nodes, src.nodes);
-  appendAll(target.relationships, src.relationships);
-  appendAll(target.symbols, src.symbols);
-  appendAll(target.imports, src.imports);
-  appendAll(target.calls, src.calls);
-  appendAll(target.assignments, src.assignments);
-  appendAll(target.heritage, src.heritage);
-  appendAll(target.routes, src.routes);
-  appendAll(target.fetchCalls, src.fetchCalls);
-  appendAll(target.decoratorRoutes, src.decoratorRoutes);
-  appendAll(target.toolDefs, src.toolDefs);
-  appendAll(target.ormQueries, src.ormQueries);
-  appendAll(target.constructorBindings, src.constructorBindings);
-  appendAll(target.fileScopeBindings, src.fileScopeBindings);
-  appendAll(target.parsedFiles, src.parsedFiles);
-  for (const [lang, count] of Object.entries(src.skippedLanguages)) {
-    target.skippedLanguages[lang] = (target.skippedLanguages[lang] || 0) + count;
-  }
-  target.fileCount += src.fileCount;
-};
+// Module-scope `TextDecoder` for sub-batch content. The pool sends each
+// file's content as a `Uint8Array` (zero-copy ArrayBuffer transfer); we
+// decode to string lazily here, once per file, before handing to
+// tree-sitter. Hoisted to module scope so we don't allocate a new
+// ICU-backed decoder per sub-batch — `TextDecoder.decode()` is
+// stateless across calls and safe to share.
+const sharedContentDecoder = new TextDecoder('utf-8');
 
+/**
+ * Convert the pool's sub-batch `files` array (content as `Uint8Array`,
+ * transferred zero-copy) into the `ParseWorkerInput[]` shape
+ * `processBatch` expects (content as `string`). This is the one place
+ * the UTF-8 decode happens — runs on the worker thread in parallel with
+ * continued main-thread work.
+ */
+function decodeSubBatchFiles(
+  files: Array<{ path: string; content: Uint8Array | string }>,
+): ParseWorkerInput[] {
+  return files.map((f) => ({
+    path: f.path,
+    // Test scaffolding (the writeReadyWorker preamble that wraps
+    // parentPort.on) may already convert content to string before
+    // calling here; tolerate both shapes so the same worker code
+    // exercises real and synthetic dispatches.
+    content: typeof f.content === 'string' ? f.content : sharedContentDecoder.decode(f.content),
+  }));
+}
+
+let firstTaskLogged = false;
 parentPort!.on('message', (msg: WorkerIncomingMessage) => {
+  if (!firstTaskLogged) {
+    firstTaskLogged = true;
+    bootstrapLog('first task received');
+  }
   try {
-    // Legacy single-message mode (backward compat): array of files
-    if (Array.isArray(msg)) {
-      const result = processBatch(msg, (filesProcessed) => {
-        parentPort!.postMessage({ type: 'progress', filesProcessed });
-      });
-      parentPort!.postMessage({ type: 'result', data: result });
-      return;
-    }
-
     // Sub-batch mode: { type: 'sub-batch', files: [...] }
     if (msg.type === 'sub-batch') {
-      const result = processBatch(msg.files, (filesProcessed) => {
+      const files = decodeSubBatchFiles(
+        msg.files as Array<{ path: string; content: Uint8Array | string }>,
+      );
+      const result = processBatch(files, (filesProcessed) => {
         parentPort!.postMessage({
           type: 'progress',
           filesProcessed: cumulativeProcessed + filesProcessed,
@@ -2405,32 +2657,89 @@ parentPort!.on('message', (msg: WorkerIncomingMessage) => {
 
     // Flush: send accumulated results
     if (msg.type === 'flush') {
-      parentPort!.postMessage({ type: 'result', data: accumulated });
+      // #1983 parallel serialization: when a store path is configured, write
+      // this job's ParsedFiles to our own disk shard HERE (at the flush
+      // boundary, where `accumulated.parsedFiles` is complete) and drop them
+      // from the result so the main thread never deserializes/re-serializes
+      // them. Writing at flush — not per sub-batch — encodes the invariant
+      // "a shard is written iff its result is delivered": a worker that dies
+      // before flush wrote no shard, so the pool's job retry yields exactly
+      // one. `undefined` store path keeps ParsedFiles in the result (no-store
+      // fallback). The write is synchronous: blocking this dedicated worker
+      // thread protects the main thread and avoids threading async through the
+      // accumulate path; per-job write time is small vs the parse it follows.
+      if (
+        (PARSED_FILE_STORE_STORAGE_PATH || DURABLE_PARSED_FILE_STORAGE_PATH) &&
+        accumulated.parsedFiles.length > 0
+      ) {
+        const seq = shardSeq++;
+        // #2038 warm-cache coverage: ALSO write a durable, content-addressed
+        // shard keyed by chunk hash so a future warm parse-cache hit (no worker
+        // runs) can restore these ParsedFiles without re-parsing. Same bytes,
+        // same `seq`, so durable and run-scoped shards correlate. Only when the
+        // flush carried a chunk hash (content-addressed dispatch).
+        if (DURABLE_PARSED_FILE_STORAGE_PATH && typeof msg.chunkHash === 'string') {
+          persistDurableParsedFileShardSync(
+            DURABLE_PARSED_FILE_STORAGE_PATH,
+            msg.chunkHash,
+            threadId,
+            seq,
+            accumulated.parsedFiles,
+          );
+        }
+        if (PARSED_FILE_STORE_STORAGE_PATH) {
+          persistParsedFileShardSync(
+            PARSED_FILE_STORE_STORAGE_PATH,
+            `w${threadId}-${seq}`,
+            accumulated.parsedFiles,
+          );
+          accumulated.parsedFiles = [];
+        }
+      }
+      postResultCloneSafe(accumulated);
       // Reset for potential reuse
       accumulated = {
         nodes: [],
         relationships: [],
         symbols: [],
-        imports: [],
         calls: [],
         assignments: [],
-        heritage: [],
         routes: [],
         fetchCalls: [],
+        fetchWrapperDefs: [],
         decoratorRoutes: [],
+        routerIncludes: [],
+        routerImports: [],
+        routerConstructorPrefixes: [],
+        routerModuleAliases: [],
         toolDefs: [],
         ormQueries: [],
         constructorBindings: [],
         fileScopeBindings: [],
         parsedFiles: [],
         skippedLanguages: {},
+        cfgSkipped: {},
         fileCount: 0,
       };
       cumulativeProcessed = 0;
       return;
     }
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    parentPort!.postMessage({ type: 'error', error: message });
+    // Carry the worker-side stack across the MessageChannel, not just the
+    // message. Without this, an unexpected worker throw (e.g. the minified
+    // `this.#<x> is not a function` family) reaches the operator as a bare
+    // one-liner with no file:line — exactly what made #2068 undebuggable. The
+    // pool embeds `errorStack` into its death/circuit-breaker reason so the
+    // surfaced "Phase 'parse' failed" message points at the real frame (the
+    // stack's first line already carries the error's type + message). We send
+    // primitive fields (not the raw Error) so a non-cloneable `cause` payload
+    // can never turn the report itself into a `messageerror`. `errorStack` is
+    // optional on the wire, so an older pool ignores it.
+    const e = err instanceof Error ? err : new Error(String(err));
+    parentPort!.postMessage({
+      type: 'error',
+      error: e.message,
+      errorStack: e.stack,
+    });
   }
 });

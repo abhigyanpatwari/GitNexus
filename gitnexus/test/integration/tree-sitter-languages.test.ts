@@ -36,6 +36,16 @@ function extractDefinitions(matches: any[]) {
   return defs;
 }
 
+function extractCapturedCallNames(matches: any[]) {
+  const names: string[] = [];
+  for (const match of matches) {
+    if (!match.captures.some((c: any) => c.name === 'call')) continue;
+    const nameCapture = match.captures.find((c: any) => c.name === 'call.name');
+    if (nameCapture) names.push(nameCapture.node.text);
+  }
+  return names;
+}
+
 describe('Tree-sitter multi-language parsing', () => {
   let parser: Parser;
 
@@ -128,6 +138,40 @@ describe('Tree-sitter multi-language parsing', () => {
       const defTypes = defs.map((d) => d.type);
       expect(defTypes).toContain('definition.function');
     });
+
+    it('captures every name in multi-name const, var, and field declarations', async () => {
+      await loadLanguage(SupportedLanguages.Go);
+      const provider = getProvider(SupportedLanguages.Go);
+      const code = `
+        package main
+        const X, Y,Z,A,B = 1, 2,3,4,5
+        var a, b int
+        var (
+          c, d string
+        )
+        const (
+          C, D = 3, 4
+        )
+        type Point struct { X, y int }
+      `;
+      const { matches } = parseAndQuery(parser, code, provider.treeSitterQueries);
+      const defs = extractDefinitions(matches);
+
+      const constNames = defs
+        .filter((def) => def.type === 'definition.const')
+        .map((def) => def.name);
+      expect(constNames.sort()).toEqual(['A', 'B', 'C', 'D', 'X', 'Y', 'Z']);
+
+      const variableNames = defs
+        .filter((def) => def.type === 'definition.variable')
+        .map((def) => def.name);
+      expect(variableNames.sort()).toEqual(['a', 'b', 'c', 'd']);
+
+      const propertyNames = defs
+        .filter((def) => def.type === 'definition.property')
+        .map((def) => def.name);
+      expect(propertyNames.sort()).toEqual(['X', 'y']);
+    });
   });
 
   describe('C', () => {
@@ -168,6 +212,21 @@ describe('Tree-sitter multi-language parsing', () => {
       expect(names).toContain('MAX_SIZE');
       expect(names).toContain('uint');
       expect(names).toContain('Point');
+    });
+
+    it('captures C typedef anonymous structs, enums, and enumerators', async () => {
+      await loadLanguage(SupportedLanguages.C);
+      const code = `
+        typedef struct { int x; int y; } Point;
+        typedef enum { RED, GREEN, BLUE } Color;
+      `;
+      const provider = getProvider(SupportedLanguages.C);
+      const { matches } = parseAndQuery(parser, code, provider.treeSitterQueries);
+      const defs = extractDefinitions(matches);
+      const names = defs.map((d) => d.name);
+      expect(defs.some((d) => d.type === 'definition.struct' && d.name === 'Point')).toBe(true);
+      expect(defs.some((d) => d.type === 'definition.enum' && d.name === 'Color')).toBe(true);
+      expect(names).toEqual(expect.arrayContaining(['RED', 'GREEN', 'BLUE']));
     });
   });
 
@@ -237,6 +296,63 @@ describe('Tree-sitter multi-language parsing', () => {
       const names = defs.map((d) => d.name);
       expect(names).toContain('utils');
       expect(names).toContain('helper');
+    });
+
+    it('treats CUDA .cu and .cuh files as C++ for definition extraction', async () => {
+      expect(getLanguageFromFilename('src/kernels/force.cu')).toBe(SupportedLanguages.CPlusPlus);
+      expect(getLanguageFromFilename('src/force/nep.cuh')).toBe(SupportedLanguages.CPlusPlus);
+
+      await loadLanguage(SupportedLanguages.CPlusPlus, 'src/kernels/force.cu');
+      const code = `class Force { public: void apply(); };\nvoid launchKernel() {}`;
+      const provider = getProvider(SupportedLanguages.CPlusPlus);
+      const { matches } = parseAndQuery(parser, code, provider.treeSitterQueries);
+      const defs = extractDefinitions(matches);
+      const names = defs.map((d) => d.name);
+
+      expect(defs.some((d) => d.type === 'definition.class' && d.name === 'Force')).toBe(true);
+      expect(names).toContain('launchKernel');
+    });
+
+    it('characterizes CUDA syntax when routed through the C++ parser', async () => {
+      await loadLanguage(SupportedLanguages.CPlusPlus, 'src/kernels/force.cu');
+      const code = `
+        __global__ void axpy(float *x) { x[0] = 1.0f; }
+        void host() {
+          axpy<<<1, 32>>>(nullptr);
+          cudaDeviceSynchronize();
+        }
+      `;
+      const provider = getProvider(SupportedLanguages.CPlusPlus);
+      const { tree, matches } = parseAndQuery(parser, code, provider.treeSitterQueries);
+      const defs = extractDefinitions(matches);
+      const callNames = extractCapturedCallNames(matches);
+      const ordinaryCalls = extractCapturedCallNames(
+        parseAndQuery(
+          parser,
+          'void host() { cudaDeviceSynchronize(); }',
+          provider.treeSitterQueries,
+        ).matches,
+      );
+
+      expect(tree.rootNode.hasError).toBe(true);
+      expect(defs.some((d) => d.name === 'axpy')).toBe(true);
+      expect(ordinaryCalls).toContain('cudaDeviceSynchronize');
+      expect(callNames).not.toContain('axpy');
+    });
+
+    it('captures C++ typedef anonymous structs, enums, and enumerators', async () => {
+      await loadLanguage(SupportedLanguages.CPlusPlus);
+      const code = `
+        typedef struct { int x; int y; } Point;
+        typedef enum { Red, Green, Blue } Color;
+      `;
+      const provider = getProvider(SupportedLanguages.CPlusPlus);
+      const { matches } = parseAndQuery(parser, code, provider.treeSitterQueries);
+      const defs = extractDefinitions(matches);
+      const names = defs.map((d) => d.name);
+      expect(defs.some((d) => d.type === 'definition.struct' && d.name === 'Point')).toBe(true);
+      expect(defs.some((d) => d.type === 'definition.enum' && d.name === 'Color')).toBe(true);
+      expect(names).toEqual(expect.arrayContaining(['Red', 'Green', 'Blue']));
     });
   });
 
@@ -331,24 +447,6 @@ describe('Tree-sitter multi-language parsing', () => {
       const defs = extractDefinitions(matches);
       const names = defs.map((d) => d.name);
       expect(names).toContain('Vec');
-    });
-
-    it('captures trait impl heritage', async () => {
-      await loadLanguage(SupportedLanguages.Rust);
-      const code = `trait Display { fn fmt(&self); }\nstruct Foo;\nimpl Display for Foo { fn fmt(&self) {} }`;
-      const provider = getProvider(SupportedLanguages.Rust);
-      const { matches } = parseAndQuery(parser, code, provider.treeSitterQueries);
-      // Look for heritage captures
-      const heritageCaptures: string[] = [];
-      for (const match of matches) {
-        for (const capture of match.captures) {
-          if (capture.name.startsWith('heritage.')) {
-            heritageCaptures.push(`${capture.name}:${capture.node.text}`);
-          }
-        }
-      }
-      expect(heritageCaptures).toContain('heritage.trait:Display');
-      expect(heritageCaptures).toContain('heritage.class:Foo');
     });
 
     it('captures modules, consts, and statics', async () => {
@@ -537,41 +635,6 @@ describe('Tree-sitter multi-language parsing', () => {
       }
       // 2 imports + 1 re-export = 3 import.source captures
       expect(imports.length).toBe(3);
-    });
-
-    // ── Heritage extraction ────────────────────────────────────────────
-
-    it('extracts heritage (extends, implements, with)', async () => {
-      if (!(await loadDartOrSkip())) return;
-      const { matches } = parseAndQuery(parser, readFixture('simple.dart'), dartQueries());
-
-      const heritage: { class: string; parent: string }[] = [];
-      for (const match of matches) {
-        const captures: Record<string, string> = {};
-        for (const c of match.captures) captures[c.name] = c.node.text;
-        if (captures['heritage.extends']) {
-          heritage.push({
-            class: captures['heritage.class'],
-            parent: captures['heritage.extends'],
-          });
-        }
-        if (captures['heritage.implements']) {
-          heritage.push({
-            class: captures['heritage.class'],
-            parent: captures['heritage.implements'],
-          });
-        }
-        if (captures['heritage.trait']) {
-          heritage.push({ class: captures['heritage.class'], parent: captures['heritage.trait'] });
-        }
-      }
-
-      const pairs = heritage.map((h) => `${h.class}->${h.parent}`);
-      expect(pairs).toContain('Dog->Animal');
-      expect(pairs).toContain('Dog->Describable');
-      expect(pairs).toContain('Duck->Animal');
-      expect(pairs).toContain('Duck->Swimming');
-      expect(pairs).toContain('Duck->Flying');
     });
 
     // ── Call extraction ────────────────────────────────────────────────

@@ -1,19 +1,17 @@
 /**
  * Test helper: Indexed LadybugDB lifecycle manager
  *
- * Uses a shared LadybugDB created by globalSetup (test/global-setup.ts).
- * Each test file clears all data, reseeds, and initializes adapters —
- * avoiding per-file schema creation overhead.
+ * Creates an isolated LadybugDB per suite, reseeds, and initializes adapters.
  *
  * Cleanup properly closes adapters and releases native resources.
  *
  * Each test file gets a unique repoId to prevent MCP pool map collisions.
  * Seed data is NOT included — each test provides its own via options.seed.
  */
-/// <reference path="../vitest.d.ts" />
 import path from 'path';
-import { describe, beforeAll, afterAll, inject } from 'vitest';
-import type { TestDBHandle } from './test-db.js';
+import { describe, beforeAll, beforeEach, afterAll } from 'vitest';
+import { resolveAnalyzeInstallPolicy } from '../../src/core/lbug/extension-loader.js';
+import { createTempDir, type TestDBHandle } from './test-db.js';
 import { NODE_TABLES, EMBEDDING_TABLE_NAME } from '../../src/core/lbug/schema.js';
 
 export interface IndexedDBHandle {
@@ -39,12 +37,21 @@ export interface FTSIndexDef {
 /**
  * Options for withTestLbugDB lifecycle.
  *
- * Lifecycle: initLbug → loadFTS → dropFTS → clearData → seed
+ * Lifecycle: initLbug → loadFTS → dropFTS → clearData → seed → beforeFTS
  *            → createFTS → [closeCoreLbug + poolInitLbug] → afterSetup
  */
 export interface WithTestLbugDBOptions {
   /** Cypher CREATE queries to insert seed data (runs before core adapter opens). */
   seed?: string[];
+  /**
+   * Custom load step run after Cypher `seed` and BEFORE the gated FTS build, so
+   * `createFTSIndex` indexes whatever this loads. Use it to exercise the real
+   * CSV→COPY path (`loadGraphToLbug`) instead of Cypher CREATE. Receives the
+   * core adapter's `dbPath`; colocate scratch files under `path.dirname(dbPath)`
+   * to inherit the suite's temp-dir cleanup. Runs unconditionally (no FTS
+   * needed); the FTS build below stays gated on extension availability.
+   */
+  beforeFTS?: (dbPath: string) => Promise<void>;
   /** FTS indexes to create after seeding. */
   ftsIndexes?: FTSIndexDef[];
   /** Close core adapter and open pool adapter (read-only) after FTS setup. */
@@ -56,8 +63,8 @@ export interface WithTestLbugDBOptions {
 }
 
 /**
- * Manages the full LadybugDB test lifecycle using the shared global DB:
- * data clearing, reseeding, FTS indexes, adapter init/teardown.
+ * Manages the full LadybugDB test lifecycle:
+ * database creation, data clearing, reseeding, FTS indexes, adapter init/teardown.
  *
  * All data operations go through the core adapter's writable connection —
  * no raw lbug.Database() connections are opened.  This avoids file-lock
@@ -76,9 +83,21 @@ export function withTestLbugDB(
   // init on Windows CI regularly exceeds 30s due to native resource setup.
   const timeout = options?.timeout ?? 120_000;
 
+  // Suites that seed FTS indexes need the optional FTS extension. On a dev
+  // machine it may be neither pre-installed nor installable (offline), so we
+  // track availability and skip the suite rather than fail against a missing
+  // index (PR #1161). In CI this graceful skip is dangerous: an FTS-dependent
+  // integration suite would silently vanish while the job stays green. When
+  // GITNEXUS_REQUIRE_FTS=1 (set by the CI test jobs), an unavailable extension
+  // is a HARD FAILURE so these tests can never silently stop protecting.
+  const ftsRequired = !!options?.ftsIndexes?.length;
+  const ftsMustBeAvailable = process.env.GITNEXUS_REQUIRE_FTS === '1';
+  let ftsAvailable = true;
+  let ftsSkipWarned = false;
+
   const setup = async () => {
-    // Get shared DB path from globalSetup (created once with full schema)
-    const dbPath = inject<'lbugDbPath'>('lbugDbPath');
+    const tmpHandle = await createTempDir('gitnexus-lbug-');
+    const dbPath = path.join(tmpHandle.dbPath, 'lbug');
     const repoId = `test-${prefix}-${Date.now()}-${repoCounter++}`;
 
     const adapter = await import('../../src/core/lbug/lbug-adapter.js');
@@ -86,6 +105,26 @@ export function withTestLbugDB(
     // 1. Init core adapter (writable) — reuses existing connection if
     //    already open for this dbPath (no new native objects created).
     await adapter.initLbug(dbPath);
+
+    // 1b. Probe the FTS extension for suites that need it, mirroring the
+    //     analyze write path (`auto`: LOAD-first, then one bounded INSTALL).
+    //     When it still cannot load, the suite is skipped (see beforeEach)
+    //     and FTS seeding below is bypassed so setup never throws — UNLESS
+    //     GITNEXUS_REQUIRE_FTS=1, in which case CI fails loudly instead of
+    //     letting an FTS-dependent integration suite silently disappear.
+    if (ftsRequired) {
+      ftsAvailable = await adapter.loadFTSExtension(undefined, {
+        policy: resolveAnalyzeInstallPolicy(),
+      });
+      if (!ftsAvailable && ftsMustBeAvailable) {
+        throw new Error(
+          `[withTestLbugDB(${prefix})] FTS extension is required (GITNEXUS_REQUIRE_FTS=1) ` +
+            'but could not be loaded or installed. FTS-dependent integration tests must not ' +
+            'be silently skipped in CI — install/repair the LadybugDB FTS extension ' +
+            '(see `gitnexus doctor`) or unset GITNEXUS_REQUIRE_FTS for offline/local runs.',
+        );
+      }
+    }
 
     // 2. Drop stale FTS indexes from previous test file
     if (options?.ftsIndexes?.length) {
@@ -111,19 +150,35 @@ export function withTestLbugDB(
       }
     }
 
-    // 5. Create FTS indexes on fresh data
-    if (options?.ftsIndexes?.length) {
+    // 4b. Custom load step (e.g. loadGraphToLbug COPY path) before the FTS
+    //     build, so createFTSIndex below indexes the loaded rows. Runs
+    //     unconditionally — no FTS extension needed to COPY — while the FTS
+    //     build stays gated on ftsAvailable.
+    if (options?.beforeFTS) {
+      await options.beforeFTS(dbPath);
+    }
+
+    // 5. Create FTS indexes on fresh data (only when the extension loaded;
+    //    otherwise the suite is skipped via beforeEach below).
+    if (options?.ftsIndexes?.length && ftsAvailable) {
       for (const idx of options.ftsIndexes) {
         await adapter.createFTSIndex(idx.table, idx.indexName, idx.columns);
       }
     }
 
+    // 5b. Flush WAL so seed data + FTS indexes are visible to the pool
+    //     adapter's read path. Without this, Windows CI intermittently
+    //     fails FTS queries because the WAL hasn't been checkpointed
+    //     before the pool adapter starts reading.
+    await adapter.flushWAL();
+
     // 6. Open pool adapter by injecting the core adapter's writable Database.
     //    LadybugDB enforces file locks — writable + read-only can't coexist
     //    on the same path, and db.close() segfaults on macOS due to N-API
     //    destructor issues.  Reusing the writable Database avoids both problems.
-    //    Write protection is enforced at the query validation layer (isWriteQuery)
-    //    rather than at the native DB level.
+    //    NOTE: This injected DB is writable by design for test setup.
+    //    Read-only enforcement tests must initialize a separate pool entry
+    //    via initLbug(...) so Ladybug native read-only mode is exercised.
     if (options?.poolAdapter) {
       const coreDb = adapter.getDatabase();
       if (!coreDb) throw new Error('withTestLbugDB: core adapter has no open Database');
@@ -137,12 +192,11 @@ export function withTestLbugDB(
         await poolAdapter.closeLbug(repoId);
       }
       await adapter.closeLbug();
+      await tmpHandle.cleanup();
     };
 
     // tmpHandle.dbPath → parent temp dir (not the lbug file) so tests
     // that create sibling directories (e.g. 'storage') still work.
-    const tmpDir = path.dirname(dbPath);
-    const tmpHandle: TestDBHandle = { dbPath: tmpDir, cleanup: async () => {} };
     ref.handle = { dbPath, repoId, tmpHandle, cleanup };
 
     // 7. User's final setup (mocks, dynamic imports, etc.)
@@ -163,6 +217,21 @@ export function withTestLbugDB(
   // collisions when multiple withTestLbugDB calls share the same file.
   describe(`withTestLbugDB(${prefix})`, () => {
     beforeAll(setup, timeout);
+    // Skip FTS-dependent suites when the extension could not be loaded or
+    // installed on this machine. Without this, tests would assert against a
+    // missing index and fail. Warn once so the skip is visible, not silent.
+    beforeEach((ctx) => {
+      if (ftsRequired && !ftsAvailable) {
+        if (!ftsSkipWarned) {
+          ftsSkipWarned = true;
+          console.warn(
+            `[withTestLbugDB(${prefix})] Skipping FTS-dependent tests — the LadybugDB ` +
+              `FTS extension is unavailable (LOAD failed and it could not be installed).`,
+          );
+        }
+        ctx.skip();
+      }
+    });
     // Explicit timeout: KuzuDB's C++ destructor can hang on Windows during
     // native resource cleanup.  The vitest hookTimeout (120s) should apply
     // automatically, but some vitest versions fall back to testTimeout (30s)

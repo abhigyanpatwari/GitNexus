@@ -39,15 +39,27 @@ Commands and gotchas live under **Repo reference** below and in **[CONTRIBUTING.
 ## Reference docs
 
 - **[ARCHITECTURE.md](ARCHITECTURE.md)**, **[CONTRIBUTING.md](CONTRIBUTING.md)**, **[GUARDRAILS.md](GUARDRAILS.md)**
-- **Call-resolution DAG (legacy path):** See ARCHITECTURE.md § Call-Resolution DAG. Typed 6-stage DAG inside the `parse` phase; language-specific behavior behind `inferImplicitReceiver` / `selectDispatch` hooks on `LanguageProvider`. Shared code in `gitnexus/src/core/ingestion/` must not name languages. Types: `gitnexus/src/core/ingestion/call-types.ts`.
-- **Scope-resolution pipeline (RFC #909 Ring 3):** See ARCHITECTURE.md § Scope-Resolution Pipeline. Replaces the legacy DAG for languages in `MIGRATED_LANGUAGES` (see `registry-primary-flag.ts`). A language plugs in by implementing `ScopeResolver` (`scope-resolution/contract/scope-resolver.ts`) and registering it in `SCOPE_RESOLVERS`. CI parity gate runs BOTH paths per migrated language on every PR.
+- **Call & inheritance resolution (RFC #909 Ring 3):** See ARCHITECTURE.md § Scope-Resolution Pipeline. All languages resolve calls and inheritance through the scope-resolution pipeline (`Registry.lookup`, `preEmitInheritanceEdges`, `emitHeritageEdges`, `buildMro` → `MethodDispatchIndex`). **Shared code in `gitnexus/src/core/ingestion/` must not name languages** — plug language behavior in via `LanguageProvider` / `ScopeResolver` hooks. A language plugs in by implementing `ScopeResolver` (`scope-resolution/contract/scope-resolver.ts`) and registering it in `SCOPE_RESOLVERS`. (The legacy call-resolution DAG + `@heritage` capture path were removed in RING4-1 #942.)
 - **Cursor:** `.cursor/index.mdc` (always-on); `.cursor/rules/*.mdc` (glob-scoped). Legacy `.cursorrules` deprecated.
 - **GitNexus:** skills in `.claude/skills/gitnexus/`; MCP rules in `gitnexus:start` block below.
+
+## PR Swarm Review (cross-CLI)
+
+To run a production-readiness review of a GitNexus pull request from **any** AI CLI, follow
+the canonical, CLI-neutral spec **[`pr-swarm-review/orchestration.md`](pr-swarm-review/orchestration.md)**
+(seven read-only review personas under `pr-swarm-review/personas/`). It defines two
+execution modes with the same output contract: **Swarm mode** (parallel subagents, e.g.
+Claude Code) and **Solo mode** (one agent runs all lanes sequentially — Codex, Gemini,
+Cursor, Copilot, or any agent reading this file). Per-CLI entrypoints are thin wrappers
+listed in [`pr-swarm-review/README.md`](pr-swarm-review/README.md); edit review logic only
+in the canonical files, never in the wrappers. The review is read-only — it never edits,
+commits, or posts.
 
 ## Changelog
 
 | Date | Version | Change |
 |------|---------|--------|
+| 2026-05-22 | 1.8.0 | Kotlin added to `MIGRATED_LANGUAGES` (registry-primary call resolution by default). Closes #1756 (companion-vs-instance dispatch) and #1757 (lambda scopes); refs #1746. RFC §6.4 corpus criterion waived (corpus-mode wiring is #927-scope); fixture criterion met. |
 | 2026-04-23 | 1.7.0 | TypeScript added to `MIGRATED_LANGUAGES` (registry-primary call resolution by default). |
 | 2026-04-20 | 1.6.0 | Added scope-resolution pipeline pointer (RFC #909 Ring 3); Python migrated to registry-primary. |
 | 2026-04-19 | 1.5.0 | Cross-repo impact (#794): `impact`/`query`/`context` accept `repo: "@<group>"` + `service`. Removed `group_query`/`group_contracts`/`group_status` MCP tools; added `gitnexus://group/{name}/contracts` and `gitnexus://group/{name}/status` resources. |
@@ -62,112 +74,64 @@ Commands and gotchas live under **Repo reference** below and in **[CONTRIBUTING.
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
 
-Indexed as **GitNexus** (4325 symbols, 10556 relationships, 300 execution flows). Use MCP tools to understand code, assess impact, and navigate safely.
+This project is indexed by GitNexus as **GitNexus** (26675 symbols, 35395 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
 
-> If any tool warns the index is stale, run `npx gitnexus analyze` first.
+> Index stale? Run `node .gitnexus/run.cjs analyze` from the project root — it auto-selects an available runner. No `.gitnexus/run.cjs` yet? `npx gitnexus analyze` (npm 11 crash → `npm i -g gitnexus`; #1939).
 
 ## Always Do
 
-- **MUST run impact analysis before editing any symbol.** `gitnexus_impact({target: "symbolName", direction: "upstream"})` — report blast radius to the user.
-- **MUST run `gitnexus_detect_changes()` before committing** — verify only expected symbols and flows are affected.
-- **MUST warn the user** if impact returns HIGH or CRITICAL risk.
-- Explore unfamiliar code with `gitnexus_query({query: "concept"})` (process-grouped, ranked) instead of grepping.
-- Full context on a symbol: `gitnexus_context({name: "symbolName"})`.
-
-## When Debugging
-
-1. `gitnexus_query({query: "<error or symptom>"})` — find related execution flows
-2. `gitnexus_context({name: "<suspect function>"})` — callers, callees, process participation
-3. `READ gitnexus://repo/GitNexus/process/{processName}` — trace flow step by step
-4. Regressions: `gitnexus_detect_changes({scope: "compare", base_ref: "main"})`
-
-## When Refactoring
-
-- **Rename:** `gitnexus_rename({symbol_name: "old", new_name: "new", dry_run: true})` first. Graph edits are safe; text_search edits need manual review.
-- **Extract/Split:** `gitnexus_context` (incoming/outgoing refs) then `gitnexus_impact` (upstream callers) before moving code.
-- **After any refactor:** `gitnexus_detect_changes({scope: "all"})` to verify scope.
+- **MUST run impact analysis before editing any symbol.** Before modifying a function, class, or method, run `impact({target: "symbolName", direction: "upstream"})` and report the blast radius (direct callers, affected processes, risk level) to the user.
+- **MUST run `detect_changes()` before committing** to verify your changes only affect expected symbols and execution flows.
+- **MUST warn the user** if impact analysis returns HIGH or CRITICAL risk before proceeding with edits.
+- When exploring unfamiliar code, use `query({search_query: "concept"})` to find execution flows instead of grepping. It returns process-grouped results ranked by relevance.
+- When you need full context on a specific symbol — callers, callees, which execution flows it participates in — use `context({name: "symbolName"})`.
 
 ## Never Do
 
-- Edit a symbol without running `gitnexus_impact` first.
-- Ignore HIGH/CRITICAL risk warnings.
-- Rename with find-and-replace — use `gitnexus_rename`.
-- Commit without `gitnexus_detect_changes()`.
-- Add language-specific behavior to shared ingestion code (`gitnexus/src/core/ingestion/`) — use a `LanguageProvider` hook. Seeing `provider.mroStrategy === 'xxx'` or an import from `languages/xxx.ts` in shared code means stop and add a hook.
-
-## Tools Quick Reference
-
-| Tool | When to use | Example |
-|------|-------------|---------|
-| `list_repos` | Discover indexed repos | `gitnexus_list_repos({})` |
-| `query` | Find code by concept | `gitnexus_query({query: "auth validation"})` |
-| `context` | 360-degree view of one symbol | `gitnexus_context({name: "validateUser"})` |
-| `impact` | Blast radius before editing | `gitnexus_impact({target: "X", direction: "upstream"})` |
-| `detect_changes` | Pre-commit scope check | `gitnexus_detect_changes({scope: "staged"})` |
-| `rename` | Safe multi-file rename | `gitnexus_rename({symbol_name: "old", new_name: "new", dry_run: true})` |
-| `cypher` | Custom graph queries | `gitnexus_cypher({query: "MATCH ..."})` |
-| `api_impact` | Pre-change API route impact | `gitnexus_api_impact({route: "/api/users", method: "GET"})` |
-| `route_map` | Route → handler → consumer map | `gitnexus_route_map({})` |
-| `tool_map` | MCP/RPC tool definitions | `gitnexus_tool_map({})` |
-| `shape_check` | Response shape vs consumer access | `gitnexus_shape_check({route: "/api/users"})` |
-| `group_list` | List repo groups | `gitnexus_group_list({})` |
-| `group_sync` | Rebuild group Contract Registry | `gitnexus_group_sync({name: "myGroup"})` |
-| `query` (group mode) | Cross-repo search in a group (RRF-merged) | `gitnexus_query({repo: "@myGroup", query: "auth"})` |
-| `context` (group mode) | 360° view across all member repos | `gitnexus_context({repo: "@myGroup", name: "validateUser"})` |
-| `impact` (group mode) | Cross-repo blast radius via Contract Bridge | `gitnexus_impact({repo: "@myGroup", target: "X", direction: "upstream"})` |
-
-> Group mode: pass `repo: "@<groupName>"` to fan out across all member repos, or `repo: "@<groupName>/<memberPath>"` to target a single member (path keys from `group.yaml`). Optional `service: "<monorepo/path>"` filters by service root. Group-level state (contracts, staleness) lives in the resources table below — there are **no** `group_query` / `group_context` / `group_impact` / `group_contracts` / `group_status` MCP tools.
->
-> For a full walkthrough of setting up a group across multiple repos that communicate over gRPC, see [docs/guides/microservices-grpc.md](docs/guides/microservices-grpc.md).
-
-## Impact Risk Levels
-
-| Depth | Meaning | Action |
-|-------|---------|--------|
-| d=1 | WILL BREAK — direct callers/importers | MUST update |
-| d=2 | LIKELY AFFECTED — indirect deps | Should test |
-| d=3 | MAY NEED TESTING — transitive | Test if critical path |
+- NEVER edit a function, class, or method without first running `impact` on it.
+- NEVER ignore HIGH or CRITICAL risk warnings from impact analysis.
+- NEVER rename symbols with find-and-replace — use `rename` which understands the call graph.
+- NEVER commit changes without running `detect_changes()` to check affected scope.
 
 ## Resources
 
 | Resource | Use for |
 |----------|---------|
-| `gitnexus://repo/GitNexus/context` | Codebase overview, index freshness |
+| `gitnexus://repo/GitNexus/context` | Codebase overview, check index freshness |
 | `gitnexus://repo/GitNexus/clusters` | All functional areas |
 | `gitnexus://repo/GitNexus/processes` | All execution flows |
 | `gitnexus://repo/GitNexus/process/{name}` | Step-by-step execution trace |
-| `gitnexus://group/{name}/contracts` | Group Contract Registry (provider/consumer rows + cross-links) |
-| `gitnexus://group/{name}/status` | Per-member index + Contract Registry staleness report |
 
-## Self-Check Before Finishing
+## CLI
 
-1. `gitnexus_impact` was run for all modified symbols
-2. No HIGH/CRITICAL warnings were ignored
-3. `gitnexus_detect_changes()` confirms expected scope
-4. All d=1 dependents were updated
-
-## Keeping the Index Fresh
-
-```bash
-npx gitnexus analyze                 # basic refresh; preserves any existing embeddings
-npx gitnexus analyze --embeddings    # also generate embeddings for new/changed nodes
-npx gitnexus analyze --drop-embeddings  # explicit opt-in to wipe existing embeddings
-```
-
-Check `.gitnexus/meta.json` `stats.embeddings` (0 = none). A plain `analyze` no longer drops existing vectors — pass `--drop-embeddings` to wipe.
-
-> Claude Code: PostToolUse hook detects a stale index after `git commit` and `git merge` and prompts the agent to run `analyze`. The hook does not invoke `analyze` itself.
-
-## CLI Skills
-
-| Task | Skill file |
-|------|-----------|
-| Architecture / "How does X work?" | `.claude/skills/gitnexus/gitnexus-exploring/SKILL.md` |
-| Blast radius / "What breaks?" | `.claude/skills/gitnexus/gitnexus-impact-analysis/SKILL.md` |
-| Debugging / "Why is X failing?" | `.claude/skills/gitnexus/gitnexus-debugging/SKILL.md` |
-| Refactoring | `.claude/skills/gitnexus/gitnexus-refactoring/SKILL.md` |
-| Tools/resources/schema reference | `.claude/skills/gitnexus/gitnexus-guide/SKILL.md` |
-| CLI commands (index, status, clean, wiki) | `.claude/skills/gitnexus/gitnexus-cli/SKILL.md` |
+| Task | Read this skill file |
+|------|---------------------|
+| Understand architecture / "How does X work?" | `.claude/skills/gitnexus/gitnexus-exploring/SKILL.md` |
+| Blast radius / "What breaks if I change X?" | `.claude/skills/gitnexus/gitnexus-impact-analysis/SKILL.md` |
+| Trace bugs / "Why is X failing?" | `.claude/skills/gitnexus/gitnexus-debugging/SKILL.md` |
+| Rename / extract / split / refactor | `.claude/skills/gitnexus/gitnexus-refactoring/SKILL.md` |
+| Tools, resources, schema reference | `.claude/skills/gitnexus/gitnexus-guide/SKILL.md` |
+| Index, status, clean, wiki CLI commands | `.claude/skills/gitnexus/gitnexus-cli/SKILL.md` |
+| Work in the Ingestion area (239 symbols) | `.claude/skills/generated/ingestion/SKILL.md` |
+| Work in the Extractors area (135 symbols) | `.claude/skills/generated/extractors/SKILL.md` |
+| Work in the Components area (112 symbols) | `.claude/skills/generated/components/SKILL.md` |
+| Work in the Lbug area (96 symbols) | `.claude/skills/generated/lbug/SKILL.md` |
+| Work in the Group area (94 symbols) | `.claude/skills/generated/group/SKILL.md` |
+| Work in the Cli area (92 symbols) | `.claude/skills/generated/cli/SKILL.md` |
+| Work in the Configs area (92 symbols) | `.claude/skills/generated/configs/SKILL.md` |
+| Work in the Type-extractors area (90 symbols) | `.claude/skills/generated/type-extractors/SKILL.md` |
+| Work in the Hooks area (88 symbols) | `.claude/skills/generated/hooks/SKILL.md` |
+| Work in the Unit area (80 symbols) | `.claude/skills/generated/unit/SKILL.md` |
+| Work in the Cpp area (73 symbols) | `.claude/skills/generated/cpp/SKILL.md` |
+| Work in the Scope-resolution area (72 symbols) | `.claude/skills/generated/scope-resolution/SKILL.md` |
+| Work in the Server area (66 symbols) | `.claude/skills/generated/server/SKILL.md` |
+| Work in the Local area (61 symbols) | `.claude/skills/generated/local/SKILL.md` |
+| Work in the Wiki area (60 symbols) | `.claude/skills/generated/wiki/SKILL.md` |
+| Work in the Workers area (57 symbols) | `.claude/skills/generated/workers/SKILL.md` |
+| Work in the Embeddings area (56 symbols) | `.claude/skills/generated/embeddings/SKILL.md` |
+| Work in the Typescript area (53 symbols) | `.claude/skills/generated/typescript/SKILL.md` |
+| Work in the Storage area (51 symbols) | `.claude/skills/generated/storage/SKILL.md` |
+| Work in the Php area (48 symbols) | `.claude/skills/generated/php/SKILL.md` |
 
 <!-- gitnexus:end -->
 
@@ -209,6 +173,6 @@ npx gitnexus serve                         # HTTP API on port 4747 (from any ind
 
 ### Gotchas
 
-- `npm install` in `gitnexus/` triggers `prepare` (builds via `tsc`) and `postinstall` (patches tree-sitter-swift, builds tree-sitter-proto). Native bindings need `python3`, `make`, `g++`.
-- `tree-sitter-kotlin` and `tree-sitter-swift` are optional — install warnings expected.
+- `npm install` in `gitnexus/` triggers `prepare` (builds via `tsc`) and `postinstall` (materializes the vendored grammars into `node_modules/`, then prefers a committed prebuild per platform-arch and only source-builds when none matches). A C/C++ toolchain (`python3`, `make`, `g++`) is needed only for that source-build fallback.
+- The vendored grammars `tree-sitter-{c,dart,proto,swift,kotlin}` are handled uniformly: c is required; dart/proto/swift/kotlin are optional and skippable via `GITNEXUS_SKIP_OPTIONAL_GRAMMARS=1`. Install warnings appear only when no prebuild matches the platform-arch and no toolchain is present, and are non-fatal — only that language's parsing is unavailable.
 - ESLint configured via `eslint.config.mjs` (TS, React Hooks, unused-imports). No `npm run lint` script; use `npx eslint .`. Prettier runs via lint-staged. CI checks both in `ci-quality.yml`.

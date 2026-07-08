@@ -1,0 +1,21 @@
+{
+  "unknown": "未知错误",
+  "connectFailed": "连接服务器失败",
+  "loadGraphFailed": "加载图数据失败",
+  "failedToConnect": "连接失败",
+  "analysisFailed": "分析失败，请检查服务器日志。",
+  "startAnalysisFailed": "启动分析失败",
+  "invalidGithubUrl": "请输入有效的 GitHub 仓库 URL。",
+  "invalidAzureDevOpsUrl": "请输入有效的 Azure DevOps 仓库 URL。",
+  "missingFolderPath": "请输入文件夹路径。",
+  "backend": {
+    "reconnecting": "服务器连接已断开，正在重连…",
+    "network": "无法连接 GitNexus 服务器，请确认 `gitnexus serve` 正在运行。",
+    "timeout": "服务器响应超时，请稍后重试。",
+    "rateLimited": "请求过于频繁，请在 {{seconds}} 秒后重试。",
+    "notFound": "未找到请求的仓库或资源。",
+    "originBlocked": "此操作无法从托管界面执行。请通过服务器自身地址（例如 http://localhost:4747）打开 GitNexus 后再继续。",
+    "client": "请求失败：{{message}}",
+    "server": "服务器错误：{{message}}"
+  }
+}

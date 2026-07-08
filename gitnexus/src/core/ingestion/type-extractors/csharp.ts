@@ -52,7 +52,7 @@ const extractDeclaration: TypeBindingExtractor = (
     const child = node.namedChild(i);
     if (!child) continue;
 
-    if (!typeNode && child.type !== 'variable_declarator' && child.type !== 'equals_value_clause') {
+    if (!typeNode && child.type !== 'variable_declarator') {
       // First non-declarator child is the type (identifier, implicit_type, generic_name, etc.)
       typeNode = child;
     }
@@ -67,12 +67,9 @@ const extractDeclaration: TypeBindingExtractor = (
   let typeName: string | undefined;
   if (typeNode.type === 'implicit_type' && typeNode.text === 'var') {
     // Try to infer from initializer: var x = new Foo()
-    // tree-sitter-c-sharp may put object_creation_expression as direct child
-    // or inside equals_value_clause depending on grammar version
+    // tree-sitter-c-sharp puts object_creation_expression as a direct child
     if (declarators.length === 1) {
-      const initializer =
-        findChild(declarators[0], 'object_creation_expression') ??
-        findChild(declarators[0], 'equals_value_clause')?.firstNamedChild;
+      const initializer = findChild(declarators[0], 'object_creation_expression');
       if (initializer?.type === 'object_creation_expression') {
         const ctorType = initializer.childForFieldName('type');
         if (ctorType) typeName = extractSimpleTypeName(ctorType);
@@ -101,7 +98,7 @@ const extractParameter: ParameterExtractor = (node: SyntaxNode, env: Map<string,
     typeNode = node.childForFieldName('type');
     nameNode = node.childForFieldName('name');
   } else {
-    nameNode = node.childForFieldName('name') ?? node.childForFieldName('pattern');
+    nameNode = node.childForFieldName('name');
     typeNode = node.childForFieldName('type');
   }
 
@@ -131,16 +128,12 @@ const scanConstructorBinding: ConstructorBindingScanner = (node) => {
   if (!declarator) return undefined;
   const nameNode = declarator.childForFieldName('name') ?? declarator.firstNamedChild;
   if (!nameNode || nameNode.type !== 'identifier') return undefined;
-  // Find the initializer value: either inside equals_value_clause or as a direct child
+  // Find the initializer value as a direct child
   // (tree-sitter-c-sharp puts invocation_expression directly inside variable_declarator)
   let value: SyntaxNode | null = null;
   for (let i = 0; i < declarator.namedChildCount; i++) {
     const child = declarator.namedChild(i);
     if (!child) continue;
-    if (child.type === 'equals_value_clause') {
-      value = child.firstNamedChild;
-      break;
-    }
     if (
       child.type === 'invocation_expression' ||
       child.type === 'object_creation_expression' ||
@@ -471,20 +464,9 @@ const extractPendingAssignment: PendingAssignmentExtractor = (node, scopeEnv) =>
     if (!nameNode) continue;
     const lhs = nameNode.text;
     if (scopeEnv.has(lhs)) continue;
-    // C# wraps value in equals_value_clause; fall back to last named child
-    let evc: SyntaxNode | null = null;
-    for (let j = 0; j < child.childCount; j++) {
-      if (child.child(j)?.type === 'equals_value_clause') {
-        evc = child.child(j);
-        break;
-      }
-    }
-    const valueNode = evc?.firstNamedChild ?? child.namedChild(child.namedChildCount - 1);
-    if (
-      valueNode &&
-      valueNode !== nameNode &&
-      (valueNode.type === 'identifier' || valueNode.type === 'simple_identifier')
-    ) {
+    // C# variable_declarator holds the initializer value as a direct named child
+    const valueNode = child.namedChild(child.namedChildCount - 1);
+    if (valueNode && valueNode !== nameNode && valueNode.type === 'identifier') {
       return { kind: 'copy', lhs, rhs: valueNode.text };
     }
     // member_access_expression RHS → fieldAccess (a.Field)
@@ -498,7 +480,7 @@ const extractPendingAssignment: PendingAssignmentExtractor = (node, scopeEnv) =>
     // invocation_expression RHS
     if (valueNode?.type === 'invocation_expression') {
       const funcNode = valueNode.firstNamedChild;
-      if (funcNode?.type === 'identifier_name' || funcNode?.type === 'identifier') {
+      if (funcNode?.type === 'identifier') {
         return { kind: 'callResult', lhs, callee: funcNode.text };
       }
       // method call with receiver → methodCallResult: a.GetC()
@@ -515,7 +497,7 @@ const extractPendingAssignment: PendingAssignmentExtractor = (node, scopeEnv) =>
       const inner = valueNode.firstNamedChild;
       if (inner?.type === 'invocation_expression') {
         const funcNode = inner.firstNamedChild;
-        if (funcNode?.type === 'identifier_name' || funcNode?.type === 'identifier') {
+        if (funcNode?.type === 'identifier') {
           return { kind: 'callResult', lhs, callee: funcNode.text };
         }
         if (funcNode?.type === 'member_access_expression') {
@@ -565,15 +547,13 @@ export const typeConfig: LanguageTypeConfig = {
     const direct = node.childForFieldName('type');
     if (direct) return direct;
 
-    const wrapped =
-      node.childForFieldName('declaration') ??
-      (() => {
-        for (let i = 0; i < node.namedChildCount; i++) {
-          const c = node.namedChild(i);
-          if (c?.type === 'variable_declaration') return c;
-        }
-        return null;
-      })();
+    const wrapped = (() => {
+      for (let i = 0; i < node.namedChildCount; i++) {
+        const c = node.namedChild(i);
+        if (c?.type === 'variable_declaration') return c;
+      }
+      return null;
+    })();
 
     return wrapped?.childForFieldName('type') ?? null;
   },

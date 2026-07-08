@@ -41,6 +41,12 @@ const CSHARP_SCOPE_QUERY = `
 (namespace_declaration) @scope.namespace
 (file_scoped_namespace_declaration) @scope.namespace
 
+(namespace_declaration
+  name: (_) @declaration.name) @declaration.namespace
+
+(file_scoped_namespace_declaration
+  name: (_) @declaration.name) @declaration.namespace
+
 (class_declaration) @scope.class
 (interface_declaration) @scope.class
 (struct_declaration) @scope.class
@@ -482,6 +488,13 @@ const CSHARP_SCOPE_QUERY = `
 (object_creation_expression
   type: (qualified_name) @reference.call.constructor.qualified) @reference.call.constructor
 
+;; Alias-qualified constructor: \`new MyAlias::Foo()\`, \`new global::Foo()\`. The
+;; top-level type is an alias_qualified_name (a \`global::Ns.Foo\` qualifier nests
+;; under qualified_name instead, covered above). No @reference.name here —
+;; captures.ts derives the simple-name tail via terminalTypeNameNode.
+(object_creation_expression
+  type: (alias_qualified_name) @reference.call.constructor.qualified) @reference.call.constructor
+
 ;; References — field/property writes: \`obj.Name = "x"\` emits a write
 ;; ACCESSES edge from the enclosing method to the field/property on
 ;; obj's class.
@@ -499,6 +512,12 @@ const CSHARP_SCOPE_QUERY = `
   left: (member_access_expression
     expression: "base" @reference.receiver
     name: (identifier) @reference.name)) @reference.write.member
+
+;; References — field/property reads: \`obj.Name\`
+;; Emit-side filtering drops call targets and assignment left-hand sides.
+(member_access_expression
+  expression: (_) @reference.receiver
+  name: (identifier) @reference.name) @reference.read.member
 `;
 
 let _parser: Parser | null = null;

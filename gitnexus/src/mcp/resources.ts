@@ -292,7 +292,7 @@ async function getReposResource(backend: LocalBackend): Promise<string> {
   if (repos.length > 1) {
     lines.push('');
     lines.push('# Multiple repos indexed. Use repo parameter in tool calls:');
-    lines.push(`# gitnexus_search({query: "auth", repo: "${repos[0].name}"})`);
+    lines.push(`# query({search_query: "auth", repo: "${repos[0].name}"})`);
   }
 
   return lines.join('\n');
@@ -335,6 +335,9 @@ async function getContextResource(backend: LocalBackend, repoName?: string): Pro
   lines.push('  - query: Process-grouped code intelligence (execution flows related to a concept)');
   lines.push('  - context: 360-degree symbol view (categorized refs, process participation)');
   lines.push('  - impact: Blast radius analysis (what breaks if you change a symbol)');
+  lines.push(
+    '  - explain: Persisted taint findings — source→sink data flows with per-hop variables (requires analyze --pdg)',
+  );
   lines.push('  - detect_changes: Git-diff impact analysis (what do your changes affect)');
   lines.push('  - rename: Multi-file coordinated rename with confidence tags');
   lines.push('  - cypher: Raw graph queries');
@@ -382,7 +385,7 @@ async function getClustersResource(backend: LocalBackend, repoName?: string): Pr
 
     if (result.clusters.length > displayLimit) {
       lines.push(
-        `\n# Showing top ${displayLimit} of ${result.clusters.length} modules. Use gitnexus_query for deeper search.`,
+        `\n# Showing top ${displayLimit} of ${result.clusters.length} modules. Use the query tool for deeper search.`,
       );
     }
 
@@ -416,7 +419,7 @@ async function getProcessesResource(backend: LocalBackend, repoName?: string): P
 
     if (result.processes.length > displayLimit) {
       lines.push(
-        `\n# Showing top ${displayLimit} of ${result.processes.length} processes. Use gitnexus_query for deeper search.`,
+        `\n# Showing top ${displayLimit} of ${result.processes.length} processes. Use the query tool for deeper search.`,
       );
     }
 
@@ -447,6 +450,7 @@ additional_node_types: "Multi-language: Struct, Enum, Macro, Typedef, Union, Nam
 
 node_properties:
   common: "name (STRING), filePath (STRING), startLine (INT32), endLine (INT32)"
+  line_numbers: "startLine/endLine on symbol nodes are 0-BASED (tree-sitter rows) in storage AND in raw Cypher results. The context, query, impact, group/cross-repo trace, and explain/pdg_query (symbol anchor) tools present them 1-BASED (editor / sed / less -N aligned), so a symbol spans editor lines (startLine+1)..(endLine+1) — e.g. sed '<startLine+1>,<endLine+1>!d' <file>. Single-repo trace symbol lines stay 0-BASED for now (full-parity follow-up). content holds the exact symbol span. (BasicBlock / PDG statement lines are separately 1-based.) (#2377, #2380)"
   Method: "parameterCount (INT32), returnType (STRING), isVariadic (BOOL), visibility (STRING), isStatic (BOOL), isAbstract (BOOL), isFinal (BOOL), isVirtual (BOOL), isOverride (BOOL), isAsync (BOOL), isPartial (BOOL), requiredParameterCount (INT32), parameterTypes (STRING[]), annotations (STRING[])"
   Function: "parameterCount (INT32), returnType (STRING), isVariadic (BOOL), visibility (STRING), isStatic (BOOL), isAbstract (BOOL), isFinal (BOOL), isAsync (BOOL), parameterTypes (STRING[]), annotations (STRING[])"
   Property: "declaredType (STRING) — the field's type annotation (e.g., 'Address', 'City'). Used for field-access chain resolution."
@@ -469,6 +473,12 @@ relationships:
   - MEMBER_OF: Symbol belongs to community
   - STEP_IN_PROCESS: Symbol is step N in process
 
+pdg_layers: "Recorded ONLY when indexed with 'gitnexus analyze --pdg'. Intra-procedural, basic-block granular; both endpoints are BasicBlock nodes. Prefer the pdg_query tool over raw Cypher."
+  - BasicBlock: "Basic-block node. Columns: id, filePath, startLine, endLine, text. id = 'BasicBlock:<filePath>:<fnStartLine>:<fnStartCol>:<blockIndex>'."
+  - CFG: "Control-flow edge BasicBlock->BasicBlock. Edge kind (seq/cond-true/cond-false/loop-back/...) is in reason."
+  - CDG: "Control-DEPENDENCE edge BasicBlock->BasicBlock — the source predicate gates the target's execution. Branch sense 'T'|'F' in reason. Query via pdg_query mode:'controls'."
+  - REACHING_DEF: "Data-dependence (def->use) edge BasicBlock->BasicBlock. Source-level variable name is in reason. Query via pdg_query mode:'flows'."
+
 relationship_table: "All relationships use a single CodeRelation table with a 'type' property. Properties: type (STRING), confidence (DOUBLE), reason (STRING), step (INT32)"
 
 example_queries:
@@ -486,6 +496,11 @@ example_queries:
     WHERE p.heuristicLabel = "LoginFlow"
     RETURN s.name, r.step
     ORDER BY r.step
+
+  guard_clauses (--pdg only; prefer pdg_query mode:'controls'): |
+    MATCH (pred:BasicBlock)-[r:CodeRelation {type: 'CDG'}]->(dep:BasicBlock)
+    WHERE dep.text STARTS WITH 'return' OR dep.text STARTS WITH 'throw'
+    RETURN pred.startLine, r.reason AS branch, dep.startLine, dep.text
 `;
 }
 

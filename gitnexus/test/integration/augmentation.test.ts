@@ -57,6 +57,7 @@ vi.mock('../../src/storage/repo-manager.js', () => ({
 }));
 
 let augment: (pattern: string, cwd?: string) => Promise<string>;
+let augmentNoFts: (pattern: string, cwd?: string) => Promise<string>;
 
 withTestLbugDB(
   'augment',
@@ -106,6 +107,28 @@ withTestLbugDB(
         const result = await augment('日本語テスト', handle.dbPath);
         expect(typeof result).toBe('string');
       });
+
+      // ─── Negative-safety: fallback must stay gated on !ftsAvailable ───
+      //
+      // When FTS is available but happens to return zero BM25 hits, the
+      // CONTAINS fallback must NOT fire — preserving the original early-return
+      // semantics. If anyone later loosens the gate to `symbolMatches.length
+      // === 0` alone, this test fails.
+
+      it('does NOT fire CONTAINS fallback when FTS is available but BM25 returns empty', async () => {
+        const bm25 = await import('../../src/core/search/bm25-index.js');
+        const spy = vi
+          .spyOn(bm25, 'searchFTSFromLbug')
+          .mockResolvedValue({ results: [], ftsAvailable: true });
+        try {
+          // 'login' WOULD match a graph node via CONTAINS, but FTS is available
+          // and empty → fallback gate must hold → result must be ''.
+          const result = await augment('login', handle.dbPath);
+          expect(result).toBe('');
+        } finally {
+          spy.mockRestore();
+        }
+      });
     });
   },
   {
@@ -128,6 +151,68 @@ withTestLbugDB(
       // Dynamically import augment after mocks are in place
       const engine = await import('../../src/core/augmentation/engine.js');
       augment = engine.augment;
+    },
+  },
+);
+
+// ─── FTS-unavailable suite: exercises the CONTAINS fallback branch ────────────
+//
+// No ftsIndexes → searchFTSFromLbug returns ftsAvailable: false → fallback fires.
+// Same seed data so 'login' still exists as a graph node.
+
+withTestLbugDB(
+  'augment-no-fts',
+  (handle) => {
+    describe('augment() — FTS indexes unavailable (CONTAINS fallback)', () => {
+      it('falls back to CONTAINS query and returns enrichment when FTS is unavailable', async () => {
+        const result = await augmentNoFts('login', handle.dbPath);
+
+        expect(result.length).toBeGreaterThan(0);
+        expect(result).toContain('[GitNexus]');
+      });
+
+      it("returns empty string for whitespace-only pattern (CONTAINS '' guard)", async () => {
+        const result = await augmentNoFts('    ', handle.dbPath);
+        expect(result).toBe('');
+      });
+
+      it('returns empty string when no nodes match the CONTAINS query', async () => {
+        const result = await augmentNoFts('nxyz_notfound', handle.dbPath);
+        expect(result).toBe('');
+      });
+
+      it('returns empty string when fallback CONTAINS query throws', async () => {
+        const poolAdapter = await import('../../src/core/lbug/pool-adapter.js');
+        const spy = vi
+          .spyOn(poolAdapter, 'executeQuery')
+          .mockRejectedValue(new Error('simulated DB error'));
+        try {
+          const result = await augmentNoFts('login', handle.dbPath);
+          expect(result).toBe('');
+        } finally {
+          spy.mockRestore();
+        }
+      });
+    });
+  },
+  {
+    seed: AUGMENT_SEED_DATA,
+    // Intentionally no ftsIndexes — forces searchFTSFromLbug to return ftsAvailable: false
+    poolAdapter: true,
+    afterSetup: async (handle) => {
+      const { listRegisteredRepos } = await import('../../src/storage/repo-manager.js');
+      (listRegisteredRepos as ReturnType<typeof vi.fn>).mockResolvedValue([
+        {
+          name: handle.repoId,
+          path: handle.dbPath,
+          storagePath: handle.tmpHandle.dbPath,
+          indexedAt: new Date().toISOString(),
+          lastCommit: 'abc123',
+        },
+      ]);
+
+      const engine = await import('../../src/core/augmentation/engine.js');
+      augmentNoFts = engine.augment;
     },
   },
 );

@@ -1,12 +1,11 @@
 /**
  * C#: heritage resolution via base_list + ambiguous namespace-import refusal
  */
-import { describe, expect, beforeAll } from 'vitest';
+import { describe, it, expect, beforeAll } from 'vitest';
 import path from 'path';
 import {
   FIXTURES,
   CROSS_FILE_FIXTURES,
-  createResolverParityIt,
   getRelationships,
   getNodesByLabel,
   getNodesByLabelFull,
@@ -14,8 +13,6 @@ import {
   runPipelineFromRepo,
   type PipelineResult,
 } from './helpers.js';
-
-const it = createResolverParityIt('csharp');
 
 // ---------------------------------------------------------------------------
 // Heritage: class + interface resolution via base_list
@@ -60,10 +57,10 @@ describe('C# heritage resolution', () => {
 
   it('resolves all CALLS from CreateUser via import-resolved, unique-global, or interface-dispatch', () => {
     const calls = getRelationships(result, 'CALLS');
-    // C# non-aliased `using Namespace;` imports don't populate NamedImportMap
-    // (namespace-scoped imports can't bind to individual symbols).
-    // Calls resolve via directory-based PackageMap (import-resolved) when ambiguous,
-    // or via unique-global when the symbol name is globally unique.
+    // C# non-aliased `using Namespace;` imports don't bind to individual symbols
+    // (namespace-scoped imports import the whole namespace, not named members).
+    // Calls resolve via directory-based namespace resolution (import-resolved) when
+    // ambiguous, or via unique-global when the symbol name is globally unique.
     // _repo.Save() also emits interface-dispatch to User.Save (IRepository has one impl in-repo).
     for (const call of calls) {
       expect(['import-resolved', 'global', 'interface-dispatch']).toContain(call.rel.reason);
@@ -116,7 +113,7 @@ describe('C# ambiguous symbol resolution', () => {
     expect(ifaces.filter((n) => n === 'IProcessor').length).toBe(2);
   });
 
-  it('heritage targets are synthetic (correct refusal for ambiguous namespace import)', () => {
+  it('resolves both ambiguous bases to the imported Models namespace via import-aware disambiguation', () => {
     const extends_ = getRelationships(result, 'EXTENDS');
     const implements_ = getRelationships(result, 'IMPLEMENTS');
 
@@ -125,13 +122,17 @@ describe('C# ambiguous symbol resolution', () => {
     expect(implements_.length).toBe(1);
     expect(implements_[0].source).toBe('UserHandler');
 
-    // The key invariant: no edge points to Other/
-    if (extends_[0].targetFilePath) {
-      expect(extends_[0].targetFilePath).not.toContain('Other/');
-    }
-    if (implements_[0].targetFilePath) {
-      expect(implements_[0].targetFilePath).not.toContain('Other/');
-    }
+    // `using MyApp.Models;` emits the file-level import edge, so import-aware
+    // resolution (#1951) disambiguates both same-named bases to the Models/
+    // definitions (NOT Other/) — pinned exactly (the prior `if (targetFilePath)`
+    // guard was vacuous). This asserts the correct registry-primary model. The
+    // legacy DAG (removed in #942) did not emit the C# namespace using-import
+    // edge and so refused to disambiguate; scope-resolution now owns this and
+    // resolves it correctly.
+    expect(extends_[0].target).toBe('Handler');
+    expect(extends_[0].targetFilePath).toBe('Models/Handler.cs');
+    expect(implements_[0].target).toBe('IProcessor');
+    expect(implements_[0].targetFilePath).toBe('Models/IProcessor.cs');
   });
 });
 
@@ -621,11 +622,9 @@ describe('C# base resolution', () => {
     expect(baseSave).toBeDefined();
     // Pin the canonical edge-reason for super/base calls. The super-branch
     // of receiver-bound-calls resolves through the MRO chain (not through
-    // imports), which the legacy DAG's tier classifier places in the
-    // `'global'` bucket (see `toResolveResult` in `call-processor.ts`).
-    // Emitting `'global'` unconditionally keeps the same-graph parity
-    // guarantee (ARCHITECTURE.md § Scope-Resolution Pipeline) and matches
-    // the legacy path under `REGISTRY_PRIMARY_CSHARP=0`.
+    // imports), which the scope-resolution pipeline classifies into the
+    // `'global'` bucket. Emitting `'global'` unconditionally keeps the
+    // same-graph guarantee (ARCHITECTURE.md § Scope-Resolution Pipeline).
     expect(baseSave!.rel.reason).toBe('global');
     const repoSave = calls.find(
       (c) => c.target === 'Save' && c.targetFilePath === 'src/Models/Repo.cs',
@@ -740,10 +739,10 @@ describe('C# return type inference via var + invocation', () => {
   });
 
   it('resolves user.Save() to User#Save (not Repo#Save) via return type of GetUser(): User', () => {
-    // scanConstructorBinding binds `var user = svc.GetUser()` → calleeName "GetUser".
-    // processCallsFromExtracted verifies GetUser's returnType is "User" via
-    // PackageMap resolution of `using ReturnType.Models;`, then receiver filtering
-    // resolves user.Save() to User#Save (not Repo#Save).
+    // `var user = svc.GetUser()` binds receiver `user` to calleeName "GetUser".
+    // Scope-resolution verifies GetUser's returnType is "User" via PackageMap
+    // resolution of `using ReturnType.Models;`, then receiver filtering resolves
+    // user.Save() to User#Save (not Repo#Save).
     const calls = getRelationships(result, 'CALLS');
     const saveCall = calls.find(
       (c) => c.target === 'Save' && c.source === 'Run' && c.targetFilePath.includes('User.cs'),
@@ -1441,6 +1440,24 @@ describe('Write access tracking (C#)', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Generic type references: IEntityTypeConfiguration<USER_INFO>, List<USER_INFO>
+// ---------------------------------------------------------------------------
+
+describe('C# generic type-reference tracking', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'csharp-generic-type-refs'), () => {});
+  }, 60000);
+
+  it('emits USES edges for generic type arguments', () => {
+    const uses = getRelationships(result, 'USES').filter((e) => e.target === 'USER_INFO');
+    expect(edgeSet(uses)).toContain('UserInfoConfiguration → USER_INFO');
+    expect(edgeSet(uses)).toContain('Load → USER_INFO');
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Call-result variable binding (Phase 9): var user = GetUser(); user.Save()
 // ---------------------------------------------------------------------------
 
@@ -2036,7 +2053,7 @@ describe('C# overloaded method disambiguation (METHOD_IMPLEMENTS)', () => {
 });
 
 // ---------------------------------------------------------------------------
-// SM-9: lookupMethodByOwnerWithMRO — c.ParentMethod() via implements-split walk
+// SM-9: inherited method resolution — c.ParentMethod() via the inheritance walk
 // ---------------------------------------------------------------------------
 
 describe('C# Child extends Parent — inherited method resolution (SM-9)', () => {
@@ -2249,13 +2266,17 @@ describe('C# record base resolution (record inheritance + base.Save)', () => {
     expect(all).toContain('UserRecord');
   });
 
-  it('does not emit a spurious self-EXTENDS (record heritage not emitted by C# heritage queries)', () => {
-    // NOTE: C# tree-sitter heritage queries cover class/interface
-    // declarations but not `record_declaration`, so records don't
-    // emit an EXTENDS edge today. The record-base linkage is still
-    // visible via `base.Save()` resolution (next test). This
-    // assertion pins the negative invariant so a future heritage
-    // extension for records can flip both tests at once.
+  it('emits no spurious self-EXTENDS for a record (record→record same-namespace EXTENDS is a known registry gap)', () => {
+    // Since #1956 the inheritance synth walks `record_declaration` base_lists,
+    // so record→class and record→interface bases now resolve to
+    // EXTENDS/IMPLEMENTS edges — see the qualified/record/struct block below
+    // (record R : Base, record P : Base(id), …). The record→RECORD case in the
+    // SAME namespace (`record UserRecord : BaseEntity`, both in `Models`) is a
+    // separate, pre-existing resolution gap: the synth emits the
+    // @reference.inherits capture, but the same-namespace record-target binding
+    // is not resolved, so no UserRecord→BaseEntity EXTENDS edge appears. It is
+    // NOT asserted here and is tracked as a follow-up. The self-edge invariant
+    // must always hold.
     const extends_ = getRelationships(result, 'EXTENDS');
     const selfExtend = extends_.find((e) => e.source === 'UserRecord' && e.target === 'UserRecord');
     expect(selfExtend).toBeUndefined();
@@ -2270,13 +2291,12 @@ describe('C# record base resolution (record inheritance + base.Save)', () => {
         c.targetFilePath === 'src/Models/BaseEntity.cs',
     );
     expect(baseSave).toBeDefined();
-    // NOTE: no `rel.reason` assertion here. Records don't emit EXTENDS
-    // edges today (see the negative-invariant test above), so the
-    // super-branch MRO lookup returns no ancestor and the edge is
-    // produced by the downstream reference-index fallback instead of
-    // the canonical super path. The `csharp-super-resolution` and
+    // NOTE: no `rel.reason` assertion here. The base.Save() linkage is
+    // exercised independently of which path produces it (super-branch MRO
+    // now that records emit EXTENDS since #1951, or the downstream
+    // reference-index fallback). The `csharp-super-resolution` and
     // `csharp-generic-parent` suites pin the super-branch reason on
-    // paths that do go through MRO.
+    // paths that go through MRO.
     const selfSave = calls.find(
       (c) =>
         c.source === 'Save' &&
@@ -2284,6 +2304,54 @@ describe('C# record base resolution (record inheritance + base.Save)', () => {
         c.targetFilePath === 'src/Models/UserRecord.cs',
     );
     expect(selfSave).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// C# qualified / record / struct / alias-qualified base heritage (#1951)
+//
+// An earlier synth walked only class/interface base lists, so
+// `record R(...) : Base, IFoo`, `record P(...) : Base(id), IBar`
+// (primary_constructor_base_type), `struct S : IFoo, ns.IBar`, and the
+// `alias_qualified_name` base `B : DomainAlias::Base` produced NO inheritance
+// edges in worker mode. Scope-resolution (the single path since #942) now owns
+// these and asserts the emitted edge sets, mirroring the bare names each shape
+// reduces to (Base / IFoo / IBar).
+// ---------------------------------------------------------------------------
+
+describe('C# qualified/record/struct/alias base heritage (#1951)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'csharp-qualified-base'), () => {});
+  }, 60000);
+
+  it('emits EXTENDS for every class-like base, tail/type/alias-resolved', () => {
+    // R, P (record bases incl. primary_constructor_base_type `Base(id)`), and
+    // A (qualified_name) / B (alias_qualified_name) all derive from the Class
+    // `Base`, so each takes the EXTENDS branch (target kind = Class).
+    const extends_ = getRelationships(result, 'EXTENDS');
+    expect(edgeSet(extends_)).toEqual(['A → Base', 'B → Base', 'P → Base', 'R → Base']);
+  });
+
+  it('emits IMPLEMENTS for interface bases on records and structs', () => {
+    // R → IFoo (record identifier base), P → IBar (record identifier base
+    // alongside the primary_constructor_base_type), S → IFoo + S → IBar
+    // (struct base_list: identifier + qualified_name). Interface targets take
+    // the IMPLEMENTS branch.
+    const implements_ = getRelationships(result, 'IMPLEMENTS');
+    expect(edgeSet(implements_)).toEqual(['P → IBar', 'R → IFoo', 'S → IBar', 'S → IFoo']);
+  });
+
+  it('all heritage edges point to real graph nodes', () => {
+    for (const edge of [
+      ...getRelationships(result, 'EXTENDS'),
+      ...getRelationships(result, 'IMPLEMENTS'),
+    ]) {
+      const target = result.graph.getNode(edge.rel.targetId);
+      expect(target).toBeDefined();
+      expect(target!.properties.name).toBe(edge.target);
+    }
   });
 });
 
@@ -2316,26 +2384,14 @@ describe('C# struct overload dispatch (implicit-this narrowing)', () => {
   it('Run() -> Add emits CALLS edges to distinct Add overloads (implicit-this narrowing)', () => {
     const calls = getRelationships(result, 'CALLS');
     const runToAdd = calls.filter((c) => c.source === 'Run' && c.target === 'Add');
-    // The registry-primary pipeline exercises `pickImplicitThisOverload`
+    // The scope-resolution pipeline exercises `pickImplicitThisOverload`
     // + `narrowOverloadCandidates` and MUST resolve both Add(int) and
     // Add(int, int) to distinct targets. A silent regression in either
     // helper would drop an edge or merge both onto one target — pin
     // exact counts so either failure mode surfaces immediately.
-    // The legacy DAG path (REGISTRY_PRIMARY_CSHARP=0) does not
-    // implement implicit-`this` struct overload narrowing, so we
-    // accept any count there; the registry-primary path remains the
-    // authoritative guarantee.
-    if (process.env['REGISTRY_PRIMARY_CSHARP'] !== '0') {
-      expect(runToAdd.length).toBe(2);
-      const targetIds = new Set(runToAdd.map((c) => c.rel.targetId));
-      expect(targetIds.size).toBe(2);
-    } else {
-      expect(runToAdd.length).toBeLessThanOrEqual(2);
-      if (runToAdd.length >= 2) {
-        const targetIds = new Set(runToAdd.map((c) => c.rel.targetId));
-        expect(targetIds.size).toBe(runToAdd.length);
-      }
-    }
+    expect(runToAdd.length).toBe(2);
+    const targetIds = new Set(runToAdd.map((c) => c.rel.targetId));
+    expect(targetIds.size).toBe(2);
   });
 });
 
@@ -2429,9 +2485,12 @@ describe('C# class-name receiver write ACCESSES (merged Case 2 kind-aware branch
 // cross-namespace `using` and a colliding local class. Pins both fixes in
 // the resolver dataset:
 //
-//   1. emitCsharpScopeCaptures + extractFileStructure must use the adaptive
-//      `getTreeSitterBufferSize` on cache miss, otherwise UserService.cs
-//      fails to reparse with "Invalid argument" and CreateUser is dropped.
+//   1. emitCsharpScopeCaptures must use the adaptive `getTreeSitterBufferSize`
+//      on cache miss, otherwise UserService.cs fails to reparse with "Invalid
+//      argument" and CreateUser is dropped. (extractFileStructure no longer
+//      re-parses on cache miss — it uses the line scanner,
+//      extractCsharpStructureViaScanner — so this fixture's line-anchored
+//      namespaces are read identically by either branch.)
 //   2. populateCsharpNamespaceSiblings must append to bindingAugmentations
 //      instead of mutating frozen finalize-produced BindingRef[] arrays;
 //      otherwise the cross-namespace inject loop throws "Cannot add property
@@ -2450,7 +2509,7 @@ describe('C# large-file + frozen-bucket regression (issue #1066)', () => {
     result = await runPipelineFromRepo(
       path.join(FIXTURES, 'csharp-large-cache-miss-resolution'),
       () => {},
-      { workerThresholdsForTest: { minFiles: 1, minBytes: 0 } },
+      {},
     );
   }, 120000);
 
@@ -2560,7 +2619,7 @@ describe('C# namespace-as-root with no trailing newline (issue #1086)', () => {
     result = await runPipelineFromRepo(
       path.join(FIXTURES, 'csharp-namespace-as-root-no-trailing-newline'),
       () => {},
-      { workerThresholdsForTest: { minFiles: 1, minBytes: 0 } },
+      {},
     );
   }, 60000);
 
@@ -2580,5 +2639,78 @@ describe('C# namespace-as-root with no trailing newline (issue #1086)', () => {
     );
     expect(edge).toBeDefined();
     expect(edge!.rel.reason).toBe('csharp-scope: using');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Spurious IMPORTS: BCL usings must not match coincidentally-named local files
+// (#1881)
+// ---------------------------------------------------------------------------
+
+describe('C# spurious import edges (#1881)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'csharp-spurious-edges'), () => {});
+  }, 60000);
+
+  it('does not emit IMPORTS from System.Threading.Tasks to a local Tasks.cs', () => {
+    const imports = getRelationships(result, 'IMPORTS');
+    const spurious = imports.find(
+      (e) =>
+        e.sourceFilePath === 'Services/OrderService.cs' && e.targetFilePath === 'Legacy/Tasks.cs',
+    );
+    expect(spurious).toBeUndefined();
+  });
+
+  it('still emits the legitimate in-repo edge OrderService.cs -> Models/User.cs', () => {
+    // Guards against the negative above passing vacuously: the fixture's
+    // `using MyApp.Models;` must resolve to a real IMPORTS edge.
+    const imports = getRelationships(result, 'IMPORTS');
+    expect(imports.length).toBeGreaterThan(0);
+    const legit = imports.find(
+      (e) =>
+        e.sourceFilePath === 'Services/OrderService.cs' && e.targetFilePath === 'Models/User.cs',
+    );
+    expect(legit).toBeDefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #1881: spurious import edges on the no-csproj direct-match path. The
+// scope-resolution pipeline ran an ungated direct-match before the gate, so a
+// path-aligned `Legacy/System/Threading/Tasks.cs` satisfied `using
+// System.Threading.Tasks;`. The gate-first ordering must now block it.
+// Fixture ships NO .csproj.
+// ---------------------------------------------------------------------------
+
+describe('C# spurious import edges — no-csproj direct-match (#1881, Codex F2)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'csharp-spurious-edges-no-csproj'),
+      () => {},
+    );
+  }, 60000);
+
+  it('does not emit IMPORTS from System.Threading.Tasks to a path-aligned Legacy/System/Threading/Tasks.cs', () => {
+    const imports = getRelationships(result, 'IMPORTS');
+    const spurious = imports.find(
+      (e) =>
+        e.sourceFilePath === 'Services/OrderService.cs' &&
+        e.targetFilePath === 'Legacy/System/Threading/Tasks.cs',
+    );
+    expect(spurious).toBeUndefined();
+  });
+
+  it('still emits the legitimate in-repo edge OrderService.cs -> Models/User.cs', () => {
+    const imports = getRelationships(result, 'IMPORTS');
+    expect(imports.length).toBeGreaterThan(0);
+    const legit = imports.find(
+      (e) =>
+        e.sourceFilePath === 'Services/OrderService.cs' && e.targetFilePath === 'Models/User.cs',
+    );
+    expect(legit).toBeDefined();
   });
 });

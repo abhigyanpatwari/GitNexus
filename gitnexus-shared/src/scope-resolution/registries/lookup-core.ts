@@ -27,8 +27,10 @@
  *   is true, resolve the receiver's type at `startScope` (from
  *   `scope.typeBindings`), then walk the MRO via
  *   `MethodDispatchIndex.mroFor(ownerDefId)`. Membership per owner comes
- *   through `RegistryContext.methodDispatch` + owner lookups into
- *   `scope.ownedDefs`; each hit records a raw signal with the owner's
+ *   through an optional `RegistryContext.ownedMembersByOwner` hook when
+ *   supplied (`undefined` → fall back to `defs.byId`; `[]` → indexed
+ *   miss), otherwise via the compatibility fallback scan over
+ *   `defs.byId`; each hit records a raw signal with the owner's
  *   MRO depth.
  *
  * **Step 3 — Owner-scoped contributor.** When
@@ -263,13 +265,14 @@ function walkReceiverTypeBinding(
   // Walk the owner itself at depth 0, then its MRO chain.
   const walk: DefId[] = [ownerDefId, ...ctx.methodDispatch.mroFor(ownerDefId)];
 
-  for (let mroDepth = 0; mroDepth < walk.length; mroDepth++) {
-    const currentOwnerId = walk[mroDepth]!;
+  let mroDepth = 0;
+  for (const currentOwnerId of walk) {
     const members = collectOwnedMembers(currentOwnerId, name, ctx);
     for (const def of members) {
       if (!acceptedKinds.has(def.type)) continue;
       recordTypeBindingHit(perCandidate, def, mroDepth, ownerDefId);
     }
+    mroDepth++;
   }
 }
 
@@ -333,23 +336,7 @@ function collectOwnedMembers(
   memberName: string,
   ctx: RegistryContext,
 ): readonly SymbolDefinition[] {
-  // An owner's members are defs whose `ownerId === ownerDefId` and whose
-  // simple name matches `memberName`. We iterate `defs.byId` — O(D) per
-  // call today. A future by-owner index would make this O(K); tracked as
-  // a follow-up optimization before Ring 3 flips go production.
-  const out: SymbolDefinition[] = [];
-  for (const def of ctx.defs.byId.values()) {
-    if (def.ownerId !== ownerDefId) continue;
-    if (simpleNameOf(def) !== memberName) continue;
-    out.push(def);
-  }
-  return out;
-}
-
-function simpleNameOf(def: SymbolDefinition): string | undefined {
-  if (def.qualifiedName === undefined || def.qualifiedName.length === 0) return undefined;
-  const dot = def.qualifiedName.lastIndexOf('.');
-  return dot === -1 ? def.qualifiedName : def.qualifiedName.slice(dot + 1);
+  return ctx.ownedMembersByOwner(ownerDefId, memberName);
 }
 
 function recordTypeBindingHit(
@@ -423,13 +410,30 @@ function applyArityFilter(
   }
 
   let anyCompatible = false;
+  let anyUnknown = false;
   for (const state of perCandidate.values()) {
     const verdict = arityFn(callsite, state.def);
     state.signals.arityVerdict = verdict;
     if (verdict === 'compatible') anyCompatible = true;
+    else if (verdict === 'unknown') anyUnknown = true;
   }
 
-  if (!anyCompatible) return;
+  // When ALL candidates are 'incompatible' (none compatible, none unknown),
+  // the call is genuinely arity-broken — drop every candidate so the
+  // registry returns no resolution. This matches the PHP variadic case
+  // f(int $req, ...$rest) called with zero args: every candidate definitively
+  // rejects, and emitting an edge to a definitively-rejected callable is
+  // a false positive. When some candidates are 'unknown' (missing metadata),
+  // keep the set so downstream evidence can break the tie — that's the
+  // original safety-fallback behavior.
+  if (!anyCompatible) {
+    if (!anyUnknown) {
+      for (const defId of perCandidate.keys()) {
+        perCandidate.delete(defId);
+      }
+    }
+    return;
+  }
 
   // Filter: when at least one compatible candidate exists, drop incompatibles.
   for (const [defId, state] of perCandidate) {

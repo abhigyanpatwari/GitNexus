@@ -25,6 +25,18 @@ on:
           a gitnexus/package.json whose version matches the tag.
         required: true
         type: string
+    # Explicit secret contract — callers pass these by name. Replaces the
+    # blanket `secrets: inherit` pattern (zizmor `secrets-inherit` audit).
+    # GHCR auth uses the implicit GITHUB_TOKEN; only Docker Hub credentials
+    # need to be passed through.
+    secrets:
+      DOCKERHUB_USERNAME:
+        required: true
+      DOCKERHUB_TOKEN:
+        required: true
+
+permissions:
+  contents: read
 
 # Concurrency convention: see CONTRIBUTING.md → "GitHub Actions — Concurrency Convention".
 # Tag refs are unique per release, so distinct tags run in parallel.
@@ -70,7 +82,7 @@ jobs:
 
     steps:
       # Only the workflow_call path requires a non-empty `inputs.tag` — callers
-      # (e.g. release-candidate.yml) must pass the RC tag explicitly. On direct
+      # (publish.yml in RC mode) must pass the RC tag explicitly. On direct
       # tag pushes the tag comes from `github.ref`, so `inputs.tag` is always
       # empty and validating it here would break every real release (#1064).
       # The downstream "Verify tag matches gitnexus/package.json version" step
@@ -89,7 +101,7 @@ jobs:
       # When triggered by workflow_call the caller passes the RC tag as an input;
       # we check out that tag so the Dockerfile and package.json match the built image.
       # For tag-push events github.ref is already the tag ref — no override needed.
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           ref: ${{ inputs.tag || github.ref }}
 
@@ -126,17 +138,17 @@ jobs:
 
       # Required for multi-platform (linux/arm64) emulation.
       - name: Set up QEMU
-        uses: docker/setup-qemu-action@ce360397dd3f832beb865e1373c09c0e9f86d70a # v4.0.0
+        uses: docker/setup-qemu-action@06116385d9baf250c9f4dcb4858b16962ea869c3 # v4.1.0
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@4d04d5d9486b7bd6fa91e7baf45bbb4f8b9deedd # v4.0.0
+        uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4.1.0
 
       - name: Install Cosign
-        uses: sigstore/cosign-installer@cad07c2e89fa2edd6e2d7bab4c1aa38e53f76003 # v4.1.1
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
 
       - name: Log in to GitHub Container Registry
         if: ${{ github.event_name != 'pull_request' && !inputs.dry_run }}
-        uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4.1.0
+        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4.2.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -151,7 +163,7 @@ jobs:
       # `akonlabs/gitnexus` and `akonlabs/gitnexus-web` repos.
       - name: Log in to Docker Hub
         if: ${{ github.event_name != 'pull_request' && !inputs.dry_run }}
-        uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4.1.0
+        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4.2.0
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
@@ -171,7 +183,7 @@ jobs:
       # `github.event_name` would still be "push", not "workflow_call".
       - name: Extract Docker metadata
         id: meta
-        uses: docker/metadata-action@030e881283bb7a6894de51c315a6bfe6a94e05cf # v6.0.0
+        uses: docker/metadata-action@80c7e94dd9b9319bd5eb7a0e0fe9291e23a2a2e9 # v6.1.0
         with:
           # Dual-registry publish. metadata-action expands the same tag set
           # against every image ref listed here, and build-push-action pushes

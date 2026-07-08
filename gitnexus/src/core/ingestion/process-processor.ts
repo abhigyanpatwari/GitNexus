@@ -17,6 +17,7 @@ import { calculateEntryPointScore, isTestFile } from './entry-point-scoring.js';
 import { SupportedLanguages } from 'gitnexus-shared';
 import { isDev } from './utils/env.js';
 
+import { logger } from '../logger.js';
 // ============================================================================
 // CONFIGURATION
 // ============================================================================
@@ -319,13 +320,13 @@ const findEntryPoints = (
 
   // DEBUG: Log top candidates with new scoring details
   if (sorted.length > 0 && isDev) {
-    console.log(`[Process] Top 10 entry point candidates (new scoring):`);
+    logger.info(`[Process] Top 10 entry point candidates (new scoring):`);
     sorted.slice(0, 10).forEach((c, i) => {
       const node = graph.getNode(c.id);
       const exported = node?.properties.isExported ? '✓' : '✗';
       const shortPath = node?.properties.filePath?.split('/').slice(-2).join('/') || '';
-      console.log(`  ${i + 1}. ${node?.properties.name} [exported:${exported}] (${shortPath})`);
-      console.log(`     score: ${c.score.toFixed(2)} = [${c.reasons.join(' × ')}]`);
+      logger.info(`  ${i + 1}. ${node?.properties.name} [exported:${exported}] (${shortPath})`);
+      logger.info(`     score: ${c.score.toFixed(2)} = [${c.reasons.join(' × ')}]`);
     });
   }
 

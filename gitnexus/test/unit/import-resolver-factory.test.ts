@@ -352,6 +352,65 @@ describe('csharpNamespaceStrategy', () => {
     expect(result).toBeNull();
   });
 
+  it('no csproj + non-aligned BCL import: stops the chain instead of the ungated standard strategy (#2)', () => {
+    // Parity with the registry leg's no-csproj path. Without csproj configs the
+    // generic strategy would suffix-match `System.Threading.Tasks` onto the
+    // coincidental local `Legacy/Tasks.cs`. The gate sees the import aligns
+    // with no declared namespace, so the strategy returns an absorbing sentinel
+    // (`{ kind: 'files', files: [] }`) that STOPS the chain — the standard
+    // strategy never runs and no spurious edge is emitted.
+    const ctx = makeCtx(['Services/OrderService.cs', 'Legacy/Tasks.cs'], {
+      csharpNamespaces: {
+        declaredNamespaces: new Set(['MyApp.Services', 'MyApp.Legacy']),
+        rootNamespaces: new Set(['MyApp']),
+        truncated: false,
+      },
+    });
+    const result = csharpNamespaceStrategy(
+      'System.Threading.Tasks',
+      'Services/OrderService.cs',
+      ctx,
+    );
+    expect(result).toEqual({ kind: 'files', files: [] });
+  });
+
+  it('no csproj + in-repo-aligned import: keeps delegating to the standard strategy (#2)', () => {
+    // An import that DOES align with a declared namespace must keep returning
+    // null so the generic strategy resolves it — legitimate no-csproj behavior
+    // is unchanged; only non-aligned (BCL) imports are stopped.
+    const ctx = makeCtx(['Services/OrderService.cs', 'Models/User.cs'], {
+      csharpNamespaces: {
+        declaredNamespaces: new Set(['MyApp.Models', 'MyApp.Services']),
+        rootNamespaces: new Set(['MyApp']),
+        truncated: false,
+      },
+    });
+    const result = csharpNamespaceStrategy('MyApp.Models', 'Services/OrderService.cs', ctx);
+    expect(result).toBeNull();
+  });
+
+  it('returns an empty files result (chain-stop) for a gated BCL import when csproj configs exist (#1881, #8)', () => {
+    // Legacy DAG leg of #1881: with csproj configs present, a BCL using like
+    // `System.Threading.Tasks` must NOT suffix-match the coincidental local
+    // `Legacy/Tasks.cs`. The strategy returns `{ kind: 'files', files: [] }`
+    // (absorbing sentinel) to STOP the chain, NOT null — null would let the
+    // generic suffix fallback re-introduce the spurious edge.
+    const ctx = makeCtx(['Services/OrderService.cs', 'Legacy/Tasks.cs'], {
+      csharpConfigs: [{ rootNamespace: 'MyApp', projectDir: '' }],
+      csharpNamespaces: {
+        declaredNamespaces: new Set(['MyApp.Services', 'MyApp.Legacy']),
+        rootNamespaces: new Set(['MyApp']),
+        truncated: false,
+      },
+    });
+    const result = csharpNamespaceStrategy(
+      'System.Threading.Tasks',
+      'Services/OrderService.cs',
+      ctx,
+    );
+    expect(result).toEqual({ kind: 'files', files: [] });
+  });
+
   it('csharpImportConfig full chain produces package-kind (strategy-order guard)', () => {
     const files = ['src/Services/Auth/AuthService.cs', 'src/Services/Auth/TokenService.cs'];
     const ctx = makeCtx(files, {

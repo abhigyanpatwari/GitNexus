@@ -1,9 +1,10 @@
 import { describe, it, expect } from 'vitest';
+import { SupportedLanguages } from 'gitnexus-shared';
 import {
   detectFrameworkFromPath,
   detectFrameworkFromAST,
-  FRAMEWORK_AST_PATTERNS,
 } from '../../src/core/ingestion/framework-detection.js';
+import { providers } from '../../src/core/ingestion/languages/index.js';
 
 describe('detectFrameworkFromPath', () => {
   describe('Next.js', () => {
@@ -359,24 +360,60 @@ describe('detectFrameworkFromAST', () => {
   });
 });
 
-describe('FRAMEWORK_AST_PATTERNS', () => {
-  it('has patterns for all expected frameworks', () => {
-    const expectedFrameworks = [
+describe('provider registry exhaustiveness', () => {
+  // Compile-time exhaustiveness is enforced by `satisfies Record<SupportedLanguages, ...>`
+  // in languages/index.ts. This runtime guard catches drift if the enum and the
+  // providers map ever diverge at runtime (e.g. via build-artifact mismatch),
+  // since both shared lookup maps are built from `Object.entries(providers)`.
+  it('has one provider per SupportedLanguages enum member', () => {
+    expect(Object.keys(providers).sort()).toEqual(Object.values(SupportedLanguages).sort());
+  });
+});
+
+describe('provider astFrameworkPatterns', () => {
+  it('preserves multiplier and reason for high-priority frameworks', () => {
+    // Pin the exact multiplier and reason strings to catch silent drift
+    // during the per-language pattern relocation. These three frameworks
+    // are the most-used decorator-driven entry-point boosters.
+    const expectedConfigs: Record<string, { multiplier: number; reason: string }> = {
+      nestjs: { multiplier: 3.2, reason: 'nestjs-decorator' },
+      spring: { multiplier: 3.2, reason: 'spring-annotation' },
+      fastapi: { multiplier: 3.0, reason: 'fastapi-decorator' },
+    };
+    const seen = new Set<string>();
+    for (const provider of Object.values(providers)) {
+      for (const cfg of provider.astFrameworkPatterns ?? []) {
+        const expected = expectedConfigs[cfg.framework];
+        if (!expected) continue;
+        expect(cfg.entryPointMultiplier).toBe(expected.multiplier);
+        expect(cfg.reason).toBe(expected.reason);
+        seen.add(cfg.framework);
+      }
+    }
+    for (const fw of Object.keys(expectedConfigs)) {
+      expect(seen.has(fw), `missing framework config: ${fw}`).toBe(true);
+    }
+  });
+
+  it('covers all expected frameworks across providers', () => {
+    const expectedFrameworks = new Set([
       'nestjs',
       'expo-router',
-      'express',
       'fastapi',
       'flask',
       'spring',
       'jaxrs',
       'aspnet',
+      'signalr',
+      'blazor',
+      'efcore',
       'go-http',
       'gin',
       'echo',
       'fiber',
       'go-grpc',
       'laravel',
-      'actix',
+      'actix-web',
       'axum',
       'rocket',
       'tokio',
@@ -386,12 +423,21 @@ describe('FRAMEWORK_AST_PATTERNS', () => {
       'vapor',
       'rails',
       'sinatra',
-    ];
+      'spring-kotlin',
+      'ktor',
+      'android-kotlin',
+      'flutter',
+      'riverpod',
+    ]);
+    const foundFrameworks = new Set<string>();
+    for (const provider of Object.values(providers)) {
+      for (const cfg of provider.astFrameworkPatterns ?? []) {
+        foundFrameworks.add(cfg.framework);
+        expect(cfg.patterns.length).toBeGreaterThan(0);
+      }
+    }
     for (const fw of expectedFrameworks) {
-      expect(FRAMEWORK_AST_PATTERNS).toHaveProperty(fw);
-      expect(
-        FRAMEWORK_AST_PATTERNS[fw as keyof typeof FRAMEWORK_AST_PATTERNS].length,
-      ).toBeGreaterThan(0);
+      expect(foundFrameworks.has(fw), `missing framework: ${fw}`).toBe(true);
     }
   });
 });

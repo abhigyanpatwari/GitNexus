@@ -1,0 +1,351 @@
+name: Commit fork prebuilds
+
+# TRUSTED HALF of the vendored-grammar prebuild pipeline — FORK PRs only.
+#
+# `build-tree-sitter-prebuilds.yml` runs in the UNTRUSTED `pull_request`
+# context. On a fork PR it has a read-only token and no secrets, so it can
+# build + validate the native prebuilds and upload them as artifacts, but it
+# cannot commit them back. This workflow is the trusted consumer: triggered by
+# `workflow_run`, it runs from the DEFAULT BRANCH's copy of this file (the trust
+# anchor) with a writable token, downloads ONLY the artifacts (data — the
+# already-built-and-validated `.node` files + a small metadata.json), verifies
+# the metadata against the GitHub-controlled workflow_run authority, then pushes
+# the prebuilds onto the fork PR's head branch.
+#
+# It NEVER checks out or executes fork-controlled code: the producer already
+# `require()`-loaded + parsed each `.node` on its target platform in the
+# untrusted half (the correct place to run untrusted code). Here we only move
+# bytes and run git. The prebuilds touch ONLY gitnexus/vendor/<g>/prebuilds/**,
+# never .github/ — so the GITHUB_TOKEN's lack of `workflows` scope is irrelevant.
+#
+# Pushing to a fork branch with the GITHUB_TOKEN works only when the contributor
+# left "Allow edits by maintainers" enabled (the PR default) — the same
+# constraint as pr-autofix-apply.yml. When it's off we fall back to a comment.
+#
+# Same-repo PRs do NOT come here: they have secrets in the producer run, so the
+# `aggregate` job in build-tree-sitter-prebuilds.yml commits straight onto their
+# branch. This workflow's `if:` filters to forks.
+
+on:
+  workflow_run:
+    workflows: ['Build tree-sitter prebuilds']
+    types: [completed]
+
+concurrency:
+  # Per-PR identity, NOT workflow_run.id (which is per-run unique and would
+  # defeat serialization). Fork PRs have an empty pull_requests[] in the
+  # workflow_run payload, so fall back to head-repo + head-branch.
+  group: ${{ github.workflow }}-${{ github.event.workflow_run.pull_requests[0].number || format('{0}/{1}', github.event.workflow_run.head_repository.full_name, github.event.workflow_run.head_branch) }}
+  cancel-in-progress: false
+
+permissions: {}
+
+jobs:
+  deliver:
+    name: deliver-fork-prebuilds
+    # Only a SUCCESSFUL fork pull_request producer run. Same-repo PRs
+    # (head_repository == base) are handled by the producer's aggregate job.
+    if: >-
+      github.event.workflow_run.event == 'pull_request'
+      && github.event.workflow_run.conclusion == 'success'
+      && github.event.workflow_run.head_repository.full_name != github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write # push the prebuilds commit to the fork PR head branch
+      pull-requests: write # comment the delivery outcome
+      actions: read # download artifacts produced by the producer run
+    steps:
+      # Pinned to v8.0.1 (same SHA used across this repo's workflows).
+      - name: Download prebuild artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        continue-on-error: true
+        with:
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          pattern: ts-prebuild-*
+          path: prebuilds-in
+
+      - name: Download PR meta
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        continue-on-error: true
+        with:
+          name: pr-meta
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: meta-in
+
+      - name: Read and validate metadata
+        id: meta
+        shell: bash
+        run: |
+          set -euo pipefail
+          # No meta => this producer run had no fork-PR prebuilds to deliver
+          # (nothing changed, or it wasn't a fork). Exit cleanly.
+          if [ ! -f meta-in/metadata.json ]; then
+            echo "No pr-meta artifact — nothing to deliver."
+            echo "deliver=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # No prebuild artifacts => same (defensive; producer uploads both together).
+          if ! ls prebuilds-in/ts-prebuild-* >/dev/null 2>&1; then
+            echo "No ts-prebuild-* artifacts — nothing to deliver."
+            echo "deliver=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          jq . meta-in/metadata.json
+
+          # The artifact comes from the untrusted producer running fork code.
+          # Allowlist EVERY field before it flows into $GITHUB_OUTPUT — a newline
+          # in head_ref would otherwise inject a second output line and redirect
+          # this job's write-scoped push/comment onto a victim PR.
+          assert_field() {
+            local key="$1" pattern="$2" value
+            value=$(jq -r ".${key} // empty" meta-in/metadata.json)
+            if [ -z "$value" ] || ! [[ "$value" =~ $pattern ]]; then
+              echo "::error::metadata.${key} failed allowlist (got: $(printf '%q' "$value"))"
+              exit 1
+            fi
+            printf '%s' "$value"
+          }
+
+          SCHEMA=$(assert_field    schema    '^gitnexus\.ts-prebuild/v[0-9]+$')
+          PR_NUMBER=$(assert_field pr_number  '^[0-9]+$')
+          HEAD_SHA=$(assert_field  head_sha   '^[0-9a-f]{40}$')
+          HEAD_REF=$(assert_field  head_ref   '^[A-Za-z0-9._/-]+$')
+          HEAD_REPO=$(assert_field head_repo  '^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$')
+          BASE_REPO=$(assert_field base_repo  '^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$')
+
+          # Defence-in-depth: refuse to act if the artifact claims another repo.
+          if [ "$BASE_REPO" != "${GITHUB_REPOSITORY}" ]; then
+            echo "::error::Artifact base_repo does not match \$GITHUB_REPOSITORY — refusing to deliver."
+            exit 1
+          fi
+
+          {
+            echo "deliver=true"
+            echo "schema=${SCHEMA}"
+            echo "pr_number=${PR_NUMBER}"
+            echo "head_sha=${HEAD_SHA}"
+            echo "head_ref=${HEAD_REF}"
+            echo "head_repo=${HEAD_REPO}"
+          } >> "$GITHUB_OUTPUT"
+
+      # Cross-verify the artifact's claimed identity against the GitHub-controlled
+      # workflow_run event. The allowlist above only proves the fields are
+      # well-formed — not that they refer to the PR/SHA that actually triggered
+      # us. A fork-controlled build could mutate metadata.json to reference
+      # another PR/SHA and redirect our write-scoped push. Authority sources are
+      # all server-controlled: workflow_run.head_sha, head_repository.full_name,
+      # and pull_requests[].number (empty on forks -> commits/{sha}/pulls).
+      - name: Verify metadata against workflow_run authority
+        if: steps.meta.outputs.deliver == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          META_PR_NUMBER: ${{ steps.meta.outputs.pr_number }}
+          META_HEAD_SHA: ${{ steps.meta.outputs.head_sha }}
+          META_HEAD_REPO: ${{ steps.meta.outputs.head_repo }}
+          WF_HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          WF_HEAD_REPO: ${{ github.event.workflow_run.head_repository.full_name }}
+          WF_PR_NUMBERS: ${{ toJSON(github.event.workflow_run.pull_requests.*.number) }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # 1) head_sha must match exactly — the commit GitHub ran the producer against.
+          if [ "${META_HEAD_SHA}" != "${WF_HEAD_SHA}" ]; then
+            echo "::error::Artifact head_sha (${META_HEAD_SHA}) != workflow_run.head_sha (${WF_HEAD_SHA}) — refusing."
+            exit 1
+          fi
+          # 2) head_repo must match exactly.
+          if [ "${META_HEAD_REPO}" != "${WF_HEAD_REPO}" ]; then
+            echo "::error::Artifact head_repo (${META_HEAD_REPO}) != workflow_run.head_repository (${WF_HEAD_REPO}) — refusing."
+            exit 1
+          fi
+          # 3) pr_number must reference an open PR with this head SHA. Forks have
+          # an empty pull_requests[] by design — fall back to commits/{sha}/pulls.
+          allowed_numbers=$(jq -c '.' <<< "${WF_PR_NUMBERS}")
+          if [ "${allowed_numbers}" = "[]" ]; then
+            echo "workflow_run.pull_requests empty (fork) — using commits/{sha}/pulls."
+            allowed_numbers=$(gh api "repos/${GH_REPO}/commits/${WF_HEAD_SHA}/pulls" \
+              --jq '[.[] | select(.state == "open") | .number]' 2>/dev/null || echo "[]")
+            if [ "${allowed_numbers}" = "[]" ]; then
+              echo "::error::No open PR for head ${WF_HEAD_SHA} — refusing."
+              exit 1
+            fi
+          fi
+          if ! jq -e --argjson n "${META_PR_NUMBER}" 'index($n) != null' <<< "${allowed_numbers}" >/dev/null; then
+            echo "::error::Artifact pr_number (${META_PR_NUMBER}) not in authoritative list (${allowed_numbers}) — refusing."
+            exit 1
+          fi
+          echo "Verified identity: PR=${META_PR_NUMBER} head_sha=${META_HEAD_SHA} head_repo=${META_HEAD_REPO}."
+
+      # Pinned to v6.0.3 (same SHA used by build-tree-sitter-prebuilds.yml).
+      # persist-credentials: false — push auth is provided inline at push time,
+      # never written to .git/config on disk.
+      - name: Checkout fork PR head
+        if: steps.meta.outputs.deliver == 'true'
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          repository: ${{ steps.meta.outputs.head_repo }}
+          ref: ${{ steps.meta.outputs.head_sha }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+          persist-credentials: false
+          fetch-depth: 0
+          path: pr-checkout
+
+      - name: Place prebuilds into the fork checkout
+        if: steps.meta.outputs.deliver == 'true'
+        env:
+          DL: prebuilds-in
+          CHECKOUT: pr-checkout
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --input-type=module - <<'NODE'
+          import fs from 'node:fs';
+          import { execSync } from 'node:child_process';
+          const dl = process.env.DL;
+          const checkout = process.env.CHECKOUT;
+          const PLATFORMS = ['linux-x64', 'linux-arm64', 'darwin-arm64', 'darwin-x64', 'win32-x64', 'win32-arm64'];
+          // Reconstruct {grammar -> archs} from the downloaded artifact dir names
+          // (ts-prebuild-<grammar>-<platform-arch>; grammar shortnames are dash-free).
+          const byGrammar = {};
+          for (const d of (fs.existsSync(dl) ? fs.readdirSync(dl) : [])) {
+            const m = d.match(/^ts-prebuild-([a-z0-9]+)-(.+)$/);
+            if (m) (byGrammar[m[1]] ||= []).push(m[2]);
+          }
+          const grammars = Object.keys(byGrammar);
+          if (grammars.length === 0) throw new Error('no ts-prebuild-* artifacts present');
+          const changed = [];
+          for (const grammar of grammars) {
+            const name = `tree-sitter-${grammar}`;
+            const dest = `${checkout}/gitnexus/vendor/${name}/prebuilds`;
+            // A grammar with 5/6 prebuilds silently breaks node-gyp-build on the
+            // 6th platform — refuse a partial result.
+            for (const pa of PLATFORMS) {
+              const art = `${dl}/ts-prebuild-${grammar}-${pa}/${name}.node`;
+              if (!fs.existsSync(art)) throw new Error(`missing ${grammar} prebuild for ${pa}`);
+              fs.mkdirSync(`${dest}/${pa}`, { recursive: true });
+              fs.copyFileSync(art, `${dest}/${pa}/${name}.node`);
+            }
+            execSync(`cd ${dest} && find . -name "*.node" | sort | xargs sha256sum > SHA256SUMS`);
+            changed.push(name);
+          }
+          console.log('Placed prebuilds for:', changed.join(', '));
+          NODE
+
+      - name: Commit and push to the fork branch
+        id: push
+        if: steps.meta.outputs.deliver == 'true'
+        working-directory: pr-checkout
+        env:
+          HEAD_REF: ${{ steps.meta.outputs.head_ref }}
+          HEAD_REPO: ${{ steps.meta.outputs.head_repo }}
+          HEAD_SHA: ${{ steps.meta.outputs.head_sha }}
+          # Push auth only — supplied via env, never interpolated into the command.
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git add gitnexus/vendor/tree-sitter-*/prebuilds
+          if git diff --cached --quiet; then
+            echo "Prebuilds byte-identical to the fork branch — nothing to commit."
+            echo "result=nothing-to-commit" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Loop guard: if HEAD is already our prebuild bot commit, don't stack
+          # another. (The producer's paths filter already excludes prebuilds/**,
+          # so a prebuild-only push cannot retrigger it — this is defence in depth.)
+          head_author=$(git log -1 --format='%ae' HEAD)
+          head_subject=$(git log -1 --format='%s' HEAD)
+          if [ "${head_author}" = "41898282+github-actions[bot]@users.noreply.github.com" ] \
+             && [[ "${head_subject}" =~ ^chore\(vendor\) ]]; then
+            echo "::warning::HEAD is already a prebuild bot commit — refusing to re-apply."
+            echo "result=loop-prevented" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          grammars=$(git diff --cached --name-only \
+            | sed -n 's#gitnexus/vendor/\(tree-sitter-[a-z0-9]*\)/.*#\1#p' | sort -u | paste -sd, -)
+
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git config user.name  "github-actions[bot]"
+          git commit -q -m "chore(vendor): rebuild native prebuilds (${grammars})" \
+            -m "Built + validated by ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+
+          # Push to the fork head with a lease against the resolved SHA, so a
+          # contributor force-push during the build surfaces as lease-failed (not
+          # push-failed, which would mislead them into the maintainer-edit fix).
+          # Auth via per-invocation http.extraheader (never persisted, never in
+          # the process args / git remote -v). Base64-encoded form is masked too.
+          push_url="${GITHUB_SERVER_URL}/${HEAD_REPO}.git"
+          auth_header="Authorization: Basic $(printf 'x-access-token:%s' "${GITHUB_TOKEN}" | base64 -w0)"
+          echo "::add-mask::${auth_header}"
+          push_stderr=$(mktemp)
+          if git -c http.extraheader="${auth_header}" \
+                push --force-with-lease="refs/heads/${HEAD_REF}:${HEAD_SHA}" \
+                "${push_url}" "HEAD:${HEAD_REF}" 2>"$push_stderr"; then
+            echo "result=applied" >> "$GITHUB_OUTPUT"
+          else
+            cat "$push_stderr" >&2
+            if grep -qE "stale info|force-with-lease|rejected.*non-fast-forward|remote rejected|! \[rejected\]" "$push_stderr"; then
+              echo "::error::Push lease failed — fork branch moved during build."
+              echo "result=lease-failed" >> "$GITHUB_OUTPUT"
+            else
+              echo "::error::Push failed — likely a fork without 'Allow edits by maintainers'."
+              echo "result=push-failed" >> "$GITHUB_OUTPUT"
+            fi
+            exit 0
+          fi
+
+      - name: Comment delivery outcome
+        if: always() && steps.meta.outputs.deliver == 'true' && steps.push.outcome != 'skipped'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          PR: ${{ steps.meta.outputs.pr_number }}
+          RESULT: ${{ steps.push.outputs.result }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          marker="<!-- gitnexus:ts-prebuild-fork -->"
+          case "${RESULT}" in
+            applied)
+              body="${marker}
+          ✅ **Rebuilt native prebuilds pushed to this PR branch.** A grammar source change re-cut the vendored \`tree-sitter\` prebuilds for all 6 platforms and they're now committed on your branch. ([builder run](${RUN_URL}))" ;;
+            nothing-to-commit)
+              body="${marker}
+          ✅ Native prebuilds are already up to date on this branch — nothing to push." ;;
+            loop-prevented)
+              body="${marker}
+          🔁 Skipping prebuild push: the branch HEAD is already an automated prebuild commit." ;;
+            lease-failed)
+              body="${marker}
+          ⏳ The PR head moved while the prebuilds were building, so they weren't pushed. Push another commit (or wait for the next build) and they'll be re-cut. ([builder run](${RUN_URL}))" ;;
+            push-failed)
+              body="${marker}
+          ⚠️ Rebuilt native prebuilds are ready but **couldn't be pushed to your fork branch**. Tick **Allow edits by maintainers** in the PR sidebar so CI can commit them — or download them from the [builder run](${RUN_URL}) artifacts (\`ts-prebuild-*\`) and commit them under \`gitnexus/vendor/<grammar>/prebuilds/\` yourself." ;;
+            *)
+              body="${marker}
+          ❓ Prebuild delivery finished in an unexpected state (\`${RESULT:-unknown}\`). See the [builder run](${RUN_URL})." ;;
+          esac
+          # Strip the YAML block indent so the rendered comment starts at column 0.
+          body="$(printf '%s\n' "$body" | sed 's/^          //')"
+
+          # Upsert a single sticky comment keyed by the marker; only ever edit our
+          # own bot comment (PATCH on someone else's 403s and would abort).
+          existing=$(gh api "repos/${GH_REPO}/issues/${PR}/comments" --paginate \
+            --jq ".[] | select(.user.login == \"github-actions[bot]\" and (.body | contains(\"${marker}\"))) | .id" \
+            | head -n1 || true)
+          if [ -n "${existing}" ]; then
+            gh api -X PATCH "repos/${GH_REPO}/issues/comments/${existing}" -f body="${body}" >/dev/null
+            echo "Updated comment ${existing}."
+          else
+            gh api -X POST "repos/${GH_REPO}/issues/${PR}/comments" -f body="${body}" >/dev/null
+            echo "Created delivery comment."
+          fi

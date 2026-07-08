@@ -17,13 +17,19 @@
  */
 
 import type { Capture, CaptureMatch } from 'gitnexus-shared';
-import { findNodeAtRange, nodeToCapture, syntheticCapture } from '../../utils/ast-helpers.js';
+import {
+  nodeIfType,
+  nodeToCapture,
+  syntheticCapture,
+  walkNamedTree,
+} from '../../utils/ast-helpers.js';
 import { splitUsingDirective } from './import-decomposer.js';
 import { computeCsharpArityMetadata } from './arity-metadata.js';
 import { synthesizeCsharpReceiverBinding } from './receiver-binding.js';
 import { getCsharpParser, getCsharpScopeQuery } from './query.js';
 import { recordCacheHit, recordCacheMiss } from './cache-stats.js';
 import { getTreeSitterBufferSize } from '../../constants.js';
+import { parseSourceSafe } from '../../../tree-sitter/safe-parse.js';
 
 /** Declaration anchors that carry function-like arity metadata. */
 const FUNCTION_DECL_TAGS = [
@@ -42,18 +48,52 @@ const FUNCTION_NODE_TYPES = [
   'local_function_statement',
 ] as const;
 
+const BUILTIN_TYPE_NAMES = new Set([
+  'bool',
+  'byte',
+  'char',
+  'decimal',
+  'double',
+  'float',
+  'int',
+  'long',
+  'object',
+  'sbyte',
+  'short',
+  'string',
+  'uint',
+  'ulong',
+  'ushort',
+  'void',
+]);
+
+function shouldEmitReadMember(memberNode: SyntaxNode): boolean {
+  const parent = memberNode.parent;
+  if (parent === null) return true;
+
+  switch (parent.type) {
+    case 'invocation_expression':
+      return parent.childForFieldName('function')?.id !== memberNode.id;
+    case 'assignment_expression':
+      return parent.childForFieldName('left')?.id !== memberNode.id;
+    default:
+      return true;
+  }
+}
+
 export function emitCsharpScopeCaptures(
   sourceText: string,
   _filePath: string,
   cachedTree?: unknown,
 ): readonly CaptureMatch[] {
-  // Skip the parse when the caller (parse phase's scopeTreeCache)
-  // already produced a Tree for this source. Cache miss = re-parse,
-  // same as before. The cachedTree parameter is typed as `unknown` at
-  // the LanguageProvider contract layer; cast here at the use site.
+  // Reuse a pre-parsed Tree when the caller passes one via `cachedTree`; a
+  // miss re-parses. (The cache is currently always empty — its only producer,
+  // the sequential parser, was removed — so this re-parses in practice.) The
+  // cachedTree parameter is typed `unknown` at the LanguageProvider contract
+  // layer; cast here at the use site.
   let tree = cachedTree as ReturnType<ReturnType<typeof getCsharpParser>['parse']> | undefined;
   if (tree === undefined) {
-    tree = getCsharpParser().parse(sourceText, undefined, {
+    tree = parseSourceSafe(getCsharpParser(), sourceText, undefined, {
       bufferSize: getTreeSitterBufferSize(sourceText),
     });
     recordCacheMiss();
@@ -69,9 +109,16 @@ export function emitCsharpScopeCaptures(
     // `@`; we put it back so the central extractor's prefix lookups
     // (`@scope.`, `@declaration.`, …) work.
     const grouped: Record<string, Capture> = {};
+    // Parallel tag -> captured SyntaxNode map: the query hands us each matched
+    // node as c.node, so anchors resolve via a type-guarded lookup (nodeIfType)
+    // instead of re-deriving them with findNodeAtRange(tree.rootNode, ...) per
+    // match — the O(matches x rootChildren) root-walk fixed for go #1915 /
+    // python #1918, mirrored here.
+    const nodeMap: Record<string, SyntaxNode> = {};
     for (const c of m.captures) {
       const tag = '@' + c.name;
       grouped[tag] = nodeToCapture(tag, c.node);
+      nodeMap[tag] = c.node;
     }
     if (Object.keys(grouped).length === 0) continue;
 
@@ -79,8 +126,7 @@ export function emitCsharpScopeCaptures(
     // the kind/source/name/alias markers it consumes. Raw query match
     // only carries the @import.statement anchor.
     if (grouped['@import.statement'] !== undefined) {
-      const stmtCapture = grouped['@import.statement'];
-      const stmtNode = findNodeAtRange(tree.rootNode, stmtCapture.range, 'using_directive');
+      const stmtNode = nodeIfType(nodeMap['@import.statement'], 'using_directive');
       if (stmtNode !== null) {
         const decomposed = splitUsingDirective(stmtNode);
         if (decomposed !== null) {
@@ -94,6 +140,13 @@ export function emitCsharpScopeCaptures(
       continue;
     }
 
+    if (grouped['@reference.read.member'] !== undefined) {
+      const memberNode = nodeIfType(nodeMap['@reference.read.member'], 'member_access_expression');
+      if (memberNode === null || !shouldEmitReadMember(memberNode)) {
+        continue;
+      }
+    }
+
     // Synthesize `this` / `base` receiver type-bindings on every
     // instance method-like. Tree-sitter can't cleanly express "the
     // implicit receiver of a non-static member of a class/struct/
@@ -102,8 +155,7 @@ export function emitCsharpScopeCaptures(
     // `@scope.function` matches.
     if (grouped['@scope.function'] !== undefined) {
       out.push(grouped);
-      const anchor = grouped['@scope.function']!;
-      const fnNode = findFunctionNode(tree.rootNode, anchor.range);
+      const fnNode = nodeIfType(nodeMap['@scope.function'], ...FUNCTION_NODE_TYPES);
       if (fnNode !== null) {
         for (const synth of synthesizeCsharpReceiverBinding(fnNode)) {
           out.push(synth);
@@ -118,8 +170,7 @@ export function emitCsharpScopeCaptures(
     // the first tag that matches.
     const declTag = FUNCTION_DECL_TAGS.find((t) => grouped[t] !== undefined);
     if (declTag !== undefined) {
-      const anchor = grouped[declTag]!;
-      const fnNode = findFunctionNode(tree.rootNode, anchor.range);
+      const fnNode = nodeIfType(nodeMap[declTag], ...FUNCTION_NODE_TYPES);
       if (fnNode !== null) {
         const arity = computeCsharpArityMetadata(fnNode);
         if (arity.parameterCount !== undefined) {
@@ -146,6 +197,33 @@ export function emitCsharpScopeCaptures(
       }
     }
 
+    // Qualified constructor calls — `new Ns.Foo()`, `new A.B.Foo()`,
+    // `new Ns.Box<int>()` — bind only `@reference.call.constructor.qualified`
+    // with NO `@reference.name`, so the central extractor falls back to the
+    // whole-expression anchor and the reference name becomes the raw
+    // `new Ns.Foo()` text (never resolves). Derive the bare simple-name tail via
+    // the same `terminalTypeNameNode` helper the inheritance synth uses — it
+    // handles qualified_name, a generic tail (`Ns.Box<int>` → `Box`), and
+    // alias_qualified_name (`global::Ns.Foo`). Mirrors Java F35 (#1928).
+    if (
+      grouped['@reference.call.constructor.qualified'] !== undefined &&
+      grouped['@reference.name'] === undefined
+    ) {
+      const qNode = nodeMap['@reference.call.constructor.qualified'];
+      const nameNode = qNode === undefined ? null : terminalTypeNameNode(qNode);
+      if (nameNode !== null) {
+        grouped['@reference.name'] = nodeToCapture('@reference.name', nameNode);
+        const qText = qNode.text.trim();
+        if (qText.length > 0 && qText !== nameNode.text) {
+          grouped['@reference.qualified-name'] = syntheticCapture(
+            '@reference.qualified-name',
+            qNode,
+            qText,
+          );
+        }
+      }
+    }
+
     // Synthesize `@reference.arity` on every callsite so the
     // registry's arity filter can narrow overloads. Count the
     // `argument` named children of the backing `argument_list`.
@@ -156,10 +234,11 @@ export function emitCsharpScopeCaptures(
       ['@reference.call.free', '@reference.call.member', '@reference.call.constructor'] as const
     ).find((t) => grouped[t] !== undefined);
     if (callTag !== undefined && grouped['@reference.arity'] === undefined) {
-      const anchor = grouped[callTag]!;
-      const callNode =
-        findNodeAtRange(tree.rootNode, anchor.range, 'invocation_expression') ??
-        findNodeAtRange(tree.rootNode, anchor.range, 'object_creation_expression');
+      const callNode = nodeIfType(
+        nodeMap[callTag],
+        'invocation_expression',
+        'object_creation_expression',
+      );
       if (callNode !== null) {
         const argList = callNode.childForFieldName('arguments');
         const args =
@@ -198,10 +277,11 @@ export function emitCsharpScopeCaptures(
       grouped['@declaration.class'] !== undefined ||
       grouped['@declaration.record'] !== undefined
     ) {
-      const anchor = grouped['@declaration.class'] ?? grouped['@declaration.record']!;
-      const typeNode =
-        findNodeAtRange(tree.rootNode, anchor.range, 'class_declaration') ??
-        findNodeAtRange(tree.rootNode, anchor.range, 'record_declaration');
+      const typeNode = nodeIfType(
+        nodeMap['@declaration.class'] ?? nodeMap['@declaration.record'],
+        'class_declaration',
+        'record_declaration',
+      );
       if (typeNode !== null) {
         const synth = synthesizePrimaryConstructor(typeNode);
         if (synth !== null) out.push(synth);
@@ -209,7 +289,216 @@ export function emitCsharpScopeCaptures(
     }
   }
 
+  out.push(...synthesizeGenericTypeArgumentReferences(tree.rootNode));
+  out.push(...synthesizeCsharpInheritanceReferences(tree.rootNode));
+  out.push(...synthesizeCsharpConstructorInitializerReferences(tree.rootNode));
+
   return out;
+}
+
+/**
+ * Synthesize `@reference.call.constructor` captures for C# constructor
+ * initializers — `: base(...)` and `: this(...)` (F38 analog of Java #1928).
+ * tree-sitter-c-sharp models these as `constructor_initializer` nodes the scope
+ * query never matched, so the chained-constructor CALLS edges (derived ctor →
+ * base ctor; ctor → sibling overload) were silently dropped.
+ *
+ * The initializer carries no constructor name (the `base`/`this` child is a bare
+ * keyword token), so the target is resolved structurally:
+ *   - `this(...)` → the enclosing type's own simple name.
+ *   - `base(...)` → the enclosing class/record's base type, reduced to its bare
+ *     simple name via `terminalTypeNameNode`. C# requires the base class first in
+ *     a mixed list (`class C : Base, IFoo`); interface-only lists (`class C : IFoo`)
+ *     imply implicit `System.Object` — no `@reference` is emitted when the first
+ *     non-builtin base would be an interface-only target (resolution also drops
+ *     Interface-typed constructor targets in `free-call-fallback`).
+ * Arity is attached for overload disambiguation, mirroring `new X(...)`.
+ */
+function synthesizeCsharpConstructorInitializerReferences(root: SyntaxNode): CaptureMatch[] {
+  const out: CaptureMatch[] = [];
+  walkNamedTree(root, (node) => {
+    if (node.type !== 'constructor_initializer') return;
+
+    let kind: 'base' | 'this' | null = null;
+    for (let i = 0; i < node.childCount; i++) {
+      const t = node.child(i)?.type;
+      if (t === 'base' || t === 'this') {
+        kind = t;
+        break;
+      }
+    }
+    if (kind === null) return;
+
+    const enclosingType = findEnclosingTypeDeclaration(node);
+    if (enclosingType === null) return;
+
+    let targetNameNode: SyntaxNode | null = null;
+    if (kind === 'this') {
+      targetNameNode = enclosingType.childForFieldName('name');
+    } else {
+      const baseList = findNamedChild(enclosingType, 'base_list');
+      if (baseList === null) return;
+      // Prefer the first non-builtin entry (idiomatically the base class). When
+      // the list is interface-only (`class C : IFoo`), do not synthesize a
+      // `base(...)` ref — valid C# chains to implicit Object, not IFoo (#2046).
+      let sawNonBuiltin = false;
+      for (const base of baseList.namedChildren) {
+        if (base === null) continue;
+        const n = terminalTypeNameNode(base);
+        if (n === null || BUILTIN_TYPE_NAMES.has(n.text)) continue;
+        sawNonBuiltin = true;
+        targetNameNode = n;
+        break;
+      }
+      if (!sawNonBuiltin) return;
+    }
+    if (targetNameNode === null) return;
+
+    const argList = findNamedChild(node, 'argument_list');
+    const arity =
+      argList === null
+        ? 0
+        : argList.namedChildren.filter((c) => c !== null && c.type === 'argument').length;
+
+    out.push({
+      '@reference.call.constructor': nodeToCapture('@reference.call.constructor', node),
+      '@reference.name': nodeToCapture('@reference.name', targetNameNode),
+      '@reference.arity': syntheticCapture('@reference.arity', node, String(arity)),
+    });
+  });
+  return out;
+}
+
+function findEnclosingTypeDeclaration(node: SyntaxNode): SyntaxNode | null {
+  let cur: SyntaxNode | null = node.parent;
+  while (cur !== null) {
+    if (
+      cur.type === 'class_declaration' ||
+      cur.type === 'struct_declaration' ||
+      cur.type === 'record_declaration'
+    ) {
+      return cur;
+    }
+    cur = cur.parent;
+  }
+  return null;
+}
+
+/**
+ * Synthesize `@reference.inherits` captures from C# base lists so the
+ * registry-primary scope-resolution path emits EXTENDS / IMPLEMENTS edges
+ * (mirrors C++ `emitCppInheritanceCaptures`). Without this, C# inheritance
+ * edges came only from the legacy heritage-capture leg (removed in #942),
+ * which is dropped for registry-primary languages in the worker pipeline
+ * (issue #1951).
+ *
+ * Scope covers every `base_list`-bearing declaration the legacy heritage
+ * leg matched: `class_declaration`, `interface_declaration`,
+ * `record_declaration`, and `struct_declaration`. Records and structs were
+ * dropped before (#1951): a `record R(...) : Base(args), IFoo` or
+ * `struct S : IFoo, ns.IBar` produced no registry-primary inheritance edge
+ * even though the legacy heritage query covered them. The
+ * EXTENDS-vs-IMPLEMENTS split is decided downstream from the resolved target's
+ * symbol kind (`preEmitInheritanceEdges`), so all bases are emitted with the
+ * same `inherits` kind here; the base lookup name is normalized to its bare
+ * simple identifier (`IRepository<T>` → `IRepository`, `A.B.IFace` → `IFace`,
+ * `Base(args)` primary-ctor base → `Base`, `MyAlias::Foo` → `Foo`) to match
+ * the V1 simple-name `findClassBindingInScope` contract — exactly the bare
+ * text `normalizeSupertypeName` (supertype-alternation.ts) reduces each shape
+ * to on the legacy leg.
+ */
+function synthesizeCsharpInheritanceReferences(root: SyntaxNode): CaptureMatch[] {
+  const out: CaptureMatch[] = [];
+  walkNamedTree(root, (node) => {
+    if (
+      node.type !== 'class_declaration' &&
+      node.type !== 'interface_declaration' &&
+      node.type !== 'record_declaration' &&
+      node.type !== 'struct_declaration'
+    ) {
+      return;
+    }
+    const baseList = findNamedChild(node, 'base_list');
+    if (baseList === null) return;
+    for (const base of baseList.namedChildren) {
+      if (base === null) continue;
+      const nameNode = terminalTypeNameNode(base);
+      if (nameNode === null) continue;
+      if (BUILTIN_TYPE_NAMES.has(nameNode.text)) continue;
+      out.push({
+        '@reference.inherits': nodeToCapture('@reference.inherits', base),
+        '@reference.name': nodeToCapture('@reference.name', nameNode),
+      });
+    }
+  });
+  return out;
+}
+
+function synthesizeGenericTypeArgumentReferences(root: SyntaxNode): CaptureMatch[] {
+  const out: CaptureMatch[] = [];
+  // Treat all generic type arguments as static type references, including
+  // declaration signatures and call-site generic instantiations.
+  walkNamedTree(root, (node) => {
+    if (node.type !== 'generic_name') return;
+    const args = findNamedChild(node, 'type_argument_list');
+    if (args === null) return;
+
+    for (const arg of args.namedChildren) {
+      if (arg === null) continue;
+      const nameNode = terminalTypeNameNode(arg);
+      if (nameNode === null) continue;
+      if (BUILTIN_TYPE_NAMES.has(nameNode.text)) continue;
+      out.push({
+        '@reference.type': nodeToCapture('@reference.type', nameNode),
+        '@reference.name': nodeToCapture('@reference.name', nameNode),
+      });
+    }
+  });
+  return out;
+}
+
+function terminalTypeNameNode(node: SyntaxNode): SyntaxNode | null {
+  switch (node.type) {
+    case 'identifier':
+      return node;
+    case 'nullable_type':
+      return node.firstNamedChild === null ? null : terminalTypeNameNode(node.firstNamedChild);
+    case 'qualified_name': {
+      // `A.B.Base` -> tail identifier `Base`; `A.B.Base<T>` -> the tail is a
+      // `generic_name`, so recurse to drop the type arguments and reach the
+      // bare base identifier (#1951).
+      const tail = node.lastNamedChild;
+      return tail === null ? null : terminalTypeNameNode(tail);
+    }
+    case 'alias_qualified_name': {
+      // `MyAlias::Foo` / `global::IDisposable` -> the `name` field is the bare
+      // identifier (the `alias` is the qualifier). Mirrors
+      // normalizeSupertypeName's `name`-field reduction for this shape (#1951).
+      const name = node.childForFieldName('name');
+      return name === null ? null : terminalTypeNameNode(name);
+    }
+    case 'primary_constructor_base_type': {
+      // record base with a constructor call: `Base(args)` / `pkg.Base(id)` /
+      // `Box<int>(id)`. The `type` field holds the supertype (identifier /
+      // qualified_name / generic_name); the trailing argument_list is dropped.
+      // Mirrors normalizeSupertypeName's `type`-field reduction (#1951).
+      const type = node.childForFieldName('type');
+      return type === null ? null : terminalTypeNameNode(type);
+    }
+    case 'generic_name':
+      // generic_name has no `name` field (verified by real parse, #1920); the
+      // base identifier is the first named child.
+      return node.firstNamedChild;
+    default:
+      return null;
+  }
+}
+
+function findNamedChild(node: SyntaxNode, type: string): SyntaxNode | null {
+  for (const child of node.namedChildren) {
+    if (child !== null && child.type === type) return child;
+  }
+  return null;
 }
 
 /** C# 12 primary constructor: `class X(a, b) { }` / `record X(a, b)`.
@@ -294,15 +583,4 @@ function inferArgType(argNode: SyntaxNode): string {
     default:
       return '';
   }
-}
-
-/** Find the first C# function-like node at the given range. The
- *  declaration anchor range covers the whole method/constructor/etc.
- *  node, but the tag alone doesn't tell us which node type. */
-function findFunctionNode(rootNode: SyntaxNode, range: Capture['range']): SyntaxNode | null {
-  for (const nodeType of FUNCTION_NODE_TYPES) {
-    const n = findNodeAtRange(rootNode, range, nodeType);
-    if (n !== null) return n as SyntaxNode;
-  }
-  return null;
 }

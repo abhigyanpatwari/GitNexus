@@ -1,43 +1,26 @@
 import { describe, expect, it } from 'vitest';
-import { createASTCache } from '../../src/core/ingestion/ast-cache.js';
-import { processParsing } from '../../src/core/ingestion/parsing-processor.js';
-import { createSemanticModel } from '../../src/core/ingestion/model/semantic-model.js';
-import { createKnowledgeGraph } from '../../src/core/graph/graph.js';
+import { parseFilesWithWorkers } from '../helpers/worker-parse.js';
 
 describe('qualified class lookups', () => {
   it('derives canonical dot-separated names from namespaces, packages, and modules', async () => {
-    const graph = createKnowledgeGraph();
-    const model = createSemanticModel();
-    // model.symbols is the SymbolTable leaf that processParsing writes into.
-    // Fan-out writes still reach model.types / model.methods / model.fields
-    // via SemanticModel's wrappedAdd — this alias is purely for convenience
-    // at call sites that want the SymbolTable-shaped interface.
-    const symbolTable = model.symbols;
-    const astCache = createASTCache();
-
-    await processParsing(
-      graph,
-      [
-        {
-          path: 'src/Services/User.cs',
-          content: 'namespace Services.Auth;\npublic class User {}\n',
-        },
-        {
-          path: 'src/Data/User.cs',
-          content: 'namespace Data.Auth;\npublic class User {}\n',
-        },
-        {
-          path: 'src/models/Config.java',
-          content: 'package com.example.models;\nclass Config {}\n',
-        },
-        {
-          path: 'lib/admin/user.rb',
-          content: 'module Admin\n  class User\n  end\nend\n',
-        },
-      ],
-      symbolTable,
-      astCache,
-    );
+    const { model } = await parseFilesWithWorkers([
+      {
+        path: 'src/Services/User.cs',
+        content: 'namespace Services.Auth;\npublic class User {}\n',
+      },
+      {
+        path: 'src/Data/User.cs',
+        content: 'namespace Data.Auth;\npublic class User {}\n',
+      },
+      {
+        path: 'src/models/Config.java',
+        content: 'package com.example.models;\nclass Config {}\n',
+      },
+      {
+        path: 'lib/admin/user.rb',
+        content: 'module Admin\n  class User\n  end\nend\n',
+      },
+    ]);
 
     const userMatches = model.types.lookupClassByName('User');
     expect(userMatches).toHaveLength(3);
@@ -64,21 +47,9 @@ describe('qualified class lookups', () => {
   });
 
   it('falls back to the simple name for top-level class-like symbols', async () => {
-    const graph = createKnowledgeGraph();
-    const model = createSemanticModel();
-    // model.symbols is the SymbolTable leaf that processParsing writes into.
-    // Fan-out writes still reach model.types / model.methods / model.fields
-    // via SemanticModel's wrappedAdd — this alias is purely for convenience
-    // at call sites that want the SymbolTable-shaped interface.
-    const symbolTable = model.symbols;
-    const astCache = createASTCache();
-
-    await processParsing(
-      graph,
-      [{ path: 'src/plain-user.ts', content: 'export class User {}\n' }],
-      symbolTable,
-      astCache,
-    );
+    const { model } = await parseFilesWithWorkers([
+      { path: 'src/plain-user.ts', content: 'export class User {}\n' },
+    ]);
 
     const simpleMatches = model.types.lookupClassByName('User');
     expect(simpleMatches).toHaveLength(1);

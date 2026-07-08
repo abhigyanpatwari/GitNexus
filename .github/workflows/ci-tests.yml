@@ -3,13 +3,26 @@ name: Tests
 on:
   workflow_call:
 
+permissions:
+  contents: read
+
 jobs:
   tests:
     name: ubuntu / coverage
     runs-on: ubuntu-latest
     timeout-minutes: 25
+    # Fail loudly (don't silently skip) if the FTS extension is unavailable, so
+    # FTS-dependent lbug integration suites are guaranteed to run in CI.
+    env:
+      GITNEXUS_REQUIRE_FTS: '1'
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      # persist-credentials: false — this job runs tests and uploads a
+      # test-reports artifact (if: always()). The default-persisted token in
+      # .git/config must not be capturable through that upload (zizmor
+      # credential-persistence / artipacked audit). The job never pushes.
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
       - uses: ./.github/actions/setup-gitnexus
         with:
           build: 'true'
@@ -56,19 +69,307 @@ jobs:
             gitnexus-web/web-test-results.json
           retention-days: 5
 
+  # Platform-sensitive subset only — the full suite runs on Ubuntu above.
+  # See gitnexus/scripts/cross-platform-tests.ts for the file list and
+  # rationale for each included test.
   cross-platform:
-    name: ${{ matrix.os }}
+    name: ${{ matrix.os }} (platform-sensitive)
     strategy:
       fail-fast: false
       matrix:
         # Ubuntu already covered by the coverage job above
         os: [windows-latest, macos-latest]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 25
+    timeout-minutes: 20
+    # Same guarantee on the platform-sensitive runners: FTS-dependent suites in
+    # the cross-platform subset must run, not silently skip.
+    env:
+      GITNEXUS_REQUIRE_FTS: '1'
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      # persist-credentials: false — runs tests only, never pushes (zizmor
+      # credential-persistence / artipacked audit).
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
       - uses: ./.github/actions/setup-gitnexus
         with:
           build: 'true'
-      - run: npx vitest run
+      - name: Run platform-sensitive tests
+        run: npx tsx scripts/run-cross-platform.ts
+        working-directory: gitnexus
+
+  # Tree-sitter ABI gate (#1922). Two halves, both blocking:
+  #   1. Static, offline: assert every grammar's compiled ABI loads on the
+  #      pinned runtime (check-tree-sitter-upgrade-readiness.py --assert-current).
+  #   2. Dynamic: run the parser-loader ABI load-smoke on the OS matrix so an
+  #      ABI-incompatible committed vendor prebuilt (e.g. Swift's — the static
+  #      check introspects source, not the shipped .node) fails on the platform
+  #      it ships to.
+  abi-assert:
+    name: tree-sitter ABI (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-gitnexus
+        with:
+          build: 'true'
+
+      - name: Assert installed + vendored grammar ABIs (static)
+        shell: bash
+        run: python3 .github/scripts/check-tree-sitter-upgrade-readiness.py --assert-current
+
+      - name: Run parser-loader ABI load-smoke (dynamic)
+        run: npx vitest run test/unit/parser-loader-abi.test.ts
+        working-directory: gitnexus
+
+  # End-to-end smoke test for the #1728 packaging fix: pack the published
+  # tarball, install it globally into a temp prefix, and assert no junction
+  # creation (the EPERM root cause) plus working CLI plus vendor cleanliness
+  # (#836). Runs on windows-latest because that is the platform the fix
+  # targets; the in-repo `npm ci` job above only exercises the dev-tree path
+  # and skips the tarball reify step where the historical EPERM occurred.
+  packaged-install-smoke:
+    name: packaged install smoke (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      # persist-credentials: false — this job runs npm pack + npm install -g
+      # from a tarball and never pushes back; the token in .git/config would
+      # be at risk of leaking through any future artifact-upload step
+      # (zizmor artipacked audit). Disable upfront.
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-gitnexus
+        with:
+          build: 'true'
+
+      - name: Pack gitnexus tarball
+        shell: bash
+        run: npm pack
+        working-directory: gitnexus
+
+      - name: Install gitnexus tarball into isolated prefix
+        shell: bash
+        run: |
+          set -euo pipefail
+          PREFIX="$RUNNER_TEMP/gitnexus-smoke"
+          mkdir -p "$PREFIX"
+          TARBALL=$(find . -maxdepth 1 -name 'gitnexus-*.tgz' -print -quit)
+          if [ -z "$TARBALL" ]; then
+            echo "ERROR: no gitnexus-*.tgz tarball found in $(pwd)" >&2
+            exit 1
+          fi
+          echo "Installing $TARBALL into $PREFIX"
+          npm install -g --prefix "$PREFIX" "./$TARBALL" --no-audit --no-fund
+          echo "PREFIX=$PREFIX" >> "$GITHUB_ENV"
+        working-directory: gitnexus
+
+      - name: Assert no junctions or vendor build artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Locate the installed gitnexus package across npm prefix layouts
+          # (lib/node_modules on POSIX, node_modules on Windows).
+          for candidate in "$PREFIX/lib/node_modules/gitnexus" "$PREFIX/node_modules/gitnexus"; do
+            if [ -d "$candidate" ]; then
+              INSTALLED="$candidate"
+              break
+            fi
+          done
+          if [ -z "${INSTALLED:-}" ]; then
+            echo "ERROR: installed gitnexus package not found under $PREFIX" >&2
+            ls -la "$PREFIX" || true
+            exit 1
+          fi
+          echo "Installed package at: $INSTALLED"
+
+          # #836 invariant: no node_modules/ or build/ under any vendor/*.
+          BAD=$(find "$INSTALLED/vendor" \( -name node_modules -o -name build \) -print 2>/dev/null || true)
+          if [ -n "$BAD" ]; then
+            echo "ERROR: vendor tree contains forbidden build artifacts (#836):" >&2
+            echo "$BAD" >&2
+            exit 1
+          fi
+
+          # #1728 invariant: materialized grammar dirs are real directories,
+          # not junctions/symlinks (which is what the EPERM regression created).
+          for name in tree-sitter-dart tree-sitter-proto tree-sitter-swift; do
+            entry="$INSTALLED/node_modules/$name"
+            if [ ! -e "$entry" ]; then
+              echo "WARN: $name not materialized (toolchain/prebuild may be unavailable on $RUNNER_OS)"
+              continue
+            fi
+            if [ -L "$entry" ]; then
+              echo "ERROR: $entry is a symlink/junction — #1728 regression" >&2
+              exit 1
+            fi
+            if [ ! -d "$entry" ]; then
+              echo "ERROR: $entry is not a directory" >&2
+              exit 1
+            fi
+          done
+
+      - name: Assert gitnexus --version works
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            "$PREFIX/gitnexus.cmd" --version
+          else
+            "$PREFIX/bin/gitnexus" --version
+          fi
+
+  # Node engines-floor gate (#2372). The embedding resolvers statically named
+  # `module.registerHooks`, which only exists on Node >= 22.15 / >= 23.5, so on
+  # the supported floor (engines: >=22.0.0) those ESM modules failed to LINK —
+  # a class vitest/tsx transforms structurally mask, and the default
+  # `node-version: 22` (resolves to latest) never hits. Build the dist on 22.x,
+  # then import-link every module R1 names as a load surface on a pinned 22.14
+  # so a regression fails here instead of shipping to users on that Node range.
+  node-floor-compat:
+    name: node floor compat (22.14)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      # persist-credentials: false — builds and import-links only, never pushes
+      # (zizmor credential-persistence / artipacked audit).
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: gitnexus/package-lock.json
+      - name: Build gitnexus-shared
+        run: npm install && npm run build
+        working-directory: gitnexus-shared
+      - name: Install and build gitnexus
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm ci
+          npm run build
+        working-directory: gitnexus
+      # Switch to the engines-floor Node AFTER building — native deps built on
+      # 22.x load across the whole 22.x ABI line, and nothing installs after this
+      # (so no package-manager cache is needed).
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: '22.14.0'
+          package-manager-cache: false
+      - name: Import-link the built dist on Node 22.14
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --version
+          node --version | grep -q '^v22\.14\.' || { echo "expected Node 22.14.x" >&2; exit 1; }
+          for m in \
+            core/embeddings/runtime-install \
+            core/embeddings/onnxruntime-node-resolver \
+            core/embeddings/onnxruntime-common-resolver \
+            cli/embeddings \
+            cli/analyze \
+            cli/doctor \
+            mcp/core/embedder; do
+            echo "import dist/$m.js"
+            node --input-type=module -e "await import('./dist/$m.js')"
+          done
+        working-directory: gitnexus
+
+  # ── Dedicated benchmark gate ─────────────────────────────────────
+  # The cross-language `*-pipeline-benchmark.test.ts` suites are gated behind
+  # GITNEXUS_BENCH (they generate synthetic codebases at scale), so the main
+  # coverage job above SKIPS them — their O(n^2) scaling guards never ran in CI.
+  # Run them here with GITNEXUS_BENCH=1, alongside the Python scope-capture and
+  # import-resolution fingerprint + scaling guards (PR #1918 P2a).
+  #
+  # `--no-file-parallelism` is REQUIRED: these suites measure wall-clock and peak
+  # heap, so parallel forks both skew the timings and OOM the worker pool — they
+  # must run one file at a time.
+  #
+  # go-pipeline-benchmark.test.ts is deliberately NOT included: its
+  # worker-pool (#1848) suite spins a real worker pool that exits unexpectedly
+  # under vitest's fork pool (reproduced in validation), which would make this
+  # gate flaky. Go is already guarded by its non-gated O(n^2) tripwire (runs in
+  # the main coverage job) plus its golden capture-parity test.
+  benchmarks:
+    name: benchmarks (GITNEXUS_BENCH)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      # persist-credentials: false — this job only runs npm + vitest benchmarks
+      # and never pushes; the default-persisted token in .git/config would be at
+      # risk of leaking through an artifact upload (zizmor credential-persistence
+      # / artipacked audit). Mirrors the packaged-install-smoke job below.
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-gitnexus
+        with:
+          build: 'true'
+
+      - name: Python scope-capture + import-resolution fingerprint / scaling guards
+        run: |
+          node --import tsx bench/python-scope/measure.mjs --check
+          node --import tsx bench/python-scope/import-target-fingerprint.mjs --check
+        working-directory: gitnexus
+
+      - name: Cross-language scope-capture fingerprint + scaling guards
+        # Build-free: asserts emit<Lang>ScopeCaptures output is unchanged
+        # (fingerprint) and stays linear (scaling < 1.5) for go/csharp/rust/php/
+        # ruby/cobol. Catches an O(n^2) re-regression without the worker pool.
+        run: node --import tsx bench/scope-capture/measure.mjs --check
+        working-directory: gitnexus
+
+      - name: CFG construction time / disk / memory guards (#2081 M1)
+        # Build-free: asserts collectFunctionCfgs output is unchanged
+        # (fingerprint) and that wall-time, cfgSideChannel disk bytes, AND
+        # retained heap all stay sub-quadratic for the straight-line /
+        # many-functions / branchy scenarios. Catches an O(n^2) re-regression in
+        # the per-function CFG builder (e.g. an extendBlock concat chain) and a
+        # memory/disk blow-up. --expose-gc enables the retained-heap measurement.
+        run: node --expose-gc --import tsx bench/cfg/measure.mjs --check
+        working-directory: gitnexus
+
+      - name: Emit-persistence throughput / byte-identity guards (#2203)
+        # Build-free: asserts streamAllCSVsToDisk output is byte-identical
+        # (order-independent CSV-line fingerprint — the #2203 U2/U3 emit
+        # optimisations must not change graph content) and that emit wall-time
+        # stays linear in node+edge count. The LadybugDB COPY half needs a real
+        # DB, so its timing lives in the runtime PROF_LBUG_LOAD breakdown.
+        run: node --import tsx bench/emit-persistence/measure.mjs --check
+        working-directory: gitnexus
+
+      - name: Streaming PDG-emit byte-identity / bounded-RSS guards (#2202)
+        # Build-free: asserts the streaming PdgEmitSink emits a CSV row SET
+        # byte-identical to the whole-graph streamAllCSVsToDisk emit, AND that
+        # the in-memory graph retains zero BasicBlock nodes (the O(chunk) peak-RSS
+        # bound that unblocks full-kernel-scale repos). Fails on fingerprint drift
+        # or any resident BasicBlock.
+        run: node --import tsx bench/emit-persistence/measure-streaming.mjs --check
+        working-directory: gitnexus
+
+      - name: Cross-language pipeline benchmarks (GITNEXUS_BENCH, serial)
+        env:
+          GITNEXUS_BENCH: '1'
+        run: >-
+          npx vitest run --no-file-parallelism
+          test/integration/cobol-pipeline-benchmark.test.ts
+          test/integration/csharp-pipeline-benchmark.test.ts
+          test/integration/rust-pipeline-benchmark.test.ts
+          test/integration/php-pipeline-benchmark.test.ts
+          test/integration/ruby-pipeline-benchmark.test.ts
         working-directory: gitnexus

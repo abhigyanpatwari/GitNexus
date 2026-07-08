@@ -33,9 +33,8 @@
  *     same identifier also binds as a parameter in the constructor scope
  *     via the normal `required_parameter` → `@type-binding.parameter` path.
  *   - **Enum** — dual type+value. Emits `@scope.class` (enum body contains
- *     member declarations) + `@declaration.enum`. Members are captured as
- *     `@declaration.property` via the generic property_identifier pattern
- *     inside enum_body.
+ *     member declarations) + `@declaration.enum`. Enum member names
+ *     are captured via `enum_assignment` (see below).
  *
  * Node types pinned via `scripts/_probe_typescript_grammar.ts`:
  *   internal_module, namespace_export, namespace_import, import_specifier,
@@ -53,6 +52,10 @@
 
 import Parser from 'tree-sitter';
 import TS from 'tree-sitter-typescript';
+import {
+  ARRAY_METHOD_NOT_ANY_OF_PREDICATE,
+  DEFAULT_EXPORT_IDENTIFIER_NOT_ANY_OF_PREDICATE,
+} from '../../ts-js-hoc-utils.js';
 
 // tree-sitter-typescript exports both `typescript` and `tsx` grammars on
 // the default export. The package's `.d.ts` types the default export
@@ -85,6 +88,11 @@ const TYPESCRIPT_SCOPE_QUERY = `
 (abstract_class_declaration) @scope.class
 (interface_declaration) @scope.class
 (enum_declaration) @scope.class
+;; Class expressions: const Foo = class { ... } / const Foo = class Named { ... }.
+;; tree-sitter-typescript uses (class) (NOT class_expression) -- same node
+;; name as tree-sitter-javascript. The name field is optional (anonymous
+;; class expressions omit it); ScopeExtractor tolerates missing names.
+(class) @scope.class
 
 (function_declaration) @scope.function
 (generator_function_declaration) @scope.function
@@ -136,27 +144,262 @@ const TYPESCRIPT_SCOPE_QUERY = `
 ;; Arrow/function-expression assigned to a const/let/var — named by the
 ;; variable_declarator. Covers \`const fn = () => {}\` and its export
 ;; variant. Matches the legacy TYPESCRIPT_QUERIES pattern.
+;;
+;; The \`@declaration.function\` anchor sits on the INNER arrow_function /
+;; function_expression node (NOT the wrapping lexical_declaration), so
+;; \`anchor.range\` aligns with the corresponding \`@scope.function\` scope
+;; range. \`pass2AttachDeclarations\` then resolves \`innermost\` to the
+;; arrow's own scope (instead of the module scope) and the def is owned
+;; by the arrow itself. Without this alignment, calls inside the arrow
+;; body lose caller attribution: \`resolveCallerGraphId\` walks up past
+;; the empty arrow scope into the module scope and grabs whichever
+;; Function-like def appears first there — silently mis-attributing
+;; every nested call (Zustand stores, TanStack hooks, Promise-all/map,
+;; etc.). See \`typescript-hof-callbacks.test.ts\`.
 (lexical_declaration
   (variable_declarator
     name: (identifier) @declaration.name
-    value: (arrow_function))) @declaration.function
+    value: (arrow_function) @declaration.function))
 
 (lexical_declaration
   (variable_declarator
     name: (identifier) @declaration.name
-    value: (function_expression))) @declaration.function
+    value: (function_expression) @declaration.function))
 
 (variable_declaration
   (variable_declarator
     name: (identifier) @declaration.name
-    value: (arrow_function))) @declaration.function
+    value: (arrow_function) @declaration.function))
 
 (variable_declaration
   (variable_declarator
     name: (identifier) @declaration.name
-    value: (function_expression))) @declaration.function
+    value: (function_expression) @declaration.function))
+
+;; Object-property arrows / function expressions named by their pair key:
+;; \`{ addItem: (item) => ..., removeItem: (item) => ... }\`. The legacy
+;; TYPESCRIPT_QUERIES emits the same shape; mirroring it here keeps
+;; scope-resolution declarations in sync (issue #1166). Computed keys
+;; (\`[K]: () => ...\`) intentionally fall through anonymous.
+;;
+;; Same anchor discipline as the \`lexical_declaration\` block above: the
+;; \`@declaration.function\` capture must sit on the INNER \`arrow_function\`
+;; / \`function_expression\` node — NOT the outer \`pair\`. The pair node
+;; starts at the property-key token, BEFORE the arrow's
+;; \`@scope.function\` range. \`pass2AttachDeclarations.atPosition(pair.startLine,
+;; pair.startCol)\` therefore resolves to the PARENT scope (the enclosing
+;; function-like, e.g. the \`(set) => ({...})\` callback in
+;; \`persist((set) => ({...}))\`), not the inner arrow's own scope.
+;;
+;; With the anchor on \`pair\`, ALL pair-function defs from the same object
+;; literal land in the same parent scope's \`ownedDefs\`. \`resolveCallerGraphId\`
+;; walking up from a call inside any of those arrows then matches the
+;; FIRST Function-like def via \`ownedDefs.find()\` — silently mis-attributing
+;; every call to the first sibling. Multi-action Zustand stores
+;; (\`{ addItem, removeItem, fetchData, … }\`) — the dominant 0%-capture
+;; pattern in the bug report — would land all calls on \`addItem\`.
+;;
+;; With the anchor on the inner \`arrow_function\` / \`function_expression\`,
+;; \`anchor.range\` matches the arrow's own \`@scope.function\` range; the
+;; def lands in the arrow scope's own \`ownedDefs\` and \`pass2AttachDeclarations\`'s
+;; auto-hoist (\`rangesEqual(anchor.range, innermost.range)\`) promotes
+;; the BINDING to the parent scope (so importers and lookups still find
+;; the name in the object's surrounding scope). Each pair-arrow becomes
+;; an independent caller anchor in the walk.
+(pair
+  key: (property_identifier) @declaration.name
+  value: (arrow_function) @declaration.function)
+
+(pair
+  key: (property_identifier) @declaration.name
+  value: (function_expression) @declaration.function)
+
+(pair
+  key: (string (string_fragment) @declaration.name)
+  value: (arrow_function) @declaration.function)
+
+(pair
+  key: (string (string_fragment) @declaration.name)
+  value: (function_expression) @declaration.function)
+
+;; HOC-wrapped variable declarations: \`const X = HOC((args) => { ... })\`.
+;;
+;; Covers the dominant React UI idiom (\`React.forwardRef\`, \`React.memo\`,
+;; bare \`forwardRef\` / \`memo\` / \`observer\`), Hook callbacks
+;; (\`useCallback\`, \`useMemo\`), and library-wrapper factories (\`debounce\`,
+;; \`throttle\`, user-defined \`withErrorBoundary\` / \`createHook\`, etc.).
+;; All produce the same AST shape:
+;;
+;;   lexical_declaration
+;;     variable_declarator
+;;       name: identifier "X"                          ← we want this name
+;;       value: call_expression
+;;         function: identifier | member_expression    ← any callee
+;;         arguments: arguments
+;;           arrow_function | function_expression      ← the actual code
+;;
+;; The pre-fix \`tsExtractFunctionName\` only handled \`variable_declarator\`
+;; and \`pair\` parents, so HOC-wrapped arrows fell through anonymous. The
+;; registry-primary \`query.ts\` had no pattern for this shape either —
+;; \`const Button = forwardRef((p, r) => { ... })\` registered as a
+;; \`Variable\` with no \`Function\` def, and every call inside the arrow
+;; body lost caller attribution: \`resolveCallerGraphId\` walked up past
+;; the empty arrow scope to the module's File fallback. Sourcerer-fe alone
+;; has ~296 such declarations (57 forwardRef + 21 memo + 161 useCallback
+;; + 57 useMemo) — all invisible to \`gitnexus_context\` /
+;; \`gitnexus_impact\` for outgoing edges before this fix.
+;;
+;; Anchor discipline: same as the \`lexical_declaration\` / \`pair\` blocks
+;; above — on the INNER \`arrow_function\` / \`function_expression\`, NOT
+;; the outer \`call_expression\`. The arrow's range matches its own
+;; \`@scope.function\` range, so \`pass2AttachDeclarations.atPosition\`
+;; resolves \`innermost\` to the arrow's own scope and
+;; \`rangesEqual(anchor.range, innermost.range)\` triggers the auto-hoist
+;; that promotes the binding to the parent scope (where \`const X\`
+;; lives).
+;;
+;; #1876 — chained array-method form: \`const x = arr.find((y) => p(y))\`
+;; has the same syntactic shape and matches here too, naming the
+;; \`.find\` callback as \`x\`. Because \`x\` holds a value (the method
+;; result), not a callable, the spurious \`Function:x\` def is dropped
+;; emit-side in captures.ts: \`isArrayMethodCallbackArrow\` skips any
+;; \`@declaration.function\` whose enclosing call has a member-expression
+;; callee with a known Array-method property (\`ARRAY_CALLBACK_METHODS\`:
+;; \`map\` / \`filter\` / \`find\` / \`reduce\` / \`forEach\` / \`some\` /
+;; \`every\` / …). Only the \`@declaration.variable\` survives, so the
+;; binding is a single value def and calls inside the callback attribute
+;; to the enclosing scope rather than \`Function:x\`.
+;;
+;; Residual (intentional): a user-defined fluent-API method with a
+;; callback (\`qb.where(x => …)\`) is NOT in the blocklist and still
+;; classifies as \`Function\` — there's no clean syntactic line beyond
+;; the well-known Array surface, so the set is closed and easy to extend.
+;;
+;; Trade-off — multi-arrow arguments: \`const x = call(arrow1, arrow2)\`
+;; would emit TWO matches with the same name \`x\`. tree-sitter-query
+;; iterates all arrow_function direct children of \`arguments\`, so each
+;; emits its own \`(name=x, function=...)\` pair. \`pass2AttachDeclarations\`
+;; pushes both \`Function:x\` defs into the same arrow scopes (each in
+;; its own arrow's \`ownedDefs\`) and hoists both bindings to the parent.
+;; The downstream registry's qualified-name dedup then collapses them
+;; via \`(filePath, type, qualifiedName)\` — second wins. Acceptable;
+;; multi-arrow-callback APIs are rare (\`new Promise(executor)\` is the
+;; main one and takes a single executor).
+;;
+;; NOTE: Split into identifier vs member_expression patterns. Member
+;; expressions are filtered with a blocklist of common array methods
+;; (map, filter, reduce, etc.) to avoid false positives like
+;; \`const x = arr.map(a => ...)\` being classified as Function.
+(lexical_declaration
+  (variable_declarator
+    name: (identifier) @declaration.name
+    value: (call_expression
+      function: (identifier)
+      arguments: (arguments
+        (arrow_function) @declaration.function))))
+
+(lexical_declaration
+  (variable_declarator
+    name: (identifier) @declaration.name
+    value: (call_expression
+      function: (identifier)
+      arguments: (arguments
+        (function_expression) @declaration.function))))
+
+(lexical_declaration
+  (variable_declarator
+    name: (identifier) @declaration.name
+    value: (call_expression
+      function: (member_expression
+        property: (property_identifier) @callee)
+      arguments: (arguments
+        (arrow_function) @declaration.function)))
+  ${ARRAY_METHOD_NOT_ANY_OF_PREDICATE})
+
+(lexical_declaration
+  (variable_declarator
+    name: (identifier) @declaration.name
+    value: (call_expression
+      function: (member_expression
+        property: (property_identifier) @callee)
+      arguments: (arguments
+        (function_expression) @declaration.function)))
+  ${ARRAY_METHOD_NOT_ANY_OF_PREDICATE})
+
+(variable_declaration
+  (variable_declarator
+    name: (identifier) @declaration.name
+    value: (call_expression
+      function: (identifier)
+      arguments: (arguments
+        (arrow_function) @declaration.function))))
+
+(variable_declaration
+  (variable_declarator
+    name: (identifier) @declaration.name
+    value: (call_expression
+      function: (identifier)
+      arguments: (arguments
+        (function_expression) @declaration.function))))
+
+(variable_declaration
+  (variable_declarator
+    name: (identifier) @declaration.name
+    value: (call_expression
+      function: (member_expression
+        property: (property_identifier) @callee)
+      arguments: (arguments
+        (arrow_function) @declaration.function)))
+  ${ARRAY_METHOD_NOT_ANY_OF_PREDICATE})
+
+(variable_declaration
+  (variable_declarator
+    name: (identifier) @declaration.name
+    value: (call_expression
+      function: (member_expression
+        property: (property_identifier) @callee)
+      arguments: (arguments
+        (function_expression) @declaration.function)))
+  ${ARRAY_METHOD_NOT_ANY_OF_PREDICATE})
+
+;; HOC-wrapped default exports: \`export default defineEventHandler(async (e) => { ... })\`.
+;; The emit phase rewrites @declaration.name to a file-derived name so
+;; wrappers like \`defineEventHandler\` / \`React.memo\` do not collapse
+;; unrelated modules onto the same symbol name.
+((export_statement
+  value: (call_expression
+    function: (identifier) @hoc
+    arguments: (arguments
+      (arrow_function) @declaration.function)))
+  ${DEFAULT_EXPORT_IDENTIFIER_NOT_ANY_OF_PREDICATE})
+
+((export_statement
+  value: (call_expression
+    function: (identifier) @hoc
+    arguments: (arguments
+      (function_expression) @declaration.function)))
+  ${DEFAULT_EXPORT_IDENTIFIER_NOT_ANY_OF_PREDICATE})
+
+((export_statement
+  value: (call_expression
+    function: (member_expression
+      property: (property_identifier) @callee)
+    arguments: (arguments
+      (arrow_function) @declaration.function)))
+  ${ARRAY_METHOD_NOT_ANY_OF_PREDICATE})
+
+((export_statement
+  value: (call_expression
+    function: (member_expression
+      property: (property_identifier) @callee)
+    arguments: (arguments
+      (function_expression) @declaration.function)))
+  ${ARRAY_METHOD_NOT_ANY_OF_PREDICATE})
 
 ;; Method definitions — regular + private (#field) methods.
+;; These match inside both class_declaration and class (class expression)
+;; bodies. The @scope.class for class expressions (see (class) above)
+;; ensures methods inside class expressions get the correct Class scope parent.
 (method_definition
   name: (property_identifier) @declaration.name) @declaration.method
 
@@ -177,6 +420,15 @@ const TYPESCRIPT_SCOPE_QUERY = `
 
 (public_field_definition
   name: (private_property_identifier) @declaration.name) @declaration.property
+
+;; Enum members: enum Color { Red, Green = 1, Blue }.
+;; Bare members (no value): Red, Blue — property_identifier inside enum_body.
+;; Members with value: Green = 1 — enum_assignment with name field.
+(enum_body
+  (property_identifier) @declaration.name) @declaration.property
+
+(enum_assignment
+  name: (_) @declaration.name) @declaration.property
 
 ;; Declarations — parameter properties: \`constructor(public name: string)\`.
 ;; The accessibility_modifier presence distinguishes these from regular
@@ -298,6 +550,26 @@ const TYPESCRIPT_SCOPE_QUERY = `
   pattern: (identifier) @type-binding.name
   type: (type_annotation
     (generic_type) @type-binding.type)) @type-binding.parameter
+
+(optional_parameter
+  pattern: (identifier) @type-binding.name
+  type: (type_annotation
+    (predefined_type) @type-binding.type)) @type-binding.parameter
+
+(optional_parameter
+  pattern: (identifier) @type-binding.name
+  type: (type_annotation
+    (union_type) @type-binding.type)) @type-binding.parameter
+
+(optional_parameter
+  pattern: (identifier) @type-binding.name
+  type: (type_annotation
+    (array_type) @type-binding.type)) @type-binding.parameter
+
+(optional_parameter
+  pattern: (identifier) @type-binding.name
+  type: (type_annotation
+    (readonly_type) @type-binding.type)) @type-binding.parameter
 
 ;; Type bindings — variable annotations: \`let u: User = ...\` / \`const u: User\`.
 (variable_declarator
@@ -698,7 +970,8 @@ const TYPESCRIPT_SCOPE_QUERY = `
   constructor: (identifier) @reference.name) @reference.call.constructor
 
 (new_expression
-  constructor: (member_expression) @reference.call.constructor.qualified) @reference.call.constructor
+  constructor: (member_expression
+    property: (property_identifier) @reference.name) @reference.call.constructor.qualified) @reference.call.constructor
 
 ;; References — write access: \`obj.field = value\`.
 (assignment_expression
@@ -721,6 +994,53 @@ const TYPESCRIPT_SCOPE_QUERY = `
 (member_expression
   object: (_) @reference.receiver
   property: (property_identifier) @reference.name) @reference.read.member
+`;
+
+/**
+ * JSX-only query suffix. Appended to the base query when compiling
+ * against the TSX grammar; NOT compiled against the plain TS grammar
+ * (which has no \`jsx_*\` node types and would reject these patterns).
+ *
+ * Why JSX as a CALLS edge: \`<Foo />\` is syntactic sugar for \`Foo(props)\`
+ * and the React component is invoked by the renderer, so for blast-radius
+ * (\`gitnexus_impact("Badge", direction: "upstream")\`) and call-graph
+ * (\`gitnexus_context("Foo")\`) purposes JSX usage IS a call. Routing
+ * through \`@reference.call.free\` / \`@reference.call.member\` makes the
+ * downstream caller-walk + edge-emission paths handle JSX uniformly with
+ * ordinary call expressions — no new edge type, no schema changes.
+ *
+ * Identifier-only JSX is filtered to PascalCase via \`(#match? ... "^[A-Z]")\`
+ * so \`<div>\`, \`<span>\`, \`<button>\` and other native HTML elements (which
+ * by JSX convention start lowercase) don't emit edges to nonexistent
+ * "div" / "span" symbols. Member-form JSX (\`<Foo.Bar />\`) is always a
+ * component (HTML element names can't contain dots), so no predicate
+ * filter is applied there.
+ *
+ * Both \`jsx_self_closing_element\` (\`<Foo />\`) and \`jsx_opening_element\`
+ * (\`<Foo>...</Foo>\`) emit; the closing tag is intentionally NOT captured —
+ * each JSX element should emit exactly one CALLS edge per use site.
+ */
+const TSX_JSX_QUERY_SUFFIX = `
+;; <Foo />
+((jsx_self_closing_element
+  name: (identifier) @reference.name) @reference.call.free
+  (#match? @reference.name "^[A-Z]"))
+
+;; <Foo> ... </Foo>  (paired form — match the opening tag only)
+((jsx_opening_element
+  name: (identifier) @reference.name) @reference.call.free
+  (#match? @reference.name "^[A-Z]"))
+
+;; <Foo.Bar />  /  <Container.Section.Title />  — namespaced JSX
+(jsx_self_closing_element
+  name: (member_expression
+    object: (_) @reference.receiver
+    property: (property_identifier) @reference.name)) @reference.call.member
+
+(jsx_opening_element
+  name: (member_expression
+    object: (_) @reference.receiver
+    property: (property_identifier) @reference.name)) @reference.call.member
 `;
 
 let _tsParser: Parser | null = null;
@@ -753,11 +1073,18 @@ export function getTsParser(filePath?: string): Parser {
  * executed against a Tree produced by the `tsx` grammar — tree-sitter
  * matches by node-type id, and the two grammars have separate id
  * spaces.
+ *
+ * The TSX query is compiled with the JSX-as-call patterns appended.
+ * Those patterns reference `jsx_self_closing_element` /
+ * `jsx_opening_element` which exist only in the TSX grammar — embedding
+ * them in the plain TS query would throw `Query.InvalidNodeType` at
+ * compile time (and even if it didn't, the patterns would never fire on
+ * `.ts` source).
  */
 export function getTsScopeQuery(filePath?: string): Parser.Query {
   if (filePath !== undefined && isTsxFile(filePath)) {
     if (_tsxQuery === null) {
-      _tsxQuery = new Parser.Query(TSX_GRAMMAR, TYPESCRIPT_SCOPE_QUERY);
+      _tsxQuery = new Parser.Query(TSX_GRAMMAR, TYPESCRIPT_SCOPE_QUERY + TSX_JSX_QUERY_SUFFIX);
     }
     return _tsxQuery;
   }

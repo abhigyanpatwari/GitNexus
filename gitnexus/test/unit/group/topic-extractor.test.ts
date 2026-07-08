@@ -483,4 +483,59 @@ await consumer.subscribe({ topic: 'order.placed' });`,
       expect(contracts).toEqual([]);
     });
   });
+
+  // ─── #1185: topic extractor must honour .gitnexusignore ─────────────
+  //
+  // The source-scan glob used to use a hardcoded ignore array; it now
+  // consumes the shared `IgnoreService` (mirrors `filesystem-walker.ts`)
+  // so any `.gitnexusignore` pattern excludes those files from contract
+  // extraction. Special case for this extractor: the Go-specific
+  // `_test.go` filter is preserved via a small wrapper around the base
+  // filter (so glob-level pruning still applies); the second test below
+  // pins that behaviour against accidental regressions.
+  describe('respects .gitnexusignore (#1185)', () => {
+    it('source-scan glob skips files matched by .gitnexusignore', async () => {
+      // Control: a regular @KafkaListener that SHOULD be discovered.
+      writeFile(
+        'src/EventHandler.java',
+        `@KafkaListener(topics = "user.created")
+public void handleUserCreated(ConsumerRecord<String, String> record) {}`,
+      );
+      // Vendored Java handler under a venv-style dir.
+      writeFile(
+        'mentor_env/lib/LeakedHandler.java',
+        `@KafkaListener(topics = "leaked.event")
+public void handleLeaked(ConsumerRecord<String, String> r) {}`,
+      );
+      writeFile('.gitnexusignore', 'mentor_env/\n');
+
+      const contracts = await extractor.extract(null, tmpDir, makeRepo(tmpDir));
+      const ids = contracts.map((c) => c.contractId);
+      expect(ids).toContain('topic::user.created');
+      expect(ids).not.toContain('topic::leaked.event');
+      expect(contracts.some((c) => c.symbolRef?.filePath?.startsWith('mentor_env/'))).toBe(false);
+    });
+
+    it('still prunes `*_test.go` even when .gitnexusignore is empty (wrapper preserves glob-level filter)', async () => {
+      // Regression guard: replacing the hardcoded `**/*_test.go` glob
+      // entry with a wrapper around `createIgnoreFilter` must keep this
+      // file out of the scan. Without the wrapper, the previous test
+      // ('skips Go test files (`*_test.go`)') would still pass because
+      // the test scenario set up no detections, but here we WRITE a
+      // valid Sarama consumer call inside `_test.go` and assert the
+      // extractor never sees it.
+      writeFile(
+        'src/orders_test.go',
+        `package orders
+import "github.com/IBM/sarama"
+func TestSomething() {
+    consumer.ConsumePartition("real-topic-from-test", 0, sarama.OffsetNewest)
+}`,
+      );
+
+      const contracts = await extractor.extract(null, tmpDir, makeRepo(tmpDir));
+      expect(contracts.find((c) => c.contractId === 'topic::real-topic-from-test')).toBeUndefined();
+      expect(contracts).toEqual([]);
+    });
+  });
 });

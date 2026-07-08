@@ -100,6 +100,7 @@ function makeCtx(
   opts: {
     mro?: Record<string, readonly string[]>;
     implsByInterface?: Record<string, readonly string[]>;
+    ownedMembersByOwner?: RegistryContext['ownedMembersByOwner'];
     arity?: (
       callsite: { arity: number },
       def: SymbolDefinition,
@@ -125,11 +126,25 @@ function makeCtx(
       return out;
     },
   });
+  // Default hook: scan supplied defs by (ownerId, simpleName) — the same
+  // semantics the byId fallback used to provide. Tests that need a custom
+  // hook override via opts.ownedMembersByOwner.
+  const defaultOwnedMembersByOwner = (ownerDefId: string, memberName: string) => {
+    const out: SymbolDefinition[] = [];
+    for (const def of defs) {
+      if (def.ownerId !== ownerDefId) continue;
+      const dot = def.qualifiedName?.lastIndexOf('.') ?? -1;
+      const simple = dot === -1 ? def.qualifiedName : def.qualifiedName?.slice(dot + 1);
+      if (simple === memberName) out.push(def);
+    }
+    return out;
+  };
   return {
     scopes: buildScopeTree(scopes),
     defs: defIndex,
     qualifiedNames: qualifiedNameIndex,
     moduleScopes,
+    ownedMembersByOwner: opts.ownedMembersByOwner ?? defaultOwnedMembersByOwner,
     methodDispatch,
     providers: opts.arity !== undefined ? { arityCompatibility: opts.arity } : {},
   };
@@ -250,7 +265,13 @@ describe('Step 5: arity filter', () => {
     );
   });
 
-  it('keeps incompatible candidates when no compatible candidate exists (soft penalty)', () => {
+  it('drops every candidate when ALL are incompatible AND none unknown (hard rejection)', () => {
+    // Post-commit af9af4a9 (PR #1497 / U1): the old soft-penalty fallback
+    // that kept incompatible candidates with `arityMatchIncompatible`
+    // weight was deliberately removed at this layer too. When every
+    // candidate is definitively arity-incompatible, the registry returns
+    // no resolution — matching the PHP variadic case `f(int $req, ...$rest)`
+    // called with zero args.
     const save3 = mkDef({
       nodeId: 'def:save-three',
       type: 'Method',
@@ -268,8 +289,41 @@ describe('Step 5: arity filter', () => {
     const results = buildMethodRegistry(ctx).lookup('save', 'scope:m', {
       callsite: { arity: 1 },
     });
-    expect(results).toHaveLength(1);
-    expect(evidenceOfKind(results[0]!, 'arity-match')?.weight).toBe(
+    expect(results).toHaveLength(0);
+  });
+
+  it('keeps incompatible candidates when at least one verdict is unknown (soft penalty)', () => {
+    // The soft-rescue path is still active when at least one candidate's
+    // arity verdict is 'unknown' — that signals missing metadata rather
+    // than a definitive mismatch, so all candidates (including incompatible
+    // ones) are preserved with their evidence weights for downstream
+    // tie-breaking.
+    const save3 = mkDef({
+      nodeId: 'def:save-three',
+      type: 'Method',
+      qualifiedName: 'User.save',
+      parameterCount: 3,
+    });
+    const saveUnknown = mkDef({
+      nodeId: 'def:save-unknown',
+      type: 'Method',
+      qualifiedName: 'User.save',
+    });
+    const mod = mkScope({
+      id: 'scope:m',
+      parent: null,
+      bindings: { save: [mkBinding(save3, 'local'), mkBinding(saveUnknown, 'local')] },
+    });
+    const ctx = makeCtx([mod], [save3, saveUnknown], {
+      arity: (_callsite, def) => (def.nodeId === 'def:save-unknown' ? 'unknown' : 'incompatible'),
+    });
+    const results = buildMethodRegistry(ctx).lookup('save', 'scope:m', {
+      callsite: { arity: 1 },
+    });
+    expect(results).toHaveLength(2);
+    const incompat = results.find((r) => r.def.nodeId === 'def:save-three');
+    expect(incompat).toBeDefined();
+    expect(evidenceOfKind(incompat!, 'arity-match')?.weight).toBe(
       EvidenceWeights.arityMatchIncompatible,
     );
   });
@@ -534,6 +588,184 @@ describe('Step 3: owner-scoped contributor', () => {
 // ─── Step 2: type-binding / MRO walk ───────────────────────────────────────
 
 describe('Step 2: type-binding + MRO walk', () => {
+  it('uses ownedMembersByOwner before falling back to defs scans', () => {
+    const userClass = mkDef({ nodeId: 'def:User', type: 'Class', qualifiedName: 'User' });
+    const saveMethod = mkDef({
+      nodeId: 'def:User.save',
+      type: 'Method',
+      qualifiedName: 'User.save',
+      ownerId: 'def:User',
+    });
+    const callScope = mkScope({
+      id: 'scope:call',
+      parent: null,
+      typeBindings: { user: typeRef('User', 'scope:call') },
+    });
+    const ctx = makeCtx([callScope], [userClass], {
+      ownedMembersByOwner: (ownerDefId, memberName) =>
+        ownerDefId === 'def:User' && memberName === 'save' ? [saveMethod] : [],
+    });
+
+    const results = buildMethodRegistry(ctx).lookup('save', 'scope:call', {
+      explicitReceiver: { name: 'user' },
+    });
+
+    expect(results).toHaveLength(1);
+    expect(results[0]!.def).toBe(saveMethod);
+    expect(evidenceOfKind(results[0]!, 'type-binding')?.weight).toBe(
+      EvidenceWeights.typeBindingByMroDepth[0],
+    );
+  });
+
+  it('keeps hook-provided overloads available for arity filtering', () => {
+    const userClass = mkDef({ nodeId: 'def:User', type: 'Class', qualifiedName: 'User' });
+    const saveOne = mkDef({
+      nodeId: 'def:User.save1',
+      type: 'Method',
+      qualifiedName: 'User.save',
+      ownerId: 'def:User',
+      parameterCount: 1,
+    });
+    const saveTwo = mkDef({
+      nodeId: 'def:User.save2',
+      type: 'Method',
+      qualifiedName: 'User.save',
+      ownerId: 'def:User',
+      parameterCount: 2,
+    });
+    const callScope = mkScope({
+      id: 'scope:call',
+      parent: null,
+      typeBindings: { user: typeRef('User', 'scope:call') },
+    });
+    const ctx = makeCtx([callScope], [userClass], {
+      ownedMembersByOwner: (ownerDefId, memberName) =>
+        ownerDefId === 'def:User' && memberName === 'save' ? [saveTwo, saveOne] : [],
+      arity: (callsite, def) =>
+        (def.parameterCount ?? 0) === callsite.arity ? 'compatible' : 'incompatible',
+    });
+
+    const results = buildMethodRegistry(ctx).lookup('save', 'scope:call', {
+      explicitReceiver: { name: 'user' },
+      callsite: { arity: 1 },
+    });
+
+    expect(results).toHaveLength(1);
+    expect(results[0]!.def).toBe(saveOne);
+  });
+
+  it('resolves field members from ownedMembersByOwner through accepted-kind filtering', () => {
+    const userClass = mkDef({ nodeId: 'def:User', type: 'Class', qualifiedName: 'User' });
+    const nameField = mkDef({
+      nodeId: 'def:User.name',
+      type: 'Property',
+      qualifiedName: 'User.name',
+      ownerId: 'def:User',
+    });
+    const readScope = mkScope({
+      id: 'scope:read',
+      parent: null,
+      typeBindings: { user: typeRef('User', 'scope:read') },
+    });
+    const ctx = makeCtx([readScope], [userClass], {
+      ownedMembersByOwner: (ownerDefId, memberName) =>
+        ownerDefId === 'def:User' && memberName === 'name' ? [nameField] : [],
+    });
+
+    const results = buildFieldRegistry(ctx).lookup('name', 'scope:read', {
+      explicitReceiver: { name: 'user' },
+    });
+
+    expect(results).toHaveLength(1);
+    expect(results[0]!.def).toBe(nameField);
+  });
+
+  it('resolves Const members from ownedMembersByOwner through accepted-kind filtering', () => {
+    const userClass = mkDef({ nodeId: 'def:User', type: 'Class', qualifiedName: 'User' });
+    const maxConst = mkDef({
+      nodeId: 'def:User.MAX',
+      type: 'Const',
+      qualifiedName: 'User.MAX',
+      ownerId: 'def:User',
+    });
+    const readScope = mkScope({
+      id: 'scope:read',
+      parent: null,
+      typeBindings: { user: typeRef('User', 'scope:read') },
+    });
+    const ctx = makeCtx([readScope], [userClass], {
+      ownedMembersByOwner: (ownerDefId, memberName) =>
+        ownerDefId === 'def:User' && memberName === 'MAX' ? [maxConst] : [],
+    });
+
+    const results = buildFieldRegistry(ctx).lookup('MAX', 'scope:read', {
+      explicitReceiver: { name: 'user' },
+    });
+
+    expect(results).toHaveLength(1);
+    expect(results[0]!.def).toBe(maxConst);
+  });
+
+  it('resolves Static members from ownedMembersByOwner through accepted-kind filtering', () => {
+    const userClass = mkDef({ nodeId: 'def:User', type: 'Class', qualifiedName: 'User' });
+    const counterStatic = mkDef({
+      nodeId: 'def:User.counter',
+      type: 'Static',
+      qualifiedName: 'User.counter',
+      ownerId: 'def:User',
+    });
+    const readScope = mkScope({
+      id: 'scope:read',
+      parent: null,
+      typeBindings: { user: typeRef('User', 'scope:read') },
+    });
+    const ctx = makeCtx([readScope], [userClass], {
+      ownedMembersByOwner: (ownerDefId, memberName) =>
+        ownerDefId === 'def:User' && memberName === 'counter' ? [counterStatic] : [],
+    });
+
+    const results = buildFieldRegistry(ctx).lookup('counter', 'scope:read', {
+      explicitReceiver: { name: 'user' },
+    });
+
+    expect(results).toHaveLength(1);
+    expect(results[0]!.def).toBe(counterStatic);
+  });
+
+  it('returns every hook-provided field kind that shares (owner, name)', () => {
+    const userClass = mkDef({ nodeId: 'def:User', type: 'Class', qualifiedName: 'User' });
+    const legacyProp = mkDef({
+      nodeId: 'prop:User.name',
+      type: 'Property',
+      qualifiedName: 'User.name',
+      ownerId: 'def:User',
+    });
+    const reconciledVar = mkDef({
+      nodeId: 'def:User.name',
+      type: 'Variable',
+      qualifiedName: 'User.name',
+      ownerId: 'def:User',
+    });
+    const readScope = mkScope({
+      id: 'scope:read',
+      parent: null,
+      typeBindings: { user: typeRef('User', 'scope:read') },
+    });
+    const ctx = makeCtx([readScope], [userClass], {
+      ownedMembersByOwner: (ownerDefId, memberName) =>
+        ownerDefId === 'def:User' && memberName === 'name' ? [legacyProp, reconciledVar] : [],
+    });
+
+    const results = buildFieldRegistry(ctx).lookup('name', 'scope:read', {
+      explicitReceiver: { name: 'user' },
+    });
+
+    expect(results).toHaveLength(2);
+    expect(results.map((r) => r.def.nodeId).sort()).toEqual(
+      [legacyProp.nodeId, reconciledVar.nodeId].sort(),
+    );
+  });
+
   it('emits type-binding evidence with MRO-depth-decayed weight (explicit receiver)', () => {
     const userClass = mkDef({ nodeId: 'def:User', type: 'Class', qualifiedName: 'User' });
     const saveMethod = mkDef({

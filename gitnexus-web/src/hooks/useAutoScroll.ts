@@ -4,8 +4,8 @@ const DEFAULT_BOTTOM_THRESHOLD = 100;
 const USER_SCROLL_EPSILON = 5;
 
 export interface UseAutoScrollResult {
-  scrollContainerRef: React.RefObject<HTMLDivElement>;
-  messagesContainerRef: React.RefObject<HTMLDivElement>;
+  scrollContainerRef: React.RefObject<HTMLDivElement | null>;
+  messagesContainerRef: React.RefObject<HTMLDivElement | null>;
   isAtBottom: boolean;
   scrollToBottom: (behavior?: ScrollBehavior) => void;
 }

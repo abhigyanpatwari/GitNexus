@@ -1,0 +1,6 @@
+eead3dd8a0144a00fbc1564e27d86217c9134a83ed85a435933969652fcdb1d1  ./darwin-arm64/tree-sitter-kotlin.node
+931c1d0844e857d7eb16e537bc3791e9e696f3e9074342c7920d11888371e6f9  ./darwin-x64/tree-sitter-kotlin.node
+e450af11745811646af4be54c6e1ac69767184b878de790ee37e92546e4685d3  ./linux-arm64/tree-sitter-kotlin.node
+220f109e4e2ce3f27e5889bd326cf7dc1ec83c5a99ec022f60f023c240fc52a8  ./linux-x64/tree-sitter-kotlin.node
+ea26652d30ac4e75a16ec8fca7194bfe0324c96d169f5ccbdf1fde42ed99de83  ./win32-arm64/tree-sitter-kotlin.node
+c2b049fe147f40df5546163c07c50cbfcdb1e0dbe348cd003a998e47a61307bb  ./win32-x64/tree-sitter-kotlin.node

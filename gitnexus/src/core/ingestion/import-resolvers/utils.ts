@@ -1,6 +1,5 @@
 /**
- * Shared utilities for import resolution.
- * Extracted from import-processor.ts to reduce file size.
+ * Suffix-index helpers for import path resolution.
  */
 
 /** All file extensions to try during resolution */
@@ -9,8 +8,12 @@ export const EXTENSIONS = [
   // TypeScript/JavaScript
   '.tsx',
   '.ts',
+  '.mts',
+  '.cts',
   '.jsx',
   '.js',
+  '.mjs',
+  '.cjs',
   '.vue',
   '/index.tsx',
   '/index.ts',
@@ -33,6 +36,8 @@ export const EXTENSIONS = [
   '.cxx',
   '.hxx',
   '.hh',
+  '.cu',
+  '.cuh',
   // C#
   '.cs',
   // Go
@@ -53,7 +58,10 @@ export const EXTENSIONS = [
  * Try to match a path (with extensions) against the known file set.
  * Returns the matched file path or null.
  */
-export function tryResolveWithExtensions(basePath: string, allFiles: Set<string>): string | null {
+export function tryResolveWithExtensions(
+  basePath: string,
+  allFiles: ReadonlySet<string>,
+): string | null {
   for (const ext of EXTENSIONS) {
     const candidate = basePath + ext;
     if (allFiles.has(candidate)) return candidate;
@@ -78,15 +86,6 @@ export interface SuffixIndex {
   /** Get all files in a directory suffix */
   getFilesInDir(dirSuffix: string, extension: string): string[];
 }
-
-const FROZEN_EMPTY_ARRAY: string[] = Object.freeze([]) as string[];
-
-/** Sentinel index that returns no results. Used to release memory after import resolution. */
-export const EMPTY_INDEX: SuffixIndex = Object.freeze({
-  get: () => undefined,
-  getInsensitive: () => undefined,
-  getFilesInDir: () => FROZEN_EMPTY_ARRAY,
-});
 
 export function buildSuffixIndex(normalizedFileList: string[], allFileList: string[]): SuffixIndex {
   // Map: normalized suffix -> original file path

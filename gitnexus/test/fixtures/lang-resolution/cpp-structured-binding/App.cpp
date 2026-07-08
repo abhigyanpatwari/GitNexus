@@ -15,3 +15,8 @@ void processRepoMap(std::map<std::string, Repo> repoMap) {
         repo.save();
     }
 }
+
+// F9 — plain (non-for-loop) structured binding declaration. Each bound name
+// must emit its own Variable node.
+std::pair<int, int> makePair();
+auto [firstId, secondId] = makePair();

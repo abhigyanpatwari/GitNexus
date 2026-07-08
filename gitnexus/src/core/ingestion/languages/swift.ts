@@ -3,11 +3,6 @@
  *
  * Assembles all Swift-specific ingestion capabilities into a single
  * LanguageProvider, following the Strategy pattern used by the pipeline.
- *
- * Key Swift traits:
- *   - importSemantics: 'wildcard-leaf' (Swift imports entire modules)
- *   - heritageDefaultEdge: 'IMPLEMENTS' (protocols are more common than class inheritance)
- *   - implicitImportWirer: all files in the same SPM target see each other
  */
 
 import { SupportedLanguages } from 'gitnexus-shared';
@@ -15,13 +10,14 @@ import type { NodeLabel, SymbolDefinition } from 'gitnexus-shared';
 import { createClassExtractor } from '../class-extractors/generic.js';
 import { swiftClassConfig } from '../class-extractors/configs/swift.js';
 import { defineLanguage } from '../language-provider.js';
+import type { AstFrameworkPatternConfig } from '../language-provider.js';
 import { typeConfig as swiftConfig } from '../type-extractors/swift.js';
 import { swiftExportChecker } from '../export-detection.js';
 import { createImportResolver } from '../import-resolvers/resolver-factory.js';
 import { swiftImportConfig } from '../import-resolvers/configs/swift.js';
 import { SWIFT_QUERIES } from '../tree-sitter-queries.js';
-import type { SwiftPackageConfig } from '../language-config.js';
 import type { SyntaxNode } from '../utils/ast-helpers.js';
+import { createLeadingDocDescriptionExtractor } from '../utils/ast-helpers.js';
 import { createFieldExtractor } from '../field-extractors/generic.js';
 import { swiftConfig as swiftFieldConfig } from '../field-extractors/configs/swift.js';
 import { createMethodExtractor } from '../method-extractors/generic.js';
@@ -30,94 +26,17 @@ import { createVariableExtractor } from '../variable-extractors/generic.js';
 import { swiftVariableConfig } from '../variable-extractors/configs/swift.js';
 import { createCallExtractor } from '../call-extractors/generic.js';
 import { swiftCallConfig } from '../call-extractors/configs/swift.js';
-import { createHeritageExtractor } from '../heritage-extractors/generic.js';
-
-/**
- * Group Swift files by SPM target for implicit module visibility.
- * If SwiftPackageConfig is available, use target -> directory mappings.
- * Otherwise, group all Swift files under a single "default" target
- * (assumes a single-module Xcode project).
- */
-function groupSwiftFilesByTarget(
-  swiftFiles: string[],
-  swiftPackageConfig: SwiftPackageConfig | null,
-): Map<string, string[]> {
-  // No SPM config -> single target (common for Xcode projects)
-  if (!swiftPackageConfig || swiftPackageConfig.targets.size === 0) {
-    return new Map([['__default__', swiftFiles]]);
-  }
-
-  // Pre-convert target dirs to normalized prefix format once
-  const targets = [...swiftPackageConfig.targets.entries()].map(([name, dir]) => ({
-    name,
-    prefix: dir.replace(/\\/g, '/') + '/',
-  }));
-
-  const groups = new Map<string, string[]>();
-  const defaultGroup: string[] = [];
-
-  for (const file of swiftFiles) {
-    const normalized = file.includes('\\') ? file.replace(/\\/g, '/') : file;
-    let assigned = false;
-    for (const { name, prefix } of targets) {
-      const idx = normalized.indexOf(prefix);
-      if (idx === 0 || (idx > 0 && normalized[idx - 1] === '/')) {
-        let group = groups.get(name);
-        if (!group) {
-          group = [];
-          groups.set(name, group);
-        }
-        group.push(file);
-        assigned = true;
-        break;
-      }
-    }
-    if (!assigned) defaultGroup.push(file);
-  }
-
-  if (defaultGroup.length > 0) groups.set('__default__', defaultGroup);
-  return groups;
-}
-
-/**
- * Wire implicit inter-file imports for Swift.
- * All files in the same SPM target see each other (full module visibility).
- * Two fast paths avoid unnecessary work:
- *   1. No existing imports for src -> emit all (m-1) edges without Set.has checks
- *   2. Existing imports present -> skip already-connected pairs
- */
-function wireSwiftImplicitImports(
-  swiftFiles: string[],
-  importMap: ReadonlyMap<string, ReadonlySet<string>>,
-  addImportEdge: (src: string, target: string) => void,
-  projectConfig: unknown,
-): void {
-  const configs = projectConfig as { swiftPackageConfig?: SwiftPackageConfig | null } | null;
-  const targetGroups = groupSwiftFilesByTarget(swiftFiles, configs?.swiftPackageConfig ?? null);
-
-  for (const group of targetGroups.values()) {
-    const m = group.length;
-    if (m <= 1) continue;
-    // All-pairs implicit edges: O(m²) is inherent for full module visibility.
-    for (let i = 0; i < m; i++) {
-      const src = group[i];
-      const existing = importMap.get(src);
-      if (!existing || existing.size === 0) {
-        // Fast path: no prior imports — emit all peers unconditionally
-        for (let j = 0; j < m; j++) {
-          if (i !== j) addImportEdge(src, group[j]);
-        }
-      } else {
-        // Dedup path: skip already-connected pairs
-        for (let j = 0; j < m; j++) {
-          if (i !== j && !existing.has(group[j])) {
-            addImportEdge(src, group[j]);
-          }
-        }
-      }
-    }
-  }
-}
+import { createSwiftCfgVisitor } from '../cfg/visitors/swift.js';
+import {
+  emitSwiftScopeCaptures,
+  interpretSwiftImport,
+  interpretSwiftTypeBinding,
+  swiftBindingScopeFor,
+  swiftImportOwningScope,
+  swiftReceiverBinding,
+  swiftMergeBindings,
+  swiftArityCompatibility,
+} from './swift/index.js';
 
 /** Swift init/deinit declarations have special names and Constructor label. */
 const swiftExtractFunctionName = (
@@ -259,12 +178,64 @@ const BUILT_INS: ReadonlySet<string> = new Set([
 export const swiftProvider = defineLanguage({
   id: SupportedLanguages.Swift,
   extensions: ['.swift'],
+  entryPointPatterns: [
+    /^viewDidLoad$/,
+    /^viewWillAppear$/,
+    /^viewDidAppear$/,
+    /^viewWillDisappear$/,
+    /^viewDidDisappear$/,
+    /^application\(/,
+    /^scene\(/,
+    /^body$/,
+    /Coordinator$/,
+    /^sceneDidBecomeActive$/,
+    /^sceneWillResignActive$/,
+    /^didFinishLaunchingWithOptions$/,
+    /ViewController$/,
+    /^configure[A-Z]/,
+    /^setup[A-Z]/,
+    /^makeBody$/,
+  ],
+  astFrameworkPatterns: [
+    {
+      framework: 'uikit',
+      entryPointMultiplier: 2.5,
+      reason: 'uikit-lifecycle',
+      patterns: [
+        'viewDidLoad',
+        'viewWillAppear',
+        'viewDidAppear',
+        'UIViewController',
+        '@IBOutlet',
+        '@IBAction',
+        '@objc',
+      ],
+    },
+    {
+      framework: 'swiftui',
+      entryPointMultiplier: 2.8,
+      reason: 'swiftui-pattern',
+      patterns: [
+        '@main',
+        'WindowGroup',
+        'ContentView',
+        '@StateObject',
+        '@ObservedObject',
+        '@EnvironmentObject',
+        '@Published',
+      ],
+    },
+    {
+      framework: 'vapor',
+      entryPointMultiplier: 3.0,
+      reason: 'vapor-routing',
+      patterns: ['app.get', 'app.post', 'req.content.decode', 'Vapor'],
+    },
+  ] satisfies AstFrameworkPatternConfig[],
   treeSitterQueries: SWIFT_QUERIES,
   typeConfig: swiftConfig,
   exportChecker: swiftExportChecker,
   importResolver: createImportResolver(swiftImportConfig),
-  importSemantics: 'wildcard-leaf',
-  heritageDefaultEdge: 'IMPLEMENTS',
   callExtractor: createCallExtractor(swiftCallConfig),
   fieldExtractor: createFieldExtractor(swiftFieldConfig),
   methodExtractor: createMethodExtractor({
@@ -273,8 +244,19 @@ export const swiftProvider = defineLanguage({
   }),
   variableExtractor: createVariableExtractor(swiftVariableConfig),
   classExtractor: createClassExtractor(swiftClassConfig),
-  heritageExtractor: createHeritageExtractor(SupportedLanguages.Swift),
-  implicitImportWirer: wireSwiftImplicitImports,
+  // ── Swift doc comments (`///`, `/** */`) → description (issue #2270) ──
+  descriptionExtractor: createLeadingDocDescriptionExtractor(),
   orderSameNameTypeCandidates: orderSwiftSameNameTypeCandidates,
   builtInNames: BUILT_INS,
+  // ── Scope-based resolution hooks (RFC #909 Ring 3, issue #937). See
+  //    languages/swift/ for the implementations. ──────────────────────
+  emitScopeCaptures: emitSwiftScopeCaptures,
+  cfgVisitor: createSwiftCfgVisitor(),
+  interpretImport: interpretSwiftImport,
+  interpretTypeBinding: interpretSwiftTypeBinding,
+  bindingScopeFor: swiftBindingScopeFor,
+  importOwningScope: swiftImportOwningScope,
+  receiverBinding: swiftReceiverBinding,
+  mergeBindings: (_scope, bindings) => swiftMergeBindings(bindings),
+  arityCompatibility: swiftArityCompatibility,
 });

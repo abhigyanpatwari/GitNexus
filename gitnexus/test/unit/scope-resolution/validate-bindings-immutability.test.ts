@@ -22,10 +22,21 @@ const mkRef = (nodeId: string): BindingRef =>
 const mkIndexes = (
   bindings: Map<ScopeId, Map<string, readonly BindingRef[]>>,
   augmentations: Map<ScopeId, Map<string, BindingRef[]>>,
+  workspace: Map<string, readonly BindingRef[]> = new Map(),
+  extra: Partial<{
+    workspaceTypeBindings: Map<string, unknown>;
+    namespaceFqnBindings: Map<string, Map<string, readonly BindingRef[]>>;
+    namespaceTypeBindings: Map<string, Map<string, unknown>>;
+  }> = {},
 ): ScopeResolutionIndexes =>
   ({
     bindings,
     bindingAugmentations: augmentations,
+    workspaceFqnBindings: workspace,
+    workspaceTypeBindings: extra.workspaceTypeBindings ?? new Map(),
+    namespaceFqnBindings: extra.namespaceFqnBindings ?? new Map(),
+    namespaceTypeBindings: extra.namespaceTypeBindings ?? new Map(),
+    accessibleNamespacesByScope: new Map(),
   }) as unknown as ScopeResolutionIndexes;
 
 describe('validateBindingsImmutability', () => {
@@ -86,6 +97,88 @@ describe('validateBindingsImmutability', () => {
     expect(onWarn.mock.calls[0][0]).toMatch(/binding-immutability/);
     expect(onWarn.mock.calls[0][0]).toMatch(/indexes\.bindingAugmentations/);
     expect(onWarn.mock.calls[0][0]).toMatch(/I8/);
+  });
+
+  it('warns when a bucket in indexes.workspaceFqnBindings IS frozen', () => {
+    vi.stubEnv('NODE_ENV', 'development');
+    const workspace = new Map<string, readonly BindingRef[]>([
+      ['User', Object.freeze([mkRef('def:User')]) as BindingRef[]],
+    ]);
+    const onWarn = vi.fn();
+
+    const violations = validateBindingsImmutability(
+      mkIndexes(new Map(), new Map(), workspace),
+      onWarn,
+    );
+
+    expect(violations).toBe(1);
+    expect(onWarn).toHaveBeenCalledTimes(1);
+    expect(onWarn.mock.calls[0][0]).toMatch(/indexes\.workspaceFqnBindings/);
+    expect(onWarn.mock.calls[0][0]).toMatch(/I8/);
+  });
+
+  it('warns when indexes.workspaceTypeBindings IS frozen', () => {
+    vi.stubEnv('NODE_ENV', 'development');
+    const onWarn = vi.fn();
+
+    const violations = validateBindingsImmutability(
+      mkIndexes(new Map(), new Map(), new Map(), {
+        workspaceTypeBindings: Object.freeze(new Map([['GetUser', {}]])) as Map<string, unknown>,
+      }),
+      onWarn,
+    );
+
+    expect(violations).toBe(1);
+    expect(onWarn.mock.calls[0][0]).toMatch(/indexes\.workspaceTypeBindings/);
+    expect(onWarn.mock.calls[0][0]).toMatch(/I8/);
+  });
+
+  it('warns when a per-namespace bucket in indexes.namespaceFqnBindings IS frozen', () => {
+    vi.stubEnv('NODE_ENV', 'development');
+    const onWarn = vi.fn();
+    const nsFqn = new Map<string, Map<string, readonly BindingRef[]>>([
+      ['App', new Map([['User', Object.freeze([mkRef('def:User')]) as BindingRef[]]])],
+    ]);
+
+    const violations = validateBindingsImmutability(
+      mkIndexes(new Map(), new Map(), new Map(), { namespaceFqnBindings: nsFqn }),
+      onWarn,
+    );
+
+    expect(violations).toBe(1);
+    expect(onWarn.mock.calls[0][0]).toMatch(/indexes\.namespaceFqnBindings\[App\]\[User\]/);
+    expect(onWarn.mock.calls[0][0]).toMatch(/I8/);
+  });
+
+  it('warns when a per-namespace map in indexes.namespaceTypeBindings IS frozen', () => {
+    vi.stubEnv('NODE_ENV', 'development');
+    const onWarn = vi.fn();
+    const nsType = new Map<string, Map<string, unknown>>([
+      ['App', Object.freeze(new Map([['GetUser', {}]])) as Map<string, unknown>],
+    ]);
+
+    const violations = validateBindingsImmutability(
+      mkIndexes(new Map(), new Map(), new Map(), { namespaceTypeBindings: nsType }),
+      onWarn,
+    );
+
+    expect(violations).toBe(1);
+    expect(onWarn.mock.calls[0][0]).toMatch(/indexes\.namespaceTypeBindings\[App\]/);
+  });
+
+  it('is silent when the new channels are present and unfrozen', () => {
+    vi.stubEnv('NODE_ENV', 'development');
+    const onWarn = vi.fn();
+    const violations = validateBindingsImmutability(
+      mkIndexes(new Map(), new Map(), new Map(), {
+        workspaceTypeBindings: new Map([['GetUser', {}]]),
+        namespaceFqnBindings: new Map([['App', new Map([['User', [mkRef('def:User')]]])]]),
+        namespaceTypeBindings: new Map([['App', new Map([['GetUser', {}]])]]),
+      }),
+      onWarn,
+    );
+    expect(violations).toBe(0);
+    expect(onWarn).not.toHaveBeenCalled();
   });
 
   it('does not detect semantically wrong frozen replacements in indexes.bindings', () => {

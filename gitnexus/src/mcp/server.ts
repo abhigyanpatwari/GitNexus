@@ -24,7 +24,7 @@ import {
   GetPromptRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js';
 import { GITNEXUS_TOOLS } from './tools.js';
-import { realStdoutWrite } from './core/lbug-adapter.js';
+import { installGlobalStdoutSentinel } from './stdio-context.js';
 import type { LocalBackend } from './local/local-backend.js';
 import { getResourceDefinitions, getResourceTemplates, readResource } from './resources.js';
 
@@ -44,7 +44,7 @@ function getNextStepHint(toolName: string, args: Record<string, any> | undefined
 
   switch (toolName) {
     case 'list_repos':
-      return `\n\n---\n**Next:** READ gitnexus://repo/{name}/context for any repo above to get its overview and check staleness.`;
+      return `\n\n---\n**Next:** READ gitnexus://repo/{name}/context for any repo above to get its overview and check staleness. If pagination.hasMore is true, call list_repos again with offset set to pagination.nextOffset to fetch the rest.`;
 
     case 'query':
       return `\n\n---\n**Next:** To understand a specific symbol in depth, use context({name: "<symbol_name>"${repoParam}}) to see categorized refs and process participation.`;
@@ -158,6 +158,7 @@ export function createMCPServer(backend: LocalBackend): Server {
       name: tool.name,
       description: tool.description,
       inputSchema: tool.inputSchema,
+      annotations: tool.annotations,
     })),
   }));
 
@@ -283,39 +284,96 @@ Follow these steps:
 /**
  * Start the MCP server on stdio transport (for CLI use).
  */
+/** Force-exit fallback budget if graceful shutdown cleanup hangs. */
+const SHUTDOWN_FORCE_EXIT_MS = 5_000;
+
+/** Conventional 128 + signal-number exit codes for graceful termination. */
+export const SHUTDOWN_EXIT_CODES = { SIGINT: 130, SIGTERM: 143 } as const;
+
+type SignalRegistrar = (
+  event: 'SIGINT' | 'SIGTERM',
+  listener: (...args: unknown[]) => void,
+) => void;
+
+/**
+ * Wire SIGINT/SIGTERM to a graceful shutdown using NUMERIC exit codes.
+ *
+ * Node invokes signal listeners with the signal NAME string as the first
+ * argument, so registering an `(exitCode = 0) => process.exit(exitCode)`
+ * shutdown directly passes `'SIGTERM'` into `process.exit()` and crashes with
+ * `ERR_INVALID_ARG_TYPE` (#1132). These wrappers discard the signal argument
+ * and pass the conventional 128+signal code instead. `on` is injectable so the
+ * mapping can be unit-tested without touching the real process.
+ */
+export function installSignalShutdown(
+  shutdown: (exitCode?: number) => unknown,
+  on: SignalRegistrar = (event, listener) => {
+    process.on(event, listener);
+  },
+): void {
+  on('SIGINT', () => void shutdown(SHUTDOWN_EXIT_CODES.SIGINT));
+  on('SIGTERM', () => void shutdown(SHUTDOWN_EXIT_CODES.SIGTERM));
+}
+
 export async function startMCPServer(backend: LocalBackend): Promise<void> {
   const server = createMCPServer(backend);
 
-  // Use the shared stdout reference captured at module-load time by the
-  // lbug-adapter.  Avoids divergence if anything patches stdout between
-  // module load and server start.
-  const _safeStdout = new Proxy(process.stdout, {
+  // Idempotent global sentinel install. cli/mcp.ts calls this first thing
+  // (before warnMissingOptionalGrammars / backend.init can emit to stdout);
+  // calling again here is a safety net for direct callers of startMCPServer
+  // (tests, future entry points). The transport's _safeStdout Proxy is a
+  // second layer that guarantees transport writes reach the sentinel even
+  // if anything else re-replaces process.stdout.write later. Tagged
+  // transport writes (wrapped in withMcpWrite by compatible-stdio-transport.send)
+  // pass through to the captured realStdoutWrite; untagged writes reaching
+  // the Proxy or process.stdout get redirected to stderr with the
+  // [mcp:stdout-redirect] prefix. See stdio-context.ts.
+  const sentinel = installGlobalStdoutSentinel();
+  const safeStdout = new Proxy(process.stdout, {
     get(target, prop, receiver) {
-      if (prop === 'write') return realStdoutWrite;
+      if (prop === 'write') return sentinel.write;
       const val = Reflect.get(target, prop, receiver);
       return typeof val === 'function' ? val.bind(target) : val;
     },
   });
-  const transport = new CompatibleStdioServerTransport(process.stdin, _safeStdout);
-  await server.connect(transport);
+  const transport = new CompatibleStdioServerTransport(process.stdin, safeStdout);
 
-  // Graceful shutdown helper
+  // Surface the redirect counter on shutdown so users see the volume of
+  // stray writes even when individual payloads were truncated/suppressed.
+  process.on('exit', () => sentinel.flushSummary());
+
+  // Graceful shutdown helper. Pino's default destination is `sync: false`
+  // (buffered), so we must `flushLoggerSync()` before `process.exit` —
+  // otherwise records emitted during disconnect/close are lost. The flush
+  // is a no-op when the singleton was never used or when running under
+  // vitest. See `gitnexus/src/core/logger.ts`.
   let shuttingDown = false;
   const shutdown = async (exitCode = 0) => {
     if (shuttingDown) return;
     shuttingDown = true;
+    // Safety net: if backend.disconnect()/server.close() hangs, still exit so a
+    // SIGINT/SIGTERM reliably terminates the process. Unref'd so the timer alone
+    // never keeps the event loop alive.
+    const forceExit = setTimeout(() => process.exit(exitCode), SHUTDOWN_FORCE_EXIT_MS);
+    forceExit.unref();
     try {
       await backend.disconnect();
     } catch {}
     try {
       await server.close();
     } catch {}
+    const { flushLoggerSync } = await import('../core/logger.js');
+    flushLoggerSync();
+    clearTimeout(forceExit);
     process.exit(exitCode);
   };
 
-  // Handle graceful shutdown
-  process.on('SIGINT', shutdown);
-  process.on('SIGTERM', shutdown);
+  // Handle graceful shutdown. Node invokes signal listeners with the signal
+  // NAME (e.g. 'SIGTERM') as the first argument; registering `shutdown`
+  // directly passed that string to process.exit() and crashed with
+  // ERR_INVALID_ARG_TYPE (#1132). Map each signal to its conventional
+  // 128+signal exit code instead.
+  installSignalShutdown(shutdown);
 
   // Log crashes to stderr so they aren't silently lost.
   // uncaughtException is fatal — shut down.
@@ -323,14 +381,27 @@ export async function startMCPServer(backend: LocalBackend): Promise<void> {
   // killing the server for one missed catch would be worse than logging it.
   process.on('uncaughtException', (err) => {
     process.stderr.write(`GitNexus MCP uncaughtException: ${err?.stack || err}\n`);
-    shutdown(1);
+    void shutdown(1);
   });
   process.on('unhandledRejection', (reason: any) => {
     process.stderr.write(`GitNexus MCP unhandledRejection: ${reason?.stack || reason}\n`);
   });
 
-  // Handle stdio errors — stdin close means the parent process is gone
-  process.stdin.on('end', shutdown);
-  process.stdin.on('error', () => shutdown());
-  process.stdout.on('error', () => shutdown());
+  // Handle stdio errors — stdin close means the parent process is gone.
+  // Defense-in-depth: the transport also listens for stdin end/close and
+  // handles transport-level cleanup. These listeners handle process-level
+  // shutdown. Both paths are idempotent and safe to fire together.
+  // Wrap so the event payload (e.g. an Error for 'error') can never reach
+  // process.exit() as a non-numeric exit code, and void the returned promise.
+  process.stdin.on('end', () => void shutdown(0));
+  process.stdin.on('close', () => void shutdown(0));
+  process.stdin.on('error', () => void shutdown(0));
+  process.stdout.on('error', () => void shutdown(0));
+
+  if (process.stdin.readableEnded || process.stdin.destroyed) {
+    await shutdown(0);
+    return;
+  }
+
+  await server.connect(transport);
 }

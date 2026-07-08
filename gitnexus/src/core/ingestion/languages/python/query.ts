@@ -13,6 +13,7 @@ const PYTHON_SCOPE_QUERY = `
 (module) @scope.module
 (class_definition) @scope.class
 (function_definition) @scope.function
+(lambda) @scope.function
 
 ;; Declarations
 (class_definition
@@ -233,6 +234,22 @@ const PYTHON_SCOPE_QUERY = `
 (function_definition
   name: (identifier) @type-binding.name
   return_type: (type) @type-binding.type) @type-binding.return
+
+;; Decorators — simple @decorator
+(decorator
+  (identifier) @reference.name) @reference.call.free
+
+;; Decorators — @obj.decorator (single attribute, identifier receiver)
+(decorator
+  (attribute
+    object: (identifier) @reference.receiver
+    attribute: (identifier) @reference.name)) @reference.call.member
+
+;; Decorators — @a.b.decorator (nested attributes)
+(decorator
+  (attribute
+    object: (attribute) @reference.receiver
+    attribute: (identifier) @reference.name)) @reference.call.member
 
 ;; References — calls
 (call

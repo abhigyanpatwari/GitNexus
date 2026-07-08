@@ -4,7 +4,8 @@
  * Determines whether a symbol (function, class, etc.) is exported/public
  * in its language. This is a pure function — safe for use in worker threads.
  *
- * Shared between parse-worker.ts (worker pool) and parsing-processor.ts (sequential fallback).
+ * Used by the language providers during worker parsing (parse-worker.ts) — the
+ * sole parse path. (Sequential parsing was removed.)
  */
 
 import { findSiblingChild, type SyntaxNode } from './utils/ast-helpers.js';
@@ -73,11 +74,6 @@ const CSHARP_DECL_TYPES = new Set([
   'struct_declaration',
   'enum_declaration',
   'record_declaration',
-  // tree-sitter-c-sharp absorbs 'record struct' and 'record class' into
-  // record_declaration — these two node types are listed defensively but
-  // never emitted by the grammar in practice (verified against ^0.23.1).
-  'record_struct_declaration',
-  'record_class_declaration',
   'delegate_declaration',
   'property_declaration',
   'field_declaration',

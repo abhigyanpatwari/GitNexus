@@ -13,22 +13,96 @@
  *   2. Exact-required-match wins over variadic. Variadic is detected
  *      via a `parameterTypes` entry equal to `'params'` or starting
  *      with `'params '` (C# `params` / variadic marker).
- *   3. If the arity filter empties the set, fall back to the full
- *      overload list rather than returning nothing — the caller still
- *      needs a best-effort candidate.
+ *   3. If the arity filter empties the set AND any candidate had
+ *      unknown bounds (both `parameterCount` and `requiredParameterCount`
+ *      undefined), fall back to the full overload list — the empty
+ *      result may be due to missing metadata rather than a real mismatch.
+ *      If EVERY rejected candidate had definite arity bounds, trust the
+ *      filter and return empty — the call is genuinely arity-incompatible
+ *      (e.g., PHP `f(int $req, ...$rest)` called with zero args).
  *   4. If `argTypes` is present, filter further by per-slot type
  *      equality. An empty string in `argTypes[i]` means "unknown" and
  *      counts as a match. Mismatches disqualify. A non-empty typed
  *      result wins; otherwise return the arity-filtered candidates.
+ *   4b. When the exact-type filter from step 4 returns empty AND a
+ *       `conversionRankFn` is provided (via `hookCtx`), rank candidates
+ *       via pairwise dominance comparison (ISO C++ [over.ics.rank]):
+ *       F1 beats F2 only when F1 is not worse for every arg and better
+ *       for at least one. Non-dominated candidates are returned;
+ *       multiple survivors are genuinely ambiguous.
+ *   4c. Final per-candidate constraint filter (SFINAE / `requires`).
+ *       When `constraintCompatibility` is provided via `hookCtx`, drop
+ *       candidates whose template constraints provably fail at the
+ *       call site. Three-valued; `'unknown'` keeps the candidate
+ *       (monotonicity).
+ *   4d. Conservative C++ template partial-order approximation. When
+ *       template-placeholder overloads remain tied, prefer a candidate
+ *       whose parameter shape is more specialized for the observed
+ *       argument shape (`T*` over `T`, `const T&` over `T`). Unknown or
+ *       incomparable shapes are left ambiguous.
  *   5. Empty input returns empty output.
  */
 
-import type { SymbolDefinition } from 'gitnexus-shared';
+import type {
+  ArityVerdict,
+  Callsite,
+  ConstraintContext,
+  ParameterTypeClass,
+  SymbolDefinition,
+} from 'gitnexus-shared';
+
+/**
+ * Per-slot conversion-rank function. Returns a numeric cost for
+ * converting `argType` to `paramType`:
+ *   - 0 = exact match (no conversion)
+ *   - 1 = promotion (e.g. char→int, bool→int in C++)
+ *   - 2 = standard conversion (e.g. int→double)
+ *   - Infinity = incompatible types
+ *
+ * Each language provides its own implementation. The function operates
+ * on normalized type strings (output of the language's type normalizer).
+ */
+export type ConversionRankFn = (
+  argType: string,
+  paramType: string,
+  argTypeClass?: ParameterTypeClass,
+  paramTypeClass?: ParameterTypeClass,
+) => number;
+
+/**
+ * Optional hook bundle for narrowing extension points. Threaded in
+ * from `pickOverload` / `pickImplicitThisOverload` so per-language
+ * narrowing can layer in conversion-rank scoring (#1606) and
+ * constraint filtering (#1579) without changing the call signature
+ * at every site. Each hook is independently optional — leaving both
+ * undefined preserves the legacy arity + exact-type behavior.
+ */
+export interface OverloadNarrowingHookCtx {
+  /** Shape-preserving per-argument sidecar aligned with `argTypes`. */
+  readonly argumentTypeClasses?: ConstraintContext['argumentTypeClasses'];
+  /** Conversion-rank scoring fallback (step 4b). Engages when the
+   *  exact-type filter rejects every candidate. */
+  readonly conversionRankFn?: ConversionRankFn;
+  /** Per-language argument-type prefixes whose conversion-rank failures
+   *  should suppress genuinely ambiguous multi-overload sets instead of
+   *  falling back to arity-only candidates. */
+  readonly conversionOnlyArgTypePrefixes?: readonly string[];
+  /** Constraint filter (step 4c). Drops candidates whose template
+   *  guards (SFINAE `enable_if_t`, C++20 `requires`, future Rust
+   *  trait bounds, etc.) provably fail at the call site. Three-valued
+   *  — `'unknown'` keeps the candidate (monotonicity). */
+  readonly constraintCompatibility?: (
+    callsite: Callsite,
+    def: SymbolDefinition,
+    ctx: ConstraintContext,
+  ) => ArityVerdict;
+}
 
 export function narrowOverloadCandidates(
   overloads: readonly SymbolDefinition[],
   argCount: number | undefined,
   argTypes: readonly string[] | undefined,
+  hookCtx?: OverloadNarrowingHookCtx,
 ): readonly SymbolDefinition[] {
   if (overloads.length === 0) return [];
 
@@ -39,6 +113,16 @@ export function narrowOverloadCandidates(
           const max = d.parameterCount;
           const min = d.requiredParameterCount;
           if (max !== undefined && argCount > max) {
+            // Variadic marker check is C#-specific (the 'params' keyword).
+            // Other languages use their own marker — PHP uses '...' (see
+            // `languages/php/arity-metadata.ts:46`), Python uses '*args'-
+            // shaped metadata that lives outside `parameterTypes` entirely.
+            // This branch is dead code for those languages because they
+            // set `parameterCount = undefined` for variadic functions,
+            // which keeps `max` undefined and skips this check entirely.
+            // Adding new variadic markers here changes behavior for those
+            // other languages too — don't extend without auditing each
+            // adapter's `arity-metadata.ts`. Finding 9 of PR #1497.
             const variadic =
               d.parameterTypes !== undefined &&
               d.parameterTypes.some((t) => t === 'params' || t.startsWith('params '));
@@ -48,21 +132,395 @@ export function narrowOverloadCandidates(
           return true;
         });
 
+  // When the arity filter empties the set, only fall back to the full
+  // overload list if some candidate had unknown bounds — otherwise the
+  // empty result is authoritative (every candidate definitively failed
+  // arity, e.g., PHP variadic with required-prefix called with too few
+  // args).
+  const anyUnknownBounds = overloads.some(
+    (d) => d.parameterCount === undefined && d.requiredParameterCount === undefined,
+  );
   const candidates: readonly SymbolDefinition[] =
-    arityMatches.length > 0 ? arityMatches : overloads;
+    arityMatches.length > 0 ? arityMatches : anyUnknownBounds ? overloads : [];
 
+  let result: readonly SymbolDefinition[] = candidates;
   if (argTypes !== undefined && argTypes.length > 0) {
     const typed = candidates.filter((d) => {
       const params = d.parameterTypes;
       if (params === undefined) return false;
       for (let i = 0; i < argTypes.length && i < params.length; i++) {
         if (argTypes[i] === '') continue;
-        if (argTypes[i] !== params[i]) return false;
+        if (
+          !exactTypeSlotMatches(
+            argTypes[i],
+            params[i],
+            hookCtx?.argumentTypeClasses?.[i],
+            d.parameterTypeClasses?.[i],
+          )
+        ) {
+          return false;
+        }
       }
       return true;
     });
-    if (typed.length > 0) return typed;
+    if (typed.length > 0) {
+      result = typed;
+    } else if (hookCtx?.conversionRankFn !== undefined) {
+      // ── Conversion-rank scoring (step 4b) ──────────────────────────
+      // The exact-type filter rejected every candidate. Rank via
+      // pairwise dominance: F1 beats F2 only when F1 is not worse for
+      // every arg and better for at least one. Non-dominated candidates
+      // are returned; multiple survivors are genuinely ambiguous. When
+      // ranking also yields empty, fall through to the arity-filtered
+      // `candidates` set — matches pre-#1606 behavior.
+      const ranked = rankByConversion(
+        candidates,
+        argTypes,
+        hookCtx.conversionRankFn,
+        hookCtx.argumentTypeClasses,
+      );
+      if (ranked.length > 0) result = ranked;
+      else if (
+        candidates.length > 1 &&
+        hasConversionOnlyArgType(argTypes, hookCtx.conversionOnlyArgTypePrefixes)
+      ) {
+        result = [];
+      }
+    }
   }
 
-  return candidates;
+  // Constraint filter (step 4c; Tier-A — SFINAE / `requires` clauses).
+  // Runs after arity, exact-type, and conversion-rank filters so the
+  // hook only sees candidates already viable on the other axes.
+  // Three-valued: `'compatible'` and `'unknown'` keep the candidate
+  // (monotonicity — adding a predicate must never cause a wrong edge);
+  // only `'incompatible'` drops it. Candidates without
+  // `templateConstraints` are always kept.
+  //
+  // No fallback to the unconstrained set when this filter empties the
+  // candidate list: a fully-`'incompatible'` verdict is authoritative.
+  // The downstream `OVERLOAD_AMBIGUOUS` sentinel still guards the empty
+  // case, so a buggy hook that wrongly returns `'incompatible'` for
+  // every candidate degrades to today's "suppress edge" behavior rather
+  // than emitting a wrong edge.
+  if (hookCtx?.constraintCompatibility !== undefined && argCount !== undefined) {
+    const callsite: Callsite = { arity: argCount };
+    const ctx: ConstraintContext =
+      argTypes !== undefined
+        ? {
+            argumentTypes: argTypes,
+            ...(hookCtx.argumentTypeClasses !== undefined
+              ? { argumentTypeClasses: hookCtx.argumentTypeClasses }
+              : {}),
+          }
+        : {};
+    result = result.filter((def) => {
+      if (def.templateConstraints === undefined) return true;
+      return hookCtx.constraintCompatibility!(callsite, def, ctx) !== 'incompatible';
+    });
+  }
+
+  if (result.length > 1 && argTypes !== undefined && argTypes.length > 0) {
+    const partiallyOrdered = rankByTemplatePartialOrdering(
+      result,
+      argTypes,
+      hookCtx?.argumentTypeClasses,
+    );
+    if (partiallyOrdered !== undefined) result = partiallyOrdered;
+  }
+
+  return result;
+}
+
+function hasConversionOnlyArgType(
+  argTypes: readonly string[],
+  prefixes: readonly string[] | undefined,
+): boolean {
+  if (prefixes === undefined || prefixes.length === 0) return false;
+  return argTypes.some((type) => prefixes.some((prefix) => type.startsWith(prefix)));
+}
+
+function exactTypeSlotMatches(
+  argType: string,
+  paramType: string,
+  argTypeClass?: ParameterTypeClass,
+  paramTypeClass?: ParameterTypeClass,
+): boolean {
+  if (argType !== paramType) return false;
+  // C++ normalizes away pointer markers (`int*` -> `int`). When both sides
+  // provide shape sidecars, do not let that collapse make `int` exactly match
+  // `int*`. Unknown sidecar evidence preserves the previous string-only path.
+  if (argTypeClass === undefined || paramTypeClass === undefined) return true;
+  if (argTypeClass.indirection === 'unknown' || paramTypeClass.indirection === 'unknown') {
+    return true;
+  }
+  return isPointerShape(argTypeClass) === isPointerShape(paramTypeClass);
+}
+
+function isPointerShape(typeClass: ParameterTypeClass): boolean {
+  return typeClass.indirection === 'pointer' && typeClass.pointerDepth > 0;
+}
+
+/**
+ * Pairwise dominance comparison (ISO C++ [over.ics.rank]).
+ *
+ * F1 is a better match than F2 when F1's conversion rank is **not
+ * worse** for every argument AND **strictly better** for at least one.
+ * Candidates dominated by any other viable candidate are removed.
+ * If more than one non-dominated candidate remains, they are genuinely
+ * ambiguous — callers suppress the edge rather than picking arbitrarily.
+ *
+ * Candidates with at least one `Infinity`-ranked slot (incompatible
+ * type) are excluded before pairwise comparison begins.
+ */
+function rankByConversion(
+  candidates: readonly SymbolDefinition[],
+  argTypes: readonly string[],
+  rankFn: ConversionRankFn,
+  argTypeClasses?: readonly ParameterTypeClass[],
+): readonly SymbolDefinition[] {
+  // Step 1: compute per-slot ranks and exclude non-viable candidates.
+  const viable: Array<{ def: SymbolDefinition; ranks: number[] }> = [];
+  for (const d of candidates) {
+    const params = d.parameterTypes;
+    if (params === undefined) continue;
+    const ranks: number[] = [];
+    let ok = true;
+    for (let i = 0; i < argTypes.length; i++) {
+      const paramType = parameterTypeAt(params, i);
+      if (paramType === undefined) {
+        ok = false;
+        break;
+      }
+      if (argTypes[i] === '') {
+        ranks.push(0); // unknown arg → any-match (rank 0)
+        continue;
+      }
+      const r = rankFn(
+        argTypes[i],
+        paramType,
+        argTypeClasses?.[i],
+        parameterTypeClassAt(d.parameterTypeClasses, i),
+      );
+      if (!isFinite(r)) {
+        ok = false;
+        break;
+      }
+      ranks.push(r);
+    }
+    if (!ok) continue;
+    viable.push({ def: d, ranks });
+  }
+  if (viable.length <= 1) return viable.map((v) => v.def);
+
+  // Step 2: pairwise dominance — remove candidates dominated by any other.
+  const dominated = new Set<number>();
+  for (let i = 0; i < viable.length; i++) {
+    if (dominated.has(i)) continue;
+    for (let j = i + 1; j < viable.length; j++) {
+      if (dominated.has(j)) continue;
+      const cmp = pairwiseCompare(viable[i].ranks, viable[j].ranks);
+      if (cmp < 0)
+        dominated.add(j); // i dominates j
+      else if (cmp > 0) dominated.add(i); // j dominates i
+    }
+  }
+  return viable.filter((_, idx) => !dominated.has(idx)).map((v) => v.def);
+}
+
+function parameterTypeAt(params: readonly string[], argIndex: number): string | undefined {
+  if (argIndex < params.length) return params[argIndex];
+  return params[params.length - 1] === '...' ? '...' : undefined;
+}
+
+function parameterTypeClassAt(
+  params: readonly ParameterTypeClass[] | undefined,
+  argIndex: number,
+): ParameterTypeClass | undefined {
+  if (params === undefined) return undefined;
+  if (argIndex < params.length) return params[argIndex];
+  return params[params.length - 1]?.base === '...' ? params[params.length - 1] : undefined;
+}
+
+/**
+ * Compare two per-slot rank vectors.
+ * Returns  -1 if `a` dominates `b` (not worse everywhere, better somewhere),
+ *          +1 if `b` dominates `a`,
+ *           0 if neither dominates (incomparable or equal).
+ */
+function pairwiseCompare(a: readonly number[], b: readonly number[]): -1 | 0 | 1 {
+  let aBetter = false;
+  let bBetter = false;
+  const len = Math.min(a.length, b.length);
+  for (let i = 0; i < len; i++) {
+    if (a[i] < b[i]) aBetter = true;
+    else if (b[i] < a[i]) bBetter = true;
+    if (aBetter && bBetter) return 0; // incomparable — early exit
+  }
+  if (aBetter && !bBetter) return -1;
+  if (bBetter && !aBetter) return 1;
+  return 0;
+}
+
+/**
+ * Closed-table approximation of C++ function-template partial ordering.
+ *
+ * Full `[temp.func.order]` requires template argument deduction. GitNexus
+ * keeps this graph-safe by recognizing only syntactic placeholder shapes
+ * that the C++ parameter sidecar already preserves:
+ *   - `T*` is more specialized than `T` for pointer arguments.
+ *
+ * Anything with unknown argument shape, non-template parameter spelling, or
+ * incomparable specialized shapes stays ambiguous so callers suppress. The
+ * placeholder detector is intentionally narrow: lowercase template parameters
+ * are left ambiguous rather than guessed.
+ */
+function rankByTemplatePartialOrdering(
+  candidates: readonly SymbolDefinition[],
+  argTypes: readonly string[],
+  argTypeClasses?: readonly ParameterTypeClass[],
+): readonly SymbolDefinition[] | undefined {
+  if (argTypeClasses === undefined) return undefined;
+
+  const viable: Array<{ def: SymbolDefinition; ranks: number[] }> = [];
+  for (const def of candidates) {
+    const params = def.parameterTypes;
+    const paramClasses = def.parameterTypeClasses;
+    if (params === undefined || paramClasses === undefined) continue;
+
+    const ranks: number[] = [];
+    let sawTemplateSlot = false;
+    let ok = true;
+    for (let i = 0; i < argTypes.length; i++) {
+      const paramType = parameterTypeAt(params, i);
+      const paramClass = parameterTypeClassAt(paramClasses, i);
+      const argClass = argTypeClasses[i];
+      if (paramType === undefined || paramClass === undefined || argClass === undefined) {
+        ok = false;
+        break;
+      }
+
+      const rank = templatePartialOrderSlotRank(paramType, paramClass, argClass);
+      if (rank === undefined) {
+        ok = false;
+        break;
+      }
+      sawTemplateSlot ||= isTemplatePlaceholder(paramType);
+      ranks.push(rank);
+    }
+    if (ok && sawTemplateSlot) viable.push({ def, ranks });
+  }
+  if (viable.length === 0) return undefined;
+  if (viable.length !== candidates.length) return [];
+  if (viable.length <= 1) return viable.map((v) => v.def);
+
+  const dominated = new Set<number>();
+  for (let i = 0; i < viable.length; i++) {
+    if (dominated.has(i)) continue;
+    for (let j = i + 1; j < viable.length; j++) {
+      if (dominated.has(j)) continue;
+      const cmp = compareSpecializationRanks(viable[i].ranks, viable[j].ranks);
+      if (cmp < 0) dominated.add(j);
+      else if (cmp > 0) dominated.add(i);
+    }
+  }
+  return viable.filter((_, idx) => !dominated.has(idx)).map((v) => v.def);
+}
+
+function templatePartialOrderSlotRank(
+  paramType: string,
+  paramClass: ParameterTypeClass,
+  argClass: ParameterTypeClass,
+): number | undefined {
+  if (!isTemplatePlaceholder(paramType)) return undefined;
+  if (argClass.indirection === 'unknown' || paramClass.indirection === 'unknown') {
+    return undefined;
+  }
+  if (isPointerShape(paramClass)) {
+    return isPointerShape(argClass) ? 3 : undefined;
+  }
+  if (paramClass.indirection === 'value') return 1;
+  return undefined;
+}
+
+function isTemplatePlaceholder(typeName: string): boolean {
+  return /^[A-Z]\w*$/.test(typeName);
+}
+
+/**
+ * Higher specialization rank is better. Returns -1 when `a` dominates `b`,
+ * +1 when `b` dominates `a`, and 0 for ties / incomparable vectors.
+ */
+function compareSpecializationRanks(a: readonly number[], b: readonly number[]): -1 | 0 | 1 {
+  let aBetter = false;
+  let bBetter = false;
+  const len = Math.min(a.length, b.length);
+  for (let i = 0; i < len; i++) {
+    if (a[i] > b[i]) aBetter = true;
+    else if (b[i] > a[i]) bBetter = true;
+    if (aBetter && bBetter) return 0;
+  }
+  if (aBetter && !bBetter) return -1;
+  if (bBetter && !aBetter) return 1;
+  return 0;
+}
+
+/**
+ * Detect when >1 candidate share identical `parameterTypes` after the
+ * per-language normalizer has collapsed distinct underlying types. This
+ * signals "the resolver cannot pick the right overload — the
+ * normalization that helps single-candidate flows now hides a real
+ * ambiguity" and lets callers suppress the edge rather than pick
+ * arbitrarily.
+ *
+ * Concrete trigger (PR #1520 review follow-up plan U2, Claude review
+ * Finding 5): the C++ `arity-metadata.ts` normalizer collapses `int`,
+ * `long`, `short`, `unsigned`, and `size_t` to `'int'`. Without this
+ * check, `process(int)` and `process(long)` both end up with
+ * `parameterTypes === ['int']`, and `pickOverload` arbitrarily picks
+ * the first — emitting a false CALLS edge to the wrong overload.
+ *
+ * Returns false when:
+ *   - 0 or 1 candidates (no ambiguity to detect)
+ *   - any candidate has undefined `parameterTypes` (can't compare)
+ *   - candidates differ in arity or in any parameter-type slot
+ *
+ * Other languages: this check is a precondition gate, not a behavior
+ * change for normal narrowing. Languages whose normalizers do not
+ * collapse distinct types (verified by grep over `*-arity-metadata.ts`
+ * — no `int → int` collapse outside C++) will never produce >1
+ * candidate with identical `parameterTypes` from genuinely distinct
+ * declarations, so this returns false for them. The branch is
+ * effectively C++-only in practice.
+ */
+export function isOverloadAmbiguousAfterNormalization(
+  candidates: readonly SymbolDefinition[],
+  argCount?: number,
+): boolean {
+  if (candidates.length < 2) return false;
+  const first = candidates[0].parameterTypes;
+  if (first === undefined) return false;
+  // When argCount is provided, compare only the first `argCount` slots —
+  // this catches default-argument ambiguity: `void f(int); void f(int, int = 0);`
+  // called with `f(1)` (argCount=1) leaves both candidates viable because
+  // default args make them arity-compatible, and their first slot is
+  // identical even though full parameterTypes lengths differ.
+  // Without argCount, fall back to full-sequence comparison (the original
+  // int/long normalization-collapse case).
+  const compareUpTo = argCount !== undefined ? argCount : first.length;
+  if (compareUpTo === 0) return false;
+  if (first.length < compareUpTo) return false;
+  for (let i = 1; i < candidates.length; i++) {
+    const p = candidates[i].parameterTypes;
+    if (p === undefined) return false;
+    if (p.length < compareUpTo) return false;
+    for (let j = 0; j < compareUpTo; j++) {
+      if (p[j] !== first[j]) return false;
+    }
+    // When argCount is NOT provided, also require length equality so
+    // distinct-arity candidates that happen to share a prefix don't
+    // collapse to ambiguous (preserves the original int/long contract).
+    if (argCount === undefined && p.length !== first.length) return false;
+  }
+  return true;
 }
