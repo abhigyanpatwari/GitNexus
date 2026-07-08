@@ -350,9 +350,6 @@ function runGitNexusCli(cliPath, args, cwd, timeout) {
 }
 
 /**
- * PreToolUse handler — augment searches with graph context.
- */
-/**
  * Fallback augmentation for the #2396 path: when a GitNexus process holds the
  * lbug DB write lock the CLI `augment` can't run, so point the agent at the MCP
  * `query` tool instead. Phrased conditionally ("if the MCP tools are live") so it
@@ -369,6 +366,9 @@ function buildMcpQueryHint(pattern) {
   );
 }
 
+/**
+ * PreToolUse handler — augment searches with graph context.
+ */
 function handlePreToolUse(input) {
   const cwd = input.cwd || process.cwd();
   if (!path.isAbsolute(cwd)) return;
