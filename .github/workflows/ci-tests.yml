@@ -61,6 +61,9 @@ jobs:
         with:
           name: coverage-blob-${{ matrix.shard }}
           path: gitnexus/.vitest-reports/
+          # .vitest-reports is a dotdir; upload-artifact excludes hidden files by
+          # default, which would upload an empty artifact and break the merge.
+          include-hidden-files: true
           retention-days: 5
 
   # Merge the sharded coverage blobs into one report and enforce the real
