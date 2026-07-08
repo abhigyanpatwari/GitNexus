@@ -13,6 +13,7 @@
 // We use createRequire to load the CommonJS vendored files in ESM context.
 import Graph from 'graphology';
 import type { AbstractGraph, Attributes } from 'graphology-types';
+import { createHash } from 'node:crypto';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
@@ -324,7 +325,7 @@ const createCommunityNodes = (
     // Skip singleton communities - they're just isolated nodes
     if (memberIds.length < 2) return;
 
-    const heuristicLabel = generateHeuristicLabel(memberIds, nodePathMap, graph, commNum);
+    const heuristicLabel = generateHeuristicLabel(memberIds, nodePathMap, graph);
 
     communityNodes.push({
       id: `comm_${commNum}`,
@@ -352,7 +353,6 @@ const generateHeuristicLabel = (
   memberIds: string[],
   nodePathMap: Map<string, string>,
   graph: GraphInstance,
-  commNum: number,
 ): string => {
   // Collect folder names from file paths
   const folderCounts = new Map<string, number>();
@@ -406,8 +406,13 @@ const generateHeuristicLabel = (
     }
   }
 
-  // Last resort: generic name with community ID for uniqueness
-  return `Cluster_${commNum}`;
+  const stableSig = memberIds
+    .slice()
+    .map((id) => nodePathMap.get(id) || id)
+    .sort()
+    .join('|');
+  const hash = createHash('sha1').update(stableSig).digest('hex').slice(0, 6);
+  return `cluster-${hash}`;
 };
 
 /**
