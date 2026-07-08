@@ -353,15 +353,19 @@ function runGitNexusCli(cliPath, args, cwd, timeout) {
  * PreToolUse handler — augment searches with graph context.
  */
 /**
- * Fallback augmentation for the #2396 path: when the MCP server owns the DB the
- * CLI `augment` can't run, so hand the agent a pointer to the live MCP `query`
- * tool for this pattern. `pattern` is JSON-escaped by sendHookResponse.
+ * Fallback augmentation for the #2396 path: when a GitNexus process holds the
+ * lbug DB write lock the CLI `augment` can't run, so point the agent at the MCP
+ * `query` tool instead. Phrased conditionally ("if the MCP tools are live") so it
+ * stays truthful on every owner path — a confirmed MCP owner, a `serve` owner, or
+ * a fail-closed probe where no server is actually confirmed. `pattern` is embedded
+ * verbatim; the caller (sendHookResponse) JSON-escapes it structurally.
  */
 function buildMcpQueryHint(pattern) {
   return (
-    `[GitNexus] Knowledge graph is live via the MCP server. For graph-ranked ` +
-    `context on "${pattern}", call the GitNexus \`query\` MCP tool ` +
-    `(e.g. mcp__gitnexus__query) with search_query "${pattern}".`
+    `[GitNexus] Local augment is unavailable (the graph DB is held by another ` +
+    `GitNexus process). If the GitNexus MCP tools are live in this session, call ` +
+    `the GitNexus \`query\` MCP tool (e.g. mcp__gitnexus__query) with ` +
+    `search_query "${pattern}".`
   );
 }
 

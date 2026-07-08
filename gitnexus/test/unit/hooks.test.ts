@@ -1817,13 +1817,14 @@ describe('PreToolUse augmentation filtering (integration)', () => {
       }
     });
 
-    // Issue #1913: the MCP-owned-DB skip is a NORMAL (non-error) path, so by
-    // default it must stay completely silent — empty stdout AND empty stderr,
-    // exit 0 — so strict hook runners (e.g. Codex `PreToolUse`) never see
-    // unexpected output. GITNEXUS_DEBUG is forced off to keep the assertion
-    // deterministic regardless of the ambient environment.
+    // #2396: when a GitNexus MCP process owns the repo DB the CLI augment can't
+    // run, so the hook hands the agent the MCP-query hint on stdout (the sanctioned
+    // additionalContext channel). By default (GITNEXUS_DEBUG unset) the stderr skip
+    // diagnostic stays silent, so strict hook runners (e.g. Codex `PreToolUse`) see
+    // no unexpected diagnostic noise — only the augmentation itself (#1913). This is
+    // the GITNEXUS_DEBUG='' owner-hint coverage; the debug variants are below.
     it.skipIf(SKIP_LSOF_PATH)(
-      `${label}: skips augment SILENTLY when a GitNexus MCP process owns the repo DB`,
+      `${label}: emits the MCP-query hint on stdout, stderr silent by default, when a GitNexus MCP process owns the repo DB`,
       () => {
         const markerPath = path.join(os.tmpdir(), `gitnexus-hook-called-${process.pid}-${label}`);
         const lbugPath = path.join(gitNexusDir, 'lbug');
@@ -1847,7 +1848,9 @@ describe('PreToolUse augmentation filtering (integration)', () => {
             { env: { ...hookEnv(binDir), GITNEXUS_DEBUG: '' } },
           );
 
-          expect(result.stdout.trim()).toBe('');
+          const output = parseHookOutput(result.stdout);
+          expect(output!.additionalContext).toContain('mcp__gitnexus__query');
+          expect(output!.additionalContext).toContain('validateUser');
           expect(result.stderr.trim()).toBe('');
           expect(result.status).toBe(0);
           expect(fs.existsSync(markerPath)).toBe(false);
@@ -1995,7 +1998,11 @@ describe.skipIf(SKIP_LSOF_PATH)(
             undefined,
             { env: { ...hookEnv(binDir), GITNEXUS_DEBUG: '1' } },
           );
-          expect(result.stdout.trim()).toBe('');
+          // #2396: owner path now hands the agent the MCP-query hint on stdout;
+          // the CLI augment is still skipped (marker absent) and the stderr
+          // skip diagnostic remains debug-gated.
+          const output = parseHookOutput(result.stdout);
+          expect(output!.additionalContext).toContain('mcp__gitnexus__query');
           expect(result.status).toBe(0);
           expect(result.stderr).toContain('[GitNexus] augment skipped');
           expect(fs.existsSync(markerPath)).toBe(false);
@@ -2059,7 +2066,11 @@ describe.skipIf(SKIP_LSOF_PATH)(
             undefined,
             { env: { ...hookEnv(binDir), GITNEXUS_DEBUG: '1' } },
           );
-          expect(result.stdout.trim()).toBe('');
+          // #2396: owner path now hands the agent the MCP-query hint on stdout;
+          // the CLI augment is still skipped (marker absent) and the stderr
+          // skip diagnostic remains debug-gated.
+          const output = parseHookOutput(result.stdout);
+          expect(output!.additionalContext).toContain('mcp__gitnexus__query');
           expect(result.status).toBe(0);
           expect(result.stderr).toContain('[GitNexus] augment skipped');
           expect(fs.existsSync(markerPath)).toBe(false);
@@ -2147,7 +2158,11 @@ describe.skipIf(SKIP_LSOF_PATH)(
             undefined,
             { env: { ...hookEnv(binDir), GITNEXUS_DEBUG: '1' } },
           );
-          expect(result.stdout.trim()).toBe('');
+          // #2396: owner path now hands the agent the MCP-query hint on stdout;
+          // the CLI augment is still skipped (marker absent) and the stderr
+          // skip diagnostic remains debug-gated.
+          const output = parseHookOutput(result.stdout);
+          expect(output!.additionalContext).toContain('mcp__gitnexus__query');
           expect(result.status).toBe(0);
           expect(result.stderr).toContain('[GitNexus] augment skipped');
           expect(fs.existsSync(markerPath)).toBe(false);
@@ -2157,11 +2172,13 @@ describe.skipIf(SKIP_LSOF_PATH)(
         }
       });
 
-      // #1913: the fail-closed (probe-timeout) skip routes through the SAME gated
-      // line as the MCP-owner skip, so it too must be silent by default. Symmetric
-      // counterpart to the debug-on test above, so a regression that ungated the
-      // ETIMEDOUT path specifically would still be caught.
-      it(`${label}: ETIMEDOUT lsof → augment skipped SILENTLY by default`, () => {
+      // #2396/#1913: the fail-closed (probe-timeout) skip routes through the SAME
+      // owner branch, so it now emits the conditional MCP-query hint on stdout —
+      // truthful here because the hint only asks the agent to use the MCP tools
+      // "if they are live". The stderr diagnostic stays debug-gated (empty by
+      // default), so strict runners still see no unexpected diagnostic. Symmetric
+      // counterpart to the debug-on test above.
+      it(`${label}: ETIMEDOUT lsof → emits hint on stdout, stderr silent by default`, () => {
         const markerPath = path.join(os.tmpdir(), `gn-hook-etime-silent-${process.pid}-${label}`);
         const lbugPath = path.join(gitNexusDir, 'lbug');
         fs.writeFileSync(lbugPath, '');
@@ -2183,7 +2200,8 @@ describe.skipIf(SKIP_LSOF_PATH)(
             undefined,
             { env: { ...hookEnv(binDir), GITNEXUS_DEBUG: '' } },
           );
-          expect(result.stdout.trim()).toBe('');
+          const output = parseHookOutput(result.stdout);
+          expect(output!.additionalContext).toContain('mcp__gitnexus__query');
           expect(result.stderr.trim()).toBe('');
           expect(result.status).toBe(0);
           expect(fs.existsSync(markerPath)).toBe(false);
@@ -2231,7 +2249,11 @@ describe.skipIf(SKIP_LSOF_PATH)(
               },
             },
           );
-          expect(result.stdout.trim()).toBe('');
+          // #2396: owner path now hands the agent the MCP-query hint on stdout;
+          // the CLI augment is still skipped (marker absent) and the stderr
+          // skip diagnostic remains debug-gated.
+          const output = parseHookOutput(result.stdout);
+          expect(output!.additionalContext).toContain('mcp__gitnexus__query');
           expect(result.status).toBe(0);
           expect(result.stderr).toContain('[GitNexus] augment skipped');
           expect(fs.existsSync(markerPath)).toBe(false);
@@ -2284,7 +2306,11 @@ describe.skipIf(SKIP_LSOF_PATH)(
               },
             },
           );
-          expect(result.stdout.trim()).toBe('');
+          // #2396: owner path now hands the agent the MCP-query hint on stdout;
+          // the CLI augment is still skipped (marker absent) and the stderr
+          // skip diagnostic remains debug-gated.
+          const output = parseHookOutput(result.stdout);
+          expect(output!.additionalContext).toContain('mcp__gitnexus__query');
           expect(result.status).toBe(0);
           expect(result.stderr).toContain('[GitNexus] augment skipped');
           expect(fs.existsSync(markerPath)).toBe(false);
@@ -2340,7 +2366,11 @@ describe.skipIf(SKIP_LSOF_PATH)(
               },
             },
           );
-          expect(result.stdout.trim()).toBe('');
+          // #2396: owner path now hands the agent the MCP-query hint on stdout;
+          // the CLI augment is still skipped (marker absent) and the stderr
+          // skip diagnostic remains debug-gated.
+          const output = parseHookOutput(result.stdout);
+          expect(output!.additionalContext).toContain('mcp__gitnexus__query');
           expect(result.status).toBe(0);
           expect(result.stderr).toContain('[GitNexus] augment skipped');
           expect(fs.existsSync(markerPath)).toBe(false);
@@ -2396,7 +2426,11 @@ describe.skipIf(SKIP_LSOF_PATH)(
               },
             },
           );
-          expect(result.stdout.trim()).toBe('');
+          // #2396: owner path now hands the agent the MCP-query hint on stdout;
+          // the CLI augment is still skipped (marker absent) and the stderr
+          // skip diagnostic remains debug-gated.
+          const output = parseHookOutput(result.stdout);
+          expect(output!.additionalContext).toContain('mcp__gitnexus__query');
           expect(result.status).toBe(0);
           expect(result.stderr).toContain('[GitNexus] augment skipped');
           expect(fs.existsSync(markerPath)).toBe(false);
@@ -2521,7 +2555,11 @@ describe.skipIf(SKIP_LSOF_PATH)(
             undefined,
             { env: { ...hookEnv(binDir), GITNEXUS_DEBUG: '1' } },
           );
-          expect(result.stdout.trim()).toBe('');
+          // #2396: owner path now hands the agent the MCP-query hint on stdout;
+          // the CLI augment is still skipped (marker absent) and the stderr
+          // skip diagnostic remains debug-gated.
+          const output = parseHookOutput(result.stdout);
+          expect(output!.additionalContext).toContain('mcp__gitnexus__query');
           expect(result.status).toBe(0);
           expect(result.stderr).toContain('[GitNexus] augment skipped');
           expect(fs.existsSync(markerPath)).toBe(false);
