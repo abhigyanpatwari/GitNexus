@@ -1,4 +1,5 @@
 import { defineConfig } from 'vitest/config';
+import PerfSequencer from './test/helpers/perf-sequencer.js';
 
 export default defineConfig({
   test: {
@@ -32,6 +33,14 @@ export default defineConfig({
         functions: 28,
         lines: 27,
       },
+    },
+
+    // Balance shards by estimated work rather than file count, so the
+    // spawn-heavy sequential suites spread evenly across shard runners instead
+    // of clustering onto one (see test/helpers/perf-sequencer.ts). Only shard()
+    // is overridden — groupOrder and sort order are left to the base sequencer.
+    sequence: {
+      sequencer: PerfSequencer,
     },
 
     // LadybugDB's native mmap addon causes file-lock conflicts when vitest
