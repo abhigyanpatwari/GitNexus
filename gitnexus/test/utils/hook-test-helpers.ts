@@ -220,6 +220,10 @@ export function hookEnv(binDir: string) {
     GITNEXUS_HOOK_CLI_PATH: path.join(binDir, 'gitnexus-cli.js'),
     GITNEXUS_HOOK_LSOF_PATH: path.join(binDir, 'lsof'),
     GITNEXUS_HOOK_PS_PATH: path.join(binDir, 'ps'),
+    // #2396: disable the per-repo MCP-hint throttle by default so owner tests
+    // are deterministic (gitNexusDir is shared across the suite). The throttle
+    // itself is covered by its own dedicated test, which sets a real window.
+    GITNEXUS_MCP_HINT_THROTTLE_MS: '0',
   };
 }
 

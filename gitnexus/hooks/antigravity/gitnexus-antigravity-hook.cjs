@@ -408,6 +408,32 @@ function buildMcpQueryHint(pattern) {
   );
 }
 
+/**
+ * #2396 throttle: emit the MCP-query hint at most once per repo per window, so an
+ * owner-locked session isn't nudged on every search. Window (ms) via
+ * GITNEXUS_MCP_HINT_THROTTLE_MS (default 10min; 0/invalid disables). Best-effort —
+ * any fs error falls back to emitting.
+ * ponytail: per-repo mtime marker, shared across concurrent sessions on the same
+ * repo; add per-session dedup only if that sharing becomes a problem.
+ */
+function shouldEmitMcpHint(gitNexusDir) {
+  const raw = process.env.GITNEXUS_MCP_HINT_THROTTLE_MS;
+  const windowMs = raw === undefined || raw === '' ? 600000 : Number(raw);
+  if (!Number.isFinite(windowMs) || windowMs <= 0) return true;
+  const marker = path.join(gitNexusDir, '.mcp-hint-shown');
+  try {
+    if (Date.now() - fs.statSync(marker).mtimeMs < windowMs) return false;
+  } catch {
+    /* marker missing/unreadable → emit */
+  }
+  try {
+    fs.writeFileSync(marker, '');
+  } catch {
+    /* best-effort; still emit */
+  }
+  return true;
+}
+
 function runAugment(gitNexusDir, cwd, pattern) {
   // Acquire the per-repo slot BEFORE the DB-owner probe (#2163): the probe
   // itself spawns lsof/ps, so it must be bounded by the same ≤3-per-repo cap
@@ -436,7 +462,7 @@ function runAugment(gitNexusDir, cwd, pattern) {
       if (isDebugEnabled()) {
         process.stderr.write('[GitNexus] augment skipped: MCP server owns DB\n');
       }
-      return buildMcpQueryHint(pattern);
+      return shouldEmitMcpHint(gitNexusDir) ? buildMcpQueryHint(pattern) : '';
     }
     const cliPath = resolveCliPath();
     const child = runGitNexusCli(cliPath, ['augment', '--', pattern], cwd, 7000);

@@ -399,6 +399,32 @@ function buildMcpQueryHint(pattern) {
 }
 
 /**
+ * #2396 throttle: emit the MCP-query hint at most once per repo per window, so an
+ * owner-locked session isn't nudged on every search. Window (ms) via
+ * GITNEXUS_MCP_HINT_THROTTLE_MS (default 10min; 0/invalid disables). Best-effort —
+ * any fs error falls back to emitting.
+ * ponytail: per-repo mtime marker, shared across concurrent sessions on the same
+ * repo; add per-session dedup only if that sharing becomes a problem.
+ */
+function shouldEmitMcpHint(gitNexusDir) {
+  const raw = process.env.GITNEXUS_MCP_HINT_THROTTLE_MS;
+  const windowMs = raw === undefined || raw === '' ? 600000 : Number(raw);
+  if (!Number.isFinite(windowMs) || windowMs <= 0) return true;
+  const marker = path.join(gitNexusDir, '.mcp-hint-shown');
+  try {
+    if (Date.now() - fs.statSync(marker).mtimeMs < windowMs) return false;
+  } catch {
+    /* marker missing/unreadable → emit */
+  }
+  try {
+    fs.writeFileSync(marker, '');
+  } catch {
+    /* best-effort; still emit */
+  }
+  return true;
+}
+
+/**
  * PreToolUse handler — augment searches with graph context.
  */
 function handlePreToolUse(input) {
@@ -444,7 +470,9 @@ function handlePreToolUse(input) {
       if (isDebugEnabled()) {
         process.stderr.write('[GitNexus] augment skipped: MCP server owns DB\n');
       }
-      result = buildMcpQueryHint(pattern);
+      if (shouldEmitMcpHint(gitNexusDir)) {
+        result = buildMcpQueryHint(pattern);
+      }
     } else {
       const child = runGitNexusCli(['augment', '--', pattern], cwd, 7000);
       if (!child.error && child.status === 0) {

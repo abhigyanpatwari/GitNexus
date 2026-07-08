@@ -1956,6 +1956,62 @@ describe('PreToolUse augmentation filtering (integration)', () => {
   }
 });
 
+// #2396: the owner-path hint is throttled to at most once per repo per window
+// (GITNEXUS_MCP_HINT_THROTTLE_MS, default 10min) via a per-repo `.mcp-hint-shown`
+// marker, so an owner-locked session isn't nudged on every search. macOS/other-
+// Unix lsof+ps lane only (SKIP_LSOF_PATH), like the sibling owner tests. hookEnv
+// sets the window to 0 (disabled) elsewhere for determinism; here we set a real
+// window to exercise the throttle.
+describe.skipIf(SKIP_LSOF_PATH)('MCP-owner hint throttle (#2396)', () => {
+  for (const [label, hookPath] of [
+    ['CJS', CJS_HOOK],
+    ['Plugin', PLUGIN_HOOK],
+  ] as const) {
+    it(`${label}: emits once, then throttles within the window (marker gates it)`, () => {
+      const markerPath = path.join(os.tmpdir(), `gn-hook-throttle-${process.pid}-${label}`);
+      const lbugPath = path.join(gitNexusDir, 'lbug');
+      const throttleMarker = path.join(gitNexusDir, '.mcp-hint-shown');
+      fs.writeFileSync(lbugPath, '');
+      fs.rmSync(markerPath, { force: true });
+      fs.rmSync(throttleMarker, { force: true });
+      const binDir = createHookToolDir({
+        gitnexusMarkerPath: markerPath,
+        lsofOutput: '12345\n',
+        psOutput: 'node /tmp/node_modules/.bin/gitnexus mcp\n',
+      });
+      const runOnce = () =>
+        runHook(
+          hookPath,
+          {
+            hook_event_name: 'PreToolUse',
+            tool_name: 'Grep',
+            tool_input: { pattern: 'validateUser' },
+            cwd: tmpDir,
+          },
+          undefined,
+          { env: { ...hookEnv(binDir), GITNEXUS_MCP_HINT_THROTTLE_MS: '600000' } },
+        );
+      try {
+        // First owner-locked search: emits the hint and writes the marker.
+        const first = runOnce();
+        const out1 = parseHookOutput(first.stdout);
+        expect(out1!.additionalContext).toContain('mcp__gitnexus__query');
+        expect(first.status).toBe(0);
+        expect(fs.existsSync(throttleMarker)).toBe(true);
+        // Second search, marker still fresh (10-min window): throttled — no hint.
+        const second = runOnce();
+        expect(second.stdout.trim()).toBe('');
+        expect(second.status).toBe(0);
+      } finally {
+        fs.rmSync(lbugPath, { force: true });
+        fs.rmSync(markerPath, { force: true });
+        fs.rmSync(throttleMarker, { force: true });
+        fs.rmSync(binDir, { recursive: true, force: true });
+      }
+    });
+  }
+});
+
 describe.skipIf(SKIP_LSOF_PATH)(
   'Ladybug DB owner guard — production-shaped ps + failure modes (#1493)',
   () => {
