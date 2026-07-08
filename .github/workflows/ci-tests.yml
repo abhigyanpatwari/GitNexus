@@ -36,6 +36,19 @@ jobs:
       - uses: ./.github/actions/setup-gitnexus
         with:
           build: 'true'
+      # Warm-cache the FTS extension (same per-OS key as the cross-platform job)
+      # and install it up front, so every coverage shard has FTS in ~/.lbdb before
+      # any test module loads. The file-path FTS gate (extension-binary-real)
+      # resolves the extension at module load and can't self-install, so sharding
+      # could otherwise drop it into a shard with no installer sibling.
+      - name: Cache LadybugDB FTS extension
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v5
+        with:
+          path: ~/.lbdb/extension
+          key: lbug-fts-${{ runner.os }}-${{ hashFiles('gitnexus/package-lock.json') }}
+      - name: Ensure FTS extension installed
+        run: npx tsx scripts/ensure-fts.ts
+        working-directory: gitnexus
       - name: Run sharded tests with coverage (blob)
         # Shard via env var (not `${{ }}` inlined into the shell) so it isn't a
         # template-injection sink; shell: bash makes "$SHARD" expand uniformly.
@@ -212,6 +225,9 @@ jobs:
         with:
           path: ~/.lbdb/extension
           key: lbug-fts-${{ runner.os }}-${{ hashFiles('gitnexus/package-lock.json') }}
+      - name: Ensure FTS extension installed
+        run: npx tsx scripts/ensure-fts.ts
+        working-directory: gitnexus
       - name: Run platform-sensitive tests
         # Pass the shard through an env var (not `${{ }}` inlined into the shell)
         # so it isn't a template-injection sink (zizmor). shell: bash makes the
