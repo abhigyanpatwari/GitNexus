@@ -80,6 +80,37 @@ describe('mergeResult', () => {
     expect(target.springTypes).toBeUndefined();
   });
 
+  it('unions moduleConstants across sub-batch results, initializing the target when absent (#2391)', () => {
+    const mkConst = (filePath: string, name: string) => ({
+      filePath,
+      constants: {
+        literals: new Map([[name, '/a']]),
+        exprs: new Map(),
+        imports: new Map(),
+      },
+    });
+    // Regression: the worker-side accumulator dropped this field, so composed
+    // FastAPI route constants never reached parse-impl and resolved to `POST /`.
+    const target = emptyResult(); // no moduleConstants on the target (the `??=` path)
+    mergeResult(target, {
+      ...emptyResult(),
+      moduleConstants: [mkConst('a.py', 'A')],
+      fileCount: 1,
+    });
+    mergeResult(target, {
+      ...emptyResult(),
+      moduleConstants: [mkConst('b.py', 'B')],
+      fileCount: 1,
+    });
+    expect(target.moduleConstants?.map((m) => m.filePath)).toEqual(['a.py', 'b.py']);
+  });
+
+  it('leaves moduleConstants undefined when no source carries any (#2391)', () => {
+    const target = emptyResult();
+    mergeResult(target, { ...emptyResult(), fileCount: 1 });
+    expect(target.moduleConstants).toBeUndefined();
+  });
+
   it('also sums skippedLanguages and appends node arrays (sanity of the rest of the merge)', () => {
     const target = { ...emptyResult(), skippedLanguages: { rust: 1 } };
     mergeResult(target, {

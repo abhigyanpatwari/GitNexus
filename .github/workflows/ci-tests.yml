@@ -7,18 +7,28 @@ permissions:
   contents: read
 
 jobs:
+  # Ubuntu full-suite coverage, sharded. Each shard writes a vitest blob report
+  # (carrying its slice of V8 coverage) with thresholds forced OFF — a single
+  # shard's partial coverage can't meet the gate. The coverage-merge job below
+  # reduces the blobs and enforces the real thresholds on the combined coverage.
+  # FTS self-installs per shard (test/helpers/fts-availability.ts), so sharding
+  # the full suite across fresh runners is safe. Shard count: shard-plan.cov_total.
   tests:
-    name: ubuntu / coverage
+    name: ubuntu / coverage ${{ matrix.shard }}/${{ needs.shard-plan.outputs.cov_total }}
+    needs: shard-plan
     runs-on: ubuntu-latest
     timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ${{ fromJSON(needs.shard-plan.outputs.cov_shards) }}
     # Fail loudly (don't silently skip) if the FTS extension is unavailable, so
     # FTS-dependent lbug integration suites are guaranteed to run in CI.
     env:
       GITNEXUS_REQUIRE_FTS: '1'
     steps:
-      # persist-credentials: false — this job runs tests and uploads a
-      # test-reports artifact (if: always()). The default-persisted token in
-      # .git/config must not be capturable through that upload (zizmor
+      # persist-credentials: false — runs tests + uploads a blob artifact; the
+      # default-persisted token must not be capturable through it (zizmor
       # credential-persistence / artipacked audit). The job never pushes.
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
@@ -26,10 +36,78 @@ jobs:
       - uses: ./.github/actions/setup-gitnexus
         with:
           build: 'true'
-
-      - name: Run all tests with coverage
+      # Warm-cache the FTS extension (same per-OS key as the cross-platform job)
+      # and install it up front, so every coverage shard has FTS in ~/.lbdb before
+      # any test module loads. The file-path FTS gate (extension-binary-real)
+      # resolves the extension at module load and can't self-install, so sharding
+      # could otherwise drop it into a shard with no installer sibling.
+      - name: Cache LadybugDB FTS extension
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v5
+        with:
+          path: ~/.lbdb/extension
+          key: lbug-fts-${{ runner.os }}-${{ hashFiles('gitnexus/package-lock.json') }}
+      - name: Ensure FTS extension installed
+        run: npx tsx scripts/ensure-fts.ts
+        working-directory: gitnexus
+      - name: Run sharded tests with coverage (blob)
+        # Shard via env var (not `${{ }}` inlined into the shell) so it isn't a
+        # template-injection sink; shell: bash makes "$SHARD" expand uniformly.
+        # Thresholds forced to 0 — the merge job enforces the real gate on the
+        # MERGED coverage; a single shard's partial coverage would always fail.
+        shell: bash
+        env:
+          SHARD: ${{ matrix.shard }}/${{ needs.shard-plan.outputs.cov_total }}
         run: >-
           npx vitest run
+          --shard="$SHARD"
+          --reporter=default
+          --reporter=blob
+          --coverage
+          --coverage.thresholds.lines=0
+          --coverage.thresholds.functions=0
+          --coverage.thresholds.branches=0
+          --coverage.thresholds.statements=0
+        working-directory: gitnexus
+      - name: Upload coverage blob
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: coverage-blob-${{ matrix.shard }}
+          path: gitnexus/.vitest-reports/
+          # .vitest-reports is a dotdir; upload-artifact excludes hidden files by
+          # default, which would upload an empty artifact and break the merge.
+          include-hidden-files: true
+          retention-days: 5
+
+  # Merge the sharded coverage blobs into one report and enforce the real
+  # thresholds on the combined ('new') coverage — `vitest --mergeReports` re-runs
+  # nothing, it just reduces the stored blobs. Also emits the merged
+  # test-results.json and runs the (unsharded) web + docker suites, so the
+  # `test-reports` artifact keeps the exact shape ci-report.yml consumes for its
+  # base-branch ('baseline') vs new coverage delta.
+  coverage-merge:
+    name: ubuntu / coverage merge
+    needs: tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      GITNEXUS_REQUIRE_FTS: '1'
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-gitnexus
+        with:
+          build: 'true'
+      - name: Download coverage blobs
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          pattern: coverage-blob-*
+          path: gitnexus/.vitest-reports
+          merge-multiple: true
+      - name: Merge coverage + enforce thresholds
+        run: >-
+          npx vitest --mergeReports
           --reporter=default
           --reporter=json
           --outputFile=test-results.json
@@ -38,14 +116,11 @@ jobs:
           --coverage.reporter=json
           --coverage.reporter=text
           --coverage.thresholdAutoUpdate=false
-          --coverage.reportOnFailure=true
         working-directory: gitnexus
-
-      # gitnexus-shared already built by setup-gitnexus action above
+      # gitnexus-shared already built by setup-gitnexus above
       - name: Install gitnexus-web dependencies
         run: npm ci
         working-directory: gitnexus-web
-
       - name: Run gitnexus-web unit tests
         run: >-
           npx vitest run
@@ -53,10 +128,8 @@ jobs:
           --reporter=json
           --outputFile=web-test-results.json
         working-directory: gitnexus-web
-
       - name: Run docker-server integration tests
         run: node --test docker-server.test.mjs
-
       - name: Upload test reports
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -69,22 +142,68 @@ jobs:
             gitnexus-web/web-test-results.json
           retention-days: 5
 
+  # Single source of truth for the platform-sensitive shard count. TOTAL below
+  # generates both the shard index list (the matrix) and the /N denominator (job
+  # name + --shard arg), so they can't drift — bump the shard count by editing
+  # TOTAL alone. Checkout-free (ubuntu ships jq), so no credential surface.
+  shard-plan:
+    runs-on: ubuntu-latest
+    outputs:
+      shards: ${{ steps.gen.outputs.shards }}
+      total: ${{ steps.gen.outputs.total }}
+      cov_shards: ${{ steps.gen.outputs.cov_shards }}
+      cov_total: ${{ steps.gen.outputs.cov_total }}
+    steps:
+      - id: gen
+        run: |
+          TOTAL=3         # cross-platform (windows/macOS) shards per OS
+          COV_TOTAL=3     # ubuntu coverage shards (merged before thresholds)
+          if [ "$TOTAL" -lt 1 ] || [ "$COV_TOTAL" -lt 1 ]; then
+            echo "shard totals must be >= 1" >&2; exit 1
+          fi
+          {
+            echo "shards=$(jq -nc --argjson n "$TOTAL" '[range(1; $n + 1)]')"
+            echo "total=$TOTAL"
+            echo "cov_shards=$(jq -nc --argjson n "$COV_TOTAL" '[range(1; $n + 1)]')"
+            echo "cov_total=$COV_TOTAL"
+          } >> "$GITHUB_OUTPUT"
+
   # Platform-sensitive subset only — the full suite runs on Ubuntu above.
   # See gitnexus/scripts/cross-platform-tests.ts for the file list and
   # rationale for each included test.
   cross-platform:
-    name: ${{ matrix.os }} (platform-sensitive)
+    name: ${{ matrix.os }} (platform-sensitive) ${{ matrix.shard }}/${{ needs.shard-plan.outputs.total }}
+    needs: shard-plan
     strategy:
       fail-fast: false
       matrix:
         # Ubuntu already covered by the coverage job above
         os: [windows-latest, macos-latest]
+        # Shard the fixed file list across N runners per OS (N = TOTAL in the
+        # shard-plan job). The suite is dominated by ~50 CLI/worker process
+        # spawns and Windows is ~5x slower than macOS at those, so the unsharded
+        # run crept past the 15-min watchdog in run-cross-platform.ts. vitest
+        # shards by file COUNT, not runtime, so the heaviest spawn suites can
+        # cluster on one shard; 3 shards keep even the busiest Windows shard
+        # comfortably under the watchdog (macOS had margin either way).
+        # Shard indices come from the shard-plan job (single source of truth):
+        # its TOTAL drives this list and the /N in the job name + --shard arg.
+        shard: ${{ fromJSON(needs.shard-plan.outputs.shards) }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     # Same guarantee on the platform-sensitive runners: FTS-dependent suites in
     # the cross-platform subset must run, not silently skip.
+    #
+    # GITNEXUS_E2E_CLI=dist: the e2e suites spawn the CLI ~50 times; each spawn via
+    # `node --import tsx src/cli/index.ts` re-transpiles the whole CLI, and Windows
+    # is ~5x slower at process startup. `build: true` below produces a fresh dist
+    # before tests, so opting these runners into the built CLI removes that
+    # per-spawn transpile (see test/helpers/cli-entry.ts). Deliberately scoped to
+    # THIS job: the Ubuntu coverage job leaves it unset, so it keeps exercising the
+    # tsx-on-source path in CI (both entry points stay covered).
     env:
       GITNEXUS_REQUIRE_FTS: '1'
+      GITNEXUS_E2E_CLI: dist
     steps:
       # persist-credentials: false — runs tests only, never pushes (zizmor
       # credential-persistence / artipacked audit).
@@ -94,8 +213,30 @@ jobs:
       - uses: ./.github/actions/setup-gitnexus
         with:
           build: 'true'
+      # Warm-cache the installed LadybugDB FTS extension (~/.lbdb/extension) per
+      # OS + lockfile so a warm run skips the network install entirely, and the
+      # parallel shards share one download across runs. Pure reliability/speed:
+      # on a cache miss the tests self-install FTS on demand (see
+      # test/helpers/fts-availability.ts), so a miss just falls back to install —
+      # never a correctness dependency. Keyed by lockfile hash so a LadybugDB
+      # version bump re-installs; per-OS because the extension is a native binary.
+      - name: Cache LadybugDB FTS extension
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v5
+        with:
+          path: ~/.lbdb/extension
+          key: lbug-fts-${{ runner.os }}-${{ hashFiles('gitnexus/package-lock.json') }}
+      - name: Ensure FTS extension installed
+        run: npx tsx scripts/ensure-fts.ts
+        working-directory: gitnexus
       - name: Run platform-sensitive tests
-        run: npx tsx scripts/run-cross-platform.ts
+        # Pass the shard through an env var (not `${{ }}` inlined into the shell)
+        # so it isn't a template-injection sink (zizmor). shell: bash makes the
+        # `"$SHARD"` expansion uniform across the windows + macOS matrix (the
+        # default run shell is pwsh on Windows, where `$SHARD` would be empty).
+        shell: bash
+        env:
+          SHARD: ${{ matrix.shard }}/${{ needs.shard-plan.outputs.total }}
+        run: npx tsx scripts/run-cross-platform.ts --shard="$SHARD"
         working-directory: gitnexus
 
   # Tree-sitter ABI gate (#1922). Two halves, both blocking:

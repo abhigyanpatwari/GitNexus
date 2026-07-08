@@ -13,14 +13,13 @@ import { spawnSync, spawn } from 'child_process';
 import path from 'path';
 import fs from 'fs';
 import os from 'os';
-import { fileURLToPath, pathToFileURL } from 'url';
+import { fileURLToPath } from 'url';
 
-import { createRequire } from 'module';
 import { cleanupTempDirSync } from '../helpers/test-db.js';
+import { CLI_SPAWN_PREFIX } from '../helpers/cli-entry.js';
 
 const testDir = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(testDir, '../..');
-const cliEntry = path.join(repoRoot, 'src/cli/index.ts');
 const FIXTURE_SRC = path.resolve(testDir, '..', 'fixtures', 'mini-repo');
 
 // `MINI_REPO` is a *per-run temp copy* of the fixture, not the shared
@@ -38,14 +37,6 @@ const FIXTURE_SRC = path.resolve(testDir, '..', 'fixtures', 'mini-repo');
 let MINI_REPO: string;
 let tmpParent: string;
 let suiteGitnexusHome: string;
-
-// Absolute file:// URL to tsx loader — needed when spawning CLI with cwd
-// outside the project tree (bare 'tsx' specifier won't resolve there).
-// Cannot use require.resolve('tsx/dist/loader.mjs') because the subpath is
-// not in tsx's package.json exports; resolve the package root then join.
-const _require = createRequire(import.meta.url);
-const tsxPkgDir = path.dirname(_require.resolve('tsx/package.json'));
-const tsxImportUrl = pathToFileURL(path.join(tsxPkgDir, 'dist', 'loader.mjs')).href;
 
 beforeAll(() => {
   // Copy the fixture into an isolated tmpdir named `mini-repo` so that the
@@ -112,7 +103,7 @@ function cliEnv(extraEnv: Record<string, string> = {}) {
 }
 
 function runCli(command: string, cwd: string, timeoutMs = 15000) {
-  return spawnSync(process.execPath, ['--import', tsxImportUrl, cliEntry, command], {
+  return spawnSync(process.execPath, [...CLI_SPAWN_PREFIX, command], {
     cwd,
     encoding: 'utf8',
     timeout: timeoutMs,
@@ -126,7 +117,7 @@ function runCli(command: string, cwd: string, timeoutMs = 15000) {
  * can pass flags (e.g. --help) or omit a command entirely.
  */
 function runCliRaw(extraArgs: string[], cwd: string, timeoutMs = 15000) {
-  return spawnSync(process.execPath, ['--import', tsxImportUrl, cliEntry, ...extraArgs], {
+  return spawnSync(process.execPath, [...CLI_SPAWN_PREFIX, ...extraArgs], {
     cwd,
     encoding: 'utf8',
     timeout: timeoutMs,
@@ -146,7 +137,7 @@ function runCliWithEnv(
   extraEnv: Record<string, string>,
   timeoutMs = 15000,
 ) {
-  return spawnSync(process.execPath, ['--import', tsxImportUrl, cliEntry, ...extraArgs], {
+  return spawnSync(process.execPath, [...CLI_SPAWN_PREFIX, ...extraArgs], {
     cwd,
     encoding: 'utf8',
     timeout: timeoutMs,
@@ -229,15 +220,11 @@ function runEvalServerHostFlagTest(
   },
 ): Promise<void> {
   return new Promise<void>((resolve, reject) => {
-    const child = spawn(
-      process.execPath,
-      ['--import', tsxImportUrl, cliEntry, 'eval-server', ...spawnArgs],
-      {
-        cwd: MINI_REPO,
-        stdio: ['ignore', 'pipe', 'pipe'],
-        env: cliEnv(),
-      },
-    );
+    const child = spawn(process.execPath, [...CLI_SPAWN_PREFIX, 'eval-server', ...spawnArgs], {
+      cwd: MINI_REPO,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      env: cliEnv(),
+    });
 
     let stdoutBuffer = '';
     let stderrBuffer = '';
@@ -1072,12 +1059,13 @@ describe('CLI end-to-end', () => {
 
   describe('CLI error handling', () => {
     /**
-     * Helper to spawn CLI from a cwd outside the project tree.
-     * Uses the absolute file:// URL to tsx loader so the --import hook
-     * resolves even when cwd has no node_modules.
+     * Helper to spawn CLI from a cwd outside the project tree via
+     * CLI_SPAWN_PREFIX (built dist in CI, tsx-on-source locally). On the tsx
+     * path the loader is an absolute file:// URL so the --import hook resolves
+     * even when cwd has no node_modules.
      */
     function runCliOutsideProject(args: string[], cwd: string, timeoutMs = 15000) {
-      return spawnSync(process.execPath, ['--import', tsxImportUrl, cliEntry, ...args], {
+      return spawnSync(process.execPath, [...CLI_SPAWN_PREFIX, ...args], {
         cwd,
         encoding: 'utf8',
         timeout: timeoutMs,
@@ -1196,17 +1184,13 @@ describe('CLI end-to-end', () => {
         });
 
         // Must spawn outside project tree so it doesn't find parent .gitnexus
-        const result = spawnSync(
-          process.execPath,
-          ['--import', tsxImportUrl, cliEntry, 'wiki', tmpDir],
-          {
-            cwd: tmpDir,
-            encoding: 'utf8',
-            timeout: 15000,
-            stdio: ['pipe', 'pipe', 'pipe'],
-            env: cliEnv(),
-          },
-        );
+        const result = spawnSync(process.execPath, [...CLI_SPAWN_PREFIX, 'wiki', tmpDir], {
+          cwd: tmpDir,
+          encoding: 'utf8',
+          timeout: 15000,
+          stdio: ['pipe', 'pipe', 'pipe'],
+          env: cliEnv(),
+        });
         if (result.status === null) return;
 
         expect(result.status).toBe(1);
@@ -1324,15 +1308,7 @@ describe('CLI end-to-end', () => {
       return new Promise<void>((resolve, reject) => {
         const child = spawn(
           process.execPath,
-          [
-            '--import',
-            tsxImportUrl,
-            cliEntry,
-            'cypher',
-            'MATCH (n) RETURN n LIMIT 500',
-            '--repo',
-            'mini-repo',
-          ],
+          [...CLI_SPAWN_PREFIX, 'cypher', 'MATCH (n) RETURN n LIMIT 500', '--repo', 'mini-repo'],
           {
             cwd: MINI_REPO,
             stdio: ['ignore', 'pipe', 'pipe'],
@@ -1382,7 +1358,7 @@ describe('CLI end-to-end', () => {
       return new Promise<void>((resolve, reject) => {
         const child = spawn(
           process.execPath,
-          ['--import', tsxImportUrl, cliEntry, 'eval-server', '--port', '0', '--idle-timeout', '3'],
+          [...CLI_SPAWN_PREFIX, 'eval-server', '--port', '0', '--idle-timeout', '3'],
           {
             cwd: MINI_REPO,
             stdio: ['ignore', 'pipe', 'pipe'],
