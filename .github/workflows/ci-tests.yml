@@ -148,10 +148,12 @@ jobs:
           if [ "$TOTAL" -lt 1 ] || [ "$COV_TOTAL" -lt 1 ]; then
             echo "shard totals must be >= 1" >&2; exit 1
           fi
-          echo "shards=$(jq -nc --argjson n "$TOTAL" '[range(1; $n + 1)]')" >> "$GITHUB_OUTPUT"
-          echo "total=$TOTAL" >> "$GITHUB_OUTPUT"
-          echo "cov_shards=$(jq -nc --argjson n "$COV_TOTAL" '[range(1; $n + 1)]')" >> "$GITHUB_OUTPUT"
-          echo "cov_total=$COV_TOTAL" >> "$GITHUB_OUTPUT"
+          {
+            echo "shards=$(jq -nc --argjson n "$TOTAL" '[range(1; $n + 1)]')"
+            echo "total=$TOTAL"
+            echo "cov_shards=$(jq -nc --argjson n "$COV_TOTAL" '[range(1; $n + 1)]')"
+            echo "cov_total=$COV_TOTAL"
+          } >> "$GITHUB_OUTPUT"
 
   # Platform-sensitive subset only — the full suite runs on Ubuntu above.
   # See gitnexus/scripts/cross-platform-tests.ts for the file list and
