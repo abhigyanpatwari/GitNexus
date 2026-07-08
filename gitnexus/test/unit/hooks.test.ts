@@ -1859,11 +1859,13 @@ describe('PreToolUse augmentation filtering (integration)', () => {
       },
     );
 
-    // Issue #1913: the skip reason remains recoverable for operators who opt in
-    // via GITNEXUS_DEBUG=1 — stdout stays empty (no augment ran), the diagnostic
-    // appears on stderr.
+    // #2396: when the MCP server owns the DB the CLI augment can't run, so the
+    // hook hands the agent an MCP-query hint on stdout (the sanctioned
+    // additionalContext channel) instead of doing nothing. The CLI still never
+    // spawns (marker absent). #1913: the stderr skip diagnostic stays gated
+    // behind GITNEXUS_DEBUG.
     it.skipIf(SKIP_LSOF_PATH)(
-      `${label}: surfaces the MCP-owner skip reason only under GITNEXUS_DEBUG`,
+      `${label}: MCP-owner path emits the MCP query hint; stderr reason gated by GITNEXUS_DEBUG`,
       () => {
         const markerPath = path.join(os.tmpdir(), `gitnexus-hook-dbg-${process.pid}-${label}`);
         const lbugPath = path.join(gitNexusDir, 'lbug');
@@ -1887,7 +1889,9 @@ describe('PreToolUse augmentation filtering (integration)', () => {
             { env: { ...hookEnv(binDir), GITNEXUS_DEBUG: '1' } },
           );
 
-          expect(result.stdout.trim()).toBe('');
+          const output = parseHookOutput(result.stdout);
+          expect(output!.additionalContext).toContain('mcp__gitnexus__query');
+          expect(output!.additionalContext).toContain('validateUser');
           expect(result.status).toBe(0);
           expect(result.stderr).toContain('[GitNexus] augment skipped: MCP server owns DB');
           expect(fs.existsSync(markerPath)).toBe(false);
@@ -1900,13 +1904,13 @@ describe('PreToolUse augmentation filtering (integration)', () => {
     );
 
     // #1913: the GITNEXUS_DEBUG contract is strict — ONLY '1' and 'true' enable
-    // diagnostics. Pin that non-canonical truthy-looking values ('0', 'false')
-    // are treated as OFF, so the skip stays silent. A truthy-gated reader would
-    // have emitted on these; this guards the unified strict gate (incl. the
-    // main() catch handler) across the claude/plugin copies.
+    // the stderr diagnostic. Pin that non-canonical truthy-looking values ('0',
+    // 'false') are treated as OFF, so stderr stays silent. The #2396 MCP-query
+    // hint on stdout is independent of GITNEXUS_DEBUG (it is the augmentation, not
+    // a diagnostic) and must still be emitted here.
     for (const debugValue of ['0', 'false']) {
       it.skipIf(SKIP_LSOF_PATH)(
-        `${label}: MCP-owner skip stays SILENT with GITNEXUS_DEBUG='${debugValue}' (strict contract)`,
+        `${label}: MCP-owner hint emits on stdout; stderr stays silent with GITNEXUS_DEBUG='${debugValue}'`,
         () => {
           const markerPath = path.join(
             os.tmpdir(),
@@ -1933,7 +1937,8 @@ describe('PreToolUse augmentation filtering (integration)', () => {
               { env: { ...hookEnv(binDir), GITNEXUS_DEBUG: debugValue } },
             );
 
-            expect(result.stdout.trim()).toBe('');
+            const output = parseHookOutput(result.stdout);
+            expect(output!.additionalContext).toContain('mcp__gitnexus__query');
             expect(result.stderr.trim()).toBe('');
             expect(result.status).toBe(0);
             expect(fs.existsSync(markerPath)).toBe(false);

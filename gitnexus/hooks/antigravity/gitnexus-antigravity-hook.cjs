@@ -391,6 +391,19 @@ function buildAfterToolContext(input) {
   return parts.length > 0 ? parts.join('\n\n') : null;
 }
 
+/**
+ * Fallback augmentation for the #2396 path: when the MCP server owns the DB the
+ * CLI `augment` can't run, so hand the agent a pointer to the live MCP `query`
+ * tool for this pattern. `pattern` is JSON-escaped by writeAdditionalContext.
+ */
+function buildMcpQueryHint(pattern) {
+  return (
+    `[GitNexus] Knowledge graph is live via the MCP server. For graph-ranked ` +
+    `context on "${pattern}", call the GitNexus \`query\` MCP tool ` +
+    `(e.g. mcp__gitnexus__query) with search_query "${pattern}".`
+  );
+}
+
 function runAugment(gitNexusDir, cwd, pattern) {
   // Acquire the per-repo slot BEFORE the DB-owner probe (#2163): the probe
   // itself spawns lsof/ps, so it must be bounded by the same ≤3-per-repo cap
@@ -410,12 +423,16 @@ function runAugment(gitNexusDir, cwd, pattern) {
   }
   try {
     if (hasGitNexusServerOwner(gitNexusDir)) {
-      // Normal skip path: the MCP server owns the DB. Stay silent for strict
-      // hook runners (issue #1913); surface the reason only under GITNEXUS_DEBUG.
+      // #2396: the MCP server holds the DB write lock, so a competing CLI
+      // `augment` would only contend on it (LadybugDB is single-writer). The
+      // session has the GitNexus MCP tools live — route the augmentation to the
+      // agent via additionalContext instead of dropping it. Mirror the skip
+      // reason to stderr only under GITNEXUS_DEBUG (strict-runner contract,
+      // #1913); the hint itself rides the sanctioned additionalContext channel.
       if (isDebugEnabled()) {
         process.stderr.write('[GitNexus] augment skipped: MCP server owns DB\n');
       }
-      return '';
+      return buildMcpQueryHint(pattern);
     }
     const cliPath = resolveCliPath();
     const child = runGitNexusCli(cliPath, ['augment', '--', pattern], cwd, 7000);

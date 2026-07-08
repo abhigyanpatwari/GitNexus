@@ -382,6 +382,19 @@ function sendHookResponse(hookEventName, message) {
 }
 
 /**
+ * Fallback augmentation for the #2396 path: when the MCP server owns the DB the
+ * CLI `augment` can't run, so hand the agent a pointer to the live MCP `query`
+ * tool for this pattern. `pattern` is JSON-escaped by sendHookResponse.
+ */
+function buildMcpQueryHint(pattern) {
+  return (
+    `[GitNexus] Knowledge graph is live via the MCP server. For graph-ranked ` +
+    `context on "${pattern}", call the GitNexus \`query\` MCP tool ` +
+    `(e.g. mcp__gitnexus__query) with search_query "${pattern}".`
+  );
+}
+
+/**
  * PreToolUse handler — augment searches with graph context.
  */
 function handlePreToolUse(input) {
@@ -417,17 +430,22 @@ function handlePreToolUse(input) {
   let result = '';
   try {
     if (hasGitNexusServerOwner(gitNexusDir)) {
-      // Normal skip path: the MCP server owns the DB, so the CLI augment would
-      // contend on the lock. Stay silent for strict hook runners (issue #1913);
-      // surface the reason only when diagnostics are explicitly requested.
+      // #2396: the MCP server holds the DB write lock, so a competing CLI
+      // `augment` would only contend on it (LadybugDB is single-writer). But the
+      // session that triggered this hook has the GitNexus MCP tools live — route
+      // the augmentation to the agent via additionalContext instead of silently
+      // doing nothing. Mirror the skip reason to stderr only under GITNEXUS_DEBUG
+      // (strict-runner contract, #1913); the hint itself rides the sanctioned
+      // additionalContext stdout channel the successful augment already uses.
       if (isDebugEnabled()) {
         process.stderr.write('[GitNexus] augment skipped: MCP server owns DB\n');
       }
-      return;
-    }
-    const child = runGitNexusCli(['augment', '--', pattern], cwd, 7000);
-    if (!child.error && child.status === 0) {
-      result = extractAugmentContext(child.stderr || '');
+      result = buildMcpQueryHint(pattern);
+    } else {
+      const child = runGitNexusCli(['augment', '--', pattern], cwd, 7000);
+      if (!child.error && child.status === 0) {
+        result = extractAugmentContext(child.stderr || '');
+      }
     }
   } catch {
     /* graceful failure */
