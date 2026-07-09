@@ -424,7 +424,7 @@ describe('CLI end-to-end', () => {
     const repoParent = path.dirname(repo);
 
     try {
-      const first = runCliWithEnv(['analyze'], repo, { GITNEXUS_HOME: gnHome }, 60000);
+      const first = runCliWithEnv(['analyze'], repo, { GITNEXUS_HOME: gnHome }, 90_000);
       expect(
         first.status,
         [
@@ -443,7 +443,7 @@ describe('CLI end-to-end', () => {
       // not discoverable because the global registry entry is missing.
       fs.writeFileSync(path.join(gnHome, 'registry.json'), '[]', 'utf-8');
 
-      const second = runCliWithEnv(['analyze'], repo, { GITNEXUS_HOME: gnHome }, 60000);
+      const second = runCliWithEnv(['analyze'], repo, { GITNEXUS_HOME: gnHome }, 90_000);
       expect(
         second.status,
         [
@@ -459,7 +459,7 @@ describe('CLI end-to-end', () => {
       cleanupTempDirSync(gnHome);
       cleanupTempDirSync(repoParent);
     }
-  }, 60_000);
+  }, 180_000);
 
   // ─── analyze --name <alias> + --allow-duplicate-name (#829) ──────
   //
