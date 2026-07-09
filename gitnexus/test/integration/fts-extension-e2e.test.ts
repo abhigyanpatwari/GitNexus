@@ -302,6 +302,10 @@ describe('unhappy path — extension missing entirely', () => {
 
 describe('self-heal over the network — FORCE INSTALL replaces a broken file (auto)', () => {
   beforeEach((ctx) => {
+    // The platform matrix already exercises offline FTS load/diagnostic paths
+    // against real macOS/Windows binaries. Keep network redownload coverage on
+    // Ubuntu, where the full test job has the most stable extension fetch path.
+    if (process.platform !== 'linux') ctx.skip();
     if (!networkAvailable) ctx.skip();
   });
 

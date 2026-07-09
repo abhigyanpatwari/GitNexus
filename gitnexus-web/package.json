@@ -25,7 +25,7 @@
     "@langchain/ollama": "^1.2.7",
     "@langchain/openai": "^1.5.3",
     "@sigma/edge-curve": "^3.1.0",
-    "@tailwindcss/vite": "^4.3.0",
+    "@tailwindcss/vite": "^4.3.2",
     "axios": "^1.16.1",
     "d3": "^7.9.0",
     "dompurify": "^3.4.11",
@@ -53,7 +53,7 @@
     "remark-gfm": "^4.0.1",
     "sigma": "^3.0.3",
     "tailwindcss": "^4.2.4",
-    "uuid": "^14.0.0",
+    "uuid": "^14.0.1",
     "zod": "^4.4.3"
   },
   "devDependencies": {
