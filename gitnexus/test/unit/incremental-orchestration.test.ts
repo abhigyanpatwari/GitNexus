@@ -257,16 +257,21 @@ describe('runFullAnalysis — incremental orchestration', () => {
         incrementalInProgress: {
           startedAt: Date.now() - 60_000,
           toWriteCount: 3,
+          phase: 'load-graph',
+          importerExpansion: 153,
+          effectiveWriteCount: 167,
+          deleteCount: 169,
         },
       };
       await saveMeta(storagePath, tampered);
+      const logs: string[] = [];
 
       // Next run must detect the flag, force a full rebuild (which
       // overwrites meta), and clear the flag.
       const recovered = await runFullAnalysis(
         repo.dbPath,
         { skipAgentsMd: true },
-        { onProgress: () => {} },
+        { onProgress: () => {}, onLog: (message) => logs.push(message) },
       );
       // A full rebuild was taken — the alreadyUpToDate fast path
       // explicitly cannot fire because the dirty-flag check rewrote
@@ -275,6 +280,9 @@ describe('runFullAnalysis — incremental orchestration', () => {
 
       const after = await loadMeta(storagePath);
       expect(after!.incrementalInProgress).toBeUndefined();
+      expect(logs.join('\n')).toContain(
+        'last dirty state: phase=load-graph, toWrite=3, importerExpansion=153, effectiveWrite=167, deleteCount=169',
+      );
     } finally {
       await repo.cleanup();
     }

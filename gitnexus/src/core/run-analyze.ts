@@ -744,10 +744,25 @@ export async function runFullAnalysis(
   // clear it, the on-disk index may be in a half-state. Cheapest path
   // back to a known-good index is to wipe + rebuild from scratch.
   if (existingMeta?.incrementalInProgress) {
+    const dirty = existingMeta.incrementalInProgress;
+    const dirtyDetails = [
+      dirty.phase ? `phase=${dirty.phase}` : undefined,
+      `toWrite=${dirty.toWriteCount}`,
+      dirty.importerExpansion !== undefined
+        ? `importerExpansion=${dirty.importerExpansion}`
+        : undefined,
+      dirty.effectiveWriteCount !== undefined
+        ? `effectiveWrite=${dirty.effectiveWriteCount}`
+        : undefined,
+      dirty.deleteCount !== undefined ? `deleteCount=${dirty.deleteCount}` : undefined,
+    ]
+      .filter(Boolean)
+      .join(', ');
     log(
       // "analyze run", not "incremental run" — since #2099 F1 the flag is a
       // generic dirty marker written by BOTH writeback branches.
       'Previous analyze run did not complete cleanly (incrementalInProgress flag set); ' +
+        `last dirty state: ${dirtyDetails}; ` +
         'forcing full rebuild to restore a known-good index.',
     );
     options = { ...options, force: true };
@@ -1095,11 +1110,15 @@ export async function runFullAnalysis(
     );
     // Set the dirty flag BEFORE any destructive DB mutation. Cleared on
     // success at the meta-save step. Scoped to this branch's meta.json.
+    const now = Date.now();
     await saveMeta(metaDir, {
       ...existingMeta!,
       incrementalInProgress: {
-        startedAt: Date.now(),
+        startedAt: now,
+        updatedAt: now,
+        phase: 'pre-write',
         toWriteCount: hashDiff.toWrite.length,
+        directWriteCount: hashDiff.toWrite.length,
       },
     });
   } else {
@@ -1112,9 +1131,15 @@ export async function runFullAnalysis(
     // pdg flip, certify zombie/missing BasicBlock rows indefinitely).
     // toWriteCount: 0 is the full-path sentinel (no incremental write set).
     if (existingMeta) {
+      const now = Date.now();
       await saveMeta(metaDir, {
         ...existingMeta,
-        incrementalInProgress: { startedAt: Date.now(), toWriteCount: 0 },
+        incrementalInProgress: {
+          startedAt: now,
+          updatedAt: now,
+          phase: 'full-rebuild',
+          toWriteCount: 0,
+        },
       });
     }
     await closeLbug();
@@ -1176,6 +1201,23 @@ export async function runFullAnalysis(
       const MAX_IMPORTER_BFS_DEPTH = 4;
       const writableFiles = new Set<string>(hashDiff.toWrite);
       const directlyChangedCount = writableFiles.size;
+      const dirtyStartedAt = existingMeta!.incrementalInProgress?.startedAt ?? Date.now();
+      const saveIncrementalDirtyState = async (
+        phase: string,
+        extra: Partial<NonNullable<RepoMeta['incrementalInProgress']>> = {},
+      ): Promise<void> => {
+        await saveMeta(metaDir, {
+          ...existingMeta!,
+          incrementalInProgress: {
+            startedAt: dirtyStartedAt,
+            updatedAt: Date.now(),
+            phase,
+            toWriteCount: writableFiles.size,
+            directWriteCount: directlyChangedCount,
+            ...extra,
+          },
+        });
+      };
 
       // Shadow-seed: for ADDED files, queryImporters returns 0 (the new
       // file has no IMPORTS rows in the pre-pipeline DB yet). But pre-
@@ -1221,6 +1263,10 @@ export async function runFullAnalysis(
         }
       }
       const importerExpansion = writableFiles.size - directlyChangedCount;
+      await saveIncrementalDirtyState('importer-bfs', {
+        importerExpansion,
+        shadowSeedCount: shadowSeed.length,
+      });
       if (importerExpansion > 0) {
         log(
           `Incremental: +${importerExpansion} importer(s) added to writable set ` +
@@ -1250,6 +1296,12 @@ export async function runFullAnalysis(
       // would otherwise call deleteNodesForFile twice for the same file
       // (Bugbot LOW finding on PR #1479).
       const filesToDelete = [...new Set([...effectiveWriteSet, ...hashDiff.deleted])];
+      await saveIncrementalDirtyState('effective-write-set', {
+        importerExpansion,
+        shadowSeedCount: shadowSeed.length,
+        effectiveWriteCount: effectiveWriteSet.size,
+        deleteCount: filesToDelete.length,
+      });
       for (let i = 0; i < filesToDelete.length; i++) {
         const f = filesToDelete[i];
         try {
@@ -1299,6 +1351,12 @@ export async function runFullAnalysis(
       //    the SAME effectiveWriteSet so the subgraph and the deletes
       //    cover identical files (asymmetry would silently corrupt).
       const subgraph = extractChangedSubgraph(pipelineResult.graph, effectiveWriteSet);
+      await saveIncrementalDirtyState('load-graph', {
+        importerExpansion,
+        shadowSeedCount: shadowSeed.length,
+        effectiveWriteCount: effectiveWriteSet.size,
+        deleteCount: filesToDelete.length,
+      });
       await loadGraphToLbug(subgraph, pipelineResult.repoPath, storagePath, (msg) => {
         lbugMsgCount++;
         const pct = Math.min(84, 65 + Math.round((lbugMsgCount / (lbugMsgCount + 10)) * 19));
@@ -1579,7 +1637,7 @@ export async function runFullAnalysis(
       // usedKeys.add) — so it's complete even on an incremental run. Persisted
       // so a sibling branch's prune can union it and not evict our shards.
       cacheKeys: [...parseCache.usedKeys],
-      incrementalInProgress: undefined as { startedAt: number; toWriteCount: number } | undefined,
+      incrementalInProgress: undefined as RepoMeta['incrementalInProgress'],
       // The effective pdg config this run's DB rows were built under
       // (#2099 F1). `undefined` on pdg-off runs — this meta is a fresh
       // literal (no spread of existingMeta), so omission is what CLEARS the

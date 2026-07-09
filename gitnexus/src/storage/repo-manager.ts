@@ -138,9 +138,23 @@ export interface RepoMeta {
   incrementalInProgress?: {
     /** When the run started (epoch ms). */
     startedAt: number;
+    /** Last dirty-flag refresh (epoch ms). */
+    updatedAt?: number;
     /** Number of files in the writable set, for diagnostic logs.
      *  `0` on the full-rebuild path (no incremental write set exists). */
     toWriteCount: number;
+    /** Last completed writeback phase before the process stopped. */
+    phase?: string;
+    /** Directly changed/added/deleted files before importer expansion. */
+    directWriteCount?: number;
+    /** Extra files pulled into the writable set by importer BFS. */
+    importerExpansion?: number;
+    /** Files in the effective write set after graph-boundary expansion. */
+    effectiveWriteCount?: number;
+    /** Files whose persisted rows were scheduled for deletion. */
+    deleteCount?: number;
+    /** Added-file shadow seeds included in importer BFS. */
+    shadowSeedCount?: number;
   };
   /**
    * Name of the git branch this index represents (#2106). Absent for the
