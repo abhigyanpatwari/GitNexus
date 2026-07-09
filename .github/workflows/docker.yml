@@ -256,7 +256,7 @@ jobs:
       # pulling from either GHCR or Docker Hub see the same provenance.
       - name: Generate build provenance attestation (GHCR)
         if: ${{ github.event_name != 'pull_request' && !inputs.dry_run }}
-        uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32 # v4.1.0
+        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
         with:
           subject-name: ghcr.io/${{ github.repository_owner }}/${{ matrix.image.slug }}
           subject-digest: ${{ steps.build.outputs.digest }}
@@ -264,7 +264,7 @@ jobs:
 
       - name: Generate build provenance attestation (Docker Hub)
         if: ${{ github.event_name != 'pull_request' && !inputs.dry_run }}
-        uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32 # v4.1.0
+        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
         with:
           subject-name: docker.io/akonlabs/${{ matrix.image.slug }}
           subject-digest: ${{ steps.build.outputs.digest }}
