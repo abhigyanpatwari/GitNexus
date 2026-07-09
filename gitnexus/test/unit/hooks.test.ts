@@ -681,7 +681,9 @@ describe('PreToolUse concurrency guard', () => {
 
 // ─── Integration: concurrency guard skips when slots are full ──────
 
-describe('PreToolUse concurrency guard (integration)', () => {
+// The burst tests spawn real child processes; under CI load a child can exit
+// before printing its decision even though the slot hard cap still holds.
+describe('PreToolUse concurrency guard (integration)', { retry: 1 }, () => {
   for (const [label, hookPath] of [
     ['CJS', CJS_HOOK],
     ['Plugin', PLUGIN_HOOK],
