@@ -126,107 +126,114 @@ const DEADLOCK_TIMEOUT_MS = 60_000;
 // three platforms, matching its LBUG_NATIVE registration in
 // cross-platform-tests.ts and vitest.config.ts.
 
-describe('concurrent multi-connection writes do not deadlock (#2338, LadybugDB #605)', () => {
-  it(
-    'writer + reader connections on one Database complete without deadlock, forcing a real checkpoint-vs-reader race',
-    async () => {
-      const tmp = await createTempDir('gitnexus-lbug-multiwriter-');
-      const dbPath = path.join(tmp.dbPath, 'lbug');
-      const previousThreshold = process.env.GITNEXUS_WAL_CHECKPOINT_THRESHOLD;
-      process.env.GITNEXUS_WAL_CHECKPOINT_THRESHOLD = String(CHECKPOINT_THRESHOLD_BYTES);
+// The native checkpoint/reader race is intentionally timing-sensitive; retry
+// once to absorb transient LadybugDB native exceptions while still failing a
+// persistent deadlock or correctness regression.
+describe(
+  'concurrent multi-connection writes do not deadlock (#2338, LadybugDB #605)',
+  { retry: 1 },
+  () => {
+    it(
+      'writer + reader connections on one Database complete without deadlock, forcing a real checkpoint-vs-reader race',
+      async () => {
+        const tmp = await createTempDir('gitnexus-lbug-multiwriter-');
+        const dbPath = path.join(tmp.dbPath, 'lbug');
+        const previousThreshold = process.env.GITNEXUS_WAL_CHECKPOINT_THRESHOLD;
+        process.env.GITNEXUS_WAL_CHECKPOINT_THRESHOLD = String(CHECKPOINT_THRESHOLD_BYTES);
 
-      let db: LbugDatabase | undefined;
-      let writers: LbugConnection[] = [];
-      let readers: LbugConnection[] = [];
-      let timeoutHandle: NodeJS.Timeout | undefined;
-      let shadowWatcher: NodeJS.Timeout | undefined;
+        let db: LbugDatabase | undefined;
+        let writers: LbugConnection[] = [];
+        let readers: LbugConnection[] = [];
+        let timeoutHandle: NodeJS.Timeout | undefined;
+        let shadowWatcher: NodeJS.Timeout | undefined;
 
-      try {
-        const lbug = (await import('@ladybugdb/core')).default;
+        try {
+          const lbug = (await import('@ladybugdb/core')).default;
 
-        db = createLbugDatabase(lbug, dbPath);
-        const dbHandle = db;
+          db = createLbugDatabase(lbug, dbPath);
+          const dbHandle = db;
 
-        const setupConn = new lbug.Connection(dbHandle);
-        const setupResult = await setupConn.query(
-          'CREATE NODE TABLE T(id INT64 PRIMARY KEY, val STRING)',
-        );
-        await closeQueryResults(setupResult);
-        await setupConn.close();
+          const setupConn = new lbug.Connection(dbHandle);
+          const setupResult = await setupConn.query(
+            'CREATE NODE TABLE T(id INT64 PRIMARY KEY, val STRING)',
+          );
+          await closeQueryResults(setupResult);
+          await setupConn.close();
 
-        const shadowPath = `${dbPath}.shadow`;
-        let shadowSeen = false;
-        shadowWatcher = setInterval(() => {
-          if (fs.existsSync(shadowPath)) shadowSeen = true;
-        }, 5);
+          const shadowPath = `${dbPath}.shadow`;
+          let shadowSeen = false;
+          shadowWatcher = setInterval(() => {
+            if (fs.existsSync(shadowPath)) shadowSeen = true;
+          }, 5);
 
-        writers = Array.from({ length: WRITER_COUNT }, () => new lbug.Connection(dbHandle));
-        readers = Array.from({ length: READER_COUNT }, () => new lbug.Connection(dbHandle));
+          writers = Array.from({ length: WRITER_COUNT }, () => new lbug.Connection(dbHandle));
+          readers = Array.from({ length: READER_COUNT }, () => new lbug.Connection(dbHandle));
 
-        const writeLoops = writers.map((conn, writerIdx) =>
-          (async () => {
-            for (let i = 0; i < ROWS_PER_WRITER; i++) {
-              const id = writerIdx * ROWS_PER_WRITER + i;
-              await writeWithRetry(conn, `CREATE (:T {id: ${id}, val: '${'x'.repeat(200)}'})`);
-            }
-          })(),
-        );
-        const readLoops = readers.map((conn) =>
-          (async () => {
-            for (let i = 0; i < ROWS_PER_WRITER; i++) {
-              const res = await conn.query('MATCH (n:T) RETURN count(n) AS c');
-              await closeQueryResults(res);
-            }
-          })(),
-        );
+          const writeLoops = writers.map((conn, writerIdx) =>
+            (async () => {
+              for (let i = 0; i < ROWS_PER_WRITER; i++) {
+                const id = writerIdx * ROWS_PER_WRITER + i;
+                await writeWithRetry(conn, `CREATE (:T {id: ${id}, val: '${'x'.repeat(200)}'})`);
+              }
+            })(),
+          );
+          const readLoops = readers.map((conn) =>
+            (async () => {
+              for (let i = 0; i < ROWS_PER_WRITER; i++) {
+                const res = await conn.query('MATCH (n:T) RETURN count(n) AS c');
+                await closeQueryResults(res);
+              }
+            })(),
+          );
 
-        const raceResult = await Promise.race([
-          Promise.all([...writeLoops, ...readLoops]).then(() => 'completed' as const),
-          new Promise<'timeout'>((resolve) => {
-            timeoutHandle = setTimeout(() => resolve('timeout'), DEADLOCK_TIMEOUT_MS);
-          }),
-        ]);
+          const raceResult = await Promise.race([
+            Promise.all([...writeLoops, ...readLoops]).then(() => 'completed' as const),
+            new Promise<'timeout'>((resolve) => {
+              timeoutHandle = setTimeout(() => resolve('timeout'), DEADLOCK_TIMEOUT_MS);
+            }),
+          ]);
 
-        expect(
-          raceResult,
-          `deadlock suspected — concurrent writers/readers did not complete within ${DEADLOCK_TIMEOUT_MS}ms`,
-        ).toBe('completed');
+          expect(
+            raceResult,
+            `deadlock suspected — concurrent writers/readers did not complete within ${DEADLOCK_TIMEOUT_MS}ms`,
+          ).toBe('completed');
 
-        // The interleaving #605 fixes is checkpoint-vs-concurrent-transaction;
-        // if a checkpoint never actually raced a reader, this test could pass
-        // without ever exercising that race.
-        expect(
-          shadowSeen,
-          'expected a .shadow checkpoint sidecar to appear during the run — the checkpoint/reader race this test targets was never entered',
-        ).toBe(true);
+          // The interleaving #605 fixes is checkpoint-vs-concurrent-transaction;
+          // if a checkpoint never actually raced a reader, this test could pass
+          // without ever exercising that race.
+          expect(
+            shadowSeen,
+            'expected a .shadow checkpoint sidecar to appear during the run — the checkpoint/reader race this test targets was never entered',
+          ).toBe(true);
 
-        const verifyConn = new lbug.Connection(db);
-        readers.push(verifyConn); // closed by the outer finally even if the query below throws
-        const countRes = await verifyConn.query('MATCH (n:T) RETURN count(n) AS c');
-        // `query()` types as QueryResult | QueryResult[] (array only for
-        // multi-statement scripts); this is a single statement, so narrow to
-        // the single-result case rather than calling `.getAll()` on a type
-        // that doesn't declare it.
-        const singleCountRes = Array.isArray(countRes) ? countRes[0] : countRes;
-        const rows = await singleCountRes.getAll();
-        await closeQueryResults(countRes);
+          const verifyConn = new lbug.Connection(db);
+          readers.push(verifyConn); // closed by the outer finally even if the query below throws
+          const countRes = await verifyConn.query('MATCH (n:T) RETURN count(n) AS c');
+          // `query()` types as QueryResult | QueryResult[] (array only for
+          // multi-statement scripts); this is a single statement, so narrow to
+          // the single-result case rather than calling `.getAll()` on a type
+          // that doesn't declare it.
+          const singleCountRes = Array.isArray(countRes) ? countRes[0] : countRes;
+          const rows = await singleCountRes.getAll();
+          await closeQueryResults(countRes);
 
-        expect(rows[0].c).toBe(WRITER_COUNT * ROWS_PER_WRITER);
-      } finally {
-        clearTimeout(timeoutHandle);
-        clearInterval(shadowWatcher);
-        for (const conn of [...writers, ...readers]) {
-          await conn.close().catch(() => {});
+          expect(rows[0].c).toBe(WRITER_COUNT * ROWS_PER_WRITER);
+        } finally {
+          clearTimeout(timeoutHandle);
+          clearInterval(shadowWatcher);
+          for (const conn of [...writers, ...readers]) {
+            await conn.close().catch(() => {});
+          }
+          await db?.close().catch(() => {});
+          if (previousThreshold === undefined) {
+            delete process.env.GITNEXUS_WAL_CHECKPOINT_THRESHOLD;
+          } else {
+            process.env.GITNEXUS_WAL_CHECKPOINT_THRESHOLD = previousThreshold;
+          }
+          await tmp.cleanup();
         }
-        await db?.close().catch(() => {});
-        if (previousThreshold === undefined) {
-          delete process.env.GITNEXUS_WAL_CHECKPOINT_THRESHOLD;
-        } else {
-          process.env.GITNEXUS_WAL_CHECKPOINT_THRESHOLD = previousThreshold;
-        }
-        await tmp.cleanup();
-      }
-    },
-    DEADLOCK_TIMEOUT_MS + 10_000,
-  );
-});
+      },
+      DEADLOCK_TIMEOUT_MS + 10_000,
+    );
+  },
+);

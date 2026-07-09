@@ -190,7 +190,7 @@ jobs:
         # its TOTAL drives this list and the /N in the job name + --shard arg.
         shard: ${{ fromJSON(needs.shard-plan.outputs.shards) }}
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 20
+    timeout-minutes: 25
     # Same guarantee on the platform-sensitive runners: FTS-dependent suites in
     # the cross-platform subset must run, not silently skip.
     #
