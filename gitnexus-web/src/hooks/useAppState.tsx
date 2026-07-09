@@ -1277,7 +1277,7 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
         // fresh per-repo decision (auto-detect) on the next refresh rather than
         // carry the previous repo's forced mode (#2178).
         const urlObj = new URL(window.location.href);
-        urlObj.searchParams.set('project', repoIdentity || pNameStr);
+        urlObj.searchParams.set('project', pNameStr);
         urlObj.searchParams.delete('skipGraph');
         window.history.replaceState(null, '', urlObj.toString());
       }

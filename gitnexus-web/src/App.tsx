@@ -81,7 +81,7 @@ const AppContent = () => {
 
       // Persist the active project in the URL for bookmarkability and F5 refresh resilience
       const urlObj = new URL(window.location.href);
-      urlObj.searchParams.set('project', repoIdentity);
+      urlObj.searchParams.set('project', projectName);
       window.history.replaceState(null, '', urlObj.toString());
 
       // Transition directly to exploring view
