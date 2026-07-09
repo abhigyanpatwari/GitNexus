@@ -40,7 +40,7 @@ jobs:
       # The action wraps the upstream `rhysd/actionlint` binary and emits
       # GitHub-annotation-formatted findings on PRs.
       - name: Run actionlint
-        uses: raven-actions/actionlint@205b530c5d9fa8f44ae9ed59f341a0db994aa6f8 # v2.1.2
+        uses: raven-actions/actionlint@3d39aea434753780c3b3d4a1a31c854b4dbf49d7 # v2.2.0
         with:
           fail-on-error: true
 

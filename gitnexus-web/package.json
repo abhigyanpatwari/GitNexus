@@ -25,7 +25,7 @@
     "@langchain/ollama": "^1.2.7",
     "@langchain/openai": "^1.5.3",
     "@sigma/edge-curve": "^3.1.0",
-    "@tailwindcss/vite": "^4.3.0",
+    "@tailwindcss/vite": "^4.3.2",
     "axios": "^1.16.1",
     "d3": "^7.9.0",
     "dompurify": "^3.4.11",
@@ -53,7 +53,7 @@
     "remark-gfm": "^4.0.1",
     "sigma": "^3.0.3",
     "tailwindcss": "^4.2.4",
-    "uuid": "^14.0.0",
+    "uuid": "^14.0.1",
     "zod": "^4.4.3"
   },
   "devDependencies": {
@@ -67,15 +67,15 @@
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
     "@types/react-syntax-highlighter": "^15.5.13",
-    "@vercel/node": "^5.8.12",
+    "@vercel/node": "^5.8.22",
     "@vitejs/plugin-react": "^5.1.4",
     "@vitest/coverage-v8": "^4.1.9",
     "jsdom": "^29.1.1",
     "tree-sitter-wasms": "^0.1.13",
     "typescript": "^5.4.5",
-    "vite": "^8.0.16",
+    "vite": "^8.1.3",
     "vitest": "^4.1.5",
-    "wait-on": "^9.0.5"
+    "wait-on": "^9.0.10"
   },
   "overrides": {
     "@vercel/static-config": {
