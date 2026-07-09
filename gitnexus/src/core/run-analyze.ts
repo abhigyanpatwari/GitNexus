@@ -745,19 +745,22 @@ export async function runFullAnalysis(
   // back to a known-good index is to wipe + rebuild from scratch.
   if (existingMeta?.incrementalInProgress) {
     const dirty = existingMeta.incrementalInProgress;
-    const dirtyDetails = [
-      dirty.phase ? `phase=${dirty.phase}` : undefined,
-      `toWrite=${dirty.toWriteCount}`,
-      dirty.importerExpansion !== undefined
-        ? `importerExpansion=${dirty.importerExpansion}`
-        : undefined,
-      dirty.effectiveWriteCount !== undefined
-        ? `effectiveWrite=${dirty.effectiveWriteCount}`
-        : undefined,
-      dirty.deleteCount !== undefined ? `deleteCount=${dirty.deleteCount}` : undefined,
-    ]
-      .filter(Boolean)
-      .join(', ');
+    const dirtyDetails =
+      typeof dirty === 'object'
+        ? [
+            dirty.phase ? `phase=${dirty.phase}` : undefined,
+            `toWrite=${dirty.toWriteCount}`,
+            dirty.importerExpansion !== undefined
+              ? `importerExpansion=${dirty.importerExpansion}`
+              : undefined,
+            dirty.effectiveWriteCount !== undefined
+              ? `effectiveWrite=${dirty.effectiveWriteCount}`
+              : undefined,
+            dirty.deleteCount !== undefined ? `deleteCount=${dirty.deleteCount}` : undefined,
+          ]
+            .filter(Boolean)
+            .join(', ')
+        : 'legacy dirty flag';
     log(
       // "analyze run", not "incremental run" — since #2099 F1 the flag is a
       // generic dirty marker written by BOTH writeback branches.

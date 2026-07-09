@@ -145,7 +145,7 @@ export interface RepoMeta {
     toWriteCount: number;
     /** Last completed writeback phase before the process stopped. */
     phase?: string;
-    /** Directly changed/added/deleted files before importer expansion. */
+    /** Directly changed/added files before importer expansion. */
     directWriteCount?: number;
     /** Extra files pulled into the writable set by importer BFS. */
     importerExpansion?: number;
