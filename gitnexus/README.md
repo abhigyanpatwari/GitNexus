@@ -535,17 +535,26 @@ After scope resolution, analyze prunes inert block-local value symbols (a functi
 
 Programmatic callers can pass `keepLocalValueSymbols: true` in `PipelineOptions` instead of setting the env var.
 
-### Hook augmentation/notifications are silently skipped
+### Hook augmentation and skip diagnostics
 
-The Claude Code / Antigravity hooks intentionally stay **silent** on normal skip
+The Claude Code / Antigravity hooks keep their **stderr** silent on normal skip
 paths so strict hook runners (e.g. Codex `PreToolUse`) never see unexpected
-output. A search may not be augmented — or a stale-index reminder may not appear
-on stderr — when the GitNexus MCP server owns the repo DB, when the DB-lock probe
-times out and fails closed, or when the index is already current.
+diagnostic output.
 
-To see why a hook skipped, set `GITNEXUS_DEBUG=1` and re-run the action — the hook
-writes the reason (e.g. `[GitNexus] augment skipped: MCP server owns DB`) and the
-stale-index hint to its stderr:
+When a GitNexus process holds the repo DB write lock (the common case — the MCP
+server is running, or the DB-lock probe timed out and failed closed), the local
+CLI `augment` can't run (LadybugDB is single-writer). Rather than drop the
+augmentation, the hook hands the agent a short, conditional MCP-query hint on
+stdout (the sanctioned `additionalContext` channel) — _"if the GitNexus MCP tools
+are live in this session, call `query` …"_ — so an agent that has the tools can
+still fetch graph-ranked context. The hint is throttled to at most once per repo
+per window (`GITNEXUS_MCP_HINT_THROTTLE_MS`, default 10 min; `0` disables), so an
+owner-locked session isn't nudged on every search. A stale-index reminder, or an
+already-current index, stays silent.
+
+To see why a hook skipped the CLI augment, set `GITNEXUS_DEBUG=1` and re-run the
+action — the hook writes the reason (e.g. `[GitNexus] augment skipped: MCP server
+owns DB`) and the stale-index hint to its stderr:
 
 ```bash
 GITNEXUS_DEBUG=1 <your command>   # surfaces hook skip/diagnostic reasons on stderr
