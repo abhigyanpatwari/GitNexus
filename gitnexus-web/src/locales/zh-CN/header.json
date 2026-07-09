@@ -6,6 +6,8 @@
   "deleteRepo": "删除 {{repoName}}",
   "reanalyzingRepo": "正在重新分析 {{repoName}}：{{message}}",
   "analyzeNew": "分析新仓库...",
+  "searchRepositories": "搜索仓库...",
+  "noRepositoriesFound": "未找到“{{query}}”相关仓库",
   "searchNodes": "搜索节点...",
   "noNodesFound": "未找到“{{query}}”相关节点",
   "starIfCool": "觉得不错就点星",
