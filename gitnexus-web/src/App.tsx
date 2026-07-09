@@ -66,8 +66,9 @@ const AppContent = () => {
         result.repoInfo.name ||
         (repoPath || '').replace(/\\/g, '/').split('/').filter(Boolean).pop() ||
         'server-project';
+      const repoIdentity = repoPath || projectName;
       setProjectName(projectName);
-      setCurrentRepo(projectName);
+      setCurrentRepo(repoIdentity);
 
       // Build KnowledgeGraph from server data for visualization. In chat-only
       // mode the graph download was skipped, so the shared builder keeps an
@@ -80,7 +81,7 @@ const AppContent = () => {
 
       // Persist the active project in the URL for bookmarkability and F5 refresh resilience
       const urlObj = new URL(window.location.href);
-      urlObj.searchParams.set('project', projectName);
+      urlObj.searchParams.set('project', repoIdentity);
       window.history.replaceState(null, '', urlObj.toString());
 
       // Transition directly to exploring view
@@ -90,7 +91,7 @@ const AppContent = () => {
       // chat-only flag so the agent's prompt matches the loaded/skipped graph (#2178).
       try {
         if (getActiveProviderConfig()) {
-          await initializeAgent(projectName, { chatOnly: result.graphSkipped });
+          await initializeAgent(projectName, { chatOnly: result.graphSkipped, repo: repoIdentity });
         }
         startEmbeddingsWithFallback();
       } catch (err) {

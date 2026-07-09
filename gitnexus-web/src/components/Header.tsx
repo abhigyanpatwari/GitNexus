@@ -62,6 +62,7 @@ export const Header = ({
   const { t } = useTranslation(['common', 'header', 'errors']);
   const {
     projectName,
+    currentRepo,
     graph,
     graphMode,
     openChatPanel,
@@ -74,7 +75,7 @@ export const Header = ({
   const [repoSearchQuery, setRepoSearchQuery] = useState('');
   const [isRepoDropdownOpen, setIsRepoDropdownOpen] = useState(false);
   const [showAnalyzer, setShowAnalyzer] = useState(false);
-  const [reanalyzing, setReanalyzing] = useState<string | null>(null); // repo name being re-analyzed
+  const [reanalyzing, setReanalyzing] = useState<string | null>(null); // repo identity being re-analyzed
   const [deleteError, setDeleteError] = useState<string | null>(null); // surfaced when a delete is rejected (e.g. origin-blocked 403)
   const [reanalyzeProgress, setReanalyzeProgress] = useState<JobProgress | null>(null);
   const reanalyzeSseRef = useRef<AbortController | null>(null);
@@ -103,6 +104,9 @@ export const Header = ({
 
     return availableRepos.filter((repo) => repo.name.toLowerCase().includes(query));
   }, [availableRepos, repoSearchQuery]);
+
+  const repoIdentity = (repo: BackendRepo) => repo.repoPath ?? repo.path ?? repo.name;
+  const activeRepoIdentity = currentRepo ?? projectName;
 
   // Handle clicking outside search or repo dropdown to close them
   useEffect(() => {
@@ -242,131 +246,136 @@ export const Header = ({
                             />
                           </div>
                         </div>
-                        <div className="scrollbar-thin min-h-0 flex-1 overflow-y-auto pb-1">
+                        <div className="min-h-0 flex-1 scrollbar-thin overflow-y-auto pb-1">
                           {filteredRepos.length === 0 ? (
                             <div className="px-4 py-3 text-sm text-text-muted">
                               {t('header:noRepositoriesFound', { query: repoSearchQuery })}
                             </div>
                           ) : (
-                            filteredRepos.map((repo) => (
-                              <div
-                                key={repo.path || repo.name}
-                                className={`group flex items-center gap-2 px-4 py-2 transition-colors ${
-                                  repo.name === projectName
-                                    ? 'border-l-2 border-accent bg-accent/10'
-                                    : 'hover:bg-hover'
-                                }`}
-                              >
-                                <button
-                                  onClick={() => {
-                                    if (repo.name !== projectName) onSwitchRepo?.(repo.name);
-                                    setIsRepoDropdownOpen(false);
-                                    setRepoSearchQuery('');
-                                  }}
-                                  className="flex min-w-0 flex-1 cursor-pointer items-center gap-3 text-left"
-                                >
-                                  <FolderOpen className="h-3.5 w-3.5 shrink-0 text-node-folder" />
-                                  <span className="flex-1 truncate font-mono text-sm text-text-primary">
-                                    {repo.name}
-                                  </span>
-                                  {repo.name === projectName && (
-                                    <span className="shrink-0 font-mono text-[10px] text-accent">
-                                      {t('header:active')}
-                                    </span>
-                                  )}
-                                </button>
-                                {/* Re-analyze */}
-                                <button
-                                  onClick={async (e) => {
-                                    e.stopPropagation();
-                                    if (reanalyzing) return; // already running
-                                    setReanalyzing(repo.name);
-                                    setReanalyzeProgress({
-                                      phase: 'queued',
-                                      percent: 0,
-                                      message: t('common:progress.starting'),
-                                    });
-                                    try {
-                                      const { jobId } = await startAnalyze({
-                                        path: repo.path,
-                                        force: true,
-                                      });
-                                      reanalyzeSseRef.current = streamAnalyzeProgress(
-                                        jobId,
-                                        (p) => setReanalyzeProgress(p),
-                                        () => {
-                                          setReanalyzing(null);
-                                          setReanalyzeProgress(null);
-                                          reanalyzeSseRef.current = null;
-                                          onAnalyzeComplete?.(repo.name);
-                                        },
-                                        (errMsg) => {
-                                          console.error('Re-analyze failed:', errMsg);
-                                          setReanalyzing(null);
-                                          setReanalyzeProgress(null);
-                                          reanalyzeSseRef.current = null;
-                                        },
-                                      );
-                                    } catch (err) {
-                                      console.error('Failed to start re-analysis:', err);
-                                      setReanalyzing(null);
-                                      setReanalyzeProgress(null);
-                                    }
-                                  }}
-                                  disabled={!!reanalyzing}
-                                  className={`cursor-pointer rounded p-1 transition-all ${
-                                    reanalyzing === repo.name
-                                      ? 'text-accent'
-                                      : 'text-text-muted/0 group-hover:text-text-muted hover:!text-accent'
+                            filteredRepos.map((repo) => {
+                              const identity = repoIdentity(repo);
+                              const isActive = identity === activeRepoIdentity;
+
+                              return (
+                                <div
+                                  key={identity}
+                                  className={`group flex items-center gap-2 px-4 py-2 transition-colors ${
+                                    isActive
+                                      ? 'border-l-2 border-accent bg-accent/10'
+                                      : 'hover:bg-hover'
                                   }`}
-                                  title={
-                                    reanalyzing === repo.name
-                                      ? t('header:reanalyzing')
-                                      : t('header:reanalyzeRepo', { repoName: repo.name })
-                                  }
                                 >
-                                  <RefreshCw
-                                    className={`h-3.5 w-3.5 ${reanalyzing === repo.name ? 'animate-spin' : ''}`}
-                                  />
-                                </button>
-                                {/* Delete */}
-                                <button
-                                  onClick={async (e) => {
-                                    e.stopPropagation();
-                                    // Abort any running re-analysis for this repo
-                                    if (reanalyzing === repo.name) {
-                                      reanalyzeSseRef.current?.abort();
-                                      setReanalyzing(null);
-                                      setReanalyzeProgress(null);
-                                      reanalyzeSseRef.current = null;
-                                    }
-                                    setDeleteError(null);
-                                    try {
-                                      await deleteRepo(repo.name);
-                                      const updated = await fetchRepos();
-                                      onReposChanged?.(updated);
-                                      // If we deleted the active repo, switch to first available
-                                      if (repo.name === projectName && updated.length > 0) {
-                                        onSwitchRepo?.(updated[0].name);
-                                      } else if (updated.length === 0) {
-                                        // No repos left — go back to onboarding
-                                        window.location.reload();
+                                  <button
+                                    onClick={() => {
+                                      if (!isActive) onSwitchRepo?.(identity);
+                                      setIsRepoDropdownOpen(false);
+                                      setRepoSearchQuery('');
+                                    }}
+                                    className="flex min-w-0 flex-1 cursor-pointer items-center gap-3 text-left"
+                                  >
+                                    <FolderOpen className="h-3.5 w-3.5 shrink-0 text-node-folder" />
+                                    <span className="flex-1 truncate font-mono text-sm text-text-primary">
+                                      {repo.name}
+                                    </span>
+                                    {isActive && (
+                                      <span className="shrink-0 font-mono text-[10px] text-accent">
+                                        {t('header:active')}
+                                      </span>
+                                    )}
+                                  </button>
+                                  {/* Re-analyze */}
+                                  <button
+                                    onClick={async (e) => {
+                                      e.stopPropagation();
+                                      if (reanalyzing) return; // already running
+                                      setReanalyzing(identity);
+                                      setReanalyzeProgress({
+                                        phase: 'queued',
+                                        percent: 0,
+                                        message: t('common:progress.starting'),
+                                      });
+                                      try {
+                                        const { jobId } = await startAnalyze({
+                                          path: repo.path,
+                                          force: true,
+                                        });
+                                        reanalyzeSseRef.current = streamAnalyzeProgress(
+                                          jobId,
+                                          (p) => setReanalyzeProgress(p),
+                                          () => {
+                                            setReanalyzing(null);
+                                            setReanalyzeProgress(null);
+                                            reanalyzeSseRef.current = null;
+                                            onAnalyzeComplete?.(identity);
+                                          },
+                                          (errMsg) => {
+                                            console.error('Re-analyze failed:', errMsg);
+                                            setReanalyzing(null);
+                                            setReanalyzeProgress(null);
+                                            reanalyzeSseRef.current = null;
+                                          },
+                                        );
+                                      } catch (err) {
+                                        console.error('Failed to start re-analysis:', err);
+                                        setReanalyzing(null);
+                                        setReanalyzeProgress(null);
                                       }
-                                    } catch (err) {
-                                      // Surface the failure instead of silently no-opping —
-                                      // e.g. an origin-blocked 403 when driving a local
-                                      // backend from the hosted UI.
-                                      console.error('Failed to delete repo:', err);
-                                      setDeleteError(formatBackendError(err, t));
+                                    }}
+                                    disabled={!!reanalyzing}
+                                    className={`cursor-pointer rounded p-1 transition-all ${
+                                      reanalyzing === identity
+                                        ? 'text-accent'
+                                        : 'text-text-muted/0 group-hover:text-text-muted hover:!text-accent'
+                                    }`}
+                                    title={
+                                      reanalyzing === identity
+                                        ? t('header:reanalyzing')
+                                        : t('header:reanalyzeRepo', { repoName: repo.name })
                                     }
-                                  }}
-                                  className="cursor-pointer rounded p-1 text-text-muted/0 transition-all group-hover:text-text-muted hover:!text-red-400"
-                                  title={t('header:deleteRepo', { repoName: repo.name })}
-                                >
-                                  <Trash2 className="h-3.5 w-3.5" />
-                                </button>
-                              </div>
-                            ))
+                                  >
+                                    <RefreshCw
+                                      className={`h-3.5 w-3.5 ${reanalyzing === identity ? 'animate-spin' : ''}`}
+                                    />
+                                  </button>
+                                  {/* Delete */}
+                                  <button
+                                    onClick={async (e) => {
+                                      e.stopPropagation();
+                                      // Abort any running re-analysis for this repo
+                                      if (reanalyzing === identity) {
+                                        reanalyzeSseRef.current?.abort();
+                                        setReanalyzing(null);
+                                        setReanalyzeProgress(null);
+                                        reanalyzeSseRef.current = null;
+                                      }
+                                      setDeleteError(null);
+                                      try {
+                                        await deleteRepo(identity);
+                                        const updated = await fetchRepos();
+                                        onReposChanged?.(updated);
+                                        // If we deleted the active repo, switch to first available
+                                        if (isActive && updated.length > 0) {
+                                          onSwitchRepo?.(repoIdentity(updated[0]));
+                                        } else if (updated.length === 0) {
+                                          // No repos left — go back to onboarding
+                                          window.location.reload();
+                                        }
+                                      } catch (err) {
+                                        // Surface the failure instead of silently no-opping —
+                                        // e.g. an origin-blocked 403 when driving a local
+                                        // backend from the hosted UI.
+                                        console.error('Failed to delete repo:', err);
+                                        setDeleteError(formatBackendError(err, t));
+                                      }
+                                    }}
+                                    className="cursor-pointer rounded p-1 text-text-muted/0 transition-all group-hover:text-text-muted hover:!text-red-400"
+                                    title={t('header:deleteRepo', { repoName: repo.name })}
+                                  >
+                                    <Trash2 className="h-3.5 w-3.5" />
+                                  </button>
+                                </div>
+                              );
+                            })
                           )}
                         </div>
                       </div>

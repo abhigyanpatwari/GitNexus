@@ -1,12 +1,14 @@
 import { fireEvent, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { Header } from '../../src/components/Header';
+import { deleteRepo, fetchRepos } from '../../src/services/backend-client';
 import type { BackendRepo } from '../../src/services/backend-client';
 
 vi.mock('../../src/hooks/useAppState', () => ({
   useAppState: () => ({
     projectName: 'reels',
+    currentRepo: '/workspace/group-b/reels',
     graph: null,
     graphMode: 'full',
     openChatPanel: vi.fn(),
@@ -71,6 +73,10 @@ function makeRepo(index: number): BackendRepo {
 }
 
 describe('Header', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
   it('keeps a large repository menu scrollable inside the viewport', () => {
     render(<Header availableRepos={Array.from({ length: 30 }, (_, index) => makeRepo(index))} />);
 
@@ -151,5 +157,47 @@ describe('Header', () => {
     expect(repoList).not.toHaveTextContent('search_sync');
     expect(repoList).not.toHaveTextContent('feed_sync');
     expect(repoList).not.toHaveTextContent('reels');
+  });
+
+  it('uses repository path identity when duplicate display names are present', async () => {
+    const onSwitchRepo = vi.fn();
+    render(
+      <Header
+        onSwitchRepo={onSwitchRepo}
+        availableRepos={[
+          { ...makeRepo(0), name: 'reels', path: '/workspace/group-a/reels' },
+          { ...makeRepo(1), name: 'reels', path: '/workspace/group-b/reels' },
+        ]}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: /reels/i }));
+
+    expect(screen.getAllByText('Active')).toHaveLength(1);
+    await userEvent.click(screen.getAllByText('reels')[1]);
+
+    expect(onSwitchRepo).toHaveBeenCalledWith('/workspace/group-a/reels');
+  });
+
+  it('deletes and falls back using repository path identity', async () => {
+    const onSwitchRepo = vi.fn();
+    const updatedRepos = [{ ...makeRepo(2), name: 'reels', path: '/workspace/group-a/reels' }];
+    vi.mocked(fetchRepos).mockResolvedValue(updatedRepos);
+
+    render(
+      <Header
+        onSwitchRepo={onSwitchRepo}
+        availableRepos={[
+          { ...makeRepo(0), name: 'reels', path: '/workspace/group-a/reels' },
+          { ...makeRepo(1), name: 'reels', path: '/workspace/group-b/reels' },
+        ]}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: /reels/i }));
+    await userEvent.click(screen.getAllByTitle('Delete reels')[1]);
+
+    expect(deleteRepo).toHaveBeenCalledWith('/workspace/group-b/reels');
+    expect(onSwitchRepo).toHaveBeenCalledWith('/workspace/group-a/reels');
   });
 });

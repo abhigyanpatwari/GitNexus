@@ -87,6 +87,8 @@ function RepoCard({ repo, onClick }: { repo: BackendRepo; onClick: () => void })
   );
 }
 
+const repoIdentity = (repo: BackendRepo) => repo.repoPath ?? repo.path ?? repo.name;
+
 // ── RepoLanding ──────────────────────────────────────────────────────────────
 
 interface RepoLandingProps {
@@ -126,7 +128,11 @@ export const RepoLanding = ({ repos, onSelectRepo, onAnalyzeComplete }: RepoLand
       {/* Repo list */}
       <div className="relative mb-5 space-y-2">
         {repos.map((repo) => (
-          <RepoCard key={repo.name} repo={repo} onClick={() => onSelectRepo(repo.name)} />
+          <RepoCard
+            key={repoIdentity(repo)}
+            repo={repo}
+            onClick={() => onSelectRepo(repoIdentity(repo))}
+          />
         ))}
       </div>
 

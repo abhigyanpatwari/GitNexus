@@ -162,6 +162,7 @@ interface AppState {
   // Project info
   projectName: string;
   setProjectName: (name: string) => void;
+  currentRepo: string | undefined;
 
   // Multi-repo switching
   serverBaseUrl: string | null;
@@ -169,7 +170,7 @@ interface AppState {
   availableRepos: BackendRepo[];
   setAvailableRepos: (repos: BackendRepo[]) => void;
   switchRepo: (repoName: string) => Promise<void>;
-  setCurrentRepo: (repoName: string) => void;
+  setCurrentRepo: (repoName: string | undefined) => void;
   /** Download the full graph for the current repo after a chat-only connect (#2178). */
   loadGraphAnyway: () => Promise<void>;
 
@@ -204,7 +205,10 @@ interface AppState {
 
   // LLM methods
   refreshLLMSettings: () => void;
-  initializeAgent: (overrideProjectName?: string, opts?: { chatOnly?: boolean }) => Promise<void>;
+  initializeAgent: (
+    overrideProjectName?: string,
+    opts?: { chatOnly?: boolean; repo?: string },
+  ) => Promise<void>;
   sendChatMessage: (message: string) => Promise<void>;
   stopChatResponse: () => void;
   clearChat: () => void;
@@ -346,6 +350,7 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
 
   // Project info
   const [projectName, setProjectName] = useState<string>('');
+  const [currentRepo, setCurrentRepoState] = useState<string | undefined>(undefined);
 
   // Multi-repo switching
   const [serverBaseUrl, setServerBaseUrl] = useState<string | null>(null);
@@ -489,8 +494,9 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
   // Backend client — direct HTTP calls (no Worker/Comlink)
   const repoRef = useRef<string | undefined>(undefined);
 
-  const setCurrentRepo = useCallback((repoName: string) => {
+  const setCurrentRepo = useCallback((repoName: string | undefined) => {
     repoRef.current = repoName;
+    setCurrentRepoState(repoName);
   }, []);
 
   const runQuery = useCallback(async (cypher: string): Promise<any[]> => {
@@ -613,7 +619,10 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
   }, [graphMode]);
 
   const initializeAgent = useCallback(
-    async (overrideProjectName?: string, opts?: { chatOnly?: boolean }): Promise<void> => {
+    async (
+      overrideProjectName?: string,
+      opts?: { chatOnly?: boolean; repo?: string },
+    ): Promise<void> => {
       const config = getActiveProviderConfig();
       if (!config) {
         setAgentError('Please configure an LLM provider in settings');
@@ -632,8 +641,8 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
         // Sync repoRef so all agent backend calls target the correct repo.
         // initializeAgent can be called from App.tsx (handleServerConnect) which
         // never sets repoRef.current directly — without this, queries default to repo[0].
-        if (overrideProjectName) {
-          repoRef.current = overrideProjectName;
+        if (opts?.repo || overrideProjectName) {
+          setCurrentRepo(opts?.repo ?? overrideProjectName);
         }
         const repo = repoRef.current;
 
@@ -1184,7 +1193,8 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
       setChatOnlyNodeCount(null);
 
       let connectedRepo: BackendRepo | undefined;
-      let pNameStr = repoName || 'server-project';
+      let pNameStr = 'server-project';
+      let repoIdentity = repoName || undefined;
       let connectedChatOnly = false;
 
       try {
@@ -1225,12 +1235,13 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
         const repoPath = result.repoInfo.repoPath ?? result.repoInfo.path;
         // Prefer the registry name, then normalize Windows \ and Unix / paths
         const pName =
-          repoName ||
           result.repoInfo.name ||
           (repoPath || '').replace(/\\/g, '/').split('/').filter(Boolean).pop() ||
+          repoName ||
           'server-project';
+        repoIdentity = repoName || repoPath || pName;
         setProjectName(pName);
-        repoRef.current = pName;
+        setCurrentRepo(repoIdentity);
 
         connectedRepo = result.repoInfo;
         pNameStr = pName;
@@ -1266,7 +1277,7 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
         // fresh per-repo decision (auto-detect) on the next refresh rather than
         // carry the previous repo's forced mode (#2178).
         const urlObj = new URL(window.location.href);
-        urlObj.searchParams.set('project', pNameStr);
+        urlObj.searchParams.set('project', repoIdentity || pNameStr);
         urlObj.searchParams.delete('skipGraph');
         window.history.replaceState(null, '', urlObj.toString());
       }
@@ -1279,7 +1290,7 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
       // Re-initialize agent with the new repo's graph context
       try {
         if (getActiveProviderConfig()) {
-          await initializeAgent(pNameStr, { chatOnly: connectedChatOnly });
+          await initializeAgent(pNameStr, { chatOnly: connectedChatOnly, repo: repoIdentity });
         }
         setViewMode('exploring');
         startEmbeddingsWithFallback();
@@ -1313,6 +1324,7 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
       setCodePanelOpen,
       setCodeReferenceFocus,
       setChatMessages,
+      setCurrentRepo,
     ],
   );
 
@@ -1495,6 +1507,7 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
     setProgress,
     projectName,
     setProjectName,
+    currentRepo,
     // Multi-repo switching
     serverBaseUrl,
     setServerBaseUrl,
