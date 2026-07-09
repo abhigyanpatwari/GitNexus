@@ -13,7 +13,14 @@ import cors from 'cors';
 import path from 'path';
 import fs from 'fs/promises';
 import { createRequire } from 'node:module';
-import { loadMeta, listRegisteredRepos, getStoragePath } from '../storage/repo-manager.js';
+import {
+  canonicalizePath,
+  loadMeta,
+  listRegisteredRepos,
+  getStoragePath,
+  registryPathEquals,
+  type RegistryEntry,
+} from '../storage/repo-manager.js';
 import {
   executeQuery,
   executePrepared,
@@ -561,6 +568,38 @@ const requestedRepo = (req: express.Request): string | undefined => {
   return undefined;
 };
 
+const repoParamBasename = (repoName: string): string =>
+  repoName.replace(/\\/g, '/').split('/').filter(Boolean).pop() ?? repoName;
+
+export const resolveRegisteredRepoEntry = (
+  repos: RegistryEntry[],
+  repoName?: string,
+): RegistryEntry | null => {
+  if (!repoName) return repos[0] ?? null;
+
+  const looksLikePath =
+    path.isAbsolute(repoName) ||
+    repoName.includes(path.sep) ||
+    repoName.includes('/') ||
+    repoName.includes('\\');
+
+  if (looksLikePath) {
+    const requestedPath = canonicalizePath(repoName);
+    const pathMatch = repos.find((r) =>
+      registryPathEquals(canonicalizePath(r.path), requestedPath),
+    );
+    if (pathMatch) return pathMatch;
+  }
+
+  const normalizedName = repoParamBasename(repoName);
+
+  return (
+    repos.find((r) => r.name === normalizedName) ||
+    repos.find((r) => r.name.toLowerCase() === normalizedName.toLowerCase()) ||
+    null
+  );
+};
+
 /**
  * Handle a GET /api/file request body. Extracted from createServer's route
  * registration so it can be unit-tested without spinning up an HTTP server
@@ -833,20 +872,9 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
   // Pass `req` to enable early exit if the client disconnects during the hold-queue wait.
   const resolveRepo = async (repoName?: string, isRetry = false, req?: any): Promise<any> => {
     const repos = await listRegisteredRepos();
-    let found = null;
+    const found = resolveRegisteredRepoEntry(repos, repoName);
 
-    // Normalize: if a full path is passed, extract just the basename.
-    // e.g. "C:\Users\LENOVO\.gitnexus\repos\todo.txt-cli" -> "todo.txt-cli"
-    const normalizedName = repoName ? path.basename(repoName) : undefined;
-
-    if (normalizedName) {
-      found =
-        repos.find((r) => r.name === normalizedName) ||
-        repos.find((r) => r.name.toLowerCase() === normalizedName.toLowerCase()) ||
-        null;
-    } else if (repos.length > 0) {
-      found = repos[0]; // default to first repo
-    }
+    const normalizedName = repoName ? repoParamBasename(repoName) : undefined;
 
     // If not yet in the registry, check whether a background job is actively cloning or
     // analyzing this repo. Hold the connection open (up to 5 minutes) until it completes.
