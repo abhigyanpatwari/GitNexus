@@ -47,6 +47,11 @@ vi.mock('../../src/core/lbug/lbug-adapter.js', () => ({
   closeLbug: vi.fn(async () => undefined),
   closeLbugBeforeExit: vi.fn(async () => undefined),
   isLbugReady: vi.fn(() => false),
+  // Stub class for the CLI's `err instanceof LbugWipeError` branch (#2409,
+  // tri-review 4669518496 P2-4): instanceof must evaluate (not TypeError on
+  // an undefined binding) and correctly NOT claim this suite's errors. Same
+  // pattern as the RegistryNameCollisionError stub below.
+  LbugWipeError: class LbugWipeError extends Error {},
 }));
 
 vi.mock('../../src/storage/repo-manager.js', () => ({

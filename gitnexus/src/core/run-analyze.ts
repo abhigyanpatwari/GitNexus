@@ -30,6 +30,7 @@ import {
   deleteAllInjects,
   queryImportersBatch,
   loadFTSExtension,
+  wipeLbugDbFiles,
 } from './lbug/lbug-adapter.js';
 import {
   createSearchFTSIndexes,
@@ -89,6 +90,7 @@ import {
   computeEffectiveWriteSet,
 } from './incremental/subgraph-extract.js';
 import { shadowCandidatesFor } from './incremental/shadow-candidates.js';
+import { shouldEscalateIncrementalWrite } from './incremental/escalation-gate.js';
 import {
   loadParseCache,
   saveParseCache,
@@ -1156,17 +1158,14 @@ export async function runFullAnalysis(
       });
     }
     await closeLbug();
-    // `.shadow` included (#2409): a checkpoint-in-flight crash leaves a shadow
-    // sidecar, and a stale shadow next to a freshly created DB file is replay
-    // poison on the next open — the wipe must clear the whole sidecar family.
-    const lbugFiles = [lbugPath, `${lbugPath}.wal`, `${lbugPath}.shadow`, `${lbugPath}.lock`];
-    for (const f of lbugFiles) {
-      try {
-        await fs.rm(f, { recursive: true, force: true });
-      } catch {
-        /* swallow */
-      }
-    }
+    // Shared loud wipe (#2409 + tri-review 4669518496 P2-4). The 4-file
+    // family list — `.shadow` included, because a checkpoint-in-flight crash
+    // leaves a shadow sidecar that is replay poison next to a freshly created
+    // DB file — lives in wipeLbugDbFiles so this site and the escalation
+    // valve below can never drift. Failures now throw a typed LbugWipeError
+    // (ENOENT-verified removal) instead of silently letting initLbug reopen
+    // a still-populated DB this run believes it wiped.
+    await wipeLbugDbFiles(lbugPath);
   }
 
   await initLbug(lbugPath);
@@ -1217,15 +1216,8 @@ export async function runFullAnalysis(
       //    target" — exactly the set whose previously-stored edges may
       //    no longer match what cross-file resolution produces this run.
       const MAX_IMPORTER_BFS_DEPTH = 4;
-      // Escalation cap (#2409): above this fraction of the repo's files, the
-      // surgical delete-and-COPY writeback is replaced by the full-rebuild
-      // write plan (wipe + bulk COPY of the already-built graph) below.
-      const INCREMENTAL_MAX_WRITE_FRACTION = 0.5;
-      // …but only at a scale where the surgical plan's overhead is real. Tiny
-      // repos hit huge fractions from a single edit (7 files → one touch can
-      // pull in 5) while both write plans finish in well under a second there —
-      // escalating would churn the DB files for nothing.
-      const INCREMENTAL_ESCALATION_MIN_FILES = 50;
+      // Escalation thresholds (#2409) live with shouldEscalateIncrementalWrite
+      // in incremental/escalation-gate.ts (pure predicate, boundary-tested).
       const writableFiles = new Set<string>(hashDiff.toWrite);
       const directlyChangedCount = writableFiles.size;
       const dirtyStartedAt = existingMeta!.incrementalInProgress?.startedAt ?? Date.now();
@@ -1335,16 +1327,22 @@ export async function runFullAnalysis(
       // tables, and at this size it measured SLOWER than a full DB load. The
       // pipeline already produced the FULL graph (it always does), so only the
       // DB write plan changes here; fileHashes/meta bookkeeping is identical.
-      // 0.5 is a coarse crossover knob, not a tuned constant — lower it if
-      // surgical writebacks above ~30% ever measure slower than the full COPY.
+      // Thresholds + the AND-gate live in incremental/escalation-gate.ts.
       const writeFraction = effectiveWriteSet.size / Math.max(1, allFilePaths.length);
       if (
-        filesToDelete.length >= INCREMENTAL_ESCALATION_MIN_FILES &&
-        writeFraction > INCREMENTAL_MAX_WRITE_FRACTION
+        shouldEscalateIncrementalWrite(
+          filesToDelete.length,
+          effectiveWriteSet.size,
+          allFilePaths.length,
+        )
       ) {
         log(
           `Incremental: effective write set covers ${effectiveWriteSet.size}/${allFilePaths.length} ` +
-            `files (${Math.round(writeFraction * 100)}%) — switching to a full DB write ` +
+            // Display clamp only (predicate unchanged): BFS-found deleted
+            // importers can push the numerator past the CURRENT file list, so
+            // the raw fraction can exceed 1 — see the population-mismatch note
+            // on shouldEscalateIncrementalWrite (tri-review 4669518496).
+            `files (${Math.min(100, Math.round(writeFraction * 100))}%) — switching to a full DB write ` +
             `(wipe + bulk COPY) for this run; file-level incremental bookkeeping is unaffected.`,
         );
         // toWriteCount: 0 is the established full-path dirty-flag sentinel;
@@ -1359,16 +1357,14 @@ export async function runFullAnalysis(
         // Strategy switch: stop the checkpoint driver around the close so its
         // in-flight CHECKPOINT can't race the reopen, drop the DB files
         // (sidecars included), and bulk-load the full graph into a fresh DB —
-        // byte-for-byte the full-rebuild write plan.
+        // byte-for-byte the full-rebuild write plan. The wipe is the shared
+        // ENOENT-verified helper (#2409 + tri-review 4669518496 P2-4): a
+        // surviving family member throws a typed LbugWipeError here instead
+        // of letting the reopen below resurrect the rows this run just chose
+        // to replace wholesale.
         await walCheckpointDriver.stop();
         await closeLbug();
-        for (const f of [lbugPath, `${lbugPath}.wal`, `${lbugPath}.shadow`, `${lbugPath}.lock`]) {
-          try {
-            await fs.rm(f, { recursive: true, force: true });
-          } catch {
-            /* swallow */
-          }
-        }
+        await wipeLbugDbFiles(lbugPath);
         await initLbug(lbugPath);
         walCheckpointDriver = startWalCheckpointDriver();
         await loadGraphToLbug(pipelineResult.graph, pipelineResult.repoPath, storagePath, (msg) => {

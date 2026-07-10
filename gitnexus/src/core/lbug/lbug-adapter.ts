@@ -1261,8 +1261,42 @@ const escapeTableName = (table: string): string => {
   return BACKTICK_TABLES.has(table) ? `\`${table}\`` : table;
 };
 
-/** Fallback: insert relationships one-by-one if COPY fails */
-const fallbackRelationshipInserts = async (
+/**
+ * Format one JS value as a Cypher literal for the adapter's string-built
+ * statements: NULL/undefined → `NULL`, numbers pass through unquoted,
+ * everything else becomes a single-quoted string literal escaped via
+ * {@link escapeCypherString} (backslashes first, then quotes).
+ *
+ * Replaces three per-function closures that used SQL-style `''` doubling —
+ * LadybugDB REJECTS doubling, so every value containing a quote made the
+ * whole statement a parser error, invisible wherever the call site swallowed
+ * per-row failures (#2409 escaping sweep, completed for tri-review
+ * 4669518496 P2-2). Those closures also rewrote literal `\n`/`\r` into
+ * two-character escape sequences; raw LF/CR are legal inside LadybugDB
+ * single-quoted literals (live-probed on @ladybugdb/core 0.18.0), so the
+ * replaces are gone and content now round-trips byte-identical.
+ */
+const formatCypherValue = (v: unknown): string => {
+  if (v === null || v === undefined) return 'NULL';
+  if (typeof v === 'number') return String(v);
+  return `'${escapeCypherString(String(v))}'`;
+};
+
+/**
+ * Fallback: insert relationships one-by-one if COPY fails.
+ *
+ * Exported for the quoted-id round-trip tests in
+ * `test/integration/lbug-core-adapter.test.ts` (the `DELETE_FILES_CHUNK_SIZE`
+ * exported-for-tests precedent); production callers stay in this module.
+ * Bails silently when the adapter singleton is closed.
+ *
+ * KNOWN PRE-EXISTING NARROWING (distinct from the `''` escaping bug, NOT
+ * fixed here): the row regex below matches CSV fields with `[^"]*`, so an id
+ * containing a double quote (CSV-escaped as `""`) never matches and the edge
+ * is skipped. Tracked as part of the quote-in-id divergence documented in
+ * `rel-pair-routing.ts`.
+ */
+export const fallbackRelationshipInserts = async (
   validRelLines: string[],
   validTables: Set<string>,
   getNodeLabel: (id: string) => string,
@@ -1285,14 +1319,12 @@ const fallbackRelationshipInserts = async (
       const confidence = parseFloat(confidenceStr) || 1.0;
       const step = parseInt(stepStr) || 0;
 
-      const esc = (s: string) =>
-        s.replace(/'/g, "''").replace(/\\/g, '\\\\').replace(/\n/g, '\\n').replace(/\r/g, '\\r');
       await queryAndDrain(
         conn,
         `
-        MATCH (a:${escapeLabel(fromLabel)} {id: '${esc(fromId)}' }),
-              (b:${escapeLabel(toLabel)} {id: '${esc(toId)}' })
-        CREATE (a)-[:${REL_TABLE_NAME} {type: '${esc(relType)}', confidence: ${confidence}, reason: '${esc(reason)}', step: ${step}}]->(b)
+        MATCH (a:${escapeLabel(fromLabel)} {id: ${formatCypherValue(fromId)} }),
+              (b:${escapeLabel(toLabel)} {id: ${formatCypherValue(toId)} })
+        CREATE (a)-[:${REL_TABLE_NAME} {type: ${formatCypherValue(relType)}, confidence: ${confidence}, reason: ${formatCypherValue(reason)}, step: ${step}}]->(b)
       `,
       );
     } catch {
@@ -1371,46 +1403,43 @@ export const insertNodeToLbug = async (
   }
 
   try {
-    const escapeValue = (v: any): string => {
-      if (v === null || v === undefined) return 'NULL';
-      if (typeof v === 'number') return String(v);
-      // Escape backslashes first (for Windows paths), then single quotes
-      return `'${String(v).replace(/\\/g, '\\\\').replace(/'/g, "''").replace(/\n/g, '\\n').replace(/\r/g, '\\r')}'`;
-    };
+    // Values go through the module-scope formatCypherValue — the old local
+    // closure used `''` doubling, which LadybugDB rejects (#2409 escaping
+    // sweep, tri-review 4669518496 P2-2).
 
     // Build INSERT query based on node type
     const t = escapeTableName(label);
     let query: string;
 
     if (label === 'File') {
-      query = `CREATE (n:File {id: ${escapeValue(properties.id)}, name: ${escapeValue(properties.name)}, filePath: ${escapeValue(properties.filePath)}, content: ${escapeValue(properties.content || '')}})`;
+      query = `CREATE (n:File {id: ${formatCypherValue(properties.id)}, name: ${formatCypherValue(properties.name)}, filePath: ${formatCypherValue(properties.filePath)}, content: ${formatCypherValue(properties.content || '')}})`;
     } else if (label === 'Folder') {
-      query = `CREATE (n:Folder {id: ${escapeValue(properties.id)}, name: ${escapeValue(properties.name)}, filePath: ${escapeValue(properties.filePath)}})`;
+      query = `CREATE (n:Folder {id: ${formatCypherValue(properties.id)}, name: ${formatCypherValue(properties.name)}, filePath: ${formatCypherValue(properties.filePath)}})`;
     } else if (label === 'Section') {
       const descPart = properties.description
-        ? `, description: ${escapeValue(properties.description)}`
+        ? `, description: ${formatCypherValue(properties.description)}`
         : '';
-      query = `CREATE (n:Section {id: ${escapeValue(properties.id)}, name: ${escapeValue(properties.name)}, filePath: ${escapeValue(properties.filePath)}, startLine: ${properties.startLine || 0}, endLine: ${properties.endLine || 0}, level: ${properties.level || 1}, content: ${escapeValue(properties.content || '')}${descPart}})`;
+      query = `CREATE (n:Section {id: ${formatCypherValue(properties.id)}, name: ${formatCypherValue(properties.name)}, filePath: ${formatCypherValue(properties.filePath)}, startLine: ${properties.startLine || 0}, endLine: ${properties.endLine || 0}, level: ${properties.level || 1}, content: ${formatCypherValue(properties.content || '')}${descPart}})`;
     } else if (label === 'BasicBlock') {
       // Taint/PDG substrate (issue #2080) — no name column. `calleeIds` (#2227)
       // is the sound resolved-id parallel to the leaf-name `callees` set.
-      query = `CREATE (n:BasicBlock {id: ${escapeValue(properties.id)}, filePath: ${escapeValue(properties.filePath)}, startLine: ${properties.startLine || 0}, endLine: ${properties.endLine || 0}, text: ${escapeValue(properties.text || '')}, callees: ${escapeValue(properties.callees || '')}, calleeIds: ${escapeValue(properties.calleeIds || '')}})`;
+      query = `CREATE (n:BasicBlock {id: ${formatCypherValue(properties.id)}, filePath: ${formatCypherValue(properties.filePath)}, startLine: ${properties.startLine || 0}, endLine: ${properties.endLine || 0}, text: ${formatCypherValue(properties.text || '')}, callees: ${formatCypherValue(properties.callees || '')}, calleeIds: ${formatCypherValue(properties.calleeIds || '')}})`;
     } else if (TABLES_WITH_EXPORTED.has(label)) {
       const descPart = properties.description
-        ? `, description: ${escapeValue(properties.description)}`
+        ? `, description: ${formatCypherValue(properties.description)}`
         : '';
-      query = `CREATE (n:${t} {id: ${escapeValue(properties.id)}, name: ${escapeValue(properties.name)}, filePath: ${escapeValue(properties.filePath)}, startLine: ${properties.startLine || 0}, endLine: ${properties.endLine || 0}, isExported: ${!!properties.isExported}, content: ${escapeValue(properties.content || '')}${descPart}})`;
+      query = `CREATE (n:${t} {id: ${formatCypherValue(properties.id)}, name: ${formatCypherValue(properties.name)}, filePath: ${formatCypherValue(properties.filePath)}, startLine: ${properties.startLine || 0}, endLine: ${properties.endLine || 0}, isExported: ${!!properties.isExported}, content: ${formatCypherValue(properties.content || '')}${descPart}})`;
     } else if (label === 'Property') {
       const descPart = properties.description
-        ? `, description: ${escapeValue(properties.description)}`
+        ? `, description: ${formatCypherValue(properties.description)}`
         : '';
-      query = `CREATE (n:${t} {id: ${escapeValue(properties.id)}, name: ${escapeValue(properties.name)}, filePath: ${escapeValue(properties.filePath)}, startLine: ${properties.startLine || 0}, endLine: ${properties.endLine || 0}, content: ${escapeValue(properties.content || '')}${descPart}, declaredType: ${escapeValue(properties.declaredType || '')}})`;
+      query = `CREATE (n:${t} {id: ${formatCypherValue(properties.id)}, name: ${formatCypherValue(properties.name)}, filePath: ${formatCypherValue(properties.filePath)}, startLine: ${properties.startLine || 0}, endLine: ${properties.endLine || 0}, content: ${formatCypherValue(properties.content || '')}${descPart}, declaredType: ${formatCypherValue(properties.declaredType || '')}})`;
     } else {
       // Multi-language tables (Struct, Impl, Trait, Macro, etc.) — no isExported
       const descPart = properties.description
-        ? `, description: ${escapeValue(properties.description)}`
+        ? `, description: ${formatCypherValue(properties.description)}`
         : '';
-      query = `CREATE (n:${t} {id: ${escapeValue(properties.id)}, name: ${escapeValue(properties.name)}, filePath: ${escapeValue(properties.filePath)}, startLine: ${properties.startLine || 0}, endLine: ${properties.endLine || 0}, content: ${escapeValue(properties.content || '')}${descPart}})`;
+      query = `CREATE (n:${t} {id: ${formatCypherValue(properties.id)}, name: ${formatCypherValue(properties.name)}, filePath: ${formatCypherValue(properties.filePath)}, startLine: ${properties.startLine || 0}, endLine: ${properties.endLine || 0}, content: ${formatCypherValue(properties.content || '')}${descPart}})`;
     }
 
     // Use per-query connection if dbPath provided (avoids lock conflicts)
@@ -1448,12 +1477,10 @@ export const batchInsertNodesToLbug = async (
 ): Promise<{ inserted: number; failed: number }> => {
   if (nodes.length === 0) return { inserted: 0, failed: 0 };
 
-  const escapeValue = (v: any): string => {
-    if (v === null || v === undefined) return 'NULL';
-    if (typeof v === 'number') return String(v);
-    // Escape backslashes first (for Windows paths), then single quotes, then newlines
-    return `'${String(v).replace(/\\/g, '\\\\').replace(/'/g, "''").replace(/\n/g, '\\n').replace(/\r/g, '\\r')}'`;
-  };
+  // Values go through the module-scope formatCypherValue — the old local
+  // closure used `''` doubling, which LadybugDB rejects; the per-node catch
+  // below counted every quoted value as a silent `failed` (#2409 escaping
+  // sweep, tri-review 4669518496 P2-2).
 
   // Open a single connection for all inserts
   const tempHandle = await openLbugConnection(lbug, dbPath);
@@ -1470,33 +1497,33 @@ export const batchInsertNodesToLbug = async (
         // Use MERGE instead of CREATE for upsert behavior (handles duplicates gracefully)
         const t = escapeTableName(label);
         if (label === 'File') {
-          query = `MERGE (n:File {id: ${escapeValue(properties.id)}}) SET n.name = ${escapeValue(properties.name)}, n.filePath = ${escapeValue(properties.filePath)}, n.content = ${escapeValue(properties.content || '')}`;
+          query = `MERGE (n:File {id: ${formatCypherValue(properties.id)}}) SET n.name = ${formatCypherValue(properties.name)}, n.filePath = ${formatCypherValue(properties.filePath)}, n.content = ${formatCypherValue(properties.content || '')}`;
         } else if (label === 'Folder') {
-          query = `MERGE (n:Folder {id: ${escapeValue(properties.id)}}) SET n.name = ${escapeValue(properties.name)}, n.filePath = ${escapeValue(properties.filePath)}`;
+          query = `MERGE (n:Folder {id: ${formatCypherValue(properties.id)}}) SET n.name = ${formatCypherValue(properties.name)}, n.filePath = ${formatCypherValue(properties.filePath)}`;
         } else if (label === 'Section') {
           const descPart = properties.description
-            ? `, n.description = ${escapeValue(properties.description)}`
+            ? `, n.description = ${formatCypherValue(properties.description)}`
             : '';
-          query = `MERGE (n:Section {id: ${escapeValue(properties.id)}}) SET n.name = ${escapeValue(properties.name)}, n.filePath = ${escapeValue(properties.filePath)}, n.startLine = ${properties.startLine || 0}, n.endLine = ${properties.endLine || 0}, n.level = ${properties.level || 1}, n.content = ${escapeValue(properties.content || '')}${descPart}`;
+          query = `MERGE (n:Section {id: ${formatCypherValue(properties.id)}}) SET n.name = ${formatCypherValue(properties.name)}, n.filePath = ${formatCypherValue(properties.filePath)}, n.startLine = ${properties.startLine || 0}, n.endLine = ${properties.endLine || 0}, n.level = ${properties.level || 1}, n.content = ${formatCypherValue(properties.content || '')}${descPart}`;
         } else if (label === 'BasicBlock') {
           // Taint/PDG substrate (issue #2080) — no name column. `calleeIds`
           // (#2227) is the sound resolved-id parallel to the `callees` set.
-          query = `MERGE (n:BasicBlock {id: ${escapeValue(properties.id)}}) SET n.filePath = ${escapeValue(properties.filePath)}, n.startLine = ${properties.startLine || 0}, n.endLine = ${properties.endLine || 0}, n.text = ${escapeValue(properties.text || '')}, n.callees = ${escapeValue(properties.callees || '')}, n.calleeIds = ${escapeValue(properties.calleeIds || '')}`;
+          query = `MERGE (n:BasicBlock {id: ${formatCypherValue(properties.id)}}) SET n.filePath = ${formatCypherValue(properties.filePath)}, n.startLine = ${properties.startLine || 0}, n.endLine = ${properties.endLine || 0}, n.text = ${formatCypherValue(properties.text || '')}, n.callees = ${formatCypherValue(properties.callees || '')}, n.calleeIds = ${formatCypherValue(properties.calleeIds || '')}`;
         } else if (TABLES_WITH_EXPORTED.has(label)) {
           const descPart = properties.description
-            ? `, n.description = ${escapeValue(properties.description)}`
+            ? `, n.description = ${formatCypherValue(properties.description)}`
             : '';
-          query = `MERGE (n:${t} {id: ${escapeValue(properties.id)}}) SET n.name = ${escapeValue(properties.name)}, n.filePath = ${escapeValue(properties.filePath)}, n.startLine = ${properties.startLine || 0}, n.endLine = ${properties.endLine || 0}, n.isExported = ${!!properties.isExported}, n.content = ${escapeValue(properties.content || '')}${descPart}`;
+          query = `MERGE (n:${t} {id: ${formatCypherValue(properties.id)}}) SET n.name = ${formatCypherValue(properties.name)}, n.filePath = ${formatCypherValue(properties.filePath)}, n.startLine = ${properties.startLine || 0}, n.endLine = ${properties.endLine || 0}, n.isExported = ${!!properties.isExported}, n.content = ${formatCypherValue(properties.content || '')}${descPart}`;
         } else if (label === 'Property') {
           const descPart = properties.description
-            ? `, n.description = ${escapeValue(properties.description)}`
+            ? `, n.description = ${formatCypherValue(properties.description)}`
             : '';
-          query = `MERGE (n:${t} {id: ${escapeValue(properties.id)}}) SET n.name = ${escapeValue(properties.name)}, n.filePath = ${escapeValue(properties.filePath)}, n.startLine = ${properties.startLine || 0}, n.endLine = ${properties.endLine || 0}, n.content = ${escapeValue(properties.content || '')}${descPart}, n.declaredType = ${escapeValue(properties.declaredType || '')}`;
+          query = `MERGE (n:${t} {id: ${formatCypherValue(properties.id)}}) SET n.name = ${formatCypherValue(properties.name)}, n.filePath = ${formatCypherValue(properties.filePath)}, n.startLine = ${properties.startLine || 0}, n.endLine = ${properties.endLine || 0}, n.content = ${formatCypherValue(properties.content || '')}${descPart}, n.declaredType = ${formatCypherValue(properties.declaredType || '')}`;
         } else {
           const descPart = properties.description
-            ? `, n.description = ${escapeValue(properties.description)}`
+            ? `, n.description = ${formatCypherValue(properties.description)}`
             : '';
-          query = `MERGE (n:${t} {id: ${escapeValue(properties.id)}}) SET n.name = ${escapeValue(properties.name)}, n.filePath = ${escapeValue(properties.filePath)}, n.startLine = ${properties.startLine || 0}, n.endLine = ${properties.endLine || 0}, n.content = ${escapeValue(properties.content || '')}${descPart}`;
+          query = `MERGE (n:${t} {id: ${formatCypherValue(properties.id)}}) SET n.name = ${formatCypherValue(properties.name)}, n.filePath = ${formatCypherValue(properties.filePath)}, n.startLine = ${properties.startLine || 0}, n.endLine = ${properties.endLine || 0}, n.content = ${formatCypherValue(properties.content || '')}${descPart}`;
         }
 
         await queryAndDrain(tempConn, query);
@@ -1963,6 +1990,100 @@ export const closeLbug = async (): Promise<void> => {
   vectorExtensionLoaded = false;
   vectorIndexEnsured = false;
   ensuredFTSIndexes.clear();
+};
+
+// Mirrors waitForWindowsHandleRelease's probe budget (HANDLE_RELEASE_PROBE_*
+// in lbug-config.ts): 5 attempts with a 50ms linear back-off absorbs the
+// Windows delete-pending / handle-release lag class without masking a real
+// cross-process holder (MCP server, serve worker, AV scan).
+const WIPE_VERIFY_ATTEMPTS = 5;
+const WIPE_VERIFY_DELAY_MS = 50;
+
+/**
+ * Thrown by {@link wipeLbugDbFiles} when part of the LadybugDB file family is
+ * still present after the bounded remove-and-verify retries (#2409,
+ * tri-review 4669518496 P2-4).
+ *
+ * Classify by TYPE (`err instanceof LbugWipeError`) — the repo norm from
+ * #2385 — never by message text. The MESSAGE is nonetheless fully
+ * self-contained (survivor paths + remediation) because `gitnexus serve`
+ * forwards only `err.message` over worker IPC (analyze-worker-core.ts), so
+ * the serve surface has nothing but this string to show the user.
+ */
+export class LbugWipeError extends Error {
+  /** Family members still present (or unverifiable) after all retries. */
+  readonly survivors: readonly string[];
+
+  constructor(survivors: readonly string[]) {
+    super(
+      `Failed to remove the LadybugDB index files — still present after ` +
+        `${WIPE_VERIFY_ATTEMPTS} attempts:\n` +
+        survivors.map((p) => `  - ${p}`).join('\n') +
+        `\nAnother process likely holds the index open — stop the MCP/serve ` +
+        `process using this repository, add an antivirus exclusion for the ` +
+        `GitNexus storage directory, then re-run the analyze.`,
+    );
+    this.name = 'LbugWipeError';
+    this.survivors = survivors;
+  }
+}
+
+/**
+ * Remove the LadybugDB file family and VERIFY each member is really gone.
+ *
+ * Owns the canonical 4-file family list — `<lbugPath>`, `.wal`, `.shadow`,
+ * `.lock` — so run-analyze's two wipe sites (full rebuild + the #2409
+ * escalation valve) can never drift apart. `.shadow` is included because a
+ * checkpoint-in-flight crash leaves a shadow sidecar, and a stale shadow next
+ * to a freshly created DB file is replay poison on the next open (#2409).
+ *
+ * Verification contract (tri-review 4669518496 P2-4 — the old inline loops
+ * swallowed rm failures and let `initLbug` reopen a still-populated DB the
+ * run believed it wiped): after `fs.rm({ recursive, force })`, each path is
+ * probed and counts as GONE only when the probe rejects with **ENOENT**. A
+ * resolving probe, or a rejection in the EPERM/EBUSY/EACCES class (Windows
+ * delete-pending / handle-release lag — see HANDLE_RELEASE_LOCK_CODES in
+ * lbug-config.ts), or any other code means the path is not verifiably gone:
+ * it is retried on the bounded budget above and then reported as a survivor
+ * via {@link LbugWipeError}. Linux unlinked-but-open (name gone, holder keeps
+ * the old inode) probes ENOENT and is accepted by design — both production
+ * wipe sites run after a real `closeLbug()`.
+ *
+ * Deliberately OUT of this contract: `cleanupOldKuzuFiles`
+ * (repo-manager.ts) sweeps the LEGACY kuzu-era file family during storage
+ * migration — different family, best-effort by design; and
+ * `sweepStaleSidecars` (lbug-config.ts) is a test-fixture-gated open-retry
+ * fallback that must never delete production files. Neither wipes the live
+ * DB the run is about to recreate, so neither needs (or may share) the
+ * loud-failure contract here.
+ */
+export const wipeLbugDbFiles = async (lbugPath: string): Promise<void> => {
+  const family = [lbugPath, `${lbugPath}.wal`, `${lbugPath}.shadow`, `${lbugPath}.lock`];
+  let survivors: string[] = [];
+
+  for (let attempt = 1; attempt <= WIPE_VERIFY_ATTEMPTS; attempt++) {
+    survivors = [];
+    for (const f of family) {
+      try {
+        await fs.rm(f, { recursive: true, force: true });
+      } catch {
+        // `force: true` swallows ENOENT, so a rejection is a real failure —
+        // but the ENOENT-probe below stays authoritative either way (another
+        // process may have removed the path between the rm and the probe).
+      }
+      const gone = await fs.access(f).then(
+        () => false, // still present
+        (err: unknown) => (err as NodeJS.ErrnoException | null)?.code === 'ENOENT',
+      );
+      if (!gone) survivors.push(f);
+    }
+    if (survivors.length === 0) return;
+    if (attempt < WIPE_VERIFY_ATTEMPTS) {
+      await new Promise((resolve) => setTimeout(resolve, WIPE_VERIFY_DELAY_MS * attempt));
+    }
+  }
+
+  throw new LbugWipeError(survivors);
 };
 
 export const isLbugReady = (): boolean => conn !== null && db !== null;

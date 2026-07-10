@@ -241,6 +241,9 @@ describe('runFullAnalysis metadata reconciliation (mocked pipeline)', () => {
       executeQuery: vi.fn(async () => []),
       executeWithReusedStatement: vi.fn(async () => []),
       closeLbug: vi.fn(async () => undefined),
+      // Full-rebuild wipe is loud now (#2409, tri-review 4669518496 P2-4) —
+      // run-analyze calls this on every full-path analyze.
+      wipeLbugDbFiles: vi.fn(async () => undefined),
       loadCachedEmbeddings: vi.fn(async () => ({ embeddingNodeIds: new Set(), embeddings: [] })),
       deleteNodesForFile: vi.fn(async () => undefined),
       deleteAllCommunitiesAndProcesses: vi.fn(async () => undefined),
