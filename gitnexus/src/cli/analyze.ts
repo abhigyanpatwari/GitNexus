@@ -1652,20 +1652,35 @@ const analyzeCommandImpl = async (
         pageSize !== undefined && pageSize !== 4096
           ? `  Detected OS page size: ${pageSize} bytes (non-4K — e.g. Raspberry Pi 5 16K kernel, Asahi Linux).\n`
           : '';
+      // The upgrade variant must not assert version facts about an unknown
+      // version — mirror the doctor-side wording rule (#2424 review R2).
+      const upgradeIntro =
+        ladybug === undefined
+          ? `  The installed @ladybugdb/core version is unknown — it may predate the\n` +
+            `  runtime OS-page-size detection added in 0.18.0.\n`
+          : `  The installed @ladybugdb/core (${ladybug}) assumes 4 KiB pages in its buffer\n` +
+            `  manager.\n`;
       const guidance = isPageSizeAwareLadybug(ladybug)
         ? `  The installed @ladybugdb/core (${ladybug}) already detects the OS page size at runtime,\n` +
           `  so this configuration was expected to work. Please report it:\n` +
           `    https://github.com/abhigyanpatwari/GitNexus/issues/1231\n` +
           `  and include: gitnexus --version, node --version, getconf PAGE_SIZE, uname -a,\n` +
           `  and the full error message above.\n`
-        : `  The installed @ladybugdb/core (${ladybug ?? 'unknown'}) assumes 4 KiB pages in its buffer\n` +
-          `  manager. Upgrade GitNexus to a release that bundles @ladybugdb/core >= 0.18.0\n` +
+        : upgradeIntro +
+          `  Upgrade GitNexus to a release that bundles @ladybugdb/core >= 0.18.0\n` +
           `  (gitnexus >= 1.6.9), which detects the OS page size at runtime:\n` +
           `    npm install -g gitnexus@latest\n` +
           `  Last-resort workaround on Raspberry Pi 5: boot the 4 KiB-page kernel\n` +
           `  (config.txt: kernel=kernel8.img), at the cost of Pi 5 optimizations.\n`;
+      // Embed the raw native text (indented, no stack) so "the full error
+      // message above" is fulfillable — same idiom as the LbugWipeError
+      // branch. The errno suffix and the 0.18.0 guard's frame/granule numbers
+      // are the discriminating triage content (#2424 review P2).
       cliError(
-        `  LadybugDB's buffer manager failed to release frame memory.\n` + pageLine + guidance,
+        `  LadybugDB's buffer manager failed to release frame memory.\n` +
+          `    ${msg.replace(/\n/g, '\n    ')}\n` +
+          pageLine +
+          guidance,
         { recoveryHint: 'lbug-page-size', pageSize, ladybugVersion: ladybug },
       );
       process.exitCode = 1;
