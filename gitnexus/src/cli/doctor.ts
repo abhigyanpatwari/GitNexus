@@ -13,6 +13,7 @@ import {
 } from '../core/embeddings/runtime-install.js';
 import { cudaRedirectDoctorStatus } from '../core/embeddings/onnxruntime-node-resolver.js';
 import { checkLbugNative, probeFtsExtensionLoad } from '../core/lbug/native-check.js';
+import { getOsPageSize, isPageSizeAwareLadybug } from '../core/lbug/lbug-config.js';
 import { diagnoseExtensionLoad } from '../core/lbug/extension-load-error.js';
 import { getExtensionInstallPolicy } from '../core/lbug/extension-loader.js';
 import { t } from './i18n/index.js';
@@ -123,6 +124,20 @@ export const doctorCommand = async () => {
   console.log(`  ${label('doctor.labels.node', 10)}${fingerprint.node}`);
   console.log(`  ${label('doctor.labels.gitnexus', 10)}${fingerprint.gitnexus}`);
   console.log(`  ${label('doctor.labels.ladybugdb', 10)}${fingerprint.ladybugdb ?? 'unknown'}`);
+  // OS page size next to the LadybugDB version because the two interact:
+  // @ladybugdb/core < 0.18.0 assumed 4 KiB pages in its buffer manager and
+  // crashes mid-COPY on 16 KiB/64 KiB-page kernels (#1231). Literal label
+  // (like the 'native' line below) to avoid adding i18n keys.
+  const osPageSize = getOsPageSize();
+  if (osPageSize !== undefined) {
+    console.log(`  ${padDisplayEnd('page size', 10)}${osPageSize}`);
+    if (osPageSize > 4096 && !isPageSizeAwareLadybug(fingerprint.ladybugdb)) {
+      console.log(
+        `  ${padDisplayEnd('', 10)}⚠ non-4K page size with @ladybugdb/core < 0.18.0 — ` +
+          `'gitnexus analyze' may fail during COPY (#1231). Upgrade gitnexus (npm install -g gitnexus@latest).`,
+      );
+    }
+  }
   const nativeCheck = checkLbugNative();
   if (nativeCheck.ok) {
     console.log(`  ${padDisplayEnd('native', 10)}✓ lbugjs.node loaded`);

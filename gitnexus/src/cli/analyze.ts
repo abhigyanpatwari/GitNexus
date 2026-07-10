@@ -16,7 +16,10 @@ import cliProgress from 'cli-progress';
 import { isLbugReady, LbugWipeError } from '../core/lbug/lbug-adapter.js';
 import { boundedCheckpointBeforeExit } from '../core/lbug/shutdown-helpers.js';
 import {
+  getOsPageSize,
   isLbugCheckpointIoError,
+  isLbugPageSizeFrameError,
+  isPageSizeAwareLadybug,
   isWalCorruptionError,
   parseWalCheckpointThreshold,
   WAL_RECOVERY_SUGGESTION,
@@ -37,6 +40,7 @@ import {
   GitNexusRcError,
 } from './analyze-config.js';
 import { runFullAnalysis } from '../core/run-analyze.js';
+import { getRuntimeFingerprint } from '../core/platform/capabilities.js';
 import { getMaxFileSizeBannerMessage } from '../core/ingestion/utils/max-file-size.js';
 import { warnMissingOptionalGrammars, getOptionalGrammarExtensions } from './optional-grammars.js';
 import { glob } from 'glob';
@@ -1631,6 +1635,39 @@ const analyzeCommandImpl = async (
       cliError(`  ${msg.replace(/\n/g, '\n  ')}\n`, {
         recoveryHint: 'lbug-wipe-failed',
       });
+      process.exitCode = 1;
+      return;
+    }
+
+    // Buffer-manager frame-release failure on non-4K-page kernels (#1231).
+    // LadybugDB <= 0.17.x assumed 4 KiB OS pages when releasing evicted
+    // frames; Raspberry Pi 5 (16 KiB kernel pages) and other arm64 systems
+    // crash mid-COPY with a raw native message. 0.18.0 detects the page size
+    // at runtime, so the actionable fix depends on which side of that
+    // boundary the installed @ladybugdb/core is.
+    if (isLbugPageSizeFrameError(err)) {
+      const pageSize = getOsPageSize();
+      const ladybug = getRuntimeFingerprint().ladybugdb;
+      const pageLine =
+        pageSize !== undefined && pageSize !== 4096
+          ? `  Detected OS page size: ${pageSize} bytes (non-4K — e.g. Raspberry Pi 5 16K kernel, Asahi Linux).\n`
+          : '';
+      const guidance = isPageSizeAwareLadybug(ladybug)
+        ? `  The installed @ladybugdb/core (${ladybug}) already detects the OS page size at runtime,\n` +
+          `  so this configuration was expected to work. Please report it:\n` +
+          `    https://github.com/abhigyanpatwari/GitNexus/issues/1231\n` +
+          `  and include: gitnexus --version, node --version, getconf PAGE_SIZE, uname -a,\n` +
+          `  and the full error message above.\n`
+        : `  The installed @ladybugdb/core (${ladybug ?? 'unknown'}) assumes 4 KiB pages in its buffer\n` +
+          `  manager. Upgrade GitNexus to a release that bundles @ladybugdb/core >= 0.18.0\n` +
+          `  (gitnexus >= 1.6.9), which detects the OS page size at runtime:\n` +
+          `    npm install -g gitnexus@latest\n` +
+          `  Last-resort workaround on Raspberry Pi 5: boot the 4 KiB-page kernel\n` +
+          `  (config.txt: kernel=kernel8.img), at the cost of Pi 5 optimizations.\n`;
+      cliError(
+        `  LadybugDB's buffer manager failed to release frame memory.\n` + pageLine + guidance,
+        { recoveryHint: 'lbug-page-size', pageSize, ladybugVersion: ladybug },
+      );
       process.exitCode = 1;
       return;
     }
