@@ -14,7 +14,7 @@
 
 import { Sparkles, ArrowRight, GitBranch, FileCode, Layers } from '@/lib/lucide-icons';
 import { RepoAnalyzer } from './RepoAnalyzer';
-import type { BackendRepo } from '../services/backend-client';
+import { repoIdentity, type BackendRepo } from '../services/backend-client';
 import type { TFunction } from 'i18next';
 import { useTranslation } from 'react-i18next';
 
@@ -86,8 +86,6 @@ function RepoCard({ repo, onClick }: { repo: BackendRepo; onClick: () => void })
     </button>
   );
 }
-
-const repoIdentity = (repo: BackendRepo) => repo.repoPath ?? repo.path ?? repo.name;
 
 // ── RepoLanding ──────────────────────────────────────────────────────────────
 

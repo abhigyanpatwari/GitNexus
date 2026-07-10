@@ -1013,6 +1013,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
         repos.map((r) => ({
           name: r.name,
           path: r.path,
+          repoPath: r.path,
           indexedAt: r.indexedAt,
           lastCommit: r.lastCommit,
           stats: r.stats,
