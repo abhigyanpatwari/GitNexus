@@ -589,6 +589,7 @@ export const resolveRegisteredRepoEntry = (
       registryPathEquals(canonicalizePath(r.path), requestedPath),
     );
     if (pathMatch) return pathMatch;
+    return null;
   }
 
   const normalizedName = repoParamBasename(repoName);
@@ -913,7 +914,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
             if (currentJob.status === 'complete') {
               await backend.init();
               const freshRepos = await listRegisteredRepos();
-              return freshRepos.find((r) => r.name === normalizedName) || null;
+              return resolveRegisteredRepoEntry(freshRepos, repoName);
             }
             await new Promise((r) => setTimeout(r, 1000));
           }
@@ -934,7 +935,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
         );
       }
       await backend.init();
-      return await resolveRepo(normalizedName, true, req);
+      return await resolveRepo(repoName, true, req);
     }
 
     return found;

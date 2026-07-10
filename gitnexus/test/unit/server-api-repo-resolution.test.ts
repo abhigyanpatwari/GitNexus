@@ -24,7 +24,23 @@ describe('resolveRegisteredRepoEntry', () => {
   it('falls back to basename/name matching for older callers', () => {
     const repo = entry({ name: 'e2e-mini-repo' });
 
-    expect(resolveRegisteredRepoEntry([repo], '/tmp/e2e-mini-repo')).toBe(repo);
+    expect(resolveRegisteredRepoEntry([repo], 'e2e-mini-repo')).toBe(repo);
     expect(resolveRegisteredRepoEntry([repo], 'E2E-MINI-REPO')).toBe(repo);
+  });
+
+  it('does not fall back to a duplicate basename after a path-shaped miss', () => {
+    const first = entry({
+      name: 'service',
+      path: '/tmp/first/service',
+      storagePath: '/tmp/first/service/.gitnexus',
+    });
+    const second = entry({
+      name: 'service',
+      path: '/tmp/second/service',
+      storagePath: '/tmp/second/service/.gitnexus',
+    });
+
+    expect(resolveRegisteredRepoEntry([first, second], '/tmp/missing/service')).toBeNull();
+    expect(resolveRegisteredRepoEntry([first, second], '/tmp/second/service')).toBe(second);
   });
 });
