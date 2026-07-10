@@ -36,6 +36,10 @@ const PLATFORM_LOGIC = [
   // must exercise the Windows backslash branch, so run it on the OS matrix (#2394).
   'test/unit/cli-entry.test.ts',
   'test/unit/platform-capabilities.test.ts',
+  // getconf page-size probe: explicit process.platform gate (win32 short-circuit)
+  // plus a live-probe test whose only real non-4K coverage is macos-arm64's
+  // 16 KiB pages — the exact hardware class #1231 targets (#2424 review).
+  'test/unit/lbug-config-pagesize.test.ts',
   'test/unit/worker-pool-windows-quarantine.test.ts',
   'test/unit/lbug-pool-fts-load.test.ts',
   'test/unit/repo-manager.test.ts',

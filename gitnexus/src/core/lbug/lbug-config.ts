@@ -355,6 +355,107 @@ export const isLbugCheckpointIoError = (err: unknown): boolean => {
   return LBUG_CHECKPOINT_PERMISSIVE_RE.test(msg);
 };
 
+// ─── Ladybug non-4K page-size frame-release matcher (#1231) ─────────────────
+//
+// LadybugDB <= 0.17.x hardcoded a 4 KiB OS-page assumption in its buffer
+// manager: evicting a frame released physical memory with
+// `madvise(frame, frameSize, MADV_DONTNEED)` on 4 KiB-aligned frame
+// addresses (verified by disassembling `VMRegion::releaseFrame` in
+// @ladybugdb/core-linux-arm64 0.17.1 — `mov w2, #0x4` = MADV_DONTNEED,
+// throw on non-zero return). On kernels with 16 KiB pages (Raspberry Pi 5
+// default 2712 kernel, Asahi Linux) or 64 KiB pages (some enterprise arm64
+// distros), madvise rejects addresses that are not multiples of the real
+// page size with EINVAL, surfacing as:
+//   "Buffer manager exception: Releasing physical memory associated with a
+//    frame failed with error code -1: Invalid argument."
+// which aborts `gitnexus analyze` mid-COPY.
+//
+// @ladybugdb/core 0.18.0 rewrote the release path with runtime OS-page-size
+// detection and discard-granule-aligned madvise (new binary strings:
+// "Failed to detect the operating system page size.", "Unsupported page
+// size combination: frame size {}, discard granule size {}, frame group
+// size {}."), so upgrading is the fix. The residual 0.18.0 guard
+// ("Unsupported page size combination") is matched here too so exotic
+// configurations receive the same actionable guidance instead of a raw
+// native message.
+const LBUG_FRAME_RELEASE_RE = /releasing physical memory associated with a frame failed/i;
+const LBUG_PAGE_COMBO_RE = /unsupported page size combination/i;
+
+/**
+ * True when `err` looks like the LadybugDB buffer manager failing to release
+ * frame memory — the failure mode of a 4 KiB page-size assumption on a
+ * 16 KiB/64 KiB-page kernel (#1231). Deliberately does NOT match the
+ * generic "buffer pool is full" exhaustion error, which is a sizing
+ * problem, not a page-size one.
+ */
+export const isLbugPageSizeFrameError = (err: unknown): boolean => {
+  if (!err) return false;
+  const msg = err instanceof Error ? err.message : String(err);
+  return LBUG_FRAME_RELEASE_RE.test(msg) || LBUG_PAGE_COMBO_RE.test(msg);
+};
+
+/**
+ * True when the given `@ladybugdb/core` version contains the runtime
+ * OS-page-size detection introduced in 0.18.0 (see the matcher comment
+ * above). Unknown/unparseable versions return false so callers err on the
+ * side of showing the upgrade hint.
+ */
+export const isPageSizeAwareLadybug = (version: string | undefined): boolean => {
+  if (!version) return false;
+  const m = /^(\d+)\.(\d+)/.exec(version.trim());
+  if (!m) return false;
+  const major = Number(m[1]);
+  const minor = Number(m[2]);
+  return major > 0 || minor >= 18;
+};
+
+// `undefined` = not probed yet; `null` = probed and unavailable. Cached
+// because analyze error paths and doctor may both ask, and getconf forks.
+let cachedOsPageSize: number | null | undefined;
+
+/**
+ * OS memory page size in bytes, or `undefined` when it cannot be determined
+ * (Windows, missing getconf, sandboxed exec). Node exposes no page-size API,
+ * so this shells out to POSIX `getconf PAGE_SIZE` — same execFileSync shape
+ * as the Windows 8.3 short-path probe above, but with a tighter timeout and
+ * an explicit killSignal (see the options comment below).
+ */
+export const getOsPageSize = (): number | undefined => {
+  if (cachedOsPageSize !== undefined) return cachedOsPageSize ?? undefined;
+  if (process.platform === 'win32') {
+    // Windows allocation granularity is not what madvise alignment is about;
+    // the #1231 failure mode is POSIX-only.
+    cachedOsPageSize = null;
+    return undefined;
+  }
+  try {
+    // killSignal SIGKILL (first use in this repo): the default SIGTERM is
+    // catchable, so a signal-trapping child held the "5s" timeout for 9s in
+    // review reproduction — SIGKILL makes the timeout real for everything
+    // except a child stuck in uninterruptible I/O (D state). 2000ms, not
+    // 5000: doctor runs this probe on its happy path and real getconf
+    // answers in ~2ms, but keep margin for loaded Pi-class hardware — a
+    // too-tight ceiling would silently drop the very #1231 diagnostics this
+    // probe exists to provide (the catch caches the failure). (#2424 review)
+    const out = execFileSync('getconf', ['PAGE_SIZE'], {
+      encoding: 'utf-8',
+      timeout: 2000,
+      killSignal: 'SIGKILL',
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    const parsed = Number(out.trim());
+    cachedOsPageSize = Number.isInteger(parsed) && parsed > 0 ? parsed : null;
+  } catch {
+    cachedOsPageSize = null;
+  }
+  return cachedOsPageSize ?? undefined;
+};
+
+/** Exported only for unit tests — clears the getconf probe cache. */
+export const _resetOsPageSizeCacheForTest = (): void => {
+  cachedOsPageSize = undefined;
+};
+
 type LbugModule = typeof lbug;
 
 export interface LbugDatabaseOptions {
