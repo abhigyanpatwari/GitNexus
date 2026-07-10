@@ -1211,8 +1211,10 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
       setChatOnlyNodeCount(null);
 
       let connectedRepo: BackendRepo | undefined;
-      let pNameStr = 'server-project';
-      let repoIdentity = repoName || undefined;
+      // Bare declarations: both are always assigned on the success path before
+      // any read, and the catch below returns early (CodeQL alerts 825/826).
+      let pNameStr: string;
+      let repoIdentity: string | undefined;
       let connectedChatOnly = false;
 
       try {
