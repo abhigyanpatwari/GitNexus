@@ -15,6 +15,7 @@ import fs from 'fs/promises';
 import { createRequire } from 'node:module';
 import {
   canonicalizePath,
+  cloneDirBelongsToEntry,
   loadMeta,
   listRegisteredRepos,
   getStoragePath,
@@ -1078,7 +1079,10 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
         } catch {
           /* repo name not eligible for a clone dir (local repo) */
         }
-        if (cloneDir) {
+        // Only remove the clone dir when it is *this* entry's path — a local
+        // repo registered under the same name would otherwise take a cloned
+        // sibling's checkout down with it (see cloneDirBelongsToEntry).
+        if (cloneDir && cloneDirBelongsToEntry(cloneDir, entry.path)) {
           try {
             const stat = await fs.stat(cloneDir);
             if (stat.isDirectory()) {
