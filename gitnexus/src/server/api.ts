@@ -466,8 +466,13 @@ export const streamGraphNdjson = async (
 /**
  * Mount an SSE progress endpoint for a JobManager.
  * Handles: initial state, terminal events, heartbeat, event IDs, client disconnect.
+ *
+ * Terminal payloads carry `repoPath` (the analyzed path) alongside the display
+ * `repoName` so clients can reconnect by path identity — with duplicate
+ * basenames, a name-only reconnect resolves to the first same-named sibling.
+ * Exported for unit tests that lock the wire payload shape.
  */
-const mountSSEProgress = (app: express.Express, routePath: string, jm: JobManager) => {
+export const mountSSEProgress = (app: express.Express, routePath: string, jm: JobManager) => {
   app.get(routePath, (req, res) => {
     let jobId: string;
     try {
@@ -500,6 +505,7 @@ const mountSSEProgress = (app: express.Express, routePath: string, jm: JobManage
       res.write(
         `id: ${eventId}\nevent: ${job.status}\ndata: ${JSON.stringify({
           repoName: job.repoName,
+          repoPath: job.repoPath,
           error: job.error,
         })}\n\n`,
       );
@@ -526,6 +532,7 @@ const mountSSEProgress = (app: express.Express, routePath: string, jm: JobManage
           res.write(
             `id: ${eventId}\nevent: ${progress.phase}\ndata: ${JSON.stringify({
               repoName: eventJob?.repoName,
+              repoPath: eventJob?.repoPath,
               error: eventJob?.error,
             })}\n\n`,
           );

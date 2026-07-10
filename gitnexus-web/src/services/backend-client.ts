@@ -899,7 +899,7 @@ export const cancelAnalyze = async (jobId: string): Promise<void> => {
 export const streamAnalyzeProgress = (
   jobId: string,
   onProgress: (progress: JobProgress) => void,
-  onComplete: (data: { repoName?: string }) => void,
+  onComplete: (data: { repoName?: string; repoPath?: string }) => void,
   onError: (error: string) => void,
 ): AbortController => {
   return streamSSE<JobProgress>(
@@ -948,7 +948,7 @@ export const cancelEmbeddings = async (jobId: string): Promise<void> => {
 export const streamEmbeddingProgress = (
   jobId: string,
   onProgress: (progress: JobProgress) => void,
-  onComplete: (data: { repoName?: string }) => void,
+  onComplete: (data: { repoName?: string; repoPath?: string }) => void,
   onError: (error: string) => void,
 ): AbortController => {
   return streamSSE<JobProgress>(`${_backendUrl}/api/embed/${encodeURIComponent(jobId)}/progress`, {
