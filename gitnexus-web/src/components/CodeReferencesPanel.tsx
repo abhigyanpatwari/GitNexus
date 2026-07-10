@@ -57,6 +57,7 @@ export const CodeReferencesPanel = ({ onFocusNode }: CodeReferencesPanelProps) =
     setSelectedNode,
     codeReferenceFocus,
     projectName,
+    currentRepo,
   } = useAppState();
 
   const nodeById = useMemo(() => {
@@ -226,14 +227,15 @@ export const CodeReferencesPanel = ({ onFocusNode }: CodeReferencesPanelProps) =
     const isWholeFile = selectedIsFile || startLine === undefined;
 
     const options = isWholeFile
-      ? { repo: projectName }
+      ? {}
       : {
           startLine: Math.max(0, startLine - CONTEXT_LINES),
           endLine: (endLine ?? startLine) + CONTEXT_LINES,
-          repo: projectName,
         };
 
-    readFile(selectedFilePath, { ...options, repo: projectName || undefined })
+    // Prefer the repo path identity over the display name — duplicate display
+    // names would otherwise resolve to the wrong repository's file (#2420).
+    readFile(selectedFilePath, { ...options, repo: currentRepo || projectName || undefined })
       .then((result) => {
         if (!cancelled) {
           setFileResult(result);
@@ -256,6 +258,7 @@ export const CodeReferencesPanel = ({ onFocusNode }: CodeReferencesPanelProps) =
     selectedNode?.properties?.endLine,
     selectedIsFile,
     projectName,
+    currentRepo,
   ]);
 
   // Scroll to the selected node's startLine after content loads
@@ -381,7 +384,7 @@ export const CodeReferencesPanel = ({ onFocusNode }: CodeReferencesPanelProps) =
                 <X className="h-4 w-4" />
               </button>
             </div>
-            <div ref={selectedViewerRef} className="scrollbar-thin min-h-0 flex-1 overflow-auto">
+            <div ref={selectedViewerRef} className="min-h-0 flex-1 scrollbar-thin overflow-auto">
               {isLoadingFile ? (
                 <div className="flex items-center justify-center gap-2 py-8 text-text-muted">
                   <Loader2 className="h-4 w-4 animate-spin" />
@@ -454,7 +457,7 @@ export const CodeReferencesPanel = ({ onFocusNode }: CodeReferencesPanelProps) =
                 {t('graph:codePanel.references', { count: aiReferences.length })}
               </span>
             </div>
-            <div className="scrollbar-thin min-h-0 flex-1 space-y-3 overflow-y-auto p-3">
+            <div className="min-h-0 flex-1 scrollbar-thin space-y-3 overflow-y-auto p-3">
               {refsWithSnippets.map(
                 ({ ref, content, start, highlightStart, highlightEnd, totalLines }) => {
                   const nodeColor = ref.label
