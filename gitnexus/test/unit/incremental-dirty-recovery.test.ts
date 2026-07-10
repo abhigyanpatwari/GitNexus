@@ -26,9 +26,52 @@ import {
   loadMeta,
   type RepoMeta,
 } from '../../src/storage/repo-manager.js';
+import { EMBEDDING_DIMS } from '../../src/core/lbug/schema.js';
 import { setupMiniRepo as setupSharedMiniRepo } from '../helpers/mini-repo.js';
 
 const setupMiniRepo = () => setupSharedMiniRepo('gitnexus-incr-dirty-rec-');
+
+/**
+ * Seed zero-vector CodeEmbedding rows for REAL graph nodes through the real
+ * `batchInsertEmbeddings` (KTD9 pattern, replicated from
+ * incremental-orchestration.test.ts — importing a sibling test file would
+ * register its describes into this suite): reopen the repo DB, look up
+ * actual Function ids for the given files, insert, close. Zero vectors need
+ * no VECTOR extension — the CodeEmbedding TABLE is plain schema. Returns the
+ * seeded node ids.
+ */
+async function seedEmbeddingsForFiles(
+  repoPath: string,
+  filePaths: readonly string[],
+  maxPerFile: number,
+): Promise<string[]> {
+  const adapter = await import('../../src/core/lbug/lbug-adapter.js');
+  const { batchInsertEmbeddings } = await import('../../src/core/embeddings/embedding-pipeline.js');
+  const { lbugPath } = getStoragePaths(repoPath);
+  const seededIds: string[] = [];
+  await adapter.initLbug(lbugPath);
+  try {
+    for (const fp of filePaths) {
+      const rows = (await adapter.executeQuery(
+        `MATCH (n:Function) WHERE n.filePath = '${fp}' RETURN n.id AS id LIMIT ${maxPerFile}`,
+      )) as Array<{ id: string }>;
+      for (const r of rows) seededIds.push(String(r.id));
+    }
+    await batchInsertEmbeddings(
+      adapter.executeWithReusedStatement,
+      seededIds.map((nodeId) => ({
+        nodeId,
+        chunkIndex: 0,
+        startLine: 0,
+        endLine: 2,
+        embedding: new Array(EMBEDDING_DIMS).fill(0),
+      })),
+    );
+  } finally {
+    await adapter.closeLbug();
+  }
+  return seededIds;
+}
 
 describe('runFullAnalysis — dirty-flag recovery sidecar parking (#2409)', () => {
   it('parks the crashed run WAL/shadow sidecars before reopening, then rebuilds clean', async () => {
@@ -37,14 +80,29 @@ describe('runFullAnalysis — dirty-flag recovery sidecar parking (#2409)', () =
       const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
       await runFullAnalysis(repo.dbPath, { skipAgentsMd: true }, { onProgress: () => {} });
 
+      // Seed real embeddings BEFORE the tamper (tri-review 4669518496 / U5):
+      // with meta.stats.embeddings = 0 the recovery run derived
+      // shouldLoadCache=false and never opened the DB pre-wipe — this test
+      // was vacuous about the exact open the parking protects. Seeded rows +
+      // a stats stamp route the recovery (which runs force:true internally,
+      // so forceRegenerate → shouldLoadCache) through the REAL
+      // embedding-cache preservation open on the just-parked DB.
+      const { storagePath, lbugPath } = getStoragePaths(repo.dbPath);
+      const seededNodeIds = await seedEmbeddingsForFiles(
+        repo.dbPath,
+        ['src/handler.ts', 'src/logger.ts'],
+        1,
+      );
+      expect(seededNodeIds.length).toBeGreaterThan(0);
+
       // Simulate a crashed incremental writeback: dirty flag in meta plus
       // leftover sidecars whose bytes must never be replayed. 8KB puts the
       // WAL above the tiny-orphan threshold — the state the sidecar
       // preflight deliberately leaves in place for engine replay.
-      const { storagePath, lbugPath } = getStoragePaths(repo.dbPath);
       const meta = await loadMeta(storagePath);
       const tampered: RepoMeta = {
         ...meta!,
+        stats: { ...meta!.stats, embeddings: seededNodeIds.length },
         incrementalInProgress: {
           startedAt: Date.now() - 60_000,
           toWriteCount: 12,
@@ -58,9 +116,16 @@ describe('runFullAnalysis — dirty-flag recovery sidecar parking (#2409)', () =
       await writeFile(`${lbugPath}.shadow`, shadowGarbage);
 
       const logs: string[] = [];
+      // embeddingsNodeLimit: 1 (KTD9): the recovery runs force:true
+      // internally, and the seeded stats would otherwise route Phase 4 into
+      // a real embedder in CI — the 1-node cap suppresses generation while
+      // leaving the preserve/restore path fully live. On linux the
+      // wipe-and-restore vector-index seam then fires for real (statically
+      // linked VECTOR): a CREATE_VECTOR_INDEX over the restored rows is
+      // expected and harmless here.
       const recovered = await runFullAnalysis(
         repo.dbPath,
-        { skipAgentsMd: true },
+        { skipAgentsMd: true, embeddingsNodeLimit: 1 },
         { onProgress: () => {}, onLog: (m) => logs.push(m) },
       );
       expect(recovered.alreadyUpToDate).toBeUndefined();
@@ -71,13 +136,26 @@ describe('runFullAnalysis — dirty-flag recovery sidecar parking (#2409)', () =
       expect(
         Buffer.compare(await readFile(`${lbugPath}.shadow.dirty-recovery`), shadowGarbage),
       ).toBe(0);
-      expect(logs.join('\n')).toContain(
-        'Parked lbug.wal.dirty-recovery, lbug.shadow.dirty-recovery',
-      );
+      const joinedLogs = logs.join('\n');
+      expect(joinedLogs).toContain('Parked lbug.wal.dirty-recovery, lbug.shadow.dirty-recovery');
 
-      // …and the rebuild completed into a clean index: dirty flag cleared.
+      // …the run traversed the REAL pre-wipe preservation open — recovery's
+      // internal force on an embedded repo upgrades to regenerate mode, whose
+      // banner only prints when existingEmbeddingCount was read from the
+      // seeded stats and the cache-load path engaged…
+      expect(joinedLogs).toContain(
+        `--force on a repo with ${seededNodeIds.length} existing embeddings`,
+      );
+      // …with generation itself cap-suppressed (no embedder in CI):
+      expect(joinedLogs).toContain('exceeds the 1-node safety cap');
+
+      // …and the rebuild completed into a clean index: dirty flag cleared,
+      // and the seeded embeddings survived the park → open → wipe → restore
+      // round-trip (the strongest signal the preservation open really ran:
+      // the DB was wiped, so these rows can only come from the cache load).
       const after = await loadMeta(storagePath);
       expect(after!.incrementalInProgress).toBeUndefined();
+      expect(after!.stats?.embeddings).toBe(seededNodeIds.length);
     } finally {
       await repo.cleanup();
     }

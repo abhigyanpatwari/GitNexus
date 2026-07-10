@@ -648,6 +648,20 @@ export async function runFullAnalysis(
           'Run `gitnexus analyze` first to create the initial index, then retry `--repair-fts`.',
       );
     }
+    if (existingMeta.incrementalInProgress) {
+      // #2409 / tri-review 4669518496 (R6): a dirty flag means the previous
+      // run died mid-writeback — the graph may be half-written and its WAL
+      // possibly poisoned. This branch returns early, so the dirty-recovery
+      // sidecar quarantine below would never run: repairing FTS now would
+      // open the DB and replay that WAL pre-quarantine, and even a
+      // survivable open would certify FTS over a half-written graph.
+      throw new Error(
+        'Cannot repair FTS indexes: the index is mid-incremental-recovery ' +
+          '(a previous analyze run did not complete cleanly). ' +
+          'Run `gitnexus analyze` first — it recovers the index automatically — ' +
+          'then retry `--repair-fts`.',
+      );
+    }
     let lbugStat;
     try {
       lbugStat = await fs.lstat(lbugPath);
@@ -747,6 +761,13 @@ export async function runFullAnalysis(
   // If the previous incremental run set incrementalInProgress and didn't
   // clear it, the on-disk index may be in a half-state. Cheapest path
   // back to a known-good index is to wipe + rebuild from scratch.
+  //
+  // Hoisted parking outcome (tri-review 4669518496 P2-3): a non-empty
+  // `failed` from the sidecar quarantine means a possibly-poisoned WAL
+  // still sits next to the DB. The embedding-mode derivation below consumes
+  // this and fails safe in drop shape — there is no "open it anyway"
+  // fallback (the pre-wipe open would replay the WAL and die).
+  let sidecarParkingFailed = false;
   if (existingMeta?.incrementalInProgress) {
     const dirty = existingMeta.incrementalInProgress;
     const dirtyDetails =
@@ -783,7 +804,10 @@ export async function runFullAnalysis(
     // rebuild wipe that would discard it. Park the WAL/shadow sidecars aside
     // now, while nothing is open, so every open in this run is replay-free.
     // The rebuild wipes the DB regardless, so no committed data is at stake.
-    await quarantineSidecarsForDirtyRecovery(lbugPath, log);
+    // Sidecars that could NOT be parked gate the run's embedding mode into
+    // drop shape below instead of falling through to an in-place open.
+    const { failed: unparkedSidecars } = await quarantineSidecarsForDirtyRecovery(lbugPath, log);
+    sidecarParkingFailed = unparkedSidecars.length > 0;
   }
 
   // ── pdg-mode flip forces full writeback (#2099 F1) ─────────────────
@@ -977,14 +1001,36 @@ export async function runFullAnalysis(
   let cachedEmbeddings: CachedEmbedding[] = [];
 
   const existingEmbeddingCount = existingMeta?.stats?.embeddings ?? 0;
+  // When dirty-recovery sidecar parking failed, derive the mode in DROP shape
+  // (tri-review 4669518496 P2-3): `{ embeddings: false, dropEmbeddings: true }`
+  // with existing=0 forces all four flags false. Zeroing only the existing
+  // count is NOT enough — `shouldGenerateEmbeddings = explicit || forceRegen`
+  // (embedding-mode.ts) keeps an explicit `--embeddings` recovery invocation
+  // alive, which would (a) open the DB before the rebuild wipe
+  // (`shouldLoadCache`) and replay the possibly-poisoned WAL, and (b) drag
+  // the embedder into the exact locked/AV environment where parking fails,
+  // resurrecting the #2409 death loop one phase later as
+  // wipe→rebuild→embed-fail cycles.
   const {
     forceRegenerateEmbeddings,
     preserveExistingEmbeddings,
     shouldGenerateEmbeddings,
     shouldLoadCache,
-  } = _deriveEmbeddingMode(options, existingEmbeddingCount);
+  } = sidecarParkingFailed
+    ? _deriveEmbeddingMode({ ...options, embeddings: false, dropEmbeddings: true }, 0)
+    : _deriveEmbeddingMode(options, existingEmbeddingCount);
 
-  if (options.dropEmbeddings && existingEmbeddingCount > 0) {
+  if (sidecarParkingFailed) {
+    // First banner branch so the printed mode stays coherent with the
+    // drop-shape derivation above (no "Preserving N embeddings" claim on a
+    // run that will not).
+    log(
+      'Sidecar parking failed — dropping embeddings for this run: recovery will not open ' +
+        'the existing index before the rebuild wipe (its WAL may be poisoned) and will not ' +
+        'run the embedder in this locked environment. Run `gitnexus analyze --embeddings` ' +
+        'to rebuild embeddings once the lock clears.',
+    );
+  } else if (options.dropEmbeddings && existingEmbeddingCount > 0) {
     log(
       `Dropping ${existingEmbeddingCount} existing embeddings (--drop-embeddings). ` +
         `Re-run with --embeddings to regenerate.`,
@@ -1011,6 +1057,12 @@ export async function runFullAnalysis(
   // silently dropping embeddings on a mispredicted run. The re-insert
   // step gates itself on the actual `isIncremental` value to avoid
   // PK-conflicts when the incremental writeback path keeps the rows.
+  //
+  // This is the FIRST DB open of the run — the one #2409 defect 2 is about.
+  // On a dirty-recovery run it happens only after the sidecar quarantine
+  // parked the crashed run's WAL/shadow; when parking failed, the drop-shape
+  // derivation above forces `shouldLoadCache` false, so this open never
+  // fires by construction (tri-review 4669518496 P2-3).
   if (shouldLoadCache && existingMeta) {
     try {
       progress('embeddings', 0, 'Caching embeddings...');

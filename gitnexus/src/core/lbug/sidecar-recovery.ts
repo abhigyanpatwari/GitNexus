@@ -430,6 +430,20 @@ export async function finalizeLbugSidecarsAfterClose(
 }
 
 /**
+ * Corrected parking-failure warning (tri-review 4669518496 P2-3). The old
+ * text promised "the rebuild will wipe it in place instead" — false: the
+ * recovery run's pre-wipe DB open would replay the poisoned WAL and die
+ * before any wipe could happen. Mirrors {@link renameFailureMessage}'s
+ * EBUSY/EPERM framing: the problem is environmental (file lock, AV), not
+ * data integrity — fix the lock and re-run.
+ */
+const sidecarParkRefusedWarning = (from: string, err: unknown): string =>
+  `Warning: could not park ${path.basename(from)} aside before the recovery rebuild ` +
+  `(${err instanceof Error ? err.message : String(err)}). Another process likely holds an ` +
+  'open handle on it — stop any GitNexus MCP or serve process using this repository, add an ' +
+  'antivirus exclusion for the index directory if needed, then re-run `gitnexus analyze`.';
+
+/**
  * Move the WAL/shadow sidecars aside before a dirty-flag recovery rebuild
  * (#2409 defect 2).
  *
@@ -447,28 +461,83 @@ export async function finalizeLbugSidecarsAfterClose(
  * {@link quarantineWalForMissingShadow} — so the bytes stay available for
  * post-mortem debugging. Fixed destination names (no timestamp) cap the
  * accumulation at one parked file per sidecar across repeated crashes.
- * Best-effort: a rename refusal (file lock, permissions) logs and falls
- * through — no worse than today's behavior of opening in place.
+ * Rename-first with a structural confirm probe (tri-review 4669518496
+ * P2-3): the old shape pre-deleted a previous crash's parked copy on the
+ * bet that the rename would then succeed — destroying the prior forensics
+ * exactly when the source was locked and nothing replaced them. Now a
+ * failed `rename(from, to)` is retried against the collision-free
+ * `${to}.next` name: success proves the first failure was a Windows
+ * rename-onto-existing collision (stale copy replaced — newest forensics
+ * win); a second failure proves the source itself is locked, and the
+ * previous parked copy is left INTACT. Per-suffix isolation: a `.wal`
+ * failure never skips the `.shadow` attempt.
+ *
+ * @returns `moved` — destination paths now holding the parked bytes;
+ * `failed` — source sidecars that could not be parked. A non-empty
+ * `failed` means a possibly-poisoned sidecar still sits next to the DB:
+ * the caller must not open the DB before the rebuild wipe (the open would
+ * replay the WAL and die — there is no "wipe it in place" fallback) and
+ * must keep the embedder out of the same locked/AV environment
+ * (run-analyze derives its embedding mode in drop shape).
  */
 export async function quarantineSidecarsForDirtyRecovery(
   dbPath: string,
   log: (message: string) => void,
-): Promise<string[]> {
+): Promise<{ moved: string[]; failed: string[] }> {
   const moved: string[] = [];
+  const failed: string[] = [];
   for (const suffix of ['.wal', '.shadow'] as const) {
     const from = `${dbPath}${suffix}`;
+    const to = `${from}.dirty-recovery`;
     try {
       if (!(await statIfExists(from))) continue;
-      const to = `${from}.dirty-recovery`;
-      // Windows rename-onto-existing fails — drop a stale parked copy first.
-      await fs.rm(to, { force: true });
+    } catch (err) {
+      // Non-ENOENT stat failure (EPERM/EBUSY class — statIfExists swallows
+      // ENOENT itself): assume the sidecar exists and is unreachable; the
+      // caller must fail safe.
+      failed.push(from);
+      log(sidecarParkRefusedWarning(from, err));
+      continue;
+    }
+    try {
+      // Rename FIRST — never pre-delete the previous crash's parked copy on
+      // the bet that this rename will then succeed (tri-review 4669518496
+      // P2-3: the old rm-first shape destroyed the prior forensics exactly
+      // when the source was locked and nothing replaced them).
       await fs.rename(from, to);
       moved.push(to);
+      continue;
     } catch (err) {
-      if (!missing(err)) {
+      if (missing(err)) continue; // source raced away between stat and rename
+      // Structural confirm probe: a bare "does `to` exist?" check cannot
+      // discriminate a Windows rename-onto-existing collision from a locked
+      // source that happens to have a leftover parked copy. Renaming the
+      // source to a collision-free name can — if it succeeds, the source was
+      // movable and the first failure was the collision.
+      const probe = `${to}.next`;
+      try {
+        await fs.rename(from, probe);
+      } catch (probeErr) {
+        if (missing(probeErr)) continue; // source raced away mid-probe
+        // The source itself is locked: the previous crash's parked copy (if
+        // any) stays INTACT for post-mortem; report so the caller degrades.
+        failed.push(from);
+        log(sidecarParkRefusedWarning(from, probeErr));
+        continue;
+      }
+      try {
+        // True collision — replace the stale parked copy: newest forensics win.
+        await fs.rm(to, { force: true });
+        await fs.rename(probe, to);
+        moved.push(to);
+      } catch {
+        // Double failure: the stale copy is itself locked/undeletable. The
+        // interrupted run's sidecar is already out of the replay path at the
+        // probe name, so the recovery open stays safe — keep both files.
+        moved.push(probe);
         log(
-          `Warning: could not move ${path.basename(from)} aside before the recovery rebuild ` +
-            `(${(err as Error).message}); the rebuild will wipe it in place instead.`,
+          `Warning: parked ${path.basename(from)} as ${path.basename(probe)} — the stale ` +
+            `${path.basename(to)} from an earlier crash is locked and could not be replaced.`,
         );
       }
     }
@@ -479,7 +548,7 @@ export async function quarantineSidecarsForDirtyRecovery(
         'so the recovery rebuild opens without replaying it.',
     );
   }
-  return moved;
+  return { moved, failed };
 }
 
 export async function listQuarantinedMissingShadowWals(dbPath: string): Promise<string[]> {

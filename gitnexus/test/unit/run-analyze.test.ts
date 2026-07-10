@@ -460,6 +460,29 @@ describe('deriveEmbeddingMode', () => {
     expect(m.shouldGenerateEmbeddings).toBe(true);
     expect(m.preserveExistingEmbeddings).toBe(false);
   });
+
+  // Dirty-recovery parking-failure DROP shape (tri-review 4669518496 P2-3 /
+  // KTD3): run-analyze derives this exact expression when the crashed run's
+  // sidecars could not be parked — the user's options spread with
+  // `embeddings: false, dropEmbeddings: true` and existing=0. The case above
+  // shows why the spread must FORCE `embeddings: false`: with the explicit
+  // flag left alive, dropEmbeddings alone still generates (and would drag the
+  // embedder into the locked/AV environment where parking fails), and zeroing
+  // only the existing count would still load the cache — the pre-wipe DB open
+  // that replays the poisoned WAL.
+  it('drop shape kills an explicit --embeddings recovery invocation (all four flags false)', () => {
+    const recoveryInvocation = { embeddings: true, force: true };
+    const m = deriveEmbeddingMode(
+      { ...recoveryInvocation, embeddings: false, dropEmbeddings: true },
+      0,
+    );
+    expect(m).toEqual({
+      shouldGenerateEmbeddings: false,
+      preserveExistingEmbeddings: false,
+      forceRegenerateEmbeddings: false,
+      shouldLoadCache: false,
+    });
+  });
 });
 
 describe('deriveEmbeddingCap', () => {
