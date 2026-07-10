@@ -311,63 +311,10 @@ describe('runFullAnalysis — incremental orchestration', () => {
     }
   }, 600_000);
 
-  // #2409 defect 2: the dirty-flag recovery rebuild used to open the crashed
-  // DB (embedding-cache preservation) BEFORE the rebuild wipe — replaying
-  // whatever WAL the crashed writeback left behind. A poisoned WAL kills that
-  // open natively, so recovery never ran and only a manual rename-aside of
-  // the index dir escaped. The recovery path must park the WAL/shadow
-  // sidecars aside before ANY open.
-  it('dirty-flag recovery parks the crashed run WAL/shadow sidecars before reopening (#2409)', async () => {
-    const repo = await setupMiniRepo();
-    try {
-      const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
-      await runFullAnalysis(repo.dbPath, { skipAgentsMd: true }, { onProgress: () => {} });
-
-      // Simulate a crashed incremental writeback: dirty flag in meta plus
-      // leftover sidecars whose bytes must never be replayed. 8KB puts the
-      // WAL above the tiny-orphan threshold — the state the sidecar
-      // preflight deliberately leaves in place for engine replay.
-      const { storagePath, lbugPath } = getStoragePaths(repo.dbPath);
-      const meta = await loadMeta(storagePath);
-      const tampered: RepoMeta = {
-        ...meta!,
-        incrementalInProgress: {
-          startedAt: Date.now() - 60_000,
-          toWriteCount: 12,
-          phase: 'load-graph',
-        },
-      };
-      await saveMeta(storagePath, tampered);
-      const walGarbage = Buffer.alloc(8192, 0xab);
-      const shadowGarbage = Buffer.alloc(4096, 0xcd);
-      await writeFile(`${lbugPath}.wal`, walGarbage);
-      await writeFile(`${lbugPath}.shadow`, shadowGarbage);
-
-      const logs: string[] = [];
-      const recovered = await runFullAnalysis(
-        repo.dbPath,
-        { skipAgentsMd: true },
-        { onProgress: () => {}, onLog: (m) => logs.push(m) },
-      );
-      expect(recovered.alreadyUpToDate).toBeUndefined();
-
-      // Both sidecars were parked verbatim (renamed, never deleted) before
-      // any open could replay them…
-      expect(Buffer.compare(await readFile(`${lbugPath}.wal.dirty-recovery`), walGarbage)).toBe(0);
-      expect(
-        Buffer.compare(await readFile(`${lbugPath}.shadow.dirty-recovery`), shadowGarbage),
-      ).toBe(0);
-      expect(logs.join('\n')).toContain(
-        'Parked lbug.wal.dirty-recovery, lbug.shadow.dirty-recovery',
-      );
-
-      // …and the rebuild completed into a clean index: dirty flag cleared.
-      const after = await loadMeta(storagePath);
-      expect(after!.incrementalInProgress).toBeUndefined();
-    } finally {
-      await repo.cleanup();
-    }
-  }, 300_000);
+  // #2409 defect 2 (dirty-flag recovery parks WAL/shadow sidecars before any
+  // open) is covered in incremental-dirty-recovery.test.ts — its own file so
+  // the cross-platform CI matrix runs it on windows-latest without pulling in
+  // this whole suite.
 
   it('a stale incrementalInProgress flag at startup forces a full rebuild that clears it', async () => {
     const repo = await setupMiniRepo();

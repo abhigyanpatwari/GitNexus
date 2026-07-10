@@ -16,6 +16,7 @@
 
 import path from 'path';
 import { listRegisteredRepos } from '../../storage/repo-manager.js';
+import { escapeCypherString } from '../lbug/cypher-escape.js';
 
 /**
  * Find the best matching repo for a given working directory.
@@ -86,7 +87,7 @@ async function findRepoForCwd(cwd: string): Promise<{
 export async function augment(pattern: string, cwd?: string): Promise<string> {
   if (!pattern || pattern.length < 3) return '';
 
-  const patternFirstWord = pattern.trim().replace(/'/g, "''").split(/\s+/)[0];
+  const patternFirstWord = escapeCypherString(pattern.trim()).split(/\s+/)[0];
   if (!patternFirstWord || patternFirstWord.length < 2) return '';
 
   const workDir = cwd || process.cwd();
@@ -119,7 +120,7 @@ export async function augment(pattern: string, cwd?: string): Promise<string> {
     }> = [];
 
     for (const result of bm25Results.slice(0, 5)) {
-      const escaped = result.filePath.replace(/'/g, "''");
+      const escaped = escapeCypherString(result.filePath);
       try {
         const symbols = await executeQuery(
           repoId,
@@ -177,7 +178,7 @@ export async function augment(pattern: string, cwd?: string): Promise<string> {
 
     if (uniqueSymbols.length === 0) return '';
 
-    const idList = uniqueSymbols.map((s) => `'${s.nodeId.replace(/'/g, "''")}'`).join(', ');
+    const idList = uniqueSymbols.map((s) => `'${escapeCypherString(s.nodeId)}'`).join(', ');
 
     // Batch fetch callers
     const callersMap = new Map<string, string[]>();

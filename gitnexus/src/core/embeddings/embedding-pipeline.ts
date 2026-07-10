@@ -41,6 +41,7 @@ import {
 import { rankExactEmbeddingRows, type ExactEmbeddingRow } from './exact-search.js';
 import { EMBEDDING_TABLE_NAME, EMBEDDING_INDEX_NAME, STALE_HASH_SENTINEL } from '../lbug/schema.js';
 import { loadVectorExtension, createVectorIndex } from '../lbug/lbug-adapter.js';
+import { escapeCypherString } from '../lbug/cypher-escape.js';
 import type { ExtensionInstallPolicy } from '../lbug/extension-loader.js';
 import { getExactScanLimit } from '../platform/capabilities.js';
 import { logger } from '../logger.js';
@@ -708,7 +709,7 @@ export const semanticSearch = async (
   const results: SemanticSearchResult[] = [];
 
   for (const [label, items] of byLabel) {
-    const idList = items.map((i) => `'${i.nodeId.replace(/'/g, "''")}'`).join(', ');
+    const idList = items.map((i) => `'${escapeCypherString(i.nodeId)}'`).join(', ');
     try {
       const nodeQuery = `
         MATCH (n:\`${label}\`) WHERE n.id IN [${idList}]

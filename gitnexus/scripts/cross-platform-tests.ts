@@ -99,6 +99,15 @@ const LBUG_NATIVE = [
   'test/integration/analyze-wal-checkpoint-failure.test.ts',
   'test/integration/fts-stemmer-sweep.test.ts',
   'test/integration/lbug-multiwriter-deadlock.test.ts',
+  // #2409 batched incremental writeback: chunked IN-list DETACH DELETEs +
+  // backslash quote escaping against the REAL native engine — the failing
+  // environment for #2409 was Windows, so the write pattern must be proven
+  // on the windows-latest native addon, not just Ubuntu.
+  'test/integration/lbug-delete-nodes-for-files.test.ts',
+  // #2409 defect 2: dirty-flag recovery parks lbug.wal/.shadow (rename next
+  // to a live native DB, rm-then-rename over an existing parked copy) before
+  // any open — rename semantics are exactly what differs on Windows.
+  'test/unit/incremental-dirty-recovery.test.ts',
 ];
 
 // Process spawning and CLI tests — exercise child_process with real

@@ -6,6 +6,7 @@ import { finished } from 'stream/promises';
 import path from 'path';
 import lbug from '@ladybugdb/core';
 import { closeQueryResults } from './query-result-utils.js';
+import { escapeCypherString } from './cypher-escape.js';
 import { withConnLock } from './conn-lock.js';
 import { isWalDriverActive } from './wal-driver-state.js';
 import { KnowledgeGraph } from '../graph/types.js';
@@ -1259,16 +1260,6 @@ const BACKTICK_TABLES = new Set([
 const escapeTableName = (table: string): string => {
   return BACKTICK_TABLES.has(table) ? `\`${table}\`` : table;
 };
-
-/**
- * Escape a value for embedding in a single-quoted Cypher string literal.
- * LadybugDB's parser uses backslash escapes and REJECTS SQL-style `''`
- * doubling (`'we''ird'` is a parser error, not an escaped quote — #2409
- * review). The old doubled-quote escaping at the writeback call sites never
- * parsed; the failures were invisible because those sites swallowed errors.
- */
-const escapeCypherString = (value: string): string =>
-  value.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
 
 /** Fallback: insert relationships one-by-one if COPY fails */
 const fallbackRelationshipInserts = async (
