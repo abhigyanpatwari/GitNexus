@@ -103,6 +103,27 @@ export interface RepoMeta {
     embeddings?: number;
   };
   /**
+   * Capability stamps for what THIS analyze run actually produced (mirrors
+   * the meta literal in run-analyze.ts — typed here so the stamp site is
+   * compile-checked; tri-review 4669518496 P1/U3: `vectorSearch.status`
+   * must never claim 'vector-index' unless the run verified or recreated
+   * the HNSW index). Forensic today — no programmatic readers (`doctor`
+   * prints platform-derived capabilities, query routing never consults
+   * meta). The status unions mirror `CapabilityStatus` /
+   * `SemanticSearchMode` in core/platform/capabilities.ts; inlined to keep
+   * storage/ free of a core/ type dependency.
+   */
+  capabilities?: {
+    graph: { provider: string; status: 'available' | 'degraded' | 'unavailable' };
+    fts: { provider: string; status: 'available' | 'degraded' | 'unavailable' };
+    vectorSearch: {
+      provider: string;
+      status: 'vector-index' | 'exact-scan' | 'unavailable';
+      exactScanLimit: number;
+      reason?: string;
+    };
+  };
+  /**
    * Bumped whenever incremental-indexing invariants change in an
    * incompatible way (delete-and-rewrite logic, subgraph extraction,
    * graph-wide node handling). On mismatch, runFullAnalysis forces a

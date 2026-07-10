@@ -13,12 +13,17 @@
  *   - single quotes in paths are escaped, not injected
  *   - unknown paths are a no-op success (zero-match ≠ error)
  *   - onChunk progress reports cumulative file counts
+ *   - CodeEmbedding rows ride along with their file's nodes (tri-review
+ *     4669518496 P2-1): node ids are label-first (`Function:<fp>:fn:1`), so
+ *     the delete joins `e.nodeId = n.id` through the still-present nodes —
+ *     deleted/quoted files' rows go, survivors' rows stay.
  */
 import { describe, it, expect } from 'vitest';
 import path from 'path';
 import { withTestLbugDB } from '../helpers/test-indexed-db.js';
 import { buildTestGraph, type TestNodeInput, type TestRelInput } from '../helpers/test-graph.js';
 import { DELETE_FILES_CHUNK_SIZE } from '../../src/core/lbug/lbug-adapter.js';
+import { EMBEDDING_TABLE_NAME, EMBEDDING_DIMS } from '../../src/core/lbug/schema.js';
 
 const FILE_COUNT = DELETE_FILES_CHUNK_SIZE + 30; // crosses the chunk boundary
 const KEEP_COUNT = 10;
@@ -59,9 +64,11 @@ function buildFixtureGraph() {
 
 withTestLbugDB('delete-nodes-for-files', (handle) => {
   describe('deleteNodesForFiles (batched incremental delete, #2409)', () => {
-    it('deletes exactly the requested files across chunks with DETACH semantics, quote escaping, and zero-match no-ops', async () => {
-      const { loadGraphToLbug, deleteNodesForFiles, executeQuery } =
+    it('deletes exactly the requested files across chunks with DETACH semantics, quote escaping, embedding-row joins, and zero-match no-ops', async () => {
+      const { loadGraphToLbug, deleteNodesForFiles, executeQuery, executeWithReusedStatement } =
         await import('../../src/core/lbug/lbug-adapter.js');
+      const { batchInsertEmbeddings } =
+        await import('../../src/core/embeddings/embedding-pipeline.js');
 
       await loadGraphToLbug(buildFixtureGraph(), '/tmp/repo', path.dirname(handle.dbPath));
 
@@ -76,6 +83,33 @@ withTestLbugDB('delete-nodes-for-files', (handle) => {
         `MATCH ()-[r:CodeRelation]->() WHERE r.type = 'CALLS' RETURN count(r) AS c`,
       );
       expect(callsBefore).toBe(FILE_COUNT - 1);
+
+      // Seed embedding rows through the real batchInsertEmbeddings for a
+      // to-be-deleted plain-path file, the quoted-path file, and a survivor.
+      // nodeIds are the fixture's REAL label-first node ids — the exact
+      // format the old bare-path `STARTS WITH` shape could never match
+      // (tri-review 4669518496 P2-1). Zero vectors: the CodeEmbedding table
+      // is plain schema (no VECTOR extension involved).
+      const SURVIVOR_PATH = filePath(FILE_COUNT - 1);
+      const survivorEmbeddingNodeId = `Function:${SURVIVOR_PATH}:fn${FILE_COUNT - 1}:1`;
+      const seededEmbeddingNodeIds = [
+        `Function:${filePath(1)}:fn1:1`, // deleted, plain path
+        `Function:${QUOTED_PATH}:fn0:1`, // deleted, quoted path
+        survivorEmbeddingNodeId, // survives the delete
+      ];
+      await batchInsertEmbeddings(
+        executeWithReusedStatement,
+        seededEmbeddingNodeIds.map((nodeId) => ({
+          nodeId,
+          chunkIndex: 0,
+          startLine: 1,
+          endLine: 3,
+          embedding: new Array(EMBEDDING_DIMS).fill(0),
+        })),
+      );
+      expect(await count(`MATCH (e:${EMBEDDING_TABLE_NAME}) RETURN count(e) AS c`)).toBe(
+        seededEmbeddingNodeIds.length,
+      );
 
       // Delete everything except the last KEEP_COUNT files. Includes the
       // quoted path (chunk 1), crosses into chunk 2, and appends a path with
@@ -113,9 +147,19 @@ withTestLbugDB('delete-nodes-for-files', (handle) => {
           `MATCH (n:File) WHERE n.filePath = '${filePath(FILE_COUNT - 1)}' RETURN count(n) AS c`,
         ),
       ).toBe(1);
+      // Embedding rows followed their files: ONLY the survivor's row remains
+      // — exact nodeId, not count-only, so a delete that swept the wrong rows
+      // (or none) cannot pass. The quoted-path row proves the join statement
+      // escapes list literals, not just the per-table deletes.
+      const embRows = (await executeQuery(
+        `MATCH (e:${EMBEDDING_TABLE_NAME}) RETURN e.nodeId AS nodeId`,
+      )) as Array<{ nodeId: string }>;
+      expect(embRows.map((r) => String(r.nodeId))).toEqual([survivorEmbeddingNodeId]);
 
       // Zero-match batch (all paths already gone) is a clean no-op.
       await expect(deleteNodesForFiles([QUOTED_PATH, filePath(1)])).resolves.toBeUndefined();
+      // …and it left the surviving embedding row alone.
+      expect(await count(`MATCH (e:${EMBEDDING_TABLE_NAME}) RETURN count(e) AS c`)).toBe(1);
     }, 120_000);
   });
 });

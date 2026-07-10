@@ -21,9 +21,9 @@
  */
 
 import { execSync } from 'child_process';
-import { writeFile, readFile } from 'fs/promises';
+import { writeFile, readFile, rm } from 'fs/promises';
 import path from 'path';
-import { afterEach, describe, it, expect, vi } from 'vitest';
+import { afterEach, beforeAll, beforeEach, describe, it, expect, vi } from 'vitest';
 import {
   getStoragePaths,
   saveMeta,
@@ -31,9 +31,81 @@ import {
   INCREMENTAL_SCHEMA_VERSION,
   type RepoMeta,
 } from '../../src/storage/repo-manager.js';
+import { EMBEDDING_TABLE_NAME, EMBEDDING_DIMS } from '../../src/core/lbug/schema.js';
 import { setupMiniRepo as setupSharedMiniRepo } from '../helpers/mini-repo.js';
+import { createTempDir } from '../helpers/test-db.js';
 
 const setupMiniRepo = () => setupSharedMiniRepo('gitnexus-incr-orch-');
+
+/**
+ * Seed zero-vector CodeEmbedding rows for REAL graph nodes through the real
+ * `batchInsertEmbeddings` (KTD9, tri-review 4669518496): reopen the repo DB,
+ * read actual node ids per file (`Function:<fp>:<name>:<line>` — label-first,
+ * so fabricated ids would be dropped by the Phase 3.5 live-graph filter),
+ * insert, close. Zero vectors need no VECTOR extension — the CodeEmbedding
+ * TABLE is plain schema; only the HNSW index is extension-gated. Returns the
+ * seeded node ids keyed by file path.
+ */
+async function seedEmbeddingsForFiles(
+  repoPath: string,
+  filePaths: readonly string[],
+  maxPerFile: number,
+): Promise<Map<string, string[]>> {
+  const adapter = await import('../../src/core/lbug/lbug-adapter.js');
+  const { batchInsertEmbeddings } = await import('../../src/core/embeddings/embedding-pipeline.js');
+  const { lbugPath } = getStoragePaths(repoPath);
+  const idsByFile = new Map<string, string[]>();
+  await adapter.initLbug(lbugPath);
+  try {
+    for (const fp of filePaths) {
+      const rows = (await adapter.executeQuery(
+        `MATCH (n:Function) WHERE n.filePath = '${fp}' RETURN n.id AS id LIMIT ${maxPerFile}`,
+      )) as Array<{ id: string }>;
+      idsByFile.set(
+        fp,
+        rows.map((r) => String(r.id)),
+      );
+    }
+    const allIds = [...idsByFile.values()].flat();
+    await batchInsertEmbeddings(
+      adapter.executeWithReusedStatement,
+      allIds.map((nodeId) => ({
+        nodeId,
+        chunkIndex: 0,
+        startLine: 0,
+        endLine: 2,
+        embedding: new Array(EMBEDDING_DIMS).fill(0),
+      })),
+    );
+  } finally {
+    await adapter.closeLbug();
+  }
+  return idsByFile;
+}
+
+/** Read the surviving CodeEmbedding nodeIds straight from the repo DB. */
+async function readEmbeddingNodeIds(repoPath: string): Promise<string[]> {
+  const adapter = await import('../../src/core/lbug/lbug-adapter.js');
+  const { lbugPath } = getStoragePaths(repoPath);
+  await adapter.initLbug(lbugPath);
+  try {
+    const rows = (await adapter.executeQuery(
+      `MATCH (e:${EMBEDDING_TABLE_NAME}) RETURN e.nodeId AS nodeId`,
+    )) as Array<{ nodeId: string }>;
+    return rows.map((r) => String(r.nodeId));
+  } finally {
+    await adapter.closeLbug();
+  }
+}
+
+/** Tamper meta.stats.embeddings so deriveEmbeddingMode sees an embedded repo
+ *  (loadMeta → spread → saveMeta, same pattern as the dirty-flag tests). */
+async function stampEmbeddingCount(storagePath: string, embeddings: number): Promise<void> {
+  const meta = await loadMeta(storagePath);
+  expect(meta).not.toBeNull();
+  const tampered: RepoMeta = { ...meta!, stats: { ...meta!.stats, embeddings } };
+  await saveMeta(storagePath, tampered);
+}
 
 /** Stage + commit everything in the temp repo (mirrors mini-repo.ts's git calls). */
 const gitCommitAll = (cwd: string, message: string): void => {
@@ -311,6 +383,81 @@ describe('runFullAnalysis — incremental orchestration', () => {
     }
   }, 600_000);
 
+  // U4 / KTD10 (tri-review 4669518496): a SURGICAL preserve-mode run (below
+  // both valve gates) must keep embedding rows in lockstep with their files
+  // now that deleteNodesForFiles really deletes embedding rows via the
+  // nodeId join:
+  //   - changed-file rows are deleted with their nodes and RESTORED from the
+  //     cache (the old insert-all restore lost them when a surviving row's
+  //     PK conflict aborted the rest of the batch),
+  //   - deleted-file rows are gone (join-delete) and NOT resurrected by the
+  //     restore (live-graph filter),
+  //   - unchanged rows are untouched (skip-existing filter, no conflicts).
+  it('surgical incremental run keeps embedding rows in lockstep: changed restored, deleted gone, unchanged intact (tri-review 4669518496 KTD10)', async () => {
+    const repo = await setupMiniRepo();
+    try {
+      const CHANGED_FILE = 'src/logger.ts';
+      const UNCHANGED_FILE = 'src/db.ts';
+      const DELETED_FILE = 'src/formatter.ts';
+
+      const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
+      await runFullAnalysis(repo.dbPath, { skipAgentsMd: true }, { onProgress: () => {} });
+
+      const { storagePath } = getStoragePaths(repo.dbPath);
+      const idsByFile = await seedEmbeddingsForFiles(
+        repo.dbPath,
+        [CHANGED_FILE, UNCHANGED_FILE, DELETED_FILE],
+        3,
+      );
+      for (const fp of [CHANGED_FILE, UNCHANGED_FILE, DELETED_FILE]) {
+        expect((idsByFile.get(fp) ?? []).length).toBeGreaterThan(0);
+      }
+      const seededTotal = [...idsByFile.values()].flat().length;
+      await stampEmbeddingCount(storagePath, seededTotal);
+
+      // One file modified (comment-only, appended at EOF so node ids keep
+      // their line numbers), one file deleted — committed so lastCommit moves.
+      const target = path.join(repo.dbPath, CHANGED_FILE);
+      await writeFile(
+        target,
+        (await readFile(target, 'utf-8')) + '\n// embeddings parity touch\n',
+        'utf-8',
+      );
+      await rm(path.join(repo.dbPath, DELETED_FILE));
+      gitCommitAll(repo.dbPath, 'modify logger + delete formatter');
+
+      const logs: string[] = [];
+      const run = await runFullAnalysis(
+        repo.dbPath,
+        { skipAgentsMd: true },
+        { onProgress: () => {}, onLog: (m) => logs.push(m) },
+      );
+      expect(run.alreadyUpToDate).toBeUndefined();
+      // 7-file repo — far below the 50-file valve floor: this MUST have been
+      // the surgical write plan, or every assertion below is vacuously about
+      // the escalated path instead.
+      expect(logs.join('\n')).not.toContain('switching to a full DB write');
+
+      const after = await loadMeta(storagePath);
+      expect(after!.incrementalInProgress).toBeUndefined();
+      const expectedSurvivors = [
+        ...(idsByFile.get(CHANGED_FILE) ?? []),
+        ...(idsByFile.get(UNCHANGED_FILE) ?? []),
+      ];
+      // stats.embeddings stayed stable across the surgical run: changed +
+      // unchanged rows survived, deleted-file rows did not.
+      expect(after!.stats?.embeddings).toBe(expectedSurvivors.length);
+      // Exact surviving nodeId set — pins all three behaviors at once (a
+      // batch-abort loss, a leaked deleted-file row, or a dropped unchanged
+      // row each break set equality).
+      expect((await readEmbeddingNodeIds(repo.dbPath)).sort()).toEqual(
+        [...expectedSurvivors].sort(),
+      );
+    } finally {
+      await repo.cleanup();
+    }
+  }, 600_000);
+
   // #2409 defect 2 (dirty-flag recovery parks WAL/shadow sidecars before any
   // open) is covered in incremental-dirty-recovery.test.ts — its own file so
   // the cross-platform CI matrix runs it on windows-latest without pulling in
@@ -514,6 +661,143 @@ describe('runFullAnalysis — incremental orchestration', () => {
       );
       expect(run2.alreadyUpToDate).toBeUndefined();
       expect(await countInjects(repo.dbPath)).toBe(2);
+    } finally {
+      await repo.cleanup();
+    }
+  }, 600_000);
+});
+
+/**
+ * U3 (tri-review 4669518496 P1): the #2409 escalation valve wipes the DB
+ * files — HNSW vector index included. The Phase 3.5 restore brought the
+ * embedding ROWS back, but nothing recreated the index and meta still
+ * stamped `vector-index`: semantic search on a >10k-embedding repo silently
+ * lost its vector lane while meta certified otherwise. This suite pins the
+ * fix end-to-end: escalated preserve-mode run → index recreated → meta honest.
+ *
+ * SEPARATE from the `--force` escalation parity test above (KTD9): seeding
+ * embeddings there would make its force leg derive forceRegenerateEmbeddings
+ * and boot a real embedder in CI. This run stays preserve-only (no force).
+ *
+ * Skip-gated on VECTOR availability (the lbug-vector-extension.test.ts
+ * pattern): hard-false on win32; statically linked on linux-x64, so the
+ * assertions genuinely run in CI — and on win32 the honest stamp is
+ * 'exact-scan', which the unit-level wiring pin in
+ * run-analyze-fts-repair.test.ts covers platform-independently.
+ */
+describe('runFullAnalysis — escalated wipe recreates the vector index (#2409, tri-review 4669518496 P1)', () => {
+  let vectorAvailable = false;
+  let skipWarned = false;
+  beforeAll(async () => {
+    // Probe VECTOR the way the analyze write path loads it. loadVectorExtension
+    // needs an open connection, and this suite (unlike the withTestLbugDB
+    // vector suites) has no ambient DB — probe against a scratch one.
+    const adapter = await import('../../src/core/lbug/lbug-adapter.js');
+    const { resolveAnalyzeInstallPolicy } = await import('../../src/core/lbug/extension-loader.js');
+    const tmp = await createTempDir('gitnexus-incr-orch-vector-probe-');
+    try {
+      await adapter.initLbug(path.join(tmp.dbPath, 'probe-lbug'));
+      vectorAvailable = await adapter.loadVectorExtension(undefined, {
+        policy: resolveAnalyzeInstallPolicy(),
+      });
+    } finally {
+      await adapter.closeLbug();
+      await tmp.cleanup();
+    }
+  }, 120_000);
+  beforeEach((ctx) => {
+    if (!vectorAvailable) {
+      if (!skipWarned) {
+        skipWarned = true;
+        console.warn(
+          '[incremental-orchestration] Skipping vector-index recreation test — the ' +
+            'LadybugDB VECTOR extension is unavailable (unsupported platform or ' +
+            'could not be installed).',
+        );
+      }
+      ctx.skip();
+    }
+  });
+
+  it('recreates the HNSW index after an escalated wipe-and-restore and stamps meta honestly (tri-review 4669518496 P1)', async () => {
+    const repo = await setupMiniRepo();
+    try {
+      // Hub+spokes repo shape VERBATIM from the escalation parity test above:
+      // the escalated run must clear BOTH valve gates (deleteCount ≥ 50 AND
+      // fraction > 0.5). A smaller fixture would silently take the surgical
+      // path, whose surviving index makes every assertion below pass
+      // vacuously.
+      const src = path.join(repo.dbPath, 'src');
+      await writeFile(
+        path.join(src, 'hub.ts'),
+        'export function hubValue(x: number): number {\n  return x + 1;\n}\n',
+        'utf-8',
+      );
+      for (let i = 0; i < 60; i++) {
+        await writeFile(
+          path.join(src, `spoke-${String(i).padStart(3, '0')}.ts`),
+          `import { hubValue } from './hub';\n\nexport function spoke${i}(): number {\n  return hubValue(${i});\n}\n`,
+          'utf-8',
+        );
+      }
+      gitCommitAll(repo.dbPath, 'add hub + spokes');
+
+      const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
+      await runFullAnalysis(repo.dbPath, { skipAgentsMd: true }, { onProgress: () => {} });
+
+      // 20 zero-vector embeddings on real Function nodes (one per spoke —
+      // fabricated ids would be dropped by the Phase 3.5 live-graph filter)
+      // + a stats stamp so deriveEmbeddingMode sees an embedded repo
+      // (preserve mode — the run below passes NO force flag, so no embedder
+      // ever fires; KTD9).
+      const SEED_COUNT = 20;
+      const { storagePath, lbugPath } = getStoragePaths(repo.dbPath);
+      const seedFiles: string[] = [];
+      for (let i = 0; i < SEED_COUNT; i++) {
+        seedFiles.push(`src/spoke-${String(i).padStart(3, '0')}.ts`);
+      }
+      const idsByFile = await seedEmbeddingsForFiles(repo.dbPath, seedFiles, 1);
+      expect([...idsByFile.values()].flat().length).toBe(SEED_COUNT);
+      await stampEmbeddingCount(storagePath, SEED_COUNT);
+
+      // Touch the hub — the importer closure covers the whole family, the
+      // valve fires, and the DB (index included) is wiped mid-run.
+      const hub = path.join(src, 'hub.ts');
+      await writeFile(hub, (await readFile(hub, 'utf-8')) + '// index recreation touch\n', 'utf-8');
+
+      const logs: string[] = [];
+      const escalated = await runFullAnalysis(
+        repo.dbPath,
+        { skipAgentsMd: true },
+        { onProgress: () => {}, onLog: (m) => logs.push(m) },
+      );
+      expect(escalated.alreadyUpToDate).toBeUndefined();
+      // The valve rerouted the write plan — without this the index assertions
+      // below test the surgical path's surviving index, not the recreation.
+      expect(logs.join('\n')).toContain('switching to a full DB write');
+
+      // Every cached row was restored across the wipe…
+      const after = await loadMeta(storagePath);
+      expect(after!.incrementalInProgress).toBeUndefined();
+      expect(after!.stats?.embeddings).toBe(SEED_COUNT);
+      // …meta stamps what the DB actually holds…
+      expect(after!.capabilities?.vectorSearch.status).toBe('vector-index');
+      // …and the DB really does hold a recreated HNSW index (SHOW_INDEXES
+      // straight off the reopened store — the assertion that fails when the
+      // wipe destroys the index and nothing rebuilds it).
+      const adapter = await import('../../src/core/lbug/lbug-adapter.js');
+      await adapter.initLbug(lbugPath);
+      try {
+        const idxRows = (await adapter.executeQuery('CALL SHOW_INDEXES() RETURN *')) as Array<{
+          index_name?: string;
+          index_type?: string;
+        }>;
+        const idx = idxRows.find((r) => r.index_name === 'code_embedding_idx');
+        expect(idx).toBeDefined();
+        expect(idx!.index_type).toBe('HNSW');
+      } finally {
+        await adapter.closeLbug();
+      }
     } finally {
       await repo.cleanup();
     }

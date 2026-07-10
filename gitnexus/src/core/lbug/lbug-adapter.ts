@@ -2117,6 +2117,23 @@ export const deleteNodesForFile = async (
     let deletedNodes = 0;
     const escapedPath = escapeCypherString(filePath);
 
+    // Delete the file's embedding rows FIRST, while their owning nodes are
+    // still present: node ids are label-first — generateId = `${label}:${name}`
+    // (src/lib/utils.ts) with qualified names that embed the file path — so
+    // the old `e.nodeId STARTS WITH '<filePath>'` shape never matched a row
+    // (tri-review 4669518496 P2-1). Join through the nodes on exact id
+    // equality instead; ordering is load-bearing — after the DETACH DELETE
+    // loop below the join would match nothing.
+    try {
+      await queryAndDrain(
+        targetConn!,
+        `MATCH (n) WHERE n.filePath = '${escapedPath}' ` +
+          `MATCH (e:${EMBEDDING_TABLE_NAME}) WHERE e.nodeId = n.id DELETE e`,
+      );
+    } catch {
+      // Embedding table may not exist (pre-embedding-schema DBs)
+    }
+
     // Delete nodes from each table that has filePath
     // DETACH DELETE removes the node and all its relationships
     for (const tableName of NODE_TABLES) {
@@ -2148,16 +2165,6 @@ export const deleteNodesForFile = async (
       } catch (e) {
         // Some tables may not support this query, skip
       }
-    }
-
-    // Also delete any embeddings for nodes in this file
-    try {
-      await queryAndDrain(
-        targetConn!,
-        `MATCH (e:${EMBEDDING_TABLE_NAME}) WHERE e.nodeId STARTS WITH '${escapedPath}' DELETE e`,
-      );
-    } catch {
-      // Embedding table may not exist or nodeId format may differ
     }
 
     return { deletedNodes };
@@ -2202,6 +2209,23 @@ export const deleteNodesForFiles = async (
   for (let i = 0; i < filePaths.length; i += DELETE_FILES_CHUNK_SIZE) {
     const chunk = filePaths.slice(i, i + DELETE_FILES_CHUNK_SIZE);
     const listLiteral = `[${chunk.map((p) => `'${escapeCypherString(p)}'`).join(', ')}]`;
+    // Embedding rows key on their OWNING NODE's id: generateId builds
+    // label-first ids — `${label}:${name}` (src/lib/utils.ts) with qualified
+    // names that embed the file path (e.g. `Function:src/f.ts:fn0:1`) — so
+    // the previous bare-path `e.nodeId STARTS WITH '<filePath>'` OR-chain
+    // could never match anything (tri-review 4669518496 P2-1: the embedding
+    // delete was a no-op). Join through the nodes instead: the unlabeled
+    // MATCH covers all node tables in one statement (a table without
+    // `filePath` binds NULL and drops out), and `e.nodeId = n.id` equality is
+    // exact — no `File:a.ts` / `File:a.tsx` prefix collisions. ORDER IS
+    // LOAD-BEARING: this must run BEFORE the DETACH DELETE loop below —
+    // once the nodes are gone the join matches nothing (empirically
+    // verified against @ladybugdb/core 0.18.0).
+    await queryAndDrain(
+      targetConn,
+      `MATCH (n) WHERE n.filePath IN ${listLiteral} ` +
+        `MATCH (e:${EMBEDDING_TABLE_NAME}) WHERE e.nodeId = n.id DELETE e`,
+    );
     for (const tableName of NODE_TABLES) {
       // Community/Process are graph-wide (no filePath); the orchestrator
       // drops them wholesale via deleteAllCommunitiesAndProcesses.
@@ -2212,13 +2236,6 @@ export const deleteNodesForFiles = async (
         `MATCH (n:${tn}) WHERE n.filePath IN ${listLiteral} DETACH DELETE n`,
       );
     }
-    // Embedding rows key on nodeId ('<filePath>:…'), so IN can't apply —
-    // OR-join the same chunk's prefixes into one statement (mirrors the
-    // per-file variant's STARTS WITH semantics).
-    const orClause = chunk
-      .map((p) => `e.nodeId STARTS WITH '${escapeCypherString(p)}'`)
-      .join(' OR ');
-    await queryAndDrain(targetConn, `MATCH (e:${EMBEDDING_TABLE_NAME}) WHERE ${orClause} DELETE e`);
     options.onChunk?.(Math.min(i + DELETE_FILES_CHUNK_SIZE, filePaths.length), filePaths.length);
   }
 };

@@ -1187,6 +1187,12 @@ export async function runFullAnalysis(
     // must be released to avoid blocking subsequent invocations.
 
     let lbugMsgCount = 0;
+    // #2409 escalation valve outcome, hoisted above the incremental branch so
+    // the vector-index recreation seam in Phase 4 below can tell "surgical
+    // incremental" (DB files survived — the HNSW index with them) apart from
+    // "escalated full write" (DB wiped, index destroyed) — tri-review
+    // 4669518496 P1.
+    let escalatedFullWrite = false;
     if (isIncremental && hashDiff) {
       // ── Incremental DB writeback ───────────────────────────────────
       // 0. Expand the writable set with transitive importers of
@@ -1336,6 +1342,7 @@ export async function runFullAnalysis(
           allFilePaths.length,
         )
       ) {
+        escalatedFullWrite = true;
         log(
           `Incremental: effective write set covers ${effectiveWriteSet.size}/${allFilePaths.length} ` +
             // Display clamp only (predicate unchanged): BFS-found deleted
@@ -1513,18 +1520,34 @@ export async function runFullAnalysis(
 
     // ── Phase 3.5: Re-insert cached embeddings ────────────────────────
     // Runs on BOTH the full-rebuild path and the incremental path:
-    //   - Full rebuild: DB was wiped, every cached row needs to come back.
-    //   - Incremental:  changed-file rows were just deleted by
-    //                   deleteNodesForFile (which cascades to their
-    //                   embedding rows) — so their cached vectors need
-    //                   to come back too. Unchanged-file rows still
-    //                   exist; re-inserting their cached vectors would
-    //                   PK-conflict, but the per-batch try/catch below
-    //                   silently ignores those (matches the existing
-    //                   "some may fail if node was removed, that's
-    //                   fine" semantics). Bugbot review on PR #1479
-    //                   flagged that gating this on `!isIncremental`
-    //                   silently lost changed-file embeddings.
+    //   - Full rebuild / escalated write: DB was wiped, every cached row
+    //     needs to come back.
+    //   - Incremental (surgical): changed/deleted files' rows were just
+    //     deleted by deleteNodesForFiles (a REAL delete since tri-review
+    //     4669518496 P2-1 — it joins embedding rows through their owning
+    //     nodes), so changed-file vectors need to come back; unchanged-file
+    //     rows still exist. Bugbot review on PR #1479 flagged that gating
+    //     this on `!isIncremental` silently lost changed-file embeddings.
+    //
+    // Restore discipline (tri-review 4669518496 / KTD10) — filtered and
+    // conflict-free, replacing the old insert-everything-and-swallow shape:
+    //   1. Live-graph filter: rows whose nodeId no longer exists in the
+    //      freshly-built FULL graph are dropped. The cache was read BEFORE
+    //      the pipeline ran, so it still carries deleted files' rows —
+    //      re-inserting them resurrected orphans (wholesale onto the wiped
+    //      paths' empty table) now that the delete above is real.
+    //   2. Skip-existing filter: one labeled pre-read of surviving embedding
+    //      ids, and only absent rows are inserted. The old shape re-inserted
+    //      every row and swallowed PK conflicts per 200-row batch — but one
+    //      conflict aborts the WHOLE remaining executeWithReusedStatement
+    //      call, so changed-file rows queued behind a surviving row's
+    //      conflict were silently lost in preserve mode (nothing regenerates
+    //      them). Harmless while the embedding delete was a no-op; silent
+    //      data loss once it stopped being one.
+    // The per-batch try/catch stays as a last-resort guard only — it no
+    // longer fires on the happy path.
+    let restoredEmbeddingCount = 0;
+    let buildVectorIndexAfterRestore: (() => Promise<boolean>) | undefined;
     if (cachedEmbeddings.length > 0) {
       const cachedDims = cachedEmbeddings[0].embedding.length;
       const { EMBEDDING_DIMS } = await import('./lbug/schema.js');
@@ -1536,17 +1559,41 @@ export async function runFullAnalysis(
         cachedEmbeddings = [];
         cachedEmbeddingNodeIds = new Set();
       } else {
-        progress('embeddings', 88, `Restoring ${cachedEmbeddings.length} cached embeddings...`);
-        const { batchInsertEmbeddings: batchInsert } =
+        const { batchInsertEmbeddings: batchInsert, buildVectorIndex } =
           await import('./embeddings/embedding-pipeline.js');
+        // Captured for the post-restore vector-index seam in Phase 4 (P1 fix)
+        // — same dynamic import, so the lazy-embeddings convention (#2370)
+        // holds: no embeddings module is loaded unless a restore happens.
+        buildVectorIndexAfterRestore = buildVectorIndex;
+        // (1) Live-graph filter — the FULL pipeline graph (always produced),
+        // NOT the incremental subgraph, or unchanged files' rows would be
+        // dropped from the restore set.
+        const liveEmbeddings = cachedEmbeddings.filter(
+          (e) => pipelineResult.graph.getNode(e.nodeId) !== undefined,
+        );
+        // (2) Skip-existing filter. LABELED match — an unlabeled `MATCH (e)`
+        // would scan every node table; this reads only the embedding table.
+        const survivingIdRows = (await executeQuery(
+          `MATCH (e:${EMBEDDING_TABLE_NAME}) RETURN e.id AS id`,
+        )) as Array<{ id?: unknown }>;
+        const survivingIds = new Set<string>();
+        for (const row of survivingIdRows) {
+          if (typeof row?.id === 'string' && row.id.length > 0) survivingIds.add(row.id);
+        }
+        // Row id shape matches batchInsertEmbeddings: `${nodeId}:${chunkIndex}`.
+        const rowsToRestore = liveEmbeddings.filter(
+          (e) => !survivingIds.has(`${e.nodeId}:${e.chunkIndex}`),
+        );
+        progress('embeddings', 88, `Restoring ${rowsToRestore.length} cached embeddings...`);
         const EMBED_BATCH = 200;
-        for (let i = 0; i < cachedEmbeddings.length; i += EMBED_BATCH) {
-          const batch = cachedEmbeddings.slice(i, i + EMBED_BATCH);
+        for (let i = 0; i < rowsToRestore.length; i += EMBED_BATCH) {
+          const batch = rowsToRestore.slice(i, i + EMBED_BATCH);
 
           try {
             await batchInsert(executeWithReusedStatement, batch);
+            restoredEmbeddingCount += batch.length;
           } catch {
-            /* some may fail if node was removed, that's fine */
+            /* last-resort guard — conflict-free by construction above */
           }
         }
       }
@@ -1580,6 +1627,39 @@ export async function runFullAnalysis(
             `\`--embeddings <n>\` to set a custom cap.`,
         );
       }
+    }
+
+    // ── Vector-index recreation after a wipe-and-restore (tri-review
+    // 4669518496 P1 / KTD1) ────────────────────────────────────────────
+    // The full-rebuild and escalated-incremental write plans wipe the DB
+    // files — the HNSW index with them. Phase 3.5 brought the embedding ROWS
+    // back, but on a preserve-only run nothing recreates the index: semantic
+    // search silently loses its vector lane (>10k-embedding repos return
+    // empty under the exact-scan cap) while meta certified 'vector-index'.
+    // Recreate it here, where every gate input is settled:
+    //   - restoredEmbeddingCount > 0 — rows actually came back;
+    //   - dbWasWiped — surgical incremental runs keep their index (HNSW
+    //     self-maintains on insert/delete); only wiped DBs lost it;
+    //   - embeddingSkipped — evaluated AFTER the deriveEmbeddingCap decision
+    //     above, NOT `!shouldGenerateEmbeddings`: when Phase 4 really runs,
+    //     the pipeline builds the index itself after all inserts (firing this
+    //     seam first would swap its bulk build for per-row live HNSW
+    //     maintenance on the hottest flow), while a capped >50k-node repo has
+    //     shouldGenerateEmbeddings=true yet never runs the pipeline — exactly
+    //     the case a naive gate would leave index-less again.
+    // buildVectorIndex carries its own extension-policy gate and
+    // warn-on-failure; the boolean feeds semanticMode so the finalize stamp
+    // reflects the DB's ACTUAL state even when recreation fails (win32 /
+    // extension unavailable → 'exact-scan').
+    const dbWasWiped = !isIncremental || escalatedFullWrite;
+    if (
+      restoredEmbeddingCount > 0 &&
+      dbWasWiped &&
+      embeddingSkipped &&
+      buildVectorIndexAfterRestore
+    ) {
+      const vectorIndexReady = await buildVectorIndexAfterRestore();
+      semanticMode = vectorIndexReady ? 'vector-index' : 'exact-scan';
     }
 
     if (!embeddingSkipped) {
@@ -1652,6 +1732,11 @@ export async function runFullAnalysis(
 
     const { getRuntimeCapabilities } = await import('./platform/capabilities.js');
     const runtimeCapabilities = getRuntimeCapabilities();
+    // `semanticMode` is authoritative when set (Phase 4 reported what it
+    // built, or the wipe-and-restore seam above verified/recreated the index
+    // — tri-review 4669518496 P1); the platform-derived fallback covers only
+    // the untouched paths (no generation, no wiped restore — e.g. a surgical
+    // incremental run whose index survived in place).
     const effectiveSemanticMode =
       semanticMode ??
       (runtimeCapabilities.semanticMode === 'vector-index' ? 'vector-index' : 'exact-scan');
@@ -1661,7 +1746,11 @@ export async function runFullAnalysis(
     const newFileHashesRecord: Record<string, string> = {};
     for (const [k, v] of newFileHashes) newFileHashesRecord[k] = v;
 
-    const meta = {
+    // Annotated so the capabilities stamp below is compile-checked against
+    // RepoMeta's status unions (tri-review 4669518496 P1/U3) — an unannotated
+    // literal widens the vectorSearch.status ternary to `string` and the
+    // honesty contract silently decays to "whatever interpolates".
+    const meta: RepoMeta = {
       repoPath,
       lastCommit: currentCommit,
       indexedAt: new Date().toISOString(),

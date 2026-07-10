@@ -1,6 +1,7 @@
 import fs from 'fs/promises';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { getStoragePaths, saveMeta } from '../../src/storage/repo-manager.js';
+import { getStoragePaths, saveMeta, type RepoMeta } from '../../src/storage/repo-manager.js';
+import { EMBEDDING_DIMS } from '../../src/core/lbug/schema.js';
 import { createTempDir } from '../helpers/test-db.js';
 
 const SIMULATED_MISSING_FTS_INDEX_NAME = 'File.file_fts';
@@ -585,6 +586,146 @@ describe('runFullAnalysis FTS repair and verification failure paths', () => {
       // ...but NOT the generic install guidance that contradicts "reinstalling will NOT help".
       expect(degradeLine).not.toMatch(/network access/i);
       expect(degradeLine).not.toMatch(/pre-installed for offline use/i);
+    } finally {
+      await tmpRepo.cleanup();
+    }
+  });
+});
+
+/**
+ * U3 wiring pin (tri-review 4669518496 P1): a wiped run that restores cached
+ * embeddings recreates the HNSW vector index at the Phase 3.5/Phase 4 seam —
+ * and when that recreation reports FAILURE, the persisted meta must stamp
+ * `capabilities.vectorSearch.status = 'exact-scan'`, never the platform-derived
+ * 'vector-index' (which is exactly what the linux fallback would claim).
+ * Pinned here at unit level with the wholesale-mock harness so the wiring is
+ * platform-independent; the real-index orchestration half lives in
+ * incremental-orchestration.test.ts and skip-gates on VECTOR availability.
+ */
+describe('runFullAnalysis wipe-and-restore vector-index stamp (tri-review 4669518496 P1 / U3)', () => {
+  afterEach(() => {
+    vi.doUnmock('../../src/core/lbug/lbug-adapter.js');
+    vi.doUnmock('../../src/core/search/fts-indexes.js');
+    vi.doUnmock('../../src/core/ingestion/pipeline.js');
+    vi.doUnmock('../../src/storage/repo-manager.js');
+    vi.doUnmock('../../src/core/embeddings/embedding-pipeline.js');
+    vi.resetModules();
+    vi.clearAllMocks();
+    vi.unstubAllEnvs();
+  });
+
+  it('stamps capabilities.vectorSearch.status = exact-scan when post-restore index recreation reports failure', async () => {
+    const RESTORED_NODE_ID = 'Function:src/app.ts:handler:1';
+    const stubNode = {
+      id: RESTORED_NODE_ID,
+      label: 'Function',
+      name: 'handler',
+      properties: { filePath: 'src/app.ts' },
+    };
+    const buildVectorIndex = vi.fn(async () => false);
+    const executeWithReusedStatement = vi.fn(async () => []);
+    vi.doMock('../../src/core/lbug/lbug-adapter.js', () => ({
+      initLbug: vi.fn(async () => undefined),
+      loadGraphToLbug: vi.fn(async () => undefined),
+      getLbugStats: vi.fn(async () => ({ nodes: 2, edges: 0, communities: 0, processes: 0 })),
+      // Phase 3.5's surviving-id pre-read answers empty (the DB was just
+      // wiped); the finalize embedding count answers 1 (the restored row) — a
+      // zero count would stamp 'unavailable' and the exact-scan assertion
+      // below would pass for the wrong reason.
+      executeQuery: vi.fn(async (cypher: string) =>
+        /RETURN count\(e\) AS cnt/.test(cypher) ? [{ cnt: 1 }] : [],
+      ),
+      executeWithReusedStatement,
+      closeLbug: vi.fn(async () => undefined),
+      // Full-rebuild wipe is loud now (#2409, tri-review 4669518496 P2-4) —
+      // run-analyze calls this on every full-path analyze.
+      wipeLbugDbFiles: vi.fn(async () => undefined),
+      // ≥1 cached row with a real-dims embedding: the harness default (empty
+      // cache) would leave restoredEmbeddingCount at 0 and the recreation
+      // gate shut — this test would then assert nothing.
+      loadCachedEmbeddings: vi.fn(async () => ({
+        embeddingNodeIds: new Set([RESTORED_NODE_ID]),
+        embeddings: [
+          {
+            nodeId: RESTORED_NODE_ID,
+            chunkIndex: 0,
+            startLine: 0,
+            endLine: 3,
+            embedding: new Array(EMBEDDING_DIMS).fill(0),
+            contentHash: 'stub-hash',
+          },
+        ],
+      })),
+      deleteNodesForFile: vi.fn(async () => undefined),
+      deleteAllCommunitiesAndProcesses: vi.fn(async () => undefined),
+      queryImporters: vi.fn(async () => []),
+      loadFTSExtension: vi.fn(async () => false),
+    }));
+    vi.doMock('../../src/core/search/fts-indexes.js', () => ({
+      initialiseSearchFTSStemmer: vi.fn(() => 'porter'),
+      createSearchFTSIndexes: vi.fn(async () => undefined),
+      verifySearchFTSIndexes: vi.fn(async () => []),
+    }));
+    // The stub graph must CONTAIN the cached row's node: Phase 3.5's
+    // live-graph filter (KTD10) drops rows absent from the fresh graph, and
+    // `getNode` is the lookup it uses.
+    vi.doMock('../../src/core/ingestion/pipeline.js', () => ({
+      runPipelineFromRepo: vi.fn(async (repoPath: string) => ({
+        repoPath,
+        totalFileCount: 1,
+        graph: {
+          forEachNode: (fn: (node: typeof stubNode) => void) => fn(stubNode),
+          getNode: (id: string) => (id === RESTORED_NODE_ID ? stubNode : undefined),
+        },
+      })),
+    }));
+    // Avoid touching the global registry / repo .gitnexusignore from a unit test.
+    vi.doMock('../../src/storage/repo-manager.js', async (importActual) => ({
+      ...(await importActual<typeof import('../../src/storage/repo-manager.js')>()),
+      registerRepo: vi.fn(async () => 'vector-stamp-repo'),
+      ensureGitNexusIgnored: vi.fn(async () => undefined),
+    }));
+    // Real pipeline module (the real batchInsertEmbeddings drives the restore
+    // through the mocked executeWithReusedStatement) with ONLY the index
+    // recreation forced to report failure.
+    vi.doMock('../../src/core/embeddings/embedding-pipeline.js', async (importActual) => ({
+      ...(await importActual<typeof import('../../src/core/embeddings/embedding-pipeline.js')>()),
+      buildVectorIndex,
+    }));
+
+    const tmpRepo = await createTempDir('gitnexus-run-analyze-vector-stamp-');
+    try {
+      const { storagePath } = getStoragePaths(tmpRepo.dbPath);
+      await fs.mkdir(storagePath, { recursive: true });
+      // stats.embeddings > 0 → deriveEmbeddingMode loads the cache; force +
+      // embeddingsNodeLimit(1) < getLbugStats().nodes(2) → generation is
+      // cap-skipped. That makes this a wiped PRESERVE-shaped run — exactly
+      // the KTD1 case where a naive `!shouldGenerateEmbeddings` gate would
+      // wrongly stay shut (shouldGenerate is TRUE here, yet the Phase 4
+      // pipeline never runs).
+      await saveMeta(storagePath, {
+        repoPath: tmpRepo.dbPath,
+        lastCommit: '',
+        indexedAt: new Date().toISOString(),
+        stats: { embeddings: 1 },
+      });
+
+      const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
+      await runFullAnalysis(
+        tmpRepo.dbPath,
+        { force: true, embeddingsNodeLimit: 1 },
+        { onProgress: () => {} },
+      );
+
+      // The recreation seam fired exactly once…
+      expect(buildVectorIndex).toHaveBeenCalledTimes(1);
+      // …the restore actually submitted the cached row (one 200-row batch)…
+      expect(executeWithReusedStatement).toHaveBeenCalledTimes(1);
+      // …and the persisted stamp reflects the DB's ACTUAL state, not the
+      // platform capability fallback.
+      const meta = JSON.parse(await fs.readFile(`${storagePath}/meta.json`, 'utf-8')) as RepoMeta;
+      expect(meta.capabilities?.vectorSearch.status).toBe('exact-scan');
+      expect(meta.stats?.embeddings).toBe(1);
     } finally {
       await tmpRepo.cleanup();
     }
