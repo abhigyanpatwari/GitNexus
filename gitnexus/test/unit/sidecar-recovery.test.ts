@@ -14,6 +14,7 @@ import {
   listQuarantinedMissingShadowWals,
   preflightLbugSidecars,
   presentShadowUnreachableMessage,
+  quarantineSidecarsForDirtyRecovery,
   renameFailureMessage,
   shadowSidecarRecoveryMessage,
   TINY_ORPHAN_WAL_BYTES,
@@ -532,6 +533,52 @@ describe('LadybugDB sidecar recovery', () => {
       expect(log.warn).toHaveBeenCalledTimes(1);
       const firstWarnMessage = (log.warn as any).mock.calls[0][0] as string;
       expect(firstWarnMessage).not.toContain('occurrence of this condition');
+    });
+  });
+
+  describe('quarantineSidecarsForDirtyRecovery (#2409 defect 2)', () => {
+    it('parks both WAL and shadow verbatim under fixed .dirty-recovery names', async () => {
+      await fs.writeFile(`${dbPath}.wal`, Buffer.alloc(8192, 0xab));
+      await fs.writeFile(`${dbPath}.shadow`, Buffer.alloc(4096, 0xcd));
+      const messages: string[] = [];
+
+      const moved = await quarantineSidecarsForDirtyRecovery(dbPath, (m) => messages.push(m));
+
+      expect(moved).toEqual([`${dbPath}.wal.dirty-recovery`, `${dbPath}.shadow.dirty-recovery`]);
+      // Originals gone — the next open has nothing to replay.
+      await expect(inspectLbugSidecars(dbPath)).resolves.toEqual({ kind: 'clean', dbPath });
+      // Bytes preserved for post-mortem, not deleted.
+      expect(
+        Buffer.compare(readFileSync(`${dbPath}.wal.dirty-recovery`), Buffer.alloc(8192, 0xab)),
+      ).toBe(0);
+      expect(
+        Buffer.compare(readFileSync(`${dbPath}.shadow.dirty-recovery`), Buffer.alloc(4096, 0xcd)),
+      ).toBe(0);
+      expect(messages.join('\n')).toContain(
+        'Parked lbug.wal.dirty-recovery, lbug.shadow.dirty-recovery',
+      );
+    });
+
+    it('is a silent no-op when no sidecars exist', async () => {
+      const messages: string[] = [];
+      const moved = await quarantineSidecarsForDirtyRecovery(dbPath, (m) => messages.push(m));
+      expect(moved).toEqual([]);
+      expect(messages).toEqual([]);
+    });
+
+    it('parks a lone WAL and replaces a stale parked copy from an earlier crash', async () => {
+      await fs.writeFile(`${dbPath}.wal.dirty-recovery`, 'stale parked bytes');
+      await fs.writeFile(`${dbPath}.wal`, Buffer.alloc(2048, 0x11));
+
+      const moved = await quarantineSidecarsForDirtyRecovery(dbPath, () => {});
+
+      expect(moved).toEqual([`${dbPath}.wal.dirty-recovery`]);
+      // Fixed destination name caps accumulation at one parked file: the
+      // newest crash's bytes win.
+      expect(
+        Buffer.compare(readFileSync(`${dbPath}.wal.dirty-recovery`), Buffer.alloc(2048, 0x11)),
+      ).toBe(0);
+      await expect(inspectLbugSidecars(dbPath)).resolves.toEqual({ kind: 'clean', dbPath });
     });
   });
 });

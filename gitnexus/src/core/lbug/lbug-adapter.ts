@@ -1260,6 +1260,16 @@ const escapeTableName = (table: string): string => {
   return BACKTICK_TABLES.has(table) ? `\`${table}\`` : table;
 };
 
+/**
+ * Escape a value for embedding in a single-quoted Cypher string literal.
+ * LadybugDB's parser uses backslash escapes and REJECTS SQL-style `''`
+ * doubling (`'we''ird'` is a parser error, not an escaped quote — #2409
+ * review). The old doubled-quote escaping at the writeback call sites never
+ * parsed; the failures were invisible because those sites swallowed errors.
+ */
+const escapeCypherString = (value: string): string =>
+  value.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+
 /** Fallback: insert relationships one-by-one if COPY fails */
 const fallbackRelationshipInserts = async (
   validRelLines: string[],
@@ -1993,7 +2003,7 @@ export const deleteNodesForFile = async (
 
   try {
     let deletedNodes = 0;
-    const escapedPath = filePath.replace(/'/g, "''");
+    const escapedPath = escapeCypherString(filePath);
 
     // Delete nodes from each table that has filePath
     // DETACH DELETE removes the node and all its relationships
@@ -2045,6 +2055,62 @@ export const deleteNodesForFile = async (
   }
 };
 
+/**
+ * Chunk size for {@link deleteNodesForFiles}. 200 paths keeps each
+ * statement ~13KB (well inside parser limits) while a ~700-file write set
+ * still collapses from ~13,000 statements to ~40.
+ */
+export const DELETE_FILES_CHUNK_SIZE = 200;
+
+/**
+ * Batched variant of {@link deleteNodesForFile} for the incremental
+ * writeback (#2409). One `DETACH DELETE … WHERE n.filePath IN […]` per
+ * node table per chunk of paths, instead of a count + delete per table
+ * per FILE. The per-file loop issued ~13,000 single-row write
+ * transactions on a ~700-file write set — a WAL-append storm that made
+ * the incremental path slower than a full rebuild and is the write
+ * pattern behind the native mid-writeback deaths reported in #2409.
+ *
+ * Unlike the per-file variant there is NO error swallowing: a zero-match
+ * chunk is a no-op success by construction (every node table except
+ * Community/Process has a filePath column), so anything thrown here is a
+ * real engine failure the caller must see — silently skipping was exactly
+ * how #2409 hid its root cause. Singleton-connection only: the analyze
+ * writeback owns the write lock, and `queryAndDrain` routes through
+ * `withConnLock` for it (the WAL checkpoint driver is live during this).
+ */
+export const deleteNodesForFiles = async (
+  filePaths: readonly string[],
+  options: { onChunk?: (filesDone: number, filesTotal: number) => void } = {},
+): Promise<void> => {
+  if (!conn) {
+    throw new Error('LadybugDB not initialized. Call initLbug first.');
+  }
+  const targetConn = conn;
+  for (let i = 0; i < filePaths.length; i += DELETE_FILES_CHUNK_SIZE) {
+    const chunk = filePaths.slice(i, i + DELETE_FILES_CHUNK_SIZE);
+    const listLiteral = `[${chunk.map((p) => `'${escapeCypherString(p)}'`).join(', ')}]`;
+    for (const tableName of NODE_TABLES) {
+      // Community/Process are graph-wide (no filePath); the orchestrator
+      // drops them wholesale via deleteAllCommunitiesAndProcesses.
+      if (tableName === 'Community' || tableName === 'Process') continue;
+      const tn = escapeTableName(tableName);
+      await queryAndDrain(
+        targetConn,
+        `MATCH (n:${tn}) WHERE n.filePath IN ${listLiteral} DETACH DELETE n`,
+      );
+    }
+    // Embedding rows key on nodeId ('<filePath>:…'), so IN can't apply —
+    // OR-join the same chunk's prefixes into one statement (mirrors the
+    // per-file variant's STARTS WITH semantics).
+    const orClause = chunk
+      .map((p) => `e.nodeId STARTS WITH '${escapeCypherString(p)}'`)
+      .join(' OR ');
+    await queryAndDrain(targetConn, `MATCH (e:${EMBEDDING_TABLE_NAME}) WHERE ${orClause} DELETE e`);
+    options.onChunk?.(Math.min(i + DELETE_FILES_CHUNK_SIZE, filePaths.length), filePaths.length);
+  }
+};
+
 export const getEmbeddingTableName = (): string => EMBEDDING_TABLE_NAME;
 
 /**
@@ -2067,7 +2133,7 @@ export const queryImporters = async (targetFilePath: string): Promise<string[]> 
   if (!c) {
     throw new Error('LadybugDB not initialized. Call initLbug first.');
   }
-  const escaped = targetFilePath.replace(/'/g, "''");
+  const escaped = escapeCypherString(targetFilePath);
   const cypher = `
     MATCH (a)-[r:${REL_TABLE_NAME}]->(b)
     WHERE r.type = 'IMPORTS' AND b.filePath = '${escaped}'
@@ -2094,6 +2160,56 @@ export const queryImporters = async (targetFilePath: string): Promise<string[]> 
       if (queryResult) await closeQueryResults(queryResult);
     }
   });
+};
+
+/**
+ * Batched variant of {@link queryImporters} for the incremental importer
+ * BFS (#2409): distinct importers of ANY of the target paths, one query per
+ * chunk per BFS depth instead of one query per frontier FILE (a ~700-file
+ * frontier was ~700 sequential round-trips, each taking the connection lock
+ * against the live WAL checkpoint driver — ~5.6s of the writeback measured).
+ *
+ * Same contract as the singular form: reads the pre-pipeline DB state and
+ * swallows per-chunk query failures into a smaller result (correctness
+ * degrades on that branch — under-expansion means possibly-stale edges —
+ * but the DB stays writable and the writeback proceeds).
+ */
+export const queryImportersBatch = async (
+  targetFilePaths: readonly string[],
+): Promise<string[]> => {
+  const c = conn;
+  if (!c) {
+    throw new Error('LadybugDB not initialized. Call initLbug first.');
+  }
+  const importers = new Set<string>();
+  for (let i = 0; i < targetFilePaths.length; i += DELETE_FILES_CHUNK_SIZE) {
+    const chunk = targetFilePaths.slice(i, i + DELETE_FILES_CHUNK_SIZE);
+    const listLiteral = `[${chunk.map((p) => `'${escapeCypherString(p)}'`).join(', ')}]`;
+    const cypher = `
+      MATCH (a)-[r:${REL_TABLE_NAME}]->(b)
+      WHERE r.type = 'IMPORTS' AND b.filePath IN ${listLiteral}
+      RETURN DISTINCT a.filePath AS importer
+    `;
+    await withConnLock(async () => {
+      let queryResult: lbug.QueryResult | lbug.QueryResult[] | undefined;
+      try {
+        queryResult = await c.query(cypher);
+        const result = Array.isArray(queryResult) ? queryResult[0] : queryResult;
+        const rows = await result.getAll();
+        for (const row of rows) {
+          const v = (row as { importer?: unknown }).importer;
+          if (typeof v === 'string' && v.length > 0) importers.add(v);
+        }
+      } catch {
+        /* mirror queryImporters: degrade to a smaller expansion, stay writable */
+      } finally {
+        if (queryResult) await closeQueryResults(queryResult);
+      }
+    });
+  }
+  // Cypher without ORDER BY is unordered — sort so downstream chunking and
+  // logs are stable run-to-run (matches diffFileHashes' sorted outputs).
+  return [...importers].sort();
 };
 
 /**

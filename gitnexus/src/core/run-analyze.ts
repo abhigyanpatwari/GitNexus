@@ -23,12 +23,12 @@ import {
   closeLbug,
   closeLbugBeforeExit,
   loadCachedEmbeddings,
-  deleteNodesForFile,
+  deleteNodesForFiles,
   deleteAllCommunitiesAndProcesses,
   deleteAllInterprocTaintPaths,
   deleteAllCallSummaries,
   deleteAllInjects,
-  queryImporters,
+  queryImportersBatch,
   loadFTSExtension,
 } from './lbug/lbug-adapter.js';
 import {
@@ -45,8 +45,10 @@ import { getExtensionCapabilities, resolveAnalyzeInstallPolicy } from './lbug/ex
 import { diagnoseExtensionLoad } from './lbug/extension-load-error.js';
 import {
   startWalCheckpointDriver,
+  checkpointOnce,
   type WalCheckpointDriver,
 } from './lbug/wal-checkpoint-driver.js';
+import { quarantineSidecarsForDirtyRecovery } from './lbug/sidecar-recovery.js';
 import {
   getStoragePaths,
   resolveBranchPlacement,
@@ -772,6 +774,14 @@ export async function runFullAnalysis(
     // Reload meta after clearing the flag in-memory; we still want fileHashes
     // for the post-rebuild meta carry-over, but force=true ensures the
     // rebuild path executes.
+    //
+    // #2409 defect 2: the crashed writeback's WAL can be poisoned — replaying
+    // it kills the process natively, and the first DB open of this recovery
+    // run (the embedding-cache preservation open below) happens BEFORE the
+    // rebuild wipe that would discard it. Park the WAL/shadow sidecars aside
+    // now, while nothing is open, so every open in this run is replay-free.
+    // The rebuild wipes the DB regardless, so no committed data is at stake.
+    await quarantineSidecarsForDirtyRecovery(lbugPath, log);
   }
 
   // ── pdg-mode flip forces full writeback (#2099 F1) ─────────────────
@@ -1146,7 +1156,10 @@ export async function runFullAnalysis(
       });
     }
     await closeLbug();
-    const lbugFiles = [lbugPath, `${lbugPath}.wal`, `${lbugPath}.lock`];
+    // `.shadow` included (#2409): a checkpoint-in-flight crash leaves a shadow
+    // sidecar, and a stale shadow next to a freshly created DB file is replay
+    // poison on the next open — the wipe must clear the whole sidecar family.
+    const lbugFiles = [lbugPath, `${lbugPath}.wal`, `${lbugPath}.shadow`, `${lbugPath}.lock`];
     for (const f of lbugFiles) {
       try {
         await fs.rm(f, { recursive: true, force: true });
@@ -1166,7 +1179,9 @@ export async function runFullAnalysis(
   // Opt-out via `GITNEXUS_WAL_MANUAL_CHECKPOINT=0` (the driver itself
   // returns a no-op handle when disabled). Analyze-only: MCP and serve
   // paths continue to rely on the close-time CHECKPOINT in `safeClose`.
-  const walCheckpointDriver: WalCheckpointDriver = startWalCheckpointDriver();
+  // `let`: the incremental branch's escalation valve (#2409) stops this driver
+  // around its close→wipe→reopen strategy switch and starts a fresh one.
+  let walCheckpointDriver: WalCheckpointDriver = startWalCheckpointDriver();
   try {
     // All work after initLbug is wrapped in try/finally to ensure closeLbug()
     // is called even if an error occurs — the module-level singleton DB handle
@@ -1197,11 +1212,20 @@ export async function runFullAnalysis(
       //    self-acknowledged as best-effort; `--force` remains the
       //    escape hatch documented in GUARDRAILS.md.
       //
-      //    `queryImporters` reads `IMPORTS` from the pre-pipeline DB
+      //    `queryImportersBatch` reads `IMPORTS` from the pre-pipeline DB
       //    state, so the result is "files that USED TO import the
       //    target" — exactly the set whose previously-stored edges may
       //    no longer match what cross-file resolution produces this run.
       const MAX_IMPORTER_BFS_DEPTH = 4;
+      // Escalation cap (#2409): above this fraction of the repo's files, the
+      // surgical delete-and-COPY writeback is replaced by the full-rebuild
+      // write plan (wipe + bulk COPY of the already-built graph) below.
+      const INCREMENTAL_MAX_WRITE_FRACTION = 0.5;
+      // …but only at a scale where the surgical plan's overhead is real. Tiny
+      // repos hit huge fractions from a single edit (7 files → one touch can
+      // pull in 5) while both write plans finish in well under a second there —
+      // escalating would churn the DB files for nothing.
+      const INCREMENTAL_ESCALATION_MIN_FILES = 50;
       const writableFiles = new Set<string>(hashDiff.toWrite);
       const directlyChangedCount = writableFiles.size;
       const dirtyStartedAt = existingMeta!.incrementalInProgress?.startedAt ?? Date.now();
@@ -1222,14 +1246,14 @@ export async function runFullAnalysis(
         });
       };
 
-      // Shadow-seed: for ADDED files, queryImporters returns 0 (the new
+      // Shadow-seed: for ADDED files, the importer query returns 0 (the new
       // file has no IMPORTS rows in the pre-pipeline DB yet). But pre-
       // existing unchanged files may have IMPORTS edges whose module-
       // resolution claim the newcomer can steal under standard JS/TS
       // resolution (Bugbot review on PR #1479). For each added file we
       // derive the shadow candidates and, if the candidate was a known
       // file in the prior meta, seed it into the BFS frontier so its
-      // importers — surfaced via queryImporters — get their CALLS edges
+      // importers — surfaced via the importer BFS — get their CALLS edges
       // re-resolved against the new file. See shadow-candidates.ts for
       // the full pattern catalogue.
       const priorFileSet = new Set<string>(
@@ -1245,21 +1269,19 @@ export async function runFullAnalysis(
       }
 
       {
+        // Batched per depth level (#2409): one IN-list query per ~200-path
+        // chunk instead of one query per frontier file — a ~700-file frontier
+        // used to cost ~700 sequential lock-taking round-trips (~5.6s). The
+        // closure is identical: importers already in writableFiles are not
+        // re-frontiered, exactly like the per-file loop's membership check.
         let frontier: string[] = [...hashDiff.toWrite, ...hashDiff.deleted, ...shadowSeed];
         for (let depth = 0; depth < MAX_IMPORTER_BFS_DEPTH && frontier.length > 0; depth++) {
+          const importers = await queryImportersBatch(frontier);
           const nextFrontier: string[] = [];
-          for (const f of frontier) {
-            try {
-              const importers = await queryImporters(f);
-              for (const i of importers) {
-                if (!writableFiles.has(i)) {
-                  writableFiles.add(i);
-                  nextFrontier.push(i);
-                }
-              }
-            } catch {
-              /* per-file importer query failure → skip; correctness degrades on
-                 that branch, but DB stays writable. */
+          for (const i of importers) {
+            if (!writableFiles.has(i)) {
+              writableFiles.add(i);
+              nextFrontier.push(i);
             }
           }
           frontier = nextFrontier;
@@ -1295,7 +1317,7 @@ export async function runFullAnalysis(
       //    leave stale rows or PK-conflict at COPY time.
       const effectiveWriteSet = computeEffectiveWriteSet(pipelineResult.graph, writableFiles);
       // Deduped: deleted entries may already appear via importer-BFS
-      // expansion (queryImporters can return a now-deleted path), which
+      // expansion (the importer BFS can return a now-deleted path), which
       // would otherwise call deleteNodesForFile twice for the same file
       // (Bugbot LOW finding on PR #1479).
       const filesToDelete = [...new Set([...effectiveWriteSet, ...hashDiff.deleted])];
@@ -1305,66 +1327,128 @@ export async function runFullAnalysis(
         effectiveWriteCount: effectiveWriteSet.size,
         deleteCount: filesToDelete.length,
       });
-      for (let i = 0; i < filesToDelete.length; i++) {
-        const f = filesToDelete[i];
-        try {
-          await deleteNodesForFile(f);
-        } catch {
-          /* file may not have rows (e.g. an unparseable file) — fine */
+
+      // Escalation valve (#2409): when the effective write set covers most of
+      // the repo, per-file surgery is strictly worse than the proven
+      // wipe-and-bulk-COPY plan — the same data volume lands either way, but
+      // the surgical plan pays per-table deletes plus COPY-into-non-empty
+      // tables, and at this size it measured SLOWER than a full DB load. The
+      // pipeline already produced the FULL graph (it always does), so only the
+      // DB write plan changes here; fileHashes/meta bookkeeping is identical.
+      // 0.5 is a coarse crossover knob, not a tuned constant — lower it if
+      // surgical writebacks above ~30% ever measure slower than the full COPY.
+      const writeFraction = effectiveWriteSet.size / Math.max(1, allFilePaths.length);
+      if (
+        filesToDelete.length >= INCREMENTAL_ESCALATION_MIN_FILES &&
+        writeFraction > INCREMENTAL_MAX_WRITE_FRACTION
+      ) {
+        log(
+          `Incremental: effective write set covers ${effectiveWriteSet.size}/${allFilePaths.length} ` +
+            `files (${Math.round(writeFraction * 100)}%) — switching to a full DB write ` +
+            `(wipe + bulk COPY) for this run; file-level incremental bookkeeping is unaffected.`,
+        );
+        // toWriteCount: 0 is the established full-path dirty-flag sentinel;
+        // the real counters ride along for crash diagnostics.
+        await saveIncrementalDirtyState('escalated-full-write', {
+          toWriteCount: 0,
+          importerExpansion,
+          shadowSeedCount: shadowSeed.length,
+          effectiveWriteCount: effectiveWriteSet.size,
+          deleteCount: filesToDelete.length,
+        });
+        // Strategy switch: stop the checkpoint driver around the close so its
+        // in-flight CHECKPOINT can't race the reopen, drop the DB files
+        // (sidecars included), and bulk-load the full graph into a fresh DB —
+        // byte-for-byte the full-rebuild write plan.
+        await walCheckpointDriver.stop();
+        await closeLbug();
+        for (const f of [lbugPath, `${lbugPath}.wal`, `${lbugPath}.shadow`, `${lbugPath}.lock`]) {
+          try {
+            await fs.rm(f, { recursive: true, force: true });
+          } catch {
+            /* swallow */
+          }
         }
-        if (i % 20 === 0) {
-          progress('lbug', 62, `Removing rows for changed files (${i}/${filesToDelete.length})...`);
+        await initLbug(lbugPath);
+        walCheckpointDriver = startWalCheckpointDriver();
+        await loadGraphToLbug(pipelineResult.graph, pipelineResult.repoPath, storagePath, (msg) => {
+          lbugMsgCount++;
+          const pct = Math.min(84, 65 + Math.round((lbugMsgCount / (lbugMsgCount + 10)) * 19));
+          progress('lbug', pct, msg);
+        });
+      } else {
+        // 1a. Remove the write set's existing rows — batched (#2409): one
+        //     DETACH DELETE per table per 200-file chunk. The former per-file
+        //     loop issued a count + delete per table per FILE — ~13k
+        //     single-row write transactions on a ~700-file write set — which
+        //     made this phase slower than a full rebuild and is the WAL-append
+        //     storm behind the native mid-writeback deaths in #2409. Errors
+        //     are NOT swallowed anymore: a zero-match file is a no-op by
+        //     construction, so anything thrown is a real engine failure that
+        //     must surface instead of silently skipping (that silent skip was
+        //     how #2409 hid its root cause).
+        progress('lbug', 62, `Removing rows for changed files (0/${filesToDelete.length})...`);
+        await deleteNodesForFiles(filesToDelete, {
+          onChunk: (done, total) =>
+            progress('lbug', 62, `Removing rows for changed files (${done}/${total})...`),
+        });
+        // 2. Drop graph-wide nodes (Community, Process). They'll be re-inserted
+        //    from the fresh pipeline output below. Required for the
+        //    "Leiden runs on the FULL graph" correctness invariant.
+        await deleteAllCommunitiesAndProcesses();
+        // 2a. Drop INJECTS edges (DI collection injection, #2200) — their
+        //     validity is a whole-program property (a third-file change to the
+        //     interface or an implementer creates/invalidates edges between two
+        //     untouched files), so endpoint-writability extraction can't refresh
+        //     them; extractChangedSubgraph re-includes all of them from the
+        //     fresh graph (isGraphWideRelType). UNCONDITIONAL, next to the
+        //     Communities delete — NOT inside the `options.pdg` block below: the
+        //     di phase runs on every persisting analyze (same !skipGraphPhases
+        //     regime as communities/processes) while the graph-wide re-include
+        //     is unconditional, so a pdg-gated delete would append without
+        //     deleting on every non-pdg incremental run (N runs = N copies of
+        //     every INJECTS row; CodeRelation has no PK and no read-side dedup).
+        await deleteAllInjects();
+        // 2b. Drop interprocedural TAINT_PATH edges (#2084 M4 U6) when pdg is on
+        //     — their validity is a whole-program property (an A→C flow can be
+        //     invalidated by a change to an intermediate function on a third
+        //     file), so endpoint-writability extraction can't refresh them.
+        //     extractChangedSubgraph re-includes all of them from the fresh
+        //     graph (isGraphWideRelType), mirroring Community/Process.
+        if (options.pdg === true) {
+          await deleteAllInterprocTaintPaths();
+          // 2c. Drop CALL_SUMMARY edges (PDG FU-C) on an incremental `--pdg`
+          //     writeback. They are re-included from the FULL fresh graph
+          //     (isGraphWideRelType) and the callSummaries phase recomputes every
+          //     summary each run, so delete-all-then-rebuild keeps an unchanged
+          //     function's summary from being lost — same contract as TAINT_PATH.
+          await deleteAllCallSummaries();
         }
-      }
-      // 2. Drop graph-wide nodes (Community, Process). They'll be re-inserted
-      //    from the fresh pipeline output below. Required for the
-      //    "Leiden runs on the FULL graph" correctness invariant.
-      await deleteAllCommunitiesAndProcesses();
-      // 2a. Drop INJECTS edges (DI collection injection, #2200) — their
-      //     validity is a whole-program property (a third-file change to the
-      //     interface or an implementer creates/invalidates edges between two
-      //     untouched files), so endpoint-writability extraction can't refresh
-      //     them; extractChangedSubgraph re-includes all of them from the
-      //     fresh graph (isGraphWideRelType). UNCONDITIONAL, next to the
-      //     Communities delete — NOT inside the `options.pdg` block below: the
-      //     di phase runs on every persisting analyze (same !skipGraphPhases
-      //     regime as communities/processes) while the graph-wide re-include
-      //     is unconditional, so a pdg-gated delete would append without
-      //     deleting on every non-pdg incremental run (N runs = N copies of
-      //     every INJECTS row; CodeRelation has no PK and no read-side dedup).
-      await deleteAllInjects();
-      // 2b. Drop interprocedural TAINT_PATH edges (#2084 M4 U6) when pdg is on
-      //     — their validity is a whole-program property (an A→C flow can be
-      //     invalidated by a change to an intermediate function on a third
-      //     file), so endpoint-writability extraction can't refresh them.
-      //     extractChangedSubgraph re-includes all of them from the fresh
-      //     graph (isGraphWideRelType), mirroring Community/Process.
-      if (options.pdg === true) {
-        await deleteAllInterprocTaintPaths();
-        // 2c. Drop CALL_SUMMARY edges (PDG FU-C) on an incremental `--pdg`
-        //     writeback. They are re-included from the FULL fresh graph
-        //     (isGraphWideRelType) and the callSummaries phase recomputes every
-        //     summary each run, so delete-all-then-rebuild keeps an unchanged
-        //     function's summary from being lost — same contract as TAINT_PATH.
-        await deleteAllCallSummaries();
+
+        // 3. Extract the changed subgraph from the FULL ctx.graph and write
+        //    only that. Unchanged-file rows in the DB stay untouched. Pass
+        //    the SAME effectiveWriteSet so the subgraph and the deletes
+        //    cover identical files (asymmetry would silently corrupt).
+        const subgraph = extractChangedSubgraph(pipelineResult.graph, effectiveWriteSet);
+        await saveIncrementalDirtyState('load-graph', {
+          importerExpansion,
+          shadowSeedCount: shadowSeed.length,
+          effectiveWriteCount: effectiveWriteSet.size,
+          deleteCount: filesToDelete.length,
+        });
+        await loadGraphToLbug(subgraph, pipelineResult.repoPath, storagePath, (msg) => {
+          lbugMsgCount++;
+          const pct = Math.min(84, 65 + Math.round((lbugMsgCount / (lbugMsgCount + 10)) * 19));
+          progress('lbug', pct, msg);
+        });
       }
 
-      // 3. Extract the changed subgraph from the FULL ctx.graph and write
-      //    only that. Unchanged-file rows in the DB stay untouched. Pass
-      //    the SAME effectiveWriteSet so the subgraph and the deletes
-      //    cover identical files (asymmetry would silently corrupt).
-      const subgraph = extractChangedSubgraph(pipelineResult.graph, effectiveWriteSet);
-      await saveIncrementalDirtyState('load-graph', {
-        importerExpansion,
-        shadowSeedCount: shadowSeed.length,
-        effectiveWriteCount: effectiveWriteSet.size,
-        deleteCount: filesToDelete.length,
-      });
-      await loadGraphToLbug(subgraph, pipelineResult.repoPath, storagePath, (msg) => {
-        lbugMsgCount++;
-        const pct = Math.min(84, 65 + Math.round((lbugMsgCount / (lbugMsgCount + 10)) * 19));
-        progress('lbug', pct, msg);
-      });
+      // Boundary drain (#2409): checkpoint at the end of the incremental
+      // writeback so the WAL it accumulated never lingers into the FTS and
+      // embedding phases — a later crash leaves only post-checkpoint WAL for
+      // the next open to replay. Near-instant when the periodic driver has
+      // kept up; rides the driver's bounded retry via runCheckpointWithRetry.
+      await checkpointOnce();
     } else {
       // ── Full rebuild ───────────────────────────────────────────────
       // Pass the streamed PDG-emit manifest (#2202) so the BasicBlock layer that

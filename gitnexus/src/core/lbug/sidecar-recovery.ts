@@ -429,6 +429,59 @@ export async function finalizeLbugSidecarsAfterClose(
   }
 }
 
+/**
+ * Move the WAL/shadow sidecars aside before a dirty-flag recovery rebuild
+ * (#2409 defect 2).
+ *
+ * When `incrementalInProgress` forces a full rebuild, the previous run
+ * died mid-writeback — its WAL can be poisoned in a way that natively
+ * kills the process on replay. The recovery run used to open the DB
+ * BEFORE the rebuild wipe (the embedding-cache preservation open), replay
+ * the poisoned WAL, and die on the spot — so recovery never happened and
+ * only a manual rename-aside of the index dir escaped the loop. The
+ * rebuild discards every pending WAL byte anyway (the DB files are wiped),
+ * so parking the sidecars first costs nothing and makes every subsequent
+ * open replay-free.
+ *
+ * Renamed, never deleted — same philosophy as
+ * {@link quarantineWalForMissingShadow} — so the bytes stay available for
+ * post-mortem debugging. Fixed destination names (no timestamp) cap the
+ * accumulation at one parked file per sidecar across repeated crashes.
+ * Best-effort: a rename refusal (file lock, permissions) logs and falls
+ * through — no worse than today's behavior of opening in place.
+ */
+export async function quarantineSidecarsForDirtyRecovery(
+  dbPath: string,
+  log: (message: string) => void,
+): Promise<string[]> {
+  const moved: string[] = [];
+  for (const suffix of ['.wal', '.shadow'] as const) {
+    const from = `${dbPath}${suffix}`;
+    try {
+      if (!(await statIfExists(from))) continue;
+      const to = `${from}.dirty-recovery`;
+      // Windows rename-onto-existing fails — drop a stale parked copy first.
+      await fs.rm(to, { force: true });
+      await fs.rename(from, to);
+      moved.push(to);
+    } catch (err) {
+      if (!missing(err)) {
+        log(
+          `Warning: could not move ${path.basename(from)} aside before the recovery rebuild ` +
+            `(${(err as Error).message}); the rebuild will wipe it in place instead.`,
+        );
+      }
+    }
+  }
+  if (moved.length > 0) {
+    log(
+      `Parked ${moved.map((p) => path.basename(p)).join(', ')} from the interrupted run ` +
+        'so the recovery rebuild opens without replaying it.',
+    );
+  }
+  return moved;
+}
+
 export async function listQuarantinedMissingShadowWals(dbPath: string): Promise<string[]> {
   const dir = path.dirname(dbPath);
   const base = path.basename(dbPath);

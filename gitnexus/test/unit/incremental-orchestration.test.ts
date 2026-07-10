@@ -240,6 +240,135 @@ describe('runFullAnalysis — incremental orchestration', () => {
     }
   }, 600_000);
 
+  // #2409: a large-fraction effective write set must escalate to the full DB
+  // write plan (wipe + bulk COPY of the already-built graph) instead of the
+  // surgical per-file writeback — at that size the surgical plan measured
+  // SLOWER than a full load and its delete storm is the write pattern behind
+  // the reported native mid-writeback deaths. The escalated result must be
+  // indistinguishable from a --force rebuild of the same state.
+  it('a hub edit whose write set covers most of a large repo escalates to the full DB write plan (#2409)', async () => {
+    const repo = await setupMiniRepo();
+    try {
+      // Grow the repo past INCREMENTAL_ESCALATION_MIN_FILES (50) with a hub
+      // imported by every generated file: touching the hub pulls the whole
+      // family into the importer closure → write fraction ≈ 100% > 50%.
+      const src = path.join(repo.dbPath, 'src');
+      await writeFile(
+        path.join(src, 'hub.ts'),
+        'export function hubValue(x: number): number {\n  return x + 1;\n}\n',
+        'utf-8',
+      );
+      for (let i = 0; i < 60; i++) {
+        await writeFile(
+          path.join(src, `spoke-${String(i).padStart(3, '0')}.ts`),
+          `import { hubValue } from './hub';\n\nexport function spoke${i}(): number {\n  return hubValue(${i});\n}\n`,
+          'utf-8',
+        );
+      }
+      gitCommitAll(repo.dbPath, 'add hub + spokes');
+
+      const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
+      await runFullAnalysis(repo.dbPath, { skipAgentsMd: true }, { onProgress: () => {} });
+
+      // Touch the hub — comment-only, so graph stats must be preserved.
+      const hub = path.join(src, 'hub.ts');
+      await writeFile(hub, (await readFile(hub, 'utf-8')) + '// escalation touch\n', 'utf-8');
+
+      const logs: string[] = [];
+      const incremental = await runFullAnalysis(
+        repo.dbPath,
+        { skipAgentsMd: true },
+        { onProgress: () => {}, onLog: (m) => logs.push(m) },
+      );
+      expect(incremental.alreadyUpToDate).toBeUndefined();
+      const joined = logs.join('\n');
+      // The importer expansion fired AND the valve rerouted the write plan.
+      expect(joined).toContain('importer(s) added to writable set');
+      expect(joined).toContain('switching to a full DB write');
+
+      const { storagePath } = getStoragePaths(repo.dbPath);
+      const escalatedMeta = await loadMeta(storagePath);
+      expect(escalatedMeta).not.toBeNull();
+      // Dirty flag cleared on success — the escalated plan converges on the
+      // same meta-save as every other successful run.
+      expect(escalatedMeta!.incrementalInProgress).toBeUndefined();
+
+      // The escalated write must be indistinguishable from --force on the
+      // same state: any stale surviving row would show up as a stats delta.
+      await runFullAnalysis(
+        repo.dbPath,
+        { skipAgentsMd: true, force: true },
+        { onProgress: () => {} },
+      );
+      const forcedMeta = await loadMeta(storagePath);
+      expect(escalatedMeta!.stats?.files).toBe(forcedMeta!.stats?.files);
+      expect(escalatedMeta!.stats?.nodes).toBe(forcedMeta!.stats?.nodes);
+      expect(escalatedMeta!.stats?.edges).toBe(forcedMeta!.stats?.edges);
+      expect(escalatedMeta!.stats?.communities).toBe(forcedMeta!.stats?.communities);
+      expect(escalatedMeta!.stats?.processes).toBe(forcedMeta!.stats?.processes);
+    } finally {
+      await repo.cleanup();
+    }
+  }, 600_000);
+
+  // #2409 defect 2: the dirty-flag recovery rebuild used to open the crashed
+  // DB (embedding-cache preservation) BEFORE the rebuild wipe — replaying
+  // whatever WAL the crashed writeback left behind. A poisoned WAL kills that
+  // open natively, so recovery never ran and only a manual rename-aside of
+  // the index dir escaped. The recovery path must park the WAL/shadow
+  // sidecars aside before ANY open.
+  it('dirty-flag recovery parks the crashed run WAL/shadow sidecars before reopening (#2409)', async () => {
+    const repo = await setupMiniRepo();
+    try {
+      const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
+      await runFullAnalysis(repo.dbPath, { skipAgentsMd: true }, { onProgress: () => {} });
+
+      // Simulate a crashed incremental writeback: dirty flag in meta plus
+      // leftover sidecars whose bytes must never be replayed. 8KB puts the
+      // WAL above the tiny-orphan threshold — the state the sidecar
+      // preflight deliberately leaves in place for engine replay.
+      const { storagePath, lbugPath } = getStoragePaths(repo.dbPath);
+      const meta = await loadMeta(storagePath);
+      const tampered: RepoMeta = {
+        ...meta!,
+        incrementalInProgress: {
+          startedAt: Date.now() - 60_000,
+          toWriteCount: 12,
+          phase: 'load-graph',
+        },
+      };
+      await saveMeta(storagePath, tampered);
+      const walGarbage = Buffer.alloc(8192, 0xab);
+      const shadowGarbage = Buffer.alloc(4096, 0xcd);
+      await writeFile(`${lbugPath}.wal`, walGarbage);
+      await writeFile(`${lbugPath}.shadow`, shadowGarbage);
+
+      const logs: string[] = [];
+      const recovered = await runFullAnalysis(
+        repo.dbPath,
+        { skipAgentsMd: true },
+        { onProgress: () => {}, onLog: (m) => logs.push(m) },
+      );
+      expect(recovered.alreadyUpToDate).toBeUndefined();
+
+      // Both sidecars were parked verbatim (renamed, never deleted) before
+      // any open could replay them…
+      expect(Buffer.compare(await readFile(`${lbugPath}.wal.dirty-recovery`), walGarbage)).toBe(0);
+      expect(
+        Buffer.compare(await readFile(`${lbugPath}.shadow.dirty-recovery`), shadowGarbage),
+      ).toBe(0);
+      expect(logs.join('\n')).toContain(
+        'Parked lbug.wal.dirty-recovery, lbug.shadow.dirty-recovery',
+      );
+
+      // …and the rebuild completed into a clean index: dirty flag cleared.
+      const after = await loadMeta(storagePath);
+      expect(after!.incrementalInProgress).toBeUndefined();
+    } finally {
+      await repo.cleanup();
+    }
+  }, 300_000);
+
   it('a stale incrementalInProgress flag at startup forces a full rebuild that clears it', async () => {
     const repo = await setupMiniRepo();
     try {
