@@ -41,11 +41,13 @@ export const en = {
   'clean.deleteBranch': 'This will delete the branch index "{{branch}}" at: {{path}}',
   'clean.deletedBranch': 'Deleted branch index: {{branch}}',
   'clean.lbugSidecars.state': 'LadybugDB sidecar state: {{state}}',
-  'clean.lbugSidecars.none': 'No quarantined LadybugDB missing-shadow WAL sidecars found.',
+  'clean.lbugSidecars.none':
+    'No parked LadybugDB recovery sidecars found (missing-shadow WAL quarantines or dirty-recovery parks).',
   'clean.lbugSidecars.preview':
-    'This will delete {{count}} quarantined LadybugDB missing-shadow WAL sidecar(s):',
-  'clean.lbugSidecars.deleted':
-    'Deleted {{count}} quarantined LadybugDB missing-shadow WAL sidecar(s).',
+    'This will delete {{count}} parked LadybugDB recovery sidecar(s) (missing-shadow WAL quarantines and dirty-recovery parks):',
+  'clean.lbugSidecars.deleted': 'Deleted {{count}} parked LadybugDB recovery sidecar(s).',
+  'clean.lbugSidecars.failed':
+    'Could not delete {{count}} locked file(s) — stop the process holding them (GitNexus MCP/serve or an antivirus scan) and re-run:',
   'remove.nothingToRemove': 'Nothing to remove: {{message}}',
   'remove.deleteTarget': 'This will delete the GitNexus index for: {{name}}',
   'remove.removed': 'Removed: {{name}}',
@@ -216,7 +218,8 @@ export const en = {
   'help.option.uninstall.force': 'Apply the changes (default is a dry-run preview)',
   'help.option.clean.all': 'Clean all indexed repos',
   'help.option.clean.branch': 'Delete only the named branch index (not the workspace index)',
-  'help.option.clean.lbugSidecars': 'Clean quarantined LadybugDB missing-shadow WAL sidecars',
+  'help.option.clean.lbugSidecars':
+    'Clean parked LadybugDB recovery sidecars (missing-shadow WAL quarantines and dirty-recovery parks)',
   'help.option.wiki.force': 'Force full regeneration even if up to date',
   'help.option.wiki.provider':
     'LLM provider: openai, openrouter, azure, custom, cursor, claude, codex, or opencode (default: openai)',

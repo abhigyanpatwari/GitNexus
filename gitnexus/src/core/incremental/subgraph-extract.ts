@@ -22,7 +22,7 @@
  *
  * `extractChangedSubgraph` intentionally does NOT expand the set it is
  * given — expansion is the orchestrator's job, so the SAME expanded set
- * can be fed to both `deleteNodesForFile` and this function (asymmetry
+ * can be fed to both `deleteNodesForFiles` and this function (asymmetry
  * between the delete set and the write set silently corrupts the DB).
  * `computeEffectiveWriteSet` below performs the boundary-crossing 1-hop
  * walk; the orchestrator composes it with its importer-BFS expansion and
@@ -134,7 +134,7 @@ export const extractChangedSubgraph = (
  * deleted + rewritten in lockstep with the changed side.
  *
  * Single pass over the edge list. Does NOT mutate `toWriteSet`. The
- * orchestrator MUST feed the returned set to both `deleteNodesForFile`
+ * orchestrator MUST feed the returned set to both `deleteNodesForFiles`
  * and `extractChangedSubgraph` — feeding the unexpanded set to either
  * one leaves stale rows or PK-conflicts at COPY time.
  */

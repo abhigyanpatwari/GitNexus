@@ -459,7 +459,10 @@ export function createLbugDatabase(
 //   1. OPEN_LOCK_RETRY_ATTEMPTS / OPEN_LOCK_RETRY_DELAY_MS  (this file)
 //      → `new lbug.Database()` constructor lock failures
 //   2. HANDLE_RELEASE_PROBE_ATTEMPTS / HANDLE_RELEASE_PROBE_DELAY_MS  (this file)
-//      → post-close fs.open probe to absorb Windows handle-release lag
+//      → post-close fs.open probe to absorb Windows handle-release lag; also
+//        the shared budget for wipeLbugDbFiles' ENOENT-verified removal
+//        (lbug-adapter.ts) and the dirty-recovery sidecar park's
+//        rename/rm retries (sidecar-recovery.ts) — same lock class
 //   3. DB_LOCK_RETRY_ATTEMPTS / DB_LOCK_RETRY_DELAY_MS  (lbug-adapter.ts withLbugDb)
 //      → query-time busy/lock retry around already-open connections
 //
@@ -478,8 +481,13 @@ export function createLbugDatabase(
 const OPEN_LOCK_RETRY_ATTEMPTS = 5;
 const OPEN_LOCK_RETRY_DELAY_MS = 100;
 
-const HANDLE_RELEASE_PROBE_ATTEMPTS = 5;
-const HANDLE_RELEASE_PROBE_DELAY_MS = 50;
+// Exported (this shipping review, FIX 1/2): the dirty-recovery sidecar park
+// (sidecar-recovery.ts) and the ENOENT-verified wipe (lbug-adapter.ts
+// wipeLbugDbFiles) retry the SAME Windows handle-release/AV lock class, and
+// their previous private mirror constants were documentation-coupled copies
+// that could drift from this tuning-knob registry silently.
+export const HANDLE_RELEASE_PROBE_ATTEMPTS = 5;
+export const HANDLE_RELEASE_PROBE_DELAY_MS = 50;
 const HANDLE_RELEASE_LOCK_CODES = new Set(['EBUSY', 'EPERM', 'EACCES']);
 
 /**
@@ -546,7 +554,10 @@ const isTestFixturePath = (dbPath: string): boolean => {
 /** Exported only for direct unit testing — production callers use `openWithLockRetry`. */
 export const _isTestFixturePathForTest = isTestFixturePath;
 
-const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+// Exported alongside HANDLE_RELEASE_PROBE_* (this shipping review, FIX 1/2)
+// so the consumers of the shared retry budget do not each grow a private copy.
+export const sleep = (ms: number): Promise<void> =>
+  new Promise((resolve) => setTimeout(resolve, ms));
 
 /**
  * Attempt to remove stale `.wal` / `.lock` sidecars that a previous aborted

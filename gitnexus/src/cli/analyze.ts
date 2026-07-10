@@ -13,7 +13,7 @@ import os from 'os';
 import { spawn } from 'child_process';
 import v8 from 'v8';
 import cliProgress from 'cli-progress';
-import { isLbugReady } from '../core/lbug/lbug-adapter.js';
+import { isLbugReady, LbugWipeError } from '../core/lbug/lbug-adapter.js';
 import { boundedCheckpointBeforeExit } from '../core/lbug/shutdown-helpers.js';
 import {
   isLbugCheckpointIoError,
@@ -1615,6 +1615,22 @@ const analyzeCommandImpl = async (
           `    (Try 33554432 = 32 MiB on small-disk / CI runners.)\n`,
         { recoveryHint: 'wal-checkpoint-threshold' },
       );
+      process.exitCode = 1;
+      return;
+    }
+
+    // DB-family wipe failure (#2409, tri-review 4669518496 P2-4): the rebuild
+    // could not verify the LadybugDB file family was removed — usually another
+    // process (MCP server, serve worker, antivirus) holding the index open.
+    // Keyed on the error *type* (repo norm from #2385), never message text.
+    // The message itself is fully self-contained (survivor paths + stop-MCP /
+    // AV-exclusion / re-run guidance) because the serve worker forwards only
+    // `err.message` over IPC — this branch just renders it without the
+    // raw-stack fallback below.
+    if (err instanceof LbugWipeError) {
+      cliError(`  ${msg.replace(/\n/g, '\n  ')}\n`, {
+        recoveryHint: 'lbug-wipe-failed',
+      });
       process.exitCode = 1;
       return;
     }

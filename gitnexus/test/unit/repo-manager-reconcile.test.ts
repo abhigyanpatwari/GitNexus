@@ -241,10 +241,19 @@ describe('runFullAnalysis metadata reconciliation (mocked pipeline)', () => {
       executeQuery: vi.fn(async () => []),
       executeWithReusedStatement: vi.fn(async () => []),
       closeLbug: vi.fn(async () => undefined),
+      // Full-rebuild wipe is loud now (#2409, tri-review 4669518496 P2-4) —
+      // run-analyze calls this on every full-path analyze.
+      wipeLbugDbFiles: vi.fn(async () => undefined),
       loadCachedEmbeddings: vi.fn(async () => ({ embeddingNodeIds: new Set(), embeddings: [] })),
       deleteNodesForFile: vi.fn(async () => undefined),
+      // Batched incremental APIs (#2409) — consumed UNCONDITIONALLY by
+      // run-analyze's incremental branch; a wholesale factory without them is
+      // a latent TypeError the moment a mocked run goes incremental
+      // (tri-review 4669518496 accuracy sweep).
+      deleteNodesForFiles: vi.fn(async () => undefined),
       deleteAllCommunitiesAndProcesses: vi.fn(async () => undefined),
       queryImporters: vi.fn(async () => []),
+      queryImportersBatch: vi.fn(async () => []),
       loadFTSExtension: vi.fn(async () => false),
     }));
     vi.doMock('../../src/core/search/fts-indexes.js', () => ({

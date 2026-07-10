@@ -18,9 +18,9 @@ import {
   UnsafeStoragePathError,
 } from '../storage/repo-manager.js';
 import {
-  cleanQuarantinedMissingShadowWals,
+  cleanParkedLbugSidecars,
   inspectLbugSidecars,
-  listQuarantinedMissingShadowWals,
+  listParkedLbugSidecars,
 } from '../core/lbug/sidecar-recovery.js';
 import { t } from './i18n/index.js';
 
@@ -83,7 +83,13 @@ export const cleanCommand = async (options?: {
 
     const lbugPath = path.join(repo.storagePath, 'lbug');
     const state = await inspectLbugSidecars(lbugPath);
-    const quarantined = await listQuarantinedMissingShadowWals(lbugPath);
+    // Single roster authority (this shipping review, FIX 5): the aggregate
+    // covers both parked-sidecar families — the timestamped missing-shadow
+    // WAL quarantines AND the fixed-name `.dirty-recovery` parks (`.next`
+    // residues included) left by a dirty-flag recovery rebuild (#2409). The
+    // previous inline concatenations here were how the `.next` residue
+    // stayed invisible to this surface.
+    const quarantined = await listParkedLbugSidecars(lbugPath);
 
     console.log(t('clean.lbugSidecars.state', { state: state.kind }));
     if (quarantined.length === 0) {
@@ -100,8 +106,16 @@ export const cleanCommand = async (options?: {
       return;
     }
 
-    const deleted = await cleanQuarantinedMissingShadowWals(lbugPath);
+    const { deleted, failed } = await cleanParkedLbugSidecars(lbugPath);
     console.log(t('clean.lbugSidecars.deleted', { count: deleted.length }));
+    // A locked parked file no longer crashes the clean mid-command (FIX 5)
+    // — the rest were deleted above; report what remains and why.
+    if (failed.length > 0) {
+      console.log(t('clean.lbugSidecars.failed', { count: failed.length }));
+      for (const file of failed) {
+        console.log(`  - ${file}`);
+      }
+    }
     return;
   }
 

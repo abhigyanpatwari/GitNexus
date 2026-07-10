@@ -41,6 +41,7 @@ import {
 import { rankExactEmbeddingRows, type ExactEmbeddingRow } from './exact-search.js';
 import { EMBEDDING_TABLE_NAME, EMBEDDING_INDEX_NAME, STALE_HASH_SENTINEL } from '../lbug/schema.js';
 import { loadVectorExtension, createVectorIndex } from '../lbug/lbug-adapter.js';
+import { escapeCypherString } from '../lbug/cypher-escape.js';
 import type { ExtensionInstallPolicy } from '../lbug/extension-loader.js';
 import { getExactScanLimit } from '../platform/capabilities.js';
 import { logger } from '../logger.js';
@@ -223,8 +224,15 @@ export const batchInsertEmbeddings = async (
  * `executeQuery` (prepared `conn.prepare()`): LadybugDB cannot prepare that
  * procedure and fails with "We do not support prepare multiple statements" —
  * the silent degrade in #2114.
+ *
+ * Exported for run-analyze's wipe-and-restore seam (tri-review 4669518496
+ * P1): a full-rebuild/escalated write wipes the DB files — index included —
+ * and a preserve-only run restores embedding ROWS without ever reaching the
+ * pipeline call sites below, so the orchestrator recreates the index through
+ * this same policy-gated, warn-on-failure entry point. Consumed there via
+ * dynamic import only (lazy-embeddings convention, #2370).
  */
-const buildVectorIndex = async (): Promise<boolean> => {
+export const buildVectorIndex = async (): Promise<boolean> => {
   // This pre-check applies the embedding-specific install policy
   // (resolveEmbeddingInstallPolicy, default `auto` for analyze) before reaching
   // the adapter. The adapter's createVectorIndex() calls loadVectorExtension()
@@ -708,7 +716,7 @@ export const semanticSearch = async (
   const results: SemanticSearchResult[] = [];
 
   for (const [label, items] of byLabel) {
-    const idList = items.map((i) => `'${i.nodeId.replace(/'/g, "''")}'`).join(', ');
+    const idList = items.map((i) => `'${escapeCypherString(i.nodeId)}'`).join(', ');
     try {
       const nodeQuery = `
         MATCH (n:\`${label}\`) WHERE n.id IN [${idList}]

@@ -2,9 +2,9 @@
  * Shadow-candidate path derivation for incremental indexing.
  *
  * Background — Bugbot review on PR #1479:
- *   queryImporters() on a NEWLY ADDED file returns 0 importers in the
- *   pre-pipeline DB, because the new file's IMPORTS rows haven't been
- *   written yet. But pre-existing files may have IMPORTS edges that
+ *   the importer BFS (queryImportersBatch) on a NEWLY ADDED file returns
+ *   0 importers in the pre-pipeline DB, because the new file's IMPORTS
+ *   rows haven't been written yet. But pre-existing files may have IMPORTS edges that
  *   *resolved to a sibling path*, and the newcomer can now steal that
  *   resolution under standard JS/TS module-resolution rules. Without
  *   pulling those pre-existing files into the writable set, their

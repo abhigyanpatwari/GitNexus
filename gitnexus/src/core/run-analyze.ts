@@ -23,14 +23,18 @@ import {
   closeLbug,
   closeLbugBeforeExit,
   loadCachedEmbeddings,
-  deleteNodesForFile,
+  deleteNodesForFiles,
   deleteAllCommunitiesAndProcesses,
   deleteAllInterprocTaintPaths,
   deleteAllCallSummaries,
   deleteAllInjects,
-  queryImporters,
+  queryImportersBatch,
   loadFTSExtension,
+  wipeLbugDbFiles,
+  LbugWipeError,
+  DELETE_FILES_CHUNK_SIZE,
 } from './lbug/lbug-adapter.js';
+import { escapeCypherString } from './lbug/cypher-escape.js';
 import {
   createSearchFTSIndexes,
   initialiseSearchFTSStemmer,
@@ -45,8 +49,10 @@ import { getExtensionCapabilities, resolveAnalyzeInstallPolicy } from './lbug/ex
 import { diagnoseExtensionLoad } from './lbug/extension-load-error.js';
 import {
   startWalCheckpointDriver,
+  checkpointOnce,
   type WalCheckpointDriver,
 } from './lbug/wal-checkpoint-driver.js';
+import { quarantineSidecarsForDirtyRecovery } from './lbug/sidecar-recovery.js';
 import {
   getStoragePaths,
   resolveBranchPlacement,
@@ -87,6 +93,7 @@ import {
   computeEffectiveWriteSet,
 } from './incremental/subgraph-extract.js';
 import { shadowCandidatesFor } from './incremental/shadow-candidates.js';
+import { shouldEscalateIncrementalWrite } from './incremental/escalation-gate.js';
 import {
   loadParseCache,
   saveParseCache,
@@ -644,6 +651,20 @@ export async function runFullAnalysis(
           'Run `gitnexus analyze` first to create the initial index, then retry `--repair-fts`.',
       );
     }
+    if (existingMeta.incrementalInProgress) {
+      // #2409 / tri-review 4669518496 (R6): a dirty flag means the previous
+      // run died mid-writeback — the graph may be half-written and its WAL
+      // possibly poisoned. This branch returns early, so the dirty-recovery
+      // sidecar quarantine below would never run: repairing FTS now would
+      // open the DB and replay that WAL pre-quarantine, and even a
+      // survivable open would certify FTS over a half-written graph.
+      throw new Error(
+        'Cannot repair FTS indexes: the index is mid-incremental-recovery ' +
+          '(a previous analyze run did not complete cleanly). ' +
+          'Run `gitnexus analyze` first — it recovers the index automatically — ' +
+          'then retry `--repair-fts`.',
+      );
+    }
     let lbugStat;
     try {
       lbugStat = await fs.lstat(lbugPath);
@@ -757,6 +778,13 @@ export async function runFullAnalysis(
               ? `effectiveWrite=${dirty.effectiveWriteCount}`
               : undefined,
             dirty.deleteCount !== undefined ? `deleteCount=${dirty.deleteCount}` : undefined,
+            // Only stamped when > 0 (tri-review 4669518496 P2-5): its
+            // presence means the crashed run's importer expansion was
+            // already degraded — the write set may have been under-expanded
+            // before the crash.
+            dirty.droppedImporterChunks !== undefined
+              ? `droppedImporterChunks=${dirty.droppedImporterChunks}`
+              : undefined,
           ]
             .filter(Boolean)
             .join(', ')
@@ -772,6 +800,41 @@ export async function runFullAnalysis(
     // Reload meta after clearing the flag in-memory; we still want fileHashes
     // for the post-rebuild meta carry-over, but force=true ensures the
     // rebuild path executes.
+    //
+    // #2409 defect 2: the crashed writeback's WAL can be poisoned — replaying
+    // it kills the process natively, and the first DB open of this recovery
+    // run (the embedding-cache preservation open below) happens BEFORE the
+    // rebuild wipe that would discard it. Park the WAL/shadow sidecars aside
+    // now, while nothing is open, so every open in this run is replay-free.
+    // The rebuild wipes the DB regardless, so no committed data is at stake.
+    const { removed, failed } = await quarantineSidecarsForDirtyRecovery(lbugPath, log);
+    if (removed.length > 0) {
+      log(
+        `Dirty-state recovery discarded ${removed.map((p) => path.basename(p)).join(', ')} ` +
+          'from the interrupted run (the file could not be moved aside, so its bytes were ' +
+          'removed — post-mortem forensics lost). Recovery proceeds with full embedding ' +
+          'preservation.',
+      );
+    }
+    if (failed.length > 0) {
+      // FIX 1 (this shipping review, replacing the tri-review 4669518496
+      // P2-3 drop-shape design): under a persistent lock the old drop-shape
+      // run derived its embedding mode as "drop", ran the WHOLE pipeline,
+      // and then died at the rebuild wipe on the very same handle — wasting
+      // minutes and zeroing embeddings on the way. A possibly-poisoned
+      // sidecar still sits next to the DB (any pre-wipe open would replay it
+      // and die), so failing here, in seconds, with the same actionable
+      // typed error the wipe would eventually throw is strictly better —
+      // and the CLI's LbugWipeError handler already renders it
+      // (recoveryHint 'lbug-wipe-failed'). The message is self-contained
+      // (headline + paths + lock guidance) because serve forwards only
+      // err.message over worker IPC.
+      throw new LbugWipeError(failed, {
+        headline:
+          "Cannot start dirty-state recovery — the interrupted run's LadybugDB sidecars " +
+          'could neither be moved aside nor removed:',
+      });
+    }
   }
 
   // ── pdg-mode flip forces full writeback (#2099 F1) ─────────────────
@@ -999,6 +1062,12 @@ export async function runFullAnalysis(
   // silently dropping embeddings on a mispredicted run. The re-insert
   // step gates itself on the actual `isIncremental` value to avoid
   // PK-conflicts when the incremental writeback path keeps the rows.
+  //
+  // This is the FIRST DB open of the run — the one #2409 defect 2 is about.
+  // On a dirty-recovery run it happens only after the sidecar quarantine
+  // moved (or removed) the crashed run's WAL/shadow; when neither was
+  // possible the dirty block above already threw a LbugWipeError, so this
+  // open is replay-free by construction (FIX 1 of this shipping review).
   if (shouldLoadCache && existingMeta) {
     try {
       progress('embeddings', 0, 'Caching embeddings...');
@@ -1146,14 +1215,14 @@ export async function runFullAnalysis(
       });
     }
     await closeLbug();
-    const lbugFiles = [lbugPath, `${lbugPath}.wal`, `${lbugPath}.lock`];
-    for (const f of lbugFiles) {
-      try {
-        await fs.rm(f, { recursive: true, force: true });
-      } catch {
-        /* swallow */
-      }
-    }
+    // Shared loud wipe (#2409 + tri-review 4669518496 P2-4). The 4-file
+    // family list — `.shadow` included, because a checkpoint-in-flight crash
+    // leaves a shadow sidecar that is replay poison next to a freshly created
+    // DB file — lives in wipeLbugDbFiles so this site and the escalation
+    // valve below can never drift. Failures now throw a typed LbugWipeError
+    // (ENOENT-verified removal) instead of silently letting initLbug reopen
+    // a still-populated DB this run believes it wiped.
+    await wipeLbugDbFiles(lbugPath);
   }
 
   await initLbug(lbugPath);
@@ -1166,13 +1235,32 @@ export async function runFullAnalysis(
   // Opt-out via `GITNEXUS_WAL_MANUAL_CHECKPOINT=0` (the driver itself
   // returns a no-op handle when disabled). Analyze-only: MCP and serve
   // paths continue to rely on the close-time CHECKPOINT in `safeClose`.
-  const walCheckpointDriver: WalCheckpointDriver = startWalCheckpointDriver();
+  // `let`: the incremental branch's escalation valve (#2409) stops this driver
+  // around its close→wipe→reopen strategy switch and starts a fresh one.
+  let walCheckpointDriver: WalCheckpointDriver = startWalCheckpointDriver();
   try {
     // All work after initLbug is wrapped in try/finally to ensure closeLbug()
     // is called even if an error occurs — the module-level singleton DB handle
     // must be released to avoid blocking subsequent invocations.
 
     let lbugMsgCount = 0;
+    // #2409 escalation valve outcome, hoisted above the incremental branch so
+    // the vector-index recreation seam in Phase 4 below can tell "surgical
+    // incremental" (DB files survived — the HNSW index with them) apart from
+    // "escalated full write" (DB wiped, index destroyed) — tri-review
+    // 4669518496 P1.
+    let escalatedFullWrite = false;
+    // Phase 3.5's restore scope (FIX 3 of this shipping review): on the
+    // SURGICAL write plan this is the exact file set whose rows
+    // deleteNodesForFiles just removed — only THOSE files' cached embedding
+    // rows need re-inserting (everything else still sits in the DB, and
+    // re-inserting it would PK-conflict). `null` means the DB was wiped
+    // (full rebuild or escalated write): the embedding table is fresh and
+    // every cached row must come back. Deriving this in memory replaces the
+    // old whole-table `RETURN e.id` pre-read, which rescanned data this
+    // process already holds and — worse — ran a read against the DB between
+    // writeback and finalize for no recovery benefit.
+    let deletedFilePathsForRestore: Set<string> | null = null;
     if (isIncremental && hashDiff) {
       // ── Incremental DB writeback ───────────────────────────────────
       // 0. Expand the writable set with transitive importers of
@@ -1197,14 +1285,28 @@ export async function runFullAnalysis(
       //    self-acknowledged as best-effort; `--force` remains the
       //    escape hatch documented in GUARDRAILS.md.
       //
-      //    `queryImporters` reads `IMPORTS` from the pre-pipeline DB
+      //    `queryImportersBatch` reads `IMPORTS` from the pre-pipeline DB
       //    state, so the result is "files that USED TO import the
       //    target" — exactly the set whose previously-stored edges may
       //    no longer match what cross-file resolution produces this run.
       const MAX_IMPORTER_BFS_DEPTH = 4;
+      // Escalation thresholds (#2409) live with shouldEscalateIncrementalWrite
+      // in incremental/escalation-gate.ts (pure predicate, boundary-tested).
       const writableFiles = new Set<string>(hashDiff.toWrite);
       const directlyChangedCount = writableFiles.size;
       const dirtyStartedAt = existingMeta!.incrementalInProgress?.startedAt ?? Date.now();
+      // Dropped-chunk observability (tri-review 4669518496 P2-5): counts
+      // importer-BFS chunks whose IMPORTS query failed across ALL depths
+      // (degrade-don't-fail — the expansion shrinks instead of the run
+      // dying). Stamped into the #2410 crash diagnostics by
+      // saveIncrementalDirtyState ITSELF (FIX 6 of this shipping review),
+      // not by per-call-site spreads: the closure rebuilds its object from
+      // scratch on every call, so a count riding along at only some sites
+      // meant any newly added save site would silently erase it — exactly
+      // the phases where #2409-class crashes happen. >0-only semantics
+      // unchanged: unconditional zero-stamping would churn every
+      // strict-equality consumer of the diagnostics shape.
+      let droppedImporterChunks = 0;
       const saveIncrementalDirtyState = async (
         phase: string,
         extra: Partial<NonNullable<RepoMeta['incrementalInProgress']>> = {},
@@ -1217,19 +1319,20 @@ export async function runFullAnalysis(
             phase,
             toWriteCount: writableFiles.size,
             directWriteCount: directlyChangedCount,
+            ...(droppedImporterChunks > 0 ? { droppedImporterChunks } : {}),
             ...extra,
           },
         });
       };
 
-      // Shadow-seed: for ADDED files, queryImporters returns 0 (the new
+      // Shadow-seed: for ADDED files, the importer query returns 0 (the new
       // file has no IMPORTS rows in the pre-pipeline DB yet). But pre-
       // existing unchanged files may have IMPORTS edges whose module-
       // resolution claim the newcomer can steal under standard JS/TS
       // resolution (Bugbot review on PR #1479). For each added file we
       // derive the shadow candidates and, if the candidate was a known
       // file in the prior meta, seed it into the BFS frontier so its
-      // importers — surfaced via queryImporters — get their CALLS edges
+      // importers — surfaced via the importer BFS — get their CALLS edges
       // re-resolved against the new file. See shadow-candidates.ts for
       // the full pattern catalogue.
       const priorFileSet = new Set<string>(
@@ -1245,21 +1348,23 @@ export async function runFullAnalysis(
       }
 
       {
+        // Batched per depth level (#2409): one IN-list query per ~200-path
+        // chunk instead of one query per frontier file — a ~700-file frontier
+        // used to cost ~700 sequential lock-taking round-trips (~5.6s). The
+        // closure is identical: importers already in writableFiles are not
+        // re-frontiered, exactly like the per-file loop's membership check.
         let frontier: string[] = [...hashDiff.toWrite, ...hashDiff.deleted, ...shadowSeed];
         for (let depth = 0; depth < MAX_IMPORTER_BFS_DEPTH && frontier.length > 0; depth++) {
+          const importers = await queryImportersBatch(frontier, {
+            onChunkFailure: () => {
+              droppedImporterChunks += 1;
+            },
+          });
           const nextFrontier: string[] = [];
-          for (const f of frontier) {
-            try {
-              const importers = await queryImporters(f);
-              for (const i of importers) {
-                if (!writableFiles.has(i)) {
-                  writableFiles.add(i);
-                  nextFrontier.push(i);
-                }
-              }
-            } catch {
-              /* per-file importer query failure → skip; correctness degrades on
-                 that branch, but DB stays writable. */
+          for (const i of importers) {
+            if (!writableFiles.has(i)) {
+              writableFiles.add(i);
+              nextFrontier.push(i);
             }
           }
           frontier = nextFrontier;
@@ -1290,14 +1395,14 @@ export async function runFullAnalysis(
       //          cross-file CALLS edges that the pre-run DB couldn't
       //          predict, e.g. a barrel re-export shifting `foo` from
       //          B to D).
-      //    The composed set is the input to BOTH deleteNodesForFile
+      //    The composed set is the input to BOTH deleteNodesForFiles
       //    and extractChangedSubgraph — asymmetry between the two would
       //    leave stale rows or PK-conflict at COPY time.
       const effectiveWriteSet = computeEffectiveWriteSet(pipelineResult.graph, writableFiles);
       // Deduped: deleted entries may already appear via importer-BFS
-      // expansion (queryImporters can return a now-deleted path), which
-      // would otherwise call deleteNodesForFile twice for the same file
-      // (Bugbot LOW finding on PR #1479).
+      // expansion (the importer BFS can return a now-deleted path), which
+      // would otherwise hand deleteNodesForFiles the same path twice in one
+      // batch (Bugbot LOW finding on PR #1479).
       const filesToDelete = [...new Set([...effectiveWriteSet, ...hashDiff.deleted])];
       await saveIncrementalDirtyState('effective-write-set', {
         importerExpansion,
@@ -1305,66 +1410,139 @@ export async function runFullAnalysis(
         effectiveWriteCount: effectiveWriteSet.size,
         deleteCount: filesToDelete.length,
       });
-      for (let i = 0; i < filesToDelete.length; i++) {
-        const f = filesToDelete[i];
-        try {
-          await deleteNodesForFile(f);
-        } catch {
-          /* file may not have rows (e.g. an unparseable file) — fine */
+
+      // Escalation valve (#2409): when the effective write set covers most of
+      // the repo, per-file surgery is strictly worse than the proven
+      // wipe-and-bulk-COPY plan — the same data volume lands either way, but
+      // the surgical plan pays per-table deletes plus COPY-into-non-empty
+      // tables, and at this size it measured SLOWER than a full DB load. The
+      // pipeline already produced the FULL graph (it always does), so only the
+      // DB write plan changes here; fileHashes/meta bookkeeping is identical.
+      // Thresholds + the AND-gate live in incremental/escalation-gate.ts.
+      const writeFraction = effectiveWriteSet.size / Math.max(1, allFilePaths.length);
+      if (
+        shouldEscalateIncrementalWrite(
+          filesToDelete.length,
+          effectiveWriteSet.size,
+          allFilePaths.length,
+        )
+      ) {
+        escalatedFullWrite = true;
+        log(
+          `Incremental: effective write set covers ${effectiveWriteSet.size}/${allFilePaths.length} ` +
+            // Display clamp only (predicate unchanged): BFS-found deleted
+            // importers can push the numerator past the CURRENT file list, so
+            // the raw fraction can exceed 1 — see the population-mismatch note
+            // on shouldEscalateIncrementalWrite (tri-review 4669518496).
+            `files (${Math.min(100, Math.round(writeFraction * 100))}%) — switching to a full DB write ` +
+            `(wipe + bulk COPY) for this run; file-level incremental bookkeeping is unaffected.`,
+        );
+        // toWriteCount: 0 is the established full-path dirty-flag sentinel;
+        // the real counters ride along for crash diagnostics.
+        await saveIncrementalDirtyState('escalated-full-write', {
+          toWriteCount: 0,
+          importerExpansion,
+          shadowSeedCount: shadowSeed.length,
+          effectiveWriteCount: effectiveWriteSet.size,
+          deleteCount: filesToDelete.length,
+        });
+        // Strategy switch: stop the checkpoint driver around the close so its
+        // in-flight CHECKPOINT can't race the reopen, drop the DB files
+        // (sidecars included), and bulk-load the full graph into a fresh DB —
+        // byte-for-byte the full-rebuild write plan. The wipe is the shared
+        // ENOENT-verified helper (#2409 + tri-review 4669518496 P2-4): a
+        // surviving family member throws a typed LbugWipeError here instead
+        // of letting the reopen below resurrect the rows this run just chose
+        // to replace wholesale.
+        await walCheckpointDriver.stop();
+        await closeLbug();
+        await wipeLbugDbFiles(lbugPath);
+        await initLbug(lbugPath);
+        walCheckpointDriver = startWalCheckpointDriver();
+        await loadGraphToLbug(pipelineResult.graph, pipelineResult.repoPath, storagePath, (msg) => {
+          lbugMsgCount++;
+          const pct = Math.min(84, 65 + Math.round((lbugMsgCount / (lbugMsgCount + 10)) * 19));
+          progress('lbug', pct, msg);
+        });
+      } else {
+        // 1a. Remove the write set's existing rows — batched (#2409): one
+        //     DETACH DELETE per table per 200-file chunk. The former per-file
+        //     loop issued a count + delete per table per FILE — ~13k
+        //     single-row write transactions on a ~700-file write set — which
+        //     made this phase slower than a full rebuild and is the WAL-append
+        //     storm behind the native mid-writeback deaths in #2409. Errors
+        //     are NOT swallowed anymore: a zero-match file is a no-op by
+        //     construction, so anything thrown is a real engine failure that
+        //     must surface instead of silently skipping (that silent skip was
+        //     how #2409 hid its root cause).
+        progress('lbug', 62, `Removing rows for changed files (0/${filesToDelete.length})...`);
+        await deleteNodesForFiles(filesToDelete, {
+          onChunk: (done, total) =>
+            progress('lbug', 62, `Removing rows for changed files (${done}/${total})...`),
+        });
+        // Surgical path: Phase 3.5 restores exactly these files' embedding
+        // rows (FIX 3). Sound because deleteNodesForFiles propagates errors
+        // — reaching this line means every listed file's rows are gone
+        // deterministically — and this process holds the exclusive DB lock,
+        // so no concurrent writer can disturb the derivation.
+        deletedFilePathsForRestore = new Set(filesToDelete);
+        // 2. Drop graph-wide nodes (Community, Process). They'll be re-inserted
+        //    from the fresh pipeline output below. Required for the
+        //    "Leiden runs on the FULL graph" correctness invariant.
+        await deleteAllCommunitiesAndProcesses();
+        // 2a. Drop INJECTS edges (DI collection injection, #2200) — their
+        //     validity is a whole-program property (a third-file change to the
+        //     interface or an implementer creates/invalidates edges between two
+        //     untouched files), so endpoint-writability extraction can't refresh
+        //     them; extractChangedSubgraph re-includes all of them from the
+        //     fresh graph (isGraphWideRelType). UNCONDITIONAL, next to the
+        //     Communities delete — NOT inside the `options.pdg` block below: the
+        //     di phase runs on every persisting analyze (same !skipGraphPhases
+        //     regime as communities/processes) while the graph-wide re-include
+        //     is unconditional, so a pdg-gated delete would append without
+        //     deleting on every non-pdg incremental run (N runs = N copies of
+        //     every INJECTS row; CodeRelation has no PK and no read-side dedup).
+        await deleteAllInjects();
+        // 2b. Drop interprocedural TAINT_PATH edges (#2084 M4 U6) when pdg is on
+        //     — their validity is a whole-program property (an A→C flow can be
+        //     invalidated by a change to an intermediate function on a third
+        //     file), so endpoint-writability extraction can't refresh them.
+        //     extractChangedSubgraph re-includes all of them from the fresh
+        //     graph (isGraphWideRelType), mirroring Community/Process.
+        if (options.pdg === true) {
+          await deleteAllInterprocTaintPaths();
+          // 2c. Drop CALL_SUMMARY edges (PDG FU-C) on an incremental `--pdg`
+          //     writeback. They are re-included from the FULL fresh graph
+          //     (isGraphWideRelType) and the callSummaries phase recomputes every
+          //     summary each run, so delete-all-then-rebuild keeps an unchanged
+          //     function's summary from being lost — same contract as TAINT_PATH.
+          await deleteAllCallSummaries();
         }
-        if (i % 20 === 0) {
-          progress('lbug', 62, `Removing rows for changed files (${i}/${filesToDelete.length})...`);
-        }
-      }
-      // 2. Drop graph-wide nodes (Community, Process). They'll be re-inserted
-      //    from the fresh pipeline output below. Required for the
-      //    "Leiden runs on the FULL graph" correctness invariant.
-      await deleteAllCommunitiesAndProcesses();
-      // 2a. Drop INJECTS edges (DI collection injection, #2200) — their
-      //     validity is a whole-program property (a third-file change to the
-      //     interface or an implementer creates/invalidates edges between two
-      //     untouched files), so endpoint-writability extraction can't refresh
-      //     them; extractChangedSubgraph re-includes all of them from the
-      //     fresh graph (isGraphWideRelType). UNCONDITIONAL, next to the
-      //     Communities delete — NOT inside the `options.pdg` block below: the
-      //     di phase runs on every persisting analyze (same !skipGraphPhases
-      //     regime as communities/processes) while the graph-wide re-include
-      //     is unconditional, so a pdg-gated delete would append without
-      //     deleting on every non-pdg incremental run (N runs = N copies of
-      //     every INJECTS row; CodeRelation has no PK and no read-side dedup).
-      await deleteAllInjects();
-      // 2b. Drop interprocedural TAINT_PATH edges (#2084 M4 U6) when pdg is on
-      //     — their validity is a whole-program property (an A→C flow can be
-      //     invalidated by a change to an intermediate function on a third
-      //     file), so endpoint-writability extraction can't refresh them.
-      //     extractChangedSubgraph re-includes all of them from the fresh
-      //     graph (isGraphWideRelType), mirroring Community/Process.
-      if (options.pdg === true) {
-        await deleteAllInterprocTaintPaths();
-        // 2c. Drop CALL_SUMMARY edges (PDG FU-C) on an incremental `--pdg`
-        //     writeback. They are re-included from the FULL fresh graph
-        //     (isGraphWideRelType) and the callSummaries phase recomputes every
-        //     summary each run, so delete-all-then-rebuild keeps an unchanged
-        //     function's summary from being lost — same contract as TAINT_PATH.
-        await deleteAllCallSummaries();
+
+        // 3. Extract the changed subgraph from the FULL ctx.graph and write
+        //    only that. Unchanged-file rows in the DB stay untouched. Pass
+        //    the SAME effectiveWriteSet so the subgraph and the deletes
+        //    cover identical files (asymmetry would silently corrupt).
+        const subgraph = extractChangedSubgraph(pipelineResult.graph, effectiveWriteSet);
+        await saveIncrementalDirtyState('load-graph', {
+          importerExpansion,
+          shadowSeedCount: shadowSeed.length,
+          effectiveWriteCount: effectiveWriteSet.size,
+          deleteCount: filesToDelete.length,
+        });
+        await loadGraphToLbug(subgraph, pipelineResult.repoPath, storagePath, (msg) => {
+          lbugMsgCount++;
+          const pct = Math.min(84, 65 + Math.round((lbugMsgCount / (lbugMsgCount + 10)) * 19));
+          progress('lbug', pct, msg);
+        });
       }
 
-      // 3. Extract the changed subgraph from the FULL ctx.graph and write
-      //    only that. Unchanged-file rows in the DB stay untouched. Pass
-      //    the SAME effectiveWriteSet so the subgraph and the deletes
-      //    cover identical files (asymmetry would silently corrupt).
-      const subgraph = extractChangedSubgraph(pipelineResult.graph, effectiveWriteSet);
-      await saveIncrementalDirtyState('load-graph', {
-        importerExpansion,
-        shadowSeedCount: shadowSeed.length,
-        effectiveWriteCount: effectiveWriteSet.size,
-        deleteCount: filesToDelete.length,
-      });
-      await loadGraphToLbug(subgraph, pipelineResult.repoPath, storagePath, (msg) => {
-        lbugMsgCount++;
-        const pct = Math.min(84, 65 + Math.round((lbugMsgCount / (lbugMsgCount + 10)) * 19));
-        progress('lbug', pct, msg);
-      });
+      // Boundary drain (#2409): checkpoint at the end of the incremental
+      // writeback so the WAL it accumulated never lingers into the FTS and
+      // embedding phases — a later crash leaves only post-checkpoint WAL for
+      // the next open to replay. Near-instant when the periodic driver has
+      // kept up; rides the driver's bounded retry via runCheckpointWithRetry.
+      await checkpointOnce();
     } else {
       // ── Full rebuild ───────────────────────────────────────────────
       // Pass the streamed PDG-emit manifest (#2202) so the BasicBlock layer that
@@ -1433,18 +1611,37 @@ export async function runFullAnalysis(
 
     // ── Phase 3.5: Re-insert cached embeddings ────────────────────────
     // Runs on BOTH the full-rebuild path and the incremental path:
-    //   - Full rebuild: DB was wiped, every cached row needs to come back.
-    //   - Incremental:  changed-file rows were just deleted by
-    //                   deleteNodesForFile (which cascades to their
-    //                   embedding rows) — so their cached vectors need
-    //                   to come back too. Unchanged-file rows still
-    //                   exist; re-inserting their cached vectors would
-    //                   PK-conflict, but the per-batch try/catch below
-    //                   silently ignores those (matches the existing
-    //                   "some may fail if node was removed, that's
-    //                   fine" semantics). Bugbot review on PR #1479
-    //                   flagged that gating this on `!isIncremental`
-    //                   silently lost changed-file embeddings.
+    //   - Full rebuild / escalated write: DB was wiped, every cached row
+    //     needs to come back.
+    //   - Incremental (surgical): changed/deleted files' rows were just
+    //     deleted by deleteNodesForFiles (a REAL delete since tri-review
+    //     4669518496 P2-1 — it joins embedding rows through their owning
+    //     nodes), so changed-file vectors need to come back; unchanged-file
+    //     rows still exist. Bugbot review on PR #1479 flagged that gating
+    //     this on `!isIncremental` silently lost changed-file embeddings.
+    //
+    // Restore discipline (tri-review 4669518496 / KTD10, restore scope
+    // derived in memory since FIX 3 of this shipping review) — filtered and
+    // conflict-free, replacing the old insert-everything-and-swallow shape:
+    //   1. Live-graph filter: rows whose nodeId no longer exists in the
+    //      freshly-built FULL graph are dropped. The cache was read BEFORE
+    //      the pipeline ran, so it still carries deleted files' rows —
+    //      re-inserting them resurrected orphans (wholesale onto the wiped
+    //      paths' empty table) now that the delete above is real.
+    //   2. Restore-scope filter, derived WITHOUT touching the DB (the old
+    //      shape pre-read every surviving embedding id back out of the
+    //      table it had just written): on a wiped path
+    //      (`deletedFilePathsForRestore === null`) the table is fresh, so
+    //      every live row comes back; on the surgical path only rows whose
+    //      owning node's filePath is in the just-join-deleted set are
+    //      inserted — everything else still sits in the DB and would
+    //      PK-conflict. The derivation is sound because deleteNodesForFiles
+    //      propagates errors (a completed writeback means a deterministic
+    //      delete outcome) and this process holds the exclusive DB lock (no
+    //      concurrent writer).
+    // The per-batch try/catch stays as a last-resort guard only — it no
+    // longer fires on the happy path.
+    let restoredEmbeddingCount = 0;
     if (cachedEmbeddings.length > 0) {
       const cachedDims = cachedEmbeddings[0].embedding.length;
       const { EMBEDDING_DIMS } = await import('./lbug/schema.js');
@@ -1456,17 +1653,75 @@ export async function runFullAnalysis(
         cachedEmbeddings = [];
         cachedEmbeddingNodeIds = new Set();
       } else {
-        progress('embeddings', 88, `Restoring ${cachedEmbeddings.length} cached embeddings...`);
         const { batchInsertEmbeddings: batchInsert } =
           await import('./embeddings/embedding-pipeline.js');
+        // (1) Live-graph filter — the FULL pipeline graph (always produced),
+        // NOT the incremental subgraph, or unchanged files' rows would be
+        // dropped from the restore set.
+        const liveEmbeddings = cachedEmbeddings.filter(
+          (e) => pipelineResult.graph.getNode(e.nodeId) !== undefined,
+        );
+        // (2) Restore-scope filter (see the discipline note above).
+        const rowsToRestore =
+          deletedFilePathsForRestore === null
+            ? liveEmbeddings
+            : liveEmbeddings.filter((e) => {
+                const filePath = pipelineResult.graph.getNode(e.nodeId)?.properties?.filePath;
+                return typeof filePath === 'string' && deletedFilePathsForRestore!.has(filePath);
+              });
+        progress('embeddings', 88, `Restoring ${rowsToRestore.length} cached embeddings...`);
         const EMBED_BATCH = 200;
-        for (let i = 0; i < cachedEmbeddings.length; i += EMBED_BATCH) {
-          const batch = cachedEmbeddings.slice(i, i + EMBED_BATCH);
+        for (let i = 0; i < rowsToRestore.length; i += EMBED_BATCH) {
+          const batch = rowsToRestore.slice(i, i + EMBED_BATCH);
 
           try {
             await batchInsert(executeWithReusedStatement, batch);
+            restoredEmbeddingCount += batch.length;
           } catch {
-            /* some may fail if node was removed, that's fine */
+            /* last-resort guard — conflict-free by construction above */
+          }
+        }
+
+        // Legacy-orphan sweep (FIX 3, finder B): the live-graph filter's
+        // REJECTS — cached rows whose owning node no longer exists — are the
+        // rows stranded by the era when the embedding delete was a no-op
+        // (tri-review 4669518496 P2-1; schema version stays 6), plus this
+        // run's just-deleted files' rows (already join-deleted above — the
+        // exact-id DELETE matches nothing for those, so including them is a
+        // harmless no-op rather than worth a fragile nodeId parse to
+        // exclude). On the SURGICAL path the true legacy orphans still sit
+        // in the DB and the node join can never reach them again (no owning
+        // node), so delete them by exact row id. On wiped paths the rejects
+        // were simply not restored — nothing to sweep. Legacy-tolerant: a
+        // sweep failure must never fail a completed writeback, so the whole
+        // sweep warns-and-continues.
+        if (deletedFilePathsForRestore !== null) {
+          const orphanRowIds = cachedEmbeddings
+            .filter((e) => pipelineResult.graph.getNode(e.nodeId) === undefined)
+            .map((e) => `${e.nodeId}:${e.chunkIndex}`);
+          if (orphanRowIds.length > 0) {
+            try {
+              for (let i = 0; i < orphanRowIds.length; i += DELETE_FILES_CHUNK_SIZE) {
+                const chunk = orphanRowIds.slice(i, i + DELETE_FILES_CHUNK_SIZE);
+                const listLiteral = `[${chunk
+                  .map((id) => `'${escapeCypherString(id)}'`)
+                  .join(', ')}]`;
+                await executeQuery(
+                  `MATCH (e:${EMBEDDING_TABLE_NAME}) WHERE e.id IN ${listLiteral} DELETE e`,
+                );
+              }
+              log(
+                `Swept ${orphanRowIds.length} cached embedding row(s) with no live owning ` +
+                  'node — legacy orphans stranded while the embedding delete was a no-op; ' +
+                  'ids already removed with their files match nothing.',
+              );
+            } catch (err) {
+              log(
+                `Warning: could not sweep ${orphanRowIds.length} orphaned embedding ` +
+                  `row(s) (${(err as Error).message}); they are unreachable by search ` +
+                  'joins and will be retried next run.',
+              );
+            }
           }
         }
       }
@@ -1500,6 +1755,41 @@ export async function runFullAnalysis(
             `\`--embeddings <n>\` to set a custom cap.`,
         );
       }
+    }
+
+    // ── Vector-index recreation after a wipe-and-restore (tri-review
+    // 4669518496 P1 / KTD1) ────────────────────────────────────────────
+    // The full-rebuild and escalated-incremental write plans wipe the DB
+    // files — the HNSW index with them. Phase 3.5 brought the embedding ROWS
+    // back, but on a preserve-only run nothing recreates the index: semantic
+    // search silently loses its vector lane (>10k-embedding repos return
+    // empty under the exact-scan cap) while meta certified 'vector-index'.
+    // Recreate it here, where every gate input is settled:
+    //   - restoredEmbeddingCount > 0 — rows actually came back;
+    //   - dbWasWiped — surgical incremental runs keep their index (HNSW
+    //     self-maintains on insert/delete); only wiped DBs lost it;
+    //   - embeddingSkipped — evaluated AFTER the deriveEmbeddingCap decision
+    //     above, NOT `!shouldGenerateEmbeddings`: when Phase 4 really runs,
+    //     the pipeline builds the index itself after all inserts (firing this
+    //     seam first would swap its bulk build for per-row live HNSW
+    //     maintenance on the hottest flow), while a capped >50k-node repo has
+    //     shouldGenerateEmbeddings=true yet never runs the pipeline — exactly
+    //     the case a naive gate would leave index-less again.
+    // buildVectorIndex carries its own extension-policy gate and
+    // warn-on-failure; the boolean feeds semanticMode so the finalize stamp
+    // reflects the DB's ACTUAL state even when recreation fails (win32 /
+    // extension unavailable → 'exact-scan').
+    const dbWasWiped = !isIncremental || escalatedFullWrite;
+    if (restoredEmbeddingCount > 0 && dbWasWiped && embeddingSkipped) {
+      // Re-import at the seam rather than thread a mutable capture from
+      // Phase 3.5 (FIX 3 of this shipping review — the captured function was
+      // a fragile moving part): dynamic imports are memoized, and
+      // `restoredEmbeddingCount > 0` proves Phase 3.5 already loaded the
+      // module, so the lazy-embeddings convention (#2370) holds — no
+      // embeddings module loads unless a restore actually happened.
+      const { buildVectorIndex } = await import('./embeddings/embedding-pipeline.js');
+      const vectorIndexReady = await buildVectorIndex();
+      semanticMode = vectorIndexReady ? 'vector-index' : 'exact-scan';
     }
 
     if (!embeddingSkipped) {
@@ -1572,8 +1862,25 @@ export async function runFullAnalysis(
 
     const { getRuntimeCapabilities } = await import('./platform/capabilities.js');
     const runtimeCapabilities = getRuntimeCapabilities();
+    // `semanticMode` is authoritative when set (Phase 4 reported what it
+    // built, or the wipe-and-restore seam above verified/recreated the index
+    // — tri-review 4669518496 P1). When unset, prefer the PREVIOUS run's
+    // persisted stamp over the platform capability (FIX 3, finder A): the
+    // unset case is exactly a run that neither wiped nor generated — e.g. a
+    // surgical incremental whose index survived in place — and such a run
+    // cannot change whether the HNSW index exists, so carrying the persisted
+    // observation forward is strictly more truthful than re-deriving from
+    // what the platform COULD do. Only the two positive observations carry
+    // ('vector-index'/'exact-scan'); 'unavailable'/absent falls through to
+    // the platform default rather than pinning a stale negative.
+    const persistedStatus = existingMeta?.capabilities?.vectorSearch.status;
+    const persistedSemanticMode: 'vector-index' | 'exact-scan' | undefined =
+      persistedStatus === 'vector-index' || persistedStatus === 'exact-scan'
+        ? persistedStatus
+        : undefined;
     const effectiveSemanticMode =
       semanticMode ??
+      persistedSemanticMode ??
       (runtimeCapabilities.semanticMode === 'vector-index' ? 'vector-index' : 'exact-scan');
 
     // Convert the post-run file-hash map to the on-disk Record<string,string>
@@ -1581,7 +1888,11 @@ export async function runFullAnalysis(
     const newFileHashesRecord: Record<string, string> = {};
     for (const [k, v] of newFileHashes) newFileHashesRecord[k] = v;
 
-    const meta = {
+    // Annotated so the capabilities stamp below is compile-checked against
+    // RepoMeta's status unions (tri-review 4669518496 P1/U3) — an unannotated
+    // literal widens the vectorSearch.status ternary to `string` and the
+    // honesty contract silently decays to "whatever interpolates".
+    const meta: RepoMeta = {
       repoPath,
       lastCommit: currentCommit,
       indexedAt: new Date().toISOString(),

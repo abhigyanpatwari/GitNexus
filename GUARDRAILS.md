@@ -30,20 +30,20 @@ Format: **Trigger → Instruction → Reason**. Append new Signs when the same m
 ### Stale graph after edits
 
 - **Trigger:** MCP warns index is behind `HEAD`, or search doesn't match latest commit.
-- **Do:** `npx gitnexus analyze` (plus `--embeddings` if used). Runs incrementally by default — the pipeline parses every file every run (cross-file resolution requires it), but tree-sitter dispatch is skipped for unchanged file chunks via the content-addressed cache, and only changed-file rows (plus their importers, transitively) are rewritten in LadybugDB.
+- **Do:** `npx gitnexus analyze` (plus `--embeddings` if used). Runs incrementally by default — the pipeline parses every file every run (cross-file resolution requires it), but tree-sitter dispatch is skipped for unchanged file chunks via the content-addressed cache, and only changed-file rows (plus their importers, transitively) are rewritten in LadybugDB. When the effective write set exceeds ~50% of the repo's files (minimum 50 files), the run transparently switches to the full wipe + bulk-COPY write plan and logs "switching to a full DB write" — expected behavior, not a bug, and file-level bookkeeping stays incremental.
 - **Why:** Tools query LadybugDB from last analyze; git changes are invisible until re-indexed.
 
 ### Index seems corrupt or "incremental" is misbehaving
 
 - **Trigger:** `analyze` produces unexpected results, or `incrementalInProgress` is set in the index metadata (`.gitnexus/gitnexus.json` / legacy `meta.json`), or the index is in a half-state after a crash.
-- **Do:** `npx gitnexus analyze --force` to rebuild from scratch. The dirty-flag check forces this automatically when a previous incremental run didn't complete cleanly, but `--force` is the manual escape hatch. Safe to delete the `.gitnexus/parse-cache/` directory (and any legacy `.gitnexus/parse-cache.json`) at any time — content-addressed, will be regenerated.
+- **Do:** `npx gitnexus analyze --force` to rebuild from scratch. The dirty-flag check forces this automatically when a previous incremental run didn't complete cleanly, but `--force` is the manual escape hatch. A dirty-flag recovery rebuild parks the interrupted run's sidecars beside the DB as `lbug.wal.dirty-recovery` / `lbug.shadow.dirty-recovery` for post-mortem debugging — harmless, and removable with `npx gitnexus clean --lbug-sidecars`. Safe to delete the `.gitnexus/parse-cache/` directory (and any legacy `.gitnexus/parse-cache.json`) at any time — content-addressed, will be regenerated.
 - **Why:** Incremental writeback is selective DB row replacement; if the on-disk state is inconsistent for any reason, a full rebuild is the cheapest path back to a known-good index.
 
 ### Embeddings vanished after analyze
 
 - **Trigger:** Semantic search quality drops; `stats.embeddings` in the index metadata (`gitnexus.json` / legacy `meta.json`) is 0 after refresh.
 - **Do:** Re-run `npx gitnexus analyze --embeddings` to regenerate. Check the analyze log for a `Warning: could not load cached embeddings` line — if present, the cache restore failed (corrupt DB / schema mismatch) and the rebuild had nothing to preserve. If you intentionally passed `--drop-embeddings`, this is expected.
-- **Why:** Plain `analyze` preserves prior vectors by re-inserting them after the rebuild; the only ways to end up at zero are an explicit `--drop-embeddings`, a cache-load failure (now logged), or a model/dimension change that invalidates the cache.
+- **Why:** Plain `analyze` preserves prior vectors by re-inserting them after the rebuild; the only ways to end up at zero are an explicit `--drop-embeddings`, a cache-load failure (now logged), or a model/dimension change that invalidates the cache. A dirty-recovery run that cannot move the crashed WAL aside now either discards it (logged: forensics lost, embeddings still preserved) or fails fast with a lock error naming the holder — it never silently zeroes embeddings.
 
 ### MCP lists no repos
 

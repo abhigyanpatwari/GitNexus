@@ -45,11 +45,13 @@ export const zhCN = {
   'clean.deleteBranch': '将删除分支索引 “{{branch}}”，路径：{{path}}',
   'clean.deletedBranch': '已删除分支索引：{{branch}}',
   'clean.lbugSidecars.state': 'LadybugDB sidecar 状态：{{state}}',
-  'clean.lbugSidecars.none': '未找到已隔离的 LadybugDB missing-shadow WAL sidecar。',
+  'clean.lbugSidecars.none':
+    '未找到已暂存的 LadybugDB 恢复 sidecar（missing-shadow WAL 隔离文件或 dirty-recovery 暂存文件）。',
   'clean.lbugSidecars.preview':
-    '将删除 {{count}} 个已隔离的 LadybugDB missing-shadow WAL sidecar：',
-  'clean.lbugSidecars.deleted':
-    '已删除 {{count}} 个已隔离的 LadybugDB missing-shadow WAL sidecar。',
+    '将删除 {{count}} 个已暂存的 LadybugDB 恢复 sidecar（missing-shadow WAL 隔离文件与 dirty-recovery 暂存文件）：',
+  'clean.lbugSidecars.deleted': '已删除 {{count}} 个已暂存的 LadybugDB 恢复 sidecar。',
+  'clean.lbugSidecars.failed':
+    '有 {{count}} 个文件被锁定而无法删除 — 请停止占用它们的进程（GitNexus MCP/serve 或杀毒软件扫描）后重试：',
   'remove.nothingToRemove': '无需移除：{{message}}',
   'remove.deleteTarget': '将删除该仓库的 GitNexus 索引：{{name}}',
   'remove.removed': '已移除：{{name}}',
@@ -204,7 +206,8 @@ export const zhCN = {
   'help.option.uninstall.force': '应用更改（默认仅为预演预览）',
   'help.option.clean.all': '清理所有已索引仓库',
   'help.option.clean.branch': '仅删除指定分支的索引（不影响工作区索引）',
-  'help.option.clean.lbugSidecars': '清理已隔离的 LadybugDB missing-shadow WAL sidecar',
+  'help.option.clean.lbugSidecars':
+    '清理已暂存的 LadybugDB 恢复 sidecar（missing-shadow WAL 隔离文件与 dirty-recovery 暂存文件）',
   'help.option.wiki.force': '即使已是最新也强制完整重新生成',
   'help.option.wiki.provider':
     'LLM 提供商：openai、openrouter、azure、custom、cursor、claude、codex 或 opencode（默认：openai）',

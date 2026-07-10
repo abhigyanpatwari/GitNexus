@@ -460,6 +460,29 @@ describe('deriveEmbeddingMode', () => {
     expect(m.shouldGenerateEmbeddings).toBe(true);
     expect(m.preserveExistingEmbeddings).toBe(false);
   });
+
+  // Pure drop-shape derivation pin: `{ embeddings: false, dropEmbeddings:
+  // true }` with existing=0 must force ALL FOUR flags false even against an
+  // explicit `--embeddings` invocation — dropEmbeddings alone still
+  // generates, and zeroing only the existing count would still load the
+  // cache. (Historical note: run-analyze's dirty-recovery block derived this
+  // exact shape between tri-review 4669518496 P2-3 and this shipping
+  // review's FIX 1, which replaced it with a fail-fast LbugWipeError — see
+  // run-analyze-fts-repair.test.ts. The derivation itself remains a real
+  // deriveEmbeddingMode contract worth pinning.)
+  it('drop shape kills an explicit --embeddings recovery invocation (all four flags false)', () => {
+    const recoveryInvocation = { embeddings: true, force: true };
+    const m = deriveEmbeddingMode(
+      { ...recoveryInvocation, embeddings: false, dropEmbeddings: true },
+      0,
+    );
+    expect(m).toEqual({
+      shouldGenerateEmbeddings: false,
+      preserveExistingEmbeddings: false,
+      forceRegenerateEmbeddings: false,
+      shouldLoadCache: false,
+    });
+  });
 });
 
 describe('deriveEmbeddingCap', () => {
