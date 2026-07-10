@@ -17,6 +17,7 @@ import fs from 'fs/promises';
 import path from 'path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { LbugWipeError, wipeLbugDbFiles } from '../../src/core/lbug/lbug-adapter.js';
+import { _captureLogger } from '../../src/core/logger.js';
 import { createTempDir, type TestDBHandle } from '../helpers/test-db.js';
 
 const familyOf = (lbugPath: string): string[] => [
@@ -93,7 +94,13 @@ describe('wipeLbugDbFiles (#2409 loud ENOENT-verified wipe)', () => {
       message: expect.stringContaining(walPath),
     });
     expect(rejection).toMatchObject({
-      message: expect.stringMatching(/stop the MCP\/serve process/i),
+      // Shared lock-remediation copy (this shipping review, FIX 7) plus the
+      // own-handle framing (FIX 2): the holder may be this very process's
+      // just-closed DB or an AV scan, so an immediate re-run often succeeds.
+      message: expect.stringMatching(/stop any GitNexus MCP or serve process/i),
+    });
+    expect(rejection).toMatchObject({
+      message: expect.stringMatching(/an immediate re-run often succeeds/i),
     });
 
     // Per-path isolation: the survivor did not abort the rest of the family.
@@ -105,16 +112,17 @@ describe('wipeLbugDbFiles (#2409 loud ENOENT-verified wipe)', () => {
   it('treats a persistent EPERM probe as a survivor even when rm resolves (delete-pending class)', async () => {
     tmp = await createTempDir('gitnexus-test-wipe-');
     const lbugPath = path.join(tmp.dbPath, 'lbug');
-    const lockPath = `${lbugPath}.lock`;
     await createFamily(lbugPath);
 
-    // rm resolves (the real files ARE unlinked) but the `.lock` probe keeps
-    // rejecting EPERM — the Windows delete-pending signature: the name stays
-    // visible while another process holds the last handle. Gone must mean
-    // ENOENT specifically, so this path must be reported, not assumed gone.
+    // rm resolves (the real files ARE unlinked) but the main DB file's probe
+    // keeps rejecting EPERM — the Windows delete-pending signature: the name
+    // stays visible while another process holds the last handle. Gone must
+    // mean ENOENT specifically, so this DATA-BEARING path must be reported,
+    // not assumed gone. (Retargeted from `.lock` — since FIX 2 of this
+    // shipping review the contentless lock file is tolerated, see below.)
     const originalAccess: typeof fs.access = fs.access;
     vi.spyOn(fs, 'access').mockImplementation(async (p, mode) => {
-      if (String(p) === lockPath) throw errnoError('EPERM');
+      if (String(p) === lbugPath) throw errnoError('EPERM');
       return originalAccess(p, mode);
     });
 
@@ -124,6 +132,43 @@ describe('wipeLbugDbFiles (#2409 loud ENOENT-verified wipe)', () => {
     );
 
     expect(rejection).toBeInstanceOf(LbugWipeError);
-    expect(rejection).toMatchObject({ survivors: [lockPath] });
+    expect(rejection).toMatchObject({ survivors: [lbugPath] });
+  });
+
+  it('a persistent survivor on ONLY the contentless .lock warns and resolves — no throw (FIX 2)', async () => {
+    tmp = await createTempDir('gitnexus-test-wipe-');
+    const lbugPath = path.join(tmp.dbPath, 'lbug');
+    const lockPath = `${lbugPath}.lock`;
+    await createFamily(lbugPath);
+
+    // The `.lock` rm keeps failing EPERM (an AV-held delete-pending handle
+    // outlasting the retry budget). The lock file is contentless — initLbug
+    // recreates it, and a genuinely held lock surfaces as the reopen's own
+    // lock-busy classification — so failing a sound rebuild over it was
+    // pure collateral (FIX 2, finder B).
+    const originalRm: typeof fs.rm = fs.rm;
+    vi.spyOn(fs, 'rm').mockImplementation(async (p, options) => {
+      if (String(p) === lockPath) throw errnoError('EPERM');
+      return originalRm(p, options);
+    });
+    const cap = _captureLogger();
+    try {
+      await expect(wipeLbugDbFiles(lbugPath)).resolves.toBeUndefined();
+
+      // The data-bearing members are really gone…
+      for (const f of [lbugPath, `${lbugPath}.wal`, `${lbugPath}.shadow`]) {
+        await expect(fs.access(f)).rejects.toMatchObject({ code: 'ENOENT' });
+      }
+      // …the lock file remains (the injected failure)…
+      await expect(fs.access(lockPath)).resolves.toBeUndefined();
+      // …and the tolerance was logged at warn level, not silent.
+      const warned = cap
+        .records()
+        .find((r) => typeof r.msg === 'string' && r.msg.includes(lockPath));
+      expect(warned).toBeDefined();
+      expect(warned).toMatchObject({ msg: expect.stringContaining('lock-busy') });
+    } finally {
+      cap.restore();
+    }
   });
 });

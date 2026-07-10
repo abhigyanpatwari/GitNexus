@@ -46,6 +46,8 @@ export const en = {
   'clean.lbugSidecars.preview':
     'This will delete {{count}} parked LadybugDB recovery sidecar(s) (missing-shadow WAL quarantines and dirty-recovery parks):',
   'clean.lbugSidecars.deleted': 'Deleted {{count}} parked LadybugDB recovery sidecar(s).',
+  'clean.lbugSidecars.failed':
+    'Could not delete {{count}} locked file(s) — stop the process holding them (GitNexus MCP/serve or an antivirus scan) and re-run:',
   'remove.nothingToRemove': 'Nothing to remove: {{message}}',
   'remove.deleteTarget': 'This will delete the GitNexus index for: {{name}}',
   'remove.removed': 'Removed: {{name}}',

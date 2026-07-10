@@ -31,81 +31,19 @@ import {
   INCREMENTAL_SCHEMA_VERSION,
   type RepoMeta,
 } from '../../src/storage/repo-manager.js';
-import { EMBEDDING_TABLE_NAME, EMBEDDING_DIMS } from '../../src/core/lbug/schema.js';
 import { setupMiniRepo as setupSharedMiniRepo } from '../helpers/mini-repo.js';
 import { createTempDir } from '../helpers/test-db.js';
+// Shared embedding-seed trio (this shipping review, FIX 8) — the KTD9
+// zero-vector seeding pattern lives in one helper module now instead of two
+// divergent copies here and in incremental-dirty-recovery.test.ts.
+import {
+  readEmbeddingNodeIds,
+  seedEmbeddingForNodeId,
+  seedEmbeddingsForFiles,
+  stampEmbeddingCount,
+} from '../helpers/embedding-seed.js';
 
 const setupMiniRepo = () => setupSharedMiniRepo('gitnexus-incr-orch-');
-
-/**
- * Seed zero-vector CodeEmbedding rows for REAL graph nodes through the real
- * `batchInsertEmbeddings` (KTD9, tri-review 4669518496): reopen the repo DB,
- * read actual node ids per file (`Function:<fp>:<name>:<line>` — label-first,
- * so fabricated ids would be dropped by the Phase 3.5 live-graph filter),
- * insert, close. Zero vectors need no VECTOR extension — the CodeEmbedding
- * TABLE is plain schema; only the HNSW index is extension-gated. Returns the
- * seeded node ids keyed by file path.
- */
-async function seedEmbeddingsForFiles(
-  repoPath: string,
-  filePaths: readonly string[],
-  maxPerFile: number,
-): Promise<Map<string, string[]>> {
-  const adapter = await import('../../src/core/lbug/lbug-adapter.js');
-  const { batchInsertEmbeddings } = await import('../../src/core/embeddings/embedding-pipeline.js');
-  const { lbugPath } = getStoragePaths(repoPath);
-  const idsByFile = new Map<string, string[]>();
-  await adapter.initLbug(lbugPath);
-  try {
-    for (const fp of filePaths) {
-      const rows = (await adapter.executeQuery(
-        `MATCH (n:Function) WHERE n.filePath = '${fp}' RETURN n.id AS id LIMIT ${maxPerFile}`,
-      )) as Array<{ id: string }>;
-      idsByFile.set(
-        fp,
-        rows.map((r) => String(r.id)),
-      );
-    }
-    const allIds = [...idsByFile.values()].flat();
-    await batchInsertEmbeddings(
-      adapter.executeWithReusedStatement,
-      allIds.map((nodeId) => ({
-        nodeId,
-        chunkIndex: 0,
-        startLine: 0,
-        endLine: 2,
-        embedding: new Array(EMBEDDING_DIMS).fill(0),
-      })),
-    );
-  } finally {
-    await adapter.closeLbug();
-  }
-  return idsByFile;
-}
-
-/** Read the surviving CodeEmbedding nodeIds straight from the repo DB. */
-async function readEmbeddingNodeIds(repoPath: string): Promise<string[]> {
-  const adapter = await import('../../src/core/lbug/lbug-adapter.js');
-  const { lbugPath } = getStoragePaths(repoPath);
-  await adapter.initLbug(lbugPath);
-  try {
-    const rows = (await adapter.executeQuery(
-      `MATCH (e:${EMBEDDING_TABLE_NAME}) RETURN e.nodeId AS nodeId`,
-    )) as Array<{ nodeId: string }>;
-    return rows.map((r) => String(r.nodeId));
-  } finally {
-    await adapter.closeLbug();
-  }
-}
-
-/** Tamper meta.stats.embeddings so deriveEmbeddingMode sees an embedded repo
- *  (loadMeta → spread → saveMeta, same pattern as the dirty-flag tests). */
-async function stampEmbeddingCount(storagePath: string, embeddings: number): Promise<void> {
-  const meta = await loadMeta(storagePath);
-  expect(meta).not.toBeNull();
-  const tampered: RepoMeta = { ...meta!, stats: { ...meta!.stats, embeddings } };
-  await saveMeta(storagePath, tampered);
-}
 
 /** Stage + commit everything in the temp repo (mirrors mini-repo.ts's git calls). */
 const gitCommitAll = (cwd: string, message: string): void => {
@@ -392,13 +330,20 @@ describe('runFullAnalysis — incremental orchestration', () => {
   //     PK conflict aborted the rest of the batch),
   //   - deleted-file rows are gone (join-delete) and NOT resurrected by the
   //     restore (live-graph filter),
-  //   - unchanged rows are untouched (skip-existing filter, no conflicts).
-  it('surgical incremental run keeps embedding rows in lockstep: changed restored, deleted gone, unchanged intact (tri-review 4669518496 KTD10)', async () => {
+  //   - unchanged rows are untouched (restore-scope filter, no conflicts),
+  //   - a LEGACY ORPHAN row — stranded while the embedding delete was a
+  //     no-op, unreachable by the node join forever — is swept by exact id
+  //     (this shipping review, FIX 3).
+  it('surgical incremental run keeps embedding rows in lockstep: changed restored, deleted gone, unchanged intact, legacy orphan swept (tri-review 4669518496 KTD10 + FIX 3)', async () => {
     const repo = await setupMiniRepo();
     try {
       const CHANGED_FILE = 'src/logger.ts';
       const UNCHANGED_FILE = 'src/db.ts';
       const DELETED_FILE = 'src/formatter.ts';
+      // A fabricated nodeId no graph will ever contain: the P2-1-era no-op
+      // delete left rows like this stranded in real DBs (schema version
+      // stays 6, so they are still out there).
+      const LEGACY_ORPHAN_NODE_ID = 'Function:src/ghost.ts:ghost:1';
 
       const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
       await runFullAnalysis(repo.dbPath, { skipAgentsMd: true }, { onProgress: () => {} });
@@ -412,7 +357,8 @@ describe('runFullAnalysis — incremental orchestration', () => {
       for (const fp of [CHANGED_FILE, UNCHANGED_FILE, DELETED_FILE]) {
         expect((idsByFile.get(fp) ?? []).length).toBeGreaterThan(0);
       }
-      const seededTotal = [...idsByFile.values()].flat().length;
+      await seedEmbeddingForNodeId(repo.dbPath, LEGACY_ORPHAN_NODE_ID);
+      const seededTotal = [...idsByFile.values()].flat().length + 1;
       await stampEmbeddingCount(storagePath, seededTotal);
 
       // One file modified (comment-only, appended at EOF so node ids keep
@@ -438,18 +384,27 @@ describe('runFullAnalysis — incremental orchestration', () => {
       // the escalated path instead.
       expect(logs.join('\n')).not.toContain('switching to a full DB write');
 
+      // The surgical run swept the fabricated legacy orphan by exact id
+      // (FIX 3). The logged count also includes DELETED_FILE's cached rows —
+      // live-graph rejects whose DB rows were already join-deleted with the
+      // file, so their exact-id DELETEs match nothing (documented no-op).
+      const expectedSweepCount = 1 + (idsByFile.get(DELETED_FILE) ?? []).length;
+      expect(logs.join('\n')).toContain(
+        `Swept ${expectedSweepCount} cached embedding row(s) with no live owning node`,
+      );
+
       const after = await loadMeta(storagePath);
       expect(after!.incrementalInProgress).toBeUndefined();
       const expectedSurvivors = [
         ...(idsByFile.get(CHANGED_FILE) ?? []),
         ...(idsByFile.get(UNCHANGED_FILE) ?? []),
       ];
-      // stats.embeddings stayed stable across the surgical run: changed +
-      // unchanged rows survived, deleted-file rows did not.
+      // stats.embeddings excludes both the deleted-file rows AND the swept
+      // legacy orphan.
       expect(after!.stats?.embeddings).toBe(expectedSurvivors.length);
-      // Exact surviving nodeId set — pins all three behaviors at once (a
-      // batch-abort loss, a leaked deleted-file row, or a dropped unchanged
-      // row each break set equality).
+      // Exact surviving nodeId set — pins all four behaviors at once (a
+      // batch-abort loss, a leaked deleted-file row, a dropped unchanged
+      // row, or a lingering legacy orphan each break set equality).
       expect((await readEmbeddingNodeIds(repo.dbPath)).sort()).toEqual(
         [...expectedSurvivors].sort(),
       );

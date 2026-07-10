@@ -161,5 +161,79 @@ withTestLbugDB('delete-nodes-for-files', (handle) => {
       // …and it left the surviving embedding row alone.
       expect(await count(`MATCH (e:${EMBEDDING_TABLE_NAME}) RETURN count(e) AS c`)).toBe(1);
     }, 120_000);
+
+    it('a file whose only nodes carry non-embeddable labels deletes cleanly and leaves other files’ embedding rows intact (FIX 4)', async () => {
+      const { deleteNodesForFiles, executeQuery } =
+        await import('../../src/core/lbug/lbug-adapter.js');
+      const count = async (cypher: string): Promise<number> => {
+        const rows = (await executeQuery(cypher)) as Array<{ c: number | bigint }>;
+        return Number(rows[0]?.c ?? 0);
+      };
+
+      // File is NOT an embeddable label, so the label-scoped embedding join
+      // (FIX 4) never binds it — the delete must still remove the node rows
+      // without erroring, and embedding rows owned by OTHER files stay put.
+      const ASSET_PATH = 'src/assets-only.txt';
+      await executeQuery(
+        `CREATE (:File {id: 'File:${ASSET_PATH}', name: 'assets-only.txt', filePath: '${ASSET_PATH}'})`,
+      );
+      const embeddingsBefore = await count(
+        `MATCH (e:${EMBEDDING_TABLE_NAME}) RETURN count(e) AS c`,
+      );
+
+      await expect(deleteNodesForFiles([ASSET_PATH])).resolves.toBeUndefined();
+
+      expect(
+        await count(`MATCH (n:File) WHERE n.filePath = '${ASSET_PATH}' RETURN count(n) AS c`),
+      ).toBe(0);
+      expect(await count(`MATCH (e:${EMBEDDING_TABLE_NAME}) RETURN count(e) AS c`)).toBe(
+        embeddingsBefore,
+      );
+    }, 120_000);
+  });
+});
+
+/**
+ * Missing-embedding-table tolerance (FIX 4): a DB created without
+ * EMBEDDING_SCHEMA raises `Binder exception: Table CodeEmbedding does not
+ * exist.` (probe-recorded on @ladybugdb/core 0.18.0) on the join-delete.
+ * deleteNodesForFiles must tolerate exactly that one case — warn and keep
+ * going — instead of bricking every incremental run until `--force`, while
+ * the node-table deletes still complete. Own withTestLbugDB block: the
+ * DROP TABLE would poison the sibling suite's shared DB.
+ */
+withTestLbugDB('delete-nodes-missing-embedding-table', () => {
+  describe('deleteNodesForFiles without a CodeEmbedding table (FIX 4)', () => {
+    it('resolves, still deletes the node rows, and later statements keep working', async () => {
+      const { deleteNodesForFiles, executeQuery } =
+        await import('../../src/core/lbug/lbug-adapter.js');
+      const count = async (cypher: string): Promise<number> => {
+        const rows = (await executeQuery(cypher)) as Array<{ c: number | bigint }>;
+        return Number(rows[0]?.c ?? 0);
+      };
+
+      await executeQuery(
+        `CREATE (:Function {id: 'Function:src/a.ts:fnA:1', name: 'fnA', filePath: 'src/a.ts', startLine: 1, endLine: 3, isExported: true, content: '', description: ''})`,
+      );
+      await executeQuery(
+        `CREATE (:Function {id: 'Function:src/b.ts:fnB:1', name: 'fnB', filePath: 'src/b.ts', startLine: 1, endLine: 3, isExported: true, content: '', description: ''})`,
+      );
+      // Build-variant DB without the embedding schema.
+      await executeQuery(`DROP TABLE ${EMBEDDING_TABLE_NAME}`);
+
+      await expect(deleteNodesForFiles(['src/a.ts'])).resolves.toBeUndefined();
+
+      // The node delete completed despite the tolerated missing-table warn…
+      expect(
+        await count(`MATCH (n:Function) WHERE n.filePath = 'src/a.ts' RETURN count(n) AS c`),
+      ).toBe(0);
+      // …the untouched file survives…
+      expect(
+        await count(`MATCH (n:Function) WHERE n.filePath = 'src/b.ts' RETURN count(n) AS c`),
+      ).toBe(1);
+      // …and the connection stays healthy for subsequent batches.
+      await expect(deleteNodesForFiles(['src/b.ts'])).resolves.toBeUndefined();
+      expect(await count(`MATCH (n:Function) RETURN count(n) AS c`)).toBe(0);
+    }, 120_000);
   });
 });

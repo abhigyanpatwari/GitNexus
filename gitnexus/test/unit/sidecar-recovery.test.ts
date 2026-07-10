@@ -6,6 +6,7 @@ import { readFileSync } from 'node:fs';
 import {
   _resetSidecarRecoveryWarningsForTest,
   cleanParkedDirtyRecoverySidecars,
+  cleanParkedLbugSidecars,
   cleanQuarantinedMissingShadowWals,
   finalizeLbugSidecarsAfterClose,
   guardWalQuarantine,
@@ -14,6 +15,7 @@ import {
   isPermissionRenameError,
   isReadOnlyShadowReplayError,
   listParkedDirtyRecoverySidecars,
+  listParkedLbugSidecars,
   listQuarantinedMissingShadowWals,
   preflightLbugSidecars,
   presentShadowUnreachableMessage,
@@ -552,6 +554,7 @@ describe('LadybugDB sidecar recovery', () => {
 
       expect(result).toEqual({
         moved: [`${dbPath}.wal.dirty-recovery`, `${dbPath}.shadow.dirty-recovery`],
+        removed: [],
         failed: [],
       });
       // Originals gone — the next open has nothing to replay.
@@ -571,8 +574,43 @@ describe('LadybugDB sidecar recovery', () => {
     it('is a silent no-op when no sidecars exist', async () => {
       const messages: string[] = [];
       const result = await quarantineSidecarsForDirtyRecovery(dbPath, (m) => messages.push(m));
-      expect(result).toEqual({ moved: [], failed: [] });
+      expect(result).toEqual({ moved: [], removed: [], failed: [] });
       expect(messages).toEqual([]);
+    });
+
+    it('a transient EBUSY that clears within the retry budget parks normally (FIX 1 — the park used to have ZERO retry for the lock class the wipe path retries)', async () => {
+      await fs.writeFile(`${dbPath}.wal`, Buffer.alloc(2048, 0x55));
+      // First two rename attempts on the .wal source fail EBUSY (AV scan /
+      // handle-release lag), then the spy calls through — the shared-budget
+      // retry loop must absorb this without classifying anything as removed
+      // or failed. Typed captured original, path-filtered (precedent:
+      // repo-manager-transient-error.test.ts EACCES case, minus its as-any).
+      const originalRename: typeof fs.rename = fs.rename;
+      let walRenameAttempts = 0;
+      vi.spyOn(fs, 'rename').mockImplementation(async (from, to) => {
+        if (String(from).endsWith('.wal')) {
+          walRenameAttempts += 1;
+          if (walRenameAttempts <= 2) {
+            const err = new Error('resource busy or locked') as NodeJS.ErrnoException;
+            err.code = 'EBUSY';
+            throw err;
+          }
+        }
+        return originalRename(from, to);
+      });
+
+      const result = await quarantineSidecarsForDirtyRecovery(dbPath, () => {});
+
+      expect(result).toEqual({
+        moved: [`${dbPath}.wal.dirty-recovery`],
+        removed: [],
+        failed: [],
+      });
+      expect(walRenameAttempts).toBe(3);
+      expect(
+        Buffer.compare(readFileSync(`${dbPath}.wal.dirty-recovery`), Buffer.alloc(2048, 0x55)),
+      ).toBe(0);
+      await expect(inspectLbugSidecars(dbPath)).resolves.toEqual({ kind: 'clean', dbPath });
     });
 
     it('parks a lone WAL and replaces a stale parked copy from an earlier crash', async () => {
@@ -581,7 +619,11 @@ describe('LadybugDB sidecar recovery', () => {
 
       const result = await quarantineSidecarsForDirtyRecovery(dbPath, () => {});
 
-      expect(result).toEqual({ moved: [`${dbPath}.wal.dirty-recovery`], failed: [] });
+      expect(result).toEqual({
+        moved: [`${dbPath}.wal.dirty-recovery`],
+        removed: [],
+        failed: [],
+      });
       // Fixed destination name caps accumulation at one parked file: the
       // newest crash's bytes win.
       expect(
@@ -590,14 +632,16 @@ describe('LadybugDB sidecar recovery', () => {
       await expect(inspectLbugSidecars(dbPath)).resolves.toEqual({ kind: 'clean', dbPath });
     });
 
-    it('reports a locked .wal in failed, still parks .shadow, and warns honestly (tri-review 4669518496 P2-3)', async () => {
+    it('rm-fallback: a persistently rename-locked .wal is REMOVED (bytes gone), .shadow still parks, log says forensics discarded (FIX 1)', async () => {
       await fs.writeFile(`${dbPath}.wal`, Buffer.alloc(2048, 0x11));
       await fs.writeFile(`${dbPath}.shadow`, Buffer.alloc(1024, 0x22));
       // Path-filtered rename spy with a typed captured original (precedent:
       // repo-manager-transient-error.test.ts EACCES case, minus its as-any):
       // every rename whose SOURCE is the .wal sidecar fails EBUSY — the
-      // direct park AND the confirm probe — simulating an MCP/serve process
-      // holding the WAL open (#2396's common deploy shape).
+      // retried direct park AND the confirm probe — simulating a holder that
+      // blocks RENAME but not unlink (#2396's common deploy shape). fs.rm is
+      // untouched, so the rm-fallback succeeds and the poisoned bytes are
+      // gone: forensics lost, replay risk eliminated.
       const originalRename: typeof fs.rename = fs.rename;
       vi.spyOn(fs, 'rename').mockImplementation(async (from, to) => {
         if (String(from).endsWith('.wal')) {
@@ -611,28 +655,28 @@ describe('LadybugDB sidecar recovery', () => {
 
       const result = await quarantineSidecarsForDirtyRecovery(dbPath, (m) => messages.push(m));
 
-      // Per-suffix isolation: the .wal failure did not skip the .shadow attempt.
+      // Per-suffix isolation: the .wal escalation did not skip the .shadow park.
       expect(result).toEqual({
         moved: [`${dbPath}.shadow.dirty-recovery`],
-        failed: [`${dbPath}.wal`],
+        removed: [`${dbPath}.wal`],
+        failed: [],
       });
+      // The poisoned bytes are GONE — nothing for any subsequent open to replay.
+      await expect(fs.stat(`${dbPath}.wal`)).rejects.toMatchObject({ code: 'ENOENT' });
       const joined = messages.join('\n');
-      // Honest EBUSY/EPERM-class guidance: stop the holder, AV exclusion, re-run…
-      expect(joined).toContain('stop any GitNexus MCP or serve process');
-      expect(joined).toContain('antivirus exclusion');
-      // …and NOT the old false promise — the pre-wipe open would replay the
-      // poisoned WAL and die before any wipe could happen.
-      expect(joined).not.toContain('wipe it in place');
+      expect(joined).toContain('forensics');
+      expect(joined).toContain('replay risk is eliminated');
     });
 
-    it("leaves the previous crash's parked copy INTACT when the source is fully locked (confirm-probe proof)", async () => {
+    it('all-fail (rename + probe + rm locked) lands in failed with honest guidance, and the previous parked copy survives untouched', async () => {
       const staleBytes = 'previous crash forensics';
       await fs.writeFile(`${dbPath}.wal.dirty-recovery`, staleBytes);
       await fs.writeFile(`${dbPath}.wal`, Buffer.alloc(2048, 0x33));
-      // Source locked for BOTH targets (direct park AND the `${to}.next`
-      // probe). The pre-tri-review shape rm'd the stale parked copy BEFORE
-      // attempting the rename — destroying the prior crash's forensics
-      // exactly here, where nothing ever replaces them.
+      // Source locked for EVERY escape hatch: the retried direct park, the
+      // `${to}.next` probe, AND the rm-fallback. The pre-tri-review shape
+      // rm'd the stale parked copy BEFORE attempting the rename — destroying
+      // the prior crash's forensics exactly here, where nothing ever
+      // replaces them.
       const originalRename: typeof fs.rename = fs.rename;
       vi.spyOn(fs, 'rename').mockImplementation(async (from, to) => {
         if (String(from).endsWith('.wal')) {
@@ -642,14 +686,31 @@ describe('LadybugDB sidecar recovery', () => {
         }
         return originalRename(from, to);
       });
+      const originalRm: typeof fs.rm = fs.rm;
+      vi.spyOn(fs, 'rm').mockImplementation(async (p, opts) => {
+        if (String(p).endsWith('.wal')) {
+          const err = new Error('resource busy or locked') as NodeJS.ErrnoException;
+          err.code = 'EBUSY';
+          throw err;
+        }
+        return originalRm(p, opts);
+      });
+      const messages: string[] = [];
 
-      const result = await quarantineSidecarsForDirtyRecovery(dbPath, () => {});
+      const result = await quarantineSidecarsForDirtyRecovery(dbPath, (m) => messages.push(m));
 
-      expect(result).toEqual({ moved: [], failed: [`${dbPath}.wal`] });
+      expect(result).toEqual({ moved: [], removed: [], failed: [`${dbPath}.wal`] });
       // The stale parked copy's bytes survived untouched…
       expect(readFileSync(`${dbPath}.wal.dirty-recovery`, 'utf-8')).toBe(staleBytes);
       // …and the locked source is still in place (nothing was half-moved).
       await expect(fs.stat(`${dbPath}.wal`)).resolves.toBeDefined();
+      const joined = messages.join('\n');
+      // Honest EBUSY/EPERM-class guidance: stop the holder, AV exclusion, re-run…
+      expect(joined).toContain('stop any GitNexus MCP or serve process');
+      expect(joined).toContain('antivirus exclusion');
+      // …and NOT the old false promise — the pre-wipe open would replay the
+      // poisoned WAL and die before any wipe could happen.
+      expect(joined).not.toContain('wipe it in place');
     });
 
     it('replaces a stale parked copy via the probe-promote path on a true rename-onto-existing collision', async () => {
@@ -659,10 +720,14 @@ describe('LadybugDB sidecar recovery', () => {
       // rename-onto-existing semantics — while the collision-free `.next`
       // probe and its promotion succeed. Deterministic cross-platform pin of
       // the branch the "parks a lone WAL" case above only exercises
-      // implicitly on Windows (POSIX rename overwrites in place).
+      // implicitly on Windows (POSIX rename overwrites in place). EEXIST is
+      // outside the transient lock class, so the retry loop must fall
+      // through to the probe on the FIRST failure, not burn the budget.
       const originalRename: typeof fs.rename = fs.rename;
+      let directRenameAttempts = 0;
       vi.spyOn(fs, 'rename').mockImplementation(async (from, to) => {
         if (String(from).endsWith('.wal') && String(to).endsWith('.dirty-recovery')) {
+          directRenameAttempts += 1;
           const err = new Error('file already exists') as NodeJS.ErrnoException;
           err.code = 'EEXIST';
           throw err;
@@ -672,7 +737,12 @@ describe('LadybugDB sidecar recovery', () => {
 
       const result = await quarantineSidecarsForDirtyRecovery(dbPath, () => {});
 
-      expect(result).toEqual({ moved: [`${dbPath}.wal.dirty-recovery`], failed: [] });
+      expect(result).toEqual({
+        moved: [`${dbPath}.wal.dirty-recovery`],
+        removed: [],
+        failed: [],
+      });
+      expect(directRenameAttempts).toBe(1);
       // Newest forensics win — and no `.next` probe residue is left behind.
       expect(
         Buffer.compare(readFileSync(`${dbPath}.wal.dirty-recovery`), Buffer.alloc(2048, 0x44)),
@@ -698,13 +768,14 @@ describe('LadybugDB sidecar recovery', () => {
       ]);
     });
 
-    it('lists both parked files sorted; live sidecars, missing-shadow quarantines, and .next residue are not enumerated', async () => {
+    it('lists parked files AND .next residue sorted; live sidecars and missing-shadow quarantines are not enumerated', async () => {
       await fs.writeFile(`${dbPath}.wal.dirty-recovery`, 'parked wal bytes');
       await fs.writeFile(`${dbPath}.shadow.dirty-recovery`, 'parked shadow bytes');
-      // Fixed-name lister must not sweep up neighbors: a LIVE wal, a
-      // missing-shadow quarantine (the OTHER family), and the double-failure
-      // `.next` residue (deliberately manual-removal-only — its presence
-      // means the fixed name is locked).
+      // Fixed-name lister must not sweep up neighbors — a LIVE wal and a
+      // missing-shadow quarantine (the OTHER family) — while the
+      // double-failure `.next` residue IS enumerated since FIX 5 of this
+      // shipping review (it used to be invisible to every surface while the
+      // docs said "remove manually").
       await fs.writeFile(`${dbPath}.wal`, 'live wal');
       await fs.writeFile(`${dbPath}.wal.missing-shadow.1-a`, '');
       await fs.writeFile(`${dbPath}.wal.dirty-recovery.next`, 'residue');
@@ -712,23 +783,29 @@ describe('LadybugDB sidecar recovery', () => {
       await expect(listParkedDirtyRecoverySidecars(dbPath)).resolves.toEqual([
         `${dbPath}.shadow.dirty-recovery`,
         `${dbPath}.wal.dirty-recovery`,
+        `${dbPath}.wal.dirty-recovery.next`,
       ]);
     });
 
-    it('clean removes the parked files, returns their paths, and leaves the missing-shadow family alone', async () => {
+    it('clean removes the parked files (.next residue included), returns their paths, and leaves the missing-shadow family alone', async () => {
       await fs.writeFile(`${dbPath}.wal.dirty-recovery`, 'parked wal bytes');
       await fs.writeFile(`${dbPath}.shadow.dirty-recovery`, 'parked shadow bytes');
+      await fs.writeFile(`${dbPath}.wal.dirty-recovery.next`, 'residue');
       await fs.writeFile(`${dbPath}.wal.missing-shadow.1-a`, '');
 
       await expect(cleanParkedDirtyRecoverySidecars(dbPath)).resolves.toEqual([
         `${dbPath}.shadow.dirty-recovery`,
         `${dbPath}.wal.dirty-recovery`,
+        `${dbPath}.wal.dirty-recovery.next`,
       ]);
 
       await expect(fs.stat(`${dbPath}.wal.dirty-recovery`)).rejects.toMatchObject({
         code: 'ENOENT',
       });
       await expect(fs.stat(`${dbPath}.shadow.dirty-recovery`)).rejects.toMatchObject({
+        code: 'ENOENT',
+      });
+      await expect(fs.stat(`${dbPath}.wal.dirty-recovery.next`)).rejects.toMatchObject({
         code: 'ENOENT',
       });
       // The other family is untouched by the new pair…
@@ -749,6 +826,88 @@ describe('LadybugDB sidecar recovery', () => {
       await expect(listParkedDirtyRecoverySidecars(dbPath)).resolves.toEqual([
         `${dbPath}.wal.dirty-recovery`,
       ]);
+    });
+  });
+
+  describe('listParkedLbugSidecars / cleanParkedLbugSidecars aggregate (this shipping review, FIX 5)', () => {
+    it('aggregates both families — missing-shadow quarantines plus dirty-recovery parks and .next residue', async () => {
+      await fs.writeFile(`${dbPath}.wal.missing-shadow.1-a`, '');
+      await fs.writeFile(`${dbPath}.wal.missing-shadow.2-b`, '');
+      await fs.writeFile(`${dbPath}.wal.dirty-recovery`, 'parked wal bytes');
+      await fs.writeFile(`${dbPath}.shadow.dirty-recovery.next`, 'residue');
+
+      await expect(listParkedLbugSidecars(dbPath)).resolves.toEqual([
+        `${dbPath}.wal.missing-shadow.1-a`,
+        `${dbPath}.wal.missing-shadow.2-b`,
+        `${dbPath}.shadow.dirty-recovery.next`,
+        `${dbPath}.wal.dirty-recovery`,
+      ]);
+
+      const result = await cleanParkedLbugSidecars(dbPath);
+      expect(result).toEqual({
+        deleted: [
+          `${dbPath}.wal.missing-shadow.1-a`,
+          `${dbPath}.wal.missing-shadow.2-b`,
+          `${dbPath}.shadow.dirty-recovery.next`,
+          `${dbPath}.wal.dirty-recovery`,
+        ],
+        failed: [],
+      });
+      await expect(listParkedLbugSidecars(dbPath)).resolves.toEqual([]);
+    });
+
+    it('a locked parked file lands in failed while every other file is still deleted (no throw, no partial abort)', async () => {
+      await fs.writeFile(`${dbPath}.wal.missing-shadow.1-a`, '');
+      await fs.writeFile(`${dbPath}.wal.dirty-recovery`, 'parked wal bytes');
+      await fs.writeFile(`${dbPath}.shadow.dirty-recovery`, 'parked shadow bytes');
+      // One EBUSY-locked file mid-roster: the old per-family cleaners threw
+      // on it, crashing the whole clean after a partial deletion. Typed
+      // captured original, path-filtered.
+      const originalUnlink: typeof fs.unlink = fs.unlink;
+      vi.spyOn(fs, 'unlink').mockImplementation(async (p) => {
+        if (String(p) === `${dbPath}.wal.dirty-recovery`) {
+          const err = new Error('resource busy or locked') as NodeJS.ErrnoException;
+          err.code = 'EBUSY';
+          throw err;
+        }
+        return originalUnlink(p);
+      });
+
+      const result = await cleanParkedLbugSidecars(dbPath);
+
+      expect(result).toEqual({
+        deleted: [`${dbPath}.wal.missing-shadow.1-a`, `${dbPath}.shadow.dirty-recovery`],
+        failed: [`${dbPath}.wal.dirty-recovery`],
+      });
+      // The locked file is still on disk; everything else is gone.
+      await expect(fs.stat(`${dbPath}.wal.dirty-recovery`)).resolves.toBeDefined();
+      await expect(fs.stat(`${dbPath}.wal.missing-shadow.1-a`)).rejects.toMatchObject({
+        code: 'ENOENT',
+      });
+      await expect(fs.stat(`${dbPath}.shadow.dirty-recovery`)).rejects.toMatchObject({
+        code: 'ENOENT',
+      });
+    });
+
+    it('a list→delete race (ENOENT at unlink time) is skipped silently — neither deleted nor failed', async () => {
+      await fs.writeFile(`${dbPath}.wal.dirty-recovery`, 'parked wal bytes');
+      await fs.writeFile(`${dbPath}.shadow.dirty-recovery`, 'parked shadow bytes');
+      const originalUnlink: typeof fs.unlink = fs.unlink;
+      vi.spyOn(fs, 'unlink').mockImplementation(async (p) => {
+        if (String(p) === `${dbPath}.wal.dirty-recovery`) {
+          // Simulate another process winning the race after the list.
+          await originalUnlink(p);
+        }
+        return originalUnlink(p);
+      });
+
+      const result = await cleanParkedLbugSidecars(dbPath);
+
+      expect(result).toEqual({
+        deleted: [`${dbPath}.shadow.dirty-recovery`],
+        failed: [],
+      });
+      await expect(listParkedLbugSidecars(dbPath)).resolves.toEqual([]);
     });
   });
 });

@@ -704,10 +704,12 @@ describe('runFullAnalysis wipe-and-restore vector-index stamp (tri-review 466951
       initLbug: vi.fn(async () => undefined),
       loadGraphToLbug: vi.fn(async () => undefined),
       getLbugStats: vi.fn(async () => ({ nodes: 2, edges: 0, communities: 0, processes: 0 })),
-      // Phase 3.5's surviving-id pre-read answers empty (the DB was just
-      // wiped); the finalize embedding count answers 1 (the restored row) — a
-      // zero count would stamp 'unavailable' and the exact-scan assertion
-      // below would pass for the wrong reason.
+      // The finalize embedding count answers 1 (the restored row) — a zero
+      // count would stamp 'unavailable' and the exact-scan assertion below
+      // would pass for the wrong reason. (No surviving-id pre-read to answer
+      // anymore: Phase 3.5 derives its restore scope in memory — FIX 3 of
+      // this shipping review — and this wiped/full-rebuild path restores ALL
+      // live cached rows.)
       executeQuery: vi.fn(async (cypher: string) =>
         /RETURN count\(e\) AS cnt/.test(cypher) ? [{ cnt: 1 }] : [],
       ),
@@ -815,46 +817,53 @@ describe('runFullAnalysis wipe-and-restore vector-index stamp (tri-review 466951
 });
 
 /**
- * U5 mode-gate pin (tri-review 4669518496 P2-3 / KTD3): when dirty-recovery
- * sidecar parking FAILS, the run must derive its embedding mode in DROP shape
- * — even against an explicit `--embeddings` invocation. Zeroing only the
- * existing count would leave `shouldGenerateEmbeddings = explicit || …` alive
- * (embedding-mode.ts), so the run would still open the DB before the rebuild
- * wipe (replaying the possibly-poisoned WAL — the #2409 defect-2 death loop)
- * AND drag the embedder into the locked/AV environment where parking fails.
- * The pure drop-shape derivation is pinned in run-analyze.test.ts; this
- * harness pins the WIRING — that a failed park actually reaches it.
+ * U5 fail-fast pin (this shipping review, FIX 1 — replacing the tri-review
+ * 4669518496 P2-3 drop-shape design): when the dirty-recovery sidecar
+ * quarantine can neither PARK nor REMOVE a crashed run's sidecar, the run
+ * must reject with a typed LbugWipeError in seconds — before any DB open
+ * (the pre-wipe preservation open would replay the possibly-poisoned WAL
+ * and die: the #2409 defect-2 death loop) and before the pipeline burns
+ * minutes only to die at the rebuild wipe on the very same handle. The
+ * dirty flag must survive the rejection so the next run re-attempts
+ * recovery.
  */
-describe('runFullAnalysis dirty-recovery parking failure fails safe (tri-review 4669518496 P2-3 / U5)', () => {
+describe('runFullAnalysis dirty-recovery parking failure fails fast (this shipping review, FIX 1)', () => {
   afterEach(() => {
     vi.doUnmock('../../src/core/lbug/lbug-adapter.js');
     vi.doUnmock('../../src/core/search/fts-indexes.js');
     vi.doUnmock('../../src/core/ingestion/pipeline.js');
     vi.doUnmock('../../src/storage/repo-manager.js');
     vi.doUnmock('../../src/core/embeddings/embedding-pipeline.js');
-    // The test spies on fs.rename — restore BEFORE resetModules/clearAllMocks
-    // so later suites' atomic meta writes never see the path-filtered reject.
+    // The test spies on fs.rename/fs.rm — restore BEFORE resetModules/
+    // clearAllMocks so later suites' atomic meta writes never see the
+    // path-filtered reject.
     vi.restoreAllMocks();
     vi.resetModules();
     vi.clearAllMocks();
     vi.unstubAllEnvs();
   });
 
-  it('parking failure + explicit --embeddings: no pre-wipe cache open, no embedder, honest drop log', async () => {
+  it('all-fail park + explicit --embeddings: rejects with LbugWipeError before any DB open, dirty flag survives', async () => {
     const loadCachedEmbeddings = vi.fn(async () => ({
       embeddingNodeIds: new Set<string>(),
       embeddings: [],
     }));
     const runEmbeddingPipeline = vi.fn(async () => ({ semanticMode: 'exact-scan' as const }));
-    vi.doMock('../../src/core/lbug/lbug-adapter.js', () => ({
+    const runPipelineFromRepo = vi.fn(async (repoPath: string) => ({
+      repoPath,
+      totalFileCount: 1,
+      graph: { forEachNode: () => undefined },
+    }));
+    // Wholesale factory EXCEPT LbugWipeError: run-analyze throws the class it
+    // imports from this module, and the test asserts on that very type — so
+    // the real class rides along via importActual.
+    vi.doMock('../../src/core/lbug/lbug-adapter.js', async (importActual) => ({
       initLbug: vi.fn(async () => undefined),
       loadGraphToLbug: vi.fn(async () => undefined),
       getLbugStats: vi.fn(async () => ({ nodes: 1, edges: 0, communities: 0, processes: 0 })),
       executeQuery: vi.fn(async () => []),
       executeWithReusedStatement: vi.fn(async () => []),
       closeLbug: vi.fn(async () => undefined),
-      // Full-rebuild wipe is loud now (#2409, tri-review 4669518496 P2-4) —
-      // run-analyze calls this on every full-path analyze.
       wipeLbugDbFiles: vi.fn(async () => undefined),
       loadCachedEmbeddings,
       deleteNodesForFile: vi.fn(async () => undefined),
@@ -867,6 +876,9 @@ describe('runFullAnalysis dirty-recovery parking failure fails safe (tri-review 
       queryImporters: vi.fn(async () => []),
       queryImportersBatch: vi.fn(async () => []),
       loadFTSExtension: vi.fn(async () => false),
+      LbugWipeError: (await importActual<typeof import('../../src/core/lbug/lbug-adapter.js')>())
+        .LbugWipeError,
+      DELETE_FILES_CHUNK_SIZE: 200,
     }));
     vi.doMock('../../src/core/search/fts-indexes.js', () => ({
       initialiseSearchFTSStemmer: vi.fn(() => 'porter'),
@@ -874,11 +886,7 @@ describe('runFullAnalysis dirty-recovery parking failure fails safe (tri-review 
       verifySearchFTSIndexes: vi.fn(async () => []),
     }));
     vi.doMock('../../src/core/ingestion/pipeline.js', () => ({
-      runPipelineFromRepo: vi.fn(async (repoPath: string) => ({
-        repoPath,
-        totalFileCount: 1,
-        graph: { forEachNode: () => undefined },
-      })),
+      runPipelineFromRepo,
     }));
     // Avoid touching the global registry / repo .gitnexusignore from a unit test.
     vi.doMock('../../src/storage/repo-manager.js', async (importActual) => ({
@@ -886,7 +894,7 @@ describe('runFullAnalysis dirty-recovery parking failure fails safe (tri-review 
       registerRepo: vi.fn(async () => 'park-fail-repo'),
       ensureGitNexusIgnored: vi.fn(async () => undefined),
     }));
-    // If the drop-shape gate were broken, the explicit --embeddings below
+    // If the fail-fast gate were broken, the explicit --embeddings below
     // would reach Phase 4 and initialize a REAL embedder in CI — stub it so
     // the failure mode is a clean assertion, not a model download.
     vi.doMock('../../src/core/embeddings/embedding-pipeline.js', async (importActual) => ({
@@ -899,9 +907,8 @@ describe('runFullAnalysis dirty-recovery parking failure fails safe (tri-review 
     try {
       const { storagePath, lbugPath } = getStoragePaths(tmpRepo.dbPath);
       await fs.mkdir(storagePath, { recursive: true });
-      // Embedded repo + crashed writeback: exactly the state where a naive
-      // "zero the existing count" gate would leave the explicit --embeddings
-      // path alive.
+      // Embedded repo + crashed writeback: exactly the state where the run
+      // would otherwise open the DB pre-wipe to preserve embeddings.
       await saveMeta(storagePath, {
         repoPath: tmpRepo.dbPath,
         lastCommit: '',
@@ -916,11 +923,12 @@ describe('runFullAnalysis dirty-recovery parking failure fails safe (tri-review 
       await createPlaceholderGraphStore(lbugPath);
       // A leftover WAL from the crash…
       await fs.writeFile(`${lbugPath}.wal`, Buffer.alloc(8192, 0xab));
-      // …that cannot be parked: every rename onto a `.dirty-recovery*` target
-      // fails EBUSY (direct park AND confirm probe). Path-filtered with a
-      // typed captured original (repo-manager-transient-error.test.ts
-      // precedent, minus its as-any) so meta's atomic tmp→final renames keep
-      // working.
+      // …locked against EVERY escape hatch: renames onto `.dirty-recovery*`
+      // targets fail EBUSY (retried direct park AND confirm probe), and the
+      // rm-fallback on the WAL source fails EBUSY too. Path-filtered with
+      // typed captured originals (repo-manager-transient-error.test.ts
+      // precedent, minus its as-any) so meta's atomic tmp→final renames and
+      // the temp-dir cleanup keep working.
       const originalRename: typeof fs.rename = fs.rename;
       vi.spyOn(fs, 'rename').mockImplementation(async (from, to) => {
         if (String(to).includes('.dirty-recovery')) {
@@ -930,33 +938,50 @@ describe('runFullAnalysis dirty-recovery parking failure fails safe (tri-review 
         }
         return originalRename(from, to);
       });
+      const originalRm: typeof fs.rm = fs.rm;
+      vi.spyOn(fs, 'rm').mockImplementation(async (p, opts) => {
+        if (String(p) === `${lbugPath}.wal`) {
+          const err = new Error('resource busy or locked') as NodeJS.ErrnoException;
+          err.code = 'EBUSY';
+          throw err;
+        }
+        return originalRm(p, opts);
+      });
 
       const logs: string[] = [];
       const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
-      await runFullAnalysis(
+      const { LbugWipeError } = await import('../../src/core/lbug/lbug-adapter.js');
+      const rejection: unknown = await runFullAnalysis(
         tmpRepo.dbPath,
         { embeddings: true },
         { onProgress: () => {}, onLog: (m: string) => logs.push(m) },
+      ).then(
+        () => null,
+        (e: unknown) => e,
       );
 
+      // Fail-fast with the typed, self-contained error (serve forwards only
+      // err.message over IPC): headline + blocked path + lock guidance.
+      expect(rejection).toBeInstanceOf(LbugWipeError);
+      expect(rejection).toMatchObject({
+        name: 'LbugWipeError',
+        survivors: [`${lbugPath}.wal`],
+        message: expect.stringContaining('dirty-state recovery'),
+      });
+      expect(rejection).toMatchObject({
+        message: expect.stringMatching(/stop any GitNexus MCP or serve process/i),
+      });
       // The preservation open is the ONLY loadCachedEmbeddings call site —
-      // not called means the DB was never opened before the rebuild wipe…
+      // not called means the DB was never opened before the throw…
       expect(loadCachedEmbeddings).not.toHaveBeenCalled();
+      // …the pipeline never started (the throw is in seconds, not minutes)…
+      expect(runPipelineFromRepo).not.toHaveBeenCalled();
       // …and the embedder never ran despite the explicit --embeddings.
       expect(runEmbeddingPipeline).not.toHaveBeenCalled();
-      const joined = logs.join('\n');
-      // The honest drop banner replaced the normal mode banner…
-      expect(joined).toContain('dropping embeddings for this run');
-      expect(joined).toContain('gitnexus analyze --embeddings');
-      // …and the corrected sidecar warning carries no wipe-in-place promise.
-      expect(joined).not.toContain('wipe it in place');
-      // Persisted meta is coherent with the drop (run-analyze.ts finalize):
-      // zero embeddings, vector search honestly unavailable, and the dirty
-      // flag cleared by the completed recovery.
+      // The dirty flag SURVIVES the rejection: the next run re-attempts
+      // recovery instead of certifying the half-written index.
       const meta = JSON.parse(await fs.readFile(`${storagePath}/meta.json`, 'utf-8')) as RepoMeta;
-      expect(meta.stats?.embeddings).toBe(0);
-      expect(meta.capabilities?.vectorSearch.status).toBe('unavailable');
-      expect(meta.incrementalInProgress).toBeUndefined();
+      expect(meta.incrementalInProgress).toMatchObject({ phase: 'load-graph' });
     } finally {
       await tmpRepo.cleanup();
     }

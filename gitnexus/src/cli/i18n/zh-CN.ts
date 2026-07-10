@@ -50,6 +50,8 @@ export const zhCN = {
   'clean.lbugSidecars.preview':
     '将删除 {{count}} 个已暂存的 LadybugDB 恢复 sidecar（missing-shadow WAL 隔离文件与 dirty-recovery 暂存文件）：',
   'clean.lbugSidecars.deleted': '已删除 {{count}} 个已暂存的 LadybugDB 恢复 sidecar。',
+  'clean.lbugSidecars.failed':
+    '有 {{count}} 个文件被锁定而无法删除 — 请停止占用它们的进程（GitNexus MCP/serve 或杀毒软件扫描）后重试：',
   'remove.nothingToRemove': '无需移除：{{message}}',
   'remove.deleteTarget': '将删除该仓库的 GitNexus 索引：{{name}}',
   'remove.removed': '已移除：{{name}}',

@@ -1,5 +1,10 @@
 import fs from 'fs/promises';
 import path from 'path';
+import {
+  HANDLE_RELEASE_PROBE_ATTEMPTS,
+  HANDLE_RELEASE_PROBE_DELAY_MS,
+  sleep,
+} from './lbug-config.js';
 
 export type LbugSidecarState =
   | { kind: 'clean'; dbPath: string }
@@ -199,6 +204,23 @@ export const isPermissionRenameError = (err: unknown): boolean => {
 };
 
 /**
+ * Canonical remediation guidance for the LadybugDB file-lock class
+ * (EBUSY/EPERM/EACCES — an MCP/serve process holding the index, or an
+ * antivirus scan). One exported producer (this shipping review, FIX 7):
+ * the dirty-recovery park warning below, `LbugWipeError`'s message builder
+ * (lbug-adapter.ts) and {@link renameFailureMessage} previously carried
+ * three divergent hand-written copies of the same advice.
+ *
+ * `rerun` names the command to retry once the lock clears — the analyze
+ * wipe/park surfaces re-run the analyze; the read-path quarantine surface
+ * re-runs whatever command failed. No trailing period: callers own the
+ * sentence end.
+ */
+export const lbugLockRemediation = (rerun = 're-run `gitnexus analyze`'): string =>
+  'stop any GitNexus MCP or serve process using this repository, add an antivirus ' +
+  `exclusion for the GitNexus storage directory, then ${rerun}`;
+
+/**
  * Classify a failure surfaced by quarantine rename into an actionable user-facing
  * message.
  *
@@ -220,10 +242,10 @@ export const renameFailureMessage = (dbPath: string, err: unknown): string => {
     return (
       `GitNexus could not move the LadybugDB WAL sidecar at ${dbPath}.wal because of a ` +
       `filesystem permission or file-lock error (${code}). ` +
-      'Check filesystem ACLs, antivirus exclusions for the index directory, and ' +
-      'whether another process holds an open handle on the file. ' +
-      'The index does not need to be rebuilt — re-running the failing command after ' +
-      'resolving the lock or permission should succeed.' +
+      'The index does not need to be rebuilt — ' +
+      // Shared remediation copy (FIX 7); this surface serves read paths too,
+      // so the re-run target is the failing command, not the analyze.
+      `${lbugLockRemediation('re-run the failing command once the lock or permission is resolved')}.` +
       `\n  Original error: ${msg.slice(0, 200)}`
     );
   }
@@ -434,14 +456,14 @@ export async function finalizeLbugSidecarsAfterClose(
  * text promised "the rebuild will wipe it in place instead" — false: the
  * recovery run's pre-wipe DB open would replay the poisoned WAL and die
  * before any wipe could happen. Mirrors {@link renameFailureMessage}'s
- * EBUSY/EPERM framing: the problem is environmental (file lock, AV), not
- * data integrity — fix the lock and re-run.
+ * EBUSY/EPERM framing via the shared {@link lbugLockRemediation} copy
+ * (FIX 7): the problem is environmental (file lock, AV), not data
+ * integrity — fix the lock and re-run.
  */
 const sidecarParkRefusedWarning = (from: string, err: unknown): string =>
-  `Warning: could not park ${path.basename(from)} aside before the recovery rebuild ` +
+  `Warning: could not park or remove ${path.basename(from)} before the recovery rebuild ` +
   `(${err instanceof Error ? err.message : String(err)}). Another process likely holds an ` +
-  'open handle on it — stop any GitNexus MCP or serve process using this repository, add an ' +
-  'antivirus exclusion for the index directory if needed, then re-run `gitnexus analyze`.';
+  `open handle on it — ${lbugLockRemediation()}.`;
 
 /**
  * The sidecar family parked by {@link quarantineSidecarsForDirtyRecovery}
@@ -450,6 +472,19 @@ const sidecarParkRefusedWarning = (from: string, err: unknown): string =>
  * 4669518496 P2-7).
  */
 const DIRTY_RECOVERY_SIDECAR_SUFFIXES = ['.wal', '.shadow'] as const;
+
+/**
+ * Every fixed name the dirty-recovery park can leave beside `dbPath`: the
+ * two `.dirty-recovery` destinations PLUS their `.next` probe residues
+ * (this shipping review, FIX 5 — the residue used to be invisible to every
+ * cleanup surface while the docs said "remove manually"). Single roster
+ * authority for {@link listParkedDirtyRecoverySidecars}.
+ */
+const dirtyRecoveryParkedNames = (dbPath: string): string[] =>
+  DIRTY_RECOVERY_SIDECAR_SUFFIXES.flatMap((suffix) => [
+    `${dbPath}${suffix}.dirty-recovery`,
+    `${dbPath}${suffix}.dirty-recovery.next`,
+  ]);
 
 /**
  * Move the WAL/shadow sidecars aside before a dirty-flag recovery rebuild
@@ -465,44 +500,69 @@ const DIRTY_RECOVERY_SIDECAR_SUFFIXES = ['.wal', '.shadow'] as const;
  * so parking the sidecars first costs nothing and makes every subsequent
  * open replay-free.
  *
- * Renamed, never deleted, so the bytes stay available for post-mortem
+ * Renamed when possible, so the bytes stay available for post-mortem
  * debugging — and, like {@link quarantineWalForMissingShadow}'s quarantine
  * files, the parked copies are surfaced and removable by
  * `gitnexus clean --lbug-sidecars` (tri-review 4669518496 P2-7; before
  * that, this comment claimed a "same philosophy" parity while the
  * dirty-recovery files were invisible to every cleanup surface). Real
- * lifecycle: the destinations are the two FIXED names — no timestamp, see
+ * lifecycle: the destinations are FIXED names — no timestamp, see
  * {@link listParkedDirtyRecoverySidecars} — so each new crash overwrites
  * the previous parked copy, capping accumulation at one file per sidecar;
  * remove them via `clean --lbug-sidecars` or manually once their
- * post-mortem value has passed. Extreme double-failure corner (movable
- * source, locked stale copy): the bytes land at the `${to}.next` residue
- * name instead (logged when it happens) — the fixed-name listers do not
- * enumerate `.next` residues, so remove those manually.
- * Rename-first with a structural confirm probe (tri-review 4669518496
- * P2-3): the old shape pre-deleted a previous crash's parked copy on the
- * bet that the rename would then succeed — destroying the prior forensics
- * exactly when the source was locked and nothing replaced them. Now a
- * failed `rename(from, to)` is retried against the collision-free
- * `${to}.next` name: success proves the first failure was a Windows
- * rename-onto-existing collision (stale copy replaced — newest forensics
- * win); a second failure proves the source itself is locked, and the
- * previous parked copy is left INTACT. Per-suffix isolation: a `.wal`
- * failure never skips the `.shadow` attempt.
+ * post-mortem value has passed.
+ *
+ * Escalation ladder per suffix (this shipping review, FIX 1 — replacing
+ * the drop-shape design, whose park had ZERO retry while the wipe path
+ * retried the very same lock class):
+ *
+ *   1. `rename(from, to)` retried over the shared handle-release budget
+ *      (HANDLE_RELEASE_PROBE_ATTEMPTS × linear HANDLE_RELEASE_PROBE_DELAY_MS,
+ *      lbug-config.ts) — a transient AV/handle-lag EBUSY must not cost the
+ *      run anything.
+ *   2. Structural confirm probe: a bare "does `to` exist?" check cannot
+ *      discriminate a Windows rename-onto-existing collision from a locked
+ *      source that happens to have a leftover parked copy. Renaming the
+ *      source to the collision-free `${to}.next` can — success proves the
+ *      failure was the collision, so the stale copy is replaced (newest
+ *      forensics win). The crash window between the `rm(to)` and the final
+ *      promote rename strands the bytes at `.next` — acceptable: `.next`
+ *      residues are enumerated by the dirty-recovery lister and removed by
+ *      `clean --lbug-sidecars` (FIX 5). Never pre-delete the previous
+ *      crash's parked copy on the bet that a rename will then succeed
+ *      (tri-review 4669518496 P2-3: the old rm-first shape destroyed the
+ *      prior forensics exactly when the source was locked and nothing
+ *      replaced them).
+ *   3. rm-fallback: the source itself is locked for RENAME, but Windows
+ *      lets some holders' files be unlink-marked — retry
+ *      `rm(from, {force:true})` over the same budget and require the file
+ *      verifiably GONE. Success eliminates the replay risk at the cost of
+ *      the post-mortem forensics (logged exactly so).
+ *   4. Report in `failed` with the corrected lock guidance — the caller
+ *      must abort (run-analyze throws a LbugWipeError in seconds instead
+ *      of running the whole pipeline and dying at the wipe on the same
+ *      handle).
+ *
+ * Per-suffix isolation: a `.wal` failure never skips the `.shadow`
+ * attempt.
+ *
+ * INVARIANT: after this function returns, either no original sidecar
+ * remains adjacent to the DB — every entry is in `moved` or `removed`, so
+ * every subsequent open this run performs is replay-free — or the entry is
+ * in `failed` and the caller MUST abort before any DB open.
  *
  * @returns `moved` — destination paths now holding the parked bytes;
- * `failed` — source sidecars that could not be parked. A non-empty
- * `failed` means a possibly-poisoned sidecar still sits next to the DB:
- * the caller must not open the DB before the rebuild wipe (the open would
- * replay the WAL and die — there is no "wipe it in place" fallback) and
- * must keep the embedder out of the same locked/AV environment
- * (run-analyze derives its embedding mode in drop shape).
+ * `removed` — source sidecars whose bytes are GONE (forensics lost, replay
+ * risk eliminated); `failed` — source sidecars still in place: a
+ * possibly-poisoned sidecar sits next to the DB and any pre-wipe open
+ * would replay it and die (there is no "wipe it in place" fallback).
  */
 export async function quarantineSidecarsForDirtyRecovery(
   dbPath: string,
   log: (message: string) => void,
-): Promise<{ moved: string[]; failed: string[] }> {
+): Promise<{ moved: string[]; removed: string[]; failed: string[] }> {
   const moved: string[] = [];
+  const removed: string[] = [];
   const failed: string[] = [];
   for (const suffix of DIRTY_RECOVERY_SIDECAR_SUFFIXES) {
     const from = `${dbPath}${suffix}`;
@@ -517,32 +577,45 @@ export async function quarantineSidecarsForDirtyRecovery(
       log(sidecarParkRefusedWarning(from, err));
       continue;
     }
-    try {
-      // Rename FIRST — never pre-delete the previous crash's parked copy on
-      // the bet that this rename will then succeed (tri-review 4669518496
-      // P2-3: the old rm-first shape destroyed the prior forensics exactly
-      // when the source was locked and nothing replaced them).
-      await fs.rename(from, to);
+
+    // 1. Rename, retried over the shared handle-release budget for the
+    //    transient lock class only (EACCES/EPERM/EBUSY — an AV scan or
+    //    handle-release lag clears within it; a structural failure like
+    //    EEXIST goes straight to the confirm probe).
+    let outcome: 'moved' | 'raced' | 'rename-failed' = 'rename-failed';
+    let renameErr: unknown;
+    for (let attempt = 1; attempt <= HANDLE_RELEASE_PROBE_ATTEMPTS; attempt++) {
+      try {
+        await fs.rename(from, to);
+        outcome = 'moved';
+        break;
+      } catch (err) {
+        if (missing(err)) {
+          outcome = 'raced'; // source raced away between stat and rename
+          break;
+        }
+        renameErr = err;
+        if (!isPermissionRenameError(err) || attempt === HANDLE_RELEASE_PROBE_ATTEMPTS) break;
+        await sleep(HANDLE_RELEASE_PROBE_DELAY_MS * attempt);
+      }
+    }
+    if (outcome === 'moved') {
       moved.push(to);
       continue;
-    } catch (err) {
-      if (missing(err)) continue; // source raced away between stat and rename
-      // Structural confirm probe: a bare "does `to` exist?" check cannot
-      // discriminate a Windows rename-onto-existing collision from a locked
-      // source that happens to have a leftover parked copy. Renaming the
-      // source to a collision-free name can — if it succeeds, the source was
-      // movable and the first failure was the collision.
-      const probe = `${to}.next`;
-      try {
-        await fs.rename(from, probe);
-      } catch (probeErr) {
-        if (missing(probeErr)) continue; // source raced away mid-probe
-        // The source itself is locked: the previous crash's parked copy (if
-        // any) stays INTACT for post-mortem; report so the caller degrades.
-        failed.push(from);
-        log(sidecarParkRefusedWarning(from, probeErr));
-        continue;
-      }
+    }
+    if (outcome === 'raced') continue;
+
+    // 2. Structural confirm probe (see TSDoc step 2).
+    const probe = `${to}.next`;
+    let probeLanded = false;
+    try {
+      await fs.rename(from, probe);
+      probeLanded = true;
+    } catch (probeErr) {
+      if (missing(probeErr)) continue; // source raced away mid-probe
+      // Source locked for rename — fall through to the rm-fallback below.
+    }
+    if (probeLanded) {
       try {
         // True collision — replace the stale parked copy: newest forensics win.
         await fs.rm(to, { force: true });
@@ -558,7 +631,46 @@ export async function quarantineSidecarsForDirtyRecovery(
             `${path.basename(to)} from an earlier crash is locked and could not be replaced.`,
         );
       }
+      continue;
     }
+
+    // 3. rm-fallback, retried over the same budget. `force: true` swallows
+    //    ENOENT, so a resolving rm proves nothing on Windows (delete-pending
+    //    keeps the name visible) — only a verifiably-absent file counts.
+    let removedOk = false;
+    for (let attempt = 1; attempt <= HANDLE_RELEASE_PROBE_ATTEMPTS; attempt++) {
+      try {
+        await fs.rm(from, { force: true });
+      } catch {
+        /* verified below — the absence probe is authoritative */
+      }
+      let stillPresent = true;
+      try {
+        stillPresent = (await statIfExists(from)) !== null;
+      } catch {
+        // Non-ENOENT stat failure: not verifiably gone — keep retrying.
+      }
+      if (!stillPresent) {
+        removedOk = true;
+        break;
+      }
+      if (attempt < HANDLE_RELEASE_PROBE_ATTEMPTS) {
+        await sleep(HANDLE_RELEASE_PROBE_DELAY_MS * attempt);
+      }
+    }
+    if (removedOk) {
+      removed.push(from);
+      log(
+        `Removed ${path.basename(from)} from the interrupted run — it could not be parked ` +
+          'aside (rename locked), so its bytes were deleted instead: post-mortem forensics ' +
+          'are lost, but the replay risk is eliminated and recovery can proceed.',
+      );
+      continue;
+    }
+
+    // 4. Everything failed — the poisoned bytes still sit next to the DB.
+    failed.push(from);
+    log(sidecarParkRefusedWarning(from, renameErr));
   }
   if (moved.length > 0) {
     log(
@@ -566,7 +678,7 @@ export async function quarantineSidecarsForDirtyRecovery(
         'so the recovery rebuild opens without replaying it.',
     );
   }
-  return { moved, failed };
+  return { moved, removed, failed };
 }
 
 export async function listQuarantinedMissingShadowWals(dbPath: string): Promise<string[]> {
@@ -585,14 +697,39 @@ export async function listQuarantinedMissingShadowWals(dbPath: string): Promise<
     .sort();
 }
 
-export async function cleanQuarantinedMissingShadowWals(dbPath: string): Promise<string[]> {
-  const files = await listQuarantinedMissingShadowWals(dbPath);
+/**
+ * Shared unlink walker for the parked-sidecar cleaners (this shipping
+ * review, FIX 5). Per-file error policy: ENOENT is skipped silently (a
+ * list→delete race means the file is already gone — the desired state);
+ * EBUSY/EPERM/anything else lands in `failed` and the walk CONTINUES —
+ * the old per-family cleaners threw on the first locked file, crashing
+ * the whole clean mid-command after a partial deletion.
+ */
+const unlinkParkedFiles = async (
+  files: readonly string[],
+): Promise<{ deleted: string[]; failed: string[] }> => {
   const deleted: string[] = [];
+  const failed: string[] = [];
   for (const file of files) {
-    await fs.unlink(file);
-    deleted.push(file);
+    try {
+      await fs.unlink(file);
+      deleted.push(file);
+    } catch (err) {
+      if (missing(err)) continue;
+      failed.push(file);
+    }
   }
-  return deleted;
+  return { deleted, failed };
+};
+
+/**
+ * Delete the missing-shadow WAL quarantines for `dbPath` and return the
+ * deleted paths. Locked files are skipped, not thrown (FIX 5) — user-facing
+ * surfaces should call {@link cleanParkedLbugSidecars}, which also REPORTS
+ * the skipped files.
+ */
+export async function cleanQuarantinedMissingShadowWals(dbPath: string): Promise<string[]> {
+  return (await unlinkParkedFiles(await listQuarantinedMissingShadowWals(dbPath))).deleted;
 }
 
 /**
@@ -600,12 +737,13 @@ export async function cleanQuarantinedMissingShadowWals(dbPath: string): Promise
  * {@link quarantineSidecarsForDirtyRecovery}, so `gitnexus clean
  * --lbug-sidecars` can surface them next to the missing-shadow quarantines
  * (tri-review 4669518496 P2-7 — they were previously invisible to every
- * cleanup surface). Exactly two fixed names can exist
- * (`<dbPath>.wal.dirty-recovery`, `<dbPath>.shadow.dirty-recovery`), so this
- * stats them directly instead of prefix-scanning the directory the way the
- * timestamped missing-shadow lister must. The rare `${to}.next` residue from
- * a double park failure is deliberately NOT enumerated — its presence means
- * the fixed name is locked, so unlinking around it would be misleading.
+ * cleanup surface). Only fixed names can exist (see
+ * {@link dirtyRecoveryParkedNames}: `<dbPath>.wal.dirty-recovery`,
+ * `<dbPath>.shadow.dirty-recovery`, and their `.next` probe residues from a
+ * double park failure — enumerated since FIX 5 of this shipping review; the
+ * docs used to say "remove manually" while no surface even listed them), so
+ * this stats them directly instead of prefix-scanning the directory the way
+ * the timestamped missing-shadow lister must.
  *
  * Returns existing parked files as sorted absolute paths. Branch-scoped
  * index slots (`branches/<slug>/`) are outside `clean.ts`'s flat-path
@@ -613,8 +751,7 @@ export async function cleanQuarantinedMissingShadowWals(dbPath: string): Promise
  */
 export async function listParkedDirtyRecoverySidecars(dbPath: string): Promise<string[]> {
   const present: string[] = [];
-  for (const suffix of DIRTY_RECOVERY_SIDECAR_SUFFIXES) {
-    const parked = `${dbPath}${suffix}.dirty-recovery`;
+  for (const parked of dirtyRecoveryParkedNames(dbPath)) {
     if (await statIfExists(parked)) present.push(parked);
   }
   return present.sort();
@@ -622,17 +759,39 @@ export async function listParkedDirtyRecoverySidecars(dbPath: string): Promise<s
 
 /**
  * Delete the `.dirty-recovery` parked sidecars for `dbPath` and return the
- * deleted paths. Sibling of {@link cleanQuarantinedMissingShadowWals} —
- * `clean.ts` concatenates both families (tri-review 4669518496 P2-7).
+ * deleted paths. Sibling of {@link cleanQuarantinedMissingShadowWals}; same
+ * skip-not-throw policy (FIX 5) — user-facing surfaces should call
+ * {@link cleanParkedLbugSidecars}, which also reports locked files.
  */
 export async function cleanParkedDirtyRecoverySidecars(dbPath: string): Promise<string[]> {
-  const files = await listParkedDirtyRecoverySidecars(dbPath);
-  const deleted: string[] = [];
-  for (const file of files) {
-    await fs.unlink(file);
-    deleted.push(file);
-  }
-  return deleted;
+  return (await unlinkParkedFiles(await listParkedDirtyRecoverySidecars(dbPath))).deleted;
+}
+
+/**
+ * Aggregate roster of every parked/quarantined sidecar family beside
+ * `dbPath` (this shipping review, FIX 5): the timestamped missing-shadow
+ * WAL quarantines plus the fixed-name dirty-recovery parks (`.next`
+ * residues included). Single roster authority for `clean --lbug-sidecars`
+ * — the command previously concatenated the families inline in two places,
+ * which is how the `.next` residue stayed invisible.
+ */
+export async function listParkedLbugSidecars(dbPath: string): Promise<string[]> {
+  return [
+    ...(await listQuarantinedMissingShadowWals(dbPath)),
+    ...(await listParkedDirtyRecoverySidecars(dbPath)),
+  ];
+}
+
+/**
+ * Delete every file {@link listParkedLbugSidecars} enumerates. Per-file
+ * error policy via {@link unlinkParkedFiles}: ENOENT skipped silently,
+ * locked files collected into `failed` while the rest are still deleted —
+ * a locked parked file must not crash the whole clean mid-command.
+ */
+export async function cleanParkedLbugSidecars(
+  dbPath: string,
+): Promise<{ deleted: string[]; failed: string[] }> {
+  return unlinkParkedFiles(await listParkedLbugSidecars(dbPath));
 }
 
 export const _resetSidecarRecoveryWarningsForTest = (): void => {

@@ -26,52 +26,14 @@ import {
   loadMeta,
   type RepoMeta,
 } from '../../src/storage/repo-manager.js';
-import { EMBEDDING_DIMS } from '../../src/core/lbug/schema.js';
 import { setupMiniRepo as setupSharedMiniRepo } from '../helpers/mini-repo.js';
+// Shared embedding-seed helper (this shipping review, FIX 8) — the KTD9
+// zero-vector seeding pattern previously lived here as a divergent copy of
+// incremental-orchestration.test.ts's (a helper module has no
+// describe-registration problem, unlike importing a sibling test file).
+import { seedEmbeddingsForFiles } from '../helpers/embedding-seed.js';
 
 const setupMiniRepo = () => setupSharedMiniRepo('gitnexus-incr-dirty-rec-');
-
-/**
- * Seed zero-vector CodeEmbedding rows for REAL graph nodes through the real
- * `batchInsertEmbeddings` (KTD9 pattern, replicated from
- * incremental-orchestration.test.ts — importing a sibling test file would
- * register its describes into this suite): reopen the repo DB, look up
- * actual Function ids for the given files, insert, close. Zero vectors need
- * no VECTOR extension — the CodeEmbedding TABLE is plain schema. Returns the
- * seeded node ids.
- */
-async function seedEmbeddingsForFiles(
-  repoPath: string,
-  filePaths: readonly string[],
-  maxPerFile: number,
-): Promise<string[]> {
-  const adapter = await import('../../src/core/lbug/lbug-adapter.js');
-  const { batchInsertEmbeddings } = await import('../../src/core/embeddings/embedding-pipeline.js');
-  const { lbugPath } = getStoragePaths(repoPath);
-  const seededIds: string[] = [];
-  await adapter.initLbug(lbugPath);
-  try {
-    for (const fp of filePaths) {
-      const rows = (await adapter.executeQuery(
-        `MATCH (n:Function) WHERE n.filePath = '${fp}' RETURN n.id AS id LIMIT ${maxPerFile}`,
-      )) as Array<{ id: string }>;
-      for (const r of rows) seededIds.push(String(r.id));
-    }
-    await batchInsertEmbeddings(
-      adapter.executeWithReusedStatement,
-      seededIds.map((nodeId) => ({
-        nodeId,
-        chunkIndex: 0,
-        startLine: 0,
-        endLine: 2,
-        embedding: new Array(EMBEDDING_DIMS).fill(0),
-      })),
-    );
-  } finally {
-    await adapter.closeLbug();
-  }
-  return seededIds;
-}
 
 describe('runFullAnalysis — dirty-flag recovery sidecar parking (#2409)', () => {
   it('parks the crashed run WAL/shadow sidecars before reopening, then rebuilds clean', async () => {
@@ -88,11 +50,12 @@ describe('runFullAnalysis — dirty-flag recovery sidecar parking (#2409)', () =
       // so forceRegenerate → shouldLoadCache) through the REAL
       // embedding-cache preservation open on the just-parked DB.
       const { storagePath, lbugPath } = getStoragePaths(repo.dbPath);
-      const seededNodeIds = await seedEmbeddingsForFiles(
+      const seededIdsByFile = await seedEmbeddingsForFiles(
         repo.dbPath,
         ['src/handler.ts', 'src/logger.ts'],
         1,
       );
+      const seededNodeIds = [...seededIdsByFile.values()].flat();
       expect(seededNodeIds.length).toBeGreaterThan(0);
 
       // Simulate a crashed incremental writeback: dirty flag in meta plus

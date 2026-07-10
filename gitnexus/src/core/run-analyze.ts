@@ -31,7 +31,10 @@ import {
   queryImportersBatch,
   loadFTSExtension,
   wipeLbugDbFiles,
+  LbugWipeError,
+  DELETE_FILES_CHUNK_SIZE,
 } from './lbug/lbug-adapter.js';
+import { escapeCypherString } from './lbug/cypher-escape.js';
 import {
   createSearchFTSIndexes,
   initialiseSearchFTSStemmer,
@@ -761,13 +764,6 @@ export async function runFullAnalysis(
   // If the previous incremental run set incrementalInProgress and didn't
   // clear it, the on-disk index may be in a half-state. Cheapest path
   // back to a known-good index is to wipe + rebuild from scratch.
-  //
-  // Hoisted parking outcome (tri-review 4669518496 P2-3): a non-empty
-  // `failed` from the sidecar quarantine means a possibly-poisoned WAL
-  // still sits next to the DB. The embedding-mode derivation below consumes
-  // this and fails safe in drop shape — there is no "open it anyway"
-  // fallback (the pre-wipe open would replay the WAL and die).
-  let sidecarParkingFailed = false;
   if (existingMeta?.incrementalInProgress) {
     const dirty = existingMeta.incrementalInProgress;
     const dirtyDetails =
@@ -811,10 +807,34 @@ export async function runFullAnalysis(
     // rebuild wipe that would discard it. Park the WAL/shadow sidecars aside
     // now, while nothing is open, so every open in this run is replay-free.
     // The rebuild wipes the DB regardless, so no committed data is at stake.
-    // Sidecars that could NOT be parked gate the run's embedding mode into
-    // drop shape below instead of falling through to an in-place open.
-    const { failed: unparkedSidecars } = await quarantineSidecarsForDirtyRecovery(lbugPath, log);
-    sidecarParkingFailed = unparkedSidecars.length > 0;
+    const { removed, failed } = await quarantineSidecarsForDirtyRecovery(lbugPath, log);
+    if (removed.length > 0) {
+      log(
+        `Dirty-state recovery discarded ${removed.map((p) => path.basename(p)).join(', ')} ` +
+          'from the interrupted run (the file could not be moved aside, so its bytes were ' +
+          'removed — post-mortem forensics lost). Recovery proceeds with full embedding ' +
+          'preservation.',
+      );
+    }
+    if (failed.length > 0) {
+      // FIX 1 (this shipping review, replacing the tri-review 4669518496
+      // P2-3 drop-shape design): under a persistent lock the old drop-shape
+      // run derived its embedding mode as "drop", ran the WHOLE pipeline,
+      // and then died at the rebuild wipe on the very same handle — wasting
+      // minutes and zeroing embeddings on the way. A possibly-poisoned
+      // sidecar still sits next to the DB (any pre-wipe open would replay it
+      // and die), so failing here, in seconds, with the same actionable
+      // typed error the wipe would eventually throw is strictly better —
+      // and the CLI's LbugWipeError handler already renders it
+      // (recoveryHint 'lbug-wipe-failed'). The message is self-contained
+      // (headline + paths + lock guidance) because serve forwards only
+      // err.message over worker IPC.
+      throw new LbugWipeError(failed, {
+        headline:
+          "Cannot start dirty-state recovery — the interrupted run's LadybugDB sidecars " +
+          'could neither be moved aside nor removed:',
+      });
+    }
   }
 
   // ── pdg-mode flip forces full writeback (#2099 F1) ─────────────────
@@ -1008,36 +1028,14 @@ export async function runFullAnalysis(
   let cachedEmbeddings: CachedEmbedding[] = [];
 
   const existingEmbeddingCount = existingMeta?.stats?.embeddings ?? 0;
-  // When dirty-recovery sidecar parking failed, derive the mode in DROP shape
-  // (tri-review 4669518496 P2-3): `{ embeddings: false, dropEmbeddings: true }`
-  // with existing=0 forces all four flags false. Zeroing only the existing
-  // count is NOT enough — `shouldGenerateEmbeddings = explicit || forceRegen`
-  // (embedding-mode.ts) keeps an explicit `--embeddings` recovery invocation
-  // alive, which would (a) open the DB before the rebuild wipe
-  // (`shouldLoadCache`) and replay the possibly-poisoned WAL, and (b) drag
-  // the embedder into the exact locked/AV environment where parking fails,
-  // resurrecting the #2409 death loop one phase later as
-  // wipe→rebuild→embed-fail cycles.
   const {
     forceRegenerateEmbeddings,
     preserveExistingEmbeddings,
     shouldGenerateEmbeddings,
     shouldLoadCache,
-  } = sidecarParkingFailed
-    ? _deriveEmbeddingMode({ ...options, embeddings: false, dropEmbeddings: true }, 0)
-    : _deriveEmbeddingMode(options, existingEmbeddingCount);
+  } = _deriveEmbeddingMode(options, existingEmbeddingCount);
 
-  if (sidecarParkingFailed) {
-    // First banner branch so the printed mode stays coherent with the
-    // drop-shape derivation above (no "Preserving N embeddings" claim on a
-    // run that will not).
-    log(
-      'Sidecar parking failed — dropping embeddings for this run: recovery will not open ' +
-        'the existing index before the rebuild wipe (its WAL may be poisoned) and will not ' +
-        'run the embedder in this locked environment. Run `gitnexus analyze --embeddings` ' +
-        'to rebuild embeddings once the lock clears.',
-    );
-  } else if (options.dropEmbeddings && existingEmbeddingCount > 0) {
+  if (options.dropEmbeddings && existingEmbeddingCount > 0) {
     log(
       `Dropping ${existingEmbeddingCount} existing embeddings (--drop-embeddings). ` +
         `Re-run with --embeddings to regenerate.`,
@@ -1067,9 +1065,9 @@ export async function runFullAnalysis(
   //
   // This is the FIRST DB open of the run — the one #2409 defect 2 is about.
   // On a dirty-recovery run it happens only after the sidecar quarantine
-  // parked the crashed run's WAL/shadow; when parking failed, the drop-shape
-  // derivation above forces `shouldLoadCache` false, so this open never
-  // fires by construction (tri-review 4669518496 P2-3).
+  // moved (or removed) the crashed run's WAL/shadow; when neither was
+  // possible the dirty block above already threw a LbugWipeError, so this
+  // open is replay-free by construction (FIX 1 of this shipping review).
   if (shouldLoadCache && existingMeta) {
     try {
       progress('embeddings', 0, 'Caching embeddings...');
@@ -1252,6 +1250,17 @@ export async function runFullAnalysis(
     // "escalated full write" (DB wiped, index destroyed) — tri-review
     // 4669518496 P1.
     let escalatedFullWrite = false;
+    // Phase 3.5's restore scope (FIX 3 of this shipping review): on the
+    // SURGICAL write plan this is the exact file set whose rows
+    // deleteNodesForFiles just removed — only THOSE files' cached embedding
+    // rows need re-inserting (everything else still sits in the DB, and
+    // re-inserting it would PK-conflict). `null` means the DB was wiped
+    // (full rebuild or escalated write): the embedding table is fresh and
+    // every cached row must come back. Deriving this in memory replaces the
+    // old whole-table `RETURN e.id` pre-read, which rescanned data this
+    // process already holds and — worse — ran a read against the DB between
+    // writeback and finalize for no recovery benefit.
+    let deletedFilePathsForRestore: Set<string> | null = null;
     if (isIncremental && hashDiff) {
       // ── Incremental DB writeback ───────────────────────────────────
       // 0. Expand the writable set with transitive importers of
@@ -1286,6 +1295,18 @@ export async function runFullAnalysis(
       const writableFiles = new Set<string>(hashDiff.toWrite);
       const directlyChangedCount = writableFiles.size;
       const dirtyStartedAt = existingMeta!.incrementalInProgress?.startedAt ?? Date.now();
+      // Dropped-chunk observability (tri-review 4669518496 P2-5): counts
+      // importer-BFS chunks whose IMPORTS query failed across ALL depths
+      // (degrade-don't-fail — the expansion shrinks instead of the run
+      // dying). Stamped into the #2410 crash diagnostics by
+      // saveIncrementalDirtyState ITSELF (FIX 6 of this shipping review),
+      // not by per-call-site spreads: the closure rebuilds its object from
+      // scratch on every call, so a count riding along at only some sites
+      // meant any newly added save site would silently erase it — exactly
+      // the phases where #2409-class crashes happen. >0-only semantics
+      // unchanged: unconditional zero-stamping would churn every
+      // strict-equality consumer of the diagnostics shape.
+      let droppedImporterChunks = 0;
       const saveIncrementalDirtyState = async (
         phase: string,
         extra: Partial<NonNullable<RepoMeta['incrementalInProgress']>> = {},
@@ -1298,6 +1319,7 @@ export async function runFullAnalysis(
             phase,
             toWriteCount: writableFiles.size,
             directWriteCount: directlyChangedCount,
+            ...(droppedImporterChunks > 0 ? { droppedImporterChunks } : {}),
             ...extra,
           },
         });
@@ -1325,16 +1347,6 @@ export async function runFullAnalysis(
         }
       }
 
-      // Dropped-chunk observability (tri-review 4669518496 P2-5): counts
-      // importer-BFS chunks whose IMPORTS query failed across ALL depths
-      // (degrade-don't-fail — the expansion shrinks instead of the run
-      // dying). Run-scoped, not save-scoped: saveIncrementalDirtyState
-      // rebuilds its object from scratch on every call, so a count stamped
-      // only at the BFS save would be erased by the later
-      // effective-write-set / escalated-full-write / load-graph saves —
-      // exactly the phases where #2409-class crashes happen. Stamped into
-      // the #2410 diagnostics only when > 0.
-      let droppedImporterChunks = 0;
       {
         // Batched per depth level (#2409): one IN-list query per ~200-path
         // chunk instead of one query per frontier file — a ~700-file frontier
@@ -1359,14 +1371,9 @@ export async function runFullAnalysis(
         }
       }
       const importerExpansion = writableFiles.size - directlyChangedCount;
-      // droppedImporterChunks rides along on THIS and every later save (each
-      // save rebuilds the diagnostics object — see the counter's comment),
-      // but only when > 0: unconditional zero-stamping would churn every
-      // strict-equality consumer of the diagnostics shape.
       await saveIncrementalDirtyState('importer-bfs', {
         importerExpansion,
         shadowSeedCount: shadowSeed.length,
-        ...(droppedImporterChunks > 0 ? { droppedImporterChunks } : {}),
       });
       if (importerExpansion > 0) {
         log(
@@ -1402,7 +1409,6 @@ export async function runFullAnalysis(
         shadowSeedCount: shadowSeed.length,
         effectiveWriteCount: effectiveWriteSet.size,
         deleteCount: filesToDelete.length,
-        ...(droppedImporterChunks > 0 ? { droppedImporterChunks } : {}),
       });
 
       // Escalation valve (#2409): when the effective write set covers most of
@@ -1439,7 +1445,6 @@ export async function runFullAnalysis(
           shadowSeedCount: shadowSeed.length,
           effectiveWriteCount: effectiveWriteSet.size,
           deleteCount: filesToDelete.length,
-          ...(droppedImporterChunks > 0 ? { droppedImporterChunks } : {}),
         });
         // Strategy switch: stop the checkpoint driver around the close so its
         // in-flight CHECKPOINT can't race the reopen, drop the DB files
@@ -1475,6 +1480,12 @@ export async function runFullAnalysis(
           onChunk: (done, total) =>
             progress('lbug', 62, `Removing rows for changed files (${done}/${total})...`),
         });
+        // Surgical path: Phase 3.5 restores exactly these files' embedding
+        // rows (FIX 3). Sound because deleteNodesForFiles propagates errors
+        // — reaching this line means every listed file's rows are gone
+        // deterministically — and this process holds the exclusive DB lock,
+        // so no concurrent writer can disturb the derivation.
+        deletedFilePathsForRestore = new Set(filesToDelete);
         // 2. Drop graph-wide nodes (Community, Process). They'll be re-inserted
         //    from the fresh pipeline output below. Required for the
         //    "Leiden runs on the FULL graph" correctness invariant.
@@ -1518,7 +1529,6 @@ export async function runFullAnalysis(
           shadowSeedCount: shadowSeed.length,
           effectiveWriteCount: effectiveWriteSet.size,
           deleteCount: filesToDelete.length,
-          ...(droppedImporterChunks > 0 ? { droppedImporterChunks } : {}),
         });
         await loadGraphToLbug(subgraph, pipelineResult.repoPath, storagePath, (msg) => {
           lbugMsgCount++;
@@ -1610,25 +1620,28 @@ export async function runFullAnalysis(
     //     rows still exist. Bugbot review on PR #1479 flagged that gating
     //     this on `!isIncremental` silently lost changed-file embeddings.
     //
-    // Restore discipline (tri-review 4669518496 / KTD10) — filtered and
+    // Restore discipline (tri-review 4669518496 / KTD10, restore scope
+    // derived in memory since FIX 3 of this shipping review) — filtered and
     // conflict-free, replacing the old insert-everything-and-swallow shape:
     //   1. Live-graph filter: rows whose nodeId no longer exists in the
     //      freshly-built FULL graph are dropped. The cache was read BEFORE
     //      the pipeline ran, so it still carries deleted files' rows —
     //      re-inserting them resurrected orphans (wholesale onto the wiped
     //      paths' empty table) now that the delete above is real.
-    //   2. Skip-existing filter: one labeled pre-read of surviving embedding
-    //      ids, and only absent rows are inserted. The old shape re-inserted
-    //      every row and swallowed PK conflicts per 200-row batch — but one
-    //      conflict aborts the WHOLE remaining executeWithReusedStatement
-    //      call, so changed-file rows queued behind a surviving row's
-    //      conflict were silently lost in preserve mode (nothing regenerates
-    //      them). Harmless while the embedding delete was a no-op; silent
-    //      data loss once it stopped being one.
+    //   2. Restore-scope filter, derived WITHOUT touching the DB (the old
+    //      shape pre-read every surviving embedding id back out of the
+    //      table it had just written): on a wiped path
+    //      (`deletedFilePathsForRestore === null`) the table is fresh, so
+    //      every live row comes back; on the surgical path only rows whose
+    //      owning node's filePath is in the just-join-deleted set are
+    //      inserted — everything else still sits in the DB and would
+    //      PK-conflict. The derivation is sound because deleteNodesForFiles
+    //      propagates errors (a completed writeback means a deterministic
+    //      delete outcome) and this process holds the exclusive DB lock (no
+    //      concurrent writer).
     // The per-batch try/catch stays as a last-resort guard only — it no
     // longer fires on the happy path.
     let restoredEmbeddingCount = 0;
-    let buildVectorIndexAfterRestore: (() => Promise<boolean>) | undefined;
     if (cachedEmbeddings.length > 0) {
       const cachedDims = cachedEmbeddings[0].embedding.length;
       const { EMBEDDING_DIMS } = await import('./lbug/schema.js');
@@ -1640,31 +1653,22 @@ export async function runFullAnalysis(
         cachedEmbeddings = [];
         cachedEmbeddingNodeIds = new Set();
       } else {
-        const { batchInsertEmbeddings: batchInsert, buildVectorIndex } =
+        const { batchInsertEmbeddings: batchInsert } =
           await import('./embeddings/embedding-pipeline.js');
-        // Captured for the post-restore vector-index seam in Phase 4 (P1 fix)
-        // — same dynamic import, so the lazy-embeddings convention (#2370)
-        // holds: no embeddings module is loaded unless a restore happens.
-        buildVectorIndexAfterRestore = buildVectorIndex;
         // (1) Live-graph filter — the FULL pipeline graph (always produced),
         // NOT the incremental subgraph, or unchanged files' rows would be
         // dropped from the restore set.
         const liveEmbeddings = cachedEmbeddings.filter(
           (e) => pipelineResult.graph.getNode(e.nodeId) !== undefined,
         );
-        // (2) Skip-existing filter. LABELED match — an unlabeled `MATCH (e)`
-        // would scan every node table; this reads only the embedding table.
-        const survivingIdRows = (await executeQuery(
-          `MATCH (e:${EMBEDDING_TABLE_NAME}) RETURN e.id AS id`,
-        )) as Array<{ id?: unknown }>;
-        const survivingIds = new Set<string>();
-        for (const row of survivingIdRows) {
-          if (typeof row?.id === 'string' && row.id.length > 0) survivingIds.add(row.id);
-        }
-        // Row id shape matches batchInsertEmbeddings: `${nodeId}:${chunkIndex}`.
-        const rowsToRestore = liveEmbeddings.filter(
-          (e) => !survivingIds.has(`${e.nodeId}:${e.chunkIndex}`),
-        );
+        // (2) Restore-scope filter (see the discipline note above).
+        const rowsToRestore =
+          deletedFilePathsForRestore === null
+            ? liveEmbeddings
+            : liveEmbeddings.filter((e) => {
+                const filePath = pipelineResult.graph.getNode(e.nodeId)?.properties?.filePath;
+                return typeof filePath === 'string' && deletedFilePathsForRestore!.has(filePath);
+              });
         progress('embeddings', 88, `Restoring ${rowsToRestore.length} cached embeddings...`);
         const EMBED_BATCH = 200;
         for (let i = 0; i < rowsToRestore.length; i += EMBED_BATCH) {
@@ -1675,6 +1679,49 @@ export async function runFullAnalysis(
             restoredEmbeddingCount += batch.length;
           } catch {
             /* last-resort guard — conflict-free by construction above */
+          }
+        }
+
+        // Legacy-orphan sweep (FIX 3, finder B): the live-graph filter's
+        // REJECTS — cached rows whose owning node no longer exists — are the
+        // rows stranded by the era when the embedding delete was a no-op
+        // (tri-review 4669518496 P2-1; schema version stays 6), plus this
+        // run's just-deleted files' rows (already join-deleted above — the
+        // exact-id DELETE matches nothing for those, so including them is a
+        // harmless no-op rather than worth a fragile nodeId parse to
+        // exclude). On the SURGICAL path the true legacy orphans still sit
+        // in the DB and the node join can never reach them again (no owning
+        // node), so delete them by exact row id. On wiped paths the rejects
+        // were simply not restored — nothing to sweep. Legacy-tolerant: a
+        // sweep failure must never fail a completed writeback, so the whole
+        // sweep warns-and-continues.
+        if (deletedFilePathsForRestore !== null) {
+          const orphanRowIds = cachedEmbeddings
+            .filter((e) => pipelineResult.graph.getNode(e.nodeId) === undefined)
+            .map((e) => `${e.nodeId}:${e.chunkIndex}`);
+          if (orphanRowIds.length > 0) {
+            try {
+              for (let i = 0; i < orphanRowIds.length; i += DELETE_FILES_CHUNK_SIZE) {
+                const chunk = orphanRowIds.slice(i, i + DELETE_FILES_CHUNK_SIZE);
+                const listLiteral = `[${chunk
+                  .map((id) => `'${escapeCypherString(id)}'`)
+                  .join(', ')}]`;
+                await executeQuery(
+                  `MATCH (e:${EMBEDDING_TABLE_NAME}) WHERE e.id IN ${listLiteral} DELETE e`,
+                );
+              }
+              log(
+                `Swept ${orphanRowIds.length} cached embedding row(s) with no live owning ` +
+                  'node — legacy orphans stranded while the embedding delete was a no-op; ' +
+                  'ids already removed with their files match nothing.',
+              );
+            } catch (err) {
+              log(
+                `Warning: could not sweep ${orphanRowIds.length} orphaned embedding ` +
+                  `row(s) (${(err as Error).message}); they are unreachable by search ` +
+                  'joins and will be retried next run.',
+              );
+            }
           }
         }
       }
@@ -1733,13 +1780,15 @@ export async function runFullAnalysis(
     // reflects the DB's ACTUAL state even when recreation fails (win32 /
     // extension unavailable → 'exact-scan').
     const dbWasWiped = !isIncremental || escalatedFullWrite;
-    if (
-      restoredEmbeddingCount > 0 &&
-      dbWasWiped &&
-      embeddingSkipped &&
-      buildVectorIndexAfterRestore
-    ) {
-      const vectorIndexReady = await buildVectorIndexAfterRestore();
+    if (restoredEmbeddingCount > 0 && dbWasWiped && embeddingSkipped) {
+      // Re-import at the seam rather than thread a mutable capture from
+      // Phase 3.5 (FIX 3 of this shipping review — the captured function was
+      // a fragile moving part): dynamic imports are memoized, and
+      // `restoredEmbeddingCount > 0` proves Phase 3.5 already loaded the
+      // module, so the lazy-embeddings convention (#2370) holds — no
+      // embeddings module loads unless a restore actually happened.
+      const { buildVectorIndex } = await import('./embeddings/embedding-pipeline.js');
+      const vectorIndexReady = await buildVectorIndex();
       semanticMode = vectorIndexReady ? 'vector-index' : 'exact-scan';
     }
 
@@ -1815,11 +1864,23 @@ export async function runFullAnalysis(
     const runtimeCapabilities = getRuntimeCapabilities();
     // `semanticMode` is authoritative when set (Phase 4 reported what it
     // built, or the wipe-and-restore seam above verified/recreated the index
-    // — tri-review 4669518496 P1); the platform-derived fallback covers only
-    // the untouched paths (no generation, no wiped restore — e.g. a surgical
-    // incremental run whose index survived in place).
+    // — tri-review 4669518496 P1). When unset, prefer the PREVIOUS run's
+    // persisted stamp over the platform capability (FIX 3, finder A): the
+    // unset case is exactly a run that neither wiped nor generated — e.g. a
+    // surgical incremental whose index survived in place — and such a run
+    // cannot change whether the HNSW index exists, so carrying the persisted
+    // observation forward is strictly more truthful than re-deriving from
+    // what the platform COULD do. Only the two positive observations carry
+    // ('vector-index'/'exact-scan'); 'unavailable'/absent falls through to
+    // the platform default rather than pinning a stale negative.
+    const persistedStatus = existingMeta?.capabilities?.vectorSearch.status;
+    const persistedSemanticMode: 'vector-index' | 'exact-scan' | undefined =
+      persistedStatus === 'vector-index' || persistedStatus === 'exact-scan'
+        ? persistedStatus
+        : undefined;
     const effectiveSemanticMode =
       semanticMode ??
+      persistedSemanticMode ??
       (runtimeCapabilities.semanticMode === 'vector-index' ? 'vector-index' : 'exact-scan');
 
     // Convert the post-run file-hash map to the on-disk Record<string,string>

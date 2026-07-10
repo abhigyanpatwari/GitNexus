@@ -102,9 +102,10 @@ describe('analyzeCommand LadybugDB wipe-failure handling (#2409, tri-review 4669
       expect(record).toBeDefined();
       const text = typeof record?.msg === 'string' ? record.msg : '';
       // The self-contained LbugWipeError message is surfaced verbatim:
-      // survivor path + stop-MCP/AV-exclusion/re-run guidance.
+      // survivor path + the shared stop-MCP/AV-exclusion/re-run guidance
+      // (lbugLockRemediation, this shipping review FIX 7).
       expect(text).toContain(survivor);
-      expect(text).toMatch(/stop the MCP\/serve process/i);
+      expect(text).toMatch(/stop any GitNexus MCP or serve process/i);
       // The typed branch returns before writeFatalToStderr — the raw-stack
       // fallback header must never hit stderr for this error class.
       const stderrText = stderrSpy.mock.calls.map((call) => String(call[0])).join('');

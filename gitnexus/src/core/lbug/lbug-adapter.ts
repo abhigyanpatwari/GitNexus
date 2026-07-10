@@ -22,15 +22,18 @@ import {
 import { streamAllCSVsToDisk, type StreamedCSVResult } from './csv-generator.js';
 import type { PdgEmitManifest } from './pdg-emit-sink.js';
 import { getNodeLabel as deriveNodeLabel, type WriteStreamFactory } from './rel-pair-routing.js';
-import type { CachedEmbedding } from '../embeddings/types.js';
+import { EMBEDDABLE_LABELS, type CachedEmbedding } from '../embeddings/types.js';
 import { extensionManager, type ExtensionEnsureOptions } from './extension-loader.js';
 import {
   classifyDeleteAllError,
   closeLbugConnection,
+  HANDLE_RELEASE_PROBE_ATTEMPTS,
+  HANDLE_RELEASE_PROBE_DELAY_MS,
   isDbBusyError,
   isOpenRetryExhausted,
   isWalCorruptionError,
   openLbugConnection,
+  sleep,
   toNativeSafePath,
   resolveNativeSafeStorageDir,
   WAL_RECOVERY_SUGGESTION,
@@ -42,6 +45,7 @@ import {
   guardWalQuarantine,
   isMissingShadowSidecarError,
   isReadOnlyShadowReplayError,
+  lbugLockRemediation,
   preflightLbugSidecars,
   quarantineWalForMissingShadow,
   renameFailureMessage,
@@ -1992,36 +1996,40 @@ export const closeLbug = async (): Promise<void> => {
   ensuredFTSIndexes.clear();
 };
 
-// Mirrors waitForWindowsHandleRelease's probe budget (HANDLE_RELEASE_PROBE_*
-// in lbug-config.ts): 5 attempts with a 50ms linear back-off absorbs the
-// Windows delete-pending / handle-release lag class without masking a real
-// cross-process holder (MCP server, serve worker, AV scan).
-const WIPE_VERIFY_ATTEMPTS = 5;
-const WIPE_VERIFY_DELAY_MS = 50;
-
 /**
- * Thrown by {@link wipeLbugDbFiles} when part of the LadybugDB file family is
- * still present after the bounded remove-and-verify retries (#2409,
- * tri-review 4669518496 P2-4).
+ * Thrown by {@link wipeLbugDbFiles} when a data-bearing member of the
+ * LadybugDB file family is still present after the bounded
+ * remove-and-verify retries (#2409, tri-review 4669518496 P2-4), and by
+ * run-analyze's dirty-recovery block when the crashed run's sidecars can
+ * neither be parked nor removed (this shipping review, FIX 1 — same lock
+ * class, same remediation, and the CLI already renders this type).
  *
  * Classify by TYPE (`err instanceof LbugWipeError`) — the repo norm from
  * #2385 — never by message text. The MESSAGE is nonetheless fully
- * self-contained (survivor paths + remediation) because `gitnexus serve`
- * forwards only `err.message` over worker IPC (analyze-worker-core.ts), so
- * the serve surface has nothing but this string to show the user.
+ * self-contained (headline + blocked paths + remediation) because
+ * `gitnexus serve` forwards only `err.message` over worker IPC
+ * (analyze-worker-core.ts), so the serve surface has nothing but this
+ * string to show the user. The holder framing deliberately covers the
+ * own-process case (FIX 2, finder A): the blocking handle is often a
+ * lingering one from THIS process's just-closed DB or a transient AV scan
+ * — not necessarily another process — so an immediate re-run often
+ * succeeds.
  */
 export class LbugWipeError extends Error {
-  /** Family members still present (or unverifiable) after all retries. */
+  /** Paths still present (or unverifiable) after all retries. */
   readonly survivors: readonly string[];
 
-  constructor(survivors: readonly string[]) {
+  constructor(survivors: readonly string[], options?: { headline?: string }) {
     super(
-      `Failed to remove the LadybugDB index files — still present after ` +
-        `${WIPE_VERIFY_ATTEMPTS} attempts:\n` +
+      `${
+        options?.headline ??
+        `Failed to remove the LadybugDB index files — still present after ` +
+          `${HANDLE_RELEASE_PROBE_ATTEMPTS} attempts:`
+      }\n` +
         survivors.map((p) => `  - ${p}`).join('\n') +
-        `\nAnother process likely holds the index open — stop the MCP/serve ` +
-        `process using this repository, add an antivirus exclusion for the ` +
-        `GitNexus storage directory, then re-run the analyze.`,
+        `\nThe blocking handle may be another process, a lingering handle from this ` +
+        `process's just-closed database, or an antivirus scan — an immediate re-run ` +
+        `often succeeds. If it persists, ${lbugLockRemediation('re-run the analyze')}.`,
     );
     this.name = 'LbugWipeError';
     this.survivors = survivors;
@@ -2044,10 +2052,24 @@ export class LbugWipeError extends Error {
  * resolving probe, or a rejection in the EPERM/EBUSY/EACCES class (Windows
  * delete-pending / handle-release lag — see HANDLE_RELEASE_LOCK_CODES in
  * lbug-config.ts), or any other code means the path is not verifiably gone:
- * it is retried on the bounded budget above and then reported as a survivor
- * via {@link LbugWipeError}. Linux unlinked-but-open (name gone, holder keeps
- * the old inode) probes ENOENT and is accepted by design — both production
- * wipe sites run after a real `closeLbug()`.
+ * it is retried on the shared handle-release budget
+ * (HANDLE_RELEASE_PROBE_ATTEMPTS × linear HANDLE_RELEASE_PROBE_DELAY_MS,
+ * lbug-config.ts — the previous private mirror constants were
+ * documentation-coupled copies) and then handled by CLASS (this shipping
+ * review, FIX 2):
+ *
+ *   - DATA-BEARING members (`<lbugPath>`, `.wal`, `.shadow`) — a survivor
+ *     means the reopen would resurrect rows this run believes wiped: throw
+ *     a typed {@link LbugWipeError}.
+ *   - `.lock` — contentless: `initLbug` recreates it, and a genuinely held
+ *     lock surfaces as initLbug's own lock-busy classification (a better
+ *     error than this one). A `.lock`-only survivor (an AV-held
+ *     delete-pending handle outlasting the budget previously failed a
+ *     perfectly sound rebuild) logs a warning and CONTINUES.
+ *
+ * Linux unlinked-but-open (name gone, holder keeps the old inode) probes
+ * ENOENT and is accepted by design — both production wipe sites run after a
+ * real `closeLbug()`.
  *
  * Deliberately OUT of this contract: `cleanupOldKuzuFiles`
  * (repo-manager.ts) sweeps the LEGACY kuzu-era file family during storage
@@ -2058,10 +2080,11 @@ export class LbugWipeError extends Error {
  * loud-failure contract here.
  */
 export const wipeLbugDbFiles = async (lbugPath: string): Promise<void> => {
-  const family = [lbugPath, `${lbugPath}.wal`, `${lbugPath}.shadow`, `${lbugPath}.lock`];
+  const lockPath = `${lbugPath}.lock`;
+  const family = [lbugPath, `${lbugPath}.wal`, `${lbugPath}.shadow`, lockPath];
   let survivors: string[] = [];
 
-  for (let attempt = 1; attempt <= WIPE_VERIFY_ATTEMPTS; attempt++) {
+  for (let attempt = 1; attempt <= HANDLE_RELEASE_PROBE_ATTEMPTS; attempt++) {
     survivors = [];
     for (const f of family) {
       try {
@@ -2078,15 +2101,48 @@ export const wipeLbugDbFiles = async (lbugPath: string): Promise<void> => {
       if (!gone) survivors.push(f);
     }
     if (survivors.length === 0) return;
-    if (attempt < WIPE_VERIFY_ATTEMPTS) {
-      await new Promise((resolve) => setTimeout(resolve, WIPE_VERIFY_DELAY_MS * attempt));
+    if (attempt < HANDLE_RELEASE_PROBE_ATTEMPTS) {
+      await sleep(HANDLE_RELEASE_PROBE_DELAY_MS * attempt);
     }
   }
 
-  throw new LbugWipeError(survivors);
+  // Class split (FIX 2): the contentless `.lock` never fails the wipe.
+  const dataSurvivors = survivors.filter((f) => f !== lockPath);
+  if (survivors.includes(lockPath)) {
+    logger.warn(
+      `GitNexus: ${lockPath} is still present after the wipe retries — continuing: the ` +
+        'lock file is contentless and initLbug recreates it; a genuinely held lock will ' +
+        "surface as the reopen's own lock-busy error.",
+    );
+  }
+  if (dataSurvivors.length > 0) {
+    throw new LbugWipeError(dataSurvivors);
+  }
 };
 
 export const isLbugReady = (): boolean => conn !== null && db !== null;
+
+/**
+ * Multi-label alternation over exactly the labels that can own embedding
+ * rows (embedding-pipeline.ts queries EMBEDDABLE_LABELS and nothing else),
+ * reserved keywords backtick-escaped via {@link escapeTableName}. Probed on
+ * @ladybugdb/core 0.18.0 (this shipping review, FIX 4): the full 19-label
+ * alternation parses, executes, and deletes exactly the joined rows —
+ * replacing the unlabeled `MATCH (n)` that scanned EVERY node table per
+ * chunk (BasicBlock-dominated under `--pdg`) when only embeddable labels
+ * can match an embedding row.
+ */
+const embeddableLabelMatch = (): string =>
+  EMBEDDABLE_LABELS.map((l) => escapeTableName(l)).join('|');
+
+// LADYBUGDB-CONTRACT: matches @ladybugdb/core ^0.18.0 native binder text,
+// probe-recorded: `Binder exception: Table CodeEmbedding does not exist.`
+// When bumping LadybugDB, re-validate — `git grep "LADYBUGDB-CONTRACT"`
+// enumerates every version-coupled spot.
+const isMissingEmbeddingTableError = (err: unknown): boolean => {
+  const msg = err instanceof Error ? err.message : String(err);
+  return msg.includes(`Table ${EMBEDDING_TABLE_NAME} does not exist`);
+};
 
 /**
  * Delete all nodes (and their relationships) for a specific file from LadybugDB
@@ -2122,16 +2178,32 @@ export const deleteNodesForFile = async (
     // (src/lib/utils.ts) with qualified names that embed the file path — so
     // the old `e.nodeId STARTS WITH '<filePath>'` shape never matched a row
     // (tri-review 4669518496 P2-1). Join through the nodes on exact id
-    // equality instead; ordering is load-bearing — after the DETACH DELETE
-    // loop below the join would match nothing.
+    // equality instead, scoped to the embeddable labels (FIX 4 — see
+    // embeddableLabelMatch); ordering is load-bearing — after the DETACH
+    // DELETE loop below the join would match nothing.
     try {
       await queryAndDrain(
         targetConn!,
-        `MATCH (n) WHERE n.filePath = '${escapedPath}' ` +
+        `MATCH (n:${embeddableLabelMatch()}) WHERE n.filePath = '${escapedPath}' ` +
           `MATCH (e:${EMBEDDING_TABLE_NAME}) WHERE e.nodeId = n.id DELETE e`,
       );
-    } catch {
-      // Embedding table may not exist (pre-embedding-schema DBs)
+    } catch (err) {
+      // Deliberately legacy-permissive (pinned contract:
+      // lbug-conn-serialization U5 and lbug-core-adapter expect this variant
+      // to resolve `{deletedNodes: 0}` even on a bogus dbPath): the singular
+      // variant swallows per-statement failures wholesale — its per-table
+      // loop below does the same — so a partial rethrow here would be
+      // incoherent with the rest of the function. The STRICT
+      // rethrow-except-missing-table policy lives in deleteNodesForFiles,
+      // the #2409 incremental writeback path (FIX 4). The one case worth a
+      // diagnostic is the missing embedding table.
+      if (isMissingEmbeddingTableError(err)) {
+        logger.warn(
+          { err },
+          `deleteNodesForFile: ${EMBEDDING_TABLE_NAME} table does not exist — ` +
+            'skipping embedding-row deletes for this DB.',
+        );
+      }
     }
 
     // Delete nodes from each table that has filePath
@@ -2194,13 +2266,20 @@ export const DELETE_FILES_CHUNK_SIZE = 200;
  * the incremental path slower than a full rebuild and is the write
  * pattern behind the native mid-writeback deaths reported in #2409.
  *
- * Unlike the per-file variant there is NO error swallowing: a zero-match
- * chunk is a no-op success by construction (every node table except
- * Community/Process has a filePath column), so anything thrown here is a
- * real engine failure the caller must see — silently skipping was exactly
- * how #2409 hid its root cause. Singleton-connection only: the analyze
- * writeback owns the write lock, and `queryAndDrain` routes through
- * `withConnLock` for it (the WAL checkpoint driver is live during this).
+ * NO general error swallowing: a zero-match chunk is a no-op success by
+ * construction (every node table except Community/Process has a filePath
+ * column), so anything thrown here is a real engine failure the caller
+ * must see — silently skipping was exactly how #2409 hid its root cause.
+ * The single tolerated exception (FIX 4) is the missing-embedding-table
+ * binder error on the embedding join-delete: a DB created without
+ * EMBEDDING_SCHEMA cannot own embedding rows, so skipping that one
+ * statement is sound, while failing would brick every incremental run on
+ * such a DB until `--force`. Statement count per chunk is unchanged by the
+ * multi-label join: 1 embedding join-delete + 30 node-table deletes = 31
+ * (the rejected per-label fallback shape would have been 19 + 30 = 49).
+ * Singleton-connection only: the analyze writeback owns the write lock,
+ * and `queryAndDrain` routes through `withConnLock` for it (the WAL
+ * checkpoint driver is live during this).
  */
 export const deleteNodesForFiles = async (
   filePaths: readonly string[],
@@ -2210,6 +2289,7 @@ export const deleteNodesForFiles = async (
     throw new Error('LadybugDB not initialized. Call initLbug first.');
   }
   const targetConn = conn;
+  let warnedMissingEmbeddingTable = false;
   for (let i = 0; i < filePaths.length; i += DELETE_FILES_CHUNK_SIZE) {
     const chunk = filePaths.slice(i, i + DELETE_FILES_CHUNK_SIZE);
     const listLiteral = `[${chunk.map((p) => `'${escapeCypherString(p)}'`).join(', ')}]`;
@@ -2218,18 +2298,36 @@ export const deleteNodesForFiles = async (
     // names that embed the file path (e.g. `Function:src/f.ts:fn0:1`) — so
     // the previous bare-path `e.nodeId STARTS WITH '<filePath>'` OR-chain
     // could never match anything (tri-review 4669518496 P2-1: the embedding
-    // delete was a no-op). Join through the nodes instead: the unlabeled
-    // MATCH covers all node tables in one statement (a table without
-    // `filePath` binds NULL and drops out), and `e.nodeId = n.id` equality is
-    // exact — no `File:a.ts` / `File:a.tsx` prefix collisions. ORDER IS
-    // LOAD-BEARING: this must run BEFORE the DETACH DELETE loop below —
-    // once the nodes are gone the join matches nothing (empirically
-    // verified against @ladybugdb/core 0.18.0).
-    await queryAndDrain(
-      targetConn,
-      `MATCH (n) WHERE n.filePath IN ${listLiteral} ` +
-        `MATCH (e:${EMBEDDING_TABLE_NAME}) WHERE e.nodeId = n.id DELETE e`,
-    );
+    // delete was a no-op). Join through the nodes instead: one multi-label
+    // MATCH over exactly the embeddable labels (FIX 4, probe-proven on
+    // 0.18.0 — see embeddableLabelMatch; the old unlabeled `MATCH (n)`
+    // scanned every node table per chunk, BasicBlock-dominated under
+    // `--pdg`, when only embeddable labels can own rows), and
+    // `e.nodeId = n.id` equality is exact — no `File:a.ts` / `File:a.tsx`
+    // prefix collisions. ORDER IS LOAD-BEARING: this must run BEFORE the
+    // DETACH DELETE loop below — once the nodes are gone the join matches
+    // nothing (empirically verified against @ladybugdb/core 0.18.0).
+    try {
+      await queryAndDrain(
+        targetConn,
+        `MATCH (n:${embeddableLabelMatch()}) WHERE n.filePath IN ${listLiteral} ` +
+          `MATCH (e:${EMBEDDING_TABLE_NAME}) WHERE e.nodeId = n.id DELETE e`,
+      );
+    } catch (err) {
+      // Tolerate exactly the missing-embedding-table binder error: a
+      // build-variant DB without EMBEDDING_SCHEMA would otherwise brick
+      // every incremental run until `--force` (FIX 4). The no-swallow
+      // policy stays for every real failure — anything else rethrows.
+      if (!isMissingEmbeddingTableError(err)) throw err;
+      if (!warnedMissingEmbeddingTable) {
+        warnedMissingEmbeddingTable = true;
+        logger.warn(
+          { err },
+          `deleteNodesForFiles: ${EMBEDDING_TABLE_NAME} table does not exist — ` +
+            'skipping embedding-row deletes for this writeback.',
+        );
+      }
+    }
     for (const tableName of NODE_TABLES) {
       // Community/Process are graph-wide (no filePath); the orchestrator
       // drops them wholesale via deleteAllCommunitiesAndProcesses.

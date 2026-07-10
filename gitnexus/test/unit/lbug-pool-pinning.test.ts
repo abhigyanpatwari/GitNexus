@@ -60,7 +60,9 @@ vi.mock('../../src/core/lbug/sidecar-recovery.js', () => ({
   // Not consumed by pool-adapter today; listed so this wholesale mock can't
   // become a TypeError trap if the pool ever routes through dirty recovery
   // (#2409, tri-review 4669518496 mock-hygiene sweep).
-  quarantineSidecarsForDirtyRecovery: vi.fn().mockResolvedValue({ moved: [], failed: [] }),
+  quarantineSidecarsForDirtyRecovery: vi
+    .fn()
+    .mockResolvedValue({ moved: [], removed: [], failed: [] }),
   renameFailureMessage: vi.fn((p: string) => `rename failed for ${p}`),
   statIfExists: vi.fn().mockResolvedValue(null),
 }));
