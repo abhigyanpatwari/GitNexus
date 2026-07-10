@@ -1,10 +1,28 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { execFileSync } from 'child_process';
 import {
   _resetOsPageSizeCacheForTest,
   getOsPageSize,
   isLbugPageSizeFrameError,
   isPageSizeAwareLadybug,
 } from '../../src/core/lbug/lbug-config.js';
+
+// Pass-through spy on the bare 'child_process' specifier (lbug-config.ts
+// imports execFileSync from 'child_process', not 'node:child_process').
+// Real behavior is preserved by default, so the live-probe test below still
+// exercises the host getconf — including the real 16 KiB pages on the
+// macos-arm64 CI matrix — while failure-path tests override single calls via
+// mockImplementationOnce. Recipe: sibling-clone-drift.test.ts.
+vi.mock('child_process', async () => {
+  const actual = await vi.importActual<typeof import('child_process')>('child_process');
+  return { ...actual, execFileSync: vi.fn(actual.execFileSync) };
+});
+
+const execFileSyncSpy = vi.mocked(execFileSync);
+
+// getOsPageSize short-circuits before any exec on win32, so every
+// exec-asserting test below is POSIX-only (skipIf pairs, no if-branching).
+const onWindows = process.platform === 'win32';
 
 // ─── #1231: non-4K page-size frame-release matcher ──────────────────────────
 
@@ -75,21 +93,46 @@ describe('isPageSizeAwareLadybug', () => {
 describe('getOsPageSize', () => {
   afterEach(() => {
     _resetOsPageSizeCacheForTest();
+    execFileSyncSpy.mockClear();
   });
 
-  it('returns a positive power-of-two page size on POSIX platforms', () => {
+  it.skipIf(onWindows)('returns a positive power-of-two page size on POSIX platforms', () => {
     const pageSize = getOsPageSize();
-    if (process.platform === 'win32') {
-      expect(pageSize).toBeUndefined();
-    } else {
-      expect(pageSize).toBeGreaterThan(0);
-      expect(Number.isInteger(pageSize)).toBe(true);
-      // Every real page size is a power of two (4K, 16K, 64K, ...).
-      expect(((pageSize as number) & ((pageSize as number) - 1)) === 0).toBe(true);
-    }
+    expect(pageSize).toBeDefined();
+    expect(Number.isInteger(pageSize)).toBe(true);
+    // Every real page size is a power of two (4K, 16K, 64K, ...). log2 of a
+    // power of two is an integer; `?? 0` narrows without a cast or branch and
+    // Math.log2(0) is -Infinity, which fails isInteger.
+    expect(Number.isInteger(Math.log2(pageSize ?? 0))).toBe(true);
   });
 
-  it('caches the probe (two calls return the identical value)', () => {
+  it.skipIf(!onWindows)('returns undefined on Windows without forking', () => {
+    expect(getOsPageSize()).toBeUndefined();
+    expect(execFileSyncSpy).not.toHaveBeenCalled();
+  });
+
+  it.skipIf(onWindows)('returns undefined when the probe cannot exec', () => {
+    execFileSyncSpy.mockImplementationOnce(() => {
+      throw new Error('spawnSync getconf ENOENT');
+    });
+    expect(getOsPageSize()).toBeUndefined();
+  });
+
+  it.skipIf(onWindows)('returns undefined on non-numeric probe output', () => {
+    execFileSyncSpy.mockImplementationOnce(() => 'unlimited');
+    expect(getOsPageSize()).toBeUndefined();
+  });
+
+  it.skipIf(onWindows)('returns undefined on empty probe output', () => {
+    execFileSyncSpy.mockImplementationOnce(() => '');
+    expect(getOsPageSize()).toBeUndefined();
+  });
+
+  it.skipIf(onWindows)('probes at most once per process (cached)', () => {
     expect(getOsPageSize()).toBe(getOsPageSize());
+    expect(execFileSyncSpy).toHaveBeenCalledTimes(1);
+    _resetOsPageSizeCacheForTest();
+    getOsPageSize();
+    expect(execFileSyncSpy).toHaveBeenCalledTimes(2);
   });
 });
