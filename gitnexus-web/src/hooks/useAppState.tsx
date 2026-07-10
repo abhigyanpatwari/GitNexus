@@ -35,6 +35,9 @@ import {
   startEmbeddings as backendStartEmbeddings,
   streamEmbeddingProgress,
   probeBackend,
+  // Aliased: switchRepo declares a local `let repoIdentity` that would shadow
+  // a plain named import of this helper.
+  repoIdentity as repoIdentityOf,
   type BackendRepo,
   type ConnectResult,
   type JobProgress,
@@ -51,6 +54,15 @@ export const shouldAutoStartEmbeddings = (): boolean => {
   if (typeof window === 'undefined' || !window.localStorage) return false;
   return window.localStorage.getItem(AUTO_START_EMBEDDINGS_STORAGE_KEY) === 'true';
 };
+
+// Resolve a human-readable name for a repo path identity: the registry entry's
+// display name first, then the path's basename, then the raw identity. State
+// keeps holding the path identity (#2419) — user-facing labels and the agent
+// prompt must never show an absolute filesystem path.
+const displayNameForIdentity = (repos: BackendRepo[], identity: string): string =>
+  repos.find((r) => repoIdentityOf(r) === identity)?.name ??
+  identity.split(/[/\\]/).filter(Boolean).at(-1) ??
+  identity;
 
 export type ViewMode = 'onboarding' | 'loading' | 'exploring';
 export type RightPanelTab = 'code' | 'chat';
@@ -1170,7 +1182,10 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
         phase: 'extracting',
         percent: 0,
         message: i18n.t('common:progress.switchingRepository'),
-        detail: i18n.t('common:progress.loadingRepository', { repo: repoName }),
+        detail: i18n.t('common:progress.loadingRepository', {
+          // `repoName` is a path identity — show the display name, not the path.
+          repo: displayNameForIdentity(availableRepos, repoName),
+        }),
       });
       setViewMode('loading');
       setIsAgentReady(false);
@@ -1314,6 +1329,7 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
     },
     [
       serverBaseUrl,
+      availableRepos,
       setProgress,
       setViewMode,
       setProjectName,
@@ -1410,7 +1426,14 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
       // the chat-only note (#2178, KTD2). Guarded on a configured provider, like
       // switchRepo; runs inside the mounted/stale guard above.
       if (getActiveProviderConfig()) {
-        await initializeAgent(repo, { chatOnly: false });
+        // Pass the display name explicitly — initializeAgent's empty-deps
+        // closure traps `projectName` at its initial '', so relying on the
+        // state fallback would label the prompt the literal 'project'. The
+        // path identity travels separately via opts.repo.
+        await initializeAgent(repo ? displayNameForIdentity(availableRepos, repo) : undefined, {
+          chatOnly: false,
+          repo,
+        });
       }
     } catch (err) {
       if (!loadGraphMountedRef.current || repoRef.current !== repo) return;
@@ -1424,6 +1447,7 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
     }
   }, [
     serverBaseUrl,
+    availableRepos,
     setProgress,
     setViewMode,
     setGraph,

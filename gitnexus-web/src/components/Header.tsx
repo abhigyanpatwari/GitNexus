@@ -411,7 +411,13 @@ export const Header = ({
                           <Loader2 className="h-3 w-3 shrink-0 animate-spin text-accent" />
                           <span className="truncate text-xs text-text-secondary">
                             {t('header:reanalyzingRepo', {
-                              repoName: reanalyzing,
+                              // `reanalyzing` holds the path identity (#2419) —
+                              // resolve the display name for the label, falling
+                              // back to the path basename.
+                              repoName:
+                                availableRepos.find((r) => repoIdentity(r) === reanalyzing)?.name ??
+                                reanalyzing.split(/[/\\]/).filter(Boolean).at(-1) ??
+                                reanalyzing,
                               message: translateProgressMessage(reanalyzeProgress.message, t),
                             })}
                           </span>
