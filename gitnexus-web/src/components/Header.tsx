@@ -355,9 +355,25 @@ export const Header = ({
                                         onReposChanged?.(updated);
                                         // If we deleted the active repo, switch to first available
                                         if (isActive && updated.length > 0) {
+                                          // Strip the deleted repo's identity from the URL before
+                                          // the fallback switch: the switch success path rewrites
+                                          // them, and if it fails nothing stale must remain that
+                                          // would restore the deleted repo on refresh (#2419).
+                                          const urlObj = new URL(window.location.href);
+                                          urlObj.searchParams.delete('repo');
+                                          urlObj.searchParams.delete('project');
+                                          window.history.replaceState(null, '', urlObj.toString());
                                           onSwitchRepo?.(repoIdentity(updated[0]));
                                         } else if (updated.length === 0) {
-                                          // No repos left — go back to onboarding
+                                          // No repos left — go back to onboarding. Strip the
+                                          // restore params first so the reload lands on
+                                          // onboarding instead of deterministically 404-flashing
+                                          // on the just-deleted repo (#2419).
+                                          const urlObj = new URL(window.location.href);
+                                          urlObj.searchParams.delete('repo');
+                                          urlObj.searchParams.delete('project');
+                                          urlObj.searchParams.delete('skipGraph');
+                                          window.history.replaceState(null, '', urlObj.toString());
                                           window.location.reload();
                                         }
                                       } catch (err) {

@@ -1,6 +1,6 @@
 import { fireEvent, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Header } from '../../src/components/Header';
 import { deleteRepo, fetchRepos } from '../../src/services/backend-client';
 import type { BackendRepo } from '../../src/services/backend-client';
@@ -75,6 +75,12 @@ function makeRepo(index: number): BackendRepo {
 describe('Header', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    // Reset the URL mutated by the delete handler's hygiene pass.
+    window.history.replaceState(null, '', '/');
   });
 
   it('keeps a large repository menu scrollable inside the viewport', () => {
@@ -199,5 +205,73 @@ describe('Header', () => {
 
     expect(deleteRepo).toHaveBeenCalledWith('/workspace/group-b/reels');
     expect(onSwitchRepo).toHaveBeenCalledWith('/workspace/group-a/reels');
+  });
+
+  it('strips repo, project and skipGraph from the URL before reloading after the last repo is deleted', async () => {
+    window.history.replaceState(
+      null,
+      '',
+      '/?repo=%2Fworkspace%2Fgroup-b%2Freels&project=reels&skipGraph=1',
+    );
+    // jsdom's location.reload is own+non-configurable — replace the whole
+    // `location` accessor with a stub that delegates URL reads to the real
+    // Location (kept live by history.replaceState) and mocks reload.
+    const realLocation = window.location;
+    const reloadMock = vi.fn();
+    vi.stubGlobal('location', {
+      get href() {
+        return realLocation.href;
+      },
+      get search() {
+        return realLocation.search;
+      },
+      reload: reloadMock,
+    });
+    vi.mocked(fetchRepos).mockResolvedValue([]);
+
+    render(
+      <Header
+        availableRepos={[{ ...makeRepo(0), name: 'reels', path: '/workspace/group-b/reels' }]}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: /reels/i }));
+    await userEvent.click(screen.getByTitle('Delete reels'));
+
+    expect(reloadMock).toHaveBeenCalledTimes(1);
+    expect(window.location.search).not.toContain('repo=');
+    expect(window.location.search).not.toContain('project=');
+    expect(window.location.search).not.toContain('skipGraph');
+  });
+
+  it('strips repo and project from the URL before falling back after deleting the active repo', async () => {
+    window.history.replaceState(null, '', '/?repo=%2Fworkspace%2Fgroup-b%2Freels&project=reels');
+    // Capture the URL at the moment of the fallback switch — the stale
+    // identity must already be gone so a failed switch leaves nothing that
+    // restores the deleted repo on refresh (#2419).
+    const searchAtSwitch: string[] = [];
+    const onSwitchRepo = vi.fn(() => {
+      searchAtSwitch.push(window.location.search);
+    });
+    vi.mocked(fetchRepos).mockResolvedValue([
+      { ...makeRepo(2), name: 'reels', path: '/workspace/group-a/reels' },
+    ]);
+
+    render(
+      <Header
+        onSwitchRepo={onSwitchRepo}
+        availableRepos={[
+          { ...makeRepo(0), name: 'reels', path: '/workspace/group-a/reels' },
+          { ...makeRepo(1), name: 'reels', path: '/workspace/group-b/reels' },
+        ]}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: /reels/i }));
+    await userEvent.click(screen.getAllByTitle('Delete reels')[1]);
+
+    expect(deleteRepo).toHaveBeenCalledWith('/workspace/group-b/reels');
+    expect(onSwitchRepo).toHaveBeenCalledWith('/workspace/group-a/reels');
+    expect(searchAtSwitch).toEqual(['']);
   });
 });

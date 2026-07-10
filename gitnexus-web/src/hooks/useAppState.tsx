@@ -1273,11 +1273,19 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
 
       if (pNameStr) {
         // Persist the selected project in the URL so a refresh re-opens it.
+        // `repo` carries the server-resolved path identity (never the
+        // request-side string) so the refresh restores this exact repo even
+        // when duplicate display names exist (#2419); `project` stays as the
+        // readable display name.
         // Drop any `?skipGraph` override: a deliberate repo switch should make a
         // fresh per-repo decision (auto-detect) on the next refresh rather than
         // carry the previous repo's forced mode (#2178).
         const urlObj = new URL(window.location.href);
         urlObj.searchParams.set('project', pNameStr);
+        const resolvedRepoPath = connectedRepo?.repoPath ?? connectedRepo?.path;
+        if (resolvedRepoPath) {
+          urlObj.searchParams.set('repo', resolvedRepoPath);
+        }
         urlObj.searchParams.delete('skipGraph');
         window.history.replaceState(null, '', urlObj.toString());
       }
