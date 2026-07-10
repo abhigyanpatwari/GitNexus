@@ -572,6 +572,23 @@ const requestedRepo = (req: express.Request): string | undefined => {
 const repoParamBasename = (repoName: string): string =>
   repoName.replace(/\\/g, '/').split('/').filter(Boolean).pop() ?? repoName;
 
+/**
+ * Resolve a `?repo=` request param against the registry in two tiers:
+ *
+ *   1. Path claim — any input containing a separator ('/' or '\\', which
+ *      cover path.sep on every platform) is treated as a path claim and
+ *      resolved by canonical registry path ONLY. A miss fails closed
+ *      (null, never a basename fallback) so a stale or wrong path can
+ *      never silently retarget a same-named sibling repo (#2419).
+ *      Within this tier, only absolute or Windows-shaped ('\\') claims
+ *      are worth canonicalizing; relative claims like 'org/name' or
+ *      './repo' are rejected immediately WITHOUT touching the filesystem
+ *      — canonicalizing them would run an attacker-influenced
+ *      CWD-relative realpathSync probe on un-rate-limited GET routes,
+ *      and no legitimate caller sends relative paths.
+ *   2. Name fallback — bare names (no separators) keep the legacy
+ *      basename/name match for older callers.
+ */
 export const resolveRegisteredRepoEntry = (
   repos: RegistryEntry[],
   repoName?: string,
@@ -579,12 +596,12 @@ export const resolveRegisteredRepoEntry = (
   if (!repoName) return repos[0] ?? null;
 
   const looksLikePath =
-    path.isAbsolute(repoName) ||
-    repoName.includes(path.sep) ||
-    repoName.includes('/') ||
-    repoName.includes('\\');
+    path.isAbsolute(repoName) || repoName.includes('/') || repoName.includes('\\');
 
   if (looksLikePath) {
+    // Relative path claims fail closed with zero filesystem probes.
+    if (!path.isAbsolute(repoName) && !repoName.includes('\\')) return null;
+
     const requestedPath = canonicalizePath(repoName);
     const pathMatch = repos.find((r) =>
       registryPathEquals(canonicalizePath(r.path), requestedPath),
@@ -1007,7 +1024,11 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
   });
 
   // Get repo info
-  app.get('/api/repo', async (req, res) => {
+  // Rate-limited (CodeQL js/missing-rate-limiting): resolveRepo canonicalizes
+  // the attacker-supplied ?repo= param (realpathSync probe for absolute /
+  // Windows-shaped claims). Default 60 rpm/IP — web callers hit this route
+  // only on connect/switch, never in a polling loop.
+  app.get('/api/repo', createRouteLimiter(), async (req, res) => {
     try {
       const entry = await resolveRepo(requestedRepo(req), false, req);
       if (!entry) {

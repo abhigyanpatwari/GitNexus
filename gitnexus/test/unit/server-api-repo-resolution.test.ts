@@ -43,4 +43,20 @@ describe('resolveRegisteredRepoEntry', () => {
     expect(resolveRegisteredRepoEntry([first, second], '/tmp/missing/service')).toBeNull();
     expect(resolveRegisteredRepoEntry([first, second], '/tmp/second/service')).toBe(second);
   });
+
+  it('fails closed on relative slash input instead of basename fallback', () => {
+    const named = entry({
+      name: 'name',
+      path: '/tmp/org/name',
+      storagePath: '/tmp/org/name/.gitnexus',
+    });
+
+    expect(resolveRegisteredRepoEntry([named], 'org/name')).toBeNull();
+  });
+
+  it('fails closed on dot-relative input instead of name fallback', () => {
+    const repo = entry({ name: 'repo' });
+
+    expect(resolveRegisteredRepoEntry([repo], './repo')).toBeNull();
+  });
 });
