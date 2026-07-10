@@ -128,6 +128,30 @@ describe('getOsPageSize', () => {
     expect(getOsPageSize()).toBeUndefined();
   });
 
+  it.skipIf(onWindows)('execs getconf with a SIGKILL-hardened 2s timeout', () => {
+    getOsPageSize();
+    expect(execFileSyncSpy).toHaveBeenCalledWith(
+      'getconf',
+      ['PAGE_SIZE'],
+      expect.objectContaining({ timeout: 2000, killSignal: 'SIGKILL' }),
+    );
+  });
+
+  it.skipIf(onWindows)('returns undefined when the probe times out', () => {
+    // execFileSync's timeout kill surfaces as a throw with `signal` set and
+    // `status` null — the fail-safe must hold for the kill path too.
+    execFileSyncSpy.mockImplementationOnce(() => {
+      const err = new Error('spawnSync getconf ETIMEDOUT') as Error & {
+        signal: string;
+        status: null;
+      };
+      err.signal = 'SIGKILL';
+      err.status = null;
+      throw err;
+    });
+    expect(getOsPageSize()).toBeUndefined();
+  });
+
   it.skipIf(onWindows)('probes at most once per process (cached)', () => {
     expect(getOsPageSize()).toBe(getOsPageSize());
     expect(execFileSyncSpy).toHaveBeenCalledTimes(1);

@@ -416,8 +416,9 @@ let cachedOsPageSize: number | null | undefined;
 /**
  * OS memory page size in bytes, or `undefined` when it cannot be determined
  * (Windows, missing getconf, sandboxed exec). Node exposes no page-size API,
- * so this shells out to POSIX `getconf PAGE_SIZE` — same execFileSync
- * pattern as the Windows 8.3 short-path probe above.
+ * so this shells out to POSIX `getconf PAGE_SIZE` — same execFileSync shape
+ * as the Windows 8.3 short-path probe above, but with a tighter timeout and
+ * an explicit killSignal (see the options comment below).
  */
 export const getOsPageSize = (): number | undefined => {
   if (cachedOsPageSize !== undefined) return cachedOsPageSize ?? undefined;
@@ -428,9 +429,18 @@ export const getOsPageSize = (): number | undefined => {
     return undefined;
   }
   try {
+    // killSignal SIGKILL (first use in this repo): the default SIGTERM is
+    // catchable, so a signal-trapping child held the "5s" timeout for 9s in
+    // review reproduction — SIGKILL makes the timeout real for everything
+    // except a child stuck in uninterruptible I/O (D state). 2000ms, not
+    // 5000: doctor runs this probe on its happy path and real getconf
+    // answers in ~2ms, but keep margin for loaded Pi-class hardware — a
+    // too-tight ceiling would silently drop the very #1231 diagnostics this
+    // probe exists to provide (the catch caches the failure). (#2424 review)
     const out = execFileSync('getconf', ['PAGE_SIZE'], {
       encoding: 'utf-8',
-      timeout: 5000,
+      timeout: 2000,
+      killSignal: 'SIGKILL',
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     const parsed = Number(out.trim());
