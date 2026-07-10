@@ -653,8 +653,11 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
         // Sync repoRef so all agent backend calls target the correct repo.
         // initializeAgent can be called from App.tsx (handleServerConnect) which
         // never sets repoRef.current directly — without this, queries default to repo[0].
-        if (opts?.repo || overrideProjectName) {
-          setCurrentRepo(opts?.repo ?? overrideProjectName);
+        // Only opts.repo may write the identity: overrideProjectName is a display
+        // name, and a name-only caller must never clobber the path identity with
+        // an ambiguous name (#2419).
+        if (opts?.repo) {
+          setCurrentRepo(opts.repo);
         }
         const repo = repoRef.current;
 
