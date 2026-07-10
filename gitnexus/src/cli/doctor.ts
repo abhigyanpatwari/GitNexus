@@ -113,6 +113,39 @@ export function localEmbeddingDoctorStatus(opts: {
   return { status: '✓ local embeddings supported', detail: null };
 }
 
+/**
+ * Page-size lines for the `doctor` Runtime section (#1231). Pure so the
+ * warning gate can be unit-tested without running the whole command (the
+ * `localEmbeddingDoctorStatus` precedent above) — but takes the probed
+ * values as plain params rather than injectable probes, because `undefined`
+ * is a *meaningful* pageSize state here (probe unavailable / win32) and
+ * would collide with a "not provided → use default" DI convention.
+ *
+ * Returns 0 lines (page size unknown), 1 line (page size), or 2 lines
+ * (page size + non-4K warning when the installed @ladybugdb/core does not
+ * detect the OS page size at runtime).
+ */
+export function pageSizeDoctorLines(
+  pageSize: number | undefined,
+  ladybugVersion: string | undefined,
+): string[] {
+  if (pageSize === undefined) return [];
+  const lines = [`  ${padDisplayEnd('page size', 10)}${pageSize}`];
+  if (pageSize > 4096 && !isPageSizeAwareLadybug(ladybugVersion)) {
+    // Don't assert "< 0.18.0" as fact when the version is unresolvable
+    // (#2424 review R2) — name the unknown state instead.
+    const versionClause =
+      ladybugVersion === undefined
+        ? 'an unknown @ladybugdb/core version (may predate 0.18.0)'
+        : `@ladybugdb/core < 0.18.0`;
+    lines.push(
+      `  ${padDisplayEnd('', 10)}⚠ non-4K page size with ${versionClause} — ` +
+        `'gitnexus analyze' may fail during COPY (#1231). Upgrade gitnexus (npm install -g gitnexus@latest).`,
+    );
+  }
+  return lines;
+}
+
 export const doctorCommand = async () => {
   const fingerprint = getRuntimeFingerprint();
   const capabilities = getRuntimeCapabilities();
@@ -128,15 +161,8 @@ export const doctorCommand = async () => {
   // @ladybugdb/core < 0.18.0 assumed 4 KiB pages in its buffer manager and
   // crashes mid-COPY on 16 KiB/64 KiB-page kernels (#1231). Literal label
   // (like the 'native' line below) to avoid adding i18n keys.
-  const osPageSize = getOsPageSize();
-  if (osPageSize !== undefined) {
-    console.log(`  ${padDisplayEnd('page size', 10)}${osPageSize}`);
-    if (osPageSize > 4096 && !isPageSizeAwareLadybug(fingerprint.ladybugdb)) {
-      console.log(
-        `  ${padDisplayEnd('', 10)}⚠ non-4K page size with @ladybugdb/core < 0.18.0 — ` +
-          `'gitnexus analyze' may fail during COPY (#1231). Upgrade gitnexus (npm install -g gitnexus@latest).`,
-      );
-    }
+  for (const line of pageSizeDoctorLines(getOsPageSize(), fingerprint.ladybugdb)) {
+    console.log(line);
   }
   const nativeCheck = checkLbugNative();
   if (nativeCheck.ok) {
