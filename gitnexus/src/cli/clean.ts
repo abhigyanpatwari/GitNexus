@@ -18,8 +18,10 @@ import {
   UnsafeStoragePathError,
 } from '../storage/repo-manager.js';
 import {
+  cleanParkedDirtyRecoverySidecars,
   cleanQuarantinedMissingShadowWals,
   inspectLbugSidecars,
+  listParkedDirtyRecoverySidecars,
   listQuarantinedMissingShadowWals,
 } from '../core/lbug/sidecar-recovery.js';
 import { t } from './i18n/index.js';
@@ -83,7 +85,13 @@ export const cleanCommand = async (options?: {
 
     const lbugPath = path.join(repo.storagePath, 'lbug');
     const state = await inspectLbugSidecars(lbugPath);
-    const quarantined = await listQuarantinedMissingShadowWals(lbugPath);
+    // Both parked-sidecar families (tri-review 4669518496 P2-7): the
+    // timestamped missing-shadow WAL quarantines AND the fixed-name
+    // `.dirty-recovery` parks left by a dirty-flag recovery rebuild (#2409).
+    const quarantined = [
+      ...(await listQuarantinedMissingShadowWals(lbugPath)),
+      ...(await listParkedDirtyRecoverySidecars(lbugPath)),
+    ];
 
     console.log(t('clean.lbugSidecars.state', { state: state.kind }));
     if (quarantined.length === 0) {
@@ -100,7 +108,10 @@ export const cleanCommand = async (options?: {
       return;
     }
 
-    const deleted = await cleanQuarantinedMissingShadowWals(lbugPath);
+    const deleted = [
+      ...(await cleanQuarantinedMissingShadowWals(lbugPath)),
+      ...(await cleanParkedDirtyRecoverySidecars(lbugPath)),
+    ];
     console.log(t('clean.lbugSidecars.deleted', { count: deleted.length }));
     return;
   }

@@ -176,6 +176,12 @@ export interface RepoMeta {
     deleteCount?: number;
     /** Added-file shadow seeds included in importer BFS. */
     shadowSeedCount?: number;
+    /** Importer-BFS chunks dropped by failed IMPORTS queries (#2410 +
+     *  tri-review 4669518496 P2-5). Stamped only when > 0: a dropped chunk
+     *  means the importer expansion silently shrank, so a crash's
+     *  diagnostics must show whether the write set was already
+     *  under-expanded when the run died. */
+    droppedImporterChunks?: number;
   };
   /**
    * Name of the git branch this index represents (#2106). Absent for the

@@ -263,7 +263,10 @@ program
   .option('-f, --force', 'Skip confirmation prompt')
   .option('--all', 'Clean all indexed repos')
   .option('--branch <name>', 'Delete only the named branch index (not the workspace index)')
-  .option('--lbug-sidecars', 'Clean quarantined LadybugDB missing-shadow WAL sidecars')
+  .option(
+    '--lbug-sidecars',
+    'Clean parked LadybugDB recovery sidecars (missing-shadow WAL quarantines and dirty-recovery parks)',
+  )
   .action(createLazyAction(() => import('./clean.js'), 'cleanCommand'));
 
 program

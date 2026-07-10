@@ -213,8 +213,14 @@ describe('runFullAnalysis FTS repair and verification failure paths', () => {
       wipeLbugDbFiles: vi.fn(async () => undefined),
       loadCachedEmbeddings: vi.fn(async () => ({ embeddingNodeIds: new Set(), embeddings: [] })),
       deleteNodesForFile: vi.fn(async () => undefined),
+      // Batched incremental APIs (#2409) — consumed UNCONDITIONALLY by
+      // run-analyze's incremental branch; a wholesale factory without them is
+      // a latent TypeError the moment a mocked run goes incremental
+      // (tri-review 4669518496 accuracy sweep).
+      deleteNodesForFiles: vi.fn(async () => undefined),
       deleteAllCommunitiesAndProcesses: vi.fn(async () => undefined),
       queryImporters: vi.fn(async () => []),
+      queryImportersBatch: vi.fn(async () => []),
       // Repair path now gates on FTS availability before drop-then-create.
       loadFTSExtension: vi.fn(async () => true),
     }));
@@ -266,8 +272,14 @@ describe('runFullAnalysis FTS repair and verification failure paths', () => {
       wipeLbugDbFiles: vi.fn(async () => undefined),
       loadCachedEmbeddings: vi.fn(async () => ({ embeddingNodeIds: new Set(), embeddings: [] })),
       deleteNodesForFile: vi.fn(async () => undefined),
+      // Batched incremental APIs (#2409) — consumed UNCONDITIONALLY by
+      // run-analyze's incremental branch; a wholesale factory without them is
+      // a latent TypeError the moment a mocked run goes incremental
+      // (tri-review 4669518496 accuracy sweep).
+      deleteNodesForFiles: vi.fn(async () => undefined),
       deleteAllCommunitiesAndProcesses: vi.fn(async () => undefined),
       queryImporters: vi.fn(async () => []),
+      queryImportersBatch: vi.fn(async () => []),
       // Extension loads; the throw under test comes from index creation itself.
       loadFTSExtension: vi.fn(async () => true),
     }));
@@ -325,8 +337,14 @@ describe('runFullAnalysis FTS repair and verification failure paths', () => {
       wipeLbugDbFiles: vi.fn(async () => undefined),
       loadCachedEmbeddings: vi.fn(async () => ({ embeddingNodeIds: new Set(), embeddings: [] })),
       deleteNodesForFile: vi.fn(async () => undefined),
+      // Batched incremental APIs (#2409) — consumed UNCONDITIONALLY by
+      // run-analyze's incremental branch; a wholesale factory without them is
+      // a latent TypeError the moment a mocked run goes incremental
+      // (tri-review 4669518496 accuracy sweep).
+      deleteNodesForFiles: vi.fn(async () => undefined),
       deleteAllCommunitiesAndProcesses: vi.fn(async () => undefined),
       queryImporters: vi.fn(async () => []),
+      queryImportersBatch: vi.fn(async () => []),
       // Extension cannot load — the guard must fail BEFORE any index is touched.
       loadFTSExtension: vi.fn(async () => false),
     }));
@@ -387,8 +405,14 @@ describe('runFullAnalysis FTS repair and verification failure paths', () => {
       wipeLbugDbFiles: vi.fn(async () => undefined),
       loadCachedEmbeddings: vi.fn(async () => ({ embeddingNodeIds: new Set(), embeddings: [] })),
       deleteNodesForFile: vi.fn(async () => undefined),
+      // Batched incremental APIs (#2409) — consumed UNCONDITIONALLY by
+      // run-analyze's incremental branch; a wholesale factory without them is
+      // a latent TypeError the moment a mocked run goes incremental
+      // (tri-review 4669518496 accuracy sweep).
+      deleteNodesForFiles: vi.fn(async () => undefined),
       deleteAllCommunitiesAndProcesses: vi.fn(async () => undefined),
       queryImporters: vi.fn(async () => []),
+      queryImportersBatch: vi.fn(async () => []),
       loadFTSExtension: vi.fn(async () => false),
     }));
     vi.doMock('../../src/core/search/fts-indexes.js', () => ({
@@ -448,8 +472,14 @@ describe('runFullAnalysis FTS repair and verification failure paths', () => {
       wipeLbugDbFiles: vi.fn(async () => undefined),
       loadCachedEmbeddings: vi.fn(async () => ({ embeddingNodeIds: new Set(), embeddings: [] })),
       deleteNodesForFile: vi.fn(async () => undefined),
+      // Batched incremental APIs (#2409) — consumed UNCONDITIONALLY by
+      // run-analyze's incremental branch; a wholesale factory without them is
+      // a latent TypeError the moment a mocked run goes incremental
+      // (tri-review 4669518496 accuracy sweep).
+      deleteNodesForFiles: vi.fn(async () => undefined),
       deleteAllCommunitiesAndProcesses: vi.fn(async () => undefined),
       queryImporters: vi.fn(async () => []),
+      queryImportersBatch: vi.fn(async () => []),
       // FTS extension loads → analyze proceeds to create + verify indexes.
       loadFTSExtension: vi.fn(async () => true),
     }));
@@ -501,8 +531,14 @@ describe('runFullAnalysis FTS repair and verification failure paths', () => {
       wipeLbugDbFiles: vi.fn(async () => undefined),
       loadCachedEmbeddings: vi.fn(async () => ({ embeddingNodeIds: new Set(), embeddings: [] })),
       deleteNodesForFile: vi.fn(async () => undefined),
+      // Batched incremental APIs (#2409) — consumed UNCONDITIONALLY by
+      // run-analyze's incremental branch; a wholesale factory without them is
+      // a latent TypeError the moment a mocked run goes incremental
+      // (tri-review 4669518496 accuracy sweep).
+      deleteNodesForFiles: vi.fn(async () => undefined),
       deleteAllCommunitiesAndProcesses: vi.fn(async () => undefined),
       queryImporters: vi.fn(async () => []),
+      queryImportersBatch: vi.fn(async () => []),
       // FTS extension cannot load (offline + not pre-installed, or policy forced).
       loadFTSExtension: vi.fn(async () => false),
     }));
@@ -567,8 +603,14 @@ describe('runFullAnalysis FTS repair and verification failure paths', () => {
       wipeLbugDbFiles: vi.fn(async () => undefined),
       loadCachedEmbeddings: vi.fn(async () => ({ embeddingNodeIds: new Set(), embeddings: [] })),
       deleteNodesForFile: vi.fn(async () => undefined),
+      // Batched incremental APIs (#2409) — consumed UNCONDITIONALLY by
+      // run-analyze's incremental branch; a wholesale factory without them is
+      // a latent TypeError the moment a mocked run goes incremental
+      // (tri-review 4669518496 accuracy sweep).
+      deleteNodesForFiles: vi.fn(async () => undefined),
       deleteAllCommunitiesAndProcesses: vi.fn(async () => undefined),
       queryImporters: vi.fn(async () => []),
+      queryImportersBatch: vi.fn(async () => []),
       loadFTSExtension: vi.fn(async () => false),
     }));
     vi.doMock('../../src/core/search/fts-indexes.js', () => ({
@@ -691,8 +733,14 @@ describe('runFullAnalysis wipe-and-restore vector-index stamp (tri-review 466951
         ],
       })),
       deleteNodesForFile: vi.fn(async () => undefined),
+      // Batched incremental APIs (#2409) — consumed UNCONDITIONALLY by
+      // run-analyze's incremental branch; a wholesale factory without them is
+      // a latent TypeError the moment a mocked run goes incremental
+      // (tri-review 4669518496 accuracy sweep).
+      deleteNodesForFiles: vi.fn(async () => undefined),
       deleteAllCommunitiesAndProcesses: vi.fn(async () => undefined),
       queryImporters: vi.fn(async () => []),
+      queryImportersBatch: vi.fn(async () => []),
       loadFTSExtension: vi.fn(async () => false),
     }));
     vi.doMock('../../src/core/search/fts-indexes.js', () => ({
@@ -810,8 +858,14 @@ describe('runFullAnalysis dirty-recovery parking failure fails safe (tri-review 
       wipeLbugDbFiles: vi.fn(async () => undefined),
       loadCachedEmbeddings,
       deleteNodesForFile: vi.fn(async () => undefined),
+      // Batched incremental APIs (#2409) — consumed UNCONDITIONALLY by
+      // run-analyze's incremental branch; a wholesale factory without them is
+      // a latent TypeError the moment a mocked run goes incremental
+      // (tri-review 4669518496 accuracy sweep).
+      deleteNodesForFiles: vi.fn(async () => undefined),
       deleteAllCommunitiesAndProcesses: vi.fn(async () => undefined),
       queryImporters: vi.fn(async () => []),
+      queryImportersBatch: vi.fn(async () => []),
       loadFTSExtension: vi.fn(async () => false),
     }));
     vi.doMock('../../src/core/search/fts-indexes.js', () => ({

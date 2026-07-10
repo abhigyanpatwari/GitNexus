@@ -782,6 +782,13 @@ export async function runFullAnalysis(
               ? `effectiveWrite=${dirty.effectiveWriteCount}`
               : undefined,
             dirty.deleteCount !== undefined ? `deleteCount=${dirty.deleteCount}` : undefined,
+            // Only stamped when > 0 (tri-review 4669518496 P2-5): its
+            // presence means the crashed run's importer expansion was
+            // already degraded — the write set may have been under-expanded
+            // before the crash.
+            dirty.droppedImporterChunks !== undefined
+              ? `droppedImporterChunks=${dirty.droppedImporterChunks}`
+              : undefined,
           ]
             .filter(Boolean)
             .join(', ')
@@ -1318,6 +1325,16 @@ export async function runFullAnalysis(
         }
       }
 
+      // Dropped-chunk observability (tri-review 4669518496 P2-5): counts
+      // importer-BFS chunks whose IMPORTS query failed across ALL depths
+      // (degrade-don't-fail — the expansion shrinks instead of the run
+      // dying). Run-scoped, not save-scoped: saveIncrementalDirtyState
+      // rebuilds its object from scratch on every call, so a count stamped
+      // only at the BFS save would be erased by the later
+      // effective-write-set / escalated-full-write / load-graph saves —
+      // exactly the phases where #2409-class crashes happen. Stamped into
+      // the #2410 diagnostics only when > 0.
+      let droppedImporterChunks = 0;
       {
         // Batched per depth level (#2409): one IN-list query per ~200-path
         // chunk instead of one query per frontier file — a ~700-file frontier
@@ -1326,7 +1343,11 @@ export async function runFullAnalysis(
         // re-frontiered, exactly like the per-file loop's membership check.
         let frontier: string[] = [...hashDiff.toWrite, ...hashDiff.deleted, ...shadowSeed];
         for (let depth = 0; depth < MAX_IMPORTER_BFS_DEPTH && frontier.length > 0; depth++) {
-          const importers = await queryImportersBatch(frontier);
+          const importers = await queryImportersBatch(frontier, {
+            onChunkFailure: () => {
+              droppedImporterChunks += 1;
+            },
+          });
           const nextFrontier: string[] = [];
           for (const i of importers) {
             if (!writableFiles.has(i)) {
@@ -1338,9 +1359,14 @@ export async function runFullAnalysis(
         }
       }
       const importerExpansion = writableFiles.size - directlyChangedCount;
+      // droppedImporterChunks rides along on THIS and every later save (each
+      // save rebuilds the diagnostics object — see the counter's comment),
+      // but only when > 0: unconditional zero-stamping would churn every
+      // strict-equality consumer of the diagnostics shape.
       await saveIncrementalDirtyState('importer-bfs', {
         importerExpansion,
         shadowSeedCount: shadowSeed.length,
+        ...(droppedImporterChunks > 0 ? { droppedImporterChunks } : {}),
       });
       if (importerExpansion > 0) {
         log(
@@ -1362,20 +1388,21 @@ export async function runFullAnalysis(
       //          cross-file CALLS edges that the pre-run DB couldn't
       //          predict, e.g. a barrel re-export shifting `foo` from
       //          B to D).
-      //    The composed set is the input to BOTH deleteNodesForFile
+      //    The composed set is the input to BOTH deleteNodesForFiles
       //    and extractChangedSubgraph — asymmetry between the two would
       //    leave stale rows or PK-conflict at COPY time.
       const effectiveWriteSet = computeEffectiveWriteSet(pipelineResult.graph, writableFiles);
       // Deduped: deleted entries may already appear via importer-BFS
       // expansion (the importer BFS can return a now-deleted path), which
-      // would otherwise call deleteNodesForFile twice for the same file
-      // (Bugbot LOW finding on PR #1479).
+      // would otherwise hand deleteNodesForFiles the same path twice in one
+      // batch (Bugbot LOW finding on PR #1479).
       const filesToDelete = [...new Set([...effectiveWriteSet, ...hashDiff.deleted])];
       await saveIncrementalDirtyState('effective-write-set', {
         importerExpansion,
         shadowSeedCount: shadowSeed.length,
         effectiveWriteCount: effectiveWriteSet.size,
         deleteCount: filesToDelete.length,
+        ...(droppedImporterChunks > 0 ? { droppedImporterChunks } : {}),
       });
 
       // Escalation valve (#2409): when the effective write set covers most of
@@ -1412,6 +1439,7 @@ export async function runFullAnalysis(
           shadowSeedCount: shadowSeed.length,
           effectiveWriteCount: effectiveWriteSet.size,
           deleteCount: filesToDelete.length,
+          ...(droppedImporterChunks > 0 ? { droppedImporterChunks } : {}),
         });
         // Strategy switch: stop the checkpoint driver around the close so its
         // in-flight CHECKPOINT can't race the reopen, drop the DB files
@@ -1490,6 +1518,7 @@ export async function runFullAnalysis(
           shadowSeedCount: shadowSeed.length,
           effectiveWriteCount: effectiveWriteSet.size,
           deleteCount: filesToDelete.length,
+          ...(droppedImporterChunks > 0 ? { droppedImporterChunks } : {}),
         });
         await loadGraphToLbug(subgraph, pipelineResult.repoPath, storagePath, (msg) => {
           lbugMsgCount++;

@@ -2177,7 +2177,11 @@ export const deleteNodesForFile = async (
 /**
  * Chunk size for {@link deleteNodesForFiles}. 200 paths keeps each
  * statement ~13KB (well inside parser limits) while a ~700-file write set
- * still collapses from ~13,000 statements to ~40.
+ * still collapses from ~13,000 statements to 124: 31 statements per chunk
+ * (1 CodeEmbedding join-delete + 30 filePath-bearing node tables — the
+ * 32-table NODE_TABLES roster minus Community/Process) × 4 chunks. The
+ * original "~40" claim under-counted the per-chunk statement fan-out
+ * (tri-review 4669518496 accuracy sweep).
  */
 export const DELETE_FILES_CHUNK_SIZE = 200;
 
@@ -2301,10 +2305,22 @@ export const queryImporters = async (targetFilePath: string): Promise<string[]> 
  * Same contract as the singular form: reads the pre-pipeline DB state and
  * swallows per-chunk query failures into a smaller result (correctness
  * degrades on that branch — under-expansion means possibly-stale edges —
- * but the DB stays writable and the writeback proceeds).
+ * but the DB stays writable and the writeback proceeds). Unlike the singular
+ * form the degradation is not silent (tri-review 4669518496 P2-5): every
+ * dropped chunk is logged and reported through `options.onChunkFailure`, so
+ * the orchestrator can count it into the #2410 crash diagnostics
+ * (`incrementalInProgress.droppedImporterChunks`).
  */
 export const queryImportersBatch = async (
   targetFilePaths: readonly string[],
+  options: {
+    /**
+     * Invoked once per chunk whose IMPORTS query failed and was dropped from
+     * the expansion. Observability only — the degrade-don't-fail contract is
+     * unchanged (the result just shrinks by the failed chunk's importers).
+     */
+    onChunkFailure?: (chunkIndex: number, chunkSize: number, err: unknown) => void;
+  } = {},
 ): Promise<string[]> => {
   const c = conn;
   if (!c) {
@@ -2312,6 +2328,8 @@ export const queryImportersBatch = async (
   }
   const importers = new Set<string>();
   for (let i = 0; i < targetFilePaths.length; i += DELETE_FILES_CHUNK_SIZE) {
+    // `i` only ever advances in whole chunk strides, so this is exact.
+    const chunkIndex = i / DELETE_FILES_CHUNK_SIZE;
     const chunk = targetFilePaths.slice(i, i + DELETE_FILES_CHUNK_SIZE);
     const listLiteral = `[${chunk.map((p) => `'${escapeCypherString(p)}'`).join(', ')}]`;
     const cypher = `
@@ -2329,8 +2347,18 @@ export const queryImportersBatch = async (
           const v = (row as { importer?: unknown }).importer;
           if (typeof v === 'string' && v.length > 0) importers.add(v);
         }
-      } catch {
-        /* mirror queryImporters: degrade to a smaller expansion, stay writable */
+      } catch (err) {
+        // Degrade-don't-fail, mirroring queryImporters — but LOUDLY
+        // (tri-review 4669518496 P2-5): a dropped chunk means every importer
+        // it would have surfaced keeps possibly-stale edges this run, and the
+        // old bare `catch {}` left no trace of that anywhere. pino idiom:
+        // `err` key — `error` serializes to `{}`.
+        logger.warn(
+          { err },
+          `Incremental importer BFS: dropped chunk ${chunkIndex} (${chunk.length} target path(s)) — ` +
+            'importer expansion degrades for this run; affected importers may keep stale edges until the next full rebuild.',
+        );
+        options.onChunkFailure?.(chunkIndex, chunk.length, err);
       } finally {
         if (queryResult) await closeQueryResults(queryResult);
       }

@@ -444,6 +444,14 @@ const sidecarParkRefusedWarning = (from: string, err: unknown): string =>
   'antivirus exclusion for the index directory if needed, then re-run `gitnexus analyze`.';
 
 /**
+ * The sidecar family parked by {@link quarantineSidecarsForDirtyRecovery}
+ * and enumerated by {@link listParkedDirtyRecoverySidecars} — one shared
+ * roster so the park and clean surfaces cannot drift apart (tri-review
+ * 4669518496 P2-7).
+ */
+const DIRTY_RECOVERY_SIDECAR_SUFFIXES = ['.wal', '.shadow'] as const;
+
+/**
  * Move the WAL/shadow sidecars aside before a dirty-flag recovery rebuild
  * (#2409 defect 2).
  *
@@ -457,10 +465,20 @@ const sidecarParkRefusedWarning = (from: string, err: unknown): string =>
  * so parking the sidecars first costs nothing and makes every subsequent
  * open replay-free.
  *
- * Renamed, never deleted — same philosophy as
- * {@link quarantineWalForMissingShadow} — so the bytes stay available for
- * post-mortem debugging. Fixed destination names (no timestamp) cap the
- * accumulation at one parked file per sidecar across repeated crashes.
+ * Renamed, never deleted, so the bytes stay available for post-mortem
+ * debugging — and, like {@link quarantineWalForMissingShadow}'s quarantine
+ * files, the parked copies are surfaced and removable by
+ * `gitnexus clean --lbug-sidecars` (tri-review 4669518496 P2-7; before
+ * that, this comment claimed a "same philosophy" parity while the
+ * dirty-recovery files were invisible to every cleanup surface). Real
+ * lifecycle: the destinations are the two FIXED names — no timestamp, see
+ * {@link listParkedDirtyRecoverySidecars} — so each new crash overwrites
+ * the previous parked copy, capping accumulation at one file per sidecar;
+ * remove them via `clean --lbug-sidecars` or manually once their
+ * post-mortem value has passed. Extreme double-failure corner (movable
+ * source, locked stale copy): the bytes land at the `${to}.next` residue
+ * name instead (logged when it happens) — the fixed-name listers do not
+ * enumerate `.next` residues, so remove those manually.
  * Rename-first with a structural confirm probe (tri-review 4669518496
  * P2-3): the old shape pre-deleted a previous crash's parked copy on the
  * bet that the rename would then succeed — destroying the prior forensics
@@ -486,7 +504,7 @@ export async function quarantineSidecarsForDirtyRecovery(
 ): Promise<{ moved: string[]; failed: string[] }> {
   const moved: string[] = [];
   const failed: string[] = [];
-  for (const suffix of ['.wal', '.shadow'] as const) {
+  for (const suffix of DIRTY_RECOVERY_SIDECAR_SUFFIXES) {
     const from = `${dbPath}${suffix}`;
     const to = `${from}.dirty-recovery`;
     try {
@@ -569,6 +587,46 @@ export async function listQuarantinedMissingShadowWals(dbPath: string): Promise<
 
 export async function cleanQuarantinedMissingShadowWals(dbPath: string): Promise<string[]> {
   const files = await listQuarantinedMissingShadowWals(dbPath);
+  const deleted: string[] = [];
+  for (const file of files) {
+    await fs.unlink(file);
+    deleted.push(file);
+  }
+  return deleted;
+}
+
+/**
+ * List the `.dirty-recovery` sidecars parked beside `dbPath` by
+ * {@link quarantineSidecarsForDirtyRecovery}, so `gitnexus clean
+ * --lbug-sidecars` can surface them next to the missing-shadow quarantines
+ * (tri-review 4669518496 P2-7 — they were previously invisible to every
+ * cleanup surface). Exactly two fixed names can exist
+ * (`<dbPath>.wal.dirty-recovery`, `<dbPath>.shadow.dirty-recovery`), so this
+ * stats them directly instead of prefix-scanning the directory the way the
+ * timestamped missing-shadow lister must. The rare `${to}.next` residue from
+ * a double park failure is deliberately NOT enumerated — its presence means
+ * the fixed name is locked, so unlinking around it would be misleading.
+ *
+ * Returns existing parked files as sorted absolute paths. Branch-scoped
+ * index slots (`branches/<slug>/`) are outside `clean.ts`'s flat-path
+ * resolution — the same documented limitation as the missing-shadow pair.
+ */
+export async function listParkedDirtyRecoverySidecars(dbPath: string): Promise<string[]> {
+  const present: string[] = [];
+  for (const suffix of DIRTY_RECOVERY_SIDECAR_SUFFIXES) {
+    const parked = `${dbPath}${suffix}.dirty-recovery`;
+    if (await statIfExists(parked)) present.push(parked);
+  }
+  return present.sort();
+}
+
+/**
+ * Delete the `.dirty-recovery` parked sidecars for `dbPath` and return the
+ * deleted paths. Sibling of {@link cleanQuarantinedMissingShadowWals} —
+ * `clean.ts` concatenates both families (tri-review 4669518496 P2-7).
+ */
+export async function cleanParkedDirtyRecoverySidecars(dbPath: string): Promise<string[]> {
+  const files = await listParkedDirtyRecoverySidecars(dbPath);
   const deleted: string[] = [];
   for (const file of files) {
     await fs.unlink(file);

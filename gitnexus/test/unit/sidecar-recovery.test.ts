@@ -5,12 +5,15 @@ import path from 'node:path';
 import { readFileSync } from 'node:fs';
 import {
   _resetSidecarRecoveryWarningsForTest,
+  cleanParkedDirtyRecoverySidecars,
+  cleanQuarantinedMissingShadowWals,
   finalizeLbugSidecarsAfterClose,
   guardWalQuarantine,
   inspectLbugSidecars,
   isMissingShadowSidecarError,
   isPermissionRenameError,
   isReadOnlyShadowReplayError,
+  listParkedDirtyRecoverySidecars,
   listQuarantinedMissingShadowWals,
   preflightLbugSidecars,
   presentShadowUnreachableMessage,
@@ -678,6 +681,74 @@ describe('LadybugDB sidecar recovery', () => {
         code: 'ENOENT',
       });
       await expect(inspectLbugSidecars(dbPath)).resolves.toEqual({ kind: 'clean', dbPath });
+    });
+  });
+
+  describe('listParkedDirtyRecoverySidecars / cleanParkedDirtyRecoverySidecars (tri-review 4669518496 P2-7)', () => {
+    it('returns [] and deletes nothing when no parked files exist', async () => {
+      await expect(listParkedDirtyRecoverySidecars(dbPath)).resolves.toEqual([]);
+      await expect(cleanParkedDirtyRecoverySidecars(dbPath)).resolves.toEqual([]);
+    });
+
+    it('lists exactly the single present parked file', async () => {
+      await fs.writeFile(`${dbPath}.wal.dirty-recovery`, 'parked wal bytes');
+
+      await expect(listParkedDirtyRecoverySidecars(dbPath)).resolves.toEqual([
+        `${dbPath}.wal.dirty-recovery`,
+      ]);
+    });
+
+    it('lists both parked files sorted; live sidecars, missing-shadow quarantines, and .next residue are not enumerated', async () => {
+      await fs.writeFile(`${dbPath}.wal.dirty-recovery`, 'parked wal bytes');
+      await fs.writeFile(`${dbPath}.shadow.dirty-recovery`, 'parked shadow bytes');
+      // Fixed-name lister must not sweep up neighbors: a LIVE wal, a
+      // missing-shadow quarantine (the OTHER family), and the double-failure
+      // `.next` residue (deliberately manual-removal-only — its presence
+      // means the fixed name is locked).
+      await fs.writeFile(`${dbPath}.wal`, 'live wal');
+      await fs.writeFile(`${dbPath}.wal.missing-shadow.1-a`, '');
+      await fs.writeFile(`${dbPath}.wal.dirty-recovery.next`, 'residue');
+
+      await expect(listParkedDirtyRecoverySidecars(dbPath)).resolves.toEqual([
+        `${dbPath}.shadow.dirty-recovery`,
+        `${dbPath}.wal.dirty-recovery`,
+      ]);
+    });
+
+    it('clean removes the parked files, returns their paths, and leaves the missing-shadow family alone', async () => {
+      await fs.writeFile(`${dbPath}.wal.dirty-recovery`, 'parked wal bytes');
+      await fs.writeFile(`${dbPath}.shadow.dirty-recovery`, 'parked shadow bytes');
+      await fs.writeFile(`${dbPath}.wal.missing-shadow.1-a`, '');
+
+      await expect(cleanParkedDirtyRecoverySidecars(dbPath)).resolves.toEqual([
+        `${dbPath}.shadow.dirty-recovery`,
+        `${dbPath}.wal.dirty-recovery`,
+      ]);
+
+      await expect(fs.stat(`${dbPath}.wal.dirty-recovery`)).rejects.toMatchObject({
+        code: 'ENOENT',
+      });
+      await expect(fs.stat(`${dbPath}.shadow.dirty-recovery`)).rejects.toMatchObject({
+        code: 'ENOENT',
+      });
+      // The other family is untouched by the new pair…
+      await expect(listQuarantinedMissingShadowWals(dbPath)).resolves.toEqual([
+        `${dbPath}.wal.missing-shadow.1-a`,
+      ]);
+      // …and a second clean is an idempotent no-op.
+      await expect(cleanParkedDirtyRecoverySidecars(dbPath)).resolves.toEqual([]);
+    });
+
+    it('missing-shadow cleaner leaves dirty-recovery parks untouched (vice-versa isolation)', async () => {
+      await fs.writeFile(`${dbPath}.wal.dirty-recovery`, 'parked wal bytes');
+      await fs.writeFile(`${dbPath}.wal.missing-shadow.1-a`, '');
+
+      await expect(cleanQuarantinedMissingShadowWals(dbPath)).resolves.toEqual([
+        `${dbPath}.wal.missing-shadow.1-a`,
+      ]);
+      await expect(listParkedDirtyRecoverySidecars(dbPath)).resolves.toEqual([
+        `${dbPath}.wal.dirty-recovery`,
+      ]);
     });
   });
 });
