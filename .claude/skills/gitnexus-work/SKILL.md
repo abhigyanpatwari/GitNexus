@@ -40,8 +40,12 @@ executor counterpart to the planning-only `gitnexus-plan`.
    `primary_symbols`, `related_symbols`, `files_to_modify`,
    `execution_path`, `pdg_constraints`, `architectural_patterns`, `tests`,
    `verification_commands`, `risks`, `assumptions`, `open_questions`, `avoid`.
+   Compact plans carry the mini-pack subset — absent optional fields are
+   empty, not errors.
 3. **Drift check.** The plan header pins the commit its evidence was
-   verified at. If HEAD has moved since, diff the pinned commit against HEAD
+   verified at. **HEAD equals the pin → every citation is still verified:
+   skip all re-reading and go straight to work — that is the pin's entire
+   point.** If HEAD has moved since, diff the pinned commit against HEAD
    for **every file the pack cites** — `files_to_modify`,
    `primary_symbols`/`related_symbols` files, files named in
    `pdg_constraints.affected_statements`, `architectural_patterns[]`

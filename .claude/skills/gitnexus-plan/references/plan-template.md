@@ -1,8 +1,41 @@
 # Plan document template
 
-Fill every section. If a section is genuinely empty for this task (e.g. no PDG
-layer indexed), keep the heading and state why in one line — never silently
-drop it. Repo-relative paths for all repo artifacts.
+Two forms, chosen by the Phase 0 category (`form` knob overrides): **compact**
+for narrow/default work, **full** for deep work. Repo-relative paths for all
+repo artifacts in both.
+
+## Compact form
+
+Same evidence header, then only the load-bearing sections — keep the §
+numbers in the headings so `gitnexus-work`'s § references resolve:
+
+```markdown
+# GitNexus Engineering Plan
+
+> Task: <one line>
+> Evidence verified at commit <sha>; GitNexus index <...>.
+
+## Objective (§1)
+## Current Behaviour (§2–3)         — ≤10 lines, architecture folded in
+## Findings (§4–5)                  — only load-bearing, each tagged + tool-named
+## Proposed Changes (§6)
+## Implementation Sequence (§7)     — risks inline as step notes
+## Test Strategy (§8)
+## Implementation Context (§11)     — the mini-pack (see context-pack.md)
+## Assumptions and Open Questions (§12)
+## Definition of Done (§13)
+```
+
+Hard cap: **80 lines excluding the §11 pack**. Anything cut that still
+matters becomes one line in §12 — never padded prose. A compact plan that
+outgrows the cap is a signal the task was misclassified: reclassify to full
+rather than overflowing.
+
+## Full form
+
+Fill every section below. If a section is genuinely empty for this task
+(e.g. no PDG layer indexed), keep the heading and state why in one line —
+never silently drop it.
 
 **Claim tagging.** Tag every load-bearing claim with its evidence class:
 `[verified]` (source-read at the pinned commit), `[graph]` (GitNexus/PDG

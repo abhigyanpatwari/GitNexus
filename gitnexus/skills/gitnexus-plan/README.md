@@ -90,11 +90,15 @@ of context until the phase that needs them.
 
 - Requires a GitNexus index; statement-level sections additionally require the
   `--pdg` layers.
-- Freshness is a gate, not a footnote: under the default `freshness: strict`,
-  a stale index (or a missing PDG layer) is refreshed once with
+- Freshness is a gate, priced by category: full-plan categories (refactor,
+  security, performance, concurrency, architecture) default to `freshness:
+  strict` — a stale index (or missing PDG layer) is refreshed once with
   `analyze --index-only [--pdg]` — run via `node .gitnexus/run.cjs` when the
   project has one, else the installed `gitnexus` CLI (`npm install -g
   gitnexus`), else `npx gitnexus` — before the graph is relied on.
+  Compact-plan categories default to `accept` (source-weighted, refresh only
+  if a graph claim becomes load-bearing) because the refresh is the largest
+  fixed cost a planning session carries (measured: `eval/workflow_bench/`).
   `--index-only` touches only the `.gitnexus` store, never repo files. When the repo builds the analyzer from source (like this one:
   `gitnexus/dist`), the gate first ensures `dist/` is current (`npm run
   build` when src is newer) so the refresh doesn't re-index with outdated

@@ -18,9 +18,16 @@ never inline a summary of what the skill would have done.
 
 ## Lane 1 — Plan
 
-Invoke `gitnexus-plan` with the task (knob overrides pass through verbatim).
-If the input is already a plan file path, skip to Lane 2. The plan lands in
-`docs/plans/` — record its path; every later lane consumes it.
+**Boundary triage first.** If the task is plainly below the planning
+boundary — trivial or small-bounded work an agent finishes in well under ~35
+turns (the measured regime where a planning pass costs more than it returns;
+see `eval/workflow_bench/`) — say so and offer `gitnexus-work` direct mode as
+an alternative to the full pipeline before spending the plan lane. Honor the
+user's choice.
+
+Otherwise invoke `gitnexus-plan` with the task (knob overrides pass through
+verbatim). If the input is already a plan file path, skip to Lane 2. The plan
+lands in `docs/plans/` — record its path; every later lane consumes it.
 
 ## Lane 2 — The plan gate (user choice, blocking)
 

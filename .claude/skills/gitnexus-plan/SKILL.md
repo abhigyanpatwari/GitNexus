@@ -50,21 +50,27 @@ never repo files) and the analyzer `dist/` rebuild that may precede it
 Read `references/context-ledger.md` and open the ledger with the task:
 original request, interpreted goal, acceptance criteria. Classify the task:
 
-| Category | Depth posture |
+| Category | Posture (depth · plan form · tool-call budget · freshness) |
 | --- | --- |
-| Bug fix (local) | Narrow: 1–2 primary symbols, `impact_depth` 1 |
-| Feature | Default knobs |
-| Refactor / shared API change | Impact analysis mandatory, `impact_depth` 3 |
-| Performance | Default + performance PDG mode (see `references/pdg-slice.md`) |
-| Security | Default + security PDG mode + `explain` taint findings |
-| Dependency upgrade / migration | Impact + compatibility focus; PDG usually unnecessary |
-| Concurrency / transactional | Control-flow and state-mutation focus in the PDG slice |
-| Test improvement / docs | Narrowest: usually no impact or PDG pass |
-| Architecture change / spike | Widest: clusters + processes resources first |
+| Bug fix (local) | Narrow, 1–2 primary symbols, `impact_depth` 1 · compact · ~15 · accept |
+| Feature | Default knobs · compact · ~30 · accept |
+| Refactor / shared API change | Impact mandatory, `impact_depth` 3 · full · ~45 · strict |
+| Performance | Default + performance PDG mode (`references/pdg-slice.md`) · full · ~45 · strict |
+| Security | Default + security PDG mode + `explain` taint findings · full · ~45 · strict |
+| Dependency upgrade / migration | Impact + compatibility focus; PDG rarely needed · compact · ~20 · accept |
+| Concurrency / transactional | Control-flow + state-mutation PDG focus · full · ~45 · strict |
+| Test improvement / docs | Narrowest: usually no impact or PDG pass · compact · ~10 · accept |
+| Architecture change / spike | Widest: clusters + processes first · full · no cap · strict |
 
 The category posture overrides the Configuration baseline; explicit `key:value`
 invocation knobs override both. A task matching several rows combines them:
 take the widest depth, union the focus areas.
+
+**Turn economy is a deliverable.** The plan is judged on decision quality per
+token, not thoroughness theater (measured: a 63-turn plan for a two-line
+change — see `eval/workflow_bench/`). Stay within the category's tool-call
+budget; when the budget runs out with questions still open, record them in
+§12 instead of digging further — the executor re-verifies cheaply anyway.
 
 ## Phase 1 — Anchor and freshness
 
@@ -80,8 +86,15 @@ take the widest depth, union the focus areas.
    `npx gitnexus analyze …`.
 4. Read `gitnexus://repo/{name}/context` — codebase overview + staleness check.
    **Freshness gate.** Plans built on a stale graph make stale blast-radius
-   claims, so freshness is not advisory here. Under `freshness: strict` (the
-   default):
+   claims — but a refresh (analyzer rebuild + re-index) is the single
+   largest fixed cost a planning session carries (measured in
+   `eval/workflow_bench/`), so the gate is category-priced:
+   - Compact-plan categories default to `freshness: accept`: plan on the
+     current graph with source verification weighted higher — their plans
+     cite little graph evidence. Escalate to a refresh mid-plan only when a
+     graph claim becomes load-bearing (e.g. Proposed Changes rest on a d=1
+     dependent list), and only then.
+   - Full-plan categories default to `freshness: strict`, and under it:
    - **Runner build check — before any refresh.** If the target repo builds
      the analyzer from its own source (a `bin` → `dist/` mapping, as in this
      repo's `gitnexus/` package), the built output must be current, or the
@@ -150,7 +163,9 @@ GitNexus said where to look; now confirm what is there. Using ordinary file
 reads (exact line ranges, not whole files unless genuinely required):
 
 - Read every source range the plan will cite: signatures, branch conditions,
-  state mutations, error paths, nearby comments that change behavior.
+  state mutations, error paths, nearby comments that change behavior. Compact
+  plans cite less — verify what they cite, don't expand the citation set to
+  have more to verify.
 - Read the tests GitNexus associated with the primary symbols; never claim a
   test exists without having located it.
 - Verify the build/test commands the plan will name actually exist
@@ -171,9 +186,11 @@ and executable behavior → compiler/build/lint output → GitNexus graph and PD
 
 ## Phase 5 — Compose the plan
 
-1. Read `references/plan-template.md` and fill all 13 sections from the
-   ledger, tagging claims with the template's four classes — `[verified]`,
-   `[graph]`, `[inferred]`, `[assumed]` — and routing open questions to §12.
+1. Read `references/plan-template.md` and fill the category's form — compact
+   (core sections, ≤80 lines excluding the pack) or full (all 13 sections) —
+   from the ledger, tagging claims with the template's four classes —
+   `[verified]`, `[graph]`, `[inferred]`, `[assumed]` — and routing open
+   questions to §12.
 2. Build the implementation context pack per `references/context-pack.md`
    (this is section 11 of the plan).
 3. Write the document to `docs/plans/YYYY-MM-DD-gitnexus-plan-<slug>.md` under the
@@ -224,6 +241,7 @@ skill-config file mechanism; invocation args are the mechanism):
 | Knob | Default | Meaning |
 | --- | --- | --- |
 | `depth` | by category | `narrow` = `impact_depth` 1, PDG only if one function is clearly central; `default` = this table; `deep` = `impact_depth` 3 + clusters/processes read |
+| `form` | by category | `compact` (core sections + mini-pack, ≤80 lines excl. pack — see `references/plan-template.md`) or `full` (all 13 sections) |
 | `impact_depth` | 2 | `maxDepth` for `impact` |
 | `pdg_data_depth` | 2 | Data-dependence hops in the PDG slice |
 | `pdg_control_depth` | 2 | Control-dependence hops in the PDG slice |
@@ -231,7 +249,7 @@ skill-config file mechanism; invocation args are the mechanism):
 | `max_related_symbols` | 20 | Ledger budget (active symbols; discards don't count) |
 | `max_snippet_lines` | 30 | Longest source excerpt quoted in the plan |
 | `out` | `docs/plans/` in target repo | Plan document destination |
-| `freshness` | `strict` | `strict` = refresh a stale index (and a missing PDG layer) with `analyze --index-only [--pdg]` before relying on the graph; `accept` = plan on the stale graph, source-weighted and labelled |
+| `freshness` | by category | `strict` (full-plan categories) = refresh a stale index (and a missing PDG layer) with `analyze --index-only [--pdg]` before relying on the graph; `accept` (compact categories) = plan on the current graph, source-weighted and labelled, refreshing only if a graph claim becomes load-bearing |
 
 ## Fallback mode (GitNexus or PDG unavailable)
 

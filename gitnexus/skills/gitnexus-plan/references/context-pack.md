@@ -5,6 +5,12 @@ implementation agent (`gitnexus-work`, or any executor) consumes to start
 work **without repeating the investigation**. Distilled from the ledger;
 every entry traceable to verified evidence.
 
+**Compact plans emit the mini-pack** — only: `task_summary`,
+`files_to_modify`, `tests`, `verification_commands`, `pdg_constraints` (only
+when a slice actually ran), `assumptions`, `open_questions`, `avoid`. Full
+plans emit every field. Field semantics are identical in both;
+`gitnexus-work` treats absent optional fields as empty, not as errors.
+
 ## Schema
 
 ```yaml
