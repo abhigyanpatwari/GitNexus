@@ -1,6 +1,38 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { renderHook, act } from '@testing-library/react';
 import { AppStateProvider, useAppState } from '../../src/hooks/useAppState';
+import { getActiveProviderConfig } from '../../src/core/llm/settings-service';
+import { buildCodebaseContext, type CodebaseContext } from '../../src/core/llm/context-builder';
+
+// Capture initializeAgent's observable seam: buildCodebaseContext receives the
+// effective project name that ends up in the agent's system prompt.
+vi.mock('../../src/core/llm/context-builder', () => ({
+  buildCodebaseContext: vi.fn(
+    async (): Promise<CodebaseContext> => ({
+      stats: {
+        projectName: 'stub',
+        fileCount: 0,
+        functionCount: 0,
+        classCount: 0,
+        interfaceCount: 0,
+        methodCount: 0,
+      },
+      hotspots: [],
+      folderTree: '',
+    }),
+  ),
+}));
+
+vi.mock('../../src/core/llm/agent', () => ({
+  createGraphRAGAgent: vi.fn(() => ({})),
+}));
+
+vi.mock('../../src/core/llm/settings-service', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../src/core/llm/settings-service')>();
+  // Wrap with the real implementation so tests without an explicit override
+  // keep today's no-provider (null) behavior.
+  return { ...actual, getActiveProviderConfig: vi.fn(actual.getActiveProviderConfig) };
+});
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -168,6 +200,81 @@ describe('loadGraphAnyway (chat-only escape hatch, #2178)', () => {
 
     // The stale repo-A result must NOT flip the (now repo-B) view to full.
     expect(result.current.graphMode).toBe('chatOnly');
+  });
+
+  it('re-initializes the agent with the looked-up display name and the path identity', async () => {
+    vi.mocked(getActiveProviderConfig).mockReturnValue({
+      provider: 'openai',
+      model: 'gpt-4o',
+      apiKey: 'test-key',
+    });
+    const fetchMock = vi.fn((url: string) => {
+      if (url.includes('/api/repo')) return Promise.resolve(repoInfoResponse());
+      if (url.includes('/api/graph')) return Promise.resolve(graphNdjsonResponse());
+      return Promise.resolve(
+        new Response('{}', { status: 200, headers: { 'Content-Type': 'application/json' } }),
+      );
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const { result } = renderHook(() => useAppState(), { wrapper: AppStateProvider });
+    act(() => {
+      result.current.setServerBaseUrl('http://localhost:4747');
+      result.current.setAvailableRepos([
+        {
+          name: 'reels-display',
+          path: '/r/big-repo',
+          repoPath: '/r/big-repo',
+          indexedAt: '2026-06-13T00:00:00Z',
+        },
+      ]);
+      result.current.setCurrentRepo('/r/big-repo');
+      result.current.setGraphMode('chatOnly');
+    });
+
+    await act(async () => {
+      await result.current.loadGraphAnyway();
+    });
+
+    // The agent prompt gets the human-readable display name — never the
+    // absolute path, and never the 'project' literal that initializeAgent's
+    // empty-deps closure would fall back to (projectName is trapped at '').
+    expect(vi.mocked(buildCodebaseContext)).toHaveBeenCalledWith(
+      expect.any(Function),
+      'reels-display',
+    );
+    // The repo identity itself stays the path (threaded via opts.repo).
+    expect(result.current.currentRepo).toBe('/r/big-repo');
+  });
+
+  it('falls back to the identity basename for the agent prompt when the repo list misses it', async () => {
+    vi.mocked(getActiveProviderConfig).mockReturnValue({
+      provider: 'openai',
+      model: 'gpt-4o',
+      apiKey: 'test-key',
+    });
+    const fetchMock = vi.fn((url: string) => {
+      if (url.includes('/api/repo')) return Promise.resolve(repoInfoResponse());
+      if (url.includes('/api/graph')) return Promise.resolve(graphNdjsonResponse());
+      return Promise.resolve(
+        new Response('{}', { status: 200, headers: { 'Content-Type': 'application/json' } }),
+      );
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const { result } = renderHook(() => useAppState(), { wrapper: AppStateProvider });
+    act(() => {
+      result.current.setServerBaseUrl('http://localhost:4747');
+      result.current.setCurrentRepo('/r/big-repo');
+      result.current.setGraphMode('chatOnly');
+    });
+
+    await act(async () => {
+      await result.current.loadGraphAnyway();
+    });
+
+    expect(vi.mocked(buildCodebaseContext)).toHaveBeenCalledWith(expect.any(Function), 'big-repo');
+    expect(result.current.currentRepo).toBe('/r/big-repo');
   });
 
   it('does not throw or apply state when unmounted mid-load', async () => {

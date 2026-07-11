@@ -13,7 +13,15 @@ import cors from 'cors';
 import path from 'path';
 import fs from 'fs/promises';
 import { createRequire } from 'node:module';
-import { loadMeta, listRegisteredRepos, getStoragePath } from '../storage/repo-manager.js';
+import {
+  canonicalizePath,
+  cloneDirBelongsToEntry,
+  loadMeta,
+  listRegisteredRepos,
+  getStoragePath,
+  registryPathEquals,
+  type RegistryEntry,
+} from '../storage/repo-manager.js';
 import {
   executeQuery,
   executePrepared,
@@ -458,8 +466,13 @@ export const streamGraphNdjson = async (
 /**
  * Mount an SSE progress endpoint for a JobManager.
  * Handles: initial state, terminal events, heartbeat, event IDs, client disconnect.
+ *
+ * Terminal payloads carry `repoPath` (the analyzed path) alongside the display
+ * `repoName` so clients can reconnect by path identity — with duplicate
+ * basenames, a name-only reconnect resolves to the first same-named sibling.
+ * Exported for unit tests that lock the wire payload shape.
  */
-const mountSSEProgress = (app: express.Express, routePath: string, jm: JobManager) => {
+export const mountSSEProgress = (app: express.Express, routePath: string, jm: JobManager) => {
   app.get(routePath, (req, res) => {
     let jobId: string;
     try {
@@ -492,6 +505,7 @@ const mountSSEProgress = (app: express.Express, routePath: string, jm: JobManage
       res.write(
         `id: ${eventId}\nevent: ${job.status}\ndata: ${JSON.stringify({
           repoName: job.repoName,
+          repoPath: job.repoPath,
           error: job.error,
         })}\n\n`,
       );
@@ -518,6 +532,7 @@ const mountSSEProgress = (app: express.Express, routePath: string, jm: JobManage
           res.write(
             `id: ${eventId}\nevent: ${progress.phase}\ndata: ${JSON.stringify({
               repoName: eventJob?.repoName,
+              repoPath: eventJob?.repoPath,
               error: eventJob?.error,
             })}\n\n`,
           );
@@ -559,6 +574,56 @@ const requestedRepo = (req: express.Request): string | undefined => {
   }
 
   return undefined;
+};
+
+const repoParamBasename = (repoName: string): string =>
+  repoName.replace(/\\/g, '/').split('/').filter(Boolean).pop() ?? repoName;
+
+/**
+ * Resolve a `?repo=` request param against the registry in two tiers:
+ *
+ *   1. Path claim — any input containing a separator ('/' or '\\', which
+ *      cover path.sep on every platform) is treated as a path claim and
+ *      resolved by canonical registry path ONLY. A miss fails closed
+ *      (null, never a basename fallback) so a stale or wrong path can
+ *      never silently retarget a same-named sibling repo (#2419).
+ *      Within this tier, only absolute or Windows-shaped ('\\') claims
+ *      are worth canonicalizing; relative claims like 'org/name' or
+ *      './repo' are rejected immediately WITHOUT touching the filesystem
+ *      — canonicalizing them would run an attacker-influenced
+ *      CWD-relative realpathSync probe on un-rate-limited GET routes,
+ *      and no legitimate caller sends relative paths.
+ *   2. Name fallback — bare names (no separators) keep the legacy
+ *      basename/name match for older callers.
+ */
+export const resolveRegisteredRepoEntry = (
+  repos: RegistryEntry[],
+  repoName?: string,
+): RegistryEntry | null => {
+  if (!repoName) return repos[0] ?? null;
+
+  const looksLikePath =
+    path.isAbsolute(repoName) || repoName.includes('/') || repoName.includes('\\');
+
+  if (looksLikePath) {
+    // Relative path claims fail closed with zero filesystem probes.
+    if (!path.isAbsolute(repoName) && !repoName.includes('\\')) return null;
+
+    const requestedPath = canonicalizePath(repoName);
+    const pathMatch = repos.find((r) =>
+      registryPathEquals(canonicalizePath(r.path), requestedPath),
+    );
+    if (pathMatch) return pathMatch;
+    return null;
+  }
+
+  const normalizedName = repoParamBasename(repoName);
+
+  return (
+    repos.find((r) => r.name === normalizedName) ||
+    repos.find((r) => r.name.toLowerCase() === normalizedName.toLowerCase()) ||
+    null
+  );
 };
 
 /**
@@ -821,6 +886,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
     backend,
     acquireRepoLock,
     releaseRepoLock,
+    closeDbHandle: closeLbug,
   });
 
   /**
@@ -833,20 +899,9 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
   // Pass `req` to enable early exit if the client disconnects during the hold-queue wait.
   const resolveRepo = async (repoName?: string, isRetry = false, req?: any): Promise<any> => {
     const repos = await listRegisteredRepos();
-    let found = null;
+    const found = resolveRegisteredRepoEntry(repos, repoName);
 
-    // Normalize: if a full path is passed, extract just the basename.
-    // e.g. "C:\Users\LENOVO\.gitnexus\repos\todo.txt-cli" -> "todo.txt-cli"
-    const normalizedName = repoName ? path.basename(repoName) : undefined;
-
-    if (normalizedName) {
-      found =
-        repos.find((r) => r.name === normalizedName) ||
-        repos.find((r) => r.name.toLowerCase() === normalizedName.toLowerCase()) ||
-        null;
-    } else if (repos.length > 0) {
-      found = repos[0]; // default to first repo
-    }
+    const normalizedName = repoName ? repoParamBasename(repoName) : undefined;
 
     // If not yet in the registry, check whether a background job is actively cloning or
     // analyzing this repo. Hold the connection open (up to 5 minutes) until it completes.
@@ -885,7 +940,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
             if (currentJob.status === 'complete') {
               await backend.init();
               const freshRepos = await listRegisteredRepos();
-              return freshRepos.find((r) => r.name === normalizedName) || null;
+              return resolveRegisteredRepoEntry(freshRepos, repoName);
             }
             await new Promise((r) => setTimeout(r, 1000));
           }
@@ -906,7 +961,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
         );
       }
       await backend.init();
-      return await resolveRepo(normalizedName, true, req);
+      return await resolveRepo(repoName, true, req);
     }
 
     return found;
@@ -966,6 +1021,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
         repos.map((r) => ({
           name: r.name,
           path: r.path,
+          repoPath: r.path,
           indexedAt: r.indexedAt,
           lastCommit: r.lastCommit,
           stats: r.stats,
@@ -977,7 +1033,11 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
   });
 
   // Get repo info
-  app.get('/api/repo', async (req, res) => {
+  // Rate-limited (CodeQL js/missing-rate-limiting): resolveRepo canonicalizes
+  // the attacker-supplied ?repo= param (realpathSync probe for absolute /
+  // Windows-shaped claims). Default 60 rpm/IP — web callers hit this route
+  // only on connect/switch, never in a polling loop.
+  app.get('/api/repo', createRouteLimiter(), async (req, res) => {
     try {
       const entry = await resolveRepo(requestedRepo(req), false, req);
       if (!entry) {
@@ -1049,7 +1109,10 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
         } catch {
           /* repo name not eligible for a clone dir (local repo) */
         }
-        if (cloneDir) {
+        // Only remove the clone dir when it is *this* entry's path — a local
+        // repo registered under the same name would otherwise take a cloned
+        // sibling's checkout down with it (see cloneDirBelongsToEntry).
+        if (cloneDir && cloneDirBelongsToEntry(cloneDir, entry.path)) {
           try {
             const stat = await fs.stat(cloneDir);
             if (stat.isDirectory()) {

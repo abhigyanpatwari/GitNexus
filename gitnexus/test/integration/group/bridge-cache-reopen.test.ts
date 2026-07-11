@@ -16,8 +16,7 @@
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { spawnSync } from 'node:child_process';
-import { createRequire } from 'node:module';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { fileURLToPath } from 'node:url';
 import fsp from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
@@ -29,12 +28,11 @@ import {
 } from '../../../src/core/group/bridge-db.js';
 import { retryRename } from '../../../src/storage/fs-atomic.js';
 import { cleanupTempDir } from '../../helpers/test-db.js';
+import { tsxLoaderUrl } from '../../helpers/cli-entry.js';
 
 // Absolute file:// URL to the tsx loader so the seed script runs under tsx in a
-// child process (mirrors test/integration/cli-e2e.test.ts).
-const _require = createRequire(import.meta.url);
-const tsxPkgDir = path.dirname(_require.resolve('tsx/package.json'));
-const tsxImportUrl = pathToFileURL(path.join(tsxPkgDir, 'dist', 'loader.mjs')).href;
+// child process (shared resolver — see test/helpers/cli-entry.ts).
+const tsxImportUrl = tsxLoaderUrl();
 const seedScript = fileURLToPath(new URL('./fixtures/seed-bridge.ts', import.meta.url));
 
 describe('bridge RO-handle cache — cross-process seed (Windows reopen fix, #2274)', () => {

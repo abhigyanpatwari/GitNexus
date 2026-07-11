@@ -41,11 +41,13 @@ export const en = {
   'clean.deleteBranch': 'This will delete the branch index "{{branch}}" at: {{path}}',
   'clean.deletedBranch': 'Deleted branch index: {{branch}}',
   'clean.lbugSidecars.state': 'LadybugDB sidecar state: {{state}}',
-  'clean.lbugSidecars.none': 'No quarantined LadybugDB missing-shadow WAL sidecars found.',
+  'clean.lbugSidecars.none':
+    'No parked LadybugDB recovery sidecars found (missing-shadow WAL quarantines or dirty-recovery parks).',
   'clean.lbugSidecars.preview':
-    'This will delete {{count}} quarantined LadybugDB missing-shadow WAL sidecar(s):',
-  'clean.lbugSidecars.deleted':
-    'Deleted {{count}} quarantined LadybugDB missing-shadow WAL sidecar(s).',
+    'This will delete {{count}} parked LadybugDB recovery sidecar(s) (missing-shadow WAL quarantines and dirty-recovery parks):',
+  'clean.lbugSidecars.deleted': 'Deleted {{count}} parked LadybugDB recovery sidecar(s).',
+  'clean.lbugSidecars.failed':
+    'Could not delete {{count}} locked file(s) — stop the process holding them (GitNexus MCP/serve or an antivirus scan) and re-run:',
   'remove.nothingToRemove': 'Nothing to remove: {{message}}',
   'remove.deleteTarget': 'This will delete the GitNexus index for: {{name}}',
   'remove.removed': 'Removed: {{name}}',
@@ -216,7 +218,8 @@ export const en = {
   'help.option.uninstall.force': 'Apply the changes (default is a dry-run preview)',
   'help.option.clean.all': 'Clean all indexed repos',
   'help.option.clean.branch': 'Delete only the named branch index (not the workspace index)',
-  'help.option.clean.lbugSidecars': 'Clean quarantined LadybugDB missing-shadow WAL sidecars',
+  'help.option.clean.lbugSidecars':
+    'Clean parked LadybugDB recovery sidecars (missing-shadow WAL quarantines and dirty-recovery parks)',
   'help.option.wiki.force': 'Force full regeneration even if up to date',
   'help.option.wiki.provider':
     'LLM provider: openai, openrouter, azure, custom, cursor, claude, codex, or opencode (default: openai)',
@@ -297,5 +300,5 @@ export const en = {
   'help.option.group.contracts.repo': 'Filter by repo',
   'help.option.group.contracts.unmatched': 'Show only unmatched contracts',
   'help.analyze.environment':
-    '\nEnvironment variables:\n  GITNEXUS_NO_GITIGNORE=1   Skip .gitignore parsing (still reads .gitnexusignore)\n  GITNEXUS_MAX_FILE_SIZE=N  Override large-file skip threshold (KB). Default 512, max 32768.\n  GITNEXUS_WORKER_SUB_BATCH_TIMEOUT_MS=N  Worker idle timeout in milliseconds. Default 30000.\n  GITNEXUS_WAL_CHECKPOINT_THRESHOLD=N  LadybugDB WAL auto-checkpoint threshold in bytes (default 67108864 = 64 MiB; -1 keeps Ladybug stock ~16 MiB).\n  GITNEXUS_WORKER_SUB_BATCH_MAX_BYTES=N  Worker job byte budget. Default 8388608.\n  GITNEXUS_WORKER_POOL_SIZE=N  Parse worker count override. Default cores-1 capped at 16.\n  GITNEXUS_PARSE_CHUNK_CONCURRENCY=N  Concurrent in-flight parse chunks. Default 2.\n  GITNEXUS_WORKER_MAX_RESPAWNS_PER_SLOT=N  Max replacement spawns per slot before drop. Default 3.\n  GITNEXUS_WORKER_MAX_CUMULATIVE_TIMEOUT_MS=N  Total retry wall-time per job. Default 5x sub-batch timeout.\n  GITNEXUS_WORKER_CONSECUTIVE_FAILURE_THRESHOLD=N  Per-slot deaths to trip circuit breaker. Default max(3, poolSize).\n  GITNEXUS_EMBEDDING_THREADS=N  Limit local ONNX CPU threads for --embeddings.\n  GITNEXUS_SEMANTIC_EXACT_SCAN_LIMIT=N  Max embedding chunks for exact-scan fallback. Default 10000.\n  GITNEXUS_VECTOR_MAX_DISTANCE=N  Max accepted semantic/vector cosine distance (0 < N <= 2; higher values clamp to 2). Default 0.6 for MCP, 0.5 elsewhere.\n\nFlags override the corresponding env vars when both are provided.\n\nTip: `.gitnexusignore` supports `.gitignore`-style negation. Add e.g.\n     `!__tests__/` to index a directory that is auto-filtered by default (#771).',
+    '\nEnvironment variables:\n  GITNEXUS_NO_GITIGNORE=1   Skip .gitignore parsing (still reads .gitnexusignore)\n  GITNEXUS_MAX_FILE_SIZE=N  Override large-file skip threshold (KB). Default 512, max 32768.\n  GITNEXUS_WORKER_SUB_BATCH_TIMEOUT_MS=N  Worker idle timeout in milliseconds. Default 30000.\n  GITNEXUS_WAL_CHECKPOINT_THRESHOLD=N  LadybugDB WAL auto-checkpoint threshold in bytes (default 67108864 = 64 MiB; -1 keeps Ladybug stock ~16 MiB).\n  GITNEXUS_WORKER_SUB_BATCH_MAX_BYTES=N  Worker job byte budget. Default 8388608.\n  GITNEXUS_WORKER_POOL_SIZE=N  Parse worker count override. Default cores-1 capped at 16.\n  GITNEXUS_PARSE_CHUNK_CONCURRENCY=N  Concurrent in-flight parse chunks. Default 2.\n  GITNEXUS_WORKER_MAX_RESPAWNS_PER_SLOT=N  Max replacement spawns per slot before drop. Default 3.\n  GITNEXUS_WORKER_MAX_CUMULATIVE_TIMEOUT_MS=N  Total retry wall-time per job. Default 5x sub-batch timeout.\n  GITNEXUS_WORKER_CONSECUTIVE_FAILURE_THRESHOLD=N  Per-slot deaths to trip circuit breaker. Default max(3, poolSize).\n  GITNEXUS_WORKER_SHUTDOWN_DRAIN_MS=N  Max wait at pool shutdown for a retired worker still inside native code (terminated at its next safe point instead of aborting the process). Default 30000.\n  GITNEXUS_CPP_CAPTURE_BUDGET_MS=N  Per-file wall-clock budget for C++ capture extraction; on breach the file keeps partial captures with a warning. Default 20000.\n  GITNEXUS_EMBEDDING_THREADS=N  Limit local ONNX CPU threads for --embeddings.\n  GITNEXUS_SEMANTIC_EXACT_SCAN_LIMIT=N  Max embedding chunks for exact-scan fallback. Default 10000.\n  GITNEXUS_VECTOR_MAX_DISTANCE=N  Max accepted semantic/vector cosine distance (0 < N <= 2; higher values clamp to 2). Default 0.6 for MCP, 0.5 elsewhere.\n\nFlags override the corresponding env vars when both are provided.\n\nTip: `.gitnexusignore` supports `.gitignore`-style negation. Add e.g.\n     `!__tests__/` to index a directory that is auto-filtered by default (#771).',
 } as const;

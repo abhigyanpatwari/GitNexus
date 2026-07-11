@@ -1,5 +1,6 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import Parser from 'tree-sitter';
+import Java from 'tree-sitter-java';
 import Python from 'tree-sitter-python';
 
 // Mock the logger so the throttled degraded-parse logs (emitted at `debug`,
@@ -32,6 +33,22 @@ const makeParser = (): Parser => {
   p.setLanguage(Python);
   return p;
 };
+
+const makeJavaParser = (): Parser => {
+  const parser = new Parser();
+  parser.setLanguage(Java);
+  return parser;
+};
+
+const buildNullByteJavaSource = (paddingChars = 0): string => `public interface Demo {
+  void before();
+  /**${'x'.repeat(paddingChars)} @example paramsMap={"dataStyle":"\0"} */
+  String batchGetStructure(java.util.Map<String, Object> paramsMap);
+  void after0();
+  void after1();
+  void after2();
+}
+`;
 
 const buildSource = (chars: number, lineLen = 80): string => {
   const line = 'x = 1' + ' '.repeat(Math.max(0, lineLen - 6)) + '\n';
@@ -94,6 +111,109 @@ describe('parseSourceSafe', () => {
     const tree = parseSourceSafe(makeParser(), large);
     expect(tree.rootNode.hasError).toBe(false);
     expect(tree.rootNode.endIndex).toBe(large.length);
+  });
+});
+
+describe('parseSourceSafe — embedded NUL recovery (#2426)', () => {
+  afterEach(() => {
+    debugSpy.mockClear();
+    warnSpy.mockClear();
+    resetDegradedParseCounter();
+  });
+
+  it.each([
+    ['direct string', 0],
+    ['callback', 17_000],
+  ])('recovers all Java methods through the %s path', (_path, paddingChars) => {
+    const source = buildNullByteJavaSource(paddingChars);
+    const tree = parseSourceSafe(
+      makeJavaParser(),
+      source,
+      undefined,
+      undefined,
+      'NullByteDemoService.java',
+    );
+    const methods = tree.rootNode.descendantsOfType('method_declaration');
+
+    expect(tree.rootNode.hasError).toBe(false);
+    expect(tree.rootNode.endIndex).toBe(source.length);
+    expect(methods.map((method) => method.childForFieldName('name')?.text)).toEqual([
+      'before',
+      'batchGetStructure',
+      'after0',
+      'after1',
+      'after2',
+    ]);
+    expect(methods[2]?.childForFieldName('name')?.startIndex).toBe(source.indexOf('after0'));
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ['direct string', 'short\0source'],
+    ['callback', `${'x'.repeat(17_000)}\0source`],
+  ])('never exposes a NUL to the %s parser input', (_path, source) => {
+    let capturedInput: string | Parser.Input | undefined;
+    const stub = {
+      setTimeoutMicros: () => {},
+      parse: (input: string | Parser.Input) => {
+        capturedInput = input;
+        return { rootNode: null } as unknown as Parser.Tree;
+      },
+    } as unknown as Parser;
+
+    parseSourceSafe(stub, source);
+
+    if (typeof capturedInput === 'string') {
+      expect(capturedInput).not.toContain('\0');
+      expect(capturedInput).toHaveLength(source.length);
+    } else {
+      expect(capturedInput).toBeTypeOf('function');
+      let reconstructed = '';
+      for (let index = 0; index < source.length; index += 16 * 1024) {
+        const chunk = capturedInput?.(index, { row: 0, column: index });
+        expect(chunk).not.toContain('\0');
+        reconstructed += chunk ?? '';
+      }
+      expect(reconstructed).toHaveLength(source.length);
+    }
+
+    expect(warnSpy).toHaveBeenCalledWith(
+      { nullByteCount: 1 },
+      'replaced embedded NUL bytes before tree-sitter parsing',
+    );
+  });
+
+  it('reports all replacements with the supplied file label', () => {
+    const source = buildNullByteJavaSource().replace('after1', '\0after1');
+
+    parseSourceSafe(makeJavaParser(), source, undefined, undefined, 'src/Demo.java');
+
+    expect(warnSpy).toHaveBeenCalledOnce();
+    expect(warnSpy).toHaveBeenCalledWith(
+      { file: 'src/Demo.java', nullByteCount: 2 },
+      'replaced embedded NUL bytes before tree-sitter parsing',
+    );
+  });
+
+  it('keeps clean input on the existing path without a NUL warning', () => {
+    const source = buildNullByteJavaSource().replace('\0', ' ');
+    const tree = parseSourceSafe(makeJavaParser(), source, undefined, undefined, 'src/Demo.java');
+
+    expect(tree.rootNode.hasError).toBe(false);
+    expect(warnSpy).not.toHaveBeenCalled();
+  });
+
+  it('does not consume the degraded-tree warning allowance', () => {
+    parseSourceSafe(makeJavaParser(), buildNullByteJavaSource());
+    const parser = makeParser();
+    const malformed = 'def broken(:\n    return (1 + \n';
+
+    for (let index = 0; index < 20; index += 1) {
+      parseSourceSafe(parser, malformed);
+    }
+
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    expect(debugSpy).toHaveBeenCalledTimes(20);
   });
 });
 

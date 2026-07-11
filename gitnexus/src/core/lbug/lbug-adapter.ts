@@ -6,6 +6,7 @@ import { finished } from 'stream/promises';
 import path from 'path';
 import lbug from '@ladybugdb/core';
 import { closeQueryResults } from './query-result-utils.js';
+import { escapeCypherString } from './cypher-escape.js';
 import { withConnLock } from './conn-lock.js';
 import { isWalDriverActive } from './wal-driver-state.js';
 import { KnowledgeGraph } from '../graph/types.js';
@@ -21,15 +22,18 @@ import {
 import { streamAllCSVsToDisk, type StreamedCSVResult } from './csv-generator.js';
 import type { PdgEmitManifest } from './pdg-emit-sink.js';
 import { getNodeLabel as deriveNodeLabel, type WriteStreamFactory } from './rel-pair-routing.js';
-import type { CachedEmbedding } from '../embeddings/types.js';
+import { EMBEDDABLE_LABELS, type CachedEmbedding } from '../embeddings/types.js';
 import { extensionManager, type ExtensionEnsureOptions } from './extension-loader.js';
 import {
   classifyDeleteAllError,
   closeLbugConnection,
+  HANDLE_RELEASE_PROBE_ATTEMPTS,
+  HANDLE_RELEASE_PROBE_DELAY_MS,
   isDbBusyError,
   isOpenRetryExhausted,
   isWalCorruptionError,
   openLbugConnection,
+  sleep,
   toNativeSafePath,
   resolveNativeSafeStorageDir,
   WAL_RECOVERY_SUGGESTION,
@@ -41,6 +45,7 @@ import {
   guardWalQuarantine,
   isMissingShadowSidecarError,
   isReadOnlyShadowReplayError,
+  lbugLockRemediation,
   preflightLbugSidecars,
   quarantineWalForMissingShadow,
   renameFailureMessage,
@@ -1260,8 +1265,42 @@ const escapeTableName = (table: string): string => {
   return BACKTICK_TABLES.has(table) ? `\`${table}\`` : table;
 };
 
-/** Fallback: insert relationships one-by-one if COPY fails */
-const fallbackRelationshipInserts = async (
+/**
+ * Format one JS value as a Cypher literal for the adapter's string-built
+ * statements: NULL/undefined → `NULL`, numbers pass through unquoted,
+ * everything else becomes a single-quoted string literal escaped via
+ * {@link escapeCypherString} (backslashes first, then quotes).
+ *
+ * Replaces three per-function closures that used SQL-style `''` doubling —
+ * LadybugDB REJECTS doubling, so every value containing a quote made the
+ * whole statement a parser error, invisible wherever the call site swallowed
+ * per-row failures (#2409 escaping sweep, completed for tri-review
+ * 4669518496 P2-2). Those closures also rewrote literal `\n`/`\r` into
+ * two-character escape sequences; raw LF/CR are legal inside LadybugDB
+ * single-quoted literals (live-probed on @ladybugdb/core 0.18.0), so the
+ * replaces are gone and content now round-trips byte-identical.
+ */
+const formatCypherValue = (v: unknown): string => {
+  if (v === null || v === undefined) return 'NULL';
+  if (typeof v === 'number') return String(v);
+  return `'${escapeCypherString(String(v))}'`;
+};
+
+/**
+ * Fallback: insert relationships one-by-one if COPY fails.
+ *
+ * Exported for the quoted-id round-trip tests in
+ * `test/integration/lbug-core-adapter.test.ts` (the `DELETE_FILES_CHUNK_SIZE`
+ * exported-for-tests precedent); production callers stay in this module.
+ * Bails silently when the adapter singleton is closed.
+ *
+ * KNOWN PRE-EXISTING NARROWING (distinct from the `''` escaping bug, NOT
+ * fixed here): the row regex below matches CSV fields with `[^"]*`, so an id
+ * containing a double quote (CSV-escaped as `""`) never matches and the edge
+ * is skipped. Tracked as part of the quote-in-id divergence documented in
+ * `rel-pair-routing.ts`.
+ */
+export const fallbackRelationshipInserts = async (
   validRelLines: string[],
   validTables: Set<string>,
   getNodeLabel: (id: string) => string,
@@ -1284,14 +1323,12 @@ const fallbackRelationshipInserts = async (
       const confidence = parseFloat(confidenceStr) || 1.0;
       const step = parseInt(stepStr) || 0;
 
-      const esc = (s: string) =>
-        s.replace(/'/g, "''").replace(/\\/g, '\\\\').replace(/\n/g, '\\n').replace(/\r/g, '\\r');
       await queryAndDrain(
         conn,
         `
-        MATCH (a:${escapeLabel(fromLabel)} {id: '${esc(fromId)}' }),
-              (b:${escapeLabel(toLabel)} {id: '${esc(toId)}' })
-        CREATE (a)-[:${REL_TABLE_NAME} {type: '${esc(relType)}', confidence: ${confidence}, reason: '${esc(reason)}', step: ${step}}]->(b)
+        MATCH (a:${escapeLabel(fromLabel)} {id: ${formatCypherValue(fromId)} }),
+              (b:${escapeLabel(toLabel)} {id: ${formatCypherValue(toId)} })
+        CREATE (a)-[:${REL_TABLE_NAME} {type: ${formatCypherValue(relType)}, confidence: ${confidence}, reason: ${formatCypherValue(reason)}, step: ${step}}]->(b)
       `,
       );
     } catch {
@@ -1370,46 +1407,43 @@ export const insertNodeToLbug = async (
   }
 
   try {
-    const escapeValue = (v: any): string => {
-      if (v === null || v === undefined) return 'NULL';
-      if (typeof v === 'number') return String(v);
-      // Escape backslashes first (for Windows paths), then single quotes
-      return `'${String(v).replace(/\\/g, '\\\\').replace(/'/g, "''").replace(/\n/g, '\\n').replace(/\r/g, '\\r')}'`;
-    };
+    // Values go through the module-scope formatCypherValue — the old local
+    // closure used `''` doubling, which LadybugDB rejects (#2409 escaping
+    // sweep, tri-review 4669518496 P2-2).
 
     // Build INSERT query based on node type
     const t = escapeTableName(label);
     let query: string;
 
     if (label === 'File') {
-      query = `CREATE (n:File {id: ${escapeValue(properties.id)}, name: ${escapeValue(properties.name)}, filePath: ${escapeValue(properties.filePath)}, content: ${escapeValue(properties.content || '')}})`;
+      query = `CREATE (n:File {id: ${formatCypherValue(properties.id)}, name: ${formatCypherValue(properties.name)}, filePath: ${formatCypherValue(properties.filePath)}, content: ${formatCypherValue(properties.content || '')}})`;
     } else if (label === 'Folder') {
-      query = `CREATE (n:Folder {id: ${escapeValue(properties.id)}, name: ${escapeValue(properties.name)}, filePath: ${escapeValue(properties.filePath)}})`;
+      query = `CREATE (n:Folder {id: ${formatCypherValue(properties.id)}, name: ${formatCypherValue(properties.name)}, filePath: ${formatCypherValue(properties.filePath)}})`;
     } else if (label === 'Section') {
       const descPart = properties.description
-        ? `, description: ${escapeValue(properties.description)}`
+        ? `, description: ${formatCypherValue(properties.description)}`
         : '';
-      query = `CREATE (n:Section {id: ${escapeValue(properties.id)}, name: ${escapeValue(properties.name)}, filePath: ${escapeValue(properties.filePath)}, startLine: ${properties.startLine || 0}, endLine: ${properties.endLine || 0}, level: ${properties.level || 1}, content: ${escapeValue(properties.content || '')}${descPart}})`;
+      query = `CREATE (n:Section {id: ${formatCypherValue(properties.id)}, name: ${formatCypherValue(properties.name)}, filePath: ${formatCypherValue(properties.filePath)}, startLine: ${properties.startLine || 0}, endLine: ${properties.endLine || 0}, level: ${properties.level || 1}, content: ${formatCypherValue(properties.content || '')}${descPart}})`;
     } else if (label === 'BasicBlock') {
       // Taint/PDG substrate (issue #2080) — no name column. `calleeIds` (#2227)
       // is the sound resolved-id parallel to the leaf-name `callees` set.
-      query = `CREATE (n:BasicBlock {id: ${escapeValue(properties.id)}, filePath: ${escapeValue(properties.filePath)}, startLine: ${properties.startLine || 0}, endLine: ${properties.endLine || 0}, text: ${escapeValue(properties.text || '')}, callees: ${escapeValue(properties.callees || '')}, calleeIds: ${escapeValue(properties.calleeIds || '')}})`;
+      query = `CREATE (n:BasicBlock {id: ${formatCypherValue(properties.id)}, filePath: ${formatCypherValue(properties.filePath)}, startLine: ${properties.startLine || 0}, endLine: ${properties.endLine || 0}, text: ${formatCypherValue(properties.text || '')}, callees: ${formatCypherValue(properties.callees || '')}, calleeIds: ${formatCypherValue(properties.calleeIds || '')}})`;
     } else if (TABLES_WITH_EXPORTED.has(label)) {
       const descPart = properties.description
-        ? `, description: ${escapeValue(properties.description)}`
+        ? `, description: ${formatCypherValue(properties.description)}`
         : '';
-      query = `CREATE (n:${t} {id: ${escapeValue(properties.id)}, name: ${escapeValue(properties.name)}, filePath: ${escapeValue(properties.filePath)}, startLine: ${properties.startLine || 0}, endLine: ${properties.endLine || 0}, isExported: ${!!properties.isExported}, content: ${escapeValue(properties.content || '')}${descPart}})`;
+      query = `CREATE (n:${t} {id: ${formatCypherValue(properties.id)}, name: ${formatCypherValue(properties.name)}, filePath: ${formatCypherValue(properties.filePath)}, startLine: ${properties.startLine || 0}, endLine: ${properties.endLine || 0}, isExported: ${!!properties.isExported}, content: ${formatCypherValue(properties.content || '')}${descPart}})`;
     } else if (label === 'Property') {
       const descPart = properties.description
-        ? `, description: ${escapeValue(properties.description)}`
+        ? `, description: ${formatCypherValue(properties.description)}`
         : '';
-      query = `CREATE (n:${t} {id: ${escapeValue(properties.id)}, name: ${escapeValue(properties.name)}, filePath: ${escapeValue(properties.filePath)}, startLine: ${properties.startLine || 0}, endLine: ${properties.endLine || 0}, content: ${escapeValue(properties.content || '')}${descPart}, declaredType: ${escapeValue(properties.declaredType || '')}})`;
+      query = `CREATE (n:${t} {id: ${formatCypherValue(properties.id)}, name: ${formatCypherValue(properties.name)}, filePath: ${formatCypherValue(properties.filePath)}, startLine: ${properties.startLine || 0}, endLine: ${properties.endLine || 0}, content: ${formatCypherValue(properties.content || '')}${descPart}, declaredType: ${formatCypherValue(properties.declaredType || '')}})`;
     } else {
       // Multi-language tables (Struct, Impl, Trait, Macro, etc.) — no isExported
       const descPart = properties.description
-        ? `, description: ${escapeValue(properties.description)}`
+        ? `, description: ${formatCypherValue(properties.description)}`
         : '';
-      query = `CREATE (n:${t} {id: ${escapeValue(properties.id)}, name: ${escapeValue(properties.name)}, filePath: ${escapeValue(properties.filePath)}, startLine: ${properties.startLine || 0}, endLine: ${properties.endLine || 0}, content: ${escapeValue(properties.content || '')}${descPart}})`;
+      query = `CREATE (n:${t} {id: ${formatCypherValue(properties.id)}, name: ${formatCypherValue(properties.name)}, filePath: ${formatCypherValue(properties.filePath)}, startLine: ${properties.startLine || 0}, endLine: ${properties.endLine || 0}, content: ${formatCypherValue(properties.content || '')}${descPart}})`;
     }
 
     // Use per-query connection if dbPath provided (avoids lock conflicts)
@@ -1447,12 +1481,10 @@ export const batchInsertNodesToLbug = async (
 ): Promise<{ inserted: number; failed: number }> => {
   if (nodes.length === 0) return { inserted: 0, failed: 0 };
 
-  const escapeValue = (v: any): string => {
-    if (v === null || v === undefined) return 'NULL';
-    if (typeof v === 'number') return String(v);
-    // Escape backslashes first (for Windows paths), then single quotes, then newlines
-    return `'${String(v).replace(/\\/g, '\\\\').replace(/'/g, "''").replace(/\n/g, '\\n').replace(/\r/g, '\\r')}'`;
-  };
+  // Values go through the module-scope formatCypherValue — the old local
+  // closure used `''` doubling, which LadybugDB rejects; the per-node catch
+  // below counted every quoted value as a silent `failed` (#2409 escaping
+  // sweep, tri-review 4669518496 P2-2).
 
   // Open a single connection for all inserts
   const tempHandle = await openLbugConnection(lbug, dbPath);
@@ -1469,33 +1501,33 @@ export const batchInsertNodesToLbug = async (
         // Use MERGE instead of CREATE for upsert behavior (handles duplicates gracefully)
         const t = escapeTableName(label);
         if (label === 'File') {
-          query = `MERGE (n:File {id: ${escapeValue(properties.id)}}) SET n.name = ${escapeValue(properties.name)}, n.filePath = ${escapeValue(properties.filePath)}, n.content = ${escapeValue(properties.content || '')}`;
+          query = `MERGE (n:File {id: ${formatCypherValue(properties.id)}}) SET n.name = ${formatCypherValue(properties.name)}, n.filePath = ${formatCypherValue(properties.filePath)}, n.content = ${formatCypherValue(properties.content || '')}`;
         } else if (label === 'Folder') {
-          query = `MERGE (n:Folder {id: ${escapeValue(properties.id)}}) SET n.name = ${escapeValue(properties.name)}, n.filePath = ${escapeValue(properties.filePath)}`;
+          query = `MERGE (n:Folder {id: ${formatCypherValue(properties.id)}}) SET n.name = ${formatCypherValue(properties.name)}, n.filePath = ${formatCypherValue(properties.filePath)}`;
         } else if (label === 'Section') {
           const descPart = properties.description
-            ? `, n.description = ${escapeValue(properties.description)}`
+            ? `, n.description = ${formatCypherValue(properties.description)}`
             : '';
-          query = `MERGE (n:Section {id: ${escapeValue(properties.id)}}) SET n.name = ${escapeValue(properties.name)}, n.filePath = ${escapeValue(properties.filePath)}, n.startLine = ${properties.startLine || 0}, n.endLine = ${properties.endLine || 0}, n.level = ${properties.level || 1}, n.content = ${escapeValue(properties.content || '')}${descPart}`;
+          query = `MERGE (n:Section {id: ${formatCypherValue(properties.id)}}) SET n.name = ${formatCypherValue(properties.name)}, n.filePath = ${formatCypherValue(properties.filePath)}, n.startLine = ${properties.startLine || 0}, n.endLine = ${properties.endLine || 0}, n.level = ${properties.level || 1}, n.content = ${formatCypherValue(properties.content || '')}${descPart}`;
         } else if (label === 'BasicBlock') {
           // Taint/PDG substrate (issue #2080) — no name column. `calleeIds`
           // (#2227) is the sound resolved-id parallel to the `callees` set.
-          query = `MERGE (n:BasicBlock {id: ${escapeValue(properties.id)}}) SET n.filePath = ${escapeValue(properties.filePath)}, n.startLine = ${properties.startLine || 0}, n.endLine = ${properties.endLine || 0}, n.text = ${escapeValue(properties.text || '')}, n.callees = ${escapeValue(properties.callees || '')}, n.calleeIds = ${escapeValue(properties.calleeIds || '')}`;
+          query = `MERGE (n:BasicBlock {id: ${formatCypherValue(properties.id)}}) SET n.filePath = ${formatCypherValue(properties.filePath)}, n.startLine = ${properties.startLine || 0}, n.endLine = ${properties.endLine || 0}, n.text = ${formatCypherValue(properties.text || '')}, n.callees = ${formatCypherValue(properties.callees || '')}, n.calleeIds = ${formatCypherValue(properties.calleeIds || '')}`;
         } else if (TABLES_WITH_EXPORTED.has(label)) {
           const descPart = properties.description
-            ? `, n.description = ${escapeValue(properties.description)}`
+            ? `, n.description = ${formatCypherValue(properties.description)}`
             : '';
-          query = `MERGE (n:${t} {id: ${escapeValue(properties.id)}}) SET n.name = ${escapeValue(properties.name)}, n.filePath = ${escapeValue(properties.filePath)}, n.startLine = ${properties.startLine || 0}, n.endLine = ${properties.endLine || 0}, n.isExported = ${!!properties.isExported}, n.content = ${escapeValue(properties.content || '')}${descPart}`;
+          query = `MERGE (n:${t} {id: ${formatCypherValue(properties.id)}}) SET n.name = ${formatCypherValue(properties.name)}, n.filePath = ${formatCypherValue(properties.filePath)}, n.startLine = ${properties.startLine || 0}, n.endLine = ${properties.endLine || 0}, n.isExported = ${!!properties.isExported}, n.content = ${formatCypherValue(properties.content || '')}${descPart}`;
         } else if (label === 'Property') {
           const descPart = properties.description
-            ? `, n.description = ${escapeValue(properties.description)}`
+            ? `, n.description = ${formatCypherValue(properties.description)}`
             : '';
-          query = `MERGE (n:${t} {id: ${escapeValue(properties.id)}}) SET n.name = ${escapeValue(properties.name)}, n.filePath = ${escapeValue(properties.filePath)}, n.startLine = ${properties.startLine || 0}, n.endLine = ${properties.endLine || 0}, n.content = ${escapeValue(properties.content || '')}${descPart}, n.declaredType = ${escapeValue(properties.declaredType || '')}`;
+          query = `MERGE (n:${t} {id: ${formatCypherValue(properties.id)}}) SET n.name = ${formatCypherValue(properties.name)}, n.filePath = ${formatCypherValue(properties.filePath)}, n.startLine = ${properties.startLine || 0}, n.endLine = ${properties.endLine || 0}, n.content = ${formatCypherValue(properties.content || '')}${descPart}, n.declaredType = ${formatCypherValue(properties.declaredType || '')}`;
         } else {
           const descPart = properties.description
-            ? `, n.description = ${escapeValue(properties.description)}`
+            ? `, n.description = ${formatCypherValue(properties.description)}`
             : '';
-          query = `MERGE (n:${t} {id: ${escapeValue(properties.id)}}) SET n.name = ${escapeValue(properties.name)}, n.filePath = ${escapeValue(properties.filePath)}, n.startLine = ${properties.startLine || 0}, n.endLine = ${properties.endLine || 0}, n.content = ${escapeValue(properties.content || '')}${descPart}`;
+          query = `MERGE (n:${t} {id: ${formatCypherValue(properties.id)}}) SET n.name = ${formatCypherValue(properties.name)}, n.filePath = ${formatCypherValue(properties.filePath)}, n.startLine = ${properties.startLine || 0}, n.endLine = ${properties.endLine || 0}, n.content = ${formatCypherValue(properties.content || '')}${descPart}`;
         }
 
         await queryAndDrain(tempConn, query);
@@ -1964,7 +1996,153 @@ export const closeLbug = async (): Promise<void> => {
   ensuredFTSIndexes.clear();
 };
 
+/**
+ * Thrown by {@link wipeLbugDbFiles} when a data-bearing member of the
+ * LadybugDB file family is still present after the bounded
+ * remove-and-verify retries (#2409, tri-review 4669518496 P2-4), and by
+ * run-analyze's dirty-recovery block when the crashed run's sidecars can
+ * neither be parked nor removed (this shipping review, FIX 1 — same lock
+ * class, same remediation, and the CLI already renders this type).
+ *
+ * Classify by TYPE (`err instanceof LbugWipeError`) — the repo norm from
+ * #2385 — never by message text. The MESSAGE is nonetheless fully
+ * self-contained (headline + blocked paths + remediation) because
+ * `gitnexus serve` forwards only `err.message` over worker IPC
+ * (analyze-worker-core.ts), so the serve surface has nothing but this
+ * string to show the user. The holder framing deliberately covers the
+ * own-process case (FIX 2, finder A): the blocking handle is often a
+ * lingering one from THIS process's just-closed DB or a transient AV scan
+ * — not necessarily another process — so an immediate re-run often
+ * succeeds.
+ */
+export class LbugWipeError extends Error {
+  /** Paths still present (or unverifiable) after all retries. */
+  readonly survivors: readonly string[];
+
+  constructor(survivors: readonly string[], options?: { headline?: string }) {
+    super(
+      `${
+        options?.headline ??
+        `Failed to remove the LadybugDB index files — still present after ` +
+          `${HANDLE_RELEASE_PROBE_ATTEMPTS} attempts:`
+      }\n` +
+        survivors.map((p) => `  - ${p}`).join('\n') +
+        `\nThe blocking handle may be another process, a lingering handle from this ` +
+        `process's just-closed database, or an antivirus scan — an immediate re-run ` +
+        `often succeeds. If it persists, ${lbugLockRemediation('re-run the analyze')}.`,
+    );
+    this.name = 'LbugWipeError';
+    this.survivors = survivors;
+  }
+}
+
+/**
+ * Remove the LadybugDB file family and VERIFY each member is really gone.
+ *
+ * Owns the canonical 4-file family list — `<lbugPath>`, `.wal`, `.shadow`,
+ * `.lock` — so run-analyze's two wipe sites (full rebuild + the #2409
+ * escalation valve) can never drift apart. `.shadow` is included because a
+ * checkpoint-in-flight crash leaves a shadow sidecar, and a stale shadow next
+ * to a freshly created DB file is replay poison on the next open (#2409).
+ *
+ * Verification contract (tri-review 4669518496 P2-4 — the old inline loops
+ * swallowed rm failures and let `initLbug` reopen a still-populated DB the
+ * run believed it wiped): after `fs.rm({ recursive, force })`, each path is
+ * probed and counts as GONE only when the probe rejects with **ENOENT**. A
+ * resolving probe, or a rejection in the EPERM/EBUSY/EACCES class (Windows
+ * delete-pending / handle-release lag — see HANDLE_RELEASE_LOCK_CODES in
+ * lbug-config.ts), or any other code means the path is not verifiably gone:
+ * it is retried on the shared handle-release budget
+ * (HANDLE_RELEASE_PROBE_ATTEMPTS × linear HANDLE_RELEASE_PROBE_DELAY_MS,
+ * lbug-config.ts — the previous private mirror constants were
+ * documentation-coupled copies) and then handled by CLASS (this shipping
+ * review, FIX 2):
+ *
+ *   - DATA-BEARING members (`<lbugPath>`, `.wal`, `.shadow`) — a survivor
+ *     means the reopen would resurrect rows this run believes wiped: throw
+ *     a typed {@link LbugWipeError}.
+ *   - `.lock` — contentless: `initLbug` recreates it, and a genuinely held
+ *     lock surfaces as initLbug's own lock-busy classification (a better
+ *     error than this one). A `.lock`-only survivor (an AV-held
+ *     delete-pending handle outlasting the budget previously failed a
+ *     perfectly sound rebuild) logs a warning and CONTINUES.
+ *
+ * Linux unlinked-but-open (name gone, holder keeps the old inode) probes
+ * ENOENT and is accepted by design — both production wipe sites run after a
+ * real `closeLbug()`.
+ *
+ * Deliberately OUT of this contract: `cleanupOldKuzuFiles`
+ * (repo-manager.ts) sweeps the LEGACY kuzu-era file family during storage
+ * migration — different family, best-effort by design; and
+ * `sweepStaleSidecars` (lbug-config.ts) is a test-fixture-gated open-retry
+ * fallback that must never delete production files. Neither wipes the live
+ * DB the run is about to recreate, so neither needs (or may share) the
+ * loud-failure contract here.
+ */
+export const wipeLbugDbFiles = async (lbugPath: string): Promise<void> => {
+  const lockPath = `${lbugPath}.lock`;
+  const family = [lbugPath, `${lbugPath}.wal`, `${lbugPath}.shadow`, lockPath];
+  let survivors: string[] = [];
+
+  for (let attempt = 1; attempt <= HANDLE_RELEASE_PROBE_ATTEMPTS; attempt++) {
+    survivors = [];
+    for (const f of family) {
+      try {
+        await fs.rm(f, { recursive: true, force: true });
+      } catch {
+        // `force: true` swallows ENOENT, so a rejection is a real failure —
+        // but the ENOENT-probe below stays authoritative either way (another
+        // process may have removed the path between the rm and the probe).
+      }
+      const gone = await fs.access(f).then(
+        () => false, // still present
+        (err: unknown) => (err as NodeJS.ErrnoException | null)?.code === 'ENOENT',
+      );
+      if (!gone) survivors.push(f);
+    }
+    if (survivors.length === 0) return;
+    if (attempt < HANDLE_RELEASE_PROBE_ATTEMPTS) {
+      await sleep(HANDLE_RELEASE_PROBE_DELAY_MS * attempt);
+    }
+  }
+
+  // Class split (FIX 2): the contentless `.lock` never fails the wipe.
+  const dataSurvivors = survivors.filter((f) => f !== lockPath);
+  if (survivors.includes(lockPath)) {
+    logger.warn(
+      `GitNexus: ${lockPath} is still present after the wipe retries — continuing: the ` +
+        'lock file is contentless and initLbug recreates it; a genuinely held lock will ' +
+        "surface as the reopen's own lock-busy error.",
+    );
+  }
+  if (dataSurvivors.length > 0) {
+    throw new LbugWipeError(dataSurvivors);
+  }
+};
+
 export const isLbugReady = (): boolean => conn !== null && db !== null;
+
+/**
+ * Multi-label alternation over exactly the labels that can own embedding
+ * rows (embedding-pipeline.ts queries EMBEDDABLE_LABELS and nothing else),
+ * reserved keywords backtick-escaped via {@link escapeTableName}. Probed on
+ * @ladybugdb/core 0.18.0 (this shipping review, FIX 4): the full 19-label
+ * alternation parses, executes, and deletes exactly the joined rows —
+ * replacing the unlabeled `MATCH (n)` that scanned EVERY node table per
+ * chunk (BasicBlock-dominated under `--pdg`) when only embeddable labels
+ * can match an embedding row.
+ */
+const embeddableLabelMatch = (): string =>
+  EMBEDDABLE_LABELS.map((l) => escapeTableName(l)).join('|');
+
+// LADYBUGDB-CONTRACT: matches @ladybugdb/core ^0.18.0 native binder text,
+// probe-recorded: `Binder exception: Table CodeEmbedding does not exist.`
+// When bumping LadybugDB, re-validate — `git grep "LADYBUGDB-CONTRACT"`
+// enumerates every version-coupled spot.
+const isMissingEmbeddingTableError = (err: unknown): boolean => {
+  const msg = err instanceof Error ? err.message : String(err);
+  return msg.includes(`Table ${EMBEDDING_TABLE_NAME} does not exist`);
+};
 
 /**
  * Delete all nodes (and their relationships) for a specific file from LadybugDB
@@ -1993,7 +2171,40 @@ export const deleteNodesForFile = async (
 
   try {
     let deletedNodes = 0;
-    const escapedPath = filePath.replace(/'/g, "''");
+    const escapedPath = escapeCypherString(filePath);
+
+    // Delete the file's embedding rows FIRST, while their owning nodes are
+    // still present: node ids are label-first — generateId = `${label}:${name}`
+    // (src/lib/utils.ts) with qualified names that embed the file path — so
+    // the old `e.nodeId STARTS WITH '<filePath>'` shape never matched a row
+    // (tri-review 4669518496 P2-1). Join through the nodes on exact id
+    // equality instead, scoped to the embeddable labels (FIX 4 — see
+    // embeddableLabelMatch); ordering is load-bearing — after the DETACH
+    // DELETE loop below the join would match nothing.
+    try {
+      await queryAndDrain(
+        targetConn!,
+        `MATCH (n:${embeddableLabelMatch()}) WHERE n.filePath = '${escapedPath}' ` +
+          `MATCH (e:${EMBEDDING_TABLE_NAME}) WHERE e.nodeId = n.id DELETE e`,
+      );
+    } catch (err) {
+      // Deliberately legacy-permissive (pinned contract:
+      // lbug-conn-serialization U5 and lbug-core-adapter expect this variant
+      // to resolve `{deletedNodes: 0}` even on a bogus dbPath): the singular
+      // variant swallows per-statement failures wholesale — its per-table
+      // loop below does the same — so a partial rethrow here would be
+      // incoherent with the rest of the function. The STRICT
+      // rethrow-except-missing-table policy lives in deleteNodesForFiles,
+      // the #2409 incremental writeback path (FIX 4). The one case worth a
+      // diagnostic is the missing embedding table.
+      if (isMissingEmbeddingTableError(err)) {
+        logger.warn(
+          { err },
+          `deleteNodesForFile: ${EMBEDDING_TABLE_NAME} table does not exist — ` +
+            'skipping embedding-row deletes for this DB.',
+        );
+      }
+    }
 
     // Delete nodes from each table that has filePath
     // DETACH DELETE removes the node and all its relationships
@@ -2028,20 +2239,106 @@ export const deleteNodesForFile = async (
       }
     }
 
-    // Also delete any embeddings for nodes in this file
-    try {
-      await queryAndDrain(
-        targetConn!,
-        `MATCH (e:${EMBEDDING_TABLE_NAME}) WHERE e.nodeId STARTS WITH '${escapedPath}' DELETE e`,
-      );
-    } catch {
-      // Embedding table may not exist or nodeId format may differ
-    }
-
     return { deletedNodes };
   } finally {
     // Close per-query connection if used
     if (tempHandle) await closeLbugConnection(tempHandle);
+  }
+};
+
+/**
+ * Chunk size for {@link deleteNodesForFiles}. 200 paths keeps each
+ * statement ~13KB (well inside parser limits) while a ~700-file write set
+ * still collapses from ~13,000 statements to 124: 31 statements per chunk
+ * (1 CodeEmbedding join-delete + 30 filePath-bearing node tables — the
+ * 32-table NODE_TABLES roster minus Community/Process) × 4 chunks. The
+ * original "~40" claim under-counted the per-chunk statement fan-out
+ * (tri-review 4669518496 accuracy sweep).
+ */
+export const DELETE_FILES_CHUNK_SIZE = 200;
+
+/**
+ * Batched variant of {@link deleteNodesForFile} for the incremental
+ * writeback (#2409). One `DETACH DELETE … WHERE n.filePath IN […]` per
+ * node table per chunk of paths, instead of a count + delete per table
+ * per FILE. The per-file loop issued ~13,000 single-row write
+ * transactions on a ~700-file write set — a WAL-append storm that made
+ * the incremental path slower than a full rebuild and is the write
+ * pattern behind the native mid-writeback deaths reported in #2409.
+ *
+ * NO general error swallowing: a zero-match chunk is a no-op success by
+ * construction (every node table except Community/Process has a filePath
+ * column), so anything thrown here is a real engine failure the caller
+ * must see — silently skipping was exactly how #2409 hid its root cause.
+ * The single tolerated exception (FIX 4) is the missing-embedding-table
+ * binder error on the embedding join-delete: a DB created without
+ * EMBEDDING_SCHEMA cannot own embedding rows, so skipping that one
+ * statement is sound, while failing would brick every incremental run on
+ * such a DB until `--force`. Statement count per chunk is unchanged by the
+ * multi-label join: 1 embedding join-delete + 30 node-table deletes = 31
+ * (the rejected per-label fallback shape would have been 19 + 30 = 49).
+ * Singleton-connection only: the analyze writeback owns the write lock,
+ * and `queryAndDrain` routes through `withConnLock` for it (the WAL
+ * checkpoint driver is live during this).
+ */
+export const deleteNodesForFiles = async (
+  filePaths: readonly string[],
+  options: { onChunk?: (filesDone: number, filesTotal: number) => void } = {},
+): Promise<void> => {
+  if (!conn) {
+    throw new Error('LadybugDB not initialized. Call initLbug first.');
+  }
+  const targetConn = conn;
+  let warnedMissingEmbeddingTable = false;
+  for (let i = 0; i < filePaths.length; i += DELETE_FILES_CHUNK_SIZE) {
+    const chunk = filePaths.slice(i, i + DELETE_FILES_CHUNK_SIZE);
+    const listLiteral = `[${chunk.map((p) => `'${escapeCypherString(p)}'`).join(', ')}]`;
+    // Embedding rows key on their OWNING NODE's id: generateId builds
+    // label-first ids — `${label}:${name}` (src/lib/utils.ts) with qualified
+    // names that embed the file path (e.g. `Function:src/f.ts:fn0:1`) — so
+    // the previous bare-path `e.nodeId STARTS WITH '<filePath>'` OR-chain
+    // could never match anything (tri-review 4669518496 P2-1: the embedding
+    // delete was a no-op). Join through the nodes instead: one multi-label
+    // MATCH over exactly the embeddable labels (FIX 4, probe-proven on
+    // 0.18.0 — see embeddableLabelMatch; the old unlabeled `MATCH (n)`
+    // scanned every node table per chunk, BasicBlock-dominated under
+    // `--pdg`, when only embeddable labels can own rows), and
+    // `e.nodeId = n.id` equality is exact — no `File:a.ts` / `File:a.tsx`
+    // prefix collisions. ORDER IS LOAD-BEARING: this must run BEFORE the
+    // DETACH DELETE loop below — once the nodes are gone the join matches
+    // nothing (empirically verified against @ladybugdb/core 0.18.0).
+    try {
+      await queryAndDrain(
+        targetConn,
+        `MATCH (n:${embeddableLabelMatch()}) WHERE n.filePath IN ${listLiteral} ` +
+          `MATCH (e:${EMBEDDING_TABLE_NAME}) WHERE e.nodeId = n.id DELETE e`,
+      );
+    } catch (err) {
+      // Tolerate exactly the missing-embedding-table binder error: a
+      // build-variant DB without EMBEDDING_SCHEMA would otherwise brick
+      // every incremental run until `--force` (FIX 4). The no-swallow
+      // policy stays for every real failure — anything else rethrows.
+      if (!isMissingEmbeddingTableError(err)) throw err;
+      if (!warnedMissingEmbeddingTable) {
+        warnedMissingEmbeddingTable = true;
+        logger.warn(
+          { err },
+          `deleteNodesForFiles: ${EMBEDDING_TABLE_NAME} table does not exist — ` +
+            'skipping embedding-row deletes for this writeback.',
+        );
+      }
+    }
+    for (const tableName of NODE_TABLES) {
+      // Community/Process are graph-wide (no filePath); the orchestrator
+      // drops them wholesale via deleteAllCommunitiesAndProcesses.
+      if (tableName === 'Community' || tableName === 'Process') continue;
+      const tn = escapeTableName(tableName);
+      await queryAndDrain(
+        targetConn,
+        `MATCH (n:${tn}) WHERE n.filePath IN ${listLiteral} DETACH DELETE n`,
+      );
+    }
+    options.onChunk?.(Math.min(i + DELETE_FILES_CHUNK_SIZE, filePaths.length), filePaths.length);
   }
 };
 
@@ -2067,7 +2364,7 @@ export const queryImporters = async (targetFilePath: string): Promise<string[]> 
   if (!c) {
     throw new Error('LadybugDB not initialized. Call initLbug first.');
   }
-  const escaped = targetFilePath.replace(/'/g, "''");
+  const escaped = escapeCypherString(targetFilePath);
   const cypher = `
     MATCH (a)-[r:${REL_TABLE_NAME}]->(b)
     WHERE r.type = 'IMPORTS' AND b.filePath = '${escaped}'
@@ -2094,6 +2391,80 @@ export const queryImporters = async (targetFilePath: string): Promise<string[]> 
       if (queryResult) await closeQueryResults(queryResult);
     }
   });
+};
+
+/**
+ * Batched variant of {@link queryImporters} for the incremental importer
+ * BFS (#2409): distinct importers of ANY of the target paths, one query per
+ * chunk per BFS depth instead of one query per frontier FILE (a ~700-file
+ * frontier was ~700 sequential round-trips, each taking the connection lock
+ * against the live WAL checkpoint driver — ~5.6s of the writeback measured).
+ *
+ * Same contract as the singular form: reads the pre-pipeline DB state and
+ * swallows per-chunk query failures into a smaller result (correctness
+ * degrades on that branch — under-expansion means possibly-stale edges —
+ * but the DB stays writable and the writeback proceeds). Unlike the singular
+ * form the degradation is not silent (tri-review 4669518496 P2-5): every
+ * dropped chunk is logged and reported through `options.onChunkFailure`, so
+ * the orchestrator can count it into the #2410 crash diagnostics
+ * (`incrementalInProgress.droppedImporterChunks`).
+ */
+export const queryImportersBatch = async (
+  targetFilePaths: readonly string[],
+  options: {
+    /**
+     * Invoked once per chunk whose IMPORTS query failed and was dropped from
+     * the expansion. Observability only — the degrade-don't-fail contract is
+     * unchanged (the result just shrinks by the failed chunk's importers).
+     */
+    onChunkFailure?: (chunkIndex: number, chunkSize: number, err: unknown) => void;
+  } = {},
+): Promise<string[]> => {
+  const c = conn;
+  if (!c) {
+    throw new Error('LadybugDB not initialized. Call initLbug first.');
+  }
+  const importers = new Set<string>();
+  for (let i = 0; i < targetFilePaths.length; i += DELETE_FILES_CHUNK_SIZE) {
+    // `i` only ever advances in whole chunk strides, so this is exact.
+    const chunkIndex = i / DELETE_FILES_CHUNK_SIZE;
+    const chunk = targetFilePaths.slice(i, i + DELETE_FILES_CHUNK_SIZE);
+    const listLiteral = `[${chunk.map((p) => `'${escapeCypherString(p)}'`).join(', ')}]`;
+    const cypher = `
+      MATCH (a)-[r:${REL_TABLE_NAME}]->(b)
+      WHERE r.type = 'IMPORTS' AND b.filePath IN ${listLiteral}
+      RETURN DISTINCT a.filePath AS importer
+    `;
+    await withConnLock(async () => {
+      let queryResult: lbug.QueryResult | lbug.QueryResult[] | undefined;
+      try {
+        queryResult = await c.query(cypher);
+        const result = Array.isArray(queryResult) ? queryResult[0] : queryResult;
+        const rows = await result.getAll();
+        for (const row of rows) {
+          const v = (row as { importer?: unknown }).importer;
+          if (typeof v === 'string' && v.length > 0) importers.add(v);
+        }
+      } catch (err) {
+        // Degrade-don't-fail, mirroring queryImporters — but LOUDLY
+        // (tri-review 4669518496 P2-5): a dropped chunk means every importer
+        // it would have surfaced keeps possibly-stale edges this run, and the
+        // old bare `catch {}` left no trace of that anywhere. pino idiom:
+        // `err` key — `error` serializes to `{}`.
+        logger.warn(
+          { err },
+          `Incremental importer BFS: dropped chunk ${chunkIndex} (${chunk.length} target path(s)) — ` +
+            'importer expansion degrades for this run; affected importers may keep stale edges until the next full rebuild.',
+        );
+        options.onChunkFailure?.(chunkIndex, chunk.length, err);
+      } finally {
+        if (queryResult) await closeQueryResults(queryResult);
+      }
+    });
+  }
+  // Cypher without ORDER BY is unordered — sort so downstream chunking and
+  // logs are stable run-to-run (matches diffFileHashes' sorted outputs).
+  return [...importers].sort();
 };
 
 /**

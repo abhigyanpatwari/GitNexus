@@ -240,6 +240,10 @@ describe('production routes — rate-limit middleware wiring', () => {
     expect(apiSource).toMatch(/app\.delete\('\/api\/repo',\s*createRouteLimiter\(/);
   });
 
+  it('GET /api/repo is wired with createRouteLimiter', () => {
+    expect(apiSource).toMatch(/app\.get\('\/api\/repo',\s*createRouteLimiter\(/);
+  });
+
   it('POST /api/analyze is wired with createRouteLimiter', () => {
     // Tolerate Prettier wrapping the registration across lines (it does once
     // the route carries extra middleware like requireLocalhostOrigin).

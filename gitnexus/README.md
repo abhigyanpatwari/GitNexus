@@ -163,6 +163,16 @@ GitNexus builds a complete knowledge graph of your codebase through a multi-phas
 
 The result is a **LadybugDB graph database** stored locally in `.gitnexus/` with full-text search and semantic embeddings.
 
+### Experimental community detection engine
+
+Community detection uses the bundled Graphology Leiden implementation by default. To test the #2337 Icebug migration path without changing default analyze behavior, set:
+
+```bash
+GITNEXUS_COMMUNITY_ENGINE=icebug npx gitnexus analyze
+```
+
+Supported values are `graphology`, `icebug`, and `auto`. The Icebug path is an experimental probe: GitNexus does not bundle an Icebug native package yet, and if a separately resolvable module is unavailable or its API does not match the expected `Graph.fromCSR` / `ParallelLeidenView` shape, analyze falls back to Graphology and reports the fallback in progress output. Today `auto` is behaviorally identical to `icebug`: both try Icebug and fall back to Graphology, while `graphology` skips the Icebug probe entirely.
+
 ## MCP Tools
 
 Your AI agent gets **17 tools** (15 per-repo + 2 group) automatically:
@@ -450,10 +460,11 @@ Configure the behavior with these environment variables:
 
 | Variable                                     | Values                       | Default             | Effect                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | -------------------------------------------- | ---------------------------- | ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `GITNEXUS_LBUG_EXTENSION_INSTALL`            | `auto`, `load-only`, `never` | `auto`              | `auto` runs one bounded install if LOAD fails — a plain `INSTALL`, escalating to `FORCE INSTALL` only when the LOAD error shows the present extension file is broken. `load-only` only uses already-installed extensions (recommended for offline / firewalled environments). `never` skips optional extensions entirely.                                                                                                                                                                                                                                                                                                                                                                                 |
+| `GITNEXUS_LBUG_EXTENSION_INSTALL`            | `auto`, `load-only`, `never` | `auto`              | `auto` runs one bounded install if LOAD fails — a plain `INSTALL`, escalating to `FORCE INSTALL` only when the LOAD error shows the present extension file is broken. `load-only` only uses already-installed extensions (recommended for offline / firewalled environments). `never` skips optional extensions entirely.                                                                                                                                                                                                                                                                                                                                                                               |
 | `GITNEXUS_LBUG_EXTENSION_INSTALL_TIMEOUT_MS` | positive integer             | `15000`             | Wall-clock budget for the out-of-process extension-install child before it is killed.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
 | `GITNEXUS_FTS_STEMMER`                       | supported LadybugDB stemmer  | `porter`            | Stemmer used when rebuilding BM25/FTS indexes. Use `none` for CJK-heavy repositories, or a language stemmer such as `german`, `french`, or `spanish` when that better matches repository comments and identifiers. Re-run `gitnexus analyze --repair-fts` after changing it.                                                                                                                                                                                                                                                                                                                                                                                                                            |
 | `GITNEXUS_FTS_CJK_SEGMENTATION`              | `none`, `bigram`             | `none`              | `bigram` inserts overlapping character-bigram boundaries into Chinese/Japanese Han-ideograph spans in `content`/`description` before FTS indexing, so LadybugDB's space-only tokenizer can see sub-phrase word boundaries. Scoped to CJK Unified Ideographs only — Japanese Hiragana/Katakana and Korean Hangul are not currently segmented. Unlike `GITNEXUS_FTS_STEMMER`, this rewrites stored text — enabling it on an already-indexed repo requires a full `gitnexus analyze --force`; neither `--repair-fts` nor a plain incremental `analyze` applies it to previously-indexed files. Set the same value wherever `analyze` and search-serving processes (CLI query, MCP server, web server) run. |
+| `GITNEXUS_COMMUNITY_ENGINE`                  | `graphology`, `icebug`, `auto` | `graphology`        | Community-detection engine used during analyze. `graphology` uses the bundled default path. `icebug` and `auto` currently behave identically: both try the experimental Icebug CSR path and fall back to Graphology if the optional native module is unavailable or incompatible.                                                                                                                                                                                                                                                                                                                                                         |
 | `GITNEXUS_WAL_CHECKPOINT_THRESHOLD`          | integer `>= -1`              | `67108864` (64 MiB) | LadybugDB WAL auto-checkpoint threshold during analyze (bytes). Auto-checkpoint remains enabled; `-1` keeps Ladybug's stock ~16 MiB. Larger thresholds reduce checkpoint frequency but increase the WAL size at rotation time — choose a smaller value on disk-constrained environments.                                                                                                                                                                                                                                                                                                                                                                                                                |
 
 ```bash
@@ -524,6 +535,8 @@ Three env vars expose the pool's resilience layers (respawn budget, cumulative-t
 | `GITNEXUS_WORKER_MAX_RESPAWNS_PER_SLOT`         | `3`                     | Max replacement spawns per slot before the slot is dropped from the active rotation.                                  |
 | `GITNEXUS_WORKER_MAX_CUMULATIVE_TIMEOUT_MS`     | `5 × subBatchTimeoutMs` | Total retry wall-time budget per job before quarantining. Bounds exponentially-growing retry waits.                   |
 | `GITNEXUS_WORKER_CONSECUTIVE_FAILURE_THRESHOLD` | `max(3, poolSize)`      | Per-slot consecutive deaths before the pool's circuit breaker trips. After tripping, dispatches require a fresh pool. |
+| `GITNEXUS_WORKER_SHUTDOWN_DRAIN_MS`             | `30000`                 | Max wait at pool shutdown for a retired worker still inside native code — terminated at its next JS-safe point instead of mid-native-call, which would abort the process (`Napi::Error`, #2432). |
+| `GITNEXUS_CPP_CAPTURE_BUDGET_MS`                | `20000`                 | Per-file wall-clock budget for C++ capture extraction; on breach the file keeps partial captures with a warning (#2432). `0` expires immediately.           |
 
 ### Graph cleanup tuning
 
@@ -535,17 +548,26 @@ After scope resolution, analyze prunes inert block-local value symbols (a functi
 
 Programmatic callers can pass `keepLocalValueSymbols: true` in `PipelineOptions` instead of setting the env var.
 
-### Hook augmentation/notifications are silently skipped
+### Hook augmentation and skip diagnostics
 
-The Claude Code / Antigravity hooks intentionally stay **silent** on normal skip
+The Claude Code / Antigravity hooks keep their **stderr** silent on normal skip
 paths so strict hook runners (e.g. Codex `PreToolUse`) never see unexpected
-output. A search may not be augmented — or a stale-index reminder may not appear
-on stderr — when the GitNexus MCP server owns the repo DB, when the DB-lock probe
-times out and fails closed, or when the index is already current.
+diagnostic output.
 
-To see why a hook skipped, set `GITNEXUS_DEBUG=1` and re-run the action — the hook
-writes the reason (e.g. `[GitNexus] augment skipped: MCP server owns DB`) and the
-stale-index hint to its stderr:
+When a GitNexus process holds the repo DB write lock (the common case — the MCP
+server is running, or the DB-lock probe timed out and failed closed), the local
+CLI `augment` can't run (LadybugDB is single-writer). Rather than drop the
+augmentation, the hook hands the agent a short, conditional MCP-query hint on
+stdout (the sanctioned `additionalContext` channel) — _"if the GitNexus MCP tools
+are live in this session, call `query` …"_ — so an agent that has the tools can
+still fetch graph-ranked context. The hint is throttled to at most once per repo
+per window (`GITNEXUS_MCP_HINT_THROTTLE_MS`, default 10 min; `0` disables), so an
+owner-locked session isn't nudged on every search. A stale-index reminder, or an
+already-current index, stays silent.
+
+To see why a hook skipped the CLI augment, set `GITNEXUS_DEBUG=1` and re-run the
+action — the hook writes the reason (e.g. `[GitNexus] augment skipped: MCP server
+owns DB`) and the stale-index hint to its stderr:
 
 ```bash
 GITNEXUS_DEBUG=1 <your command>   # surfaces hook skip/diagnostic reasons on stderr

@@ -382,6 +382,49 @@ function sendHookResponse(hookEventName, message) {
 }
 
 /**
+ * Fallback augmentation for the #2396 path: when a GitNexus process holds the
+ * lbug DB write lock the CLI `augment` can't run, so point the agent at the MCP
+ * `query` tool instead. Phrased conditionally ("if the MCP tools are live") so it
+ * stays truthful on every owner path — a confirmed MCP owner, a `serve` owner, or
+ * a fail-closed probe where no server is actually confirmed. `pattern` is embedded
+ * verbatim; the caller (sendHookResponse) JSON-escapes it structurally.
+ */
+function buildMcpQueryHint(pattern) {
+  return (
+    `[GitNexus] Local augment is unavailable (the graph DB is held by another ` +
+    `GitNexus process). If the GitNexus MCP tools are live in this session, call ` +
+    `the GitNexus \`query\` MCP tool (e.g. mcp__gitnexus__query) with ` +
+    `search_query "${pattern}".`
+  );
+}
+
+/**
+ * #2396 throttle: emit the MCP-query hint at most once per repo per window, so an
+ * owner-locked session isn't nudged on every search. Window (ms) via
+ * GITNEXUS_MCP_HINT_THROTTLE_MS (default 10min; 0/invalid disables). Best-effort —
+ * any fs error falls back to emitting.
+ * ponytail: per-repo mtime marker, shared across concurrent sessions on the same
+ * repo; add per-session dedup only if that sharing becomes a problem.
+ */
+function shouldEmitMcpHint(gitNexusDir) {
+  const raw = process.env.GITNEXUS_MCP_HINT_THROTTLE_MS;
+  const windowMs = raw === undefined || raw === '' ? 600000 : Number(raw);
+  if (!Number.isFinite(windowMs) || windowMs <= 0) return true;
+  const marker = path.join(gitNexusDir, '.mcp-hint-shown');
+  try {
+    if (Date.now() - fs.statSync(marker).mtimeMs < windowMs) return false;
+  } catch {
+    /* marker missing/unreadable → emit */
+  }
+  try {
+    fs.writeFileSync(marker, '');
+  } catch {
+    /* best-effort; still emit */
+  }
+  return true;
+}
+
+/**
  * PreToolUse handler — augment searches with graph context.
  */
 function handlePreToolUse(input) {
@@ -417,17 +460,24 @@ function handlePreToolUse(input) {
   let result = '';
   try {
     if (hasGitNexusServerOwner(gitNexusDir)) {
-      // Normal skip path: the MCP server owns the DB, so the CLI augment would
-      // contend on the lock. Stay silent for strict hook runners (issue #1913);
-      // surface the reason only when diagnostics are explicitly requested.
+      // #2396: the MCP server holds the DB write lock, so a competing CLI
+      // `augment` would only contend on it (LadybugDB is single-writer). But the
+      // session that triggered this hook has the GitNexus MCP tools live — route
+      // the augmentation to the agent via additionalContext instead of silently
+      // doing nothing. Mirror the skip reason to stderr only under GITNEXUS_DEBUG
+      // (strict-runner contract, #1913); the hint itself rides the sanctioned
+      // additionalContext stdout channel the successful augment already uses.
       if (isDebugEnabled()) {
         process.stderr.write('[GitNexus] augment skipped: MCP server owns DB\n');
       }
-      return;
-    }
-    const child = runGitNexusCli(['augment', '--', pattern], cwd, 7000);
-    if (!child.error && child.status === 0) {
-      result = extractAugmentContext(child.stderr || '');
+      if (shouldEmitMcpHint(gitNexusDir)) {
+        result = buildMcpQueryHint(pattern);
+      }
+    } else {
+      const child = runGitNexusCli(['augment', '--', pattern], cwd, 7000);
+      if (!child.error && child.status === 0) {
+        result = extractAugmentContext(child.stderr || '');
+      }
     }
   } catch {
     /* graceful failure */

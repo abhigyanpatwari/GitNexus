@@ -382,7 +382,9 @@ CLI (analyze.ts) → runFullAnalysis(repoPath, options, callbacks)
 <repo>/.gitnexus/
   ├── lbug           # LadybugDB database
   ├── lbug.wal       # Write-ahead log
+  ├── lbug.shadow    # Shadow sidecar (checkpoint staging)
   ├── lbug.lock      # Single-writer lock
+  ├── lbug.{wal,shadow}.dirty-recovery  # parked sidecars from a crashed run; safe to delete
   ├── gitnexus.json  # lastCommit, indexedAt, stats (primary metadata file)
   └── meta.json      # legacy mirror of gitnexus.json, kept in sync (see MIGRATION.md)
 

@@ -32,7 +32,14 @@ const PLATFORM_LOGIC = [
   'test/unit/setup-antigravity.test.ts',
   'test/integration/setup-uninstall-roundtrip.test.ts',
   'test/unit/resolve-invocation.test.ts',
+  // CLI-spawn entry-point resolution; its path-separator assertion (cli[/\\]index)
+  // must exercise the Windows backslash branch, so run it on the OS matrix (#2394).
+  'test/unit/cli-entry.test.ts',
   'test/unit/platform-capabilities.test.ts',
+  // getconf page-size probe: explicit process.platform gate (win32 short-circuit)
+  // plus a live-probe test whose only real non-4K coverage is macos-arm64's
+  // 16 KiB pages — the exact hardware class #1231 targets (#2424 review).
+  'test/unit/lbug-config-pagesize.test.ts',
   'test/unit/worker-pool-windows-quarantine.test.ts',
   'test/unit/lbug-pool-fts-load.test.ts',
   'test/unit/repo-manager.test.ts',
@@ -67,6 +74,11 @@ const PLATFORM_LOGIC = [
   // (macos), so the header parsing is proven on genuine binaries, not synthetic
   // buffers (the ubuntu suite covers the ELF path).
   'test/integration/extension-binary-real.test.ts',
+  // Server repo resolver branches on path shape (path.isAbsolute, backslash
+  // detection) and canonicalizePath/realpathSync, all of which differ between
+  // POSIX and Windows — the fail-closed path-claim semantics must hold on the
+  // real windows-latest path implementation (#2419/#2420).
+  'test/unit/server-api-repo-resolution.test.ts',
 ];
 
 // Native LadybugDB integration tests — exercise the @ladybugdb/core
@@ -96,6 +108,15 @@ const LBUG_NATIVE = [
   'test/integration/analyze-wal-checkpoint-failure.test.ts',
   'test/integration/fts-stemmer-sweep.test.ts',
   'test/integration/lbug-multiwriter-deadlock.test.ts',
+  // #2409 batched incremental writeback: chunked IN-list DETACH DELETEs +
+  // backslash quote escaping against the REAL native engine — the failing
+  // environment for #2409 was Windows, so the write pattern must be proven
+  // on the windows-latest native addon, not just Ubuntu.
+  'test/integration/lbug-delete-nodes-for-files.test.ts',
+  // #2409 defect 2: dirty-flag recovery parks lbug.wal/.shadow (rename next
+  // to a live native DB, rm-then-rename over an existing parked copy) before
+  // any open — rename semantics are exactly what differs on Windows.
+  'test/unit/incremental-dirty-recovery.test.ts',
 ];
 
 // Process spawning and CLI tests — exercise child_process with real

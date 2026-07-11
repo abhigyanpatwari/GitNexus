@@ -57,6 +57,7 @@ export const CodeReferencesPanel = ({ onFocusNode }: CodeReferencesPanelProps) =
     setSelectedNode,
     codeReferenceFocus,
     projectName,
+    currentRepo,
   } = useAppState();
 
   const nodeById = useMemo(() => {
@@ -226,14 +227,15 @@ export const CodeReferencesPanel = ({ onFocusNode }: CodeReferencesPanelProps) =
     const isWholeFile = selectedIsFile || startLine === undefined;
 
     const options = isWholeFile
-      ? { repo: projectName }
+      ? {}
       : {
           startLine: Math.max(0, startLine - CONTEXT_LINES),
           endLine: (endLine ?? startLine) + CONTEXT_LINES,
-          repo: projectName,
         };
 
-    readFile(selectedFilePath, { ...options, repo: projectName || undefined })
+    // Prefer the repo path identity over the display name — duplicate display
+    // names would otherwise resolve to the wrong repository's file (#2420).
+    readFile(selectedFilePath, { ...options, repo: currentRepo || projectName || undefined })
       .then((result) => {
         if (!cancelled) {
           setFileResult(result);
@@ -256,6 +258,7 @@ export const CodeReferencesPanel = ({ onFocusNode }: CodeReferencesPanelProps) =
     selectedNode?.properties?.endLine,
     selectedIsFile,
     projectName,
+    currentRepo,
   ]);
 
   // Scroll to the selected node's startLine after content loads

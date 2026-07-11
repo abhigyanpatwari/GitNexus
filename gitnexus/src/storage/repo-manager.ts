@@ -82,6 +82,20 @@ export const canonicalizePath = (p: string): string => {
 export const registryPathEquals = (a: string, b: string): boolean =>
   process.platform === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b;
 
+/**
+ * Does the clone dir derived from an entry's *name* actually belong to that
+ * entry? Registry names are not unique across storage locations: a cloned
+ * repo under `~/.gitnexus/repos/<name>` and a local repo registered under the
+ * same name share a `getCloneDir(entry.name)` result. The server's delete
+ * handler must therefore never remove the clone dir based on the name alone —
+ * only when the entry's own `path` resolves to that dir (mirroring its step-2b
+ * rule that cleanup is driven off `entry.path`, so a same-named sibling's
+ * clone is never removed). Both sides are canonicalised so symlinked or
+ * differently-spelled forms of the same dir still match.
+ */
+export const cloneDirBelongsToEntry = (cloneDir: string, entryPath: string): boolean =>
+  registryPathEquals(canonicalizePath(cloneDir), canonicalizePath(entryPath));
+
 export interface RepoMeta {
   repoPath: string;
   lastCommit: string;
@@ -101,6 +115,27 @@ export interface RepoMeta {
     communities?: number;
     processes?: number;
     embeddings?: number;
+  };
+  /**
+   * Capability stamps for what THIS analyze run actually produced (mirrors
+   * the meta literal in run-analyze.ts — typed here so the stamp site is
+   * compile-checked; tri-review 4669518496 P1/U3: `vectorSearch.status`
+   * must never claim 'vector-index' unless the run verified or recreated
+   * the HNSW index). Forensic today — no programmatic readers (`doctor`
+   * prints platform-derived capabilities, query routing never consults
+   * meta). The status unions mirror `CapabilityStatus` /
+   * `SemanticSearchMode` in core/platform/capabilities.ts; inlined to keep
+   * storage/ free of a core/ type dependency.
+   */
+  capabilities?: {
+    graph: { provider: string; status: 'available' | 'degraded' | 'unavailable' };
+    fts: { provider: string; status: 'available' | 'degraded' | 'unavailable' };
+    vectorSearch: {
+      provider: string;
+      status: 'vector-index' | 'exact-scan' | 'unavailable';
+      exactScanLimit: number;
+      reason?: string;
+    };
   };
   /**
    * Bumped whenever incremental-indexing invariants change in an
@@ -138,9 +173,29 @@ export interface RepoMeta {
   incrementalInProgress?: {
     /** When the run started (epoch ms). */
     startedAt: number;
+    /** Last dirty-flag refresh (epoch ms). */
+    updatedAt?: number;
     /** Number of files in the writable set, for diagnostic logs.
      *  `0` on the full-rebuild path (no incremental write set exists). */
     toWriteCount: number;
+    /** Last completed writeback phase before the process stopped. */
+    phase?: string;
+    /** Directly changed/added files before importer expansion. */
+    directWriteCount?: number;
+    /** Extra files pulled into the writable set by importer BFS. */
+    importerExpansion?: number;
+    /** Files in the effective write set after graph-boundary expansion. */
+    effectiveWriteCount?: number;
+    /** Files whose persisted rows were scheduled for deletion. */
+    deleteCount?: number;
+    /** Added-file shadow seeds included in importer BFS. */
+    shadowSeedCount?: number;
+    /** Importer-BFS chunks dropped by failed IMPORTS queries (#2410 +
+     *  tri-review 4669518496 P2-5). Stamped only when > 0: a dropped chunk
+     *  means the importer expansion silently shrank, so a crash's
+     *  diagnostics must show whether the write set was already
+     *  under-expanded when the run died. */
+    droppedImporterChunks?: number;
   };
   /**
    * Name of the git branch this index represents (#2106). Absent for the

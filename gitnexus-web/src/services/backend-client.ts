@@ -28,6 +28,13 @@ export interface BackendRepo {
   };
 }
 
+/**
+ * Canonical repo identity: the registry path. The display `name` is ambiguous
+ * across duplicate repo names (#2419); `repoPath` is the normalized field and
+ * `path` the legacy list-endpoint field.
+ */
+export const repoIdentity = (repo: BackendRepo): string => repo.repoPath ?? repo.path ?? repo.name;
+
 export interface EnrichedSearchResult {
   filePath: string;
   score: number;
@@ -535,7 +542,8 @@ export const probeBackend = async (): Promise<boolean> => {
 export const fetchRepos = async (): Promise<BackendRepo[]> => {
   const response = await fetchWithTimeout(`${_backendUrl}/api/repos`);
   await assertOk(response);
-  return response.json() as Promise<BackendRepo[]>;
+  const repos = (await response.json()) as BackendRepo[];
+  return repos.map((r) => ({ ...r, repoPath: r.repoPath ?? r.path }));
 };
 
 /** Fetch repo metadata.
@@ -891,7 +899,7 @@ export const cancelAnalyze = async (jobId: string): Promise<void> => {
 export const streamAnalyzeProgress = (
   jobId: string,
   onProgress: (progress: JobProgress) => void,
-  onComplete: (data: { repoName?: string }) => void,
+  onComplete: (data: { repoName?: string; repoPath?: string }) => void,
   onError: (error: string) => void,
 ): AbortController => {
   return streamSSE<JobProgress>(
@@ -940,7 +948,7 @@ export const cancelEmbeddings = async (jobId: string): Promise<void> => {
 export const streamEmbeddingProgress = (
   jobId: string,
   onProgress: (progress: JobProgress) => void,
-  onComplete: (data: { repoName?: string }) => void,
+  onComplete: (data: { repoName?: string; repoPath?: string }) => void,
   onError: (error: string) => void,
 ): AbortController => {
   return streamSSE<JobProgress>(`${_backendUrl}/api/embed/${encodeURIComponent(jobId)}/progress`, {

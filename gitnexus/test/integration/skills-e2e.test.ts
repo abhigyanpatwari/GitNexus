@@ -11,22 +11,11 @@
  * Accepts status === null (timeout) as valid on slow CI runners.
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { CLI_SPAWN_PREFIX } from '../helpers/cli-entry.js';
 import { spawnSync } from 'child_process';
 import path from 'path';
 import fs from 'fs';
 import os from 'os';
-import { fileURLToPath, pathToFileURL } from 'url';
-import { createRequire } from 'module';
-
-const testDir = path.dirname(fileURLToPath(import.meta.url));
-const repoRoot = path.resolve(testDir, '../..');
-const cliEntry = path.join(repoRoot, 'src/cli/index.ts');
-
-// Absolute file:// URL to tsx loader — needed when spawning CLI with cwd
-// outside the project tree (bare 'tsx' specifier won't resolve there).
-const _require = createRequire(import.meta.url);
-const tsxPkgDir = path.dirname(_require.resolve('tsx/package.json'));
-const tsxImportUrl = pathToFileURL(path.join(tsxPkgDir, 'dist', 'loader.mjs')).href;
 
 // ============================================================================
 // FILE-LOCAL HELPERS
@@ -34,10 +23,11 @@ const tsxImportUrl = pathToFileURL(path.join(tsxPkgDir, 'dist', 'loader.mjs')).h
 
 /**
  * Spawn the CLI with `analyze --skills` in the given cwd.
- * Uses the absolute tsx loader URL so it works outside the project tree.
+ * Entry point comes from CLI_SPAWN_PREFIX (built dist in CI, tsx-on-source
+ * locally); the tsx path uses an absolute loader URL so it resolves from any cwd.
  */
 function runSkillsCli(cwd: string, timeoutMs = 45000) {
-  return spawnSync(process.execPath, ['--import', tsxImportUrl, cliEntry, 'analyze', '--skills'], {
+  return spawnSync(process.execPath, [...CLI_SPAWN_PREFIX, 'analyze', '--skills'], {
     cwd,
     encoding: 'utf8',
     timeout: timeoutMs,

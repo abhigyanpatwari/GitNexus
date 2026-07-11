@@ -31,22 +31,16 @@
  * (rather than the exact engine error wording) keeps this test stable.
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { CLI_SPAWN_PREFIX } from '../helpers/cli-entry.js';
 import { spawnSync } from 'child_process';
 import path from 'path';
 import fs from 'fs';
 import os from 'os';
-import { createRequire } from 'module';
-import { fileURLToPath, pathToFileURL } from 'url';
+import { fileURLToPath } from 'url';
 import { cleanupTempDirSync } from '../helpers/test-db.js';
 
 const testDir = path.dirname(fileURLToPath(import.meta.url));
-const repoRoot = path.resolve(testDir, '../..');
-const cliEntry = path.join(repoRoot, 'src/cli/index.ts');
 const FIXTURE_SRC = path.resolve(testDir, '..', 'fixtures', 'mini-repo');
-
-const _require = createRequire(import.meta.url);
-const tsxPkgDir = path.dirname(_require.resolve('tsx/package.json'));
-const tsxImportUrl = pathToFileURL(path.join(tsxPkgDir, 'dist', 'loader.mjs')).href;
 
 let tmpParent: string;
 let suiteGitnexusHome: string;
@@ -92,28 +86,24 @@ describe('analyze WAL auto-checkpoint rename failure (real lbug, no mocks)', () 
     fs.mkdirSync(blockerDir, { recursive: true });
     fs.writeFileSync(path.join(blockerDir, 'blocker'), 'cannot-be-renamed-over');
 
-    const result = spawnSync(
-      process.execPath,
-      ['--import', tsxImportUrl, cliEntry, 'analyze', '--skip-skills'],
-      {
-        cwd: repoPath,
-        encoding: 'utf8',
-        // Generous timeout: the test does real CSV/COPY work before the
-        // first failing checkpoint, and CI runners are slow.
-        timeout: process.env.CI ? 120_000 : 60_000,
-        stdio: ['pipe', 'pipe', 'pipe'],
-        env: {
-          ...process.env,
-          GITNEXUS_HOME: suiteGitnexusHome,
-          // Skip ensureHeap re-exec (which drops the tsx loader).
-          NODE_OPTIONS: `${process.env.NODE_OPTIONS || ''} --max-old-space-size=8192`.trim(),
-          // Tiny threshold forces auto-checkpoint on every write so the
-          // first write into the WAL trips the planted rename blocker.
-          GITNEXUS_WAL_CHECKPOINT_THRESHOLD: '1',
-          CI: '1',
-        },
+    const result = spawnSync(process.execPath, [...CLI_SPAWN_PREFIX, 'analyze', '--skip-skills'], {
+      cwd: repoPath,
+      encoding: 'utf8',
+      // Generous timeout: the test does real CSV/COPY work before the
+      // first failing checkpoint, and CI runners are slow.
+      timeout: process.env.CI ? 120_000 : 60_000,
+      stdio: ['pipe', 'pipe', 'pipe'],
+      env: {
+        ...process.env,
+        GITNEXUS_HOME: suiteGitnexusHome,
+        // Skip ensureHeap re-exec (which drops the tsx loader).
+        NODE_OPTIONS: `${process.env.NODE_OPTIONS || ''} --max-old-space-size=8192`.trim(),
+        // Tiny threshold forces auto-checkpoint on every write so the
+        // first write into the WAL trips the planted rename blocker.
+        GITNEXUS_WAL_CHECKPOINT_THRESHOLD: '1',
+        CI: '1',
       },
-    );
+    });
 
     const combined = `${result.stderr}\n${result.stdout}`;
 
