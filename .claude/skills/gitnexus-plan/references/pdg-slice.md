@@ -29,8 +29,8 @@ Contract caveats that shape interpretation:
   The note is repo-wide: one probe settles it — do not re-probe per function.
   Under `freshness: strict` (default), run
   `node .gitnexus/run.cjs analyze --index-only --pdg` — once per planning
-  session, and only if Phase 1's refresh didn't already carry `--pdg` — then
-  re-probe. If the refresh failed, is impractical, or `freshness: accept` was
+  session, only if Phase 1's refresh didn't already carry `--pdg`, and with
+  Phase 1's runner build check applied first — then re-probe. If the refresh failed, is impractical, or `freshness: accept` was
   passed: record "PDG unavailable" in the ledger, skip the slice, say so in
   plan §5, and recommend the command. Never reconstruct edges from source by
   hand.

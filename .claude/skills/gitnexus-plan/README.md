@@ -94,8 +94,12 @@ of context until the phase that needs them.
   a stale index (or a missing PDG layer) is refreshed once via
   `node .gitnexus/run.cjs analyze --index-only [--pdg]` before the graph is
   relied on — `--index-only` touches only the `.gitnexus` store, never repo
-  files. `freshness: accept` (or a failed/impractical refresh) plans on the
-  stale graph instead, source-weighted and labelled in the plan header.
+  files. When the repo builds the analyzer from source (like this one:
+  `gitnexus/dist`), the gate first ensures `dist/` is current (`npm run
+  build` when src is newer) so the refresh doesn't re-index with outdated
+  extraction logic. `freshness: accept` (or a failed/impractical refresh)
+  plans on the stale graph instead, source-weighted and labelled in the plan
+  header.
 - PDG layer still unavailable after that → the plan says so and skips
   statement-level claims (never reconstructs fake edges).
 - No GitNexus at all → fallback mode: targeted grep/read exploration, findings

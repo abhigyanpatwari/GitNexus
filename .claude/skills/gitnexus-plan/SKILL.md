@@ -76,6 +76,15 @@ take the widest depth, union the focus areas.
    **Freshness gate.** Plans built on a stale graph make stale blast-radius
    claims, so freshness is not advisory here. Under `freshness: strict` (the
    default):
+   - **Runner build check — before any refresh.** If the target repo builds
+     the analyzer from its own source (a `bin` → `dist/` mapping, as in this
+     repo's `gitnexus/` package), the built output must be current, or the
+     refresh re-indexes with outdated extraction logic and defeats the gate.
+     Rebuild when any analyzer source file is newer than the built entrypoint
+     (e.g. `find gitnexus/src -newer gitnexus/dist/cli/index.js -print -quit`
+     prints anything — when in doubt, rebuild: `npm run build` in the
+     package) and prefer that freshly built CLI for the refresh. Note the
+     rebuild in `index_refresh`.
    - Stale index → run `node .gitnexus/run.cjs analyze --index-only` (append
      `--pdg` when the task category will reach Phase 3) and re-read the
      context resource. At most **one refresh per planning session**; record

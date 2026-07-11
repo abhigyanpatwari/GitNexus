@@ -21,8 +21,9 @@ context_ledger:
                                  # every line citation in the plan pins to it
 
   index_refresh: ""              # the one permitted analyze --index-only run:
-                                 # command + outcome (or "skipped: <reason>");
-                                 # at most one per planning session
+                                 # command + outcome (or "skipped: <reason>"),
+                                 # incl. any analyzer dist/ rebuild that
+                                 # preceded it; at most one per session
 
   established_facts: []          # each with its evidence source
 
