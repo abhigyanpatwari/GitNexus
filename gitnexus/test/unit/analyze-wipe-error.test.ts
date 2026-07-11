@@ -14,7 +14,7 @@
  *   - drive `analyzeCommand` with a mocked `runFullAnalysis` that rejects
  *   - assert on process.exitCode and the captured logger records
  */
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const runFullAnalysisMock = vi.fn();
 
@@ -71,6 +71,12 @@ vi.mock('../../src/core/embeddings/hf-env.js', () => ({
 }));
 
 describe('analyzeCommand LadybugDB wipe-failure handling (#2409, tri-review 4669518496)', () => {
+  // Capture the host's NODE_OPTIONS once so afterEach can restore it cleanly.
+  // Without the restore, beforeEach's append accumulated duplicate
+  // --max-old-space-size tokens across tests (analyze-worker-pool-size.test.ts
+  // pattern; #2424 review).
+  const ORIGINAL_NODE_OPTIONS = process.env.NODE_OPTIONS;
+
   beforeEach(() => {
     vi.resetModules();
     runFullAnalysisMock.mockReset();
@@ -79,6 +85,14 @@ describe('analyzeCommand LadybugDB wipe-failure handling (#2409, tri-review 4669
     installEmbeddingRuntimeMock.mockReset().mockResolvedValue(undefined);
     process.exitCode = undefined;
     process.env.NODE_OPTIONS = `${process.env.NODE_OPTIONS ?? ''} --max-old-space-size=8192`.trim();
+  });
+
+  afterEach(() => {
+    if (ORIGINAL_NODE_OPTIONS === undefined) {
+      delete process.env.NODE_OPTIONS;
+    } else {
+      process.env.NODE_OPTIONS = ORIGINAL_NODE_OPTIONS;
+    }
   });
 
   it('routes a wipe failure to the dedicated recovery hint, not the raw-stack fallback', async () => {
