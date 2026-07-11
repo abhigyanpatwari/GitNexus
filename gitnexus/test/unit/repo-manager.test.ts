@@ -28,6 +28,7 @@ import {
   listRegisteredRepos,
   resolveRegistryEntry,
   canonicalizePath,
+  cloneDirBelongsToEntry,
   assertSafeStoragePath,
   RegistryNameCollisionError,
   RegistryNotFoundError,
@@ -1405,6 +1406,33 @@ describe('canonicalizePath (#1003)', () => {
     const rel = './does-not-exist-zzz-' + Date.now();
     const got = canonicalizePath(rel);
     expect(path.isAbsolute(got)).toBe(true);
+  });
+});
+
+describe('cloneDirBelongsToEntry', () => {
+  it('returns true when the clone dir and entry.path canonicalize to the same dir', () => {
+    // Non-canonical spelling of a REAL path (same trick as the
+    // resolveRegistryEntry backward-compat test): raw concat keeps the
+    // strings unequal until canonicalizePath runs.
+    const realDir = process.cwd();
+    const nonCanonical = realDir + path.sep + '.';
+    expect(nonCanonical).not.toBe(realDir);
+    expect(cloneDirBelongsToEntry(nonCanonical, realDir)).toBe(true);
+  });
+
+  it('returns false when the entry.path lives elsewhere than the clone dir', () => {
+    // The delete-handler scenario: entry B is a local repo whose name
+    // collides with clone A's — its path must not claim A's clone dir.
+    const cloneDir = path.join(os.tmpdir(), 'gitnexus-clones', 'reels');
+    const entryPath = path.join(os.tmpdir(), 'local', 'reels');
+    expect(cloneDirBelongsToEntry(cloneDir, entryPath)).toBe(false);
+  });
+
+  it('compares nonexistent paths without throwing (realpath falls back to path.resolve)', () => {
+    // Neither side exists on disk — canonicalizePath must fall back to
+    // path.resolve on both, so equal strings still compare equal.
+    const ghost = path.join(os.tmpdir(), 'gnx-never-exists-____', 'clone-dir');
+    expect(cloneDirBelongsToEntry(ghost, ghost)).toBe(true);
   });
 });
 
