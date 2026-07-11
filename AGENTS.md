@@ -1,4 +1,4 @@
-<!-- version: 1.9.0 -->
+<!-- version: 1.10.0 -->
 <!-- Last updated: 2026-07-11 -->
 
 Last reviewed: 2026-07-11
@@ -55,22 +55,31 @@ listed in [`pr-swarm-review/README.md`](pr-swarm-review/README.md); edit review 
 in the canonical files, never in the wrappers. The review is read-only — it never edits,
 commits, or posts.
 
-## Engineering planning (`/gitnexus-plan`)
+## Engineering planning & execution (`/gitnexus-plan` · `/gitnexus-work` · `/gitnexus-lfg`)
 
-To produce a deep, implementation-ready plan for a code change, follow the canonical,
-CLI-neutral spec **`.claude/skills/gitnexus-plan/SKILL.md`** (plus its `references/`
-files): GitNexus graph intelligence for navigation, statement-level PDG slices for
-behavioral constraints, targeted source reads for verification. Claude Code invokes it
-as the `/gitnexus-plan` skill; Codex or any other agent reading this file should read
-that SKILL.md and follow it directly (an optional user-level Codex prompt is documented
-in `.claude/skills/gitnexus-plan/README.md`). Output lands in `docs/plans/` with a
-reusable implementation context pack (section 11) that a follow-up implementation agent
-consumes without re-investigating. The skill is planning-only — it never edits code.
+Three canonical, CLI-neutral skill specs under `.claude/skills/` (Claude Code invokes
+them as slash commands; Codex or any other agent reading this file should read the
+named SKILL.md and follow it directly — user-level Codex prompts are documented in each
+skill's README):
+
+- **`gitnexus-plan/SKILL.md`** — deep, implementation-ready plan for a code change:
+  GitNexus graph intelligence for navigation, statement-level PDG slices for behavioral
+  constraints, targeted source reads for verification. Output lands in `docs/plans/`
+  with a reusable implementation context pack (section 11). Planning-only — it never
+  edits code (index freshness refreshes via `analyze --index-only` are the one
+  permitted state change). Deepen mode strengthens an existing plan in place.
+- **`gitnexus-work/SKILL.md`** — executes a gitnexus-plan as verified atomic commits:
+  drift-checks the plan's evidence pin against HEAD, `impact` before every symbol
+  edit, tests from the plan's scenarios, `detect_changes` before every commit.
+- **`gitnexus-lfg/SKILL.md`** — pipeline orchestrator: plan → blocking user gate
+  (deepen the plan, proceed, or stop) → work → review via the existing
+  `gitnexus/gitnexus-pr-review` skill (open PR, or branch diff when no PR exists).
 
 ## Changelog
 
 | Date | Version | Change |
 |------|---------|--------|
+| 2026-07-11 | 1.10.0 | Added `gitnexus-work` (plan executor) and `gitnexus-lfg` (plan → deepen/work gate → pr-review pipeline) skills; section renamed to Engineering planning & execution. |
 | 2026-07-11 | 1.9.0 | Added Engineering planning (`/gitnexus-plan`) section; registered the `gitnexus-plan` skill (`.claude/skills/gitnexus-plan/`). |
 | 2026-05-22 | 1.8.0 | Kotlin added to `MIGRATED_LANGUAGES` (registry-primary call resolution by default). Closes #1756 (companion-vs-instance dispatch) and #1757 (lambda scopes); refs #1746. RFC §6.4 corpus criterion waived (corpus-mode wiring is #927-scope); fixture criterion met. |
 | 2026-04-23 | 1.7.0 | TypeScript added to `MIGRATED_LANGUAGES` (registry-primary call resolution by default). |

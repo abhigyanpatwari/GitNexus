@@ -1,6 +1,6 @@
 ---
 name: gitnexus-plan
-description: "Use when you need a deep, implementation-ready engineering plan for a code change — built from GitNexus graph intelligence, statement-level PDG analysis, and targeted source verification, compact enough that an implementation agent can start without re-investigating. Examples: \"/gitnexus-plan Add retry support to the ingestion pipeline\", \"/gitnexus-plan Fix the stale warm-cache invalidation bug\", \"plan this change using the knowledge graph\"."
+description: "Use when you need a deep, implementation-ready engineering plan for a code change — built from GitNexus graph intelligence, statement-level PDG analysis, and targeted source verification, compact enough that an implementation agent can start without re-investigating. Also strengthens existing plans via Deepen mode. Examples: \"/gitnexus-plan Add retry support to the ingestion pipeline\", \"/gitnexus-plan deepen docs/plans/<plan>.md\", \"plan this change using the knowledge graph\"."
 ---
 
 # gitnexus-plan — implementation-ready engineering plans
@@ -10,8 +10,8 @@ navigation layer (where to look), statement-level PDG is the constraint layer
 (what gates and feeds the behavior), and your native targeted source reads are
 the verification layer (what is actually true right now). The output is a plan
 document plus a compact, machine-readable **implementation context pack**
-that a follow-up implementation agent (a future `gitnexus-implement`, or any
-executor) can consume without repeating the investigation.
+that a follow-up implementation agent (`gitnexus-work`, or any executor) can
+consume without repeating the investigation.
 
 ```
 /gitnexus-plan <task description>
@@ -175,6 +175,27 @@ and executable behavior → compiler/build/lint output → GitNexus graph and PD
 4. Present in chat: objective, proposed-changes summary, implementation
    sequence, top risks, open questions, and the plan file path. Do not paste
    the whole document into chat.
+
+## Deepen mode
+
+`/gitnexus-plan deepen <plan-path>` strengthens an existing plan in place
+instead of creating a new one:
+
+1. Re-run Phase 1 in full — runner build check, freshness gate, a new HEAD
+   pin for the evidence header.
+2. Escalate to `depth: deep` (impact_depth 3, clusters/processes read)
+   unless the invocation overrides knobs explicitly.
+3. Seed the ledger from the plan's §11 pack, then re-verify: every
+   `[graph]`/`[inferred]` claim gets a targeted pass toward `[verified]`;
+   every `[assumed]` claim is resolved or kept with its reason; direct
+   (d=1) dependent accounting is re-checked against the refreshed graph;
+   PDG slices are built or expanded for the central functions when the
+   layer is present.
+4. Strengthen whatever the deeper pass showed thin — test scenarios, risks,
+   Definition of Done — and carry claim-tag upgrades through the prose.
+5. Rewrite the **same file**: same 13 sections, context pack kept in sync,
+   evidence header updated. Summarize the delta in chat: claims upgraded,
+   claims that failed re-verification, sections changed.
 
 ## Configuration
 

@@ -1,9 +1,9 @@
 # Implementation context pack
 
 Section 11 of the plan. The stable, machine-readable contract a follow-up
-implementation agent (a future `gitnexus-implement`, or any executor) consumes to
-start work **without repeating the investigation**. Distilled from the
-ledger; every entry traceable to verified evidence.
+implementation agent (`gitnexus-work`, or any executor) consumes to start
+work **without repeating the investigation**. Distilled from the ledger;
+every entry traceable to verified evidence.
 
 ## Schema
 
@@ -67,7 +67,7 @@ implementation_context:
 
 ## Stability contract
 
-Field names above are the interface for a future `gitnexus-implement`. Add fields
+Field names above are the interface consumed by `gitnexus-work`. Add fields
 freely; do not rename or repurpose existing ones. `assumptions` and `avoid`
 are load-bearing: an executor treats `assumptions` as things to re-verify
 cheaply before relying on them, and `avoid` as hard constraints.

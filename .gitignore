@@ -99,6 +99,8 @@ gitnexus/vendor/**/node_modules/
 !.claude/skills/gitnexus/
 !.claude/skills/gitnexus-pr-swarm-review/
 !.claude/skills/gitnexus-plan/
+!.claude/skills/gitnexus-work/
+!.claude/skills/gitnexus-lfg/
 
 .history/
 
