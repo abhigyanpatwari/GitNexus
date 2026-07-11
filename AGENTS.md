@@ -55,20 +55,23 @@ listed in [`pr-swarm-review/README.md`](pr-swarm-review/README.md); edit review 
 in the canonical files, never in the wrappers. The review is read-only — it never edits,
 commits, or posts.
 
-## Engineering planning (`/ce-plan`)
+## Engineering planning (`/gitnexus-plan`)
 
-To produce a deep, implementation-ready plan for a code change, invoke the **`ce-plan`**
-skill (`.claude/skills/ce-plan/SKILL.md`): GitNexus graph intelligence for navigation,
-statement-level PDG slices for behavioral constraints, targeted source reads for
-verification. Output lands in `docs/plans/` with a reusable implementation context pack
-(section 11) that a follow-up implementation agent consumes without re-investigating.
-The skill is planning-only — it never edits code.
+To produce a deep, implementation-ready plan for a code change, follow the canonical,
+CLI-neutral spec **`.claude/skills/gitnexus-plan/SKILL.md`** (plus its `references/`
+files): GitNexus graph intelligence for navigation, statement-level PDG slices for
+behavioral constraints, targeted source reads for verification. Claude Code invokes it
+as the `/gitnexus-plan` skill; Codex or any other agent reading this file should read
+that SKILL.md and follow it directly (an optional user-level Codex prompt is documented
+in `.claude/skills/gitnexus-plan/README.md`). Output lands in `docs/plans/` with a
+reusable implementation context pack (section 11) that a follow-up implementation agent
+consumes without re-investigating. The skill is planning-only — it never edits code.
 
 ## Changelog
 
 | Date | Version | Change |
 |------|---------|--------|
-| 2026-07-11 | 1.9.0 | Added Engineering planning (`/ce-plan`) section; registered the `ce-plan` skill (`.claude/skills/ce-plan/`). |
+| 2026-07-11 | 1.9.0 | Added Engineering planning (`/gitnexus-plan`) section; registered the `gitnexus-plan` skill (`.claude/skills/gitnexus-plan/`). |
 | 2026-05-22 | 1.8.0 | Kotlin added to `MIGRATED_LANGUAGES` (registry-primary call resolution by default). Closes #1756 (companion-vs-instance dispatch) and #1757 (lambda scopes); refs #1746. RFC §6.4 corpus criterion waived (corpus-mode wiring is #927-scope); fixture criterion met. |
 | 2026-04-23 | 1.7.0 | TypeScript added to `MIGRATED_LANGUAGES` (registry-primary call resolution by default). |
 | 2026-04-20 | 1.6.0 | Added scope-resolution pipeline pointer (RFC #909 Ring 3); Python migrated to registry-primary. |

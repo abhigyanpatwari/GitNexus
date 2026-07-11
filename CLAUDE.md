@@ -37,13 +37,13 @@ If always-on instructions grow, load deep conventions via conditional reads (e.g
 - **This repository:** [AGENTS.md](AGENTS.md) (Cursor + monorepo notes), [ARCHITECTURE.md](ARCHITECTURE.md), [CONTRIBUTING.md](CONTRIBUTING.md), [GUARDRAILS.md](GUARDRAILS.md).
 - **Call & inheritance resolution:** See ARCHITECTURE.md § Scope-Resolution Pipeline. Shared pipeline code in `gitnexus/src/core/ingestion/` must not name languages — use `LanguageProvider` / `ScopeResolver` hooks instead (see AGENTS.md). (The legacy call-resolution DAG was removed in #942.)
 - **GitNexus:** `.claude/skills/gitnexus/`; MCP and indexed-repo rules live only in [AGENTS.md](AGENTS.md) (`gitnexus:start` … `gitnexus:end`). See **GitNexus rules** below.
-- **Engineering plans:** `/ce-plan <task>` — implementation-ready plans via GitNexus + statement-level PDG + source verification; spec in `.claude/skills/ce-plan/SKILL.md` (see AGENTS.md § Engineering planning).
+- **Engineering plans:** `/gitnexus-plan <task>` — implementation-ready plans via GitNexus + statement-level PDG + source verification; spec in `.claude/skills/gitnexus-plan/SKILL.md` (see AGENTS.md § Engineering planning).
 
 ## Changelog
 
 | Date | Version | Change |
 |------|---------|--------|
-| 2026-07-11 | 1.4.0 | Added `/ce-plan` pointer to Reference Documentation. |
+| 2026-07-11 | 1.4.0 | Added `/gitnexus-plan` pointer to Reference Documentation. |
 | 2026-04-13 | 1.3.0 | Updated GitNexus index stats after DAG refactor. |
 | 2026-03-24 | 1.2.0 | Removed duplicated gitnexus:start block and scope table; replaced with pointers to AGENTS.md. |
 | 2026-03-23 | 1.1.0 | Updated agent instructions to match AGENTS.md. |

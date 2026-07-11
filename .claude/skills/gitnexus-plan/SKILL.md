@@ -1,21 +1,21 @@
 ---
-name: ce-plan
-description: "Use when you need a deep, implementation-ready engineering plan for a code change — built from GitNexus graph intelligence, statement-level PDG analysis, and targeted source verification, compact enough that an implementation agent can start without re-investigating. Examples: \"/ce-plan Add retry support to the ingestion pipeline\", \"/ce-plan Fix the stale warm-cache invalidation bug\", \"plan this change using the knowledge graph\"."
+name: gitnexus-plan
+description: "Use when you need a deep, implementation-ready engineering plan for a code change — built from GitNexus graph intelligence, statement-level PDG analysis, and targeted source verification, compact enough that an implementation agent can start without re-investigating. Examples: \"/gitnexus-plan Add retry support to the ingestion pipeline\", \"/gitnexus-plan Fix the stale warm-cache invalidation bug\", \"plan this change using the knowledge graph\"."
 ---
 
-# ce-plan — Compound Engineering Plan
+# gitnexus-plan — implementation-ready engineering plans
 
 Produce an implementation-ready plan for an engineering task. GitNexus is the
 navigation layer (where to look), statement-level PDG is the constraint layer
-(what gates and feeds the behavior), Claude Code source reads are the
-verification layer (what is actually true right now). The output is a plan
+(what gates and feeds the behavior), and your native targeted source reads are
+the verification layer (what is actually true right now). The output is a plan
 document plus a compact, machine-readable **implementation context pack**
-that a follow-up implementation agent (a future `ce-implement`, or any
+that a follow-up implementation agent (a future `gitnexus-implement`, or any
 executor) can consume without repeating the investigation.
 
 ```
-/ce-plan <task description>
-/ce-plan impact_depth:3 depth:deep <task description>   # knob overrides, see Configuration
+/gitnexus-plan <task description>
+/gitnexus-plan impact_depth:3 depth:deep <task description>   # knob overrides, see Configuration
 ```
 
 **This skill plans. It never implements.** Do not modify production code,
@@ -37,7 +37,7 @@ is the plan document (a working ledger kept outside the repo is fine).
 - **No fabrication.** Never invent symbols, filenames, test names, tool
   results, or PDG edges. Unknowns go to *Assumptions and Open Questions*.
 - **No scope creep.** Adjacent refactors the task didn't ask for go to plan
-  §12 as suggestions, not into Proposed Changes.
+  §12 as explicitly-deferred follow-ups, not into Proposed Changes.
 - **Stop when you have enough.** Sufficient evidence ends exploration; plans
   do not improve monotonically with tokens spent.
 
@@ -147,7 +147,7 @@ and executable behavior → compiler/build/lint output → GitNexus graph and PD
    evidence-backed inferences, assumptions, and open questions.
 2. Build the implementation context pack per `references/context-pack.md`
    (this is section 11 of the plan).
-3. Write the document to `docs/plans/YYYY-MM-DD-ce-plan-<slug>.md` under the
+3. Write the document to `docs/plans/YYYY-MM-DD-gitnexus-plan-<slug>.md` under the
    root of the repo being planned (the Phase 1 target repo, not necessarily
    the cwd). Create the directory if missing; kebab-case slug, 3–5 words.
    The `out:<path>` knob overrides the destination (use it for read-only

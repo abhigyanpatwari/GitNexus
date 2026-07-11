@@ -11,7 +11,7 @@ output, not source-confirmed), `[inferred]` (evidence-backed reasoning),
 narrative, not evidence.
 
 ```markdown
-# Compound Engineering Plan
+# GitNexus Engineering Plan
 
 > Task: <one line>
 > Evidence verified at commit <HEAD sha>; GitNexus index <fresh | N commits behind | not used>.
@@ -109,7 +109,8 @@ The machine-readable context pack — see `context-pack.md`.
 
 ## 12. Assumptions and Open Questions
 
-Clearly separate assumptions from confirmed facts.
+Clearly separate assumptions from confirmed facts. Explicitly-deferred
+follow-up suggestions (adjacent work the task didn't ask for) land here too.
 
 ## 13. Definition of Done
 

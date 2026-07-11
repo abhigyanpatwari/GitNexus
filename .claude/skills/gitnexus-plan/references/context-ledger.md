@@ -1,6 +1,6 @@
 # Context ledger
 
-The ledger is ce-plan's working memory. It exists to make repeated
+The ledger is gitnexus-plan's working memory. It exists to make repeated
 investigation impossible-by-discipline: **before every GitNexus call and
 every repo file read, check it.** Keep it as structured notes in your working
 context (or a scratchpad file *outside the repo* for very long sessions); it
