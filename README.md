@@ -347,7 +347,7 @@ gitnexus analyze --skills        # Generate repo-specific skill files from detec
 gitnexus analyze --skip-embeddings  # Skip embedding generation (faster)
 gitnexus analyze --embeddings [limit]  # Enable embedding generation (slower, better search)
 gitnexus analyze --skip-agents-md   # Preserve custom AGENTS.md/CLAUDE.md gitnexus section edits
-gitnexus analyze --skip-skills      # Skip installing .claude/skills/gitnexus/ skill files
+gitnexus analyze --skip-skills      # Skip installing .claude/skills/gitnexus-*/ skill files
 gitnexus analyze --skip-git         # Index folders that are not Git repositories
 gitnexus analyze --default-branch develop  # Branch used in the generated regression-compare example (base_ref)
 gitnexus analyze --verbose       # Log skipped files when parsers are unavailable
@@ -403,7 +403,7 @@ Commit a `.gitnexusrc` JSON file at the repo root to preconfigure recurring `ana
   // over its fix on every analyze. (Alias: "branch".)
   "defaultBranch": "develop",
   "skipContextFiles": true, // alias of skipAgentsMd: keep your own AGENTS.md/CLAUDE.md
-  "skipSkills": true, // don't install .claude/skills/gitnexus/
+  "skipSkills": true, // don't install .claude/skills/gitnexus-*/
   "embeddings": true, // generate embeddings by default
   "workerTimeout": 60
 }

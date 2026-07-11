@@ -31,8 +31,10 @@ function collectSkillFiles(): string[] {
   }
 
   // Per-skill <name>/SKILL.md copies across the other distribution locations.
+  // Claude Code skills sit directly under .claude/skills/ — one level, no
+  // grouping directory, or they are never registered (#2433).
   const skillRoots = [
-    path.join(REPO_ROOT, '.claude', 'skills', 'gitnexus'),
+    path.join(REPO_ROOT, '.claude', 'skills'),
     path.join(REPO_ROOT, 'gitnexus-claude-plugin', 'skills'),
     path.join(REPO_ROOT, 'gitnexus-cursor-integration', 'skills'),
   ];
@@ -61,7 +63,7 @@ describe('skill-file steering (#1939, #1945)', () => {
     const rels = files.map((f) => path.relative(REPO_ROOT, f));
     expect(rels.some((r) => r.startsWith(`gitnexus${path.sep}skills${path.sep}`))).toBe(true);
     expect(
-      rels.some((r) => r.startsWith(path.join('.claude', 'skills', 'gitnexus') + path.sep)),
+      rels.some((r) => r.startsWith(path.join('.claude', 'skills', 'gitnexus-'))),
     ).toBe(true);
     expect(
       rels.some((r) => r.startsWith(path.join('gitnexus-claude-plugin', 'skills') + path.sep)),

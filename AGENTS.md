@@ -41,7 +41,7 @@ Commands and gotchas live under **Repo reference** below and in **[CONTRIBUTING.
 - **[ARCHITECTURE.md](ARCHITECTURE.md)**, **[CONTRIBUTING.md](CONTRIBUTING.md)**, **[GUARDRAILS.md](GUARDRAILS.md)**
 - **Call & inheritance resolution (RFC #909 Ring 3):** See ARCHITECTURE.md § Scope-Resolution Pipeline. All languages resolve calls and inheritance through the scope-resolution pipeline (`Registry.lookup`, `preEmitInheritanceEdges`, `emitHeritageEdges`, `buildMro` → `MethodDispatchIndex`). **Shared code in `gitnexus/src/core/ingestion/` must not name languages** — plug language behavior in via `LanguageProvider` / `ScopeResolver` hooks. A language plugs in by implementing `ScopeResolver` (`scope-resolution/contract/scope-resolver.ts`) and registering it in `SCOPE_RESOLVERS`. (The legacy call-resolution DAG + `@heritage` capture path were removed in RING4-1 #942.)
 - **Cursor:** `.cursor/index.mdc` (always-on); `.cursor/rules/*.mdc` (glob-scoped). Legacy `.cursorrules` deprecated.
-- **GitNexus:** skills in `.claude/skills/gitnexus/`; MCP rules in `gitnexus:start` block below.
+- **GitNexus:** skills in `.claude/skills/gitnexus-*/`; MCP rules in `gitnexus:start` block below.
 
 ## PR Swarm Review (cross-CLI)
 
@@ -106,12 +106,12 @@ This project is indexed by GitNexus as **GitNexus** (26675 symbols, 35395 relati
 
 | Task | Read this skill file |
 |------|---------------------|
-| Understand architecture / "How does X work?" | `.claude/skills/gitnexus/gitnexus-exploring/SKILL.md` |
-| Blast radius / "What breaks if I change X?" | `.claude/skills/gitnexus/gitnexus-impact-analysis/SKILL.md` |
-| Trace bugs / "Why is X failing?" | `.claude/skills/gitnexus/gitnexus-debugging/SKILL.md` |
-| Rename / extract / split / refactor | `.claude/skills/gitnexus/gitnexus-refactoring/SKILL.md` |
-| Tools, resources, schema reference | `.claude/skills/gitnexus/gitnexus-guide/SKILL.md` |
-| Index, status, clean, wiki CLI commands | `.claude/skills/gitnexus/gitnexus-cli/SKILL.md` |
+| Understand architecture / "How does X work?" | `.claude/skills/gitnexus-exploring/SKILL.md` |
+| Blast radius / "What breaks if I change X?" | `.claude/skills/gitnexus-impact-analysis/SKILL.md` |
+| Trace bugs / "Why is X failing?" | `.claude/skills/gitnexus-debugging/SKILL.md` |
+| Rename / extract / split / refactor | `.claude/skills/gitnexus-refactoring/SKILL.md` |
+| Tools, resources, schema reference | `.claude/skills/gitnexus-guide/SKILL.md` |
+| Index, status, clean, wiki CLI commands | `.claude/skills/gitnexus-cli/SKILL.md` |
 | Work in the Ingestion area (239 symbols) | `.claude/skills/generated/ingestion/SKILL.md` |
 | Work in the Extractors area (135 symbols) | `.claude/skills/generated/extractors/SKILL.md` |
 | Work in the Components area (112 symbols) | `.claude/skills/generated/components/SKILL.md` |

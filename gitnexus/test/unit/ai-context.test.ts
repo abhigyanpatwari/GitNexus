@@ -343,26 +343,36 @@ Old content here.
     expect(result).not.toContain('Old content here');
   });
 
-  it('installs skills files', async () => {
+  it('installs skills at .claude/skills/<name>/SKILL.md, the layout Claude Code discovers', async () => {
+    // Claude Code scans exactly .claude/skills/<name>/SKILL.md and does not
+    // recurse (https://code.claude.com/docs/en/skills.md). A grouping level —
+    // .claude/skills/gitnexus/<name>/ — is never registered, so the skills
+    // would ship inert. Assert the flat layout, and assert the nested one is
+    // gone, or this regresses silently.
     const stats = { nodes: 10 };
     await generateAIContextFiles(tmpDir, storagePath, 'TestProject', stats);
 
-    // Should have installed skill files
-    const skillsDir = path.join(tmpDir, '.claude', 'skills', 'gitnexus');
-    try {
-      const entries = await fs.readdir(skillsDir, { recursive: true });
-      expect(entries.length).toBeGreaterThan(0);
-    } catch {
-      // Skills dir may not be created if skills source doesn't exist in test context
+    const skillsDir = path.join(tmpDir, '.claude', 'skills');
+    for (const skill of [
+      'gitnexus-exploring',
+      'gitnexus-debugging',
+      'gitnexus-impact-analysis',
+      'gitnexus-refactoring',
+      'gitnexus-guide',
+      'gitnexus-cli',
+    ]) {
+      await expect(fs.access(path.join(skillsDir, skill, 'SKILL.md'))).resolves.toBeUndefined();
     }
+
+    await expect(fs.access(path.join(skillsDir, 'gitnexus'))).rejects.toThrow();
   });
 
-  it('does not create .claude/skills/gitnexus/ when skipSkills is true (#742)', async () => {
+  it('does not create .claude/skills/gitnexus-*/ when skipSkills is true (#742)', async () => {
     // Regression guard for #742. The --skip-skills flag must prevent
     // installSkills() from writing the 6 standard skill dirs into the
     // analyzed repo. Per-test tmpdir so we start from a known-clean
     // slate — the shared tmpDir from beforeAll may already contain
-    // .claude/skills/gitnexus/ from an earlier test.
+    // .claude/skills/gitnexus-*/ from an earlier test.
     const skipDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-ai-ctx-skip-skills-'));
     const skipStorage = path.join(skipDir, '.gitnexus');
     await fs.mkdir(skipStorage, { recursive: true });
@@ -377,9 +387,9 @@ Old content here.
         { skipSkills: true },
       );
 
-      expect(result.files).toContain('.claude/skills/gitnexus/ (skipped via --skip-skills)');
+      expect(result.files).toContain('.claude/skills/gitnexus-*/ (skipped via --skip-skills)');
       await expect(
-        fs.access(path.join(skipDir, '.claude', 'skills', 'gitnexus')),
+        fs.access(path.join(skipDir, '.claude', 'skills', 'gitnexus-exploring')),
       ).rejects.toThrow();
     } finally {
       await fs.rm(skipDir, { recursive: true, force: true });
@@ -408,11 +418,13 @@ Old content here.
 
       expect(result.files).toContain('AGENTS.md (skipped via --skip-agents-md)');
       expect(result.files).toContain('CLAUDE.md (skipped via --skip-agents-md)');
-      expect(result.files).toContain('.claude/skills/gitnexus/ (skipped via --skip-skills)');
+      expect(result.files).toContain('.claude/skills/gitnexus-*/ (skipped via --skip-skills)');
 
       await expect(fs.access(path.join(idxDir, 'AGENTS.md'))).rejects.toThrow();
       await expect(fs.access(path.join(idxDir, 'CLAUDE.md'))).rejects.toThrow();
-      await expect(fs.access(path.join(idxDir, '.claude', 'skills', 'gitnexus'))).rejects.toThrow();
+      await expect(
+        fs.access(path.join(idxDir, '.claude', 'skills', 'gitnexus-exploring')),
+      ).rejects.toThrow();
     } finally {
       await fs.rm(idxDir, { recursive: true, force: true });
     }
@@ -420,7 +432,7 @@ Old content here.
 
   it('omits standard skill references from AGENTS.md/CLAUDE.md when skipSkills is true (#742)', async () => {
     // The skills routing table in AGENTS.md/CLAUDE.md points agents at
-    // .claude/skills/gitnexus/*/SKILL.md files installed by installSkills().
+    // .claude/skills/gitnexus-*/SKILL.md files installed by installSkills().
     // When --skip-skills suppresses that install but AGENTS.md/CLAUDE.md
     // are still written, the routing table must NOT name files that don't
     // exist — otherwise every agent load incurs 6 failed reads and the

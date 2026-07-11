@@ -167,12 +167,12 @@ export function generateGitNexusContent(
   // are independent of --skip-skills, so they remain when present.
   const standardSkillsRows = skipSkills
     ? ''
-    : `| Understand architecture / "How does X work?" | \`.claude/skills/gitnexus/gitnexus-exploring/SKILL.md\` |
-| Blast radius / "What breaks if I change X?" | \`.claude/skills/gitnexus/gitnexus-impact-analysis/SKILL.md\` |
-| Trace bugs / "Why is X failing?" | \`.claude/skills/gitnexus/gitnexus-debugging/SKILL.md\` |
-| Rename / extract / split / refactor | \`.claude/skills/gitnexus/gitnexus-refactoring/SKILL.md\` |
-| Tools, resources, schema reference | \`.claude/skills/gitnexus/gitnexus-guide/SKILL.md\` |
-| Index, status, clean, wiki CLI commands | \`.claude/skills/gitnexus/gitnexus-cli/SKILL.md\` |`;
+    : `| Understand architecture / "How does X work?" | \`.claude/skills/gitnexus-exploring/SKILL.md\` |
+| Blast radius / "What breaks if I change X?" | \`.claude/skills/gitnexus-impact-analysis/SKILL.md\` |
+| Trace bugs / "Why is X failing?" | \`.claude/skills/gitnexus-debugging/SKILL.md\` |
+| Rename / extract / split / refactor | \`.claude/skills/gitnexus-refactoring/SKILL.md\` |
+| Tools, resources, schema reference | \`.claude/skills/gitnexus-guide/SKILL.md\` |
+| Index, status, clean, wiki CLI commands | \`.claude/skills/gitnexus-cli/SKILL.md\` |`;
 
   const tableBody = [standardSkillsRows, generatedRows].filter(Boolean).join('\n');
   const skillsTable = tableBody
@@ -364,11 +364,17 @@ async function upsertGitNexusSection(
 }
 
 /**
- * Install GitNexus skills to .claude/skills/gitnexus/
- * Works natively with Claude Code, Cursor, and GitHub Copilot
+ * Install GitNexus skills to .claude/skills/<skill-name>/SKILL.md
+ *
+ * Skills must sit directly under .claude/skills/ — one level, no grouping
+ * directory. Claude Code does not scan recursively, so a nested
+ * .claude/skills/gitnexus/<name>/ layout is never registered
+ * (https://code.claude.com/docs/en/skills.md). Skill names are already
+ * namespaced (`gitnexus-exploring`, …), so the flat layout cannot collide.
+ * This matches how `setup` installs the same skills globally (editor-targets.ts).
  */
 async function installSkills(repoPath: string): Promise<string[]> {
-  const skillsDir = path.join(repoPath, '.claude', 'skills', 'gitnexus');
+  const skillsDir = path.join(repoPath, '.claude', 'skills');
   const installedSkills: string[] = [];
 
   // Skill definitions bundled with the package
@@ -518,14 +524,14 @@ export async function generateAIContextFiles(
     createdFiles.push('CLAUDE.md (skipped via --skip-agents-md)');
   }
 
-  // Install skills to .claude/skills/gitnexus/ (unless --skip-skills)
+  // Install skills to .claude/skills/gitnexus-*/ (unless --skip-skills)
   if (!options?.skipSkills) {
     const installedSkills = await installSkills(repoPath);
     if (installedSkills.length > 0) {
-      createdFiles.push(`.claude/skills/gitnexus/ (${installedSkills.length} skills)`);
+      createdFiles.push(`.claude/skills/gitnexus-*/ (${installedSkills.length} skills)`);
     }
   } else {
-    createdFiles.push('.claude/skills/gitnexus/ (skipped via --skip-skills)');
+    createdFiles.push('.claude/skills/gitnexus-*/ (skipped via --skip-skills)');
   }
 
   return { files: createdFiles };
