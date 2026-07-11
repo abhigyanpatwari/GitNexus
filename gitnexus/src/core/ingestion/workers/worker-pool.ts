@@ -241,6 +241,19 @@ export interface WorkerPoolOptions {
   pdg?: boolean;
   /** Per-function source-line cap for worker-side CFG construction (0 ⇒ no cap). */
   pdgMaxFunctionLines?: number;
+  /**
+   * Max wall time `terminate()` waits for a retired worker that has NOT yet
+   * reached a JS-visible safe point before giving up on terminating it
+   * (#2432). Terminating a worker thread that is inside an N-API call aborts
+   * the whole process (`Napi::Error` → `std::terminate` → SIGABRT) — and the
+   * same abort fires at plain process exit, so the drain is what makes
+   * shutdown safe. On expiry the worker is left running (unref'd, with its
+   * at-safe-point terminate listener still armed) and a diagnostic is logged.
+   * Default 30000ms — above the C++ capture budget
+   * (`GITNEXUS_CPP_CAPTURE_BUDGET_MS`, 20000ms) so the drain converges for
+   * the known pathological class. 0 ⇒ no wait (test hook).
+   */
+  shutdownDrainMs?: number;
 }
 
 export class WorkerPoolDispatchError extends Error {
@@ -521,6 +534,9 @@ function nonNegativeInteger(value: unknown): number | undefined {
     : undefined;
 }
 
+/** See {@link WorkerPoolOptions.shutdownDrainMs}. */
+const DEFAULT_SHUTDOWN_DRAIN_MS = 30_000;
+
 interface ResolvedWorkerPoolOptions {
   subBatchSize: number;
   subBatchMaxBytes: number;
@@ -530,6 +546,7 @@ interface ResolvedWorkerPoolOptions {
   maxRespawnsPerSlot: number;
   maxCumulativeTimeoutMs: number;
   consecutiveFailureThreshold: number;
+  shutdownDrainMs: number;
 }
 
 export function resolveWorkerPoolOptions(
@@ -562,6 +579,10 @@ export function resolveWorkerPoolOptions(
       positiveInteger(options.consecutiveFailureThreshold) ??
       positiveInteger(process.env.GITNEXUS_WORKER_CONSECUTIVE_FAILURE_THRESHOLD) ??
       Math.max(DEFAULT_CONSECUTIVE_FAILURE_THRESHOLD_FLOOR, poolSize ?? 0),
+    shutdownDrainMs:
+      nonNegativeInteger(options.shutdownDrainMs) ??
+      nonNegativeInteger(process.env.GITNEXUS_WORKER_SHUTDOWN_DRAIN_MS) ??
+      DEFAULT_SHUTDOWN_DRAIN_MS,
   };
 }
 
@@ -936,6 +957,15 @@ export const createWorkerPool = (
     reason: string;
     cleanup: () => void;
     terminate: () => Promise<void>;
+    /**
+     * True once the worker has been observed at a JS-visible safe point
+     * (posted a message / messageerror, or died). Until then the worker may
+     * be inside an N-API call, and `worker.terminate()` would abort the
+     * whole process (`Napi::Error` → SIGABRT, #2432).
+     */
+    safeToTerminate: boolean;
+    /** Resolves when `safeToTerminate` flips (or the worker exits/errors). */
+    safePoint: Promise<void>;
   };
   const retiredWorkers = new Set<RetiredWorkerRecord>();
   const respawnCount: number[] = new Array(size).fill(0);
@@ -968,15 +998,55 @@ export const createWorkerPool = (
   // a terminate during startup aborts pending backoff/retries (#1741).
   let terminated = false;
 
+  /** Resolves `true` when `promise` settles within `ms`, else `false`. The
+   *  timer is unref'd so an expiring drain never holds the process open. */
+  const settledWithin = (promise: Promise<void>, ms: number): Promise<boolean> => {
+    if (ms <= 0) return Promise.resolve(false);
+    return new Promise<boolean>((resolve) => {
+      const timer = setTimeout(() => resolve(false), ms);
+      timer.unref?.();
+      void promise.then(() => {
+        clearTimeout(timer);
+        resolve(true);
+      });
+    });
+  };
+
   const terminateTrackedWorkers = async (
     liveWorkers: readonly (Worker | undefined)[],
   ): Promise<void> => {
     const retired = Array.from(retiredWorkers);
     await Promise.all([
       ...liveWorkers.map((worker) => worker?.terminate().catch(() => undefined)),
-      ...retired.map((record) => record.terminate()),
+      ...retired.map(async (record) => {
+        // #2432: a retired worker that has not reached a JS-visible safe
+        // point may be inside an N-API call — terminating it aborts the
+        // WHOLE process (`Napi::Error` → std::terminate → SIGABRT). Drain:
+        // wait (bounded) for its safe point; on expiry leave it running —
+        // it is unref'd and its at-safe-point terminate listener stays
+        // armed — and log which file wedged it.
+        if (!record.safeToTerminate) {
+          const drained = await settledWithin(record.safePoint, poolOptions.shutdownDrainMs);
+          if (!drained) {
+            logger.warn(
+              {
+                workerIndex: record.workerIndex,
+                reason: record.reason,
+                drainMs: poolOptions.shutdownDrainMs,
+              },
+              `Worker ${record.workerIndex} is still inside native code after the ` +
+                `${poolOptions.shutdownDrainMs}ms shutdown drain; leaving it un-terminated ` +
+                `to avoid a native abort (#2432). It will be terminated at its next safe point.`,
+            );
+            return;
+          }
+        }
+        await record.terminate();
+      }),
     ]);
-    retiredWorkers.clear();
+    // Undrained records stay tracked so a repeated shutdown call can retry
+    // their (now possibly safe) terminate; record.terminate() removes each
+    // drained record via its cleanup.
   };
 
   for (let i = 0; i < size; i++) {
@@ -1192,6 +1262,19 @@ export const createWorkerPool = (
       ): void => {
         let cleaned = false;
         let terminateStarted = false;
+        let resolveSafePoint!: () => void;
+        const safePoint = new Promise<void>((resolve) => {
+          resolveSafePoint = resolve;
+        });
+
+        // A message/messageerror proves the worker is executing JS again; an
+        // exit/error means the thread is gone. Either way `worker.terminate()`
+        // can no longer land mid-N-API call (#2432), so shutdown's drain may
+        // stop waiting.
+        function markSafeToTerminate() {
+          record.safeToTerminate = true;
+          resolveSafePoint();
+        }
 
         function cleanupRetired() {
           if (cleaned) return;
@@ -1211,6 +1294,7 @@ export const createWorkerPool = (
         }
 
         function terminateWhenBackInJs() {
+          markSafeToTerminate();
           void terminateRetired();
         }
 
@@ -1222,8 +1306,14 @@ export const createWorkerPool = (
           }
         }
 
-        const onRetiredError = () => cleanupRetired();
-        const onRetiredExit = () => cleanupRetired();
+        const onRetiredError = () => {
+          markSafeToTerminate();
+          cleanupRetired();
+        };
+        const onRetiredExit = () => {
+          markSafeToTerminate();
+          cleanupRetired();
+        };
         const onRetiredMessageError = () => terminateWhenBackInJs();
         const record: RetiredWorkerRecord = {
           worker,
@@ -1231,6 +1321,8 @@ export const createWorkerPool = (
           reason,
           cleanup: cleanupRetired,
           terminate: terminateRetired,
+          safeToTerminate: false,
+          safePoint,
         };
         retiredWorkers.add(record);
         worker.on('message', onRetiredMessage);
@@ -1308,8 +1400,23 @@ export const createWorkerPool = (
         reject(err);
         const liveWorkers = workers.slice();
         for (let i = 0; i < workers.length; i++) workers[i] = undefined;
+        // #2432: a live worker with a job in flight may be inside an N-API
+        // call — direct terminate risks the same native abort as the retired
+        // case. Route busy workers through the retire path (terminate at
+        // their next JS-visible safe point); idle workers are parked in the
+        // JS event loop and terminate safely right away.
+        const idleWorkers: (Worker | undefined)[] = [];
+        for (let i = 0; i < liveWorkers.length; i++) {
+          const worker = liveWorkers[i];
+          if (worker === undefined) continue;
+          if (busySlots.has(i)) {
+            retireWorkerAfterTimeout(worker, i, 'circuit breaker tripped with job in flight');
+          } else {
+            idleWorkers.push(worker);
+          }
+        }
         activeSlots.clear();
-        void terminateTrackedWorkers(liveWorkers);
+        void terminateTrackedWorkers(idleWorkers);
       };
 
       const maybeDone = () => {

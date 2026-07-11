@@ -22,6 +22,28 @@ import { markCppInlineNamespaceRange } from './inline-namespaces.js';
 import { extractCppTemplateConstraints } from './constraint-extractor.js';
 import { captureCppMemberLookupFacts } from './member-lookup.js';
 import { CPP_BRACED_INIT_TYPE_PREFIX } from './conversion-rank.js';
+import { logger } from '../../../logger.js';
+
+/**
+ * Per-file wall-clock budget for the capture-emit loop (#2432). A worker
+ * thread stuck in this loop cannot be terminated safely (terminating a
+ * thread mid-N-API call aborts the whole process with Napi::Error), so the
+ * loop must bound itself: on breach we return the captures accumulated so
+ * far with a warning — degraded coverage for one file, never a crash or a
+ * thrown error (a throw here would make the language-group catch drop every
+ * remaining file in the batch).
+ *
+ * `GITNEXUS_CPP_CAPTURE_BUDGET_MS`: unset/invalid/negative → 20000; explicit
+ * 0 → expires immediately (deterministic test hook).
+ */
+const CPP_CAPTURE_BUDGET_DEFAULT_MS = 20_000;
+
+function cppCaptureBudgetMs(): number {
+  const raw = process.env.GITNEXUS_CPP_CAPTURE_BUDGET_MS;
+  if (raw === undefined || raw === '') return CPP_CAPTURE_BUDGET_DEFAULT_MS;
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : CPP_CAPTURE_BUDGET_DEFAULT_MS;
+}
 
 export function emitCppScopeCaptures(
   sourceText: string,
@@ -38,11 +60,33 @@ export function emitCppScopeCaptures(
   const rawMatches = getCppScopeQuery().matches(tree.rootNode);
   const out: CaptureMatch[] = [];
 
+  // #2432: reset the per-file lookup index. The identifier-argument type
+  // lookups below used to re-walk the AST per identifier (full-tree DFS in
+  // isKnownEnumName, per-scope declaration scans) — O(calls × args × treeSize)
+  // per file, 151s on a 194KB file that parses in 46ms. The index makes each
+  // lookup O(1) after a single lazily-built pass.
+  resetCppFileLookupIndex();
+
   // Track ranges where typedef-struct/enum was captured as its concrete type
   // so we can suppress the duplicate @declaration.typedef match.
   const concreteTypedefRanges = new Set<string>();
 
+  // #2432: per-file deadline for the loop below (see cppCaptureBudgetMs).
+  // Checked every 64 matches — post-index a single iteration is microseconds,
+  // so the check granularity costs nothing and bounds the drift past the
+  // deadline to well under a second.
+  const budgetMs = cppCaptureBudgetMs();
+  const deadline = Date.now() + budgetMs;
+  let matchIndex = 0;
+
   for (const m of rawMatches) {
+    if ((matchIndex++ & 63) === 0 && Date.now() >= deadline) {
+      logger.warn(
+        { filePath, budgetMs, processedMatches: matchIndex - 1, totalMatches: rawMatches.length },
+        `C++ capture extraction exceeded its ${budgetMs}ms budget for ${filePath}; returning partial captures for this file (#2432).`,
+      );
+      break;
+    }
     const grouped: Record<string, Capture> = {};
     // Parallel tag -> captured SyntaxNode map. The tree-sitter query already
     // hands us each matched node as `c.node`, so anchors resolve via a
@@ -1077,6 +1121,66 @@ function inferCppBracedInitType(node: SyntaxNode): string {
 }
 
 /**
+ * Per-file lookup index (#2432). Reset at the top of `emitCppScopeCaptures`
+ * (the single per-file entry) and populated lazily by the lookup helpers
+ * below. Everything is keyed by `SyntaxNode.id` — node WRAPPER objects are
+ * recreated per access by the tree-sitter binding, so object identity (and
+ * therefore WeakMap keys) would silently never hit.
+ *
+ * - `enumNames`: every named `enum_specifier` in the translation unit,
+ *   collected by ONE root DFS on first `isKnownEnumName` query (was: one
+ *   full-tree DFS per identifier argument — the #2432 hotspot).
+ * - `scopeDecls`: per enclosing scope, first-declaration-wins map of
+ *   variable name → `declaration` statement (position-free, matching the
+ *   scan it replaces).
+ * - `fnParams`: per `function_definition`/`function_declarator`, map of
+ *   parameter name → `parameter_declaration` (null when the function has
+ *   no parameter list, preserving the scan's early-return semantics).
+ */
+interface CppFileLookupIndex {
+  enumNames: Set<string> | null;
+  scopeDecls: Map<number, Map<string, SyntaxNode>>;
+  fnParams: Map<number, Map<string, SyntaxNode> | null>;
+}
+
+let fileLookupIndex: CppFileLookupIndex = {
+  enumNames: null,
+  scopeDecls: new Map(),
+  fnParams: new Map(),
+};
+
+function resetCppFileLookupIndex(): void {
+  fileLookupIndex = { enumNames: null, scopeDecls: new Map(), fnParams: new Map() };
+}
+
+/**
+ * First-declaration-wins map of the scope's `declaration` children that
+ * carry a concrete (non-placeholder) type and a nameable declarator —
+ * exactly the entries the replaced per-identifier scans could match.
+ */
+function scopeDeclarationsFor(scope: SyntaxNode): Map<string, SyntaxNode> {
+  const cached = fileLookupIndex.scopeDecls.get(scope.id);
+  if (cached !== undefined) return cached;
+  const decls = new Map<string, SyntaxNode>();
+  for (let i = 0; i < scope.childCount; i++) {
+    const stmt = scope.child(i);
+    if (stmt === null || stmt.type !== 'declaration') continue;
+    const typeNode = stmt.childForFieldName('type');
+    if (typeNode === null) continue;
+    if (typeNode.type === 'placeholder_type_specifier') continue;
+    const declarator = stmt.childForFieldName('declarator');
+    if (declarator === null) continue;
+    const nameChild = declaredNameNode(declarator);
+    if (nameChild === null) continue;
+    const name = extractDeclaratorLeafName(nameChild);
+    if (name === '' || decls.has(name)) continue;
+    decls.set(name, stmt);
+  }
+  fileLookupIndex.scopeDecls.set(scope.id, decls);
+  return decls;
+}
+
+/**
  * Look up the declared type of a variable by scanning sibling declarations
  * in the enclosing compound_statement (function body). Handles:
  *   - `std::string result = ...` → 'string'
@@ -1109,25 +1213,12 @@ function lookupDeclaredTypeForIdentifier(identNode: SyntaxNode): string {
   const paramType = lookupFunctionParameterType(scope, varName);
   if (paramType !== '') return paramType;
 
-  // Scan declarations in the scope for a matching variable name
-  for (let i = 0; i < scope.childCount; i++) {
-    const stmt = scope.child(i);
-    if (stmt === null || stmt.type !== 'declaration') continue;
-
-    const typeNode = stmt.childForFieldName('type');
-    if (typeNode === null) continue;
-    // Skip auto/placeholder types — those need chain-follow, not literal
-    if (typeNode.type === 'placeholder_type_specifier') continue;
-
-    // Check init_declarator children for the variable name
-    const declarator = stmt.childForFieldName('declarator');
-    if (declarator === null) continue;
-    const nameChild = declaredNameNode(declarator);
-    if (nameChild !== null && extractDeclaratorLeafName(nameChild) === varName) {
-      return normalizeCppTypeText(typeNode.text);
-    }
-  }
-  return '';
+  // Indexed scope-declaration lookup (#2432; was a per-identifier scan).
+  const stmt = scopeDeclarationsFor(scope).get(varName);
+  if (stmt === undefined) return '';
+  const typeNode = stmt.childForFieldName('type');
+  if (typeNode === null) return '';
+  return normalizeCppTypeText(typeNode.text);
 }
 
 function lookupDeclaredTypeClassForIdentifier(identNode: SyntaxNode): ParameterTypeClass {
@@ -1145,30 +1236,23 @@ function lookupDeclaredTypeClassForIdentifier(identNode: SyntaxNode): ParameterT
   const paramTypeClass = lookupFunctionParameterTypeClass(scope, varName, identNode);
   if (paramTypeClass !== undefined) return paramTypeClass;
 
-  for (let i = 0; i < scope.childCount; i++) {
-    const stmt = scope.child(i);
-    if (stmt === null || stmt.type !== 'declaration') continue;
+  // Indexed scope-declaration lookup (#2432; was a per-identifier scan).
+  const stmt = scopeDeclarationsFor(scope).get(varName);
+  if (stmt === undefined) return unknownTypeClass('unknown');
+  const typeNode = stmt.childForFieldName('type');
+  const declarator = stmt.childForFieldName('declarator');
+  const nameChild = declarator !== null ? declaredNameNode(declarator) : null;
+  if (typeNode === null || nameChild === null) return unknownTypeClass('unknown');
 
-    const typeNode = stmt.childForFieldName('type');
-    if (typeNode === null) continue;
-    if (typeNode.type === 'placeholder_type_specifier') continue;
-
-    const declarator = stmt.childForFieldName('declarator');
-    if (declarator === null) continue;
-    const nameChild = declaredNameNode(declarator);
-    if (nameChild === null || extractDeclaratorLeafName(nameChild) !== varName) continue;
-
-    const typeClass = classifyCppParameterType(
-      typeNode.text,
-      nameChild.text,
-      stmt.text.replace(/;\s*$/, ''),
-    );
-    if (isKnownEnumName(identNode, typeClass.base)) {
-      return { ...typeClass, base: `enum:${typeClass.base}` };
-    }
-    return typeClass;
+  const typeClass = classifyCppParameterType(
+    typeNode.text,
+    nameChild.text,
+    stmt.text.replace(/;\s*$/, ''),
+  );
+  if (isKnownEnumName(identNode, typeClass.base)) {
+    return { ...typeClass, base: `enum:${typeClass.base}` };
   }
-  return unknownTypeClass('unknown');
+  return typeClass;
 }
 
 function lookupFunctionParameterType(scope: SyntaxNode, varName: string): string {
@@ -1201,26 +1285,42 @@ function findEnclosingFunctionParameter(scope: SyntaxNode, varName: string): Syn
   let node: SyntaxNode | null = scope.parent;
   while (node !== null) {
     if (node.type === 'function_definition' || node.type === 'function_declarator') {
-      const fnDecl =
-        node.type === 'function_declarator'
-          ? node
-          : findFirstDescendantOfType(node, 'function_declarator');
-      const params = fnDecl?.childForFieldName('parameters') ?? null;
-      if (params !== null) {
-        for (let i = 0; i < params.namedChildCount; i++) {
-          const param = params.namedChild(i);
-          if (param === null || param.type !== 'parameter_declaration') continue;
-          const declarator = param.childForFieldName('declarator');
-          if (declarator !== null && extractDeclaratorLeafName(declarator) === varName) {
-            return param;
-          }
-        }
-      }
-      return null;
+      return enclosingFunctionParametersFor(node)?.get(varName) ?? null;
     }
     node = node.parent;
   }
   return null;
+}
+
+/**
+ * First-wins map of a function's `parameter_declaration`s by declarator
+ * leaf name (#2432; was a per-identifier scan). `null` when the function
+ * has no parameter list — the caller returns null without walking further
+ * up, preserving the replaced scan's early-return.
+ */
+function enclosingFunctionParametersFor(fnNode: SyntaxNode): Map<string, SyntaxNode> | null {
+  const cached = fileLookupIndex.fnParams.get(fnNode.id);
+  if (cached !== undefined) return cached;
+  const fnDecl =
+    fnNode.type === 'function_declarator'
+      ? fnNode
+      : findFirstDescendantOfType(fnNode, 'function_declarator');
+  const params = fnDecl?.childForFieldName('parameters') ?? null;
+  let index: Map<string, SyntaxNode> | null = null;
+  if (params !== null) {
+    index = new Map();
+    for (let i = 0; i < params.namedChildCount; i++) {
+      const param = params.namedChild(i);
+      if (param === null || param.type !== 'parameter_declaration') continue;
+      const declarator = param.childForFieldName('declarator');
+      if (declarator === null) continue;
+      const name = extractDeclaratorLeafName(declarator);
+      if (name === '' || index.has(name)) continue;
+      index.set(name, param);
+    }
+  }
+  fileLookupIndex.fnParams.set(fnNode.id, index);
+  return index;
 }
 
 function declaredNameNode(declarator: SyntaxNode): SyntaxNode | null {
@@ -1247,21 +1347,28 @@ function normalizeCppTypeText(text: string): string {
 
 function isKnownEnumName(node: SyntaxNode, typeName: string): boolean {
   if (typeName === '' || typeName === 'unknown') return false;
-  let root: SyntaxNode = node;
-  while (root.parent !== null) root = root.parent;
-  const stack: SyntaxNode[] = [root];
-  while (stack.length > 0) {
-    const cur = stack.pop()!;
-    if (cur.type === 'enum_specifier') {
-      const name = cur.childForFieldName('name');
-      if (name?.text === typeName) return true;
+  // One full-tree DFS per FILE (lazy), not per identifier argument — the
+  // per-identifier walk here was the dominant cost of #2432 (87s of a 151s
+  // extraction on a file that parses in 46ms).
+  if (fileLookupIndex.enumNames === null) {
+    let root: SyntaxNode = node;
+    while (root.parent !== null) root = root.parent;
+    const names = new Set<string>();
+    const stack: SyntaxNode[] = [root];
+    while (stack.length > 0) {
+      const cur = stack.pop()!;
+      if (cur.type === 'enum_specifier') {
+        const name = cur.childForFieldName('name');
+        if (name !== null) names.add(name.text);
+      }
+      for (let i = 0; i < cur.childCount; i++) {
+        const child = cur.child(i);
+        if (child !== null) stack.push(child);
+      }
     }
-    for (let i = 0; i < cur.childCount; i++) {
-      const child = cur.child(i);
-      if (child !== null) stack.push(child);
-    }
+    fileLookupIndex.enumNames = names;
   }
-  return false;
+  return fileLookupIndex.enumNames.has(typeName);
 }
 
 /**
