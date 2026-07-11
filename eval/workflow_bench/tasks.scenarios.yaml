@@ -1,0 +1,84 @@
+# Scenario suite for the gitnexus workflow benchmark — the ground-base matrix.
+#
+# Task fields:
+#   id:      short slug used in reports
+#   class:   task class for cost/quality routing analysis. The suite spans:
+#            trivial → investigation-bug → investigation-feature → cross-module
+#   repo:    path to a git repo that is GitNexus-indexed
+#   ref:     git ref benchmarked (fresh detached worktree per arm per run)
+#   setup:   optional shell command run in the fresh worktree first
+#            (dependency symlinks / index copy so agents and verify can run)
+#   prompt:  the engineering task, phrased once, given verbatim to every arm.
+#            Prescribe the test file path — that keeps `verify` deterministic.
+#   verify:  shell command, exit 0 = resolved
+#
+# Arms (runner --arms): workflow (plan→work), workflow_direct (work skill,
+# no plan), baseline (no skills, MCP allowed), baseline_nomcp (no skills, no
+# graph tools). Comparing workflow vs workflow_direct vs baseline locates the
+# task-complexity boundary where each mode pays for itself — that boundary is
+# the routing rule lfg's gate and work's direct-mode triage encode.
+#
+# For the GitNexus repo itself, a working setup is:
+#   mkdir -p .gitnexus &&
+#   cp -r <main-checkout>/.gitnexus/gitnexus.json <main-checkout>/.gitnexus/meta.json
+#         <main-checkout>/.gitnexus/run.cjs <main-checkout>/.gitnexus/lbug .gitnexus/;
+#   ln -s <main-checkout>/node_modules node_modules &&
+#   ln -s <main-checkout>/gitnexus/node_modules gitnexus/node_modules &&
+#   ln -s <main-checkout>/gitnexus-shared/node_modules gitnexus-shared/node_modules
+
+tasks:
+  # Overhead floor — measured 2026-07-11 (see README calibration): the
+  # workflow is EXPECTED to lose here. Kept in the suite so regressions in
+  # the overhead floor stay visible.
+  - id: trivial-version-alias
+    class: trivial
+    repo: ~/GitNexus
+    ref: main
+    prompt: >
+      Add -V as a short alias for --version to the gitnexus CLI
+      (gitnexus/src/cli/index.ts), and cover the alias with a unit test in
+      gitnexus/test/unit/cli-commands.test.ts.
+    verify: cd gitnexus && npx tsc --noEmit && npx vitest run test/unit/cli-commands.test.ts
+
+  # Investigation-heavy bug: requires locating the degraded-result path in
+  # local-backend, understanding the layer probe, and changing a contract
+  # message without breaking existing consumers.
+  - id: inv-bug-pdg-note
+    class: investigation-bug
+    repo: ~/GitNexus
+    ref: main
+    prompt: >
+      When the pdg_query MCP tool returns its "no PDG layer" note, make the
+      note say WHICH sub-layer is missing (CDG vs REACHING_DEF) instead of a
+      generic message, keeping the existing degraded-result contract intact.
+      Cover both modes with unit tests in
+      gitnexus/test/unit/pdg-note-sublayer.test.ts.
+    verify: cd gitnexus && npx tsc --noEmit && npx vitest run test/unit/pdg-note-sublayer.test.ts
+
+  # Investigation-heavy feature: touches tool schema, backend filtering, and
+  # pagination totals — three seams that must stay consistent.
+  - id: inv-feature-list-repos-filter
+    class: investigation-feature
+    repo: ~/GitNexus
+    ref: main
+    prompt: >
+      Add an optional "name_contains" filter parameter to the list_repos MCP
+      tool: case-insensitive substring match on the repo name, with the
+      pagination object (total/hasMore/nextOffset) reflecting the FILTERED
+      set. Cover with unit tests in
+      gitnexus/test/unit/list-repos-name-filter.test.ts.
+    verify: cd gitnexus && npx tsc --noEmit && npx vitest run test/unit/list-repos-name-filter.test.ts
+
+  # Cross-module: worker-pool + pipeline seams, concurrency-sensitive.
+  # The most expensive scenario — run deliberately, not by default.
+  - id: cross-module-parse-retry
+    class: cross-module
+    repo: ~/GitNexus
+    ref: main
+    prompt: >
+      Add bounded retry with backoff to the ingestion pipeline so a transient
+      parse-worker failure on a file is retried up to 2 times before the file
+      is marked failed, without retrying deterministic parse errors. Cover
+      the retry/no-retry decision with unit tests in
+      gitnexus/test/unit/parse-retry.test.ts.
+    verify: cd gitnexus && npx tsc --noEmit && npx vitest run test/unit/parse-retry.test.ts

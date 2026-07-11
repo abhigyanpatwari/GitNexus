@@ -7,7 +7,7 @@
 #   uv run --with 'litellm[proxy]' litellm --config workflow_bench/free-model.litellm.yaml --port 4000
 #
 #   uv run python -m workflow_bench.runner \
-#     --tasks workflow_bench/tasks.example.yaml \
+#     --tasks workflow_bench/tasks.scenarios.yaml \
 #     --base-url http://localhost:4000 --auth-token sk-wfbench \
 #     --model free-coder
 #

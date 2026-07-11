@@ -10,19 +10,24 @@ the CLI's own `--output-format json` usage report.
 | Arm | Sessions | Notes |
 | --- | --- | --- |
 | `workflow` | `gitnexus-plan` on the task, then `gitnexus-work` on the produced plan | The skills must be installed (`gitnexus setup`, or repo-local `.claude/skills/`) |
+| `workflow_direct` | one `gitnexus-work` direct-mode session | The middle option — execution discipline without a planning pass |
 | `baseline` | one session with the identical task text | `--disallowedTools Skill` so it cannot borrow the workflow; same repo, same MCP tools |
+| `baseline_nomcp` | like baseline, graph tools also disallowed | Separates the workflow-discipline question from the GitNexus-tools question (off by default) |
 
-Both arms run in fresh detached git worktrees of the task's `ref`, once per
+Every arm runs in a fresh detached git worktree of the task's `ref`, once per
 `--runs`. A per-task `verify` command decides `resolved` — token savings on a
-failed task are flagged, not celebrated. The benchmark isolates the
-*workflow discipline* (graph-first navigation, context ledger, plan→pack
-handoff); both arms may use the GitNexus MCP tools.
+failed task are flagged, not celebrated — and diff churn
+(files/+insertions/−deletions vs the starting commit) is recorded as a cheap
+over-engineering proxy. Task `class` labels (trivial → investigation →
+cross-module) make the report readable as a routing table: the boundary where
+`workflow` starts beating `workflow_direct` and `baseline` is the boundary
+lfg's gate and work's direct-mode triage should encode.
 
 ## Quick start
 
 ```bash
 cd eval
-uv run python -m workflow_bench.runner --tasks workflow_bench/tasks.example.yaml --runs 3
+uv run python -m workflow_bench.runner --tasks workflow_bench/tasks.scenarios.yaml --runs 3
 ```
 
 Output: `results/wfbench-<timestamp>/results.jsonl` (every run, with session
@@ -42,7 +47,7 @@ uv run --with 'litellm[proxy]' litellm --config workflow_bench/free-model.litell
 
 # 2. Point the benchmark at it
 uv run python -m workflow_bench.runner \
-  --tasks workflow_bench/tasks.example.yaml --runs 3 \
+  --tasks workflow_bench/tasks.scenarios.yaml --runs 3 \
   --base-url http://localhost:4000 --auth-token sk-wfbench --model free-coder
 ```
 
@@ -81,7 +86,7 @@ task, distrust the benchmark.
 
 ## Writing good tasks
 
-See `tasks.example.yaml`. Small enough to finish headless, real enough to
+See `tasks.scenarios.yaml`. Small enough to finish headless, real enough to
 require investigation — the workflow's savings come from *not re-reading and
 not re-investigating*, which trivial tasks never exercise. Prefer `verify`
 commands that use the repo's own npm scripts (they carry build pre-hooks).

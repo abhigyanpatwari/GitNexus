@@ -1,6 +1,6 @@
 """Unit tests for the pure aggregation/report helpers of workflow_bench."""
 
-from workflow_bench.runner import aggregate, render_report, savings
+from workflow_bench.runner import aggregate, parse_shortstat, render_report, savings
 
 
 def record(**overrides):
@@ -12,6 +12,10 @@ def record(**overrides):
         "cost_usd": 0.5,
         "duration_s": 60.0,
         "num_turns": 10,
+        "diff_files": 2,
+        "diff_insertions": 30,
+        "diff_deletions": 5,
+        "class": "demo",
         "resolved": True,
     }
     base.update(overrides)
@@ -33,6 +37,10 @@ def test_aggregate_takes_medians_and_counts_resolved():
         "cost_usd": 0.5,
         "duration_s": 60.0,
         "num_turns": 10,
+        "diff_files": 2,
+        "diff_insertions": 30,
+        "diff_deletions": 5,
+        "class": "demo",
         "resolved": 2,
         "runs": 3,
     }
@@ -53,15 +61,30 @@ def test_savings_handles_zero_baseline_without_dividing():
     assert savings(baseline, workflow)["cost_usd"] == 0.0
 
 
-def test_render_report_emits_arm_rows_and_savings_row():
+def test_parse_shortstat_full_and_empty():
+    full = parse_shortstat(" 3 files changed, 120 insertions(+), 7 deletions(-)")
+    assert full == {"diff_files": 3, "diff_insertions": 120, "diff_deletions": 7}
+    assert parse_shortstat("") == {
+        "diff_files": 0,
+        "diff_insertions": 0,
+        "diff_deletions": 0,
+    }
+    singular = parse_shortstat(" 1 file changed, 1 insertion(+)")
+    assert singular == {"diff_files": 1, "diff_insertions": 1, "diff_deletions": 0}
+
+
+def test_render_report_emits_arm_rows_and_per_arm_savings_rows():
     results = {
         "demo-task": {
-            "baseline": aggregate([record(input_tokens=2000)]),
             "workflow": aggregate([record(input_tokens=1000)]),
+            "workflow_direct": aggregate([record(input_tokens=1500)]),
+            "baseline": aggregate([record(input_tokens=2000)]),
         }
     }
     report = render_report(results)
-    assert "| demo-task | baseline | 1/1 | 2000 |" in report
-    assert "| demo-task | workflow | 1/1 | 1000 |" in report
-    assert "| demo-task | **savings %** | — | 50.0 |" in report
+    assert "| demo-task | demo | workflow | 1/1 | 1000 |" in report
+    assert "| demo-task | demo | baseline | 1/1 | 2000 |" in report
+    assert "| demo-task | demo | **workflow savings %** | — | 50.0 |" in report
+    assert "| demo-task | demo | **workflow_direct savings %** | — | 25.0 |" in report
+    assert "2/+30/−5" in report
     assert "results.jsonl" in report

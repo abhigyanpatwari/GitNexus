@@ -22,6 +22,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import statistics
 import subprocess
 import tempfile
@@ -47,6 +48,12 @@ WORK_PROMPT = (
     "Use the gitnexus-work skill to execute the plan at {plan}.\n"
     "Headless run: proceed without asking; report Definition of Done status "
     "at the end."
+)
+WORK_DIRECT_PROMPT = (
+    "Use the gitnexus-work skill for: {task}\n"
+    "Headless run: proceed without asking. The user explicitly declines a "
+    "separate planning pass — execute in direct mode with the skill's "
+    "execution discipline."
 )
 BASELINE_PROMPT = (
     "{task}\n\n"
@@ -136,6 +143,31 @@ def remove_worktree(repo: Path, worktree: Path) -> None:
     )
 
 
+def parse_shortstat(text: str) -> dict[str, int]:
+    """Parse `git diff --shortstat` output into churn counters."""
+    keys = {
+        "file": "diff_files",
+        "insertion": "diff_insertions",
+        "deletion": "diff_deletions",
+    }
+    out = dict.fromkeys(keys.values(), 0)
+    for count, word in re.findall(r"(\d+) (file|insertion|deletion)", text):
+        out[keys[word]] = int(count)
+    return out
+
+
+def diff_churn(worktree: Path, orig_sha: str) -> dict[str, int]:
+    """Total churn (committed + uncommitted) vs the worktree's starting sha —
+    a cheap over-engineering proxy alongside pass/fail quality."""
+    proc = subprocess.run(
+        ["git", "-C", str(worktree), "diff", "--shortstat", orig_sha],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return parse_shortstat(proc.stdout)
+
+
 def run_verify(command: str, cwd: Path, timeout: int) -> bool:
     proc = subprocess.run(
         command, shell=True, cwd=cwd, capture_output=True, timeout=timeout, check=False
@@ -183,6 +215,23 @@ def run_arm(
                     **common,
                 )
             )
+    elif arm == "workflow_direct":
+        sessions.append(
+            run_claude(
+                WORK_DIRECT_PROMPT.format(task=task["prompt"]), worktree, **common
+            )
+        )
+    elif arm == "baseline_nomcp":
+        # Isolates the workflow-discipline question from the GitNexus-tools
+        # question: no skills AND no graph tools.
+        sessions.append(
+            run_claude(
+                BASELINE_PROMPT.format(task=task["prompt"]),
+                worktree,
+                disallowed_tools=["Skill", "mcp__gitnexus"],
+                **common,
+            )
+        )
     else:
         sessions.append(
             run_claude(
@@ -204,14 +253,18 @@ def run_arm(
 # ─── Pure aggregation/report helpers (unit-tested) ──────────────────────────
 
 
+CHURN_FIELDS = ("diff_files", "diff_insertions", "diff_deletions")
+
+
 def aggregate(records: list[dict[str, Any]]) -> dict[str, Any]:
     """Median metrics + resolve rate across repeated runs of one task+arm."""
-    metrics = (*USAGE_FIELDS, "cost_usd", "duration_s", "num_turns")
+    metrics = (*USAGE_FIELDS, "cost_usd", "duration_s", "num_turns", *CHURN_FIELDS)
     out: dict[str, Any] = {
-        m: statistics.median(r[m] for r in records) for m in metrics
+        m: statistics.median(r.get(m, 0) for r in records) for m in metrics
     }
     out["resolved"] = sum(1 for r in records if r["resolved"])
     out["runs"] = len(records)
+    out["class"] = records[0].get("class", "")
     return out
 
 
@@ -229,28 +282,31 @@ def render_report(results: dict[str, dict[str, dict[str, Any]]]) -> str:
     lines = [
         "# gitnexus workflow benchmark",
         "",
-        "Medians across runs; savings = (baseline − workflow) / baseline.",
-        "A negative saving means the workflow arm spent more.",
+        "Medians across runs; savings rows = (baseline − arm) / baseline per arm.",
+        "A negative saving means that arm spent more than baseline. churn =",
+        "files/+insertions/−deletions vs the worktree's starting commit.",
         "",
-        "| task | arm | resolved | input | cache_create | cache_read | output | cost $ | wall s | turns |",
-        "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+        "| task | class | arm | resolved | input | cache_create | cache_read | output | cost $ | wall s | turns | churn |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
     ]
     for task_id, arms in results.items():
         for arm, agg in arms.items():
             lines.append(
-                f"| {task_id} | {arm} | {agg['resolved']}/{agg['runs']} "
+                f"| {task_id} | {agg['class']} | {arm} | {agg['resolved']}/{agg['runs']} "
                 f"| {agg['input_tokens']:.0f} | {agg['cache_creation_input_tokens']:.0f} "
                 f"| {agg['cache_read_input_tokens']:.0f} | {agg['output_tokens']:.0f} "
-                f"| {agg['cost_usd']:.4f} | {agg['duration_s']:.0f} | {agg['num_turns']:.0f} |"
+                f"| {agg['cost_usd']:.4f} | {agg['duration_s']:.0f} | {agg['num_turns']:.0f} "
+                f"| {agg['diff_files']:.0f}/+{agg['diff_insertions']:.0f}/−{agg['diff_deletions']:.0f} |"
             )
-        if "baseline" in arms and "workflow" in arms:
-            s = savings(arms["baseline"], arms["workflow"])
-            lines.append(
-                f"| {task_id} | **savings %** | — "
-                f"| {s['input_tokens']} | {s['cache_creation_input_tokens']} "
-                f"| {s['cache_read_input_tokens']} | {s['output_tokens']} "
-                f"| {s['cost_usd']} | {s['duration_s']} | — |"
-            )
+        for arm in arms:
+            if arm != "baseline" and "baseline" in arms:
+                s = savings(arms["baseline"], arms[arm])
+                lines.append(
+                    f"| {task_id} | {arms[arm]['class']} | **{arm} savings %** | — "
+                    f"| {s['input_tokens']} | {s['cache_creation_input_tokens']} "
+                    f"| {s['cache_read_input_tokens']} | {s['output_tokens']} "
+                    f"| {s['cost_usd']} | {s['duration_s']} | — | — |"
+                )
     lines.append("")
     lines.append(
         "Session ids for every run are in results.jsonl — open the matching "
@@ -266,7 +322,12 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--tasks", required=True, type=Path)
     parser.add_argument("--runs", type=int, default=1)
-    parser.add_argument("--arms", nargs="+", default=["workflow", "baseline"])
+    parser.add_argument(
+        "--arms",
+        nargs="+",
+        default=["workflow", "workflow_direct", "baseline"],
+        choices=["workflow", "workflow_direct", "baseline", "baseline_nomcp"],
+    )
     parser.add_argument("--claude-bin", default="claude")
     parser.add_argument("--timeout", type=int, default=3600, help="per session, seconds")
     parser.add_argument("--out", type=Path, default=None)
@@ -315,10 +376,23 @@ def main() -> None:
                                 capture_output=True,
                                 timeout=600,
                             )
+                        orig_sha = subprocess.run(
+                            ["git", "-C", str(worktree), "rev-parse", "HEAD"],
+                            capture_output=True,
+                            text=True,
+                            check=True,
+                        ).stdout.strip()
                         record = run_arm(arm, task, worktree, args)
+                        record.update(diff_churn(worktree, orig_sha))
                     finally:
                         remove_worktree(repo, worktree)
-                    record.update({"task": task["id"], "run": run_idx})
+                    record.update(
+                        {
+                            "task": task["id"],
+                            "class": task.get("class", ""),
+                            "run": run_idx,
+                        }
+                    )
                     per_arm[arm].append(record)
                     with results_path.open("a") as fh:
                         fh.write(json.dumps(record) + "\n")
