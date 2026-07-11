@@ -11,10 +11,11 @@
  */
 
 import path from 'path';
+import { existsSync, statSync } from 'node:fs';
 import { fork } from 'child_process';
 import { fileURLToPath, pathToFileURL } from 'url';
 import { createRequire } from 'node:module';
-import { getStoragePath } from '../storage/repo-manager.js';
+import { getStoragePath, INDEX_METADATA_FILE } from '../storage/repo-manager.js';
 import { logger } from '../core/logger.js';
 import type { JobManager } from './analyze-job.js';
 import type { WorkerMessage } from './analyze-worker.js';
@@ -26,6 +27,12 @@ export interface LaunchDeps {
   backend: { init: () => Promise<unknown> };
   acquireRepoLock: (key: string) => string | null;
   releaseRepoLock: (key: string) => void;
+  /**
+   * Drops the server's cached LadybugDB handle (closeLbug). The worker
+   * process rewrites the repo's DB files on disk, so a connection opened
+   * before the rewrite keeps reading the pre-rewrite state until evicted.
+   */
+  closeDbHandle: () => Promise<void>;
 }
 
 export interface LaunchOptions {
@@ -37,14 +44,71 @@ export interface LaunchOptions {
 
 const MAX_WORKER_RETRIES = 2;
 
+/**
+ * The worker reports `complete` over IPC before its on-disk finalization
+ * (LadybugDB checkpoint + native handle release + metadata write) is visible
+ * at `getStoragePath(targetPath)` — observed up to ~6.5s behind the IPC
+ * message. Opening the database inside that window is what the pre-IPC
+ * ordering was meant to prevent and is actively dangerous: reads fail with
+ * binder errors or return an empty graph, the open can quarantine the
+ * in-flight WAL, and the native layer racing the rewrite has crashed the
+ * whole server (SIGSEGV-class exit, no output) on slow CI runners.
+ */
+const FINALIZE_SETTLE_TIMEOUT_MS = 60_000;
+const FINALIZE_SETTLE_POLL_MS = 200;
+
+/**
+ * Resolve once the analyzed repo's index is settled at `storagePath`: the
+ * LadybugDB file and metadata both exist AND were (re)written by THIS job
+ * (mtime >= jobStartMs — bare existence is not enough, a re-analysis leaves
+ * the previous index in place while it works), and no transient WAL/shadow/
+ * checkpoint sidecars remain (the worker's native close has finished).
+ *
+ * Never rejects. Timing out logs and proceeds (pre-gate behavior) rather
+ * than failing a job whose analysis genuinely succeeded — e.g. a no-op
+ * non-force analyze legitimately rewrites nothing.
+ */
+const waitForSettledIndex = async (storagePath: string, jobStartMs: number): Promise<void> => {
+  const transientSidecars = ['lbug.wal', 'lbug.shadow', 'lbug.wal.checkpoint'].map((f) =>
+    path.join(storagePath, f),
+  );
+  const settled = (): boolean => {
+    try {
+      const lbugStat = statSync(path.join(storagePath, 'lbug'));
+      const metaStat = statSync(path.join(storagePath, INDEX_METADATA_FILE));
+      return (
+        lbugStat.mtimeMs >= jobStartMs &&
+        metaStat.mtimeMs >= jobStartMs &&
+        transientSidecars.every((f) => !existsSync(f))
+      );
+    } catch {
+      return false; // not written yet
+    }
+  };
+  const deadline = Date.now() + FINALIZE_SETTLE_TIMEOUT_MS;
+  while (!settled()) {
+    if (Date.now() > deadline) {
+      logger.warn(
+        { storagePath },
+        'analyze finalization not visible after timeout; completing job anyway',
+      );
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, FINALIZE_SETTLE_POLL_MS));
+  }
+};
+
 export function createLaunchAnalysisWorker(deps: LaunchDeps) {
-  const { jobManager, backend, acquireRepoLock, releaseRepoLock } = deps;
+  const { jobManager, backend, acquireRepoLock, releaseRepoLock, closeDbHandle } = deps;
 
   return function launchAnalysisWorker(
     job: { id: string },
     targetPath: string,
     opts: LaunchOptions,
   ): void {
+    // For waitForSettledIndex: files (re)written by this job have mtimes at or
+    // after this instant. Taken before the fork so no worker write predates it.
+    const jobStartMs = Date.now();
     // Acquire shared repo lock (keyed on storagePath to match embed handler)
     const analyzeLockKey = getStoragePath(targetPath);
     const lockErr = acquireRepoLock(analyzeLockKey);
@@ -95,10 +159,17 @@ export function createLaunchAnalysisWorker(deps: LaunchDeps) {
           });
         } else if (msg.type === 'complete') {
           releaseRepoLock(analyzeLockKey);
-          // Reinitialize backend BEFORE marking complete — ensures the new repo
-          // is queryable when the client receives the SSE complete event.
-          backend
-            .init()
+          // Before marking complete: (1) wait for the worker's on-disk
+          // finalization to settle (see waitForSettledIndex), (2) evict the
+          // cached DB handle — same invalidation DELETE /api/repo performs, a
+          // handle opened before the rewrite reads pre-rewrite state — and
+          // only then (3) reinitialize the backend. This makes the ordering
+          // comment below true in practice: the repo is actually queryable
+          // when the client receives the SSE complete event.
+          waitForSettledIndex(analyzeLockKey, jobStartMs)
+            .then(() => closeDbHandle())
+            .catch(() => {}) // best-effort: eviction failure must not fail the job
+            .then(() => backend.init())
             .then(() => {
               jobManager.updateJob(job.id, { status: 'complete', repoName: msg.result.repoName });
             })
@@ -111,6 +182,8 @@ export function createLaunchAnalysisWorker(deps: LaunchDeps) {
             });
         } else if (msg.type === 'error') {
           releaseRepoLock(analyzeLockKey);
+          // A failed (force) analyze may still have rewritten DB files first.
+          void closeDbHandle().catch(() => {});
           jobManager.updateJob(job.id, { status: 'failed', error: msg.message });
         }
       });
