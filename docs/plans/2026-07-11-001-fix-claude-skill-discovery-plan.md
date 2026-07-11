@@ -205,4 +205,3 @@ It does not alter indexing, graph storage, MCP APIs, global setup targets, or ru
 - Full `gitnexus` tests and typecheck pass, or any environment-only exception is documented with focused proof.
 - GitNexus change detection reports only the expected CLI generation and test scope.
 - Abandoned experimental code and temporary artifacts from implementation are absent from the final diff.
-
