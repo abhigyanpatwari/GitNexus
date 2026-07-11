@@ -1285,9 +1285,15 @@ const processFileGroup = (
 
     let tree;
     try {
-      tree = parseSourceSafe(parser, parseContent, undefined, {
-        bufferSize: getTreeSitterBufferSize(parseContent),
-      });
+      tree = parseSourceSafe(
+        parser,
+        parseContent,
+        undefined,
+        {
+          bufferSize: getTreeSitterBufferSize(parseContent),
+        },
+        file.path,
+      );
     } catch (err) {
       reportWarning(
         `Failed to parse file ${file.path}: ${err instanceof Error ? err.message : String(err)}`,

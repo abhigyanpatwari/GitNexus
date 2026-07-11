@@ -181,7 +181,7 @@ export function getParseDiagnostics(tree: Parser.Tree): {
 /**
  * Parse `sourceText` safely on every platform.
  *
- * This is the single "parse safely" entry point and its contract covers three
+ * This is the single "parse safely" entry point and its contract covers four
  * concerns:
  *
  *  1. **Windows crash workaround.** Inputs longer than 32 767 chars are fed
@@ -201,8 +201,13 @@ export function getParseDiagnostics(tree: Parser.Tree): {
  *     the tree is **returned anyway** — error recovery is a downgrade, never a
  *     drop. Callers wanting the boolean use {@link parseHadErrors}.
  *
- * @param label optional context (e.g. file path) attached to timeout errors
- *   and degraded-parse logs. Non-breaking trailing param.
+ *  4. **Embedded NUL recovery.** U+0000 is replaced with one ASCII space in
+ *     the parser-only input. The one-for-one substitution keeps tree indices
+ *     aligned with the original source while preventing language lexers from
+ *     swallowing declarations during error recovery.
+ *
+ * @param label optional context (e.g. file path) attached to timeout errors,
+ *   recovery warnings, and degraded-parse logs. Non-breaking trailing param.
  */
 export function parseSourceSafe(
   parser: Parser,
@@ -211,17 +216,30 @@ export function parseSourceSafe(
   options?: Parser.Options,
   label?: string,
 ): Parser.Tree {
+  let parserInput = sourceText;
+  if (sourceText.includes('\0')) {
+    let nullByteCount = 0;
+    parserInput = sourceText.replaceAll('\0', () => {
+      nullByteCount += 1;
+      return ' ';
+    });
+    logger.warn(
+      { ...(label ? { file: label } : {}), nullByteCount },
+      'replaced embedded NUL bytes before tree-sitter parsing',
+    );
+  }
+
   const budgetMs = resolveParseTimeoutMs();
   const armed = armParseBudget(parser, budgetMs);
 
   let tree: Parser.Tree | null;
   try {
-    if (sourceText.length <= DIRECT_PARSE_LIMIT_CHARS) {
-      tree = parser.parse(sourceText, oldTree, options);
+    if (parserInput.length <= DIRECT_PARSE_LIMIT_CHARS) {
+      tree = parser.parse(parserInput, oldTree, options);
     } else {
       const input: Parser.Input = (index) => {
-        if (index >= sourceText.length) return null;
-        return sourceText.slice(index, index + SAFE_PARSE_CHUNK_CHARS);
+        if (index >= parserInput.length) return null;
+        return parserInput.slice(index, index + SAFE_PARSE_CHUNK_CHARS);
       };
       tree = parser.parse(input, oldTree, options);
     }
