@@ -181,7 +181,7 @@ export function getParseDiagnostics(tree: Parser.Tree): {
 /**
  * Parse `sourceText` safely on every platform.
  *
- * This is the single "parse safely" entry point and its contract covers three
+ * This is the single "parse safely" entry point and its contract covers four
  * concerns:
  *
  *  1. **Windows crash workaround.** Inputs longer than 32 767 chars are fed
