@@ -22,19 +22,31 @@ Output: `docs/plans/YYYY-MM-DD-gitnexus-plan-<slug>.md` — a 13-section plan wh
 section 11 is a machine-readable **implementation context pack** that a
 follow-up agent can consume without re-investigating the repository.
 
-### Codex (optional user-level slash command)
+### Codex (user-level install)
 
-Codex prompts are user-level only (not repo-shareable). To get a
-`/gitnexus-plan` slash command, create `~/.codex/prompts/gitnexus-plan.md`:
+Codex discovers SKILL.md skills from `~/.agents/skills/` (the same path the
+other `gitnexus-*` skills install to). To make this skill auto-discoverable in
+every Codex session:
+
+```
+cp -r .claude/skills/gitnexus-plan ~/.agents/skills/gitnexus-plan
+```
+
+Codex prompts are user-level only (not repo-shareable). Optionally, for an
+explicit `/gitnexus-plan` slash command, also create
+`~/.codex/prompts/gitnexus-plan.md`:
 
 ```markdown
 ---
 description: Implementation-ready engineering plan via GitNexus + PDG + source verification
 argument-hint: <task description>
 ---
-Read `.claude/skills/gitnexus-plan/SKILL.md` in this repo and follow it for: $ARGUMENTS
-Load its references/ files at the phases that call for them. Planning only — never
-edit code; the only repo file you write is the plan document.
+Use the gitnexus-plan skill for: $ARGUMENTS
+
+Read `~/.agents/skills/gitnexus-plan/SKILL.md` (if this repo has its own copy at
+`.claude/skills/gitnexus-plan/SKILL.md`, prefer that one) and follow its phases in
+order, loading its `references/` files at the phases that call for them. Planning
+only — never edit code; the only repo file you write is the plan document.
 ```
 
 ## Architecture note: how GitNexus and the agent interact
