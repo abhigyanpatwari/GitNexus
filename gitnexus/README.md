@@ -233,7 +233,7 @@ gitnexus analyze --embeddings    # Enable embedding generation (slower, better s
 gitnexus embeddings install      # Fetch the optional local embedding stack on demand (--cuda, --force)
 gitnexus analyze --skills        # Generate repo-specific skill files from detected communities
 gitnexus analyze --skip-agents-md  # Preserve custom AGENTS.md/CLAUDE.md gitnexus section edits
-gitnexus analyze --skip-skills   # Skip installing .claude/skills/gitnexus/ skill files
+gitnexus analyze --skip-skills   # Skip installing standard .claude/skills/gitnexus-* skill files
 gitnexus analyze --skip-git      # Index folders that are not Git repositories
 gitnexus analyze --workers <n>   # Parse worker pool size (>=1; default: cores-1, capped at 16)
 gitnexus analyze --verbose       # Log skipped files when parsers are unavailable
@@ -328,7 +328,7 @@ GitNexus ships with skill files that teach AI agents how to use the tools effect
 - **Guide** — GitNexus tool/resource/schema reference for the agent
 - **CLI** — Run analyze/status/clean/wiki commands on request
 
-Installed automatically by both `gitnexus analyze` (per-repo) and `gitnexus setup` (global). Run `gitnexus analyze --skills` to additionally generate repo-specific skills for each detected functional area under `.claude/skills/generated/`.
+Installed automatically by both `gitnexus analyze` (per-repo) and `gitnexus setup` (global). Run `gitnexus analyze --skills` to additionally generate each detected functional area as a direct project skill under `.claude/skills/gitnexus-area-<name>/`.
 
 ## Requirements
 

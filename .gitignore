@@ -97,6 +97,12 @@ gitnexus/vendor/**/node_modules/
 .claude/helpers
 .claude/skills/*
 !.claude/skills/gitnexus/
+!.claude/skills/gitnexus-cli/
+!.claude/skills/gitnexus-debugging/
+!.claude/skills/gitnexus-exploring/
+!.claude/skills/gitnexus-guide/
+!.claude/skills/gitnexus-impact-analysis/
+!.claude/skills/gitnexus-refactoring/
 !.claude/skills/gitnexus-pr-swarm-review/
 
 .history/
