@@ -1,0 +1,39 @@
+# Example benchmark tasks for the gitnexus workflow benchmark.
+#
+# Each task needs:
+#   id:      short slug used in reports
+#   repo:    path to a git repo that is GitNexus-indexed (both arms may use
+#            the MCP tools — the benchmark isolates the WORKFLOW discipline,
+#            not GitNexus itself)
+#   ref:     git ref to benchmark against (default HEAD); every run gets a
+#            fresh detached worktree of this ref
+#   prompt:  the engineering task, phrased once, given verbatim to both arms
+#   setup:   optional shell command run in the fresh worktree before the arm
+#            (dependency symlinks / installs so agents and verify can run)
+#   verify:  shell command run in the worktree after the arm finishes;
+#            exit 0 = resolved. Prefer the repo's own npm scripts (they carry
+#            build pre-hooks).
+#
+# Good benchmark tasks are small enough to finish headless but real enough to
+# require investigation — the workflow's savings come from NOT re-reading and
+# NOT re-investigating, which trivial tasks never exercise.
+
+tasks:
+  - id: pdg-note-sublayer
+    repo: ~/GitNexus
+    ref: main
+    prompt: >
+      When the pdg_query MCP tool returns its "no PDG layer" note, make the
+      note say which sub-layer is missing (CDG vs REACHING_DEF) instead of a
+      generic message. Cover both modes with a unit test.
+    verify: cd gitnexus && npx vitest run test/unit --changed
+
+  - id: list-repos-filter
+    repo: ~/GitNexus
+    ref: main
+    prompt: >
+      Add an optional "name_contains" filter parameter to the list_repos MCP
+      tool that filters repositories by case-insensitive substring match on
+      the repo name, with pagination totals reflecting the filtered set.
+      Cover with unit tests.
+    verify: cd gitnexus && npx vitest run test/unit --changed

@@ -1,4 +1,4 @@
-<!-- version: 1.10.0 -->
+<!-- version: 1.11.0 -->
 <!-- Last updated: 2026-07-11 -->
 
 Last reviewed: 2026-07-11
@@ -75,10 +75,16 @@ skill's README):
   (deepen the plan, proceed, or stop) → work → review via the existing
   `gitnexus/gitnexus-pr-review` skill (open PR, or branch diff when no PR exists).
 
+The family ships with the npm package (`gitnexus/skills/`, installed to editor targets
+by `gitnexus setup`) and the Claude Code plugin; `gitnexus/test/unit/shipped-skills-sync.test.ts`
+guards the copies. Token savings of the workflow are measurable with
+`eval/workflow_bench/` (real headless CLI runs, free-model routing supported — see its README).
+
 ## Changelog
 
 | Date | Version | Change |
 |------|---------|--------|
+| 2026-07-11 | 1.11.0 | Skill family shipped via npm skills/ + plugin (sync-guarded); added eval/workflow_bench token-savings benchmark. |
 | 2026-07-11 | 1.10.0 | Added `gitnexus-work` (plan executor) and `gitnexus-lfg` (plan → deepen/work gate → pr-review pipeline) skills; section renamed to Engineering planning & execution. |
 | 2026-07-11 | 1.9.0 | Added Engineering planning (`/gitnexus-plan`) section; registered the `gitnexus-plan` skill (`.claude/skills/gitnexus-plan/`). |
 | 2026-05-22 | 1.8.0 | Kotlin added to `MIGRATED_LANGUAGES` (registry-primary call resolution by default). Closes #1756 (companion-vs-instance dispatch) and #1757 (lambda scopes); refs #1746. RFC §6.4 corpus criterion waived (corpus-mode wiring is #927-scope); fixture criterion met. |
