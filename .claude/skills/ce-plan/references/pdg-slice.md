@@ -9,18 +9,24 @@ Goal: a compact slice the planning LLM can hold, never a graph dump.
 | --- | --- |
 | Under what condition does X run? Guards? | `pdg_query {mode: "controls", target}` |
 | Where does variable Y flow inside the function? | `pdg_query {mode: "flows", target, variable}` |
-| What depends on the statement at line N? | `impact {mode: "pdg", target, line: N}` |
+| What depends on the statement at line N? | `impact {mode: "pdg", target, direction: "upstream", line: N}` |
 | Source→sink taint paths (security mode) | `explain {target}` |
 
 Contract caveats that shape interpretation:
 
-- CDG branch sense is `'T'`/`'F'` in the edge's `reason`; a guard's sense
-  depends on its predicate (`if (!ok) return;` rides `'T'`) — never filter
-  guards by a fixed label. Early return/throw edges carry `guard: true`.
+- `impact` requires `direction` in every mode, `mode: "pdg"` included —
+  `"upstream"` for "what depends on this statement", `"downstream"` for what
+  it depends on. Omitting it fails schema validation.
+- CDG branch sense is `'T'`/`'F'` in the result's `label` field; a guard's
+  sense depends on its predicate (`if (!ok) return;` rides `'T'`) — never
+  filter guards by a fixed label. Early return/throw edges carry `guard:
+  true`. (The raw edge stores the sense in `reason`, visible only via
+  `cypher`.)
 - `pdg_query` is intra-procedural and always anchored. Cross-function flow is
   taint's domain (`explain`) or `impact {mode:"pdg"}`'s inter-procedural reach.
 - Every `switch` case arm is `'T'` (per-case conditions not distinguished).
 - No `--pdg` layer → the tools return a "no PDG layer" note, not an error.
+  The note is repo-wide: one probe settles it — do not re-probe per function.
   Record it, skip the slice, recommend `analyze --pdg`. Do not reconstruct
   edges from source by hand.
 
@@ -42,7 +48,11 @@ A statement enters the slice only if it is at least one of:
 Everything else is cut. If the slice exceeds ~15 statements per function,
 tighten relevance rather than raising depth.
 
-## Slice representation (goes into the ledger; summarized in plan §5)
+## Slice representation
+
+Working-memory material: keep the full slice in working context while
+planning, summarize it into the ledger's one-line `pdg_slices` entries, and
+distill it into plan §5.
 
 ```yaml
 pdg_context:
@@ -79,9 +89,11 @@ Additionally identify and record: untrusted inputs, validation points,
 sanitisation points, authn/authz checks, privilege boundaries, sensitive data,
 persistence operations, network calls, dangerous sinks, and error paths that
 bypass validation. Run `explain {target}` for persisted source→sink taint
-paths and include the hop paths for findings relevant to the task. Absence of
-a taint finding is **not** proof of safety (intra-procedural only) — say so
-when it matters.
+paths (intra-procedural TAINTED edges and cross-function TAINT_PATH flows)
+and include the hop paths for findings relevant to the task. Absence of a
+taint finding is **not** proof of safety — closure/callback flows,
+property/field flows, and implicit flows are not modeled, and guard-style
+sanitizers may be missed — say so when it matters.
 
 ## Performance mode (task category: performance)
 

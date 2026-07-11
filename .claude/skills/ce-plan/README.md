@@ -25,7 +25,8 @@ Three layers, strictly ordered:
    connected*: execution flows, callers/callees, blast radius, related tests.
    Every call must answer a named planning question.
 2. **PDG constrains** (`pdg_query` controls/flows, `impact {mode:"pdg",
-   line}` statement slices, `explain` for taint). The statement-level layers
+   direction, line}` statement slices, `explain` for taint). The
+   statement-level layers
    answer *what gates and feeds the behavior* inside the few functions the
    change centers on. Results are filtered into a bounded slice
    (`references/pdg-slice.md`), never dumped.

@@ -9,9 +9,9 @@ Produce an implementation-ready plan for an engineering task. GitNexus is the
 navigation layer (where to look), statement-level PDG is the constraint layer
 (what gates and feeds the behavior), Claude Code source reads are the
 verification layer (what is actually true right now). The output is a plan
-document plus a compact, machine-readable **implementation context pack** that
-a follow-up agent (`ce-implement` or any executor) can consume without
-repeating the investigation.
+document plus a compact, machine-readable **implementation context pack**
+that a follow-up implementation agent (a future `ce-implement`, or any
+executor) can consume without repeating the investigation.
 
 ```
 /ce-plan <task description>
@@ -19,33 +19,38 @@ repeating the investigation.
 ```
 
 **This skill plans. It never implements.** Do not modify production code,
-tests, or configuration while running it. The only file it writes is the plan
-document.
+tests, or configuration while running it. The only repository file it writes
+is the plan document (a working ledger kept outside the repo is fine).
 
 ## Hard rules
 
-- **Ledger first.** Before every GitNexus call and every file read, check the
-  context ledger (below). Never repeat a query or reread an unchanged range
-  that already answered the same question.
+- **Ledger first.** Before every GitNexus call and every repo file read, check
+  the context ledger. Never repeat a query or reread an unchanged range that
+  already answered the same question (allowed repeats are defined in
+  `references/context-ledger.md`; this skill's own reference files are exempt
+  from ledger bookkeeping).
 - **Every graph query answers a named planning question.** Record the question
   and the conclusion in the ledger. No exploratory dredging.
 - **Source beats graph.** The graph navigates; current source is authoritative.
-  Verify before asserting (see Phase 4).
+  Verify before asserting (see Phase 4). Comments are the weakest evidence —
+  never stronger than executable code.
 - **No fabrication.** Never invent symbols, filenames, test names, tool
   results, or PDG edges. Unknowns go to *Assumptions and Open Questions*.
+- **No scope creep.** Adjacent refactors the task didn't ask for go to plan
+  §12 as suggestions, not into Proposed Changes.
 - **Stop when you have enough.** Sufficient evidence ends exploration; plans
   do not improve monotonically with tokens spent.
 
 ## Phase 0 — Parse and classify
 
-Restate the task as an interpreted goal plus acceptance criteria (open the
-ledger with these). Classify it:
+Read `references/context-ledger.md` and open the ledger with the task:
+original request, interpreted goal, acceptance criteria. Classify the task:
 
 | Category | Depth posture |
 | --- | --- |
-| Bug fix (local) | Narrow: 1–2 primary symbols, impact depth 1–2 |
+| Bug fix (local) | Narrow: 1–2 primary symbols, `impact_depth` 1 |
 | Feature | Default knobs |
-| Refactor / shared API change | Impact analysis mandatory, impact depth 3 |
+| Refactor / shared API change | Impact analysis mandatory, `impact_depth` 3 |
 | Performance | Default + performance PDG mode (see `references/pdg-slice.md`) |
 | Security | Default + security PDG mode + `explain` taint findings |
 | Dependency upgrade / migration | Impact + compatibility focus; PDG usually unnecessary |
@@ -53,36 +58,44 @@ ledger with these). Classify it:
 | Test improvement / docs | Narrowest: usually no impact or PDG pass |
 | Architecture change / spike | Widest: clusters + processes resources first |
 
-Raise a bounded-depth knob only when the change clearly crosses architectural
-boundaries; say so in the plan when you do.
+The category posture overrides the Configuration baseline; explicit `key:value`
+invocation knobs override both. A task matching several rows combines them:
+take the widest depth, union the focus areas.
 
 ## Phase 1 — Anchor and freshness
 
 1. Resolve the target repo: `list_repos` if in doubt, else the indexed repo
    covering the working directory. Pass `repo` explicitly on every call when
    more than one repo is indexed.
-2. Read `gitnexus://repo/{name}/context` — codebase overview + staleness check.
+2. Record the repo's current HEAD commit in the ledger — every line-number
+   citation in the plan is pinned to it.
+3. Read `gitnexus://repo/{name}/context` — codebase overview + staleness check.
    - Stale index → recommend `node .gitnexus/run.cjs analyze`, note the
      staleness in the plan's Assumptions, and continue with source
      verification weighted higher.
+   - Resources unreadable but tools working → proceed on tools alone, treat
+     freshness as unknown (weight source higher), and note it in the plan.
    - GitNexus unavailable entirely → switch to **Fallback mode** (below).
-3. For architecture-scale tasks only, also read
+4. For architecture-scale tasks only, also read
    `gitnexus://repo/{name}/clusters` and `.../processes`.
 
 ## Phase 2 — Graph navigation ladder
 
 Use the narrowest operation that answers the current ledger question, in this
 order. Budgets: at most `max_primary_symbols` (5) primary symbols and
-`max_related_symbols` (20) related symbols enter the ledger.
+`max_related_symbols` (20) related symbols active in the ledger.
 
 1. `query {search_query, task_context}` — locate concepts, execution flows,
    modules, and related tests for the task.
 2. `context {name}` — 360° view of each candidate primary symbol: callers,
-   callees, categorized refs, processes. Promote to primary or discard.
+   callees, categorized refs, processes. Promote to primary or discard. An
+   `ambiguous` result (ranked candidates) is answered by one retry narrowed
+   with `kind` / `file_path` / uid — that retry is an allowed repeat.
 3. `impact {target, direction}` — upstream/downstream blast radius for shared
    or high-connectivity symbols (`maxDepth` = `impact_depth`; `summaryOnly:
-   true` first for hub symbols). Record d=1 items — the plan must account for
-   every one of them.
+   true` first for hub symbols, then drill in — an allowed repeat). Record the
+   d=1 items — the **direct (depth-1) dependents** — the plan must account
+   for every one of them.
 4. `trace {from, to}` — when the task hinges on *how A reaches B*, one call
    instead of chained context hops.
 5. Statement-level PDG — Phase 3, for the functions the change centers on.
@@ -97,22 +110,10 @@ step 2.
 
 ## Phase 3 — Statement-level PDG slice
 
-For the 1–3 functions most central to the change, build a **PDG context
-slice**: read `references/pdg-slice.md` and follow it. In short:
-
-- `pdg_query {mode: "controls", target}` — what gates the behavior (guards,
-  branch senses, early exits).
-- `pdg_query {mode: "flows", target, variable?}` — def→use flow of the
-  variables the change touches.
-- `impact {mode: "pdg", target, line}` — statement-anchored dependence slice
-  plus inter-procedural reach, when one statement is the seed of the change.
-- Security tasks add `explain` (taint findings); performance tasks add the
-  loop/blocking-call checklist.
-
-Filter hard: only statements meeting the slice inclusion criteria enter the
-plan, bounded by `pdg_data_depth`/`pdg_control_depth` (2). Never paste a raw
-PDG dump. No `--pdg` layer indexed → record "PDG unavailable" in the ledger,
-skip to Phase 4, and say so in the plan; do not reconstruct fake edges.
+For the 1–3 functions most central to the change, build a bounded **PDG
+context slice**. Read `references/pdg-slice.md` and follow it — it owns the
+tool calls, inclusion criteria, depth bounds, slice schema, the security and
+performance modes, and the no-PDG-layer fallback.
 
 ## Phase 4 — Targeted source verification
 
@@ -123,6 +124,10 @@ reads (exact line ranges, not whole files unless genuinely required):
   state mutations, error paths, nearby comments that change behavior.
 - Read the tests GitNexus associated with the primary symbols; never claim a
   test exists without having located it.
+- Verify the build/test commands the plan will name actually exist
+  (package.json scripts / CI workflows), and prefer the script form that
+  carries its prerequisites (pre-hooks) over invoking underlying binaries
+  directly.
 - Check repo conventions that constrain the change (AGENTS.md, GUARDRAILS.md,
   lint/build config) — only the parts the change touches.
 - Mark each ledger symbol `source_verified: true` as you go. **A symbol that
@@ -138,38 +143,35 @@ and executable behavior → compiler/build/lint output → GitNexus graph and PD
 ## Phase 5 — Compose the plan
 
 1. Read `references/plan-template.md` and fill all 13 sections from the
-   ledger. Distinguish **confirmed facts / evidence-backed inferences /
-   assumptions / open questions** throughout.
+   ledger, using its claim-tagging convention to distinguish confirmed facts,
+   evidence-backed inferences, assumptions, and open questions.
 2. Build the implementation context pack per `references/context-pack.md`
    (this is section 11 of the plan).
-3. Write the document to `docs/plans/YYYY-MM-DD-ce-plan-<slug>.md` (create the
-   directory if missing; kebab-case slug, 3–5 words). Repo-relative paths
-   everywhere.
+3. Write the document to `docs/plans/YYYY-MM-DD-ce-plan-<slug>.md` under the
+   root of the repo being planned (the Phase 1 target repo, not necessarily
+   the cwd). Create the directory if missing; kebab-case slug, 3–5 words.
+   The `out:<path>` knob overrides the destination (use it for read-only
+   checkouts). Repo-relative paths inside the document.
 4. Present in chat: objective, proposed-changes summary, implementation
    sequence, top risks, open questions, and the plan file path. Do not paste
    the whole document into chat.
 
-## Context ledger
-
-Maintain the ledger from Phase 0 onward — it is the skill's working memory and
-its token budget enforcement. Schema and reread rules: `references/context-ledger.md`.
-The final ledger feeds the plan; it is not itself published.
-
 ## Configuration
 
-Defaults; override inline with `key:value` tokens before the task text (the
-repo has no skill-config file mechanism — invocation args are the mechanism):
+Baseline defaults — the Phase 0 category posture overrides them, and inline
+`key:value` tokens before the task text override both (the repo has no
+skill-config file mechanism; invocation args are the mechanism):
 
 | Knob | Default | Meaning |
 | --- | --- | --- |
-| `depth` | by category | `narrow` / `default` / `deep` posture |
-| `call_depth` | 2 | Caller/callee expansion in `context`/`trace` reasoning |
+| `depth` | by category | `narrow` = `impact_depth` 1, PDG only if one function is clearly central; `default` = this table; `deep` = `impact_depth` 3 + clusters/processes read |
 | `impact_depth` | 2 | `maxDepth` for `impact` |
 | `pdg_data_depth` | 2 | Data-dependence hops in the PDG slice |
 | `pdg_control_depth` | 2 | Control-dependence hops in the PDG slice |
-| `max_primary_symbols` | 5 | Ledger budget |
-| `max_related_symbols` | 20 | Ledger budget |
+| `max_primary_symbols` | 5 | Ledger budget (active symbols; discards don't count) |
+| `max_related_symbols` | 20 | Ledger budget (active symbols; discards don't count) |
 | `max_snippet_lines` | 30 | Longest source excerpt quoted in the plan |
+| `out` | `docs/plans/` in target repo | Plan document destination |
 
 ## Fallback mode (GitNexus or PDG unavailable)
 
@@ -180,12 +182,3 @@ repo has no skill-config file mechanism — invocation args are the mechanism):
    as graph-derived, and never fabricate statement-level edges.
 4. Recommend `node .gitnexus/run.cjs analyze` (add `--pdg` for the PDG layers)
    when it would materially raise confidence.
-
-## Never
-
-- Implement the feature, edit production code, or run mutating commands.
-- Dump unfiltered graph/PDG output or full files into the plan.
-- Repeat a search or reread an unchanged range already in the ledger.
-- Expand scope into unrelated refactoring.
-- Treat comments as stronger evidence than executable code.
-- Continue exploring after the ledger answers all open planning questions.

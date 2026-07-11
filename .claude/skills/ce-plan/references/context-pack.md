@@ -1,9 +1,9 @@
 # Implementation context pack
 
 Section 11 of the plan. The stable, machine-readable contract a follow-up
-implementation agent (`ce-implement` or any executor) consumes to start work
-**without repeating the investigation**. Distilled from the ledger; every
-entry traceable to verified evidence.
+implementation agent (a future `ce-implement`, or any executor) consumes to
+start work **without repeating the investigation**. Distilled from the
+ledger; every entry traceable to verified evidence.
 
 ## Schema
 
@@ -44,10 +44,12 @@ implementation_context:
     - file: ""                   # existing file to update, or new path to create
       scenarios: []              # input → action → expected outcome
 
-  verification_commands: []      # real commands from repo scripts/CI, verified to exist
+  verification_commands: []      # real commands verified to exist AND be runnable —
+                                 # prefer npm/CI scripts that carry their pre-hooks
 
   risks: []
-  assumptions: []                # verbatim from plan §12
+  assumptions: []                # faithful condensation of plan §12 assumptions
+  open_questions: []             # faithful condensation of plan §12 open questions
 
   avoid:
     - "Do not repeat full repository discovery"

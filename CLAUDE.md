@@ -1,10 +1,10 @@
-<!-- version: 1.3.0 -->
+<!-- version: 1.4.0 -->
 <!--
   Metadata: version, last reviewed, scope, model policy, reference docs, changelog.
-  Last updated: 2026-03-22
+  Last updated: 2026-07-11
 -->
 
-Last reviewed: 2026-04-13
+Last reviewed: 2026-07-11
 
 **Project:** GitNexus · **Environment:** dev · **Maintainer:** repository maintainers (see GitHub)
 
@@ -43,6 +43,7 @@ If always-on instructions grow, load deep conventions via conditional reads (e.g
 
 | Date | Version | Change |
 |------|---------|--------|
+| 2026-07-11 | 1.4.0 | Added `/ce-plan` pointer to Reference Documentation. |
 | 2026-04-13 | 1.3.0 | Updated GitNexus index stats after DAG refactor. |
 | 2026-03-24 | 1.2.0 | Removed duplicated gitnexus:start block and scope table; replaced with pointers to AGENTS.md. |
 | 2026-03-23 | 1.1.0 | Updated agent instructions to match AGENTS.md. |

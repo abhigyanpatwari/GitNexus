@@ -2,11 +2,19 @@
 
 Fill every section. If a section is genuinely empty for this task (e.g. no PDG
 layer indexed), keep the heading and state why in one line — never silently
-drop it. Repo-relative paths everywhere. Distinguish confirmed facts,
-evidence-backed inferences, assumptions, and open questions throughout.
+drop it. Repo-relative paths for all repo artifacts.
+
+**Claim tagging.** Tag every load-bearing claim with its evidence class:
+`[verified]` (source-read at the pinned commit), `[graph]` (GitNexus/PDG
+output, not source-confirmed), `[inferred]` (evidence-backed reasoning),
+`[assumed]` (unverified — must also appear in §12). Untagged prose is
+narrative, not evidence.
 
 ```markdown
 # Compound Engineering Plan
+
+> Task: <one line>
+> Evidence verified at commit <HEAD sha>; GitNexus index <fresh | N commits behind | not used>.
 
 ## 1. Objective
 
@@ -112,11 +120,16 @@ Composition notes:
 
 - §2/§5 quote source excerpts at most `max_snippet_lines` (30) lines each, and
   only when the excerpt carries the argument.
-- §4 findings each name the tool call they came from (traceable to the
-  ledger); stale-index or fallback-mode findings are labelled as such.
+- §4 findings each name the tool call they came from (tool + key args), plus a
+  one-line quote of the result when the plan leans on it — that is what makes
+  a tool claim auditable later. Stale-index or fallback-mode findings are
+  labelled as such.
 - §6 changes may only name symbols the ledger marks `source_verified`.
 - §7 steps are ordered by dependency and independently actionable — an
   executor can stop after any step with the tree still coherent.
 - §8 names real, located test files for updates; new tests get concrete
-  scenario lists (input → action → expected outcome).
-- §9 must account for every d=1 symbol the impact pass reported.
+  scenario lists (input → action → expected outcome). Verification commands
+  must exist AND be runnable: prefer the npm/CI script form that carries its
+  prerequisites (pre-hooks, builds) over invoking underlying binaries directly.
+- §9 must account for every direct (depth-1) dependent the impact pass
+  reported.
