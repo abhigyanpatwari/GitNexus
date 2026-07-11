@@ -9,8 +9,8 @@ and the agent's native targeted source verification.
 | CLI | How to invoke | Adapter file |
 |-----|---------------|--------------|
 | **Claude Code** | `/gitnexus-plan <task>` | `.claude/skills/gitnexus-plan/SKILL.md` |
-| **Codex CLI** | Ask: "run gitnexus-plan for <task>" (Codex reads `AGENTS.md`) — or install the user-level prompt below | `AGENTS.md` § Engineering planning |
-| **Any AGENTS.md-aware agent** | Ask it to "read `.claude/skills/gitnexus-plan/SKILL.md` and follow it for <task>" | `AGENTS.md` § Engineering planning |
+| **Codex CLI** | Ask: "run gitnexus-plan for <task>" (Codex reads `AGENTS.md`) — or install the user-level prompt below | `AGENTS.md` § Engineering planning & execution |
+| **Any AGENTS.md-aware agent** | Ask it to "read `.claude/skills/gitnexus-plan/SKILL.md` and follow it for <task>" | `AGENTS.md` § Engineering planning & execution |
 
 ```
 /gitnexus-plan Add retry support to the ingestion pipeline
@@ -111,4 +111,5 @@ of context until the phase that needs them.
   (taint) or `impact {mode:"pdg"}` inter-procedural reach.
 - The skill is planning-only by contract: the only repository file it writes
   is the plan document, and the only other state it may touch is the
-  `.gitnexus` index store (freshness refresh) — it will not fix what it finds.
+  `.gitnexus` index store (freshness refresh) plus the analyzer's `dist/`
+  build output (runner build check) — it will not fix what it finds.

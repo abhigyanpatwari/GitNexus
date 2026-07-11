@@ -11,7 +11,7 @@ relying on it.
 
 | CLI | How to invoke |
 |-----|---------------|
-| **Claude Code** | `/gitnexus-work [plan path]` (blank → newest `docs/plans/*.md`) |
+| **Claude Code** | `/gitnexus-work [plan path]` (blank → newest `docs/plans/*gitnexus-plan*.md` in this repo) |
 | **Codex CLI** | Ask: "run gitnexus-work on <plan path>" (Codex reads `AGENTS.md`), or install the skill user-level (below) |
 
 ### Codex (user-level install)

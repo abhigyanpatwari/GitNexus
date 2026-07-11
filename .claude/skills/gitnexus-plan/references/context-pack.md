@@ -48,7 +48,9 @@ implementation_context:
                                  # prefer npm/CI scripts that carry their pre-hooks
 
   risks: []
-  assumptions: []                # faithful condensation of plan §12 assumptions
+  assumptions: []                # faithful condensation of plan §12 assumptions;
+                                 # each entry names WHAT to check and HOW —
+                                 # gitnexus-work re-verifies them before executing
   open_questions: []             # faithful condensation of plan §12 open questions
 
   avoid:
@@ -67,7 +69,8 @@ implementation_context:
 
 ## Stability contract
 
-Field names above are the interface consumed by `gitnexus-work`. Add fields
+Field names above are the interface consumed by `gitnexus-work` (fields it
+does not act on directly travel as executor context). Add fields
 freely; do not rename or repurpose existing ones. `assumptions` and `avoid`
 are load-bearing: an executor treats `assumptions` as things to re-verify
 cheaply before relying on them, and `avoid` as hard constraints.

@@ -13,30 +13,39 @@ executor counterpart to the planning-only `gitnexus-plan`.
 
 ```
 /gitnexus-work <plan path>        # execute this plan
-/gitnexus-work                    # execute the newest docs/plans/*.md
+/gitnexus-work                    # newest docs/plans/*gitnexus-plan*.md here
 /gitnexus-work <small task text>  # direct mode, see Input triage
 ```
 
 ## Input triage
 
-- **Plan path** (or blank → newest `docs/plans/*.md`): the normal mode;
-  continue to Phase 1.
+- **Plan path** (or blank → the newest `docs/plans/*gitnexus-plan*.md` under
+  the current repo root; plans written elsewhere — `out:` override, other
+  target repo — must be passed by explicit path): the normal mode; continue
+  to Phase 1. If Phase 1's pre-completed check finds every §7 step of that
+  newest plan already landed, stop and ask instead of re-executing it.
 - **Bare task text**: trivial and bounded (1–2 files, no architectural
-  decisions) → implement directly, still honoring the Execution discipline
-  below. Anything larger → recommend running `/gitnexus-plan` first; honor
-  the user's choice if they decline.
+  decisions) → implement directly with the same discipline: `impact` before
+  every symbol edit, minimal change, tests when behavior changes,
+  verification commands taken from the repo's own scripts (package.json /
+  CI), `detect_changes` before every commit. Anything larger → recommend
+  running `/gitnexus-plan` first; honor the user's choice if they decline.
 
 ## Phase 1 — Load and re-anchor the plan
 
 1. Read the plan document completely. It is a decision artifact, not a
    script: scope boundaries and `avoid` entries bind you; exact code is
    yours to write. Never edit the plan body.
-2. Parse the §11 `implementation_context` pack: `files_to_modify`,
+2. Parse the §11 `implementation_context` pack: `acceptance_criteria`,
+   `primary_symbols`, `related_symbols`, `files_to_modify`,
    `execution_path`, `pdg_constraints`, `architectural_patterns`, `tests`,
    `verification_commands`, `risks`, `assumptions`, `open_questions`, `avoid`.
 3. **Drift check.** The plan header pins the commit its evidence was
    verified at. If HEAD has moved since, diff the pinned commit against HEAD
-   for the pack's `files_to_modify` — untouched files keep their verified
+   for **every file the pack cites** — `files_to_modify`,
+   `primary_symbols`/`related_symbols` files, files named in
+   `pdg_constraints.affected_statements`, `architectural_patterns[]`
+   example locations, `tests[].file` — untouched files keep their verified
    status; changed files get their cited ranges re-read before you rely on
    them. Material drift (a planned seam no longer exists) → stop and send
    the plan back through `gitnexus-plan` Deepen mode.
@@ -45,11 +54,21 @@ executor counterpart to the planning-only `gitnexus-plan`.
    depend on it, not something to code around silently.
 5. Note `open_questions` — if one blocks a step and the answer materially
    changes the work, ask the user before that step, not after.
+6. **Pre-completed check.** If commits for this plan already exist on the
+   branch (a prior partial run, or a post-route-back Deepen cycle), verify
+   which §7 steps have landed at HEAD: those are skipped and reported as
+   pre-completed, and execution resumes at the first unlanded step. All
+   steps landed → report that and stop.
 
 ## Phase 2 — Environment
 
 - On the default branch → create a feature branch named from the plan slug.
-  Already on a meaningful feature branch → stay on it.
+  On a feature branch already → stay only if it is meaningful *for this
+  plan* (name matches the plan slug, or the user confirms); otherwise
+  branch from here with the slug name.
+- If the plan document is not yet committed, commit it now
+  (`docs(plans): add <slug> plan`) — the plan travels with the work it
+  drives, and the final review diff then includes it.
 - Confirm the `verification_commands` from the pack actually run in this
   checkout (dependencies installed, builds present) before starting, not
   after the last step.
@@ -91,9 +110,9 @@ choice isn't obvious.
 
 1. Run the full `verification_commands` suite once, at the end, even if
    every step already passed individually.
-2. Walk plan §13 (Definition of Done) item by item; anything unmet is
-   either finished now or reported as explicitly unmet — never silently
-   dropped.
+2. Walk plan §13 (Definition of Done) and the pack's `acceptance_criteria`
+   item by item; anything unmet is either finished now or reported as
+   explicitly unmet — never silently dropped.
 3. Report: steps completed, commits made, deviations from the plan (with
    why), assumptions that failed re-verification, DoD status, and anything
    deferred. Test failures are reported with their output, not smoothed
@@ -101,8 +120,8 @@ choice isn't obvious.
 
 ## Never
 
-- Edit a symbol without the Phase 3 impact check, or commit without
+- Skip the Phase 3 gates: no symbol edit without `impact`, no commit without
   `detect_changes`.
 - Expand scope beyond the plan — §12's deferred follow-ups stay deferred.
-- Mutate the plan document, weaken failing tests, or present unverified
-  work as verified.
+- Mutate the plan body (committing the file verbatim in Phase 2 is not
+  mutation), weaken failing tests, or present unverified work as verified.

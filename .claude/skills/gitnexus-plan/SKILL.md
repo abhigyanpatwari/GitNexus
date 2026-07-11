@@ -21,9 +21,10 @@ consume without repeating the investigation.
 **This skill plans. It never implements.** Do not modify production code,
 tests, or configuration while running it. The only repository file it writes
 is the plan document (a working ledger kept outside the repo is fine). The
-one permitted state change besides that is an index refresh via
-`analyze --index-only` — it writes only the `.gitnexus` index store, never
-repo files.
+only other permitted state changes are the freshness gate's: an index
+refresh via `analyze --index-only` (writes only the `.gitnexus` index store,
+never repo files) and the analyzer `dist/` rebuild that may precede it
+(build output only).
 
 ## Hard rules
 
@@ -87,8 +88,11 @@ take the widest depth, union the focus areas.
      rebuild in `index_refresh`.
    - Stale index → run `node .gitnexus/run.cjs analyze --index-only` (append
      `--pdg` when the task category will reach Phase 3) and re-read the
-     context resource. At most **one refresh per planning session**; record
-     the command and outcome in the ledger's `index_refresh`.
+     context resource. Refresh budget, stated once here: at most one
+     `--index-only` refresh in Phase 1 **plus** at most one later `--pdg`
+     upgrade in Phase 3 (only when Phase 1's refresh lacked `--pdg`) per
+     planning session — a Deepen run is its own session. Record each command
+     and outcome in the ledger's `index_refresh`.
    - Refresh failed or impractical (no write access to the index, prohibitive
      repo size), or `freshness: accept` was passed → proceed on the stale
      graph, weight source verification higher, and state the staleness and
@@ -163,8 +167,8 @@ and executable behavior → compiler/build/lint output → GitNexus graph and PD
 ## Phase 5 — Compose the plan
 
 1. Read `references/plan-template.md` and fill all 13 sections from the
-   ledger, using its claim-tagging convention to distinguish confirmed facts,
-   evidence-backed inferences, assumptions, and open questions.
+   ledger, tagging claims with the template's four classes — `[verified]`,
+   `[graph]`, `[inferred]`, `[assumed]` — and routing open questions to §12.
 2. Build the implementation context pack per `references/context-pack.md`
    (this is section 11 of the plan).
 3. Write the document to `docs/plans/YYYY-MM-DD-gitnexus-plan-<slug>.md` under the
@@ -181,19 +185,28 @@ and executable behavior → compiler/build/lint output → GitNexus graph and PD
 `/gitnexus-plan deepen <plan-path>` strengthens an existing plan in place
 instead of creating a new one:
 
-1. Re-run Phase 1 in full — runner build check, freshness gate, a new HEAD
-   pin for the evidence header.
-2. Escalate to `depth: deep` (impact_depth 3, clusters/processes read)
+1. Re-run Phase 1 in full — runner build check, freshness gate (a Deepen
+   run is its own session, with its own refresh budget).
+2. **Re-anchor before re-pinning.** Diff the plan's old evidence pin against
+   current HEAD for every file backing a `[verified]` claim: unchanged files
+   keep the tag; changed files get their cited ranges re-read — or the claim
+   downgraded — *before* the header pin moves to the new HEAD. Moving the
+   pin without this step silently launders stale claims as verified.
+3. Escalate to `depth: deep` (impact_depth 3, clusters/processes read)
    unless the invocation overrides knobs explicitly.
-3. Seed the ledger from the plan's §11 pack, then re-verify: every
+4. Seed the ledger from the plan's §11 pack, then re-verify: every
    `[graph]`/`[inferred]` claim gets a targeted pass toward `[verified]`;
    every `[assumed]` claim is resolved or kept with its reason; direct
    (d=1) dependent accounting is re-checked against the refreshed graph;
    PDG slices are built or expanded for the central functions when the
    layer is present.
-4. Strengthen whatever the deeper pass showed thin — test scenarios, risks,
+5. **Reconcile execution state.** If `gitnexus-work` already landed commits
+   for this plan (a mid-execution route-back), mark the §7 steps present at
+   HEAD as completed and re-sequence the remainder — the rewritten plan must
+   be executable from the top without redoing landed steps.
+6. Strengthen whatever the deeper pass showed thin — test scenarios, risks,
    Definition of Done — and carry claim-tag upgrades through the prose.
-5. Rewrite the **same file**: same 13 sections, context pack kept in sync,
+7. Rewrite the **same file**: same 13 sections, context pack kept in sync,
    evidence header updated. Summarize the delta in chat: claims upgraded,
    claims that failed re-verification, sections changed.
 

@@ -20,10 +20,11 @@ context_ledger:
   verified_at_commit: ""         # target repo HEAD, recorded once in Phase 1;
                                  # every line citation in the plan pins to it
 
-  index_refresh: ""              # the one permitted analyze --index-only run:
-                                 # command + outcome (or "skipped: <reason>"),
-                                 # incl. any analyzer dist/ rebuild that
-                                 # preceded it; at most one per session
+  index_refresh: ""              # analyze --index-only runs: command + outcome
+                                 # (or "skipped: <reason>"), incl. any analyzer
+                                 # dist/ rebuild that preceded them. Budget is
+                                 # owned by SKILL.md Phase 1: one refresh plus
+                                 # at most one Phase 3 --pdg upgrade per session
 
   established_facts: []          # each with its evidence source
 

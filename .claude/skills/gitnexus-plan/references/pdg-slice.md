@@ -28,9 +28,10 @@ Contract caveats that shape interpretation:
 - No `--pdg` layer → the tools return a "no PDG layer" note, not an error.
   The note is repo-wide: one probe settles it — do not re-probe per function.
   Under `freshness: strict` (default), run
-  `node .gitnexus/run.cjs analyze --index-only --pdg` — once per planning
-  session, only if Phase 1's refresh didn't already carry `--pdg`, and with
-  Phase 1's runner build check applied first — then re-probe. If the refresh failed, is impractical, or `freshness: accept` was
+  `node .gitnexus/run.cjs analyze --index-only --pdg` — this is the one
+  `--pdg` upgrade SKILL.md Phase 1's refresh budget allows (skip it if
+  Phase 1 already refreshed with `--pdg`; apply the runner build check
+  first) — then re-probe. If the refresh failed, is impractical, or `freshness: accept` was
   passed: record "PDG unavailable" in the ledger, skip the slice, say so in
   plan §5, and recommend the command. Never reconstruct edges from source by
   hand.
