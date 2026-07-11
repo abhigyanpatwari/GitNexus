@@ -20,6 +20,10 @@ context_ledger:
   verified_at_commit: ""         # target repo HEAD, recorded once in Phase 1;
                                  # every line citation in the plan pins to it
 
+  index_refresh: ""              # the one permitted analyze --index-only run:
+                                 # command + outcome (or "skipped: <reason>");
+                                 # at most one per planning session
+
   established_facts: []          # each with its evidence source
 
   symbols:                       # budgets count active (primary/related) only;

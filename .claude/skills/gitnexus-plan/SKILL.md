@@ -20,7 +20,10 @@ executor) can consume without repeating the investigation.
 
 **This skill plans. It never implements.** Do not modify production code,
 tests, or configuration while running it. The only repository file it writes
-is the plan document (a working ledger kept outside the repo is fine).
+is the plan document (a working ledger kept outside the repo is fine). The
+one permitted state change besides that is an index refresh via
+`analyze --index-only` — it writes only the `.gitnexus` index store, never
+repo files.
 
 ## Hard rules
 
@@ -70,9 +73,17 @@ take the widest depth, union the focus areas.
 2. Record the repo's current HEAD commit in the ledger — every line-number
    citation in the plan is pinned to it.
 3. Read `gitnexus://repo/{name}/context` — codebase overview + staleness check.
-   - Stale index → recommend `node .gitnexus/run.cjs analyze`, note the
-     staleness in the plan's Assumptions, and continue with source
-     verification weighted higher.
+   **Freshness gate.** Plans built on a stale graph make stale blast-radius
+   claims, so freshness is not advisory here. Under `freshness: strict` (the
+   default):
+   - Stale index → run `node .gitnexus/run.cjs analyze --index-only` (append
+     `--pdg` when the task category will reach Phase 3) and re-read the
+     context resource. At most **one refresh per planning session**; record
+     the command and outcome in the ledger's `index_refresh`.
+   - Refresh failed or impractical (no write access to the index, prohibitive
+     repo size), or `freshness: accept` was passed → proceed on the stale
+     graph, weight source verification higher, and state the staleness and
+     the skipped refresh in the plan header and Assumptions.
    - Resources unreadable but tools working → proceed on tools alone, treat
      freshness as unknown (weight source higher), and note it in the plan.
    - GitNexus unavailable entirely → switch to **Fallback mode** (below).
@@ -172,6 +183,7 @@ skill-config file mechanism; invocation args are the mechanism):
 | `max_related_symbols` | 20 | Ledger budget (active symbols; discards don't count) |
 | `max_snippet_lines` | 30 | Longest source excerpt quoted in the plan |
 | `out` | `docs/plans/` in target repo | Plan document destination |
+| `freshness` | `strict` | `strict` = refresh a stale index (and a missing PDG layer) with `analyze --index-only [--pdg]` before relying on the graph; `accept` = plan on the stale graph, source-weighted and labelled |
 
 ## Fallback mode (GitNexus or PDG unavailable)
 
@@ -180,5 +192,5 @@ skill-config file mechanism; invocation args are the mechanism):
    dependencies, execution flow, state changes, and related tests.
 3. Label every such finding **source-derived** in the plan — never present it
    as graph-derived, and never fabricate statement-level edges.
-4. Recommend `node .gitnexus/run.cjs analyze` (add `--pdg` for the PDG layers)
-   when it would materially raise confidence.
+4. Recommend `node .gitnexus/run.cjs analyze --index-only` (add `--pdg` for
+   the PDG layers) when it would materially raise confidence.

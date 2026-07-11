@@ -14,7 +14,7 @@ narrative, not evidence.
 # GitNexus Engineering Plan
 
 > Task: <one line>
-> Evidence verified at commit <HEAD sha>; GitNexus index <fresh | N commits behind | not used>.
+> Evidence verified at commit <HEAD sha>; GitNexus index <fresh | refreshed this session (--index-only [--pdg]) | N commits behind, refresh skipped: <reason> | not used>.
 
 ## 1. Objective
 

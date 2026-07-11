@@ -27,8 +27,13 @@ Contract caveats that shape interpretation:
 - Every `switch` case arm is `'T'` (per-case conditions not distinguished).
 - No `--pdg` layer → the tools return a "no PDG layer" note, not an error.
   The note is repo-wide: one probe settles it — do not re-probe per function.
-  Record it, skip the slice, recommend `analyze --pdg`. Do not reconstruct
-  edges from source by hand.
+  Under `freshness: strict` (default), run
+  `node .gitnexus/run.cjs analyze --index-only --pdg` — once per planning
+  session, and only if Phase 1's refresh didn't already carry `--pdg` — then
+  re-probe. If the refresh failed, is impractical, or `freshness: accept` was
+  passed: record "PDG unavailable" in the ledger, skip the slice, say so in
+  plan §5, and recommend the command. Never reconstruct edges from source by
+  hand.
 
 ## Inclusion criteria
 
