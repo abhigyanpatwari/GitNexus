@@ -191,6 +191,7 @@ export const Header = ({
         {projectName && (
           <div className="relative" ref={repoDropdownRef}>
             <button
+              data-testid="repo-switcher-trigger"
               onClick={() => {
                 const nextOpen = !isRepoDropdownOpen;
                 setIsRepoDropdownOpen(nextOpen);
@@ -246,7 +247,7 @@ export const Header = ({
                             />
                           </div>
                         </div>
-                        <div className="scrollbar-thin min-h-0 flex-1 overflow-y-auto pb-1">
+                        <div className="min-h-0 flex-1 scrollbar-thin overflow-y-auto pb-1">
                           {filteredRepos.length === 0 ? (
                             <div className="px-4 py-3 text-sm text-text-muted">
                               {t('header:noRepositoriesFound', { query: repoSearchQuery })}
@@ -259,6 +260,8 @@ export const Header = ({
                               return (
                                 <div
                                   key={identity}
+                                  data-testid="repo-switcher-row"
+                                  data-active={isActive}
                                   className={`group flex items-center gap-2 px-4 py-2 transition-colors ${
                                     isActive
                                       ? 'border-l-2 border-accent bg-accent/10'
@@ -285,6 +288,7 @@ export const Header = ({
                                   </button>
                                   {/* Re-analyze */}
                                   <button
+                                    data-testid="repo-switcher-reanalyze"
                                     onClick={async (e) => {
                                       e.stopPropagation();
                                       if (reanalyzing) return; // already running
@@ -339,6 +343,7 @@ export const Header = ({
                                   </button>
                                   {/* Delete */}
                                   <button
+                                    data-testid="repo-switcher-delete"
                                     onClick={async (e) => {
                                       e.stopPropagation();
                                       // Abort any running re-analysis for this repo

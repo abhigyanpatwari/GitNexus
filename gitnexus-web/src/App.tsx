@@ -303,8 +303,11 @@ const AppContent = () => {
               setProgress(null);
               return;
             } catch (err: unknown) {
-              if (attempt === 0 && err instanceof BackendError && err.status === 404) {
-                // Server may still be reinitializing — wait and retry
+              // Server may still be reinitializing after the worker completed:
+              // that surfaces as a 404 (repo not registered yet) OR a transient
+              // 5xx/binder error while the freshly-written DB becomes readable.
+              // Either way, wait and retry once before giving up.
+              if (attempt === 0 && err instanceof BackendError) {
                 await new Promise((r) => setTimeout(r, 1500));
                 continue;
               }
