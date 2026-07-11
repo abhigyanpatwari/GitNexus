@@ -15,7 +15,13 @@ import { existsSync, statSync } from 'node:fs';
 import { fork } from 'child_process';
 import { fileURLToPath, pathToFileURL } from 'url';
 import { createRequire } from 'node:module';
-import { getStoragePath, INDEX_METADATA_FILE } from '../storage/repo-manager.js';
+import {
+  canonicalizePath,
+  getStoragePath,
+  INDEX_METADATA_FILE,
+  listRegisteredRepos,
+  registryPathEquals,
+} from '../storage/repo-manager.js';
 import { logger } from '../core/logger.js';
 import type { JobManager } from './analyze-job.js';
 import type { WorkerMessage } from './analyze-worker.js';
@@ -68,28 +74,45 @@ const FINALIZE_SETTLE_POLL_MS = 200;
  * than failing a job whose analysis genuinely succeeded — e.g. a no-op
  * non-force analyze legitimately rewrites nothing.
  */
-const waitForSettledIndex = async (storagePath: string, jobStartMs: number): Promise<void> => {
-  const transientSidecars = ['lbug.wal', 'lbug.shadow', 'lbug.wal.checkpoint'].map((f) =>
-    path.join(storagePath, f),
-  );
-  const settled = (): boolean => {
+/**
+ * Look up the analyzed repo's registered storage path. The request's
+ * user-provided path is used only as a comparison key; the filesystem probes
+ * below run against the registry's own `storagePath` — the server-owned
+ * record readers resolve through, and not a user-controlled value
+ * (CodeQL js/path-injection).
+ */
+const registeredStoragePath = async (targetPath: string): Promise<string | null> => {
+  const target = canonicalizePath(path.resolve(targetPath));
+  const entries = await listRegisteredRepos();
+  const entry = entries.find((e) => registryPathEquals(canonicalizePath(e.path), target));
+  return entry?.storagePath ?? null;
+};
+
+const waitForSettledIndex = async (targetPath: string, jobStartMs: number): Promise<void> => {
+  const settled = (storagePath: string): boolean => {
     try {
       const lbugStat = statSync(path.join(storagePath, 'lbug'));
       const metaStat = statSync(path.join(storagePath, INDEX_METADATA_FILE));
       return (
         lbugStat.mtimeMs >= jobStartMs &&
         metaStat.mtimeMs >= jobStartMs &&
-        transientSidecars.every((f) => !existsSync(f))
+        ['lbug.wal', 'lbug.shadow', 'lbug.wal.checkpoint'].every(
+          (f) => !existsSync(path.join(storagePath, f)),
+        )
       );
     } catch {
       return false; // not written yet
     }
   };
   const deadline = Date.now() + FINALIZE_SETTLE_TIMEOUT_MS;
-  while (!settled()) {
+  for (;;) {
+    // Re-resolved each round: the worker registers the repo as part of the
+    // finalization this gate is waiting out.
+    const storagePath = await registeredStoragePath(targetPath);
+    if (storagePath && settled(storagePath)) return;
     if (Date.now() > deadline) {
       logger.warn(
-        { storagePath },
+        { targetPath },
         'analyze finalization not visible after timeout; completing job anyway',
       );
       return;
@@ -166,7 +189,7 @@ export function createLaunchAnalysisWorker(deps: LaunchDeps) {
           // only then (3) reinitialize the backend. This makes the ordering
           // comment below true in practice: the repo is actually queryable
           // when the client receives the SSE complete event.
-          waitForSettledIndex(analyzeLockKey, jobStartMs)
+          waitForSettledIndex(targetPath, jobStartMs)
             .then(() => closeDbHandle())
             .catch(() => {}) // best-effort: eviction failure must not fail the job
             .then(() => backend.init())
