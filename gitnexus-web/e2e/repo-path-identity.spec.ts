@@ -1,4 +1,5 @@
 import { test, expect, type Page } from '@playwright/test';
+import { spawn, type ChildProcess } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -6,8 +7,17 @@ import path from 'node:path';
 /**
  * E2E tests for repo *path* identity with duplicate display names (#2419).
  *
+ * Unlike the sibling specs, this file runs WRITE operations (analyze,
+ * re-analyze, delete), so it spawns its OWN backend on a dedicated port with
+ * an isolated GITNEXUS_HOME instead of sharing the suite-wide server: a force
+ * re-analysis rewrites LadybugDB files under a live server, and doing that on
+ * the shared instance while parallel workers hold connections has taken the
+ * whole backend down in CI (every later test in every file died with
+ * ECONNRESET). Isolation also makes the registry hermetic — exactly the two
+ * duplicates exist, and nothing here can perturb the other suites.
+ *
  * Two repos with the SAME basename (`pr2419-dupe`) under different parent
- * directories are provisioned against the live backend via POST /api/analyze.
+ * directories are provisioned against that backend via POST /api/analyze.
  * Each contains a uniquely named marker file so the tests can assert which
  * repo's graph is actually on screen — the whole point of #2419 is that name
  * alone cannot distinguish them.
@@ -26,8 +36,16 @@ import path from 'node:path';
  *    to the repo picker instead of silently retargeting the sibling
  */
 
-const BACKEND_URL = process.env.BACKEND_URL ?? 'http://localhost:4747';
 const FRONTEND_URL = process.env.FRONTEND_URL ?? 'http://localhost:5173';
+
+// Spec-owned backend (spawned in beforeAll) — deliberately NOT the shared
+// suite server; see the header comment. 127.0.0.1 (not localhost) because the
+// availability probes here run in Node, whose fetch resolves localhost to an
+// address the server may not be bound to.
+const BACKEND_PORT = 4799;
+const BACKEND_URL = `http://127.0.0.1:${BACKEND_PORT}`;
+// Playwright's cwd is gitnexus-web (the config dir).
+const CLI_PATH = path.resolve(process.cwd(), '..', 'gitnexus', 'dist', 'cli', 'index.js');
 
 const DUPE_NAME = 'pr2419-dupe';
 const READY_TIMEOUT_MS = 45_000;
@@ -46,8 +64,48 @@ interface RepoListEntry {
 }
 
 let tempRoot = '';
+let gitnexusHome = '';
+let server: ChildProcess | undefined;
+let serverLog = '';
+let serverExited: number | null | undefined;
 /** Duplicate repo paths in registry (= card/switcher-row) order. */
 let dupePaths: string[] = [];
+
+/** Spawn the spec-owned backend and wait until it serves /api/repos. */
+async function startBackend(): Promise<void> {
+  gitnexusHome = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-dupe-home-'));
+  server = spawn(
+    process.execPath,
+    [CLI_PATH, 'serve', '--port', String(BACKEND_PORT), '--host', '127.0.0.1'],
+    {
+      env: { ...process.env, GITNEXUS_HOME: gitnexusHome },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    },
+  );
+  const capture = (chunk: Buffer) => {
+    serverLog = (serverLog + chunk.toString()).slice(-8_192);
+  };
+  server.stdout?.on('data', capture);
+  server.stderr?.on('data', capture);
+  server.on('exit', (code) => {
+    serverExited = code;
+  });
+
+  const deadline = Date.now() + 30_000;
+  for (;;) {
+    if (serverExited !== undefined) {
+      throw new Error(`spec backend exited early (code ${serverExited}):\n${serverLog}`);
+    }
+    const ok = await fetch(`${BACKEND_URL}/api/repos`)
+      .then((r) => r.ok)
+      .catch(() => false);
+    if (ok) return;
+    if (Date.now() > deadline) {
+      throw new Error(`spec backend did not become ready on ${BACKEND_URL}:\n${serverLog}`);
+    }
+    await new Promise((r) => setTimeout(r, 250));
+  }
+}
 
 /**
  * The marker file proving which duplicate's graph is on screen. Keyed off the
@@ -92,42 +150,29 @@ async function listDupes(): Promise<string[]> {
 }
 
 test.beforeAll(async () => {
-  // Two sequential live analyses can exceed the default hook budget.
+  // Backend spawn + two sequential live analyses can exceed the default budget.
   test.setTimeout(300_000);
 
+  // Local runs skip gracefully when prerequisites are missing; under E2E=1
+  // (CI) a missing prerequisite is an infra failure and must fail loudly.
   if (!process.env.E2E) {
-    try {
-      const [backendRes, frontendRes] = await Promise.allSettled([
-        fetch(`${BACKEND_URL}/api/repos`),
-        fetch(FRONTEND_URL),
-      ]);
-      if (
-        backendRes.status === 'rejected' ||
-        (backendRes.status === 'fulfilled' && !backendRes.value.ok)
-      ) {
-        test.skip(true, 'gitnexus serve not available');
-        return;
-      }
-      if (
-        frontendRes.status === 'rejected' ||
-        (frontendRes.status === 'fulfilled' && !frontendRes.value.ok)
-      ) {
-        test.skip(true, 'Vite dev server not available');
-        return;
-      }
-    } catch {
-      test.skip(true, 'servers not available');
+    const frontendUp = await fetch(FRONTEND_URL)
+      .then((r) => r.ok)
+      .catch(() => false);
+    if (!frontendUp) {
+      test.skip(true, 'Vite dev server not available');
+      return;
+    }
+    if (!fs.existsSync(CLI_PATH)) {
+      test.skip(true, `backend CLI not built (${CLI_PATH})`);
       return;
     }
   }
 
-  // Hermetic setup: remove any same-named leftovers from a previous aborted
-  // run before provisioning, so registry order and counts are deterministic.
-  for (const stale of await listDupes().catch(() => [] as string[])) {
-    await deleteRepoByPath(stale);
-  }
+  await startBackend();
 
   // Provision two repos with the SAME basename under different parents.
+  // The registry (fresh GITNEXUS_HOME) is hermetic by construction.
   tempRoot = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'gn-dupe-e2e-')));
   const pathA = path.join(tempRoot, 'team-a', DUPE_NAME);
   const pathB = path.join(tempRoot, 'team-b', DUPE_NAME);
@@ -152,11 +197,33 @@ test.beforeAll(async () => {
   }
 });
 
+// Every page in this file must talk to the spec-owned backend: both the
+// probe-driven landing flow and the ?server= auto-connect read the backend
+// URL from useBackend, which honors this supported localStorage override.
+test.beforeEach(async ({ page }) => {
+  await page.addInitScript((backendUrl) => {
+    window.localStorage.setItem('gitnexus-backend-url', backendUrl);
+  }, BACKEND_URL);
+});
+
 test.afterAll(async () => {
-  for (const repoPath of await listDupes().catch(() => [] as string[])) {
-    await deleteRepoByPath(repoPath);
+  if (server && serverExited !== undefined) {
+    // The backend crashed mid-run — surface its output, which CI otherwise loses.
+    console.error(`spec backend exited (code ${serverExited}); last output:\n${serverLog}`);
   }
-  if (tempRoot) fs.rmSync(tempRoot, { recursive: true, force: true });
+  if (server && serverExited === undefined) {
+    // Wait for the process to actually exit before removing its storage,
+    // otherwise the rm races the server's final writes.
+    const exited = new Promise<void>((resolve) => server?.once('exit', () => resolve()));
+    server.kill('SIGTERM');
+    await Promise.race([exited, new Promise((r) => setTimeout(r, 5_000))]);
+  }
+  try {
+    if (tempRoot) fs.rmSync(tempRoot, { recursive: true, force: true });
+    if (gitnexusHome) fs.rmSync(gitnexusHome, { recursive: true, force: true });
+  } catch {
+    /* best-effort cleanup of temp dirs */
+  }
 });
 
 /** Loads a specific duplicate directly via URL params and waits for Ready. */
@@ -179,6 +246,8 @@ function marker(page: Page, repoPath: string) {
 test('landing lists both duplicates and selecting the second loads its exact path', async ({
   page,
 }) => {
+  // Plain `/` (no ?server= — that param auto-connects and skips the landing);
+  // the beforeEach localStorage override points the probe at the spec backend.
   await page.goto('/');
 
   const dupeCards = page
