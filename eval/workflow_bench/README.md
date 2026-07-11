@@ -108,6 +108,30 @@ route; reserve full `gitnexus-plan` → `gitnexus-work` for cross-module work,
 multi-session execution, or when the plan document itself is a deliverable.
 If a future run shows the workflow flattering itself here, distrust the run.
 
+### Optimization re-measurement (same day, commit 830a0459)
+
+After category-priced plan forms (compact ≤80 lines + mini-pack),
+category-priced freshness (`accept` for compact classes), per-category turn
+budgets, and the work-phase HEAD==pin fast path, the same
+`inv-bug-pdg-note` workflow cell re-measured (n=1):
+
+| | ground base | optimized | delta |
+| --- | --- | --- | --- |
+| resolved | ✅ | ✅ | — |
+| cost $ | 14.56 | 11.70 | **−20%** |
+| turns | 83 | 72 | −13% |
+| output tokens | 59,789 | 53,345 | −11% |
+| cache_read | 6.64M | 5.07M | −24% |
+| wall | 21m | 25m | +15% |
+
+Verified in-transcript: the compact form fired (115-line plan vs 209 for a
+simpler task pre-optimization), the plan session dropped 72→49 turns, and
+NO analyzer rebuild/re-index executed. All savings came from the plan side;
+this run's work session drew a long test-debugging tail (hence the wall
+regression) — single-run variance cuts both ways. The optimizations narrow
+the gap but do not flip the regime: the workflow remains ~3.5× baseline on
+this task class, so the routing rule above stands unchanged.
+
 ## Writing good tasks
 
 See `tasks.scenarios.yaml`. Small enough to finish headless, real enough to
