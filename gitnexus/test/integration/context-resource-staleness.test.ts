@@ -1,125 +1,47 @@
 /**
  * Integration Tests: Context Resource Staleness Fix (#2438)
  *
- * Verifies that `gitnexus://repo/{name}/context` reads fresh metadata from
- * disk on every call so the staleness banner and stats always reflect the
- * actual on-disk state after an out-of-process `analyze --index-only` refresh
- * — even when the LocalBackend's in-memory RepoHandle is stale.
- *
- * Reproduce sequence (from the issue):
- *   1. LocalBackend starts → reads registry → caches RepoHandle (lastCommit = C1)
- *   2. `analyze --index-only` runs out-of-process → writes gitnexus.json (lastCommit = C2)
- *   3. Re-read context resource → must NOT show stale banner, must show fresh stats
- *
- * This is an integration test that exercises real file I/O (git + gitnexus.json)
- * without requiring a full LadybugDB index. The registry is mocked so CI doesn't
- * require the native addon, but loadMeta reads real JSON files on disk.
+ * End-to-end flow with real git and real registry/meta I/O.
  */
-import { execSync } from 'child_process';
-import { mkdirSync, writeFileSync } from 'fs';
+import { execFileSync } from 'child_process';
+import { writeFileSync } from 'fs';
 import path from 'path';
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { createTempDir } from '../helpers/test-db.js';
-import type { RegistryEntry } from '../../src/storage/repo-manager.js';
 import type { RepoMeta } from '../../src/storage/repo-manager.js';
-
-// Mock listRegisteredRepos to control which repos the backend sees.
-// loadMeta, loadMetaLegacy, and saveMeta are left un-mocked so the test
-// exercises real file I/O. cleanupOldKuzuFiles and findSiblingClones are
-// stubbed to no-ops to keep the test clean.
-const { listRegisteredReposMock } = vi.hoisted(() => ({
-  listRegisteredReposMock: vi.fn<() => Promise<RegistryEntry[]>>().mockResolvedValue([]),
-}));
-
-vi.mock('../../src/storage/repo-manager.js', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../../src/storage/repo-manager.js')>();
-  return {
-    ...actual,
-    listRegisteredRepos: listRegisteredReposMock,
-    cleanupOldKuzuFiles: vi.fn().mockResolvedValue({ found: false, needsReindex: false }),
-    findSiblingClones: vi.fn().mockResolvedValue([]),
-  };
-});
-
-// Stub git-staleness so the test controls the staleness signal independently
-// of whether git is available in the CI path. The real checkStaleness function
-// would also work (it shells out to git which IS available), but mocking lets us
-// assert the exact commits passed without relying on git rev-list output.
-const { checkStalenessMock } = vi.hoisted(() => ({
-  checkStalenessMock: vi.fn().mockReturnValue({ isStale: false, commitsBehind: 0 }),
-}));
-
-vi.mock('../../src/core/git-staleness.js', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../../src/core/git-staleness.js')>();
-  return {
-    ...actual,
-    checkStaleness: checkStalenessMock,
-    checkStalenessAsync: vi.fn().mockResolvedValue({ isStale: false, commitsBehind: 0 }),
-    checkCwdMatch: vi.fn().mockResolvedValue({ match: 'none' }),
-  };
-});
-
-vi.mock('../../src/mcp/staleness.js', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../../src/mcp/staleness.js')>();
-  return { ...actual, checkStaleness: checkStalenessMock };
-});
-
-// Stub the native LadybugDB addon at the package boundary so none of the
-// transitive importers (pool-adapter, lbug-adapter, fts-indexes, …) try
-// to open lbugjs.node — which does not exist in CI without postinstall.
-// This is the same pattern used in unit/lbug-pool-fts-load.test.ts etc.
-vi.mock('@ladybugdb/core', () => ({
-  default: {
-    Database: vi.fn(),
-    Connection: vi.fn(function (this: any) {
-      this.close = vi.fn().mockResolvedValue(undefined);
-    }),
-  },
-}));
-
-// Stub LadybugDB pool — we never open an actual DB in this test.
-vi.mock('../../src/core/lbug/pool-adapter.js', () => ({
-  initLbug: vi.fn().mockResolvedValue(undefined),
-  executeQuery: vi.fn().mockResolvedValue([]),
-  executeParameterized: vi.fn().mockResolvedValue([]),
-  closeLbug: vi.fn().mockResolvedValue(undefined),
-  isLbugReady: vi.fn().mockReturnValue(false),
-}));
-vi.mock('../../src/mcp/core/lbug-adapter.js', () => ({
-  initLbug: vi.fn().mockResolvedValue(undefined),
-  executeQuery: vi.fn().mockResolvedValue([]),
-  executeParameterized: vi.fn().mockResolvedValue([]),
-  closeLbug: vi.fn().mockResolvedValue(undefined),
-  isLbugReady: vi.fn().mockReturnValue(false),
-}));
+import { getStoragePaths, registerRepo, saveMeta } from '../../src/storage/repo-manager.js';
 
 import { LocalBackend } from '../../src/mcp/local/local-backend.js';
 import { readResource } from '../../src/mcp/resources.js';
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
-/** Write a gitnexus.json (RepoMeta) to the given storagePath directory. */
-function writeMetaJson(storagePath: string, meta: RepoMeta): void {
-  mkdirSync(storagePath, { recursive: true });
-  writeFileSync(path.join(storagePath, 'gitnexus.json'), JSON.stringify(meta, null, 2), 'utf-8');
+function runGit(repoPath: string, ...args: string[]): string {
+  try {
+    return execFileSync('git', args, { cwd: repoPath, encoding: 'utf-8' }).trim();
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`git ${args.join(' ')} failed in ${repoPath}: ${message}`);
+  }
 }
 
-/** Build a minimal RegistryEntry for a tmp repo dir. */
-function makeRegistryEntry(
+/**
+ * Persist index metadata and register the repo in the global registry.
+ * `saveMeta` runs before `registerRepo` so registry validation can immediately
+ * see a readable metadata file for this entry.
+ * @param repoPath Absolute path to the git repository under test.
+ * @param storagePath Absolute path to the repo metadata directory.
+ * @param meta Metadata snapshot to write to gitnexus.json and registry.
+ * @param repoName Registry alias used by LocalBackend for this repo.
+ */
+async function seedIndexedRepo(
   repoPath: string,
   storagePath: string,
-  lastCommit: string,
-  stats: NonNullable<RepoMeta['stats']>,
-): RegistryEntry {
-  return {
-    name: 'test-repo',
-    path: repoPath,
-    storagePath,
-    indexedAt: '2024-01-01T00:00:00Z',
-    lastCommit,
-    stats,
-    branches: [],
-  };
+  meta: RepoMeta,
+  repoName: string = 'test-repo',
+): Promise<void> {
+  await saveMeta(storagePath, meta);
+  await registerRepo(repoPath, meta, { name: repoName });
 }
 
 // ─── Tests ───────────────────────────────────────────────────────────────────
@@ -133,16 +55,15 @@ describe('context resource freshness — out-of-process analyze (#2438)', () => 
   beforeEach(async () => {
     tmpDir = await createTempDir('gnx-ctx-staleness-');
     repoPath = tmpDir.dbPath;
-    storagePath = path.join(repoPath, '.gitnexus');
-    mkdirSync(storagePath, { recursive: true });
 
     // Isolate the global registry from the developer's real ~/.gitnexus
     savedHome = process.env.GITNEXUS_HOME;
-    process.env.GITNEXUS_HOME = storagePath;
+    process.env.GITNEXUS_HOME = path.join(repoPath, '.gitnexus-home');
+    storagePath = getStoragePaths(repoPath).storagePath;
 
-    checkStalenessMock.mockReset();
-    checkStalenessMock.mockReturnValue({ isStale: false, commitsBehind: 0 });
-    listRegisteredReposMock.mockReset();
+    runGit(repoPath, 'init');
+    runGit(repoPath, 'config', 'user.name', 'GitNexus Test');
+    runGit(repoPath, 'config', 'user.email', 'gitnexus@example.com');
   });
 
   afterEach(async () => {
@@ -152,61 +73,47 @@ describe('context resource freshness — out-of-process analyze (#2438)', () => 
   });
 
   it('clears the staleness banner after out-of-process analyze updates gitnexus.json', async () => {
-    // ── STEP 1: Initial analyze writes gitnexus.json with old commit (C1) ───
-    const c1 = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'; // simulated HEAD at index time
-    const c2 = 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'; // new HEAD after more commits
+    // ── STEP 1: Repository HEAD advances from C1 to C2 ───────────────────────
+    writeFileSync(path.join(repoPath, 'a.ts'), 'export const a = 1;\n');
+    runGit(repoPath, 'add', 'a.ts');
+    runGit(repoPath, 'commit', '-m', 'c1');
+    const c1 = runGit(repoPath, 'rev-parse', 'HEAD');
+    writeFileSync(path.join(repoPath, 'b.ts'), 'export const b = 2;\n');
+    runGit(repoPath, 'add', 'b.ts');
+    runGit(repoPath, 'commit', '-m', 'c2');
+    const c2 = runGit(repoPath, 'rev-parse', 'HEAD');
+
     const oldStats = { files: 100, nodes: 500, processes: 10 };
     const freshStats = { files: 120, nodes: 600, processes: 12 };
 
-    writeMetaJson(storagePath, {
+    await seedIndexedRepo(repoPath, storagePath, {
       repoPath,
       lastCommit: c1,
       indexedAt: '2024-01-01T00:00:00Z',
       stats: oldStats,
     });
 
-    // Registry entry also points to C1 (what LocalBackend reads at init time)
-    listRegisteredReposMock.mockResolvedValue([
-      makeRegistryEntry(repoPath, storagePath, c1, oldStats),
-    ]);
-
     const backend = new LocalBackend();
     await backend.init();
 
-    // ── STEP 2: Time passes; new commits land. checkStaleness now reports stale ──
-    checkStalenessMock.mockReturnValue({
-      isStale: true,
-      commitsBehind: 5,
-      hint: '⚠️ Index is 5 commits behind HEAD. Run analyze tool to update.',
-    });
-
+    // C1 is stale against current HEAD (C2)
     const resultBefore = await readResource(`gitnexus://repo/test-repo/context`, backend);
     expect(resultBefore).toContain('staleness:');
-    expect(resultBefore).toContain('5 commits behind');
+    expect(resultBefore).toContain('1 commit behind');
     // Stats reflect the old (C1-era) values from gitnexus.json
     expect(resultBefore).toContain('files: 100');
     expect(resultBefore).toContain('symbols: 500');
 
     // ── STEP 3: Out-of-process analyze runs, updates gitnexus.json to C2 ───
     // The MCP server (LocalBackend) is NOT restarted — this is the bug scenario.
-    writeMetaJson(storagePath, {
+    await saveMeta(storagePath, {
       repoPath,
       lastCommit: c2,
       indexedAt: new Date().toISOString(),
       stats: freshStats,
     });
-    // checkStaleness is now called with C2 (which equals HEAD) — not stale
-    checkStalenessMock.mockImplementation((_repoPath: string, commit: string) => {
-      if (commit === c2) {
-        return { isStale: false, commitsBehind: 0 };
-      }
-      // C1 is still stale (5 commits behind)
-      return { isStale: true, commitsBehind: 5, hint: '⚠️ Index is 5 commits behind HEAD.' };
-    });
 
     // ── STEP 4: Re-read context resource WITHOUT restarting the MCP server ──
-    // The backend's cached RepoHandle still has lastCommit = C1 (never refreshed).
-    // The fix must read from disk to get C2 and pass it to checkStaleness.
     const resultAfter = await readResource(`gitnexus://repo/test-repo/context`, backend);
 
     // Staleness banner MUST be gone — the fresh gitnexus.json has lastCommit = C2
@@ -218,54 +125,46 @@ describe('context resource freshness — out-of-process analyze (#2438)', () => 
   });
 
   it('shows stale banner before analyze and clears it after — full reproduce sequence', async () => {
-    const c1 = 'c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1';
-    const c2 = 'c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2';
-    const stats = { files: 50, nodes: 200, processes: 5 };
+    writeFileSync(path.join(repoPath, 'a.ts'), 'export const a = 1;\n');
+    runGit(repoPath, 'add', 'a.ts');
+    runGit(repoPath, 'commit', '-m', 'c1');
+    writeFileSync(path.join(repoPath, 'b.ts'), 'export const b = 2;\n');
+    runGit(repoPath, 'add', 'b.ts');
+    runGit(repoPath, 'commit', '-m', 'c2');
+    const c2 = runGit(repoPath, 'rev-parse', 'HEAD');
 
-    // Initial state: indexed at C1
-    writeMetaJson(storagePath, {
+    const stats = { files: 50, nodes: 200, processes: 5 };
+    await seedIndexedRepo(repoPath, storagePath, {
       repoPath,
-      lastCommit: c1,
+      lastCommit: c2,
       indexedAt: '2024-01-01T00:00:00Z',
       stats,
     });
-    listRegisteredReposMock.mockResolvedValue([
-      makeRegistryEntry(repoPath, storagePath, c1, stats),
-    ]);
 
     const backend = new LocalBackend();
     await backend.init();
 
-    // Pre-analyze: not stale (index is current)
-    checkStalenessMock.mockReturnValue({ isStale: false, commitsBehind: 0 });
+    // Pre-analyze: registry/meta are seeded at current HEAD (C2), so not stale
     const r1 = await readResource(`gitnexus://repo/test-repo/context`, backend);
     expect(r1).not.toContain('staleness:');
 
-    // New commits arrive; C1 is now stale
-    checkStalenessMock.mockReturnValue({
-      isStale: true,
-      commitsBehind: 31,
-      hint: '⚠️ Index is 31 commits behind HEAD. Run analyze tool to update.',
-    });
+    // New commit arrives; indexed commit (C2) is stale
+    writeFileSync(path.join(repoPath, 'c.ts'), 'export const c = 3;\n');
+    runGit(repoPath, 'add', 'c.ts');
+    runGit(repoPath, 'commit', '-m', 'c3');
+    const c3 = runGit(repoPath, 'rev-parse', 'HEAD');
     const r2 = await readResource(`gitnexus://repo/test-repo/context`, backend);
     expect(r2).toContain('staleness:');
-    expect(r2).toContain('31 commits behind');
+    expect(r2).toContain('1 commit behind');
 
-    // Out-of-process analyze --index-only completes; gitnexus.json updated to C2
+    // Out-of-process analyze --index-only completes; gitnexus.json updated to C3
     const freshStats = { files: 60, nodes: 250, processes: 7 };
-    writeMetaJson(storagePath, {
+    await saveMeta(storagePath, {
       repoPath,
-      lastCommit: c2,
+      lastCommit: c3,
       indexedAt: new Date().toISOString(),
       stats: freshStats,
     });
-
-    // When the fresh commit is passed to checkStaleness it's not stale anymore
-    checkStalenessMock.mockImplementation((_: string, commit: string) =>
-      commit === c2
-        ? { isStale: false, commitsBehind: 0 }
-        : { isStale: true, commitsBehind: 31, hint: '⚠️ Index is 31 commits behind HEAD.' },
-    );
 
     // Third read — MCP server still running, but context must reflect fresh state
     const r3 = await readResource(`gitnexus://repo/test-repo/context`, backend);
@@ -276,24 +175,28 @@ describe('context resource freshness — out-of-process analyze (#2438)', () => 
   });
 
   it('stat fields absent in disk meta fall through to cached context stats', async () => {
-    // Some older gitnexus.json files omit the stats field. The fallback must
-    // use the cached context stats rather than showing zeros or undefined.
-    const c1 = 'deadbeefdeadbeefdeadbeefdeadbeefdeadbeef';
-    const oldStats = { files: 77, nodes: 333, processes: 4 };
+    writeFileSync(path.join(repoPath, 'a.ts'), 'export const a = 1;\n');
+    runGit(repoPath, 'add', 'a.ts');
+    runGit(repoPath, 'commit', '-m', 'c1');
+    const c1 = runGit(repoPath, 'rev-parse', 'HEAD');
 
-    // Disk meta has NO stats (simulating an older or partially-written meta)
-    writeMetaJson(storagePath, {
+    const oldStats = { files: 77, nodes: 333, processes: 4 };
+    await seedIndexedRepo(repoPath, storagePath, {
       repoPath,
       lastCommit: c1,
       indexedAt: '2024-01-01T00:00:00Z',
-      // stats omitted intentionally
+      stats: oldStats,
     });
-    listRegisteredReposMock.mockResolvedValue([
-      makeRegistryEntry(repoPath, storagePath, c1, oldStats),
-    ]);
 
     const backend = new LocalBackend();
     await backend.init();
+
+    // Overwrite disk meta with NO stats (simulating an older/partial file)
+    await saveMeta(storagePath, {
+      repoPath,
+      lastCommit: c1,
+      indexedAt: new Date().toISOString(),
+    });
 
     const result = await readResource(`gitnexus://repo/test-repo/context`, backend);
     // Falls back to cached context stats (from registry entry)
