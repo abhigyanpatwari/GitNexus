@@ -74,6 +74,11 @@ const PLATFORM_LOGIC = [
   // (macos), so the header parsing is proven on genuine binaries, not synthetic
   // buffers (the ubuntu suite covers the ELF path).
   'test/integration/extension-binary-real.test.ts',
+  // Server repo resolver branches on path shape (path.isAbsolute, backslash
+  // detection) and canonicalizePath/realpathSync, all of which differ between
+  // POSIX and Windows — the fail-closed path-claim semantics must hold on the
+  // real windows-latest path implementation (#2419/#2420).
+  'test/unit/server-api-repo-resolution.test.ts',
 ];
 
 // Native LadybugDB integration tests — exercise the @ladybugdb/core

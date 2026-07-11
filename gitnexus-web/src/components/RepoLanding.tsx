@@ -14,7 +14,7 @@
 
 import { Sparkles, ArrowRight, GitBranch, FileCode, Layers } from '@/lib/lucide-icons';
 import { RepoAnalyzer } from './RepoAnalyzer';
-import type { BackendRepo } from '../services/backend-client';
+import { repoIdentity, type BackendRepo } from '../services/backend-client';
 import type { TFunction } from 'i18next';
 import { useTranslation } from 'react-i18next';
 
@@ -126,7 +126,11 @@ export const RepoLanding = ({ repos, onSelectRepo, onAnalyzeComplete }: RepoLand
       {/* Repo list */}
       <div className="relative mb-5 space-y-2">
         {repos.map((repo) => (
-          <RepoCard key={repo.name} repo={repo} onClick={() => onSelectRepo(repo.name)} />
+          <RepoCard
+            key={repoIdentity(repo)}
+            repo={repo}
+            onClick={() => onSelectRepo(repoIdentity(repo))}
+          />
         ))}
       </div>
 

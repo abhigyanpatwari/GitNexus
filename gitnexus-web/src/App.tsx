@@ -25,6 +25,16 @@ import { parseSkipGraphParam } from './lib/graph-load-decision';
 import { formatBackendError } from './i18n/error-messages';
 import { useTranslation } from 'react-i18next';
 
+/**
+ * Restore-param preference for the auto-connect effect: `repo` carries the
+ * server-resolved path identity (restores the exact repo even when duplicate
+ * display names exist, #2419), while older `project`-only URLs degrade to a
+ * name-based restore. Exported for direct unit testing — no test harness
+ * renders <App/>.
+ */
+export const pickRestoreRepo = (params: URLSearchParams): string | undefined =>
+  params.get('repo') ?? params.get('project') ?? undefined;
+
 const AppContent = () => {
   const { t } = useTranslation(['common', 'errors']);
   const {
@@ -66,8 +76,9 @@ const AppContent = () => {
         result.repoInfo.name ||
         (repoPath || '').replace(/\\/g, '/').split('/').filter(Boolean).pop() ||
         'server-project';
+      const repoIdentity = repoPath || projectName;
       setProjectName(projectName);
-      setCurrentRepo(projectName);
+      setCurrentRepo(repoIdentity);
 
       // Build KnowledgeGraph from server data for visualization. In chat-only
       // mode the graph download was skipped, so the shared builder keeps an
@@ -78,9 +89,15 @@ const AppContent = () => {
       setGraphMode(built.graphMode);
       setChatOnlyNodeCount(built.graphMode === 'chatOnly' ? built.nodeCount : null);
 
-      // Persist the active project in the URL for bookmarkability and F5 refresh resilience
+      // Persist the active project in the URL for bookmarkability and F5 refresh resilience.
+      // `repo` carries the server-resolved path identity (never the request-side
+      // string) so a refresh restores this exact repo even when duplicate display
+      // names exist (#2419); `project` stays as the readable display name.
       const urlObj = new URL(window.location.href);
       urlObj.searchParams.set('project', projectName);
+      if (repoPath) {
+        urlObj.searchParams.set('repo', repoPath);
+      }
       window.history.replaceState(null, '', urlObj.toString());
 
       // Transition directly to exploring view
@@ -90,7 +107,7 @@ const AppContent = () => {
       // chat-only flag so the agent's prompt matches the loaded/skipped graph (#2178).
       try {
         if (getActiveProviderConfig()) {
-          await initializeAgent(projectName, { chatOnly: result.graphSkipped });
+          await initializeAgent(projectName, { chatOnly: result.graphSkipped, repo: repoIdentity });
         }
         startEmbeddingsWithFallback();
       } catch (err) {
@@ -109,7 +126,11 @@ const AppContent = () => {
     ],
   );
 
-  // Auto-connect when ?server or ?project query param is present (bookmarkable shortcut)
+  // Auto-connect when a ?server, ?repo or ?project query param is present
+  // (bookmarkable shortcut). A failed ?repo= restore (e.g. the bookmarked path
+  // was deleted) fails visibly via the error overlay → onboarding — it must
+  // NOT silently fall back to a name-based connect, which could reconnect a
+  // same-named sibling repo (#2419).
   const autoConnectRan = useRef(false);
   const tRef = useRef(t);
   useEffect(() => {
@@ -120,12 +141,12 @@ const AppContent = () => {
     if (autoConnectRan.current) return;
     const params = new URLSearchParams(window.location.search);
     const serverUrlParam = params.get('server');
-    const projectParam = params.get('project');
+    const restoreRepoParam = pickRestoreRepo(params);
     // `?skipGraph=1` forces chat-only, `?skipGraph=0` forces a full graph;
     // absent → auto-detect by node count. Bookmarkable / survives F5 (#2178).
     const skipGraphParam = parseSkipGraphParam(params.get('skipGraph'));
 
-    if (!serverUrlParam && !projectParam) return;
+    if (!serverUrlParam && !restoreRepoParam) return;
     autoConnectRan.current = true;
 
     setProgress({
@@ -169,7 +190,7 @@ const AppContent = () => {
           }
         },
         undefined,
-        projectParam || undefined,
+        restoreRepoParam,
         { awaitAnalysis: true, skipGraph: skipGraphParam }, // hold-queue + chat-only control (#2178)
       );
     };
@@ -282,8 +303,11 @@ const AppContent = () => {
               setProgress(null);
               return;
             } catch (err: unknown) {
-              if (attempt === 0 && err instanceof BackendError && err.status === 404) {
-                // Server may still be reinitializing — wait and retry
+              // Server may still be reinitializing after the worker completed:
+              // that surfaces as a 404 (repo not registered yet) OR a transient
+              // 5xx/binder error while the freshly-written DB becomes readable.
+              // Either way, wait and retry once before giving up.
+              if (attempt === 0 && err instanceof BackendError) {
                 await new Promise((r) => setTimeout(r, 1500));
                 continue;
               }

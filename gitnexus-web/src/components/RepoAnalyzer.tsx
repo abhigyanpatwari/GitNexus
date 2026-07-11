@@ -183,7 +183,12 @@ type InternalPhase = 'input' | 'starting' | 'analyzing' | 'done' | 'error';
 
 export interface RepoAnalyzerProps {
   variant: 'onboarding' | 'sheet';
-  onComplete: (repoName: string) => void;
+  /**
+   * Receives the repo IDENTITY to reconnect with — the analyzed path when the
+   * server provides one (`repoPath` on the SSE complete event), otherwise the
+   * display name. Never rendered; the done screen shows the display name.
+   */
+  onComplete: (repoIdentity: string) => void;
   onCancel?: () => void;
 }
 
@@ -360,19 +365,25 @@ export const RepoAnalyzer = ({ variant, onComplete, onCancel }: RepoAnalyzerProp
       jobId,
       (p) => setProgress(p),
       (data) => {
-        const name =
+        // Display vs identity split: the done screen renders the display name
+        // (never an absolute path), while onComplete receives the identity —
+        // the analyzed path when the server provides it, so the reconnect
+        // targets the exact repo even when basenames collide. Old servers omit
+        // repoPath and degrade to today's name behavior.
+        const displayName =
           data.repoName ??
           (fallbackNameSource
             ? fallbackNameSource.split(/[/\\]/).filter(Boolean).at(-1)
             : undefined) ??
           t('onboarding:repoAnalyzer.defaultRepoName');
-        setCompletedRepoName(name);
+        const identity = data.repoPath ?? displayName;
+        setCompletedRepoName(displayName);
         setGithubToken('');
         setPhase('done');
         sseControllerRef.current = null;
         completeTimerRef.current = setTimeout(() => {
           completeTimerRef.current = null;
-          onComplete(name);
+          onComplete(identity);
         }, 1200);
       },
       (errMsg) => {

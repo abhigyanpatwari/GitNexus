@@ -82,6 +82,20 @@ export const canonicalizePath = (p: string): string => {
 export const registryPathEquals = (a: string, b: string): boolean =>
   process.platform === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b;
 
+/**
+ * Does the clone dir derived from an entry's *name* actually belong to that
+ * entry? Registry names are not unique across storage locations: a cloned
+ * repo under `~/.gitnexus/repos/<name>` and a local repo registered under the
+ * same name share a `getCloneDir(entry.name)` result. The server's delete
+ * handler must therefore never remove the clone dir based on the name alone —
+ * only when the entry's own `path` resolves to that dir (mirroring its step-2b
+ * rule that cleanup is driven off `entry.path`, so a same-named sibling's
+ * clone is never removed). Both sides are canonicalised so symlinked or
+ * differently-spelled forms of the same dir still match.
+ */
+export const cloneDirBelongsToEntry = (cloneDir: string, entryPath: string): boolean =>
+  registryPathEquals(canonicalizePath(cloneDir), canonicalizePath(entryPath));
+
 export interface RepoMeta {
   repoPath: string;
   lastCommit: string;
