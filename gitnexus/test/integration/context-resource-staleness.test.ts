@@ -64,25 +64,34 @@ vi.mock('../../src/mcp/staleness.js', async (importOriginal) => {
   return { ...actual, checkStaleness: checkStalenessMock };
 });
 
+// Stub the native LadybugDB addon at the package boundary so none of the
+// transitive importers (pool-adapter, lbug-adapter, fts-indexes, …) try
+// to open lbugjs.node — which does not exist in CI without postinstall.
+// This is the same pattern used in unit/lbug-pool-fts-load.test.ts etc.
+vi.mock('@ladybugdb/core', () => ({
+  default: {
+    Database: vi.fn(),
+    Connection: vi.fn(function (this: any) {
+      this.close = vi.fn().mockResolvedValue(undefined);
+    }),
+  },
+}));
+
 // Stub LadybugDB pool — we never open an actual DB in this test.
-vi.mock('../../src/core/lbug/pool-adapter.js', async (importOriginal) => {
-  const actual = await importOriginal();
-  return {
-    ...actual,
-    initLbug: vi.fn().mockResolvedValue(undefined),
-    closeLbug: vi.fn().mockResolvedValue(undefined),
-    isLbugReady: vi.fn().mockReturnValue(false),
-  };
-});
-vi.mock('../../src/mcp/core/lbug-adapter.js', async (importOriginal) => {
-  const actual = await importOriginal();
-  return {
-    ...actual,
-    initLbug: vi.fn().mockResolvedValue(undefined),
-    closeLbug: vi.fn().mockResolvedValue(undefined),
-    isLbugReady: vi.fn().mockReturnValue(false),
-  };
-});
+vi.mock('../../src/core/lbug/pool-adapter.js', () => ({
+  initLbug: vi.fn().mockResolvedValue(undefined),
+  executeQuery: vi.fn().mockResolvedValue([]),
+  executeParameterized: vi.fn().mockResolvedValue([]),
+  closeLbug: vi.fn().mockResolvedValue(undefined),
+  isLbugReady: vi.fn().mockReturnValue(false),
+}));
+vi.mock('../../src/mcp/core/lbug-adapter.js', () => ({
+  initLbug: vi.fn().mockResolvedValue(undefined),
+  executeQuery: vi.fn().mockResolvedValue([]),
+  executeParameterized: vi.fn().mockResolvedValue([]),
+  closeLbug: vi.fn().mockResolvedValue(undefined),
+  isLbugReady: vi.fn().mockReturnValue(false),
+}));
 
 import { LocalBackend } from '../../src/mcp/local/local-backend.js';
 import { readResource } from '../../src/mcp/resources.js';
