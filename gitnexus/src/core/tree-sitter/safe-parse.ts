@@ -34,6 +34,22 @@ const DIRECT_PARSE_LIMIT_CHARS = 16 * 1024;
  * (unlimited parse time — restore the historical behaviour for debugging).
  */
 const DEFAULT_PARSE_TIMEOUT_MS = 15_000;
+const NULL_BYTE_PATTERN = /\0/g;
+
+function replaceNullBytes(sourceText: string, label?: string): string {
+  if (!sourceText.includes('\0')) return sourceText;
+
+  const nullByteCount = sourceText.match(NULL_BYTE_PATTERN)?.length ?? 0;
+  const sanitizedText = sourceText.replace(NULL_BYTE_PATTERN, ' ');
+  logger.warn(
+    {
+      ...(label ? { file: label } : {}),
+      nullByteCount,
+    },
+    'tree-sitter input contained null bytes; replaced them with spaces before parsing',
+  );
+  return sanitizedText;
+}
 
 /**
  * Resolve the per-parse budget in milliseconds from the environment. A
@@ -196,7 +212,12 @@ export function getParseDiagnostics(tree: Parser.Tree): {
  *     `finally` so it never leaks to the next parse on a reused/singleton
  *     parser (`loadParser()` and the worker both reuse one `Parser`).
  *
- *  3. **Intrinsic error detection.** On a successful parse, a degraded tree
+ *  3. **Null-byte truncation guard.** Inputs containing `\0` have those bytes
+ *     replaced with spaces before either parse path so tree-sitter's native
+ *     binding cannot treat them as C-string terminators. Replacement preserves
+ *     source length and node offsets while surfacing a warning for the file.
+ *
+ *  4. **Intrinsic error detection.** On a successful parse, a degraded tree
  *     (`rootNode.hasError`) is logged at `debug` level with throttling, then
  *     the tree is **returned anyway** — error recovery is a downgrade, never a
  *     drop. Callers wanting the boolean use {@link parseHadErrors}.
@@ -211,17 +232,18 @@ export function parseSourceSafe(
   options?: Parser.Options,
   label?: string,
 ): Parser.Tree {
+  const parseText = replaceNullBytes(sourceText, label);
   const budgetMs = resolveParseTimeoutMs();
   const armed = armParseBudget(parser, budgetMs);
 
   let tree: Parser.Tree | null;
   try {
-    if (sourceText.length <= DIRECT_PARSE_LIMIT_CHARS) {
-      tree = parser.parse(sourceText, oldTree, options);
+    if (parseText.length <= DIRECT_PARSE_LIMIT_CHARS) {
+      tree = parser.parse(parseText, oldTree, options);
     } else {
       const input: Parser.Input = (index) => {
-        if (index >= sourceText.length) return null;
-        return sourceText.slice(index, index + SAFE_PARSE_CHUNK_CHARS);
+        if (index >= parseText.length) return null;
+        return parseText.slice(index, index + SAFE_PARSE_CHUNK_CHARS);
       };
       tree = parser.parse(input, oldTree, options);
     }

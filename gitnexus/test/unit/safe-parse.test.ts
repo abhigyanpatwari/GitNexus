@@ -95,6 +95,32 @@ describe('parseSourceSafe', () => {
     expect(tree.rootNode.hasError).toBe(false);
     expect(tree.rootNode.endIndex).toBe(large.length);
   });
+
+  it('replaces null bytes before direct parsing so later source is not truncated', () => {
+    warnSpy.mockClear();
+    const src = 'before = 1\n# bad\0comment\nafter = 2\n';
+    const tree = parseSourceSafe(makeParser(), src, undefined, undefined, 'null-direct.py');
+
+    expect(tree.rootNode.text).toContain('after = 2');
+    expect(tree.rootNode.endIndex).toBe(src.length);
+    expect(warnSpy).toHaveBeenCalledWith(
+      { file: 'null-direct.py', nullByteCount: 1 },
+      'tree-sitter input contained null bytes; replaced them with spaces before parsing',
+    );
+  });
+
+  it('replaces null bytes before callback parsing so later source is not truncated', () => {
+    warnSpy.mockClear();
+    const src = `${buildSource(17 * 1024)}# bad\0comment\nafter = 2\n`;
+    const tree = parseSourceSafe(makeParser(), src, undefined, undefined, 'null-callback.py');
+
+    expect(tree.rootNode.text).toContain('after = 2');
+    expect(tree.rootNode.endIndex).toBe(src.length);
+    expect(warnSpy).toHaveBeenCalledWith(
+      { file: 'null-callback.py', nullByteCount: 1 },
+      'tree-sitter input contained null bytes; replaced them with spaces before parsing',
+    );
+  });
 });
 
 describe('parseSourceSafe — runaway-parse timeout (#1922)', () => {
