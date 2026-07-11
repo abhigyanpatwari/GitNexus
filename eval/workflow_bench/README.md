@@ -116,15 +116,23 @@ seams, transient-vs-deterministic classification:
 | arm | resolved | cost $ | wall | turns | churn |
 | --- | --- | --- | --- | --- | --- |
 | workflow | 1/1 | 18.32 | 37m | 107 | 4/+373/−17 |
+| **workflow_direct** | 1/1 | **9.53** | **15m** | **52** | 11/+244/−66 |
 | baseline | 1/1 | 18.03 | 34m | 98 | 6/+345/−69 |
-| workflow_direct | *invalidated* — see below | | | | |
 
-**The workflow's cost premium vanished at this scale** (−1.6% vs the −211%
-to −333% of smaller classes): its fixed costs amortized, it produced a plan
-document as a bonus artifact, and its diff was less destructive (−17
-deletions vs baseline's −69 across more files). Resolve rate still didn't
-differentiate — both passed — so the workflow's case at this scale is
-equal-cost + better-shaped work + a durable plan, not savings yet.
+(The workflow_direct row is the clean re-run under clone isolation — the
+original was contaminated, see the integrity note below.)
+
+**This is the cell where the discipline pays.** `workflow_direct` — the
+execution skill without a planning pass — beat a plain agent by **47% cost
+and 56% wall time** on the hardest class while resolving: impact-first
+navigation and gated commits prevented the flailing that baseline's 98
+turns represent. The full workflow's premium vanished (−1.6% vs baseline;
+−211%..−333% on smaller classes) — fixed costs amortize here, with a less
+destructive diff and a durable plan artifact — but it didn't beat direct
+mode on any measured axis with the plan consumed only once. Resolve rate
+stayed tied across all cells; the savings story belongs to the execution
+discipline, and the planning pass is bought for its artifact (multi-session
+reuse, review, handoff), not for same-session token savings.
 
 **Benchmark integrity note (why churn earns its keep):** the original
 `workflow_direct` cell reported an impossible 28-turn/$4.71 solve with churn
