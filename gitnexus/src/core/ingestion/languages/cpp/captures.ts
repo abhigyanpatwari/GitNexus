@@ -22,6 +22,28 @@ import { markCppInlineNamespaceRange } from './inline-namespaces.js';
 import { extractCppTemplateConstraints } from './constraint-extractor.js';
 import { captureCppMemberLookupFacts } from './member-lookup.js';
 import { CPP_BRACED_INIT_TYPE_PREFIX } from './conversion-rank.js';
+import { logger } from '../../../logger.js';
+
+/**
+ * Per-file wall-clock budget for the capture-emit loop (#2432). A worker
+ * thread stuck in this loop cannot be terminated safely (terminating a
+ * thread mid-N-API call aborts the whole process with Napi::Error), so the
+ * loop must bound itself: on breach we return the captures accumulated so
+ * far with a warning — degraded coverage for one file, never a crash or a
+ * thrown error (a throw here would make the language-group catch drop every
+ * remaining file in the batch).
+ *
+ * `GITNEXUS_CPP_CAPTURE_BUDGET_MS`: unset/invalid/negative → 20000; explicit
+ * 0 → expires immediately (deterministic test hook).
+ */
+const CPP_CAPTURE_BUDGET_DEFAULT_MS = 20_000;
+
+function cppCaptureBudgetMs(): number {
+  const raw = process.env.GITNEXUS_CPP_CAPTURE_BUDGET_MS;
+  if (raw === undefined || raw === '') return CPP_CAPTURE_BUDGET_DEFAULT_MS;
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : CPP_CAPTURE_BUDGET_DEFAULT_MS;
+}
 
 export function emitCppScopeCaptures(
   sourceText: string,
@@ -49,7 +71,22 @@ export function emitCppScopeCaptures(
   // so we can suppress the duplicate @declaration.typedef match.
   const concreteTypedefRanges = new Set<string>();
 
+  // #2432: per-file deadline for the loop below (see cppCaptureBudgetMs).
+  // Checked every 64 matches — post-index a single iteration is microseconds,
+  // so the check granularity costs nothing and bounds the drift past the
+  // deadline to well under a second.
+  const budgetMs = cppCaptureBudgetMs();
+  const deadline = Date.now() + budgetMs;
+  let matchIndex = 0;
+
   for (const m of rawMatches) {
+    if ((matchIndex++ & 63) === 0 && Date.now() >= deadline) {
+      logger.warn(
+        { filePath, budgetMs, processedMatches: matchIndex - 1, totalMatches: rawMatches.length },
+        `C++ capture extraction exceeded its ${budgetMs}ms budget for ${filePath}; returning partial captures for this file (#2432).`,
+      );
+      break;
+    }
     const grouped: Record<string, Capture> = {};
     // Parallel tag -> captured SyntaxNode map. The tree-sitter query already
     // hands us each matched node as `c.node`, so anchors resolve via a
