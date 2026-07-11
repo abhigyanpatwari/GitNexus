@@ -91,6 +91,10 @@ describe('worker pool cumulative-timeout exhaustion (U10 M6)', () => {
       // cumulative-timeout branch, not the consecutive-failure trip.
       consecutiveFailureThreshold: 100,
       maxRespawnsPerSlot: 100,
+      // #2432: the hanging worker never reaches a JS-safe point, so the
+      // finally-block terminate() would otherwise wait the full default
+      // shutdown drain (30s) before giving up on it.
+      shutdownDrainMs: 25,
       workerFactory: () => new HangingWorker() as unknown as import('node:worker_threads').Worker,
     });
 

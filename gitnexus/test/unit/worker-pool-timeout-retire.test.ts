@@ -99,6 +99,7 @@ describe('worker pool timeout retirement', () => {
       subBatchIdleTimeoutMs: 20,
       maxTimeoutRetries: 1,
       timeoutBackoffFactor: 2,
+      shutdownDrainMs: 25,
       workerFactory: () =>
         new TimeoutThenHealthyWorker() as unknown as import('node:worker_threads').Worker,
     });
@@ -113,9 +114,19 @@ describe('worker pool timeout retirement', () => {
       expect(TimeoutThenHealthyWorker.instances[0].unrefCalls).toBe(1);
       expect(TimeoutThenHealthyWorker.instances[0].terminateCalls).toBe(0);
 
+      // #2432: the retired worker never reached a JS-visible safe point, so
+      // shutdown must NOT terminate it (terminating a thread mid-N-API call
+      // aborts the whole process). The bounded drain expires and terminate()
+      // resolves with the worker left running.
       await pool.terminate();
+      expect(TimeoutThenHealthyWorker.instances[0].terminateCalls).toBe(0);
 
-      expect(TimeoutThenHealthyWorker.instances[0].terminateCalls).toBe(1);
+      // Once the worker reaches a safe point, the armed listener terminates it.
+      TimeoutThenHealthyWorker.instances[0].emit('message', { type: 'sub-batch-done' });
+      await waitFor(
+        () => TimeoutThenHealthyWorker.instances[0]?.terminateCalls === 1,
+        'Timed out waiting for post-shutdown safe-point terminate',
+      );
     } finally {
       await pool.terminate();
     }
@@ -152,12 +163,13 @@ describe('worker pool timeout retirement', () => {
     }
   });
 
-  it('terminates retired workers when the circuit breaker shuts the pool down', async () => {
+  it('leaves an unsafe retired worker running on breaker trip, terminating it at its safe point', async () => {
     const pool = createWorkerPool(workerUrl, 1, {
       subBatchIdleTimeoutMs: 10,
       maxTimeoutRetries: 1,
       timeoutBackoffFactor: 2,
       consecutiveFailureThreshold: 1,
+      shutdownDrainMs: 25,
       workerFactory: () =>
         new TimeoutThenHealthyWorker() as unknown as import('node:worker_threads').Worker,
     });
@@ -169,10 +181,102 @@ describe('worker pool timeout retirement', () => {
         ]),
       ).rejects.toThrow(/circuit breaker/i);
 
+      // #2432: the stalled worker never signalled a safe point — the breaker's
+      // background drain must expire WITHOUT terminating it.
+      await new Promise((resolve) => setTimeout(resolve, 80));
+      expect(TimeoutThenHealthyWorker.instances[0].terminateCalls).toBe(0);
+      expect(TimeoutThenHealthyWorker.instances[0].unrefCalls).toBeGreaterThanOrEqual(1);
+
+      TimeoutThenHealthyWorker.instances[0].emit('message', { type: 'sub-batch-done' });
       await waitFor(
         () => TimeoutThenHealthyWorker.instances[0]?.terminateCalls === 1,
-        'Timed out waiting for circuit breaker cleanup to terminate retired worker',
+        'Timed out waiting for safe-point terminate after breaker trip',
       );
+    } finally {
+      await pool.terminate();
+    }
+  });
+
+  it('retires (not terminates) a busy live worker when the breaker trips from another slot', async () => {
+    // Slot 0 stalls mid-job (native-busy); slot 1 dies, tripping the breaker
+    // (threshold 1). The breaker must route the BUSY live worker through the
+    // retire path — direct terminate would abort the process mid-N-API call.
+    class BusyAndDyingWorker extends TimeoutThenHealthyWorker {
+      override postMessage(msg: unknown): void {
+        if (msg !== null && typeof msg === 'object') {
+          const type = (msg as { type?: unknown }).type;
+          if (type === 'sub-batch') {
+            if (this.id === 0) return; // busy forever, never messages back
+            queueMicrotask(() => this.emit('error', new Error('worker crashed')));
+            return;
+          }
+        }
+        super.postMessage(msg);
+      }
+    }
+
+    const pool = createWorkerPool(workerUrl, 2, {
+      subBatchSize: 1,
+      subBatchIdleTimeoutMs: 5_000,
+      consecutiveFailureThreshold: 1,
+      shutdownDrainMs: 25,
+      workerFactory: () =>
+        new BusyAndDyingWorker() as unknown as import('node:worker_threads').Worker,
+    });
+
+    try {
+      await expect(
+        pool.dispatch<{ path: string; content: string }, { paths: string[] }>([
+          { path: 'src/busy.ts', content: 'const a = 1;' },
+          { path: 'src/dies.ts', content: 'const b = 2;' },
+        ]),
+      ).rejects.toThrow(/circuit breaker/i);
+
+      const busy = TimeoutThenHealthyWorker.instances[0];
+      // Retired, not terminated: unref'd with the safe-point listener armed.
+      await waitFor(() => busy.unrefCalls >= 1, 'Timed out waiting for busy worker to be retired');
+      await new Promise((resolve) => setTimeout(resolve, 80));
+      expect(busy.terminateCalls).toBe(0);
+
+      busy.emit('message', { type: 'sub-batch-done' });
+      await waitFor(
+        () => busy.terminateCalls === 1,
+        'Timed out waiting for retired busy worker to terminate at its safe point',
+      );
+    } finally {
+      await pool.terminate();
+    }
+  });
+
+  it('terminate() drains a retired worker that reaches its safe point mid-drain', async () => {
+    TimeoutThenHealthyWorker.firstWorkerBehavior = 'delayed-safe-return';
+    TimeoutThenHealthyWorker.safeReturnDelayMs = 5_000; // safe point arrives only via manual emit
+    const pool = createWorkerPool(workerUrl, 1, {
+      subBatchIdleTimeoutMs: 10,
+      maxTimeoutRetries: 1,
+      timeoutBackoffFactor: 2,
+      shutdownDrainMs: 2_000,
+      workerFactory: () =>
+        new TimeoutThenHealthyWorker() as unknown as import('node:worker_threads').Worker,
+    });
+
+    try {
+      const results = await pool.dispatch<{ path: string; content: string }, { paths: string[] }>([
+        { path: 'src/native-stall.ts', content: 'const x = 1;' },
+      ]);
+      expect(results).toEqual([{ paths: ['src/native-stall.ts'] }]);
+      expect(TimeoutThenHealthyWorker.instances[0].terminateCalls).toBe(0);
+
+      // Signal the safe point shortly after shutdown starts: the drain must
+      // pick it up and terminate promptly instead of waiting out the cap.
+      const terminatePromise = pool.terminate();
+      setTimeout(() => {
+        TimeoutThenHealthyWorker.instances[0].emit('message', { type: 'sub-batch-done' });
+      }, 20);
+      const start = Date.now();
+      await terminatePromise;
+      expect(Date.now() - start).toBeLessThan(1_500);
+      expect(TimeoutThenHealthyWorker.instances[0].terminateCalls).toBe(1);
     } finally {
       await pool.terminate();
     }
