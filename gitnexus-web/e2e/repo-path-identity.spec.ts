@@ -403,10 +403,11 @@ test('re-analyzing a duplicate targets its exact path throughout the flow', asyn
   // sibling). Assert the identity of the reconnect at the request level.
   //
   // Deliberately NOT asserted here: that the reconnect reaches the Ready
-  // state. A pre-existing server-side race (any repo, duplicates or not)
-  // can leave the freshly re-analyzed database transiently unreadable right
-  // after the SSE complete event, which would fail this test for reasons
-  // unrelated to the #2419 identity contract it covers.
+  // state. A pre-existing storage race (any repo, duplicates or not) can
+  // leave a freshly re-analyzed database transiently unreadable ("Binder
+  // exception: Table CodeRelation does not exist") right after completion,
+  // which would fail this test for reasons unrelated to the #2419 identity
+  // contract it covers. Tighten to a full Ready assertion once that is fixed.
   await expect
     .poll(() => connectTargets.filter((t) => t === dupePaths[1]).length, { timeout: 120_000 })
     .toBeGreaterThan(0);
