@@ -157,10 +157,30 @@ def parse_shortstat(text: str) -> dict[str, int]:
 
 
 def diff_churn(worktree: Path, orig_sha: str) -> dict[str, int]:
-    """Total churn (committed + uncommitted) vs the worktree's starting sha —
-    a cheap over-engineering proxy alongside pass/fail quality."""
+    """Code churn (committed + uncommitted + new files) vs the worktree's
+    starting sha — a cheap over-engineering proxy alongside pass/fail quality.
+
+    intent-to-add makes untracked new files visible to `git diff` (arms that
+    never commit would otherwise undercount); docs/plans is excluded so the
+    workflow arm's committed plan document doesn't inflate its code churn.
+    """
+    subprocess.run(
+        ["git", "-C", str(worktree), "add", "--intent-to-add", "-A"],
+        capture_output=True,
+        check=False,
+    )
     proc = subprocess.run(
-        ["git", "-C", str(worktree), "diff", "--shortstat", orig_sha],
+        [
+            "git",
+            "-C",
+            str(worktree),
+            "diff",
+            "--shortstat",
+            orig_sha,
+            "--",
+            ".",
+            ":(exclude)docs/plans",
+        ],
         capture_output=True,
         text=True,
         check=False,

@@ -65,24 +65,48 @@ Caveats, honestly:
   runner is Claude-Code-first; a codex engine is a straightforward extension
   (parse its `--json` usage events).
 
-## Calibration data point (2026-07-11, Claude Code 2.1.207)
+## Ground base (2026-07-11, Claude Code 2.1.207, default model, n=1/cell)
 
-First live run, deliberately on a *trivial* task ("add `-V` as a `--version`
-alias + unit test", 1 run, default model), to calibrate the overhead floor:
+Three task classes × three arms, single-repo (GitNexus itself). **Every arm
+resolved every task** — at this difficulty, pass/fail quality is saturated
+and the comparison is pure cost:
 
-| arm | resolved | cache_create | cache_read | output | cost $ | wall s | turns |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| workflow | 1/1 | 184,603 | 3,980,936 | 29,668 | 9.16 | 955 | 63 |
-| baseline | 1/1 | 57,113 | 711,184 | 5,222 | 2.11 | 167 | 16 |
+| task (class) | arm | resolved | cost $ | wall | turns | vs baseline cost |
+| --- | --- | --- | --- | --- | --- | --- |
+| trivial-version-alias | workflow | 1/1 | 9.16 | 16m | 63 | −333% |
+| trivial-version-alias | baseline | 1/1 | 2.11 | 2.8m | 16 | — |
+| inv-bug-pdg-note | workflow | 1/1 | 14.56 | 21m | 83 | −331% |
+| inv-bug-pdg-note | workflow_direct | 1/1 | 5.23 | 7.5m | 32 | −55% |
+| inv-bug-pdg-note | baseline | 1/1 | 3.38 | 4.7m | 22 | — |
+| inv-feature-list-repos-filter | workflow | 1/1 | 13.22 | 19m | 84 | −211% |
+| inv-feature-list-repos-filter | workflow_direct | 1/1 | 4.87 | 4.8m | 38 | −15% (wall +14% faster) |
+| inv-feature-list-repos-filter | baseline | 1/1 | 4.25 | 5.5m | 32 | — |
 
-Both arms solved it; the workflow cost ~4.3× more. That is the expected
-result for this task class — a two-line alias needs no investigation, so the
-workflow's fixed costs (freshness gate incl. analyzer rebuild + re-index, a
-209-line plan, context pack, work-phase re-anchoring) are pure overhead.
-The savings hypothesis applies to investigation-heavy, multi-file tasks
-(see the example tasks) and to plan-once/execute-later flows where the
-context pack amortizes. If the benchmark had flattered the workflow on this
-task, distrust the benchmark.
+What the ground base says, honestly:
+
+- **The full plan→work workflow never paid for itself at this task scale**
+  (tasks a baseline agent finishes in ≤35 turns). Its fixed cost — freshness
+  gate incl. analyzer rebuild + re-index, a full 13-section plan, work-phase
+  re-anchoring — is ~$9–11 per task and needs much larger tasks, plan-reuse
+  (one plan, several executors/sessions), or plan-as-deliverable flows to
+  amortize.
+- **workflow_direct is close to baseline** (−15% to −55% cost, once slightly
+  faster wall) — the execution discipline (impact-before-edit,
+  detect_changes-before-commit) is cheap. It produced noticeably more test
+  coverage than baseline for near-equal cost on the feature task.
+- **Quality didn't differentiate because nothing failed.** The regime where
+  the workflow should win on *resolve rate* — cross-module tasks where
+  baselines flail — is the unmeasured cell (`cross-module-parse-retry`), and
+  the next thing to measure, ideally with `--runs 3+` on a free backend.
+- Caveats: n=1 per cell, one repo, one model; churn numbers from this run
+  predate the intent-to-add/exclude-plans churn fix, so they are not
+  comparable across arms and are omitted above.
+
+Routing implication (to revisit as cells fill in): for tasks up to this
+size, `gitnexus-work` direct mode or a plain agent is the cost-optimal
+route; reserve full `gitnexus-plan` → `gitnexus-work` for cross-module work,
+multi-session execution, or when the plan document itself is a deliverable.
+If a future run shows the workflow flattering itself here, distrust the run.
 
 ## Writing good tasks
 
