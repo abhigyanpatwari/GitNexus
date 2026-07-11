@@ -23,6 +23,7 @@ import argparse
 import json
 import os
 import re
+import shutil
 import statistics
 import subprocess
 import tempfile
@@ -126,21 +127,34 @@ def newest_plan(worktree: Path) -> Path | None:
 
 
 def make_worktree(repo: Path, ref: str, parent: Path) -> Path:
+    """Isolated CLONE per arm — refs (branches, stash) stay arm-local.
+
+    `git worktree add` shares the ref namespace: an agent-created slug branch
+    survived its worktree's removal and a later arm found and ADOPTED the
+    previous arm's completed work (caught by identical churn fingerprints).
+    `--shared` keeps the clone cheap (object store via alternates); every ref
+    an agent creates dies with the clone directory.
+    """
     target = Path(tempfile.mkdtemp(prefix="wfbench-", dir=parent))
+    target.rmdir()  # git clone creates it
     subprocess.run(
-        ["git", "-C", str(repo), "worktree", "add", "--detach", str(target), ref],
+        ["git", "clone", "--shared", "--quiet", str(repo), str(target)],
         check=True,
         capture_output=True,
     )
-    return target
+    # Non-default branches exist only as origin/<ref> in a fresh clone.
+    for candidate in (ref, f"origin/{ref}"):
+        proc = subprocess.run(
+            ["git", "-C", str(target), "checkout", "--detach", "--quiet", candidate],
+            capture_output=True,
+        )
+        if proc.returncode == 0:
+            return target
+    raise RuntimeError(f"ref {ref!r} not found in clone of {repo}")
 
 
 def remove_worktree(repo: Path, worktree: Path) -> None:
-    subprocess.run(
-        ["git", "-C", str(repo), "worktree", "remove", "--force", str(worktree)],
-        check=False,
-        capture_output=True,
-    )
+    shutil.rmtree(worktree, ignore_errors=True)
 
 
 def parse_shortstat(text: str) -> dict[str, int]:

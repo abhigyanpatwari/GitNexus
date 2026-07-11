@@ -108,6 +108,33 @@ route; reserve full `gitnexus-plan` → `gitnexus-work` for cross-module work,
 multi-session execution, or when the plan document itself is a deliverable.
 If a future run shows the workflow flattering itself here, distrust the run.
 
+### Cross-module cell (same day, optimized skills, n=1)
+
+The hardest class — retry-with-backoff across the worker-pool/pipeline
+seams, transient-vs-deterministic classification:
+
+| arm | resolved | cost $ | wall | turns | churn |
+| --- | --- | --- | --- | --- | --- |
+| workflow | 1/1 | 18.32 | 37m | 107 | 4/+373/−17 |
+| baseline | 1/1 | 18.03 | 34m | 98 | 6/+345/−69 |
+| workflow_direct | *invalidated* — see below | | | | |
+
+**The workflow's cost premium vanished at this scale** (−1.6% vs the −211%
+to −333% of smaller classes): its fixed costs amortized, it produced a plan
+document as a bonus artifact, and its diff was less destructive (−17
+deletions vs baseline's −69 across more files). Resolve rate still didn't
+differentiate — both passed — so the workflow's case at this scale is
+equal-cost + better-shaped work + a durable plan, not savings yet.
+
+**Benchmark integrity note (why churn earns its keep):** the original
+`workflow_direct` cell reported an impossible 28-turn/$4.71 solve with churn
+byte-identical to the workflow arm — because `git worktree add` shares the
+ref namespace, the workflow arm's slug branch survived worktree removal, and
+the direct arm found and adopted the finished work. Fixed by giving every
+arm an isolated `git clone --shared` (agent-created refs die with the clone);
+the leaked branch was deleted and the cell re-measured. Treat identical
+churn fingerprints across arms as a contamination alarm.
+
 ### Optimization re-measurement (same day, commit 830a0459)
 
 After category-priced plan forms (compact ≤80 lines + mini-pack),
