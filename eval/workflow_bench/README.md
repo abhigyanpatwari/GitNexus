@@ -60,6 +60,25 @@ Caveats, honestly:
   runner is Claude-Code-first; a codex engine is a straightforward extension
   (parse its `--json` usage events).
 
+## Calibration data point (2026-07-11, Claude Code 2.1.207)
+
+First live run, deliberately on a *trivial* task ("add `-V` as a `--version`
+alias + unit test", 1 run, default model), to calibrate the overhead floor:
+
+| arm | resolved | cache_create | cache_read | output | cost $ | wall s | turns |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| workflow | 1/1 | 184,603 | 3,980,936 | 29,668 | 9.16 | 955 | 63 |
+| baseline | 1/1 | 57,113 | 711,184 | 5,222 | 2.11 | 167 | 16 |
+
+Both arms solved it; the workflow cost ~4.3× more. That is the expected
+result for this task class — a two-line alias needs no investigation, so the
+workflow's fixed costs (freshness gate incl. analyzer rebuild + re-index, a
+209-line plan, context pack, work-phase re-anchoring) are pure overhead.
+The savings hypothesis applies to investigation-heavy, multi-file tasks
+(see the example tasks) and to plan-once/execute-later flows where the
+context pack amortizes. If the benchmark had flattered the workflow on this
+task, distrust the benchmark.
+
 ## Writing good tasks
 
 See `tasks.example.yaml`. Small enough to finish headless, real enough to
