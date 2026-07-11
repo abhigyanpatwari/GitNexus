@@ -55,6 +55,15 @@ listed in [`pr-swarm-review/README.md`](pr-swarm-review/README.md); edit review 
 in the canonical files, never in the wrappers. The review is read-only — it never edits,
 commits, or posts.
 
+## Engineering planning (`/ce-plan`)
+
+To produce a deep, implementation-ready plan for a code change, invoke the **`ce-plan`**
+skill (`.claude/skills/ce-plan/SKILL.md`): GitNexus graph intelligence for navigation,
+statement-level PDG slices for behavioral constraints, targeted source reads for
+verification. Output lands in `docs/plans/` with a reusable implementation context pack
+(section 11) that a follow-up implementation agent consumes without re-investigating.
+The skill is planning-only — it never edits code.
+
 ## Changelog
 
 | Date | Version | Change |

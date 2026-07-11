@@ -98,6 +98,7 @@ gitnexus/vendor/**/node_modules/
 .claude/skills/*
 !.claude/skills/gitnexus/
 !.claude/skills/gitnexus-pr-swarm-review/
+!.claude/skills/ce-plan/
 
 .history/
 
