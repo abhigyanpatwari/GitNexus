@@ -33,7 +33,7 @@ export default defineConfig({
       exclude: [
         'src/workers/**', // Web workers (require worker env)
         'src/core/lbug/**', // WASM (requires SharedArrayBuffer)
-        'src/core/tree-sitter/**', // WASM (requires tree-sitter binaries)
+        // tree-sitter registry (wasm-grammars.ts) is pure TS and covered by unit tests
         'src/core/embeddings/**', // WASM (requires ML model)
         'src/main.tsx', // Entry point
         'src/vite-env.d.ts', // Type declarations

@@ -22,6 +22,11 @@
     "proto": {
       "name": "tree-sitter-proto",
       "upstream": { "github": "coder3101/tree-sitter-proto" }
+    },
+    "solidity": {
+      "name": "tree-sitter-solidity",
+      "upstream": { "npm": "tree-sitter-solidity" },
+      "hold": "ABI-pinned at npm 1.1.0 (LANGUAGE_VERSION 13) for tree-sitter@0.21.1 — do not bump to 1.2.x (ABI 15) without a tree-sitter runtime upgrade (#531)"
     }
   }
 }

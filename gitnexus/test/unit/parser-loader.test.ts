@@ -73,6 +73,10 @@ describe('parser-loader', () => {
       await expect(loadLanguage(SupportedLanguages.Ruby)).resolves.not.toThrow();
     });
 
+    it('loads Solidity language when the vendored grammar is available', async () => {
+      await expect(loadLanguage(SupportedLanguages.Solidity)).resolves.not.toThrow();
+    });
+
     it('throws for unsupported language', async () => {
       await expect(loadLanguage('erlang' as SupportedLanguages)).rejects.toThrow(
         'Unsupported language',
@@ -164,6 +168,28 @@ int main(void) {
 
       expect(tree.rootNode.type).toBe('source_file');
       expect(tree.rootNode.namedChildCount).toBe(1);
+    });
+  });
+
+  describe('Solidity vendored grammar', () => {
+    it('parses a minimal contract and walks the tree', async () => {
+      const parser = await loadParser();
+      await loadLanguage(SupportedLanguages.Solidity);
+      const tree = parser.parse(
+        'pragma solidity ^0.8.0; contract Foo { function bar() public {} }',
+      );
+
+      expect(tree.rootNode.type).toBe('source_file');
+      expect(tree.rootNode.hasError).toBe(false);
+
+      let nodeCount = 0;
+      const walk = (node: { type: string; children: any[] }): void => {
+        nodeCount += 1;
+        expect(typeof node.type).toBe('string');
+        for (const child of node.children) walk(child);
+      };
+      walk(tree.rootNode as any);
+      expect(nodeCount).toBeGreaterThan(10);
     });
   });
 });

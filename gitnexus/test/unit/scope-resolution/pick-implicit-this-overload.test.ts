@@ -153,4 +153,34 @@ describe('pickImplicitThisOverload — uniqueness guard (Codex #1497 finding 2)'
 
     expect(result).toBeUndefined();
   });
+
+  it('resolves inherited methods via MRO when the enclosing class has no local match', () => {
+    const PARENT_DEF_ID = 'def:test.cs:Parent';
+    const inherited = mkMethod({
+      nodeId: 'm:parent-save',
+      parameterCount: 1,
+      requiredParameterCount: 1,
+    });
+    const scopes = {
+      scopeTree: {
+        getScope: (id: ScopeId) => (id === CLASS_SCOPE_ID ? mkClassScope() : undefined),
+      },
+      methodDispatch: {
+        mroFor: (id: string) => (id === CLASS_DEF_ID ? [PARENT_DEF_ID] : []),
+      },
+    } as unknown as ScopeResolutionIndexes;
+    const workspace = mkWorkspaceIndex(new Map([[CLASS_SCOPE_ID, CLASS_DEF_ID]]));
+    const model = {
+      methods: {
+        lookupAllByOwner: (ownerId: string, name: string) => {
+          if (ownerId === PARENT_DEF_ID && name === 'save') return [inherited];
+          return [];
+        },
+      },
+    } as unknown as SemanticModel;
+
+    const result = pickImplicitThisOverload(site, scopes, workspace, model);
+
+    expect(result?.nodeId).toBe('m:parent-save');
+  });
 });

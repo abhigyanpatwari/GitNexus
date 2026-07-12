@@ -56,6 +56,12 @@ const OPTIONAL_GRAMMARS: OptionalGrammar[] = [
     extensions: ['.kt', '.kts'],
     language: SupportedLanguages.Kotlin,
   },
+  {
+    name: 'tree-sitter-solidity',
+    pkg: 'tree-sitter-solidity',
+    extensions: ['.sol'],
+    language: SupportedLanguages.Solidity,
+  },
 ];
 
 /**

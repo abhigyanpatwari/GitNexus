@@ -76,6 +76,11 @@ let C: TreeSitterLanguage | null = null;
 try {
   C = requireVendoredGrammar('tree-sitter-c') as TreeSitterLanguage;
 } catch {}
+
+let Solidity: TreeSitterLanguage | null = null;
+try {
+  Solidity = requireVendoredGrammar('tree-sitter-solidity') as TreeSitterLanguage;
+} catch {}
 import { getLanguageFromFilename } from 'gitnexus-shared';
 import {
   buildConcreteTypedefDefinitionRanges,
@@ -518,6 +523,7 @@ const languageMap: Record<string, TreeSitterLanguage> = {
   [SupportedLanguages.Vue]: TypeScript.typescript,
   ...(Dart ? { [SupportedLanguages.Dart]: Dart } : {}),
   ...(Swift ? { [SupportedLanguages.Swift]: Swift } : {}),
+  ...(Solidity ? { [SupportedLanguages.Solidity]: Solidity } : {}),
 };
 
 /**

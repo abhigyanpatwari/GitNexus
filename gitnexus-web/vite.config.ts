@@ -1,14 +1,75 @@
-import { defineConfig } from 'vite';
+import { defineConfig, type Plugin } from 'vite';
 import react from '@vitejs/plugin-react';
 import tailwindcss from '@tailwindcss/vite';
-import path from 'path';
+import fs from 'node:fs';
+import path from 'node:path';
 import { createRequire } from 'module';
+import { fileURLToPath } from 'node:url';
 
 const _require = createRequire(import.meta.url);
 const gitnexusPkg = _require('../gitnexus/package.json');
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+/**
+ * Copy selected `tree-sitter-wasms` binaries into `public/wasm/` so
+ * `resolveWasmUrl()` assets are available in dev and production builds.
+ * Includes Solidity (`tree-sitter-solidity.wasm`) for Phase 4.
+ */
+function copyTreeSitterWasmPlugin(): Plugin {
+  const outDir = path.resolve(__dirname, 'public/wasm');
+  const sourceDir = path.resolve(__dirname, 'node_modules/tree-sitter-wasms/out');
+  // Keep this list aligned with WASM_GRAMMAR_FILES (+ TSX) in wasm-grammars.ts.
+  const files = [
+    'tree-sitter-javascript.wasm',
+    'tree-sitter-typescript.wasm',
+    'tree-sitter-tsx.wasm',
+    'tree-sitter-python.wasm',
+    'tree-sitter-java.wasm',
+    'tree-sitter-c.wasm',
+    'tree-sitter-cpp.wasm',
+    'tree-sitter-c_sharp.wasm',
+    'tree-sitter-go.wasm',
+    'tree-sitter-ruby.wasm',
+    'tree-sitter-rust.wasm',
+    'tree-sitter-php.wasm',
+    'tree-sitter-kotlin.wasm',
+    'tree-sitter-swift.wasm',
+    'tree-sitter-dart.wasm',
+    'tree-sitter-vue.wasm',
+    'tree-sitter-solidity.wasm',
+  ];
+
+  const sync = () => {
+    if (!fs.existsSync(sourceDir)) {
+      console.warn(
+        `[vite] tree-sitter-wasms not found at ${sourceDir} — skip WASM copy (Solidity browser grammar unavailable)`,
+      );
+      return;
+    }
+    fs.mkdirSync(outDir, { recursive: true });
+    for (const file of files) {
+      const src = path.join(sourceDir, file);
+      if (!fs.existsSync(src)) {
+        console.warn(`[vite] missing WASM grammar: ${file}`);
+        continue;
+      }
+      fs.copyFileSync(src, path.join(outDir, file));
+    }
+  };
+
+  return {
+    name: 'copy-tree-sitter-wasm',
+    buildStart() {
+      sync();
+    },
+    configureServer() {
+      sync();
+    },
+  };
+}
 
 export default defineConfig({
-  plugins: [react(), tailwindcss()],
+  plugins: [react(), tailwindcss(), copyTreeSitterWasmPlugin()],
   define: {
     __REQUIRED_NODE_VERSION__: JSON.stringify(gitnexusPkg.engines.node.replace(/[>=^~\s]/g, '')),
   },

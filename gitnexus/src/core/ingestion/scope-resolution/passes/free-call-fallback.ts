@@ -857,7 +857,19 @@ export function pickImplicitThisOverload(
   const classDefId = workspaceIndex.classScopeIdToDefId.get(classScopeId);
   if (classDefId === undefined) return undefined;
 
-  const overloads = model.methods.lookupAllByOwner(classDefId, site.name);
+  // Local methods first, then inherited owners via MRO (Solidity modifiers
+  // on base contracts; bare superclass method calls in Java/C#/etc.).
+  // `mroFor` returns ancestors only — self is checked first.
+  let overloads = model.methods.lookupAllByOwner(classDefId, site.name);
+  if (overloads.length === 0) {
+    const mroFor = scopes.methodDispatch?.mroFor;
+    if (mroFor !== undefined) {
+      for (const ownerId of mroFor(classDefId)) {
+        overloads = model.methods.lookupAllByOwner(ownerId, site.name);
+        if (overloads.length > 0) break;
+      }
+    }
+  }
   if (overloads.length === 0) return undefined;
   if (overloads.length === 1) return overloads[0];
 

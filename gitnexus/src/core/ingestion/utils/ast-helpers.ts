@@ -230,6 +230,9 @@ export const CLASS_CONTAINER_TYPES = new Set([
   // Go
   'struct_type',
   'interface_type',
+  // Solidity
+  'contract_declaration',
+  'library_declaration',
 ]);
 
 export const CONTAINER_TYPE_TO_LABEL: Record<string, string> = {
@@ -264,6 +267,9 @@ export const CONTAINER_TYPE_TO_LABEL: Record<string, string> = {
   companion_object: 'Class',
   struct_type: 'Struct',
   interface_type: 'Interface',
+  // Solidity — contracts/libraries are Class; interfaces already map above.
+  contract_declaration: 'Class',
+  library_declaration: 'Class',
 };
 
 /**
