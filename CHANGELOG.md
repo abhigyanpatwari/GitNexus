@@ -4,6 +4,10 @@ All notable changes to GitNexus will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- **Solidity language support** — vendored `tree-sitter-solidity@1.1.0` (optional grammar), CLI/shared LanguageProvider + extractors, Foundry remappings, modifier/`using for`/emit-revert/`this`/`super` resolution, fixtures/tests, and web WASM registration (#531)
+
 ## [1.5.3] - 2026-04-01
 
 ### Added

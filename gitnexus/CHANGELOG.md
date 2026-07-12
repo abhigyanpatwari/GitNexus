@@ -4,6 +4,10 @@ All notable changes to GitNexus will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- **Solidity language support** — vendored `tree-sitter-solidity@1.1.0` (ABI 13, optional like Dart/Kotlin/Swift), LanguageProvider + extractors for contracts/interfaces/libraries, modifiers (including invocations), `using for`, Foundry remappings (`remappings.txt` / `foundry.toml`), emit/revert edges, `this`/`super` receiver binding, and Foundry `vm`/`msg`/`abi` noise filtering; web WASM grammar registration for `/wasm/tree-sitter-solidity.wasm`; Linux Docker FTS smoke script (`scripts/docker-fts-validate.sh`) (#531)
+
 ## [1.6.9] - 2026-07-04
 
 ### Added
