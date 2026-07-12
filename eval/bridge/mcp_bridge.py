@@ -10,7 +10,7 @@ The bridge communicates with the MCP server via stdio using the JSON-RPC protoco
 import json
 import logging
 import os
-import subprocess
+import subprocess  # nosemgrep: gitlab.bandit.B404
 import sys
 import threading
 import time
@@ -40,7 +40,10 @@ class MCPBridge:
     """
 
     def __init__(self, repo_path: str | None = None):
-        self.repo_path = repo_path or os.getcwd()
+        resolved = Path(repo_path or os.getcwd()).resolve()
+        if not resolved.is_dir():
+            raise ValueError(f"Invalid repository path: {repo_path!r}")
+        self.repo_path = str(resolved)
         self.process: subprocess.Popen | None = None
         self._request_id = 0
         self._lock = threading.Lock()
