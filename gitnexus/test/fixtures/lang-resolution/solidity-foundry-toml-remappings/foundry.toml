@@ -1,0 +1,6 @@
+[profile.default]
+src = "src"
+# Intentional multiline array — exercises the regex/minimal foundry.toml parser
+remappings = [
+  "forge-std/=lib/helper/src/",
+]

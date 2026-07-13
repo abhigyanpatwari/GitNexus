@@ -284,6 +284,38 @@ describe.skipIf(!solidityAvailable)('Solidity foundry remappings', () => {
   });
 });
 
+describe.skipIf(!solidityAvailable)('Solidity foundry.toml remappings', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'solidity-foundry-toml-remappings'),
+      () => {},
+    );
+  }, 60000);
+
+  it('resolves import forge-std/Helper.sol via foundry.toml only (no remappings.txt)', () => {
+    const imports = getRelationships(result, 'IMPORTS');
+    const edge = imports.filter(
+      (e) =>
+        e.sourceFilePath.includes('App.sol') && e.targetFilePath.includes('Helper.sol'),
+    );
+    expect(edge.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('resolves Helper.ping call across foundry.toml remapped import', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const edge = calls.find(
+      (c) =>
+        c.source === 'run' &&
+        c.target === 'ping' &&
+        c.sourceFilePath.includes('App.sol') &&
+        c.targetFilePath.includes('Helper.sol'),
+    );
+    expect(edge).toBeDefined();
+  });
+});
+
 describe.skipIf(!solidityAvailable)('Solidity this / super member calls (Phase 3)', () => {
   let result: PipelineResult;
 
