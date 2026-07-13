@@ -34,6 +34,7 @@ import {
   narrowOverloadCandidates,
 } from '../../scope-resolution/passes/overload-narrowing.js';
 import { CPP_CONVERSION_ONLY_ARG_TYPE_PREFIXES, cppConversionRank } from './conversion-rank.js';
+import { logHeapProbe } from '../../utils/heap-probe.js';
 
 interface RangeKey {
   readonly startLine: number;
@@ -44,6 +45,13 @@ interface RangeKey {
 
 const inlineNamespaceRangesByFile = new Map<string, Set<string>>();
 const inlineNamespaceScopeIds = new Set<ScopeId>();
+// ponytail: 限定命名空间成员解析索引缓存。原 resolveCppQualifiedNamespaceMember 每次调用
+// 全量扫所有 parsedFiles 找匹配 receiverName 的 namespace（O(N×M)，UE5 9万文件卡 29h）。
+// 改首次调用建 nsName→[namespace scope] 索引，之后 O(1) 查候选。parsedFiles 引用不变则复用。
+type NamespaceIndexEntry = { scope: ParsedFile['scopes'][number]; scopesById: Map<ScopeId, ParsedFile['scopes'][number]> };
+let _nsIndex: Map<string, NamespaceIndexEntry[]> | null = null;
+let _nsIndexKey: readonly ParsedFile[] | null = null;
+let _resolveCallCount = 0;
 
 function rangeKey(r: RangeKey): string {
   return `${r.startLine}:${r.startCol}:${r.endLine}:${r.endCol}`;
@@ -89,6 +97,8 @@ export function applyCppInlineNamespaceSideChannel(
 export function clearCppInlineNamespaces(): void {
   inlineNamespaceRangesByFile.clear();
   inlineNamespaceScopeIds.clear();
+  _nsIndex = null;
+  _nsIndexKey = null;
 }
 
 /** Resolve captured ranges to actual ScopeIds by matching scope ranges
@@ -115,11 +125,41 @@ export function isCppInlineNamespaceScope(scopeId: ScopeId): boolean {
 }
 
 /**
- * Walk every parsed file looking for a Namespace scope whose qualified
- * name matches `receiverName`, collect its callable ownedDefs matching
- * `memberName`, transitively descending into any inline-namespace
- * children (since they're members of the enclosing namespace under ISO
- * C++).
+ * Build a `nsName → [namespace scope]` index over all parsed files.
+ * Called once per resolution pass (parsedFiles reference unchanged →
+ * reused). Reduces `resolveCppQualifiedNamespaceMember` from O(N×M)
+ * (walk every file every call) to O(1) candidate lookup.
+ */
+function buildNamespaceIndex(parsedFiles: readonly ParsedFile[]): Map<string, NamespaceIndexEntry[]> {
+  const idx = new Map<string, NamespaceIndexEntry[]>();
+  for (const parsed of parsedFiles) {
+    let hasNs = false;
+    for (const scope of parsed.scopes) {
+      if (scope.kind === 'Namespace') { hasNs = true; break; }
+    }
+    if (!hasNs) continue;
+    const scopesById = new Map<ScopeId, ParsedFile['scopes'][number]>();
+    for (const sc of parsed.scopes) scopesById.set(sc.id, sc);
+    for (const scope of parsed.scopes) {
+      if (scope.kind !== 'Namespace') continue;
+      const nsDef = findNamespaceDefInScope(scope);
+      if (nsDef === undefined) continue;
+      const nsName = nsDef.qualifiedName?.split('.').pop() ?? nsDef.qualifiedName ?? '';
+      let bucket = idx.get(nsName);
+      if (bucket === undefined) {
+        bucket = [];
+        idx.set(nsName, bucket);
+      }
+      bucket.push({ scope, scopesById });
+    }
+  }
+  return idx;
+}
+
+/**
+ * Resolve a qualified receiver (`A::foo`) by looking up `A` in the
+ * namespace index (O(1)), then collecting callable `foo` members
+ * transitively through inline-namespace children.
  *
  * Returns the most specific (innermost) match — for `outer::foo()`
  * where `inline namespace v1` declares `foo`, returns `v1::foo`. When
@@ -134,25 +174,25 @@ export function resolveCppQualifiedNamespaceMember(
   _scopes: ScopeResolutionIndexes,
   callsite?: Callsite,
 ): SymbolDefinition | 'ambiguous' | undefined {
+  _resolveCallCount++;
+  if (_resolveCallCount % 5000 === 0) {
+    logHeapProbe('cpp-ns-resolve-progress', `calls=${_resolveCallCount} receiverName=${receiverName} nsIdxSize=${_nsIndex?.size ?? -1}`);
+  }
+  if (_nsIndexKey !== parsedFiles) {
+    _nsIndexKey = parsedFiles;
+    _nsIndex = buildNamespaceIndex(parsedFiles);
+    logHeapProbe('cpp-ns-index-built', `nsCount=${_nsIndex.size} calls=${_resolveCallCount}`);
+  }
+  const candidates = _nsIndex.get(receiverName);
+  if (candidates === undefined) return undefined;
   const allHits: SymbolDefinition[] = [];
   const seenNodeId = new Set<string>();
-  for (const parsed of parsedFiles) {
-    const scopesById = new Map<ScopeId, (typeof parsed.scopes)[number]>();
-    for (const sc of parsed.scopes) scopesById.set(sc.id, sc);
-    for (const scope of parsed.scopes) {
-      if (scope.kind !== 'Namespace') continue;
-      const nsDef = findNamespaceDefInScope(scope);
-      if (nsDef === undefined) continue;
-      const nsName = nsDef.qualifiedName?.split('.').pop() ?? nsDef.qualifiedName ?? '';
-      if (nsName !== receiverName) continue;
-      // Found a matching namespace scope in this file. Collect ALL
-      // members transitively through any inline-namespace children.
-      const hits = findMemberInNamespaceTransitive(scope, scopesById, memberName);
-      for (const hit of hits) {
-        if (seenNodeId.has(hit.nodeId)) continue;
-        seenNodeId.add(hit.nodeId);
-        allHits.push(hit);
-      }
+  for (const { scope, scopesById } of candidates) {
+    const hits = findMemberInNamespaceTransitive(scope, scopesById, memberName);
+    for (const hit of hits) {
+      if (seenNodeId.has(hit.nodeId)) continue;
+      seenNodeId.add(hit.nodeId);
+      allHits.push(hit);
     }
   }
   if (allHits.length === 0) return undefined;

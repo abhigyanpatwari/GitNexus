@@ -55,8 +55,7 @@ export interface FinalizeFile {
    * per-file re-export closure (`buildReexportClosures`), which encodes
    * every name reachable through `B`'s named and wildcard re-exports —
    * including transitively through cyclic SCCs. The lookup is O(1) and
-   * inherits the upstream `targetDefId`, populating `transitiveVia` with
-   * the file paths traversed to reach the leaf def.
+   * inherits the upstream `targetDefId`.
    *
    * Surfacing re-exported names in `localDefs` is still a valid (and
    * slightly cheaper) optimization: the direct lookup short-circuits the
@@ -101,7 +100,7 @@ export interface FinalizeHooks {
    * `M`'s local defs to produce a concrete `BindingRef`; names with no
    * matching export are dropped.
    */
-  expandsWildcardTo(targetModuleScope: ScopeId, workspaceIndex: WorkspaceIndex): readonly string[];
+  expandsWildcardTo(targetModuleScope: ScopeId, workspaceIndex: WorkspaceIndex): readonly string[] | null;
 
   /**
    * Merge `incoming` bindings into `existing` for a given name. Called
@@ -212,7 +211,7 @@ export function finalize(input: FinalizeInput, hooks: FinalizeHooks): FinalizeOu
   // SCC-condensed). Eliminates the recursive crawl that the per-edge
   // `tryFinalize` call site used to do; lookups are O(1) afterwards.
   // See `buildReexportClosures` for the algorithm.
-  const reexportClosures = buildReexportClosures(input.files, byFilePath, edgeIndex);
+  const reexportClosures = buildReexportClosures(input.files, byFilePath, edgeIndex, hooks, input.workspaceIndex);
 
   // ── Phase 3: process SCCs in reverse-topological order (leaves first).
   // Within each SCC, run a bounded fixpoint that resolves intra-SCC edges.
@@ -471,13 +470,10 @@ function tryFinalize(
   const exported = findExportByName(targetModule.localDefs, importedName);
 
   if (exported !== undefined) {
-    const transitiveVia =
-      draft.source.kind === 'reexport' ? Object.freeze([targetFile]) : undefined;
     return {
       ...draft.base,
       targetModuleScope: targetModule.moduleScope,
       targetDefId: exported.nodeId,
-      ...(transitiveVia !== undefined ? { transitiveVia } : {}),
     };
   }
 
@@ -496,15 +492,10 @@ function tryFinalize(
     return null;
   }
 
-  const viaFiles = [targetFile, ...followed.via];
-  const transitiveVia =
-    draft.source.kind === 'reexport' || viaFiles.length > 1 ? Object.freeze(viaFiles) : undefined;
-
   return {
     ...draft.base,
     targetModuleScope: targetModule.moduleScope,
-    targetDefId: followed.def.nodeId,
-    ...(transitiveVia !== undefined ? { transitiveVia } : {}),
+    targetDefId: followed.nodeId,
   };
 }
 
@@ -519,8 +510,7 @@ function tryFinalize(
  *
  * Built once per finalize pass. Lookups are O(1).
  */
-type ReexportClosureEntry = { readonly def: SymbolDefinition; readonly via: readonly string[] };
-type FileReexportClosure = ReadonlyMap<string, ReexportClosureEntry>;
+type FileReexportClosure = ReadonlyMap<string, SymbolDefinition>;
 
 /**
  * Build per-file re-export closures.
@@ -558,11 +548,6 @@ type FileReexportClosure = ReadonlyMap<string, ReexportClosureEntry>;
  *     SCC. For tree-shaped barrel graphs (the common case) it
  *     collapses to O(E_re) total.
  *   * Per-edge lookup at finalize time: O(1).
- *   * `transitiveVia` preserves the exact file path chain for diagnostics
- *     and graph provenance. Building those arrays copies the inherited path,
- *     which is O(depth²) in a pathological single-name barrel chain; practical
- *     TypeScript barrel chains are shallow enough that we keep exact paths
- *     instead of capping or summarizing them.
  *   * Pathological deep chains that previously needed
  *     `MAX_REEXPORT_DEPTH=100` to bound stack growth now resolve
  *     in full and are bounded only by available memory — the
@@ -572,8 +557,10 @@ function buildReexportClosures(
   files: readonly FinalizeFile[],
   byFilePath: ReadonlyMap<string, FinalizeFile>,
   edgeIndex: ReadonlyMap<string, ImportEdgeDraft[]>,
+  hooks: FinalizeHooks,
+  workspaceIndex: WorkspaceIndex,
 ): ReadonlyMap<string, FileReexportClosure> {
-  const closures = new Map<string, Map<string, ReexportClosureEntry>>();
+  const closures = new Map<string, Map<string, SymbolDefinition>>();
   for (const file of files) closures.set(file.filePath, new Map());
 
   // ── Step 1: build the re-export sub-graph (only resolvable
@@ -604,7 +591,7 @@ function buildReexportClosures(
     if (!scc.isCycle) {
       const filePath = scc.files[0];
       if (filePath !== undefined) {
-        populateFileClosure(filePath, byFilePath, edgeIndex, closures);
+        populateFileClosure(filePath, byFilePath, edgeIndex, closures, hooks, workspaceIndex);
       }
       continue;
     }
@@ -618,7 +605,7 @@ function buildReexportClosures(
       progressed = false;
       iter++;
       for (const filePath of scc.files) {
-        if (populateFileClosure(filePath, byFilePath, edgeIndex, closures)) {
+        if (populateFileClosure(filePath, byFilePath, edgeIndex, closures, hooks, workspaceIndex)) {
           progressed = true;
         }
       }
@@ -646,7 +633,9 @@ function populateFileClosure(
   filePath: string,
   byFilePath: ReadonlyMap<string, FinalizeFile>,
   edgeIndex: ReadonlyMap<string, ImportEdgeDraft[]>,
-  closures: Map<string, Map<string, ReexportClosureEntry>>,
+  closures: Map<string, Map<string, SymbolDefinition>>,
+  hooks: FinalizeHooks,
+  workspaceIndex: WorkspaceIndex,
 ): boolean {
   const myClosure = closures.get(filePath);
   if (myClosure === undefined) return false;
@@ -669,15 +658,12 @@ function populateFileClosure(
     const importedName = draft.source.importedName;
     const direct = findExportByName(targetModule.localDefs, importedName);
     if (direct !== undefined) {
-      myClosure.set(localName, { def: direct, via: Object.freeze([targetFile]) });
+      myClosure.set(localName, direct);
       continue;
     }
     const inherited = closures.get(targetFile)?.get(importedName);
     if (inherited !== undefined) {
-      myClosure.set(localName, {
-        def: inherited.def,
-        via: Object.freeze([targetFile, ...inherited.via]),
-      });
+      myClosure.set(localName, inherited);
     }
     // Else: target's closure is still empty (in-SCC, awaiting next
     // iteration). Outer loop will revisit.
@@ -686,6 +672,9 @@ function populateFileClosure(
   // Wildcard re-exports — fan out the target's own surface (localDefs
   // + transitive closure). `myClosure.has(name)` checks below preserve
   // the named-precedence and first-wins semantics from above.
+  // ponytail: 走 expandsWildcardTo hook —— 有实现的语言（cpp/c/go/ruby/dart）
+  // 用过滤后的 names（cpp 过滤 class/namespace members，避免 N×M #include 爆炸）；
+  // null 表示无实现，回退 localDefs fan-out（保护 TS/JS 的 export * from）。
   for (const draft of drafts) {
     if (draft.source.kind !== 'wildcard') continue;
     const targetFile = draft.targetFile;
@@ -693,19 +682,35 @@ function populateFileClosure(
     const targetModule = byFilePath.get(targetFile);
     if (targetModule === undefined) continue;
 
-    for (const def of targetModule.localDefs) {
-      const name = deriveSimpleName(def);
-      if (name === null || myClosure.has(name)) continue;
-      myClosure.set(name, { def, via: Object.freeze([targetFile]) });
-    }
-    const targetClosure = closures.get(targetFile);
-    if (targetClosure !== undefined) {
-      for (const [name, entry] of targetClosure) {
+    const names = hooks.expandsWildcardTo(targetModule.moduleScope, workspaceIndex);
+    if (names !== null) {
+      for (const name of names) {
         if (myClosure.has(name)) continue;
-        myClosure.set(name, {
-          def: entry.def,
-          via: Object.freeze([targetFile, ...entry.via]),
-        });
+        const def = findExportByName(targetModule.localDefs, name);
+        if (def === undefined) continue;
+        myClosure.set(name, def);
+      }
+    } else {
+      for (const def of targetModule.localDefs) {
+        const name = deriveSimpleName(def);
+        if (name === null || myClosure.has(name)) continue;
+        myClosure.set(name, def);
+      }
+    }
+    // Only propagate transitive closure for true re-export wildcards
+    // (expandsWildcardTo returns null — TS/JS `export * from`, Python
+    // `from x import *`, Rust `pub use x::*`). Consumer wildcards (non-null
+    // — cpp/c #include, Go dot import, Dart import, Ruby require) never
+    // feed lookupReexportedName (no named/reexport kind drafts reach
+    // tryFinalize's named branch), so the transitive copy is pure waste —
+    // it inflated cpp #include closure to 7.26亿 entries on UE5 全量.
+    if (names === null) {
+      const targetClosure = closures.get(targetFile);
+      if (targetClosure !== undefined) {
+        for (const [name, def] of targetClosure) {
+          if (myClosure.has(name)) continue;
+          myClosure.set(name, def);
+        }
       }
     }
   }
@@ -721,12 +726,10 @@ function lookupReexportedName(
   closures: ReadonlyMap<string, FileReexportClosure>,
   filePath: string,
   name: string,
-): { def: SymbolDefinition; via: readonly string[] } | null {
+): SymbolDefinition | null {
   const closure = closures.get(filePath);
   if (closure === undefined) return null;
-  const entry = closure.get(name);
-  if (entry === undefined) return null;
-  return { def: entry.def, via: entry.via };
+  return closure.get(name) ?? null;
 }
 
 /**
@@ -833,7 +836,7 @@ function expandWildcard(
   if (target === undefined) return [edge];
 
   const names = hooks.expandsWildcardTo(edge.targetModuleScope, workspace);
-  if (names.length === 0) {
+  if (names === null || names.length === 0) {
     // Resolved wildcard with zero propagating names is still a real file-
     // level dependency (e.g. a C++ header that only declares classes —
     // `#include` is a valid IMPORTS edge, but unqualified-binding names
