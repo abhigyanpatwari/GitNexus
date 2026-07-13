@@ -803,8 +803,14 @@ describe('runFullAnalysis wipe-and-restore vector-index stamp (tri-review 466951
 
       // The recreation seam fired exactly once…
       expect(buildVectorIndex).toHaveBeenCalledTimes(1);
-      // …the restore actually submitted the cached row (one 200-row batch)…
-      expect(executeWithReusedStatement).toHaveBeenCalledTimes(1);
+      // …the restore first clears the exact target id, then submits the
+      // cached row (one 200-row batch)…
+      expect(executeWithReusedStatement).toHaveBeenCalledTimes(2);
+      const [deleteCall, restoreCall] = executeWithReusedStatement.mock.calls;
+      expect(deleteCall[0]).toContain('DELETE e');
+      expect(deleteCall[1]).toEqual([{ id: `${RESTORED_NODE_ID}:0` }]);
+      expect(restoreCall[0]).toContain('CREATE (e:CodeEmbedding');
+      expect(restoreCall[1]).toHaveLength(1);
       // …and the persisted stamp reflects the DB's ACTUAL state, not the
       // platform capability fallback.
       const meta = JSON.parse(await fs.readFile(`${storagePath}/meta.json`, 'utf-8')) as RepoMeta;
