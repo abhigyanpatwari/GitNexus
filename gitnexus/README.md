@@ -15,6 +15,19 @@ AI coding tools don't understand your codebase structure. They edit a function w
 
 **Three commands to give your AI agent full codebase awareness.**
 
+## Large-Scale Validation: Unreal Engine 5.8
+
+Validated on a full Unreal Engine 5.8 source tree — **92,321 files** (91,601 C++ + 466 C + 254 Dart), exit 0 in **6.53h** (23,508.9s), producing **2,587,687 nodes / 5,171,925 edges / 55,288 clusters / 119 flows**, peak RSS 72.7 GB.
+
+This scale required four fixes on top of upstream (see [`rebuild-notes.md`](../rebuild-notes.md)):
+
+1. **cpp qualified-namespace resolution indexed** (`src/core/ingestion/languages/cpp/inline-namespaces.ts`) — O(N×M) full scan → O(1) `Map` lookup. Emit-receiver phase 29.5h → ~1-2h.
+2. **Option A OOM guard** (`gitnexus-shared/src/scope-resolution/finalize-algorithm.ts`) — consumer wildcards (cpp `#include`, etc.) skip the pure-waste transitive-closure copy. `closureEntries` 726M → 12.5M.
+3. **emit 6-subphase probes** (`src/core/ingestion/scope-resolution/pipeline/run.ts`) — `sr-emit-receiver/unresolved-receiver/free-call/references/imports/post-resolution` pre/post.
+4. **main pipeline phase2/phase3 probes** (`src/core/run-analyze.ts`) — `phase2-lbug-load` / `phase3-fts` pre/post.
+
+Reproduce: `gitnexus analyze <ue-root> --force --skills --verbose --workers 16 --max-file-size 4096` with `GITNEXUS_DEBUG_HEAP=1` + `GITNEXUS_HEAP_PROBE_FILE=<path>`.
+
 ## Quick Start
 
 ```bash
