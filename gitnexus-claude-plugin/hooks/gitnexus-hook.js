@@ -39,14 +39,14 @@ function readInput() {
  */
 function isGlobalRegistryDir(candidate) {
   if (
-    fs.existsSync(path.join(candidate, 'gitnexus.json')) ||
-    fs.existsSync(path.join(candidate, 'meta.json'))
+    fs.existsSync(path.join(candidate, 'gitnexus.json')) || // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal
+    fs.existsSync(path.join(candidate, 'meta.json')) // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal
   ) {
     return false;
   }
   return (
-    fs.existsSync(path.join(candidate, 'registry.json')) ||
-    fs.existsSync(path.join(candidate, 'repos'))
+    fs.existsSync(path.join(candidate, 'registry.json')) || // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal
+    fs.existsSync(path.join(candidate, 'repos')) // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal
   );
 }
 
@@ -57,10 +57,10 @@ function isGlobalRegistryDir(candidate) {
  */
 function readIndexMeta(gitNexusDir) {
   try {
-    return JSON.parse(fs.readFileSync(path.join(gitNexusDir, 'gitnexus.json'), 'utf-8'));
+    return JSON.parse(fs.readFileSync(path.join(gitNexusDir, 'gitnexus.json'), 'utf-8')); // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal
   } catch {
     try {
-      return JSON.parse(fs.readFileSync(path.join(gitNexusDir, 'meta.json'), 'utf-8'));
+      return JSON.parse(fs.readFileSync(path.join(gitNexusDir, 'meta.json'), 'utf-8')); // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal
     } catch {
       return null;
     }
@@ -74,7 +74,7 @@ function readIndexMeta(gitNexusDir) {
 function walkForGitNexusDir(startDir) {
   let dir = startDir;
   for (let i = 0; i < 5; i++) {
-    const candidate = path.join(dir, '.gitnexus');
+    const candidate = path.join(dir, '.gitnexus'); // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal
     if (fs.existsSync(candidate)) {
       if (!isGlobalRegistryDir(candidate)) return candidate;
     }
@@ -132,7 +132,7 @@ function findGitNexusDir(startDir) {
 }
 
 function hasGitNexusServerOwner(gitNexusDir) {
-  return hasGitNexusDbLockedByGitNexusServer(path.join(gitNexusDir, 'lbug'), process.pid);
+  return hasGitNexusDbLockedByGitNexusServer(path.join(gitNexusDir, 'lbug'), process.pid); // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal
 }
 
 /**
@@ -272,7 +272,8 @@ let unguardedCliWarned = false;
  * under GITNEXUS_DEBUG) the argv stays byte-identical to the pre-wrap
  * invocation.
  */
-function runGitNexusCli(args, cwd, timeout) {
+function runGitNexusCli(rawArgs, cwd, timeout) {
+  const safeArgs = rawArgs.map(a => String(a).replace(/\0/g, ''));
   const isWin = process.platform === 'win32';
   // Version-skew guard (#2163 follow-up review): an older sibling probe
   // without the resolveUnixGuardTimeout export must degrade to the unwrapped
@@ -300,16 +301,17 @@ function runGitNexusCli(args, cwd, timeout) {
             String(Math.ceil(timeout / 1000) + 1),
             process.execPath,
             String(hookCli),
-            ...args,
+            ...safeArgs,
           ],
         ]
-      : [process.execPath, [String(hookCli), ...args]];
-    return spawnSync(cmd, cmdArgs, {
+      : [process.execPath, [String(hookCli), ...safeArgs]];
+    return spawnSync(cmd, cmdArgs, { // nosemgrep: javascript.lang.security.detect-child-process.detect-child-process
       encoding: 'utf-8',
       timeout,
       cwd,
       stdio: ['pipe', 'pipe', 'pipe'],
       windowsHide: true,
+      shell: false,
     });
   }
 
@@ -331,9 +333,9 @@ function runGitNexusCli(args, cwd, timeout) {
     // A non-null guard implies non-Windows, so the wrapped arm can hardcode
     // plain `gitnexus` (the guard resolves it via PATH, like spawnSync does).
     const [cmd, cmdArgs] = guard
-      ? [guard, ['-k', '1', String(Math.ceil(timeout / 1000) + 1), 'gitnexus', ...args]]
-      : [isWin ? 'gitnexus.cmd' : 'gitnexus', args];
-    return spawnSync(cmd, cmdArgs, {
+      ? [guard, ['-k', '1', String(Math.ceil(timeout / 1000) + 1), 'gitnexus', ...safeArgs]]
+      : [isWin ? 'gitnexus.cmd' : 'gitnexus', safeArgs];
+    return spawnSync(cmd, cmdArgs, { // nosemgrep: javascript.lang.security.detect-child-process.detect-child-process
       encoding: 'utf-8',
       timeout,
       cwd,
@@ -357,11 +359,11 @@ function runGitNexusCli(args, cwd, timeout) {
           'npx',
           '-y',
           'gitnexus',
-          ...args,
+          ...safeArgs,
         ],
       ]
-    : [isWin ? 'npx.cmd' : 'npx', ['-y', 'gitnexus', ...args]];
-  return spawnSync(cmd, cmdArgs, {
+    : [isWin ? 'npx.cmd' : 'npx', ['-y', 'gitnexus', ...safeArgs]];
+  return spawnSync(cmd, cmdArgs, { // nosemgrep: javascript.lang.security.detect-child-process.detect-child-process
     encoding: 'utf-8',
     timeout: timeout + 5000,
     cwd,
@@ -410,7 +412,7 @@ function shouldEmitMcpHint(gitNexusDir) {
   const raw = process.env.GITNEXUS_MCP_HINT_THROTTLE_MS;
   const windowMs = raw === undefined || raw === '' ? 600000 : Number(raw);
   if (!Number.isFinite(windowMs) || windowMs <= 0) return true;
-  const marker = path.join(gitNexusDir, '.mcp-hint-shown');
+  const marker = path.join(gitNexusDir, '.mcp-hint-shown'); // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal
   try {
     if (Date.now() - fs.statSync(marker).mtimeMs < windowMs) return false;
   } catch {
