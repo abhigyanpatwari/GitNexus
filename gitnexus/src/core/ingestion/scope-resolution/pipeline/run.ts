@@ -564,7 +564,7 @@ export function runScopeResolution(
       resolveImportTarget: (targetRaw, fromFile) =>
         provider.resolveImportTarget(targetRaw, fromFile, allFilePaths, resolutionConfig),
       expandsWildcardTo: (targetModuleScope) =>
-        provider.expandsWildcardTo?.(targetModuleScope, parsedFiles) ?? [],
+        provider.expandsWildcardTo?.(targetModuleScope, parsedFiles) ?? null,
       mergeBindings: (existing, incoming, scopeId) =>
         provider.mergeBindings(existing, incoming, scopeId),
     },
@@ -725,6 +725,7 @@ export function runScopeResolution(
   // `emitFileCfgs` below to produce `BasicBlock.calleeIds`.
   const calleeIdAccumulator: CalleeIdAccumulator | undefined =
     input.pdg === true ? createCalleeIdAccumulator() : undefined;
+  logHeapProbe('sr-emit-receiver-pre', `lang=${provider.language}`);
   const receiverExtras = emitReceiverBoundCalls(
     graph,
     indexes,
@@ -739,6 +740,8 @@ export function runScopeResolution(
       calleeIdSink: calleeIdAccumulator,
     },
   );
+  logHeapProbe('sr-emit-receiver-post', `lang=${provider.language} emitted=${receiverExtras}`);
+  logHeapProbe('sr-emit-unresolved-receiver-pre', `lang=${provider.language}`);
   const unresolvedReceiverExtras =
     provider.emitUnresolvedReceiverEdges !== undefined
       ? provider.emitUnresolvedReceiverEdges(
@@ -750,6 +753,8 @@ export function runScopeResolution(
           readonlyModel,
         )
       : 0;
+  logHeapProbe('sr-emit-unresolved-receiver-post', `lang=${provider.language} emitted=${unresolvedReceiverExtras}`);
+  logHeapProbe('sr-emit-free-call-pre', `lang=${provider.language}`);
   const freeCallExtras = emitFreeCallFallback(
     graph,
     indexes,
@@ -772,6 +777,8 @@ export function runScopeResolution(
       calleeIdSink: calleeIdAccumulator,
     },
   );
+  logHeapProbe('sr-emit-free-call-post', `lang=${provider.language} emitted=${freeCallExtras}`);
+  logHeapProbe('sr-emit-references-pre', `lang=${provider.language}`);
   const { emitted, skipped } = emitReferencesViaLookup(
     graph,
     indexes,
@@ -780,13 +787,16 @@ export function runScopeResolution(
     handledSites,
     calleeIdAccumulator,
   );
+  logHeapProbe('sr-emit-references-post', `lang=${provider.language} emitted=${emitted} skipped=${skipped}`);
+  logHeapProbe('sr-emit-imports-pre', `lang=${provider.language}`);
   const importsEmitted = emitImportEdges(
     graph,
     indexes.imports,
     indexes.scopeTree,
     provider.importEdgeReason,
   );
-
+  logHeapProbe('sr-emit-imports-post', `lang=${provider.language} emitted=${importsEmitted}`);
+  logHeapProbe('sr-emit-post-resolution-pre', `lang=${provider.language}`);
   // Language-specific supplementary edges (e.g. Vue template-derived
   // BINDS_EVENT_HANDLER / EMITS_EVENT / CALLS / ACCESSES edges).
   // Runs last so the full graph — including import edges — is visible.
@@ -796,6 +806,7 @@ export function runScopeResolution(
       resolutionConfig,
     });
   }
+  logHeapProbe('sr-emit-post-resolution-post', `lang=${provider.language}`);
 
   // ── CFG/PDG emission (#2081 M1, opt-in via `--pdg`) ──────────────────────
   // Emit BasicBlock nodes + CFG edges from each ParsedFile's worker-built

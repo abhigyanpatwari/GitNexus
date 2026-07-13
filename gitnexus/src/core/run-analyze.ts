@@ -14,6 +14,7 @@ import fs from 'fs/promises';
 import { execFileSync } from 'child_process';
 import { runPipelineFromRepo } from './ingestion/pipeline.js';
 import { resetDegradedParseCounter } from './tree-sitter/safe-parse.js';
+import { logHeapProbe } from './ingestion/utils/heap-probe.js';
 import {
   initLbug,
   loadGraphToLbug,
@@ -1549,6 +1550,7 @@ export async function runFullAnalysis(
       // was flushed to CSV during the emit loop is COPY'd alongside the
       // structural CSVs. Only ever set on a full rebuild (streaming is
       // force-gated), so the incremental branch above never carries it.
+      logHeapProbe('phase2-lbug-load-pre', '');
       await loadGraphToLbug(
         pipelineResult.graph,
         pipelineResult.repoPath,
@@ -1561,6 +1563,8 @@ export async function runFullAnalysis(
         pipelineResult.pdgEmitManifest,
       );
     }
+    logHeapProbe('phase2-lbug-load-post', '');
+    logHeapProbe('phase3-fts-pre', '');
 
     // ── Phase 3: FTS (85–90%) ─────────────────────────────────────────
     // The analyze (write) path owns building the search indexes, so it uses
@@ -1608,6 +1612,7 @@ export async function runFullAnalysis(
       );
       progress('fts', 90, 'Search indexes skipped (FTS unavailable)');
     }
+    logHeapProbe('phase3-fts-post', '');
 
     // ── Phase 3.5: Re-insert cached embeddings ────────────────────────
     // Runs on BOTH the full-rebuild path and the incremental path:
