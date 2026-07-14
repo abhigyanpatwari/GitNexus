@@ -134,14 +134,15 @@ describe('GITNEXUS_TOOLS', () => {
     expect(contextTool.inputSchema.properties.file).toMatchObject({ type: 'string' });
   });
 
-  it('api_impact tool expresses the route-or-file requirement via anyOf (#2308)', () => {
+  it('api_impact tool avoids top-level schema combinators for Bedrock compatibility (#2487)', () => {
     const apiImpactTool = GITNEXUS_TOOLS.find((t) => t.name === 'api_impact')!;
-    expect(apiImpactTool.inputSchema.anyOf).toEqual([
-      { required: ['route'] },
-      { required: ['file'] },
-    ]);
-    // route/file stay optional in `required` (anyOf carries the cross-field rule)
+    expect(apiImpactTool.inputSchema).not.toHaveProperty('anyOf');
+    expect(apiImpactTool.inputSchema).not.toHaveProperty('oneOf');
+    expect(apiImpactTool.inputSchema).not.toHaveProperty('allOf');
+    // route/file stay optional in the transport schema; callTool keeps the
+    // runtime guard so providers that reject top-level combinators can load it.
     expect(apiImpactTool.inputSchema.required).toEqual([]);
+    expect(apiImpactTool.description).toContain('Requires at least "route" or "file"');
   });
 
   it('impact tool requires direction and advertises target, name, or symbol without combinators', () => {

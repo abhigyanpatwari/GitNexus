@@ -28,12 +28,6 @@ export interface ToolDefinition {
       }
     >;
     required: string[];
-    /**
-     * JSON-Schema `anyOf` for cross-property constraints `required` cannot express
-     * — e.g. "at least one of route/file". Forwarded verbatim to clients by the
-     * server's ListTools handler, so MCP clients see the constraint.
-     */
-    anyOf?: Array<{ required: string[] }>;
   };
 }
 
@@ -796,9 +790,6 @@ Response shape is keyed on how many routes match, not on the data: exactly one m
         repo: { type: 'string', description: 'Repository name or path.' },
       },
       required: [],
-      // Exactly one lookup key is needed, but either works (route wins if both
-      // are passed) — so the structural constraint is "at least one of route/file".
-      anyOf: [{ required: ['route'] }, { required: ['file'] }],
     },
   },
   {
