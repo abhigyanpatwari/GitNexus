@@ -42,4 +42,15 @@ describe('filterRepoFiles', () => {
     const r = filterRepoFiles([{ name: 'lone.ts', size: 5 }]);
     expect(r.manifest).toEqual(['lone.ts']);
   });
+
+  it('keeps Solidity .sol sources for backend analyze upload', () => {
+    const input = [
+      f('repo/contracts/Token.sol', 200),
+      f('repo/node_modules/@openzeppelin/Token.sol', 200),
+      f('repo/src/app.ts', 50),
+    ];
+    const r = filterRepoFiles(input);
+    expect(r.manifest).toEqual(['repo/contracts/Token.sol', 'repo/src/app.ts']);
+    expect(r.droppedCount).toBe(1);
+  });
 });

@@ -242,3 +242,56 @@ export const rubyExportChecker: ExportChecker = (_node, _name) => true;
 
 /** Dart: public if no leading underscore (convention, same as Python). */
 export const dartExportChecker: ExportChecker = (_node, name) => !name.startsWith('_');
+
+/**
+ * Solidity: public/external surface is exported for graph purposes.
+ * Types (contracts/interfaces/libraries/structs/enums/events/errors) are always
+ * treated as exported when no visibility child is present on the declaration.
+ */
+export const solidityExportChecker: ExportChecker = (node, _name) => {
+  let current: SyntaxNode | null = node;
+  while (current) {
+    if (
+      current.type === 'contract_declaration' ||
+      current.type === 'interface_declaration' ||
+      current.type === 'library_declaration' ||
+      current.type === 'struct_declaration' ||
+      current.type === 'enum_declaration' ||
+      current.type === 'event_definition' ||
+      current.type === 'error_declaration'
+    ) {
+      return true;
+    }
+
+    if (
+      current.type === 'function_definition' ||
+      current.type === 'modifier_definition' ||
+      current.type === 'constructor_definition' ||
+      current.type === 'fallback_receive_definition' ||
+      current.type === 'state_variable_declaration'
+    ) {
+      for (let i = 0; i < current.childCount; i++) {
+        const child = current.child(i);
+        if (!child) continue;
+        const text =
+          child.type === 'visibility' ? child.text.trim() : !child.isNamed ? child.text.trim() : '';
+        if (text === 'public' || text === 'external') return true;
+        if (text === 'private' || text === 'internal') return false;
+      }
+      // Constructors and fallbacks without visibility: treat as public surface.
+      if (
+        current.type === 'constructor_definition' ||
+        current.type === 'fallback_receive_definition'
+      ) {
+        return true;
+      }
+      // State vars default internal → not exported.
+      if (current.type === 'state_variable_declaration') return false;
+      // Pre-0.7 functions defaulted public.
+      return true;
+    }
+
+    current = current.parent;
+  }
+  return false;
+};

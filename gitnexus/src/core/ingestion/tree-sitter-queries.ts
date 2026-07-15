@@ -1764,6 +1764,43 @@ export const DART_QUERIES = `
   right: (_)) @assignment
 `;
 
+// Solidity queries — tree-sitter-solidity@1.1.0 (LANGUAGE_VERSION 13)
+// Note: function_definition uses field `function_name` (not `name`).
+// struct/enum use `struct_name` / `enum_type_name`.
+export const SOLIDITY_QUERIES = `
+; ── Types ────────────────────────────────────────────────────────────────────
+(contract_declaration name: (identifier) @name) @definition.class
+(interface_declaration name: (identifier) @name) @definition.interface
+(library_declaration name: (identifier) @name) @definition.class
+(struct_declaration struct_name: (identifier) @name) @definition.struct
+(enum_declaration enum_type_name: (identifier) @name) @definition.enum
+(error_declaration (identifier) @name) @definition.class
+(event_definition name: (identifier) @name) @definition.class
+
+; ── Callables ────────────────────────────────────────────────────────────────
+(function_definition function_name: (identifier) @name) @definition.method
+(modifier_definition name: (identifier) @name) @definition.method
+(constructor_definition) @definition.constructor
+(fallback_receive_definition) @definition.method
+
+; ── State variables ──────────────────────────────────────────────────────────
+(state_variable_declaration name: (identifier) @name) @definition.property
+
+; ── Imports ──────────────────────────────────────────────────────────────────
+(import_directive source: (string) @import.source) @import
+
+; ── Calls ────────────────────────────────────────────────────────────────────
+(call_expression (identifier) @call.name) @call
+(call_expression (member_expression property: (property_identifier) @call.name)) @call
+
+; ── Write access: obj.field = value ──────────────────────────────────────────
+(assignment_expression
+  left: (member_expression
+    object: (_) @assignment.receiver
+    property: (property_identifier) @assignment.property)
+  right: (_)) @assignment
+`;
+
 import { SupportedLanguages } from 'gitnexus-shared';
 
 export const LANGUAGE_QUERIES: Record<SupportedLanguages, string> = {
@@ -1782,5 +1819,6 @@ export const LANGUAGE_QUERIES: Record<SupportedLanguages, string> = {
   [SupportedLanguages.Swift]: SWIFT_QUERIES,
   [SupportedLanguages.Dart]: DART_QUERIES,
   [SupportedLanguages.Vue]: TYPESCRIPT_QUERIES, // Vue <script> blocks are parsed as TypeScript
+  [SupportedLanguages.Solidity]: SOLIDITY_QUERIES,
   [SupportedLanguages.Cobol]: '', // Standalone regex processor — no tree-sitter queries
 };

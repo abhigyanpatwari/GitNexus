@@ -177,6 +177,17 @@ const SOURCES: Record<string, GrammarSource> = {
       'Likely cause: no prebuilt `.node` for this platform/architecture. ' +
       `See ${ISSUES_URL}/2107.`,
   },
+  [SupportedLanguages.Solidity]: {
+    load: () => requireVendoredGrammar('tree-sitter-solidity'),
+    optional: true,
+    userSkippable: true,
+    unavailableNote:
+      'Solidity parsing disabled: vendored `tree-sitter-solidity` (under ' +
+      '`gitnexus/vendor/tree-sitter-solidity`) failed to load. ' +
+      'Likely cause: native compile failed at install (missing python3/make/g++) ' +
+      'or no prebuilt `.node` for this platform/architecture. ' +
+      'See GitNexus issue #531.',
+  },
 };
 
 /**
