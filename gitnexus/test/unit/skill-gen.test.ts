@@ -174,7 +174,7 @@ describe('generateSkillFiles — return values', () => {
     );
 
     expect(result.skills).toEqual([]);
-    expect(result.outputPath).toBe(path.join(tmpDir, '.claude', 'skills', 'generated'));
+    expect(result.outputPath).toBe(path.join(tmpDir, '.claude', 'skills'));
   });
 
   /**
@@ -252,7 +252,7 @@ describe('generateSkillFiles — return values', () => {
     expect(result.skills[0].label).toBe('Auth');
     expect(result.skills[0].symbolCount).toBe(5);
     expect(result.skills[0].fileCount).toBe(2);
-    expect(result.skills[0].name).toBe('auth');
+    expect(result.skills[0].name).toBe('gitnexus-area-auth');
   });
 
   /**
@@ -573,10 +573,10 @@ describe('generateSkillFiles — file output', () => {
   }
 
   /**
-   * Verify that each community produces a directory under generated/
+   * Verify that each community produces a namespaced directory directly under .claude/skills/
    * containing a SKILL.md file.
    */
-  it('creates generated/{name}/SKILL.md for each community', async () => {
+  it('creates {name}/SKILL.md as a direct project skill for each community (#2433)', async () => {
     const { graph, communities, memberships } = twoCommSetup();
 
     await generateSkillFiles(
@@ -590,11 +590,57 @@ describe('generateSkillFiles — file output', () => {
       }),
     );
 
-    const outputDir = path.join(tmpDir, '.claude', 'skills', 'generated');
-    const alphaSkill = await fs.readFile(path.join(outputDir, 'alpha', 'SKILL.md'), 'utf-8');
-    const betaSkill = await fs.readFile(path.join(outputDir, 'beta', 'SKILL.md'), 'utf-8');
+    const outputDir = path.join(tmpDir, '.claude', 'skills');
+    const alphaSkill = await fs.readFile(
+      path.join(outputDir, 'gitnexus-area-alpha', 'SKILL.md'),
+      'utf-8',
+    );
+    const betaSkill = await fs.readFile(
+      path.join(outputDir, 'gitnexus-area-beta', 'SKILL.md'),
+      'utf-8',
+    );
     expect(alphaSkill.length).toBeGreaterThan(0);
     expect(betaSkill.length).toBeGreaterThan(0);
+  });
+
+  it('uses an owned namespace and removes only prior GitNexus-generated outputs (#2433)', async () => {
+    const graph = createKnowledgeGraph();
+    for (let i = 0; i < 4; i++) {
+      graph.addNode(
+        makeNode(`fn:cli${i}`, `cliFn${i}`, 'Function', `${tmpDir}/src/cli/f${i}.ts`, 1, true),
+      );
+    }
+    const skillsRoot = path.join(tmpDir, '.claude', 'skills');
+    const standardSkill = path.join(skillsRoot, 'gitnexus-cli', 'SKILL.md');
+    const userSkill = path.join(skillsRoot, 'auth', 'SKILL.md');
+    const legacyGenerated = path.join(skillsRoot, 'generated', 'old', 'SKILL.md');
+    const staleGenerated = path.join(skillsRoot, 'gitnexus-area-old', 'SKILL.md');
+    for (const file of [standardSkill, userSkill, legacyGenerated, staleGenerated]) {
+      await fs.mkdir(path.dirname(file), { recursive: true });
+      await fs.writeFile(file, file, 'utf-8');
+    }
+
+    const result = await generateSkillFiles(
+      tmpDir,
+      'TestProject',
+      buildPipelineResult({
+        graph,
+        repoPath: tmpDir,
+        communities: [makeCommunity('c1', 'Cli', 4)],
+        memberships: [0, 1, 2, 3].map((i) => makeMembership(`fn:cli${i}`, 'c1')),
+      }),
+    );
+
+    expect(result.skills[0].name).toBe('gitnexus-area-cli');
+    const generatedContent = await fs.readFile(
+      path.join(skillsRoot, 'gitnexus-area-cli', 'SKILL.md'),
+      'utf-8',
+    );
+    expect(generatedContent).toContain('name: gitnexus-area-cli');
+    await expect(fs.readFile(standardSkill, 'utf-8')).resolves.toBe(standardSkill);
+    await expect(fs.readFile(userSkill, 'utf-8')).resolves.toBe(userSkill);
+    await expect(fs.access(path.join(skillsRoot, 'generated'))).rejects.toThrow();
+    await expect(fs.access(path.join(skillsRoot, 'gitnexus-area-old'))).rejects.toThrow();
   });
 
   /**
@@ -616,7 +662,7 @@ describe('generateSkillFiles — file output', () => {
     );
 
     const content = await fs.readFile(
-      path.join(tmpDir, '.claude', 'skills', 'generated', 'alpha', 'SKILL.md'),
+      path.join(tmpDir, '.claude', 'skills', 'gitnexus-area-alpha', 'SKILL.md'),
       'utf-8',
     );
     expect(content.startsWith('---')).toBe(true);
@@ -645,7 +691,7 @@ describe('generateSkillFiles — file output', () => {
     );
 
     const content = await fs.readFile(
-      path.join(tmpDir, '.claude', 'skills', 'generated', 'alpha', 'SKILL.md'),
+      path.join(tmpDir, '.claude', 'skills', 'gitnexus-area-alpha', 'SKILL.md'),
       'utf-8',
     );
     expect(content).not.toMatch(/gitnexus_(context|query|impact|detect_changes|rename|cypher)/);
@@ -700,7 +746,7 @@ describe('generateSkillFiles — file output', () => {
     );
 
     const content = await fs.readFile(
-      path.join(tmpDir, '.claude', 'skills', 'generated', 'alpha', 'SKILL.md'),
+      path.join(tmpDir, '.claude', 'skills', 'gitnexus-area-alpha', 'SKILL.md'),
       'utf-8',
     );
 
@@ -737,7 +783,7 @@ describe('generateSkillFiles — file output', () => {
     );
 
     const content = await fs.readFile(
-      path.join(tmpDir, '.claude', 'skills', 'generated', 'isolated', 'SKILL.md'),
+      path.join(tmpDir, '.claude', 'skills', 'gitnexus-area-isolated', 'SKILL.md'),
       'utf-8',
     );
 
@@ -770,9 +816,9 @@ describe('generateSkillFiles — file output', () => {
       }),
     );
 
-    const outputDir = path.join(tmpDir, '.claude', 'skills', 'generated');
+    const outputDir = path.join(tmpDir, '.claude', 'skills');
     const firstRunDirs = await fs.readdir(outputDir);
-    expect(firstRunDirs).toContain('first');
+    expect(firstRunDirs).toContain('gitnexus-area-first');
 
     // Second run with different community
     const graph2 = createKnowledgeGraph();
@@ -794,8 +840,8 @@ describe('generateSkillFiles — file output', () => {
     );
 
     const secondRunDirs = await fs.readdir(outputDir);
-    expect(secondRunDirs).toContain('second');
-    expect(secondRunDirs).not.toContain('first');
+    expect(secondRunDirs).toContain('gitnexus-area-second');
+    expect(secondRunDirs).not.toContain('gitnexus-area-first');
   });
 
   /**
@@ -825,7 +871,7 @@ describe('generateSkillFiles — file output', () => {
     );
 
     const content = await fs.readFile(
-      path.join(tmpDir, '.claude', 'skills', 'generated', 'stats', 'SKILL.md'),
+      path.join(tmpDir, '.claude', 'skills', 'gitnexus-area-stats', 'SKILL.md'),
       'utf-8',
     );
 
@@ -862,16 +908,52 @@ describe('generateSkillFiles — file output', () => {
     // The kebab name should only contain lowercase alphanumerics and dashes
     expect(result.skills[0].name).toMatch(/^[a-z0-9-]+$/);
 
-    const skillPath = path.join(
-      tmpDir,
-      '.claude',
-      'skills',
-      'generated',
-      result.skills[0].name,
-      'SKILL.md',
-    );
+    const skillPath = path.join(tmpDir, '.claude', 'skills', result.skills[0].name, 'SKILL.md');
     const content = await fs.readFile(skillPath, 'utf-8');
     expect(content.length).toBeGreaterThan(0);
+  });
+
+  it("keeps colliding names within Claude Code's 64-character limit", async () => {
+    const graph = createKnowledgeGraph();
+    for (let i = 0; i < 8; i++) {
+      graph.addNode(
+        makeNode(
+          `fn:long${i}`,
+          `longFunc${i}`,
+          'Function',
+          `${tmpDir}/src/long/f${i}.ts`,
+          1,
+          false,
+        ),
+      );
+    }
+
+    const sharedPrefix = 'a'.repeat(60);
+    const communities = [
+      makeCommunity('c1', `${sharedPrefix}one`, 4),
+      makeCommunity('c2', `${sharedPrefix}two`, 4),
+    ];
+    const memberships = [
+      ...[0, 1, 2, 3].map((i) => makeMembership(`fn:long${i}`, 'c1')),
+      ...[4, 5, 6, 7].map((i) => makeMembership(`fn:long${i}`, 'c2')),
+    ];
+
+    const result = await generateSkillFiles(
+      tmpDir,
+      'TestProject',
+      buildPipelineResult({ graph, repoPath: tmpDir, communities, memberships }),
+    );
+
+    expect(result.skills).toHaveLength(2);
+    expect(new Set(result.skills.map((skill) => skill.name)).size).toBe(2);
+    for (const skill of result.skills) {
+      expect(skill.name.length).toBeLessThanOrEqual(64);
+      const content = await fs.readFile(
+        path.join(tmpDir, '.claude', 'skills', skill.name, 'SKILL.md'),
+        'utf-8',
+      );
+      expect(content).toContain(`name: ${skill.name}`);
+    }
   });
 
   /**
@@ -933,7 +1015,7 @@ describe('generateSkillFiles — file output', () => {
     expect(result.skills).toHaveLength(1);
 
     const content = await fs.readFile(
-      path.join(tmpDir, '.claude', 'skills', 'generated', 'win', 'SKILL.md'),
+      path.join(tmpDir, '.claude', 'skills', 'gitnexus-area-win', 'SKILL.md'),
       'utf-8',
     );
 

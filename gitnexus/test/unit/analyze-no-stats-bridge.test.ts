@@ -6,7 +6,7 @@ const { runFullAnalysisMock, generateAIContextFilesMock, generateSkillFilesMock,
     const generateAIContextFilesMock = vi.fn(async () => ({ files: [] as string[] }));
     const generateSkillFilesMock = vi.fn(async () => ({
       skills: [{ name: 'c', label: 'Community', symbolCount: 1, fileCount: 1 }],
-      outputPath: '/repo/.claude/skills/generated',
+      outputPath: '/repo/.claude/skills',
     }));
     const cliErrorMock = vi.fn();
     return {
@@ -74,7 +74,7 @@ describe('analyzeCommand commander → runFullAnalysis noStats bridge (#1477)', 
     generateSkillFilesMock.mockReset();
     generateSkillFilesMock.mockResolvedValue({
       skills: [{ name: 'c', label: 'Community', symbolCount: 1, fileCount: 1 }],
-      outputPath: '/repo/.claude/skills/generated',
+      outputPath: '/repo/.claude/skills',
     });
     cliErrorMock.mockReset();
     process.exitCode = undefined;
