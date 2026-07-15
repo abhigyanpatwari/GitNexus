@@ -68,7 +68,7 @@
     "@types/react-dom": "^19.2.3",
     "@types/react-syntax-highlighter": "^15.5.13",
     "@vercel/node": "^5.8.22",
-    "@vitejs/plugin-react": "^5.1.4",
+    "@vitejs/plugin-react": "^6.0.2",
     "@vitest/coverage-v8": "^4.1.9",
     "jsdom": "^29.1.1",
     "tree-sitter-wasms": "^0.1.13",
