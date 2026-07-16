@@ -1,12 +1,12 @@
-# gitnexus-lfg — plan → (deepen | work) → review
+# gitnexus-lfg — plan → gate → work → review
 
 Thin pipeline orchestrator over three existing skills: `gitnexus-plan`
-produces the plan, the user chooses at a blocking gate to deepen it (as many
-cycles as they want) or proceed, `gitnexus-work` executes it as verified
-atomic commits, and `gitnexus-review` reviews the result (the open PR if
-one exists, else the branch diff against the default branch). One bounded
-fix cycle for review findings, then a final report. It never pushes or opens
-a PR on its own.
+produces the plan (asking up front how deep to go), the user chooses at a
+blocking gate to proceed or stop (an explicit deepen request is still
+honored), `gitnexus-work` executes it as verified atomic commits, and
+`gitnexus-review` reviews the result (the open PR if one exists, else the
+branch diff against the default branch). One bounded fix cycle for review
+findings, then a final report. It never pushes or opens a PR on its own.
 
 ## Invocation
 
@@ -26,7 +26,7 @@ Optionally, for an explicit slash command, create
 
 ```markdown
 ---
-description: GitNexus pipeline — plan, user gate (deepen or execute), work, PR review
+description: GitNexus pipeline — plan (depth asked up front), user gate, work, PR review
 argument-hint: <task description or plan path>
 ---
 Use the gitnexus-lfg skill for: $ARGUMENTS
@@ -41,6 +41,6 @@ skills for each lane. Stop at the plan gate for the user's choice.
 
 | Lane | Skill | Gate |
 |------|-------|------|
-| Plan | `gitnexus-plan` (`.claude/skills/gitnexus-plan/`) | Blocking user choice: deepen / proceed / stop |
+| Plan | `gitnexus-plan` (`.claude/skills/gitnexus-plan/`) | Depth asked up front; blocking gate: proceed / stop |
 | Work | `gitnexus-work` (`.claude/skills/gitnexus-work/`) | Structural drift routes back to the plan gate |
 | Review | `gitnexus-review` (`.claude/skills/gitnexus-review/`) | One fix cycle max, then report |

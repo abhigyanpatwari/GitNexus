@@ -66,6 +66,26 @@ The category posture overrides the Configuration baseline; explicit `key:value`
 invocation knobs override both. A task matching several rows combines them:
 take the widest depth, union the focus areas.
 
+**Depth is the user's decision, asked once, up front.** In an interactive
+session, when the invocation carries no explicit depth signal (no `depth:`,
+`form:`, or `freshness:` knob, and not Deepen mode), ask one blocking
+question before Phase 1 — how deep should this plan go?
+
+1. **Quick** — `depth:narrow form:compact freshness:accept`. Fastest useful
+   plan: 1–2 primary symbols, minimal graph work, core sections only.
+2. **Standard** — the category posture above, unchanged. Recommend this
+   unless the classification argues otherwise.
+3. **Deep** — `depth:deep form:full freshness:strict`. All 13 sections,
+   `impact_depth` 3, clusters/processes read, PDG slices for the central
+   functions.
+
+The answer sets the knobs exactly as if they had been typed in the
+invocation; explicit knobs win and skip the question. Headless runs never
+ask — the category posture applies unchanged. Asking up front replaces
+offering to deepen a finished plan afterwards: Deepen mode (below) remains
+the mechanism for strengthening an existing plan document — a later session,
+review findings, an executor route-back — not a default follow-up question.
+
 **Turn economy is a deliverable.** The plan is judged on decision quality per
 token, not thoroughness theater (measured: a 63-turn plan for a two-line
 change — see `eval/workflow_bench/`). Stay within the category's tool-call

@@ -1,9 +1,9 @@
 ---
 name: gitnexus-lfg
-description: "Use when the user wants the GitNexus engineering pipeline run end-to-end on a task: gitnexus-plan, then their choice to deepen the plan or execute it with gitnexus-work, finishing with a gitnexus-review of the result. Examples: \"/gitnexus-lfg Add retry support to the ingestion pipeline\", \"run the gitnexus pipeline on this\", \"plan, build and review this feature\"."
+description: "Use when the user wants the GitNexus engineering pipeline run end-to-end on a task: gitnexus-plan (plan depth chosen up front), a blocking gate to execute with gitnexus-work or stop, finishing with a gitnexus-review of the result. Examples: \"/gitnexus-lfg Add retry support to the ingestion pipeline\", \"run the gitnexus pipeline on this\", \"plan, build and review this feature\"."
 ---
 
-# gitnexus-lfg — plan → (deepen | work) → review
+# gitnexus-lfg — plan → gate → work → review
 
 Thin orchestrator over three existing skills. It adds no engineering logic of
 its own — it sequences `gitnexus-plan`, `gitnexus-work`, and
@@ -32,8 +32,9 @@ and at least every 90 days; update this skill only after the deterministic gate
 shows no quality regression.
 
 Otherwise invoke `gitnexus-plan` with the task (knob overrides pass through
-verbatim). If the input is already a plan file path, skip to Lane 2. The plan
-lands in `docs/plans/` — record its path; every later lane consumes it.
+verbatim; `gitnexus-plan` owns the up-front depth question — never ask it
+again here). If the input is already a plan file path, skip to Lane 2. The
+plan lands in `docs/plans/` — record its path; every later lane consumes it.
 
 ## Lane 2 — The plan gate (user choice, blocking)
 
@@ -42,17 +43,18 @@ risks, open questions, plan path), then ask the user — as a blocking
 question (`AskUserQuestion` in Claude Code; a numbered list in chat on CLIs
 without a blocking tool):
 
-1. **Deepen the plan** — run `gitnexus-plan` Deepen mode on the plan file,
-   then return to this gate with the strengthened plan.
-2. **Proceed to work** — continue to Lane 3.
-3. **Stop here** — the plan file is the deliverable; end the pipeline.
+1. **Proceed to work** — continue to Lane 3.
+2. **Stop here** — the plan file is the deliverable; end the pipeline.
 
-Loop on 1 as many times as the user asks. Do not proceed past the gate
-without an explicit choice — the gate is the pipeline's only checkpoint and
-exists precisely because execution is expensive to unwind.
+Depth was the user's up-front choice in Lane 1, so deepening is not offered
+by default — but honor an explicit request for it at the gate: run
+`gitnexus-plan` Deepen mode on the plan file and return here with the
+strengthened plan, as many times as the user asks. Do not proceed past the
+gate without an explicit choice — the gate is the pipeline's only checkpoint
+and exists precisely because execution is expensive to unwind.
 
 **Headless / non-interactive runs:** no one can answer the gate, so end the
-pipeline after Lane 1 — the plan file is the deliverable (gate option 3) —
+pipeline after Lane 1 — the plan file is the deliverable (gate option 2) —
 and say so in the final report. Never auto-proceed to execution.
 
 ## Lane 3 — Work

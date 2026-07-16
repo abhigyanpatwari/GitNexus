@@ -37,12 +37,13 @@ If always-on instructions grow, load deep conventions via conditional reads (e.g
 - **This repository:** [AGENTS.md](AGENTS.md) (Cursor + monorepo notes), [ARCHITECTURE.md](ARCHITECTURE.md), [CONTRIBUTING.md](CONTRIBUTING.md), [GUARDRAILS.md](GUARDRAILS.md).
 - **Call & inheritance resolution:** See ARCHITECTURE.md § Scope-Resolution Pipeline. Shared pipeline code in `gitnexus/src/core/ingestion/` must not name languages — use `LanguageProvider` / `ScopeResolver` hooks instead (see AGENTS.md). (The legacy call-resolution DAG was removed in #942.)
 - **GitNexus:** standard skills in `.claude/skills/gitnexus-*/`; MCP and indexed-repo rules live only in [AGENTS.md](AGENTS.md) (`gitnexus:start` … `gitnexus:end`). See **GitNexus rules** below.
-- **Engineering plans, execution & review:** `/gitnexus-plan <task>` (implementation-ready plans via GitNexus + statement-level PDG + source verification; Deepen mode for existing plans), `/gitnexus-work [plan]` (executes a plan as impact-checked, detect_changes-gated atomic commits), `/gitnexus-review [PR|branch|range|local]` (read-only graph-backed review), `/gitnexus-lfg <task>` (plan → deepen/work gate → review pipeline). Specs in `.claude/skills/gitnexus-{plan,work,review,lfg}/SKILL.md` (see AGENTS.md § Engineering planning & execution).
+- **Engineering plans, execution & review:** `/gitnexus-plan <task>` (implementation-ready plans via GitNexus + statement-level PDG + source verification; Deepen mode for existing plans), `/gitnexus-work [plan]` (executes a plan as impact-checked, detect_changes-gated atomic commits), `/gitnexus-review [PR|branch|range|local]` (read-only graph-backed review), `/gitnexus-lfg <task>` (plan with depth asked up front → proceed/stop gate → work → review pipeline). Specs in `.claude/skills/gitnexus-{plan,work,review,lfg}/SKILL.md` (see AGENTS.md § Engineering planning & execution).
 
 ## Changelog
 
 | Date | Version | Change |
 |------|---------|--------|
+| 2026-07-16 | 1.7.0 | `/gitnexus-plan` asks depth up front in interactive runs; `/gitnexus-lfg` gate slimmed to proceed/stop. |
 | 2026-07-16 | 1.6.0 | Renamed `/gitnexus-pr-review` to `/gitnexus-review` and added PR, branch/range, and local-change targets. |
 | 2026-07-11 | 1.5.0 | Added `/gitnexus-work` and `/gitnexus-lfg` to the engineering plans & execution pointer. |
 | 2026-07-11 | 1.4.0 | Added `/gitnexus-plan` pointer to Reference Documentation. |
@@ -60,17 +61,18 @@ See the `<!-- gitnexus:start --> … <!-- gitnexus:end -->` block in **[AGENTS.m
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
 
-This project is indexed by GitNexus as **GitNexus** (26675 symbols, 35395 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
+This project is indexed by GitNexus as **GitNexus** (20319 symbols, 54304 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
 
 > Index stale? Run `node .gitnexus/run.cjs analyze` from the project root — it auto-selects an available runner. No `.gitnexus/run.cjs` yet? `npx gitnexus analyze` (npm 11 crash → `npm i -g gitnexus`; #1939).
 
 ## Always Do
 
 - **MUST run impact analysis before editing any symbol.** Before modifying a function, class, or method, run `impact({target: "symbolName", direction: "upstream"})` and report the blast radius (direct callers, affected processes, risk level) to the user.
-- **MUST run `detect_changes()` before committing** to verify your changes only affect expected symbols and execution flows.
+- **MUST run `detect_changes()` before committing** to verify your changes only affect expected symbols and execution flows. For regression review, compare against the default branch: `detect_changes({scope: "compare", base_ref: "main"})`.
 - **MUST warn the user** if impact analysis returns HIGH or CRITICAL risk before proceeding with edits.
 - When exploring unfamiliar code, use `query({search_query: "concept"})` to find execution flows instead of grepping. It returns process-grouped results ranked by relevance.
 - When you need full context on a specific symbol — callers, callees, which execution flows it participates in — use `context({name: "symbolName"})`.
+- For security review, `explain({target: "fileOrSymbol"})` lists taint findings (source→sink flows; needs `analyze --pdg`).
 
 ## Never Do
 
@@ -92,31 +94,11 @@ This project is indexed by GitNexus as **GitNexus** (26675 symbols, 35395 relati
 
 | Task | Read this skill file |
 |------|---------------------|
-| Understand architecture / "How does X work?" | `.claude/skills/gitnexus-exploring/SKILL.md` |
-| Blast radius / "What breaks if I change X?" | `.claude/skills/gitnexus-impact-analysis/SKILL.md` |
-| Trace bugs / "Why is X failing?" | `.claude/skills/gitnexus-debugging/SKILL.md` |
-| Rename / extract / split / refactor | `.claude/skills/gitnexus-refactoring/SKILL.md` |
-| Tools, resources, schema reference | `.claude/skills/gitnexus-guide/SKILL.md` |
-| Index, status, clean, wiki CLI commands | `.claude/skills/gitnexus-cli/SKILL.md` |
-| Work in the Ingestion area (239 symbols) | `.claude/skills/gitnexus-area-ingestion/SKILL.md` |
-| Work in the Extractors area (135 symbols) | `.claude/skills/gitnexus-area-extractors/SKILL.md` |
-| Work in the Components area (112 symbols) | `.claude/skills/gitnexus-area-components/SKILL.md` |
-| Work in the Lbug area (96 symbols) | `.claude/skills/gitnexus-area-lbug/SKILL.md` |
-| Work in the Group area (94 symbols) | `.claude/skills/gitnexus-area-group/SKILL.md` |
-| Work in the Cli area (92 symbols) | `.claude/skills/gitnexus-area-cli/SKILL.md` |
-| Work in the Configs area (92 symbols) | `.claude/skills/gitnexus-area-configs/SKILL.md` |
-| Work in the Type-extractors area (90 symbols) | `.claude/skills/gitnexus-area-type-extractors/SKILL.md` |
-| Work in the Hooks area (88 symbols) | `.claude/skills/gitnexus-area-hooks/SKILL.md` |
-| Work in the Unit area (80 symbols) | `.claude/skills/gitnexus-area-unit/SKILL.md` |
-| Work in the Cpp area (73 symbols) | `.claude/skills/gitnexus-area-cpp/SKILL.md` |
-| Work in the Scope-resolution area (72 symbols) | `.claude/skills/gitnexus-area-scope-resolution/SKILL.md` |
-| Work in the Server area (66 symbols) | `.claude/skills/gitnexus-area-server/SKILL.md` |
-| Work in the Local area (61 symbols) | `.claude/skills/gitnexus-area-local/SKILL.md` |
-| Work in the Wiki area (60 symbols) | `.claude/skills/gitnexus-area-wiki/SKILL.md` |
-| Work in the Workers area (57 symbols) | `.claude/skills/gitnexus-area-workers/SKILL.md` |
-| Work in the Embeddings area (56 symbols) | `.claude/skills/gitnexus-area-embeddings/SKILL.md` |
-| Work in the Typescript area (53 symbols) | `.claude/skills/gitnexus-area-typescript/SKILL.md` |
-| Work in the Storage area (51 symbols) | `.claude/skills/gitnexus-area-storage/SKILL.md` |
-| Work in the Php area (48 symbols) | `.claude/skills/gitnexus-area-php/SKILL.md` |
+| Understand architecture / "How does X work?" | `.claude/skills/gitnexus/gitnexus-exploring/SKILL.md` |
+| Blast radius / "What breaks if I change X?" | `.claude/skills/gitnexus/gitnexus-impact-analysis/SKILL.md` |
+| Trace bugs / "Why is X failing?" | `.claude/skills/gitnexus/gitnexus-debugging/SKILL.md` |
+| Rename / extract / split / refactor | `.claude/skills/gitnexus/gitnexus-refactoring/SKILL.md` |
+| Tools, resources, schema reference | `.claude/skills/gitnexus/gitnexus-guide/SKILL.md` |
+| Index, status, clean, wiki CLI commands | `.claude/skills/gitnexus/gitnexus-cli/SKILL.md` |
 
 <!-- gitnexus:end -->
