@@ -75,6 +75,43 @@ BASELINE_PROMPT = (
     "Implement the change in this repository and verify it by running the "
     "relevant tests. Work autonomously without asking questions."
 )
+# External-comparator arms: the compound-engineering plugin's plan/work family,
+# prompted with the same structure as the gitnexus arms so only the skill
+# family differs. The plugin ships user-level, so clones need no repo files.
+CE_PLAN_PROMPT = (
+    "Use the ce-plan skill (compound-engineering plugin) for: {task}\n"
+    "Headless run: make reasonable choices without asking; the plan document "
+    "is the deliverable."
+)
+CE_WORK_PROMPT = (
+    "Use the ce-work skill (compound-engineering plugin) to execute the plan "
+    "at {plan}.\n"
+    "Headless run: proceed without asking; report completion status at the "
+    "end."
+)
+CE_WORK_DIRECT_PROMPT = (
+    "Use the ce-work skill (compound-engineering plugin) for: {task}\n"
+    "Headless run: proceed without asking. The user explicitly declines a "
+    "separate planning pass — execute directly with the skill's execution "
+    "discipline."
+)
+# Review cell: the task's `setup` applies the diff under review as local
+# changes; both arms review the same working tree and write to the same file
+# so `verify` can gate on a produced review.
+REVIEW_PROMPT = (
+    "Use the gitnexus-review skill to review the local uncommitted changes "
+    "in this repository. {task}\n"
+    "Headless run: proceed without asking; do not post to GitHub or anywhere "
+    "external; write the complete review to review-output.md in the "
+    "repository root."
+)
+CE_REVIEW_PROMPT = (
+    "Use the ce-code-review skill (compound-engineering plugin) to review "
+    "the local uncommitted changes in this repository. {task}\n"
+    "Headless run: proceed without asking; do not post to GitHub or anywhere "
+    "external; write the complete review to review-output.md in the "
+    "repository root."
+)
 
 
 def run_claude(
@@ -133,11 +170,19 @@ def sum_sessions(sessions: list[dict[str, Any]]) -> dict[str, Any]:
     return total
 
 
-def newest_plan(worktree: Path) -> Path | None:
-    plans = sorted(
-        worktree.glob("docs/plans/*gitnexus-plan*.md"), key=lambda p: p.stat().st_mtime
-    )
-    return plans[-1] if plans else None
+def new_plan_doc(worktree: Path, before: set[Path]) -> Path | None:
+    """The plan document a session just wrote: any new file under docs/plans.
+
+    A name glob is unreliable — the repo ships committed example plans whose
+    clone-time mtimes tie, and sessions don't always follow the skill's naming
+    convention — so plan discovery diffs against a pre-session snapshot.
+    """
+    fresh = [
+        p
+        for p in worktree.glob("docs/plans/*")
+        if p not in before and p.suffix in (".md", ".html")
+    ]
+    return max(fresh, key=lambda p: p.stat().st_mtime, default=None)
 
 
 def make_worktree(repo: Path, ref: str, parent: Path) -> Path:
@@ -216,11 +261,13 @@ def diff_churn(worktree: Path, orig_sha: str) -> dict[str, int]:
     return parse_shortstat(proc.stdout)
 
 
-def run_verify(command: str, cwd: Path, timeout: int) -> bool:
+def run_verify(command: str, cwd: Path, timeout: int) -> tuple[bool, str]:
+    """Run the task's verify command; keep its output tail for diagnosis."""
     proc = subprocess.run(
         command, shell=True, cwd=cwd, capture_output=True, timeout=timeout, check=False
     )
-    return proc.returncode == 0
+    output = (proc.stdout + b"\n" + proc.stderr).decode(errors="replace")
+    return proc.returncode == 0, output[-4000:]
 
 
 def claude_env(args: argparse.Namespace) -> dict[str, str]:
@@ -250,19 +297,37 @@ def run_arm(
         "env": env,
         "permission_mode": args.permission_mode,
     }
-    if arm == "workflow":
+    plan_doc: Path | None = None
+    if arm in ("workflow", "ce_workflow"):
+        plan_prompt = PLAN_PROMPT if arm == "workflow" else CE_PLAN_PROMPT
+        work_prompt = WORK_PROMPT if arm == "workflow" else CE_WORK_PROMPT
+        pre = set(worktree.glob("docs/plans/*"))
         sessions.append(
-            run_claude(PLAN_PROMPT.format(task=task["prompt"]), worktree, **common)
+            run_claude(plan_prompt.format(task=task["prompt"]), worktree, **common)
         )
-        plan = newest_plan(worktree)
-        if plan is not None:
+        plan_doc = new_plan_doc(worktree, pre)
+        if plan_doc is not None:
             sessions.append(
                 run_claude(
-                    WORK_PROMPT.format(plan=plan.relative_to(worktree)),
+                    work_prompt.format(plan=plan_doc.relative_to(worktree)),
                     worktree,
                     **common,
                 )
             )
+    elif arm == "ce_workflow_direct":
+        sessions.append(
+            run_claude(
+                CE_WORK_DIRECT_PROMPT.format(task=task["prompt"]), worktree, **common
+            )
+        )
+    elif arm == "review":
+        sessions.append(
+            run_claude(REVIEW_PROMPT.format(task=task["prompt"]), worktree, **common)
+        )
+    elif arm == "ce_review":
+        sessions.append(
+            run_claude(CE_REVIEW_PROMPT.format(task=task["prompt"]), worktree, **common)
+        )
     elif arm == "workflow_direct":
         sessions.append(
             run_claude(
@@ -291,10 +356,12 @@ def run_arm(
         )
     record = sum_sessions(sessions)
     record["arm"] = arm
-    record["plan_produced"] = arm != "workflow" or newest_plan(worktree) is not None
-    record["resolved"] = record["ok"] and run_verify(
-        task["verify"], worktree, args.timeout
+    record["plan_produced"] = (
+        arm not in ("workflow", "ce_workflow") or plan_doc is not None
     )
+    verified, verify_output = run_verify(task["verify"], worktree, args.timeout)
+    record["resolved"] = record["ok"] and verified
+    record["verify_output"] = verify_output
     return record
 
 
@@ -379,6 +446,10 @@ def main() -> None:
             "candidate_workflow",
             "workflow_direct",
             "candidate_workflow_direct",
+            "ce_workflow",
+            "ce_workflow_direct",
+            "review",
+            "ce_review",
             "baseline",
             "baseline_nomcp",
         ],
@@ -494,6 +565,17 @@ def main() -> None:
                             }
                         )
                         record.update(diff_churn(worktree, orig_sha))
+                        # Final working-tree patch — the clone is destroyed, so
+                        # this is the only artifact for diagnosing verify fails.
+                        patch = subprocess.run(
+                            ["git", "-C", str(worktree), "diff", orig_sha],
+                            capture_output=True,
+                            text=True,
+                            check=False,
+                        ).stdout
+                        (
+                            out_dir / f"{task['id']}-{arm}-run{run_idx}.patch"
+                        ).write_text(patch[:300_000])
                     finally:
                         remove_worktree(repo, worktree)
                     record.update(
