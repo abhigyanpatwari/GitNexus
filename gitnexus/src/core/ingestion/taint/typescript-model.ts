@@ -38,10 +38,14 @@ export const TS_JS_TAINT_MODEL: SourceSinkSanitizerSpec = {
     },
   ],
   sinks: [
-    // Command execution — the command string is argument 0.
+    // Command execution — shell strings are arg 0; argv-form APIs also treat
+    // the argv array at arg 1 as command/option injection surface.
     { name: 'exec', kind: 'command-injection', args: [0], module: 'child_process' },
     { name: 'execSync', kind: 'command-injection', args: [0], module: 'child_process' },
-    { name: 'spawn', kind: 'command-injection', args: [0], module: 'child_process' },
+    { name: 'spawn', kind: 'command-injection', args: [0, 1], module: 'child_process' },
+    { name: 'spawnSync', kind: 'command-injection', args: [0, 1], module: 'child_process' },
+    { name: 'execFile', kind: 'command-injection', args: [0, 1], module: 'child_process' },
+    { name: 'execFileSync', kind: 'command-injection', args: [0, 1], module: 'child_process' },
     // Code evaluation. `eval` takes code at 0; `new Function(...)` treats
     // EVERY argument as source text (params + body), so `args` is omitted
     // (= all positions) rather than pinned to 0.
@@ -56,9 +60,37 @@ export const TS_JS_TAINT_MODEL: SourceSinkSanitizerSpec = {
     // (mysql2/pg/knex handles go by many names; receiver-conventional).
     { name: 'query', kind: 'sql-injection', args: [0], anyReceiver: true },
     { name: 'execute', kind: 'sql-injection', args: [0], anyReceiver: true },
+    // Modern DB libraries expose shorter method names with high collision
+    // rates (`map.get`, `task.run`, ...), so keep these receiver-conventional.
+    {
+      name: 'run',
+      kind: 'sql-injection',
+      args: [0],
+      receivers: ['db', 'database', 'conn', 'client', 'pool', 'stmt', 'statement', 'prepared'],
+    },
+    {
+      name: 'all',
+      kind: 'sql-injection',
+      args: [0],
+      receivers: ['db', 'database', 'conn', 'client', 'pool', 'stmt', 'statement', 'prepared'],
+    },
+    {
+      name: 'get',
+      kind: 'sql-injection',
+      args: [0],
+      receivers: ['db', 'database', 'conn', 'client', 'pool', 'stmt', 'statement', 'prepared'],
+    },
+    {
+      name: 'values',
+      kind: 'sql-injection',
+      args: [0],
+      receivers: ['db', 'database', 'conn', 'client', 'pool'],
+    },
+    { name: 'raw', kind: 'sql-injection', args: [0], receivers: ['db', 'knex', 'sequelize'] },
     // Reflected XSS — Express response writes, conventional receiver `res`.
     { name: 'send', kind: 'xss', args: [0], receivers: ['res'] },
     { name: 'write', kind: 'xss', args: [0], receivers: ['res'] },
+    { name: 'render', kind: 'xss', args: [0, 1], receivers: ['res'] },
   ],
   sanitizers: [
     // URL-encoding: neutralizes markup injection AND path separators
