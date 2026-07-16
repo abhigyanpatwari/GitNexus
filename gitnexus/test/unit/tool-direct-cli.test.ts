@@ -81,6 +81,49 @@ describe('direct CLI tool commands', () => {
     expect(process.exitCode).toBe(1);
   });
 
+  it('fails closed when cypher returns a backend error payload', async () => {
+    callToolMock.mockResolvedValue({ error: 'Binder exception: missing relationship property' });
+    const { cypherCommand } = await import('../../src/cli/tool.js');
+
+    await cypherCommand('MATCH ()-[r:CodeRelation]->() RETURN r.missing');
+
+    expect(writeSyncMock).toHaveBeenCalledWith(
+      1,
+      expect.stringContaining('Binder exception: missing relationship property'),
+    );
+    expect(process.exitCode).toBe(1);
+  });
+
+  it('keeps a successful cypher result at exit zero', async () => {
+    callToolMock.mockResolvedValue({ markdown: '| count |\n| --- |\n| 1 |', row_count: 1 });
+    const { cypherCommand } = await import('../../src/cli/tool.js');
+
+    await cypherCommand('MATCH (n) RETURN count(n) AS count');
+
+    expect(writeSyncMock).toHaveBeenCalledWith(1, expect.stringContaining('"row_count": 1'));
+    expect(process.exitCode).toBeUndefined();
+  });
+
+  it('fails closed when query returns a backend error payload', async () => {
+    callToolMock.mockResolvedValue({ error: 'Repository "missing" not found.' });
+    const { queryCommand } = await import('../../src/cli/tool.js');
+
+    await queryCommand('auth flow');
+
+    expect(writeSyncMock).toHaveBeenCalledWith(1, expect.stringContaining('not found'));
+    expect(process.exitCode).toBe(1);
+  });
+
+  it('fails closed when context returns a backend error payload', async () => {
+    callToolMock.mockResolvedValue({ error: 'Symbol not found: nope' });
+    const { contextCommand } = await import('../../src/cli/tool.js');
+
+    await contextCommand('nope');
+
+    expect(writeSyncMock).toHaveBeenCalledWith(1, expect.stringContaining('Symbol not found'));
+    expect(process.exitCode).toBe(1);
+  });
+
   it('dispatches detect_changes with CLI-shaped arguments', async () => {
     callToolMock.mockResolvedValue({
       summary: {

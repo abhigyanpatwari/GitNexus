@@ -16,6 +16,7 @@ import { CircuitOpenError, ResilientFetchExhaustedError, resilientFetch } from '
 const HTTP_TIMEOUT_MS = 30_000;
 const HTTP_MAX_RETRIES = 2;
 const HTTP_RETRY_BACKOFF_MS = 1_000;
+const HTTP_RETRY_CAP_MS = 5_000;
 const HTTP_BATCH_SIZE = 64;
 const DEFAULT_DIMS = 384;
 const HTTP_BREAKER_KEY = 'embeddings-http';
@@ -25,7 +26,84 @@ interface HttpConfig {
   model: string;
   apiKey: string;
   dimensions?: number;
+  maxAttempts: number;
+  retryCapMs: number;
+  minIntervalMs: number;
 }
+
+export interface EmbeddingRequestOptions {
+  signal?: AbortSignal;
+}
+
+let lastHttpRequestStartedAt: number | undefined;
+let httpPaceQueue: Promise<void> = Promise.resolve();
+
+const parsePositiveIntegerEnv = (name: string, fallback: number, max: number): number => {
+  const raw = process.env[name];
+  if (raw === undefined || raw === '') return fallback;
+  if (!/^\d+$/u.test(raw)) {
+    throw new Error(`${name} must be a positive integer, got "${raw}"`);
+  }
+  const parsed = Number(raw);
+  if (!Number.isSafeInteger(parsed) || parsed <= 0 || parsed > max) {
+    throw new Error(`${name} must be a positive integer <= ${max}, got "${raw}"`);
+  }
+  return parsed;
+};
+
+const parseNonNegativeIntegerEnv = (name: string, fallback: number, max: number): number => {
+  const raw = process.env[name];
+  if (raw === undefined || raw === '') return fallback;
+  if (!/^\d+$/u.test(raw)) {
+    throw new Error(`${name} must be a non-negative integer, got "${raw}"`);
+  }
+  const parsed = Number(raw);
+  if (!Number.isSafeInteger(parsed) || parsed < 0 || parsed > max) {
+    throw new Error(`${name} must be a non-negative integer <= ${max}, got "${raw}"`);
+  }
+  return parsed;
+};
+
+const cancelledError = (): DOMException =>
+  new DOMException('Embedding request cancelled', 'AbortError');
+
+const throwIfAborted = (signal?: AbortSignal): void => {
+  if (signal?.aborted) throw cancelledError();
+};
+
+const abortableSleep = (ms: number, signal?: AbortSignal): Promise<void> => {
+  throwIfAborted(signal);
+  if (ms <= 0) return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+    const onAbort = () => {
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', onAbort);
+      reject(cancelledError());
+    };
+    signal?.addEventListener('abort', onAbort, { once: true });
+  });
+};
+
+const paceHttpRequest = async (minIntervalMs: number, signal?: AbortSignal): Promise<void> => {
+  throwIfAborted(signal);
+  if (minIntervalMs <= 0) return;
+  const waitTurn = httpPaceQueue.then(async () => {
+    throwIfAborted(signal);
+    const waitMs =
+      lastHttpRequestStartedAt === undefined
+        ? 0
+        : Math.max(0, lastHttpRequestStartedAt + minIntervalMs - Date.now());
+    await abortableSleep(waitMs, signal);
+    throwIfAborted(signal);
+    lastHttpRequestStartedAt = Date.now();
+  });
+  httpPaceQueue = waitTurn.catch(() => undefined);
+  await waitTurn;
+};
 
 /**
  * Stable lead of the {@link readConfig} malformed-`GITNEXUS_EMBEDDING_DIMS`
@@ -74,6 +152,17 @@ const readConfig = (): HttpConfig | null => {
     model,
     apiKey: process.env.GITNEXUS_EMBEDDING_API_KEY ?? 'unused',
     dimensions,
+    maxAttempts: parsePositiveIntegerEnv(
+      'GITNEXUS_EMBEDDING_MAX_ATTEMPTS',
+      HTTP_MAX_RETRIES + 1,
+      20,
+    ),
+    retryCapMs: parsePositiveIntegerEnv(
+      'GITNEXUS_EMBEDDING_RETRY_CAP_MS',
+      HTTP_RETRY_CAP_MS,
+      300_000,
+    ),
+    minIntervalMs: parseNonNegativeIntegerEnv('GITNEXUS_EMBEDDING_MIN_INTERVAL_MS', 0, 300_000),
   };
 };
 
@@ -120,11 +209,15 @@ export const safeUrl = (url: string): string => {
  * its masked form, then strip any residual `scheme://userinfo@` the transport may
  * have echoed in a normalized (non-exact) form. See #2385.
  */
-const sanitizeReason = (reason: string, url: string): string =>
-  reason
+const sanitizeReason = (reason: string, url: string, apiKey?: string): string => {
+  const withoutUrlCredentials = reason
     .split(url)
     .join(safeUrl(url))
     .replace(/([a-z][a-z0-9+.-]*:\/\/)[^/@\s]*@/gi, '$1');
+  return apiKey && apiKey !== 'unused'
+    ? withoutUrlCredentials.split(apiKey).join('[redacted]')
+    : withoutUrlCredentials;
+};
 
 /**
  * Error thrown by this module's HTTP embedding path (`httpEmbedBatch` /
@@ -201,6 +294,10 @@ const httpEmbedBatch = async (
   apiKey: string,
   batchIndex = 0,
   dimensions?: number,
+  requestOptions: EmbeddingRequestOptions = {},
+  maxAttempts = HTTP_MAX_RETRIES + 1,
+  retryCapMs = HTTP_RETRY_CAP_MS,
+  minIntervalMs = 0,
 ): Promise<EmbeddingItem[]> => {
   const requestBody: { input: string[]; model: string; dimensions?: number } = {
     input: batch,
@@ -212,11 +309,11 @@ const httpEmbedBatch = async (
 
   let resp: Response;
   try {
+    throwIfAborted(requestOptions.signal);
     resp = await resilientFetch(
       url,
       {
         method: 'POST',
-        signal: AbortSignal.timeout(HTTP_TIMEOUT_MS),
         headers: {
           'Content-Type': 'application/json',
           Authorization: `Bearer ${apiKey}`,
@@ -224,11 +321,35 @@ const httpEmbedBatch = async (
         body: JSON.stringify(requestBody),
       },
       {
+        fetchImpl: async (input, init) => {
+          await paceHttpRequest(minIntervalMs, requestOptions.signal);
+          throwIfAborted(requestOptions.signal);
+          const timeoutSignal = AbortSignal.timeout(HTTP_TIMEOUT_MS);
+          const signal = requestOptions.signal
+            ? AbortSignal.any([requestOptions.signal, timeoutSignal])
+            : timeoutSignal;
+          return globalThis.fetch(input, { ...init, signal });
+        },
         breakerKey: HTTP_BREAKER_KEY,
-        retry: { maxAttempts: HTTP_MAX_RETRIES + 1, baseDelayMs: HTTP_RETRY_BACKOFF_MS },
+        retry: {
+          maxAttempts,
+          baseDelayMs: HTTP_RETRY_BACKOFF_MS,
+          capDelayMs: retryCapMs,
+          retryAfterCapMs: retryCapMs,
+          sleep: (ms) => abortableSleep(ms, requestOptions.signal),
+        },
       },
     );
   } catch (err) {
+    if (
+      requestOptions.signal?.aborted ||
+      (err instanceof DOMException && err.name === 'AbortError')
+    ) {
+      throw new HttpEmbeddingError(
+        `Embedding request cancelled (${safeUrl(url)}, batch ${batchIndex})`,
+        { cause: err },
+      );
+    }
     if (err instanceof CircuitOpenError) {
       throw new HttpEmbeddingError(
         `Embedding endpoint circuit open (${safeUrl(url)}, batch ${batchIndex}): retry in ${Math.ceil(err.retryAfterMs / 1000)}s`,
@@ -247,10 +368,12 @@ const httpEmbedBatch = async (
         { cause: err },
       );
     }
-    const reason = sanitizeReason(err instanceof Error ? err.message : String(err), url);
+    const reason = sanitizeReason(err instanceof Error ? err.message : String(err), url, apiKey);
+    const safeCause = new Error(reason);
+    safeCause.name = err instanceof Error ? err.name : 'EmbeddingTransportError';
     throw new HttpEmbeddingError(
       `Embedding request failed (${safeUrl(url)}, batch ${batchIndex}): ${reason}`,
-      { cause: err },
+      { cause: safeCause },
     );
   }
 
@@ -290,7 +413,10 @@ const httpEmbedBatch = async (
  * @param texts - Array of texts to embed
  * @returns Array of Float32Array embedding vectors
  */
-export const httpEmbed = async (texts: string[]): Promise<Float32Array[]> => {
+export const httpEmbed = async (
+  texts: string[],
+  requestOptions: EmbeddingRequestOptions = {},
+): Promise<Float32Array[]> => {
   if (texts.length === 0) return [];
 
   const config = readConfig();
@@ -309,6 +435,10 @@ export const httpEmbed = async (texts: string[]): Promise<Float32Array[]> => {
       config.apiKey,
       batchIndex,
       config.dimensions,
+      requestOptions,
+      config.maxAttempts,
+      config.retryCapMs,
+      config.minIntervalMs,
     );
 
     if (items.length !== batch.length) {
@@ -347,7 +477,10 @@ export const httpEmbed = async (texts: string[]): Promise<Float32Array[]> => {
  * @param text - Query text to embed
  * @returns Embedding vector as number array
  */
-export const httpEmbedQuery = async (text: string): Promise<number[]> => {
+export const httpEmbedQuery = async (
+  text: string,
+  requestOptions: EmbeddingRequestOptions = {},
+): Promise<number[]> => {
   const config = readConfig();
   if (!config) throw new Error('HTTP embedding not configured');
 
@@ -359,6 +492,10 @@ export const httpEmbedQuery = async (text: string): Promise<number[]> => {
     config.apiKey,
     0,
     config.dimensions,
+    requestOptions,
+    config.maxAttempts,
+    config.retryCapMs,
+    config.minIntervalMs,
   );
   if (!items.length) {
     throw new HttpEmbeddingError(`Embedding endpoint returned empty response (${safeUrl(url)})`);

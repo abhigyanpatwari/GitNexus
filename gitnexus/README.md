@@ -283,10 +283,13 @@ export GITNEXUS_EMBEDDING_URL=http://your-server:8080/v1
 export GITNEXUS_EMBEDDING_MODEL=BAAI/bge-large-en-v1.5
 export GITNEXUS_EMBEDDING_DIMS=1024          # optional, default 384
 export GITNEXUS_EMBEDDING_API_KEY=your-key   # optional, default: "unused"
+export GITNEXUS_EMBEDDING_MAX_ATTEMPTS=3     # optional, total attempts (1-20)
+export GITNEXUS_EMBEDDING_RETRY_CAP_MS=5000  # optional, maximum retry delay
+export GITNEXUS_EMBEDDING_MIN_INTERVAL_MS=0  # optional, minimum request spacing
 gitnexus analyze . --embeddings
 ```
 
-Works with Infinity, vLLM, TEI, llama.cpp, Ollama, LM Studio, or OpenAI. When unset, local embeddings are used unchanged.
+Works with Infinity, vLLM, TEI, llama.cpp, Ollama, LM Studio, or OpenAI. Retry and pacing settings are provider-neutral; provider-specific limits should be supplied through configuration. When unset, local embeddings are used unchanged.
 
 ## Multi-Repo Support
 

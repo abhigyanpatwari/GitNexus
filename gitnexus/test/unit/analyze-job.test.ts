@@ -119,6 +119,17 @@ describe('JobManager', () => {
     expect(manager.getJob(job.id)!.error).toBe('Cancelled by user');
   });
 
+  it('cancelJob aborts registered in-process work', () => {
+    const job = manager.createJob({ repoPath: '/tmp/repo' });
+    manager.updateJob(job.id, { status: 'analyzing' });
+    const controller = new AbortController();
+    manager.registerAbortController(job.id, controller);
+
+    manager.cancelJob(job.id, 'Cancelled by user');
+
+    expect(controller.signal.aborted).toBe(true);
+  });
+
   it('cancelJob returns false for terminal jobs', () => {
     const job = manager.createJob({ repoUrl: 'https://github.com/user/repo' });
     manager.updateJob(job.id, { status: 'complete' });
