@@ -36,7 +36,7 @@ If always-on instructions grow, load deep conventions via conditional reads (e.g
 
 - **This repository:** [AGENTS.md](AGENTS.md) (Cursor + monorepo notes), [ARCHITECTURE.md](ARCHITECTURE.md), [CONTRIBUTING.md](CONTRIBUTING.md), [GUARDRAILS.md](GUARDRAILS.md).
 - **Call & inheritance resolution:** See ARCHITECTURE.md § Scope-Resolution Pipeline. Shared pipeline code in `gitnexus/src/core/ingestion/` must not name languages — use `LanguageProvider` / `ScopeResolver` hooks instead (see AGENTS.md). (The legacy call-resolution DAG was removed in #942.)
-- **GitNexus:** `.claude/skills/gitnexus/`; MCP and indexed-repo rules live only in [AGENTS.md](AGENTS.md) (`gitnexus:start` … `gitnexus:end`). See **GitNexus rules** below.
+- **GitNexus:** standard skills in `.claude/skills/gitnexus-*/`; MCP and indexed-repo rules live only in [AGENTS.md](AGENTS.md) (`gitnexus:start` … `gitnexus:end`). See **GitNexus rules** below.
 
 ## Changelog
 
@@ -88,31 +88,31 @@ This project is indexed by GitNexus as **GitNexus** (26675 symbols, 35395 relati
 
 | Task | Read this skill file |
 |------|---------------------|
-| Understand architecture / "How does X work?" | `.claude/skills/gitnexus/gitnexus-exploring/SKILL.md` |
-| Blast radius / "What breaks if I change X?" | `.claude/skills/gitnexus/gitnexus-impact-analysis/SKILL.md` |
-| Trace bugs / "Why is X failing?" | `.claude/skills/gitnexus/gitnexus-debugging/SKILL.md` |
-| Rename / extract / split / refactor | `.claude/skills/gitnexus/gitnexus-refactoring/SKILL.md` |
-| Tools, resources, schema reference | `.claude/skills/gitnexus/gitnexus-guide/SKILL.md` |
-| Index, status, clean, wiki CLI commands | `.claude/skills/gitnexus/gitnexus-cli/SKILL.md` |
-| Work in the Ingestion area (239 symbols) | `.claude/skills/generated/ingestion/SKILL.md` |
-| Work in the Extractors area (135 symbols) | `.claude/skills/generated/extractors/SKILL.md` |
-| Work in the Components area (112 symbols) | `.claude/skills/generated/components/SKILL.md` |
-| Work in the Lbug area (96 symbols) | `.claude/skills/generated/lbug/SKILL.md` |
-| Work in the Group area (94 symbols) | `.claude/skills/generated/group/SKILL.md` |
-| Work in the Cli area (92 symbols) | `.claude/skills/generated/cli/SKILL.md` |
-| Work in the Configs area (92 symbols) | `.claude/skills/generated/configs/SKILL.md` |
-| Work in the Type-extractors area (90 symbols) | `.claude/skills/generated/type-extractors/SKILL.md` |
-| Work in the Hooks area (88 symbols) | `.claude/skills/generated/hooks/SKILL.md` |
-| Work in the Unit area (80 symbols) | `.claude/skills/generated/unit/SKILL.md` |
-| Work in the Cpp area (73 symbols) | `.claude/skills/generated/cpp/SKILL.md` |
-| Work in the Scope-resolution area (72 symbols) | `.claude/skills/generated/scope-resolution/SKILL.md` |
-| Work in the Server area (66 symbols) | `.claude/skills/generated/server/SKILL.md` |
-| Work in the Local area (61 symbols) | `.claude/skills/generated/local/SKILL.md` |
-| Work in the Wiki area (60 symbols) | `.claude/skills/generated/wiki/SKILL.md` |
-| Work in the Workers area (57 symbols) | `.claude/skills/generated/workers/SKILL.md` |
-| Work in the Embeddings area (56 symbols) | `.claude/skills/generated/embeddings/SKILL.md` |
-| Work in the Typescript area (53 symbols) | `.claude/skills/generated/typescript/SKILL.md` |
-| Work in the Storage area (51 symbols) | `.claude/skills/generated/storage/SKILL.md` |
-| Work in the Php area (48 symbols) | `.claude/skills/generated/php/SKILL.md` |
+| Understand architecture / "How does X work?" | `.claude/skills/gitnexus-exploring/SKILL.md` |
+| Blast radius / "What breaks if I change X?" | `.claude/skills/gitnexus-impact-analysis/SKILL.md` |
+| Trace bugs / "Why is X failing?" | `.claude/skills/gitnexus-debugging/SKILL.md` |
+| Rename / extract / split / refactor | `.claude/skills/gitnexus-refactoring/SKILL.md` |
+| Tools, resources, schema reference | `.claude/skills/gitnexus-guide/SKILL.md` |
+| Index, status, clean, wiki CLI commands | `.claude/skills/gitnexus-cli/SKILL.md` |
+| Work in the Ingestion area (239 symbols) | `.claude/skills/gitnexus-area-ingestion/SKILL.md` |
+| Work in the Extractors area (135 symbols) | `.claude/skills/gitnexus-area-extractors/SKILL.md` |
+| Work in the Components area (112 symbols) | `.claude/skills/gitnexus-area-components/SKILL.md` |
+| Work in the Lbug area (96 symbols) | `.claude/skills/gitnexus-area-lbug/SKILL.md` |
+| Work in the Group area (94 symbols) | `.claude/skills/gitnexus-area-group/SKILL.md` |
+| Work in the Cli area (92 symbols) | `.claude/skills/gitnexus-area-cli/SKILL.md` |
+| Work in the Configs area (92 symbols) | `.claude/skills/gitnexus-area-configs/SKILL.md` |
+| Work in the Type-extractors area (90 symbols) | `.claude/skills/gitnexus-area-type-extractors/SKILL.md` |
+| Work in the Hooks area (88 symbols) | `.claude/skills/gitnexus-area-hooks/SKILL.md` |
+| Work in the Unit area (80 symbols) | `.claude/skills/gitnexus-area-unit/SKILL.md` |
+| Work in the Cpp area (73 symbols) | `.claude/skills/gitnexus-area-cpp/SKILL.md` |
+| Work in the Scope-resolution area (72 symbols) | `.claude/skills/gitnexus-area-scope-resolution/SKILL.md` |
+| Work in the Server area (66 symbols) | `.claude/skills/gitnexus-area-server/SKILL.md` |
+| Work in the Local area (61 symbols) | `.claude/skills/gitnexus-area-local/SKILL.md` |
+| Work in the Wiki area (60 symbols) | `.claude/skills/gitnexus-area-wiki/SKILL.md` |
+| Work in the Workers area (57 symbols) | `.claude/skills/gitnexus-area-workers/SKILL.md` |
+| Work in the Embeddings area (56 symbols) | `.claude/skills/gitnexus-area-embeddings/SKILL.md` |
+| Work in the Typescript area (53 symbols) | `.claude/skills/gitnexus-area-typescript/SKILL.md` |
+| Work in the Storage area (51 symbols) | `.claude/skills/gitnexus-area-storage/SKILL.md` |
+| Work in the Php area (48 symbols) | `.claude/skills/gitnexus-area-php/SKILL.md` |
 
 <!-- gitnexus:end -->

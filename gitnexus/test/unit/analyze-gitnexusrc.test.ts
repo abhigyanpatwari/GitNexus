@@ -26,7 +26,7 @@ const {
   refreshBaseRefLineMock: vi.fn(async () => ({ files: [] as string[] })),
   generateSkillFilesMock: vi.fn(async () => ({
     skills: [{ name: 'c', label: 'Community', symbolCount: 1, fileCount: 1 }],
-    outputPath: '/repo/.claude/skills/generated',
+    outputPath: '/repo/.claude/skills',
   })),
   cliErrorMock: vi.fn(),
   getDefaultBranchMock: vi.fn<(p: string) => string | null>(() => null),
@@ -88,7 +88,7 @@ describe('analyzeCommand .gitnexusrc wiring (#243)', () => {
     generateSkillFilesMock.mockReset();
     generateSkillFilesMock.mockResolvedValue({
       skills: [{ name: 'c', label: 'Community', symbolCount: 1, fileCount: 1 }],
-      outputPath: '/repo/.claude/skills/generated',
+      outputPath: '/repo/.claude/skills',
     });
     cliErrorMock.mockReset();
     getDefaultBranchMock.mockReset();
