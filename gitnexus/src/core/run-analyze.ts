@@ -53,6 +53,7 @@ import {
   type WalCheckpointDriver,
 } from './lbug/wal-checkpoint-driver.js';
 import { quarantineSidecarsForDirtyRecovery } from './lbug/sidecar-recovery.js';
+import type { EmbeddingIdentity } from './embeddings/embedding-identity.js';
 import {
   getStoragePaths,
   resolveBranchPlacement,
@@ -760,6 +761,44 @@ export async function runFullAnalysis(
     }
   }
 
+  let resumeEmbeddingCheckpoint = false;
+  let pendingEmbeddingNodeIds = new Set<string>();
+  let embeddingIdentityForRun: EmbeddingIdentity | undefined;
+  if (existingMeta?.embeddingCheckpoint) {
+    if (options.dropEmbeddings) {
+      log('Discarding the interrupted embedding checkpoint (--drop-embeddings).');
+      options = { ...options, force: true };
+    } else {
+      const { resolveEmbeddingIdentity } = await import('./embeddings/embedding-identity.js');
+      embeddingIdentityForRun = resolveEmbeddingIdentity();
+      const checkpoint = existingMeta.embeddingCheckpoint;
+      if (checkpoint.provider !== embeddingIdentityForRun.provider) {
+        throw new Error(
+          'Cannot resume embedding checkpoint: the embedding provider configuration differs. ' +
+            'Restore the matching endpoint configuration or pass --drop-embeddings to rebuild without it.',
+        );
+      }
+      if (
+        checkpoint.model !== embeddingIdentityForRun.model ||
+        checkpoint.dimensions !== embeddingIdentityForRun.dimensions
+      ) {
+        throw new Error(
+          `Cannot resume embedding checkpoint: it uses ${checkpoint.model} at ` +
+            `${checkpoint.dimensions} dimensions, but this run resolves ` +
+            `${embeddingIdentityForRun.model} at ${embeddingIdentityForRun.dimensions}. ` +
+            'Restore the matching embedding configuration or pass --drop-embeddings to rebuild without it.',
+        );
+      }
+      resumeEmbeddingCheckpoint = true;
+      pendingEmbeddingNodeIds = new Set(checkpoint.pendingNodeIds ?? []);
+      log(
+        `Previous analyze ended at an embedding checkpoint ` +
+          `(${checkpoint.nodesProcessed}/${checkpoint.totalNodes} nodes); resuming from persisted hashes` +
+          `${pendingEmbeddingNodeIds.size > 0 ? ` and regenerating ${pendingEmbeddingNodeIds.size} pending node(s)` : ''}.`,
+      );
+    }
+  }
+
   // ── Crash recovery: dirty flag forces full rebuild ────────────────
   // If the previous incremental run set incrementalInProgress and didn't
   // clear it, the on-disk index may be in a half-state. Cheapest path
@@ -898,7 +937,12 @@ export async function runFullAnalysis(
   }
 
   // ── Early-return: already up to date ──────────────────────────────
-  if (existingMeta && !options.force && existingMeta.lastCommit === currentCommit) {
+  if (
+    existingMeta &&
+    !existingMeta.embeddingCheckpoint &&
+    !options.force &&
+    existingMeta.lastCommit === currentCommit
+  ) {
     // Non-git folders have currentCommit = '' — always rebuild since we can't detect changes
     if (currentCommit !== '') {
       // For git repos, even if HEAD matches lastCommit, the working tree
@@ -1031,9 +1075,11 @@ export async function runFullAnalysis(
   const {
     forceRegenerateEmbeddings,
     preserveExistingEmbeddings,
-    shouldGenerateEmbeddings,
-    shouldLoadCache,
+    shouldGenerateEmbeddings: derivedShouldGenerateEmbeddings,
+    shouldLoadCache: derivedShouldLoadCache,
   } = _deriveEmbeddingMode(options, existingEmbeddingCount);
+  const shouldGenerateEmbeddings = derivedShouldGenerateEmbeddings || resumeEmbeddingCheckpoint;
+  const shouldLoadCache = derivedShouldLoadCache || resumeEmbeddingCheckpoint;
 
   if (options.dropEmbeddings && existingEmbeddingCount > 0) {
     log(
@@ -1735,7 +1781,7 @@ export async function runFullAnalysis(
     if (shouldGenerateEmbeddings) {
       const { skipForCap, capDisabled, nodeLimit } = deriveEmbeddingCap(
         stats.nodes,
-        options.embeddingsNodeLimit,
+        resumeEmbeddingCheckpoint ? 0 : options.embeddingsNodeLimit,
       );
       if (!skipForCap) {
         embeddingSkipped = false;
@@ -1801,6 +1847,11 @@ export async function runFullAnalysis(
         httpMode ? 'Connecting to embedding endpoint...' : 'Loading embedding model...',
       );
       const { runEmbeddingPipeline } = await import('./embeddings/embedding-pipeline.js');
+      if (!embeddingIdentityForRun) {
+        const { resolveEmbeddingIdentity } = await import('./embeddings/embedding-identity.js');
+        embeddingIdentityForRun = resolveEmbeddingIdentity();
+      }
+      const embeddingIdentity = embeddingIdentityForRun;
       // Build a Map<nodeId, contentHash> from cached embeddings for incremental mode
       let existingEmbeddings: Map<string, string> | undefined;
       if (cachedEmbeddingNodeIds.size > 0) {
@@ -1809,6 +1860,49 @@ export async function runFullAnalysis(
           existingEmbeddings.set(e.nodeId, e.contentHash ?? STALE_HASH_SENTINEL);
         }
       }
+
+      const saveEmbeddingCheckpoint = async (
+        checkpoint: {
+          nodesProcessed: number;
+          totalNodes: number;
+          chunksProcessed: number;
+        },
+        pendingNodeIds: string[],
+        embeddings: number | undefined,
+      ): Promise<void> => {
+        const fileHashes: Record<string, string> = {};
+        for (const [key, value] of newFileHashes) fileHashes[key] = value;
+        await saveMeta(metaDir, {
+          ...(existingMeta ?? {}),
+          repoPath,
+          lastCommit: currentCommit,
+          indexedAt: new Date().toISOString(),
+          branch: branchLabel ?? existingMeta?.branch,
+          remoteUrl: hasGitDir(repoPath) ? getRemoteUrl(repoPath) : undefined,
+          stats: {
+            files: pipelineResult.totalFileCount,
+            nodes: stats.nodes,
+            edges: stats.edges,
+            communities: pipelineResult.communityResult?.stats.totalCommunities,
+            processes: pipelineResult.processResult?.stats.totalProcesses,
+            embeddings,
+          },
+          schemaVersion: hasGitDir(repoPath) ? INCREMENTAL_SCHEMA_VERSION : undefined,
+          cjkSegmentation: getSearchFTSCjkSegmentation(),
+          fileHashes: hasGitDir(repoPath) ? fileHashes : undefined,
+          cacheKeys: [...parseCache.usedKeys],
+          incrementalInProgress: undefined,
+          embeddingCheckpoint: {
+            at: new Date().toISOString(),
+            ...checkpoint,
+            model: embeddingIdentity.model,
+            dimensions: embeddingIdentity.dimensions,
+            provider: embeddingIdentity.provider,
+            pendingNodeIds,
+          },
+          pdg: resolvePdgConfig(options),
+        });
+      };
 
       const embeddingResult = await runEmbeddingPipeline(
         executeQuery,
@@ -1826,6 +1920,21 @@ export async function runFullAnalysis(
         {},
         cachedEmbeddingNodeIds.size > 0 ? cachedEmbeddingNodeIds : undefined,
         existingEmbeddings,
+        {
+          forceReembedNodeIds: pendingEmbeddingNodeIds,
+          onCheckpointWindowStart: async ({ nodeIds, ...checkpoint }) => {
+            await saveEmbeddingCheckpoint(checkpoint, nodeIds, existingMeta?.stats?.embeddings);
+          },
+          onCheckpoint: async (checkpoint) => {
+            await checkpointOnce();
+            const countResult = await executeQuery(
+              `MATCH (e:${EMBEDDING_TABLE_NAME}) RETURN count(e) AS cnt`,
+            );
+            const countRow = countResult?.[0];
+            const embeddings = Number(countRow?.cnt ?? countRow?.[0] ?? 0);
+            await saveEmbeddingCheckpoint(checkpoint, [], embeddings);
+          },
+        },
       );
       if (embeddingResult.semanticMode === 'exact-scan') {
         semanticMode = 'exact-scan';
@@ -1952,6 +2061,7 @@ export async function runFullAnalysis(
       // so a sibling branch's prune can union it and not evict our shards.
       cacheKeys: [...parseCache.usedKeys],
       incrementalInProgress: undefined as RepoMeta['incrementalInProgress'],
+      embeddingCheckpoint: undefined,
       // The effective pdg config this run's DB rows were built under
       // (#2099 F1). `undefined` on pdg-off runs — this meta is a fresh
       // literal (no spread of existingMeta), so omission is what CLEARS the

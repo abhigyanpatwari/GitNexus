@@ -292,6 +292,22 @@ export const getDurableParsedFileDir = (storagePath: string): string =>
 const durableChunkDir = (durableDir: string, chunkHash: string): string =>
   path.join(durableDir, chunkHash);
 
+/**
+ * Start a fresh durable generation for one content-addressed parse chunk.
+ * The main thread calls this once before dispatching a cache miss, before any
+ * worker can write that chunk. Recreating the directory immediately keeps the
+ * worker-side mkdir memoization valid while preventing old worker shard names
+ * from accumulating across analyses.
+ */
+export const prepareDurableParsedFileChunk = async (
+  durableDir: string,
+  chunkHash: string,
+): Promise<void> => {
+  const dir = durableChunkDir(durableDir, chunkHash);
+  await fs.rm(dir, { recursive: true, force: true });
+  await fs.mkdir(dir, { recursive: true });
+};
+
 // Per-process set of durable chunk subdirs already `mkdir`ed (mirrors
 // `createdStoreDirs`) so the worker doesn't `mkdirSync` on every shard.
 const createdDurableDirs = new Set<string>();
