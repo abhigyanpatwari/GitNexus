@@ -428,6 +428,38 @@ describe('runEmbeddingPipeline incremental filter', () => {
     expect(insertParams[0].contentHash).toMatch(/^[0-9a-f]{40}$/);
   });
 
+  it('deletes exact embedding row ids before inserting a batch (#2452)', async () => {
+    mockEmbedderSetup();
+
+    const node = makeNode({
+      id: 'Function:retry:src/retry.ts',
+      name: 'retry',
+      filePath: 'src/retry.ts',
+    });
+    const executeQuery = mockExecuteQuery([node]);
+    const executeWithReusedStatement = mockExecuteWithReusedStatement();
+
+    const { runEmbeddingPipeline } =
+      await import('../../src/core/embeddings/embedding-pipeline.js');
+
+    await runEmbeddingPipeline(
+      executeQuery,
+      executeWithReusedStatement,
+      onProgress,
+      {},
+      undefined,
+      new Map(),
+    );
+
+    const rowDeleteIndex = stmtCalls.findIndex(
+      (c) => c.cypher.includes('{id: $id}') && c.cypher.includes('DELETE'),
+    );
+    const createIndex = stmtCalls.findIndex((c) => c.cypher.includes('CREATE'));
+    expect(rowDeleteIndex).toBeGreaterThanOrEqual(0);
+    expect(createIndex).toBeGreaterThan(rowDeleteIndex);
+    expect(stmtCalls[rowDeleteIndex].params).toContainEqual({ id: `${node.id}:0` });
+  });
+
   it('maps positional query rows with description/isExported columns correctly', async () => {
     const embedBatchSpy = vi
       .fn()
@@ -536,7 +568,7 @@ describe('runEmbeddingPipeline incremental filter', () => {
     );
 
     // Should have a DELETE call for the stale node
-    const deleteCalls = stmtCalls.filter((c) => c.cypher.includes('DELETE'));
+    const deleteCalls = stmtCalls.filter((c) => c.cypher.includes('{nodeId: $nodeId}'));
     expect(deleteCalls.length).toBeGreaterThanOrEqual(1);
     expect(deleteCalls[0].params.some((p: any) => p.nodeId === node.id)).toBe(true);
 
@@ -568,7 +600,7 @@ describe('runEmbeddingPipeline incremental filter', () => {
     );
 
     // Should have a DELETE call (stale)
-    const deleteCalls = stmtCalls.filter((c) => c.cypher.includes('DELETE'));
+    const deleteCalls = stmtCalls.filter((c) => c.cypher.includes('{nodeId: $nodeId}'));
     expect(deleteCalls.length).toBeGreaterThanOrEqual(1);
 
     // Should also have a CREATE (re-embed)
@@ -604,7 +636,7 @@ describe('runEmbeddingPipeline incremental filter', () => {
 
     // U6 / KTD7: per-batch interleaving means TWO separate DELETE calls (one per
     // batch), not one up-front bulk delete of both stale rows.
-    const deleteCalls = stmtCalls.filter((c) => c.cypher.includes('DELETE'));
+    const deleteCalls = stmtCalls.filter((c) => c.cypher.includes('{nodeId: $nodeId}'));
     expect(deleteCalls.length).toBe(2);
 
     // Ordering proof: batch 1's INSERT lands BEFORE batch 2's DELETE. An up-front
@@ -614,7 +646,7 @@ describe('runEmbeddingPipeline incremental filter', () => {
       (c) => c.cypher.includes('CREATE') && c.params.some((p) => p.nodeId === n1.id),
     );
     const deleteN2 = stmtCalls.findIndex(
-      (c) => c.cypher.includes('DELETE') && c.params.some((p) => p.nodeId === n2.id),
+      (c) => c.cypher.includes('{nodeId: $nodeId}') && c.params.some((p) => p.nodeId === n2.id),
     );
     expect(insertN1).toBeGreaterThanOrEqual(0);
     expect(deleteN2).toBeGreaterThanOrEqual(0);
@@ -750,7 +782,7 @@ describe('runEmbeddingPipeline incremental filter', () => {
     const executeQuery = mockExecuteQuery([first, second, third]);
     const executeWithReusedStatement = mockExecuteWithReusedStatement();
     const windows: string[][] = [];
-    const mutationCountsAtWindowStart: number[] = [];
+    const createCountsAtWindowStart: number[] = [];
     const checkpoints: number[] = [];
     const { runEmbeddingPipeline } =
       await import('../../src/core/embeddings/embedding-pipeline.js');
@@ -766,7 +798,9 @@ describe('runEmbeddingPipeline incremental filter', () => {
         checkpointEveryNodes: 2,
         onCheckpointWindowStart: async ({ nodeIds }) => {
           windows.push(nodeIds);
-          mutationCountsAtWindowStart.push(stmtCalls.length);
+          createCountsAtWindowStart.push(
+            stmtCalls.filter((call) => call.cypher.includes('CREATE')).length,
+          );
         },
         onCheckpoint: async ({ nodesProcessed }) => {
           checkpoints.push(nodesProcessed);
@@ -775,7 +809,7 @@ describe('runEmbeddingPipeline incremental filter', () => {
     );
 
     expect(windows).toEqual([[first.id, second.id], [third.id]]);
-    expect(mutationCountsAtWindowStart).toEqual([0, 2]);
+    expect(createCountsAtWindowStart).toEqual([0, 2]);
     expect(checkpoints).toEqual([2, 3]);
   });
 
@@ -833,7 +867,7 @@ describe('runEmbeddingPipeline incremental filter', () => {
     );
 
     const deletedIds = stmtCalls
-      .filter((c) => c.cypher.includes('DELETE'))
+      .filter((c) => c.cypher.includes('{nodeId: $nodeId}'))
       .flatMap((c) => c.params.map((p) => p.nodeId));
     expect(deletedIds).toContain(stale.id);
     expect(deletedIds).not.toContain(brandNew.id);
