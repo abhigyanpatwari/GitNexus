@@ -897,6 +897,77 @@ DESTINATION TRACE (cross-repo): for an "@groupName" trace, OMIT to/to_uid/to_fil
       required: [],
     },
   },
+  {
+    name: 'move_entries',
+    description: `List Move/Aptos entry points (compiler-sourced).
+
+WHEN TO USE: To enumerate a Move package's external surface - \`entry\` functions (transaction entry points) and \`#[view]\` functions (read-only queries). Filter by module, kind, or attribute.
+
+Returns: { entries: [{ name, qualifiedName, filePath, isEntry, isView, visibility, acquires, attributes, returnType }], count }.`,
+    annotations: READ_ONLY_TOOL_ANNOTATIONS,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        module: {
+          type: 'string',
+          description: 'Filter to one module (qualified name, e.g. 0xa::coin).',
+        },
+        kind: {
+          type: 'string',
+          enum: ['entry', 'view', 'inline', 'native'],
+          description: 'Restrict to a single entry kind. Omit for entry+view.',
+        },
+        attribute: {
+          type: 'string',
+          description: 'Only functions carrying this attribute (e.g. "view").',
+        },
+        repo: { type: 'string', description: 'Repository name or path.' },
+      },
+      required: [],
+    },
+  },
+  {
+    name: 'move_resources',
+    description: `List Move/Aptos resources (structs/enums with the \`key\` ability) and their accessors.
+
+WHEN TO USE: To audit on-chain storage — which resources exist and which functions read/write/acquire them (from READS_RESOURCE / WRITES_RESOURCE / ACQUIRES edges).
+
+Returns: { resources: [{ name, qualifiedName, filePath, abilities, fieldList, accessors: [{ caller, reason, isEntry, isView }] }], count }.`,
+    annotations: READ_ONLY_TOOL_ANNOTATIONS,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        module: { type: 'string', description: 'Filter to one module (qualified name).' },
+        repo: { type: 'string', description: 'Repository name or path.' },
+      },
+      required: [],
+    },
+  },
+  {
+    name: 'move_impact',
+    description: `Blast radius for a Move/Aptos symbol over Move edges (CALLS / READS_RESOURCE / WRITES_RESOURCE / ACQUIRES / USES_TYPE).
+
+WHEN TO USE: BEFORE editing a Move function or resource/type. Reports callers, resource-access dependents, and signature type users. Restricts the generic impact traversal to Move semantic edges.`,
+    annotations: READ_ONLY_TOOL_ANNOTATIONS,
+    inputSchema: {
+      type: 'object',
+      properties: {
+        target: {
+          type: 'string',
+          description: 'Move symbol (qualified name preferred, e.g. 0xa::coin::transfer).',
+        },
+        direction: {
+          type: 'string',
+          enum: ['upstream', 'downstream'],
+          description:
+            'upstream = who depends on the target (default); downstream = what the target depends on.',
+        },
+        maxDepth: { type: 'number', description: 'Traversal depth (default 3).' },
+        repo: { type: 'string', description: 'Repository name or path.' },
+      },
+      required: ['target'],
+    },
+  },
 ];
 
 /**
@@ -921,6 +992,9 @@ const BRANCH_SCOPED_TOOLS = new Set([
   'shape_check',
   'api_impact',
   'trace',
+  'move_entries',
+  'move_resources',
+  'move_impact',
 ]);
 
 for (const tool of GITNEXUS_TOOLS) {

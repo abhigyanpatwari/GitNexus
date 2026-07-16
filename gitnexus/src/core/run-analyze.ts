@@ -12,7 +12,11 @@
 import path from 'path';
 import fs from 'fs/promises';
 import { execFileSync } from 'child_process';
+import { glob } from 'glob';
 import { runPipelineFromRepo } from './ingestion/pipeline.js';
+import { isMoveCompilerInputPath, moveAvailabilityRequiresFullRebuild } from './move/constants.js';
+import { createMoveIngestPhase } from './move/move-ingest.js';
+import { tryCreateMoveFlowClient } from './move/mcp-client.js';
 import { resetDegradedParseCounter } from './tree-sitter/safe-parse.js';
 import {
   initLbug,
@@ -317,6 +321,26 @@ const FTS_UNAVAILABLE_MESSAGE =
   'Full-text/BM25 search will be disabled until the LadybugDB FTS extension is ' +
   'installed once with network access (GITNEXUS_LBUG_EXTENSION_INSTALL=auto) or ' +
   'pre-installed for offline use. Run `gitnexus doctor` for details.';
+
+/**
+ * Returns true when the repo contains at least one Move.toml. Cross-platform:
+ * uses the `glob` package (already a dep) instead of shelling out to the
+ * POSIX-only `find` command, so this works on native Windows.
+ */
+export async function repoHasMove(repoPath: string): Promise<boolean> {
+  try {
+    const matches = await glob(['**/Move.toml'], {
+      cwd: repoPath,
+      ignore: ['**/node_modules/**', '**/.git/**', '**/dist/**', '**/build/**'],
+      nodir: true,
+      absolute: false,
+      dot: false,
+    });
+    return matches.length > 0;
+  } catch {
+    return false;
+  }
+}
 
 // Re-export the pure flag-derivation helper so external callers (and tests)
 // keep importing from this module's stable surface.
@@ -937,6 +961,23 @@ export async function runFullAnalysis(
     options = { ...options, force: true };
   }
 
+  // Probe before the same-commit fast path: an index built while move-flow was
+  // unavailable must be backfilled once the compiler becomes available.
+  const hasMovePackages = await repoHasMove(repoPath);
+  const moveFlowClient = hasMovePackages ? tryCreateMoveFlowClient() : null;
+  const moveIngestAvailable = hasMovePackages ? moveFlowClient !== null : undefined;
+  if (
+    existingMeta &&
+    moveAvailabilityRequiresFullRebuild(
+      hasMovePackages,
+      moveFlowClient !== null,
+      existingMeta.moveIngestAvailable,
+    )
+  ) {
+    log('Move compiler became available; forcing a full rebuild to backfill Move symbols.');
+    options = { ...options, force: true };
+  }
+
   // ── Early-return: already up to date ──────────────────────────────
   if (
     existingMeta &&
@@ -1037,6 +1078,7 @@ export async function runFullAnalysis(
           }
         }
         await ensureGitNexusIgnored(repoPath);
+        await moveFlowClient?.shutdown();
         return {
           // `resolveRepoIdentityRoot` collapses worktree roots to the
           // canonical repo basename (#1259) but leaves arbitrary subdirs
@@ -1150,39 +1192,47 @@ export async function runFullAnalysis(
   const parseCache = await loadParseCache(storagePath);
 
   // ── Phase 1: Full Pipeline (0–60%) ────────────────────────────────
-  const pipelineResult = await runPipelineFromRepo(
-    repoPath,
-    (p) => {
-      const phaseLabel = PHASE_LABELS[p.phase] || p.phase;
-      const scaled = Math.round(p.percent * 0.6);
-      const message = p.detail
-        ? `${p.message || phaseLabel} (${p.detail})`
-        : p.message || phaseLabel;
-      progress(p.phase, scaled, message);
-    },
-    {
-      parseCache,
-      workerPoolSize: options.workerPoolSize,
-      // CFG/PDG opt-in (#2081 M1). PipelineOptions.pdg fans out to the worker
-      // build gate (workerData.pdg) and the scope-resolution emit gate.
-      pdg: options.pdg === true,
-      pdgMaxFunctionLines: options.pdgMaxFunctionLines,
-      pdgMaxEdgesPerFunction: options.pdgMaxEdgesPerFunction,
-      pdgMaxReachingDefEdgesPerFunction: options.pdgMaxReachingDefEdgesPerFunction,
-      pdgMaxCdgEdgesPerFunction: options.pdgMaxCdgEdgesPerFunction,
-      pdgMaxTaintFindingsPerFunction: options.pdgMaxTaintFindingsPerFunction,
-      pdgMaxTaintHops: options.pdgMaxTaintHops,
-      pdgMaxInterprocFindings: options.pdgMaxInterprocFindings,
-      pdgMaxInterprocHops: options.pdgMaxInterprocHops,
-      pdgMaxInterprocEdges: options.pdgMaxInterprocEdges,
-      // Streaming/chunked PDG emit (#2202) — gated to full-rebuild runs
-      // (force === true) so the incremental writeback never reads back an
-      // offloaded BasicBlock layer. Memory-only; byte-identical output.
-      streamPdgEmit: resolveStreamPdgEmit(options),
-      pdgEmitChunkSize: resolvePdgEmitChunkSize(options),
-      fetchWrappers: options.fetchWrappers,
-    },
-  );
+  // `finally` guarantees the spawned move-flow child is released even if the
+  // pipeline throws — important for long-running hosts (MCP daemon, eval-server).
+  let pipelineResult: Awaited<ReturnType<typeof runPipelineFromRepo>>;
+  try {
+    pipelineResult = await runPipelineFromRepo(
+      repoPath,
+      (p) => {
+        const phaseLabel = PHASE_LABELS[p.phase] || p.phase;
+        const scaled = Math.round(p.percent * 0.6);
+        const message = p.detail
+          ? `${p.message || phaseLabel} (${p.detail})`
+          : p.message || phaseLabel;
+        progress(p.phase, scaled, message);
+      },
+      {
+        parseCache,
+        workerPoolSize: options.workerPoolSize,
+        standaloneIngestPhase: createMoveIngestPhase(moveFlowClient),
+        // CFG/PDG opt-in (#2081 M1). PipelineOptions.pdg fans out to the worker
+        // build gate (workerData.pdg) and the scope-resolution emit gate.
+        pdg: options.pdg === true,
+        pdgMaxFunctionLines: options.pdgMaxFunctionLines,
+        pdgMaxEdgesPerFunction: options.pdgMaxEdgesPerFunction,
+        pdgMaxReachingDefEdgesPerFunction: options.pdgMaxReachingDefEdgesPerFunction,
+        pdgMaxCdgEdgesPerFunction: options.pdgMaxCdgEdgesPerFunction,
+        pdgMaxTaintFindingsPerFunction: options.pdgMaxTaintFindingsPerFunction,
+        pdgMaxTaintHops: options.pdgMaxTaintHops,
+        pdgMaxInterprocFindings: options.pdgMaxInterprocFindings,
+        pdgMaxInterprocHops: options.pdgMaxInterprocHops,
+        pdgMaxInterprocEdges: options.pdgMaxInterprocEdges,
+        // Streaming/chunked PDG emit (#2202) — gated to full-rebuild runs
+        // (force === true) so the incremental writeback never reads back an
+        // offloaded BasicBlock layer. Memory-only; byte-identical output.
+        streamPdgEmit: resolveStreamPdgEmit(options),
+        pdgEmitChunkSize: resolvePdgEmitChunkSize(options),
+        fetchWrappers: options.fetchWrappers,
+      },
+    );
+  } finally {
+    await moveFlowClient?.shutdown();
+  }
 
   // ── Phase 2: LadybugDB (60–85%) ──────────────────────────────────
   progress('lbug', 60, 'Loading into LadybugDB...');
@@ -1205,7 +1255,7 @@ export async function runFullAnalysis(
   // (Bugbot review on PR #1479: a prediction that flipped post-pipeline
   // could skip the embedding cache load and then take the full-rebuild
   // path, silently losing embeddings).
-  const isIncremental =
+  const incrementalCandidate =
     !options.force &&
     !!existingMeta &&
     existingMeta.schemaVersion === INCREMENTAL_SCHEMA_VERSION &&
@@ -1214,9 +1264,20 @@ export async function runFullAnalysis(
     repoHasGit &&
     allFilePaths.length > 0;
 
-  const hashDiff = isIncremental
+  const candidateHashDiff = incrementalCandidate
     ? diffFileHashes(newFileHashes, existingMeta!.fileHashes)
     : undefined;
+  const moveCompilerInputsChanged =
+    candidateHashDiff !== undefined &&
+    [...candidateHashDiff.changed, ...candidateHashDiff.added, ...candidateHashDiff.deleted].some(
+      isMoveCompilerInputPath,
+    );
+  const isIncremental = incrementalCandidate && !moveCompilerInputsChanged;
+  const hashDiff = isIncremental ? candidateHashDiff : undefined;
+
+  if (incrementalCandidate && moveCompilerInputsChanged) {
+    log('Move compiler inputs changed; using a full rebuild for package-wide consistency.');
+  }
 
   if (isIncremental && hashDiff) {
     log(
@@ -2067,6 +2128,7 @@ export async function runFullAnalysis(
       // absence, so this is never conditionally omitted.
       cjkSegmentation: getSearchFTSCjkSegmentation(),
       fileHashes: hasGitDir(repoPath) ? newFileHashesRecord : undefined,
+      moveIngestAvailable,
       // This branch's full live chunk-key set (#2106 R6). `usedKeys` is every
       // chunk hash touched in this scan — cache HITS included (see parse-impl
       // usedKeys.add) — so it's complete even on an incremental run. Persisted

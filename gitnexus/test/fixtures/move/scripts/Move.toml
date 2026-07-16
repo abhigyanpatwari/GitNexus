@@ -1,0 +1,6 @@
+[package]
+name = "scripts_demo"
+version = "0.0.1"
+
+[addresses]
+scripts_demo = "0xA"

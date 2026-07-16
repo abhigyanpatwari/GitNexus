@@ -101,7 +101,7 @@ describe('validRelType – REL_TYPES membership', () => {
     ['SQL keyword', 'DROP'],
     ['injection attempt', 'CALLS;DELETE'],
     ['lowercase', 'calls'],
-    ['nonexistent type', 'FRIEND_OF'],
+    ['nonexistent type', 'NOT_A_RELATION'],
     ['padded', ' CALLS '],
   ])('rejects invalid relation type: %s', (_desc, relType) => {
     expect(validRelType(relType)).toBe(false);

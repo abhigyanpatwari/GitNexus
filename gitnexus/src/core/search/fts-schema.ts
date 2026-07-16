@@ -44,4 +44,6 @@ export const FTS_INDEXES: readonly FTSIndexDefinition[] = [
   { table: 'Union', indexName: 'union_fts', properties: FTS_PROPERTIES },
   { table: 'Static', indexName: 'static_fts', properties: FTS_PROPERTIES },
   { table: 'Variable', indexName: 'variable_fts', properties: FTS_PROPERTIES },
+  // Move/Aptos module nodes also carry description/content columns.
+  { table: 'Module', indexName: 'module_fts', properties: FTS_PROPERTIES },
 ];

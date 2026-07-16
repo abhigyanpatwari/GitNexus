@@ -20,6 +20,8 @@ export enum SupportedLanguages {
   Swift = 'swift',
   Dart = 'dart',
   Vue = 'vue',
+  /** Aptos Move — compiler-first via move-flow MCP; no tree-sitter, no raw-source scanning. */
+  Move = 'move',
   /** Standalone regex processor — no tree-sitter, no LanguageProvider. */
   Cobol = 'cobol',
 }

@@ -112,9 +112,20 @@ const WEB_DEST = path.join(DIST, '..', 'web');
 
 if (fs.existsSync(path.join(WEB_ROOT, 'package.json'))) {
   console.log('[build] building gitnexus-web…');
-  if (!fs.existsSync(path.join(WEB_ROOT, 'node_modules'))) {
-    console.log('[build] installing gitnexus-web dependencies…');
-    execSync('npm ci', { cwd: WEB_ROOT, stdio: 'inherit', timeout: BUILD_TIMEOUT_MS });
+  // A bare `node_modules` directory can exist while the install is empty or
+  // partial (e.g. an interrupted install), which previously skipped `npm ci`
+  // and then failed with `tsc: command not found`. Detect a *complete* install
+  // via npm's marker file (`node_modules/.package-lock.json`, written only on a
+  // successful install) plus the binaries the build actually invokes.
+  const webDepsInstalled =
+    fs.existsSync(path.join(WEB_ROOT, 'node_modules', '.package-lock.json')) &&
+    fs.existsSync(path.join(WEB_ROOT, 'node_modules', '.bin', 'tsc')) &&
+    fs.existsSync(path.join(WEB_ROOT, 'node_modules', '.bin', 'vite'));
+  if (!webDepsInstalled) {
+    const hasLockfile = fs.existsSync(path.join(WEB_ROOT, 'package-lock.json'));
+    const installCmd = hasLockfile ? 'npm ci' : 'npm install';
+    console.log(`[build] installing gitnexus-web dependencies (${installCmd})…`);
+    execSync(installCmd, { cwd: WEB_ROOT, stdio: 'inherit', timeout: BUILD_TIMEOUT_MS });
   }
   execSync('npm run build', { cwd: WEB_ROOT, stdio: 'inherit', timeout: BUILD_TIMEOUT_MS });
 

@@ -1,0 +1,6 @@
+[package]
+name = "enums_demo"
+version = "0.0.1"
+
+[addresses]
+enums_demo = "0xA"

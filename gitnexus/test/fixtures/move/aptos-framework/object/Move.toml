@@ -1,0 +1,7 @@
+[package]
+name = "object"
+version = "0.0.1"
+
+[addresses]
+aptos_framework = "0xA"
+std = "0x1"

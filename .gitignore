@@ -87,6 +87,10 @@ GitNexus.sln
 gitnexus/vendor/**/build/
 gitnexus/vendor/**/node_modules/
 
+# move-flow binary is downloaded at install time into vendor/move-flow/
+# (postinstall probe), never committed. See gitnexus/scripts/install-move-flow.cjs.
+gitnexus/vendor/move-flow/
+
 /github/scripts/triage/__pycache__/
 
 .claude-flow/

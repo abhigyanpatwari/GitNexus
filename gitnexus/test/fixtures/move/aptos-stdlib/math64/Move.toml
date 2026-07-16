@@ -1,0 +1,6 @@
+[package]
+name = "math64"
+version = "0.0.1"
+
+[addresses]
+aptos_std = "0xA"

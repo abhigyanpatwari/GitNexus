@@ -1,0 +1,7 @@
+[package]
+name = "pkg_y"
+version = "0.0.1"
+
+[addresses]
+pkg_x = "0xA"
+pkg_y = "0xB"

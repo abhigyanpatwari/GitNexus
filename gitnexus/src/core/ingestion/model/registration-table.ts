@@ -182,6 +182,7 @@ const LABEL_BEHAVIOR = {
   Section: 'inert',
   Route: 'inert',
   Tool: 'inert',
+  EnumVariant: 'inert',
   // Taint/PDG substrate (issue #2080) — a control-flow node, never a
   // symbol-resolution target. Inert: file index only, no owner scope.
   BasicBlock: 'inert',

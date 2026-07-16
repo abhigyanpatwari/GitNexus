@@ -19,6 +19,7 @@ import { SupportedLanguages } from 'gitnexus-shared';
 import { isGrammarRuntimeSkipped } from '../core/tree-sitter/parser-loader.js';
 import { requireVendoredGrammar } from '../core/tree-sitter/vendored-grammars.js';
 import { cliWarn } from './cli-message.js';
+import { tryCreateMoveFlowClient } from '../core/move/mcp-client.js';
 
 interface OptionalGrammar {
   /** Display name in warnings */
@@ -167,4 +168,32 @@ export function warnMissingOptionalGrammars(opts?: {
       context: opts?.context,
     });
   }
+}
+
+/**
+ * Warn once if a repo contains Move sources but no usable move-flow binary
+ * is reachable. Move ingestion is compiler-first — without the binary the
+ * Move ingest phase silently no-ops, so users would otherwise just see an
+ * empty Move graph with no explanation.
+ *
+ * `repoHasMove` is computed by the caller (typically by scanning the target
+ * repo for `Move.toml` / `.move` files) so non-Move users see no noise.
+ *
+ * Mirrors `warnMissingOptionalGrammars`: stderr via `cliWarn`, never throws,
+ * never uses `console.error` directly (ESLint pino-migration rule).
+ */
+export function warnIfMoveUnavailable(opts: { repoHasMove: boolean; context?: string }): void {
+  if (!opts.repoHasMove) return;
+  const client = tryCreateMoveFlowClient();
+  if (client) {
+    // Probe succeeded — release the spawned child immediately, the ingest
+    // phase creates its own client lazily when it actually needs to talk.
+    void client.shutdown();
+    return;
+  }
+  const ctx = opts.context ? ` [${opts.context}]` : '';
+  cliWarn(
+    `GitNexus${ctx}: move-flow is unavailable — .move files will not be indexed. Reinstall without GITNEXUS_SKIP_MOVE_FLOW=1, or set MOVE_FLOW to a move-flow binary from aptos-labs/aptos-ai.`,
+    { binary: 'move-flow', context: opts.context },
+  );
 }
