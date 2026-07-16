@@ -50,10 +50,11 @@ Build an overlay that mirrors only the canonical repo-local skill paths:
 └── .claude/skills/
     ├── gitnexus-plan/SKILL.md
     ├── gitnexus-work/SKILL.md
-    └── gitnexus-lfg/SKILL.md
+    ├── gitnexus-lfg/SKILL.md
+    └── gitnexus-pr-review/SKILL.md
 ```
 
-The overlay may contain Markdown files from any subset of those three skill
+The overlay may contain Markdown files from any subset of those four skill
 trees. The runner rejects every other path, including source, test, and MCP
 configuration files, so a candidate cannot improve its score by changing the
 task or verifier. Run candidate and incumbent arms together on a pinned model:

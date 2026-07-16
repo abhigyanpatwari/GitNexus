@@ -13,7 +13,12 @@ CANDIDATE_ARMS = {
     "candidate_workflow": "workflow",
     "candidate_workflow_direct": "workflow_direct",
 }
-CANDIDATE_SKILLS = {"gitnexus-plan", "gitnexus-work", "gitnexus-lfg"}
+CANDIDATE_SKILLS = {
+    "gitnexus-plan",
+    "gitnexus-work",
+    "gitnexus-lfg",
+    "gitnexus-pr-review",
+}
 PROMOTION_METRICS = ("output_tokens", "cost_usd", "duration_s", "num_turns")
 EVIDENCE_MAX_AGE_DAYS = 90
 
@@ -49,7 +54,7 @@ def candidate_overlay_files(overlay: Path) -> list[Path]:
         ):
             raise ValueError(
                 "candidate overlays may only contain Markdown files under "
-                ".claude/skills/gitnexus-{plan,work,lfg}: "
+                ".claude/skills/gitnexus-{plan,work,lfg,pr-review}: "
                 f"{relative}"
             )
     return entries

@@ -208,6 +208,12 @@ def test_candidate_overlay_is_skill_only_and_content_addressed(tmp_path):
 
     assert first != second
 
+    review_overlay = tmp_path / "review-candidate"
+    review_skill = review_overlay / ".claude" / "skills" / "gitnexus-pr-review" / "SKILL.md"
+    review_skill.parent.mkdir(parents=True)
+    review_skill.write_text("review candidate\n")
+    assert candidate_overlay_digest(review_overlay)
+
     invalid = tmp_path / "invalid"
     source = invalid / "gitnexus" / "src" / "cli" / "index.ts"
     source.parent.mkdir(parents=True)
