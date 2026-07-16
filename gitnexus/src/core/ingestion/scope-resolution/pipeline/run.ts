@@ -561,8 +561,11 @@ export function runScopeResolution(
   const resolutionConfig = input.resolutionConfig;
   const finalized = finalizeScopeModel(parsedFiles, {
     hooks: {
-      resolveImportTarget: (targetRaw, fromFile) =>
-        provider.resolveImportTarget(targetRaw, fromFile, allFilePaths, resolutionConfig),
+      resolveImportTarget: (targetRaw, fromFile, _workspaceIndex, parsedImport) =>
+        provider.resolveImportTarget(targetRaw, fromFile, allFilePaths, resolutionConfig, {
+          parsedFiles,
+          parsedImport,
+        }),
       expandsWildcardTo: (targetModuleScope) =>
         provider.expandsWildcardTo?.(targetModuleScope, parsedFiles) ?? [],
       mergeBindings: (existing, incoming, scopeId) =>

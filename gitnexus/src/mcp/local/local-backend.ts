@@ -142,6 +142,61 @@ function resolveAliasString(canonical: unknown, legacy: unknown): string | undef
   return undefined;
 }
 
+interface StringAliasDefinition {
+  canonical: string;
+  aliases: readonly string[];
+}
+
+const TOOL_STRING_ALIASES: Readonly<Record<string, readonly StringAliasDefinition[]>> = {
+  impact: [{ canonical: 'target', aliases: ['name', 'symbol'] }],
+  context: [{ canonical: 'file_path', aliases: ['file'] }],
+};
+
+function normalizeToolParams(
+  method: string,
+  params: unknown,
+): { params: Record<string, unknown> } | { error: string } {
+  const input = params && typeof params === 'object' ? (params as Record<string, unknown>) : {};
+  const definitions = TOOL_STRING_ALIASES[method];
+  if (!definitions) return { params: input };
+
+  const normalized = { ...input };
+  for (const { canonical, aliases } of definitions) {
+    const keys = [canonical, ...aliases];
+    const supplied: Array<{ key: string; value: string }> = [];
+    for (const key of keys) {
+      if (!Object.prototype.hasOwnProperty.call(input, key)) continue;
+      const value = input[key];
+      // Internal CLI callers materialize omitted optional flags as undefined.
+      if (value === undefined) continue;
+      if (typeof value !== 'string' || !value.trim()) {
+        return { error: `MCP parameter ${method}.${key} must be a non-empty string.` };
+      }
+      supplied.push({ key, value: value.trim() });
+    }
+    const distinctValues = new Set(supplied.map(({ value }) => value));
+    if (distinctValues.size > 1) {
+      return {
+        error: `Conflicting MCP parameters for ${method}.${canonical}: ${supplied
+          .map(({ key }) => key)
+          .join(', ')} must agree.`,
+      };
+    }
+
+    for (const alias of aliases) delete normalized[alias];
+    if (supplied.length > 0) normalized[canonical] = supplied[0].value;
+  }
+
+  if (
+    method === 'impact' &&
+    typeof normalized.target !== 'string' &&
+    (typeof normalized.target_uid !== 'string' || !normalized.target_uid.trim())
+  ) {
+    return { error: 'MCP impact requires target, name, symbol, or target_uid.' };
+  }
+  return { params: normalized };
+}
+
 // AI context generation is CLI-only (gitnexus analyze)
 // import { generateAIContextFiles } from '../../cli/ai-context.js';
 
@@ -1661,7 +1716,9 @@ export class LocalBackend {
       return this.handleGroupTool(method, params || {});
     }
 
-    const p = params && typeof params === 'object' ? (params as Record<string, unknown>) : {};
+    const normalized = normalizeToolParams(method, params);
+    if ('error' in normalized) return { error: normalized.error };
+    const p = normalized.params;
 
     // #2175: Claude Code drops a tool-call argument named exactly "query", so the
     // query/cypher tools advertise "search_query"/"statement" while still accepting the
@@ -1682,47 +1739,52 @@ export class LocalBackend {
 
     // Resolve repo from optional param (re-reads registry on miss). An optional
     // `branch` param scopes the resolved handle to that branch's index (#2106).
-    const repoParams = params as { repo?: string; branch?: string } | undefined;
-    const repo = await this.resolveRepo(repoParams?.repo, repoParams?.branch);
+    const repo = await this.resolveRepo(
+      p.repo as string | undefined,
+      p.branch as string | undefined,
+    );
 
     switch (method) {
       case 'query':
-        return this.query(repo, params);
+        return this.query(repo, p);
       case 'cypher': {
-        const raw = await this.cypher(repo, params);
+        const raw = await this.cypher(repo, p);
         return this.formatCypherAsMarkdown(raw);
       }
       case 'context':
-        return this.context(repo, params);
+        return this.context(repo, p);
       case 'explain':
-        return this.explain(repo, params);
+        return this.explain(repo, p);
       case 'pdg_query':
-        return this.pdgQuery(repo, params);
+        return this.pdgQuery(repo, p);
       case 'impact':
-        return this.impact(repo, params);
+        return this.impact(repo, p as unknown as ImpactParams);
       case 'detect_changes':
-        return this.detectChanges(repo, params);
+        return this.detectChanges(repo, p);
       case 'check':
-        return this.check(repo, params);
+        return this.check(repo, p);
       case 'rename':
-        return this.rename(repo, params);
+        return this.rename(repo, p as unknown as Parameters<LocalBackend['rename']>[1]);
       // Legacy aliases for backwards compatibility
       case 'search':
-        return this.query(repo, params);
+        return this.query(repo, p);
       case 'explore':
-        return this.context(repo, { name: params?.name, ...params });
+        return this.context(repo, {
+          name: typeof p.name === 'string' ? p.name : undefined,
+          ...p,
+        });
       case 'overview':
-        return this.overview(repo, params);
+        return this.overview(repo, p);
       case 'route_map':
-        return this.routeMap(repo, params);
+        return this.routeMap(repo, p);
       case 'shape_check':
-        return this.shapeCheck(repo, params);
+        return this.shapeCheck(repo, p);
       case 'tool_map':
-        return this.toolMap(repo, params);
+        return this.toolMap(repo, p);
       case 'api_impact':
-        return this.apiImpact(repo, params);
+        return this.apiImpact(repo, p);
       case 'trace':
-        return this.trace(repo, params);
+        return this.trace(repo, p);
       default:
         throw new Error(`Unknown tool: ${method}`);
     }

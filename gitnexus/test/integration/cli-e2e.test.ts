@@ -210,8 +210,10 @@ function runEvalServerHostFlagTest(
   spawnArgs: string[],
   opts: {
     timeoutMsg: string;
+    extraEnv?: Record<string, string>;
     onStdout: (params: {
       stdoutBuffer: string;
+      stderrBuffer: string;
       isSettled: () => boolean;
       settle: (fn: () => void) => void;
       resolve: () => void;
@@ -223,7 +225,7 @@ function runEvalServerHostFlagTest(
     const child = spawn(process.execPath, [...CLI_SPAWN_PREFIX, 'eval-server', ...spawnArgs], {
       cwd: MINI_REPO,
       stdio: ['ignore', 'pipe', 'pipe'],
-      env: cliEnv(),
+      env: cliEnv(opts.extraEnv),
     });
 
     let stdoutBuffer = '';
@@ -255,6 +257,7 @@ function runEvalServerHostFlagTest(
       try {
         await opts.onStdout({
           stdoutBuffer,
+          stderrBuffer,
           isSettled: () => settled,
           settle,
           resolve,
@@ -1416,10 +1419,25 @@ describe('CLI end-to-end', () => {
   // Original flag registration test by Val Vladescu (PR #1602).
 
   describe('eval-server --host flag', { retry: 2 }, () => {
+    it('refuses an unauthenticated non-loopback bind before emitting READY', () => {
+      const result = runCliWithEnv(
+        ['eval-server', '--port', '0', '--host', '0.0.0.0', '--idle-timeout', '3'],
+        MINI_REPO,
+        { GITNEXUS_AUTH_TOKEN: '' },
+        30000,
+      );
+      const output = `${result.stdout}\n${result.stderr}`;
+
+      expect(result.status).toBe(1);
+      expect(output).toMatch(/non-loopback.*GITNEXUS_AUTH_TOKEN/is);
+      expect(output).not.toContain('GITNEXUS_EVAL_SERVER_READY:');
+    }, 35000);
+
     it('emits READY signal containing the bound host 127.0.0.1', () => {
       return runEvalServerHostFlagTest(
         ['--port', '0', '--host', '127.0.0.1', '--idle-timeout', '3'],
         {
+          extraEnv: { GITNEXUS_AUTH_TOKEN: '' },
           timeoutMsg: 'eval-server did not emit READY signal within 30s',
           onStdout({ stdoutBuffer, settle, resolve, reject }) {
             if (!stdoutBuffer.includes('GITNEXUS_EVAL_SERVER_READY:')) return;
@@ -1439,12 +1457,26 @@ describe('CLI end-to-end', () => {
       );
     }, 35000);
 
-    it('binds to 0.0.0.0 and serves /health on 127.0.0.1 (cross-container use case)', () => {
+    it('binds to ::1 without a token when IPv6 loopback is available', () => {
+      return runEvalServerHostFlagTest(['--port', '0', '--host', '::1', '--idle-timeout', '3'], {
+        extraEnv: { GITNEXUS_AUTH_TOKEN: '' },
+        timeoutMsg: 'eval-server --host ::1 did not emit READY signal within 30s',
+        onStdout({ stdoutBuffer, settle, resolve }) {
+          if (stdoutBuffer.includes('GITNEXUS_EVAL_SERVER_READY:[::1]:')) {
+            settle(resolve);
+          }
+        },
+      });
+    }, 35000);
+
+    it('requires the configured bearer token on a 0.0.0.0 bind', () => {
+      const authToken = 'integration-secret-token';
       return runEvalServerHostFlagTest(
         ['--port', '0', '--host', '0.0.0.0', '--idle-timeout', '3'],
         {
+          extraEnv: { GITNEXUS_AUTH_TOKEN: authToken },
           timeoutMsg: 'eval-server --host 0.0.0.0 did not emit READY signal within 30s',
-          async onStdout({ stdoutBuffer, isSettled, settle, resolve, reject }) {
+          async onStdout({ stdoutBuffer, stderrBuffer, isSettled, settle, resolve, reject }) {
             const readyLine = stdoutBuffer
               .split('\n')
               .find((l) => l.startsWith('GITNEXUS_EVAL_SERVER_READY:0.0.0.0:'));
@@ -1459,19 +1491,42 @@ describe('CLI end-to-end', () => {
               return;
             }
 
-            // A server bound to 0.0.0.0 must be reachable on 127.0.0.1 from the same host
             try {
-              const res = await fetch(`http://127.0.0.1:${boundPort}/health`);
-              if (res.status === 200) {
+              const url = `http://127.0.0.1:${boundPort}/health`;
+              const missing = await fetch(url);
+              const wrong = await fetch(url, {
+                headers: { Authorization: 'Bearer wrong-token' },
+              });
+              const correct = await fetch(url, {
+                headers: { Authorization: `Bearer ${authToken}` },
+              });
+              const responseText = `${await missing.text()}${await wrong.text()}${await correct.text()}`;
+
+              if (
+                missing.status === 401 &&
+                wrong.status === 401 &&
+                correct.status === 200 &&
+                missing.headers.get('www-authenticate') === 'Bearer' &&
+                wrong.headers.get('www-authenticate') === 'Bearer' &&
+                !responseText.includes(authToken) &&
+                !stdoutBuffer.includes(authToken) &&
+                !stderrBuffer.includes(authToken)
+              ) {
                 settle(resolve);
               } else {
-                settle(() => reject(new Error(`/health returned ${res.status}, expected 200`)));
+                settle(() =>
+                  reject(
+                    new Error(
+                      `/health auth statuses were ${missing.status}/${wrong.status}/${correct.status}; expected 401/401/200`,
+                    ),
+                  ),
+                );
               }
             } catch (err) {
               settle(() =>
                 reject(
                   new Error(
-                    `eval-server bound to 0.0.0.0 but /health unreachable on 127.0.0.1:${boundPort}: ${err}`,
+                    `authenticated eval-server health probe failed on 127.0.0.1:${boundPort}: ${err}`,
                   ),
                 ),
               );
@@ -1485,6 +1540,7 @@ describe('CLI end-to-end', () => {
       return runEvalServerHostFlagTest(
         ['--port', '0', '--host', 'localhost', '--idle-timeout', '3'],
         {
+          extraEnv: { GITNEXUS_AUTH_TOKEN: '' },
           timeoutMsg: 'eval-server --host localhost did not emit READY signal within 30s',
           async onStdout({ stdoutBuffer, isSettled, settle, resolve, reject }) {
             const readyLine = stdoutBuffer

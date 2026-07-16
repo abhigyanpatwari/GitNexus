@@ -436,7 +436,7 @@ program
   .option('-p, --port <port>', 'Port number', '4848')
   .option(
     '--host <host>',
-    'Bind address (default: 127.0.0.1, use 0.0.0.0 to expose to all interfaces)',
+    'Bind address or resolvable hostname (default: 127.0.0.1; non-loopback requires GITNEXUS_AUTH_TOKEN; hostnames resolve to IPv4)',
   )
   .option('--idle-timeout <seconds>', 'Auto-shutdown after N seconds idle (0 = disabled)', '0')
   .action(createLbugLazyAction(() => import('./eval-server.js'), 'evalServerCommand'));

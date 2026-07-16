@@ -273,7 +273,7 @@ export const en = {
   'help.option.cypher.limit': 'Max result rows to return',
   'help.option.check.cycles': 'Detect circular imports and fail when any are found',
   'help.option.evalServer.host':
-    'Bind address (default: 127.0.0.1, use 0.0.0.0 to expose to all interfaces)',
+    'Bind address or resolvable hostname (default: 127.0.0.1; non-loopback requires GITNEXUS_AUTH_TOKEN; hostnames resolve to IPv4)',
   'help.option.evalServer.idleTimeout': 'Auto-shutdown after N seconds idle (0 = disabled)',
   'help.option.embeddings.install.cuda':
     "Also download the CUDA GPU binaries (runs onnxruntime-node's NuGet postinstall; set GLOBAL_AGENT_HTTPS_PROXY behind a proxy)",

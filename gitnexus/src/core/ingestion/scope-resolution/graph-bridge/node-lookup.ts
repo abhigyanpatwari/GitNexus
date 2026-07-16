@@ -163,7 +163,7 @@ export function buildGraphNodeLookup(graph: KnowledgeGraph): GraphNodeLookup {
       }
     }
 
-    // Fallback key: simple name. First-wins within a file — used when
+    // Fallback key: simple name. Source-order first-wins within a file — used when
     // the caller doesn't know the qualifier (unqualified free-call
     // fallback, cross-file resolution where MethodRegistry already
     // disambiguated the owner).
