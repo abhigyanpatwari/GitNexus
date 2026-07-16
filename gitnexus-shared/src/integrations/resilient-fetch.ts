@@ -33,6 +33,8 @@ export interface ResilientFetchOptions {
   breakerOptions?: CircuitBreakerOptions;
   /** Tuning knobs for the retry helper. */
   retry?: Partial<Pick<RetryOptions, 'maxAttempts' | 'baseDelayMs' | 'capDelayMs'>> & {
+    /** Upper bound on a single Retry-After wait. Defaults to RETRY_AFTER_CAP_MS. */
+    retryAfterCapMs?: number;
     sleep?: RetryOptions['sleep'];
     random?: RetryOptions['random'];
   };
@@ -83,6 +85,7 @@ type Outcome =
 export function classifyOutcome(
   result: { kind: 'error'; err: unknown } | { kind: 'response'; resp: Response },
   now: () => number,
+  retryAfterCapMs = RETRY_AFTER_CAP_MS,
 ): Outcome {
   if (result.kind === 'error') {
     // Both timer-fired aborts (`AbortSignal.timeout()` → `TimeoutError`)
@@ -111,7 +114,7 @@ export function classifyOutcome(
     return {
       kind: 'retryable-status',
       resp,
-      afterMs: parsed !== null ? Math.min(parsed, RETRY_AFTER_CAP_MS) : undefined,
+      afterMs: parsed !== null ? Math.min(parsed, retryAfterCapMs) : undefined,
     };
   }
   if (resp.status >= 500) return { kind: 'retryable-status', resp, afterMs: undefined };
@@ -176,6 +179,7 @@ export async function resilientFetch(
     maxAttempts: opts.retry?.maxAttempts ?? DEFAULT_RETRY.maxAttempts,
     baseDelayMs: opts.retry?.baseDelayMs ?? DEFAULT_RETRY.baseDelayMs,
     capDelayMs: opts.retry?.capDelayMs ?? DEFAULT_RETRY.capDelayMs,
+    retryAfterCapMs: opts.retry?.retryAfterCapMs ?? RETRY_AFTER_CAP_MS,
   };
   const sleep = opts.retry?.sleep ?? defaultSleep;
   const random = opts.retry?.random ?? Math.random;
@@ -202,7 +206,7 @@ export async function resilientFetch(
       result = { kind: 'error', err };
     }
 
-    const outcome = classifyOutcome(result, now);
+    const outcome = classifyOutcome(result, now, retryConfig.retryAfterCapMs);
 
     switch (outcome.kind) {
       case 'success':

@@ -39,9 +39,9 @@
     "_note": "PR #1934: F66/F68 let-binding pattern narrowing; F71 union (Struct-labeled, now materialized via legacy @definition.struct + resolvable); F72 macro FULLY WIRED \u2014 @declaration.macro/@reference.macro + MacroRegistry \u2192 USES edges to Macro nodes (never a same-named fn). + rust-macro / rust-union fixtures and merged with origin/main #1975 rust-scoped-impl; fingerprint re-baselined (scaling ~0.99, fixture_count 126). #1992: + rust-nested-tail-collision-generic and rust-generic-impl-same-method-name (F3) fixtures \u2014 pure fixture-corpus drift, no scope-extractor change; fixture_count 127->129, fingerprint 56ffc1c0->b00aea0f."
   },
   "php": {
-    "fingerprint": "bc2c27c5ba26d5aea61142a2a99fb772222f5b969205260eb7a71b4c0bd73cdb",
+    "fingerprint": "31c9e3f3cb7094a2bf9021cf9db859036e002f8b44605cd993b470fc600e97cb",
     "scaling_budget": 1.5,
-    "_rebaselined": "#1956: heritage-bearing scale source (class extends Base + use trait); both forms gated at scale; linear (~1.04).",
+    "_rebaselined": "#1956: heritage-bearing scale source (class extends Base + use trait); both forms gated at scale; linear (~1.04). | #2481/#2482: PHP imports carry a symbol-kind capture so function/constant imports resolve by declaring file; capture shape changes, scaling remains linear (~1.04).",
     "_note": "PR #1931: F53 import multi-clause, F54 enum_case, F55 anonymous_class \u2014 fixture count 138\u2192140, fingerprint drift expected."
   },
   "ruby": {

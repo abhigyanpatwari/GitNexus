@@ -56,6 +56,19 @@ function output(data: any): void {
     // Fallback: stderr (previous behavior, works on all platforms)
     process.stderr.write(text + '\n');
   }
+  // Backend failures come back as `{ error }` payloads rather than throws
+  // (#2469). Every tool command routes its result through here, so this is
+  // the one place that keeps scripted callers honest: print the payload,
+  // then exit non-zero.
+  if (
+    data &&
+    typeof data === 'object' &&
+    'error' in data &&
+    typeof data.error === 'string' &&
+    data.error.trim().length > 0
+  ) {
+    process.exitCode = 1;
+  }
 }
 
 /**

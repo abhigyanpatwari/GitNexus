@@ -185,6 +185,22 @@ describe('resilientFetch', () => {
     expect(sleep).toHaveBeenCalledWith(50);
   });
 
+  it('lets a caller set a stricter Retry-After cap', async () => {
+    let n = 0;
+    const fetchImpl = vi.fn(async () => {
+      n += 1;
+      return n === 1 ? jsonResp(429, { 'Retry-After': '60' }) : jsonResp(204);
+    });
+    const sleep = vi.fn(async () => {});
+    const { breaker } = makeBreaker();
+    await resilientFetch(URL_STR, undefined, {
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      breaker,
+      retry: { sleep, capDelayMs: 2500, retryAfterCapMs: 2500 },
+    });
+    expect(sleep).toHaveBeenCalledWith(2500);
+  });
+
   it('401 returned as Response, no retry, breaker not incremented', async () => {
     const fetchImpl = vi.fn(async () => jsonResp(401));
     const sleep = vi.fn(async () => {});

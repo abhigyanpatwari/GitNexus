@@ -33,6 +33,7 @@ import {
   persistParsedFileChunk,
   getDurableParsedFileDir,
   loadDurableParsedFileIndex,
+  prepareDurableParsedFileChunk,
   restoreDurableParsedFileShard,
 } from '../../../storage/parsedfile-store.js';
 import type { ParseWorkerResult } from '../workers/parse-worker.js';
@@ -984,6 +985,19 @@ export async function runChunkedParseAndResolve(
         // Cache miss: dispatch to workers, capture the raw results, store
         // them under the chunk hash for the next run.
         chunkCacheMisses++;
+        if (durableParsedFileDir !== undefined && chunkHash !== null) {
+          try {
+            await prepareDurableParsedFileChunk(durableParsedFileDir, chunkHash);
+          } catch (err) {
+            // The durable store is an optimization — degrade like the restore
+            // path does instead of failing the analyze. Workers recreate the
+            // directory on write, so at worst the old generation lingers.
+            logger.warn(
+              { err, chunkHash: chunkHash.slice(0, 8) },
+              'parsedfile-cache: could not reset durable chunk generation; continuing',
+            );
+          }
+        }
         const progressForChunk = (current: number, _total: number, filePath: string) => {
           const globalCurrent = filesParsedSoFar + current;
           // Parse phase covers 20-70 (M2). Deferred extraction handles 70-95.
