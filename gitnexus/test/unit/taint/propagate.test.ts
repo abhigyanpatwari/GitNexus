@@ -539,6 +539,54 @@ describe('multi-source identity — distinct sources do not merge at one def', (
 // ── kind-set exclusion model (real built-in model) ──────────────────────────
 
 describe('kind-set exclusions — sanitizers neutralize their kinds only', () => {
+  it('built-in model catches argv-form child_process command sinks', () => {
+    const r = analyze(
+      `import { execFileSync } from 'node:child_process';
+function f(req) {
+  const tool = req.body;
+  const arg = req.query;
+  execFileSync(tool, ['--version']);
+  execFileSync('git', [arg]);
+}`,
+      { spec: TS_JS_TAINT_MODEL },
+    );
+    expect(r.findings.map((finding) => finding.sinkKind)).toEqual([
+      'command-injection',
+      'command-injection',
+    ]);
+  });
+
+  it('built-in model catches conventional modern DB receiver methods', () => {
+    const r = analyze(
+      `function f(req, db, stmt, knex) {
+  const name = req.body;
+  db.run(name);
+  db.all(name);
+  stmt.get(name);
+  knex.raw(name);
+}`,
+      { spec: TS_JS_TAINT_MODEL },
+    );
+    expect(r.findings.map((finding) => finding.sinkKind)).toEqual([
+      'sql-injection',
+      'sql-injection',
+      'sql-injection',
+      'sql-injection',
+    ]);
+  });
+
+  it('built-in model catches Express render template and data sinks', () => {
+    const r = analyze(
+      `function f(req, res) {
+  const template = req.body;
+  const viewData = req.query;
+  res.render(template, viewData);
+}`,
+      { spec: TS_JS_TAINT_MODEL },
+    );
+    expect(r.findings.map((finding) => finding.sinkKind)).toEqual(['xss', 'xss']);
+  });
+
   it('escape(req.body) → res.send(b) suppressed (xss neutralized) BUT db.query(b) fires (sql not)', () => {
     const r = analyze(
       `import { escape } from 'validator';

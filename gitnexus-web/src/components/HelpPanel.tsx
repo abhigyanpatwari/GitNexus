@@ -1,5 +1,14 @@
 import React, { useState } from 'react';
-import { X, GitBranch, Search, Filter, Zap, Keyboard, BarChart2, HelpCircle } from 'lucide-react';
+import {
+  X,
+  GitBranch,
+  Search,
+  Filter,
+  Zap,
+  Keyboard,
+  BarChart2,
+  HelpCircle,
+} from '@/lib/lucide-icons';
 import { useTranslation } from 'react-i18next';
 
 interface HelpPanelProps {

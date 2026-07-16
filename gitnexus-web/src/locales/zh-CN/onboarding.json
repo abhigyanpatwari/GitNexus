@@ -31,7 +31,7 @@
   },
   "analyzeFirst": {
     "title": "分析你的第一个仓库",
-    "description": "粘贴 GitHub URL，GitNexus 会克隆仓库、解析代码，并直接在浏览器中构建实时知识图谱。",
+    "description": "粘贴仓库 URL，GitNexus 会克隆仓库、解析代码，并直接在浏览器中构建实时知识图谱。",
     "footer": "仅支持公开仓库 · 服务器本地克隆 · 数据不会离开你的机器"
   },
   "landing": {
@@ -51,6 +51,7 @@
     "inputType": "输入类型",
     "githubUrl": "GitHub URL",
     "gitlabUrl": "GitLab URL",
+    "azureDevOpsUrl": "Azure DevOps",
     "localFolder": "本地文件夹",
     "starting": "正在启动分析...",
     "analyzeRepository": "分析仓库",
@@ -58,8 +59,13 @@
     "loadingGraph": "正在加载图数据...",
     "defaultRepoName": "仓库",
     "githubRepositoryUrl": "GitHub 仓库 URL",
+    "githubTokenLabel": "个人访问令牌（可选）",
+    "githubTokenPlaceholder": "ghp_… 或 github_pat_…",
+    "githubTokenHelp": "私有仓库需要此项。需 'repo' 范围（或细粒度 Contents:read）。仅发送一次，不会保存。",
     "gitlabRepositoryUrl": "GitLab 仓库 URL",
     "gitlabSupported": "支持 GitLab.com 和自托管 GitLab 实例。",
+    "azureDevOpsRepositoryUrl": "Azure DevOps 仓库 URL",
+    "azureDevOpsSupported": "格式: http://server/Collection/Project/_git/Repository",
     "localFolderPath": "本地文件夹路径",
     "hideBackground": "隐藏（分析继续在后台进行）",
     "upload": {

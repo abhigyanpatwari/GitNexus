@@ -57,6 +57,7 @@ const javaScopeResolver: ScopeResolver = {
   propagatesReturnTypesAcrossImports: true,
   collapseMemberCallsByCallerTarget: true,
   hoistTypeBindingsToModule: true,
+  stripReceiverCastExpressions: true,
 
   populateNamespaceSiblings: populateJavaPackageSiblings,
   populateRangeBindings: populateJavaCrossFileReturnTypes,

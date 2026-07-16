@@ -19,32 +19,30 @@ const baseNode: EmbeddableNode = {
 
 describe('text-generator', () => {
   describe('generateEmbeddingText', () => {
-    it('includes metadata header for Function', () => {
+    it('leads with name and code, dropping verbose metadata lines (#2333)', () => {
       const node: EmbeddableNode = {
         ...baseNode,
         isExported: true,
         repoName: 'backend-user-ms',
       };
       const text = generateEmbeddingText(node, node.content);
+      // Compact embedding header: name + code remain.
       expect(text).toContain('Function: parseJSON');
-      expect(text).toContain('Repo: backend-user-ms');
-      expect(text).toContain('Path: src/utils/parser.ts');
-      expect(text).toContain('Export: true');
       expect(text).toContain('function parseJSON');
+      // Low-signal metadata lines are intentionally excluded from embedding text.
+      expect(text).not.toContain('Repo: backend-user-ms');
+      expect(text).not.toContain('Path: src/utils/parser.ts');
+      expect(text).not.toContain('Export: true');
     });
 
-    it('includes Server line when serverName is set', () => {
+    it('excludes the Server line from embedding text even when serverName is set (#2333)', () => {
       const node: EmbeddableNode = {
         ...baseNode,
         repoName: 'backend-user-ms',
         serverName: 'user-service',
       };
       const text = generateEmbeddingText(node, node.content);
-      expect(text).toContain('Server: user-service');
-    });
-
-    it('omits Server line when serverName is undefined', () => {
-      const text = generateEmbeddingText(baseNode, baseNode.content);
+      expect(text).not.toContain('Server: user-service');
       expect(text).not.toContain('Server:');
     });
 
@@ -55,6 +53,179 @@ describe('text-generator', () => {
       };
       const text = generateEmbeddingText(node, node.content);
       expect(text).toContain('This function parses JSON text');
+    });
+
+    // #2333: short doc comments must not be diluted by metadata. The description
+    // is hoisted directly under the name, ahead of the code body, and the
+    // low-signal metadata lines are dropped from embedding text entirely.
+    it('hoists a short English description above the code body (#2333)', () => {
+      const node: EmbeddableNode = {
+        ...baseNode,
+        label: 'Method',
+        name: 'updateMaterialExpiryDate',
+        description: 'validate user',
+        isExported: false,
+        repoName: 'my-project',
+        content:
+          'function updateMaterialExpiryDate(paramMap) {\n  // ... a long method body ...\n  return doWork(paramMap);\n}',
+      };
+      const text = generateEmbeddingText(node, node.content);
+      expect(text).toContain('validate user');
+      // Description appears before the code body.
+      expect(text.indexOf('validate user')).toBeLessThan(text.indexOf('return doWork'));
+      // Metadata noise removed.
+      expect(text).not.toContain('Repo: my-project');
+      expect(text).not.toContain('Path:');
+      expect(text).not.toContain('Export:');
+    });
+
+    it('hoists a short CJK description above the code body (#2333)', () => {
+      const node: EmbeddableNode = {
+        ...baseNode,
+        label: 'Method',
+        name: 'updateMaterialExpiryDate',
+        description: '更新物料有效期',
+        isExported: false,
+        repoName: 'my-project',
+        content:
+          'function updateMaterialExpiryDate(paramMap) {\n  // ... a long method body ...\n  return doWork(paramMap);\n}',
+      };
+      const text = generateEmbeddingText(node, node.content);
+      expect(text).toContain('更新物料有效期');
+      expect(text.indexOf('更新物料有效期')).toBeLessThan(text.indexOf('return doWork'));
+      expect(text).not.toContain('Repo: my-project');
+      expect(text).not.toContain('Path:');
+      expect(text).not.toContain('Export:');
+    });
+
+    it('hoists description in short-label nodes too (#2333)', () => {
+      const node: EmbeddableNode = {
+        ...baseNode,
+        label: 'Const',
+        name: 'MAX_RETRIES',
+        description: 'retry ceiling',
+        content: 'const MAX_RETRIES = 5;',
+      };
+      const text = generateEmbeddingText(node, node.content);
+      expect(text).toContain('Const: MAX_RETRIES');
+      expect(text).toContain('retry ceiling');
+      expect(text.indexOf('retry ceiling')).toBeLessThan(text.indexOf('const MAX_RETRIES = 5;'));
+      expect(text).not.toContain('Path:');
+    });
+
+    it('keeps structural Methods/Properties lines under the compact header (#2333)', () => {
+      const node: EmbeddableNode = {
+        ...baseNode,
+        label: 'Class',
+        name: 'Parser',
+        description: 'JSON parser',
+        repoName: 'my-project',
+        methodNames: ['parseJSON', 'validate'],
+        fieldNames: ['options', 'cache'],
+        content: `class Parser {
+  options: ParserOptions;
+  private cache: Map<string, any>;
+  parseJSON(text: string) { return JSON.parse(text); }
+  validate() { return true; }
+}`,
+      };
+      const text = generateEmbeddingText(node, node.content);
+      expect(text).toContain('Class: Parser');
+      expect(text).toContain('JSON parser');
+      // Structural signal must survive the compact-header change.
+      expect(text).toContain('Methods: parseJSON, validate');
+      expect(text).toContain('Properties: options, cache');
+      // Description is hoisted ahead of the structural lines (ordering guard for
+      // the structural path, mirroring the function/method ordering checks).
+      expect(text.indexOf('JSON parser')).toBeLessThan(text.indexOf('Container:'));
+      expect(text.indexOf('JSON parser')).toBeLessThan(text.indexOf('Methods:'));
+      // Metadata noise still dropped.
+      expect(text).not.toContain('Repo: my-project');
+    });
+
+    it('emits no description line and no metadata when description is absent (#2333)', () => {
+      const node: EmbeddableNode = {
+        ...baseNode,
+        isExported: true,
+        repoName: 'my-project',
+        description: undefined,
+      };
+      const text = generateEmbeddingText(node, node.content);
+      // Header is the name line, then the bounded location line, then a blank
+      // line, then the code body — no stray empty description line, no verbose
+      // metadata.
+      expect(
+        text.startsWith('Function: parseJSON\nLoc: utils/parser.ts\n\nfunction parseJSON'),
+      ).toBe(true);
+      expect(text).not.toContain('Repo:');
+      expect(text).not.toContain('Export:');
+      // Only the bounded last-1-2 segments — never the verbose deep path.
+      expect(text).not.toContain('Path:');
+      expect(text).not.toContain('src/utils/parser.ts');
+    });
+
+    // U3 (#2333 PR #2334 tri-review): a BOUNDED location signal (last 1-2 path
+    // segments) is reinstated so path/service-qualified semantic search keeps a
+    // discriminator, since FTS does not index filePath.
+    it('emits a bounded location (last 2 segments), not the full deep path (#2333 U3)', () => {
+      const node: EmbeddableNode = {
+        ...baseNode,
+        label: 'Method',
+        name: 'updateMaterialExpiryDate',
+        filePath: 'src/main/java/com/example/service/MaterialServiceImpl.java',
+        content: 'function updateMaterialExpiryDate() { return doWork(); }',
+      };
+      const text = generateEmbeddingText(node, node.content);
+      expect(text).toContain('Loc: service/MaterialServiceImpl.java');
+      // The deep prefix is dropped entirely.
+      expect(text).not.toContain('src/main/java/com/example');
+    });
+
+    it('emits just the basename for a root-level file (#2333 U3)', () => {
+      const node: EmbeddableNode = { ...baseNode, filePath: 'index.ts' };
+      const text = generateEmbeddingText(node, node.content);
+      expect(text).toContain('Loc: index.ts');
+      // No leading slash and no stray "undefined/" prefix from slicing one segment.
+      expect(text).not.toContain('Loc: /index.ts');
+      expect(text).not.toContain('undefined');
+    });
+
+    it('disambiguates same-named symbols in different service folders (#2333 U3)', () => {
+      const billing = generateEmbeddingText(
+        { ...baseNode, name: 'handler', filePath: 'billing/handler.ts' },
+        'function handler() {}',
+      );
+      const identity = generateEmbeddingText(
+        { ...baseNode, name: 'handler', filePath: 'identity/handler.ts' },
+        'function handler() {}',
+      );
+      expect(billing).toContain('Loc: billing/handler.ts');
+      expect(identity).toContain('Loc: identity/handler.ts');
+      // The two embedding texts differ — the regression the tri-review flagged
+      // (both collapsing to identical vectors) is fixed.
+      expect(billing).not.toBe(identity);
+    });
+
+    it('keeps the description ahead of the location signal (#2333 U3)', () => {
+      const node: EmbeddableNode = {
+        ...baseNode,
+        label: 'Method',
+        name: 'doThing',
+        description: 'batch import rows',
+        filePath: 'svc/importer.ts',
+        content: 'function doThing() { return run(); }',
+      };
+      const text = generateEmbeddingText(node, node.content);
+      // description leads, then the location line, then the code body.
+      expect(text.indexOf('batch import rows')).toBeLessThan(text.indexOf('Loc: svc/importer.ts'));
+      expect(text.indexOf('Loc: svc/importer.ts')).toBeLessThan(text.indexOf('return run()'));
+    });
+
+    it('normalizes Windows path separators in the location signal (#2333 U3)', () => {
+      const node: EmbeddableNode = { ...baseNode, filePath: 'src\\svc\\Foo.ts' };
+      const text = generateEmbeddingText(node, node.content);
+      expect(text).toContain('Loc: svc/Foo.ts');
+      expect(text).not.toContain('\\');
     });
 
     it('generates short node text for TypeAlias without chunking', () => {
@@ -165,6 +336,56 @@ describe('text-generator', () => {
       expect(text).toContain('Properties: name, age');
       expect(text).toContain('Container: struct User {');
       expect(text).toContain('struct User {');
+    });
+
+    // U5 (#2333 PR #2334): Interface and Struct route through the same
+    // generateStructuralTypeText path as Class, so the description-forward
+    // ordering must hold for them too — guards against a future per-label
+    // specialization silently reordering the header.
+    it('keeps an Interface description ahead of its structural lines (#2333 U5)', () => {
+      const node: EmbeddableNode = {
+        ...baseNode,
+        label: 'Interface',
+        name: 'Handler',
+        description: 'event handler contract',
+        methodNames: ['handle', 'validate'],
+        fieldNames: ['name'],
+        content: `interface Handler {
+  handle(event: Event): void;
+  readonly name: string;
+}`,
+      };
+      const text = generateEmbeddingText(node, node.content);
+      expect(text).toContain('Interface: Handler');
+      expect(text).toContain('event handler contract');
+      expect(text).toContain('Methods: handle, validate');
+      expect(text).toContain('Properties: name');
+      expect(text.indexOf('event handler contract')).toBeLessThan(text.indexOf('Container:'));
+      expect(text.indexOf('event handler contract')).toBeLessThan(text.indexOf('Methods:'));
+      expect(text).toContain('Loc: utils/parser.ts');
+      expect(text).not.toContain('Repo:');
+    });
+
+    it('keeps a Struct description ahead of its structural lines (#2333 U5)', () => {
+      const node: EmbeddableNode = {
+        ...baseNode,
+        label: 'Struct',
+        name: 'User',
+        description: 'user record',
+        fieldNames: ['name', 'age'],
+        content: `struct User {
+  name: String,
+  age: u32,
+}`,
+      };
+      const text = generateEmbeddingText(node, node.content);
+      expect(text).toContain('Struct: User');
+      expect(text).toContain('user record');
+      expect(text).toContain('Properties: name, age');
+      expect(text).toContain('Container: struct User {');
+      expect(text.indexOf('user record')).toBeLessThan(text.indexOf('Container:'));
+      expect(text.indexOf('user record')).toBeLessThan(text.indexOf('Properties:'));
+      expect(text).toContain('Loc: utils/parser.ts');
     });
 
     it('keeps compact container context on later structural chunks', () => {

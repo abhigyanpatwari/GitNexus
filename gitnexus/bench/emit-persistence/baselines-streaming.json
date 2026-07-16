@@ -1,0 +1,4 @@
+{
+  "fingerprint": "381de8dede253140953775c290bf9a25f82ebf3cc8ecb5250ae06a63f648b089",
+  "_note": "Byte-identity + bounded-retention gate for streaming/chunked PDG emit (#2202). fingerprint = sha256 of the sorted, header-stripped BasicBlock + PDG-edge data rows of the canonical synthetic set. --check also asserts the streamed PdgEmitSink output is byte-identical to the whole-graph streamAllCSVsToDisk emit (byte_identical_nodes/edges) and that the in-memory graph retains 0 BasicBlocks (resident_basic_blocks === 0, the O(chunk) RSS bound). Regenerate via `node --import tsx bench/emit-persistence/measure-streaming.mjs`."
+}

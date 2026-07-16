@@ -2,7 +2,13 @@
 
 import { SupportedLanguages } from 'gitnexus-shared';
 import type { FieldExtractionConfig } from '../generic.js';
-import { findVisibility, hasKeyword, hasModifier, typeFromField } from './helpers.js';
+import {
+  extractAnnotations,
+  findVisibility,
+  hasKeyword,
+  hasModifier,
+  typeFromField,
+} from './helpers.js';
 import { extractSimpleTypeName } from '../../type-extractors/shared.js';
 import type { FieldVisibility } from '../../field-types.js';
 import type { SyntaxNode } from '../../utils/ast-helpers.js';
@@ -53,6 +59,20 @@ export const javaConfig: FieldExtractionConfig = {
       return extractSimpleTypeName(first) ?? first.text?.trim();
     }
     return undefined;
+  },
+
+  extractRawType(node) {
+    // Verbatim type-node text — preserves generic arguments (`List<Shape>`)
+    // and qualifiers (`java.util.List<Shape>`) that extractType strips.
+    // Precedent: the JVM method extractor keeps raw `.text` for the same
+    // reason (method-extractors/configs/jvm.ts).
+    return node.childForFieldName('type')?.text?.trim();
+  },
+
+  extractAnnotations(node) {
+    // Same walk the JVM method extractor uses — field annotations live under
+    // the `modifiers` child of a `field_declaration` (e.g. `@Autowired`).
+    return extractAnnotations(node, 'modifiers');
   },
 
   extractVisibility(node) {

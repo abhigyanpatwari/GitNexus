@@ -13,14 +13,13 @@ import { spawnSync, spawn } from 'child_process';
 import path from 'path';
 import fs from 'fs';
 import os from 'os';
-import { fileURLToPath, pathToFileURL } from 'url';
+import { fileURLToPath } from 'url';
 
-import { createRequire } from 'module';
 import { cleanupTempDirSync } from '../helpers/test-db.js';
+import { CLI_SPAWN_PREFIX } from '../helpers/cli-entry.js';
 
 const testDir = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(testDir, '../..');
-const cliEntry = path.join(repoRoot, 'src/cli/index.ts');
 const FIXTURE_SRC = path.resolve(testDir, '..', 'fixtures', 'mini-repo');
 
 // `MINI_REPO` is a *per-run temp copy* of the fixture, not the shared
@@ -38,14 +37,6 @@ const FIXTURE_SRC = path.resolve(testDir, '..', 'fixtures', 'mini-repo');
 let MINI_REPO: string;
 let tmpParent: string;
 let suiteGitnexusHome: string;
-
-// Absolute file:// URL to tsx loader — needed when spawning CLI with cwd
-// outside the project tree (bare 'tsx' specifier won't resolve there).
-// Cannot use require.resolve('tsx/dist/loader.mjs') because the subpath is
-// not in tsx's package.json exports; resolve the package root then join.
-const _require = createRequire(import.meta.url);
-const tsxPkgDir = path.dirname(_require.resolve('tsx/package.json'));
-const tsxImportUrl = pathToFileURL(path.join(tsxPkgDir, 'dist', 'loader.mjs')).href;
 
 beforeAll(() => {
   // Copy the fixture into an isolated tmpdir named `mini-repo` so that the
@@ -112,7 +103,7 @@ function cliEnv(extraEnv: Record<string, string> = {}) {
 }
 
 function runCli(command: string, cwd: string, timeoutMs = 15000) {
-  return spawnSync(process.execPath, ['--import', tsxImportUrl, cliEntry, command], {
+  return spawnSync(process.execPath, [...CLI_SPAWN_PREFIX, command], {
     cwd,
     encoding: 'utf8',
     timeout: timeoutMs,
@@ -126,7 +117,7 @@ function runCli(command: string, cwd: string, timeoutMs = 15000) {
  * can pass flags (e.g. --help) or omit a command entirely.
  */
 function runCliRaw(extraArgs: string[], cwd: string, timeoutMs = 15000) {
-  return spawnSync(process.execPath, ['--import', tsxImportUrl, cliEntry, ...extraArgs], {
+  return spawnSync(process.execPath, [...CLI_SPAWN_PREFIX, ...extraArgs], {
     cwd,
     encoding: 'utf8',
     timeout: timeoutMs,
@@ -146,7 +137,7 @@ function runCliWithEnv(
   extraEnv: Record<string, string>,
   timeoutMs = 15000,
 ) {
-  return spawnSync(process.execPath, ['--import', tsxImportUrl, cliEntry, ...extraArgs], {
+  return spawnSync(process.execPath, [...CLI_SPAWN_PREFIX, ...extraArgs], {
     cwd,
     encoding: 'utf8',
     timeout: timeoutMs,
@@ -219,8 +210,10 @@ function runEvalServerHostFlagTest(
   spawnArgs: string[],
   opts: {
     timeoutMsg: string;
+    extraEnv?: Record<string, string>;
     onStdout: (params: {
       stdoutBuffer: string;
+      stderrBuffer: string;
       isSettled: () => boolean;
       settle: (fn: () => void) => void;
       resolve: () => void;
@@ -229,15 +222,11 @@ function runEvalServerHostFlagTest(
   },
 ): Promise<void> {
   return new Promise<void>((resolve, reject) => {
-    const child = spawn(
-      process.execPath,
-      ['--import', tsxImportUrl, cliEntry, 'eval-server', ...spawnArgs],
-      {
-        cwd: MINI_REPO,
-        stdio: ['ignore', 'pipe', 'pipe'],
-        env: cliEnv(),
-      },
-    );
+    const child = spawn(process.execPath, [...CLI_SPAWN_PREFIX, 'eval-server', ...spawnArgs], {
+      cwd: MINI_REPO,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      env: cliEnv(opts.extraEnv),
+    });
 
     let stdoutBuffer = '';
     let stderrBuffer = '';
@@ -268,6 +257,7 @@ function runEvalServerHostFlagTest(
       try {
         await opts.onStdout({
           stdoutBuffer,
+          stderrBuffer,
           isSettled: () => settled,
           settle,
           resolve,
@@ -390,11 +380,21 @@ describe('CLI end-to-end', () => {
         ].join('\n'),
       ).toBe(0);
 
+      // Both metadata filenames must exist after a successful analyze:
+      // gitnexus.json is the primary (what assertAnalysisFinalized checks —
+      // its absence is the #1169 silent-finalize symptom) and meta.json is
+      // the dual-written legacy mirror older consumers still read.
+      const primaryMetaPath = path.join(repo, '.gitnexus', 'gitnexus.json');
+      expect(
+        fs.existsSync(primaryMetaPath),
+        `gitnexus.json missing at ${primaryMetaPath} after analyze exited 0 — this is the #1169 silent-finalize symptom`,
+      ).toBe(true);
       const metaPath = path.join(repo, '.gitnexus', 'meta.json');
       expect(
         fs.existsSync(metaPath),
-        `meta.json missing at ${metaPath} after analyze exited 0 — this is the #1169 silent-finalize symptom`,
+        `legacy meta.json mirror missing at ${metaPath} after analyze exited 0 — dual-write regressed`,
       ).toBe(true);
+      expect(fs.readFileSync(primaryMetaPath, 'utf-8')).toBe(fs.readFileSync(metaPath, 'utf-8'));
 
       const registryPath = path.join(gnHome, 'registry.json');
       expect(
@@ -427,7 +427,7 @@ describe('CLI end-to-end', () => {
     const repoParent = path.dirname(repo);
 
     try {
-      const first = runCliWithEnv(['analyze'], repo, { GITNEXUS_HOME: gnHome }, 60000);
+      const first = runCliWithEnv(['analyze'], repo, { GITNEXUS_HOME: gnHome }, 90_000);
       expect(
         first.status,
         [
@@ -439,13 +439,14 @@ describe('CLI end-to-end', () => {
 
       const metaPath = path.join(repo, '.gitnexus', 'meta.json');
       expect(fs.existsSync(metaPath)).toBe(true);
+      expect(fs.existsSync(path.join(repo, '.gitnexus', 'gitnexus.json'))).toBe(true);
 
-      // Simulate the half-finalized state from the review: meta.json is
-      // present and lastCommit matches, but the repo is not discoverable
-      // because the global registry entry is missing.
+      // Simulate the half-finalized state from the review: the metadata
+      // (both filenames) is present and lastCommit matches, but the repo is
+      // not discoverable because the global registry entry is missing.
       fs.writeFileSync(path.join(gnHome, 'registry.json'), '[]', 'utf-8');
 
-      const second = runCliWithEnv(['analyze'], repo, { GITNEXUS_HOME: gnHome }, 60000);
+      const second = runCliWithEnv(['analyze'], repo, { GITNEXUS_HOME: gnHome }, 90_000);
       expect(
         second.status,
         [
@@ -461,7 +462,7 @@ describe('CLI end-to-end', () => {
       cleanupTempDirSync(gnHome);
       cleanupTempDirSync(repoParent);
     }
-  }, 60_000);
+  }, 180_000);
 
   // ─── analyze --name <alias> + --allow-duplicate-name (#829) ──────
   //
@@ -1061,12 +1062,13 @@ describe('CLI end-to-end', () => {
 
   describe('CLI error handling', () => {
     /**
-     * Helper to spawn CLI from a cwd outside the project tree.
-     * Uses the absolute file:// URL to tsx loader so the --import hook
-     * resolves even when cwd has no node_modules.
+     * Helper to spawn CLI from a cwd outside the project tree via
+     * CLI_SPAWN_PREFIX (built dist in CI, tsx-on-source locally). On the tsx
+     * path the loader is an absolute file:// URL so the --import hook resolves
+     * even when cwd has no node_modules.
      */
     function runCliOutsideProject(args: string[], cwd: string, timeoutMs = 15000) {
-      return spawnSync(process.execPath, ['--import', tsxImportUrl, cliEntry, ...args], {
+      return spawnSync(process.execPath, [...CLI_SPAWN_PREFIX, ...args], {
         cwd,
         encoding: 'utf8',
         timeout: timeoutMs,
@@ -1185,17 +1187,13 @@ describe('CLI end-to-end', () => {
         });
 
         // Must spawn outside project tree so it doesn't find parent .gitnexus
-        const result = spawnSync(
-          process.execPath,
-          ['--import', tsxImportUrl, cliEntry, 'wiki', tmpDir],
-          {
-            cwd: tmpDir,
-            encoding: 'utf8',
-            timeout: 15000,
-            stdio: ['pipe', 'pipe', 'pipe'],
-            env: cliEnv(),
-          },
-        );
+        const result = spawnSync(process.execPath, [...CLI_SPAWN_PREFIX, 'wiki', tmpDir], {
+          cwd: tmpDir,
+          encoding: 'utf8',
+          timeout: 15000,
+          stdio: ['pipe', 'pipe', 'pipe'],
+          env: cliEnv(),
+        });
         if (result.status === null) return;
 
         expect(result.status).toBe(1);
@@ -1313,15 +1311,7 @@ describe('CLI end-to-end', () => {
       return new Promise<void>((resolve, reject) => {
         const child = spawn(
           process.execPath,
-          [
-            '--import',
-            tsxImportUrl,
-            cliEntry,
-            'cypher',
-            'MATCH (n) RETURN n LIMIT 500',
-            '--repo',
-            'mini-repo',
-          ],
+          [...CLI_SPAWN_PREFIX, 'cypher', 'MATCH (n) RETURN n LIMIT 500', '--repo', 'mini-repo'],
           {
             cwd: MINI_REPO,
             stdio: ['ignore', 'pipe', 'pipe'],
@@ -1371,7 +1361,7 @@ describe('CLI end-to-end', () => {
       return new Promise<void>((resolve, reject) => {
         const child = spawn(
           process.execPath,
-          ['--import', tsxImportUrl, cliEntry, 'eval-server', '--port', '0', '--idle-timeout', '3'],
+          [...CLI_SPAWN_PREFIX, 'eval-server', '--port', '0', '--idle-timeout', '3'],
           {
             cwd: MINI_REPO,
             stdio: ['ignore', 'pipe', 'pipe'],
@@ -1429,10 +1419,25 @@ describe('CLI end-to-end', () => {
   // Original flag registration test by Val Vladescu (PR #1602).
 
   describe('eval-server --host flag', { retry: 2 }, () => {
+    it('refuses an unauthenticated non-loopback bind before emitting READY', () => {
+      const result = runCliWithEnv(
+        ['eval-server', '--port', '0', '--host', '0.0.0.0', '--idle-timeout', '3'],
+        MINI_REPO,
+        { GITNEXUS_AUTH_TOKEN: '' },
+        30000,
+      );
+      const output = `${result.stdout}\n${result.stderr}`;
+
+      expect(result.status).toBe(1);
+      expect(output).toMatch(/non-loopback.*GITNEXUS_AUTH_TOKEN/is);
+      expect(output).not.toContain('GITNEXUS_EVAL_SERVER_READY:');
+    }, 35000);
+
     it('emits READY signal containing the bound host 127.0.0.1', () => {
       return runEvalServerHostFlagTest(
         ['--port', '0', '--host', '127.0.0.1', '--idle-timeout', '3'],
         {
+          extraEnv: { GITNEXUS_AUTH_TOKEN: '' },
           timeoutMsg: 'eval-server did not emit READY signal within 30s',
           onStdout({ stdoutBuffer, settle, resolve, reject }) {
             if (!stdoutBuffer.includes('GITNEXUS_EVAL_SERVER_READY:')) return;
@@ -1452,12 +1457,26 @@ describe('CLI end-to-end', () => {
       );
     }, 35000);
 
-    it('binds to 0.0.0.0 and serves /health on 127.0.0.1 (cross-container use case)', () => {
+    it('binds to ::1 without a token when IPv6 loopback is available', () => {
+      return runEvalServerHostFlagTest(['--port', '0', '--host', '::1', '--idle-timeout', '3'], {
+        extraEnv: { GITNEXUS_AUTH_TOKEN: '' },
+        timeoutMsg: 'eval-server --host ::1 did not emit READY signal within 30s',
+        onStdout({ stdoutBuffer, settle, resolve }) {
+          if (stdoutBuffer.includes('GITNEXUS_EVAL_SERVER_READY:[::1]:')) {
+            settle(resolve);
+          }
+        },
+      });
+    }, 35000);
+
+    it('requires the configured bearer token on a 0.0.0.0 bind', () => {
+      const authToken = 'integration-secret-token';
       return runEvalServerHostFlagTest(
         ['--port', '0', '--host', '0.0.0.0', '--idle-timeout', '3'],
         {
+          extraEnv: { GITNEXUS_AUTH_TOKEN: authToken },
           timeoutMsg: 'eval-server --host 0.0.0.0 did not emit READY signal within 30s',
-          async onStdout({ stdoutBuffer, isSettled, settle, resolve, reject }) {
+          async onStdout({ stdoutBuffer, stderrBuffer, isSettled, settle, resolve, reject }) {
             const readyLine = stdoutBuffer
               .split('\n')
               .find((l) => l.startsWith('GITNEXUS_EVAL_SERVER_READY:0.0.0.0:'));
@@ -1472,19 +1491,42 @@ describe('CLI end-to-end', () => {
               return;
             }
 
-            // A server bound to 0.0.0.0 must be reachable on 127.0.0.1 from the same host
             try {
-              const res = await fetch(`http://127.0.0.1:${boundPort}/health`);
-              if (res.status === 200) {
+              const url = `http://127.0.0.1:${boundPort}/health`;
+              const missing = await fetch(url);
+              const wrong = await fetch(url, {
+                headers: { Authorization: 'Bearer wrong-token' },
+              });
+              const correct = await fetch(url, {
+                headers: { Authorization: `Bearer ${authToken}` },
+              });
+              const responseText = `${await missing.text()}${await wrong.text()}${await correct.text()}`;
+
+              if (
+                missing.status === 401 &&
+                wrong.status === 401 &&
+                correct.status === 200 &&
+                missing.headers.get('www-authenticate') === 'Bearer' &&
+                wrong.headers.get('www-authenticate') === 'Bearer' &&
+                !responseText.includes(authToken) &&
+                !stdoutBuffer.includes(authToken) &&
+                !stderrBuffer.includes(authToken)
+              ) {
                 settle(resolve);
               } else {
-                settle(() => reject(new Error(`/health returned ${res.status}, expected 200`)));
+                settle(() =>
+                  reject(
+                    new Error(
+                      `/health auth statuses were ${missing.status}/${wrong.status}/${correct.status}; expected 401/401/200`,
+                    ),
+                  ),
+                );
               }
             } catch (err) {
               settle(() =>
                 reject(
                   new Error(
-                    `eval-server bound to 0.0.0.0 but /health unreachable on 127.0.0.1:${boundPort}: ${err}`,
+                    `authenticated eval-server health probe failed on 127.0.0.1:${boundPort}: ${err}`,
                   ),
                 ),
               );
@@ -1498,6 +1540,7 @@ describe('CLI end-to-end', () => {
       return runEvalServerHostFlagTest(
         ['--port', '0', '--host', 'localhost', '--idle-timeout', '3'],
         {
+          extraEnv: { GITNEXUS_AUTH_TOKEN: '' },
           timeoutMsg: 'eval-server --host localhost did not emit READY signal within 30s',
           async onStdout({ stdoutBuffer, isSettled, settle, resolve, reject }) {
             const readyLine = stdoutBuffer

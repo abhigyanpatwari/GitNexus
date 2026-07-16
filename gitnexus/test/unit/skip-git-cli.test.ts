@@ -44,6 +44,8 @@ describe('--skip-git CLI flag', () => {
     expect(helpOutput).toContain('--skip-git');
     expect(helpOutput).toContain('--skip-agents-md');
     expect(helpOutput).toContain('--skip-skills');
+    expect(helpOutput).toContain('directly under .claude/skills/');
+    expect(helpOutput).toContain('.claude/skills/gitnexus-area-*');
     expect(helpOutput).toContain('--index-only');
     expect(helpOutput).not.toContain('--no-git');
   });
@@ -156,14 +158,25 @@ describe('--skip-git CLI flag', () => {
       expect(keepContext).toContain('"status": "found"');
       expect(keepContext).toContain('"filePath": "src/keep.ts"');
 
-      const leakedContext = execSync(
-        `node "${cliPath}" context leaked --repo "${path.basename(tmpDir)}"`,
-        {
-          encoding: 'utf8',
-          timeout: 60000,
-          env,
-        },
-      );
+      // Since #2470 a backend error payload also exits non-zero, so capture
+      // the payload from the exec failure instead of expecting exit 0.
+      let leakedContext = '';
+      let leakedStatus = 0;
+      try {
+        leakedContext = execSync(
+          `node "${cliPath}" context leaked --repo "${path.basename(tmpDir)}"`,
+          {
+            encoding: 'utf8',
+            timeout: 60000,
+            env,
+          },
+        );
+      } catch (err: unknown) {
+        const execErr = err as { status?: number; stdout?: string | Buffer };
+        leakedStatus = execErr.status ?? 0;
+        leakedContext = String(execErr.stdout ?? '');
+      }
+      expect(leakedStatus).toBe(1);
       expect(leakedContext).toContain(`"error": "Symbol 'leaked' not found"`);
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });

@@ -13,7 +13,16 @@ import cors from 'cors';
 import path from 'path';
 import fs from 'fs/promises';
 import { createRequire } from 'node:module';
-import { loadMeta, listRegisteredRepos, getStoragePath } from '../storage/repo-manager.js';
+import {
+  canonicalizePath,
+  cloneDirBelongsToEntry,
+  loadMeta,
+  saveMeta,
+  listRegisteredRepos,
+  getStoragePath,
+  registryPathEquals,
+  type RegistryEntry,
+} from '../storage/repo-manager.js';
 import {
   executeQuery,
   executePrepared,
@@ -28,12 +37,19 @@ import { isValidQueryParams } from '../core/lbug/query-params.js';
 import { NODE_TABLES, type GraphNode, type GraphRelationship } from 'gitnexus-shared';
 import { searchFTSFromLbug } from '../core/search/bm25-index.js';
 import { hybridSearch } from '../core/search/hybrid-search.js';
+import { ftsDegradedWarning } from '../core/search/fts-indexes.js';
 import { LocalBackend } from '../mcp/local/local-backend.js';
 import { mountMCPEndpoints } from './mcp-http.js';
 import { fileURLToPath } from 'url';
 import { JobManager } from './analyze-job.js';
 import { assertString, escapeRegExp, BadRequestError, createRouteLimiter } from './validation.js';
-import { extractRepoName, getCloneDir, cloneOrPull } from './git-clone.js';
+import {
+  extractRepoName,
+  getCloneDir,
+  cloneOrPull,
+  warnIfInsecureAzureConfig,
+  GITHUB_TOKEN_HOSTS,
+} from './git-clone.js';
 import { createAnalyzeUploadHandler } from './analyze-upload.js';
 import { createLocalhostOriginGuard, normalizeBoundHost } from './middleware.js';
 import { createLaunchAnalysisWorker } from './analyze-launch.js';
@@ -451,8 +467,13 @@ export const streamGraphNdjson = async (
 /**
  * Mount an SSE progress endpoint for a JobManager.
  * Handles: initial state, terminal events, heartbeat, event IDs, client disconnect.
+ *
+ * Terminal payloads carry `repoPath` (the analyzed path) alongside the display
+ * `repoName` so clients can reconnect by path identity — with duplicate
+ * basenames, a name-only reconnect resolves to the first same-named sibling.
+ * Exported for unit tests that lock the wire payload shape.
  */
-const mountSSEProgress = (app: express.Express, routePath: string, jm: JobManager) => {
+export const mountSSEProgress = (app: express.Express, routePath: string, jm: JobManager) => {
   app.get(routePath, (req, res) => {
     let jobId: string;
     try {
@@ -485,6 +506,7 @@ const mountSSEProgress = (app: express.Express, routePath: string, jm: JobManage
       res.write(
         `id: ${eventId}\nevent: ${job.status}\ndata: ${JSON.stringify({
           repoName: job.repoName,
+          repoPath: job.repoPath,
           error: job.error,
         })}\n\n`,
       );
@@ -511,6 +533,7 @@ const mountSSEProgress = (app: express.Express, routePath: string, jm: JobManage
           res.write(
             `id: ${eventId}\nevent: ${progress.phase}\ndata: ${JSON.stringify({
               repoName: eventJob?.repoName,
+              repoPath: eventJob?.repoPath,
               error: eventJob?.error,
             })}\n\n`,
           );
@@ -552,6 +575,56 @@ const requestedRepo = (req: express.Request): string | undefined => {
   }
 
   return undefined;
+};
+
+const repoParamBasename = (repoName: string): string =>
+  repoName.replace(/\\/g, '/').split('/').filter(Boolean).pop() ?? repoName;
+
+/**
+ * Resolve a `?repo=` request param against the registry in two tiers:
+ *
+ *   1. Path claim — any input containing a separator ('/' or '\\', which
+ *      cover path.sep on every platform) is treated as a path claim and
+ *      resolved by canonical registry path ONLY. A miss fails closed
+ *      (null, never a basename fallback) so a stale or wrong path can
+ *      never silently retarget a same-named sibling repo (#2419).
+ *      Within this tier, only absolute or Windows-shaped ('\\') claims
+ *      are worth canonicalizing; relative claims like 'org/name' or
+ *      './repo' are rejected immediately WITHOUT touching the filesystem
+ *      — canonicalizing them would run an attacker-influenced
+ *      CWD-relative realpathSync probe on un-rate-limited GET routes,
+ *      and no legitimate caller sends relative paths.
+ *   2. Name fallback — bare names (no separators) keep the legacy
+ *      basename/name match for older callers.
+ */
+export const resolveRegisteredRepoEntry = (
+  repos: RegistryEntry[],
+  repoName?: string,
+): RegistryEntry | null => {
+  if (!repoName) return repos[0] ?? null;
+
+  const looksLikePath =
+    path.isAbsolute(repoName) || repoName.includes('/') || repoName.includes('\\');
+
+  if (looksLikePath) {
+    // Relative path claims fail closed with zero filesystem probes.
+    if (!path.isAbsolute(repoName) && !repoName.includes('\\')) return null;
+
+    const requestedPath = canonicalizePath(repoName);
+    const pathMatch = repos.find((r) =>
+      registryPathEquals(canonicalizePath(r.path), requestedPath),
+    );
+    if (pathMatch) return pathMatch;
+    return null;
+  }
+
+  const normalizedName = repoParamBasename(repoName);
+
+  return (
+    repos.find((r) => r.name === normalizedName) ||
+    repos.find((r) => r.name.toLowerCase() === normalizedName.toLowerCase()) ||
+    null
+  );
 };
 
 /**
@@ -673,7 +746,47 @@ export const handleQueryRequest = async (
   }
 };
 
+/**
+ * Validate the optional `token` field of POST /api/analyze. Returns an
+ * { status, error } to send, or null when the token is absent or valid.
+ *
+ * The token is a GitHub PAT: charset-restricted (blocks CRLF header
+ * smuggling), length-bounded (1–256), and bound to github.com using the SAME
+ * GITHUB_TOKEN_HOSTS allowlist + hostname parse as resolveGitCredential, so a
+ * token the API accepts is exactly the one buildGitEnv will inject — and one
+ * it rejects is never sent off github.com.
+ *
+ * Exported for unit tests (the route validation is otherwise only reachable
+ * by booting the server).
+ */
+export function validateAnalyzeToken(
+  repoToken: unknown,
+  repoUrl: unknown,
+): { status: number; error: string } | null {
+  if (repoToken === undefined) return null;
+  if (typeof repoToken !== 'string') return { status: 400, error: '"token" must be a string' };
+  if (repoToken.length === 0 || repoToken.length > 256)
+    return { status: 400, error: '"token" length must be between 1 and 256' };
+  if (!/^[A-Za-z0-9._~+/=-]+$/.test(repoToken))
+    return { status: 400, error: '"token" contains invalid characters' };
+  if (!repoUrl || typeof repoUrl !== 'string')
+    return { status: 400, error: '"token" requires "url"' };
+  let tokenHost: string;
+  try {
+    tokenHost = new URL(repoUrl).hostname.toLowerCase();
+  } catch {
+    return { status: 400, error: '"url" must be a valid URL when "token" is provided' };
+  }
+  if (!GITHUB_TOKEN_HOSTS.has(tokenHost))
+    return { status: 400, error: '"token" is only supported for github.com URLs' };
+  return null;
+}
+
 export const createServer = async (port: number, host: string = '127.0.0.1') => {
+  // Surface a cleartext Azure DevOps PAT config at boot (operators rarely
+  // read per-request logs). Warn-only — http:// self-hosted stays supported.
+  warnIfInsecureAzureConfig();
+
   const app = express();
   app.disable('x-powered-by');
 
@@ -745,7 +858,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
   // Initialize MCP backend (multi-repo, shared across all MCP sessions)
   const backend = new LocalBackend();
   await backend.init();
-  const cleanupMcp = mountMCPEndpoints(app, backend);
+  const cleanupMcp = await mountMCPEndpoints(app, backend);
   const jobManager = new JobManager();
 
   // Backstop: remove any upload staging dirs orphaned by a previous crash.
@@ -774,6 +887,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
     backend,
     acquireRepoLock,
     releaseRepoLock,
+    closeDbHandle: closeLbug,
   });
 
   /**
@@ -786,20 +900,9 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
   // Pass `req` to enable early exit if the client disconnects during the hold-queue wait.
   const resolveRepo = async (repoName?: string, isRetry = false, req?: any): Promise<any> => {
     const repos = await listRegisteredRepos();
-    let found = null;
+    const found = resolveRegisteredRepoEntry(repos, repoName);
 
-    // Normalize: if a full path is passed, extract just the basename.
-    // e.g. "C:\Users\LENOVO\.gitnexus\repos\todo.txt-cli" -> "todo.txt-cli"
-    const normalizedName = repoName ? path.basename(repoName) : undefined;
-
-    if (normalizedName) {
-      found =
-        repos.find((r) => r.name === normalizedName) ||
-        repos.find((r) => r.name.toLowerCase() === normalizedName.toLowerCase()) ||
-        null;
-    } else if (repos.length > 0) {
-      found = repos[0]; // default to first repo
-    }
+    const normalizedName = repoName ? repoParamBasename(repoName) : undefined;
 
     // If not yet in the registry, check whether a background job is actively cloning or
     // analyzing this repo. Hold the connection open (up to 5 minutes) until it completes.
@@ -838,7 +941,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
             if (currentJob.status === 'complete') {
               await backend.init();
               const freshRepos = await listRegisteredRepos();
-              return freshRepos.find((r) => r.name === normalizedName) || null;
+              return resolveRegisteredRepoEntry(freshRepos, repoName);
             }
             await new Promise((r) => setTimeout(r, 1000));
           }
@@ -859,7 +962,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
         );
       }
       await backend.init();
-      return await resolveRepo(normalizedName, true, req);
+      return await resolveRepo(repoName, true, req);
     }
 
     return found;
@@ -919,6 +1022,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
         repos.map((r) => ({
           name: r.name,
           path: r.path,
+          repoPath: r.path,
           indexedAt: r.indexedAt,
           lastCommit: r.lastCommit,
           stats: r.stats,
@@ -930,7 +1034,11 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
   });
 
   // Get repo info
-  app.get('/api/repo', async (req, res) => {
+  // Rate-limited (CodeQL js/missing-rate-limiting): resolveRepo canonicalizes
+  // the attacker-supplied ?repo= param (realpathSync probe for absolute /
+  // Windows-shaped claims). Default 60 rpm/IP — web callers hit this route
+  // only on connect/switch, never in a polling loop.
+  app.get('/api/repo', createRouteLimiter(), async (req, res) => {
     try {
       const entry = await resolveRepo(requestedRepo(req), false, req);
       if (!entry) {
@@ -1002,7 +1110,10 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
         } catch {
           /* repo name not eligible for a clone dir (local repo) */
         }
-        if (cloneDir) {
+        // Only remove the clone dir when it is *this* entry's path — a local
+        // repo registered under the same name would otherwise take a cloned
+        // sibling's checkout down with it (see cloneDirBelongsToEntry).
+        if (cloneDir && cloneDirBelongsToEntry(cloneDir, entry.path)) {
           try {
             const stat = await fs.stat(cloneDir);
             if (stat.isDirectory()) {
@@ -1272,8 +1383,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
       );
       const response: any = { results: results.searchResults ?? results };
       if (results.ftsAvailable === false) {
-        response.warning =
-          'FTS indexes missing — keyword search degraded. Run: gitnexus analyze --repair-fts (or gitnexus analyze --force) to rebuild indexes.';
+        response.warning = ftsDegradedWarning();
       }
       res.json(response);
     } catch (err: any) {
@@ -1461,7 +1571,14 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
     requireLocalhostOrigin,
     async (req, res) => {
       try {
-        const { url: repoUrl, path: repoLocalPath, force, embeddings, dropEmbeddings } = req.body;
+        const {
+          url: repoUrl,
+          path: repoLocalPath,
+          force,
+          embeddings,
+          dropEmbeddings,
+          token: repoToken,
+        } = req.body;
 
         // Input type validation
         if (repoUrl !== undefined && typeof repoUrl !== 'string') {
@@ -1475,6 +1592,14 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
 
         if (!repoUrl && !repoLocalPath) {
           res.status(400).json({ error: 'Provide "url" (git URL) or "path" (local path)' });
+          return;
+        }
+
+        // Token: optional, restricted charset to prevent header smuggling
+        // (CRLF), bound length, and bound to github.com (see validateAnalyzeToken).
+        const tokenError = validateAnalyzeToken(repoToken, repoUrl);
+        if (tokenError) {
+          res.status(tokenError.status).json({ error: tokenError.error });
           return;
         }
 
@@ -1496,9 +1621,19 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
 
         const job = jobManager.createJob({ repoUrl, repoPath: repoLocalPath });
 
-        // If job was already running (dedup), just return its id
+        // If job was already running (dedup), just return its id. The token is
+        // not part of the dedup identity and is never stored on the job, so a
+        // token on THIS request had no effect — the existing job already
+        // cloned (or is cloning) with whatever credentials its originating
+        // request supplied. Surface `tokenIgnored` so an authenticated caller
+        // isn't misled into thinking their PAT took effect on a reused job.
         if (job.status !== 'queued') {
-          res.status(202).json({ jobId: job.id, status: job.status });
+          const body: { jobId: string; status: string; tokenIgnored?: boolean } = {
+            jobId: job.id,
+            status: job.status,
+          };
+          if (repoToken !== undefined) body.tokenIgnored = true;
+          res.status(202).json(body);
           return;
         }
 
@@ -1520,11 +1655,16 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
                 progress: { phase: 'cloning', percent: 0, message: `Cloning ${repoUrl}...` },
               });
 
-              await cloneOrPull(repoUrl, targetPath, (progress) => {
-                jobManager.updateJob(job.id, {
-                  progress: { phase: progress.phase, percent: 5, message: progress.message },
-                });
-              });
+              await cloneOrPull(
+                repoUrl,
+                targetPath,
+                (progress) => {
+                  jobManager.updateJob(job.id, {
+                    progress: { phase: progress.phase, percent: 5, message: progress.message },
+                  });
+                },
+                repoToken ? { token: repoToken } : undefined,
+              );
             }
 
             if (!targetPath) {
@@ -1637,17 +1777,15 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
           status: 'analyzing' as any,
           progress: { phase: 'analyzing', percent: 0, message: 'Starting embedding generation...' },
         });
+        const embedController = new AbortController();
+        embedJobManager.registerAbortController(job.id, embedController);
 
         // 30-minute timeout for embedding jobs (same as analyze jobs)
         const EMBED_TIMEOUT_MS = 30 * 60 * 1000;
         const embedTimeout = setTimeout(() => {
           const current = embedJobManager.getJob(job.id);
           if (current && current.status !== 'complete' && current.status !== 'failed') {
-            releaseRepoLock(repoLockPath);
-            embedJobManager.updateJob(job.id, {
-              status: 'failed',
-              error: 'Embedding timed out (30 minute limit)',
-            });
+            embedJobManager.cancelJob(job.id, 'Embedding timed out (30 minute limit)');
           }
         }, EMBED_TIMEOUT_MS);
 
@@ -1658,6 +1796,50 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
             await withLbugDb(lbugPath, async () => {
               const { runEmbeddingPipeline } =
                 await import('../core/embeddings/embedding-pipeline.js');
+              const { resolveEmbeddingIdentity } =
+                await import('../core/embeddings/embedding-identity.js');
+              const embeddingIdentity = resolveEmbeddingIdentity();
+              let embeddingMeta = await loadMeta(entry.storagePath);
+              if (!embeddingMeta) {
+                throw new Error('Repository metadata is missing; run gitnexus analyze first');
+              }
+              const priorCheckpoint = embeddingMeta.embeddingCheckpoint;
+              if (priorCheckpoint && priorCheckpoint.provider !== embeddingIdentity.provider) {
+                throw new Error(
+                  'Cannot resume embedding checkpoint: the embedding provider configuration differs.',
+                );
+              }
+              if (
+                priorCheckpoint &&
+                (priorCheckpoint.model !== embeddingIdentity.model ||
+                  priorCheckpoint.dimensions !== embeddingIdentity.dimensions)
+              ) {
+                throw new Error(
+                  `Cannot resume embedding checkpoint: it uses ${priorCheckpoint.model} at ` +
+                    `${priorCheckpoint.dimensions} dimensions, but this run resolves ` +
+                    `${embeddingIdentity.model} at ${embeddingIdentity.dimensions}.`,
+                );
+              }
+              const forceReembedNodeIds = new Set(priorCheckpoint?.pendingNodeIds ?? []);
+              const saveEmbeddingCheckpoint = async (
+                checkpoint: {
+                  nodesProcessed: number;
+                  totalNodes: number;
+                  chunksProcessed: number;
+                },
+                pendingNodeIds: string[],
+              ): Promise<void> => {
+                embeddingMeta = {
+                  ...embeddingMeta,
+                  embeddingCheckpoint: {
+                    at: new Date().toISOString(),
+                    ...checkpoint,
+                    ...embeddingIdentity,
+                    pendingNodeIds,
+                  },
+                };
+                await saveMeta(entry.storagePath, embeddingMeta);
+              };
               // Fetch existing content hashes for incremental embedding.
               // Delegated to lbug-adapter which owns the DB query logic and legacy-fallback handling.
               const { fetchExistingEmbeddingHashes } = await import('../core/lbug/lbug-adapter.js');
@@ -1691,8 +1873,18 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
                 },
                 {}, // config: use defaults
                 undefined, // skipNodeIds
-                undefined, // context
                 existingEmbeddings,
+                {
+                  signal: embedController.signal,
+                  forceReembedNodeIds,
+                  onCheckpointWindowStart: async ({ nodeIds, ...checkpoint }) => {
+                    await saveEmbeddingCheckpoint(checkpoint, nodeIds);
+                  },
+                  onCheckpoint: async (checkpoint) => {
+                    await flushWAL();
+                    await saveEmbeddingCheckpoint(checkpoint, []);
+                  },
+                },
               );
 
               // Flush WAL so subsequent /api/search requests see the new
@@ -1700,18 +1892,16 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
               // handles this during process exit, but the server keeps the
               // connection open for other routes — a CHECKPOINT is enough.
               await flushWAL();
+              embeddingMeta = { ...embeddingMeta, embeddingCheckpoint: undefined };
+              await saveMeta(entry.storagePath, embeddingMeta);
             });
 
-            clearTimeout(embedTimeout);
-            releaseRepoLock(repoLockPath);
             // Don't overwrite 'failed' if the job was cancelled while the pipeline was running
             const current = embedJobManager.getJob(job.id);
             if (!current || current.status !== 'failed') {
               embedJobManager.updateJob(job.id, { status: 'complete' });
             }
           } catch (err: any) {
-            clearTimeout(embedTimeout);
-            releaseRepoLock(repoLockPath);
             const current = embedJobManager.getJob(job.id);
             if (!current || current.status !== 'failed') {
               embedJobManager.updateJob(job.id, {
@@ -1719,6 +1909,9 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
                 error: err.message || 'Embedding generation failed',
               });
             }
+          } finally {
+            clearTimeout(embedTimeout);
+            releaseRepoLock(repoLockPath);
           }
         })();
 

@@ -27,6 +27,9 @@ export const TYPESCRIPT_QUERIES = `
 (function_declaration
   name: (identifier) @name) @definition.function
 
+(generator_function_declaration
+  name: (identifier) @name) @definition.function
+
 ; TypeScript overload signatures (function_signature is a separate node type from function_declaration)
 (function_signature
   name: (identifier) @name) @definition.function
@@ -374,6 +377,9 @@ export const JAVASCRIPT_QUERIES = `
 (function_declaration
   name: (identifier) @name) @definition.function
 
+(generator_function_declaration
+  name: (identifier) @name) @definition.function
+
 (method_definition
   name: (property_identifier) @name) @definition.method
 
@@ -715,13 +721,24 @@ export const PYTHON_QUERIES = `
     (string (string_content) @http_client.url))) @http_client
 
 ; Python decorators: @app.route, @router.get, etc.
+; The first positional argument is captured three ways (#2391): a string literal
+; path via @decorator.arg (quote-free, the fast path); a bare constant name or a
+; plus-concatenation via @decorator.arg_expr (resolved cross-file by the constant
+; resolver). The anchored optional alternation pins to the FIRST arg and stays
+; optional, so no-arg decorators (@app.tool(), etc.) and non-path first args still
+; match.
 (decorator
   (call
     function: (attribute
       object: (identifier) @decorator.receiver
       attribute: (identifier) @decorator.name)
     arguments: (argument_list
-      (string (string_content) @decorator.arg)?))) @decorator
+      .
+      [
+        (string (string_content)? @decorator.arg) @decorator.arg_str
+        (identifier) @decorator.arg_expr
+        (binary_operator) @decorator.arg_expr
+      ]?))) @decorator
 `;
 
 // Java queries - works with tree-sitter-java

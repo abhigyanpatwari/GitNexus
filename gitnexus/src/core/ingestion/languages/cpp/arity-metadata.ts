@@ -201,6 +201,7 @@ export function classifyCppParameterType(
     cv,
     indirection,
     pointerDepth,
+    ...templateArgumentsFor(`${source} ${rawType} ${declaratorText ?? ''}`),
   };
 }
 
@@ -211,6 +212,39 @@ function unknownTypeClass(base: string): ParameterTypeClass {
     indirection: 'unknown',
     pointerDepth: 0,
   };
+}
+
+function templateArgumentsFor(rawType: string): Pick<ParameterTypeClass, 'templateArguments'> {
+  const args = parseTopLevelTemplateArguments(rawType);
+  return args === undefined ? {} : { templateArguments: args };
+}
+
+function parseTopLevelTemplateArguments(rawType: string): string[] | undefined {
+  const start = rawType.indexOf('<');
+  if (start < 0) return undefined;
+
+  const args: string[] = [];
+  let depth = 0;
+  let argStart = start + 1;
+  for (let i = start + 1; i < rawType.length; i++) {
+    const ch = rawType[i];
+    if (ch === '<') {
+      depth++;
+    } else if (ch === '>') {
+      if (depth === 0) {
+        const finalArg = rawType.slice(argStart, i).trim();
+        if (finalArg.length > 0) args.push(normalizeCppParamType(finalArg));
+        return args.length > 0 ? args : undefined;
+      }
+      depth--;
+    } else if (ch === ',' && depth === 0) {
+      const arg = rawType.slice(argStart, i).trim();
+      if (arg.length > 0) args.push(normalizeCppParamType(arg));
+      argStart = i + 1;
+    }
+  }
+
+  return undefined;
 }
 
 function findFuncDeclarator(node: SyntaxNode): SyntaxNode | null {

@@ -11,6 +11,8 @@
 import { SupportedLanguages } from 'gitnexus-shared';
 import { createClassExtractor } from '../class-extractors/generic.js';
 import { goClassConfig } from '../class-extractors/configs/go.js';
+import { createLeadingDocDescriptionExtractor } from '../utils/ast-helpers.js';
+import { createGoCfgVisitor } from '../cfg/visitors/go.js';
 import { defineLanguage } from '../language-provider.js';
 import { typeConfig as goConfig } from '../type-extractors/go.js';
 import { goExportChecker } from '../export-detection.js';
@@ -137,10 +139,17 @@ export const goProvider = defineLanguage({
   methodExtractor: createMethodExtractor(goMethodConfig),
   variableExtractor: createVariableExtractor(goVariableConfig),
   classExtractor: createClassExtractor(goClassConfig),
+  // ── godoc (`//` leading comments) → description (issue #2270). Build/tool
+  //    directives (//go:…, // +build, //nolint, //line) are not documentation. ──
+  descriptionExtractor: createLeadingDocDescriptionExtractor({
+    lineCommentPrefixes: ['//'],
+    lineDirectivePrefixes: ['//go:', '// +build', '//nolint', '//line'],
+  }),
   builtInNames: GO_BUILT_INS,
 
   // ── RFC #909 Ring 3: scope-based resolution hooks ──────────
   emitScopeCaptures: emitGoScopeCaptures,
+  cfgVisitor: createGoCfgVisitor(),
   interpretImport: interpretGoImport,
   interpretTypeBinding: interpretGoTypeBinding,
   bindingScopeFor: goBindingScopeFor,

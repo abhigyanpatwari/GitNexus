@@ -1,0 +1,71 @@
+name: Impact PDG Mutation Report
+
+# Off-the-fast-path mutation oracle for the PDG-backed `impact` mode.
+#
+# The `--mutation` oracle (bench/impact-pdg/measure.mjs) is a ~280s dynamic
+# value-diff check: it mutates each fixture, re-analyzes with `--pdg`, and scores
+# the realized recall of the statement slice against the behavioral diff. It is
+# far too slow for the PR critical path, so it runs on a nightly schedule (and on
+# demand via workflow_dispatch) and uploads the JSON report as an artifact rather
+# than gating merges.
+#
+# The harness shells out to `gitnexus analyze --pdg`, which spawns workers from
+# dist/, so dist must be built first — setup-gitnexus with build: 'true' does
+# that (mirrors ci-tests.yml).
+
+on:
+  schedule:
+    - cron: '0 3 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  mutation-report:
+    name: impact-pdg mutation oracle
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    permissions:
+      contents: read
+    steps:
+      # persist-credentials: false — this job runs the bench + uploads an
+      # artifact and never pushes; the default-persisted token in .git/config
+      # must not be capturable through that upload (zizmor credential-persistence
+      # / artipacked audit). Mirrors ci-tests.yml.
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      # setup-gitnexus is the repo's composite install action (Node 22 + npm ci);
+      # build: 'true' runs `node scripts/build.js` so dist/ exists for the
+      # analyze workers the mutation harness spawns.
+      - uses: ./.github/actions/setup-gitnexus
+        with:
+          build: 'true'
+
+      - name: Run PDG impact mutation oracle (~280s)
+        run: node --import tsx bench/impact-pdg/measure.mjs --mutation --json > mutation-report.json
+        working-directory: gitnexus
+
+      # Regression gate: write a recall summary to the run AND fail if the
+      # minimum realized recall drops below the (tunable) floor, so a recall
+      # regression surfaces instead of sitting unread in the artifact. Runs
+      # before the (always) upload so the artifact is preserved even on a fail.
+      - name: Gate on mutation recall regression
+        run: node bench/impact-pdg/gate-mutation-recall.mjs mutation-report.json
+        working-directory: gitnexus
+        env:
+          MUTATION_RECALL_FLOOR: '0.5'
+
+      - name: Upload mutation report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: impact-pdg-mutation-report
+          path: gitnexus/mutation-report.json
+          retention-days: 14

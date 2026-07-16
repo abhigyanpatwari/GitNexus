@@ -119,6 +119,17 @@ describe('JobManager', () => {
     expect(manager.getJob(job.id)!.error).toBe('Cancelled by user');
   });
 
+  it('cancelJob aborts registered in-process work', () => {
+    const job = manager.createJob({ repoPath: '/tmp/repo' });
+    manager.updateJob(job.id, { status: 'analyzing' });
+    const controller = new AbortController();
+    manager.registerAbortController(job.id, controller);
+
+    manager.cancelJob(job.id, 'Cancelled by user');
+
+    expect(controller.signal.aborted).toBe(true);
+  });
+
   it('cancelJob returns false for terminal jobs', () => {
     const job = manager.createJob({ repoUrl: 'https://github.com/user/repo' });
     manager.updateJob(job.id, { status: 'complete' });
@@ -127,5 +138,37 @@ describe('JobManager', () => {
 
   it('cancelJob returns false for unknown job', () => {
     expect(manager.cancelJob('nonexistent')).toBe(false);
+  });
+
+  // #2264 P3: a job's terminal outcome is immutable, so a late worker message (a
+  // SIGTERM-driven `error` after `complete`, or vice versa) cannot flip it.
+  describe('terminal-state immutability (#2264 P3)', () => {
+    it('keeps complete when a later failed update arrives', () => {
+      const job = manager.createJob({ repoUrl: 'https://github.com/user/repo' });
+      manager.updateJob(job.id, { status: 'analyzing' });
+      manager.updateJob(job.id, { status: 'complete', repoName: 'repo' });
+      manager.updateJob(job.id, { status: 'failed', error: 'Analysis cancelled' });
+      expect(manager.getJob(job.id)!.status).toBe('complete');
+    });
+
+    it('keeps failed when a later complete update arrives', () => {
+      const job = manager.createJob({ repoUrl: 'https://github.com/user/repo' });
+      manager.updateJob(job.id, { status: 'analyzing' });
+      manager.updateJob(job.id, { status: 'failed', error: 'Analysis cancelled' });
+      manager.updateJob(job.id, { status: 'complete', repoName: 'repo' });
+      const after = manager.getJob(job.id)!;
+      expect(after.status).toBe('failed');
+      expect(after.error).toBe('Analysis cancelled');
+    });
+
+    it('emits no further event for a post-terminal update', () => {
+      const job = manager.createJob({ repoUrl: 'https://github.com/user/repo' });
+      const events: Array<{ phase: string }> = [];
+      manager.onProgress(job.id, (data) => events.push(data));
+      manager.updateJob(job.id, { status: 'complete', repoName: 'repo' });
+      manager.updateJob(job.id, { status: 'failed', error: 'late' });
+      expect(events).toHaveLength(1);
+      expect(events[0].phase).toBe('complete');
+    });
   });
 });

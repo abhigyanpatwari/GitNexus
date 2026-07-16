@@ -17,6 +17,7 @@ and the report never renders a bare ``?`` placeholder. All network is mocked.
 from __future__ import annotations
 
 import contextlib
+import http.client
 import importlib.util
 import io
 import json
@@ -39,6 +40,13 @@ _spec.loader.exec_module(readiness)  # type: ignore[union-attr]
 # format change that would silently break change-detection fails here. Group 2 is
 # ONLY the Status cell ([^|]+? before the final `|$`).
 _ROW_DIFF_RE = re.compile(r"\| `(tree-sitter-[^`]+)` \|.*\| ([^|]+?) \|$", re.M)
+# Mirrors the scheduled issue-update summary extraction in
+# tree-sitter-upgrade-readiness.yml. If the report prose changes again, the issue
+# comment should not silently degrade to "?/? ready. ? blocker(s)".
+_ISSUE_READY_RE = re.compile(
+    r"- (\d+)/(\d+) npm-installed grammars already accept tree-sitter@"
+)
+_ISSUE_BLOCKER_RE = re.compile(r"\*\*Blocked\*\* — (\d+) grammars? ")
 
 
 def _physical_vendor_grammars() -> set[str]:
@@ -53,9 +61,10 @@ def _physical_vendor_grammars() -> set[str]:
 def _render_report() -> tuple[str, int]:
     """Run main() with network mocked to mirror PRODUCTION; return (md, exit_code).
 
-    - npm grammars resolve to a permissive "Ready" peer dep, so the ONLY blocker
-      left is the held vendored tree-sitter-c — letting us assert the hold is
-      load-bearing (exit code stays non-zero because of it).
+    - npm grammars resolve to a permissive "Ready" peer dep, so the only blockers
+      left are the held vendored grammars (tree-sitter-c, tree-sitter-kotlin) plus
+      the intentionally-pinned tree-sitter-cpp — letting us assert holds are
+      load-bearing (exit code stays non-zero because of them).
     - npm_view_json records its calls so we can prove vendored grammars are never
       npm-queried.
     - fetch_text mirrors the real workflow: upstream parser.c resolves to a real
@@ -206,6 +215,62 @@ class AssertCurrent(TestCase):
         self.assertIn("outside current runtime range", buf.getvalue())
 
 
+class FetchHelperReadPhaseErrors(TestCase):
+    """Read-phase transport failures — raised by resp.read() AFTER urlopen has
+    returned (ConnectionResetError, ssl.SSLError, socket.timeout,
+    http.client.IncompleteRead) — are NOT urllib.error.URLError subclasses
+    (urllib only wraps connect-phase OSErrors). A prior revision's narrow except
+    tuple let them escape npm_view_json / fetch_text, crash main(), and empty
+    stdout — which makes the workflow's requireMatch throw on a non-drift
+    scheduled run. The helpers must swallow them to None so the grammar routes to
+    the fetch_failed blocker bucket and the report still renders completely."""
+
+    @staticmethod
+    def _patch_urlopen(*, read_returns=None, read_raises=None):
+        class _Resp:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+            def read(self, *a, **k):
+                if read_raises is not None:
+                    raise read_raises
+                return read_returns
+
+        def _fake_urlopen(*a, **k):
+            return _Resp()
+
+        import urllib.request
+
+        return mock.patch.object(urllib.request, "urlopen", side_effect=_fake_urlopen)
+
+    def test_npm_view_json_swallows_read_phase_connection_reset(self):
+        # ConnectionResetError is an OSError but NOT a URLError — the broadened
+        # OSError clause must catch it so the helper returns None, not raises.
+        with mock.patch.object(readiness, "OFFLINE", False), self._patch_urlopen(
+            read_raises=ConnectionResetError("peer reset mid-body")
+        ):
+            self.assertIsNone(readiness.npm_view_json("tree-sitter-anything"))
+
+    def test_fetch_text_swallows_read_phase_incomplete_read(self):
+        # http.client.IncompleteRead is an HTTPException (not OSError), so it must
+        # be named explicitly in the except tuple.
+        with mock.patch.object(readiness, "OFFLINE", False), self._patch_urlopen(
+            read_raises=http.client.IncompleteRead(partial=b"half")
+        ):
+            self.assertIsNone(readiness.fetch_text("https://example.com/parser.c"))
+
+    def test_npm_view_json_still_swallows_bad_json(self):
+        # JSONDecodeError is a ValueError, not an OSError — broadening the tuple
+        # must not drop it. Non-JSON body still yields None.
+        with mock.patch.object(readiness, "OFFLINE", False), self._patch_urlopen(
+            read_returns=b"<<not json>>"
+        ):
+            self.assertIsNone(readiness.npm_view_json("tree-sitter-anything"))
+
+
 class ReportRendering(TestCase):
     @classmethod
     def setUpClass(cls):
@@ -290,6 +355,24 @@ class ReportRendering(TestCase):
         self.assertEqual(self.rows["tree-sitter-c"], "Vendored — held")
         for status in self.rows.values():
             self.assertNotIn("|", status)
+
+    def test_issue_update_summary_regex_matches_current_report(self):
+        ready = _ISSUE_READY_RE.search(self.report)
+        blockers = _ISSUE_BLOCKER_RE.search(self.report)
+        self.assertIsNotNone(ready)
+        self.assertIsNotNone(blockers)
+        # Counts are derived from _render_report()'s mock corpus (all npm peer
+        # deps mocked permissive): of the 10 npm-installed grammars, 9 render
+        # Ready and 1 — tree-sitter-cpp — is the intentional pin (#1242), so it is
+        # not counted ready. The 3 blockers are that same pinned tree-sitter-cpp
+        # plus two held vendored grammars: ABI-held tree-sitter-c (#1242/#858) and
+        # tree-sitter-kotlin (pinned to an unreleased fwcd main commit for `fun
+        # interface` support — ABI 14 is in range, but a hold counts as a blocker
+        # until it is lifted). If a grammar is added/removed or a pin/hold changes,
+        # update _render_report()'s mock AND these expected counts together; a
+        # mismatch here means the report prose drifted, not the regex.
+        self.assertEqual(ready.groups(), ("9", "10"))
+        self.assertEqual(blockers.group(1), "3")
 
     def _matrix_row(self, name: str) -> str:
         for line in self.report.splitlines():

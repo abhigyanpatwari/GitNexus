@@ -8,6 +8,7 @@ import {
   emitFileCdg,
   POST_DOMINATE_DEBUG_ENV,
 } from '../../../src/core/ingestion/cfg/emit.js';
+import { decodeReachingDefReason } from '../../../src/core/ingestion/cfg/reaching-def-reason-codec.js';
 import { getProvider } from '../../../src/core/ingestion/languages/index.js';
 import { SupportedLanguages } from '../../../src/config/supported-languages.js';
 import type {
@@ -112,6 +113,35 @@ describe('U4 — emitFileCfgs node/edge shape', () => {
   });
 });
 
+describe('collectFunctionCfgs — lineOffset → file coordinates (#2195 P1, Vue SFC)', () => {
+  it('shifts functionStartLine + block + statement lines by lineOffset', () => {
+    const code = `function f(x: number) { if (x) { a(); } else { b(); } }`;
+    const base = collectFunctionCfgs(tsRoot(code), visitor(), 'x.vue').cfgs;
+    const shifted = collectFunctionCfgs(tsRoot(code), visitor(), 'x.vue', 0, 5).cfgs;
+    expect(base.length).toBeGreaterThan(0);
+    expect(shifted).toHaveLength(base.length);
+    expect(shifted[0].functionStartLine).toBe(base[0].functionStartLine + 5);
+    expect(shifted[0].functionEndLine).toBe(base[0].functionEndLine + 5);
+    // functionStartColumn is a COLUMN, not a line — unchanged.
+    expect(shifted[0].functionStartColumn).toBe(base[0].functionStartColumn);
+    for (let i = 0; i < base[0].blocks.length; i++) {
+      expect(shifted[0].blocks[i].startLine).toBe(base[0].blocks[i].startLine + 5);
+      expect(shifted[0].blocks[i].endLine).toBe(base[0].blocks[i].endLine + 5);
+    }
+    // per-statement source lines shift too (file-accurate taint/explain hops).
+    const stmtLines = (cfgs: readonly FunctionCfg[]): number[] =>
+      cfgs[0].blocks.flatMap((b) => (b.statements ?? []).map((s) => s.line));
+    expect(stmtLines(shifted)).toEqual(stmtLines(base).map((l) => l + 5));
+  });
+
+  it('lineOffset 0 is a byte-identical no-op (non-embedded files unchanged)', () => {
+    const code = `function g() { while (true) { tick(); } }`;
+    const withZero = collectFunctionCfgs(tsRoot(code), visitor(), 'g.ts', 0, 0).cfgs;
+    const omitted = collectFunctionCfgs(tsRoot(code), visitor(), 'g.ts').cfgs;
+    expect(JSON.stringify(withZero)).toBe(JSON.stringify(omitted));
+  });
+});
+
 describe('U4 — AC2: every BasicBlock is reachable from its function ENTRY', () => {
   // Fixtures deliberately contain no dead code, so the reachability closure
   // from each function's ENTRY (block index 0) must cover all of its blocks.
@@ -191,7 +221,7 @@ describe('U4 — flag-off / empty input emits nothing', () => {
 });
 
 describe('U4 (#2082 M2) — emitFileReachingDefs', () => {
-  it('persists deduped (blockPair, binding) edges with reason = plain variable name', () => {
+  it('persists deduped (blockPair, binding) edges; reason decodes to the variable name + FU-B-2 def/use lines', () => {
     const cfgs = cfgsOf(
       `function f(a) {
         let x = a;
@@ -209,10 +239,24 @@ describe('U4 (#2082 M2) — emitFileReachingDefs', () => {
       expect(e.sourceId).toMatch(/^BasicBlock:src\/rd\.ts:\d+:\d+:\d+$/);
       expect(e.targetId).toMatch(/^BasicBlock:src\/rd\.ts:\d+:\d+:\d+$/);
     }
-    // reason carries the plain source-level name (M0/S1 verdict)
-    const reasons = new Set(rels.map((e) => e.reason));
-    expect(reasons.has('x')).toBe(true);
-    expect(reasons.has('a')).toBe(true);
+    // FU-B-2: reason carries the plain source-level name FIRST (M0/S1 verdict)
+    // plus a versioned def/use-line annotation — decode to recover the name.
+    const names = new Set(rels.map((e) => decodeReachingDefReason(e.reason).name));
+    expect(names.has('x')).toBe(true);
+    expect(names.has('a')).toBe(true);
+    // Every emitted edge carries the FU-B-2 line annotation (round-trips to
+    // finite 1-based def/use source lines) — the substrate the statement-granular
+    // projection walks.
+    const decoded = rels.map((e) => decodeReachingDefReason(e.reason));
+    for (const d of decoded) {
+      expect(typeof d.defLine).toBe('number');
+      expect(typeof d.useLine).toBe('number');
+    }
+    // The self-edge for `x` (def `let x = a` line 2 → use `x = x + 1` line 3)
+    // captures the intra-block def@L→use@L' chain the block-pair dedup would lose.
+    const xSelf = decoded.find((d) => d.name === 'x' && d.defLine !== d.useLine);
+    expect(xSelf).toMatchObject({ name: 'x' });
+    expect(Number(xSelf?.useLine)).toBeGreaterThan(Number(xSelf?.defLine));
   });
 
   it('same block pair, two bindings → two distinct edges (id collision-proofing)', () => {
@@ -222,7 +266,10 @@ describe('U4 (#2082 M2) — emitFileReachingDefs', () => {
     const ids = rels.map((e) => e.id);
     expect(new Set(ids).size).toBe(ids.length);
     // a and b both flow ENTRY→body: same block pair, distinct edges by binding
-    const entryToBody = rels.filter((e) => e.reason === 'a' || e.reason === 'b');
+    const entryToBody = rels.filter((e) => {
+      const name = decodeReachingDefReason(e.reason).name;
+      return name === 'a' || name === 'b';
+    });
     expect(entryToBody.length).toBeGreaterThanOrEqual(2);
   });
 
@@ -238,7 +285,7 @@ describe('U4 (#2082 M2) — emitFileReachingDefs', () => {
     );
     const { graph, rels } = recordingGraph();
     const r = emitFileReachingDefs(graph, cfgs);
-    const xEdges = rels.filter((e) => e.reason === 'x');
+    const xEdges = rels.filter((e) => decodeReachingDefReason(e.reason).name === 'x');
     expect(xEdges).toHaveLength(1); // self-pair within the single body block
     expect(r.facts).toBeGreaterThan(rels.length); // facts > deduped edges
   });

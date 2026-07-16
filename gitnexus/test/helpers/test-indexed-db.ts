@@ -37,12 +37,21 @@ export interface FTSIndexDef {
 /**
  * Options for withTestLbugDB lifecycle.
  *
- * Lifecycle: initLbug → loadFTS → dropFTS → clearData → seed
+ * Lifecycle: initLbug → loadFTS → dropFTS → clearData → seed → beforeFTS
  *            → createFTS → [closeCoreLbug + poolInitLbug] → afterSetup
  */
 export interface WithTestLbugDBOptions {
   /** Cypher CREATE queries to insert seed data (runs before core adapter opens). */
   seed?: string[];
+  /**
+   * Custom load step run after Cypher `seed` and BEFORE the gated FTS build, so
+   * `createFTSIndex` indexes whatever this loads. Use it to exercise the real
+   * CSV→COPY path (`loadGraphToLbug`) instead of Cypher CREATE. Receives the
+   * core adapter's `dbPath`; colocate scratch files under `path.dirname(dbPath)`
+   * to inherit the suite's temp-dir cleanup. Runs unconditionally (no FTS
+   * needed); the FTS build below stays gated on extension availability.
+   */
+  beforeFTS?: (dbPath: string) => Promise<void>;
   /** FTS indexes to create after seeding. */
   ftsIndexes?: FTSIndexDef[];
   /** Close core adapter and open pool adapter (read-only) after FTS setup. */
@@ -74,12 +83,15 @@ export function withTestLbugDB(
   // init on Windows CI regularly exceeds 30s due to native resource setup.
   const timeout = options?.timeout ?? 120_000;
 
-  // Suites that seed FTS indexes need the optional FTS extension. It is not
-  // guaranteed on every machine (e.g. the macOS platform-sensitive CI runner,
-  // where it is neither pre-installed nor installable). Track availability so
-  // setup can skip FTS seeding instead of throwing, and so every test in the
-  // suite is skipped rather than failing against a missing index. (PR #1161.)
+  // Suites that seed FTS indexes need the optional FTS extension. On a dev
+  // machine it may be neither pre-installed nor installable (offline), so we
+  // track availability and skip the suite rather than fail against a missing
+  // index (PR #1161). In CI this graceful skip is dangerous: an FTS-dependent
+  // integration suite would silently vanish while the job stays green. When
+  // GITNEXUS_REQUIRE_FTS=1 (set by the CI test jobs), an unavailable extension
+  // is a HARD FAILURE so these tests can never silently stop protecting.
   const ftsRequired = !!options?.ftsIndexes?.length;
+  const ftsMustBeAvailable = process.env.GITNEXUS_REQUIRE_FTS === '1';
   let ftsAvailable = true;
   let ftsSkipWarned = false;
 
@@ -97,11 +109,21 @@ export function withTestLbugDB(
     // 1b. Probe the FTS extension for suites that need it, mirroring the
     //     analyze write path (`auto`: LOAD-first, then one bounded INSTALL).
     //     When it still cannot load, the suite is skipped (see beforeEach)
-    //     and FTS seeding below is bypassed so setup never throws.
+    //     and FTS seeding below is bypassed so setup never throws — UNLESS
+    //     GITNEXUS_REQUIRE_FTS=1, in which case CI fails loudly instead of
+    //     letting an FTS-dependent integration suite silently disappear.
     if (ftsRequired) {
       ftsAvailable = await adapter.loadFTSExtension(undefined, {
         policy: resolveAnalyzeInstallPolicy(),
       });
+      if (!ftsAvailable && ftsMustBeAvailable) {
+        throw new Error(
+          `[withTestLbugDB(${prefix})] FTS extension is required (GITNEXUS_REQUIRE_FTS=1) ` +
+            'but could not be loaded or installed. FTS-dependent integration tests must not ' +
+            'be silently skipped in CI — install/repair the LadybugDB FTS extension ' +
+            '(see `gitnexus doctor`) or unset GITNEXUS_REQUIRE_FTS for offline/local runs.',
+        );
+      }
     }
 
     // 2. Drop stale FTS indexes from previous test file
@@ -126,6 +148,14 @@ export function withTestLbugDB(
       for (const q of options.seed) {
         await adapter.executeQuery(q);
       }
+    }
+
+    // 4b. Custom load step (e.g. loadGraphToLbug COPY path) before the FTS
+    //     build, so createFTSIndex below indexes the loaded rows. Runs
+    //     unconditionally — no FTS extension needed to COPY — while the FTS
+    //     build stays gated on ftsAvailable.
+    if (options?.beforeFTS) {
+      await options.beforeFTS(dbPath);
     }
 
     // 5. Create FTS indexes on fresh data (only when the extension loaded;
@@ -196,7 +226,7 @@ export function withTestLbugDB(
           ftsSkipWarned = true;
           console.warn(
             `[withTestLbugDB(${prefix})] Skipping FTS-dependent tests — the LadybugDB ` +
-              `FTS extension is unavailable (not pre-installed and could not be installed).`,
+              `FTS extension is unavailable (LOAD failed and it could not be installed).`,
           );
         }
         ctx.skip();

@@ -21,7 +21,13 @@ import { generateId } from '../../lib/utils.js';
 import type { SymbolDefinition } from 'gitnexus-shared';
 import { yieldToEventLoop } from './utils/event-loop.js';
 import type { ExtractedRoute, ExtractedFetchCall } from './workers/parse-worker.js';
+import type { ExtractedDecoratorRoute } from './workers/parse-worker.js';
 import { normalizeFetchURL, routeMatches } from './route-extractors/nextjs.js';
+import {
+  normalizeExtractedRoutePath,
+  normalizeRouteMethod,
+  routeNodeKey,
+} from './route-extractors/route-path.js';
 import { extractReturnTypeName } from './type-extractors/shared.js';
 
 const MAX_EXPORTS_PER_FILE = 500;
@@ -243,6 +249,93 @@ export const processRoutesFromExtracted = async (
   onProgress?.(extractedRoutes.length, extractedRoutes.length);
 };
 
+/**
+ * Resolve each route's handler to a real symbol UID, keyed by the route's
+ * `(method, url)` identity (`routeNodeKey` — the same key the routes phase uses
+ * for the `Route` node). This is the Part 2 (#2138) groundwork that lets
+ * `HttpRouteExtractor.extractProvidersGraph` read the handler symbol from the
+ * graph instead of re-parsing source via `getDetections()`.
+ *
+ * Two route shapes, one resolution target — `(filePath, name) → nodeId`:
+ *   - Laravel framework routes (`ExtractedRoute`) carry `controllerName` +
+ *     `methodName`; resolve the controller (qualified-first) then the method in
+ *     the controller's own file (mirrors `processRoutesFromExtracted`).
+ *   - Decorator routes (`ExtractedDecoratorRoute`, e.g. Spring/FastAPI) carry
+ *     `handlerName` (the decorated method, captured at extraction); resolve it
+ *     directly in the route's own file.
+ *
+ * First-writer-wins per route identity, matching the routes phase's dedup (it
+ * keeps the first route registered for a `(method, url)` key and counts the rest
+ * as duplicates). The first route to claim a key reserves it **even when its
+ * handler is unresolvable**, so a later same-key route can never stamp its
+ * handler onto the first route's Route node (the routes phase made that first
+ * route the node-winner). Keying is `routeNodeKey(method, url)` (#2289): a
+ * same-URL multi-verb pair (`GET /x` + `POST /x`) resolves two handlers, one per
+ * node; method-less / wildcard routes key by URL alone, byte-identical to the
+ * pre-#2289 behavior. Routes whose handler cannot be *uniquely* resolved (no
+ * name, zero matches, or an ambiguous same-name match) carry no
+ * `handlerSymbolId`; the extractor then falls back to source scan for that route
+ * (fail-open, no regression, never a wrong handler).
+ */
+export function resolveRouteHandlerSymbols(
+  model: SemanticModel,
+  extractedRoutes: readonly ExtractedRoute[],
+  decoratorRoutes: readonly ExtractedDecoratorRoute[],
+): Map<string, string> {
+  const out = new Map<string, string>();
+  // Route identities already claimed by an earlier route (resolved or not).
+  // Mirrors the routes phase `addRoute` first-writer-wins so the handler we
+  // stamp always belongs to the route that actually won the Route node.
+  const claimed = new Set<string>();
+
+  // Resolve a single same-file symbol by name, refusing to guess on ambiguity:
+  // exactly one match → its nodeId; zero or many → undefined (fail-open).
+  const uniqueSymbolId = (filePath: string, name: string): string | undefined => {
+    const defs = model.symbols.lookupExactAll(filePath, name);
+    return defs.length === 1 ? defs[0]?.nodeId : undefined;
+  };
+
+  const claim = (
+    routePath: string | null,
+    prefix: string | null,
+    httpMethod: string | null | undefined,
+    symbolId: string | undefined,
+  ) => {
+    if (!routePath) return;
+    const url = normalizeExtractedRoutePath(routePath, prefix);
+    const key = routeNodeKey(normalizeRouteMethod(httpMethod), url);
+    if (claimed.has(key)) return; // first-writer-wins: later same-key routes can't override
+    claimed.add(key);
+    if (symbolId) out.set(key, symbolId);
+  };
+
+  // Laravel framework routes — controller class + method name.
+  for (const route of extractedRoutes) {
+    let methodId: string | undefined;
+    if (route.controllerName && route.methodName) {
+      let controllerDef: SymbolDefinition | undefined;
+      if (route.controllerQualifiedName) {
+        controllerDef = resolveControllerByQualifiedName(model, route.controllerQualifiedName);
+      }
+      if (!controllerDef) {
+        const controllerDefs = model.types.lookupClassByName(route.controllerName);
+        if (controllerDefs.length === 1) controllerDef = controllerDefs[0];
+      }
+      if (controllerDef) methodId = uniqueSymbolId(controllerDef.filePath, route.methodName);
+    }
+    claim(route.routePath, route.prefix ?? null, route.httpMethod, methodId);
+  }
+
+  // Decorator routes (Spring / FastAPI / generic) — the decorated handler in
+  // the route's own file.
+  for (const dr of decoratorRoutes) {
+    const handlerId = dr.handlerName ? uniqueSymbolId(dr.filePath, dr.handlerName) : undefined;
+    claim(dr.routePath, dr.prefix ?? null, dr.httpMethod, handlerId);
+  }
+
+  return out;
+}
+
 /** Common method names on response/data objects that are NOT property accesses */
 // Properties/methods to ignore when extracting consumer accessed keys from `data.X` patterns.
 // Avoids false positives from Fetch API, Array, Object, Promise, and DOM access on variables
@@ -386,19 +479,29 @@ export const extractConsumerAccessedKeys = (content: string): string[] => {
  * Create FETCHES edges from extracted fetch() calls to matching Route nodes.
  * When consumerContents is provided, extracts property access patterns from
  * consumer files and encodes them in the edge reason field.
+ *
+ * Matching stays URL-only (#2289): a verb-less consumer (a `fetch()` call has
+ * no statically-known HTTP method) matches a route by URL and connects to
+ * **every** Route node sharing that URL — i.e. both the `GET /x` and `POST /x`
+ * nodes when a URL carries multiple verbs. `routeUrlToKeys` therefore maps each
+ * route URL to the list of `routeNodeKey` identities at that URL; a single-verb
+ * (or method-less) URL has a one-element list, keeping edges byte-identical to
+ * the pre-#2289 behavior.
  */
 export const processNextjsFetchRoutes = (
   graph: KnowledgeGraph,
   fetchCalls: ExtractedFetchCall[],
-  routeRegistry: Map<string, string>, // routeURL → handlerFilePath
+  routeUrlToKeys: Map<string, string[]>, // routeURL → route node keys at that URL
   consumerContents?: Map<string, string>, // filePath → file content
 ) => {
-  // Pre-count how many routes each consumer file matches (for confidence attribution)
+  // Pre-count how many route URLs each consumer file matches (for confidence
+  // attribution). Counts once per call that matches any URL — independent of how
+  // many verbs share that URL — so the multi-fetch heuristic is unchanged.
   const routeCountByFile = new Map<string, number>();
   for (const call of fetchCalls) {
     const normalized = normalizeFetchURL(call.fetchURL);
     if (!normalized) continue;
-    for (const [routeURL] of routeRegistry) {
+    for (const routeURL of routeUrlToKeys.keys()) {
       if (routeMatches(normalized, routeURL)) {
         routeCountByFile.set(call.filePath, (routeCountByFile.get(call.filePath) ?? 0) + 1);
         break;
@@ -410,10 +513,9 @@ export const processNextjsFetchRoutes = (
     const normalized = normalizeFetchURL(call.fetchURL);
     if (!normalized) continue;
 
-    for (const [routeURL] of routeRegistry) {
+    for (const [routeURL, routeKeys] of routeUrlToKeys) {
       if (routeMatches(normalized, routeURL)) {
         const sourceId = generateId('File', call.filePath);
-        const routeNodeId = generateId('Route', routeURL);
 
         // Extract consumer accessed keys if file content is available
         let reason = 'fetch-url-match';
@@ -433,14 +535,18 @@ export const processNextjsFetchRoutes = (
           reason = `${reason}|fetches:${fetchCount}`;
         }
 
-        graph.addRelationship({
-          id: generateId('FETCHES', `${sourceId}->${routeNodeId}`),
-          sourceId,
-          targetId: routeNodeId,
-          type: 'FETCHES',
-          confidence: 0.9,
-          reason,
-        });
+        // Connect to every Route node at this URL (one per verb).
+        for (const routeKey of routeKeys) {
+          const routeNodeId = generateId('Route', routeKey);
+          graph.addRelationship({
+            id: generateId('FETCHES', `${sourceId}->${routeNodeId}`),
+            sourceId,
+            targetId: routeNodeId,
+            type: 'FETCHES',
+            confidence: 0.9,
+            reason,
+          });
+        }
         break;
       }
     }

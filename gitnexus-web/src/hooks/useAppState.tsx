@@ -35,6 +35,9 @@ import {
   startEmbeddings as backendStartEmbeddings,
   streamEmbeddingProgress,
   probeBackend,
+  // Aliased: switchRepo declares a local `let repoIdentity` that would shadow
+  // a plain named import of this helper.
+  repoIdentity as repoIdentityOf,
   type BackendRepo,
   type ConnectResult,
   type JobProgress,
@@ -51,6 +54,15 @@ export const shouldAutoStartEmbeddings = (): boolean => {
   if (typeof window === 'undefined' || !window.localStorage) return false;
   return window.localStorage.getItem(AUTO_START_EMBEDDINGS_STORAGE_KEY) === 'true';
 };
+
+// Resolve a human-readable name for a repo path identity: the registry entry's
+// display name first, then the path's basename, then the raw identity. State
+// keeps holding the path identity (#2419) — user-facing labels and the agent
+// prompt must never show an absolute filesystem path.
+const displayNameForIdentity = (repos: BackendRepo[], identity: string): string =>
+  repos.find((r) => repoIdentityOf(r) === identity)?.name ??
+  identity.split(/[/\\]/).filter(Boolean).at(-1) ??
+  identity;
 
 export type ViewMode = 'onboarding' | 'loading' | 'exploring';
 export type RightPanelTab = 'code' | 'chat';
@@ -162,6 +174,7 @@ interface AppState {
   // Project info
   projectName: string;
   setProjectName: (name: string) => void;
+  currentRepo: string | undefined;
 
   // Multi-repo switching
   serverBaseUrl: string | null;
@@ -169,7 +182,7 @@ interface AppState {
   availableRepos: BackendRepo[];
   setAvailableRepos: (repos: BackendRepo[]) => void;
   switchRepo: (repoName: string) => Promise<void>;
-  setCurrentRepo: (repoName: string) => void;
+  setCurrentRepo: (repoName: string | undefined) => void;
   /** Download the full graph for the current repo after a chat-only connect (#2178). */
   loadGraphAnyway: () => Promise<void>;
 
@@ -204,7 +217,10 @@ interface AppState {
 
   // LLM methods
   refreshLLMSettings: () => void;
-  initializeAgent: (overrideProjectName?: string, opts?: { chatOnly?: boolean }) => Promise<void>;
+  initializeAgent: (
+    overrideProjectName?: string,
+    opts?: { chatOnly?: boolean; repo?: string },
+  ) => Promise<void>;
   sendChatMessage: (message: string) => Promise<void>;
   stopChatResponse: () => void;
   clearChat: () => void;
@@ -346,6 +362,7 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
 
   // Project info
   const [projectName, setProjectName] = useState<string>('');
+  const [currentRepo, setCurrentRepoState] = useState<string | undefined>(undefined);
 
   // Multi-repo switching
   const [serverBaseUrl, setServerBaseUrl] = useState<string | null>(null);
@@ -489,8 +506,9 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
   // Backend client — direct HTTP calls (no Worker/Comlink)
   const repoRef = useRef<string | undefined>(undefined);
 
-  const setCurrentRepo = useCallback((repoName: string) => {
+  const setCurrentRepo = useCallback((repoName: string | undefined) => {
     repoRef.current = repoName;
+    setCurrentRepoState(repoName);
   }, []);
 
   const runQuery = useCallback(async (cypher: string): Promise<any[]> => {
@@ -613,7 +631,10 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
   }, [graphMode]);
 
   const initializeAgent = useCallback(
-    async (overrideProjectName?: string, opts?: { chatOnly?: boolean }): Promise<void> => {
+    async (
+      overrideProjectName?: string,
+      opts?: { chatOnly?: boolean; repo?: string },
+    ): Promise<void> => {
       const config = getActiveProviderConfig();
       if (!config) {
         setAgentError('Please configure an LLM provider in settings');
@@ -632,8 +653,11 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
         // Sync repoRef so all agent backend calls target the correct repo.
         // initializeAgent can be called from App.tsx (handleServerConnect) which
         // never sets repoRef.current directly — without this, queries default to repo[0].
-        if (overrideProjectName) {
-          repoRef.current = overrideProjectName;
+        // Only opts.repo may write the identity: overrideProjectName is a display
+        // name, and a name-only caller must never clobber the path identity with
+        // an ambiguous name (#2419).
+        if (opts?.repo) {
+          setCurrentRepo(opts.repo);
         }
         const repo = repoRef.current;
 
@@ -1161,7 +1185,10 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
         phase: 'extracting',
         percent: 0,
         message: i18n.t('common:progress.switchingRepository'),
-        detail: i18n.t('common:progress.loadingRepository', { repo: repoName }),
+        detail: i18n.t('common:progress.loadingRepository', {
+          // `repoName` is a path identity — show the display name, not the path.
+          repo: displayNameForIdentity(availableRepos, repoName),
+        }),
       });
       setViewMode('loading');
       setIsAgentReady(false);
@@ -1184,7 +1211,10 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
       setChatOnlyNodeCount(null);
 
       let connectedRepo: BackendRepo | undefined;
-      let pNameStr = repoName || 'server-project';
+      // Bare declarations: both are always assigned on the success path before
+      // any read, and the catch below returns early (CodeQL alerts 825/826).
+      let pNameStr: string;
+      let repoIdentity: string | undefined;
       let connectedChatOnly = false;
 
       try {
@@ -1225,12 +1255,13 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
         const repoPath = result.repoInfo.repoPath ?? result.repoInfo.path;
         // Prefer the registry name, then normalize Windows \ and Unix / paths
         const pName =
-          repoName ||
           result.repoInfo.name ||
           (repoPath || '').replace(/\\/g, '/').split('/').filter(Boolean).pop() ||
+          repoName ||
           'server-project';
+        repoIdentity = repoName || repoPath || pName;
         setProjectName(pName);
-        repoRef.current = pName;
+        setCurrentRepo(repoIdentity);
 
         connectedRepo = result.repoInfo;
         pNameStr = pName;
@@ -1262,11 +1293,19 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
 
       if (pNameStr) {
         // Persist the selected project in the URL so a refresh re-opens it.
+        // `repo` carries the server-resolved path identity (never the
+        // request-side string) so the refresh restores this exact repo even
+        // when duplicate display names exist (#2419); `project` stays as the
+        // readable display name.
         // Drop any `?skipGraph` override: a deliberate repo switch should make a
         // fresh per-repo decision (auto-detect) on the next refresh rather than
         // carry the previous repo's forced mode (#2178).
         const urlObj = new URL(window.location.href);
         urlObj.searchParams.set('project', pNameStr);
+        const resolvedRepoPath = connectedRepo?.repoPath ?? connectedRepo?.path;
+        if (resolvedRepoPath) {
+          urlObj.searchParams.set('repo', resolvedRepoPath);
+        }
         urlObj.searchParams.delete('skipGraph');
         window.history.replaceState(null, '', urlObj.toString());
       }
@@ -1279,7 +1318,7 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
       // Re-initialize agent with the new repo's graph context
       try {
         if (getActiveProviderConfig()) {
-          await initializeAgent(pNameStr, { chatOnly: connectedChatOnly });
+          await initializeAgent(pNameStr, { chatOnly: connectedChatOnly, repo: repoIdentity });
         }
         setViewMode('exploring');
         startEmbeddingsWithFallback();
@@ -1295,6 +1334,7 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
     },
     [
       serverBaseUrl,
+      availableRepos,
       setProgress,
       setViewMode,
       setProjectName,
@@ -1313,6 +1353,7 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
       setCodePanelOpen,
       setCodeReferenceFocus,
       setChatMessages,
+      setCurrentRepo,
     ],
   );
 
@@ -1390,7 +1431,14 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
       // the chat-only note (#2178, KTD2). Guarded on a configured provider, like
       // switchRepo; runs inside the mounted/stale guard above.
       if (getActiveProviderConfig()) {
-        await initializeAgent(repo, { chatOnly: false });
+        // Pass the display name explicitly — initializeAgent's empty-deps
+        // closure traps `projectName` at its initial '', so relying on the
+        // state fallback would label the prompt the literal 'project'. The
+        // path identity travels separately via opts.repo.
+        await initializeAgent(repo ? displayNameForIdentity(availableRepos, repo) : undefined, {
+          chatOnly: false,
+          repo,
+        });
       }
     } catch (err) {
       if (!loadGraphMountedRef.current || repoRef.current !== repo) return;
@@ -1404,6 +1452,7 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
     }
   }, [
     serverBaseUrl,
+    availableRepos,
     setProgress,
     setViewMode,
     setGraph,
@@ -1495,6 +1544,7 @@ const AppStateProviderInner = ({ children }: { children: ReactNode }) => {
     setProgress,
     projectName,
     setProjectName,
+    currentRepo,
     // Multi-repo switching
     serverBaseUrl,
     setServerBaseUrl,

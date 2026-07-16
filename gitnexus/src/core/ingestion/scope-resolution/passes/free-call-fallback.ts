@@ -35,6 +35,7 @@ import type {
   ResolutionSuppressionReason,
 } from '../resolution-outcome.js';
 import { resolveCallerGraphId, resolveDefGraphId } from '../graph-bridge/ids.js';
+import type { CalleeIdSink } from '../graph-bridge/callee-id-sink.js';
 import {
   findAllCallableBindingsInScope,
   findCallableBindingInScope,
@@ -80,6 +81,7 @@ export function emitFreeCallFallback(
       parsedFiles: readonly ParsedFile[],
     ) => readonly SymbolDefinition[] | undefined;
     readonly conversionRankFn?: ConversionRankFn;
+    readonly conversionOnlyArgTypePrefixes?: readonly string[];
     /** Optional per-language constraint hook threaded into
      *  `narrowOverloadCandidates`. Drops candidates whose template
      *  constraints (e.g. C++ `enable_if_t`, C++20 `requires`) provably
@@ -87,6 +89,11 @@ export function emitFreeCallFallback(
      *  candidate (monotonicity). */
     readonly constraintCompatibility?: ScopeResolver['constraintCompatibility'];
     readonly recordResolutionOutcome?: ResolutionOutcomeRecorder;
+    /** Resolved-callee-id capture sink (#2227 U2). Threaded in only under
+     *  `--pdg`; `undefined` ⇒ zero overhead, byte-identity (R4). Captured at
+     *  the CALLS emit below BEFORE the collapsed `seen` dedup (KTD6) so
+     *  same-target multi-line calls are still recorded per site. */
+    readonly calleeIdSink?: CalleeIdSink;
   } = {},
 ): number {
   let emitted = 0;
@@ -164,6 +171,7 @@ export function emitFreeCallFallback(
       if (fnDef === undefined) {
         fnDef = pickImplicitThisOverload(site, scopes, workspaceIndex, model, {
           conversionRankFn: options.conversionRankFn,
+          conversionOnlyArgTypePrefixes: options.conversionOnlyArgTypePrefixes,
           constraintCompatibility: options.constraintCompatibility,
         });
         fnDefFromImplicitThis = fnDef !== undefined;
@@ -191,6 +199,7 @@ export function emitFreeCallFallback(
                 {
                   argumentTypeClasses: site.argumentTypeClasses,
                   conversionRankFn: options.conversionRankFn,
+                  conversionOnlyArgTypePrefixes: options.conversionOnlyArgTypePrefixes,
                   constraintCompatibility: options.constraintCompatibility,
                 },
               );
@@ -277,6 +286,7 @@ export function emitFreeCallFallback(
               const narrowed = narrowOverloadCandidates(ordinary, site.arity, site.argumentTypes, {
                 argumentTypeClasses: site.argumentTypeClasses,
                 conversionRankFn: options.conversionRankFn,
+                conversionOnlyArgTypePrefixes: options.conversionOnlyArgTypePrefixes,
                 constraintCompatibility: options.constraintCompatibility,
               });
               if (narrowed.length === 1) {
@@ -324,6 +334,7 @@ export function emitFreeCallFallback(
             const narrowed = narrowOverloadCandidates(merged, site.arity, site.argumentTypes, {
               argumentTypeClasses: site.argumentTypeClasses,
               conversionRankFn: options.conversionRankFn,
+              conversionOnlyArgTypePrefixes: options.conversionOnlyArgTypePrefixes,
               constraintCompatibility: options.constraintCompatibility,
             });
             if (narrowed.length === 1) {
@@ -380,6 +391,7 @@ export function emitFreeCallFallback(
           site.argumentTypeClasses,
           options.conversionRankFn,
           scopeDefsCache,
+          options.conversionOnlyArgTypePrefixes,
         );
       }
       if (fnDef === undefined) continue;
@@ -416,6 +428,18 @@ export function emitFreeCallFallback(
       // means we don't add a new edge — so `emit-references` skips its
       // potentially-wrong fallback for the same site.
       handledSites.add(siteKey(parsed.filePath, site));
+      // Resolved-callee-id capture (#2227 U2/KTD6/R8): record this CALLS site's
+      // resolved target BEFORE the collapsed `seen` dedup. The free-call dedup
+      // key drops the line (one edge per caller→target), so capturing after
+      // `seen.has` would lose every same-target call past the first — capture
+      // here, per site, keyed on `site.atRange` (byte-equal to U1's
+      // SiteRecord.at: 1-based line / 0-based col).
+      options.calleeIdSink?.add(
+        parsed.filePath,
+        site.atRange.startLine,
+        site.atRange.startCol,
+        tgtGraphId,
+      );
       const relId = `rel:CALLS:${callerGraphId}->${tgtGraphId}`;
       if (seen.has(relId)) continue;
       seen.add(relId);
@@ -576,6 +600,7 @@ export function pickUniqueGlobalCallable(
   callArgTypeClasses?: readonly ParameterTypeClass[],
   conversionRankFn?: ConversionRankFn,
   scopeDefsCache?: Map<string, readonly SymbolDefinition[]>,
+  conversionOnlyArgTypePrefixes?: readonly string[],
 ): SymbolDefinition | undefined {
   // The scope-index candidate list is a pure function of (name, callerFilePath):
   // the same-name bucket is fixed for the pass, the file-local filter depends
@@ -637,6 +662,7 @@ export function pickUniqueGlobalCallable(
     const narrowed = narrowOverloadCandidates(scopeDefs, callArity, callArgTypes, {
       argumentTypeClasses: callArgTypeClasses,
       conversionRankFn,
+      conversionOnlyArgTypePrefixes,
     });
     if (narrowed.length === 1) return narrowed[0];
   }
@@ -678,6 +704,7 @@ export function pickUniqueGlobalCallable(
     const narrowed = narrowOverloadCandidates(defs, callArity, callArgTypes, {
       argumentTypeClasses: callArgTypeClasses,
       conversionRankFn,
+      conversionOnlyArgTypePrefixes,
     });
     if (narrowed.length === 1) return narrowed[0];
   }
@@ -808,6 +835,7 @@ export function pickImplicitThisOverload(
   model: SemanticModel,
   hookCtx?: {
     readonly conversionRankFn?: ConversionRankFn;
+    readonly conversionOnlyArgTypePrefixes?: readonly string[];
     readonly constraintCompatibility?: ScopeResolver['constraintCompatibility'];
   },
 ): SymbolDefinition | undefined {
@@ -840,6 +868,7 @@ export function pickImplicitThisOverload(
   const candidates = narrowOverloadCandidates(overloads, site.arity, site.argumentTypes, {
     argumentTypeClasses: site.argumentTypeClasses,
     conversionRankFn: hookCtx?.conversionRankFn,
+    conversionOnlyArgTypePrefixes: hookCtx?.conversionOnlyArgTypePrefixes,
     constraintCompatibility: hookCtx?.constraintCompatibility,
   });
   if (candidates.length !== 1) return undefined;

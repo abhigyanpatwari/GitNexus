@@ -78,6 +78,9 @@ export type NodeProperties = {
   level?: number;
   returnType?: string;
   declaredType?: string;
+  /** Verbatim declared-type source text with generics preserved
+   *  (e.g. `List<Shape>` where `declaredType` is the stripped `List`). */
+  rawDeclaredType?: string;
   visibility?: string;
   isStatic?: boolean;
   isReadonly?: boolean;
@@ -94,6 +97,9 @@ export type NodeProperties = {
   middleware?: string[];
   // BasicBlock (taint/PDG substrate, issue #2080) — reuses filePath/startLine/endLine.
   text?: string;
+  /** BasicBlock: space-joined leaf callee names invoked in the block — the
+   *  statement-precise inter-procedural reach substrate for impact mode. */
+  callees?: string;
   // Extensible
   [key: string]: unknown;
 };
@@ -121,6 +127,19 @@ export type RelationshipType =
   | 'ENTRY_POINT_OF'
   | 'WRAPS'
   | 'QUERIES'
+  /** Dependency-injection edge: a consumer class receives every implementer
+   *  of interface `T` via a container-injected collection-typed field
+   *  (`List<T>`, `Set<T>`, `Collection<T>`, or `Map<K,T>`). Precondition: the
+   *  field carries an injection annotation recognized by a per-language
+   *  matcher registered in `di-extractors/` (Java/Spring today: `@Autowired`
+   *  or `@Inject`; `@Resource` is excluded — by-name-first semantics).
+   *  Source = the consumer Class node (the one owning the field).
+   *  Target = an implementing Class node.
+   *  Framework specifics live in the `reason` payload (e.g.
+   *  `Spring DI: @Autowired List<T>`), not in this type contract.
+   *  Lets Cypher queries trace which beans the container injects into a given
+   *  consumer, complementing the structural `IMPLEMENTS` heritage edges. */
+  | 'INJECTS'
   /** Vue component event system: a handler function in a parent component is
    *  bound to an event emitted by a child component (`@event="handlerFn"`).
    *  Source = handler Function/Method node in the parent.
@@ -171,7 +190,20 @@ export type RelationshipType =
    *  removing it later is a breaking schema change — and it is deliberately
    *  excluded from `VALID_RELATION_TYPES` so it never enters impact-style
    *  symbol-space traversal (same posture as the taint substrate edges). */
-  | 'POST_DOMINATE';
+  | 'POST_DOMINATE'
+  /** Per-callee dependence SUMMARY edge (PDG FU-C): a self-loop on a
+   *  Function/Method/Constructor node carrying that callee's RETURN-VALUE
+   *  ASCENT — which formal-parameter indices flow to the function's return
+   *  value, encoded as a versioned bitset in the relation's existing `reason`
+   *  column (the same single-channel pattern `CFG`/`REACHING_DEF`/`CDG` use,
+   *  since the lone `CodeRelation` table has no dedicated label column). A
+   *  later consumer phase lets an interprocedural slice ascend a callee's
+   *  return effect into the caller continuation. Like the taint substrate
+   *  edges it is an internal PDG-engine edge: deliberately EXCLUDED from
+   *  `VALID_RELATION_TYPES` and the web schema so it never leaks into
+   *  callgraph-style impact/relationship surfaces. Emitted only under `--pdg`;
+   *  a default analyze emits zero. */
+  | 'CALL_SUMMARY';
 
 export interface GraphNode {
   id: string;

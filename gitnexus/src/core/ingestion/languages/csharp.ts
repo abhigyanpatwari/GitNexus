@@ -15,6 +15,7 @@ import { csharpExportChecker } from '../export-detection.js';
 import { createImportResolver } from '../import-resolvers/resolver-factory.js';
 import { csharpImportConfig } from '../import-resolvers/configs/csharp.js';
 import { CSHARP_QUERIES } from '../tree-sitter-queries.js';
+import { createLeadingDocDescriptionExtractor } from '../utils/ast-helpers.js';
 import type { AstFrameworkPatternConfig } from '../language-provider.js';
 import { createCallExtractor } from '../call-extractors/generic.js';
 import { csharpCallConfig } from '../call-extractors/configs/csharp.js';
@@ -24,6 +25,7 @@ import { createMethodExtractor } from '../method-extractors/generic.js';
 import { csharpMethodConfig } from '../method-extractors/configs/csharp.js';
 import { createVariableExtractor } from '../variable-extractors/generic.js';
 import { csharpVariableConfig } from '../variable-extractors/configs/csharp.js';
+import { createCsharpCfgVisitor } from '../cfg/visitors/csharp.js';
 import {
   emitCsharpScopeCaptures,
   interpretCsharpImport,
@@ -193,6 +195,8 @@ export const csharpProvider = defineLanguage({
   methodExtractor: createMethodExtractor(csharpMethodConfig),
   variableExtractor: createVariableExtractor(csharpVariableConfig),
   classExtractor: createClassExtractor(csharpClassConfig),
+  // ── XML doc comments (`///`) → description (issue #2270) ──
+  descriptionExtractor: createLeadingDocDescriptionExtractor(),
   builtInNames: BUILT_INS,
 
   // ── RFC #909 Ring 3: scope-based resolution hooks (RFC §5) ──────────
@@ -200,6 +204,7 @@ export const csharpProvider = defineLanguage({
   // the full per-hook rationale and the canonical capture vocabulary
   // in ./csharp/query.ts (CSHARP_SCOPE_QUERY constant).
   emitScopeCaptures: emitCsharpScopeCaptures,
+  cfgVisitor: createCsharpCfgVisitor(),
   interpretImport: interpretCsharpImport,
   interpretTypeBinding: interpretCsharpTypeBinding,
   bindingScopeFor: csharpBindingScopeFor,

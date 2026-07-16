@@ -76,12 +76,13 @@ const FULL_ORDER = [
   'scopeResolution',
   'pruneLocalSymbols',
   'mro',
+  'di',
   'communities',
   'processes',
 ];
 
 const WITHOUT_GRAPH_PHASES = FULL_ORDER.filter(
-  (n) => n !== 'mro' && n !== 'communities' && n !== 'processes',
+  (n) => n !== 'mro' && n !== 'di' && n !== 'communities' && n !== 'processes',
 );
 
 describe('buildPhaseList parity (registry refactor, #2080)', () => {
@@ -94,7 +95,7 @@ describe('buildPhaseList parity (registry refactor, #2080)', () => {
     expect(buildPhaseList({ skipGraphPhases: false }).map((p) => p.name)).toEqual(FULL_ORDER);
   });
 
-  it('skipGraphPhases:true → omits exactly mro/communities/processes', () => {
+  it('skipGraphPhases:true → omits exactly mro/di/communities/processes', () => {
     expect(buildPhaseList({ skipGraphPhases: true }).map((p) => p.name)).toEqual(
       WITHOUT_GRAPH_PHASES,
     );
@@ -107,9 +108,12 @@ describe('buildPhaseList parity (registry refactor, #2080)', () => {
 // inserted right after pruneLocalSymbols, before mro.
 // ---------------------------------------------------------------------------
 
+// pdg-gated phases are registered consecutively after pruneLocalSymbols, in
+// registration order: taintSummaries (#2084) then callSummaries (PDG FU-C).
 const WITH_TAINT_SUMMARIES = [
   ...FULL_ORDER.slice(0, FULL_ORDER.indexOf('pruneLocalSymbols') + 1),
   'taintSummaries',
+  'callSummaries',
   ...FULL_ORDER.slice(FULL_ORDER.indexOf('pruneLocalSymbols') + 1),
 ];
 
@@ -130,12 +134,19 @@ describe('buildPhaseList — taintSummaries opt-in (#2084)', () => {
     expect(names).not.toContain('mro');
   });
 
-  it('no always-on phase depends on the pdg-gated taintSummaries phase', () => {
+  it('no always-on phase depends on the pdg-gated taintSummaries/callSummaries phases', () => {
     // A filtered-out dep would throw in getPhaseOutput at runtime, so no
-    // always-included phase may list taintSummaries in its deps.
+    // always-included phase may list a pdg-gated phase in its deps.
     const offList = buildPhaseList({});
     for (const p of offList) {
       expect(p.deps).not.toContain('taintSummaries');
+      expect(p.deps).not.toContain('callSummaries');
     }
+  });
+
+  it('pdg:true → callSummaries inserted alongside taintSummaries, absent when pdg off', () => {
+    expect(buildPhaseList({}).map((p) => p.name)).not.toContain('callSummaries');
+    expect(buildPhaseList({ pdg: false }).map((p) => p.name)).not.toContain('callSummaries');
+    expect(buildPhaseList({ pdg: true }).map((p) => p.name)).toContain('callSummaries');
   });
 });

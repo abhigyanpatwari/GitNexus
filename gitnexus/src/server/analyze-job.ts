@@ -40,6 +40,7 @@ const JOB_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes
 export class JobManager {
   private jobs = new Map<string, AnalyzeJob>();
   private children = new Map<string, ChildProcess>();
+  private abortControllers = new Map<string, AbortController>();
   private timeouts = new Map<string, ReturnType<typeof setTimeout>>();
   private emitter = new EventEmitter();
   private cleanupTimer: ReturnType<typeof setInterval>;
@@ -101,10 +102,17 @@ export class JobManager {
     const job = this.jobs.get(id);
     if (!job) return;
 
+    // Once a job is terminal (complete/failed) its outcome is immutable — drop any
+    // later update so a worker `complete` racing a SIGTERM-driven `error` (or vice
+    // versa) can't flip a reported result (#2264 P3). The transition INTO a terminal
+    // state still applies because `job.status` is not yet terminal at that point.
+    if (this.isTerminal(job.status)) return;
+
     Object.assign(job, update);
 
     if (this.isTerminal(job.status)) {
       job.completedAt = job.completedAt ?? Date.now();
+      this.abortControllers.delete(id);
     }
 
     // Emit exactly one event per updateJob call to prevent SSE double-write
@@ -144,6 +152,16 @@ export class JobManager {
     });
   }
 
+  /** Register cancellable in-process work for a job. */
+  registerAbortController(jobId: string, controller: AbortController): void {
+    const job = this.jobs.get(jobId);
+    if (!job || this.isTerminal(job.status)) {
+      controller.abort();
+      return;
+    }
+    this.abortControllers.set(jobId, controller);
+  }
+
   /** Cancel a running job — sends SIGTERM to child process. */
   cancelJob(jobId: string, reason?: string): boolean {
     const job = this.jobs.get(jobId);
@@ -153,6 +171,8 @@ export class JobManager {
     if (child) {
       child.kill('SIGTERM');
     }
+    this.abortControllers.get(jobId)?.abort();
+    this.abortControllers.delete(jobId);
 
     this.updateJob(jobId, {
       status: 'failed',
@@ -175,6 +195,8 @@ export class JobManager {
       child.kill('SIGTERM');
     }
     this.children.clear();
+    for (const controller of this.abortControllers.values()) controller.abort();
+    this.abortControllers.clear();
 
     // Clear all timeouts
     for (const timer of this.timeouts.values()) {
@@ -195,6 +217,7 @@ export class JobManager {
     for (const [id, job] of this.jobs) {
       if (this.isTerminal(job.status) && job.completedAt && now - job.completedAt > JOB_TTL_MS) {
         this.jobs.delete(id);
+        this.abortControllers.delete(id);
       }
     }
   }

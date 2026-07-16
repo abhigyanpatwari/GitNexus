@@ -49,6 +49,26 @@ describe('CLI commands', () => {
       expect(pluginManifest.version).toBe(pkg.default.version);
       expect(gitnexusEntries[0]?.version).toBe(pkg.default.version);
     });
+
+    it('keeps Codex plugin manifests aligned with the gitnexus release version', async () => {
+      const pkg = await import('../../package.json', { with: { type: 'json' } });
+      const pluginManifest = await readRepoJson<{ version: string }>(
+        'gitnexus-claude-plugin/.codex-plugin/plugin.json',
+      );
+      const marketplaceManifest = await readRepoJson<{
+        plugins?: Array<{ name: string; version: string }>;
+      }>('.agents/plugins/marketplace.json');
+
+      expect(Array.isArray(marketplaceManifest.plugins)).toBe(true);
+
+      const gitnexusEntries = (marketplaceManifest.plugins ?? []).filter(
+        (plugin) => plugin.name === 'gitnexus',
+      );
+
+      expect(gitnexusEntries).toHaveLength(1);
+      expect(pluginManifest.version).toBe(pkg.default.version);
+      expect(gitnexusEntries[0]?.version).toBe(pkg.default.version);
+    });
   });
 
   describe('package.json scripts', () => {
@@ -147,7 +167,7 @@ describe('CLI commands', () => {
       // ships source only) and loaded from vendor/ by absolute path (#2111).
       expect(optional['tree-sitter-kotlin']).toBeUndefined();
       expect(pkg.default.scripts.postinstall).toContain('build-tree-sitter-grammars.cjs');
-      expect(kotlinPkg.default.version).toBe('0.3.8');
+      expect(kotlinPkg.default.version).toBe('0.4.0');
       // No scripts.install / dependencies inside vendor/ (#836 / #1728 hygiene).
       expect(kotlinPkg.default.scripts?.install).toBeUndefined();
       expect(kotlinPkg.default.dependencies).toBeUndefined();

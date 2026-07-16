@@ -68,9 +68,12 @@ describe('getLanguageFromFilename', () => {
   });
 
   describe('C++', () => {
-    it.each(['.cpp', '.cc', '.cxx', '.h', '.hpp', '.hxx', '.hh'])('detects %s files', (ext) => {
-      expect(getLanguageFromFilename(`file${ext}`)).toBe(SupportedLanguages.CPlusPlus);
-    });
+    it.each(['.cpp', '.cc', '.cxx', '.h', '.hpp', '.hxx', '.hh', '.cu', '.cuh'])(
+      'detects %s files',
+      (ext) => {
+        expect(getLanguageFromFilename(`file${ext}`)).toBe(SupportedLanguages.CPlusPlus);
+      },
+    );
   });
 
   describe('C#', () => {
@@ -171,6 +174,11 @@ describe('getProviderForFile', () => {
     expect(getProviderForFile('vendor/mage-os/templates/product/list.phtml')?.id).toBe(
       SupportedLanguages.PHP,
     );
+  });
+
+  it('routes CUDA C++ source and header files to the C++ provider', () => {
+    expect(getProviderForFile('src/kernels/integrate.cu')?.id).toBe(SupportedLanguages.CPlusPlus);
+    expect(getProviderForFile('src/force/nep.cuh')?.id).toBe(SupportedLanguages.CPlusPlus);
   });
 });
 

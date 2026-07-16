@@ -9,11 +9,13 @@
  *   CUSTDAT.cpy, COPYLIB.cpy, RUNJOBS.jcl
  */
 import { describe, it, expect, beforeAll } from 'vitest';
+import fs from 'fs/promises';
 import path from 'path';
 import {
   FIXTURES,
   getRelationships,
   getNodesByLabel,
+  getNodesByLabelFull,
   edgeSet,
   runPipelineFromRepo,
   type PipelineResult,
@@ -750,6 +752,46 @@ describe('COBOL full system extraction', () => {
       expect(parsedFile!.scopes.length).toBeGreaterThan(0);
       expect(typeof parsedFile!.moduleScope).toBe('string');
       expect(parsedFile!.moduleScope.length).toBeGreaterThan(0);
+    });
+  });
+
+  // ---------------------------------------------------------------------
+  // LINE-BASE CONVENTION — COBOL/JCL emit 0-based startLine (#2377 / #2379)
+  // Regex-based processors carry 1-based line numbers; they must convert to
+  // the 0-based GraphNode convention at emission or the exact-content slice
+  // drops each symbol's declaration line. These lock that in.
+  // ---------------------------------------------------------------------
+  describe('line-base convention: 0-based startLine (#2377 / #2379)', () => {
+    it('primary program Module starts at 0-based line 0', () => {
+      const custupdt = getNodesByLabelFull(result, 'Module').find((m) => m.name === 'CUSTUPDT');
+      expect(custupdt).toBeDefined();
+      expect(custupdt!.properties.startLine).toBe(0);
+    });
+
+    // NOTE: COBOL paragraph lines can't be cross-checked against the raw file —
+    // the preprocessor expands COPY statements, so `startLine` is in expanded
+    // coordinates (a separate, pre-existing content-alignment concern, out of
+    // scope for the 0-based conversion). JCL has no such expansion, so a JCL
+    // step gives a clean 0-based proof for a NON-line-0 symbol — ruling out a
+    // "conversion always yields 0" false pass.
+    it('JCL step CodeElement startLine is the 0-based declaration line', async () => {
+      const source = await fs.readFile(path.join(FIXTURES, 'cobol-app', 'RUNJOBS.jcl'), 'utf-8');
+      const lines = source.split('\n');
+      const expectedIdx = lines.findIndex((l) => l.includes('STEP1'));
+      expect(expectedIdx).toBeGreaterThan(0); // not line 0 — proves a real conversion
+      const step1 = getNodesByLabelFull(result, 'CodeElement').find((n) => n.name === 'STEP1');
+      expect(step1).toBeDefined();
+      expect(step1!.properties.startLine).toBe(expectedIdx);
+      expect(lines[step1!.properties.startLine]).toContain('STEP1');
+    });
+
+    it('JCL job CodeElement starts at 0-based line 0', async () => {
+      const source = await fs.readFile(path.join(FIXTURES, 'cobol-app', 'RUNJOBS.jcl'), 'utf-8');
+      const lines = source.split('\n');
+      const custjob = getNodesByLabelFull(result, 'CodeElement').find((n) => n.name === 'CUSTJOB');
+      expect(custjob).toBeDefined();
+      expect(custjob!.properties.startLine).toBe(0);
+      expect(lines[custjob!.properties.startLine]).toContain('CUSTJOB');
     });
   });
 });

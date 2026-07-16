@@ -13,9 +13,13 @@ import os from 'os';
 import { spawn } from 'child_process';
 import v8 from 'v8';
 import cliProgress from 'cli-progress';
-import { closeLbug } from '../core/lbug/lbug-adapter.js';
+import { isLbugReady, LbugWipeError } from '../core/lbug/lbug-adapter.js';
+import { boundedCheckpointBeforeExit } from '../core/lbug/shutdown-helpers.js';
 import {
+  getOsPageSize,
   isLbugCheckpointIoError,
+  isLbugPageSizeFrameError,
+  isPageSizeAwareLadybug,
   isWalCorruptionError,
   parseWalCheckpointThreshold,
   WAL_RECOVERY_SUGGESTION,
@@ -36,6 +40,7 @@ import {
   GitNexusRcError,
 } from './analyze-config.js';
 import { runFullAnalysis } from '../core/run-analyze.js';
+import { getRuntimeFingerprint } from '../core/platform/capabilities.js';
 import { getMaxFileSizeBannerMessage } from '../core/ingestion/utils/max-file-size.js';
 import { warnMissingOptionalGrammars, getOptionalGrammarExtensions } from './optional-grammars.js';
 import { glob } from 'glob';
@@ -44,8 +49,26 @@ import { cliError } from './cli-message.js';
 import { EMBEDDING_DIMS_ERROR, normalizeEmbeddingDims } from './embedding-dims.js';
 import { formatElapsed } from './format-elapsed.js';
 import { isHfDownloadFailure } from '../core/embeddings/hf-env.js';
-import { safeUrl } from '../core/embeddings/http-client.js';
-import { isLocalEmbeddingRuntimeBlockerMessage } from '../core/embeddings/runtime-support.js';
+import {
+  isHttpEmbeddingDimsError,
+  isHttpEmbeddingError,
+  isHttpMode,
+  safeUrl,
+} from '../core/embeddings/http-client.js';
+import {
+  isLocalEmbeddingRuntimeBlockerMessage,
+  isMissingLocalEmbeddingStackMessage,
+  localEmbeddingPrefixUnloadableMessage,
+  localEmbeddingStackMissingMessage,
+} from '../core/embeddings/runtime-support.js';
+import {
+  ANALYZE_EMBEDDING_INSTALL_TIMEOUT_MS,
+  getEmbeddingInstallTimeoutMs,
+  getEmbeddingRuntimeDir,
+  installEmbeddingRuntime,
+  isPrefixRuntimeLoadable,
+  resolveEmbeddingRuntime,
+} from '../core/embeddings/runtime-install.js';
 import { warnIfNpm11NpxRisk } from './resolve-invocation.js';
 
 // Capture stderr.write at module load BEFORE anything (LadybugDB native
@@ -623,7 +646,7 @@ export interface AnalyzeOptions {
    * default-on case.
    */
   stats?: boolean;
-  /** Skip installing standard GitNexus skill files to .claude/skills/gitnexus/. */
+  /** Skip installing standard GitNexus skill files directly under .claude/skills/. */
   skipSkills?: boolean;
   /**
    * Default branch for the generated regression-compare example (#243). From
@@ -737,6 +760,17 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
     await analyzeCommandImpl(inputPath, options);
   } finally {
     restoreAnalyzeEnv(envSnap);
+  }
+  // If analyzeCommandImpl returned via a soft `process.exitCode = 1` error path
+  // while LadybugDB native handles are still open, the event loop won't drain and
+  // the process would HANG (#2264 review P1). The full analyze paths skip-close the
+  // DB — handles are left open and reclaimed by process.exit — so a soft return
+  // after a real analyze must force the exit. The success path never reaches here
+  // (analyzeCommandImpl calls process.exit(0) itself); early-validation errors and
+  // unit tests that mock runFullAnalysis never open the DB, so isLbugReady() is
+  // false and the soft return is preserved.
+  if (isLbugReady()) {
+    process.exit(typeof process.exitCode === 'number' ? process.exitCode : 1);
   }
 };
 
@@ -1075,6 +1109,60 @@ const analyzeCommandImpl = async (
     );
   }
 
+  // On-demand embedding runtime (#2370): when the optional stack was pruned at
+  // install time (proxy-blocked NuGet download in onnxruntime-node's
+  // postinstall), heal it here instead of failing later in the pipeline. The
+  // install goes through the user's npm registry config (mirrors/proxies
+  // apply) with --ignore-scripts, so no NuGet download is attempted. Runs
+  // before bar.start() like the sibling validations above.
+  if (embeddingsEnabled && !isHttpMode()) {
+    const resolved = resolveEmbeddingRuntime();
+    // Resolved-but-unloadable (a populated prefix on a Node with no
+    // module.registerHooks), or nothing installed on such a Node: fail fast with
+    // capability guidance instead of dying mid-pipeline over an unusable prefix
+    // or downloading a runtime the loader can't reach. A package-sourced stack
+    // never needs the hook, so it is excluded. --embeddings was explicitly
+    // requested and this failure is deterministic, so fail fast rather than
+    // silently degrading to BM25 (distinct from a transient install timeout).
+    if (!isPrefixRuntimeLoadable() && (resolved === null || resolved.source === 'runtime-prefix')) {
+      cliError(`  ${localEmbeddingPrefixUnloadableMessage().replace(/\n/g, '\n  ')}\n`, {
+        recoveryHint: 'local-embedding-stack-missing',
+      });
+      process.exitCode = 1;
+      return;
+    }
+    // On-demand embedding runtime (#2370): when the optional stack was pruned at
+    // install time (proxy-blocked NuGet download in onnxruntime-node's
+    // postinstall), heal it here instead of failing later in the pipeline. The
+    // install goes through the user's npm registry config (mirrors/proxies
+    // apply) with --ignore-scripts, so no NuGet download is attempted.
+    if (resolved === null) {
+      console.log(
+        `  Local embedding runtime is not installed (optional packages were skipped at install time).\n` +
+          `  Downloading it now from your npm registry into ${getEmbeddingRuntimeDir()} …\n` +
+          `  (one-time; rerun manually anytime with \`gitnexus embeddings install\`)\n`,
+      );
+      try {
+        // Short deadline (env override still wins): analyze is interactive, so a
+        // blackholed proxy must not stall the whole index run for the 10-minute
+        // default — fail over to the guidance below instead.
+        await installEmbeddingRuntime(
+          {},
+          getEmbeddingInstallTimeoutMs(ANALYZE_EMBEDDING_INSTALL_TIMEOUT_MS),
+        );
+        console.log('  Embedding runtime installed.\n');
+      } catch (err) {
+        cliError(
+          `  Could not install the embedding runtime: ${err instanceof Error ? err.message : String(err)}\n\n` +
+            `  ${localEmbeddingStackMissingMessage().replace(/\n/g, '\n  ')}\n`,
+          { recoveryHint: 'local-embedding-stack-missing' },
+        );
+        process.exitCode = 1;
+        return;
+      }
+    }
+  }
+
   if (options.repairFts && options.force) {
     cliError(
       '  Cannot combine `--repair-fts` with `--force`. ' +
@@ -1168,13 +1256,18 @@ const analyzeCommandImpl = async (
     aborted = true;
     bar.stop();
     console.log('\n  Interrupted — cleaning up...');
-    closeLbug()
-      .catch(() => {})
-      .finally(async () => {
+    // Bounded CHECKPOINT-then-exit (#2264 review P3): skip the native close (the
+    // LadybugDB destructor can double-free after --pdg writes), but don't hang
+    // behind a long --pdg COPY holding the connection lock — bound it so a single
+    // Ctrl-C stays responsive; the WAL replays on the next analyze. A second
+    // Ctrl-C (`if (aborted) process.exit(1)` above) remains the escape hatch.
+    void boundedCheckpointBeforeExit({
+      exitCode: 130,
+      beforeExit: async () => {
         const { flushLoggerSync } = await import('../core/logger.js');
         flushLoggerSync();
-        process.exit(130);
-      });
+      },
+    });
   };
   process.on('SIGINT', sigintHandler);
 
@@ -1273,6 +1366,12 @@ const analyzeCommandImpl = async (
         // Extra fetch-wrapper names from `.gitnexusrc` (#1589/#1852 residual);
         // forwarded to the routes phase consumer scan.
         fetchWrappers: options.fetchWrappers,
+        // The CLI always process.exit()s after this returns (success path at the
+        // end of analyzeCommandImpl, error/interrupt paths via process.exit too),
+        // so the finalize close skips the native conn/db close — it can double-free
+        // in LadybugDB's ClientContext destructor after --pdg writes (#2264). The
+        // CHECKPOINT keeps the index durable; process exit reclaims the handles.
+        skipNativeCloseOnExit: true,
       },
       {
         onProgress: (_phase, percent, message) => {
@@ -1294,10 +1393,11 @@ const analyzeCommandImpl = async (
       // preserving the rest of the block (incl. --skills community rows). No-op
       // when the value already matches, so a routine up-to-date run is silent
       // (#1996 tri-review P2).
-      // Only refresh the repo-root AGENTS.md/CLAUDE.md base_ref for the
-      // PRIMARY/flat index (#2106 R2). A non-primary branch's up-to-date
-      // analyze must not churn the committed AGENTS.md — this mirrors the
-      // in-pipeline `if (!placement.branch)` gate around generateAIContextFiles.
+      // Only refresh the repo-root AGENTS.md/CLAUDE.md base_ref for the flat
+      // WORKSPACE index (#2106 R2, #2354). A pinned --branch sub-index's
+      // up-to-date analyze must not churn the committed AGENTS.md — this
+      // mirrors the in-pipeline `if (!placement.branch)` gate around
+      // generateAIContextFiles.
       let baseRefRefreshed: string[] = [];
       if (result.isPrimaryBranch !== false) {
         try {
@@ -1523,6 +1623,70 @@ const analyzeCommandImpl = async (
       return;
     }
 
+    // DB-family wipe failure (#2409, tri-review 4669518496 P2-4): the rebuild
+    // could not verify the LadybugDB file family was removed — usually another
+    // process (MCP server, serve worker, antivirus) holding the index open.
+    // Keyed on the error *type* (repo norm from #2385), never message text.
+    // The message itself is fully self-contained (survivor paths + stop-MCP /
+    // AV-exclusion / re-run guidance) because the serve worker forwards only
+    // `err.message` over IPC — this branch just renders it without the
+    // raw-stack fallback below.
+    if (err instanceof LbugWipeError) {
+      cliError(`  ${msg.replace(/\n/g, '\n  ')}\n`, {
+        recoveryHint: 'lbug-wipe-failed',
+      });
+      process.exitCode = 1;
+      return;
+    }
+
+    // Buffer-manager frame-release failure on non-4K-page kernels (#1231).
+    // LadybugDB <= 0.17.x assumed 4 KiB OS pages when releasing evicted
+    // frames; Raspberry Pi 5 (16 KiB kernel pages) and other arm64 systems
+    // crash mid-COPY with a raw native message. 0.18.0 detects the page size
+    // at runtime, so the actionable fix depends on which side of that
+    // boundary the installed @ladybugdb/core is.
+    if (isLbugPageSizeFrameError(err)) {
+      const pageSize = getOsPageSize();
+      const ladybug = getRuntimeFingerprint().ladybugdb;
+      const pageLine =
+        pageSize !== undefined && pageSize !== 4096
+          ? `  Detected OS page size: ${pageSize} bytes (non-4K — e.g. Raspberry Pi 5 16K kernel, Asahi Linux).\n`
+          : '';
+      // The upgrade variant must not assert version facts about an unknown
+      // version — mirror the doctor-side wording rule (#2424 review R2).
+      const upgradeIntro =
+        ladybug === undefined
+          ? `  The installed @ladybugdb/core version is unknown — it may predate the\n` +
+            `  runtime OS-page-size detection added in 0.18.0.\n`
+          : `  The installed @ladybugdb/core (${ladybug}) assumes 4 KiB pages in its buffer\n` +
+            `  manager.\n`;
+      const guidance = isPageSizeAwareLadybug(ladybug)
+        ? `  The installed @ladybugdb/core (${ladybug}) already detects the OS page size at runtime,\n` +
+          `  so this configuration was expected to work. Please report it:\n` +
+          `    https://github.com/abhigyanpatwari/GitNexus/issues/1231\n` +
+          `  and include: gitnexus --version, node --version, getconf PAGE_SIZE, uname -a,\n` +
+          `  and the full error message above.\n`
+        : upgradeIntro +
+          `  Upgrade GitNexus to a release that bundles @ladybugdb/core >= 0.18.0\n` +
+          `  (gitnexus >= 1.6.9), which detects the OS page size at runtime:\n` +
+          `    npm install -g gitnexus@latest\n` +
+          `  Last-resort workaround on Raspberry Pi 5: boot the 4 KiB-page kernel\n` +
+          `  (config.txt: kernel=kernel8.img), at the cost of Pi 5 optimizations.\n`;
+      // Embed the raw native text (indented, no stack) so "the full error
+      // message above" is fulfillable — same idiom as the LbugWipeError
+      // branch. The errno suffix and the 0.18.0 guard's frame/granule numbers
+      // are the discriminating triage content (#2424 review P2).
+      cliError(
+        `  LadybugDB's buffer manager failed to release frame memory.\n` +
+          `    ${msg.replace(/\n/g, '\n    ')}\n` +
+          pageLine +
+          guidance,
+        { recoveryHint: 'lbug-page-size', pageSize, ladybugVersion: ladybug },
+      );
+      process.exitCode = 1;
+      return;
+    }
+
     // Local embedding runtime unsupported on this platform (macOS Intel ships no
     // darwin/x64 ONNX native binding, #1515). The guard threw before importing
     // transformers.js, so this is a clean, actionable GitNexus message. Checked
@@ -1537,10 +1701,75 @@ const analyzeCommandImpl = async (
       return;
     }
 
+    // The optional embedding stack (@huggingface/transformers → onnxruntime-node)
+    // was pruned at install time — usually a proxy-blocked NuGet download during
+    // onnxruntime-node's postinstall (#2370). Checked before the generic
+    // module-not-found "installation may be corrupt" hint below, which would
+    // otherwise misdiagnose a deliberate optional-dependency skip.
+    if (isMissingLocalEmbeddingStackMessage(msg)) {
+      cliError(`  ${msg.replace(/\n/g, '\n  ')}\n`, {
+        recoveryHint: 'local-embedding-stack-missing',
+      });
+      process.exitCode = 1;
+      return;
+    }
+
+    // Malformed GITNEXUS_EMBEDDING_DIMS env var (#2385). readConfig() throws a
+    // plain Error (a config mistake, not an endpoint failure), surfacing here from
+    // httpEmbed()->readConfig() inside the analysis run. Show a clean config
+    // message rather than a raw stack dump. The --embedding-dims CLI flag is
+    // validated up front (EMBEDDING_DIMS_ERROR); this covers the env-var path.
+    // Checked before the endpoint/HF branches: it is a plain Error, so
+    // isHttpEmbeddingError() is false and the HF network heuristic must not claim it.
+    if (isHttpEmbeddingDimsError(msg)) {
+      cliError(`  ${msg.replace(/\n/g, '\n  ')}\n`, {
+        recoveryHint: 'embedding-dims-invalid',
+      });
+      process.exitCode = 1;
+      return;
+    }
+
+    // Custom HTTP embedding endpoint failure (#2385). When a `--embedding-base-url`
+    // is configured, HTTP mode never downloads a model — so a failure talking to
+    // that endpoint must NOT show the huggingface-download guidance. Keyed on the
+    // error *type* (HttpEmbeddingError), not its message text, so it stays correct
+    // regardless of locale or wording. Checked before the HF branch, whose network
+    // heuristic (`fetch failed` / `ECONNREFUSED`) would otherwise also match a
+    // wrapped endpoint-connection error. The header is deliberately neutral: this
+    // type covers both never-reached failures (connection/timeout/DNS) and
+    // reached-but-failed ones (4xx/5xx, dimension/shape mismatch), so it must not
+    // assert "unreachable". The thrown `msg` carries the specific reason (and the
+    // masked URL where one applies), so it is surfaced verbatim.
+    if (isHttpEmbeddingError(err)) {
+      cliError(
+        `  The custom embedding endpoint request failed.\n` +
+          `  ${msg.replace(/\n/g, '\n  ')}\n` +
+          `  Suggestions:\n` +
+          `    1. Verify the endpoint URL is reachable and running ` +
+          `(--embedding-base-url / GITNEXUS_EMBEDDING_URL: host, port, /v1 path).\n` +
+          `    2. Confirm the model name and embedding dimensions match what the endpoint serves.\n` +
+          `    3. Re-run without --embeddings to index without vectors.\n`,
+        { recoveryHint: 'http-embedding-endpoint-error' },
+      );
+      process.exitCode = 1;
+      return;
+    }
+
+    // isHttpMode() is a pure presence probe (URL+MODEL) that never throws — a
+    // malformed GITNEXUS_EMBEDDING_DIMS is handled by the dims branch above — so
+    // no defensive try/catch is needed here (#2385).
+    const inHttpMode = isHttpMode();
+
     // HF download failure — show clean guidance without the raw stack trace.
     // Checked before writeFatalToStderr so the user sees one focused message
     // rather than a stack-trace dump followed by a second remediation block.
-    if (isHfDownloadFailure(msg) || msg.includes('Failed to download embedding model')) {
+    // Gated on !inHttpMode: with a custom endpoint configured no model download
+    // is ever attempted, so a network error there is the endpoint's, handled by
+    // the HttpEmbeddingError branch above — never HF's (#2385).
+    if (
+      (isHfDownloadFailure(msg) || msg.includes('Failed to download embedding model')) &&
+      !inHttpMode
+    ) {
       cliError(
         `  The embedding model could not be downloaded.\n` +
           `  huggingface.co may be unreachable from your network\n` +

@@ -2,14 +2,14 @@ import { readdirSync, type Dirent } from 'fs';
 import { join, relative } from 'path';
 
 /** C++ header extensions to scan for in the workspace. */
-const HEADER_EXTENSIONS = new Set(['.h', '.hpp', '.hxx', '.hh']);
+const HEADER_EXTENSIONS = new Set(['.h', '.hpp', '.hxx', '.hh', '.cuh']);
 
 /**
  * Walk `repoPath` recursively and return relative paths of all C++ header files.
  * Used by `loadResolutionConfig` so the C++ resolver can resolve `#include`
  * targets that live in header files.
  *
- * Scans for: .h, .hpp, .hxx, .hh
+ * Scans for: .h, .hpp, .hxx, .hh, .cuh
  */
 export function scanCppHeaderFiles(repoPath: string): ReadonlySet<string> {
   const headers = new Set<string>();

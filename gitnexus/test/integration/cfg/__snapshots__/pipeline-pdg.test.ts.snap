@@ -1,0 +1,93 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`U7 — C-family worker-mode --pdg pipeline > C#: --pdg off is byte-identical (zero PDG nodes/edges, stable golden digest) 1`] = `
+{
+  "byRelType": {
+    "CALLS": 7,
+    "DEFINES": 3,
+    "HAS_METHOD": 16,
+    "MEMBER_OF": 9,
+    "STEP_IN_PROCESS": 3,
+  },
+  "byType": {
+    "Class": 2,
+    "Community": 3,
+    "File": 1,
+    "Function": 1,
+    "Method": 15,
+    "Namespace": 1,
+    "Process": 1,
+  },
+  "edgeDigest": "0497d26dbe060d36426bf10cde5db490a6d82c013e0835296723a4c00ef7442a",
+  "relationships": 38,
+  "symbols": 24,
+}
+`;
+
+exports[`U7 — C-family worker-mode --pdg pipeline > C++: --pdg off is byte-identical (zero PDG nodes/edges, stable golden digest) 1`] = `
+{
+  "byRelType": {
+    "DEFINES": 6,
+  },
+  "byType": {
+    "File": 1,
+    "Function": 6,
+  },
+  "edgeDigest": "4e8cfcfe7cbde0d0a858e2f5db8af82713fbb42527d23e6fabf704382d8088df",
+  "relationships": 6,
+  "symbols": 7,
+}
+`;
+
+exports[`U7 — C-family worker-mode --pdg pipeline > C: --pdg off is byte-identical (zero PDG nodes/edges, stable golden digest) 1`] = `
+{
+  "byRelType": {
+    "DEFINES": 9,
+  },
+  "byType": {
+    "File": 1,
+    "Function": 9,
+  },
+  "edgeDigest": "887c0c3f91a858df6333d2105f03160b3232ff625f6dc04328425a0bbbd58cd3",
+  "relationships": 9,
+  "symbols": 10,
+}
+`;
+
+exports[`U7 — C-family worker-mode --pdg pipeline > Go: --pdg off is byte-identical (zero PDG nodes/edges, stable golden digest) 1`] = `
+{
+  "byRelType": {
+    "CALLS": 14,
+    "DEFINES": 28,
+    "MEMBER_OF": 22,
+  },
+  "byType": {
+    "Community": 8,
+    "File": 1,
+    "Function": 28,
+  },
+  "edgeDigest": "33164ebef537538cce43ab1a518d8a5d4944d6d9ad059973b974d3b0fea7caaa",
+  "relationships": 64,
+  "symbols": 37,
+}
+`;
+
+exports[`U7 — C-family worker-mode --pdg pipeline > Java: --pdg off is byte-identical (zero PDG nodes/edges, stable golden digest) 1`] = `
+{
+  "byRelType": {
+    "CALLS": 10,
+    "DEFINES": 1,
+    "HAS_METHOD": 21,
+    "MEMBER_OF": 14,
+  },
+  "byType": {
+    "Class": 1,
+    "Community": 4,
+    "File": 1,
+    "Method": 21,
+  },
+  "edgeDigest": "488a3f80683f3e2fd0160847f22537cdd1d48f1e8f34c929562854459abfe03a",
+  "relationships": 46,
+  "symbols": 27,
+}
+`;

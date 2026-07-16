@@ -20,13 +20,23 @@ import {
 import { SupportedLanguages } from 'gitnexus-shared';
 import { createClassExtractor } from '../class-extractors/generic.js';
 import { phpClassConfig } from '../class-extractors/configs/php.js';
-import { defineLanguage, type AstFrameworkPatternConfig } from '../language-provider.js';
+import { createPhpCfgVisitor } from '../cfg/visitors/php.js';
+import {
+  defineLanguage,
+  type AstFrameworkPatternConfig,
+  type CaptureMap,
+} from '../language-provider.js';
 import { typeConfig as phpConfig } from '../type-extractors/php.js';
 import { phpExportChecker } from '../export-detection.js';
 import { createImportResolver } from '../import-resolvers/resolver-factory.js';
 import { phpImportConfig } from '../import-resolvers/configs/php.js';
 import { PHP_QUERIES } from '../tree-sitter-queries.js';
-import { findDescendant, extractStringContent, type SyntaxNode } from '../utils/ast-helpers.js';
+import {
+  findDescendant,
+  extractStringContent,
+  createLeadingDocDescriptionExtractor,
+  type SyntaxNode,
+} from '../utils/ast-helpers.js';
 import type { NodeLabel } from 'gitnexus-shared';
 import { createFieldExtractor } from '../field-extractors/generic.js';
 import { phpConfig as phpFieldConfig } from '../field-extractors/configs/php.js';
@@ -220,22 +230,32 @@ function extractEloquentRelationDescription(methodNode: SyntaxNode): string | nu
   return null;
 }
 
+/** PHPDoc-docblock fallback, shared with the other leading-comment languages. */
+const phpLeadingDocFallback = createLeadingDocDescriptionExtractor();
+
 /**
  * LanguageProvider.descriptionExtractor implementation for PHP.
- * Extracts Eloquent model property metadata and relationship descriptions.
+ * Eloquent model property metadata and relationship descriptions take
+ * precedence (they are richer than prose); otherwise documentable symbols fall
+ * back to their leading PHPDoc docblock (issue #2270), mirroring the other
+ * leading-comment languages.
  */
 function phpDescriptionExtractor(
   nodeLabel: NodeLabel,
   nodeName: string,
-  captureMap: Record<string, SyntaxNode>,
+  captureMap: CaptureMap,
 ): string | undefined {
-  if (nodeLabel === 'Property' && captureMap['definition.property']) {
-    return extractPhpPropertyDescription(nodeName, captureMap['definition.property']) ?? undefined;
+  const propertyNode = captureMap['definition.property'];
+  if (nodeLabel === 'Property' && propertyNode) {
+    const eloquentProperty = extractPhpPropertyDescription(nodeName, propertyNode);
+    if (eloquentProperty) return eloquentProperty;
   }
-  if (nodeLabel === 'Method' && captureMap['definition.method']) {
-    return extractEloquentRelationDescription(captureMap['definition.method']) ?? undefined;
+  const methodNode = captureMap['definition.method'];
+  if (nodeLabel === 'Method' && methodNode) {
+    const eloquentRelation = extractEloquentRelationDescription(methodNode);
+    if (eloquentRelation) return eloquentRelation;
   }
-  return undefined;
+  return phpLeadingDocFallback(nodeLabel, nodeName, captureMap);
 }
 
 /** Detect Laravel route files by path convention. */
@@ -297,6 +317,7 @@ export const phpProvider = defineLanguage({
   builtInNames: BUILT_INS,
   // ── RFC #909 Ring 3: scope-based resolution hooks ──────────────────────
   emitScopeCaptures: emitPhpScopeCaptures,
+  cfgVisitor: createPhpCfgVisitor(),
   interpretImport: interpretPhpImport,
   interpretTypeBinding: interpretPhpTypeBinding,
   // LanguageProvider uses (def, callsite); phpArityCompatibility uses (def, callsite) — same.

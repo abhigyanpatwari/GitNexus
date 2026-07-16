@@ -21,12 +21,34 @@ const runFullAnalysisMock = vi.fn();
 // also match the blocker error and prove the blocker branch still wins.
 const isHfDownloadFailureMock = vi.fn(() => false);
 
+// Drive analyze's auto-install / capability gate (#2372). Defaults keep the
+// existing tests on the happy path (package-sourced, loadable → gate skipped).
+const resolveEmbeddingRuntimeMock = vi.fn<() => { source: string } | null>(() => ({
+  source: 'package',
+}));
+const isPrefixRuntimeLoadableMock = vi.fn(() => true);
+const installEmbeddingRuntimeMock = vi.fn(async () => undefined);
+vi.mock('../../src/core/embeddings/runtime-install.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../src/core/embeddings/runtime-install.js')>()),
+  resolveEmbeddingRuntime: () => resolveEmbeddingRuntimeMock(),
+  isPrefixRuntimeLoadable: () => isPrefixRuntimeLoadableMock(),
+  installEmbeddingRuntime: (...args: unknown[]) => installEmbeddingRuntimeMock(...args),
+  getEmbeddingRuntimeDir: () => '/fake/embedding-runtime',
+}));
+
 vi.mock('../../src/core/run-analyze.js', () => ({
   runFullAnalysis: runFullAnalysisMock,
 }));
 
 vi.mock('../../src/core/lbug/lbug-adapter.js', () => ({
   closeLbug: vi.fn(async () => undefined),
+  closeLbugBeforeExit: vi.fn(async () => undefined),
+  isLbugReady: vi.fn(() => false),
+  // Stub class for the CLI's `err instanceof LbugWipeError` branch (#2409,
+  // tri-review 4669518496 P2-4): instanceof must evaluate (not TypeError on
+  // an undefined binding) and correctly NOT claim this suite's errors. Same
+  // pattern as the RegistryNameCollisionError stub below.
+  LbugWipeError: class LbugWipeError extends Error {},
 }));
 
 vi.mock('../../src/storage/repo-manager.js', () => ({
@@ -65,6 +87,12 @@ describe('analyzeCommand local-embedding-runtime error handling', () => {
     runFullAnalysisMock.mockReset();
     isHfDownloadFailureMock.mockReset();
     isHfDownloadFailureMock.mockReturnValue(false);
+    resolveEmbeddingRuntimeMock.mockReset();
+    resolveEmbeddingRuntimeMock.mockReturnValue({ source: 'package' });
+    isPrefixRuntimeLoadableMock.mockReset();
+    isPrefixRuntimeLoadableMock.mockReturnValue(true);
+    installEmbeddingRuntimeMock.mockReset();
+    installEmbeddingRuntimeMock.mockResolvedValue(undefined);
     process.exitCode = undefined;
     // Ensure ensureHeap() short-circuits (heap already at target size)
     process.env.NODE_OPTIONS = `${process.env.NODE_OPTIONS ?? ''} --max-old-space-size=8192`.trim();
@@ -146,6 +174,73 @@ describe('analyzeCommand local-embedding-runtime error handling', () => {
     const records = cap.records();
     expect(records.some((r) => r.recoveryHint === 'local-embedding-unsupported')).toBe(false);
 
+    cap.restore();
+  });
+});
+
+describe('analyzeCommand — prefix-runtime capability gate (#2372)', () => {
+  beforeEach(() => {
+    vi.resetModules();
+    runFullAnalysisMock.mockReset();
+    isHfDownloadFailureMock.mockReset().mockReturnValue(false);
+    resolveEmbeddingRuntimeMock.mockReset();
+    isPrefixRuntimeLoadableMock.mockReset();
+    installEmbeddingRuntimeMock.mockReset().mockResolvedValue(undefined);
+    process.exitCode = undefined;
+    process.env.NODE_OPTIONS = `${process.env.NODE_OPTIONS ?? ''} --max-old-space-size=8192`.trim();
+  });
+
+  it('fails fast without installing when nothing is installed and the prefix is unloadable', async () => {
+    resolveEmbeddingRuntimeMock.mockReturnValue(null);
+    isPrefixRuntimeLoadableMock.mockReturnValue(false);
+
+    const { _captureLogger } = await import('../../src/core/logger.js');
+    const cap = _captureLogger();
+    const { analyzeCommand } = await import('../../src/cli/analyze.js');
+    await analyzeCommand(undefined, { embeddings: true });
+
+    expect(process.exitCode).toBe(1);
+    expect(installEmbeddingRuntimeMock).not.toHaveBeenCalled();
+    const record = cap.records().find((r) => r.recoveryHint === 'local-embedding-stack-missing');
+    expect(typeof record?.msg === 'string' && record.msg).toMatch(/module\.registerHooks/);
+    cap.restore();
+  });
+
+  it('fails fast on a resolved-but-unloadable prefix (the previously-uncaught state)', async () => {
+    resolveEmbeddingRuntimeMock.mockReturnValue({ source: 'runtime-prefix' });
+    isPrefixRuntimeLoadableMock.mockReturnValue(false);
+
+    const { _captureLogger } = await import('../../src/core/logger.js');
+    const cap = _captureLogger();
+    const { analyzeCommand } = await import('../../src/cli/analyze.js');
+    await analyzeCommand(undefined, { embeddings: true });
+
+    expect(process.exitCode).toBe(1);
+    expect(installEmbeddingRuntimeMock).not.toHaveBeenCalled();
+    expect(cap.records().some((r) => r.recoveryHint === 'local-embedding-stack-missing')).toBe(
+      true,
+    );
+    cap.restore();
+  });
+
+  it('installs with a shorter-than-default timeout when nothing is installed and the prefix is loadable', async () => {
+    resolveEmbeddingRuntimeMock.mockReturnValue(null);
+    isPrefixRuntimeLoadableMock.mockReturnValue(true);
+    // Reject afterwards so analyze bails right after the install, isolating the gate.
+    runFullAnalysisMock.mockRejectedValue(new Error('stop after install'));
+
+    const { _captureLogger } = await import('../../src/core/logger.js');
+    const cap = _captureLogger();
+    const { ANALYZE_EMBEDDING_INSTALL_TIMEOUT_MS } =
+      await import('../../src/core/embeddings/runtime-install.js');
+    const { analyzeCommand } = await import('../../src/cli/analyze.js');
+    await analyzeCommand(undefined, { embeddings: true });
+
+    expect(installEmbeddingRuntimeMock).toHaveBeenCalledTimes(1);
+    // analyze must pass the shorter deadline so a blackholed proxy can't stall
+    // the run for the 10-minute default.
+    const timeoutArg = installEmbeddingRuntimeMock.mock.calls[0][1] as number;
+    expect(timeoutArg).toBe(ANALYZE_EMBEDDING_INSTALL_TIMEOUT_MS);
     cap.restore();
   });
 });

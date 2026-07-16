@@ -30,6 +30,7 @@ import { postResultCloneSafe } from './post-result.js';
 import { mergeResult } from './result-merge.js';
 import type { SymbolTableReader } from '../model/symbol-table.js';
 import type {
+  ExtractedRouterConstructorPrefix,
   ExtractedRouterInclude,
   ExtractedRouterImport,
   ExtractedRouterModuleAlias,
@@ -130,7 +131,12 @@ import {
   persistDurableParsedFileShardSync,
 } from '../../../storage/parsedfile-store.js';
 import { extractLaravelRoutes, type ExtractedRoute } from '../route-extractors/laravel.js';
-import { collectFunctionCfgs, DEFAULT_PDG_MAX_FUNCTION_LINES } from '../cfg/collect.js';
+import type { SharedSpringType } from '../route-extractors/spring-shared.js';
+import {
+  collectFunctionCfgs,
+  DEFAULT_PDG_MAX_FUNCTION_LINES,
+  type CfgSkipCounts,
+} from '../cfg/collect.js';
 
 import { logger } from '../../logger.js';
 export type { ExtractedRoute } from '../route-extractors/laravel.js';
@@ -307,12 +313,49 @@ export interface ExtractedDecoratorRoute {
    */
   decoratorReceiver?: string;
   /**
+   * Raw text of a non-literal decorator path argument (`#2391`), e.g.
+   * `API_V1_WIDGETS_GET` or `API_V1 + "/widgets"`. Present only when the
+   * decorator's first argument was NOT a string literal, in which case
+   * `routePath` is empty and parse-impl resolves the constant cross-file (or
+   * drops the route on failure). Absent for ordinary string-literal routes.
+   */
+  routePathExpr?: string;
+  /**
+   * Parsed operand list for {@link routePathExpr} — an identifier reference or a
+   * `+`-concatenation, in the {@link Operand} shape the constant resolver folds.
+   * `undefined` when the expression was not a foldable string form (e.g. an
+   * attribute access), in which case the route is dropped at resolution.
+   */
+  routePathOperands?: Operand[];
+  /**
    * FastAPI `app.include_router(prefix='/x')` prefix that applies to
    * this route. Filled by parse-impl after cross-file aggregation; the
    * routes phase joins it via `normalizeExtractedRoutePath`. `null` /
    * absent ⇒ no prefix applies.
    */
   prefix?: string | null;
+  /**
+   * Name of the handler the route decorator sits on (the decorated
+   * method/function — e.g. `create` for `@PostMapping("/orders") Order create()`).
+   * Captured at extraction where the decorated definition node is in hand, so
+   * the routes phase can resolve it to a real handler symbol UID via the
+   * SemanticModel (same `(filePath, name) → nodeId` lookup Laravel routes use).
+   * Absent when the extractor could not identify the decorated definition;
+   * resolution then falls back (the Route node simply carries no handlerSymbolId).
+   */
+  handlerName?: string;
+}
+
+/**
+ * One Python file's module-level string constants (#2391), used by parse-impl to
+ * resolve non-literal decorator route paths cross-file. `constants` is the
+ * `Map`-based {@link ModuleConstants} shape — it survives the worker
+ * `postMessage` boundary (structured clone) and the parse cache
+ * (`mapReplacer`/`mapReviver`) without conversion.
+ */
+export interface ExtractedModuleConstants {
+  filePath: string;
+  constants: ModuleConstants;
 }
 
 export interface ExtractedToolDef {
@@ -379,6 +422,16 @@ export interface ParseWorkerResult {
   decoratorRoutes: ExtractedDecoratorRoute[];
   routerIncludes: ExtractedRouterInclude[];
   routerImports: ExtractedRouterImport[];
+  routerConstructorPrefixes?: ExtractedRouterConstructorPrefix[];
+  /**
+   * Optional. Project-wide `SharedSpringType` view of route-defining
+   * class/interface declarations, produced by the provider's
+   * `extractRouteInheritanceTypes` hook (Java/Spring). parse-impl aggregates
+   * these and runs a cross-file pass that resolves interface-inherited routes
+   * into additional `decoratorRoutes` (#2288). Optional for cache backward
+   * compatibility; consumers must guard with `?? []`.
+   */
+  springTypes?: SharedSpringType[];
   /**
    * Optional. `from <pkg> import <module>` records from Python files
    * where `<module>` is later used as a Shape-A include receiver
@@ -389,6 +442,13 @@ export interface ParseWorkerResult {
    * predate the field; consumers must guard with `if (… ?? [])`).
    */
   routerModuleAliases?: ExtractedRouterModuleAlias[];
+  /**
+   * Per-file Python module-level string constants (#2391). parse-impl aggregates
+   * these into a repo-wide, file-path-keyed map and resolves each decorator
+   * route's non-literal path expression against it. Optional for cache backward
+   * compatibility (older entries predate the field; consumers guard with `?? []`).
+   */
+  moduleConstants?: ExtractedModuleConstants[];
   toolDefs: ExtractedToolDef[];
   ormQueries: ExtractedORMQuery[];
   constructorBindings: FileConstructorBindings[];
@@ -412,6 +472,17 @@ export interface ParseWorkerResult {
    * entries predate the field; consumers must guard with `?? []`.
    */
   skippedPaths?: SkippedPath[];
+  /**
+   * Per-language CFG-bearing functions skipped during the worker walk, bucketed
+   * by reason (#2195): too-many-lines, too-deeply-nested (the proactive
+   * depth-guard bail), or build-error. Survives the parse cache (a small number
+   * map, kept by `...result` in slimParseWorkerResultsForCache) and is merged +
+   * logged per-language in `dispatchChunkParse` (alongside `skippedLanguages`),
+   * so a CFG coverage gap is visible. Like that sibling telemetry the warn is
+   * emitted for freshly-parsed chunks, not re-emitted on a warm cache hit.
+   * Optional for cache backward-compatibility — older shards predate it.
+   */
+  cfgSkipped?: Record<string, CfgSkipCounts>;
   fileCount: number;
 }
 
@@ -871,6 +942,7 @@ const processBatch = (
     decoratorRoutes: [],
     routerIncludes: [],
     routerImports: [],
+    routerConstructorPrefixes: [],
     routerModuleAliases: [],
     toolDefs: [],
     ormQueries: [],
@@ -878,6 +950,7 @@ const processBatch = (
     fileScopeBindings: [],
     parsedFiles: [],
     skippedLanguages: {},
+    cfgSkipped: {},
     fileCount: 0,
   };
 
@@ -950,8 +1023,13 @@ const processBatch = (
         try {
           setLanguage(language, regularFiles[0].path);
           processFileGroup(regularFiles, language, queryString, result, onFileProcessed);
-        } catch {
-          // parser unavailable — skip this language group
+        } catch (err) {
+          // A throw here drops the whole language group — surface it to the pool
+          // (#2264) instead of silently skipping. The old empty catch hid real
+          // extractor/parser failures, not just an unavailable grammar.
+          reportWarning(
+            `Skipped ${regularFiles.length} ${language} file(s) after a processing error: ${err instanceof Error ? err.message : String(err)}`,
+          );
         }
       } else {
         result.skippedLanguages[language] =
@@ -965,8 +1043,12 @@ const processBatch = (
         try {
           setLanguage(language, tsxFiles[0].path);
           processFileGroup(tsxFiles, language, queryString, result, onFileProcessed);
-        } catch {
-          // parser unavailable — skip this language group
+        } catch (err) {
+          // See above — surface a tsx-group processing failure rather than
+          // silently dropping every file in it (#2264).
+          reportWarning(
+            `Skipped ${tsxFiles.length} ${language} (tsx) file(s) after a processing error: ${err instanceof Error ? err.message : String(err)}`,
+          );
         }
       } else {
         result.skippedLanguages[language] =
@@ -1125,6 +1207,29 @@ export function extractORMQueries(
 // import the function and its types directly from `route-extractors/`.
 
 import { extractFastAPIRouterBindings } from '../route-extractors/fastapi-router-bindings.js';
+import {
+  extractPythonModuleConstants,
+  parseConstOperands,
+  type ModuleConstants,
+  type Operand,
+} from '../route-extractors/python-const-resolver.js';
+
+/**
+ * Report a non-fatal worker issue to the pool over IPC so a caught error is not
+ * invisible to the operator (#2264). The pool logs it on the main thread AND
+ * resets the worker idle timer (so a worker grinding through failing files isn't
+ * falsely idle-evicted). Falls back to the local logger when there's no parent —
+ * this code also runs on the main thread in tests / the non-worker path. Fatal,
+ * group-aborting errors go through the message handler's
+ * `{ type: 'error', errorStack }` channel instead.
+ */
+function reportWarning(message: string): void {
+  if (parentPort) {
+    parentPort.postMessage({ type: 'warning', message });
+  } else {
+    logger.warn(message);
+  }
+}
 
 const processFileGroup = (
   files: ParseWorkerInput[],
@@ -1138,12 +1243,9 @@ const processFileGroup = (
     const lang = parser.getLanguage();
     query = new Parser.Query(lang, queryString);
   } catch (err) {
-    const message = `Query compilation failed for ${language}: ${err instanceof Error ? err.message : String(err)}`;
-    if (parentPort) {
-      parentPort.postMessage({ type: 'warning', message });
-    } else {
-      logger.warn(message);
-    }
+    reportWarning(
+      `Query compilation failed for ${language}: ${err instanceof Error ? err.message : String(err)}`,
+    );
     return;
   }
 
@@ -1183,11 +1285,17 @@ const processFileGroup = (
 
     let tree;
     try {
-      tree = parseSourceSafe(parser, parseContent, undefined, {
-        bufferSize: getTreeSitterBufferSize(parseContent),
-      });
+      tree = parseSourceSafe(
+        parser,
+        parseContent,
+        undefined,
+        {
+          bufferSize: getTreeSitterBufferSize(parseContent),
+        },
+        file.path,
+      );
     } catch (err) {
-      logger.warn(
+      reportWarning(
         `Failed to parse file ${file.path}: ${err instanceof Error ? err.message : String(err)}`,
       );
       continue;
@@ -1200,7 +1308,7 @@ const processFileGroup = (
     try {
       matches = query.matches(tree.rootNode);
     } catch (err) {
-      logger.warn(
+      reportWarning(
         `Query execution failed for ${file.path}: ${err instanceof Error ? err.message : String(err)}`,
       );
       continue;
@@ -1221,13 +1329,7 @@ const processFileGroup = (
       provider,
       parseContent,
       file.path,
-      (message) => {
-        if (parentPort) {
-          parentPort.postMessage({ type: 'warning', message });
-        } else {
-          logger.warn(message);
-        }
-      },
+      reportWarning,
       tree,
       scopeSourceKind,
     );
@@ -1258,23 +1360,41 @@ const processFileGroup = (
       // SCHEMA_BUMP + the pdg-folded chunk-hash key (see parse-cache.ts).
       if (PDG_ENABLED && provider.cfgVisitor) {
         // Isolate the CFG build per file: a throw here (an unexpected tree-sitter
-        // node shape, a deep-nesting stack overflow) must NOT propagate — it
-        // would escape processFileGroup to the language-group catch, which treats
-        // any throw as "parser unavailable" and silently drops EVERY remaining
-        // file in the group. Skip CFG for this one file; parsing + scope
-        // resolution proceed unaffected (CFG is a strictly-additive opt-in).
+        // node shape) must NOT propagate — it would escape processFileGroup to the
+        // language-group catch, which treats any throw as "parser unavailable" and
+        // silently drops EVERY remaining file in the group. Skip CFG for this one
+        // file; parsing + scope resolution proceed unaffected (CFG is a
+        // strictly-additive opt-in). collectFunctionCfgs ALSO isolates per
+        // FUNCTION now (#2195) — a deep-nesting bail or a single malformed function
+        // is counted in `skipped` and skipped, not allowed to lose the whole file.
         try {
-          const { cfgs } = collectFunctionCfgs(
+          const { cfgs, skipped } = collectFunctionCfgs(
             tree.rootNode,
             provider.cfgVisitor,
             file.path,
             PDG_MAX_FUNCTION_LINES,
+            // Embedded scripts (Vue SFC <script>) parse at row 0 but live at
+            // `lineOffset` in the file — shift the CFG into file coordinates so
+            // it joins its graph node and BasicBlock lines map to source.
+            lineOffset,
           );
           if (cfgs.length) withChannels = { ...withChannels, cfgSideChannel: cfgs };
+          // Surface per-function CFG skips per-language (#2195): merged + logged
+          // in mergeChunkResults. Only accumulate when something was skipped so
+          // the common (nothing-skipped) case stays a no-op.
+          if (skipped.tooManyLines || skipped.tooDeeplyNested || skipped.buildError) {
+            const agg = (result.cfgSkipped ??= {});
+            const prev = agg[language] ?? { tooManyLines: 0, tooDeeplyNested: 0, buildError: 0 };
+            agg[language] = {
+              tooManyLines: prev.tooManyLines + skipped.tooManyLines,
+              tooDeeplyNested: prev.tooDeeplyNested + skipped.tooDeeplyNested,
+              buildError: prev.buildError + skipped.buildError,
+            };
+          }
         } catch (err) {
-          const message = `CFG build failed for ${file.path}: ${err instanceof Error ? err.message : String(err)}`;
-          if (parentPort) parentPort.postMessage({ type: 'warning', message });
-          else logger.warn(message);
+          reportWarning(
+            `CFG build failed for ${file.path}: ${err instanceof Error ? err.message : String(err)}`,
+          );
         }
       }
 
@@ -1378,6 +1498,12 @@ const processFileGroup = (
       if (captureMap['decorator'] && captureMap['decorator.name']) {
         const decoratorName = captureMap['decorator.name'].text;
         const decoratorArg = captureMap['decorator.arg']?.text;
+        // #2391: the first positional arg captured as either a string node
+        // (`arg_str`, present even for the empty-string literal `""` which has no
+        // `string_content`) or a non-literal expression (`arg_expr`: an
+        // identifier or a `+`-concatenation).
+        const decoratorArgStr = captureMap['decorator.arg_str'];
+        const decoratorArgExpr = captureMap['decorator.arg_expr'];
         const decoratorReceiver = captureMap['decorator.receiver']?.text;
         const decoratorNode = captureMap['decorator'];
         // Store by the decorator's end line — the definition follows immediately after
@@ -1387,19 +1513,39 @@ const processFileGroup = (
         });
 
         if (ROUTE_DECORATOR_NAMES.has(decoratorName)) {
-          const routePath = decoratorArg || '';
           const method = decoratorName.replace('Mapping', '').toUpperCase();
           const httpMethod = ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'].includes(method)
             ? method
             : 'GET';
-          result.decoratorRoutes.push({
+          const base = {
             filePath: file.path,
-            routePath,
             httpMethod,
             decoratorName,
             lineNumber: decoratorNode.startPosition.row + lineOffset,
             ...(decoratorReceiver ? { decoratorReceiver } : {}),
-          });
+          };
+          if (decoratorArgStr) {
+            // String-literal path (the fast path, unchanged). Empty-string
+            // literal `""` has no `string_content` → `decoratorArg` undefined →
+            // routePath '' (a valid path under an APIRouter prefix).
+            result.decoratorRoutes.push({ ...base, routePath: decoratorArg ?? '' });
+          } else if (decoratorArgExpr) {
+            // #2391 non-literal path (imported/composed constant). Emit the raw
+            // expression + its operands for cross-file resolution in parse-impl;
+            // `routePath` stays empty until resolved (or the route is dropped).
+            const operands: Operand[] | null =
+              decoratorArgExpr.type === 'identifier'
+                ? [{ kind: 'ref', name: decoratorArgExpr.text }]
+                : parseConstOperands(decoratorArgExpr);
+            result.decoratorRoutes.push({
+              ...base,
+              routePath: '',
+              routePathExpr: decoratorArgExpr.text,
+              ...(operands ? { routePathOperands: operands } : {}),
+            });
+          }
+          // Otherwise the first arg is absent or an unsupported shape
+          // (attribute access, call, …) → skip; never a phantom `POST /`.
         }
         // MCP/RPC tool detection: @mcp.tool(), @app.tool(), @server.tool()
         if (decoratorName === 'tool') {
@@ -1624,6 +1770,13 @@ const processFileGroup = (
                         : routedFieldInfo?.type
                           ? { declaredType: routedFieldInfo.type }
                           : {}),
+                      ...(routedFieldInfo?.rawDeclaredType !== undefined
+                        ? { rawDeclaredType: routedFieldInfo.rawDeclaredType }
+                        : {}),
+                      ...(routedFieldInfo?.annotations !== undefined &&
+                      routedFieldInfo.annotations.length > 0
+                        ? { annotations: routedFieldInfo.annotations }
+                        : {}),
                       ...(routedFieldInfo?.visibility !== undefined
                         ? { visibility: routedFieldInfo.visibility }
                         : {}),
@@ -2075,7 +2228,12 @@ const processFileGroup = (
           if (parsedTemplateConstraints !== undefined) {
             constraintsTag = templateConstraintsIdTag(parsedTemplateConstraints);
           }
-        } catch {
+        } catch (err) {
+          // Optional C++ template-constraint enrichment: fall back to no tag, but
+          // surface the failure (#2264) — matches the CFG-build warning above.
+          reportWarning(
+            `Template-constraint extraction failed for ${file.path}: ${err instanceof Error ? err.message : String(err)}`,
+          );
           parsedTemplateConstraints = undefined;
           constraintsTag = '';
         }
@@ -2085,7 +2243,20 @@ const processFileGroup = (
         `${file.path}:${qualifiedName}${classTemplateTag}${arityTag}${parameterShapeTag}${constraintsTag}`,
       );
 
-      const description = provider.descriptionExtractor?.(nodeLabel, nodeName, captureMap);
+      let description: string | undefined;
+      try {
+        description = provider.descriptionExtractor?.(nodeLabel, nodeName, captureMap);
+      } catch (err) {
+        // A throw here (an unexpected tree-sitter node shape, a provider bug) must
+        // NOT propagate — it would escape processFileGroup to the language-group
+        // catch, which treats any throw as "parser unavailable" and silently drops
+        // every remaining file in the group. Mirrors the extractTemplateConstraints
+        // guard above (#2286 review).
+        reportWarning(
+          `Description extraction failed for ${file.path}: ${err instanceof Error ? err.message : String(err)}`,
+        );
+        description = undefined;
+      }
 
       let frameworkHint = definitionNode
         ? detectFrameworkFromAST(language, (definitionNode.text || '').slice(0, 300))
@@ -2157,6 +2328,15 @@ const processFileGroup = (
             const info = fieldMap?.get(nodeName);
             if (info) {
               declaredType = info.type ?? undefined;
+              // Mutate methodProps BEFORE the `{...methodProps}` spread below —
+              // rawDeclaredType is the verbatim generic type text (U1, PR #2200).
+              if (info.rawDeclaredType !== undefined) {
+                methodProps.rawDeclaredType = info.rawDeclaredType;
+              }
+              // Field annotations ('@Name' strings, U2 PR #2200) — omit when empty.
+              if (info.annotations !== undefined && info.annotations.length > 0) {
+                methodProps.annotations = info.annotations;
+              }
               methodProps.visibility = info.visibility;
               methodProps.isStatic = info.isStatic;
               methodProps.isReadonly = info.isReadonly;
@@ -2334,7 +2514,16 @@ const processFileGroup = (
         result.routerIncludes,
         result.routerImports,
         (result.routerModuleAliases ??= []),
+        (result.routerConstructorPrefixes ??= []),
       );
+      // #2391: harvest module-level string constants + from-imports so parse-impl
+      // can resolve non-literal decorator route paths cross-file. Only emit for
+      // files that carry something resolvable (a constant definition or an import
+      // binding) to keep the aggregate bounded on large repos.
+      const constants = extractPythonModuleConstants(tree);
+      if (constants.literals.size > 0 || constants.exprs.size > 0 || constants.imports.size > 0) {
+        (result.moduleConstants ??= []).push({ filePath: file.path, constants });
+      }
     }
 
     // Language-specific decorator route extraction via provider hook.
@@ -2344,6 +2533,14 @@ const processFileGroup = (
     if (provider.extractDecoratorRoutes) {
       const frameworkRoutes = provider.extractDecoratorRoutes(tree, file.path, lineOffset);
       for (const r of frameworkRoutes) result.decoratorRoutes.push(r);
+    }
+
+    // Project-wide route-inheritance type collection via provider hook (#2288).
+    // The per-file SharedSpringType views are aggregated by the parse phase,
+    // which then resolves interface-inherited routes cross-file.
+    if (provider.extractRouteInheritanceTypes) {
+      const springTypes = provider.extractRouteInheritanceTypes(tree, file.path);
+      if (springTypes.length > 0) (result.springTypes ??= []).push(...springTypes);
     }
 
     // Vue: emit CALLS edges for components used in <template>
@@ -2378,6 +2575,7 @@ let accumulated: ParseWorkerResult = {
   decoratorRoutes: [],
   routerIncludes: [],
   routerImports: [],
+  routerConstructorPrefixes: [],
   routerModuleAliases: [],
   toolDefs: [],
   ormQueries: [],
@@ -2385,6 +2583,7 @@ let accumulated: ParseWorkerResult = {
   fileScopeBindings: [],
   parsedFiles: [],
   skippedLanguages: {},
+  cfgSkipped: {},
   fileCount: 0,
 };
 let cumulativeProcessed = 0;
@@ -2517,6 +2716,7 @@ parentPort!.on('message', (msg: WorkerIncomingMessage) => {
         decoratorRoutes: [],
         routerIncludes: [],
         routerImports: [],
+        routerConstructorPrefixes: [],
         routerModuleAliases: [],
         toolDefs: [],
         ormQueries: [],
@@ -2524,6 +2724,7 @@ parentPort!.on('message', (msg: WorkerIncomingMessage) => {
         fileScopeBindings: [],
         parsedFiles: [],
         skippedLanguages: {},
+        cfgSkipped: {},
         fileCount: 0,
       };
       cumulativeProcessed = 0;

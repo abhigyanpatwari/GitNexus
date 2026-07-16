@@ -10,7 +10,7 @@
  *   - drive `analyzeCommand` with a mocked `runFullAnalysis` that throws
  *   - assert on process.exitCode and the logged output
  */
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const runFullAnalysisMock = vi.fn();
 
@@ -20,6 +20,13 @@ vi.mock('../../src/core/run-analyze.js', () => ({
 
 vi.mock('../../src/core/lbug/lbug-adapter.js', () => ({
   closeLbug: vi.fn(async () => undefined),
+  closeLbugBeforeExit: vi.fn(async () => undefined),
+  isLbugReady: vi.fn(() => false),
+  // Stub class for the CLI's `err instanceof LbugWipeError` branch (#2409,
+  // tri-review 4669518496 P2-4): instanceof must evaluate (not TypeError on
+  // an undefined binding) and correctly NOT claim this suite's errors. Same
+  // pattern as the RegistryNameCollisionError stub below.
+  LbugWipeError: class LbugWipeError extends Error {},
 }));
 
 vi.mock('../../src/storage/repo-manager.js', () => ({
@@ -48,12 +55,26 @@ vi.mock('../../src/core/embeddings/hf-env.js', () => ({
 // ─── Tests ───────────────────────────────────────────────────────────────────
 
 describe('analyzeCommand WAL corruption error handling', () => {
+  // Capture the host's NODE_OPTIONS once so afterEach can restore it cleanly.
+  // Without the restore, beforeEach's append accumulated duplicate
+  // --max-old-space-size tokens across tests (analyze-worker-pool-size.test.ts
+  // pattern; #2424 review).
+  const ORIGINAL_NODE_OPTIONS = process.env.NODE_OPTIONS;
+
   beforeEach(() => {
     vi.resetModules();
     runFullAnalysisMock.mockReset();
     process.exitCode = undefined;
     // Ensure ensureHeap() short-circuits (heap already at target size)
     process.env.NODE_OPTIONS = `${process.env.NODE_OPTIONS ?? ''} --max-old-space-size=8192`.trim();
+  });
+
+  afterEach(() => {
+    if (ORIGINAL_NODE_OPTIONS === undefined) {
+      delete process.env.NODE_OPTIONS;
+    } else {
+      process.env.NODE_OPTIONS = ORIGINAL_NODE_OPTIONS;
+    }
   });
 
   it('surfaces a clean recovery message on a re-wrapped WAL corruption error', async () => {

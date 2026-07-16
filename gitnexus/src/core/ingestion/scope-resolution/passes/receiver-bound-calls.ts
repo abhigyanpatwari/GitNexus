@@ -1,5 +1,5 @@
 /**
- * Receiver-bound CALLS / ACCESSES emit pass — generic 7-case
+ * Receiver-bound CALLS / ACCESSES emit pass — generic 8-case
  * dispatcher consuming `ScopeResolver` for the language-specific bits
  * (super recognizer, field-fallback toggle).
  *
@@ -9,19 +9,26 @@
  *   1. **super branch** — `provider.isSuperReceiver(receiverName)` →
  *      MRO walk skipping self
  *   2. **Case 0 (compound)** — receiver has `.` or `(` → compound resolver
- *   3. **Case 1 (namespace)** — receiver in `namespaceTargets` → exported def
- *   4. **Case 2 (class-name / static receiver)** — receiver resolves to a
+ *   3. **Case 0.5 (implicit `this` receiver)** — GATED: fires only when
+ *      the language sets `resolveThisViaEnclosingClass === true` AND the
+ *      receiver is literally `this` → enclosing-class + MRO chain walk
+ *      with C++ member-name-hiding semantics. Languages that leave the
+ *      toggle unset skip this case entirely; their `this` sites fall
+ *      through to Case 4 via the synthesized `this` typeBinding (which
+ *      also emits interface-dispatch fan-out that this case does not).
+ *   4. **Case 1 (namespace)** — receiver in `namespaceTargets` → exported def
+ *   5. **Case 2 (class-name / static receiver)** — receiver resolves to a
  *      class-like binding (Class/Interface/Struct/Record/Enum/Trait) → MRO
  *      walk on that class. Also handles static-style invocations
  *      (`ILogger.Warn(...)`) with kind-aware reason/confidence for
  *      read/write ACCESSES.
- *   5. **Case 3 (dotted typeBinding for namespace prefix)** —
+ *   6. **Case 3 (dotted typeBinding for namespace prefix)** —
  *      `typeRef.rawName` like `models.User`
- *   6. **Case 3b (chain-typebinding)** — `typeRef.rawName` has a dot
+ *   7. **Case 3b (chain-typebinding)** — `typeRef.rawName` has a dot
  *      but not a namespace prefix → compound resolver
- *   7. **Case 4 (simple typeBinding)** — `typeRef.rawName` has no dot →
+ *   8. **Case 4 (simple typeBinding)** — `typeRef.rawName` has no dot →
  *      MRO walk + `findOwnedMember`
- *   8. **Case 5 (value-receiver bridge)** — receiver is a `Const`/`Variable`
+ *   9. **Case 5 (value-receiver bridge)** — receiver is a `Const`/`Variable`
  *      whose `nodeId` is referenced as an `ownerId` in `model.methods`
  *      (object-literal services). Last-resort fallback for lowercase
  *      receivers with no class-like or type-binding match. Mirrors
@@ -54,7 +61,12 @@ import {
   findValueBindingInScope,
   isClassLike,
 } from '../scope/walkers.js';
-import { tryEmitEdge, tryEmitEdgeWithExplicitTargetId } from '../graph-bridge/edges.js';
+import {
+  tryEmitEdge,
+  tryEmitEdgeWithExplicitTargetId,
+  type CalleeIdCaptureCtx,
+} from '../graph-bridge/edges.js';
+import type { CalleeIdSink } from '../graph-bridge/callee-id-sink.js';
 import { resolveCompoundReceiverClass } from '../passes/compound-receiver.js';
 import { resolveDefGraphId } from '../graph-bridge/ids.js';
 import {
@@ -81,10 +93,12 @@ type ReceiverBoundProviderSubset = Pick<
   | 'collapseMemberCallsByCallerTarget'
   | 'unwrapCollectionAccessor'
   | 'hoistTypeBindingsToModule'
+  | 'stripReceiverCastExpressions'
   | 'resolveQualifiedReceiverMember'
   | 'resolveReceiverMember'
   | 'resolveThisViaEnclosingClass'
   | 'conversionRankFn'
+  | 'conversionOnlyArgTypePrefixes'
   | 'constraintCompatibility'
   | 'isStaticOnly'
 >;
@@ -147,6 +161,10 @@ export function emitReceiverBoundCalls(
   model: SemanticModel,
   options: {
     readonly recordResolutionOutcome?: ResolutionOutcomeRecorder;
+    /** Resolved-callee-id capture sink (#2227 U2). Threaded in only under
+     *  `--pdg`; `undefined` ⇒ zero overhead, byte-identity (R4). Per-file
+     *  capture contexts are built from this + `parsed.filePath` in the loop. */
+    readonly calleeIdSink?: CalleeIdSink;
   } = {},
 ): number {
   let emitted = 0;
@@ -161,6 +179,7 @@ export function emitReceiverBoundCalls(
     fieldFallback,
     unwrapCollectionAccessor: provider.unwrapCollectionAccessor,
     hoistTypeBindingsToModule,
+    stripReceiverCastExpressions: provider.stripReceiverCastExpressions === true,
   };
 
   // Build an interface → implementors map from IMPLEMENTS edges.
@@ -199,6 +218,7 @@ export function emitReceiverBoundCalls(
     primaryMemberDef: SymbolDefinition,
     site: ParsedFile['referenceSites'][number],
     confidence: number,
+    calleeCapture: CalleeIdCaptureCtx | undefined,
   ): number => {
     if (ownerDef.type !== 'Interface') return 0;
     const impls = implementorsByInterfaceDefId.get(ownerDef.nodeId);
@@ -224,6 +244,7 @@ export function emitReceiverBoundCalls(
         seen,
         confidence,
         collapse,
+        calleeCapture,
       );
       if (ok) n++;
     }
@@ -232,6 +253,13 @@ export function emitReceiverBoundCalls(
 
   for (const parsed of parsedFiles) {
     const namespaceTargets = collectNamespaceTargets(parsed, scopes);
+    // Per-file resolved-callee-id capture context (#2227 U2). Built once per
+    // file; `undefined` when the sink is absent (pdg off) so the `tryEmitEdge`
+    // capture is a no-op and emission stays byte-identical (R4).
+    const calleeCapture: CalleeIdCaptureCtx | undefined =
+      options.calleeIdSink !== undefined
+        ? { sink: options.calleeIdSink, filePath: parsed.filePath }
+        : undefined;
 
     for (const site of parsed.referenceSites) {
       if (site.kind !== 'call' && site.kind !== 'read' && site.kind !== 'write') continue;
@@ -329,6 +357,7 @@ export function emitReceiverBoundCalls(
               seen,
               0.85,
               collapse,
+              calleeCapture,
             );
             if (ok) emitted++;
             // Always mark handled when the site was resolved, even
@@ -416,6 +445,7 @@ export function emitReceiverBoundCalls(
               seen,
               0.85,
               collapse,
+              calleeCapture,
             );
             if (ok) emitted++;
             // Always mark handled when the site was resolved, even
@@ -496,6 +526,7 @@ export function emitReceiverBoundCalls(
               seen,
               confidence,
               collapse,
+              calleeCapture,
             );
             if (ok) emitted++;
             handledSites.add(siteKey);
@@ -519,6 +550,7 @@ export function emitReceiverBoundCalls(
                 {
                   argumentTypeClasses: site.argumentTypeClasses,
                   conversionRankFn: provider.conversionRankFn,
+                  conversionOnlyArgTypePrefixes: provider.conversionOnlyArgTypePrefixes,
                   constraintCompatibility: provider.constraintCompatibility,
                 },
               );
@@ -591,6 +623,7 @@ export function emitReceiverBoundCalls(
               seen,
               confidence,
               collapse,
+              calleeCapture,
             );
             if (ok) emitted++;
             handledSites.add(siteKey);
@@ -628,6 +661,7 @@ export function emitReceiverBoundCalls(
               seen,
               0.85,
               collapse,
+              calleeCapture,
             );
             if (ok) emitted++;
             handledSites.add(siteKey);
@@ -690,6 +724,7 @@ export function emitReceiverBoundCalls(
             seen,
             0.85,
             collapse,
+            calleeCapture,
           );
           if (ok) emitted++;
           handledSites.add(siteKey);
@@ -771,6 +806,7 @@ export function emitReceiverBoundCalls(
             seen,
             confidence,
             collapse,
+            calleeCapture,
           );
           if (ok) emitted++;
           handledSites.add(siteKey);
@@ -829,6 +865,11 @@ export function emitReceiverBoundCalls(
                   memberDef,
                   memberDef.filePath !== parsed.filePath ? 'import-resolved' : 'global',
                   seen,
+                  // Explicit defaults so the trailing capture ctx (#2227 U2) can
+                  // be threaded without changing dedup/confidence behavior.
+                  0.85,
+                  false,
+                  calleeCapture,
                 );
                 if (ok) {
                   emitted++;
@@ -937,6 +978,7 @@ export function emitReceiverBoundCalls(
               seen,
               0.85,
               collapse,
+              calleeCapture,
             );
             if (ok) emitted++;
             // Always mark handled when the site was resolved, even
@@ -1027,6 +1069,7 @@ export function emitReceiverBoundCalls(
               seen,
               confidence,
               collapse,
+              calleeCapture,
             );
             if (ok) emitted++;
             handledSites.add(siteKey);
@@ -1143,12 +1186,20 @@ export function emitReceiverBoundCalls(
               seen,
               confidence,
               collapse,
+              calleeCapture,
             );
             if (ok) emitted++;
             // Interface dispatch: when the primary owner is an
             // Interface, emit secondary CALLS edges to every
             // implementing class's same-named method.
-            emitted += emitInterfaceDispatchFor(ownerDef, memberName, memberDef, site, confidence);
+            emitted += emitInterfaceDispatchFor(
+              ownerDef,
+              memberName,
+              memberDef,
+              site,
+              confidence,
+              calleeCapture,
+            );
             // Always mark handled when the site was resolved, even
             // if the edge was deduplicated (collapse mode), so
             // `emitReferencesViaLookup` doesn't re-emit from the
@@ -1240,6 +1291,7 @@ export function emitReceiverBoundCalls(
             seen,
             confidence,
             collapse,
+            calleeCapture,
           );
           if (ok) emitted++;
           handledSites.add(siteKey);
@@ -1275,6 +1327,7 @@ function pickOverload(
   const candidates = narrowOverloadCandidates(overloads, site.arity, site.argumentTypes, {
     argumentTypeClasses: site.argumentTypeClasses,
     conversionRankFn: provider.conversionRankFn,
+    conversionOnlyArgTypePrefixes: provider.conversionOnlyArgTypePrefixes,
     constraintCompatibility: provider.constraintCompatibility,
   });
   // When narrowing leaves >1 candidate that share identical normalized
@@ -1382,6 +1435,7 @@ function pickFirstNonStaticOnly(
   const candidates = narrowOverloadCandidates(overloads, site.arity, site.argumentTypes, {
     argumentTypeClasses: site.argumentTypeClasses,
     conversionRankFn: provider.conversionRankFn,
+    conversionOnlyArgTypePrefixes: provider.conversionOnlyArgTypePrefixes,
     constraintCompatibility: provider.constraintCompatibility,
   });
   // Same ambiguity handling as `pickOverload`: when normalization
@@ -1427,6 +1481,7 @@ function recordReceiverOverloadSuppression(
   const candidates = narrowOverloadCandidates(overloads, site.arity, site.argumentTypes, {
     argumentTypeClasses: site.argumentTypeClasses,
     conversionRankFn: provider.conversionRankFn,
+    conversionOnlyArgTypePrefixes: provider.conversionOnlyArgTypePrefixes,
     constraintCompatibility: provider.constraintCompatibility,
   });
   const reason: ResolutionSuppressionReason = isOverloadAmbiguousAfterNormalization(

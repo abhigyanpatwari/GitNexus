@@ -112,11 +112,14 @@ flowchart TD
   EMIT --> BRIDGE[(bridge.lbug<br/>#795)]
 ```
 
-Label-scoped queries in `resolveSymbol` keep accidental cross-matches
-out:
-- `topic` → `(n:Function|Method|Class|Interface)`
-- `grpc` method → `(n:Function|Method)`, service → `(n:Class|Interface)`
-- `lib` → `(n:Package|Module)`
+Label-scoped queries in `resolveSymbol` keep accidental cross-matches out.
+They use the `MATCH (n) WHERE labels(n) IN [...]` allowlist form, NOT the
+`MATCH (n:A|B)` disjunction — LadybugDB's parser rejects a disjunction that
+names a reserved keyword (e.g. `Macro`, `Union`), which is what broke the
+`custom` branch in #2325:
+- `topic` → `labels(n) IN ['Function','Method','Class','Interface']`
+- `grpc`/`thrift` method → `labels(n) IN ['Function','Method']`, service → `labels(n) IN ['Class','Interface']`
+- `lib` → `labels(n) IN ['Module']`
 
 ## Cross-impact query (PR #606)
 
@@ -137,3 +140,28 @@ The bridge stores every extracted contract keyed by `symbolUid`.
 Manifest-sourced contracts use the synthetic uid form so both sides
 of the `(local impact) ↔ (bridge query)` join derive the same uid
 without coordinating through any shared state.
+
+## Cross-repo trace (`cross-trace.ts`)
+
+A second consumer of the bridge. Where cross-impact fans a blast radius
+*outward* from one symbol, cross-trace stitches a directed **path** between
+two symbols that live in different repos:
+
+```mermaid
+flowchart TD
+  FT[from / to resolved<br/>across all members] --> SR{same repo?}
+  SR -- yes --> LT[single-repo trace<br/>no crossing]
+  SR -- no --> SEGA[trace: from → consumer symbol<br/>in home repo]
+  SEGA --> XB[Bridge pair query<br/>consumer.symbolUid → provider.symbolUid<br/>one ContractLink boundary]
+  XB --> SEGB[trace: provider symbol → to<br/>in target repo]
+  SEGB --> STITCH[stitched hops + CONTRACT_LINK edge<br/>+ optional REACHING_DEF data-flow]
+```
+
+It reuses the same `symbolUid` join as cross-impact, but issues its own
+*pair* query (`listCrossingsBetween`) because a path needs BOTH endpoints of
+a crossing — the uid-filtered neighbor join (`resolveBridgeNeighbors`, shared
+with impact) returns only the far side. The crossing is clamped to one
+boundary (`MAX_SUPPORTED_CROSS_DEPTH`). With `pdg: true` the boundary-adjacent
+segments are enriched with intra-procedural REACHING_DEF data-flow (never
+across the boundary). Full cross-program data flow across the boundary is a
+deferred follow-up.

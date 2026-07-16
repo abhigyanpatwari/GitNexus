@@ -390,6 +390,18 @@ describe('C++ variadic packs and dependent-name resolution (#1894)', () => {
     expect(extendsEdges).toHaveLength(0);
   });
 
+  it('keeps the comment-free pack-expanded base path covered', () => {
+    const extendsEdges = getRelationships(result, 'EXTENDS').filter(
+      (e) => e.source === 'PlainMix' && e.target === 'B',
+    );
+    const inheritedCalls = getRelationships(result, 'CALLS').filter(
+      (c) => c.source === 'plainRun' && c.target === 'inherited',
+    );
+
+    expect(extendsEdges).toHaveLength(0);
+    expect(inheritedCalls).toHaveLength(0);
+  });
+
   it('does not bind unqualified member lookup through a pack-expanded dependent base', () => {
     const calls = getRelationships(result, 'CALLS').filter(
       (c) => c.source === 'run' && c.target === 'inherited',
@@ -1229,6 +1241,70 @@ describe('C++ overload disambiguation by parameter types', () => {
 });
 
 // ── Phase P: Same-arity overloads — cross-file + chain resolution ─────────
+
+describe('C++ braced-init-list overload disambiguation (#1899 A8 conservative)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'cpp-braced-init-list-overload'),
+      () => {},
+    );
+  }, 60000);
+
+  const callsFrom = (source: string, target: string) =>
+    getRelationships(result, 'CALLS').filter(
+      (edge) => edge.source === source && edge.target === target,
+    );
+
+  const singleTargetParameterTypes = (source: string, target: string) => {
+    const calls = callsFrom(source, target);
+    expect(calls).toHaveLength(1);
+    const [call] = calls;
+    expect(call).toBeDefined();
+    return call === undefined
+      ? undefined
+      : result.graph.getNode(call.rel.targetId)?.properties.parameterTypes;
+  };
+
+  it('resolves homogeneous literal braces to initializer_list overloads', () => {
+    expect(singleTargetParameterTypes('callHomogeneousInitList', 'consume')).toEqual([
+      'std::initializer_list<int>',
+    ]);
+  });
+
+  it('resolves homogeneous literal braces to container overloads', () => {
+    expect(singleTargetParameterTypes('callHomogeneousVector', 'consumeVector')).toEqual([
+      'std::vector<int>',
+    ]);
+  });
+
+  it('prefers a scalar overload for single-element braced-init lists', () => {
+    expect(singleTargetParameterTypes('callSingleElementScalar', 'consumeScalarOrVector')).toEqual([
+      'int',
+    ]);
+  });
+
+  it('rejects container overloads whose value type cannot accept the braced elements', () => {
+    expect(callsFrom('callStringVectorMismatch', 'consumeStringVectorMismatch')).toHaveLength(0);
+  });
+
+  it('suppresses heterogeneous braced-init lists instead of guessing an element type', () => {
+    expect(callsFrom('callHeterogeneousInitList', 'consumeMixed')).toHaveLength(0);
+  });
+
+  it('suppresses empty braced-init lists instead of guessing an element type', () => {
+    expect(callsFrom('callEmptyInitList', 'consumeEmpty')).toHaveLength(0);
+  });
+
+  it('preserves single-overload heterogeneous braced-init recall', () => {
+    expect(callsFrom('callSingleHeterogeneousInitList', 'consumeSingleMixed')).toHaveLength(1);
+  });
+
+  it('preserves single-overload empty braced-init recall', () => {
+    expect(callsFrom('callSingleEmptyInitList', 'consumeSingleEmpty')).toHaveLength(1);
+  });
+});
 
 describe('C++ same-arity overload cross-file and chain resolution', () => {
   let result: PipelineResult;

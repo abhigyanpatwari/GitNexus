@@ -17,6 +17,7 @@ import {
   isLbugReady,
 } from '../../core/lbug/pool-adapter.js';
 import { isValidQueryParams } from '../../core/lbug/query-params.js';
+import { toDisplayLine } from './line-display.js';
 import { isWalCorruptionError, WAL_RECOVERY_SUGGESTION } from '../../core/lbug/lbug-config.js';
 // Embedding imports are lazy (dynamic import) to avoid loading onnxruntime-node
 // at MCP server startup — crashes on unsupported Node ABI versions (#89)
@@ -39,9 +40,19 @@ import {
   type RegistryEntry,
   type BranchSummary,
 } from '../../storage/repo-manager.js';
-import { GroupService, type GroupToolPort } from '../../core/group/service.js';
+import {
+  GroupService,
+  type GroupToolPort,
+  type GroupSymbolResolution,
+  type GroupPdgFlowResult,
+  type GroupPdgFlowHop,
+} from '../../core/group/service.js';
 import { resolveAtGroupMemberRepoPath } from '../../core/group/resolve-at-member.js';
 import { collectBestChunks } from '../../core/embeddings/types.js';
+import {
+  DEFAULT_MCP_VECTOR_MAX_DISTANCE,
+  getVectorMaxDistance,
+} from '../../core/embeddings/config.js';
 import {
   rankExactEmbeddingRows,
   type ExactEmbeddingRow,
@@ -52,8 +63,20 @@ import {
   isVectorExtensionSupportedByPlatform,
 } from '../../core/platform/capabilities.js';
 import { PhaseTimer } from '../../core/search/phase-timer.js';
+import { ftsDegradedWarning } from '../../core/search/fts-indexes.js';
+import {
+  cjkSegmentationModeMismatch,
+  containsSegmentableCjkRun,
+  getSearchFTSCjkSegmentation,
+  isSupportedCjkSegmentationMode,
+  MAX_CJK_SEGMENTATION_QUERY_LENGTH,
+} from '../../core/search/cjk-segmentation.js';
 import { checkStalenessAsync, checkCwdMatch } from '../../core/git-staleness.js';
 import { logger } from '../../core/logger.js';
+import {
+  isLocalEmbeddingRuntimeBlockerMessage,
+  isMissingLocalEmbeddingStackMessage,
+} from '../../core/embeddings/runtime-support.js';
 import {
   LIST_REPOS_DEFAULT_LIMIT,
   LIST_REPOS_MAX_LIMIT,
@@ -64,7 +87,29 @@ import {
 } from '../tools.js';
 import { findImportCycles } from '../../core/graph/import-cycles.js';
 import { decodeTaintPath } from '../../core/ingestion/taint/path-codec.js';
+import { decodeReachingDefReason } from '../../core/ingestion/cfg/reaching-def-reason-codec.js';
 import { EXTENSIONS } from '../../core/ingestion/import-resolvers/utils.js';
+import {
+  fnLineOf,
+  isPdgDegradedLayerStatus,
+  makePdgImpactErrorResult,
+  makePdgLayerDegradedResult,
+  pdgLayerStatus,
+  pdgStampForMode,
+  runImpactPDG,
+  validateImpactMode,
+  pdgBridgeEvidenceForImpact,
+  betterBridgeEvidence,
+  composeUnifiedPdgImpactResult,
+  splitCalleeIds,
+  type ImpactMode,
+  type PdgImpactResult,
+  type PdgImpactErrorResult,
+  type PdgImpactTarget,
+  type PdgBridgeOptions,
+  type PdgBridgeEvidenceInfo,
+  type PdgLayerStatus,
+} from './pdg-impact.js';
 
 /** Real source-file extensions (`.ts`, `.py`, …) from the resolver's list,
  *  excluding the empty entry and the `/index.*` forms — used to decide whether
@@ -96,6 +141,62 @@ function resolveAliasString(canonical: unknown, legacy: unknown): string | undef
   }
   return undefined;
 }
+
+interface StringAliasDefinition {
+  canonical: string;
+  aliases: readonly string[];
+}
+
+const TOOL_STRING_ALIASES: Readonly<Record<string, readonly StringAliasDefinition[]>> = {
+  impact: [{ canonical: 'target', aliases: ['name', 'symbol'] }],
+  context: [{ canonical: 'file_path', aliases: ['file'] }],
+};
+
+function normalizeToolParams(
+  method: string,
+  params: unknown,
+): { params: Record<string, unknown> } | { error: string } {
+  const input = params && typeof params === 'object' ? (params as Record<string, unknown>) : {};
+  const definitions = TOOL_STRING_ALIASES[method];
+  if (!definitions) return { params: input };
+
+  const normalized = { ...input };
+  for (const { canonical, aliases } of definitions) {
+    const keys = [canonical, ...aliases];
+    const supplied: Array<{ key: string; value: string }> = [];
+    for (const key of keys) {
+      if (!Object.prototype.hasOwnProperty.call(input, key)) continue;
+      const value = input[key];
+      // Internal CLI callers materialize omitted optional flags as undefined.
+      if (value === undefined) continue;
+      if (typeof value !== 'string' || !value.trim()) {
+        return { error: `MCP parameter ${method}.${key} must be a non-empty string.` };
+      }
+      supplied.push({ key, value: value.trim() });
+    }
+    const distinctValues = new Set(supplied.map(({ value }) => value));
+    if (distinctValues.size > 1) {
+      return {
+        error: `Conflicting MCP parameters for ${method}.${canonical}: ${supplied
+          .map(({ key }) => key)
+          .join(', ')} must agree.`,
+      };
+    }
+
+    for (const alias of aliases) delete normalized[alias];
+    if (supplied.length > 0) normalized[canonical] = supplied[0].value;
+  }
+
+  if (
+    method === 'impact' &&
+    typeof normalized.target !== 'string' &&
+    (typeof normalized.target_uid !== 'string' || !normalized.target_uid.trim())
+  ) {
+    return { error: 'MCP impact requires target, name, symbol, or target_uid.' };
+  }
+  return { params: normalized };
+}
+
 // AI context generation is CLI-only (gitnexus analyze)
 // import { generateAIContextFiles } from '../../cli/ai-context.js';
 
@@ -181,6 +282,14 @@ export const VALID_RELATION_TYPES = new Set([
   'HANDLES_TOOL',
   'ENTRY_POINT_OF',
   'WRAPS',
+  // Emitted by the `di` pipeline phase (#2200 — DI collection injection,
+  // consumer Class → implementer Class). Valid here for explicit
+  // `relationTypes` filters, but deliberately NOT in the default impact()
+  // relTypes nor the context() incoming/outgoing lists — traversal is opt-in,
+  // like WRAPS/FETCHES. Also deliberately NO IMPACT_RELATION_CONFIDENCE entry
+  // (WRAPS/FETCHES precedent): the 0.5 unknown-type floor applies there,
+  // and the edges carry their own confidence (0.8) in the graph.
+  'INJECTS',
 ]);
 
 /**
@@ -237,10 +346,39 @@ export const IMPACT_RELATION_CONFIDENCE: Readonly<Record<string, number>> = {
 const confidenceForRelType = (relType: string | undefined): number =>
   IMPACT_RELATION_CONFIDENCE[relType ?? ''] ?? 0.5;
 
-/** Structured error logging for query failures — replaces empty catch blocks */
+/**
+ * Structured logging for *swallowed* query failures — replaces empty catch
+ * blocks. The level reflects telemetry severity, NOT a promise about the
+ * caller: most callers catch the failure and degrade to a genuinely safe
+ * fallback (a usable result, usually with a caller-visible `partial`/`ftsUsed`
+ * flag), so these are not operation-level errors and must not log at `error`:
+ *
+ *  - A benign missing optional table/label/column — a repo analyzed without
+ *    processes/communities, or a pre-v3 PDG index lacking the `calleeIds`
+ *    column — is a normal configuration, not a failure. Logged at `debug`
+ *    (suppressed at the default `info` level; surfaced only when troubleshooting).
+ *  - Any other swallowed failure is an unexpected-but-handled degradation:
+ *    logged at `warn` so it stays observable without raising a false `error`
+ *    alarm that would drown genuine, operation-aborting failures.
+ *
+ * `error` is intentionally NOT used here — it is reserved for failures that
+ * actually abort an operation, which log directly rather than through this
+ * best-effort-degradation helper.
+ *
+ * Contract for callers (#2283 review): only route a failure here when the
+ * caller ALSO surfaces the degradation in its result (a `partial` flag,
+ * `failed_files`, `traversalComplete:false`, …). A mutating or safety-critical
+ * path that would otherwise report success/clean (e.g. `rename` apply, the
+ * `detect_changes` safety gate) MUST set that result-level signal — `warn`
+ * alone is not a substitute for an honest result.
+ */
 function logQueryError(context: string, err: unknown): void {
   const msg = err instanceof Error ? err.message : String(err);
-  logger.error({ context, err: msg }, 'GitNexus query failed');
+  if (isBenignMissingTableError(err)) {
+    logger.debug({ context, err: msg }, 'GitNexus query skipped (missing optional data)');
+    return;
+  }
+  logger.warn({ context, err: msg }, 'GitNexus query failed (degraded)');
 }
 
 /**
@@ -253,7 +391,12 @@ function logQueryError(context: string, err: unknown): void {
  */
 function isBenignMissingTableError(err: unknown): boolean {
   const msg = err instanceof Error ? err.message : String(err ?? '');
-  return /does not exist|no such (table|label|rel)|unknown (table|label)|not (defined|found)/i.test(
+  // The `not (defined|found)` arm is scoped to a schema object (table/label/
+  // rel/column/property), mirroring lbug-adapter's isMissingColumnError
+  // (`/(table|column|property).*not found/i`): an unscoped "not found" matched
+  // operation failures like `rg: not found` (ripgrep absent) or `Symbol not
+  // found`, which this helper would then silently demote to `debug` (#2283).
+  return /does not exist|no such (table|label|rel)|unknown (table|label)|(table|label|rel|column|property)[^\n]*\bnot (defined|found)\b/i.test(
     msg,
   );
 }
@@ -314,7 +457,7 @@ interface RepoHandle {
   stats?: RegistryEntry['stats'];
   /** Primary/flat branch name, when known (#2106). */
   branch?: string;
-  /** Non-primary branch indexes available for this repo (#2106). */
+  /** Pinned `--branch` sub-indexes available for this repo, distinct from the flat workspace slot (#2106/#2354). */
   branches?: BranchSummary[];
 }
 
@@ -425,7 +568,24 @@ interface ImpactParams {
   file_path?: string;
   kind?: string;
   direction: 'upstream' | 'downstream';
+  /**
+   * Blast-radius engine (KTD1/KTD5). Absent / `undefined` / `'callgraph'` →
+   * the unchanged inter-procedural symbol→symbol BFS. `'pdg'` → the opt-in,
+   * intra-procedural Program Dependence Graph traversal (`_runImpactPDG`).
+   * Validated in `_impactImpl`; any other value is a hard `{ error }`.
+   */
+  mode?: ImpactMode;
+  /**
+   * Statement anchor for `mode:'pdg'` (1-based source line). When provided, the
+   * PDG traversal seeds the dependence slice on the BasicBlock(s) at THIS line
+   * within the target symbol — answering "what statements depend on the code at
+   * line N?" — instead of the whole-symbol seed (which is empty for a function,
+   * since its intra-procedural reach stays inside its own blocks). Only
+   * meaningful with `mode:'pdg'`; rejected for `mode:'callgraph'`.
+   */
+  line?: number;
   maxDepth?: number;
+  crossDepth?: number;
   relationTypes?: string[];
   includeTests?: boolean;
   minConfidence?: number;
@@ -433,6 +593,41 @@ interface ImpactParams {
   offset?: number;
   summaryOnly?: boolean;
 }
+
+/** One route in an `api_impact` result. `executionFlows` are process names. */
+interface ApiImpactRoute {
+  route: string;
+  method: string | null;
+  handler: string;
+  responseShape: { success: string[]; error: string[] };
+  middleware: string[];
+  middlewareDetection?: 'partial';
+  middlewareNote?: string;
+  consumers: Array<{ name: string; file: string; accesses: string[]; attributionNote?: string }>;
+  mismatches?: Array<{
+    consumer: string;
+    field: string;
+    reason: string;
+    confidence: 'high' | 'low';
+  }>;
+  executionFlows: string[];
+  impactSummary: {
+    directConsumers: number;
+    affectedFlows: number;
+    riskLevel: 'LOW' | 'MEDIUM' | 'HIGH';
+    warning?: string;
+  };
+}
+
+/**
+ * `api_impact` is polymorphic by match count: a single matched route returns the
+ * route object directly; two or more return the wrapped `{ routes, total }`
+ * form; any guard failure returns `{ error }`.
+ */
+type ApiImpactResult =
+  | ApiImpactRoute
+  | { routes: ApiImpactRoute[]; total: number }
+  | { error: string };
 
 /**
  * One repository entry as returned by {@link LocalBackend.listRepos} and in each
@@ -450,7 +645,7 @@ export interface RepoListing {
   siblings?: Array<{ name: string; path: string; lastCommit: string }>;
   /** Primary/flat branch name, when known (#2106). */
   branch?: string;
-  /** Non-primary branch indexes available for this repo (#2106). */
+  /** Pinned `--branch` sub-indexes available for this repo, distinct from the flat workspace slot (#2106/#2354). */
   branches?: Array<Omit<BranchSummary, 'stats'>>;
 }
 
@@ -546,6 +741,13 @@ export class LocalBackend {
   private warnedVectorUnsupported = false;
 
   /**
+   * One-shot warning when a pruned or Node-unloadable optional embedding stack
+   * (#2370/#2372) forces semantic search to fall back to BM25 — so the
+   * degradation is visible once instead of silent.
+   */
+  private warnedMissingEmbeddingStack = false;
+
+  /**
    * Cross-repo group tools (CLI). Shares logic with MCP `group_*` handlers.
    */
   getGroupService(): GroupService {
@@ -556,10 +758,180 @@ export class LocalBackend {
         query: (r, p) => this.query(r as RepoHandle, p),
         impactByUid: (id, uid, d, o) => this.impactByUid(id, uid, d, o),
         context: (r, p) => this.context(r as RepoHandle, p),
+        trace: (r, p) => this.traceForGroup(r as RepoHandle, p),
+        resolveSymbol: (r, q) => this.resolveSymbolForGroup(r as RepoHandle, q),
+        pdgFlows: (r, anchor, opts) => this.pdgFlowsForGroup(r as RepoHandle, anchor, opts),
       };
       this.groupToolSvc = new GroupService(port);
     }
     return this.groupToolSvc;
+  }
+
+  /**
+   * Adapt local `trace` to the group port. The assembled group/cross-repo trace
+   * presents 1-based endpoints (via resolveSymbolForGroup), so convert the hop
+   * lines here too — otherwise one response mixes 1-based endpoints with 0-based
+   * hops (#2380). Single-repo `trace` dispatches directly (not through this
+   * port) and stays 0-based (documented full-parity follow-up).
+   */
+  private async traceForGroup(repo: RepoHandle, params: TraceParams): Promise<unknown> {
+    const result = await this.trace(repo, params);
+    const hops = (result as { hops?: Array<{ startLine?: number | null }> }).hops;
+    if (Array.isArray(hops)) {
+      for (const hop of hops) {
+        hop.startLine = toDisplayLine(hop.startLine);
+      }
+    }
+    return result;
+  }
+
+  /**
+   * Adapt the shared symbol resolver to the GroupToolPort contract. Used by the
+   * cross-repo trace path to locate which member repo an endpoint lives in and
+   * recover its node id (== bridge `Contract.symbolUid`).
+   */
+  private async resolveSymbolForGroup(
+    repo: RepoHandle,
+    query: { name?: string; uid?: string; file_path?: string },
+  ): Promise<GroupSymbolResolution> {
+    await this.ensureInitialized(repo);
+    const outcome = await this.resolveSymbolCandidates(
+      repo,
+      { uid: query.uid, name: query.name },
+      { file_path: query.file_path },
+    );
+    if (outcome.kind === 'ok') {
+      const s = outcome.symbol;
+      return {
+        kind: 'ok',
+        symbol: {
+          id: s.id,
+          name: s.name,
+          type: s.type,
+          filePath: s.filePath,
+          startLine: toDisplayLine(s.startLine),
+          endLine: toDisplayLine(s.endLine),
+        },
+      };
+    }
+    if (outcome.kind === 'ambiguous') {
+      return {
+        kind: 'ambiguous',
+        candidates: outcome.candidates.map((c) => ({
+          id: c.id,
+          name: c.name,
+          type: c.type,
+          filePath: c.filePath,
+          startLine: toDisplayLine(c.startLine),
+        })),
+      };
+    }
+    return { kind: 'not_found' };
+  }
+
+  /**
+   * Intra-procedural REACHING_DEF data-flow for a single anchor symbol, adapted
+   * to the GroupToolPort contract. Reuses the same anchor + `flows` query as the
+   * `pdg_query` tool. `available:false` (not an error) when the repo has no PDG
+   * `flows` layer, so the cross-repo trace degrades to call-level hops.
+   */
+  private async pdgFlowsForGroup(
+    repo: RepoHandle,
+    anchor: { name?: string; uid?: string; file_path?: string },
+    opts: { limit?: number },
+  ): Promise<GroupPdgFlowResult> {
+    try {
+      await this.ensureInitialized(repo);
+      return await this._pdgFlowsForGroupImpl(repo, anchor, opts);
+    } catch {
+      // Enrichment is auxiliary — never let a PDG query failure fail the trace.
+      return { available: false, hops: [] };
+    }
+  }
+
+  /**
+   * Intra-procedural REACHING_DEF data-flow within the anchor symbol's block
+   * span. Reuses the same anchored, bind-param-only `flows` query as
+   * `pdg_query` (no rel-property index ⇒ the BasicBlock id-prefix + line-span
+   * anchor IS the bound). The anchor is resolved by UID when available (the
+   * boundary symbol is known precisely), avoiding the name-ambiguity the
+   * by-name `resolveBlockAnchor` path can hit. Data flow never crosses the repo
+   * boundary — this only describes how values move toward the boundary call
+   * inside one function.
+   */
+  private async _pdgFlowsForGroupImpl(
+    repo: RepoHandle,
+    anchor: { name?: string; uid?: string; file_path?: string },
+    opts: { limit?: number },
+  ): Promise<GroupPdgFlowResult> {
+    const rawLimit = opts.limit ?? PDG_QUERY_DEFAULT_LIMIT;
+    const limit =
+      Number.isInteger(rawLimit) && rawLimit >= 1 && rawLimit <= PDG_QUERY_MAX_LIMIT
+        ? rawLimit
+        : PDG_QUERY_DEFAULT_LIMIT;
+
+    // Meta probe: layer present iff the flows cap is stamped. `false` is a
+    // definitive absence (degrade to call-level); `undefined` is unreadable
+    // meta (fall through and infer presence from rows found).
+    const pdgStamped = await pdgStampForMode(repo.lbugPath, 'flows');
+    if (pdgStamped === false) return { available: false, hops: [] };
+
+    // Resolve the anchor symbol (UID is precise; fall back to name/file).
+    const resolved = await this.resolveSymbolCandidates(
+      repo,
+      { uid: anchor.uid, name: anchor.name },
+      { file_path: anchor.file_path },
+    );
+    if (resolved.kind !== 'ok') {
+      // Layer may exist but we couldn't anchor — report availability from the
+      // stamp so the caller's note reflects the layer, not the miss.
+      return { available: pdgStamped === true, hops: [] };
+    }
+    const sym = resolved.symbol;
+
+    // Same span-anchored clause as resolveBlockAnchor's symbol branch: the
+    // BasicBlock startLine is 1-based vs the 0-based symbol span, so shift both
+    // bounds +1. `idPrefix`/`symStart`/`symEnd` are bind params; the edge type
+    // is a hardcoded literal — no user string is ever interpolated.
+    const hasSpan =
+      typeof sym.startLine === 'number' &&
+      typeof sym.endLine === 'number' &&
+      sym.endLine >= sym.startLine;
+    const idPrefix = `BasicBlock:${sym.filePath}:`;
+    const anchorClause = hasSpan
+      ? 'a.id STARTS WITH $idPrefix AND a.startLine >= $symStart AND a.startLine <= $symEnd'
+      : 'a.id STARTS WITH $idPrefix';
+    const queryParams: Record<string, unknown> = hasSpan
+      ? { idPrefix, symStart: sym.startLine + 1, symEnd: sym.endLine + 1 }
+      : { idPrefix };
+
+    const rows = await executeParameterized(
+      repo.lbugPath,
+      `MATCH (a:BasicBlock)-[r:CodeRelation]->(b:BasicBlock)
+       WHERE r.type = 'REACHING_DEF' AND ${anchorClause}
+       RETURN a.startLine AS defLine, b.startLine AS useLine, b.text AS useText, r.reason AS reason
+       ORDER BY useLine, defLine, reason
+       LIMIT ${limit + 1}`,
+      queryParams,
+    );
+
+    const truncated = rows.length > limit;
+    const capped = truncated ? rows.slice(0, limit) : rows;
+    const hops: GroupPdgFlowHop[] = capped.map((r: Record<string, unknown>) => ({
+      // Number()/String() coerce the LadybugDB object/tuple cell; a bare
+      // `as number` cast on a nullish cell would surface NaN downstream.
+      line: Number(r.useLine ?? r[1] ?? 0),
+      text: String(r.useText ?? r[2] ?? '').trim(),
+      variable: decodeReachingDefReason(String(r.reason ?? r[3] ?? '')).name || undefined,
+    }));
+
+    const available = pdgStamped === true || hops.length > 0;
+    return {
+      available,
+      ...(hops[0]?.variable ? { variable: hops[0].variable } : {}),
+      hops,
+      ...(truncated ? { truncated: true } : {}),
+    };
   }
 
   /** Close all pooled LadybugDB connections (CLI one-shot; optional for long-lived MCP). */
@@ -834,45 +1206,118 @@ export class LocalBackend {
   /**
    * Re-point a resolved repo handle at a specific branch index (#2106).
    *
-   * - No `branch` (default) → the primary/flat handle, unchanged (backward
+   * - No `branch` (default) → the flat workspace handle, unchanged (backward
    *   compatible: every existing caller passes no branch).
-   * - `branch` equal to the known primary → the flat handle.
-   * - `branch` matching an indexed non-primary branch → a handle whose
+   * - `branch` equal to the flat slot's **on-disk** recorded branch → the
+   *   flat handle. The disk meta is read before any cached state is trusted
+   *   (#2364 review F1): the flat slot follows the checked-out working tree
+   *   (#2354), so a plain analyze after a branch switch restamps the meta
+   *   without any repo-resolution miss that would refresh a long-lived
+   *   server's cached handle — the cached label can otherwise serve another
+   *   branch's content under the old name (the pool staleness reinit
+   *   hot-swaps content without updating `handle.branch`).
+   * - `branch` matching an indexed pinned branch → a handle whose
    *   `lbugPath` points at `branches/<slug>/lbug`; the connection pool keys by
-   *   `lbugPath`, so this is the only change needed to scope every tool.
-   * - `branch` that was never indexed → a clear error (never a silently-empty
-   *   result against the wrong DB).
+   *   `lbugPath`, so this is the only change needed to scope every tool. The
+   *   sub-index lbug must actually exist on disk — `adoptFlatBranchLabel`
+   *   deletes the whole dir when the flat slot takes ownership, and a stale
+   *   cached summary must not route to the deleted path.
+   * - Cached `handle.branch` is trusted only when there is no readable flat
+   *   meta to contradict it (legacy shapes, #2106 R4).
+   * - Any miss → a clear error (never a silently-empty result against the
+   *   wrong DB), after exactly one `refreshRepos()` so newly-pinned branches
+   *   and restamped labels the cached handle predates resolve on the next
+   *   call.
    */
   private async applyBranchScope(handle: RepoHandle, branch?: string): Promise<RepoHandle> {
     if (!branch) return handle;
-    if (handle.branch && handle.branch === branch) return handle;
-    const summary = handle.branches?.find((b) => b.branch === branch);
-    if (summary) {
-      const { lbugPath } = getStoragePaths(handle.repoPath, branch);
+    // At most one cache refresh per resolution: enough for the NEXT call to
+    // see fresh handles, without paying two registry re-scans when several
+    // stale arms fire in one degraded resolution.
+    let refreshed = false;
+    const refreshOnce = async (): Promise<void> => {
+      if (refreshed) return;
+      refreshed = true;
+      await this.refreshRepos().catch(() => {});
+    };
+    // One small JSON read per scoped call; mid-run meta writes preserve the
+    // old label until the end-of-run atomic stamp (run-analyze dirty stamps
+    // spread the existing meta), so this read never runs ahead of the DB.
+    const flatMeta = await loadMeta(path.dirname(handle.lbugPath));
+    if (flatMeta?.branch && flatMeta.branch === branch) {
+      // The disk meta decides routing, so it also supplies the metadata —
+      // the cached handle's label/commit/stats can predate the restamp.
       return {
         ...handle,
-        lbugPath,
-        indexedAt: summary.indexedAt,
-        lastCommit: summary.lastCommit,
-        stats: summary.stats,
+        branch: flatMeta.branch,
+        indexedAt: flatMeta.indexedAt ?? handle.indexedAt,
+        lastCommit: flatMeta.lastCommit ?? handle.lastCommit,
+        stats: flatMeta.stats ?? handle.stats,
       };
     }
-    // Legacy entry (pre-#2106): the registry has no recorded primary `branch`,
-    // so a `--branch <primary>` request misses the checks above. Read the flat
-    // meta.json (next to the flat handle's lbug) to learn the primary and serve
-    // the flat handle only when it actually matches — never serve flat for an
-    // arbitrary unindexed branch (#2106 R4).
-    if (!handle.branch) {
-      const flatMeta = await loadMeta(path.dirname(handle.lbugPath));
-      if (flatMeta?.branch && flatMeta.branch === branch) return handle;
+
+    // A registry entry claiming `branch` both as the flat label AND as a
+    // pinned summary is an adopt-degraded state (rm kept the summary while
+    // the label restamped) — never serve the possibly stale-vintage pin for
+    // a label the flat slot claims; fall through to the honest error.
+    const summary =
+      handle.branch !== branch ? handle.branches?.find((b) => b.branch === branch) : undefined;
+    if (summary) {
+      const { lbugPath } = getStoragePaths(handle.repoPath, branch);
+      // The lbug is the artifact the pool opens, so its presence is the
+      // serviceability truth — a half-deleted dir can outlive its meta.json
+      // while the lbug is gone, and vice versa (#2364 review F1 arm ii).
+      // Only provably-absent errno counts as missing: a transient EACCES/EIO
+      // on a healthy pinned sub-index must serve the handle (the pool open
+      // surfaces the real error) rather than a false "not indexed".
+      const probeCode = await fs.access(lbugPath).then(
+        () => null,
+        (e: unknown) => (e as NodeJS.ErrnoException)?.code ?? 'UNKNOWN',
+      );
+      const subIndexMissing = probeCode === 'ENOENT' || probeCode === 'ENOTDIR';
+      if (!subIndexMissing) {
+        return {
+          ...handle,
+          lbugPath,
+          indexedAt: summary.indexedAt,
+          lastCommit: summary.lastCommit,
+          stats: summary.stats,
+        };
+      }
+      // Stale summary (sub-index adopted/deleted): refresh so later calls see
+      // fresh handles, then fall through — the flat meta above is the truth.
+      await refreshOnce();
     }
-    const indexed = [handle.branch, ...(handle.branches?.map((b) => b.branch) ?? [])].filter(
-      Boolean,
+
+    if (handle.branch && handle.branch === branch) {
+      // No readable flat meta (missing/corrupt — loadMeta → null): keep the
+      // pre-#2354 trust in the cached label (#2106 R4 legacy shapes). A
+      // readable meta that names another branch means the label is stale.
+      if (!flatMeta?.branch) return handle;
+    }
+
+    // Every miss refreshes once before erroring: newly-pinned branches and
+    // restamped labels the cached handle predates become resolvable on the
+    // caller's next attempt (the cache otherwise only refreshes on repo-
+    // resolution misses and list_repos).
+    await refreshOnce();
+
+    // The flat slot's label comes from the authoritative meta when readable —
+    // never echo a cached label the meta just contradicted (a "not indexed:
+    // main / indexed: main" self-contradiction). Cached summaries may still
+    // lag; they are a hint, not a promise.
+    const flatLabel = flatMeta?.branch ?? handle.branch;
+    const indexed = [flatLabel, ...(handle.branches?.map((b) => b.branch) ?? [])].filter(
+      (b) => Boolean(b) && b !== branch,
     );
-    const available = indexed.length > 0 ? indexed.join(', ') : '(primary only)';
+    const available = indexed.length > 0 ? indexed.join(', ') : '(workspace only)';
+    // Post-#2354 a bare `analyze --branch <X>` refuses to run unless X is
+    // checked out, so the guidance must lead with the checkout (#2364 F6).
     throw new Error(
       `Branch "${branch}" is not indexed for "${handle.name}". ` +
-        `Indexed branches: ${available}. Run: gitnexus analyze --branch ${branch}`,
+        `Indexed branches: ${available}. The workspace index follows the ` +
+        `checked-out branch — check out "${branch}" and re-run: gitnexus analyze ` +
+        `(add --branch ${branch} while it is checked out to pin a separate sub-index).`,
     );
   }
 
@@ -1009,14 +1454,14 @@ export class LocalBackend {
 
       this.lastStalenessCheck.set(poolKey, now);
       try {
-        // Read the meta.json that sits next to THIS handle's lbug. For the
-        // flat/primary handle this is `<storagePath>/meta.json` (unchanged);
-        // for a branch handle it is `<storagePath>/branches/<slug>/meta.json`.
+        // Read the metadata that sits next to THIS handle's lbug. For the
+        // flat/primary handle this is `<storagePath>/gitnexus.json`; for a
+        // branch handle it is `<storagePath>/branches/<slug>/gitnexus.json`.
+        // loadMeta falls back to legacy meta.json during migration.
         // Reading the flat meta for a branch handle would compare the branch
         // index's indexedAt against the primary's and thrash the pool (#2106).
-        const metaPath = path.join(path.dirname(repo.lbugPath), 'meta.json');
-        const metaRaw = await fs.readFile(metaPath, 'utf-8');
-        const meta = JSON.parse(metaRaw);
+        const meta = await loadMeta(path.dirname(repo.lbugPath));
+        if (!meta) return;
         // Compare against the last indexedAt OBSERVED for this pool (keyed by
         // lbugPath), not the handle's — branch handles are fresh spreads so a
         // handle mutation would not persist and would reinit on every check.
@@ -1271,7 +1716,9 @@ export class LocalBackend {
       return this.handleGroupTool(method, params || {});
     }
 
-    const p = params && typeof params === 'object' ? (params as Record<string, unknown>) : {};
+    const normalized = normalizeToolParams(method, params);
+    if ('error' in normalized) return { error: normalized.error };
+    const p = normalized.params;
 
     // #2175: Claude Code drops a tool-call argument named exactly "query", so the
     // query/cypher tools advertise "search_query"/"statement" while still accepting the
@@ -1283,7 +1730,7 @@ export class LocalBackend {
     // — third-party MCP clients may legitimately send "query", so the alias is not slated
     // for removal even if Claude Code's argument handling later changes.
     if (
-      (method === 'impact' || method === 'query' || method === 'context') &&
+      (method === 'impact' || method === 'query' || method === 'context' || method === 'trace') &&
       typeof p.repo === 'string' &&
       p.repo.startsWith('@')
     ) {
@@ -1292,47 +1739,52 @@ export class LocalBackend {
 
     // Resolve repo from optional param (re-reads registry on miss). An optional
     // `branch` param scopes the resolved handle to that branch's index (#2106).
-    const repoParams = params as { repo?: string; branch?: string } | undefined;
-    const repo = await this.resolveRepo(repoParams?.repo, repoParams?.branch);
+    const repo = await this.resolveRepo(
+      p.repo as string | undefined,
+      p.branch as string | undefined,
+    );
 
     switch (method) {
       case 'query':
-        return this.query(repo, params);
+        return this.query(repo, p);
       case 'cypher': {
-        const raw = await this.cypher(repo, params);
+        const raw = await this.cypher(repo, p);
         return this.formatCypherAsMarkdown(raw);
       }
       case 'context':
-        return this.context(repo, params);
+        return this.context(repo, p);
       case 'explain':
-        return this.explain(repo, params);
+        return this.explain(repo, p);
       case 'pdg_query':
-        return this.pdgQuery(repo, params);
+        return this.pdgQuery(repo, p);
       case 'impact':
-        return this.impact(repo, params);
+        return this.impact(repo, p as unknown as ImpactParams);
       case 'detect_changes':
-        return this.detectChanges(repo, params);
+        return this.detectChanges(repo, p);
       case 'check':
-        return this.check(repo, params);
+        return this.check(repo, p);
       case 'rename':
-        return this.rename(repo, params);
+        return this.rename(repo, p as unknown as Parameters<LocalBackend['rename']>[1]);
       // Legacy aliases for backwards compatibility
       case 'search':
-        return this.query(repo, params);
+        return this.query(repo, p);
       case 'explore':
-        return this.context(repo, { name: params?.name, ...params });
+        return this.context(repo, {
+          name: typeof p.name === 'string' ? p.name : undefined,
+          ...p,
+        });
       case 'overview':
-        return this.overview(repo, params);
+        return this.overview(repo, p);
       case 'route_map':
-        return this.routeMap(repo, params);
+        return this.routeMap(repo, p);
       case 'shape_check':
-        return this.shapeCheck(repo, params);
+        return this.shapeCheck(repo, p);
       case 'tool_map':
-        return this.toolMap(repo, params);
+        return this.toolMap(repo, p);
       case 'api_impact':
-        return this.apiImpact(repo, params);
+        return this.apiImpact(repo, p);
       case 'trace':
-        return this.trace(repo, params);
+        return this.trace(repo, p);
       default:
         throw new Error(`Unknown tool: ${method}`);
     }
@@ -1616,8 +2068,8 @@ export class LocalBackend {
         name: sym.name,
         type: sym.type,
         filePath: sym.filePath,
-        startLine: sym.startLine,
-        endLine: sym.endLine,
+        startLine: toDisplayLine(sym.startLine),
+        endLine: toDisplayLine(sym.endLine),
         ...(module ? { module } : {}),
         ...(includeContent && content ? { content } : {}),
       };
@@ -1714,9 +2166,77 @@ export class LocalBackend {
     // path, leaving the success-path response shape byte-identical.
     const warnings: string[] = [];
     if (!ftsUsed) {
-      warnings.push(
-        'FTS indexes missing — keyword search degraded. Run: gitnexus analyze --repair-fts (or gitnexus analyze --force) to rebuild indexes.',
-      );
+      warnings.push(ftsDegradedWarning());
+    }
+    // #2331: a CJK query against a server process resolving
+    // GITNEXUS_FTS_CJK_SEGMENTATION to 'none' silently misses sub-phrase
+    // matches with no other signal — this is the only place an agent driving
+    // GitNexus through the query tool can learn the capability exists.
+    try {
+      const cjkMode = getSearchFTSCjkSegmentation();
+      if (containsSegmentableCjkRun(searchQuery) && cjkMode !== 'bigram') {
+        warnings.push(
+          'Query contains CJK characters — sub-phrase matches require GITNEXUS_FTS_CJK_SEGMENTATION=bigram set for both `analyze` and this server process, then `gitnexus analyze --force`.',
+        );
+      } else if (
+        cjkMode === 'bigram' &&
+        searchQuery.length > MAX_CJK_SEGMENTATION_QUERY_LENGTH &&
+        containsSegmentableCjkRun(searchQuery)
+      ) {
+        // #2339: bigram mode is enabled, but the query exceeds the length
+        // cap that guards segmentCjkSpans's per-character allocation cost —
+        // applyCjkSegmentationIfEnabled silently skips segmentation above
+        // this length, so an over-cap CJK query returns zero results for
+        // text that IS indexed and present verbatim, with no other signal.
+        warnings.push(
+          `Query exceeds the ${MAX_CJK_SEGMENTATION_QUERY_LENGTH}-character CJK segmentation cap — ` +
+            'sub-phrase matches are skipped for this query even though GITNEXUS_FTS_CJK_SEGMENTATION=bigram is enabled. Shorten the query to search within the cap.',
+        );
+      }
+    } catch (err) {
+      // Best-effort diagnostic only — never fail the query over it.
+      logQueryError('query:cjk-warning', err);
+    }
+    // #2339: the checks above only compare the QUERY's own content against
+    // the live process's mode — they can't detect "server mode is 'bigram'
+    // but the on-disk index was actually built under 'none'/legacy" (env var
+    // changed without a full --force re-analyze, or a plain/--repair-fts
+    // analyze ran instead). That mismatch affects every CJK query against
+    // this repo, not just one whose own text happens to contain CJK, so it's
+    // a separate, unconditional check — not folded into the branches above.
+    try {
+      const meta = await loadMeta(path.dirname(repo.lbugPath));
+      // meta.json is on-disk state inside the analyzed repo, read via a
+      // schema-less JSON.parse — not trusted input. Validate before
+      // interpolating it into agent-visible tool output (#2339): an
+      // unrecognized value is itself evidence of a corrupt/foreign index,
+      // reported generically rather than echoed verbatim.
+      const persistedMode = meta?.cjkSegmentation;
+      if (meta && persistedMode !== undefined && !isSupportedCjkSegmentationMode(persistedMode)) {
+        warnings.push(
+          "This repo's index metadata has an unrecognized CJK segmentation mode stamp — the index " +
+            'may be corrupt or from an incompatible GitNexus version. Run `gitnexus analyze --force` to rebuild it.',
+        );
+      } else if (
+        meta &&
+        cjkSegmentationModeMismatch(meta.cjkSegmentation, getSearchFTSCjkSegmentation())
+      ) {
+        warnings.push(
+          `Index was built with CJK segmentation mode '${meta.cjkSegmentation ?? 'none'}', but this ` +
+            `server is resolving '${getSearchFTSCjkSegmentation()}' — sub-phrase CJK search results ` +
+            'may be incomplete. Set GITNEXUS_FTS_CJK_SEGMENTATION to the same value for both the ' +
+            '`analyze` process and this server, then run `gitnexus analyze --force` to rebuild under ' +
+            "the agreed mode (do not assume the live server's mode is the one to keep — re-analyzing " +
+            'under the wrong mode can strip an already-working bigram-segmented index back to `none`).',
+        );
+      }
+    } catch (err) {
+      // loadMeta() itself never throws (it returns null on any read/parse
+      // failure) — the actual throw source here is getSearchFTSCjkSegmentation()
+      // on an invalid env value, same root cause as the catch above. This is
+      // a separate, independently-guarded diagnostic though, so it gets its
+      // own log context rather than sharing 'query:cjk-warning'.
+      logQueryError('query:cjk-mode-drift', err);
     }
     if (enrichmentDegraded) {
       warnings.push(
@@ -1757,9 +2277,14 @@ export class LocalBackend {
     try {
       ftsResponse = await searchFTSFromLbug(query, limit, repo.lbugPath);
     } catch (err: any) {
-      logger.error(
+      // Swallowed, gracefully-degraded failure: the search falls back to
+      // semantic-only (a valid result), and the most common cause is simply an
+      // un-indexed FTS extension — a normal configuration, not an operation
+      // error. Logged at warn (matching the sibling import-failure fallback
+      // above), never error, so it does not raise a false alarm.
+      logger.warn(
         { err: err.message },
-        'GitNexus: BM25/FTS search failed (FTS indexes may not exist) -',
+        'GitNexus: BM25/FTS search failed (FTS indexes may not exist) — falling back to semantic-only',
       );
       return { results: [], ftsUsed: false };
     }
@@ -1811,8 +2336,11 @@ export class LocalBackend {
               name: sym.name || sym[1],
               type: sym.type || sym[2],
               filePath: sym.filePath || sym[3],
-              startLine: sym.startLine || sym[4],
-              endLine: sym.endLine || sym[5],
+              // Raw 0-based here — `bm25Search` is only called from `query()`,
+              // whose aggregation loop applies `toDisplayLine` once (see below).
+              // Converting here too would double-shift BM25-matched lines (#2380).
+              startLine: sym.startLine ?? sym[4],
+              endLine: sym.endLine ?? sym[5],
               bm25Score: bm25Result.score,
             });
           }
@@ -1855,6 +2383,7 @@ export class LocalBackend {
       const queryVec = await embedQuery(query);
       const dims = getEmbeddingDims();
       const queryVecStr = `[${queryVec.join(',')}]`;
+      const maxDistance = getVectorMaxDistance(DEFAULT_MCP_VECTOR_MAX_DISTANCE);
 
       let bestChunks = new Map<
         string,
@@ -1868,7 +2397,7 @@ export class LocalBackend {
               CAST(${queryVecStr} AS FLOAT[${dims}]), ${fetchLimit})
             YIELD node AS emb, distance
             WITH emb, distance
-            WHERE distance < 0.6
+            WHERE distance < ${maxDistance}
             RETURN emb.nodeId AS nodeId, emb.chunkIndex AS chunkIndex,
                    emb.startLine AS startLine, emb.endLine AS endLine, distance
             ORDER BY distance
@@ -1918,7 +2447,7 @@ export class LocalBackend {
           embedding: row.embedding ?? row[4] ?? [],
         }));
         bestChunks = new Map(
-          rankExactEmbeddingRows(exactRows, queryVec, limit, 0.6).map((row) => [
+          rankExactEmbeddingRows(exactRows, queryVec, limit, maxDistance).map((row) => [
             row.nodeId,
             {
               distance: row.distance,
@@ -1964,8 +2493,22 @@ export class LocalBackend {
       }
 
       return results;
-    } catch {
-      // Expected when embeddings are disabled — silently fall back to BM25-only
+    } catch (err) {
+      // Embeddings disabled is the common, silent case. But a pruned or
+      // Node-unloadable optional stack (#2370/#2372) also lands here — surface it
+      // once so semantic search doesn't silently degrade to BM25 with no hint
+      // (the exact silent-degradation mode #2370 exists to fix). Emitted once per
+      // LocalBackend instance to keep stderr quiet on hot paths (like the VECTOR
+      // fallback above). All other errors stay silent, as before.
+      const message = err instanceof Error ? err.message : '';
+      if (
+        !this.warnedMissingEmbeddingStack &&
+        (isMissingLocalEmbeddingStackMessage(message) ||
+          isLocalEmbeddingRuntimeBlockerMessage(message))
+      ) {
+        this.warnedMissingEmbeddingStack = true;
+        logger.warn(`GitNexus [query:vector]: ${message}`);
+      }
       return [];
     }
   }
@@ -2047,7 +2590,11 @@ export class LocalBackend {
             const v = row[k];
             if (v === null || v === undefined) return '';
             if (typeof v === 'object') return JSON.stringify(v);
-            return String(v);
+            // Collapse newlines so a multi-line cell value (e.g. a symbol's
+            // `content`) stays on one physical line. Otherwise the rendered row
+            // spans multiple lines, which corrupts the table and breaks the
+            // CLI's `--limit` line-based slicing (#2310 review).
+            return String(v).replace(/\r?\n/g, ' ');
           })
           .join(' | ') +
         ' |',
@@ -2526,7 +3073,7 @@ export class LocalBackend {
           name: c.name,
           kind: c.type,
           filePath: c.filePath,
-          line: c.startLine,
+          line: toDisplayLine(c.startLine),
           score: Number(c.score.toFixed(2)),
         })),
       };
@@ -2783,8 +3330,8 @@ export class LocalBackend {
         name: sym.name || sym[1],
         kind: symKind,
         filePath: sym.filePath || sym[3],
-        startLine: sym.startLine || sym[4],
-        endLine: sym.endLine || sym[5],
+        startLine: toDisplayLine(sym.startLine ?? sym[4]),
+        endLine: toDisplayLine(sym.endLine ?? sym[5]),
         ...(include_content && (sym.content || sym[6]) ? { content: sym.content || sym[6] } : {}),
         ...(methodMetadata ? { methodMetadata } : {}),
       },
@@ -2830,7 +3377,7 @@ export class LocalBackend {
   private async resolveBlockAnchor(
     repo: RepoHandle,
     target: string,
-    toolName: 'explain' | 'pdg_query',
+    toolName: 'explain' | 'pdg_query' | 'impact',
   ): Promise<{
     anchorClause: string;
     queryParams: Record<string, unknown>;
@@ -2871,7 +3418,7 @@ export class LocalBackend {
             name: c.name,
             kind: c.type,
             filePath: c.filePath,
-            line: c.startLine,
+            line: toDisplayLine(c.startLine),
             score: Number(c.score.toFixed(2)),
           })),
         },
@@ -2892,11 +3439,14 @@ export class LocalBackend {
         anchorClause:
           'a.id STARTS WITH $idPrefix AND a.startLine >= $symStart AND a.startLine <= $symEnd',
         queryParams: { idPrefix, symStart: sym.startLine + 1, symEnd: sym.endLine + 1 },
+        // Display anchor is 1-based, matching the ambiguous-candidate branch and
+        // the context/query/impact tools (#2380). This is display-only — the
+        // BasicBlock join above uses the raw `sym.startLine + 1` in `symStart`.
         anchor: {
           file: sym.filePath,
           symbol: sym.name,
-          startLine: sym.startLine,
-          endLine: sym.endLine,
+          startLine: toDisplayLine(sym.startLine),
+          endLine: toDisplayLine(sym.endLine),
         },
       };
     }
@@ -3288,18 +3838,13 @@ export class LocalBackend {
     // Cheap meta probe: the layer exists iff the pdg stamp carries the
     // mode-relevant cap (maxCdgEdgesPerFunction for CDG, maxReachingDef…
     // for REACHING_DEF). Absent ⇒ the no-layer hint without a DB scan.
-    let pdgStamped: boolean | undefined;
-    try {
-      const meta = await loadMeta(path.dirname(repo.lbugPath));
-      if (meta) {
-        pdgStamped =
-          mode === 'controls'
-            ? meta.pdg?.maxCdgEdgesPerFunction !== undefined
-            : meta.pdg?.maxReachingDefEdgesPerFunction !== undefined;
-      }
-    } catch {
-      /* meta unreadable — decide from the DB below */
-    }
+    // `pdgStampForMode` is the shared meta read (the both-caps `pdgLayerStatus`
+    // helper consumes the same underlying read for impact); here we project it
+    // down to this one mode's cap, preserving the tri-state `boolean | undefined`
+    // contract byte-for-byte: `false` ⇒ definitive no-layer (short-circuit
+    // below), `true` ⇒ proceed, `undefined` ⇒ meta unreadable, defer to the
+    // post-anchored-query probe (Feasibility Issue 4).
+    const pdgStamped = await pdgStampForMode(repo.lbugPath, mode);
     if (pdgStamped === false) {
       return { mode, results: [], total: 0, note: NO_PDG_NOTE };
     }
@@ -3315,11 +3860,17 @@ export class LocalBackend {
     const queryParams = resolved.queryParams;
 
     // Optional variable filter (flows mode) — REACHING_DEF stores the variable
-    // name in `reason`.
+    // name in `reason`. FU-B-2 prefixes the name with a `<name>|1:<def>:<use>`
+    // annotation (name FIRST), so match BOTH a legacy bare-name reason (`=`) AND
+    // an annotated one (`STARTS WITH <name>|`). Source identifiers never contain
+    // `|`, so the `<name>|` prefix is exact (it cannot collide with a longer name
+    // — `ab|…` is not a prefix of `abc|…`).
     let reasonClause = '';
     if (mode === 'flows' && typeof params.variable === 'string' && params.variable.trim()) {
-      reasonClause = ' AND r.reason = $variable';
-      queryParams.variable = params.variable.trim();
+      reasonClause = ' AND (r.reason = $variable OR r.reason STARTS WITH $variablePrefix)';
+      const variable = params.variable.trim();
+      queryParams.variable = variable;
+      queryParams.variablePrefix = `${variable}|`;
     }
 
     // edgeType is a hardcoded per-mode literal (never user input); `target` /
@@ -3359,12 +3910,7 @@ export class LocalBackend {
     }
 
     // basicBlockId = `BasicBlock:<filePath>:<fnLine>:<fnCol>:<blockIdx>` — split
-    // from the RIGHT (filePath may contain ':').
-    const fnLineOf = (id: string): number => {
-      const parts = id.split(':');
-      return Number(parts[parts.length - 3]);
-    };
-
+    // from the RIGHT (filePath may contain ':'). Shared module-scope `fnLineOf`.
     const results =
       mode === 'controls'
         ? rows.map((r: any) => {
@@ -3383,9 +3929,13 @@ export class LocalBackend {
           })
         : rows.map((r: any) => {
             const fnLine = fnLineOf(String(r.srcId ?? r[0] ?? ''));
+            // FU-B-2: REACHING_DEF `reason` is `<name>` (legacy) or
+            // `<name>|1:<defLine>:<useLine>` — decode to surface the bare
+            // variable name, not the encoded annotation.
+            const variable = decodeReachingDefReason(r.reason ?? r[4] ?? '').name;
             return {
               ...(Number.isInteger(fnLine) ? { functionLine: fnLine } : {}),
-              variable: String(r.reason ?? r[4] ?? ''),
+              variable,
               def: { line: (r.srcLine ?? r[1]) as number | undefined },
               use: {
                 line: (r.dstLine ?? r[2]) as number | undefined,
@@ -3627,6 +4177,9 @@ export class LocalBackend {
 
     // Map diff hunks to indexed symbols via range overlap
     const changedSymbols: any[] = [];
+    // Set if a swallowed graph query fails below — surfaces `partial:true` so a
+    // degraded run cannot report a false-clean `risk_level:'low'` (#2283).
+    let queryDegraded = false;
     for (const fileDiff of fileDiffs) {
       if (fileDiff.hunks.length === 0) continue;
 
@@ -3674,6 +4227,12 @@ export class LocalBackend {
         }
       } catch (e) {
         logQueryError('detect-changes:file-symbols', e);
+        // The symbol query failed: changedSymbols stays empty and the result
+        // would otherwise look like a clean no-op (`changed_count:0`,
+        // `risk_level:'low'`). detect_changes is the pre-commit safety gate, so
+        // flag the result `partial` rather than let a swallowed failure
+        // masquerade as "nothing changed" (#2283).
+        queryDegraded = true;
       }
     }
 
@@ -3712,6 +4271,7 @@ export class LocalBackend {
         }
       } catch (e) {
         logQueryError('detect-changes:process-lookup', e);
+        queryDegraded = true;
       }
     }
 
@@ -3734,6 +4294,9 @@ export class LocalBackend {
       },
       changed_symbols: changedSymbols,
       affected_processes: Array.from(affectedProcesses.values()),
+      // A swallowed query failure makes the counts/risk above incomplete — tell
+      // the caller so the safety gate isn't trusted as a clean result (#2283).
+      ...(queryDegraded && { partial: true }),
     };
   }
 
@@ -3934,6 +4497,7 @@ export class LocalBackend {
     const allChanges = Array.from(changes.values());
     const totalEdits = allChanges.reduce((sum, c) => sum + c.edits.length, 0);
 
+    const failedFiles: string[] = [];
     if (!dry_run) {
       // Apply edits to files
       for (const change of allChanges) {
@@ -3944,13 +4508,17 @@ export class LocalBackend {
           content = content.replace(regex, new_name);
           await fs.writeFile(fullPath, content, 'utf-8');
         } catch (e) {
+          // A swallowed write failure must not be reported as a full success
+          // (#2283): record the file so the result can degrade to 'partial'
+          // with the unwritten files listed, rather than masquerading as done.
           logQueryError('rename:apply-edit', e);
+          failedFiles.push(change.file_path);
         }
       }
     }
 
     return {
-      status: 'success',
+      status: failedFiles.length > 0 ? 'partial' : 'success',
       old_name: oldName,
       new_name,
       files_affected: allChanges.length,
@@ -3959,6 +4527,7 @@ export class LocalBackend {
       text_search_edits: astSearchEdits,
       changes: allChanges,
       applied: !dry_run,
+      ...(failedFiles.length > 0 && { failed_files: failedFiles }),
     };
   }
 
@@ -3996,6 +4565,22 @@ export class LocalBackend {
         status: 'error',
         error: "'from', 'to', and their *_uid variants must be strings.",
         suggestion: 'Pass symbol names or UIDs as strings, e.g. trace from="A" to="B".',
+      };
+    }
+
+    // A single-repo trace needs a target. Omitting `to` is the destination-trace
+    // shorthand, but that only exists for a cross-repo @group trace — reject a
+    // to-less single-repo call with an actionable error rather than the opaque
+    // "Target symbol 'undefined' not found".
+    const hasTo =
+      (typeof params.to === 'string' && params.to.trim() !== '') ||
+      (typeof params.to_uid === 'string' && params.to_uid.trim() !== '');
+    if (!hasTo) {
+      return {
+        status: 'error',
+        error: 'trace requires `to` (or `to_uid`) for a single-repo trace.',
+        suggestion:
+          'Pass a target symbol, or use repo:"@<group>" and omit `to` to trace `from` to its HTTP destination.',
       };
     }
 
@@ -4222,14 +4807,34 @@ export class LocalBackend {
       return await this._impactImpl(repo, params);
     } catch (err: any) {
       // Return structured error instead of crashing (#321)
+      const message =
+        (err instanceof Error ? err.message : String(err)) || 'Impact analysis failed';
+      const suggestion = 'The graph query failed — try gitnexus context <symbol> as a fallback';
+      const recoverySuggestion = isWalCorruptionError(err) ? WAL_RECOVERY_SUGGESTION : undefined;
+      if (params.mode === 'pdg') {
+        // Symbol resolution never reached the catch with a resolved symbol (the
+        // throw can originate before/within resolution), so the envelope carries
+        // the partial-but-typed target — typed as PdgImpactTarget so the partial
+        // is type-checked, not an inline literal in a Promise<any> hole.
+        const target: PdgImpactTarget = { name: params.target };
+        const pdgErr: PdgImpactErrorResult = makePdgImpactErrorResult({
+          mode: 'pdg',
+          error: message,
+          target,
+          direction: params.direction,
+          suggestion,
+          recoverySuggestion,
+        });
+        return pdgErr;
+      }
       return {
-        error: (err instanceof Error ? err.message : String(err)) || 'Impact analysis failed',
+        error: message,
         target: { name: params.target },
         direction: params.direction,
         impactedCount: 0,
         risk: 'UNKNOWN',
-        suggestion: 'The graph query failed — try gitnexus context <symbol> as a fallback',
-        ...(isWalCorruptionError(err) ? { recoverySuggestion: WAL_RECOVERY_SUGGESTION } : {}),
+        suggestion,
+        ...(recoverySuggestion ? { recoverySuggestion } : {}),
       };
     }
   }
@@ -4238,6 +4843,94 @@ export class LocalBackend {
     await this.ensureInitialized(repo);
 
     const { target, direction } = params;
+
+    // ── Dispatch order (KTD5) ──────────────────────────────────────────
+    // (1) Validate `mode`. Absent/'callgraph' → unchanged path; 'pdg' → the
+    // intra-procedural PDG engine; anything else → hard error.
+    // This MUST come before resolveSymbolCandidates so the ambiguous branch can
+    // fork on the validated mode and never run the callgraph fan-out under pdg.
+    const modeResult = validateImpactMode(params.mode);
+    if ('error' in modeResult) {
+      return {
+        error: modeResult.error,
+        target: { name: target },
+        direction,
+        impactedCount: 0,
+        risk: 'UNKNOWN',
+      };
+    }
+    const mode = modeResult.mode;
+
+    // #2279: some MCP client/agent adapters serialize an *omitted* optional
+    // numeric field as `0` rather than dropping it, so callgraph calls arrive
+    // carrying a spurious `line: 0`. `line` is meaningless on the callgraph path
+    // (the symbol→symbol BFS has no statement notion), so treat a literal `0`
+    // there as omitted and let the normal traversal run. The coercion is
+    // deliberately narrow — only the literal `0`, only when mode !== 'pdg':
+    // a genuine positive `line` on callgraph still errors (real mode mistake),
+    // negative/fractional values still error, and pdg mode is untouched (the
+    // normalization is an identity there, so `line: 0` is still rejected below —
+    // there is no 1-based source line `0` to anchor on).
+    const effectiveLine = mode !== 'pdg' && params.line === 0 ? undefined : params.line;
+
+    // `line` is a PDG-only statement anchor. Reject it on the callgraph path
+    // rather than silently ignore (the symbol→symbol BFS has no statement notion).
+    if (effectiveLine !== undefined && mode !== 'pdg') {
+      return {
+        error: `Parameter 'line' is only supported with mode:'pdg' (it anchors the dependence slice on a statement). Remove it or set mode:'pdg'.`,
+        target: { name: params.target },
+        direction: params.direction,
+        impactedCount: 0,
+        risk: 'UNKNOWN',
+      };
+    }
+    // A provided `line` must be a positive integer.
+    if (
+      effectiveLine !== undefined &&
+      (!Number.isInteger(effectiveLine) || (effectiveLine as number) < 1)
+    ) {
+      // Line param fails validation before target resolution → partial-but-typed
+      // target on the pdg path (typed PdgImpactTarget, not an inline literal).
+      const badLineTarget: PdgImpactTarget = { name: params.target };
+      return mode === 'pdg'
+        ? makePdgImpactErrorResult({
+            mode: 'pdg',
+            error: `Parameter 'line' must be a positive integer (1-based source line), got ${JSON.stringify(params.line)}.`,
+            target: badLineTarget,
+            direction: params.direction,
+          })
+        : {
+            error: `Parameter 'line' must be a positive integer (1-based source line), got ${JSON.stringify(params.line)}.`,
+            target: { name: params.target },
+            direction: params.direction,
+            impactedCount: 0,
+            risk: 'UNKNOWN',
+          };
+    }
+
+    if (mode === 'pdg') {
+      // PDG mode is now unified inside a single repo: it combines the local
+      // CDG/RD statement slice with the same inter-symbol reach used for the
+      // option-driven comparison path. Cross-repo fan-out remains a callgraph
+      // feature, so crossDepth is still a loud error rather than a silent ignore.
+      const incompatible: string[] = [];
+      if (params.crossDepth !== undefined) incompatible.push('crossDepth');
+      if (incompatible.length > 0) {
+        // crossDepth is rejected before target resolution → partial-but-typed
+        // target (typed PdgImpactTarget).
+        const crossDepthTarget: PdgImpactTarget = { name: target };
+        const pdgErr: PdgImpactErrorResult = makePdgImpactErrorResult({
+          mode: 'pdg',
+          error:
+            `Parameter(s) ${incompatible.join(', ')} are not supported with mode:'pdg' ` +
+            `(single-repo PDG impact). Remove them or use mode:'callgraph' for cross-repo fan-out.`,
+          target: crossDepthTarget,
+          direction,
+        });
+        return pdgErr;
+      }
+    }
+
     const maxDepth = params.maxDepth || 3;
     // Map legacy relation type names before filtering (backward compat for OVERRIDES → METHOD_OVERRIDES)
     const mappedRelTypes = params.relationTypes?.flatMap((t: string) =>
@@ -4290,16 +4983,67 @@ export class LocalBackend {
 
     if (outcome.kind === 'not_found') {
       const missing = params.target_uid ?? target;
-      return {
-        error: `Target '${missing}' not found`,
-        target: { name: target },
-        direction,
-        impactedCount: 0,
-        risk: 'UNKNOWN',
-      };
+      // not_found = no resolved symbol, so the envelope keeps the partial-but-
+      // typed target (typed PdgImpactTarget — there is no id/type/filePath yet).
+      const notFoundTarget: PdgImpactTarget = { name: target };
+      return mode === 'pdg'
+        ? makePdgImpactErrorResult({
+            mode: 'pdg',
+            error: `Target '${missing}' not found`,
+            target: notFoundTarget,
+            direction,
+          })
+        : {
+            error: `Target '${missing}' not found`,
+            target: { name: target },
+            direction,
+            impactedCount: 0,
+            risk: 'UNKNOWN',
+          };
     }
 
     if (outcome.kind === 'ambiguous') {
+      // Shared truncation cap for the ambiguous candidate list — both the pdg
+      // branch (shows candidates) and the callgraph branch (probes candidates)
+      // bound to this many.
+      const AMBIGUOUS_MAX_CANDIDATES = 6;
+      // KTD5 ambiguous trap — under mode:'pdg' we MUST NOT fall into the
+      // callgraph fan-out below: it runs `_runImpactBFS` per candidate, which
+      // would silently execute the call-graph engine under a `pdg` call (the
+      // exact silent fallback KTD5 forbids). For U1 the pdg ambiguous path
+      // returns the candidate list WITHOUT any callgraph probe; the full pdg
+      // ambiguous handling (per-candidate PDG summaries / ranking) lands in U4.
+      if (mode === 'pdg') {
+        const truncated = outcome.candidates.length > AMBIGUOUS_MAX_CANDIDATES;
+        const shown = outcome.candidates.slice(0, AMBIGUOUS_MAX_CANDIDATES);
+        return {
+          status: 'ambiguous',
+          mode,
+          message:
+            `Found ${outcome.candidates.length} symbols matching '${target}'` +
+            (truncated ? ` (showing ${shown.length} of ${outcome.candidates.length})` : '') +
+            `. Disambiguate with target_uid (or file_path/kind) for a single ` +
+            `authoritative PDG result.`,
+          target: { name: target },
+          direction,
+          totalCandidates: outcome.candidates.length,
+          // No single resolved symbol → impactedCount stays 0 / risk UNKNOWN
+          // (UNKNOWN must never read as "safe to refactor"). No callgraph
+          // fan-out runs, so there is no per-candidate blast radius here yet.
+          impactedCount: 0,
+          risk: 'UNKNOWN',
+          ...(truncated && { candidatesTruncated: true }),
+          candidates: shown.map((c) => ({
+            uid: c.id,
+            name: c.name,
+            kind: c.type,
+            filePath: c.filePath,
+            line: toDisplayLine(c.startLine),
+            score: Number(c.score.toFixed(2)),
+          })),
+        };
+      }
+
       // #2129 — a bare name that collides with several symbols must NOT report a
       // bare `impactedCount: 0`. The real blast radius lives under whichever
       // candidate the caller meant; a flat zero here is precisely the silent
@@ -4309,7 +5053,6 @@ export class LocalBackend {
       // summary-only BFS per candidate so each one's true count + risk is
       // visible, and surface the maximum at the top level so the headline can
       // never read as "safe to refactor". Candidates arrive sorted by score.
-      const AMBIGUOUS_MAX_CANDIDATES = 6;
       const probed = outcome.candidates.slice(0, AMBIGUOUS_MAX_CANDIDATES);
       // `partialProbe` is intentionally a SECOND incompleteness flag, distinct
       // from the traversal-interrupted `partial` flag used elsewhere: it means
@@ -4360,7 +5103,7 @@ export class LocalBackend {
             name: c.name,
             kind: c.type,
             filePath: c.filePath,
-            line: c.startLine,
+            line: toDisplayLine(c.startLine),
             score: Number(c.score.toFixed(2)),
             impactedCount: summary?.impactedCount ?? 0,
             risk: summary?.risk ?? 'UNKNOWN',
@@ -4422,8 +5165,48 @@ export class LocalBackend {
       id: outcome.symbol.id,
       name: outcome.symbol.name,
       filePath: outcome.symbol.filePath,
+      // Carry the resolved span so the PDG seed anchors on THIS symbol directly,
+      // without re-resolving its (possibly ambiguous) name (FIX 1).
+      startLine: outcome.symbol.startLine,
+      endLine: outcome.symbol.endLine,
     };
     const symType = outcome.resolvedLabel || outcome.symbol.type || '';
+
+    // (2) PDG-layer presence probe (U2, KTD7) — the four-state degradation
+    // contract after target resolution, before traversal. A repo never analyzed
+    // with `--pdg` (no-layer), one with only a partial layer (sub-layer-missing
+    // — impact needs BOTH CDG and REACHING_DEF), or one whose meta is unreadable
+    // (unknown) each returns a distinct guidance note here rather than a
+    // confusing empty blast radius. Resolve first so target-known degraded
+    // responses keep the same id/type/filePath envelope as successful PDG
+    // responses; only `ready` falls through to traversal.
+    // Hoisted so the (4) traversal branch can read `layer.hasCallSummary` (FU-C):
+    // the same single meta-stamp probe serves both the degradation gate and the
+    // ascent-availability note — no second probe.
+    let layer: PdgLayerStatus | undefined;
+    if (mode === 'pdg') {
+      layer = await pdgLayerStatus({
+        lbugPath: repo.lbugPath,
+        executeParameterized,
+      });
+      if (isPdgDegradedLayerStatus(layer)) {
+        // Degradation occurs AFTER target resolution → thread the FULL typed
+        // envelope ({ id, name, type, filePath }) so degraded responses keep the
+        // same target shape as a successful PDG result (typed PdgImpactTarget).
+        const degradedTarget: PdgImpactTarget = {
+          id: sym.id,
+          name: sym.name,
+          type: symType || 'Function',
+          filePath: sym.filePath,
+        };
+        return makePdgLayerDegradedResult({
+          mode,
+          layer,
+          target: degradedTarget,
+          direction,
+        });
+      }
+    }
 
     const effectiveRelationTypes =
       (symType === 'Class' || symType === 'Interface') &&
@@ -4431,6 +5214,90 @@ export class LocalBackend {
       !relationTypes.includes('ACCESSES')
         ? [...relationTypes, 'ACCESSES']
         : relationTypes;
+
+    // (4) single → route the resolved symbol to the engine selected by `mode`.
+    if (mode === 'pdg') {
+      const pdgResult = await this._runImpactPDG({
+        repo,
+        sym,
+        symType,
+        direction,
+        maxDepth,
+        // Use the normalized line, not raw params.line, so the gate and the
+        // engine share one source of truth (#2283). Identity in pdg mode today
+        // — effectiveLine === params.line when mode === 'pdg' — but this stays
+        // correct if the normalization ever stops being an identity here.
+        line: effectiveLine,
+        limit: Number.isFinite(params.limit) ? params.limit : 100,
+        // KTD2 extraction-seam discipline: hand the engine its DB dependency
+        // explicitly rather than `this.`-binding it. LocalBackend owns repo
+        // lifecycle; `pdg-impact.ts` owns traversal/projection.
+        executeParameterized,
+        // FU-C: thread the CALL_SUMMARY layer presence read above (meta stamp) so
+        // the engine notes "no return-value ascent (re-index)" on a pre-FU-C (v3)
+        // index. `layer.hasCallSummary` is set on every meta-readable state.
+        callSummaryAvailable: layer?.hasCallSummary === true,
+      });
+
+      // Statement-precise inter-procedural reach: a first-hop callee is "proven"
+      // iff it is invoked in a block of the criterion's dependence slice. The
+      // slice = the seed block(s) (the changed line itself) UNION the dependent
+      // reachable blocks — both carry the leaf callee names they call
+      // (`BasicBlock.callees`). The seed block is included because a callee
+      // invoked directly on the changed line is the most-directly-impacted one,
+      // yet `reachableBlocks` excludes the seed by the seed-minus-reachable
+      // convention. Upstream seeds carry no discriminating slice, so the bridge
+      // falls back to preserving callgraph reach.
+      // `_runImpactPDG` returns the PdgImpactResult union; only the success/empty
+      // slice results carry intraReachableBlocks/seedBlocks (degraded and error
+      // results do not). Narrow via the same discriminant the composer uses, then
+      // read the typed string[] slices — no `as any`.
+      const sliceResult = 'error' in pdgResult || 'pdgLayer' in pdgResult ? null : pdgResult;
+      // FIX 6: key the "first-hop proven" set on the INTRA-procedural slice only
+      // (seed ∪ intra-reachable), NOT `reachableBlocks` — which the U1 descent now
+      // EXPANDS with inter-procedurally-reached callee blocks. Using the expanded
+      // superset would mark transitively-reached (2+ hop) callgraph targets as
+      // first-hop "proven", silently shifting the established statementPrecision
+      // semantics. The interproc-reached blocks are routed into the statement
+      // slice / block→symbol projection inside `_runImpactPDG` only.
+      const intraReachableBlocks: string[] = sliceResult?.intraReachableBlocks ?? [];
+      const seedBlocks: string[] = sliceResult?.seedBlocks ?? [];
+      const sliceBlocks = [...seedBlocks, ...intraReachableBlocks];
+      const sliceCalleeNames =
+        direction === 'downstream' && sliceBlocks.length > 0
+          ? await this.calleesOfBlocks(repo, sliceBlocks)
+          : new Set<string>();
+      // Resolved-id slice set (sound primary key, KTD3): unioned from the SAME
+      // seed ∪ reachable block set as the names — so a callee invoked only on the
+      // seeded line is still provable by id. Absent on a pre-v3 index (no
+      // `calleeIds` column) → empty → the bridge falls back to the leaf-name match.
+      const sliceCalleeIds =
+        direction === 'downstream' && sliceBlocks.length > 0
+          ? await this.calleeIdsOfBlocks(repo, sliceBlocks)
+          : new Set<string>();
+      // Build the bridge when EITHER the name fallback or the id key has signal —
+      // an id-only index (names empty but ids present) must still seed the bridge.
+      const pdgBridge: PdgBridgeOptions | undefined =
+        sliceCalleeNames.size > 0 || sliceCalleeIds.size > 0
+          ? { sliceCalleeNames, sliceCalleeIds }
+          : undefined;
+
+      try {
+        const interproceduralResult = await this._runImpactBFS(repo, sym, symType, direction, {
+          maxDepth,
+          relationTypes: effectiveRelationTypes,
+          includeTests,
+          minConfidence,
+          limit: Number.isFinite(params.limit) ? params.limit : 100,
+          offset: Number.isFinite(params.offset) ? params.offset : 0,
+          pdgBridge,
+        });
+        return composeUnifiedPdgImpactResult(pdgResult, interproceduralResult);
+      } catch (e) {
+        logQueryError('impact:pdg-interprocedural-reach', e);
+        return composeUnifiedPdgImpactResult(pdgResult, null, e);
+      }
+    }
 
     return this._runImpactBFS(repo, sym, symType, direction, {
       maxDepth,
@@ -4441,6 +5308,93 @@ export class LocalBackend {
       offset: Number.isFinite(params.offset) ? params.offset : 0,
       summaryOnly: params.summaryOnly,
     });
+  }
+
+  /**
+   * Union of the leaf callee names invoked across a set of dependence-slice
+   * blocks (`BasicBlock.callees`, space-joined at emit). Drives statement-precise
+   * inter-procedural evidence: a first-hop callee reached from the criterion is
+   * "proven" (callgraph-bridge) iff its name is in this set, else unproven-bridge.
+   * Empty when the slice blocks call nothing or carry no harvested callees
+   * (non-TS/JS or synthetic ENTRY/EXIT blocks) — the bridge then preserves
+   * callgraph reach. A query failure is logged and degrades to empty (no proof),
+   * never throws (the inter-procedural reach is still returned).
+   */
+  private async calleesOfBlocks(repo: RepoHandle, blockIds: string[]): Promise<Set<string>> {
+    const names = new Set<string>();
+    if (blockIds.length === 0) return names;
+    try {
+      const rows = await executeParameterized(
+        repo.lbugPath,
+        `MATCH (b:BasicBlock) WHERE b.id IN $ids RETURN b.callees AS callees`,
+        { ids: blockIds },
+      );
+      for (const r of rows as any[]) {
+        const raw = String(r.callees ?? r[0] ?? '');
+        for (const n of raw.split(' ')) if (n) names.add(n);
+      }
+    } catch (e) {
+      logQueryError('impact:pdg-slice-callees', e);
+    }
+    return names;
+  }
+
+  /**
+   * Union of the RESOLVED callee symbol ids invoked across a set of
+   * dependence-slice blocks (`BasicBlock.calleeIds`, space-joined at emit —
+   * sibling of `callees`). This is the SOUND key the bridge prefers: a first-hop
+   * callee is proven statement-precise iff its resolved id is in this set, which
+   * eliminates the same-leaf-name collision (false-positive) and import-alias
+   * (false-negative) the name set cannot distinguish. Empty when the slice blocks
+   * carry no captured ids (pre-v3 index without the `calleeIds` column, or
+   * non-overloading/synthetic blocks) — the bridge then falls back to the
+   * leaf-name match per U5. A query failure is logged and degrades to empty (no
+   * proof), never throws (the inter-procedural reach is still returned). Mirrors
+   * `calleesOfBlocks` exactly — same shape, same swallow-on-error contract.
+   */
+  private async calleeIdsOfBlocks(repo: RepoHandle, blockIds: string[]): Promise<Set<string>> {
+    const ids = new Set<string>();
+    if (blockIds.length === 0) return ids;
+    try {
+      const rows = await executeParameterized(
+        repo.lbugPath,
+        `MATCH (b:BasicBlock) WHERE b.id IN $ids RETURN b.calleeIds AS calleeIds`,
+        { ids: blockIds },
+      );
+      for (const r of rows) {
+        // Shared split-and-drop-sentinel logic (`splitCalleeIds`) so this bridge
+        // key and the inter-procedural descent cannot diverge. The sentinel marks
+        // a capped block (handled by the names-sentinel check in the bridge) and
+        // is not a resolved symbol id, so it never enters the `has(realId)` set.
+        for (const id of splitCalleeIds(r.calleeIds ?? r[0])) ids.add(id);
+      }
+    } catch (e) {
+      logQueryError('impact:pdg-slice-callee-ids', e);
+    }
+    return ids;
+  }
+
+  /**
+   * Delegates the PDG impact engine to `pdg-impact.ts`.
+   *
+   * The private method remains as the LocalBackend dispatch seam so existing
+   * tests can keep asserting that `mode:'pdg'` routes through the PDG
+   * statement engine before LocalBackend attaches interprocedural symbol reach.
+   * The traversal/projection/result assembly lives in the extracted helper
+   * module.
+   */
+  private async _runImpactPDG(deps: {
+    repo: RepoHandle;
+    sym: { id: string; name: string; filePath: string; startLine?: number; endLine?: number };
+    symType: string;
+    direction: 'upstream' | 'downstream';
+    maxDepth: number;
+    limit: number;
+    line?: number;
+    executeParameterized: typeof executeParameterized;
+    callSummaryAvailable?: boolean;
+  }): Promise<PdgImpactResult> {
+    return runImpactPDG(deps);
   }
 
   /**
@@ -4592,6 +5546,7 @@ export class LocalBackend {
       skipPerSymbolEnrichment?: boolean;
       skipEpistemic?: boolean;
       skipEnrichment?: boolean;
+      pdgBridge?: PdgBridgeOptions;
     },
   ): Promise<any> {
     const { maxDepth, relationTypes, includeTests, minConfidence } = opts;
@@ -4634,6 +5589,7 @@ export class LocalBackend {
 
     const impacted: any[] = [];
     const visited = new Set<string>([symId]);
+    const pdgBridgeEvidenceById = new Map<string, PdgBridgeEvidenceInfo>();
     let frontier = [symId];
     let traversalComplete = true;
 
@@ -4731,10 +5687,35 @@ export class LocalBackend {
         });
 
         for (const rel of related) {
+          const sourceId = String(rel.sourceId ?? rel[0] ?? '');
           const relId = rel.id || rel[1];
           const filePath = rel.filePath || rel[4] || '';
 
           if (!includeTests && isTestFilePath(filePath)) continue;
+
+          // Bridge evidence is computed for EVERY edge (not just the first to
+          // reach a node) and the strongest verdict across all parents is kept
+          // (`callgraph-bridge` wins). This makes a diamond-reachable node's
+          // proven/unproven label order-independent of DB row iteration; the
+          // final label is stamped onto the impacted items after the depth loop.
+          if (opts.pdgBridge) {
+            const ev = pdgBridgeEvidenceForImpact({
+              bridge: opts.pdgBridge,
+              depth,
+              calleeName: rel.name || rel[2],
+              // Sound primary key (KTD3): the reached callee's RESOLVED id — the
+              // same `relId` (`rel.id`) the BFS keys its visited/frontier sets on,
+              // which equals the CALLS targetId captured into `BasicBlock.calleeIds`.
+              // The bridge proves by id ∈ `sliceCalleeIds` first, falling back to
+              // `calleeName` only when ids are absent or the block is capped.
+              calleeId: relId,
+              inherited: pdgBridgeEvidenceById.get(sourceId),
+            });
+            pdgBridgeEvidenceById.set(
+              String(relId),
+              betterBridgeEvidence(pdgBridgeEvidenceById.get(String(relId)), ev),
+            );
+          }
 
           if (!visited.has(relId)) {
             visited.add(relId);
@@ -4747,6 +5728,8 @@ export class LocalBackend {
               typeof storedConfidence === 'number' && storedConfidence > 0
                 ? storedConfidence
                 : confidenceForRelType(relationType);
+            // pdgEvidence is stamped after the depth loop from the finalized,
+            // order-independent pdgBridgeEvidenceById map.
             impacted.push({
               depth,
               id: relId,
@@ -4767,6 +5750,19 @@ export class LocalBackend {
       }
 
       frontier = nextFrontier;
+    }
+
+    // Stamp the finalized, order-independent bridge evidence (strongest across
+    // all parents) onto each impacted item. Deferred from the BFS loop so a
+    // diamond-reachable node reflects a proven parent regardless of visit order.
+    if (opts.pdgBridge) {
+      for (const item of impacted as Array<Record<string, unknown>>) {
+        const ev = pdgBridgeEvidenceById.get(String(item.id));
+        if (ev) {
+          item.pdgEvidence = ev.evidence;
+          item.pdgBridgeBasis = ev.basis;
+        }
+      }
     }
 
     const grouped: Record<number, any[]> = {};
@@ -5347,7 +6343,53 @@ export class LocalBackend {
     if (resolved.ok === false) return { error: resolved.error };
 
     const svc = this.getGroupService();
+    if (method === 'trace') {
+      // Cross-repo trace resolves `from`/`to` across ALL members (it does not
+      // anchor on a single member like impact/query/context), so the member
+      // path in `@group/path` is advisory here — `resolved` above still
+      // validates that the group exists. groupTrace owns cross-member
+      // resolution and the single-boundary bridge crossing.
+      const traceArgs: Record<string, unknown> = { name: groupName };
+      if (params.from !== undefined) traceArgs.from = params.from;
+      if (params.to !== undefined) traceArgs.to = params.to;
+      if (params.from_uid !== undefined) traceArgs.from_uid = params.from_uid;
+      if (params.to_uid !== undefined) traceArgs.to_uid = params.to_uid;
+      if (params.from_file !== undefined) traceArgs.from_file = params.from_file;
+      if (params.to_file !== undefined) traceArgs.to_file = params.to_file;
+      if (params.maxDepth !== undefined) traceArgs.maxDepth = params.maxDepth;
+      if (params.crossDepth !== undefined) traceArgs.crossDepth = params.crossDepth;
+      if (params.includeTests !== undefined) traceArgs.includeTests = params.includeTests;
+      if (params.pdg !== undefined) traceArgs.pdg = params.pdg;
+      if (params.limit !== undefined) traceArgs.limit = params.limit;
+      return svc.groupTrace(traceArgs);
+    }
     if (method === 'impact') {
+      // KTD5/KTD12 — validate `mode` at the group-forward boundary too (the
+      // JSON-schema enum is advisory). An invalid mode errors; `mode:'pdg'` is
+      // rejected for @group targets because PDG impact is single-repo and
+      // intra-procedural — there is no cross-repo dependence graph to walk.
+      // Rejecting here (before groupImpact) is the KTD12 @group hard error.
+      const groupModeResult = validateImpactMode(params.mode);
+      if ('error' in groupModeResult) return { error: groupModeResult.error };
+      if (groupModeResult.mode === 'pdg') {
+        // @group reject: no single-repo symbol is ever resolved on the group path,
+        // so the envelope carries the partial-but-typed target (PdgImpactTarget).
+        // Routed through the typed builder so this exit is a PdgImpactResult union
+        // member, never a bare { error } object.
+        const groupRejectTarget: PdgImpactTarget = { name: String(params.target ?? '') };
+        const pdgErr: PdgImpactErrorResult = makePdgImpactErrorResult({
+          mode: 'pdg',
+          error:
+            "mode:'pdg' is not supported for @group targets — PDG impact is " +
+            'single-repo and intra-procedural. Run pdg impact against an ' +
+            'individual indexed repository instead.',
+          target: groupRejectTarget,
+          direction: (params.direction === 'downstream' ? 'downstream' : 'upstream') as
+            | 'upstream'
+            | 'downstream',
+        });
+        return pdgErr;
+      }
       const impactArgs: Record<string, unknown> = {
         name: groupName,
         repo: resolved.repoPath,
@@ -5477,6 +6519,7 @@ export class LocalBackend {
     Array<{
       id: string;
       name: string;
+      method: string | null;
       filePath: string;
       responseKeys: string[] | null;
       errorKeys: string[] | null;
@@ -5499,7 +6542,7 @@ export class LocalBackend {
       RETURN n.id AS routeId, n.name AS routeName, n.filePath AS handlerFile,
              n.responseKeys AS responseKeys, n.errorKeys AS errorKeys, n.middleware AS middleware,
              consumer.name AS consumerName, consumer.filePath AS consumerFile,
-             r.reason AS fetchReason
+             r.reason AS fetchReason, n.method AS method
     `,
       params,
     );
@@ -5514,6 +6557,7 @@ export class LocalBackend {
       {
         id: string;
         name: string;
+        method: string | null;
         filePath: string;
         responseKeys: string[] | null;
         errorKeys: string[] | null;
@@ -5536,11 +6580,17 @@ export class LocalBackend {
       const consumerName = row.consumerName ?? row[6];
       const consumerFile = row.consumerFile ?? row[7];
       const fetchReason: string | null = row.fetchReason ?? row[8] ?? null;
+      // Verb is the literal '*' for method-agnostic routes (Django function
+      // views) and absent (null) for method-less routes (filesystem, Laravel
+      // resource). Appended last in RETURN so positional fallbacks for the
+      // consumer/reason columns above stay stable.
+      const method: string | null = row.method ?? row[9] ?? null;
 
       if (!routeMap.has(id)) {
         routeMap.set(id, {
           id,
           name,
+          method,
           filePath,
           responseKeys,
           errorKeys,
@@ -5638,6 +6688,7 @@ export class LocalBackend {
     return {
       routes: routes.map((r) => ({
         route: r.name,
+        method: r.method,
         handler: r.filePath,
         middleware: r.middleware || [],
         consumers: r.consumers,
@@ -5705,6 +6756,7 @@ export class LocalBackend {
 
         return {
           route: r.name,
+          method: r.method,
           handler: r.filePath,
           ...(responseKeys.length > 0 ? { responseKeys } : {}),
           ...(errorKeys.length > 0 ? { errorKeys } : {}),
@@ -5772,8 +6824,8 @@ export class LocalBackend {
 
   private async apiImpact(
     repo: RepoHandle,
-    params: { route?: string; file?: string },
-  ): Promise<any> {
+    params: { route?: string; file?: string; method?: unknown },
+  ): Promise<ApiImpactResult> {
     await this.ensureInitialized(repo);
 
     if (!params.route && !params.file) {
@@ -5792,11 +6844,30 @@ export class LocalBackend {
       queryParams.file = params.file;
     }
 
-    const routes = await this.fetchRoutesWithConsumers(repo.lbugPath, routeFilter, queryParams);
+    // After #2302 the same URL/handler can expose one Route node per HTTP verb.
+    // An optional `method` narrows to that one verb so the response collapses to
+    // the singular shape. A method-agnostic route (method `'*'`, e.g. a Django
+    // function view) matches any selector; verbless routes (null method) never do.
+    // `method` arrives unvalidated from the MCP envelope (the JSON schema is
+    // advisory), so reject a non-string verb with a structured error instead of
+    // throwing on `.toUpperCase()`; empty/whitespace collapses to no selector.
+    const rawMethod = params.method;
+    if (rawMethod !== undefined && typeof rawMethod !== 'string') {
+      return { error: '"method" must be a string (e.g. "GET", "POST").' };
+    }
+    const wantedMethod =
+      typeof rawMethod === 'string' ? rawMethod.trim().toUpperCase() || undefined : undefined;
+    const matched = await this.fetchRoutesWithConsumers(repo.lbugPath, routeFilter, queryParams);
+    const routes = matched.filter(
+      (r) => !wantedMethod || r.method === '*' || r.method?.toUpperCase() === wantedMethod,
+    );
 
     if (routes.length === 0) {
       const target = params.route || params.file;
-      return { error: `No routes found matching "${target}".` };
+      // Only append the verb when the URL/file matched routes but none used it;
+      // a non-existent URL/file gets the plain "no routes found" message.
+      const verb = wantedMethod && matched.length > 0 ? ` with method "${wantedMethod}"` : '';
+      return { error: `No routes found matching "${target}"${verb}.` };
     }
 
     const flowMap = await this.fetchLinkedFlowsBatch(
@@ -5804,15 +6875,16 @@ export class LocalBackend {
       routes.map((r) => r.id),
     );
 
-    // Count how many routes share the same handler file (for middleware partial detection)
+    // Count verbs per handler from the FULL match (before the method filter) so a
+    // method-scoped query still flags a multi-verb handler's partial middleware.
     const routeCountByHandler = new Map<string, number>();
-    for (const r of routes) {
+    for (const r of matched) {
       if (r.filePath) {
         routeCountByHandler.set(r.filePath, (routeCountByHandler.get(r.filePath) ?? 0) + 1);
       }
     }
 
-    const results = routes.map((r) => {
+    const results: ApiImpactRoute[] = routes.map((r) => {
       // Keys already normalized by fetchRoutesWithConsumers (quotes stripped)
       const responseKeys = r.responseKeys ?? [];
       const errorKeys = r.errorKeys ?? [];
@@ -5885,6 +6957,7 @@ export class LocalBackend {
 
       return {
         route: r.name,
+        method: r.method,
         handler: r.filePath,
         responseShape: {
           success: responseKeys,
@@ -5895,7 +6968,7 @@ export class LocalBackend {
           ? {
               middlewareDetection: 'partial' as const,
               middlewareNote:
-                'Middleware captured from first HTTP method export only — other methods in this handler may use different middleware chains.',
+                'Middleware captured from the first route export only — other route exports in this handler may use different middleware chains.',
             }
           : {}),
         consumers,

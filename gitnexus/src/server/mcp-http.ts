@@ -11,10 +11,15 @@
 import type { Express, Request, Response } from 'express';
 import { createStreamableHttpHandler } from '../mcp/http-transport.js';
 import type { LocalBackend } from '../mcp/local/local-backend.js';
+import { createMcpRepositoryPolicy } from '../mcp/repository-policy.js';
 import { logger } from '../core/logger.js';
 
-export function mountMCPEndpoints(app: Express, backend: LocalBackend): () => Promise<void> {
-  const { handler, cleanup } = createStreamableHttpHandler(backend);
+export async function mountMCPEndpoints(
+  app: Express,
+  backend: LocalBackend,
+): Promise<() => Promise<void>> {
+  const repositoryPolicy = await createMcpRepositoryPolicy(backend);
+  const { handler, cleanup } = createStreamableHttpHandler(backend, { repositoryPolicy });
 
   app.all('/api/mcp', (req: Request, res: Response) => {
     void handler(req, res).catch((err: unknown) => {

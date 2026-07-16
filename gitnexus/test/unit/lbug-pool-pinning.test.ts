@@ -52,16 +52,24 @@ vi.mock('../../src/core/lbug/lbug-config.js', () => ({
 
 vi.mock('../../src/core/lbug/sidecar-recovery.js', () => ({
   preflightLbugSidecars: vi.fn().mockResolvedValue(undefined),
+  guardWalQuarantine: vi.fn().mockResolvedValue(undefined),
   isMissingFsError: vi.fn(() => false),
   isMissingShadowSidecarError: vi.fn(() => false),
   isReadOnlyShadowReplayError: vi.fn(() => false),
   quarantineWalForMissingShadow: vi.fn().mockResolvedValue(''),
+  // Not consumed by pool-adapter today; listed so this wholesale mock can't
+  // become a TypeError trap if the pool ever routes through dirty recovery
+  // (#2409, tri-review 4669518496 mock-hygiene sweep).
+  quarantineSidecarsForDirtyRecovery: vi
+    .fn()
+    .mockResolvedValue({ moved: [], removed: [], failed: [] }),
   renameFailureMessage: vi.fn((p: string) => `rename failed for ${p}`),
   statIfExists: vi.fn().mockResolvedValue(null),
 }));
 
 const { initLbug, closeLbug, isLbugReady, pinRepo, unpinRepo } =
   await import('../../src/core/lbug/pool-adapter.js');
+const { initWikiDb, closeWikiDb, pinWikiDb } = await import('../../src/core/wiki/graph-queries.js');
 
 describe('pool-adapter repo pinning (issue #2189)', () => {
   let tmpDir: string;
@@ -149,6 +157,23 @@ describe('pool-adapter repo pinning (issue #2189)', () => {
 
     expect(isLbugReady('pinned-idle')).toBe(true);
     expect(isLbugReady('unpinned-idle')).toBe(false);
+  });
+
+  it('wiki DB pin wrapper keeps __wiki__ resident past idle cleanup', async () => {
+    vi.useFakeTimers();
+
+    const releaseWikiPin = pinWikiDb();
+    await initWikiDb(dbPathFor('wiki-wrapper'));
+    expect(isLbugReady('__wiki__')).toBe(true);
+
+    await vi.advanceTimersByTimeAsync(5 * 60 * 1000 + 60 * 1000);
+    expect(isLbugReady('__wiki__')).toBe(true);
+
+    releaseWikiPin();
+    await vi.advanceTimersByTimeAsync(5 * 60 * 1000 + 60 * 1000);
+    expect(isLbugReady('__wiki__')).toBe(false);
+
+    await closeWikiDb();
   });
 
   it('unpinRepo re-enables eviction for that repo', async () => {

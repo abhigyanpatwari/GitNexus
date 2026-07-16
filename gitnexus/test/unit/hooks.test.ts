@@ -141,6 +141,34 @@ function resolveHostGuardForReapingTests(): string | null {
 
 // ─── Test fixtures: temporary .gitnexus directory ───────────────────
 
+function writeSelfTestingGuardWithMarkers(
+  guardPath: string,
+  markers: { lsof?: string; ps?: string },
+) {
+  fs.writeFileSync(
+    guardPath,
+    `#!/usr/bin/env node
+const fs = require('fs');
+const { spawnSync } = require('child_process');
+const args = process.argv.slice(2);
+const lsofMarker = ${JSON.stringify(markers.lsof ?? '')};
+const psMarker = ${JSON.stringify(markers.ps ?? '')};
+if (args.includes('exit 42')) process.exit(42);
+if (lsofMarker && args.includes('-nP')) fs.writeFileSync(lsofMarker, 'called');
+if (psMarker && args.includes('-p')) fs.writeFileSync(psMarker, 'called');
+const child = spawnSync(args[3], args.slice(4), {
+  encoding: 'utf-8',
+  stdio: ['ignore', 'pipe', 'pipe'],
+});
+if (child.stdout) process.stdout.write(child.stdout);
+if (child.stderr) process.stderr.write(child.stderr);
+if (child.error) process.exit(127);
+process.exit(child.status ?? 0);
+`,
+    { mode: 0o755 },
+  );
+}
+
 let tmpDir: string;
 let gitNexusDir: string;
 
@@ -328,8 +356,16 @@ describe('windowsHide regression', () => {
     ['gitnexus/src/cli/setup.ts', path.resolve(__dirname, '..', '..', 'src', 'cli', 'setup.ts')],
     ['gitnexus/src/cli/wiki.ts', path.resolve(__dirname, '..', '..', 'src', 'cli', 'wiki.ts')],
     [
-      'gitnexus/src/core/embeddings/embedder.ts',
-      path.resolve(__dirname, '..', '..', 'src', 'core', 'embeddings', 'embedder.ts'),
+      'gitnexus/src/core/embeddings/onnxruntime-node-resolver.ts',
+      path.resolve(
+        __dirname,
+        '..',
+        '..',
+        'src',
+        'core',
+        'embeddings',
+        'onnxruntime-node-resolver.ts',
+      ),
     ],
     [
       'gitnexus/src/core/git-staleness.ts',
@@ -645,7 +681,9 @@ describe('PreToolUse concurrency guard', () => {
 
 // ─── Integration: concurrency guard skips when slots are full ──────
 
-describe('PreToolUse concurrency guard (integration)', () => {
+// The burst tests spawn real child processes; under CI load a child can exit
+// before printing its decision even though the slot hard cap still holds.
+describe('PreToolUse concurrency guard (integration)', { retry: 1 }, () => {
   for (const [label, hookPath] of [
     ['CJS', CJS_HOOK],
     ['Plugin', PLUGIN_HOOK],
@@ -1781,13 +1819,14 @@ describe('PreToolUse augmentation filtering (integration)', () => {
       }
     });
 
-    // Issue #1913: the MCP-owned-DB skip is a NORMAL (non-error) path, so by
-    // default it must stay completely silent — empty stdout AND empty stderr,
-    // exit 0 — so strict hook runners (e.g. Codex `PreToolUse`) never see
-    // unexpected output. GITNEXUS_DEBUG is forced off to keep the assertion
-    // deterministic regardless of the ambient environment.
+    // #2396: when a GitNexus MCP process owns the repo DB the CLI augment can't
+    // run, so the hook hands the agent the MCP-query hint on stdout (the sanctioned
+    // additionalContext channel). By default (GITNEXUS_DEBUG unset) the stderr skip
+    // diagnostic stays silent, so strict hook runners (e.g. Codex `PreToolUse`) see
+    // no unexpected diagnostic noise — only the augmentation itself (#1913). This is
+    // the GITNEXUS_DEBUG='' owner-hint coverage; the debug variants are below.
     it.skipIf(SKIP_LSOF_PATH)(
-      `${label}: skips augment SILENTLY when a GitNexus MCP process owns the repo DB`,
+      `${label}: emits the MCP-query hint on stdout, stderr silent by default, when a GitNexus MCP process owns the repo DB`,
       () => {
         const markerPath = path.join(os.tmpdir(), `gitnexus-hook-called-${process.pid}-${label}`);
         const lbugPath = path.join(gitNexusDir, 'lbug');
@@ -1811,7 +1850,9 @@ describe('PreToolUse augmentation filtering (integration)', () => {
             { env: { ...hookEnv(binDir), GITNEXUS_DEBUG: '' } },
           );
 
-          expect(result.stdout.trim()).toBe('');
+          const output = parseHookOutput(result.stdout);
+          expect(output!.additionalContext).toContain('mcp__gitnexus__query');
+          expect(output!.additionalContext).toContain('validateUser');
           expect(result.stderr.trim()).toBe('');
           expect(result.status).toBe(0);
           expect(fs.existsSync(markerPath)).toBe(false);
@@ -1823,11 +1864,13 @@ describe('PreToolUse augmentation filtering (integration)', () => {
       },
     );
 
-    // Issue #1913: the skip reason remains recoverable for operators who opt in
-    // via GITNEXUS_DEBUG=1 — stdout stays empty (no augment ran), the diagnostic
-    // appears on stderr.
+    // #2396: when the MCP server owns the DB the CLI augment can't run, so the
+    // hook hands the agent an MCP-query hint on stdout (the sanctioned
+    // additionalContext channel) instead of doing nothing. The CLI still never
+    // spawns (marker absent). #1913: the stderr skip diagnostic stays gated
+    // behind GITNEXUS_DEBUG.
     it.skipIf(SKIP_LSOF_PATH)(
-      `${label}: surfaces the MCP-owner skip reason only under GITNEXUS_DEBUG`,
+      `${label}: MCP-owner path emits the MCP query hint; stderr reason gated by GITNEXUS_DEBUG`,
       () => {
         const markerPath = path.join(os.tmpdir(), `gitnexus-hook-dbg-${process.pid}-${label}`);
         const lbugPath = path.join(gitNexusDir, 'lbug');
@@ -1851,7 +1894,9 @@ describe('PreToolUse augmentation filtering (integration)', () => {
             { env: { ...hookEnv(binDir), GITNEXUS_DEBUG: '1' } },
           );
 
-          expect(result.stdout.trim()).toBe('');
+          const output = parseHookOutput(result.stdout);
+          expect(output!.additionalContext).toContain('mcp__gitnexus__query');
+          expect(output!.additionalContext).toContain('validateUser');
           expect(result.status).toBe(0);
           expect(result.stderr).toContain('[GitNexus] augment skipped: MCP server owns DB');
           expect(fs.existsSync(markerPath)).toBe(false);
@@ -1864,13 +1909,13 @@ describe('PreToolUse augmentation filtering (integration)', () => {
     );
 
     // #1913: the GITNEXUS_DEBUG contract is strict — ONLY '1' and 'true' enable
-    // diagnostics. Pin that non-canonical truthy-looking values ('0', 'false')
-    // are treated as OFF, so the skip stays silent. A truthy-gated reader would
-    // have emitted on these; this guards the unified strict gate (incl. the
-    // main() catch handler) across the claude/plugin copies.
+    // the stderr diagnostic. Pin that non-canonical truthy-looking values ('0',
+    // 'false') are treated as OFF, so stderr stays silent. The #2396 MCP-query
+    // hint on stdout is independent of GITNEXUS_DEBUG (it is the augmentation, not
+    // a diagnostic) and must still be emitted here.
     for (const debugValue of ['0', 'false']) {
       it.skipIf(SKIP_LSOF_PATH)(
-        `${label}: MCP-owner skip stays SILENT with GITNEXUS_DEBUG='${debugValue}' (strict contract)`,
+        `${label}: MCP-owner hint emits on stdout; stderr stays silent with GITNEXUS_DEBUG='${debugValue}'`,
         () => {
           const markerPath = path.join(
             os.tmpdir(),
@@ -1897,7 +1942,8 @@ describe('PreToolUse augmentation filtering (integration)', () => {
               { env: { ...hookEnv(binDir), GITNEXUS_DEBUG: debugValue } },
             );
 
-            expect(result.stdout.trim()).toBe('');
+            const output = parseHookOutput(result.stdout);
+            expect(output!.additionalContext).toContain('mcp__gitnexus__query');
             expect(result.stderr.trim()).toBe('');
             expect(result.status).toBe(0);
             expect(fs.existsSync(markerPath)).toBe(false);
@@ -1909,6 +1955,143 @@ describe('PreToolUse augmentation filtering (integration)', () => {
         },
       );
     }
+  }
+});
+
+// #2396: the owner-path hint is throttled to at most once per repo per window
+// (GITNEXUS_MCP_HINT_THROTTLE_MS, default 10min) via a per-repo `.mcp-hint-shown`
+// marker, so an owner-locked session isn't nudged on every search. macOS/other-
+// Unix lsof+ps lane only (SKIP_LSOF_PATH), like the sibling owner tests. hookEnv
+// sets the window to 0 (disabled) elsewhere for determinism; here we set a real
+// window to exercise the throttle.
+describe.skipIf(SKIP_LSOF_PATH)('MCP-owner hint throttle (#2396)', () => {
+  for (const [label, hookPath] of [
+    ['CJS', CJS_HOOK],
+    ['Plugin', PLUGIN_HOOK],
+  ] as const) {
+    it(`${label}: emits once, then throttles within the window (marker gates it)`, () => {
+      const markerPath = path.join(os.tmpdir(), `gn-hook-throttle-${process.pid}-${label}`);
+      const lbugPath = path.join(gitNexusDir, 'lbug');
+      const throttleMarker = path.join(gitNexusDir, '.mcp-hint-shown');
+      fs.writeFileSync(lbugPath, '');
+      fs.rmSync(markerPath, { force: true });
+      fs.rmSync(throttleMarker, { force: true });
+      const binDir = createHookToolDir({
+        gitnexusMarkerPath: markerPath,
+        lsofOutput: '12345\n',
+        psOutput: 'node /tmp/node_modules/.bin/gitnexus mcp\n',
+      });
+      const runOnce = () =>
+        runHook(
+          hookPath,
+          {
+            hook_event_name: 'PreToolUse',
+            tool_name: 'Grep',
+            tool_input: { pattern: 'validateUser' },
+            cwd: tmpDir,
+          },
+          undefined,
+          { env: { ...hookEnv(binDir), GITNEXUS_MCP_HINT_THROTTLE_MS: '600000' } },
+        );
+      try {
+        // First owner-locked search: emits the hint and writes the marker.
+        const first = runOnce();
+        const out1 = parseHookOutput(first.stdout);
+        expect(out1!.additionalContext).toContain('mcp__gitnexus__query');
+        expect(first.status).toBe(0);
+        expect(fs.existsSync(throttleMarker)).toBe(true);
+        // Second search, marker still fresh (10-min window): throttled — no hint.
+        const second = runOnce();
+        expect(second.stdout.trim()).toBe('');
+        expect(second.status).toBe(0);
+      } finally {
+        fs.rmSync(lbugPath, { force: true });
+        fs.rmSync(markerPath, { force: true });
+        fs.rmSync(throttleMarker, { force: true });
+        fs.rmSync(binDir, { recursive: true, force: true });
+      }
+    });
+  }
+});
+
+// #2396: buildMcpQueryHint and its throttle are triplicated across the three hook
+// copies (the repo's deliberate no-shared-module hook convention). Guard against
+// silent drift with a source-level byte-identity check — runs on every platform,
+// unlike the owner-path behavior tests which are macOS-only.
+describe('hook copy drift guard (#2396)', () => {
+  const ANTIGRAVITY_HOOK = path.resolve(
+    __dirname,
+    '..',
+    '..',
+    'hooks',
+    'antigravity',
+    'gitnexus-antigravity-hook.cjs',
+  );
+  const HOOK_SOURCES: ReadonlyArray<readonly [string, string]> = [
+    ['claude', CJS_HOOK],
+    ['plugin', PLUGIN_HOOK],
+    ['antigravity', ANTIGRAVITY_HOOK],
+  ];
+
+  function extractFn(source: string, name: string): string {
+    const match = source.match(new RegExp(`function ${name}\\([^)]*\\) \\{[\\s\\S]*?\\n\\}`));
+    return match ? match[0] : `<${name} not found>`;
+  }
+
+  for (const fnName of ['buildMcpQueryHint', 'shouldEmitMcpHint']) {
+    it(`${fnName} is byte-identical across all three hook copies`, () => {
+      const [claude, plugin, antigravity] = HOOK_SOURCES.map(([, p]) =>
+        extractFn(fs.readFileSync(p, 'utf-8'), fnName),
+      );
+      expect(claude).toContain(`function ${fnName}`);
+      expect(plugin).toBe(claude);
+      expect(antigravity).toBe(claude);
+    });
+  }
+});
+
+// #2396: an adversarial search pattern (embedded quote + newline) must not break
+// the additionalContext JSON envelope — JSON.stringify in the emit path escapes it
+// structurally. Owner-path only (macOS/other-Unix lsof+ps lane, SKIP_LSOF_PATH).
+describe.skipIf(SKIP_LSOF_PATH)('MCP hint pattern escaping (#2396)', () => {
+  for (const [label, hookPath] of [
+    ['CJS', CJS_HOOK],
+    ['Plugin', PLUGIN_HOOK],
+  ] as const) {
+    it(`${label}: quote+newline pattern stays JSON-safe in additionalContext`, () => {
+      const markerPath = path.join(os.tmpdir(), `gn-hook-esc-${process.pid}-${label}`);
+      const lbugPath = path.join(gitNexusDir, 'lbug');
+      fs.writeFileSync(lbugPath, '');
+      fs.rmSync(markerPath, { force: true });
+      const binDir = createHookToolDir({
+        gitnexusMarkerPath: markerPath,
+        lsofOutput: '12345\n',
+        psOutput: 'node /tmp/node_modules/.bin/gitnexus mcp\n',
+      });
+      const evilPattern = 'foo"bar\nbaz';
+      try {
+        const result = runHook(
+          hookPath,
+          {
+            hook_event_name: 'PreToolUse',
+            tool_name: 'Grep',
+            tool_input: { pattern: evilPattern },
+            cwd: tmpDir,
+          },
+          undefined,
+          { env: hookEnv(binDir) },
+        );
+        // parseHookOutput JSON.parses stdout — a broken envelope would throw/return null.
+        const output = parseHookOutput(result.stdout);
+        expect(output!.additionalContext).toContain('foo"bar');
+        expect(output!.additionalContext).toContain('search_query');
+        expect(result.status).toBe(0);
+      } finally {
+        fs.rmSync(lbugPath, { force: true });
+        fs.rmSync(markerPath, { force: true });
+        fs.rmSync(binDir, { recursive: true, force: true });
+      }
+    });
   }
 });
 
@@ -1954,7 +2137,11 @@ describe.skipIf(SKIP_LSOF_PATH)(
             undefined,
             { env: { ...hookEnv(binDir), GITNEXUS_DEBUG: '1' } },
           );
-          expect(result.stdout.trim()).toBe('');
+          // #2396: owner path now hands the agent the MCP-query hint on stdout;
+          // the CLI augment is still skipped (marker absent) and the stderr
+          // skip diagnostic remains debug-gated.
+          const output = parseHookOutput(result.stdout);
+          expect(output!.additionalContext).toContain('mcp__gitnexus__query');
           expect(result.status).toBe(0);
           expect(result.stderr).toContain('[GitNexus] augment skipped');
           expect(fs.existsSync(markerPath)).toBe(false);
@@ -2018,7 +2205,11 @@ describe.skipIf(SKIP_LSOF_PATH)(
             undefined,
             { env: { ...hookEnv(binDir), GITNEXUS_DEBUG: '1' } },
           );
-          expect(result.stdout.trim()).toBe('');
+          // #2396: owner path now hands the agent the MCP-query hint on stdout;
+          // the CLI augment is still skipped (marker absent) and the stderr
+          // skip diagnostic remains debug-gated.
+          const output = parseHookOutput(result.stdout);
+          expect(output!.additionalContext).toContain('mcp__gitnexus__query');
           expect(result.status).toBe(0);
           expect(result.stderr).toContain('[GitNexus] augment skipped');
           expect(fs.existsSync(markerPath)).toBe(false);
@@ -2030,19 +2221,35 @@ describe.skipIf(SKIP_LSOF_PATH)(
 
       it(`${label}: ENOENT lsof → augment still runs (fail-open)`, () => {
         const markerPath = path.join(os.tmpdir(), `gn-hook-enoent-${process.pid}-${label}`);
+        const lsofWrapMarkerPath = path.join(
+          os.tmpdir(),
+          `gn-hook-enoent-lsofwrap-${process.pid}-${label}`,
+        );
+        const psWrapMarkerPath = path.join(
+          os.tmpdir(),
+          `gn-hook-enoent-pswrap-${process.pid}-${label}`,
+        );
         const lbugPath = path.join(gitNexusDir, 'lbug');
         fs.writeFileSync(lbugPath, '');
         fs.rmSync(markerPath, { force: true });
+        fs.rmSync(lsofWrapMarkerPath, { force: true });
+        fs.rmSync(psWrapMarkerPath, { force: true });
         const binDir = createHookToolDir({
           gitnexusMarkerPath: markerPath,
           gitnexusStderr: '[GitNexus] 1 related symbol found:\n\nvalidateUser (src/auth.ts)\n',
           lsofOutput: '',
           psOutput: '',
         });
+        const guardPath = path.join(binDir, 'marker-guard');
+        writeSelfTestingGuardWithMarkers(guardPath, {
+          lsof: lsofWrapMarkerPath,
+          ps: psWrapMarkerPath,
+        });
         try {
           const env = {
             ...hookEnv(binDir),
             GITNEXUS_HOOK_LSOF_PATH: path.join(binDir, '__missing_lsof__'),
+            GITNEXUS_HOOK_TIMEOUT_PATH: guardPath,
           };
           const result = runHook(
             hookPath,
@@ -2058,8 +2265,12 @@ describe.skipIf(SKIP_LSOF_PATH)(
           const output = parseHookOutput(result.stdout);
           expect(output).not.toBeNull();
           expect(fs.existsSync(markerPath)).toBe(true);
+          expect(fs.existsSync(lsofWrapMarkerPath)).toBe(false);
+          expect(fs.existsSync(psWrapMarkerPath)).toBe(false);
         } finally {
           fs.rmSync(markerPath, { force: true });
+          fs.rmSync(lsofWrapMarkerPath, { force: true });
+          fs.rmSync(psWrapMarkerPath, { force: true });
           fs.rmSync(binDir, { recursive: true, force: true });
         }
       });
@@ -2086,7 +2297,11 @@ describe.skipIf(SKIP_LSOF_PATH)(
             undefined,
             { env: { ...hookEnv(binDir), GITNEXUS_DEBUG: '1' } },
           );
-          expect(result.stdout.trim()).toBe('');
+          // #2396: owner path now hands the agent the MCP-query hint on stdout;
+          // the CLI augment is still skipped (marker absent) and the stderr
+          // skip diagnostic remains debug-gated.
+          const output = parseHookOutput(result.stdout);
+          expect(output!.additionalContext).toContain('mcp__gitnexus__query');
           expect(result.status).toBe(0);
           expect(result.stderr).toContain('[GitNexus] augment skipped');
           expect(fs.existsSync(markerPath)).toBe(false);
@@ -2096,11 +2311,13 @@ describe.skipIf(SKIP_LSOF_PATH)(
         }
       });
 
-      // #1913: the fail-closed (probe-timeout) skip routes through the SAME gated
-      // line as the MCP-owner skip, so it too must be silent by default. Symmetric
-      // counterpart to the debug-on test above, so a regression that ungated the
-      // ETIMEDOUT path specifically would still be caught.
-      it(`${label}: ETIMEDOUT lsof → augment skipped SILENTLY by default`, () => {
+      // #2396/#1913: the fail-closed (probe-timeout) skip routes through the SAME
+      // owner branch, so it now emits the conditional MCP-query hint on stdout —
+      // truthful here because the hint only asks the agent to use the MCP tools
+      // "if they are live". The stderr diagnostic stays debug-gated (empty by
+      // default), so strict runners still see no unexpected diagnostic. Symmetric
+      // counterpart to the debug-on test above.
+      it(`${label}: ETIMEDOUT lsof → emits hint on stdout, stderr silent by default`, () => {
         const markerPath = path.join(os.tmpdir(), `gn-hook-etime-silent-${process.pid}-${label}`);
         const lbugPath = path.join(gitNexusDir, 'lbug');
         fs.writeFileSync(lbugPath, '');
@@ -2122,7 +2339,8 @@ describe.skipIf(SKIP_LSOF_PATH)(
             undefined,
             { env: { ...hookEnv(binDir), GITNEXUS_DEBUG: '' } },
           );
-          expect(result.stdout.trim()).toBe('');
+          const output = parseHookOutput(result.stdout);
+          expect(output!.additionalContext).toContain('mcp__gitnexus__query');
           expect(result.stderr.trim()).toBe('');
           expect(result.status).toBe(0);
           expect(fs.existsSync(markerPath)).toBe(false);
@@ -2170,7 +2388,11 @@ describe.skipIf(SKIP_LSOF_PATH)(
               },
             },
           );
-          expect(result.stdout.trim()).toBe('');
+          // #2396: owner path now hands the agent the MCP-query hint on stdout;
+          // the CLI augment is still skipped (marker absent) and the stderr
+          // skip diagnostic remains debug-gated.
+          const output = parseHookOutput(result.stdout);
+          expect(output!.additionalContext).toContain('mcp__gitnexus__query');
           expect(result.status).toBe(0);
           expect(result.stderr).toContain('[GitNexus] augment skipped');
           expect(fs.existsSync(markerPath)).toBe(false);
@@ -2223,7 +2445,11 @@ describe.skipIf(SKIP_LSOF_PATH)(
               },
             },
           );
-          expect(result.stdout.trim()).toBe('');
+          // #2396: owner path now hands the agent the MCP-query hint on stdout;
+          // the CLI augment is still skipped (marker absent) and the stderr
+          // skip diagnostic remains debug-gated.
+          const output = parseHookOutput(result.stdout);
+          expect(output!.additionalContext).toContain('mcp__gitnexus__query');
           expect(result.status).toBe(0);
           expect(result.stderr).toContain('[GitNexus] augment skipped');
           expect(fs.existsSync(markerPath)).toBe(false);
@@ -2279,7 +2505,11 @@ describe.skipIf(SKIP_LSOF_PATH)(
               },
             },
           );
-          expect(result.stdout.trim()).toBe('');
+          // #2396: owner path now hands the agent the MCP-query hint on stdout;
+          // the CLI augment is still skipped (marker absent) and the stderr
+          // skip diagnostic remains debug-gated.
+          const output = parseHookOutput(result.stdout);
+          expect(output!.additionalContext).toContain('mcp__gitnexus__query');
           expect(result.status).toBe(0);
           expect(result.stderr).toContain('[GitNexus] augment skipped');
           expect(fs.existsSync(markerPath)).toBe(false);
@@ -2335,7 +2565,11 @@ describe.skipIf(SKIP_LSOF_PATH)(
               },
             },
           );
-          expect(result.stdout.trim()).toBe('');
+          // #2396: owner path now hands the agent the MCP-query hint on stdout;
+          // the CLI augment is still skipped (marker absent) and the stderr
+          // skip diagnostic remains debug-gated.
+          const output = parseHookOutput(result.stdout);
+          expect(output!.additionalContext).toContain('mcp__gitnexus__query');
           expect(result.status).toBe(0);
           expect(result.stderr).toContain('[GitNexus] augment skipped');
           expect(fs.existsSync(markerPath)).toBe(false);
@@ -2460,7 +2694,11 @@ describe.skipIf(SKIP_LSOF_PATH)(
             undefined,
             { env: { ...hookEnv(binDir), GITNEXUS_DEBUG: '1' } },
           );
-          expect(result.stdout.trim()).toBe('');
+          // #2396: owner path now hands the agent the MCP-query hint on stdout;
+          // the CLI augment is still skipped (marker absent) and the stderr
+          // skip diagnostic remains debug-gated.
+          const output = parseHookOutput(result.stdout);
+          expect(output!.additionalContext).toContain('mcp__gitnexus__query');
           expect(result.status).toBe(0);
           expect(result.stderr).toContain('[GitNexus] augment skipped');
           expect(fs.existsSync(markerPath)).toBe(false);
@@ -2472,19 +2710,37 @@ describe.skipIf(SKIP_LSOF_PATH)(
 
       it(`${label}: ps ENOENT → augment runs (ignore that PID)`, () => {
         const markerPath = path.join(os.tmpdir(), `gn-hook-pseno-${process.pid}-${label}`);
+        const lsofWrapMarkerPath = path.join(
+          os.tmpdir(),
+          `gn-hook-pseno-lsofwrap-${process.pid}-${label}`,
+        );
+        const psWrapMarkerPath = path.join(
+          os.tmpdir(),
+          `gn-hook-pseno-pswrap-${process.pid}-${label}`,
+        );
         const lbugPath = path.join(gitNexusDir, 'lbug');
         fs.writeFileSync(lbugPath, '');
         fs.rmSync(markerPath, { force: true });
+        fs.rmSync(lsofWrapMarkerPath, { force: true });
+        fs.rmSync(psWrapMarkerPath, { force: true });
         const binDir = createHookToolDir({
           gitnexusMarkerPath: markerPath,
           gitnexusStderr: '[GitNexus] 1 related symbol found:\n\nvalidateUser (src/auth.ts)\n',
           lsofOutput: '99905\n',
-          psOutput: '',
+          psOutputByPid: {
+            '99905': 'node /x/node_modules/gitnexus/dist/cli/index.js mcp\n',
+          },
+        });
+        const guardPath = path.join(binDir, 'marker-guard');
+        writeSelfTestingGuardWithMarkers(guardPath, {
+          lsof: lsofWrapMarkerPath,
+          ps: psWrapMarkerPath,
         });
         try {
           const env = {
             ...hookEnv(binDir),
             GITNEXUS_HOOK_PS_PATH: path.join(binDir, '__missing_ps__'),
+            GITNEXUS_HOOK_TIMEOUT_PATH: guardPath,
           };
           const result = runHook(
             hookPath,
@@ -2500,8 +2756,12 @@ describe.skipIf(SKIP_LSOF_PATH)(
           const output = parseHookOutput(result.stdout);
           expect(output).not.toBeNull();
           expect(fs.existsSync(markerPath)).toBe(true);
+          expect(fs.existsSync(lsofWrapMarkerPath)).toBe(true);
+          expect(fs.existsSync(psWrapMarkerPath)).toBe(false);
         } finally {
           fs.rmSync(markerPath, { force: true });
+          fs.rmSync(lsofWrapMarkerPath, { force: true });
+          fs.rmSync(psWrapMarkerPath, { force: true });
           fs.rmSync(binDir, { recursive: true, force: true });
         }
       });
@@ -2679,6 +2939,118 @@ describe('PostToolUse staleness detection (integration)', () => {
 
       const output = parseHookOutput(result.stdout);
       expect(output).not.toBeNull();
+    });
+  }
+});
+
+// ─── Integration: PostToolUse staleness detection with gitnexus.json ────
+// (the current primary metadata filename; meta.json is a dual-written
+// compatibility mirror — see repo-manager.ts's saveMeta/loadMeta)
+
+describe('PostToolUse staleness detection with gitnexus.json (integration)', () => {
+  for (const [label, hookPath] of [
+    ['CJS', CJS_HOOK],
+    ['Plugin', PLUGIN_HOOK],
+  ] as const) {
+    it(`${label}: emits stale notification when HEAD differs from gitnexus.json`, () => {
+      const gitnexusJsonPath = path.join(gitNexusDir, 'gitnexus.json');
+      const metaJsonPath = path.join(gitNexusDir, 'meta.json');
+      fs.rmSync(metaJsonPath, { force: true });
+      fs.writeFileSync(
+        gitnexusJsonPath,
+        JSON.stringify({ lastCommit: 'aaaaaaa0000000000000000000000000deadbeef', stats: {} }),
+      );
+
+      try {
+        const result = runHook(hookPath, {
+          hook_event_name: 'PostToolUse',
+          tool_name: 'Bash',
+          tool_input: { command: 'git commit -m "test"' },
+          tool_output: { exit_code: 0 },
+          cwd: tmpDir,
+        });
+
+        const output = parseHookOutput(result.stdout);
+        expect(output).not.toBeNull();
+        expect(output!.additionalContext).toContain('stale');
+        expect(output!.additionalContext).toContain('aaaaaaa');
+      } finally {
+        fs.rmSync(gitnexusJsonPath, { force: true });
+        fs.writeFileSync(metaJsonPath, JSON.stringify({ lastCommit: 'old', stats: {} }));
+      }
+    });
+
+    it(`${label}: silent when HEAD matches gitnexus.json lastCommit`, () => {
+      const gitnexusJsonPath = path.join(gitNexusDir, 'gitnexus.json');
+      const metaJsonPath = path.join(gitNexusDir, 'meta.json');
+      const head = getHeadCommit();
+      fs.rmSync(metaJsonPath, { force: true });
+      fs.writeFileSync(gitnexusJsonPath, JSON.stringify({ lastCommit: head, stats: {} }));
+
+      try {
+        const result = runHook(hookPath, {
+          hook_event_name: 'PostToolUse',
+          tool_name: 'Bash',
+          tool_input: { command: 'git commit -m "test"' },
+          tool_output: { exit_code: 0 },
+          cwd: tmpDir,
+        });
+
+        expect(result.stdout.trim()).toBe('');
+      } finally {
+        fs.rmSync(gitnexusJsonPath, { force: true });
+        fs.writeFileSync(metaJsonPath, JSON.stringify({ lastCommit: 'old', stats: {} }));
+      }
+    });
+
+    it(`${label}: prefers gitnexus.json over meta.json when both are present (dual-write steady state)`, () => {
+      const gitnexusJsonPath = path.join(gitNexusDir, 'gitnexus.json');
+      const metaJsonPath = path.join(gitNexusDir, 'meta.json');
+      fs.writeFileSync(gitnexusJsonPath, JSON.stringify({ lastCommit: 'freshcommit', stats: {} }));
+      fs.writeFileSync(metaJsonPath, JSON.stringify({ lastCommit: 'stalecommit', stats: {} }));
+
+      try {
+        const result = runHook(hookPath, {
+          hook_event_name: 'PostToolUse',
+          tool_name: 'Bash',
+          tool_input: { command: 'git commit -m "test"' },
+          tool_output: { exit_code: 0 },
+          cwd: tmpDir,
+        });
+
+        const output = parseHookOutput(result.stdout);
+        expect(output).not.toBeNull();
+        // Reports staleness against gitnexus.json's commit, not meta.json's —
+        // proves gitnexus.json is consulted first.
+        expect(output!.additionalContext).toContain('freshco');
+      } finally {
+        fs.rmSync(gitnexusJsonPath, { force: true });
+        fs.writeFileSync(metaJsonPath, JSON.stringify({ lastCommit: 'old', stats: {} }));
+      }
+    });
+
+    it(`${label}: falls back to meta.json when gitnexus.json is corrupt`, () => {
+      const gitnexusJsonPath = path.join(gitNexusDir, 'gitnexus.json');
+      const metaJsonPath = path.join(gitNexusDir, 'meta.json');
+      const head = getHeadCommit();
+      fs.writeFileSync(gitnexusJsonPath, 'not valid json!!!');
+      fs.writeFileSync(metaJsonPath, JSON.stringify({ lastCommit: head, stats: {} }));
+
+      try {
+        const result = runHook(hookPath, {
+          hook_event_name: 'PostToolUse',
+          tool_name: 'Bash',
+          tool_input: { command: 'git commit -m "test"' },
+          tool_output: { exit_code: 0 },
+          cwd: tmpDir,
+        });
+
+        // meta.json's lastCommit matches HEAD, so a correct fallback stays silent.
+        expect(result.stdout.trim()).toBe('');
+      } finally {
+        fs.rmSync(gitnexusJsonPath, { force: true });
+        fs.writeFileSync(metaJsonPath, JSON.stringify({ lastCommit: 'old', stats: {} }));
+      }
     });
   }
 });
@@ -3001,6 +3373,43 @@ describe('PostToolUse with missing/corrupt meta.json', () => {
 
       // Restore
       fs.writeFileSync(metaPath, JSON.stringify({ lastCommit: 'old', stats: {} }));
+    });
+  }
+});
+
+// ─── Drift guard: every shipped hook must know about gitnexus.json ──
+// This repo has hit the "N mirrored copies silently drift" failure mode
+// twice for skills (#2356/#2360/#2362) — this test is the same class of
+// guardrail for the four hook copies.
+
+describe('Hook metadata-filename drift guard', () => {
+  const ANTIGRAVITY_HOOK = path.resolve(
+    __dirname,
+    '..',
+    '..',
+    'hooks',
+    'antigravity',
+    'gitnexus-antigravity-hook.cjs',
+  );
+  const CURSOR_HOOK = path.resolve(
+    __dirname,
+    '..',
+    '..',
+    '..',
+    'gitnexus-cursor-integration',
+    'hooks',
+    'gitnexus-hook.cjs',
+  );
+
+  for (const [label, hookPath] of [
+    ['CJS (claude)', CJS_HOOK],
+    ['Plugin', PLUGIN_HOOK],
+    ['Antigravity', ANTIGRAVITY_HOOK],
+    ['Cursor', CURSOR_HOOK],
+  ] as const) {
+    it(`${label}: source references gitnexus.json, not only meta.json`, () => {
+      const source = fs.readFileSync(hookPath, 'utf-8');
+      expect(source).toContain('gitnexus.json');
     });
   }
 });

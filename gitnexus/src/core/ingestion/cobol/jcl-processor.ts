@@ -19,6 +19,7 @@
 import { parseJcl, type JclParseResults } from './jcl-parser.js';
 import type { KnowledgeGraph } from '../../graph/types.js';
 import { generateId } from '../../../lib/utils.js';
+import { toZeroBasedLine } from '../utils/line-base.js';
 
 export interface JclProcessResult {
   jobCount: number;
@@ -98,8 +99,8 @@ function integrateJclResults(
       properties: {
         name: job.name,
         filePath,
-        startLine: job.line,
-        endLine: job.line,
+        startLine: toZeroBasedLine(job.line),
+        endLine: toZeroBasedLine(job.line),
         description: `jcl-job${classPart}${msgPart}`,
       },
     });
@@ -137,8 +138,8 @@ function integrateJclResults(
       properties: {
         name: step.name,
         filePath,
-        startLine: step.line,
-        endLine: step.line,
+        startLine: toZeroBasedLine(step.line),
+        endLine: toZeroBasedLine(step.line),
         description: `jcl-step${pgmPart}${procPart}`,
       },
     });
@@ -209,8 +210,8 @@ function integrateJclResults(
         properties: {
           name: dd.dataset,
           filePath,
-          startLine: dd.line,
-          endLine: dd.line,
+          startLine: toZeroBasedLine(dd.line),
+          endLine: toZeroBasedLine(dd.line),
 
           description: `jcl-dataset${dispPart}`,
         },
@@ -244,8 +245,8 @@ function integrateJclResults(
       properties: {
         name: proc.name,
         filePath,
-        startLine: proc.line,
-        endLine: proc.line,
+        startLine: toZeroBasedLine(proc.line),
+        endLine: toZeroBasedLine(proc.line),
         description: 'jcl-proc-instream',
       },
     });

@@ -243,6 +243,34 @@ describe('antigravity hook adapter e2e', () => {
       expect(output!.additionalContext).toContain('npx gitnexus@latest analyze --embeddings');
     });
 
+    it('prefers gitnexus.json over meta.json when both are present (dual-write steady state)', () => {
+      const gitnexusJsonPath = path.join(gitNexusDir, 'gitnexus.json');
+      const metaJsonPath = path.join(gitNexusDir, 'meta.json');
+      fs.writeFileSync(gitnexusJsonPath, JSON.stringify({ lastCommit: 'f'.repeat(40), stats: {} }));
+      fs.writeFileSync(
+        metaJsonPath,
+        JSON.stringify({ lastCommit: 'stale'.padEnd(40, '0'), stats: {} }),
+      );
+
+      try {
+        const result = runHook(installedHook, {
+          hook_event_name: 'AfterTool',
+          tool_name: 'run_shell_command',
+          tool_input: { command: 'git commit -m "test"' },
+          tool_response: { llmContent: '[committed]' },
+          cwd: tmpDir,
+        });
+
+        const output = parseHookOutput(result.stdout);
+        expect(output).not.toBeNull();
+        // Reports staleness against gitnexus.json's commit — proves it's consulted first.
+        expect(output!.additionalContext).toContain('fffffff');
+      } finally {
+        fs.rmSync(gitnexusJsonPath, { force: true });
+        fs.writeFileSync(metaJsonPath, JSON.stringify({ lastCommit: 'old', stats: {} }));
+      }
+    });
+
     it('treats missing meta.json as stale', () => {
       const metaPath = path.join(gitNexusDir, 'meta.json');
       if (fs.existsSync(metaPath)) fs.unlinkSync(metaPath);
@@ -388,14 +416,16 @@ describe('antigravity hook adapter e2e', () => {
     });
   });
 
-  // Issue #1913: when a GitNexus MCP server owns the repo DB, runAugment() must
-  // SKIP — silently by default so strict hook runners never see unexpected
-  // output, and surface the reason only under GITNEXUS_DEBUG=1. The Claude/Plugin
-  // copies are covered in test/unit/hooks.test.ts; the antigravity adapter shares
-  // the identical gated skip and is exercised here through the install pipeline
-  // (its lock/probe helpers only resolve from the install dir). A faked lsof/ps +
-  // an empty `lbug` lock force hasGitNexusServerOwner() => true; a marker-writing
-  // fake CLI proves augment never ran.
+  // #2396: when a GitNexus MCP server owns the repo DB, runAugment() cannot run
+  // the CLI augment (LadybugDB is single-writer), so it returns an MCP-query hint
+  // that reaches the agent via additionalContext instead of dropping the
+  // augmentation. #1913: the stderr skip diagnostic stays gated behind
+  // GITNEXUS_DEBUG=1. The Claude/Plugin copies are covered in
+  // test/unit/hooks.test.ts; the antigravity adapter shares the identical path
+  // and is exercised here through the install pipeline (its lock/probe helpers
+  // only resolve from the install dir). A faked lsof/ps + an empty `lbug` lock
+  // force hasGitNexusServerOwner() => true; a marker-writing fake CLI proves the
+  // CLI augment never ran.
   //
   // #2180: skipped on Linux too — the probe's Linux backend no longer uses
   // lsof/ps, so the faked lsof/ps can't force owner=true there. This stays as the
@@ -403,14 +433,14 @@ describe('antigravity hook adapter e2e', () => {
   // gated owner-skip with the claude/plugin copies, whose Linux owner detection
   // is covered against a fake /proc in test/unit/hook-db-lock-probe.test.ts.
   describe.skipIf(process.platform === 'win32' || process.platform === 'linux')(
-    'AfterTool — augment skipped when MCP server owns the DB (#1913)',
+    'AfterTool — MCP-query hint when MCP server owns the DB (#2396)',
     () => {
       const OWNER_PROBE = {
         lsofOutput: '12345\n',
         psOutput: 'node /tmp/node_modules/.bin/gitnexus mcp\n',
       };
 
-      it('stays SILENT by default (no augment ran, no stderr noise, exit 0)', () => {
+      it('emits the MCP-query hint on stdout, no stderr noise, exit 0 (CLI augment never ran)', () => {
         const markerPath = path.join(os.tmpdir(), `antigravity-skip-silent-${process.pid}`);
         const lbugPath = path.join(gitNexusDir, 'lbug');
         fs.writeFileSync(lbugPath, '');
@@ -431,13 +461,15 @@ describe('antigravity hook adapter e2e', () => {
           );
 
           expect(result.status).toBe(0);
-          // Strict-runner contract: completely silent — empty stdout AND stderr
-          // (matches the unit suite's assertion strength for the claude/plugin copies).
-          expect(result.stdout.trim()).toBe('');
+          // #2396: the augmentation is handed to the agent as an MCP-query hint on
+          // stdout; stderr stays silent (strict-runner contract, #1913).
+          const output = parseHookOutput(result.stdout);
+          expect(output!.additionalContext).toContain('mcp__gitnexus__query');
+          expect(output!.additionalContext).toContain('validateUser');
           expect(result.stderr.trim()).toBe('');
-          // Marker absent ⇒ the CLI never ran (augment short-circuited at the owner
-          // check). The paired GITNEXUS_DEBUG=1 test below positively proves the skip
-          // was the owner path (it asserts the owner-skip diagnostic on stderr).
+          // Marker absent ⇒ the CLI never ran (short-circuited at the owner check).
+          // The paired GITNEXUS_DEBUG=1 test below positively proves the path was
+          // the owner path (it asserts the owner-skip diagnostic on stderr).
           expect(fs.existsSync(markerPath)).toBe(false);
         } finally {
           fs.rmSync(lbugPath, { force: true });
@@ -467,7 +499,10 @@ describe('antigravity hook adapter e2e', () => {
           );
 
           expect(result.status).toBe(0);
-          expect(parseHookOutput(result.stdout)).toBeNull();
+          // The hint still rides stdout; GITNEXUS_DEBUG only adds the stderr reason.
+          expect(parseHookOutput(result.stdout)!.additionalContext).toContain(
+            'mcp__gitnexus__query',
+          );
           expect(result.stderr).toContain('[GitNexus] augment skipped: MCP server owns DB');
           expect(fs.existsSync(markerPath)).toBe(false);
         } finally {

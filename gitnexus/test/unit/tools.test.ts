@@ -128,15 +128,94 @@ describe('GITNEXUS_TOOLS', () => {
     expect(contextTool.inputSchema.required).toEqual([]);
   });
 
-  it('impact tool requires target and direction', () => {
-    const impactTool = GITNEXUS_TOOLS.find((t) => t.name === 'impact')!;
-    expect(impactTool.inputSchema.required).toContain('target');
-    expect(impactTool.inputSchema.required).toContain('direction');
+  it('context tool advertises file as a compatibility alias for file_path', () => {
+    const contextTool = GITNEXUS_TOOLS.find((t) => t.name === 'context')!;
+    expect(contextTool.inputSchema.properties.file_path).toBeDefined();
+    expect(contextTool.inputSchema.properties.file).toMatchObject({ type: 'string' });
   });
+
+  it('api_impact tool avoids top-level schema combinators for Bedrock compatibility (#2487)', () => {
+    const apiImpactTool = GITNEXUS_TOOLS.find((t) => t.name === 'api_impact')!;
+    expect(apiImpactTool.inputSchema).not.toHaveProperty('anyOf');
+    expect(apiImpactTool.inputSchema).not.toHaveProperty('oneOf');
+    expect(apiImpactTool.inputSchema).not.toHaveProperty('allOf');
+    // route/file stay optional in the transport schema; callTool keeps the
+    // runtime guard so providers that reject top-level combinators can load it.
+    expect(apiImpactTool.inputSchema.required).toEqual([]);
+    expect(apiImpactTool.description).toContain('Requires at least "route" or "file"');
+  });
+
+  it('impact tool requires direction and advertises target, name, or symbol without combinators', () => {
+    const impactTool = GITNEXUS_TOOLS.find((t) => t.name === 'impact')!;
+    expect(impactTool.inputSchema.required).toContain('direction');
+    expect(impactTool.inputSchema.required).not.toContain('target');
+    expect(impactTool.inputSchema.properties.name).toMatchObject({ type: 'string' });
+    expect(impactTool.inputSchema.properties.symbol).toMatchObject({ type: 'string' });
+    expect(impactTool.inputSchema).not.toHaveProperty('anyOf');
+    expect(impactTool.inputSchema).not.toHaveProperty('oneOf');
+    expect(impactTool.inputSchema).not.toHaveProperty('allOf');
+  });
+
+  it('impact tool advertises the PDG-only `line` statement anchor (integer, min 0, not required)', () => {
+    const impactTool = GITNEXUS_TOOLS.find((t) => t.name === 'impact')!;
+    const line = (impactTool.inputSchema.properties as Record<string, any>).line;
+    expect(line).toBeDefined();
+    expect(line.type).toBe('integer');
+    // minimum is 0 (not 1) so strict adapters that materialize an omitted
+    // optional numeric field as `0` are not rejected client-side (#2279); a
+    // positive line is enforced backend-side for a real pdg anchor.
+    expect(line.minimum).toBe(0);
+    // Statement-anchored slice is optional — never required.
+    expect(impactTool.inputSchema.required).not.toContain('line');
+    // The description names the mode:'pdg' statement-anchor semantics and the
+    // literal-0 compatibility convention — without contradicting the top-level
+    // "omit line for whole-symbol pdg" contract (#2283).
+    expect(line.description).toMatch(/statement anchor/i);
+    expect(line.description).toMatch(/pdg/i);
+    expect(line.description).toMatch(/literal 0 is tolerated only .* on the callgraph path/i);
+    expect(line.description).toMatch(/omit line for whole-symbol pdg/i);
+    // Must NOT claim pdg "requires a positive line" — that contradicts the valid
+    // no-line whole-symbol pdg call documented in the top-level description.
+    expect(line.description).not.toMatch(/requires a positive line/i);
+    // The top-level description mentions the statement-anchored slice and result shape.
+    expect(impactTool.description).toMatch(/statement-anchored|STATEMENT-ANCHORED/);
+    expect(impactTool.description).toContain('affectedStatements');
+    expect(impactTool.description).toContain('target metadata');
+    expect(impactTool.description).toContain('truncatedBy');
+  });
+
+  it.each(['query', 'context', 'impact'])(
+    '%s advertises an optional positive maxTokens budget',
+    (name) => {
+      const tool = GITNEXUS_TOOLS.find((definition) => definition.name === name)!;
+      const maxTokens = tool.inputSchema.properties.maxTokens;
+      expect(maxTokens).toMatchObject({ type: 'integer', minimum: 1 });
+      expect(tool.inputSchema.required).not.toContain('maxTokens');
+    },
+  );
 
   it('rename tool requires new_name', () => {
     const renameTool = GITNEXUS_TOOLS.find((t) => t.name === 'rename')!;
     expect(renameTool.inputSchema.required).toContain('new_name');
+  });
+
+  it('trace tool advertises cross-repo @group support plus pdg/crossDepth flags (U3)', () => {
+    const traceTool = GITNEXUS_TOOLS.find((t) => t.name === 'trace')!;
+    const props = traceTool.inputSchema.properties as Record<
+      string,
+      { type?: string; default?: unknown; minimum?: number; description?: string }
+    >;
+    // Experimental cross-repo flags are advertised and optional.
+    expect(props.pdg).toBeDefined();
+    expect(props.pdg.type).toBe('boolean');
+    expect(props.crossDepth).toBeDefined();
+    expect(props.crossDepth.type).toBe('number');
+    expect(traceTool.inputSchema.required).toEqual([]);
+    // The repo param and top-level description both name the @group entry point.
+    expect(props.repo.description).toMatch(/@groupName/);
+    expect(traceTool.description).toMatch(/CROSS-REPO/i);
+    expect(traceTool.description).toContain('ContractLink');
+    expect(traceTool.description).toContain('crossings');
   });
 
   it('detect_changes tool has no required parameters', () => {
@@ -274,6 +353,26 @@ describe('GITNEXUS_TOOLS', () => {
     const relProp = impactTool.inputSchema.properties.relationTypes;
     expect(relProp.type).toBe('array');
     expect(relProp.items).toEqual({ type: 'string' });
+  });
+
+  it('impact advertises a mode param (callgraph default; pdg opt-in) — not a new tool (KTD1)', () => {
+    // KTD1: pdg impact ships as a PARAM on the existing tool, so the tool count
+    // must NOT change (asserted at 17 above) and `impact` must expose `mode`.
+    const impactTool = GITNEXUS_TOOLS.find((t) => t.name === 'impact')!;
+    const modeProp = impactTool.inputSchema.properties.mode;
+    expect(modeProp).toBeDefined();
+    expect(modeProp.type).toBe('string');
+    expect(modeProp.enum).toEqual(['callgraph', 'pdg']);
+    expect(modeProp.default).toBe('callgraph');
+    // The description must teach the opt-in / intra-procedural / --pdg contract.
+    expect(modeProp.description).toContain('pdg');
+    expect(modeProp.description).toContain('--pdg');
+    expect(modeProp.description.toLowerCase()).toContain('intra-procedural');
+    expect(modeProp.description).toContain('affectedStatements');
+    expect(modeProp.description).toContain('UNKNOWN-risk');
+    // The tool-level description must mention the mode so an LLM discovers it.
+    expect(impactTool.description.toLowerCase()).toContain('mode');
+    expect(impactTool.description).toContain('pdg');
   });
 
   it('route_map description defers to api_impact for pre-change analysis', () => {

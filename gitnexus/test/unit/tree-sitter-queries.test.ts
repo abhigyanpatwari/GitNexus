@@ -1,4 +1,7 @@
 import { describe, it, expect } from 'vitest';
+import Parser from 'tree-sitter';
+import JavaScript from 'tree-sitter-javascript';
+import TypeScript from 'tree-sitter-typescript';
 import {
   TYPESCRIPT_QUERIES,
   JAVASCRIPT_QUERIES,
@@ -15,6 +18,28 @@ import {
   DART_QUERIES,
 } from '../../src/core/ingestion/tree-sitter-queries.js';
 
+function capturedDefinitionFunctionNames(
+  language: Parameters<Parser['setLanguage']>[0],
+  querySource: string,
+  src: string,
+): string[] {
+  const parser = new Parser();
+  parser.setLanguage(language);
+  const query = new Parser.Query(language, querySource);
+  const tree = parser.parse(src);
+  const names: string[] = [];
+  for (const match of query.matches(tree.rootNode)) {
+    let isFunction = false;
+    let name: string | undefined;
+    for (const capture of match.captures) {
+      if (capture.name === 'definition.function') isFunction = true;
+      if (capture.name === 'name') name = capture.node.text;
+    }
+    if (isFunction && name !== undefined) names.push(name);
+  }
+  return names;
+}
+
 describe('tree-sitter queries', () => {
   describe('TypeScript queries', () => {
     it('captures class declarations', () => {
@@ -30,6 +55,22 @@ describe('tree-sitter queries', () => {
     it('captures function declarations', () => {
       expect(TYPESCRIPT_QUERIES).toContain('function_declaration');
       expect(TYPESCRIPT_QUERIES).toContain('@definition.function');
+    });
+
+    it('captures async generator function declarations as function definitions', () => {
+      const names = capturedDefinitionFunctionNames(
+        TypeScript.typescript as Parameters<Parser['setLanguage']>[0],
+        TYPESCRIPT_QUERIES,
+        `
+        export function userText() { return ''; }
+        export async function* runCoachLoop(): AsyncGenerator<string> {
+          yield 'ready';
+        }
+      `,
+      );
+
+      expect(names).toContain('userText');
+      expect(names).toContain('runCoachLoop');
     });
 
     it('captures method definitions', () => {
@@ -61,6 +102,26 @@ describe('tree-sitter queries', () => {
 
     it('does not have interface declarations', () => {
       expect(JAVASCRIPT_QUERIES).not.toContain('interface_declaration');
+    });
+
+    it('captures generator function declarations as function definitions', () => {
+      const names = capturedDefinitionFunctionNames(
+        JavaScript as Parameters<Parser['setLanguage']>[0],
+        JAVASCRIPT_QUERIES,
+        `
+        export function userText() { return ''; }
+        export async function* runCoachLoop() {
+          yield 'ready';
+        }
+        export function* plainGen() {
+          yield 1;
+        }
+      `,
+      );
+
+      expect(names).toContain('userText');
+      expect(names).toContain('runCoachLoop');
+      expect(names).toContain('plainGen');
     });
   });
 

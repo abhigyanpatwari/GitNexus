@@ -17,6 +17,7 @@ import { createImportResolver } from '../import-resolvers/resolver-factory.js';
 import { swiftImportConfig } from '../import-resolvers/configs/swift.js';
 import { SWIFT_QUERIES } from '../tree-sitter-queries.js';
 import type { SyntaxNode } from '../utils/ast-helpers.js';
+import { createLeadingDocDescriptionExtractor } from '../utils/ast-helpers.js';
 import { createFieldExtractor } from '../field-extractors/generic.js';
 import { swiftConfig as swiftFieldConfig } from '../field-extractors/configs/swift.js';
 import { createMethodExtractor } from '../method-extractors/generic.js';
@@ -25,6 +26,7 @@ import { createVariableExtractor } from '../variable-extractors/generic.js';
 import { swiftVariableConfig } from '../variable-extractors/configs/swift.js';
 import { createCallExtractor } from '../call-extractors/generic.js';
 import { swiftCallConfig } from '../call-extractors/configs/swift.js';
+import { createSwiftCfgVisitor } from '../cfg/visitors/swift.js';
 import {
   emitSwiftScopeCaptures,
   interpretSwiftImport,
@@ -242,11 +244,14 @@ export const swiftProvider = defineLanguage({
   }),
   variableExtractor: createVariableExtractor(swiftVariableConfig),
   classExtractor: createClassExtractor(swiftClassConfig),
+  // ── Swift doc comments (`///`, `/** */`) → description (issue #2270) ──
+  descriptionExtractor: createLeadingDocDescriptionExtractor(),
   orderSameNameTypeCandidates: orderSwiftSameNameTypeCandidates,
   builtInNames: BUILT_INS,
   // ── Scope-based resolution hooks (RFC #909 Ring 3, issue #937). See
   //    languages/swift/ for the implementations. ──────────────────────
   emitScopeCaptures: emitSwiftScopeCaptures,
+  cfgVisitor: createSwiftCfgVisitor(),
   interpretImport: interpretSwiftImport,
   interpretTypeBinding: interpretSwiftTypeBinding,
   bindingScopeFor: swiftBindingScopeFor,

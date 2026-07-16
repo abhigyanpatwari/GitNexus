@@ -5,9 +5,12 @@ import path from 'path';
 import {
   extractTemplateStaticFetchCalls,
   isTemplateRouteCandidate,
-  normalizeExtractedRoutePath,
   routesPhase,
 } from '../../src/core/ingestion/pipeline-phases/routes.js';
+import {
+  normalizeExtractedRoutePath,
+  routeNodeKey,
+} from '../../src/core/ingestion/route-extractors/route-path.js';
 import type { ParseOutput } from '../../src/core/ingestion/pipeline-phases/parse.js';
 import { createKnowledgeGraph } from '../../src/core/graph/graph.js';
 import { generateId } from '../../src/lib/utils.js';
@@ -131,6 +134,7 @@ describe('Blade/template static route extraction', () => {
           },
         ],
         allDecoratorRoutes: [],
+        routeHandlerSymbols: new Map(),
       } as unknown as ParseOutput;
 
       const output = await routesPhase.execute(
@@ -143,9 +147,13 @@ describe('Blade/template static route extraction', () => {
         new Map([['parse', { phaseName: 'parse', output: parseOutput, durationMs: 0 }]]),
       );
 
-      expect(output.routeRegistry.get('/admin/orders')).toEqual({
+      // The registry is keyed by the `(method, url)` identity (#2289); the URL
+      // is carried on the entry's `url` field (the Route node's display name).
+      expect(output.routeRegistry.get(routeNodeKey('POST', '/admin/orders'))).toEqual({
         filePath: 'routes/web.php',
         source: 'framework-route',
+        url: '/admin/orders',
+        method: 'POST',
       });
 
       const fetchEdges = graph.relationships.filter((rel) => rel.type === 'FETCHES');

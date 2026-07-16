@@ -496,6 +496,127 @@ describe('computeMRO', () => {
     });
   });
 
+  // ---- Single-ancestor override detection ---------------------------------
+  describe('single-ancestor override detection', () => {
+    it('emits one Class→Method edge when a subclass overrides a parent method', () => {
+      const graph = createKnowledgeGraph();
+      const childId = addClass(graph, 'B', 'java');
+      addClass(graph, 'A', 'java');
+      addExtends(graph, 'B', 'A');
+      const aFoo = addMethod(graph, 'A', 'foo');
+      addMethod(graph, 'B', 'foo'); // B overrides A.foo
+
+      const result = computeMRO(graph);
+
+      const overrides = graph.relationships.filter((r) => r.type === 'METHOD_OVERRIDES');
+      expect(overrides).toHaveLength(1);
+      expect(overrides[0].sourceId).toBe(childId); // child CLASS is the source
+      expect(overrides[0].targetId).toBe(aFoo); // ancestor METHOD node, not the class
+      expect(overrides[0].confidence).toBe(0.9);
+      expect(result.overrideEdges).toBe(1);
+    });
+
+    it('emits a distinct edge per overridden method of the same parent', () => {
+      const graph = createKnowledgeGraph();
+      addClass(graph, 'B', 'java');
+      addClass(graph, 'A', 'java');
+      addExtends(graph, 'B', 'A');
+      const aFoo = addMethod(graph, 'A', 'foo');
+      const aBar = addMethod(graph, 'A', 'bar');
+      addMethod(graph, 'B', 'foo');
+      addMethod(graph, 'B', 'bar');
+
+      const result = computeMRO(graph);
+
+      const overrides = graph.relationships.filter((r) => r.type === 'METHOD_OVERRIDES');
+      expect(overrides).toHaveLength(2);
+      expect(overrides.map((r) => r.targetId).sort()).toEqual([aBar, aFoo].sort());
+      expect(result.overrideEdges).toBe(2); // counter matches edges actually added
+    });
+
+    it('does not treat a same-named overload (different arity) as an override', () => {
+      const graph = createKnowledgeGraph();
+      addClass(graph, 'B', 'java');
+      addClass(graph, 'A', 'java');
+      addExtends(graph, 'B', 'A');
+      addMethod(graph, 'A', 'foo', 'Class', undefined, { parameterCount: 0 });
+      addMethod(graph, 'B', 'foo', 'Class', undefined, { parameterCount: 1 }); // foo(x) — overload
+
+      const result = computeMRO(graph);
+
+      const overrides = graph.relationships.filter((r) => r.type === 'METHOD_OVERRIDES');
+      expect(overrides).toHaveLength(0);
+      expect(result.overrideEdges).toBe(0);
+    });
+
+    it('targets the nearest ancestor when multiple levels define the method', () => {
+      const graph = createKnowledgeGraph();
+      addClass(graph, 'C', 'java');
+      addClass(graph, 'B', 'java');
+      addClass(graph, 'A', 'java');
+      addExtends(graph, 'C', 'B');
+      addExtends(graph, 'B', 'A');
+      addMethod(graph, 'A', 'foo');
+      const bFoo = addMethod(graph, 'B', 'foo'); // nearest ancestor of C with foo
+      addMethod(graph, 'C', 'foo');
+
+      computeMRO(graph);
+
+      const cOverride = graph.relationships.find(
+        (r) => r.type === 'METHOD_OVERRIDES' && r.sourceId === generateId('Class', 'C'),
+      );
+      expect(cOverride).toBeDefined();
+      expect(cOverride!.targetId).toBe(bFoo); // nearest (B), not A
+    });
+
+    it('does not emit overrides for qualified-syntax languages (Rust)', () => {
+      const graph = createKnowledgeGraph();
+      // Identical class-inheritance shape to the Java happy-path; the Rust
+      // (qualified-syntax) gate must suppress it.
+      addClass(graph, 'Derived', 'rust');
+      addClass(graph, 'Base', 'rust');
+      addExtends(graph, 'Derived', 'Base');
+      addMethod(graph, 'Base', 'run');
+      addMethod(graph, 'Derived', 'run');
+
+      const result = computeMRO(graph);
+
+      const overrides = graph.relationships.filter((r) => r.type === 'METHOD_OVERRIDES');
+      expect(overrides).toHaveLength(0);
+      expect(result.overrideEdges).toBe(0);
+    });
+
+    it('does not emit an override for a same-named interface method (implements, not extends)', () => {
+      const graph = createKnowledgeGraph();
+      addClass(graph, 'Impl', 'java');
+      addClass(graph, 'Iface', 'java', 'Interface');
+      addImplements(graph, 'Impl', 'Iface');
+      addMethod(graph, 'Iface', 'run', 'Interface');
+      addMethod(graph, 'Impl', 'run');
+
+      computeMRO(graph);
+
+      const overrides = graph.relationships.filter((r) => r.type === 'METHOD_OVERRIDES');
+      expect(overrides).toHaveLength(0); // interface satisfaction is METHOD_IMPLEMENTS, not an override
+    });
+
+    it('overrideEdges count equals the number of METHOD_OVERRIDES relationships', () => {
+      const graph = createKnowledgeGraph();
+      addClass(graph, 'B', 'java');
+      addClass(graph, 'A', 'java');
+      addExtends(graph, 'B', 'A');
+      addMethod(graph, 'A', 'foo');
+      addMethod(graph, 'A', 'bar');
+      addMethod(graph, 'B', 'foo');
+      addMethod(graph, 'B', 'bar');
+
+      const result = computeMRO(graph);
+
+      const overrides = graph.relationships.filter((r) => r.type === 'METHOD_OVERRIDES');
+      expect(result.overrideEdges).toBe(overrides.length);
+    });
+  });
+
   // ---- Empty graph --------------------------------------------------------
   describe('empty graph', () => {
     it('returns empty result for graph with no classes', () => {

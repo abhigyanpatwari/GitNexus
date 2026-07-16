@@ -83,6 +83,11 @@ export const walkRepositoryPaths = async (
     }
   }
 
+  // Filesystem/glob traversal order is not stable across filesystems or repeated
+  // scans. Canonicalize once at the scan boundary so every downstream phase sees
+  // the same repository order.
+  entries.sort((left, right) => (left.path < right.path ? -1 : left.path > right.path ? 1 : 0));
+
   if (skippedLarge > 0) {
     const isDefault = maxFileSizeBytes === DEFAULT_MAX_FILE_SIZE_BYTES;
     const isOverrideUnset = !process.env.GITNEXUS_MAX_FILE_SIZE;

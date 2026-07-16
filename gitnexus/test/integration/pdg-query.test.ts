@@ -315,6 +315,9 @@ withTestLbugDB(
           target: 'targetFn',
         });
         expect(result).not.toHaveProperty('error');
+        // #2380: the display anchor is 1-based, matching context/query/impact —
+        // targetFn stored 0-based 10 -> 11 (the BasicBlock join is unaffected).
+        expect((result.anchor as { startLine: number }).startLine).toBe(11);
         // Only targetFn's own control edge — the neighbor's line-10 edge is out
         // of the [11,15] window after the lower-bound +1 fix.
         expect(result.results).toHaveLength(1);

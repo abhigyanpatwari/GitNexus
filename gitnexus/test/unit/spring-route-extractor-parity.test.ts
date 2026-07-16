@@ -19,7 +19,7 @@ import Parser from 'tree-sitter';
 import Java from 'tree-sitter-java';
 import { extractSpringRoutes } from '../../src/core/ingestion/route-extractors/spring.js';
 import { JAVA_HTTP_PLUGIN } from '../../src/core/group/extractors/http-patterns/java.js';
-import { normalizeExtractedRoutePath } from '../../src/core/ingestion/pipeline-phases/routes.js';
+import { normalizeExtractedRoutePath } from '../../src/core/ingestion/route-extractors/route-path.js';
 
 function parse(code: string): Parser.Tree {
   const parser = new Parser();

@@ -2373,3 +2373,355 @@ describe('Java User implements Validator — interface default method (SM-11)', 
     expect(validateCall!.source).toBe('run');
   });
 });
+
+// ---------------------------------------------------------------------------
+// Cast-wrapped receivers: ((Type) expr).method() resolves via the CAST type
+// (#2353). Every scenario pairs the cast target with a decoy class owning a
+// same-named method on the receiver's declared type, so a regression that
+// ignores the cast produces a detectably wrong edge instead of a silent pass.
+// ---------------------------------------------------------------------------
+
+describe('Java cast receiver resolution', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'java-cast-receiver'), () => {});
+  }, 60000);
+
+  it('detects the caller plus target and decoy classes', () => {
+    expect(getNodesByLabel(result, 'Class')).toEqual([
+      'App',
+      'Box',
+      'Fallback',
+      'Shape',
+      'Target',
+      'Wrapper',
+    ]);
+  });
+
+  it('resolves simple cast ((Box) obj).open() to Box.open, not declared-type Wrapper.open', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const openCall = calls.find((c) => c.target === 'open' && c.source === 'castSimple');
+    expect(openCall).toBeDefined();
+    expect(openCall!.targetFilePath).toBe('models/Box.java');
+  });
+
+  it('does not emit an open() edge to the decoy Wrapper', () => {
+    const calls = getRelationships(result, 'CALLS');
+    expect(
+      calls.some((c) => c.target === 'open' && c.targetFilePath === 'models/Wrapper.java'),
+    ).toBe(false);
+  });
+
+  it('resolves nested CFR cast ((Target)((Object)expr)).render() to Target.render', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const renderCall = calls.find((c) => c.target === 'render' && c.source === 'castNested');
+    expect(renderCall).toBeDefined();
+    expect(renderCall!.targetFilePath).toBe('models/Target.java');
+  });
+
+  it('does not emit a render() edge to the inner cast or to the decoy Shape (expr declared type)', () => {
+    const calls = getRelationships(result, 'CALLS');
+    expect(
+      calls.some((c) => c.target === 'render' && c.targetFilePath === 'models/Shape.java'),
+    ).toBe(false);
+  });
+
+  it('resolves cast + this.field ((Target)((Object)this.held)).draw() to Target.draw', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const drawCall = calls.find((c) => c.target === 'draw' && c.source === 'castThisField');
+    expect(drawCall).toBeDefined();
+    expect(drawCall!.targetFilePath).toBe('models/Target.java');
+  });
+
+  it('does not emit a draw() edge to the decoy Shape (field declared type)', () => {
+    const calls = getRelationships(result, 'CALLS');
+    expect(calls.some((c) => c.target === 'draw' && c.targetFilePath === 'models/Shape.java')).toBe(
+      false,
+    );
+  });
+
+  // ((String) obj).act(): `String` is a resolvable-SHAPE cast type (simple
+  // identifier) that is not locally indexed, so resolution deliberately falls
+  // back to obj's OWN declared type (Fallback). This is intentionally kept,
+  // unlike the unparseable-cast case (#2353 review F1), whose criterion is:
+  // a paren group that is type-shaped but UNPARSEABLE (generic / array / FQN)
+  // must resolve to nothing, because falling through to the pre-cast
+  // expression's declared type emits a confident wrong edge. Here the cast IS
+  // parseable — it just names a type we didn't index — so no better
+  // information exists, and upcast casts make the declared type a plausible
+  // dispatch target. Residual risk kept visible: a cross-cast to an unindexed
+  // sibling type would still emit this declared-type fallback edge.
+  it('falls back to the declared type for a cast to an unindexed simple type (String)', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const actCall = calls.find((c) => c.target === 'act' && c.source === 'castUnindexedType');
+    expect(actCall).toBeDefined();
+    expect(actCall!.targetFilePath).toBe('models/Fallback.java');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Unparseable casts (#2353 review F1): a receiver whose paren group is
+// TYPE-SHAPED but unparseable — generic (Box<String>), array (Box[]),
+// fully-qualified (models.Box) — is a cast the resolver cannot look up.
+// It must resolve to NOTHING (pre-#2353 behavior): stripping the parens and
+// falling through resolves the pre-cast expression's own declared type and
+// emits a confident wrong CALLS edge (reason "import-resolved") to the decoy.
+// Every assertion is source-scoped (c.source === caller method) so it cannot
+// collide with the positive-shape scenarios pinned above.
+// ---------------------------------------------------------------------------
+
+describe('Java unparseable cast receiver resolution', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'java-cast-receiver'), () => {});
+  }, 60000);
+
+  const callTargets = (source: string, target: string): string[] =>
+    getRelationships(result, 'CALLS')
+      .filter((c) => c.source === source && c.target === target)
+      .map((c) => `${c.source} → ${c.target} @ ${c.targetFilePath}`);
+
+  it('emits no open() edge for a generic cast ((Box<String>) obj) — declared-type decoy Wrapper', () => {
+    expect(callTargets('castGeneric', 'open')).toEqual([]);
+  });
+
+  it('emits no act2() edge for an array cast ((Box[]) obj) — declared-type decoy Wrapper', () => {
+    expect(callTargets('castArray', 'act2')).toEqual([]);
+  });
+
+  it('emits no act3() edge for a fully-qualified cast ((models.Box) obj) — declared-type decoy Wrapper', () => {
+    expect(callTargets('castQualified', 'act3')).toEqual([]);
+  });
+
+  it('emits no act4() edge for a generic-FQN cast over this.field — field declared-type decoy Shape', () => {
+    expect(callTargets('castGenericFqnThisField', 'act4')).toEqual([]);
+  });
+
+  it('leaves a non-cast parenthesized receiver untouched — no crash, no fabricated edge', () => {
+    const fromNonCast = getRelationships(result, 'CALLS')
+      .filter((c) => c.source === 'nonCastParen')
+      .map((c) => `${c.source} → ${c.target} @ ${c.targetFilePath}`);
+    expect(fromNonCast).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// this.field chains (#2353 review F4/F5/F7): resolved by the generic
+// per-segment chain walker — the head `this` segment resolves via the
+// synthesized Function-scope typeBinding, each following segment via
+// class-scope typeBindings. Initializer-context sites (instance
+// initializer block / field initializer) have no function scope and
+// therefore no synthesized `this` binding; they resolve via the
+// literal-`this` head seed (enclosing class def) and attribute their
+// CALLS edge to the enclosing Class node. Every scenario has a decoy
+// class (Decoy) owning a same-named method, so a wrong resolution
+// emits a detectable edge.
+// ---------------------------------------------------------------------------
+
+describe('Java this.field chain resolution', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'java-this-field-chain'), () => {});
+  }, 60000);
+
+  it('detects the caller plus target and decoy classes', () => {
+    expect(getNodesByLabel(result, 'Class')).toEqual([
+      'App',
+      'Core',
+      'Decoy',
+      'Engine',
+      'Mapper',
+      'Monitor',
+      'Report',
+      'ReportFactory',
+      'Result',
+    ]);
+  });
+
+  it('resolves one-hop this.engine.start() to Engine.start', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const edge = calls.find((c) => c.source === 'chainOneHop' && c.target === 'start');
+    expect(edge).toBeDefined();
+    expect(edge!.targetFilePath).toBe('models/Engine.java');
+  });
+
+  it('resolves two-hop this.engine.core.ignite() through two typed fields to Core.ignite', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const edge = calls.find((c) => c.source === 'chainTwoHop' && c.target === 'ignite');
+    expect(edge).toBeDefined();
+    expect(edge!.targetFilePath).toBe('models/Core.java');
+  });
+
+  it('resolves this.monitor.watch() inside an instance initializer block to Monitor.watch', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const edge = calls.find((c) => c.source === 'App' && c.target === 'watch');
+    expect(edge).toBeDefined();
+    expect(edge!.targetFilePath).toBe('models/Monitor.java');
+  });
+
+  it('resolves the field initializer this.factory.make() to ReportFactory.make', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const edge = calls.find((c) => c.source === 'App' && c.target === 'make');
+    expect(edge).toBeDefined();
+    expect(edge!.targetFilePath).toBe('models/ReportFactory.java');
+  });
+
+  // #2353 review F5: the dot inside the string argument must not break
+  // chain segmentation — both the middle-of-chain lookup() call and the
+  // chained run() call resolve to their declaring classes.
+  it('resolves a chain whose call argument contains a dot — this.mapper.lookup("a.b").run()', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const lookupEdge = calls.find((c) => c.source === 'chainDottedArg' && c.target === 'lookup');
+    expect(lookupEdge).toBeDefined();
+    expect(lookupEdge!.targetFilePath).toBe('models/Mapper.java');
+    const runEdge = calls.find((c) => c.source === 'chainDottedArg' && c.target === 'run');
+    expect(runEdge).toBeDefined();
+    expect(runEdge!.targetFilePath).toBe('models/Result.java');
+  });
+
+  // Consistency guard: no this-only special-casing — an identically-shaped
+  // parameter-receiver chain (same classes) resolves to the same target.
+  it('resolves an identically-shaped obj.field.method() chain the same way as the this. variant', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const paramEdge = calls.find((c) => c.source === 'chainOneHopParam' && c.target === 'start');
+    expect(paramEdge).toBeDefined();
+    expect(paramEdge!.targetFilePath).toBe('models/Engine.java');
+    const thisEdge = calls.find((c) => c.source === 'chainOneHop' && c.target === 'start');
+    expect(thisEdge).toBeDefined();
+    expect(thisEdge!.targetFilePath).toBe(paramEdge!.targetFilePath);
+  });
+
+  it('emits no CALLS edge to any decoy method', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const decoyEdges = calls
+      .filter((c) => c.targetFilePath === 'models/Decoy.java')
+      .map((c) => `${c.source} → ${c.target} @ ${c.targetFilePath}`);
+    expect(decoyEdges).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Bare-`this` dispatch pinning (#2353 review F6): Java `this.member` sites
+// resolve through Case 4 — the synthesized Function-scope `this` typeBinding
+// (languages/java/receiver-binding.ts) feeding the MRO walk — NOT through the
+// C++-authored Case 0.5 chain walk gated by `resolveThisViaEnclosingClass`
+// (receiver-bound-calls.ts). PR #2353 briefly enabled that flag for Java; U7
+// reverted it per the toggle's own contract doc. These scenarios characterize
+// the Case 4 baseline (characterization, not idealization — two deliberate
+// baseline quirks are pinned with deferred-item comments below), and the
+// interface-default fan-out scenario is the A/B discriminator: Case 0.5
+// provably drops the interface-dispatch edges that only Case 4 emits.
+// ---------------------------------------------------------------------------
+
+describe('Java bare-this dispatch (Case 4 pinning)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'java-this-dispatch'), () => {});
+  }, 60000);
+
+  it('detects the hierarchy, collision, and interface fixture types', () => {
+    expect(getNodesByLabel(result, 'Class')).toEqual([
+      'Base',
+      'Derived',
+      'FastTask',
+      'Runner',
+      'SizeDecoy',
+      'SlowTask',
+      'Widget',
+    ]);
+    expect(getNodesByLabel(result, 'Interface')).toEqual(['Task']);
+  });
+
+  // Characterization, not idealization: `this.greet("world")` (arity 1)
+  // inside Derived binds to Derived.greet(String, int) — Case 4's
+  // `pickFirstNonStaticOnly` short-circuits on a single-overload owner
+  // without arity narrowing, so the inherited Base.greet(String) never gets
+  // a look. The ideal Base.greet target is the deferred Case 4 arity item
+  // (docs/plans/2026-07-02-001 § Deferred). Under PR #2353's Case 0.5, the
+  // `hiddenByName` C++ name-hiding rule dropped this member site entirely
+  // and a free-call fallback edge (reason 'local-call') to the same target
+  // masked the drop.
+  it('pins this.greet("world") in Derived to Derived.greet(String,int) — arity-blind shortcut', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const greetEdges = [
+      ...new Set(
+        calls
+          .filter((c) => c.source === 'announce' && c.target === 'greet')
+          .map((c) => `${c.targetFilePath} reason=${c.rel.reason}`),
+      ),
+    ].sort();
+    expect(greetEdges).toEqual(['models/Derived.java reason=global']);
+  });
+
+  // Characterization, not idealization: with field `size` AND method
+  // `size()` on Widget, the bare-this READ `this.size` emits ACCESSES
+  // reason 'read' targeting the METHOD node — `pickFirstNonStaticOnly`
+  // consults methods before fields for every site kind, so methods shadow
+  // fields on read sites too. The read-should-target-the-Property fix is
+  // the deferred Case 4 methods-shadow-fields item
+  // (docs/plans/2026-07-02-001 § Deferred).
+  it('pins the this.size field read to the size() Method node (methods-shadow-fields)', () => {
+    const accesses = getRelationships(result, 'ACCESSES');
+    const sizeReads = accesses.filter((e) => e.source === 'describe' && e.target === 'size');
+    expect(sizeReads.length).toBe(1);
+    expect(sizeReads[0].rel.reason).toBe('read');
+    expect(sizeReads[0].targetLabel).toBe('Method');
+    expect(sizeReads[0].targetFilePath).toBe('models/Widget.java');
+  });
+
+  it('resolves the this.size() call beside the size field to Widget.size()', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const sizeCalls = [
+      ...new Set(
+        calls
+          .filter((c) => c.source === 'measure' && c.target === 'size')
+          .map((c) => `${c.targetLabel} @ ${c.targetFilePath}`),
+      ),
+    ].sort();
+    expect(sizeCalls).toEqual(['Method @ models/Widget.java']);
+  });
+
+  // The A/B discriminator: only Case 4 emits interface-dispatch fan-out
+  // (`emitInterfaceDispatchFor`); Case 0.5 resolved this same site to
+  // Task.run WITHOUT the implementor edges. Target-SET assertions rather
+  // than edge counts, per the deferred duplicate-reference-site quirk.
+  it('emits the primary this.run() edge from the default method to Task.run', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const primaries = [
+      ...new Set(
+        calls
+          .filter(
+            (c) =>
+              c.source === 'runAll' && c.target === 'run' && c.rel.reason !== 'interface-dispatch',
+          )
+          .map((c) => c.targetFilePath),
+      ),
+    ].sort();
+    expect(primaries).toEqual(['models/Task.java']);
+  });
+
+  it('fans this.run() out to exactly the implementors via interface-dispatch edges', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const fanout = [
+      ...new Set(
+        calls
+          .filter((c) => c.source === 'runAll' && c.rel.reason === 'interface-dispatch')
+          .map((c) => c.targetFilePath),
+      ),
+    ].sort();
+    expect(fanout).toEqual(['models/FastTask.java', 'models/SlowTask.java']);
+  });
+
+  it('interface-dispatch fan-out excludes the interface itself and the non-implementor Runner', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const fanout = calls.filter((c) => c.rel.reason === 'interface-dispatch');
+    for (const edge of fanout) {
+      expect(edge.targetFilePath).not.toBe('models/Task.java');
+      expect(edge.targetFilePath).not.toBe('models/Runner.java');
+    }
+  });
+});

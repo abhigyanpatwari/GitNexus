@@ -30,7 +30,7 @@ description: "Use when the user wants to rename, extract, split, move, or restru
 
 ```
 - [ ] rename({symbol_name: "oldName", new_name: "newName", dry_run: true}) — preview all edits
-- [ ] Review graph edits (high confidence) and ast_search edits (review carefully)
+- [ ] Review graph edits (high confidence) and text_search edits (review carefully)
 - [ ] If satisfied: rename({..., dry_run: false}) — apply edits
 - [ ] detect_changes() — verify only expected files changed
 - [ ] Run tests for affected processes
@@ -66,7 +66,7 @@ description: "Use when the user wants to rename, extract, split, move, or restru
 ```
 rename({symbol_name: "validateUser", new_name: "authenticateUser", dry_run: true})
 → 12 edits across 8 files
-→ 10 graph edits (high confidence), 2 ast_search edits (review)
+→ 10 graph edits (high confidence), 2 text_search edits (review)
 → Changes: [{file_path, edits: [{line, old_text, new_text, confidence}]}]
 ```
 
@@ -107,10 +107,10 @@ RETURN caller.name, caller.filePath ORDER BY caller.filePath
 
 ```
 1. rename({symbol_name: "validateUser", new_name: "authenticateUser", dry_run: true})
-   → 12 edits: 10 graph (safe), 2 ast_search (review)
+   → 12 edits: 10 graph (safe), 2 text_search (review)
    → Files: validator.ts, login.ts, middleware.ts, config.json...
 
-2. Review ast_search edits (config.json: dynamic reference!)
+2. Review text_search edits (config.json: dynamic reference!)
 
 3. rename({symbol_name: "validateUser", new_name: "authenticateUser", dry_run: false})
    → Applied 12 edits across 8 files

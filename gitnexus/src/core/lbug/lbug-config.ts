@@ -190,6 +190,36 @@ export function toNativeSafePath(p: string): string {
 }
 
 /**
+ * Resolve the on-disk CSV staging dir for `<storagePath>/<subdir>`, applying the
+ * same ASCII-safe relocation `toNativeSafePath` enables: on Windows with a
+ * non-ASCII storage path, LadybugDB's bulk COPY cannot open files under that
+ * path, so the dir is relocated under `os.tmpdir()`. Shared by the structural
+ * `csv/` dir and the streaming `pdg-csv/` dir (#2202) so the two can never
+ * diverge on platform handling; the `gitnexus-<subdir>-` prefix keeps their tmp
+ * locations distinct and recognizable.
+ *
+ * The relocated dir is created with `fs.mkdtempSync` (a unique, mode-0700,
+ * guaranteed-not-pre-existing suffix) rather than a deterministic
+ * `gitnexus-<subdir>-<hash>` name. A predictable name in the world-readable OS
+ * temp dir is information-disclosure-prone and pre-plantable
+ * (CWE-377/378 / CodeQL `js/insecure-temporary-file`); mkdtemp's random suffix
+ * is the documented mitigation and is what reaches the streaming sink's
+ * `fs.openSync`. The non-Windows / ASCII path stays a pure `path.join` (no dir
+ * created) and is byte-identical to before.
+ */
+export function resolveNativeSafeStorageDir(storagePath: string, subdir: string): string {
+  if (process.platform === 'win32' && NON_ASCII_RE.test(storagePath)) {
+    // 8.3-shorten the tmpdir base first (a non-ASCII Windows *profile* path can
+    // make os.tmpdir() itself non-ASCII), THEN mkdtemp so the returned path —
+    // the one that flows into fs.openSync — is provably mkdtemp-sourced (random,
+    // exclusive) and clears the insecure-temp-file dataflow.
+    const base = toNativeSafePath(os.tmpdir());
+    return fsSync.mkdtempSync(path.join(base, `gitnexus-${subdir}-`));
+  }
+  return path.join(storagePath, subdir);
+}
+
+/**
  * Shared configuration for `@ladybugdb/core` `Database` construction.
  *
  * Two values changed meaningfully in `@ladybugdb/core` 0.16.0 and need to be
@@ -283,7 +313,7 @@ export function isWalCorruptionError(err: unknown): boolean {
 
 // ─── Ladybug WAL checkpoint IO error matchers ───────────────────────────────
 //
-// Matched against LadybugDB v0.16.1 (see `gitnexus/package.json`
+// Matched against LadybugDB v0.18.0 (see `gitnexus/package.json`
 // @ladybugdb/core). Strict regexes encode local_file_system.cpp wording
 // verified at that version. Two-tier strategy: strict matchers first so we
 // only fire on real checkpoint-rotation shapes; a permissive fallback
@@ -325,6 +355,107 @@ export const isLbugCheckpointIoError = (err: unknown): boolean => {
   return LBUG_CHECKPOINT_PERMISSIVE_RE.test(msg);
 };
 
+// ─── Ladybug non-4K page-size frame-release matcher (#1231) ─────────────────
+//
+// LadybugDB <= 0.17.x hardcoded a 4 KiB OS-page assumption in its buffer
+// manager: evicting a frame released physical memory with
+// `madvise(frame, frameSize, MADV_DONTNEED)` on 4 KiB-aligned frame
+// addresses (verified by disassembling `VMRegion::releaseFrame` in
+// @ladybugdb/core-linux-arm64 0.17.1 — `mov w2, #0x4` = MADV_DONTNEED,
+// throw on non-zero return). On kernels with 16 KiB pages (Raspberry Pi 5
+// default 2712 kernel, Asahi Linux) or 64 KiB pages (some enterprise arm64
+// distros), madvise rejects addresses that are not multiples of the real
+// page size with EINVAL, surfacing as:
+//   "Buffer manager exception: Releasing physical memory associated with a
+//    frame failed with error code -1: Invalid argument."
+// which aborts `gitnexus analyze` mid-COPY.
+//
+// @ladybugdb/core 0.18.0 rewrote the release path with runtime OS-page-size
+// detection and discard-granule-aligned madvise (new binary strings:
+// "Failed to detect the operating system page size.", "Unsupported page
+// size combination: frame size {}, discard granule size {}, frame group
+// size {}."), so upgrading is the fix. The residual 0.18.0 guard
+// ("Unsupported page size combination") is matched here too so exotic
+// configurations receive the same actionable guidance instead of a raw
+// native message.
+const LBUG_FRAME_RELEASE_RE = /releasing physical memory associated with a frame failed/i;
+const LBUG_PAGE_COMBO_RE = /unsupported page size combination/i;
+
+/**
+ * True when `err` looks like the LadybugDB buffer manager failing to release
+ * frame memory — the failure mode of a 4 KiB page-size assumption on a
+ * 16 KiB/64 KiB-page kernel (#1231). Deliberately does NOT match the
+ * generic "buffer pool is full" exhaustion error, which is a sizing
+ * problem, not a page-size one.
+ */
+export const isLbugPageSizeFrameError = (err: unknown): boolean => {
+  if (!err) return false;
+  const msg = err instanceof Error ? err.message : String(err);
+  return LBUG_FRAME_RELEASE_RE.test(msg) || LBUG_PAGE_COMBO_RE.test(msg);
+};
+
+/**
+ * True when the given `@ladybugdb/core` version contains the runtime
+ * OS-page-size detection introduced in 0.18.0 (see the matcher comment
+ * above). Unknown/unparseable versions return false so callers err on the
+ * side of showing the upgrade hint.
+ */
+export const isPageSizeAwareLadybug = (version: string | undefined): boolean => {
+  if (!version) return false;
+  const m = /^(\d+)\.(\d+)/.exec(version.trim());
+  if (!m) return false;
+  const major = Number(m[1]);
+  const minor = Number(m[2]);
+  return major > 0 || minor >= 18;
+};
+
+// `undefined` = not probed yet; `null` = probed and unavailable. Cached
+// because analyze error paths and doctor may both ask, and getconf forks.
+let cachedOsPageSize: number | null | undefined;
+
+/**
+ * OS memory page size in bytes, or `undefined` when it cannot be determined
+ * (Windows, missing getconf, sandboxed exec). Node exposes no page-size API,
+ * so this shells out to POSIX `getconf PAGE_SIZE` — same execFileSync shape
+ * as the Windows 8.3 short-path probe above, but with a tighter timeout and
+ * an explicit killSignal (see the options comment below).
+ */
+export const getOsPageSize = (): number | undefined => {
+  if (cachedOsPageSize !== undefined) return cachedOsPageSize ?? undefined;
+  if (process.platform === 'win32') {
+    // Windows allocation granularity is not what madvise alignment is about;
+    // the #1231 failure mode is POSIX-only.
+    cachedOsPageSize = null;
+    return undefined;
+  }
+  try {
+    // killSignal SIGKILL (first use in this repo): the default SIGTERM is
+    // catchable, so a signal-trapping child held the "5s" timeout for 9s in
+    // review reproduction — SIGKILL makes the timeout real for everything
+    // except a child stuck in uninterruptible I/O (D state). 2000ms, not
+    // 5000: doctor runs this probe on its happy path and real getconf
+    // answers in ~2ms, but keep margin for loaded Pi-class hardware — a
+    // too-tight ceiling would silently drop the very #1231 diagnostics this
+    // probe exists to provide (the catch caches the failure). (#2424 review)
+    const out = execFileSync('getconf', ['PAGE_SIZE'], {
+      encoding: 'utf-8',
+      timeout: 2000,
+      killSignal: 'SIGKILL',
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    const parsed = Number(out.trim());
+    cachedOsPageSize = Number.isInteger(parsed) && parsed > 0 ? parsed : null;
+  } catch {
+    cachedOsPageSize = null;
+  }
+  return cachedOsPageSize ?? undefined;
+};
+
+/** Exported only for unit tests — clears the getconf probe cache. */
+export const _resetOsPageSizeCacheForTest = (): void => {
+  cachedOsPageSize = undefined;
+};
+
 type LbugModule = typeof lbug;
 
 export interface LbugDatabaseOptions {
@@ -338,10 +469,13 @@ export interface LbugConnectionHandle {
 }
 
 /**
- * Return true when the error message indicates that a LadybugDB file lock
- * could not be acquired — either at construction time
- * (`new lbug.Database(...)` raises from `local_file_system.cpp`) or during
- * a query (another writer holds the exclusive lock).
+ * Return true when the error message indicates that a LadybugDB write
+ * transaction could not proceed due to lock contention — either a file
+ * lock that could not be acquired (either at construction time,
+ * `new lbug.Database(...)` raising from `local_file_system.cpp`, or during
+ * a query, another writer holds the exclusive lock), or a same-process
+ * write transaction rejected because another write transaction is already
+ * active on the connection.
  *
  * Lives here (not in `lbug-adapter.ts`) so both the construction-time
  * retry (`openWithLockRetry` in this file) and the query-time retry
@@ -353,10 +487,49 @@ export const isDbBusyError = (err: unknown): boolean => {
   // `lock` already subsumes `could not set lock`; the broader term is kept
   // because graph-DB transient errors include "deadlock", "lock contention",
   // and the LadybugDB native module's "could not set lock on file" — all of
-  // which deserve a retry. If a non-transient lock-shaped error ever
-  // surfaces (e.g., "lock file missing" during recovery), tighten this
-  // matcher rather than raising the retry budget.
-  return msg.includes('busy') || msg.includes('lock') || msg.includes('already in use');
+  // which deserve a retry. LadybugDB also reports same-process writer
+  // contention without the words "busy" or "lock".
+  //
+  // "only one write transaction at a time" was observed against LadybugDB
+  // 0.18.0 (see gitnexus/package.json @ladybugdb/core).
+  //
+  // If a non-transient lock-shaped error ever surfaces (e.g., "lock file
+  // missing" during recovery), tighten this matcher rather than raising the
+  // retry budget.
+  return (
+    msg.includes('busy') ||
+    msg.includes('lock') ||
+    msg.includes('already in use') ||
+    msg.includes('only one write transaction at a time')
+  );
+};
+
+/** See {@link classifyDeleteAllError}. */
+export type DeleteAllErrorClass = 'benign-missing-table' | 'rethrow';
+
+/**
+ * Classify an error thrown while clearing all relationships of one type
+ * before an incremental re-write (`deleteAllRelationshipsOfType` in
+ * `lbug-adapter.ts` — the `deleteAllInjects` / `deleteAllCallSummaries` /
+ * `deleteAllInterprocTaintPaths` family).
+ *
+ * - `'benign-missing-table'`: the CodeRelation table does not exist yet
+ *   (freshly-initialized DB) — the delete-all is a no-op, stay silent.
+ * - `'rethrow'`: ANY other failure (lock, disk, closed connection, native
+ *   error) leaves stale rows that the subsequent re-extract then DUPLICATES
+ *   (CodeRelation has no PK), so the caller must abort the writeback
+ *   (#2084 review P2-5).
+ *
+ * Pure classification, extracted here (next to the other error matchers) so
+ * the load-bearing regex/branch is unit-testable without a native DB —
+ * driving a synthetic failure through the real singleton connection would
+ * break every later test in the shared integration suite (#2200 review).
+ */
+export const classifyDeleteAllError = (err: unknown): DeleteAllErrorClass => {
+  const msg = err instanceof Error ? err.message : String(err);
+  return /no table|not exist|not found|does not exist|Table .* does not exist/i.test(msg)
+    ? 'benign-missing-table'
+    : 'rethrow';
 };
 
 export function createLbugDatabase(
@@ -387,7 +560,10 @@ export function createLbugDatabase(
 //   1. OPEN_LOCK_RETRY_ATTEMPTS / OPEN_LOCK_RETRY_DELAY_MS  (this file)
 //      → `new lbug.Database()` constructor lock failures
 //   2. HANDLE_RELEASE_PROBE_ATTEMPTS / HANDLE_RELEASE_PROBE_DELAY_MS  (this file)
-//      → post-close fs.open probe to absorb Windows handle-release lag
+//      → post-close fs.open probe to absorb Windows handle-release lag; also
+//        the shared budget for wipeLbugDbFiles' ENOENT-verified removal
+//        (lbug-adapter.ts) and the dirty-recovery sidecar park's
+//        rename/rm retries (sidecar-recovery.ts) — same lock class
 //   3. DB_LOCK_RETRY_ATTEMPTS / DB_LOCK_RETRY_DELAY_MS  (lbug-adapter.ts withLbugDb)
 //      → query-time busy/lock retry around already-open connections
 //
@@ -399,12 +575,20 @@ export function createLbugDatabase(
 // of 10–50ms each = ~1.0–1.2s worst case) clears the typical
 // AV-scanner hold without masking real cross-process conflicts.
 //
-// Source: https://github.com/LadybugDB/ladybug/blob/v0.16.1/src/common/file_system/local_file_system.cpp#L126
+// Source: https://github.com/LadybugDB/ladybug/blob/v0.18.0/src/common/file_system/local_file_system.cpp#L127
+// (v0.18.0 appends " (Error: <code>)" / " (Lock is held by PID X)" on POSIX,
+// but the "Could not set lock on file : " prefix `isDbBusyError` substring-
+// matches on is unchanged.)
 const OPEN_LOCK_RETRY_ATTEMPTS = 5;
 const OPEN_LOCK_RETRY_DELAY_MS = 100;
 
-const HANDLE_RELEASE_PROBE_ATTEMPTS = 5;
-const HANDLE_RELEASE_PROBE_DELAY_MS = 50;
+// Exported (this shipping review, FIX 1/2): the dirty-recovery sidecar park
+// (sidecar-recovery.ts) and the ENOENT-verified wipe (lbug-adapter.ts
+// wipeLbugDbFiles) retry the SAME Windows handle-release/AV lock class, and
+// their previous private mirror constants were documentation-coupled copies
+// that could drift from this tuning-knob registry silently.
+export const HANDLE_RELEASE_PROBE_ATTEMPTS = 5;
+export const HANDLE_RELEASE_PROBE_DELAY_MS = 50;
 const HANDLE_RELEASE_LOCK_CODES = new Set(['EBUSY', 'EPERM', 'EACCES']);
 
 /**
@@ -471,7 +655,10 @@ const isTestFixturePath = (dbPath: string): boolean => {
 /** Exported only for direct unit testing — production callers use `openWithLockRetry`. */
 export const _isTestFixturePathForTest = isTestFixturePath;
 
-const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+// Exported alongside HANDLE_RELEASE_PROBE_* (this shipping review, FIX 1/2)
+// so the consumers of the shared retry budget do not each grow a private copy.
+export const sleep = (ms: number): Promise<void> =>
+  new Promise((resolve) => setTimeout(resolve, ms));
 
 /**
  * Attempt to remove stale `.wal` / `.lock` sidecars that a previous aborted

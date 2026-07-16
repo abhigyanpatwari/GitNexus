@@ -16,18 +16,19 @@ Evaluate whether GitNexus code intelligence improves AI agent performance on rea
 
 > **Recommended**: Use `native_augment` mode. It mirrors the Claude Code model — the agent gets both explicit GitNexus tools (fast bash commands) AND automatic enrichment of grep results with callers, callees, and execution flows. The agent decides when to use explicit tools vs rely on enriched search output.
 
-**Models supported:**
+**Models supported** (see `configs/models/` for the current list):
 
-- Claude 3.5 Haiku, Claude Sonnet 4, Claude Opus 4
-- MiniMax M1 2.5
+- Claude Haiku 4.5, Claude Sonnet 4, Claude Opus 4
+- MiniMax M1 2.5, MiniMax M2.5
 - GLM 4.7, GLM 5
+- DeepSeek
 - Any model supported by litellm (add a YAML config)
 
 ## Prerequisites
 
 - Python 3.11+
 - Docker (for SWE-bench containers)
-- Node.js 18+ (for GitNexus)
+- Node.js 22+ (for GitNexus)
 - API keys for your chosen models
 
 ## Setup

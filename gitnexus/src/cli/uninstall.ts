@@ -42,7 +42,7 @@ import {
   type ParseError,
   type JSONPath,
 } from 'jsonc-parser';
-import { getEditorTargets, detectIndentation } from './editor-targets.js';
+import { getEditorTargets, detectIndentation, isEnoent } from './editor-targets.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -52,6 +52,13 @@ interface UninstallResult {
   removed: string[];
   skipped: string[];
   errors: string[];
+  /**
+   * A corrupt LEGACY chain file was seen. It is reported informationally
+   * (skipped, no exit code), but it makes "not configured" unknowable, so the
+   * final report must not claim it. Kept as a first-class flag — the report
+   * must never re-derive this by sniffing skipped-entry message text.
+   */
+  corruptLegacy: boolean;
 }
 
 type RemovalStatus = 'removed' | 'absent' | 'corrupt' | 'missing';
@@ -72,7 +79,12 @@ async function removeJsoncKey(
   let raw: string;
   try {
     raw = await fs.readFile(filePath, 'utf-8');
-  } catch {
+  } catch (err) {
+    // ENOENT = genuinely not configured. Any other read failure (EACCES,
+    // locks) must not report 'missing' — the file may hold a real gitnexus
+    // entry the dry-run would then deny exists. Rethrow into the caller's
+    // per-file catch.
+    if (!isEnoent(err)) throw err;
     return 'missing';
   }
 
@@ -116,7 +128,11 @@ async function removeHookEntries(
   let raw: string;
   try {
     raw = await fs.readFile(filePath, 'utf-8');
-  } catch {
+  } catch (err) {
+    // Masking a non-ENOENT read failure as 'missing' would also let the
+    // caller delete the hook scriptDir while the unreadable settings file
+    // still references it. Rethrow into the hook uninstaller's catch.
+    if (!isEnoent(err)) throw err;
     return { status: 'missing', count: 0 };
   }
 
@@ -365,8 +381,14 @@ async function uninstallCodex(
   let raw: string;
   try {
     raw = await fs.readFile(configPath, 'utf-8');
-  } catch {
-    result.skipped.push('Codex MCP (not configured)');
+  } catch (err) {
+    // Catch locally: this call site has no surrounding try, so a rethrow
+    // would abort the hooks/skills cleanup that runs after Codex.
+    if (isEnoent(err)) {
+      result.skipped.push('Codex MCP (not configured)');
+    } else {
+      result.errors.push(`Codex: ${err instanceof Error ? err.message : String(err)}`);
+    }
     return;
   }
 
@@ -417,23 +439,54 @@ export const uninstallCommand = async (options?: { force?: boolean }) => {
     console.log('');
   }
 
-  const result: UninstallResult = { removed: [], skipped: [], errors: [] };
+  const result: UninstallResult = { removed: [], skipped: [], errors: [], corruptLegacy: false };
 
   // ─── MCP server entries (JSONC editors) ──────────────────────────
+  // Sweep legacyFiles too: setup writes into the first existing file of the
+  // editor's priority chain, so the gitnexus entry may live in a deprecated
+  // location (e.g. CodeBuddy's ~/.codebuddy/mcp.json).
   for (const target of targets.mcpJsonc) {
-    try {
-      const status = await removeJsoncKey(target.file, target.keyPath, dryRun);
-      if (status === 'removed')
-        result.removed.push(
-          `${target.label} MCP server — ${target.keyPath.join('.')} in ${target.file}`,
-        );
-      else if (status === 'corrupt')
-        result.errors.push(
-          `${target.label}: ${path.basename(target.file)} is corrupt — left untouched`,
-        );
-      else result.skipped.push(`${target.label} MCP (not configured)`);
-    } catch (err: any) {
-      result.errors.push(`${target.label}: ${err.message}`);
+    let removedAny = false;
+    let erroredAny = false;
+    let corruptLegacyAny = false;
+    for (const file of [target.file, ...(target.legacyFiles ?? [])]) {
+      try {
+        const status = await removeJsoncKey(file, target.keyPath, dryRun);
+        if (status === 'removed') {
+          removedAny = true;
+          result.removed.push(
+            `${target.label} MCP server — ${target.keyPath.join('.')} in ${file}`,
+          );
+        } else if (status === 'corrupt') {
+          if (file === target.file) {
+            // The primary path is where gitnexus itself writes — corruption
+            // there is an error worth failing the command over.
+            erroredAny = true;
+            result.errors.push(
+              `${target.label}: ${path.basename(file)} is corrupt — left untouched`,
+            );
+          } else {
+            // Legacy chain files are vendor locations gitnexus may never have
+            // touched (e.g. a corrupt ~/.codebuddy.json from an old install).
+            // Report informationally without failing uninstall. Deliberate
+            // asymmetry: an UNREADABLE (non-ENOENT) legacy file still errors —
+            // that's an environmental problem worth surfacing, while corrupt-
+            // but-readable proves there is no removable gitnexus entry.
+            corruptLegacyAny = true;
+            result.corruptLegacy = true;
+            result.skipped.push(
+              `${target.label} MCP (legacy ${path.basename(file)} is corrupt — left untouched)`,
+            );
+          }
+        }
+      } catch (err) {
+        erroredAny = true;
+        result.errors.push(`${target.label}: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+    // A corrupt legacy file makes "not configured" unknowable — suppress it.
+    if (!removedAny && !erroredAny && !corruptLegacyAny) {
+      result.skipped.push(`${target.label} MCP (not configured)`);
     }
   }
 
@@ -482,6 +535,11 @@ export const uninstallCommand = async (options?: { force?: boolean }) => {
   if (result.removed.length > 0) {
     console.log(`  ${verb}:`);
     for (const name of result.removed) console.log(`    - ${name}`);
+  } else if (result.errors.length > 0 || result.corruptLegacy) {
+    // Errors (corrupt primary files, unreadable configs) or corrupt legacy
+    // configs make "not configured" unknowable — claiming it right above an
+    // Errors block would be a contradiction users learn to distrust.
+    console.log('  Nothing removed.');
   } else {
     console.log('  Nothing to remove — GitNexus is not configured in any detected editor.');
   }

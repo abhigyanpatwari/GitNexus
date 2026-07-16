@@ -1,7 +1,11 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import {
   getLocalEmbeddingRuntimeBlocker,
+  getMissingLocalEmbeddingStackMessage,
   isLocalEmbeddingRuntimeBlockerMessage,
+  isLocalEmbeddingStackInstalled,
+  isMissingLocalEmbeddingStackMessage,
+  localEmbeddingStackMissingMessage,
 } from '../../src/core/embeddings/runtime-support.js';
 
 /**
@@ -20,6 +24,37 @@ vi.mock('@huggingface/transformers', () => {
     env: { allowLocalModels: true, cacheDir: '', remoteHost: '' },
   };
 });
+
+/**
+ * Spy for the CUDA-13 build-matching resolver hook. Both local embedders must
+ * call this before importing transformers.js — mocked (rather than exercising
+ * the real resolver's env/subprocess probing) to keep this suite fast and
+ * platform-independent; `onnxruntime-node-resolver.test.ts` covers the
+ * resolver's own decision logic.
+ */
+const { resolverHookInstalled } = vi.hoisted(() => ({ resolverHookInstalled: vi.fn() }));
+
+vi.mock('../../src/core/embeddings/onnxruntime-node-resolver.js', () => ({
+  ensureOnnxRuntimeNodeMatchesSystem: () => resolverHookInstalled(),
+  isEffectiveCudaAvailable: () => false,
+}));
+
+/**
+ * Mock `module.registerHooks` with a spy (#2372). Without this, a successful
+ * local `initEmbedder()` calls the REAL `ensureEmbeddingStackResolvable` /
+ * onnxruntime-common resolver, which register process-global resolution hooks in
+ * the vitest worker — and `vi.resetModules()` (beforeEach) resets their one-shot
+ * guards, so each test re-registers real hooks that are never deregistered,
+ * silently redirecting resolution for every later test in the worker. Spreading
+ * `importOriginal` keeps `createRequire` real, so the CJS resolution probes still
+ * work.
+ */
+const { registerHooksSpy } = vi.hoisted(() => ({ registerHooksSpy: vi.fn() }));
+
+vi.mock('node:module', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('node:module')>()),
+  registerHooks: registerHooksSpy,
+}));
 
 const EMBED_ENV_KEYS = [
   'GITNEXUS_EMBEDDING_URL',
@@ -44,6 +79,8 @@ const stubPlatform = (platform: NodeJS.Platform, arch: NodeJS.Architecture): (()
 beforeEach(() => {
   vi.resetModules();
   transformersImported.mockClear();
+  resolverHookInstalled.mockClear();
+  registerHooksSpy.mockClear();
   for (const key of EMBED_ENV_KEYS) delete process.env[key];
 });
 
@@ -122,6 +159,83 @@ describe('isLocalEmbeddingRuntimeBlockerMessage', () => {
         "Cannot find module '../bin/.../onnxruntime_binding.node'",
       ),
     ).toBe(false);
+  });
+});
+
+/** Build a module-not-found error the way Node does (message + `code`). */
+const moduleNotFound = (message: string, code: string): NodeJS.ErrnoException => {
+  const err: NodeJS.ErrnoException = new Error(message);
+  err.code = code;
+  return err;
+};
+
+describe('getMissingLocalEmbeddingStackMessage (#2370 pruned optional stack)', () => {
+  it('maps an ESM import failure for @huggingface/transformers to the guidance message', () => {
+    const err = moduleNotFound(
+      "Cannot find package '@huggingface/transformers' imported from /x/dist/core/embeddings/embedder.js",
+      'ERR_MODULE_NOT_FOUND',
+    );
+    expect(getMissingLocalEmbeddingStackMessage(err)).toBe(localEmbeddingStackMissingMessage());
+  });
+
+  it('maps a CJS require failure for onnxruntime-node to the guidance message', () => {
+    const err = moduleNotFound("Cannot find module 'onnxruntime-node'", 'MODULE_NOT_FOUND');
+    expect(getMissingLocalEmbeddingStackMessage(err)).toBe(localEmbeddingStackMissingMessage());
+  });
+
+  it('ignores module-not-found errors for unrelated packages', () => {
+    const err = moduleNotFound("Cannot find package 'graphology'", 'ERR_MODULE_NOT_FOUND');
+    expect(getMissingLocalEmbeddingStackMessage(err)).toBeNull();
+  });
+
+  it('ignores the macOS-Intel native-binding path error (a file path, not the bare specifier)', () => {
+    // #1515-style failure: the PACKAGE is installed but its native binding file
+    // is absent — must NOT be misreported as a pruned optional install.
+    const err = moduleNotFound(
+      "Cannot find module '/x/node_modules/onnxruntime-node/bin/napi-v6/darwin/x64/onnxruntime_binding.node'",
+      'MODULE_NOT_FOUND',
+    );
+    expect(getMissingLocalEmbeddingStackMessage(err)).toBeNull();
+  });
+
+  it('ignores errors without a module-not-found code and non-Error values', () => {
+    expect(
+      getMissingLocalEmbeddingStackMessage(new Error("Cannot find package 'onnxruntime-node'")),
+    ).toBeNull();
+    expect(
+      getMissingLocalEmbeddingStackMessage("Cannot find package 'onnxruntime-node'"),
+    ).toBeNull();
+    expect(getMissingLocalEmbeddingStackMessage(undefined)).toBeNull();
+  });
+
+  it('produces guidance naming every recovery path', () => {
+    const msg = localEmbeddingStackMissingMessage();
+    expect(msg).toContain('gitnexus embeddings install');
+    expect(msg).toContain('ONNXRUNTIME_NODE_INSTALL=skip');
+    expect(msg).toContain('GLOBAL_AGENT_HTTPS_PROXY');
+    expect(msg).toContain('GITNEXUS_EMBEDDING_URL');
+    expect(msg).toContain('#2370');
+    // Must not trip analyze.ts's generic "installation may be corrupt" branch.
+    expect(msg).not.toMatch(/Cannot find (module|package)/);
+    expect(msg).not.toContain('MODULE_NOT_FOUND');
+  });
+});
+
+describe('isMissingLocalEmbeddingStackMessage', () => {
+  it('recognises its own message and rejects the platform blocker and unrelated errors', () => {
+    expect(isMissingLocalEmbeddingStackMessage(localEmbeddingStackMissingMessage())).toBe(true);
+    const blocker = getLocalEmbeddingRuntimeBlocker({ platform: 'darwin', arch: 'x64' }) as string;
+    expect(isMissingLocalEmbeddingStackMessage(blocker)).toBe(false);
+    expect(isLocalEmbeddingRuntimeBlockerMessage(localEmbeddingStackMissingMessage())).toBe(false);
+    expect(isMissingLocalEmbeddingStackMessage('ECONNREFUSED while downloading model')).toBe(false);
+  });
+});
+
+describe('isLocalEmbeddingStackInstalled', () => {
+  it('resolves the optional stack in the dev workspace without importing it', () => {
+    expect(isLocalEmbeddingStackInstalled()).toBe(true);
+    // Resolution only — the transformers.js import spy must not fire.
+    expect(transformersImported).not.toHaveBeenCalled();
   });
 });
 
@@ -265,6 +379,53 @@ describe('MCP embedQuery on darwin/x64', () => {
       const { embedQuery } = await import('../../src/mcp/core/embedder.js');
       await expect(embedQuery('query from macOS Intel')).rejects.toThrow(/macOS Intel/);
       expect(transformersImported).not.toHaveBeenCalled();
+    } finally {
+      restore();
+    }
+  });
+});
+
+describe('CUDA-13 resolver hook installation (both local-embedding entrypoints)', () => {
+  // Regression guard for the two local embedders drifting apart (gitnexus PR #2341
+  // follow-up): both `core/embeddings/embedder.ts` and `mcp/core/embedder.ts` must
+  // install the CUDA-build-matching redirect during a successful local init. (The
+  // source itself places the call before `await import('@huggingface/transformers')`
+  // — not re-asserted here via mock call-order, since the hoisted `@huggingface/
+  // transformers` mock's factory only fires once per file run for this external
+  // package, making a second per-test "called fresh" assertion on it unreliable.)
+  it('core embedder installs the resolver hook on a successful local init', async () => {
+    const restore = stubPlatform('linux', 'x64');
+    try {
+      const { initEmbedder } = await import('../../src/core/embeddings/embedder.js');
+      await expect(initEmbedder()).resolves.toBeDefined();
+
+      expect(resolverHookInstalled).toHaveBeenCalled();
+    } finally {
+      restore();
+    }
+  });
+
+  it('MCP embedder installs the resolver hook on a successful local init', async () => {
+    const restore = stubPlatform('linux', 'x64');
+    try {
+      const { initEmbedder } = await import('../../src/mcp/core/embedder.js');
+      await expect(initEmbedder()).resolves.toBeDefined();
+
+      expect(resolverHookInstalled).toHaveBeenCalled();
+    } finally {
+      restore();
+    }
+  });
+
+  it('registers the runtime-prefix fallback through the mocked registerHooks, not the real global API (#2372)', async () => {
+    // The whole point of the node:module mock: a successful local init exercises
+    // ensureEmbeddingStackResolvable's registration via the spy, so no real
+    // process-global resolution hook leaks into other tests in the worker.
+    const restore = stubPlatform('linux', 'x64');
+    try {
+      const { initEmbedder } = await import('../../src/core/embeddings/embedder.js');
+      await expect(initEmbedder()).resolves.toBeDefined();
+      expect(registerHooksSpy).toHaveBeenCalled();
     } finally {
       restore();
     }

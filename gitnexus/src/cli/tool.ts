@@ -56,11 +56,52 @@ function output(data: any): void {
     // Fallback: stderr (previous behavior, works on all platforms)
     process.stderr.write(text + '\n');
   }
+  // Backend failures come back as `{ error }` payloads rather than throws
+  // (#2469). Every tool command routes its result through here, so this is
+  // the one place that keeps scripted callers honest: print the payload,
+  // then exit non-zero.
+  if (
+    data &&
+    typeof data === 'object' &&
+    'error' in data &&
+    typeof data.error === 'string' &&
+    data.error.trim().length > 0
+  ) {
+    process.exitCode = 1;
+  }
+}
+
+/**
+ * Parse a `--limit` CLI option into a positive row cap, or `undefined` when the
+ * flag is absent, non-numeric, zero, or negative.
+ *
+ * Treating invalid / 0 / negative input as "no limit" — rather than the old
+ * `options.limit ? Math.max(0, parseInt(...)) : undefined` path, where a string
+ * like `"abc"` is truthy and yields `NaN`, then `slice(0, NaN)` silently EMPTIES
+ * the result with exit 0 — keeps the guardrail commands (impact / context /
+ * detect-changes) honest: a bad `--limit` shows everything, never nothing.
+ */
+function parseLimit(raw: string | undefined): number | undefined {
+  if (raw === undefined) return undefined;
+  const n = Number(raw);
+  return Number.isInteger(n) && n > 0 ? n : undefined;
+}
+
+/**
+ * Parse an `--offset` CLI option into a non-negative pagination start, or
+ * `undefined` when the flag is absent or invalid. Mirrors {@link parseLimit};
+ * offset `0` is valid ("start at the beginning"), so the guard is `>= 0`.
+ */
+function parseOffset(raw: string | undefined): number | undefined {
+  if (raw === undefined) return undefined;
+  const n = Number(raw);
+  return Number.isInteger(n) && n >= 0 ? n : undefined;
 }
 
 export async function queryCommand(
-  queryText: string,
+  queryText: string | undefined,
   options?: {
+    query?: string;
     repo?: string;
     branch?: string;
     context?: string;
@@ -69,7 +110,8 @@ export async function queryCommand(
     content?: boolean;
   },
 ): Promise<void> {
-  if (!queryText?.trim()) {
+  const resolvedQuery = queryText?.trim() || options?.query?.trim();
+  if (!resolvedQuery) {
     cliErrorKey('tool.usage.query');
     process.exit(1);
   }
@@ -77,10 +119,10 @@ export async function queryCommand(
   const backend = await getBackend();
   const result = await backend.callTool('query', {
     // #2175: canonical param is search_query; the backend still accepts legacy "query".
-    search_query: queryText,
+    search_query: resolvedQuery,
     task_context: options?.context,
     goal: options?.goal,
-    limit: options?.limit ? parseInt(options.limit) : undefined,
+    limit: parseLimit(options?.limit),
     include_content: options?.content ?? false,
     repo: options?.repo,
     branch: options?.branch,
@@ -95,6 +137,7 @@ export async function contextCommand(
     branch?: string;
     file?: string;
     uid?: string;
+    limit?: string;
     content?: boolean;
   },
 ): Promise<void> {
@@ -108,6 +151,7 @@ export async function contextCommand(
     process.exit(1);
   }
 
+  const limit = parseLimit(options?.limit);
   const backend = await getBackend();
   const result = await backend.callTool('context', {
     name: name || undefined,
@@ -117,6 +161,24 @@ export async function contextCommand(
     repo: options?.repo,
     branch: options?.branch,
   });
+  if (limit !== undefined) {
+    // Bound every array-valued category under incoming/outgoing (calls, accesses,
+    // imports, extends, uses, …) — categorize() buckets by relType, so the prior
+    // hardcoded calls/accesses missed the rest (e.g. incoming.accesses) — plus
+    // typed_properties and processes, so --limit caps the whole context payload.
+    for (const dir of [result.incoming, result.outgoing] as Array<
+      Record<string, unknown> | undefined
+    >) {
+      if (!dir) continue;
+      for (const key of Object.keys(dir)) {
+        const bucket = dir[key];
+        if (Array.isArray(bucket)) dir[key] = bucket.slice(0, limit);
+      }
+    }
+    if (Array.isArray(result.typed_properties))
+      result.typed_properties = result.typed_properties.slice(0, limit);
+    if (Array.isArray(result.processes)) result.processes = result.processes.slice(0, limit);
+  }
   output(result);
 }
 
@@ -124,6 +186,8 @@ export async function impactCommand(
   target?: string,
   options?: {
     direction?: string;
+    mode?: string;
+    line?: string;
     repo?: string;
     branch?: string;
     uid?: string;
@@ -158,16 +222,25 @@ export async function impactCommand(
 
   try {
     const backend = await getBackend();
-    const rawLimit = parseInt(options?.limit ?? '', 10);
-    const rawOffset = parseInt(options?.offset ?? '', 10);
-    const parsedLimit = Number.isFinite(rawLimit) ? rawLimit : undefined;
-    const parsedOffset = Number.isFinite(rawOffset) ? rawOffset : undefined;
+    const parsedLimit = parseLimit(options?.limit);
+    const parsedOffset = parseOffset(options?.offset);
+    // `--line` is a PDG-only statement anchor (1-based source line). Parse it to
+    // an integer when provided and thread it ONLY when present, so the backend's
+    // line-without-pdg / non-positive-integer validation fires on the real value
+    // rather than on a silently-dropped flag. A non-numeric `--line` parses to
+    // NaN, which the backend rejects as a non-positive integer (loud, not silent).
+    const parsedLine = options?.line !== undefined ? parseInt(options.line, 10) : undefined;
     const result = await backend.callTool('impact', {
       target: target || undefined,
       target_uid: options?.uid,
       file_path: options?.file,
       kind: options?.kind,
       direction: options?.direction || 'upstream',
+      // Forward the engine selector; backend validates the enum (callgraph/pdg)
+      // and treats the default 'callgraph' identically to an omitted mode.
+      mode: options?.mode,
+      // PDG-only statement anchor — forwarded only when --line was given.
+      ...(parsedLine !== undefined ? { line: parsedLine } : {}),
       maxDepth: options?.depth ? parseInt(options.depth, 10) : undefined,
       includeTests: options?.includeTests ?? false,
       repo: options?.repo,
@@ -176,6 +249,15 @@ export async function impactCommand(
       offset: parsedOffset,
       summaryOnly: options?.summaryOnly ?? undefined,
     });
+    // Client-side cap of the affected-list payload to --limit (parity with the
+    // other tool commands). The backend already paginates byDepth per level to
+    // the same limit, so byDepth needs no client-side re-slice.
+    if (parsedLimit !== undefined) {
+      if (Array.isArray(result.affected_processes))
+        result.affected_processes = result.affected_processes.slice(0, parsedLimit);
+      if (Array.isArray(result.affected_modules))
+        result.affected_modules = result.affected_modules.slice(0, parsedLimit);
+    }
     output(result);
   } catch (err: unknown) {
     // Belt-and-suspenders: catch infrastructure failures (getBackend, callTool transport)
@@ -196,6 +278,7 @@ export async function cypherCommand(
   options?: {
     repo?: string;
     branch?: string;
+    limit?: string;
   },
 ): Promise<void> {
   if (!query?.trim()) {
@@ -203,6 +286,7 @@ export async function cypherCommand(
     process.exit(1);
   }
 
+  const limit = parseLimit(options?.limit);
   const backend = await getBackend();
   const result = await backend.callTool('cypher', {
     // #2175: canonical param is statement; the backend still accepts legacy "query".
@@ -210,6 +294,25 @@ export async function cypherCommand(
     repo: options?.repo,
     branch: options?.branch,
   });
+  if (limit !== undefined) {
+    if (Array.isArray(result)) {
+      // Non-tabular result: a raw row array.
+      result.splice(limit);
+    } else if (result && typeof result === 'object' && typeof result.row_count === 'number') {
+      // Tabular result: { markdown, row_count }. The markdown is a table built as
+      // [header, separator, ...dataRows].join('\n'), so slice it to `limit` data
+      // rows (keeping the 2 header lines) and report a row_count that matches what
+      // is actually printed — otherwise `--limit 2` over 50 rows prints all 50 but
+      // claims row_count: 2.
+      if (typeof result.markdown === 'string' && result.row_count > limit) {
+        result.markdown = result.markdown
+          .split('\n')
+          .slice(0, 2 + limit)
+          .join('\n');
+      }
+      result.row_count = Math.min(result.row_count, limit);
+    }
+  }
   output(result);
 }
 
@@ -218,7 +321,9 @@ export async function detectChangesCommand(options?: {
   baseRef?: string;
   repo?: string;
   branch?: string;
+  limit?: string;
 }): Promise<void> {
+  const limit = parseLimit(options?.limit);
   const backend = await getBackend();
   const result = await backend.callTool('detect_changes', {
     scope: options?.scope || 'unstaged',
@@ -226,6 +331,12 @@ export async function detectChangesCommand(options?: {
     repo: options?.repo,
     branch: options?.branch,
   });
+  if (limit !== undefined) {
+    if (Array.isArray(result.changed_symbols))
+      result.changed_symbols = result.changed_symbols.slice(0, limit);
+    if (Array.isArray(result.affected_processes))
+      result.affected_processes = result.affected_processes.slice(0, limit);
+  }
   output(formatDetectChangesResult(result));
 }
 

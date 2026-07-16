@@ -14,7 +14,13 @@ import {
   LOCAL_BACKEND_FTS_INDEXES,
 } from '../fixtures/local-backend-seed.js';
 
-vi.mock('../../src/storage/repo-manager.js', () => ({
+// Partial mock: registry access is faked, but everything else — critically
+// `loadMeta`, which the staleness check in LocalBackend.ensureInitialized
+// calls on every throttled window — stays REAL. A factory that omitted
+// loadMeta made that call site throw a TypeError that the staleness check's
+// catch silently swallowed, so the code path was never actually exercised.
+vi.mock('../../src/storage/repo-manager.js', async (importActual) => ({
+  ...(await importActual<typeof import('../../src/storage/repo-manager.js')>()),
   listRegisteredRepos: vi.fn().mockResolvedValue([]),
   cleanupOldKuzuFiles: vi.fn().mockResolvedValue({ found: false, needsReindex: false }),
   findSiblingClones: vi.fn().mockResolvedValue([]),
@@ -94,6 +100,31 @@ withTestLbugDB(
         expect(directDeps.length).toBeGreaterThanOrEqual(1);
         const depNames = directDeps.map((d: any) => d.name);
         expect(depNames).toContain('login');
+      });
+
+      it.each(['name', 'symbol'] as const)(
+        'impact tool resolves the %s compatibility alias against a real index',
+        async (alias) => {
+          const result = await backend.callTool('impact', {
+            [alias]: 'validate',
+            direction: 'upstream',
+          });
+          expect(result).not.toHaveProperty('error');
+          expect(result.target?.name).toBe('validate');
+          const directDeps = result.byDepth[1] || result.byDepth['1'] || [];
+          expect(directDeps.map((d: any) => d.name)).toContain('login');
+        },
+      );
+
+      it('context tool resolves the file compatibility alias against a real index', async () => {
+        const result = await backend.callTool('context', {
+          name: 'authenticate',
+          file: 'src/base.ts',
+        });
+        expect(result).not.toHaveProperty('error');
+        expect(result.status).toBe('found');
+        expect(result.symbol?.name).toBe('authenticate');
+        expect(result.symbol?.filePath).toBe('src/base.ts');
       });
 
       it('query tool returns results for keyword search', async () => {

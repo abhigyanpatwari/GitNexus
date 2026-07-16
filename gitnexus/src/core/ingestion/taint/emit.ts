@@ -71,7 +71,12 @@ import {
   bindingKey,
   DEFAULT_PDG_MAX_REACHING_DEF_FACTS_PER_FUNCTION,
 } from '../cfg/emit.js';
-import { computeReachingDefs, pointKey, type ProgramPoint } from '../cfg/reaching-defs.js';
+import {
+  computeReachingDefs,
+  pointKey,
+  type ProgramPoint,
+  type ReachingDefsSolver,
+} from '../cfg/reaching-defs.js';
 import type { BindingEntry, FunctionCfg } from '../cfg/types.js';
 import { hasTaintSafeSites } from './site-safety.js';
 import { buildTaintImportIndex, matchFunctionSites } from './match.js';
@@ -156,6 +161,10 @@ export function emitFileTaint(
   spec: SourceSinkSanitizerSpec,
   limits?: TaintEmitLimits,
   onWarn?: (message: string) => void,
+  // U12: shared per-file memoized solver (harvest/taint bucket — no maxBlockVisits).
+  // The zero-match fast path below still skips the solve entirely; only MATCHED
+  // functions request it, hitting the cache the call-summary harvest warmed.
+  solve: ReachingDefsSolver = computeReachingDefs,
 ): TaintEmitResult {
   const result: TaintEmitResult = {
     functionsAnalyzed: 0,
@@ -204,7 +213,7 @@ export function emitFileTaint(
       continue;
     }
 
-    const defUse = computeReachingDefs(cfg, { maxFacts });
+    const defUse = solve(cfg, { maxFacts });
     const flows = computeTaintFlows(cfg, defUse, matches, { maxFindingsPerFunction, maxHops });
     if (flows.status === 'coverage-gap') {
       // R4: skipped entirely, counted by reason; aggregate-warned by the
@@ -223,7 +232,6 @@ export function emitFileTaint(
       const b = bindings[idx];
       return b === undefined ? `#${idx}` : bindingKey(b);
     };
-
     // SANITIZES — one edge per kill, REGARDLESS of findings (kills can and do
     // exist with zero findings: a fully-sanitized flow IS the kill evidence).
     for (const kill of flows.kills) {
@@ -254,13 +262,27 @@ export function emitFileTaint(
       // `exec(req.body, req.query)`'s two findings; `property` is free-text
       // (string-literal subscripts) and rides LAST so it cannot collide into
       // another component.
-      const id = generateId(
-        'TAINTED',
-        `${fnAnchor}:${finding.sinkKind}:` +
-          `${pointKey(source.point)}.${source.siteIndex}:${bKey(source.objectBindingIdx)}:` +
-          `${pointKey(sink.point)}.${sink.siteIndex}.${sink.argIndex}:${bKey(sink.bindingIdx)}:` +
-          `${sink.entryName}:${source.property}`,
-      );
+      const id =
+        source.type === 'member-read'
+          ? generateId(
+              'TAINTED',
+              `${fnAnchor}:${finding.sinkKind}:` +
+                `${pointKey(source.point)}.${source.siteIndex}:${bKey(source.objectBindingIdx)}:` +
+                `${pointKey(sink.point)}.${sink.siteIndex}.${sink.argIndex}:${bKey(
+                  sink.bindingIdx,
+                )}:` +
+                `${sink.entryName}:${source.property}`,
+            )
+          : generateId(
+              'TAINTED',
+              `${fnAnchor}:${finding.sinkKind}:` +
+                `${pointKey(source.point)}.${source.siteIndex}:call-result:` +
+                `${bKey(source.resultBindingIdx)}:${source.calleeName}:` +
+                `${pointKey(sink.point)}.${sink.siteIndex}.${sink.argIndex}:${bKey(
+                  sink.bindingIdx,
+                )}:` +
+                `${sink.entryName}`,
+            );
       if (seenEdgeIds.has(id)) continue;
       seenEdgeIds.add(id);
       // `kind` rides the reason's `;<kind>` header — the only persisted

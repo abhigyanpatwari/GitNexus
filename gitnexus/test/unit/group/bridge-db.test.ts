@@ -9,7 +9,6 @@ import {
   queryBridge,
   closeBridgeDb,
   contractNodeId,
-  retryRename,
   writeBridge,
   openBridgeDbReadOnly,
   readBridgeMeta,
@@ -18,25 +17,25 @@ import {
   indexContract,
   findContractNode,
 } from '../../../src/core/group/bridge-db.js';
-import type { CrossLink } from '../../../src/core/group/types.js';
+import { retryRename } from '../../../src/storage/fs-atomic.js';
+import type { BridgeHandle, CrossLink } from '../../../src/core/group/types.js';
 import { makeContract } from './fixtures.js';
 
 /**
- * LadybugDB 0.16.0 has a known Windows-only regression: `Database.close()`
- * does not release the underlying file lock until the process exits, so any
- * read-after-write within the same process fails with Win32 Error 33
- * ("process cannot access the file because another process has locked a
- * portion of the file"). This blocks the close-then-reopen pattern that
- * `writeBridge → openBridgeDbReadOnly` relies on.
+ * In-process close-then-reopen of `bridge.lbug` (`writeBridge →
+ * openBridgeDbReadOnly`, and the read path's open→query→close→reopen) — exactly
+ * what a long-lived MCP server does on repeated `@group` impact/trace calls.
  *
- * Production code paths are unaffected: `gitnexus analyze`, `serve`, and
- * `mcp` each open the database exactly once per process and close it at
- * exit. The pattern only manifests in tests and in worker pool reuse.
+ * On Linux/macOS this is now a supported, exercised pattern thanks to the
+ * `closeBridgeDb` fix that skips CHECKPOINT on read-only handles (a CHECKPOINT
+ * on a read-only connection left a lock artifact that failed the next open).
  *
- * Upstream: see kuzudb/kuzu#3872 / #3883 / #4730 (file-lock UX gaps on
- * Windows). Skipping these specific tests on Windows lets the segfault fix
- * (the original motivation for the 0.16.0 upgrade) ship while we wait for
- * an upstream fix or pivot to a single-process bridge writer.
+ * On WINDOWS the direct openBridgeDbReadOnly reopen still fails (see NOTE in
+ * closeBridgeDb). The read-only bridge-handle cache (getCachedBridgeReadOnly)
+ * solves this for production by keeping one handle alive across calls instead
+ * of reopening — see the `bridge handle cache` describe block. These tests
+ * exercise the DIRECT reopen path (bypassed by the cache) and stay skipped on
+ * Windows.
  */
 const itLbugReopen = process.platform === 'win32' ? it.skip : it;
 
@@ -145,7 +144,9 @@ describe('writeBridge + read', () => {
     await writeBridge(tmpDir, {
       contracts: [makeContract()],
       crossLinks: [],
-      repoSnapshots: { backend: { indexedAt: '2026-01-01', lastCommit: 'abc' } },
+      repoSnapshots: {
+        backend: { indexedAt: '2026-01-01', lastCommit: 'abc' },
+      },
       missingRepos: ['missing-repo'],
     });
     const exists = await bridgeExists(tmpDir);
@@ -156,7 +157,9 @@ describe('writeBridge + read', () => {
     const report = await writeBridge(tmpDir, {
       contracts: [makeContract(), makeContract({ repo: 'frontend', role: 'consumer' })],
       crossLinks: [],
-      repoSnapshots: { backend: { indexedAt: '2026-01-01', lastCommit: 'abc' } },
+      repoSnapshots: {
+        backend: { indexedAt: '2026-01-01', lastCommit: 'abc' },
+      },
       missingRepos: [],
     });
     expect(report.contractsInserted).toBe(2);
@@ -219,6 +222,38 @@ describe('writeBridge + read', () => {
     await closeBridgeDb(handle!);
   });
 
+  itLbugReopen('test_openBridgeDbReadOnly_can_reopen_in_same_process', async () => {
+    // Regression: closeBridgeDb used to issue CHECKPOINT on read-only handles
+    // too, which left a WAL/shadow lock artifact that made the next read-only
+    // open of the same file fail in-process — breaking repeated @group
+    // impact/trace calls in a long-lived MCP server. closeBridgeDb now skips
+    // the checkpoint for read-only handles, so open→query→close→open works.
+    await writeBridge(tmpDir, {
+      contracts: [makeContract()],
+      crossLinks: [],
+      repoSnapshots: {},
+      missingRepos: [],
+    });
+
+    const first = await openBridgeDbReadOnly(tmpDir);
+    expect(first).not.toBeNull();
+    const r1 = await queryBridge<{ n: number }>(first!, 'MATCH (c:Contract) RETURN count(c) AS n');
+    expect(r1[0].n).toBe(1);
+    await closeBridgeDb(first!);
+
+    // Second open in the SAME process must succeed (previously returned null).
+    const second = await openBridgeDbReadOnly(tmpDir);
+    expect(second).not.toBeNull();
+    const r2 = await queryBridge<{ n: number }>(second!, 'MATCH (c:Contract) RETURN count(c) AS n');
+    expect(r2[0].n).toBe(1);
+    await closeBridgeDb(second!);
+
+    // And a third, to confirm it is not a one-shot.
+    const third = await openBridgeDbReadOnly(tmpDir);
+    expect(third).not.toBeNull();
+    await closeBridgeDb(third!);
+  });
+
   it('test_writeBridge_meta_json_persists_missingRepos', async () => {
     await writeBridge(tmpDir, {
       contracts: [],
@@ -236,7 +271,9 @@ describe('writeBridge + read', () => {
     await writeBridge(tmpDir, {
       contracts: [],
       crossLinks: [],
-      repoSnapshots: { 'hr/backend': { indexedAt: '2026-01-01', lastCommit: 'abc' } },
+      repoSnapshots: {
+        'hr/backend': { indexedAt: '2026-01-01', lastCommit: 'abc' },
+      },
       missingRepos: [],
     });
     const handle = await openBridgeDbReadOnly(tmpDir);
@@ -281,7 +318,11 @@ describe('writeBridge + read', () => {
       missingRepos: [],
     });
     const handle = await openBridgeDbReadOnly(tmpDir);
-    const rows = await queryBridge<{ fromRepo: string; toRepo: string; matchType: string }>(
+    const rows = await queryBridge<{
+      fromRepo: string;
+      toRepo: string;
+      matchType: string;
+    }>(
       handle!,
       'MATCH (a:Contract)-[l:ContractLink]->(b:Contract) RETURN l.fromRepo AS fromRepo, l.toRepo AS toRepo, l.matchType AS matchType',
     );
@@ -345,7 +386,11 @@ describe('writeBridge + read', () => {
     });
 
     const handle = await openBridgeDbReadOnly(tmpDir);
-    const contracts = await queryBridge<{ repo: string; symbolUid: string; symbolName: string }>(
+    const contracts = await queryBridge<{
+      repo: string;
+      symbolUid: string;
+      symbolName: string;
+    }>(
       handle!,
       'MATCH (c:Contract) RETURN c.repo AS repo, c.symbolUid AS symbolUid, c.symbolName AS symbolName ORDER BY c.repo',
     );
@@ -404,6 +449,332 @@ describe('writeBridge + read', () => {
   });
 });
 
+/* ------------------------------------------------------------------ */
+/*  getCachedBridgeReadOnly cache tests                                */
+/* ------------------------------------------------------------------ */
+
+/**
+ * The RO bridge-handle cache avoids reopening bridge.lbug per @group
+ * tool call, which fails on Windows (the OS handle isn't fully released
+ * before the next open races in). These tests verify read→read reuse and
+ * mtime/size-based invalidation on macOS/Linux. Each begins with the
+ * beforeEach `writeBridge` (writable) followed by a read-only open, i.e. the
+ * in-process write→read reopen that is the unfixed LadybugDB Windows
+ * limitation — so every test here is `itCacheReopen` (win32-skipped). The
+ * cache layer (one handle held alive) is what these exercise, not the native
+ * close-then-reopen the itLbugReopen tests cover.
+ */
+describe('bridge handle cache', () => {
+  let tmpDir: string;
+
+  beforeEach(async () => {
+    tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'bridge-cache-test-'));
+    // Create a valid bridge.lbug to open
+    await writeBridge(tmpDir, {
+      contracts: [makeContract()],
+      crossLinks: [],
+      repoSnapshots: {},
+      missingRepos: [],
+    });
+  });
+
+  afterEach(async () => {
+    // Close any cached handles so cleanupTempDir doesn't hit EBUSY
+    const { closeAllCachedBridges } = await import('../../../src/core/group/bridge-db.js');
+    await closeAllCachedBridges();
+    await cleanupTempDir(tmpDir);
+  });
+
+  // The beforeEach calls writeBridge (writable) then the test body opens
+  // read-only via getCachedBridgeReadOnly. On Windows this in-process
+  // write→read reopen is the known LadybugDB limitation (same class as
+  // itLbugReopen) — the OS handle isn't fully released after the writer
+  // closes. The cache exercises read→read reuse, not write→read, so the
+  // skip only affects the test setup, not the cache logic.
+  const itCacheReopen = process.platform === 'win32' ? it.skip : it;
+
+  itCacheReopen('same groupDir returns the same handle instance', async () => {
+    const { getCachedBridgeReadOnly } = await import('../../../src/core/group/bridge-db.js');
+    const first = await getCachedBridgeReadOnly(tmpDir);
+    expect(first).not.toBeNull();
+
+    const second = await getCachedBridgeReadOnly(tmpDir);
+    expect(second).not.toBeNull();
+    // Must be the SAME object — not a new open
+    expect(second).toBe(first);
+  });
+
+  itCacheReopen('writeBridge self-invalidates the cache (no manual invalidate)', async () => {
+    const { getCachedBridgeReadOnly, queryBridge, closeBridgeDb } =
+      await import('../../../src/core/group/bridge-db.js');
+    const first = await getCachedBridgeReadOnly(tmpDir);
+    expect(first).not.toBeNull();
+
+    // Rewrite the bridge WITHOUT calling invalidateBridgeCache here — writeBridge
+    // must self-invalidate (impl: invalidateBridgeCache before its atomic rename).
+    // A manual invalidate would mask that, leaving the load-bearing invariant
+    // untested.
+    await writeBridge(tmpDir, {
+      contracts: [makeContract({ repo: 'updated-repo' })],
+      crossLinks: [],
+      repoSnapshots: {},
+      missingRepos: [],
+    });
+
+    const second = await getCachedBridgeReadOnly(tmpDir);
+    expect(second).not.toBeNull();
+    // Different handle — writeBridge's own invalidate dropped the old entry.
+    expect(second).not.toBe(first);
+
+    // New handle sees the updated data.
+    const rows = await queryBridge<{ repo: string }>(
+      second!,
+      'MATCH (c:Contract) RETURN c.repo AS repo',
+    );
+    expect(rows).toMatchObject([{ repo: 'updated-repo' }]);
+
+    // Release leases as real consumers do (finally{closeBridgeDb}). `first` was
+    // evicted by writeBridge (close deferred behind this lease) — releasing it
+    // fires the deferred native close.
+    await closeBridgeDb(first!);
+    await closeBridgeDb(second!);
+  });
+
+  itCacheReopen('cache reopens when an external writer bumps mtime', async () => {
+    // Exercises the stat-based mtime/size invalidation branch directly, WITHOUT
+    // going through writeBridge's own invalidate. bridge.lbug is a native binary,
+    // so we bump mtime with fsp.utimes (rewriting bytes would corrupt it and the
+    // reopen would return null). Simulates another process having written the
+    // bridge out-of-band.
+    const { getCachedBridgeReadOnly, queryBridge, closeBridgeDb } =
+      await import('../../../src/core/group/bridge-db.js');
+    const dbPath = path.join(tmpDir, 'bridge.lbug');
+    const first = await getCachedBridgeReadOnly(tmpDir);
+    expect(first).not.toBeNull();
+
+    const future = new Date(Date.now() + 5000);
+    await fsp.utimes(dbPath, future, future);
+
+    const second = await getCachedBridgeReadOnly(tmpDir);
+    expect(second).not.toBeNull();
+    // mtime moved → the fast path missed → a fresh handle was opened.
+    expect(second).not.toBe(first);
+
+    const rows = await queryBridge<{ repo: string }>(
+      second!,
+      'MATCH (c:Contract) RETURN c.repo AS repo',
+    );
+    expect(rows).toMatchObject([{ repo: 'backend' }]);
+
+    await closeBridgeDb(first!);
+    await closeBridgeDb(second!);
+  });
+
+  itCacheReopen('concurrent calls return the same handle instance', async () => {
+    const { getCachedBridgeReadOnly } = await import('../../../src/core/group/bridge-db.js');
+
+    // Fire N concurrent cache-miss calls — the TOCTOU guard should make
+    // only ONE actual openBridgeDbReadOnly call; all the rest await it.
+    const N = 10;
+    const results = await Promise.all(
+      Array.from({ length: N }, () => getCachedBridgeReadOnly(tmpDir)),
+    );
+
+    // All returned the same handle instance (proves no double-open)
+    const first = results[0]!;
+    for (const h of results) {
+      expect(h).toBe(first);
+    }
+
+    // Verify the handle works — query returns expected data
+    const { queryBridge } = await import('../../../src/core/group/bridge-db.js');
+    const rows = await queryBridge<{ repo: string }>(
+      first,
+      'MATCH (c:Contract) RETURN c.repo AS repo',
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0].repo).toBe('backend');
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/*  Concurrency: per-handle query serialization + refcount lease       */
+/* ------------------------------------------------------------------ */
+
+/**
+ * The cached RO handle is shared across concurrent @group callers in a
+ * long-lived MCP serve process. Two correctness properties must hold:
+ *   1. No two queries run on one connection at once (LadybugDB Connection is
+ *      not concurrency-safe — conn-lock.ts). queryBridge serializes per handle.
+ *   2. The native handle is never closed while a reader holds a lease, and is
+ *      closed exactly once on the last release (refcount).
+ */
+describe('bridge handle lock (withHandleLock)', () => {
+  it('serializes — never two operations overlap on one lock', async () => {
+    const { withHandleLock } = await import('../../../src/core/group/bridge-db.js');
+    const lock = { lockTail: Promise.resolve() };
+    let active = 0;
+    const observedMax: number[] = [];
+    const section = async () => {
+      active++;
+      observedMax.push(active);
+      await new Promise((r) => setTimeout(r, 1));
+      active--;
+    };
+    await Promise.all(Array.from({ length: 8 }, () => withHandleLock(lock, section)));
+    // If two sections ever overlapped, active would reach 2.
+    expect(Math.max(...observedMax)).toBe(1);
+  });
+
+  it('releases the lock when an operation throws (chain not wedged)', async () => {
+    const { withHandleLock } = await import('../../../src/core/group/bridge-db.js');
+    const lock = { lockTail: Promise.resolve() };
+    await expect(
+      withHandleLock(lock, async () => {
+        throw new Error('boom');
+      }),
+    ).rejects.toThrow('boom');
+    // A subsequent op still runs — the failed op released its tail.
+    const result = await withHandleLock(lock, async () => 'ok');
+    expect(result).toBe('ok');
+  });
+});
+
+describe('bridge handle cache — refcount lease', () => {
+  let tmpDir: string;
+
+  beforeEach(async () => {
+    tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'bridge-refcount-test-'));
+    await writeBridge(tmpDir, {
+      contracts: [makeContract()],
+      crossLinks: [],
+      repoSnapshots: {},
+      missingRepos: [],
+    });
+  });
+
+  afterEach(async () => {
+    const { closeAllCachedBridges } = await import('../../../src/core/group/bridge-db.js');
+    await closeAllCachedBridges();
+    await cleanupTempDir(tmpDir);
+  });
+
+  // Each test below opens RO right after the beforeEach writeBridge (write→read
+  // reopen) — the unfixed Windows limitation — so all are win32-skipped.
+  const itCacheReopen = process.platform === 'win32' ? it.skip : it;
+
+  // Spy on the native close of a handle without `any` (strict-typing rule):
+  // _conn is typed `unknown`, so cast to the minimal structural shape we use.
+  const spyConnClose = (handle: BridgeHandle) =>
+    vi.spyOn(handle._conn as { close: () => Promise<unknown> }, 'close');
+
+  itCacheReopen('invalidate defers the native close until the last lease releases', async () => {
+    const { getCachedBridgeReadOnly, invalidateBridgeCache, closeBridgeDb } =
+      await import('../../../src/core/group/bridge-db.js');
+    // Two leases on the same cached handle (refs === 2).
+    const a = await getCachedBridgeReadOnly(tmpDir);
+    const b = await getCachedBridgeReadOnly(tmpDir);
+    expect(a).not.toBeNull();
+    expect(b).toBe(a);
+
+    const closeSpy = spyConnClose(a!);
+
+    // group_sync-style invalidate while readers hold leases → close deferred.
+    await invalidateBridgeCache(tmpDir);
+    expect(closeSpy).not.toHaveBeenCalled();
+
+    // First release: refs 2 → 1, still not closed.
+    await closeBridgeDb(a!);
+    expect(closeSpy).not.toHaveBeenCalled();
+
+    // Last release: refs 1 → 0, native close fires exactly once.
+    await closeBridgeDb(b!);
+    expect(closeSpy).toHaveBeenCalledTimes(1);
+  });
+
+  itCacheReopen('refs count every awaiter under inFlightOpens (not just one)', async () => {
+    const { getCachedBridgeReadOnly, invalidateBridgeCache, closeBridgeDb } =
+      await import('../../../src/core/group/bridge-db.js');
+    // N concurrent cache-miss calls coalesce to one open but each takes a lease.
+    const N = 5;
+    const handles = await Promise.all(
+      Array.from({ length: N }, () => getCachedBridgeReadOnly(tmpDir)),
+    );
+    const first = handles[0]!;
+    expect(handles).toMatchObject(Array.from({ length: N }, () => first));
+
+    const closeSpy = spyConnClose(first);
+    await invalidateBridgeCache(tmpDir);
+
+    // Release N-1 leases — if refs had been miscounted as 1, the close would
+    // have fired on the first release. It must not.
+    for (let i = 0; i < N - 1; i++) await closeBridgeDb(first);
+    expect(closeSpy).not.toHaveBeenCalled();
+
+    // The Nth release drops refs to 0 → close once.
+    await closeBridgeDb(first);
+    expect(closeSpy).toHaveBeenCalledTimes(1);
+  });
+
+  itCacheReopen('mtime-evict also defers close while a lease is held', async () => {
+    const { getCachedBridgeReadOnly, closeBridgeDb } =
+      await import('../../../src/core/group/bridge-db.js');
+    const dbPath = path.join(tmpDir, 'bridge.lbug');
+    const stale = await getCachedBridgeReadOnly(tmpDir);
+    expect(stale).not.toBeNull();
+    const closeSpy = spyConnClose(stale!);
+
+    // External writer bumps mtime; the next get evicts the stale entry. The
+    // lease on `stale` is still held, so its close must defer (this is the
+    // OTHER live close-under-lease path, alongside invalidate).
+    const future = new Date(Date.now() + 5000);
+    await fsp.utimes(dbPath, future, future);
+    const fresh = await getCachedBridgeReadOnly(tmpDir);
+    expect(fresh).not.toBe(stale);
+    expect(closeSpy).not.toHaveBeenCalled();
+
+    // Releasing the stale lease fires its deferred close exactly once.
+    await closeBridgeDb(stale!);
+    expect(closeSpy).toHaveBeenCalledTimes(1);
+
+    await closeBridgeDb(fresh!);
+  });
+
+  // Exercises the win32-only bounded-drain branch by mocking process.platform on
+  // a non-Windows runner (the real win32 path is proven by the cross-process
+  // integration test; this proves the branch LOGIC — that invalidate blocks
+  // until the reader releases on Windows rather than racing the rename).
+  // Skipped on real win32 (its in-process setup is the unsupported reopen).
+  itCacheReopen('on win32, invalidate waits for the in-flight reader to drain', async () => {
+    const { getCachedBridgeReadOnly, invalidateBridgeCache, closeBridgeDb } =
+      await import('../../../src/core/group/bridge-db.js');
+    const handle = await getCachedBridgeReadOnly(tmpDir);
+    expect(handle).not.toBeNull();
+
+    const realPlatform = process.platform;
+    Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
+    try {
+      let invalidateResolved = false;
+      const invalidate = invalidateBridgeCache(tmpDir).then(() => {
+        invalidateResolved = true;
+      });
+
+      // With a lease held, the win32 drain must NOT resolve yet (POSIX would
+      // return immediately here — that's the platform difference under test).
+      await new Promise((r) => setTimeout(r, 20));
+      expect(invalidateResolved).toBe(false);
+
+      // Releasing the lease drains refs→0, closes the handle, and unblocks the
+      // waiting invalidate well within the bounded timeout.
+      await closeBridgeDb(handle!);
+      await invalidate;
+      expect(invalidateResolved).toBe(true);
+    } finally {
+      Object.defineProperty(process, 'platform', { value: realPlatform, configurable: true });
+    }
+  });
+});
+
 describe('retryRename', () => {
   afterEach(() => {
     vi.restoreAllMocks();
@@ -444,7 +815,9 @@ describe('retryRename', () => {
       throw err;
     });
 
-    await expect(retryRename('/src/a', '/dst/b', 5)).rejects.toMatchObject({ code: 'ENOENT' });
+    await expect(retryRename('/src/a', '/dst/b', 5)).rejects.toMatchObject({
+      code: 'ENOENT',
+    });
     expect(calls).toBe(1);
   });
 
@@ -457,7 +830,9 @@ describe('retryRename', () => {
       throw err;
     });
 
-    await expect(retryRename('/src/a', '/dst/b', 3)).rejects.toMatchObject({ code: 'EPERM' });
+    await expect(retryRename('/src/a', '/dst/b', 3)).rejects.toMatchObject({
+      code: 'EPERM',
+    });
     expect(calls).toBe(3);
   });
 
@@ -491,7 +866,11 @@ describe('findContractNode', () => {
 
   it('tier 1: returns contract matched by symbolUid', () => {
     const index = createContractLookupIndex();
-    const c = makeContract({ symbolUid: 'uid-42', repo: 'backend', role: 'provider' });
+    const c = makeContract({
+      symbolUid: 'uid-42',
+      repo: 'backend',
+      role: 'provider',
+    });
     indexContract(index, c, 'node-A');
     expect(findContractNode(index, 'backend', 'provider', 'uid-42', 'anywhere.ts', 'anyName')).toBe(
       'node-A',
@@ -509,7 +888,11 @@ describe('findContractNode', () => {
 
   it('tier 1 is role-scoped: provider uid match does not resolve consumer query', () => {
     const index = createContractLookupIndex();
-    const c = makeContract({ symbolUid: 'uid-42', role: 'provider', repo: 'backend' });
+    const c = makeContract({
+      symbolUid: 'uid-42',
+      role: 'provider',
+      repo: 'backend',
+    });
     indexContract(index, c, 'node-A');
     expect(
       findContractNode(index, 'backend', 'consumer', 'uid-42', 'src/routes.ts', 'getUsers'),
@@ -593,3 +976,9 @@ describe('findContractNode', () => {
     );
   });
 });
+
+// The B2 cross-process rename-clash probe moved to
+// test/integration/group/bridge-cache-reopen.test.ts, where a cross-process
+// seed lets it run on win32 (the in-process write→read reopen no longer gates
+// it). It empirically answers whether an open cached RO handle blocks an
+// external atomic rename of bridge.lbug on Windows.

@@ -65,7 +65,7 @@ describe('literal-collectors', () => {
         (f) =>
           f.field === 'pattern' &&
           f.receiverNodeType === 'is_pattern_expression' &&
-          f.file.endsWith('type-extractors/csharp.ts'),
+          f.file.replace(/\\/g, '/').endsWith('type-extractors/csharp.ts'),
       );
       expect(scoped).toBeDefined();
       // a childForFieldName NOT inside a single positive type-guard stays unscoped
@@ -79,6 +79,29 @@ describe('literal-collectors', () => {
       // resolution-layer files (where .type is a resolved-symbol kind) are excluded
       expect(nodeTypes.some((n) => n.file.endsWith('call-processor.ts'))).toBe(false);
       expect(nodeTypes.some((n) => n.file.endsWith('type-env.ts'))).toBe(false);
+    });
+  });
+
+  describe('fileLanguages — `*-harvest.ts` map to their grammar (U10)', () => {
+    const fl = __test.fileLanguages;
+    it('maps each <lang>-harvest.ts to the same grammar(s) as its <lang>.ts visitor', () => {
+      expect(fl('cfg/visitors/go-harvest.ts')).toEqual([SupportedLanguages.Go]);
+      expect(fl('cfg/visitors/csharp-harvest.ts')).toEqual([SupportedLanguages.CSharp]);
+      expect(fl('cfg/visitors/typescript-harvest.ts')).toEqual([SupportedLanguages.TypeScript]);
+      expect(fl('cfg/visitors/c-cpp-harvest.ts')).toEqual([
+        SupportedLanguages.C,
+        SupportedLanguages.CPlusPlus,
+      ]);
+      // a harvester pins exactly its visitor's grammar set, not the weak ALL_LANGS
+      expect(fl('cfg/visitors/go-harvest.ts')).toEqual(fl('cfg/visitors/go.ts'));
+    });
+    it('leaves the language-agnostic harvesters valid-if-any (ALL_LANGS)', () => {
+      const all = fl('cfg/visitors/call-site-harvest.ts');
+      const scopeTree = fl('cfg/visitors/scope-tree-harvest.ts');
+      // both name no grammar → fall through to the full gated set, which is far
+      // larger than any single-/dual-language harvester mapping
+      expect(all.length).toBeGreaterThan(2);
+      expect(scopeTree).toEqual(all);
     });
   });
 

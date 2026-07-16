@@ -18,9 +18,11 @@ import fs from 'fs/promises';
 import {
   AnalysisNotFinalizedError,
   assertAnalysisFinalized,
+  isRepoRegistered,
   registerRepo,
   saveMeta,
   getStoragePaths,
+  INDEX_METADATA_FILE,
   type RepoMeta,
 } from '../../src/storage/repo-manager.js';
 import { createTempDir } from '../helpers/test-db.js';
@@ -51,10 +53,10 @@ describe('assertAnalysisFinalized (#1169)', () => {
     await tmpRepo.cleanup();
   });
 
-  it('throws missing="meta" when .gitnexus/meta.json was never written (the #1169 symptom)', async () => {
+  it('throws missing="meta" when .gitnexus/gitnexus.json was never written (the #1169 symptom)', async () => {
     // Reproduce the exact disk shape from the user's repro: lbug.wal
-    // present, meta.json absent. analyze must report this as a hard
-    // failure, not silently return success.
+    // present, the metadata file absent. analyze must report this as a
+    // hard failure, not silently return success.
     const { storagePath, lbugPath } = getStoragePaths(tmpRepo.dbPath);
     await fs.mkdir(storagePath, { recursive: true });
     await fs.writeFile(`${lbugPath}.wal`, 'simulated uncommitted WAL data');
@@ -72,10 +74,11 @@ describe('assertAnalysisFinalized (#1169)', () => {
       expect(err.kind).toBe('AnalysisNotFinalizedError');
       expect(err.repoPath).toBe(path.resolve(tmpRepo.dbPath));
       expect(err.storagePath).toBe(storagePath);
-      // Diagnostic message names the missing artifact and the storage
+      // Diagnostic message names the missing artifact (the PRIMARY
+      // metadata filename the check actually probes) and the storage
       // path the user must inspect — required to clear DoD §2.8
       // (errors must be actionable).
-      expect(err.message).toContain('meta.json');
+      expect(err.message).toContain(INDEX_METADATA_FILE);
       expect(err.message).toContain(storagePath);
       expect(err.message).toContain('lbug.wal');
     }
@@ -127,5 +130,18 @@ describe('assertAnalysisFinalized (#1169)', () => {
 
     const variant = process.platform === 'win32' ? tmpRepo.dbPath.toUpperCase() : tmpRepo.dbPath; // POSIX is case-sensitive; assertion uses canonical form
     await expect(assertAnalysisFinalized(variant)).resolves.toBeUndefined();
+  });
+
+  // isRepoRegistered backs the analyze up-to-date fast-path gate (#2264): the
+  // fast path must NOT short-circuit a repo that is indexed-but-unregistered
+  // (e.g. a prior --name collision wrote meta.json then failed before
+  // registerRepo), otherwise --allow-duplicate-name could never heal it.
+  it('isRepoRegistered is false when the repo has no registry entry', async () => {
+    expect(await isRepoRegistered(tmpRepo.dbPath)).toBe(false);
+  });
+
+  it('isRepoRegistered is true once a matching entry is written', async () => {
+    await registerRepo(tmpRepo.dbPath, meta);
+    expect(await isRepoRegistered(tmpRepo.dbPath)).toBe(true);
   });
 });

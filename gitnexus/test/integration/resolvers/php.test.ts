@@ -1621,6 +1621,11 @@ describe('PHP cross-file binding propagation', () => {
       (e) => e.sourceFilePath.includes('Main') && e.targetFilePath.includes('UserFactory'),
     );
     expect(edge).toBeDefined();
+
+    const unrelatedEdge = imports.find(
+      (e) => e.sourceFilePath.includes('Main') && e.targetFilePath.endsWith('/Models/User.php'),
+    );
+    expect(unrelatedEdge).toBeUndefined();
   });
 
   it('resolves $u->save() in run() to User#save via cross-file return type propagation', () => {

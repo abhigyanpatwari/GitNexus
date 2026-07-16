@@ -5,19 +5,18 @@ import { fileURLToPath } from 'node:url';
 import { Command, Option } from 'commander';
 import * as ts from 'typescript';
 import { afterEach, describe, expect, it } from 'vitest';
+import { CLI_SPAWN_PREFIX } from '../helpers/cli-entry.js';
 import { localizeCliHelp } from '../../src/cli/help-i18n.js';
 import { setCliLanguage, type SupportedCliLanguage } from '../../src/cli/i18n/index.js';
 
 const testDir = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(testDir, '../..');
-const cliEntry = path.join(repoRoot, 'src/cli/index.ts');
-
 function runHelp(command: string, env: NodeJS.ProcessEnv = {}) {
   return runHelpArgs([command], env);
 }
 
 function runHelpArgs(args: string[], env: NodeJS.ProcessEnv = {}) {
-  return spawnSync(process.execPath, ['--import', 'tsx', cliEntry, ...args, '--help'], {
+  return spawnSync(process.execPath, [...CLI_SPAWN_PREFIX, ...args, '--help'], {
     cwd: repoRoot,
     encoding: 'utf8',
     env: { ...process.env, ...env },
@@ -49,6 +48,8 @@ const allHelpCommands = [
   ['cypher'],
   ['detect-changes'],
   ['eval-server'],
+  ['embeddings'],
+  ['embeddings', 'install'],
   ['group'],
   ['group', 'create'],
   ['group', 'add'],
@@ -130,7 +131,12 @@ describe('CLI help surface', () => {
     expect(result.stdout).toContain('-h, --help                               显示命令帮助');
     expect(result.stdout).toContain('命令：');
     expect(result.stdout).toContain('setup');
-    expect(result.stdout).toContain('一次性设置：为 Cursor、Claude Code、OpenCode、Codex 配置 MCP');
+    // Stable fragments rather than the full editor roster: the roster grows
+    // over time (see PR #2368), and the dynamic test below ("localizes every
+    // registered CLI command...") already fails on any untranslated
+    // description, so freezing the roster here only creates churn.
+    expect(result.stdout).toContain('一次性设置');
+    expect(result.stdout).toContain('配置 MCP');
     expect(result.stdout).toContain('detect-changes|detect_changes [options]');
     expect(result.stdout).toContain('将 git diff hunk 映射到已索引符号和受影响执行流程');
     expect(result.stdout).not.toContain('GitNexus local CLI and MCP server');
@@ -141,7 +147,7 @@ describe('CLI help surface', () => {
     const result = runHelp('query', { GITNEXUS_LANG: 'zh-CN' } as NodeJS.ProcessEnv);
 
     expect(result.status).toBe(0);
-    expect(result.stdout).toContain('用法： gitnexus query [options] <search_query>');
+    expect(result.stdout).toContain('用法： gitnexus query [options] [search_query]');
     expect(result.stdout).toContain('搜索知识图谱中与概念相关的执行流程');
     expect(result.stdout).toContain('-r, --repo <name>     目标仓库（仅有一个已索引仓库时可省略）');
     expect(result.stdout).toContain('-l, --limit <n>       最多返回的流程数（默认：5）');

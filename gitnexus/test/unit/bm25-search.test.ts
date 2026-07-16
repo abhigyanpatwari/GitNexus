@@ -1,5 +1,6 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { searchFTSFromLbug, type BM25SearchResult } from '../../src/core/search/bm25-index.js';
+import { FTS_INDEXES } from '../../src/core/search/fts-schema.js';
 
 vi.mock('../../src/core/lbug/lbug-adapter.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../src/core/lbug/lbug-adapter.js')>();
@@ -7,6 +8,7 @@ vi.mock('../../src/core/lbug/lbug-adapter.js', async (importOriginal) => {
     ...actual,
     queryFTS: vi.fn().mockResolvedValue([]),
     createFTSIndex: vi.fn().mockResolvedValue(undefined),
+    dropFTSIndex: vi.fn().mockResolvedValue(undefined),
   };
 });
 
@@ -26,44 +28,62 @@ describe('BM25 search', () => {
       vi.clearAllMocks();
     });
 
-    it('creates the configured indexes on the writable analysis path', async () => {
+    it('creates every configured index on the writable analysis path', async () => {
       const { createFTSIndex } = await import('../../src/core/lbug/lbug-adapter.js');
       const { createSearchFTSIndexes } = await import('../../src/core/search/fts-indexes.js');
 
       await createSearchFTSIndexes();
 
-      expect(vi.mocked(createFTSIndex).mock.calls).toEqual([
-        ['File', 'file_fts', ['name', 'content']],
-        ['Function', 'function_fts', ['name', 'content']],
-        ['Class', 'class_fts', ['name', 'content']],
-        ['Method', 'method_fts', ['name', 'content']],
-        ['Interface', 'interface_fts', ['name', 'content']],
-      ]);
+      expect(vi.mocked(createFTSIndex).mock.calls).toEqual(
+        FTS_INDEXES.map((i) => [i.table, i.indexName, [...i.properties], 'porter']),
+      );
     });
 
-    it('verifies all configured FTS indexes are queryable', async () => {
-      const executeQuery = vi.fn().mockResolvedValue([]);
+    it('returns no missing indexes when every configured index covers its columns', async () => {
+      // One SHOW_INDEXES call returns a catalog row per configured index, each
+      // covering exactly its expected properties.
+      const showIndexesRows = FTS_INDEXES.map((i) => ({
+        index_name: i.indexName,
+        property_names: [...i.properties],
+      }));
+      const executeQuery = vi.fn().mockResolvedValue(showIndexesRows);
       const { verifySearchFTSIndexes } = await import('../../src/core/search/fts-indexes.js');
 
       const missing = await verifySearchFTSIndexes(executeQuery);
 
       expect(missing).toEqual([]);
-      expect(executeQuery).toHaveBeenCalledTimes(5);
+      expect(executeQuery).toHaveBeenCalledTimes(1);
     });
 
-    it('reports missing indexes when an FTS probe fails', async () => {
-      const executeQuery = vi
-        .fn()
-        .mockResolvedValueOnce([])
-        .mockRejectedValueOnce(new Error('index does not exist'))
-        .mockResolvedValueOnce([])
-        .mockResolvedValueOnce([])
-        .mockResolvedValueOnce([]);
+    it('reports an index that exists but does not cover its configured columns', async () => {
+      // Model a pre-#2299 stale Function index: present, but name+content only,
+      // missing `description`. Every other index covers its columns.
+      const staleIndex = 'function_fts';
+      const showIndexesRows = FTS_INDEXES.map((i) => ({
+        index_name: i.indexName,
+        property_names: i.indexName === staleIndex ? ['name', 'content'] : [...i.properties],
+      }));
+      const executeQuery = vi.fn().mockResolvedValue(showIndexesRows);
       const { verifySearchFTSIndexes } = await import('../../src/core/search/fts-indexes.js');
 
       const missing = await verifySearchFTSIndexes(executeQuery);
 
       expect(missing).toEqual(['Function.function_fts']);
+    });
+
+    it('reports an index that is absent from the catalog entirely', async () => {
+      // Every configured index present and covering, except const_fts is missing.
+      const absentIndex = 'const_fts';
+      const showIndexesRows = FTS_INDEXES.filter((i) => i.indexName !== absentIndex).map((i) => ({
+        index_name: i.indexName,
+        property_names: [...i.properties],
+      }));
+      const executeQuery = vi.fn().mockResolvedValue(showIndexesRows);
+      const { verifySearchFTSIndexes } = await import('../../src/core/search/fts-indexes.js');
+
+      const missing = await verifySearchFTSIndexes(executeQuery);
+
+      expect(missing).toEqual(['Const.const_fts']);
     });
   });
 
@@ -289,13 +309,162 @@ describe('BM25 search', () => {
       const queryCalls = mockExecuteParameterized.mock.calls.filter((c) =>
         String(c[1]).includes('QUERY_FTS_INDEX'),
       );
-      expect(queryCalls.map((c) => String(c[1]).match(/QUERY_FTS_INDEX\('([^']+)'/)?.[1])).toEqual([
-        'File',
-        'Function',
-        'Class',
-        'Method',
-        'Interface',
-      ]);
+      expect(queryCalls.map((c) => String(c[1]).match(/QUERY_FTS_INDEX\('([^']+)'/)?.[1])).toEqual(
+        FTS_INDEXES.map((i) => i.table),
+      );
+    });
+  });
+
+  describe('GITNEXUS_FTS_CJK_SEGMENTATION query-side transform (#2331)', () => {
+    const CJK_REPO = 'test-repo-cjk-query';
+
+    beforeEach(() => {
+      vi.clearAllMocks();
+    });
+
+    afterEach(() => {
+      vi.unstubAllEnvs();
+    });
+
+    it('leaves the query unchanged by default (mode: none)', async () => {
+      const { queryFTS } = await import('../../src/core/lbug/lbug-adapter.js');
+      vi.mocked(queryFTS).mockResolvedValue([]);
+
+      await searchFTSFromLbug('审批流程');
+
+      expect(vi.mocked(queryFTS).mock.calls.length).toBeGreaterThan(0);
+      for (const call of vi.mocked(queryFTS).mock.calls) {
+        expect(call[2]).toBe('审批流程');
+      }
+    });
+
+    it('bigram-segments the query before it reaches queryFTS when enabled', async () => {
+      vi.stubEnv('GITNEXUS_FTS_CJK_SEGMENTATION', 'bigram');
+      const { queryFTS } = await import('../../src/core/lbug/lbug-adapter.js');
+      vi.mocked(queryFTS).mockResolvedValue([]);
+
+      await searchFTSFromLbug('审批流程');
+
+      expect(vi.mocked(queryFTS).mock.calls.length).toBeGreaterThan(0);
+      for (const call of vi.mocked(queryFTS).mock.calls) {
+        expect(call[2]).toBe('审批 批流 流程');
+      }
+    });
+
+    it('bigram-segments the query in pool mode too, still bound via $query', async () => {
+      vi.stubEnv('GITNEXUS_FTS_CJK_SEGMENTATION', 'bigram');
+      mockExecuteParameterized.mockResolvedValue([]);
+
+      await searchFTSFromLbug('审批流程', 5, CJK_REPO);
+
+      expect(mockExecuteParameterized).toHaveBeenCalled();
+      for (const call of mockExecuteParameterized.mock.calls) {
+        expect(String(call[1])).toContain('$query');
+        expect(String(call[1])).not.toContain('审批流程');
+        expect(call[2]).toEqual({ query: '审批 批流 流程' });
+      }
+    });
+
+    it('skips segmentation for a pathologically long query, searching it unchanged', async () => {
+      vi.stubEnv('GITNEXUS_FTS_CJK_SEGMENTATION', 'bigram');
+      const { queryFTS } = await import('../../src/core/lbug/lbug-adapter.js');
+      vi.mocked(queryFTS).mockResolvedValue([]);
+
+      const longQuery = '审批流程'.repeat(1000); // well past the 2000-char cap
+      await searchFTSFromLbug(longQuery);
+
+      expect(vi.mocked(queryFTS).mock.calls.length).toBeGreaterThan(0);
+      for (const call of vi.mocked(queryFTS).mock.calls) {
+        expect(call[2]).toBe(longQuery);
+      }
+    });
+
+    it('segments a query at exactly the 2000-character cap', async () => {
+      vi.stubEnv('GITNEXUS_FTS_CJK_SEGMENTATION', 'bigram');
+      const { queryFTS } = await import('../../src/core/lbug/lbug-adapter.js');
+      vi.mocked(queryFTS).mockResolvedValue([]);
+
+      const atCapQuery = '审'.repeat(2000);
+      await searchFTSFromLbug(atCapQuery);
+
+      expect(vi.mocked(queryFTS).mock.calls.length).toBeGreaterThan(0);
+      for (const call of vi.mocked(queryFTS).mock.calls) {
+        expect(call[2]).not.toBe(atCapQuery); // segmented, not passed through raw
+        expect(call[2]).toContain(' ');
+      }
+    });
+
+    it('does not segment a query at exactly 2001 characters, one past the cap', async () => {
+      vi.stubEnv('GITNEXUS_FTS_CJK_SEGMENTATION', 'bigram');
+      const { queryFTS } = await import('../../src/core/lbug/lbug-adapter.js');
+      vi.mocked(queryFTS).mockResolvedValue([]);
+
+      const overCapQuery = '审'.repeat(2001);
+      await searchFTSFromLbug(overCapQuery);
+
+      expect(vi.mocked(queryFTS).mock.calls.length).toBeGreaterThan(0);
+      for (const call of vi.mocked(queryFTS).mock.calls) {
+        expect(call[2]).toBe(overCapQuery); // passed through raw, unsegmented
+      }
+    });
+  });
+
+  // #2339: the query path previously never called normalizeFtsText (only
+  // applyCjkSegmentationIfEnabled), unlike the write path which always
+  // composes both — a literal tab/newline in a query wouldn't match
+  // whitespace-normalized indexed text.
+  describe('normalizeFtsText query-side composition (#2339)', () => {
+    beforeEach(() => {
+      vi.clearAllMocks();
+    });
+
+    afterEach(() => {
+      vi.unstubAllEnvs();
+    });
+
+    it('collapses a literal tab in the query to a space (mode: none)', async () => {
+      const { queryFTS } = await import('../../src/core/lbug/lbug-adapter.js');
+      vi.mocked(queryFTS).mockResolvedValue([]);
+
+      await searchFTSFromLbug('审批\t流程');
+
+      expect(vi.mocked(queryFTS).mock.calls.length).toBeGreaterThan(0);
+      for (const call of vi.mocked(queryFTS).mock.calls) {
+        expect(call[2]).toBe('审批 流程');
+      }
+    });
+
+    it('composes segmentation THEN normalization, matching the write path order (mode: bigram)', async () => {
+      vi.stubEnv('GITNEXUS_FTS_CJK_SEGMENTATION', 'bigram');
+      const { queryFTS } = await import('../../src/core/lbug/lbug-adapter.js');
+      vi.mocked(queryFTS).mockResolvedValue([]);
+
+      await searchFTSFromLbug('审批流程\t自动');
+
+      expect(vi.mocked(queryFTS).mock.calls.length).toBeGreaterThan(0);
+      for (const call of vi.mocked(queryFTS).mock.calls) {
+        // "审批流程" bigram-segments to "审批 批流 流程"; the tab (untouched
+        // by segmentCjkSpans, since neither run's boundary needs an extra
+        // space next to an already-whitespace neighbor) is then collapsed
+        // to a space by normalizeFtsText, keeping "自动" a separate token.
+        expect(call[2]).toBe('审批 批流 流程 自动');
+      }
+    });
+
+    it('applies normalization regardless of the 2000-char segmentation cap', async () => {
+      vi.stubEnv('GITNEXUS_FTS_CJK_SEGMENTATION', 'bigram');
+      const { queryFTS } = await import('../../src/core/lbug/lbug-adapter.js');
+      vi.mocked(queryFTS).mockResolvedValue([]);
+
+      const longQueryWithTab = '审'.repeat(2001) + '\t' + '批';
+      await searchFTSFromLbug(longQueryWithTab);
+
+      expect(vi.mocked(queryFTS).mock.calls.length).toBeGreaterThan(0);
+      for (const call of vi.mocked(queryFTS).mock.calls) {
+        // Segmentation is skipped (over the cap), but normalizeFtsText still
+        // runs unconditionally — no per-character cost concern there.
+        expect(call[2]).toBe('审'.repeat(2001) + ' ' + '批');
+      }
     });
   });
 });

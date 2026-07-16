@@ -2900,3 +2900,33 @@ describe('F52 — Kotlin companion-object properties', () => {
     expect(getNodesByLabel(result, 'Property')).not.toContain('create');
   });
 });
+
+// ---------------------------------------------------------------------------
+// Functional (SAM) interfaces: `fun interface` (vendored grammar bump, fwcd #169)
+// ---------------------------------------------------------------------------
+
+describe('Kotlin functional (fun) interfaces', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'kotlin-fun-interface'), () => {});
+  }, 60000);
+
+  // Pre-fix, the 0.3.8 grammar parsed `fun interface` as an ERROR node and
+  // dropped the declaration, so Clicker/Mapper were never extracted.
+  it('extracts `fun interface` declarations as Interface nodes alongside a plain one', () => {
+    expect(getNodesByLabel(result, 'Interface')).toEqual(['Clicker', 'Mapper', 'Plain']);
+    expect(getNodesByLabel(result, 'Class')).toEqual(['Button']);
+  });
+
+  it('extracts the abstract methods of fun interfaces', () => {
+    const methods = getNodesByLabel(result, 'Method');
+    expect(methods).toContain('onClick'); // Clicker (fun interface)
+    expect(methods).toContain('map'); // Mapper<T> (generic fun interface)
+  });
+
+  it('still resolves heritage on a class implementing a plain interface', () => {
+    const implements_ = getRelationships(result, 'IMPLEMENTS');
+    expect(edgeSet(implements_)).toContain('Button → Plain');
+  });
+});

@@ -6,7 +6,12 @@
  */
 
 import { queryFTS } from '../lbug/lbug-adapter.js';
+import { normalizeFtsText } from '../lbug/csv-generator.js';
 import { FTS_INDEXES } from './fts-schema.js';
+import {
+  applyCjkSegmentationIfEnabled,
+  MAX_CJK_SEGMENTATION_QUERY_LENGTH,
+} from './cjk-segmentation.js';
 
 export interface BM25SearchResult {
   filePath: string;
@@ -71,6 +76,23 @@ export const searchFTSFromLbug = async (
   limit: number = 20,
   repoId?: string,
 ): Promise<FTSSearchResponse> => {
+  // Applied once, up front, so every downstream branch searches with the
+  // same text the index was built from (#2331/#2339) — index-time and
+  // query-time text transforms must never diverge, since QUERY_FTS_INDEX
+  // cannot derive a tokenizer from the index it queries. Composed in the
+  // SAME order as the write path (csv-generator.ts's formatFtsDescription /
+  // extractContent: normalizeFtsText(applyCjkSegmentationIfEnabled(text))):
+  // CJK segmentation is no-op when disabled (default); normalizeFtsText
+  // (collapsing \r\n\t to a space) applies unconditionally — it has no
+  // per-character cost concern, unlike CJK segmentation, so it's not gated
+  // by the length cap. Segmentation itself is skipped for pathologically
+  // long queries (see MAX_CJK_SEGMENTATION_QUERY_LENGTH) — the query still
+  // searches correctly, just without CJK sub-phrase segmentation.
+  const searchQuery = normalizeFtsText(
+    query.length <= MAX_CJK_SEGMENTATION_QUERY_LENGTH
+      ? applyCjkSegmentationIfEnabled(query)
+      : query,
+  );
   const resultsByIndex: any[][] = [];
   let queriesSucceeded = 0;
 
@@ -84,7 +106,7 @@ export const searchFTSFromLbug = async (
       executeParameterized(repoId, cypher, params);
 
     for (const { table, indexName } of FTS_INDEXES) {
-      const result = await queryFTSViaExecutor(executor, table, indexName, query, limit);
+      const result = await queryFTSViaExecutor(executor, table, indexName, searchQuery, limit);
       if (result !== null) {
         queriesSucceeded++;
         resultsByIndex.push(result);
@@ -94,7 +116,7 @@ export const searchFTSFromLbug = async (
     // Use core lbug adapter (CLI / pipeline context) — also sequential for safety.
     for (const { table, indexName } of FTS_INDEXES) {
       try {
-        const result = await queryFTS(table, indexName, query, limit, false);
+        const result = await queryFTS(table, indexName, searchQuery, limit, false);
         queriesSucceeded++;
         resultsByIndex.push(result);
       } catch {

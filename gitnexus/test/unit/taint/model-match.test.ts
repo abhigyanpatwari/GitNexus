@@ -13,6 +13,7 @@ import { cfgOf, importsFor } from '../../helpers/ts-cfg-harness.js';
 import { hasTaintSafeSites } from '../../../src/core/ingestion/taint/site-safety.js';
 import type { SourceSinkSanitizerSpec } from '../../../src/core/ingestion/taint/source-sink-config.js';
 import {
+  BUILTIN_TAINT_MODELS,
   TS_JS_TAINT_MODEL,
   computeTaintModelVersion,
   registerBuiltinTaintModels,
@@ -24,7 +25,7 @@ import {
   type FunctionSiteMatches,
   type MatchedSanitizerCall,
   type MatchedSinkCall,
-  type MatchedSourceRead,
+  type MatchedSource,
 } from '../../../src/core/ingestion/taint/match.js';
 import {
   getSourceSinkConfig,
@@ -46,7 +47,7 @@ function matchesOf(
 
 const allSinks = (m: FunctionSiteMatches): MatchedSinkCall[] =>
   m.statements.flatMap((s) => [...s.sinks]);
-const allSources = (m: FunctionSiteMatches): MatchedSourceRead[] =>
+const allSources = (m: FunctionSiteMatches): MatchedSource[] =>
   m.statements.flatMap((s) => [...s.sources]);
 const allSanitizers = (m: FunctionSiteMatches): MatchedSanitizerCall[] =>
   m.statements.flatMap((s) => [...s.sanitizers]);
@@ -77,10 +78,41 @@ function f(c) { cp.exec(c); }`);
     expect(allSinks(m).map((s) => s.entry.name)).toEqual(['exec']);
   });
 
+  it('named import from a same-tail module is not canonicalized as a namespace handle', () => {
+    const spec: SourceSinkSanitizerSpec = {
+      sources: [],
+      sinks: [{ name: 'readString', kind: 'path-traversal', args: [0], module: 'pkg.Files' }],
+      sanitizers: [],
+    };
+    const m = matchesOf(
+      `import { Files } from 'pkg.Files';
+function f(p) { Files.readString(p); }`,
+      0,
+      spec,
+    );
+    expect(allSinks(m)).toHaveLength(0);
+  });
+
   it('node: scheme prefix is normalized — `from "node:child_process"` matches too', () => {
     const m = matchesOf(`import { execSync } from 'node:child_process';
 function f(c) { execSync(c); }`);
     expect(allSinks(m).map((s) => s.entry.name)).toEqual(['execSync']);
+  });
+
+  it('argv-form child_process sinks match command injection on arg 0', () => {
+    const m = matchesOf(`import { execFile, execFileSync, spawnSync } from 'node:child_process';
+function f(cmd, arg) {
+  execFile(cmd, [arg]);
+  execFileSync(cmd, [arg]);
+  spawnSync(cmd, [arg]);
+}`);
+    expect(allSinks(m).map((s) => s.entry.name)).toEqual(['execFile', 'execFileSync', 'spawnSync']);
+    expect(allSinks(m).map((s) => [...s.argPositions])).toEqual([
+      [0, 1],
+      [0, 1],
+      [0, 1],
+    ]);
+    expect(allSinks(m).every((s) => s.entry.kind === 'command-injection')).toBe(true);
   });
 
   it('an in-FUNCTION local `exec` shadows the import — no match', () => {
@@ -209,9 +241,34 @@ describe('receiver-conventional sinks', () => {
     expect(allSinks(m).every((s) => s.entry.kind === 'xss')).toBe(true);
   });
 
+  it('res.render matches template and data args; out.render does not', () => {
+    const m = matchesOf(`function f(res, out, template, data) {
+      res.render(template, data);
+      out.render(template, data);
+    }`);
+    const sinks = allSinks(m);
+    expect(sinks.map((s) => s.entry.name)).toEqual(['render']);
+    expect(sinks.map((s) => [...s.argPositions])).toEqual([[0, 1]]);
+    expect(sinks[0].entry.kind).toBe('xss');
+  });
+
   it('.query/.execute match sql-injection on ANY receiver', () => {
     const m = matchesOf(`function f(db, pool, x) { db.query(x); pool.execute(x); }`);
     expect(allSinks(m).map((s) => s.entry.kind)).toEqual(['sql-injection', 'sql-injection']);
+  });
+
+  it('modern DB method sinks match only conventional DB receivers', () => {
+    const m = matchesOf(`function f(db, stmt, knex, map, task, x) {
+      db.run(x);
+      db.all(x);
+      stmt.get(x);
+      knex.raw(x);
+      db.values(x);
+      map.get(x);
+      task.run(x);
+    }`);
+    expect(allSinks(m).map((s) => s.entry.name)).toEqual(['run', 'all', 'get', 'raw', 'values']);
+    expect(allSinks(m).every((s) => s.entry.kind === 'sql-injection')).toBe(true);
   });
 });
 
@@ -272,18 +329,25 @@ function f(x) { exec(escape(x)); }`);
 describe('registry + model identity', () => {
   beforeEach(() => clearSourceSinkRegistry());
 
-  it('registerBuiltinTaintModels registers typescript AND javascript (idempotent); others stay undefined', () => {
+  it('registerBuiltinTaintModels registers TS, JS, and Python (idempotent); others stay undefined', () => {
     registerBuiltinTaintModels();
     registerBuiltinTaintModels(); // idempotent — last-write-wins on the same ids
-    expect(registeredTaintLanguages().sort()).toEqual(['javascript', 'typescript']);
+    expect(registeredTaintLanguages().sort()).toEqual([
+      'java',
+      'javascript',
+      'python',
+      'typescript',
+    ]);
+    expect(getSourceSinkConfig('java')).toBe(BUILTIN_TAINT_MODELS.java);
     expect(getSourceSinkConfig('typescript')).toBe(TS_JS_TAINT_MODEL);
     expect(getSourceSinkConfig('javascript')).toBe(TS_JS_TAINT_MODEL);
-    expect(getSourceSinkConfig('python')).toBeUndefined();
+    expect(getSourceSinkConfig('python')).toBe(BUILTIN_TAINT_MODELS.python);
+    expect(getSourceSinkConfig('ruby')).toBeUndefined();
   });
 
-  it('taintModelVersion is the digest of the full built-in model', () => {
-    expect(taintModelVersion).toBe(computeTaintModelVersion(TS_JS_TAINT_MODEL));
+  it('taintModelVersion covers the full built-in model registry', () => {
     expect(taintModelVersion).toMatch(/^[0-9a-f]{12}$/);
+    expect(taintModelVersion).not.toBe(computeTaintModelVersion(TS_JS_TAINT_MODEL));
   });
 
   it('adding an entry changes the version', () => {
@@ -291,7 +355,7 @@ describe('registry + model identity', () => {
       ...TS_JS_TAINT_MODEL,
       sinks: [...TS_JS_TAINT_MODEL.sinks, { name: 'load', kind: 'code-injection', module: 'vm' }],
     };
-    expect(computeTaintModelVersion(added)).not.toBe(taintModelVersion);
+    expect(computeTaintModelVersion(added)).not.toBe(computeTaintModelVersion(TS_JS_TAINT_MODEL));
   });
 
   it('changing only a kind label changes the version', () => {
@@ -301,7 +365,9 @@ describe('registry + model identity', () => {
         s.name === 'exec' ? { ...s, kind: 'xss' as const } : s,
       ),
     };
-    expect(computeTaintModelVersion(relabeled)).not.toBe(taintModelVersion);
+    expect(computeTaintModelVersion(relabeled)).not.toBe(
+      computeTaintModelVersion(TS_JS_TAINT_MODEL),
+    );
   });
 
   it('the version is content-derived: key order does not matter, entry order does', () => {
@@ -310,6 +376,6 @@ describe('registry + model identity', () => {
       sinks: TS_JS_TAINT_MODEL.sinks,
       sources: TS_JS_TAINT_MODEL.sources,
     };
-    expect(computeTaintModelVersion(reordered)).toBe(taintModelVersion);
+    expect(computeTaintModelVersion(reordered)).toBe(computeTaintModelVersion(TS_JS_TAINT_MODEL));
   });
 });

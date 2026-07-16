@@ -22,7 +22,12 @@ import {
   repoInSubgroup,
 } from './group-path-utils.js';
 import { getGroupDir } from './storage.js';
-import { closeBridgeDb, openBridgeDbReadOnly, queryBridge, readBridgeMeta } from './bridge-db.js';
+import {
+  closeBridgeDb,
+  getCachedBridgeReadOnly,
+  queryBridge,
+  readBridgeMeta,
+} from './bridge-db.js';
 import { BRIDGE_SCHEMA_VERSION } from './bridge-schema.js';
 
 // High limit for the local phase of group impact so collectImpactSymbolUids
@@ -63,7 +68,7 @@ RETURN provider.repo AS neighborRepo,
        provider.type AS contractType
 `;
 
-type BridgeNeighborRow = {
+export type BridgeNeighborRow = {
   neighborRepo: string;
   neighborUid: string;
   neighborFilePath?: string;
@@ -339,7 +344,11 @@ function extractProcessNames(impact: unknown): string[] {
   return o.affected_processes.map((p) => String(p.name ?? '')).filter(Boolean);
 }
 
-function mergeRisk(localRisk: string, cross: CrossRepoImpact[]): string {
+// Exported so the U4 PDG-result interchangeability contract (KTD8) can assert
+// permanently that a PDG `risk:'UNKNOWN'` never coalesces to a confident `LOW`.
+// No behavior change — `'UNKNOWN'` was already handled correctly at the
+// `(localRisk === 'LOW' || localRisk === 'UNKNOWN')` branch below.
+export function mergeRisk(localRisk: string, cross: CrossRepoImpact[]): string {
   const highConf = cross.some((c) => c.contract.confidence >= 0.85);
   if (localRisk === 'CRITICAL') return 'CRITICAL';
   if (cross.length >= 3) return 'CRITICAL';
@@ -348,7 +357,7 @@ function mergeRisk(localRisk: string, cross: CrossRepoImpact[]): string {
   return localRisk;
 }
 
-async function ensureBridgeReady(
+export async function ensureBridgeReady(
   groupDir: string,
 ): Promise<{ handle: BridgeHandle } | { error: string }> {
   const meta = await readBridgeMeta(groupDir);
@@ -365,7 +374,10 @@ async function ensureBridgeReady(
       error: `No bridge.lbug in this group directory. Run gitnexus group sync (schema ${BRIDGE_SCHEMA_VERSION}).`,
     };
   }
-  const handle = await openBridgeDbReadOnly(groupDir);
+  // Use the cached read-only handle if available — avoids reopening the same
+  // bridge.lbug in a long-lived MCP server, which fails on Windows because
+  // the OS handle isn't fully released before the next open races in.
+  const handle = await getCachedBridgeReadOnly(groupDir);
   if (!handle) {
     return {
       error: `Could not open bridge.lbug read-only (schema ${BRIDGE_SCHEMA_VERSION}). Run gitnexus group sync.`,
@@ -388,6 +400,39 @@ function rowToNeighbor(r: Record<string, unknown>): BridgeNeighborRow | null {
     contractId: String(r.contractId ?? r[5] ?? ''),
     contractType: String(r.contractType ?? r[6] ?? 'custom'),
   };
+}
+
+/**
+ * Resolve cross-repo neighbors over `ContractLink` for a set of local symbol
+ * UIDs, in a single direction, sorted by descending confidence.
+ *
+ * This is the one shared consumer↔provider bridge join. `runGroupImpact`'s
+ * Phase-2 fan-out uses it directly; the cross-repo trace path (`cross-trace.ts`)
+ * reuses the same `queryBridge` + row-normalization primitives but issues a
+ * distinct *pair* query, because a trace must keep BOTH endpoints of a crossing
+ * (this neighbor join intentionally returns only the far side, which is lossy
+ * for stitching a path). Keeping this helper as the single uid-filtered join
+ * means impact never forks its own copy of the neighbor Cypher.
+ *
+ * Returns `[]` for an empty `uids` set without touching the DB.
+ */
+export async function resolveBridgeNeighbors(
+  handle: BridgeHandle,
+  opts: { localRepo: string; uids: string[]; direction: 'upstream' | 'downstream' },
+): Promise<BridgeNeighborRow[]> {
+  if (opts.uids.length === 0) return [];
+  const cypher = opts.direction === 'upstream' ? CY_NEIGHBORS_UPSTREAM : CY_NEIGHBORS_DOWNSTREAM;
+  const rows = await queryBridge<Record<string, unknown>>(handle, cypher, {
+    localRepo: opts.localRepo,
+    uids: opts.uids,
+  });
+  const neighbors: BridgeNeighborRow[] = [];
+  for (const raw of rows) {
+    const n = rowToNeighbor(raw);
+    if (n) neighbors.push(n);
+  }
+  neighbors.sort((a, b) => b.confidence - a.confidence);
+  return neighbors;
 }
 
 export async function runGroupImpact(
@@ -533,18 +578,11 @@ export async function runGroupImpact(
   const truncatedRepos: string[] = [];
 
   try {
-    const cypher = direction === 'upstream' ? CY_NEIGHBORS_UPSTREAM : CY_NEIGHBORS_DOWNSTREAM;
-    const rows = await queryBridge<Record<string, unknown>>(handle, cypher, {
+    const neighbors = await resolveBridgeNeighbors(handle, {
       localRepo: repoPath,
       uids,
+      direction,
     });
-
-    const neighbors: BridgeNeighborRow[] = [];
-    for (const raw of rows) {
-      const n = rowToNeighbor(raw);
-      if (n) neighbors.push(n);
-    }
-    neighbors.sort((a, b) => b.confidence - a.confidence);
 
     const seen = new Set<string>();
 

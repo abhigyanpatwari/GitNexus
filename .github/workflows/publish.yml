@@ -162,7 +162,7 @@ jobs:
       should_run: ${{ steps.decide.outputs.should_run }}
       head_sha: ${{ steps.decide.outputs.head_sha }}
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           fetch-depth: 0
           fetch-tags: true
@@ -332,7 +332,7 @@ jobs:
       # on the RC path.
       - name: Checkout (RC)
         if: needs.route.outputs.mode == 'rc'
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           fetch-depth: 0
           fetch-tags: true
@@ -349,7 +349,7 @@ jobs:
 
       - name: Checkout (stable)
         if: needs.route.outputs.mode == 'stable'
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         # No `token:` — actions/checkout uses GITHUB_TOKEN by default. Stable
         # path performs no git pushes; the default scope is sufficient.
         with:
@@ -423,6 +423,10 @@ jobs:
             echo "::error::Tag version (v$TAG_VERSION) does not match package.json version ($PKG_VERSION)"
             exit 1
           fi
+          # Stable releases carry their version bump on main via the release
+          # PR, so the manifest surfaces must already be in sync — refuse to
+          # publish a stable whose manifests drifted (#2445).
+          node scripts/sync-plugin-manifests.mjs --check
           echo "Version verified: $PKG_VERSION"
 
       # ── RC-only: compute the next rc version against the live registry ──
@@ -584,6 +588,17 @@ jobs:
           npm version "${{ steps.rc-version.outputs.rc_version }}" \
             --no-git-tag-version --allow-same-version
 
+      # ── Verify the plugin manifest surfaces synced (#2445) ───────────────
+      # The npm `version` lifecycle script in gitnexus/package.json syncs all
+      # four manifest surfaces whenever `npm version` runs (the step above,
+      # and a maintainer's laptop alike). This step only verifies fail-closed
+      # so a future removal of that wiring cannot ship a drifted RC again.
+      - name: Verify plugin manifests (rc)
+        if: needs.route.outputs.mode == 'rc'
+        shell: bash
+        working-directory: gitnexus
+        run: node scripts/sync-plugin-manifests.mjs --check
+
       - name: Build gitnexus
         run: npm run build
         working-directory: gitnexus
@@ -669,6 +684,12 @@ jobs:
           # pristine, but the v-tag's tree matches the published package
           # exactly (release-integrity).
           git add package.json package-lock.json 2>/dev/null || git add package.json
+          # The synced manifest surfaces (#2445) belong in the same detached
+          # release commit so the tag's tree passes its own version contract.
+          git add ../gitnexus-claude-plugin/.claude-plugin/plugin.json \
+            ../.claude-plugin/marketplace.json \
+            ../gitnexus-claude-plugin/.codex-plugin/plugin.json \
+            ../.agents/plugins/marketplace.json
           git commit -m "release: ${VTAG}" --allow-empty
           RELEASE_SHA="$(git rev-parse HEAD)"
           echo "Detached release commit: $RELEASE_SHA"
@@ -807,7 +828,7 @@ jobs:
           fi
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@b4309332981a82ec1c5618f44dd2e27cc8bfbfda # v2
+        uses: softprops/action-gh-release@718ea10b132b3b2eba29c1007bb80653f286566b # v2
         with:
           tag_name: ${{ steps.vtag-gate.outputs.vtag }}
           name: >-

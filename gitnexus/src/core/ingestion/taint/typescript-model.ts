@@ -1,8 +1,8 @@
 /**
  * Built-in TS/JS taint model (#2083 M3 U2, plan KTD7).
  *
- * The canonical Express/Node source/sink/sanitizer set, registered for the
- * `typescript` and `javascript` language ids via the EXPLICIT
+ * The canonical Express/Node source/sink/sanitizer set plus the Java and
+ * Python models, registered for their language ids via the EXPLICIT
  * {@link registerBuiltinTaintModels} seam — deliberately not an import
  * side-effect, so the U4 emit path controls WHEN registration happens (call
  * it once before the pdg window runs; it is idempotent — the registry is
@@ -18,6 +18,8 @@
 import { createHash } from 'node:crypto';
 import { SupportedLanguages } from 'gitnexus-shared';
 import type { SourceSinkSanitizerSpec } from './source-sink-config.js';
+import { JAVA_TAINT_MODEL } from './java-model.js';
+import { PYTHON_TAINT_MODEL } from './python-model.js';
 import { registerSourceSinkConfig } from './source-sink-registry.js';
 
 /**
@@ -36,10 +38,14 @@ export const TS_JS_TAINT_MODEL: SourceSinkSanitizerSpec = {
     },
   ],
   sinks: [
-    // Command execution — the command string is argument 0.
+    // Command execution — shell strings are arg 0; argv-form APIs also treat
+    // the argv array at arg 1 as command/option injection surface.
     { name: 'exec', kind: 'command-injection', args: [0], module: 'child_process' },
     { name: 'execSync', kind: 'command-injection', args: [0], module: 'child_process' },
-    { name: 'spawn', kind: 'command-injection', args: [0], module: 'child_process' },
+    { name: 'spawn', kind: 'command-injection', args: [0, 1], module: 'child_process' },
+    { name: 'spawnSync', kind: 'command-injection', args: [0, 1], module: 'child_process' },
+    { name: 'execFile', kind: 'command-injection', args: [0, 1], module: 'child_process' },
+    { name: 'execFileSync', kind: 'command-injection', args: [0, 1], module: 'child_process' },
     // Code evaluation. `eval` takes code at 0; `new Function(...)` treats
     // EVERY argument as source text (params + body), so `args` is omitted
     // (= all positions) rather than pinned to 0.
@@ -54,9 +60,37 @@ export const TS_JS_TAINT_MODEL: SourceSinkSanitizerSpec = {
     // (mysql2/pg/knex handles go by many names; receiver-conventional).
     { name: 'query', kind: 'sql-injection', args: [0], anyReceiver: true },
     { name: 'execute', kind: 'sql-injection', args: [0], anyReceiver: true },
+    // Modern DB libraries expose shorter method names with high collision
+    // rates (`map.get`, `task.run`, ...), so keep these receiver-conventional.
+    {
+      name: 'run',
+      kind: 'sql-injection',
+      args: [0],
+      receivers: ['db', 'database', 'conn', 'client', 'pool', 'stmt', 'statement', 'prepared'],
+    },
+    {
+      name: 'all',
+      kind: 'sql-injection',
+      args: [0],
+      receivers: ['db', 'database', 'conn', 'client', 'pool', 'stmt', 'statement', 'prepared'],
+    },
+    {
+      name: 'get',
+      kind: 'sql-injection',
+      args: [0],
+      receivers: ['db', 'database', 'conn', 'client', 'pool', 'stmt', 'statement', 'prepared'],
+    },
+    {
+      name: 'values',
+      kind: 'sql-injection',
+      args: [0],
+      receivers: ['db', 'database', 'conn', 'client', 'pool'],
+    },
+    { name: 'raw', kind: 'sql-injection', args: [0], receivers: ['db', 'knex', 'sequelize'] },
     // Reflected XSS — Express response writes, conventional receiver `res`.
     { name: 'send', kind: 'xss', args: [0], receivers: ['res'] },
     { name: 'write', kind: 'xss', args: [0], receivers: ['res'] },
+    { name: 'render', kind: 'xss', args: [0, 1], receivers: ['res'] },
   ],
   sanitizers: [
     // URL-encoding: neutralizes markup injection AND path separators
@@ -78,7 +112,11 @@ export const TS_JS_TAINT_MODEL: SourceSinkSanitizerSpec = {
  * array order is semantic (entry identity) and intentionally preserved.
  */
 export function computeTaintModelVersion(spec: SourceSinkSanitizerSpec): string {
-  return createHash('sha256').update(canonicalJson(spec)).digest('hex').slice(0, 12);
+  return computeModelDigest(spec);
+}
+
+function computeModelDigest(value: unknown): string {
+  return createHash('sha256').update(canonicalJson(value)).digest('hex').slice(0, 12);
 }
 
 function canonicalJson(value: unknown): string {
@@ -93,16 +131,28 @@ function canonicalJson(value: unknown): string {
   return JSON.stringify(value);
 }
 
-/** Version stamp of the built-in TS/JS model (joins the RepoMeta pdg key in U5). */
-export const taintModelVersion: string = computeTaintModelVersion(TS_JS_TAINT_MODEL);
+export const BUILTIN_TAINT_MODELS = {
+  [SupportedLanguages.Java]: JAVA_TAINT_MODEL,
+  [SupportedLanguages.JavaScript]: TS_JS_TAINT_MODEL,
+  [SupportedLanguages.Python]: PYTHON_TAINT_MODEL,
+  [SupportedLanguages.TypeScript]: TS_JS_TAINT_MODEL,
+} as const satisfies Record<string, SourceSinkSanitizerSpec>;
 
 /**
- * Register the built-in model for TypeScript and JavaScript. Explicit init
- * seam for the U4 emit path (call before the pdg window consumes the
- * registry); idempotent. Vue and other TS-adjacent language ids are
- * deliberately NOT registered — the M3 scope is TS/JS only.
+ * Version stamp of every built-in model (joins the RepoMeta pdg key in U5).
+ * Adding a language model must invalidate existing persisted taint findings.
+ */
+export const taintModelVersion: string = computeModelDigest(BUILTIN_TAINT_MODELS);
+
+/**
+ * Register the built-in models for Java, TypeScript, JavaScript, and Python.
+ * Explicit init seam for the U4 emit path (call before the pdg window
+ * consumes the registry); idempotent. Other language ids remain unregistered
+ * until they have a dedicated model.
  */
 export function registerBuiltinTaintModels(): void {
+  registerSourceSinkConfig(SupportedLanguages.Java, JAVA_TAINT_MODEL);
   registerSourceSinkConfig(SupportedLanguages.TypeScript, TS_JS_TAINT_MODEL);
   registerSourceSinkConfig(SupportedLanguages.JavaScript, TS_JS_TAINT_MODEL);
+  registerSourceSinkConfig(SupportedLanguages.Python, PYTHON_TAINT_MODEL);
 }

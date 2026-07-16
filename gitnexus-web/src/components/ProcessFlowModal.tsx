@@ -6,7 +6,7 @@
 
 import { useEffect, useRef, useCallback, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Copy, Focus, ZoomIn, ZoomOut } from 'lucide-react';
+import { Copy, Focus, ZoomIn, ZoomOut } from '@/lib/lucide-icons';
 import mermaid from 'mermaid';
 import DOMPurify from 'dompurify';
 import { ProcessData, generateProcessMermaid } from '../lib/mermaid-generator';
@@ -18,7 +18,6 @@ interface ProcessFlowModalProps {
   isFullScreen?: boolean;
 }
 
-// Initialize mermaid with cyan/purple theme matching GitNexus
 // Initialize mermaid with cyan/purple theme matching GitNexus
 mermaid.initialize({
   startOnLoad: false,

@@ -1,0 +1,1 @@
+SHARED = "/b-shared"

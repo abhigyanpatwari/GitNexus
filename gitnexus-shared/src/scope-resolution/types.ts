@@ -105,6 +105,16 @@ export type ParsedImport =
       readonly localName: string;
       readonly importedName: string;
       readonly targetRaw: string;
+      /** Provider-specific imported symbol category when module and symbol
+       * namespaces have distinct resolution rules (for example PHP). */
+      readonly importedSymbolKind?: 'type' | 'function' | 'const';
+      /**
+       * Set by providers when `targetRaw` already names the imported symbol
+       * rather than only its containing module. Consumers that compose
+       * `<local>.<member>` paths can then use `targetRaw.<member>` instead of
+       * duplicating `importedName`.
+       */
+      readonly targetIncludesImportedName?: boolean;
     }
   /**
    * Per-name import with rename.
@@ -119,6 +129,10 @@ export type ParsedImport =
       readonly importedName: string;
       readonly alias: string;
       readonly targetRaw: string;
+      /** See the same field on the `named` variant. */
+      readonly importedSymbolKind?: 'type' | 'function' | 'const';
+      /** See the same field on the `named` variant. */
+      readonly targetIncludesImportedName?: boolean;
     }
   /**
    * Qualified module handle, with or without rename. `importedName` is the

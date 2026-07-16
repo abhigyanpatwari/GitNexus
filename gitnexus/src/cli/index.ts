@@ -24,7 +24,7 @@ program.name('gitnexus').description('GitNexus local CLI and MCP server').versio
 program
   .command('setup')
   .description(
-    'One-time setup: configure MCP for Cursor, Claude Code, Antigravity, OpenCode, Codex',
+    'One-time setup: configure MCP for Cursor, Claude Code, Antigravity, OpenCode, CodeBuddy, Qoder, Codex',
   )
   .option(
     '-c, --coding-agent <agents>',
@@ -83,15 +83,15 @@ program
   )
   .option(
     '--branch <name>',
-    'Index the working tree under a specific branch slot (multi-branch indexing). ' +
-      'Defaults to the checked-out branch; the primary/first-indexed branch keeps the ' +
-      'flat index and others get their own. Distinct from --default-branch (cosmetic base_ref).',
+    'Pin the working tree into a dedicated per-branch index slot (multi-branch indexing). ' +
+      'Without this flag, analyze always updates the workspace index, which follows the ' +
+      'checked-out working tree. Distinct from --default-branch (cosmetic base_ref).',
   )
   .option('--no-stats', 'Omit volatile file/symbol counts from AGENTS.md and CLAUDE.md')
   .option(
     '--skip-skills',
-    'Skip installing standard GitNexus skill files under .claude/skills/gitnexus/. ' +
-      'Does not suppress community skills from --skills (those use .claude/skills/generated/). ' +
+    'Skip installing standard GitNexus skill files directly under .claude/skills/. ' +
+      'Does not suppress community skills from --skills (those use .claude/skills/gitnexus-area-*). ' +
       'Use --index-only to skip all AI-context file injection.',
   )
   .option('--index-only', 'Pure index mode: skip all file injection (AGENTS.md, CLAUDE.md, skills)')
@@ -195,7 +195,7 @@ program
   .description(
     'Register an existing .gitnexus/ folder into the global registry (no re-analysis needed)',
   )
-  .option('-f, --force', 'Register even if meta.json is missing (stats will be empty)')
+  .option('-f, --force', 'Register even if index metadata is missing (stats will be empty)')
   .option('--allow-non-git', 'Allow registering folders that are not Git repositories')
   .action(createLazyAction(() => import('./index-repo.js'), 'indexCommand'));
 
@@ -241,12 +241,32 @@ program
   .action(createLazyAction(() => import('./doctor.js'), 'doctorCommand'));
 
 program
+  .command('embeddings')
+  .description('Manage the on-demand local embedding runtime')
+  .command('install')
+  .description(
+    'Install the local embedding stack (@huggingface/transformers + onnxruntime-node) on demand. ' +
+      'Heals installs where npm skipped the optional packages (e.g. behind an HTTP proxy, #2370). ' +
+      'Downloads only from your configured npm registry — mirrors and proxies apply.',
+  )
+  .option(
+    '--cuda',
+    "Also download the CUDA GPU binaries (runs onnxruntime-node's NuGet postinstall; " +
+      'set GLOBAL_AGENT_HTTPS_PROXY behind a proxy)',
+  )
+  .option('--force', 'Install into the runtime prefix even when the stack already resolves')
+  .action(createLazyAction(() => import('./embeddings.js'), 'embeddingsInstallCommand'));
+
+program
   .command('clean')
   .description('Delete GitNexus index for current repo')
   .option('-f, --force', 'Skip confirmation prompt')
   .option('--all', 'Clean all indexed repos')
-  .option('--branch <name>', 'Delete only the named branch index (not the primary)')
-  .option('--lbug-sidecars', 'Clean quarantined LadybugDB missing-shadow WAL sidecars')
+  .option('--branch <name>', 'Delete only the named branch index (not the workspace index)')
+  .option(
+    '--lbug-sidecars',
+    'Clean parked LadybugDB recovery sidecars (missing-shadow WAL quarantines and dirty-recovery parks)',
+  )
   .action(createLazyAction(() => import('./clean.js'), 'cleanCommand'));
 
 program
@@ -284,6 +304,10 @@ program
   .option('--concurrency <n>', 'Parallel LLM calls (default: 3)', '3')
   .option('--timeout <seconds>', 'LLM request timeout in seconds (default: disabled)')
   .option('--retries <n>', 'Max LLM retry attempts per request (default: 3)')
+  .option(
+    '--allow-insecure-connection <host>',
+    'Allow exact host(s) for http:// LLM base URLs (comma-separated; HTTPS is preferred)',
+  )
   .option('--gist', 'Publish wiki as a public GitHub Gist after generation')
   .option('-v, --verbose', 'Enable verbose output (show LLM commands and responses)')
   .option('--review', 'Stop after grouping to review module structure before generating pages')
@@ -314,8 +338,9 @@ program
 // These invoke LocalBackend directly for use in eval, scripts, and CI.
 
 program
-  .command('query <search_query>')
+  .command('query [search_query]')
   .description('Search the knowledge graph for execution flows related to a concept')
+  .option('-q, --query <text>', 'Search query (alias for positional argument)')
   .option('-r, --repo <name>', 'Target repository (omit if only one indexed)')
   .option('--branch <name>', 'Scope to a specific branch index (multi-branch repos)')
   .option('-c, --context <text>', 'Task context to improve ranking')
@@ -331,6 +356,7 @@ program
   .option('--branch <name>', 'Scope to a specific branch index (multi-branch repos)')
   .option('-u, --uid <uid>', 'Direct symbol UID (zero-ambiguity lookup)')
   .option('-f, --file <path>', 'File path to disambiguate common names')
+  .option('-l, --limit <n>', 'Max callers/callees/processes to return')
   .option('--content', 'Include full symbol source code')
   .action(createLbugLazyAction(() => import('./tool.js'), 'contextCommand'));
 
@@ -338,6 +364,15 @@ program
   .command('impact [target]')
   .description('Blast radius analysis: what breaks if you change a symbol')
   .option('-d, --direction <dir>', 'upstream (dependants) or downstream (dependencies)', 'upstream')
+  .option(
+    '--mode <mode>',
+    'Engine: callgraph (default) or pdg (opt-in, intra-procedural; needs analyze --pdg)',
+    'callgraph',
+  )
+  .option(
+    '--line <number>',
+    '1-based source line — PDG-only statement anchor (--mode pdg): slice the dependence from the statement at this line and show what depends on it',
+  )
   .option('-r, --repo <name>', 'Target repository')
   .option('--branch <name>', 'Scope to a specific branch index (multi-branch repos)')
   .option('-u, --uid <uid>', 'Direct symbol UID (zero-ambiguity lookup)')
@@ -348,7 +383,10 @@ program
   )
   .option('--depth <n>', 'Max relationship depth (default: 3)')
   .option('--include-tests', 'Include test files in results')
-  .option('--limit <n>', 'Max symbols per depth level (default: 100)')
+  .option(
+    '-l, --limit <n>',
+    'Max symbols per depth level and affected processes/modules to return (default: 100)',
+  )
   .option('--offset <n>', 'Skip N symbols per depth level for pagination')
   .option('--summary-only', 'Return counts and risk only, omit symbol list')
   .action(createLbugLazyAction(() => import('./tool.js'), 'impactCommand'));
@@ -371,6 +409,7 @@ program
   .description('Execute raw Cypher query against the knowledge graph')
   .option('-r, --repo <name>', 'Target repository')
   .option('--branch <name>', 'Scope to a specific branch index (multi-branch repos)')
+  .option('-l, --limit <n>', 'Max result rows to return')
   .action(createLbugLazyAction(() => import('./tool.js'), 'cypherCommand'));
 
 program
@@ -381,6 +420,7 @@ program
   .option('-b, --base-ref <ref>', 'Branch/commit for compare scope (e.g. main)')
   .option('-r, --repo <name>', 'Target repository')
   .option('--branch <name>', 'Scope to a specific branch index (multi-branch repos)')
+  .option('-l, --limit <n>', 'Max changed symbols to return')
   .action(createLbugLazyAction(() => import('./tool.js'), 'detectChangesCommand'));
 
 program
@@ -400,7 +440,7 @@ program
   .option('-p, --port <port>', 'Port number', '4848')
   .option(
     '--host <host>',
-    'Bind address (default: 127.0.0.1, use 0.0.0.0 to expose to all interfaces)',
+    'Bind address or resolvable hostname (default: 127.0.0.1; non-loopback requires GITNEXUS_AUTH_TOKEN; hostnames resolve to IPv4)',
   )
   .option('--idle-timeout <seconds>', 'Auto-shutdown after N seconds idle (0 = disabled)', '0')
   .action(createLbugLazyAction(() => import('./eval-server.js'), 'evalServerCommand'));

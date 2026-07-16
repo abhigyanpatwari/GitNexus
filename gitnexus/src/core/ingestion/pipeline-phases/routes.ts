@@ -29,6 +29,11 @@ import {
   compiledMatcherMatchesRoute,
 } from '../route-extractors/middleware.js';
 import { processNextjsFetchRoutes } from '../call-processor.js';
+import {
+  normalizeExtractedRoutePath,
+  normalizeRouteMethod,
+  routeNodeKey,
+} from '../route-extractors/route-path.js';
 import { generateId } from '../../../lib/utils.js';
 import { readFileContents } from '../filesystem-walker.js';
 import { isDev } from '../utils/env.js';
@@ -42,6 +47,22 @@ const EXPO_NAV_PATTERNS = [
 export interface RouteEntry {
   filePath: string;
   source: string;
+  /**
+   * The route's URL path (leading-slash, prefix-joined). This is the Route
+   * node's `name`. Stored explicitly because the registry is keyed by the
+   * `(method, url)` identity (`routeNodeKey`), so the key is no longer the URL
+   * — downstream URL consumers (middleware/fetch matching) read this instead.
+   */
+  url: string;
+  /**
+   * HTTP verb for this route when ingestion knows it structurally
+   * (Spring/Laravel framework routes and decorator routes carry
+   * `httpMethod`; filesystem-derived routes — Next.js/Expo/PHP file
+   * routes — do not, so this stays undefined for them). Persisted onto
+   * the Route node so downstream contract extraction can read the verb
+   * from the graph instead of re-parsing the handler source.
+   */
+  method?: string;
 }
 
 export interface RoutesOutput {
@@ -124,13 +145,6 @@ export function extractTemplateStaticFetchCalls(
   return calls;
 }
 
-export function normalizeExtractedRoutePath(routePath: string, prefix: string | null): string {
-  const pathPart = routePath.trim().replace(/^\/+/, '').replace(/\/+$/g, '');
-  const prefixPart = prefix?.trim().replace(/^\/+/, '').replace(/\/+$/g, '');
-  const joined = prefixPart ? `/${prefixPart}${pathPart ? `/${pathPart}` : ''}` : `/${pathPart}`;
-  return joined.replace(/\/+/g, '/') || '/';
-}
-
 function escapeRegex(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
@@ -149,6 +163,7 @@ export const routesPhase: PipelinePhase<RoutesOutput> = {
       allFetchWrapperDefs,
       allExtractedRoutes,
       allDecoratorRoutes,
+      routeHandlerSymbols,
     } = getPhaseOutput<ParseOutput>(deps, 'parse');
 
     // Local copy — routes phase must not mutate upstream ParseOutput
@@ -181,31 +196,45 @@ export const routesPhase: PipelinePhase<RoutesOutput> = {
       if (expoAppPaths.has(p)) {
         const expoURL = expoFileToRouteURL(p);
         if (expoURL && !routeRegistry.has(expoURL)) {
-          routeRegistry.set(expoURL, { filePath: p, source: 'expo-filesystem-route' });
+          routeRegistry.set(expoURL, {
+            filePath: p,
+            source: 'expo-filesystem-route',
+            url: expoURL,
+          });
           continue;
         }
       }
       const nextjsURL = nextjsFileToRouteURL(p);
       if (nextjsURL && !routeRegistry.has(nextjsURL)) {
-        routeRegistry.set(nextjsURL, { filePath: p, source: 'nextjs-filesystem-route' });
+        routeRegistry.set(nextjsURL, {
+          filePath: p,
+          source: 'nextjs-filesystem-route',
+          url: nextjsURL,
+        });
         continue;
       }
       if (p.endsWith('.php')) {
         const phpURL = phpFileToRouteURL(p);
         if (phpURL && !routeRegistry.has(phpURL)) {
-          routeRegistry.set(phpURL, { filePath: p, source: 'php-file-route' });
+          routeRegistry.set(phpURL, { filePath: p, source: 'php-file-route', url: phpURL });
         }
       }
     }
 
     let duplicateRoutes = 0;
     const namedRouteRegistry = new Map<string, string>();
-    const addRoute = (url: string, entry: RouteEntry) => {
-      if (routeRegistry.has(url)) {
+    // Routes are keyed by their `(method, url)` identity (#2289): a same-URL
+    // multi-verb pair (`GET /x` + `POST /x`) is two entries, not one. Method-less
+    // / wildcard routes key by URL (see `routeNodeKey`), so filesystem/resource
+    // routes stay byte-identical. A true duplicate (same method AND url) is still
+    // dropped.
+    const addRoute = (url: string, entry: Omit<RouteEntry, 'url'>) => {
+      const key = routeNodeKey(entry.method, url);
+      if (routeRegistry.has(key)) {
         duplicateRoutes++;
         return;
       }
-      routeRegistry.set(url, entry);
+      routeRegistry.set(key, { ...entry, url });
     };
     for (const route of allExtractedRoutes) {
       if (!route.routePath) continue;
@@ -213,6 +242,7 @@ export const routesPhase: PipelinePhase<RoutesOutput> = {
       addRoute(routeUrl, {
         filePath: route.filePath,
         source: 'framework-route',
+        method: normalizeRouteMethod(route.httpMethod),
       });
       if (route.routeName && !namedRouteRegistry.has(route.routeName)) {
         namedRouteRegistry.set(route.routeName, routeUrl);
@@ -223,6 +253,7 @@ export const routesPhase: PipelinePhase<RoutesOutput> = {
       addRoute(url, {
         filePath: dr.filePath,
         source: `decorator-${dr.decoratorName}`,
+        method: normalizeRouteMethod(dr.httpMethod),
       });
     }
 
@@ -231,8 +262,8 @@ export const routesPhase: PipelinePhase<RoutesOutput> = {
       const handlerPaths = [...routeRegistry.values()].map((e) => e.filePath);
       handlerContents = await readFileContents(ctx.repoPath, handlerPaths);
 
-      for (const [routeURL, entry] of routeRegistry) {
-        const { filePath: handlerPath, source: routeSource } = entry;
+      for (const [routeKey, entry] of routeRegistry) {
+        const { filePath: handlerPath, source: routeSource, method: routeMethod, url } = entry;
         const content = handlerContents.get(handlerPath);
 
         const { responseKeys, errorKeys } = content
@@ -244,13 +275,16 @@ export const routesPhase: PipelinePhase<RoutesOutput> = {
         const mwResult = content ? extractMiddlewareChain(content) : undefined;
         const middleware = mwResult?.chain;
 
-        const routeNodeId = generateId('Route', routeURL);
+        const routeNodeId = generateId('Route', routeKey);
+        const handlerSymbolId = routeHandlerSymbols.get(routeKey);
         ctx.graph.addNode({
           id: routeNodeId,
           label: 'Route',
           properties: {
-            name: routeURL,
+            name: url,
             filePath: handlerPath,
+            ...(routeMethod ? { method: routeMethod } : {}),
+            ...(handlerSymbolId ? { handlerSymbolId } : {}),
             ...(responseKeys ? { responseKeys } : {}),
             ...(errorKeys ? { errorKeys } : {}),
             ...(middleware && middleware.length > 0 ? { middleware } : {}),
@@ -301,13 +335,13 @@ export const routesPhase: PipelinePhase<RoutesOutput> = {
             .filter((m): m is NonNullable<typeof m> => m !== null);
 
           let linkedCount = 0;
-          for (const [routeURL] of routeRegistry) {
+          for (const [routeKey, entry] of routeRegistry) {
             const matches =
               compiled.length === 0 ||
-              compiled.some((cm) => compiledMatcherMatchesRoute(cm, routeURL));
+              compiled.some((cm) => compiledMatcherMatchesRoute(cm, entry.url));
             if (!matches) continue;
 
-            const routeNodeId = generateId('Route', routeURL);
+            const routeNodeId = generateId('Route', routeKey);
             const existing = ctx.graph.getNode(routeNodeId);
             if (!existing) continue;
 
@@ -444,13 +478,19 @@ export const routesPhase: PipelinePhase<RoutesOutput> = {
     }
 
     if (routeRegistry.size > 0 && allFetchCalls.length > 0) {
-      const routeURLToFile = new Map<string, string>();
-      for (const [url, entry] of routeRegistry) routeURLToFile.set(url, entry.filePath);
+      // url → [route node keys at that url] (one per verb). A verb-less fetch()
+      // consumer matches by URL and connects to every Route node at that URL.
+      const routeUrlToKeys = new Map<string, string[]>();
+      for (const [routeKey, entry] of routeRegistry) {
+        const existing = routeUrlToKeys.get(entry.url);
+        if (existing) existing.push(routeKey);
+        else routeUrlToKeys.set(entry.url, [routeKey]);
+      }
 
       const consumerPaths = [...new Set(allFetchCalls.map((c) => c.filePath))];
       const consumerContents = await readFileContents(ctx.repoPath, consumerPaths);
 
-      processNextjsFetchRoutes(ctx.graph, allFetchCalls, routeURLToFile, consumerContents);
+      processNextjsFetchRoutes(ctx.graph, allFetchCalls, routeUrlToKeys, consumerContents);
       if (isDev) {
         logger.info(
           `🔗 Processed ${allFetchCalls.length} fetch() calls against ${routeRegistry.size} routes`,

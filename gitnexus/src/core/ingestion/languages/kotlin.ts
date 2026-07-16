@@ -11,6 +11,7 @@ import { SupportedLanguages } from 'gitnexus-shared';
 import { createClassExtractor } from '../class-extractors/generic.js';
 import { kotlinClassConfig } from '../class-extractors/configs/jvm.js';
 import { defineLanguage } from '../language-provider.js';
+import { createLeadingDocDescriptionExtractor } from '../utils/ast-helpers.js';
 import { assertCloneable } from '../workers/clone-safety.js';
 import { kotlinTypeConfig } from '../type-extractors/jvm.js';
 import { kotlinExportChecker } from '../export-detection.js';
@@ -22,6 +23,7 @@ import type { AstFrameworkPatternConfig } from '../language-provider.js';
 import type { SyntaxNode } from '../utils/ast-helpers.js';
 import { createCallExtractor } from '../call-extractors/generic.js';
 import { kotlinCallConfig } from '../call-extractors/configs/jvm.js';
+import { createKotlinCfgVisitor } from '../cfg/visitors/kotlin.js';
 import { createFieldExtractor } from '../field-extractors/generic.js';
 import { kotlinConfig } from '../field-extractors/configs/jvm.js';
 import { createMethodExtractor } from '../method-extractors/generic.js';
@@ -169,6 +171,10 @@ export const kotlinProvider = defineLanguage({
   variableExtractor: createVariableExtractor(kotlinVariableConfig),
   classExtractor: createClassExtractor(kotlinClassConfig),
   builtInNames: BUILT_INS,
+
+  // ── KDoc → description (issue #2270) ──
+  descriptionExtractor: createLeadingDocDescriptionExtractor(),
+
   labelOverride: (functionNode, defaultLabel) => {
     if (defaultLabel !== 'Function') return defaultLabel;
     if (isKotlinClassMethod(functionNode)) return 'Method';
@@ -177,6 +183,8 @@ export const kotlinProvider = defineLanguage({
 
   // ── RFC #909 Ring 3: scope-based resolution hooks ──
   emitScopeCaptures: emitKotlinScopeCaptures,
+  // ── #2195 PDG layer: Kotlin CFG visitor (vendored grammar) ──
+  cfgVisitor: createKotlinCfgVisitor(),
   // Worker-side: snapshot the module-level companion-scope marks
   // `emitKotlinScopeCaptures` just populated for this file (`markCompanionScope`
   // → `companionScopesByFile`) into plain data on `ParsedFile.captureSideChannel`,
