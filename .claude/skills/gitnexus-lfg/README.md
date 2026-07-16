@@ -3,7 +3,7 @@
 Thin pipeline orchestrator over three existing skills: `gitnexus-plan`
 produces the plan, the user chooses at a blocking gate to deepen it (as many
 cycles as they want) or proceed, `gitnexus-work` executes it as verified
-atomic commits, and `gitnexus-pr-review` reviews the result (the open PR if
+atomic commits, and `gitnexus-review` reviews the result (the open PR if
 one exists, else the branch diff against the default branch). One bounded
 fix cycle for review findings, then a final report. It never pushes or opens
 a PR on its own.
@@ -33,7 +33,7 @@ Use the gitnexus-lfg skill for: $ARGUMENTS
 
 Read `~/.agents/skills/gitnexus-lfg/SKILL.md` (prefer the repo copy at
 `.claude/skills/gitnexus-lfg/SKILL.md` when present) and follow its lanes in
-order, invoking the real gitnexus-plan / gitnexus-work / gitnexus-pr-review
+order, invoking the real gitnexus-plan / gitnexus-work / gitnexus-review
 skills for each lane. Stop at the plan gate for the user's choice.
 ```
 
@@ -43,4 +43,4 @@ skills for each lane. Stop at the plan gate for the user's choice.
 |------|-------|------|
 | Plan | `gitnexus-plan` (`.claude/skills/gitnexus-plan/`) | Blocking user choice: deepen / proceed / stop |
 | Work | `gitnexus-work` (`.claude/skills/gitnexus-work/`) | Structural drift routes back to the plan gate |
-| Review | `gitnexus-pr-review` (`.claude/skills/gitnexus/gitnexus-pr-review/`) | One fix cycle max, then report |
+| Review | `gitnexus-review` (`.claude/skills/gitnexus-review/`) | One fix cycle max, then report |

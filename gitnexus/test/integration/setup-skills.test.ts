@@ -68,6 +68,10 @@ describe('setupCommand skills integration', () => {
   });
 
   it('installs packaged, flat-file, and directory skills into cursor skills directory', async () => {
+    const legacyReviewDir = path.join(tempHome, '.cursor', 'skills', 'gitnexus-pr-review');
+    await fs.mkdir(legacyReviewDir, { recursive: true });
+    await fs.writeFile(path.join(legacyReviewDir, 'SKILL.md'), 'legacy review skill', 'utf-8');
+
     await setupCommand();
 
     const cursorSkillsRoot = path.join(tempHome, '.cursor', 'skills');
@@ -82,6 +86,13 @@ describe('setupCommand skills integration', () => {
       'utf-8',
     );
     expect(skillContent).toContain('GitNexus CLI Commands');
+
+    const reviewContent = await fs.readFile(
+      path.join(cursorSkillsRoot, 'gitnexus-review', 'SKILL.md'),
+      'utf-8',
+    );
+    expect(reviewContent).toContain('name: gitnexus-review');
+    await expect(fs.access(legacyReviewDir)).rejects.toThrow();
 
     // Flat file source should be installed as {name}/SKILL.md.
     const flatInstalled = await fs.readFile(

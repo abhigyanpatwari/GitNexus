@@ -104,6 +104,7 @@ gitnexus/vendor/**/node_modules/
 !.claude/skills/gitnexus-impact-analysis/
 !.claude/skills/gitnexus-refactoring/
 !.claude/skills/gitnexus-pr-swarm-review/
+!.claude/skills/gitnexus-review/
 !.claude/skills/gitnexus-plan/
 !.claude/skills/gitnexus-work/
 !.claude/skills/gitnexus-lfg/

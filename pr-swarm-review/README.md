@@ -68,5 +68,6 @@ subagents, else Solo mode)*. Do not copy the persona/orchestration text into the
 
 ## Relationship to the existing review skill
 
-This coexists with `/gitnexus-pr-review` (a single-agent linear checklist using GitNexus MCP
-tools). This swarm is a multi-agent / multi-persona deep production-readiness review.
+This coexists with `/gitnexus-review` (a single-agent review for PRs, branches,
+ranges, or local changes using GitNexus MCP tools). This swarm is a multi-agent /
+multi-persona deep production-readiness review.

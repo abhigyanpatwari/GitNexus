@@ -51,7 +51,7 @@ Build an overlay that mirrors only the canonical repo-local skill paths:
     ├── gitnexus-plan/SKILL.md
     ├── gitnexus-work/SKILL.md
     ├── gitnexus-lfg/SKILL.md
-    └── gitnexus-pr-review/SKILL.md
+    └── gitnexus-review/SKILL.md
 ```
 
 The overlay may contain Markdown files from any subset of those four skill

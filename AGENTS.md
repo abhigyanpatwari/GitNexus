@@ -55,9 +55,9 @@ listed in [`pr-swarm-review/README.md`](pr-swarm-review/README.md); edit review 
 in the canonical files, never in the wrappers. The review is read-only — it never edits,
 commits, or posts.
 
-## Engineering planning & execution (`/gitnexus-plan` · `/gitnexus-work` · `/gitnexus-lfg`)
+## Engineering planning & execution (`/gitnexus-plan` · `/gitnexus-work` · `/gitnexus-review` · `/gitnexus-lfg`)
 
-Three canonical, CLI-neutral skill specs under `.claude/skills/` (Claude Code invokes
+Four canonical, CLI-neutral skill specs under `.claude/skills/` (Claude Code invokes
 them as slash commands; Codex or any other agent reading this file should read the
 named SKILL.md and follow it directly — user-level Codex prompts are documented in each
 skill's README):
@@ -71,21 +71,24 @@ skill's README):
 - **`gitnexus-work/SKILL.md`** — executes a gitnexus-plan as verified atomic commits:
   drift-checks the plan's evidence pin against HEAD, `impact` before every symbol
   edit, tests from the plan's scenarios, `detect_changes` before every commit.
+- **`gitnexus-review/SKILL.md`** — read-only GitNexus review of a PR URL/number,
+  branch or commit range, or local staged/unstaged/untracked changes. It pins exact
+  SHAs, aligns the graph and checkout, and reports evidence-backed findings.
 - **`gitnexus-lfg/SKILL.md`** — pipeline orchestrator: plan → blocking user gate
-  (deepen the plan, proceed, or stop) → work → review via the existing
-  `gitnexus/gitnexus-pr-review` skill (open PR, or branch diff when no PR exists).
+  (deepen the plan, proceed, or stop) → work → `gitnexus-review`.
 
 The family ships with the npm package (`gitnexus/skills/`, installed to editor targets
-by `gitnexus setup`) and the Claude Code plugin; `gitnexus/test/unit/shipped-skills-sync.test.ts`
-guards the copies. Token savings of the workflow are measurable with
+by `gitnexus setup`) and the Claude Code plugin; review also has a standalone Cursor
+mirror. `gitnexus/test/unit/shipped-skills-sync.test.ts` guards the copies. Token savings of the workflow are measurable with
 `eval/workflow_bench/` (real headless CLI runs, free-model routing supported — see its README).
 
 ## Changelog
 
 | Date | Version | Change |
 |------|---------|--------|
+| 2026-07-16 | 1.12.0 | Renamed `gitnexus-pr-review` to `gitnexus-review`; added PR URL/number, branch/range, and local-change targets plus install migration cleanup. |
 | 2026-07-11 | 1.11.0 | Skill family shipped via npm skills/ + plugin (sync-guarded); added eval/workflow_bench token-savings benchmark. |
-| 2026-07-11 | 1.10.0 | Added `gitnexus-work` (plan executor) and `gitnexus-lfg` (plan → deepen/work gate → pr-review pipeline) skills; section renamed to Engineering planning & execution. |
+| 2026-07-11 | 1.10.0 | Added `gitnexus-work` (plan executor) and `gitnexus-lfg` (plan → deepen/work gate → review pipeline) skills; section renamed to Engineering planning & execution. |
 | 2026-07-11 | 1.9.0 | Added Engineering planning (`/gitnexus-plan`) section; registered the `gitnexus-plan` skill (`.claude/skills/gitnexus-plan/`). |
 | 2026-05-22 | 1.8.0 | Kotlin added to `MIGRATED_LANGUAGES` (registry-primary call resolution by default). Closes #1756 (companion-vs-instance dispatch) and #1757 (lambda scopes); refs #1746. RFC §6.4 corpus criterion waived (corpus-mode wiring is #927-scope); fixture criterion met. |
 | 2026-04-23 | 1.7.0 | TypeScript added to `MIGRATED_LANGUAGES` (registry-primary call resolution by default). |

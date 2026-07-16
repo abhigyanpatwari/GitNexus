@@ -37,12 +37,13 @@ If always-on instructions grow, load deep conventions via conditional reads (e.g
 - **This repository:** [AGENTS.md](AGENTS.md) (Cursor + monorepo notes), [ARCHITECTURE.md](ARCHITECTURE.md), [CONTRIBUTING.md](CONTRIBUTING.md), [GUARDRAILS.md](GUARDRAILS.md).
 - **Call & inheritance resolution:** See ARCHITECTURE.md § Scope-Resolution Pipeline. Shared pipeline code in `gitnexus/src/core/ingestion/` must not name languages — use `LanguageProvider` / `ScopeResolver` hooks instead (see AGENTS.md). (The legacy call-resolution DAG was removed in #942.)
 - **GitNexus:** standard skills in `.claude/skills/gitnexus-*/`; MCP and indexed-repo rules live only in [AGENTS.md](AGENTS.md) (`gitnexus:start` … `gitnexus:end`). See **GitNexus rules** below.
-- **Engineering plans & execution:** `/gitnexus-plan <task>` (implementation-ready plans via GitNexus + statement-level PDG + source verification; Deepen mode for existing plans), `/gitnexus-work [plan]` (executes a plan as impact-checked, detect_changes-gated atomic commits), `/gitnexus-lfg <task>` (plan → deepen/work gate → pr-review pipeline). Specs in `.claude/skills/gitnexus-{plan,work,lfg}/SKILL.md` (see AGENTS.md § Engineering planning & execution).
+- **Engineering plans, execution & review:** `/gitnexus-plan <task>` (implementation-ready plans via GitNexus + statement-level PDG + source verification; Deepen mode for existing plans), `/gitnexus-work [plan]` (executes a plan as impact-checked, detect_changes-gated atomic commits), `/gitnexus-review [PR|branch|range|local]` (read-only graph-backed review), `/gitnexus-lfg <task>` (plan → deepen/work gate → review pipeline). Specs in `.claude/skills/gitnexus-{plan,work,review,lfg}/SKILL.md` (see AGENTS.md § Engineering planning & execution).
 
 ## Changelog
 
 | Date | Version | Change |
 |------|---------|--------|
+| 2026-07-16 | 1.6.0 | Renamed `/gitnexus-pr-review` to `/gitnexus-review` and added PR, branch/range, and local-change targets. |
 | 2026-07-11 | 1.5.0 | Added `/gitnexus-work` and `/gitnexus-lfg` to the engineering plans & execution pointer. |
 | 2026-07-11 | 1.4.0 | Added `/gitnexus-plan` pointer to Reference Documentation. |
 | 2026-04-13 | 1.3.0 | Updated GitNexus index stats after DAG refactor. |

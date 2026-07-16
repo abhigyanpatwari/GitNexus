@@ -1017,6 +1017,10 @@ async function setupCodex(result: SetupResult): Promise<void> {
 
 // ─── Skill Installation ───────────────────────────────────────────
 
+const RENAMED_SKILL_DIRS: Readonly<Record<string, readonly string[]>> = {
+  'gitnexus-review': ['gitnexus-pr-review'],
+};
+
 /**
  * Install GitNexus skills to a target directory.
  * Each skill is installed as {targetDir}/gitnexus-{skillName}/SKILL.md
@@ -1078,14 +1082,19 @@ async function installSkillsTo(targetDir: string): Promise<string[]> {
       if (source.isDirectory) {
         const dirSource = path.join(skillsRoot, skillName);
         await copyDirRecursive(dirSource, skillDir);
-        installed.push(skillName);
       } else {
         const flatSource = path.join(skillsRoot, `${skillName}.md`);
         const content = await fs.readFile(flatSource, 'utf-8');
         await fs.mkdir(skillDir, { recursive: true });
         await fs.writeFile(path.join(skillDir, 'SKILL.md'), content, 'utf-8');
-        installed.push(skillName);
       }
+
+      // Remove only installer-owned directories superseded by a shipped rename.
+      // Otherwise both names remain discoverable after upgrading GitNexus.
+      for (const oldName of RENAMED_SKILL_DIRS[skillName] ?? []) {
+        await fs.rm(path.join(targetDir, oldName), { recursive: true, force: true });
+      }
+      installed.push(skillName);
     } catch {
       // Source skill not found — skip
     }

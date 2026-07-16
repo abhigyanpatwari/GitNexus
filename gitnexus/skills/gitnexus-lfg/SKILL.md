@@ -1,13 +1,13 @@
 ---
 name: gitnexus-lfg
-description: "Use when the user wants the GitNexus engineering pipeline run end-to-end on a task: gitnexus-plan, then their choice to deepen the plan or execute it with gitnexus-work, finishing with a gitnexus-pr-review of the result. Examples: \"/gitnexus-lfg Add retry support to the ingestion pipeline\", \"run the gitnexus pipeline on this\", \"plan, build and review this feature\"."
+description: "Use when the user wants the GitNexus engineering pipeline run end-to-end on a task: gitnexus-plan, then their choice to deepen the plan or execute it with gitnexus-work, finishing with a gitnexus-review of the result. Examples: \"/gitnexus-lfg Add retry support to the ingestion pipeline\", \"run the gitnexus pipeline on this\", \"plan, build and review this feature\"."
 ---
 
 # gitnexus-lfg — plan → (deepen | work) → review
 
 Thin orchestrator over three existing skills. It adds no engineering logic of
 its own — it sequences `gitnexus-plan`, `gitnexus-work`, and
-`gitnexus-pr-review`, with the user deciding at the plan gate. Run every lane
+`gitnexus-review`, with the user deciding at the plan gate. Run every lane
 by actually invoking the named skill (read its SKILL.md and follow it);
 never inline a summary of what the skill would have done.
 
@@ -64,18 +64,11 @@ Deepen pass and return to the Lane 2 gate rather than pushing through.
 
 ## Lane 4 — Review
 
-Invoke `gitnexus-pr-review` on the completed work. The pipeline's normal
-case is a **branch-diff review** — neither lane pushes, so no PR exists
-unless the user made one:
-
-- Branch diff (normal): review the branch against its merge-base with the
-  default branch — `git diff <default>...HEAD` plus
-  `detect_changes {scope: "compare", base_ref: "$(git merge-base <default>
-  HEAD)"}`. Pass the **merge-base**, not the branch name: `compare` runs a
-  two-dot diff, so a raw `<default>` base misattributes upstream commits to
-  this branch whenever the default has advanced past the branch point.
-- An open PR exists (`gh pr view` — the exception, e.g. a user-supplied
-  plan on an already-pushed branch) → review that PR instead.
+Invoke `gitnexus-review` on the completed work. Pass an open PR URL/number
+when one exists; otherwise pass the current branch. The review skill owns
+target resolution, exact-SHA checkout/index alignment, and merge-base
+selection. Do not duplicate that logic here. If work left local changes,
+pass `local` as a second, separately labeled review surface.
 
 Surface the review verdict and findings to the user. Findings the user
 wants fixed: those within `gitnexus-work`'s direct-mode bounds (1–2 files,
