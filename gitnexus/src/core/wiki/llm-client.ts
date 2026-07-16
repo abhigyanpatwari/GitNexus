@@ -98,7 +98,7 @@ export async function resolveLLMConfig(overrides?: Partial<LLMConfig>): Promise<
     isReasoningModel: overrides?.isReasoningModel ?? savedConfig.isReasoningModel,
     allowedInsecureHttpHosts:
       overrides?.allowedInsecureHttpHosts ??
-      parseLLMAllowedInsecureHttpHosts(process.env[LLM_ALLOW_INSECURE_HTTP_HOSTS_ENV]),
+      parseLLMAllowedInsecureHttpHosts(process.env[LLM_ALLOW_INSECURE_CONNECTION_ENV]),
   };
 }
 
@@ -122,13 +122,13 @@ function isTimeoutLikeError(err: unknown): boolean {
   return /time(d)?\s*out|timeout/i.test(err.message);
 }
 
-export const LLM_ALLOW_INSECURE_HTTP_HOSTS_ENV = 'GITNEXUS_LLM_ALLOW_INSECURE_HTTP_HOSTS';
+export const LLM_ALLOW_INSECURE_CONNECTION_ENV = 'GITNEXUS_ALLOW_INSECURE_CONNECTION';
 
 function normalizeAllowedInsecureHttpHost(host: string): string {
   const trimmed = host.trim().toLowerCase();
   const fail = () => {
     throw new Error(
-      `${LLM_ALLOW_INSECURE_HTTP_HOSTS_ENV} entries must be exact hostnames or IP addresses`,
+      `--allow-insecure-connection / ${LLM_ALLOW_INSECURE_CONNECTION_ENV} entries must be exact hostnames or IP addresses`,
     );
   };
   if (!trimmed || /[/@?#]/.test(trimmed)) fail();
@@ -174,7 +174,7 @@ export function parseLLMAllowedInsecureHttpHosts(value: string | undefined): str
 export function validateLLMBaseUrl(
   baseUrl: string,
   allowedInsecureHttpHosts: readonly string[] = parseLLMAllowedInsecureHttpHosts(
-    process.env[LLM_ALLOW_INSECURE_HTTP_HOSTS_ENV],
+    process.env[LLM_ALLOW_INSECURE_CONNECTION_ENV],
   ),
 ): void {
   let parsed: URL;
@@ -199,7 +199,7 @@ export function validateLLMBaseUrl(
       // Use parsed.origin (scheme+host+port, no credentials) instead of the full URL.
       throw new Error(
         `Insecure http:// LLM base URLs are only allowed for localhost/127.0.0.1 ` +
-          `or hosts listed in ${LLM_ALLOW_INSECURE_HTTP_HOSTS_ENV}. ` +
+          `or hosts listed by --allow-insecure-connection / ${LLM_ALLOW_INSECURE_CONNECTION_ENV}. ` +
           `Use https:// for remote endpoints (got ${parsed.origin})`,
       );
     }

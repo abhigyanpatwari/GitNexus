@@ -2,7 +2,7 @@ import { describe, it, expect, vi, afterEach } from 'vitest';
 
 // Import the function we'll add in the next step
 import {
-  LLM_ALLOW_INSECURE_HTTP_HOSTS_ENV,
+  LLM_ALLOW_INSECURE_CONNECTION_ENV,
   isAzureProvider,
   isReasoningModel,
   buildRequestUrl,
@@ -474,8 +474,7 @@ describe('readSSEStream — content_filter handling', () => {
 
 describe('validateLLMBaseUrl', () => {
   afterEach(() => {
-    delete process.env[LLM_ALLOW_INSECURE_HTTP_HOSTS_ENV];
-    vi.doUnmock('../../src/storage/repo-manager.js');
+    delete process.env[LLM_ALLOW_INSECURE_CONNECTION_ENV];
   });
 
   it('allows https:// for any public host', () => {
@@ -539,10 +538,7 @@ describe('validateLLMBaseUrl', () => {
   });
 
   it('resolveLLMConfig reads insecure HTTP hosts from env when no override is passed', async () => {
-    vi.doMock('../../src/storage/repo-manager.js', () => ({
-      loadCLIConfig: vi.fn().mockResolvedValue({}),
-    }));
-    process.env[LLM_ALLOW_INSECURE_HTTP_HOSTS_ENV] = 'llama-box.local,192.168.1.23';
+    process.env[LLM_ALLOW_INSECURE_CONNECTION_ENV] = 'llama-box.local,192.168.1.23';
 
     const config = await resolveLLMConfig();
 

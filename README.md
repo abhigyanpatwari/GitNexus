@@ -743,13 +743,13 @@ gitnexus wiki --retries <n>        # Max LLM retry attempts per request (default
 # Allow a specific LAN/self-hosted HTTP LLM host (HTTPS is preferred for remote endpoints)
 gitnexus wiki --base-url http://llama-box.local:8080/v1 --allow-insecure-connection llama-box.local
 # Or set a comma-separated host allowlist:
-GITNEXUS_LLM_ALLOW_INSECURE_HTTP_HOSTS=llama-box.local,192.168.1.23
+GITNEXUS_ALLOW_INSECURE_CONNECTION=llama-box.local,192.168.1.23
 
 # Change the output language
 gitnexus wiki --lang <lang>  # e.g. english, chinese, spanish, japanese
 ```
 
-For safety, `http://` LLM base URLs are allowed by default only for loopback hosts (`localhost`, `127.0.0.1`, `::1`). `--allow-insecure-connection` and `GITNEXUS_LLM_ALLOW_INSECURE_HTTP_HOSTS` accept exact hostnames or IP addresses only; do not include schemes, ports, paths, credentials, or wildcards.
+For safety, `http://` LLM base URLs are allowed by default only for loopback hosts (`localhost`, `127.0.0.1`, `::1`). `--allow-insecure-connection` and `GITNEXUS_ALLOW_INSECURE_CONNECTION` accept exact hostnames or IP addresses only; do not include schemes, ports, paths, credentials, or wildcards.
 
 The wiki generator reads the indexed graph structure, groups files into modules via LLM, generates per-module documentation pages, and creates an overview page — all with cross-references to the knowledge graph.
 
