@@ -81,7 +81,7 @@ export interface MoveFactsFunction {
   name: string;
   file?: string;
   span?: [number, number];
-  visibility: 'public' | 'friend' | 'internal' | 'package' | string;
+  visibility: string;
   isEntry: boolean;
   isInline: boolean;
   isNative: boolean;

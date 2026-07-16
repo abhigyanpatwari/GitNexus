@@ -53,24 +53,19 @@ describe('tryCreateMoveFlowClient', () => {
     expect(tryCreateMoveFlowClient()).toBeNull();
   });
 
-  it('returns null for binary names with shell metacharacters', () => {
-    process.env.MOVE_FLOW = 'move-flow; rm -rf /';
-    const client = tryCreateMoveFlowClient();
-    expect(client).toBeNull();
-    expect(mockExecFileSync).not.toHaveBeenCalled();
-  });
-
-  it('returns null for binary names with backticks', () => {
-    process.env.MOVE_FLOW = '`evil`';
-    expect(tryCreateMoveFlowClient()).toBeNull();
-    expect(mockExecFileSync).not.toHaveBeenCalled();
-  });
-
-  it('allows valid path-like binary names', () => {
-    process.env.MOVE_FLOW = '/usr/local/bin/move-flow';
+  it.each([
+    '/usr/local/bin/move-flow',
+    'C:\\Program Files\\move-flow.exe',
+    'move-flow;literal-name',
+  ])('passes an explicit binary path directly to execFileSync: %s', (binary) => {
+    process.env.MOVE_FLOW = binary;
     mockExecFileSync.mockReturnValue(Buffer.from(''));
     const client = tryCreateMoveFlowClient();
     expect(client).toBeInstanceOf(MoveFlowMcpClient);
+    expect(mockExecFileSync).toHaveBeenCalledWith(binary, ['--version'], {
+      stdio: 'ignore',
+      timeout: 5000,
+    });
   });
 });
 

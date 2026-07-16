@@ -3,7 +3,7 @@
  * Optional native dependency probe: download a pinned `move-flow` release
  * into `gitnexus/vendor/move-flow/<platform>/`.
  *
- * Same shape as `build-tree-sitter-swift.cjs`: an opt-out env var, a soft-fail
+ * Same shape as `build-tree-sitter-grammars.cjs`: an opt-out env var, a soft-fail
  * contract that always exits 0 (the gitnexus install must succeed even when
  * the binary can't be provisioned), idempotency (skip when the on-disk
  * version already matches), and an offline platform detect that warns and
@@ -32,7 +32,7 @@ const { execFileSync } = require('node:child_process');
 const os = require('node:os');
 
 /** Pinned move-flow release from https://github.com/aptos-labs/aptos-ai. */
-const MOVE_FLOW_VERSION = process.env.GITNEXUS_MOVE_FLOW_VERSION || '1.0.4';
+const MOVE_FLOW_VERSION = process.env.GITNEXUS_MOVE_FLOW_VERSION || '2.0.0';
 const RELEASE_REPO = process.env.GITNEXUS_MOVE_FLOW_REPO || 'aptos-labs/aptos-ai';
 const RELEASE_TAG = process.env.GITNEXUS_MOVE_FLOW_TAG || `move-flow-v${MOVE_FLOW_VERSION}`;
 const RELEASE_BASE = `https://github.com/${RELEASE_REPO}/releases/download/${RELEASE_TAG}`;
@@ -241,13 +241,6 @@ async function main() {
   }
 
   const releaseTarget = releaseTargetForPlatform(key);
-  if (!releaseTarget) {
-    console.warn(
-      `[move-flow] Unsupported platform ${process.platform}-${process.arch} — skipping. ` +
-        'Set $MOVE_FLOW to provide a binary, or set GITNEXUS_SKIP_MOVE_FLOW=1 to silence this notice.',
-    );
-    process.exit(0);
-  }
 
   const { dir, file } = targetBinaryPath(key);
 
@@ -323,7 +316,7 @@ async function main() {
 }
 
 main().catch((err) => {
-  // Belt-and-braces: never hard-fail the gitnexus install.
+  // Never hard-fail the gitnexus install.
   console.warn(`[move-flow] Unexpected error during install probe: ${err?.message ?? err}`);
   process.exit(0);
 });

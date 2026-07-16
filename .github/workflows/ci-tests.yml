@@ -45,7 +45,7 @@ jobs:
         uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5
         with:
           path: gitnexus/vendor/move-flow
-          key: ${{ runner.os }}-move-flow-v1.0.4
+          key: ${{ runner.os }}-move-flow-v2.0.0
 
       - uses: ./.github/actions/setup-gitnexus
         with:

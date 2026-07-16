@@ -6,7 +6,7 @@
  * or on $PATH as `move-flow`.
  */
 
-import { spawn, execFileSync, type ChildProcess } from 'node:child_process';
+import { spawn, execFileSync, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import { existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -18,6 +18,29 @@ interface JsonRpcResponse {
   id?: number;
   result?: unknown;
   error?: { code: number; message: string; data?: unknown };
+}
+
+interface JsonRpcNotification {
+  jsonrpc: '2.0';
+  method: string;
+  params?: Record<string, unknown>;
+}
+
+/** Shape of a successful MCP tools/call result. */
+interface McpCallToolResult {
+  isError?: boolean;
+  content?: Array<{ text?: string }>;
+}
+function isMcpCallToolResult(v: unknown): v is McpCallToolResult {
+  return typeof v === 'object' && v !== null;
+}
+
+/** Shape of a tools/list response. */
+interface McpListToolResult {
+  tools?: unknown[];
+}
+function isMcpListToolResult(v: unknown): v is McpListToolResult {
+  return typeof v === 'object' && v !== null;
 }
 
 /** JSON-RPC `invalid_params` - move-flow uses it for caller/input errors
@@ -136,12 +159,12 @@ function schemaMentionsFactsQuery(schema: unknown): boolean {
 }
 
 export class MoveFlowMcpClient implements MoveFlowClient {
-  private proc: ChildProcess | null = null;
+  private proc: ChildProcessWithoutNullStreams | null = null;
   private requestId = 0;
   private pending = new Map<
     number,
     {
-      resolve: (v: any) => void;
+      resolve: (v: unknown) => void;
       reject: (e: Error) => void;
       timeout: ReturnType<typeof setTimeout>;
     }
@@ -175,11 +198,12 @@ export class MoveFlowMcpClient implements MoveFlowClient {
         reject(new Error('move-flow MCP server did not respond within 30s'));
       }, 30000);
 
-      this.proc = spawn(this.binaryPath, ['mcp'], {
+      const proc = spawn(this.binaryPath, ['mcp'], {
         stdio: ['pipe', 'pipe', 'pipe'],
       });
+      this.proc = proc;
 
-      this.proc.stderr!.on('data', (chunk: Buffer) => {
+      proc.stderr.on('data', (chunk: Buffer) => {
         for (const line of chunk.toString().split('\n')) {
           if (!line) continue;
           this.stderrLines.push(line);
@@ -191,19 +215,19 @@ export class MoveFlowMcpClient implements MoveFlowClient {
 
       // Absorb async EPIPE from writes to a dead child so it does not become an
       // uncaughtException; the 'exit' handler settles in-flight requests.
-      this.proc.stdin!.on('error', (err) => {
+      proc.stdin.on('error', (err) => {
         this.stderrLines.push(`stdin error: ${err.message}`);
         if (this.stderrLines.length > MoveFlowMcpClient.MAX_STDERR) {
           this.stderrLines.shift();
         }
       });
 
-      this.proc.on('error', (err) => {
+      proc.on('error', (err) => {
         clearTimeout(timeout);
         reject(new Error(`Failed to spawn move-flow: ${err.message}${this.stderrContext()}`));
       });
 
-      this.proc.on('exit', (code) => {
+      proc.on('exit', (code) => {
         if (!this.initialized) {
           clearTimeout(timeout);
           reject(
@@ -224,7 +248,7 @@ export class MoveFlowMcpClient implements MoveFlowClient {
         this.proc = null;
       });
 
-      const rl = createInterface({ input: this.proc.stdout!, crlfDelay: Infinity });
+      const rl = createInterface({ input: proc.stdout, crlfDelay: Infinity });
       rl.on('line', (line) => {
         if (!line.trim()) return;
         try {
@@ -254,7 +278,11 @@ export class MoveFlowMcpClient implements MoveFlowClient {
       this.pending.set(initId, {
         resolve: () => {
           clearTimeout(timeout);
-          this.send({ jsonrpc: '2.0', method: 'notifications/initialized' } as any);
+          const notif: JsonRpcNotification = {
+            jsonrpc: '2.0',
+            method: 'notifications/initialized',
+          };
+          this.send(notif);
           this.initialized = true;
           resolve();
         },
@@ -278,14 +306,15 @@ export class MoveFlowMcpClient implements MoveFlowClient {
     });
   }
 
-  private send(msg: Record<string, unknown>): void {
-    this.proc!.stdin!.write(JSON.stringify(msg) + '\n');
+  private send(msg: Record<string, unknown> | JsonRpcNotification): void {
+    if (!this.proc) throw new Error('move-flow MCP server is not running');
+    this.proc.stdin.write(JSON.stringify(msg) + '\n');
   }
 
-  private async callTool(toolName: string, args: Record<string, unknown>): Promise<any> {
+  private async callTool(toolName: string, args: Record<string, unknown>): Promise<unknown> {
     await this.ensureStarted();
 
-    return new Promise<any>((resolve, reject) => {
+    return new Promise<unknown>((resolve, reject) => {
       const id = ++this.requestId;
       const timeout = setTimeout(() => {
         this.pending.delete(id);
@@ -300,18 +329,22 @@ export class MoveFlowMcpClient implements MoveFlowClient {
       this.pending.set(id, {
         resolve: (result) => {
           clearTimeout(timeout);
+          if (!isMcpCallToolResult(result)) {
+            resolve(result);
+            return;
+          }
           // Tool-level failures (e.g. package build failures) arrive as a
           // SUCCESS result with `isError: true` and the diagnostic as content
           // text - reject rather than hand the error text to callers as data.
-          if (result?.isError === true) {
+          if (result.isError === true) {
             const text =
-              typeof result?.content?.[0]?.text === 'string'
+              typeof result.content?.[0]?.text === 'string'
                 ? result.content[0].text
                 : `move-flow '${toolName}' reported an unspecified tool error`;
             reject(new MoveFlowToolCallError(text));
             return;
           }
-          if (result?.content?.[0]?.text) {
+          if (result.content?.[0]?.text) {
             try {
               resolve(JSON.parse(result.content[0].text));
             } catch {
@@ -366,9 +399,9 @@ export class MoveFlowMcpClient implements MoveFlowClient {
   }
 
   /** Raw JSON-RPC request (non-`tools/call`), e.g. `tools/list`. */
-  private async rpcRequest(method: string, params?: unknown): Promise<any> {
+  private async rpcRequest(method: string, params?: unknown): Promise<unknown> {
     await this.ensureStarted();
-    return new Promise<any>((resolve, reject) => {
+    return new Promise<unknown>((resolve, reject) => {
       const id = ++this.requestId;
       const timeout = setTimeout(() => {
         this.pending.delete(id);
@@ -394,7 +427,9 @@ export class MoveFlowMcpClient implements MoveFlowClient {
     this.capsPromise = (async () => {
       try {
         const listed = await this.rpcRequest('tools/list', {});
-        const tools = (listed?.tools ?? []) as MoveFlowToolInfo[];
+        const tools = (
+          isMcpListToolResult(listed) ? (listed.tools ?? []) : []
+        ) as MoveFlowToolInfo[];
         return detectMoveFlowCapabilities(tools);
       } catch {
         // Probe failure → facts unavailable; the ingest phase trips its hard gate.
@@ -433,8 +468,6 @@ export class MoveFlowMcpClient implements MoveFlowClient {
  *      probe installs here — see `scripts/install-move-flow.cjs`).
  *   3. `move-flow` on `$PATH` (host install).
  */
-const SAFE_BINARY = /^[\w./-]+$/;
-
 function bundledMoveFlowPath(): string | null {
   const { platform, arch } = process;
   let key: string | null = null;
@@ -462,12 +495,11 @@ function probeBinary(binary: string): boolean {
 export function tryCreateMoveFlowClient(): MoveFlowMcpClient | null {
   const explicit = process.env.MOVE_FLOW;
   if (explicit) {
-    if (!SAFE_BINARY.test(explicit)) return null;
     return probeBinary(explicit) ? new MoveFlowMcpClient(explicit) : null;
   }
 
   const bundled = bundledMoveFlowPath();
-  if (bundled && existsSync(bundled) && SAFE_BINARY.test(bundled) && probeBinary(bundled)) {
+  if (bundled && existsSync(bundled) && probeBinary(bundled)) {
     return new MoveFlowMcpClient(bundled);
   }
 

@@ -39,14 +39,12 @@ import {
   validateBranchName,
   GitNexusRcError,
 } from './analyze-config.js';
-import { runFullAnalysis, repoHasMove } from '../core/run-analyze.js';
+import { runFullAnalysis } from '../core/run-analyze.js';
+import { repoHasMove } from '../core/move/discovery.js';
 import { getRuntimeFingerprint } from '../core/platform/capabilities.js';
 import { getMaxFileSizeBannerMessage } from '../core/ingestion/utils/max-file-size.js';
-import {
-  warnMissingOptionalGrammars,
-  warnIfMoveUnavailable,
-  getOptionalGrammarExtensions,
-} from './optional-grammars.js';
+import { warnMissingOptionalGrammars, getOptionalGrammarExtensions } from './optional-grammars.js';
+import { warnIfMoveUnavailable } from './move-availability.js';
 import { glob } from 'glob';
 import fs from 'fs/promises';
 import { cliError } from './cli-message.js';
