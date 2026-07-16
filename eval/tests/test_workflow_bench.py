@@ -1,6 +1,20 @@
 """Unit tests for the pure aggregation/report helpers of workflow_bench."""
 
-from workflow_bench.runner import aggregate, parse_shortstat, render_report, savings
+import subprocess
+
+import pytest
+
+from workflow_bench.evolution import (
+    apply_candidate_overlay,
+    candidate_overlay_digest,
+    evaluate_candidate,
+)
+from workflow_bench.runner import (
+    aggregate,
+    parse_shortstat,
+    render_report,
+    savings,
+)
 
 
 def record(**overrides):
@@ -88,3 +102,163 @@ def test_render_report_emits_arm_rows_and_per_arm_savings_rows():
     assert "| demo-task | demo | **workflow_direct savings %** | — | 25.0 |" in report
     assert "2/+30/−5" in report
     assert "results.jsonl" in report
+
+
+def test_candidate_gate_promotes_quality_preserving_efficiency_gain():
+    results = {
+        "task-a": {
+            "workflow_direct": aggregate([record(output_tokens=1000) for _ in range(3)]),
+            "candidate_workflow_direct": aggregate([record(output_tokens=880) for _ in range(3)]),
+        },
+        "task-b": {
+            "workflow_direct": aggregate([record(output_tokens=800) for _ in range(3)]),
+            "candidate_workflow_direct": aggregate([record(output_tokens=720) for _ in range(3)]),
+        },
+    }
+
+    decision = evaluate_candidate(
+        results,
+        incumbent_arm="workflow_direct",
+        candidate_arm="candidate_workflow_direct",
+        model="pinned-model",
+    )
+
+    assert decision["decision"] == "promote"
+    assert decision["median_improvement_pct"] == 11.0
+
+
+def test_candidate_gate_never_trades_resolution_for_lower_cost():
+    results = {
+        "task-a": {
+            "workflow": aggregate([record() for _ in range(3)]),
+            "candidate_workflow": aggregate(
+                [
+                    record(cost_usd=0.1),
+                    record(cost_usd=0.1),
+                    record(cost_usd=0.1, resolved=False),
+                ]
+            ),
+        }
+    }
+
+    decision = evaluate_candidate(
+        results,
+        incumbent_arm="workflow",
+        candidate_arm="candidate_workflow",
+        model="pinned-model",
+        metric="cost_usd",
+    )
+
+    assert decision["decision"] == "keep_incumbent"
+    assert any("resolution regressed" in reason for reason in decision["reasons"])
+
+
+def test_candidate_gate_requires_repeated_runs_and_a_named_model():
+    results = {
+        "task-a": {
+            "workflow_direct": aggregate([record(output_tokens=1000)]),
+            "candidate_workflow_direct": aggregate([record(output_tokens=800)]),
+        }
+    }
+
+    decision = evaluate_candidate(
+        results,
+        incumbent_arm="workflow_direct",
+        candidate_arm="candidate_workflow_direct",
+        model=None,
+    )
+
+    assert decision["decision"] == "insufficient_evidence"
+    assert any("named --model" in reason for reason in decision["reasons"])
+    assert any("at least 3 runs" in reason for reason in decision["reasons"])
+
+
+def test_candidate_gate_caps_large_per_task_efficiency_regressions():
+    results = {
+        "task-a": {
+            "workflow_direct": aggregate([record(output_tokens=1000) for _ in range(3)]),
+            "candidate_workflow_direct": aggregate([record(output_tokens=500) for _ in range(3)]),
+        },
+        "task-b": {
+            "workflow_direct": aggregate([record(output_tokens=1000) for _ in range(3)]),
+            "candidate_workflow_direct": aggregate([record(output_tokens=1250) for _ in range(3)]),
+        },
+    }
+
+    decision = evaluate_candidate(
+        results,
+        incumbent_arm="workflow_direct",
+        candidate_arm="candidate_workflow_direct",
+        model="pinned-model",
+    )
+
+    assert decision["decision"] == "keep_incumbent"
+    assert any("task cap" in reason for reason in decision["reasons"])
+
+
+def test_candidate_overlay_is_skill_only_and_content_addressed(tmp_path):
+    overlay = tmp_path / "candidate"
+    skill = overlay / ".claude" / "skills" / "gitnexus-work" / "SKILL.md"
+    skill.parent.mkdir(parents=True)
+    skill.write_text("candidate one\n")
+
+    first = candidate_overlay_digest(overlay)
+    skill.write_text("candidate two\n")
+    second = candidate_overlay_digest(overlay)
+
+    assert first != second
+
+    invalid = tmp_path / "invalid"
+    source = invalid / "gitnexus" / "src" / "cli" / "index.ts"
+    source.parent.mkdir(parents=True)
+    source.write_text("gaming the verifier\n")
+    with pytest.raises(ValueError, match="may only contain Markdown files"):
+        candidate_overlay_digest(invalid)
+
+    config_overlay = tmp_path / "config-overlay"
+    config = config_overlay / ".claude" / "skills" / "gitnexus-work" / "mcp.json"
+    config.parent.mkdir(parents=True)
+    config.write_text("{}\n")
+    with pytest.raises(ValueError, match="may only contain Markdown files"):
+        candidate_overlay_digest(config_overlay)
+
+
+def test_apply_candidate_overlay_creates_a_clean_ephemeral_commit(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "--quiet", str(repo)], check=True)
+    incumbent = repo / ".claude" / "skills" / "gitnexus-work" / "SKILL.md"
+    incumbent.parent.mkdir(parents=True)
+    incumbent.write_text("incumbent\n")
+    subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(repo),
+            "-c",
+            "user.name=test",
+            "-c",
+            "user.email=test@invalid",
+            "commit",
+            "--quiet",
+            "-m",
+            "incumbent",
+        ],
+        check=True,
+    )
+
+    overlay = tmp_path / "candidate"
+    candidate = overlay / ".claude" / "skills" / "gitnexus-work" / "SKILL.md"
+    candidate.parent.mkdir(parents=True)
+    candidate.write_text("candidate\n")
+
+    assert apply_candidate_overlay(overlay, repo) == candidate_overlay_digest(overlay)
+    assert incumbent.read_text() == "candidate\n"
+    status = subprocess.run(
+        ["git", "-C", str(repo), "status", "--porcelain"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert status.stdout == ""

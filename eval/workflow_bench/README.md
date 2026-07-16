@@ -10,7 +10,9 @@ the CLI's own `--output-format json` usage report.
 | Arm | Sessions | Notes |
 | --- | --- | --- |
 | `workflow` | `gitnexus-plan` on the task, then `gitnexus-work` on the produced plan | The skills must be installed (`gitnexus setup`, or repo-local `.claude/skills/`) |
+| `candidate_workflow` | same sessions as `workflow`, with a candidate skill overlay | Paired with `workflow` on the same task/ref/model |
 | `workflow_direct` | one `gitnexus-work` direct-mode session | The middle option — execution discipline without a planning pass |
+| `candidate_workflow_direct` | same session as `workflow_direct`, with a candidate skill overlay | Paired with `workflow_direct` on the same task/ref/model |
 | `baseline` | one session with the identical task text | `--disallowedTools Skill` so it cannot borrow the workflow; same repo, same MCP tools |
 | `baseline_nomcp` | like baseline, graph tools also disallowed | Separates the workflow-discipline question from the GitNexus-tools question (off by default) |
 
@@ -33,6 +35,67 @@ uv run python -m workflow_bench.runner --tasks workflow_bench/tasks.scenarios.ya
 Output: `results/wfbench-<timestamp>/results.jsonl` (every run, with session
 ids for transcript drill-down) and `report.md` (medians per task per arm,
 plus a savings row: input / cache / output tokens, cost, wall time).
+
+## Prompt and skill evolution loop
+
+Prompts age as models and tool harnesses change. Treat the current skills and
+router thresholds as an incumbent policy, not permanent truth. Candidate
+changes run offline in the same throwaway clones as the incumbent; production
+skills never rewrite themselves from a live task.
+
+Build an overlay that mirrors only the canonical repo-local skill paths:
+
+```text
+/tmp/gn-skill-candidate/
+└── .claude/skills/
+    ├── gitnexus-plan/SKILL.md
+    ├── gitnexus-work/SKILL.md
+    └── gitnexus-lfg/SKILL.md
+```
+
+The overlay may contain Markdown files from any subset of those three skill
+trees. The runner rejects every other path, including source, test, and MCP
+configuration files, so a candidate cannot improve its score by changing the
+task or verifier. Run candidate and incumbent arms together on a pinned model:
+
+```bash
+cd eval
+uv run python -m workflow_bench.runner \
+  --tasks workflow_bench/tasks.scenarios.yaml \
+  --runs 3 --model <pinned-model-id> \
+  --arms workflow candidate_workflow \
+         workflow_direct candidate_workflow_direct baseline \
+  --candidate-overlay /tmp/gn-skill-candidate
+```
+
+Candidate runs start from the same task commit, then receive a clean ephemeral
+commit containing the overlay. `results.jsonl` records the named model, task
+commit, task-prompt digest, skill digest, overlay digest, timestamp, and local
+session ids. Those session transcripts are the trajectory evidence: cluster
+failures and expensive detours, propose one bounded prompt change, and feed it
+back as the next overlay.
+
+When candidate arms are present the runner also writes `promotion.json`. Its
+default deterministic gate is deliberately conservative:
+
+- at least 3 paired runs per task and a named model;
+- no per-task resolution-rate regression (quality is lexicographically first);
+- with equal quality, at least 5% median output-token improvement;
+- no individual task may regress the selected efficiency metric by more than
+  20%.
+
+Tune the efficiency signal with `--promotion-metric` and the three
+`--promotion-*` thresholds. A `promote` decision is evidence for a normal,
+human-reviewed change to the canonical `.claude/skills/` files and their
+shipped mirrors; it does not edit them automatically. `keep_incumbent` and
+`insufficient_evidence` become the next learning queue; their raw
+`results.jsonl` rows carry the `session_ids` of the trajectories to inspect.
+
+Re-run the paired suite whenever the named model or tool harness changes, and
+at least every 90 days otherwise. This is prompt-policy optimization using
+verified agent trajectories as reward evidence; it is intentionally not
+online model-weight RL. The same records can feed a later offline RL pipeline
+without weakening today's deterministic promotion boundary.
 
 ## Free-model setup (no paid tokens)
 

@@ -25,6 +25,12 @@ see `eval/workflow_bench/`) — say so and offer `gitnexus-work` direct mode as
 an alternative to the full pipeline before spending the plan lane. Honor the
 user's choice.
 
+The threshold is a promoted benchmark policy, not a timeless heuristic. Never
+self-edit it from a live task. Re-evaluate it offline with the paired candidate
+loop in `eval/workflow_bench/` whenever the named model or tool harness changes,
+and at least every 90 days; update this skill only after the deterministic gate
+shows no quality regression.
+
 Otherwise invoke `gitnexus-plan` with the task (knob overrides pass through
 verbatim). If the input is already a plan file path, skip to Lane 2. The plan
 lands in `docs/plans/` — record its path; every later lane consumes it.

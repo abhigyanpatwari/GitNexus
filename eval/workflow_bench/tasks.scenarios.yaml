@@ -14,9 +14,11 @@
 #
 # Arms (runner --arms): workflow (plan→work), workflow_direct (work skill,
 # no plan), baseline (no skills, MCP allowed), baseline_nomcp (no skills, no
-# graph tools). Comparing workflow vs workflow_direct vs baseline locates the
-# task-complexity boundary where each mode pays for itself — that boundary is
-# the routing rule lfg's gate and work's direct-mode triage encode.
+# graph tools). candidate_workflow and candidate_workflow_direct apply a
+# skill-only --candidate-overlay and must be paired with their incumbent arm.
+# Comparing workflow vs workflow_direct vs baseline locates the task-complexity
+# boundary where each mode pays for itself — that boundary is the routing rule
+# lfg's gate and work's direct-mode triage encode.
 #
 # For the GitNexus repo itself, a working setup is:
 #   mkdir -p .gitnexus &&

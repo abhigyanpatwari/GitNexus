@@ -8,6 +8,8 @@ arm per run:
 
 * ``workflow`` — two headless Claude Code sessions: gitnexus-plan, then
   gitnexus-work on the produced plan.
+* ``candidate_workflow`` / ``candidate_workflow_direct`` — the matching
+  workflow arm with a prompt-only candidate overlay committed in its clone.
 * ``baseline`` — one headless session with the same task text and the Skill
   tool disallowed (so it cannot borrow the workflow), everything else equal.
 
@@ -20,6 +22,7 @@ reported but flagged, because saving tokens by failing is not a saving.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -28,10 +31,21 @@ import statistics
 import subprocess
 import tempfile
 import time
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 import yaml
+
+from .evolution import (
+    CANDIDATE_ARMS,
+    EVIDENCE_MAX_AGE_DAYS,
+    PROMOTION_METRICS,
+    apply_candidate_overlay,
+    candidate_overlay_digest,
+    evaluate_candidate,
+    skill_fingerprint,
+)
 
 USAGE_FIELDS = (
     "input_tokens",
@@ -360,7 +374,14 @@ def main() -> None:
         "--arms",
         nargs="+",
         default=["workflow", "workflow_direct", "baseline"],
-        choices=["workflow", "workflow_direct", "baseline", "baseline_nomcp"],
+        choices=[
+            "workflow",
+            "candidate_workflow",
+            "workflow_direct",
+            "candidate_workflow_direct",
+            "baseline",
+            "baseline_nomcp",
+        ],
     )
     parser.add_argument("--claude-bin", default="claude")
     parser.add_argument("--timeout", type=int, default=3600, help="per session, seconds")
@@ -385,7 +406,37 @@ def main() -> None:
         help="passed to `claude --permission-mode`; the default lets headless "
         "sessions edit/run unattended — arms run in throwaway worktrees",
     )
+    parser.add_argument(
+        "--candidate-overlay",
+        type=Path,
+        default=None,
+        help="directory mirroring .claude/skills/gitnexus-{plan,work,lfg}; applied only to candidate_* arms",
+    )
+    parser.add_argument(
+        "--promotion-metric",
+        choices=PROMOTION_METRICS,
+        default="output_tokens",
+        help="efficiency metric used by the deterministic candidate gate",
+    )
+    parser.add_argument("--promotion-min-runs", type=int, default=3)
+    parser.add_argument("--promotion-min-improvement", type=float, default=5.0)
+    parser.add_argument("--promotion-max-task-regression", type=float, default=20.0)
     args = parser.parse_args()
+
+    candidate_arms = [arm for arm in args.arms if arm in CANDIDATE_ARMS]
+    if candidate_arms and args.candidate_overlay is None:
+        parser.error("candidate_* arms require --candidate-overlay")
+    if args.candidate_overlay is not None and not candidate_arms:
+        parser.error("--candidate-overlay requires at least one candidate_* arm")
+    for candidate_arm in candidate_arms:
+        incumbent_arm = CANDIDATE_ARMS[candidate_arm]
+        if incumbent_arm not in args.arms:
+            parser.error(f"{candidate_arm} must be paired with {incumbent_arm}")
+    if args.runs < 1 or args.promotion_min_runs < 1:
+        parser.error("--runs and --promotion-min-runs must be positive")
+
+    candidate_overlay = args.candidate_overlay.expanduser().resolve() if args.candidate_overlay is not None else None
+    overlay_digest = candidate_overlay_digest(candidate_overlay) if candidate_overlay is not None else None
 
     tasks = yaml.safe_load(args.tasks.read_text())["tasks"]
     out_dir = args.out or Path("results") / time.strftime("wfbench-%Y%m%d-%H%M%S")
@@ -410,13 +461,38 @@ def main() -> None:
                                 capture_output=True,
                                 timeout=600,
                             )
+                        task_base_sha = subprocess.run(
+                            ["git", "-C", str(worktree), "rev-parse", "HEAD"],
+                            capture_output=True,
+                            text=True,
+                            check=True,
+                        ).stdout.strip()
+                        execution_arm = CANDIDATE_ARMS.get(arm, arm)
+                        if arm in CANDIDATE_ARMS:
+                            assert candidate_overlay is not None
+                            applied_digest = apply_candidate_overlay(candidate_overlay, worktree)
+                            if applied_digest != overlay_digest:
+                                raise RuntimeError("candidate overlay changed during the benchmark run")
                         orig_sha = subprocess.run(
                             ["git", "-C", str(worktree), "rev-parse", "HEAD"],
                             capture_output=True,
                             text=True,
                             check=True,
                         ).stdout.strip()
-                        record = run_arm(arm, task, worktree, args)
+                        record = run_arm(execution_arm, task, worktree, args)
+                        record["arm"] = arm
+                        record.update(
+                            {
+                                "model": args.model,
+                                "task_ref": task.get("ref", "HEAD"),
+                                "task_base_sha": task_base_sha,
+                                "variant_head_sha": orig_sha,
+                                "task_prompt_digest": hashlib.sha256(task["prompt"].encode()).hexdigest(),
+                                "skill_digest": skill_fingerprint(worktree, execution_arm),
+                                "candidate_overlay_digest": (overlay_digest if arm in CANDIDATE_ARMS else None),
+                                "recorded_at": datetime.now(UTC).isoformat(),
+                            }
+                        )
                         record.update(diff_churn(worktree, orig_sha))
                     finally:
                         remove_worktree(repo, worktree)
@@ -439,6 +515,38 @@ def main() -> None:
 
     report = render_report(results)
     (out_dir / "report.md").write_text(report)
+    if candidate_arms:
+        promotion_generated_at = datetime.now(UTC)
+        promotion = {
+            "schema_version": 1,
+            "generated_at": promotion_generated_at.isoformat(),
+            "evidence_expires_at": (promotion_generated_at + timedelta(days=EVIDENCE_MAX_AGE_DAYS)).isoformat(),
+            "model": args.model,
+            "candidate_overlay": str(candidate_overlay),
+            "candidate_overlay_digest": overlay_digest,
+            "policy": {
+                "metric": args.promotion_metric,
+                "min_runs": args.promotion_min_runs,
+                "min_improvement_pct": args.promotion_min_improvement,
+                "max_task_regression_pct": args.promotion_max_task_regression,
+                "quality_rule": "no per-task resolution-rate regression",
+                "max_age_days": EVIDENCE_MAX_AGE_DAYS,
+            },
+            "decisions": [
+                evaluate_candidate(
+                    results,
+                    incumbent_arm=CANDIDATE_ARMS[candidate_arm],
+                    candidate_arm=candidate_arm,
+                    model=args.model,
+                    metric=args.promotion_metric,
+                    min_runs=args.promotion_min_runs,
+                    min_improvement_pct=args.promotion_min_improvement,
+                    max_task_regression_pct=args.promotion_max_task_regression,
+                )
+                for candidate_arm in candidate_arms
+            ],
+        }
+        (out_dir / "promotion.json").write_text(json.dumps(promotion, indent=2) + "\n")
     print(f"\n{report}\n\nWritten to {out_dir}/")
 
 
