@@ -102,6 +102,26 @@ describe('community-processor', () => {
       expect(projection.symbolCount).toBe(3);
     });
 
+    it('produces the same projection regardless of graph insertion order', () => {
+      const first = createKnowledgeGraph();
+      for (const id of ['fn:c', 'fn:a', 'fn:b']) {
+        first.addNode(makeNode(id, id.slice(3)));
+      }
+      first.addRelationship(makeRel('rel:ac', 'fn:a', 'fn:c'));
+      first.addRelationship(makeRel('rel:ab', 'fn:a', 'fn:b'));
+      first.addRelationship(makeRel('rel:bc', 'fn:b', 'fn:c'));
+
+      const second = createKnowledgeGraph();
+      for (const id of ['fn:b', 'fn:c', 'fn:a']) {
+        second.addNode(makeNode(id, id.slice(3)));
+      }
+      second.addRelationship(makeRel('rel:bc', 'fn:c', 'fn:b'));
+      second.addRelationship(makeRel('rel:ab', 'fn:b', 'fn:a'));
+      second.addRelationship(makeRel('rel:ac', 'fn:c', 'fn:a'));
+
+      expect(buildCommunityProjection(second)).toEqual(buildCommunityProjection(first));
+    });
+
     it('exports a deterministic undirected CSR adjacency', () => {
       const projection = {
         nodes: [

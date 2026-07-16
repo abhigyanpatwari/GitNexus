@@ -43,6 +43,27 @@ function createMockBackend(overrides: Record<string, any> = {}): any {
   };
 }
 
+async function callToolThroughServer(
+  backend: ReturnType<typeof createMockBackend>,
+  name: string,
+  args: Record<string, unknown>,
+): Promise<{ text: string; isError: boolean }> {
+  const server = createMCPServer(backend);
+  const client = new Client({ name: 'budget-test-client', version: '0.0.0' });
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+
+  try {
+    await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+    const response = await client.callTool({ name, arguments: args });
+    const text = response.content.find((item) => item.type === 'text')?.text;
+    if (typeof text !== 'string') throw new Error('Expected an MCP text response');
+    return { text, isError: response.isError === true };
+  } finally {
+    await client.close();
+    await server.close();
+  }
+}
+
 // ─── createMCPServer ─────────────────────────────────────────────────
 
 describe('createMCPServer', () => {
@@ -102,6 +123,124 @@ describe('getNextStepHint (via tool call response)', () => {
     // so we verify the handler was registered by creating the server without error.
     // The actual hint logic is tested via the integration path.
     expect(backend.callTool).not.toHaveBeenCalled(); // not called until request
+  });
+});
+
+describe('MCP output budgets', () => {
+  it('leaves the complete formatted response unchanged when no budget is configured', async () => {
+    const previous = process.env.GITNEXUS_MCP_DEFAULT_MAX_TOKENS;
+    delete process.env.GITNEXUS_MCP_DEFAULT_MAX_TOKENS;
+    try {
+      const backend = createMockBackend({
+        callTool: vi.fn().mockResolvedValue({ payload: 'complete' }),
+      });
+      const { text, isError } = await callToolThroughServer(backend, 'query', {
+        search_query: 'auth',
+      });
+      expect(isError).toBe(false);
+      expect(text).toContain('"payload": "complete"');
+      expect(text).toContain('**Next:**');
+      expect(text.endsWith('\n…')).toBe(false);
+    } finally {
+      if (previous === undefined) delete process.env.GITNEXUS_MCP_DEFAULT_MAX_TOKENS;
+      else process.env.GITNEXUS_MCP_DEFAULT_MAX_TOKENS = previous;
+    }
+  });
+
+  it('applies explicit maxTokens to the complete response deterministically and UTF-8 safely', async () => {
+    const backend = createMockBackend({
+      callTool: vi.fn().mockResolvedValue({ payload: '😀'.repeat(100) }),
+    });
+    const args = { search_query: 'auth', maxTokens: 8 };
+
+    const first = await callToolThroughServer(backend, 'query', args);
+    const second = await callToolThroughServer(backend, 'query', args);
+
+    expect(first.isError).toBe(false);
+    expect(first.text).toBe(second.text);
+    expect(Buffer.byteLength(first.text, 'utf8')).toBeLessThanOrEqual(8 * 4);
+    expect(first.text.endsWith('\n…')).toBe(true);
+    expect(first.text).not.toContain('\uFFFD');
+    expect(backend.callTool).toHaveBeenCalledWith('query', { search_query: 'auth' });
+  });
+
+  it('uses the environment default when maxTokens is omitted', async () => {
+    const previous = process.env.GITNEXUS_MCP_DEFAULT_MAX_TOKENS;
+    process.env.GITNEXUS_MCP_DEFAULT_MAX_TOKENS = '8';
+    try {
+      const backend = createMockBackend({
+        callTool: vi.fn().mockResolvedValue({ payload: 'x'.repeat(200) }),
+      });
+      const { text } = await callToolThroughServer(backend, 'context', { name: 'auth' });
+      expect(Buffer.byteLength(text, 'utf8')).toBeLessThanOrEqual(8 * 4);
+      expect(text.endsWith('\n…')).toBe(true);
+    } finally {
+      if (previous === undefined) delete process.env.GITNEXUS_MCP_DEFAULT_MAX_TOKENS;
+      else process.env.GITNEXUS_MCP_DEFAULT_MAX_TOKENS = previous;
+    }
+  });
+
+  it('lets an explicit request override the environment default', async () => {
+    const previous = process.env.GITNEXUS_MCP_DEFAULT_MAX_TOKENS;
+    process.env.GITNEXUS_MCP_DEFAULT_MAX_TOKENS = '1';
+    try {
+      const backend = createMockBackend({
+        callTool: vi.fn().mockResolvedValue({ payload: 'complete' }),
+      });
+      const { text } = await callToolThroughServer(backend, 'impact', {
+        target: 'auth',
+        direction: 'upstream',
+        maxTokens: 200,
+      });
+      expect(text).toContain('"payload": "complete"');
+      expect(text).toContain('**Next:**');
+      expect(text.endsWith('\n…')).toBe(false);
+    } finally {
+      if (previous === undefined) delete process.env.GITNEXUS_MCP_DEFAULT_MAX_TOKENS;
+      else process.env.GITNEXUS_MCP_DEFAULT_MAX_TOKENS = previous;
+    }
+  });
+
+  it('rejects a non-positive explicit maxTokens before backend execution', async () => {
+    const backend = createMockBackend();
+    const { text, isError } = await callToolThroughServer(backend, 'query', {
+      search_query: 'auth',
+      maxTokens: 0,
+    });
+    expect(isError).toBe(true);
+    expect(text).toMatch(/maxTokens.*positive integer/i);
+    expect(backend.callTool).not.toHaveBeenCalled();
+  });
+
+  it('rejects an invalid environment default before backend execution', async () => {
+    const previous = process.env.GITNEXUS_MCP_DEFAULT_MAX_TOKENS;
+    process.env.GITNEXUS_MCP_DEFAULT_MAX_TOKENS = 'invalid';
+    try {
+      const backend = createMockBackend();
+      const { text, isError } = await callToolThroughServer(backend, 'query', {
+        search_query: 'auth',
+      });
+      expect(isError).toBe(true);
+      expect(text).toMatch(/GITNEXUS_MCP_DEFAULT_MAX_TOKENS.*positive integer/i);
+      expect(backend.callTool).not.toHaveBeenCalled();
+    } finally {
+      if (previous === undefined) delete process.env.GITNEXUS_MCP_DEFAULT_MAX_TOKENS;
+      else process.env.GITNEXUS_MCP_DEFAULT_MAX_TOKENS = previous;
+    }
+  });
+
+  it('applies a valid budget to backend error text', async () => {
+    const backend = createMockBackend({
+      callTool: vi.fn().mockRejectedValue(new Error('😀'.repeat(100))),
+    });
+    const { text, isError } = await callToolThroughServer(backend, 'context', {
+      name: 'auth',
+      maxTokens: 8,
+    });
+    expect(isError).toBe(true);
+    expect(Buffer.byteLength(text, 'utf8')).toBeLessThanOrEqual(8 * 4);
+    expect(text.endsWith('\n…')).toBe(true);
+    expect(text).not.toContain('\uFFFD');
   });
 });
 

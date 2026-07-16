@@ -638,18 +638,18 @@ describe('createSseHandlers', () => {
 // ─── mountMCPEndpoints refactor safety ───────────────────────────────
 
 describe('mountMCPEndpoints', () => {
-  it('returns a cleanup function', () => {
+  it('returns a cleanup function', async () => {
     const backend = createMockBackend();
     const mockApp = {
       all: vi.fn(),
     };
 
-    const cleanup = mountMCPEndpoints(mockApp as never, backend as never);
+    const cleanup = await mountMCPEndpoints(mockApp as never, backend as never);
 
     expect(typeof cleanup).toBe('function');
   });
 
-  it('registers the /api/mcp route', () => {
+  it('registers the /api/mcp route', async () => {
     const backend = createMockBackend();
     const allCalls: Array<[string, ...unknown[]]> = [];
     const mockApp = {
@@ -658,7 +658,7 @@ describe('mountMCPEndpoints', () => {
       }),
     };
 
-    mountMCPEndpoints(mockApp as never, backend as never);
+    await mountMCPEndpoints(mockApp as never, backend as never);
 
     const registeredPaths = allCalls.map(([path]) => path);
     expect(registeredPaths).toContain('/api/mcp');
@@ -670,7 +670,7 @@ describe('mountMCPEndpoints', () => {
       all: vi.fn(),
     };
 
-    const cleanup = mountMCPEndpoints(mockApp as never, backend as never);
+    const cleanup = await mountMCPEndpoints(mockApp as never, backend as never);
 
     await expect(cleanup()).resolves.not.toThrow();
   });

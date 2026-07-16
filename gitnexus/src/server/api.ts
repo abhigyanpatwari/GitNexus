@@ -857,7 +857,7 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
   // Initialize MCP backend (multi-repo, shared across all MCP sessions)
   const backend = new LocalBackend();
   await backend.init();
-  const cleanupMcp = mountMCPEndpoints(app, backend);
+  const cleanupMcp = await mountMCPEndpoints(app, backend);
   const jobManager = new JobManager();
 
   // Backstop: remove any upload staging dirs orphaned by a previous crash.

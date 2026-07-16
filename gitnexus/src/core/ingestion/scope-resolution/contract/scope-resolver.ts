@@ -273,6 +273,7 @@ import type {
   Callsite,
   ConstraintContext,
   ParsedFile,
+  ParsedImport,
   ReferenceSite,
   ScopeId,
   SupportedLanguages,
@@ -301,6 +302,11 @@ export type ArityVerdict = 'compatible' | 'unknown' | 'incompatible';
 export type ReceiverMemberResolution =
   | { readonly kind: 'resolved'; readonly definition: SymbolDefinition }
   | { readonly kind: 'ambiguous'; readonly candidateIds: readonly string[] };
+
+export interface ImportResolutionContext {
+  readonly parsedFiles: readonly ParsedFile[];
+  readonly parsedImport?: ParsedImport;
+}
 
 /** Re-exported for ScopeResolver consumers — same shape as
  *  `RegistryProviders.constraintCompatibility`'s third parameter. */
@@ -340,12 +346,18 @@ export interface ScopeResolver {
    * orchestrator). TypeScript uses this to thread `tsconfig.json` path
    * aliases through to the standard resolver. Languages that don't
    * need any extra config ignore the parameter.
+   *
+   * `context.parsedFiles` is the complete, read-only language workspace. It is
+   * optional so resolvers that only need paths retain their existing shape.
+   * `context.parsedImport` is the exact import being finalized. PHP uses both
+   * when a PSR-4 import names a function instead of a file.
    */
   resolveImportTarget(
     targetRaw: string,
     fromFile: string,
     allFilePaths: ReadonlySet<string>,
     resolutionConfig?: unknown,
+    context?: ImportResolutionContext,
   ): string | readonly string[] | null;
 
   /**

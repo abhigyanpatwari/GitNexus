@@ -93,6 +93,7 @@ export interface FinalizeHooks {
     targetRaw: string,
     fromFile: string,
     workspaceIndex: WorkspaceIndex,
+    parsedImport?: ParsedImport,
   ): string | readonly string[] | null;
 
   /**
@@ -348,7 +349,12 @@ function makeEdgeDrafts(
     ];
   }
 
-  const targetFile = hooks.resolveImportTarget(parsed.targetRaw ?? '', file.filePath, workspace);
+  const targetFile = hooks.resolveImportTarget(
+    parsed.targetRaw ?? '',
+    file.filePath,
+    workspace,
+    parsed,
+  );
 
   // Edge is unresolvable at the file level — mark unresolved now.
   if (targetFile === null) {
