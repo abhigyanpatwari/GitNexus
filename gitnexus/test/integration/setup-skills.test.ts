@@ -92,7 +92,10 @@ describe('setupCommand skills integration', () => {
       'utf-8',
     );
     expect(reviewContent).toContain('name: gitnexus-review');
-    await expect(fs.access(legacyReviewDir)).rejects.toThrow();
+    // The legacy directory survives the rename untouched: the installer cannot
+    // prove it owns the contents, so it warns instead of deleting (#2431 review).
+    const legacyContent = await fs.readFile(path.join(legacyReviewDir, 'SKILL.md'), 'utf-8');
+    expect(legacyContent).toBe('legacy review skill');
 
     // Flat file source should be installed as {name}/SKILL.md.
     const flatInstalled = await fs.readFile(

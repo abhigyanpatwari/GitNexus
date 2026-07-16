@@ -1089,10 +1089,18 @@ async function installSkillsTo(targetDir: string): Promise<string[]> {
         await fs.writeFile(path.join(skillDir, 'SKILL.md'), content, 'utf-8');
       }
 
-      // Remove only installer-owned directories superseded by a shipped rename.
-      // Otherwise both names remain discoverable after upgrading GitNexus.
+      // A directory superseded by a shipped rename is warned about, never
+      // deleted: the installer cannot prove it owns the contents (users
+      // customize installed skills or hand-write their own under these
+      // names), so an upgrade must not destroy data.
       for (const oldName of RENAMED_SKILL_DIRS[skillName] ?? []) {
-        await fs.rm(path.join(targetDir, oldName), { recursive: true, force: true });
+        const legacyDir = path.join(targetDir, oldName);
+        if (await dirExists(legacyDir)) {
+          console.log(
+            `[gitnexus] skill "${oldName}" was renamed to "${skillName}"; ` +
+              `left ${legacyDir} in place — delete it manually if you have not customized it.`,
+          );
+        }
       }
       installed.push(skillName);
     } catch {

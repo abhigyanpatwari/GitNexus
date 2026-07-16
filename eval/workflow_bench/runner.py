@@ -17,6 +17,11 @@ Token usage, cost, duration, and turn counts come from the CLI's own
 ``--output-format json`` report — nothing is estimated. A task-specific
 ``verify`` command decides ``resolved``; token savings on unresolved runs are
 reported but flagged, because saving tokens by failing is not a saving.
+
+Trust model: task files are EXECUTABLE INPUT — ``setup``/``verify`` run
+through the shell and sessions default to ``--permission-mode
+bypassPermissions`` with the parent environment. Only run task files, repos,
+and candidate overlays you trust (see README § Trust model).
 """
 
 from __future__ import annotations
@@ -144,14 +149,18 @@ def run_claude(
         env=env,
     )
     wall_s = time.monotonic() - started
-    line = proc.stdout.strip().splitlines()[-1] if proc.stdout.strip() else "{}"
+    line = proc.stdout.strip().splitlines()[-1] if proc.stdout.strip() else ""
     try:
-        data = json.loads(line)
+        data = json.loads(line) if line else {}
     except json.JSONDecodeError:
         data = {}
     usage = data.get("usage") or {}
+    # Fail closed: an exit-0 session whose report is empty/malformed or lacks
+    # usage fields must not count as measured evidence (it would otherwise
+    # record a "resolved" run with zero usage and corrupt promotion decisions).
+    well_formed = all(f in usage for f in USAGE_FIELDS)
     return {
-        "ok": proc.returncode == 0 and not data.get("is_error", False),
+        "ok": proc.returncode == 0 and not data.get("is_error", False) and well_formed,
         "session_id": data.get("session_id"),
         "num_turns": data.get("num_turns", 0),
         "cost_usd": data.get("total_cost_usd", 0.0),

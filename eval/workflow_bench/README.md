@@ -36,6 +36,25 @@ Output: `results/wfbench-<timestamp>/results.jsonl` (every run, with session
 ids for transcript drill-down) and `report.md` (medians per task per arm,
 plus a savings row: input / cache / output tokens, cost, wall time).
 
+## Trust model — task files are executable input
+
+**Only run task files, repos, and candidate overlays you trust.** This is a
+local benchmarking tool, not a sandbox:
+
+- Each task's `setup` and `verify` strings run through the shell
+  (`shell=True`) on your machine, with your environment.
+- The benchmarked sessions default to `--permission-mode bypassPermissions`
+  (they must edit and run tests unattended) and inherit the parent process
+  environment — including any credentials in it. Clones are throwaway, your
+  environment is not: scrub secrets from the shell you launch from, or pass a
+  stricter `--permission-mode`.
+- Candidate overlays are skill *prompts* injected into those sessions; a
+  malicious overlay can instruct an agent that has shell access. The runner
+  restricts overlay paths and file types, not their prose.
+
+Treat a tasks YAML from someone else like a shell script from someone else:
+read it before running it.
+
 ## Prompt and skill evolution loop
 
 Prompts age as models and tool harnesses change. Treat the current skills and
@@ -106,13 +125,16 @@ that costs nothing — a hosted OpenRouter `:free` variant or a fully local
 Ollama model. Config template: `free-model.litellm.yaml`.
 
 ```bash
-# 1. Start the proxy (pick/edit a model route in the yaml first)
+# 1. Choose a proxy master key and start the proxy
+#    (pick/edit a model route in the yaml first; keep the proxy on loopback —
+#    anyone who can reach the port with this key can spend the backend quota)
+export LITELLM_MASTER_KEY="$(openssl rand -hex 16)"
 uv run --with 'litellm[proxy]' litellm --config workflow_bench/free-model.litellm.yaml --port 4000
 
 # 2. Point the benchmark at it
 uv run python -m workflow_bench.runner \
   --tasks workflow_bench/tasks.scenarios.yaml --runs 3 \
-  --base-url http://localhost:4000 --auth-token sk-wfbench --model free-coder
+  --base-url http://localhost:4000 --auth-token "$LITELLM_MASTER_KEY" --model free-coder
 ```
 
 Caveats, honestly:

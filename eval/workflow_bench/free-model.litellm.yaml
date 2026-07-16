@@ -4,12 +4,16 @@
 # headless Claude Code can use via ANTHROPIC_BASE_URL, routing to a model
 # that costs nothing:
 #
+#   export LITELLM_MASTER_KEY="$(openssl rand -hex 16)"
 #   uv run --with 'litellm[proxy]' litellm --config workflow_bench/free-model.litellm.yaml --port 4000
 #
 #   uv run python -m workflow_bench.runner \
 #     --tasks workflow_bench/tasks.scenarios.yaml \
-#     --base-url http://localhost:4000 --auth-token sk-wfbench \
+#     --base-url http://localhost:4000 --auth-token "$LITELLM_MASTER_KEY" \
 #     --model free-coder
+#
+# Keep the proxy on loopback (litellm's default host). Anyone who can reach
+# the port with the master key can spend the configured backend's quota.
 #
 # Pick ONE of the model routes below (or add your own — anything litellm
 # supports works):
@@ -34,4 +38,6 @@ model_list:
       api_base: http://localhost:11434
 
 general_settings:
-  master_key: sk-wfbench
+  # No static default — export LITELLM_MASTER_KEY before starting the proxy
+  # and pass the same value as --auth-token (see header).
+  master_key: os.environ/LITELLM_MASTER_KEY

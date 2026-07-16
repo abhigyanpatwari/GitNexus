@@ -268,3 +268,35 @@ def test_apply_candidate_overlay_creates_a_clean_ephemeral_commit(tmp_path):
         text=True,
     )
     assert status.stdout == ""
+
+
+# ─── run_claude fail-closed on malformed session reports (#2431 review) ─────
+
+
+def fake_cli_result(stdout: str):
+    return subprocess.CompletedProcess(args=[], returncode=0, stdout=stdout, stderr="")
+
+
+VALID_REPORT = (
+    '{"session_id": "s", "num_turns": 3, "total_cost_usd": 0.1, "duration_ms": 1000,'
+    ' "usage": {"input_tokens": 1, "cache_creation_input_tokens": 2,'
+    ' "cache_read_input_tokens": 3, "output_tokens": 4}}'
+)
+
+
+@pytest.mark.parametrize(
+    ("stdout", "expected_ok"),
+    [
+        (VALID_REPORT, True),
+        ("", False),  # empty output
+        ("not json", False),  # malformed JSON
+        ('{"session_id": "s", "num_turns": 3}', False),  # missing usage entirely
+        ('{"usage": {"input_tokens": 1}}', False),  # usage missing required fields
+    ],
+)
+def test_run_claude_fails_closed_on_bad_reports(monkeypatch, tmp_path, stdout, expected_ok):
+    from workflow_bench import runner
+
+    monkeypatch.setattr(runner.subprocess, "run", lambda *a, **k: fake_cli_result(stdout))
+    rec = runner.run_claude("task", tmp_path, claude_bin="claude", timeout=5)
+    assert rec["ok"] is expected_ok

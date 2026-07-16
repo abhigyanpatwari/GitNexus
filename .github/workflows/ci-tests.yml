@@ -520,3 +520,22 @@ jobs:
           test/integration/php-pipeline-benchmark.test.ts
           test/integration/ruby-pipeline-benchmark.test.ts
         working-directory: gitnexus
+
+  # Unit tests for the eval workflow benchmark harness (pure helpers +
+  # fail-closed session-report parsing). Deliberately avoids `uv sync` — the
+  # harness tests only need pytest and pyyaml, not the full eval stack.
+  eval-tests:
+    name: eval / workflow_bench pytest
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      # persist-credentials: false — runs tests only, never pushes.
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: '3.13'
+      - run: pip install pytest pyyaml
+      - run: python -m pytest tests/test_workflow_bench.py -q
+        working-directory: eval
