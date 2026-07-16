@@ -26,6 +26,7 @@ import { LocalBackend } from '../../src/mcp/local/local-backend.js';
 import { listRegisteredRepos, loadMeta } from '../../src/storage/repo-manager.js';
 import { withTestLbugDB } from '../helpers/test-indexed-db.js';
 import { runPipelineFromRepo } from '../../src/core/ingestion/pipeline.js';
+import { decodeTaintPath } from '../../src/core/ingestion/taint/path-codec.js';
 
 vi.mock('../../src/storage/repo-manager.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../src/storage/repo-manager.js')>();
@@ -41,6 +42,82 @@ vi.mock('../../src/storage/repo-manager.js', async (importOriginal) => {
 });
 
 const FIXTURE = path.join(__dirname, 'cfg', 'fixtures', 'pdg-repo');
+
+describe('TS/JS taint model sink disambiguation — real pipeline', () => {
+  it('emits findings only for the intended imported/receiver-conventional sinks', async () => {
+    const repoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-taint-disambig-'));
+    try {
+      fs.mkdirSync(path.join(repoDir, 'src'), { recursive: true });
+      fs.writeFileSync(
+        path.join(repoDir, 'src', 'app.ts'),
+        `import { execFile as childExecFile, spawnSync } from 'node:child_process';
+
+function execFile(cmd: string, args: string[]) {
+  return { cmd, args };
+}
+
+export function handle(req: any, db: any, map: Map<string, string>, task: any, res: any, out: any) {
+  const value = req.body;
+  childExecFile('git', [value]);
+  spawnSync(value, []);
+  execFile(value, [value]);
+  db.run(value);
+  map.get(value);
+  task.run(value);
+  res.render(value, {});
+  out.render(value, {});
+}
+`,
+      );
+
+      const result = await runPipelineFromRepo(repoDir, () => {}, { pdg: true });
+      const findings = [...result.graph.iterRelationships()]
+        .filter((rel) => rel.type === 'TAINTED')
+        .map((rel) => {
+          const sink = result.graph.getNode(rel.targetId);
+          const decoded = decodeTaintPath(rel.reason);
+          if (!decoded.ok) {
+            throw new Error(`invalid TAINTED reason for ${rel.id}: ${decoded.error}`);
+          }
+          return {
+            kind: decoded.kind,
+            sinkLine: decoded.hops.at(-1)?.line,
+            sinkText: String(sink?.properties.text ?? ''),
+          };
+        });
+
+      expect(findings.map((f) => f.kind).sort()).toEqual([
+        'command-injection',
+        'command-injection',
+        'sql-injection',
+        'xss',
+      ]);
+      const findingSites = findings
+        .map((f) => `${f.kind}@${f.sinkLine}`)
+        .sort((a, b) => Number(a.split('@')[1]) - Number(b.split('@')[1]));
+      expect(findingSites).toEqual([
+        'command-injection@9',
+        'command-injection@10',
+        'sql-injection@12',
+        'xss@15',
+      ]);
+      expect(findings.map((f) => f.sinkLine).sort((a, b) => Number(a) - Number(b))).not.toContain(
+        11,
+      );
+      expect(findings.map((f) => f.sinkLine).sort((a, b) => Number(a) - Number(b))).not.toContain(
+        13,
+      );
+      expect(findings.map((f) => f.sinkLine).sort((a, b) => Number(a) - Number(b))).not.toContain(
+        14,
+      );
+      expect(findings.map((f) => f.sinkLine).sort((a, b) => Number(a) - Number(b))).not.toContain(
+        16,
+      );
+    } finally {
+      fs.rmSync(repoDir, { recursive: true, force: true });
+    }
+  });
+});
 
 // ─── Block 1: a --pdg index with real taint findings ─────────────────
 

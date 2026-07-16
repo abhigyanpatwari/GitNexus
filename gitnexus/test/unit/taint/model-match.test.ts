@@ -99,6 +99,22 @@ function f(c) { execSync(c); }`);
     expect(allSinks(m).map((s) => s.entry.name)).toEqual(['execSync']);
   });
 
+  it('argv-form child_process sinks match command injection on arg 0', () => {
+    const m = matchesOf(`import { execFile, execFileSync, spawnSync } from 'node:child_process';
+function f(cmd, arg) {
+  execFile(cmd, [arg]);
+  execFileSync(cmd, [arg]);
+  spawnSync(cmd, [arg]);
+}`);
+    expect(allSinks(m).map((s) => s.entry.name)).toEqual(['execFile', 'execFileSync', 'spawnSync']);
+    expect(allSinks(m).map((s) => [...s.argPositions])).toEqual([
+      [0, 1],
+      [0, 1],
+      [0, 1],
+    ]);
+    expect(allSinks(m).every((s) => s.entry.kind === 'command-injection')).toBe(true);
+  });
+
   it('an in-FUNCTION local `exec` shadows the import — no match', () => {
     const m = matchesOf(`import { exec } from 'child_process';
 function f(c) { function exec(x) { return x; } exec(c); }`);
@@ -225,9 +241,34 @@ describe('receiver-conventional sinks', () => {
     expect(allSinks(m).every((s) => s.entry.kind === 'xss')).toBe(true);
   });
 
+  it('res.render matches template and data args; out.render does not', () => {
+    const m = matchesOf(`function f(res, out, template, data) {
+      res.render(template, data);
+      out.render(template, data);
+    }`);
+    const sinks = allSinks(m);
+    expect(sinks.map((s) => s.entry.name)).toEqual(['render']);
+    expect(sinks.map((s) => [...s.argPositions])).toEqual([[0, 1]]);
+    expect(sinks[0].entry.kind).toBe('xss');
+  });
+
   it('.query/.execute match sql-injection on ANY receiver', () => {
     const m = matchesOf(`function f(db, pool, x) { db.query(x); pool.execute(x); }`);
     expect(allSinks(m).map((s) => s.entry.kind)).toEqual(['sql-injection', 'sql-injection']);
+  });
+
+  it('modern DB method sinks match only conventional DB receivers', () => {
+    const m = matchesOf(`function f(db, stmt, knex, map, task, x) {
+      db.run(x);
+      db.all(x);
+      stmt.get(x);
+      knex.raw(x);
+      db.values(x);
+      map.get(x);
+      task.run(x);
+    }`);
+    expect(allSinks(m).map((s) => s.entry.name)).toEqual(['run', 'all', 'get', 'raw', 'values']);
+    expect(allSinks(m).every((s) => s.entry.kind === 'sql-injection')).toBe(true);
   });
 });
 
