@@ -789,13 +789,25 @@ export function runScopeResolution(
   // functions registered under the same property key. Runs after the precise
   // passes — `graph.addRelationship` is first-write-wins, so precisely
   // resolved sites keep their edges.
-  emitPropertyDispatchCalls(
+  const propertyDispatch = emitPropertyDispatchCalls(
     graph,
     indexes,
     emitParsedFiles,
     postHeritageNodeLookup,
     calleeIdAccumulator,
   );
+  if (propertyDispatch.skippedKeys > 0) {
+    // Never drop dispatch coverage silently: a hook table larger than the
+    // fan-out cap means member calls through those keys get no synthesized
+    // CALLS — the #2437 false-safe gap reappears for exactly those keys.
+    logger.debug(
+      {
+        lang: provider.language,
+        skippedKeys: propertyDispatch.skippedKeys,
+      },
+      'property-dispatch: keys over the fan-out cap were dropped (no CALLS synthesized for them)',
+    );
+  }
   const importsEmitted = emitImportEdges(
     graph,
     indexes.imports,
@@ -1211,7 +1223,13 @@ export function runScopeResolution(
     filesSkipped,
     importsEmitted,
     resolve: resolveStats,
-    referenceEdgesEmitted: emitted + receiverExtras + unresolvedReceiverExtras + freeCallExtras,
+    referenceEdgesEmitted:
+      emitted +
+      receiverExtras +
+      unresolvedReceiverExtras +
+      freeCallExtras +
+      propertyDispatch.usesEmitted +
+      propertyDispatch.callsEmitted,
     referenceSkipped: skipped,
     resolutionOutcomes,
     functionSummaries: harvestedSummaries,
