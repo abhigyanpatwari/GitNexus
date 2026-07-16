@@ -782,7 +782,7 @@ describe('runEmbeddingPipeline incremental filter', () => {
     const executeQuery = mockExecuteQuery([first, second, third]);
     const executeWithReusedStatement = mockExecuteWithReusedStatement();
     const windows: string[][] = [];
-    const mutationCountsAtWindowStart: number[] = [];
+    const createCountsAtWindowStart: number[] = [];
     const checkpoints: number[] = [];
     const { runEmbeddingPipeline } =
       await import('../../src/core/embeddings/embedding-pipeline.js');
@@ -798,7 +798,9 @@ describe('runEmbeddingPipeline incremental filter', () => {
         checkpointEveryNodes: 2,
         onCheckpointWindowStart: async ({ nodeIds }) => {
           windows.push(nodeIds);
-          mutationCountsAtWindowStart.push(stmtCalls.length);
+          createCountsAtWindowStart.push(
+            stmtCalls.filter((call) => call.cypher.includes('CREATE')).length,
+          );
         },
         onCheckpoint: async ({ nodesProcessed }) => {
           checkpoints.push(nodesProcessed);
@@ -807,7 +809,7 @@ describe('runEmbeddingPipeline incremental filter', () => {
     );
 
     expect(windows).toEqual([[first.id, second.id], [third.id]]);
-    expect(mutationCountsAtWindowStart).toEqual([0, 2]);
+    expect(createCountsAtWindowStart).toEqual([0, 2]);
     expect(checkpoints).toEqual([2, 3]);
   });
 

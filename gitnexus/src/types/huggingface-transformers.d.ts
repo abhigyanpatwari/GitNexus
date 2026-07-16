@@ -1,3 +1,5 @@
+// This ambient shim intentionally shadows the optional package's bundled types
+// in dependency-pruned CI. Mirror any newly used transformer API surface here.
 declare module '@huggingface/transformers' {
   export interface ProgressInfo {
     status?: string;
