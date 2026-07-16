@@ -688,3 +688,42 @@ describe('emitTsScopeCaptures — #1876 array-method-callback narrowing', () => 
     ).toBe(true);
   });
 });
+
+describe('emitTsScopeCaptures — value-position references (#2437)', () => {
+  it('captures a longhand pair value identifier as @reference.value-ref with its key', () => {
+    const match = findMatch(
+      'function emitHook(): void {}\nexport const provider = { emitScopeCaptures: emitHook };',
+      (t) => t.includes('@reference.value-ref'),
+    );
+    expect(match).toBeDefined();
+    expect(match!['@reference.name'].text).toBe('emitHook');
+    expect(match!['@reference.property-key'].text).toBe('emitScopeCaptures');
+  });
+
+  it('captures a shorthand property as @reference.value-ref with key = name', () => {
+    const match = findMatch(
+      'function emitHook(): void {}\nexport const provider = { emitHook };',
+      (t) => t.includes('@reference.value-ref'),
+    );
+    expect(match).toBeDefined();
+    expect(match!['@reference.name'].text).toBe('emitHook');
+    expect(match!['@reference.property-key'].text).toBe('emitHook');
+  });
+
+  it('does not fire on destructuring shorthand', () => {
+    expect(
+      countMatches('const o = { a: 1 };\nconst { a } = o;', (t) =>
+        t.includes('@reference.value-ref'),
+      ),
+    ).toBe(0);
+  });
+
+  it('does not fire on a pair whose value is a call expression', () => {
+    expect(
+      countMatches(
+        'function make(): number { return 1; }\nexport const provider = { cfgVisitor: make() };',
+        (t) => t.includes('@reference.value-ref'),
+      ),
+    ).toBe(0);
+  });
+});
