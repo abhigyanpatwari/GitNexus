@@ -88,9 +88,16 @@ export function emitReferencesViaLookup(
       // Resolved-callee-id capture (#2227 U2/KTD6/R8): record this CALLS site's
       // resolved target BEFORE the `seen` dedup, keyed on `ref.atRange`
       // (byte-equal to U1's SiteRecord.at: 1-based line / 0-based col). Only
-      // CALLS feeds the bridge; ACCESSES/USES/EXTENDS are skipped. `fromFilePath`
+      // CALLS from real call sites feeds the bridge; ACCESSES/USES/EXTENDS are
+      // skipped, and so are value-ref CALLS (#2437) — a property-value
+      // reference is not a call site U1 could have stamped. `fromFilePath`
       // is the call-site (caller) file — the same file U1 stamps the site on.
-      if (calleeIdSink !== undefined && edgeType === 'CALLS' && fromFilePath !== undefined) {
+      if (
+        calleeIdSink !== undefined &&
+        edgeType === 'CALLS' &&
+        ref.kind === 'call' &&
+        fromFilePath !== undefined
+      ) {
         calleeIdSink.add(fromFilePath, ref.atRange.startLine, ref.atRange.startCol, targetGraphId);
       }
 

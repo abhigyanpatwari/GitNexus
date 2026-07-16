@@ -994,6 +994,26 @@ const TYPESCRIPT_SCOPE_QUERY = `
 (member_expression
   object: (_) @reference.receiver
   property: (property_identifier) @reference.name) @reference.read.member
+
+;; References — value position (#2437): a function identifier assigned as an
+;; object-literal property value (\`{ emitScopeCaptures: emitCppScopeCaptures }\`)
+;; or shorthand (\`{ emitHook }\`). Resolution keeps only callable targets
+;; (MethodRegistry), so plain-value pairs (\`{ port: DEFAULT_PORT }\`) emit
+;; nothing; the emitted edge is a reference-class USES (registration ≠
+;; invocation). \`@reference.property-key\` records the key so the
+;; property-dispatch pass can synthesize CALLS at \`x.<key>()\` sites; for
+;; shorthand the key IS the name (both tags on one node). Two separate
+;; patterns — never combined in \`[...]\` (tree-sitter 0.21 drops alternation
+;; siblings around predicates). Destructuring shorthand is a different node
+;; (\`shorthand_property_identifier_pattern\`), so \`const { a } = o\` cannot
+;; match; string/computed keys carry no \`property_identifier\` and register
+;; without a dispatch key.
+(pair
+  key: (property_identifier) @reference.property-key
+  value: (identifier) @reference.name @reference.value-ref)
+
+(object
+  (shorthand_property_identifier) @reference.name @reference.property-key @reference.value-ref)
 `;
 
 /**

@@ -50,6 +50,12 @@ export function mapReferenceKindToEdgeType(
       return 'EXTENDS';
     case 'type-reference':
       return 'USES';
+    // A function registered as an object-literal property value emits a
+    // reference-class USES edge, NOT CALLS — a registration is not an
+    // invocation (Kythe `ref` vs `ref/call`; Joern `METHOD_REF`). The
+    // invocation side is synthesized by the property-dispatch pass (#2437).
+    case 'value-ref':
+      return 'USES';
     // Macro invocations resolve to a `Macro` node (never a function), so
     // they emit `USES` — kept out of the `CALLS` keyspace which denotes
     // function/method dispatch (#1934 review).

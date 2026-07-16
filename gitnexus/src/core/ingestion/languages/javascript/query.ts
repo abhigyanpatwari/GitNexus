@@ -464,6 +464,20 @@ const JAVASCRIPT_SCOPE_QUERY = `
 (member_expression
   object: (_) @reference.receiver
   property: (property_identifier) @reference.name) @reference.read.member
+
+;; Value position (#2437): function identifier as object-literal property
+;; value ({ emitScopeCaptures: emitHook }) or shorthand ({ emitHook }).
+;; Resolution is callable-gated (MethodRegistry) and emits a USES reference;
+;; @reference.property-key feeds the property-dispatch pass, which
+;; synthesizes CALLS at x.<key>() sites. Two separate patterns (tree-sitter
+;; 0.21 alternation hazard); destructuring shorthand is
+;; shorthand_property_identifier_pattern and cannot match.
+(pair
+  key: (property_identifier) @reference.property-key
+  value: (identifier) @reference.name @reference.value-ref)
+
+(object
+  (shorthand_property_identifier) @reference.name @reference.property-key @reference.value-ref)
 `;
 
 /** JSX-only suffix — appended when compiling against the JSX grammar for .jsx files. */

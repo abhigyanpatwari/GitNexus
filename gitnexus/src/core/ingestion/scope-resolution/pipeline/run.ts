@@ -68,6 +68,7 @@ import { buildPopulatedMethodDispatch } from '../graph-bridge/method-dispatch.js
 import { propagateImportedReturnTypes } from '../passes/imported-return-types.js';
 import { emitReceiverBoundCalls } from '../passes/receiver-bound-calls.js';
 import { emitFreeCallFallback } from '../passes/free-call-fallback.js';
+import { emitPropertyDispatchCalls } from '../passes/property-dispatch.js';
 import { emitReferencesViaLookup } from '../graph-bridge/references-to-edges.js';
 import {
   createCalleeIdAccumulator,
@@ -781,6 +782,18 @@ export function runScopeResolution(
     referenceIndex,
     postHeritageNodeLookup,
     handledSites,
+    calleeIdAccumulator,
+  );
+  // value-ref registrations (#2437): USES edges at the registration sites
+  // plus field-based dispatch — synthesized CALLS from member-call sites to
+  // functions registered under the same property key. Runs after the precise
+  // passes — `graph.addRelationship` is first-write-wins, so precisely
+  // resolved sites keep their edges.
+  emitPropertyDispatchCalls(
+    graph,
+    indexes,
+    emitParsedFiles,
+    postHeritageNodeLookup,
     calleeIdAccumulator,
   );
   const importsEmitted = emitImportEdges(

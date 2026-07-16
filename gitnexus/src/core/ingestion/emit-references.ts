@@ -289,6 +289,10 @@ function mapKindToType(kind: Reference['kind']): RelationshipType {
     case 'type-reference':
     case 'import-use':
     case 'macro':
+    // value-ref: function registered as an object-literal property value —
+    // a reference, not an invocation; CALLS are synthesized separately by
+    // the property-dispatch pass (#2437).
+    case 'value-ref':
       return 'USES';
   }
 }

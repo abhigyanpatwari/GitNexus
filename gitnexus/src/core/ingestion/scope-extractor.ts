@@ -1025,6 +1025,10 @@ function pass5CollectReferences(
       match['@reference.parameter-type-classes'],
     );
 
+    // Object-literal key for value-ref sites (`{ key: fn }` / shorthand);
+    // consumed by the property-dispatch pass (#2437).
+    const propertyKeyCap = match['@reference.property-key'];
+
     const site: ReferenceSite = {
       name: nameCap.text,
       atRange: anchor.range,
@@ -1032,6 +1036,9 @@ function pass5CollectReferences(
       kind,
       ...(qualifiedCap?.text !== undefined && qualifiedCap.text.length > 0
         ? { rawQualifiedName: qualifiedCap.text }
+        : {}),
+      ...(propertyKeyCap?.text !== undefined && propertyKeyCap.text.length > 0
+        ? { propertyKey: propertyKeyCap.text }
         : {}),
       ...(callForm !== undefined ? { callForm } : {}),
       ...(explicitReceiver !== undefined ? { explicitReceiver } : {}),
@@ -1065,6 +1072,8 @@ function referenceKindFromAnchor(name: string): ReferenceKind | undefined {
       return 'import-use';
     case 'macro':
       return 'macro';
+    case 'value-ref':
+      return 'value-ref';
     default:
       return undefined;
   }
@@ -1155,6 +1164,7 @@ const KNOWN_SUB_TAGS: ReadonlySet<string> = new Set<string>([
   '@type-binding.type',
   '@reference.name',
   '@reference.qualified-name',
+  '@reference.property-key',
   '@reference.receiver',
   '@reference.operator',
   '@reference.arity',

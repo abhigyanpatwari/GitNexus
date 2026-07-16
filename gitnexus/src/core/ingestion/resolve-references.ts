@@ -115,6 +115,11 @@ export function resolveReferenceSites(input: ResolveReferencesInput): ResolveRef
   let unresolved = 0;
 
   for (const site of scopes.referenceSites) {
+    // value-ref sites resolve post-finalize (imports live in finalized
+    // bindings the registries can't see — same reason free calls need
+    // `emitFreeCallFallback`). `emitPropertyDispatchCalls` owns their
+    // resolution and emission entirely (#2437).
+    if (site.kind === 'value-ref') continue;
     sitesProcessed++;
 
     const resolutions = lookupForSite(
@@ -174,6 +179,7 @@ export function resolveReferenceSites(input: ResolveReferencesInput): ResolveRef
  *   | `type-reference` | ClassRegistry     | CLASS_KINDS                  |
  *   | `read`/`write`   | FieldRegistry     | FIELD_KINDS                  |
  *   | `import-use`     | tiered fallback   | METHOD ∪ CLASS ∪ FIELD       |
+ *   | `value-ref`      | (skipped here)    | post-finalize walker in `emitPropertyDispatchCalls` |
  *   | `macro`          | MacroRegistry     | MACRO_KINDS (`Macro` only)   |
  *
  * `macro` has its own single-kind registry so a macro invocation
@@ -228,6 +234,11 @@ function lookupForSite(
       const methodHits = methodRegistry.lookup(site.name, site.inScope);
       if (methodHits.length > 0) return methodHits;
       return fieldRegistry.lookup(site.name, site.inScope);
+    }
+    case 'value-ref': {
+      // Unreachable — filtered before lookup (post-finalize resolution in
+      // `emitPropertyDispatchCalls`, #2437). Kept for switch exhaustiveness.
+      return [];
     }
     case 'macro': {
       // Macro-only namespace: resolves against `Macro`-labeled defs, never
