@@ -183,7 +183,7 @@ export const en = {
     'Skip updating the gitnexus section in AGENTS.md and CLAUDE.md',
   'help.option.analyze.noStats': 'Omit volatile file/symbol counts from AGENTS.md and CLAUDE.md',
   'help.option.analyze.skipSkills':
-    'Skip installing standard GitNexus skill files under .claude/skills/gitnexus/. Does not suppress community skills from --skills (those use .claude/skills/generated/). Use --index-only to skip all AI-context file injection.',
+    'Skip installing standard GitNexus skill files directly under .claude/skills/. Does not suppress community skills from --skills (those use .claude/skills/gitnexus-area-*). Use --index-only to skip all AI-context file injection.',
   'help.option.analyze.indexOnly':
     'Pure index mode: skip all file injection (AGENTS.md, CLAUDE.md, skills)',
   'help.option.skipGit':
