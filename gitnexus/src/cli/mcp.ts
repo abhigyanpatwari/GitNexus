@@ -53,11 +53,13 @@ export const mcpCommand = async (options?: {
   // stdout at module init, but transitive deps (pino, pino-pretty, the
   // worker-thread transport) could in theory, and the import-closure
   // regression test enforces the leaf invariant.
-  const [{ startMCPServer }, { LocalBackend }, { logger }] = await Promise.all([
-    import('../mcp/server.js'),
-    import('../mcp/local/local-backend.js'),
-    import('../core/logger.js'),
-  ]);
+  const [{ startMCPServer }, { LocalBackend }, { logger }, { createMcpRepositoryPolicy }] =
+    await Promise.all([
+      import('../mcp/server.js'),
+      import('../mcp/local/local-backend.js'),
+      import('../core/logger.js'),
+      import('../mcp/repository-policy.js'),
+    ]);
 
   // Missing-optional-grammar warnings are intentionally NOT emitted here.
   // `gitnexus analyze` already warns at index time, filtered by the repo's
@@ -71,7 +73,8 @@ export const mcpCommand = async (options?: {
   const backend = new LocalBackend();
   await backend.init();
 
-  const repos = await backend.listRepos();
+  const repositoryPolicy = await createMcpRepositoryPolicy(backend);
+  const repos = await repositoryPolicy.scopeBackend(backend).listRepos();
   if (repos.length === 0) {
     // Operator-actionable but the server still starts and serves; warn-level,
     // not error. Tools will discover newly-analyzed repos via lazy refresh.
@@ -105,6 +108,7 @@ export const mcpCommand = async (options?: {
         port,
         host: options.host ?? '127.0.0.1',
         authToken: resolveAuthToken(options.authToken, process.env),
+        repositoryPolicy,
       });
     } catch (err) {
       logger.error(
@@ -117,5 +121,5 @@ export const mcpCommand = async (options?: {
   }
 
   // Start MCP server (serves all repos, discovers new ones lazily)
-  await startMCPServer(backend);
+  await startMCPServer(backend, repositoryPolicy);
 };

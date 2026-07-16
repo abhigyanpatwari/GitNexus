@@ -58,6 +58,39 @@ export interface WorkerExtractedData {
   parsedFiles: ParsedFile[];
 }
 
+type ParsedGraphNode = ParseWorkerResult['nodes'][number];
+
+function compareText(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
+function sourceLine(node: ParsedGraphNode): number {
+  const value = node.properties.startLine;
+  return typeof value === 'number' && Number.isFinite(value) ? value : Number.MAX_SAFE_INTEGER;
+}
+
+function compareParsedNodeSourceOrder(left: ParsedGraphNode, right: ParsedGraphNode): number {
+  const leftPath = typeof left.properties.filePath === 'string' ? left.properties.filePath : '';
+  const rightPath = typeof right.properties.filePath === 'string' ? right.properties.filePath : '';
+  const fileOrder = compareText(leftPath, rightPath);
+  if (fileOrder !== 0) return fileOrder;
+
+  const leftLine = sourceLine(left);
+  const rightLine = sourceLine(right);
+  if (leftLine !== rightLine) return leftLine < rightLine ? -1 : 1;
+
+  return compareText(left.id, right.id);
+}
+
+function nodesInSourceOrder(nodes: readonly ParsedGraphNode[]): readonly ParsedGraphNode[] {
+  for (let index = 1; index < nodes.length; index++) {
+    if (compareParsedNodeSourceOrder(nodes[index - 1], nodes[index]) > 0) {
+      return [...nodes].sort(compareParsedNodeSourceOrder);
+    }
+  }
+  return nodes;
+}
+
 // ============================================================================
 // Worker-based parallel parsing
 // ============================================================================
@@ -95,7 +128,11 @@ export const mergeChunkResults = (
   const allParsedFiles: ParsedFile[] = [];
 
   for (const result of chunkResults) {
-    for (const node of result.nodes) {
+    // Worker jobs and input files are already merged in stable start-index/path
+    // order. Canonicalize the final per-result node boundary once so graph
+    // insertion, cache replay, and first-wins graph indexes share source order.
+    // The common already-ordered path stays allocation-free and linear.
+    for (const node of nodesInSourceOrder(result.nodes)) {
       graph.addNode({
         id: node.id,
         label: node.label as NodeLabel,

@@ -354,8 +354,8 @@ const phpScopeResolver: ScopeResolver = {
   languageProvider: phpProvider,
   importEdgeReason: 'php-scope: use',
 
-  resolveImportTarget: (targetRaw, fromFile, allFilePaths, resolutionConfig) =>
-    resolvePhpImportTargetInternal(targetRaw, fromFile, allFilePaths, resolutionConfig),
+  resolveImportTarget: (targetRaw, fromFile, allFilePaths, resolutionConfig, context) =>
+    resolvePhpImportTargetInternal(targetRaw, fromFile, allFilePaths, resolutionConfig, context),
 
   loadResolutionConfig: (repoPath) => loadPhpComposerConfig(repoPath),
 

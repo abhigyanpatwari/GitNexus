@@ -302,6 +302,7 @@ export const buildCommunityProjection = (knowledgeGraph: KnowledgeGraph): Commun
 
   const nodes: CommunityProjectionNode[] = [];
   const nodeIndexById = new Map<string, number>();
+  const eligibleNodes: GraphNode[] = [];
 
   knowledgeGraph.forEachNode((node) => {
     if (!isCommunitySymbol(node) || !connectedNodes.has(node.id)) return;
@@ -309,6 +310,12 @@ export const buildCommunityProjection = (knowledgeGraph: KnowledgeGraph): Commun
     // get absorbed into their single neighbor's community, but cost iteration time.
     if (isLarge && (nodeDegree.get(node.id) || 0) < 2) return;
 
+    eligibleNodes.push(node);
+  });
+
+  eligibleNodes.sort((left, right) => (left.id < right.id ? -1 : left.id > right.id ? 1 : 0));
+
+  for (const node of eligibleNodes) {
     nodeIndexById.set(node.id, nodes.length);
     nodes.push({
       id: node.id,
@@ -316,7 +323,7 @@ export const buildCommunityProjection = (knowledgeGraph: KnowledgeGraph): Commun
       filePath: node.properties.filePath,
       type: node.label,
     });
-  });
+  }
 
   const seenEdges = new Set<string>();
   const edges: Array<readonly [number, number]> = [];
@@ -338,6 +345,7 @@ export const buildCommunityProjection = (knowledgeGraph: KnowledgeGraph): Commun
     seenEdges.add(edgeKey);
     edges.push([a, b]);
   });
+  edges.sort(([leftA, leftB], [rightA, rightB]) => leftA - rightA || leftB - rightB);
 
   return { nodes, edges, symbolCount, isLarge };
 };

@@ -182,6 +182,12 @@ SERVICE: optional monorepo path prefix (POSIX-style, case-sensitive segments). W
           description: 'Include full symbol source code (default: false)',
           default: false,
         },
+        maxTokens: {
+          type: 'integer',
+          minimum: 1,
+          description:
+            'Maximum estimated tokens in the complete formatted MCP response. Explicit request overrides GITNEXUS_MCP_DEFAULT_MAX_TOKENS.',
+        },
         repo: {
           type: 'string',
           description:
@@ -297,6 +303,10 @@ SERVICE: optional monorepo path prefix (case-sensitive path segments). When "rep
           description: 'Direct symbol UID from prior tool results (zero-ambiguity lookup)',
         },
         file_path: { type: 'string', description: 'File path to disambiguate common names' },
+        file: {
+          type: 'string',
+          description: 'Compatibility alias for file_path; values must agree when both are present',
+        },
         kind: {
           type: 'string',
           description:
@@ -306,6 +316,12 @@ SERVICE: optional monorepo path prefix (case-sensitive path segments). When "rep
           type: 'boolean',
           description: 'Include full symbol source code (default: false)',
           default: false,
+        },
+        maxTokens: {
+          type: 'integer',
+          minimum: 1,
+          description:
+            'Maximum estimated tokens in the complete formatted MCP response. Explicit request overrides GITNEXUS_MCP_DEFAULT_MAX_TOKENS.',
         },
         repo: {
           type: 'string',
@@ -461,6 +477,14 @@ SERVICE: optional monorepo path prefix (case-sensitive path segments). When "rep
       type: 'object',
       properties: {
         target: { type: 'string', description: 'Name of function, class, or file to analyze' },
+        name: {
+          type: 'string',
+          description: 'Compatibility alias for target; all supplied target aliases must agree',
+        },
+        symbol: {
+          type: 'string',
+          description: 'Compatibility alias for target; all supplied target aliases must agree',
+        },
         target_uid: {
           type: 'string',
           description:
@@ -564,6 +588,12 @@ SERVICE: optional monorepo path prefix (case-sensitive path segments). When "rep
             'When true, returns target, summary, risk, byDepthCounts, affected_processes, and affected_modules — omits byDepth. Single-repo only; ignored in group mode (@groupName). Use for hub symbols to get actionable signal without output explosion.',
           default: false,
         },
+        maxTokens: {
+          type: 'integer',
+          minimum: 1,
+          description:
+            'Maximum estimated tokens in the complete formatted MCP response. Explicit request overrides GITNEXUS_MCP_DEFAULT_MAX_TOKENS.',
+        },
         timeoutMs: {
           type: 'number',
           description:
@@ -578,7 +608,7 @@ SERVICE: optional monorepo path prefix (case-sensitive path segments). When "rep
           maximum: 3600000,
         },
       },
-      required: ['target', 'direction'],
+      required: ['direction'],
     },
   },
   {

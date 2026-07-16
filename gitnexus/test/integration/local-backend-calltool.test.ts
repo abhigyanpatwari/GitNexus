@@ -102,6 +102,31 @@ withTestLbugDB(
         expect(depNames).toContain('login');
       });
 
+      it.each(['name', 'symbol'] as const)(
+        'impact tool resolves the %s compatibility alias against a real index',
+        async (alias) => {
+          const result = await backend.callTool('impact', {
+            [alias]: 'validate',
+            direction: 'upstream',
+          });
+          expect(result).not.toHaveProperty('error');
+          expect(result.target?.name).toBe('validate');
+          const directDeps = result.byDepth[1] || result.byDepth['1'] || [];
+          expect(directDeps.map((d: any) => d.name)).toContain('login');
+        },
+      );
+
+      it('context tool resolves the file compatibility alias against a real index', async () => {
+        const result = await backend.callTool('context', {
+          name: 'authenticate',
+          file: 'src/base.ts',
+        });
+        expect(result).not.toHaveProperty('error');
+        expect(result.status).toBe('found');
+        expect(result.symbol?.name).toBe('authenticate');
+        expect(result.symbol?.filePath).toBe('src/base.ts');
+      });
+
       it('query tool returns results for keyword search', async () => {
         const result = await backend.callTool('query', { query: 'login' });
         expect(result).not.toHaveProperty('error');

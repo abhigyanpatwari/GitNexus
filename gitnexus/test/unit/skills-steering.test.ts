@@ -21,6 +21,7 @@ const REPO_ROOT = path.resolve(__dirname, '..', '..', '..'); // -> monorepo root
 
 function collectSkillFiles(): string[] {
   const files: string[] = [];
+  const projectSkillsRoot = path.join(REPO_ROOT, '.claude', 'skills');
 
   // Bundled ship source: flat *.md files installSkills() copies to new users.
   const bundled = path.join(GITNEXUS_ROOT, 'skills');
@@ -32,13 +33,17 @@ function collectSkillFiles(): string[] {
 
   // Per-skill <name>/SKILL.md copies across the other distribution locations.
   const skillRoots = [
-    path.join(REPO_ROOT, '.claude', 'skills', 'gitnexus'),
+    projectSkillsRoot,
+    path.join(projectSkillsRoot, 'gitnexus'),
     path.join(REPO_ROOT, 'gitnexus-claude-plugin', 'skills'),
     path.join(REPO_ROOT, 'gitnexus-cursor-integration', 'skills'),
   ];
   for (const root of skillRoots) {
     if (!existsSync(root)) continue;
     for (const dir of readdirSync(root)) {
+      if (root === projectSkillsRoot && !dir.startsWith('gitnexus-')) {
+        continue;
+      }
       const skillMd = path.join(root, dir, 'SKILL.md');
       if (existsSync(skillMd)) files.push(skillMd);
     }
@@ -57,11 +62,16 @@ function cliSkillFiles(files: string[]): string[] {
 describe('skill-file steering (#1939, #1945)', () => {
   const files = collectSkillFiles();
 
-  it('collects skill files from all four committed locations (guard is not vacuous)', () => {
+  it('collects skill files from all committed locations (guard is not vacuous)', () => {
     const rels = files.map((f) => path.relative(REPO_ROOT, f));
     expect(rels.some((r) => r.startsWith(`gitnexus${path.sep}skills${path.sep}`))).toBe(true);
     expect(
-      rels.some((r) => r.startsWith(path.join('.claude', 'skills', 'gitnexus') + path.sep)),
+      rels.some((r) => r.startsWith(path.join('.claude', 'skills', 'gitnexus-cli') + path.sep)),
+    ).toBe(true);
+    expect(
+      rels.some((r) =>
+        r.startsWith(path.join('.claude', 'skills', 'gitnexus', 'gitnexus-pdg-query') + path.sep),
+      ),
     ).toBe(true);
     expect(
       rels.some((r) => r.startsWith(path.join('gitnexus-claude-plugin', 'skills') + path.sep)),

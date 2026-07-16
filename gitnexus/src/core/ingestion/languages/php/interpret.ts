@@ -20,12 +20,19 @@ export function interpretPhpImport(captures: CaptureMatch): ParsedImport | null 
   const sourceCap = captures['@import.source'];
   const nameCap = captures['@import.name'];
   const aliasCap = captures['@import.alias'];
+  const symbolKindCap = captures['@import.symbol-kind'];
 
   const kind = kindCap?.text;
   if (kind === undefined || sourceCap === undefined) return null;
 
   const source = sourceCap.text.trim();
   if (source === '') return null;
+  const importedSymbolKind =
+    symbolKindCap?.text === 'function' || symbolKindCap?.text === 'const'
+      ? symbolKindCap.text
+      : kind === 'function' || kind === 'const'
+        ? kind
+        : 'type';
 
   switch (kind) {
     case 'namespace': {
@@ -39,6 +46,7 @@ export function interpretPhpImport(captures: CaptureMatch): ParsedImport | null 
         localName,
         importedName: localName,
         targetRaw: source,
+        importedSymbolKind,
       };
     }
     case 'alias': {
@@ -53,6 +61,7 @@ export function interpretPhpImport(captures: CaptureMatch): ParsedImport | null 
         importedName,
         alias,
         targetRaw: source,
+        importedSymbolKind,
       };
     }
     case 'function': {
@@ -64,6 +73,7 @@ export function interpretPhpImport(captures: CaptureMatch): ParsedImport | null 
         localName,
         importedName: localName,
         targetRaw: source,
+        importedSymbolKind,
       };
     }
     case 'const': {
@@ -74,6 +84,7 @@ export function interpretPhpImport(captures: CaptureMatch): ParsedImport | null 
         localName,
         importedName: localName,
         targetRaw: source,
+        importedSymbolKind,
       };
     }
     default:
