@@ -184,8 +184,10 @@ jobs:
         # spawns and Windows is ~5x slower than macOS at those, so the unsharded
         # run crept past the 15-min watchdog in run-cross-platform.ts. vitest
         # shards by file COUNT, not runtime, so the heaviest spawn suites can
-        # cluster on one shard; 3 shards keep even the busiest Windows shard
-        # comfortably under the watchdog (macOS had margin either way).
+        # cluster on one shard. The busiest Windows shard has grown to the old
+        # 15-minute watchdog (14m57s on the v1.6.10-rc.19 green run, one
+        # observed timeout since — #2449), so the job env below raises the
+        # per-shard watchdog to 20 minutes, still bounded by timeout-minutes.
         # Shard indices come from the shard-plan job (single source of truth):
         # its TOTAL drives this list and the /N in the job name + --shard arg.
         shard: ${{ fromJSON(needs.shard-plan.outputs.shards) }}
@@ -204,6 +206,10 @@ jobs:
     env:
       GITNEXUS_REQUIRE_FTS: '1'
       GITNEXUS_E2E_CLI: dist
+      # #2449: hosted Windows runners intermittently push the busiest shard past
+      # the default 15-minute watchdog. 20 minutes restores real headroom while
+      # the 25-minute job timeout above still bounds a genuine hang.
+      GITNEXUS_CROSS_PLATFORM_TIMEOUT_MINUTES: '20'
     steps:
       # persist-credentials: false — runs tests only, never pushes (zizmor
       # credential-persistence / artipacked audit).

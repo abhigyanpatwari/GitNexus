@@ -92,10 +92,14 @@ withTestLbugDB('delete-nodes-for-files', (handle) => {
       // is plain schema (no VECTOR extension involved).
       const SURVIVOR_PATH = filePath(FILE_COUNT - 1);
       const survivorEmbeddingNodeId = `Function:${SURVIVOR_PATH}:fn${FILE_COUNT - 1}:1`;
+      const survivorFileEmbeddingNodeId = `File:${SURVIVOR_PATH}`;
       const seededEmbeddingNodeIds = [
         `Function:${filePath(1)}:fn1:1`, // deleted, plain path
+        `File:${filePath(1)}`, // deleted fallback File embedding, plain path
         `Function:${QUOTED_PATH}:fn0:1`, // deleted, quoted path
+        `File:${QUOTED_PATH}`, // deleted fallback File embedding, quoted path
         survivorEmbeddingNodeId, // survives the delete
+        survivorFileEmbeddingNodeId, // fallback File embedding also survives
       ];
       await batchInsertEmbeddings(
         executeWithReusedStatement,
@@ -154,15 +158,17 @@ withTestLbugDB('delete-nodes-for-files', (handle) => {
       const embRows = (await executeQuery(
         `MATCH (e:${EMBEDDING_TABLE_NAME}) RETURN e.nodeId AS nodeId`,
       )) as Array<{ nodeId: string }>;
-      expect(embRows.map((r) => String(r.nodeId))).toEqual([survivorEmbeddingNodeId]);
+      expect(embRows.map((r) => String(r.nodeId)).sort()).toEqual(
+        [survivorEmbeddingNodeId, survivorFileEmbeddingNodeId].sort(),
+      );
 
       // Zero-match batch (all paths already gone) is a clean no-op.
       await expect(deleteNodesForFiles([QUOTED_PATH, filePath(1)])).resolves.toBeUndefined();
       // …and it left the surviving embedding row alone.
-      expect(await count(`MATCH (e:${EMBEDDING_TABLE_NAME}) RETURN count(e) AS c`)).toBe(1);
+      expect(await count(`MATCH (e:${EMBEDDING_TABLE_NAME}) RETURN count(e) AS c`)).toBe(2);
     }, 120_000);
 
-    it('a file whose only nodes carry non-embeddable labels deletes cleanly and leaves other files’ embedding rows intact (FIX 4)', async () => {
+    it('a File node without an embedding deletes cleanly and leaves other files’ embedding rows intact (FIX 4)', async () => {
       const { deleteNodesForFiles, executeQuery } =
         await import('../../src/core/lbug/lbug-adapter.js');
       const count = async (cypher: string): Promise<number> => {
@@ -170,9 +176,9 @@ withTestLbugDB('delete-nodes-for-files', (handle) => {
         return Number(rows[0]?.c ?? 0);
       };
 
-      // File is NOT an embeddable label, so the label-scoped embedding join
-      // (FIX 4) never binds it — the delete must still remove the node rows
-      // without erroring, and embedding rows owned by OTHER files stay put.
+      // File can own fallback embeddings, but this fixture deliberately has
+      // none. The delete must still remove the node row without erroring, and
+      // embedding rows owned by OTHER files stay put.
       const ASSET_PATH = 'src/assets-only.txt';
       await executeQuery(
         `CREATE (:File {id: 'File:${ASSET_PATH}', name: 'assets-only.txt', filePath: '${ASSET_PATH}'})`,
@@ -189,6 +195,39 @@ withTestLbugDB('delete-nodes-for-files', (handle) => {
       expect(await count(`MATCH (e:${EMBEDDING_TABLE_NAME}) RETURN count(e) AS c`)).toBe(
         embeddingsBefore,
       );
+    }, 120_000);
+
+    it('deleteNodesForFile removes a fallback embedding owned by the File node', async () => {
+      const { deleteNodesForFile, executeQuery, executeWithReusedStatement } =
+        await import('../../src/core/lbug/lbug-adapter.js');
+      const { batchInsertEmbeddings } =
+        await import('../../src/core/embeddings/embedding-pipeline.js');
+      const count = async (cypher: string): Promise<number> => {
+        const rows = (await executeQuery(cypher)) as Array<{ c: number | bigint }>;
+        return Number(rows[0]?.c ?? 0);
+      };
+
+      const filePath = 'docs/singular.md';
+      const nodeId = `File:${filePath}`;
+      await executeQuery(
+        `CREATE (:File {id: '${nodeId}', name: 'singular.md', filePath: '${filePath}'})`,
+      );
+      await batchInsertEmbeddings(executeWithReusedStatement, [
+        {
+          nodeId,
+          chunkIndex: 0,
+          startLine: 1,
+          endLine: 1,
+          embedding: new Array(EMBEDDING_DIMS).fill(0),
+        },
+      ]);
+
+      await expect(deleteNodesForFile(filePath)).resolves.toEqual({ deletedNodes: 1 });
+      expect(
+        await count(
+          `MATCH (e:${EMBEDDING_TABLE_NAME}) WHERE e.nodeId = '${nodeId}' RETURN count(e) AS c`,
+        ),
+      ).toBe(0);
     }, 120_000);
   });
 });
