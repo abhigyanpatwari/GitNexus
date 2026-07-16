@@ -64,16 +64,26 @@ PLAN_PROMPT = (
     "Headless run: make reasonable choices without asking; the plan document "
     "is the deliverable."
 )
+# Appended to every work-arm prompt. In a headless `claude -p` session there
+# is no later turn: backgrounded test runs and scheduled wakeups never come
+# back, so a session that "waits" for verification ends unverified (observed:
+# a work arm backgrounded its slow tests, scheduled three wakeups that never
+# fired, and reported done while two tests failed).
+HEADLESS_VERIFY = (
+    " Verification must be observed inside this session: run the typecheck "
+    "and test commands in the foreground to completion and report their "
+    "actual output — never background them or wait on scheduled wakeups."
+)
 WORK_PROMPT = (
     "Use the gitnexus-work skill to execute the plan at {plan}.\n"
     "Headless run: proceed without asking; report Definition of Done status "
-    "at the end."
+    "at the end." + HEADLESS_VERIFY
 )
 WORK_DIRECT_PROMPT = (
     "Use the gitnexus-work skill for: {task}\n"
     "Headless run: proceed without asking. The user explicitly declines a "
     "separate planning pass — execute in direct mode with the skill's "
-    "execution discipline."
+    "execution discipline." + HEADLESS_VERIFY
 )
 BASELINE_PROMPT = (
     "{task}\n\n"
@@ -92,13 +102,13 @@ CE_WORK_PROMPT = (
     "Use the ce-work skill (compound-engineering plugin) to execute the plan "
     "at {plan}.\n"
     "Headless run: proceed without asking; report completion status at the "
-    "end."
+    "end." + HEADLESS_VERIFY
 )
 CE_WORK_DIRECT_PROMPT = (
     "Use the ce-work skill (compound-engineering plugin) for: {task}\n"
     "Headless run: proceed without asking. The user explicitly declines a "
     "separate planning pass — execute directly with the skill's execution "
-    "discipline."
+    "discipline." + HEADLESS_VERIFY
 )
 # Review cell: the task's `setup` applies the diff under review as local
 # changes; both arms review the same working tree and write to the same file
