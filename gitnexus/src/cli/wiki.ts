@@ -41,7 +41,7 @@ export interface WikiCommandOptions {
   timeout?: string;
   retries?: string;
   lang?: string;
-  allowInsecureLlmHost?: string;
+  allowInsecureConnection?: string;
 }
 
 function parsePositiveIntegerOption(
@@ -195,9 +195,9 @@ const wikiCommandImpl = async (inputPath?: string, options?: WikiCommandOptions)
     timeoutSeconds = parsePositiveIntegerOption(options?.timeout, '--timeout', 1000);
     retries = parsePositiveIntegerOption(options?.retries, '--retries');
     allowedInsecureHttpHosts =
-      options?.allowInsecureLlmHost === undefined
+      options?.allowInsecureConnection === undefined
         ? undefined
-        : parseLLMAllowedInsecureHttpHosts(options.allowInsecureLlmHost);
+        : parseLLMAllowedInsecureHttpHosts(options.allowInsecureConnection);
   } catch (error) {
     console.log(`  Error: ${(error as Error).message}\n`);
     process.exitCode = 1;

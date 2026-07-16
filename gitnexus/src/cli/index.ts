@@ -305,7 +305,7 @@ program
   .option('--timeout <seconds>', 'LLM request timeout in seconds (default: disabled)')
   .option('--retries <n>', 'Max LLM retry attempts per request (default: 3)')
   .option(
-    '--allow-insecure-llm-host <host>',
+    '--allow-insecure-connection <host>',
     'Allow exact host(s) for http:// LLM base URLs (comma-separated; HTTPS is preferred)',
   )
   .option('--gist', 'Publish wiki as a public GitHub Gist after generation')

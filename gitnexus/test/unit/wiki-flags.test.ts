@@ -677,11 +677,11 @@ describe('wikiCommand --timeout mapping', () => {
     expect(harness.getCapturedConfig()?.maxAttempts).toBe(5);
   });
 
-  it('maps --allow-insecure-llm-host to allowedInsecureHttpHosts', async () => {
+  it('maps --allow-insecure-connection to allowedInsecureHttpHosts', async () => {
     const harness = await loadWikiCommandHarness();
 
     await harness.wikiCommand('/tmp/repo', {
-      allowInsecureLlmHost: 'llama-box.local,192.168.1.23,llama-box.local',
+      allowInsecureConnection: 'llama-box.local,192.168.1.23,llama-box.local',
     });
 
     expect(harness.resolveLLMConfig).toHaveBeenCalledWith(
