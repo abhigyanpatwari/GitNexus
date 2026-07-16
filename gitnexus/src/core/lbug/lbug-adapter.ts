@@ -2124,16 +2124,18 @@ export const isLbugReady = (): boolean => conn !== null && db !== null;
 
 /**
  * Multi-label alternation over exactly the labels that can own embedding
- * rows (embedding-pipeline.ts queries EMBEDDABLE_LABELS and nothing else),
- * reserved keywords backtick-escaped via {@link escapeTableName}. Probed on
- * @ladybugdb/core 0.18.0 (this shipping review, FIX 4): the full 19-label
+ * rows: EMBEDDABLE_LABELS plus File, which embedding-pipeline.ts embeds as
+ * the zero-symbol fallback for text-only repositories (#2454). Reserved
+ * keywords are backtick-escaped via {@link escapeTableName}. Probed on
+ * @ladybugdb/core 0.18.0 (this shipping review, FIX 4): the full multi-label
  * alternation parses, executes, and deletes exactly the joined rows —
  * replacing the unlabeled `MATCH (n)` that scanned EVERY node table per
  * chunk (BasicBlock-dominated under `--pdg`) when only embeddable labels
- * can match an embedding row.
+ * can match an embedding row. Including File is free for code repositories:
+ * they never hold File embedding rows, so the extra label joins nothing.
  */
 const embeddableLabelMatch = (): string =>
-  EMBEDDABLE_LABELS.map((l) => escapeTableName(l)).join('|');
+  ['File', ...EMBEDDABLE_LABELS].map((l) => escapeTableName(l)).join('|');
 
 // LADYBUGDB-CONTRACT: matches @ladybugdb/core ^0.18.0 native binder text,
 // probe-recorded: `Binder exception: Table CodeEmbedding does not exist.`
