@@ -48,10 +48,11 @@ try {
 
 // Per-shard watchdog, default 15 min. Sharding splits the file list by COUNT, not
 // runtime, so the heaviest spawn suites can cluster on one shard — what this
-// bounds is the *busiest* shard, not an even 1/n of wall-clock. With 3 shards
-// even that shard clears the watchdog, where the whole unsharded Windows run
-// used to trip it. Allow CI/manual runs to add headroom without editing the
-// script again.
+// bounds is the *busiest* shard, not an even 1/n of wall-clock. The busiest
+// Windows shard has grown to the default (14m57s on the v1.6.10-rc.19 green
+// run, one observed timeout since — #2449), so CI raises the budget to 20
+// minutes via GITNEXUS_CROSS_PLATFORM_TIMEOUT_MINUTES; the default stays 15
+// for local runs.
 const DEFAULT_TIMEOUT_MIN = 15;
 const timeoutMinutes = Number.parseInt(
   process.env.GITNEXUS_CROSS_PLATFORM_TIMEOUT_MINUTES ?? String(DEFAULT_TIMEOUT_MIN),
@@ -67,6 +68,7 @@ console.log(
     `${shardArg ? ` (${shardArg.replace('--shard=', 'shard ')})` : ''}...\n`,
 );
 
+const startedAt = Date.now();
 try {
   execFileSync('npx', ['vitest', 'run', ...ALL_CROSS_PLATFORM, ...(shardArg ? [shardArg] : [])], {
     cwd: ROOT,
@@ -76,9 +78,22 @@ try {
   });
 } catch (err) {
   // execFileSync sets `killed`/`signal` when the watchdog above kills vitest.
-  const e = err as { killed?: boolean; signal?: NodeJS.Signals | null };
+  const e = err as {
+    killed?: boolean;
+    signal?: NodeJS.Signals | null;
+    status?: number | null;
+    code?: string;
+  };
   if (e.killed || e.signal) {
     console.error(`vitest timed out after ${Math.round(timeoutMs / 60_000)} minutes`);
   }
+  // #2449: Windows shards have died with a bare `status: null`, empty stderr
+  // and nothing to triage from. Always leave the child's exit facts behind.
+  const elapsedSec = Math.round((Date.now() - startedAt) / 1000);
+  console.error(
+    `vitest exited abnormally: status=${e.status ?? 'null'} signal=${e.signal ?? 'none'} ` +
+      `killed=${e.killed === true} spawnCode=${e.code ?? 'none'} elapsed=${elapsedSec}s ` +
+      `budget=${Math.round(timeoutMs / 60_000)}min`,
+  );
   process.exit(1);
 }
