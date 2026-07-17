@@ -11,6 +11,24 @@ import { parseSourceSafe } from '../../../tree-sitter/safe-parse.js';
 import { splitCInclude } from './import-decomposer.js';
 import { computeCDeclarationArity, computeCCallArity } from './arity-metadata.js';
 import { markStaticName } from './static-linkage.js';
+import {
+  synthesizeCallableFlowCaptures,
+  type CallableCaptureSignature,
+} from '../../utils/callable-flow-captures.js';
+
+const C_CALLABLE_CAPTURE_OPTIONS = {
+  functionNodeTypes: new Set(['function_definition']),
+  callNodeTypes: new Set(['call_expression']),
+  parameterListNodeTypes: new Set(['parameter_list', 'argument_list']),
+  parameterNodeTypes: new Set(['parameter_declaration']),
+  bindingNodeTypes: new Set(['init_declarator']),
+  assignmentNodeTypes: new Set(['assignment_expression']),
+  identifierNodeTypes: new Set(['identifier', 'field_identifier', 'type_identifier']),
+  parameterPassingMode: (parameter: SyntaxNode) =>
+    containsNodeType(parameter, 'pointer_declarator') ? ('pointer' as const) : ('value' as const),
+  expectedSignature: (_container: SyntaxNode, destination: SyntaxNode) =>
+    functionDeclaratorSignature(destination),
+} as const;
 
 export function emitCScopeCaptures(
   sourceText: string,
@@ -146,7 +164,36 @@ export function emitCScopeCaptures(
     out.push(grouped);
   }
 
+  out.push(...synthesizeCallableFlowCaptures(tree.rootNode, C_CALLABLE_CAPTURE_OPTIONS));
   return out;
+}
+
+function functionDeclaratorSignature(node: SyntaxNode): CallableCaptureSignature | undefined {
+  const declarator = findDescendantOfType(node, 'function_declarator');
+  const parameters = declarator?.childForFieldName('parameters');
+  if (parameters === null || parameters === undefined) return undefined;
+  const parameterNodes = parameters.namedChildren.filter(
+    (child): child is SyntaxNode => child !== null && child.type === 'parameter_declaration',
+  );
+  const isVoidOnly =
+    parameterNodes.length === 1 &&
+    parameterNodes[0]!.namedChildCount === 1 &&
+    parameterNodes[0]!.firstNamedChild?.text === 'void';
+  return { parameterCount: isVoidOnly ? 0 : parameterNodes.length };
+}
+
+function containsNodeType(root: SyntaxNode, type: string): boolean {
+  return findDescendantOfType(root, type) !== null;
+}
+
+function findDescendantOfType(root: SyntaxNode, type: string): SyntaxNode | null {
+  const stack: SyntaxNode[] = [root];
+  while (stack.length > 0) {
+    const node = stack.pop()!;
+    if (node.type === type) return node;
+    for (const child of node.namedChildren) if (child !== null) stack.push(child);
+  }
+  return null;
 }
 
 /**

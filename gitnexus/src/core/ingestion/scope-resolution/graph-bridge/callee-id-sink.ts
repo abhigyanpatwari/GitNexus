@@ -21,9 +21,9 @@
  * `(atRange.startLine, atRange.startCol)` is byte-equal to U1's `at` — no
  * normalization needed.
  *
- * Gating (R4): the concrete sink is created in `run.ts` only when
- * `input.pdg === true`; otherwise `undefined` is threaded through, so off-mode
- * does zero work and emits byte-identical output.
+ * Gating (R4): the concrete sink is created in `run.ts` when PDG is enabled OR
+ * always-on callable-flow facts need direct call targets for actual→formal
+ * propagation. The read-side CFG join remains strictly PDG-gated.
  *
  * Multi-target dispatch (R2/KTD8): one site → multiple emit calls → the `Set`
  * accumulates every resolved target. Capture is per-emit-call, so the
@@ -75,9 +75,8 @@ export interface CalleeIdMapView {
 export interface CalleeIdAccumulator extends CalleeIdSink, CalleeIdMapView {}
 
 /**
- * Create the concrete nested-`Map` accumulator. Call ONLY when
- * `input.pdg === true` (else thread `undefined` for byte-identity / zero
- * overhead — R4).
+ * Create the concrete nested-`Map` accumulator for PDG callee capture or
+ * callable-value-flow's direct-target index.
  */
 export function createCalleeIdAccumulator(): CalleeIdAccumulator {
   const byFile = new Map<string, Map<CalleeIdPosKey, Set<string>>>();

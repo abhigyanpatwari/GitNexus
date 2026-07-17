@@ -1319,6 +1319,7 @@ function callableFlowOperand(
     inScope,
     atRange: cap.range,
     indirection: parseNonNegativeInt(match[`@callable-flow.${role}-indirection`]?.text) ?? 0,
+    addressOf: match[`@callable-flow.${role}-address`]?.text === 'true',
   };
 }
 

@@ -78,6 +78,10 @@ import {
   type CalleeIdAccumulator,
 } from '../graph-bridge/callee-id-sink.js';
 import { emitImportEdges } from '../graph-bridge/imports-to-edges.js';
+import {
+  collectDeferredIndirectSites,
+  emitCallableValueFlow,
+} from '../passes/callable-value-flow.js';
 import type { ScopeResolver } from '../contract/scope-resolver.js';
 import { findEnclosingClassDef, resolveInheritanceBaseInScope } from '../scope/walkers.js';
 import { buildWorkspaceResolutionIndex } from '../workspace-index.js';
@@ -725,13 +729,13 @@ export function runScopeResolution(
   // ── Phase 4: emit graph edges (LOAD-BEARING ORDER — see I1) ────────────
   input.onProgress?.('linking symbols', files.length, files.length);
   const handledSites = new Set<string>(preEmittedInheritanceSites);
-  // Resolved-callee-id capture accumulator (#2227 U2). Created ONLY under
-  // `--pdg` — `undefined` otherwise so the three emitters do zero work and emit
-  // byte-identical output (R4). Populated below at all three CALLS emit paths
-  // (each before its dedup, KTD6/R8); consumed by the CFG-emit join (U3) at
-  // `emitFileCfgs` below to produce `BasicBlock.calleeIds`.
+  const deferredIndirectSites = collectDeferredIndirectSites(emitParsedFiles);
+  // Resolved-callee-id accumulator (#2227 U2 + callable-value-flow). Created
+  // for PDG OR when indirect-call facts need direct targets for actual→formal
+  // propagation. Populated below at every CALLS emit path before dedup; the CFG
+  // join still consumes it only inside the `input.pdg` block.
   const calleeIdAccumulator: CalleeIdAccumulator | undefined =
-    input.pdg === true ? createCalleeIdAccumulator() : undefined;
+    input.pdg === true || deferredIndirectSites.size > 0 ? createCalleeIdAccumulator() : undefined;
   const receiverExtras = emitReceiverBoundCalls(
     graph,
     indexes,
@@ -777,16 +781,42 @@ export function runScopeResolution(
       constraintCompatibility: provider.constraintCompatibility,
       recordResolutionOutcome,
       calleeIdSink: calleeIdAccumulator,
+      skipSites: deferredIndirectSites,
     },
   );
+  const referenceSkipSites = new Set(handledSites);
+  for (const key of deferredIndirectSites) referenceSkipSites.add(key);
   const { emitted, skipped } = emitReferencesViaLookup(
     graph,
     indexes,
     referenceIndex,
     postHeritageNodeLookup,
-    handledSites,
+    referenceSkipSites,
     calleeIdAccumulator,
   );
+  const callableValueFlow =
+    calleeIdAccumulator === undefined
+      ? {
+          emitted: 0,
+          resolvedInvokes: 0,
+          ambiguousInvokes: 0,
+          unmatchedInvokes: 0,
+          iterations: 0,
+        }
+      : emitCallableValueFlow({
+          graph,
+          scopes: indexes,
+          parsedFiles: emitParsedFiles,
+          nodeLookup: postHeritageNodeLookup,
+          calleeIds: calleeIdAccumulator,
+          language: provider.language,
+          collapseByCallerTarget: provider.collapseMemberCallsByCallerTarget === true,
+          onWarn: (warning) =>
+            logger.warn(
+              warning,
+              'callable-value-flow: candidate set exceeded the cap; no partial CALLS emitted',
+            ),
+        });
   // value-ref registrations (#2437): USES edges at the registration sites
   // plus field-based dispatch — synthesized CALLS from member-call sites to
   // functions registered under the same property key. Runs after the precise
@@ -970,8 +1000,8 @@ export function runScopeResolution(
           (message) => logger.warn(message),
           // U3 (#2227): the resolved-callee-id map for this file (captured at the
           // three CALLS emit paths in U2), joined by exact call-site position to
-          // emit `BasicBlock.calleeIds`. `undefined` when pdg is off (the
-          // accumulator is only created under `input.pdg === true`).
+          // emit `BasicBlock.calleeIds`. Callable-flow may also have allocated
+          // the accumulator in a normal run, but this join remains PDG-only.
           calleeIdAccumulator?.get(pf.filePath),
         );
         cfgBlocks += emitted.blocks;
@@ -1232,6 +1262,7 @@ export function runScopeResolution(
       receiverExtras +
       unresolvedReceiverExtras +
       freeCallExtras +
+      callableValueFlow.emitted +
       propertyDispatch.usesEmitted +
       propertyDispatch.callsEmitted,
     referenceSkipped: skipped,

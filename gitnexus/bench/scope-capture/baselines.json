@@ -11,15 +11,17 @@
     "_note": "Updated for F17-F23 fixes (P2: TIMES guard, ADD GIVING, SQL AS alias). See PR #1959."
   },
   "c": {
-    "fingerprint": "12a196b2d6249c8d86a931b12ecebc2a0cdf8d6f47683acdd0d8e9d8bc7657f5",
+    "fingerprint": "75bcdbbf006bf9bd263c0f5857461b118f39b164e9f821cb0651ad0ec46ef6ae",
     "scaling_budget": 1.5,
+    "_rebaselined_callable_flow": "Callable-value-flow facts for C function pointers, copies, pointer-to-pointer cells, arguments, and indirect invokes. Prior 12a196b2d6249c8d86a931b12ecebc2a0cdf8d6f47683acdd0d8e9d8bc7657f5 -> 75bcdbbf006bf9bd263c0f5857461b118f39b164e9f821cb0651ad0ec46ef6ae; measured scaling ratio 0.980 < 1.5.",
     "_added": "#1956: c added to the scope-capture bench (was UNBENCHED). C has no inheritance \u2014 flat scale source. Adding it exposed + fixed a pre-existing O(n^2) findNodeAtRange root-walk in c/captures.ts (threaded c.node, byte-identical over c-* fixtures); scaling 3.475 -> 0.96.",
     "_note": "#1983: + c-static-linkage-worker fixture (caller.c/lib.c/lib.h/local.c \u2014 worker-path static-linkage side-channel test). Pure fixture-corpus drift: no c/captures.ts or query change branch-vs-main, existing fixtures' captures byte-identical (c-captures.test.ts 45/45), scaling stays linear (~0.97). The baseline was missed when the fixture landed; regenerated here. fingerprint 0de009b->39f3a83.",
     "_rebaselined": "#1919 open-language coverage: new lang-resolution fixtures + intended capture additions (F5/F9 c-cpp, F26/F28/F29 dart, F47/F48/F49/F51/F52 kotlin, F75/F79 swift). Fingerprint-only drift; scaling_ratio ~1.0 (linear, no perf regression)."
   },
   "cpp": {
-    "fingerprint": "6ab657c8f9bfe988a3759098c2cffdcc0443def75ff263f1282b82c21d96e931",
+    "fingerprint": "3a503a1513e7eede3f7a223dcce0896c06d15bdfa920445224c9025848c0d710",
     "scaling_budget": 1.5,
+    "_rebaselined_callable_flow": "Callable-value-flow facts for C++ function pointers/references, reference aliases, contextual arity, arguments, and member-pointer syntax. Prior 6ab657c8f9bfe988a3759098c2cffdcc0443def75ff263f1282b82c21d96e931 -> 3a503a1513e7eede3f7a223dcce0896c06d15bdfa920445224c9025848c0d710; measured scaling ratio 1.069 < 1.5.",
     "_note_1909_p3_followup": "#1909 P3 follow-up: cpp-variadic-dependent-resolution covers a comment between a pack-expanded base and `...`; review follow-up restores a separate plain `B...` fixture path too. Capture ranges intentionally drift while scaling remains linear (1.116 < 1.5).",
     "_note_1899_followup": "#1899 follow-up: braced-init metadata now carries element count, intentionally changing C++ capture output; CI benchmark scaling remains linear (1.129 < 1.5).",
     "_added": "#1956: cpp added to the scope-capture bench (was UNBENCHED). Heritage-bearing scale source (: public Base, public Mixin) drives emitCppInheritanceCaptures at scale. Adding it exposed + fixed a pre-existing O(n^2) findNodeAtRange root-walk in cpp/captures.ts (~12 sites, threaded c.node, byte-identical over 263 cpp-* fixtures); scaling 2.30 -> 1.12.",
@@ -68,15 +70,17 @@
     "_note": "#1928 / #2045: F35 adds qualified + qualified-generic constructor query captures (`new pkg.Foo()`, `new a.b.Foo()`, `new pkg.Box<T>()`); F38 synthesizes `@reference.call.constructor` on `super(...)`/`this(...)` explicit_constructor_invocation nodes; F41 generic-aware stripQualifier in interpret (type-binding normalization). + java-qualified-constructor and java-explicit-constructor fixtures. Pure capture-additive + fixture-corpus drift; scaling stays linear (~1.06)."
   },
   "typescript": {
-    "fingerprint": "25de86fd3377132c4e35d3d98f4f94a58e0cfeb7c22948a8ea3be4e793be74fd",
+    "fingerprint": "db5933cc6760234ed7d495123410feba6de243646d583f20d43032b9459f81fd",
     "scaling_budget": 1.5,
+    "_rebaselined_callable_flow": "Callable assignment/copy/formal/argument/invoke facts (also consumed by Vue script blocks). Prior 25de86fd3377132c4e35d3d98f4f94a58e0cfeb7c22948a8ea3be4e793be74fd -> db5933cc6760234ed7d495123410feba6de243646d583f20d43032b9459f81fd; measured scaling ratio 0.951 < 1.5.",
     "_rebaselined": "#1962: F44 (class scope@), F85 (enum member declarations), F87 (optional_parameter type annotations) add new captures \u2014 fingerprint drift expected.",
     "_note": "#1968: F44, F85, F87 \u2014 fingerprint drift expected.",
     "_rebaselined_2522": "#2522 intentional @reference.value-ref/property-key capture additions. GitHub Actions run 29553361660 job 87800394279: prior 3f44a4a6892698df2d145c8ff2812c3b318807648983c88aca28fbd694f172f9 -> 25de86fd3377132c4e35d3d98f4f94a58e0cfeb7c22948a8ea3be4e793be74fd; scaling ratio 0.987 < 1.5."
   },
   "javascript": {
-    "fingerprint": "5567dd47e7ba29821a518c4a9852adc3b774e25ef3e7a6e2b3ecb7b59ddab73c",
+    "fingerprint": "917a9cd975ba035bdad71fdb70cd72eeddec58c25797e5a1addfa6172808a55c",
     "scaling_budget": 1.5,
+    "_rebaselined_callable_flow": "Callable assignment/copy/formal/argument/invoke facts (also consumed by Vue script blocks). Prior 5567dd47e7ba29821a518c4a9852adc3b774e25ef3e7a6e2b3ecb7b59ddab73c -> 917a9cd975ba035bdad71fdb70cd72eeddec58c25797e5a1addfa6172808a55c; measured scaling ratio 1.126 < 1.5.",
     "_added": "#1951: bench coverage added (was ungated); scale source heritage-bearing (extends Base); js/kotlin O(n^2) findNodeAtRange-per-match fixed to threaded captured node, now linear.",
     "_rebaselined": "#1956 synth-widening: + javascript-qualified-base fixture; synthesizeJsInheritanceReferences now handles a member_expression base (class S extends ns.Base -> Base), matching the #1940 legacy leg + the TS terminalTsTypeNameNode property_identifier case, at parity. Linear (~1.05). | #942: scope-resolution-only cleanup reworded fixture comments; capture byte-positions shift, capture LOGIC unchanged.",
     "_rebaselined_2522": "#2522 intentional @reference.value-ref/property-key capture additions. GitHub Actions run 29553361660 job 87800394279: prior d72f03c6c502235d2d4b74d66baa5c7d361f040d7a1b72e84acad61210d05ae8 -> 5567dd47e7ba29821a518c4a9852adc3b774e25ef3e7a6e2b3ecb7b59ddab73c; scaling ratio 1.031 < 1.5."

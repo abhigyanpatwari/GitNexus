@@ -23,6 +23,38 @@ import { extractCppTemplateConstraints } from './constraint-extractor.js';
 import { captureCppMemberLookupFacts } from './member-lookup.js';
 import { CPP_BRACED_INIT_TYPE_PREFIX } from './conversion-rank.js';
 import { logger } from '../../../logger.js';
+import {
+  synthesizeCallableFlowCaptures,
+  type CallableCaptureSignature,
+} from '../../utils/callable-flow-captures.js';
+
+const CPP_CALLABLE_CAPTURE_OPTIONS = {
+  functionNodeTypes: new Set(['function_definition', 'lambda_expression']),
+  callNodeTypes: new Set(['call_expression']),
+  parameterListNodeTypes: new Set(['parameter_list', 'argument_list']),
+  parameterNodeTypes: new Set(['parameter_declaration', 'optional_parameter_declaration']),
+  bindingNodeTypes: new Set(['init_declarator']),
+  assignmentNodeTypes: new Set(['assignment_expression']),
+  identifierNodeTypes: new Set([
+    'identifier',
+    'field_identifier',
+    'type_identifier',
+    'namespace_identifier',
+  ]),
+  callableReferenceNodeTypes: new Set(['qualified_identifier']),
+  memberPointerOperators: new Set(['.*', '->*']),
+  parameterPassingMode: (parameter: SyntaxNode) =>
+    cppContainsNodeType(parameter, 'reference_declarator')
+      ? ('reference' as const)
+      : cppContainsNodeType(parameter, 'pointer_declarator')
+        ? ('pointer' as const)
+        : ('value' as const),
+  isTrueReferenceBinding: (_container: SyntaxNode, destination: SyntaxNode) =>
+    cppContainsNodeType(destination, 'reference_declarator'),
+  expectedSignature: (_container: SyntaxNode, destination: SyntaxNode) =>
+    cppFunctionDeclaratorSignature(destination),
+  normalizeQualifiedName: (raw: string) => raw.replaceAll('::', '.'),
+} as const;
 
 /**
  * Per-file wall-clock budget for the capture-emit loop (#2432). A worker
@@ -519,7 +551,36 @@ export function emitCppScopeCaptures(
   detectCppDependentBases(tree.rootNode, filePath);
   captureCppMemberLookupFacts(tree.rootNode, filePath);
 
+  out.push(...synthesizeCallableFlowCaptures(tree.rootNode, CPP_CALLABLE_CAPTURE_OPTIONS));
   return out;
+}
+
+function cppFunctionDeclaratorSignature(node: SyntaxNode): CallableCaptureSignature | undefined {
+  const declarator = cppFindDescendantOfType(node, 'function_declarator');
+  const parameters = declarator?.childForFieldName('parameters');
+  if (parameters === null || parameters === undefined) return undefined;
+  const parameterNodes = parameters.namedChildren.filter(
+    (child): child is SyntaxNode => child !== null && child.type.includes('parameter_declaration'),
+  );
+  const isVoidOnly =
+    parameterNodes.length === 1 &&
+    parameterNodes[0]!.namedChildCount === 1 &&
+    parameterNodes[0]!.firstNamedChild?.text === 'void';
+  return { parameterCount: isVoidOnly ? 0 : parameterNodes.length };
+}
+
+function cppContainsNodeType(root: SyntaxNode, type: string): boolean {
+  return cppFindDescendantOfType(root, type) !== null;
+}
+
+function cppFindDescendantOfType(root: SyntaxNode, type: string): SyntaxNode | null {
+  const stack: SyntaxNode[] = [root];
+  while (stack.length > 0) {
+    const node = stack.pop()!;
+    if (node.type === type) return node;
+    for (const child of node.namedChildren) if (child !== null) stack.push(child);
+  }
+  return null;
 }
 
 function extractCppDeclarationReturnType(fnNode: SyntaxNode): string | undefined {

@@ -19,6 +19,8 @@ export interface CallableFlowOperand {
   readonly atRange: Range;
   /** Number of dereference operators applied at this occurrence. */
   readonly indirection: number;
+  /** Whether this occurrence explicitly takes the binding's address. */
+  readonly addressOf: boolean;
 }
 
 /** Callable shape used to disambiguate overload sets when syntax supplies it. */
