@@ -566,8 +566,13 @@ def write_transcript(home: Path, session_id: str, blocks) -> Path:
     return path
 
 
+def set_fake_home(monkeypatch, home: Path) -> None:
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+
+
 def test_skill_invocation_is_detected_from_the_transcript(monkeypatch, tmp_path):
-    monkeypatch.setenv("HOME", str(tmp_path))
+    set_fake_home(monkeypatch, tmp_path)
     monkeypatch.setattr(runner.subprocess, "run", lambda *a, **k: fake_cli_result(VALID_REPORT))
     write_transcript(
         tmp_path, "s", [{"type": "tool_use", "name": "Skill", "input": {"command": "gitnexus-work"}}]
@@ -581,7 +586,7 @@ def test_skill_invocation_is_detected_from_the_transcript(monkeypatch, tmp_path)
 
 
 def test_missing_skill_invocation_fails_closed(monkeypatch, tmp_path):
-    monkeypatch.setenv("HOME", str(tmp_path))
+    set_fake_home(monkeypatch, tmp_path)
     monkeypatch.setattr(runner.subprocess, "run", lambda *a, **k: fake_cli_result(VALID_REPORT))
     write_transcript(
         tmp_path, "s", [{"type": "tool_use", "name": "Read", "input": {"file_path": "x"}}]
@@ -595,7 +600,7 @@ def test_missing_skill_invocation_fails_closed(monkeypatch, tmp_path):
 
 
 def test_unlocatable_transcript_records_null_without_failing(monkeypatch, tmp_path):
-    monkeypatch.setenv("HOME", str(tmp_path))
+    set_fake_home(monkeypatch, tmp_path)
     monkeypatch.setattr(runner.subprocess, "run", lambda *a, **k: fake_cli_result(VALID_REPORT))
     rec = runner.run_claude(
         "task", tmp_path, claude_bin="claude", timeout=5, expected_skill="gitnexus-work"
