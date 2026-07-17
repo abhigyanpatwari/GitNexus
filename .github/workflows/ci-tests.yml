@@ -537,5 +537,5 @@ jobs:
         with:
           python-version: '3.13'
       - run: pip install pytest==8.4.1 pyyaml==6.0.2
-      - run: python -m pytest tests/test_workflow_bench.py -q
+      - run: python -m pytest tests/test_workflow_bench.py tests/test_evolve.py -q
         working-directory: eval
