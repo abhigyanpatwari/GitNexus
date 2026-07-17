@@ -797,6 +797,20 @@ invoke(factory());
     expect(callableCallSiteLines(result, 'invoke', 'factory')).toEqual([]);
   }, 60_000);
 
+  it('resolves a file-scope function pointer assigned in one function and called in another (#2522 review)', async () => {
+    const result = await runSource(
+      'c',
+      `
+void handler(int x) {}
+static void (*fp)(int);
+void init(void) { fp = handler; }
+void run(void) { fp(1); }
+`,
+    );
+
+    expect(callableCallSiteLines(result, 'run', 'handler')).toEqual([5]);
+  }, 60_000);
+
   it('binds variable-indexed function-pointer array cells to the array, not the index (#2522 review)', async () => {
     const result = await runSource(
       'c',

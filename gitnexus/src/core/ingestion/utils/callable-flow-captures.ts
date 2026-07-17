@@ -363,7 +363,13 @@ function isVisibleValueBinding(
     }
     node = node.parent;
   }
-  return bindings.formalByOwner.get(undefined)?.has(name) === true;
+  if (bindings.formalByOwner.get(undefined)?.has(name) === true) return true;
+  // A declared callable-typed binding (file-scope `void (*fp)(int);`) is a
+  // value binding wherever its declaration is visible — its assignments may
+  // live in OTHER functions (the init/register callback pattern), so
+  // assignment regions alone under-approximate visibility and the cross-
+  // function call emitted no invoke fact at all (#2522 review, H1).
+  return visibleCallableSignature(input, name, bindings, options) !== undefined;
 }
 
 function visibleCallableSignature(
