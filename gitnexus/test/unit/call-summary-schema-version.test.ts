@@ -73,8 +73,8 @@ describe('CALL_SUMMARY relation-type exclusion (U-C1)', () => {
 });
 
 describe('CALL_SUMMARY incremental reuse gate (U-C5)', () => {
-  it('INCREMENTAL_SCHEMA_VERSION is bumped to 6 (uniform 0-based line storage re-index window)', () => {
-    expect(INCREMENTAL_SCHEMA_VERSION).toBe(6);
+  it('INCREMENTAL_SCHEMA_VERSION is bumped to 7 (callable-value-flow edges re-index window)', () => {
+    expect(INCREMENTAL_SCHEMA_VERSION).toBe(7);
   });
 
   it('a pre-current stamp fails the `=== INCREMENTAL_SCHEMA_VERSION` reuse gate → forces full re-analyze', () => {
@@ -95,7 +95,11 @@ describe('CALL_SUMMARY incremental reuse gate (U-C5)', () => {
     // COBOL/JCL/markdown/scope rows are still 1-based, so an incremental top-up
     // would mix bases → must NOT reuse.
     expect(passesReuseGate(5)).toBe(false);
+    // A pre-v7 (v6) index predates the callable-value-flow edges (#2437/#2522)
+    // — new edges between unchanged files would never enter the incremental
+    // write set → must NOT reuse.
+    expect(passesReuseGate(6)).toBe(false);
     // A current-version stamp passes the gate (incremental top-up eligible).
-    expect(passesReuseGate(6)).toBe(true);
+    expect(passesReuseGate(7)).toBe(true);
   });
 });
