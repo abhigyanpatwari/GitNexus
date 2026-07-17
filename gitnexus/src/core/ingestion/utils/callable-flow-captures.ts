@@ -946,11 +946,32 @@ function unaryOperator(node: SyntaxNode): string | undefined {
   return undefined;
 }
 
+/**
+ * For a subscript/index expression, the identifier of interest is always in
+ * the container operand, never the index: `tbl[i] = h` must bind the cell
+ * `tbl` (index-insensitive, Andersen-style), not the index variable `i` —
+ * seeding `i` both pollutes a same-named formal and misses the later
+ * `tbl[i]()` join (#2522 review). Field names cover the grammars that field
+ * their subscript nodes; others keep the generic traversal.
+ */
+function subscriptBase(node: SyntaxNode): SyntaxNode | null {
+  if (node.childForFieldName('index') === null) return null;
+  return (
+    node.childForFieldName('argument') ?? // C/C++ subscript_expression
+    node.childForFieldName('object') ?? // JS/TS subscript_expression
+    node.childForFieldName('value') ?? // Python subscript
+    node.childForFieldName('operand') ?? // Go index_expression
+    node.childForFieldName('array') // Java array_access
+  );
+}
+
 function bindingIdentifier(
   node: SyntaxNode,
   options: CallableFlowCaptureOptions,
 ): SyntaxNode | undefined {
   if (options.identifierNodeTypes.has(node.type)) return node;
+  const base = subscriptBase(node);
+  if (base !== null) return bindingIdentifier(base, options);
   for (const fieldName of ['name', 'declarator', 'pattern', 'left']) {
     const field = node.childForFieldName(fieldName);
     if (field === null || field.id === node.id) continue;
@@ -970,6 +991,8 @@ function terminalIdentifier(
   options: CallableFlowCaptureOptions,
 ): SyntaxNode | undefined {
   if (options.identifierNodeTypes.has(node.type)) return node;
+  const base = subscriptBase(node);
+  if (base !== null) return terminalIdentifier(base, options);
   for (const fieldName of ['name', 'property', 'field', 'method', 'declarator']) {
     const field = node.childForFieldName(fieldName);
     if (field === null || field.id === node.id) continue;

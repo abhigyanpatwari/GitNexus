@@ -797,6 +797,24 @@ invoke(factory());
     expect(callableCallSiteLines(result, 'invoke', 'factory')).toEqual([]);
   }, 60_000);
 
+  it('binds variable-indexed function-pointer array cells to the array, not the index (#2522 review)', async () => {
+    const result = await runSource(
+      'c',
+      `
+void handler(int x) {}
+int entry(void) {
+  void (*tbl[2])(int);
+  int i = 0;
+  tbl[i] = handler;
+  tbl[i](7);
+  return 0;
+}
+`,
+    );
+
+    expect(callableCallSiteLines(result, 'entry', 'handler')).toEqual([7]);
+  }, 60_000);
+
   it('does not store a factory function itself through a C pointer assignment', async () => {
     const result = await runSource(
       'c',
