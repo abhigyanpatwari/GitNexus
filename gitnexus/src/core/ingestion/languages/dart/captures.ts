@@ -45,6 +45,7 @@ import { parseSourceSafe } from '../../../tree-sitter/safe-parse.js';
 import { encodeMarker } from '../../utils/heritage-marker.js';
 import { DART_BUILT_INS } from './built-ins.js';
 import { synthesizeCallableFlowCaptures } from '../../utils/callable-flow-captures.js';
+import { preprocessDartExtensionTypes } from './extension-type-preprocess.js';
 
 const FUNCTION_DECL_TAGS = [
   '@declaration.function',
@@ -85,13 +86,14 @@ export function emitDartScopeCaptures(
   _filePath: string,
   cachedTree?: unknown,
 ): readonly CaptureMatch[] {
+  const parseText = preprocessDartExtensionTypes(sourceText);
   let tree: Parser.Tree;
   if (cachedTree !== undefined && cachedTree !== null) {
     tree = cachedTree as Parser.Tree;
     recordCacheHit();
   } else {
-    tree = parseSourceSafe(getDartParser(), sourceText, undefined, {
-      bufferSize: getTreeSitterBufferSize(sourceText),
+    tree = parseSourceSafe(getDartParser(), parseText, undefined, {
+      bufferSize: getTreeSitterBufferSize(parseText),
     });
     recordCacheMiss();
   }
