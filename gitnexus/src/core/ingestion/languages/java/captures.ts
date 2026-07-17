@@ -40,7 +40,13 @@ const JAVA_CALLABLE_CAPTURE_OPTIONS = {
   assignmentNodeTypes: new Set(['assignment_expression']),
   identifierNodeTypes: new Set(['identifier', 'type_identifier']),
   callableReferenceNodeTypes: new Set(['method_reference']),
-  callableProtocolMethods: new Set(['run', 'apply', 'accept', 'get', 'test', 'call']),
+  // java.util.function SAM names, MINUS 'get' and 'test': those two collide
+  // with ubiquitous non-functional APIs (Map/List/Optional/Future.get,
+  // Predicate-unrelated test methods), emitting a spurious callable-object
+  // invoke fact for every container access (#2522 review). Supplier.get /
+  // Predicate.test dispatch is deliberately traded away until the check can
+  // gate on the receiver's declared type.
+  callableProtocolMethods: new Set(['run', 'apply', 'accept', 'call']),
   normalizeQualifiedName: (raw: string) => raw.replaceAll('::', '.'),
 } as const;
 
