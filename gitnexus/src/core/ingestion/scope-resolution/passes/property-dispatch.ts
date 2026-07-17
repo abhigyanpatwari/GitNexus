@@ -64,7 +64,12 @@ export function emitPropertyDispatchCalls(
   parsedFiles: readonly ParsedFile[],
   nodeLookup: GraphNodeLookup,
   calleeIdSink?: CalleeIdSink,
-): { usesEmitted: number; callsEmitted: number; skippedKeys: number } {
+): {
+  usesEmitted: number;
+  callsEmitted: number;
+  skippedKeys: number;
+  skippedKeyNames: readonly string[];
+} {
   const seen = new Set<string>();
   let usesEmitted = 0;
 
@@ -98,11 +103,16 @@ export function emitPropertyDispatchCalls(
     }
   }
 
+  // Keep the dropped key NAMES (bounded) — an over-cap key means no CALLS
+  // are synthesized through it, and a count alone leaves the operator unable
+  // to tell WHICH hook table lost coverage (#2522 review).
   let skippedKeys = 0;
+  const skippedKeyNames: string[] = [];
   for (const [key, defs] of registrations) {
     if (defs.size > MAX_PROPERTY_DISPATCH_FANOUT) {
       registrations.delete(key);
       skippedKeys++;
+      if (skippedKeyNames.length < 20) skippedKeyNames.push(key);
     }
   }
 
@@ -134,5 +144,5 @@ export function emitPropertyDispatchCalls(
       }
     }
   }
-  return { usesEmitted, callsEmitted, skippedKeys };
+  return { usesEmitted, callsEmitted, skippedKeys, skippedKeyNames };
 }

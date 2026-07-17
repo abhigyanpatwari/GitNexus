@@ -419,6 +419,12 @@ interface RunScopeResolutionStats {
   readonly resolve: ResolveStats;
   readonly referenceEdgesEmitted: number;
   readonly referenceSkipped: number;
+  /**
+   * Property-dispatch keys dropped for exceeding the fan-out cap. Non-zero
+   * means member calls through those keys got NO synthesized CALLS — the
+   * #2437 false-safe gap for exactly those keys (names are in the warn log).
+   */
+  readonly propertyDispatchSkippedKeys: number;
   readonly resolutionOutcomes: readonly ResolutionOutcome[];
   /**
    * Per-function taint summaries harvested in the pdg window (#2084 M4 U1).
@@ -546,6 +552,7 @@ export function runScopeResolution(
       resolve: { sitesProcessed: 0, referencesEmitted: 0, unresolved: 0 },
       referenceEdgesEmitted: 0,
       referenceSkipped: 0,
+      propertyDispatchSkippedKeys: 0,
       resolutionOutcomes,
       functionSummaries: [],
       callSummaries: [],
@@ -574,6 +581,7 @@ export function runScopeResolution(
       resolve: { sitesProcessed: 0, referencesEmitted: 0, unresolved: 0 },
       referenceEdgesEmitted: 0,
       referenceSkipped: 0,
+      propertyDispatchSkippedKeys: 0,
       resolutionOutcomes,
       functionSummaries: [],
       callSummaries: [],
@@ -857,7 +865,7 @@ export function runScopeResolution(
   // propagation. `graph.addRelationship` remains first-write-wins, so precise
   // edges already emitted for a site retain ownership.
   const propertyDispatch = callableFlowOnly
-    ? { usesEmitted: 0, callsEmitted: 0, skippedKeys: 0 }
+    ? { usesEmitted: 0, callsEmitted: 0, skippedKeys: 0, skippedKeyNames: [] as readonly string[] }
     : emitPropertyDispatchCalls(
         graph,
         indexes,
@@ -873,6 +881,7 @@ export function runScopeResolution(
       {
         lang: provider.language,
         skippedKeys: propertyDispatch.skippedKeys,
+        skippedKeyNames: propertyDispatch.skippedKeyNames,
         fanoutCap: MAX_PROPERTY_DISPATCH_FANOUT,
       },
       'property-dispatch: keys over the fan-out cap were dropped (no CALLS synthesized for them)',
@@ -1324,6 +1333,7 @@ export function runScopeResolution(
       propertyDispatch.usesEmitted +
       propertyDispatch.callsEmitted,
     referenceSkipped: skipped,
+    propertyDispatchSkippedKeys: propertyDispatch.skippedKeys,
     resolutionOutcomes,
     functionSummaries: harvestedSummaries,
     callSummaries: harvestedCallSummaries,
