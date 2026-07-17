@@ -828,6 +828,26 @@ invoke(factory());
     expect(callableCallSiteLines(result, 'invoke', 'factory')).toEqual([]);
   }, 60_000);
 
+  it('pairs Go multi-value := positionally instead of cross-wiring (#2522 review)', async () => {
+    const result = await runSource(
+      'go',
+      `package main
+
+func targetFunc() {}
+func otherFunc() {}
+
+func entry() {
+	a, b := targetFunc, otherFunc
+	a()
+	b()
+}
+`,
+    );
+
+    expect(callableCallSiteLines(result, 'entry', 'targetFunc')).toEqual([8]);
+    expect(callableCallSiteLines(result, 'entry', 'otherFunc')).toEqual([9]);
+  }, 60_000);
+
   it('does not treat a bare Ruby identifier as a callable reference — it is a call (#2522 review)', async () => {
     const result = await runSource(
       'rb',

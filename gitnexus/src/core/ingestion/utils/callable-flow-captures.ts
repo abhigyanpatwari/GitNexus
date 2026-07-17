@@ -59,9 +59,19 @@ export interface CallableFlowCaptureOptions {
     destination: SyntaxNode,
   ) => CallableCaptureSignature | undefined;
   readonly normalizeQualifiedName?: (raw: string) => string;
+  /**
+   * Provider-owned assignment decomposition. May return MULTIPLE pairs for
+   * one node — Go's multi-value `a, b := f, g` pairs positionally; the
+   * shared field fallback would cross-wire first-LHS with last-RHS (#2522
+   * review). Returning an empty array means "recognized, but emit nothing"
+   * (e.g. a multi-return call RHS with mismatched arity).
+   */
   readonly extractAssignment?: (
     node: SyntaxNode,
-  ) => { readonly destination: SyntaxNode; readonly source: SyntaxNode } | undefined;
+  ) =>
+    | { readonly destination: SyntaxNode; readonly source: SyntaxNode }
+    | readonly { readonly destination: SyntaxNode; readonly source: SyntaxNode }[]
+    | undefined;
   readonly extractFunctionParameters?: (node: SyntaxNode) => readonly SyntaxNode[] | undefined;
   readonly extractCallCallee?: (node: SyntaxNode) => SyntaxNode | undefined;
   readonly isCallNode?: (node: SyntaxNode) => boolean;
@@ -203,7 +213,7 @@ function defaultFunctionName(
   }
   const parent = node.parent;
   if (parent !== null && options.bindingNodeTypes.has(parent.type)) {
-    const destination = assignmentParts(parent, options)?.destination;
+    const destination = assignmentParts(parent, options)[0]?.destination;
     if (destination !== undefined) return bindingIdentifier(destination, options)?.text;
   }
   return undefined;
@@ -242,9 +252,9 @@ function collectAssignments(
     }
     if (seen.has(node.id)) continue;
     const parts = assignmentParts(node, options);
-    if (parts === undefined) continue;
+    if (parts.length === 0) continue;
     seen.add(node.id);
-    out.push(parts);
+    out.push(...parts);
   }
   return out;
 }
@@ -414,10 +424,11 @@ function visibleCallableSignature(
 function assignmentParts(
   node: SyntaxNode,
   options: CallableFlowCaptureOptions,
-): AssignmentParts | undefined {
+): readonly AssignmentParts[] {
   const providerParts = options.extractAssignment?.(node);
   if (providerParts !== undefined) {
-    return { container: node, ...providerParts };
+    const pairs = Array.isArray(providerParts) ? providerParts : [providerParts];
+    return pairs.map((pair) => ({ container: node, ...pair }));
   }
   const destination =
     node.childForFieldName('left') ??
@@ -437,11 +448,11 @@ function assignmentParts(
       if (child === null || child.id === node.id) continue;
       if (!options.bindingNodeTypes.has(child.type)) continue;
       const nested = assignmentParts(child, options);
-      if (nested !== undefined) return nested;
+      if (nested.length > 0) return nested;
     }
   }
-  if (destination === null || source === null) return undefined;
-  return { container: node, destination, source };
+  if (destination === null || source === null) return [];
+  return [{ container: node, destination, source }];
 }
 
 function emitAssignmentFact(
