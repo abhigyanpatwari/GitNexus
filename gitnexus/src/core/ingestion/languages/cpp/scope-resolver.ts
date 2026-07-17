@@ -292,6 +292,12 @@ export const cppScopeResolver: ScopeResolver = {
   // visibility gate above: namespace and class ownership do not imply
   // internal linkage, while a namespace-scope `static` function does.
   hasFileLocalCallableLinkage: (def: SymbolDefinition) => {
+    // Class members have EXTERNAL linkage even when declared `static` —
+    // inside a class, `static` means "no instance", not internal linkage.
+    // The name-keyed set below is populated from every `static` declaration,
+    // so without this gate a header-declared static member refused its
+    // cross-file definition join (#2522 review, M2).
+    if (def.type === 'Method' || def.type === 'Constructor') return false;
     const simple = def.qualifiedName?.split('.').pop() ?? def.qualifiedName ?? '';
     return isFileLocal(def.filePath, simple);
   },
