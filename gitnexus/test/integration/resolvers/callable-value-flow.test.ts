@@ -842,6 +842,39 @@ function entry(): void {
     expect(callableCallSiteLines(result, 'entry', 'replacement')).toEqual([8]);
   }, 60_000);
 
+  it('keeps the declaration as a target when a function is reassigned through its own name and the RHS is unresolvable (#2522 review)', async () => {
+    const result = await runSource(
+      'js',
+      `
+import { fancyGreet } from 'external-pkg';
+function greet() {}
+function entry() {
+  greet = fancyGreet;
+  greet();
+}
+`,
+    );
+
+    expect(callableCallSiteLines(result, 'entry', 'greet')).toEqual([6]);
+  }, 60_000);
+
+  it('unions the declaration with a resolvable reassignment target (inclusion semantics)', async () => {
+    const result = await runSource(
+      'js',
+      `
+function greet() {}
+function fancy() {}
+function entry() {
+  greet = fancy;
+  greet();
+}
+`,
+    );
+
+    expect(callableCallSiteLines(result, 'entry', 'greet')).toEqual([6]);
+    expect(callableCallSiteLines(result, 'entry', 'fancy')).toEqual([6]);
+  }, 60_000);
+
   it.each([
     {
       language: 'Python',

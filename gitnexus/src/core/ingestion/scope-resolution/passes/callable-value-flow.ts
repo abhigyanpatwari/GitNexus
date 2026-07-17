@@ -182,10 +182,18 @@ export function emitCallableValueFlow(input: EmitCallableValueFlowInput): Callab
 
   const bindingKey = (filePath: string, operand: CallableFlowOperand): string =>
     canonicalBindingKey(filePath, operand, input.scopes);
-  const constrainedBindings = new Set<string>();
+  // Lexical binding lookup is suppressed ONLY for cells bound by formal
+  // facts: a parameter whose grammar emits no declaration binding must not
+  // adopt a same-named outer function. Value cells (copy/alias/store/load
+  // destinations) keep their declaration in the inclusion union — reassigning
+  // a declared function through its own name (`greet = other; greet()`) must
+  // still count the declaration as a target, or an unresolvable RHS yields
+  // zero CALLS for a call that resolved pre-flow (#2522 review finding 8).
+  const formalConstrainedBindings = new Set<string>();
   for (const fact of facts) {
-    const operand = flowCellOperand(fact.site);
-    if (operand !== undefined) constrainedBindings.add(bindingKey(fact.filePath, operand));
+    if (fact.site.kind === 'formal') {
+      formalConstrainedBindings.add(bindingKey(fact.filePath, fact.site.binding));
+    }
   }
 
   const warnOverflow = (
@@ -419,7 +427,7 @@ export function emitCallableValueFlow(input: EmitCallableValueFlowInput): Callab
       globalBySimpleName,
       targetIndexes,
       input.graph,
-      !constrainedBindings.has(key),
+      !formalConstrainedBindings.has(key),
     )) {
       addTarget(key, target, `binding:${key}`);
     }
@@ -438,7 +446,7 @@ export function emitCallableValueFlow(input: EmitCallableValueFlowInput): Callab
       globalBySimpleName,
       targetIndexes,
       input.graph,
-      !constrainedBindings.has(key),
+      !formalConstrainedBindings.has(key),
     )) {
       addTarget(key, target, `binding:${key}`);
     }
@@ -626,7 +634,7 @@ export function emitCallableValueFlow(input: EmitCallableValueFlowInput): Callab
             globalBySimpleName,
             targetIndexes,
             input.graph,
-            !constrainedBindings.has(sourceKey),
+            !formalConstrainedBindings.has(sourceKey),
           )) {
             contextualTargets.set(target.id, target);
           }
