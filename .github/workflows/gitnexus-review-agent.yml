@@ -3,26 +3,38 @@
 # A maintainer comments `@gitnexus review` on a pull request (from anywhere —
 # phone included) and a headless Claude session runs the repo's own
 # gitnexus-review skill against the PR, posting the review back as a sticky
-# comment. Requires the `ANTHROPIC_API_KEY` repository secret.
+# comment. The manual lane (`workflow_dispatch` with a PR number) covers
+# Actions-UI triggering and pre-merge testing — issue_comment events always
+# read this file from the default branch, so the comment trigger goes live
+# only once this lands on main.
+#
+# Auth reuses the CLAUDE_CODE_OAUTH_TOKEN secret already used by claude.yml.
 #
 # Trust model: the trigger is the consent. Only OWNER/MEMBER/COLLABORATOR
-# comments start the job (the action re-validates write access on top), the
-# GITHUB_TOKEN cannot write repo contents, and the session's tools are pinned
-# to read/analyze operations — GitNexus `analyze` is tree-sitter parsing, so
-# PR code is read, never executed. Worst case for a prompt-injected PR is a
-# bad review comment, not pushed code or an exfiltrated key (Write/Edit and
-# the web tools are disallowed; Bash is allowlisted to git reads and the
+# comments start the job (the action re-validates write access; dispatching
+# manually requires write access to begin with), the GITHUB_TOKEN cannot
+# write repo contents, and the session's tools are pinned to read/analyze
+# operations — GitNexus `analyze` is tree-sitter parsing, so PR code is
+# read, never executed. Worst case for a prompt-injected PR is a bad review
+# comment, not pushed code or an exfiltrated key (Write/Edit and the web
+# tools are disallowed; Bash is allowlisted to git/gh reads and the
 # gitnexus CLI).
 name: GitNexus review agent
 
 on:
   issue_comment:
     types: [created]
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: 'Pull request number to review'
+        required: true
+        type: string
 
 # One review per PR at a time; a re-trigger queues rather than cancels the
 # run a maintainer is waiting on.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.issue.number }}
+  group: ${{ github.workflow }}-${{ github.event.issue.number || inputs.pr || github.run_id }}
   cancel-in-progress: false
 
 permissions:
@@ -34,9 +46,12 @@ jobs:
   review:
     name: graph-backed PR review
     if: >
-      github.event.issue.pull_request != null &&
-      contains(github.event.comment.body, '@gitnexus review') &&
-      contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.comment.author_association)
+      github.event_name == 'workflow_dispatch' ||
+      (
+        github.event.issue.pull_request != null &&
+        contains(github.event.comment.body, '@gitnexus review') &&
+        contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.comment.author_association)
+      )
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
@@ -45,16 +60,18 @@ jobs:
       - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
           node-version: '22'
-      # The action checks out the PR head itself and posts the reply comment.
-      - uses: anthropics/claude-code-action@a868f958ed6f1a7089cb521ac70eb2f3f323298b # v1
+      # On issue_comment the action checks out the PR head itself; on
+      # workflow_dispatch it checks out the dispatched ref and the skill
+      # fetches the PR's exact SHAs (gh pr view + git fetch are allowlisted).
+      - uses: anthropics/claude-code-action@9469d113c6afd29550c402740f22d1a97dd1209b # v1
         with:
-          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
           trigger_phrase: '@gitnexus review'
           use_sticky_comment: true
           prompt: |
             A repository maintainer triggered a GitNexus review of pull request
-            #${{ github.event.issue.number }} in ${{ github.repository }}.
+            #${{ github.event_name == 'workflow_dispatch' && inputs.pr || github.event.issue.number }} in ${{ github.repository }}.
 
             Use the gitnexus-review skill (.claude/skills/gitnexus-review/SKILL.md)
             to review this PR. Follow the skill end to end: exact-SHA alignment,
@@ -72,6 +89,6 @@ jobs:
             do not submit a formal GitHub approve/request-changes review.
           claude_args: |
             --mcp-config .mcp.json
-            --allowedTools "mcp__gitnexus,Bash(npx gitnexus:*),Bash(node .gitnexus/run.cjs:*),Bash(git fetch:*),Bash(git diff:*),Bash(git log:*),Bash(git show:*),Bash(git merge-base:*),Bash(git rev-parse:*),Bash(git status:*)"
+            --allowedTools "mcp__gitnexus,Bash(npx gitnexus:*),Bash(node .gitnexus/run.cjs:*),Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh api:*),Bash(git fetch:*),Bash(git diff:*),Bash(git log:*),Bash(git show:*),Bash(git merge-base:*),Bash(git rev-parse:*),Bash(git status:*)"
             --disallowedTools "Write,Edit,NotebookEdit,WebFetch,WebSearch"
             --max-turns 100
