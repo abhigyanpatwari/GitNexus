@@ -68,16 +68,18 @@
     "_note": "#1928 / #2045: F35 adds qualified + qualified-generic constructor query captures (`new pkg.Foo()`, `new a.b.Foo()`, `new pkg.Box<T>()`); F38 synthesizes `@reference.call.constructor` on `super(...)`/`this(...)` explicit_constructor_invocation nodes; F41 generic-aware stripQualifier in interpret (type-binding normalization). + java-qualified-constructor and java-explicit-constructor fixtures. Pure capture-additive + fixture-corpus drift; scaling stays linear (~1.06)."
   },
   "typescript": {
-    "fingerprint": "3f44a4a6892698df2d145c8ff2812c3b318807648983c88aca28fbd694f172f9",
+    "fingerprint": "25de86fd3377132c4e35d3d98f4f94a58e0cfeb7c22948a8ea3be4e793be74fd",
     "scaling_budget": 1.5,
     "_rebaselined": "#1962: F44 (class scope@), F85 (enum member declarations), F87 (optional_parameter type annotations) add new captures \u2014 fingerprint drift expected.",
-    "_note": "#1968: F44, F85, F87 \u2014 fingerprint drift expected."
+    "_note": "#1968: F44, F85, F87 \u2014 fingerprint drift expected.",
+    "_rebaselined_2522": "#2522 intentional @reference.value-ref/property-key capture additions. GitHub Actions run 29553361660 job 87800394279: prior 3f44a4a6892698df2d145c8ff2812c3b318807648983c88aca28fbd694f172f9 -> 25de86fd3377132c4e35d3d98f4f94a58e0cfeb7c22948a8ea3be4e793be74fd; scaling ratio 0.987 < 1.5."
   },
   "javascript": {
-    "fingerprint": "d72f03c6c502235d2d4b74d66baa5c7d361f040d7a1b72e84acad61210d05ae8",
+    "fingerprint": "5567dd47e7ba29821a518c4a9852adc3b774e25ef3e7a6e2b3ecb7b59ddab73c",
     "scaling_budget": 1.5,
     "_added": "#1951: bench coverage added (was ungated); scale source heritage-bearing (extends Base); js/kotlin O(n^2) findNodeAtRange-per-match fixed to threaded captured node, now linear.",
-    "_rebaselined": "#1956 synth-widening: + javascript-qualified-base fixture; synthesizeJsInheritanceReferences now handles a member_expression base (class S extends ns.Base -> Base), matching the #1940 legacy leg + the TS terminalTsTypeNameNode property_identifier case, at parity. Linear (~1.05). | #942: scope-resolution-only cleanup reworded fixture comments; capture byte-positions shift, capture LOGIC unchanged."
+    "_rebaselined": "#1956 synth-widening: + javascript-qualified-base fixture; synthesizeJsInheritanceReferences now handles a member_expression base (class S extends ns.Base -> Base), matching the #1940 legacy leg + the TS terminalTsTypeNameNode property_identifier case, at parity. Linear (~1.05). | #942: scope-resolution-only cleanup reworded fixture comments; capture byte-positions shift, capture LOGIC unchanged.",
+    "_rebaselined_2522": "#2522 intentional @reference.value-ref/property-key capture additions. GitHub Actions run 29553361660 job 87800394279: prior d72f03c6c502235d2d4b74d66baa5c7d361f040d7a1b72e84acad61210d05ae8 -> 5567dd47e7ba29821a518c4a9852adc3b774e25ef3e7a6e2b3ecb7b59ddab73c; scaling ratio 1.031 < 1.5."
   },
   "kotlin": {
     "fingerprint": "4900431791f2b9280009deb2b82659c26ead8aa6fb8731190a7c505dec5a9041",

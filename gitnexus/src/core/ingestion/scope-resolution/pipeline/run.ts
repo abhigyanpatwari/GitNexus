@@ -68,7 +68,10 @@ import { buildPopulatedMethodDispatch } from '../graph-bridge/method-dispatch.js
 import { propagateImportedReturnTypes } from '../passes/imported-return-types.js';
 import { emitReceiverBoundCalls } from '../passes/receiver-bound-calls.js';
 import { emitFreeCallFallback } from '../passes/free-call-fallback.js';
-import { emitPropertyDispatchCalls } from '../passes/property-dispatch.js';
+import {
+  emitPropertyDispatchCalls,
+  MAX_PROPERTY_DISPATCH_FANOUT,
+} from '../passes/property-dispatch.js';
 import { emitReferencesViaLookup } from '../graph-bridge/references-to-edges.js';
 import {
   createCalleeIdAccumulator,
@@ -800,10 +803,11 @@ export function runScopeResolution(
     // Never drop dispatch coverage silently: a hook table larger than the
     // fan-out cap means member calls through those keys get no synthesized
     // CALLS — the #2437 false-safe gap reappears for exactly those keys.
-    logger.debug(
+    logger.warn(
       {
         lang: provider.language,
         skippedKeys: propertyDispatch.skippedKeys,
+        fanoutCap: MAX_PROPERTY_DISPATCH_FANOUT,
       },
       'property-dispatch: keys over the fan-out cap were dropped (no CALLS synthesized for them)',
     );

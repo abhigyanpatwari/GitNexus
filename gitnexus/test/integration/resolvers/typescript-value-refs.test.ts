@@ -24,6 +24,7 @@ import {
   MAX_PROPERTY_DISPATCH_FANOUT,
   PROPERTY_DISPATCH_CONFIDENCE,
 } from '../../../src/core/ingestion/scope-resolution/passes/property-dispatch.js';
+import { _captureLogger, type PinoLogRecord } from '../../../src/core/logger.js';
 
 function writeFixtureRepo(root: string, files: Record<string, string>): void {
   for (const [relPath, content] of Object.entries(files)) {
@@ -45,6 +46,7 @@ describe('value-position function references (#2437)', () => {
   let result: PipelineResult;
   let calls: RelEdge[];
   let uses: RelEdge[];
+  let logRecords: PinoLogRecord[];
 
   beforeAll(async () => {
     repoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-ts-value-refs-'));
@@ -133,7 +135,13 @@ export function runJsBridge() {
 }
 `,
     });
-    result = await runPipelineFromRepo(repoDir, () => {}, {});
+    const loggerCapture = _captureLogger();
+    try {
+      result = await runPipelineFromRepo(repoDir, () => {}, {});
+      logRecords = loggerCapture.records();
+    } finally {
+      loggerCapture.restore();
+    }
     calls = getRelationships(result, 'CALLS');
     uses = getRelationships(result, 'USES');
   }, 120000);
@@ -248,6 +256,19 @@ export function runJsBridge() {
       (c) => c.rel.reason === DISPATCH_REASON && c.target.startsWith('capped'),
     );
     expect(cappedDispatch).toEqual([]);
+
+    const capWarnings = logRecords.filter(
+      (record) =>
+        record.msg ===
+        'property-dispatch: keys over the fan-out cap were dropped (no CALLS synthesized for them)',
+    );
+    expect(capWarnings).toHaveLength(1);
+    expect(capWarnings[0]).toMatchObject({
+      level: 40,
+      lang: 'typescript',
+      skippedKeys: 1,
+      fanoutCap: MAX_PROPERTY_DISPATCH_FANOUT,
+    });
   });
 
   it('every property-dispatch edge targets a registered hook', () => {
