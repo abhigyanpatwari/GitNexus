@@ -862,6 +862,43 @@ invoke(factory());
     expect(callableCallSiteLines(result, 'INVOKE', 'TARGET')).toEqual([18]);
   }, 60_000);
 
+  it('ignores commented-out COBOL SET statements (#2522 review)', async () => {
+    const result = await runSource(
+      'cbl',
+      `
+000100 IDENTIFICATION DIVISION.
+000200 PROGRAM-ID. MAIN.
+000300 DATA DIVISION.
+000400 WORKING-STORAGE SECTION.
+000500 01  CALLBACK USAGE IS PROCEDURE-POINTER.
+000600 PROCEDURE DIVISION.
+000700     SET CALLBACK TO ENTRY "TARGET".
+000750*    SET CALLBACK TO ENTRY "MAIN".
+000800     CALL "INVOKE" USING CALLBACK.
+000900     STOP RUN.
+001000 END PROGRAM MAIN.
+001100 IDENTIFICATION DIVISION.
+001200 PROGRAM-ID. INVOKE.
+001300 DATA DIVISION.
+001400 LINKAGE SECTION.
+001500 01  CB USAGE IS PROCEDURE-POINTER.
+001600 PROCEDURE DIVISION USING CB.
+001700     CALL CB.
+001800     GOBACK.
+001900 END PROGRAM INVOKE.
+002000 IDENTIFICATION DIVISION.
+002100 PROGRAM-ID. TARGET.
+002200 PROCEDURE DIVISION.
+002300     GOBACK.
+002400 END PROGRAM TARGET.
+`,
+    );
+
+    // The dead SET in the comment must not add MAIN to the callee set.
+    expect(callableCallSiteLines(result, 'INVOKE', 'MAIN')).toEqual([]);
+    expect(callableCallSiteLines(result, 'INVOKE', 'TARGET')).toEqual([19]);
+  }, 60_000);
+
   it('does not resolve a Rust unit enum variant seeded as a callable value (#2522 review)', async () => {
     const result = await runSource(
       'rs',

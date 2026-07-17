@@ -328,9 +328,15 @@ export function emitCobolScopeCaptures(
 
   for (let index = 0; index < lines.length; index++) {
     const line = lines[index]!;
+    // Comment lines must not seed flows — a commented-out SET produced a
+    // live seed and a false CALLS edge from dead code (#2522 review, M1).
+    // Fixed format marks comments with '*'/'/' in indicator column 7; free
+    // format uses '*>' (also valid inline, so strip the tail).
+    if (line[6] === '*' || line[6] === '/') continue;
+    const code = line.split('*>')[0]!;
     const lineNumber = index + 1;
     const lineRange = rangeOf(lineNumber, 0, lineNumber, endColFrom(line));
-    const entry = line.match(
+    const entry = code.match(
       /\bSET\s+([A-Z0-9][A-Z0-9-]*)\s+TO\s+ENTRY\s+(?:"([^"]+)"|'([^']+)')/i,
     );
     if (entry !== null) {
@@ -350,7 +356,7 @@ export function emitCobolScopeCaptures(
       }
       continue;
     }
-    const copy = line.match(/\bSET\s+([A-Z0-9][A-Z0-9-]*)\s+TO\s+([A-Z0-9][A-Z0-9-]*)\b/i);
+    const copy = code.match(/\bSET\s+([A-Z0-9][A-Z0-9-]*)\s+TO\s+([A-Z0-9][A-Z0-9-]*)\b/i);
     if (
       copy !== null &&
       procedurePointers.has(copy[1]!.toUpperCase()) &&
