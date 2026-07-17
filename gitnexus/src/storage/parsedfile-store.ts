@@ -52,7 +52,8 @@ import { promises as fs, mkdirSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import v8 from 'node:v8';
 import vm from 'node:vm';
-import type { ParsedFile, SymbolDefinition } from 'gitnexus-shared';
+import type { CallableFlowSite, ParsedFile, SymbolDefinition } from 'gitnexus-shared';
+import { logger } from '../core/logger.js';
 import { mapReplacer, mapReviver } from './parse-cache.js';
 
 const STORE_DIRNAME = 'parsedfile-store';
@@ -244,6 +245,8 @@ export const loadParsedFilesForPaths = async (
   // (one `int` / one repeated filePath for the whole language), which is where
   // most of the saving comes from. Dropped when this function returns.
   const pool = new Map<string, string>();
+  let droppedSites = 0;
+  let filesWithDroppedSites = 0;
   for (let i = 0; i < shards.length; i++) {
     // Per-shard def pool: a SymbolDefinition's three serialized copies live within
     // a single shard (one ParsedFile), so the dedup is shard-local. A cross-shard
@@ -260,13 +263,15 @@ export const loadParsedFilesForPaths = async (
     }
     if (!Array.isArray(parsed)) continue;
     for (const pf of parsed) {
-      if (
-        pf &&
-        typeof pf.filePath === 'string' &&
-        wantPaths.has(pf.filePath) &&
-        isValidCallableFlowSites(pf.callableFlowSites)
-      ) {
+      if (!pf || typeof pf.filePath !== 'string' || !wantPaths.has(pf.filePath)) continue;
+      const flow = sanitizeCallableFlowSites(pf.callableFlowSites);
+      if (flow === undefined) continue; // non-array garbage → distrust the file, re-extract
+      if (flow.dropped === 0) {
         out.set(pf.filePath, pf);
+      } else {
+        droppedSites += flow.dropped;
+        filesWithDroppedSites++;
+        out.set(pf.filePath, { ...pf, callableFlowSites: flow.sites });
       }
     }
     // Every few shards, reclaim the transient pre-intern parse churn before it
@@ -277,21 +282,42 @@ export const loadParsedFilesForPaths = async (
       await new Promise<void>((resolve) => setImmediate(resolve));
     }
   }
+  if (droppedSites > 0) {
+    // Facts for the dropped sites are omitted this run (the file itself is
+    // retained, so no re-extract happens) — surface it so a recurring drop
+    // on every warm load is observable rather than silent (#2522 review).
+    logger.warn(
+      { droppedSites, files: filesWithDroppedSites },
+      'parsedfile-store: dropped malformed/over-bound callable-flow sites at load; files retained without those facts',
+    );
+  }
   return out;
 };
 
 /**
  * Treat the durable ParsedFile store as an untrusted serialization boundary.
- * A stale/corrupt shard is skipped so the normal caller re-extracts that file;
- * malformed facts never reach callable-value-flow's worklist.
+ * Sanitation is per-SITE, not per-file: one malformed or over-bound fact drops
+ * only itself (counted, logged by the caller), so a legitimately pathological
+ * source file cannot push its whole ParsedFile into a permanent, silent
+ * warm-cache-miss reparse loop (#2522 review). Only a non-array field —
+ * i.e. garbage that says the serialization itself is untrustworthy — rejects
+ * the file, and `undefined` (never emitted / no facts) passes through.
+ * Returns `undefined` for the reject-file case.
  */
-function isValidCallableFlowSites(value: unknown): boolean {
-  if (value === undefined) return true;
-  if (!Array.isArray(value) || value.length > MAX_CALLABLE_FLOW_SITES_PER_FILE) return false;
-  return value.every(isValidCallableFlowSite);
+function sanitizeCallableFlowSites(
+  value: unknown,
+): { sites: readonly CallableFlowSite[] | undefined; dropped: number } | undefined {
+  if (value === undefined) return { sites: undefined, dropped: 0 };
+  if (!Array.isArray(value)) return undefined;
+  const bounded =
+    value.length > MAX_CALLABLE_FLOW_SITES_PER_FILE
+      ? value.slice(0, MAX_CALLABLE_FLOW_SITES_PER_FILE)
+      : value;
+  const sites = bounded.filter(isValidCallableFlowSite);
+  return { sites, dropped: value.length - sites.length };
 }
 
-function isValidCallableFlowSite(value: unknown): boolean {
+function isValidCallableFlowSite(value: unknown): value is CallableFlowSite {
   if (!isRecord(value) || typeof value.kind !== 'string') return false;
   switch (value.kind) {
     case 'seed':
@@ -384,7 +410,13 @@ function isValidBoundedStringArray(value: unknown): boolean {
     value === undefined ||
     (Array.isArray(value) &&
       value.length <= MAX_CALLABLE_FLOW_PARAMETERS &&
-      value.every(isBoundedString))
+      // '' is a legitimate entry meaning "unknown type" — the same convention
+      // as ReferenceSite.argumentTypes. C++ emits it for cv-qualifier-only or
+      // ERROR-recovered parameter types, so requiring non-empty here rejected
+      // real extractor output (#2522 review).
+      value.every(
+        (entry) => typeof entry === 'string' && entry.length <= MAX_CALLABLE_FLOW_NAME_LENGTH,
+      ))
   );
 }
 

@@ -138,7 +138,7 @@ describe('parsedfile-store', () => {
     }
   });
 
-  it('rejects malformed callable-flow facts so the caller can freshly extract the file', async () => {
+  it('drops a malformed callable-flow site but retains the file and its other sites (per-site sanitation, #2522)', async () => {
     const dir = await mkdtemp(path.join(tmpdir(), 'pfstore-'));
     try {
       const operand = {
@@ -165,8 +165,58 @@ describe('parsedfile-store', () => {
       await persistParsedFileChunk(dir, 'invalid', [invalid, makeParsedFile('valid.c')]);
 
       const loaded = await loadParsedFilesForPaths(dir, new Set(['invalid.c', 'valid.c']));
-      expect(loaded.has('invalid.c')).toBe(false);
+      // The file survives with the offending site dropped — a per-file
+      // rejection here caused a permanent, silent warm-cache reparse loop.
+      expect(loaded.get('invalid.c')?.callableFlowSites).toEqual([]);
       expect(loaded.has('valid.c')).toBe(true);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('accepts empty-string parameterTypes entries ("" = unknown type, real C++ extractor output)', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'pfstore-'));
+    try {
+      const pf = {
+        ...(makeParsedFile('cv.cpp') as unknown as Record<string, unknown>),
+        callableFlowSites: [
+          {
+            kind: 'seed',
+            destination: {
+              name: 'fp',
+              inScope: 'scope:entry',
+              atRange: { startLine: 1, startCol: 0, endLine: 1, endCol: 8 },
+              indirection: 0,
+              addressOf: false,
+              expressionKind: 'binding',
+            },
+            targetName: 'handler',
+            targetRange: { startLine: 1, startCol: 12, endLine: 1, endCol: 19 },
+            expectedSignature: { parameterCount: 2, parameterTypes: ['int', ''] },
+          },
+        ],
+      } as unknown as ParsedFile;
+      await persistParsedFileChunk(dir, 'cv', [pf]);
+
+      const loaded = await loadParsedFilesForPaths(dir, new Set(['cv.cpp']));
+      expect(loaded.get('cv.cpp')?.callableFlowSites).toEqual(pf.callableFlowSites);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects the whole file only when callableFlowSites is non-array garbage', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'pfstore-'));
+    try {
+      const garbage = {
+        ...(makeParsedFile('garbage.c') as unknown as Record<string, unknown>),
+        callableFlowSites: 'not-an-array',
+      } as unknown as ParsedFile;
+      await persistParsedFileChunk(dir, 'garbage', [garbage, makeParsedFile('ok.c')]);
+
+      const loaded = await loadParsedFilesForPaths(dir, new Set(['garbage.c', 'ok.c']));
+      expect(loaded.has('garbage.c')).toBe(false);
+      expect(loaded.has('ok.c')).toBe(true);
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
