@@ -288,6 +288,14 @@ export const cppScopeResolver: ScopeResolver = {
     return false;
   },
 
+  // Keep declaration/definition identity narrower than the global free-call
+  // visibility gate above: namespace and class ownership do not imply
+  // internal linkage, while a namespace-scope `static` function does.
+  hasFileLocalCallableLinkage: (def: SymbolDefinition) => {
+    const simple = def.qualifiedName?.split('.').pop() ?? def.qualifiedName ?? '';
+    return isFileLocal(def.filePath, simple);
+  },
+
   // C++ two-phase template lookup: inside a class template body,
   // unqualified calls MUST NOT bind to members of a dependent base
   // class. The standard requires `this->name()` or `Base<T>::name()`

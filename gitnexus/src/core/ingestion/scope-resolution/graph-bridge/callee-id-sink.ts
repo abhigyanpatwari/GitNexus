@@ -74,14 +74,19 @@ export interface CalleeIdMapView {
 /** The concrete accumulator: a write sink that also exposes the read view. */
 export interface CalleeIdAccumulator extends CalleeIdSink, CalleeIdMapView {}
 
+export type CalleeIdCaptureFilter = (filePath: string, line: number, col: number) => boolean;
+
 /**
  * Create the concrete nested-`Map` accumulator for PDG callee capture or
  * callable-value-flow's direct-target index.
  */
-export function createCalleeIdAccumulator(): CalleeIdAccumulator {
+export function createCalleeIdAccumulator(
+  shouldCapture?: CalleeIdCaptureFilter,
+): CalleeIdAccumulator {
   const byFile = new Map<string, Map<CalleeIdPosKey, Set<string>>>();
   return {
     add(filePath: string, line: number, col: number, calleeId: string): void {
+      if (shouldCapture?.(filePath, line, col) === false) return;
       let byPos = byFile.get(filePath);
       if (byPos === undefined) {
         byPos = new Map<CalleeIdPosKey, Set<string>>();

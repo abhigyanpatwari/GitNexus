@@ -21,6 +21,18 @@ export interface CallableFlowOperand {
   readonly indirection: number;
   /** Whether this occurrence explicitly takes the binding's address. */
   readonly addressOf: boolean;
+  /**
+   * Provider-normalized expression role. `binding` is the conservative
+   * default; the other variants prove the occurrence denotes a callable
+   * designator rather than a value produced by an expression.
+   */
+  readonly expressionKind?:
+    | 'binding'
+    | 'callable-designator'
+    | 'bound-member'
+    | 'anonymous-callable';
+  /** Qualified spelling retained for receiver/member-aware lookup. */
+  readonly qualifiedName?: string;
 }
 
 /** Callable shape used to disambiguate overload sets when syntax supplies it. */
@@ -28,6 +40,8 @@ export interface CallableFlowExpectedSignature {
   readonly parameterCount?: number;
   readonly parameterTypes?: readonly string[];
   readonly parameterTypeClasses?: readonly ParameterTypeClass[];
+  /** C++ member-function cv qualifier when the declarator supplies it. */
+  readonly isConst?: boolean;
 }
 
 export type CallableFlowPassingMode = 'value' | 'reference' | 'pointer' | 'callable-object';

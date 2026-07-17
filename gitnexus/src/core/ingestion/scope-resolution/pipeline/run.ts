@@ -79,6 +79,7 @@ import {
 } from '../graph-bridge/callee-id-sink.js';
 import { emitImportEdges } from '../graph-bridge/imports-to-edges.js';
 import {
+  callableFlowSiteKey,
   collectDeferredIndirectSites,
   emitCallableValueFlow,
 } from '../passes/callable-value-flow.js';
@@ -761,13 +762,29 @@ export function runScopeResolution(
   // ── Phase 4: emit graph edges (LOAD-BEARING ORDER — see I1) ────────────
   input.onProgress?.('linking symbols', files.length, files.length);
   const handledSites = new Set<string>(preEmittedInheritanceSites);
-  const deferredIndirectSites = collectDeferredIndirectSites(emitParsedFiles);
+  const deferredIndirectSites = collectDeferredIndirectSites(emitParsedFiles, indexes);
+  const callableArgumentSites = new Set<string>();
+  if (input.pdg !== true && deferredIndirectSites.size > 0) {
+    for (const parsed of emitParsedFiles) {
+      for (const site of parsed.callableFlowSites ?? []) {
+        if (site.kind === 'argument') {
+          callableArgumentSites.add(callableFlowSiteKey(parsed.filePath, site.callSite));
+        }
+      }
+    }
+  }
   // Resolved-callee-id accumulator (#2227 U2 + callable-value-flow). Created
   // for PDG OR when indirect-call facts need direct targets for actual→formal
   // propagation. Populated below at every CALLS emit path before dedup; the CFG
   // join still consumes it only inside the `input.pdg` block.
   const calleeIdAccumulator: CalleeIdAccumulator | undefined =
-    input.pdg === true || deferredIndirectSites.size > 0 ? createCalleeIdAccumulator() : undefined;
+    input.pdg === true || deferredIndirectSites.size > 0
+      ? createCalleeIdAccumulator(
+          input.pdg === true
+            ? undefined
+            : (filePath, line, col) => callableArgumentSites.has(`${filePath}:${line}:${col}`),
+        )
+      : undefined;
   const receiverExtras = callableFlowOnly
     ? 0
     : emitReceiverBoundCalls(
@@ -832,35 +849,13 @@ export function runScopeResolution(
         referenceSkipSites,
         calleeIdAccumulator,
       );
-  const callableValueFlow =
-    calleeIdAccumulator === undefined
-      ? {
-          emitted: 0,
-          resolvedInvokes: 0,
-          ambiguousInvokes: 0,
-          unmatchedInvokes: 0,
-          iterations: 0,
-        }
-      : emitCallableValueFlow({
-          graph,
-          scopes: indexes,
-          parsedFiles: emitParsedFiles,
-          nodeLookup: postHeritageNodeLookup,
-          calleeIds: calleeIdAccumulator,
-          language: provider.language,
-          collapseByCallerTarget: provider.collapseMemberCallsByCallerTarget === true,
-          isCallableValueTarget: provider.isCallableValueTarget,
-          onWarn: (warning) =>
-            logger.warn(
-              warning,
-              'callable-value-flow: candidate set exceeded the cap; no partial CALLS emitted',
-            ),
-        });
   // value-ref registrations (#2437): USES edges at the registration sites
   // plus field-based dispatch — synthesized CALLS from member-call sites to
-  // functions registered under the same property key. Runs after the precise
-  // passes — `graph.addRelationship` is first-write-wins, so precisely
-  // resolved sites keep their edges.
+  // functions registered under the same property key. This runs after the
+  // ordinary precise passes but before callable-value-flow: property-dispatched
+  // wrapper calls must populate the callee accumulator before actual→formal
+  // propagation. `graph.addRelationship` remains first-write-wins, so precise
+  // edges already emitted for a site retain ownership.
   const propertyDispatch = callableFlowOnly
     ? { usesEmitted: 0, callsEmitted: 0, skippedKeys: 0 }
     : emitPropertyDispatchCalls(
@@ -883,6 +878,31 @@ export function runScopeResolution(
       'property-dispatch: keys over the fan-out cap were dropped (no CALLS synthesized for them)',
     );
   }
+  const callableValueFlow =
+    calleeIdAccumulator === undefined
+      ? {
+          emitted: 0,
+          resolvedInvokes: 0,
+          ambiguousInvokes: 0,
+          unmatchedInvokes: 0,
+          iterations: 0,
+        }
+      : emitCallableValueFlow({
+          graph,
+          scopes: indexes,
+          parsedFiles: emitParsedFiles,
+          nodeLookup: postHeritageNodeLookup,
+          calleeIds: calleeIdAccumulator,
+          language: provider.language,
+          collapseByCallerTarget: provider.collapseMemberCallsByCallerTarget === true,
+          isCallableValueTarget: provider.isCallableValueTarget,
+          hasFileLocalCallableLinkage: provider.hasFileLocalCallableLinkage,
+          onWarn: (warning) =>
+            logger.warn(
+              warning,
+              'callable-value-flow: candidate set exceeded the cap; no partial CALLS emitted',
+            ),
+        });
   const importsEmitted = callableFlowOnly
     ? 0
     : emitImportEdges(graph, indexes.imports, indexes.scopeTree, provider.importEdgeReason);

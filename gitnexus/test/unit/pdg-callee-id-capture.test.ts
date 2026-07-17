@@ -622,3 +622,17 @@ describe('callee-id accumulator — delete (R6 per-file release)', () => {
     expect(snapshot(acc, 'b.ts')).toEqual({ [calleeIdPosKey(5, 0)]: ['fn:b'] });
   });
 });
+
+describe('callee-id accumulator — selective callable-flow capture', () => {
+  it('retains only positions accepted by the capture filter', () => {
+    const acc = createCalleeIdAccumulator(
+      (filePath, line, col) => filePath === 'wanted.ts' && line === 7 && col === 3,
+    );
+    acc.add('wanted.ts', 7, 3, 'Function:wanted');
+    acc.add('wanted.ts', 8, 3, 'Function:other-line');
+    acc.add('other.ts', 7, 3, 'Function:other-file');
+
+    expect(snapshot(acc, 'wanted.ts')).toEqual({ '7:3': ['Function:wanted'] });
+    expect(acc.get('other.ts')).toBeUndefined();
+  });
+});

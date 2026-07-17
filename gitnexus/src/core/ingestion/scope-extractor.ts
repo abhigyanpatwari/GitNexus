@@ -1312,12 +1312,19 @@ function callableFlowOperand(
   if (cap === undefined || !nonEmpty(cap.text)) return undefined;
   const inScope = positionIndex.atPosition(filePath, cap.range.startLine, cap.range.startCol);
   if (inScope === undefined) return undefined;
+  const expressionKind = parseCallableOperandKind(match[`@callable-flow.${role}-kind`]?.text);
+  const indirection = parseNonNegativeInt(match[`@callable-flow.${role}-indirection`]?.text);
+  if (indirection !== undefined && indirection > 16) return undefined;
   return {
     name: cap.text,
     inScope,
     atRange: cap.range,
-    indirection: parseNonNegativeInt(match[`@callable-flow.${role}-indirection`]?.text) ?? 0,
+    indirection: indirection ?? 0,
     addressOf: match[`@callable-flow.${role}-address`]?.text === 'true',
+    ...(expressionKind !== undefined ? { expressionKind } : {}),
+    ...(nonEmpty(match[`@callable-flow.${role}-qualified-name`]?.text)
+      ? { qualifiedName: match[`@callable-flow.${role}-qualified-name`]!.text }
+      : {}),
   };
 }
 
@@ -1329,10 +1336,12 @@ function callableFlowExpectedSignature(
   const parameterTypeClasses = parseJsonParameterTypeClassesCapture(
     match['@callable-flow.expected-type-classes'],
   );
+  const isConst = parseBooleanText(match['@callable-flow.expected-const']?.text);
   if (
     parameterCount === undefined &&
     parameterTypes === undefined &&
-    parameterTypeClasses === undefined
+    parameterTypeClasses === undefined &&
+    isConst === undefined
   ) {
     return undefined;
   }
@@ -1340,7 +1349,28 @@ function callableFlowExpectedSignature(
     ...(parameterCount !== undefined ? { parameterCount } : {}),
     ...(parameterTypes !== undefined ? { parameterTypes } : {}),
     ...(parameterTypeClasses !== undefined ? { parameterTypeClasses } : {}),
+    ...(isConst !== undefined ? { isConst } : {}),
   };
+}
+
+function parseCallableOperandKind(
+  text: string | undefined,
+): 'binding' | 'callable-designator' | 'bound-member' | 'anonymous-callable' | undefined {
+  switch (text) {
+    case 'binding':
+    case 'callable-designator':
+    case 'bound-member':
+    case 'anonymous-callable':
+      return text;
+    default:
+      return undefined;
+  }
+}
+
+function parseBooleanText(text: string | undefined): boolean | undefined {
+  if (text === 'true') return true;
+  if (text === 'false') return false;
+  return undefined;
 }
 
 function parseJsonStringArray(text: string | undefined): readonly string[] | undefined {

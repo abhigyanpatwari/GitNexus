@@ -5,6 +5,7 @@
  */
 
 import type {
+  CallableFlowExpectedSignature,
   CallableFlowFormalSite,
   CallableFlowInvokeSite,
   CallableFlowOperand,
@@ -17,7 +18,7 @@ import type { KnowledgeGraph } from '../../../graph/types.js';
 import type { ScopeResolutionIndexes } from '../../model/scope-resolution-indexes.js';
 import type { GraphNodeLookup } from '../graph-bridge/node-lookup.js';
 import type { CalleeIdAccumulator } from '../graph-bridge/callee-id-sink.js';
-import { tryEmitEdge } from '../graph-bridge/edges.js';
+import { tryEmitEdgeWithExplicitTargetId } from '../graph-bridge/edges.js';
 import { resolveCallerGraphId, resolveDefGraphId } from '../graph-bridge/ids.js';
 import { resolveInheritanceBaseInScope } from '../scope/walkers.js';
 import { narrowOverloadCandidates } from './overload-narrowing.js';
@@ -63,6 +64,7 @@ export interface EmitCallableValueFlowInput {
   readonly language: string;
   readonly collapseByCallerTarget?: boolean;
   readonly isCallableValueTarget?: (def: SymbolDefinition) => boolean;
+  readonly hasFileLocalCallableLinkage?: (def: SymbolDefinition) => boolean;
   readonly onWarn?: (warning: CallableValueFlowWarning) => void;
 }
 
@@ -80,8 +82,20 @@ export function callableFlowSiteKey(
  */
 export function collectDeferredIndirectSites(
   parsedFiles: readonly ParsedFile[],
+  scopes?: ScopeResolutionIndexes,
 ): ReadonlySet<string> {
   const out = new Set<string>();
+  const flowCells = new Set<string>();
+  if (scopes !== undefined) {
+    for (const parsed of parsedFiles) {
+      for (const site of parsed.callableFlowSites ?? []) {
+        const operand = flowCellOperand(site);
+        if (operand !== undefined) {
+          flowCells.add(canonicalBindingKey(parsed.filePath, operand, scopes));
+        }
+      }
+    }
+  }
   for (const parsed of parsedFiles) {
     const canonical = new Set(
       parsed.referenceSites
@@ -91,16 +105,42 @@ export function collectDeferredIndirectSites(
     for (const site of parsed.callableFlowSites ?? []) {
       if (site.kind !== 'invoke') continue;
       const key = callableFlowSiteKey(parsed.filePath, site.callSite);
-      if (canonical.has(key)) out.add(key);
+      if (!canonical.has(key)) continue;
+      if (
+        scopes === undefined ||
+        site.invocationKind === 'member-pointer' ||
+        site.callee.indirection > 0 ||
+        flowCells.has(canonicalBindingKey(parsed.filePath, site.callee, scopes))
+      ) {
+        out.add(key);
+      }
     }
   }
   return out;
 }
 
+function flowCellOperand(site: CallableFlowSite): CallableFlowOperand | undefined {
+  switch (site.kind) {
+    case 'seed':
+    case 'copy':
+    case 'alias':
+    case 'address':
+    case 'load':
+      return site.destination;
+    case 'store':
+      return site.pointer;
+    case 'formal':
+      return site.binding;
+    case 'argument':
+    case 'invoke':
+      return undefined;
+  }
+}
+
 export function emitCallableValueFlow(input: EmitCallableValueFlowInput): CallableValueFlowResult {
   const facts: FileFact[] = [];
   const invokes: FileInvoke[] = [];
-  const canonicalInvokeKeys = collectDeferredIndirectSites(input.parsedFiles);
+  const canonicalInvokeKeys = collectDeferredIndirectSites(input.parsedFiles, input.scopes);
   let unmatchedInvokes = 0;
   for (const parsed of input.parsedFiles) {
     for (const site of parsed.callableFlowSites ?? []) {
@@ -122,24 +162,80 @@ export function emitCallableValueFlow(input: EmitCallableValueFlowInput): Callab
   const overflowedTargets = new Set<string>();
   const overflowedAddresses = new Set<string>();
   const overflowWarnings = new Map<string, CallableValueFlowWarning>();
-  const graphTargets = buildGraphTargetIndex(
+  const rawGraphTargets = buildGraphTargetIndex(
     input.scopes,
     input.nodeLookup,
     input.isCallableValueTarget,
+    input.graph,
   );
-  const globalBySimpleName = buildGlobalCallableIndex(graphTargets.values());
+  const rawTargetIndexes = buildCallableTargetIndexes(rawGraphTargets.values(), input.scopes);
+  const { targets: graphTargets, aliasesByTargetId } = canonicalizeCallableDeclarations(
+    rawGraphTargets,
+    rawTargetIndexes,
+    input.scopes,
+    input.graph,
+    input.hasFileLocalCallableLinkage,
+  );
+  const uniqueGraphTargets = dedupeTargets([...graphTargets.values()]);
+  const globalBySimpleName = buildGlobalCallableIndex(uniqueGraphTargets);
+  const targetIndexes = buildCallableTargetIndexes(uniqueGraphTargets, input.scopes);
 
   const bindingKey = (filePath: string, operand: CallableFlowOperand): string =>
     canonicalBindingKey(filePath, operand, input.scopes);
+  const constrainedBindings = new Set<string>();
+  for (const fact of facts) {
+    const operand = flowCellOperand(fact.site);
+    if (operand !== undefined) constrainedBindings.add(bindingKey(fact.filePath, operand));
+  }
 
-  const warnOverflow = (key: string, count: number, context: string): void => {
+  const warnOverflow = (
+    key: string,
+    count: number,
+    context: string,
+    cap = MAX_CALLABLE_VALUE_TARGETS,
+  ): void => {
     if (overflowWarnings.has(key)) return;
     overflowWarnings.set(key, {
       language: input.language,
       context,
       candidateCount: count,
-      cap: MAX_CALLABLE_VALUE_TARGETS,
+      cap,
     });
+  };
+
+  // Dependency-indexed worklist. Each constraint records the target/address
+  // cells it reads; only consumers of a changed cell are re-enqueued. This is
+  // the finite inclusion worklist promised by the plan and avoids rescanning
+  // every fact for every hop in a reverse-ordered copy chain.
+  const workItems: Array<() => void> = [];
+  const watchers = new Map<string, Set<number>>();
+  const queue: number[] = [];
+  const queued = new Set<number>();
+  let activeWorkItem: number | undefined;
+  const dependencyKey = (kind: 'target' | 'address' | 'call', key: string): string =>
+    `${kind}\0${key}`;
+  const watch = (kind: 'target' | 'address' | 'call', key: string): void => {
+    if (activeWorkItem === undefined) return;
+    const dependency = dependencyKey(kind, key);
+    let bucket = watchers.get(dependency);
+    if (bucket === undefined) {
+      bucket = new Set();
+      watchers.set(dependency, bucket);
+    }
+    bucket.add(activeWorkItem);
+  };
+  const schedule = (id: number): void => {
+    if (queued.has(id)) return;
+    queued.add(id);
+    queue.push(id);
+  };
+  const notify = (kind: 'target' | 'address' | 'call', key: string): void => {
+    for (const id of watchers.get(dependencyKey(kind, key)) ?? []) schedule(id);
+  };
+  const addWorkItem = (run: () => void): void => {
+    const id = workItems.length;
+    workItems.push(run);
+    schedule(id);
   };
 
   const addTarget = (key: string, target: Target, context: string): boolean => {
@@ -155,9 +251,11 @@ export function emitCallableValueFlow(input: EmitCallableValueFlowInput): Callab
       bucket.clear();
       overflowedTargets.add(key);
       warnOverflow(`target:${key}`, count, context);
+      notify('target', key);
       return true;
     }
     bucket.set(target.id, target);
+    notify('target', key);
     return true;
   };
 
@@ -174,40 +272,116 @@ export function emitCallableValueFlow(input: EmitCallableValueFlowInput): Callab
       bucket.clear();
       overflowedAddresses.add(key);
       warnOverflow(`address:${key}`, count, context);
+      notify('address', key);
       return true;
     }
     bucket.add(cell);
+    notify('address', key);
     return true;
   };
 
+  const markTargetOverflow = (key: string, context: string): boolean => {
+    if (overflowedTargets.has(key)) return false;
+    targetsByBinding.get(key)?.clear();
+    overflowedTargets.add(key);
+    warnOverflow(`target:${key}`, MAX_CALLABLE_VALUE_TARGETS + 1, context);
+    notify('target', key);
+    return true;
+  };
+
+  const markAddressOverflow = (key: string, context: string): boolean => {
+    if (overflowedAddresses.has(key)) return false;
+    addressesByBinding.get(key)?.clear();
+    overflowedAddresses.add(key);
+    warnOverflow(`address:${key}`, MAX_CALLABLE_VALUE_TARGETS + 1, context);
+    notify('address', key);
+    return true;
+  };
+
+  const readTargets = (
+    key: string,
+  ): { readonly targets: ReadonlyMap<string, Target>; readonly overflow: boolean } => {
+    watch('target', key);
+    return {
+      targets: targetsByBinding.get(key) ?? new Map(),
+      overflow: overflowedTargets.has(key),
+    };
+  };
+
+  const readAddresses = (
+    key: string,
+  ): { readonly cells: ReadonlySet<string>; readonly overflow: boolean } => {
+    watch('address', key);
+    return {
+      cells: addressesByBinding.get(key) ?? new Set(),
+      overflow: overflowedAddresses.has(key),
+    };
+  };
+
   const transferTargets = (source: string, destination: string, context: string): boolean => {
-    if (overflowedTargets.has(source)) {
-      if (overflowedTargets.has(destination)) return false;
-      targetsByBinding.get(destination)?.clear();
-      overflowedTargets.add(destination);
-      warnOverflow(`target:${destination}`, MAX_CALLABLE_VALUE_TARGETS + 1, context);
-      return true;
-    }
+    const sourceTargets = readTargets(source);
+    if (sourceTargets.overflow) return markTargetOverflow(destination, context);
     let changed = false;
-    for (const target of targetsByBinding.get(source)?.values() ?? []) {
+    for (const target of sourceTargets.targets.values()) {
       if (addTarget(destination, target, context)) changed = true;
     }
     return changed;
   };
 
   const transferAddresses = (source: string, destination: string, context: string): boolean => {
-    if (overflowedAddresses.has(source)) {
-      if (overflowedAddresses.has(destination)) return false;
-      addressesByBinding.get(destination)?.clear();
-      overflowedAddresses.add(destination);
-      warnOverflow(`address:${destination}`, MAX_CALLABLE_VALUE_TARGETS + 1, context);
-      return true;
-    }
+    const sourceAddresses = readAddresses(source);
+    if (sourceAddresses.overflow) return markAddressOverflow(destination, context);
     let changed = false;
-    for (const cell of addressesByBinding.get(source) ?? []) {
+    for (const cell of sourceAddresses.cells) {
       if (addAddress(destination, cell, context)) changed = true;
     }
     return changed;
+  };
+
+  const reachedCells = (
+    filePath: string,
+    operand: CallableFlowOperand,
+  ): { readonly layers: readonly ReadonlySet<string>[]; readonly overflow: boolean } => {
+    const layers: ReadonlySet<string>[] = [new Set([bindingKey(filePath, operand)])];
+    let current = layers[0]!;
+    for (let depth = 0; depth < operand.indirection; depth++) {
+      const next = new Set<string>();
+      for (const cell of current) {
+        const addresses = readAddresses(cell);
+        if (addresses.overflow) return { layers, overflow: true };
+        for (const reached of addresses.cells) next.add(reached);
+      }
+      layers.push(next);
+      current = next;
+      if (current.size === 0) break;
+    }
+    return { layers, overflow: false };
+  };
+
+  const operandTargets = (
+    filePath: string,
+    operand: CallableFlowOperand,
+  ): { readonly targets: Map<string, Target>; readonly overflow: boolean } => {
+    const reached = reachedCells(filePath, operand);
+    if (reached.overflow) return { targets: new Map(), overflow: true };
+    const out = new Map<string, Target>();
+    // A function-pointer binding already denotes its pointee. Explicit `*`
+    // may therefore terminate at any prefix, while pointer-to-pointer cells
+    // continue through address edges. This models fp(), (*fp)(), and (**pp)
+    // without treating the final function-designator dereference as a cell hop.
+    for (const layer of reached.layers) {
+      for (const cell of layer) {
+        const candidates = readTargets(cell);
+        if (candidates.overflow) return { targets: new Map(), overflow: true };
+        for (const target of candidates.targets.values()) {
+          out.set(target.id, target);
+          if (out.size > MAX_CALLABLE_VALUE_TARGETS) {
+            return { targets: new Map(), overflow: true };
+          }
+        }
+      }
+    }
+    return { targets: out, overflow: false };
   };
 
   // Explicit seeds use lexical/qualified registries and contextual signature
@@ -224,6 +398,8 @@ export function emitCallableValueFlow(input: EmitCallableValueFlowInput): Callab
       input.scopes,
       graphTargets,
       globalBySimpleName,
+      targetIndexes,
+      input.graph,
     );
     for (const target of candidates) addTarget(destination, target, `binding:${destination}`);
   }
@@ -234,7 +410,36 @@ export function emitCallableValueFlow(input: EmitCallableValueFlowInput): Callab
     const source = sourceOperand(fact.site);
     if (source === undefined) continue;
     const key = bindingKey(fact.filePath, source);
-    for (const target of lexicalCallableTargets(source, input.scopes, graphTargets)) {
+    for (const target of resolveOperandCandidates(
+      fact.filePath,
+      source,
+      undefined,
+      input.scopes,
+      graphTargets,
+      globalBySimpleName,
+      targetIndexes,
+      input.graph,
+      !constrainedBindings.has(key),
+    )) {
+      addTarget(key, target, `binding:${key}`);
+    }
+  }
+
+  // Explicitly dereferenced named functions (`(*target)()`) have no source
+  // fact of their own; seed their canonical binding from lexical lookup.
+  for (const invoke of invokes) {
+    const key = bindingKey(invoke.filePath, invoke.site.callee);
+    for (const target of resolveOperandCandidates(
+      invoke.filePath,
+      invoke.site.callee,
+      undefined,
+      input.scopes,
+      graphTargets,
+      globalBySimpleName,
+      targetIndexes,
+      input.graph,
+      !constrainedBindings.has(key),
+    )) {
       addTarget(key, target, `binding:${key}`);
     }
   }
@@ -253,180 +458,231 @@ export function emitCallableValueFlow(input: EmitCallableValueFlowInput): Callab
     input.parsedFiles,
     input.scopes,
     input.nodeLookup,
-    graphTargets,
+    targetIndexes,
+    aliasesByTargetId,
   );
   const dynamicCallees = new Map<string, Map<string, Target>>();
   const dynamicOverflow = new Set<string>();
-  let changed = true;
-  let iterations = 0;
-  const maxIterations = Math.max(16, (facts.length + invokes.length) * 4);
+  const dynamicTargetHistory = new Map<string, Set<string>>();
 
-  while (changed && iterations < maxIterations) {
-    changed = false;
-    iterations++;
-
-    for (const fact of facts) {
-      const context = `${fact.site.kind}:${fact.filePath}`;
-      switch (fact.site.kind) {
-        case 'copy': {
-          const source = bindingKey(fact.filePath, fact.site.source);
-          const destination = bindingKey(fact.filePath, fact.site.destination);
-          changed = transferTargets(source, destination, context) || changed;
-          changed = transferAddresses(source, destination, context) || changed;
-          break;
-        }
-        case 'alias': {
-          const source = bindingKey(fact.filePath, fact.site.source);
-          const destination = bindingKey(fact.filePath, fact.site.destination);
-          changed = transferTargets(source, destination, context) || changed;
-          changed = transferTargets(destination, source, context) || changed;
-          changed = transferAddresses(source, destination, context) || changed;
-          changed = transferAddresses(destination, source, context) || changed;
-          break;
-        }
-        case 'load': {
-          const destination = bindingKey(fact.filePath, fact.site.destination);
-          for (const cell of cellsForOperand(
-            fact.filePath,
-            fact.site.pointer,
-            bindingKey,
-            addressesByBinding,
-          )) {
-            changed = transferTargets(cell, destination, context) || changed;
-            changed = transferAddresses(cell, destination, context) || changed;
+  for (const fact of facts) {
+    const site = fact.site;
+    const context = `${fact.site.kind}:${fact.filePath}`;
+    switch (site.kind) {
+      case 'copy':
+      case 'alias': {
+        addWorkItem(() => {
+          const source = bindingKey(fact.filePath, site.source);
+          const destination = bindingKey(fact.filePath, site.destination);
+          transferTargets(source, destination, context);
+          transferAddresses(source, destination, context);
+          if (site.kind === 'alias') {
+            transferTargets(destination, source, context);
+            transferAddresses(destination, source, context);
           }
-          break;
-        }
-        case 'store': {
-          const sourceTargets = targetsForOperand(
-            fact.filePath,
-            fact.site.source,
-            bindingKey,
-            targetsByBinding,
-            addressesByBinding,
-            overflowedTargets,
-            overflowedAddresses,
-          );
-          for (const cell of cellsForOperand(
-            fact.filePath,
-            fact.site.pointer,
-            bindingKey,
-            addressesByBinding,
-          )) {
+        });
+        break;
+      }
+      case 'load': {
+        addWorkItem(() => {
+          const destination = bindingKey(fact.filePath, site.destination);
+          const reached = reachedCells(fact.filePath, site.pointer);
+          if (reached.overflow) {
+            markTargetOverflow(destination, context);
+            markAddressOverflow(destination, context);
+            return;
+          }
+          for (const cell of reached.layers.at(-1) ?? []) {
+            transferTargets(cell, destination, context);
+            transferAddresses(cell, destination, context);
+          }
+        });
+        break;
+      }
+      case 'store': {
+        addWorkItem(() => {
+          const sourceTargets = operandTargets(fact.filePath, site.source);
+          const reached = reachedCells(fact.filePath, site.pointer);
+          if (reached.overflow) return;
+          for (const cell of reached.layers.at(-1) ?? []) {
             if (sourceTargets.overflow) {
-              if (!overflowedTargets.has(cell)) {
-                targetsByBinding.get(cell)?.clear();
-                overflowedTargets.add(cell);
-                changed = true;
-              }
+              markTargetOverflow(cell, context);
               continue;
             }
-            for (const target of sourceTargets.targets.values()) {
-              changed = addTarget(cell, target, context) || changed;
-            }
+            for (const target of sourceTargets.targets.values()) addTarget(cell, target, context);
           }
-          break;
-        }
-        case 'seed':
-        case 'address':
-        case 'formal':
-        case 'argument':
-        case 'invoke':
-          break;
+        });
+        break;
       }
+      case 'seed':
+      case 'address':
+      case 'formal':
+      case 'argument':
+      case 'invoke':
+        break;
     }
+  }
 
-    dynamicCallees.clear();
-    dynamicOverflow.clear();
-    for (const invoke of invokes) {
-      const key = callableFlowSiteKey(invoke.filePath, invoke.site.callSite);
-      const targets = targetsForOperand(
-        invoke.filePath,
-        invoke.site.callee,
-        bindingKey,
-        targetsByBinding,
-        addressesByBinding,
-        overflowedTargets,
-        overflowedAddresses,
-      );
+  for (const invoke of invokes) {
+    addWorkItem(() => {
+      const callKey = callableFlowSiteKey(invoke.filePath, invoke.site.callSite);
+      const targets = operandTargets(invoke.filePath, invoke.site.callee);
       if (targets.overflow || targets.targets.size > MAX_CALLABLE_VALUE_TARGETS) {
-        dynamicOverflow.add(key);
-        warnOverflow(
-          `invoke:${key}`,
-          Math.max(targets.targets.size, MAX_CALLABLE_VALUE_TARGETS + 1),
-          `site:${key}`,
-        );
-        continue;
+        if (!dynamicOverflow.has(callKey)) {
+          dynamicOverflow.add(callKey);
+          dynamicCallees.delete(callKey);
+          warnOverflow(
+            `invoke:${callKey}`,
+            Math.max(targets.targets.size, MAX_CALLABLE_VALUE_TARGETS + 1),
+            `site:${callKey}`,
+          );
+          notify('call', callKey);
+        }
+        return;
       }
-      const expanded = expandMemberTargets(invoke, targets.targets, input.scopes, graphTargets);
-      dynamicCallees.set(key, expanded);
-    }
+      const expanded = expandMemberTargets(
+        invoke,
+        targets.targets,
+        input.scopes,
+        graphTargets,
+        targetIndexes,
+        input.graph,
+      );
+      const history = dynamicTargetHistory.get(callKey) ?? new Set<string>();
+      for (const id of expanded.keys()) history.add(id);
+      dynamicTargetHistory.set(callKey, history);
+      const previous = dynamicCallees.get(callKey);
+      if (!sameTargetSet(previous, expanded)) {
+        dynamicCallees.set(callKey, expanded);
+        notify('call', callKey);
+      }
+    });
+  }
 
-    // Actual → formal propagation consumes both already-resolved direct call
-    // targets and targets discovered for indirect invocations this iteration.
-    for (const fact of facts) {
-      if (fact.site.kind !== 'argument') continue;
-      const callKey = callableFlowSiteKey(fact.filePath, fact.site.callSite);
+  for (const fact of facts) {
+    if (fact.site.kind !== 'argument') continue;
+    const site = fact.site;
+    addWorkItem(() => {
+      const callKey = callableFlowSiteKey(fact.filePath, site.callSite);
+      watch('call', callKey);
       const targetIds = new Set<string>();
-      for (const id of input.calleeIds.get(fact.filePath)?.get(posKey(fact.site.callSite)) ?? []) {
+      for (const id of input.calleeIds.get(fact.filePath)?.get(posKey(site.callSite)) ?? []) {
         targetIds.add(id);
       }
       for (const id of dynamicCallees.get(callKey)?.keys() ?? []) targetIds.add(id);
-      if (targetIds.size === 0 && fact.site.directCalleeName !== undefined) {
+      let hasIndexedFormal = [...targetIds].some(
+        (id) => formalsByGraphId.get(id)?.get(site.parameterIndex)?.length,
+      );
+      if (!hasIndexedFormal && site.directCalleeName !== undefined) {
         for (const target of resolveSeedCandidates(
           fact.filePath,
-          fact.site.source.inScope,
-          fact.site.directCalleeName,
+          site.source.inScope,
+          site.directCalleeName,
           undefined,
           undefined,
           input.scopes,
           graphTargets,
           globalBySimpleName,
+          targetIndexes,
+          input.graph,
         )) {
           targetIds.add(target.id);
         }
+        hasIndexedFormal = [...targetIds].some(
+          (id) => formalsByGraphId.get(id)?.get(site.parameterIndex)?.length,
+        );
       }
-      if (targetIds.size === 0 || dynamicOverflow.has(callKey)) continue;
+      const history = dynamicTargetHistory.get(callKey);
+      const callOverflow =
+        dynamicOverflow.has(callKey) || targetIds.size > MAX_CALLABLE_VALUE_TARGETS;
+      if (callOverflow) {
+        for (const targetId of history ?? targetIds) {
+          for (const formal of formalsByGraphId.get(targetId)?.get(site.parameterIndex) ?? []) {
+            const formalKey = bindingKey(formal.filePath, formal.site.binding);
+            markTargetOverflow(formalKey, `actual-formal-overflow:${callKey}`);
+            markAddressOverflow(formalKey, `actual-formal-overflow:${callKey}`);
+          }
+        }
+        return;
+      }
+      if (targetIds.size === 0 || !hasIndexedFormal) return;
 
-      const sourceKey = bindingKey(fact.filePath, fact.site.source);
-      const sourceTargets = targetsForOperand(
-        fact.filePath,
-        fact.site.source,
-        bindingKey,
-        targetsByBinding,
-        addressesByBinding,
-        overflowedTargets,
-        overflowedAddresses,
-      );
+      const sourceKey = bindingKey(fact.filePath, site.source);
+      const sourceTargets = operandTargets(fact.filePath, site.source);
       for (const targetId of targetIds) {
-        for (const formal of formalsByGraphId.get(targetId)?.get(fact.site.parameterIndex) ?? []) {
+        for (const formal of formalsByGraphId.get(targetId)?.get(site.parameterIndex) ?? []) {
           const formalKey = bindingKey(formal.filePath, formal.site.binding);
-          const context = `actual-formal:${callKey}:${fact.site.parameterIndex}`;
-          if (sourceTargets.overflow) {
-            if (!overflowedTargets.has(formalKey)) {
-              targetsByBinding.get(formalKey)?.clear();
-              overflowedTargets.add(formalKey);
-              changed = true;
-            }
+          const context = `actual-formal:${callKey}:${site.parameterIndex}`;
+          const contextualTargets = new Map(sourceTargets.targets);
+          for (const target of resolveOperandCandidates(
+            fact.filePath,
+            site.source,
+            formal.site.expectedSignature,
+            input.scopes,
+            graphTargets,
+            globalBySimpleName,
+            targetIndexes,
+            input.graph,
+            !constrainedBindings.has(sourceKey),
+          )) {
+            contextualTargets.set(target.id, target);
+          }
+          const narrowed = narrowTargetMap(
+            contextualTargets,
+            formal.site.expectedSignature,
+            input.graph,
+          );
+          if (sourceTargets.overflow || narrowed.size > MAX_CALLABLE_VALUE_TARGETS) {
+            markTargetOverflow(formalKey, context);
           } else {
-            for (const target of sourceTargets.targets.values()) {
-              changed = addTarget(formalKey, target, context) || changed;
-            }
+            for (const target of narrowed.values()) addTarget(formalKey, target, context);
           }
-          changed = transferAddresses(sourceKey, formalKey, context) || changed;
-          if (fact.site.source.addressOf) {
-            changed = addAddress(formalKey, sourceKey, context) || changed;
-          }
+          transferAddresses(sourceKey, formalKey, context);
+          if (site.source.addressOf) addAddress(formalKey, sourceKey, context);
           if (formal.site.passingMode === 'reference') {
-            changed = transferTargets(formalKey, sourceKey, context) || changed;
-            changed = transferAddresses(formalKey, sourceKey, context) || changed;
+            transferTargets(formalKey, sourceKey, context);
+            transferAddresses(formalKey, sourceKey, context);
           }
         }
       }
-    }
+    });
+  }
+
+  let iterations = 0;
+  const workBudget = Math.max(2_048, workItems.length * 128);
+  let queueHead = 0;
+  while (queueHead < queue.length && iterations < workBudget) {
+    const id = queue[queueHead++]!;
+    queued.delete(id);
+    activeWorkItem = id;
+    workItems[id]!();
+    activeWorkItem = undefined;
+    iterations++;
+  }
+  const workBudgetExceeded = queueHead < queue.length;
+  if (workBudgetExceeded) {
+    warnOverflow(
+      'work-budget',
+      iterations + queue.length - queueHead,
+      'analysis-work-budget',
+      workBudget,
+    );
   }
 
   for (const warning of overflowWarnings.values()) input.onWarn?.(warning);
+
+  // No partial graph output when a hostile/corrupt fact graph exhausts the
+  // bounded work budget. The caller receives a warning and ordinary graph
+  // emission remains untouched.
+  if (workBudgetExceeded) {
+    return {
+      emitted: 0,
+      resolvedInvokes: 0,
+      ambiguousInvokes: invokes.length,
+      unmatchedInvokes,
+      iterations,
+    };
+  }
 
   let emitted = 0;
   let resolvedInvokes = 0;
@@ -444,12 +700,12 @@ export function emitCallableValueFlow(input: EmitCallableValueFlowInput): Callab
     const confidence = targets.size === 1 ? 0.8 : 0.7;
     for (const target of targets.values()) {
       if (
-        tryEmitEdge(
+        tryEmitEdgeWithExplicitTargetId(
           input.graph,
           input.scopes,
           input.nodeLookup,
           { inScope: invoke.site.inScope, atRange: invoke.site.callSite, kind: 'call' },
-          target.def,
+          target.id,
           'callable-value-flow',
           seen,
           confidence,
@@ -469,17 +725,169 @@ function buildGraphTargetIndex(
   scopes: ScopeResolutionIndexes,
   nodeLookup: GraphNodeLookup,
   providerTarget: ((def: SymbolDefinition) => boolean) | undefined,
+  graph: KnowledgeGraph,
 ): ReadonlyMap<string, Target> {
   const out = new Map<string, Target>();
+  const byAnchor = buildGraphCallableAnchorIndex(graph);
   for (const def of scopes.defs.byId.values()) {
     if (!isCallable(def) && providerTarget?.(def) !== true) continue;
-    const id = resolveDefGraphId(def.filePath, def, nodeLookup);
+    const anchorKey = definitionAnchorKey(def);
+    const anchored = anchorKey === undefined ? undefined : byAnchor.get(anchorKey);
+    const id =
+      anchored?.length === 1 ? anchored[0] : resolveDefGraphId(def.filePath, def, nodeLookup);
     // Overloads can intentionally share one graph node ID. Index by the
     // definition identity so contextual signature narrowing still sees the
     // complete overload set before a selected target collapses to graph ID.
     if (id !== undefined) out.set(def.nodeId, { id, def });
   }
   return out;
+}
+
+interface CanonicalCallableTargets {
+  /** Definition identity remains the key; declaration keys may point at the definition target. */
+  readonly targets: ReadonlyMap<string, Target>;
+  /** Prototype/declaration graph ids grouped by their canonical definition graph id. */
+  readonly aliasesByTargetId: ReadonlyMap<string, readonly string[]>;
+}
+
+/**
+ * Associate declaration-only callable nodes with their unique out-of-file
+ * definition. Function scopes are the body/definition signal; prototypes do
+ * not create one. The optional provider predicate is deliberately linkage-
+ * only, keeping language rules out of this shared pass and preventing `static`
+ * symbols from leaking across translation units.
+ */
+function canonicalizeCallableDeclarations(
+  rawTargets: ReadonlyMap<string, Target>,
+  rawIndexes: CallableTargetIndexes,
+  scopes: ScopeResolutionIndexes,
+  graph: KnowledgeGraph,
+  hasFileLocalCallableLinkage: ((def: SymbolDefinition) => boolean) | undefined,
+): CanonicalCallableTargets {
+  if (hasFileLocalCallableLinkage === undefined) {
+    return { targets: rawTargets, aliasesByTargetId: new Map() };
+  }
+
+  const definitionAnchors = new Set<string>();
+  for (const scope of scopes.scopeTree.byId.values()) {
+    if (scope.kind !== 'Function') continue;
+    definitionAnchors.add(`${scope.filePath}\0${scope.range.startLine}\0${scope.range.startCol}`);
+  }
+  const isDefinition = (target: Target): boolean => {
+    const position = definitionPosition(target.def);
+    return position !== undefined && definitionAnchors.has(position);
+  };
+
+  const targets = new Map(rawTargets);
+  for (const [defId, declaration] of rawTargets) {
+    if (isDefinition(declaration)) continue;
+    const qualifiedName = effectiveQualifiedName(declaration.def, scopes);
+    if (qualifiedName === undefined) continue;
+    const candidates = dedupeTargets(
+      (rawIndexes.byQualifiedName.get(qualifiedName) ?? []).filter((candidate) => {
+        if (!isDefinition(candidate)) return false;
+        if (candidate.def.filePath === declaration.def.filePath) return true;
+        if (
+          hasFileLocalCallableLinkage(declaration.def) ||
+          hasFileLocalCallableLinkage(candidate.def)
+        ) {
+          return false;
+        }
+        return declarationSignatureCompatible(declaration, candidate, graph);
+      }),
+    );
+    const byGraphId = new Map(candidates.map((candidate) => [candidate.id, candidate]));
+    if (byGraphId.size === 1) {
+      targets.set(defId, byGraphId.values().next().value as Target);
+    }
+  }
+
+  const aliases = new Map<string, Set<string>>();
+  for (const [defId, raw] of rawTargets) {
+    const canonical = targets.get(defId);
+    if (canonical === undefined || canonical.id === raw.id) continue;
+    let bucket = aliases.get(canonical.id);
+    if (bucket === undefined) {
+      bucket = new Set();
+      aliases.set(canonical.id, bucket);
+    }
+    bucket.add(raw.id);
+  }
+  return {
+    targets,
+    aliasesByTargetId: new Map(
+      [...aliases].map(([targetId, graphIds]) => [targetId, [...graphIds]]),
+    ),
+  };
+}
+
+function definitionPosition(def: SymbolDefinition): string | undefined {
+  const match = def.nodeId.match(/#(\d+):(\d+):/);
+  return match === null ? undefined : `${def.filePath}\0${match[1]}\0${match[2]}`;
+}
+
+function declarationSignatureCompatible(
+  declaration: Target,
+  definition: Target,
+  graph: KnowledgeGraph,
+): boolean {
+  const left = declaration.def;
+  const right = definition.def;
+  if (
+    left.parameterCount !== undefined &&
+    right.parameterCount !== undefined &&
+    left.parameterCount !== right.parameterCount
+  ) {
+    return false;
+  }
+  if (
+    left.parameterTypes !== undefined &&
+    !sameOptionalArray(left.parameterTypes, right.parameterTypes)
+  ) {
+    return false;
+  }
+  if (
+    left.parameterTypeClasses !== undefined &&
+    !sameOptionalArray(left.parameterTypeClasses, right.parameterTypeClasses)
+  ) {
+    return false;
+  }
+  const declarationConst = graph.getNode(declaration.id)?.properties.isConst;
+  const definitionConst = graph.getNode(definition.id)?.properties.isConst;
+  return typeof declarationConst !== 'boolean' || declarationConst === definitionConst;
+}
+
+function buildGraphCallableAnchorIndex(
+  graph: KnowledgeGraph,
+): ReadonlyMap<string, readonly string[]> {
+  const out = new Map<string, string[]>();
+  for (const node of graph.iterNodes()) {
+    if (node.label !== 'Function' && node.label !== 'Method' && node.label !== 'Constructor') {
+      continue;
+    }
+    const filePath = node.properties.filePath;
+    const name = node.properties.name;
+    const zeroBasedLine = node.properties.startLine;
+    if (
+      typeof filePath !== 'string' ||
+      typeof name !== 'string' ||
+      typeof zeroBasedLine !== 'number'
+    ) {
+      continue;
+    }
+    const key = `${filePath}\0${node.label}\0${zeroBasedLine + 1}\0${name}`;
+    const bucket = out.get(key);
+    if (bucket === undefined) out.set(key, [node.id]);
+    else bucket.push(node.id);
+  }
+  return out;
+}
+
+function definitionAnchorKey(def: SymbolDefinition): string | undefined {
+  const line = def.nodeId.match(/#(\d+):(\d+):/)?.[1];
+  const name = simpleName(def.qualifiedName);
+  if (line === undefined || name === undefined) return undefined;
+  return `${def.filePath}\0${def.type}\0${line}\0${name}`;
 }
 
 function buildGlobalCallableIndex(
@@ -496,6 +904,40 @@ function buildGlobalCallableIndex(
   return out;
 }
 
+interface CallableTargetIndexes {
+  readonly byQualifiedName: ReadonlyMap<string, readonly Target[]>;
+  readonly byOwnerAndName: ReadonlyMap<string, readonly Target[]>;
+  readonly byFileAndName: ReadonlyMap<string, readonly Target[]>;
+}
+
+function buildCallableTargetIndexes(
+  targets: Iterable<Target>,
+  scopes: ScopeResolutionIndexes,
+): CallableTargetIndexes {
+  const byQualifiedName = new Map<string, Target[]>();
+  const byOwnerAndName = new Map<string, Target[]>();
+  const byFileAndName = new Map<string, Target[]>();
+  const add = (index: Map<string, Target[]>, key: string | undefined, target: Target): void => {
+    if (key === undefined) return;
+    const bucket = index.get(key);
+    if (bucket === undefined) index.set(key, [target]);
+    else bucket.push(target);
+  };
+  for (const target of targets) {
+    const name = simpleName(target.def.qualifiedName);
+    add(byQualifiedName, effectiveQualifiedName(target.def, scopes), target);
+    add(
+      byOwnerAndName,
+      target.def.ownerId === undefined || name === undefined
+        ? undefined
+        : `${target.def.ownerId}\0${name}`,
+      target,
+    );
+    add(byFileAndName, name === undefined ? undefined : `${target.def.filePath}\0${name}`, target);
+  }
+  return { byQualifiedName, byOwnerAndName, byFileAndName };
+}
+
 function resolveSeedCandidates(
   filePath: string,
   inScope: ScopeId,
@@ -506,13 +948,17 @@ function resolveSeedCandidates(
         readonly parameterCount?: number;
         readonly parameterTypes?: readonly string[];
         readonly parameterTypeClasses?: readonly import('gitnexus-shared').ParameterTypeClass[];
+        readonly isConst?: boolean;
       }
     | undefined,
   scopes: ScopeResolutionIndexes,
   graphTargets: ReadonlyMap<string, Target>,
   globalBySimpleName: ReadonlyMap<string, readonly Target[]>,
+  targetIndexes: CallableTargetIndexes,
+  graph: KnowledgeGraph,
 ): readonly Target[] {
   let candidates: Target[] = [];
+  let lexicalShadow = false;
   if (targetQualifiedName !== undefined) {
     for (const defId of scopes.qualifiedNames.get(targetQualifiedName)) {
       const def = scopes.defs.get(defId);
@@ -522,34 +968,36 @@ function resolveSeedCandidates(
     }
     if (candidates.length === 0) {
       const normalizedTarget = normalizeSymbolName(targetQualifiedName);
-      for (const target of graphTargets.values()) {
-        if (effectiveQualifiedName(target.def, scopes) === normalizedTarget) {
-          candidates.push(target);
-        }
-      }
+      candidates.push(...(targetIndexes.byQualifiedName.get(normalizedTarget) ?? []));
     }
-  }
-  if (candidates.length === 0) {
-    candidates = lexicalCallableTargets(
+    if (candidates.length === 0) {
+      candidates.push(
+        ...resolveBoundMemberCandidates(
+          targetQualifiedName,
+          targetName,
+          inScope,
+          scopes,
+          graphTargets,
+          targetIndexes,
+        ),
+      );
+    }
+    // A qualified/bound reference that misses its owner must not degrade into
+    // an unrelated workspace-wide same-simple-name method.
+    if (candidates.length === 0) return [];
+  } else {
+    const lexical = lexicalCallableLookup(
       { name: targetName, inScope, atRange: zeroRange(), indirection: 0, addressOf: false },
       scopes,
       graphTargets,
     );
+    candidates = lexical.targets;
+    lexicalShadow = lexical.shadowed;
+    if (candidates.length === 0 && !lexicalShadow) {
+      candidates = [...(globalBySimpleName.get(targetName) ?? [])];
+    }
   }
-  if (candidates.length === 0) {
-    candidates = [...(globalBySimpleName.get(targetName) ?? [])];
-  }
-  candidates = dedupeTargets(candidates);
-  if (expected !== undefined) {
-    const narrowedDefs = narrowOverloadCandidates(
-      candidates.map((candidate) => candidate.def),
-      expected.parameterCount,
-      expected.parameterTypes,
-      { argumentTypeClasses: expected.parameterTypeClasses },
-    );
-    const allowed = new Set(narrowedDefs.map((def) => def.nodeId));
-    candidates = candidates.filter((candidate) => allowed.has(candidate.def.nodeId));
-  }
+  candidates = narrowTargetCandidates(dedupeTargets(candidates), expected, graph);
   if (isUnresolvedOverloadSet(candidates)) return [];
   // File-local qualified lookup should not accidentally fan out to same-name
   // defs in unrelated files when the source explicitly names a local target.
@@ -557,17 +1005,90 @@ function resolveSeedCandidates(
   return sameFile.length > 0 ? sameFile : candidates;
 }
 
-function lexicalCallableTargets(
+function resolveOperandCandidates(
+  filePath: string,
+  operand: CallableFlowOperand,
+  expected: CallableFlowFormalSite['expectedSignature'] | undefined,
+  scopes: ScopeResolutionIndexes,
+  graphTargets: ReadonlyMap<string, Target>,
+  globalBySimpleName: ReadonlyMap<string, readonly Target[]>,
+  targetIndexes: CallableTargetIndexes,
+  graph: KnowledgeGraph,
+  allowBindingLookup = true,
+): readonly Target[] {
+  // Plain bindings may resolve through an exact lexical/import binding (needed
+  // for cross-file `const assigned = importedTarget`) but never through the
+  // workspace-wide simple-name fallback. The latter can attach an unrelated
+  // same-named function to a parameter or pointer variable.
+  if (operand.expressionKind === undefined || operand.expressionKind === 'anonymous-callable') {
+    return [];
+  }
+  if (operand.expressionKind === 'binding') {
+    if (!allowBindingLookup) return [];
+    const lexical = lexicalCallableLookup(operand, scopes, graphTargets);
+    const candidates = narrowTargetCandidates(lexical.targets, expected, graph);
+    return isUnresolvedOverloadSet(candidates) ? [] : candidates;
+  }
+  return resolveSeedCandidates(
+    filePath,
+    operand.inScope,
+    operand.name,
+    operand.qualifiedName,
+    expected,
+    scopes,
+    graphTargets,
+    globalBySimpleName,
+    targetIndexes,
+    graph,
+  );
+}
+
+function resolveBoundMemberCandidates(
+  qualifiedName: string,
+  memberName: string,
+  inScope: ScopeId,
+  scopes: ScopeResolutionIndexes,
+  graphTargets: ReadonlyMap<string, Target>,
+  targetIndexes: CallableTargetIndexes,
+): readonly Target[] {
+  const normalized = normalizeSymbolName(qualifiedName);
+  const lastDot = normalized.lastIndexOf('.');
+  if (lastDot <= 0) return [];
+  const receiverRaw = normalized.slice(0, lastDot);
+  const receiverName = receiverRaw.slice(receiverRaw.lastIndexOf('.') + 1);
+  const receiverOperand: CallableFlowOperand = {
+    name: receiverName,
+    inScope,
+    atRange: zeroRange(),
+    indirection: 0,
+    addressOf: false,
+  };
+  const typeRef = receiverType(receiverOperand, scopes) ?? receiverName;
+  const receiverClass = resolveInheritanceBaseInScope(inScope, typeRef, scopes);
+  if (receiverClass === undefined) return [];
+  const owners = [receiverClass.nodeId, ...scopes.methodDispatch.mroFor(receiverClass.nodeId)];
+  const out: Target[] = [];
+  for (const owner of owners) {
+    for (const target of targetIndexes.byOwnerAndName.get(`${owner}\0${memberName}`) ?? []) {
+      const canonical = targetForDef(target.def, graphTargets);
+      if (canonical !== undefined) out.push(canonical);
+    }
+    if (out.length > 0) break;
+  }
+  return dedupeTargets(out);
+}
+
+function lexicalCallableLookup(
   operand: CallableFlowOperand,
   scopes: ScopeResolutionIndexes,
   graphTargets: ReadonlyMap<string, Target>,
-): Target[] {
+): { readonly targets: Target[]; readonly shadowed: boolean } {
   let current: ScopeId | null = operand.inScope;
   const visited = new Set<ScopeId>();
   while (current !== null && !visited.has(current)) {
     visited.add(current);
     const scope = scopes.scopeTree.getScope(current);
-    if (scope === undefined) return [];
+    if (scope === undefined) return { targets: [], shadowed: false };
     const refs = nearestScopeBindings(current, operand.name, scope.bindings, scopes);
     if (refs.length > 0) {
       const out: Target[] = [];
@@ -575,11 +1096,11 @@ function lexicalCallableTargets(
         const target = targetForDef(ref.def, graphTargets);
         if (target !== undefined) out.push(target);
       }
-      return dedupeTargets(out);
+      return { targets: dedupeTargets(out), shadowed: true };
     }
     current = scope.parent;
   }
-  return [];
+  return { targets: [], shadowed: false };
 }
 
 function nearestScopeBindings(
@@ -648,47 +1169,6 @@ function sourceOperand(site: CallableFlowSite): CallableFlowOperand | undefined 
   }
 }
 
-function cellsForOperand(
-  filePath: string,
-  operand: CallableFlowOperand,
-  bindingKey: (filePath: string, operand: CallableFlowOperand) => string,
-  addresses: ReadonlyMap<string, ReadonlySet<string>>,
-): ReadonlySet<string> {
-  let cells = new Set([bindingKey(filePath, operand)]);
-  for (let depth = 0; depth < operand.indirection; depth++) {
-    const next = new Set<string>();
-    for (const cell of cells) for (const reached of addresses.get(cell) ?? []) next.add(reached);
-    cells = next;
-    if (cells.size === 0) break;
-  }
-  return cells;
-}
-
-function targetsForOperand(
-  filePath: string,
-  operand: CallableFlowOperand,
-  bindingKey: (filePath: string, operand: CallableFlowOperand) => string,
-  targets: ReadonlyMap<string, ReadonlyMap<string, Target>>,
-  addresses: ReadonlyMap<string, ReadonlySet<string>>,
-  overflowedTargets: ReadonlySet<string>,
-  overflowedAddresses: ReadonlySet<string>,
-): { readonly targets: Map<string, Target>; readonly overflow: boolean } {
-  const base = bindingKey(filePath, operand);
-  if (overflowedAddresses.has(base) && operand.indirection > 0) {
-    return { targets: new Map(), overflow: true };
-  }
-  const cells = cellsForOperand(filePath, operand, bindingKey, addresses);
-  const out = new Map<string, Target>();
-  for (const cell of cells) {
-    if (overflowedTargets.has(cell)) return { targets: new Map(), overflow: true };
-    for (const target of targets.get(cell)?.values() ?? []) {
-      out.set(target.id, target);
-      if (out.size > MAX_CALLABLE_VALUE_TARGETS) return { targets: new Map(), overflow: true };
-    }
-  }
-  return { targets: out, overflow: false };
-}
-
 interface IndexedFormal {
   readonly filePath: string;
   readonly site: CallableFlowFormalSite;
@@ -698,7 +1178,8 @@ function indexFormalsByGraphId(
   parsedFiles: readonly ParsedFile[],
   scopes: ScopeResolutionIndexes,
   nodeLookup: GraphNodeLookup,
-  graphTargets: ReadonlyMap<string, Target>,
+  targetIndexes: CallableTargetIndexes,
+  aliasesByTargetId: ReadonlyMap<string, readonly string[]>,
 ): ReadonlyMap<string, ReadonlyMap<number, readonly IndexedFormal[]>> {
   const building = new Map<string, Map<number, IndexedFormal[]>>();
   for (const parsed of parsedFiles) {
@@ -715,20 +1196,12 @@ function indexFormalsByGraphId(
       // Signature-bearing graph ids can be more precise than a scope-only
       // caller lookup. Join the provider-supplied owner identity to canonical
       // defs as a fallback (important for function-reference parameters).
-      for (const target of graphTargets.values()) {
+      const fallbackTargets =
+        site.ownerQualifiedName === undefined
+          ? (targetIndexes.byFileAndName.get(`${parsed.filePath}\0${site.ownerName}`) ?? [])
+          : (targetIndexes.byQualifiedName.get(normalizeSymbolName(site.ownerQualifiedName)) ?? []);
+      for (const target of fallbackTargets) {
         if (target.def.filePath !== parsed.filePath) continue;
-        if (
-          site.ownerQualifiedName !== undefined &&
-          target.def.qualifiedName !== site.ownerQualifiedName
-        ) {
-          continue;
-        }
-        if (
-          site.ownerQualifiedName === undefined &&
-          simpleName(target.def.qualifiedName) !== site.ownerName
-        ) {
-          continue;
-        }
         if (
           target.def.parameterCount !== undefined &&
           site.parameterIndex >= target.def.parameterCount
@@ -736,6 +1209,7 @@ function indexFormalsByGraphId(
           continue;
         }
         graphIds.add(target.id);
+        for (const aliasId of aliasesByTargetId.get(target.id) ?? []) graphIds.add(aliasId);
       }
       for (const graphId of graphIds) {
         let byIndex = building.get(graphId);
@@ -760,6 +1234,8 @@ function expandMemberTargets(
   targets: ReadonlyMap<string, Target>,
   scopes: ScopeResolutionIndexes,
   graphTargets: ReadonlyMap<string, Target>,
+  targetIndexes: CallableTargetIndexes,
+  graph: KnowledgeGraph,
 ): Map<string, Target> {
   if (invoke.site.invocationKind !== 'member-pointer' || invoke.site.receiver === undefined) {
     return new Map(targets);
@@ -780,16 +1256,22 @@ function expandMemberTargets(
       out.set(target.id, target);
       continue;
     }
+    // A C++ pointer to a non-virtual member names that exact implementation.
+    // Dynamic replacement is legal only when the pointed-to base method is
+    // virtual; treating every member pointer as virtual invents derived calls.
+    if (graph.getNode(target.id)?.properties.isVirtual !== true) {
+      out.set(target.id, target);
+      continue;
+    }
     let replacement: Target | undefined;
     for (const ownerId of ownerChain) {
-      const def = [...scopes.defs.byId.values()].find(
-        (candidate) =>
-          candidate.ownerId === ownerId &&
-          isCallable(candidate) &&
-          simpleName(candidate.qualifiedName) === name,
+      const compatible = (targetIndexes.byOwnerAndName.get(`${ownerId}\0${name}`) ?? []).filter(
+        (candidate) => sameCallableSignature(target, candidate, graph),
       );
-      if (def === undefined) continue;
-      replacement = targetForDef(def, graphTargets);
+      const distinct = new Map(compatible.map((candidate) => [candidate.id, candidate]));
+      if (distinct.size !== 1) continue;
+      const candidate = distinct.values().next().value as Target;
+      replacement = targetForDef(candidate.def, graphTargets);
       if (replacement !== undefined) break;
     }
     out.set((replacement ?? target).id, replacement ?? target);
@@ -849,6 +1331,70 @@ function normalizeSymbolName(name: string): string {
 
 function dedupeTargets(targets: readonly Target[]): Target[] {
   return [...new Map(targets.map((target) => [target.def.nodeId, target])).values()];
+}
+
+function narrowTargetCandidates(
+  candidates: readonly Target[],
+  expected: CallableFlowExpectedSignature | undefined,
+  graph: KnowledgeGraph,
+): Target[] {
+  if (candidates.length === 0) return [];
+  const narrowedDefs = narrowOverloadCandidates(
+    candidates.map((candidate) => candidate.def),
+    expected?.parameterCount,
+    expected?.parameterTypes,
+  );
+  const allowedDefs = new Set(narrowedDefs.map((def) => def.nodeId));
+  return candidates.filter((candidate) => {
+    if (!allowedDefs.has(candidate.def.nodeId)) return false;
+    if (expected?.isConst === undefined) return true;
+    const candidateIsConst = graph.getNode(candidate.id)?.properties.isConst === true;
+    return candidateIsConst === expected.isConst;
+  });
+}
+
+function narrowTargetMap(
+  targets: ReadonlyMap<string, Target>,
+  expected: CallableFlowExpectedSignature | undefined,
+  graph: KnowledgeGraph,
+): Map<string, Target> {
+  return new Map(
+    narrowTargetCandidates([...targets.values()], expected, graph).map((target) => [
+      target.id,
+      target,
+    ]),
+  );
+}
+
+function sameTargetSet(
+  left: ReadonlyMap<string, Target> | undefined,
+  right: ReadonlyMap<string, Target>,
+): boolean {
+  if (left === undefined || left.size !== right.size) return false;
+  for (const id of left.keys()) if (!right.has(id)) return false;
+  return true;
+}
+
+function sameCallableSignature(base: Target, candidate: Target, graph: KnowledgeGraph): boolean {
+  const left = base.def;
+  const right = candidate.def;
+  if (
+    left.parameterCount !== undefined &&
+    right.parameterCount !== undefined &&
+    left.parameterCount !== right.parameterCount
+  ) {
+    return false;
+  }
+  if (!sameOptionalArray(left.parameterTypes, right.parameterTypes)) return false;
+  if (!sameOptionalArray(left.parameterTypeClasses, right.parameterTypeClasses)) return false;
+  const leftConst = graph.getNode(base.id)?.properties.isConst === true;
+  const rightConst = graph.getNode(candidate.id)?.properties.isConst === true;
+  return leftConst === rightConst;
+}
+
+function sameOptionalArray<T>(left: readonly T[] | undefined, right: readonly T[] | undefined) {
+  if (left === undefined || right === undefined) return left === right;
+  return JSON.stringify(left) === JSON.stringify(right);
 }
 
 function isUnresolvedOverloadSet(targets: readonly Target[]): boolean {

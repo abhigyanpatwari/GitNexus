@@ -8,13 +8,15 @@
 >
 > Planning method: full/strict gitnexus-plan workflow from the skill family developed in PR #2431, including source verification, upstream impact analysis, statement-level PDG slices, a current-indexer reproduction, and a reusable implementation context. [verified]
 
+> Implementation status (2026-07-17): executed on PR #2522 at the user's direction rather than as stacked follow-ups. Units A–C are implemented for all 16 registered providers. Review hardening added expression-aware lexical bindings, dependency-indexed/budgeted solving, durable-store validation, exact C/C++ pointer/reference/member-pointer resolution, and cross-translation-unit prototype-to-definition joins that respect `static` linkage. The final cache schema is 17: 15 introduced always-on facts, 16 added direct-callee identity, and 17 added expression/qualified identity plus formal signature metadata. Property dispatch intentionally runs before callable flow so a property-dispatched wrapper can seed actual-to-formal propagation. [verified]
+
 ## 1. Objective
 
 Deliver one reviewable workstream in three mergeable units:
 
-1. Unit A, on PR #2522: close the exact review comment by updating the measured TypeScript and JavaScript scope-capture fingerprints and surfacing capped property-dispatch loss at warning level with language, skipped-key count, and cap context. [verified]
-2. Unit B, as a stacked follow-up: add a language-neutral callable-value-flow substrate and implement C/C++ completely, plus TypeScript/JavaScript/Vue as the first non-C-family proof. Calls through assigned values, aliases, pointer/reference forms, and actual-to-formal argument flow must emit CALLS at the real invocation site. [inferred]
-3. Unit C, as one or more stacked provider-adoption follow-ups: cover every remaining production provider with an assign → pass → invoke fixture or an explicit, source-verified language limitation. [inferred]
+1. Unit A, on PR #2522: close the exact review comment by updating the measured TypeScript and JavaScript scope-capture fingerprints and surfacing capped property-dispatch loss at warning level with language, skipped-key count, and cap context. [implemented]
+2. Unit B, on PR #2522 per the user's shipping instruction: add a language-neutral callable-value-flow substrate and implement C/C++ completely, plus TypeScript/JavaScript/Vue as the first non-C-family proof. Calls through assigned values, aliases, pointer/reference forms, and actual-to-formal argument flow emit CALLS at the real invocation site. [implemented]
+3. Unit C, on the same PR: cover every remaining production provider with an assign → pass → invoke fixture and an exhaustive provider-governance matrix. [implemented]
 
 The work is complete only when normal indexing and --pdg indexing resolve the same CALLS targets, PDG callee IDs remain attached to the real invocation positions, common-name collisions cannot create a false global-function edge, and bounded ambiguity is visible rather than silently dropped. [inferred]
 
@@ -83,6 +85,7 @@ The load-bearing path is:
       → free-call fallback
       → lookup references
       → property dispatch
+      → callable-value flow
       → optional CFG/PDG join
 
 [verified]
@@ -136,8 +139,8 @@ Do not pre-seed handledSites: that set means a precise pass actually handled a s
 - derive deferredIndirectSites from invoke facts;
 - pass it as an explicit skip set to emitFreeCallFallback and emitReferencesViaLookup;
 - let receiver/direct-call resolution run and seed real call targets;
-- run callable-value-flow to own the deferred sites;
-- leave property-dispatch after the precise callable solver as a separate fallback. [inferred]
+- run property-dispatch to seed direct wrapper targets in the callee accumulator;
+- run callable-value-flow to own deferred sites and consume those targets. [implemented]
 
 The CalleeIdAccumulator already stores a multi-target set by exact file/line/column and records targets before edge dedup. Allocate it when input.pdg is true OR any ParsedFile has callableFlowSites. Direct emitters seed it; callable flow consumes and updates it; the existing CFG join remains gated by input.pdg. Update its comments to reflect the broader producer lifetime without changing its narrow sink/view interfaces. [verified]
 
@@ -251,11 +254,11 @@ Provider rollout impact summary: Python, C#, and Swift emitters are also MEDIUM;
 - ReferenceKind has call/read/write/type/inherits/import-use/value-ref/macro; value-ref alone carries propertyKey. [verified]
 - resolveReferenceSites intentionally skips value-ref; emitPropertyDispatchCalls owns it. [verified]
 - emitReferencesViaLookup feeds CalleeIdSink only for CALLS. [verified]
-- runScopeResolution allocates CalleeIdAccumulator only for --pdg today and runs receiver → free fallback → lookup → property dispatch. [verified]
+- At the planning pin, runScopeResolution allocated CalleeIdAccumulator only for --pdg and ran receiver → free fallback → lookup → property dispatch; implementation now allocates it for callable arguments and inserts callable-value flow after property dispatch. [verified]
 - existing C and C++ query/type bindings retain pointer/reference type shape for overload and ADL work, but no artifact carries the callable target identity across assignment or parameters. [verified]
 - all providers export emit*ScopeCaptures and can synthesize extra capture metadata through the existing hook. [verified]
 - ParsedFile scope stripping in run.ts uses object spread, so an added non-scope callableFlowSites field survives the disk-seal boundary. [verified]
-- SCHEMA_BUMP is 14 on this branch; the new ParsedFile semantic field requires 15. [verified]
+- At the planning pin SCHEMA_BUMP was 14; implementation advanced it through 15/16 to final schema 17 as the fact contract gained required semantic identity. [verified]
 
 ## 5. Statement-Level PDG Findings
 
@@ -312,7 +315,7 @@ Before implementation:
    - Assert one warning with the exact language, skipped-key count, and fan-out cap.
    - Preserve the existing assertion that capped keys emit no partial CALLS. [verified]
 
-Unit A is the only implementation that belongs directly in #2522. [inferred]
+The original split put only Unit A in #2522; the user explicitly requested Units B/C be implemented and pushed to the same PR branch, so that sequencing constraint was superseded. [verified]
 
 ### Unit B — shared callable-flow substrate and strict C/C++ support
 
@@ -320,7 +323,7 @@ Unit A is the only implementation that belongs directly in #2522. [inferred]
 
 1. Add gitnexus-shared/src/scope-resolution/callable-flow-site.ts with the normalized facts from §3.2 and export them from gitnexus-shared/src/index.ts. [inferred]
 2. Add readonly callableFlowSites?: readonly CallableFlowSite[] to ParsedFile. ScopeExtractor omits it when empty; all consumers normalize undefined to an empty collection. The optional shape avoids mechanical churn in hand-built ParsedFile fixtures, while SCHEMA_BUMP still prevents a real warm cache from masquerading as newly extracted source. Pin both populated and omitted cases in tests. [inferred]
-3. Bump SCHEMA_BUMP from 14 to 15 with a comment that old ParsedFiles lack always-on callable-flow facts. [verified]
+3. Bump SCHEMA_BUMP from 14 through 17: 15 invalidates caches without always-on facts, 16 adds direct-callee identity, and 17 adds expression/qualified identity plus formal signature metadata. [implemented]
 4. Extend worker/cache round-trip tests so facts preserve discriminant, ScopeId, Range, index, passing mode, indirection, expected signature, and invoke position. [inferred]
 
 #### B2. Extraction without a provider-contract change
@@ -347,7 +350,7 @@ Unit A is the only implementation that belongs directly in #2522. [inferred]
 2. Add an explicit optional skipSites parameter to emitFreeCallFallback and emitReferencesViaLookup; leave handledSites ownership unchanged. [inferred]
 3. Allocate CalleeIdAccumulator for PDG OR callable-flow files. Update its documentation from “PDG only” to “direct-target index plus optional PDG join.” [inferred]
 4. Preserve receiver/direct-call passes first so their exact targets seed actual → formal.
-5. Run callable-value-flow after direct free/lookup emission and before property-dispatch.
+5. Run property-dispatch after direct free/lookup emission, then callable-value-flow; property-dispatched wrapper targets must be present before actual-to-formal propagation.
 6. Preserve the CFG join and deletion behavior only when input.pdg is true. [inferred]
 
 #### B5. C and C++ providers
@@ -523,7 +526,7 @@ Then re-index with --pdg and run detect_changes with scope=compare against curre
 | PDG-only behavior leaks into normal indexing | callableFlowSites is always-on; parity tests run both modes |
 | Callee IDs land on assignment rather than invocation | use invoke Range and existing exact position encoding |
 | Interprocedural cycles do not terminate | monotone finite worklist and capped target sets |
-| Cache serves ParsedFiles without facts | SCHEMA_BUMP 14 → 15 plus worker/cache round-trip tests |
+| Cache serves ParsedFiles without facts or newer identity metadata | SCHEMA_BUMP 14 → 17 plus strict durable-boundary validation and warm-cache parity tests |
 | Capture query growth regresses scaling | per-provider fingerprint audit and <1.5 ratio gate |
 | Cross-language rollout becomes one unreviewable PR | staged provider clusters and exhaustive governance test |
 
@@ -548,7 +551,7 @@ The refreshed graph under-reports some production callers that exact source cont
 | gitnexus-shared/src/scope-resolution/callable-flow-site.ts | new types | normalized JSON-safe fact contract |
 | gitnexus-shared/src/scope-resolution/parsed-file.ts | ParsedFile | callableFlowSites |
 | gitnexus-shared/src/index.ts | exports | export shared facts |
-| gitnexus/src/storage/parse-cache.ts | SCHEMA_BUMP | 14 → 15 |
+| gitnexus/src/storage/parse-cache.ts | SCHEMA_BUMP | 14 → 17 across the implemented fact-contract revisions |
 | gitnexus/src/core/ingestion/scope-extractor.ts | Topic, partitionByTopic, topicOf, extract, new Pass 6 | route/build facts; leave Pass 5 unchanged |
 | gitnexus/src/core/ingestion/scope-resolution/passes/callable-value-flow.ts | new | fixed-point solver and edge emission |
 | gitnexus/src/core/ingestion/scope-resolution/passes/free-call-fallback.ts | emitFreeCallFallback | explicit skipSites |
@@ -656,7 +659,7 @@ Provider query/capture modules under languages/python, ruby, php, go, rust, kotl
         - "free/lookup passes skip deferred indirect sites but seed direct callee IDs"
         - "callable-value-flow fixed point applies local and actual→formal constraints"
         - "tryEmitEdge emits CALLS at invoke positions and records callee IDs"
-        - "property-dispatch remains a later, separate fallback"
+        - "property-dispatch remains separate and runs before callable flow so wrapper targets seed actual→formal propagation"
         - "optional CFG join consumes the same callee IDs under --pdg"
       pdg_constraints:
         - "Accumulator definition must dominate all direct and indirect target producers"
@@ -692,7 +695,7 @@ Provider query/capture modules under languages/python, ruby, php, go, rust, kotl
         - file: gitnexus/src/core/ingestion/scope-resolution/graph-bridge/references-to-edges.ts
           intended_change: "explicit skipSites"
         - file: gitnexus/src/storage/parse-cache.ts
-          intended_change: "SCHEMA_BUMP 14→15"
+          intended_change: "SCHEMA_BUMP 14→17 across callable fact-contract revisions"
         - file: "C/C++/TS/JS provider query + capture modules"
           intended_change: "normalized syntax facts"
       tests:
@@ -786,7 +789,7 @@ None of these questions blocks Unit A or the C/C++ substrate design. They gate o
 - Same-name global collision tests prove free/lookup fallback cannot preempt a deferred indirect site. [inferred]
 - Normal and --pdg CALLS sets are identical; --pdg BasicBlock.calleeIds contain every indirect target at the invocation position. [inferred]
 - Pass 5 and LanguageProvider remain unchanged; shared ingestion code contains no language names. [inferred]
-- Parse cache is bumped to 15 and worker/store round trips preserve every fact. [inferred]
+- Parse cache is bumped to 17 and worker/store round trips preserve and validate every fact. [implemented]
 - TypeScript, JavaScript, and Vue prove the substrate is not C-family-specific. [inferred]
 - All changed capture benchmarks remain below 1.5 and hashes are updated only with an audit trail. [inferred]
 

@@ -24,10 +24,11 @@ const C_CALLABLE_CAPTURE_OPTIONS = {
   bindingNodeTypes: new Set(['init_declarator']),
   assignmentNodeTypes: new Set(['assignment_expression']),
   identifierNodeTypes: new Set(['identifier', 'field_identifier', 'type_identifier']),
+  emitCanonicalInvokeReference: true,
   parameterPassingMode: (parameter: SyntaxNode) =>
     containsNodeType(parameter, 'pointer_declarator') ? ('pointer' as const) : ('value' as const),
-  expectedSignature: (_container: SyntaxNode, destination: SyntaxNode) =>
-    functionDeclaratorSignature(destination),
+  expectedSignature: (container: SyntaxNode, destination: SyntaxNode) =>
+    functionDeclaratorSignature(destination) ?? functionDeclaratorSignature(container),
 } as const;
 
 export function emitCScopeCaptures(

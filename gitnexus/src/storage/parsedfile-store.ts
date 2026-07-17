@@ -58,6 +58,10 @@ import { mapReplacer, mapReviver } from './parse-cache.js';
 const STORE_DIRNAME = 'parsedfile-store';
 const DURABLE_DIRNAME = 'parsedfile-cache';
 const DURABLE_INDEX_FILENAME = 'index.json';
+const MAX_CALLABLE_FLOW_SITES_PER_FILE = 100_000;
+const MAX_CALLABLE_FLOW_INDIRECTION = 16;
+const MAX_CALLABLE_FLOW_NAME_LENGTH = 4_096;
+const MAX_CALLABLE_FLOW_PARAMETERS = 1_024;
 
 /**
  * Build a JSON.parse reviver that (a) interns every string against a shared
@@ -256,7 +260,12 @@ export const loadParsedFilesForPaths = async (
     }
     if (!Array.isArray(parsed)) continue;
     for (const pf of parsed) {
-      if (pf && typeof pf.filePath === 'string' && wantPaths.has(pf.filePath)) {
+      if (
+        pf &&
+        typeof pf.filePath === 'string' &&
+        wantPaths.has(pf.filePath) &&
+        isValidCallableFlowSites(pf.callableFlowSites)
+      ) {
         out.set(pf.filePath, pf);
       }
     }
@@ -270,6 +279,146 @@ export const loadParsedFilesForPaths = async (
   }
   return out;
 };
+
+/**
+ * Treat the durable ParsedFile store as an untrusted serialization boundary.
+ * A stale/corrupt shard is skipped so the normal caller re-extracts that file;
+ * malformed facts never reach callable-value-flow's worklist.
+ */
+function isValidCallableFlowSites(value: unknown): boolean {
+  if (value === undefined) return true;
+  if (!Array.isArray(value) || value.length > MAX_CALLABLE_FLOW_SITES_PER_FILE) return false;
+  return value.every(isValidCallableFlowSite);
+}
+
+function isValidCallableFlowSite(value: unknown): boolean {
+  if (!isRecord(value) || typeof value.kind !== 'string') return false;
+  switch (value.kind) {
+    case 'seed':
+      return (
+        isValidOperand(value.destination) &&
+        isBoundedString(value.targetName) &&
+        isOptionalBoundedString(value.targetQualifiedName) &&
+        isValidRange(value.targetRange) &&
+        isValidExpectedSignature(value.expectedSignature)
+      );
+    case 'copy':
+    case 'alias':
+    case 'address':
+      return isValidOperand(value.source) && isValidOperand(value.destination);
+    case 'store':
+      return isValidOperand(value.source) && isValidOperand(value.pointer);
+    case 'load':
+      return isValidOperand(value.pointer) && isValidOperand(value.destination);
+    case 'formal':
+      return (
+        isBoundedString(value.ownerName) &&
+        isOptionalBoundedString(value.ownerQualifiedName) &&
+        isValidRange(value.ownerRange) &&
+        isSafeIndex(value.parameterIndex) &&
+        isValidOperand(value.binding) &&
+        (value.passingMode === 'value' ||
+          value.passingMode === 'reference' ||
+          value.passingMode === 'pointer' ||
+          value.passingMode === 'callable-object') &&
+        isValidExpectedSignature(value.expectedSignature)
+      );
+    case 'argument':
+      return (
+        isValidRange(value.callSite) &&
+        isSafeIndex(value.parameterIndex) &&
+        isValidOperand(value.source) &&
+        isOptionalBoundedString(value.directCalleeName)
+      );
+    case 'invoke':
+      return (
+        isValidRange(value.callSite) &&
+        isBoundedString(value.inScope) &&
+        isValidOperand(value.callee) &&
+        (value.receiver === undefined || isValidOperand(value.receiver)) &&
+        (value.invocationKind === 'indirect' ||
+          value.invocationKind === 'member-pointer' ||
+          value.invocationKind === 'callable-object') &&
+        (value.arity === undefined || isSafeIndex(value.arity))
+      );
+    default:
+      return false;
+  }
+}
+
+function isValidOperand(value: unknown): boolean {
+  if (!isRecord(value)) return false;
+  return (
+    isBoundedString(value.name) &&
+    isBoundedString(value.inScope) &&
+    isValidRange(value.atRange) &&
+    Number.isInteger(value.indirection) &&
+    (value.indirection as number) >= 0 &&
+    (value.indirection as number) <= MAX_CALLABLE_FLOW_INDIRECTION &&
+    typeof value.addressOf === 'boolean' &&
+    (value.expressionKind === undefined ||
+      value.expressionKind === 'binding' ||
+      value.expressionKind === 'callable-designator' ||
+      value.expressionKind === 'bound-member' ||
+      value.expressionKind === 'anonymous-callable') &&
+    isOptionalBoundedString(value.qualifiedName)
+  );
+}
+
+function isValidExpectedSignature(value: unknown): boolean {
+  if (value === undefined) return true;
+  if (!isRecord(value)) return false;
+  return (
+    (value.parameterCount === undefined || isSafeIndex(value.parameterCount)) &&
+    isValidBoundedStringArray(value.parameterTypes) &&
+    (value.parameterTypeClasses === undefined ||
+      (Array.isArray(value.parameterTypeClasses) &&
+        value.parameterTypeClasses.length <= MAX_CALLABLE_FLOW_PARAMETERS &&
+        value.parameterTypeClasses.every(isRecord))) &&
+    (value.isConst === undefined || typeof value.isConst === 'boolean')
+  );
+}
+
+function isValidBoundedStringArray(value: unknown): boolean {
+  return (
+    value === undefined ||
+    (Array.isArray(value) &&
+      value.length <= MAX_CALLABLE_FLOW_PARAMETERS &&
+      value.every(isBoundedString))
+  );
+}
+
+function isValidRange(value: unknown): boolean {
+  if (!isRecord(value)) return false;
+  return (
+    isNonNegativeInteger(value.startLine) &&
+    isNonNegativeInteger(value.startCol) &&
+    isNonNegativeInteger(value.endLine) &&
+    isNonNegativeInteger(value.endCol)
+  );
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function isBoundedString(value: unknown): value is string {
+  return (
+    typeof value === 'string' && value.length > 0 && value.length <= MAX_CALLABLE_FLOW_NAME_LENGTH
+  );
+}
+
+function isOptionalBoundedString(value: unknown): boolean {
+  return value === undefined || isBoundedString(value);
+}
+
+function isNonNegativeInteger(value: unknown): boolean {
+  return Number.isSafeInteger(value) && (value as number) >= 0;
+}
+
+function isSafeIndex(value: unknown): boolean {
+  return isNonNegativeInteger(value) && (value as number) <= MAX_CALLABLE_FLOW_PARAMETERS;
+}
 
 // ─── Durable, content-addressed sibling store (warm-cache coverage) ──────────
 //

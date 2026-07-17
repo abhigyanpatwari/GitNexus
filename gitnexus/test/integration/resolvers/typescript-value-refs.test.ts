@@ -63,17 +63,21 @@ export const DEFAULT_PORT = 8080;
 export function createVisitor(): () => void {
   return () => {};
 }
+export function targetCallback(): void {}
+export function invokeCallback(callback: () => void): void { callback(); }
 export const provider = {
   emitScopeCaptures: emitHook,
+  runWithCallback: invokeCallback,
   port: DEFAULT_PORT,
   cfgVisitor: createVisitor(),
 };
 `,
       // Dispatch through the property — the scope-extractor-bridge shape.
       'src/bridge.ts': `
-import { provider } from './provider';
+import { provider, targetCallback } from './provider';
 export function runBridge(): void {
   provider.emitScopeCaptures();
+  provider.runWithCallback(targetCallback);
   provider.toString();
 }
 `,
@@ -222,6 +226,18 @@ export function runJsBridge() {
     expect(edge!.rel.confidence).toBe(PROPERTY_DISPATCH_CONFIDENCE);
   });
 
+  it('propagates a callback through a property-dispatched wrapper before indirect resolution', () => {
+    const edge = calls.find(
+      (candidate) =>
+        candidate.source === 'invokeCallback' &&
+        candidate.target === 'targetCallback' &&
+        candidate.rel.reason === 'callable-value-flow',
+    );
+    expect(edge).toBeDefined();
+    expect(edge!.sourceFilePath).toBe('src/provider.ts');
+    expect(edge!.targetFilePath).toBe('src/provider.ts');
+  });
+
   it('dispatch fans out to every same-language registration of the property name', () => {
     // `emitScopeCaptures` is registered in TypeScript by emitHook
     // (provider.ts) and emitCrossHook (registry.ts + alias-registry.ts,
@@ -232,7 +248,7 @@ export function runJsBridge() {
       .filter((c) => c.source === 'runBridge' && c.rel.reason === DISPATCH_REASON)
       .map((c) => c.target)
       .sort();
-    expect(targets).toEqual(['emitCrossHook', 'emitHook']);
+    expect(targets).toEqual(['emitCrossHook', 'emitHook', 'invokeCallback']);
   });
 
   it('dispatches through a shorthand-registered key', () => {
@@ -275,7 +291,12 @@ export function runJsBridge() {
     const dispatchTargets = new Set(
       calls.filter((c) => c.rel.reason === DISPATCH_REASON).map((c) => c.target),
     );
-    expect([...dispatchTargets].sort()).toEqual(['emitCrossHook', 'emitHook', 'emitJsHook']);
+    expect([...dispatchTargets].sort()).toEqual([
+      'emitCrossHook',
+      'emitHook',
+      'emitJsHook',
+      'invokeCallback',
+    ]);
   });
 
   // ── JavaScript twins ─────────────────────────────────────────────────────

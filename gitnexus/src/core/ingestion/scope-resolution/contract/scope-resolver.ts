@@ -764,6 +764,20 @@ export interface ScopeResolver {
   readonly isFileLocalDef?: (def: SymbolDefinition) => boolean;
 
   /**
+   * Optional precise linkage predicate used when callable-value flow joins a
+   * declaration graph node (for example a C/C++ prototype in a caller file)
+   * to its out-of-file definition. Unlike `isFileLocalDef`, this hook MUST
+   * answer only language-level internal/file-local linkage. It must not fold
+   * in broader unqualified-name visibility rules such as namespace or member
+   * lookup: an explicit declaration already establishes caller visibility.
+   *
+   * C and C++ provide this hook for `static` free functions. Languages whose
+   * declaration/definition identity is already represented by imports or one
+   * graph node leave it undefined, disabling cross-file prototype joining.
+   */
+  readonly hasFileLocalCallableLinkage?: (def: SymbolDefinition) => boolean;
+
+  /**
    * Optional predicate to identify members for which dispatch through
    * an instance receiver is **invalid at the language level** — i.e.
    * calling `instance.member()` would be a compile error or a

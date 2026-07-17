@@ -102,6 +102,76 @@ describe('parsedfile-store', () => {
     }
   });
 
+  it('round-trips validated callable-flow operand and signature metadata', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'pfstore-'));
+    try {
+      const pf = {
+        ...(makeParsedFile('flow.cpp') as unknown as Record<string, unknown>),
+        callableFlowSites: [
+          {
+            kind: 'seed',
+            destination: {
+              name: 'member',
+              inScope: 'scope:entry',
+              atRange: { startLine: 3, startCol: 2, endLine: 3, endCol: 8 },
+              indirection: 0,
+              addressOf: false,
+              expressionKind: 'binding',
+            },
+            targetName: 'run',
+            targetQualifiedName: 'Base.run',
+            targetRange: { startLine: 3, startCol: 12, endLine: 3, endCol: 21 },
+            expectedSignature: {
+              parameterCount: 1,
+              parameterTypes: ['int'],
+              isConst: true,
+            },
+          },
+        ],
+      } as unknown as ParsedFile;
+      await persistParsedFileChunk(dir, 'flow', [pf]);
+
+      const loaded = await loadParsedFilesForPaths(dir, new Set(['flow.cpp']));
+      expect(loaded.get('flow.cpp')?.callableFlowSites).toEqual(pf.callableFlowSites);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects malformed callable-flow facts so the caller can freshly extract the file', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'pfstore-'));
+    try {
+      const operand = {
+        name: 'callback',
+        inScope: 'scope:entry',
+        atRange: { startLine: 2, startCol: 2, endLine: 2, endCol: 10 },
+        indirection: 17,
+        addressOf: false,
+        expressionKind: 'binding',
+      };
+      const invalid = {
+        ...(makeParsedFile('invalid.c') as unknown as Record<string, unknown>),
+        callableFlowSites: [
+          {
+            kind: 'invoke',
+            callSite: { startLine: 2, startCol: 2, endLine: 2, endCol: 12 },
+            inScope: 'scope:entry',
+            callee: operand,
+            invocationKind: 'indirect',
+            arity: 0,
+          },
+        ],
+      } as unknown as ParsedFile;
+      await persistParsedFileChunk(dir, 'invalid', [invalid, makeParsedFile('valid.c')]);
+
+      const loaded = await loadParsedFilesForPaths(dir, new Set(['invalid.c', 'valid.c']));
+      expect(loaded.has('invalid.c')).toBe(false);
+      expect(loaded.has('valid.c')).toBe(true);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   // #1983 parallel serialization: the sync worker writer and the async writer
   // share one serialization core and MUST produce byte-identical shards (the
   // loader's deep-equals masks byte drift, so assert raw bytes).

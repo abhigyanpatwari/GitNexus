@@ -43,6 +43,7 @@ const CPP_CALLABLE_CAPTURE_OPTIONS = {
     'namespace_identifier',
   ]),
   callableReferenceNodeTypes: new Set(['qualified_identifier']),
+  emitCanonicalInvokeReference: true,
   memberPointerOperators: new Set(['.*', '->*']),
   memberPointerParts: (node: SyntaxNode) => cppRecoveredMemberPointerParts(node),
   parameterPassingMode: (parameter: SyntaxNode) =>
@@ -53,8 +54,8 @@ const CPP_CALLABLE_CAPTURE_OPTIONS = {
         : ('value' as const),
   isTrueReferenceBinding: (_container: SyntaxNode, destination: SyntaxNode) =>
     cppContainsNodeType(destination, 'reference_declarator'),
-  expectedSignature: (_container: SyntaxNode, destination: SyntaxNode) =>
-    cppFunctionDeclaratorSignature(destination),
+  expectedSignature: (container: SyntaxNode, destination: SyntaxNode) =>
+    cppFunctionDeclaratorSignature(destination) ?? cppFunctionDeclaratorSignature(container),
   normalizeQualifiedName: (raw: string) => raw.replaceAll('::', '.'),
 } as const;
 
@@ -577,7 +578,9 @@ export function emitCppScopeCaptures(
 function cppFunctionDeclaratorSignature(node: SyntaxNode): CallableCaptureSignature | undefined {
   const declarator = cppFindDescendantOfType(node, 'function_declarator');
   const parameters = declarator?.childForFieldName('parameters');
-  if (parameters === null || parameters === undefined) return undefined;
+  if (parameters === null || parameters === undefined) {
+    return recoverCppMemberPointerSignature(node.text);
+  }
   const parameterNodes = parameters.namedChildren.filter(
     (child): child is SyntaxNode => child !== null && child.type.includes('parameter_declaration'),
   );
@@ -623,7 +626,63 @@ function cppFunctionDeclaratorSignature(node: SyntaxNode): CallableCaptureSignat
     ...(hasEllipsis ? {} : { parameterCount: parameterNodes.length }),
     parameterTypes,
     parameterTypeClasses,
+    isConst: /\)\s*const(?:\s|$)/.test(declarator.text),
   };
+}
+
+/**
+ * tree-sitter-cpp parses a non-const pointer-to-member variable such as
+ * `void (Base::*member)()` as nested call expressions (while the cv-qualified
+ * twin is a declaration). Recover the callable shape from the declarator text
+ * so `const`/non-`const` overload sets remain distinguishable.
+ */
+function recoverCppMemberPointerSignature(text: string): CallableCaptureSignature | undefined {
+  const match = text.match(/\(\s*[^()]*::\s*\*\s*[A-Za-z_]\w*\s*\)\s*\(([^()]*)\)\s*(const\b)?/);
+  if (match === null) return undefined;
+  const rawParameters = match[1]!.trim();
+  const parameterCount =
+    rawParameters === '' || rawParameters === 'void'
+      ? 0
+      : splitTopLevelCppParameters(rawParameters).length;
+  return { parameterCount, isConst: match[2] !== undefined };
+}
+
+function splitTopLevelCppParameters(text: string): string[] {
+  const out: string[] = [];
+  let start = 0;
+  let angleDepth = 0;
+  let parenDepth = 0;
+  let bracketDepth = 0;
+  for (let index = 0; index < text.length; index++) {
+    switch (text[index]) {
+      case '<':
+        angleDepth++;
+        break;
+      case '>':
+        angleDepth = Math.max(0, angleDepth - 1);
+        break;
+      case '(':
+        parenDepth++;
+        break;
+      case ')':
+        parenDepth = Math.max(0, parenDepth - 1);
+        break;
+      case '[':
+        bracketDepth++;
+        break;
+      case ']':
+        bracketDepth = Math.max(0, bracketDepth - 1);
+        break;
+      case ',':
+        if (angleDepth === 0 && parenDepth === 0 && bracketDepth === 0) {
+          out.push(text.slice(start, index).trim());
+          start = index + 1;
+        }
+        break;
+    }
+  }
+  out.push(text.slice(start).trim());
+  return out.filter((parameter) => parameter.length > 0);
 }
 
 function cppContainsNodeType(root: SyntaxNode, type: string): boolean {

@@ -5,6 +5,16 @@ import path from 'node:path';
 import { SupportedLanguages } from 'gitnexus-shared';
 import { providers } from '../../../src/core/ingestion/languages/index.js';
 import { getRelationships, runPipelineFromRepo, type PipelineOptions } from './helpers.js';
+import {
+  loadParseCache,
+  PARSE_CACHE_VERSION,
+  saveParseCache,
+  type ParseCache,
+} from '../../../src/storage/parse-cache.js';
+import {
+  getDurableParsedFileDir,
+  pruneAndSaveDurableParsedFileStore,
+} from '../../../src/storage/parsedfile-store.js';
 
 const CALLABLE_FLOW_PROVIDER_COVERAGE = {
   [SupportedLanguages.JavaScript]: 'matrix',
@@ -244,13 +254,37 @@ END PROGRAM TARGET.
 ] as const;
 
 async function runSource(extension: string, source: string, options: PipelineOptions = {}) {
+  return runSources({ [`main.${extension}`]: source }, options);
+}
+
+async function runSources(files: Record<string, string>, options: PipelineOptions = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-callable-flow-'));
   try {
-    fs.writeFileSync(path.join(root, `main.${extension}`), source, 'utf8');
+    for (const [filePath, source] of Object.entries(files)) {
+      const fullPath = path.join(root, filePath);
+      fs.mkdirSync(path.dirname(fullPath), { recursive: true });
+      fs.writeFileSync(fullPath, source, 'utf8');
+    }
     return await runPipelineFromRepo(root, () => {}, { skipGraphPhases: true, ...options });
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
+}
+
+function callableCallSiteLines(
+  result: Awaited<ReturnType<typeof runSource>>,
+  source: string,
+  target: string,
+): number[] {
+  return getRelationships(result, 'CALLS')
+    .filter(
+      (edge) =>
+        edge.source === source &&
+        edge.target === target &&
+        edge.rel.reason === 'callable-value-flow',
+    )
+    .map((edge) => Number(edge.rel.id.match(/:(\d+):(\d+)$/)?.[1]))
+    .sort((left, right) => left - right);
 }
 
 function callsFrom(
@@ -319,6 +353,7 @@ int entry(void) {
   fp();
   (*fp2)();
   (*slot)();
+  (**slot)();
   invoke(*slot);
   outer(target);
   void (*installed)(void) = &callback;
@@ -343,6 +378,36 @@ int entry(void) {
       reason: 'callable-value-flow',
     });
     expect(callsFrom(result, 'invoke').some((edge) => edge.target === 'callback')).toBe(false);
+    expect(callableCallSiteLines(result, 'entry', 'target')).toEqual([13, 14, 15, 16]);
+    expect(callableCallSiteLines(result, 'entry', 'installed_target')).toEqual([21]);
+    expect(callableCallSiteLines(result, 'invoke', 'target')).toEqual([5]);
+  }, 60_000);
+
+  it('joins C prototypes to cross-file definitions without leaking a static decoy', async () => {
+    const result = await runSources({
+      'target.c': 'void target(void) {}\n',
+      'decoy.c': 'static void target(void) {}\n',
+      'wrapper.c': 'void invoke(void (*callback)(void)) { callback(); }\n',
+      'main.c': `
+void target(void);
+void invoke(void (*callback)(void));
+int main(void) {
+  void (*assigned)(void) = target;
+  invoke(assigned);
+  return 0;
+}
+`,
+    });
+
+    const callbackEdges = getRelationships(result, 'CALLS').filter(
+      (edge) =>
+        edge.source === 'invoke' &&
+        edge.target === 'target' &&
+        edge.rel.reason === 'callable-value-flow',
+    );
+    expect(callbackEdges).toHaveLength(1);
+    expect(callbackEdges[0]!.sourceFilePath).toBe('wrapper.c');
+    expect(callbackEdges[0]!.targetFilePath).toBe('target.c');
   }, 60_000);
 
   it('uses a C++ function-pointer signature to select one overload and suppresses untyped overload sets', async () => {
@@ -363,6 +428,16 @@ int entry() {
     );
 
     expect(callableTargetQualifiedNames(result, 'entry')).toEqual(['target']);
+    expect(callableCallSiteLines(result, 'entry', 'target')).toEqual([8]);
+    const targetEdge = getRelationships(result, 'CALLS').find(
+      (edge) =>
+        edge.source === 'entry' &&
+        edge.target === 'target' &&
+        edge.rel.reason === 'callable-value-flow',
+    );
+    expect(result.graph.getNode(targetEdge!.rel.targetId)?.properties.parameterTypes).toEqual([
+      'int',
+    ]);
   }, 60_000);
 
   it('dispatches C++ member pointers through object/reference and pointer receivers to the virtual override', async () => {
@@ -397,6 +472,86 @@ int entry() {
     expect(new Set(targets)).toEqual(new Set(['Method:main.cpp:Derived.run#0']));
   }, 90_000);
 
+  it('keeps non-virtual C++ member pointers exact and dispatches virtual overload/cv signatures precisely', async () => {
+    const result = await runSource(
+      'cpp',
+      `
+struct Base {
+  virtual void run(int) {}
+  virtual void run(double) {}
+  void fixed() {}
+  virtual void cv() const {}
+  virtual void cv() {}
+};
+struct Derived : Base {
+  void run(int) override {}
+  void run(double) override {}
+  void fixed() {}
+  void cv() const override {}
+  void cv() override {}
+};
+
+void invoke(
+  Derived& value,
+  void (Base::*runMember)(int),
+  void (Base::*fixedMember)(),
+  void (Base::*constMember)() const,
+  void (Base::*mutableMember)()
+) {
+  (value.*runMember)(1);
+  (value.*fixedMember)();
+  (value.*constMember)();
+  (value.*mutableMember)();
+}
+
+int entry() {
+  Derived value;
+  void (Base::*runMember)(int) = &Base::run;
+  void (Base::*fixedMember)() = &Base::fixed;
+  void (Base::*constMember)() const = &Base::cv;
+  void (Base::*mutableMember)() = &Base::cv;
+  invoke(value, runMember, fixedMember, constMember, mutableMember);
+  return 0;
+}
+`,
+      { skipGraphPhases: false },
+    );
+
+    const targets = getRelationships(result, 'CALLS')
+      .filter((edge) => edge.source === 'invoke' && edge.rel.reason === 'callable-value-flow')
+      .map((edge) => ({
+        id: edge.rel.targetId,
+        properties: result.graph.getNode(edge.rel.targetId)?.properties,
+      }));
+    expect(targets).toHaveLength(4);
+    expect(
+      targets.some(
+        ({ id, properties }) =>
+          id.includes('Derived.run') &&
+          JSON.stringify(properties?.parameterTypes) === JSON.stringify(['int']),
+      ),
+    ).toBe(true);
+    expect(
+      targets.some(
+        ({ id, properties }) =>
+          id.includes('Derived.run') &&
+          JSON.stringify(properties?.parameterTypes) === JSON.stringify(['double']),
+      ),
+    ).toBe(false);
+    expect(targets.some(({ id }) => id.includes('Base.fixed'))).toBe(true);
+    expect(targets.some(({ id }) => id.includes('Derived.fixed'))).toBe(false);
+    expect(
+      targets.some(
+        ({ id, properties }) => id.includes('Derived.cv') && properties?.isConst === true,
+      ),
+    ).toBe(true);
+    expect(
+      targets.some(
+        ({ id, properties }) => id.includes('Derived.cv') && properties?.isConst !== true,
+      ),
+    ).toBe(true);
+  }, 90_000);
+
   it('resolves C++ function references and references to pointer variables', async () => {
     const result = await runSource(
       'cpp',
@@ -426,6 +581,39 @@ int entry() {
       target: 'target',
       reason: 'callable-value-flow',
     });
+    expect(callableCallSiteLines(result, 'entry', 'target')).toEqual([9, 10]);
+    expect(callableCallSiteLines(result, 'invoke', 'target')).toEqual([3]);
+  }, 60_000);
+
+  it('propagates a C++ function reference through a cross-file prototype and formal', async () => {
+    const result = await runSources({
+      'target.cpp': 'void target() {}\n',
+      'decoy.cpp': 'static void target() {}\n',
+      'wrapper.cpp': `
+using Callback = void (*)();
+void invoke(Callback callback) { callback(); }
+`,
+      'main.cpp': `
+using Callback = void (*)();
+void target();
+void invoke(Callback callback);
+int main() {
+  void (&reference)() = target;
+  invoke(reference);
+  return 0;
+}
+`,
+    });
+
+    const callbackEdges = getRelationships(result, 'CALLS').filter(
+      (edge) =>
+        edge.source === 'invoke' &&
+        edge.target === 'target' &&
+        edge.rel.reason === 'callable-value-flow',
+    );
+    expect(callbackEdges).toHaveLength(1);
+    expect(callbackEdges[0]!.sourceFilePath).toBe('wrapper.cpp');
+    expect(callbackEdges[0]!.targetFilePath).toBe('target.cpp');
   }, 60_000);
 
   it('resolves TypeScript callable assignment, copy, and actual-to-formal invocation', async () => {
@@ -453,6 +641,127 @@ outer(second);
       target: 'target',
       reason: 'callable-value-flow',
     });
+  }, 60_000);
+
+  it('propagates an imported callable through a cross-file wrapper without selecting a decoy', async () => {
+    const result = await runSources({
+      'target.ts': `export function target(): void {}`,
+      'decoy.ts': `export function target(): void {}`,
+      'wrapper.ts': `
+export function invoke(callback: () => void): void {
+  callback();
+}
+`,
+      'main.ts': `
+import { target } from './target';
+import { invoke } from './wrapper';
+const assigned = target;
+invoke(assigned);
+`,
+    });
+
+    const edge = getRelationships(result, 'CALLS').find(
+      (candidate) =>
+        candidate.source === 'invoke' &&
+        candidate.target === 'target' &&
+        candidate.rel.reason === 'callable-value-flow',
+    );
+    expect(edge).toBeDefined();
+    expect(edge!.sourceFilePath).toBe('wrapper.ts');
+    expect(edge!.targetFilePath).toBe('target.ts');
+    expect(
+      getRelationships(result, 'CALLS').some(
+        (candidate) => candidate.source === 'invoke' && candidate.targetFilePath === 'decoy.ts',
+      ),
+    ).toBe(false);
+  }, 60_000);
+
+  it('resolves a bound method assigned to a variable and passed into a wrapper', async () => {
+    const result = await runSource(
+      'ts',
+      `
+class Worker {
+  run(): void {}
+}
+class Decoy {
+  run(): void {}
+}
+function invoke(callback: () => void): void { callback(); }
+const worker = new Worker();
+const assigned = worker.run;
+invoke(assigned);
+`,
+    );
+
+    const edge = getRelationships(result, 'CALLS').find(
+      (candidate) =>
+        candidate.source === 'invoke' &&
+        candidate.target === 'run' &&
+        candidate.rel.reason === 'callable-value-flow',
+    );
+    expect(edge).toBeDefined();
+    expect(edge!.targetLabel).toBe('Method');
+    expect(edge!.rel.targetId).toContain('Worker.run');
+  }, 60_000);
+
+  it('does not reinterpret call results passed as arguments as callable designators', async () => {
+    const result = await runSource(
+      'ts',
+      `
+function target(): void {}
+function factory(): () => void { return target; }
+function invoke(callback: () => void): void { callback(); }
+invoke(factory());
+`,
+    );
+
+    expect(callableCallSiteLines(result, 'invoke', 'target')).toEqual([]);
+    expect(callableCallSiteLines(result, 'invoke', 'factory')).toEqual([]);
+  }, 60_000);
+
+  it('does not store a factory function itself through a C pointer assignment', async () => {
+    const result = await runSource(
+      'c',
+      `
+void initial(void) {}
+void produced(void) {}
+void (*factory(void))(void) { return &produced; }
+void install(void (**slot)(void)) { *slot = factory(); }
+int entry(void) {
+  void (*callback)(void) = &initial;
+  install(&callback);
+  callback();
+  return 0;
+}
+`,
+    );
+
+    expect(callableCallSiteLines(result, 'entry', 'factory')).toEqual([]);
+    expect(callableCallSiteLines(result, 'entry', 'initial')).toEqual([9]);
+  }, 60_000);
+
+  it('keeps a direct call outside a nested same-name callable binding on ordinary resolution', async () => {
+    const result = await runSource(
+      'ts',
+      `
+function target(): void {}
+function replacement(): void {}
+function entry(): void {
+  target();
+  {
+    const target = replacement;
+    target();
+  }
+}
+`,
+    );
+
+    expect(
+      getRelationships(result, 'CALLS').some(
+        (edge) => edge.source === 'entry' && edge.target === 'target',
+      ),
+    ).toBe(true);
+    expect(callableCallSiteLines(result, 'entry', 'replacement')).toEqual([8]);
   }, 60_000);
 
   it('terminates copy cycles and preserves the reachable callable target', async () => {
@@ -528,6 +837,58 @@ value();
       reason: 'callable-value-flow',
     });
   }, 60_000);
+
+  it('replays identical callable-flow semantics from the durable warm parse cache', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-callable-warm-repo-'));
+    const storage = fs.mkdtempSync(path.join(os.tmpdir(), 'gitnexus-callable-warm-store-'));
+    try {
+      fs.writeFileSync(
+        path.join(root, 'main.ts'),
+        `
+function target(): void {}
+function invoke(callback: () => void): void { callback(); }
+const assigned = target;
+invoke(assigned);
+`,
+        'utf8',
+      );
+      const coldCache: ParseCache = {
+        version: PARSE_CACHE_VERSION,
+        entries: new Map(),
+        usedKeys: new Set(),
+        storagePath: storage,
+        onDiskKeys: new Set(),
+      };
+      const cold = await runPipelineFromRepo(root, () => {}, {
+        skipGraphPhases: true,
+        parseCache: coldCache,
+      });
+      const savedKeys = await saveParseCache(storage, coldCache);
+      await pruneAndSaveDurableParsedFileStore(
+        getDurableParsedFileDir(storage),
+        PARSE_CACHE_VERSION,
+        new Set(savedKeys),
+      );
+      const warmCache = await loadParseCache(storage);
+      const warm = await runPipelineFromRepo(root, () => {}, {
+        skipGraphPhases: true,
+        parseCache: warmCache,
+      });
+      const project = (result: Awaited<ReturnType<typeof runSource>>) =>
+        getRelationships(result, 'CALLS')
+          .filter((edge) => edge.rel.reason === 'callable-value-flow')
+          .map(
+            (edge) =>
+              `${edge.sourceFilePath}:${edge.source}->${edge.targetFilePath}:${edge.target}`,
+          )
+          .sort();
+      expect(project(warm)).toEqual(project(cold));
+      expect(project(warm)).toEqual(['main.ts:invoke->main.ts:target']);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+      fs.rmSync(storage, { recursive: true, force: true });
+    }
+  }, 120_000);
 
   it('keeps normal/PDG targets identical and stamps calleeIds at the indirect invocation', async () => {
     const source = `

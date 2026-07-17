@@ -15,6 +15,7 @@ export interface CallableCaptureSignature {
   readonly parameterCount?: number;
   readonly parameterTypes?: readonly string[];
   readonly parameterTypeClasses?: readonly ParameterTypeClass[];
+  readonly isConst?: boolean;
 }
 
 export interface CallableFlowCaptureOptions {
@@ -79,6 +80,11 @@ interface OperandSyntax {
   readonly directDesignator: boolean;
   readonly callableReference: boolean;
   readonly anonymousCallable: boolean;
+  readonly expressionKind:
+    | 'binding'
+    | 'callable-designator'
+    | 'bound-member'
+    | 'anonymous-callable';
 }
 
 interface AssignmentParts {
@@ -94,7 +100,7 @@ interface FunctionInfo {
 }
 
 interface ValueBindingIndex {
-  readonly assignedByOwner: ReadonlyMap<number | undefined, ReadonlySet<string>>;
+  readonly assignmentRegionIdsByName: ReadonlyMap<string, ReadonlySet<number>>;
   readonly formalByOwner: ReadonlyMap<number | undefined, ReadonlySet<string>>;
 }
 
@@ -125,7 +131,7 @@ export function synthesizeCallableFlowCaptures(
       options.callNodeTypes.has(node.type) &&
       (options.isCallNode === undefined || options.isCallNode(node))
     ) {
-      emitCallFacts(node, valueBindings, options, out);
+      emitCallFacts(node, knownCallableNames, valueBindings, options, out);
     }
   }
 
@@ -229,7 +235,7 @@ function buildValueBindingIndex(
   functions: readonly FunctionInfo[],
   options: CallableFlowCaptureOptions,
 ): ValueBindingIndex {
-  const assignedByOwner = new Map<number | undefined, Set<string>>();
+  const assignmentRegionIdsByName = new Map<string, Set<number>>();
   const formalByOwner = new Map<number | undefined, Set<string>>();
   const add = (
     index: Map<number | undefined, Set<string>>,
@@ -247,7 +253,13 @@ function buildValueBindingIndex(
   for (const assignment of assignments) {
     const destination = operandSyntax(assignment.destination, options, true);
     if (destination !== undefined) {
-      add(assignedByOwner, nearestFunctionOwnerId(assignment.container, options), destination.name);
+      const region = nearestLexicalRegion(assignment.container, options);
+      let regionIds = assignmentRegionIdsByName.get(destination.name);
+      if (regionIds === undefined) {
+        regionIds = new Set();
+        assignmentRegionIdsByName.set(destination.name, regionIds);
+      }
+      regionIds.add(region.id);
     }
   }
   for (const fn of functions) {
@@ -256,21 +268,26 @@ function buildValueBindingIndex(
       if (binding !== undefined) add(formalByOwner, fn.node.id, binding.text);
     }
   }
-  return { assignedByOwner, formalByOwner };
+  return { assignmentRegionIdsByName, formalByOwner };
 }
 
-function nearestFunctionOwnerId(
-  input: SyntaxNode,
-  options: CallableFlowCaptureOptions,
-): number | undefined {
+function nearestLexicalRegion(input: SyntaxNode, options: CallableFlowCaptureOptions): SyntaxNode {
   const providerOwner = options.lexicalFunctionOwner?.(input);
-  if (providerOwner !== undefined) return providerOwner.id;
-  let node: SyntaxNode | null = input;
+  let node: SyntaxNode | null = input.parent;
+  let outermost = input;
   while (node !== null) {
-    if (options.functionNodeTypes.has(node.type)) return node.id;
+    outermost = node;
+    if (providerOwner !== undefined && node.id === providerOwner.id) return node;
+    if (options.functionNodeTypes.has(node.type) || isLexicalRegionNode(node)) return node;
     node = node.parent;
   }
-  return undefined;
+  return providerOwner ?? outermost;
+}
+
+function isLexicalRegionNode(node: SyntaxNode): boolean {
+  return /(?:^|_)(?:block|body|compound_statement|source_file|program|module|script)(?:$|_)/.test(
+    node.type,
+  );
 }
 
 function isVisibleValueBinding(
@@ -279,29 +296,27 @@ function isVisibleValueBinding(
   bindings: ValueBindingIndex,
   options: CallableFlowCaptureOptions,
 ): boolean {
+  const assignmentRegionIds = bindings.assignmentRegionIdsByName.get(name);
   const providerOwner = options.lexicalFunctionOwner?.(input);
   if (
     providerOwner !== undefined &&
-    (bindings.assignedByOwner.get(providerOwner.id)?.has(name) === true ||
+    (assignmentRegionIds?.has(providerOwner.id) === true ||
       bindings.formalByOwner.get(providerOwner.id)?.has(name) === true)
   ) {
     return true;
   }
   let node: SyntaxNode | null = input;
   while (node !== null) {
+    if (assignmentRegionIds?.has(node.id) === true) return true;
     if (
       options.functionNodeTypes.has(node.type) &&
-      (bindings.assignedByOwner.get(node.id)?.has(name) === true ||
-        bindings.formalByOwner.get(node.id)?.has(name) === true)
+      bindings.formalByOwner.get(node.id)?.has(name) === true
     ) {
       return true;
     }
     node = node.parent;
   }
-  return (
-    bindings.assignedByOwner.get(undefined)?.has(name) === true ||
-    bindings.formalByOwner.get(undefined)?.has(name) === true
-  );
+  return bindings.formalByOwner.get(undefined)?.has(name) === true;
 }
 
 function assignmentParts(
@@ -367,9 +382,24 @@ function emitAssignmentFact(
       (knownCallableNames.has(source.name) ||
         source.qualifiedName !== undefined ||
         signature !== undefined));
+  const flowSource = sourceIsKnownCallable ? asCallableDesignator(source) : source;
+
+  // A call/constructor/composite result is not the function designator that
+  // appears inside it. This guard must precede the store path: otherwise
+  // `*slot = factory()` stores `factory` itself into `slot`.
+  if (
+    !source.directDesignator &&
+    !sourceIsKnownCallable &&
+    source.indirection === 0 &&
+    !source.addressOf
+  ) {
+    return;
+  }
 
   if (destination.indirection > 0) {
-    out.push(binaryFact('store', assignment.container, 'pointer', destination, 'source', source));
+    out.push(
+      binaryFact('store', assignment.container, 'pointer', destination, 'source', flowSource),
+    );
     return;
   }
   if (source.addressOf && !sourceIsKnownCallable) {
@@ -392,18 +422,18 @@ function emitAssignmentFact(
     const match: Record<string, ReturnType<typeof nodeToCapture>> = {
       '@callable-flow.seed': nodeToCapture('@callable-flow.seed', assignment.container),
       '@callable-flow.destination': operandCapture('@callable-flow.destination', destination),
-      '@callable-flow.target': operandCapture('@callable-flow.target', source),
+      '@callable-flow.target': operandCapture('@callable-flow.target', flowSource),
       '@callable-flow.target-name': syntheticCapture(
         '@callable-flow.target-name',
-        source.node,
-        source.anonymousCallable ? destination.name : source.name,
+        flowSource.node,
+        flowSource.anonymousCallable ? destination.name : flowSource.name,
       ),
     };
-    if (source.qualifiedName !== undefined) {
+    if (flowSource.qualifiedName !== undefined) {
       match['@callable-flow.target-qualified-name'] = syntheticCapture(
         '@callable-flow.target-qualified-name',
-        source.node,
-        options.normalizeQualifiedName?.(source.qualifiedName) ?? source.qualifiedName,
+        flowSource.node,
+        options.normalizeQualifiedName?.(flowSource.qualifiedName) ?? flowSource.qualifiedName,
       );
     }
     addSignatureCaptures(match, assignment.container, signature);
@@ -411,15 +441,12 @@ function emitAssignmentFact(
     return;
   }
 
-  // A call/constructor result is not the function designator that appears
-  // inside its expression. Do not turn arbitrary expression trees into copy
-  // facts merely because their rightmost leaf happens to name a callable.
-  if (!source.directDesignator && source.indirection === 0 && !source.addressOf) return;
-
   const kind = options.isTrueReferenceBinding?.(assignment.container, assignment.destination)
     ? 'alias'
     : 'copy';
-  out.push(binaryFact(kind, assignment.container, 'destination', destination, 'source', source));
+  out.push(
+    binaryFact(kind, assignment.container, 'destination', destination, 'source', flowSource),
+  );
 }
 
 function emitFormalFacts(
@@ -447,12 +474,14 @@ function emitFormalFacts(
         mode,
       ),
     };
+    addSignatureCaptures(match, parameter, options.expectedSignature?.(parameter, parameter));
     out.push(match);
   }
 }
 
 function emitCallFacts(
   call: SyntaxNode,
+  knownCallableNames: ReadonlySet<string>,
   valueBindings: ValueBindingIndex,
   options: CallableFlowCaptureOptions,
   out: CaptureMatch[],
@@ -480,11 +509,42 @@ function emitCallFacts(
       ? callee.name
       : undefined;
   for (let index = 0; index < args.length; index++) {
-    const source = operandSyntax(args[index]!, options);
-    if (source === undefined) continue;
+    const rawSource = operandSyntax(args[index]!, options);
+    if (rawSource === undefined) continue;
+    // A call/constructor/composite result is a produced value, not a reference
+    // to the terminal identifier inside the expression.
+    if (!rawSource.directDesignator && rawSource.indirection === 0 && !rawSource.addressOf) {
+      continue;
+    }
+    const sourceIsValueBinding = isVisibleValueBinding(
+      args[index]!,
+      rawSource.name,
+      valueBindings,
+      options,
+    );
+    const sourceIsKnownCallable =
+      rawSource.callableReference ||
+      rawSource.anonymousCallable ||
+      (rawSource.directDesignator &&
+        !sourceIsValueBinding &&
+        (knownCallableNames.has(rawSource.name) || rawSource.qualifiedName !== undefined));
+    // Keep unresolved direct identifiers (not arbitrary expressions): imports
+    // and cross-file callable bindings are only known after registry finalize.
+    // The solver requires an exact callable lexical binding before propagating,
+    // so ordinary value arguments remain inert.
+    if (
+      !sourceIsValueBinding &&
+      !sourceIsKnownCallable &&
+      !rawSource.directDesignator &&
+      !rawSource.addressOf
+    ) {
+      continue;
+    }
+    const source = sourceIsKnownCallable ? asCallableDesignator(rawSource) : rawSource;
     out.push({
       '@callable-flow.argument': nodeToCapture('@callable-flow.argument', callSite),
       '@callable-flow.source': operandCapture('@callable-flow.source', source),
+      ...operandMetadataCaptures('source', source),
       ...(source.indirection > 0
         ? {
             '@callable-flow.source-indirection': syntheticCapture(
@@ -544,7 +604,11 @@ function emitCallFacts(
 
   if (callee === undefined) return;
   if (callee.indirection > 0 || calleeIsValueBinding) {
-    emitInvoke(callSite, callee, 'indirect', args.length, out, options);
+    const invokeCallee =
+      !calleeIsValueBinding && knownCallableNames.has(callee.name)
+        ? asCallableDesignator(callee)
+        : callee;
+    emitInvoke(callSite, invokeCallee, 'indirect', args.length, out, options);
   }
 }
 
@@ -560,6 +624,7 @@ function emitInvoke(
   out.push({
     '@callable-flow.invoke': nodeToCapture('@callable-flow.invoke', call),
     '@callable-flow.callee': operandCapture('@callable-flow.callee', callee),
+    ...operandMetadataCaptures('callee', callee),
     ...(callee.indirection > 0
       ? {
           '@callable-flow.callee-indirection': syntheticCapture(
@@ -570,7 +635,10 @@ function emitInvoke(
         }
       : {}),
     ...(receiver !== undefined
-      ? { '@callable-flow.receiver': operandCapture('@callable-flow.receiver', receiver) }
+      ? {
+          '@callable-flow.receiver': operandCapture('@callable-flow.receiver', receiver),
+          ...operandMetadataCaptures('receiver', receiver),
+        }
       : {}),
     '@callable-flow.invocation-kind': syntheticCapture(
       '@callable-flow.invocation-kind',
@@ -693,6 +761,7 @@ function operandSyntax(
       directDesignator: false,
       callableReference: false,
       anonymousCallable: false,
+      expressionKind: 'binding',
     };
   }
   const providerReference = options.extractCallableReference?.(input);
@@ -708,6 +777,8 @@ function operandSyntax(
       directDesignator: true,
       callableReference: true,
       anonymousCallable: false,
+      expressionKind:
+        providerReference.qualifiedName === undefined ? 'callable-designator' : 'bound-member',
     };
   }
   let node = input;
@@ -724,6 +795,7 @@ function operandSyntax(
         directDesignator: true,
         callableReference: true,
         anonymousCallable: true,
+        expressionKind: 'anonymous-callable',
       };
     }
     const operator = unaryOperator(node);
@@ -753,7 +825,17 @@ function operandSyntax(
       (isQualified && !valueProducingExpression && !/[([{]/.test(node.text)),
     callableReference: options.callableReferenceNodeTypes?.has(node.type) === true,
     anonymousCallable: false,
+    expressionKind: isQualified
+      ? 'bound-member'
+      : options.callableReferenceNodeTypes?.has(node.type) === true
+        ? 'callable-designator'
+        : 'binding',
   };
+}
+
+function asCallableDesignator(operand: OperandSyntax): OperandSyntax {
+  if (operand.expressionKind !== 'binding') return operand;
+  return { ...operand, expressionKind: 'callable-designator' };
 }
 
 function wrappedExpression(node: SyntaxNode): SyntaxNode | null {
@@ -866,6 +948,7 @@ function binaryFact(
   return {
     [`@callable-flow.${kind}`]: nodeToCapture(`@callable-flow.${kind}`, anchor),
     [`@callable-flow.${leftRole}`]: operandCapture(`@callable-flow.${leftRole}`, left),
+    ...operandMetadataCaptures(leftRole, left),
     ...(left.indirection > 0
       ? {
           [`@callable-flow.${leftRole}-indirection`]: syntheticCapture(
@@ -876,6 +959,7 @@ function binaryFact(
         }
       : {}),
     [`@callable-flow.${rightRole}`]: operandCapture(`@callable-flow.${rightRole}`, right),
+    ...operandMetadataCaptures(rightRole, right),
     ...(right.indirection > 0
       ? {
           [`@callable-flow.${rightRole}-indirection`]: syntheticCapture(
@@ -890,6 +974,28 @@ function binaryFact(
 
 function operandCapture(name: string, operand: OperandSyntax) {
   return syntheticCapture(name, operand.node, operand.name);
+}
+
+function operandMetadataCaptures(
+  role: 'source' | 'destination' | 'pointer' | 'binding' | 'callee' | 'receiver',
+  operand: OperandSyntax,
+): Record<string, ReturnType<typeof nodeToCapture>> {
+  return {
+    [`@callable-flow.${role}-kind`]: syntheticCapture(
+      `@callable-flow.${role}-kind`,
+      operand.node,
+      operand.expressionKind,
+    ),
+    ...(operand.qualifiedName !== undefined
+      ? {
+          [`@callable-flow.${role}-qualified-name`]: syntheticCapture(
+            `@callable-flow.${role}-qualified-name`,
+            operand.node,
+            operand.qualifiedName,
+          ),
+        }
+      : {}),
+  };
 }
 
 function addSignatureCaptures(
@@ -916,6 +1022,13 @@ function addSignatureCaptures(
       '@callable-flow.expected-type-classes',
       anchor,
       JSON.stringify(signature.parameterTypeClasses),
+    );
+  }
+  if (signature?.isConst !== undefined) {
+    match['@callable-flow.expected-const'] = syntheticCapture(
+      '@callable-flow.expected-const',
+      anchor,
+      String(signature.isConst),
     );
   }
 }
