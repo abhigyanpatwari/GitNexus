@@ -69,12 +69,12 @@ worktree for the PR/ref head, review there, and remove only that temporary
 worktree afterward. Never switch or reset the user's current worktree.
 
 Check GitNexus status in the target worktree. If stale, run
-`analyze --index-only` via the resolved runner (`node .gitnexus/run.cjs` →
-installed `gitnexus` → `npx gitnexus`; temporary worktrees never carry the
-gitignored `run.cjs`) before trusting graph results — and include `--pdg` in
-that same refresh when the diff plausibly touches trust or data-flow
-boundaries, so the taint pass below doesn't pay a second full analyze. Taint
-and dependence evidence needs that PDG layer: when the workflow's taint pass
+`node .gitnexus/run.cjs analyze --index-only` before trusting graph results
+(temporary worktrees never carry the gitignored `run.cjs` — fall back to the
+installed `gitnexus` CLI, then `npx gitnexus`), and include `--pdg` in that
+same refresh when the diff plausibly touches trust or data-flow boundaries,
+so the taint pass below doesn't pay a second full analyze. Taint and
+dependence evidence needs that PDG layer: when the workflow's taint pass
 finds it missing, rebuild with `analyze --pdg --index-only` and record the
 rebuild in provenance. For local changes, refresh the index so new or
 modified source is represented.
