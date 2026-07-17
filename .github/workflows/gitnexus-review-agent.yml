@@ -17,8 +17,18 @@
 # operations — GitNexus `analyze` is tree-sitter parsing, so PR code is
 # read, never executed. Worst case for a prompt-injected PR is a bad review
 # comment, not pushed code or an exfiltrated key (Write/Edit and the web
-# tools are disallowed; Bash is allowlisted to git/gh reads and the
-# gitnexus CLI).
+# tools are disallowed; Bash is allowlisted to read-only git/gh commands).
+#
+# IMPORTANT: the analyzer is invoked ONLY via `npx gitnexus` (npm registry,
+# not the checked-out tree) — never `node .gitnexus/run.cjs` or any other
+# in-repo script. `.gitnexus/` is gitignored (confused-deputy risk, not a
+# hard block): on `issue_comment` this job checks out PR-HEAD content, so a
+# fork PR could commit its own `.gitnexus/run.cjs` and, if that path were
+# executable here, run arbitrary code inside a job holding
+# CLAUDE_CODE_OAUTH_TOKEN and a write-scoped GITHUB_TOKEN. `gh api` is
+# likewise excluded — unlike `gh pr view`/`gh pr diff`, it isn't read-only
+# (accepts -X POST/PATCH/DELETE) and would let a prompt-injected session
+# mutate PR/issue state within the token's write scope.
 name: GitNexus review agent
 
 on:
@@ -39,7 +49,7 @@ concurrency:
 
 permissions:
   contents: read
-  pull-requests: write
+  pull-requests: read
   issues: write
 
 jobs:
@@ -89,6 +99,6 @@ jobs:
             do not submit a formal GitHub approve/request-changes review.
           claude_args: |
             --mcp-config .mcp.json
-            --allowedTools "mcp__gitnexus,Bash(npx gitnexus:*),Bash(node .gitnexus/run.cjs:*),Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh api:*),Bash(git fetch:*),Bash(git diff:*),Bash(git log:*),Bash(git show:*),Bash(git merge-base:*),Bash(git rev-parse:*),Bash(git status:*)"
+            --allowedTools "mcp__gitnexus,Bash(npx gitnexus:*),Bash(gh pr view:*),Bash(gh pr diff:*),Bash(git fetch:*),Bash(git diff:*),Bash(git log:*),Bash(git show:*),Bash(git merge-base:*),Bash(git rev-parse:*),Bash(git status:*)"
             --disallowedTools "Write,Edit,NotebookEdit,WebFetch,WebSearch"
             --max-turns 100

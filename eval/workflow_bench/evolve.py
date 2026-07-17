@@ -84,7 +84,7 @@ def select_evidence(rows: list[dict[str, Any]], max_rows: int = MAX_EVIDENCE_ROW
     unresolved = [r for r in measured if not r.get("resolved")]
     resolved = [r for r in measured if r.get("resolved")]
     unresolved.sort(key=lambda r: (str(r.get("task")), str(r.get("arm")), r.get("run", 0)))
-    resolved.sort(key=lambda r: float(r.get("cost_usd", 0.0)), reverse=True)
+    resolved.sort(key=lambda r: float(r.get("cost_usd") or 0.0), reverse=True)
     return (unresolved + resolved)[:max_rows]
 
 

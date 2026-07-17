@@ -56,6 +56,15 @@ def test_select_evidence_excludes_infra_error_rows_and_caps():
     assert [r["task"] for r in picked] == ["t19", "t18", "t17", "t16", "t15"]
 
 
+def test_select_evidence_tolerates_an_explicit_null_cost():
+    # A foreign --seed-results row (e.g. hand-edited or from another tool)
+    # can carry an explicit JSON null rather than omitting the key; .get's
+    # default only covers the missing-key case, so this must not raise.
+    rows = [row(task="no-cost", resolved=True, cost_usd=None), row(task="priced", cost_usd=5.0)]
+    picked = select_evidence(rows)
+    assert [r["task"] for r in picked] == ["priced", "no-cost"]
+
+
 def test_load_jsonl_skips_blank_and_malformed_lines(tmp_path):
     path = tmp_path / "learnings.jsonl"
     path.write_text('{"skill": "gitnexus-plan"}\n\nnot json\n[1, 2]\n{"skill": "gitnexus-work"}\n')
