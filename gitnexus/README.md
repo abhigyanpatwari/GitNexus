@@ -332,6 +332,9 @@ GitNexus ships with skill files that teach AI agents how to use the tools effect
 - **Refactoring** — Plan safe refactors using dependency mapping
 - **Guide** — GitNexus tool/resource/schema reference for the agent
 - **CLI** — Run analyze/status/clean/wiki commands on request
+- **PDG Query** — Statement-level control/data dependence queries (`--pdg` index)
+- **Taint Analysis** — Source→sink data-flow findings (`--pdg` index)
+- **Plan / Work / Review / LFG** — The engineering family: implementation-ready plans, gated plan execution, graph-backed change review with taint + expert lenses, and the end-to-end pipeline
 
 Installed automatically by both `gitnexus analyze` (per-repo) and `gitnexus setup` (global). Run `gitnexus analyze --skills` to additionally generate each detected functional area as a direct project skill under `.claude/skills/gitnexus-area-<name>/`.
 

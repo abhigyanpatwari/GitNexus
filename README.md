@@ -181,7 +181,7 @@ flowchart TB
 | `detect_impact` | Pre-commit change analysis — scope, affected processes, risk level        |
 | `generate_map`  | Architecture documentation from the knowledge graph with mermaid diagrams |
 
-### 6 agent skills installed to `.claude/skills/` automatically
+### Agent skills installed to `.claude/skills/` automatically
 
 - **Exploring** — navigate unfamiliar code using the knowledge graph
 - **Debugging** — trace bugs through call chains
@@ -189,6 +189,12 @@ flowchart TB
 - **Refactoring** — plan safe refactors using dependency mapping
 - **Guide** — GitNexus tool/resource/schema reference for the agent
 - **CLI** — run analyze/status/clean/wiki commands on request
+- **PDG Query** — statement-level control/data dependence queries (`--pdg` index)
+- **Taint Analysis** — source→sink data-flow findings (`--pdg` index)
+- **Plan** (`/gitnexus-plan`) — implementation-ready engineering plans backed by the graph and PDG slices
+- **Work** (`/gitnexus-work`) — executes a plan as impact-checked, `detect_changes`-gated atomic commits
+- **Review** (`/gitnexus-review`) — graph-backed review of a PR, branch, range, or local diff, with taint pass and per-domain expert lenses
+- **LFG** (`/gitnexus-lfg`) — the full pipeline: plan → user gate → work → review
 
 **Repo-specific skills** — run `gitnexus analyze --skills` and GitNexus detects the functional areas of your codebase (via Leiden community detection) and generates each one as a direct project skill under `.claude/skills/gitnexus-area-<name>/`. Each skill describes a module's key files, entry points, execution flows, and cross-area connections, and is regenerated on each `--skills` run to stay current.
 

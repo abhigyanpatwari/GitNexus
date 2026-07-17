@@ -1,7 +1,7 @@
-<!-- version: 1.11.0 -->
-<!-- Last updated: 2026-07-11 -->
+<!-- version: 1.13.0 -->
+<!-- Last updated: 2026-07-16 -->
 
-Last reviewed: 2026-07-11
+Last reviewed: 2026-07-16
 
 **Project:** GitNexus · **Environment:** dev · **Maintainer:** repository maintainers (see GitHub)
 
@@ -59,8 +59,8 @@ commits, or posts.
 
 Four canonical, CLI-neutral skill specs under `.claude/skills/` (Claude Code invokes
 them as slash commands; Codex or any other agent reading this file should read the
-named SKILL.md and follow it directly — user-level Codex prompts are documented in each
-skill's README):
+named SKILL.md and follow it directly — user-level Codex prompts are documented in the
+plan/work/lfg skill READMEs):
 
 - **`gitnexus-plan/SKILL.md`** — deep, implementation-ready plan for a code change:
   GitNexus graph intelligence for navigation, statement-level PDG slices for behavioral
@@ -74,7 +74,9 @@ skill's README):
   edit, tests from the plan's scenarios, `detect_changes` before every commit.
 - **`gitnexus-review/SKILL.md`** — read-only GitNexus review of a PR URL/number,
   branch or commit range, or local staged/unstaged/untracked changes. It pins exact
-  SHAs, aligns the graph and checkout, and reports evidence-backed findings.
+  SHAs, aligns the graph and checkout, runs a PDG-backed taint pass on trust-boundary
+  diffs, scales to per-domain expert lenses from the graph's clusters, and reports
+  evidence-backed findings.
 - **`gitnexus-lfg/SKILL.md`** — pipeline orchestrator: plan (depth asked up front) →
   blocking user gate (proceed or stop) → work → `gitnexus-review`.
 
@@ -88,7 +90,7 @@ mirror. `gitnexus/test/unit/shipped-skills-sync.test.ts` guards the copies. Toke
 | Date | Version | Change |
 |------|---------|--------|
 | 2026-07-16 | 1.13.0 | `gitnexus-plan` asks plan depth up front (quick/standard/deep) in interactive runs; `gitnexus-lfg` gate slimmed to proceed/stop (Deepen stays as the route-back mechanism). |
-| 2026-07-16 | 1.12.0 | Renamed `gitnexus-pr-review` to `gitnexus-review`; added PR URL/number, branch/range, and local-change targets plus install migration cleanup. |
+| 2026-07-16 | 1.12.0 | Renamed `gitnexus-pr-review` to `gitnexus-review`; added PR URL/number, branch/range, and local-change targets plus install migration (setup warns on a legacy `gitnexus-pr-review` dir and leaves it in place; uninstall removes it). |
 | 2026-07-11 | 1.11.0 | Skill family shipped via npm skills/ + plugin (sync-guarded); added eval/workflow_bench token-savings benchmark. |
 | 2026-07-11 | 1.10.0 | Added `gitnexus-work` (plan executor) and `gitnexus-lfg` (plan → deepen/work gate → review pipeline) skills; section renamed to Engineering planning & execution. |
 | 2026-07-11 | 1.9.0 | Added Engineering planning (`/gitnexus-plan`) section; registered the `gitnexus-plan` skill (`.claude/skills/gitnexus-plan/`). |
@@ -140,12 +142,12 @@ This project is indexed by GitNexus as **GitNexus** (20319 symbols, 54304 relati
 
 | Task | Read this skill file |
 |------|---------------------|
-| Understand architecture / "How does X work?" | `.claude/skills/gitnexus/gitnexus-exploring/SKILL.md` |
-| Blast radius / "What breaks if I change X?" | `.claude/skills/gitnexus/gitnexus-impact-analysis/SKILL.md` |
-| Trace bugs / "Why is X failing?" | `.claude/skills/gitnexus/gitnexus-debugging/SKILL.md` |
-| Rename / extract / split / refactor | `.claude/skills/gitnexus/gitnexus-refactoring/SKILL.md` |
-| Tools, resources, schema reference | `.claude/skills/gitnexus/gitnexus-guide/SKILL.md` |
-| Index, status, clean, wiki CLI commands | `.claude/skills/gitnexus/gitnexus-cli/SKILL.md` |
+| Understand architecture / "How does X work?" | `.claude/skills/gitnexus-exploring/SKILL.md` |
+| Blast radius / "What breaks if I change X?" | `.claude/skills/gitnexus-impact-analysis/SKILL.md` |
+| Trace bugs / "Why is X failing?" | `.claude/skills/gitnexus-debugging/SKILL.md` |
+| Rename / extract / split / refactor | `.claude/skills/gitnexus-refactoring/SKILL.md` |
+| Tools, resources, schema reference | `.claude/skills/gitnexus-guide/SKILL.md` |
+| Index, status, clean, wiki CLI commands | `.claude/skills/gitnexus-cli/SKILL.md` |
 
 <!-- gitnexus:end -->
 
