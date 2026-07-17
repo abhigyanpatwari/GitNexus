@@ -226,3 +226,15 @@ APPROVE | REQUEST CHANGES | NEEDS DISCUSSION
 For a branch or local review, use `READY`, `NOT READY`, or `NEEDS DISCUSSION`
 instead of a PR approval action. Include the exact target SHAs so a later run
 can tell whether the evidence is stale.
+
+## Skill feedback (GitNexus repo only)
+
+If this run exposed friction in this skill's own instructions — wrong or
+missing guidance, a wasted tool budget, a phase that misrouted — and the repo
+carries `eval/workflow_bench/`, append one JSON line to
+`eval/workflow_bench/learnings.jsonl` (create the file if absent):
+`{"skill": "gitnexus-review", "date": "YYYY-MM-DD", "task": "<one line>", "friction": "<one line>", "suggestion": "<one line>"}`.
+Never edit this skill file itself from a live task: improvements go through
+the offline candidate loop (`eval/workflow_bench/README.md` § Prompt and
+skill evolution loop), where a candidate must beat the incumbent on the
+paired benchmark before a human merges it.
