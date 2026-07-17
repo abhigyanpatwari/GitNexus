@@ -415,8 +415,16 @@ const DEFAULT_CONSECUTIVE_FAILURE_THRESHOLD_FLOOR = 3;
  * imports; if the worker hasn't reported ready by then, it's almost
  * certainly stuck or crashed and the pool should surface the failure
  * fast rather than wait out the dispatch idle timeout.
+ *
+ * Overridable via `GITNEXUS_WORKER_READY_TIMEOUT_MS` (mirroring
+ * `GITNEXUS_WORKER_SUB_BATCH_TIMEOUT_MS`): on a slow or heavily loaded
+ * host, a full pool of workers cold-starting concurrently can legitimately
+ * take longer than 5s to load the native grammar bindings — without the
+ * override every slot times out and the pool misclassifies the slow start
+ * as a deterministic startup crash-loop, aborting the whole analyze.
  */
-const WORKER_READY_TIMEOUT_MS = 5_000;
+const WORKER_READY_TIMEOUT_MS =
+  positiveInteger(process.env.GITNEXUS_WORKER_READY_TIMEOUT_MS) ?? 5_000;
 /**
  * Default upper bound on auto-resolved pool size. Past 16 workers the
  * dominant cost shifts from worker-side parsing to main-thread merge /
@@ -683,6 +691,27 @@ function captureWorkerStderr(worker: Worker): void {
   stream.on('error', () => undefined);
 }
 
+/**
+ * Forward a worker's piped stdout to the parent process's stdout, so worker
+ * logs stay visible now that the production factory spawns with
+ * `{ stdout: true }`. Workers with INHERITED stdout have been observed to
+ * crash silently during top-of-script init (exit code 1, nothing on stderr,
+ * roughly half of a concurrently spawned pool) on macOS 26.5 under both
+ * Node 22 and 26; piping stdout eliminates the crash entirely. Piping also
+ * matches the existing stderr handling, so worker output no longer races the
+ * parent's raw fd. No-op when the worker has no `stdout` stream (test
+ * factories).
+ */
+function forwardWorkerStdout(worker: Worker): void {
+  const stream = worker.stdout;
+  if (!stream) return;
+  stream.on('data', (chunk: Buffer | string) => {
+    process.stdout.write(typeof chunk === 'string' ? chunk : chunk.toString('utf8'));
+  });
+  // A stdout stream error must never crash the pool.
+  stream.on('error', () => undefined);
+}
+
 /** Captured stderr tail for a worker, trimmed; '' when nothing was captured. */
 function workerStderrTail(worker: Worker): string {
   return workerStderrTails.get(worker)?.text.trim() ?? '';
@@ -931,6 +960,10 @@ export const createWorkerPool = (
     options?.workerFactory ??
     ((url: URL) =>
       new Worker(url, {
+        // Piped (not inherited) stdio: stderr for crash capture (#1741),
+        // stdout because inherited stdout triggers silent startup crashes on
+        // some hosts (see forwardWorkerStdout).
+        stdout: true,
         stderr: true,
         workerData: workerStoreData,
         // The CFG visitors build per-function control-flow graphs by RECURSIVE
@@ -944,10 +977,11 @@ export const createWorkerPool = (
         // try/catch) and only that function's PDG is skipped, never a crash.
         resourceLimits: { stackSizeMb: 16 },
       }));
-  /** Spawn + wire stderr capture in one step (used by all spawn sites). */
+  /** Spawn + wire stdio capture/forwarding in one step (used by all spawn sites). */
   const spawnAndCapture = (url: URL): Worker => {
     const worker = spawnWorker(url);
     captureWorkerStderr(worker);
+    forwardWorkerStdout(worker);
     return worker;
   };
   const workers: (Worker | undefined)[] = new Array(size);
@@ -1578,8 +1612,7 @@ export const createWorkerPool = (
       // sequence can `await` cleanly (which is required to know when the
       // slot is ready to pick up new work after a give-up).
       type TimeoutDecision =
-        | { kind: 'retry' }
-        | { kind: 'give-up'; reason: string; excludePaths: readonly string[] };
+        { kind: 'retry' } | { kind: 'give-up'; reason: string; excludePaths: readonly string[] };
 
       const requeueAfterTimeout = (
         workerIndex: number,
