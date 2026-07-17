@@ -188,6 +188,10 @@ export function emitDartScopeCaptures(
       emitHeritage(node, out);
       return;
     }
+    if (node.type === 'extension_declaration') {
+      emitExtensionImplementsHeritage(node, out);
+      return;
+    }
   });
 
   out.push(...synthesizeCallableFlowCaptures(root, DART_CALLABLE_CAPTURE_OPTIONS));
@@ -521,6 +525,25 @@ function emitHeritage(classNode: SyntaxNode, out: CaptureMatch[]): void {
   const interfaces = classNode.childForFieldName('interfaces');
   if (interfaces !== null) {
     emitHeritageMarkers(interfaces, 'implements', className, out);
+  }
+}
+
+function emitExtensionImplementsHeritage(extensionNode: SyntaxNode, out: CaptureMatch[]): void {
+  const nameNode = extensionNode.childForFieldName('name');
+  if (nameNode === null) return;
+
+  const bodyStart = extensionNode.text.indexOf('{');
+  const header = bodyStart === -1 ? extensionNode.text : extensionNode.text.slice(0, bodyStart);
+  const implementsIndex = header.indexOf('implements');
+  if (implementsIndex === -1) return;
+
+  const className = nameNode.text;
+  const interfaces = header.slice(implementsIndex + 'implements'.length);
+  for (const rawInterface of interfaces.split(',')) {
+    const target = /^[ \t]*([A-Za-z_$][A-Za-z0-9_$]*)/.exec(rawInterface)?.[1];
+    if (target === undefined) continue;
+    const payload = encodeMarker('heritage', ['implements', target, className]);
+    out.push({ '@import.heritage': syntheticCapture('@import.heritage', nameNode, payload) });
   }
 }
 

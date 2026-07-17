@@ -1,4 +1,8 @@
-extension type const UserId(String value) {
+class Identifiable {}
+
+class SequenceLike<T> {}
+
+extension type const UserId(String value) implements Identifiable {
   String describe() => value;
 }
 
@@ -8,7 +12,7 @@ extension type Celsius(double degrees) {
   double toFahrenheit() => degrees * 9 / 5 + 32;
 }
 
-extension type Box<T>(List<T> value) {
+extension type Box<T>(List<T> value) implements SequenceLike<T> {
   T first() => value.first;
 }
 

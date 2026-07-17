@@ -52,7 +52,11 @@ typedef Pred = bool Function(int);
 typedef Mapper<T> = T Function(T);
 typedef int _Internal(int);`;
 
-const EXTENSION_TYPES = `extension type const UserId(String value) {
+const EXTENSION_TYPES = `class Identifiable {}
+
+class SequenceLike<T> {}
+
+extension type const UserId(String value) implements Identifiable {
   String describe() => value;
 }
 
@@ -62,7 +66,7 @@ extension type Celsius(double degrees) {
   double toFahrenheit() => degrees * 9 / 5 + 32;
 }
 
-extension type Box<T>(List<T> value) {
+extension type Box<T>(List<T> value) implements SequenceLike<T> {
   T first() => value.first;
 }
 
@@ -87,6 +91,12 @@ function classDeclarationNames(src: string): string[] {
     .filter((m) => m['@declaration.class'] !== undefined)
     .map((m) => m['@declaration.name']?.text)
     .filter((n): n is string => Boolean(n));
+}
+
+/** Synthetic Dart implements markers, as marker payloads. */
+function heritageImports(src: string): string[] {
+  const matches = emitDartScopeCaptures(src, 'test.dart') as CaptureMatch[];
+  return matches.map((m) => m['@import.heritage']?.text).filter((n): n is string => Boolean(n));
 }
 
 // ---------------------------------------------------------------------------
@@ -147,6 +157,16 @@ describe.skipIf(!dartAvailable)('Dart extension type declarations (scope layer)'
     const names = classDeclarationNames(EXTENSION_TYPES);
     expect(names).toEqual(expect.arrayContaining(['UserId', 'EmptyId', 'Celsius', 'Box', 'Fancy']));
   });
+
+  it('captures implements clauses on extension types as heritage markers', () => {
+    const imports = heritageImports(EXTENSION_TYPES);
+    expect(imports).toEqual(
+      expect.arrayContaining([
+        '__heritage__:implements:Identifiable:UserId',
+        '__heritage__:implements:SequenceLike:Box',
+      ]),
+    );
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -196,6 +216,13 @@ describe.skipIf(!dartAvailable)('Dart extension type symbols (end-to-end)', () =
     );
   });
 
+  it('emits IMPLEMENTS edges for extension type implements clauses', () => {
+    const implementsEdges = edgeSet(getRelationships(result, 'IMPLEMENTS'));
+    expect(implementsEdges).toEqual(
+      expect.arrayContaining(['Box → SequenceLike', 'UserId → Identifiable']),
+    );
+  });
+
   it('keeps extension type methods owned by their extension type symbol', () => {
     const methods = getNodesByLabel(result, 'Method');
     expect(methods).toEqual(expect.arrayContaining(['describe', 'toFahrenheit', 'first', 'shout']));
@@ -212,6 +239,6 @@ describe.skipIf(!dartAvailable)('Dart extension type symbols (end-to-end)', () =
   });
 
   it('does not leave dangling method ownership edges', () => {
-    expect(findDanglingEdges(result, ['HAS_METHOD'])).toEqual([]);
+    expect(findDanglingEdges(result, ['HAS_METHOD', 'IMPLEMENTS'])).toEqual([]);
   });
 });
