@@ -46,6 +46,10 @@ const RUBY_CALLABLE_CAPTURE_OPTIONS = {
   ]),
   functionScopedValueBindings: true,
   callableProtocolMethods: new Set(['call']),
+  // A bare receiver-less identifier in value position is a method CALL in
+  // Ruby (`action = process` stores process's RETURN value) — only explicit
+  // reference forms (method(:x), &:x, lambda/proc) reference the callable.
+  bareNamesAreCalls: true,
   extractCallableReference: (node: SyntaxNode) => {
     if (node.type !== 'call') return undefined;
     const method = node.childForFieldName('method');

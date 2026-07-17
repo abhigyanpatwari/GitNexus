@@ -828,6 +828,33 @@ invoke(factory());
     expect(callableCallSiteLines(result, 'invoke', 'factory')).toEqual([]);
   }, 60_000);
 
+  it('does not treat a bare Ruby identifier as a callable reference — it is a call (#2522 review)', async () => {
+    const result = await runSource(
+      'rb',
+      `
+def process
+  'done'
+end
+
+def dispatch(cb)
+  cb.call
+end
+
+action = process
+dispatch(action)
+`,
+    );
+
+    // `action` holds process's RETURN VALUE (a String); a CALLS edge from
+    // dispatch to process here is over-linking.
+    expect(callableCallSiteLines(result, 'dispatch', 'process')).toEqual([]);
+    expect(
+      getRelationships(result, 'CALLS').filter(
+        (edge) => edge.rel.reason === 'callable-value-flow' && edge.target === 'process',
+      ),
+    ).toEqual([]);
+  }, 60_000);
+
   it('resolves the C ops-vtable pattern: struct-field pointer stored then called (#2522 review)', async () => {
     const result = await runSource(
       'c',

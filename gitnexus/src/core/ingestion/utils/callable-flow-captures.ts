@@ -65,6 +65,15 @@ export interface CallableFlowCaptureOptions {
   readonly extractFunctionParameters?: (node: SyntaxNode) => readonly SyntaxNode[] | undefined;
   readonly extractCallCallee?: (node: SyntaxNode) => SyntaxNode | undefined;
   readonly isCallNode?: (node: SyntaxNode) => boolean;
+  /**
+   * Languages where a bare, receiver-less, paren-less name in value position
+   * is a CALL, not a reference (Ruby: `action = process` invokes `process`
+   * and stores its return). When true, a bare name that is not a provably
+   * local value binding and not an explicit reference form (`method(:x)`,
+   * lambda/proc) emits NO flow fact — treating it as a callable minted CALLS
+   * edges to methods that were merely invoked (#2522 review).
+   */
+  readonly bareNamesAreCalls?: boolean;
   readonly callSiteNode?: (node: SyntaxNode) => SyntaxNode | undefined;
   /** Emit a canonical call ReferenceSite when the provider query omits variable calls. */
   readonly emitCanonicalInvokeReference?: boolean;
@@ -459,6 +468,16 @@ function emitAssignmentFact(
     valueBindings,
     options,
   );
+  if (
+    options.bareNamesAreCalls === true &&
+    source.directDesignator &&
+    !source.callableReference &&
+    !source.anonymousCallable &&
+    !sourceIsValueBinding
+  ) {
+    // The RHS is the produced value of a call, not a reference to the callee.
+    return;
+  }
   const sourceIsKnownCallable =
     source.callableReference ||
     source.anonymousCallable ||
@@ -618,6 +637,16 @@ function emitCallFacts(
       valueBindings,
       options,
     );
+    if (
+      options.bareNamesAreCalls === true &&
+      rawSource.directDesignator &&
+      !rawSource.callableReference &&
+      !rawSource.anonymousCallable &&
+      !sourceIsValueBinding
+    ) {
+      // Bare argument name = a call's produced value in this language.
+      continue;
+    }
     const sourceIsKnownCallable =
       rawSource.callableReference ||
       rawSource.anonymousCallable ||
