@@ -33,6 +33,16 @@ const KOTLIN_CALLABLE_CAPTURE_OPTIONS = {
       (child): child is SyntaxNode => child !== null && child.type === 'simple_identifier',
     )?.text,
   extractAssignment: (node: SyntaxNode) => {
+    // tree-sitter-kotlin's `assignment` node is FIELDLESS (positional
+    // `directly_assignable_expression` then the value), so the shared
+    // field-based fallback returned nothing and nested reassignments
+    // (`chosen = ::target` inside a block) never produced flow facts
+    // (#2522 review, shallow-coverage gap).
+    if (node.type === 'assignment') {
+      const named = node.namedChildren.filter((child): child is SyntaxNode => child !== null);
+      if (named.length < 2) return undefined;
+      return { destination: named[0]!, source: named[named.length - 1]! };
+    }
     if (node.type !== 'property_declaration') return undefined;
     if (!node.children.some((child) => child.text === '=')) return undefined;
     const destination = node.namedChildren.find(

@@ -862,6 +862,35 @@ invoke(factory());
     expect(callableCallSiteLines(result, 'INVOKE', 'TARGET')).toEqual([18]);
   }, 60_000);
 
+  it('propagates COBOL procedure pointers through SET x TO y copies (#2522 review)', async () => {
+    const result = await runSource(
+      'cbl',
+      `
+>>SOURCE FORMAT FREE
+IDENTIFICATION DIVISION.
+PROGRAM-ID. MAIN.
+DATA DIVISION.
+WORKING-STORAGE SECTION.
+01 P1 USAGE PROCEDURE-POINTER.
+01 P2 USAGE PROCEDURE-POINTER.
+PROCEDURE DIVISION.
+    SET P1 TO ENTRY "TARGET".
+    SET P2 TO P1.
+    CALL P2.
+    STOP RUN.
+END PROGRAM MAIN.
+
+IDENTIFICATION DIVISION.
+PROGRAM-ID. TARGET.
+PROCEDURE DIVISION.
+    GOBACK.
+END PROGRAM TARGET.
+`,
+    );
+
+    expect(callableCallSiteLines(result, 'MAIN', 'TARGET')).toEqual([12]);
+  }, 60_000);
+
   it('ignores commented-out COBOL SET statements (#2522 review)', async () => {
     const result = await runSource(
       'cbl',
@@ -1146,11 +1175,76 @@ def entry(enabled)
 end
 `,
     },
+    {
+      language: 'Kotlin',
+      extension: 'kt',
+      caller: 'invoke',
+      source: `
+fun target() {}
+fun other() {}
+fun invoke(callback: () -> Unit) { callback() }
+fun entry(enabled: Boolean) {
+    var chosen = ::other
+    if (enabled) {
+        chosen = ::target
+    }
+    invoke(chosen)
+}
+`,
+    },
+    {
+      language: 'C#',
+      extension: 'cs',
+      source: `
+class Demo {
+    static void target() {}
+    static void entry(bool enabled) {
+        System.Action callback = () => {};
+        if (enabled) {
+            callback = target;
+        }
+        callback();
+    }
+}
+`,
+    },
+    {
+      language: 'Swift',
+      extension: 'swift',
+      caller: 'invoke',
+      source: `
+func target() {}
+func other() {}
+func invoke(_ callback: () -> Void) { callback() }
+func entry(enabled: Bool) {
+    var chosen = other
+    if enabled {
+        chosen = target
+    }
+    invoke(chosen)
+}
+`,
+    },
+    {
+      language: 'Dart',
+      extension: 'dart',
+      source: `
+void target() {}
+
+void entry(bool enabled) {
+  var callback = () {};
+  if (enabled) {
+    callback = target;
+  }
+  callback();
+}
+`,
+    },
   ])(
     'keeps function-scoped callable assignments visible outside nested $language blocks',
-    async ({ extension, source }) => {
+    async ({ extension, source, caller = 'entry' }) => {
       const result = await runSource(extension, source);
-      expect(callsFrom(result, 'entry')).toContainEqual({
+      expect(callsFrom(result, caller)).toContainEqual({
         target: 'target',
         reason: 'callable-value-flow',
       });

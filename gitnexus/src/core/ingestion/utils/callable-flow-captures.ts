@@ -434,12 +434,14 @@ function assignmentParts(
     node.childForFieldName('left') ??
     node.childForFieldName('name') ??
     node.childForFieldName('pattern') ??
-    node.childForFieldName('declarator');
+    node.childForFieldName('declarator') ??
+    node.childForFieldName('target'); // Swift assignment
   const source =
     node.childForFieldName('right') ??
     node.childForFieldName('value') ??
     node.childForFieldName('initializer') ??
-    node.childForFieldName('default_value');
+    node.childForFieldName('default_value') ??
+    node.childForFieldName('result'); // Swift assignment
 
   // Declaration wrappers often contain the real initialized declarator one
   // level below (for example a declarator list).
