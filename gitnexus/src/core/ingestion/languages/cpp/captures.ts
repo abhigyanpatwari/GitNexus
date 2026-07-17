@@ -73,13 +73,27 @@ function cppRecoveredMemberPointerParts(
     (child): child is SyntaxNode => child !== null && child.type === 'ERROR',
   );
   if (recovered === undefined) return undefined;
-  const operator = recovered.children.find((child) => child.text === '->*');
-  const receiver = node.namedChildren.find(
+  const operator = recovered.children.find((child) => child !== null && child.text === '->*');
+  const sibling = node.namedChildren.find(
     (child): child is SyntaxNode => child !== null && child.id !== recovered.id,
   );
-  const member = recovered.namedChildren.find((child): child is SyntaxNode => child !== null);
-  if (operator === undefined || receiver === undefined || member === undefined) return undefined;
-  return { receiver, member, operator: operator.text };
+  const errIdentifier = recovered.namedChildren.find(
+    (child): child is SyntaxNode => child !== null,
+  );
+  if (operator === undefined || sibling === undefined || errIdentifier === undefined) {
+    return undefined;
+  }
+  // tree-sitter's error recovery groups `(obj->*ptr)` two ways depending on
+  // recovery cost (identifier lengths!): either `[identifier, ERROR "->*m"]`
+  // or `[ERROR "obj->*", identifier]`. Disambiguate by token order INSIDE the
+  // ERROR: an identifier BEFORE `->*` is the receiver (the sibling is the
+  // pointer/member); an identifier AFTER `->*` is the member (the sibling is
+  // the receiver). Assuming one fixed grouping swapped the roles and silently
+  // dropped the call site (#2522 review, H2).
+  if (errIdentifier.startIndex < operator.startIndex) {
+    return { receiver: errIdentifier, member: sibling, operator: operator.text };
+  }
+  return { receiver: sibling, member: errIdentifier, operator: operator.text };
 }
 
 /**

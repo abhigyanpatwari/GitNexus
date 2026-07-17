@@ -550,6 +550,37 @@ int entry() {
     expect(new Set(targets)).toEqual(new Set(['Method:main.cpp:Derived.run#0']));
   }, 90_000);
 
+  it('resolves (obj->*ptr)() regardless of tree-sitter ERROR-recovery grouping (#2522 review)', async () => {
+    const result = await runSource(
+      'cpp',
+      `
+struct Base {
+  virtual void run() {}
+};
+struct Derived : Base {
+  void run() override {}
+};
+
+void invoke(Derived& v, void (Base::*ptr)()) {
+  Derived* obj = &v;
+  (obj->*ptr)();
+}
+
+int entry() {
+  Derived v;
+  auto ptr = &Base::run;
+  invoke(v, ptr);
+  return 0;
+}
+`,
+      { skipGraphPhases: false },
+    );
+
+    const targets = callableTargetIds(result, 'invoke');
+    expect(targets).toHaveLength(1);
+    expect(new Set(targets)).toEqual(new Set(['Method:main.cpp:Derived.run#0']));
+  }, 90_000);
+
   it('keeps non-virtual C++ member pointers exact and dispatches virtual overload/cv signatures precisely', async () => {
     const result = await runSource(
       'cpp',
