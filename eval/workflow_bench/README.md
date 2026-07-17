@@ -13,6 +13,10 @@ the CLI's own `--output-format json` usage report.
 | `candidate_workflow` | same sessions as `workflow`, with a candidate skill overlay | Paired with `workflow` on the same task/ref/model |
 | `workflow_direct` | one `gitnexus-work` direct-mode session | The middle option — execution discipline without a planning pass |
 | `candidate_workflow_direct` | same session as `workflow_direct`, with a candidate skill overlay | Paired with `workflow_direct` on the same task/ref/model |
+| `ce_workflow` | `ce-plan` on the task, then `ce-work` on the produced plan | External comparator: the compound-engineering plugin's plan→work family, prompted like `workflow` (plugin ships user-level) |
+| `ce_workflow_direct` | one `ce-work` direct-mode session | External comparator paired with `workflow_direct` |
+| `review` | one `gitnexus-review` session over local uncommitted changes | The task's `setup` applies the diff under review; the review is written to `review-output.md` so `verify` can gate on it |
+| `ce_review` | one `ce-code-review` session over the same changes | External comparator paired with `review` |
 | `baseline` | one session with the identical task text | `--disallowedTools Skill` so it cannot borrow the workflow; same repo, same MCP tools |
 | `baseline_nomcp` | like baseline, graph tools also disallowed | Separates the workflow-discipline question from the GitNexus-tools question (off by default) |
 
@@ -98,9 +102,17 @@ back as the next overlay.
 When candidate arms are present the runner also writes `promotion.json`. Its
 default deterministic gate is deliberately conservative:
 
-- at least 3 paired runs per task and a named model;
+- at least 3 paired VALID runs per task (session/infra-error runs don't
+  count) and a named model;
 - no per-task resolution-rate regression (quality is lexicographically first);
-- with equal quality, at least 5% median output-token improvement;
+- promotion by resolution needs a margin of at least 2 resolved runs —
+  a 1-run difference is noise at this run count and falls through to the
+  efficiency comparison;
+- with equal quality, at least 5% median improvement on the promotion metric
+  (default `cost_usd` — the only CLI-reported number that includes subagent
+  spend; token metrics count only the main-loop session and flatter
+  subagent-heavy candidates, so selecting one stamps a warning into
+  `promotion.json`);
 - no individual task may regress the selected efficiency metric by more than
   20%.
 
@@ -144,7 +156,12 @@ Caveats, honestly:
   expect lower resolve rates and noisier savings than on frontier models.
   Treat free-model runs as directional; confirm headline numbers with a
   small paid run.
-- `cost_usd` reads ~0 through a proxy; token counts remain the real metric.
+- Through a proxy `cost_usd` reads ~0, and the CLI's token counts are NOT a
+  substitute "real metric": they cover only the main-loop session, so
+  subagent spend is invisible to both. For efficiency ranking, prefer a paid
+  run gated on `cost_usd`, or sum per-session usage from the transcripts
+  (`~/.claude/projects/<cwd-slug>/<session_id>.jsonl`, deduplicating events
+  that share one `message.id`).
 - OpenRouter `:free` variants are rate-limited (~50 req/day on a fresh
   account); local Ollama has no limits.
 - Codex users: `codex exec --oss` runs local models for free too, but this

@@ -1,7 +1,7 @@
 """Benchmark the gitnexus-plan/work workflow against a baseline agent.
 
 Usage:
-    uv run python -m workflow_bench.runner --tasks workflow_bench/tasks.example.yaml --runs 3
+    uv run python -m workflow_bench.runner --tasks workflow_bench/tasks.scenarios.yaml --runs 3
 
 Each task runs in a fresh detached git worktree of the target repo, once per
 arm per run:
@@ -14,7 +14,9 @@ arm per run:
   tool disallowed (so it cannot borrow the workflow), everything else equal.
 
 Token usage, cost, duration, and turn counts come from the CLI's own
-``--output-format json`` report — nothing is estimated. A task-specific
+``--output-format json`` report — nothing is estimated. Caveat: the report's
+top-level ``usage`` counts ONLY the main-loop session; ``total_cost_usd`` is
+the only reported number that includes subagent spend. A task-specific
 ``verify`` command decides ``resolved``; token savings on unresolved runs are
 reported but flagged, because saving tokens by failing is not a saving.
 
@@ -45,11 +47,14 @@ import yaml
 from .evolution import (
     CANDIDATE_ARMS,
     EVIDENCE_MAX_AGE_DAYS,
+    MAIN_LOOP_ONLY_METRICS,
+    MAIN_LOOP_ONLY_WARNING,
     PROMOTION_METRICS,
     apply_candidate_overlay,
     candidate_overlay_digest,
     evaluate_candidate,
     skill_fingerprint,
+    unexercised_overlay_skills,
 )
 
 USAGE_FIELDS = (
@@ -129,6 +134,62 @@ CE_REVIEW_PROMPT = (
 )
 
 
+# Skill each arm's session(s) must actually invoke; a session that never ran
+# its skill is a silent no-op arm, not a data point (checked via transcript).
+ARM_EXPECTED_SKILLS: dict[str, tuple[str, ...]] = {
+    "workflow": ("gitnexus-plan", "gitnexus-work"),
+    "ce_workflow": ("ce-plan", "ce-work"),
+    "workflow_direct": ("gitnexus-work",),
+    "ce_workflow_direct": ("ce-work",),
+    "review": ("gitnexus-review",),
+    "ce_review": ("ce-code-review",),
+}
+
+
+def transcript_path(cwd: Path, session_id: str | None) -> Path | None:
+    """Locate ``~/.claude/projects/<cwd-slug>/<session_id>.jsonl`` if present."""
+    if not session_id:
+        return None
+    projects = Path.home() / ".claude" / "projects"
+    slug = re.sub(r"[^A-Za-z0-9]", "-", str(cwd))
+    direct = projects / slug / f"{session_id}.jsonl"
+    if direct.is_file():
+        return direct
+    # Transcripts can live under a differently derived slug; session ids are
+    # unique, so a projects-wide glob is a safe fallback.
+    return next(iter(projects.glob(f"*/{session_id}.jsonl")), None)
+
+
+def skill_was_invoked(transcript: Path, skill_name: str) -> bool:
+    """Scan a session transcript for a Skill tool_use invoking ``skill_name``.
+
+    Liberal on event shape: any tool_use block named "Skill"/"skill" whose
+    input mentions the skill, or a tool named after the skill itself.
+    """
+    for line in transcript.read_text(errors="replace").splitlines():
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(event, dict):
+            continue
+        message = event.get("message")
+        content = (message or {}).get("content") if isinstance(message, dict) else None
+        if content is None:
+            content = event.get("content")
+        if not isinstance(content, list):
+            continue
+        for block in content:
+            if not isinstance(block, dict) or block.get("type") != "tool_use":
+                continue
+            name = str(block.get("name", ""))
+            if name == skill_name:
+                return True
+            if name.lower() == "skill" and skill_name in json.dumps(block.get("input", {})):
+                return True
+    return False
+
+
 def run_claude(
     prompt: str,
     cwd: Path,
@@ -139,6 +200,7 @@ def run_claude(
     model: str | None = None,
     env: dict[str, str] | None = None,
     permission_mode: str | None = None,
+    expected_skill: str | None = None,
 ) -> dict[str, Any]:
     """Run one headless session and return its usage record."""
     cmd = [claude_bin, "-p", prompt, "--output-format", "json"]
@@ -165,18 +227,49 @@ def run_claude(
     except json.JSONDecodeError:
         data = {}
     usage = data.get("usage") or {}
+    subtype = data.get("subtype")
     # Fail closed: an exit-0 session whose report is empty/malformed or lacks
     # usage fields must not count as measured evidence (it would otherwise
     # record a "resolved" run with zero usage and corrupt promotion decisions).
     well_formed = all(f in usage for f in USAGE_FIELDS)
-    return {
-        "ok": proc.returncode == 0 and not data.get("is_error", False) and well_formed,
+    session_error = (
+        proc.returncode != 0
+        or data.get("is_error", False)
+        or str(subtype).startswith("error")  # e.g. error_max_turns — limit/infra death
+        or not well_formed
+    )
+    record = {
+        "ok": not session_error,
+        "error_kind": "session-error" if session_error else None,
+        "error_detail": (
+            {
+                "subtype": subtype,
+                "returncode": proc.returncode,
+                "stderr_tail": proc.stderr[-2000:],
+            }
+            if session_error
+            else None
+        ),
         "session_id": data.get("session_id"),
         "num_turns": data.get("num_turns", 0),
         "cost_usd": data.get("total_cost_usd", 0.0),
         "duration_s": round(data.get("duration_ms", wall_s * 1000) / 1000, 1),
         **{f: usage.get(f, 0) for f in USAGE_FIELDS},
     }
+    if expected_skill is not None and record["ok"]:
+        transcript = transcript_path(cwd, data.get("session_id"))
+        # Missing transcript (e.g. CI keeps them elsewhere): record null, do
+        # not fail the row — the report notes unverified skill invocations.
+        record["skill_invoked"] = (
+            None if transcript is None else skill_was_invoked(transcript, expected_skill)
+        )
+        if record["skill_invoked"] is False:
+            record["ok"] = False
+            record["error_kind"] = "skill-not-invoked"
+            record["error_detail"] = (
+                f"transcript {transcript} shows no {expected_skill} invocation"
+            )
+    return record
 
 
 def sum_sessions(sessions: list[dict[str, Any]]) -> dict[str, Any]:
@@ -186,6 +279,20 @@ def sum_sessions(sessions: list[dict[str, Any]]) -> dict[str, Any]:
     total["num_turns"] = sum(s["num_turns"] for s in sessions)
     total["ok"] = all(s["ok"] for s in sessions)
     total["session_ids"] = [s["session_id"] for s in sessions]
+    kinds = [s.get("error_kind") for s in sessions if s.get("error_kind")]
+    total["error_kind"] = kinds[0] if kinds else None
+    details = [s.get("error_detail") for s in sessions if s.get("error_detail")]
+    total["error_detail"] = details[0] if details else None
+    # Merge per-session skill checks: any explicit miss fails the row; any
+    # unlocatable transcript degrades the row to "unverified" (None).
+    invocations = [s["skill_invoked"] for s in sessions if "skill_invoked" in s]
+    if False in invocations:
+        total["skill_invoked"] = False
+    elif None in invocations or not invocations:
+        total["skill_invoked"] = None
+    else:
+        total["skill_invoked"] = True
+    total["transcript_missing"] = None in invocations
     return total
 
 
@@ -231,8 +338,9 @@ def make_worktree(repo: Path, ref: str, parent: Path) -> Path:
     raise RuntimeError(f"ref {ref!r} not found in clone of {repo}")
 
 
-def remove_worktree(repo: Path, worktree: Path) -> None:
-    shutil.rmtree(worktree, ignore_errors=True)
+def remove_clone(clone: Path) -> None:
+    """Delete one throwaway arm clone (created by make_worktree)."""
+    shutil.rmtree(clone, ignore_errors=True)
 
 
 def parse_shortstat(text: str) -> dict[str, int]:
@@ -316,13 +424,19 @@ def run_arm(
         "env": env,
         "permission_mode": args.permission_mode,
     }
+    expected_skills = ARM_EXPECTED_SKILLS.get(arm, ())
     plan_doc: Path | None = None
     if arm in ("workflow", "ce_workflow"):
         plan_prompt = PLAN_PROMPT if arm == "workflow" else CE_PLAN_PROMPT
         work_prompt = WORK_PROMPT if arm == "workflow" else CE_WORK_PROMPT
         pre = set(worktree.glob("docs/plans/*"))
         sessions.append(
-            run_claude(plan_prompt.format(task=task["prompt"]), worktree, **common)
+            run_claude(
+                plan_prompt.format(task=task["prompt"]),
+                worktree,
+                expected_skill=expected_skills[0],
+                **common,
+            )
         )
         plan_doc = new_plan_doc(worktree, pre)
         if plan_doc is not None:
@@ -330,27 +444,44 @@ def run_arm(
                 run_claude(
                     work_prompt.format(plan=plan_doc.relative_to(worktree)),
                     worktree,
+                    expected_skill=expected_skills[1],
                     **common,
                 )
             )
     elif arm == "ce_workflow_direct":
         sessions.append(
             run_claude(
-                CE_WORK_DIRECT_PROMPT.format(task=task["prompt"]), worktree, **common
+                CE_WORK_DIRECT_PROMPT.format(task=task["prompt"]),
+                worktree,
+                expected_skill=expected_skills[0],
+                **common,
             )
         )
     elif arm == "review":
         sessions.append(
-            run_claude(REVIEW_PROMPT.format(task=task["prompt"]), worktree, **common)
+            run_claude(
+                REVIEW_PROMPT.format(task=task["prompt"]),
+                worktree,
+                expected_skill=expected_skills[0],
+                **common,
+            )
         )
     elif arm == "ce_review":
         sessions.append(
-            run_claude(CE_REVIEW_PROMPT.format(task=task["prompt"]), worktree, **common)
+            run_claude(
+                CE_REVIEW_PROMPT.format(task=task["prompt"]),
+                worktree,
+                expected_skill=expected_skills[0],
+                **common,
+            )
         )
     elif arm == "workflow_direct":
         sessions.append(
             run_claude(
-                WORK_DIRECT_PROMPT.format(task=task["prompt"]), worktree, **common
+                WORK_DIRECT_PROMPT.format(task=task["prompt"]),
+                worktree,
+                expected_skill=expected_skills[0],
+                **common,
             )
         )
     elif arm == "baseline_nomcp":
@@ -381,6 +512,11 @@ def run_arm(
     verified, verify_output = run_verify(task["verify"], worktree, args.timeout)
     record["resolved"] = record["ok"] and verified
     record["verify_output"] = verify_output
+    if record["error_kind"] is None and not verified:
+        # The sessions completed — the produced change just failed the task's
+        # verify command. Kept distinct from session-error so aggregates can
+        # exclude infrastructure deaths without hiding real failures.
+        record["error_kind"] = "verify-failed"
     return record
 
 
@@ -389,15 +525,50 @@ def run_arm(
 
 CHURN_FIELDS = ("diff_files", "diff_insertions", "diff_deletions")
 
+# Rows where the session (or the harness) died carry no measured evidence and
+# must not skew efficiency medians or resolve denominators. verify-failed and
+# skill-not-invoked rows DO count: those sessions ran and spent real tokens.
+EXCLUDED_ERROR_KINDS = frozenset({"session-error", "infra-error"})
+
+
+def infra_error_record(exc: BaseException) -> dict[str, Any]:
+    """Row for a run the harness itself killed (timeout, setup failure)."""
+    record: dict[str, Any] = dict.fromkeys(USAGE_FIELDS, 0)
+    record.update(
+        {
+            "ok": False,
+            "resolved": False,
+            "error_kind": "infra-error",
+            "error_detail": f"{type(exc).__name__}: {exc}"[:2000],
+            "session_ids": [],
+            "cost_usd": 0.0,
+            "duration_s": 0.0,
+            "num_turns": 0,
+            "plan_produced": False,
+            "verify_output": "",
+            "skill_invoked": None,
+            "transcript_missing": False,
+        }
+    )
+    return record
+
 
 def aggregate(records: list[dict[str, Any]]) -> dict[str, Any]:
-    """Median metrics + resolve rate across repeated runs of one task+arm."""
+    """Median metrics + resolve rate across repeated runs of one task+arm.
+
+    Session/infra-error rows are excluded from the medians (they measured
+    nothing); ``valid_runs``/``excluded_runs`` make the exclusion visible.
+    """
+    valid = [r for r in records if r.get("error_kind") not in EXCLUDED_ERROR_KINDS]
     metrics = (*USAGE_FIELDS, "cost_usd", "duration_s", "num_turns", *CHURN_FIELDS)
     out: dict[str, Any] = {
-        m: statistics.median(r.get(m, 0) for r in records) for m in metrics
+        m: statistics.median(r.get(m, 0) for r in (valid or [{}])) for m in metrics
     }
     out["resolved"] = sum(1 for r in records if r["resolved"])
     out["runs"] = len(records)
+    out["valid_runs"] = len(valid)
+    out["excluded_runs"] = len(records) - len(valid)
+    out["transcripts_missing"] = sum(1 for r in records if r.get("transcript_missing"))
     out["class"] = records[0].get("class", "")
     return out
 
@@ -420,13 +591,23 @@ def render_report(results: dict[str, dict[str, dict[str, Any]]]) -> str:
         "A negative saving means that arm spent more than baseline. churn =",
         "files/+insertions/−deletions vs the worktree's starting commit.",
         "",
+        "**WARNING:** token columns count only each arm's main-loop session —",
+        "subagent spend is invisible to them and flatters subagent-heavy arms.",
+        "cost $ is the only column that includes subagent spend; to rank token",
+        "efficiency, sum usage from the session transcripts instead",
+        "(dedup events sharing one message.id).",
+        "",
         "| task | class | arm | resolved | input | cache_create | cache_read | output | cost $ | wall s | turns | churn |",
         "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
     ]
     for task_id, arms in results.items():
         for arm, agg in arms.items():
+            excluded = agg.get("excluded_runs", 0)
+            resolved_cell = f"{agg['resolved']}/{agg.get('valid_runs', agg['runs'])}"
+            if excluded:
+                resolved_cell += f" ({excluded} excluded)"
             lines.append(
-                f"| {task_id} | {agg['class']} | {arm} | {agg['resolved']}/{agg['runs']} "
+                f"| {task_id} | {agg['class']} | {arm} | {resolved_cell} "
                 f"| {agg['input_tokens']:.0f} | {agg['cache_creation_input_tokens']:.0f} "
                 f"| {agg['cache_read_input_tokens']:.0f} | {agg['output_tokens']:.0f} "
                 f"| {agg['cost_usd']:.4f} | {agg['duration_s']:.0f} | {agg['num_turns']:.0f} "
@@ -442,6 +623,19 @@ def render_report(results: dict[str, dict[str, dict[str, Any]]]) -> str:
                     f"| {s['cost_usd']} | {s['duration_s']} | — | — |"
                 )
     lines.append("")
+    all_aggs = [agg for arms in results.values() for agg in arms.values()]
+    excluded_total = sum(agg.get("excluded_runs", 0) for agg in all_aggs)
+    if excluded_total:
+        lines.append(
+            f"{excluded_total} run(s) hit session/infra errors and were excluded "
+            "from medians and resolve denominators — see error_kind in results.jsonl."
+        )
+    missing_total = sum(agg.get("transcripts_missing", 0) for agg in all_aggs)
+    if missing_total:
+        lines.append(
+            f"{missing_total} run(s) had no locatable session transcript, so their "
+            "skill invocation could not be verified (skill_invoked=null in results.jsonl)."
+        )
     lines.append(
         "Session ids for every run are in results.jsonl — open the matching "
         "transcript to see where each arm spent its tokens."
@@ -452,7 +646,7 @@ def render_report(results: dict[str, dict[str, dict[str, Any]]]) -> str:
 # ─── Main ────────────────────────────────────────────────────────────────────
 
 
-def main() -> None:
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--tasks", required=True, type=Path)
     parser.add_argument("--runs", type=int, default=1)
@@ -505,12 +699,19 @@ def main() -> None:
     parser.add_argument(
         "--promotion-metric",
         choices=PROMOTION_METRICS,
-        default="output_tokens",
-        help="efficiency metric used by the deterministic candidate gate",
+        default="cost_usd",
+        help="efficiency metric used by the deterministic candidate gate; "
+        "cost_usd (default) is the only CLI-reported number that includes "
+        "subagent spend — token metrics count only the main loop",
     )
     parser.add_argument("--promotion-min-runs", type=int, default=3)
     parser.add_argument("--promotion-min-improvement", type=float, default=5.0)
     parser.add_argument("--promotion-max-task-regression", type=float, default=20.0)
+    return parser
+
+
+def main() -> None:
+    parser = build_parser()
     args = parser.parse_args()
 
     candidate_arms = [arm for arm in args.arms if arm in CANDIDATE_ARMS]
@@ -527,6 +728,14 @@ def main() -> None:
 
     candidate_overlay = args.candidate_overlay.expanduser().resolve() if args.candidate_overlay is not None else None
     overlay_digest = candidate_overlay_digest(candidate_overlay) if candidate_overlay is not None else None
+    if candidate_overlay is not None:
+        unexercised = unexercised_overlay_skills(candidate_overlay, candidate_arms)
+        if unexercised:
+            parser.error(
+                "candidate overlay touches skills no selected candidate arm "
+                f"exercises: {', '.join(unexercised)} — those files would never "
+                "be loaded by any session, so the gate would decide from noise"
+            )
 
     tasks = yaml.safe_load(args.tasks.read_text())["tasks"]
     out_dir = args.out or Path("results") / time.strftime("wfbench-%Y%m%d-%H%M%S")
@@ -595,8 +804,15 @@ def main() -> None:
                         (
                             out_dir / f"{task['id']}-{arm}-run{run_idx}.patch"
                         ).write_text(patch[:300_000])
+                    except (subprocess.TimeoutExpired, subprocess.CalledProcessError) as exc:
+                        # One hung session or failed setup must not abort the
+                        # sweep — record the run as infra-error and move on so
+                        # report.md/promotion.json still get written.
+                        record = infra_error_record(exc)
+                        record["arm"] = arm
+                        print(f"[{task['id']}][{arm}][run {run_idx}] infra-error: {exc}")
                     finally:
-                        remove_worktree(repo, worktree)
+                        remove_clone(worktree)
                     record.update(
                         {
                             "task": task["id"],
@@ -627,6 +843,11 @@ def main() -> None:
             "candidate_overlay_digest": overlay_digest,
             "policy": {
                 "metric": args.promotion_metric,
+                "metric_warning": (
+                    MAIN_LOOP_ONLY_WARNING
+                    if args.promotion_metric in MAIN_LOOP_ONLY_METRICS
+                    else None
+                ),
                 "min_runs": args.promotion_min_runs,
                 "min_improvement_pct": args.promotion_min_improvement,
                 "max_task_regression_pct": args.promotion_max_task_regression,

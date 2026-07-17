@@ -19,7 +19,26 @@ CANDIDATE_SKILLS = {
     "gitnexus-lfg",
     "gitnexus-review",
 }
+# Skills each incumbent arm actually loads in its sessions. An overlay that
+# only touches other skills would never be exercised — the gate would decide
+# from noise — so such overlays are rejected up front.
+ARM_SKILLS = {
+    "workflow": ("gitnexus-plan", "gitnexus-work"),
+    "workflow_direct": ("gitnexus-work",),
+}
 PROMOTION_METRICS = ("output_tokens", "cost_usd", "duration_s", "num_turns")
+# Token/turn metrics come from the CLI's top-level `usage`, which counts ONLY
+# the main-loop session. `total_cost_usd` is the only reported number that
+# includes subagent spend.
+MAIN_LOOP_ONLY_METRICS = frozenset({"output_tokens"})
+MAIN_LOOP_ONLY_WARNING = (
+    "WARNING: token metrics count only the main-loop session — subagent spend "
+    "is invisible to them and systematically flatters subagent-heavy "
+    "candidates. Prefer cost_usd (the only CLI-reported field that includes "
+    "subagents), or sum usage from the session transcripts "
+    "(~/.claude/projects/<cwd-slug>/<session_id>.jsonl), deduplicating events "
+    "that share one message.id."
+)
 EVIDENCE_MAX_AGE_DAYS = 90
 
 
@@ -124,13 +143,28 @@ def apply_candidate_overlay(overlay: Path, worktree: Path) -> str:
     return fingerprint_files(overlay, files)
 
 
+def unexercised_overlay_skills(overlay: Path, candidate_arms: list[str]) -> list[str]:
+    """Overlay skills that no selected candidate arm would ever load.
+
+    A gitnexus-lfg-only (or gitnexus-review-only) overlay paired with the
+    workflow arms is never read by any benchmarked session, so any promotion
+    decision about it would be noise.
+    """
+    overlay = overlay.expanduser().resolve()
+    exercised = {
+        skill
+        for arm in candidate_arms
+        for skill in ARM_SKILLS[CANDIDATE_ARMS[arm]]
+    }
+    touched = {
+        path.relative_to(overlay).parts[2] for path in candidate_overlay_files(overlay)
+    }
+    return sorted(touched - exercised)
+
+
 def skill_fingerprint(worktree: Path, arm: str) -> str | None:
-    skill_names: tuple[str, ...]
-    if arm == "workflow":
-        skill_names = ("gitnexus-plan", "gitnexus-work")
-    elif arm == "workflow_direct":
-        skill_names = ("gitnexus-work",)
-    else:
+    skill_names = ARM_SKILLS.get(arm)
+    if skill_names is None:
         return None
 
     files = sorted(
@@ -151,7 +185,7 @@ def evaluate_candidate(
     incumbent_arm: str,
     candidate_arm: str,
     model: str | None,
-    metric: str = "output_tokens",
+    metric: str = "cost_usd",
     min_runs: int = 3,
     min_improvement_pct: float = 5.0,
     max_task_regression_pct: float = 20.0,
@@ -183,8 +217,12 @@ def evaluate_candidate(
 
         incumbent = arms[incumbent_arm]
         candidate = arms[candidate_arm]
-        incumbent_runs = int(incumbent["runs"])
-        candidate_runs = int(candidate["runs"])
+        # Session/infra-error rows carry no measured evidence: only VALID runs
+        # count toward the run minimum, the pairing check, and resolve rates.
+        incumbent_runs = int(incumbent.get("valid_runs", incumbent["runs"]))
+        candidate_runs = int(candidate.get("valid_runs", candidate["runs"]))
+        incumbent_excluded = int(incumbent.get("excluded_runs", 0))
+        candidate_excluded = int(candidate.get("excluded_runs", 0))
         incumbent_rate = incumbent["resolved"] / incumbent_runs if incumbent_runs else 0.0
         candidate_rate = candidate["resolved"] / candidate_runs if candidate_runs else 0.0
         incumbent_metric = float(incumbent[metric])
@@ -198,6 +236,8 @@ def evaluate_candidate(
                 "class": incumbent.get("class", ""),
                 "incumbent_resolved": f"{incumbent['resolved']}/{incumbent_runs}",
                 "candidate_resolved": f"{candidate['resolved']}/{candidate_runs}",
+                "incumbent_excluded_runs": incumbent_excluded,
+                "candidate_excluded_runs": candidate_excluded,
                 "incumbent_metric": incumbent_metric,
                 "candidate_metric": candidate_metric,
                 "improvement_pct": improvement,
@@ -206,10 +246,13 @@ def evaluate_candidate(
 
         if incumbent_runs < min_runs or candidate_runs < min_runs:
             insufficient = True
-            reasons.append(f"{task_id}: needs at least {min_runs} runs per arm (got {incumbent_runs}/{candidate_runs})")
+            reasons.append(f"{task_id}: needs at least {min_runs} valid runs per arm (got {incumbent_runs}/{candidate_runs})")
         if incumbent_runs != candidate_runs:
             insufficient = True
-            reasons.append(f"{task_id}: paired arms have different run counts ({incumbent_runs}/{candidate_runs})")
+            reasons.append(
+                f"{task_id}: paired arms have different valid run counts "
+                f"({incumbent_runs}/{candidate_runs} valid; {incumbent_excluded}/{candidate_excluded} excluded)"
+            )
         if candidate_rate < incumbent_rate:
             quality_regression = True
             reasons.append(f"{task_id}: resolution regressed from {incumbent_rate:.0%} to {candidate_rate:.0%}")
@@ -235,29 +278,40 @@ def evaluate_candidate(
         arms[candidate_arm]["resolved"] for arms in results.values() if incumbent_arm in arms and candidate_arm in arms
     )
 
+    resolution_margin = candidate_resolved - incumbent_resolved
     if insufficient:
         decision = "insufficient_evidence"
     elif quality_regression or efficiency_regression:
         decision = "keep_incumbent"
-    elif candidate_resolved > incumbent_resolved:
-        decision = "promote"
-        reasons.append("candidate improves total task resolution with no task regression")
-    elif median_improvement is not None and median_improvement >= min_improvement_pct:
+    elif resolution_margin >= 2:
         decision = "promote"
         reasons.append(
-            f"median {metric} improvement is {median_improvement:.1f}% (required {min_improvement_pct:.1f}%)"
+            f"candidate improves total task resolution by {resolution_margin} runs "
+            "(at least 2 required) with no task regression"
         )
     else:
-        decision = "keep_incumbent"
-        reasons.append(
-            f"median {metric} improvement is {median_improvement or 0.0:.1f}% (required {min_improvement_pct:.1f}%)"
-        )
+        if resolution_margin == 1:
+            reasons.append(
+                "total resolution improved by only 1 run — within the noise floor "
+                "(2 required); deciding on efficiency instead"
+            )
+        if median_improvement is not None and median_improvement >= min_improvement_pct:
+            decision = "promote"
+            reasons.append(
+                f"median {metric} improvement is {median_improvement:.1f}% (required {min_improvement_pct:.1f}%)"
+            )
+        else:
+            decision = "keep_incumbent"
+            reasons.append(
+                f"median {metric} improvement is {median_improvement or 0.0:.1f}% (required {min_improvement_pct:.1f}%)"
+            )
 
     return {
         "incumbent_arm": incumbent_arm,
         "candidate_arm": candidate_arm,
         "decision": decision,
         "metric": metric,
+        "metric_warning": (MAIN_LOOP_ONLY_WARNING if metric in MAIN_LOOP_ONLY_METRICS else None),
         "median_improvement_pct": median_improvement,
         "reasons": reasons,
         "tasks": task_rows,
