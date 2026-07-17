@@ -58,7 +58,10 @@ const PHP_CALLABLE_CAPTURE_OPTIONS = {
   ]),
   callNodeTypes: new Set(['function_call_expression']),
   parameterListNodeTypes: new Set(['formal_parameters', 'arguments']),
-  parameterNodeTypes: new Set(['simple_parameter', 'variadic_parameter', 'optional_parameter']),
+  // tree-sitter-php has no 'optional_parameter' node (defaults ride on
+  // simple_parameter); property promotion is constructor-only and carries no
+  // callable-flow value (#2522 review).
+  parameterNodeTypes: new Set(['simple_parameter', 'variadic_parameter']),
   bindingNodeTypes: new Set(['assignment_expression']),
   assignmentNodeTypes: new Set(['assignment_expression']),
   identifierNodeTypes: new Set(['name', 'qualified_name', 'namespace_name']),
