@@ -183,7 +183,7 @@ jobs:
       # `github.event_name` would still be "push", not "workflow_call".
       - name: Extract Docker metadata
         id: meta
-        uses: docker/metadata-action@80c7e94dd9b9319bd5eb7a0e0fe9291e23a2a2e9 # v6.1.0
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
         with:
           # Dual-registry publish. metadata-action expands the same tag set
           # against every image ref listed here, and build-push-action pushes
