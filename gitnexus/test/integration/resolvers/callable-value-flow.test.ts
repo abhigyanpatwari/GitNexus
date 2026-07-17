@@ -828,6 +828,39 @@ invoke(factory());
     expect(callableCallSiteLines(result, 'invoke', 'factory')).toEqual([]);
   }, 60_000);
 
+  it('does not resolve a Rust unit enum variant seeded as a callable value (#2522 review)', async () => {
+    const result = await runSource(
+      'rs',
+      `
+enum Shape {
+    Square,
+}
+
+fn dispatch(cb: fn()) {
+    cb();
+}
+
+fn entry() {
+    let x = Shape::Square;
+    let _ = x;
+}
+
+fn main() {
+    entry();
+    dispatch(main);
+}
+`,
+    );
+
+    // Shape::Square is a value, not a callable — the qualified-name guard
+    // must keep the over-captured seed edge-free.
+    expect(
+      getRelationships(result, 'CALLS').filter(
+        (edge) => edge.rel.reason === 'callable-value-flow' && edge.target === 'Square',
+      ),
+    ).toEqual([]);
+  }, 60_000);
+
   it('pairs Go multi-value := positionally instead of cross-wiring (#2522 review)', async () => {
     const result = await runSource(
       'go',

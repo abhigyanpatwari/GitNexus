@@ -999,8 +999,13 @@ function resolveSeedCandidates(
         ),
       );
     }
-    // A qualified/bound reference that misses its owner must not degrade into
-    // an unrelated workspace-wide same-simple-name method.
+    // HARD INVARIANT — a qualified/bound reference that resolves to nothing
+    // must return NOTHING, never degrade to a workspace-wide same-simple-name
+    // lookup. Language layers depend on this as their over-capture backstop:
+    // Rust's `scoped_identifier` seeds cover non-callables (`Shape::Square`
+    // unit variants) and Go emits nothing useful for mis-shaped multi-value
+    // forms — both stay edge-free only because this guard holds (#2522
+    // review). Relaxing it converts benign over-capture into wrong CALLS.
     if (candidates.length === 0) return [];
   } else {
     const lexical = lexicalCallableLookup(
