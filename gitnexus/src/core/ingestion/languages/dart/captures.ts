@@ -44,12 +44,41 @@ import { getTreeSitterBufferSize } from '../../constants.js';
 import { parseSourceSafe } from '../../../tree-sitter/safe-parse.js';
 import { encodeMarker } from '../../utils/heritage-marker.js';
 import { DART_BUILT_INS } from './built-ins.js';
+import { synthesizeCallableFlowCaptures } from '../../utils/callable-flow-captures.js';
 
 const FUNCTION_DECL_TAGS = [
   '@declaration.function',
   '@declaration.method',
   '@declaration.constructor',
 ] as const;
+
+const DART_CALLABLE_CAPTURE_OPTIONS = {
+  functionNodeTypes: new Set(['function_signature', 'function_expression']),
+  callNodeTypes: new Set(['selector']),
+  parameterListNodeTypes: new Set(['formal_parameter_list', 'arguments']),
+  parameterNodeTypes: new Set(['formal_parameter']),
+  bindingNodeTypes: new Set(['initialized_variable_definition']),
+  assignmentNodeTypes: new Set(['assignment_expression']),
+  identifierNodeTypes: new Set(['identifier', 'type_identifier']),
+  lexicalFunctionOwner: (node: SyntaxNode) => dartLexicalFunctionOwner(node),
+  isCallNode: (node: SyntaxNode) => node.namedChild(0)?.type === 'argument_part',
+  extractCallCallee: (node: SyntaxNode) => dartCallableCallee(node) ?? undefined,
+  callSiteNode: (node: SyntaxNode) => dartCallableCallee(node) ?? undefined,
+  callableProtocolMethods: new Set(['call']),
+} as const;
+
+function dartLexicalFunctionOwner(input: SyntaxNode): SyntaxNode | undefined {
+  let node: SyntaxNode | null = input;
+  while (node !== null) {
+    if (node.type === 'function_signature' || node.type === 'function_expression') return node;
+    if (node.type === 'function_body') {
+      const signature = node.previousNamedSibling;
+      if (signature?.type === 'function_signature') return signature;
+    }
+    node = node.parent;
+  }
+  return undefined;
+}
 
 export function emitDartScopeCaptures(
   sourceText: string,
@@ -159,7 +188,18 @@ export function emitDartScopeCaptures(
     }
   });
 
+  out.push(...synthesizeCallableFlowCaptures(root, DART_CALLABLE_CAPTURE_OPTIONS));
+
   return out;
+}
+
+function dartCallableCallee(selector: SyntaxNode): SyntaxNode | null {
+  if (selector.namedChild(0)?.type !== 'argument_part') return null;
+  const previous = selector.previousNamedSibling;
+  if (previous?.type === 'identifier') return previous;
+  if (previous?.type !== 'selector') return null;
+  const inner = previous.namedChild(0);
+  return inner !== null && ASSIGNABLE_SELECTORS.has(inner.type) ? selectorName(inner) : null;
 }
 
 // ─── Function scope synthesis ───────────────────────────────────────────────

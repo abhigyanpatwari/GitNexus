@@ -414,6 +414,23 @@ export interface ScopeResolver {
   arityCompatibility(callsite: Callsite, def: SymbolDefinition): ArityVerdict;
 
   /**
+   * Add provider-specific callable value targets beyond the shared
+   * Function/Method/Constructor set. This is intentionally a predicate hook:
+   * shared flow analysis never branches on a language name or syntax kind.
+   */
+  readonly isCallableValueTarget?: (def: SymbolDefinition) => boolean;
+
+  /**
+   * Restrict this provider's scope-resolution graph mutations to callable-value
+   * CALLS edges. Providers with an existing structural edge pipeline can use
+   * the shared scope model and callable solver without duplicating their
+   * established CALLS, IMPORTS, heritage, or property-dispatch edges.
+   *
+   * Default: `all`.
+   */
+  readonly scopeResolutionEdgeMode?: 'all' | 'callable-flow-only';
+
+  /**
    * Per-language constraint compatibility between a callsite and a
    * candidate `def` that carries `templateConstraints` metadata.
    * Mirrors `arityCompatibility` semantics: the three-valued verdict

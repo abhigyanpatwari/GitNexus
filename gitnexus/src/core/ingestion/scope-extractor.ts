@@ -224,9 +224,9 @@ interface Partitioned {
 }
 
 /**
- * Bucket each match by the topic of its anchor capture. The anchor is the
- * capture whose name is prefixed with the match's topic (`@scope.*`,
- * `@declaration.*`, `@import.*`, `@type-binding.*`, `@reference.*`).
+ * Bucket each match by every topic represented by its anchor captures. An
+ * emitter may deliberately group a lexical scope and its declaration in one
+ * match so both passes observe the exact same source range.
  *
  * A match may contain additional captures (e.g., `@import.source`,
  * `@declaration.class.name`) that are used by the provider hooks to
@@ -242,58 +242,46 @@ function partitionByTopic(matches: readonly CaptureMatch[]): Partitioned {
   const callableFlow: CaptureMatch[] = [];
 
   for (const match of matches) {
-    const topic = topicOf(match);
-    switch (topic) {
-      case 'scope':
-        scope.push(match);
-        break;
-      case 'declaration':
-        declaration.push(match);
-        break;
-      case 'import':
-        import_.push(match);
-        break;
-      case 'type-binding':
-        typeBinding.push(match);
-        break;
-      case 'reference':
-        reference.push(match);
-        break;
-      case 'callable-flow':
-        callableFlow.push(match);
-        break;
-      case 'unknown':
-        // Unrecognized anchor — silently skip. Providers may emit extra
-        // captures (e.g., `@comment`) that the extractor has no topic for.
-        break;
+    for (const topic of topicsOf(match)) {
+      switch (topic) {
+        case 'scope':
+          scope.push(match);
+          break;
+        case 'declaration':
+          declaration.push(match);
+          break;
+        case 'import':
+          import_.push(match);
+          break;
+        case 'type-binding':
+          typeBinding.push(match);
+          break;
+        case 'reference':
+          reference.push(match);
+          break;
+        case 'callable-flow':
+          callableFlow.push(match);
+          break;
+      }
     }
   }
 
   return { scope, declaration, import_, typeBinding, reference, callableFlow };
 }
 
-type Topic =
-  | 'scope'
-  | 'declaration'
-  | 'import'
-  | 'type-binding'
-  | 'reference'
-  | 'callable-flow'
-  | 'unknown';
+type Topic = 'scope' | 'declaration' | 'import' | 'type-binding' | 'reference' | 'callable-flow';
 
-function topicOf(match: CaptureMatch): Topic {
-  // The anchor is the capture whose name uses one of the known topic
-  // prefixes. For multi-capture matches, ALL captures share the topic;
-  // we pick the first matching key for efficiency.
+function topicsOf(match: CaptureMatch): ReadonlySet<Topic> {
+  const topics = new Set<Topic>();
   for (const name of Object.keys(match)) {
-    if (name.startsWith('@scope.')) return 'scope';
-    if (name.startsWith('@declaration.')) return 'declaration';
-    if (name.startsWith('@import.')) return 'import';
-    if (name.startsWith('@type-binding.')) return 'type-binding';
-    if (name.startsWith('@reference.')) return 'reference';
-    if (name.startsWith('@callable-flow.')) return 'callable-flow';
+    if (name.startsWith('@scope.')) topics.add('scope');
+    else if (name.startsWith('@declaration.')) topics.add('declaration');
+    else if (name.startsWith('@import.')) topics.add('import');
+    else if (name.startsWith('@type-binding.')) topics.add('type-binding');
+    else if (name.startsWith('@reference.')) topics.add('reference');
+    else if (name.startsWith('@callable-flow.')) topics.add('callable-flow');
   }
-  return 'unknown';
+  return topics;
 }
 
 // ─── Internal: Scope draft model ───────────────────────────────────────────
@@ -780,6 +768,8 @@ function normalizeNodeLabel(kindStr: string): SymbolDefinition['type'] | undefin
       return 'Annotation';
     case 'namespace':
       return 'Namespace';
+    case 'program':
+      return 'Module';
     case 'macro':
       return 'Macro';
     default:
@@ -1269,7 +1259,15 @@ function pass6CollectCallableFlows(
         const source = callableFlowOperand(match, 'source', positionIndex, filePath);
         const parameterIndex = parseNonNegativeInt(match['@callable-flow.parameter-index']?.text);
         if (source === undefined || parameterIndex === undefined) continue;
-        out.push({ kind, callSite: anchor.range, parameterIndex, source });
+        out.push({
+          kind,
+          callSite: anchor.range,
+          parameterIndex,
+          source,
+          ...(nonEmpty(match['@callable-flow.direct-callee-name']?.text)
+            ? { directCalleeName: match['@callable-flow.direct-callee-name']!.text }
+            : {}),
+        });
         break;
       }
       case 'invoke': {

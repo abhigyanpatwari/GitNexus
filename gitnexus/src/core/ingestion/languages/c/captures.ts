@@ -175,11 +175,22 @@ function functionDeclaratorSignature(node: SyntaxNode): CallableCaptureSignature
   const parameterNodes = parameters.namedChildren.filter(
     (child): child is SyntaxNode => child !== null && child.type === 'parameter_declaration',
   );
+  const hasEllipsis = parameters.children.some(
+    (child) => child.type === '...' || (!child.isNamed && child.text === '...'),
+  );
   const isVoidOnly =
     parameterNodes.length === 1 &&
     parameterNodes[0]!.namedChildCount === 1 &&
     parameterNodes[0]!.firstNamedChild?.text === 'void';
-  return { parameterCount: isVoidOnly ? 0 : parameterNodes.length };
+  if (isVoidOnly) return { parameterCount: 0, parameterTypes: [] };
+  const parameterTypes = parameterNodes.map(
+    (parameter) => parameter.childForFieldName('type')?.text ?? 'unknown',
+  );
+  if (hasEllipsis) parameterTypes.push('...');
+  return {
+    ...(hasEllipsis ? {} : { parameterCount: parameterNodes.length }),
+    parameterTypes,
+  };
 }
 
 function containsNodeType(root: SyntaxNode, type: string): boolean {

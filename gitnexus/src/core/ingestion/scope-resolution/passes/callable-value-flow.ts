@@ -62,6 +62,7 @@ export interface EmitCallableValueFlowInput {
   readonly calleeIds: CalleeIdAccumulator;
   readonly language: string;
   readonly collapseByCallerTarget?: boolean;
+  readonly isCallableValueTarget?: (def: SymbolDefinition) => boolean;
   readonly onWarn?: (warning: CallableValueFlowWarning) => void;
 }
 
@@ -121,7 +122,11 @@ export function emitCallableValueFlow(input: EmitCallableValueFlowInput): Callab
   const overflowedTargets = new Set<string>();
   const overflowedAddresses = new Set<string>();
   const overflowWarnings = new Map<string, CallableValueFlowWarning>();
-  const graphTargets = buildGraphTargetIndex(input.scopes, input.nodeLookup);
+  const graphTargets = buildGraphTargetIndex(
+    input.scopes,
+    input.nodeLookup,
+    input.isCallableValueTarget,
+  );
   const globalBySimpleName = buildGlobalCallableIndex(graphTargets.values());
 
   const bindingKey = (filePath: string, operand: CallableFlowOperand): string =>
@@ -367,6 +372,20 @@ export function emitCallableValueFlow(input: EmitCallableValueFlowInput): Callab
         targetIds.add(id);
       }
       for (const id of dynamicCallees.get(callKey)?.keys() ?? []) targetIds.add(id);
+      if (targetIds.size === 0 && fact.site.directCalleeName !== undefined) {
+        for (const target of resolveSeedCandidates(
+          fact.filePath,
+          fact.site.source.inScope,
+          fact.site.directCalleeName,
+          undefined,
+          undefined,
+          input.scopes,
+          graphTargets,
+          globalBySimpleName,
+        )) {
+          targetIds.add(target.id);
+        }
+      }
       if (targetIds.size === 0 || dynamicOverflow.has(callKey)) continue;
 
       const sourceKey = bindingKey(fact.filePath, fact.site.source);
@@ -449,12 +468,16 @@ export function emitCallableValueFlow(input: EmitCallableValueFlowInput): Callab
 function buildGraphTargetIndex(
   scopes: ScopeResolutionIndexes,
   nodeLookup: GraphNodeLookup,
+  providerTarget: ((def: SymbolDefinition) => boolean) | undefined,
 ): ReadonlyMap<string, Target> {
   const out = new Map<string, Target>();
   for (const def of scopes.defs.byId.values()) {
-    if (!isCallable(def)) continue;
+    if (!isCallable(def) && providerTarget?.(def) !== true) continue;
     const id = resolveDefGraphId(def.filePath, def, nodeLookup);
-    if (id !== undefined) out.set(id, { id, def });
+    // Overloads can intentionally share one graph node ID. Index by the
+    // definition identity so contextual signature narrowing still sees the
+    // complete overload set before a selected target collapses to graph ID.
+    if (id !== undefined) out.set(def.nodeId, { id, def });
   }
   return out;
 }
@@ -493,9 +516,17 @@ function resolveSeedCandidates(
   if (targetQualifiedName !== undefined) {
     for (const defId of scopes.qualifiedNames.get(targetQualifiedName)) {
       const def = scopes.defs.get(defId);
-      if (def === undefined || !isCallable(def)) continue;
+      if (def === undefined) continue;
       const target = targetForDef(def, graphTargets);
       if (target !== undefined) candidates.push(target);
+    }
+    if (candidates.length === 0) {
+      const normalizedTarget = normalizeSymbolName(targetQualifiedName);
+      for (const target of graphTargets.values()) {
+        if (effectiveQualifiedName(target.def, scopes) === normalizedTarget) {
+          candidates.push(target);
+        }
+      }
     }
   }
   if (candidates.length === 0) {
@@ -541,7 +572,6 @@ function lexicalCallableTargets(
     if (refs.length > 0) {
       const out: Target[] = [];
       for (const ref of refs) {
-        if (!isCallable(ref.def)) continue;
         const target = targetForDef(ref.def, graphTargets);
         if (target !== undefined) out.push(target);
       }
@@ -788,8 +818,7 @@ function targetForDef(
   def: SymbolDefinition,
   targets: ReadonlyMap<string, Target>,
 ): Target | undefined {
-  for (const target of targets.values()) if (target.def.nodeId === def.nodeId) return target;
-  return undefined;
+  return targets.get(def.nodeId);
 }
 
 function isCallable(def: SymbolDefinition): boolean {
@@ -802,8 +831,24 @@ function simpleName(qualifiedName: string | undefined): string | undefined {
   return normalized.slice(normalized.lastIndexOf('.') + 1);
 }
 
+function effectiveQualifiedName(
+  def: SymbolDefinition,
+  scopes: ScopeResolutionIndexes,
+): string | undefined {
+  const ownName = simpleName(def.qualifiedName);
+  if (ownName === undefined) return undefined;
+  if (def.ownerId === undefined) return normalizeSymbolName(def.qualifiedName!);
+  const owner = scopes.defs.get(def.ownerId);
+  const ownerName = owner === undefined ? undefined : effectiveQualifiedName(owner, scopes);
+  return ownerName === undefined ? ownName : `${ownerName}.${ownName}`;
+}
+
+function normalizeSymbolName(name: string): string {
+  return name.replaceAll('::', '.').replaceAll('\\', '.');
+}
+
 function dedupeTargets(targets: readonly Target[]): Target[] {
-  return [...new Map(targets.map((target) => [target.id, target])).values()];
+  return [...new Map(targets.map((target) => [target.def.nodeId, target])).values()];
 }
 
 function isUnresolvedOverloadSet(targets: readonly Target[]): boolean {

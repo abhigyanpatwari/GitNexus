@@ -14,6 +14,7 @@ import {
   classifyCppParameterType,
   computeCppDeclarationArity,
   computeCppCallArity,
+  normalizeCppParamType,
 } from './arity-metadata.js';
 import { markCppAnonymousNamespaceRange, markFileLocal } from './file-local-linkage.js';
 import { markCppDependentBase, markCppDependentPackBase } from './two-phase-lookup.js';
@@ -43,6 +44,7 @@ const CPP_CALLABLE_CAPTURE_OPTIONS = {
   ]),
   callableReferenceNodeTypes: new Set(['qualified_identifier']),
   memberPointerOperators: new Set(['.*', '->*']),
+  memberPointerParts: (node: SyntaxNode) => cppRecoveredMemberPointerParts(node),
   parameterPassingMode: (parameter: SyntaxNode) =>
     cppContainsNodeType(parameter, 'reference_declarator')
       ? ('reference' as const)
@@ -55,6 +57,23 @@ const CPP_CALLABLE_CAPTURE_OPTIONS = {
     cppFunctionDeclaratorSignature(destination),
   normalizeQualifiedName: (raw: string) => raw.replaceAll('::', '.'),
 } as const;
+
+function cppRecoveredMemberPointerParts(
+  node: SyntaxNode,
+): { receiver: SyntaxNode; member: SyntaxNode; operator: string } | undefined {
+  if (!node.type.includes('parenthesized')) return undefined;
+  const recovered = node.namedChildren.find(
+    (child): child is SyntaxNode => child !== null && child.type === 'ERROR',
+  );
+  if (recovered === undefined) return undefined;
+  const operator = recovered.children.find((child) => child.text === '->*');
+  const receiver = node.namedChildren.find(
+    (child): child is SyntaxNode => child !== null && child.id !== recovered.id,
+  );
+  const member = recovered.namedChildren.find((child): child is SyntaxNode => child !== null);
+  if (operator === undefined || receiver === undefined || member === undefined) return undefined;
+  return { receiver, member, operator: operator.text };
+}
 
 /**
  * Per-file wall-clock budget for the capture-emit loop (#2432). A worker
@@ -562,11 +581,49 @@ function cppFunctionDeclaratorSignature(node: SyntaxNode): CallableCaptureSignat
   const parameterNodes = parameters.namedChildren.filter(
     (child): child is SyntaxNode => child !== null && child.type.includes('parameter_declaration'),
   );
+  const hasEllipsis =
+    parameters.children.some(
+      (child) => child.type === '...' || (!child.isNamed && child.text === '...'),
+    ) || parameterNodes.some((parameter) => parameter.type === 'variadic_parameter_declaration');
   const isVoidOnly =
     parameterNodes.length === 1 &&
     parameterNodes[0]!.namedChildCount === 1 &&
     parameterNodes[0]!.firstNamedChild?.text === 'void';
-  return { parameterCount: isVoidOnly ? 0 : parameterNodes.length };
+  if (isVoidOnly) {
+    return { parameterCount: 0, parameterTypes: [], parameterTypeClasses: [] };
+  }
+  const parameterTypes: string[] = [];
+  const parameterTypeClasses: ParameterTypeClass[] = [];
+  for (const parameter of parameterNodes) {
+    if (parameter.type === 'variadic_parameter_declaration') {
+      parameterTypes.push('...');
+      parameterTypeClasses.push({
+        base: '...',
+        cv: 'unknown',
+        indirection: 'unknown',
+        pointerDepth: 0,
+      });
+      continue;
+    }
+    const rawType = parameter.childForFieldName('type')?.text ?? 'unknown';
+    const declaratorText = parameter.childForFieldName('declarator')?.text;
+    parameterTypes.push(normalizeCppParamType(rawType));
+    parameterTypeClasses.push(classifyCppParameterType(rawType, declaratorText, parameter.text));
+  }
+  if (hasEllipsis && !parameterTypes.includes('...')) {
+    parameterTypes.push('...');
+    parameterTypeClasses.push({
+      base: '...',
+      cv: 'unknown',
+      indirection: 'unknown',
+      pointerDepth: 0,
+    });
+  }
+  return {
+    ...(hasEllipsis ? {} : { parameterCount: parameterNodes.length }),
+    parameterTypes,
+    parameterTypeClasses,
+  };
 }
 
 function cppContainsNodeType(root: SyntaxNode, type: string): boolean {

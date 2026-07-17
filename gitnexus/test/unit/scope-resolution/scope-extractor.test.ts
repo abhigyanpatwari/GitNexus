@@ -213,6 +213,25 @@ describe('Pass 1: scope tree', () => {
 // ─── §Pass 2: declarations + local bindings ────────────────────────────────
 
 describe('Pass 2: declarations + local bindings', () => {
+  it('routes one multi-topic match through both scope and declaration passes', () => {
+    const result = extract(
+      [
+        scopeMatch('module', 1, 0, 100, 0),
+        {
+          '@scope.function': cap('@scope.function', 5, 0, 20, 0, 'render'),
+          '@declaration.function': cap('@declaration.function', 5, 0, 20, 0, 'render'),
+          '@declaration.name': cap('@declaration.name', 5, 0, 5, 6, 'render'),
+        },
+      ],
+      'a.ts',
+      mockProvider(),
+    );
+
+    expect(result.scopes.some((scope) => scope.kind === 'Function')).toBe(true);
+    expect(result.localDefs).toHaveLength(1);
+    expect(result.localDefs[0]!.qualifiedName).toBe('render');
+  });
+
   it('attaches a Class declaration to its enclosing Module scope', () => {
     const result = extract(
       [
@@ -582,6 +601,14 @@ describe('Pass 6: callable-value-flow facts', () => {
         '@callable-flow.argument': cap('@callable-flow.argument', 30, 2, 30, 12),
         '@callable-flow.source': cap('@callable-flow.source', 30, 9, 30, 11, 'fp'),
         '@callable-flow.parameter-index': cap('@callable-flow.parameter-index', 30, 9, 30, 9, '0'),
+        '@callable-flow.direct-callee-name': cap(
+          '@callable-flow.direct-callee-name',
+          30,
+          2,
+          30,
+          8,
+          'invoke',
+        ),
       },
       {
         '@callable-flow.invoke': cap('@callable-flow.invoke', 40, 2, 40, 14),
@@ -629,6 +656,7 @@ describe('Pass 6: callable-value-flow facts', () => {
       passingMode: 'reference',
       binding: { name: 'cb', inScope: fnScope.id },
     });
+    expect(sites[7]).toMatchObject({ directCalleeName: 'invoke' });
     expect(sites[8]).toMatchObject({
       invocationKind: 'member-pointer',
       arity: 0,

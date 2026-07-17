@@ -12,6 +12,19 @@ import { splitRustUseDeclaration } from './import-decomposer.js';
 import { synthesizeRustReceiverBinding } from './receiver-binding.js';
 import { getTreeSitterBufferSize } from '../../constants.js';
 import { parseSourceSafe } from '../../../tree-sitter/safe-parse.js';
+import { synthesizeCallableFlowCaptures } from '../../utils/callable-flow-captures.js';
+
+const RUST_CALLABLE_CAPTURE_OPTIONS = {
+  functionNodeTypes: new Set(['function_item', 'closure_expression']),
+  callNodeTypes: new Set(['call_expression']),
+  parameterListNodeTypes: new Set(['parameters', 'arguments']),
+  parameterNodeTypes: new Set(['parameter', 'self_parameter']),
+  bindingNodeTypes: new Set(['let_declaration']),
+  assignmentNodeTypes: new Set(['assignment_expression']),
+  identifierNodeTypes: new Set(['identifier', 'type_identifier', 'field_identifier']),
+  callableReferenceNodeTypes: new Set(['scoped_identifier']),
+  normalizeQualifiedName: (raw: string) => raw.replaceAll('::', '.'),
+} as const;
 
 export function emitRustScopeCaptures(
   sourceText: string,
@@ -163,6 +176,7 @@ export function emitRustScopeCaptures(
   }
 
   out.push(...synthesizeRustInheritanceReferences(tree.rootNode));
+  out.push(...synthesizeCallableFlowCaptures(tree.rootNode, RUST_CALLABLE_CAPTURE_OPTIONS));
 
   return out;
 }

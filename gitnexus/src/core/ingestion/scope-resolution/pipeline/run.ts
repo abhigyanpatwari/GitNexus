@@ -442,6 +442,7 @@ export function runScopeResolution(
   provider: ScopeResolver,
 ): RunScopeResolutionStats {
   const { graph, files } = input;
+  const callableFlowOnly = provider.scopeResolutionEdgeMode === 'callable-flow-only';
   const onWarn = input.onWarn ?? (() => {});
   const resolutionOutcomes: ResolutionOutcome[] = [];
   const recordResolutionOutcome: ResolutionOutcomeRecorder = (outcome) => {
@@ -529,6 +530,27 @@ export function runScopeResolution(
   );
   provider.populateWorkspaceOwners?.(parsedFiles, { fileContents: getFileContents() });
 
+  // A callable-flow-only provider has no reason to build the whole-graph
+  // lookup or finalize ordinary references when none of its files emitted a
+  // callable fact. This keeps the opt-in path proportional to source scanning
+  // for repositories that use the provider but no first-class callables.
+  if (
+    callableFlowOnly &&
+    !parsedFiles.some((parsed) => (parsed.callableFlowSites?.length ?? 0) > 0)
+  ) {
+    return {
+      filesProcessed: parsedFiles.length,
+      filesSkipped,
+      importsEmitted: 0,
+      resolve: { sitesProcessed: 0, referencesEmitted: 0, unresolved: 0 },
+      referenceEdgesEmitted: 0,
+      referenceSkipped: 0,
+      resolutionOutcomes,
+      functionSummaries: [],
+      callSummaries: [],
+    };
+  }
+
   // Reconcile scope-resolution's ownership view into the SemanticModel.
   // See `reconcile-ownership.ts` for the full rationale (Contract
   // Invariant I9). Debug-mode validator runs immediately after to
@@ -581,18 +603,24 @@ export function runScopeResolution(
     },
   });
   logHeapProbe('sr-post-finalize', `lang=${provider.language}`);
-  const preEmittedInheritanceSites = preEmitInheritanceEdges(graph, finalized, nodeLookup);
+  const preEmittedInheritanceSites = callableFlowOnly
+    ? new Set<string>()
+    : preEmitInheritanceEdges(graph, finalized, nodeLookup);
   // Call-based heritage hook (e.g., Ruby include/extend/prepend) — emits
   // IMPLEMENTS edges that `preEmitInheritanceEdges` cannot produce because
   // the heritage declarations are syntactic method calls, not grammar-level
   // heritage clauses. Must run BEFORE `buildMro` so MRO construction sees
   // the freshly-emitted IMPLEMENTS edges.
-  provider.emitHeritageEdges?.(graph, parsedFiles, nodeLookup, finalized);
+  if (!callableFlowOnly) {
+    provider.emitHeritageEdges?.(graph, parsedFiles, nodeLookup, finalized);
+  }
   // Implicit IMPORTS-edge hook — for languages whose files have compiler-
   // implicit cross-file visibility (no syntactic import statement). The
   // finalized-ImportEdge pipeline (`emitImportEdges`) cannot produce these
   // because there is no `ImportEdge` to materialize. Idempotent.
-  provider.emitImplicitImportEdges?.(graph, parsedFiles, nodeLookup, resolutionConfig);
+  if (!callableFlowOnly) {
+    provider.emitImplicitImportEdges?.(graph, parsedFiles, nodeLookup, resolutionConfig);
+  }
   // Rebuild the node lookup after heritage-edge emission. Languages like
   // Ruby create Property graph nodes inside `emitHeritageEdges`; those
   // nodes must be visible to downstream passes (`emitReceiverBoundCalls`
@@ -600,15 +628,19 @@ export function runScopeResolution(
   // `nodeLookup`). Without this rebuild, Property nodes added by the
   // heritage hook are invisible and ACCESSES edges silently fail to emit.
   const postHeritageNodeLookup =
-    provider.emitHeritageEdges !== undefined ? buildGraphNodeLookup(graph) : nodeLookup;
-  emitDetectedInterfaceImplementations(
-    graph,
-    parsedFiles,
-    postHeritageNodeLookup,
-    provider,
-    finalized,
-    readonlyModel,
-  );
+    !callableFlowOnly && provider.emitHeritageEdges !== undefined
+      ? buildGraphNodeLookup(graph)
+      : nodeLookup;
+  if (!callableFlowOnly) {
+    emitDetectedInterfaceImplementations(
+      graph,
+      parsedFiles,
+      postHeritageNodeLookup,
+      provider,
+      finalized,
+      readonlyModel,
+    );
+  }
   const mroByClassDefId = provider.buildMro(graph, parsedFiles, postHeritageNodeLookup);
   const extendsOnlyMroByClassDefId = provider.buildExtendsOnlyMro?.(
     graph,
@@ -736,22 +768,24 @@ export function runScopeResolution(
   // join still consumes it only inside the `input.pdg` block.
   const calleeIdAccumulator: CalleeIdAccumulator | undefined =
     input.pdg === true || deferredIndirectSites.size > 0 ? createCalleeIdAccumulator() : undefined;
-  const receiverExtras = emitReceiverBoundCalls(
-    graph,
-    indexes,
-    emitParsedFiles,
-    postHeritageNodeLookup,
-    handledSites,
-    provider,
-    workspaceIndex,
-    readonlyModel,
-    {
-      recordResolutionOutcome,
-      calleeIdSink: calleeIdAccumulator,
-    },
-  );
+  const receiverExtras = callableFlowOnly
+    ? 0
+    : emitReceiverBoundCalls(
+        graph,
+        indexes,
+        emitParsedFiles,
+        postHeritageNodeLookup,
+        handledSites,
+        provider,
+        workspaceIndex,
+        readonlyModel,
+        {
+          recordResolutionOutcome,
+          calleeIdSink: calleeIdAccumulator,
+        },
+      );
   const unresolvedReceiverExtras =
-    provider.emitUnresolvedReceiverEdges !== undefined
+    !callableFlowOnly && provider.emitUnresolvedReceiverEdges !== undefined
       ? provider.emitUnresolvedReceiverEdges(
           graph,
           indexes,
@@ -761,39 +795,43 @@ export function runScopeResolution(
           readonlyModel,
         )
       : 0;
-  const freeCallExtras = emitFreeCallFallback(
-    graph,
-    indexes,
-    emitParsedFiles,
-    postHeritageNodeLookup,
-    referenceIndex,
-    handledSites,
-    readonlyModel,
-    workspaceIndex,
-    {
-      allowGlobalFallback: provider.allowGlobalFreeCallFallback === true,
-      constructorCallTargetsClass: provider.constructorCallTargetsClass === true,
-      isFileLocalDef: provider.isFileLocalDef,
-      isCallableVisibleFromCaller: provider.isCallableVisibleFromCaller,
-      resolveAdlCandidates: provider.resolveAdlCandidates,
-      conversionRankFn: provider.conversionRankFn,
-      conversionOnlyArgTypePrefixes: provider.conversionOnlyArgTypePrefixes,
-      constraintCompatibility: provider.constraintCompatibility,
-      recordResolutionOutcome,
-      calleeIdSink: calleeIdAccumulator,
-      skipSites: deferredIndirectSites,
-    },
-  );
+  const freeCallExtras = callableFlowOnly
+    ? 0
+    : emitFreeCallFallback(
+        graph,
+        indexes,
+        emitParsedFiles,
+        postHeritageNodeLookup,
+        referenceIndex,
+        handledSites,
+        readonlyModel,
+        workspaceIndex,
+        {
+          allowGlobalFallback: provider.allowGlobalFreeCallFallback === true,
+          constructorCallTargetsClass: provider.constructorCallTargetsClass === true,
+          isFileLocalDef: provider.isFileLocalDef,
+          isCallableVisibleFromCaller: provider.isCallableVisibleFromCaller,
+          resolveAdlCandidates: provider.resolveAdlCandidates,
+          conversionRankFn: provider.conversionRankFn,
+          conversionOnlyArgTypePrefixes: provider.conversionOnlyArgTypePrefixes,
+          constraintCompatibility: provider.constraintCompatibility,
+          recordResolutionOutcome,
+          calleeIdSink: calleeIdAccumulator,
+          skipSites: deferredIndirectSites,
+        },
+      );
   const referenceSkipSites = new Set(handledSites);
   for (const key of deferredIndirectSites) referenceSkipSites.add(key);
-  const { emitted, skipped } = emitReferencesViaLookup(
-    graph,
-    indexes,
-    referenceIndex,
-    postHeritageNodeLookup,
-    referenceSkipSites,
-    calleeIdAccumulator,
-  );
+  const { emitted, skipped } = callableFlowOnly
+    ? { emitted: 0, skipped: 0 }
+    : emitReferencesViaLookup(
+        graph,
+        indexes,
+        referenceIndex,
+        postHeritageNodeLookup,
+        referenceSkipSites,
+        calleeIdAccumulator,
+      );
   const callableValueFlow =
     calleeIdAccumulator === undefined
       ? {
@@ -811,6 +849,7 @@ export function runScopeResolution(
           calleeIds: calleeIdAccumulator,
           language: provider.language,
           collapseByCallerTarget: provider.collapseMemberCallsByCallerTarget === true,
+          isCallableValueTarget: provider.isCallableValueTarget,
           onWarn: (warning) =>
             logger.warn(
               warning,
@@ -822,13 +861,15 @@ export function runScopeResolution(
   // functions registered under the same property key. Runs after the precise
   // passes — `graph.addRelationship` is first-write-wins, so precisely
   // resolved sites keep their edges.
-  const propertyDispatch = emitPropertyDispatchCalls(
-    graph,
-    indexes,
-    emitParsedFiles,
-    postHeritageNodeLookup,
-    calleeIdAccumulator,
-  );
+  const propertyDispatch = callableFlowOnly
+    ? { usesEmitted: 0, callsEmitted: 0, skippedKeys: 0 }
+    : emitPropertyDispatchCalls(
+        graph,
+        indexes,
+        emitParsedFiles,
+        postHeritageNodeLookup,
+        calleeIdAccumulator,
+      );
   if (propertyDispatch.skippedKeys > 0) {
     // Never drop dispatch coverage silently: a hook table larger than the
     // fan-out cap means member calls through those keys get no synthesized
@@ -842,17 +883,14 @@ export function runScopeResolution(
       'property-dispatch: keys over the fan-out cap were dropped (no CALLS synthesized for them)',
     );
   }
-  const importsEmitted = emitImportEdges(
-    graph,
-    indexes.imports,
-    indexes.scopeTree,
-    provider.importEdgeReason,
-  );
+  const importsEmitted = callableFlowOnly
+    ? 0
+    : emitImportEdges(graph, indexes.imports, indexes.scopeTree, provider.importEdgeReason);
 
   // Language-specific supplementary edges (e.g. Vue template-derived
   // BINDS_EVENT_HANDLER / EMITS_EVENT / CALLS / ACCESSES edges).
   // Runs last so the full graph — including import edges — is visible.
-  if (provider.emitPostResolutionEdges !== undefined) {
+  if (!callableFlowOnly && provider.emitPostResolutionEdges !== undefined) {
     provider.emitPostResolutionEdges(graph, emitParsedFiles, postHeritageNodeLookup, indexes, {
       fileContents: getFileContents(),
       resolutionConfig,

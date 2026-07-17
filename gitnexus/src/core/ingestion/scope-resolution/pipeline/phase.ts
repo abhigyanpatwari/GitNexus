@@ -152,11 +152,10 @@ export const scopeResolutionPhase: PipelinePhase<ScopeResolutionOutput> = {
     // extract per file inside runScopeResolution.
     const parsedFileStorePath = ctx.options?.parseCache?.storagePath;
 
-    // Drop pre-extracted entries for standalone providers — these
-    // languages are skipped by the canonical guard below (line 164)
-    // and never consume preExtractedByPath, so holding onto their
-    // entries leaks memory until the cleanup loop at 262-264 which
-    // also never runs for skipped providers.
+    // Standalone providers are re-extracted from source on the main thread;
+    // workers intentionally do not serialize ParsedFile artifacts for them.
+    // Drop any stale/cache-sourced entry defensively so provider-owned regex
+    // capture logic is always the source of truth for the current content.
     for (const [path] of preExtractedByPath) {
       const lang = getLanguageFromFilename(path);
       if (lang === null) continue;
@@ -205,15 +204,15 @@ export const scopeResolutionPhase: PipelinePhase<ScopeResolutionOutput> = {
     for (const f of scannedFiles) {
       const fileLang = getLanguageFromFilename(f.path);
       if (fileLang === null) continue;
-      // Skip files whose grammar isn't available (optional grammars like
-      // swift/dart/kotlin on an install where the binding is absent or the
-      // user set GITNEXUS_SKIP_OPTIONAL_GRAMMARS). The parse phase already
-      // excluded and warned about these (parse-impl.ts); without this guard the
-      // file would fall through to the main-thread re-extract in run.ts and
-      // throw "Unsupported language" (caught, but noisy, and it needlessly
-      // loads the grammar on the main thread). `isLanguageAvailable` is
-      // memoized, so this stays O(1) per language. (#2091, #2093)
-      if (!isLanguageAvailable(fileLang)) continue;
+      // Tree-sitter providers require an available grammar. Standalone regex
+      // providers deliberately have none and re-extract on the main thread.
+      const resolver = SCOPE_RESOLVERS.get(fileLang);
+      if (
+        resolver?.languageProvider.parseStrategy !== 'standalone' &&
+        !isLanguageAvailable(fileLang)
+      ) {
+        continue;
+      }
       let bucket = filesByLang.get(fileLang);
       if (bucket === undefined) {
         bucket = [];
@@ -304,14 +303,6 @@ export const scopeResolutionPhase: PipelinePhase<ScopeResolutionOutput> = {
     let pdgSinkSettled = false;
     try {
       for (const [lang, provider] of SCOPE_RESOLVERS) {
-        // Standalone providers (COBOL, JCL) don't emit graph edges yet
-        // through the scope-resolution path. This is the canonical guard:
-        // runScopeResolution is never called for standalone providers, which
-        // keeps cobolPhase as the sole IMPORTS edge producer. Keep this guard
-        // in sync with any additional standalone providers added to
-        // SCOPE_RESOLVERS.
-        if (provider.languageProvider.parseStrategy === 'standalone') continue;
-
         const primaryLangFiles = filesByLang.get(lang) ?? [];
         if (primaryLangFiles.length === 0) continue;
         const primaryFilePaths = primaryLangFiles.map((f) => f.path);

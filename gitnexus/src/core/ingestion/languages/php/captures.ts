@@ -45,8 +45,36 @@ import { getPhpParser, getPhpScopeQuery } from './query.js';
 import { recordCacheHit, recordCacheMiss } from './cache-stats.js';
 import { getTreeSitterBufferSize } from '../../constants.js';
 import { parseSourceSafe } from '../../../tree-sitter/safe-parse.js';
+import { synthesizeCallableFlowCaptures } from '../../utils/callable-flow-captures.js';
 
 type SyntaxNode = ReturnType<ReturnType<typeof getPhpParser>['parse']>['rootNode'];
+
+const PHP_CALLABLE_CAPTURE_OPTIONS = {
+  functionNodeTypes: new Set([
+    'function_definition',
+    'method_declaration',
+    'anonymous_function',
+    'arrow_function',
+  ]),
+  callNodeTypes: new Set(['function_call_expression']),
+  parameterListNodeTypes: new Set(['formal_parameters', 'arguments']),
+  parameterNodeTypes: new Set(['simple_parameter', 'variadic_parameter', 'optional_parameter']),
+  bindingNodeTypes: new Set(['assignment_expression']),
+  assignmentNodeTypes: new Set(['assignment_expression']),
+  identifierNodeTypes: new Set(['name', 'qualified_name', 'namespace_name']),
+  emitCanonicalInvokeReference: true,
+  extractCallableReference: (node: SyntaxNode) => {
+    if (node.type !== 'function_call_expression') return undefined;
+    const args = node.childForFieldName('arguments');
+    const isFirstClass =
+      args?.namedChildren.some(
+        (child) => child !== null && child.type === 'variadic_placeholder',
+      ) === true;
+    const target = node.childForFieldName('function');
+    if (!isFirstClass || target === null || target.type === 'variable_name') return undefined;
+    return { name: target.text.replace(/^\\+/, ''), anchor: target };
+  },
+} as const;
 
 /** Declaration anchors that carry function-like arity metadata. */
 const FUNCTION_DECL_TAGS = ['@declaration.method', '@declaration.function'] as const;
@@ -259,6 +287,19 @@ export function emitPhpScopeCaptures(
     const callTag = (
       ['@reference.call.free', '@reference.call.member', '@reference.call.constructor'] as const
     ).find((t) => grouped[t] !== undefined);
+    if (callTag !== undefined) {
+      const possibleFirstClass = nodeIfType(nodeMap[callTag], 'function_call_expression');
+      const argumentsNode = possibleFirstClass?.childForFieldName('arguments');
+      if (
+        argumentsNode?.namedChildren.some(
+          (child) => child !== null && child.type === 'variadic_placeholder',
+        ) === true
+      ) {
+        // PHP 8.1 `target(...)` creates a Closure; it does not invoke target.
+        // Callable-flow synthesis below owns this site as a seed.
+        continue;
+      }
+    }
     if (callTag !== undefined && grouped['@reference.arity'] === undefined) {
       const callNode = nodeIfType(
         nodeMap[callTag],
@@ -297,6 +338,7 @@ export function emitPhpScopeCaptures(
   }
 
   out.push(...synthesizePhpInheritanceReferences(tree.rootNode));
+  out.push(...synthesizeCallableFlowCaptures(tree.rootNode, PHP_CALLABLE_CAPTURE_OPTIONS));
 
   return out;
 }

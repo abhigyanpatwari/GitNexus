@@ -13,6 +13,17 @@ import { synthesizeGoReceiverBinding } from './receiver-binding.js';
 import { synthesizeGoTypeBindings, extractSimpleTypeNameText } from './type-binding.js';
 import { getTreeSitterBufferSize } from '../../constants.js';
 import { parseSourceSafe } from '../../../tree-sitter/safe-parse.js';
+import { synthesizeCallableFlowCaptures } from '../../utils/callable-flow-captures.js';
+
+const GO_CALLABLE_CAPTURE_OPTIONS = {
+  functionNodeTypes: new Set(['function_declaration', 'method_declaration', 'func_literal']),
+  callNodeTypes: new Set(['call_expression']),
+  parameterListNodeTypes: new Set(['parameter_list', 'argument_list']),
+  parameterNodeTypes: new Set(['parameter_declaration', 'variadic_parameter_declaration']),
+  bindingNodeTypes: new Set(['short_var_declaration', 'var_spec']),
+  assignmentNodeTypes: new Set(['assignment_statement']),
+  identifierNodeTypes: new Set(['identifier', 'field_identifier', 'package_identifier']),
+} as const;
 
 export function emitGoScopeCaptures(
   sourceText: string,
@@ -175,6 +186,7 @@ export function emitGoScopeCaptures(
   }
 
   out.push(...synthesizeGoInheritanceReferences(tree.rootNode));
+  out.push(...synthesizeCallableFlowCaptures(tree.rootNode, GO_CALLABLE_CAPTURE_OPTIONS));
 
   return out;
 }

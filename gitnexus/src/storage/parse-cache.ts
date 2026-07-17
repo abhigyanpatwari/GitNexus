@@ -55,7 +55,7 @@ import type { ParseWorkerResult } from '../core/ingestion/workers/parse-worker.j
 // the main thread (the #1983 OOM). Because the two stores share this version,
 // any future change to the `ParsedFile` serialization shape MUST bump
 // SCHEMA_BUMP so both invalidate in lockstep.
-const SCHEMA_BUMP = 15; // Callable-value-flow: cached ParsedFiles before 15 lack always-on callableFlowSites. (14 = #2437 TS/JS value-ref sites; 13 = durable chunk directories.)
+const SCHEMA_BUMP = 16; // Callable-value-flow: argument facts before 16 lack direct callee identity needed to join pre-emitted calls. (15 = always-on callableFlowSites; 14 = #2437 TS/JS value-ref sites.)
 const GITNEXUS_PKG_VERSION = (() => {
   try {
     // package.json sits at gitnexus/package.json — two levels up from

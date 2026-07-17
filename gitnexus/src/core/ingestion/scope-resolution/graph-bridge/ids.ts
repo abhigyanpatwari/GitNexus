@@ -48,6 +48,7 @@ function isCallerAnchorLabel(label: NodeLabel): boolean {
     label === 'Function' ||
     label === 'Method' ||
     label === 'Constructor' ||
+    label === 'Module' ||
     label === 'Class' ||
     label === 'Interface' ||
     label === 'Struct' ||

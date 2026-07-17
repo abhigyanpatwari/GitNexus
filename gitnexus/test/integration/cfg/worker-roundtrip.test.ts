@@ -183,6 +183,11 @@ describe('callable-flow ParsedFile round-trip', () => {
       callee: { name: 'cb' },
       callSite: { startLine: 3 },
     });
+    expect(round.callableFlowSites[3]).toMatchObject({
+      kind: 'argument',
+      directCalleeName: 'invoke',
+      parameterIndex: 0,
+    });
   });
 });
 

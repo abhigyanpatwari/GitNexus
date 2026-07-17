@@ -31,7 +31,17 @@ export interface CallableFlowCaptureOptions {
   readonly callableProtocolMethods?: ReadonlySet<string>;
   /** Operators used for receiver-bound member-pointer invocation. */
   readonly memberPointerOperators?: ReadonlySet<string>;
+  /** Provider fallback for member-pointer syntax a grammar recovers as ERROR nodes. */
+  readonly memberPointerParts?: (node: SyntaxNode) =>
+    | {
+        readonly receiver: SyntaxNode;
+        readonly member: SyntaxNode;
+        readonly operator: string;
+      }
+    | undefined;
   readonly functionName?: (node: SyntaxNode) => string | undefined;
+  /** Map grammar-specific split signature/body shapes to one lexical owner. */
+  readonly lexicalFunctionOwner?: (node: SyntaxNode) => SyntaxNode | undefined;
   readonly parameterPassingMode?: (
     parameter: SyntaxNode,
   ) => 'value' | 'reference' | 'pointer' | 'callable-object';
@@ -41,6 +51,23 @@ export interface CallableFlowCaptureOptions {
     destination: SyntaxNode,
   ) => CallableCaptureSignature | undefined;
   readonly normalizeQualifiedName?: (raw: string) => string;
+  readonly extractAssignment?: (
+    node: SyntaxNode,
+  ) => { readonly destination: SyntaxNode; readonly source: SyntaxNode } | undefined;
+  readonly extractFunctionParameters?: (node: SyntaxNode) => readonly SyntaxNode[] | undefined;
+  readonly extractCallCallee?: (node: SyntaxNode) => SyntaxNode | undefined;
+  readonly extractCallArguments?: (node: SyntaxNode) => readonly SyntaxNode[] | undefined;
+  readonly isCallNode?: (node: SyntaxNode) => boolean;
+  readonly callSiteNode?: (node: SyntaxNode) => SyntaxNode | undefined;
+  /** Emit a canonical call ReferenceSite when the provider query omits variable calls. */
+  readonly emitCanonicalInvokeReference?: boolean;
+  readonly extractCallableReference?: (node: SyntaxNode) =>
+    | {
+        readonly name: string;
+        readonly anchor: SyntaxNode;
+        readonly qualifiedName?: string;
+      }
+    | undefined;
 }
 
 interface OperandSyntax {
@@ -49,6 +76,7 @@ interface OperandSyntax {
   readonly indirection: number;
   readonly addressOf: boolean;
   readonly qualifiedName?: string;
+  readonly directDesignator: boolean;
   readonly callableReference: boolean;
   readonly anonymousCallable: boolean;
 }
@@ -63,6 +91,11 @@ interface FunctionInfo {
   readonly node: SyntaxNode;
   readonly name: string;
   readonly parameters: readonly SyntaxNode[];
+}
+
+interface ValueBindingIndex {
+  readonly assignedByOwner: ReadonlyMap<number | undefined, ReadonlySet<string>>;
+  readonly formalByOwner: ReadonlyMap<number | undefined, ReadonlySet<string>>;
 }
 
 /**
@@ -80,28 +113,19 @@ export function synthesizeCallableFlowCaptures(
   const functions = collectFunctions(nodes, options);
   const knownCallableNames = new Set(functions.map((fn) => fn.name));
   const assignments = collectAssignments(nodes, options);
-  const assignedNames = new Set<string>();
-  for (const assignment of assignments) {
-    const destination = operandSyntax(assignment.destination, options);
-    if (destination !== undefined) assignedNames.add(destination.name);
-  }
-
-  const formalNames = new Set<string>();
-  for (const fn of functions) {
-    for (const parameter of fn.parameters) {
-      const bindingNode = bindingIdentifier(parameter, options);
-      if (bindingNode !== undefined) formalNames.add(bindingNode.text);
-    }
-  }
+  const valueBindings = buildValueBindingIndex(assignments, functions, options);
 
   const out: CaptureMatch[] = [];
   for (const assignment of assignments) {
-    emitAssignmentFact(assignment, knownCallableNames, assignedNames, formalNames, options, out);
+    emitAssignmentFact(assignment, knownCallableNames, valueBindings, options, out);
   }
   for (const fn of functions) emitFormalFacts(fn, options, out);
   for (const node of nodes) {
-    if (options.callNodeTypes.has(node.type)) {
-      emitCallFacts(node, assignedNames, formalNames, options, out);
+    if (
+      options.callNodeTypes.has(node.type) &&
+      (options.isCallNode === undefined || options.isCallNode(node))
+    ) {
+      emitCallFacts(node, valueBindings, options, out);
     }
   }
 
@@ -164,6 +188,8 @@ function functionParameters(
   node: SyntaxNode,
   options: CallableFlowCaptureOptions,
 ): readonly SyntaxNode[] {
+  const providerParameters = options.extractFunctionParameters?.(node);
+  if (providerParameters !== undefined) return providerParameters;
   const explicit =
     node.childForFieldName('parameters') ??
     node.childForFieldName('parameter') ??
@@ -198,10 +224,94 @@ function collectAssignments(
   return out;
 }
 
+function buildValueBindingIndex(
+  assignments: readonly AssignmentParts[],
+  functions: readonly FunctionInfo[],
+  options: CallableFlowCaptureOptions,
+): ValueBindingIndex {
+  const assignedByOwner = new Map<number | undefined, Set<string>>();
+  const formalByOwner = new Map<number | undefined, Set<string>>();
+  const add = (
+    index: Map<number | undefined, Set<string>>,
+    owner: number | undefined,
+    name: string,
+  ): void => {
+    let names = index.get(owner);
+    if (names === undefined) {
+      names = new Set();
+      index.set(owner, names);
+    }
+    names.add(name);
+  };
+
+  for (const assignment of assignments) {
+    const destination = operandSyntax(assignment.destination, options, true);
+    if (destination !== undefined) {
+      add(assignedByOwner, nearestFunctionOwnerId(assignment.container, options), destination.name);
+    }
+  }
+  for (const fn of functions) {
+    for (const parameter of fn.parameters) {
+      const binding = bindingIdentifier(parameter, options);
+      if (binding !== undefined) add(formalByOwner, fn.node.id, binding.text);
+    }
+  }
+  return { assignedByOwner, formalByOwner };
+}
+
+function nearestFunctionOwnerId(
+  input: SyntaxNode,
+  options: CallableFlowCaptureOptions,
+): number | undefined {
+  const providerOwner = options.lexicalFunctionOwner?.(input);
+  if (providerOwner !== undefined) return providerOwner.id;
+  let node: SyntaxNode | null = input;
+  while (node !== null) {
+    if (options.functionNodeTypes.has(node.type)) return node.id;
+    node = node.parent;
+  }
+  return undefined;
+}
+
+function isVisibleValueBinding(
+  input: SyntaxNode,
+  name: string,
+  bindings: ValueBindingIndex,
+  options: CallableFlowCaptureOptions,
+): boolean {
+  const providerOwner = options.lexicalFunctionOwner?.(input);
+  if (
+    providerOwner !== undefined &&
+    (bindings.assignedByOwner.get(providerOwner.id)?.has(name) === true ||
+      bindings.formalByOwner.get(providerOwner.id)?.has(name) === true)
+  ) {
+    return true;
+  }
+  let node: SyntaxNode | null = input;
+  while (node !== null) {
+    if (
+      options.functionNodeTypes.has(node.type) &&
+      (bindings.assignedByOwner.get(node.id)?.has(name) === true ||
+        bindings.formalByOwner.get(node.id)?.has(name) === true)
+    ) {
+      return true;
+    }
+    node = node.parent;
+  }
+  return (
+    bindings.assignedByOwner.get(undefined)?.has(name) === true ||
+    bindings.formalByOwner.get(undefined)?.has(name) === true
+  );
+}
+
 function assignmentParts(
   node: SyntaxNode,
   options: CallableFlowCaptureOptions,
 ): AssignmentParts | undefined {
+  const providerParts = options.extractAssignment?.(node);
+  if (providerParts !== undefined) {
+    return { container: node, ...providerParts };
+  }
   const destination =
     node.childForFieldName('left') ??
     node.childForFieldName('name') ??
@@ -230,22 +340,33 @@ function assignmentParts(
 function emitAssignmentFact(
   assignment: AssignmentParts,
   knownCallableNames: ReadonlySet<string>,
-  assignedNames: ReadonlySet<string>,
-  formalNames: ReadonlySet<string>,
+  valueBindings: ValueBindingIndex,
   options: CallableFlowCaptureOptions,
   out: CaptureMatch[],
 ): void {
-  const destination = operandSyntax(assignment.destination, options);
+  const destination = operandSyntax(
+    assignment.destination,
+    options,
+    options.bindingNodeTypes.has(assignment.container.type),
+  );
   const source = operandSyntax(assignment.source, options);
   if (destination === undefined || source === undefined) return;
 
   const signature = options.expectedSignature?.(assignment.container, assignment.destination);
+  const sourceIsValueBinding = isVisibleValueBinding(
+    assignment.source,
+    source.name,
+    valueBindings,
+    options,
+  );
   const sourceIsKnownCallable =
-    knownCallableNames.has(source.name) ||
     source.callableReference ||
     source.anonymousCallable ||
-    (source.qualifiedName !== undefined && !assignedNames.has(source.name)) ||
-    (signature !== undefined && !assignedNames.has(source.name) && !formalNames.has(source.name));
+    (source.directDesignator &&
+      !sourceIsValueBinding &&
+      (knownCallableNames.has(source.name) ||
+        source.qualifiedName !== undefined ||
+        signature !== undefined));
 
   if (destination.indirection > 0) {
     out.push(binaryFact('store', assignment.container, 'pointer', destination, 'source', source));
@@ -254,7 +375,7 @@ function emitAssignmentFact(
   if (source.addressOf && !sourceIsKnownCallable) {
     // An address of a value binding creates an abstract-cell edge. Addresses
     // of named callables are seeds instead (function designator semantics).
-    if (assignedNames.has(source.name) || formalNames.has(source.name)) {
+    if (sourceIsValueBinding) {
       out.push(
         binaryFact('address', assignment.container, 'destination', destination, 'source', source),
       );
@@ -289,6 +410,11 @@ function emitAssignmentFact(
     out.push(match);
     return;
   }
+
+  // A call/constructor result is not the function designator that appears
+  // inside its expression. Do not turn arbitrary expression trees into copy
+  // facts merely because their rightmost leaf happens to name a callable.
+  if (!source.directDesignator && source.indirection === 0 && !source.addressOf) return;
 
   const kind = options.isTrueReferenceBinding?.(assignment.container, assignment.destination)
     ? 'alias'
@@ -327,24 +453,37 @@ function emitFormalFacts(
 
 function emitCallFacts(
   call: SyntaxNode,
-  assignedNames: ReadonlySet<string>,
-  formalNames: ReadonlySet<string>,
+  valueBindings: ValueBindingIndex,
   options: CallableFlowCaptureOptions,
   out: CaptureMatch[],
 ): void {
   const calleeNode =
+    options.extractCallCallee?.(call) ??
     call.childForFieldName('function') ??
     call.childForFieldName('callee') ??
     call.childForFieldName('name') ??
-    call.childForFieldName('method');
+    call.childForFieldName('method') ??
+    call.firstNamedChild;
   if (calleeNode === null) return;
 
+  const callSite = options.callSiteNode?.(call) ?? call;
   const args = callArguments(call, options);
+  const member = directCallMemberParts(call, options) ?? memberParts(calleeNode, options);
+  const callee = operandSyntax(calleeNode, options);
+  const calleeIsValueBinding =
+    callee !== undefined && isVisibleValueBinding(call, callee.name, valueBindings, options);
+  const directCalleeName =
+    member === undefined &&
+    callee !== undefined &&
+    callee.indirection === 0 &&
+    !calleeIsValueBinding
+      ? callee.name
+      : undefined;
   for (let index = 0; index < args.length; index++) {
     const source = operandSyntax(args[index]!, options);
     if (source === undefined) continue;
     out.push({
-      '@callable-flow.argument': nodeToCapture('@callable-flow.argument', call),
+      '@callable-flow.argument': nodeToCapture('@callable-flow.argument', callSite),
       '@callable-flow.source': operandCapture('@callable-flow.source', source),
       ...(source.indirection > 0
         ? {
@@ -369,28 +508,43 @@ function emitCallFacts(
         args[index]!,
         String(index),
       ),
+      ...(directCalleeName !== undefined
+        ? {
+            '@callable-flow.direct-callee-name': syntheticCapture(
+              '@callable-flow.direct-callee-name',
+              callee!.node,
+              directCalleeName,
+            ),
+          }
+        : {}),
     });
   }
 
-  const member = memberParts(calleeNode, options);
   if (member !== undefined) {
     if (
       member.operator !== undefined &&
       options.memberPointerOperators?.has(member.operator) === true
     ) {
-      emitInvoke(call, member.member, 'member-pointer', args.length, out, member.receiver);
+      emitInvoke(
+        callSite,
+        member.member,
+        'member-pointer',
+        args.length,
+        out,
+        options,
+        member.receiver,
+      );
       return;
     }
     if (options.callableProtocolMethods?.has(member.member.name) === true) {
-      emitInvoke(call, member.receiver, 'callable-object', args.length, out);
+      emitInvoke(callSite, member.receiver, 'callable-object', args.length, out, options);
     }
     return;
   }
 
-  const callee = operandSyntax(calleeNode, options);
   if (callee === undefined) return;
-  if (callee.indirection > 0 || assignedNames.has(callee.name) || formalNames.has(callee.name)) {
-    emitInvoke(call, callee, 'indirect', args.length, out);
+  if (callee.indirection > 0 || calleeIsValueBinding) {
+    emitInvoke(callSite, callee, 'indirect', args.length, out, options);
   }
 }
 
@@ -400,6 +554,7 @@ function emitInvoke(
   invocationKind: 'indirect' | 'member-pointer' | 'callable-object',
   arity: number,
   out: CaptureMatch[],
+  options: CallableFlowCaptureOptions,
   receiver?: OperandSyntax,
 ): void {
   out.push({
@@ -424,12 +579,32 @@ function emitInvoke(
     ),
     '@callable-flow.arity': syntheticCapture('@callable-flow.arity', call, String(arity)),
   });
+  if (invocationKind === 'member-pointer' && receiver !== undefined) {
+    // Parenthesized member-pointer callees are not matched by the ordinary
+    // member-call query shape.
+    // Supply the same canonical callsite contract so the shared resolver can
+    // exact-join this fact instead of trusting an unanchored/stale side fact.
+    out.push({
+      '@reference.call.member': nodeToCapture('@reference.call.member', call),
+      '@reference.receiver': operandCapture('@reference.receiver', receiver),
+      '@reference.name': operandCapture('@reference.name', callee),
+      '@reference.arity': syntheticCapture('@reference.arity', call, String(arity)),
+    });
+  } else if (options.emitCanonicalInvokeReference === true) {
+    out.push({
+      '@reference.call.free': nodeToCapture('@reference.call.free', call),
+      '@reference.name': operandCapture('@reference.name', callee),
+      '@reference.arity': syntheticCapture('@reference.arity', call, String(arity)),
+    });
+  }
 }
 
 function callArguments(
   call: SyntaxNode,
   options: CallableFlowCaptureOptions,
 ): readonly SyntaxNode[] {
+  const providerArguments = options.extractCallArguments?.(call);
+  if (providerArguments !== undefined) return providerArguments;
   const list =
     call.childForFieldName('arguments') ??
     call.childForFieldName('argument') ??
@@ -437,6 +612,7 @@ function callArguments(
       (child): child is SyntaxNode =>
         child !== null && options.parameterListNodeTypes.has(child.type),
     ) ??
+    findFirstDescendantOfTypes(call, options.parameterListNodeTypes) ??
     null;
   if (list === null) return [];
   if (options.parameterListNodeTypes.has(list.type)) {
@@ -447,12 +623,34 @@ function callArguments(
   return [list];
 }
 
+function directCallMemberParts(
+  call: SyntaxNode,
+  options: CallableFlowCaptureOptions,
+):
+  | { readonly receiver: OperandSyntax; readonly member: OperandSyntax; readonly operator?: string }
+  | undefined {
+  const receiverNode = call.childForFieldName('object') ?? call.childForFieldName('receiver');
+  const memberNode = call.childForFieldName('method') ?? call.childForFieldName('name');
+  if (receiverNode === null || memberNode === null) return undefined;
+  const receiver = operandSyntax(receiverNode, options);
+  const member = operandSyntax(memberNode, options);
+  return receiver === undefined || member === undefined ? undefined : { receiver, member };
+}
+
 function memberParts(
   input: SyntaxNode,
   options: CallableFlowCaptureOptions,
 ):
   | { readonly receiver: OperandSyntax; readonly member: OperandSyntax; readonly operator?: string }
   | undefined {
+  const providerParts = options.memberPointerParts?.(input);
+  if (providerParts !== undefined) {
+    const receiver = operandSyntax(providerParts.receiver, options);
+    const member = operandSyntax(providerParts.member, options);
+    if (receiver !== undefined && member !== undefined) {
+      return { receiver, member, operator: providerParts.operator };
+    }
+  }
   let node = input;
   for (let guard = 0; guard < 8; guard++) {
     const wrapped = wrappedExpression(node);
@@ -482,7 +680,36 @@ function memberParts(
 function operandSyntax(
   input: SyntaxNode,
   options: CallableFlowCaptureOptions,
+  declarationBinding = false,
 ): OperandSyntax | undefined {
+  if (declarationBinding) {
+    const binding = bindingIdentifier(input, options);
+    if (binding === undefined) return undefined;
+    return {
+      name: binding.text,
+      node: binding,
+      indirection: 0,
+      addressOf: false,
+      directDesignator: false,
+      callableReference: false,
+      anonymousCallable: false,
+    };
+  }
+  const providerReference = options.extractCallableReference?.(input);
+  if (providerReference !== undefined) {
+    return {
+      name: providerReference.name,
+      node: providerReference.anchor,
+      indirection: 0,
+      addressOf: false,
+      ...(providerReference.qualifiedName !== undefined
+        ? { qualifiedName: providerReference.qualifiedName }
+        : {}),
+      directDesignator: true,
+      callableReference: true,
+      anonymousCallable: false,
+    };
+  }
   let node = input;
   let indirection = 0;
   let addressOf = false;
@@ -494,6 +721,7 @@ function operandSyntax(
         node,
         indirection,
         addressOf,
+        directDesignator: true,
         callableReference: true,
         anonymousCallable: true,
       };
@@ -509,12 +737,20 @@ function operandSyntax(
   const id = terminalIdentifier(node, options);
   if (id === undefined) return undefined;
   const isQualified = id.id !== node.id && hasMultipleIdentifierLeaves(node, options);
+  const singleNameText = node.text.trim().replace(/^[\$@]+/, '');
+  const valueProducingExpression = /call|invocation|creation|new_expression|composite_literal/.test(
+    node.type,
+  );
   return {
     name: id.text,
     node: id,
     indirection,
     addressOf,
     ...(isQualified ? { qualifiedName: node.text } : {}),
+    directDesignator:
+      options.identifierNodeTypes.has(node.type) ||
+      (!isQualified && singleNameText === id.text) ||
+      (isQualified && !valueProducingExpression && !/[([{]/.test(node.text)),
     callableReference: options.callableReferenceNodeTypes?.has(node.type) === true,
     anonymousCallable: false,
   };

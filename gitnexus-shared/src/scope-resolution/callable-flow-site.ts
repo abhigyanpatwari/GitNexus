@@ -95,6 +95,8 @@ export interface CallableFlowArgumentSite {
   readonly callSite: Range;
   readonly parameterIndex: number;
   readonly source: CallableFlowOperand;
+  /** Direct callee spelling used when an earlier resolver already emitted the edge. */
+  readonly directCalleeName?: string;
 }
 
 export type CallableFlowInvocationKind = 'indirect' | 'member-pointer' | 'callable-object';

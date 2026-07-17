@@ -60,6 +60,17 @@ export function emitCobolScopeCaptures(
   const extracted = extractCobolSymbolsWithRegex(cleaned, _filePath);
 
   const out: CaptureMatch[] = [];
+  const procedurePointers = new Set(
+    extracted.dataItems
+      .filter((item) => item.usage?.toUpperCase().includes('PROCEDURE-POINTER') === true)
+      .map((item) => item.name.toUpperCase()),
+  );
+  for (const line of lines) {
+    const declaration = line.match(
+      /^\s*\d+\s+([A-Z0-9][A-Z0-9-]*).*\b(?:USAGE\s+(?:IS\s+)?)?PROCEDURE-POINTER\b/i,
+    );
+    if (declaration !== null) procedurePointers.add(declaration[1]!.toUpperCase());
+  }
 
   // ── 1. PROGRAM-ID → @scope.module ───────────────────────────────────
   // The primary program name (first PROGRAM-ID encountered)
@@ -276,6 +287,117 @@ export function emitCobolScopeCaptures(
 
     const m = matchFrom(grouped);
     if (m !== null) out.push(m);
+  }
+
+  // ── 9. Procedure-pointer value flow ────────────────────────────────
+  // ISO COBOL exposes callable values through USAGE PROCEDURE-POINTER,
+  // SET ... TO ENTRY, and dynamic CALL data-items. The regex provider emits
+  // the same normalized facts as AST-backed providers so shared ingestion
+  // remains language-agnostic.
+  for (const program of extracted.programs) {
+    for (let index = 0; index < (program.procedureUsing?.length ?? 0); index++) {
+      const parameter = program.procedureUsing![index]!;
+      const ownerRange = rangeOf(program.startLine, 0, program.endLine, 0);
+      out.push({
+        '@callable-flow.formal': capture('@callable-flow.formal', ownerRange, program.name),
+        '@callable-flow.owner': capture('@callable-flow.owner', ownerRange, program.name),
+        '@callable-flow.binding': capture(
+          '@callable-flow.binding',
+          rangeOf(program.startLine, 0, program.startLine, parameter.length),
+          parameter,
+        ),
+        '@callable-flow.parameter-index': capture(
+          '@callable-flow.parameter-index',
+          ownerRange,
+          String(index),
+        ),
+        '@callable-flow.passing-mode': capture(
+          '@callable-flow.passing-mode',
+          ownerRange,
+          'reference',
+        ),
+      });
+    }
+  }
+
+  for (let index = 0; index < lines.length; index++) {
+    const line = lines[index]!;
+    const lineNumber = index + 1;
+    const lineRange = rangeOf(lineNumber, 0, lineNumber, endColFrom(line));
+    const entry = line.match(
+      /\bSET\s+([A-Z0-9][A-Z0-9-]*)\s+TO\s+ENTRY\s+(?:"([^"]+)"|'([^']+)')/i,
+    );
+    if (entry !== null) {
+      const destination = entry[1]!;
+      const target = entry[2] ?? entry[3]!;
+      if (procedurePointers.has(destination.toUpperCase())) {
+        out.push({
+          '@callable-flow.seed': capture('@callable-flow.seed', lineRange, line),
+          '@callable-flow.destination': capture(
+            '@callable-flow.destination',
+            lineRange,
+            destination,
+          ),
+          '@callable-flow.target': capture('@callable-flow.target', lineRange, target),
+          '@callable-flow.target-name': capture('@callable-flow.target-name', lineRange, target),
+        });
+      }
+      continue;
+    }
+    const copy = line.match(/\bSET\s+([A-Z0-9][A-Z0-9-]*)\s+TO\s+([A-Z0-9][A-Z0-9-]*)\b/i);
+    if (
+      copy !== null &&
+      procedurePointers.has(copy[1]!.toUpperCase()) &&
+      procedurePointers.has(copy[2]!.toUpperCase())
+    ) {
+      out.push({
+        '@callable-flow.copy': capture('@callable-flow.copy', lineRange, line),
+        '@callable-flow.destination': capture('@callable-flow.destination', lineRange, copy[1]!),
+        '@callable-flow.source': capture('@callable-flow.source', lineRange, copy[2]!),
+      });
+    }
+  }
+
+  for (const call of extracted.calls) {
+    const line = lines[call.line - 1] ?? '';
+    const lineRange = rangeOf(call.line, 0, call.line, endColFrom(line));
+    for (let index = 0; index < (call.parameters?.length ?? 0); index++) {
+      const parameter = call.parameters![index]!;
+      out.push({
+        '@callable-flow.argument': capture('@callable-flow.argument', lineRange, line),
+        '@callable-flow.source': capture('@callable-flow.source', lineRange, parameter),
+        '@callable-flow.parameter-index': capture(
+          '@callable-flow.parameter-index',
+          lineRange,
+          String(index),
+        ),
+        ...(!call.isQuoted && procedurePointers.has(call.target.toUpperCase())
+          ? {}
+          : {
+              '@callable-flow.direct-callee-name': capture(
+                '@callable-flow.direct-callee-name',
+                lineRange,
+                call.target,
+              ),
+            }),
+      });
+    }
+    if (!call.isQuoted && procedurePointers.has(call.target.toUpperCase())) {
+      out.push({
+        '@callable-flow.invoke': capture('@callable-flow.invoke', lineRange, line),
+        '@callable-flow.callee': capture('@callable-flow.callee', lineRange, call.target),
+        '@callable-flow.invocation-kind': capture(
+          '@callable-flow.invocation-kind',
+          lineRange,
+          'indirect',
+        ),
+        '@callable-flow.arity': capture(
+          '@callable-flow.arity',
+          lineRange,
+          String(call.parameters?.length ?? 0),
+        ),
+      });
+    }
   }
 
   return out;

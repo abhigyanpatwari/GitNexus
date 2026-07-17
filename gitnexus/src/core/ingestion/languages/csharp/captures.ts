@@ -30,6 +30,7 @@ import { getCsharpParser, getCsharpScopeQuery } from './query.js';
 import { recordCacheHit, recordCacheMiss } from './cache-stats.js';
 import { getTreeSitterBufferSize } from '../../constants.js';
 import { parseSourceSafe } from '../../../tree-sitter/safe-parse.js';
+import { synthesizeCallableFlowCaptures } from '../../utils/callable-flow-captures.js';
 
 /** Declaration anchors that carry function-like arity metadata. */
 const FUNCTION_DECL_TAGS = [
@@ -47,6 +48,28 @@ const FUNCTION_NODE_TYPES = [
   'conversion_operator_declaration',
   'local_function_statement',
 ] as const;
+
+const CSHARP_CALLABLE_CAPTURE_OPTIONS = {
+  functionNodeTypes: new Set([
+    ...FUNCTION_NODE_TYPES,
+    'lambda_expression',
+    'anonymous_method_expression',
+  ]),
+  callNodeTypes: new Set(['invocation_expression']),
+  parameterListNodeTypes: new Set(['parameter_list', 'argument_list']),
+  parameterNodeTypes: new Set(['parameter']),
+  bindingNodeTypes: new Set(['variable_declarator']),
+  assignmentNodeTypes: new Set(['assignment_expression']),
+  identifierNodeTypes: new Set(['identifier', 'generic_name']),
+  callableProtocolMethods: new Set(['Invoke']),
+  extractAssignment: (node: SyntaxNode) => {
+    if (node.type !== 'variable_declarator') return undefined;
+    const destination = node.childForFieldName('name');
+    const source = node.lastNamedChild;
+    if (destination === null || source === null || source.id === destination.id) return undefined;
+    return { destination, source };
+  },
+} as const;
 
 const BUILTIN_TYPE_NAMES = new Set([
   'bool',
@@ -292,6 +315,7 @@ export function emitCsharpScopeCaptures(
   out.push(...synthesizeGenericTypeArgumentReferences(tree.rootNode));
   out.push(...synthesizeCsharpInheritanceReferences(tree.rootNode));
   out.push(...synthesizeCsharpConstructorInitializerReferences(tree.rootNode));
+  out.push(...synthesizeCallableFlowCaptures(tree.rootNode, CSHARP_CALLABLE_CAPTURE_OPTIONS));
 
   return out;
 }

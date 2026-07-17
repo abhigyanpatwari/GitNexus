@@ -23,12 +23,26 @@ import { getJavaParser, getJavaScopeQuery } from './query.js';
 import { recordCacheHit, recordCacheMiss } from './cache-stats.js';
 import { getTreeSitterBufferSize } from '../../constants.js';
 import { parseSourceSafe } from '../../../tree-sitter/safe-parse.js';
+import { synthesizeCallableFlowCaptures } from '../../utils/callable-flow-captures.js';
 
 /** Declaration anchors that carry function-like arity metadata. */
 const FUNCTION_DECL_TAGS = ['@declaration.method', '@declaration.constructor'] as const;
 
 /** tree-sitter-java node types that the method extractor accepts. */
 const FUNCTION_NODE_TYPES = ['method_declaration', 'constructor_declaration'] as const;
+
+const JAVA_CALLABLE_CAPTURE_OPTIONS = {
+  functionNodeTypes: new Set([...FUNCTION_NODE_TYPES, 'lambda_expression']),
+  callNodeTypes: new Set(['method_invocation']),
+  parameterListNodeTypes: new Set(['formal_parameters', 'argument_list']),
+  parameterNodeTypes: new Set(['formal_parameter', 'spread_parameter', 'receiver_parameter']),
+  bindingNodeTypes: new Set(['variable_declarator']),
+  assignmentNodeTypes: new Set(['assignment_expression']),
+  identifierNodeTypes: new Set(['identifier', 'type_identifier']),
+  callableReferenceNodeTypes: new Set(['method_reference']),
+  callableProtocolMethods: new Set(['run', 'apply', 'accept', 'get', 'test', 'call']),
+  normalizeQualifiedName: (raw: string) => raw.replaceAll('::', '.'),
+} as const;
 
 /** Suppress read.member emissions when the field_access is already
  *  covered by a method_invocation (object of a call) or an
@@ -220,6 +234,7 @@ export function emitJavaScopeCaptures(
     ...resolveVarTypeBindings(out),
     ...synthesizeJavaInheritanceReferences(tree.rootNode),
     ...synthesizeJavaExplicitConstructorReferences(tree.rootNode),
+    ...synthesizeCallableFlowCaptures(tree.rootNode, JAVA_CALLABLE_CAPTURE_OPTIONS),
   ];
 }
 

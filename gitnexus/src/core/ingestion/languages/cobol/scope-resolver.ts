@@ -58,6 +58,15 @@ const cobolScopeResolver: ScopeResolver = {
     return 'incompatible';
   },
 
+  // PROGRAM-ID declarations bridge to legacy Module graph nodes. COBOL's
+  // procedure-pointer ENTRY values therefore target Module defs, while every
+  // AST-backed provider keeps the shared callable-label default.
+  isCallableValueTarget: (def) => def.type === 'Module',
+
+  // Structural COBOL CALLS/IMPORTS remain owned by the established regex
+  // processor; this resolver contributes only procedure-pointer CALLS.
+  scopeResolutionEdgeMode: 'callable-flow-only',
+
   // No inheritance in COBOL — empty MRO map.
   buildMro: () => new Map(),
 

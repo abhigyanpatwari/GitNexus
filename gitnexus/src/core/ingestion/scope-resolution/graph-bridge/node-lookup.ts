@@ -178,6 +178,9 @@ export function isLinkableLabel(label: NodeLabel): boolean {
     label === 'Function' ||
     label === 'Method' ||
     label === 'Constructor' ||
+    // Program-like module declarations are provider-gated callable-value
+    // targets and need the same def→graph bridge.
+    label === 'Module' ||
     label === 'Class' ||
     label === 'Interface' ||
     label === 'Struct' ||
