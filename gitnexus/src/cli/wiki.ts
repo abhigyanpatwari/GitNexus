@@ -17,7 +17,11 @@ import {
   saveCLIConfig,
 } from '../storage/repo-manager.js';
 import { WikiGenerator, type WikiOptions } from '../core/wiki/generator.js';
-import { resolveLLMConfig, type LLMProvider } from '../core/wiki/llm-client.js';
+import {
+  parseLLMAllowedInsecureHttpHosts,
+  resolveLLMConfig,
+  type LLMProvider,
+} from '../core/wiki/llm-client.js';
 import { detectCursorCLI } from '../core/wiki/cursor-client.js';
 import { detectLocalCLI } from '../core/wiki/local-cli-client.js';
 import { logger } from '../core/logger.js';
@@ -37,6 +41,7 @@ export interface WikiCommandOptions {
   timeout?: string;
   retries?: string;
   lang?: string;
+  allowInsecureConnection?: string;
 }
 
 function parsePositiveIntegerOption(
@@ -185,9 +190,14 @@ const wikiCommandImpl = async (inputPath?: string, options?: WikiCommandOptions)
 
   let timeoutSeconds: number | undefined;
   let retries: number | undefined;
+  let allowedInsecureHttpHosts: string[] | undefined;
   try {
     timeoutSeconds = parsePositiveIntegerOption(options?.timeout, '--timeout', 1000);
     retries = parsePositiveIntegerOption(options?.retries, '--retries');
+    allowedInsecureHttpHosts =
+      options?.allowInsecureConnection === undefined
+        ? undefined
+        : parseLLMAllowedInsecureHttpHosts(options.allowInsecureConnection);
   } catch (error) {
     console.log(`  Error: ${(error as Error).message}\n`);
     process.exitCode = 1;
@@ -245,6 +255,7 @@ const wikiCommandImpl = async (inputPath?: string, options?: WikiCommandOptions)
     provider: options?.provider,
     apiVersion: options?.apiVersion,
     isReasoningModel: options?.reasoningModel,
+    allowedInsecureHttpHosts,
   });
 
   // Run interactive setup if no saved config and no CLI flags provided

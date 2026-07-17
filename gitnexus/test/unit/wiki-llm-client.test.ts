@@ -2,9 +2,12 @@ import { describe, it, expect, vi, afterEach } from 'vitest';
 
 // Import the function we'll add in the next step
 import {
+  LLM_ALLOW_INSECURE_CONNECTION_ENV,
   isAzureProvider,
   isReasoningModel,
   buildRequestUrl,
+  parseLLMAllowedInsecureHttpHosts,
+  resolveLLMConfig,
   validateLLMBaseUrl,
 } from '../../src/core/wiki/llm-client.js';
 
@@ -470,6 +473,10 @@ describe('readSSEStream — content_filter handling', () => {
 });
 
 describe('validateLLMBaseUrl', () => {
+  afterEach(() => {
+    delete process.env[LLM_ALLOW_INSECURE_CONNECTION_ENV];
+  });
+
   it('allows https:// for any public host', () => {
     expect(() => validateLLMBaseUrl('https://api.openai.com/v1')).not.toThrow();
     expect(() => validateLLMBaseUrl('https://openrouter.ai/api/v1')).not.toThrow();
@@ -496,6 +503,46 @@ describe('validateLLMBaseUrl', () => {
     expect(() => validateLLMBaseUrl('http://169.254.169.254/latest/meta-data')).toThrow(
       'Insecure http://',
     );
+  });
+
+  it('allows explicit http:// hosts only when exactly allowlisted', () => {
+    expect(() =>
+      validateLLMBaseUrl('http://llama-box.local:8080/v1', ['llama-box.local']),
+    ).not.toThrow();
+    expect(() =>
+      validateLLMBaseUrl('http://LLAMA-BOX.local:8080/v1', [' llama-box.LOCAL ']),
+    ).not.toThrow();
+    expect(() => validateLLMBaseUrl('http://llama-box.local.evil/v1', ['llama-box.local'])).toThrow(
+      'Insecure http://',
+    );
+    expect(() => validateLLMBaseUrl('http://192.168.1.23:8080/v1', ['192.168.1.23'])).not.toThrow();
+  });
+
+  it('parses and validates comma-separated insecure HTTP host allowlists', () => {
+    expect(
+      parseLLMAllowedInsecureHttpHosts(' llama-box.local,192.168.1.23,llama-box.local '),
+    ).toEqual(['llama-box.local', '192.168.1.23']);
+    expect(parseLLMAllowedInsecureHttpHosts('[fe80::1]')).toEqual(['fe80::1']);
+    expect(() => parseLLMAllowedInsecureHttpHosts('http://llama-box.local')).toThrow(
+      'exact hostnames or IP addresses',
+    );
+    expect(() => parseLLMAllowedInsecureHttpHosts('llama-box.local/path')).toThrow(
+      'exact hostnames or IP addresses',
+    );
+    expect(() => parseLLMAllowedInsecureHttpHosts('llama-box.local:8080')).toThrow(
+      'exact hostnames or IP addresses',
+    );
+    expect(() => parseLLMAllowedInsecureHttpHosts('[fe80::1]:8080')).toThrow(
+      'exact hostnames or IP addresses',
+    );
+  });
+
+  it('resolveLLMConfig reads insecure HTTP hosts from env when no override is passed', async () => {
+    process.env[LLM_ALLOW_INSECURE_CONNECTION_ENV] = 'llama-box.local,192.168.1.23';
+
+    const config = await resolveLLMConfig();
+
+    expect(config.allowedInsecureHttpHosts).toEqual(['llama-box.local', '192.168.1.23']);
   });
 
   it('rejects http:// hostname-spoofing attempts', () => {

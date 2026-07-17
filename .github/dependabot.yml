@@ -16,6 +16,10 @@ updates:
     labels:
       - dependencies
       - ci
+    groups:
+      codeql-action:
+        patterns:
+          - github/codeql-action/*
 
   # Keep pinned Docker base-image digests current for the root Dockerfiles.
   - package-ecosystem: docker
