@@ -536,6 +536,6 @@ jobs:
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: '3.13'
-      - run: pip install pytest pyyaml
+      - run: pip install pytest==8.4.1 pyyaml==6.0.2
       - run: python -m pytest tests/test_workflow_bench.py -q
         working-directory: eval
