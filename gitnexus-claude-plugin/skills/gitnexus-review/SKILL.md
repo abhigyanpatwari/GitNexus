@@ -152,7 +152,12 @@ combined pass covering its domain lens plus the four cross-cutting checks;
 a multi-domain change gets one lens per touched area — run as parallel
 subagents where the harness supports them, each scoped to its own files
 plus the shared graph evidence, and as sequential passes otherwise. Never
-spawn a lens for a domain the diff does not touch. Every lens reports
+spawn a lens for a domain the diff does not touch. Merge lenses that ground
+in the same material — two lenses reading the same files pay twice for one
+read's coverage, so give one reviewer both charges. Where the harness
+offers model or effort tiers, run mechanical lenses (rename sweeps,
+doc-consistency checks) on a cheaper tier and reserve the strongest engine
+for adversarial judgment. Every lens reports
 through the Finding standard below; merge and dedup before the verdict,
 dropping anything without a concrete failing scenario.
 
