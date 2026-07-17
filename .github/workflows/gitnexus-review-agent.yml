@@ -1,0 +1,77 @@
+# GitNexus review agent — comment-triggered, graph-backed PR review.
+#
+# A maintainer comments `@gitnexus review` on a pull request (from anywhere —
+# phone included) and a headless Claude session runs the repo's own
+# gitnexus-review skill against the PR, posting the review back as a sticky
+# comment. Requires the `ANTHROPIC_API_KEY` repository secret.
+#
+# Trust model: the trigger is the consent. Only OWNER/MEMBER/COLLABORATOR
+# comments start the job (the action re-validates write access on top), the
+# GITHUB_TOKEN cannot write repo contents, and the session's tools are pinned
+# to read/analyze operations — GitNexus `analyze` is tree-sitter parsing, so
+# PR code is read, never executed. Worst case for a prompt-injected PR is a
+# bad review comment, not pushed code or an exfiltrated key (Write/Edit and
+# the web tools are disallowed; Bash is allowlisted to git reads and the
+# gitnexus CLI).
+name: GitNexus review agent
+
+on:
+  issue_comment:
+    types: [created]
+
+# One review per PR at a time; a re-trigger queues rather than cancels the
+# run a maintainer is waiting on.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.issue.number }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
+jobs:
+  review:
+    name: graph-backed PR review
+    if: >
+      github.event.issue.pull_request != null &&
+      contains(github.event.comment.body, '@gitnexus review') &&
+      contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.comment.author_association)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      # The gitnexus CLI (`npx gitnexus@latest`, resolved by .mcp.json and the
+      # skill's runner ladder) needs a pinned modern Node on the PATH.
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: '22'
+      # The action checks out the PR head itself and posts the reply comment.
+      - uses: anthropics/claude-code-action@a868f958ed6f1a7089cb521ac70eb2f3f323298b # v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          trigger_phrase: '@gitnexus review'
+          use_sticky_comment: true
+          prompt: |
+            A repository maintainer triggered a GitNexus review of pull request
+            #${{ github.event.issue.number }} in ${{ github.repository }}.
+
+            Use the gitnexus-review skill (.claude/skills/gitnexus-review/SKILL.md)
+            to review this PR. Follow the skill end to end: exact-SHA alignment,
+            merge-base selection, graph-backed evidence. If the freshness gate
+            needs an index, build it with `npx gitnexus analyze --index-only`;
+            if graph tools stay unavailable, use the skill's documented fallback
+            mode and label findings source-derived.
+
+            This is a review-only session: never modify files, never create
+            branches or commits, never run PR code.
+
+            Deliver the complete review — findings with file:line, change and
+            blast-radius summary, coverage and residual risk, verdict — as your
+            reply comment. Use the skill's verdict wording in the comment body;
+            do not submit a formal GitHub approve/request-changes review.
+          claude_args: |
+            --mcp-config .mcp.json
+            --allowedTools "mcp__gitnexus,Bash(npx gitnexus:*),Bash(node .gitnexus/run.cjs:*),Bash(git fetch:*),Bash(git diff:*),Bash(git log:*),Bash(git show:*),Bash(git merge-base:*),Bash(git rev-parse:*),Bash(git status:*)"
+            --disallowedTools "Write,Edit,NotebookEdit,WebFetch,WebSearch"
+            --max-turns 100
