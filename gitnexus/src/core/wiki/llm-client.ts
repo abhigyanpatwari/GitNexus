@@ -35,6 +35,8 @@ export interface LLMConfig {
   requestTimeoutMs?: number;
   /** Max fetch attempts before giving up (default: 3). */
   maxAttempts?: number;
+  /** Exact hostnames allowed for explicit http:// LLM endpoints. */
+  allowedInsecureHttpHosts?: readonly string[];
 }
 
 export interface LLMResponse {
@@ -94,6 +96,9 @@ export async function resolveLLMConfig(overrides?: Partial<LLMConfig>): Promise<
     apiVersion:
       overrides?.apiVersion || process.env.GITNEXUS_AZURE_API_VERSION || savedConfig.apiVersion,
     isReasoningModel: overrides?.isReasoningModel ?? savedConfig.isReasoningModel,
+    allowedInsecureHttpHosts:
+      overrides?.allowedInsecureHttpHosts ??
+      parseLLMAllowedInsecureHttpHosts(process.env[LLM_ALLOW_INSECURE_CONNECTION_ENV]),
   };
 }
 
@@ -117,6 +122,38 @@ function isTimeoutLikeError(err: unknown): boolean {
   return /time(d)?\s*out|timeout/i.test(err.message);
 }
 
+export const LLM_ALLOW_INSECURE_CONNECTION_ENV = 'GITNEXUS_ALLOW_INSECURE_CONNECTION';
+
+function normalizeAllowedInsecureHttpHost(host: string): string {
+  const trimmed = host.trim().toLowerCase();
+  const fail = () => {
+    throw new Error(
+      `--allow-insecure-connection / ${LLM_ALLOW_INSECURE_CONNECTION_ENV} entries must be exact hostnames or IP addresses`,
+    );
+  };
+  if (!trimmed || /[/@?#]/.test(trimmed)) fail();
+
+  if (trimmed.startsWith('[')) {
+    if (!trimmed.endsWith(']')) fail();
+    const normalized = trimmed.slice(1, -1);
+    if (!normalized || /[\[\]]/.test(normalized)) fail();
+    return normalized;
+  }
+
+  if (/[\[\]]/.test(trimmed)) fail();
+  if ((trimmed.match(/:/g)?.length ?? 0) === 1) {
+    // URL.hostname never includes the port, so accepting "host:port" would
+    // create a confusing no-op allowlist entry.
+    fail();
+  }
+  return trimmed;
+}
+
+export function parseLLMAllowedInsecureHttpHosts(value: string | undefined): string[] {
+  if (value === undefined || value.trim() === '') return [];
+  return [...new Set(value.split(',').map(normalizeAllowedInsecureHttpHost))];
+}
+
 /**
  * Validate that a base URL supplied for LLM API calls is a safe HTTP/HTTPS
  * endpoint (CWE-918 / CodeQL js/http-to-file-access).
@@ -124,15 +161,22 @@ function isTimeoutLikeError(err: unknown): boolean {
  * Allowed:
  *  - https:// with any hostname (public LLM APIs, Azure, OpenRouter, …)
  *  - http:// restricted to localhost / 127.0.0.1 (local servers: Ollama, LiteLLM, …)
+ *  - http:// to exact hosts explicitly allowlisted for LAN/self-hosted LLMs
  *
  * Rejected:
  *  - file://, data:, javascript:, and any other non-HTTP scheme
- *  - http:// aimed at non-loopback hosts (avoids SSRF against internal networks)
+ *  - http:// aimed at non-loopback hosts unless explicitly allowlisted
+ *    (avoids SSRF against internal networks by default)
  *
  * Throws with a descriptive message on validation failure so callers surface a
  * clear error rather than an opaque network error.
  */
-export function validateLLMBaseUrl(baseUrl: string): void {
+export function validateLLMBaseUrl(
+  baseUrl: string,
+  allowedInsecureHttpHosts: readonly string[] = parseLLMAllowedInsecureHttpHosts(
+    process.env[LLM_ALLOW_INSECURE_CONNECTION_ENV],
+  ),
+): void {
   let parsed: URL;
   try {
     parsed = new URL(baseUrl);
@@ -150,10 +194,12 @@ export function validateLLMBaseUrl(baseUrl: string): void {
     // Node's URL parser preserves IPv6 brackets in hostname (e.g. "[::1]"),
     // so strip them before comparing to bare address literals.
     const host = parsed.hostname.toLowerCase().replace(/^\[|\]$/g, '');
-    if (host !== 'localhost' && host !== '127.0.0.1' && host !== '::1') {
+    const allowedHosts = new Set(allowedInsecureHttpHosts.map(normalizeAllowedInsecureHttpHost));
+    if (host !== 'localhost' && host !== '127.0.0.1' && host !== '::1' && !allowedHosts.has(host)) {
       // Use parsed.origin (scheme+host+port, no credentials) instead of the full URL.
       throw new Error(
-        `Insecure http:// LLM base URLs are only allowed for localhost/127.0.0.1. ` +
+        `Insecure http:// LLM base URLs are only allowed for localhost/127.0.0.1 ` +
+          `or hosts listed by --allow-insecure-connection / ${LLM_ALLOW_INSECURE_CONNECTION_ENV}. ` +
           `Use https:// for remote endpoints (got ${parsed.origin})`,
       );
     }
@@ -212,7 +258,7 @@ export async function callLLM(
   options?: CallLLMOptions,
 ): Promise<LLMResponse> {
   // Validate base URL before any fetch (CodeQL js/http-to-file-access)
-  validateLLMBaseUrl(config.baseUrl);
+  validateLLMBaseUrl(config.baseUrl, config.allowedInsecureHttpHosts);
 
   const messages: Array<{ role: string; content: string }> = [];
   if (systemPrompt) {

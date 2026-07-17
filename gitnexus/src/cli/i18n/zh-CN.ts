@@ -222,6 +222,8 @@ export const zhCN = {
   'help.option.wiki.concurrency': '并行 LLM 调用数（默认：3）',
   'help.option.wiki.timeout': 'LLM 请求超时时间（秒，默认：禁用）',
   'help.option.wiki.retries': '每个请求的最大 LLM 重试次数（默认：3）',
+  'help.option.wiki.allowInsecureConnection':
+    '允许 http:// LLM base URL 使用的精确主机（逗号分隔；推荐使用 HTTPS）',
   'help.option.wiki.gist': '生成后发布 Wiki 为公开 GitHub Gist',
   'help.option.wiki.review': '分组后停止，以便在生成页面前审查模块结构',
   'help.option.wiki.lang': '生成文档的输出语言（如 english、chinese、spanish、japanese）',
@@ -255,7 +257,8 @@ export const zhCN = {
   'help.option.detectChanges.limit': '最多返回的已变更符号数',
   'help.option.cypher.limit': '最多返回的结果行数',
   'help.option.check.cycles': '检测循环导入，并在发现循环时失败',
-  'help.option.evalServer.host': '绑定地址（默认：127.0.0.1；用 0.0.0.0 暴露到所有网卡）',
+  'help.option.evalServer.host':
+    '绑定地址或可解析的主机名（默认：127.0.0.1；非回环绑定需要 GITNEXUS_AUTH_TOKEN；主机名解析为 IPv4）',
   'help.option.evalServer.idleTimeout': '空闲 N 秒后自动关闭（0 = 禁用）',
   'help.option.embeddings.install.cuda':
     '同时下载 CUDA GPU 二进制文件（运行 onnxruntime-node 的 NuGet postinstall；代理后请设置 GLOBAL_AGENT_HTTPS_PROXY）',

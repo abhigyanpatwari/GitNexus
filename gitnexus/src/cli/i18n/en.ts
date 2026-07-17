@@ -235,6 +235,8 @@ export const en = {
   'help.option.wiki.concurrency': 'Parallel LLM calls (default: 3)',
   'help.option.wiki.timeout': 'LLM request timeout in seconds (default: disabled)',
   'help.option.wiki.retries': 'Max LLM retry attempts per request (default: 3)',
+  'help.option.wiki.allowInsecureConnection':
+    'Allow exact host(s) for http:// LLM base URLs (comma-separated; HTTPS is preferred)',
   'help.option.wiki.gist': 'Publish wiki as a public GitHub Gist after generation',
   'help.option.wiki.review':
     'Stop after grouping to review module structure before generating pages',
@@ -273,7 +275,7 @@ export const en = {
   'help.option.cypher.limit': 'Max result rows to return',
   'help.option.check.cycles': 'Detect circular imports and fail when any are found',
   'help.option.evalServer.host':
-    'Bind address (default: 127.0.0.1, use 0.0.0.0 to expose to all interfaces)',
+    'Bind address or resolvable hostname (default: 127.0.0.1; non-loopback requires GITNEXUS_AUTH_TOKEN; hostnames resolve to IPv4)',
   'help.option.evalServer.idleTimeout': 'Auto-shutdown after N seconds idle (0 = disabled)',
   'help.option.embeddings.install.cuda':
     "Also download the CUDA GPU binaries (runs onnxruntime-node's NuGet postinstall; set GLOBAL_AGENT_HTTPS_PROXY behind a proxy)",

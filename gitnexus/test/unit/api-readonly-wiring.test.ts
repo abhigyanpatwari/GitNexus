@@ -57,4 +57,25 @@ describe('api read-only endpoint wiring', () => {
       expect(embedSection[0]).not.toMatch(/readOnly:\s*true/);
     }
   });
+
+  it('/api/embed keeps the repository lock until cancelled work actually stops', async () => {
+    const source = await readSource();
+    const timeoutSection = source.match(
+      /const embedTimeout = setTimeout\([\s\S]*?\/\/ Run embedding pipeline asynchronously/,
+    );
+    expect(timeoutSection).not.toBeNull();
+    expect(timeoutSection?.[0]).not.toContain('releaseRepoLock(repoLockPath)');
+  });
+
+  it('/api/embed persists and resumes bounded pending windows', async () => {
+    const source = await readSource();
+    const embedSection = source.match(
+      /\/\/ Run embedding pipeline asynchronously[\s\S]*?res\.status\(202\)/,
+    );
+    expect(embedSection).not.toBeNull();
+    expect(embedSection?.[0]).toContain('forceReembedNodeIds');
+    expect(embedSection?.[0]).toContain('onCheckpointWindowStart');
+    expect(embedSection?.[0]).toContain('pendingNodeIds');
+    expect(embedSection?.[0]).toContain('saveMeta');
+  });
 });

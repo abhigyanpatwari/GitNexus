@@ -52,7 +52,8 @@
     "postinstall": "node scripts/build-tree-sitter-grammars.cjs",
     "assert-publish-coverage": "node scripts/assert-publish-grammar-coverage.cjs",
     "prepare": "node scripts/build.js",
-    "prepack": "node scripts/assert-publish-grammar-coverage.cjs && node scripts/build.js"
+    "prepack": "node scripts/assert-publish-grammar-coverage.cjs && node scripts/build.js",
+    "version": "node scripts/sync-plugin-manifests.mjs"
   },
   "dependencies": {
     "@ladybugdb/core": "^0.18.0",
@@ -96,10 +97,10 @@
     "onnxruntime-node": "^1.24.0"
   },
   "devDependencies": {
-    "@babel/generator": "^7.29.7",
-    "@babel/parser": "^7.29.7",
-    "@babel/traverse": "^7.29.7",
-    "@babel/types": "^7.29.7",
+    "@babel/generator": "^8.0.0",
+    "@babel/parser": "^8.0.0",
+    "@babel/traverse": "^8.0.0",
+    "@babel/types": "^8.0.0",
     "@types/busboy": "^1.5.4",
     "@types/cli-progress": "^3.11.6",
     "@types/cors": "^2.8.17",

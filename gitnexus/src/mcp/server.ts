@@ -27,6 +27,21 @@ import { GITNEXUS_TOOLS } from './tools.js';
 import { installGlobalStdoutSentinel } from './stdio-context.js';
 import type { LocalBackend } from './local/local-backend.js';
 import { getResourceDefinitions, getResourceTemplates, readResource } from './resources.js';
+import {
+  assertMcpReadOnlyResource,
+  assertMcpReadOnlyToolCall,
+  filterMcpReadOnlyResourceContent,
+  MCP_READ_ONLY_TOOLS,
+  readOnlyResourceTemplateAllowed,
+  resolveMcpReadOnlyMode,
+  toolForReadOnlyMcp,
+} from './read-only-policy.js';
+import {
+  createMcpRepositoryPolicy,
+  McpRepositoryPolicy,
+  mcpRepositoryPolicyConfigured,
+} from './repository-policy.js';
+import { applyMcpMaxTokens, resolveMcpMaxTokens, withoutMcpBudgetArg } from './output-budget.js';
 
 /**
  * Next-step hints appended to tool responses.
@@ -81,7 +96,16 @@ function getNextStepHint(toolName: string, args: Record<string, any> | undefined
  * Create a configured MCP Server with all handlers registered.
  * Transport-agnostic — caller connects the desired transport.
  */
-export function createMCPServer(backend: LocalBackend): Server {
+export function createMCPServer(
+  backend: LocalBackend,
+  options: { repositoryPolicy?: McpRepositoryPolicy } = {},
+): Server {
+  const readOnly = resolveMcpReadOnlyMode();
+  if (!options.repositoryPolicy && mcpRepositoryPolicyConfigured()) {
+    throw new Error('Configured MCP repository policy must be validated before server creation.');
+  }
+  const repositoryPolicy = options.repositoryPolicy ?? McpRepositoryPolicy.unrestricted();
+  const scopedBackend = repositoryPolicy.scopeBackend(backend);
   const require = createRequire(import.meta.url);
   const pkgVersion: string = require('../../package.json').version;
   const server = new Server(
@@ -113,7 +137,11 @@ export function createMCPServer(backend: LocalBackend): Server {
 
   // Handle list resource templates request (for dynamic resources)
   server.setRequestHandler(ListResourceTemplatesRequestSchema, async () => {
-    const templates = getResourceTemplates();
+    const templates = getResourceTemplates().filter(
+      (template) =>
+        readOnlyResourceTemplateAllowed(template.uriTemplate, readOnly) &&
+        repositoryPolicy.resourceTemplateAllowed(template.uriTemplate),
+    );
     return {
       resourceTemplates: templates.map((t) => ({
         uriTemplate: t.uriTemplate,
@@ -129,7 +157,12 @@ export function createMCPServer(backend: LocalBackend): Server {
     const { uri } = request.params;
 
     try {
-      const content = await readResource(uri, backend);
+      assertMcpReadOnlyResource(uri, readOnly);
+      repositoryPolicy.assertResourceUri(uri);
+      const content = filterMcpReadOnlyResourceContent(
+        await readResource(uri, scopedBackend),
+        readOnly,
+      );
       return {
         contents: [
           {
@@ -154,20 +187,30 @@ export function createMCPServer(backend: LocalBackend): Server {
 
   // Handle list tools request
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
-    tools: GITNEXUS_TOOLS.map((tool) => ({
-      name: tool.name,
-      description: tool.description,
-      inputSchema: tool.inputSchema,
-      annotations: tool.annotations,
-    })),
+    tools: GITNEXUS_TOOLS.filter(
+      (tool) =>
+        (!readOnly || MCP_READ_ONLY_TOOLS.has(tool.name)) &&
+        repositoryPolicy.toolAllowed(tool.name),
+    )
+      .map((tool) => toolForReadOnlyMcp(repositoryPolicy.toolForMcp(tool), readOnly))
+      .map((tool) => ({
+        name: tool.name,
+        description: tool.description,
+        inputSchema: tool.inputSchema,
+        annotations: tool.annotations,
+      })),
   }));
 
   // Handle tool calls — append next-step hints to guide agent workflow
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const { name, arguments: args } = request.params;
+    let maxTokens: number | undefined;
 
     try {
-      const result = await backend.callTool(name, args);
+      const typedArgs = args as Record<string, unknown> | undefined;
+      assertMcpReadOnlyToolCall(name, typedArgs, readOnly);
+      maxTokens = resolveMcpMaxTokens(name, typedArgs);
+      const result = await scopedBackend.callTool(name, withoutMcpBudgetArg(typedArgs));
       const resultText = typeof result === 'string' ? result : JSON.stringify(result, null, 2);
       const hint = getNextStepHint(name, args as Record<string, any> | undefined);
 
@@ -175,7 +218,7 @@ export function createMCPServer(backend: LocalBackend): Server {
         content: [
           {
             type: 'text',
-            text: resultText + hint,
+            text: applyMcpMaxTokens(resultText + hint, maxTokens),
           },
         ],
       };
@@ -185,7 +228,7 @@ export function createMCPServer(backend: LocalBackend): Server {
         content: [
           {
             type: 'text',
-            text: `Error: ${message}`,
+            text: applyMcpMaxTokens(`Error: ${message}`, maxTokens),
           },
         ],
         isError: true,
@@ -315,8 +358,12 @@ export function installSignalShutdown(
   on('SIGTERM', () => void shutdown(SHUTDOWN_EXIT_CODES.SIGTERM));
 }
 
-export async function startMCPServer(backend: LocalBackend): Promise<void> {
-  const server = createMCPServer(backend);
+export async function startMCPServer(
+  backend: LocalBackend,
+  repositoryPolicy?: McpRepositoryPolicy,
+): Promise<void> {
+  const validatedRepositoryPolicy = repositoryPolicy ?? (await createMcpRepositoryPolicy(backend));
+  const server = createMCPServer(backend, { repositoryPolicy: validatedRepositoryPolicy });
 
   // Idempotent global sentinel install. cli/mcp.ts calls this first thing
   // (before warnMissingOptionalGrammars / backend.init can emit to stdout);

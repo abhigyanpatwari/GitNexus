@@ -20,7 +20,12 @@ if (!process.env.ORT_LOG_LEVEL) {
 // initEmbedder, after the platform guard has passed (#1515).
 import type { FeatureExtractionPipeline, ProgressInfo } from '@huggingface/transformers';
 import { DEFAULT_EMBEDDING_CONFIG, type EmbeddingConfig, type ModelProgress } from './types.js';
-import { isHttpMode, getHttpDimensions, httpEmbed } from './http-client.js';
+import {
+  isHttpMode,
+  getHttpDimensions,
+  httpEmbed,
+  type EmbeddingRequestOptions,
+} from './http-client.js';
 import { resolveEmbeddingConfig } from './config.js';
 import { applyHfEnvOverrides, isHfDownloadFailure, withHfDownloadRetry } from './hf-env.js';
 import {
@@ -297,9 +302,13 @@ export const getEmbedder = (): FeatureExtractionPipeline => {
  * @param text - Text to embed
  * @returns Float32Array of embedding vector
  */
-export const embedText = async (text: string): Promise<Float32Array> => {
+export const embedText = async (
+  text: string,
+  options: EmbeddingRequestOptions = {},
+): Promise<Float32Array> => {
+  options.signal?.throwIfAborted();
   if (isHttpMode()) {
-    const [vec] = await httpEmbed([text]);
+    const [vec] = await httpEmbed([text], options);
     return vec;
   }
 
@@ -321,13 +330,17 @@ export const embedText = async (text: string): Promise<Float32Array> => {
  * @param texts - Array of texts to embed
  * @returns Array of Float32Array embedding vectors
  */
-export const embedBatch = async (texts: string[]): Promise<Float32Array[]> => {
+export const embedBatch = async (
+  texts: string[],
+  options: EmbeddingRequestOptions = {},
+): Promise<Float32Array[]> => {
+  options.signal?.throwIfAborted();
   if (texts.length === 0) {
     return [];
   }
 
   if (isHttpMode()) {
-    return httpEmbed(texts);
+    return httpEmbed(texts, options);
   }
 
   const embedder = getEmbedder();
@@ -337,6 +350,7 @@ export const embedBatch = async (texts: string[]): Promise<Float32Array[]> => {
     pooling: 'mean',
     normalize: true,
   });
+  options.signal?.throwIfAborted();
 
   // Result shape is [batch_size, dimensions]
   // Need to split into individual vectors

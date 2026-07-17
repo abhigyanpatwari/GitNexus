@@ -327,6 +327,138 @@ describe('LocalBackend.callTool', () => {
     );
   });
 
+  it.each(['name', 'symbol'] as const)(
+    'normalizes impact.%s to target once before local dispatch',
+    async (alias) => {
+      const impactSpy = vi
+        .spyOn(backend as any, 'impact')
+        .mockResolvedValue({ status: 'normalized' });
+
+      const result = await backend.callTool('impact', {
+        [alias]: ' validate ',
+        direction: 'upstream',
+      });
+
+      expect(result).toEqual({ status: 'normalized' });
+      const dispatched = impactSpy.mock.calls[0][1] as Record<string, unknown>;
+      expect(dispatched.target).toBe('validate');
+      expect(dispatched).not.toHaveProperty('name');
+      expect(dispatched).not.toHaveProperty('symbol');
+    },
+  );
+
+  it('normalizes context.file to file_path once before local dispatch', async () => {
+    const contextSpy = vi
+      .spyOn(backend as any, 'context')
+      .mockResolvedValue({ status: 'normalized' });
+
+    const result = await backend.callTool('context', {
+      name: 'validate',
+      file: ' src/auth.ts ',
+    });
+
+    expect(result).toEqual({ status: 'normalized' });
+    const dispatched = contextSpy.mock.calls[0][1] as Record<string, unknown>;
+    expect(dispatched.file_path).toBe('src/auth.ts');
+    expect(dispatched).not.toHaveProperty('file');
+  });
+
+  it('treats undefined optional alias keys from CLI callers as absent', async () => {
+    const contextSpy = vi
+      .spyOn(backend as any, 'context')
+      .mockResolvedValue({ status: 'normalized' });
+
+    const result = await backend.callTool('context', {
+      name: 'validate',
+      file_path: undefined,
+      file: undefined,
+    });
+
+    expect(result).toEqual({ status: 'normalized' });
+    expect(contextSpy.mock.calls[0][1]).toMatchObject({ name: 'validate' });
+  });
+
+  it('allows agreeing canonical and alias values after trimming', async () => {
+    const impactSpy = vi
+      .spyOn(backend as any, 'impact')
+      .mockResolvedValue({ status: 'normalized' });
+
+    await backend.callTool('impact', {
+      target: 'validate',
+      name: ' validate ',
+      symbol: 'validate',
+      direction: 'upstream',
+    });
+
+    expect(impactSpy.mock.calls[0][1]).toMatchObject({ target: 'validate' });
+  });
+
+  it.each([
+    ['impact', { target: 'validate', name: 'login', direction: 'upstream' }],
+    ['impact', { name: 'validate', symbol: 'login', direction: 'upstream' }],
+    ['context', { name: 'validate', file_path: 'src/auth.ts', file: 'src/login.ts' }],
+  ])('rejects conflicting %s aliases before repository resolution', async (method, params) => {
+    const resolveSpy = vi.spyOn(backend, 'resolveRepo');
+
+    const result = await backend.callTool(method, params);
+
+    expect(result.error).toMatch(/conflicting mcp parameters/i);
+    expect(resolveSpy).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['impact', { target: '', direction: 'upstream' }],
+    ['impact', { name: 42, direction: 'upstream' }],
+    ['context', { name: 'validate', file: '   ' }],
+    ['context', { name: 'validate', file: null }],
+  ])('rejects invalid %s aliases before repository resolution', async (method, params) => {
+    const resolveSpy = vi.spyOn(backend, 'resolveRepo');
+
+    const result = await backend.callTool(method, params);
+
+    expect(result.error).toMatch(/non-empty string/i);
+    expect(resolveSpy).not.toHaveBeenCalled();
+  });
+
+  it('rejects a missing impact target before repository resolution', async () => {
+    const resolveSpy = vi.spyOn(backend, 'resolveRepo');
+
+    const result = await backend.callTool('impact', { direction: 'upstream' });
+
+    expect(result.error).toMatch(/requires target, name, symbol, or target_uid/i);
+    expect(resolveSpy).not.toHaveBeenCalled();
+  });
+
+  it('preserves target_uid-only impact dispatch', async () => {
+    const impactSpy = vi
+      .spyOn(backend as any, 'impact')
+      .mockResolvedValue({ status: 'normalized' });
+
+    await backend.callTool('impact', {
+      target_uid: 'Function:src/auth.ts:validate',
+      direction: 'upstream',
+    });
+
+    expect(impactSpy.mock.calls[0][1]).toMatchObject({
+      target_uid: 'Function:src/auth.ts:validate',
+    });
+  });
+
+  it('normalizes impact aliases before @group forwarding', async () => {
+    resolveAtMemberMock.mockResolvedValue({ ok: true, repoPath: '/tmp/test-project' });
+    const groupImpactSpy = vi
+      .spyOn(backend.getGroupService(), 'groupImpact')
+      .mockResolvedValue({ status: 'normalized' } as any);
+
+    await backend.callTool('impact', {
+      symbol: 'validate',
+      direction: 'upstream',
+      repo: '@grp',
+    });
+
+    expect(groupImpactSpy.mock.calls[0][0]).toMatchObject({ target: 'validate' });
+  });
+
   it('dispatches query tool', async () => {
     (executeParameterized as any).mockResolvedValue([]);
     const result = await backend.callTool('query', { query: 'auth' });

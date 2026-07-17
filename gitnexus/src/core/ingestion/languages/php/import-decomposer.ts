@@ -22,9 +22,11 @@ import type { Capture, CaptureMatch } from 'gitnexus-shared';
 import { nodeToCapture, syntheticCapture, type SyntaxNode } from '../../utils/ast-helpers.js';
 
 export type PhpImportKind = 'namespace' | 'alias' | 'function' | 'const';
+type PhpImportedSymbolKind = 'type' | 'function' | 'const';
 
 interface PhpImportSpec {
   readonly kind: PhpImportKind;
+  readonly symbolKind: PhpImportedSymbolKind;
   /** Full backslash-separated path (backslashes intact): `Foo\Bar\Baz`. */
   readonly source: string;
   /** Local binding name — last source segment for plain imports, the
@@ -119,6 +121,7 @@ function parseUseClause(clause: SyntaxNode, qualifier: PhpImportKind): PhpImport
       if (alias !== '') {
         return {
           kind: 'alias',
+          symbolKind: symbolKindFor(qualifier),
           source,
           name: alias,
           alias,
@@ -130,6 +133,7 @@ function parseUseClause(clause: SyntaxNode, qualifier: PhpImportKind): PhpImport
 
   return {
     kind: qualifier,
+    symbolKind: symbolKindFor(qualifier),
     source,
     name: lastSegment(source),
     atNode: clause,
@@ -214,6 +218,7 @@ function parseInnerClause(
       if (alias !== '') {
         return {
           kind: 'alias',
+          symbolKind: symbolKindFor(qualifier),
           source,
           name: alias,
           alias,
@@ -225,6 +230,7 @@ function parseInnerClause(
 
   return {
     kind: qualifier,
+    symbolKind: symbolKindFor(qualifier),
     source,
     name: lastSegment(innerPath),
     atNode: clause,
@@ -237,6 +243,7 @@ function buildImportMatch(stmtNode: SyntaxNode, spec: PhpImportSpec): CaptureMat
   const m: Record<string, Capture> = {
     '@import.statement': nodeToCapture('@import.statement', stmtNode),
     '@import.kind': syntheticCapture('@import.kind', spec.atNode, spec.kind),
+    '@import.symbol-kind': syntheticCapture('@import.symbol-kind', spec.atNode, spec.symbolKind),
     '@import.source': syntheticCapture('@import.source', spec.atNode, spec.source),
     '@import.name': syntheticCapture('@import.name', spec.atNode, spec.name),
   };
@@ -252,6 +259,12 @@ function buildImportMatch(stmtNode: SyntaxNode, spec: PhpImportSpec): CaptureMat
 function lastSegment(path: string): string {
   const parts = path.split('\\').filter(Boolean);
   return parts[parts.length - 1] ?? path;
+}
+
+function symbolKindFor(kind: PhpImportKind): PhpImportedSymbolKind {
+  if (kind === 'function') return 'function';
+  if (kind === 'const') return 'const';
+  return 'type';
 }
 
 /** Find the first named child with a given node type. */

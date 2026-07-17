@@ -31,6 +31,11 @@ import { isInitializeRequest } from '@modelcontextprotocol/sdk/types.js';
 import { createMCPServer, installSignalShutdown } from './server.js';
 import type { LocalBackend } from './local/local-backend.js';
 import { logger } from '../core/logger.js';
+import {
+  createMcpRepositoryPolicy,
+  mcpRepositoryPolicyConfigured,
+  type McpRepositoryPolicy,
+} from './repository-policy.js';
 
 /** HTTP server configuration options. */
 export interface McpHttpOptions {
@@ -40,6 +45,8 @@ export interface McpHttpOptions {
   host: string;
   /** Bearer auth token (optional; no auth when omitted). */
   authToken?: string;
+  /** Prevalidated repository policy shared by startup logging and transports. */
+  repositoryPolicy?: McpRepositoryPolicy;
 }
 
 interface MCPSession {
@@ -217,13 +224,25 @@ export function startIdleSweep<T extends { server: Server; lastActivity: number 
  */
 export function createStreamableHttpHandler(
   backend: LocalBackend,
-  opts: { createServer?: () => Server; host?: string; port?: number } = {},
+  opts: {
+    createServer?: () => Server;
+    host?: string;
+    port?: number;
+    repositoryPolicy?: McpRepositoryPolicy;
+  } = {},
 ): {
   handler: (req: Request, res: Response) => Promise<void>;
   cleanup: () => Promise<void>;
 } {
+  if (opts.createServer && !opts.repositoryPolicy && mcpRepositoryPolicyConfigured()) {
+    throw new Error('A custom MCP server factory cannot bypass configured repository policy.');
+  }
   // Seam: tests inject createServer to observe the per-session Server lifecycle.
-  const createServer = opts.createServer ?? ((): Server => createMCPServer(backend));
+  let repositoryPolicy: Promise<McpRepositoryPolicy> | undefined = opts.repositoryPolicy
+    ? Promise.resolve(opts.repositoryPolicy)
+    : undefined;
+  const getRepositoryPolicy = (): Promise<McpRepositoryPolicy> =>
+    (repositoryPolicy ??= createMcpRepositoryPolicy(backend));
   // DNS-rebinding protection (Host-header allowlist) when the bind host is known.
   const dnsRebinding = dnsRebindingOptions(opts.host, opts.port);
   const sessions = new Map<string, MCPSession>();
@@ -280,7 +299,9 @@ export function createStreamableHttpHandler(
         sessionIdGenerator: () => randomUUID(),
         ...dnsRebinding,
       });
-      const server = createServer();
+      const server = opts.createServer
+        ? opts.createServer()
+        : createMCPServer(backend, { repositoryPolicy: await getRepositoryPolicy() });
       await server.connect(transport);
       await transport.handleRequest(req, res, req.body);
 
@@ -337,13 +358,23 @@ export function createStreamableHttpHandler(
 export function createSseHandlers(
   backend: LocalBackend,
   messagesPath = '/messages',
-  opts: { maxSessions?: number; host?: string; port?: number } = {},
+  opts: {
+    maxSessions?: number;
+    host?: string;
+    port?: number;
+    repositoryPolicy?: McpRepositoryPolicy;
+  } = {},
 ): {
   sseHandler: (req: Request, res: Response) => Promise<void>;
   messageHandler: (req: Request, res: Response) => Promise<void>;
   cleanup: () => Promise<void>;
 } {
   const maxSessions = opts.maxSessions ?? MAX_SESSIONS;
+  let repositoryPolicy: Promise<McpRepositoryPolicy> | undefined = opts.repositoryPolicy
+    ? Promise.resolve(opts.repositoryPolicy)
+    : undefined;
+  const getRepositoryPolicy = (): Promise<McpRepositoryPolicy> =>
+    (repositoryPolicy ??= createMcpRepositoryPolicy(backend));
   // DNS-rebinding protection (Host-header allowlist) when the bind host is known.
   const dnsRebinding = dnsRebindingOptions(opts.host, opts.port);
   const sseSessions = new Map<string, SSESession>();
@@ -364,7 +395,7 @@ export function createSseHandlers(
 
     // SSEServerTransport(endpoint, res, options): endpoint is the path clients POST to.
     const transport = new SSEServerTransport(messagesPath, res, dnsRebinding);
-    const server = createMCPServer(backend);
+    const server = createMCPServer(backend, { repositoryPolicy: await getRepositoryPolicy() });
 
     sseSessions.set(transport.sessionId, { server, transport, lastActivity: Date.now() });
 
@@ -451,6 +482,8 @@ export async function startMcpHttpServer(
     );
   }
 
+  const repositoryPolicy = options.repositoryPolicy ?? (await createMcpRepositoryPolicy(backend));
+
   const app: Express = express();
 
   // Suppress X-Powered-By to reduce information leakage.
@@ -502,7 +535,7 @@ export async function startMcpHttpServer(
   });
 
   // Streamable HTTP (modern MCP clients) at POST /mcp.
-  const streamable = createStreamableHttpHandler(backend, { host, port });
+  const streamable = createStreamableHttpHandler(backend, { host, port, repositoryPolicy });
   app.all('/mcp', auth, jsonBody, (req: Request, res: Response) => {
     void streamable.handler(req, res).catch((err: unknown) => {
       logger.error({ err }, 'MCP /mcp request failed');
@@ -517,7 +550,7 @@ export async function startMcpHttpServer(
   });
 
   // Legacy SSE: GET /sse opens the stream; POST /messages receives JSON-RPC messages.
-  const sse = createSseHandlers(backend, '/messages', { host, port });
+  const sse = createSseHandlers(backend, '/messages', { host, port, repositoryPolicy });
   app.get('/sse', auth, (req: Request, res: Response) => {
     void sse.sseHandler(req, res).catch((err: unknown) => {
       logger.error({ err }, 'MCP /sse failed');

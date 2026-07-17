@@ -198,6 +198,30 @@ export interface RepoMeta {
     droppedImporterChunks?: number;
   };
   /**
+   * Durable embedding-resume marker. Before a bounded write window begins,
+   * `pendingNodeIds` records every node that could become partially persisted;
+   * after the LadybugDB checkpoint it is cleared while progress is retained.
+   * A matching runtime resumes from persisted hashes and regenerates pending
+   * nodes; a model or dimension mismatch fails before mutation.
+   */
+  embeddingCheckpoint?: {
+    at: string;
+    nodesProcessed: number;
+    totalNodes: number;
+    chunksProcessed: number;
+    model: string;
+    dimensions: number;
+    /** `local` or a secret-free SHA-256 fingerprint of the HTTP endpoint identity. */
+    provider: string;
+    /**
+     * Nodes in the current checkpoint window. Any of these may have only a
+     * subset of their chunks persisted after an abrupt process termination,
+     * so resume must delete and regenerate them even when a persisted row has
+     * the current content hash.
+     */
+    pendingNodeIds?: string[];
+  };
+  /**
    * Name of the git branch this index represents (#2106). Absent for the
    * default/legacy single-branch case so the flat metadata file stays
    * byte-identical to pre-multi-branch output. When present in the FLAT

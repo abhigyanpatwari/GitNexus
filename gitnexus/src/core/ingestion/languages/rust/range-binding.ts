@@ -89,6 +89,13 @@ export function populateRustRangeBindings(
         }
       }
     }
+
+    // Publish per-type member bindings for the whole workspace before resolving
+    // assignments. Otherwise an importer processed before its defining file can
+    // miss a field or identity-method type solely because of file order.
+    const scopeMap = new Map(parsed.scopes.map((scope) => [scope.id, scope]));
+    processFieldTypeBindings(tree.rootNode, parsed, scopeMap);
+    processIdentityMethodBindings(parsed);
   }
 
   for (const parsed of parsedFiles) {
@@ -122,8 +129,6 @@ export function populateRustRangeBindings(
     const moduleScope = parsed.scopes.find((s) => s.kind === 'Module');
     if (moduleScope === undefined) continue;
 
-    processFieldTypeBindings(tree.rootNode, parsed, scopeMap);
-    processIdentityMethodBindings(parsed);
     processForLoops(tree.rootNode, parsed, scopeMap, moduleScope, allReturnTypes);
     processPatternBindings(tree.rootNode, parsed, scopeMap, moduleScope);
     processStructDestructuring(tree.rootNode, parsed, scopeMap, moduleScope, allFieldTypes);

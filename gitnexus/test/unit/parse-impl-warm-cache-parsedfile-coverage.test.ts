@@ -26,11 +26,27 @@
  *      shards are absent; and a mixed-mode run (one file changed) hits the
  *      unchanged chunk while re-parsing the changed one.
  */
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
+
+// Partial mock: lets one test make prepareDurableParsedFileChunk fail without
+// touching the worker-side persist path (which shares the same directory).
+const prepareOverride = vi.hoisted(() => ({
+  impl: undefined as undefined | (() => Promise<void>),
+}));
+vi.mock('../../src/storage/parsedfile-store.js', async (importOriginal) => {
+  const real = await importOriginal<typeof import('../../src/storage/parsedfile-store.js')>();
+  return {
+    ...real,
+    prepareDurableParsedFileChunk: (durableDir: string, chunkHash: string) =>
+      prepareOverride.impl
+        ? prepareOverride.impl()
+        : real.prepareDurableParsedFileChunk(durableDir, chunkHash),
+  };
+});
 
 import { createKnowledgeGraph } from '../../src/core/graph/graph.js';
 import { runChunkedParseAndResolve } from '../../src/core/ingestion/pipeline-phases/parse-impl.js';
@@ -41,6 +57,7 @@ import {
 } from '../../src/storage/parse-cache.js';
 import {
   getDurableParsedFileDir,
+  prepareDurableParsedFileChunk,
   persistDurableParsedFileShardSync,
   restoreDurableParsedFileShard,
   loadParsedFilesForPaths,
@@ -98,6 +115,29 @@ describe('durable ParsedFile store — content-addressed warm-cache coverage', (
     const durableDir = getDurableParsedFileDir(tempDir);
     const restored = await restoreDurableParsedFileShard(durableDir, tempDir, 'b'.repeat(64));
     expect(restored).toBe(0);
+  });
+
+  it('prepares a fresh durable generation without retaining old worker shards', async () => {
+    const durableDir = getDurableParsedFileDir(tempDir);
+    const chunkHash = 'f'.repeat(64);
+    const chunkDir = path.join(durableDir, chunkHash);
+
+    persistDurableParsedFileShardSync(durableDir, chunkHash, 1, 0, [mkParsedFile('old.ts')]);
+    await prepareDurableParsedFileChunk(durableDir, chunkHash);
+    persistDurableParsedFileShardSync(durableDir, chunkHash, 1, 0, [mkParsedFile('new-a.ts')]);
+    persistDurableParsedFileShardSync(durableDir, chunkHash, 2, 0, [mkParsedFile('new-b.ts')]);
+
+    const shards = fs
+      .readdirSync(chunkDir)
+      .filter((name) => name.endsWith('.json'))
+      .sort();
+    expect(shards).toEqual([`${chunkHash}-w1-0.json`, `${chunkHash}-w2-0.json`]);
+    await restoreDurableParsedFileShard(durableDir, tempDir, chunkHash);
+    const files = await loadParsedFilesForPaths(
+      tempDir,
+      new Set(['old.ts', 'new-a.ts', 'new-b.ts']),
+    );
+    expect([...files.keys()].sort()).toEqual(['new-a.ts', 'new-b.ts']);
   });
 
   it('index load is version-gated (PARSE_CACHE_VERSION mismatch ⇒ empty)', async () => {
@@ -289,6 +329,37 @@ describe('parse-impl warm-cache ParsedFile coverage (#2038)', () => {
     expect(fs.existsSync(chunkDir)).toBe(true);
     expect(fs.readdirSync(chunkDir).filter((n) => n.endsWith('.json')).length).toBeGreaterThan(0);
     expect(cache.usedKeys.has(chunkHash)).toBe(true);
+  });
+
+  it('a failing durable-generation reset degrades instead of failing the analyze', async () => {
+    const f = writeFile('src/degrade.ts', 'export function degrade() { return 1; }\n');
+    prepareOverride.impl = () => Promise.reject(new Error('EACCES: simulated cache failure'));
+    try {
+      await expect(run(newCache(), [f])).resolves.toBeUndefined();
+    } finally {
+      prepareOverride.impl = undefined;
+    }
+  });
+
+  it('a repeated cache miss replaces the durable chunk generation', async () => {
+    const f = writeFile('src/repeated.ts', 'export function repeated() { return 1; }\n');
+    const chunkHash = computeChunkHash([
+      {
+        filePath: f.path,
+        contentHash: fileContentHash(fs.readFileSync(path.join(repoDir, f.path), 'utf-8')),
+      },
+    ]);
+
+    await run(newCache(), [f]);
+    await run(newCache(), [f]);
+
+    const chunkDir = path.join(getDurableParsedFileDir(storageDir), chunkHash);
+    const shards = fs.readdirSync(chunkDir).filter((name) => name.endsWith('.json'));
+    expect(shards).toHaveLength(1);
+    const parsed = JSON.parse(fs.readFileSync(path.join(chunkDir, shards[0]!), 'utf-8')) as Array<{
+      filePath: string;
+    }>;
+    expect(parsed.map((item) => item.filePath)).toEqual(['src/repeated.ts']);
   });
 
   it('run #2 (all hits) spawns NO worker — the warm path is served from caches', async () => {

@@ -128,20 +128,32 @@ describe('GITNEXUS_TOOLS', () => {
     expect(contextTool.inputSchema.required).toEqual([]);
   });
 
-  it('api_impact tool expresses the route-or-file requirement via anyOf (#2308)', () => {
-    const apiImpactTool = GITNEXUS_TOOLS.find((t) => t.name === 'api_impact')!;
-    expect(apiImpactTool.inputSchema.anyOf).toEqual([
-      { required: ['route'] },
-      { required: ['file'] },
-    ]);
-    // route/file stay optional in `required` (anyOf carries the cross-field rule)
-    expect(apiImpactTool.inputSchema.required).toEqual([]);
+  it('context tool advertises file as a compatibility alias for file_path', () => {
+    const contextTool = GITNEXUS_TOOLS.find((t) => t.name === 'context')!;
+    expect(contextTool.inputSchema.properties.file_path).toBeDefined();
+    expect(contextTool.inputSchema.properties.file).toMatchObject({ type: 'string' });
   });
 
-  it('impact tool requires target and direction', () => {
+  it('api_impact tool avoids top-level schema combinators for Bedrock compatibility (#2487)', () => {
+    const apiImpactTool = GITNEXUS_TOOLS.find((t) => t.name === 'api_impact')!;
+    expect(apiImpactTool.inputSchema).not.toHaveProperty('anyOf');
+    expect(apiImpactTool.inputSchema).not.toHaveProperty('oneOf');
+    expect(apiImpactTool.inputSchema).not.toHaveProperty('allOf');
+    // route/file stay optional in the transport schema; callTool keeps the
+    // runtime guard so providers that reject top-level combinators can load it.
+    expect(apiImpactTool.inputSchema.required).toEqual([]);
+    expect(apiImpactTool.description).toContain('Requires at least "route" or "file"');
+  });
+
+  it('impact tool requires direction and advertises target, name, or symbol without combinators', () => {
     const impactTool = GITNEXUS_TOOLS.find((t) => t.name === 'impact')!;
-    expect(impactTool.inputSchema.required).toContain('target');
     expect(impactTool.inputSchema.required).toContain('direction');
+    expect(impactTool.inputSchema.required).not.toContain('target');
+    expect(impactTool.inputSchema.properties.name).toMatchObject({ type: 'string' });
+    expect(impactTool.inputSchema.properties.symbol).toMatchObject({ type: 'string' });
+    expect(impactTool.inputSchema).not.toHaveProperty('anyOf');
+    expect(impactTool.inputSchema).not.toHaveProperty('oneOf');
+    expect(impactTool.inputSchema).not.toHaveProperty('allOf');
   });
 
   it('impact tool advertises the PDG-only `line` statement anchor (integer, min 0, not required)', () => {
@@ -171,6 +183,16 @@ describe('GITNEXUS_TOOLS', () => {
     expect(impactTool.description).toContain('target metadata');
     expect(impactTool.description).toContain('truncatedBy');
   });
+
+  it.each(['query', 'context', 'impact'])(
+    '%s advertises an optional positive maxTokens budget',
+    (name) => {
+      const tool = GITNEXUS_TOOLS.find((definition) => definition.name === name)!;
+      const maxTokens = tool.inputSchema.properties.maxTokens;
+      expect(maxTokens).toMatchObject({ type: 'integer', minimum: 1 });
+      expect(tool.inputSchema.required).not.toContain('maxTokens');
+    },
+  );
 
   it('rename tool requires new_name', () => {
     const renameTool = GITNEXUS_TOOLS.find((t) => t.name === 'rename')!;
