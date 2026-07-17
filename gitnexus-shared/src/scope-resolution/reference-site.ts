@@ -40,8 +40,10 @@ export type ReferenceKind =
   | 'import-use'
   // An identifier in object-literal property-value position
   // (`{ emitScopeCaptures: emitCppScopeCaptures }`, shorthand `{ hook }`).
-  // Resolved against callable definitions ONLY (MethodRegistry), so a
-  // non-function value never produces a reference. Emitted as a `USES`
+  // Resolution is owned entirely by the post-finalize property-dispatch pass
+  // (`emitPropertyDispatchCalls` via the callable-gated finalized-bindings
+  // walker `findCallableBindingInScope`; `resolveReferenceSites` skips these
+  // sites), so a non-function value never produces a reference. Emitted as a `USES`
   // reference edge — NOT `CALLS` (a registration is not an invocation;
   // Kythe `ref` / Joern `METHOD_REF` precedent). The invocation side is
   // recovered separately by the property-dispatch pass, which uses

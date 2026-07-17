@@ -91,10 +91,11 @@ export function emitFreeCallFallback(
     readonly recordResolutionOutcome?: ResolutionOutcomeRecorder;
     /** Call sites owned by a later precise pass (for example callable-value-flow). */
     readonly skipSites?: ReadonlySet<string>;
-    /** Resolved-callee-id capture sink (#2227 U2). Threaded in only under
-     *  `--pdg`; `undefined` ⇒ zero overhead, byte-identity (R4). Captured at
-     *  the CALLS emit below BEFORE the collapsed `seen` dedup (KTD6) so
-     *  same-target multi-line calls are still recorded per site. */
+    /** Resolved-callee-id capture sink (#2227 U2). Threaded in under `--pdg`
+     *  OR for callable-flow's direct-target index (#2437, position-filtered);
+     *  `undefined` ⇒ zero overhead, byte-identity (R4). Captured at the CALLS
+     *  emit below BEFORE the collapsed `seen` dedup (KTD6) so same-target
+     *  multi-line calls are still recorded per site. */
     readonly calleeIdSink?: CalleeIdSink;
   } = {},
 ): number {

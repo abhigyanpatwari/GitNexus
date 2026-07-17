@@ -24,7 +24,9 @@ import type { CalleeIdSink } from './callee-id-sink.js';
 
 /**
  * Optional resolved-callee-id capture context (#2227 follow-up U2). Threaded
- * in only under `--pdg` (else `undefined` → zero overhead, byte-identity R4).
+ * in under `--pdg` OR when always-on callable-flow facts need direct call
+ * targets (#2437 — the accumulator then carries a position filter); else
+ * `undefined` → zero overhead, byte-identity (R4).
  * `filePath` is NOT on the `site` param, so it rides here alongside the sink.
  */
 export interface CalleeIdCaptureCtx {
