@@ -40,6 +40,19 @@ const makeParsedFile = (filePath: string): ParsedFile =>
     ],
   }) as unknown as ParsedFile;
 
+/**
+ * Store payload with arbitrary (possibly corrupt) field overrides. The one
+ * controlled escape hatch for building malformed serialization-boundary
+ * fixtures lives HERE instead of double-casts scattered through the tests
+ * (#2522 review).
+ */
+function makeStoreEntry(filePath: string, overrides: Record<string, unknown>): ParsedFile {
+  return {
+    ...(makeParsedFile(filePath) as unknown as Record<string, unknown>),
+    ...overrides,
+  } as unknown as ParsedFile;
+}
+
 describe('parsedfile-store', () => {
   it('round-trips ParsedFiles (incl. Scope Maps) and filters by requested paths', async () => {
     const dir = await mkdtemp(path.join(tmpdir(), 'pfstore-'));
@@ -105,8 +118,7 @@ describe('parsedfile-store', () => {
   it('round-trips validated callable-flow operand and signature metadata', async () => {
     const dir = await mkdtemp(path.join(tmpdir(), 'pfstore-'));
     try {
-      const pf = {
-        ...(makeParsedFile('flow.cpp') as unknown as Record<string, unknown>),
+      const pf = makeStoreEntry('flow.cpp', {
         callableFlowSites: [
           {
             kind: 'seed',
@@ -128,7 +140,7 @@ describe('parsedfile-store', () => {
             },
           },
         ],
-      } as unknown as ParsedFile;
+      });
       await persistParsedFileChunk(dir, 'flow', [pf]);
 
       const loaded = await loadParsedFilesForPaths(dir, new Set(['flow.cpp']));
@@ -149,8 +161,7 @@ describe('parsedfile-store', () => {
         addressOf: false,
         expressionKind: 'binding',
       };
-      const invalid = {
-        ...(makeParsedFile('invalid.c') as unknown as Record<string, unknown>),
+      const invalid = makeStoreEntry('invalid.c', {
         callableFlowSites: [
           {
             kind: 'invoke',
@@ -161,7 +172,7 @@ describe('parsedfile-store', () => {
             arity: 0,
           },
         ],
-      } as unknown as ParsedFile;
+      });
       await persistParsedFileChunk(dir, 'invalid', [invalid, makeParsedFile('valid.c')]);
 
       const loaded = await loadParsedFilesForPaths(dir, new Set(['invalid.c', 'valid.c']));
@@ -177,8 +188,7 @@ describe('parsedfile-store', () => {
   it('accepts empty-string parameterTypes entries ("" = unknown type, real C++ extractor output)', async () => {
     const dir = await mkdtemp(path.join(tmpdir(), 'pfstore-'));
     try {
-      const pf = {
-        ...(makeParsedFile('cv.cpp') as unknown as Record<string, unknown>),
+      const pf = makeStoreEntry('cv.cpp', {
         callableFlowSites: [
           {
             kind: 'seed',
@@ -195,7 +205,7 @@ describe('parsedfile-store', () => {
             expectedSignature: { parameterCount: 2, parameterTypes: ['int', ''] },
           },
         ],
-      } as unknown as ParsedFile;
+      });
       await persistParsedFileChunk(dir, 'cv', [pf]);
 
       const loaded = await loadParsedFilesForPaths(dir, new Set(['cv.cpp']));
@@ -208,10 +218,9 @@ describe('parsedfile-store', () => {
   it('rejects the whole file only when callableFlowSites is non-array garbage', async () => {
     const dir = await mkdtemp(path.join(tmpdir(), 'pfstore-'));
     try {
-      const garbage = {
-        ...(makeParsedFile('garbage.c') as unknown as Record<string, unknown>),
+      const garbage = makeStoreEntry('garbage.c', {
         callableFlowSites: 'not-an-array',
-      } as unknown as ParsedFile;
+      });
       await persistParsedFileChunk(dir, 'garbage', [garbage, makeParsedFile('ok.c')]);
 
       const loaded = await loadParsedFilesForPaths(dir, new Set(['garbage.c', 'ok.c']));
@@ -298,10 +307,9 @@ describe('parsedfile-store', () => {
           dependentPackBaseClasses: ['Mix'],
         },
       };
-      const pf = {
-        ...(makeParsedFile('app.cpp') as unknown as Record<string, unknown>),
+      const pf = makeStoreEntry('app.cpp', {
         captureSideChannel: sideChannel,
-      } as unknown as ParsedFile;
+      });
 
       persistParsedFileShardSync(dir, 'w1-0', [pf]);
       const loaded = await loadParsedFilesForPaths(dir, new Set(['app.cpp']));
@@ -324,10 +332,9 @@ describe('parsedfile-store', () => {
         kind: 'kotlin',
         companionScopes: ['scope:Logger.companion', 'scope:Animal.companion'],
       };
-      const pf = {
-        ...(makeParsedFile('App.kt') as unknown as Record<string, unknown>),
+      const pf = makeStoreEntry('App.kt', {
         captureSideChannel: sideChannel,
-      } as unknown as ParsedFile;
+      });
 
       persistParsedFileShardSync(dir, 'w1-0', [pf]);
       const loaded = await loadParsedFilesForPaths(dir, new Set(['App.kt']));
@@ -348,10 +355,9 @@ describe('parsedfile-store', () => {
     const dir = await mkdtemp(path.join(tmpdir(), 'pfstore-'));
     try {
       const sideChannel = { kind: 'c', staticNames: ['compute', 'helper'] };
-      const pf = {
-        ...(makeParsedFile('local.c') as unknown as Record<string, unknown>),
+      const pf = makeStoreEntry('local.c', {
         captureSideChannel: sideChannel,
-      } as unknown as ParsedFile;
+      });
 
       persistParsedFileShardSync(dir, 'w1-0', [pf]);
       const loaded = await loadParsedFilesForPaths(dir, new Set(['local.c']));
