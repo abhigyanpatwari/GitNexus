@@ -797,6 +797,23 @@ invoke(factory());
     expect(callableCallSiteLines(result, 'invoke', 'factory')).toEqual([]);
   }, 60_000);
 
+  it('resolves the C ops-vtable pattern: struct-field pointer stored then called (#2522 review)', async () => {
+    const result = await runSource(
+      'c',
+      `
+void handler(int x) {}
+struct ops { void (*run)(int); };
+int entry(struct ops *o) {
+  o->run = handler;
+  o->run(1);
+  return 0;
+}
+`,
+    );
+
+    expect(callableCallSiteLines(result, 'entry', 'handler')).toEqual([6]);
+  }, 60_000);
+
   it('resolves a file-scope function pointer assigned in one function and called in another (#2522 review)', async () => {
     const result = await runSource(
       'c',

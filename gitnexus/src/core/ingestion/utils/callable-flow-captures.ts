@@ -263,13 +263,21 @@ function buildValueBindingIndex(
   };
 
   for (const assignment of assignments) {
+    const destinationNames = new Set<string>();
     const destination = operandSyntax(assignment.destination, options, true);
-    if (destination !== undefined) {
+    if (destination !== undefined) destinationNames.add(destination.name);
+    // Member-path destinations (`o->run = handler`) store into the MEMBER's
+    // name-cell — the seed fact is keyed on `run`, so the store must be
+    // visible under that name too or the member-call invoke gate never sees
+    // it (#2522 review, M3 ops-vtable pattern).
+    const terminal = terminalIdentifier(assignment.destination, options);
+    if (terminal !== undefined) destinationNames.add(terminal.text);
+    for (const name of destinationNames) {
       const region = nearestLexicalRegion(assignment.container, options);
-      let regionIds = assignmentRegionIdsByName.get(destination.name);
+      let regionIds = assignmentRegionIdsByName.get(name);
       if (regionIds === undefined) {
         regionIds = new Set();
-        assignmentRegionIdsByName.set(destination.name, regionIds);
+        assignmentRegionIdsByName.set(name, regionIds);
       }
       regionIds.add(region.id);
       if (options.functionScopedValueBindings === true) {
@@ -686,6 +694,17 @@ function emitCallFacts(
     }
     if (options.callableProtocolMethods?.has(member.member.name) === true) {
       emitInvoke(callSite, member.receiver, 'callable-object', args.length, out, options);
+      return;
+    }
+    // Field-stored callables (`o->run = handler; o->run(1)` — the C ops-vtable
+    // pattern): when a visible assignment wrote this member's name-cell, the
+    // member call is an indirect invoke through that cell (#2522 review, M3).
+    // Gated on the store so plain accessor calls (`map.get(x)`) stay inert;
+    // name-keyed field collapse matches the solver's store/load model.
+    // ponytail: same-region joins only — cross-function vtable installs need
+    // a field-sensitive cell model.
+    if (isVisibleValueBinding(call, member.member.name, valueBindings, options)) {
+      emitInvoke(callSite, member.member, 'indirect', args.length, out, options, member.receiver);
     }
     return;
   }
