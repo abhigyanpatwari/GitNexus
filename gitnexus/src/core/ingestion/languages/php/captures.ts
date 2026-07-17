@@ -62,6 +62,7 @@ const PHP_CALLABLE_CAPTURE_OPTIONS = {
   bindingNodeTypes: new Set(['assignment_expression']),
   assignmentNodeTypes: new Set(['assignment_expression']),
   identifierNodeTypes: new Set(['name', 'qualified_name', 'namespace_name']),
+  functionScopedValueBindings: true,
   emitCanonicalInvokeReference: true,
   extractCallableReference: (node: SyntaxNode) => {
     if (node.type !== 'function_call_expression') return undefined;

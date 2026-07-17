@@ -42,6 +42,12 @@ const CPP_CALLABLE_CAPTURE_OPTIONS = {
     'type_identifier',
     'namespace_identifier',
   ]),
+  callableSignatureDeclarationNodeTypes: new Set([
+    'declaration',
+    'field_declaration',
+    'parameter_declaration',
+    'optional_parameter_declaration',
+  ]),
   callableReferenceNodeTypes: new Set(['qualified_identifier']),
   emitCanonicalInvokeReference: true,
   memberPointerOperators: new Set(['.*', '->*']),

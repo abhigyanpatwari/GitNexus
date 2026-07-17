@@ -440,6 +440,84 @@ int entry() {
     ]);
   }, 60_000);
 
+  it('retains C++ pointer and member-pointer signatures across split declaration and assignment', async () => {
+    const result = await runSource(
+      'cpp',
+      `
+void target(int) {}
+void target(double) {}
+struct Base {
+  virtual void run() const {}
+  virtual void run() {}
+};
+struct Derived : Base {
+  void run() const override {}
+  void run() override {}
+};
+void invoke(void (*callback)(int), Derived& value, void (Base::*member)() const) {
+  callback(1);
+  (value.*member)();
+}
+int entry() {
+  void (*callback)(int);
+  callback = &target;
+  void (Base::*member)() const;
+  member = &Base::run;
+  Derived value;
+  invoke(callback, value, member);
+  return 0;
+}
+`,
+      { skipGraphPhases: false },
+    );
+
+    const targets = getRelationships(result, 'CALLS')
+      .filter((edge) => edge.source === 'invoke' && edge.rel.reason === 'callable-value-flow')
+      .map((edge) => ({
+        id: edge.rel.targetId,
+        properties: result.graph.getNode(edge.rel.targetId)?.properties,
+      }));
+    expect(targets).toHaveLength(2);
+    expect(
+      targets.some(
+        ({ id, properties }) =>
+          id.includes('target') &&
+          JSON.stringify(properties?.parameterTypes) === JSON.stringify(['int']),
+      ),
+    ).toBe(true);
+    expect(
+      targets.some(
+        ({ id, properties }) => id.includes('Derived.run') && properties?.isConst === true,
+      ),
+    ).toBe(true);
+    expect(
+      targets.some(
+        ({ id, properties }) =>
+          JSON.stringify(properties?.parameterTypes) === JSON.stringify(['double']) ||
+          (id.includes('Derived.run') && properties?.isConst !== true),
+      ),
+    ).toBe(false);
+  }, 90_000);
+
+  it('resolves an imported C++ function assigned through an auto pointer', async () => {
+    const result = await runSources({
+      'target.hpp': 'void target();\n',
+      'target.cpp': '#include "target.hpp"\nvoid target() {}\n',
+      'main.cpp': '#include "target.hpp"\nint entry() { auto callback = &target; callback(); }\n',
+    });
+
+    const targetEdges = getRelationships(result, 'CALLS').filter(
+      (edge) =>
+        edge.source === 'entry' &&
+        edge.target === 'target' &&
+        edge.rel.reason === 'callable-value-flow',
+    );
+    expect(targetEdges).toHaveLength(1);
+    expect(result.graph.getNode(targetEdges[0]!.rel.targetId)?.properties.filePath).toBe(
+      'target.cpp',
+    );
+  }, 90_000);
+
   it('dispatches C++ member pointers through object/reference and pointer receivers to the virtual override', async () => {
     const result = await runSource(
       'cpp',
@@ -763,6 +841,79 @@ function entry(): void {
     ).toBe(true);
     expect(callableCallSiteLines(result, 'entry', 'replacement')).toEqual([8]);
   }, 60_000);
+
+  it.each([
+    {
+      language: 'Python',
+      extension: 'py',
+      source: `
+def target():
+    pass
+
+def entry(enabled):
+    if enabled:
+        callback = target
+    callback()
+`,
+    },
+    {
+      language: 'PHP',
+      extension: 'php',
+      source: `<?php
+function target() {}
+function entry($enabled) {
+    if ($enabled) {
+        $callback = target(...);
+    }
+    $callback();
+}
+`,
+    },
+    {
+      language: 'Ruby',
+      extension: 'rb',
+      source: `
+def target; end
+def entry(enabled)
+  if enabled
+    callback = method(:target)
+  end
+  callback.call
+end
+`,
+    },
+  ])(
+    'keeps function-scoped callable assignments visible outside nested $language blocks',
+    async ({ extension, source }) => {
+      const result = await runSource(extension, source);
+      expect(callsFrom(result, 'entry')).toContainEqual({
+        target: 'target',
+        reason: 'callable-value-flow',
+      });
+    },
+    60_000,
+  );
+
+  it('does not leak actuals between distinct C++ wrapper overloads', async () => {
+    const result = await runSource(
+      'cpp',
+      `
+void target() {}
+void invoke(void (*callback)()) { callback(); }
+void invoke(void (*callback)(), int) { callback(); }
+int entry() {
+  invoke(target);
+  return 0;
+}
+`,
+    );
+
+    const sourceParameterCounts = getRelationships(result, 'CALLS')
+      .filter((edge) => edge.target === 'target' && edge.rel.reason === 'callable-value-flow')
+      .map((edge) => result.graph.getNode(edge.rel.sourceId)?.properties.parameterCount)
+      .sort();
+    expect(sourceParameterCounts).toEqual([1]);
+  }, 90_000);
 
   it('terminates copy cycles and preserves the reachable callable target', async () => {
     const result = await runSource(

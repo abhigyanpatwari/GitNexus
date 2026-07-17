@@ -26,6 +26,13 @@ export interface CallableFlowCaptureOptions {
   readonly bindingNodeTypes: ReadonlySet<string>;
   readonly assignmentNodeTypes: ReadonlySet<string>;
   readonly identifierNodeTypes: ReadonlySet<string>;
+  /** Control-flow blocks do not introduce a new local-variable scope. */
+  readonly functionScopedValueBindings?: boolean;
+  /**
+   * Declaration nodes whose callable type can contextually select an overload
+   * at a later assignment (for example `void (*fp)(int); fp = target;`).
+   */
+  readonly callableSignatureDeclarationNodeTypes?: ReadonlySet<string>;
   /** Nodes that denote a named callable reference rather than a value read. */
   readonly callableReferenceNodeTypes?: ReadonlySet<string>;
   /** Member methods whose receiver itself is the callable object. */
@@ -102,6 +109,10 @@ interface FunctionInfo {
 interface ValueBindingIndex {
   readonly assignmentRegionIdsByName: ReadonlyMap<string, ReadonlySet<number>>;
   readonly formalByOwner: ReadonlyMap<number | undefined, ReadonlySet<string>>;
+  readonly signatureByNameAndRegion: ReadonlyMap<
+    string,
+    ReadonlyMap<number, CallableCaptureSignature>
+  >;
 }
 
 /**
@@ -119,7 +130,7 @@ export function synthesizeCallableFlowCaptures(
   const functions = collectFunctions(nodes, options);
   const knownCallableNames = new Set(functions.map((fn) => fn.name));
   const assignments = collectAssignments(nodes, options);
-  const valueBindings = buildValueBindingIndex(assignments, functions, options);
+  const valueBindings = buildValueBindingIndex(nodes, assignments, functions, options);
 
   const out: CaptureMatch[] = [];
   for (const assignment of assignments) {
@@ -231,12 +242,14 @@ function collectAssignments(
 }
 
 function buildValueBindingIndex(
+  nodes: readonly SyntaxNode[],
   assignments: readonly AssignmentParts[],
   functions: readonly FunctionInfo[],
   options: CallableFlowCaptureOptions,
 ): ValueBindingIndex {
   const assignmentRegionIdsByName = new Map<string, Set<number>>();
   const formalByOwner = new Map<number | undefined, Set<string>>();
+  const signatureByNameAndRegion = new Map<string, Map<number, CallableCaptureSignature>>();
   const add = (
     index: Map<number | undefined, Set<string>>,
     owner: number | undefined,
@@ -260,6 +273,10 @@ function buildValueBindingIndex(
         assignmentRegionIdsByName.set(destination.name, regionIds);
       }
       regionIds.add(region.id);
+      if (options.functionScopedValueBindings === true) {
+        const functionOwner = nearestFunctionOwner(assignment.container, options);
+        if (functionOwner !== undefined) regionIds.add(functionOwner.id);
+      }
     }
   }
   for (const fn of functions) {
@@ -268,7 +285,38 @@ function buildValueBindingIndex(
       if (binding !== undefined) add(formalByOwner, fn.node.id, binding.text);
     }
   }
-  return { assignmentRegionIdsByName, formalByOwner };
+  for (const node of nodes) {
+    if (options.callableSignatureDeclarationNodeTypes?.has(node.type) !== true) continue;
+    const binding = bindingIdentifier(node, options);
+    const signature = options.expectedSignature?.(node, node);
+    if (binding === undefined || signature === undefined) continue;
+    const region = nearestLexicalRegion(node, options);
+    let byRegion = signatureByNameAndRegion.get(binding.text);
+    if (byRegion === undefined) {
+      byRegion = new Map();
+      signatureByNameAndRegion.set(binding.text, byRegion);
+    }
+    byRegion.set(region.id, signature);
+    if (options.functionScopedValueBindings === true) {
+      const functionOwner = nearestFunctionOwner(node, options);
+      if (functionOwner !== undefined) byRegion.set(functionOwner.id, signature);
+    }
+  }
+  return { assignmentRegionIdsByName, formalByOwner, signatureByNameAndRegion };
+}
+
+function nearestFunctionOwner(
+  input: SyntaxNode,
+  options: CallableFlowCaptureOptions,
+): SyntaxNode | undefined {
+  const providerOwner = options.lexicalFunctionOwner?.(input);
+  if (providerOwner !== undefined) return providerOwner;
+  let node: SyntaxNode | null = input;
+  while (node !== null) {
+    if (options.functionNodeTypes.has(node.type)) return node;
+    node = node.parent;
+  }
+  return undefined;
 }
 
 function nearestLexicalRegion(input: SyntaxNode, options: CallableFlowCaptureOptions): SyntaxNode {
@@ -319,6 +367,28 @@ function isVisibleValueBinding(
   return bindings.formalByOwner.get(undefined)?.has(name) === true;
 }
 
+function visibleCallableSignature(
+  input: SyntaxNode,
+  name: string,
+  bindings: ValueBindingIndex,
+  options: CallableFlowCaptureOptions,
+): CallableCaptureSignature | undefined {
+  const byRegion = bindings.signatureByNameAndRegion.get(name);
+  if (byRegion === undefined) return undefined;
+  const providerOwner = options.lexicalFunctionOwner?.(input);
+  if (providerOwner !== undefined) {
+    const signature = byRegion.get(providerOwner.id);
+    if (signature !== undefined) return signature;
+  }
+  let node: SyntaxNode | null = input;
+  while (node !== null) {
+    const signature = byRegion.get(node.id);
+    if (signature !== undefined) return signature;
+    node = node.parent;
+  }
+  return undefined;
+}
+
 function assignmentParts(
   node: SyntaxNode,
   options: CallableFlowCaptureOptions,
@@ -367,7 +437,9 @@ function emitAssignmentFact(
   const source = operandSyntax(assignment.source, options);
   if (destination === undefined || source === undefined) return;
 
-  const signature = options.expectedSignature?.(assignment.container, assignment.destination);
+  const signature =
+    options.expectedSignature?.(assignment.container, assignment.destination) ??
+    visibleCallableSignature(assignment.container, destination.name, valueBindings, options);
   const sourceIsValueBinding = isVisibleValueBinding(
     assignment.source,
     source.name,
@@ -408,6 +480,17 @@ function emitAssignmentFact(
     if (sourceIsValueBinding) {
       out.push(
         binaryFact('address', assignment.container, 'destination', destination, 'source', source),
+      );
+    } else if (source.directDesignator) {
+      // A declaration imported from another file is only visible after scope
+      // finalization. Preserve both interpretations here: the address relation
+      // supports pointer-to-pointer cells, while the copy lets the solver's
+      // exact lexical/import lookup recognize `auto fp = &importedTarget`.
+      out.push(
+        binaryFact('address', assignment.container, 'destination', destination, 'source', source),
+      );
+      out.push(
+        binaryFact('copy', assignment.container, 'destination', destination, 'source', source),
       );
     }
     return;

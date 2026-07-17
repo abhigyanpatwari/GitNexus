@@ -44,6 +44,7 @@ const RUBY_CALLABLE_CAPTURE_OPTIONS = {
     'class_variable',
     'global_variable',
   ]),
+  functionScopedValueBindings: true,
   callableProtocolMethods: new Set(['call']),
   extractCallableReference: (node: SyntaxNode) => {
     if (node.type !== 'call') return undefined;

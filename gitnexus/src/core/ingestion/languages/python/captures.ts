@@ -49,6 +49,7 @@ const PYTHON_CALLABLE_CAPTURE_OPTIONS = {
   bindingNodeTypes: new Set(['assignment', 'named_expression']),
   assignmentNodeTypes: new Set(['assignment', 'named_expression']),
   identifierNodeTypes: new Set(['identifier']),
+  functionScopedValueBindings: true,
 } as const;
 
 export function emitPythonScopeCaptures(

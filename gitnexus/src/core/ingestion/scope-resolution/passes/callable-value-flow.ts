@@ -461,6 +461,7 @@ export function emitCallableValueFlow(input: EmitCallableValueFlowInput): Callab
     targetIndexes,
     aliasesByTargetId,
   );
+  const callSignaturesBySite = indexCallSignatures(input.parsedFiles);
   const dynamicCallees = new Map<string, Map<string, Target>>();
   const dynamicOverflow = new Set<string>();
   const dynamicTargetHistory = new Map<string, Set<string>>();
@@ -564,22 +565,26 @@ export function emitCallableValueFlow(input: EmitCallableValueFlowInput): Callab
     const site = fact.site;
     addWorkItem(() => {
       const callKey = callableFlowSiteKey(fact.filePath, site.callSite);
+      const callSignature = callSignaturesBySite.get(callKey);
+      const indexedFormals = (targetId: string): readonly IndexedFormal[] =>
+        narrowIndexedFormals(
+          formalsByGraphId.get(targetId)?.get(site.parameterIndex) ?? [],
+          callSignature,
+        );
       watch('call', callKey);
       const targetIds = new Set<string>();
       for (const id of input.calleeIds.get(fact.filePath)?.get(posKey(site.callSite)) ?? []) {
         targetIds.add(id);
       }
       for (const id of dynamicCallees.get(callKey)?.keys() ?? []) targetIds.add(id);
-      let hasIndexedFormal = [...targetIds].some(
-        (id) => formalsByGraphId.get(id)?.get(site.parameterIndex)?.length,
-      );
+      let hasIndexedFormal = [...targetIds].some((id) => indexedFormals(id).length > 0);
       if (!hasIndexedFormal && site.directCalleeName !== undefined) {
         for (const target of resolveSeedCandidates(
           fact.filePath,
           site.source.inScope,
           site.directCalleeName,
           undefined,
-          undefined,
+          callSignature,
           input.scopes,
           graphTargets,
           globalBySimpleName,
@@ -588,16 +593,14 @@ export function emitCallableValueFlow(input: EmitCallableValueFlowInput): Callab
         )) {
           targetIds.add(target.id);
         }
-        hasIndexedFormal = [...targetIds].some(
-          (id) => formalsByGraphId.get(id)?.get(site.parameterIndex)?.length,
-        );
+        hasIndexedFormal = [...targetIds].some((id) => indexedFormals(id).length > 0);
       }
       const history = dynamicTargetHistory.get(callKey);
       const callOverflow =
         dynamicOverflow.has(callKey) || targetIds.size > MAX_CALLABLE_VALUE_TARGETS;
       if (callOverflow) {
         for (const targetId of history ?? targetIds) {
-          for (const formal of formalsByGraphId.get(targetId)?.get(site.parameterIndex) ?? []) {
+          for (const formal of indexedFormals(targetId)) {
             const formalKey = bindingKey(formal.filePath, formal.site.binding);
             markTargetOverflow(formalKey, `actual-formal-overflow:${callKey}`);
             markAddressOverflow(formalKey, `actual-formal-overflow:${callKey}`);
@@ -610,7 +613,7 @@ export function emitCallableValueFlow(input: EmitCallableValueFlowInput): Callab
       const sourceKey = bindingKey(fact.filePath, site.source);
       const sourceTargets = operandTargets(fact.filePath, site.source);
       for (const targetId of targetIds) {
-        for (const formal of formalsByGraphId.get(targetId)?.get(site.parameterIndex) ?? []) {
+        for (const formal of indexedFormals(targetId)) {
           const formalKey = bindingKey(formal.filePath, formal.site.binding);
           const context = `actual-formal:${callKey}:${site.parameterIndex}`;
           const contextualTargets = new Map(sourceTargets.targets);
@@ -1172,6 +1175,8 @@ function sourceOperand(site: CallableFlowSite): CallableFlowOperand | undefined 
 interface IndexedFormal {
   readonly filePath: string;
   readonly site: CallableFlowFormalSite;
+  /** Exact definition owning this formal, even when overloads share a graph id. */
+  readonly ownerDef?: SymbolDefinition;
 }
 
 function indexFormalsByGraphId(
@@ -1191,8 +1196,6 @@ function indexFormalsByGraphId(
         nodeLookup,
         site.ownerRange,
       );
-      const graphIds = new Set<string>();
-      if (resolvedCaller !== undefined) graphIds.add(resolvedCaller);
       // Signature-bearing graph ids can be more precise than a scope-only
       // caller lookup. Join the provider-supplied owner identity to canonical
       // defs as a fallback (important for function-reference parameters).
@@ -1200,7 +1203,38 @@ function indexFormalsByGraphId(
         site.ownerQualifiedName === undefined
           ? (targetIndexes.byFileAndName.get(`${parsed.filePath}\0${site.ownerName}`) ?? [])
           : (targetIndexes.byQualifiedName.get(normalizeSymbolName(site.ownerQualifiedName)) ?? []);
-      for (const target of fallbackTargets) {
+      const anchoredFallbacks = fallbackTargets.filter(
+        (target) =>
+          target.def.filePath === parsed.filePath &&
+          definitionStartsAt(target.def, site.ownerRange.startLine, site.ownerRange.startCol),
+      );
+      const resolvedFallbacks = fallbackTargets.filter((target) => target.id === resolvedCaller);
+      const ownerTargets =
+        anchoredFallbacks.length > 0
+          ? anchoredFallbacks
+          : resolvedFallbacks.length === 1
+            ? resolvedFallbacks
+            : [];
+      const indexFormal = (graphId: string, ownerDef?: SymbolDefinition): void => {
+        let byIndex = building.get(graphId);
+        if (byIndex === undefined) {
+          byIndex = new Map();
+          building.set(graphId, byIndex);
+        }
+        const bucket = byIndex.get(site.parameterIndex);
+        const indexed = { filePath: parsed.filePath, site, ownerDef };
+        if (bucket === undefined) byIndex.set(site.parameterIndex, [indexed]);
+        else if (
+          !bucket.some(
+            (entry) =>
+              entry.site.binding.inScope === site.binding.inScope &&
+              entry.ownerDef?.nodeId === ownerDef?.nodeId,
+          )
+        ) {
+          bucket.push(indexed);
+        }
+      };
+      for (const target of ownerTargets) {
         if (target.def.filePath !== parsed.filePath) continue;
         if (
           target.def.parameterCount !== undefined &&
@@ -1208,25 +1242,84 @@ function indexFormalsByGraphId(
         ) {
           continue;
         }
-        graphIds.add(target.id);
-        for (const aliasId of aliasesByTargetId.get(target.id) ?? []) graphIds.add(aliasId);
+        indexFormal(target.id, target.def);
+        for (const aliasId of aliasesByTargetId.get(target.id) ?? []) {
+          indexFormal(aliasId, target.def);
+        }
       }
-      for (const graphId of graphIds) {
-        let byIndex = building.get(graphId);
-        if (byIndex === undefined) {
-          byIndex = new Map();
-          building.set(graphId, byIndex);
-        }
-        const bucket = byIndex.get(site.parameterIndex);
-        const indexed = { filePath: parsed.filePath, site };
-        if (bucket === undefined) byIndex.set(site.parameterIndex, [indexed]);
-        else if (!bucket.some((entry) => entry.site.binding.inScope === site.binding.inScope)) {
-          bucket.push(indexed);
-        }
+      // Some providers can resolve an owner graph node without retaining a
+      // callable SymbolDefinition. Preserve that established fallback; it
+      // simply cannot participate in overload-owner narrowing.
+      if (
+        ownerTargets.length === 0 &&
+        fallbackTargets.length === 0 &&
+        resolvedCaller !== undefined
+      ) {
+        indexFormal(resolvedCaller);
       }
     }
   }
   return building;
+}
+
+function indexCallSignatures(
+  parsedFiles: readonly ParsedFile[],
+): ReadonlyMap<string, CallableFlowExpectedSignature> {
+  const out = new Map<string, CallableFlowExpectedSignature>();
+  for (const parsed of parsedFiles) {
+    for (const site of parsed.referenceSites) {
+      if (site.kind !== 'call') continue;
+      const signature: CallableFlowExpectedSignature = {
+        ...(site.arity !== undefined ? { parameterCount: site.arity } : {}),
+        ...(site.argumentTypes !== undefined ? { parameterTypes: site.argumentTypes } : {}),
+        ...(site.argumentTypeClasses !== undefined
+          ? { parameterTypeClasses: site.argumentTypeClasses }
+          : {}),
+      };
+      const key = callableFlowSiteKey(parsed.filePath, site.atRange);
+      const previous = out.get(key);
+      if (previous === undefined || signatureEvidence(signature) > signatureEvidence(previous)) {
+        out.set(key, signature);
+      }
+    }
+  }
+  return out;
+}
+
+function signatureEvidence(signature: CallableFlowExpectedSignature): number {
+  return (
+    (signature.parameterCount === undefined ? 0 : 1) +
+    (signature.parameterTypes?.filter((type) => type.length > 0).length ?? 0) +
+    (signature.parameterTypeClasses?.length ?? 0)
+  );
+}
+
+function narrowIndexedFormals(
+  formals: readonly IndexedFormal[],
+  callSignature: CallableFlowExpectedSignature | undefined,
+): readonly IndexedFormal[] {
+  if (formals.length < 2 || callSignature === undefined) return formals;
+  const owners = dedupeDefinitions(formals.flatMap((formal) => formal.ownerDef ?? []));
+  if (owners.length < 2) return formals;
+  const narrowed = narrowOverloadCandidates(
+    owners,
+    callSignature.parameterCount,
+    callSignature.parameterTypes,
+    { argumentTypeClasses: callSignature.parameterTypeClasses },
+  );
+  const allowed = new Set(narrowed.map((owner) => owner.nodeId));
+  return formals.filter(
+    (formal) => formal.ownerDef === undefined || allowed.has(formal.ownerDef.nodeId),
+  );
+}
+
+function dedupeDefinitions(defs: readonly SymbolDefinition[]): SymbolDefinition[] {
+  return [...new Map(defs.map((def) => [def.nodeId, def])).values()];
+}
+
+function definitionStartsAt(def: SymbolDefinition, line: number, column: number): boolean {
+  const match = def.nodeId.match(/#(\d+):(\d+):/);
+  return match !== null && Number(match[1]) === line && Number(match[2]) === column;
 }
 
 function expandMemberTargets(
