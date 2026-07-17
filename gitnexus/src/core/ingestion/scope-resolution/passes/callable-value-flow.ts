@@ -672,10 +672,14 @@ export function emitCallableValueFlow(input: EmitCallableValueFlowInput): Callab
   }
   const workBudgetExceeded = queueHead < queue.length;
   if (workBudgetExceeded) {
+    // `invokes` are exactly the deferred sites the ordinary passes already
+    // skipped (`collectDeferredIndirectSites` feeds both) — every one of them
+    // ends this run with zero CALLS, so the count goes in the warning context
+    // rather than being lost (#2522 review finding: budget-bailout honesty).
     warnOverflow(
       'work-budget',
       iterations + queue.length - queueHead,
-      'analysis-work-budget',
+      `analysis-work-budget:${invokes.length}-deferred-sites-unresolved`,
       workBudget,
     );
   }
@@ -683,8 +687,10 @@ export function emitCallableValueFlow(input: EmitCallableValueFlowInput): Callab
   for (const warning of overflowWarnings.values()) input.onWarn?.(warning);
 
   // No partial graph output when a hostile/corrupt fact graph exhausts the
-  // bounded work budget. The caller receives a warning and ordinary graph
-  // emission remains untouched.
+  // bounded work budget. The caller receives a warning; NOTE this is not
+  // free for callers — the deferred invoke sites were already excluded from
+  // free-call fallback and reference emission, so they get no edges at all
+  // this run. Non-deferred sites keep their ordinary resolution.
   if (workBudgetExceeded) {
     return {
       emitted: 0,
