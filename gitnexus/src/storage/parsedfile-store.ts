@@ -344,8 +344,7 @@ function isValidCallableFlowSite(value: unknown): value is CallableFlowSite {
         isValidOperand(value.binding) &&
         (value.passingMode === 'value' ||
           value.passingMode === 'reference' ||
-          value.passingMode === 'pointer' ||
-          value.passingMode === 'callable-object') &&
+          value.passingMode === 'pointer') &&
         isValidExpectedSignature(value.expectedSignature)
       );
     case 'argument':

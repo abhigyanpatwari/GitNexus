@@ -64,7 +64,6 @@ export interface CallableFlowCaptureOptions {
   ) => { readonly destination: SyntaxNode; readonly source: SyntaxNode } | undefined;
   readonly extractFunctionParameters?: (node: SyntaxNode) => readonly SyntaxNode[] | undefined;
   readonly extractCallCallee?: (node: SyntaxNode) => SyntaxNode | undefined;
-  readonly extractCallArguments?: (node: SyntaxNode) => readonly SyntaxNode[] | undefined;
   readonly isCallNode?: (node: SyntaxNode) => boolean;
   readonly callSiteNode?: (node: SyntaxNode) => SyntaxNode | undefined;
   /** Emit a canonical call ReferenceSite when the provider query omits variable calls. */
@@ -754,8 +753,6 @@ function callArguments(
   call: SyntaxNode,
   options: CallableFlowCaptureOptions,
 ): readonly SyntaxNode[] {
-  const providerArguments = options.extractCallArguments?.(call);
-  if (providerArguments !== undefined) return providerArguments;
   const list =
     call.childForFieldName('arguments') ??
     call.childForFieldName('argument') ??

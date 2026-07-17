@@ -1393,7 +1393,6 @@ function parseCallablePassingMode(text: string | undefined): CallableFlowPassing
     case 'value':
     case 'reference':
     case 'pointer':
-    case 'callable-object':
       return text;
     default:
       return undefined;

@@ -44,7 +44,12 @@ export interface CallableFlowExpectedSignature {
   readonly isConst?: boolean;
 }
 
-export type CallableFlowPassingMode = 'value' | 'reference' | 'pointer' | 'callable-object';
+// 'pointer' is currently behaviorally identical to 'value' in the solver
+// (only 'reference' back-propagates); it stays in the union as C/C++
+// provenance. A 'callable-object' passing mode had no producer and was
+// dropped (#2522 review) — the invocation-kind 'callable-object' below is a
+// different, live concept.
+export type CallableFlowPassingMode = 'value' | 'reference' | 'pointer';
 
 export interface CallableFlowSeedSite {
   readonly kind: 'seed';
