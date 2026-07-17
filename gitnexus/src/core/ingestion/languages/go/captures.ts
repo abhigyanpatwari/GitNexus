@@ -13,6 +13,36 @@ import { synthesizeGoReceiverBinding } from './receiver-binding.js';
 import { synthesizeGoTypeBindings, extractSimpleTypeNameText } from './type-binding.js';
 import { getTreeSitterBufferSize } from '../../constants.js';
 import { parseSourceSafe } from '../../../tree-sitter/safe-parse.js';
+import { synthesizeCallableFlowCaptures } from '../../utils/callable-flow-captures.js';
+
+const GO_CALLABLE_CAPTURE_OPTIONS = {
+  functionNodeTypes: new Set(['function_declaration', 'method_declaration', 'func_literal']),
+  callNodeTypes: new Set(['call_expression']),
+  parameterListNodeTypes: new Set(['parameter_list', 'argument_list']),
+  parameterNodeTypes: new Set(['parameter_declaration', 'variadic_parameter_declaration']),
+  bindingNodeTypes: new Set(['short_var_declaration', 'var_spec']),
+  assignmentNodeTypes: new Set(['assignment_statement']),
+  identifierNodeTypes: new Set(['identifier', 'field_identifier', 'package_identifier']),
+  // Multi-value forms (`a, b := f, g`) pair LHS/RHS expression_list entries
+  // positionally — the shared field fallback cross-wired first-LHS with
+  // last-RHS and synthesized a garbage comma-joined qualified name (#2522
+  // review). A length mismatch (multi-return call RHS) recognizes the node
+  // but emits nothing.
+  extractAssignment: (node: SyntaxNode) => {
+    if (node.type !== 'short_var_declaration' && node.type !== 'assignment_statement') {
+      return undefined;
+    }
+    const left = node.childForFieldName('left');
+    const right = node.childForFieldName('right');
+    if (left === null || right === null) return undefined;
+    if (left.type !== 'expression_list' || right.type !== 'expression_list') return undefined;
+    const destinations = left.namedChildren.filter((child): child is SyntaxNode => child !== null);
+    const sources = right.namedChildren.filter((child): child is SyntaxNode => child !== null);
+    if (destinations.length <= 1 && sources.length <= 1) return undefined;
+    if (destinations.length !== sources.length) return [];
+    return destinations.map((destination, index) => ({ destination, source: sources[index]! }));
+  },
+} as const;
 
 export function emitGoScopeCaptures(
   sourceText: string,
@@ -175,6 +205,7 @@ export function emitGoScopeCaptures(
   }
 
   out.push(...synthesizeGoInheritanceReferences(tree.rootNode));
+  out.push(...synthesizeCallableFlowCaptures(tree.rootNode, GO_CALLABLE_CAPTURE_OPTIONS));
 
   return out;
 }

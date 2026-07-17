@@ -55,7 +55,7 @@ import type { ParseWorkerResult } from '../core/ingestion/workers/parse-worker.j
 // the main thread (the #1983 OOM). Because the two stores share this version,
 // any future change to the `ParsedFile` serialization shape MUST bump
 // SCHEMA_BUMP so both invalidate in lockstep.
-const SCHEMA_BUMP = 13; // Durable ParsedFile chunk directories now replace one complete generation instead of accumulating worker shards across cache-miss analyses. Invalidate once so existing unbounded stores are rebuilt under the bounded contract. (12 = #2391 follow-up: Python module constant extraction semantics changed.)
+const SCHEMA_BUMP = 17; // Callable-value-flow operands now retain expression kind/qualified identity and formal signature metadata. (16 = direct callee identity; 15 = always-on callableFlowSites; 14 = #2437 value refs.)
 const GITNEXUS_PKG_VERSION = (() => {
   try {
     // package.json sits at gitnexus/package.json — two levels up from

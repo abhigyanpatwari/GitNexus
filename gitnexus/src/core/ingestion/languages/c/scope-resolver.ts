@@ -126,4 +126,10 @@ export const cScopeResolver: ScopeResolver = {
     const simple = def.qualifiedName?.split('.').pop() ?? def.qualifiedName ?? '';
     return isStaticName(def.filePath, simple);
   },
+  // Precise linkage-only variant used to associate a visible prototype with
+  // its implementation during callable-value actual-to-formal propagation.
+  hasFileLocalCallableLinkage: (def: SymbolDefinition) => {
+    const simple = def.qualifiedName?.split('.').pop() ?? def.qualifiedName ?? '';
+    return isStaticName(def.filePath, simple);
+  },
 };

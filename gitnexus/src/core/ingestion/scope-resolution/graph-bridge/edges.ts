@@ -24,7 +24,9 @@ import type { CalleeIdSink } from './callee-id-sink.js';
 
 /**
  * Optional resolved-callee-id capture context (#2227 follow-up U2). Threaded
- * in only under `--pdg` (else `undefined` → zero overhead, byte-identity R4).
+ * in under `--pdg` OR when always-on callable-flow facts need direct call
+ * targets (#2437 — the accumulator then carries a position filter); else
+ * `undefined` → zero overhead, byte-identity (R4).
  * `filePath` is NOT on the `site` param, so it rides here alongside the sink.
  */
 export interface CalleeIdCaptureCtx {
@@ -49,6 +51,12 @@ export function mapReferenceKindToEdgeType(
     case 'inherits':
       return 'EXTENDS';
     case 'type-reference':
+      return 'USES';
+    // A function registered as an object-literal property value emits a
+    // reference-class USES edge, NOT CALLS — a registration is not an
+    // invocation (Kythe `ref` vs `ref/call`; Joern `METHOD_REF`). The
+    // invocation side is synthesized by the property-dispatch pass (#2437).
+    case 'value-ref':
       return 'USES';
     // Macro invocations resolve to a `Macro` node (never a function), so
     // they emit `USES` — kept out of the `CALLS` keyspace which denotes

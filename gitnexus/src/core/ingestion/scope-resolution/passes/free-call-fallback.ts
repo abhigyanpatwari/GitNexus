@@ -89,10 +89,13 @@ export function emitFreeCallFallback(
      *  candidate (monotonicity). */
     readonly constraintCompatibility?: ScopeResolver['constraintCompatibility'];
     readonly recordResolutionOutcome?: ResolutionOutcomeRecorder;
-    /** Resolved-callee-id capture sink (#2227 U2). Threaded in only under
-     *  `--pdg`; `undefined` ⇒ zero overhead, byte-identity (R4). Captured at
-     *  the CALLS emit below BEFORE the collapsed `seen` dedup (KTD6) so
-     *  same-target multi-line calls are still recorded per site. */
+    /** Call sites owned by a later precise pass (for example callable-value-flow). */
+    readonly skipSites?: ReadonlySet<string>;
+    /** Resolved-callee-id capture sink (#2227 U2). Threaded in under `--pdg`
+     *  OR for callable-flow's direct-target index (#2437, position-filtered);
+     *  `undefined` ⇒ zero overhead, byte-identity (R4). Captured at the CALLS
+     *  emit below BEFORE the collapsed `seen` dedup (KTD6) so same-target
+     *  multi-line calls are still recorded per site. */
     readonly calleeIdSink?: CalleeIdSink;
   } = {},
 ): number {
@@ -123,6 +126,7 @@ export function emitFreeCallFallback(
     for (const site of parsed.referenceSites) {
       if (site.kind !== 'call') continue;
       if (site.explicitReceiver !== undefined) continue;
+      if (options.skipSites?.has(siteKey(parsed.filePath, site)) === true) continue;
 
       // Constructor form (`new User(...)`): resolve the class, then
       // emit CALLS to its explicit Constructor def (when present) or

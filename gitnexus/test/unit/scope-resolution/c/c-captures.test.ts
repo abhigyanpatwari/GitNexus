@@ -374,3 +374,15 @@ describe('emitCScopeCaptures — static storage class', () => {
     expect(isStaticName('a.c', 'get_buffer')).toBe(true);
   });
 });
+
+describe('emitCScopeCaptures — callable-flow signatures', () => {
+  it('variadic function-pointer signatures carry the "..." sentinel and no fixed arity (#2522)', () => {
+    const match = findMatch(
+      'int vlog(const char *fmt, ...) { return 0; }\nint entry(void) { int (*emit)(const char *, ...) = vlog; return 0; }',
+      (tags) => tags.includes('@callable-flow.seed'),
+    );
+    expect(match).toBeDefined();
+    expect(match?.['@callable-flow.expected-types']?.text).toBe('["char","..."]');
+    expect(match?.['@callable-flow.expected-arity']).toBeUndefined();
+  });
+});

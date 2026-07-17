@@ -40,6 +40,7 @@ import { computeTsArityMetadata } from './arity-metadata.js';
 import { isArrayMethodCallbackArrow } from './array-callback.js';
 import { getTreeSitterBufferSize } from '../../constants.js';
 import { parseSourceSafe } from '../../../tree-sitter/safe-parse.js';
+import { synthesizeCallableFlowCaptures } from '../../utils/callable-flow-captures.js';
 import {
   deriveDefaultExportHocName,
   isBlockedDefaultExportHoc,
@@ -69,6 +70,26 @@ const CALL_TAGS = [
   '@reference.call.member',
   '@reference.call.constructor',
 ] as const;
+
+const TS_CALLABLE_CAPTURE_OPTIONS = {
+  functionNodeTypes: new Set<string>(FUNCTION_NODE_TYPES),
+  callNodeTypes: new Set(['call_expression']),
+  parameterListNodeTypes: new Set(['formal_parameters', 'arguments']),
+  parameterNodeTypes: new Set([
+    'required_parameter',
+    'optional_parameter',
+    'rest_pattern',
+    'identifier',
+  ]),
+  bindingNodeTypes: new Set(['variable_declarator']),
+  assignmentNodeTypes: new Set(['assignment_expression', 'augmented_assignment_expression']),
+  identifierNodeTypes: new Set([
+    'identifier',
+    'property_identifier',
+    'shorthand_property_identifier_pattern',
+    'private_property_identifier',
+  ]),
+} as const;
 
 function pickFirstCapture(grouped: CaptureMatch, tags: readonly string[]): Capture | undefined {
   for (const tag of tags) {
@@ -421,6 +442,7 @@ export function emitTsScopeCaptures(
   synthesizeForOfMapTupleBindings(tree.rootNode, out);
   synthesizeInstanceofNarrowings(tree.rootNode, out);
   synthesizeTsInheritanceReferences(tree.rootNode, out);
+  out.push(...synthesizeCallableFlowCaptures(tree.rootNode, TS_CALLABLE_CAPTURE_OPTIONS));
 
   return out;
 }

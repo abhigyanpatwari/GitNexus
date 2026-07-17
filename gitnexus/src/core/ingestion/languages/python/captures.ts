@@ -32,6 +32,25 @@ import { recordCacheHit, recordCacheMiss } from './cache-stats.js';
 import { getTreeSitterBufferSize } from '../../constants.js';
 import { parseSourceSafe } from '../../../tree-sitter/safe-parse.js';
 import { pythonFunctionDefinitionLabel } from './simple-hooks.js';
+import { synthesizeCallableFlowCaptures } from '../../utils/callable-flow-captures.js';
+
+const PYTHON_CALLABLE_CAPTURE_OPTIONS = {
+  functionNodeTypes: new Set(['function_definition', 'lambda']),
+  callNodeTypes: new Set(['call']),
+  parameterListNodeTypes: new Set(['parameters', 'argument_list']),
+  parameterNodeTypes: new Set([
+    'identifier',
+    'default_parameter',
+    'typed_parameter',
+    'typed_default_parameter',
+    'list_splat_pattern',
+    'dictionary_splat_pattern',
+  ]),
+  bindingNodeTypes: new Set(['assignment', 'named_expression']),
+  assignmentNodeTypes: new Set(['assignment', 'named_expression']),
+  identifierNodeTypes: new Set(['identifier']),
+  functionScopedValueBindings: true,
+} as const;
 
 export function emitPythonScopeCaptures(
   sourceText: string,
@@ -169,6 +188,7 @@ export function emitPythonScopeCaptures(
   }
 
   out.push(...synthesizePythonInheritanceReferences(tree.rootNode));
+  out.push(...synthesizeCallableFlowCaptures(tree.rootNode, PYTHON_CALLABLE_CAPTURE_OPTIONS));
 
   return out;
 }

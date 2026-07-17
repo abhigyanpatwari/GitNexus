@@ -55,6 +55,7 @@ import type { Scope, ScopeId } from './types.js';
 import type { ParsedImport } from './types.js';
 import type { SymbolDefinition } from './symbol-definition.js';
 import type { ReferenceSite } from './reference-site.js';
+import type { CallableFlowSite } from './callable-flow-site.js';
 
 export interface ParsedFile {
   readonly filePath: string;
@@ -74,6 +75,12 @@ export interface ParsedFile {
    */
   readonly localDefs: readonly SymbolDefinition[];
   readonly referenceSites: readonly ReferenceSite[];
+  /**
+   * Compact, always-on facts for calls through assigned/passed callable
+   * values. Optional so hand-built fixtures and providers with no relevant
+   * syntax remain source-compatible; consumers normalize absence to `[]`.
+   */
+  readonly callableFlowSites?: readonly CallableFlowSite[];
   /**
    * Opaque, language-private serialization of capture-time side-channel
    * state that a provider's `emitScopeCaptures` populates into module-level
