@@ -52,18 +52,52 @@ const CPP_CALLABLE_CAPTURE_OPTIONS = {
   emitCanonicalInvokeReference: true,
   memberPointerOperators: new Set(['.*', '->*']),
   memberPointerParts: (node: SyntaxNode) => cppRecoveredMemberPointerParts(node),
-  parameterPassingMode: (parameter: SyntaxNode) =>
-    cppContainsNodeType(parameter, 'reference_declarator')
-      ? ('reference' as const)
-      : cppContainsNodeType(parameter, 'pointer_declarator')
-        ? ('pointer' as const)
-        : ('value' as const),
+  parameterPassingMode: (parameter: SyntaxNode) => cppOutermostPassingMode(parameter),
   isTrueReferenceBinding: (_container: SyntaxNode, destination: SyntaxNode) =>
     cppContainsNodeType(destination, 'reference_declarator'),
   expectedSignature: (container: SyntaxNode, destination: SyntaxNode) =>
     cppFunctionDeclaratorSignature(destination) ?? cppFunctionDeclaratorSignature(container),
   normalizeQualifiedName: (raw: string) => raw.replaceAll('::', '.'),
 } as const;
+
+/**
+ * Passing mode from the parameter's OUTERMOST declarator chain only. A deep
+ * subtree scan inverted copy vs alias: `void reg(void (*cb)(int& out))` has a
+ * `reference_declarator` inside the nested parameter list, but `cb` itself is
+ * a by-value pointer copy — classifying it 'reference' made the solver
+ * back-propagate formal targets into every caller's argument cell (#2522
+ * review, M5). The chain walk never descends into nested parameter lists.
+ */
+function cppOutermostPassingMode(parameter: SyntaxNode): 'reference' | 'pointer' | 'value' {
+  let sawReference = false;
+  let sawPointer = false;
+  let node: SyntaxNode | null = parameter.childForFieldName('declarator') ?? null;
+  const visited = new Set<number>();
+  while (node !== null && !visited.has(node.id)) {
+    visited.add(node.id);
+    if (node.type === 'reference_declarator' || node.type === 'abstract_reference_declarator') {
+      // A reference ANYWHERE on the chain aliases the caller's storage —
+      // `void (*&cb)(int)` is a reference to pointer, i.e. an alias.
+      sawReference = true;
+    } else if (node.type === 'pointer_declarator' || node.type === 'abstract_pointer_declarator') {
+      sawPointer = true;
+    }
+    const next: SyntaxNode | null = node.childForFieldName('declarator');
+    if (next !== null) {
+      node = next;
+      continue;
+    }
+    if (node.type === 'parenthesized_declarator') {
+      node =
+        node.namedChildren.find(
+          (child): child is SyntaxNode => child !== null && child.type.includes('declarator'),
+        ) ?? null;
+      continue;
+    }
+    break;
+  }
+  return sawReference ? 'reference' : sawPointer ? 'pointer' : 'value';
+}
 
 function cppRecoveredMemberPointerParts(
   node: SyntaxNode,
