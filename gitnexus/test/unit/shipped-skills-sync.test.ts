@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
+import { RENAMED_SKILL_DIRS } from '../../src/cli/setup.js';
 
 // The engineering skill family is authored once under .claude/skills/ and
 // shipped as byte-identical copies through the npm package's skills/ directory
@@ -81,3 +82,31 @@ describe('gitnexus-review target contract', () => {
     expect(skill).not.toContain('name: gitnexus-pr-review');
   });
 });
+
+// ── Resurrection guard ──
+// A skill's OLD directory name must never reappear in a shipped tree: setup
+// would install it again alongside the new name, and the rename warning in
+// setup.ts would point at a dir we ourselves shipped. Empty directories are
+// treated as absent (checkout residue can leave empty dirs on disk locally),
+// so the assertion is "no files inside", not fs.existsSync of the dir.
+const filesUnder = (dir: string): string[] => (fs.existsSync(dir) ? listFilesRecursive(dir) : []);
+
+describe.each(Object.values(RENAMED_SKILL_DIRS).flat())(
+  'legacy skill name %s stays out of the shipped trees',
+  (legacyName) => {
+    it.each([
+      path.join(REPO_ROOT, '.claude', 'skills'),
+      path.join(REPO_ROOT, 'gitnexus', 'skills'),
+      path.join(REPO_ROOT, 'gitnexus-claude-plugin', 'skills'),
+      path.join(REPO_ROOT, 'gitnexus-cursor-integration', 'skills'),
+    ])('has no files under %s', (skillsRoot) => {
+      expect(filesUnder(path.join(skillsRoot, legacyName))).toEqual([]);
+    });
+
+    it('has no flat copy in the npm package skills root', () => {
+      expect(fs.existsSync(path.join(REPO_ROOT, 'gitnexus', 'skills', `${legacyName}.md`))).toBe(
+        false,
+      );
+    });
+  },
+);

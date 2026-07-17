@@ -1017,9 +1017,17 @@ async function setupCodex(result: SetupResult): Promise<void> {
 
 // ─── Skill Installation ───────────────────────────────────────────
 
-const RENAMED_SKILL_DIRS: Readonly<Record<string, readonly string[]>> = {
+export const RENAMED_SKILL_DIRS: Readonly<Record<string, readonly string[]>> = {
   'gitnexus-review': ['gitnexus-pr-review'],
 };
+
+/**
+ * Every legacy directory name superseded by a shipped rename. These no longer
+ * exist in the bundled skills/ source, but a pre-rename install left them
+ * behind in every editor target. Setup only warns about them (it cannot prove
+ * it owns the contents); uninstall's ownership-by-name contract removes them.
+ */
+export const LEGACY_SKILL_DIR_NAMES: readonly string[] = Object.values(RENAMED_SKILL_DIRS).flat();
 
 /**
  * Install GitNexus skills to a target directory.

@@ -43,6 +43,7 @@ import {
   type JSONPath,
 } from 'jsonc-parser';
 import { getEditorTargets, detectIndentation, isEnoent } from './editor-targets.js';
+import { LEGACY_SKILL_DIR_NAMES } from './setup.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -212,7 +213,8 @@ async function removeDir(dirPath: string, dryRun: boolean): Promise<boolean> {
 /**
  * The exact set of skill directory names setup installs, derived from the
  * bundled `skills/` source the same way installSkillsTo does (flat
- * `{name}.md` and `{name}/SKILL.md` layouts). Deriving the set — rather
+ * `{name}.md` and `{name}/SKILL.md` layouts), plus the legacy names that
+ * older setups installed before a shipped rename. Deriving the set — rather
  * than globbing `gitnexus-*` — ensures we never delete a user's own
  * similarly-named skill folder.
  */
@@ -220,7 +222,10 @@ async function listGitnexusSkillNames(): Promise<string[]> {
   const skillsRoot =
     process.env.GITNEXUS_TEST_SKILLS_ROOT ?? path.join(__dirname, '..', '..', 'skills');
 
-  const names = new Set<string>();
+  // Seed with legacy names superseded by shipped renames: they dropped out of
+  // the bundled source, but a pre-rename install left them behind in every
+  // target. Setup only warns about them; uninstall removes by name by design.
+  const names = new Set<string>(LEGACY_SKILL_DIR_NAMES);
   try {
     const entries = await fs.readdir(skillsRoot, { withFileTypes: true });
     for (const entry of entries) {
