@@ -316,6 +316,17 @@ function buildValueBindingIndex(
     const binding = bindingIdentifier(node, options);
     const signature = options.expectedSignature?.(node, node);
     if (binding === undefined || signature === undefined) continue;
+    // Only callable-typed VARIABLE declarations (`void (*fp)(int);`) create
+    // value cells — a plain function/method prototype (`void f(int);`)
+    // declares a callee, not a value. A variable declarator interposes a
+    // pointer/parenthesized declarator between the declaration and its
+    // identifier; a prototype's identifier hangs directly off the function
+    // declarator. Indexing prototypes here turned every call to a declared
+    // function into an indirect invoke — and, with
+    // `emitCanonicalInvokeReference`, minted a free-call reference that
+    // bypassed the precise passes' two-phase/ambiguity suppression
+    // (#2522 CI: eight cpp resolver tests gained a phantom edge).
+    if (!bindingInterposesValueDeclarator(node, binding)) continue;
     const region = nearestLexicalRegion(node, options);
     let byRegion = signatureByNameAndRegion.get(binding.text);
     if (byRegion === undefined) {
@@ -329,6 +340,19 @@ function buildValueBindingIndex(
     }
   }
   return { assignmentRegionIdsByName, formalByOwner, signatureByNameAndRegion };
+}
+
+/** True when a pointer/parenthesized declarator sits between the declaration
+ *  and its binding identifier — the shape of a callable-typed variable, never
+ *  of a plain prototype. Only C/C++ supply signature-declaration node types,
+ *  so the type-name sniff stays scoped to those grammars. */
+function bindingInterposesValueDeclarator(declaration: SyntaxNode, binding: SyntaxNode): boolean {
+  let node: SyntaxNode | null = binding.parent;
+  while (node !== null && node.id !== declaration.id) {
+    if (node.type.includes('pointer') || node.type.includes('parenthesized')) return true;
+    node = node.parent;
+  }
+  return false;
 }
 
 function nearestFunctionOwner(
