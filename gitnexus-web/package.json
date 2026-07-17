@@ -19,7 +19,7 @@
   },
   "dependencies": {
     "@langchain/anthropic": "^1.3.29",
-    "@langchain/core": "^1.1.49",
+    "@langchain/core": "^1.2.2",
     "@langchain/google-genai": "^2.2.0",
     "@langchain/langgraph": "^1.4.7",
     "@langchain/ollama": "^1.2.7",
