@@ -62,12 +62,18 @@ export function emitCobolScopeCaptures(
   const out: CaptureMatch[] = [];
   const procedurePointers = new Set(
     extracted.dataItems
-      .filter((item) => item.usage?.toUpperCase().includes('PROCEDURE-POINTER') === true)
+      .filter((item) => /(?:PROCEDURE|FUNCTION)-POINTER/.test(item.usage?.toUpperCase() ?? ''))
       .map((item) => item.name.toUpperCase()),
   );
-  for (const line of lines) {
+  // Fallback for declarations the clause parser missed. Scan CLEANED lines —
+  // on raw fixed-format sources the sequence number (cols 1-6) satisfied
+  // `\d+` and the LEVEL NUMBER got captured as the name, so the set never
+  // contained the real pointer name and the whole feature no-op'd (#2522
+  // review, H3). COBOL data names must contain a letter, so `[A-Z]` first
+  // rejects level numbers.
+  for (const line of cleaned.split(/\r?\n/)) {
     const declaration = line.match(
-      /^\s*\d+\s+([A-Z0-9][A-Z0-9-]*).*\b(?:USAGE\s+(?:IS\s+)?)?PROCEDURE-POINTER\b/i,
+      /^\s*\d{1,2}\s+([A-Z][A-Z0-9-]*).*\b(?:PROCEDURE|FUNCTION)-POINTER\b/i,
     );
     if (declaration !== null) procedurePointers.add(declaration[1]!.toUpperCase());
   }

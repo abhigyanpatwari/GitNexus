@@ -607,7 +607,7 @@ function parseDataItemClauses(rest: string): {
 
   // USAGE [IS] <usage-type> — including non-standard COMP-6, COMP-X etc.
   const usageMatch = text.match(
-    /\bUSAGE\s+(?:IS\s+)?(COMP(?:UTATIONAL)?(?:-[0-9X])?|BINARY|PACKED-DECIMAL|DISPLAY|INDEX|POINTER|NATIONAL)\b/i,
+    /\bUSAGE\s+(?:IS\s+)?(PROCEDURE-POINTER|FUNCTION-POINTER|COMP(?:UTATIONAL)?(?:-[0-9X])?|BINARY|PACKED-DECIMAL|DISPLAY|INDEX|POINTER|NATIONAL)\b/i,
   );
   if (usageMatch) {
     result.usage = usageMatch[1].toUpperCase();
