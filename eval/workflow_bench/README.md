@@ -129,6 +129,45 @@ verified agent trajectories as reward evidence; it is intentionally not
 online model-weight RL. The same records can feed a later offline RL pipeline
 without weakening today's deterministic promotion boundary.
 
+### Closing the loop automatically (`evolve.py`)
+
+`workflow_bench.evolve` automates the three manual arrows — propose,
+benchmark, apply — without moving the trust boundary:
+
+```bash
+cd eval
+uv run python -m workflow_bench.evolve \
+  --tasks workflow_bench/tasks.scenarios.yaml \
+  --model <pinned-model-id> --generations 2 \
+  --seed-results results/wfbench-<prior-run>   # optional gen-0 evidence
+```
+
+Each generation: a **proposer** session (headless Claude in a throwaway
+clone) reads the incumbent skills, the prior generation's `results.jsonl`
+loser rows, their session transcripts and patches, and the learning queue,
+then writes ONE bounded candidate overlay plus a reviewer-facing
+`proposal.md`. The overlay is re-validated by `candidate_overlay_files`
+(same boundary: Markdown under the four skill trees, nothing else), the
+paired benchmark runs, and the deterministic gate decides. `promote` stops
+the loop; with `--apply` the overlay is copied onto the canonical
+`.claude/skills/` trees and their shipped mirrors as an ordinary
+working-tree diff — committing, CI (`shipped-skills-sync`,
+`skills-steering`), and the PR merge stay human. `keep_incumbent` feeds that
+generation's trajectories to the next proposer. `--initial-overlay` skips
+the generation-0 proposer to benchmark a hand-written candidate;
+`--proposer-model` upgrades only the diagnosis session.
+
+**Learning queue.** Live skill runs never self-edit (see each skill's
+"Skill feedback" section) — instead they may append one-line JSON notes to
+`workflow_bench/learnings.jsonl` (gitignored, machine-local like the
+transcripts they complement). The proposer reads the queue as hints, not
+ground truth: a learning only reaches a shipped skill by surviving the same
+paired benchmark as any other candidate.
+
+Run the driver on the existing re-evaluation triggers (model/harness change,
+90-day staleness), not on a tight schedule — every generation costs ≥3 paired
+runs per task, and `--generations` is the only loop bound.
+
 ## Free-model setup (no paid tokens)
 
 Headless Claude Code honors `ANTHROPIC_BASE_URL`, and litellm (already an
