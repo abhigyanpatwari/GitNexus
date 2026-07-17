@@ -69,8 +69,15 @@ worktree for the PR/ref head, review there, and remove only that temporary
 worktree afterward. Never switch or reset the user's current worktree.
 
 Check GitNexus status in the target worktree. If stale, run
-`node .gitnexus/run.cjs analyze --index-only` before trusting graph results.
-For local changes, refresh the index so new or modified source is represented.
+`analyze --index-only` via the resolved runner (`node .gitnexus/run.cjs` →
+installed `gitnexus` → `npx gitnexus`; temporary worktrees never carry the
+gitignored `run.cjs`) before trusting graph results — and include `--pdg` in
+that same refresh when the diff plausibly touches trust or data-flow
+boundaries, so the taint pass below doesn't pay a second full analyze. Taint
+and dependence evidence needs that PDG layer: when the workflow's taint pass
+finds it missing, rebuild with `analyze --pdg --index-only` and record the
+rebuild in provenance. For local changes, refresh the index so new or
+modified source is represented.
 If an exact target checkout/index cannot be established, state the limitation
 and do not claim a complete graph-backed review.
 
@@ -92,16 +99,69 @@ and do not claim a complete graph-backed review.
    contract and caller behavior in source.
 5. Use `context` on key or ambiguous symbols and inspect affected execution
    flows. Read the surrounding implementation and tests at cited locations.
-6. Check whether tests exercise the changed behavior, boundary conditions, and
+6. **Taint and dependence pass.** For changed code on trust or data-flow
+   boundaries — external input, persistence, process execution, network,
+   auth — run `explain` on the changed files or symbols and judge its
+   source→sink taint findings against the diff: a flow the change
+   introduces, or a sanitizer/guard the change removes, is a finding; a
+   pre-existing flow is context, not a defect of this change. When the
+   change claims to guard or sanitize something, verify with `pdg_query`:
+   what controls the changed statement, and where its values flow. This
+   needs a `--pdg` index; if one cannot be built, state that the taint pass
+   was skipped rather than implying coverage.
+7. Check whether tests exercise the changed behavior, boundary conditions, and
    affected flows. Run focused read-only validation when practical.
-7. Reconcile graph evidence with the raw diff. New files, dynamic dispatch,
+8. Reconcile graph evidence with the raw diff. New files, dynamic dispatch,
    configuration, reflection, and untracked content may require direct review
    even when graph results are empty.
+
+## Expert lenses
+
+Depth comes from matching reviewers to what actually changed, not from one
+generalist pass. After workflow step 2, group the changed files and symbols
+by the functional areas the graph already knows — the index's cluster
+listing; `context` names each symbol's cluster — and give each touched area
+an expert lens: a reviewer charged with that domain's contracts, invariants,
+and failure modes, grounded in the repo's own material (architecture docs,
+agent rules, the domain's tests) before judging the diff. The numbered
+workflow runs exactly once; dispatch the lens passes after step 6, handing
+each lens the evidence already collected rather than letting lenses repeat
+the `impact`, `context`, or taint calls. In GitNexus
+itself, for example: shared ingestion-pipeline changes get an ingestion
+expert plus one language expert per changed language extractor; embeddings
+changes an embeddings expert; LadybugDB/storage changes a Ladybug expert.
+
+Four cross-cutting lenses run regardless of domain:
+
+- **Architectural fit** — the change lands where the architecture says the
+  concern lives, reuses existing seams, and adds no parallel structure.
+- **Language conformance** — the repo's own type/lint/test contract as
+  configured (tsconfig strictness, lint rules, test conventions); in a
+  strict TypeScript repo, for example: strictness intact, no `any`/`as any`
+  escapes, module boundaries typed. Judge by the repo's contract, never a
+  universal style bar.
+- **Definition of Done** — changed behavior has tests, docs the change makes
+  stale are updated, and sync/drift guards (shipped copies, manifests,
+  changelogs) still hold.
+- **Simplicity** — YAGNI and clear-code check: flag speculative abstraction,
+  unused knobs, and overengineering; the smallest diff that meets the
+  Definition of Done is the standard.
+
+Scale effort to the surface: a single-domain change of a few files gets one
+combined pass covering its domain lens plus the four cross-cutting checks;
+a multi-domain change gets one lens per touched area — run as parallel
+subagents where the harness supports them, each scoped to its own files
+plus the shared graph evidence, and as sequential passes otherwise. Never
+spawn a lens for a domain the diff does not touch. Every lens reports
+through the Finding standard below; merge and dedup before the verdict,
+dropping anything without a concrete failing scenario.
 
 ## Finding standard
 
 Report a finding only when the reviewed change introduces a concrete defect,
-regression, security issue, compatibility break, or material coverage gap.
+regression, security issue, compatibility break, material coverage gap, or a
+maintainability cost with a concrete carrying scenario (a dead knob, a
+duplicated contract, a drift-prone copy).
 Each finding must include:
 
 - severity and a precise `path:line` anchor;

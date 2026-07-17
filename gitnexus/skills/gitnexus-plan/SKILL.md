@@ -88,7 +88,7 @@ review findings, an executor route-back — not a default follow-up question.
 
 **Turn economy is a deliverable.** The plan is judged on decision quality per
 token, not thoroughness theater (measured: a 63-turn plan for a two-line
-change — see `eval/workflow_bench/`). Stay within the category's tool-call
+change — the GitNexus repo's `eval/workflow_bench/`). Stay within the category's tool-call
 budget; when the budget runs out with questions still open, record them in
 §12 instead of digging further — the executor re-verifies cheaply anyway.
 
@@ -107,8 +107,8 @@ budget; when the budget runs out with questions still open, record them in
 4. Read `gitnexus://repo/{name}/context` — codebase overview + staleness check.
    **Freshness gate.** Plans built on a stale graph make stale blast-radius
    claims — but a refresh (analyzer rebuild + re-index) is the single
-   largest fixed cost a planning session carries (measured in
-   `eval/workflow_bench/`), so the gate is category-priced:
+   largest fixed cost a planning session carries (measured in the GitNexus
+   repo's `eval/workflow_bench/`), so the gate is category-priced:
    - Compact-plan categories default to `freshness: accept`: plan on the
      current graph with source verification weighted higher — their plans
      cite little graph evidence. Escalate to a refresh mid-plan only when a

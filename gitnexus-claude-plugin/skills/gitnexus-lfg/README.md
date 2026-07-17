@@ -44,3 +44,12 @@ skills for each lane. Stop at the plan gate for the user's choice.
 | Plan | `gitnexus-plan` (`.claude/skills/gitnexus-plan/`) | Depth asked up front; blocking gate: proceed / stop |
 | Work | `gitnexus-work` (`.claude/skills/gitnexus-work/`) | Structural drift routes back to the plan gate |
 | Review | `gitnexus-review` (`.claude/skills/gitnexus-review/`) | One fix cycle max, then report |
+
+## Threshold governance (maintainers)
+
+The Lane 1 planning boundary (~35 turns) is a promoted benchmark policy from
+the GitNexus repository's `eval/workflow_bench/` paired candidate loop.
+Re-evaluate it offline whenever the named model or tool harness changes, and
+at least every 90 days; update the SKILL.md threshold only after the
+deterministic promotion gate shows no quality regression. Reading agents
+never self-edit it from a live task.

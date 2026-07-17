@@ -28,7 +28,8 @@ executor counterpart to the planning-only `gitnexus-plan`.
   decisions) → implement directly with the same discipline: `impact` before
   every symbol edit, minimal change, tests when behavior changes,
   verification commands taken from the repo's own scripts (package.json /
-  CI), `detect_changes` before every commit. Anything larger → recommend
+  CI), `detect_changes` before every commit, and the Phase 4
+  knowledge-graph refresh after the final commit. Anything larger → recommend
   running `/gitnexus-plan` first; honor the user's choice if they decline.
 
 ## Phase 1 — Load and re-anchor the plan
@@ -117,7 +118,16 @@ choice isn't obvious.
 2. Walk plan §13 (Definition of Done) and the pack's `acceptance_criteria`
    item by item; anything unmet is either finished now or reported as
    explicitly unmet — never silently dropped.
-3. Report: steps completed, commits made, deviations from the plan (with
+3. **Refresh the knowledge graph.** The commits just changed the code the
+   index describes; after the last commit has landed, run
+   `analyze --index-only` via the resolved runner (`node .gitnexus/run.cjs`
+   → installed `gitnexus` → `npx gitnexus`, the same ladder gitnexus-plan
+   resolves), adding `--pdg` when the index carries the PDG layer (one
+   `pdg_query` probe tells you). `--index-only` writes only the `.gitnexus`
+   index store, never repo files, so the tree stays coherent — and the
+   review lane and every later session query the finished work, not the
+   pre-work graph. Skip only when no commit landed.
+4. Report: steps completed, commits made, deviations from the plan (with
    why), assumptions that failed re-verification, DoD status, and anything
    deferred. Test failures are reported with their output, not smoothed
    over.

@@ -21,15 +21,13 @@ never inline a summary of what the skill would have done.
 **Boundary triage first.** If the task is plainly below the planning
 boundary — trivial or small-bounded work an agent finishes in well under ~35
 turns (the measured regime where a planning pass costs more than it returns;
-see `eval/workflow_bench/`) — say so and offer `gitnexus-work` direct mode as
-an alternative to the full pipeline before spending the plan lane. Honor the
-user's choice.
+measured in the GitNexus repository's `eval/workflow_bench/`) — say so and
+offer `gitnexus-work` direct mode as an alternative to the full pipeline
+before spending the plan lane. Honor the user's choice.
 
-The threshold is a promoted benchmark policy, not a timeless heuristic. Never
-self-edit it from a live task. Re-evaluate it offline with the paired candidate
-loop in `eval/workflow_bench/` whenever the named model or tool harness changes,
-and at least every 90 days; update this skill only after the deterministic gate
-shows no quality regression.
+The threshold is a promoted benchmark policy measured offline, not a
+timeless heuristic — never self-edit it from a live task. Its re-evaluation
+governance lives in this skill's README.
 
 Otherwise invoke `gitnexus-plan` with the task (knob overrides pass through
 verbatim; `gitnexus-plan` owns the up-front depth question — never ask it
@@ -60,8 +58,8 @@ and say so in the final report. Never auto-proceed to execution.
 ## Lane 3 — Work
 
 Invoke `gitnexus-work` with the plan path. It re-anchors the plan at HEAD,
-executes the Implementation Sequence as verified atomic commits, and reports
-deviations. If it routes back for re-planning (structural drift), run the
+executes the Implementation Sequence as verified atomic commits, refreshes
+the knowledge graph when done (its Phase 4), and reports deviations. If it routes back for re-planning (structural drift), run the
 Deepen pass and return to the Lane 2 gate rather than pushing through.
 
 ## Lane 4 — Review
