@@ -66,6 +66,16 @@ The category posture overrides the Configuration baseline; explicit `key:value`
 invocation knobs override both. A task matching several rows combines them:
 take the widest depth, union the focus areas.
 
+**Seeded evidence.** When a completed investigation already supplies
+verified findings — a finished review, a triage document with `path:line`
+anchors and named failing scenarios — open the ledger FROM it: cite the
+source document as the opening ledger entries and plan directly against
+them instead of re-running the graph ladder over ground it already covers.
+Re-deriving what the evidence proves is budget spent against the
+turn-economy rule. Phase 4 still source-verifies whatever Proposed Changes
+will cite, at the pinned commit — seeding replaces exploration, never
+verification.
+
 **Depth is the user's decision, asked once, up front.** In an interactive
 session, when the invocation carries no explicit depth signal (no `depth:`,
 `form:`, or `freshness:` knob, and not Deepen mode), ask one blocking

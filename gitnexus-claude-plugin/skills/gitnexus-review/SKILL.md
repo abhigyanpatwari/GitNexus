@@ -110,10 +110,20 @@ and do not claim a complete graph-backed review.
    needs a `--pdg` index; if one cannot be built, state that the taint pass
    was skipped rather than implying coverage.
 7. Check whether tests exercise the changed behavior, boundary conditions, and
-   affected flows. Run focused read-only validation when practical.
+   affected flows. Run focused read-only validation when practical. When the
+   diff refreshes a committed baseline, fingerprint, or golden, re-run the
+   exact CI check command against the head instead of trusting the committed
+   value — a stale artifact is invisible in the diff and fails only in CI.
 8. Reconcile graph evidence with the raw diff. New files, dynamic dispatch,
    configuration, reflection, and untracked content may require direct review
-   even when graph results are empty.
+   even when graph results are empty. Version and invalidation constants are
+   review surface: when the diff changes what gets emitted or persisted,
+   verify every schema/version constant gating caches, incremental
+   writebacks, and fingerprint baselines was bumped or regenerated — in
+   GitNexus itself, for example: `INCREMENTAL_SCHEMA_VERSION` (the
+   incremental write set covers only changed files, so new cross-file edges
+   never reach an existing index without the bump), the parse-store
+   `SCHEMA_BUMP`, and both bench fingerprint sets.
 
 ## Expert lenses
 
@@ -123,7 +133,14 @@ by the functional areas the graph already knows — the index's cluster
 listing; `context` names each symbol's cluster — and give each touched area
 an expert lens: a reviewer charged with that domain's contracts, invariants,
 and failure modes, grounded in the repo's own material (architecture docs,
-agent rules, the domain's tests) before judging the diff. The numbered
+agent rules, the domain's tests) before judging the diff. A lens verifies,
+not just reads: when the changed code is a pure function reachable from the
+repo's own toolchain — parsers, extractors, capture emitters, formatters —
+execute it on the candidate failing shape (a scratch probe, deleted
+afterward) and cite the observed output. An empirical probe outranks source
+reading in the evidence hierarchy; role swaps, dead branches, and
+error-recovery-dependent behavior repeatedly pass a reading and fail a
+ten-line probe. The numbered
 workflow runs exactly once; dispatch the lens passes after step 6, handing
 each lens the evidence already collected rather than letting lenses repeat
 the `impact`, `context`, or taint calls. In GitNexus

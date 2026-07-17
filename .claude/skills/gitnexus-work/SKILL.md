@@ -96,12 +96,22 @@ Work through plan §7 step by step, in order. For each step:
 4. **Test from the plan's scenarios.** Each `tests[]` scenario (input →
    action → expected outcome) becomes a real test in the named file. Add
    coverage the plan missed if the step's behavior demands it; never delete
-   or weaken an assertion to make a step pass.
+   or weaken an assertion to make a step pass. Prove a new regression test
+   discriminates: when the failure mode is subtle, run it once against the
+   pre-fix tree (write the test before the fix, or stash the fix) and watch
+   it fail — a test that passes both ways pins nothing.
 5. **Verify.** Run the step-relevant `verification_commands` (they carry
-   their build prerequisites; use them as written).
+   their build prerequisites; use them as written). If any part of the
+   change executes from build output — worker entrypoints, dist-shipped
+   CLIs, bundled assets — rebuild that output before every verification
+   run: a pass or fail against outdated build output is noise, and "the
+   fix doesn't work" is more often "the fix never loaded".
 6. **Commit atomically.** `detect_changes {scope: "staged"}` before every
    commit to confirm only the expected symbols and flows are affected
-   (repo mandate); then one conventional commit per step. Unexpected
+   (repo mandate); then one conventional commit per step. Run stage →
+   `detect_changes` → commit as one unbroken sequence from the repository
+   root — interleaving other work between the gate and the commit is how
+   the gate gets skipped. Unexpected
    affected flows → investigate before committing, not after.
 
 Steps are independently actionable: after any commit the tree is coherent.

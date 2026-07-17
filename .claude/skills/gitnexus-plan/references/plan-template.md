@@ -160,7 +160,11 @@ Composition notes:
   labelled as such.
 - §6 changes may only name symbols the ledger marks `source_verified`.
 - §7 steps are ordered by dependency and independently actionable — an
-  executor can stop after any step with the tree still coherent.
+  executor can stop after any step with the tree still coherent. Steps that
+  change output guarded by fingerprints, goldens, or recorded baselines
+  regenerate those artifacts ONCE, in the final step of the sequence — CI
+  judges only the tip, and per-step refreshes churn every intermediate
+  commit and re-drift as later steps land.
 - §8 names real, located test files for updates; new tests get concrete
   scenario lists (input → action → expected outcome). Verification commands
   must exist AND be runnable: prefer the npm/CI script form that carries its
