@@ -74,7 +74,7 @@
     "tree-sitter-wasms": "^0.1.13",
     "typescript": "^5.4.5",
     "vite": "^8.1.4",
-    "vitest": "^4.1.5",
+    "vitest": "^4.1.10",
     "wait-on": "^9.0.10"
   },
   "overrides": {
