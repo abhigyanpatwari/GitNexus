@@ -4,7 +4,7 @@ ARG TARGETPLATFORM
 # gitnexus/Dockerfile.test.
 ARG NPM_VERSION=11.14.1
 
-# node:22-bookworm-slim
+# node:25-bookworm-slim
 FROM --platform=$BUILDPLATFORM node:25-bookworm-slim@sha256:81db02c4b671288a03915da9534dbd54f96d0e7c24d80ccc54f5b36b2e684370 AS builder
 ARG NPM_VERSION
 
@@ -26,7 +26,7 @@ RUN npm ci --prefix gitnexus-web
 COPY gitnexus-web ./gitnexus-web
 RUN npm run build --prefix gitnexus-web
 
-# node:22-bookworm-slim
+# node:25-bookworm-slim
 FROM node:25-bookworm-slim@sha256:81db02c4b671288a03915da9534dbd54f96d0e7c24d80ccc54f5b36b2e684370 AS runtime
 
 RUN apt-get update && apt-get install -y --no-install-recommends curl && rm -rf /var/lib/apt/lists/* \
