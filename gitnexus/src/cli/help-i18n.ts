@@ -96,6 +96,7 @@ const OPTION_DESCRIPTION_KEYS = {
   'wiki|--concurrency <n>': 'help.option.wiki.concurrency',
   'wiki|--timeout <seconds>': 'help.option.wiki.timeout',
   'wiki|--retries <n>': 'help.option.wiki.retries',
+  'wiki|--allow-insecure-connection <host>': 'help.option.wiki.allowInsecureConnection',
   'wiki|--gist': 'help.option.wiki.gist',
   'wiki|-v, --verbose': 'help.option.verbose',
   'wiki|--review': 'help.option.wiki.review',

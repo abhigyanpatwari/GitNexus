@@ -579,6 +579,17 @@ describe('wikiCommand --timeout mapping', () => {
 
   async function loadWikiCommandHarness() {
     let capturedConfig: Record<string, unknown> | undefined;
+    const resolveLLMConfig = vi.fn().mockImplementation((overrides = {}) =>
+      Promise.resolve({
+        apiKey: 'sk-test',
+        baseUrl: 'https://api.openai.com/v1',
+        model: 'gpt-4o',
+        maxTokens: 16_384,
+        temperature: 0,
+        provider: 'openai',
+        ...overrides,
+      }),
+    );
     const generatorCtor = vi
       .fn()
       .mockImplementation(function (_repoPath, _storagePath, _lbugPath, config) {
@@ -609,14 +620,7 @@ describe('wikiCommand --timeout mapping', () => {
       const actual = await importOriginal<typeof import('../../src/core/wiki/llm-client.js')>();
       return {
         ...actual,
-        resolveLLMConfig: vi.fn().mockResolvedValue({
-          apiKey: 'sk-test',
-          baseUrl: 'https://api.openai.com/v1',
-          model: 'gpt-4o',
-          maxTokens: 16_384,
-          temperature: 0,
-          provider: 'openai',
-        }),
+        resolveLLMConfig,
       };
     });
     vi.doMock('../../src/core/wiki/generator.js', () => ({
@@ -642,6 +646,7 @@ describe('wikiCommand --timeout mapping', () => {
       generatorCtor,
       consoleSpy,
       getCapturedConfig: () => capturedConfig,
+      resolveLLMConfig,
     };
   }
 
@@ -670,6 +675,25 @@ describe('wikiCommand --timeout mapping', () => {
 
     expect(harness.generatorCtor).toHaveBeenCalledTimes(1);
     expect(harness.getCapturedConfig()?.maxAttempts).toBe(5);
+  });
+
+  it('maps --allow-insecure-connection to allowedInsecureHttpHosts', async () => {
+    const harness = await loadWikiCommandHarness();
+
+    await harness.wikiCommand('/tmp/repo', {
+      allowInsecureConnection: 'llama-box.local,192.168.1.23,llama-box.local',
+    });
+
+    expect(harness.resolveLLMConfig).toHaveBeenCalledWith(
+      expect.objectContaining({
+        allowedInsecureHttpHosts: ['llama-box.local', '192.168.1.23'],
+      }),
+    );
+    expect(harness.generatorCtor).toHaveBeenCalledTimes(1);
+    expect(harness.getCapturedConfig()?.allowedInsecureHttpHosts).toEqual([
+      'llama-box.local',
+      '192.168.1.23',
+    ]);
   });
 });
 
