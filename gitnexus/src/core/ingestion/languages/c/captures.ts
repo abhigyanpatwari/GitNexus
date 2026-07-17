@@ -177,8 +177,15 @@ function functionDeclaratorSignature(node: SyntaxNode): CallableCaptureSignature
   const parameterNodes = parameters.namedChildren.filter(
     (child): child is SyntaxNode => child !== null && child.type === 'parameter_declaration',
   );
+  // tree-sitter-c materializes `...` as a NAMED `variadic_parameter` node —
+  // the anonymous-token checks never matched, so variadic signatures were
+  // emitted with a wrong fixed arity (#2522 review). Keep the token checks
+  // for grammar variants that expose `...` as an anonymous literal.
   const hasEllipsis = parameters.children.some(
-    (child) => child.type === '...' || (!child.isNamed && child.text === '...'),
+    (child) =>
+      child.type === 'variadic_parameter' ||
+      child.type === '...' ||
+      (!child.isNamed && child.text === '...'),
   );
   const isVoidOnly =
     parameterNodes.length === 1 &&
