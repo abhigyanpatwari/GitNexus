@@ -1214,9 +1214,7 @@ function indexFormalsByGraphId(
       // caller lookup. Join the provider-supplied owner identity to canonical
       // defs as a fallback (important for function-reference parameters).
       const fallbackTargets =
-        site.ownerQualifiedName === undefined
-          ? (targetIndexes.byFileAndName.get(`${parsed.filePath}\0${site.ownerName}`) ?? [])
-          : (targetIndexes.byQualifiedName.get(normalizeSymbolName(site.ownerQualifiedName)) ?? []);
+        targetIndexes.byFileAndName.get(`${parsed.filePath}\0${site.ownerName}`) ?? [];
       const anchoredFallbacks = fallbackTargets.filter(
         (target) =>
           target.def.filePath === parsed.filePath &&

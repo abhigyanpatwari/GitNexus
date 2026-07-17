@@ -339,7 +339,6 @@ function isValidCallableFlowSite(value: unknown): value is CallableFlowSite {
     case 'formal':
       return (
         isBoundedString(value.ownerName) &&
-        isOptionalBoundedString(value.ownerQualifiedName) &&
         isValidRange(value.ownerRange) &&
         isSafeIndex(value.parameterIndex) &&
         isValidOperand(value.binding) &&

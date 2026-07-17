@@ -571,14 +571,6 @@ describe('Pass 6: callable-value-flow facts', () => {
       {
         '@callable-flow.formal': cap('@callable-flow.formal', 10, 0, 60, 0),
         '@callable-flow.owner': cap('@callable-flow.owner', 10, 0, 60, 0, 'invoke'),
-        '@callable-flow.owner-qualified-name': cap(
-          '@callable-flow.owner-qualified-name',
-          10,
-          0,
-          60,
-          0,
-          'Api.invoke',
-        ),
         '@callable-flow.binding': cap('@callable-flow.binding', 10, 15, 10, 17, 'cb'),
         '@callable-flow.parameter-index': cap(
           '@callable-flow.parameter-index',
@@ -651,7 +643,6 @@ describe('Pass 6: callable-value-flow facts', () => {
     expect(sites[4]).toMatchObject({ pointer: { name: 'slot', indirection: 1 } });
     expect(sites[6]).toMatchObject({
       ownerName: 'invoke',
-      ownerQualifiedName: 'Api.invoke',
       parameterIndex: 0,
       passingMode: 'reference',
       binding: { name: 'cb', inScope: fnScope.id },

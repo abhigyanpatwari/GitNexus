@@ -1248,9 +1248,6 @@ function pass6CollectCallableFlows(
           parameterIndex,
           binding,
           passingMode,
-          ...(nonEmpty(match['@callable-flow.owner-qualified-name']?.text)
-            ? { ownerQualifiedName: match['@callable-flow.owner-qualified-name']!.text }
-            : {}),
           ...(expectedSignature !== undefined ? { expectedSignature } : {}),
         });
         break;

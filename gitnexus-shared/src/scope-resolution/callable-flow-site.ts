@@ -95,7 +95,6 @@ export interface CallableFlowLoadSite {
 export interface CallableFlowFormalSite {
   readonly kind: 'formal';
   readonly ownerName: string;
-  readonly ownerQualifiedName?: string;
   readonly ownerRange: Range;
   readonly parameterIndex: number;
   readonly binding: CallableFlowOperand;
