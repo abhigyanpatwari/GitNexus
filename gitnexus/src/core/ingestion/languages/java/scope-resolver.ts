@@ -58,6 +58,12 @@ const javaScopeResolver: ScopeResolver = {
   collapseMemberCallsByCallerTarget: true,
   hoistTypeBindingsToModule: true,
   stripReceiverCastExpressions: true,
+  // #2550: every Java method belongs to a class instance — a free call may
+  // resolve to a Method only when the caller's enclosing class chain
+  // (self + MRO) contains the method's owner. Closes the finalize-bucket
+  // leak (unqualified `run()` matching an unrelated same-file anonymous
+  // class's method). C# is the intended next adopter.
+  freeCallsRequireInstanceOwnership: true,
 
   populateNamespaceSiblings: populateJavaPackageSiblings,
   populateRangeBindings: populateJavaCrossFileReturnTypes,

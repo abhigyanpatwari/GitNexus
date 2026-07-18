@@ -459,7 +459,11 @@ describe('runFullAnalysis FTS repair and verification failure paths', () => {
     }
   });
 
-  it('fails full analyze when FTS verification reports missing indexes after creation', async () => {
+  it('degrades gracefully (no throw, warns, ftsSkipped) when FTS verification reports missing indexes after creation (#2544/#2546)', async () => {
+    // A native tokenizer error on one pre-existing row (the #2544/#2546
+    // failure mode) must not abort an otherwise-successful full analyze —
+    // it degrades keyword search for this run instead, same contract as the
+    // FTS-extension-unavailable sibling test below.
     vi.doMock('../../src/core/lbug/lbug-adapter.js', () => ({
       initLbug: vi.fn(async () => undefined),
       loadGraphToLbug: vi.fn(async () => undefined),
@@ -480,34 +484,42 @@ describe('runFullAnalysis FTS repair and verification failure paths', () => {
       deleteAllCommunitiesAndProcesses: vi.fn(async () => undefined),
       queryImporters: vi.fn(async () => []),
       queryImportersBatch: vi.fn(async () => []),
-      // FTS extension loads → analyze proceeds to create + verify indexes.
+      // FTS extension loads → analyze proceeds to build + verify indexes.
       loadFTSExtension: vi.fn(async () => true),
     }));
     vi.doMock('../../src/core/search/fts-indexes.js', () => ({
       initialiseSearchFTSStemmer: vi.fn(() => 'porter'),
-      createSearchFTSIndexes: vi.fn(async () => undefined),
-      verifySearchFTSIndexes: vi.fn(async () => ['Function.function_fts']),
+      buildSearchIndexesOrDegrade: vi.fn(async () => ({
+        ok: false,
+        error: 'missing indexes after build: Function.function_fts',
+      })),
     }));
     vi.doMock('../../src/core/ingestion/pipeline.js', () => ({
       runPipelineFromRepo: vi.fn(async (repoPath: string) => ({
         repoPath,
-        // Full-analyze path only needs `forEachNode` before the FTS verify guard.
+        // Full-analyze path only needs `forEachNode` before the FTS phase.
         graph: { forEachNode: () => undefined },
       })),
     }));
 
     const tmpRepo = await createTempDir('gitnexus-run-analyze-full-verify-fail-');
     try {
+      const logs: string[] = [];
       const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
-      await expect(
-        runFullAnalysis(
-          tmpRepo.dbPath,
-          { force: true },
-          {
-            onProgress: () => {},
-          },
-        ),
-      ).rejects.toThrow(/FTS verification failed - missing indexes after analyze/i);
+      const result = await runFullAnalysis(
+        tmpRepo.dbPath,
+        { force: true },
+        { onProgress: () => {}, onLog: (msg: string) => logs.push(msg) },
+      );
+
+      expect(result.ftsSkipped).toBe(true);
+      expect(logs.join('\n')).toMatch(
+        /FTS index build failed.*missing indexes after build.*keyword search degraded this run/i,
+      );
+
+      const { storagePath } = getStoragePaths(tmpRepo.dbPath);
+      const meta = JSON.parse(await fs.readFile(`${storagePath}/meta.json`, 'utf-8'));
+      expect(meta.capabilities.fts.status).toBe('unavailable');
     } finally {
       await tmpRepo.cleanup();
     }

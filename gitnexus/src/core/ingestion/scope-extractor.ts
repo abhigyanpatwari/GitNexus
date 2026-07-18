@@ -455,6 +455,8 @@ function resolveKindForScopeMatch(
       return 'Block';
     case 'expression':
       return 'Expression';
+    case 'object':
+      return 'Object';
     default:
       return null;
   }

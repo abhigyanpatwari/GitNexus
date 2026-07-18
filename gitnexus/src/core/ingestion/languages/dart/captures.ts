@@ -45,6 +45,7 @@ import { parseSourceSafe } from '../../../tree-sitter/safe-parse.js';
 import { encodeMarker } from '../../utils/heritage-marker.js';
 import { DART_BUILT_INS } from './built-ins.js';
 import { synthesizeCallableFlowCaptures } from '../../utils/callable-flow-captures.js';
+import { preprocessDartExtensionTypes } from './extension-type-preprocess.js';
 
 const FUNCTION_DECL_TAGS = [
   '@declaration.function',
@@ -85,13 +86,14 @@ export function emitDartScopeCaptures(
   _filePath: string,
   cachedTree?: unknown,
 ): readonly CaptureMatch[] {
+  const parseText = preprocessDartExtensionTypes(sourceText);
   let tree: Parser.Tree;
   if (cachedTree !== undefined && cachedTree !== null) {
     tree = cachedTree as Parser.Tree;
     recordCacheHit();
   } else {
-    tree = parseSourceSafe(getDartParser(), sourceText, undefined, {
-      bufferSize: getTreeSitterBufferSize(sourceText),
+    tree = parseSourceSafe(getDartParser(), parseText, undefined, {
+      bufferSize: getTreeSitterBufferSize(parseText),
     });
     recordCacheMiss();
   }
@@ -184,6 +186,10 @@ export function emitDartScopeCaptures(
     }
     if (node.type === 'class_definition') {
       emitHeritage(node, out);
+      return;
+    }
+    if (node.type === 'extension_declaration') {
+      emitExtensionImplementsHeritage(node, out);
       return;
     }
   });
@@ -520,6 +526,50 @@ function emitHeritage(classNode: SyntaxNode, out: CaptureMatch[]): void {
   if (interfaces !== null) {
     emitHeritageMarkers(interfaces, 'implements', className, out);
   }
+}
+
+function emitExtensionImplementsHeritage(extensionNode: SyntaxNode, out: CaptureMatch[]): void {
+  const nameNode = extensionNode.childForFieldName('name');
+  if (nameNode === null) return;
+
+  const bodyStart = extensionNode.text.indexOf('{');
+  const header = bodyStart === -1 ? extensionNode.text : extensionNode.text.slice(0, bodyStart);
+  const implementsIndex = header.indexOf('implements');
+  if (implementsIndex === -1) return;
+
+  const className = nameNode.text;
+  const interfaces = header.slice(implementsIndex + 'implements'.length);
+  for (const rawInterface of splitTopLevelCommaList(interfaces)) {
+    const target = /^[ \t]*([A-Za-z_$][A-Za-z0-9_$]*)/.exec(rawInterface)?.[1];
+    if (target === undefined) continue;
+    const payload = encodeMarker('heritage', ['implements', target, className]);
+    out.push({ '@import.heritage': syntheticCapture('@import.heritage', nameNode, payload) });
+  }
+}
+
+function splitTopLevelCommaList(text: string): string[] {
+  const parts: string[] = [];
+  let start = 0;
+  let angleDepth = 0;
+
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (ch === '<') {
+      angleDepth++;
+      continue;
+    }
+    if (ch === '>' && angleDepth > 0) {
+      angleDepth--;
+      continue;
+    }
+    if (ch === ',' && angleDepth === 0) {
+      parts.push(text.slice(start, i));
+      start = i + 1;
+    }
+  }
+
+  parts.push(text.slice(start));
+  return parts;
 }
 
 function emitHeritageMarkers(

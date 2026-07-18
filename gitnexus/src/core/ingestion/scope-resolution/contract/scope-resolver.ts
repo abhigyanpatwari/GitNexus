@@ -718,6 +718,24 @@ export interface ScopeResolver {
   readonly allowGlobalFreeCallFallback?: boolean;
 
   /**
+   * In this language every `Method` belongs to a class instance, so a
+   * FREE (receiver-less) call may resolve to a `Method` only when the
+   * caller's enclosing class chain — the class itself plus its MRO —
+   * contains the method's owner (#2550). Suppresses the finalize-bucket
+   * leak where an unqualified call matched any same-file method by bare
+   * name (`materializeBindings` flattens every declaration onto module
+   * scope). Java opts in; C# is the intended next adopter.
+   *
+   * NOT implemented via `LanguageProvider.builtInNames`: that mechanism
+   * has unrelated consumers (`parse-worker`'s call-site extraction gate
+   * suppresses member calls too; `type-env`'s return-type lookup) which
+   * assume a flagged name is never a real repository declaration —
+   * false for common method names like `run`/`get`/`compare` (verified
+   * regression).
+   */
+  readonly freeCallsRequireInstanceOwnership?: boolean;
+
+  /**
    * When true, a constructor-form call `Type(...)` links to the Class def
    * itself rather than its explicit Constructor def. Default
    * (undefined/false) targets the explicit Constructor when one exists,

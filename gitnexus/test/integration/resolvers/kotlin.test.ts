@@ -2930,3 +2930,31 @@ describe('Kotlin functional (fun) interfaces', () => {
     expect(edgeSet(implements_)).toContain('Button → Plain');
   });
 });
+
+// ---------------------------------------------------------------------------
+// Issue #2545: an anonymous `object { ... }` expression has no scope
+// boundary of its own, so a method's name auto-hoists past it into
+// whatever lexically encloses it -- letting an unrelated same-file call
+// to a builtin like `println` incorrectly resolve to it.
+// ---------------------------------------------------------------------------
+
+describe('Kotlin anonymous object-expression method scoping (#2545)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'kotlin-object-literal-scope'),
+      () => {},
+    );
+  }, 60000);
+
+  it('does not resolve the builtin println() call to the anonymous object-expression method', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const printlnCall = calls.find((c) => c.source === 'callExternal' && c.target === 'println');
+    expect(printlnCall).toBeUndefined();
+  });
+
+  it('still extracts the anonymous object-expression method as a Method', () => {
+    expect(getNodesByLabel(result, 'Method')).toContain('println');
+  });
+});
