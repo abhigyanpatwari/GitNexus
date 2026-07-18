@@ -202,34 +202,31 @@ describe('createLbugDatabase buffer pool size (#2557)', () => {
     }
   });
 
-  it.each([['abc'], ['-5']])(
-    'warns and falls back to the default for invalid value %s',
-    (raw) => {
-      const cap = _captureLogger();
-      const totalmemSpy = vi.spyOn(os, 'totalmem').mockReturnValue(32 * GiB);
-      try {
-        vi.stubEnv('GITNEXUS_LBUG_BUFFER_POOL_SIZE', raw);
-        const Database = vi.fn(function (this: any) {});
-        const lbugModule = { Database } as any;
+  it.each([['abc'], ['-5']])('warns and falls back to the default for invalid value %s', (raw) => {
+    const cap = _captureLogger();
+    const totalmemSpy = vi.spyOn(os, 'totalmem').mockReturnValue(32 * GiB);
+    try {
+      vi.stubEnv('GITNEXUS_LBUG_BUFFER_POOL_SIZE', raw);
+      const Database = vi.fn(function (this: any) {});
+      const lbugModule = { Database } as any;
 
-        createLbugDatabase(lbugModule, '/tmp/lbug-pool-invalid');
+      createLbugDatabase(lbugModule, '/tmp/lbug-pool-invalid');
 
-        expect(bufferPoolArg(Database)).toBe(2 * GiB);
-        const warn = cap
-          .records()
-          .find(
-            (r) =>
-              typeof r.msg === 'string' &&
-              r.msg.includes('Ignoring invalid GITNEXUS_LBUG_BUFFER_POOL_SIZE'),
-          );
-        expect(warn).toBeDefined();
-      } finally {
-        vi.unstubAllEnvs();
-        totalmemSpy.mockRestore();
-        cap.restore();
-      }
-    },
-  );
+      expect(bufferPoolArg(Database)).toBe(2 * GiB);
+      const warn = cap
+        .records()
+        .find(
+          (r) =>
+            typeof r.msg === 'string' &&
+            r.msg.includes('Ignoring invalid GITNEXUS_LBUG_BUFFER_POOL_SIZE'),
+        );
+      expect(warn).toBeDefined();
+    } finally {
+      vi.unstubAllEnvs();
+      totalmemSpy.mockRestore();
+      cap.restore();
+    }
+  });
 
   it('does NOT warn when GITNEXUS_LBUG_BUFFER_POOL_SIZE is empty (treated as unset)', () => {
     const cap = _captureLogger();
