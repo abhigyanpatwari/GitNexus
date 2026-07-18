@@ -204,7 +204,8 @@ function normalizeToolParams(
  * Quick test-file detection for filtering impact results.
  * Matches common test file patterns across all supported languages.
  */
-export function isTestFilePath(filePath: string): boolean {
+export function isTestFilePath(filePath: string | null | undefined): boolean {
+  if (!filePath) return false;
   const p = filePath.toLowerCase().replace(/\\/g, '/');
   return (
     p.includes('.test.') ||
