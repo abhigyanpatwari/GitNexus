@@ -35,6 +35,19 @@ export const javaClassConfig: ClassExtractionConfig = {
     }
     return undefined;
   },
+  // An anonymous body whose name CANNOT be synthesized (no supported host
+  // type declaration) must not become a Class node at all. Without this
+  // skip, `extract()`'s `extractTypeNameFromNode` fallback names the node
+  // after the CONSTRUCTED type — emitting a phantom `Class:...:Runnable`
+  // for `new Runnable() { ... }` (empirically caught in review).
+  shouldSkipClassCapture({ definitionNode }) {
+    return (
+      definitionNode !== null &&
+      definitionNode !== undefined &&
+      definitionNode.type === 'object_creation_expression' &&
+      synthesizeJavaAnonymousClassName(definitionNode) === undefined
+    );
+  },
 };
 
 // ---------------------------------------------------------------------------

@@ -418,27 +418,63 @@ const MAX_ENCLOSING_WALK_ITERATIONS = 4096;
  * declaration synthesis, receiver typeBinding) — they agree by all calling
  * this one helper.
  */
+/** Type-declaration node types that can host (and name) a Java anonymous
+ *  class body — javac numbers `$N` per top-level type of any of these
+ *  kinds. Enum constant bodies (`A { ... }`) are a different node shape
+ *  and remain unmodeled. */
+const JAVA_ANON_HOST_TYPES = new Set([
+  'class_declaration',
+  'enum_declaration',
+  'interface_declaration',
+  'record_declaration',
+]);
+
+/** Per-parse-tree memo of anonymous-body numbering: tree → (startIndex →
+ *  synthesized name). Keyed by the tree OBJECT via WeakMap so entries die
+ *  with the parse; without it every call re-scans the host subtree
+ *  (`descendantsOfType`), and the helper is called from four independent
+ *  layers per anonymous body — quadratic on anon-heavy files (old-style
+ *  listener-per-widget Java). */
+const javaAnonNameMemo = new WeakMap<object, Map<number, string>>();
+
 export const synthesizeJavaAnonymousClassName = (node: SyntaxNode): string | undefined => {
   if (node.type !== 'object_creation_expression') return undefined;
   const hasClassBody = node.namedChildren?.some((c: SyntaxNode) => c.type === 'class_body');
   if (hasClassBody !== true) return undefined;
 
-  // Topmost enclosing class_declaration — javac numbers per top-level class.
-  let topClass: SyntaxNode | null = null;
+  const tree = (node as { tree?: object }).tree;
+  if (tree !== undefined) {
+    const cached = javaAnonNameMemo.get(tree)?.get(node.startIndex);
+    if (cached !== undefined) return cached;
+  }
+
+  // Topmost enclosing host type declaration — javac numbers per top-level type.
+  let topHost: SyntaxNode | null = null;
   let cursor: SyntaxNode | null = node.parent;
   let iterations = 0;
   while (cursor) {
     if (++iterations > MAX_ENCLOSING_WALK_ITERATIONS) return undefined;
-    if (cursor.type === 'class_declaration') topClass = cursor;
+    if (JAVA_ANON_HOST_TYPES.has(cursor.type)) topHost = cursor;
     cursor = cursor.parent;
   }
-  if (topClass === null) return undefined;
-  const topName = topClass.childForFieldName?.('name')?.text;
+  if (topHost === null) return undefined;
+  const topName = topHost.childForFieldName?.('name')?.text;
   if (topName === undefined || topName.length === 0) return undefined;
 
-  const anonBodies = (topClass.descendantsOfType?.('object_creation_expression') ?? []).filter(
+  const anonBodies = (topHost.descendantsOfType?.('object_creation_expression') ?? []).filter(
     (c: SyntaxNode) => c.namedChildren?.some((n: SyntaxNode) => n.type === 'class_body'),
   );
+  if (tree !== undefined) {
+    let byStart = javaAnonNameMemo.get(tree);
+    if (byStart === undefined) {
+      byStart = new Map();
+      javaAnonNameMemo.set(tree, byStart);
+    }
+    for (let i = 0; i < anonBodies.length; i++) {
+      byStart.set(anonBodies[i]!.startIndex, `${topName}$${i + 1}`);
+    }
+    return byStart.get(node.startIndex);
+  }
   const index = anonBodies.findIndex((c: SyntaxNode) => c.startIndex === node.startIndex);
   if (index === -1) return undefined;
   return `${topName}$${index + 1}`;

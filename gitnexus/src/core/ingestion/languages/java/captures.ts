@@ -275,6 +275,29 @@ function synthesizeJavaAnonymousClassDeclarations(rootNode: SyntaxNode): Capture
       '@declaration.name': syntheticCapture('@declaration.name', body, name),
     });
 
+    // Inheritance: the anonymous class extends/implements its constructed
+    // type. Anchor the `@reference.inherits` on the `class_body` — its
+    // range equals the anonymous Class scope, so the reference site's
+    // enclosing class resolves to the SYNTHESIZED `Worker$N` def (anchoring
+    // on the constructed-type node would sit OUTSIDE the anonymous scope
+    // and mis-attribute the edge to the lexically enclosing class). The
+    // synthetic `@reference.name` carries the base's simple name; a JDK
+    // type with no repo def simply resolves to nothing (no edge). Without
+    // this edge `mroFor(Worker$N)` is empty and the #2550 instance-
+    // ownership gate suppressed TRUE bare calls to inherited methods
+    // inside the anonymous body (empirically caught in review).
+    const constructedType = oce.childForFieldName?.('type');
+    const baseSimpleName =
+      constructedType !== null && constructedType !== undefined
+        ? javaBaseSimpleNameOf(constructedType)
+        : undefined;
+    if (baseSimpleName !== undefined) {
+      out.push({
+        '@reference.inherits': nodeToCapture('@reference.inherits', body),
+        '@reference.name': syntheticCapture('@reference.name', body, baseSimpleName),
+      });
+    }
+
     // Receiver typeBinding: `Runnable handler = new Runnable() { ... }`
     // binds `handler` to the ANONYMOUS class (`Worker$1`), not the declared
     // interface — the instance is what `handler.run()` dispatches into, and
@@ -483,6 +506,14 @@ function emitJavaInheritanceBase(out: CaptureMatch[], base: SyntaxNode | null): 
 }
 
 /** Resolve a Java base-type node to its bare simple-name identifier node. */
+/** Simple name of a constructed/base type node, reusing the same node
+ *  shapes `javaBaseLookupNameNode` handles (`Runnable`, `a.b.Base`,
+ *  `Box<T>`). Returns undefined when the node is none of those. */
+function javaBaseSimpleNameOf(typeNode: SyntaxNode): string | undefined {
+  const nameNode = javaBaseLookupNameNode(typeNode);
+  return nameNode === null ? undefined : nameNode.text;
+}
+
 function javaBaseLookupNameNode(node: SyntaxNode): SyntaxNode | null {
   switch (node.type) {
     case 'type_identifier':

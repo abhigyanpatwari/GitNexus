@@ -2815,3 +2815,41 @@ describe('Java instance-ownership free-call gate (#2550)', () => {
     expect(classes).toContain('Multi$2');
   }, 60000);
 });
+
+// ---------------------------------------------------------------------------
+// #2550 review hardening: (a) an anonymous class inherits from its
+// constructed type, so bare calls to inherited methods INSIDE the
+// anonymous body pass the ownership gate's MRO arm (review caught the
+// gate suppressing that true edge — the anon had no EXTENDS edge and an
+// empty MRO); (b) enum/interface/record hosts synthesize names too, and
+// a hostless anonymous body must NOT materialize a phantom Class node
+// named after the constructed type.
+// ---------------------------------------------------------------------------
+
+describe('Java anonymous-class inheritance and host coverage (#2550 review)', () => {
+  it('anon extending a same-file class keeps bare inherited calls and gains an EXTENDS edge', async () => {
+    const result = await runPipelineFromRepo(path.join(FIXTURES, 'java-anon-extends-base'), () => {});
+    const extends_ = getRelationships(result, 'EXTENDS');
+    const anonExtends = extends_.find(
+      (e) => e.rel.sourceId === 'Class:src/App.java:AnonExtHost$1' && e.target === 'Base',
+    );
+    expect(anonExtends).toBeDefined();
+
+    const calls = getRelationships(result, 'CALLS');
+    const inherited = calls.find((c) => c.source === 'extra' && c.target === 'work');
+    expect(inherited).toBeDefined();
+    expect(inherited!.rel.targetId).toBe('Method:src/App.java:Base.work#0');
+  }, 60000);
+
+  it('enum-hosted anonymous body is modeled (EnumHost$1) with no phantom constructed-type Class', async () => {
+    const result = await runPipelineFromRepo(path.join(FIXTURES, 'java-anon-enum-host'), () => {});
+    const classes = getNodesByLabel(result, 'Class');
+    expect(classes).toContain('EnumHost$1');
+    expect(classes).not.toContain('Runnable');
+
+    const calls = getRelationships(result, 'CALLS');
+    const own = calls.find((c) => c.source === 'caller' && c.target === 'run');
+    expect(own).toBeDefined();
+    expect(own!.rel.targetId).toBe('Method:src/EnumHost.java:EnumHost.run#0');
+  }, 60000);
+});
