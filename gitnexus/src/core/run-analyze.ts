@@ -36,6 +36,7 @@ import {
 } from './lbug/lbug-adapter.js';
 import { escapeCypherString } from './lbug/cypher-escape.js';
 import {
+  buildSearchIndexesOrDegrade,
   createSearchFTSIndexes,
   initialiseSearchFTSStemmer,
   verifySearchFTSIndexes,
@@ -1624,7 +1625,11 @@ export async function runFullAnalysis(
       policy: resolveAnalyzeInstallPolicy(),
     });
     if (ftsAvailable) {
-      await createSearchFTSIndexes({
+      // Degrade rather than throw: createSearchFTSIndexes re-tokenizes every
+      // stored row on every run, so a native tokenizer error on a single
+      // pre-existing row (#2544/#2546) must not discard this run's otherwise-
+      // successful graph/embeddings work — only keyword search degrades.
+      const ftsResult = await buildSearchIndexesOrDegrade(executeQuery, {
         onIndexStart: options.verbose
           ? (table, indexName) => log(`FTS: creating ${table}.${indexName}`)
           : undefined,
@@ -1632,14 +1637,15 @@ export async function runFullAnalysis(
           ? (table, indexName) => log(`FTS: ready ${table}.${indexName}`)
           : undefined,
       });
-      const missingIndexNames = await verifySearchFTSIndexes(executeQuery);
-      if (missingIndexNames.length > 0) {
-        throw new Error(
-          `FTS verification failed - missing indexes after analyze: ${missingIndexNames.join(', ')}. ` +
-            'Check FTS extension availability, then retry `gitnexus analyze --force` for a full rebuild.',
+      if (ftsResult.ok) {
+        progress('fts', 90, 'Search indexes ready');
+      } else {
+        log(
+          `FTS index build failed (${ftsResult.error}) — keyword search degraded this run. ` +
+            'Graph and embeddings analysis completed successfully. Run `gitnexus analyze --repair-fts` to retry.',
         );
+        progress('fts', 90, 'Search indexes skipped (build failed)');
       }
-      progress('fts', 90, 'Search indexes ready');
     } else {
       // For a missing runtime dependency (#2374) the file is present, so the
       // generic "install it with network access" tail in FTS_UNAVAILABLE_MESSAGE
