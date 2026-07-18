@@ -367,7 +367,7 @@ export interface RepoMeta {
  * `Worker.run`-keyed Method nodes alongside the new ones (the v5 Route
  * precedent); force a full re-analyze instead.
  * v9: Java enum constant bodies joined the instance model and anonymous
- * naming switched to JLS 13.1 immediate-host chains (#2555): `enum E { A {
+ * naming switched to JLS 13.1 immediately-enclosing-type chains (#2555): `enum E { A {
  * hook(){} } }` now emits `Class:...:E$1` with methods re-keyed from
  * `E.hook` to `E$1.hook`, and nested-host anonymous names re-key
  * (`EnumWrap$1` → `EnumWrap$Mode$1`). Same contract as v8: identities move

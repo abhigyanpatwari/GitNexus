@@ -439,13 +439,16 @@ const isJavaAnonymousBodyNode = (node: SyntaxNode): boolean =>
     node.namedChildren?.some((c: SyntaxNode) => c.type === 'class_body') === true) ||
   (node.type === 'enum_constant' && node.childForFieldName?.('body')?.type === 'class_body');
 
-/** Nearest `JAVA_ANON_HOST_TYPES` ancestor of `node`, or null. */
-const nearestJavaAnonHost = (node: SyntaxNode): SyntaxNode | null => {
+/** Nearest ancestor of `node` that is an enclosing TYPE per JLS 13.1 —
+ *  a named host declaration OR another anonymous body (both shapes).
+ *  Anonymous ancestors chain through: an anon inside an anon is
+ *  `Host$1$1`, and an anon inside an enum constant body is `E$1$1`. */
+const nearestJavaEnclosingType = (node: SyntaxNode): SyntaxNode | null => {
   let cursor: SyntaxNode | null = node.parent;
   let iterations = 0;
   while (cursor) {
     if (++iterations > MAX_ENCLOSING_WALK_ITERATIONS) return null;
-    if (JAVA_ANON_HOST_TYPES.has(cursor.type)) return cursor;
+    if (JAVA_ANON_HOST_TYPES.has(cursor.type) || isJavaAnonymousBodyNode(cursor)) return cursor;
     cursor = cursor.parent;
   }
   return null;
@@ -468,39 +471,48 @@ export const synthesizeJavaAnonymousClassName = (node: SyntaxNode): string | und
     if (cached !== undefined) return cached;
   }
 
-  // JLS 13.1: prefix = the `$`-joined chain of enclosing host names,
-  // nearest host last (`EnumWrap$Mode`); numbering is per IMMEDIATE host.
-  const immediateHost = nearestJavaAnonHost(node);
-  if (immediateHost === null) return undefined;
-  const hostNames: string[] = [];
-  let cursor: SyntaxNode | null = immediateHost;
-  let iterations = 0;
-  while (cursor) {
-    if (++iterations > MAX_ENCLOSING_WALK_ITERATIONS) return undefined;
-    if (JAVA_ANON_HOST_TYPES.has(cursor.type)) {
-      const hostName = cursor.childForFieldName?.('name')?.text;
-      if (hostName === undefined || hostName.length === 0) return undefined;
-      hostNames.unshift(hostName);
+  // JLS 13.1: the binary name is the IMMEDIATELY ENCLOSING TYPE's binary
+  // name + `$N`. The enclosing type may itself be anonymous — then its
+  // own synthesized name is the prefix (recursion, memo-bounded):
+  // `NestHost$1$1` for an anon inside an anon, `E$1$1` for an anon
+  // inside an enum constant body. For a named enclosing type the prefix
+  // is the `$`-joined chain of named hosts (`EnumWrap$Mode`).
+  const enclosing = nearestJavaEnclosingType(node);
+  if (enclosing === null) return undefined;
+  let prefix: string;
+  if (isJavaAnonymousBodyNode(enclosing)) {
+    const enclosingName = synthesizeJavaAnonymousClassName(enclosing);
+    if (enclosingName === undefined) return undefined;
+    prefix = enclosingName;
+  } else {
+    const hostNames: string[] = [];
+    let cursor: SyntaxNode | null = enclosing;
+    let iterations = 0;
+    while (cursor) {
+      if (++iterations > MAX_ENCLOSING_WALK_ITERATIONS) return undefined;
+      if (JAVA_ANON_HOST_TYPES.has(cursor.type)) {
+        const hostName = cursor.childForFieldName?.('name')?.text;
+        if (hostName === undefined || hostName.length === 0) return undefined;
+        hostNames.unshift(hostName);
+      }
+      cursor = cursor.parent;
     }
-    cursor = cursor.parent;
+    prefix = hostNames.join('$');
   }
-  const prefix = hostNames.join('$');
 
-  // All anonymous bodies (both shapes) whose immediate host is THIS host,
-  // in source order. `descendantsOfType` over the host subtree also finds
-  // bodies belonging to NESTED hosts — filter them out by re-deriving each
-  // candidate's own immediate host.
+  // All anonymous bodies (both shapes) whose immediately enclosing TYPE
+  // is THIS one, in source order. `descendantsOfType` over the subtree
+  // also finds bodies belonging to nested enclosing types — filter them
+  // out by re-deriving each candidate's own enclosing type.
   const candidates = [
-    ...(immediateHost.descendantsOfType?.('object_creation_expression') ?? []),
-    ...(immediateHost.descendantsOfType?.('enum_constant') ?? []),
+    ...(enclosing.descendantsOfType?.('object_creation_expression') ?? []),
+    ...(enclosing.descendantsOfType?.('enum_constant') ?? []),
   ]
     .filter(isJavaAnonymousBodyNode)
     .filter((c: SyntaxNode) => {
-      const host = nearestJavaAnonHost(c);
+      const host = nearestJavaEnclosingType(c);
       return (
-        host !== null &&
-        host.startIndex === immediateHost.startIndex &&
-        host.type === immediateHost.type
+        host !== null && host.startIndex === enclosing.startIndex && host.type === enclosing.type
       );
     })
     .sort((a: SyntaxNode, b: SyntaxNode) => a.startIndex - b.startIndex);

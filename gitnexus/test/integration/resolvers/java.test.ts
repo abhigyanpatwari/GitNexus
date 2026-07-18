@@ -2919,6 +2919,43 @@ describe('Java enum constant bodies (#2555)', () => {
     expect(classes).not.toContain('EnumWrap$1');
   }, 60000);
 
+  it('chains anonymous enclosing types per JLS 13.1: anon inside anon is NestHost$1$1', async () => {
+    const result = await runPipelineFromRepo(path.join(FIXTURES, 'java-anon-in-anon'), () => {});
+    const classes = getNodesByLabel(result, 'Class');
+    expect(classes).toContain('NestHost$1');
+    expect(classes).toContain('NestHost$1$1');
+    expect(classes).not.toContain('NestHost$2');
+  }, 60000);
+
+  it('chains through enum constant bodies: anon inside a constant body is N$1$1', async () => {
+    const result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'java-anon-in-constant-body'),
+      () => {},
+    );
+    const classes = getNodesByLabel(result, 'Class');
+    expect(classes).toContain('N$1');
+    expect(classes).toContain('N$1$1');
+    expect(classes).not.toContain('N$2');
+
+    const hasMethod = getRelationships(result, 'HAS_METHOD');
+    const owned = hasMethod.find(
+      (e) =>
+        e.rel.sourceId === 'Class:src/N.java:N$1$1' &&
+        e.rel.targetId === 'Method:src/N.java:N$1$1.run#0',
+    );
+    expect(owned).toBeDefined();
+  }, 60000);
+
+  it('names a bodied constant in a NESTED enum with the full host chain (EnumWrap2$Mode$1)', async () => {
+    const result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'java-nested-enum-constant'),
+      () => {},
+    );
+    const classes = getNodesByLabel(result, 'Class');
+    expect(classes).toContain('EnumWrap2$Mode$1');
+    expect(classes).not.toContain('EnumWrap2$1');
+  }, 60000);
+
   it('attributes same-named methods across sibling constant bodies to their own classes', async () => {
     // Review-caught collapse: the scope-side qualifier chained the
     // synthesized class def to `M3.M3$2`, desyncing from the structure
