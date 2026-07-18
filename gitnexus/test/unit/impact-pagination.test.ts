@@ -46,9 +46,9 @@ function makeBackend() {
   return { backend, repoHandle };
 }
 
-// The BFS frontier query is now parameterized (bound $frontierIds/$relTypes,
+// The BFS frontier query is now parameterized (bound $frontierIds + scalar $relTypeN,
 // #1907 U3), so the caller rows come back through executeParameterizedMock
-// (matched on `r.type IN`) rather than executeQueryMock. Symbol resolution and
+// (matched on `$frontierIds`; #2508 replaced the rel-type IN predicate with scalar equality) rather than executeQueryMock. Symbol resolution and
 // the label-enrichment UNION still fall through to the default symbol row.
 function setupMultiDepthHub(d1Count: number, d2Count: number) {
   let depth = 0;
@@ -57,11 +57,11 @@ function setupMultiDepthHub(d1Count: number, d2Count: number) {
     if (query.includes('STEP_IN_PROCESS')) return [];
     if (query.includes('MEMBER_OF')) return [];
     // The #1858 epistemic-boundary probe (computeEpistemicBoundary) runs
-    // concurrently with the BFS and also matches `r.type IN`, but targets the
+    // concurrently with the BFS and also ran through this mock, but targets the
     // `iface` alias. Return empty so it stays `epistemic: 'exact'` and does not
     // consume a depth slot from the frontier counter below.
     if (query.includes('iface')) return [];
-    if (query.includes('r.type IN')) {
+    if (query.includes('$frontierIds')) {
       depth++;
       const count = depth === 1 ? d1Count : depth === 2 ? d2Count : 0;
       const res: any[] = [];
@@ -88,9 +88,9 @@ function setupHubSymbol(count: number) {
     if (query.includes('STEP_IN_PROCESS')) return [];
     if (query.includes('MEMBER_OF')) return [];
     // See setupMultiDepthHub — keep the #1858 epistemic probe from matching the
-    // `r.type IN` caller branch below.
+    // `$frontierIds` caller branch below.
     if (query.includes('iface')) return [];
-    if (query.includes('r.type IN')) {
+    if (query.includes('$frontierIds')) {
       const res: any[] = [];
       for (let i = 0; i < count; i++) {
         res.push({

@@ -97,7 +97,7 @@ describe('impact: batching and grouping', () => {
         ];
       }
       // BFS frontier query (parameterized #1907 U3): return the 250 impacted ids.
-      if (query.includes('r.type IN') && !query.includes('STEP_IN_PROCESS')) {
+      if (query.includes('$frontierIds') && !query.includes('STEP_IN_PROCESS')) {
         const res: any[] = [];
         for (let i = 0; i < 250; i++) {
           res.push({
@@ -145,7 +145,7 @@ describe('impact: batching and grouping', () => {
     executeParameterizedMock.mockImplementation(async (...args: any[]) => {
       const query = typeof args[1] === 'string' ? args[1] : String(args[0] ?? '');
       // BFS frontier query (parameterized #1907 U3): return 6 impacted nodes.
-      if (query.includes('r.type IN') && !query.includes('STEP_IN_PROCESS')) {
+      if (query.includes('$frontierIds') && !query.includes('STEP_IN_PROCESS')) {
         const res: any[] = [];
         for (let i = 0; i < 6; i++)
           res.push({
@@ -271,7 +271,7 @@ describe('impact: batching and grouping', () => {
       }
 
       // BFS frontier query (parameterized #1907 U3): return 500 impacted nodes.
-      if (query.includes('r.type IN') && !query.includes('STEP_IN_PROCESS')) {
+      if (query.includes('$frontierIds') && !query.includes('STEP_IN_PROCESS')) {
         const res: any[] = [];
         for (let i = 0; i < 500; i++)
           res.push({

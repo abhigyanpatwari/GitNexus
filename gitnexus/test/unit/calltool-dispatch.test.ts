@@ -1158,7 +1158,7 @@ describe('LocalBackend.callTool', () => {
     // Resolver returns target; BFS returns one frontier caller; no STEP_IN_PROCESS rows.
     (executeParameterized as any).mockImplementation((_repoId: string, cypher: string) => {
       // BFS frontier query is now parameterized (#1907 U3).
-      if (cypher.includes('r.type IN') && !cypher.includes('STEP_IN_PROCESS')) {
+      if (cypher.includes('$frontierIds') && !cypher.includes('STEP_IN_PROCESS')) {
         return Promise.resolve([
           {
             id: 'func:caller',
@@ -1189,7 +1189,7 @@ describe('LocalBackend.callTool', () => {
   it('impact populates byDepth processes when STEP_IN_PROCESS rows exist', async () => {
     (executeParameterized as any).mockImplementation((_repoId: string, cypher: string) => {
       // BFS frontier query is now parameterized (#1907 U3).
-      if (cypher.includes('r.type IN') && !cypher.includes('STEP_IN_PROCESS')) {
+      if (cypher.includes('$frontierIds') && !cypher.includes('STEP_IN_PROCESS')) {
         return Promise.resolve([
           {
             id: 'func:caller',
@@ -1268,7 +1268,7 @@ describe('LocalBackend.callTool', () => {
     (executeParameterized as any).mockImplementation((_repoId: string, cypher: string) => {
       // BFS frontier query is now parameterized (#1907 U3) — return a caller so
       // the per-symbol-skip assertion below is meaningful (not vacuous).
-      if (cypher.includes('r.type IN') && !cypher.includes('STEP_IN_PROCESS')) {
+      if (cypher.includes('$frontierIds') && !cypher.includes('STEP_IN_PROCESS')) {
         return Promise.resolve([
           {
             id: 'func:caller',
@@ -1353,7 +1353,7 @@ describe('LocalBackend.callTool', () => {
 
     (executeParameterized as any).mockImplementation((_repoId: string, cypher: string) => {
       // BFS frontier query is now parameterized (#1907 U3).
-      if (cypher.includes('r.type IN') && !cypher.includes('STEP_IN_PROCESS')) {
+      if (cypher.includes('$frontierIds') && !cypher.includes('STEP_IN_PROCESS')) {
         return Promise.resolve([
           {
             id: 'func:caller',

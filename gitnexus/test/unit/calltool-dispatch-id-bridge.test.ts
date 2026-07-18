@@ -168,7 +168,7 @@ describe('LocalBackend PDG impact — resolved-callee-id bridge (U6)', () => {
     vi.mocked(executeParameterized).mockImplementation(async (_repo, query) => {
       if (query.includes('RETURN b.calleeIds')) return [{ calleeIds: 'func:callee-A' }];
       if (query.includes('RETURN b.callees')) return [{ callees: 'someOtherLeaf' }];
-      if (query.includes('r.type IN $relTypes') && !query.includes('STEP_IN_PROCESS')) {
+      if (query.includes('$frontierIds') && !query.includes('STEP_IN_PROCESS')) {
         return [frontierRow('func:callee-A', 'callee')];
       }
       if (query.includes('COUNT(DISTINCT s.id)') || query.includes('RETURN s.id AS sid')) return [];
@@ -204,7 +204,7 @@ describe('LocalBackend PDG impact — resolved-callee-id bridge (U6)', () => {
     vi.mocked(executeParameterized).mockImplementation(async (_repo, query) => {
       if (query.includes('RETURN b.calleeIds')) throw new Error('calleeIds query failed');
       if (query.includes('RETURN b.callees')) return [{ callees: 'callee' }];
-      if (query.includes('r.type IN $relTypes') && !query.includes('STEP_IN_PROCESS')) {
+      if (query.includes('$frontierIds') && !query.includes('STEP_IN_PROCESS')) {
         return [frontierRow('func:callee-A', 'callee')];
       }
       if (query.includes('COUNT(DISTINCT s.id)') || query.includes('RETURN s.id AS sid')) return [];
@@ -239,7 +239,7 @@ describe('LocalBackend PDG impact — resolved-callee-id bridge (U6)', () => {
     vi.mocked(executeParameterized).mockImplementation(async (_repo, query) => {
       if (query.includes('RETURN b.calleeIds')) return [{ calleeIds: 'func:callee-A' }];
       if (query.includes('RETURN b.callees')) return [{ callees: 'callee' }];
-      if (query.includes('r.type IN $relTypes') && !query.includes('STEP_IN_PROCESS')) {
+      if (query.includes('$frontierIds') && !query.includes('STEP_IN_PROCESS')) {
         return [frontierRow('func:callee-A', 'callee'), frontierRow('func:callee-B', 'callee')];
       }
       if (query.includes('COUNT(DISTINCT s.id)') || query.includes('RETURN s.id AS sid')) return [];
@@ -275,7 +275,7 @@ describe('LocalBackend PDG impact — resolved-callee-id bridge (U6)', () => {
     vi.mocked(executeParameterized).mockImplementation(async (_repo, query) => {
       if (query.includes('RETURN b.calleeIds')) return [{ calleeIds: 'func:callee-A\t*' }];
       if (query.includes('RETURN b.callees')) return [{ callees: 'callee' }];
-      if (query.includes('r.type IN $relTypes') && !query.includes('STEP_IN_PROCESS')) {
+      if (query.includes('$frontierIds') && !query.includes('STEP_IN_PROCESS')) {
         return [frontierRow('func:callee-A', 'callee'), frontierRow('*', 'callee')];
       }
       if (query.includes('COUNT(DISTINCT s.id)') || query.includes('RETURN s.id AS sid')) return [];
