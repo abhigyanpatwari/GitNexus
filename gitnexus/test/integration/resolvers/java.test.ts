@@ -2725,3 +2725,40 @@ describe('Java bare-this dispatch (Case 4 pinning)', () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// Issue #2545: an anonymous class body (`new Runnable() { public void
+// run() {} }`) previously had no scope boundary of its own, so a
+// method's name auto-hoisted past it into whatever lexically enclosed
+// it. `(object_creation_expression (class_body) @scope.class)` fixes
+// the scope-tree side of this (the anonymous class now owns its
+// method's binding correctly, matching PHP's existing
+// `anonymous_class` handling). NOTE: unlike TypeScript/JavaScript/
+// Kotlin, Java has no `builtInNames` list, so free-call-fallback's
+// `isBuiltInName` guard (free-call-fallback.ts) never engages here --
+// an unqualified call to an unrelated same-file method sharing the
+// anonymous class's method name can still resolve via finalize's
+// per-file module-scope bucket (`materializeBindings` in
+// gitnexus-shared, language-agnostic and intentionally not touched by
+// this fix). That residual gap is the same one TS/JS/Kotlin still have
+// for their own non-builtin name collisions -- fixing it generally
+// would mean changing shared finalize architecture, out of scope here.
+// ---------------------------------------------------------------------------
+
+describe('Java anonymous-class method scoping (#2545)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'java-anonymous-class-scope'), () => {});
+  }, 60000);
+
+  it('still resolves handler.run() to the anonymous Runnable method', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const explicit = calls.find((c) => c.source === 'makeHandler' && c.target === 'run');
+    expect(explicit).toBeDefined();
+  });
+
+  it('still extracts the anonymous Runnable method as a Method', () => {
+    expect(getNodesByLabel(result, 'Method')).toContain('run');
+  });
+});
