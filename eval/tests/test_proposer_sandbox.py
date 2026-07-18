@@ -539,6 +539,8 @@ for line in sys.stdin:
     )
     fake_mcp.chmod(0o500)
 
+    observed_tool_results: dict[str, dict] = {}
+
     class ModelHandler(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
 
@@ -555,6 +557,17 @@ for line in sys.stdin:
                 for block in message["content"]
                 if isinstance(block, dict) and block.get("type") == "tool_result"
             }
+            observed_tool_results.update(
+                {
+                    block["tool_use_id"]: block
+                    for message in request.get("messages", [])
+                    if isinstance(message, dict) and isinstance(message.get("content"), list)
+                    for block in message["content"]
+                    if isinstance(block, dict)
+                    and block.get("type") == "tool_result"
+                    and isinstance(block.get("tool_use_id"), str)
+                }
+            )
             if "toolu_mcp_canary" not in tool_result_ids:
                 blocks = [
                     {
@@ -706,5 +719,7 @@ for line in sys.stdin:
     assert result.ok, result.stderr_tail + result.stdout_tail
     report = json.loads(result.stdout_tail)
     assert report["subtype"] == "success" and report["is_error"] is False, report
+    bash_result = observed_tool_results["toolu_bash_canary"]
+    assert bash_result.get("is_error") is not True, bash_result
     assert (clone / "bash-called").read_text() == "canary"
     assert (clone / "mcp-called").read_text() == "ok"
