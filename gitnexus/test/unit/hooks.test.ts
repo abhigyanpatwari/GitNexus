@@ -424,15 +424,26 @@ describe('windowsHide regression', () => {
 // ─── Source code regression: .cmd extensions for Windows ─────────────
 
 describe('Windows .cmd extension handling', () => {
-  for (const [label, hookPath] of [
-    ['CJS', CJS_HOOK],
-    ['Plugin', PLUGIN_HOOK],
-  ] as const) {
-    it(`${label} hook uses .cmd extensions for Windows npx`, () => {
-      const source = fs.readFileSync(hookPath, 'utf-8');
-      expect(source).toContain('npx.cmd');
-    });
-  }
+  it('CJS hook uses .cmd extensions for Windows npx', () => {
+    const source = fs.readFileSync(CJS_HOOK, 'utf-8');
+    expect(source).toContain('npx.cmd');
+  });
+
+  // R4 (f4a13f49) rewrote the Plugin hook to drop the npx -y silent-install
+  // fallback entirely (no auto-install), so it no longer has an npx.cmd
+  // Windows path to assert — instead pin that no npx spawn/exec usage
+  // remains (comment mentions of npx don't count).
+  it('Plugin hook does not invoke npx (R4 removed the silent-install fallback)', () => {
+    const source = fs.readFileSync(PLUGIN_HOOK, 'utf-8');
+    const codeSource = source
+      .split('\n')
+      .filter((l) => {
+        const t = l.trim();
+        return !t.startsWith('//') && !t.startsWith('*') && !t.startsWith('/*');
+      })
+      .join('\n');
+    expect(codeSource).not.toMatch(/\bnpx\b/);
+  });
 
   it('Plugin hook uses .cmd extension for Windows gitnexus binary', () => {
     const source = fs.readFileSync(PLUGIN_HOOK, 'utf-8');
@@ -1636,7 +1647,6 @@ describe('Augment CLI guard wrap (source, #2163 follow-up)', () => {
       // branch cannot pass unnoticed.
       const directBudgetCount = (fn.match(/Math\.ceil\(timeout \/ 1000\) \+ 1/g) ?? []).length;
       expect(directBudgetCount).toBe(label === 'Plugin' ? 2 : 1);
-      expect(fn).toMatch(/Math\.ceil\(\(timeout \+ 5000\) \/ 1000\) \+ 1/);
       // Argv-order pin (#2169 review): the budget token must appear BEFORE
       // the command word — `timeout … <budget> <cmd>` — or coreutils would
       // parse the command word as its DURATION argument. Token presence and
@@ -1650,19 +1660,35 @@ describe('Augment CLI guard wrap (source, #2163 follow-up)', () => {
         ) ?? []
       ).length;
       expect(directOrderCount).toBe(label === 'Plugin' ? 2 : 1);
-      expect(fn).toMatch(/String\(Math\.ceil\(\(timeout \+ 5000\) \/ 1000\) \+ 1\),\s*'npx'/);
-      // npx-branch grandchild containment (#2169 review): the npx wrapped
-      // arm must SIGKILL the process group at budget (`-s KILL`) — a group
-      // SIGTERM there kills only the obedient npx parent, `timeout` returns
-      // before its `-k` escalation fires, and a SIGTERM-immune CLI
-      // grandchild escapes unbounded.
-      expect(fn).toMatch(
-        /'-s',\s*'KILL',\s*'-k',\s*'1',\s*String\(Math\.ceil\(\(timeout \+ 5000\)/,
-      );
-      // …and the direct-exec arm(s) must NOT lead with `-s KILL`: TERM-first
-      // is gentler and sufficient there (the CLI is the guard's direct
-      // child), so `-s` appears exactly once — in the npx arm.
-      expect((fn.match(/'-s',/g) ?? []).length).toBe(1);
+      if (label === 'Plugin') {
+        // R4 (f4a13f49): the Plugin adapter dropped the npx -y silent-install
+        // fallback entirely — there is no npx arm left to carry the
+        // (timeout + 5000)/1000 + 1 budget or its `-s KILL` grandchild
+        // containment, and no `-s` flag should remain anywhere in the
+        // function (that escalation exists solely to contain an npx
+        // grandchild; the direct-exec arms are TERM-first via `-k` only).
+        expect(fn).not.toMatch(/Math\.ceil\(\(timeout \+ 5000\) \/ 1000\) \+ 1/);
+        expect(fn).not.toContain("'npx'");
+        expect((fn.match(/'-s',/g) ?? []).length).toBe(0);
+      } else {
+        // …with a budget STRICTLY above each branch's inner spawnSync timeout:
+        // ceil(inner/1000)+1 for both the direct (timeout) and npx
+        // (timeout + 5000) call sites.
+        expect(fn).toMatch(/Math\.ceil\(\(timeout \+ 5000\) \/ 1000\) \+ 1/);
+        expect(fn).toMatch(/String\(Math\.ceil\(\(timeout \+ 5000\) \/ 1000\) \+ 1\),\s*'npx'/);
+        // npx-branch grandchild containment (#2169 review): the npx wrapped
+        // arm must SIGKILL the process group at budget (`-s KILL`) — a group
+        // SIGTERM there kills only the obedient npx parent, `timeout` returns
+        // before its `-k` escalation fires, and a SIGTERM-immune CLI
+        // grandchild escapes unbounded.
+        expect(fn).toMatch(
+          /'-s',\s*'KILL',\s*'-k',\s*'1',\s*String\(Math\.ceil\(\(timeout \+ 5000\)/,
+        );
+        // …and the direct-exec arm(s) must NOT lead with `-s KILL`: TERM-first
+        // is gentler and sufficient there (the CLI is the guard's direct
+        // child), so `-s` appears exactly once — in the npx arm.
+        expect((fn.match(/'-s',/g) ?? []).length).toBe(1);
+      }
     });
   }
 
