@@ -2828,7 +2828,10 @@ describe('Java instance-ownership free-call gate (#2550)', () => {
 
 describe('Java anonymous-class inheritance and host coverage (#2550 review)', () => {
   it('anon extending a same-file class keeps bare inherited calls and gains an EXTENDS edge', async () => {
-    const result = await runPipelineFromRepo(path.join(FIXTURES, 'java-anon-extends-base'), () => {});
+    const result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'java-anon-extends-base'),
+      () => {},
+    );
     const extends_ = getRelationships(result, 'EXTENDS');
     const anonExtends = extends_.find(
       (e) => e.rel.sourceId === 'Class:src/App.java:AnonExtHost$1' && e.target === 'Base',
