@@ -21,7 +21,7 @@ on:
         type: string
 
 concurrency:
-  group: gitnexus-review-${{ github.event.issue.number || inputs.pr || github.run_id }}
+  group: ${{ github.workflow }}-${{ github.event.issue.number || inputs.pr || github.run_id }}
   cancel-in-progress: false
 
 permissions: {}
