@@ -2777,7 +2777,7 @@ describe('Java anonymous-class instance identity (#2550)', () => {
 });
 
 describe('Java instance-ownership free-call gate (#2550)', () => {
-  it('does not resolve a bare call to an unrelated same-file class\'s method', async () => {
+  it("does not resolve a bare call to an unrelated same-file class's method", async () => {
     const result = await runPipelineFromRepo(
       path.join(FIXTURES, 'java-unrelated-method-collision'),
       () => {},
