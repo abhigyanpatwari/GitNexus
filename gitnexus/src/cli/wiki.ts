@@ -15,6 +15,7 @@ import {
   loadMeta,
   loadCLIConfig,
   saveCLIConfig,
+  type CLIConfig,
 } from '../storage/repo-manager.js';
 import { WikiGenerator, type WikiOptions } from '../core/wiki/generator.js';
 import { resolveLLMConfig, type LLMProvider } from '../core/wiki/llm-client.js';
@@ -126,6 +127,37 @@ function prompt(question: string, hide = false): Promise<string> {
   });
 }
 
+/**
+ * Merge CLI flag overrides into the saved config. Callers must skip
+ * saveCLIConfig when `changed` is false: repeated invocations with identical
+ * flags (omc watch passes --provider/--model every tick) must not rewrite
+ * ~/.gitnexus/config.json on every run.
+ */
+export function applyCliConfigOverrides(
+  options: WikiCommandOptions,
+  existing: CLIConfig,
+): { merged: CLIConfig; changed: boolean } {
+  const updates: Partial<CLIConfig> = {};
+  if (options.apiKey) updates.apiKey = options.apiKey;
+  if (options.baseUrl) updates.baseUrl = options.baseUrl;
+  if (options.provider) updates.provider = options.provider as CLIConfig['provider'];
+  if (options.apiVersion) updates.apiVersion = options.apiVersion;
+  if (options.reasoningModel !== undefined) updates.isReasoningModel = options.reasoningModel;
+  // Save model to appropriate field based on provider.
+  if (options.model) {
+    const targetProvider = options.provider ?? existing.provider;
+    if (isLocalProvider(targetProvider)) {
+      updates[localModelConfigKey(targetProvider)] = options.model;
+    } else {
+      updates.model = options.model;
+    }
+  }
+  const changed = (Object.keys(updates) as Array<keyof CLIConfig>).some(
+    (key) => existing[key] !== updates[key],
+  );
+  return { merged: { ...existing, ...updates }, changed };
+}
+
 export const wikiCommand = async (inputPath?: string, options?: WikiCommandOptions) => {
   // Snapshot GITNEXUS_VERBOSE at entry — wikiCommand mutates it (the impl
   // below) so cursor-client (process.env-driven) sees the right value during
@@ -205,23 +237,11 @@ const wikiCommandImpl = async (inputPath?: string, options?: WikiCommandOptions)
     options?.reasoningModel !== undefined
   ) {
     const existing = await loadCLIConfig();
-    const updates: Partial<typeof existing> = {};
-    if (options.apiKey) updates.apiKey = options.apiKey;
-    if (options.baseUrl) updates.baseUrl = options.baseUrl;
-    if (options.provider) updates.provider = options.provider;
-    if (options.apiVersion) updates.apiVersion = options.apiVersion;
-    if (options.reasoningModel !== undefined) updates.isReasoningModel = options.reasoningModel;
-    // Save model to appropriate field based on provider.
-    if (options.model) {
-      const targetProvider = options.provider ?? existing.provider;
-      if (isLocalProvider(targetProvider)) {
-        updates[localModelConfigKey(targetProvider)] = options.model;
-      } else {
-        updates.model = options.model;
-      }
+    const { merged, changed } = applyCliConfigOverrides(options!, existing);
+    if (changed) {
+      await saveCLIConfig(merged);
+      console.log('  Config saved to ~/.gitnexus/config.json\n');
     }
-    await saveCLIConfig({ ...existing, ...updates });
-    console.log('  Config saved to ~/.gitnexus/config.json\n');
   }
 
   const savedConfig = await loadCLIConfig();
