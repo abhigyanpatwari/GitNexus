@@ -4327,7 +4327,9 @@ export class LocalBackend {
     /** Guard: ensure a file path resolves within the repo root (prevents path traversal) */
     const assertSafePath = (filePath: string): string => {
       const full = path.resolve(repo.repoPath, filePath);
-      const safePrefix = repo.repoPath.endsWith(path.sep) ? repo.repoPath : repo.repoPath + path.sep;
+      const safePrefix = repo.repoPath.endsWith(path.sep)
+        ? repo.repoPath
+        : repo.repoPath + path.sep;
       if (!full.startsWith(safePrefix) && full !== repo.repoPath) {
         throw new Error(`Path traversal blocked: ${filePath}`);
       }
