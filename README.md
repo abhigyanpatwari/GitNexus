@@ -205,6 +205,7 @@ flowchart TB
 | **OpenCode**             | Yes | Yes    | —                                                                                                                 | MCP + Skills |
 | **CodeBuddy** (Tencent)  | Yes | Yes    | —                                                                                                                 | MCP + Skills |
 | **Qoder** (Alibaba)      | Yes | Yes    | —                                                                                                                 | MCP + Skills |
+| **Factory** (Droid)      | Yes | Yes    | Yes (PostToolUse, [plugin](gitnexus-factory-plugin/))                                                              | **Full**     |
 | **Windsurf**             | Yes | —      | —                                                                                                                 | MCP          |
 
 > **Claude Code** and **Codex** get the deepest integration: MCP tools + agent skills + PreToolUse hooks that enrich searches with graph context + PostToolUse hooks that detect a stale index after commits and prompt the agent to reindex.
@@ -250,6 +251,21 @@ codex plugin marketplace add abhigyanpatwari/GitNexus
 ```
 
 > **Codex notes:** SessionStart is intentionally not registered — Codex reads [AGENTS.md natively](https://developers.openai.com/codex/guides/agents-md), which already carries the GitNexus context block. Newly installed hooks need a one-time approval in Codex via `/hooks` before they run. Pick **one** install route (`gitnexus setup -c codex` **or** the plugin): plugin hooks load alongside `~/.codex/hooks.json`, so installing both can fire duplicate hooks per tool call.
+
+**Factory** (Droid) — MCP + skills via `gitnexus setup -c droid`, or add the server manually to `~/.factory/mcp.json` ([user scope](https://docs.factory.ai/cli/configuration/mcp), applies to all projects):
+
+```json
+{
+  "mcpServers": {
+    "gitnexus": {
+      "command": "npx",
+      "args": ["-y", "gitnexus@latest", "mcp"]
+    }
+  }
+}
+```
+
+`gitnexus setup -c droid` also installs skills to `~/.factory/skills/`. For the PostToolUse search-augment hook, install the bundled [`gitnexus-factory-plugin/`](gitnexus-factory-plugin/) — from a marketplace that includes this repo, run `droid plugin install gitnexus@<marketplace>`, or point Droid at it via `extraKnownMarketplaces` in `.factory/settings.json`. Factory reads [`AGENTS.md` natively](https://docs.factory.ai/), which already carries the GitNexus context block.
 
 **Cursor** (`~/.cursor/mcp.json` — global, works for all projects):
 
