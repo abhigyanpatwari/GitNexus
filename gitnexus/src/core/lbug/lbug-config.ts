@@ -321,7 +321,7 @@ const resolveCheckpointThreshold = (): number => {
 const DEFAULT_BUFFER_POOL_CAP = 2 * 1024 * 1024 * 1024;
 const BUFFER_POOL_FLOOR = 64 * 1024 * 1024;
 
-export const parseBufferPoolSize = (raw: string | undefined): number | undefined => {
+const parseBufferPoolSize = (raw: string | undefined): number | undefined => {
   if (raw === undefined) return undefined;
   const normalized = raw.trim();
   if (normalized.length === 0) return undefined;
