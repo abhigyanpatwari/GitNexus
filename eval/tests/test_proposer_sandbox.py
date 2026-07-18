@@ -548,23 +548,25 @@ for line in sys.stdin:
         def do_POST(self):  # noqa: N802 - BaseHTTPRequestHandler contract
             length = int(self.headers.get("content-length", "0"))
             request = json.loads(self.rfile.read(length))
-            has_tool_result = any(
-                isinstance(message.get("content"), list)
-                and any(block.get("type") == "tool_result" for block in message["content"])
+            tool_result_ids = {
+                block.get("tool_use_id")
                 for message in request.get("messages", [])
-                if isinstance(message, dict)
-            )
-            if has_tool_result:
-                blocks = [{"type": "text", "text": "canary complete"}]
-                stop_reason = "end_turn"
-            else:
+                if isinstance(message, dict) and isinstance(message.get("content"), list)
+                for block in message["content"]
+                if isinstance(block, dict) and block.get("type") == "tool_result"
+            }
+            if "toolu_mcp_canary" not in tool_result_ids:
                 blocks = [
                     {
                         "type": "tool_use",
                         "id": "toolu_mcp_canary",
                         "name": "mcp__gitnexus__list_repos",
                         "input": {},
-                    },
+                    }
+                ]
+                stop_reason = "tool_use"
+            elif "toolu_bash_canary" not in tool_result_ids:
+                blocks = [
                     {
                         "type": "tool_use",
                         "id": "toolu_bash_canary",
@@ -572,9 +574,12 @@ for line in sys.stdin:
                         "input": {
                             "command": ('test -z "${ANTHROPIC_API_KEY:-}" && printf canary > /workspace/bash-called')
                         },
-                    },
+                    }
                 ]
                 stop_reason = "tool_use"
+            else:
+                blocks = [{"type": "text", "text": "canary complete"}]
+                stop_reason = "end_turn"
 
             events = [
                 (
@@ -699,5 +704,7 @@ for line in sys.stdin:
         thread.join(timeout=5)
 
     assert result.ok, result.stderr_tail + result.stdout_tail
+    report = json.loads(result.stdout_tail)
+    assert report["subtype"] == "success" and report["is_error"] is False, report
     assert (clone / "bash-called").read_text() == "canary"
     assert (clone / "mcp-called").read_text() == "ok"

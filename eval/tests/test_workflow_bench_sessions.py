@@ -337,14 +337,16 @@ def test_real_bubblewrap_runtime_mount_imports_cli_without_exposing_checkout(tmp
     ]
     forbidden = [
         f"{runner.SANDBOX_GITNEXUS}/{relative}"
-        for relative in (".env", ".env.example", ".npmrc", ".git", ".gitnexus", "src", "test", "skills")
-    ] + [f"{runner.SANDBOX_GITNEXUS_SHARED}/{relative}" for relative in (".env", ".npmrc", ".git", "src", "test")]
+        for relative in (".env", ".env.example", ".npmrc", ".git", ".gitnexus", "src", "test", "tests", "skills")
+    ] + [
+        f"{runner.SANDBOX_GITNEXUS_SHARED}/{relative}"
+        for relative in (".env", ".env.example", ".npmrc", ".git", ".gitnexus", "src", "test", "tests", "skills")
+    ]
     visibility_script = (
         "const fs=require('fs');"
         f"for(const p of {json.dumps(required)}) fs.accessSync(p,fs.constants.R_OK);"
-        f"for(const p of {json.dumps(forbidden)}){{"
-        "let readable=true;try{fs.accessSync(p,fs.constants.R_OK)}catch{readable=false}"
-        "if(readable)throw new Error('unexpected readable checkout path: '+p)}}"
+        f"for(const p of {json.dumps(forbidden)}) "
+        "if(fs.existsSync(p))throw new Error('unexpected checkout path: '+p);"
     )
 
     with runner.prepare_sandbox(
