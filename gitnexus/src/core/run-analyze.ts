@@ -1624,6 +1624,11 @@ export async function runFullAnalysis(
     const ftsAvailable = await loadFTSExtension(undefined, {
       policy: resolveAnalyzeInstallPolicy(),
     });
+    // Tracks whether search indexes actually ended up usable this run — starts
+    // as ftsAvailable (extension loaded) but flips to false below when the
+    // build/verify step itself fails, so capabilities.fts.status / ftsSkipped
+    // stay honest even though that failure no longer aborts the whole analyze.
+    let ftsReady = ftsAvailable;
     if (ftsAvailable) {
       // Degrade rather than throw: createSearchFTSIndexes re-tokenizes every
       // stored row on every run, so a native tokenizer error on a single
@@ -1640,6 +1645,7 @@ export async function runFullAnalysis(
       if (ftsResult.ok) {
         progress('fts', 90, 'Search indexes ready');
       } else {
+        ftsReady = false;
         log(
           `FTS index build failed (${ftsResult.error}) — keyword search degraded this run. ` +
             'Graph and embeddings analysis completed successfully. Run `gitnexus analyze --repair-fts` to retry.',
@@ -2042,7 +2048,7 @@ export async function runFullAnalysis(
         // meta.json / `gitnexus doctor` honest about degraded search.
         fts: {
           provider: 'ladybugdb-fts',
-          status: ftsAvailable ? runtimeCapabilities.fts : 'unavailable',
+          status: ftsReady ? runtimeCapabilities.fts : 'unavailable',
         },
         vectorSearch: {
           provider: effectiveSemanticMode === 'vector-index' ? 'ladybugdb-vector' : 'exact-scan',
@@ -2222,7 +2228,7 @@ export async function runFullAnalysis(
       repoPath,
       stats: meta.stats,
       pipelineResult,
-      ftsSkipped: !ftsAvailable,
+      ftsSkipped: !ftsReady,
       isPrimaryBranch: !placement.branch,
     };
   } catch (err) {
