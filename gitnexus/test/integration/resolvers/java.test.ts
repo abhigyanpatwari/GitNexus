@@ -2910,7 +2910,10 @@ describe('Java enum constant bodies (#2555)', () => {
   });
 
   it('names a nested-host anonymous body with the JLS 13.1 immediate-host chain', async () => {
-    const nested = await runPipelineFromRepo(path.join(FIXTURES, 'java-nested-host-naming'), () => {});
+    const nested = await runPipelineFromRepo(
+      path.join(FIXTURES, 'java-nested-host-naming'),
+      () => {},
+    );
     const classes = getNodesByLabel(nested, 'Class');
     expect(classes).toContain('EnumWrap$Mode$1');
     expect(classes).not.toContain('EnumWrap$1');
