@@ -200,6 +200,7 @@ export function emitFreeCallFallback(
           if (
             fnDef !== undefined &&
             options.isBuiltInName?.(site.name) === true &&
+            fnDef.filePath === parsed.filePath &&
             !hasGenuineLexicalBinding(site.inScope, site.name, scopes)
           ) {
             // A platform/language built-in (e.g. `fetch`, `setTimeout`)
@@ -214,6 +215,17 @@ export function emitFreeCallFallback(
             // were never really module-scope-visible -- e.g. a Cloudflare
             // Worker's `export default { fetch(req) {} }` handler (#2545).
             // Leave the call unresolved rather than emit a false edge.
+            //
+            // `fnDef.filePath === parsed.filePath` is the load-bearing
+            // guard against a real regression: `materializeBindings`'s
+            // flat bucket is per-file, so the leak this guard targets is
+            // ALWAYS same-file. A cross-file match at this point can only
+            // come from a genuine import/namespace/workspace-FQN channel
+            // (the separate, gated `pickUniqueGlobalCallable` global
+            // fallback runs later and isn't what populated `fnDef` here)
+            // -- e.g. `import { fetch } from './fetch-polyfill'` must
+            // keep resolving. Without this check, that import silently
+            // stopped resolving (verified via a scratch probe fixture).
             fnDef = undefined;
           }
           if (fnDef !== undefined && options.conversionRankFn !== undefined) {
@@ -923,7 +935,10 @@ function hasGenuineLexicalBinding(
     visited.add(currentId);
     const scope = scopes.scopeTree.getScope(currentId);
     if (scope === undefined) return false;
-    if (scope.bindings.get(name) !== undefined) return true;
+    // `Object` scopes (object/record literal bodies) are a hoist
+    // boundary only -- never a genuine lexical binding, not even to
+    // their own nested children (#2551, mirrors scope/walkers.ts).
+    if (scope.kind !== 'Object' && scope.bindings.get(name) !== undefined) return true;
     currentId = scope.parent;
   }
   return false;

@@ -614,12 +614,26 @@ describe('TypeScript local definition shadows import', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Issue #2545: an object literal has no scope boundary of its own, so a
-// method's name auto-hoists past the literal into whatever lexically
-// encloses it (e.g. Module scope for a top-level `export default { ... }`).
-// A Cloudflare Worker's `fetch` handler shape is the reported case: an
-// unrelated same-file call to the platform-global `fetch()` was matching
-// that leaked binding instead of staying unresolved.
+// Issue #2545 (+ #2551): an object literal has no scope boundary of its
+// own, so a method's name auto-hoists past the literal into whatever
+// lexically encloses it (e.g. Module scope for a top-level
+// `export default { ... }`). A Cloudflare Worker's `fetch` handler
+// shape is the reported case: an unrelated same-file call to the
+// platform-global `fetch()` was matching that leaked binding instead
+// of staying unresolved.
+//
+// #2551 caught a second manifestation of the same underlying bug during
+// review: a SIBLING property within the same object literal (`handler`
+// below) calling another sibling's name (`fetch`) as a bare identifier
+// also incorrectly resolved to it. The first fix reused the `Block`
+// scope kind, correct for a real lexical block (`if`/`for`/`while`,
+// where a nested closure legitimately sees block-scoped bindings) but
+// wrong for object literals, which have no such semantic -- sibling
+// properties are never visible to each other as bare identifiers, only
+// via property access. Fixed with a dedicated `Object` scope kind
+// (`gitnexus-shared`'s `ScopeKind`): a hoist boundary only, whose own
+// bindings scope-chain walkers (`scope-resolution/scope/walkers.ts`)
+// never consult, while still traversing past it to the parent.
 // ---------------------------------------------------------------------------
 
 describe('TypeScript object-literal method scoping (#2545)', () => {
@@ -656,16 +670,61 @@ export default {
     expect(fetchCall).toBeUndefined();
   });
 
-  it('does not leak an object-literal arrow-property name into the enclosing scope either', () => {
+  it('does not resolve a sibling arrow-property\'s fetch() call to its own sibling either (#2551)', () => {
     const calls = getRelationships(result, 'CALLS');
     const fetchFromHandler = calls.find(
-      (c) => c.source === 'handler' && c.target === 'fetch' && c.reason === 'local-call',
+      (c) => c.source === 'handler' && c.target === 'fetch' && c.rel.reason === 'local-call',
     );
     expect(fetchFromHandler).toBeUndefined();
   });
 
   it('still extracts the Worker fetch handler as a Method', () => {
     expect(getNodesByLabel(result, 'Method')).toContain('fetch');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Issue #2545 fix regression: the isBuiltInName guard must not suppress a
+// genuine cross-file import whose name happens to match a builtin
+// (e.g. a `fetch` polyfill). Caught during review: the guard originally
+// suppressed ANY same-name match with no local scope-chain binding,
+// including real imports -- `hasGenuineLexicalBinding` only walks
+// `Scope.bindings` (local declarations), never the imports channel.
+// Fixed by scoping the guard to same-file matches only (the leak it
+// targets is inherently same-file -- finalize's flat bucket is per-file).
+// ---------------------------------------------------------------------------
+
+describe('TypeScript builtin-name import still resolves (#2545 regression)', () => {
+  let repoDir: string;
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    repoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-ts-builtin-import-'));
+    writeFixtureRepo(repoDir, {
+      'src/fetch-polyfill.ts': `export function fetch(url: string): Promise<Response> {
+  return globalThis.fetch(url);
+}
+`,
+      'src/app.ts': `import { fetch } from './fetch-polyfill';
+
+export async function loadData(): Promise<Response> {
+  return fetch('https://example.com/data');
+}
+`,
+    });
+    result = await runPipelineFromRepo(repoDir, () => {}, {});
+  }, 60000);
+
+  afterAll(() => {
+    if (repoDir !== undefined) fs.rmSync(repoDir, { recursive: true, force: true });
+  });
+
+  it('resolves loadData() to the imported fetch polyfill, not left unresolved', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const fetchCall = calls.find((c) => c.source === 'loadData' && c.target === 'fetch');
+    expect(fetchCall).toBeDefined();
+    expect(fetchCall!.targetFilePath).toBe('src/fetch-polyfill.ts');
+    expect(fetchCall!.rel.reason).toBe('import-resolved');
   });
 });
 
