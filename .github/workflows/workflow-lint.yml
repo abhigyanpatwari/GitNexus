@@ -11,7 +11,7 @@ name: Workflow Lint
 
 on:
   pull_request:
-    branches: [main]
+    branches: [main, main-aptos]
     paths:
       - '.github/**'
 

@@ -3,7 +3,7 @@ name: PR Description Check
 on:
   pull_request:
     types: [opened, edited, reopened]
-    branches: [main]
+    branches: [main, main-aptos]
 
 permissions:
   pull-requests: write

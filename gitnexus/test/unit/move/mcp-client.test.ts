@@ -8,6 +8,13 @@ vi.mock('node:child_process', () => ({
   execFileSync: vi.fn(),
 }));
 
+// Keep PATH-resolution tests independent of a developer or CI cache that may
+// already contain vendor/move-flow/<platform>/move-flow.
+vi.mock('node:fs', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs')>();
+  return { ...actual, existsSync: vi.fn(() => false) };
+});
+
 import {
   MoveFlowMcpClient,
   MoveFlowToolCallError,
