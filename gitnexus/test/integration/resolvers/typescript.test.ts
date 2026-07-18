@@ -670,7 +670,7 @@ export default {
     expect(fetchCall).toBeUndefined();
   });
 
-  it('does not resolve a sibling arrow-property\'s fetch() call to its own sibling either (#2551)', () => {
+  it("does not resolve a sibling arrow-property's fetch() call to its own sibling either (#2551)", () => {
     const calls = getRelationships(result, 'CALLS');
     const fetchFromHandler = calls.find(
       (c) => c.source === 'handler' && c.target === 'fetch' && c.rel.reason === 'local-call',
