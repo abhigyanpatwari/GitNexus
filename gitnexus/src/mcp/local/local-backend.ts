@@ -16,7 +16,7 @@ import {
   closeLbug,
   isLbugReady,
 } from '../../core/lbug/pool-adapter.js';
-import { isValidQueryParams } from '../../core/lbug/query-params.js';
+import { isValidQueryParams, relTypeEquals } from '../../core/lbug/query-params.js';
 import { toDisplayLine } from './line-display.js';
 import { isWalCorruptionError, WAL_RECOVERY_SUGGESTION } from '../../core/lbug/lbug-config.js';
 // Embedding imports are lazy (dynamic import) to avoid loading onnxruntime-node
@@ -295,7 +295,8 @@ export const VALID_RELATION_TYPES = new Set([
 /**
  * Relation types the #1858 epistemic-boundary probe keys on. Kept as
  * module-level `readonly` arrays (not Sets) because computeEpistemicBoundary
- * binds them as Cypher query params (`r.type IN $heritage` / `IN $types`).
+ * binds them as scalar Cypher params via relTypeEquals (#2508 — never a
+ * rel-property `IN` list predicate).
  * The heritage set is exactly the IMPACT_RELATION_CONFIDENCE 0.85 tier —
  * "statically verifiable, but the concrete binding past it is not".
  */
@@ -3084,16 +3085,30 @@ export class LocalBackend {
     const resolvedLabel = outcome.resolvedLabel;
     const symId = sym.id;
 
-    // Categorized incoming refs
+    // Categorized incoming refs. Scalar-equality predicate, never `r.type IN`:
+    // LadybugDB ≥0.18.1 COPY-written layouts misevaluate rel-property IN (#2508).
+    const refTypePred = relTypeEquals('r', [
+      'CALLS',
+      'IMPORTS',
+      'EXTENDS',
+      'IMPLEMENTS',
+      'USES',
+      'HAS_METHOD',
+      'HAS_PROPERTY',
+      'METHOD_OVERRIDES',
+      'OVERRIDES',
+      'METHOD_IMPLEMENTS',
+      'ACCESSES',
+    ]);
     const incomingRows = await executeParameterized(
       repo.lbugPath,
       `
       MATCH (caller)-[r:CodeRelation]->(n {id: $symId})
-      WHERE r.type IN ['CALLS', 'IMPORTS', 'EXTENDS', 'IMPLEMENTS', 'USES', 'HAS_METHOD', 'HAS_PROPERTY', 'METHOD_OVERRIDES', 'OVERRIDES', 'METHOD_IMPLEMENTS', 'ACCESSES']
+      WHERE ${refTypePred.clause}
       RETURN r.type AS relType, caller.id AS uid, caller.name AS name, caller.filePath AS filePath, labels(caller)[0] AS kind
       LIMIT 30
     `,
-      { symId },
+      { symId, ...refTypePred.params },
     );
     let typedPropertyRows: any[] = [];
 
@@ -3129,6 +3144,15 @@ export class LocalBackend {
 
     if (isClassLike) {
       try {
+        const classRefPred = relTypeEquals('r', [
+          'CALLS',
+          'IMPORTS',
+          'EXTENDS',
+          'IMPLEMENTS',
+          'USES',
+          'ACCESSES',
+        ]);
+        const fileRefPred = relTypeEquals('r', ['CALLS', 'IMPORTS']);
         // Run incoming-ref queries in parallel — they are independent.
         const [ctorIncoming, fileIncoming, typedPropertyIncoming, typedProperties] =
           await Promise.all([
@@ -3138,11 +3162,11 @@ export class LocalBackend {
             MATCH (n)-[hm:CodeRelation]->(ctor:Constructor)
             WHERE n.id = $symId AND hm.type = 'HAS_METHOD'
             MATCH (caller)-[r:CodeRelation]->(ctor)
-            WHERE r.type IN ['CALLS', 'IMPORTS', 'EXTENDS', 'IMPLEMENTS', 'USES', 'ACCESSES']
+            WHERE ${classRefPred.clause}
             RETURN r.type AS relType, caller.id AS uid, caller.name AS name, caller.filePath AS filePath, labels(caller)[0] AS kind
             LIMIT 30
           `,
-              { symId },
+              { symId, ...classRefPred.params },
             ),
             executeParameterized(
               repo.lbugPath,
@@ -3150,11 +3174,11 @@ export class LocalBackend {
             MATCH (f:File)-[rel:CodeRelation]->(n)
             WHERE n.id = $symId AND rel.type = 'DEFINES'
             MATCH (caller)-[r:CodeRelation]->(f)
-            WHERE r.type IN ['CALLS', 'IMPORTS']
+            WHERE ${fileRefPred.clause}
             RETURN r.type AS relType, caller.id AS uid, caller.name AS name, caller.filePath AS filePath, labels(caller)[0] AS kind
             LIMIT 30
           `,
-              { symId },
+              { symId, ...fileRefPred.params },
             ),
             executeParameterized(
               repo.lbugPath,
@@ -3164,7 +3188,7 @@ export class LocalBackend {
                OR p.declaredType STARTS WITH $genericPrefix
                OR p.declaredType CONTAINS $genericArg
             MATCH (caller)-[r:CodeRelation]->(p)
-            WHERE r.type IN ['CALLS', 'IMPORTS', 'EXTENDS', 'IMPLEMENTS', 'USES', 'ACCESSES']
+            WHERE ${classRefPred.clause}
             RETURN r.type AS relType, caller.id AS uid, caller.name AS name, caller.filePath AS filePath, labels(caller)[0] AS kind
             LIMIT 30
           `,
@@ -3172,6 +3196,7 @@ export class LocalBackend {
                 name: sym.name,
                 genericPrefix: `${sym.name}<`,
                 genericArg: `<${sym.name}>`,
+                ...classRefPred.params,
               },
             ),
             executeParameterized(
@@ -3212,16 +3237,16 @@ export class LocalBackend {
       }
     }
 
-    // Categorized outgoing refs
+    // Categorized outgoing refs (same scalar predicate as incoming)
     const outgoingRows = await executeParameterized(
       repo.lbugPath,
       `
       MATCH (n {id: $symId})-[r:CodeRelation]->(target)
-      WHERE r.type IN ['CALLS', 'IMPORTS', 'EXTENDS', 'IMPLEMENTS', 'USES', 'HAS_METHOD', 'HAS_PROPERTY', 'METHOD_OVERRIDES', 'OVERRIDES', 'METHOD_IMPLEMENTS', 'ACCESSES']
+      WHERE ${refTypePred.clause}
       RETURN r.type AS relType, target.id AS uid, target.name AS name, target.filePath AS filePath, labels(target)[0] AS kind
       LIMIT 30
     `,
-      { symId },
+      { symId, ...refTypePred.params },
     );
 
     // Process participation
@@ -4693,6 +4718,7 @@ export class LocalBackend {
     } | null = null;
     let reachedDepth = 0;
 
+    const edgeTypePred = relTypeEquals('r', TRAVERSAL_EDGE_TYPES, 'edgeType');
     for (let depth = 1; depth <= maxDepth && frontier.length > 0 && !found; depth++) {
       const nextFrontier: string[] = [];
       // LadybugDB/Kuzu does not support a parameterized LIMIT, so the cap is
@@ -4702,12 +4728,12 @@ export class LocalBackend {
       const rows = await executeParameterized(
         repo.lbugPath,
         `MATCH (n)-[r:CodeRelation]->(m)
-         WHERE n.id IN $frontierIds AND r.type IN $edgeTypes
+         WHERE n.id IN $frontierIds AND ${edgeTypePred.clause}
          RETURN n.id AS sourceId, m.id AS id, m.name AS name, labels(m)[0] AS type,
                 m.filePath AS filePath, m.startLine AS startLine,
                 r.type AS edgeType, r.confidence AS confidence
          LIMIT ${rowCap}`,
-        { frontierIds: frontier, edgeTypes: TRAVERSAL_EDGE_TYPES },
+        { frontierIds: frontier, ...edgeTypePred.params },
       );
 
       // A clipped level may have dropped a node that lies on the only shortest
@@ -5433,13 +5459,14 @@ export class LocalBackend {
       if (symType === 'Interface') {
         boundary.set(symId, { name: symName || '', label: 'Interface' });
       }
+      const heritagePred = relTypeEquals('r', HERITAGE_TYPES, 'heritage');
       const ifaceRows = await executeParameterized(
         repo.lbugPath,
         `MATCH (x)-[r:CodeRelation]->(iface)
-         WHERE x.id = $symId AND r.type IN $heritage
+         WHERE x.id = $symId AND ${heritagePred.clause}
          RETURN DISTINCT iface.id AS id, iface.name AS name, labels(iface)[0] AS label
          LIMIT 25`,
-        { symId, heritage: HERITAGE_TYPES },
+        { symId, ...heritagePred.params },
       ).catch(() => []);
       for (const r of ifaceRows) {
         const id = (r.id ?? r[0]) as string;
@@ -5459,14 +5486,15 @@ export class LocalBackend {
       // each boundary node individually (boundary is small — capped at 25).
       const countByType = async (types: readonly string[]): Promise<Map<string, number>> => {
         const m = new Map<string, number>();
+        const typePred = relTypeEquals('r', types, 'type');
         await Promise.all(
           ifaceIds.map(async (ifaceId) => {
             const rows = await executeParameterized(
               repo.lbugPath,
               `MATCH (other)-[r:CodeRelation]->(iface)
-               WHERE iface.id = $ifaceId AND r.type IN $types
+               WHERE iface.id = $ifaceId AND ${typePred.clause}
                RETURN COUNT(DISTINCT other.id) AS cnt`,
-              { ifaceId, types },
+              { ifaceId, ...typePred.params },
             ).catch(() => []);
             const cnt =
               rows.length > 0 ? Number((rows[0] as any).cnt ?? (rows[0] as any)[0] ?? 0) : 0;
@@ -5669,6 +5697,8 @@ export class LocalBackend {
       }
     }
 
+    // Scalar-equality rel-type predicate (#2508) — loop-invariant, built once.
+    const relTypePred = relTypeEquals('r', relationTypes);
     for (let depth = 1; depth <= maxDepth && frontier.length > 0; depth++) {
       const nextFrontier: string[] = [];
 
@@ -5676,13 +5706,13 @@ export class LocalBackend {
       // ids/types/confidence are bound parameters (see above) — no interpolation.
       const query =
         direction === 'upstream'
-          ? `MATCH (caller)-[r:CodeRelation]->(n) WHERE n.id IN $frontierIds AND r.type IN $relTypes${confidenceFilter} RETURN n.id AS sourceId, caller.id AS id, caller.name AS name, labels(caller)[0] AS type, caller.filePath AS filePath, r.type AS relType, r.confidence AS confidence`
-          : `MATCH (n)-[r:CodeRelation]->(callee) WHERE n.id IN $frontierIds AND r.type IN $relTypes${confidenceFilter} RETURN n.id AS sourceId, callee.id AS id, callee.name AS name, labels(callee)[0] AS type, callee.filePath AS filePath, r.type AS relType, r.confidence AS confidence`;
+          ? `MATCH (caller)-[r:CodeRelation]->(n) WHERE n.id IN $frontierIds AND ${relTypePred.clause}${confidenceFilter} RETURN n.id AS sourceId, caller.id AS id, caller.name AS name, labels(caller)[0] AS type, caller.filePath AS filePath, r.type AS relType, r.confidence AS confidence`
+          : `MATCH (n)-[r:CodeRelation]->(callee) WHERE n.id IN $frontierIds AND ${relTypePred.clause}${confidenceFilter} RETURN n.id AS sourceId, callee.id AS id, callee.name AS name, labels(callee)[0] AS type, callee.filePath AS filePath, r.type AS relType, r.confidence AS confidence`;
 
       try {
         const related = await executeParameterized(repo.lbugPath, query, {
           frontierIds: frontier,
-          relTypes: relationTypes,
+          ...relTypePred.params,
           ...(safeMinConfidence > 0 ? { minConfidence: safeMinConfidence } : {}),
         });
 
