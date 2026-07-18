@@ -103,6 +103,19 @@ const TYPESCRIPT_SCOPE_QUERY = `
 (arrow_function) @scope.function
 (function_expression) @scope.function
 
+;; Object literals (the { ... } value expression, NOT object_type or
+;; object_pattern) get their own scope boundary. Without it, a
+;; method_definition/property-arrow's auto-hoist (scope-extractor.ts)
+;; has nowhere to stop and leaks the name past the literal into whatever
+;; lexically encloses it -- e.g. 'export default { async fetch(req) {} }'
+;; would bind fetch at Module scope, letting an unrelated same-file
+;; fetch(...) call (the platform global) incorrectly resolve to it
+;; (#2545). Block (not Class): object-literal members are reachable
+;; only via property access, never as bare identifiers, and Block is
+;; already the "no backing declaration" scope kind used the same way by
+;; other languages.
+(object) @scope.block
+
 ;; Type aliases that contain an object_type are structurally class-like —
 ;; they define a shape with named members. Emit @scope.class so the
 ;; field-extractor's type-alias-with-object-type handling (in

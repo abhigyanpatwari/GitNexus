@@ -88,6 +88,10 @@ export function emitFreeCallFallback(
      *  fail at the call site. Three-valued; `'unknown'` keeps the
      *  candidate (monotonicity). */
     readonly constraintCompatibility?: ScopeResolver['constraintCompatibility'];
+    /** Platform/language built-in names (e.g. `fetch`, `setTimeout`) that
+     *  are never real repository declarations. Gates the finalize-bucket
+     *  guard below (#2545) -- see `hasGenuineLexicalBinding`. */
+    readonly isBuiltInName?: (name: string) => boolean;
     readonly recordResolutionOutcome?: ResolutionOutcomeRecorder;
     /** Call sites owned by a later precise pass (for example callable-value-flow). */
     readonly skipSites?: ReadonlySet<string>;
@@ -193,6 +197,25 @@ export function emitFreeCallFallback(
           // available AND the binding scope contains multiple overloads,
           // refine with narrowOverloadCandidates (#1578).
           fnDef = findCallableBindingInScope(site.inScope, site.name, scopes);
+          if (
+            fnDef !== undefined &&
+            options.isBuiltInName?.(site.name) === true &&
+            !hasGenuineLexicalBinding(site.inScope, site.name, scopes)
+          ) {
+            // A platform/language built-in (e.g. `fetch`, `setTimeout`)
+            // with no binding reachable via the TRUE lexical scope chain
+            // (Scope.bindings only) -- the match came solely from
+            // finalize's per-file "local + imports + wildcards" bucket,
+            // which flattens every declaration in the file onto the
+            // module scope regardless of true nesting depth
+            // (gitnexus-shared's `materializeBindings`). That flattening
+            // is correct for its purpose (cross-file import targets) but
+            // over-matches same-file built-in-shadowing declarations that
+            // were never really module-scope-visible -- e.g. a Cloudflare
+            // Worker's `export default { fetch(req) {} }` handler (#2545).
+            // Leave the call unresolved rather than emit a false edge.
+            fnDef = undefined;
+          }
           if (fnDef !== undefined && options.conversionRankFn !== undefined) {
             const allCallables = findAllCallableBindingsInScope(site.inScope, site.name, scopes);
             if (allCallables.length > 1) {
@@ -877,4 +900,31 @@ export function pickImplicitThisOverload(
   });
   if (candidates.length !== 1) return undefined;
   return candidates[0];
+}
+
+/**
+ * True when `name` is bound somewhere along the TRUE lexical scope
+ * chain from `startScope` -- i.e. via `Scope.bindings` (the raw,
+ * nesting-aware per-scope map built during extraction), NOT via
+ * finalize's `indexes.bindings` module-scope bucket (which flattens
+ * every declaration in the file onto the module scope regardless of
+ * true nesting -- see `hasGenuineLexicalBinding`'s caller for why that
+ * distinction matters, #2545).
+ */
+function hasGenuineLexicalBinding(
+  startScope: ScopeId,
+  name: string,
+  scopes: ScopeResolutionIndexes,
+): boolean {
+  let currentId: ScopeId | null = startScope;
+  const visited = new Set<ScopeId>();
+  while (currentId !== null) {
+    if (visited.has(currentId)) return false;
+    visited.add(currentId);
+    const scope = scopes.scopeTree.getScope(currentId);
+    if (scope === undefined) return false;
+    if (scope.bindings.get(name) !== undefined) return true;
+    currentId = scope.parent;
+  }
+  return false;
 }

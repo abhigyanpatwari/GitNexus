@@ -614,6 +614,62 @@ describe('TypeScript local definition shadows import', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Issue #2545: an object literal has no scope boundary of its own, so a
+// method's name auto-hoists past the literal into whatever lexically
+// encloses it (e.g. Module scope for a top-level `export default { ... }`).
+// A Cloudflare Worker's `fetch` handler shape is the reported case: an
+// unrelated same-file call to the platform-global `fetch()` was matching
+// that leaked binding instead of staying unresolved.
+// ---------------------------------------------------------------------------
+
+describe('TypeScript object-literal method scoping (#2545)', () => {
+  let repoDir: string;
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    repoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-ts-object-literal-scope-'));
+    writeFixtureRepo(repoDir, {
+      'src/worker.ts': `export async function callExternal(): Promise<Response> {
+  return fetch('https://example.com/api');
+}
+
+export default {
+  async fetch(_request: Request): Promise<Response> {
+    return new Response('ok');
+  },
+  handler: () => {
+    return fetch('https://example.com/other');
+  },
+};
+`,
+    });
+    result = await runPipelineFromRepo(repoDir, () => {}, {});
+  }, 60000);
+
+  afterAll(() => {
+    if (repoDir !== undefined) fs.rmSync(repoDir, { recursive: true, force: true });
+  });
+
+  it('does not resolve the global fetch() call to the object-literal fetch method', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const fetchCall = calls.find((c) => c.source === 'callExternal' && c.target === 'fetch');
+    expect(fetchCall).toBeUndefined();
+  });
+
+  it('does not leak an object-literal arrow-property name into the enclosing scope either', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const fetchFromHandler = calls.find(
+      (c) => c.source === 'handler' && c.target === 'fetch' && c.reason === 'local-call',
+    );
+    expect(fetchFromHandler).toBeUndefined();
+  });
+
+  it('still extracts the Worker fetch handler as a Method', () => {
+    expect(getNodesByLabel(result, 'Method')).toContain('fetch');
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Variadic resolution: rest params don't get filtered by arity
 // ---------------------------------------------------------------------------
 

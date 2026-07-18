@@ -73,6 +73,12 @@ const JAVASCRIPT_SCOPE_QUERY = `
 (arrow_function) @scope.function
 (method_definition) @scope.function
 
+;; Object literals get their own scope boundary -- see the matching
+;; comment in typescript/query.ts (#2545). Prevents a method_definition/
+;; property-arrow's auto-hoist from leaking its name past the literal
+;; into the enclosing scope.
+(object) @scope.block
+
 ;; Declarations — classes
 (class_declaration
   name: (identifier) @declaration.name) @declaration.class
