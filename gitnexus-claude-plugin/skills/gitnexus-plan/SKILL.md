@@ -1,6 +1,6 @@
 ---
 name: gitnexus-plan
-description: "Use when you need a deep, implementation-ready engineering plan for a code change — built from GitNexus graph intelligence, statement-level PDG analysis, and targeted source verification, compact enough that an implementation agent can start without re-investigating. Also strengthens existing plans via Deepen mode. Examples: \"/gitnexus-plan Add retry support to the ingestion pipeline\", \"/gitnexus-plan deepen docs/plans/<plan>.md\", \"plan this change using the knowledge graph\"."
+description: 'Use when you need a deep, implementation-ready engineering plan for a code change — built from GitNexus graph intelligence, statement-level PDG analysis, and targeted source verification, compact enough that an implementation agent can start without re-investigating. Also strengthens existing plans via Deepen mode. Examples: "/gitnexus-plan Add retry support to the ingestion pipeline", "/gitnexus-plan deepen docs/plans/<plan>.md", "plan this change using the knowledge graph".'
 ---
 
 # gitnexus-plan — implementation-ready engineering plans
@@ -21,10 +21,11 @@ consume without repeating the investigation.
 **This skill plans. It never implements.** Do not modify production code,
 tests, or configuration while running it. The only repository file it writes
 is the plan document (a working ledger kept outside the repo is fine). The
-only other permitted state changes are the freshness gate's: an index
-refresh via `analyze --index-only` (writes only the `.gitnexus` index store,
-never repo files) and the analyzer `dist/` rebuild that may precede it
-(build output only).
+only other permitted state change is an index refresh via
+`analyze --index-only`, which writes only the `.gitnexus` index store. It
+must not build analyzer `dist/` output and must not mutate source, tests,
+configuration, or evaluation data. Stale analyzer provenance is disclosed as
+a source-weighted limitation, never repaired by a planning run.
 
 ## Hard rules
 
@@ -39,9 +40,27 @@ never repo files) and the analyzer `dist/` rebuild that may precede it
   Verify before asserting (see Phase 4). Comments are the weakest evidence —
   never stronger than executable code.
 - **No fabrication.** Never invent symbols, filenames, test names, tool
-  results, or PDG edges. Unknowns go to *Assumptions and Open Questions*.
+  results, or PDG edges. Unknowns go to _Assumptions and Open Questions_.
 - **No scope creep.** Adjacent refactors the task didn't ask for go to plan
   §12 as explicitly-deferred follow-ups, not into Proposed Changes.
+- **Pin working-tree evidence, not only HEAD.** Every plan form carries the
+  versioned global dirty digest and sorted cited-path manifest defined in
+  `references/context-ledger.md`. Generate it only with the portable helper
+  and byte contract in `scripts/evidence-provenance.mjs` and
+  `references/evidence-provenance.md`; never reimplement the digest.
+- **Write the plan only through the helper.** The generated-plan path is a
+  normalized repo-relative
+  `docs/plans/YYYY-MM-DD-gitnexus-plan-<3-5-word-slug>.md` path. Compose the
+  complete UTF-8 document in memory or in a scratchpad outside the target
+  repo, then pass it on stdin to the helper's `write-plan` command. Never
+  write the destination directly or fall back to an external output path when
+  the safe writer fails.
+- **Read an existing plan only through the helper.** Deepen must invoke
+  `scripts/evidence-provenance.mjs read-plan`, parse the exact decoded
+  `plan_bytes_base64` from its descriptor-anchored receipt, and retain that
+  receipt's canonical `generated_plan_path` and `plan_digest` as one binding.
+  Never parse a direct lexical-path read or apply one plan's digest to another
+  path.
 - **Stop when you have enough.** Sufficient evidence ends exploration; plans
   do not improve monotonically with tokens spent.
 
@@ -50,17 +69,17 @@ never repo files) and the analyzer `dist/` rebuild that may precede it
 Read `references/context-ledger.md` and open the ledger with the task:
 original request, interpreted goal, acceptance criteria. Classify the task:
 
-| Category | Posture (depth · plan form · tool-call budget · freshness) |
-| --- | --- |
-| Bug fix (local) | Narrow, 1–2 primary symbols, `impact_depth` 1 · compact · ~15 · accept |
-| Feature | Default knobs · compact · ~30 · accept |
-| Refactor / shared API change | Impact mandatory, `impact_depth` 3 · full · ~45 · strict |
-| Performance | Default + performance PDG mode (`references/pdg-slice.md`) · full · ~45 · strict |
-| Security | Default + security PDG mode + `explain` taint findings · full · ~45 · strict |
-| Dependency upgrade / migration | Impact + compatibility focus; PDG rarely needed · compact · ~20 · accept |
-| Concurrency / transactional | Control-flow + state-mutation PDG focus · full · ~45 · strict |
-| Test improvement / docs | Narrowest: usually no impact or PDG pass · compact · ~10 · accept |
-| Architecture change / spike | Widest: clusters + processes first · full · no cap · strict |
+| Category                       | Posture (depth · plan form · tool-call budget · freshness)                       |
+| ------------------------------ | -------------------------------------------------------------------------------- |
+| Bug fix (local)                | Narrow, 1–2 primary symbols, `impact_depth` 1 · compact · ~15 · accept           |
+| Feature                        | Default knobs · compact · ~30 · accept                                           |
+| Refactor / shared API change   | Impact mandatory, `impact_depth` 3 · full · ~45 · strict                         |
+| Performance                    | Default + performance PDG mode (`references/pdg-slice.md`) · full · ~45 · strict |
+| Security                       | Default + security PDG mode + `explain` taint findings · full · ~45 · strict     |
+| Dependency upgrade / migration | Impact + compatibility focus; PDG rarely needed · compact · ~20 · accept         |
+| Concurrency / transactional    | Control-flow + state-mutation PDG focus · full · ~45 · strict                    |
+| Test improvement / docs        | Narrowest: usually no impact or PDG pass · compact · ~10 · accept                |
+| Architecture change / spike    | Widest: clusters + processes first · full · no cap · strict                      |
 
 The category posture overrides the Configuration baseline; explicit `key:value`
 invocation knobs override both. A task matching several rows combines them:
@@ -109,38 +128,37 @@ budget; when the budget runs out with questions still open, record them in
    more than one repo is indexed.
 2. Record the repo's current HEAD commit in the ledger — every line-number
    citation in the plan is pinned to it.
-3. **Resolve the analyzer runner** (used by every `analyze` command in this
-   skill): `node .gitnexus/run.cjs analyze …` when the project has a runner
-   (a previous analyze dropped it next to the index), else
-   `gitnexus analyze …` (installed CLI — `npm install -g gitnexus`), else
-   `npx gitnexus analyze …`.
+3. **Resolve and record the analyzer runner** (used by every `analyze`
+   command in this skill): `node .gitnexus/run.cjs analyze …` when the
+   project has a runner (a previous analyze dropped it next to the index),
+   else `gitnexus analyze …` (installed CLI — `npm install -g gitnexus`),
+   else `npx gitnexus analyze …`. Record its path/version and any available
+   source/build identity; do not manufacture provenance from timestamps.
 4. Read `gitnexus://repo/{name}/context` — codebase overview + staleness check.
    **Freshness gate.** Plans built on a stale graph make stale blast-radius
-   claims — but a refresh (analyzer rebuild + re-index) is the single
-   largest fixed cost a planning session carries (measured in the GitNexus
-   repo's `eval/workflow_bench/`), so the gate is category-priced:
+   claims — but a re-index is the largest fixed cost a planning session
+   carries, so the gate is category-priced:
    - Compact-plan categories default to `freshness: accept`: plan on the
      current graph with source verification weighted higher — their plans
      cite little graph evidence. Escalate to a refresh mid-plan only when a
      graph claim becomes load-bearing (e.g. Proposed Changes rest on a d=1
      dependent list), and only then.
    - Full-plan categories default to `freshness: strict`, and under it:
-   - **Runner build check — before any refresh.** If the target repo builds
-     the analyzer from its own source (a `bin` → `dist/` mapping, as in this
-     repo's `gitnexus/` package), the built output must be current, or the
-     refresh re-indexes with outdated extraction logic and defeats the gate.
-     Rebuild when any analyzer source file is newer than the built entrypoint
-     (e.g. `find gitnexus/src -newer gitnexus/dist/cli/index.js -print -quit`
-     prints anything — when in doubt, rebuild: `npm run build` in the
-     package) and prefer that freshly built CLI for the refresh. Note the
-     rebuild in `index_refresh`.
+   - **Analyzer provenance check — before any refresh.** Compare the resolved
+     runner identity with the index metadata and, in an analyzer-source
+     checkout, with current analyzer source. If identity is stale or unknown,
+     do not build output and do not make that graph load-bearing. Record a
+     **stale analyzer provenance — source-weighted limitation** in
+     `index_refresh`, the plan header, and §12; rely on targeted source reads
+     or hand execution to `gitnexus-work`, which owns the build-current gate.
    - Stale index → run `analyze --index-only` via the resolved runner
      (append `--pdg` when the task category will reach Phase 3) and re-read
-     the context resource. Refresh budget, stated once here: at most one
-     `--index-only` refresh in Phase 1 **plus** at most one later `--pdg`
-     upgrade in Phase 3 (only when Phase 1's refresh lacked `--pdg`) per
-     planning session — a Deepen run is its own session. Record each command
-     and outcome in the ledger's `index_refresh`.
+     the context resource **only when runner provenance is known-current**.
+     Refresh budget, stated once here: at most one `--index-only` refresh in
+     Phase 1 **plus** at most one later `--pdg` upgrade in Phase 3 (only when
+     Phase 1's refresh lacked `--pdg`) per planning session — a Deepen run is
+     its own session. Record each command, runner identity, and outcome in the
+     ledger's `index_refresh`.
    - Refresh failed or impractical (no write access to the index, prohibitive
      repo size), or `freshness: accept` was passed → proceed on the stale
      graph, weight source verification higher, and state the staleness and
@@ -165,10 +183,10 @@ order. Budgets: at most `max_primary_symbols` (5) primary symbols and
    with `kind` / `file_path` / uid — that retry is an allowed repeat.
 3. `impact {target, direction}` — upstream/downstream blast radius for shared
    or high-connectivity symbols (`maxDepth` = `impact_depth`; `summaryOnly:
-   true` first for hub symbols, then drill in — an allowed repeat). Record the
+true` first for hub symbols, then drill in — an allowed repeat). Record the
    d=1 items — the **direct (depth-1) dependents** — the plan must account
    for every one of them.
-4. `trace {from, to}` — when the task hinges on *how A reaches B*, one call
+4. `trace {from, to}` — when the task hinges on _how A reaches B_, one call
    instead of chained context hops.
 5. Statement-level PDG — Phase 3, for the functions the change centers on.
 6. `cypher` — last resort, only for a precise graph question the tools above
@@ -209,6 +227,14 @@ reads (exact line ranges, not whole files unless genuinely required):
 - On graph/source disagreement: trust source, record the discrepancy in the
   ledger and the plan, recommend re-indexing. Never present stale graph data
   as fact.
+- Immediately before composition, recompute the versioned
+  `evidence_provenance` snapshot by invoking
+  `scripts/evidence-provenance.mjs` exactly as specified in
+  `references/evidence-provenance.md`: the
+  canonical global dirty digest over all dirty paths and the sorted manifest
+  of every cited path, including object kind and
+  HEAD/index/worktree/untracked layer digests. Re-read any citation that
+  changed during planning. Exclude only the generated plan path.
 
 Evidence hierarchy, strongest first: current source and config → current tests
 and executable behavior → compiler/build/lint output → GitNexus graph and PDG
@@ -222,12 +248,21 @@ and executable behavior → compiler/build/lint output → GitNexus graph and PD
    `[verified]`, `[graph]`, `[inferred]`, `[assumed]` — and routing open
    questions to §12.
 2. Build the implementation context pack per `references/context-pack.md`
-   (this is section 11 of the plan).
-3. Write the document to `docs/plans/YYYY-MM-DD-gitnexus-plan-<slug>.md` under the
-   root of the repo being planned (the Phase 1 target repo, not necessarily
-   the cwd). Create the directory if missing; kebab-case slug, 3–5 words.
-   The `out:<path>` knob overrides the destination (use it for read-only
-   checkouts). Repo-relative paths inside the document.
+   (this is section 11 of the plan), including mandatory
+   `evidence_provenance` in compact and full forms.
+3. Set `generated_plan_path` to
+   `docs/plans/YYYY-MM-DD-gitnexus-plan-<slug>.md` under the root of the repo
+   being planned (the Phase 1 target repo, not necessarily the cwd); use a
+   3–5-word kebab-case slug and repo-relative paths inside the document.
+   Compose the complete document without creating that destination, then
+   pipe its exact UTF-8 bytes to `scripts/evidence-provenance.mjs write-plan`
+   as specified in `references/evidence-provenance.md`. The helper safely
+   creates missing parent directories. Initial planning must not pass
+   `--replace`. A safe-write failure blocks plan publication: report it and
+   do not write directly, choose an external destination, or weaken the
+   repo-relative provenance contract. The snapshot and writer commands apply
+   the same strict generated-plan filename/date validator; do not substitute a
+   source, `.git`, or arbitrary `docs/plans/` path in either invocation.
 4. Present in chat: objective, proposed-changes summary, implementation
    sequence, top risks, open questions, and the plan file path. Do not paste
    the whole document into chat.
@@ -237,30 +272,45 @@ and executable behavior → compiler/build/lint output → GitNexus graph and PD
 `/gitnexus-plan deepen <plan-path>` strengthens an existing plan in place
 instead of creating a new one:
 
-1. Re-run Phase 1 in full — runner build check, freshness gate (a Deepen
-   run is its own session, with its own refresh budget).
-2. **Re-anchor before re-pinning.** Diff the plan's old evidence pin against
-   current HEAD for every file backing a `[verified]` claim: unchanged files
-   keep the tag; changed files get their cited ranges re-read — or the claim
-   downgraded — *before* the header pin moves to the new HEAD. Moving the
-   pin without this step silently launders stale claims as verified.
-3. Escalate to `depth: deep` (impact_depth 3, clusters/processes read)
+1. Resolve the target repository and normalized repo-relative plan candidate,
+   then load it with `scripts/evidence-provenance.mjs read-plan --repo <root>
+--generated-plan <candidate>` exactly as specified in
+   `references/evidence-provenance.md`. Reject a missing, external, escaping,
+   symlinked, or differently scoped path. Decode and parse only the receipt's
+   exact `plan_bytes_base64`; retain its canonical `generated_plan_path` and
+   `plan_digest` unchanged for the entire Deepen session.
+2. Re-run Phase 1 in full — analyzer provenance check and freshness gate (a
+   Deepen run is its own session, with its own refresh budget).
+3. **Re-anchor before re-pinning.** Recompute the plan's global dirty digest
+   and cited-path manifest as well as comparing its old HEAD pin with current
+   HEAD. Changed, renamed, deleted, mixed, or newly absent cited paths get
+   their ranges re-read — or the claim downgraded — _before_ the pin and
+   provenance snapshot move. Moving only the commit pin silently launders
+   dirty or stale claims as verified.
+4. Escalate to `depth: deep` (impact_depth 3, clusters/processes read)
    unless the invocation overrides knobs explicitly.
-4. Seed the ledger from the plan's §11 pack, then re-verify: every
+5. Seed the ledger from the plan's §11 pack, then re-verify: every
    `[graph]`/`[inferred]` claim gets a targeted pass toward `[verified]`;
    every `[assumed]` claim is resolved or kept with its reason; direct
    (d=1) dependent accounting is re-checked against the refreshed graph;
    PDG slices are built or expanded for the central functions when the
    layer is present.
-5. **Reconcile execution state.** If `gitnexus-work` already landed commits
+6. **Reconcile execution state.** If `gitnexus-work` already landed commits
    for this plan (a mid-execution route-back), mark the §7 steps present at
    HEAD as completed and re-sequence the remainder — the rewritten plan must
    be executable from the top without redoing landed steps.
-6. Strengthen whatever the deeper pass showed thin — test scenarios, risks,
+7. Strengthen whatever the deeper pass showed thin — test scenarios, risks,
    Definition of Done — and carry claim-tag upgrades through the prose.
-7. Rewrite the **same file**: same 13 sections, context pack kept in sync,
-   evidence header updated. Summarize the delta in chat: claims upgraded,
-   claims that failed re-verification, sections changed.
+8. Rewrite the **same canonical file** through
+   `scripts/evidence-provenance.mjs write-plan --replace
+--expected-plan-path <retained-read-plan-path>
+--expected-plan-digest <retained-read-plan-digest>`: same 13 sections,
+   context pack kept in sync, evidence header updated. `--replace` is reserved
+   for Deepen mode, and both expected values must come from the same read-plan
+   receipt; any digest/path mismatch blocks publication. Retain the successful receipt's
+   `prior_plan_backup_git_path`; it names the verified Git-admin backup of the
+   displaced plan. Summarize the delta in chat: claims upgraded, claims that
+   failed re-verification, sections changed, and that backup path.
 
 ## Configuration
 
@@ -268,18 +318,17 @@ Baseline defaults — the Phase 0 category posture overrides them, and inline
 `key:value` tokens before the task text override both (the repo has no
 skill-config file mechanism; invocation args are the mechanism):
 
-| Knob | Default | Meaning |
-| --- | --- | --- |
-| `depth` | by category | `narrow` = `impact_depth` 1, PDG only if one function is clearly central; `default` = this table; `deep` = `impact_depth` 3 + clusters/processes read |
-| `form` | by category | `compact` (core sections + mini-pack, ≤80 lines excl. pack — see `references/plan-template.md`) or `full` (all 13 sections) |
-| `impact_depth` | 2 | `maxDepth` for `impact` |
-| `pdg_data_depth` | 2 | Data-dependence hops in the PDG slice |
-| `pdg_control_depth` | 2 | Control-dependence hops in the PDG slice |
-| `max_primary_symbols` | 5 | Ledger budget (active symbols; discards don't count) |
-| `max_related_symbols` | 20 | Ledger budget (active symbols; discards don't count) |
-| `max_snippet_lines` | 30 | Longest source excerpt quoted in the plan |
-| `out` | `docs/plans/` in target repo | Plan document destination |
-| `freshness` | by category | `strict` (full-plan categories) = refresh a stale index (and a missing PDG layer) with `analyze --index-only [--pdg]` before relying on the graph; `accept` (compact categories) = plan on the current graph, source-weighted and labelled, refreshing only if a graph claim becomes load-bearing |
+| Knob                  | Default     | Meaning                                                                                                                                                                                                                                                                                           |
+| --------------------- | ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `depth`               | by category | `narrow` = `impact_depth` 1, PDG only if one function is clearly central; `default` = this table; `deep` = `impact_depth` 3 + clusters/processes read                                                                                                                                             |
+| `form`                | by category | `compact` (core sections + mini-pack, ≤80 lines excl. pack — see `references/plan-template.md`) or `full` (all 13 sections)                                                                                                                                                                       |
+| `impact_depth`        | 2           | `maxDepth` for `impact`                                                                                                                                                                                                                                                                           |
+| `pdg_data_depth`      | 2           | Data-dependence hops in the PDG slice                                                                                                                                                                                                                                                             |
+| `pdg_control_depth`   | 2           | Control-dependence hops in the PDG slice                                                                                                                                                                                                                                                          |
+| `max_primary_symbols` | 5           | Ledger budget (active symbols; discards don't count)                                                                                                                                                                                                                                              |
+| `max_related_symbols` | 20          | Ledger budget (active symbols; discards don't count)                                                                                                                                                                                                                                              |
+| `max_snippet_lines`   | 30          | Longest source excerpt quoted in the plan                                                                                                                                                                                                                                                         |
+| `freshness`           | by category | `strict` (full-plan categories) = refresh a stale index (and a missing PDG layer) with `analyze --index-only [--pdg]` before relying on the graph; `accept` (compact categories) = plan on the current graph, source-weighted and labelled, refreshing only if a graph claim becomes load-bearing |
 
 ## Fallback mode (GitNexus or PDG unavailable)
 
@@ -292,14 +341,8 @@ skill-config file mechanism; invocation args are the mechanism):
    the resolved runner — `node .gitnexus/run.cjs`, installed `gitnexus`, or
    `npx gitnexus` — when it would materially raise confidence.
 
-## Skill feedback (GitNexus repo only)
+## Skill feedback
 
-If this run exposed friction in this skill's own instructions — wrong or
-missing guidance, a wasted tool budget, a phase that misrouted — and the repo
-carries `eval/workflow_bench/`, append one JSON line to
-`eval/workflow_bench/learnings.jsonl` (create the file if absent):
-`{"skill": "gitnexus-plan", "date": "YYYY-MM-DD", "task": "<one line>", "friction": "<one line>", "suggestion": "<one line>"}`.
-Never edit this skill file itself from a live task: improvements go through
-the offline candidate loop (`eval/workflow_bench/README.md` § Prompt and
-skill evolution loop), where a candidate must beat the incumbent on the
-paired benchmark before a human merges it.
+If this run exposed friction in the instructions, include concise feedback in
+the final response. Feedback is chat-only: do not append evaluation learnings,
+edit benchmark data, or modify this skill during a live planning task.

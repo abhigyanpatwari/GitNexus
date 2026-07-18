@@ -1,26 +1,22 @@
-"""Unit tests for the pure aggregation/report helpers of workflow_bench."""
+"""Unit tests for workflow benchmark aggregation, reporting, task, and CI contracts."""
 
-import argparse
 import json
+import re
 import subprocess
 from pathlib import Path
 
 import pytest
+import yaml
 
-from workflow_bench import runner
-from workflow_bench.evolution import (
-    apply_candidate_overlay,
-    candidate_overlay_digest,
-    evaluate_candidate,
-    unexercised_overlay_skills,
-)
 from workflow_bench.runner import (
     aggregate,
     build_parser,
     infra_error_record,
+    normalized_model_identifier,
     parse_shortstat,
     render_report,
     savings,
+    select_tasks,
 )
 
 
@@ -79,6 +75,178 @@ def test_savings_is_positive_when_workflow_is_cheaper():
     assert s["cost_usd"] == 60.0
 
 
+def task_row(task_id: str, **overrides):
+    task = {
+        "id": task_id,
+        "class": "demo",
+        "repo": "/repo",
+        "prompt": "do it",
+        "verify": "true",
+        "oracle": {
+            "command": "true",
+            "files": [
+                {
+                    "source": "trivial-version-alias.oracle.test.ts",
+                    "target": "oracle.test.ts",
+                }
+            ],
+        },
+    }
+    task.update(overrides)
+    return task
+
+
+def test_expensive_tasks_are_opt_in_and_reported_as_skipped():
+    tasks = [task_row("default"), task_row("large", expensive=True)]
+    selected, skipped = select_tasks(tasks, include_expensive=False)
+    assert [task["id"] for task in selected] == ["default"]
+    assert skipped == ["large"]
+
+    selected, skipped = select_tasks(tasks, include_expensive=True)
+    assert [task["id"] for task in selected] == ["default", "large"]
+    assert skipped == []
+
+
+@pytest.mark.parametrize("value", ["true", 1, None, [], {}])
+def test_expensive_metadata_must_be_boolean(value):
+    with pytest.raises(ValueError, match="expensive.*boolean"):
+        select_tasks([task_row("bad", expensive=value)], include_expensive=False)
+
+
+def test_task_selection_rejects_duplicate_ids_and_empty_selection():
+    with pytest.raises(ValueError, match="duplicate task id"):
+        select_tasks([task_row("same"), task_row("same")], include_expensive=True)
+    with pytest.raises(ValueError, match="no tasks selected"):
+        select_tasks([task_row("large", expensive=True)], include_expensive=False)
+
+
+def test_runner_requires_a_named_model_and_supports_expensive_opt_in():
+    with pytest.raises(SystemExit):
+        build_parser().parse_args(["--tasks", "tasks.yaml"])
+    args = build_parser().parse_args(
+        [
+            "--tasks",
+            "tasks.yaml",
+            "--model",
+            "claude-sonnet-4-20250514",
+            "--include-expensive",
+        ]
+    )
+    assert args.include_expensive is True
+    with pytest.raises(ValueError, match="nonblank"):
+        normalized_model_identifier("   ")
+
+
+@pytest.mark.parametrize(
+    "alias",
+    ["Auto", "AUTO", "latest", "provider/latest", "provider:Latest", "provider@LATEST"],
+)
+def test_runner_rejects_mutable_model_aliases(alias):
+    with pytest.raises(ValueError, match="mutable auto/latest"):
+        normalized_model_identifier(alias)
+    assert normalized_model_identifier("free-coder") == "free-coder"
+    assert normalized_model_identifier("claude-sonnet-4-20250514") == "claude-sonnet-4-20250514"
+
+
+def test_eval_ci_uses_locked_uv_and_blocking_native_containment_jobs():
+    repo_root = Path(__file__).resolve().parents[2]
+    workflow = (repo_root / ".github" / "workflows" / "ci-tests.yml").read_text()
+    workflow_document = yaml.safe_load(workflow)
+    containment = workflow_document["jobs"]["eval-containment-linux"]
+    containment_steps = {step.get("name"): step for step in containment["steps"] if "name" in step}
+    containment_node_setup = next(
+        step for step in containment["steps"] if str(step.get("uses", "")).startswith("actions/setup-node@")
+    )
+    claude_lock = json.loads((repo_root / ".github" / "claude-canary-runtime" / "package-lock.json").read_text())
+    setup_uv = "astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990"
+    assert workflow.count(setup_uv) >= 3
+    assert workflow.count("version: '0.11.23'") >= 3
+    assert workflow.count("uv run --locked --extra dev python -m pytest") >= 3
+    assert "eval-containment-linux:" in workflow
+    assert "GITNEXUS_REQUIRE_BWRAP_CANARY: '1'" in workflow
+    assert "GITNEXUS_REQUIRE_CLAUDE_CANARY: '1'" in workflow
+    assert containment["env"] == {
+        "GITNEXUS_REQUIRE_BWRAP_CANARY": "1",
+        "GITNEXUS_REQUIRE_CLAUDE_CANARY": "1",
+    }
+    assert containment["timeout-minutes"] == 20
+    assert containment_node_setup["with"] == {
+        "node-version": "22.16.0",
+        "cache": "npm",
+        "cache-dependency-path": "gitnexus/package-lock.json\ngitnexus-shared/package-lock.json\n",
+    }
+    assert (
+        "CLAUDE_CANARY_BIN: ${{ runner.temp }}/claude-canary/node_modules/@anthropic-ai/claude-code-linux-x64/claude"
+        in workflow
+    )
+    assert ".github/claude-canary-runtime/package-lock.json" in workflow
+    assert "npm ci" in workflow
+    assert "--package-lock=false" not in workflow
+    assert claude_lock["packages"]["node_modules/@anthropic-ai/claude-code"]["version"] == "2.1.214"
+    assert claude_lock["packages"]["node_modules/@anthropic-ai/claude-code"]["integrity"].startswith("sha512-")
+    assert "if(p.version!=='2.1.214') process.exit(1)" in workflow
+    assert "'2.1.214 (Claude Code)'" in workflow
+    assert containment_steps["Build pinned shared runtime"]["working-directory"] == "gitnexus-shared"
+    assert containment_steps["Build pinned shared runtime"]["run"].splitlines() == [
+        "npm ci",
+        "npm run build",
+    ]
+    assert containment_steps["Install and build pinned GitNexus runtime"]["working-directory"] == "gitnexus"
+    assert containment_steps["Install and build pinned GitNexus runtime"]["run"].splitlines() == [
+        "npm ci",
+        "npm run build",
+    ]
+    selected_containment_tests = containment_steps["Prove process-tree and sandbox containment"]["run"].split()
+    assert selected_containment_tests == [
+        "uv",
+        "run",
+        "--locked",
+        "--extra",
+        "dev",
+        "python",
+        "-m",
+        "pytest",
+        "tests/test_process_control.py",
+        "tests/test_proposer_sandbox.py",
+        "tests/test_workflow_bench_sessions.py",
+        "tests/test_ce_plugin_runtime.py",
+        "-q",
+    ]
+    bwrap_canary_marker = re.compile(
+        r'@pytest\.mark\.skipif\(\s*os\.environ\.get\("GITNEXUS_REQUIRE_BWRAP_CANARY"\)',
+        re.MULTILINE,
+    )
+    bwrap_canary_files = sorted(
+        path.name
+        for path in (repo_root / "eval" / "tests").glob("test_*.py")
+        if bwrap_canary_marker.search(path.read_text())
+    )
+    assert bwrap_canary_files == ["test_proposer_sandbox.py", "test_workflow_bench_sessions.py"]
+    assert all(f"tests/{name}" in selected_containment_tests for name in bwrap_canary_files)
+    assert "eval-containment-windows:" in workflow
+
+
+def test_shipped_scenarios_opt_out_the_cross_module_cell_and_rebuild_graph_assets():
+    task_file = Path(__file__).resolve().parents[1] / "workflow_bench" / "tasks.scenarios.yaml"
+    tasks = yaml.safe_load(task_file.read_text())["tasks"]
+    selected, skipped = select_tasks(tasks, include_expensive=False)
+    assert [task["id"] for task in selected] == [
+        "trivial-version-alias",
+        "inv-bug-pdg-note",
+        "inv-feature-list-repos-filter",
+    ]
+    assert skipped == ["cross-module-parse-retry"]
+    assert all(not task.get("sandbox_copy") for task in tasks)
+    assert all(task["sandbox_dependencies"] for task in tasks)
+    assert all(task["oracle"]["command"] and task["oracle"]["files"] for task in tasks)
+    assert all("./node_modules/.bin/vitest run" in task["oracle"]["command"] for task in tasks)
+    assert all("npx vitest" not in task["oracle"]["command"] for task in tasks)
+    assert all(
+        '--config "$GITNEXUS_BENCH_ORACLE_ROOT/vitest.config.mts"' in task["oracle"]["command"] for task in tasks
+    )
+    assert all({item["target"] for item in task["oracle"]["files"]} >= {"vitest.config.mts"} for task in tasks)
+
+
 def test_savings_handles_zero_baseline_without_dividing():
     baseline = aggregate([record(cost_usd=0.0)])
     workflow = aggregate([record(cost_usd=0.0)])
@@ -115,289 +283,6 @@ def test_render_report_emits_arm_rows_and_per_arm_savings_rows():
     assert "subagent spend" in report  # token columns are main-loop-only
 
 
-def test_candidate_gate_promotes_quality_preserving_efficiency_gain():
-    results = {
-        "task-a": {
-            "workflow_direct": aggregate([record(output_tokens=1000) for _ in range(3)]),
-            "candidate_workflow_direct": aggregate([record(output_tokens=880) for _ in range(3)]),
-        },
-        "task-b": {
-            "workflow_direct": aggregate([record(output_tokens=800) for _ in range(3)]),
-            "candidate_workflow_direct": aggregate([record(output_tokens=720) for _ in range(3)]),
-        },
-    }
-
-    decision = evaluate_candidate(
-        results,
-        incumbent_arm="workflow_direct",
-        candidate_arm="candidate_workflow_direct",
-        model="pinned-model",
-        metric="output_tokens",
-    )
-
-    assert decision["decision"] == "promote"
-    assert decision["median_improvement_pct"] == 11.0
-    assert "subagent" in decision["metric_warning"]
-
-
-def test_candidate_gate_never_trades_resolution_for_lower_cost():
-    results = {
-        "task-a": {
-            "workflow": aggregate([record() for _ in range(3)]),
-            "candidate_workflow": aggregate(
-                [
-                    record(cost_usd=0.1),
-                    record(cost_usd=0.1),
-                    record(cost_usd=0.1, resolved=False),
-                ]
-            ),
-        }
-    }
-
-    decision = evaluate_candidate(
-        results,
-        incumbent_arm="workflow",
-        candidate_arm="candidate_workflow",
-        model="pinned-model",
-        metric="cost_usd",
-    )
-
-    assert decision["decision"] == "keep_incumbent"
-    assert any("resolution regressed" in reason for reason in decision["reasons"])
-
-
-def test_candidate_gate_requires_repeated_runs_and_a_named_model():
-    results = {
-        "task-a": {
-            "workflow_direct": aggregate([record(output_tokens=1000)]),
-            "candidate_workflow_direct": aggregate([record(output_tokens=800)]),
-        }
-    }
-
-    decision = evaluate_candidate(
-        results,
-        incumbent_arm="workflow_direct",
-        candidate_arm="candidate_workflow_direct",
-        model=None,
-    )
-
-    assert decision["decision"] == "insufficient_evidence"
-    assert any("named --model" in reason for reason in decision["reasons"])
-    assert any("at least 3 valid runs" in reason for reason in decision["reasons"])
-
-
-def test_candidate_gate_caps_large_per_task_efficiency_regressions():
-    results = {
-        "task-a": {
-            "workflow_direct": aggregate([record(output_tokens=1000) for _ in range(3)]),
-            "candidate_workflow_direct": aggregate([record(output_tokens=500) for _ in range(3)]),
-        },
-        "task-b": {
-            "workflow_direct": aggregate([record(output_tokens=1000) for _ in range(3)]),
-            "candidate_workflow_direct": aggregate([record(output_tokens=1250) for _ in range(3)]),
-        },
-    }
-
-    decision = evaluate_candidate(
-        results,
-        incumbent_arm="workflow_direct",
-        candidate_arm="candidate_workflow_direct",
-        model="pinned-model",
-        metric="output_tokens",
-    )
-
-    assert decision["decision"] == "keep_incumbent"
-    assert any("task cap" in reason for reason in decision["reasons"])
-
-
-def test_candidate_overlay_is_skill_only_and_content_addressed(tmp_path):
-    overlay = tmp_path / "candidate"
-    skill = overlay / ".claude" / "skills" / "gitnexus-work" / "SKILL.md"
-    skill.parent.mkdir(parents=True)
-    skill.write_text("candidate one\n")
-
-    first = candidate_overlay_digest(overlay)
-    skill.write_text("candidate two\n")
-    second = candidate_overlay_digest(overlay)
-
-    assert first != second
-
-    review_overlay = tmp_path / "review-candidate"
-    review_skill = review_overlay / ".claude" / "skills" / "gitnexus-review" / "SKILL.md"
-    review_skill.parent.mkdir(parents=True)
-    review_skill.write_text("review candidate\n")
-    assert candidate_overlay_digest(review_overlay)
-
-    invalid = tmp_path / "invalid"
-    source = invalid / "gitnexus" / "src" / "cli" / "index.ts"
-    source.parent.mkdir(parents=True)
-    source.write_text("gaming the verifier\n")
-    with pytest.raises(ValueError, match="may only contain Markdown files"):
-        candidate_overlay_digest(invalid)
-
-    config_overlay = tmp_path / "config-overlay"
-    config = config_overlay / ".claude" / "skills" / "gitnexus-work" / "mcp.json"
-    config.parent.mkdir(parents=True)
-    config.write_text("{}\n")
-    with pytest.raises(ValueError, match="may only contain Markdown files"):
-        candidate_overlay_digest(config_overlay)
-
-
-def test_apply_candidate_overlay_creates_a_clean_ephemeral_commit(tmp_path):
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    subprocess.run(["git", "init", "--quiet", str(repo)], check=True)
-    incumbent = repo / ".claude" / "skills" / "gitnexus-work" / "SKILL.md"
-    incumbent.parent.mkdir(parents=True)
-    incumbent.write_text("incumbent\n")
-    subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
-    subprocess.run(
-        [
-            "git",
-            "-C",
-            str(repo),
-            "-c",
-            "user.name=test",
-            "-c",
-            "user.email=test@invalid",
-            "commit",
-            "--quiet",
-            "-m",
-            "incumbent",
-        ],
-        check=True,
-    )
-
-    overlay = tmp_path / "candidate"
-    candidate = overlay / ".claude" / "skills" / "gitnexus-work" / "SKILL.md"
-    candidate.parent.mkdir(parents=True)
-    candidate.write_text("candidate\n")
-
-    assert apply_candidate_overlay(overlay, repo) == candidate_overlay_digest(overlay)
-    assert incumbent.read_text() == "candidate\n"
-    status = subprocess.run(
-        ["git", "-C", str(repo), "status", "--porcelain"],
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-    assert status.stdout == ""
-
-
-# ─── run_claude fail-closed on malformed session reports (#2431 review) ─────
-
-
-def fake_cli_result(stdout: str):
-    return subprocess.CompletedProcess(args=[], returncode=0, stdout=stdout, stderr="")
-
-
-VALID_REPORT = (
-    '{"session_id": "s", "num_turns": 3, "total_cost_usd": 0.1, "duration_ms": 1000,'
-    ' "usage": {"input_tokens": 1, "cache_creation_input_tokens": 2,'
-    ' "cache_read_input_tokens": 3, "output_tokens": 4}}'
-)
-
-
-@pytest.mark.parametrize(
-    ("stdout", "expected_ok"),
-    [
-        (VALID_REPORT, True),
-        ("", False),  # empty output
-        ("not json", False),  # malformed JSON
-        ('{"session_id": "s", "num_turns": 3}', False),  # missing usage entirely
-        ('{"usage": {"input_tokens": 1}}', False),  # usage missing required fields
-    ],
-)
-def test_run_claude_fails_closed_on_bad_reports(monkeypatch, tmp_path, stdout, expected_ok):
-    monkeypatch.setattr(runner.subprocess, "run", lambda *a, **k: fake_cli_result(stdout))
-    rec = runner.run_claude("task", tmp_path, claude_bin="claude", timeout=5)
-    assert rec["ok"] is expected_ok
-
-
-# ─── error_kind provenance on rows (#2431 review, finding 2/6) ───────────────
-
-
-def report_variant(**extra):
-    data = json.loads(VALID_REPORT)
-    data.update(extra)
-    return json.dumps(data)
-
-
-def session_record(**overrides):
-    base = {
-        "input_tokens": 10,
-        "cache_creation_input_tokens": 1,
-        "cache_read_input_tokens": 2,
-        "output_tokens": 5,
-        "cost_usd": 0.1,
-        "duration_s": 1.0,
-        "num_turns": 2,
-        "ok": True,
-        "session_id": "sess",
-        "error_kind": None,
-        "error_detail": None,
-    }
-    base.update(overrides)
-    return base
-
-
-def bench_args(**overrides):
-    base = {
-        "claude_bin": "claude",
-        "timeout": 5,
-        "model": None,
-        "base_url": None,
-        "auth_token": None,
-        "permission_mode": None,
-    }
-    base.update(overrides)
-    return argparse.Namespace(**base)
-
-
-@pytest.mark.parametrize(
-    ("proc", "expected_kind"),
-    [
-        (subprocess.CompletedProcess([], 0, VALID_REPORT, ""), None),
-        (subprocess.CompletedProcess([], 1, VALID_REPORT, "boom"), "session-error"),
-        (subprocess.CompletedProcess([], 0, report_variant(is_error=True), ""), "session-error"),
-        (subprocess.CompletedProcess([], 0, report_variant(subtype="error_max_turns"), ""), "session-error"),
-        (subprocess.CompletedProcess([], 0, "", ""), "session-error"),  # malformed report
-    ],
-)
-def test_run_claude_records_error_kind(monkeypatch, tmp_path, proc, expected_kind):
-    monkeypatch.setattr(runner.subprocess, "run", lambda *a, **k: proc)
-    rec = runner.run_claude("task", tmp_path, claude_bin="claude", timeout=5)
-    assert rec["error_kind"] == expected_kind
-
-
-def test_run_claude_keeps_raw_subtype_and_stderr_tail(monkeypatch, tmp_path):
-    proc = subprocess.CompletedProcess([], 1, VALID_REPORT, "rate limit hit")
-    monkeypatch.setattr(runner.subprocess, "run", lambda *a, **k: proc)
-    rec = runner.run_claude("task", tmp_path, claude_bin="claude", timeout=5)
-    assert rec["error_detail"] == {
-        "subtype": None,
-        "returncode": 1,
-        "stderr_tail": "rate limit hit",
-    }
-
-
-def test_run_arm_labels_completed_but_unverified_runs_verify_failed(monkeypatch, tmp_path):
-    monkeypatch.setattr(runner, "run_claude", lambda *a, **k: session_record())
-    rec = runner.run_arm("baseline", {"prompt": "p", "verify": "exit 1"}, tmp_path, bench_args())
-    assert rec["ok"] is True
-    assert rec["resolved"] is False
-    assert rec["error_kind"] == "verify-failed"
-
-
-def test_run_arm_keeps_session_error_kind_over_verify(monkeypatch, tmp_path):
-    dead = session_record(ok=False, error_kind="session-error", error_detail={"subtype": "error_max_turns"})
-    monkeypatch.setattr(runner, "run_claude", lambda *a, **k: dict(dead))
-    rec = runner.run_arm("baseline", {"prompt": "p", "verify": "exit 0"}, tmp_path, bench_args())
-    assert rec["ok"] is False
-    assert rec["resolved"] is False
-    assert rec["error_kind"] == "session-error"
-
-
 def test_aggregate_excludes_session_error_rows_from_medians():
     records = [
         record(cost_usd=1.0),
@@ -411,6 +296,23 @@ def test_aggregate_excludes_session_error_rows_from_medians():
     assert agg["excluded_runs"] == 1
     assert agg["transcripts_missing"] == 1
     assert agg["resolved"] == 2
+
+
+def test_aggregate_excludes_unverified_transcript_evidence():
+    agg = aggregate(
+        [
+            record(cost_usd=1.0),
+            record(
+                cost_usd=100.0,
+                resolved=False,
+                error_kind="evidence-unverified",
+                transcript_missing=True,
+            ),
+        ]
+    )
+    assert agg["cost_usd"] == 1.0
+    assert agg["valid_runs"] == 1
+    assert agg["excluded_runs"] == 1
 
 
 def test_render_report_surfaces_excluded_and_unverified_runs():
@@ -442,169 +344,3 @@ def test_infra_error_record_captures_the_failure_and_is_excluded():
     assert agg["cost_usd"] == 2.0
     assert agg["valid_runs"] == 1
     assert agg["excluded_runs"] == 1
-
-
-# ─── promotion gate provenance and noise floor (#2431 review, 1/2/5) ─────────
-
-
-def test_cli_promotion_metric_defaults_to_cost_usd():
-    args = build_parser().parse_args(["--tasks", "tasks.yaml"])
-    assert args.promotion_metric == "cost_usd"
-
-
-def test_candidate_gate_defaults_to_cost_usd_without_a_warning():
-    results = {
-        "task-a": {
-            "workflow_direct": aggregate([record(cost_usd=1.0) for _ in range(3)]),
-            "candidate_workflow_direct": aggregate([record(cost_usd=0.5) for _ in range(3)]),
-        }
-    }
-    decision = evaluate_candidate(
-        results,
-        incumbent_arm="workflow_direct",
-        candidate_arm="candidate_workflow_direct",
-        model="pinned-model",
-    )
-    assert decision["metric"] == "cost_usd"
-    assert decision["metric_warning"] is None
-    assert decision["decision"] == "promote"
-
-
-def test_candidate_gate_requires_equal_valid_run_counts():
-    results = {
-        "task-a": {
-            "workflow": aggregate([record() for _ in range(4)]),
-            "candidate_workflow": aggregate(
-                [
-                    record(),
-                    record(),
-                    record(),
-                    record(resolved=False, error_kind="session-error"),
-                ]
-            ),
-        }
-    }
-    decision = evaluate_candidate(
-        results,
-        incumbent_arm="workflow",
-        candidate_arm="candidate_workflow",
-        model="pinned-model",
-    )
-    assert decision["decision"] == "insufficient_evidence"
-    assert any("different valid run counts" in reason for reason in decision["reasons"])
-    assert decision["tasks"][0]["candidate_excluded_runs"] == 1
-    assert decision["tasks"][0]["incumbent_excluded_runs"] == 0
-
-
-def test_candidate_gate_treats_a_one_run_resolution_edge_as_noise():
-    results = {
-        "task-a": {
-            "workflow": aggregate([record(), record(resolved=False), record(resolved=False)]),
-            "candidate_workflow": aggregate([record(), record(), record(resolved=False)]),
-        }
-    }
-    decision = evaluate_candidate(
-        results,
-        incumbent_arm="workflow",
-        candidate_arm="candidate_workflow",
-        model="pinned-model",
-    )
-    assert decision["decision"] == "keep_incumbent"
-    assert any("noise floor" in reason for reason in decision["reasons"])
-
-
-def test_candidate_gate_promotes_on_a_two_run_resolution_margin():
-    results = {
-        "task-a": {
-            "workflow": aggregate([record(), record(resolved=False), record(resolved=False)]),
-            "candidate_workflow": aggregate([record() for _ in range(3)]),
-        }
-    }
-    decision = evaluate_candidate(
-        results,
-        incumbent_arm="workflow",
-        candidate_arm="candidate_workflow",
-        model="pinned-model",
-    )
-    assert decision["decision"] == "promote"
-    assert any("at least 2 required" in reason for reason in decision["reasons"])
-
-
-# ─── overlay-arm consistency (#2431 review, finding 3) ───────────────────────
-
-
-def write_overlay_skill(overlay: Path, skill: str) -> None:
-    path = overlay / ".claude" / "skills" / skill / "SKILL.md"
-    path.parent.mkdir(parents=True)
-    path.write_text(f"{skill} candidate\n")
-
-
-def test_overlay_skills_must_be_exercised_by_selected_candidate_arms(tmp_path):
-    overlay = tmp_path / "overlay"
-    write_overlay_skill(overlay, "gitnexus-lfg")
-    write_overlay_skill(overlay, "gitnexus-work")
-    assert unexercised_overlay_skills(overlay, ["candidate_workflow_direct"]) == ["gitnexus-lfg"]
-    assert unexercised_overlay_skills(overlay, ["candidate_workflow"]) == ["gitnexus-lfg"]
-
-    plan_overlay = tmp_path / "plan-overlay"
-    write_overlay_skill(plan_overlay, "gitnexus-plan")
-    assert unexercised_overlay_skills(plan_overlay, ["candidate_workflow_direct"]) == ["gitnexus-plan"]
-    assert unexercised_overlay_skills(plan_overlay, ["candidate_workflow"]) == []
-
-
-# ─── skill-invocation verification (#2431 review, finding 4) ─────────────────
-
-
-def write_transcript(home: Path, session_id: str, blocks) -> Path:
-    path = home / ".claude" / "projects" / "some-slug" / f"{session_id}.jsonl"
-    path.parent.mkdir(parents=True)
-    events = [
-        {"type": "assistant", "message": {"id": "m1", "content": [block]}}
-        for block in blocks
-    ]
-    path.write_text("\n".join(json.dumps(event) for event in events) + "\n")
-    return path
-
-
-def set_fake_home(monkeypatch, home: Path) -> None:
-    monkeypatch.setenv("HOME", str(home))
-    monkeypatch.setenv("USERPROFILE", str(home))
-
-
-def test_skill_invocation_is_detected_from_the_transcript(monkeypatch, tmp_path):
-    set_fake_home(monkeypatch, tmp_path)
-    monkeypatch.setattr(runner.subprocess, "run", lambda *a, **k: fake_cli_result(VALID_REPORT))
-    write_transcript(
-        tmp_path, "s", [{"type": "tool_use", "name": "Skill", "input": {"command": "gitnexus-work"}}]
-    )
-    rec = runner.run_claude(
-        "task", tmp_path, claude_bin="claude", timeout=5, expected_skill="gitnexus-work"
-    )
-    assert rec["ok"] is True
-    assert rec["skill_invoked"] is True
-    assert rec["error_kind"] is None
-
-
-def test_missing_skill_invocation_fails_closed(monkeypatch, tmp_path):
-    set_fake_home(monkeypatch, tmp_path)
-    monkeypatch.setattr(runner.subprocess, "run", lambda *a, **k: fake_cli_result(VALID_REPORT))
-    write_transcript(
-        tmp_path, "s", [{"type": "tool_use", "name": "Read", "input": {"file_path": "x"}}]
-    )
-    rec = runner.run_claude(
-        "task", tmp_path, claude_bin="claude", timeout=5, expected_skill="gitnexus-work"
-    )
-    assert rec["ok"] is False
-    assert rec["skill_invoked"] is False
-    assert rec["error_kind"] == "skill-not-invoked"
-
-
-def test_unlocatable_transcript_records_null_without_failing(monkeypatch, tmp_path):
-    set_fake_home(monkeypatch, tmp_path)
-    monkeypatch.setattr(runner.subprocess, "run", lambda *a, **k: fake_cli_result(VALID_REPORT))
-    rec = runner.run_claude(
-        "task", tmp_path, claude_bin="claude", timeout=5, expected_skill="gitnexus-work"
-    )
-    assert rec["ok"] is True
-    assert rec["skill_invoked"] is None
-    assert rec["error_kind"] is None

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { createLazyAction } from '../../src/cli/lazy-action.js';
+import { createAnalyzerLbugLazyAction, createLazyAction } from '../../src/cli/lazy-action.js';
 
 const { checkLbugNativeMock } = vi.hoisted(() => ({
   checkLbugNativeMock: vi.fn(() => ({ ok: true })),
@@ -56,5 +56,38 @@ describe('createLbugLazyAction', () => {
       stderrSpy.mockRestore();
       process.exitCode = undefined;
     }
+  });
+});
+
+describe('createAnalyzerLbugLazyAction', () => {
+  it('captures identity before probing native code or importing the analyzer graph', async () => {
+    const events: string[] = [];
+    const receipt = { schemaVersion: 4 };
+    const run = vi.fn(async () => undefined);
+    const identityLoader = vi.fn(async () => {
+      events.push('identity-module');
+      return {
+        captureAnalyzerIdentityBeforeLoad: async (_url: string, loader: () => Promise<unknown>) => {
+          events.push('receipt-captured');
+          const loaded = await loader();
+          return { runnerIdentity: receipt, loaded };
+        },
+      };
+    });
+    const analyzerLoader = vi.fn(async () => {
+      events.push('analyzer-module');
+      return { run };
+    });
+    const action = createAnalyzerLbugLazyAction(
+      identityLoader as never,
+      analyzerLoader,
+      'run',
+      'file:///fixture/dist/cli/index.js',
+    );
+
+    await action('repo', { force: true });
+
+    expect(events).toEqual(['identity-module', 'receipt-captured', 'analyzer-module']);
+    expect(run).toHaveBeenCalledWith(receipt, 'repo', { force: true });
   });
 });

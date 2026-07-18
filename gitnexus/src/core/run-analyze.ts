@@ -69,6 +69,7 @@ import {
   isMissingFilesystemError,
   INDEX_METADATA_FILE,
   INCREMENTAL_SCHEMA_VERSION,
+  type AnalyzerRunnerIdentity,
   type RepoMeta,
 } from '../storage/repo-manager.js';
 import { DEFAULT_PDG_MAX_FUNCTION_LINES } from './ingestion/cfg/collect.js';
@@ -118,6 +119,11 @@ import { generateAIContextFiles } from '../cli/ai-context.js';
 import { sanitizeDetectedBranch } from '../cli/analyze-config.js';
 import { EMBEDDING_TABLE_NAME } from './lbug/schema.js';
 import { STALE_HASH_SENTINEL } from './lbug/schema.js';
+import {
+  analyzerRunnerIdentitiesEqual,
+  finalizeAnalyzerRunnerIdentity,
+  resolveAnalyzerRunnerIdentity,
+} from './analyzer-identity.js';
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -562,6 +568,7 @@ export async function runFullAnalysis(
   repoPath: string,
   options: AnalyzeOptions,
   callbacks: AnalyzeCallbacks,
+  runnerIdentityAtBootstrap?: AnalyzerRunnerIdentity,
 ): Promise<AnalyzeResult> {
   const log = (msg: string) => callbacks.onLog?.(msg);
   const progress = (phase: string, percent: number, message: string) =>
@@ -761,6 +768,16 @@ export async function runFullAnalysis(
     }
   }
 
+  // Resolve once per real analysis run so every successful metadata write
+  // carries one coherent receipt. The FTS-only repair path above intentionally
+  // returns without restamping: it does not regenerate the graph represented by
+  // RepoMeta and therefore must not claim a new analyzer identity.
+  const runnerIdentity =
+    runnerIdentityAtBootstrap ?? resolveAnalyzerRunnerIdentity(import.meta.url);
+  if (!analyzerRunnerIdentitiesEqual(runnerIdentity, runnerIdentity)) {
+    throw new Error('Analyzer bootstrap supplied a malformed runner identity receipt');
+  }
+
   let resumeEmbeddingCheckpoint = false;
   let pendingEmbeddingNodeIds = new Set<string>();
   let embeddingIdentityForRun: EmbeddingIdentity | undefined;
@@ -920,6 +937,22 @@ export async function runFullAnalysis(
     log(
       `index schema changed (stamped v${stampedVersion}, this build is v${INCREMENTAL_SCHEMA_VERSION}); ` +
         `forcing a full rebuild so persisted rows match the current schema.`,
+    );
+    options = { ...options, force: true };
+  }
+
+  // Analyzer provenance is part of freshness, not merely diagnostics. A
+  // same-commit fast path must not preserve metadata produced by an older,
+  // malformed, or dependency/native-different runner. Force a real rebuild so
+  // the graph and its schema-v4 receipt are finalized atomically together.
+  if (existingMeta && !analyzerRunnerIdentitiesEqual(existingMeta.runnerIdentity, runnerIdentity)) {
+    const stampedRunnerSchema = (
+      existingMeta.runnerIdentity as { schemaVersion?: unknown } | undefined
+    )?.schemaVersion;
+    log(
+      `analyzer runner identity changed (stamped schema ${String(stampedRunnerSchema ?? 'missing')}, ` +
+        `this build uses schema ${runnerIdentity.schemaVersion}); forcing a full rebuild so the ` +
+        'index provenance matches the analyzer and dependency/native runtime that produced it.',
     );
     options = { ...options, force: true };
   }
@@ -1877,6 +1910,7 @@ export async function runFullAnalysis(
           repoPath,
           lastCommit: currentCommit,
           indexedAt: new Date().toISOString(),
+          runnerIdentity,
           branch: branchLabel ?? existingMeta?.branch,
           remoteUrl: hasGitDir(repoPath) ? getRemoteUrl(repoPath) : undefined,
           stats: {
@@ -2005,6 +2039,7 @@ export async function runFullAnalysis(
       repoPath,
       lastCommit: currentCommit,
       indexedAt: new Date().toISOString(),
+      runnerIdentity,
       // Branch identity this index represents (#2106). Recorded for the flat
       // slot too (so resolveBranchPlacement knows which branch owns it). When
       // the label is null (detached HEAD / non-git re-analyze) we PRESERVE an
@@ -2069,6 +2104,13 @@ export async function runFullAnalysis(
       // off==off and incremental eligibility is restored.
       pdg: resolvePdgConfig(options),
     };
+    // Re-resolve at the commit boundary. Long analyses can overlap an npm
+    // upgrade, rebuilt dist tree, or native dependency replacement; stamping
+    // the start-of-run receipt after such a mutation would falsely certify a
+    // graph produced by two analyzer identities. Stable-read validation lives
+    // inside the resolver, and a mismatch leaves the dirty flag intact so the
+    // next run takes the established full-recovery path.
+    meta.runnerIdentity = finalizeAnalyzerRunnerIdentity(import.meta.url, runnerIdentity);
     await saveMeta(metaDir, meta);
 
     // Persist the incremental parse cache for the next run. Wraps in

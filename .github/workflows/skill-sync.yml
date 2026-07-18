@@ -9,23 +9,29 @@ name: Skill copy sync
 on:
   pull_request:
     paths:
-      - '.claude/skills/gitnexus-plan/**'
-      - '.claude/skills/gitnexus-work/**'
-      - '.claude/skills/gitnexus-review/**'
-      - '.claude/skills/gitnexus-lfg/**'
+      - '.claude/skills/gitnexus-*/**'
+      - '.claude/skills/gitnexus/**'
       - 'gitnexus/skills/**'
       - 'gitnexus-claude-plugin/skills/**'
       - 'gitnexus-cursor-integration/skills/**'
+      - 'gitnexus/test/unit/shipped-skills-sync.test.ts'
+      - 'gitnexus/test/unit/skills-steering.test.ts'
+      - 'gitnexus/test/unit/engineering-skills-contract.test.ts'
+      - 'gitnexus/test/unit/evidence-provenance-helper.test.ts'
+      - '.github/workflows/skill-sync.yml'
   push:
     branches: [main]
     paths:
-      - '.claude/skills/gitnexus-plan/**'
-      - '.claude/skills/gitnexus-work/**'
-      - '.claude/skills/gitnexus-review/**'
-      - '.claude/skills/gitnexus-lfg/**'
+      - '.claude/skills/gitnexus-*/**'
+      - '.claude/skills/gitnexus/**'
       - 'gitnexus/skills/**'
       - 'gitnexus-claude-plugin/skills/**'
       - 'gitnexus-cursor-integration/skills/**'
+      - 'gitnexus/test/unit/shipped-skills-sync.test.ts'
+      - 'gitnexus/test/unit/skills-steering.test.ts'
+      - 'gitnexus/test/unit/engineering-skills-contract.test.ts'
+      - 'gitnexus/test/unit/evidence-provenance-helper.test.ts'
+      - '.github/workflows/skill-sync.yml'
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -55,6 +61,11 @@ jobs:
       - name: Install gitnexus
         run: npm ci
         working-directory: gitnexus
-      - name: Run drift guard
-        run: npx vitest run test/unit/shipped-skills-sync.test.ts
+      - name: Run distribution, steering, and engineering-contract guards
+        run: >-
+          npx vitest run
+          test/unit/shipped-skills-sync.test.ts
+          test/unit/skills-steering.test.ts
+          test/unit/engineering-skills-contract.test.ts
+          test/unit/evidence-provenance-helper.test.ts
         working-directory: gitnexus

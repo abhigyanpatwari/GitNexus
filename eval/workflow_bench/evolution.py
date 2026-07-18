@@ -3,11 +3,20 @@
 from __future__ import annotations
 
 import hashlib
-import shutil
+import os
+import secrets
+import stat
 import statistics
-import subprocess
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
+
+from .process_control import ManagedProcessError
+from .proposer_sandbox import (
+    SANDBOX_TMP,
+    SANDBOX_WORKSPACE,
+    SandboxSession,
+    build_sandbox_environment,
+)
 
 CANDIDATE_ARMS = {
     "candidate_workflow": "workflow",
@@ -16,8 +25,6 @@ CANDIDATE_ARMS = {
 CANDIDATE_SKILLS = {
     "gitnexus-plan",
     "gitnexus-work",
-    "gitnexus-lfg",
-    "gitnexus-review",
 }
 # Skills each incumbent arm actually loads in its sessions. An overlay that
 # only touches other skills would never be exercised — the gate would decide
@@ -25,6 +32,14 @@ CANDIDATE_SKILLS = {
 ARM_SKILLS = {
     "workflow": ("gitnexus-plan", "gitnexus-work"),
     "workflow_direct": ("gitnexus-work",),
+}
+# Repo-local prompts whose bytes are evidence for each executed arm. Keep this
+# distinct from ``ARM_SKILLS``: that mapping defines which skills a promotable
+# plan/work overlay must exercise, while this mapping also protects read-only
+# review evaluation from task setup and review-phase prompt replacement.
+EVALUATED_ARM_SKILLS = {
+    **ARM_SKILLS,
+    "review": ("gitnexus-review",),
 }
 PROMOTION_METRICS = ("output_tokens", "cost_usd", "duration_s", "num_turns")
 # Token/turn metrics come from the CLI's top-level `usage`, which counts ONLY
@@ -35,11 +50,217 @@ MAIN_LOOP_ONLY_WARNING = (
     "WARNING: token metrics count only the main-loop session — subagent spend "
     "is invisible to them and systematically flatters subagent-heavy "
     "candidates. Prefer cost_usd (the only CLI-reported field that includes "
-    "subagents), or sum usage from the session transcripts "
-    "(~/.claude/projects/<cwd-slug>/<session_id>.jsonl), deduplicating events "
+    "subagents), or sum usage from the digest-bound transcript_artifacts in "
+    "each run output, deduplicating events "
     "that share one message.id."
 )
 EVIDENCE_MAX_AGE_DAYS = 90
+MAX_CANDIDATE_OVERLAY_BYTES = 4 * 1024 * 1024
+MAX_SKILL_FINGERPRINT_BYTES = 4 * 1024 * 1024
+MAX_CANDIDATE_ENTRIES = 256
+MAX_CANDIDATE_FILES = 64
+MAX_CANDIDATE_PATH_BYTES = 512
+
+
+def _require_real_directory(path: Path, *, label: str) -> None:
+    try:
+        metadata = path.lstat()
+    except OSError as exc:
+        raise ValueError(f"{label} is unavailable: {path}: {exc}") from exc
+    if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
+        raise ValueError(f"{label} must be a real non-symlink directory: {path}")
+
+
+def _require_directory_chain(root: Path, relative: Path, *, label: str) -> None:
+    """Validate each lexical directory without erasing links via resolve()."""
+
+    _require_real_directory(root, label=label)
+    current = root
+    for part in relative.parts:
+        if part in {"", ".", ".."}:
+            raise ValueError(f"{label} contains an unsafe path component: {relative}")
+        current /= part
+        _require_real_directory(current, label=label)
+
+
+def _bounded_regular_bytes(path: Path, *, limit: int, label: str) -> bytes:
+    """Read one bounded regular file without following its leaf link."""
+
+    try:
+        before = path.lstat()
+    except OSError as exc:
+        raise ValueError(f"{label} is unreadable: {path}: {exc}") from exc
+    if stat.S_ISLNK(before.st_mode) or not stat.S_ISREG(before.st_mode):
+        raise ValueError(f"{label} must be a regular non-symlink file: {path}")
+    if before.st_size > limit:
+        raise ValueError(f"{label} exceeds the bounded evidence limit")
+
+    descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    try:
+        opened = os.fstat(descriptor)
+        if not stat.S_ISREG(opened.st_mode) or opened.st_dev != before.st_dev or opened.st_ino != before.st_ino:
+            raise ValueError(f"{label} changed while opening: {path}")
+        chunks: list[bytes] = []
+        remaining = limit + 1
+        while remaining > 0:
+            chunk = os.read(descriptor, min(64 * 1024, remaining))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        content = b"".join(chunks)
+        if len(content) > limit:
+            raise ValueError(f"{label} exceeds the bounded evidence limit")
+        after = os.fstat(descriptor)
+        if (
+            opened.st_dev,
+            opened.st_ino,
+            opened.st_size,
+            opened.st_mtime_ns,
+        ) != (
+            after.st_dev,
+            after.st_ino,
+            after.st_size,
+            after.st_mtime_ns,
+        ) or len(content) != opened.st_size:
+            raise ValueError(f"{label} changed while being read: {path}")
+        return content
+    finally:
+        os.close(descriptor)
+
+
+def candidate_overlay_payload(overlay: Path) -> tuple[str, list[tuple[PurePosixPath, bytes]]]:
+    """Return the sole validated, bounded candidate payload and its digest."""
+
+    root = overlay.expanduser().absolute()
+    payload: list[tuple[PurePosixPath, bytes]] = []
+    remaining = MAX_CANDIDATE_OVERLAY_BYTES
+    for source in candidate_overlay_files(root):
+        relative = PurePosixPath(source.relative_to(root).as_posix())
+        _require_directory_chain(
+            root,
+            Path(*relative.parent.parts),
+            label="candidate overlay directory",
+        )
+        content = _bounded_regular_bytes(
+            source,
+            limit=remaining,
+            label="candidate overlay file",
+        )
+        remaining -= len(content)
+        payload.append((relative, content))
+    return _fingerprint_payload(payload), payload
+
+
+def _fingerprint_payload(payload: list[tuple[PurePosixPath, bytes]]) -> str:
+    digest = hashlib.sha256()
+    for relative_path, content in payload:
+        relative = relative_path.as_posix().encode()
+        digest.update(len(relative).to_bytes(8, "big"))
+        digest.update(relative)
+        digest.update(len(content).to_bytes(8, "big"))
+        digest.update(content)
+    return digest.hexdigest()
+
+
+def _replace_regular_file(root: Path, relative: Path, content: bytes) -> None:
+    """Replace a clone file through validated directory descriptors."""
+
+    if relative.is_absolute() or not relative.parts or ".." in relative.parts:
+        raise ValueError(f"candidate destination escapes the clone: {relative}")
+    _require_real_directory(root, label="candidate destination root")
+    directory_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(root, directory_flags)
+    try:
+        for part in relative.parts[:-1]:
+            try:
+                os.mkdir(part, mode=0o700, dir_fd=descriptor)
+            except FileExistsError:
+                pass
+            try:
+                child = os.open(part, directory_flags, dir_fd=descriptor)
+            except OSError as exc:
+                raise ValueError(
+                    f"candidate destination parent must be a real directory: {relative.parent}: {exc}"
+                ) from exc
+            os.close(descriptor)
+            descriptor = child
+
+        leaf = relative.name
+        try:
+            existing = os.stat(leaf, dir_fd=descriptor, follow_symlinks=False)
+        except FileNotFoundError:
+            existing = None
+        except OSError as exc:
+            raise ValueError(f"candidate destination is unreadable: {relative}: {exc}") from exc
+        if existing is not None and (stat.S_ISLNK(existing.st_mode) or not stat.S_ISREG(existing.st_mode)):
+            raise ValueError(f"candidate destination must be a regular non-symlink file: {relative}")
+
+        temporary = f".wfbench-overlay-{secrets.token_hex(12)}"
+        temp_descriptor = os.open(
+            temporary,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
+            0o600,
+            dir_fd=descriptor,
+        )
+        try:
+            view = memoryview(content)
+            while view:
+                written = os.write(temp_descriptor, view)
+                if written <= 0:
+                    raise OSError("short write while staging candidate overlay")
+                view = view[written:]
+            os.fchmod(temp_descriptor, 0o644)
+        except BaseException:
+            try:
+                os.unlink(temporary, dir_fd=descriptor)
+            except OSError:
+                pass
+            raise
+        finally:
+            os.close(temp_descriptor)
+        try:
+            os.replace(
+                temporary,
+                leaf,
+                src_dir_fd=descriptor,
+                dst_dir_fd=descriptor,
+            )
+        except BaseException:
+            try:
+                os.unlink(temporary, dir_fd=descriptor)
+            except OSError:
+                pass
+            raise
+    finally:
+        os.close(descriptor)
+
+
+def _sandbox_overlay_git(
+    sandbox: SandboxSession,
+    args: list[str],
+    *,
+    extra_config: tuple[str, ...] = (),
+) -> Any:
+    hooks = f"{SANDBOX_TMP}/wfbench-empty-hooks"
+    command = [
+        "/usr/bin/git",
+        "-c",
+        "core.fsmonitor=false",
+        "-c",
+        f"core.hooksPath={hooks}",
+        "-c",
+        "commit.gpgsign=false",
+    ]
+    for item in extra_config:
+        command.extend(("-c", item))
+    command.extend(("-C", SANDBOX_WORKSPACE, *args))
+    result = sandbox.run(
+        command,
+        timeout=60,
+        env=build_sandbox_environment(),
+    )
+    return command, result
 
 
 def candidate_overlay_files(overlay: Path) -> list[Path]:
@@ -49,22 +270,53 @@ def candidate_overlay_files(overlay: Path) -> list[Path]:
     cannot modify task code, tests, or verification commands and thereby game
     the promotion gate.
     """
-    overlay = overlay.expanduser().resolve()
-    if not overlay.is_dir():
-        raise ValueError(f"candidate overlay is not a directory: {overlay}")
+    overlay = overlay.expanduser().absolute()
+    try:
+        resolved_overlay = overlay.resolve(strict=True)
+    except OSError as exc:
+        raise ValueError(f"candidate overlay is not a directory: {overlay}") from exc
+    if resolved_overlay != overlay:
+        raise ValueError(f"candidate overlay cannot traverse symlinks: {overlay}")
+    _require_real_directory(overlay, label="candidate overlay")
 
-    entries = sorted(
-        (path for path in overlay.rglob("*") if path.is_file() or path.is_symlink()),
-        key=lambda path: path.relative_to(overlay).as_posix(),
-    )
+    entries: list[Path] = []
+    pending = [overlay]
+    entry_count = 0
+    while pending:
+        directory = pending.pop()
+        child_directories: list[Path] = []
+        try:
+            iterator = os.scandir(directory)
+        except OSError as exc:
+            raise ValueError(f"candidate overlay directory is unreadable: {directory}: {exc}") from exc
+        with iterator:
+            for item in iterator:
+                entry_count += 1
+                if entry_count > MAX_CANDIDATE_ENTRIES:
+                    raise ValueError(f"candidate overlay exceeds the {MAX_CANDIDATE_ENTRIES}-entry limit")
+                path = Path(item.path)
+                relative = path.relative_to(overlay)
+                if len(relative.as_posix().encode()) > MAX_CANDIDATE_PATH_BYTES:
+                    raise ValueError(f"candidate overlay path exceeds {MAX_CANDIDATE_PATH_BYTES} bytes: {relative}")
+                if item.is_symlink():
+                    raise ValueError(f"candidate overlay cannot contain symlinks: {relative}")
+                if item.is_dir(follow_symlinks=False):
+                    child_directories.append(path)
+                    continue
+                if not item.is_file(follow_symlinks=False):
+                    raise ValueError(f"candidate overlay entries must be regular files: {relative}")
+                entries.append(path)
+                if len(entries) > MAX_CANDIDATE_FILES:
+                    raise ValueError(f"candidate overlay exceeds the {MAX_CANDIDATE_FILES}-file limit")
+        pending.extend(child_directories)
+
+    entries.sort(key=lambda path: path.relative_to(overlay).as_posix())
     if not entries:
         raise ValueError(f"candidate overlay contains no files: {overlay}")
 
     for path in entries:
         relative = path.relative_to(overlay)
         parts = relative.parts
-        if path.is_symlink():
-            raise ValueError(f"candidate overlay cannot contain symlinks: {relative}")
         if (
             len(parts) < 4
             or parts[:2] != (".claude", "skills")
@@ -73,10 +325,27 @@ def candidate_overlay_files(overlay: Path) -> list[Path]:
         ):
             raise ValueError(
                 "candidate overlays may only contain Markdown files under "
-                ".claude/skills/gitnexus-{plan,work,lfg,review}: "
+                ".claude/skills/gitnexus-{plan,work}: "
                 f"{relative}"
             )
     return entries
+
+
+def required_candidate_arms(overlay: Path) -> list[str]:
+    """Return the smallest candidate-arm set that exercises every change.
+
+    Plan prompts are loaded only by the two-session workflow. Work prompts are
+    loaded by both workflow shapes, so a work candidate must prove itself in
+    both rather than inheriting a decision from an untested execution mode.
+    """
+    overlay = overlay.expanduser().absolute()
+    touched = {path.relative_to(overlay).parts[2] for path in candidate_overlay_files(overlay)}
+    required: list[str] = []
+    if "gitnexus-plan" in touched or "gitnexus-work" in touched:
+        required.append("candidate_workflow")
+    if "gitnexus-work" in touched:
+        required.append("candidate_workflow_direct")
+    return required
 
 
 def fingerprint_files(root: Path, files: list[Path]) -> str:
@@ -92,55 +361,67 @@ def fingerprint_files(root: Path, files: list[Path]) -> str:
 
 
 def candidate_overlay_digest(overlay: Path) -> str:
-    overlay = overlay.expanduser().resolve()
-    return fingerprint_files(overlay, candidate_overlay_files(overlay))
+    digest, _ = candidate_overlay_payload(overlay)
+    return digest
 
 
-def apply_candidate_overlay(overlay: Path, worktree: Path) -> str:
-    """Apply and commit a prompt candidate inside one throwaway clone."""
-    overlay = overlay.expanduser().resolve()
-    files = candidate_overlay_files(overlay)
+def apply_candidate_overlay(
+    overlay: Path,
+    worktree: Path,
+    *,
+    sandbox: SandboxSession,
+) -> str:
+    """Safely copy and commit a prompt candidate inside its outer sandbox."""
+
+    overlay = overlay.expanduser().absolute()
+    expected_clone = Path(os.path.abspath(worktree.expanduser()))
+    sandbox_clone = Path(os.path.abspath(sandbox.clone.expanduser()))
+    if sandbox_clone != expected_clone:
+        raise ValueError("candidate sandbox does not bind the requested clone")
+    digest, payload = candidate_overlay_payload(overlay)
     relative_paths: list[str] = []
-    for source in files:
-        relative = source.relative_to(overlay)
-        destination = worktree / relative
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(source, destination)
+    for relative, content in payload:
+        _replace_regular_file(worktree, relative, content)
         relative_paths.append(relative.as_posix())
 
-    subprocess.run(
-        ["git", "-C", str(worktree), "add", "--", *relative_paths],
-        check=True,
-        capture_output=True,
+    mkdir_command = ["/bin/mkdir", "-p", f"{SANDBOX_TMP}/wfbench-empty-hooks"]
+    mkdir_result = sandbox.run(
+        mkdir_command,
+        timeout=60,
+        env=build_sandbox_environment(),
     )
-    changed = subprocess.run(
-        ["git", "-C", str(worktree), "diff", "--cached", "--quiet"],
-        check=False,
+    if not mkdir_result.ok:
+        raise ManagedProcessError(mkdir_command, mkdir_result)
+
+    command, added = _sandbox_overlay_git(sandbox, ["add", "--", *relative_paths])
+    if not added.ok:
+        raise ManagedProcessError(command, added)
+    command, changed = _sandbox_overlay_git(
+        sandbox,
+        ["diff", "--cached", "--quiet", "--no-ext-diff", "--no-textconv", "--"],
     )
     if changed.returncode == 0:
         raise ValueError("candidate overlay is byte-identical to the incumbent skills")
     if changed.returncode != 1:
-        raise RuntimeError("could not inspect the staged candidate overlay")
+        raise ManagedProcessError(command, changed)
 
-    subprocess.run(
+    command, committed = _sandbox_overlay_git(
+        sandbox,
         [
-            "git",
-            "-C",
-            str(worktree),
-            "-c",
-            "user.name=workflow-bench",
-            "-c",
-            "user.email=workflow-bench@invalid",
             "commit",
             "--quiet",
             "--no-verify",
             "-m",
             "benchmark candidate skill overlay",
         ],
-        check=True,
-        capture_output=True,
+        extra_config=(
+            "user.name=workflow-bench",
+            "user.email=workflow-bench@invalid",
+        ),
     )
-    return fingerprint_files(overlay, files)
+    if not committed.ok:
+        raise ManagedProcessError(command, committed)
+    return digest
 
 
 def unexercised_overlay_skills(overlay: Path, candidate_arms: list[str]) -> list[str]:
@@ -150,32 +431,47 @@ def unexercised_overlay_skills(overlay: Path, candidate_arms: list[str]) -> list
     workflow arms is never read by any benchmarked session, so any promotion
     decision about it would be noise.
     """
-    overlay = overlay.expanduser().resolve()
-    exercised = {
-        skill
-        for arm in candidate_arms
-        for skill in ARM_SKILLS[CANDIDATE_ARMS[arm]]
-    }
-    touched = {
-        path.relative_to(overlay).parts[2] for path in candidate_overlay_files(overlay)
-    }
+    overlay = overlay.expanduser().absolute()
+    exercised = {skill for arm in candidate_arms for skill in ARM_SKILLS[CANDIDATE_ARMS[arm]]}
+    touched = {path.relative_to(overlay).parts[2] for path in candidate_overlay_files(overlay)}
     return sorted(touched - exercised)
 
 
 def skill_fingerprint(worktree: Path, arm: str) -> str | None:
-    skill_names = ARM_SKILLS.get(arm)
+    skill_names = EVALUATED_ARM_SKILLS.get(arm)
     if skill_names is None:
         return None
 
-    files = sorted(
-        (
-            path
-            for skill_name in skill_names
-            for path in (worktree / ".claude" / "skills" / skill_name).rglob("*")
-            if path.is_file()
-        ),
+    worktree = worktree.expanduser().absolute()
+    _require_real_directory(worktree, label="skill fingerprint worktree")
+    _require_directory_chain(
+        worktree,
+        Path(".claude") / "skills",
+        label="skill fingerprint parent",
+    )
+    for skill_name in skill_names:
+        _require_directory_chain(
+            worktree,
+            Path(".claude") / "skills" / skill_name,
+            label="skill fingerprint root",
+        )
+
+    entries = sorted(
+        (path for skill_name in skill_names for path in (worktree / ".claude" / "skills" / skill_name).rglob("*")),
         key=lambda path: path.relative_to(worktree).as_posix(),
     )
+    files: list[Path] = []
+    total = 0
+    for path in entries:
+        metadata = path.lstat()
+        if stat.S_ISDIR(metadata.st_mode):
+            continue
+        if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
+            raise ValueError(f"skill fingerprint input must be a regular non-symlink file: {path}")
+        total += metadata.st_size
+        if total > MAX_SKILL_FINGERPRINT_BYTES:
+            raise ValueError("skill fingerprint input exceeds the bounded evidence limit")
+        files.append(path)
     return fingerprint_files(worktree, files)
 
 
@@ -203,6 +499,7 @@ def evaluate_candidate(
     task_rows: list[dict[str, Any]] = []
     insufficient = False
     quality_regression = False
+    quality_floor_failed = False
     efficiency_regression = False
 
     if not model:
@@ -238,6 +535,7 @@ def evaluate_candidate(
                 "candidate_resolved": f"{candidate['resolved']}/{candidate_runs}",
                 "incumbent_excluded_runs": incumbent_excluded,
                 "candidate_excluded_runs": candidate_excluded,
+                "candidate_quality_floor_met": candidate_runs > 0 and candidate["resolved"] == candidate_runs,
                 "incumbent_metric": incumbent_metric,
                 "candidate_metric": candidate_metric,
                 "improvement_pct": improvement,
@@ -246,7 +544,15 @@ def evaluate_candidate(
 
         if incumbent_runs < min_runs or candidate_runs < min_runs:
             insufficient = True
-            reasons.append(f"{task_id}: needs at least {min_runs} valid runs per arm (got {incumbent_runs}/{candidate_runs})")
+            reasons.append(
+                f"{task_id}: needs at least {min_runs} valid runs per arm (got {incumbent_runs}/{candidate_runs})"
+            )
+        if incumbent_excluded or candidate_excluded:
+            insufficient = True
+            reasons.append(
+                f"{task_id}: promotion requires zero excluded runs in both paired arms "
+                f"(got {incumbent_excluded}/{candidate_excluded})"
+            )
         if incumbent_runs != candidate_runs:
             insufficient = True
             reasons.append(
@@ -256,6 +562,12 @@ def evaluate_candidate(
         if candidate_rate < incumbent_rate:
             quality_regression = True
             reasons.append(f"{task_id}: resolution regressed from {incumbent_rate:.0%} to {candidate_rate:.0%}")
+        if candidate_runs > 0 and candidate["resolved"] != candidate_runs:
+            quality_floor_failed = True
+            reasons.append(
+                f"{task_id}: candidate must resolve every valid run for the oracle-backed quality floor "
+                f"(got {candidate['resolved']}/{candidate_runs})"
+            )
         if improvement is None:
             insufficient = True
             reasons.append(f"{task_id}: incumbent {metric} is zero; choose a metric with signal")
@@ -281,7 +593,7 @@ def evaluate_candidate(
     resolution_margin = candidate_resolved - incumbent_resolved
     if insufficient:
         decision = "insufficient_evidence"
-    elif quality_regression or efficiency_regression:
+    elif quality_regression or quality_floor_failed or efficiency_regression:
         decision = "keep_incumbent"
     elif resolution_margin >= 2:
         decision = "promote"

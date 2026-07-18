@@ -1,7 +1,9 @@
 """Benchmark the gitnexus-plan/work workflow against a baseline agent.
 
 Usage:
-    uv run python -m workflow_bench.runner --tasks workflow_bench/tasks.scenarios.yaml --runs 3
+    uv run --locked --extra dev python -m workflow_bench.runner \
+        --tasks workflow_bench/tasks.scenarios.yaml --runs 3 \
+        --model claude-sonnet-4-20250514
 
 Each task runs in a fresh detached git worktree of the target repo, once per
 arm per run:
@@ -16,14 +18,18 @@ arm per run:
 Token usage, cost, duration, and turn counts come from the CLI's own
 ``--output-format json`` report — nothing is estimated. Caveat: the report's
 top-level ``usage`` counts ONLY the main-loop session; ``total_cost_usd`` is
-the only reported number that includes subagent spend. A task-specific
-``verify`` command decides ``resolved``; token savings on unresolved runs are
-reported but flagged, because saving tokens by failing is not a saving.
+the only reported number that includes subagent spend. A task's model-visible
+``verify`` command is retained as an authored-test quality signal; ``resolved``
+also requires its harness-owned hidden behavioral oracle. Token savings on
+unresolved runs are reported but flagged, because saving tokens by failing is
+not a saving.
 
-Trust model: task files are EXECUTABLE INPUT — ``setup``/``verify`` run
-through the shell and sessions default to ``--permission-mode
-bypassPermissions`` with the parent environment. Only run task files, repos,
-and candidate overlays you trust (see README § Trust model).
+Trust model: task files and candidate prompts are executable input. Every
+setup, verifier, and model session runs inside a preflighted Linux Bubblewrap
+boundary with an allowlisted environment, isolated home, PID namespace,
+self-contained clone, and task-declared read-only dependencies. Unsupported
+or unavailable containment fails before model invocation (README § Trust
+model).
 """
 
 from __future__ import annotations
@@ -33,11 +39,13 @@ import hashlib
 import json
 import os
 import re
-import shutil
+import secrets
+import stat
 import statistics
-import subprocess
 import tempfile
 import time
+from collections.abc import Mapping
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -47,22 +55,96 @@ import yaml
 from .evolution import (
     CANDIDATE_ARMS,
     EVIDENCE_MAX_AGE_DAYS,
+    EVALUATED_ARM_SKILLS,
     MAIN_LOOP_ONLY_METRICS,
     MAIN_LOOP_ONLY_WARNING,
     PROMOTION_METRICS,
     apply_candidate_overlay,
     candidate_overlay_digest,
     evaluate_candidate,
+    required_candidate_arms,
     skill_fingerprint,
-    unexercised_overlay_skills,
 )
-
-USAGE_FIELDS = (
-    "input_tokens",
-    "cache_creation_input_tokens",
-    "cache_read_input_tokens",
-    "output_tokens",
+from .oracle_assets import (
+    ORACLE_ENV_VAR,
+    TaskOracleSnapshot,
+    capture_task_oracles,
+    sanitize_clone_for_hidden_oracles,
+    staged_task_oracle,
 )
+from .process_control import ManagedProcessError
+from .promotion_apply import committed_destination_base_digests
+from .proposer_sandbox import (
+    SANDBOX_GITNEXUS as SANDBOX_GITNEXUS,
+    SANDBOX_GITNEXUS_REGISTRY,
+    SANDBOX_GITNEXUS_SHARED as SANDBOX_GITNEXUS_SHARED,
+    SANDBOX_WORKSPACE,
+    ReadOnlyMount,
+    SandboxError,
+    SandboxSession,
+    build_sandbox_environment,
+    preflight_bubblewrap,
+    prepare_sandbox,
+    require_claude_sandbox_helpers,
+)
+from .runner_artifacts import (
+    IMPLEMENTATION_ARMS,
+    MAX_PATCH_BYTES as MAX_PATCH_BYTES,
+    MAX_WORKSPACE_SNAPSHOT_ENTRIES as MAX_WORKSPACE_SNAPSHOT_ENTRIES,
+    MAX_WORKSPACE_SNAPSHOT_FILE_BYTES as MAX_WORKSPACE_SNAPSHOT_FILE_BYTES,
+    MAX_WORKSPACE_SNAPSHOT_PATH_BYTES as MAX_WORKSPACE_SNAPSHOT_PATH_BYTES,
+    _bounded_regular_bytes,
+    _prepare_untracked_for_diff,
+    _sandbox_git,
+    capture_patch,
+    diff_churn,
+    enforce_phase_workspace,
+    enforce_work_evidence,
+    implementation_diff_digest,
+    make_worktree,
+    new_plan_doc,
+    parse_shortstat as parse_shortstat,
+    remove_clone,
+    require_skill_fingerprint,
+    run_verify,
+    snapshot_plan_docs,
+    VerificationResult,
+    workspace_snapshot,
+)
+from .runner_sessions import (
+    BUILTIN_AGENT_TOOLS as BUILTIN_AGENT_TOOLS,
+    GITNEXUS_MUTATING_TOOLS as GITNEXUS_MUTATING_TOOLS,
+    GITNEXUS_READ_ONLY_TOOLS as GITNEXUS_READ_ONLY_TOOLS,
+    MAX_TRANSCRIPT_BYTES as MAX_TRANSCRIPT_BYTES,
+    SANDBOX_GITNEXUS_ENTRYPOINT as SANDBOX_GITNEXUS_ENTRYPOINT,
+    USAGE_FIELDS,
+    allowed_agent_tools,
+    run_claude,
+    sandbox_mcp_config,
+    sum_sessions,
+)
+from .runner_tasks import (
+    normalized_model_identifier,
+    resolve_task_bindings,
+    select_tasks,
+    selected_task_bindings as selected_task_bindings,
+)
+from .sanitized_graph import (
+    SanitizedGraphSnapshot,
+    prepare_sanitized_graph,
+    validate_no_prebuilt_graph_assets,
+)
+from .runtime_mounts import (
+    CE_ARMS,
+    HARNESS_ROOT as HARNESS_ROOT,
+    PINNED_GITNEXUS_VERSION as PINNED_GITNEXUS_VERSION,
+    ce_plugin_dir_for_arm,
+    ce_plugin_mounts_for_arm,
+    staged_ce_plugin_snapshot,
+    trusted_gitnexus_runtime_mounts,
+    validate_ce_plugin_inputs,
+)
+from .task_assets import TaskAssetCache, TaskAssetSnapshot, stage_task_assets
 
 PLAN_PROMPT = (
     "Use the gitnexus-plan skill for: {task}\n"
@@ -146,344 +228,304 @@ ARM_EXPECTED_SKILLS: dict[str, tuple[str, ...]] = {
 }
 
 
-def transcript_path(cwd: Path, session_id: str | None) -> Path | None:
-    """Locate ``~/.claude/projects/<cwd-slug>/<session_id>.jsonl`` if present."""
-    if not session_id:
-        return None
-    projects = Path.home() / ".claude" / "projects"
-    slug = re.sub(r"[^A-Za-z0-9]", "-", str(cwd))
-    direct = projects / slug / f"{session_id}.jsonl"
-    if direct.is_file():
-        return direct
-    # Transcripts can live under a differently derived slug; session ids are
-    # unique, so a projects-wide glob is a safe fallback.
-    return next(iter(projects.glob(f"*/{session_id}.jsonl")), None)
+def _require_implementation_fingerprint(
+    session: dict[str, Any],
+    worktree: Path,
+    arm: str,
+    expected: str | None,
+) -> None:
+    """Bind a just-finished implementation session to its original skill bytes."""
 
-
-def skill_was_invoked(transcript: Path, skill_name: str) -> bool:
-    """Scan a session transcript for a Skill tool_use invoking ``skill_name``.
-
-    Liberal on event shape: any tool_use block named "Skill"/"skill" whose
-    input mentions the skill, or a tool named after the skill itself.
-    """
-    for line in transcript.read_text(errors="replace").splitlines():
-        try:
-            event = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if not isinstance(event, dict):
-            continue
-        message = event.get("message")
-        content = (message or {}).get("content") if isinstance(message, dict) else None
-        if content is None:
-            content = event.get("content")
-        if not isinstance(content, list):
-            continue
-        for block in content:
-            if not isinstance(block, dict) or block.get("type") != "tool_use":
-                continue
-            name = str(block.get("name", ""))
-            if name == skill_name:
-                return True
-            if name.lower() == "skill" and skill_name in json.dumps(block.get("input", {})):
-                return True
-    return False
-
-
-def run_claude(
-    prompt: str,
-    cwd: Path,
-    *,
-    claude_bin: str,
-    timeout: int,
-    disallowed_tools: list[str] | None = None,
-    model: str | None = None,
-    env: dict[str, str] | None = None,
-    permission_mode: str | None = None,
-    expected_skill: str | None = None,
-) -> dict[str, Any]:
-    """Run one headless session and return its usage record."""
-    cmd = [claude_bin, "-p", prompt, "--output-format", "json"]
-    if permission_mode:
-        cmd += ["--permission-mode", permission_mode]
-    if model:
-        cmd += ["--model", model]
-    for tool in disallowed_tools or []:
-        cmd += ["--disallowedTools", tool]
-    started = time.monotonic()
-    proc = subprocess.run(
-        cmd,
-        cwd=cwd,
-        capture_output=True,
-        text=True,
-        timeout=timeout,
-        check=False,
-        env=env,
-    )
-    wall_s = time.monotonic() - started
-    line = proc.stdout.strip().splitlines()[-1] if proc.stdout.strip() else ""
     try:
-        data = json.loads(line) if line else {}
-    except json.JSONDecodeError:
-        data = {}
-    usage = data.get("usage") or {}
-    subtype = data.get("subtype")
-    # Fail closed: an exit-0 session whose report is empty/malformed or lacks
-    # usage fields must not count as measured evidence (it would otherwise
-    # record a "resolved" run with zero usage and corrupt promotion decisions).
-    well_formed = all(f in usage for f in USAGE_FIELDS)
-    session_error = (
-        proc.returncode != 0
-        or data.get("is_error", False)
-        or str(subtype).startswith("error")  # e.g. error_max_turns — limit/infra death
-        or not well_formed
-    )
-    record = {
-        "ok": not session_error,
-        "error_kind": "session-error" if session_error else None,
-        "error_detail": (
-            {
-                "subtype": subtype,
-                "returncode": proc.returncode,
-                "stderr_tail": proc.stderr[-2000:],
-            }
-            if session_error
-            else None
-        ),
-        "session_id": data.get("session_id"),
-        "num_turns": data.get("num_turns", 0),
-        "cost_usd": data.get("total_cost_usd", 0.0),
-        "duration_s": round(data.get("duration_ms", wall_s * 1000) / 1000, 1),
-        **{f: usage.get(f, 0) for f in USAGE_FIELDS},
-    }
-    if expected_skill is not None and record["ok"]:
-        transcript = transcript_path(cwd, data.get("session_id"))
-        # Missing transcript (e.g. CI keeps them elsewhere): record null, do
-        # not fail the row — the report notes unverified skill invocations.
-        record["skill_invoked"] = (
-            None if transcript is None else skill_was_invoked(transcript, expected_skill)
+        require_skill_fingerprint(
+            worktree,
+            arm,
+            expected,
+            phase="implementation",
         )
-        if record["skill_invoked"] is False:
-            record["ok"] = False
-            record["error_kind"] = "skill-not-invoked"
-            record["error_detail"] = (
-                f"transcript {transcript} shows no {expected_skill} invocation"
+    except ValueError as exc:
+        if session.get("error_kind") is None:
+            session["ok"] = False
+            session["error_kind"] = "implementation-evidence-invalid"
+            session["error_detail"] = str(exc)
+        else:
+            session.setdefault("evidence_diagnostics", []).append(str(exc))
+
+
+def _verification_outcome(result: VerificationResult | tuple[bool, str]) -> tuple[bool, str]:
+    if isinstance(result, VerificationResult):
+        if result.process.state != "exited":
+            # Hidden-oracle output can contain mounted test bytes. Preserve
+            # terminal-state evidence without letting candidate-controlled
+            # stdout/stderr enter results.jsonl through the exception string.
+            safe_process = replace(
+                result.process,
+                stdout_tail="",
+                stderr_tail="",
+                detail=result.process.detail or "verifier infrastructure failed",
             )
-    return record
+            raise ManagedProcessError(result.command, safe_process)
+        return result.passed, result.output
+    return result
 
 
-def sum_sessions(sessions: list[dict[str, Any]]) -> dict[str, Any]:
-    total: dict[str, Any] = {f: sum(s[f] for s in sessions) for f in USAGE_FIELDS}
-    total["cost_usd"] = round(sum(s["cost_usd"] for s in sessions), 4)
-    total["duration_s"] = round(sum(s["duration_s"] for s in sessions), 1)
-    total["num_turns"] = sum(s["num_turns"] for s in sessions)
-    total["ok"] = all(s["ok"] for s in sessions)
-    total["session_ids"] = [s["session_id"] for s in sessions]
-    kinds = [s.get("error_kind") for s in sessions if s.get("error_kind")]
-    total["error_kind"] = kinds[0] if kinds else None
-    details = [s.get("error_detail") for s in sessions if s.get("error_detail")]
-    total["error_detail"] = details[0] if details else None
-    # Merge per-session skill checks: any explicit miss fails the row; any
-    # unlocatable transcript degrades the row to "unverified" (None).
-    invocations = [s["skill_invoked"] for s in sessions if "skill_invoked" in s]
-    if False in invocations:
-        total["skill_invoked"] = False
-    elif None in invocations or not invocations:
-        total["skill_invoked"] = None
-    else:
-        total["skill_invoked"] = True
-    total["transcript_missing"] = None in invocations
-    return total
+def _run_hidden_oracle(
+    snapshot: TaskOracleSnapshot,
+    worktree: Path,
+    args: argparse.Namespace,
+    sandbox: SandboxSession,
+) -> tuple[bool, str]:
+    """Stage a captured oracle after the model exits, execute it, then erase it."""
+
+    if worktree.expanduser().absolute() != sandbox.clone.expanduser().absolute():
+        raise SandboxError("hidden oracle sandbox does not bind the credited worktree")
+    mount_name = f".wfbench-oracle-{secrets.token_hex(16)}"
+    mount_point = worktree / mount_name
+    mount_point.mkdir(mode=0o700)
+    primary: BaseException | None = None
+    try:
+        with staged_task_oracle(sandbox.private_root, snapshot) as stage_root:
+            oracle_env = build_sandbox_environment()
+            # A private RO bind at a random workspace sibling preserves each
+            # oracle's ../gitnexus import as the candidate implementation. The
+            # empty mountpoint exists only post-model and is removed before the
+            # credited patch is captured.
+            oracle_mount = f"{SANDBOX_WORKSPACE}/{mount_name}"
+            oracle_env[ORACLE_ENV_VAR] = oracle_mount
+            passed, _output = _verification_outcome(
+                run_verify(
+                    snapshot.command,
+                    sandbox.clone,
+                    args.timeout,
+                    command_prefix=sandbox.command_prefix_for(
+                        read_only_workspace=True,
+                        unshare_network=True,
+                        extra_read_only_mounts=(ReadOnlyMount(source=stage_root, target=oracle_mount),),
+                    ),
+                    env=oracle_env,
+                    require_pid_namespace=True,
+                )
+            )
+            # Candidate code executes in this process. Never persist its stdout
+            # or stderr: it can read the mounted hidden test bytes and print them.
+            return passed, "hidden oracle passed" if passed else "hidden oracle failed"
+    except BaseException as exc:
+        primary = exc
+        raise
+    finally:
+        try:
+            metadata = mount_point.lstat()
+            if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
+                raise SandboxError("hidden oracle mountpoint changed type during verification")
+            mount_point.rmdir()
+        except (OSError, SandboxError) as cleanup:
+            if primary is None:
+                raise
+            primary.add_note(f"hidden oracle mountpoint cleanup also failed: {cleanup}")
 
 
-def new_plan_doc(worktree: Path, before: set[Path]) -> Path | None:
-    """The plan document a session just wrote: any new file under docs/plans.
+def _evaluated_skill_roots(worktree: Path, arm: str) -> tuple[Path, ...]:
+    """Repo-local prompt roots that must remain immutable during a session."""
 
-    A name glob is unreliable — the repo ships committed example plans whose
-    clone-time mtimes tie, and sessions don't always follow the skill's naming
-    convention — so plan discovery diffs against a pre-session snapshot.
-    """
-    fresh = [
-        p
-        for p in worktree.glob("docs/plans/*")
-        if p not in before and p.suffix in (".md", ".html")
-    ]
-    return max(fresh, key=lambda p: p.stat().st_mtime, default=None)
+    return tuple(worktree / ".claude" / "skills" / name for name in EVALUATED_ARM_SKILLS.get(arm, ()))
 
 
-def make_worktree(repo: Path, ref: str, parent: Path) -> Path:
-    """Isolated CLONE per arm — refs (branches, stash) stay arm-local.
+def isolated_gitnexus_registry_mount(worktree: Path, parent: Path) -> ReadOnlyMount:
+    """Create a one-clone registry that cannot route MCP to any host repo."""
 
-    `git worktree add` shares the ref namespace: an agent-created slug branch
-    survived its worktree's removal and a later arm found and ADOPTED the
-    previous arm's completed work (caught by identical churn fingerprints).
-    `--shared` keeps the clone cheap (object store via alternates); every ref
-    an agent creates dies with the clone directory.
-    """
-    target = Path(tempfile.mkdtemp(prefix="wfbench-", dir=parent))
-    target.rmdir()  # git clone creates it
-    subprocess.run(
-        ["git", "clone", "--shared", "--quiet", str(repo), str(target)],
-        check=True,
-        capture_output=True,
-    )
-    # Non-default branches exist only as origin/<ref> in a fresh clone.
-    for candidate in (ref, f"origin/{ref}"):
-        proc = subprocess.run(
-            ["git", "-C", str(target), "checkout", "--detach", "--quiet", candidate],
-            capture_output=True,
-        )
-        if proc.returncode == 0:
-            return target
-    raise RuntimeError(f"ref {ref!r} not found in clone of {repo}")
+    metadata_path = worktree / ".gitnexus" / "gitnexus.json"
+    if not metadata_path.exists():
+        metadata_path = worktree / ".gitnexus" / "meta.json"
+    mode = metadata_path.lstat().st_mode
+    if stat.S_ISLNK(mode) or not stat.S_ISREG(mode):
+        raise SandboxError(f"benchmark index metadata must be regular and non-symlink: {metadata_path}")
+    raw = _bounded_regular_bytes(metadata_path, limit=2 * 1024 * 1024)
+    try:
+        metadata = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise SandboxError(f"benchmark index metadata is malformed: {metadata_path}") from exc
+    if not isinstance(metadata, dict):
+        raise SandboxError(f"benchmark index metadata must be an object: {metadata_path}")
+    indexed_at = metadata.get("indexedAt")
+    last_commit = metadata.get("lastCommit")
+    if not isinstance(indexed_at, str) or not indexed_at or not isinstance(last_commit, str) or not last_commit:
+        raise SandboxError("benchmark index metadata is missing indexedAt or lastCommit")
 
-
-def remove_clone(clone: Path) -> None:
-    """Delete one throwaway arm clone (created by make_worktree)."""
-    shutil.rmtree(clone, ignore_errors=True)
-
-
-def parse_shortstat(text: str) -> dict[str, int]:
-    """Parse `git diff --shortstat` output into churn counters."""
-    keys = {
-        "file": "diff_files",
-        "insertion": "diff_insertions",
-        "deletion": "diff_deletions",
+    parent = parent.expanduser().absolute()
+    registry = Path(tempfile.mkdtemp(prefix="wfbench-registry-", dir=parent))
+    registry.chmod(0o700)
+    entry: dict[str, Any] = {
+        "name": "benchmark-target",
+        "path": SANDBOX_WORKSPACE,
+        "storagePath": f"{SANDBOX_WORKSPACE}/.gitnexus",
+        "indexedAt": indexed_at,
+        "lastCommit": last_commit,
     }
-    out = dict.fromkeys(keys.values(), 0)
-    for count, word in re.findall(r"(\d+) (file|insertion|deletion)", text):
-        out[keys[word]] = int(count)
-    return out
-
-
-def diff_churn(worktree: Path, orig_sha: str) -> dict[str, int]:
-    """Code churn (committed + uncommitted + new files) vs the worktree's
-    starting sha — a cheap over-engineering proxy alongside pass/fail quality.
-
-    intent-to-add makes untracked new files visible to `git diff` (arms that
-    never commit would otherwise undercount); docs/plans is excluded so the
-    workflow arm's committed plan document doesn't inflate its code churn.
-    """
-    subprocess.run(
-        ["git", "-C", str(worktree), "add", "--intent-to-add", "-A"],
-        capture_output=True,
-        check=False,
+    for field in ("remoteUrl", "stats", "branch"):
+        if field in metadata:
+            entry[field] = metadata[field]
+    registry_file = registry / "registry.json"
+    descriptor = os.open(
+        registry_file,
+        os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
+        0o600,
     )
-    proc = subprocess.run(
-        [
-            "git",
-            "-C",
-            str(worktree),
-            "diff",
-            "--shortstat",
-            orig_sha,
-            "--",
-            ".",
-            ":(exclude)docs/plans",
-        ],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    return parse_shortstat(proc.stdout)
-
-
-def run_verify(command: str, cwd: Path, timeout: int) -> tuple[bool, str]:
-    """Run the task's verify command; keep its output tail for diagnosis."""
-    proc = subprocess.run(
-        command, shell=True, cwd=cwd, capture_output=True, timeout=timeout, check=False
-    )
-    output = (proc.stdout + b"\n" + proc.stderr).decode(errors="replace")
-    return proc.returncode == 0, output[-4000:]
-
-
-def claude_env(args: argparse.Namespace) -> dict[str, str]:
-    """Environment for the headless sessions — free/alt-model routing hook.
-
-    --base-url points Claude Code at any Anthropic-compatible endpoint (e.g. a
-    local `litellm --config free-model.litellm.yaml` proxy fronting a free
-    OpenRouter model or local Ollama); --auth-token supplies its key.
-    """
-    env = os.environ.copy()
-    if args.base_url:
-        env["ANTHROPIC_BASE_URL"] = args.base_url
-    if args.auth_token:
-        env["ANTHROPIC_AUTH_TOKEN"] = args.auth_token
-    return env
+    try:
+        os.fchmod(descriptor, 0o600)
+        payload = (json.dumps([entry], sort_keys=True, separators=(",", ":")) + "\n").encode()
+        view = memoryview(payload)
+        while view:
+            written = os.write(descriptor, view)
+            view = view[written:]
+    finally:
+        os.close(descriptor)
+    return ReadOnlyMount(source=registry, target=SANDBOX_GITNEXUS_REGISTRY)
 
 
 def run_arm(
-    arm: str, task: dict[str, Any], worktree: Path, args: argparse.Namespace
+    arm: str,
+    task: dict[str, Any],
+    worktree: Path,
+    args: argparse.Namespace,
+    *,
+    sandbox: SandboxSession,
+    transcript_output_dir: Path | None = None,
+    transcript_output_prefix: str | None = None,
+    expected_skill_digest: str | None = None,
+    enforce_phase_boundary: bool = False,
+    ce_plugin_dir: str | None = None,
+    oracle_snapshot: TaskOracleSnapshot | None = None,
 ) -> dict[str, Any]:
     sessions: list[dict[str, Any]] = []
-    env = claude_env(args)
+    env = build_sandbox_environment(
+        auth_token=args.auth_token,
+        base_url=args.base_url,
+    )
     common = {
-        "claude_bin": args.claude_bin,
+        "claude_bin": sandbox.claude_bin,
         "timeout": args.timeout,
         "model": args.model,
         "env": env,
-        "permission_mode": args.permission_mode,
+        "permission_mode": "dontAsk",
+        "command_prefix": sandbox.command_prefix_for(
+            read_only_paths=_evaluated_skill_roots(worktree, arm),
+        ),
+        "require_pid_namespace": True,
+        "bare": True,
+        "settings_json": sandbox.settings_json,
+        "strict_mcp_config": True,
+        "mcp_config_json": sandbox_mcp_config(),
+        "transcript_projects": sandbox.transcript_projects,
+        "transcript_cwd": Path(SANDBOX_WORKSPACE),
+        "transcript_wait_seconds": 5,
+        "transcript_output_dir": transcript_output_dir,
+        "transcript_output_prefix": transcript_output_prefix,
+        "transcript_secrets": tuple(secret for secret in (args.auth_token,) if secret),
     }
+    if ce_plugin_dir is not None:
+        common["plugin_dirs"] = (ce_plugin_dir,)
     expected_skills = ARM_EXPECTED_SKILLS.get(arm, ())
     plan_doc: Path | None = None
     if arm in ("workflow", "ce_workflow"):
         plan_prompt = PLAN_PROMPT if arm == "workflow" else CE_PLAN_PROMPT
         work_prompt = WORK_PROMPT if arm == "workflow" else CE_WORK_PROMPT
-        pre = set(worktree.glob("docs/plans/*"))
-        sessions.append(
-            run_claude(
-                plan_prompt.format(task=task["prompt"]),
-                worktree,
-                expected_skill=expected_skills[0],
-                **common,
-            )
+        pre = snapshot_plan_docs(worktree)
+        phase_before = workspace_snapshot(worktree) if enforce_phase_boundary else None
+        plan_session = run_claude(
+            plan_prompt.format(task=task["prompt"]),
+            worktree,
+            expected_skill=expected_skills[0],
+            **{**common, "allowed_tools": allowed_agent_tools(implementation=False)},
         )
-        plan_doc = new_plan_doc(worktree, pre)
-        if plan_doc is not None:
-            sessions.append(
-                run_claude(
+        sessions.append(plan_session)
+        if plan_session["ok"]:
+            try:
+                plan_doc = new_plan_doc(worktree, pre)
+                if phase_before is not None:
+                    enforce_phase_workspace(
+                        worktree,
+                        phase_before,
+                        allowed_artifact=plan_doc,
+                    )
+                    require_skill_fingerprint(
+                        worktree,
+                        arm,
+                        expected_skill_digest,
+                        phase="planning",
+                    )
+            except ValueError as exc:
+                plan_session["ok"] = False
+                plan_session["error_kind"] = "plan-evidence-invalid"
+                plan_session["error_detail"] = str(exc)
+            else:
+                work_session = run_claude(
                     work_prompt.format(plan=plan_doc.relative_to(worktree)),
                     worktree,
                     expected_skill=expected_skills[1],
-                    **common,
+                    **{**common, "allowed_tools": allowed_agent_tools(implementation=True)},
                 )
-            )
+                _require_implementation_fingerprint(
+                    work_session,
+                    worktree,
+                    arm,
+                    expected_skill_digest,
+                )
+                sessions.append(work_session)
     elif arm == "ce_workflow_direct":
-        sessions.append(
-            run_claude(
-                CE_WORK_DIRECT_PROMPT.format(task=task["prompt"]),
-                worktree,
-                expected_skill=expected_skills[0],
-                **common,
-            )
+        work_session = run_claude(
+            CE_WORK_DIRECT_PROMPT.format(task=task["prompt"]),
+            worktree,
+            expected_skill=expected_skills[0],
+            **{**common, "allowed_tools": allowed_agent_tools(implementation=True)},
         )
-    elif arm == "review":
-        sessions.append(
-            run_claude(
-                REVIEW_PROMPT.format(task=task["prompt"]),
-                worktree,
-                expected_skill=expected_skills[0],
-                **common,
-            )
+        _require_implementation_fingerprint(
+            work_session,
+            worktree,
+            arm,
+            expected_skill_digest,
         )
-    elif arm == "ce_review":
-        sessions.append(
-            run_claude(
-                CE_REVIEW_PROMPT.format(task=task["prompt"]),
-                worktree,
-                expected_skill=expected_skills[0],
-                **common,
-            )
+        sessions.append(work_session)
+    elif arm in ("review", "ce_review"):
+        review_prompt = REVIEW_PROMPT if arm == "review" else CE_REVIEW_PROMPT
+        phase_before = workspace_snapshot(worktree) if enforce_phase_boundary else None
+        review_session = run_claude(
+            review_prompt.format(task=task["prompt"]),
+            worktree,
+            expected_skill=expected_skills[0],
+            **{**common, "allowed_tools": allowed_agent_tools(implementation=False)},
         )
+        sessions.append(review_session)
+        if review_session["ok"] and phase_before is not None:
+            try:
+                enforce_phase_workspace(
+                    worktree,
+                    phase_before,
+                    allowed_artifact=worktree / "review-output.md",
+                )
+                require_skill_fingerprint(
+                    worktree,
+                    arm,
+                    expected_skill_digest,
+                    phase="review",
+                )
+            except ValueError as exc:
+                review_session["ok"] = False
+                review_session["error_kind"] = "review-evidence-invalid"
+                review_session["error_detail"] = str(exc)
     elif arm == "workflow_direct":
-        sessions.append(
-            run_claude(
-                WORK_DIRECT_PROMPT.format(task=task["prompt"]),
-                worktree,
-                expected_skill=expected_skills[0],
-                **common,
-            )
+        work_session = run_claude(
+            WORK_DIRECT_PROMPT.format(task=task["prompt"]),
+            worktree,
+            expected_skill=expected_skills[0],
+            **{**common, "allowed_tools": allowed_agent_tools(implementation=True)},
         )
+        _require_implementation_fingerprint(
+            work_session,
+            worktree,
+            arm,
+            expected_skill_digest,
+        )
+        sessions.append(work_session)
     elif arm == "baseline_nomcp":
         # Isolates the workflow-discipline question from the GitNexus-tools
         # question: no skills AND no graph tools.
@@ -492,7 +534,14 @@ def run_arm(
                 BASELINE_PROMPT.format(task=task["prompt"]),
                 worktree,
                 disallowed_tools=["Skill", "mcp__gitnexus"],
-                **common,
+                **{
+                    **common,
+                    "mcp_config_json": '{"mcpServers":{}}',
+                    "allowed_tools": allowed_agent_tools(
+                        implementation=True,
+                        include_mcp=False,
+                    ),
+                },
             )
         )
     else:
@@ -501,22 +550,57 @@ def run_arm(
                 BASELINE_PROMPT.format(task=task["prompt"]),
                 worktree,
                 disallowed_tools=["Skill"],
-                **common,
+                **{**common, "allowed_tools": allowed_agent_tools(implementation=True)},
             )
         )
     record = sum_sessions(sessions)
     record["arm"] = arm
-    record["plan_produced"] = (
-        arm not in ("workflow", "ce_workflow") or plan_doc is not None
+    record["plan_produced"] = arm not in ("workflow", "ce_workflow") or plan_doc is not None
+    authored_tests_passed, authored_test_output = _verification_outcome(
+        run_verify(
+            task["verify"],
+            worktree,
+            args.timeout,
+            command_prefix=sandbox.command_prefix_for(
+                read_only_workspace=True,
+                unshare_network=True,
+            ),
+            env=build_sandbox_environment(),
+            require_pid_namespace=True,
+        )
     )
-    verified, verify_output = run_verify(task["verify"], worktree, args.timeout)
-    record["resolved"] = record["ok"] and verified
-    record["verify_output"] = verify_output
-    if record["error_kind"] is None and not verified:
+    if oracle_snapshot is None:
+        oracle_passed, oracle_output = False, "hidden oracle snapshot unavailable"
+    else:
+        oracle_passed, oracle_output = _run_hidden_oracle(
+            oracle_snapshot,
+            worktree,
+            args,
+            sandbox,
+        )
+    record["authored_tests_passed"] = authored_tests_passed
+    record["authored_test_output"] = authored_test_output
+    record["oracle_passed"] = oracle_passed
+    record["oracle_output"] = oracle_output
+    record["resolved"] = record["ok"] and authored_tests_passed and oracle_passed
+    # Compatibility alias for existing report consumers. The authored tests are
+    # now an explicit signal and can never self-certify resolution.
+    record["verify_output"] = authored_test_output
+    if oracle_snapshot is not None:
+        record.update(
+            {
+                "oracle_digest": oracle_snapshot.digest,
+                "oracle_command_digest": oracle_snapshot.command_digest,
+                "oracle_manifest_digest": oracle_snapshot.manifest_digest,
+            }
+        )
+    if record["error_kind"] is None and not authored_tests_passed:
         # The sessions completed — the produced change just failed the task's
         # verify command. Kept distinct from session-error so aggregates can
         # exclude infrastructure deaths without hiding real failures.
         record["error_kind"] = "verify-failed"
+    elif record["error_kind"] is None and not oracle_passed:
+        record["error_kind"] = "oracle-failed" if oracle_snapshot is not None else "oracle-unavailable"
     return record
 
 
@@ -528,23 +612,32 @@ CHURN_FIELDS = ("diff_files", "diff_insertions", "diff_deletions")
 # Rows where the session (or the harness) died carry no measured evidence and
 # must not skew efficiency medians or resolve denominators. verify-failed and
 # skill-not-invoked rows DO count: those sessions ran and spent real tokens.
-EXCLUDED_ERROR_KINDS = frozenset({"session-error", "infra-error"})
+EXCLUDED_ERROR_KINDS = frozenset({"session-error", "infra-error", "evidence-unverified", "cleanup-failure"})
 
 
 def infra_error_record(exc: BaseException) -> dict[str, Any]:
     """Row for a run the harness itself killed (timeout, setup failure)."""
+    if isinstance(exc, ManagedProcessError):
+        process = exc.result
+        detail = f"{process.state}: {process.detail or process.stderr_tail[-1500:]}"
+    else:
+        detail = f"{type(exc).__name__}: {exc}"
     record: dict[str, Any] = dict.fromkeys(USAGE_FIELDS, 0)
     record.update(
         {
             "ok": False,
             "resolved": False,
             "error_kind": "infra-error",
-            "error_detail": f"{type(exc).__name__}: {exc}"[:2000],
+            "error_detail": detail[:2000],
             "session_ids": [],
             "cost_usd": 0.0,
             "duration_s": 0.0,
             "num_turns": 0,
             "plan_produced": False,
+            "authored_tests_passed": False,
+            "authored_test_output": "",
+            "oracle_passed": False,
+            "oracle_output": "",
             "verify_output": "",
             "skill_invoked": None,
             "transcript_missing": False,
@@ -561,9 +654,7 @@ def aggregate(records: list[dict[str, Any]]) -> dict[str, Any]:
     """
     valid = [r for r in records if r.get("error_kind") not in EXCLUDED_ERROR_KINDS]
     metrics = (*USAGE_FIELDS, "cost_usd", "duration_s", "num_turns", *CHURN_FIELDS)
-    out: dict[str, Any] = {
-        m: statistics.median(r.get(m, 0) for r in (valid or [{}])) for m in metrics
-    }
+    out: dict[str, Any] = {m: statistics.median(r.get(m, 0) for r in (valid or [{}])) for m in metrics}
     out["resolved"] = sum(1 for r in records if r["resolved"])
     out["runs"] = len(records)
     out["valid_runs"] = len(valid)
@@ -627,14 +718,16 @@ def render_report(results: dict[str, dict[str, dict[str, Any]]]) -> str:
     excluded_total = sum(agg.get("excluded_runs", 0) for agg in all_aggs)
     if excluded_total:
         lines.append(
-            f"{excluded_total} run(s) hit session/infra errors and were excluded "
+            f"{excluded_total} run(s) hit session/infra errors or had unverifiable "
+            "evidence and were excluded "
             "from medians and resolve denominators — see error_kind in results.jsonl."
         )
     missing_total = sum(agg.get("transcripts_missing", 0) for agg in all_aggs)
     if missing_total:
         lines.append(
-            f"{missing_total} run(s) had no locatable session transcript, so their "
-            "skill invocation could not be verified (skill_invoked=null in results.jsonl)."
+            f"{missing_total} run(s) had no locatable session transcript or it was "
+            "unreadable, so they were excluded from promotion evidence "
+            "(skill_invoked=null in results.jsonl)."
         )
     lines.append(
         "Session ids for every run are in results.jsonl — open the matching "
@@ -668,10 +761,28 @@ def build_parser() -> argparse.ArgumentParser:
         ],
     )
     parser.add_argument("--claude-bin", default="claude")
+    parser.add_argument(
+        "--ce-plugin-dir",
+        type=Path,
+        default=None,
+        help="operator-supplied Compound Engineering plugin directory; required for ce_* arms",
+    )
+    parser.add_argument(
+        "--ce-plugin-version",
+        default=None,
+        help="exact Compound Engineering plugin version; required for ce_* arms",
+    )
     parser.add_argument("--timeout", type=int, default=3600, help="per session, seconds")
     parser.add_argument("--out", type=Path, default=None)
     parser.add_argument(
-        "--model", default=None, help="model override passed to `claude --model`"
+        "--model",
+        required=True,
+        help="named, versioned model passed to every `claude --model` invocation",
+    )
+    parser.add_argument(
+        "--proposer-model",
+        default=None,
+        help="model that generated the candidate overlay (recorded for provenance)",
     )
     parser.add_argument(
         "--base-url",
@@ -681,20 +792,19 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--auth-token",
-        default=None,
-        help="ANTHROPIC_AUTH_TOKEN for the --base-url endpoint",
+        default=os.environ.get("GITNEXUS_BENCH_AUTH_TOKEN"),
+        help="ANTHROPIC_API_KEY for the --base-url endpoint (prefer GITNEXUS_BENCH_AUTH_TOKEN env)",
     )
     parser.add_argument(
-        "--permission-mode",
-        default="bypassPermissions",
-        help="passed to `claude --permission-mode`; the default lets headless "
-        "sessions edit/run unattended — arms run in throwaway worktrees",
+        "--include-expensive",
+        action="store_true",
+        help="include scenarios marked expensive: true (excluded by default)",
     )
     parser.add_argument(
         "--candidate-overlay",
         type=Path,
         default=None,
-        help="directory mirroring .claude/skills/gitnexus-{plan,work,lfg}; applied only to candidate_* arms",
+        help="directory mirroring .claude/skills/gitnexus-{plan,work}; applied only to candidate_* arms",
     )
     parser.add_argument(
         "--promotion-metric",
@@ -707,12 +817,47 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--promotion-min-runs", type=int, default=3)
     parser.add_argument("--promotion-min-improvement", type=float, default=5.0)
     parser.add_argument("--promotion-max-task-regression", type=float, default=20.0)
+    parser.add_argument("--task-bindings-json", default=None, help=argparse.SUPPRESS)
+    parser.add_argument("--promotion-target-bases-json", default=None, help=argparse.SUPPRESS)
     return parser
 
 
 def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
+    try:
+        args.model = normalized_model_identifier(args.model)
+        args.proposer_model = (
+            normalized_model_identifier(args.proposer_model, flag="--proposer-model")
+            if args.proposer_model is not None
+            else None
+        )
+        task_document = yaml.safe_load(args.tasks.read_text())
+        if not isinstance(task_document, Mapping) or not isinstance(task_document.get("tasks"), list):
+            raise ValueError("task file must contain a tasks list")
+        tasks, skipped_expensive = select_tasks(
+            task_document["tasks"],
+            include_expensive=args.include_expensive,
+        )
+        oracle_snapshots = capture_task_oracles(tasks)
+        expected_task_bindings = json.loads(args.task_bindings_json) if args.task_bindings_json else None
+        if expected_task_bindings is not None and not isinstance(expected_task_bindings, list):
+            raise ValueError("--task-bindings-json must contain a list")
+        supplied_promotion_target_bases = (
+            json.loads(args.promotion_target_bases_json) if args.promotion_target_bases_json else {}
+        )
+        if not isinstance(supplied_promotion_target_bases, dict) or not all(
+            isinstance(path, str) and isinstance(digest, str)
+            for path, digest in supplied_promotion_target_bases.items()
+        ):
+            raise ValueError("--promotion-target-bases-json must contain a string mapping")
+        ce_plugin_config = validate_ce_plugin_inputs(
+            args.arms,
+            args.ce_plugin_dir,
+            args.ce_plugin_version,
+        )
+    except (OSError, SandboxError, ValueError, yaml.YAMLError) as exc:
+        parser.error(str(exc))
 
     candidate_arms = [arm for arm in args.arms if arm in CANDIDATE_ARMS]
     if candidate_arms and args.candidate_overlay is None:
@@ -726,85 +871,252 @@ def main() -> None:
     if args.runs < 1 or args.promotion_min_runs < 1:
         parser.error("--runs and --promotion-min-runs must be positive")
 
-    candidate_overlay = args.candidate_overlay.expanduser().resolve() if args.candidate_overlay is not None else None
+    candidate_overlay = args.candidate_overlay.expanduser().absolute() if args.candidate_overlay is not None else None
     overlay_digest = candidate_overlay_digest(candidate_overlay) if candidate_overlay is not None else None
     if candidate_overlay is not None:
-        unexercised = unexercised_overlay_skills(candidate_overlay, candidate_arms)
-        if unexercised:
-            parser.error(
-                "candidate overlay touches skills no selected candidate arm "
-                f"exercises: {', '.join(unexercised)} — those files would never "
-                "be loaded by any session, so the gate would decide from noise"
-            )
+        required_candidates = required_candidate_arms(candidate_overlay)
+        required_arms = [arm for candidate in required_candidates for arm in (CANDIDATE_ARMS[candidate], candidate)]
+        if args.arms != required_arms:
+            parser.error("candidate overlay requires exactly these paired arms: " + " ".join(required_arms))
+        promotion_target_bases = committed_destination_base_digests(candidate_overlay)
+        if supplied_promotion_target_bases and supplied_promotion_target_bases != promotion_target_bases:
+            parser.error("--promotion-target-bases-json does not match the committed incumbent")
+    else:
+        if supplied_promotion_target_bases:
+            parser.error("--promotion-target-bases-json requires --candidate-overlay")
+        promotion_target_bases = {}
 
-    tasks = yaml.safe_load(args.tasks.read_text())["tasks"]
+    try:
+        bwrap_bin = preflight_bubblewrap()
+        require_claude_sandbox_helpers()
+        runtime_mounts = trusted_gitnexus_runtime_mounts()
+    except SandboxError as exc:
+        parser.error(str(exc))
     out_dir = args.out or Path("results") / time.strftime("wfbench-%Y%m%d-%H%M%S")
     out_dir.mkdir(parents=True, exist_ok=True)
     results_path = out_dir / "results.jsonl"
+    selected_ids = [task["id"] for task in tasks]
+    print(
+        f"selected {len(selected_ids)} task(s): {', '.join(selected_ids)}; "
+        f"skipped {len(skipped_expensive)} expensive task(s): "
+        f"{', '.join(skipped_expensive) if skipped_expensive else 'none'}"
+    )
 
     results: dict[str, dict[str, dict[str, Any]]] = {}
-    with tempfile.TemporaryDirectory(prefix="wfbench-trees-") as trees:
-        for task in tasks:
-            repo = Path(task["repo"]).expanduser().resolve()
+    with (
+        tempfile.TemporaryDirectory(prefix="wfbench-trees-") as trees,
+        TaskAssetCache(Path(trees) / ".task-assets") as task_asset_cache,
+        staged_ce_plugin_snapshot(
+            ce_plugin_config,
+            destination_parent=Path(trees),
+        ) as ce_plugin_snapshot,
+    ):
+        try:
+            task_bindings = resolve_task_bindings(
+                tasks,
+                expected_task_bindings,
+                oracle_snapshots=oracle_snapshots,
+                task_asset_cache=task_asset_cache,
+            )
+        except (OSError, SandboxError, ValueError) as exc:
+            parser.error(str(exc))
+        oracle_mask = Path(trees) / ".oracle-mask"
+        oracle_mask.mkdir(mode=0o500)
+        oracle_mask.chmod(0o500)
+        graph_snapshots: dict[tuple[str, str], SanitizedGraphSnapshot] = {}
+        graph_snapshot_errors: dict[tuple[str, str], BaseException] = {}
+        for task, task_binding, oracle_snapshot in zip(
+            tasks,
+            task_bindings,
+            oracle_snapshots,
+            strict=True,
+        ):
+            repo = Path(task_binding["repo_identity"])
+            task_sha = task_binding["resolved_sha"]
+            asset_snapshot: TaskAssetSnapshot | None = None
+            asset_snapshot_error: BaseException | None = None
+            graph_key = (str(repo), task_sha)
+            graph_snapshot: SanitizedGraphSnapshot | None = graph_snapshots.get(graph_key)
+            graph_snapshot_error: BaseException | None = graph_snapshot_errors.get(graph_key)
+            try:
+                validate_no_prebuilt_graph_assets(task)
+                if graph_snapshot is None and graph_snapshot_error is None:
+                    graph_snapshot = prepare_sanitized_graph(
+                        task,
+                        repo=repo,
+                        resolved_sha=task_sha,
+                        parent=Path(trees),
+                        cache=task_asset_cache,
+                        claude_bin=args.claude_bin,
+                        bwrap_bin=bwrap_bin,
+                        runtime_mounts=runtime_mounts,
+                    )
+                    graph_snapshots[graph_key] = graph_snapshot
+            except (ManagedProcessError, OSError, SandboxError, RuntimeError, ValueError) as exc:
+                graph_snapshot_error = exc
+                graph_snapshot_errors[graph_key] = exc
             per_arm: dict[str, list[dict[str, Any]]] = {a: [] for a in args.arms}
             for run_idx in range(args.runs):
                 for arm in args.arms:
-                    worktree = make_worktree(repo, task.get("ref", "HEAD"), Path(trees))
+                    worktree: Path | None = None
+                    record: dict[str, Any] | None = None
+                    cleanup_error: OSError | None = None
                     try:
-                        if task.get("setup"):
-                            subprocess.run(
-                                task["setup"],
-                                shell=True,
-                                cwd=worktree,
-                                check=True,
-                                capture_output=True,
-                                timeout=600,
+                        if asset_snapshot_error is not None:
+                            raise RuntimeError(f"task asset snapshot preparation failed: {asset_snapshot_error}")
+                        if graph_snapshot_error is not None:
+                            raise RuntimeError(f"sanitized graph snapshot preparation failed: {graph_snapshot_error}")
+                        if graph_snapshot is None:
+                            raise RuntimeError("sanitized graph snapshot is unavailable")
+                        if asset_snapshot is None:
+                            try:
+                                asset_snapshot = task_asset_cache.prepare(
+                                    task,
+                                    repo=repo,
+                                    resolved_sha=task_sha,
+                                    expected_dependency_binding=task_binding,
+                                )
+                            except (OSError, SandboxError, ValueError) as exc:
+                                asset_snapshot_error = exc
+                                raise
+                        worktree = make_worktree(repo, task_sha, Path(trees))
+                        sanitized_head = sanitize_clone_for_hidden_oracles(worktree)
+                        graph_snapshot.materialize(worktree, sanitized_head=sanitized_head)
+                        dependency_mounts = stage_task_assets(
+                            task,
+                            repo=repo,
+                            clone=worktree,
+                            snapshot=asset_snapshot,
+                        )
+                        registry_mount = isolated_gitnexus_registry_mount(worktree, Path(trees))
+                        hidden_harness = worktree / "eval" / "workflow_bench"
+                        oracle_visibility_mounts: list[ReadOnlyMount] = []
+                        if hidden_harness.exists() or hidden_harness.is_symlink():
+                            hidden_metadata = hidden_harness.lstat()
+                            if stat.S_ISLNK(hidden_metadata.st_mode) or not stat.S_ISDIR(hidden_metadata.st_mode):
+                                raise SandboxError(
+                                    "benchmark harness path must be a real directory before it can be hidden"
+                                )
+                            oracle_visibility_mounts.append(
+                                ReadOnlyMount(
+                                    source=oracle_mask,
+                                    target=f"{SANDBOX_WORKSPACE}/eval/workflow_bench",
+                                )
                             )
-                        task_base_sha = subprocess.run(
-                            ["git", "-C", str(worktree), "rev-parse", "HEAD"],
-                            capture_output=True,
-                            text=True,
-                            check=True,
-                        ).stdout.strip()
                         execution_arm = CANDIDATE_ARMS.get(arm, arm)
-                        if arm in CANDIDATE_ARMS:
-                            assert candidate_overlay is not None
-                            applied_digest = apply_candidate_overlay(candidate_overlay, worktree)
-                            if applied_digest != overlay_digest:
-                                raise RuntimeError("candidate overlay changed during the benchmark run")
-                        orig_sha = subprocess.run(
-                            ["git", "-C", str(worktree), "rev-parse", "HEAD"],
-                            capture_output=True,
-                            text=True,
-                            check=True,
-                        ).stdout.strip()
-                        record = run_arm(execution_arm, task, worktree, args)
+                        ce_mounts = ce_plugin_mounts_for_arm(execution_arm, ce_plugin_snapshot)
+                        with prepare_sandbox(
+                            clone=worktree,
+                            claude_bin=args.claude_bin,
+                            bwrap_bin=bwrap_bin,
+                            read_only_mounts=[
+                                *dependency_mounts,
+                                *runtime_mounts,
+                                registry_mount,
+                                *ce_mounts,
+                                *oracle_visibility_mounts,
+                            ],
+                            preflight=False,
+                        ) as sandbox:
+                            if arm in CANDIDATE_ARMS:
+                                assert candidate_overlay is not None
+                                applied_digest = apply_candidate_overlay(
+                                    candidate_overlay,
+                                    worktree,
+                                    sandbox=sandbox,
+                                )
+                                if applied_digest != overlay_digest:
+                                    raise RuntimeError("candidate overlay changed during the benchmark run")
+                            orig_sha = _sandbox_git(sandbox, ["rev-parse", "HEAD"]).strip()
+                            if not re.fullmatch(r"[0-9a-fA-F]{40,64}", orig_sha):
+                                raise RuntimeError("sandboxed candidate setup did not produce an immutable commit")
+                            # Capture candidate/incumbent skill evidence before
+                            # the task's untrusted setup can rewrite prompt roots.
+                            initial_skill_digest = skill_fingerprint(worktree, execution_arm)
+                            if task.get("setup"):
+                                setup_command = ["/bin/sh", "-lc", str(task["setup"])]
+                                setup = sandbox.run(
+                                    setup_command,
+                                    timeout=600,
+                                    env=build_sandbox_environment(),
+                                )
+                                if not setup.ok:
+                                    raise ManagedProcessError(setup_command, setup)
+                            require_skill_fingerprint(
+                                worktree,
+                                execution_arm,
+                                initial_skill_digest,
+                                phase="task setup",
+                            )
+                            before_work_digest = (
+                                implementation_diff_digest(sandbox, orig_sha)
+                                if execution_arm in IMPLEMENTATION_ARMS
+                                else ""
+                            )
+                            record = run_arm(
+                                execution_arm,
+                                task,
+                                worktree,
+                                args,
+                                sandbox=sandbox,
+                                transcript_output_dir=out_dir,
+                                transcript_output_prefix=f"{task['id']}-{arm}-run{run_idx}",
+                                expected_skill_digest=initial_skill_digest,
+                                enforce_phase_boundary=True,
+                                ce_plugin_dir=ce_plugin_dir_for_arm(execution_arm, ce_plugin_snapshot),
+                                oracle_snapshot=oracle_snapshot,
+                            )
+                            _prepare_untracked_for_diff(sandbox)
+                            after_work_digest = (
+                                implementation_diff_digest(
+                                    sandbox,
+                                    orig_sha,
+                                    prepare_untracked=False,
+                                )
+                                if execution_arm in IMPLEMENTATION_ARMS
+                                else ""
+                            )
+                            record.update(
+                                diff_churn(
+                                    sandbox,
+                                    orig_sha,
+                                    prepare_untracked=False,
+                                )
+                            )
+                            enforce_work_evidence(
+                                record,
+                                arm=execution_arm,
+                                before_digest=before_work_digest,
+                                after_digest=after_work_digest,
+                            )
+                            patch_bytes = capture_patch(sandbox, worktree, orig_sha)
                         record["arm"] = arm
                         record.update(
                             {
                                 "model": args.model,
+                                "benchmark_model": args.model,
+                                "proposer_model": args.proposer_model,
                                 "task_ref": task.get("ref", "HEAD"),
-                                "task_base_sha": task_base_sha,
+                                "task_base_sha": task_sha,
+                                "sanitized_task_sha": sanitized_head,
                                 "variant_head_sha": orig_sha,
                                 "task_prompt_digest": hashlib.sha256(task["prompt"].encode()).hexdigest(),
-                                "skill_digest": skill_fingerprint(worktree, execution_arm),
+                                "skill_digest": initial_skill_digest,
                                 "candidate_overlay_digest": (overlay_digest if arm in CANDIDATE_ARMS else None),
                                 "recorded_at": datetime.now(UTC).isoformat(),
                             }
                         )
-                        record.update(diff_churn(worktree, orig_sha))
                         # Final working-tree patch — the clone is destroyed, so
                         # this is the only artifact for diagnosing verify fails.
-                        patch = subprocess.run(
-                            ["git", "-C", str(worktree), "diff", orig_sha],
-                            capture_output=True,
-                            text=True,
-                            check=False,
-                        ).stdout
-                        (
-                            out_dir / f"{task['id']}-{arm}-run{run_idx}.patch"
-                        ).write_text(patch[:300_000])
-                    except (subprocess.TimeoutExpired, subprocess.CalledProcessError) as exc:
+                        patch_path = out_dir / f"{task['id']}-{arm}-run{run_idx}.patch"
+                        patch_path.write_bytes(patch_bytes)
+                    except (
+                        ManagedProcessError,
+                        SandboxError,
+                        OSError,
+                        RuntimeError,
+                        ValueError,
+                    ) as exc:
                         # One hung session or failed setup must not abort the
                         # sweep — record the run as infra-error and move on so
                         # report.md/promotion.json still get written.
@@ -812,12 +1124,58 @@ def main() -> None:
                         record["arm"] = arm
                         print(f"[{task['id']}][{arm}][run {run_idx}] infra-error: {exc}")
                     finally:
-                        remove_clone(worktree)
+                        if worktree is not None and worktree.exists():
+                            try:
+                                remove_clone(worktree)
+                            except OSError as exc:
+                                cleanup_error = exc
+                    assert record is not None
+                    if cleanup_error is not None:
+                        primary_kind = record.get("error_kind")
+                        primary_detail = record.get("error_detail")
+                        record["resolved"] = False
+                        record["ok"] = False
+                        record["error_kind"] = "cleanup-failure"
+                        record["error_detail"] = (
+                            f"primary={primary_kind}: {primary_detail}; cleanup: "
+                            f"{type(cleanup_error).__name__}: {cleanup_error}"
+                        )[:2000]
                     record.update(
                         {
                             "task": task["id"],
                             "class": task.get("class", ""),
                             "run": run_idx,
+                            "task_asset_snapshot_digest": (
+                                asset_snapshot.digest if asset_snapshot is not None else None
+                            ),
+                            "task_asset_manifest_digest": (
+                                asset_snapshot.manifest_digest if asset_snapshot is not None else None
+                            ),
+                            "sandbox_dependency_content_digest": (
+                                asset_snapshot.dependency_content_digest if asset_snapshot is not None else None
+                            ),
+                            "sandbox_dependency_manifest_digest": (
+                                asset_snapshot.dependency_manifest_digest if asset_snapshot is not None else None
+                            ),
+                            "sanitized_graph_snapshot_digest": (
+                                graph_snapshot.digest if graph_snapshot is not None else None
+                            ),
+                            "sanitized_graph_manifest_digest": (
+                                graph_snapshot.manifest_digest if graph_snapshot is not None else None
+                            ),
+                            "oracle_digest": oracle_snapshot.digest,
+                            "oracle_command_digest": oracle_snapshot.command_digest,
+                            "oracle_manifest_digest": oracle_snapshot.manifest_digest,
+                            "ce_plugin_version": (
+                                ce_plugin_snapshot.version
+                                if arm in CE_ARMS and ce_plugin_snapshot is not None
+                                else None
+                            ),
+                            "ce_plugin_manifest_digest": (
+                                ce_plugin_snapshot.manifest_digest
+                                if arm in CE_ARMS and ce_plugin_snapshot is not None
+                                else None
+                            ),
                         }
                     )
                     per_arm[arm].append(record)
@@ -830,24 +1188,44 @@ def main() -> None:
                     )
             results[task["id"]] = {a: aggregate(rs) for a, rs in per_arm.items() if rs}
 
-    report = render_report(results)
+    selection_report = [
+        "## Run provenance",
+        "",
+        f"Benchmark model: `{args.model}`",
+        f"Proposer model: `{args.proposer_model}`",
+        f"Selected tasks ({len(selected_ids)}): {', '.join(selected_ids)}",
+        (
+            f"Skipped expensive tasks ({len(skipped_expensive)}): "
+            + (", ".join(skipped_expensive) if skipped_expensive else "none")
+        ),
+    ]
+    if ce_plugin_snapshot is not None:
+        selection_report.append(
+            f"Compound Engineering plugin: `{ce_plugin_snapshot.version}` (`{ce_plugin_snapshot.manifest_digest}`)"
+        )
+    report = render_report(results) + "\n\n" + "\n".join(selection_report) + "\n"
     (out_dir / "report.md").write_text(report)
     if candidate_arms:
         promotion_generated_at = datetime.now(UTC)
         promotion = {
-            "schema_version": 1,
+            # Schema 3 is the first promotion evidence that requires hidden,
+            # byte-bound behavioral oracles. Older self-authored-only rows are
+            # intentionally ineligible for application.
+            "schema_version": 3,
             "generated_at": promotion_generated_at.isoformat(),
             "evidence_expires_at": (promotion_generated_at + timedelta(days=EVIDENCE_MAX_AGE_DAYS)).isoformat(),
-            "model": args.model,
+            "benchmark_model": args.model,
+            "proposer_model": args.proposer_model,
+            "candidate_origin": ("model-proposer" if args.proposer_model is not None else "manual-initial-overlay"),
             "candidate_overlay": str(candidate_overlay),
             "candidate_overlay_digest": overlay_digest,
+            "target_base_digests": promotion_target_bases,
+            "required_candidate_arms": candidate_arms,
+            "selected_tasks": task_bindings,
+            "ce_plugin": ce_plugin_snapshot.provenance if ce_plugin_snapshot is not None else None,
             "policy": {
                 "metric": args.promotion_metric,
-                "metric_warning": (
-                    MAIN_LOOP_ONLY_WARNING
-                    if args.promotion_metric in MAIN_LOOP_ONLY_METRICS
-                    else None
-                ),
+                "metric_warning": (MAIN_LOOP_ONLY_WARNING if args.promotion_metric in MAIN_LOOP_ONLY_METRICS else None),
                 "min_runs": args.promotion_min_runs,
                 "min_improvement_pct": args.promotion_min_improvement,
                 "max_task_regression_pct": args.promotion_max_task_regression,

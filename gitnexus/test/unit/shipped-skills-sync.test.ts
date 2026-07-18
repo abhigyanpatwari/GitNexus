@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import { RENAMED_SKILL_DIRS } from '../../src/cli/setup.js';
+import { STANDARD_SKILL_CATALOG, type StandardSkillName } from '../../src/cli/standard-skills.js';
 
 // The engineering skill family is authored once under .claude/skills/ and
 // shipped as byte-identical copies through the npm package's skills/ directory
@@ -14,6 +15,8 @@ import { RENAMED_SKILL_DIRS } from '../../src/cli/setup.js';
 
 const REPO_ROOT = path.resolve(__dirname, '..', '..', '..');
 const FAMILY = ['gitnexus-plan', 'gitnexus-work', 'gitnexus-review', 'gitnexus-lfg'];
+const STANDARD_SKILL_NAMES = STANDARD_SKILL_CATALOG.map((skill) => skill.name);
+const SPECIALIZED_NESTED_SKILLS = ['gitnexus-pdg-query', 'gitnexus-taint-analysis'] as const;
 
 function listFilesRecursive(dir: string, base: string = dir): string[] {
   const out: string[] = [];
@@ -35,6 +38,102 @@ function snapshotDir(dir: string): Record<string, string> {
   }
   return snapshot;
 }
+
+function standardSkillCopies(name: StandardSkillName): string[] {
+  const entry = STANDARD_SKILL_CATALOG.find((skill) => skill.name === name);
+  if (!entry) throw new Error(`Unknown standard skill: ${name}`);
+
+  const copies: string[] = [];
+  if (entry.distributions.project) {
+    copies.push(path.join(REPO_ROOT, '.claude', 'skills', name, 'SKILL.md'));
+  }
+  if (entry.distributions.npm) {
+    copies.push(path.join(REPO_ROOT, 'gitnexus', 'skills', `${name}.md`));
+  }
+  if (entry.distributions.claudePlugin) {
+    copies.push(path.join(REPO_ROOT, 'gitnexus-claude-plugin', 'skills', name, 'SKILL.md'));
+  }
+  if (entry.distributions.cursor) {
+    copies.push(path.join(REPO_ROOT, 'gitnexus-cursor-integration', 'skills', name, 'SKILL.md'));
+  }
+  return copies;
+}
+
+function discoverStandardSkillNames(): string[] {
+  const bundledSkillsDir = path.join(REPO_ROOT, 'gitnexus', 'skills');
+  return fs
+    .readdirSync(bundledSkillsDir, { withFileTypes: true })
+    .filter((entry) => entry.isFile() && entry.name.endsWith('.md'))
+    .map((entry) => entry.name.slice(0, -'.md'.length))
+    .filter(
+      (name) =>
+        fs.existsSync(path.join(REPO_ROOT, '.claude', 'skills', name, 'SKILL.md')) &&
+        fs.existsSync(path.join(REPO_ROOT, 'gitnexus-claude-plugin', 'skills', name, 'SKILL.md')),
+    )
+    .sort();
+}
+
+describe('standard skill catalog coverage', () => {
+  const discovered = discoverStandardSkillNames();
+
+  it('exactly matches the independently discovered standard skills', () => {
+    expect([...STANDARD_SKILL_NAMES].sort()).toEqual(discovered);
+  });
+
+  it('exactly matches the independently discovered Cursor subset', () => {
+    const discoveredCursor = discovered.filter((name) =>
+      fs.existsSync(
+        path.join(REPO_ROOT, 'gitnexus-cursor-integration', 'skills', name, 'SKILL.md'),
+      ),
+    );
+    const catalogCursor = STANDARD_SKILL_CATALOG.filter((skill) => skill.distributions.cursor)
+      .map((skill) => skill.name)
+      .sort();
+    expect(catalogCursor).toEqual(discoveredCursor);
+  });
+});
+
+describe.each(STANDARD_SKILL_NAMES)('standard skill distribution for %s', (name) => {
+  it('contains every applicable canonical and shipped copy', () => {
+    expect(standardSkillCopies(name).map((file) => fs.existsSync(file))).toEqual(
+      standardSkillCopies(name).map(() => true),
+    );
+  });
+});
+
+describe('intended standard-skill improvements stay in every applicable copy', () => {
+  it('documents the PDG analyze flag in every CLI copy', () => {
+    for (const file of standardSkillCopies('gitnexus-cli')) {
+      expect(fs.readFileSync(file, 'utf-8')).toContain('`--pdg`');
+    }
+  });
+
+  it('documents the current tools, schema, and cross-repo trace in every guide copy', () => {
+    const required = [
+      '`route_map`',
+      '`shape_check`',
+      '`api_impact`',
+      '`tool_map`',
+      '`group_list`',
+      '`group_sync`',
+      '`TAINT_PATH`',
+      'Cross-repo (experimental)',
+      'Read `gitnexus://repo/{name}/schema` before writing Cypher',
+    ];
+    for (const file of standardSkillCopies('gitnexus-guide')) {
+      const content = fs.readFileSync(file, 'utf-8');
+      for (const fragment of required) expect(content).toContain(fragment);
+    }
+  });
+
+  it("uses the rename API's text_search vocabulary in every refactoring copy", () => {
+    for (const file of standardSkillCopies('gitnexus-refactoring')) {
+      const content = fs.readFileSync(file, 'utf-8');
+      expect(content).toContain('text_search');
+      expect(content).not.toContain('ast_search');
+    }
+  });
+});
 
 describe.each(FAMILY)('shipped copies of %s stay in sync', (name) => {
   const canonical = snapshotDir(path.join(REPO_ROOT, '.claude', 'skills', name));
@@ -91,6 +190,23 @@ describe('gitnexus-review target contract', () => {
 // so the assertion is "no files inside", not fs.existsSync of the dir.
 const filesUnder = (dir: string): string[] => (fs.existsSync(dir) ? listFilesRecursive(dir) : []);
 
+describe.each(STANDARD_SKILL_NAMES)('duplicate nested standard skill %s stays deleted', (name) => {
+  it('has no files under .claude/skills/gitnexus/', () => {
+    expect(filesUnder(path.join(REPO_ROOT, '.claude', 'skills', 'gitnexus', name))).toEqual([]);
+  });
+});
+
+describe.each(SPECIALIZED_NESTED_SKILLS)(
+  'specialized nested skill %s remains available',
+  (name) => {
+    it('retains its SKILL.md', () => {
+      expect(
+        fs.existsSync(path.join(REPO_ROOT, '.claude', 'skills', 'gitnexus', name, 'SKILL.md')),
+      ).toBe(true);
+    });
+  },
+);
+
 describe.each(Object.values(RENAMED_SKILL_DIRS).flat())(
   'legacy skill name %s stays out of the shipped trees',
   (legacyName) => {
@@ -110,3 +226,34 @@ describe.each(Object.values(RENAMED_SKILL_DIRS).flat())(
     });
   },
 );
+
+describe('skill-sync workflow contract', () => {
+  const workflow = fs.readFileSync(
+    path.join(REPO_ROOT, '.github', 'workflows', 'skill-sync.yml'),
+    'utf-8',
+  );
+  const guardedPaths = [
+    '.claude/skills/gitnexus-*/**',
+    '.claude/skills/gitnexus/**',
+    'gitnexus/skills/**',
+    'gitnexus-claude-plugin/skills/**',
+    'gitnexus-cursor-integration/skills/**',
+    'gitnexus/test/unit/shipped-skills-sync.test.ts',
+    'gitnexus/test/unit/skills-steering.test.ts',
+    'gitnexus/test/unit/engineering-skills-contract.test.ts',
+    'gitnexus/test/unit/evidence-provenance-helper.test.ts',
+    '.github/workflows/skill-sync.yml',
+  ];
+
+  it.each(guardedPaths)('triggers on %s for both pull requests and main pushes', (guardedPath) => {
+    expect(workflow.split(`- '${guardedPath}'`).length - 1).toBe(2);
+  });
+
+  it('runs parity, steering, engineering, and provenance contracts in one blocking job', () => {
+    expect(workflow).toContain('npx vitest run');
+    expect(workflow).toContain('test/unit/shipped-skills-sync.test.ts');
+    expect(workflow).toContain('test/unit/skills-steering.test.ts');
+    expect(workflow).toContain('test/unit/engineering-skills-contract.test.ts');
+    expect(workflow).toContain('test/unit/evidence-provenance-helper.test.ts');
+  });
+});

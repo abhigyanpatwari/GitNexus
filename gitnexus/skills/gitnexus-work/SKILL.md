@@ -1,6 +1,6 @@
 ---
 name: gitnexus-work
-description: "Use when executing an engineering plan produced by gitnexus-plan (or a small bounded task directly) — implements step by step with GitNexus impact checks before every symbol edit, tests from the plan's scenarios, and detect_changes gating every commit. Examples: \"/gitnexus-work docs/plans/2026-07-11-gitnexus-plan-ingestion-retry.md\", \"/gitnexus-work\" (latest plan), \"execute the plan\"."
+description: 'Use when executing an engineering plan produced by gitnexus-plan (or a small bounded task directly) — implements step by step with GitNexus impact checks before every symbol edit, tests from the plan''s scenarios, and detect_changes gating every commit. Examples: "/gitnexus-work docs/plans/2026-07-11-gitnexus-plan-ingestion-retry.md", "/gitnexus-work" (latest plan), "execute the plan".'
 ---
 
 # gitnexus-work — execute a gitnexus-plan
@@ -20,46 +20,85 @@ executor counterpart to the planning-only `gitnexus-plan`.
 ## Input triage
 
 - **Plan path** (or blank → the newest `docs/plans/*gitnexus-plan*.md` under
-  the current repo root; plans written elsewhere — `out:` override, other
-  target repo — must be passed by explicit path): the normal mode; continue
-  to Phase 1. If Phase 1's pre-completed check finds every §7 step of that
-  newest plan already landed, stop and ask instead of re-executing it.
+  the current repo root): the normal mode; continue to Phase 1. Schema-2
+  plans have a normalized repo-relative
+  `docs/plans/YYYY-MM-DD-gitnexus-plan-<3-5-word-slug>.md`
+  `generated_plan_path`. Resolve only a lexical candidate, then invoke
+  `scripts/evidence-provenance.mjs read-plan --repo <root> --generated-plan
+<candidate>` and load only the exact bytes in its descriptor-anchored
+  receipt. Require the receipt's canonical repo-relative path to equal the
+  document's `generated_plan_path` byte-for-byte;
+  reject an external, escaping, differently scoped, or mismatched value. A
+  plan in another target repo may still be passed by explicit path. If Phase 1's
+  pre-completed check finds every §7 step of the newest plan already landed,
+  stop and ask instead of re-executing it.
 - **Bare task text**: trivial and bounded (1–2 files, no architectural
   decisions) → implement directly with the same discipline: `impact` before
   every symbol edit, minimal change, tests when behavior changes,
   verification commands taken from the repo's own scripts (package.json /
-  CI), `detect_changes` before every commit, and the Phase 4
-  knowledge-graph refresh after the final commit. Anything larger → recommend
-  running `/gitnexus-plan` first; honor the user's choice if they decline.
+  CI), `detect_changes` before every commit, and the shared
+  Build-current/index-current procedure before graph-dependent impact and
+  final verification. Anything larger → recommend running
+  `/gitnexus-plan` first; honor the user's choice if they decline.
 
 ## Phase 1 — Load and re-anchor the plan
 
-1. Read the plan document completely. It is a decision artifact, not a
-   script: scope boundaries and `avoid` entries bind you; exact code is
-   yours to write. Never edit the plan body.
+1. Resolve the target repo and normalized plan candidate, then invoke this
+   skill's descriptor-anchored `scripts/evidence-provenance.mjs read-plan`
+   command exactly as
+   specified in `references/evidence-provenance.md`. Reject a missing,
+   external, escaping, symlinked, or differently scoped path. Decode and read
+   the receipt's exact `plan_bytes_base64` completely; never read or reopen the
+   lexical path directly. It is a decision artifact, not a script: scope
+   boundaries and `avoid` entries bind you; exact code is yours to write.
+   Retain the receipt's canonical `generated_plan_path` and `plan_digest` in
+   session state. Never edit the plan body.
 2. Parse the §11 `implementation_context` pack: `acceptance_criteria`,
-   `primary_symbols`, `related_symbols`, `files_to_modify`,
-   `execution_path`, `pdg_constraints`, `architectural_patterns`, `tests`,
-   `verification_commands`, `risks`, `assumptions`, `open_questions`, `avoid`.
-   Compact plans carry the mini-pack subset — absent optional fields are
-   empty, not errors.
-3. **Drift check.** The plan header pins the commit its evidence was
-   verified at. **HEAD equals the pin → every citation is still verified:
-   skip all re-reading and go straight to work — that is the pin's entire
-   point.** If HEAD has moved since, diff the pinned commit against HEAD
-   for **every file the pack cites** — `files_to_modify`,
-   `primary_symbols`/`related_symbols` files, files named in
-   `pdg_constraints.affected_statements`, `architectural_patterns[]`
-   example locations, `tests[].file` — untouched files keep their verified
-   status; changed files get their cited ranges re-read before you rely on
-   them. Material drift (a planned seam no longer exists) → stop and send
-   the plan back through `gitnexus-plan` Deepen mode.
-4. **Re-verify `assumptions` cheaply** (each one names what to check).
+   `evidence_provenance`, `primary_symbols`, `related_symbols`,
+   `files_to_modify`, `execution_path`, `pdg_constraints`,
+   `architectural_patterns`, `tests`, `verification_commands`, `risks`,
+   `assumptions`, `open_questions`, `avoid`. Compact plans carry the
+   mini-pack subset — absent optional fields are empty, not errors.
+   `evidence_provenance` is mandatory: absence or schema 1 means a legacy
+   plan, not a clean tree. Before relying on it, require exact byte-for-byte
+   equality between the read-plan receipt's canonical `generated_plan_path`
+   and `evidence_provenance.generated_plan_path`.
+3. **Two-layer drift check — always recompute.** Even when current HEAD is the
+   same HEAD as the plan pin, recompute both the canonical global dirty digest
+   and the sorted cited-path manifest. Read
+   `references/evidence-provenance.md`, then invoke this skill's
+   `scripts/evidence-provenance.mjs` with the plan's exact
+   `generated_plan_path`, every cited manifest path, and schema version 2.
+   Never recreate its bytes in shell or prose. Schema 1 cannot be recomputed
+   unambiguously and requires conservative re-anchoring. Include
+   object kind plus HEAD/index/worktree/untracked layer digests, and classify
+   `staged`, `unstaged`, `untracked`, `deleted`, `renamed`, `mixed`,
+   and `absent` evidence. Honor the generated-plan exclusion exactly; do not
+   exclude all plans.
+4. **Re-anchor on either mismatch.** Missing or legacy provenance, a HEAD
+   mismatch, or a global dirty digest mismatch requires a conservative
+   re-anchor before work:
+   - Diff every cited-path manifest entry. Changed cited paths — including
+     staged-only, unstaged-only, deleted, both rename endpoints, mixed
+     staged+unstaged, and disappeared untracked paths — get their cited ranges
+     re-read before reliance.
+   - Compare the current whole-tree dirty set with the pinned global digest.
+     New uncited dirty paths get a scope assessment: determine whether they
+     overlap the plan, requirements, tests, or a key technical decision; do not
+     silently ignore them merely because they are uncited.
+   - Unreadable or unclassifiable cited evidence blocks every dependent step
+     until it can be restored, read, or resolved with the user. Never substitute
+     an invented digest or treat absence as an empty file.
+   - Keep the re-anchor result in session state; never mutate the plan body.
+     Use Deepen only if reconciliation invalidates scope, requirements, a key
+     technical decision (KTD), or the planned implementation seam. Ordinary
+     byte drift that leaves those decisions valid is re-verified locally.
+5. **Re-verify `assumptions` cheaply** (each one names what to check).
    A failed assumption is a stop-and-replan signal for the steps that
    depend on it, not something to code around silently.
-5. Note `open_questions` — if one blocks a step and the answer materially
+6. Note `open_questions` — if one blocks a step and the answer materially
    changes the work, ask the user before that step, not after.
-6. **Pre-completed check.** If commits for this plan already exist on the
+7. **Pre-completed check.** If commits for this plan already exist on the
    branch (a prior partial run, or a post-route-back Deepen cycle), verify
    which §7 steps have landed at HEAD: those are skipped and reported as
    pre-completed, and execution resumes at the first unlanded step. All
@@ -68,8 +107,8 @@ executor counterpart to the planning-only `gitnexus-plan`.
 ## Phase 2 — Environment
 
 - On the default branch → create a feature branch named from the plan slug.
-  On a feature branch already → stay only if it is meaningful *for this
-  plan* (name matches the plan slug, or the user confirms); otherwise
+  On a feature branch already → stay only if it is meaningful _for this
+  plan_ (name matches the plan slug, or the user confirms); otherwise
   branch from here with the slug name.
 - If the plan document is not yet committed, commit it now
   (`docs(plans): add <slug> plan`) — the plan travels with the work it
@@ -78,13 +117,78 @@ executor counterpart to the planning-only `gitnexus-plan`.
   checkout (dependencies installed, builds present) before starting, not
   after the last step.
 
+### Build-current/index-current procedure
+
+This is the single graph-freshness procedure owned by `gitnexus-work`; it
+applies in plan mode and direct mode. Before every graph-dependent `impact`
+query, run the Build-current/index-current procedure. Before final graph
+verification, run the same Build-current/index-current procedure again.
+
+1. Capture current HEAD and working-tree provenance. Read
+   `gitnexus://repo/<name>/context` and use its typed `index.commit` and
+   `index.runner_identity` receipt — never infer analyzer identity from prose,
+   timestamps, or a path alone. Compare `index.commit` with current HEAD. A
+   current receipt has `schemaVersion: 4`, resolved runtime path/version, CLI
+   version, invoked-artifact path/digest, build
+   kind/root/canonicalization/digest, and dependency-runtime
+   manifest/lockfile/canonicalization/package-count/artifact-count/digest. Its
+   dependency canonicalization is
+   `gitnexus-analyzer-dependency-runtime-v4`. The dependency-runtime digest
+   covers resolved package metadata and complete loadable package payloads,
+   including JavaScript, JSON, native, Wasm, and parser artifacts; schema-1,
+   schema-2, and schema-3 receipts are legacy/stale (the MCP context labels
+   them `runner_identity_schema_status: legacy-or-unknown`). Require MCP
+   `index.incomplete_reasons: []`. Run the exact candidate CLI's
+   `status --json` command and require `index.runnerIdentityStatus: current`,
+   `index.incompleteReasons: []`, and top-level `status: up-to-date`. The
+   status comparator checks every semantic field while deliberately excluding
+   only diagnostic `invokedArtifact`; a worker-authored persisted receipt and
+   the CLI's live receipt may therefore differ in that field without becoming
+   stale. Missing, malformed, differently versioned, semantically unequal, or
+   incomplete receipts are unknown/stale, not a match.
+2. Relationship-affecting committed and uncommitted edits invalidate
+   freshness after the last successful procedure run. This includes staged,
+   unstaged, untracked, deleted, or renamed analyzer/source/config changes
+   that can alter symbols or edges. Any such edit between steps requires an
+   inter-step refresh before the next graph query, even when HEAD did not move.
+3. If the typed runner receipt is stale or unknown in an analyzer-source
+   checkout, build current local source using the verified package script. In
+   this repo: `cd gitnexus && npm run build`. Resolve the package's `bin`
+   target and run that exact artifact's `status --json` command to capture its
+   current receipt. Source/build timestamps are a conservative rebuild
+   trigger, not proof that an artifact is current.
+4. Invoke that exact freshly built local CLI from the target repo root with
+   PDG layers enabled. In this repo:
+   `node gitnexus/dist/cli/index.js analyze --index-only --pdg`.
+   Add `--force` when the persisted receipt was absent, malformed,
+   differently versioned, or unequal so an already-up-to-date fast path cannot
+   leave legacy/stale provenance in place. The usual project-runner form,
+   `node .gitnexus/run.cjs analyze`, is acceptable only when its proven runner
+   identity resolves to that same freshly built artifact. Do not fall back to
+   an older project runner, global install, or package download after
+   resolving/building the local artifact.
+5. Re-read index context, rerun the exact invoked CLI's `status --json`, and
+   prove the post-refresh `index.commit` equals current HEAD, MCP
+   `index.incomplete_reasons` is empty, and its complete
+   `index.runner_identity` equals status `index.runnerIdentity` (the persisted
+   receipt). Require status `index.runnerIdentityStatus: current`, empty
+   `index.incompleteReasons`, and top-level `status: up-to-date`; do not require
+   raw equality with `current.runnerIdentity` because `invokedArtifact` is a
+   diagnostic entrypoint deliberately excluded from semantic freshness.
+   Record the dirty-state digest indexed in this procedure so same-HEAD
+   uncommitted edits can invalidate it later.
+6. Any build, refresh, metadata-read, or identity-verification failure blocks
+   graph-dependent impact work and final completion. Report the failing
+   command and evidence; do not continue on an older graph.
+
 ## Phase 3 — Execute the Implementation Sequence
 
 Work through plan §7 step by step, in order. For each step:
 
-1. **Impact before editing.** For every symbol the step modifies, run
-   `impact {target, direction: "upstream"}` first and account for the
-   direct (d=1) dependents. HIGH or CRITICAL risk → surface it to the user
+1. **Fresh impact before editing.** Run the Build-current/index-current
+   procedure immediately before every graph-dependent
+   `impact {target, direction: "upstream"}` query. Then account for every
+   direct (d=1) dependent. HIGH or CRITICAL risk → surface it to the user
    with the blast radius before proceeding (repo mandate — see AGENTS.md
    GitNexus rules).
 2. **Honor the constraints.** `pdg_constraints` entries state ordering and
@@ -114,6 +218,11 @@ Work through plan §7 step by step, in order. For each step:
    the gate gets skipped. Unexpected
    affected flows → investigate before committing, not after.
 
+A relationship-affecting implementation edit or commit invalidates the
+procedure's prior proof. The next step must perform the required inter-step
+refresh before its impact query; final verification refreshes again after the
+last edit.
+
 Steps are independently actionable: after any commit the tree is coherent.
 If a step reveals the plan is wrong, stop that step, re-verify the affected
 claims at HEAD, and either adapt (small, in-scope deviation — record it in
@@ -128,19 +237,16 @@ choice isn't obvious.
 2. Walk plan §13 (Definition of Done) and the pack's `acceptance_criteria`
    item by item; anything unmet is either finished now or reported as
    explicitly unmet — never silently dropped.
-3. **Refresh the knowledge graph.** The commits just changed the code the
-   index describes; after the last commit has landed, run
-   `analyze --index-only` via the resolved runner (`node .gitnexus/run.cjs`
-   → installed `gitnexus` → `npx gitnexus`, the same ladder gitnexus-plan
-   resolves), adding `--pdg` when the index carries the PDG layer (one
-   `pdg_query` probe tells you). `--index-only` writes only the `.gitnexus`
-   index store, never repo files, so the tree stays coherent — and the
-   review lane and every later session query the finished work, not the
-   pre-work graph. Skip only when no commit landed.
+3. **Verify the final knowledge graph.** Before final graph verification, run
+   the same Build-current/index-current procedure after the last edit, even
+   when no commit landed or HEAD still equals the original pin. Then run
+   `detect_changes {scope: "all"}` (or the repo's equivalent final graph
+   check) against that proven-current index and account for every unexpected
+   symbol or flow. A procedure failure blocks completion.
 4. Report: steps completed, commits made, deviations from the plan (with
-   why), assumptions that failed re-verification, DoD status, and anything
-   deferred. Test failures are reported with their output, not smoothed
-   over.
+   why), assumptions that failed re-verification, DoD status, final indexed
+   commit and runner identity, and anything deferred. Test failures are
+   reported with their output, not smoothed over.
 
 ## Never
 

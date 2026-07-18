@@ -7,6 +7,36 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
+const { runnerIdentity } = vi.hoisted(() => ({
+  runnerIdentity: {
+    schemaVersion: 4 as const,
+    runtime: {
+      executablePath: '/usr/bin/node',
+      version: 'v22.0.0',
+      platform: 'linux',
+      architecture: 'x64',
+      modulesAbi: '127',
+      libc: 'glibc:2.39',
+    },
+    cliVersion: '1.6.9',
+    invokedArtifact: { path: '/opt/gitnexus/dist/cli/index.js', digest: 'sha256:entry' },
+    build: {
+      kind: 'distribution' as const,
+      rootPath: '/opt/gitnexus/dist',
+      canonicalization: 'gitnexus-analyzer-build-v2' as const,
+      digest: 'sha256:build',
+    },
+    dependencyRuntime: {
+      manifestPath: '/opt/gitnexus/package.json',
+      lockfilePath: '/opt/package-lock.json',
+      canonicalization: 'gitnexus-analyzer-dependency-runtime-v4' as const,
+      packageCount: 42,
+      artifactCount: 12,
+      digest: 'sha256:dependencies',
+    },
+  },
+}));
+
 vi.mock('../../src/storage/repo-manager.js', () => ({
   listRegisteredRepos: vi.fn(),
   findRepo: vi.fn(),
@@ -21,6 +51,13 @@ vi.mock('../../src/storage/repo-manager.js', () => ({
   })),
   loadMeta: vi.fn(),
   hasKuzuIndex: vi.fn().mockResolvedValue(false),
+}));
+
+vi.mock('../../src/core/analyzer-identity.js', () => ({
+  resolveAnalyzerRunnerIdentity: vi.fn(() => runnerIdentity),
+  analyzerRunnerIdentitiesEqual: vi.fn(
+    (indexedIdentity: unknown, currentIdentity: unknown) => indexedIdentity === currentIdentity,
+  ),
 }));
 
 vi.mock('../../src/storage/git.js', () => ({
@@ -98,8 +135,84 @@ describe('status branch rendering (#2106)', () => {
       lastCommit: 'headsha0',
       indexedAt: '2026-06-10T12:00:00.000Z',
       branch: 'main',
+      runnerIdentity,
     },
   };
+
+  it('renders indexed and current typed runner receipts for exact comparison', async () => {
+    (findRepo as any).mockResolvedValue(baseRepo);
+    (getCurrentBranch as any).mockReturnValue('main');
+    (getCurrentCommit as any).mockReturnValue('headsha0');
+
+    await statusCommand();
+    const out = output();
+    expect(out).toContain(`Indexed analyzer runner identity: ${JSON.stringify(runnerIdentity)}`);
+    expect(out).toContain(`Current analyzer runner identity: ${JSON.stringify(runnerIdentity)}`);
+  });
+
+  it('renders stable machine-readable provenance with --json', async () => {
+    (findRepo as any).mockResolvedValue(baseRepo);
+    (getCurrentBranch as any).mockReturnValue('main');
+    (getCurrentCommit as any).mockReturnValue('headsha0');
+
+    await statusCommand({ json: true });
+    const parsed = JSON.parse(output());
+    expect(parsed).toMatchObject({
+      schemaVersion: 1,
+      repository: '/repo',
+      index: { commit: 'headsha0', runnerIdentity, runnerIdentityStatus: 'current' },
+      current: { commit: 'headsha0', runnerIdentity },
+      status: 'up-to-date',
+    });
+  });
+
+  it('never certifies dirty or checkpointed metadata and reports stable incomplete reasons', async () => {
+    (findRepo as any).mockResolvedValue({
+      ...baseRepo,
+      meta: {
+        ...baseRepo.meta,
+        incrementalInProgress: { startedAt: 1, toWriteCount: 2 },
+        embeddingCheckpoint: {
+          at: '2026-07-18T00:00:00.000Z',
+          nodesProcessed: 1,
+          totalNodes: 2,
+          chunksProcessed: 1,
+          model: 'fixture',
+          dimensions: 3,
+          provider: 'local',
+        },
+      },
+    });
+    (getCurrentBranch as any).mockReturnValue('main');
+    (getCurrentCommit as any).mockReturnValue('headsha0');
+
+    await statusCommand({ json: true });
+    expect(JSON.parse(output())).toMatchObject({
+      index: {
+        incompleteReasons: ['incremental-in-progress', 'embedding-checkpoint-pending'],
+        runnerIdentityStatus: 'current',
+      },
+      status: 'stale',
+    });
+  });
+
+  it('treats an older runner receipt schema as stale at the same commit', async () => {
+    (findRepo as any).mockResolvedValue({
+      ...baseRepo,
+      meta: {
+        ...baseRepo.meta,
+        runnerIdentity: { ...runnerIdentity, schemaVersion: 1 },
+      },
+    });
+    (getCurrentBranch as any).mockReturnValue('main');
+    (getCurrentCommit as any).mockReturnValue('headsha0');
+
+    await statusCommand({ json: true });
+    expect(JSON.parse(output())).toMatchObject({
+      index: { runnerIdentityStatus: 'stale-or-unknown' },
+      status: 'stale',
+    });
+  });
 
   it('shows the current branch and up-to-date on the primary', async () => {
     (findRepo as any).mockResolvedValue(baseRepo);
@@ -148,6 +261,7 @@ describe('status branch rendering (#2106)', () => {
       lastCommit: 'zzzzsha0',
       indexedAt: '2026-06-10T14:00:00.000Z',
       branch: 'feature/z',
+      runnerIdentity,
     });
 
     await statusCommand();

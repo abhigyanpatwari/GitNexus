@@ -3,7 +3,8 @@
 Measures whether the `gitnexus-plan` → `gitnexus-work` engineering workflow
 actually saves tokens versus a baseline agent on the same tasks, using real
 headless Claude Code sessions. Nothing is estimated: every number comes from
-the CLI's own `--output-format json` usage report.
+the CLI's own final event in its parent-captured `--output-format stream-json`
+report.
 
 ## What it compares
 
@@ -13,7 +14,7 @@ the CLI's own `--output-format json` usage report.
 | `candidate_workflow` | same sessions as `workflow`, with a candidate skill overlay | Paired with `workflow` on the same task/ref/model |
 | `workflow_direct` | one `gitnexus-work` direct-mode session | The middle option — execution discipline without a planning pass |
 | `candidate_workflow_direct` | same session as `workflow_direct`, with a candidate skill overlay | Paired with `workflow_direct` on the same task/ref/model |
-| `ce_workflow` | `ce-plan` on the task, then `ce-work` on the produced plan | External comparator: the compound-engineering plugin's plan→work family, prompted like `workflow` (plugin ships user-level) |
+| `ce_workflow` | `ce-plan` on the task, then `ce-work` on the produced plan | External comparator: the explicitly supplied, pinned compound-engineering plugin's plan→work family |
 | `ce_workflow_direct` | one `ce-work` direct-mode session | External comparator paired with `workflow_direct` |
 | `review` | one `gitnexus-review` session over local uncommitted changes | The task's `setup` applies the diff under review; the review is written to `review-output.md` so `verify` can gate on it |
 | `ce_review` | one `ce-code-review` session over the same changes | External comparator paired with `review` |
@@ -21,8 +22,10 @@ the CLI's own `--output-format json` usage report.
 | `baseline_nomcp` | like baseline, graph tools also disallowed | Separates the workflow-discipline question from the GitNexus-tools question (off by default) |
 
 Every arm runs in a fresh detached git worktree of the task's `ref`, once per
-`--runs`. A per-task `verify` command decides `resolved` — token savings on a
-failed task are flagged, not celebrated — and diff churn
+`--runs`. The model-visible `verify` command is recorded as
+`authored_tests_passed`, but cannot certify its own solution: `resolved` also
+requires the task's harness-owned hidden behavioral oracle to pass. Token
+savings on a failed task are flagged, not celebrated, and diff churn
 (files/+insertions/−deletions vs the starting commit) is recorded as a cheap
 over-engineering proxy. Task `class` labels (trivial → investigation →
 cross-module) make the report readable as a routing table: the boundary where
@@ -33,31 +36,102 @@ lfg's gate and work's direct-mode triage should encode.
 
 ```bash
 cd eval
-uv run python -m workflow_bench.runner --tasks workflow_bench/tasks.scenarios.yaml --runs 3
+export GITNEXUS_BENCH_AUTH_TOKEN="$ANTHROPIC_API_KEY"
+uv run --locked --extra dev python -m workflow_bench.runner \
+  --tasks workflow_bench/tasks.scenarios.yaml --runs 3 \
+  --model claude-sonnet-4-20250514
 ```
+
+Scenarios marked `expensive: true` are skipped unless
+`--include-expensive` is supplied. The report names both selected and skipped
+tasks so an omitted cell cannot be mistaken for evidence.
+
+CE comparator arms never discover a user-level plugin. Supply an exact plugin
+release explicitly; both flags are mandatory whenever any `ce_*` arm is
+selected:
+
+```bash
+uv run --locked --extra dev python -m workflow_bench.runner \
+  --tasks workflow_bench/tasks.scenarios.yaml --runs 3 \
+  --model claude-sonnet-4-20250514 \
+  --arms workflow ce_workflow \
+  --ce-plugin-dir /opt/operator-input/compound-engineering-3.19.0 \
+  --ce-plugin-version 3.19.0
+```
+
+The runner verifies the manifest version, copies only the plugin manifests,
+skills, scripts, and assets into a bounded no-symlink snapshot, and mounts
+that snapshot read-only only for CE arms. Every CE result records its exact
+plugin version and content-manifest digest.
 
 Output: `results/wfbench-<timestamp>/results.jsonl` (every run, with session
 ids for transcript drill-down) and `report.md` (medians per task per arm,
 plus a savings row: input / cache / output tokens, cost, wall time).
 
-## Trust model — task files are executable input
+## Trust model — fail-closed Linux containment
 
-**Only run task files, repos, and candidate overlays you trust.** This is a
-local benchmarking tool, not a sandbox:
+Task files and candidate prose remain untrusted executable inputs. Every
+setup, verifier, incumbent, and candidate cell therefore runs in a
+preflighted Bubblewrap boundary with a private home/config/temp, a
+self-contained clone, a PID namespace, bounded process-tree ownership, and a
+deny-by-default environment. Task-declared dependency roots are mounted
+read-only, while graph assets are rebuilt by the harness as described below.
+Claude runs in bare,
+`dontAsk` mode with strict clone-local MCP configuration; Bash children do
+not inherit the model credential and their network sandbox denies all
+domains.
 
-- Each task's `setup` and `verify` strings run through the shell
-  (`shell=True`) on your machine, with your environment.
-- The benchmarked sessions default to `--permission-mode bypassPermissions`
-  (they must edit and run tests unattended) and inherit the parent process
-  environment — including any credentials in it. Clones are throwaway, your
-  environment is not: scrub secrets from the shell you launch from, or pass a
-  stricter `--permission-mode`.
-- Candidate overlays are skill *prompts* injected into those sessions; a
-  malicious overlay can instruct an agent that has shell access. The runner
-  restricts overlay paths and file types, not their prose.
+Prebuilt task `.gitnexus` assets are rejected. For each task commit, the
+harness creates the deterministic parentless snapshot first, removes every
+analyzer-visible path or stored source reference to the benchmark harness,
+neutralizes target-controlled GitNexus config/ignore files, and builds one
+fresh PDG index offline with `--pdg --index-only --no-stats`. It then proves
+that neither whole graph nodes nor relationships contain a harness marker and
+caches only the bound metadata/database assets for reuse by paired arms.
 
-Treat a tasks YAML from someone else like a shell script from someone else:
-read it before running it.
+Each selected task also declares a bounded hidden `oracle` command and file
+set. The harness captures those regular, non-symlink files into an immutable
+in-memory snapshot before any arm runs and binds the command, paths, sizes, and
+raw bytes into the task digest. Before any task asset or model session, each
+disposable clone that contains the benchmark harness is rewritten to a clean,
+parentless snapshot without `eval/workflow_bench`; all original refs, reflogs,
+and unreachable Git objects are pruned so `git show` cannot recover the hidden
+bytes. Only after the model exits (and after the authored-test signal is
+collected) does the harness materialize the oracle beneath a private host
+root, mount it read-only at a random workspace sibling, and supply that mount
+through `GITNEXUS_BENCH_ORACLE_ROOT`. This layout preserves hidden tests'
+`../gitnexus` imports as the credited candidate checkout. Authored and hidden
+verifiers run with the complete workspace read-only and networking unshared;
+hidden stdout/stderr is never persisted. The harness re-checks every oracle
+byte and erases the mountpoint before churn/patch capture. Shipped Vitest
+oracles use the staged, digest-bound `vitest.config.mts`; a candidate cannot
+replace repo test config or setup hooks to make the hidden test vacuously pass.
+The hidden command invokes the read-only dependency's Vitest binary directly,
+without an `npx` configuration/resolution layer.
+
+Every evaluated repo-local skill root is over-mounted read-only for the full
+model session, and an immutable empty user-level skills directory prevents a
+writable `$HOME` skill from shadowing it. Skill-use evidence comes only from
+the bounded stream captured directly from Claude stdout by the parent. The
+runner parses every event through EOF, requires one final result, correlates
+an exact Skill request ID with one later successful result, structurally
+redacts the event objects, and stores the canonical redacted JSONL with a
+digest. Files written beneath the agent's `$HOME` are never trusted as
+evidence.
+
+Bare mode is deliberately non-interactive: it does not consult a stored
+Claude login/keychain or `ANTHROPIC_AUTH_TOKEN`. Supply one explicit API or
+proxy key through `GITNEXUS_BENCH_AUTH_TOKEN` (preferred) or `--auth-token`;
+the harness maps it to `ANTHROPIC_API_KEY` only for the trusted Claude parent
+and scrubs it from agent-launched tools.
+
+The trusted Claude CLI still needs outbound access to the explicitly supplied
+model endpoint. This is not a network broker, so the CLI itself retains that
+egress; agent-launched tools do not. Missing Bubblewrap, unsupported hosts,
+invalid mounts, or namespace preflight failure stop before model invocation.
+Native benchmark execution is therefore Linux/WSL2-only. Evidence assembly
+and hand-authored overlay preparation can happen elsewhere, but
+`--initial-overlay` does not bypass containment.
 
 ## Prompt and skill evolution loop
 
@@ -72,38 +146,49 @@ Build an overlay that mirrors only the canonical repo-local skill paths:
 /tmp/gn-skill-candidate/
 └── .claude/skills/
     ├── gitnexus-plan/SKILL.md
-    ├── gitnexus-work/SKILL.md
-    ├── gitnexus-lfg/SKILL.md
-    └── gitnexus-review/SKILL.md
+    └── gitnexus-work/SKILL.md
 ```
 
-The overlay may contain Markdown files from any subset of those four skill
+The overlay may contain Markdown files from either of those two skill
 trees. The runner rejects every other path, including source, test, and MCP
 configuration files, so a candidate cannot improve its score by changing the
-task or verifier. Run candidate and incumbent arms together on a pinned model:
+task or verifier. Arm selection is derived from the touched skill and must be
+exact: a plan-only overlay runs the workflow pair; any work overlay runs both
+workflow and direct-work pairs. Subsets and unrelated extra pairs fail before
+paid work. For a work overlay:
 
 ```bash
 cd eval
-uv run python -m workflow_bench.runner \
+uv run --locked --extra dev python -m workflow_bench.runner \
   --tasks workflow_bench/tasks.scenarios.yaml \
-  --runs 3 --model <pinned-model-id> \
+  --runs 3 --model claude-sonnet-4-20250514 \
   --arms workflow candidate_workflow \
-         workflow_direct candidate_workflow_direct baseline \
+         workflow_direct candidate_workflow_direct \
   --candidate-overlay /tmp/gn-skill-candidate
 ```
 
 Candidate runs start from the same task commit, then receive a clean ephemeral
 commit containing the overlay. `results.jsonl` records the named model, task
-commit, task-prompt digest, skill digest, overlay digest, timestamp, and local
-session ids. Those session transcripts are the trajectory evidence: cluster
-failures and expensive detours, propose one bounded prompt change, and feed it
-back as the next overlay.
+commit, task-prompt digest, skill digest, overlay digest, hidden-oracle
+command/manifest/content digests, immutable dependency content/manifest
+digests, separate authored-test and oracle outcomes,
+timestamp, local session ids, and digest-bound parent-captured event-stream
+artifacts. Those artifacts are the trajectory evidence: cluster failures and
+expensive detours, propose one bounded prompt change, and feed it back as the
+next overlay.
 
-When candidate arms are present the runner also writes `promotion.json`. Its
-default deterministic gate is deliberately conservative:
+When candidate arms are present the runner also writes schema-3
+`promotion.json`. It
+binds the immutable overlay digest, benchmark model, truthful candidate origin
+(a named proposer model or `manual-initial-overlay`), selected
+task definitions, resolved commits, and exact hidden-oracle bytes/commands,
+immutable dependency bytes, committed base digest of every apply
+destination, exact required arms, thresholds, and evidence expiry. Its default
+deterministic gate is deliberately conservative:
 
-- at least 3 paired VALID runs per task (session/infra-error runs don't
-  count) and a named model;
+- at least 3 paired VALID runs per task, zero excluded runs in either arm
+  (session/infra-error rows therefore block promotion), and a named model;
+- the candidate must pass the hidden oracle on every valid run for every task;
 - no per-task resolution-rate regression (quality is lexicographically first);
 - promotion by resolution needs a margin of at least 2 resolved runs —
   a 1-run difference is noise at this run count and falls through to the
@@ -117,9 +202,12 @@ default deterministic gate is deliberately conservative:
   20%.
 
 Tune the efficiency signal with `--promotion-metric` and the three
-`--promotion-*` thresholds. A `promote` decision is evidence for a normal,
-human-reviewed change to the canonical `.claude/skills/` files and their
-shipped mirrors; it does not edit them automatically. `keep_incumbent` and
+`--promotion-*` thresholds. Applying requires one unique `promote` decision
+for every bound candidate arm. The driver then stages every canonical and
+shipped mirror, verifies that all destination bytes still match the bound
+bases, replaces them as one compare-and-swap set, verifies byte parity, and
+rolls every landed replacement back on failure or interruption.
+`keep_incumbent` and
 `insufficient_evidence` become the next learning queue; their raw
 `results.jsonl` rows carry the `session_ids` of the trajectories to inspect.
 
@@ -136,20 +224,25 @@ benchmark, apply — without moving the trust boundary:
 
 ```bash
 cd eval
-uv run python -m workflow_bench.evolve \
+uv run --locked --extra dev python -m workflow_bench.evolve \
   --tasks workflow_bench/tasks.scenarios.yaml \
-  --model <pinned-model-id> --generations 2 \
+  --model claude-sonnet-4-20250514 --generations 2 \
   --seed-results results/wfbench-<prior-run>   # optional gen-0 evidence
 ```
 
-Each generation: a **proposer** session (headless Claude in a throwaway
-clone) reads the incumbent skills, the prior generation's `results.jsonl`
+Each generation: a confined **proposer** session reads the incumbent plan/work
+skills, the prior generation's `results.jsonl`
 loser rows, their session transcripts and patches, and the learning queue,
 then writes ONE bounded candidate overlay plus a reviewer-facing
 `proposal.md`. The overlay is re-validated by `candidate_overlay_files`
-(same boundary: Markdown under the four skill trees, nothing else), the
-paired benchmark runs, and the deterministic gate decides. `promote` stops
-the loop; with `--apply` the overlay is copied onto the canonical
+(same boundary: Markdown under the plan/work trees, nothing else), frozen,
+and exercised only by its exact required pairs. Task refs are resolved once
+before generation zero and the immutable task bindings are forwarded to every
+generated runner invocation, so a moving branch cannot change later evidence.
+The deterministic gate then decides. Promotion application rejects older
+pre-oracle evidence schemas. `promote` stops the loop; with `--apply`
+the authorized frozen bytes
+are transactionally applied to the canonical
 `.claude/skills/` trees and their shipped mirrors as an ordinary
 working-tree diff — committing, CI (`shipped-skills-sync`,
 `skills-steering`), and the PR merge stay human. `keep_incumbent` feeds that
@@ -157,12 +250,13 @@ generation's trajectories to the next proposer. `--initial-overlay` skips
 the generation-0 proposer to benchmark a hand-written candidate;
 `--proposer-model` upgrades only the diagnosis session.
 
-**Learning queue.** Live skill runs never self-edit (see each skill's
-"Skill feedback" section) — instead they may append one-line JSON notes to
+**Learning queue.** Live plan/work skill runs never self-edit (see each
+skill's "Skill feedback" section) — instead they may append one-line JSON notes to
 `workflow_bench/learnings.jsonl` (gitignored, machine-local like the
 transcripts they complement). The proposer reads the queue as hints, not
 ground truth: a learning only reaches a shipped skill by surviving the same
-paired benchmark as any other candidate.
+paired benchmark as any other candidate. Legacy review/LFG rows are ignored;
+those skills do not yet have honest candidate lanes or promotion gates.
 
 Run the driver on the existing re-evaluation triggers (model/harness change,
 90-day staleness), not on a tight schedule — every generation costs ≥3 paired
@@ -180,10 +274,10 @@ Ollama model. Config template: `free-model.litellm.yaml`.
 #    (pick/edit a model route in the yaml first; keep the proxy on loopback —
 #    anyone who can reach the port with this key can spend the backend quota)
 export LITELLM_MASTER_KEY="$(openssl rand -hex 16)"
-uv run --with 'litellm[proxy]' litellm --config workflow_bench/free-model.litellm.yaml --port 4000
+uv run --locked --with 'litellm[proxy]' litellm --config workflow_bench/free-model.litellm.yaml --port 4000
 
 # 2. Point the benchmark at it
-uv run python -m workflow_bench.runner \
+uv run --locked --extra dev python -m workflow_bench.runner \
   --tasks workflow_bench/tasks.scenarios.yaml --runs 3 \
   --base-url http://localhost:4000 --auth-token "$LITELLM_MASTER_KEY" --model free-coder
 ```
@@ -207,7 +301,11 @@ Caveats, honestly:
   runner is Claude-Code-first; a codex engine is a straightforward extension
   (parse its `--json` usage events).
 
-## Ground base (2026-07-11, Claude Code 2.1.207, default model, n=1/cell)
+## Historical ground base (2026-07-11, Claude Code 2.1.207, unnamed model, n=1/cell)
+
+These figures predate mandatory model provenance and are retained only as
+historical calibration. They are not eligible promotion evidence and must not
+be combined with current named-model runs.
 
 Three task classes × three arms, single-repo (GitNexus itself). **Every arm
 resolved every task** — at this difficulty, pass/fail quality is saturated
@@ -281,7 +379,8 @@ reuse, review, handoff), not for same-session token savings.
 byte-identical to the workflow arm — because `git worktree add` shares the
 ref namespace, the workflow arm's slug branch survived worktree removal, and
 the direct arm found and adopted the finished work. Fixed by giving every
-arm an isolated `git clone --shared` (agent-created refs die with the clone);
+arm an isolated `git clone --no-local --no-hardlinks` with no object
+alternates (agent-created refs and storage die with the clone);
 the leaked branch was deleted and the cell re-measured. Treat identical
 churn fingerprints across arms as a contamination alarm.
 
@@ -313,8 +412,13 @@ this task class, so the routing rule above stands unchanged.
 
 See `tasks.scenarios.yaml`. Small enough to finish headless, real enough to
 require investigation — the workflow's savings come from *not re-reading and
-not re-investigating*, which trivial tasks never exercise. Prefer `verify`
-commands that use the repo's own npm scripts (they carry build pre-hooks).
+not re-investigating*, which trivial tasks never exercise. Keep `verify` as a
+model-visible authored-test quality signal, and add an independent `oracle`
+whose source files live under `workflow_bench/oracles/`. Oracle commands must
+run only files staged beneath `$GITNEXUS_BENCH_ORACLE_ROOT`; for Vitest, include
+the shared `vitest.config.mts` as an oracle file and pass it explicitly with
+`--config`. Prefer `verify` commands that use the repo's own npm scripts (they
+carry build pre-hooks).
 
 ## Relation to the SWE-bench harness
 

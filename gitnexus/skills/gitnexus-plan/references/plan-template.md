@@ -14,15 +14,24 @@ numbers in the headings so `gitnexus-work`'s § references resolve:
 
 > Task: <one line>
 > Evidence verified at commit <sha>; GitNexus index <...>.
+> Evidence provenance schema 2; global dirty digest <sha256>; cited-path manifest <count> sorted entries; exact generated plan path excluded.
 
 ## Objective (§1)
-## Current Behaviour (§2–3)         — ≤10 lines, architecture folded in
-## Findings (§4–5)                  — only load-bearing, each tagged + tool-named
+
+## Current Behaviour (§2–3) — ≤10 lines, architecture folded in
+
+## Findings (§4–5) — only load-bearing, each tagged + tool-named
+
 ## Proposed Changes (§6)
-## Implementation Sequence (§7)     — risks inline as step notes
+
+## Implementation Sequence (§7) — risks inline as step notes
+
 ## Test Strategy (§8)
-## Implementation Context (§11)     — the mini-pack (see context-pack.md)
+
+## Implementation Context (§11) — the mini-pack (see context-pack.md)
+
 ## Assumptions and Open Questions (§12)
+
 ## Definition of Done (§13)
 ```
 
@@ -48,6 +57,7 @@ narrative, not evidence.
 
 > Task: <one line>
 > Evidence verified at commit <HEAD sha>; GitNexus index <fresh | refreshed this session (--index-only [--pdg]) | N commits behind, refresh skipped: <reason> | not used>.
+> Evidence provenance schema 2; global dirty digest <sha256>; cited-path manifest <count> sorted entries; exact generated plan path excluded.
 
 ## 1. Objective
 
@@ -134,11 +144,13 @@ Include:
 ## 10. Files Expected to Change
 
 | File | Symbols | Reason |
-|---|---|---|
+| ---- | ------- | ------ |
 
 ## 11. Reusable Implementation Context
 
-The machine-readable context pack — see `context-pack.md`.
+The machine-readable context pack — see `context-pack.md`. Its mandatory
+`evidence_provenance` field carries the full pinned commit, canonical
+repository-wide dirty digest, and sorted cited-path manifest.
 
 ## 12. Assumptions and Open Questions
 
@@ -152,6 +164,22 @@ Concrete, testable completion criteria.
 
 Composition notes:
 
+- Immediately before composition, emit `evidence_provenance.schema_version`,
+  the full HEAD commit, the canonical `global_dirty_digest`, and the
+  `cited_path_manifest` sorted by normalized repo-relative path. Include
+  object kinds, rename endpoints, and HEAD/index/worktree/untracked layer
+  digests. Exclude only the generated plan path from the global digest.
+- Invoke `scripts/evidence-provenance.mjs` per `evidence-provenance.md` and
+  copy its schema-2 JSON; never recreate canonical records in prose or shell.
+- Publish the fully composed UTF-8 plan only with that helper's `write-plan`
+  command. Initial planning must not replace an existing file; Deepen rewrites
+  the same repo-relative path with `write-plan --replace
+--expected-plan-path <path-from-read-plan>
+--expected-plan-digest <digest-from-read-plan>`, which preserves the prior
+  plan in the receipt's `prior_plan_backup_git_path`. Both expected values must
+  come from the same receipt. Deepen must load and bind that canonical path and
+  those original bytes through `read-plan` first. Snapshot, read, and
+  publication must pass the same strict generated-plan filename/date validator.
 - §2/§5 quote source excerpts at most `max_snippet_lines` (30) lines each, and
   only when the excerpt carries the argument.
 - §4 findings each name the tool call they came from (tool + key args), plus a
