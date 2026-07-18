@@ -317,7 +317,16 @@ export function getLabelFromCaptures(
   const hasDefaultExportHocNameSeed =
     captureMap['definition.function'] !== undefined &&
     (captureMap['hoc'] !== undefined || captureMap['callee'] !== undefined);
-  if (!captureMap['name'] && !captureMap['definition.constructor'] && !hasDefaultExportHocNameSeed)
+  // Nameless `definition.class` passes through: a class extractor may
+  // synthesize the name (Java anonymous class bodies → `Worker$N`, #2550).
+  // Downstream stays safe — parse-worker skips any nameless definition the
+  // extractor could not name (its `!nameNode && !extractedClassSymbol` gate).
+  if (
+    !captureMap['name'] &&
+    !captureMap['definition.constructor'] &&
+    !captureMap['definition.class'] &&
+    !hasDefaultExportHocNameSeed
+  )
     return null;
 
   if (captureMap['definition.function']) {
@@ -395,6 +404,46 @@ export interface EnclosingClassInfo {
  *    pathological hooks from creating an infinite loop. */
 const MAX_ENCLOSING_WALK_ITERATIONS = 4096;
 
+/**
+ * Synthesize a javac-style name for a Java anonymous class body:
+ * `new Runnable() { ... }` inside top-level class `Worker` becomes
+ * `Worker$1` (`$N` = 1-based source order of anonymous bodies within the
+ * top-level class). Returns undefined when the node is not an
+ * `object_creation_expression` carrying a `class_body` child — which also
+ * keeps this a no-op for C#, whose `object_creation_expression` uses
+ * `initializer_expression`, never `class_body` (#2550).
+ *
+ * The SAME name must be produced by every layer that keys the anonymous
+ * class (structure-phase node id, enclosing-owner walk, scope-side
+ * declaration synthesis, receiver typeBinding) — they agree by all calling
+ * this one helper.
+ */
+export const synthesizeJavaAnonymousClassName = (node: SyntaxNode): string | undefined => {
+  if (node.type !== 'object_creation_expression') return undefined;
+  const hasClassBody = node.namedChildren?.some((c: SyntaxNode) => c.type === 'class_body');
+  if (hasClassBody !== true) return undefined;
+
+  // Topmost enclosing class_declaration — javac numbers per top-level class.
+  let topClass: SyntaxNode | null = null;
+  let cursor: SyntaxNode | null = node.parent;
+  let iterations = 0;
+  while (cursor) {
+    if (++iterations > MAX_ENCLOSING_WALK_ITERATIONS) return undefined;
+    if (cursor.type === 'class_declaration') topClass = cursor;
+    cursor = cursor.parent;
+  }
+  if (topClass === null) return undefined;
+  const topName = topClass.childForFieldName?.('name')?.text;
+  if (topName === undefined || topName.length === 0) return undefined;
+
+  const anonBodies = (topClass.descendantsOfType?.('object_creation_expression') ?? []).filter(
+    (c: SyntaxNode) => c.namedChildren?.some((n: SyntaxNode) => n.type === 'class_body'),
+  );
+  const index = anonBodies.findIndex((c: SyntaxNode) => c.startIndex === node.startIndex);
+  if (index === -1) return undefined;
+  return `${topName}$${index + 1}`;
+};
+
 export const findEnclosingClassInfo = (
   node: SyntaxNode,
   filePath: string,
@@ -457,6 +506,21 @@ export const findEnclosingClassInfo = (
             };
           }
         }
+      }
+    }
+    // Java: an anonymous class body (`new Runnable() { ... }`) owns its
+    // members — attribute to the synthesized `Worker$N` class, not the
+    // lexically enclosing named class (#2550). `synthesizeJavaAnonymousClassName`
+    // returns undefined for `object_creation_expression` without a
+    // `class_body` (plain `new Foo()`, and every C# shape), so the walk
+    // continues unchanged for those.
+    if (current.type === 'object_creation_expression') {
+      const anonName = synthesizeJavaAnonymousClassName(current);
+      if (anonName !== undefined) {
+        return {
+          classId: generateId('Class', `${filePath}:${anonName}`),
+          className: anonName,
+        };
       }
     }
     if (CLASS_CONTAINER_TYPES.has(current.type)) {

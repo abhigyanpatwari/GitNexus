@@ -2727,38 +2727,43 @@ describe('Java bare-this dispatch (Case 4 pinning)', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Issue #2545: an anonymous class body (`new Runnable() { public void
-// run() {} }`) previously had no scope boundary of its own, so a
-// method's name auto-hoisted past it into whatever lexically enclosed
-// it. `(object_creation_expression (class_body) @scope.class)` fixes
-// the scope-tree side of this (the anonymous class now owns its
-// method's binding correctly, matching PHP's existing
-// `anonymous_class` handling). NOTE: unlike TypeScript/JavaScript/
-// Kotlin, Java has no `builtInNames` list, so free-call-fallback's
-// `isBuiltInName` guard (free-call-fallback.ts) never engages here --
-// an unqualified call to an unrelated same-file method sharing the
-// anonymous class's method name can still resolve via finalize's
-// per-file module-scope bucket (`materializeBindings` in
-// gitnexus-shared, language-agnostic and intentionally not touched by
-// this fix). That residual gap is the same one TS/JS/Kotlin still have
-// for their own non-builtin name collisions -- fixing it generally
-// would mean changing shared finalize architecture, out of scope here.
+// Issues #2545/#2550: an anonymous class body (`new Runnable() { public
+// void run() {} }`) is a first-class instance. It gets a synthesized
+// javac-style Class node (`Worker$1`), owns its methods (re-keyed
+// `Worker$1.run`), and the enclosing-owner walk attributes to it instead
+// of the lexically enclosing named class. `(object_creation_expression
+// (class_body) @scope.class)` (from #2545) provides the scope boundary;
+// the #2550 instance model provides identity + ownership.
 // ---------------------------------------------------------------------------
 
-describe('Java anonymous-class method scoping (#2545)', () => {
+describe('Java anonymous-class instance identity (#2550)', () => {
   let result: PipelineResult;
 
   beforeAll(async () => {
     result = await runPipelineFromRepo(path.join(FIXTURES, 'java-anonymous-class-scope'), () => {});
   }, 60000);
 
-  it('still resolves handler.run() to the anonymous Runnable method', () => {
-    const calls = getRelationships(result, 'CALLS');
-    const explicit = calls.find((c) => c.source === 'makeHandler' && c.target === 'run');
-    expect(explicit).toBeDefined();
+  it('emits a Class node Worker$1 for the anonymous Runnable body', () => {
+    expect(getNodesByLabel(result, 'Class')).toContain('Worker$1');
+  });
+
+  it('re-keys the anonymous run method to Worker$1.run and owns it via HAS_METHOD', () => {
+    const hasMethod = getRelationships(result, 'HAS_METHOD');
+    const owned = hasMethod.find(
+      (e) =>
+        e.rel.sourceId === 'Class:src/Worker.java:Worker$1' &&
+        e.rel.targetId === 'Method:src/Worker.java:Worker$1.run#0',
+    );
+    expect(owned).toBeDefined();
   });
 
   it('still extracts the anonymous Runnable method as a Method', () => {
     expect(getNodesByLabel(result, 'Method')).toContain('run');
+  });
+
+  it('still resolves handler.run() to the anonymous Runnable method', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const explicit = calls.find((c) => c.source === 'makeHandler' && c.target === 'run');
+    expect(explicit).toBeDefined();
   });
 });

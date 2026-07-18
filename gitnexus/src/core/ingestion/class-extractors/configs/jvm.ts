@@ -2,6 +2,7 @@
 
 import { SupportedLanguages } from 'gitnexus-shared';
 import type { ClassExtractionConfig } from '../../class-types.js';
+import { synthesizeJavaAnonymousClassName } from '../../utils/ast-helpers.js';
 
 // ---------------------------------------------------------------------------
 // Java
@@ -14,6 +15,12 @@ export const javaClassConfig: ClassExtractionConfig = {
     'interface_declaration',
     'enum_declaration',
     'record_declaration',
+    // Anonymous class bodies (`new Runnable() { ... }`) — the matching
+    // JAVA_QUERIES pattern only captures `object_creation_expression`
+    // WITH a `class_body`, and `extractName` below returns undefined for
+    // any other shape, so plain `new Foo()` constructor calls never
+    // produce a Class node (#2550).
+    'object_creation_expression',
   ],
   fileScopeNodeTypes: ['package_declaration'],
   ancestorScopeNodeTypes: [
@@ -22,6 +29,12 @@ export const javaClassConfig: ClassExtractionConfig = {
     'enum_declaration',
     'record_declaration',
   ],
+  extractName(node) {
+    if (node.type === 'object_creation_expression') {
+      return synthesizeJavaAnonymousClassName(node);
+    }
+    return undefined;
+  },
 };
 
 // ---------------------------------------------------------------------------
