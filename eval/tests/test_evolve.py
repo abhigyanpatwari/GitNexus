@@ -516,6 +516,7 @@ def test_outer_runner_pid_namespace_kills_setsid_descendant(tmp_path):
         bwrap = preflight_bubblewrap()
     except evolve.SandboxError as exc:
         pytest.skip(str(exc))
+        raise AssertionError("pytest.skip() returned unexpectedly")
     sentinel = tmp_path / "escaped"
     child = (
         "import os,subprocess,sys,time; "

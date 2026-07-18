@@ -842,6 +842,7 @@ def main() -> int:
         )
     except (OSError, ValueError, yaml.YAMLError) as exc:
         parser.error(str(exc))
+        raise AssertionError("ArgumentParser.error() returned unexpectedly")
     requested_arms = args.arms or list(INCUMBENT_ARMS)
     initial_overlay: Path | None = None
     if args.initial_overlay is not None:
@@ -862,6 +863,7 @@ def main() -> int:
         require_claude_sandbox_helpers()
     except SandboxError as exc:
         parser.error(str(exc))
+        raise AssertionError("ArgumentParser.error() returned unexpectedly")
 
     out_root = args.out_root or Path("results") / time.strftime("wfevolve-%Y%m%d-%H%M%S")
     out_root.mkdir(parents=True, exist_ok=True)

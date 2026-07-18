@@ -858,6 +858,7 @@ def main() -> None:
         )
     except (OSError, SandboxError, ValueError, yaml.YAMLError) as exc:
         parser.error(str(exc))
+        raise AssertionError("ArgumentParser.error() returned unexpectedly")
 
     candidate_arms = [arm for arm in args.arms if arm in CANDIDATE_ARMS]
     if candidate_arms and args.candidate_overlay is None:
@@ -892,6 +893,7 @@ def main() -> None:
         runtime_mounts = trusted_gitnexus_runtime_mounts()
     except SandboxError as exc:
         parser.error(str(exc))
+        raise AssertionError("ArgumentParser.error() returned unexpectedly")
     out_dir = args.out or Path("results") / time.strftime("wfbench-%Y%m%d-%H%M%S")
     out_dir.mkdir(parents=True, exist_ok=True)
     results_path = out_dir / "results.jsonl"
@@ -920,6 +922,7 @@ def main() -> None:
             )
         except (OSError, SandboxError, ValueError) as exc:
             parser.error(str(exc))
+            raise AssertionError("ArgumentParser.error() returned unexpectedly")
         oracle_mask = Path(trees) / ".oracle-mask"
         oracle_mask.mkdir(mode=0o500)
         oracle_mask.chmod(0o500)
