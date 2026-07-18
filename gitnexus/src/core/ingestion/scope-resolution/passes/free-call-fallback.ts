@@ -40,6 +40,7 @@ import {
   findAllCallableBindingsInScope,
   findCallableBindingInScope,
   findCallableBindingsAndAdlBlocker,
+  findEnclosingClassDef,
   resolveInheritanceBaseInScope,
 } from '../scope/walkers.js';
 import {
@@ -92,6 +93,11 @@ export function emitFreeCallFallback(
      *  are never real repository declarations. Gates the finalize-bucket
      *  guard below (#2545) -- see `hasGenuineLexicalBinding`. */
     readonly isBuiltInName?: (name: string) => boolean;
+    /** Instance-ownership gate (#2550): a free call may resolve to a
+     *  `Method` only when the caller's enclosing class chain (self + MRO)
+     *  contains the method's owner. See
+     *  `ScopeResolver.freeCallsRequireInstanceOwnership`. */
+    readonly freeCallsRequireInstanceOwnership?: boolean;
     readonly recordResolutionOutcome?: ResolutionOutcomeRecorder;
     /** Call sites owned by a later precise pass (for example callable-value-flow). */
     readonly skipSites?: ReadonlySet<string>;
@@ -227,6 +233,46 @@ export function emitFreeCallFallback(
             // keep resolving. Without this check, that import silently
             // stopped resolving (verified via a scratch probe fixture).
             fnDef = undefined;
+          }
+          // Instance-ownership gate (#2550). Placement matters: after the
+          // scope-chain lookup, BEFORE overload narrowing -- a suppressed
+          // candidate must not participate in overload selection. The
+          // legitimate same-class bare call already resolved earlier via
+          // `pickImplicitThisOverload`; an inherited bare call passes the
+          // MRO arm here; what remains is the finalize-bucket leak (an
+          // unrelated same-file method matched by bare name).
+          //
+          // Same-file only (mirrors the #2545 guard's load-bearing
+          // condition): the `materializeBindings` bucket is per-file, so
+          // the leak is ALWAYS same-file. A cross-file Method match here
+          // came through a genuine import channel -- e.g. the arity-
+          // narrowing parity fixtures resolve a bare `writeAudit(u)` to
+          // an imported class's method, which must keep working
+          // (suppressing it broke `java.test.ts`'s arity-filtering suite,
+          // verified empirically).
+          if (
+            fnDef !== undefined &&
+            options.freeCallsRequireInstanceOwnership === true &&
+            fnDef.type === 'Method' &&
+            fnDef.ownerId !== undefined &&
+            fnDef.filePath === parsed.filePath
+          ) {
+            const enclosing = findEnclosingClassDef(site.inScope, scopes);
+            const ownerReachable =
+              enclosing !== undefined &&
+              (enclosing.nodeId === fnDef.ownerId ||
+                scopes.methodDispatch.mroFor(enclosing.nodeId).includes(fnDef.ownerId));
+            if (!ownerReachable) {
+              recordSuppressedOutcome(options.recordResolutionOutcome, {
+                phase: 'free-call-fallback',
+                filePath: parsed.filePath,
+                name: site.name,
+                range: site.atRange,
+                reason: 'free-call-instance-ownership',
+                candidates: [fnDef],
+              });
+              fnDef = undefined;
+            }
           }
           if (fnDef !== undefined && options.conversionRankFn !== undefined) {
             const allCallables = findAllCallableBindingsInScope(site.inScope, site.name, scopes);

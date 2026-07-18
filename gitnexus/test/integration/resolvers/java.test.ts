@@ -2761,9 +2761,57 @@ describe('Java anonymous-class instance identity (#2550)', () => {
     expect(getNodesByLabel(result, 'Method')).toContain('run');
   });
 
-  it('still resolves handler.run() to the anonymous Runnable method', () => {
+  it('resolves handler.run() to Worker$1.run via the receiver path, not the free-call leak', () => {
     const calls = getRelationships(result, 'CALLS');
     const explicit = calls.find((c) => c.source === 'makeHandler' && c.target === 'run');
     expect(explicit).toBeDefined();
+    expect(explicit!.rel.targetId).toBe('Method:src/Worker.java:Worker$1.run#0');
+    expect(explicit!.rel.reason).not.toBe('local-call');
   });
+
+  it("does not resolve process()'s bare run() to the anonymous class's method (any reason)", () => {
+    const calls = getRelationships(result, 'CALLS');
+    const leaked = calls.find((c) => c.source === 'process' && c.target === 'run');
+    expect(leaked).toBeUndefined();
+  });
+});
+
+describe('Java instance-ownership free-call gate (#2550)', () => {
+  it('does not resolve a bare call to an unrelated same-file class\'s method', async () => {
+    const result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'java-unrelated-method-collision'),
+      () => {},
+    );
+    const calls = getRelationships(result, 'CALLS');
+    const leaked = calls.find((c) => c.source === 'work' && c.target === 'helper');
+    expect(leaked).toBeUndefined();
+  }, 60000);
+
+  it("still resolves a class's own bare call to its own method (implicit this)", async () => {
+    const result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'java-builtin-name-legit-dispatch'),
+      () => {},
+    );
+    const calls = getRelationships(result, 'CALLS');
+    const legitimate = calls.find((c) => c.source === 'trigger' && c.target === 'run');
+    expect(legitimate).toBeDefined();
+    expect(legitimate!.targetFilePath).toBe('src/RealTask.java');
+  }, 60000);
+
+  it('still resolves a bare inherited call through the MRO arm', async () => {
+    const result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'java-inherited-bare-call'),
+      () => {},
+    );
+    const calls = getRelationships(result, 'CALLS');
+    const inherited = calls.find((c) => c.source === 'go' && c.target === 'log');
+    expect(inherited).toBeDefined();
+  }, 60000);
+
+  it('numbers multiple anonymous bodies in source order (Multi$1, Multi$2)', async () => {
+    const result = await runPipelineFromRepo(path.join(FIXTURES, 'java-anon-numbering'), () => {});
+    const classes = getNodesByLabel(result, 'Class');
+    expect(classes).toContain('Multi$1');
+    expect(classes).toContain('Multi$2');
+  }, 60000);
 });
