@@ -79,8 +79,10 @@
     "_rebaselined_2522_review_fixes": "PR #2522 review fixes: assignment target:/result: fields join the shared fallback. Prior 7687ee2466e16020a12440a03fbda53e63aa05f94b4481f6133c09867a0d560d -> 115c5da807e36bb12fdeba28e44f2b6484ef322ff26c19fa0f191febaf774248; scaling ratio re-verified within budget."
   },
   "dart": {
-    "fingerprint": "66a46d5ff09f3d11b2771db0f48596fe7057e95c5bc8f56241fdb911137298c3",
+    "fingerprint": "ba93c90dcd341259e8e088816bc8c76ad27882419f665e35c056dc22fa54cf73",
     "scaling_budget": 1.5,
+    "_rebaselined_2538": "#2538: Dart extension type headers are preprocessed into normal extension declarations before scope capture, so extension type symbols and their methods are now emitted. Intentional Dart-only capture fingerprint drift; CI measured scaling 1.042 < 1.5.",
+    "_rebaselined_2538_implements": "#2538 tri-review follow-up: Dart extension type implements clauses now emit heritage markers and fixture coverage asserts IMPLEMENTS edges, including multi-arg generic interfaces. Prior committed baseline 66a46d5ff09f3d11b2771db0f48596fe7057e95c5bc8f56241fdb911137298c3 -> ba93c90dcd341259e8e088816bc8c76ad27882419f665e35c056dc22fa54cf73; scaling 0.945 < 1.5.",
     "_rebaselined_callable_flow_2522_review": "PR #2522 review hardening: callable operands retain expression/qualified identity and formals retain signature metadata. Prior 29ce2bfe70b246b1c9d5e99c0ec11e850c22e9672737592207242b7f4cc824b8 -> 66a46d5ff09f3d11b2771db0f48596fe7057e95c5bc8f56241fdb911137298c3; scaling 1.054 < 1.5.",
     "_rebaselined_callable_flow_2522_followup": "PR #2522 follow-up: Dart function-tearoff and selector callable flow facts, split signature/body lexical ownership, and invocation-result suppression. Prior 94bf2c26e1ba96f4211634aa572c0a989b503e717e75dfc5df04f66c417de80f -> 29ce2bfe70b246b1c9d5e99c0ec11e850c22e9672737592207242b7f4cc824b8; scaling 0.906 < 1.5.",
     "_added": "#939: dart added to the scope-capture bench with the registry-primary migration. Heritage-bearing scale source (Entity extends Base implements Marker) gates the @reference.inherits synth + the postfix-chain reference walk at scale. emitDartScopeCaptures threads tree-sitter captured nodes (no findNodeAtRange root-walk), so it is linear (~1.0).",
