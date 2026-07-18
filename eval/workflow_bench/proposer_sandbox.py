@@ -25,6 +25,8 @@ SANDBOX_WORKSPACE = "/workspace"
 SANDBOX_HOME = "/home/agent"
 SANDBOX_TMP = "/tmp"
 SANDBOX_CLAUDE = "/opt/claude/claude"
+SANDBOX_SHELL_PREFIX = "/opt/claude/shell-prefix"
+SANDBOX_PATH = "/opt/claude:/usr/local/bin:/usr/bin:/bin"
 SANDBOX_GITNEXUS = "/opt/gitnexus"
 SANDBOX_GITNEXUS_SHARED = "/opt/gitnexus-shared"
 SANDBOX_GITNEXUS_REGISTRY = "/opt/gitnexus-registry"
@@ -252,12 +254,6 @@ def build_sandbox_environment(
 ) -> dict[str, str]:
     """Build the entire parent environment; never copy ``os.environ``."""
 
-    path = "/opt/claude:/usr/local/bin:/usr/bin:/bin"
-    shell_env = (
-        "env -i "
-        f"HOME={SANDBOX_HOME} USER=agent LOGNAME=agent TMPDIR={SANDBOX_TMP} "
-        f"PATH={path} LANG=C.UTF-8 LC_ALL=C.UTF-8 TERM=dumb"
-    )
     env = {
         "HOME": SANDBOX_HOME,
         "USER": "agent",
@@ -266,7 +262,7 @@ def build_sandbox_environment(
         "XDG_CONFIG_HOME": f"{SANDBOX_HOME}/.config",
         "XDG_CACHE_HOME": f"{SANDBOX_HOME}/.cache",
         "XDG_STATE_HOME": f"{SANDBOX_HOME}/.local/state",
-        "PATH": path,
+        "PATH": SANDBOX_PATH,
         "LANG": "C.UTF-8",
         "LC_ALL": "C.UTF-8",
         "TERM": "dumb",
@@ -283,7 +279,7 @@ def build_sandbox_environment(
         "CLAUDE_CODE_DISABLE_TELEMETRY": "1",
         "CLAUDE_CODE_SUBPROCESS_ENV_SCRUB": "1",
         "CLAUDE_CODE_DONT_INHERIT_ENV": "1",
-        "CLAUDE_CODE_SHELL_PREFIX": shell_env,
+        "CLAUDE_CODE_SHELL_PREFIX": SANDBOX_SHELL_PREFIX,
         "CLAUDE_CONFIG_DIR": f"{SANDBOX_HOME}/.claude",
     }
     if auth_token is not None:
@@ -362,6 +358,23 @@ def _runtime_mount_args() -> list[str]:
         if path.exists():
             args += ["--ro-bind", raw, raw]
     return args
+
+
+def _create_shell_prefix_wrapper(private_root: Path) -> Path:
+    """Create Claude's immutable clean-environment command adapter."""
+
+    wrapper = private_root / "shell-prefix"
+    wrapper.write_text(
+        "#!/bin/bash\n"
+        "set -eu\n"
+        'if [ "$#" -ne 1 ]; then exit 64; fi\n'
+        "exec /usr/bin/env -i "
+        f"HOME={SANDBOX_HOME} USER=agent LOGNAME=agent TMPDIR={SANDBOX_TMP} "
+        f"PATH={SANDBOX_PATH} LANG=C.UTF-8 LC_ALL=C.UTF-8 TERM=dumb "
+        '/bin/bash -c "$1"\n'
+    )
+    wrapper.chmod(0o500)
+    return wrapper
 
 
 def _resolve_executable(executable: Path | str | None, default: str) -> Path:
@@ -620,6 +633,7 @@ def prepare_sandbox(
     for directory in (home, temp):
         directory.mkdir(mode=0o700)
         directory.chmod(0o700)
+    shell_prefix = _create_shell_prefix_wrapper(private_root)
     # Claude may discover user-level skills below HOME.  Keep the rest of HOME
     # writable for normal CLI state, but overlay an immutable empty skills root
     # so a model cannot shadow the evaluated repository/plugin skill by name.
@@ -629,6 +643,7 @@ def prepare_sandbox(
     protected_mounts = (
         *read_only_mounts,
         ReadOnlyMount(source=user_skills, target=SANDBOX_USER_SKILLS),
+        ReadOnlyMount(source=shell_prefix, target=SANDBOX_SHELL_PREFIX),
     )
     primary: BaseException | None = None
     try:

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import stat
+import subprocess
 import sys
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -17,6 +18,7 @@ from workflow_bench.process_control import ManagedProcessResult, run_managed
 from workflow_bench.proposer_sandbox import (
     MAX_BUNDLE_BYTES,
     MAX_EVIDENCE_FILE_BYTES,
+    SANDBOX_SHELL_PREFIX,
     SANDBOX_USER_SKILLS,
     ReadOnlyMount,
     SandboxError,
@@ -46,7 +48,7 @@ def test_environment_is_allowlisted_and_shell_children_are_credential_free(monke
     assert env["ANTHROPIC_BASE_URL"] == "https://model.example.test/v1"
     assert env["CLAUDE_CODE_SUBPROCESS_ENV_SCRUB"] == "1"
     assert env["CLAUDE_CODE_DONT_INHERIT_ENV"] == "1"
-    assert "env -i" in env["CLAUDE_CODE_SHELL_PREFIX"]
+    assert env["CLAUDE_CODE_SHELL_PREFIX"] == SANDBOX_SHELL_PREFIX
     assert "model-secret" not in env["CLAUDE_CODE_SHELL_PREFIX"]
     assert not ({"AWS_SECRET_ACCESS_KEY", "GITHUB_TOKEN", "SSH_AUTH_SOCK", "HTTPS_PROXY"} & env.keys())
 
@@ -138,6 +140,22 @@ def test_sandbox_command_has_minimal_mounts_and_no_host_root_bind(tmp_path: Path
         assert "/workspace" in argv
         assert sandbox.claude_bin == "/opt/claude/claude"
         assert sandbox.transcript_projects.parent.name == ".claude"
+        shell_prefix_index = argv.index(SANDBOX_SHELL_PREFIX)
+        assert argv[shell_prefix_index - 2] == "--ro-bind"
+        shell_prefix = Path(argv[shell_prefix_index - 1])
+        assert stat.S_IMODE(shell_prefix.stat().st_mode) == 0o500
+        probe = subprocess.run(
+            [
+                shell_prefix,
+                'test -z "${ANTHROPIC_API_KEY:-}" && test -z "${GITHUB_TOKEN:-}" && printf "%s" "$HOME|$PATH"',
+            ],
+            env={"ANTHROPIC_API_KEY": "model-secret", "GITHUB_TOKEN": "github-secret"},
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        assert probe.returncode == 0, probe.stderr
+        assert probe.stdout == "/home/agent|/opt/claude:/usr/local/bin:/usr/bin:/bin"
         assert SANDBOX_USER_SKILLS in argv
         user_skills_index = argv.index(SANDBOX_USER_SKILLS)
         assert argv[user_skills_index - 2] == "--ro-bind"
@@ -189,6 +207,7 @@ from pathlib import Path
 targets = [
     Path('/workspace/.claude/skills/gitnexus-work/SKILL.md'),
     Path('/home/agent/.claude/skills/gitnexus-work/SKILL.md'),
+    Path('/opt/claude/shell-prefix'),
 ]
 for target in targets:
     try:
