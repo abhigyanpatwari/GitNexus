@@ -56,6 +56,8 @@ const EXTENSION_TYPES = `class Identifiable {}
 
 class SequenceLike<T> {}
 
+class Comparator<A, B> {}
+
 extension type const UserId(String value) implements Identifiable {
   String describe() => value;
 }
@@ -68,6 +70,10 @@ extension type Celsius(double degrees) {
 
 extension type Box<T>(List<T> value) implements SequenceLike<T> {
   T first() => value.first;
+}
+
+extension type Pair(String value) implements Comparator<String, int> {
+  String describePair() => value;
 }
 
 extension Fancy on String {
@@ -144,18 +150,21 @@ describe.skipIf(!dartAvailable)('Dart extension type declarations (scope layer)'
     const rewritten = preprocessDartExtensionTypes(EXTENSION_TYPES);
     expect(rewritten).toHaveLength(EXTENSION_TYPES.length);
     expect(rewritten.split('\n')).toHaveLength(EXTENSION_TYPES.split('\n').length);
-    for (const name of ['UserId', 'EmptyId', 'Celsius', 'Box']) {
+    for (const name of ['UserId', 'EmptyId', 'Celsius', 'Box', 'Pair']) {
       expect(rewritten.indexOf(name)).toBe(EXTENSION_TYPES.indexOf(name));
     }
     expect(rewritten).toContain('UserId on String');
     expect(rewritten).toContain('EmptyId on String');
     expect(rewritten).toContain('Celsius on double');
     expect(rewritten).toContain('Box<T> on List<T>');
+    expect(rewritten).toContain('Pair on String');
   });
 
   it('captures extension types as class-like declarations', () => {
     const names = classDeclarationNames(EXTENSION_TYPES);
-    expect(names).toEqual(expect.arrayContaining(['UserId', 'EmptyId', 'Celsius', 'Box', 'Fancy']));
+    expect(names).toEqual(
+      expect.arrayContaining(['UserId', 'EmptyId', 'Celsius', 'Box', 'Pair', 'Fancy']),
+    );
   });
 
   it('captures implements clauses on extension types as heritage markers', () => {
@@ -164,8 +173,10 @@ describe.skipIf(!dartAvailable)('Dart extension type declarations (scope layer)'
       expect.arrayContaining([
         '__heritage__:implements:Identifiable:UserId',
         '__heritage__:implements:SequenceLike:Box',
+        '__heritage__:implements:Comparator:Pair',
       ]),
     );
+    expect(imports).not.toContain('__heritage__:implements:int:Pair');
   });
 });
 
@@ -212,20 +223,23 @@ describe.skipIf(!dartAvailable)('Dart extension type symbols (end-to-end)', () =
   it('creates Class nodes for extension type declarations', () => {
     const classes = getNodesByLabel(result, 'Class');
     expect(classes).toEqual(
-      expect.arrayContaining(['UserId', 'EmptyId', 'Celsius', 'Box', 'Fancy']),
+      expect.arrayContaining(['UserId', 'EmptyId', 'Celsius', 'Box', 'Pair', 'Fancy']),
     );
   });
 
   it('emits IMPLEMENTS edges for extension type implements clauses', () => {
     const implementsEdges = edgeSet(getRelationships(result, 'IMPLEMENTS'));
     expect(implementsEdges).toEqual(
-      expect.arrayContaining(['Box → SequenceLike', 'UserId → Identifiable']),
+      expect.arrayContaining(['Box → SequenceLike', 'Pair → Comparator', 'UserId → Identifiable']),
     );
+    expect(implementsEdges).not.toContain('Pair → int');
   });
 
   it('keeps extension type methods owned by their extension type symbol', () => {
     const methods = getNodesByLabel(result, 'Method');
-    expect(methods).toEqual(expect.arrayContaining(['describe', 'toFahrenheit', 'first', 'shout']));
+    expect(methods).toEqual(
+      expect.arrayContaining(['describe', 'toFahrenheit', 'first', 'describePair', 'shout']),
+    );
 
     const hasMethod = edgeSet(getRelationships(result, 'HAS_METHOD'));
     expect(hasMethod).toEqual(
@@ -233,6 +247,7 @@ describe.skipIf(!dartAvailable)('Dart extension type symbols (end-to-end)', () =
         'UserId → describe',
         'Celsius → toFahrenheit',
         'Box → first',
+        'Pair → describePair',
         'Fancy → shout',
       ]),
     );

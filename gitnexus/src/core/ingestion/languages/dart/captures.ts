@@ -539,12 +539,37 @@ function emitExtensionImplementsHeritage(extensionNode: SyntaxNode, out: Capture
 
   const className = nameNode.text;
   const interfaces = header.slice(implementsIndex + 'implements'.length);
-  for (const rawInterface of interfaces.split(',')) {
+  for (const rawInterface of splitTopLevelCommaList(interfaces)) {
     const target = /^[ \t]*([A-Za-z_$][A-Za-z0-9_$]*)/.exec(rawInterface)?.[1];
     if (target === undefined) continue;
     const payload = encodeMarker('heritage', ['implements', target, className]);
     out.push({ '@import.heritage': syntheticCapture('@import.heritage', nameNode, payload) });
   }
+}
+
+function splitTopLevelCommaList(text: string): string[] {
+  const parts: string[] = [];
+  let start = 0;
+  let angleDepth = 0;
+
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (ch === '<') {
+      angleDepth++;
+      continue;
+    }
+    if (ch === '>' && angleDepth > 0) {
+      angleDepth--;
+      continue;
+    }
+    if (ch === ',' && angleDepth === 0) {
+      parts.push(text.slice(start, i));
+      start = i + 1;
+    }
+  }
+
+  parts.push(text.slice(start));
+  return parts;
 }
 
 function emitHeritageMarkers(
