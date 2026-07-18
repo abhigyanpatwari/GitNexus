@@ -95,6 +95,7 @@ const CODING_AGENT_IDS = {
   codebuddy: 'codebuddy',
   qoder: 'qoder',
   codex: 'codex',
+  droid: 'droid',
 } as const satisfies Record<EditorId, EditorId>;
 const SUPPORTED_CODING_AGENTS = Object.values(CODING_AGENT_IDS);
 
@@ -952,6 +953,59 @@ async function installQoderSkills(result: SetupResult): Promise<void> {
 }
 
 /**
+ * Configure the GitNexus MCP server for Factory Droid.
+ *
+ * Factory stores user-scope MCP config in ~/.factory/mcp.json using the same
+ * `{ mcpServers: { <name>: {...} } }` JSONC shape as Cursor/Claude
+ * (https://docs.factory.ai/cli/configuration/mcp), so we reuse mergeJsoncFile
+ * rather than shelling out to `droid mcp add` — that keeps setup working even
+ * when the `droid` binary isn't on PATH.
+ */
+async function setupDroid(result: SetupResult): Promise<void> {
+  const factoryDir = path.join(os.homedir(), '.factory');
+  if (!(await dirExists(factoryDir))) {
+    result.skipped.push('Factory Droid (not installed)');
+    return;
+  }
+
+  const { file: mcpPath, keyPath } = mcpTarget('droid');
+  try {
+    const ok = await mergeJsoncFile(mcpPath, keyPath, getMcpEntry());
+    if (ok) {
+      result.configured.push('Factory Droid');
+    } else {
+      result.errors.push(
+        'Factory Droid: mcp.json is corrupt — skipping to preserve existing content',
+      );
+    }
+  } catch (err: any) {
+    result.errors.push(`Factory Droid: ${err.message}`);
+  }
+}
+
+/**
+ * Install global Factory Droid skills to ~/.factory/skills/{name}/SKILL.md
+ * (https://docs.factory.ai/cli/configuration/skills — same SKILL.md layout as
+ * Claude Code).
+ */
+async function installDroidSkills(result: SetupResult): Promise<void> {
+  const factoryDir = path.join(os.homedir(), '.factory');
+  if (!(await dirExists(factoryDir))) return;
+
+  const skillsDir = skillTarget('droid').dir;
+  try {
+    const installed = await installSkillsTo(skillsDir);
+    if (installed.length > 0) {
+      result.configured.push(
+        `Factory Droid skills (${installed.length} skills → ~/.factory/skills/)`,
+      );
+    }
+  } catch (err: any) {
+    result.errors.push(`Factory Droid skills: ${err.message}`);
+  }
+}
+
+/**
  * Build a TOML section for Codex MCP config (~/.codex/config.toml).
  */
 function getCodexMcpTomlSection(): string {
@@ -1197,6 +1251,7 @@ export const setupCommand = async (options?: { codingAgent?: string[] | string }
   if (selected.has('codebuddy')) await setupCodeBuddy(result);
   if (selected.has('qoder')) await setupQoder(result);
   if (selected.has('codex')) await setupCodex(result);
+  if (selected.has('droid')) await setupDroid(result);
 
   // Install global skills for platforms that support them
   if (selected.has('claude')) {
@@ -1215,6 +1270,10 @@ export const setupCommand = async (options?: { codingAgent?: string[] | string }
     await installCodexSkills(result);
     await installClaudeSchemaHooks(result, 'codex');
   }
+  // MCP + skills only. Factory hooks (Execute matcher, PostToolUse) ship in the
+  // standalone gitnexus-factory-plugin instead of the setup path — add a droid
+  // hook target + adapter here if setup-installed hooks are wanted.
+  if (selected.has('droid')) await installDroidSkills(result);
 
   // Print results
   if (result.configured.length > 0) {
