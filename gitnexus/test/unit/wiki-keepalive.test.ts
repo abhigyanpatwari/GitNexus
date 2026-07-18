@@ -27,7 +27,7 @@ describe('WikiGenerator keepalive', () => {
   });
 
   async function makeGenerator(graphOverrides: Record<string, unknown> = {}) {
-    vi.useFakeTimers();
+    vi.useFakeTimers({ toFake: ['setTimeout', 'setInterval', 'clearTimeout', 'clearInterval'] });
 
     const touchWikiDb = vi.fn();
     vi.doMock('../../src/core/wiki/graph-queries.js', () => ({
@@ -54,15 +54,17 @@ describe('WikiGenerator keepalive', () => {
 
     const llmClient = await import('../../src/core/wiki/llm-client.js');
     // Buffered provider simulation: nothing streams; the answer lands after 6 min.
-    vi.spyOn(llmClient, 'callLLM').mockImplementation(
-      () =>
-        new Promise((resolve) =>
-          setTimeout(
-            () => resolve({ content: JSON.stringify({ All: ['src/a.ts'] }) }),
-            SLOW_LLM_MS,
+    const callLLMSpy = vi
+      .spyOn(llmClient, 'callLLM')
+      .mockImplementation(
+        () =>
+          new Promise((resolve) =>
+            setTimeout(
+              () => resolve({ content: JSON.stringify({ All: ['src/a.ts'] }) }),
+              SLOW_LLM_MS,
+            ),
           ),
-        ),
-    );
+      );
 
     const { WikiGenerator } = await import('../../src/core/wiki/generator.js');
     const storagePath = path.join(tmpDir, 'storage');
@@ -83,17 +85,27 @@ describe('WikiGenerator keepalive', () => {
       },
       { reviewOnly: true },
     );
-    return { gen, touchWikiDb };
+    return { gen, touchWikiDb, callLLMSpy };
   }
 
   it('touches the wiki DB every 60s while a buffered LLM call is in flight', async () => {
-    const { gen, touchWikiDb } = await makeGenerator();
+    const { gen, touchWikiDb, callLLMSpy } = await makeGenerator();
 
     const run = gen.run();
 
+    // run() does real async I/O (fs.mkdir, meta file read) before it ever
+    // reaches the mocked callLLM. Advancing the fake clock before that
+    // setTimeout is registered would leave the LLM promise unresolved
+    // forever, so wait until the call is actually in flight — polling with
+    // real microtasks/timers, since setTimeout/setInterval are the only
+    // faked primitives — before advancing the fake clock.
+    while (callLLMSpy.mock.calls.length === 0) {
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+
     // Advance through 6 minutes in 1-minute increments, allowing event loop to process
     for (let i = 0; i < 6; i++) {
-      vi.advanceTimersByTime(60_000);
+      await vi.advanceTimersByTimeAsync(60_000);
     }
 
     // Now await the run to complete
@@ -104,7 +116,7 @@ describe('WikiGenerator keepalive', () => {
 
     // After run() settles the interval is cleared — no further touches
     const settled = touchWikiDb.mock.calls.length;
-    vi.advanceTimersByTime(120_000);
+    await vi.advanceTimersByTimeAsync(120_000);
     expect(touchWikiDb.mock.calls.length).toBe(settled);
   }, 60000);
 
