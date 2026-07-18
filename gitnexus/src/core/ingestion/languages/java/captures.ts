@@ -318,7 +318,46 @@ function synthesizeJavaAnonymousClassDeclarations(rootNode: SyntaxNode): Capture
       }
     }
   }
+
+  // Enum constant bodies (`enum E { A { ... } }`) — javac's other
+  // anonymous shape (#2555). Same synthesis, same body anchor; the
+  // constant's class extends its HOST ENUM (javac semantics), so the
+  // inherits reference names the enum — giving `mroFor(E$N) ∋ E` and
+  // keeping bare calls from the body to the enum's own helpers alive
+  // through the ownership gate's MRO arm. No receiver typeBinding piece:
+  // constants are not variable initializers; `E.A.hook()` dispatch rides
+  // the existing enum receiver machinery.
+  for (const constant of rootNode.descendantsOfType('enum_constant')) {
+    const name = synthesizeJavaAnonymousClassName(constant);
+    if (name === undefined) continue;
+    const body = constant.childForFieldName?.('body');
+    if (body === null || body === undefined || body.type !== 'class_body') continue;
+    out.push({
+      '@declaration.class': nodeToCapture('@declaration.class', body),
+      '@declaration.name': syntheticCapture('@declaration.name', body, name),
+    });
+    const hostEnum = javaEnclosingEnumNameOf(constant);
+    if (hostEnum !== undefined) {
+      out.push({
+        '@reference.inherits': nodeToCapture('@reference.inherits', body),
+        '@reference.name': syntheticCapture('@reference.name', body, hostEnum),
+      });
+    }
+  }
   return out;
+}
+
+/** Simple name of the enum_declaration enclosing an enum_constant, or
+ *  undefined (grammar guarantees one exists in well-formed source). */
+function javaEnclosingEnumNameOf(constant: SyntaxNode): string | undefined {
+  let cursor: SyntaxNode | null = constant.parent;
+  while (cursor !== null) {
+    if (cursor.type === 'enum_declaration') {
+      return cursor.childForFieldName?.('name')?.text ?? undefined;
+    }
+    cursor = cursor.parent;
+  }
+  return undefined;
 }
 
 /**
