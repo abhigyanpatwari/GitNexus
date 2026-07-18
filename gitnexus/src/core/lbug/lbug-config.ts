@@ -238,8 +238,15 @@ export function resolveNativeSafeStorageDir(storagePath: string, subdir: string)
  *    `true` (0.16.0). Existing call sites that relied on the positional
  *    default must now pass `false` explicitly to preserve behaviour.
  *
- * Putting both in one shared module guarantees every `new lbug.Database(...)`
- * call site agrees on the same ceiling and behaviour.
+ * 3. `bufferManagerSize` (not a 0.16.0 change, same pin-explicitly
+ *    principle): `0` means "native default", and the native default buffer
+ *    pool is 80% of physical RAM. A long-lived `gitnexus mcp` process or a
+ *    large incremental analyze can balloon to that ceiling and OOM-kill the
+ *    host session (#2557), so GitNexus pins an explicit bounded pool — see
+ *    `resolveBufferManagerSize`.
+ *
+ * Putting these in one shared module guarantees every `new lbug.Database(...)`
+ * call site agrees on the same ceilings and behaviour.
  */
 
 /**
@@ -297,6 +304,56 @@ const resolveCheckpointThreshold = (): number => {
     );
   }
   return DEFAULT_WAL_CHECKPOINT_THRESHOLD;
+};
+
+/**
+ * Default ceiling for the LadybugDB buffer pool in bytes (#2557).
+ *
+ * The pool is a page cache with eviction, so the ceiling trades throughput
+ * on very large working sets for a machine that stays alive: 2 GiB is
+ * ~40× the GitNexus self-index, while the native 80%-of-RAM default let a
+ * `detect_changes` call grow a 105 MiB on-disk index to 19.5 GiB RSS and
+ * OOM-kill the reporter's session. The `min` with 80% of `os.totalmem()`
+ * keeps sub-2.5-GiB machines at the native-equivalent bound (no regression
+ * there); the 64 MiB floor keeps tiny containers above any plausible
+ * native minimum pool size.
+ */
+const DEFAULT_BUFFER_POOL_CAP = 2 * 1024 * 1024 * 1024;
+const BUFFER_POOL_FLOOR = 64 * 1024 * 1024;
+
+const parseBufferPoolSize = (raw: string | undefined): number | undefined => {
+  if (raw === undefined) return undefined;
+  const normalized = raw.trim();
+  if (normalized.length === 0) return undefined;
+  const parsed = Number(normalized);
+  if (!Number.isFinite(parsed) || parsed < 0) return undefined;
+  return Math.floor(parsed);
+};
+
+const defaultBufferPoolSize = (): number =>
+  Math.min(DEFAULT_BUFFER_POOL_CAP, Math.max(BUFFER_POOL_FLOOR, Math.floor(os.totalmem() * 0.8)));
+
+/**
+ * Resolve the `bufferManagerSize` passed to every `new lbug.Database(...)`.
+ * `GITNEXUS_LBUG_BUFFER_POOL_SIZE` (bytes) overrides the default; `0` is a
+ * deliberate escape hatch that restores LadybugDB's native unbounded
+ * 80%-of-RAM default. Resolved at call time (not module load) so tests can
+ * stub the env var and `os.totalmem`.
+ */
+const resolveBufferManagerSize = (): number => {
+  const raw = process.env.GITNEXUS_LBUG_BUFFER_POOL_SIZE;
+  if (raw === undefined) return defaultBufferPoolSize();
+  const parsed = parseBufferPoolSize(raw);
+  if (parsed !== undefined) return parsed;
+  // Non-empty but unparseable input: warn the operator and fall back —
+  // mirrors the GITNEXUS_WAL_CHECKPOINT_THRESHOLD env path above.
+  if (raw.trim().length > 0) {
+    logger.warn(
+      { rawValue: raw, fallback: defaultBufferPoolSize() },
+      `Ignoring invalid GITNEXUS_LBUG_BUFFER_POOL_SIZE=${raw}; expected integer >= 0 (bytes; 0 restores the native 80%-of-RAM default); falling back to min(2 GiB, 80% of RAM).`,
+    );
+  }
+  return defaultBufferPoolSize();
 };
 
 /** Matches WAL corruption errors from the LadybugDB engine. */
@@ -540,7 +597,7 @@ export function createLbugDatabase(
   // .d.ts declares fewer args than the native constructor accepts.
   return new (lbugModule.Database as any)(
     databasePath,
-    0, // bufferManagerSize
+    resolveBufferManagerSize(), // bufferManagerSize (#2557: default min(2 GiB, 80% RAM); GITNEXUS_LBUG_BUFFER_POOL_SIZE overrides; 0 restores the native 80%-of-RAM default)
     false, // enableCompression (pinned for v0.16.0)
     options.readOnly ?? false,
     LBUG_MAX_DB_SIZE,
