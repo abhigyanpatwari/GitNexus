@@ -8,6 +8,7 @@
 
 import path from 'path';
 import type { executeParameterized } from '../../core/lbug/pool-adapter.js';
+import { relTypeEquals } from '../../core/lbug/query-params.js';
 import { loadMeta } from '../../storage/repo-manager.js';
 import { IMPACT_MAX_DEPTH, PDG_QUERY_DEFAULT_LIMIT, PDG_QUERY_MAX_LIMIT } from '../tools.js';
 import { CALLEES_TRUNCATED_SENTINEL, CALLEE_ID_SEP } from '../../core/ingestion/cfg/emit.js';
@@ -1166,10 +1167,11 @@ export async function pdgLayerStatus(deps: {
   let edgesVisible = false;
   let probeError: string | undefined;
   try {
+    const probePred = relTypeEquals('r', ['CDG', 'REACHING_DEF']);
     const rows = await deps.executeParameterized(
       deps.lbugPath,
-      `MATCH (:BasicBlock)-[r:CodeRelation]->(:BasicBlock) WHERE r.type IN ['CDG', 'REACHING_DEF'] RETURN r.type AS type LIMIT 1`,
-      {},
+      `MATCH (:BasicBlock)-[r:CodeRelation]->(:BasicBlock) WHERE ${probePred.clause} RETURN r.type AS type LIMIT 1`,
+      probePred.params,
     );
     edgesVisible = Array.isArray(rows) && rows.length > 0;
   } catch (err) {
@@ -1316,15 +1318,16 @@ async function bfsReachableBlocks(input: {
   const matchEndpoint = direction === 'downstream' ? 'a' : 'b';
   const collectEndpoint = direction === 'downstream' ? 'b' : 'a';
 
+  const pdgEdgePred = relTypeEquals('r', ['CDG', 'REACHING_DEF']);
   for (let depth = 0; depth < depthBudget; depth++) {
     if (frontier.length === 0) break;
     const rawRows = await exec(
       lbugPath,
       `MATCH (a:BasicBlock)-[r:CodeRelation]->(b:BasicBlock)
-         WHERE r.type IN ['CDG', 'REACHING_DEF'] AND ${matchEndpoint}.id IN $frontier
+         WHERE ${pdgEdgePred.clause} AND ${matchEndpoint}.id IN $frontier
          RETURN DISTINCT ${collectEndpoint}.id AS id
          LIMIT ${probeLimit}`,
-      { frontier },
+      { frontier, ...pdgEdgePred.params },
     );
     // Narrow the awaited rows ONCE at the boundary (executeParameterized returns
     // any[]) to a typed record shape, then read the aliased `id` via bracket

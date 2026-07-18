@@ -25,7 +25,7 @@ export const isValidQueryParams = (value: unknown): value is Record<string, unkn
 
 /**
  * Build an OR-of-scalar-equality predicate over a relationship's `type`
- * property, replacing `alias.type IN [...]` list predicates.
+ * property, replacing list-membership (`IN`) filters on the rel-type column.
  *
  * LadybugDB ≥ 0.18.1 writes a CodeRelation storage layout (bulk CSV COPY
  * across the multi-pair rel table) on which relationship-property IN-list

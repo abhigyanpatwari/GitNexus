@@ -78,3 +78,30 @@ describe('relTypeEquals', () => {
     expect(relTypeEquals('r', [])).toEqual({ clause: 'FALSE', params: {} });
   });
 });
+
+describe('rel-property IN predicate tripwire (#2508)', () => {
+  // LadybugDB >=0.18.1 COPY-written CodeRelation layouts misevaluate
+  // relationship-property IN-list predicates (dropped + duplicated rows).
+  // Any `<alias>.type IN [...]` / `<alias>.type IN $param` in a Cypher string
+  // must go through relTypeEquals instead. This scan keeps the pattern from
+  // coming back.
+  it('no source file filters a relationship type property with IN', async () => {
+    const { readFile } = await import('node:fs/promises');
+    const path = await import('node:path');
+    const { glob } = await import('glob');
+    const srcRoot = path.resolve(__dirname, '../../src');
+    const files = await glob('**/*.ts', { cwd: srcRoot, absolute: true });
+    expect(files.length).toBeGreaterThan(100);
+    const offenders: string[] = [];
+    for (const file of files) {
+      const lines = (await readFile(file, 'utf8')).split('\n');
+      offenders.push(
+        ...lines
+          .map((line, i) => ({ line, ref: `${path.relative(srcRoot, file)}:${i + 1}` }))
+          .filter(({ line }) => /\.type\s+IN\s*(\[|\$)/.test(line))
+          .map(({ line, ref }) => `${ref}: ${line.trim()} — use relTypeEquals (#2508)`),
+      );
+    }
+    expect(offenders).toEqual([]);
+  });
+});

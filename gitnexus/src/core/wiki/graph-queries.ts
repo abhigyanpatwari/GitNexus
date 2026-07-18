@@ -81,7 +81,7 @@ export async function getFilesWithExports(): Promise<FileWithExports[]> {
     UNION
     MATCH (f:File)-[:CodeRelation {type: 'DEFINES'}]->(c)
           -[mr:CodeRelation]->(n)
-    WHERE mr.type IN ['HAS_METHOD', 'HAS_PROPERTY'] AND n.isExported = true
+    WHERE (mr.type = 'HAS_METHOD' OR mr.type = 'HAS_PROPERTY') AND n.isExported = true
     RETURN f.filePath AS filePath, n.name AS name, labels(n)[0] AS type
     ORDER BY filePath
   `,
