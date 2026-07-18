@@ -155,14 +155,11 @@ export class WikiGenerator {
    *   based on token generation (e.g., grouping at 15% → 15-28%)
    * - If fixedPercent is NOT provided, we only update the label with token count
    *   but keep the current percentage (avoids fluctuation during module generation)
-   *
-   * Also touches the DB connection periodically to prevent idle timeout.
    */
   private streamOpts(label: string, fixedPercent?: number, percentRange = 10): CallLLMOptions {
     const hasFixedStart = fixedPercent !== undefined;
     const startPercent = fixedPercent ?? this.lastPercent;
     const expectedTokens = 2000;
-    let lastTouch = Date.now();
 
     return {
       onChunk: (chars: number) => {
@@ -176,13 +173,6 @@ export class WikiGenerator {
         } else {
           // For module generation, only update the label, keep current percent
           this.onProgress('stream', this.lastPercent, `${label} (${tokens} tok)`);
-        }
-
-        // Touch DB every 60s to prevent idle timeout during long LLM calls
-        const now = Date.now();
-        if (now - lastTouch > 60_000) {
-          touchWikiDb();
-          lastTouch = now;
         }
       },
     };
@@ -294,6 +284,15 @@ export class WikiGenerator {
     this.onProgress('init', 2, 'Connecting to knowledge graph...');
     await initWikiDb(this.lbugPath);
 
+    // Keepalive: touch the __wiki__ pool entry every 60s for the whole run.
+    // Local agent CLI providers (claude/codex/opencode) buffer stdout until
+    // process exit, so no streaming callback can be relied on to reset the
+    // pool's 5-minute idle timeout during long LLM calls — without this the
+    // idle sweeper evicts __wiki__ mid-run and the next graph query throws
+    // 'LadybugDB not initialized for repo "__wiki__"'.
+    const keepalive = setInterval(() => touchWikiDb(), 60_000);
+    keepalive.unref?.();
+
     let result: WikiRunResult;
     try {
       if (!forceMode && existingMeta && existingMeta.fromCommit) {
@@ -311,6 +310,7 @@ export class WikiGenerator {
         result = await this.fullGeneration(currentCommit);
       }
     } finally {
+      clearInterval(keepalive);
       await closeWikiDb();
     }
 
