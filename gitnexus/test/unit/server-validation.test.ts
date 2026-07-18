@@ -89,6 +89,12 @@ describe('assertSafePath', () => {
     // src/.. resolves back to root, which is allowed.
     expect(assertSafePath('src/..', root)).toBe(root);
   });
+
+  it('handles root-level path roots (e.g. "/") correctly', () => {
+    const rootPath = path.resolve('/');
+    const result = assertSafePath('src/foo.ts', rootPath);
+    expect(result).toBe(path.join(rootPath, 'src/foo.ts'));
+  });
 });
 
 describe('escapeRegExp', () => {
