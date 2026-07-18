@@ -318,6 +318,7 @@ def test_preflight_failure_is_returned_before_a_model_command(monkeypatch, tmp_p
     bwrap.write_text("#!/bin/sh\nexit 1\n")
     bwrap.chmod(0o755)
     calls: list[list[str]] = []
+    runtime_mounts = ["--ro-bind", "/runtime", "/runtime"]
 
     def fail(command, **_kwargs):
         calls.append(list(command))
@@ -330,9 +331,18 @@ def test_preflight_failure_is_returned_before_a_model_command(monkeypatch, tmp_p
         )
 
     monkeypatch.setattr("workflow_bench.proposer_sandbox.run_managed", fail)
+    monkeypatch.setattr(
+        "workflow_bench.proposer_sandbox._runtime_mount_args",
+        lambda: runtime_mounts,
+    )
     with pytest.raises(SandboxError, match="preflight"):
         preflight_bubblewrap(bwrap)
     assert len(calls) == 1
+    mount_index = calls[0].index("--new-session") + 1
+    assert calls[0][mount_index : mount_index + len(runtime_mounts)] == runtime_mounts
+    pairs = list(zip(calls[0], calls[0][1:]))
+    assert ("--bind", "/") not in pairs
+    assert ("--ro-bind", "/") not in pairs
     assert "claude" not in " ".join(calls[0])
 
 

@@ -11,7 +11,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from workflow_bench import runner, runner_sessions
+from workflow_bench import runner, runner_sessions, runtime_mounts
 from workflow_bench.evolution import skill_fingerprint
 from workflow_bench.process_control import ManagedProcessResult
 from workflow_bench.runner import snapshot_plan_docs
@@ -270,7 +270,22 @@ def test_agent_tool_grants_are_exact_and_nomcp_has_no_graph_tools(monkeypatch, t
     assert captured[3]["disallowed_tools"] == ["Skill", "mcp__gitnexus"]
 
 
-def test_mcp_config_uses_only_the_minimal_pinned_harness_runtime():
+def test_mcp_config_uses_only_the_minimal_pinned_harness_runtime(monkeypatch, tmp_path):
+    runtime = tmp_path / "gitnexus"
+    shared = tmp_path / "gitnexus-shared"
+    for directory in (
+        runtime / "dist" / "cli",
+        runtime / "node_modules",
+        runtime / "vendor",
+        shared / "dist",
+    ):
+        directory.mkdir(parents=True)
+    (runtime / "dist" / "cli" / "index.js").write_text("")
+    (runtime / "package.json").write_text(json.dumps({"version": runner.PINNED_GITNEXUS_VERSION}))
+    (runtime / "node_modules" / "gitnexus-shared").symlink_to(shared, target_is_directory=True)
+    (shared / "package.json").write_text(json.dumps({"name": "gitnexus-shared"}))
+    monkeypatch.setattr(runtime_mounts, "HARNESS_ROOT", tmp_path)
+
     config = json.loads(runner.sandbox_mcp_config())
     server = config["mcpServers"]["gitnexus"]
     command_line = [server["command"], *server["args"]]
@@ -281,8 +296,6 @@ def test_mcp_config_uses_only_the_minimal_pinned_harness_runtime():
     assert "GITNEXUS_MCP_ALLOWED_REPOS=/workspace" in command_line
     assert "GITNEXUS_MCP_DEFAULT_REPO=/workspace" in command_line
     mounts = runner.trusted_gitnexus_runtime_mounts()
-    runtime = runner.HARNESS_ROOT / "gitnexus"
-    shared = runner.HARNESS_ROOT / "gitnexus-shared"
     assert [(mount.source, mount.target) for mount in mounts] == [
         (runtime / "dist", f"{runner.SANDBOX_GITNEXUS}/dist"),
         (runtime / "package.json", f"{runner.SANDBOX_GITNEXUS}/package.json"),
