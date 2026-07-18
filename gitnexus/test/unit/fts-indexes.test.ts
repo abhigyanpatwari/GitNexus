@@ -15,9 +15,18 @@ vi.mock('../../src/core/lbug/lbug-adapter.js', () => ({
   ),
 }));
 
-const { createSearchFTSIndexes, getSearchFTSStemmer, initialiseSearchFTSStemmer } =
-  await import('../../src/core/search/fts-indexes.js');
+const {
+  buildSearchIndexesOrDegrade,
+  createSearchFTSIndexes,
+  getSearchFTSStemmer,
+  initialiseSearchFTSStemmer,
+} = await import('../../src/core/search/fts-indexes.js');
 const { FTS_INDEXES } = await import('../../src/core/search/fts-schema.js');
+const { createFTSIndex } = await import('../../src/core/lbug/lbug-adapter.js');
+
+/** SHOW_INDEXES rows covering every configured FTS index's expected properties. */
+const fullCoverageRows = () =>
+  FTS_INDEXES.map((i) => ({ index_name: i.indexName, property_names: [...i.properties] }));
 
 afterEach(() => {
   calls.length = 0;
@@ -62,6 +71,37 @@ describe('createSearchFTSIndexes', () => {
 
     await expect(createSearchFTSIndexes()).rejects.toThrow('Invalid GITNEXUS_FTS_STEMMER');
     expect(calls).toEqual([]);
+  });
+});
+
+describe('buildSearchIndexesOrDegrade', () => {
+  it('returns ok:true when every index builds and verifies (#2544/#2546)', async () => {
+    const executeQuery = vi.fn(async () => fullCoverageRows());
+
+    const result = await buildSearchIndexesOrDegrade(executeQuery);
+
+    expect(result).toEqual({ ok: true });
+  });
+
+  it('returns ok:false instead of throwing when a single index build rejects (#2544/#2546)', async () => {
+    vi.mocked(createFTSIndex).mockRejectedValueOnce(
+      new Error('Runtime exception: Failed calling LOWER: Invalid UTF-8.'),
+    );
+    const executeQuery = vi.fn(async () => fullCoverageRows());
+
+    const result = await buildSearchIndexesOrDegrade(executeQuery);
+
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain('Invalid UTF-8');
+  });
+
+  it('returns ok:false when verification finds a missing index, without throwing', async () => {
+    const executeQuery = vi.fn(async () => fullCoverageRows().slice(1));
+
+    const result = await buildSearchIndexesOrDegrade(executeQuery);
+
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain('missing indexes');
   });
 });
 

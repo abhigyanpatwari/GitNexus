@@ -36,6 +36,7 @@ import {
 } from './lbug/lbug-adapter.js';
 import { escapeCypherString } from './lbug/cypher-escape.js';
 import {
+  buildSearchIndexesOrDegrade,
   createSearchFTSIndexes,
   initialiseSearchFTSStemmer,
   verifySearchFTSIndexes,
@@ -1623,8 +1624,17 @@ export async function runFullAnalysis(
     const ftsAvailable = await loadFTSExtension(undefined, {
       policy: resolveAnalyzeInstallPolicy(),
     });
+    // Tracks whether search indexes actually ended up usable this run — starts
+    // as ftsAvailable (extension loaded) but flips to false below when the
+    // build/verify step itself fails, so capabilities.fts.status / ftsSkipped
+    // stay honest even though that failure no longer aborts the whole analyze.
+    let ftsReady = ftsAvailable;
     if (ftsAvailable) {
-      await createSearchFTSIndexes({
+      // Degrade rather than throw: createSearchFTSIndexes re-tokenizes every
+      // stored row on every run, so a native tokenizer error on a single
+      // pre-existing row (#2544/#2546) must not discard this run's otherwise-
+      // successful graph/embeddings work — only keyword search degrades.
+      const ftsResult = await buildSearchIndexesOrDegrade(executeQuery, {
         onIndexStart: options.verbose
           ? (table, indexName) => log(`FTS: creating ${table}.${indexName}`)
           : undefined,
@@ -1632,14 +1642,16 @@ export async function runFullAnalysis(
           ? (table, indexName) => log(`FTS: ready ${table}.${indexName}`)
           : undefined,
       });
-      const missingIndexNames = await verifySearchFTSIndexes(executeQuery);
-      if (missingIndexNames.length > 0) {
-        throw new Error(
-          `FTS verification failed - missing indexes after analyze: ${missingIndexNames.join(', ')}. ` +
-            'Check FTS extension availability, then retry `gitnexus analyze --force` for a full rebuild.',
+      if (ftsResult.ok) {
+        progress('fts', 90, 'Search indexes ready');
+      } else {
+        ftsReady = false;
+        log(
+          `FTS index build failed (${ftsResult.error}) — keyword search degraded this run. ` +
+            'Graph and embeddings analysis completed successfully. Run `gitnexus analyze --repair-fts` to retry.',
         );
+        progress('fts', 90, 'Search indexes skipped (build failed)');
       }
-      progress('fts', 90, 'Search indexes ready');
     } else {
       // For a missing runtime dependency (#2374) the file is present, so the
       // generic "install it with network access" tail in FTS_UNAVAILABLE_MESSAGE
@@ -2036,7 +2048,7 @@ export async function runFullAnalysis(
         // meta.json / `gitnexus doctor` honest about degraded search.
         fts: {
           provider: 'ladybugdb-fts',
-          status: ftsAvailable ? runtimeCapabilities.fts : 'unavailable',
+          status: ftsReady ? runtimeCapabilities.fts : 'unavailable',
         },
         vectorSearch: {
           provider: effectiveSemanticMode === 'vector-index' ? 'ladybugdb-vector' : 'exact-scan',
@@ -2216,7 +2228,7 @@ export async function runFullAnalysis(
       repoPath,
       stats: meta.stats,
       pipelineResult,
-      ftsSkipped: !ftsAvailable,
+      ftsSkipped: !ftsReady,
       isPrimaryBranch: !placement.branch,
     };
   } catch (err) {
