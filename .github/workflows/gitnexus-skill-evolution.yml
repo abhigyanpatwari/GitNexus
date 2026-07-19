@@ -221,16 +221,38 @@ jobs:
           branch="evolution/skills-${GITHUB_RUN_ID}"
           git config user.name 'gitnexus-evolution[bot]'
           git config user.email 'gitnexus-evolution[bot]@users.noreply.github.com'
-          git config credential.helper \
-            '!f() { echo "username=x-access-token"; echo "password=${APP_TOKEN}"; }; f'
           git checkout -b "${branch}"
           git add .claude/skills gitnexus/skills gitnexus-claude-plugin/skills
           git commit -m 'feat(skills): promoted evolution overlay (gate-passed)'
-          git push origin "HEAD:refs/heads/${branch}"
+
+          # The App token reaches git through GIT_ASKPASS reading step env at
+          # push time — it never appears in argv, git config, or the checkout.
+          askpass="${RUNNER_TEMP}/evolution-askpass"
+          cat > "${askpass}" <<'ASKPASS_EOF'
+          #!/usr/bin/env bash
+          printf '%s\n' "${APP_TOKEN}"
+          ASKPASS_EOF
+          chmod 0700 "${askpass}"
+          GIT_ASKPASS="${askpass}" GIT_TERMINAL_PROMPT=0 git push \
+            "https://x-access-token@github.com/${GITHUB_REPOSITORY}.git" \
+            "HEAD:refs/heads/${branch}"
+
           {
-            printf '%s\n\n' 'Automated skill-evolution promotion. The deterministic gate passed; this PR is the human-review step — inspect the diff and the evidence before merging.'
-            printf '%s\n\n' "Benchmark evidence: ${RUN_URL} (artifact \`gitnexus-evolution-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}\`)."
-            printf '<details><summary>Promotion decisions</summary>\n\n```json\n%s\n```\n\n</details>\n' "${PROMOTION_SUMMARY}"
+            cat <<'BODY_HEAD'
+          Automated skill-evolution promotion. The deterministic gate passed; this PR is the human-review step — inspect the diff and the evidence before merging.
+          BODY_HEAD
+            printf '\n%s\n\n' "Benchmark evidence: ${RUN_URL} (artifact gitnexus-evolution-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT})."
+            cat <<'BODY_OPEN'
+          <details><summary>Promotion decisions</summary>
+
+          ```json
+          BODY_OPEN
+            printf '%s\n' "${PROMOTION_SUMMARY}"
+            cat <<'BODY_CLOSE'
+          ```
+
+          </details>
+          BODY_CLOSE
           } > "${RUNNER_TEMP}/pr-body.md"
           gh pr create \
             --repo "${GITHUB_REPOSITORY}" \
