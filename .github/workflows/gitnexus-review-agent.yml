@@ -47,7 +47,7 @@ jobs:
         )
       )
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 75
     permissions:
       contents: read # Check out trusted control code and the passive PR tree.
       pull-requests: read # Resolve and revalidate the exact PR head/base tuple.
@@ -1179,17 +1179,19 @@ jobs:
             graph tools remain available for the review, but do not satisfy this evidence
             gate. Adapt the skill's checkout/index steps to this pre-aligned environment.
 
-            Run the expert-lens pass as the swarm defined in the skill's "Swarm lanes"
-            section: the lanes — finder lanes and the critic gate alike — are
-            installed as spawnable agents from the exact control SHA. Dispatch and
-            verify them via the Task tool exactly as that section instructs, handing
-            each lane the PR number, the exact head and merge-base SHAs, the absolute
-            paths of review-input/pr.diff and review-input/changed-paths.json, the
-            passive head directory, and the merge-base directory. In this environment,
-            lane tool calls never
+            The skill's "Swarm lanes" section governs the expert-lens pass, including
+            lane dispatch, verification, the critic gate, and every fallback. All six
+            lanes are pre-installed as spawnable agents from the exact control SHA;
+            the Task tool exists solely to dispatch them. Map the section's generic
+            context to this environment when handing lanes their inputs: the diff is
+            review-input/pr.diff, the changed-file manifest is
+            review-input/changed-paths.json, the head checkout is the passive
+            additional directory, the merge-base checkout is
+            ${{ runner.temp }}/gitnexus-review-merge-base, and the base and head
+            identifiers are the exact SHAs above. One CI-specific override: lane tool
+            calls never
             satisfy the publisher's context-evidence gate — make the required
-            successful context call yourself in this conversation. If the Task tool or
-            a lane fails, continue the review inline yourself rather than failing.
+            successful context call yourself in this conversation.
 
             Return one structured field named body containing the complete Markdown
             review, structured exactly as: first a short opening paragraph that leads
