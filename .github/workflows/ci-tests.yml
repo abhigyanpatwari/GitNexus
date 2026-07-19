@@ -401,7 +401,7 @@ jobs:
           cache: npm
           cache-dependency-path: gitnexus/package-lock.json
       - name: Build gitnexus-shared
-        run: npm install && npm run build
+        run: npm ci && npm run build
         working-directory: gitnexus-shared
       - name: Install and build gitnexus
         shell: bash
