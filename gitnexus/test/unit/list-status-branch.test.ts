@@ -65,12 +65,13 @@ vi.mock('../../src/storage/git.js', () => ({
   getCurrentCommit: vi.fn().mockReturnValue('headsha0'),
   getCurrentBranch: vi.fn().mockReturnValue('main'),
   getGitRoot: vi.fn((p: string) => p),
+  isWorkingTreeDirty: vi.fn().mockReturnValue(false),
 }));
 
 import { listCommand } from '../../src/cli/list.js';
 import { statusCommand } from '../../src/cli/status.js';
 import { listRegisteredRepos, findRepo, loadMeta } from '../../src/storage/repo-manager.js';
-import { getCurrentBranch, getCurrentCommit } from '../../src/storage/git.js';
+import { getCurrentBranch, getCurrentCommit, isWorkingTreeDirty } from '../../src/storage/git.js';
 
 let logSpy: ReturnType<typeof vi.spyOn>;
 const output = () => logSpy.mock.calls.map((c) => c.join(' ')).join('\n');
@@ -164,6 +165,30 @@ describe('status branch rendering (#2106)', () => {
       current: { commit: 'headsha0', runnerIdentity },
       status: 'up-to-date',
     });
+  });
+
+  it('reports a dirty working tree as stale in --json even when the commit matches', async () => {
+    (findRepo as any).mockResolvedValue(baseRepo);
+    (getCurrentBranch as any).mockReturnValue('main');
+    (getCurrentCommit as any).mockReturnValue('headsha0');
+    (isWorkingTreeDirty as any).mockReturnValueOnce(true);
+
+    await statusCommand({ json: true });
+    expect(JSON.parse(output())).toMatchObject({
+      index: { commit: 'headsha0' },
+      current: { commit: 'headsha0' },
+      status: 'stale',
+    });
+  });
+
+  it('reports a dirty working tree as stale in the human output at a matching commit', async () => {
+    (findRepo as any).mockResolvedValue(baseRepo);
+    (getCurrentBranch as any).mockReturnValue('main');
+    (getCurrentCommit as any).mockReturnValue('headsha0');
+    (isWorkingTreeDirty as any).mockReturnValueOnce(true);
+
+    await statusCommand();
+    expect(output()).not.toContain('up-to-date');
   });
 
   it('never certifies dirty or checkpointed metadata and reports stable incomplete reasons', async () => {

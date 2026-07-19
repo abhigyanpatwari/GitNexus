@@ -6,7 +6,13 @@
 
 import path from 'path';
 import { findRepo, getStoragePaths, loadMeta, hasKuzuIndex } from '../storage/repo-manager.js';
-import { getCurrentCommit, getCurrentBranch, isGitRepo, getGitRoot } from '../storage/git.js';
+import {
+  getCurrentCommit,
+  getCurrentBranch,
+  isGitRepo,
+  getGitRoot,
+  isWorkingTreeDirty,
+} from '../storage/git.js';
 import {
   analyzerRunnerIdentitiesEqual,
   resolveAnalyzerRunnerIdentity,
@@ -79,10 +85,14 @@ export const statusCommand = async (options: StatusOptions = {}) => {
     currentRunnerIdentity,
   );
   const incompleteReasons = getIndexIncompleteReasons(activeMeta);
+  // A matching HEAD is not enough: `analyze` re-indexes a dirty working tree,
+  // so a repo with uncommitted source changes is stale even at the same commit.
+  // Skip the check for non-git folders (currentCommit === '') to match analyze.
   const isUpToDate =
     currentCommit === activeMeta.lastCommit &&
     runnerIdentityIsCurrent &&
-    incompleteReasons.length === 0;
+    incompleteReasons.length === 0 &&
+    (currentCommit === '' || !isWorkingTreeDirty(repo.repoPath));
   if (options.json) {
     console.log(
       JSON.stringify({
