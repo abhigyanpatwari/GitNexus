@@ -446,6 +446,13 @@ def proposer_evidence_entries(
     return entries
 
 
+# The proposer's exact built-in tool surface. Read/Grep/Glob observe the
+# read-only evidence bundle; Edit/Write must land only in the sandbox output
+# tree. Exported so the containment canary tests the real allowlist and cannot
+# drift from production.
+PROPOSER_ALLOWED_TOOLS = ["Read", "Grep", "Glob", "Edit", "Write"]
+
+
 def run_proposer(
     prompt: str,
     args: argparse.Namespace,
@@ -493,7 +500,7 @@ def run_proposer(
                     settings_json=sandbox.settings_json,
                     strict_mcp_config=True,
                     mcp_config_json='{"mcpServers":{}}',
-                    allowed_tools=["Read", "Grep", "Glob", "Edit", "Write"],
+                    allowed_tools=PROPOSER_ALLOWED_TOOLS,
                     disable_slash_commands=True,
                     transcript_projects=sandbox.transcript_projects,
                     transcript_cwd=Path("/workspace"),

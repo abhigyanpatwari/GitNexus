@@ -14,6 +14,7 @@ from pathlib import Path
 import pytest
 
 from workflow_bench import runner
+from workflow_bench.evolve import PROPOSER_ALLOWED_TOOLS
 from workflow_bench.process_control import ManagedProcessResult, run_managed
 from workflow_bench.proposer_sandbox import (
     MAX_BUNDLE_BYTES,
@@ -742,3 +743,202 @@ for line in sys.stdin:
     assert bash_result.get("is_error") is not True, bash_result
     assert (clone / "bash-called").read_text() == "canary"
     assert (clone / "mcp-called").read_text() == "ok"
+
+
+@pytest.mark.skipif(
+    os.environ.get("GITNEXUS_REQUIRE_CLAUDE_CANARY") != "1",
+    reason="real Claude file-tool containment canary is mandatory in the named Ubuntu CI job",
+)
+def test_real_claude_proposer_file_tools_confined_to_evidence_and_output(tmp_path: Path) -> None:
+    """The proposer's built-in file tools read only /evidence and write only the output tree.
+
+    The Bash+MCP canary proves process/MCP containment; this proves the other
+    half — Read reaches the read-only evidence bundle, Write lands in the output
+    tree, and a Write into the read-only evidence mount is denied. Uses the exact
+    PROPOSER_ALLOWED_TOOLS surface and the same read-only /evidence mount as
+    run_proposer, so it cannot drift from production.
+    """
+
+    claude = Path(os.environ["CLAUDE_CANARY_BIN"]).resolve()
+    assert claude.is_file()
+    clone = tmp_path / "clone"
+    clone.mkdir()
+    evidence = tmp_path / "evidence"
+    evidence.mkdir(mode=0o700)
+    sentinel_text = "evidence-sentinel-4f3a91"
+    (evidence / "sentinel.txt").write_text(sentinel_text)
+
+    observed_tool_results: dict[str, dict] = {}
+
+    class ModelHandler(BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+
+        def log_message(self, _format, *_args):
+            return
+
+        def do_POST(self):  # noqa: N802 - BaseHTTPRequestHandler contract
+            length = int(self.headers.get("content-length", "0"))
+            request = json.loads(self.rfile.read(length))
+            observed_tool_results.update(
+                {
+                    block["tool_use_id"]: block
+                    for message in request.get("messages", [])
+                    if isinstance(message, dict) and isinstance(message.get("content"), list)
+                    for block in message["content"]
+                    if isinstance(block, dict)
+                    and block.get("type") == "tool_result"
+                    and isinstance(block.get("tool_use_id"), str)
+                }
+            )
+            seen = set(observed_tool_results)
+            if "toolu_read_evidence" not in seen:
+                blocks = [
+                    {
+                        "type": "tool_use",
+                        "id": "toolu_read_evidence",
+                        "name": "Read",
+                        "input": {"file_path": "/evidence/sentinel.txt"},
+                    }
+                ]
+                stop_reason = "tool_use"
+            elif "toolu_write_escape" not in seen:
+                blocks = [
+                    {
+                        "type": "tool_use",
+                        "id": "toolu_write_escape",
+                        "name": "Write",
+                        "input": {"file_path": "/evidence/escape.txt", "content": "escape"},
+                    }
+                ]
+                stop_reason = "tool_use"
+            elif "toolu_write_output" not in seen:
+                blocks = [
+                    {
+                        "type": "tool_use",
+                        "id": "toolu_write_output",
+                        "name": "Write",
+                        "input": {
+                            "file_path": "/workspace/.wfbench-output/overlay/marker.txt",
+                            "content": "written",
+                        },
+                    }
+                ]
+                stop_reason = "tool_use"
+            else:
+                blocks = [{"type": "text", "text": "canary complete"}]
+                stop_reason = "end_turn"
+
+            events = [
+                (
+                    "message_start",
+                    {
+                        "type": "message_start",
+                        "message": {
+                            "id": "msg_canary",
+                            "type": "message",
+                            "role": "assistant",
+                            "model": request.get("model", "claude-canary"),
+                            "content": [],
+                            "stop_reason": None,
+                            "stop_sequence": None,
+                            "usage": {"input_tokens": 1, "output_tokens": 0},
+                        },
+                    },
+                )
+            ]
+            for index, block in enumerate(blocks):
+                if block["type"] == "text":
+                    start = {"type": "text", "text": ""}
+                    delta = {"type": "text_delta", "text": block["text"]}
+                else:
+                    start = {"type": "tool_use", "id": block["id"], "name": block["name"], "input": {}}
+                    delta = {"type": "input_json_delta", "partial_json": json.dumps(block["input"])}
+                events.extend(
+                    [
+                        ("content_block_start", {"type": "content_block_start", "index": index, "content_block": start}),
+                        ("content_block_delta", {"type": "content_block_delta", "index": index, "delta": delta}),
+                        ("content_block_stop", {"type": "content_block_stop", "index": index}),
+                    ]
+                )
+            events.extend(
+                [
+                    (
+                        "message_delta",
+                        {
+                            "type": "message_delta",
+                            "delta": {"stop_reason": stop_reason, "stop_sequence": None},
+                            "usage": {"output_tokens": 1},
+                        },
+                    ),
+                    ("message_stop", {"type": "message_stop"}),
+                ]
+            )
+            payload = "".join(f"event: {event}\ndata: {json.dumps(data)}\n\n" for event, data in events).encode()
+            self.send_response(200)
+            self.send_header("content-type", "text/event-stream")
+            self.send_header("content-length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), ModelHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        evidence_mount = ReadOnlyMount(source=evidence.resolve(), target="/evidence")
+        with prepare_sandbox(
+            clone=clone,
+            claude_bin=claude,
+            read_only_mounts=[evidence_mount],
+            preflight=True,
+        ) as sandbox:
+            result = sandbox.run(
+                [
+                    sandbox.claude_bin,
+                    "-p",
+                    "--input-format",
+                    "text",
+                    "--output-format",
+                    "json",
+                    "--bare",
+                    "--settings",
+                    sandbox.settings_json,
+                    "--strict-mcp-config",
+                    "--mcp-config",
+                    '{"mcpServers":{}}',
+                    "--permission-mode",
+                    "dontAsk",
+                    "--model",
+                    "claude-canary-20260718",
+                    "--allowedTools",
+                    *PROPOSER_ALLOWED_TOOLS,
+                ],
+                timeout=60,
+                env=sandbox.environment(
+                    auth_token="offline-canary-key",
+                    base_url=f"http://127.0.0.1:{server.server_port}",
+                ),
+                stdin_data=b"Read the evidence sentinel, then write the two files, then finish.",
+            )
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+    assert result.ok, result.stderr_tail + result.stdout_tail
+    report = json.loads(result.stdout_tail)
+    assert report["subtype"] == "success" and report["is_error"] is False, report
+
+    # Read reaches the read-only evidence mount and surfaces its bytes.
+    read_result = observed_tool_results["toolu_read_evidence"]
+    assert read_result.get("is_error") is not True, read_result
+    assert sentinel_text in json.dumps(read_result), read_result
+
+    # Write into the read-only evidence mount is denied.
+    escape_result = observed_tool_results["toolu_write_escape"]
+    assert escape_result.get("is_error") is True, escape_result
+    assert not (evidence / "escape.txt").exists()
+
+    # Write into the output tree succeeds and actually lands.
+    output_result = observed_tool_results["toolu_write_output"]
+    assert output_result.get("is_error") is not True, output_result
+    assert (clone / ".wfbench-output" / "overlay" / "marker.txt").read_text() == "written"
