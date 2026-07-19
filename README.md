@@ -205,7 +205,7 @@ flowchart TB
 | **OpenCode**             | Yes | Yes    | —                                                                                                                 | MCP + Skills |
 | **CodeBuddy** (Tencent)  | Yes | Yes    | —                                                                                                                 | MCP + Skills |
 | **Qoder** (Alibaba)      | Yes | Yes    | —                                                                                                                 | MCP + Skills |
-| **Factory** (Droid)      | Yes | Yes    | Yes (PostToolUse, [plugin](gitnexus-factory-plugin/))                                                              | **Full**     |
+| **Factory** (Droid)      | Yes | Yes    | Yes (PostToolUse, [plugin](gitnexus-factory-plugin/))                                                             | **Full**     |
 | **Windsurf**             | Yes | —      | —                                                                                                                 | MCP          |
 
 > **Claude Code** and **Codex** get the deepest integration: MCP tools + agent skills + PreToolUse hooks that enrich searches with graph context + PostToolUse hooks that detect a stale index after commits and prompt the agent to reindex.
