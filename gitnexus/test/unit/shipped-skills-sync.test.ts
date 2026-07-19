@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { RENAMED_SKILL_DIRS } from '../../src/cli/setup.js';
 import { STANDARD_SKILL_CATALOG, type StandardSkillName } from '../../src/cli/standard-skills.js';
@@ -19,9 +20,20 @@ const STANDARD_SKILL_NAMES = STANDARD_SKILL_CATALOG.map((skill) => skill.name);
 const SPECIALIZED_NESTED_SKILLS = ['gitnexus-pdg-query', 'gitnexus-taint-analysis'] as const;
 
 function listFilesRecursive(dir: string, base: string = dir): string[] {
+  // readdirSync follows a symlinked directory, so a mirror dir aliased to the
+  // canonical tree would pass the byte-compare. Reject a symlinked root.
+  if (fs.lstatSync(dir).isSymbolicLink()) {
+    throw new Error(`shipped skill path must not be a symlink: ${dir}`);
+  }
   const out: string[] = [];
   for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
     const full = path.join(dir, entry.name);
+    // A symlinked file is typed as a non-directory and readFileSync would follow
+    // it to the canonical bytes — a silent pass. Only real, byte-identical files
+    // (and real directories) may make up a shipped mirror.
+    if (entry.isSymbolicLink()) {
+      throw new Error(`shipped skill entry must be a regular file, not a symlink: ${full}`);
+    }
     if (entry.isDirectory()) {
       out.push(...listFilesRecursive(full, base));
     } else {
@@ -257,3 +269,53 @@ describe('skill-sync workflow contract', () => {
     expect(workflow).toContain('test/unit/evidence-provenance-helper.test.ts');
   });
 });
+
+describe.skipIf(process.platform === 'win32')(
+  'drift guard rejects symlinked shipped entries',
+  () => {
+    it('rejects a mirror file symlinked to the canonical copy instead of passing byte-compare', () => {
+      const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-drift-file-'));
+      try {
+        const canonical = path.join(tmp, 'canonical-SKILL.md');
+        fs.writeFileSync(canonical, 'canonical content');
+        const mirror = path.join(tmp, 'mirror');
+        fs.mkdirSync(mirror);
+        fs.symlinkSync(canonical, path.join(mirror, 'SKILL.md'));
+        expect(() => snapshotDir(mirror)).toThrow(/symlink/);
+      } finally {
+        fs.rmSync(tmp, { recursive: true, force: true });
+      }
+    });
+
+    it('rejects a mirror subdirectory that is a symlink', () => {
+      const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-drift-dir-'));
+      try {
+        const realDir = path.join(tmp, 'real');
+        fs.mkdirSync(realDir);
+        fs.writeFileSync(path.join(realDir, 'SKILL.md'), 'x');
+        const mirror = path.join(tmp, 'mirror');
+        fs.mkdirSync(mirror);
+        fs.symlinkSync(realDir, path.join(mirror, 'scripts'));
+        expect(() => listFilesRecursive(mirror)).toThrow(/symlink/);
+      } finally {
+        fs.rmSync(tmp, { recursive: true, force: true });
+      }
+    });
+
+    it('still accepts a mirror made only of real byte-identical files', () => {
+      const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'gn-drift-real-'));
+      try {
+        const mirror = path.join(tmp, 'mirror');
+        fs.mkdirSync(path.join(mirror, 'scripts'), { recursive: true });
+        fs.writeFileSync(path.join(mirror, 'SKILL.md'), 'real');
+        fs.writeFileSync(path.join(mirror, 'scripts', 'helper.mjs'), 'real');
+        expect(snapshotDir(mirror)).toEqual({
+          'SKILL.md': 'real',
+          'scripts/helper.mjs': 'real',
+        });
+      } finally {
+        fs.rmSync(tmp, { recursive: true, force: true });
+      }
+    });
+  },
+);
