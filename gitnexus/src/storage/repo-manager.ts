@@ -96,10 +96,61 @@ export const registryPathEquals = (a: string, b: string): boolean =>
 export const cloneDirBelongsToEntry = (cloneDir: string, entryPath: string): boolean =>
   registryPathEquals(canonicalizePath(cloneDir), canonicalizePath(entryPath));
 
+/**
+ * Versioned receipt for the analyzer process that produced an index.
+ *
+ * Paths identify the resolved runtime and invoked GitNexus entry artifact on
+ * this machine. The entry artifact is diagnostic (CLI and server-worker entry
+ * files differ); semantic freshness compares the runtime/build/dependency
+ * fields. SHA-256 digests make the receipt independently reproducible:
+ * `invokedArtifact.digest` covers the entry file, `build.digest` covers the
+ * complete source or distribution tree, and `dependencyRuntime.digest` covers
+ * the applicable lockfile, resolved runtime package metadata, and every
+ * content-addressed package payload (including JS/JSON/native/Wasm inputs)
+ * using the canonicalizations defined in `core/analyzer-identity.ts`.
+ */
+export interface AnalyzerRunnerIdentity {
+  schemaVersion: 4;
+  runtime: {
+    executablePath: string;
+    version: string;
+    platform: string;
+    architecture: string;
+    modulesAbi: string;
+    libc: string;
+  };
+  cliVersion: string;
+  invokedArtifact: {
+    path: string;
+    digest: string;
+  };
+  build: {
+    kind: 'source' | 'distribution';
+    rootPath: string;
+    canonicalization: 'gitnexus-analyzer-build-v2';
+    digest: string;
+  };
+  dependencyRuntime: {
+    manifestPath: string;
+    lockfilePath: string | null;
+    canonicalization: 'gitnexus-analyzer-dependency-runtime-v4';
+    packageCount: number;
+    artifactCount: number;
+    digest: string;
+  };
+}
+
 export interface RepoMeta {
   repoPath: string;
   lastCommit: string;
   indexedAt: string;
+  /**
+   * Analyzer/runtime receipt for the successful run represented by this
+   * metadata. Optional so indexes written by older GitNexus releases remain
+   * readable; a missing value means provenance is unknown, never that it
+   * matches the currently invoked analyzer.
+   */
+  runnerIdentity?: AnalyzerRunnerIdentity;
   /**
    * Canonical `origin` remote URL captured at index time. Used to
    * fingerprint the same logical repo across multiple on-disk clones

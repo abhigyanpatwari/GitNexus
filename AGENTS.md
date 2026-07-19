@@ -1,7 +1,7 @@
-<!-- version: 1.7.0 -->
-<!-- Last updated: 2026-04-23 -->
+<!-- version: 1.13.0 -->
+<!-- Last updated: 2026-07-16 -->
 
-Last reviewed: 2026-04-23
+Last reviewed: 2026-07-16
 
 **Project:** GitNexus · **Environment:** dev · **Maintainer:** repository maintainers (see GitHub)
 
@@ -55,10 +55,45 @@ listed in [`pr-swarm-review/README.md`](pr-swarm-review/README.md); edit review 
 in the canonical files, never in the wrappers. The review is read-only — it never edits,
 commits, or posts.
 
+## Engineering planning & execution (`/gitnexus-plan` · `/gitnexus-work` · `/gitnexus-review` · `/gitnexus-lfg`)
+
+Four canonical, CLI-neutral skill specs under `.claude/skills/` (Claude Code invokes
+them as slash commands; Codex or any other agent reading this file should read the
+named SKILL.md and follow it directly — user-level Codex prompts are documented in the
+plan/work/lfg skill READMEs):
+
+- **`gitnexus-plan/SKILL.md`** — deep, implementation-ready plan for a code change:
+  GitNexus graph intelligence for navigation, statement-level PDG slices for behavioral
+  constraints, targeted source reads for verification. Output lands in `docs/plans/`
+  with a reusable implementation context pack (section 11). Planning-only — it never
+  edits code (index freshness refreshes via `analyze --index-only` are the one
+  permitted state change). Interactive runs ask up front how deep to go
+  (quick / standard / deep); Deepen mode strengthens an existing plan in place.
+- **`gitnexus-work/SKILL.md`** — executes a gitnexus-plan as verified atomic commits:
+  drift-checks the plan's evidence pin against HEAD, `impact` before every symbol
+  edit, tests from the plan's scenarios, `detect_changes` before every commit.
+- **`gitnexus-review/SKILL.md`** — read-only GitNexus review of a PR URL/number,
+  branch or commit range, or local staged/unstaged/untracked changes. It pins exact
+  SHAs, aligns the graph and checkout, runs a PDG-backed taint pass on trust-boundary
+  diffs, scales to per-domain expert lenses from the graph's clusters, and reports
+  evidence-backed findings.
+- **`gitnexus-lfg/SKILL.md`** — pipeline orchestrator: plan (depth asked up front) →
+  blocking user gate (proceed or stop) → work → `gitnexus-review`.
+
+The family ships with the npm package (`gitnexus/skills/`, installed to editor targets
+by `gitnexus setup`) and the Claude Code plugin; review also has a standalone Cursor
+mirror. `gitnexus/test/unit/shipped-skills-sync.test.ts` guards the copies. Token savings of the workflow are measurable with
+`eval/workflow_bench/` (real headless CLI runs, free-model routing supported — see its README).
+
 ## Changelog
 
 | Date | Version | Change |
 |------|---------|--------|
+| 2026-07-16 | 1.13.0 | `gitnexus-plan` asks plan depth up front (quick/standard/deep) in interactive runs; `gitnexus-lfg` gate slimmed to proceed/stop (Deepen stays as the route-back mechanism). |
+| 2026-07-16 | 1.12.0 | Renamed `gitnexus-pr-review` to `gitnexus-review`; added PR URL/number, branch/range, and local-change targets plus install migration (setup warns on a legacy `gitnexus-pr-review` dir and leaves it in place; uninstall removes it). |
+| 2026-07-11 | 1.11.0 | Skill family shipped via npm skills/ + plugin (sync-guarded); added eval/workflow_bench token-savings benchmark. |
+| 2026-07-11 | 1.10.0 | Added `gitnexus-work` (plan executor) and `gitnexus-lfg` (plan → deepen/work gate → review pipeline) skills; section renamed to Engineering planning & execution. |
+| 2026-07-11 | 1.9.0 | Added Engineering planning (`/gitnexus-plan`) section; registered the `gitnexus-plan` skill (`.claude/skills/gitnexus-plan/`). |
 | 2026-05-22 | 1.8.0 | Kotlin added to `MIGRATED_LANGUAGES` (registry-primary call resolution by default). Closes #1756 (companion-vs-instance dispatch) and #1757 (lambda scopes); refs #1746. RFC §6.4 corpus criterion waived (corpus-mode wiring is #927-scope); fixture criterion met. |
 | 2026-04-23 | 1.7.0 | TypeScript added to `MIGRATED_LANGUAGES` (registry-primary call resolution by default). |
 | 2026-04-20 | 1.6.0 | Added scope-resolution pipeline pointer (RFC #909 Ring 3); Python migrated to registry-primary. |
@@ -74,17 +109,18 @@ commits, or posts.
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
 
-This project is indexed by GitNexus as **GitNexus** (26675 symbols, 35395 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
+This project is indexed by GitNexus as **GitNexus** (20319 symbols, 54304 relationships, 300 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
 
 > Index stale? Run `node .gitnexus/run.cjs analyze` from the project root — it auto-selects an available runner. No `.gitnexus/run.cjs` yet? `npx gitnexus analyze` (npm 11 crash → `npm i -g gitnexus`; #1939).
 
 ## Always Do
 
 - **MUST run impact analysis before editing any symbol.** Before modifying a function, class, or method, run `impact({target: "symbolName", direction: "upstream"})` and report the blast radius (direct callers, affected processes, risk level) to the user.
-- **MUST run `detect_changes()` before committing** to verify your changes only affect expected symbols and execution flows.
+- **MUST run `detect_changes()` before committing** to verify your changes only affect expected symbols and execution flows. For regression review, compare against the default branch: `detect_changes({scope: "compare", base_ref: "main"})`.
 - **MUST warn the user** if impact analysis returns HIGH or CRITICAL risk before proceeding with edits.
 - When exploring unfamiliar code, use `query({search_query: "concept"})` to find execution flows instead of grepping. It returns process-grouped results ranked by relevance.
 - When you need full context on a specific symbol — callers, callees, which execution flows it participates in — use `context({name: "symbolName"})`.
+- For security review, `explain({target: "fileOrSymbol"})` lists taint findings (source→sink flows; needs `analyze --pdg`).
 
 ## Never Do
 
@@ -112,26 +148,6 @@ This project is indexed by GitNexus as **GitNexus** (26675 symbols, 35395 relati
 | Rename / extract / split / refactor | `.claude/skills/gitnexus-refactoring/SKILL.md` |
 | Tools, resources, schema reference | `.claude/skills/gitnexus-guide/SKILL.md` |
 | Index, status, clean, wiki CLI commands | `.claude/skills/gitnexus-cli/SKILL.md` |
-| Work in the Ingestion area (239 symbols) | `.claude/skills/gitnexus-area-ingestion/SKILL.md` |
-| Work in the Extractors area (135 symbols) | `.claude/skills/gitnexus-area-extractors/SKILL.md` |
-| Work in the Components area (112 symbols) | `.claude/skills/gitnexus-area-components/SKILL.md` |
-| Work in the Lbug area (96 symbols) | `.claude/skills/gitnexus-area-lbug/SKILL.md` |
-| Work in the Group area (94 symbols) | `.claude/skills/gitnexus-area-group/SKILL.md` |
-| Work in the Cli area (92 symbols) | `.claude/skills/gitnexus-area-cli/SKILL.md` |
-| Work in the Configs area (92 symbols) | `.claude/skills/gitnexus-area-configs/SKILL.md` |
-| Work in the Type-extractors area (90 symbols) | `.claude/skills/gitnexus-area-type-extractors/SKILL.md` |
-| Work in the Hooks area (88 symbols) | `.claude/skills/gitnexus-area-hooks/SKILL.md` |
-| Work in the Unit area (80 symbols) | `.claude/skills/gitnexus-area-unit/SKILL.md` |
-| Work in the Cpp area (73 symbols) | `.claude/skills/gitnexus-area-cpp/SKILL.md` |
-| Work in the Scope-resolution area (72 symbols) | `.claude/skills/gitnexus-area-scope-resolution/SKILL.md` |
-| Work in the Server area (66 symbols) | `.claude/skills/gitnexus-area-server/SKILL.md` |
-| Work in the Local area (61 symbols) | `.claude/skills/gitnexus-area-local/SKILL.md` |
-| Work in the Wiki area (60 symbols) | `.claude/skills/gitnexus-area-wiki/SKILL.md` |
-| Work in the Workers area (57 symbols) | `.claude/skills/gitnexus-area-workers/SKILL.md` |
-| Work in the Embeddings area (56 symbols) | `.claude/skills/gitnexus-area-embeddings/SKILL.md` |
-| Work in the Typescript area (53 symbols) | `.claude/skills/gitnexus-area-typescript/SKILL.md` |
-| Work in the Storage area (51 symbols) | `.claude/skills/gitnexus-area-storage/SKILL.md` |
-| Work in the Php area (48 symbols) | `.claude/skills/gitnexus-area-php/SKILL.md` |
 
 <!-- gitnexus:end -->
 

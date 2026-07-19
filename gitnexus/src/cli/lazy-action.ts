@@ -43,3 +43,43 @@ export function createLbugLazyAction<
     await action(...args);
   };
 }
+
+/**
+ * Analyze-specific lazy action. Unlike the generic LadybugDB wrapper, this
+ * captures the complete analyzer receipt before probing/loading native code or
+ * evaluating the analyzer module graph. The target export receives that start
+ * receipt as its first argument and threads it to runFullAnalysis.
+ */
+export function createAnalyzerLbugLazyAction<
+  TModule extends Record<string, unknown>,
+  TKey extends string & keyof TModule,
+>(
+  identityLoader: () => Promise<
+    Pick<typeof import('../core/analyzer-identity.js'), 'captureAnalyzerIdentityBeforeLoad'>
+  >,
+  loader: () => Promise<TModule>,
+  exportName: TKey,
+  analyzerModuleUrl: string,
+): (...args: unknown[]) => Promise<void> {
+  return async (...args: unknown[]): Promise<void> => {
+    const identityModule = await identityLoader();
+    const prepared = await identityModule.captureAnalyzerIdentityBeforeLoad(
+      analyzerModuleUrl,
+      async () => {
+        const check = checkLbugNative();
+        if (!check.ok) return { check, module: null };
+        return { check, module: await loader() };
+      },
+    );
+    if (!prepared.loaded.check.ok) {
+      process.stderr.write(`\n  ${prepared.loaded.check.message?.replace(/\n/g, '\n  ')}\n\n`);
+      process.exitCode = 1;
+      return;
+    }
+    const action = prepared.loaded.module?.[exportName];
+    if (!isCallable(action)) {
+      throw new Error(`Lazy action export not found: ${exportName}`);
+    }
+    await action(prepared.runnerIdentity, ...args);
+  };
+}
