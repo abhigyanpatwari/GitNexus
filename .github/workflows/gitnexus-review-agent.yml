@@ -1,9 +1,13 @@
 # GitNexus review agent: untrusted PR data is analyzed in a read-only job and
 # crosses into a separate, secretless publisher only as a bounded JSON artifact.
 #
-# Activation checklist (the comment-trigger lane is OFF by default):
+# Activation checklist (the comment-trigger lane is OFF by default).
+# Staged rollout: issue_comment and workflow_dispatch only ever execute the
+# DEFAULT-BRANCH copy of this file, so it cannot be exercised from the PR that
+# introduces it — merge it registered but disabled, then run the steps below
+# post-merge and enable the variable only once same-repo AND fork PRs pass.
 # [ ] Configure the repository secret CLAUDE_CODE_OAUTH_TOKEN.
-# [ ] Run workflow_dispatch against a disposable same-repo PR and a fork PR.
+# [ ] Run workflow_dispatch against a disposable same-repo PR and a fork PR (post-merge).
 # [ ] Confirm the analyze job has no write permission and the publisher has no model secret.
 # [ ] Confirm exact-SHA, Bubblewrap, artifact-failure, and sticky-comment paths are green.
 # [ ] Set the repository variable GITNEXUS_REVIEW_COMMENT_ENABLED=true.
