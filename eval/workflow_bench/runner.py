@@ -1072,21 +1072,13 @@ def main() -> None:
                             ],
                             preflight=False,
                         ) as sandbox:
-                            if arm in CANDIDATE_ARMS:
-                                assert candidate_overlay is not None
-                                applied_digest = apply_candidate_overlay(
-                                    candidate_overlay,
-                                    worktree,
-                                    sandbox=sandbox,
-                                )
-                                if applied_digest != overlay_digest:
-                                    raise RuntimeError("candidate overlay changed during the benchmark run")
-                            orig_sha = _sandbox_git(sandbox, ["rev-parse", "HEAD"]).strip()
-                            if not re.fullmatch(r"[0-9a-fA-F]{40,64}", orig_sha):
-                                raise RuntimeError("sandboxed candidate setup did not produce an immutable commit")
-                            # Capture candidate/incumbent skill evidence before
-                            # the task's untrusted setup can rewrite prompt roots.
-                            initial_skill_digest = skill_fingerprint(worktree, execution_arm)
+                            # Capture the BASE (pre-overlay) skill digest — identical
+                            # for the incumbent and candidate arms — then run the
+                            # task's untrusted setup against those base skills. The
+                            # candidate overlay is applied only afterwards, so setup
+                            # can never observe candidate prose and both arms share
+                            # byte-identical pre-overlay state.
+                            base_skill_digest = skill_fingerprint(worktree, execution_arm)
                             if task.get("setup"):
                                 setup_command = ["/bin/sh", "-lc", str(task["setup"])]
                                 setup = sandbox.run(
@@ -1096,12 +1088,30 @@ def main() -> None:
                                 )
                                 if not setup.ok:
                                     raise ManagedProcessError(setup_command, setup)
+                            # Tamper-evidence: setup must not have rewritten the base
+                            # skills, verified before any candidate overlay lands.
                             require_skill_fingerprint(
                                 worktree,
                                 execution_arm,
-                                initial_skill_digest,
+                                base_skill_digest,
                                 phase="task setup",
                             )
+                            if arm in CANDIDATE_ARMS:
+                                assert candidate_overlay is not None
+                                applied_digest = apply_candidate_overlay(
+                                    candidate_overlay,
+                                    worktree,
+                                    sandbox=sandbox,
+                                )
+                                if applied_digest != overlay_digest:
+                                    raise RuntimeError("candidate overlay changed during the benchmark run")
+                            # The digest the model must preserve during its run is the
+                            # post-overlay skill surface (candidate skills for
+                            # candidate arms; unchanged base skills otherwise).
+                            expected_skill_digest = skill_fingerprint(worktree, execution_arm)
+                            orig_sha = _sandbox_git(sandbox, ["rev-parse", "HEAD"]).strip()
+                            if not re.fullmatch(r"[0-9a-fA-F]{40,64}", orig_sha):
+                                raise RuntimeError("sandboxed candidate setup did not produce an immutable commit")
                             before_work_digest = (
                                 implementation_diff_digest(sandbox, orig_sha)
                                 if execution_arm in IMPLEMENTATION_ARMS
@@ -1115,7 +1125,7 @@ def main() -> None:
                                 sandbox=sandbox,
                                 transcript_output_dir=out_dir,
                                 transcript_output_prefix=f"{task['id']}-{arm}-run{run_idx}",
-                                expected_skill_digest=initial_skill_digest,
+                                expected_skill_digest=expected_skill_digest,
                                 enforce_phase_boundary=True,
                                 ce_plugin_dir=ce_plugin_dir_for_arm(execution_arm, ce_plugin_snapshot),
                                 oracle_snapshot=oracle_snapshot,
@@ -1155,7 +1165,7 @@ def main() -> None:
                                 "sanitized_task_sha": sanitized_head,
                                 "variant_head_sha": orig_sha,
                                 "task_prompt_digest": hashlib.sha256(task["prompt"].encode()).hexdigest(),
-                                "skill_digest": initial_skill_digest,
+                                "skill_digest": expected_skill_digest,
                                 "candidate_overlay_digest": (overlay_digest if arm in CANDIDATE_ARMS else None),
                                 "recorded_at": datetime.now(UTC).isoformat(),
                             }
