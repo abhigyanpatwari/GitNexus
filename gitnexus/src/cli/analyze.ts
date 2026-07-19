@@ -30,6 +30,7 @@ import {
   RegistryNameCollisionError,
   AnalysisNotFinalizedError,
   assertAnalysisFinalized,
+  type AnalyzerRunnerIdentity,
 } from '../storage/repo-manager.js';
 import { getGitRoot, hasGitDir, getDefaultBranch } from '../storage/git.js';
 import {
@@ -734,7 +735,11 @@ export const shouldGenerateCommunitySkillFiles = (
   pipelineResult: unknown,
 ): boolean => Boolean(options?.skills && pipelineResult && !options?.indexOnly);
 
-export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOptions) => {
+export const analyzeCommand = async (
+  inputPath?: string,
+  options?: AnalyzeOptions,
+  runnerIdentityAtBootstrap?: AnalyzerRunnerIdentity,
+) => {
   if (await ensureHeap()) return;
   forceHeapOOMForTestIfEnabled();
 
@@ -757,7 +762,7 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
   // pre-call values.
   const envSnap = snapshotAnalyzeEnv();
   try {
-    await analyzeCommandImpl(inputPath, options);
+    await analyzeCommandImpl(inputPath, options, runnerIdentityAtBootstrap);
   } finally {
     restoreAnalyzeEnv(envSnap);
   }
@@ -774,9 +779,17 @@ export const analyzeCommand = async (inputPath?: string, options?: AnalyzeOption
   }
 };
 
+/** Commander entrypoint used only by the capture-before-import lazy bootstrap. */
+export const analyzeCommandWithRunnerIdentity = async (
+  runnerIdentityAtBootstrap: AnalyzerRunnerIdentity,
+  inputPath?: string,
+  options?: AnalyzeOptions,
+): Promise<void> => analyzeCommand(inputPath, options, runnerIdentityAtBootstrap);
+
 const analyzeCommandImpl = async (
   inputPath?: string,
   cliOptions?: AnalyzeOptions,
+  runnerIdentityAtBootstrap?: AnalyzerRunnerIdentity,
 ): Promise<void> => {
   console.log('\n  GitNexus Analyzer\n');
 
@@ -1323,63 +1336,64 @@ const analyzeCommandImpl = async (
     const skipAll = options.indexOnly;
     const skipAgentsMd = skipAll || options.skipAgentsMd;
     const skipSkills = skipAll || options.skipSkills;
-    const result = await runFullAnalysis(
-      repoPath,
-      {
-        // Pipeline re-index — OR'd with --skills because skill generation
-        // needs a fresh pipelineResult. Has no bearing on the registry
-        // collision guard (see allowDuplicateName below).
-        force: options.force || options.skills,
-        repairFts: options.repairFts,
-        embeddings: embeddingsEnabled,
-        embeddingsNodeLimit,
-        dropEmbeddings: options.dropEmbeddings,
-        verbose: options.verbose,
-        skipGit: options.skipGit,
-        skipAgentsMd,
-        skipSkills,
-        // CFG/PDG substrate opt-in (#2081 M1) — threaded to both sinks downstream.
-        pdg: options.pdg === true,
-        // Resolved default branch (CLI > .gitnexusrc > auto-detect > "main")
-        // threaded into the generated regression-compare example (#243).
-        defaultBranch: resolvedDefaultBranch,
-        // Index-branch selector (#2106). Read straight from the CLI flag (not
-        // the .gitnexusrc-merged options) so the cosmetic defaultBranch config
-        // can never change index placement. Undefined → auto-detect in pipeline.
-        branch: cliOptions?.branch,
-        // commander.js `.option('--no-stats', …)` registers the flag as
-        // `options.stats` (boolean, default true; `false` when the user
-        // passed --no-stats). Reading `options.noStats` here returns
-        // undefined every time, so the flag was a no-op on the markdown
-        // rewrite path before this fix. See #1477.
-        noStats: options.stats === false,
-        registryName: options.name,
-        // Registry-collision bypass — its own CLI flag, intentionally NOT
-        // overloading --force. A user who hits the collision guard should
-        // be able to accept the duplicate name without also paying the
-        // cost of a full pipeline re-index. See #829 review round 2.
-        allowDuplicateName: options.allowDuplicateName,
-        // Worker pool size threaded from --workers, replacing the previous
-        // GITNEXUS_WORKER_POOL_SIZE env mutation. `undefined` defers to the
-        // env / auto-formula fallback inside the pipeline.
-        workerPoolSize,
-        // Extra fetch-wrapper names from `.gitnexusrc` (#1589/#1852 residual);
-        // forwarded to the routes phase consumer scan.
-        fetchWrappers: options.fetchWrappers,
-        // The CLI always process.exit()s after this returns (success path at the
-        // end of analyzeCommandImpl, error/interrupt paths via process.exit too),
-        // so the finalize close skips the native conn/db close — it can double-free
-        // in LadybugDB's ClientContext destructor after --pdg writes (#2264). The
-        // CHECKPOINT keeps the index durable; process exit reclaims the handles.
-        skipNativeCloseOnExit: true,
+    const runOptions = {
+      // Pipeline re-index — OR'd with --skills because skill generation
+      // needs a fresh pipelineResult. Has no bearing on the registry
+      // collision guard (see allowDuplicateName below).
+      force: options.force || options.skills,
+      repairFts: options.repairFts,
+      embeddings: embeddingsEnabled,
+      embeddingsNodeLimit,
+      dropEmbeddings: options.dropEmbeddings,
+      verbose: options.verbose,
+      skipGit: options.skipGit,
+      skipAgentsMd,
+      skipSkills,
+      // CFG/PDG substrate opt-in (#2081 M1) — threaded to both sinks downstream.
+      pdg: options.pdg === true,
+      // Resolved default branch (CLI > .gitnexusrc > auto-detect > "main")
+      // threaded into the generated regression-compare example (#243).
+      defaultBranch: resolvedDefaultBranch,
+      // Index-branch selector (#2106). Read straight from the CLI flag (not
+      // the .gitnexusrc-merged options) so the cosmetic defaultBranch config
+      // can never change index placement. Undefined → auto-detect in pipeline.
+      branch: cliOptions?.branch,
+      // commander.js `.option('--no-stats', …)` registers the flag as
+      // `options.stats` (boolean, default true; `false` when the user
+      // passed --no-stats). Reading `options.noStats` here returns
+      // undefined every time, so the flag was a no-op on the markdown
+      // rewrite path before this fix. See #1477.
+      noStats: options.stats === false,
+      registryName: options.name,
+      // Registry-collision bypass — its own CLI flag, intentionally NOT
+      // overloading --force. A user who hits the collision guard should
+      // be able to accept the duplicate name without also paying the
+      // cost of a full pipeline re-index. See #829 review round 2.
+      allowDuplicateName: options.allowDuplicateName,
+      // Worker pool size threaded from --workers, replacing the previous
+      // GITNEXUS_WORKER_POOL_SIZE env mutation. `undefined` defers to the
+      // env / auto-formula fallback inside the pipeline.
+      workerPoolSize,
+      // Extra fetch-wrapper names from `.gitnexusrc` (#1589/#1852 residual);
+      // forwarded to the routes phase consumer scan.
+      fetchWrappers: options.fetchWrappers,
+      // The CLI always process.exit()s after this returns (success path at the
+      // end of analyzeCommandImpl, error/interrupt paths via process.exit too),
+      // so the finalize close skips the native conn/db close — it can double-free
+      // in LadybugDB's ClientContext destructor after --pdg writes (#2264). The
+      // CHECKPOINT keeps the index durable; process exit reclaims the handles.
+      skipNativeCloseOnExit: true,
+    };
+    const runCallbacks = {
+      onProgress: (_phase, percent, message) => {
+        updateBar(percent, message);
       },
-      {
-        onProgress: (_phase, percent, message) => {
-          updateBar(percent, message);
-        },
-        onLog: barLog,
-      },
-    );
+      onLog: barLog,
+    };
+    const bootstrapArgs: [] | [AnalyzerRunnerIdentity] = runnerIdentityAtBootstrap
+      ? [runnerIdentityAtBootstrap]
+      : [];
+    const result = await runFullAnalysis(repoPath, runOptions, runCallbacks, ...bootstrapArgs);
 
     if (result.alreadyUpToDate) {
       // Even the fast path must prove the repo is discoverable. A prior

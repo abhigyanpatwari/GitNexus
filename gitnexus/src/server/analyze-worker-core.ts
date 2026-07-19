@@ -14,6 +14,7 @@
  */
 import type { AnalyzeOptions } from '../core/run-analyze.js';
 import type { WorkerMessage } from './analyze-worker.js';
+import type { AnalyzerRunnerIdentity } from '../storage/repo-manager.js';
 import { projectAnalyzeResultForIpc } from './analyze-worker-ipc.js';
 
 export interface WorkerAnalysisDeps {
@@ -39,9 +40,13 @@ export async function runWorkerAnalysis(
   repoPath: string,
   options: AnalyzeOptions,
   deps: WorkerAnalysisDeps,
+  runnerIdentityAtBootstrap?: AnalyzerRunnerIdentity,
 ): Promise<void> {
   let terminal: WorkerMessage;
   try {
+    const bootstrapArgs: [] | [AnalyzerRunnerIdentity] = runnerIdentityAtBootstrap
+      ? [runnerIdentityAtBootstrap]
+      : [];
     const result = await deps.runFullAnalysis(
       repoPath,
       // This worker force-exits right after reporting, so skip the native close
@@ -53,6 +58,7 @@ export async function runWorkerAnalysis(
           deps.send({ type: 'progress', phase, percent, message }),
         onLog: (message) => deps.send({ type: 'progress', phase: 'log', percent: -1, message }),
       },
+      ...bootstrapArgs,
     );
     // P2 (#2264): a half-finalized repo — meta.json written but the global
     // registry entry missing (e.g. a prior collision-aborted run, or a wiped
