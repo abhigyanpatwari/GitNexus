@@ -11,6 +11,25 @@ const SURFACES = [
   '.agents/plugins/marketplace.json',
 ] as const;
 
+const MCP_SKILL_DIRS = [
+  'gitnexus-plan',
+  'gitnexus-work',
+  'gitnexus-review',
+  'gitnexus-lfg',
+  'gitnexus-guide',
+  'gitnexus-cli',
+  'gitnexus-debugging',
+  'gitnexus-exploring',
+  'gitnexus-impact-analysis',
+  'gitnexus-refactoring',
+] as const;
+
+const TOTAL_SURFACES = SURFACES.length + MCP_SKILL_DIRS.length;
+
+function mcpPath(dir: string): string {
+  return `gitnexus-claude-plugin/skills/${dir}/mcp.json`;
+}
+
 const tempRoots: string[] = [];
 
 afterEach(() => {
@@ -37,6 +56,13 @@ function makeRoot(packageVersion: string, manifestVersion: string): string {
     name: 'gitnexus-marketplace',
     plugins: [{ name: 'gitnexus', version: manifestVersion, category: 'Developer Tools' }],
   });
+  for (const dir of MCP_SKILL_DIRS) {
+    writeJson(root, mcpPath(dir), {
+      mcpServers: {
+        gitnexus: { command: 'npx', args: ['-y', `gitnexus@${manifestVersion}`, 'mcp'] },
+      },
+    });
+  }
   return root;
 }
 
@@ -55,15 +81,37 @@ function readVersions(root: string): string[] {
 }
 
 describe('syncPluginManifests (#2445)', () => {
-  it('rewrites all four surfaces to the package version and reports them', () => {
+  it('rewrites every version-bearing surface to the package version and reports them', () => {
     const root = makeRoot('1.6.10-rc.29', '1.6.9');
 
     const result = syncPluginManifests(root);
 
     expect(result.version).toBe('1.6.10-rc.29');
-    expect(result.synced).toHaveLength(4);
-    expect(result.stale.map(({ from }) => from)).toEqual(['1.6.9', '1.6.9', '1.6.9', '1.6.9']);
+    expect(result.synced).toHaveLength(TOTAL_SURFACES);
+    expect(result.stale.map(({ from }) => from)).toEqual(Array(TOTAL_SURFACES).fill('1.6.9'));
     expect(readVersions(root)).toEqual(Array(4).fill('1.6.10-rc.29'));
+  });
+
+  it('pins the gitnexus@<version> launch arg in every plugin skill mcp.json', () => {
+    const root = makeRoot('1.6.10-rc.29', '1.6.9');
+
+    syncPluginManifests(root);
+
+    for (const dir of MCP_SKILL_DIRS) {
+      const mcp = JSON.parse(readFileSync(path.join(root, mcpPath(dir)), 'utf8')) as {
+        mcpServers: { gitnexus: { args: string[] } };
+      };
+      expect(mcp.mcpServers.gitnexus.args).toEqual(['-y', 'gitnexus@1.6.10-rc.29', 'mcp']);
+    }
+  });
+
+  it('fails closed when an mcp.json has no gitnexus@ launch arg', () => {
+    const root = makeRoot('1.6.10-rc.29', '1.6.9');
+    writeJson(root, mcpPath('gitnexus-plan'), {
+      mcpServers: { gitnexus: { command: 'npx', args: ['-y', 'mcp'] } },
+    });
+
+    expect(() => syncPluginManifests(root)).toThrow(/exactly one "gitnexus@<version>" launch arg/);
   });
 
   it('is idempotent once everything matches', () => {
@@ -81,7 +129,7 @@ describe('syncPluginManifests (#2445)', () => {
 
     const result = syncPluginManifests(root, { check: true });
 
-    expect(result.stale).toHaveLength(4);
+    expect(result.stale).toHaveLength(TOTAL_SURFACES);
     expect(result.synced).toHaveLength(0);
     expect(readVersions(root)).toEqual(Array(4).fill('1.6.9'));
   });
