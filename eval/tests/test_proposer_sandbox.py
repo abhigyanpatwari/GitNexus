@@ -780,12 +780,14 @@ def test_real_claude_run_proposer_produces_a_validated_skill_overlay(tmp_path: P
         secrets=["offline-canary-key"],
     )
 
-    candidate_skill = "# gitnexus-plan (candidate)\nTighter planning steps that spend fewer tokens.\n"
-    proposal_text = "Tightened the plan skill to cut token cost while preserving the acceptance steps.\n"
+    # Single-line, newline-free content: the command is wrapped by Claude Code's
+    # nested shell-sandbox prefix, and embedded newlines get mangled there.
+    candidate_skill = "# gitnexus-plan candidate: tighter, cheaper planning."
+    proposal_text = "Tightened the plan skill to cut token cost."
+    skill_path = "/workspace/.wfbench-output/overlay/.claude/skills/gitnexus-plan/SKILL.md"
     author_command = (
         "mkdir -p /workspace/.wfbench-output/overlay/.claude/skills/gitnexus-plan && "
-        f"printf '%s' {shlex.quote(candidate_skill)} "
-        "> /workspace/.wfbench-output/overlay/.claude/skills/gitnexus-plan/SKILL.md && "
+        f"printf '%s' {shlex.quote(candidate_skill)} > {skill_path} && "
         f"printf '%s' {shlex.quote(proposal_text)} > /workspace/.wfbench-output/proposal.md"
     )
 
