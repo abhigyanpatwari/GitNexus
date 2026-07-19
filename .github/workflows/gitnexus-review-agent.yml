@@ -1175,11 +1175,20 @@ jobs:
             gate. Adapt the skill's checkout/index steps to this pre-aligned environment.
 
             Return one structured field named body containing the complete Markdown
-            review: prioritized findings with file:line evidence, change and blast-radius
-            summary, coverage and residual risk, and the skill's verdict wording. Do not
+            review, structured exactly as: first a short opening paragraph that leads
+            with the skill's verdict wording and a plain-language summary of what the
+            PR does; then "### Findings" ordered by severity (CRITICAL, HIGH, MEDIUM,
+            LOW), one bold-severity bullet per finding stating the one-sentence claim
+            followed by an indented evidence line; then "### Change summary and blast
+            radius"; then "### Coverage and residual risk". Every file, line, or symbol
+            reference anywhere in the body must be a clickable Markdown link — never
+            bare `path:line` text. Link head files as
+            https://github.com/${{ github.repository }}/blob/${{ steps.context.outputs.head_sha }}/PATH#L10-L20
+            (exact analyzed head SHA, real line range) and deleted or rename-old paths
+            as the same URL shape at ${{ steps.inputs.outputs.merge_base }}. Do not
             include an HTML publication marker and do not mention users or teams.
           claude_args: |
-            --model claude-sonnet-4-5-20250929
+            --model claude-sonnet-5
             --add-dir "${{ runner.temp }}/gitnexus-review-pr-target"
             --setting-sources user
             --disable-slash-commands
