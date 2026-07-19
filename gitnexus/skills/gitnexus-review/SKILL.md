@@ -180,28 +180,39 @@ dropping anything without a concrete failing scenario.
 
 ### Swarm lanes
 
-Four dispatchable lane definitions ship with this skill in `ci-personas/`:
-`ci-correctness-lens`, `ci-security-lens`, `ci-blast-radius-lens`, and
-`ci-coverage-lens` — read-only reviewers restricted to Read/Glob/Grep plus
-the safe graph tools. They carry the verification dimensions of the
-numbered workflow across every touched domain; domain grouping and the
-four cross-cutting checks above remain the orchestrator's charge.
+Six dispatchable lane definitions ship with this skill in `ci-personas/` —
+read-only reviewers restricted to Read/Glob/Grep plus the safe graph
+tools. Five are finder lanes: `ci-correctness-lens`, `ci-security-lens`,
+`ci-blast-radius-lens`, `ci-coverage-lens`, and `ci-adversarial-lens`
+(which assumes the change is broken and constructs reachable failure
+scenarios the pattern checks miss). They carry the verification
+dimensions of the numbered workflow across every touched domain; domain
+grouping and the four cross-cutting checks above remain the
+orchestrator's charge. The sixth, `ci-critic-lens`, is a gate, not a
+finder — it audits the finished draft.
 
 When the harness supports subagents and these lanes are registered as
 agents (the CI review workflow installs them from its trusted control
 checkout; a local harness may register them from this directory), run the
-expert-lens pass by dispatching all four lanes in parallel in a single
-message. Give each lane the diff, the changed-file manifest, the exact
-base and head identifiers, the checkout paths, and the slice of changed
-files matching its charge.
+expert-lens pass by dispatching all five finder lanes in parallel in a
+single message. Give each lane the diff, the changed-file manifest, the
+exact base and head identifiers, the checkout paths, and the slice of
+changed files matching its charge.
 
 Treat every lane report as an unverified claim: re-anchor each finding to
 the diff, the source, or your own graph queries before it enters the
 review; dedup across lanes; drop anything without a concrete failing
 scenario. Lane tool calls never substitute for evidence this skill or its
-runner requires from the orchestrating conversation itself. If subagent
-dispatch is unavailable or a lane fails, run the lens passes inline — the
-lanes structure the work; they never gate it.
+runner requires from the orchestrating conversation itself.
+
+After composing the complete draft review, dispatch `ci-critic-lens` with
+the full draft body plus the same context. On `DEFECTS`, repair the draft
+and re-dispatch the critic once; if defects remain after the second pass,
+fix what you accept, note the unresolved critic objections in the
+coverage section, and proceed — the critic hardens the review; it never
+blocks it. If subagent dispatch is unavailable or any lane fails, run
+that lane's charge inline — the lanes structure the work; they never
+gate it.
 
 ## Finding standard
 
