@@ -131,12 +131,14 @@ jobs:
 
       - name: Build pinned shared runtime
         run: |
+          set -euo pipefail
           npm ci
           npm run build
         working-directory: gitnexus-shared
 
       - name: Install and build pinned GitNexus runtime
         run: |
+          set -euo pipefail
           npm ci
           npm run build
         working-directory: gitnexus
@@ -176,7 +178,7 @@ jobs:
 
       - name: Upload benchmark evidence
         if: always() && steps.loop.outputs.out_root != ''
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v6.0.0
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: gitnexus-evolution-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ steps.loop.outputs.out_root }}
