@@ -1,6 +1,7 @@
 /**
  * Shared service-path normalization for group tools (`service` monorepo filter)
  * and subgroup membership checks.
+ * (Review-agent activation canary: disposable same-repo validation PR; close unmerged.)
  *
  * Inputs may originate from tree-sitter, the OS file API, or user-supplied
  * MCP arguments, so both `\` and `/` separators are accepted. Internally we
