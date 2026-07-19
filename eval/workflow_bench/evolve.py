@@ -247,6 +247,9 @@ halves of one handoff rule).
 
 Rules — the harness re-validates most of these, so a violation wastes the run:
 
+- This session has no Write/Edit tools — use Bash to author files (e.g.
+  `mkdir -p <dir> && cp <incumbent> <overlay-path>` then edit in place with a
+  heredoc or `sed`). Read/Grep/Glob are available for inspection.
 - Write complete replacement files (not diffs) under
   {overlay_dir}/.claude/skills/<skill>/…, Markdown only, and only for skills
   the benchmarked arms exercise: {", ".join(skills)}.
@@ -446,11 +449,15 @@ def proposer_evidence_entries(
     return entries
 
 
-# The proposer's exact built-in tool surface. Read/Grep/Glob observe the
-# read-only evidence bundle; Edit/Write must land only in the sandbox output
-# tree. Exported so the containment canary tests the real allowlist and cannot
-# drift from production.
-PROPOSER_ALLOWED_TOOLS = ["Read", "Grep", "Glob", "Edit", "Write"]
+# The proposer's exact tool surface. Read/Grep/Glob observe the read-only
+# evidence bundle and the incumbent skills; Bash writes the candidate overlay.
+# The proposer session runs --bare, which hard-disables the Write/Edit tools
+# ("Write exists but is not enabled in this context"), so Bash is the only
+# writable tool it enables — the settings pre-authorize it via
+# autoAllowBashIfSandboxed, and the sandbox filesystem policy confines writes to
+# the workspace/tmp/home. Exported so the containment canary tests the real
+# allowlist and cannot drift from production.
+PROPOSER_ALLOWED_TOOLS = ["Read", "Grep", "Glob", "Bash"]
 
 
 def run_proposer(
