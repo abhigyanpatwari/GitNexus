@@ -17,6 +17,7 @@ from workflow_bench.runner import (
     render_report,
     savings,
     select_tasks,
+    systemic_outage_streak,
 )
 
 
@@ -344,3 +345,26 @@ def test_infra_error_record_captures_the_failure_and_is_excluded():
     assert agg["cost_usd"] == 2.0
     assert agg["valid_runs"] == 1
     assert agg["excluded_runs"] == 1
+
+
+def test_systemic_outage_streak_counts_consecutive_systemic_failures():
+    # session/infra/cleanup failures accumulate; a cleanup-failure that masked a
+    # session-error still counts toward the streak.
+    streak = 0
+    for kind in ("session-error", "infra-error", "cleanup-failure"):
+        streak = systemic_outage_streak(kind, streak)
+    assert streak == 3
+    assert systemic_outage_streak("cleanup-failure", 4) == 5
+
+
+def test_systemic_outage_streak_resets_on_non_outage():
+    # A real task failure (resolved=False → error_kind None) or an unverifiable
+    # evidence run is not an outage and resets the streak.
+    assert systemic_outage_streak(None, 4) == 0
+    assert systemic_outage_streak("evidence-unverified", 4) == 0
+
+
+def test_outage_streak_flag_defaults_and_disables():
+    base = ["--tasks", "tasks.yaml", "--model", "claude-sonnet-4-20250514"]
+    assert build_parser().parse_args(base).outage_streak == 5
+    assert build_parser().parse_args([*base, "--outage-streak", "0"]).outage_streak == 0

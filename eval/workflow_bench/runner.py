@@ -614,6 +614,18 @@ CHURN_FIELDS = ("diff_files", "diff_insertions", "diff_deletions")
 # skill-not-invoked rows DO count: those sessions ran and spent real tokens.
 EXCLUDED_ERROR_KINDS = frozenset({"session-error", "infra-error", "evidence-unverified", "cleanup-failure"})
 
+# A sustained upstream outage shows up as a run of session/infra/cleanup
+# failures. (cleanup-failure overwrites the primary error_kind, so a
+# session-error whose worktree cleanup also failed still counts.) A task's own
+# resolved=False is real signal, not an outage, so it never trips the breaker.
+SYSTEMIC_ERROR_KINDS = frozenset({"session-error", "infra-error", "cleanup-failure"})
+DEFAULT_OUTAGE_STREAK = 5
+
+
+def systemic_outage_streak(error_kind: str | None, prior_streak: int) -> int:
+    """Consecutive systemic-failure count: +1 on a systemic kind, else reset to 0."""
+    return prior_streak + 1 if error_kind in SYSTEMIC_ERROR_KINDS else 0
+
 
 def infra_error_record(exc: BaseException) -> dict[str, Any]:
     """Row for a run the harness itself killed (timeout, setup failure)."""
@@ -761,6 +773,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--tasks", required=True, type=Path)
     parser.add_argument("--runs", type=int, default=1)
+    parser.add_argument(
+        "--outage-streak",
+        type=int,
+        default=DEFAULT_OUTAGE_STREAK,
+        help="abort the sweep after this many consecutive session/infra/cleanup "
+        "failures (0 disables the circuit breaker)",
+    )
     parser.add_argument(
         "--arms",
         nargs="+",
@@ -929,6 +948,8 @@ def main() -> None:
     )
 
     results: dict[str, dict[str, dict[str, Any]]] = {}
+    outage_streak = 0
+    outage_tripped = False
     with (
         tempfile.TemporaryDirectory(prefix="wfbench-trees-") as trees,
         TaskAssetCache(Path(trees) / ".task-assets") as task_asset_cache,
@@ -958,6 +979,8 @@ def main() -> None:
             oracle_snapshots,
             strict=True,
         ):
+            if outage_tripped:
+                break
             repo = Path(task_binding["repo_identity"])
             task_sha = task_binding["resolved_sha"]
             asset_snapshot: TaskAssetSnapshot | None = None
@@ -984,7 +1007,11 @@ def main() -> None:
                 graph_snapshot_errors[graph_key] = exc
             per_arm: dict[str, list[dict[str, Any]]] = {a: [] for a in args.arms}
             for run_idx in range(args.runs):
+                if outage_tripped:
+                    break
                 for arm in args.arms:
+                    if outage_tripped:
+                        break
                     worktree: Path | None = None
                     record: dict[str, Any] | None = None
                     cleanup_error: OSError | None = None
@@ -1213,6 +1240,15 @@ def main() -> None:
                         f"in={record['input_tokens']} out={record['output_tokens']} "
                         f"cost=${_na(record['cost_usd'])}"
                     )
+                    outage_streak = systemic_outage_streak(record.get("error_kind"), outage_streak)
+                    if args.outage_streak and outage_streak >= args.outage_streak:
+                        outage_tripped = True
+                        print(
+                            f"[systemic-outage] {outage_streak} consecutive session/infra/cleanup "
+                            "failures — aborting the remaining sweep; report and promotion are written "
+                            "from partial evidence and the run exits non-zero."
+                        )
+                        break
             results[task["id"]] = {a: aggregate(rs) for a, rs in per_arm.items() if rs}
 
     selection_report = [
@@ -1275,6 +1311,10 @@ def main() -> None:
         }
         (out_dir / "promotion.json").write_text(json.dumps(promotion, indent=2) + "\n")
     print(f"\n{report}\n\nWritten to {out_dir}/")
+    if outage_tripped:
+        # Non-zero exit so a driver (evolve.py) treats the partial benchmark as a
+        # failed run and halts instead of proposing from outage-truncated evidence.
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":
