@@ -14,7 +14,11 @@ from pathlib import Path
 import pytest
 
 from workflow_bench import runner
-from workflow_bench.evolve import PROPOSER_ALLOWED_TOOLS
+from types import SimpleNamespace
+import shutil
+
+from workflow_bench.evolve import PROPOSER_ALLOWED_TOOLS, run_proposer
+from workflow_bench.evolution import candidate_overlay_files
 from workflow_bench.process_control import ManagedProcessResult, run_managed
 from workflow_bench.proposer_sandbox import (
     MAX_BUNDLE_BYTES,
@@ -942,3 +946,181 @@ def test_real_claude_proposer_file_tools_confined_to_evidence_and_output(tmp_pat
     output_result = observed_tool_results["toolu_write_output"]
     assert output_result.get("is_error") is not True, output_result
     assert (clone / ".wfbench-output" / "overlay" / "marker.txt").read_text() == "written"
+
+
+@pytest.mark.skipif(
+    os.environ.get("GITNEXUS_REQUIRE_CLAUDE_CANARY") != "1",
+    reason="real end-to-end proposer run requires the pinned Claude binary and bubblewrap (CI containment job)",
+)
+def test_real_claude_run_proposer_produces_a_validated_skill_overlay(tmp_path: Path) -> None:
+    """End-to-end: the proposer autonomously evolves a skill inside containment.
+
+    Drives the REAL run_proposer through bubblewrap with a deterministic scripted
+    model (no paid API): it reads the read-only evidence bundle, then writes a
+    candidate gitnexus-plan skill edit plus a rationale into the sandbox output
+    tree. run_proposer validates the trust boundary and copies only the approved
+    overlay + proposal out. This is the autonomous-proposal stage of the
+    self-evolution loop (propose -> [benchmark -> gate -> apply]).
+    """
+
+    claude = Path(os.environ["CLAUDE_CANARY_BIN"]).resolve()
+    assert claude.is_file()
+    bwrap_bin = shutil.which("bwrap")
+    assert bwrap_bin, "bubblewrap must be installed in the containment job"
+
+    bundle = stage_evidence_bundle(
+        tmp_path / "bundle",
+        {
+            "losers.jsonl": '{"task": "demo", "arm": "workflow_direct", "cost_usd": 1.0}\n',
+            "gate.json": {"decision": "keep_incumbent", "reasons": ["no candidate yet"]},
+        },
+        secrets=["offline-canary-key"],
+    )
+
+    candidate_skill = "# gitnexus-plan (candidate)\n\nTighter planning steps that spend fewer tokens.\n"
+    proposal_text = "Tightened the plan skill to cut token cost while preserving the acceptance steps.\n"
+
+    class ModelHandler(BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+
+        def log_message(self, _format, *_args):
+            return
+
+        def do_POST(self):  # noqa: N802 - BaseHTTPRequestHandler contract
+            length = int(self.headers.get("content-length", "0"))
+            request = json.loads(self.rfile.read(length))
+            seen = {
+                block["tool_use_id"]
+                for message in request.get("messages", [])
+                if isinstance(message, dict) and isinstance(message.get("content"), list)
+                for block in message["content"]
+                if isinstance(block, dict)
+                and block.get("type") == "tool_result"
+                and isinstance(block.get("tool_use_id"), str)
+            }
+            if "toolu_read_evidence" not in seen:
+                blocks = [
+                    {
+                        "type": "tool_use",
+                        "id": "toolu_read_evidence",
+                        "name": "Read",
+                        "input": {"file_path": "/evidence/losers.jsonl"},
+                    }
+                ]
+                stop_reason = "tool_use"
+            elif "toolu_write_overlay" not in seen:
+                blocks = [
+                    {
+                        "type": "tool_use",
+                        "id": "toolu_write_overlay",
+                        "name": "Write",
+                        "input": {
+                            "file_path": "/workspace/.wfbench-output/overlay/.claude/skills/gitnexus-plan/SKILL.md",
+                            "content": candidate_skill,
+                        },
+                    }
+                ]
+                stop_reason = "tool_use"
+            elif "toolu_write_proposal" not in seen:
+                blocks = [
+                    {
+                        "type": "tool_use",
+                        "id": "toolu_write_proposal",
+                        "name": "Write",
+                        "input": {
+                            "file_path": "/workspace/.wfbench-output/proposal.md",
+                            "content": proposal_text,
+                        },
+                    }
+                ]
+                stop_reason = "tool_use"
+            else:
+                blocks = [{"type": "text", "text": "proposal complete"}]
+                stop_reason = "end_turn"
+
+            events = [
+                (
+                    "message_start",
+                    {
+                        "type": "message_start",
+                        "message": {
+                            "id": "msg_canary",
+                            "type": "message",
+                            "role": "assistant",
+                            "model": request.get("model", "claude-canary"),
+                            "content": [],
+                            "stop_reason": None,
+                            "stop_sequence": None,
+                            "usage": {"input_tokens": 1, "output_tokens": 0},
+                        },
+                    },
+                )
+            ]
+            for index, block in enumerate(blocks):
+                if block["type"] == "text":
+                    start = {"type": "text", "text": ""}
+                    delta = {"type": "text_delta", "text": block["text"]}
+                else:
+                    start = {"type": "tool_use", "id": block["id"], "name": block["name"], "input": {}}
+                    delta = {"type": "input_json_delta", "partial_json": json.dumps(block["input"])}
+                events.extend(
+                    [
+                        ("content_block_start", {"type": "content_block_start", "index": index, "content_block": start}),
+                        ("content_block_delta", {"type": "content_block_delta", "index": index, "delta": delta}),
+                        ("content_block_stop", {"type": "content_block_stop", "index": index}),
+                    ]
+                )
+            events.extend(
+                [
+                    (
+                        "message_delta",
+                        {
+                            "type": "message_delta",
+                            "delta": {"stop_reason": stop_reason, "stop_sequence": None},
+                            "usage": {"output_tokens": 1},
+                        },
+                    ),
+                    ("message_stop", {"type": "message_stop"}),
+                ]
+            )
+            payload = "".join(f"event: {event}\ndata: {json.dumps(data)}\n\n" for event, data in events).encode()
+            self.send_response(200)
+            self.send_header("content-type", "text/event-stream")
+            self.send_header("content-length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), ModelHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    out = tmp_path / "promoted"
+    overlay_dir = out / "overlay"
+    proposal_path = out / "proposal.md"
+    try:
+        args = SimpleNamespace(
+            claude_bin=str(claude),
+            timeout=180,
+            proposer_model="claude-canary-20260718",
+            auth_token="offline-canary-key",
+            base_url=f"http://127.0.0.1:{server.server_port}",
+        )
+        record = run_proposer(
+            "Propose one bounded skill improvement, then write the overlay and proposal.",
+            args,
+            overlay_dir=overlay_dir,
+            proposal_path=proposal_path,
+            evidence_bundle=bundle,
+            bwrap_bin=Path(bwrap_bin),
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+    assert record["ok"], record.get("error_detail")
+    # The proposer's autonomous edit passed the trust boundary and was copied out.
+    written = overlay_dir / ".claude" / "skills" / "gitnexus-plan" / "SKILL.md"
+    assert written.read_text() == candidate_skill
+    assert proposal_text in proposal_path.read_text()
+    # And it is a structurally valid candidate the benchmark would accept.
+    assert candidate_overlay_files(overlay_dir)
