@@ -135,7 +135,7 @@ withTestLbugDB(
         it('matches repo at root level and CWD in sub-directory (repo at /, CWD at /src)', async () => {
           const { listRegisteredRepos } = await import('../../src/storage/repo-manager.js');
           const rootPath = path.resolve('/');
-          
+
           (listRegisteredRepos as ReturnType<typeof vi.fn>).mockResolvedValue([
             {
               name: handle.repoId,
@@ -145,7 +145,7 @@ withTestLbugDB(
               lastCommit: 'abc123',
             },
           ]);
-          
+
           try {
             const subDir = path.join(rootPath, 'src');
             const result = await augment('login', subDir);
@@ -168,7 +168,7 @@ withTestLbugDB(
           const { listRegisteredRepos } = await import('../../src/storage/repo-manager.js');
           const rootPath = path.resolve('/');
           const subDir = path.join(rootPath, 'src');
-          
+
           (listRegisteredRepos as ReturnType<typeof vi.fn>).mockResolvedValue([
             {
               name: handle.repoId,
@@ -178,7 +178,7 @@ withTestLbugDB(
               lastCommit: 'abc123',
             },
           ]);
-          
+
           try {
             const result = await augment('login', rootPath);
             expect(result.length).toBeGreaterThan(0);
@@ -199,7 +199,7 @@ withTestLbugDB(
         if (process.platform === 'win32') {
           it('matches Windows drive-root repo and sub-directory CWD (repo at C:\\, CWD at C:\\src)', async () => {
             const { listRegisteredRepos } = await import('../../src/storage/repo-manager.js');
-            
+
             (listRegisteredRepos as ReturnType<typeof vi.fn>).mockResolvedValue([
               {
                 name: handle.repoId,
@@ -209,7 +209,7 @@ withTestLbugDB(
                 lastCommit: 'abc123',
               },
             ]);
-            
+
             try {
               const result = await augment('login', 'C:\\src');
               expect(result.length).toBeGreaterThan(0);
@@ -228,7 +228,7 @@ withTestLbugDB(
 
           it('matches Windows sub-directory repo and drive-root CWD (repo at C:\\src, CWD at C:\\)', async () => {
             const { listRegisteredRepos } = await import('../../src/storage/repo-manager.js');
-            
+
             (listRegisteredRepos as ReturnType<typeof vi.fn>).mockResolvedValue([
               {
                 name: handle.repoId,
@@ -238,7 +238,7 @@ withTestLbugDB(
                 lastCommit: 'abc123',
               },
             ]);
-            
+
             try {
               const result = await augment('login', 'C:\\');
               expect(result.length).toBeGreaterThan(0);

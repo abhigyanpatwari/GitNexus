@@ -366,7 +366,7 @@ describe('checkCwdMatch', () => {
       lastCommit: 'somecommit',
       indexedAt: new Date().toISOString(),
     });
-    
+
     // Exact match
     const m1 = await checkCwdMatch(rootPath);
     expect(m1.match).toBe('path');
@@ -387,7 +387,7 @@ describe('checkCwdMatch', () => {
         lastCommit: 'somecommit',
         indexedAt: new Date().toISOString(),
       });
-      
+
       // Exact match
       const m1 = await checkCwdMatch(rootPath);
       expect(m1.match).toBe('path');
