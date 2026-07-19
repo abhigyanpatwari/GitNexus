@@ -46,6 +46,7 @@ from typing import Any
 import yaml
 
 from . import runner
+from . import runner_sessions
 from .evolution import (
     ARM_SKILLS,
     CANDIDATE_ARMS,
@@ -320,11 +321,13 @@ def _results_artifact_path(root: Path, relative_value: str, *, transcript: bool)
 def _transcript_artifact_metadata(metadata: Any) -> tuple[str, str, int]:
     """Validate transcript metadata without touching any host path."""
 
-    if not isinstance(metadata, dict) or set(metadata) != {"path", "sha256", "bytes"}:
-        raise SandboxError("transcript artifact metadata must contain only path, sha256, and bytes")
+    if not isinstance(metadata, dict) or set(metadata) != {"path", "sha256", "bytes", "source"}:
+        raise SandboxError("transcript artifact metadata must contain only path, sha256, bytes, and source")
     relative = metadata["path"]
     expected_digest = metadata["sha256"]
     expected_size = metadata["bytes"]
+    if metadata["source"] != runner_sessions.PARENT_EVENT_STREAM_SOURCE:
+        raise SandboxError("transcript artifact source is not the parent event stream")
     if not isinstance(relative, str) or not re.fullmatch(r"[0-9a-f]{64}", str(expected_digest)):
         raise SandboxError("transcript artifact metadata is malformed")
     if not isinstance(expected_size, int) or isinstance(expected_size, bool):

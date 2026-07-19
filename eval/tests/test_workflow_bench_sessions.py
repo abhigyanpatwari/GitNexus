@@ -11,7 +11,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from workflow_bench import runner, runner_sessions, runtime_mounts
+from workflow_bench import evolve, runner, runner_sessions, runtime_mounts
 from workflow_bench.evolution import skill_fingerprint
 from workflow_bench.process_control import ManagedProcessResult
 from workflow_bench.runner import snapshot_plan_docs
@@ -797,6 +797,15 @@ def test_parent_event_stream_is_persisted_private_redacted_and_digest_bound(monk
     assert artifact_meta["bytes"] == artifact.stat().st_size
     assert artifact_meta["sha256"] == hashlib.sha256(artifact.read_bytes()).hexdigest()
     assert artifact_meta["source"] == "parent-captured-stream-json"
+
+    # PR #2566 P1 regression: sum_sessions forwards the producer's 4-key record
+    # (including `source`) into transcript_artifacts, and a --seed-results / gen>=2
+    # run JSON round-trips it through the proposer evidence preflight. That preflight
+    # once required exactly {path, sha256, bytes} and aborted every seeded run with
+    # SandboxError. Round-trip real producer output through the real preflight so the
+    # producer/validator schema can never drift apart again.
+    seeded = json.loads(json.dumps(runner_sessions.sum_sessions([rec])))
+    evolve._preflight_transcript_artifacts([{"transcript_artifacts": seeded["transcript_artifacts"]}])
 
 
 def test_missing_skill_invocation_fails_closed(monkeypatch, tmp_path):

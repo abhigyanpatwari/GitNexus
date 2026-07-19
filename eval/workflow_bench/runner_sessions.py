@@ -30,6 +30,10 @@ USAGE_FIELDS = (
     "output_tokens",
 )
 MAX_TRANSCRIPT_BYTES = 8 * 1024 * 1024
+# Provenance tag stamped on every parent-captured transcript artifact. The
+# evidence preflight (evolve._transcript_artifact_metadata) validates against
+# this exact value, so producer and consumer stay pinned to one schema.
+PARENT_EVENT_STREAM_SOURCE = "parent-captured-stream-json"
 SANDBOX_GITNEXUS_ENTRYPOINT = f"{SANDBOX_GITNEXUS}/dist/cli/index.js"
 SENSITIVE_EVENT_KEYS = frozenset(
     {
@@ -198,7 +202,7 @@ def _persist_parent_event_stream(
         "path": relative.as_posix(),
         "sha256": hashlib.sha256(payload).hexdigest(),
         "bytes": len(payload),
-        "source": "parent-captured-stream-json",
+        "source": PARENT_EVENT_STREAM_SOURCE,
     }
 
 

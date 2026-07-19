@@ -11,6 +11,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from workflow_bench import evolve
+from workflow_bench.runner_sessions import PARENT_EVENT_STREAM_SOURCE
 from workflow_bench.evolve import (
     build_parser,
     build_proposer_prompt,
@@ -169,6 +170,7 @@ def test_proposer_reads_only_digest_bound_transcripts_below_results(tmp_path, mo
         "path": "transcripts/task-workflow-run0-session.jsonl",
         "sha256": hashlib.sha256(payload).hexdigest(),
         "bytes": len(payload),
+        "source": PARENT_EVENT_STREAM_SOURCE,
     }
     foreign_home = tmp_path / "foreign-home"
     foreign = foreign_home / ".claude" / "projects" / "other" / "private.jsonl"
@@ -210,6 +212,7 @@ def test_proposer_rejects_symlink_and_foreign_transcript_artifacts(tmp_path):
         "path": "transcripts/linked.jsonl",
         "sha256": hashlib.sha256(outside.read_bytes()).hexdigest(),
         "bytes": outside.stat().st_size,
+        "source": PARENT_EVENT_STREAM_SOURCE,
     }
 
     with pytest.raises(evolve.SandboxError, match="regular non-symlink"):
@@ -222,7 +225,18 @@ def test_proposer_rejects_symlink_and_foreign_transcript_artifacts(tmp_path):
     with pytest.raises(evolve.SandboxError, match="unsafe results artifact path"):
         proposer_evidence_entries(
             results_dir=results,
-            evidence=[row(transcript_artifacts=[{"path": "../outside.jsonl", "sha256": "0" * 64, "bytes": 0}])],
+            evidence=[
+                row(
+                    transcript_artifacts=[
+                        {
+                            "path": "../outside.jsonl",
+                            "sha256": "0" * 64,
+                            "bytes": 0,
+                            "source": PARENT_EVENT_STREAM_SOURCE,
+                        }
+                    ]
+                )
+            ],
             learnings=[],
             gate_summary=[],
         )
@@ -233,6 +247,7 @@ def test_proposer_rejects_duplicate_transcript_metadata_before_materializing():
         "path": "transcripts/repeated.jsonl",
         "sha256": "0" * 64,
         "bytes": 0,
+        "source": PARENT_EVENT_STREAM_SOURCE,
     }
 
     with pytest.raises(evolve.SandboxError, match="duplicate transcript artifact path"):
@@ -257,6 +272,7 @@ def test_proposer_bounds_transcript_metadata_per_row_and_globally_before_materia
             "path": f"transcripts/session-{index}.jsonl",
             "sha256": "0" * 64,
             "bytes": 0,
+            "source": PARENT_EVENT_STREAM_SOURCE,
         }
 
     with pytest.raises(evolve.SandboxError, match="per-row session limit"):
