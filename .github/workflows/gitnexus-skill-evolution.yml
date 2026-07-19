@@ -155,6 +155,7 @@ jobs:
             --runs "${RUNS}" \
             --claude-bin "${RUNNER_TEMP}/claude-canary/node_modules/@anthropic-ai/claude-code-linux-x64/claude" \
             --out-root "${out_root}" \
+            --apply \
             "${extra[@]}"
         working-directory: eval
 
