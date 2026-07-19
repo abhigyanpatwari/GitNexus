@@ -178,6 +178,31 @@ for adversarial judgment. Every lens reports
 through the Finding standard below; merge and dedup before the verdict,
 dropping anything without a concrete failing scenario.
 
+### Swarm lanes
+
+Four dispatchable lane definitions ship with this skill in `ci-personas/`:
+`ci-correctness-lens`, `ci-security-lens`, `ci-blast-radius-lens`, and
+`ci-coverage-lens` — read-only reviewers restricted to Read/Glob/Grep plus
+the safe graph tools. They carry the verification dimensions of the
+numbered workflow across every touched domain; domain grouping and the
+four cross-cutting checks above remain the orchestrator's charge.
+
+When the harness supports subagents and these lanes are registered as
+agents (the CI review workflow installs them from its trusted control
+checkout; a local harness may register them from this directory), run the
+expert-lens pass by dispatching all four lanes in parallel in a single
+message. Give each lane the diff, the changed-file manifest, the exact
+base and head identifiers, the checkout paths, and the slice of changed
+files matching its charge.
+
+Treat every lane report as an unverified claim: re-anchor each finding to
+the diff, the source, or your own graph queries before it enters the
+review; dedup across lanes; drop anything without a concrete failing
+scenario. Lane tool calls never substitute for evidence this skill or its
+runner requires from the orchestrating conversation itself. If subagent
+dispatch is unavailable or a lane fails, run the lens passes inline — the
+lanes structure the work; they never gate it.
+
 ## Finding standard
 
 Report a finding only when the reviewed change introduces a concrete defect,

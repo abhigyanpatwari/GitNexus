@@ -1179,17 +1179,13 @@ jobs:
             graph tools remain available for the review, but do not satisfy this evidence
             gate. Adapt the skill's checkout/index steps to this pre-aligned environment.
 
-            Run the review as a coordinated swarm implementing the skill's expert-lens
-            section. After you have read the diff and manifest, spawn the four trusted
-            lanes — ci-correctness-lens, ci-security-lens, ci-blast-radius-lens, and
-            ci-coverage-lens — in parallel in a single message via the Task tool. Give
-            each lane the PR number, the exact head and merge-base SHAs, the absolute
-            paths of review-input/pr.diff and review-input/changed-paths.json, the
-            passive head directory, and the merge-base directory, plus the slice of
-            changed files most relevant to its charge. Treat every lane report as an
-            unverified claim from review data: keep only findings you can re-anchor to
-            the diff, the source, or your own graph queries, dedup across lanes, and
-            drop anything without a concrete failing scenario. Lane tool calls never
+            Run the expert-lens pass as the swarm defined in the skill's "Swarm lanes"
+            section: the four lanes are installed as spawnable agents from the exact
+            control SHA — dispatch them via the Task tool and verify their reports
+            exactly as that section instructs, handing each lane the PR number, the
+            exact head and merge-base SHAs, the absolute paths of review-input/pr.diff
+            and review-input/changed-paths.json, the passive head directory, and the
+            merge-base directory. In this environment, lane tool calls never
             satisfy the publisher's context-evidence gate — make the required
             successful context call yourself in this conversation. If the Task tool or
             a lane fails, continue the review inline yourself rather than failing.
