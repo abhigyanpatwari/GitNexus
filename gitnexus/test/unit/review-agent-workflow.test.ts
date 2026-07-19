@@ -257,15 +257,19 @@ function reviewTranscript({
   toolInput = { name: 'statusCommand', file_path: CHANGED_PATH },
   toolResultContent = contextResultContent(),
   resultIsError = false,
+  toolUseId = 'tool-1',
+  parentToolUseId = null,
 }: {
   toolName?: string;
   toolInput?: Record<string, unknown>;
   toolResultContent?: unknown;
   resultIsError?: boolean | undefined;
+  toolUseId?: string;
+  parentToolUseId?: string | null;
 } = {}): Array<Record<string, unknown>> {
   const toolResult: Record<string, unknown> = {
     type: 'tool_result',
-    tool_use_id: 'tool-1',
+    tool_use_id: toolUseId,
     content: toolResultContent,
   };
   if (resultIsError !== undefined) toolResult.is_error = resultIsError;
@@ -279,7 +283,7 @@ function reviewTranscript({
     },
     {
       type: 'assistant',
-      parent_tool_use_id: null,
+      parent_tool_use_id: parentToolUseId,
       session_id: 'session-1',
       uuid: '22222222-2222-4222-8222-222222222222',
       message: {
@@ -287,7 +291,7 @@ function reviewTranscript({
         content: [
           {
             type: 'tool_use',
-            id: 'tool-1',
+            id: toolUseId,
             name: toolName,
             input: toolInput,
           },
@@ -296,7 +300,7 @@ function reviewTranscript({
     },
     {
       type: 'user',
-      parent_tool_use_id: null,
+      parent_tool_use_id: parentToolUseId,
       session_id: 'session-1',
       uuid: '33333333-3333-4333-8333-333333333333',
       message: {
@@ -1365,6 +1369,38 @@ describe('gitnexus review-agent workflow security contract', () => {
       failure_code: 'missing_graph_evidence',
       graph_evidence: null,
     });
+  });
+
+  it('rejects graph evidence that only a subagent sidechain produced', () => {
+    const sidechainOnly = runArtifactScenario({
+      rawTranscript: JSON.stringify(reviewTranscript({ parentToolUseId: 'toolu-parent-1' })),
+    });
+    expect(sidechainOnly.artifact).toMatchObject({
+      status: 'failure',
+      failure_code: 'missing_graph_evidence',
+    });
+
+    const side = reviewTranscript({
+      parentToolUseId: 'toolu-parent-1',
+      toolUseId: 'tool-side-1',
+    });
+    const main = reviewTranscript();
+    const combined = [main[0], side[1], side[2], main[1], main[2], main[3]];
+    const withMainline = runArtifactScenario({
+      rawTranscript: JSON.stringify(combined),
+    });
+    expect(withMainline.artifact).toMatchObject({
+      status: 'success',
+      failure_code: null,
+    });
+
+    const malformed = reviewTranscript();
+    (malformed[1] as Record<string, unknown>).parent_tool_use_id = 42;
+    const invalidLinkage = runArtifactScenario({
+      rawTranscript: JSON.stringify(malformed),
+    });
+    expect(invalidLinkage.artifact.failure_code).toBe('invalid_execution_transcript');
+    expect(invalidLinkage.stderr).toContain('parent linkage');
   });
 
   it('rejects non-context tools and context calls not tied to an exact changed path', () => {

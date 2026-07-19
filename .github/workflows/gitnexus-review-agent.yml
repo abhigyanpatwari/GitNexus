@@ -1219,7 +1219,7 @@ jobs:
             --disallowedTools "Bash,Write,Edit,MultiEdit,NotebookEdit,WebFetch,WebSearch,Skill,Agent,Read(/proc/**),Read(/sys/**),Read(/dev/**),Read(${{ github.workspace }}/**),mcp__github,mcp__gitnexus__detect_changes,mcp__gitnexus__rename,mcp__gitnexus__cypher,mcp__gitnexus__group_list,mcp__gitnexus__group_sync"
             --permission-mode dontAsk
             --no-session-persistence
-            --max-turns 100
+            --max-turns 150
             --json-schema '{"type":"object","properties":{"body":{"type":"string","maxLength":50000}},"required":["body"],"additionalProperties":false}'
 
       - name: Assemble bounded review artifact
@@ -1658,6 +1658,23 @@ jobs:
                 if (entry.subtype === 'success' && entry.is_error === false) sawSuccessfulRun = true;
                 continue;
               }
+              // Subagent (sidechain) turns carry a non-null parent_tool_use_id.
+              // They are validated like every other entry but can never supply
+              // the graph evidence: only the orchestrator's own context call
+              // proves the review, exactly as the prompt promises.
+              let sidechain = false;
+              if (
+                Object.hasOwn(entry, 'parent_tool_use_id') &&
+                entry.parent_tool_use_id !== null
+              ) {
+                if (
+                  typeof entry.parent_tool_use_id !== 'string' ||
+                  !TOOL_ID_RE.test(entry.parent_tool_use_id)
+                ) {
+                  throw new Error('execution transcript parent linkage is invalid');
+                }
+                sidechain = true;
+              }
               if (entry.type === 'assistant') {
                 if (
                   !isRecord(entry.message) ||
@@ -1683,7 +1700,7 @@ jobs:
                     throw new Error('execution transcript contains a duplicate tool call id');
                   }
                   seenToolCalls.add(block.id);
-                  if (block.name === CONTEXT_EVIDENCE_TOOL) {
+                  if (block.name === CONTEXT_EVIDENCE_TOOL && !sidechain) {
                     const changedPath = contextEvidencePath(block.input, changedPathManifest);
                     if (changedPath) candidateCalls.set(block.id, { messageIndex, changedPath });
                   }
@@ -1717,6 +1734,7 @@ jobs:
                   seenToolResults.add(block.tool_use_id);
                   const candidate = candidateCalls.get(block.tool_use_id);
                   if (
+                    !sidechain &&
                     block.is_error !== true &&
                     candidate &&
                     messageIndex > candidate.messageIndex &&
