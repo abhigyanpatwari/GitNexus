@@ -204,12 +204,21 @@ jobs:
             esac
           done <<< "${changed}"
           echo "promoted=true" >> "${GITHUB_OUTPUT}"
+          # The loop returns on the first promotion, so the highest-numbered
+          # gen-N/bench/promotion.json is the decision that actually fired.
+          # Emit only that one — never every generation's, or a rejected
+          # generation's decisions could surface in the PR body. The heredoc
+          # uses a per-run random delimiter so a summary value that ever
+          # contains the marker cannot close the block early and inject keys.
+          promotion_file="$(find "${OUT_ROOT}" -name promotion.json | sort -V | tail -1)"
+          delim="PROMOTION_EOF_$(openssl rand -hex 16)"
           {
-            echo 'summary<<PROMOTION_EOF'
-            find "${OUT_ROOT}" -name promotion.json -print0 |
-              xargs -0 -r cat | tail -c 8000
+            echo "summary<<${delim}"
+            if [[ -n "${promotion_file}" ]]; then
+              tail -c 8000 "${promotion_file}"
+            fi
             echo
-            echo 'PROMOTION_EOF'
+            echo "${delim}"
           } >> "${GITHUB_OUTPUT}"
 
       - name: Mint GitHub App token
@@ -229,7 +238,11 @@ jobs:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -euo pipefail
-          branch="evolution/skills-${GITHUB_RUN_ID}"
+          # Include the run attempt: GITHUB_RUN_ID is stable across re-runs, so
+          # a re-run after a push-succeeds/PR-create-fails partial failure needs
+          # a fresh branch to push (a non-force push to the existing branch
+          # would be rejected non-fast-forward and wedge the lane).
+          branch="evolution/skills-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           git config user.name 'gitnexus-evolution[bot]'
           git config user.email 'gitnexus-evolution[bot]@users.noreply.github.com'
           git checkout -b "${branch}"
