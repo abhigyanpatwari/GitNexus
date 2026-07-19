@@ -897,7 +897,13 @@ def main() -> None:
         required_arms = [arm for candidate in required_candidates for arm in (CANDIDATE_ARMS[candidate], candidate)]
         if args.arms != required_arms:
             parser.error("candidate overlay requires exactly these paired arms: " + " ".join(required_arms))
-        promotion_target_bases = committed_destination_base_digests(candidate_overlay)
+        try:
+            promotion_target_bases = committed_destination_base_digests(candidate_overlay)
+        except ValueError as exc:
+            # Overlay adds a promotion target with no committed base — a clean
+            # CLI error, not a traceback.
+            parser.error(str(exc))
+            raise AssertionError("ArgumentParser.error() returned unexpectedly")
         if supplied_promotion_target_bases and supplied_promotion_target_bases != promotion_target_bases:
             parser.error("--promotion-target-bases-json does not match the committed incumbent")
     else:

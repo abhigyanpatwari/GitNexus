@@ -491,6 +491,27 @@ def test_committed_destination_bases_ignore_and_reject_live_target_edits(tmp_pat
     assert dirty.read_text() == "user edit"
 
 
+def test_committed_destination_bases_reject_overlay_adding_uncommitted_target(tmp_path):
+    # An overlay that adds a file absent at HEAD has no committed base to bind
+    # against and raises ValueError — evolve.run / runner.main now catch that as
+    # NOT PROMOTED / a clean CLI error instead of an uncaught traceback.
+    overlay = tmp_path / "overlay"
+    new_md = overlay / ".claude" / "skills" / "gitnexus-plan" / "NEW.md"
+    new_md.parent.mkdir(parents=True)
+    new_md.write_text("brand new candidate file")
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "-b", "main")
+    _git(repo, "config", "user.name", "Workflow Bench Test")
+    _git(repo, "config", "user.email", "workflow-bench@example.invalid")
+    (repo / "README.md").write_text("seed")
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-m", "seed")
+
+    with pytest.raises(ValueError, match="committed overlay destination is unavailable"):
+        committed_destination_base_digests(overlay, repo_root=repo)
+
+
 def test_stage_replacement_removes_partial_file_when_fsync_fails(monkeypatch, tmp_path):
     destination = tmp_path / "SKILL.md"
 

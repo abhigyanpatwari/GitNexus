@@ -940,8 +940,15 @@ def main() -> int:
         incumbent_arms = resolve_incumbent_arms(frozen_overlay, args.arms)
         candidate_arms = [INCUMBENT_ARMS[arm] for arm in incumbent_arms]
         generation_proposer_model = None if generation == 0 and initial_overlay is not None else args.proposer_model
-        target_base_digests = committed_destination_base_digests(frozen_overlay)
-        live_target_bases = destination_base_digests(frozen_overlay)
+        try:
+            target_base_digests = committed_destination_base_digests(frozen_overlay)
+            live_target_bases = destination_base_digests(frozen_overlay)
+        except ValueError as exc:
+            # An overlay that adds a promotion target absent at HEAD has no
+            # committed base to bind against — fail closed with a clear message
+            # instead of a traceback. NOT PROMOTED.
+            print(f"[gen {generation}] overlay targets a path with no committed base — NOT PROMOTED: {exc}")
+            return 1
         if live_target_bases != target_base_digests:
             print(f"[gen {generation}] promotion targets contain uncommitted or drifted bytes")
             return 1
