@@ -136,6 +136,16 @@ jobs:
           npm run build
         working-directory: gitnexus
 
+      - name: Point the benchmark task repo at the checkout
+        run: |
+          set -euo pipefail
+          # tasks.scenarios.yaml addresses the target repo as ~/GitNexus (the
+          # developer-local convention). On the runner the repo is the checkout
+          # at ${GITHUB_WORKSPACE}; link it so runner_tasks.py can resolve the
+          # task `repo` path. The benchmark only clones the repo (copy-on-write)
+          # and mounts dependencies read-only, so the checkout is never mutated.
+          ln -sfn "${GITHUB_WORKSPACE}" "${HOME}/GitNexus"
+
       - name: Run the propose → benchmark → gate loop
         id: loop
         env:
