@@ -1143,6 +1143,18 @@ describe('gitnexus review-agent workflow security contract', () => {
     expect(allowedTools).not.toContain('mcp__gitnexus__detect_changes');
     expect(allowedTools).not.toContain('mcp__gitnexus__rename');
     expect(allowedTools).not.toContain('mcp__gitnexus__cypher');
+    // Swarm posture: subagents are allowed, but only the trusted control-SHA
+    // personas exist to spawn, and lane calls cannot satisfy the evidence gate.
+    expect(allowedToolRules).toContain('Task');
+    const disallowedTools = analyze.match(/--disallowedTools "([^"]+)"/)?.[1] ?? '';
+    const disallowedToolRules = disallowedTools.split(',');
+    expect(disallowedToolRules).toContain('Agent');
+    expect(disallowedToolRules).toContain('Bash');
+    expect(disallowedToolRules).not.toContain('Task');
+    expect(analyze).toContain(
+      'cp -a -- .claude/skills/gitnexus-review/ci-personas/. "${claude_config}/agents/"',
+    );
+    expect(analyze).toContain("satisfy the publisher's context-evidence gate");
     expect(analyze).toContain('Read(/proc/**)');
     expect(analyze).toContain('Read(${{ github.workspace }}/**)');
     expect(analyze).toContain(
