@@ -1045,7 +1045,8 @@ describe('gitnexus review-agent workflow security contract', () => {
     expect(analyze).toContain('pull-requests: read');
     expect(analyze).not.toContain('issues: write');
     expect(publish).toContain('issues: write');
-    expect(publish).toContain('pull-requests: read');
+    expect(publish).toContain('pull-requests: write');
+    expect(publish).not.toContain('contents: write');
     expect(publish).not.toContain('actions/checkout@');
     expect(publish).not.toContain('ANTHROPIC_API_KEY');
     expect(publish).not.toContain('CLAUDE_CODE_OAUTH_TOKEN');
