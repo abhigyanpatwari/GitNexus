@@ -1142,8 +1142,8 @@ describe('gitnexus review-agent workflow security contract', () => {
     expect(allowedTools).not.toContain('mcp__gitnexus__detect_changes');
     expect(allowedTools).not.toContain('mcp__gitnexus__rename');
     expect(allowedTools).not.toContain('mcp__gitnexus__cypher');
-    expect(analyze).toContain('Read(//proc/**)');
-    expect(analyze).toContain('Read(/${{ github.workspace }}/**)');
+    expect(analyze).toContain('Read(/proc/**)');
+    expect(analyze).toContain('Read(${{ github.workspace }}/**)');
     expect(analyze).toContain(
       'mcp__gitnexus__detect_changes,mcp__gitnexus__rename,mcp__gitnexus__cypher',
     );
