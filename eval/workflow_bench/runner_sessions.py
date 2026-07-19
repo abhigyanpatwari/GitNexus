@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import re
 import stat
@@ -34,6 +35,21 @@ MAX_TRANSCRIPT_BYTES = 8 * 1024 * 1024
 # evidence preflight (evolve._transcript_artifact_metadata) validates against
 # this exact value, so producer and consumer stay pinned to one schema.
 PARENT_EVENT_STREAM_SOURCE = "parent-captured-stream-json"
+
+
+def measured_cost(raw: Any) -> float | None:
+    """Session cost as a finite non-negative float, or None when unmeasured.
+
+    ``cost_usd`` is a promotion metric (lower wins), so an absent/garbage
+    ``total_cost_usd`` must NOT collapse to a real measured $0 that a candidate
+    could win on — it stays None and the gate refuses to rank on it. A genuine
+    measured 0.0 is preserved distinctly.
+    """
+    if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+        return None
+    if not math.isfinite(raw) or raw < 0:
+        return None
+    return float(raw)
 SANDBOX_GITNEXUS_ENTRYPOINT = f"{SANDBOX_GITNEXUS}/dist/cli/index.js"
 SENSITIVE_EVENT_KEYS = frozenset(
     {
@@ -426,7 +442,7 @@ def run_claude(
         ),
         "session_id": data.get("session_id"),
         "num_turns": data.get("num_turns", 0),
-        "cost_usd": data.get("total_cost_usd", 0.0),
+        "cost_usd": measured_cost(data.get("total_cost_usd")),
         "duration_s": round(data.get("duration_ms", wall_s * 1000) / 1000, 1),
         "transcript_missing": False,
         **{field: usage.get(field, 0) for field in USAGE_FIELDS},
@@ -494,7 +510,8 @@ def run_claude(
 
 def sum_sessions(sessions: list[dict[str, Any]]) -> dict[str, Any]:
     total: dict[str, Any] = {field: sum(session[field] for session in sessions) for field in USAGE_FIELDS}
-    total["cost_usd"] = round(sum(session["cost_usd"] for session in sessions), 4)
+    session_costs = [session["cost_usd"] for session in sessions]
+    total["cost_usd"] = None if any(cost is None for cost in session_costs) else round(sum(session_costs), 4)
     total["duration_s"] = round(sum(session["duration_s"] for session in sessions), 1)
     total["num_turns"] = sum(session["num_turns"] for session in sessions)
     total["ok"] = all(session["ok"] for session in sessions)

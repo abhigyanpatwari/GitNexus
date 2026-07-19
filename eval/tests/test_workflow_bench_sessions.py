@@ -808,6 +808,26 @@ def test_parent_event_stream_is_persisted_private_redacted_and_digest_bound(monk
     evolve._preflight_transcript_artifacts([{"transcript_artifacts": seeded["transcript_artifacts"]}])
 
 
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        (0.0, 0.0),
+        (1.25, 1.25),
+        (3, 3.0),
+        (None, None),
+        ("free", None),
+        (True, None),
+        (-1.0, None),
+        (float("nan"), None),
+        (float("inf"), None),
+    ],
+)
+def test_measured_cost_distinguishes_absent_from_zero(raw, expected):
+    # A measured $0 stays 0.0; an absent/garbage cost becomes None so it can
+    # never be scored as a real zero the promotion gate ranks on.
+    assert runner_sessions.measured_cost(raw) == expected
+
+
 def test_missing_skill_invocation_fails_closed(monkeypatch, tmp_path):
     read_events = skill_events({"skill": "other-skill"}, tool_id="read-1")
     monkeypatch.setattr(

@@ -380,6 +380,37 @@ def test_candidate_gate_defaults_to_cost_usd_without_a_warning():
     assert decision["decision"] == "promote"
 
 
+def test_aggregate_cost_unavailable_when_any_run_unmeasured():
+    # One otherwise-valid run whose cost was never measured makes the whole
+    # aggregate cost unavailable, rather than collapsing to a real median.
+    agg = aggregate([record(cost_usd=0.5), record(cost_usd=None), record(cost_usd=0.5)])
+    assert agg["cost_usd"] is None
+    measured = aggregate([record(cost_usd=0.5) for _ in range(3)])
+    assert measured["cost_usd"] == 0.5
+
+
+def test_candidate_gate_refuses_promotion_on_unmeasured_cost():
+    # Candidate looks cheapest only because one run reported no cost — the gate
+    # must refuse to rank on cost_usd instead of promoting a phantom saving.
+    results = {
+        "task-a": {
+            "workflow_direct": aggregate([record(cost_usd=1.0) for _ in range(3)]),
+            "candidate_workflow_direct": aggregate(
+                [record(cost_usd=0.1), record(cost_usd=None), record(cost_usd=0.1)]
+            ),
+        }
+    }
+    decision = evaluate_candidate(
+        results,
+        incumbent_arm="workflow_direct",
+        candidate_arm="candidate_workflow_direct",
+        model="pinned-model",
+    )
+    assert decision["metric"] == "cost_usd"
+    assert decision["decision"] == "insufficient_evidence"
+    assert any("was not measured on every run" in reason for reason in decision["reasons"])
+
+
 def test_candidate_gate_requires_equal_valid_run_counts():
     results = {
         "task-a": {

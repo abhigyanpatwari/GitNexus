@@ -522,10 +522,19 @@ def evaluate_candidate(
         candidate_excluded = int(candidate.get("excluded_runs", 0))
         incumbent_rate = incumbent["resolved"] / incumbent_runs if incumbent_runs else 0.0
         candidate_rate = candidate["resolved"] / candidate_runs if candidate_runs else 0.0
-        incumbent_metric = float(incumbent[metric])
-        candidate_metric = float(candidate[metric])
+        # cost_usd is None when a run's cost was never measured (see
+        # runner_sessions.measured_cost): the arm's aggregate cost is then
+        # unavailable and must not be ranked on, or a candidate could "win"
+        # cheapness it never actually demonstrated.
+        raw_incumbent_metric = incumbent.get(metric)
+        raw_candidate_metric = candidate.get(metric)
+        metric_unavailable = raw_incumbent_metric is None or raw_candidate_metric is None
+        incumbent_metric = None if raw_incumbent_metric is None else float(raw_incumbent_metric)
+        candidate_metric = None if raw_candidate_metric is None else float(raw_candidate_metric)
         improvement = (
-            round(100 * (incumbent_metric - candidate_metric) / incumbent_metric, 1) if incumbent_metric else None
+            round(100 * (incumbent_metric - candidate_metric) / incumbent_metric, 1)
+            if (not metric_unavailable and incumbent_metric)
+            else None
         )
         task_rows.append(
             {
@@ -568,7 +577,13 @@ def evaluate_candidate(
                 f"{task_id}: candidate must resolve every valid run for the oracle-backed quality floor "
                 f"(got {candidate['resolved']}/{candidate_runs})"
             )
-        if improvement is None:
+        if metric_unavailable:
+            insufficient = True
+            reasons.append(
+                f"{task_id}: {metric} was not measured on every run in both paired arms; "
+                "cannot rank on it (fix cost capture or choose another metric)"
+            )
+        elif improvement is None:
             insufficient = True
             reasons.append(f"{task_id}: incumbent {metric} is zero; choose a metric with signal")
         elif improvement < -max_task_regression_pct:

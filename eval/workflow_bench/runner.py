@@ -653,8 +653,13 @@ def aggregate(records: list[dict[str, Any]]) -> dict[str, Any]:
     nothing); ``valid_runs``/``excluded_runs`` make the exclusion visible.
     """
     valid = [r for r in records if r.get("error_kind") not in EXCLUDED_ERROR_KINDS]
-    metrics = (*USAGE_FIELDS, "cost_usd", "duration_s", "num_turns", *CHURN_FIELDS)
+    metrics = (*USAGE_FIELDS, "duration_s", "num_turns", *CHURN_FIELDS)
     out: dict[str, Any] = {m: statistics.median(r.get(m, 0) for r in (valid or [{}])) for m in metrics}
+    # cost_usd can be None (unmeasured) on an otherwise-valid run; a single
+    # unmeasured run makes the whole median unavailable so the gate won't rank
+    # a candidate on a cost that was never actually captured.
+    valid_costs = [r.get("cost_usd") for r in valid]
+    out["cost_usd"] = None if (not valid or any(cost is None for cost in valid_costs)) else statistics.median(valid_costs)
     out["resolved"] = sum(1 for r in records if r["resolved"])
     out["runs"] = len(records)
     out["valid_runs"] = len(valid)
@@ -668,9 +673,22 @@ def savings(baseline: dict[str, Any], workflow: dict[str, Any]) -> dict[str, Any
     """Percent saved by the workflow arm per metric (positive = cheaper)."""
     out: dict[str, Any] = {}
     for metric in (*USAGE_FIELDS, "cost_usd", "duration_s"):
-        base = baseline[metric]
-        out[metric] = round(100 * (base - workflow[metric]) / base, 1) if base else 0.0
+        base = baseline.get(metric)
+        arm = workflow.get(metric)
+        if base is None or arm is None:
+            out[metric] = None
+        else:
+            out[metric] = round(100 * (base - arm) / base, 1) if base else 0.0
     return out
+
+
+def _na(value: Any) -> Any:
+    """Render an unmeasured metric as ``n/a`` instead of a misleading number."""
+    return "n/a" if value is None else value
+
+
+def _cost_cell(value: Any) -> str:
+    return "n/a" if value is None else f"{value:.4f}"
 
 
 def render_report(results: dict[str, dict[str, dict[str, Any]]]) -> str:
@@ -701,7 +719,7 @@ def render_report(results: dict[str, dict[str, dict[str, Any]]]) -> str:
                 f"| {task_id} | {agg['class']} | {arm} | {resolved_cell} "
                 f"| {agg['input_tokens']:.0f} | {agg['cache_creation_input_tokens']:.0f} "
                 f"| {agg['cache_read_input_tokens']:.0f} | {agg['output_tokens']:.0f} "
-                f"| {agg['cost_usd']:.4f} | {agg['duration_s']:.0f} | {agg['num_turns']:.0f} "
+                f"| {_cost_cell(agg['cost_usd'])} | {agg['duration_s']:.0f} | {agg['num_turns']:.0f} "
                 f"| {agg['diff_files']:.0f}/+{agg['diff_insertions']:.0f}/−{agg['diff_deletions']:.0f} |"
             )
         for arm in arms:
@@ -711,7 +729,7 @@ def render_report(results: dict[str, dict[str, dict[str, Any]]]) -> str:
                     f"| {task_id} | {arms[arm]['class']} | **{arm} savings %** | — "
                     f"| {s['input_tokens']} | {s['cache_creation_input_tokens']} "
                     f"| {s['cache_read_input_tokens']} | {s['output_tokens']} "
-                    f"| {s['cost_usd']} | {s['duration_s']} | — | — |"
+                    f"| {_na(s['cost_usd'])} | {s['duration_s']} | — | — |"
                 )
     lines.append("")
     all_aggs = [agg for arms in results.values() for agg in arms.values()]
@@ -1187,7 +1205,7 @@ def main() -> None:
                     print(
                         f"[{task['id']}][{arm}][run {run_idx}] resolved={record['resolved']} "
                         f"in={record['input_tokens']} out={record['output_tokens']} "
-                        f"cost=${record['cost_usd']}"
+                        f"cost=${_na(record['cost_usd'])}"
                     )
             results[task["id"]] = {a: aggregate(rs) for a, rs in per_arm.items() if rs}
 
