@@ -9,6 +9,7 @@ import pytest
 
 from workflow_bench import evolve, promotion_apply
 from workflow_bench.evolution import (
+    CANDIDATE_SKILLS,
     MAX_CANDIDATE_OVERLAY_BYTES,
     candidate_overlay_digest,
     candidate_overlay_payload,
@@ -489,6 +490,27 @@ def test_committed_destination_bases_ignore_and_reject_live_target_edits(tmp_pat
             expected_target_bases=expected,
         )
     assert dirty.read_text() == "user edit"
+
+
+def test_mirror_roots_cover_every_candidate_skill_and_omit_none_that_ships_to_cursor():
+    # promotion_apply.mirror_targets writes canonical + MIRROR_SKILL_ROOTS, which
+    # today omits the Cursor tree. That is only safe because no candidate skill is
+    # cursor-shipped. If a future edit adds a cursor-shipped skill (e.g.
+    # gitnexus-review) to CANDIDATE_SKILLS, apply_promoted_overlay would rewrite
+    # the other trees and silently skip Cursor — the PR #2488 asymmetric-sync bug
+    # class. Pin the invariant to the filesystem, the source of truth the TS drift
+    # guard already enforces.
+    repo_root = Path(__file__).resolve().parents[2]
+    cursor_root = repo_root / "gitnexus-cursor-integration" / "skills"
+    for skill in sorted(CANDIDATE_SKILLS):
+        canonical = repo_root / ".claude" / "skills" / skill
+        assert canonical.is_dir(), f"candidate skill {skill} has no canonical .claude/skills dir"
+        for target in mirror_targets(PurePosixPath(".claude", "skills", skill, "SKILL.md")):
+            assert (repo_root / target).is_file(), f"candidate skill mirror missing on disk: {target}"
+        assert not (cursor_root / skill).exists(), (
+            f"candidate skill {skill} ships to Cursor, but MIRROR_SKILL_ROOTS does not cover "
+            "gitnexus-cursor-integration/skills — promotion would sync it asymmetrically"
+        )
 
 
 def test_committed_destination_bases_reject_overlay_adding_uncommitted_target(tmp_path):
