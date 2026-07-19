@@ -70,6 +70,35 @@ def test_candidate_gate_promotes_quality_preserving_efficiency_gain():
     assert "subagent" in decision["metric_warning"]
 
 
+def test_num_turns_metric_carries_main_loop_only_warning():
+    # num_turns is a main-loop-only count like output_tokens, so selecting it
+    # must warn that subagent turns are invisible.
+    results = {
+        "task-a": {
+            "workflow_direct": aggregate([record(num_turns=10) for _ in range(3)]),
+            "candidate_workflow_direct": aggregate([record(num_turns=8) for _ in range(3)]),
+        }
+    }
+    decision = evaluate_candidate(
+        results,
+        incumbent_arm="workflow_direct",
+        candidate_arm="candidate_workflow_direct",
+        model="pinned-model",
+        metric="num_turns",
+    )
+    assert decision["metric"] == "num_turns"
+    assert decision["metric_warning"] is not None
+    assert "subagent" in decision["metric_warning"]
+    cost_decision = evaluate_candidate(
+        results,
+        incumbent_arm="workflow_direct",
+        candidate_arm="candidate_workflow_direct",
+        model="pinned-model",
+        metric="duration_s",
+    )
+    assert cost_decision["metric_warning"] is None
+
+
 def test_candidate_gate_never_trades_resolution_for_lower_cost():
     results = {
         "task-a": {

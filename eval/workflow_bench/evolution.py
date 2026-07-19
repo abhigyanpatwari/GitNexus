@@ -45,9 +45,9 @@ PROMOTION_METRICS = ("output_tokens", "cost_usd", "duration_s", "num_turns")
 # Token/turn metrics come from the CLI's top-level `usage`, which counts ONLY
 # the main-loop session. `total_cost_usd` is the only reported number that
 # includes subagent spend.
-MAIN_LOOP_ONLY_METRICS = frozenset({"output_tokens"})
+MAIN_LOOP_ONLY_METRICS = frozenset({"output_tokens", "num_turns"})
 MAIN_LOOP_ONLY_WARNING = (
-    "WARNING: token metrics count only the main-loop session — subagent spend "
+    "WARNING: token and turn metrics count only the main-loop session — subagent spend "
     "is invisible to them and systematically flatters subagent-heavy "
     "candidates. Prefer cost_usd (the only CLI-reported field that includes "
     "subagents), or sum usage from the digest-bound transcript_artifacts in "
