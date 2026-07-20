@@ -206,6 +206,19 @@ export interface WorkerPoolOptions {
    */
   consecutiveFailureThreshold?: number;
   /**
+   * Startup budget in milliseconds for a replacement worker to emit the
+   * `{type:'ready'}` handshake before the pool treats it as a startup
+   * crash (see {@link waitForWorkerReady}). Default 5000; also overridable
+   * via `GITNEXUS_WORKER_READY_TIMEOUT_MS`, mirroring
+   * `GITNEXUS_WORKER_SUB_BATCH_TIMEOUT_MS`. On a slow or heavily loaded
+   * host, a full pool of workers cold-starting concurrently can
+   * legitimately need more than 5s to load the native grammar bindings —
+   * without the override every slot times out and the pool misclassifies
+   * the slow start as a deterministic startup crash-loop, aborting the
+   * whole analyze.
+   */
+  workerReadyTimeoutMs?: number;
+  /**
    * Test-only injection point for the Worker constructor. When provided,
    * the pool uses this factory instead of `new Worker(workerUrl)`. Production
    * code should leave this unset.
@@ -406,25 +419,7 @@ const DEFAULT_TIMEOUT_BACKOFF_FACTOR = 2;
 const DEFAULT_MAX_RESPAWNS_PER_SLOT = 3;
 const DEFAULT_MAX_CUMULATIVE_TIMEOUT_FACTOR = 5;
 const DEFAULT_CONSECUTIVE_FAILURE_THRESHOLD_FLOOR = 3;
-/**
- * Bounded wait for a replacement worker to emit the `{type:'ready'}`
- * handshake from `parse-worker.ts`. Trusting Node's `online` event alone
- * lets a worker that crashes during top-of-script init slip past pool
- * startup — the pool only notices on the first dispatch's idle timeout
- * (default 30s). 5 seconds is a generous budget for parser + grammar
- * imports; if the worker hasn't reported ready by then, it's almost
- * certainly stuck or crashed and the pool should surface the failure
- * fast rather than wait out the dispatch idle timeout.
- *
- * Overridable via `GITNEXUS_WORKER_READY_TIMEOUT_MS` (mirroring
- * `GITNEXUS_WORKER_SUB_BATCH_TIMEOUT_MS`): on a slow or heavily loaded
- * host, a full pool of workers cold-starting concurrently can legitimately
- * take longer than 5s to load the native grammar bindings — without the
- * override every slot times out and the pool misclassifies the slow start
- * as a deterministic startup crash-loop, aborting the whole analyze.
- */
-const WORKER_READY_TIMEOUT_MS =
-  positiveInteger(process.env.GITNEXUS_WORKER_READY_TIMEOUT_MS) ?? 5_000;
+const DEFAULT_WORKER_READY_TIMEOUT_MS = 5_000;
 /**
  * Default upper bound on auto-resolved pool size. Past 16 workers the
  * dominant cost shifts from worker-side parsing to main-thread merge /
@@ -555,6 +550,7 @@ interface ResolvedWorkerPoolOptions {
   maxCumulativeTimeoutMs: number;
   consecutiveFailureThreshold: number;
   shutdownDrainMs: number;
+  workerReadyTimeoutMs: number;
 }
 
 export function resolveWorkerPoolOptions(
@@ -591,6 +587,10 @@ export function resolveWorkerPoolOptions(
       nonNegativeInteger(options.shutdownDrainMs) ??
       nonNegativeInteger(process.env.GITNEXUS_WORKER_SHUTDOWN_DRAIN_MS) ??
       DEFAULT_SHUTDOWN_DRAIN_MS,
+    workerReadyTimeoutMs:
+      positiveInteger(options.workerReadyTimeoutMs) ??
+      positiveInteger(process.env.GITNEXUS_WORKER_READY_TIMEOUT_MS) ??
+      DEFAULT_WORKER_READY_TIMEOUT_MS,
   };
 }
 
@@ -706,7 +706,7 @@ function forwardWorkerStdout(worker: Worker): void {
   const stream = worker.stdout;
   if (!stream) return;
   stream.on('data', (chunk: Buffer | string) => {
-    process.stdout.write(typeof chunk === 'string' ? chunk : chunk.toString('utf8'));
+    process.stdout.write(chunk);
   });
   // A stdout stream error must never crash the pool.
   stream.on('error', () => undefined);
@@ -751,13 +751,14 @@ function workerErrorReason(workerIndex: number, message: string, stack?: string)
  * (parser/grammar import failure, missing native binding) slip past
  * pool startup. The pool then only noticed the dead replacement on the
  * first dispatch's idle timeout (default 30s) — a long stall masking
- * an actual crash. This handshake bounds the wait at
- * {@link WORKER_READY_TIMEOUT_MS} and surfaces init failures as
- * `error` / `exit` / `messageerror` events directly. `messageerror` is
- * wired the same way: a V8 deserialization failure during startup is
- * treated as worker death and rejects the readiness promise.
+ * an actual crash. This handshake bounds the wait at `readyTimeoutMs`
+ * (see {@link WorkerPoolOptions.workerReadyTimeoutMs}) and surfaces init
+ * failures as `error` / `exit` / `messageerror` events directly.
+ * `messageerror` is wired the same way: a V8 deserialization failure
+ * during startup is treated as worker death and rejects the readiness
+ * promise.
  */
-function waitForWorkerReady(worker: Worker): Promise<void> {
+function waitForWorkerReady(worker: Worker, readyTimeoutMs: number): Promise<void> {
   return new Promise<void>((resolve, reject) => {
     const cleanup = () => {
       clearTimeout(timer);
@@ -810,11 +811,11 @@ function waitForWorkerReady(worker: Worker): Promise<void> {
         new Error(
           withStderr(
             worker,
-            `Replacement worker did not report ready within ${WORKER_READY_TIMEOUT_MS}ms — likely crashed during top-of-script init`,
+            `Replacement worker did not report ready within ${readyTimeoutMs}ms — likely crashed during top-of-script init (slow host? raise GITNEXUS_WORKER_READY_TIMEOUT_MS)`,
           ),
         ),
       );
-    }, WORKER_READY_TIMEOUT_MS);
+    }, readyTimeoutMs);
     worker.on('message', onMessage);
     worker.once('error', onError);
     worker.once('exit', onExit);
@@ -1133,7 +1134,7 @@ export const createWorkerPool = (
       const worker = workers[i];
       if (!worker) return; // terminated mid-startup
       try {
-        await waitForWorkerReady(worker);
+        await waitForWorkerReady(worker, poolOptions.workerReadyTimeoutMs);
         anyWorkerReachedReady = true;
         return; // ready — slot stays in activeSlots
       } catch (err) {
@@ -1195,7 +1196,7 @@ export const createWorkerPool = (
     chunkHash?: string,
   ): Promise<TResult[]> => {
     // Await the initial-spawn readiness gate (F13). On first dispatch
-    // this blocks for up to WORKER_READY_TIMEOUT_MS while every initial
+    // this blocks for up to poolOptions.workerReadyTimeoutMs while every initial
     // worker's `{type:'ready'}` handshake is checked; on subsequent
     // dispatches the promise is already settled and resolves
     // synchronously. Slots whose initial worker crashed in top-of-
@@ -1394,7 +1395,7 @@ export const createWorkerPool = (
         if (stopped) return false;
         const replacement = spawnAndCapture(workerUrl);
         try {
-          await waitForWorkerReady(replacement);
+          await waitForWorkerReady(replacement, poolOptions.workerReadyTimeoutMs);
         } catch (err) {
           await replacement.terminate().catch(() => undefined);
           logger.warn(
