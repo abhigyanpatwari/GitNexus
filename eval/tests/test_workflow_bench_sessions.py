@@ -192,9 +192,22 @@ def test_run_claude_keeps_raw_subtype_and_stderr_tail(monkeypatch, tmp_path):
         "returncode": 1,
         "process_state": "exited",
         "stderr_tail": "rate limit hit",
+        "stdout_tail": VALID_REPORT,
         "process_detail": None,
         "event_stream_error": None,
     }
+
+
+def test_run_claude_surfaces_stdout_tail_on_empty_stderr(monkeypatch, tmp_path):
+    # A session can exit non-zero with an EMPTY stderr (e.g. a pre-flight
+    # sandbox failure before any model turn ever runs) -- stdout_tail is then
+    # the only place the actual event stream is visible, so it must not be
+    # dropped just because stderr had nothing to say.
+    proc = fake_cli_result(VALID_REPORT, returncode=1, stderr="")
+    monkeypatch.setattr(runner_sessions, "run_managed", lambda *a, **k: proc)
+    rec = runner.run_claude("task", tmp_path, claude_bin="claude", timeout=5)
+    assert rec["error_detail"]["stderr_tail"] == ""
+    assert rec["error_detail"]["stdout_tail"] == VALID_REPORT
 
 
 def test_run_arm_labels_completed_but_unverified_runs_verify_failed(monkeypatch, tmp_path):

@@ -151,6 +151,17 @@ jobs:
           test "$("${canary_runtime}/node_modules/@anthropic-ai/claude-code-linux-x64/claude" --version)" = \
             '2.1.214 (Claude Code)'
 
+      - name: Install monorepo root dependencies
+        run: |
+          set -euo pipefail
+          # The benchmark's task bindings sandbox-copy node_modules from the
+          # monorepo root as well as gitnexus-shared and gitnexus (see the
+          # sandbox_copy entries in tasks.scenarios.yaml). The two steps below
+          # install the subpackage trees; the root tree needs its own install
+          # or capture_task_dependency_binding aborts at task binding on the
+          # missing root node_modules.
+          npm ci
+
       - name: Build pinned shared runtime
         run: |
           set -euo pipefail
