@@ -12,6 +12,7 @@ import { act, fireEvent, render, screen } from '@testing-library/react';
 import { RepoAnalyzer } from '../../src/components/RepoAnalyzer';
 import { i18nReady } from '../../src/i18n';
 import {
+  BackendError,
   cancelAnalyze,
   startAnalyze,
   streamAnalyzeProgress,
@@ -19,6 +20,17 @@ import {
 } from '../../src/services/backend-client';
 
 vi.mock('../../src/services/backend-client', () => ({
+  BackendError: class BackendError extends Error {
+    constructor(
+      message: string,
+      public readonly status: number,
+      public readonly code: string,
+      public readonly retryAfterMs?: number,
+    ) {
+      super(message);
+      this.name = 'BackendError';
+    }
+  },
   startAnalyze: vi.fn(),
   cancelAnalyze: vi.fn(),
   streamAnalyzeProgress: vi.fn(),
@@ -161,6 +173,24 @@ describe('folder upload', () => {
     expect(screen.getByText('upload exploded')).toBeInTheDocument();
     expect(streamAnalyzeProgress).not.toHaveBeenCalled();
   });
+
+  it('formats origin-blocked upload failures with actionable guidance', async () => {
+    const d = deferred<typeof JOB>();
+    vi.mocked(uploadFolder).mockReturnValue(d.promise);
+
+    startUpload();
+    await act(async () => {
+      d.reject(
+        new BackendError('This endpoint is restricted to same-host origins', 403, 'origin_blocked'),
+      );
+    });
+
+    expect(screen.getByText(/Open GitNexus from the server's own address/)).toBeInTheDocument();
+    expect(
+      screen.queryByText('This endpoint is restricted to same-host origins'),
+    ).not.toBeInTheDocument();
+    expect(streamAnalyzeProgress).not.toHaveBeenCalled();
+  });
 });
 
 describe('URL analyze', () => {
@@ -214,5 +244,23 @@ describe('URL analyze', () => {
     expect(streamAnalyzeProgress).toHaveBeenCalledTimes(1);
     expect(vi.mocked(streamAnalyzeProgress).mock.calls[0][0]).toBe('job-3');
     expect(cancelAnalyze).not.toHaveBeenCalled();
+  });
+
+  it('formats origin-blocked analyze failures with actionable guidance', async () => {
+    const d = deferred<typeof JOB>();
+    vi.mocked(startAnalyze).mockReturnValue(d.promise);
+
+    startGithubAnalyze();
+    await act(async () => {
+      d.reject(
+        new BackendError('This endpoint is restricted to same-host origins', 403, 'origin_blocked'),
+      );
+    });
+
+    expect(screen.getByText(/Open GitNexus from the server's own address/)).toBeInTheDocument();
+    expect(
+      screen.queryByText('This endpoint is restricted to same-host origins'),
+    ).not.toBeInTheDocument();
+    expect(streamAnalyzeProgress).not.toHaveBeenCalled();
   });
 });
