@@ -73,6 +73,7 @@ from .proposer_sandbox import (
     preflight_bubblewrap,
     pid_namespace_command,
     prepare_sandbox,
+    redact_text,
     require_claude_sandbox_helpers,
     stage_evidence_bundle,
 )
@@ -938,7 +939,11 @@ def main() -> int:
                     evidence_bundle=bundle,
                     bwrap_bin=bwrap_bin,
                 )
-            (gen_dir / "proposer-session.json").write_text(json.dumps(record, indent=2) + "\n")
+            # Redact any API token echoed into the session record (e.g. an
+            # error_detail stderr_tail) before it enters the uploaded artifact.
+            (gen_dir / "proposer-session.json").write_text(
+                redact_text(json.dumps(record, indent=2), [args.auth_token or ""]) + "\n"
+            )
             if not record["ok"]:
                 print(f"[gen {generation}] proposer session failed: {record['error_detail']}")
                 return 1
