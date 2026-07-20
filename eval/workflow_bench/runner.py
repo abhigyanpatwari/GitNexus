@@ -402,6 +402,13 @@ def run_arm(
         auth_token=args.auth_token,
         base_url=args.base_url,
     )
+    # --bare hard-disables the Skill tool and every mcp__* tool — by Claude
+    # Code design, not a bug (--allowedTools can't restore what --bare
+    # removes). Every arm except baseline_nomcp needs Skill and/or MCP tools,
+    # so only baseline_nomcp can keep --bare's tighter isolation; the rest
+    # rely on ANTHROPIC_API_KEY alone (the sandboxed HOME has no OAuth/
+    # keychain state to conflict with it).
+    bare = arm == "baseline_nomcp"
     common = {
         "claude_bin": sandbox.claude_bin,
         "timeout": args.timeout,
@@ -412,7 +419,7 @@ def run_arm(
             read_only_paths=_evaluated_skill_roots(worktree, arm),
         ),
         "require_pid_namespace": True,
-        "bare": True,
+        "bare": bare,
         "settings_json": sandbox.settings_json,
         "strict_mcp_config": True,
         "mcp_config_json": sandbox_mcp_config(),
