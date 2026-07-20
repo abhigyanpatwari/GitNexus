@@ -377,6 +377,13 @@ def run_claude(
     if strict_mcp_config:
         cmd += ["--strict-mcp-config", "--mcp-config", mcp_config_json or '{"mcpServers":{}}']
     if allowed_tools:
+        # --bare's own hard-coded Bash/Edit/Read ceiling already scopes bare
+        # sessions; outside --bare the built-in toolset defaults to
+        # everything (subagents, WebFetch, Task, ...), so --tools is needed
+        # to actually restrict it — --allowedTools only pre-approves within
+        # whatever set is available, it does not narrow that set.
+        if not bare:
+            cmd += ["--tools", *allowed_tools]
         cmd += ["--allowedTools", *allowed_tools]
     if disable_slash_commands:
         cmd.append("--disable-slash-commands")
