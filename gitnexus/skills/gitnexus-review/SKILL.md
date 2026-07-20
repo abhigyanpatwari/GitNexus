@@ -193,11 +193,15 @@ finder — it audits the finished draft.
 
 When the harness supports subagents and these lanes are registered as
 agents (the CI review workflow installs them from its trusted control
-checkout; a local harness may register them from this directory), run the
-expert-lens pass by dispatching all five finder lanes in parallel in a
-single message. Give each lane the diff, the changed-file manifest, the
-exact base and head identifiers, the checkout paths, and the slice of
-changed files matching its charge.
+checkout; a local harness may register them by copying `ci-personas/*.md`
+into `~/.claude/agents/` or the project's `.claude/agents/`), run the
+expert-lens pass as follows. First establish your own graph evidence —
+make at least one substantive context call on a changed symbol yourself,
+before dispatching any lane, since lane calls never satisfy the evidence
+this skill or its runner requires. Then dispatch all five finder lanes in
+parallel in a single message. Give each lane the diff, the changed-file
+manifest, the exact base and head identifiers, the checkout paths, and the
+slice of changed files matching its charge.
 
 Treat every lane report as an unverified claim: re-anchor each finding to
 the diff, the source, or your own graph queries before it enters the
@@ -210,9 +214,14 @@ the full draft body plus the same context. On `DEFECTS`, repair the draft
 and re-dispatch the critic once; if defects remain after the second pass,
 fix what you accept, note the unresolved critic objections in the
 coverage section, and proceed — the critic hardens the review; it never
-blocks it. If subagent dispatch is unavailable or any lane fails, run
-that lane's charge inline — the lanes structure the work; they never
-gate it.
+blocks it. This fail-open is deliberate: the critic is bounded to two
+passes so it cannot deadlock or wedge the run, and the review is still
+gated by the runner's own evidence and schema checks. (This is distinct
+from the separate `gitnexus-pr-swarm-review` skill, whose interactive
+roster treats its critic as a hard gate that must clear before emission;
+this CI lane must always emit a review or a clean failure.) If subagent
+dispatch is unavailable or any lane fails, run that lane's charge inline —
+the lanes structure the work; they never gate it.
 
 ## Finding standard
 

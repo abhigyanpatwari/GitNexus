@@ -1202,7 +1202,9 @@ jobs:
             identifiers are the exact SHAs above. One CI-specific override: lane tool
             calls never
             satisfy the publisher's context-evidence gate — make the required
-            successful context call yourself in this conversation.
+            successful context call yourself in this conversation, before
+            dispatching any lane, so a fully-delegated run cannot leave the gate
+            unsatisfied.
 
             Return one structured field named body containing the complete Markdown
             review, structured exactly as: first a short opening paragraph that leads

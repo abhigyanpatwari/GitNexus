@@ -1185,6 +1185,9 @@ describe('gitnexus review-agent workflow security contract', () => {
     expect(analyze).toContain('rm -rf -- "${review_dir}/.claude/agents"');
     expect(analyze).not.toContain('rm -rf -- "${review_dir}/.claude/skills"');
     expect(analyze).toContain("satisfy the publisher's context-evidence gate");
+    // The orchestrator's own evidence call is a precondition of dispatch, so a
+    // fully-delegated run cannot leave the gate unsatisfied.
+    expect(analyze).toContain('dispatching any lane');
     expect(analyze).toContain('Read(/proc/**)');
     expect(analyze).toContain('Read(${{ github.workspace }}/**)');
     expect(analyze).toContain(
