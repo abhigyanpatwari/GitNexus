@@ -12,6 +12,7 @@
 import path from 'path';
 import fs from 'fs/promises';
 import { runPipelineFromRepo } from './ingestion/pipeline.js';
+import type { KnowledgeGraph } from './graph/types.js';
 import { resetDegradedParseCounter } from './tree-sitter/safe-parse.js';
 import {
   initLbug,
@@ -120,11 +121,61 @@ import { generateAIContextFiles } from '../cli/ai-context.js';
 import { sanitizeDetectedBranch } from '../cli/analyze-config.js';
 import { EMBEDDING_TABLE_NAME } from './lbug/schema.js';
 import { STALE_HASH_SENTINEL } from './lbug/schema.js';
+import { isSpringBeanCandidateSourceFile } from './ingestion/frameworks/spring/bean-catalog.js';
+import { SPRING_BEAN_INVENTORY_FEATURE } from './ingestion/frameworks/spring/analysis-features.js';
+import {
+  CLASS_FRAMEWORK_ANNOTATIONS_FEATURE,
+  findAnalysisFeatureMismatches,
+  resolveAnalysisFeatureVersions,
+} from './analysis-features.js';
 import {
   analyzerRunnerIdentitiesEqual,
   finalizeAnalyzerRunnerIdentity,
   resolveAnalyzerRunnerIdentity,
 } from './analyzer-identity.js';
+
+const ANALYSIS_FEATURES = [
+  CLASS_FRAMEWORK_ANNOTATIONS_FEATURE,
+  SPRING_BEAN_INVENTORY_FEATURE,
+] as const;
+
+interface PersistedFrameworkAnnotationRow {
+  readonly id?: unknown;
+  readonly frameworkAnnotations?: unknown;
+}
+
+function stringList(value: unknown): readonly string[] {
+  return Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === 'string')
+    : [];
+}
+
+function collectFrameworkAnnotationDriftFiles(
+  graph: KnowledgeGraph,
+  persistedRows: readonly PersistedFrameworkAnnotationRow[],
+): Set<string> {
+  const persistedById = new Map<string, readonly string[]>();
+  for (const row of persistedRows) {
+    if (typeof row.id === 'string') {
+      persistedById.set(row.id, stringList(row.frameworkAnnotations));
+    }
+  }
+
+  const driftFiles = new Set<string>();
+  graph.forEachNode((node) => {
+    if (node.label !== 'Class') return;
+    const current = stringList(node.properties.frameworkAnnotations);
+    const persisted = persistedById.get(node.id) ?? [];
+    if (
+      current.length !== persisted.length ||
+      current.some((annotation, index) => annotation !== persisted[index])
+    ) {
+      const filePath = node.properties.filePath;
+      if (typeof filePath === 'string') driftFiles.add(filePath);
+    }
+  });
+  return driftFiles;
+}
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -942,6 +993,34 @@ export async function runFullAnalysis(
     options = { ...options, force: true };
   }
 
+  // ── independently-versioned analysis capabilities ────────────────
+  // `schemaVersion` is reserved for graph-wide incremental invariants. Some
+  // persisted semantics apply only to repositories containing relevant source
+  // files, so they carry exact feature versions instead. This guard must also
+  // run before alreadyUpToDate: current main and this PR both use schema v8,
+  // while pre-PR v8 indexes lack the Class frameworkAnnotations column and
+  // Java/Kotlin Bean evidence.
+  const persistedFilePaths = Object.keys(existingMeta?.fileHashes ?? {});
+  const expectedPersistedAnalysisFeatures = resolveAnalysisFeatureVersions(
+    ANALYSIS_FEATURES,
+    persistedFilePaths,
+  );
+  const persistedAnalysisFeatureMismatches = existingMeta
+    ? findAnalysisFeatureMismatches(
+        existingMeta.analysisFeatures,
+        expectedPersistedAnalysisFeatures,
+      )
+    : [];
+  let analysisFeatureMismatchLogged = false;
+  if (existingMeta && persistedAnalysisFeatureMismatches.length > 0) {
+    log(
+      `analysis capabilities changed (${persistedAnalysisFeatureMismatches.join(', ')}); ` +
+        `forcing a full rebuild so persisted feature evidence is complete.`,
+    );
+    options = { ...options, force: true };
+    analysisFeatureMismatchLogged = true;
+  }
+
   // Analyzer provenance is part of freshness, not merely diagnostics. A
   // same-commit fast path must not preserve metadata produced by an older,
   // malformed, or dependency/native-different runner. Force a real rebuild so
@@ -1202,6 +1281,24 @@ export async function runFullAnalysis(
     }
   });
   const newFileHashes = await computeFileHashes(repoPath, allFilePaths);
+  const currentAnalysisFeatures = resolveAnalysisFeatureVersions(ANALYSIS_FEATURES, allFilePaths);
+  const currentAnalysisFeatureMismatches = existingMeta
+    ? findAnalysisFeatureMismatches(existingMeta.analysisFeatures, currentAnalysisFeatures)
+    : [];
+  if (
+    existingMeta &&
+    currentAnalysisFeatureMismatches.length > 0 &&
+    !analysisFeatureMismatchLogged
+  ) {
+    // Covers a repository gaining or losing its first applicable source file:
+    // the persisted file list cannot predict that transition before the
+    // pipeline, but an incremental top-up would leave unchanged rows incomplete.
+    log(
+      `analysis capabilities changed (${currentAnalysisFeatureMismatches.join(', ')}); ` +
+        `forcing a full rebuild so persisted feature evidence is complete.`,
+    );
+    options = { ...options, force: true };
+  }
 
   // Decide incremental vs full at THIS point (post-pipeline, pre-DB).
   // All eligibility conditions are checked here against the actual
@@ -1213,6 +1310,7 @@ export async function runFullAnalysis(
     !options.force &&
     !!existingMeta &&
     existingMeta.schemaVersion === INCREMENTAL_SCHEMA_VERSION &&
+    currentAnalysisFeatureMismatches.length === 0 &&
     !!existingMeta.fileHashes &&
     Object.keys(existingMeta.fileHashes).length > 0 &&
     repoHasGit &&
@@ -1450,6 +1548,37 @@ export async function runFullAnalysis(
       //    and extractChangedSubgraph — asymmetry between the two would
       //    leave stale rows or PK-conflict at COPY time.
       const effectiveWriteSet = computeEffectiveWriteSet(pipelineResult.graph, writableFiles);
+
+      // `frameworkAnnotations` is derived from cross-file JVM visibility, so
+      // an unchanged Class row can change when a same-package declaration is
+      // added or removed without producing an IMPORTS edge. Compare the fresh
+      // graph against the pre-write DB and rewrite only files whose persisted
+      // value drifted. Add them after edge-boundary expansion: relationships
+      // touching these files are already included by extractChangedSubgraph,
+      // while pulling every unchanged neighbor would add no correctness.
+      // Only supported Spring Bean source changes can alter this property;
+      // avoid materializing every persisted Class row for unrelated language
+      // updates. Check deleted paths too so removing/renaming a Java shadowing
+      // declaration still refreshes unchanged Spring candidates.
+      const beanSourceChanged =
+        hashDiff.toWrite.some(isSpringBeanCandidateSourceFile) ||
+        hashDiff.deleted.some(isSpringBeanCandidateSourceFile);
+      if (beanSourceChanged) {
+        const persistedFrameworkAnnotations = (await executeQuery(
+          'MATCH (c:Class) ' + 'RETURN c.id AS id, c.frameworkAnnotations AS frameworkAnnotations',
+        )) as PersistedFrameworkAnnotationRow[];
+        const frameworkAnnotationDriftFiles = collectFrameworkAnnotationDriftFiles(
+          pipelineResult.graph,
+          persistedFrameworkAnnotations,
+        );
+        for (const filePath of frameworkAnnotationDriftFiles) effectiveWriteSet.add(filePath);
+        if (frameworkAnnotationDriftFiles.size > 0) {
+          log(
+            `Incremental: +${frameworkAnnotationDriftFiles.size} file(s) added for ` +
+              'framework annotation property drift',
+          );
+        }
+      }
       // Deduped: deleted entries may already appear via importer-BFS
       // expansion (the importer BFS can return a now-deleted path), which
       // would otherwise hand deleteNodesForFiles the same path twice in one
@@ -1905,6 +2034,7 @@ export async function runFullAnalysis(
             embeddings,
           },
           schemaVersion: hasGitDir(repoPath) ? INCREMENTAL_SCHEMA_VERSION : undefined,
+          analysisFeatures: currentAnalysisFeatures,
           cjkSegmentation: getSearchFTSCjkSegmentation(),
           fileHashes: hasGitDir(repoPath) ? fileHashes : undefined,
           cacheKeys: [...parseCache.usedKeys],
@@ -2068,6 +2198,7 @@ export async function runFullAnalysis(
       // incrementalInProgress to undefined explicitly clears any prior
       // dirty flag (full and incremental success paths converge here).
       schemaVersion: hasGitDir(repoPath) ? INCREMENTAL_SCHEMA_VERSION : undefined,
+      analysisFeatures: currentAnalysisFeatures,
       // Always stamped with the live resolved mode (#2331/#2339) — unlike
       // `pdg` below, 'none' is a meaningful value to compare, not an
       // absence, so this is never conditionally omitted.

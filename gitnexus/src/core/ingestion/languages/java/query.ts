@@ -72,6 +72,15 @@ const JAVA_SCOPE_QUERY = `
 (annotation_type_declaration
   name: (identifier) @declaration.name) @declaration.class
 
+;; Class annotation syntax is carried to post-resolution enrichment. Keeping
+;; this in the existing scope query avoids a second AST build/traversal.
+(class_declaration
+  (modifiers
+    [
+      (marker_annotation name: (_) @class-annotation.name)
+      (annotation name: (_) @class-annotation.name)
+    ])) @class-annotation.class
+
 ;; Declarations — methods / constructors
 (method_declaration
   name: (identifier) @declaration.name) @declaration.method

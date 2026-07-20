@@ -29,11 +29,26 @@ import {
   type JavaResolveContext,
 } from './index.js';
 import { populateJavaPackageSiblings } from './package-siblings.js';
+import { attachSpringBeanCandidateMetadata } from './spring-bean-metadata.js';
+import {
+  applyJavaCaptureSideChannel,
+  clearJavaClassAnnotationFacts,
+} from './capture-side-channel.js';
+import { clearJavaPackageFacts } from './package-facts.js';
 
 const javaScopeResolver: ScopeResolver = {
   language: SupportedLanguages.Java,
   languageProvider: javaProvider,
   importEdgeReason: 'java-scope: import',
+
+  loadResolutionConfig: () => {
+    // Worker capture facts are process-local and outlive a single analysis in
+    // server mode. This hook runs once before each Java workspace pass, before
+    // ParsedFile side channels are restored for the current files.
+    clearJavaClassAnnotationFacts();
+    clearJavaPackageFacts();
+    return undefined;
+  },
 
   resolveImportTarget: (targetRaw, fromFile, allFilePaths) => {
     const ws: JavaResolveContext = { fromFile, allFilePaths };
@@ -50,6 +65,7 @@ const javaScopeResolver: ScopeResolver = {
   buildMro: buildJavaMro,
 
   populateOwners: (parsed: ParsedFile) => populateClassOwnedMembers(parsed),
+  applyCaptureSideChannel: applyJavaCaptureSideChannel,
 
   isSuperReceiver: (text) => text.trim() === 'super',
 
@@ -67,6 +83,7 @@ const javaScopeResolver: ScopeResolver = {
 
   populateNamespaceSiblings: populateJavaPackageSiblings,
   populateRangeBindings: populateJavaCrossFileReturnTypes,
+  emitPostResolutionEdges: attachSpringBeanCandidateMetadata,
 };
 
 export { javaScopeResolver };

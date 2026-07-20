@@ -59,6 +59,7 @@ CREATE NODE TABLE Class (
   isExported BOOLEAN,
   content STRING,
   description STRING,
+  frameworkAnnotations STRING[],
   PRIMARY KEY (id)
 )`;
 
