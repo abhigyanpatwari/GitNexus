@@ -793,7 +793,8 @@ const doInitLbug = async (dbPath: string, readOnly: boolean = false) => {
         const realPath = await fs.realpath(dbPath);
         const parentDir = path.dirname(dbPath);
         const realParent = await fs.realpath(parentDir);
-        if (!realPath.startsWith(realParent + path.sep) && realPath !== realParent) {
+        const safePrefix = realParent.endsWith(path.sep) ? realParent : realParent + path.sep;
+        if (!realPath.startsWith(safePrefix) && realPath !== realParent) {
           throw new Error(
             `Refusing to delete ${dbPath}: resolved path ${realPath} is outside storage directory`,
           );

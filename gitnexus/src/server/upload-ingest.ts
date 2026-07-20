@@ -94,7 +94,8 @@ export function resolveContainedDest(stageRoot: string, rel: unknown): string {
   }
   const dest = path.resolve(stageRoot, segments.join(path.sep));
   // Suffix path.sep so a sibling prefix (/sandbox-evil vs /sandbox) can't pass.
-  if (dest !== stageRoot && !dest.startsWith(stageRoot + path.sep)) {
+  const safePrefix = stageRoot.endsWith(path.sep) ? stageRoot : stageRoot + path.sep;
+  if (dest !== stageRoot && !dest.startsWith(safePrefix)) {
     throw new BadRequestError('Upload path escapes the sandbox');
   }
   return dest;

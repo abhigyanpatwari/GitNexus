@@ -61,6 +61,20 @@ describe('resolveContainedDest', () => {
     // A rel that would resolve to a sibling dir sharing the root's string prefix.
     expect(() => resolveContainedDest(ROOT, '../gitnexus-sandbox-evil/x.js')).toThrow();
   });
+
+  if (process.platform === 'win32') {
+    it('handles Windows drive-root (e.g. "C:\\") correctly on Windows', () => {
+      const rootPath = 'C:\\';
+      const result = resolveContainedDest(rootPath, 'src/foo.ts');
+      expect(result).toBe('C:\\src\\foo.ts');
+    });
+  } else {
+    it('handles Unix root-level path roots (e.g. "/") correctly', () => {
+      const rootPath = '/';
+      const result = resolveContainedDest(rootPath, 'src/foo.ts');
+      expect(result).toBe('/src/foo.ts');
+    });
+  }
 });
 
 // ── ingestUpload (multipart streaming + containment + caps + cleanup) ──────────

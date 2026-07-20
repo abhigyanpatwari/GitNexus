@@ -83,7 +83,8 @@ export function assertSafePath(rawPath: string, root: string): string {
   }
   const resolvedRoot = path.resolve(root);
   const fullPath = path.resolve(resolvedRoot, rawPath);
-  if (fullPath !== resolvedRoot && !fullPath.startsWith(resolvedRoot + path.sep)) {
+  const safePrefix = resolvedRoot.endsWith(path.sep) ? resolvedRoot : resolvedRoot + path.sep;
+  if (fullPath !== resolvedRoot && !fullPath.startsWith(safePrefix)) {
     throw new ForbiddenError('Path traversal denied');
   }
   return fullPath;
