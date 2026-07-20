@@ -1147,14 +1147,20 @@ describe('gitnexus review-agent workflow security contract', () => {
     expect(allowedTools).not.toContain('mcp__gitnexus__detect_changes');
     expect(allowedTools).not.toContain('mcp__gitnexus__rename');
     expect(allowedTools).not.toContain('mcp__gitnexus__cypher');
-    // Swarm posture: subagents are allowed, but only the trusted control-SHA
-    // personas exist to spawn, and lane calls cannot satisfy the evidence gate.
-    expect(allowedToolRules).toContain('Task');
+    // Swarm posture: the orchestrator dispatches subagents via the Agent tool
+    // (renamed from Task in Claude Code 2.1.63), scoped to the six trusted
+    // control-SHA personas; Agent is not bare-denied (deny beats allow), and
+    // lane calls cannot satisfy the evidence gate.
+    expect(analyze).toContain('--tools "Read,Glob,Grep,Agent"');
+    expect(allowedTools).toContain(
+      'Agent(ci-correctness-lens,ci-security-lens,ci-blast-radius-lens,ci-coverage-lens,ci-adversarial-lens,ci-critic-lens)',
+    );
+    expect(allowedTools).not.toContain('Task');
     const disallowedTools = analyze.match(/--disallowedTools "([^"]+)"/)?.[1] ?? '';
     const disallowedToolRules = disallowedTools.split(',');
-    expect(disallowedToolRules).toContain('Agent');
     expect(disallowedToolRules).toContain('Bash');
-    expect(disallowedToolRules).not.toContain('Task');
+    expect(disallowedToolRules).not.toContain('Agent');
+    expect(disallowedTools).not.toContain('Task');
     expect(analyze).toContain(
       'cp -a -- .claude/skills/gitnexus-review/ci-personas/. "${claude_config}/agents/"',
     );
