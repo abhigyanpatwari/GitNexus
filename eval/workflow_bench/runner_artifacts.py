@@ -240,6 +240,7 @@ def make_worktree(repo: Path, ref: str, parent: Path) -> Path:
                 "clone",
                 "--no-local",
                 "--no-hardlinks",
+                "--no-tags",
                 "--quiet",
                 str(repo),
                 str(target),

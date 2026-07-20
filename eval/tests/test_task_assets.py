@@ -113,6 +113,27 @@ def test_small_assets_use_a_bounded_buffered_fallback(monkeypatch, tmp_path: Pat
     assert (clone / "second").read_bytes() == b"def"
 
 
+def test_default_buffered_fallback_budget_covers_a_realistic_large_asset(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    # 20 MiB exceeds the old 16 MiB default but must fit comfortably under
+    # the current default, proving the real (non-monkeypatched) budget
+    # constant is sized for a realistic large sandbox_copy asset such as the
+    # harness's own pre-built graph index, not just tiny fixtures.
+    payload = os.urandom(20 * 1024 * 1024)
+    repo, task = _repo_and_task(tmp_path, {"large": payload})
+    clone = tmp_path / "clone"
+    clone.mkdir()
+    monkeypatch.setattr(task_assets, "_try_reflink", lambda *_args: False)
+
+    with TaskAssetCache(tmp_path / "cache") as cache:
+        snapshot = cache.prepare(task, repo=repo, resolved_sha=SHA)
+        snapshot.materialize(clone)
+
+    assert (clone / "large").read_bytes() == payload
+
+
 def test_large_asset_without_reflink_fails_before_publish_and_cleans_staging(
     monkeypatch,
     tmp_path: Path,
