@@ -1141,8 +1141,14 @@ describe('gitnexus review-agent workflow security contract', () => {
     const allowedToolRules = allowedTools.split(',');
     expect(allowedToolRules).toContain('Read(./**)');
     expect(allowedToolRules).not.toContain('Read');
-    expect(allowedToolRules).not.toContain('Glob');
-    expect(allowedToolRules).not.toContain('Grep');
+    // Glob/Grep are allowed (bare, read-only, sandboxed by cwd + add-dir) so the
+    // lanes' declared tools do not manufacture denied-tool errors.
+    expect(allowedToolRules).toContain('Glob');
+    expect(allowedToolRules).toContain('Grep');
+    // The merge-base source checkout is readable so lanes can inspect deleted or
+    // rename-old source; a Read() allow rule grants access without triggering
+    // --add-dir agent discovery.
+    expect(allowedTools).toContain('Read(${{ runner.temp }}/gitnexus-review-merge-base/**)');
     expect(allowedTools).toContain('mcp__gitnexus__impact');
     expect(allowedTools).not.toContain('mcp__gitnexus__detect_changes');
     expect(allowedTools).not.toContain('mcp__gitnexus__rename');
@@ -1164,6 +1170,12 @@ describe('gitnexus review-agent workflow security contract', () => {
     expect(analyze).toContain(
       'cp -a -- .claude/skills/gitnexus-review/ci-personas/. "${claude_config}/agents/"',
     );
+    // The passive add-dir tree is scanned for agent definitions; drop any
+    // PR-controlled ones so only the trusted control-SHA personas can be
+    // dispatched. Skills under the copy are NOT pruned (a skill-editing PR
+    // must stay reviewable).
+    expect(analyze).toContain('rm -rf -- "${review_dir}/.claude/agents"');
+    expect(analyze).not.toContain('rm -rf -- "${review_dir}/.claude/skills"');
     expect(analyze).toContain("satisfy the publisher's context-evidence gate");
     expect(analyze).toContain('Read(/proc/**)');
     expect(analyze).toContain('Read(${{ github.workspace }}/**)');
