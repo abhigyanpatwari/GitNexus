@@ -89,6 +89,39 @@ describe('assertSafePath', () => {
     // src/.. resolves back to root, which is allowed.
     expect(assertSafePath('src/..', root)).toBe(root);
   });
+
+  if (process.platform === 'win32') {
+    it('handles Windows drive-root (e.g. "C:\\") correctly on Windows', () => {
+      const rootPath = 'C:\\';
+      const result = assertSafePath('src\\foo.ts', rootPath);
+      expect(result).toBe('C:\\src\\foo.ts');
+    });
+
+    it('denies paths escaping Windows drive-root by resolving inside drive', () => {
+      const rootPath = 'C:\\';
+      // C:\..\..\other resolves to C:\other on Windows, which is still on C:\
+      const result = assertSafePath('..\\..\\other', rootPath);
+      expect(result).toBe('C:\\other');
+    });
+
+    it('denies paths on different Windows drive letters', () => {
+      const rootPath = 'C:\\';
+      // Resolving D:\foo against C:\ yields D:\foo, which escapes C:\
+      expect(() => assertSafePath('D:\\foo.ts', rootPath)).toThrow(ForbiddenError);
+    });
+  } else {
+    it('handles Unix root-level path roots (e.g. "/") correctly', () => {
+      const rootPath = '/';
+      const result = assertSafePath('src/foo.ts', rootPath);
+      expect(result).toBe('/src/foo.ts');
+    });
+
+    it('denies paths escaping Unix root by resolving inside root', () => {
+      const rootPath = '/';
+      const result = assertSafePath('../../other', rootPath);
+      expect(result).toBe('/other');
+    });
+  }
 });
 
 describe('escapeRegExp', () => {

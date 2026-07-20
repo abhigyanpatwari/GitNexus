@@ -91,6 +91,15 @@ describe('analyzeCommand commander → runFullAnalysis noStats bridge (#1477)', 
     expect(opts.noStats).toBe(true);
   });
 
+  it('threads the capture-before-import runner receipt into runFullAnalysis', async () => {
+    const { analyzeCommandWithRunnerIdentity } = await import('../../src/cli/analyze.js');
+    const receipt = { schemaVersion: 4 } as never;
+
+    await analyzeCommandWithRunnerIdentity(receipt, undefined, {});
+
+    expect(runFullAnalysisMock.mock.calls[0]?.[3]).toBe(receipt);
+  });
+
   it('maps omitted stats to noStats:false (default-on preserved)', async () => {
     const { analyzeCommand } = await import('../../src/cli/analyze.js');
 

@@ -134,7 +134,7 @@ Run the commands relevant to the touched area. If something cannot be run in the
 
 ### 4.5 If CI workflows or release pipelines changed
 
-- [ ] The workflow passes a dry-run or triggered run before merge; concurrency (`cancel-in-progress`) and the `setup-gitnexus` action remain wired correctly.
+- [ ] The workflow passes a dry-run or triggered run; concurrency (`cancel-in-progress`) and the `setup-gitnexus` action remain wired correctly. Workflows that only execute once registered on the default branch (an `issue_comment` trigger, or a newly added `workflow_dispatch`) cannot be dry-run pre-merge — merge them **registered but disabled**, then validate same-repo and fork execution post-merge before enabling.
 - [ ] `CHANGELOG.md` is **not** edited here — it is owned by the release process.
 
 ## 5. Review Gates

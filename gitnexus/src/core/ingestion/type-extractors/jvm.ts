@@ -1,4 +1,8 @@
-import { findChild, type SyntaxNode } from '../utils/ast-helpers.js';
+import {
+  findChild,
+  synthesizeJavaAnonymousClassName,
+  type SyntaxNode,
+} from '../utils/ast-helpers.js';
 import type {
   LanguageTypeConfig,
   ParameterExtractor,
@@ -29,6 +33,16 @@ const JAVA_DECLARATION_NODE_TYPES: ReadonlySet<string> = new Set([
   'field_declaration',
 ]);
 
+/** `Runnable handler = new Runnable() { ... }` — the variable's effective
+ *  type is the ANONYMOUS class (`Worker$1`), not the declared interface;
+ *  that is the instance `handler.run()` dispatches into (#2550). Returns
+ *  undefined for declarators without an anonymous-body initializer. */
+const anonymousInitializerTypeName = (declarator: SyntaxNode): string | undefined => {
+  const valueNode = declarator.childForFieldName('value');
+  if (!valueNode || valueNode.type !== 'object_creation_expression') return undefined;
+  return synthesizeJavaAnonymousClassName(valueNode);
+};
+
 /** Java: Type x = ...; Type x; */
 const extractJavaDeclaration: TypeBindingExtractor = (
   node: SyntaxNode,
@@ -46,7 +60,7 @@ const extractJavaDeclaration: TypeBindingExtractor = (
     const nameNode = child.childForFieldName('name');
     if (nameNode) {
       const varName = extractVarName(nameNode);
-      if (varName) env.set(varName, typeName);
+      if (varName) env.set(varName, anonymousInitializerTypeName(child) ?? typeName);
     }
   }
 };
@@ -67,6 +81,11 @@ const extractJavaInitializer: InitializerExtractor = (
     const varName = extractVarName(nameNode);
     if (!varName || env.has(varName)) continue;
     if (valueNode.type !== 'object_creation_expression') continue;
+    const anonName = anonymousInitializerTypeName(child);
+    if (anonName) {
+      env.set(varName, anonName);
+      continue;
+    }
     const ctorType = valueNode.childForFieldName('type');
     if (!ctorType) continue;
     const typeName = extractSimpleTypeName(ctorType);

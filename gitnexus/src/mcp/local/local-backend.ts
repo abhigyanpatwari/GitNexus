@@ -204,7 +204,8 @@ function normalizeToolParams(
  * Quick test-file detection for filtering impact results.
  * Matches common test file patterns across all supported languages.
  */
-export function isTestFilePath(filePath: string): boolean {
+export function isTestFilePath(filePath: string | null | undefined): boolean {
+  if (!filePath) return false;
   const p = filePath.toLowerCase().replace(/\\/g, '/');
   return (
     p.includes('.test.') ||
@@ -4327,7 +4328,10 @@ export class LocalBackend {
     /** Guard: ensure a file path resolves within the repo root (prevents path traversal) */
     const assertSafePath = (filePath: string): string => {
       const full = path.resolve(repo.repoPath, filePath);
-      if (!full.startsWith(repo.repoPath + path.sep) && full !== repo.repoPath) {
+      const safePrefix = repo.repoPath.endsWith(path.sep)
+        ? repo.repoPath
+        : repo.repoPath + path.sep;
+      if (!full.startsWith(safePrefix) && full !== repo.repoPath) {
         throw new Error(`Path traversal blocked: ${filePath}`);
       }
       return full;

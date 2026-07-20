@@ -397,7 +397,7 @@ jobs:
           package-manager-cache: false
 
       - name: Build gitnexus-shared
-        run: npm install && npm run build
+        run: npm ci && npm run build
         working-directory: gitnexus-shared
 
       - name: Install gitnexus dependencies

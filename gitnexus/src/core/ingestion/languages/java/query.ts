@@ -39,6 +39,20 @@ const JAVA_SCOPE_QUERY = `
 (record_declaration) @scope.class
 (annotation_type_declaration) @scope.class
 
+;; Anonymous class body: \`new Runnable() { public void run() {} }\`.
+;; Without its own scope, a method's auto-hoist (scope-extractor.ts) has
+;; nowhere to stop and leaks the name past the anonymous class into the
+;; enclosing scope -- the same failure mode fixed for TS/JS object
+;; literals (#2545).
+(object_creation_expression
+  (class_body) @scope.class)
+
+;; Enum constant body: \`enum E { A { public void hook() {} } }\` --
+;; javac's other anonymous-class shape (E$N), same scope-boundary need
+;; and same class_body anchor (#2555).
+(enum_constant
+  body: (class_body) @scope.class)
+
 (method_declaration) @scope.function
 (constructor_declaration) @scope.function
 

@@ -16,6 +16,12 @@ const KOTLIN_SCOPE_QUERY = `
 (class_declaration) @scope.class
 (object_declaration) @scope.class
 (companion_object) @scope.class
+;; Anonymous object expression: \`val h = object { fun fetch() {} }\`
+;; (distinct from the named \`object_declaration\`/\`companion_object\` above).
+;; Without its own scope, a method's auto-hoist (scope-extractor.ts) has
+;; nowhere to stop and leaks the name past the literal into the enclosing
+;; scope -- the same failure mode fixed for TS/JS object literals (#2545).
+(object_literal) @scope.class
 (function_declaration) @scope.function
 
 ;; Secondary-constructor body scope (issue #1919 review CF1). A

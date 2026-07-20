@@ -11,7 +11,6 @@
 
 import path from 'path';
 import fs from 'fs/promises';
-import { execFileSync } from 'child_process';
 import { runPipelineFromRepo } from './ingestion/pipeline.js';
 import { resetDegradedParseCounter } from './tree-sitter/safe-parse.js';
 import {
@@ -36,6 +35,7 @@ import {
 } from './lbug/lbug-adapter.js';
 import { escapeCypherString } from './lbug/cypher-escape.js';
 import {
+  buildSearchIndexesOrDegrade,
   createSearchFTSIndexes,
   initialiseSearchFTSStemmer,
   verifySearchFTSIndexes,
@@ -69,6 +69,7 @@ import {
   isMissingFilesystemError,
   INDEX_METADATA_FILE,
   INCREMENTAL_SCHEMA_VERSION,
+  type AnalyzerRunnerIdentity,
   type RepoMeta,
 } from '../storage/repo-manager.js';
 import { DEFAULT_PDG_MAX_FUNCTION_LINES } from './ingestion/cfg/collect.js';
@@ -111,6 +112,7 @@ import {
   getRemoteUrl,
   hasGitDir,
   getInferredRepoName,
+  isWorkingTreeDirty,
   resolveRepoIdentityRoot,
 } from '../storage/git.js';
 import type { CachedEmbedding } from './embeddings/types.js';
@@ -118,6 +120,11 @@ import { generateAIContextFiles } from '../cli/ai-context.js';
 import { sanitizeDetectedBranch } from '../cli/analyze-config.js';
 import { EMBEDDING_TABLE_NAME } from './lbug/schema.js';
 import { STALE_HASH_SENTINEL } from './lbug/schema.js';
+import {
+  analyzerRunnerIdentitiesEqual,
+  finalizeAnalyzerRunnerIdentity,
+  resolveAnalyzerRunnerIdentity,
+} from './analyzer-identity.js';
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -562,6 +569,7 @@ export async function runFullAnalysis(
   repoPath: string,
   options: AnalyzeOptions,
   callbacks: AnalyzeCallbacks,
+  runnerIdentityAtBootstrap?: AnalyzerRunnerIdentity,
 ): Promise<AnalyzeResult> {
   const log = (msg: string) => callbacks.onLog?.(msg);
   const progress = (phase: string, percent: number, message: string) =>
@@ -761,6 +769,16 @@ export async function runFullAnalysis(
     }
   }
 
+  // Resolve once per real analysis run so every successful metadata write
+  // carries one coherent receipt. The FTS-only repair path above intentionally
+  // returns without restamping: it does not regenerate the graph represented by
+  // RepoMeta and therefore must not claim a new analyzer identity.
+  const runnerIdentity =
+    runnerIdentityAtBootstrap ?? resolveAnalyzerRunnerIdentity(import.meta.url);
+  if (!analyzerRunnerIdentitiesEqual(runnerIdentity, runnerIdentity)) {
+    throw new Error('Analyzer bootstrap supplied a malformed runner identity receipt');
+  }
+
   let resumeEmbeddingCheckpoint = false;
   let pendingEmbeddingNodeIds = new Set<string>();
   let embeddingIdentityForRun: EmbeddingIdentity | undefined;
@@ -924,6 +942,22 @@ export async function runFullAnalysis(
     options = { ...options, force: true };
   }
 
+  // Analyzer provenance is part of freshness, not merely diagnostics. A
+  // same-commit fast path must not preserve metadata produced by an older,
+  // malformed, or dependency/native-different runner. Force a real rebuild so
+  // the graph and its schema-v4 receipt are finalized atomically together.
+  if (existingMeta && !analyzerRunnerIdentitiesEqual(existingMeta.runnerIdentity, runnerIdentity)) {
+    const stampedRunnerSchema = (
+      existingMeta.runnerIdentity as { schemaVersion?: unknown } | undefined
+    )?.schemaVersion;
+    log(
+      `analyzer runner identity changed (stamped schema ${String(stampedRunnerSchema ?? 'missing')}, ` +
+        `this build uses schema ${runnerIdentity.schemaVersion}); forcing a full rebuild so the ` +
+        'index provenance matches the analyzer and dependency/native runtime that produced it.',
+    );
+    options = { ...options, force: true };
+  }
+
   if (
     existingMeta &&
     cjkSegmentationModeMismatch(existingMeta.cjkSegmentation, getSearchFTSCjkSegmentation())
@@ -957,36 +991,7 @@ export async function runFullAnalysis(
       // Counting them as dirty would perpetually defeat the up-to-date
       // fast path because the previous analyze just wrote them
       // (regression vs PR #1233 behavior).
-      const dirty = (() => {
-        try {
-          const out = execFileSync(
-            'git',
-            [
-              'status',
-              '--porcelain',
-              '--',
-              '.',
-              ':(exclude).gitnexus',
-              ':(exclude).gitnexus/**',
-              ':(exclude).claude',
-              ':(exclude).claude/**',
-              ':(exclude).cursor',
-              ':(exclude).cursor/**',
-              ':(exclude)AGENTS.md',
-              ':(exclude)CLAUDE.md',
-            ],
-            {
-              cwd: repoPath,
-              stdio: ['ignore', 'pipe', 'ignore'],
-              windowsHide: true,
-              encoding: 'utf8',
-            },
-          );
-          return out.trim().length > 0;
-        } catch {
-          return true; // conservative on git failure
-        }
-      })();
+      const dirty = isWorkingTreeDirty(repoPath);
       // Registration wrinkle around the fast path (#2264). A prior
       // `analyze --name X` that hit a name collision writes meta.json (meta-save
       // runs before registerRepo) then fails before registering, leaving the
@@ -1623,8 +1628,17 @@ export async function runFullAnalysis(
     const ftsAvailable = await loadFTSExtension(undefined, {
       policy: resolveAnalyzeInstallPolicy(),
     });
+    // Tracks whether search indexes actually ended up usable this run — starts
+    // as ftsAvailable (extension loaded) but flips to false below when the
+    // build/verify step itself fails, so capabilities.fts.status / ftsSkipped
+    // stay honest even though that failure no longer aborts the whole analyze.
+    let ftsReady = ftsAvailable;
     if (ftsAvailable) {
-      await createSearchFTSIndexes({
+      // Degrade rather than throw: createSearchFTSIndexes re-tokenizes every
+      // stored row on every run, so a native tokenizer error on a single
+      // pre-existing row (#2544/#2546) must not discard this run's otherwise-
+      // successful graph/embeddings work — only keyword search degrades.
+      const ftsResult = await buildSearchIndexesOrDegrade(executeQuery, {
         onIndexStart: options.verbose
           ? (table, indexName) => log(`FTS: creating ${table}.${indexName}`)
           : undefined,
@@ -1632,14 +1646,16 @@ export async function runFullAnalysis(
           ? (table, indexName) => log(`FTS: ready ${table}.${indexName}`)
           : undefined,
       });
-      const missingIndexNames = await verifySearchFTSIndexes(executeQuery);
-      if (missingIndexNames.length > 0) {
-        throw new Error(
-          `FTS verification failed - missing indexes after analyze: ${missingIndexNames.join(', ')}. ` +
-            'Check FTS extension availability, then retry `gitnexus analyze --force` for a full rebuild.',
+      if (ftsResult.ok) {
+        progress('fts', 90, 'Search indexes ready');
+      } else {
+        ftsReady = false;
+        log(
+          `FTS index build failed (${ftsResult.error}) — keyword search degraded this run. ` +
+            'Graph and embeddings analysis completed successfully. Run `gitnexus analyze --repair-fts` to retry.',
         );
+        progress('fts', 90, 'Search indexes skipped (build failed)');
       }
-      progress('fts', 90, 'Search indexes ready');
     } else {
       // For a missing runtime dependency (#2374) the file is present, so the
       // generic "install it with network access" tail in FTS_UNAVAILABLE_MESSAGE
@@ -1877,6 +1893,7 @@ export async function runFullAnalysis(
           repoPath,
           lastCommit: currentCommit,
           indexedAt: new Date().toISOString(),
+          runnerIdentity,
           branch: branchLabel ?? existingMeta?.branch,
           remoteUrl: hasGitDir(repoPath) ? getRemoteUrl(repoPath) : undefined,
           stats: {
@@ -2005,6 +2022,7 @@ export async function runFullAnalysis(
       repoPath,
       lastCommit: currentCommit,
       indexedAt: new Date().toISOString(),
+      runnerIdentity,
       // Branch identity this index represents (#2106). Recorded for the flat
       // slot too (so resolveBranchPlacement knows which branch owns it). When
       // the label is null (detached HEAD / non-git re-analyze) we PRESERVE an
@@ -2036,7 +2054,7 @@ export async function runFullAnalysis(
         // meta.json / `gitnexus doctor` honest about degraded search.
         fts: {
           provider: 'ladybugdb-fts',
-          status: ftsAvailable ? runtimeCapabilities.fts : 'unavailable',
+          status: ftsReady ? runtimeCapabilities.fts : 'unavailable',
         },
         vectorSearch: {
           provider: effectiveSemanticMode === 'vector-index' ? 'ladybugdb-vector' : 'exact-scan',
@@ -2069,6 +2087,13 @@ export async function runFullAnalysis(
       // off==off and incremental eligibility is restored.
       pdg: resolvePdgConfig(options),
     };
+    // Re-resolve at the commit boundary. Long analyses can overlap an npm
+    // upgrade, rebuilt dist tree, or native dependency replacement; stamping
+    // the start-of-run receipt after such a mutation would falsely certify a
+    // graph produced by two analyzer identities. Stable-read validation lives
+    // inside the resolver, and a mismatch leaves the dirty flag intact so the
+    // next run takes the established full-recovery path.
+    meta.runnerIdentity = finalizeAnalyzerRunnerIdentity(import.meta.url, runnerIdentity);
     await saveMeta(metaDir, meta);
 
     // Persist the incremental parse cache for the next run. Wraps in
@@ -2216,7 +2241,7 @@ export async function runFullAnalysis(
       repoPath,
       stats: meta.stats,
       pipelineResult,
-      ftsSkipped: !ftsAvailable,
+      ftsSkipped: !ftsReady,
       isPrimaryBranch: !placement.branch,
     };
   } catch (err) {
