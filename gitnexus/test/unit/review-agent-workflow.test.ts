@@ -1149,10 +1149,13 @@ describe('gitnexus review-agent workflow security contract', () => {
     const allowedToolRules = allowedTools.split(',');
     expect(allowedToolRules).toContain('Read(./**)');
     expect(allowedToolRules).not.toContain('Read');
-    // Glob/Grep are allowed (bare, read-only, sandboxed by cwd + add-dir) so the
-    // lanes' declared tools do not manufacture denied-tool errors.
-    expect(allowedToolRules).toContain('Glob');
-    expect(allowedToolRules).toContain('Grep');
+    // Glob/Grep are intentionally NOT allow-listed: bare Glob/Grep are separate
+    // tools that the Read()-scoped path denies below (/proc, github.workspace,
+    // ...) do not cover, so allow-listing them would open an undenied read path
+    // to the raw checkouts and host paths. Under dontAsk they stay denied by
+    // omission; lanes read via the scoped Read() rules and the graph MCP.
+    expect(allowedToolRules).not.toContain('Glob');
+    expect(allowedToolRules).not.toContain('Grep');
     // The merge-base source checkout is readable so lanes can inspect deleted or
     // rename-old source; a Read() allow rule grants access without triggering
     // --add-dir agent discovery.
@@ -1179,11 +1182,13 @@ describe('gitnexus review-agent workflow security contract', () => {
       'cp -a -- .claude/skills/gitnexus-review/ci-personas/. "${claude_config}/agents/"',
     );
     // The passive add-dir tree is scanned for agent definitions; drop any
-    // PR-controlled ones so only the trusted control-SHA personas can be
-    // dispatched. Skills under the copy are NOT pruned (a skill-editing PR
-    // must stay reviewable).
-    expect(analyze).toContain('rm -rf -- "${review_dir}/.claude/agents"');
-    expect(analyze).not.toContain('rm -rf -- "${review_dir}/.claude/skills"');
+    // PR-controlled ones at any depth so only the trusted control-SHA personas
+    // can be dispatched. Skills under the copy are NOT pruned (a skill-editing
+    // PR must stay reviewable).
+    expect(analyze).toContain(
+      `find "\${review_dir}" -type d -path '*/.claude/agents' -prune -exec rm -rf -- {} +`,
+    );
+    expect(analyze).not.toContain(".claude/skills' -prune");
     expect(analyze).toContain("satisfy the publisher's context-evidence gate");
     // The orchestrator's own evidence call is a precondition of dispatch, so a
     // fully-delegated run cannot leave the gate unsatisfied.

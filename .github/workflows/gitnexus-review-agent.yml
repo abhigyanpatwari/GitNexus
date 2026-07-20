@@ -848,10 +848,11 @@ jobs:
           # This passive tree is mounted with --add-dir, which the runtime scans
           # for spawnable subagent definitions in .claude/agents/, and there is no
           # env to suppress that on the pinned runtime. Drop any PR-controlled
-          # agent definitions so only the trusted control-SHA personas installed
-          # into CLAUDE_CONFIG_DIR/agents can ever be dispatched. Skills are left
+          # agent definitions (at any depth, to also cover monorepo subpackages)
+          # so only the trusted control-SHA personas installed into
+          # CLAUDE_CONFIG_DIR/agents can ever be dispatched. Skills are left
           # intact so a PR that legitimately edits skills stays reviewable.
-          rm -rf -- "${review_dir}/.claude/agents"
+          find "${review_dir}" -type d -path '*/.claude/agents' -prune -exec rm -rf -- {} +
           export GIT_ALTERNATE_OBJECT_DIRECTORIES="${GITHUB_WORKSPACE}/.git/objects"
 
           merge_base="$(git -C pr-target merge-base "${BASE_SHA}" "${HEAD_SHA}")"
@@ -1227,7 +1228,7 @@ jobs:
             --strict-mcp-config
             --mcp-config "${{ runner.temp }}/gitnexus-review-mcp.json"
             --tools "Read,Glob,Grep,Agent"
-            --allowedTools "Agent(ci-correctness-lens,ci-security-lens,ci-blast-radius-lens,ci-coverage-lens,ci-adversarial-lens,ci-critic-lens),Glob,Grep,Read(./**),Read(${{ runner.temp }}/gitnexus-review-pr-target/**),Read(${{ runner.temp }}/gitnexus-review-merge-base/**),mcp__gitnexus__list_repos,mcp__gitnexus__query,mcp__gitnexus__context,mcp__gitnexus__check,mcp__gitnexus__impact,mcp__gitnexus__explain,mcp__gitnexus__pdg_query,mcp__gitnexus__route_map,mcp__gitnexus__tool_map,mcp__gitnexus__shape_check,mcp__gitnexus__api_impact,mcp__gitnexus__trace"
+            --allowedTools "Agent(ci-correctness-lens,ci-security-lens,ci-blast-radius-lens,ci-coverage-lens,ci-adversarial-lens,ci-critic-lens),Read(./**),Read(${{ runner.temp }}/gitnexus-review-pr-target/**),Read(${{ runner.temp }}/gitnexus-review-merge-base/**),mcp__gitnexus__list_repos,mcp__gitnexus__query,mcp__gitnexus__context,mcp__gitnexus__check,mcp__gitnexus__impact,mcp__gitnexus__explain,mcp__gitnexus__pdg_query,mcp__gitnexus__route_map,mcp__gitnexus__tool_map,mcp__gitnexus__shape_check,mcp__gitnexus__api_impact,mcp__gitnexus__trace"
             --disallowedTools "Bash,Write,Edit,MultiEdit,NotebookEdit,WebFetch,WebSearch,Skill,Read(/proc/**),Read(/sys/**),Read(/dev/**),Read(${{ github.workspace }}/**),mcp__github,mcp__gitnexus__detect_changes,mcp__gitnexus__rename,mcp__gitnexus__cypher,mcp__gitnexus__group_list,mcp__gitnexus__group_sync"
             --permission-mode dontAsk
             --no-session-persistence
