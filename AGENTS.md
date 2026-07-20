@@ -1,4 +1,4 @@
-<!-- version: 1.13.0 -->
+<!-- version: 1.14.0 -->
 <!-- Last updated: 2026-07-16 -->
 
 Last reviewed: 2026-07-16
@@ -75,8 +75,9 @@ plan/work/lfg skill READMEs):
 - **`gitnexus-review/SKILL.md`** — read-only GitNexus review of a PR URL/number,
   branch or commit range, or local staged/unstaged/untracked changes. It pins exact
   SHAs, aligns the graph and checkout, runs a PDG-backed taint pass on trust-boundary
-  diffs, scales to per-domain expert lenses from the graph's clusters, and reports
-  evidence-backed findings.
+  diffs, scales to per-domain expert lenses from the graph's clusters (dispatched as
+  parallel swarm lanes — `ci-personas/` — when the CI review agent runs it), and
+  reports evidence-backed findings.
 - **`gitnexus-lfg/SKILL.md`** — pipeline orchestrator: plan (depth asked up front) →
   blocking user gate (proceed or stop) → work → `gitnexus-review`.
 
@@ -89,6 +90,7 @@ mirror. `gitnexus/test/unit/shipped-skills-sync.test.ts` guards the copies. Toke
 
 | Date | Version | Change |
 |------|---------|--------|
+| 2026-07-20 | 1.14.0 | `gitnexus-review` gains a coordinated swarm: six `ci-personas/` lanes the CI review agent dispatches as subagents (via the `Agent` tool), with a bounded critic gate and sidechain-excluded evidence. |
 | 2026-07-16 | 1.13.0 | `gitnexus-plan` asks plan depth up front (quick/standard/deep) in interactive runs; `gitnexus-lfg` gate slimmed to proceed/stop (Deepen stays as the route-back mechanism). |
 | 2026-07-16 | 1.12.0 | Renamed `gitnexus-pr-review` to `gitnexus-review`; added PR URL/number, branch/range, and local-change targets plus install migration (setup warns on a legacy `gitnexus-pr-review` dir and leaves it in place; uninstall removes it). |
 | 2026-07-11 | 1.11.0 | Skill family shipped via npm skills/ + plugin (sync-guarded); added eval/workflow_bench token-savings benchmark. |

@@ -1,4 +1,4 @@
-<!-- version: 1.7.0 -->
+<!-- version: 1.8.0 -->
 <!--
   Metadata: version, last reviewed, scope, model policy, reference docs, changelog.
   Last updated: 2026-07-16
@@ -43,6 +43,7 @@ If always-on instructions grow, load deep conventions via conditional reads (e.g
 
 | Date | Version | Change |
 |------|---------|--------|
+| 2026-07-20 | 1.8.0 | The CI review agent runs `gitnexus-review` as a coordinated swarm — six `ci-personas/` lanes dispatched via the `Agent` tool with a bounded critic gate. |
 | 2026-07-16 | 1.7.0 | `/gitnexus-plan` asks depth up front in interactive runs; `/gitnexus-lfg` gate slimmed to proceed/stop. |
 | 2026-07-16 | 1.6.0 | Renamed `/gitnexus-pr-review` to `/gitnexus-review` and added PR, branch/range, and local-change targets. |
 | 2026-07-11 | 1.5.0 | Added `/gitnexus-work` and `/gitnexus-lfg` to the engineering plans & execution pointer. |
