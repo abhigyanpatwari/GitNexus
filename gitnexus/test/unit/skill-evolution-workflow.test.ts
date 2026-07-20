@@ -44,6 +44,14 @@ describe('gitnexus skill-evolution workflow contract', () => {
     expect(loop).toContain('--apply');
   });
 
+  it('runs the proposer on its own model, separate from the benchmark arms', () => {
+    const loop = stepRun('Run the propose → benchmark → gate loop');
+    // The benchmark arms match the production model; the proposer/diagnosis
+    // session gets its own (stronger) model — one session per generation.
+    expect(loop).toContain('--model "${MODEL}"');
+    expect(loop).toContain('--proposer-model "${PROPOSER_MODEL}"');
+  });
+
   it('provisions the benchmark task repo at ~/GitNexus before the loop', () => {
     const provision = stepRun('Point the benchmark task repo at the checkout');
     expect(provision).toContain('ln -sfn');

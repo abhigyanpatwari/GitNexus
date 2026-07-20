@@ -47,9 +47,14 @@ on:
         default: '3'
         type: string
       model:
-        description: 'Model for benchmark and proposer sessions'
+        description: 'Model for the benchmark arms (match the model your skill users run)'
         required: false
         default: 'claude-sonnet-5'
+        type: string
+      proposer_model:
+        description: 'Model for the proposer/diagnosis session — a stronger model is fine (one session per generation)'
+        required: false
+        default: 'claude-opus-4-8'
         type: string
       include_expensive:
         description: 'Include tasks marked expensive: true'
@@ -85,6 +90,7 @@ jobs:
       GENERATIONS: ${{ inputs.generations || '1' }}
       RUNS: ${{ inputs.runs || '3' }}
       MODEL: ${{ inputs.model || 'claude-sonnet-5' }}
+      PROPOSER_MODEL: ${{ inputs.proposer_model || 'claude-opus-4-8' }}
       INCLUDE_EXPENSIVE: ${{ inputs.include_expensive && '1' || '' }}
     steps:
       - name: Require the benchmark auth secret
@@ -184,6 +190,7 @@ jobs:
           uv run --locked --extra dev python -m workflow_bench.evolve \
             --tasks workflow_bench/tasks.scenarios.yaml \
             --model "${MODEL}" \
+            --proposer-model "${PROPOSER_MODEL}" \
             --generations "${GENERATIONS}" \
             --runs "${RUNS}" \
             --claude-bin "${RUNNER_TEMP}/claude-canary/node_modules/@anthropic-ai/claude-code-linux-x64/claude" \
