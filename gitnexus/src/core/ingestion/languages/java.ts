@@ -28,6 +28,8 @@ import { javaMethodConfig } from '../method-extractors/configs/jvm.js';
 import { createVariableExtractor } from '../variable-extractors/generic.js';
 import { javaVariableConfig } from '../variable-extractors/configs/jvm.js';
 import { createJavaCfgVisitor } from '../cfg/visitors/java.js';
+import { assertCloneable } from '../workers/clone-safety.js';
+import { collectJavaCaptureSideChannel } from './java/capture-side-channel.js';
 import type { SymbolDefinition } from 'gitnexus-shared';
 import {
   emitJavaScopeCaptures,
@@ -123,6 +125,7 @@ export const javaProvider = defineLanguage({
 
   // ── RFC #909 Ring 3: scope-based resolution hooks ──
   emitScopeCaptures: emitJavaScopeCaptures,
+  collectCaptureSideChannel: (filePath) => assertCloneable(collectJavaCaptureSideChannel(filePath)),
 
   // ── PDG: per-function CFG + def/use harvest (#2195 U4) ──
   cfgVisitor: createJavaCfgVisitor(),

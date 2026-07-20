@@ -29,6 +29,7 @@ import {
 import { AnalyzeProgress } from './AnalyzeProgress';
 import { filterRepoFiles } from '@/lib/upload-filter';
 import { useTranslation } from 'react-i18next';
+import { formatBackendError } from '../i18n/error-messages';
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -349,7 +350,7 @@ export const RepoAnalyzer = ({ variant, onComplete, onCancel }: RepoAnalyzerProp
     } catch (err) {
       // Unmount aborts the controller, so this also covers the unmounted case.
       if (controller.signal.aborted) return;
-      setValidationError(err instanceof Error ? err.message : t('errors:startAnalysisFailed'));
+      setValidationError(formatBackendError(err, t));
       setPhase('error');
     }
   };
@@ -430,7 +431,7 @@ export const RepoAnalyzer = ({ variant, onComplete, onCancel }: RepoAnalyzerProp
       // by the server's job timeout and terminal-job TTL sweep.
       if (controller.signal.aborted) return;
       setUploading(false);
-      setValidationError(err instanceof Error ? err.message : t('errors:startAnalysisFailed'));
+      setValidationError(formatBackendError(err, t));
       setPhase('error');
     }
   };

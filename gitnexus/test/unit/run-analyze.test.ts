@@ -1,7 +1,9 @@
 import { execSync } from 'child_process';
 import fs from 'fs/promises';
 import path from 'path';
+import { pathToFileURL } from 'url';
 import { describe, it, expect, vi } from 'vitest';
+import { resolveAnalyzerRunnerIdentity } from '../../src/core/analyzer-identity.js';
 import {
   deriveEmbeddingMode,
   deriveEmbeddingCap,
@@ -18,6 +20,16 @@ import {
 import { taintModelVersion } from '../../src/core/ingestion/taint/typescript-model.js';
 import { createTempDir } from '../helpers/test-db.js';
 import { readEmbeddingNodeIds } from '../helpers/embedding-seed.js';
+import { CLASS_FRAMEWORK_ANNOTATIONS_FEATURE } from '../../src/core/analysis-features.js';
+
+const CURRENT_ANALYSIS_FEATURES = {
+  [CLASS_FRAMEWORK_ANNOTATIONS_FEATURE.id]: CLASS_FRAMEWORK_ANNOTATIONS_FEATURE.version,
+};
+
+const currentRunnerIdentity = () =>
+  resolveAnalyzerRunnerIdentity(
+    pathToFileURL(path.resolve(__dirname, '../../src/core/run-analyze.ts')).href,
+  );
 
 describe('run-analyze module', () => {
   it('exports runFullAnalysis as a function', async () => {
@@ -52,6 +64,8 @@ describe('run-analyze module', () => {
         // guard (#2289 P1) does not force a rebuild and short-circuit the
         // alreadyUpToDate fast path this test exercises.
         schemaVersion: INCREMENTAL_SCHEMA_VERSION,
+        analysisFeatures: CURRENT_ANALYSIS_FEATURES,
+        runnerIdentity: currentRunnerIdentity(),
       };
       await saveMeta(storagePath, meta);
 
@@ -258,6 +272,7 @@ describe('run-analyze module', () => {
         cwd: tmpRepo.dbPath,
         encoding: 'utf-8',
       }).trim();
+      const runnerIdentity = currentRunnerIdentity();
 
       // Flat slot last analyzed on main; feature/x also has a pinned sub-index.
       // Both metas stamp the current schema version so the run-analyze
@@ -270,6 +285,8 @@ describe('run-analyze module', () => {
         indexedAt: new Date().toISOString(),
         branch: 'main',
         schemaVersion: INCREMENTAL_SCHEMA_VERSION,
+        analysisFeatures: CURRENT_ANALYSIS_FEATURES,
+        runnerIdentity,
       };
       await saveMeta(flat.storagePath, flatMetaSeed);
       const branch = getStoragePaths(tmpRepo.dbPath, 'feature/x');
@@ -279,6 +296,8 @@ describe('run-analyze module', () => {
         indexedAt: new Date().toISOString(),
         branch: 'feature/x',
         schemaVersion: INCREMENTAL_SCHEMA_VERSION,
+        analysisFeatures: CURRENT_ANALYSIS_FEATURES,
+        runnerIdentity,
       });
       // Register the repo in an isolated registry: the shadow cleanup only
       // runs for registered repos (#2364 review F2 — unregistered repos must
@@ -325,6 +344,7 @@ describe('run-analyze module', () => {
         cwd: tmpRepo.dbPath,
         encoding: 'utf-8',
       }).trim();
+      const runnerIdentity = currentRunnerIdentity();
 
       const flat = getStoragePaths(tmpRepo.dbPath);
       await saveMeta(flat.storagePath, {
@@ -333,6 +353,8 @@ describe('run-analyze module', () => {
         indexedAt: new Date().toISOString(),
         branch: 'main',
         schemaVersion: INCREMENTAL_SCHEMA_VERSION,
+        analysisFeatures: CURRENT_ANALYSIS_FEATURES,
+        runnerIdentity,
       });
       const branch = getStoragePaths(tmpRepo.dbPath, 'feature/x');
       await saveMeta(path.dirname(branch.metaPath), {
@@ -341,6 +363,8 @@ describe('run-analyze module', () => {
         indexedAt: new Date().toISOString(),
         branch: 'feature/x',
         schemaVersion: INCREMENTAL_SCHEMA_VERSION,
+        analysisFeatures: CURRENT_ANALYSIS_FEATURES,
+        runnerIdentity,
       });
       // Deliberately NO registerRepo: the empty isolated registry makes this
       // repo unregistered, so the adopt must be a full no-op on disk
@@ -379,6 +403,7 @@ describe('run-analyze module', () => {
         cwd: tmpRepo.dbPath,
         encoding: 'utf-8',
       }).trim();
+      const runnerIdentity = currentRunnerIdentity();
 
       const flat = getStoragePaths(tmpRepo.dbPath);
       await saveMeta(flat.storagePath, {
@@ -387,6 +412,8 @@ describe('run-analyze module', () => {
         indexedAt: new Date().toISOString(),
         branch: 'main',
         schemaVersion: INCREMENTAL_SCHEMA_VERSION,
+        analysisFeatures: CURRENT_ANALYSIS_FEATURES,
+        runnerIdentity,
       });
 
       // Detached HEAD → branchLabel is null → the restamp block must not
@@ -418,6 +445,7 @@ describe('run-analyze module', () => {
         cwd: tmpRepo.dbPath,
         encoding: 'utf-8',
       }).trim();
+      const runnerIdentity = currentRunnerIdentity();
 
       // Flat slot recorded for main; feature/x has its own up-to-date pinned
       // sub-index, so an explicit `--branch feature/x` run routes there.
@@ -428,6 +456,8 @@ describe('run-analyze module', () => {
         indexedAt: new Date().toISOString(),
         branch: 'main',
         schemaVersion: INCREMENTAL_SCHEMA_VERSION,
+        analysisFeatures: CURRENT_ANALYSIS_FEATURES,
+        runnerIdentity,
       });
       const branch = getStoragePaths(tmpRepo.dbPath, 'feature/x');
       await saveMeta(path.dirname(branch.metaPath), {
@@ -436,6 +466,8 @@ describe('run-analyze module', () => {
         indexedAt: new Date().toISOString(),
         branch: 'feature/x',
         schemaVersion: INCREMENTAL_SCHEMA_VERSION,
+        analysisFeatures: CURRENT_ANALYSIS_FEATURES,
+        runnerIdentity,
       });
 
       const { runFullAnalysis } = await import('../../src/core/run-analyze.js');

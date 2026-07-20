@@ -261,7 +261,8 @@ function isProjectLocalPath(source: string): boolean {
 /** True when `absPath` is `repoRoot` itself or lives beneath it. */
 function isWithinRepo(repoRoot: string, absPath: string): boolean {
   const root = path.resolve(repoRoot);
-  return absPath === root || absPath.startsWith(root + path.sep);
+  const safeRoot = root.endsWith(path.sep) ? root : root + path.sep;
+  return absPath === root || absPath.startsWith(safeRoot);
 }
 
 async function resolveExtension(base: string): Promise<string | null> {

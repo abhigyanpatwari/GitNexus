@@ -5,13 +5,14 @@
  * `publish.yml` bumps only `gitnexus/package.json` when it cuts an RC, so
  * every RC tag through v1.6.10-rc.28 shipped manifests frozen at the last
  * stable version and failed its own unit suite (the cli-commands version
- * contract). This script pins all four manifest surfaces to the package
- * version:
+ * contract). This script pins every version-bearing plugin surface to the
+ * package version:
  *
  *   - gitnexus-claude-plugin/.claude-plugin/plugin.json   (top-level version)
  *   - .claude-plugin/marketplace.json                     (plugins[gitnexus])
  *   - gitnexus-claude-plugin/.codex-plugin/plugin.json    (top-level version)
  *   - .agents/plugins/marketplace.json                    (plugins[gitnexus])
+ *   - gitnexus-claude-plugin/skills/<skill>/mcp.json      (gitnexus@<version> launch arg, x10)
  *
  * Modes:
  *   node scripts/sync-plugin-manifests.mjs           rewrite stale surfaces
@@ -25,11 +26,34 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+// Plugin skill mcp.json are executable MCP definitions (they launch
+// `npx -y gitnexus@<version> mcp` when a skill starts), not quickstart docs, so
+// they must ship pinned to the released version and be auto-stamped here like
+// the other surfaces — otherwise every skill invocation pulls whatever owns
+// `gitnexus@latest`, independent of the reviewed plugin version. All ten are
+// kept byte-identical (the shipped-skills-sync drift guard enforces it).
+const PLUGIN_SKILL_MCP_DIRS = [
+  'gitnexus-plan',
+  'gitnexus-work',
+  'gitnexus-review',
+  'gitnexus-lfg',
+  'gitnexus-guide',
+  'gitnexus-cli',
+  'gitnexus-debugging',
+  'gitnexus-exploring',
+  'gitnexus-impact-analysis',
+  'gitnexus-refactoring',
+];
+
 const MANIFEST_SURFACES = [
   { file: 'gitnexus-claude-plugin/.claude-plugin/plugin.json', kind: 'plugin' },
   { file: '.claude-plugin/marketplace.json', kind: 'marketplace' },
   { file: 'gitnexus-claude-plugin/.codex-plugin/plugin.json', kind: 'plugin' },
   { file: '.agents/plugins/marketplace.json', kind: 'marketplace' },
+  ...PLUGIN_SKILL_MCP_DIRS.map((name) => ({
+    file: `gitnexus-claude-plugin/skills/${name}/mcp.json`,
+    kind: 'mcp',
+  })),
 ];
 
 const PLUGIN_NAME = 'gitnexus';
@@ -70,6 +94,33 @@ function versionTarget(manifest, kind, filePath) {
 }
 
 /**
+ * Resolve the current pinned version and the textual needle for one surface.
+ * `plugin`/`marketplace` pin a JSON `"version"` field; `mcp` pins the version
+ * inside the `gitnexus@<version>` launch arg. Returns `{ from, needle }` where
+ * `needle(v)` renders the exact substring to match/replace for version `v`.
+ * Fail-closed on a missing/ambiguous target.
+ */
+function versionInfo(manifest, kind, filePath) {
+  if (kind === 'mcp') {
+    const server = manifest?.mcpServers?.[PLUGIN_NAME];
+    const args = Array.isArray(server?.args) ? server.args : [];
+    const pins = args.filter((arg) => typeof arg === 'string' && arg.startsWith(`${PLUGIN_NAME}@`));
+    if (pins.length !== 1) {
+      throw new Error(
+        `Manifest surface ${filePath} must contain exactly one "${PLUGIN_NAME}@<version>" launch arg, found ${pins.length}`,
+      );
+    }
+    const from = pins[0].slice(`${PLUGIN_NAME}@`.length);
+    if (from.length === 0) {
+      throw new Error(`Manifest surface ${filePath} has an empty ${PLUGIN_NAME}@ version`);
+    }
+    return { from, needle: (value) => `${PLUGIN_NAME}@${value}` };
+  }
+  const target = versionTarget(manifest, kind, filePath);
+  return { from: target.version, needle: (value) => `"version": "${value}"` };
+}
+
+/**
  * Sync (or with `check: true`, only inspect) every manifest surface under
  * `rootDir`. Returns `{ version, synced, stale }` where `stale` lists the
  * surfaces that did not match the package version when the run started.
@@ -86,26 +137,26 @@ export function syncPluginManifests(rootDir, { check = false } = {}) {
   for (const { file, kind } of MANIFEST_SURFACES) {
     const manifestPath = path.join(rootDir, file);
     const { raw, parsed } = readJson(manifestPath);
-    const target = versionTarget(parsed, kind, manifestPath);
-    if (target.version === version) continue;
+    const { from, needle } = versionInfo(parsed, kind, manifestPath);
+    if (from === version) continue;
 
-    stale.push({ file, from: target.version });
+    stale.push({ file, from });
     if (check) continue;
 
     // Textual surgery instead of re-serializing: JSON.stringify would refold
     // arrays and fight prettier, turning a one-line version bump into
     // formatting churn inside the release commit. The needle is built from
-    // the parsed current version, and anything other than exactly one
+    // the current pinned value, and anything other than exactly one
     // occurrence aborts rather than guessing.
-    const needle = `"version": "${target.version}"`;
-    const occurrences = raw.split(needle).length - 1;
+    const currentNeedle = needle(from);
+    const occurrences = raw.split(currentNeedle).length - 1;
     if (occurrences !== 1) {
       throw new Error(
-        `Manifest surface ${manifestPath} has ${occurrences} occurrences of ${needle}; ` +
+        `Manifest surface ${manifestPath} has ${occurrences} occurrences of ${currentNeedle}; ` +
           'expected exactly one, refusing to sync',
       );
     }
-    writeFileSync(manifestPath, raw.replace(needle, `"version": "${version}"`));
+    writeFileSync(manifestPath, raw.replace(currentNeedle, needle(version)));
     synced.push(file);
   }
 

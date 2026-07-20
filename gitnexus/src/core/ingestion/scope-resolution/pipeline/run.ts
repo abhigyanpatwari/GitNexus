@@ -835,6 +835,8 @@ export function runScopeResolution(
           allowGlobalFallback: provider.allowGlobalFreeCallFallback === true,
           constructorCallTargetsClass: provider.constructorCallTargetsClass === true,
           isFileLocalDef: provider.isFileLocalDef,
+          isBuiltInName: provider.languageProvider.isBuiltInName,
+          freeCallsRequireInstanceOwnership: provider.freeCallsRequireInstanceOwnership === true,
           isCallableVisibleFromCaller: provider.isCallableVisibleFromCaller,
           resolveAdlCandidates: provider.resolveAdlCandidates,
           conversionRankFn: provider.conversionRankFn,
