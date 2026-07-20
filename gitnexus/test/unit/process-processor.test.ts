@@ -3,6 +3,7 @@ import {
   processProcesses,
   type ProcessDetectionConfig,
 } from '../../src/core/ingestion/process-processor.js';
+import { computeDynamicMaxProcesses } from '../../src/core/ingestion/pipeline-phases/processes.js';
 import { createKnowledgeGraph } from '../../src/core/graph/graph.js';
 import type { CommunityMembership } from '../../src/core/ingestion/community-processor.js';
 
@@ -525,75 +526,37 @@ describe('processProcesses', () => {
 
   // Regression for #2198: the processesPhase dynamic sizing used to cap at
   // Math.min(300, symbolCount/10). On large repos (>3000 symbols) that silently
-  // truncated the process index. The cap was removed so dynamicMaxProcesses
-  // grows with symbolCount. This test verifies that processProcesses honours a
-  // large maxProcesses (>300) without truncation, mirroring the phase-level fix.
-  it('honours maxProcesses > 300 (no hardcoded cap, #2198)', async () => {
-    const graph = createKnowledgeGraph();
+  // truncated the process index. The cap was removed by extracting
+  // computeDynamicMaxProcesses() — this test exercises the helper directly
+  // so it fails if someone reintroduces the 300 ceiling.
+  describe('computeDynamicMaxProcesses (#2198)', () => {
+    it('returns at least the floor of 20 for tiny repos', () => {
+      expect(computeDynamicMaxProcesses(0)).toBe(20);
+      expect(computeDynamicMaxProcesses(50)).toBe(20); // 50/10 = 5, floored to 20
+      expect(computeDynamicMaxProcesses(199)).toBe(20); // 199/10 ≈ 20
+    });
 
-    // 200 branching chains, each producing 2 unique traces.
-    // entry → midA → leafA
-    // entry → midB → leafB
-    // That's 200 entry points × 2 traces = 400 candidate traces.
-    for (let chain = 0; chain < 200; chain++) {
-      const entry = `func:e${chain}`;
-      const midA = `func:e${chain}_a`;
-      const midB = `func:e${chain}_b`;
-      const leafA = `func:e${chain}_la`;
-      const leafB = `func:e${chain}_lb`;
+    it('scales linearly within the old 0–3000 range', () => {
+      expect(computeDynamicMaxProcesses(500)).toBe(50);
+      expect(computeDynamicMaxProcesses(1000)).toBe(100);
+      expect(computeDynamicMaxProcesses(2999)).toBe(300);
+    });
 
-      for (const [id, name, exported] of [
-        [entry, `e${chain}`, true],
-        [midA, `e${chain}_a`, false],
-        [midB, `e${chain}_b`, false],
-        [leafA, `e${chain}_la`, false],
-        [leafB, `e${chain}_lb`, false],
-      ] as const) {
-        graph.addNode({
-          id,
-          label: 'Function',
-          properties: {
-            name,
-            filePath: `src/c${chain}.ts`,
-            startLine: 1,
-            endLine: 5,
-            isExported: exported,
-          },
-        });
-      }
+    it('grows past 300 for large repos — the regression that #2198 fixes', () => {
+      // 3001 symbols → 300 (just at the boundary)
+      expect(computeDynamicMaxProcesses(3001)).toBe(300);
+      // 3100 symbols → 310 — would have been capped to 300 before the fix
+      expect(computeDynamicMaxProcesses(3100)).toBe(310);
+      // 5000 symbols → 500
+      expect(computeDynamicMaxProcesses(5000)).toBe(500);
+      // 28000 symbols (real-world large repo) → 2800
+      expect(computeDynamicMaxProcesses(28000)).toBe(2800);
+    });
 
-      // entry → midA → leafA  AND  entry → midB → leafB
-      for (const [src, tgt] of [
-        [entry, midA],
-        [midA, leafA],
-        [entry, midB],
-        [midB, leafB],
-      ] as const) {
-        graph.addRelationship({
-          id: `call:${src}_${tgt}`,
-          sourceId: src,
-          targetId: tgt,
-          type: 'CALLS',
-          confidence: 0.9,
-          reason: '',
-        });
-      }
-    }
-
-    const memberships: CommunityMembership[] = [];
-    for (let chain = 0; chain < 200; chain++) {
-      for (const suffix of ['', '_a', '_b', '_la', '_lb']) {
-        memberships.push({ nodeId: `func:e${chain}${suffix}`, communityId: `community:${chain}` });
-      }
-    }
-
-    // maxProcesses: 400 — would be silently capped to 300 before the fix
-    const config: Partial<ProcessDetectionConfig> = { maxProcesses: 400 };
-    const result = await processProcesses(graph, memberships, undefined, config);
-
-    // 200 entry points × 2 branches = up to 400 unique traces.
-    // The old 300-cap would have truncated to 300; we expect > 300.
-    expect(result.stats.totalProcesses).toBeGreaterThan(300);
-    expect(result.processes.length).toBeLessThanOrEqual(400);
+    it('does NOT cap at 300 — fails if Math.min(300, ...) is reintroduced', () => {
+      const largeRepo = computeDynamicMaxProcesses(10000);
+      expect(largeRepo).toBe(1000);
+      expect(largeRepo).toBeGreaterThan(300);
+    });
   });
 });
