@@ -29,6 +29,7 @@ interface HttpConfig {
   maxAttempts: number;
   retryCapMs: number;
   minIntervalMs: number;
+  requestDimensions?: number;
 }
 
 export interface EmbeddingRequestOptions {
@@ -147,6 +148,23 @@ const readConfig = (): HttpConfig | null => {
     dimensions = parsed;
   }
 
+  const rawRequestDims = process.env.GITNEXUS_EMBEDDING_REQUEST_DIMS?.trim();
+  let requestDimensions = dimensions;
+  if (rawRequestDims) {
+    if (/^(omit|none|off|false|0)$/i.test(rawRequestDims)) {
+      requestDimensions = undefined;
+    } else {
+      if (!/^\d+$/.test(rawRequestDims)) {
+        throw new Error(`${EMBEDDING_DIMS_ENV_ERROR_LEAD}, got "${rawRequestDims}"`);
+      }
+      const parsed = parseInt(rawRequestDims, 10);
+      if (parsed <= 0) {
+        throw new Error(`${EMBEDDING_DIMS_ENV_ERROR_LEAD}, got "${rawRequestDims}"`);
+      }
+      requestDimensions = parsed;
+    }
+  }
+
   return {
     baseUrl: baseUrl.replace(/\/+$/, ''),
     model,
@@ -163,6 +181,7 @@ const readConfig = (): HttpConfig | null => {
       300_000,
     ),
     minIntervalMs: parseNonNegativeIntegerEnv('GITNEXUS_EMBEDDING_MIN_INTERVAL_MS', 0, 300_000),
+    requestDimensions,
   };
 };
 
@@ -283,9 +302,9 @@ const isEmbeddingItem = (item: unknown): item is EmbeddingItem =>
  *   the `dimensions` field in the request body. Endpoints that implement
  *   Matryoshka truncation (OpenAI text-embedding-3-*, Cohere embed-v3,
  *   Voyage) return a truncated vector at that size; endpoints that do not
- *   recognise the field may ignore it or return 400. Leave
- *   `GITNEXUS_EMBEDDING_DIMS` unset for strict backends that reject
- *   unknown fields.
+ *   recognise the field may ignore it or return 400. Set
+ *   `GITNEXUS_EMBEDDING_REQUEST_DIMS=omit` for strict backends while keeping
+ *   `GITNEXUS_EMBEDDING_DIMS` set to the returned vector size.
  */
 const httpEmbedBatch = async (
   url: string,
@@ -434,7 +453,7 @@ export const httpEmbed = async (
       config.model,
       config.apiKey,
       batchIndex,
-      config.dimensions,
+      config.requestDimensions,
       requestOptions,
       config.maxAttempts,
       config.retryCapMs,
@@ -491,7 +510,7 @@ export const httpEmbedQuery = async (
     config.model,
     config.apiKey,
     0,
-    config.dimensions,
+    config.requestDimensions,
     requestOptions,
     config.maxAttempts,
     config.retryCapMs,
