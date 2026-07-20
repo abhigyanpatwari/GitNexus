@@ -1,5 +1,13 @@
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -1188,6 +1196,42 @@ describe('gitnexus review-agent workflow security contract', () => {
     expect(analyze).not.toContain(
       'test "$(git -C pr-target rev-parse HEAD)" = "${{ steps.context.outputs.head_sha }}"',
     );
+  });
+
+  it('scopes Agent dispatch to exactly the installed ci-personas', () => {
+    // Real dispatch cannot be proven without a model turn (print mode silently
+    // ignores invalid settings and does not validate permission-rule content at
+    // parse time), so the canary is the acceptance gate for that. What a unit
+    // test CAN pin is that the scoped allowlist, the persona filenames, and each
+    // persona's frontmatter name are the same set — catching a rename or typo in
+    // any of the three without auth.
+    const analyze = jobBlock('analyze');
+    const allowed = analyze.match(/--allowedTools "([^"]+)"/)?.[1] ?? '';
+    const allowlistNames = (allowed.match(/Agent\(([^)]+)\)/)?.[1] ?? '')
+      .split(',')
+      .map((name) => name.trim())
+      .sort();
+
+    const personasDir = path.resolve(
+      __dirname,
+      '../../../.claude/skills/gitnexus-review/ci-personas',
+    );
+    const personaStems = readdirSync(personasDir)
+      .filter((file) => file.endsWith('.md'))
+      .map((file) => file.replace(/\.md$/, ''))
+      .sort();
+
+    expect(allowlistNames).toEqual(personaStems);
+
+    const frontmatterNames = personaStems.map((stem) => {
+      const body = readFileSync(path.join(personasDir, `${stem}.md`), 'utf8');
+      return body.match(/^name:\s*(\S+)\s*$/m)?.[1] ?? '';
+    });
+    expect(frontmatterNames).toEqual(personaStems);
+
+    // The install source the workflow copies matches the directory the
+    // allowlist scopes to, so the six names above are the six spawnable agents.
+    expect(analyze).toContain('cp -a -- .claude/skills/gitnexus-review/ci-personas/.');
   });
 
   it('bounds and validates the structured artifact across the trust boundary', () => {

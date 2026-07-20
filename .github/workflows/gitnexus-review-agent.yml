@@ -8,6 +8,10 @@
 # post-merge and enable the variable only once same-repo AND fork PRs pass.
 # [ ] Configure the repository secret CLAUDE_CODE_OAUTH_TOKEN.
 # [ ] Run workflow_dispatch against a disposable same-repo PR and a fork PR (post-merge).
+# [ ] Confirm the swarm actually dispatches: the canary must spawn the ci-* lanes
+#     (positive) AND refuse an unlisted Agent(<type>) (negative). A review that merely
+#     completes cannot distinguish working dispatch from a silent inline fallback, and
+#     print-mode Agent(type) scoping is not provable by the unit tests.
 # [ ] Confirm the analyze job has no write permission and the publisher has no model secret.
 # [ ] Confirm exact-SHA, Bubblewrap, artifact-failure, and sticky-comment paths are green.
 # [ ] Set the repository variable GITNEXUS_REVIEW_COMMENT_ENABLED=true.
