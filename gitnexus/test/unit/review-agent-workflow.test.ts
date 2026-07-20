@@ -1277,6 +1277,29 @@ describe('gitnexus review-agent workflow security contract', () => {
     expect(worstCaseMessages).toBeLessThan(maxMessages);
   });
 
+  it('marks the review in progress from a write-scoped job without weakening analyze', () => {
+    const acknowledge = jobBlock('acknowledge');
+    // A dedicated, write-scoped job posts the in-progress marker under the same
+    // authorization gate as analyze, so the model-facing analyze job stays
+    // secretless and read-only.
+    expect(acknowledge).toContain('pull-requests: write');
+    expect(acknowledge).toContain("github.event.comment.body == '@gitnexus review'");
+    expect(acknowledge).toContain("author_association == 'OWNER'");
+    expect(acknowledge).toContain('<!-- gitnexus-review-agent:progress:');
+    expect(acknowledge).toContain('GitNexus review in progress');
+
+    const analyze = jobBlock('analyze');
+    expect(analyze).toContain('pull-requests: read');
+    expect(analyze).not.toContain('pull-requests: write');
+
+    // The publisher removes the marker when the review — or a clean failure —
+    // posts, so a stale "in progress" note never lingers.
+    const publish = jobBlock('publish');
+    expect(publish).toContain('Remove the in-progress marker');
+    expect(publish).toContain('github.rest.issues.deleteComment');
+    expect(publish).toContain('<!-- gitnexus-review-agent:progress:');
+  });
+
   it('bounds and validates the structured artifact across the trust boundary', () => {
     const analyze = jobBlock('analyze');
     const publish = jobBlock('publish');

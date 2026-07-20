@@ -35,6 +35,96 @@ concurrency:
 permissions: {}
 
 jobs:
+  acknowledge:
+    name: Mark the review in progress
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (
+        github.event_name == 'issue_comment' &&
+        vars.GITNEXUS_REVIEW_COMMENT_ENABLED == 'true' &&
+        github.event.issue.pull_request != null &&
+        github.event.comment.body == '@gitnexus review' &&
+        (
+          github.event.comment.author_association == 'OWNER' ||
+          github.event.comment.author_association == 'MEMBER' ||
+          github.event.comment.author_association == 'COLLABORATOR'
+        )
+      )
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      pull-requests: write # Upsert the in-progress marker on the PR conversation.
+      issues: write # Issue-comment scope for the marker and the acknowledgement reaction.
+    steps:
+      - name: Upsert the in-progress marker
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            const rawPr =
+              context.eventName === 'issue_comment'
+                ? context.issue.number
+                : Number(context.payload.inputs && context.payload.inputs.pr);
+            const prNumber = Number(rawPr);
+            if (!Number.isInteger(prNumber) || prNumber <= 0) {
+              core.info('No valid pull request number; skipping the in-progress marker.');
+              return;
+            }
+            const marker = `<!-- gitnexus-review-agent:progress:${prNumber} -->`;
+            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const body =
+              `${marker}\n` +
+              '🔄 **GitNexus review in progress** — the reviewer swarm is analyzing this ' +
+              `pull request. Follow the [live run](${runUrl}) for per-lane progress; this note is ` +
+              'replaced by the review when it completes.';
+            const MAX_PAGES = 20;
+            let pages = 0;
+            let existing;
+            for await (const response of github.paginate.iterator(github.rest.issues.listComments, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: prNumber,
+              per_page: 100,
+            })) {
+              pages += 1;
+              if (pages > MAX_PAGES) break;
+              for (const comment of response.data) {
+                if (
+                  comment.user &&
+                  comment.user.login === 'github-actions[bot]' &&
+                  (comment.body || '').includes(marker)
+                ) {
+                  existing = comment;
+                }
+              }
+            }
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing.id,
+                body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: prNumber,
+                body,
+              });
+            }
+      - name: React to the trigger comment
+        if: github.event_name == 'issue_comment'
+        continue-on-error: true
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            await github.rest.reactions.createForIssueComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              comment_id: context.payload.comment.id,
+              content: 'eyes',
+            });
+
   analyze:
     name: Analyze PR at an exact SHA
     if: >-
@@ -2244,4 +2334,45 @@ jobs:
                 body: publication,
               });
               core.info(`Created GitNexus review comment ${created.data.id} for ${publicationHead}.`);
+            }
+
+      - name: Remove the in-progress marker
+        if: always()
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            const rawPr =
+              context.eventName === 'issue_comment'
+                ? context.issue.number
+                : Number(context.payload.inputs && context.payload.inputs.pr);
+            const prNumber = Number(rawPr);
+            if (!Number.isInteger(prNumber) || prNumber <= 0) return;
+            const marker = `<!-- gitnexus-review-agent:progress:${prNumber} -->`;
+            const MAX_PAGES = 20;
+            let pages = 0;
+            for await (const response of github.paginate.iterator(github.rest.issues.listComments, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: prNumber,
+              per_page: 100,
+            })) {
+              pages += 1;
+              if (pages > MAX_PAGES) break;
+              for (const comment of response.data) {
+                if (
+                  comment.user &&
+                  comment.user.login === 'github-actions[bot]' &&
+                  (comment.body || '').includes(marker)
+                ) {
+                  try {
+                    await github.rest.issues.deleteComment({
+                      owner: context.repo.owner,
+                      repo: context.repo.repo,
+                      comment_id: comment.id,
+                    });
+                  } catch (error) {
+                    core.info(`Could not remove the in-progress marker: ${error.message}`);
+                  }
+                }
+              }
             }
