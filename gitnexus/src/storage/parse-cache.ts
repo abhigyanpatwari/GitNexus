@@ -55,7 +55,13 @@ import type { ParseWorkerResult } from '../core/ingestion/workers/parse-worker.j
 // the main thread (the #1983 OOM). Because the two stores share this version,
 // any future change to the `ParsedFile` serialization shape MUST bump
 // SCHEMA_BUMP so both invalidate in lockstep.
-const SCHEMA_BUMP = 19; // Java enum constant bodies emit E$N Class nodes; anonymous naming switched to JLS 13.1 immediate-host chains (#2555). (18 = Worker$N anonymous bodies; 17 = callable-value-flow operand identity; 16 = direct callee identity.)
+// v20: Java/Kotlin capture side-channels persist package and class-annotation
+// facts for shared Spring Bean resolution.
+// v19: Java enum constant bodies emit E$N Class nodes; anonymous naming uses
+// JLS 13.1 immediate-host chains (#2555).
+// v18: Worker$N anonymous bodies. v17: callable-value-flow operand identity.
+// v16: direct callee identity.
+const SCHEMA_BUMP = 20;
 const GITNEXUS_PKG_VERSION = (() => {
   try {
     // package.json sits at gitnexus/package.json — two levels up from

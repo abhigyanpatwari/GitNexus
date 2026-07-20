@@ -117,6 +117,17 @@ export const escapeCSVNumber = (
   return String(value);
 };
 
+const formatCSVStringArray = (value: unknown): string => {
+  const items = Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === 'string')
+    : [];
+  const unsafe = items.find((item) => /[,\[\]'"\n\r]/.test(item));
+  if (unsafe !== undefined) {
+    throw new Error(`Cannot safely encode CSV string-list item: ${JSON.stringify(unsafe)}`);
+  }
+  return `[${items.join(',')}]`;
+};
+
 // ============================================================================
 // CONTENT EXTRACTION (lazy — reads from disk on demand)
 // ============================================================================
@@ -428,7 +439,10 @@ export const streamAllCSVsToDisk = async (
       path.join(csvDir, 'function.csv'),
       codeElementHeader,
     );
-    const classWriter = new BufferedCSVWriter(path.join(csvDir, 'class.csv'), codeElementHeader);
+    const classWriter = new BufferedCSVWriter(
+      path.join(csvDir, 'class.csv'),
+      `${codeElementHeader},frameworkAnnotations`,
+    );
     const interfaceWriter = new BufferedCSVWriter(
       path.join(csvDir, 'interface.csv'),
       codeElementHeader,
@@ -661,18 +675,20 @@ export const streamAllCSVsToDisk = async (
           const writer = codeWriterMap[node.label];
           if (writer) {
             const content = await extractContent(node, contentCache);
-            pending = writer.addRow(
-              [
-                escapeCSVField(node.id),
-                escapeCSVField(node.properties.name || ''),
-                escapeCSVField(node.properties.filePath || ''),
-                escapeCSVNumber(node.properties.startLine, -1),
-                escapeCSVNumber(node.properties.endLine, -1),
-                node.properties.isExported ? 'true' : 'false',
-                escapeCSVField(content),
-                escapeCSVField(formatFtsDescription(node.properties.description || '')),
-              ].join(','),
-            );
+            const row = [
+              escapeCSVField(node.id),
+              escapeCSVField(node.properties.name || ''),
+              escapeCSVField(node.properties.filePath || ''),
+              escapeCSVNumber(node.properties.startLine, -1),
+              escapeCSVNumber(node.properties.endLine, -1),
+              node.properties.isExported ? 'true' : 'false',
+              escapeCSVField(content),
+              escapeCSVField(formatFtsDescription(node.properties.description || '')),
+            ];
+            if (node.label === 'Class') {
+              row.push(escapeCSVField(formatCSVStringArray(node.properties.frameworkAnnotations)));
+            }
+            pending = writer.addRow(row.join(','));
           } else {
             // Multi-language node types (Struct, Impl, Trait, Macro, etc.)
             const mlWriter = multiLangWriters.get(node.label);

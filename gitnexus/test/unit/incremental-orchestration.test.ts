@@ -21,7 +21,7 @@
  */
 
 import { execSync } from 'child_process';
-import { writeFile, readFile, rm } from 'fs/promises';
+import { writeFile, readFile, mkdir, rm } from 'fs/promises';
 import path from 'path';
 import { afterEach, beforeAll, beforeEach, describe, it, expect, vi } from 'vitest';
 import {
@@ -42,6 +42,8 @@ import {
   seedEmbeddingsForFiles,
   stampEmbeddingCount,
 } from '../helpers/embedding-seed.js';
+import { CLASS_FRAMEWORK_ANNOTATIONS_FEATURE } from '../../src/core/analysis-features.js';
+import { SPRING_BEAN_INVENTORY_FEATURE } from '../../src/core/ingestion/frameworks/spring/analysis-features.js';
 
 const setupMiniRepo = () => setupSharedMiniRepo('gitnexus-incr-orch-');
 
@@ -56,6 +58,67 @@ const gitCommitAll = (cwd: string, message: string): void => {
     { cwd, stdio: 'pipe' },
   );
 };
+
+const SPRING_SERVICE = 'org.springframework.stereotype.Service';
+
+function withoutAnalysisFeature(meta: RepoMeta, featureId: string): RepoMeta {
+  return {
+    ...meta,
+    analysisFeatures: Object.fromEntries(
+      Object.entries(meta.analysisFeatures ?? {}).filter(([id]) => id !== featureId),
+    ),
+  };
+}
+
+async function setupSpringBeanIncrementalRepo() {
+  const repo = await createTempDir('gitnexus-incr-spring-bean-');
+  const src = path.join(repo.dbPath, 'src', 'com', 'other');
+  await mkdir(src, { recursive: true });
+  await writeFile(
+    path.join(src, 'WildcardService.java'),
+    'package com.other;\n' +
+      'import org.springframework.stereotype.*;\n\n' +
+      '@Service public class WildcardService {}\n',
+    'utf-8',
+  );
+  execSync('git init', { cwd: repo.dbPath, stdio: 'pipe' });
+  gitCommitAll(repo.dbPath, 'initial spring bean candidate');
+  return repo;
+}
+
+async function setupKotlinSpringBeanIncrementalRepo() {
+  const repo = await createTempDir('gitnexus-incr-spring-bean-kotlin-');
+  const src = path.join(repo.dbPath, 'src', 'com', 'other');
+  await mkdir(src, { recursive: true });
+  await writeFile(
+    path.join(src, 'WildcardService.kt'),
+    'package com.other\n' +
+      'import org.springframework.stereotype.*\n\n' +
+      '@Service class WildcardService\n',
+    'utf-8',
+  );
+  execSync('git init', { cwd: repo.dbPath, stdio: 'pipe' });
+  gitCommitAll(repo.dbPath, 'initial Kotlin spring bean candidate');
+  return repo;
+}
+
+async function readWildcardServiceAnnotations(repoPath: string): Promise<string[]> {
+  const adapter = await import('../../src/core/lbug/lbug-adapter.js');
+  const { lbugPath } = getStoragePaths(repoPath);
+  await adapter.initLbug(lbugPath);
+  try {
+    const rows = (await adapter.executeQuery(
+      "MATCH (c:Class) WHERE c.name = 'WildcardService' " +
+        'RETURN c.frameworkAnnotations AS frameworkAnnotations LIMIT 1',
+    )) as Array<{ frameworkAnnotations?: unknown }>;
+    const value = rows[0]?.frameworkAnnotations;
+    return Array.isArray(value)
+      ? value.filter((item): item is string => typeof item === 'string')
+      : [];
+  } finally {
+    await adapter.closeLbug();
+  }
+}
 
 /**
  * Direct count over INJECTS CodeRelation rows — mirrors pdg-mode-flip's
@@ -112,6 +175,9 @@ describe('runFullAnalysis — incremental orchestration', () => {
       expect(meta!.schemaVersion).toBe(INCREMENTAL_SCHEMA_VERSION);
       expect(meta!.fileHashes).toBeDefined();
       expect(Object.keys(meta!.fileHashes ?? {}).length).toBeGreaterThan(0);
+      expect(meta!.analysisFeatures).toEqual({
+        [CLASS_FRAMEWORK_ANNOTATIONS_FEATURE.id]: CLASS_FRAMEWORK_ANNOTATIONS_FEATURE.version,
+      });
       // Dirty flag MUST be cleared after a successful run.
       expect(meta!.incrementalInProgress).toBeUndefined();
     } finally {
@@ -138,6 +204,103 @@ describe('runFullAnalysis — incremental orchestration', () => {
       // lastCommit==HEAD && working tree clean (mod GitNexus output) →
       // early-return fast path.
       expect(second.alreadyUpToDate).toBe(true);
+    } finally {
+      await repo.cleanup();
+    }
+  }, 300_000);
+
+  it('a same-commit v8 index missing the global Class capability rebuilds before the fast path', async () => {
+    const repo = await setupMiniRepo();
+    try {
+      const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
+      await runFullAnalysis(repo.dbPath, { skipAgentsMd: true }, { onProgress: () => {} });
+      const { storagePath } = getStoragePaths(repo.dbPath);
+      const meta = await loadMeta(storagePath);
+      expect(meta!.schemaVersion).toBe(INCREMENTAL_SCHEMA_VERSION);
+
+      await saveMeta(
+        storagePath,
+        withoutAnalysisFeature(meta!, CLASS_FRAMEWORK_ANNOTATIONS_FEATURE.id),
+      );
+      const logs: string[] = [];
+      const reanalyzed = await runFullAnalysis(
+        repo.dbPath,
+        { skipAgentsMd: true },
+        { onProgress: () => {}, onLog: (message) => logs.push(message) },
+      );
+
+      expect(reanalyzed.alreadyUpToDate).toBeUndefined();
+      expect(logs.join('\n')).toContain(`missing:${CLASS_FRAMEWORK_ANNOTATIONS_FEATURE.id}`);
+      expect((await loadMeta(storagePath))!.analysisFeatures).toEqual({
+        [CLASS_FRAMEWORK_ANNOTATIONS_FEATURE.id]: CLASS_FRAMEWORK_ANNOTATIONS_FEATURE.version,
+      });
+    } finally {
+      await repo.cleanup();
+    }
+  }, 300_000);
+
+  it('a JVM index missing Bean inventory evidence rebuilds and restores the scoped stamp', async () => {
+    const repo = await setupKotlinSpringBeanIncrementalRepo();
+    try {
+      const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
+      await runFullAnalysis(repo.dbPath, { skipAgentsMd: true }, { onProgress: () => {} });
+      const { storagePath } = getStoragePaths(repo.dbPath);
+      const meta = await loadMeta(storagePath);
+      expect(meta!.analysisFeatures).toEqual({
+        [CLASS_FRAMEWORK_ANNOTATIONS_FEATURE.id]: CLASS_FRAMEWORK_ANNOTATIONS_FEATURE.version,
+        [SPRING_BEAN_INVENTORY_FEATURE.id]: SPRING_BEAN_INVENTORY_FEATURE.version,
+      });
+
+      await saveMeta(storagePath, withoutAnalysisFeature(meta!, SPRING_BEAN_INVENTORY_FEATURE.id));
+      const logs: string[] = [];
+      const reanalyzed = await runFullAnalysis(
+        repo.dbPath,
+        { skipAgentsMd: true },
+        { onProgress: () => {}, onLog: (message) => logs.push(message) },
+      );
+
+      expect(reanalyzed.alreadyUpToDate).toBeUndefined();
+      expect(logs.join('\n')).toContain(`missing:${SPRING_BEAN_INVENTORY_FEATURE.id}`);
+      expect(await readWildcardServiceAnnotations(repo.dbPath)).toEqual([SPRING_SERVICE]);
+      expect((await loadMeta(storagePath))!.analysisFeatures).toEqual({
+        [CLASS_FRAMEWORK_ANNOTATIONS_FEATURE.id]: CLASS_FRAMEWORK_ANNOTATIONS_FEATURE.version,
+        [SPRING_BEAN_INVENTORY_FEATURE.id]: SPRING_BEAN_INVENTORY_FEATURE.version,
+      });
+    } finally {
+      await repo.cleanup();
+    }
+  }, 300_000);
+
+  it('adding the first JVM file re-evaluates capabilities after the pipeline and avoids a top-up', async () => {
+    const repo = await setupMiniRepo();
+    try {
+      const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
+      await runFullAnalysis(repo.dbPath, { skipAgentsMd: true }, { onProgress: () => {} });
+      const { storagePath } = getStoragePaths(repo.dbPath);
+      expect((await loadMeta(storagePath))!.analysisFeatures).toEqual({
+        [CLASS_FRAMEWORK_ANNOTATIONS_FEATURE.id]: CLASS_FRAMEWORK_ANNOTATIONS_FEATURE.version,
+      });
+
+      await writeFile(
+        path.join(repo.dbPath, 'src', 'FirstBean.kt'),
+        'import org.springframework.stereotype.Service\n\n@Service class FirstBean\n',
+        'utf-8',
+      );
+      gitCommitAll(repo.dbPath, 'add first JVM source file');
+
+      const logs: string[] = [];
+      await runFullAnalysis(
+        repo.dbPath,
+        { skipAgentsMd: true },
+        { onProgress: () => {}, onLog: (message) => logs.push(message) },
+      );
+
+      expect(logs.join('\n')).toContain(`missing:${SPRING_BEAN_INVENTORY_FEATURE.id}`);
+      expect(logs.join('\n')).not.toContain('Incremental:');
+      expect((await loadMeta(storagePath))!.analysisFeatures).toEqual({
+        [CLASS_FRAMEWORK_ANNOTATIONS_FEATURE.id]: CLASS_FRAMEWORK_ANNOTATIONS_FEATURE.version,
+        [SPRING_BEAN_INVENTORY_FEATURE.id]: SPRING_BEAN_INVENTORY_FEATURE.version,
+      });
     } finally {
       await repo.cleanup();
     }
@@ -186,6 +349,40 @@ describe('runFullAnalysis — incremental orchestration', () => {
       expect(secondMeta!.stats?.edges).toBe(firstMeta!.stats?.edges);
       expect(secondMeta!.stats?.communities).toBe(firstMeta!.stats?.communities);
       expect(secondMeta!.stats?.processes).toBe(firstMeta!.stats?.processes);
+    } finally {
+      await repo.cleanup();
+    }
+  }, 300_000);
+
+  it('skips the framework annotation drift query when no Bean source changed', async () => {
+    const repo = await setupMiniRepo();
+    try {
+      const adapter = await import('../../src/core/lbug/lbug-adapter.js');
+      const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
+      await runFullAnalysis(repo.dbPath, { skipAgentsMd: true }, { onProgress: () => {} });
+
+      const target = path.join(repo.dbPath, 'src', 'logger.ts');
+      const before = await readFile(target, 'utf-8');
+      await writeFile(target, before + '\n// non-bean-source incremental touch\n', 'utf-8');
+
+      const querySpy = vi.spyOn(adapter, 'executeQuery');
+      try {
+        const incremental = await runFullAnalysis(
+          repo.dbPath,
+          { skipAgentsMd: true },
+          { onProgress: () => {} },
+        );
+        expect(incremental.alreadyUpToDate).toBeUndefined();
+        expect(
+          querySpy.mock.calls.some(
+            ([query]) =>
+              typeof query === 'string' &&
+              query.includes('RETURN c.id AS id, c.frameworkAnnotations AS frameworkAnnotations'),
+          ),
+        ).toBe(false);
+      } finally {
+        querySpy.mockRestore();
+      }
     } finally {
       await repo.cleanup();
     }
@@ -245,6 +442,54 @@ describe('runFullAnalysis — incremental orchestration', () => {
       expect(secondMeta!.stats?.edges).toBe(forceMeta!.stats?.edges);
       expect(secondMeta!.stats?.communities).toBe(forceMeta!.stats?.communities);
       expect(secondMeta!.stats?.processes).toBe(forceMeta!.stats?.processes);
+    } finally {
+      await repo.cleanup();
+    }
+  }, 600_000);
+
+  it('rewrites unchanged Spring bean metadata when same-package shadowing changes', async () => {
+    const repo = await setupSpringBeanIncrementalRepo();
+    try {
+      const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
+      await runFullAnalysis(repo.dbPath, { skipAgentsMd: true }, { onProgress: () => {} });
+      expect(await readWildcardServiceAnnotations(repo.dbPath)).toEqual([SPRING_SERVICE]);
+
+      const shadow = path.join(repo.dbPath, 'src', 'com', 'other', 'Service.java');
+      await writeFile(shadow, 'package com.other;\npublic @interface Service {}\n', 'utf-8');
+      gitCommitAll(repo.dbPath, 'add same-package annotation shadow');
+
+      await runFullAnalysis(repo.dbPath, { skipAgentsMd: true }, { onProgress: () => {} });
+      expect(await readWildcardServiceAnnotations(repo.dbPath)).toEqual([]);
+
+      await rm(shadow);
+      gitCommitAll(repo.dbPath, 'remove same-package annotation shadow');
+
+      await runFullAnalysis(repo.dbPath, { skipAgentsMd: true }, { onProgress: () => {} });
+      expect(await readWildcardServiceAnnotations(repo.dbPath)).toEqual([SPRING_SERVICE]);
+    } finally {
+      await repo.cleanup();
+    }
+  }, 600_000);
+
+  it('rewrites unchanged Kotlin Spring bean metadata when same-package shadowing changes', async () => {
+    const repo = await setupKotlinSpringBeanIncrementalRepo();
+    try {
+      const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
+      await runFullAnalysis(repo.dbPath, { skipAgentsMd: true }, { onProgress: () => {} });
+      expect(await readWildcardServiceAnnotations(repo.dbPath)).toEqual([SPRING_SERVICE]);
+
+      const shadow = path.join(repo.dbPath, 'src', 'com', 'other', 'Service.kt');
+      await writeFile(shadow, 'package com.other\nannotation class Service\n', 'utf-8');
+      gitCommitAll(repo.dbPath, 'add same-package Kotlin annotation shadow');
+
+      await runFullAnalysis(repo.dbPath, { skipAgentsMd: true }, { onProgress: () => {} });
+      expect(await readWildcardServiceAnnotations(repo.dbPath)).toEqual([]);
+
+      await rm(shadow);
+      gitCommitAll(repo.dbPath, 'remove same-package Kotlin annotation shadow');
+
+      await runFullAnalysis(repo.dbPath, { skipAgentsMd: true }, { onProgress: () => {} });
+      expect(await readWildcardServiceAnnotations(repo.dbPath)).toEqual([SPRING_SERVICE]);
     } finally {
       await repo.cleanup();
     }
@@ -466,30 +711,23 @@ describe('runFullAnalysis — incremental orchestration', () => {
     }
   }, 300_000);
 
-  // Regression for #2289 review P1: a pre-v5 stamp (e.g. v4 with url-only
-  // Route ids) re-analyzed on the SAME commit must NOT early-return on the
-  // `alreadyUpToDate` fast path — otherwise the v5 schema bump's
-  // re-keyed-Route migration is silently bypassed and stale URL-only Route
-  // rows persist alongside any new composite-keyed writes. The schemaVersion
-  // gate (mirrors pdgModeMismatch's slot above the fast path) must force a
-  // full rebuild before lastCommit-equality short-circuits the pipeline.
-  it('a pre-v5 schemaVersion stamp forces a full rebuild on an unchanged-commit re-analyze', async () => {
+  // A pre-current index must not take the alreadyUpToDate fast path. The
+  // schema mismatch guard runs before lastCommit equality can short-circuit
+  // the pipeline, so node-identity migrations receive a full rebuild.
+  it('a pre-current schemaVersion stamp forces a full rebuild on an unchanged-commit re-analyze', async () => {
     const repo = await setupMiniRepo();
     try {
       const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
-      // First run stamps schemaVersion = INCREMENTAL_SCHEMA_VERSION (v5).
+      // First run stamps the current schema version (v8).
       await runFullAnalysis(repo.dbPath, { skipAgentsMd: true }, { onProgress: () => {} });
       const { storagePath } = getStoragePaths(repo.dbPath);
       const meta = await loadMeta(storagePath);
       expect(meta).not.toBeNull();
       expect(meta!.schemaVersion).toBe(INCREMENTAL_SCHEMA_VERSION);
 
-      // Simulate a repo indexed at the SAME commit by a pre-v5 GitNexus
-      // build: rewrite meta.json with schemaVersion = 4. lastCommit and
-      // working tree are untouched, so without the schemaVersion gate the
-      // run-analyze fast path would early-return `alreadyUpToDate=true`
-      // and never touch the stale Route rows.
-      const downgraded: RepoMeta = { ...meta!, schemaVersion: 4 };
+      // Simulate a pre-v8 index at the same commit. Without the schema guard,
+      // this would return alreadyUpToDate before the pipeline runs.
+      const downgraded: RepoMeta = { ...meta!, schemaVersion: 7 };
       await saveMeta(storagePath, downgraded);
 
       const reanalyzed = await runFullAnalysis(
@@ -499,7 +737,7 @@ describe('runFullAnalysis — incremental orchestration', () => {
       );
       // Pipeline actually ran (schemaVersion mismatch → force=true).
       expect(reanalyzed.alreadyUpToDate).toBeUndefined();
-      // And the meta is stamped back to v5 (the rebuild path runs saveMeta).
+      // And the meta is stamped back to v8 (the rebuild path runs saveMeta).
       const restamped = await loadMeta(storagePath);
       expect(restamped!.schemaVersion).toBe(INCREMENTAL_SCHEMA_VERSION);
     } finally {

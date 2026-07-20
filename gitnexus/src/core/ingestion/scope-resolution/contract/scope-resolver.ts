@@ -663,6 +663,22 @@ export interface ScopeResolver {
   // ─── Optional toggles ──────────────────────────────────────────────────────
 
   /**
+   * Source-text retention policy for post-extraction hooks that receive a
+   * `fileContents` context (`populateWorkspaceOwners`,
+   * `populateNamespaceSiblings`, `populateRangeBindings`, and
+   * `emitPostResolutionEdges`).
+   *
+   * The default, `all-files`, preserves the existing contract: source text is
+   * loaded for every file before any of those hooks run. A resolver may choose
+   * `uncached-files` only when all of its hooks derive cached-file facts from
+   * `ParsedFile` / capture side-channels and tolerate an empty content string
+   * for pre-extracted files. This keeps the durable ParsedFile path at
+   * O(uncached source) memory without putting language checks in the shared
+   * pipeline.
+   */
+  readonly postExtractSourceTextPolicy?: 'all-files' | 'uncached-files';
+
+  /**
    * Whether the orchestrator should run `propagateImportedReturnTypes`
    * after finalize. Default `true`. TypeScript with explicit type
    * exports may want a different propagation strategy and opt out.
