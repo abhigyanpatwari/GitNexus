@@ -1025,3 +1025,55 @@ def test_review_phase_rejects_workspace_or_skill_mutation(
     assert rec["resolved"] is False
     assert rec["error_kind"] == "review-evidence-invalid"
     assert expected_detail in rec["error_detail"]
+
+
+def _git(repo, *args, check=True):
+    return subprocess.run(["git", "-C", str(repo), *args], check=check, capture_output=True, text=True)
+
+
+def _git_commit(repo, message):
+    _git(
+        repo,
+        "-c",
+        "user.name=test",
+        "-c",
+        "user.email=test@invalid",
+        "commit",
+        "--quiet",
+        "--allow-empty",
+        "-m",
+        message,
+    )
+    return _git(repo, "rev-parse", "HEAD").stdout.strip()
+
+
+def test_make_worktree_clone_has_no_tags_but_keeps_all_branches(tmp_path):
+    # oracle_assets.MAX_CLONE_REFS refuses to sanitize a clone with more than
+    # 1024 refs; this repo's own history has 1000+ release-candidate tags, so
+    # a plain `git clone` of it (inheriting every tag) trips that cap on every
+    # benchmark session. make_worktree must not carry tags into its throwaway
+    # clone, but callers pass a bare SHA or "HEAD" as `ref` (never a branch
+    # name -- see evolve.py:476, runner.py:1037, sanitized_graph.py:345), so
+    # branch-fetching itself must stay untouched: a commit reachable only from
+    # a non-default branch must still resolve via the existing
+    # checkout(ref) -> checkout(origin/{ref}) fallback.
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "--quiet")
+    _git(repo, "checkout", "--quiet", "-b", "main")
+    _git_commit(repo, "base")
+    _git(repo, "tag", "v1.0.0-rc.1")
+
+    _git(repo, "checkout", "--quiet", "-b", "other")
+    other_sha = _git_commit(repo, "only on other")
+    _git(repo, "checkout", "--quiet", "main")
+
+    clones = tmp_path / "clones"
+    clones.mkdir()
+    target = runner.make_worktree(repo, other_sha, clones)
+
+    tags = _git(target, "tag").stdout.split()
+    assert tags == [], f"clone must carry no tags, found: {tags}"
+
+    current = _git(target, "rev-parse", "HEAD").stdout.strip()
+    assert current == other_sha
