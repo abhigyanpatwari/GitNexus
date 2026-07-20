@@ -58,6 +58,11 @@ def test_environment_is_allowlisted_and_shell_children_are_credential_free(monke
     assert settings["sandbox"]["failIfUnavailable"] is True
     assert settings["sandbox"]["allowUnsandboxedCommands"] is False
     assert settings["sandbox"]["network"]["deniedDomains"] == ["*"]
+    # ENV_SCRUB forces "default" mode; the proposer's tools (Bash writes the
+    # overlay) run headless only because they are explicitly pre-approved.
+    # Requesting a non-default defaultMode would merely warn, so it must be gone.
+    assert settings["permissions"]["allow"] == ["Read", "Grep", "Glob", "Bash"]
+    assert "defaultMode" not in settings["permissions"]
 
 
 @pytest.mark.parametrize(
@@ -716,8 +721,10 @@ for line in sys.stdin:
                     "--strict-mcp-config",
                     "--mcp-config",
                     mcp_config,
-                    "--permission-mode",
-                    "dontAsk",
+                    # No --permission-mode: mirrors production (run_proposer).
+                    # ENV_SCRUB forces "default"; Bash runs only because
+                    # settings permissions.allow pre-approves it. This is the
+                    # authoritative empirical gate for that behavior.
                     "--model",
                     "claude-canary-20260718",
                     "--allowedTools",
