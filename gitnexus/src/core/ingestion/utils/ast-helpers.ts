@@ -249,7 +249,7 @@ export const CONTAINER_TYPE_TO_LABEL: Record<string, string> = {
   record_declaration: 'Record',
   protocol_declaration: 'Interface',
   mixin_declaration: 'Mixin',
-  extension_declaration: 'Extension',
+  extension_declaration: 'Class',
   class: 'Class',
   // Ruby `module` declarations map to `Trait` so they participate in the
   // class-like type registry used by `lookupClassByName` / inheritance
@@ -317,7 +317,16 @@ export function getLabelFromCaptures(
   const hasDefaultExportHocNameSeed =
     captureMap['definition.function'] !== undefined &&
     (captureMap['hoc'] !== undefined || captureMap['callee'] !== undefined);
-  if (!captureMap['name'] && !captureMap['definition.constructor'] && !hasDefaultExportHocNameSeed)
+  // Nameless `definition.class` passes through: a class extractor may
+  // synthesize the name (Java anonymous class bodies → `Worker$N`, #2550).
+  // Downstream stays safe — parse-worker skips any nameless definition the
+  // extractor could not name (its `!nameNode && !extractedClassSymbol` gate).
+  if (
+    !captureMap['name'] &&
+    !captureMap['definition.constructor'] &&
+    !captureMap['definition.class'] &&
+    !hasDefaultExportHocNameSeed
+  )
     return null;
 
   if (captureMap['definition.function']) {
@@ -395,6 +404,135 @@ export interface EnclosingClassInfo {
  *    pathological hooks from creating an infinite loop. */
 const MAX_ENCLOSING_WALK_ITERATIONS = 4096;
 
+/**
+ * Synthesize a javac-style name for a Java anonymous class body:
+ * `new Runnable() { ... }` inside top-level class `Worker` becomes
+ * `Worker$1` (`$N` = 1-based source order of anonymous bodies within the
+ * top-level class). Returns undefined when the node is not an
+ * `object_creation_expression` carrying a `class_body` child — which also
+ * keeps this a no-op for C#, whose `object_creation_expression` uses
+ * `initializer_expression`, never `class_body` (#2550).
+ *
+ * The SAME name must be produced by every layer that keys the anonymous
+ * class (structure-phase node id, enclosing-owner walk, scope-side
+ * declaration synthesis, receiver typeBinding) — they agree by all calling
+ * this one helper.
+ */
+/** Type-declaration node types that can host (and name) a Java anonymous
+ *  class body. Naming follows JLS 13.1: the binary name is the
+ *  IMMEDIATELY enclosing type's binary name + `$N`, so the synthesized
+ *  name is the `$`-joined chain of enclosing host names
+ *  (`EnumWrap$Mode$1`), numbered per immediate host in source order. */
+const JAVA_ANON_HOST_TYPES = new Set([
+  'class_declaration',
+  'enum_declaration',
+  'interface_declaration',
+  'record_declaration',
+]);
+
+/** The two Java anonymous-class-body shapes (#2550/#2555): an
+ *  `object_creation_expression` with a `class_body` child
+ *  (`new Runnable() { ... }`), and an `enum_constant` with a `body:`
+ *  field (`enum E { A { ... } }` — javac's other `E$N` shape). */
+const isJavaAnonymousBodyNode = (node: SyntaxNode): boolean =>
+  (node.type === 'object_creation_expression' &&
+    node.namedChildren?.some((c: SyntaxNode) => c.type === 'class_body') === true) ||
+  (node.type === 'enum_constant' && node.childForFieldName?.('body')?.type === 'class_body');
+
+/** Nearest ancestor of `node` that is an enclosing TYPE per JLS 13.1 —
+ *  a named host declaration OR another anonymous body (both shapes).
+ *  Anonymous ancestors chain through: an anon inside an anon is
+ *  `Host$1$1`, and an anon inside an enum constant body is `E$1$1`. */
+const nearestJavaEnclosingType = (node: SyntaxNode): SyntaxNode | null => {
+  let cursor: SyntaxNode | null = node.parent;
+  let iterations = 0;
+  while (cursor) {
+    if (++iterations > MAX_ENCLOSING_WALK_ITERATIONS) return null;
+    if (JAVA_ANON_HOST_TYPES.has(cursor.type) || isJavaAnonymousBodyNode(cursor)) return cursor;
+    cursor = cursor.parent;
+  }
+  return null;
+};
+
+/** Per-parse-tree memo of anonymous-body numbering: tree → (startIndex →
+ *  synthesized name). Keyed by the tree OBJECT via WeakMap so entries die
+ *  with the parse; without it every call re-scans the host subtree
+ *  (`descendantsOfType`), and the helper is called from four independent
+ *  layers per anonymous body — quadratic on anon-heavy files (old-style
+ *  listener-per-widget Java). */
+const javaAnonNameMemo = new WeakMap<object, Map<number, string>>();
+
+export const synthesizeJavaAnonymousClassName = (node: SyntaxNode): string | undefined => {
+  if (!isJavaAnonymousBodyNode(node)) return undefined;
+
+  const tree = (node as { tree?: object }).tree;
+  if (tree !== undefined) {
+    const cached = javaAnonNameMemo.get(tree)?.get(node.startIndex);
+    if (cached !== undefined) return cached;
+  }
+
+  // JLS 13.1: the binary name is the IMMEDIATELY ENCLOSING TYPE's binary
+  // name + `$N`. The enclosing type may itself be anonymous — then its
+  // own synthesized name is the prefix (recursion, memo-bounded):
+  // `NestHost$1$1` for an anon inside an anon, `E$1$1` for an anon
+  // inside an enum constant body. For a named enclosing type the prefix
+  // is the `$`-joined chain of named hosts (`EnumWrap$Mode`).
+  const enclosing = nearestJavaEnclosingType(node);
+  if (enclosing === null) return undefined;
+  let prefix: string;
+  if (isJavaAnonymousBodyNode(enclosing)) {
+    const enclosingName = synthesizeJavaAnonymousClassName(enclosing);
+    if (enclosingName === undefined) return undefined;
+    prefix = enclosingName;
+  } else {
+    const hostNames: string[] = [];
+    let cursor: SyntaxNode | null = enclosing;
+    let iterations = 0;
+    while (cursor) {
+      if (++iterations > MAX_ENCLOSING_WALK_ITERATIONS) return undefined;
+      if (JAVA_ANON_HOST_TYPES.has(cursor.type)) {
+        const hostName = cursor.childForFieldName?.('name')?.text;
+        if (hostName === undefined || hostName.length === 0) return undefined;
+        hostNames.unshift(hostName);
+      }
+      cursor = cursor.parent;
+    }
+    prefix = hostNames.join('$');
+  }
+
+  // All anonymous bodies (both shapes) whose immediately enclosing TYPE
+  // is THIS one, in source order. `descendantsOfType` over the subtree
+  // also finds bodies belonging to nested enclosing types — filter them
+  // out by re-deriving each candidate's own enclosing type.
+  const candidates = [
+    ...(enclosing.descendantsOfType?.('object_creation_expression') ?? []),
+    ...(enclosing.descendantsOfType?.('enum_constant') ?? []),
+  ]
+    .filter(isJavaAnonymousBodyNode)
+    .filter((c: SyntaxNode) => {
+      const host = nearestJavaEnclosingType(c);
+      return (
+        host !== null && host.startIndex === enclosing.startIndex && host.type === enclosing.type
+      );
+    })
+    .sort((a: SyntaxNode, b: SyntaxNode) => a.startIndex - b.startIndex);
+
+  if (tree !== undefined) {
+    let byStart = javaAnonNameMemo.get(tree);
+    if (byStart === undefined) {
+      byStart = new Map();
+      javaAnonNameMemo.set(tree, byStart);
+    }
+    for (let i = 0; i < candidates.length; i++) {
+      byStart.set(candidates[i]!.startIndex, `${prefix}$${i + 1}`);
+    }
+    return byStart.get(node.startIndex);
+  }
+  const index = candidates.findIndex((c: SyntaxNode) => c.startIndex === node.startIndex);
+  if (index === -1) return undefined;
+  return `${prefix}$${index + 1}`;
+};
+
 export const findEnclosingClassInfo = (
   node: SyntaxNode,
   filePath: string,
@@ -457,6 +595,23 @@ export const findEnclosingClassInfo = (
             };
           }
         }
+      }
+    }
+    // Java: an anonymous class body owns its members — attribute to the
+    // synthesized `Worker$N`/`E$N` class, not the lexically enclosing
+    // named type (#2550/#2555). Covers both shapes: `new Runnable() { ... }`
+    // and enum constant bodies (`enum E { A { ... } }`). The synthesis
+    // returns undefined for shape-less nodes (plain `new Foo()`, a body-less
+    // enum constant, and every C# `object_creation_expression`), so the
+    // walk continues unchanged for those — including on to
+    // `enum_declaration`, which sits in CLASS_CONTAINER_TYPES below.
+    if (current.type === 'object_creation_expression' || current.type === 'enum_constant') {
+      const anonName = synthesizeJavaAnonymousClassName(current);
+      if (anonName !== undefined) {
+        return {
+          classId: generateId('Class', `${filePath}:${anonName}`),
+          className: anonName,
+        };
       }
     }
     if (CLASS_CONTAINER_TYPES.has(current.type)) {

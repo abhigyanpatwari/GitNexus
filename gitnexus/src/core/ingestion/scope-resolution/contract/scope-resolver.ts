@@ -414,6 +414,23 @@ export interface ScopeResolver {
   arityCompatibility(callsite: Callsite, def: SymbolDefinition): ArityVerdict;
 
   /**
+   * Add provider-specific callable value targets beyond the shared
+   * Function/Method/Constructor set. This is intentionally a predicate hook:
+   * shared flow analysis never branches on a language name or syntax kind.
+   */
+  readonly isCallableValueTarget?: (def: SymbolDefinition) => boolean;
+
+  /**
+   * Restrict this provider's scope-resolution graph mutations to callable-value
+   * CALLS edges. Providers with an existing structural edge pipeline can use
+   * the shared scope model and callable solver without duplicating their
+   * established CALLS, IMPORTS, heritage, or property-dispatch edges.
+   *
+   * Default: `all`.
+   */
+  readonly scopeResolutionEdgeMode?: 'all' | 'callable-flow-only';
+
+  /**
    * Per-language constraint compatibility between a callsite and a
    * candidate `def` that carries `templateConstraints` metadata.
    * Mirrors `arityCompatibility` semantics: the three-valued verdict
@@ -646,6 +663,22 @@ export interface ScopeResolver {
   // ─── Optional toggles ──────────────────────────────────────────────────────
 
   /**
+   * Source-text retention policy for post-extraction hooks that receive a
+   * `fileContents` context (`populateWorkspaceOwners`,
+   * `populateNamespaceSiblings`, `populateRangeBindings`, and
+   * `emitPostResolutionEdges`).
+   *
+   * The default, `all-files`, preserves the existing contract: source text is
+   * loaded for every file before any of those hooks run. A resolver may choose
+   * `uncached-files` only when all of its hooks derive cached-file facts from
+   * `ParsedFile` / capture side-channels and tolerate an empty content string
+   * for pre-extracted files. This keeps the durable ParsedFile path at
+   * O(uncached source) memory without putting language checks in the shared
+   * pipeline.
+   */
+  readonly postExtractSourceTextPolicy?: 'all-files' | 'uncached-files';
+
+  /**
    * Whether the orchestrator should run `propagateImportedReturnTypes`
    * after finalize. Default `true`. TypeScript with explicit type
    * exports may want a different propagation strategy and opt out.
@@ -701,6 +734,24 @@ export interface ScopeResolver {
   readonly allowGlobalFreeCallFallback?: boolean;
 
   /**
+   * In this language every `Method` belongs to a class instance, so a
+   * FREE (receiver-less) call may resolve to a `Method` only when the
+   * caller's enclosing class chain — the class itself plus its MRO —
+   * contains the method's owner (#2550). Suppresses the finalize-bucket
+   * leak where an unqualified call matched any same-file method by bare
+   * name (`materializeBindings` flattens every declaration onto module
+   * scope). Java opts in; C# is the intended next adopter.
+   *
+   * NOT implemented via `LanguageProvider.builtInNames`: that mechanism
+   * has unrelated consumers (`parse-worker`'s call-site extraction gate
+   * suppresses member calls too; `type-env`'s return-type lookup) which
+   * assume a flagged name is never a real repository declaration —
+   * false for common method names like `run`/`get`/`compare` (verified
+   * regression).
+   */
+  readonly freeCallsRequireInstanceOwnership?: boolean;
+
+  /**
    * When true, a constructor-form call `Type(...)` links to the Class def
    * itself rather than its explicit Constructor def. Default
    * (undefined/false) targets the explicit Constructor when one exists,
@@ -745,6 +796,20 @@ export interface ScopeResolver {
    * Languages without file-local linkage semantics leave this undefined.
    */
   readonly isFileLocalDef?: (def: SymbolDefinition) => boolean;
+
+  /**
+   * Optional precise linkage predicate used when callable-value flow joins a
+   * declaration graph node (for example a C/C++ prototype in a caller file)
+   * to its out-of-file definition. Unlike `isFileLocalDef`, this hook MUST
+   * answer only language-level internal/file-local linkage. It must not fold
+   * in broader unqualified-name visibility rules such as namespace or member
+   * lookup: an explicit declaration already establishes caller visibility.
+   *
+   * C and C++ provide this hook for `static` free functions. Languages whose
+   * declaration/definition identity is already represented by imports or one
+   * graph node leave it undefined, disabling cross-file prototype joining.
+   */
+  readonly hasFileLocalCallableLinkage?: (def: SymbolDefinition) => boolean;
 
   /**
    * Optional predicate to identify members for which dispatch through

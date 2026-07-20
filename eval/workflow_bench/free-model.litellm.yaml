@@ -1,0 +1,43 @@
+# LiteLLM proxy config for running the workflow benchmark on a FREE model.
+#
+# The proxy exposes an Anthropic-compatible /v1/messages endpoint that
+# headless Claude Code can use via ANTHROPIC_BASE_URL, routing to a model
+# that costs nothing:
+#
+#   export LITELLM_MASTER_KEY="$(openssl rand -hex 16)"
+#   uv run --with 'litellm[proxy]' litellm --config workflow_bench/free-model.litellm.yaml --port 4000
+#
+#   uv run python -m workflow_bench.runner \
+#     --tasks workflow_bench/tasks.scenarios.yaml \
+#     --base-url http://localhost:4000 --auth-token "$LITELLM_MASTER_KEY" \
+#     --model free-coder
+#
+# Keep the proxy on loopback (litellm's default host). Anyone who can reach
+# the port with the master key can spend the configured backend's quota.
+#
+# Pick ONE of the model routes below (or add your own — anything litellm
+# supports works):
+
+model_list:
+  # Hosted free tier: needs only a free OpenRouter account key in
+  # OPENROUTER_API_KEY (eval/.env). ":free" variants are rate-limited
+  # (~50 requests/day on a fresh account, 1000/day with a $10 balance) —
+  # fine for a few benchmark tasks, not for large sweeps.
+  - model_name: free-coder
+    litellm_params:
+      model: openrouter/qwen/qwen3-coder:free
+      api_key: os.environ/OPENROUTER_API_KEY
+
+  # Fully local and free: any Ollama model, no API key, no rate limits.
+  # Needs `ollama serve` running and the model pulled
+  # (`ollama pull qwen2.5-coder:14b`). Prefer a coding-tuned model that
+  # handles tool calls; small models follow skills less reliably.
+  - model_name: local-coder
+    litellm_params:
+      model: ollama_chat/qwen2.5-coder:14b
+      api_base: http://localhost:11434
+
+general_settings:
+  # No static default — export LITELLM_MASTER_KEY before starting the proxy
+  # and pass the same value as --auth-token (see header).
+  master_key: os.environ/LITELLM_MASTER_KEY

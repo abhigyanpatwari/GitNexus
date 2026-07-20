@@ -213,6 +213,25 @@ describe('Pass 1: scope tree', () => {
 // ─── §Pass 2: declarations + local bindings ────────────────────────────────
 
 describe('Pass 2: declarations + local bindings', () => {
+  it('routes one multi-topic match through both scope and declaration passes', () => {
+    const result = extract(
+      [
+        scopeMatch('module', 1, 0, 100, 0),
+        {
+          '@scope.function': cap('@scope.function', 5, 0, 20, 0, 'render'),
+          '@declaration.function': cap('@declaration.function', 5, 0, 20, 0, 'render'),
+          '@declaration.name': cap('@declaration.name', 5, 0, 5, 6, 'render'),
+        },
+      ],
+      'a.ts',
+      mockProvider(),
+    );
+
+    expect(result.scopes.some((scope) => scope.kind === 'Function')).toBe(true);
+    expect(result.localDefs).toHaveLength(1);
+    expect(result.localDefs[0]!.qualifiedName).toBe('render');
+  });
+
   it('attaches a Class declaration to its enclosing Module scope', () => {
     const result = extract(
       [
@@ -470,6 +489,172 @@ describe('Pass 5: reference sites', () => {
       mockProvider(),
     );
     expect(result.referenceSites[0]!.arity).toBe(2);
+  });
+});
+
+// ─── §Pass 6: callable-value-flow facts ───────────────────────────────────
+
+describe('Pass 6: callable-value-flow facts', () => {
+  it('omits callableFlowSites when the provider emits no flow captures', () => {
+    const result = extract([scopeMatch('module', 1, 0, 100, 0)], 'a.ts', mockProvider());
+    expect(result.callableFlowSites).toBeUndefined();
+  });
+
+  it('materializes every normalized fact shape with lexical scopes and JSON-safe metadata', () => {
+    const matches: CaptureMatch[] = [
+      scopeMatch('module', 1, 0, 100, 0),
+      scopeMatch('function', 10, 0, 60, 0),
+      {
+        '@callable-flow.seed': cap('@callable-flow.seed', 20, 2, 20, 20),
+        '@callable-flow.destination': cap('@callable-flow.destination', 20, 2, 20, 4, 'fp'),
+        '@callable-flow.target': cap('@callable-flow.target', 20, 8, 20, 14, 'target'),
+        '@callable-flow.target-name': cap('@callable-flow.target-name', 20, 8, 20, 14, 'target'),
+        '@callable-flow.target-qualified-name': cap(
+          '@callable-flow.target-qualified-name',
+          20,
+          8,
+          20,
+          14,
+          'Ns.target',
+        ),
+        '@callable-flow.expected-arity': cap('@callable-flow.expected-arity', 20, 2, 20, 2, '1'),
+        '@callable-flow.expected-types': cap(
+          '@callable-flow.expected-types',
+          20,
+          2,
+          20,
+          2,
+          '["int"]',
+        ),
+        '@callable-flow.expected-type-classes': cap(
+          '@callable-flow.expected-type-classes',
+          20,
+          2,
+          20,
+          2,
+          '[{"base":"int","cv":"none","indirection":"value","pointerDepth":0}]',
+        ),
+      },
+      {
+        '@callable-flow.copy': cap('@callable-flow.copy', 21, 2, 21, 10),
+        '@callable-flow.source': cap('@callable-flow.source', 21, 8, 21, 10, 'fp'),
+        '@callable-flow.destination': cap('@callable-flow.destination', 21, 2, 21, 5, 'fp2'),
+      },
+      {
+        '@callable-flow.alias': cap('@callable-flow.alias', 22, 2, 22, 10),
+        '@callable-flow.source': cap('@callable-flow.source', 22, 8, 22, 10, 'fp'),
+        '@callable-flow.destination': cap('@callable-flow.destination', 22, 2, 22, 5, 'ref'),
+      },
+      {
+        '@callable-flow.address': cap('@callable-flow.address', 23, 2, 23, 12),
+        '@callable-flow.source': cap('@callable-flow.source', 23, 9, 23, 11, 'fp'),
+        '@callable-flow.destination': cap('@callable-flow.destination', 23, 2, 23, 6, 'slot'),
+      },
+      {
+        '@callable-flow.store': cap('@callable-flow.store', 24, 2, 24, 14),
+        '@callable-flow.source': cap('@callable-flow.source', 24, 10, 24, 14, 'next'),
+        '@callable-flow.pointer': cap('@callable-flow.pointer', 24, 3, 24, 7, 'slot'),
+        '@callable-flow.pointer-indirection': cap(
+          '@callable-flow.pointer-indirection',
+          24,
+          3,
+          24,
+          3,
+          '1',
+        ),
+      },
+      {
+        '@callable-flow.load': cap('@callable-flow.load', 25, 2, 25, 14),
+        '@callable-flow.pointer': cap('@callable-flow.pointer', 25, 10, 25, 14, 'slot'),
+        '@callable-flow.destination': cap('@callable-flow.destination', 25, 2, 25, 5, 'out'),
+      },
+      {
+        '@callable-flow.formal': cap('@callable-flow.formal', 10, 0, 60, 0),
+        '@callable-flow.owner': cap('@callable-flow.owner', 10, 0, 60, 0, 'invoke'),
+        '@callable-flow.binding': cap('@callable-flow.binding', 10, 15, 10, 17, 'cb'),
+        '@callable-flow.parameter-index': cap(
+          '@callable-flow.parameter-index',
+          10,
+          15,
+          10,
+          15,
+          '0',
+        ),
+        '@callable-flow.passing-mode': cap(
+          '@callable-flow.passing-mode',
+          10,
+          15,
+          10,
+          15,
+          'reference',
+        ),
+      },
+      {
+        '@callable-flow.argument': cap('@callable-flow.argument', 30, 2, 30, 12),
+        '@callable-flow.source': cap('@callable-flow.source', 30, 9, 30, 11, 'fp'),
+        '@callable-flow.parameter-index': cap('@callable-flow.parameter-index', 30, 9, 30, 9, '0'),
+        '@callable-flow.direct-callee-name': cap(
+          '@callable-flow.direct-callee-name',
+          30,
+          2,
+          30,
+          8,
+          'invoke',
+        ),
+      },
+      {
+        '@callable-flow.invoke': cap('@callable-flow.invoke', 40, 2, 40, 14),
+        '@callable-flow.callee': cap('@callable-flow.callee', 40, 8, 40, 10, 'cb'),
+        '@callable-flow.receiver': cap('@callable-flow.receiver', 40, 3, 40, 6, 'obj'),
+        '@callable-flow.invocation-kind': cap(
+          '@callable-flow.invocation-kind',
+          40,
+          2,
+          40,
+          2,
+          'member-pointer',
+        ),
+        '@callable-flow.arity': cap('@callable-flow.arity', 40, 2, 40, 2, '0'),
+      },
+      // Malformed facts are ignored defensively.
+      { '@callable-flow.seed': cap('@callable-flow.seed', 50, 2, 50, 8) },
+    ];
+
+    const result = extract(matches, 'a.ts', mockProvider());
+    const sites = result.callableFlowSites!;
+    expect(sites.map((site) => site.kind)).toEqual([
+      'seed',
+      'copy',
+      'alias',
+      'address',
+      'store',
+      'load',
+      'formal',
+      'argument',
+      'invoke',
+    ]);
+    const fnScope = result.scopes.find((scope) => scope.kind === 'Function')!;
+    expect(sites[0]).toMatchObject({
+      destination: { name: 'fp', inScope: fnScope.id, indirection: 0 },
+      targetName: 'target',
+      targetQualifiedName: 'Ns.target',
+      expectedSignature: { parameterCount: 1, parameterTypes: ['int'] },
+    });
+    expect(sites[4]).toMatchObject({ pointer: { name: 'slot', indirection: 1 } });
+    expect(sites[6]).toMatchObject({
+      ownerName: 'invoke',
+      parameterIndex: 0,
+      passingMode: 'reference',
+      binding: { name: 'cb', inScope: fnScope.id },
+    });
+    expect(sites[7]).toMatchObject({ directCalleeName: 'invoke' });
+    expect(sites[8]).toMatchObject({
+      invocationKind: 'member-pointer',
+      arity: 0,
+      callee: { name: 'cb' },
+      receiver: { name: 'obj' },
+    });
+    expect(JSON.parse(JSON.stringify(sites))).toEqual(sites);
   });
 });
 

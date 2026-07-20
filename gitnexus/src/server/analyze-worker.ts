@@ -11,11 +11,11 @@
  *   Child -> Parent: { type: 'error', message: string }
  */
 
-import { runFullAnalysis, type AnalyzeOptions } from '../core/run-analyze.js';
+import type { AnalyzeOptions } from '../core/run-analyze.js';
 import { type AnalyzeResultIpc } from './analyze-worker-ipc.js';
 import { runWorkerAnalysis, createTerminalClaim } from './analyze-worker-core.js';
-import { assertAnalysisFinalized } from '../storage/repo-manager.js';
-import { boundedCheckpointBeforeExit } from '../core/lbug/shutdown-helpers.js';
+type BoundedCheckpointBeforeExit =
+  typeof import('../core/lbug/shutdown-helpers.js').boundedCheckpointBeforeExit;
 
 interface StartMessage {
   type: 'start';
@@ -58,6 +58,7 @@ function send(msg: WorkerMessage) {
 // terminal send, so a cancel near the finish line can't also report success and a
 // late SIGTERM can't flip an already-reported job (#2264 P3).
 const claimTerminal = createTerminalClaim();
+let boundedCheckpointBeforeExit: BoundedCheckpointBeforeExit | null = null;
 
 // Catch uncaught exceptions and unhandled rejections — report them to the parent
 // over IPC (the same channel the analysis path uses), then exit. The report runs
@@ -94,6 +95,10 @@ process.on('SIGTERM', () => {
   if (claimTerminal()) {
     send({ type: 'error', message: 'Analysis cancelled (worker received SIGTERM)' });
   }
+  if (!boundedCheckpointBeforeExit) {
+    process.exit(0);
+    return;
+  }
   void boundedCheckpointBeforeExit({
     exitCode: 0,
     onFlushError: (err: unknown) => {
@@ -111,16 +116,44 @@ process.on('message', async (msg: StartMessage) => {
   started = true;
 
   try {
+    // Capture the complete build/dependency receipt before evaluating the
+    // analyzer graph or loading LadybugDB. A replacement racing this boundary
+    // is compared against this receipt again immediately before metadata commit.
+    const identityModule = await import('../core/analyzer-identity.js');
+    const prepared = await identityModule.captureAnalyzerIdentityBeforeLoad(
+      import.meta.url,
+      async () => {
+        const [analysisModule, repoManager, shutdownHelpers] = await Promise.all([
+          import('../core/run-analyze.js'),
+          import('../storage/repo-manager.js'),
+          import('../core/lbug/shutdown-helpers.js'),
+        ]);
+        return { analysisModule, repoManager, shutdownHelpers };
+      },
+    );
+    boundedCheckpointBeforeExit = prepared.loaded.shutdownHelpers.boundedCheckpointBeforeExit;
     // The run → finalize → report contract lives in the side-effect-free
     // analyze-worker-core seam (unit-testable without this entry module's
     // process.on side effects). It reports exactly one terminal message and
     // never throws.
-    await runWorkerAnalysis(msg.repoPath, msg.options, {
-      runFullAnalysis,
-      assertAnalysisFinalized,
-      send,
-      claimTerminal,
-    });
+    await runWorkerAnalysis(
+      msg.repoPath,
+      msg.options,
+      {
+        runFullAnalysis: prepared.loaded.analysisModule.runFullAnalysis,
+        assertAnalysisFinalized: prepared.loaded.repoManager.assertAnalysisFinalized,
+        send,
+        claimTerminal,
+      },
+      prepared.runnerIdentity,
+    );
+  } catch (error) {
+    if (claimTerminal()) {
+      send({
+        type: 'error',
+        message: error instanceof Error ? error.message : 'Analysis worker bootstrap failed',
+      });
+    }
   } finally {
     // LadybugDB's native module prevents clean exit — force it (same reason the
     // CLI uses process.exit(0)). In `finally` so the exit still fires even if the

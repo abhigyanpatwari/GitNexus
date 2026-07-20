@@ -245,6 +245,34 @@ describe('impact: pagination and summaryOnly (#414)', () => {
     expect(res.pagination).toBeUndefined();
   });
 
+  it.each([
+    ['skipEpistemic', { skipEpistemic: true }],
+    ['summaryOnly', { summaryOnly: true }],
+  ])('%s suppresses Class bean metadata lookups', async (_name, suppression) => {
+    const { backend, repoHandle } = makeBackend();
+    setupHubSymbol(1);
+
+    await (backend as any)._runImpactBFS(
+      repoHandle,
+      { id: 'hub1', name: 'HubClass' },
+      'Class',
+      'upstream',
+      {
+        maxDepth: 1,
+        relationTypes: ['CALLS'],
+        includeTests: false,
+        minConfidence: 0,
+        ...suppression,
+      },
+    );
+
+    expect(
+      executeParameterizedMock.mock.calls.some((args) =>
+        String(args[1] ?? '').includes('frameworkAnnotations'),
+      ),
+    ).toBe(false);
+  });
+
   it('limit clamps to 1–10000 range', async () => {
     const { backend, repoHandle } = makeBackend();
     setupHubSymbol(10);

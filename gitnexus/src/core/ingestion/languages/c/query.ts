@@ -118,6 +118,23 @@ const C_SCOPE_QUERY = `
   declarator: (pointer_declarator
     declarator: (identifier) @declaration.name)) @declaration.variable
 
+;; Declarations — function-pointer variables (\`void (*fp)(int);\`), with and
+;; without initializer. Without these the file-scope pointer has no scope-tree
+;; binding, so callable-flow cells written in one function and read in another
+;; canonicalize to different keys and never join (#2522 review, H1).
+(declaration
+  declarator: (function_declarator
+    declarator: (parenthesized_declarator
+      (pointer_declarator
+        declarator: (identifier) @declaration.name)))) @declaration.variable
+
+(declaration
+  declarator: (init_declarator
+    declarator: (function_declarator
+      declarator: (parenthesized_declarator
+        (pointer_declarator
+          declarator: (identifier) @declaration.name))))) @declaration.variable
+
 ;; Declarations — macro definitions
 (preproc_def
   name: (identifier) @declaration.name) @declaration.macro

@@ -131,7 +131,7 @@ export async function checkCwdMatch(cwd: string): Promise<CwdMatch> {
   let bestLen = -1;
   for (const e of entries) {
     const p = norm(e.path);
-    if (cwdNorm === p || cwdNorm.startsWith(p + sep)) {
+    if (cwdNorm === p || cwdNorm.startsWith(p.endsWith(sep) ? p : p + sep)) {
       if (p.length > bestLen) {
         bestPath = e;
         bestLen = p.length;

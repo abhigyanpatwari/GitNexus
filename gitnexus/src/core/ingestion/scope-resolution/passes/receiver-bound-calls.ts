@@ -161,9 +161,10 @@ export function emitReceiverBoundCalls(
   model: SemanticModel,
   options: {
     readonly recordResolutionOutcome?: ResolutionOutcomeRecorder;
-    /** Resolved-callee-id capture sink (#2227 U2). Threaded in only under
-     *  `--pdg`; `undefined` ⇒ zero overhead, byte-identity (R4). Per-file
-     *  capture contexts are built from this + `parsed.filePath` in the loop. */
+    /** Resolved-callee-id capture sink (#2227 U2). Threaded in under `--pdg`
+     *  OR for callable-flow's direct-target index (#2437, position-filtered);
+     *  `undefined` ⇒ zero overhead, byte-identity (R4). Per-file capture
+     *  contexts are built from this + `parsed.filePath` in the loop. */
     readonly calleeIdSink?: CalleeIdSink;
   } = {},
 ): number {

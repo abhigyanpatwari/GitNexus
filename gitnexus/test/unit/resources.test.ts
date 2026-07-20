@@ -15,6 +15,7 @@ import {
   parseResourceUri,
   readResource,
 } from '../../src/mcp/resources.js';
+import type { RepoMeta } from '../../src/storage/repo-manager.js';
 
 // Mock loadMeta so getContextResource doesn't hit the filesystem (#2438 fix).
 // Default: returns null (simulates no on-disk meta — falls back to cached handle).
@@ -470,6 +471,92 @@ describe('context resource freshness after out-of-process analyze (#2438)', () =
     // Stale cached values should NOT appear
     expect(result).not.toContain('files: 100');
     expect(result).not.toContain('symbols: 500');
+  });
+
+  it('exposes the full indexed commit and typed runner receipt from fresh metadata', async () => {
+    const runnerIdentity = {
+      schemaVersion: 4 as const,
+      runtime: {
+        executablePath: '/usr/bin/node',
+        version: 'v22.0.0',
+        platform: 'linux',
+        architecture: 'x64',
+        modulesAbi: '127',
+        libc: 'glibc:2.39',
+      },
+      cliVersion: '1.6.9',
+      invokedArtifact: { path: '/opt/gitnexus/dist/cli/index.js', digest: 'sha256:entry' },
+      build: {
+        kind: 'distribution' as const,
+        rootPath: '/opt/gitnexus/dist',
+        canonicalization: 'gitnexus-analyzer-build-v2' as const,
+        digest: 'sha256:build',
+      },
+      dependencyRuntime: {
+        manifestPath: '/opt/gitnexus/package.json',
+        lockfilePath: '/opt/package-lock.json',
+        canonicalization: 'gitnexus-analyzer-dependency-runtime-v4' as const,
+        packageCount: 42,
+        artifactCount: 12,
+        digest: 'sha256:dependencies',
+      },
+    };
+    loadMetaMock.mockResolvedValue({
+      repoPath: '/tmp/test-repo',
+      lastCommit: '0123456789abcdef0123456789abcdef01234567',
+      indexedAt: '2026-07-18T12:00:00.000Z',
+      runnerIdentity,
+    });
+
+    const result = await readResource(
+      'gitnexus://repo/test-project/context',
+      createMockBackend({ context: CONTEXT }),
+    );
+    expect(result).toContain('index:');
+    expect(result).toContain('commit: "0123456789abcdef0123456789abcdef01234567"');
+    expect(result).toContain(`runner_identity: ${JSON.stringify(runnerIdentity)}`);
+    expect(result).toContain('runner_identity_schema_status: "current"');
+  });
+
+  it('marks an older indexed runner receipt schema as legacy', async () => {
+    loadMetaMock.mockResolvedValue({
+      repoPath: '/tmp/test-repo',
+      lastCommit: '0123456789abcdef0123456789abcdef01234567',
+      indexedAt: '2026-07-18T12:00:00.000Z',
+      runnerIdentity: { schemaVersion: 1 },
+    } as unknown as RepoMeta);
+
+    const result = await readResource(
+      'gitnexus://repo/test-project/context',
+      createMockBackend({ context: CONTEXT }),
+    );
+    expect(result).toContain('runner_identity_schema_status: "legacy-or-unknown"');
+  });
+
+  it('exposes the same machine-readable incomplete reasons as status', async () => {
+    loadMetaMock.mockResolvedValue({
+      repoPath: '/tmp/test-repo',
+      lastCommit: 'current-head',
+      indexedAt: '2026-07-18T12:00:00.000Z',
+      incrementalInProgress: { startedAt: 1, toWriteCount: 2 },
+      embeddingCheckpoint: {
+        at: '2026-07-18T12:00:00.000Z',
+        nodesProcessed: 1,
+        totalNodes: 2,
+        chunksProcessed: 1,
+        model: 'fixture',
+        dimensions: 3,
+        provider: 'local',
+      },
+    });
+
+    const result = await readResource(
+      'gitnexus://repo/test-project/context',
+      createMockBackend({ context: CONTEXT }),
+    );
+    expect(result).toContain(
+      'incomplete_reasons: ["incremental-in-progress","embedding-checkpoint-pending"]',
+    );
   });
 
   it('falls back to cached stats when loadMeta returns null', async () => {

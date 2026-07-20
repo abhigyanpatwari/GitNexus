@@ -37,7 +37,11 @@ Edit review behavior in the canonical files under `pr-swarm-review/` (orchestrat
 personas), **not** in these wrappers. After adding or editing files in `.claude/agents/`,
 restart Claude Code so it reloads the agent definitions.
 
-## Relationship to `/gitnexus-pr-review`
+## Relationship to `/gitnexus-review`
 
-Coexists with the single-agent `/gitnexus-pr-review` skill (a linear checklist using GitNexus
-MCP tools). This swarm is the multi-persona deep production-readiness review.
+Coexists with the `/gitnexus-review` skill (reviews PRs, branches, ranges, or
+local changes using GitNexus MCP tools). Both now run reviewer swarms, so the
+distinction is the runner, not the roster: this `/gitnexus-pr-swarm-review` is
+the interactive, on-demand production-readiness swarm you invoke directly,
+while `gitnexus-review`'s `ci-personas/` lanes are dispatched automatically
+inside the CI review agent's single workflow run.

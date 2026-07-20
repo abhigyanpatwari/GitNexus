@@ -2725,3 +2725,264 @@ describe('Java bare-this dispatch (Case 4 pinning)', () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// Issues #2545/#2550: an anonymous class body (`new Runnable() { public
+// void run() {} }`) is a first-class instance. It gets a synthesized
+// javac-style Class node (`Worker$1`), owns its methods (re-keyed
+// `Worker$1.run`), and the enclosing-owner walk attributes to it instead
+// of the lexically enclosing named class. `(object_creation_expression
+// (class_body) @scope.class)` (from #2545) provides the scope boundary;
+// the #2550 instance model provides identity + ownership.
+// ---------------------------------------------------------------------------
+
+describe('Java anonymous-class instance identity (#2550)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'java-anonymous-class-scope'), () => {});
+  }, 60000);
+
+  it('emits a Class node Worker$1 for the anonymous Runnable body', () => {
+    expect(getNodesByLabel(result, 'Class')).toContain('Worker$1');
+  });
+
+  it('re-keys the anonymous run method to Worker$1.run and owns it via HAS_METHOD', () => {
+    const hasMethod = getRelationships(result, 'HAS_METHOD');
+    const owned = hasMethod.find(
+      (e) =>
+        e.rel.sourceId === 'Class:src/Worker.java:Worker$1' &&
+        e.rel.targetId === 'Method:src/Worker.java:Worker$1.run#0',
+    );
+    expect(owned).toBeDefined();
+  });
+
+  it('still extracts the anonymous Runnable method as a Method', () => {
+    expect(getNodesByLabel(result, 'Method')).toContain('run');
+  });
+
+  it('resolves handler.run() to Worker$1.run via the receiver path, not the free-call leak', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const explicit = calls.find((c) => c.source === 'makeHandler' && c.target === 'run');
+    expect(explicit).toBeDefined();
+    expect(explicit!.rel.targetId).toBe('Method:src/Worker.java:Worker$1.run#0');
+    expect(explicit!.rel.reason).not.toBe('local-call');
+  });
+
+  it("does not resolve process()'s bare run() to the anonymous class's method (any reason)", () => {
+    const calls = getRelationships(result, 'CALLS');
+    const leaked = calls.find((c) => c.source === 'process' && c.target === 'run');
+    expect(leaked).toBeUndefined();
+  });
+});
+
+describe('Java instance-ownership free-call gate (#2550)', () => {
+  it("does not resolve a bare call to an unrelated same-file class's method", async () => {
+    const result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'java-unrelated-method-collision'),
+      () => {},
+    );
+    const calls = getRelationships(result, 'CALLS');
+    const leaked = calls.find((c) => c.source === 'work' && c.target === 'helper');
+    expect(leaked).toBeUndefined();
+  }, 60000);
+
+  it("still resolves a class's own bare call to its own method (implicit this)", async () => {
+    const result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'java-builtin-name-legit-dispatch'),
+      () => {},
+    );
+    const calls = getRelationships(result, 'CALLS');
+    const legitimate = calls.find((c) => c.source === 'trigger' && c.target === 'run');
+    expect(legitimate).toBeDefined();
+    expect(legitimate!.targetFilePath).toBe('src/RealTask.java');
+  }, 60000);
+
+  it('still resolves a bare inherited call through the MRO arm', async () => {
+    const result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'java-inherited-bare-call'),
+      () => {},
+    );
+    const calls = getRelationships(result, 'CALLS');
+    const inherited = calls.find((c) => c.source === 'go' && c.target === 'log');
+    expect(inherited).toBeDefined();
+  }, 60000);
+
+  it('numbers multiple anonymous bodies in source order (Multi$1, Multi$2)', async () => {
+    const result = await runPipelineFromRepo(path.join(FIXTURES, 'java-anon-numbering'), () => {});
+    const classes = getNodesByLabel(result, 'Class');
+    expect(classes).toContain('Multi$1');
+    expect(classes).toContain('Multi$2');
+  }, 60000);
+});
+
+// ---------------------------------------------------------------------------
+// #2550 review hardening: (a) an anonymous class inherits from its
+// constructed type, so bare calls to inherited methods INSIDE the
+// anonymous body pass the ownership gate's MRO arm (review caught the
+// gate suppressing that true edge — the anon had no EXTENDS edge and an
+// empty MRO); (b) enum/interface/record hosts synthesize names too, and
+// a hostless anonymous body must NOT materialize a phantom Class node
+// named after the constructed type.
+// ---------------------------------------------------------------------------
+
+describe('Java anonymous-class inheritance and host coverage (#2550 review)', () => {
+  it('anon extending a same-file class keeps bare inherited calls and gains an EXTENDS edge', async () => {
+    const result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'java-anon-extends-base'),
+      () => {},
+    );
+    const extends_ = getRelationships(result, 'EXTENDS');
+    const anonExtends = extends_.find(
+      (e) => e.rel.sourceId === 'Class:src/App.java:AnonExtHost$1' && e.target === 'Base',
+    );
+    expect(anonExtends).toBeDefined();
+
+    const calls = getRelationships(result, 'CALLS');
+    const inherited = calls.find((c) => c.source === 'extra' && c.target === 'work');
+    expect(inherited).toBeDefined();
+    expect(inherited!.rel.targetId).toBe('Method:src/App.java:Base.work#0');
+  }, 60000);
+
+  it('enum-hosted anonymous body is modeled (EnumHost$1) with no phantom constructed-type Class', async () => {
+    const result = await runPipelineFromRepo(path.join(FIXTURES, 'java-anon-enum-host'), () => {});
+    const classes = getNodesByLabel(result, 'Class');
+    expect(classes).toContain('EnumHost$1');
+    expect(classes).not.toContain('Runnable');
+
+    const calls = getRelationships(result, 'CALLS');
+    const own = calls.find((c) => c.source === 'caller' && c.target === 'run');
+    expect(own).toBeDefined();
+    expect(own!.rel.targetId).toBe('Method:src/EnumHost.java:EnumHost.run#0');
+  }, 60000);
+});
+
+// ---------------------------------------------------------------------------
+// #2555: enum constant bodies (`enum E { A { ... } }`) are javac's other
+// anonymous-class shape (`E$N`). They join the instance model: synthesized
+// Class node, re-keyed owned methods, EXTENDS to the host enum (so bare
+// calls from the body to enum helpers pass the ownership gate's MRO arm),
+// and the same-file bare-call leak closed. Naming follows JLS 13.1
+// immediate-host binary names (`EnumWrap$Mode$1` for nested hosts).
+// ---------------------------------------------------------------------------
+
+describe('Java enum constant bodies (#2555)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'java-enum-constant-body'), () => {});
+  }, 60000);
+
+  it('models constant bodies as EnumConst$1 / EnumConst$2 with owned re-keyed methods', () => {
+    const classes = getNodesByLabel(result, 'Class');
+    expect(classes).toContain('EnumConst$1');
+    expect(classes).toContain('EnumConst$2');
+    expect(classes).not.toContain('A');
+
+    const hasMethod = getRelationships(result, 'HAS_METHOD');
+    const owned = hasMethod.find(
+      (e) =>
+        e.rel.sourceId === 'Class:src/EnumConst.java:EnumConst$1' &&
+        e.rel.targetId === 'Method:src/EnumConst.java:EnumConst$1.hook#0',
+    );
+    expect(owned).toBeDefined();
+  });
+
+  it('emits EXTENDS from each constant body to the host enum', () => {
+    const extends_ = getRelationships(result, 'EXTENDS');
+    const first = extends_.find(
+      (e) => e.rel.sourceId === 'Class:src/EnumConst.java:EnumConst$1' && e.target === 'EnumConst',
+    );
+    expect(first).toBeDefined();
+  });
+
+  it("resolves a constant body's bare call to an enum helper via the MRO arm", () => {
+    const calls = getRelationships(result, 'CALLS');
+    const inherited = calls.find((c) => c.source === 'hook' && c.target === 'log');
+    expect(inherited).toBeDefined();
+    expect(inherited!.rel.targetId).toBe('Method:src/EnumConst.java:EnumConst.log#0');
+  });
+
+  it("does not resolve an unrelated same-file class's bare hook() to any constant body", () => {
+    const calls = getRelationships(result, 'CALLS');
+    const leaked = calls.find((c) => c.source === 'caller' && c.target === 'hook');
+    expect(leaked).toBeUndefined();
+  });
+
+  it('names a nested-host anonymous body with the JLS 13.1 immediate-host chain', async () => {
+    const nested = await runPipelineFromRepo(
+      path.join(FIXTURES, 'java-nested-host-naming'),
+      () => {},
+    );
+    const classes = getNodesByLabel(nested, 'Class');
+    expect(classes).toContain('EnumWrap$Mode$1');
+    expect(classes).not.toContain('EnumWrap$1');
+  }, 60000);
+
+  it('chains anonymous enclosing types per JLS 13.1: anon inside anon is NestHost$1$1', async () => {
+    const result = await runPipelineFromRepo(path.join(FIXTURES, 'java-anon-in-anon'), () => {});
+    const classes = getNodesByLabel(result, 'Class');
+    expect(classes).toContain('NestHost$1');
+    expect(classes).toContain('NestHost$1$1');
+    expect(classes).not.toContain('NestHost$2');
+  }, 60000);
+
+  it('chains through enum constant bodies: anon inside a constant body is N$1$1', async () => {
+    const result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'java-anon-in-constant-body'),
+      () => {},
+    );
+    const classes = getNodesByLabel(result, 'Class');
+    expect(classes).toContain('N$1');
+    expect(classes).toContain('N$1$1');
+    expect(classes).not.toContain('N$2');
+
+    const hasMethod = getRelationships(result, 'HAS_METHOD');
+    const owned = hasMethod.find(
+      (e) =>
+        e.rel.sourceId === 'Class:src/N.java:N$1$1' &&
+        e.rel.targetId === 'Method:src/N.java:N$1$1.run#0',
+    );
+    expect(owned).toBeDefined();
+  }, 60000);
+
+  it('names a bodied constant in a NESTED enum with the full host chain (EnumWrap2$Mode$1)', async () => {
+    const result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'java-nested-enum-constant'),
+      () => {},
+    );
+    const classes = getNodesByLabel(result, 'Class');
+    expect(classes).toContain('EnumWrap2$Mode$1');
+    expect(classes).not.toContain('EnumWrap2$1');
+  }, 60000);
+
+  it('attributes same-named methods across sibling constant bodies to their own classes', async () => {
+    // Review-caught collapse: the scope-side qualifier chained the
+    // synthesized class def to `M3.M3$2`, desyncing from the structure
+    // node id, so both bodies' `hook` calls attributed to M3$1's node
+    // via the simple-name fallback. Each body's caller must be its own.
+    const result = await runPipelineFromRepo(
+      path.join(FIXTURES, 'java-enum-constant-same-name'),
+      () => {},
+    );
+    const calls = getRelationships(result, 'CALLS');
+    const fromA = calls.find(
+      (c) =>
+        c.rel.sourceId === 'Method:src/M3.java:M3$1.hook#0' &&
+        c.rel.targetId === 'Method:src/M3.java:M3.base#0',
+    );
+    const fromC = calls.find(
+      (c) =>
+        c.rel.sourceId === 'Method:src/M3.java:M3$2.hook#0' &&
+        c.rel.targetId === 'Method:src/M3.java:M3.log#0',
+    );
+    expect(fromA).toBeDefined();
+    expect(fromC).toBeDefined();
+    const misattributed = calls.find(
+      (c) =>
+        c.rel.sourceId === 'Method:src/M3.java:M3$1.hook#0' &&
+        c.rel.targetId === 'Method:src/M3.java:M3.log#0',
+    );
+    expect(misattributed).toBeUndefined();
+  }, 60000);
+});

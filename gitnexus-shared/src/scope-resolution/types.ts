@@ -33,14 +33,27 @@ export type ScopeId = string;
 /** Stable symbol-definition identifier (graph nodeId). */
 export type DefId = string;
 
-/** Kinds of lexical scope a `Scope` node can represent. */
+/**
+ * Kinds of lexical scope a `Scope` node can represent.
+ *
+ * `Object` is a hoist boundary ONLY: an object/record literal body
+ * (TS/JS `{...}`, Kotlin anonymous `object {...}`). Members are
+ * reachable via property access, never as bare identifiers, so
+ * scope-chain walkers (`scope/walkers.ts`) must skip an `Object`
+ * scope's own bindings while still traversing past it to the parent
+ * (#2545/#2551) -- unlike `Block`, where a nested closure legitimately
+ * DOES see a sibling `let`/`const` from an enclosing `if`/`for`/`while`,
+ * a nested closure inside an object literal must NOT see a sibling
+ * property's name as a free identifier.
+ */
 export type ScopeKind =
   | 'Module' // file root
   | 'Namespace' // C++ namespace, C# namespace, Kotlin package-object, Rust mod
   | 'Class' // class/struct/trait/interface body
   | 'Function' // function/method/closure/lambda body
   | 'Block' // { ... }, if-body, for-body, with-body, match arms
-  | 'Expression'; // comprehensions, for-init, pattern bindings, lambda param lists
+  | 'Expression' // comprehensions, for-init, pattern bindings, lambda param lists
+  | 'Object'; // object/record literal body -- see doc comment above
 
 // ─── Range + Capture (parser-agnostic) ──────────────────────────────────────
 
@@ -453,7 +466,15 @@ export interface Reference {
   readonly toDef: DefId;
   /** Location of the reference in source. */
   readonly atRange: Range;
-  readonly kind: 'call' | 'read' | 'write' | 'type-reference' | 'inherits' | 'import-use' | 'macro';
+  readonly kind:
+    | 'call'
+    | 'read'
+    | 'write'
+    | 'type-reference'
+    | 'inherits'
+    | 'import-use'
+    | 'value-ref'
+    | 'macro';
   readonly confidence: number;
   readonly evidence: readonly ResolutionEvidence[];
 }

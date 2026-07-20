@@ -414,7 +414,8 @@ export async function runChunkedParseAndResolve(
   const skippedByLang = new Map<string, number>();
   for (const f of scannedFiles) {
     const lang = getLanguageFromFilename(f.path);
-    if (lang && !isLanguageAvailable(lang)) {
+    const provider = lang === null ? undefined : getProvider(lang);
+    if (lang && provider?.parseStrategy !== 'standalone' && !isLanguageAvailable(lang)) {
       skippedByLang.set(lang, (skippedByLang.get(lang) || 0) + 1);
     }
   }

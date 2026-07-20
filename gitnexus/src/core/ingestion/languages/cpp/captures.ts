@@ -14,6 +14,7 @@ import {
   classifyCppParameterType,
   computeCppDeclarationArity,
   computeCppCallArity,
+  normalizeCppParamType,
 } from './arity-metadata.js';
 import { markCppAnonymousNamespaceRange, markFileLocal } from './file-local-linkage.js';
 import { markCppDependentBase, markCppDependentPackBase } from './two-phase-lookup.js';
@@ -23,6 +24,111 @@ import { extractCppTemplateConstraints } from './constraint-extractor.js';
 import { captureCppMemberLookupFacts } from './member-lookup.js';
 import { CPP_BRACED_INIT_TYPE_PREFIX } from './conversion-rank.js';
 import { logger } from '../../../logger.js';
+import {
+  synthesizeCallableFlowCaptures,
+  type CallableCaptureSignature,
+} from '../../utils/callable-flow-captures.js';
+
+const CPP_CALLABLE_CAPTURE_OPTIONS = {
+  functionNodeTypes: new Set(['function_definition', 'lambda_expression']),
+  callNodeTypes: new Set(['call_expression']),
+  parameterListNodeTypes: new Set(['parameter_list', 'argument_list']),
+  parameterNodeTypes: new Set(['parameter_declaration', 'optional_parameter_declaration']),
+  bindingNodeTypes: new Set(['init_declarator']),
+  assignmentNodeTypes: new Set(['assignment_expression']),
+  identifierNodeTypes: new Set([
+    'identifier',
+    'field_identifier',
+    'type_identifier',
+    'namespace_identifier',
+  ]),
+  callableSignatureDeclarationNodeTypes: new Set([
+    'declaration',
+    'field_declaration',
+    'parameter_declaration',
+    'optional_parameter_declaration',
+  ]),
+  callableReferenceNodeTypes: new Set(['qualified_identifier']),
+  emitCanonicalInvokeReference: true,
+  memberPointerOperators: new Set(['.*', '->*']),
+  memberPointerParts: (node: SyntaxNode) => cppRecoveredMemberPointerParts(node),
+  parameterPassingMode: (parameter: SyntaxNode) => cppOutermostPassingMode(parameter),
+  isTrueReferenceBinding: (_container: SyntaxNode, destination: SyntaxNode) =>
+    cppContainsNodeType(destination, 'reference_declarator'),
+  expectedSignature: (container: SyntaxNode, destination: SyntaxNode) =>
+    cppFunctionDeclaratorSignature(destination) ?? cppFunctionDeclaratorSignature(container),
+  normalizeQualifiedName: (raw: string) => raw.replaceAll('::', '.'),
+} as const;
+
+/**
+ * Passing mode from the parameter's OUTERMOST declarator chain only. A deep
+ * subtree scan inverted copy vs alias: `void reg(void (*cb)(int& out))` has a
+ * `reference_declarator` inside the nested parameter list, but `cb` itself is
+ * a by-value pointer copy — classifying it 'reference' made the solver
+ * back-propagate formal targets into every caller's argument cell (#2522
+ * review, M5). The chain walk never descends into nested parameter lists.
+ */
+function cppOutermostPassingMode(parameter: SyntaxNode): 'reference' | 'pointer' | 'value' {
+  let sawReference = false;
+  let sawPointer = false;
+  let node: SyntaxNode | null = parameter.childForFieldName('declarator') ?? null;
+  const visited = new Set<number>();
+  while (node !== null && !visited.has(node.id)) {
+    visited.add(node.id);
+    if (node.type === 'reference_declarator' || node.type === 'abstract_reference_declarator') {
+      // A reference ANYWHERE on the chain aliases the caller's storage —
+      // `void (*&cb)(int)` is a reference to pointer, i.e. an alias.
+      sawReference = true;
+    } else if (node.type === 'pointer_declarator' || node.type === 'abstract_pointer_declarator') {
+      sawPointer = true;
+    }
+    const next: SyntaxNode | null = node.childForFieldName('declarator');
+    if (next !== null) {
+      node = next;
+      continue;
+    }
+    if (node.type === 'parenthesized_declarator') {
+      node =
+        node.namedChildren.find(
+          (child): child is SyntaxNode => child !== null && child.type.includes('declarator'),
+        ) ?? null;
+      continue;
+    }
+    break;
+  }
+  return sawReference ? 'reference' : sawPointer ? 'pointer' : 'value';
+}
+
+function cppRecoveredMemberPointerParts(
+  node: SyntaxNode,
+): { receiver: SyntaxNode; member: SyntaxNode; operator: string } | undefined {
+  if (!node.type.includes('parenthesized')) return undefined;
+  const recovered = node.namedChildren.find(
+    (child): child is SyntaxNode => child !== null && child.type === 'ERROR',
+  );
+  if (recovered === undefined) return undefined;
+  const operator = recovered.children.find((child) => child !== null && child.text === '->*');
+  const sibling = node.namedChildren.find(
+    (child): child is SyntaxNode => child !== null && child.id !== recovered.id,
+  );
+  const errIdentifier = recovered.namedChildren.find(
+    (child): child is SyntaxNode => child !== null,
+  );
+  if (operator === undefined || sibling === undefined || errIdentifier === undefined) {
+    return undefined;
+  }
+  // tree-sitter's error recovery groups `(obj->*ptr)` two ways depending on
+  // recovery cost (identifier lengths!): either `[identifier, ERROR "->*m"]`
+  // or `[ERROR "obj->*", identifier]`. Disambiguate by token order INSIDE the
+  // ERROR: an identifier BEFORE `->*` is the receiver (the sibling is the
+  // pointer/member); an identifier AFTER `->*` is the member (the sibling is
+  // the receiver). Assuming one fixed grouping swapped the roles and silently
+  // dropped the call site (#2522 review, H2).
+  if (errIdentifier.startIndex < operator.startIndex) {
+    return { receiver: errIdentifier, member: sibling, operator: operator.text };
+  }
+  return { receiver: sibling, member: errIdentifier, operator: operator.text };
+}
 
 /**
  * Per-file wall-clock budget for the capture-emit loop (#2432). A worker
@@ -519,7 +625,132 @@ export function emitCppScopeCaptures(
   detectCppDependentBases(tree.rootNode, filePath);
   captureCppMemberLookupFacts(tree.rootNode, filePath);
 
+  out.push(...synthesizeCallableFlowCaptures(tree.rootNode, CPP_CALLABLE_CAPTURE_OPTIONS));
   return out;
+}
+
+function cppFunctionDeclaratorSignature(node: SyntaxNode): CallableCaptureSignature | undefined {
+  const declarator = cppFindDescendantOfType(node, 'function_declarator');
+  const parameters = declarator?.childForFieldName('parameters');
+  if (parameters === null || parameters === undefined) {
+    return recoverCppMemberPointerSignature(node.text);
+  }
+  const parameterNodes = parameters.namedChildren.filter(
+    (child): child is SyntaxNode => child !== null && child.type.includes('parameter_declaration'),
+  );
+  const hasEllipsis =
+    parameters.children.some(
+      (child) => child.type === '...' || (!child.isNamed && child.text === '...'),
+    ) || parameterNodes.some((parameter) => parameter.type === 'variadic_parameter_declaration');
+  const isVoidOnly =
+    parameterNodes.length === 1 &&
+    parameterNodes[0]!.namedChildCount === 1 &&
+    parameterNodes[0]!.firstNamedChild?.text === 'void';
+  if (isVoidOnly) {
+    return { parameterCount: 0, parameterTypes: [], parameterTypeClasses: [] };
+  }
+  const parameterTypes: string[] = [];
+  const parameterTypeClasses: ParameterTypeClass[] = [];
+  for (const parameter of parameterNodes) {
+    if (parameter.type === 'variadic_parameter_declaration') {
+      parameterTypes.push('...');
+      parameterTypeClasses.push({
+        base: '...',
+        cv: 'unknown',
+        indirection: 'unknown',
+        pointerDepth: 0,
+      });
+      continue;
+    }
+    const rawType = parameter.childForFieldName('type')?.text ?? 'unknown';
+    const declaratorText = parameter.childForFieldName('declarator')?.text;
+    parameterTypes.push(normalizeCppParamType(rawType));
+    parameterTypeClasses.push(classifyCppParameterType(rawType, declaratorText, parameter.text));
+  }
+  if (hasEllipsis && !parameterTypes.includes('...')) {
+    parameterTypes.push('...');
+    parameterTypeClasses.push({
+      base: '...',
+      cv: 'unknown',
+      indirection: 'unknown',
+      pointerDepth: 0,
+    });
+  }
+  return {
+    ...(hasEllipsis ? {} : { parameterCount: parameterNodes.length }),
+    parameterTypes,
+    parameterTypeClasses,
+    isConst: /\)\s*const(?:\s|$)/.test(declarator.text),
+  };
+}
+
+/**
+ * tree-sitter-cpp parses a non-const pointer-to-member variable such as
+ * `void (Base::*member)()` as nested call expressions (while the cv-qualified
+ * twin is a declaration). Recover the callable shape from the declarator text
+ * so `const`/non-`const` overload sets remain distinguishable.
+ */
+function recoverCppMemberPointerSignature(text: string): CallableCaptureSignature | undefined {
+  const match = text.match(/\(\s*[^()]*::\s*\*\s*[A-Za-z_]\w*\s*\)\s*\(([^()]*)\)\s*(const\b)?/);
+  if (match === null) return undefined;
+  const rawParameters = match[1]!.trim();
+  const parameterCount =
+    rawParameters === '' || rawParameters === 'void'
+      ? 0
+      : splitTopLevelCppParameters(rawParameters).length;
+  return { parameterCount, isConst: match[2] !== undefined };
+}
+
+function splitTopLevelCppParameters(text: string): string[] {
+  const out: string[] = [];
+  let start = 0;
+  let angleDepth = 0;
+  let parenDepth = 0;
+  let bracketDepth = 0;
+  for (let index = 0; index < text.length; index++) {
+    switch (text[index]) {
+      case '<':
+        angleDepth++;
+        break;
+      case '>':
+        angleDepth = Math.max(0, angleDepth - 1);
+        break;
+      case '(':
+        parenDepth++;
+        break;
+      case ')':
+        parenDepth = Math.max(0, parenDepth - 1);
+        break;
+      case '[':
+        bracketDepth++;
+        break;
+      case ']':
+        bracketDepth = Math.max(0, bracketDepth - 1);
+        break;
+      case ',':
+        if (angleDepth === 0 && parenDepth === 0 && bracketDepth === 0) {
+          out.push(text.slice(start, index).trim());
+          start = index + 1;
+        }
+        break;
+    }
+  }
+  out.push(text.slice(start).trim());
+  return out.filter((parameter) => parameter.length > 0);
+}
+
+function cppContainsNodeType(root: SyntaxNode, type: string): boolean {
+  return cppFindDescendantOfType(root, type) !== null;
+}
+
+function cppFindDescendantOfType(root: SyntaxNode, type: string): SyntaxNode | null {
+  const stack: SyntaxNode[] = [root];
+  while (stack.length > 0) {
+    const node = stack.pop()!;
+    if (node.type === type) return node;
+    for (const child of node.namedChildren) if (child !== null) stack.push(child);
+  }
+  return null;
 }
 
 function extractCppDeclarationReturnType(fnNode: SyntaxNode): string | undefined {

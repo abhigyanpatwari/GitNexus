@@ -527,3 +527,36 @@ describe('emitCppScopeCaptures — file-local linkage', () => {
     expect(isFileLocal('test.cpp', 'helper')).toBe(false);
   });
 });
+
+describe('emitCppScopeCaptures — callable-flow passing modes (#2522 review, M5)', () => {
+  function modesFor(src: string): Record<string, string | undefined> {
+    const out: Record<string, string | undefined> = {};
+    for (const m of emitCppScopeCaptures(src, 'modes.cpp')) {
+      const binding = m['@callable-flow.binding']?.text;
+      if (m['@callable-flow.formal'] === undefined || binding === undefined) continue;
+      out[`${m['@callable-flow.owner']?.text}.${binding}`] = m['@callable-flow.passing-mode']?.text;
+    }
+    return out;
+  }
+
+  it('classifies by the outermost declarator chain, never nested parameter lists', () => {
+    const modes = modesFor(
+      [
+        'void reg(void (*cb)(int& out)) {}',
+        'void take(int& v) {}',
+        'void raw(int* p) {}',
+        'void val(int v) {}',
+        'void refptr(void (*&cb)(int)) {}',
+      ].join('\n'),
+    );
+    expect(modes).toMatchObject({
+      // by-value pointer copy — the nested `int&` must not make it an alias
+      'reg.cb': 'pointer',
+      'take.v': 'reference',
+      'raw.p': 'pointer',
+      'val.v': 'value',
+      // reference-to-pointer IS an alias
+      'refptr.cb': 'reference',
+    });
+  });
+});

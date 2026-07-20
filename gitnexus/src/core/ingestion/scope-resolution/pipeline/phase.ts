@@ -47,6 +47,7 @@ import type { CallSummary } from '../../taint/call-summary-model.js';
 import { buildFunctionNodeIndex } from '../../taint/summary-harvest-driver.js';
 import { PdgEmitSink, type PdgEmitManifest } from '../../../lbug/pdg-emit-sink.js';
 import { resolveNativeSafeStorageDir } from '../../../lbug/lbug-config.js';
+import type { ScopeResolver } from '../contract/scope-resolver.js';
 
 import { logger } from '../../../logger.js';
 export interface ScopeResolutionOutput {
@@ -103,6 +104,25 @@ const NOOP_OUTPUT: ScopeResolutionOutput = Object.freeze({
   callSummaries: [],
 });
 
+/** Select source files that must be materialized for one resolver pass. */
+export function selectScopeSourcePathsToRead(
+  provider: ScopeResolver,
+  primaryFilePaths: readonly string[],
+  preExtractedByPath: { readonly has: (filePath: string) => boolean },
+): string[] {
+  const hasPostExtractHooks =
+    provider.populateWorkspaceOwners !== undefined ||
+    provider.populateNamespaceSiblings !== undefined ||
+    provider.populateRangeBindings !== undefined ||
+    provider.emitPostResolutionEdges !== undefined;
+  const needsAllSourceText =
+    hasPostExtractHooks && provider.postExtractSourceTextPolicy !== 'uncached-files';
+
+  return needsAllSourceText
+    ? [...primaryFilePaths]
+    : primaryFilePaths.filter((filePath) => !preExtractedByPath.has(filePath));
+}
+
 export const scopeResolutionPhase: PipelinePhase<ScopeResolutionOutput> = {
   name: 'scopeResolution',
   // Depends on `parse` because emit-references attaches edges to
@@ -152,11 +172,10 @@ export const scopeResolutionPhase: PipelinePhase<ScopeResolutionOutput> = {
     // extract per file inside runScopeResolution.
     const parsedFileStorePath = ctx.options?.parseCache?.storagePath;
 
-    // Drop pre-extracted entries for standalone providers — these
-    // languages are skipped by the canonical guard below (line 164)
-    // and never consume preExtractedByPath, so holding onto their
-    // entries leaks memory until the cleanup loop at 262-264 which
-    // also never runs for skipped providers.
+    // Standalone providers are re-extracted from source on the main thread;
+    // workers intentionally do not serialize ParsedFile artifacts for them.
+    // Drop any stale/cache-sourced entry defensively so provider-owned regex
+    // capture logic is always the source of truth for the current content.
     for (const [path] of preExtractedByPath) {
       const lang = getLanguageFromFilename(path);
       if (lang === null) continue;
@@ -205,15 +224,15 @@ export const scopeResolutionPhase: PipelinePhase<ScopeResolutionOutput> = {
     for (const f of scannedFiles) {
       const fileLang = getLanguageFromFilename(f.path);
       if (fileLang === null) continue;
-      // Skip files whose grammar isn't available (optional grammars like
-      // swift/dart/kotlin on an install where the binding is absent or the
-      // user set GITNEXUS_SKIP_OPTIONAL_GRAMMARS). The parse phase already
-      // excluded and warned about these (parse-impl.ts); without this guard the
-      // file would fall through to the main-thread re-extract in run.ts and
-      // throw "Unsupported language" (caught, but noisy, and it needlessly
-      // loads the grammar on the main thread). `isLanguageAvailable` is
-      // memoized, so this stays O(1) per language. (#2091, #2093)
-      if (!isLanguageAvailable(fileLang)) continue;
+      // Tree-sitter providers require an available grammar. Standalone regex
+      // providers deliberately have none and re-extract on the main thread.
+      const resolver = SCOPE_RESOLVERS.get(fileLang);
+      if (
+        resolver?.languageProvider.parseStrategy !== 'standalone' &&
+        !isLanguageAvailable(fileLang)
+      ) {
+        continue;
+      }
       let bucket = filesByLang.get(fileLang);
       if (bucket === undefined) {
         bucket = [];
@@ -304,14 +323,6 @@ export const scopeResolutionPhase: PipelinePhase<ScopeResolutionOutput> = {
     let pdgSinkSettled = false;
     try {
       for (const [lang, provider] of SCOPE_RESOLVERS) {
-        // Standalone providers (COBOL, JCL) don't emit graph edges yet
-        // through the scope-resolution path. This is the canonical guard:
-        // runScopeResolution is never called for standalone providers, which
-        // keeps cobolPhase as the sole IMPORTS edge producer. Keep this guard
-        // in sync with any additional standalone providers added to
-        // SCOPE_RESOLVERS.
-        if (provider.languageProvider.parseStrategy === 'standalone') continue;
-
         const primaryLangFiles = filesByLang.get(lang) ?? [];
         if (primaryLangFiles.length === 0) continue;
         const primaryFilePaths = primaryLangFiles.map((f) => f.path);
@@ -347,18 +358,6 @@ export const scopeResolutionPhase: PipelinePhase<ScopeResolutionOutput> = {
           for (const [fp, pf] of fromDisk) preExtractedByPath.set(fp, pf);
         };
 
-        // A provider that feeds source text into a post-extract hook
-        // (populateWorkspaceOwners / populateNamespaceSiblings /
-        // populateRangeBindings / emitPostResolutionEdges) needs content for ALL
-        // its files; one without those hooks only needs content for files the
-        // store does NOT cover (fresh-extract fallback). Keep this in sync with
-        // the getFileContents() call-sites in run.ts.
-        const providerNeedsAllContent =
-          provider.populateWorkspaceOwners !== undefined ||
-          provider.populateNamespaceSiblings !== undefined ||
-          provider.populateRangeBindings !== undefined ||
-          provider.emitPostResolutionEdges !== undefined;
-
         let scopeFilePaths: Set<string>;
         let contents: Map<string, string>;
         if (provider.collectScopeContextPaths !== undefined) {
@@ -380,9 +379,11 @@ export const scopeResolutionPhase: PipelinePhase<ScopeResolutionOutput> = {
         } else {
           scopeFilePaths = new Set(primaryFilePaths);
           await loadStoreFor(scopeFilePaths);
-          const pathsToRead = providerNeedsAllContent
-            ? primaryFilePaths
-            : primaryFilePaths.filter((p) => !preExtractedByPath.has(p));
+          const pathsToRead = selectScopeSourcePathsToRead(
+            provider,
+            primaryFilePaths,
+            preExtractedByPath,
+          );
           contents = await readFileContents(ctx.repoPath, pathsToRead);
         }
         const filePaths = [...scopeFilePaths];
@@ -393,9 +394,9 @@ export const scopeResolutionPhase: PipelinePhase<ScopeResolutionOutput> = {
             files.push({ path: fp, content });
           } else if (preExtractedByPath.has(fp)) {
             // Store covers extraction for this file and we deliberately skipped
-            // reading its source; the empty string is never consumed (the
-            // extract loop uses the pre-extracted ParsedFile and this provider
-            // has no content hook).
+            // reading its source; extraction uses the pre-extracted ParsedFile,
+            // and the provider's source-text policy guarantees its hooks can
+            // tolerate empty content for cached files.
             files.push({ path: fp, content: '' });
           }
           // else: uncovered AND unreadable → skip (unchanged from prior behavior).

@@ -40,6 +40,7 @@ import {
   findAllCallableBindingsInScope,
   findCallableBindingInScope,
   findCallableBindingsAndAdlBlocker,
+  findEnclosingClassDef,
   resolveInheritanceBaseInScope,
 } from '../scope/walkers.js';
 import {
@@ -88,11 +89,23 @@ export function emitFreeCallFallback(
      *  fail at the call site. Three-valued; `'unknown'` keeps the
      *  candidate (monotonicity). */
     readonly constraintCompatibility?: ScopeResolver['constraintCompatibility'];
+    /** Platform/language built-in names (e.g. `fetch`, `setTimeout`) that
+     *  are never real repository declarations. Gates the finalize-bucket
+     *  guard below (#2545) -- see `hasGenuineLexicalBinding`. */
+    readonly isBuiltInName?: (name: string) => boolean;
+    /** Instance-ownership gate (#2550): a free call may resolve to a
+     *  `Method` only when the caller's enclosing class chain (self + MRO)
+     *  contains the method's owner. See
+     *  `ScopeResolver.freeCallsRequireInstanceOwnership`. */
+    readonly freeCallsRequireInstanceOwnership?: boolean;
     readonly recordResolutionOutcome?: ResolutionOutcomeRecorder;
-    /** Resolved-callee-id capture sink (#2227 U2). Threaded in only under
-     *  `--pdg`; `undefined` ⇒ zero overhead, byte-identity (R4). Captured at
-     *  the CALLS emit below BEFORE the collapsed `seen` dedup (KTD6) so
-     *  same-target multi-line calls are still recorded per site. */
+    /** Call sites owned by a later precise pass (for example callable-value-flow). */
+    readonly skipSites?: ReadonlySet<string>;
+    /** Resolved-callee-id capture sink (#2227 U2). Threaded in under `--pdg`
+     *  OR for callable-flow's direct-target index (#2437, position-filtered);
+     *  `undefined` ⇒ zero overhead, byte-identity (R4). Captured at the CALLS
+     *  emit below BEFORE the collapsed `seen` dedup (KTD6) so same-target
+     *  multi-line calls are still recorded per site. */
     readonly calleeIdSink?: CalleeIdSink;
   } = {},
 ): number {
@@ -123,6 +136,7 @@ export function emitFreeCallFallback(
     for (const site of parsed.referenceSites) {
       if (site.kind !== 'call') continue;
       if (site.explicitReceiver !== undefined) continue;
+      if (options.skipSites?.has(siteKey(parsed.filePath, site)) === true) continue;
 
       // Constructor form (`new User(...)`): resolve the class, then
       // emit CALLS to its explicit Constructor def (when present) or
@@ -189,6 +203,77 @@ export function emitFreeCallFallback(
           // available AND the binding scope contains multiple overloads,
           // refine with narrowOverloadCandidates (#1578).
           fnDef = findCallableBindingInScope(site.inScope, site.name, scopes);
+          if (
+            fnDef !== undefined &&
+            options.isBuiltInName?.(site.name) === true &&
+            fnDef.filePath === parsed.filePath &&
+            !hasGenuineLexicalBinding(site.inScope, site.name, scopes)
+          ) {
+            // A platform/language built-in (e.g. `fetch`, `setTimeout`)
+            // with no binding reachable via the TRUE lexical scope chain
+            // (Scope.bindings only) -- the match came solely from
+            // finalize's per-file "local + imports + wildcards" bucket,
+            // which flattens every declaration in the file onto the
+            // module scope regardless of true nesting depth
+            // (gitnexus-shared's `materializeBindings`). That flattening
+            // is correct for its purpose (cross-file import targets) but
+            // over-matches same-file built-in-shadowing declarations that
+            // were never really module-scope-visible -- e.g. a Cloudflare
+            // Worker's `export default { fetch(req) {} }` handler (#2545).
+            // Leave the call unresolved rather than emit a false edge.
+            //
+            // `fnDef.filePath === parsed.filePath` is the load-bearing
+            // guard against a real regression: `materializeBindings`'s
+            // flat bucket is per-file, so the leak this guard targets is
+            // ALWAYS same-file. A cross-file match at this point can only
+            // come from a genuine import/namespace/workspace-FQN channel
+            // (the separate, gated `pickUniqueGlobalCallable` global
+            // fallback runs later and isn't what populated `fnDef` here)
+            // -- e.g. `import { fetch } from './fetch-polyfill'` must
+            // keep resolving. Without this check, that import silently
+            // stopped resolving (verified via a scratch probe fixture).
+            fnDef = undefined;
+          }
+          // Instance-ownership gate (#2550). Placement matters: after the
+          // scope-chain lookup, BEFORE overload narrowing -- a suppressed
+          // candidate must not participate in overload selection. The
+          // legitimate same-class bare call already resolved earlier via
+          // `pickImplicitThisOverload`; an inherited bare call passes the
+          // MRO arm here; what remains is the finalize-bucket leak (an
+          // unrelated same-file method matched by bare name).
+          //
+          // Same-file only (mirrors the #2545 guard's load-bearing
+          // condition): the `materializeBindings` bucket is per-file, so
+          // the leak is ALWAYS same-file. A cross-file Method match here
+          // came through a genuine import channel -- e.g. the arity-
+          // narrowing parity fixtures resolve a bare `writeAudit(u)` to
+          // an imported class's method, which must keep working
+          // (suppressing it broke `java.test.ts`'s arity-filtering suite,
+          // verified empirically).
+          if (
+            fnDef !== undefined &&
+            options.freeCallsRequireInstanceOwnership === true &&
+            fnDef.type === 'Method' &&
+            fnDef.ownerId !== undefined &&
+            fnDef.filePath === parsed.filePath
+          ) {
+            const enclosing = findEnclosingClassDef(site.inScope, scopes);
+            const ownerReachable =
+              enclosing !== undefined &&
+              (enclosing.nodeId === fnDef.ownerId ||
+                scopes.methodDispatch.mroFor(enclosing.nodeId).includes(fnDef.ownerId));
+            if (!ownerReachable) {
+              recordSuppressedOutcome(options.recordResolutionOutcome, {
+                phase: 'free-call-fallback',
+                filePath: parsed.filePath,
+                name: site.name,
+                range: site.atRange,
+                reason: 'free-call-instance-ownership',
+                candidates: [fnDef],
+              });
+              fnDef = undefined;
+            }
+          }
           if (fnDef !== undefined && options.conversionRankFn !== undefined) {
             const allCallables = findAllCallableBindingsInScope(site.inScope, site.name, scopes);
             if (allCallables.length > 1) {
@@ -873,4 +958,34 @@ export function pickImplicitThisOverload(
   });
   if (candidates.length !== 1) return undefined;
   return candidates[0];
+}
+
+/**
+ * True when `name` is bound somewhere along the TRUE lexical scope
+ * chain from `startScope` -- i.e. via `Scope.bindings` (the raw,
+ * nesting-aware per-scope map built during extraction), NOT via
+ * finalize's `indexes.bindings` module-scope bucket (which flattens
+ * every declaration in the file onto the module scope regardless of
+ * true nesting -- see `hasGenuineLexicalBinding`'s caller for why that
+ * distinction matters, #2545).
+ */
+function hasGenuineLexicalBinding(
+  startScope: ScopeId,
+  name: string,
+  scopes: ScopeResolutionIndexes,
+): boolean {
+  let currentId: ScopeId | null = startScope;
+  const visited = new Set<ScopeId>();
+  while (currentId !== null) {
+    if (visited.has(currentId)) return false;
+    visited.add(currentId);
+    const scope = scopes.scopeTree.getScope(currentId);
+    if (scope === undefined) return false;
+    // `Object` scopes (object/record literal bodies) are a hoist
+    // boundary only -- never a genuine lexical binding, not even to
+    // their own nested children (#2551, mirrors scope/walkers.ts).
+    if (scope.kind !== 'Object' && scope.bindings.get(name) !== undefined) return true;
+    currentId = scope.parent;
+  }
+  return false;
 }

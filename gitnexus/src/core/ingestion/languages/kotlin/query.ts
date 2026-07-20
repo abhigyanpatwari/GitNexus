@@ -16,6 +16,12 @@ const KOTLIN_SCOPE_QUERY = `
 (class_declaration) @scope.class
 (object_declaration) @scope.class
 (companion_object) @scope.class
+;; Anonymous object expression: \`val h = object { fun fetch() {} }\`
+;; (distinct from the named \`object_declaration\`/\`companion_object\` above).
+;; Without its own scope, a method's auto-hoist (scope-extractor.ts) has
+;; nowhere to stop and leaks the name past the literal into the enclosing
+;; scope -- the same failure mode fixed for TS/JS object literals (#2545).
+(object_literal) @scope.class
 (function_declaration) @scope.function
 
 ;; Secondary-constructor body scope (issue #1919 review CF1). A
@@ -91,6 +97,19 @@ const KOTLIN_SCOPE_QUERY = `
 
 (type_alias
   (type_identifier) @declaration.name) @declaration.type_alias
+
+;; Class annotation syntax is carried to post-resolution enrichment. Keeping
+;; this in the existing scope query avoids a second AST traversal. Eligibility
+;; filtering (class vs interface/enum/annotation class) happens in captures.ts.
+(class_declaration
+  (modifiers
+    [
+      (annotation
+        (user_type) @class-annotation.name)
+      (annotation
+        (constructor_invocation
+          (user_type) @class-annotation.name))
+    ])) @class-annotation.class
 
 ;; Declarations — functions / methods / properties
 (function_declaration

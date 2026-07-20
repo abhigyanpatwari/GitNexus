@@ -201,7 +201,9 @@ Language-agnostic scope-resolution resolver. This is the resolution path for eve
  ReferenceIndex
     │  emitReceiverBoundCalls  ── FIRST
     │  emitFreeCallFallback    ── THEN
-    │  emitReferencesViaLookup ── LAST (uses handledSites)
+    │  emitReferencesViaLookup ── uses handledSites + deferred-site skip set
+    │  emitPropertyDispatchCalls ── registration USES + conservative CALLS
+    │  emitCallableValueFlow   ── assigned/passed callable invocation CALLS
     │  emitImportEdges
     ▼
  KnowledgeGraph  (IMPORTS / CALLS / ACCESSES / INHERITS / USES)
@@ -209,6 +211,18 @@ Language-agnostic scope-resolution resolver. This is the resolution path for eve
 
 Orchestrator: `runScopeResolution(input, provider)` in `scope-resolution/pipeline/run.ts`.
 Pipeline phase: `scopeResolutionPhase` in `scope-resolution/pipeline/phase.ts` — iterates the registered `SCOPE_RESOLVERS` over the worker-serialized `ParsedFile`s. (Per-language `emitScopeCaptures` hooks may reuse a cached Tree via the orchestrator's `treeCache`, but in worker-pool runs that cache is empty — Trees can't cross MessageChannels — so they consume the pre-extracted `ParsedFile` instead; § Performance notes.)
+
+### Callable-value flow
+
+First-class callable values use a language-neutral inclusion analysis in `passes/callable-value-flow.ts`. Providers recognize their own syntax and emit JSON-safe `CallableFlowSite` facts (`seed`, `copy`, `alias`, `address`, `load`, `store`, `formal`, `argument`, and `invoke`) into `ParsedFile`; shared ingestion never branches on a language name. These always-on facts cross workers and the durable parse store, whose schema is bumped whenever their semantic shape changes.
+
+The emit stage defers only invocation sites proven to reference a flow cell. Ordinary receiver/free/reference passes still resolve direct callees first and record exact callee IDs by file/line/column. Property dispatch then runs before callable flow because a property-dispatched wrapper call can seed actual-to-formal propagation. The callable solver consumes those direct targets, propagates callable sets through lexical cells and formals, and emits `CALLS` at the real indirect invocation site with reason `callable-value-flow` (confidence 0.8 for a singleton, 0.7 for a bounded multi-target set).
+
+The solver is flow-insensitive but bounded: dependency-indexed work items rerun only when a cell they read changes; target/address sets cap at 32; a hostile fact graph has a finite work budget; overflow or budget exhaustion emits no partial `CALLS` and produces a structured warning. Lexical shadowing is function/block aware, invocation/constructor results are not reinterpreted as callable designators, and overload selection uses provider-supplied signature metadata. C/C++ additionally associate visible prototypes with unique definitions so actual-to-formal flow crosses translation units; the provider-owned `hasFileLocalCallableLinkage` hook prevents `static` declarations or definitions from leaking across files. C++ member-function pointers preserve parameter/cv shape, keep non-virtual targets exact, and expand virtual targets through `MethodDispatchIndex`/MRO.
+
+Property-key dispatch remains a separate conservative fallback. Its per-key fan-out cap is 32; capped keys synthesize no partial calls and are reported at warning level with language, skipped-key count, dropped key names (bounded), and cap; the count also travels in `RunScopeResolutionStats.propertyDispatchSkippedKeys`.
+
+Standalone (regex-based) providers such as COBOL participate via `ScopeResolver.scopeResolutionEdgeMode: 'callable-flow-only'`: `runScopeResolution` runs for them, but every ordinary emission path — heritage, interface implementations, receiver-bound, free-call fallback, reference/import edges, post-resolution hooks — is gated off, so their legacy phase (e.g. `cobolPhase`) remains the sole owner of structural edges and the callable solver's `CALLS` are purely additive. A callable-flow-only provider whose files emitted no callable facts exits early, before finalize, keeping the opt-in proportional to source scanning.
 
 ### Optional CFG/PDG emission (`--pdg`, #2081–#2086)
 
@@ -242,6 +256,7 @@ Single interface a language implements to plug into the pipeline. Contract fully
 | `collapseMemberCallsByCallerTarget?` | One CALLS edge per (caller, target) instead of per-site — default off |
 | `populateNamespaceSiblings?` | Cross-file implicit visibility (compiler-implicit namespace sharing) — default off; ctx carries `treeCache` |
 | `hoistTypeBindingsToModule?` | Walk up to Module scope when looking up a method's return-type typeBinding — default off; enable only when bindings are stored at module level |
+| `hasFileLocalCallableLinkage?` | Precise internal-linkage predicate used only when joining callable declarations/prototypes to cross-file definitions; C/C++ use it for `static` free functions |
 
 ### Per-language registration
 
@@ -273,6 +288,7 @@ CI auto-discovers the set via `tsx`. No workflow edit required.
 - **Cross-phase Tree cache**: the orchestrator's `treeCache` (`RunScopeResolutionInput.treeCache`) lets a scope-resolution per-language hook (`emitScopeCaptures`) reuse a tree instead of re-parsing. Workers leave it empty — Trees can't cross MessageChannels — so in normal (worker-pool) runs scope-resolution does NOT rely on it: workers serialize each file's `ParsedFile` (+ capture side-channel) and stream them in, so scope-resolution consumes the pre-extracted artifact rather than re-parsing on the main thread (§ Chunked parse-and-resolve). `PROF_SCOPE_RESOLUTION=1` emits hit/miss counters and a worker-engaged warning.
 - **Typed relationship iteration**: heritage + MRO walk only the EXTENDS / IMPLEMENTS / HAS_METHOD edges via `iterRelationshipsByType`, not the full relationship map.
 - **Workspace-resolution-index**: O(1) `findOwnedMember` / `findExportedDef` / `classScopeByDefId` built once per run.
+- **Callable-value worklist**: dependency-indexed inclusion propagation is linear in a reverse-ordered copy-chain fixture; target/address sets cap at 32 and the whole worklist has a finite budget with no partial edge emission on exhaustion.
 - **SCC-ordered cross-file return-type propagation** (PR #1050): `propagateImportedReturnTypes` walks `indexes.sccs` in reverse-topological order (leaves first), so multi-hop alias chains like `models.User → service.user → app.user` collapse to the terminal class in a single linear pass. Within each importer, the source module's `typeBindings` is chain-followed BEFORE mirroring (so we mirror terminal types, not intermediate refs), and the importer's own `typeBindings` is chain-followed AFTER mirroring (so local `const x = importedFn()` resolves before downstream importers run). Cyclic SCCs reach a partial fixpoint within a single pass without iterating to convergence — see the `ts-circular` cross-file-binding fixture which only asserts pipeline-no-throw. PROF output (`PROF_SCOPE_RESOLUTION=1`) splits `finalize` from `propagate` so quadratic regressions in the chain-follow surface independently.
 
 ---

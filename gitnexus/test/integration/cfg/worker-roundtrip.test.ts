@@ -8,6 +8,7 @@ import { getProvider } from '../../../src/core/ingestion/languages/index.js';
 import { SupportedLanguages } from '../../../src/config/supported-languages.js';
 import type { CfgVisitor } from '../../../src/core/ingestion/cfg/types.js';
 import type { SyntaxNode } from '../../../src/core/ingestion/utils/ast-helpers.js';
+import { extractParsedFile } from '../../../src/core/ingestion/scope-extractor-bridge.js';
 
 // U3 — the worker→main boundary + cache coherence for the CFG side-channel.
 // These pin the contracts that make the disk-store + warm/durable parse cache
@@ -145,6 +146,48 @@ describe('U3 — CFG side-channel JSON round-trip (no AST leakage, no field loss
       );
     }
     expect(round.some((c: { bindings: unknown[] }) => c.bindings.length > 0)).toBe(true);
+  });
+});
+
+describe('callable-flow ParsedFile round-trip', () => {
+  it('preserves discriminants, scopes, ranges, indexes, modes, and invocation positions', () => {
+    const provider = getProvider(SupportedLanguages.TypeScript);
+    const parsed = extractParsedFile(
+      provider,
+      `
+      function target(): void {}
+      function invoke(cb: () => void): void { cb(); }
+      const first = target;
+      invoke(first);
+      `,
+      'callable.ts',
+      () => {},
+    );
+    expect(parsed.callableFlowSites?.map((site) => site.kind)).toEqual([
+      'formal',
+      'invoke',
+      'seed',
+      'argument',
+    ]);
+
+    const round = JSON.parse(JSON.stringify(parsed, mapReplacer), mapReviver);
+    expect(round.callableFlowSites).toEqual(parsed.callableFlowSites);
+    expect(round.callableFlowSites[0]).toMatchObject({
+      kind: 'formal',
+      parameterIndex: 0,
+      passingMode: 'value',
+      binding: { name: 'cb', addressOf: false, indirection: 0 },
+    });
+    expect(round.callableFlowSites[1]).toMatchObject({
+      kind: 'invoke',
+      callee: { name: 'cb' },
+      callSite: { startLine: 3 },
+    });
+    expect(round.callableFlowSites[3]).toMatchObject({
+      kind: 'argument',
+      directCalleeName: 'invoke',
+      parameterIndex: 0,
+    });
   });
 });
 

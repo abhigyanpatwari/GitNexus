@@ -117,3 +117,32 @@ describe('emitJavaScopeCaptures — explicit constructor invocations (F38 #1928)
     expect(refs.some((r) => r.name === 'E' && r.arity === '1')).toBe(true);
   });
 });
+
+describe('emitJavaScopeCaptures — callable-flow protocol methods (#2522 review)', () => {
+  function invokeFactsFor(src: string): number {
+    return emitJavaScopeCaptures(src, 'C.java').filter(
+      (m) => m['@callable-flow.invoke'] !== undefined,
+    ).length;
+  }
+
+  it('does not emit invoke facts for ordinary container accessors', () => {
+    const src = `
+import java.util.HashMap;
+class C {
+  static Object entry(HashMap<String, Object> map) {
+    return map.get("x");
+  }
+}
+`;
+    expect(invokeFactsFor(src)).toBe(0);
+  });
+
+  it('still emits invoke facts for functional-interface dispatch', () => {
+    const src = `
+class C {
+  static void invoke(Runnable callback) { callback.run(); }
+}
+`;
+    expect(invokeFactsFor(src)).toBe(1);
+  });
+});

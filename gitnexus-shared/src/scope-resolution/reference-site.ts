@@ -38,6 +38,17 @@ export type ReferenceKind =
   | 'type-reference'
   | 'inherits'
   | 'import-use'
+  // An identifier in object-literal property-value position
+  // (`{ emitScopeCaptures: emitCppScopeCaptures }`, shorthand `{ hook }`).
+  // Resolution is owned entirely by the post-finalize property-dispatch pass
+  // (`emitPropertyDispatchCalls` via the callable-gated finalized-bindings
+  // walker `findCallableBindingInScope`; `resolveReferenceSites` skips these
+  // sites), so a non-function value never produces a reference. Emitted as a `USES`
+  // reference edge — NOT `CALLS` (a registration is not an invocation;
+  // Kythe `ref` / Joern `METHOD_REF` precedent). The invocation side is
+  // recovered separately by the property-dispatch pass, which uses
+  // `propertyKey` to synthesize CALLS at member-call sites (#2437).
+  | 'value-ref'
   // A macro invocation (`log!(...)` / `vec![...]`). Resolved against
   // `Macro`-labeled definitions ONLY (see `MacroRegistry`) so a macro
   // never aliases a same-named free function — macros and functions are
@@ -89,6 +100,14 @@ export interface ReferenceSite {
   readonly explicitReceiver?: { readonly name: string };
   /** Argument count at the call site; used by `provider.arityCompatibility`. */
   readonly arity?: number;
+  /**
+   * Object-literal key under which a `value-ref` site registers its value
+   * (`{ emitScopeCaptures: emitHook }` → `'emitScopeCaptures'`; shorthand
+   * `{ emitHook }` → `'emitHook'`). Consumed by the property-dispatch pass
+   * to connect member-call sites (`x.emitScopeCaptures()`) to registered
+   * functions (#2437). Only set for `kind === 'value-ref'`.
+   */
+  readonly propertyKey?: string;
   /**
    * Inferred argument types at the call site, one per argument. An
    * empty-string entry means "unknown" — consumers narrowing overload

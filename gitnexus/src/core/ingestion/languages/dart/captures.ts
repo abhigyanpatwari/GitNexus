@@ -44,6 +44,8 @@ import { getTreeSitterBufferSize } from '../../constants.js';
 import { parseSourceSafe } from '../../../tree-sitter/safe-parse.js';
 import { encodeMarker } from '../../utils/heritage-marker.js';
 import { DART_BUILT_INS } from './built-ins.js';
+import { synthesizeCallableFlowCaptures } from '../../utils/callable-flow-captures.js';
+import { preprocessDartExtensionTypes } from './extension-type-preprocess.js';
 
 const FUNCTION_DECL_TAGS = [
   '@declaration.function',
@@ -51,18 +53,47 @@ const FUNCTION_DECL_TAGS = [
   '@declaration.constructor',
 ] as const;
 
+const DART_CALLABLE_CAPTURE_OPTIONS = {
+  functionNodeTypes: new Set(['function_signature', 'function_expression']),
+  callNodeTypes: new Set(['selector']),
+  parameterListNodeTypes: new Set(['formal_parameter_list', 'arguments']),
+  parameterNodeTypes: new Set(['formal_parameter']),
+  bindingNodeTypes: new Set(['initialized_variable_definition']),
+  assignmentNodeTypes: new Set(['assignment_expression']),
+  identifierNodeTypes: new Set(['identifier', 'type_identifier']),
+  lexicalFunctionOwner: (node: SyntaxNode) => dartLexicalFunctionOwner(node),
+  isCallNode: (node: SyntaxNode) => node.namedChild(0)?.type === 'argument_part',
+  extractCallCallee: (node: SyntaxNode) => dartCallableCallee(node) ?? undefined,
+  callSiteNode: (node: SyntaxNode) => dartCallableCallee(node) ?? undefined,
+  callableProtocolMethods: new Set(['call']),
+} as const;
+
+function dartLexicalFunctionOwner(input: SyntaxNode): SyntaxNode | undefined {
+  let node: SyntaxNode | null = input;
+  while (node !== null) {
+    if (node.type === 'function_signature' || node.type === 'function_expression') return node;
+    if (node.type === 'function_body') {
+      const signature = node.previousNamedSibling;
+      if (signature?.type === 'function_signature') return signature;
+    }
+    node = node.parent;
+  }
+  return undefined;
+}
+
 export function emitDartScopeCaptures(
   sourceText: string,
   _filePath: string,
   cachedTree?: unknown,
 ): readonly CaptureMatch[] {
+  const parseText = preprocessDartExtensionTypes(sourceText);
   let tree: Parser.Tree;
   if (cachedTree !== undefined && cachedTree !== null) {
     tree = cachedTree as Parser.Tree;
     recordCacheHit();
   } else {
-    tree = parseSourceSafe(getDartParser(), sourceText, undefined, {
-      bufferSize: getTreeSitterBufferSize(sourceText),
+    tree = parseSourceSafe(getDartParser(), parseText, undefined, {
+      bufferSize: getTreeSitterBufferSize(parseText),
     });
     recordCacheMiss();
   }
@@ -157,9 +188,24 @@ export function emitDartScopeCaptures(
       emitHeritage(node, out);
       return;
     }
+    if (node.type === 'extension_declaration') {
+      emitExtensionImplementsHeritage(node, out);
+      return;
+    }
   });
 
+  out.push(...synthesizeCallableFlowCaptures(root, DART_CALLABLE_CAPTURE_OPTIONS));
+
   return out;
+}
+
+function dartCallableCallee(selector: SyntaxNode): SyntaxNode | null {
+  if (selector.namedChild(0)?.type !== 'argument_part') return null;
+  const previous = selector.previousNamedSibling;
+  if (previous?.type === 'identifier') return previous;
+  if (previous?.type !== 'selector') return null;
+  const inner = previous.namedChild(0);
+  return inner !== null && ASSIGNABLE_SELECTORS.has(inner.type) ? selectorName(inner) : null;
 }
 
 // ─── Function scope synthesis ───────────────────────────────────────────────
@@ -480,6 +526,50 @@ function emitHeritage(classNode: SyntaxNode, out: CaptureMatch[]): void {
   if (interfaces !== null) {
     emitHeritageMarkers(interfaces, 'implements', className, out);
   }
+}
+
+function emitExtensionImplementsHeritage(extensionNode: SyntaxNode, out: CaptureMatch[]): void {
+  const nameNode = extensionNode.childForFieldName('name');
+  if (nameNode === null) return;
+
+  const bodyStart = extensionNode.text.indexOf('{');
+  const header = bodyStart === -1 ? extensionNode.text : extensionNode.text.slice(0, bodyStart);
+  const implementsIndex = header.indexOf('implements');
+  if (implementsIndex === -1) return;
+
+  const className = nameNode.text;
+  const interfaces = header.slice(implementsIndex + 'implements'.length);
+  for (const rawInterface of splitTopLevelCommaList(interfaces)) {
+    const target = /^[ \t]*([A-Za-z_$][A-Za-z0-9_$]*)/.exec(rawInterface)?.[1];
+    if (target === undefined) continue;
+    const payload = encodeMarker('heritage', ['implements', target, className]);
+    out.push({ '@import.heritage': syntheticCapture('@import.heritage', nameNode, payload) });
+  }
+}
+
+function splitTopLevelCommaList(text: string): string[] {
+  const parts: string[] = [];
+  let start = 0;
+  let angleDepth = 0;
+
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (ch === '<') {
+      angleDepth++;
+      continue;
+    }
+    if (ch === '>' && angleDepth > 0) {
+      angleDepth--;
+      continue;
+    }
+    if (ch === ',' && angleDepth === 0) {
+      parts.push(text.slice(start, i));
+      start = i + 1;
+    }
+  }
+
+  parts.push(text.slice(start));
+  return parts;
 }
 
 function emitHeritageMarkers(

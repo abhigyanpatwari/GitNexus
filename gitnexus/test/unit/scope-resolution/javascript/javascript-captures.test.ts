@@ -29,6 +29,18 @@ function countTag(src: string, tag: string): number {
 }
 
 describe('emitJsScopeCaptures — #1876 array-method-callback narrowing', () => {
+  it('keeps callable-value bindings lexical across sibling functions', () => {
+    const invokes = matchesFor(
+      [
+        'function target() {}',
+        'function unrelated(target) { target(); }',
+        'function entry() { target(); }',
+      ].join('\n'),
+    ).filter((match) => match['@callable-flow.invoke'] !== undefined);
+
+    expect(invokes.map((match) => match['@callable-flow.invoke']!.range.startLine)).toEqual([2]);
+  });
+
   it('does not emit @declaration.function for `const x = arr.map(a => …)`', () => {
     const src = 'const exportData = accountsList.map(account => ({ id: account.id }));';
     expect(hasDecl(src, '@declaration.const', 'exportData')).toBe(true);

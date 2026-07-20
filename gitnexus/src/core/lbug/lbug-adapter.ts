@@ -793,7 +793,8 @@ const doInitLbug = async (dbPath: string, readOnly: boolean = false) => {
         const realPath = await fs.realpath(dbPath);
         const parentDir = path.dirname(dbPath);
         const realParent = await fs.realpath(parentDir);
-        if (!realPath.startsWith(realParent + path.sep) && realPath !== realParent) {
+        const safePrefix = realParent.endsWith(path.sep) ? realParent : realParent + path.sep;
+        if (!realPath.startsWith(safePrefix) && realPath !== realParent) {
           throw new Error(
             `Refusing to delete ${dbPath}: resolved path ${realPath} is outside storage directory`,
           );
@@ -1286,6 +1287,13 @@ const formatCypherValue = (v: unknown): string => {
   return `'${escapeCypherString(String(v))}'`;
 };
 
+const formatCypherStringArray = (value: unknown): string => {
+  const items = Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === 'string')
+    : [];
+  return `[${items.map(formatCypherValue).join(', ')}]`;
+};
+
 /**
  * Fallback: insert relationships one-by-one if COPY fails.
  *
@@ -1375,6 +1383,9 @@ export const getCopyQuery = (table: NodeTableName, filePath: string): string => 
     // `calleeIds` is its SOUND parallel (space-joined resolved callee ids, #2227).
     return `COPY ${t}(id, filePath, startLine, endLine, text, callees, calleeIds) FROM "${filePath}" ${COPY_CSV_OPTS}`;
   }
+  if (table === 'Class') {
+    return `COPY ${t}(id, name, filePath, startLine, endLine, isExported, content, description, frameworkAnnotations) FROM "${filePath}" ${COPY_CSV_OPTS}`;
+  }
   if (table === 'Method') {
     return `COPY ${t}(id, name, filePath, startLine, endLine, isExported, content, description, parameterCount, returnType) FROM "${filePath}" ${COPY_CSV_OPTS}`;
   }
@@ -1428,6 +1439,11 @@ export const insertNodeToLbug = async (
       // Taint/PDG substrate (issue #2080) — no name column. `calleeIds` (#2227)
       // is the sound resolved-id parallel to the leaf-name `callees` set.
       query = `CREATE (n:BasicBlock {id: ${formatCypherValue(properties.id)}, filePath: ${formatCypherValue(properties.filePath)}, startLine: ${properties.startLine || 0}, endLine: ${properties.endLine || 0}, text: ${formatCypherValue(properties.text || '')}, callees: ${formatCypherValue(properties.callees || '')}, calleeIds: ${formatCypherValue(properties.calleeIds || '')}})`;
+    } else if (label === 'Class') {
+      const descPart = properties.description
+        ? `, description: ${formatCypherValue(properties.description)}`
+        : '';
+      query = `CREATE (n:Class {id: ${formatCypherValue(properties.id)}, name: ${formatCypherValue(properties.name)}, filePath: ${formatCypherValue(properties.filePath)}, startLine: ${properties.startLine || 0}, endLine: ${properties.endLine || 0}, isExported: ${!!properties.isExported}, content: ${formatCypherValue(properties.content || '')}${descPart}, frameworkAnnotations: ${formatCypherStringArray(properties.frameworkAnnotations)}})`;
     } else if (TABLES_WITH_EXPORTED.has(label)) {
       const descPart = properties.description
         ? `, description: ${formatCypherValue(properties.description)}`
@@ -1513,6 +1529,11 @@ export const batchInsertNodesToLbug = async (
           // Taint/PDG substrate (issue #2080) — no name column. `calleeIds`
           // (#2227) is the sound resolved-id parallel to the `callees` set.
           query = `MERGE (n:BasicBlock {id: ${formatCypherValue(properties.id)}}) SET n.filePath = ${formatCypherValue(properties.filePath)}, n.startLine = ${properties.startLine || 0}, n.endLine = ${properties.endLine || 0}, n.text = ${formatCypherValue(properties.text || '')}, n.callees = ${formatCypherValue(properties.callees || '')}, n.calleeIds = ${formatCypherValue(properties.calleeIds || '')}`;
+        } else if (label === 'Class') {
+          const descPart = properties.description
+            ? `, n.description = ${formatCypherValue(properties.description)}`
+            : '';
+          query = `MERGE (n:Class {id: ${formatCypherValue(properties.id)}}) SET n.name = ${formatCypherValue(properties.name)}, n.filePath = ${formatCypherValue(properties.filePath)}, n.startLine = ${properties.startLine || 0}, n.endLine = ${properties.endLine || 0}, n.isExported = ${!!properties.isExported}, n.content = ${formatCypherValue(properties.content || '')}${descPart}, n.frameworkAnnotations = ${formatCypherStringArray(properties.frameworkAnnotations)}`;
         } else if (TABLES_WITH_EXPORTED.has(label)) {
           const descPart = properties.description
             ? `, n.description = ${formatCypherValue(properties.description)}`
