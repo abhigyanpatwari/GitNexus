@@ -70,7 +70,7 @@
     "graphology-indices": "^0.17.0",
     "graphology-utils": "^2.3.0",
     "ignore": "^7.0.5",
-    "js-yaml": "^4.1.1",
+    "js-yaml": "^5.0.0",
     "jsonc-parser": "^3.3.1",
     "mnemonist": "^0.40.3",
     "node-addon-api": "^8.0.0",
