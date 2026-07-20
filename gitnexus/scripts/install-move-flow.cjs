@@ -30,6 +30,7 @@ const https = require('node:https');
 const crypto = require('node:crypto');
 const { execFileSync } = require('node:child_process');
 const os = require('node:os');
+const { pipeline } = require('node:stream');
 
 /** Pinned move-flow release from https://github.com/aptos-labs/aptos-ai. */
 const MOVE_FLOW_VERSION = process.env.GITNEXUS_MOVE_FLOW_VERSION || '2.0.0';
@@ -39,12 +40,6 @@ const RELEASE_BASE = `https://github.com/${RELEASE_REPO}/releases/download/${REL
 const BIN_NAME = process.platform === 'win32' ? 'move-flow.exe' : 'move-flow';
 
 const SKIP_FLAGS = ['GITNEXUS_SKIP_MOVE_FLOW', 'GITNEXUS_SKIP_OPTIONAL_GRAMMARS'];
-for (const flag of SKIP_FLAGS) {
-  if (process.env[flag] === '1') {
-    console.warn(`[move-flow] Skipping install (${flag}=1).`);
-    process.exit(0);
-  }
-}
 
 const vendorRoot = path.join(__dirname, '..', 'vendor', 'move-flow');
 
@@ -120,49 +115,61 @@ function releaseTargetForPlatform(key) {
   }
 }
 
-function downloadToFile(url, dest) {
+function downloadToFile(url, dest, get = https.get) {
   return new Promise((resolve, reject) => {
     const tmp = `${dest}.partial`;
-    const out = fs.createWriteStream(tmp);
+    let settled = false;
+
+    const fail = (err) => {
+      if (settled) return;
+      settled = true;
+      try {
+        fs.rmSync(tmp, { force: true });
+      } catch {
+        /* the caller's temp-directory cleanup gets a second chance */
+      }
+      reject(err);
+    };
+
     const followRedirect = (target, hops) => {
       if (hops > 5) {
-        out.close();
-        fs.rmSync(tmp, { force: true });
-        reject(new Error('too many redirects'));
+        fail(new Error('too many redirects'));
         return;
       }
-      const req = https.get(target, (res) => {
+      const req = get(target, (res) => {
         const status = res.statusCode || 0;
         if (status >= 300 && status < 400 && res.headers.location) {
+          res.on('error', fail);
           res.resume();
           followRedirect(new URL(res.headers.location, target).toString(), hops + 1);
           return;
         }
         if (status !== 200) {
+          res.on('error', fail);
           res.resume();
-          out.close();
-          fs.rmSync(tmp, { force: true });
-          reject(new Error(`HTTP ${status} for ${target}`));
+          fail(new Error(`HTTP ${status} for ${target}`));
           return;
         }
-        res.pipe(out);
-        out.on('finish', () => {
-          out.close((closeErr) => {
-            if (closeErr) {
-              fs.rmSync(tmp, { force: true });
-              reject(closeErr);
-              return;
-            }
+
+        // pipeline owns both streams and reports source (mid-download) and
+        // destination errors through one callback instead of allowing an
+        // unhandled stream 'error' event to escape the postinstall soft-fail.
+        pipeline(res, fs.createWriteStream(tmp), (err) => {
+          if (settled) return;
+          if (err) {
+            fail(err);
+            return;
+          }
+          try {
             fs.renameSync(tmp, dest);
+            settled = true;
             resolve();
-          });
+          } catch (renameErr) {
+            fail(renameErr);
+          }
         });
       });
-      req.on('error', (err) => {
-        out.close();
-        fs.rmSync(tmp, { force: true });
-        reject(err);
-      });
+      req.on('error', fail);
     };
     followRedirect(url, 0);
   });
@@ -174,21 +181,35 @@ function sha256(file) {
   return hash.digest('hex');
 }
 
+function powershellExpandArchiveInvocation(archive, dest) {
+  const archiveEnv = 'GITNEXUS_MOVE_FLOW_ARCHIVE_PATH';
+  const destinationEnv = 'GITNEXUS_MOVE_FLOW_DESTINATION_PATH';
+  return {
+    args: [
+      '-NoProfile',
+      '-NonInteractive',
+      '-Command',
+      `Expand-Archive -LiteralPath $env:${archiveEnv} -DestinationPath $env:${destinationEnv} -Force`,
+    ],
+    env: {
+      ...process.env,
+      [archiveEnv]: archive,
+      [destinationEnv]: dest,
+    },
+  };
+}
+
 function extractZip(archive, dest) {
   fs.mkdirSync(dest, { recursive: true });
   try {
     if (process.platform === 'win32') {
       const ps = process.env.ComSpec ? 'powershell.exe' : 'powershell';
-      execFileSync(
-        ps,
-        [
-          '-NoProfile',
-          '-NonInteractive',
-          '-Command',
-          `Expand-Archive -LiteralPath ${JSON.stringify(archive)} -DestinationPath ${JSON.stringify(dest)} -Force`,
-        ],
-        { stdio: 'ignore', timeout: 30000 },
-      );
+      const invocation = powershellExpandArchiveInvocation(archive, dest);
+      execFileSync(ps, invocation.args, {
+        stdio: 'ignore',
+        timeout: 30000,
+        env: invocation.env,
+      });
       return;
     }
     execFileSync('unzip', ['-q', archive, '-d', dest], { stdio: 'ignore', timeout: 30000 });
@@ -231,6 +252,13 @@ function expectedSha(sumsText, assetName) {
 }
 
 async function main() {
+  for (const flag of SKIP_FLAGS) {
+    if (process.env[flag] === '1') {
+      console.warn(`[move-flow] Skipping install (${flag}=1).`);
+      process.exit(0);
+    }
+  }
+
   const key = platformKey();
   if (!key) {
     console.warn(
@@ -315,8 +343,12 @@ async function main() {
   }
 }
 
-main().catch((err) => {
-  // Never hard-fail the gitnexus install.
-  console.warn(`[move-flow] Unexpected error during install probe: ${err?.message ?? err}`);
-  process.exit(0);
-});
+module.exports = { downloadToFile, powershellExpandArchiveInvocation };
+
+if (require.main === module) {
+  main().catch((err) => {
+    // Never hard-fail the gitnexus install.
+    console.warn(`[move-flow] Unexpected error during install probe: ${err?.message ?? err}`);
+    process.exit(0);
+  });
+}

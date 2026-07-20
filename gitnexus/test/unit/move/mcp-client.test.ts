@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
 
@@ -77,6 +77,14 @@ describe('tryCreateMoveFlowClient', () => {
 });
 
 describe('MoveFlowMcpClient', () => {
+  beforeEach(() => {
+    mockSpawn.mockReset();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   it('shutdown clears all state', async () => {
     const proc = createMockProc();
     mockSpawn.mockReturnValue(proc as any);
@@ -114,6 +122,97 @@ describe('MoveFlowMcpClient', () => {
       }
     });
   }
+
+  it('kills and clears a timed-out initialization, ignores its late response, and retries', async () => {
+    vi.useFakeTimers();
+    const slowProc = createMockProc();
+    const retryProc = createMockProc();
+    mockSpawn.mockReturnValueOnce(slowProc as any).mockReturnValueOnce(retryProc as any);
+
+    const client = new MoveFlowMcpClient('move-flow');
+    const firstCall = client.facts('/slow');
+    const firstFailure = expect(firstCall).rejects.toThrow(
+      'move-flow MCP server did not respond within 30s',
+    );
+
+    await vi.advanceTimersByTimeAsync(30000);
+    await firstFailure;
+
+    expect(slowProc.kill).toHaveBeenCalledOnce();
+    expect((client as any).proc).toBeNull();
+    expect((client as any).initialized).toBe(false);
+    expect((client as any).initPromise).toBeNull();
+    expect((client as any).pending.size).toBe(0);
+
+    // The dead process may still flush an initialize response after the timer.
+    // It must not resurrect the failed attempt or interfere with the retry.
+    slowProc.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: 1, result: {} }) + '\n');
+    expect((client as any).initialized).toBe(false);
+    expect((client as any).pending.size).toBe(0);
+
+    serveToolsCall(retryProc, {
+      result: { content: [{ type: 'text', text: '{"retry":"ok"}' }], isError: false },
+    });
+    await expect(client.facts('/retry')).resolves.toEqual({ retry: 'ok' });
+    expect(mockSpawn).toHaveBeenCalledTimes(2);
+
+    await client.shutdown();
+  });
+
+  it('clears initialization state when move-flow exits during launch so the next call retries', async () => {
+    const crashedProc = createMockProc();
+    const retryProc = createMockProc();
+    mockSpawn.mockReturnValueOnce(crashedProc as any).mockReturnValueOnce(retryProc as any);
+
+    const client = new MoveFlowMcpClient('move-flow');
+    const firstCall = client.facts('/crash');
+    const firstFailure = expect(firstCall).rejects.toThrow(
+      'move-flow exited with code 1 during init',
+    );
+    crashedProc.emit('exit', 1);
+    await firstFailure;
+
+    expect((client as any).proc).toBeNull();
+    expect((client as any).initialized).toBe(false);
+    expect((client as any).initPromise).toBeNull();
+    expect((client as any).pending.size).toBe(0);
+
+    serveToolsCall(retryProc, {
+      result: { content: [{ type: 'text', text: '{"retry":"ok"}' }], isError: false },
+    });
+    await expect(client.facts('/retry')).resolves.toEqual({ retry: 'ok' });
+    expect(mockSpawn).toHaveBeenCalledTimes(2);
+
+    await client.shutdown();
+  });
+
+  it('kills and clears initialization state when spawning move-flow emits an error', async () => {
+    const failedProc = createMockProc();
+    const retryProc = createMockProc();
+    mockSpawn.mockReturnValueOnce(failedProc as any).mockReturnValueOnce(retryProc as any);
+
+    const client = new MoveFlowMcpClient('move-flow');
+    const firstCall = client.facts('/missing-binary');
+    const firstFailure = expect(firstCall).rejects.toThrow(
+      'Failed to spawn move-flow: spawn ENOENT',
+    );
+    failedProc.emit('error', new Error('spawn ENOENT'));
+    await firstFailure;
+
+    expect(failedProc.kill).toHaveBeenCalledOnce();
+    expect((client as any).proc).toBeNull();
+    expect((client as any).initialized).toBe(false);
+    expect((client as any).initPromise).toBeNull();
+    expect((client as any).pending.size).toBe(0);
+
+    serveToolsCall(retryProc, {
+      result: { content: [{ type: 'text', text: '{"retry":"ok"}' }], isError: false },
+    });
+    await expect(client.facts('/retry')).resolves.toEqual({ retry: 'ok' });
+    expect(mockSpawn).toHaveBeenCalledTimes(2);
+
+    await client.shutdown();
+  });
 
   it('rejects isError:true tool results as MoveFlowToolCallError instead of resolving the error text as data', async () => {
     // move-flow reports package build failures as a SUCCESS result with

@@ -188,20 +188,85 @@ export class MoveFlowMcpClient implements MoveFlowClient {
   private async ensureStarted(): Promise<void> {
     if (this.initialized) return;
     if (this.initPromise) return this.initPromise;
-    this.initPromise = this._start();
-    return this.initPromise;
+    const start = this._start().catch((err) => {
+      // A failed startup must not poison the client for the rest of the run.
+      // Only clear the promise for this attempt so a late event from an older
+      // child cannot reset a newer retry.
+      if (this.initPromise === start) {
+        this.initialized = false;
+        this.initPromise = null;
+        this.capsPromise = null;
+      }
+      throw err;
+    });
+    this.initPromise = start;
+    return start;
   }
 
   private async _start(): Promise<void> {
     return new Promise<void>((resolve, reject) => {
-      const timeout = setTimeout(() => {
-        reject(new Error('move-flow MCP server did not respond within 30s'));
-      }, 30000);
-
+      this.stderrLines.length = 0;
       const proc = spawn(this.binaryPath, ['mcp'], {
         stdio: ['pipe', 'pipe', 'pipe'],
       });
       this.proc = proc;
+      let initId: number | null = null;
+      let initSettled = false;
+      let timeout: ReturnType<typeof setTimeout> | null = null;
+      let rl: ReturnType<typeof createInterface> | null = null;
+
+      const clearInitTimeout = (): void => {
+        if (timeout) {
+          clearTimeout(timeout);
+          timeout = null;
+        }
+      };
+
+      const failInitialization = (err: Error, killProcess = true): void => {
+        if (initSettled) return;
+        initSettled = true;
+        clearInitTimeout();
+        if (initId !== null) this.pending.delete(initId);
+        rl?.close();
+
+        // An old child's late error/exit must not tear down a newer retry.
+        if (this.proc === proc) {
+          this.proc = null;
+          this.initialized = false;
+        }
+        if (killProcess) {
+          try {
+            proc.kill();
+          } catch {
+            /* process may already be dead */
+          }
+        }
+        reject(err);
+      };
+
+      const failRunningProcess = (err: Error, killProcess = false): void => {
+        if (this.proc !== proc) return;
+        for (const [, pending] of this.pending) {
+          clearTimeout(pending.timeout);
+          pending.reject(err);
+        }
+        this.pending.clear();
+        this.initialized = false;
+        this.initPromise = null;
+        this.capsPromise = null;
+        this.proc = null;
+        if (killProcess) {
+          try {
+            proc.kill();
+          } catch {
+            /* process may already be dead */
+          }
+        }
+      };
+
+      timeout = setTimeout(() => {
+        failInitialization(new Error('move-flow MCP server did not respond within 30s'));
+      }, 30000);
 
       proc.stderr.on('data', (chunk: Buffer) => {
         for (const line of chunk.toString().split('\n')) {
@@ -223,32 +288,31 @@ export class MoveFlowMcpClient implements MoveFlowClient {
       });
 
       proc.on('error', (err) => {
-        clearTimeout(timeout);
-        reject(new Error(`Failed to spawn move-flow: ${err.message}${this.stderrContext()}`));
+        const wrapped = new Error(
+          `Failed to spawn move-flow: ${err.message}${this.stderrContext()}`,
+        );
+        if (!initSettled) {
+          failInitialization(wrapped);
+        } else {
+          failRunningProcess(wrapped, true);
+        }
       });
 
       proc.on('exit', (code) => {
-        if (!this.initialized) {
-          clearTimeout(timeout);
-          reject(
+        if (this.proc !== proc) return;
+        if (!initSettled) {
+          failInitialization(
             new Error(`move-flow exited with code ${code} during init${this.stderrContext()}`),
+            false,
           );
           return;
         }
-        // Post-init unexpected death: settle all in-flight requests
-        for (const [, p] of this.pending) {
-          clearTimeout(p.timeout);
-          p.reject(
-            new Error(`move-flow exited unexpectedly (code ${code})${this.stderrContext()}`),
-          );
-        }
-        this.pending.clear();
-        this.initialized = false;
-        this.initPromise = null;
-        this.proc = null;
+        failRunningProcess(
+          new Error(`move-flow exited unexpectedly (code ${code})${this.stderrContext()}`),
+        );
       });
 
-      const rl = createInterface({ input: proc.stdout, crlfDelay: Infinity });
+      rl = createInterface({ input: proc.stdout, crlfDelay: Infinity });
       rl.on('line', (line) => {
         if (!line.trim()) return;
         try {
@@ -274,35 +338,45 @@ export class MoveFlowMcpClient implements MoveFlowClient {
       });
 
       // Send initialize
-      const initId = ++this.requestId;
+      initId = ++this.requestId;
       this.pending.set(initId, {
         resolve: () => {
-          clearTimeout(timeout);
+          if (initSettled) return;
+          clearInitTimeout();
           const notif: JsonRpcNotification = {
             jsonrpc: '2.0',
             method: 'notifications/initialized',
           };
-          this.send(notif);
+          try {
+            this.send(notif);
+          } catch (err) {
+            failInitialization(err instanceof Error ? err : new Error(String(err)));
+            return;
+          }
+          initSettled = true;
           this.initialized = true;
           resolve();
         },
         reject: (err) => {
-          clearTimeout(timeout);
-          reject(err);
+          failInitialization(err);
         },
         timeout,
       });
 
-      this.send({
-        jsonrpc: '2.0',
-        id: initId,
-        method: 'initialize',
-        params: {
-          protocolVersion: '2024-11-05',
-          capabilities: {},
-          clientInfo: { name: 'gitnexus', version: '1.0.0' },
-        },
-      });
+      try {
+        this.send({
+          jsonrpc: '2.0',
+          id: initId,
+          method: 'initialize',
+          params: {
+            protocolVersion: '2024-11-05',
+            capabilities: {},
+            clientInfo: { name: 'gitnexus', version: '1.0.0' },
+          },
+        });
+      } catch (err) {
+        failInitialization(err instanceof Error ? err : new Error(String(err)));
+      }
     });
   }
 
