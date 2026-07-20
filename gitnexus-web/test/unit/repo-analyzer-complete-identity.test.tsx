@@ -18,6 +18,17 @@ import {
 } from '../../src/services/backend-client';
 
 vi.mock('../../src/services/backend-client', () => ({
+  BackendError: class BackendError extends Error {
+    constructor(
+      message: string,
+      public readonly status: number,
+      public readonly code: string,
+      public readonly retryAfterMs?: number,
+    ) {
+      super(message);
+      this.name = 'BackendError';
+    }
+  },
   startAnalyze: vi.fn(),
   cancelAnalyze: vi.fn(),
   streamAnalyzeProgress: vi.fn(),

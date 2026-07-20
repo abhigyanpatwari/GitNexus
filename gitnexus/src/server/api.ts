@@ -1128,7 +1128,10 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
         // UPLOAD_ROOT. Drive this off entry.path (not a name-rederived dir) so
         // a same-named clone is never affected.
         const resolvedEntry = path.resolve(entry.path);
-        if (resolvedEntry === UPLOAD_ROOT || resolvedEntry.startsWith(UPLOAD_ROOT + path.sep)) {
+        const safeUploadRoot = UPLOAD_ROOT.endsWith(path.sep)
+          ? UPLOAD_ROOT
+          : UPLOAD_ROOT + path.sep;
+        if (resolvedEntry === UPLOAD_ROOT || resolvedEntry.startsWith(safeUploadRoot)) {
           await fs.rm(resolvedEntry, { recursive: true, force: true }).catch(() => {});
         }
 
@@ -1473,7 +1476,8 @@ export const createServer = async (port: number, host: string = '127.0.0.1') => 
         const fullPath = path.resolve(repoRoot, filePath);
 
         // Path traversal guard
-        if (!fullPath.startsWith(repoRoot + path.sep) && fullPath !== repoRoot) continue;
+        const safeRepoRoot = repoRoot.endsWith(path.sep) ? repoRoot : repoRoot + path.sep;
+        if (!fullPath.startsWith(safeRepoRoot) && fullPath !== repoRoot) continue;
 
         let content: string;
         try {

@@ -358,4 +358,46 @@ describe('checkCwdMatch', () => {
       await sibling.cleanup();
     }
   });
+
+  it('handles root-level path roots (e.g. "/") in checkCwdMatch', async () => {
+    const rootPath = path.resolve('/');
+    await registerRepo(rootPath, {
+      repoPath: rootPath,
+      lastCommit: 'somecommit',
+      indexedAt: new Date().toISOString(),
+    });
+
+    // Exact match
+    const m1 = await checkCwdMatch(rootPath);
+    expect(m1.match).toBe('path');
+    expect(m1.entry?.path).toBe(rootPath);
+
+    // Nested path match
+    const nested = path.join(rootPath, 'src');
+    const m2 = await checkCwdMatch(nested);
+    expect(m2.match).toBe('path');
+    expect(m2.entry?.path).toBe(rootPath);
+  });
+
+  if (process.platform === 'win32') {
+    it('handles Windows drive-root (e.g. "C:\\") in checkCwdMatch', async () => {
+      const rootPath = 'C:\\';
+      await registerRepo(rootPath, {
+        repoPath: rootPath,
+        lastCommit: 'somecommit',
+        indexedAt: new Date().toISOString(),
+      });
+
+      // Exact match
+      const m1 = await checkCwdMatch(rootPath);
+      expect(m1.match).toBe('path');
+      expect(m1.entry?.path).toBe(rootPath);
+
+      // Nested path match
+      const nested = 'C:\\src';
+      const m2 = await checkCwdMatch(nested);
+      expect(m2.match).toBe('path');
+      expect(m2.entry?.path).toBe(rootPath);
+    });
+  }
 });

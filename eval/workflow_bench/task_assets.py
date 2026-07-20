@@ -39,9 +39,14 @@ MAX_TASK_ASSET_ENTRIES = 100_000
 MAX_TASK_ASSET_PATH_BYTES = 4_096
 MAX_TASK_ASSET_BYTES = 2 * 1024 * 1024 * 1024
 
-# A filesystem without reflink support may still run tiny fixtures.  Large
-# assets fail closed instead of silently returning to one full copy per arm.
-MAX_BUFFERED_FALLBACK_BYTES = 16 * 1024 * 1024
+# The largest known real sandbox_copy asset in this harness is the shipped
+# index above (~428 MiB estimated, ~290 MiB measured); budget comfortably
+# above that so it can still materialize via buffered copy on a filesystem
+# that cannot reflink (ext4 CI runners, 9p-backed dev mounts), while staying
+# well below MAX_TASK_ASSET_BYTES so a genuinely oversized or malformed
+# declaration still fails closed instead of silently paying for a slow full
+# copy.
+MAX_BUFFERED_FALLBACK_BYTES = 512 * 1024 * 1024
 COPY_CHUNK_BYTES = 1024 * 1024
 
 # linux/fs.h: #define FICLONE _IOW(0x94, 9, int)

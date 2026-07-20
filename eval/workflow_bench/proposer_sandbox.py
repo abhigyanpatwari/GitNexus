@@ -329,7 +329,14 @@ def build_claude_settings() -> str:
             },
         },
         "permissions": {
-            "defaultMode": "dontAsk",
+            # CLAUDE_CODE_SUBPROCESS_ENV_SCRUB forces permission mode to
+            # "default" (allowed_non_write_users hardening), so requesting a
+            # non-default mode only emits a warning and never takes effect.
+            # Under "default" a tool runs without a prompt only if it matches an
+            # allow rule, so pre-approve the proposer's exact tool surface. Bash
+            # is the only writable tool under --bare (it writes the candidate
+            # overlay) and stays sandbox-confined by the sandbox.* policy above.
+            "allow": ["Read", "Grep", "Glob", "Bash"],
             "disableBypassPermissionsMode": "disable",
         },
         "env": {

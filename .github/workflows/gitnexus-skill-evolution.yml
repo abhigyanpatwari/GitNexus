@@ -1,0 +1,334 @@
+# GitNexus skill evolution: runs the offline propose → benchmark → gate loop
+# (eval/workflow_bench/evolve.py) on a schedule and, when the deterministic
+# promotion gate passes, opens a human-reviewed PR with the promoted skill
+# overlay. The gate is evidence FOR a PR, never a bypass of one — nothing
+# merges without review.
+#
+# Activation checklist (the scheduled lane is OFF by default).
+# [ ] Configure the repository secret GITNEXUS_BENCH_AUTH_TOKEN (an Anthropic
+#     API key — benchmark sessions bill real usage; the Claude Code OAuth
+#     subscription token does not work here).
+# [ ] Configure the RELEASE_APP_ID and RELEASE_APP_PRIVATE_KEY secrets (the
+#     App that opens the promotion PR). The Mint-App-Token step hard-fails
+#     without them once a promotion is detected. Verify the App installation
+#     is scoped to this repo with only Contents: RW + Pull requests: RW.
+# [ ] Create the protected Environment `gitnexus-evolution` with a
+#     deployment-branch rule restricting it to `main`, and ideally scope the
+#     three secrets above to that Environment. workflow_dispatch runs this
+#     workflow (and eval/workflow_bench/evolve.py) from the *dispatched ref*,
+#     so this server-side rule — not a code-side guard the branch could edit
+#     away — is what stops a non-main branch from running with the secrets.
+# [ ] Run workflow_dispatch once and confirm: containment preflight passes,
+#     the benchmark completes inside the job timeout, the results artifact
+#     uploads, and a promotion (if any) opens a well-formed PR.
+# [ ] Set the repository variable GITNEXUS_EVOLUTION_ENABLED=true.
+# Roll back by setting that variable to false. Note: workflow_dispatch always
+# runs the full benchmark loop regardless of GITNEXUS_EVOLUTION_ENABLED and
+# bills real API usage on GITNEXUS_BENCH_AUTH_TOKEN.
+name: GitNexus skill evolution
+
+on:
+  schedule:
+    # Weekly is a deliberate cadence to catch model/harness drift promptly; a
+    # no-promotion week only costs one benchmark run (the gate keeps the
+    # incumbent unless quality improves). Dial back toward the README's ~90-day
+    # re-evaluation guidance if the recurring spend is not worth it.
+    - cron: '0 3 * * 6' # weekly, Saturday 03:00 UTC
+  workflow_dispatch:
+    inputs:
+      generations:
+        description: 'Propose→bench→gate generations to run'
+        required: false
+        default: '1'
+        type: string
+      runs:
+        description: 'Runs per arm per task (the gate needs at least 3)'
+        required: false
+        default: '3'
+        type: string
+      model:
+        description: 'Model for the benchmark arms (match the model your skill users run)'
+        required: false
+        default: 'claude-sonnet-5'
+        type: string
+      proposer_model:
+        description: 'Model for the proposer/diagnosis session — a stronger model is fine (one session per generation)'
+        required: false
+        default: 'claude-opus-4-8'
+        type: string
+      include_expensive:
+        description: 'Include tasks marked expensive: true'
+        required: false
+        default: false
+        type: boolean
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+permissions: {}
+
+jobs:
+  evolve:
+    name: Propose, benchmark, and gate skill candidates
+    if: >-
+      github.repository == 'abhigyanpatwari/GitNexus' &&
+      (
+        github.event_name == 'workflow_dispatch' ||
+        vars.GITNEXUS_EVOLUTION_ENABLED == 'true'
+      )
+    runs-on: ubuntu-latest
+    # Gate promotion runs on a protected Environment. An admin must attach a
+    # deployment-branch rule (main only) and ideally scope the three secrets to
+    # it — server-side enforcement a dispatched non-main ref cannot bypass by
+    # editing its own workflow copy. See the activation checklist above.
+    environment: gitnexus-evolution
+    timeout-minutes: 355 # ceiling just under GitHub's 360-minute hard cap
+    permissions:
+      contents: read # The promotion PR uses a short-lived App token minted below.
+    env:
+      GENERATIONS: ${{ inputs.generations || '1' }}
+      RUNS: ${{ inputs.runs || '3' }}
+      MODEL: ${{ inputs.model || 'claude-sonnet-5' }}
+      PROPOSER_MODEL: ${{ inputs.proposer_model || 'claude-opus-4-8' }}
+      INCLUDE_EXPENSIVE: ${{ inputs.include_expensive && '1' || '' }}
+    steps:
+      - name: Require the benchmark auth secret
+        env:
+          HAS_TOKEN: ${{ secrets.GITNEXUS_BENCH_AUTH_TOKEN != '' }}
+        run: |
+          set -euo pipefail
+          if [[ "${HAS_TOKEN}" != 'true' ]]; then
+            echo '::error::GITNEXUS_BENCH_AUTH_TOKEN is not configured. The evolution loop runs real benchmark sessions and needs an Anthropic API key (not the Claude Code OAuth token).'
+            exit 1
+          fi
+
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: '22.16.0'
+          cache: npm
+          cache-dependency-path: |
+            gitnexus/package-lock.json
+            gitnexus-shared/package-lock.json
+
+      - uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+        with:
+          version: '0.11.23'
+          python-version: '3.13'
+          enable-cache: true
+          cache-dependency-glob: eval/uv.lock
+
+      - name: Install sandbox runtime and pinned Claude CLI
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends bubblewrap socat
+          apparmor_userns=/proc/sys/kernel/apparmor_restrict_unprivileged_userns
+          if [[ -r "${apparmor_userns}" ]] && [[ "$(<"${apparmor_userns}")" == '1' ]]; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+          canary_runtime="${RUNNER_TEMP}/claude-canary"
+          install -d -m 0700 "${canary_runtime}"
+          install -m 0600 \
+            .github/claude-canary-runtime/package.json \
+            "${canary_runtime}/package.json"
+          install -m 0600 \
+            .github/claude-canary-runtime/package-lock.json \
+            "${canary_runtime}/package-lock.json"
+          npm ci \
+            --prefix "${canary_runtime}" \
+            --ignore-scripts=false \
+            --audit=false \
+            --fund=false
+          node -e \
+            "const p=require(process.argv[1]); if(p.version!=='2.1.214') process.exit(1)" \
+            "${canary_runtime}/node_modules/@anthropic-ai/claude-code/package.json"
+          test "$("${canary_runtime}/node_modules/@anthropic-ai/claude-code-linux-x64/claude" --version)" = \
+            '2.1.214 (Claude Code)'
+
+      - name: Install monorepo root dependencies
+        run: |
+          set -euo pipefail
+          # The benchmark's task bindings sandbox-copy node_modules from the
+          # monorepo root as well as gitnexus-shared and gitnexus (see the
+          # sandbox_copy entries in tasks.scenarios.yaml). The two steps below
+          # install the subpackage trees; the root tree needs its own install
+          # or capture_task_dependency_binding aborts at task binding on the
+          # missing root node_modules.
+          npm ci
+
+      - name: Build pinned shared runtime
+        run: |
+          set -euo pipefail
+          npm ci
+          npm run build
+        working-directory: gitnexus-shared
+
+      - name: Install and build pinned GitNexus runtime
+        run: |
+          set -euo pipefail
+          npm ci
+          npm run build
+        working-directory: gitnexus
+
+      - name: Point the benchmark task repo at the checkout
+        run: |
+          set -euo pipefail
+          # tasks.scenarios.yaml addresses the target repo as ~/GitNexus (the
+          # developer-local convention). On the runner the repo is the checkout
+          # at ${GITHUB_WORKSPACE}; link it so runner_tasks.py can resolve the
+          # task `repo` path. The benchmark only clones the repo (copy-on-write)
+          # and mounts dependencies read-only, so the checkout is never mutated.
+          ln -sfn "${GITHUB_WORKSPACE}" "${HOME}/GitNexus"
+
+      - name: Run the propose → benchmark → gate loop
+        id: loop
+        env:
+          GITNEXUS_BENCH_AUTH_TOKEN: ${{ secrets.GITNEXUS_BENCH_AUTH_TOKEN }}
+        run: |
+          set -euo pipefail
+          out_root="${RUNNER_TEMP}/wfevolve"
+          echo "out_root=${out_root}" >> "${GITHUB_OUTPUT}"
+          extra=()
+          if [[ -n "${INCLUDE_EXPENSIVE}" ]]; then
+            extra+=(--include-expensive)
+          fi
+          uv run --locked --extra dev python -m workflow_bench.evolve \
+            --tasks workflow_bench/tasks.scenarios.yaml \
+            --model "${MODEL}" \
+            --proposer-model "${PROPOSER_MODEL}" \
+            --generations "${GENERATIONS}" \
+            --runs "${RUNS}" \
+            --claude-bin "${RUNNER_TEMP}/claude-canary/node_modules/@anthropic-ai/claude-code-linux-x64/claude" \
+            --out-root "${out_root}" \
+            --apply \
+            "${extra[@]}"
+        working-directory: eval
+
+      - name: Upload benchmark evidence
+        if: always() && steps.loop.outputs.out_root != ''
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: gitnexus-evolution-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ steps.loop.outputs.out_root }}
+          retention-days: 14
+          if-no-files-found: warn
+
+      - name: Detect and bound the applied promotion
+        id: promotion
+        env:
+          OUT_ROOT: ${{ steps.loop.outputs.out_root }}
+        run: |
+          set -euo pipefail
+          changed="$(git status --porcelain)"
+          if [[ -z "${changed}" ]]; then
+            echo 'No promotion this run; the incumbent skills stand.'
+            echo "promoted=false" >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+          # The apply step may only touch the canonical skill tree and its
+          # shipped mirrors. Anything else means the overlay escaped its
+          # boundary — refuse to open a PR from it.
+          while IFS= read -r line; do
+            path="${line:3}"
+            case "${path}" in
+              .claude/skills/*|gitnexus/skills/*|gitnexus-claude-plugin/skills/*) ;;
+              *)
+                echo "::error::Promotion touched a path outside the skill trees: ${path}"
+                exit 1
+                ;;
+            esac
+          done <<< "${changed}"
+          echo "promoted=true" >> "${GITHUB_OUTPUT}"
+          # The loop returns on the first promotion, so the highest-numbered
+          # gen-N/bench/promotion.json is the decision that actually fired.
+          # Emit only that one — never every generation's, or a rejected
+          # generation's decisions could surface in the PR body. The heredoc
+          # uses a per-run random delimiter so a summary value that ever
+          # contains the marker cannot close the block early and inject keys.
+          promotion_file="$(find "${OUT_ROOT}" -name promotion.json | sort -V | tail -1)"
+          delim="PROMOTION_EOF_$(openssl rand -hex 16)"
+          {
+            echo "summary<<${delim}"
+            if [[ -n "${promotion_file}" ]]; then
+              tail -c 8000 "${promotion_file}"
+            fi
+            echo
+            echo "${delim}"
+          } >> "${GITHUB_OUTPUT}"
+
+      - name: Mint GitHub App token
+        id: app-token
+        if: steps.promotion.outputs.promoted == 'true'
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          # `client-id` supersedes the deprecated `app-id` in v3.x (the action
+          # accepts the numeric App ID here, as publish.yml does). Request only
+          # the permissions this job needs — push a branch and open a PR — so
+          # the minted token drops the installation's other grants (e.g.
+          # Workflows: write).
+          client-id: ${{ secrets.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          permission-contents: write
+          permission-pull-requests: write
+
+      - name: Open the promotion PR
+        if: steps.promotion.outputs.promoted == 'true'
+        env:
+          APP_TOKEN: ${{ steps.app-token.outputs.token }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          PROMOTION_SUMMARY: ${{ steps.promotion.outputs.summary }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          # Include the run attempt: GITHUB_RUN_ID is stable across re-runs, so
+          # a re-run after a push-succeeds/PR-create-fails partial failure needs
+          # a fresh branch to push (a non-force push to the existing branch
+          # would be rejected non-fast-forward and wedge the lane).
+          branch="evolution/skills-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          git config user.name 'gitnexus-evolution[bot]'
+          git config user.email 'gitnexus-evolution[bot]@users.noreply.github.com'
+          git checkout -b "${branch}"
+          git add .claude/skills gitnexus/skills gitnexus-claude-plugin/skills
+          git commit -m 'feat(skills): promoted evolution overlay (gate-passed)'
+
+          # The App token reaches git through GIT_ASKPASS reading step env at
+          # push time — it never appears in argv, git config, or the checkout.
+          askpass="${RUNNER_TEMP}/evolution-askpass"
+          cat > "${askpass}" <<'ASKPASS_EOF'
+          #!/usr/bin/env bash
+          printf '%s\n' "${APP_TOKEN}"
+          ASKPASS_EOF
+          chmod 0700 "${askpass}"
+          GIT_ASKPASS="${askpass}" GIT_TERMINAL_PROMPT=0 git push \
+            "https://x-access-token@github.com/${GITHUB_REPOSITORY}.git" \
+            "HEAD:refs/heads/${branch}"
+
+          {
+            cat <<'BODY_HEAD'
+          Automated skill-evolution promotion. The deterministic gate passed; this PR is the human-review step — inspect the diff and the evidence before merging.
+          BODY_HEAD
+            printf '\n%s\n\n' "Benchmark evidence: ${RUN_URL} (artifact gitnexus-evolution-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT})."
+            cat <<'BODY_OPEN'
+          <details><summary>Promotion decisions</summary>
+
+          ```json
+          BODY_OPEN
+            printf '%s\n' "${PROMOTION_SUMMARY}"
+            cat <<'BODY_CLOSE'
+          ```
+
+          </details>
+          BODY_CLOSE
+          } > "${RUNNER_TEMP}/pr-body.md"
+          gh pr create \
+            --repo "${GITHUB_REPOSITORY}" \
+            --base main \
+            --head "${branch}" \
+            --title 'feat(skills): promoted evolution overlay' \
+            --body-file "${RUNNER_TEMP}/pr-body.md"

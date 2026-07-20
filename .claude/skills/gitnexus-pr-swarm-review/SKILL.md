@@ -7,6 +7,10 @@ description: "Run a GitNexus production-readiness pull request review using a co
 
 Use this skill to review a GitNexus pull request and produce a production-readiness review.
 
+> This is the interactive, on-demand reviewer swarm. It is distinct from the CI
+> `gitnexus-review` skill's built-in "Swarm lanes" (`ci-personas/`), which the
+> review-agent workflow dispatches automatically inside a single review run.
+
 ```
 /gitnexus-pr-swarm-review <PR URL or PR number>
 ```

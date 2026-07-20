@@ -11,10 +11,14 @@
  *   3. **Arity metadata** on method/constructor declarations.
  *   4. **Reference arity** on call sites.
  *
- * Pure given the input source text. No I/O, no globals consulted.
+ * The returned captures are deterministic. Class-annotation facts are also
+ * recorded for the worker side-channel consumed after scope resolution.
  */
-
-import type { Capture, CaptureMatch } from 'gitnexus-shared';
+import { type Capture, type CaptureMatch, type ScopeId } from 'gitnexus-shared';
+import {
+  materializeClassAnnotationFacts,
+  recordClassAnnotationCapture,
+} from '../../frameworks/spring/bean-candidates.js';
 import {
   nodeIfType,
   nodeToCapture,
@@ -28,6 +32,8 @@ import { getJavaParser, getJavaScopeQuery } from './query.js';
 import { recordCacheHit, recordCacheMiss } from './cache-stats.js';
 import { getTreeSitterBufferSize } from '../../constants.js';
 import { parseSourceSafe } from '../../../tree-sitter/safe-parse.js';
+import { setJavaClassAnnotationFacts } from './capture-side-channel.js';
+import { captureJavaPackageFact } from './package-facts.js';
 import { synthesizeCallableFlowCaptures } from '../../utils/callable-flow-captures.js';
 
 /** Declaration anchors that carry function-like arity metadata. */
@@ -72,7 +78,7 @@ function shouldEmitReadMember(memberNode: SyntaxNode): boolean {
 
 export function emitJavaScopeCaptures(
   sourceText: string,
-  _filePath: string,
+  filePath: string,
   cachedTree?: unknown,
 ): readonly CaptureMatch[] {
   let tree = cachedTree as ReturnType<ReturnType<typeof getJavaParser>['parse']> | undefined;
@@ -84,9 +90,11 @@ export function emitJavaScopeCaptures(
   } else {
     recordCacheHit();
   }
+  captureJavaPackageFact(filePath, tree.rootNode);
 
   const rawMatches = getJavaScopeQuery().matches(tree.rootNode);
   const out: CaptureMatch[] = [];
+  const classAnnotations = new Map<ScopeId, Set<string>>();
 
   for (const m of rawMatches) {
     const grouped: Record<string, Capture> = {};
@@ -105,6 +113,13 @@ export function emitJavaScopeCaptures(
       nodeMap[tag] = c.node;
     }
     if (Object.keys(grouped).length === 0) continue;
+
+    const annotatedClass = grouped['@class-annotation.class'];
+    const annotationName = grouped['@class-annotation.name'];
+    if (annotatedClass !== undefined && annotationName !== undefined) {
+      recordClassAnnotationCapture(classAnnotations, filePath, annotatedClass, annotationName.text);
+      continue;
+    }
 
     // Decompose each `import_declaration`. `@import.statement` is captured
     // directly on the `import_declaration` node.
@@ -240,6 +255,8 @@ export function emitJavaScopeCaptures(
 
     out.push(grouped);
   }
+
+  setJavaClassAnnotationFacts(filePath, materializeClassAnnotationFacts(classAnnotations));
 
   return [
     ...resolveVarTypeBindings(out),

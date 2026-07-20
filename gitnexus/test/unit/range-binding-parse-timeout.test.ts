@@ -5,10 +5,12 @@ import { goScopeResolver } from '../../src/core/ingestion/languages/go/scope-res
 import { cppScopeResolver } from '../../src/core/ingestion/languages/cpp/scope-resolver.js';
 import { rustScopeResolver } from '../../src/core/ingestion/languages/rust/scope-resolver.js';
 import { javaScopeResolver } from '../../src/core/ingestion/languages/java/scope-resolver.js';
+import { kotlinScopeResolver } from '../../src/core/ingestion/languages/kotlin/scope-resolver.js';
 import { populateGoRangeBindings } from '../../src/core/ingestion/languages/go/range-binding.js';
 import { populateCppRangeBindings } from '../../src/core/ingestion/languages/cpp/range-bindings.js';
 import { populateRustRangeBindings } from '../../src/core/ingestion/languages/rust/range-binding.js';
 import { populateJavaPackageSiblings } from '../../src/core/ingestion/languages/java/package-siblings.js';
+import { populateKotlinPackageSiblings } from '../../src/core/ingestion/languages/kotlin/package-siblings.js';
 
 /**
  * Regression coverage for the post-finalize parse hooks after
@@ -150,30 +152,44 @@ fn main() {
     ).not.toThrow();
   });
 
-  it('Java: a timed-out file degrades to "no package" without aborting siblings', () => {
-    // Two good same-package files so sibling injection has work to do, plus a
-    // bad file whose package extraction times out and degrades to '' (its own
-    // bucket) rather than throwing.
-    const a = `package com.example;
-class A {}`;
-    const b = `package com.example;
-class B {}`;
-    const bad = 'package com.example;\n' + pathological('class Filler {}\n');
+  it.each([
+    {
+      label: 'Java',
+      resolver: javaScopeResolver,
+      populate: populateJavaPackageSiblings,
+      extension: 'java',
+      packageStatement: 'package com.example;',
+    },
+    {
+      label: 'Kotlin',
+      resolver: kotlinScopeResolver,
+      populate: populateKotlinPackageSiblings,
+      extension: 'kt',
+      packageStatement: 'package com.example',
+    },
+  ])(
+    '$label: a timed-out file degrades to no package without aborting siblings',
+    ({ resolver, populate, extension, packageStatement }) => {
+      const a = `${packageStatement}\nclass A {}`;
+      const b = `${packageStatement}\nclass B {}`;
+      const bad = `${packageStatement}\n${pathological('class Filler {}\n')}`;
 
-    const aParsed = parse(javaScopeResolver as unknown as ResolverLike, a, 'A.java');
-    const bParsed = parse(javaScopeResolver as unknown as ResolverLike, b, 'B.java');
-    const badParsed = parse(javaScopeResolver as unknown as ResolverLike, bad, 'Bad.java');
-    const fileContents = new Map<string, string>([
-      ['A.java', a],
-      ['B.java', b],
-      ['Bad.java', bad],
-    ]);
+      const aPath = `A.${extension}`;
+      const bPath = `B.${extension}`;
+      const badPath = `Bad.${extension}`;
+      const aParsed = parse(resolver as unknown as ResolverLike, a, aPath);
+      const bParsed = parse(resolver as unknown as ResolverLike, b, bPath);
+      const badParsed = parse(resolver as unknown as ResolverLike, bad, badPath);
+      const fileContents = new Map<string, string>([
+        [aPath, a],
+        [bPath, b],
+        [badPath, bad],
+      ]);
 
-    process.env.GITNEXUS_PARSE_TIMEOUT_MS = '1';
-    expect(() =>
-      populateJavaPackageSiblings([badParsed, aParsed, bParsed], makeEmptyIndexes(), {
-        fileContents,
-      }),
-    ).not.toThrow();
-  });
+      process.env.GITNEXUS_PARSE_TIMEOUT_MS = '1';
+      expect(() =>
+        populate([badParsed, aParsed, bParsed], makeEmptyIndexes(), { fileContents }),
+      ).not.toThrow();
+    },
+  );
 });

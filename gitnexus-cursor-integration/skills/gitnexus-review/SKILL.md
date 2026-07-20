@@ -178,6 +178,51 @@ for adversarial judgment. Every lens reports
 through the Finding standard below; merge and dedup before the verdict,
 dropping anything without a concrete failing scenario.
 
+### Swarm lanes
+
+Six dispatchable lane definitions ship with this skill in `ci-personas/` —
+read-only reviewers restricted to Read/Glob/Grep plus the safe graph
+tools. Five are finder lanes: `ci-correctness-lens`, `ci-security-lens`,
+`ci-blast-radius-lens`, `ci-coverage-lens`, and `ci-adversarial-lens`
+(which assumes the change is broken and constructs reachable failure
+scenarios the pattern checks miss). They carry the verification
+dimensions of the numbered workflow across every touched domain; domain
+grouping and the four cross-cutting checks above remain the
+orchestrator's charge. The sixth, `ci-critic-lens`, is a gate, not a
+finder — it audits the finished draft.
+
+When the harness supports subagents and these lanes are registered as
+agents (the CI review workflow installs them from its trusted control
+checkout; a local harness may register them by copying `ci-personas/*.md`
+into `~/.claude/agents/` or the project's `.claude/agents/`), run the
+expert-lens pass as follows. First establish your own graph evidence —
+make at least one substantive context call on a changed symbol yourself,
+before dispatching any lane, since lane calls never satisfy the evidence
+this skill or its runner requires. Then dispatch all five finder lanes in
+parallel in a single message. Give each lane the diff, the changed-file
+manifest, the exact base and head identifiers, the checkout paths, and the
+slice of changed files matching its charge.
+
+Treat every lane report as an unverified claim: re-anchor each finding to
+the diff, the source, or your own graph queries before it enters the
+review; dedup across lanes; drop anything without a concrete failing
+scenario. Lane tool calls never substitute for evidence this skill or its
+runner requires from the orchestrating conversation itself.
+
+After composing the complete draft review, dispatch `ci-critic-lens` with
+the full draft body plus the same context. On `DEFECTS`, repair the draft
+and re-dispatch the critic once; if defects remain after the second pass,
+fix what you accept, note the unresolved critic objections in the
+coverage section, and proceed — the critic hardens the review; it never
+blocks it. This fail-open is deliberate: the critic is bounded to two
+passes so it cannot deadlock or wedge the run, and the review is still
+gated by the runner's own evidence and schema checks. (This is distinct
+from the separate `gitnexus-pr-swarm-review` skill, whose interactive
+roster treats its critic as a hard gate that must clear before emission;
+this CI lane must always emit a review or a clean failure.) If subagent
+dispatch is unavailable or any lane fails, run that lane's charge inline —
+the lanes structure the work; they never gate it.
+
 ## Finding standard
 
 Report a finding only when the reviewed change introduces a concrete defect,

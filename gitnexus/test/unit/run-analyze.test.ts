@@ -20,6 +20,11 @@ import {
 import { taintModelVersion } from '../../src/core/ingestion/taint/typescript-model.js';
 import { createTempDir } from '../helpers/test-db.js';
 import { readEmbeddingNodeIds } from '../helpers/embedding-seed.js';
+import { CLASS_FRAMEWORK_ANNOTATIONS_FEATURE } from '../../src/core/analysis-features.js';
+
+const CURRENT_ANALYSIS_FEATURES = {
+  [CLASS_FRAMEWORK_ANNOTATIONS_FEATURE.id]: CLASS_FRAMEWORK_ANNOTATIONS_FEATURE.version,
+};
 
 const currentRunnerIdentity = () =>
   resolveAnalyzerRunnerIdentity(
@@ -59,6 +64,7 @@ describe('run-analyze module', () => {
         // guard (#2289 P1) does not force a rebuild and short-circuit the
         // alreadyUpToDate fast path this test exercises.
         schemaVersion: INCREMENTAL_SCHEMA_VERSION,
+        analysisFeatures: CURRENT_ANALYSIS_FEATURES,
         runnerIdentity: currentRunnerIdentity(),
       };
       await saveMeta(storagePath, meta);
@@ -279,6 +285,7 @@ describe('run-analyze module', () => {
         indexedAt: new Date().toISOString(),
         branch: 'main',
         schemaVersion: INCREMENTAL_SCHEMA_VERSION,
+        analysisFeatures: CURRENT_ANALYSIS_FEATURES,
         runnerIdentity,
       };
       await saveMeta(flat.storagePath, flatMetaSeed);
@@ -289,6 +296,7 @@ describe('run-analyze module', () => {
         indexedAt: new Date().toISOString(),
         branch: 'feature/x',
         schemaVersion: INCREMENTAL_SCHEMA_VERSION,
+        analysisFeatures: CURRENT_ANALYSIS_FEATURES,
         runnerIdentity,
       });
       // Register the repo in an isolated registry: the shadow cleanup only
@@ -345,6 +353,7 @@ describe('run-analyze module', () => {
         indexedAt: new Date().toISOString(),
         branch: 'main',
         schemaVersion: INCREMENTAL_SCHEMA_VERSION,
+        analysisFeatures: CURRENT_ANALYSIS_FEATURES,
         runnerIdentity,
       });
       const branch = getStoragePaths(tmpRepo.dbPath, 'feature/x');
@@ -354,6 +363,7 @@ describe('run-analyze module', () => {
         indexedAt: new Date().toISOString(),
         branch: 'feature/x',
         schemaVersion: INCREMENTAL_SCHEMA_VERSION,
+        analysisFeatures: CURRENT_ANALYSIS_FEATURES,
         runnerIdentity,
       });
       // Deliberately NO registerRepo: the empty isolated registry makes this
@@ -402,6 +412,7 @@ describe('run-analyze module', () => {
         indexedAt: new Date().toISOString(),
         branch: 'main',
         schemaVersion: INCREMENTAL_SCHEMA_VERSION,
+        analysisFeatures: CURRENT_ANALYSIS_FEATURES,
         runnerIdentity,
       });
 
@@ -445,6 +456,7 @@ describe('run-analyze module', () => {
         indexedAt: new Date().toISOString(),
         branch: 'main',
         schemaVersion: INCREMENTAL_SCHEMA_VERSION,
+        analysisFeatures: CURRENT_ANALYSIS_FEATURES,
         runnerIdentity,
       });
       const branch = getStoragePaths(tmpRepo.dbPath, 'feature/x');
@@ -454,6 +466,7 @@ describe('run-analyze module', () => {
         indexedAt: new Date().toISOString(),
         branch: 'feature/x',
         schemaVersion: INCREMENTAL_SCHEMA_VERSION,
+        analysisFeatures: CURRENT_ANALYSIS_FEATURES,
         runnerIdentity,
       });
 

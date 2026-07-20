@@ -1,5 +1,13 @@
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -257,15 +265,19 @@ function reviewTranscript({
   toolInput = { name: 'statusCommand', file_path: CHANGED_PATH },
   toolResultContent = contextResultContent(),
   resultIsError = false,
+  toolUseId = 'tool-1',
+  parentToolUseId = null,
 }: {
   toolName?: string;
   toolInput?: Record<string, unknown>;
   toolResultContent?: unknown;
   resultIsError?: boolean | undefined;
+  toolUseId?: string;
+  parentToolUseId?: string | null;
 } = {}): Array<Record<string, unknown>> {
   const toolResult: Record<string, unknown> = {
     type: 'tool_result',
-    tool_use_id: 'tool-1',
+    tool_use_id: toolUseId,
     content: toolResultContent,
   };
   if (resultIsError !== undefined) toolResult.is_error = resultIsError;
@@ -279,7 +291,7 @@ function reviewTranscript({
     },
     {
       type: 'assistant',
-      parent_tool_use_id: null,
+      parent_tool_use_id: parentToolUseId,
       session_id: 'session-1',
       uuid: '22222222-2222-4222-8222-222222222222',
       message: {
@@ -287,7 +299,7 @@ function reviewTranscript({
         content: [
           {
             type: 'tool_use',
-            id: 'tool-1',
+            id: toolUseId,
             name: toolName,
             input: toolInput,
           },
@@ -296,7 +308,7 @@ function reviewTranscript({
     },
     {
       type: 'user',
-      parent_tool_use_id: null,
+      parent_tool_use_id: parentToolUseId,
       session_id: 'session-1',
       uuid: '33333333-3333-4333-8333-333333333333',
       message: {
@@ -1137,12 +1149,50 @@ describe('gitnexus review-agent workflow security contract', () => {
     const allowedToolRules = allowedTools.split(',');
     expect(allowedToolRules).toContain('Read(./**)');
     expect(allowedToolRules).not.toContain('Read');
+    // Glob/Grep are intentionally NOT allow-listed: bare Glob/Grep are separate
+    // tools that the Read()-scoped path denies below (/proc, github.workspace,
+    // ...) do not cover, so allow-listing them would open an undenied read path
+    // to the raw checkouts and host paths. Under dontAsk they stay denied by
+    // omission; lanes read via the scoped Read() rules and the graph MCP.
     expect(allowedToolRules).not.toContain('Glob');
     expect(allowedToolRules).not.toContain('Grep');
+    // The merge-base source checkout is readable so lanes can inspect deleted or
+    // rename-old source; a Read() allow rule grants access without triggering
+    // --add-dir agent discovery.
+    expect(allowedTools).toContain('Read(${{ runner.temp }}/gitnexus-review-merge-base/**)');
     expect(allowedTools).toContain('mcp__gitnexus__impact');
     expect(allowedTools).not.toContain('mcp__gitnexus__detect_changes');
     expect(allowedTools).not.toContain('mcp__gitnexus__rename');
     expect(allowedTools).not.toContain('mcp__gitnexus__cypher');
+    // Swarm posture: the orchestrator dispatches subagents via the Agent tool
+    // (renamed from Task in Claude Code 2.1.63), scoped to the six trusted
+    // control-SHA personas; Agent is not bare-denied (deny beats allow), and
+    // lane calls cannot satisfy the evidence gate.
+    expect(analyze).toContain('--tools "Read,Glob,Grep,Agent"');
+    expect(allowedTools).toContain(
+      'Agent(ci-correctness-lens,ci-security-lens,ci-blast-radius-lens,ci-coverage-lens,ci-adversarial-lens,ci-critic-lens)',
+    );
+    expect(allowedTools).not.toContain('Task');
+    const disallowedTools = analyze.match(/--disallowedTools "([^"]+)"/)?.[1] ?? '';
+    const disallowedToolRules = disallowedTools.split(',');
+    expect(disallowedToolRules).toContain('Bash');
+    expect(disallowedToolRules).not.toContain('Agent');
+    expect(disallowedTools).not.toContain('Task');
+    expect(analyze).toContain(
+      'cp -a -- .claude/skills/gitnexus-review/ci-personas/. "${claude_config}/agents/"',
+    );
+    // The passive add-dir tree is scanned for agent definitions; drop any
+    // PR-controlled ones at any depth so only the trusted control-SHA personas
+    // can be dispatched. Skills under the copy are NOT pruned (a skill-editing
+    // PR must stay reviewable).
+    expect(analyze).toContain(
+      `find "\${review_dir}" -type d -path '*/.claude/agents' -prune -exec rm -rf -- {} +`,
+    );
+    expect(analyze).not.toContain(".claude/skills' -prune");
+    expect(analyze).toContain("satisfy the publisher's context-evidence gate");
+    // The orchestrator's own evidence call is a precondition of dispatch, so a
+    // fully-delegated run cannot leave the gate unsatisfied.
+    expect(analyze).toContain('dispatching any lane');
     expect(analyze).toContain('Read(/proc/**)');
     expect(analyze).toContain('Read(${{ github.workspace }}/**)');
     expect(analyze).toContain(
@@ -1154,6 +1204,100 @@ describe('gitnexus review-agent workflow security contract', () => {
     expect(analyze).not.toContain(
       'test "$(git -C pr-target rev-parse HEAD)" = "${{ steps.context.outputs.head_sha }}"',
     );
+  });
+
+  it('scopes Agent dispatch to exactly the installed ci-personas', () => {
+    // Real dispatch cannot be proven without a model turn (print mode silently
+    // ignores invalid settings and does not validate permission-rule content at
+    // parse time), so the canary is the acceptance gate for that. What a unit
+    // test CAN pin is that the scoped allowlist, the persona filenames, and each
+    // persona's frontmatter name are the same set — catching a rename or typo in
+    // any of the three without auth.
+    const analyze = jobBlock('analyze');
+    const allowed = analyze.match(/--allowedTools "([^"]+)"/)?.[1] ?? '';
+    const allowlistNames = (allowed.match(/Agent\(([^)]+)\)/)?.[1] ?? '')
+      .split(',')
+      .map((name) => name.trim())
+      .sort();
+
+    const personasDir = path.resolve(
+      __dirname,
+      '../../../.claude/skills/gitnexus-review/ci-personas',
+    );
+    const personaStems = readdirSync(personasDir)
+      .filter((file) => file.endsWith('.md'))
+      .map((file) => file.replace(/\.md$/, ''))
+      .sort();
+
+    expect(allowlistNames).toEqual(personaStems);
+
+    const frontmatterNames = personaStems.map((stem) => {
+      const body = readFileSync(path.join(personasDir, `${stem}.md`), 'utf8');
+      return body.match(/^name:\s*(\S+)\s*$/m)?.[1] ?? '';
+    });
+    expect(frontmatterNames).toEqual(personaStems);
+
+    // The install source the workflow copies matches the directory the
+    // allowlist scopes to, so the six names above are the six spawnable agents.
+    expect(analyze).toContain('cp -a -- .claude/skills/gitnexus-review/ci-personas/.');
+  });
+
+  it('bounds swarm transcript volume with per-persona maxTurns that fit the caps', () => {
+    const analyze = jobBlock('analyze');
+    const orchestratorTurns = Number(analyze.match(/--max-turns (\d+)/)?.[1] ?? '0');
+    const maxMessages = Number(
+      (analyze.match(/MAX_TRANSCRIPT_MESSAGES = ([\d_]+)/)?.[1] ?? '0').replace(/_/g, ''),
+    );
+    expect(orchestratorTurns).toBeGreaterThan(0);
+    expect(maxMessages).toBeGreaterThan(0);
+
+    const personasDir = path.resolve(
+      __dirname,
+      '../../../.claude/skills/gitnexus-review/ci-personas',
+    );
+    const laneTurns = readdirSync(personasDir)
+      .filter((file) => file.endsWith('.md'))
+      .map((file) => {
+        const body = readFileSync(path.join(personasDir, file), 'utf8');
+        const value = Number(body.match(/^maxTurns:\s*(\d+)\s*$/m)?.[1] ?? '0');
+        // Every lane declares a positive-integer turn budget so the transcript
+        // is deterministically bounded (the runtime rejects non-positive values).
+        expect(value).toBeGreaterThan(0);
+        return { file, value };
+      });
+    expect(laneTurns).toHaveLength(6);
+
+    const criticTurns = laneTurns.find((lane) => lane.file === 'ci-critic-lens.md')?.value ?? 0;
+    const totalLaneTurns = laneTurns.reduce((sum, lane) => sum + lane.value, 0);
+    // Worst case: the orchestrator, every lane once, and a second critic pass,
+    // each turn yielding at most an assistant + a user(tool_result) message. The
+    // bound must stay under the transcript cap so a full swarm run never bricks a
+    // valid review; this fails if maxTurns is bumped without revisiting the cap.
+    const worstCaseMessages = 2 * (orchestratorTurns + totalLaneTurns + criticTurns);
+    expect(worstCaseMessages).toBeLessThan(maxMessages);
+  });
+
+  it('marks the review in progress from a write-scoped job without weakening analyze', () => {
+    const acknowledge = jobBlock('acknowledge');
+    // A dedicated, write-scoped job posts the in-progress marker under the same
+    // authorization gate as analyze, so the model-facing analyze job stays
+    // secretless and read-only.
+    expect(acknowledge).toContain('pull-requests: write');
+    expect(acknowledge).toContain("github.event.comment.body == '@gitnexus review'");
+    expect(acknowledge).toContain("author_association == 'OWNER'");
+    expect(acknowledge).toContain('<!-- gitnexus-review-agent:progress:');
+    expect(acknowledge).toContain('GitNexus review in progress');
+
+    const analyze = jobBlock('analyze');
+    expect(analyze).toContain('pull-requests: read');
+    expect(analyze).not.toContain('pull-requests: write');
+
+    // The publisher removes the marker when the review — or a clean failure —
+    // posts, so a stale "in progress" note never lingers.
+    const publish = jobBlock('publish');
+    expect(publish).toContain('Remove the in-progress marker');
+    expect(publish).toContain('github.rest.issues.deleteComment');
+    expect(publish).toContain('<!-- gitnexus-review-agent:progress:');
   });
 
   it('bounds and validates the structured artifact across the trust boundary', () => {
@@ -1352,6 +1496,68 @@ describe('gitnexus review-agent workflow security contract', () => {
       status: 'failure',
       failure_code: 'missing_graph_evidence',
       graph_evidence: null,
+    });
+  });
+
+  it('rejects graph evidence that only a subagent sidechain produced', () => {
+    const sidechainOnly = runArtifactScenario({
+      rawTranscript: JSON.stringify(reviewTranscript({ parentToolUseId: 'toolu-parent-1' })),
+    });
+    expect(sidechainOnly.artifact).toMatchObject({
+      status: 'failure',
+      failure_code: 'missing_graph_evidence',
+    });
+
+    const side = reviewTranscript({
+      parentToolUseId: 'toolu-parent-1',
+      toolUseId: 'tool-side-1',
+    });
+    const main = reviewTranscript();
+    const combined = [main[0], side[1], side[2], main[1], main[2], main[3]];
+    const withMainline = runArtifactScenario({
+      rawTranscript: JSON.stringify(combined),
+    });
+    expect(withMainline.artifact).toMatchObject({
+      status: 'success',
+      failure_code: null,
+    });
+
+    const malformed = reviewTranscript();
+    (malformed[1] as Record<string, unknown>).parent_tool_use_id = 42;
+    const invalidLinkage = runArtifactScenario({
+      rawTranscript: JSON.stringify(malformed),
+    });
+    expect(invalidLinkage.artifact.failure_code).toBe('invalid_execution_transcript');
+    expect(invalidLinkage.stderr).toContain('parent linkage');
+  });
+
+  it('pins each sidechain guard independently with cross-wired transcripts', () => {
+    // A real sidechain turn carries parent_tool_use_id on BOTH its call and its
+    // result, so the two !sidechain guards are mutually redundant on realistic
+    // input — deleting either alone would still pass the symmetric fixtures.
+    // These asymmetric fixtures isolate each guard.
+
+    // Mainline call + sidechain result: the mainline call registers an evidence
+    // candidate, but the result is sidechain — only the acceptance-side guard
+    // (registration already happened) can reject it.
+    const mainCallSidechainResult = reviewTranscript();
+    (mainCallSidechainResult[2] as Record<string, unknown>).parent_tool_use_id = 'toolu-parent-1';
+    expect(
+      runArtifactScenario({ rawTranscript: JSON.stringify(mainCallSidechainResult) }).artifact,
+    ).toMatchObject({
+      status: 'failure',
+      failure_code: 'missing_graph_evidence',
+    });
+
+    // Sidechain call + mainline result: only the registration-side guard stops
+    // the sidechain call from becoming a candidate the mainline result satisfies.
+    const sidechainCallMainResult = reviewTranscript();
+    (sidechainCallMainResult[1] as Record<string, unknown>).parent_tool_use_id = 'toolu-parent-1';
+    expect(
+      runArtifactScenario({ rawTranscript: JSON.stringify(sidechainCallMainResult) }).artifact,
+    ).toMatchObject({
+      status: 'failure',
+      failure_code: 'missing_graph_evidence',
     });
   });
 

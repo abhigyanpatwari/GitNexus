@@ -162,4 +162,12 @@ describe('path traversal (isTestFilePath as proxy for path handling)', () => {
     expect(isTestFilePath('src/main.ts')).toBe(false);
     expect(isTestFilePath('src/utils/helper.ts')).toBe(false);
   });
+
+  it('isTestFilePath returns false for nodes without a filePath', () => {
+    // trace BFS visits Community/Process nodes whose rows carry no filePath;
+    // the guard must return false instead of throwing on undefined/null.
+    expect(isTestFilePath(undefined)).toBe(false);
+    expect(isTestFilePath(null)).toBe(false);
+    expect(isTestFilePath('')).toBe(false);
+  });
 });

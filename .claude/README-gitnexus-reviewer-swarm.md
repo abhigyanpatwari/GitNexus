@@ -40,6 +40,8 @@ restart Claude Code so it reloads the agent definitions.
 ## Relationship to `/gitnexus-review`
 
 Coexists with the `/gitnexus-review` skill (reviews PRs, branches, ranges, or
-local changes using GitNexus MCP tools, scaling from one pass to per-domain
-expert lenses derived from the graph's clusters). This swarm is the
-fixed-roster, multi-persona deep production-readiness review.
+local changes using GitNexus MCP tools). Both now run reviewer swarms, so the
+distinction is the runner, not the roster: this `/gitnexus-pr-swarm-review` is
+the interactive, on-demand production-readiness swarm you invoke directly,
+while `gitnexus-review`'s `ci-personas/` lanes are dispatched automatically
+inside the CI review agent's single workflow run.

@@ -434,6 +434,14 @@ def run_claude(
                 "returncode": proc.returncode,
                 "process_state": proc.state,
                 "stderr_tail": proc.stderr_tail[-2000:],
+                # A session can exit non-zero with an empty stderr (e.g. a
+                # pre-flight sandbox failure before any model turn): the tail
+                # of raw stdout is the only place the actual event stream
+                # (permission_denials, tool_use/tool_result, is_error) shows
+                # up, so surface it here rather than leaving the failure
+                # opaque. Callers already redact this record before it is
+                # written to disk or an uploaded artifact.
+                "stdout_tail": proc.stdout_tail[-2000:],
                 "process_detail": proc.detail,
                 "event_stream_error": event_stream_error,
             }
