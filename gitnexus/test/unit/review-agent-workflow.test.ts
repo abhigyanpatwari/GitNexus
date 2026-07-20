@@ -1234,6 +1234,41 @@ describe('gitnexus review-agent workflow security contract', () => {
     expect(analyze).toContain('cp -a -- .claude/skills/gitnexus-review/ci-personas/.');
   });
 
+  it('bounds swarm transcript volume with per-persona maxTurns that fit the caps', () => {
+    const analyze = jobBlock('analyze');
+    const orchestratorTurns = Number(analyze.match(/--max-turns (\d+)/)?.[1] ?? '0');
+    const maxMessages = Number(
+      (analyze.match(/MAX_TRANSCRIPT_MESSAGES = ([\d_]+)/)?.[1] ?? '0').replace(/_/g, ''),
+    );
+    expect(orchestratorTurns).toBeGreaterThan(0);
+    expect(maxMessages).toBeGreaterThan(0);
+
+    const personasDir = path.resolve(
+      __dirname,
+      '../../../.claude/skills/gitnexus-review/ci-personas',
+    );
+    const laneTurns = readdirSync(personasDir)
+      .filter((file) => file.endsWith('.md'))
+      .map((file) => {
+        const body = readFileSync(path.join(personasDir, file), 'utf8');
+        const value = Number(body.match(/^maxTurns:\s*(\d+)\s*$/m)?.[1] ?? '0');
+        // Every lane declares a positive-integer turn budget so the transcript
+        // is deterministically bounded (the runtime rejects non-positive values).
+        expect(value).toBeGreaterThan(0);
+        return { file, value };
+      });
+    expect(laneTurns).toHaveLength(6);
+
+    const criticTurns = laneTurns.find((lane) => lane.file === 'ci-critic-lens.md')?.value ?? 0;
+    const totalLaneTurns = laneTurns.reduce((sum, lane) => sum + lane.value, 0);
+    // Worst case: the orchestrator, every lane once, and a second critic pass,
+    // each turn yielding at most an assistant + a user(tool_result) message. The
+    // bound must stay under the transcript cap so a full swarm run never bricks a
+    // valid review; this fails if maxTurns is bumped without revisiting the cap.
+    const worstCaseMessages = 2 * (orchestratorTurns + totalLaneTurns + criticTurns);
+    expect(worstCaseMessages).toBeLessThan(maxMessages);
+  });
+
   it('bounds and validates the structured artifact across the trust boundary', () => {
     const analyze = jobBlock('analyze');
     const publish = jobBlock('publish');
