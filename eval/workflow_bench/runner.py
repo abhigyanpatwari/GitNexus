@@ -85,6 +85,7 @@ from .proposer_sandbox import (
     build_sandbox_environment,
     preflight_bubblewrap,
     prepare_sandbox,
+    redact_text,
     require_claude_sandbox_helpers,
 )
 from .runner_artifacts import (
@@ -1244,7 +1245,11 @@ def main() -> None:
                     )
                     per_arm[arm].append(record)
                     with results_path.open("a") as fh:
-                        fh.write(json.dumps(record) + "\n")
+                        # Redact any API token a session-error stderr_tail
+                        # echoed into error_detail before it enters the uploaded
+                        # results.jsonl artifact (transcripts are redacted; this
+                        # sink was not).
+                        fh.write(redact_text(json.dumps(record), [args.auth_token or ""]) + "\n")
                     print(
                         f"[{task['id']}][{arm}][run {run_idx}] resolved={record['resolved']} "
                         f"in={record['input_tokens']} out={record['output_tokens']} "

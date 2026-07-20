@@ -368,6 +368,61 @@ def test_evolve_proposer_failure_returns_nonzero(monkeypatch, tmp_path):
     assert evolve.main() == 1
 
 
+def test_proposer_session_record_is_redacted_before_upload(monkeypatch, tmp_path):
+    tasks = tmp_path / "tasks.yaml"
+    tasks.write_text(
+        """tasks:
+  - id: demo
+    class: test
+    repo: .
+    prompt: implement
+    verify: "true"
+    oracle:
+      command: "true"
+      files:
+        - source: hidden.test.ts
+          target: hidden.test.ts
+"""
+    )
+    literal_token = "secret-LITERAL-XYZ"
+    pattern_token = "sk-ant-FAKEEXAMPLE0000"
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "workflow_bench.evolve",
+            "--tasks",
+            str(tasks),
+            "--model",
+            "pinned-model",
+            "--out-root",
+            str(tmp_path / "out"),
+            "--auth-token",
+            literal_token,
+        ],
+    )
+    monkeypatch.setattr(evolve.runner, "selected_task_bindings", lambda _tasks: [{"id": "demo"}])
+    monkeypatch.setattr(evolve, "preflight_bubblewrap", lambda: tmp_path / "bwrap")
+    monkeypatch.setattr(evolve, "require_claude_sandbox_helpers", lambda: None)
+    # A session error whose stderr echoed both the literal API key and an
+    # sk-ant-shaped token into the record that gets written to the artifact.
+    monkeypatch.setattr(
+        evolve,
+        "run_proposer",
+        lambda *args, **kwargs: {
+            "ok": False,
+            "error_detail": {"stderr_tail": f"boom {literal_token} {pattern_token}"},
+        },
+    )
+
+    assert evolve.main() == 1
+
+    written = (tmp_path / "out" / "gen-0" / "proposer-session.json").read_text()
+    assert literal_token not in written
+    assert pattern_token not in written
+    assert "[REDACTED]" in written
+
+
 def test_runner_argv_pairs_each_incumbent_with_its_candidate(tmp_path):
     args = build_parser().parse_args(
         [
