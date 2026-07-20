@@ -1500,6 +1500,36 @@ describe('gitnexus review-agent workflow security contract', () => {
     expect(invalidLinkage.stderr).toContain('parent linkage');
   });
 
+  it('pins each sidechain guard independently with cross-wired transcripts', () => {
+    // A real sidechain turn carries parent_tool_use_id on BOTH its call and its
+    // result, so the two !sidechain guards are mutually redundant on realistic
+    // input — deleting either alone would still pass the symmetric fixtures.
+    // These asymmetric fixtures isolate each guard.
+
+    // Mainline call + sidechain result: the mainline call registers an evidence
+    // candidate, but the result is sidechain — only the acceptance-side guard
+    // (registration already happened) can reject it.
+    const mainCallSidechainResult = reviewTranscript();
+    (mainCallSidechainResult[2] as Record<string, unknown>).parent_tool_use_id = 'toolu-parent-1';
+    expect(
+      runArtifactScenario({ rawTranscript: JSON.stringify(mainCallSidechainResult) }).artifact,
+    ).toMatchObject({
+      status: 'failure',
+      failure_code: 'missing_graph_evidence',
+    });
+
+    // Sidechain call + mainline result: only the registration-side guard stops
+    // the sidechain call from becoming a candidate the mainline result satisfies.
+    const sidechainCallMainResult = reviewTranscript();
+    (sidechainCallMainResult[1] as Record<string, unknown>).parent_tool_use_id = 'toolu-parent-1';
+    expect(
+      runArtifactScenario({ rawTranscript: JSON.stringify(sidechainCallMainResult) }).artifact,
+    ).toMatchObject({
+      status: 'failure',
+      failure_code: 'missing_graph_evidence',
+    });
+  });
+
   it('rejects non-context tools and context calls not tied to an exact changed path', () => {
     const listOnly = runArtifactScenario({
       rawTranscript: JSON.stringify(
