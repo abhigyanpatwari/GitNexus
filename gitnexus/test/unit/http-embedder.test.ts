@@ -236,6 +236,70 @@ describe('HTTP embedding backend', () => {
       expect(result.length).toBe(1024);
     });
 
+    it.each(['none', 'off', 'false', '0'])(
+      'treats GITNEXUS_EMBEDDING_REQUEST_DIMS=%s as omit and drops the request dimensions field',
+      async (alias) => {
+        process.env.GITNEXUS_EMBEDDING_URL = 'http://test:8080/v1';
+        process.env.GITNEXUS_EMBEDDING_MODEL = 'bge-m3';
+        process.env.GITNEXUS_EMBEDDING_DIMS = '1024';
+        process.env.GITNEXUS_EMBEDDING_REQUEST_DIMS = alias;
+
+        const vec1024 = Array.from({ length: 1024 }, (_, i) => i / 1024);
+        vi.stubGlobal(
+          'fetch',
+          vi.fn().mockResolvedValue({
+            ok: true,
+            json: async () => ({ data: [{ embedding: vec1024 }] }),
+          }),
+        );
+
+        const { embedText } = await import('../../src/core/embeddings/embedder.js');
+        const result = await embedText('test text');
+
+        const body = JSON.parse((fetch as any).mock.calls[0][1].body);
+        expect('dimensions' in body).toBe(false);
+        expect(result.length).toBe(1024);
+      },
+    );
+
+    it('sends REQUEST_DIMS as the request dimensions while DIMS validates the response', async () => {
+      process.env.GITNEXUS_EMBEDDING_URL = 'http://test:8080/v1';
+      process.env.GITNEXUS_EMBEDDING_MODEL = 'text-embedding-3-large';
+      process.env.GITNEXUS_EMBEDDING_DIMS = '1024';
+      process.env.GITNEXUS_EMBEDDING_REQUEST_DIMS = '512';
+
+      // Response keeps the DIMS-validated length; only the outgoing request differs.
+      const vec1024 = Array.from({ length: 1024 }, (_, i) => i / 1024);
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockResolvedValue({
+          ok: true,
+          json: async () => ({ data: [{ embedding: vec1024 }] }),
+        }),
+      );
+
+      const { embedText } = await import('../../src/core/embeddings/embedder.js');
+      const result = await embedText('test text');
+
+      const body = JSON.parse((fetch as any).mock.calls[0][1].body);
+      expect(body.dimensions).toBe(512);
+      expect(result.length).toBe(1024);
+    });
+
+    it('rejects a malformed GITNEXUS_EMBEDDING_REQUEST_DIMS with an error naming that var', async () => {
+      process.env.GITNEXUS_EMBEDDING_URL = 'http://test:8080/v1';
+      process.env.GITNEXUS_EMBEDDING_MODEL = 'test-model';
+      process.env.GITNEXUS_EMBEDDING_REQUEST_DIMS = 'garbage';
+
+      const { embedText } = await import('../../src/core/embeddings/embedder.js');
+      const { isHttpEmbeddingDimsError } = await import('../../src/core/embeddings/http-client.js');
+      const err = await embedText('test').catch((e: unknown) => e);
+      // Recognizable as a config error so the CLI prints a clean message...
+      expect(isHttpEmbeddingDimsError(String(err))).toBe(true);
+      // ...and it points the operator at the var they set, not GITNEXUS_EMBEDDING_DIMS.
+      expect(String(err)).toContain('GITNEXUS_EMBEDDING_REQUEST_DIMS must be a positive integer');
+    });
+
     it('retries on server error', async () => {
       process.env.GITNEXUS_EMBEDDING_URL = 'http://test:8080/v1';
       process.env.GITNEXUS_EMBEDDING_MODEL = 'test-model';

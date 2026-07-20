@@ -107,20 +107,26 @@ const paceHttpRequest = async (minIntervalMs: number, signal?: AbortSignal): Pro
 };
 
 /**
- * Stable lead of the {@link readConfig} malformed-`GITNEXUS_EMBEDDING_DIMS`
- * error. `readConfig` throws a plain `Error` (not an {@link HttpEmbeddingError})
- * because this is a *config* mistake, not an endpoint failure — so the CLI
- * recognizes it by this lead ({@link isHttpEmbeddingDimsError}) and prints a
- * clean config message instead of a raw stack dump. See #2385.
+ * Stable lead of a {@link readConfig} malformed dims-env error. `readConfig`
+ * throws a plain `Error` (not an {@link HttpEmbeddingError}) for a malformed
+ * `GITNEXUS_EMBEDDING_DIMS` or `GITNEXUS_EMBEDDING_REQUEST_DIMS` because it's a
+ * *config* mistake, not an endpoint failure — so the CLI recognizes it by this
+ * lead ({@link isHttpEmbeddingDimsError}) and prints a clean config message
+ * instead of a raw stack dump. Each var names itself so the message points the
+ * operator at the variable they actually set, not a sibling. See #2385.
  */
-const EMBEDDING_DIMS_ENV_ERROR_LEAD = 'GITNEXUS_EMBEDDING_DIMS must be a positive integer';
+const dimsEnvErrorLead = (name: string): string => `${name} must be a positive integer`;
+const EMBEDDING_DIMS_ENV_ERROR_LEAD = dimsEnvErrorLead('GITNEXUS_EMBEDDING_DIMS');
+const EMBEDDING_REQUEST_DIMS_ENV_ERROR_LEAD = dimsEnvErrorLead('GITNEXUS_EMBEDDING_REQUEST_DIMS');
 
 /**
- * @internal Exported for the CLI analyze error handler. True when `message` is
- * the {@link readConfig} malformed-DIMS config error (a plain `Error`).
+ * @internal Exported for the CLI analyze error handler. True when `message` is a
+ * {@link readConfig} malformed dims-env config error (a plain `Error`) — for
+ * either `GITNEXUS_EMBEDDING_DIMS` or `GITNEXUS_EMBEDDING_REQUEST_DIMS`.
  */
 export const isHttpEmbeddingDimsError = (message: string): boolean =>
-  message.includes(EMBEDDING_DIMS_ENV_ERROR_LEAD);
+  message.includes(EMBEDDING_DIMS_ENV_ERROR_LEAD) ||
+  message.includes(EMBEDDING_REQUEST_DIMS_ENV_ERROR_LEAD);
 
 /**
  * Build config from the current process.env snapshot.
@@ -155,11 +161,11 @@ const readConfig = (): HttpConfig | null => {
       requestDimensions = undefined;
     } else {
       if (!/^\d+$/.test(rawRequestDims)) {
-        throw new Error(`${EMBEDDING_DIMS_ENV_ERROR_LEAD}, got "${rawRequestDims}"`);
+        throw new Error(`${EMBEDDING_REQUEST_DIMS_ENV_ERROR_LEAD}, got "${rawRequestDims}"`);
       }
       const parsed = parseInt(rawRequestDims, 10);
       if (parsed <= 0) {
-        throw new Error(`${EMBEDDING_DIMS_ENV_ERROR_LEAD}, got "${rawRequestDims}"`);
+        throw new Error(`${EMBEDDING_REQUEST_DIMS_ENV_ERROR_LEAD}, got "${rawRequestDims}"`);
       }
       requestDimensions = parsed;
     }
