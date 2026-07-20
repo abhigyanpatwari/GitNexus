@@ -1612,7 +1612,8 @@ export const createWorkerPool = (
       // sequence can `await` cleanly (which is required to know when the
       // slot is ready to pick up new work after a give-up).
       type TimeoutDecision =
-        { kind: 'retry' } | { kind: 'give-up'; reason: string; excludePaths: readonly string[] };
+        | { kind: 'retry' }
+        | { kind: 'give-up'; reason: string; excludePaths: readonly string[] };
 
       const requeueAfterTimeout = (
         workerIndex: number,
