@@ -151,6 +151,17 @@ jobs:
           test "$("${canary_runtime}/node_modules/@anthropic-ai/claude-code-linux-x64/claude" --version)" = \
             '2.1.214 (Claude Code)'
 
+      - name: Install monorepo root dependencies
+        run: |
+          set -euo pipefail
+          # The benchmark's task bindings sandbox-copy node_modules from the
+          # monorepo root as well as gitnexus-shared and gitnexus (see the
+          # sandbox_copy entries in tasks.scenarios.yaml). The two steps below
+          # install the subpackage trees; the root tree needs its own install
+          # or capture_task_dependency_binding aborts at task binding on the
+          # missing root node_modules.
+          npm ci
+
       - name: Build pinned shared runtime
         run: |
           set -euo pipefail
@@ -161,15 +172,9 @@ jobs:
       - name: Install and build pinned GitNexus runtime
         run: |
           set -euo pipefail
-          # The benchmark's task bindings sandbox-copy node_modules from the
-          # monorepo root, gitnexus-shared, and gitnexus (see the sandbox_copy
-          # entries in tasks.scenarios.yaml), mirroring a full dev checkout.
-          # Install all three so capture_task_dependency_binding can resolve
-          # them — installing only gitnexus/ leaves the root and shared
-          # node_modules absent and the benchmark aborts at task binding.
           npm ci
-          ( cd gitnexus-shared && npm ci && npm run build )
-          ( cd gitnexus && npm ci && npm run build )
+          npm run build
+        working-directory: gitnexus
 
       - name: Point the benchmark task repo at the checkout
         run: |

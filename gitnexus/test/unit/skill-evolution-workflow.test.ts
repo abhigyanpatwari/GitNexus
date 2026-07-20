@@ -59,15 +59,18 @@ describe('gitnexus skill-evolution workflow contract', () => {
     expect(provision).toContain('${HOME}/GitNexus');
   });
 
-  it('installs the root, shared, and gitnexus node_modules the benchmark sandbox-copies', () => {
-    const install = stepRun('Install and build pinned GitNexus runtime');
-    // tasks.scenarios.yaml sandbox-copies node_modules from the monorepo root,
-    // gitnexus-shared, and gitnexus; installing only gitnexus/ left the root and
-    // shared trees absent and the benchmark aborted at task binding on the first
-    // real run.
-    expect(install).toMatch(/^\s*npm ci\s*$/m); // monorepo root
-    expect(install).toContain('cd gitnexus-shared && npm ci');
-    expect(install).toContain('cd gitnexus && npm ci');
+  it('installs node_modules for the monorepo root, gitnexus-shared, and gitnexus', () => {
+    // The benchmark sandbox-copies node_modules from all three (tasks.scenarios.yaml).
+    // The root tree was absent on the first real run because only the two subpackage
+    // steps ran, so capture_task_dependency_binding aborted at task binding.
+    const rootStep = evolveJob?.steps?.find(
+      ({ name }) => name === 'Install monorepo root dependencies',
+    );
+    expect(rootStep).toBeDefined();
+    expect(rootStep).not.toHaveProperty('working-directory'); // installs at the repo root
+    expect(String(rootStep?.run)).toContain('npm ci');
+    expect(stepRun('Build pinned shared runtime')).toContain('npm ci');
+    expect(stepRun('Install and build pinned GitNexus runtime')).toContain('npm ci');
   });
 
   it('names the promotion branch with the run attempt for re-run recovery', () => {
