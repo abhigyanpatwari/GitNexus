@@ -272,8 +272,14 @@ def test_real_bubblewrap_runs_node_from_outside_the_bound_trees(tmp_path: Path, 
     relocated_node = toolcache / "node"
     shutil.copy2(real_node, relocated_node)
     relocated_node.chmod(0o755)
+    # Only fake "node"'s resolution -- prepare_sandbox's own bwrap/claude
+    # lookups (_resolve_executable) also go through shutil.which, and must
+    # keep resolving for real or preflight fails before the sandbox is even
+    # built.
+    real_which = shutil.which
     monkeypatch.setattr(
-        "workflow_bench.proposer_sandbox.shutil.which", lambda name: str(relocated_node) if name == "node" else None
+        "workflow_bench.proposer_sandbox.shutil.which",
+        lambda name: str(relocated_node) if name == "node" else real_which(name),
     )
 
     clone = tmp_path / "clone"
