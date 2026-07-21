@@ -144,7 +144,10 @@ describe.skipIf(isWin)('atomic full-rebuild swap (#2)', () => {
         path.join(repo, 'a.ts'),
         'export function renamedGreet(n: string) { return `hi ${n}`; }\nexport function caller() { return renamedGreet("x"); }\n',
       );
-      execSync('git commit -am rename', { cwd: repo, stdio: 'pipe' });
+      execSync('git -c user.name=t -c user.email=t@t commit -am rename', {
+        cwd: repo,
+        stdio: 'pipe',
+      });
       await runFullAnalysis(repo, { force: true }, { onProgress: () => {} }); // v2 → atomic swap
 
       // Same repoId: initLbug detects the swapped inode and re-opens the pool
@@ -174,7 +177,10 @@ describe.skipIf(isWin)('atomic full-rebuild swap (#2)', () => {
         path.join(repo, 'a.ts'),
         'export function greet(n: string) { return `hi ${n}`; }\nexport function caller() { return greet("x"); }\nexport function addedFn() { return 1; }\n',
       );
-      execSync('git commit -am change', { cwd: repo, stdio: 'pipe' });
+      execSync('git -c user.name=t -c user.email=t@t commit -am change', {
+        cwd: repo,
+        stdio: 'pipe',
+      });
 
       await runFullAnalysis(repo, {}, { onProgress: () => {} }); // incremental + atomic swap
       expect(await lingeringTemp(lbugPath)).toEqual([]);
