@@ -262,3 +262,37 @@ def test_phase_workspace_accepts_new_regular_review_output(tmp_path):
     artifact.write_text("new review")
 
     runner_artifacts.enforce_phase_workspace(tmp_path, before, allowed_artifact=artifact)
+
+
+def test_phase_workspace_ignores_claude_sandbox_bootstrap_noise(tmp_path):
+    # Reproduced empirically: Claude Code's own enableWeakerNestedSandbox
+    # bootstrap creates this exact set of paths on every session regardless
+    # of task or model output (a trivial "say OK" prompt was enough). None
+    # of it is something the model decided to write, so it must not read as
+    # an unauthorized planning-phase change.
+    before = runner_artifacts.workspace_snapshot(tmp_path)
+    (tmp_path / ".claude" / "agents").mkdir(parents=True)
+    (tmp_path / ".claude" / "commands").mkdir(parents=True)
+    (tmp_path / ".claude" / ".cc-writes").write_text("{}")
+    (tmp_path / ".env").write_text("")
+    (tmp_path / ".env.development.local").write_text("")
+    (tmp_path / ".npmrc").write_text("")
+    (tmp_path / "package.json").write_text("{}")
+    (tmp_path / "node_modules").mkdir()
+    (tmp_path / "node_modules" / ".bin").mkdir()
+    artifact = tmp_path / "review-output.md"
+    artifact.write_text("new review")
+
+    runner_artifacts.enforce_phase_workspace(tmp_path, before, allowed_artifact=artifact)
+
+
+def test_phase_workspace_still_rejects_a_genuinely_unauthorized_change(tmp_path):
+    # The bootstrap-noise exclusion must stay narrow: an actual source-file
+    # edit outside the allowed artifact still has to be caught.
+    before = runner_artifacts.workspace_snapshot(tmp_path)
+    (tmp_path / "src.py").write_text("changed")
+    artifact = tmp_path / "review-output.md"
+    artifact.write_text("new review")
+
+    with pytest.raises(ValueError, match="unauthorized workspace path"):
+        runner_artifacts.enforce_phase_workspace(tmp_path, before, allowed_artifact=artifact)
