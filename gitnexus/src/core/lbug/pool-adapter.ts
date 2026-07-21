@@ -423,7 +423,12 @@ setInterval(() => {
 function createConnection(db: lbug.Database): lbug.Connection {
   silenceStdout();
   try {
-    return new lbug.Connection(db);
+    const conn = new lbug.Connection(db);
+    // Bound a single query at the engine level so a pathological query cannot
+    // hang a pooled connection past the JS-side Promise.race guard (which frees
+    // the waiter but not the native call). Matches QUERY_TIMEOUT_MS.
+    conn.setQueryTimeout(QUERY_TIMEOUT_MS);
+    return conn;
   } finally {
     restoreStdout();
   }
