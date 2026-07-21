@@ -17,6 +17,7 @@ import { isLbugReady, LbugWipeError } from '../core/lbug/lbug-adapter.js';
 import { boundedCheckpointBeforeExit } from '../core/lbug/shutdown-helpers.js';
 import {
   getOsPageSize,
+  isLbugCheckpointBusyError,
   isLbugCheckpointIoError,
   isLbugPageSizeFrameError,
   isPageSizeAwareLadybug,
@@ -1618,6 +1619,23 @@ const analyzeCommandImpl = async (
           `  This usually happens when a previous analysis was interrupted mid-write.\n` +
           `  ${WAL_RECOVERY_SUGGESTION}\n`,
         { recoveryHint: 'wal-corruption' },
+      );
+      process.exitCode = 1;
+      return;
+    }
+
+    // #2599: a checkpoint IO error that also carries a busy/lock/in-use
+    // signal usually means another gitnexus process (typically a live
+    // `gitnexus mcp` server) holds the store's WAL file open — a
+    // cross-process conflict no checkpoint-threshold change can fix. Check
+    // this narrower case first so it gets a message naming the real cause.
+    if (isLbugCheckpointBusyError(err)) {
+      cliError(
+        `  LadybugDB failed while rotating/removing WAL checkpoint files —\n` +
+          `  the store looks held open by another process.\n` +
+          `  Stop any other gitnexus process using this repo (e.g. a running\n` +
+          `  "gitnexus mcp" server, or a concurrent analyze), then retry.\n`,
+        { recoveryHint: 'wal-checkpoint-held-open' },
       );
       process.exitCode = 1;
       return;
