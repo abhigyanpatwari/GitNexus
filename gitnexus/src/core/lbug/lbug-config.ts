@@ -726,6 +726,21 @@ export const HANDLE_RELEASE_PROBE_ATTEMPTS = 5;
 export const HANDLE_RELEASE_PROBE_DELAY_MS = 50;
 const HANDLE_RELEASE_LOCK_CODES = new Set(['EBUSY', 'EPERM', 'EACCES']);
 
+// Retry-budget consolidation: the read pool's read-only open retry
+// (pool-adapter.ts) and the cross-repo bridge RO open retry (group/bridge-db.ts)
+// previously kept private constants that could drift from this registry. They
+// retry the same open-time lock class ("Could not set lock" while a writer
+// rebuilds the index), so their budgets now live here alongside 1–3 above:
+//   4. POOL_OPEN_LOCK_RETRY_ATTEMPTS / POOL_OPEN_LOCK_RETRY_DELAY_MS
+//      → read pool's read-only open while `gitnexus analyze` is writing
+//   5. BRIDGE_OPEN_RETRY_ATTEMPTS / BRIDGE_OPEN_RETRY_BASE_MS / _MAX_MS
+//      → cross-repo bridge RO open race (exp back-off, capped ~3s total)
+export const POOL_OPEN_LOCK_RETRY_ATTEMPTS = 3;
+export const POOL_OPEN_LOCK_RETRY_DELAY_MS = 2000;
+export const BRIDGE_OPEN_RETRY_ATTEMPTS = 10;
+export const BRIDGE_OPEN_RETRY_BASE_MS = 100;
+export const BRIDGE_OPEN_RETRY_MAX_MS = 500;
+
 /**
  * Test-fixture directory prefixes recognized by `isTestFixturePath`.
  *

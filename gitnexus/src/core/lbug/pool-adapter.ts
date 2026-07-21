@@ -24,6 +24,8 @@ import {
   isWalCorruptionError,
   toNativeSafePath,
   WAL_RECOVERY_SUGGESTION,
+  POOL_OPEN_LOCK_RETRY_ATTEMPTS,
+  POOL_OPEN_LOCK_RETRY_DELAY_MS,
 } from './lbug-config.js';
 import {
   guardWalQuarantine,
@@ -439,8 +441,10 @@ const QUERY_TIMEOUT_MS = 30_000;
 /** Waiter queue timeout in milliseconds */
 const WAITER_TIMEOUT_MS = 15_000;
 
-const LOCK_RETRY_ATTEMPTS = 3;
-const LOCK_RETRY_DELAY_MS = 2000;
+// Read-only open retry while `gitnexus analyze` writes — budget owned by the
+// lbug-config retry registry (retry-budget consolidation).
+const LOCK_RETRY_ATTEMPTS = POOL_OPEN_LOCK_RETRY_ATTEMPTS;
+const LOCK_RETRY_DELAY_MS = POOL_OPEN_LOCK_RETRY_DELAY_MS;
 const SHADOW_REPLAY_PROBE_QUERY = 'MATCH (n) RETURN n LIMIT 1';
 
 const poolSidecarLogger = {
