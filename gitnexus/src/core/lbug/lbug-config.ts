@@ -628,6 +628,17 @@ export const isDbBusyError = (err: unknown): boolean => {
   );
 };
 
+/**
+ * True when a WAL-checkpoint IO error ALSO carries a busy/lock signal — the
+ * rotation failed because another handle (a `gitnexus mcp` server, or this
+ * process's own reader) holds the store's WAL open, rather than a permanent
+ * disk error. Reuses `isDbBusyError`'s already-tested keyword set instead of a
+ * fresh regex, so an unmatched message degrades to "IO error" rather than
+ * silently claiming a held-open cause. (#2599)
+ */
+export const isLbugCheckpointBusyError = (err: unknown): boolean =>
+  isLbugCheckpointIoError(err) && isDbBusyError(err);
+
 /** See {@link classifyDeleteAllError}. */
 export type DeleteAllErrorClass = 'benign-missing-table' | 'rethrow';
 

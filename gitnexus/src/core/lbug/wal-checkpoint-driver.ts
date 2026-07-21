@@ -35,7 +35,7 @@
 import { logger } from '../logger.js';
 import { tryFlushWAL } from './lbug-adapter.js';
 import { markWalDriverActive } from './wal-driver-state.js';
-import { isLbugCheckpointIoError } from './lbug-config.js';
+import { isLbugCheckpointIoError, isLbugCheckpointBusyError } from './lbug-config.js';
 
 /**
  * Bounded retry budget. Total worst-case wall time is dominated by the
@@ -118,6 +118,18 @@ export const runCheckpointWithRetry = async (
     { attempts: CHECKPOINT_RETRY_ATTEMPTS },
     'GitNexus: manual WAL checkpoint exhausted retry budget — surfacing IO error to caller',
   );
+  // Name the held-open cause (#2599): a checkpoint IO error that also looks
+  // busy/locked is another handle (often a `gitnexus mcp` server, or this
+  // process's own reader) holding the WAL open — not a disk fault. Annotate so
+  // the surfaced error points at the actionable fix rather than a raw IO string.
+  if (isLbugCheckpointBusyError(lastError)) {
+    const base = lastError instanceof Error ? lastError.message : String(lastError);
+    throw new Error(
+      `${base}\nGitNexus: the WAL checkpoint could not rotate because another process ` +
+        `holds the store open (e.g. a running \`gitnexus mcp\` server, or a stale reader). ` +
+        `Close other GitNexus processes on this repo and re-run.`,
+    );
+  }
   throw lastError;
 };
 
