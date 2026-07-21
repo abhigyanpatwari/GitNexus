@@ -21,6 +21,40 @@ MAX_WORKSPACE_SNAPSHOT_ENTRIES = 100_000
 MAX_WORKSPACE_SNAPSHOT_PATH_BYTES = 16 * 1024 * 1024
 MAX_WORKSPACE_SNAPSHOT_FILE_BYTES = 1024 * 1024 * 1024
 
+# Claude Code's own enableWeakerNestedSandbox bootstrap creates these paths on
+# EVERY session regardless of task or model output -- reproduced empirically
+# with a trivial "say OK" prompt: a synthetic package.json/lockfiles/
+# node_modules, a full set of .env variants, and .claude/agents,
+# .claude/commands, .claude/.cc-writes. None of this is something the model
+# decided to write, so it must not count as an "unauthorized" workspace
+# change during the planning-phase boundary check (the one thing this
+# snapshot is used for -- see workspace_snapshot's callers). Mirrors the
+# pre-existing .git exclusion below, which is the same kind of harness/tool
+# noise rather than substantive diff.
+WORKSPACE_SNAPSHOT_BOOTSTRAP_NOISE = frozenset(
+    {
+        ".claude",
+        ".env",
+        ".env.development",
+        ".env.development.local",
+        ".env.local",
+        ".env.production",
+        ".env.production.local",
+        ".env.test",
+        ".env.test.local",
+        ".gitmodules",
+        ".npmrc",
+        ".yarnrc",
+        ".yarnrc.yml",
+        "bunfig.toml",
+        "node_modules",
+        "package-lock.json",
+        "package.json",
+        "pnpm-lock.yaml",
+        "yarn.lock",
+    }
+)
+
 IMPLEMENTATION_ARMS = frozenset(
     {
         "workflow",
@@ -53,7 +87,9 @@ class VerificationResult:
 
 
 def workspace_snapshot(worktree: Path) -> dict[str, str]:
-    """Hash the workspace without following links, excluding Git internals."""
+    """Hash the workspace without following links, excluding Git internals
+    and Claude Code's own sandbox-bootstrap noise (see
+    WORKSPACE_SNAPSHOT_BOOTSTRAP_NOISE)."""
 
     root = worktree.expanduser().absolute()
     mode = root.lstat().st_mode
@@ -74,7 +110,7 @@ def workspace_snapshot(worktree: Path) -> dict[str, str]:
             raise ValueError(f"workspace snapshot directory is unreadable: {directory}: {exc}") from exc
         for entry in children:
             relative = relative_dir / entry.name
-            if relative.parts[0] == ".git":
+            if relative.parts[0] == ".git" or relative.parts[0] in WORKSPACE_SNAPSHOT_BOOTSTRAP_NOISE:
                 continue
             entry_count += 1
             path_bytes += len(relative.as_posix().encode())
