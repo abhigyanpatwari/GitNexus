@@ -127,8 +127,19 @@ export function calculateEntryPointScore(
   // Name pattern scoring
   let nameMultiplier = 1.0;
 
+  // #trpc-fork: tRPC procedures often use accessor-style names
+  // (`getX`, `setX`, `isX`) that legitimately ARE entry points. Without this
+  // exemption, the 0.3× utility penalty cancels the 3.0× tRPC framework boost
+  // (net 0.9, below baseline), preventing procedures like `setProviderCap`
+  // from becoming Process entry points and hiding them from `query` results.
+  // The exemption is scoped to tRPC router files only — non-router files still
+  // pay the utility penalty so genuine utility helpers stay deprioritized.
+  const isTrpcRouter =
+    filePath && /\/(routers|trpc\/routers|server\/routers)\//i.test(filePath.replace(/\\/g, '/'));
+  const skipUtilityPenalty = isTrpcRouter && detectFrameworkFromPath(filePath).framework === 'trpc';
+
   // Check negative patterns first (utilities get penalized)
-  if (UTILITY_PATTERNS.some((p) => p.test(name))) {
+  if (!skipUtilityPenalty && UTILITY_PATTERNS.some((p) => p.test(name))) {
     nameMultiplier = 0.3; // Significant penalty
     reasons.push('utility-pattern');
   } else {
