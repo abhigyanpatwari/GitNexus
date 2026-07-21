@@ -22,6 +22,7 @@ import { randomBytes } from 'crypto';
 import { getInferredRepoName, resolveRepoIdentityRoot } from './git.js';
 import { retryRename } from './fs-atomic.js';
 import { logger } from '../core/logger.js';
+import type { MoveCompilerIdentity, MoveFlowReleaseSelection } from '../core/move/constants.js';
 import {
   branchSlug,
   BRANCHES_DIR,
@@ -162,10 +163,14 @@ export interface RepoMeta {
    */
   fileHashes?: Record<string, string>;
   /**
-   * Whether compiler-backed Move ingestion was available for this index.
-   * Absent on legacy metadata and non-Move repositories.
+   * Whether the persisted Move facts are compiler-backed. Absent on legacy
+   * metadata and non-Move repositories.
    */
   moveIngestAvailable?: boolean;
+  /** Compiler identity that produced the persisted Move facts. */
+  moveCompilerIdentity?: MoveCompilerIdentity;
+  /** Managed release coordinates, kept separate from the binary fingerprint. */
+  moveFlowReleaseSelection?: MoveFlowReleaseSelection;
   /**
    * Crash-recovery dirty flag — a generic marker written to the metadata
    * file (gitnexus.json + its meta.json mirror) BEFORE any destructive DB

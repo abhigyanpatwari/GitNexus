@@ -11,7 +11,7 @@ vi.mock('node:child_process', () => ({
 import {
   MoveFlowMcpClient,
   MoveFlowToolCallError,
-  tryCreateMoveFlowClient,
+  tryResolveMoveFlowClient,
   detectMoveFlowCapabilities,
 } from '../../../src/core/move/mcp-client.js';
 import { spawn, execFileSync } from 'node:child_process';
@@ -29,16 +29,15 @@ function createMockProc() {
   return proc;
 }
 
-describe('tryCreateMoveFlowClient', () => {
+describe('tryResolveMoveFlowClient', () => {
   beforeEach(() => {
     vi.resetAllMocks();
     delete process.env.MOVE_FLOW;
   });
 
-  it('returns MoveFlowMcpClient when binary is found', () => {
+  it('resolves a client when the binary is found', () => {
     mockExecFileSync.mockReturnValue('move-flow 2.0.0');
-    const client = tryCreateMoveFlowClient();
-    expect(client).toBeInstanceOf(MoveFlowMcpClient);
+    expect(tryResolveMoveFlowClient()?.client).toBeInstanceOf(MoveFlowMcpClient);
     expect(mockExecFileSync).toHaveBeenCalledWith(
       'move-flow',
       ['--version'],
@@ -46,11 +45,21 @@ describe('tryCreateMoveFlowClient', () => {
     );
   });
 
+  it('returns the reported version with the resolved client', () => {
+    mockExecFileSync.mockReturnValue('move-flow 2.3.4-rc1');
+
+    expect(tryResolveMoveFlowClient('/custom/move-flow')).toMatchObject({
+      client: expect.any(MoveFlowMcpClient),
+      version: '2.3.4-rc1',
+    });
+    expect(mockExecFileSync).toHaveBeenCalledOnce();
+  });
+
   it('returns null when binary is not found', () => {
     mockExecFileSync.mockImplementation(() => {
       throw new Error('not found');
     });
-    expect(tryCreateMoveFlowClient()).toBeNull();
+    expect(tryResolveMoveFlowClient()).toBeNull();
   });
 
   it.each([
@@ -60,8 +69,7 @@ describe('tryCreateMoveFlowClient', () => {
   ])('passes an explicit binary path directly to execFileSync: %s', (binary) => {
     process.env.MOVE_FLOW = binary;
     mockExecFileSync.mockReturnValue('move-flow 2.0.0');
-    const client = tryCreateMoveFlowClient();
-    expect(client).toBeInstanceOf(MoveFlowMcpClient);
+    expect(tryResolveMoveFlowClient()?.client).toBeInstanceOf(MoveFlowMcpClient);
     expect(mockExecFileSync).toHaveBeenCalledWith(binary, ['--version'], {
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'ignore'],
@@ -73,7 +81,7 @@ describe('tryCreateMoveFlowClient', () => {
     'rejects an incompatible version response: %s',
     (versionOutput) => {
       mockExecFileSync.mockReturnValue(versionOutput);
-      expect(tryCreateMoveFlowClient('/custom/move-flow')).toBeNull();
+      expect(tryResolveMoveFlowClient('/custom/move-flow')).toBeNull();
     },
   );
 
@@ -81,7 +89,9 @@ describe('tryCreateMoveFlowClient', () => {
     'accepts a compatible-major version response: %s',
     (versionOutput) => {
       mockExecFileSync.mockReturnValue(versionOutput);
-      expect(tryCreateMoveFlowClient('/custom/move-flow')).toBeInstanceOf(MoveFlowMcpClient);
+      expect(tryResolveMoveFlowClient('/custom/move-flow')?.client).toBeInstanceOf(
+        MoveFlowMcpClient,
+      );
     },
   );
 });
@@ -196,6 +206,77 @@ describe('MoveFlowMcpClient', () => {
     await vi.advanceTimersByTimeAsync(25);
     await failure;
     expect(proc.kill).toHaveBeenCalledOnce();
+    expect((client as any).proc).toBeNull();
+    expect((client as any).initialized).toBe(false);
+    expect((client as any).initPromise).toBeNull();
+    expect((client as any).pending.size).toBe(0);
+    await client.shutdown();
+  });
+
+  it('ignores a late response after a tool timeout and starts a fresh child', async () => {
+    vi.useFakeTimers();
+    process.env.GITNEXUS_MOVE_FLOW_TIMEOUT_MS = '25';
+    const timedOutProc = createMockProc();
+    const retryProc = createMockProc();
+    mockSpawn.mockReturnValueOnce(timedOutProc as any).mockReturnValueOnce(retryProc as any);
+
+    timedOutProc.stdin.on('data', (chunk: Buffer) => {
+      for (const line of chunk.toString().split('\n')) {
+        if (!line.trim()) continue;
+        const msg = JSON.parse(line);
+        if (msg.method === 'initialize') {
+          timedOutProc.stdout.write(
+            JSON.stringify({ jsonrpc: '2.0', id: msg.id, result: {} }) + '\n',
+          );
+        }
+      }
+    });
+    const client = new MoveFlowMcpClient('move-flow');
+    const first = client.facts('/slow');
+    const failure = expect(first).rejects.toThrow("move-flow 'move_package_query' timed out");
+    await vi.advanceTimersByTimeAsync(25);
+    await failure;
+
+    timedOutProc.stdout.write(
+      JSON.stringify({
+        jsonrpc: '2.0',
+        id: 2,
+        result: { content: [{ type: 'text', text: '{"late":true}' }] },
+      }) + '\n',
+    );
+    expect((client as any).pending.size).toBe(0);
+
+    serveToolsCall(retryProc, {
+      result: { content: [{ type: 'text', text: '{"fresh":true}' }], isError: false },
+    });
+    await expect(client.facts('/retry')).resolves.toEqual({ fresh: true });
+    expect(mockSpawn).toHaveBeenCalledTimes(2);
+    await client.shutdown();
+  });
+
+  it('propagates a capabilities transport timeout and clears it for retry', async () => {
+    vi.useFakeTimers();
+    const proc = createMockProc();
+    mockSpawn.mockReturnValue(proc as any);
+    proc.stdin.on('data', (chunk: Buffer) => {
+      for (const line of chunk.toString().split('\n')) {
+        if (!line.trim()) continue;
+        const msg = JSON.parse(line);
+        if (msg.method === 'initialize') {
+          proc.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: msg.id, result: {} }) + '\n');
+        }
+      }
+    });
+
+    const client = new MoveFlowMcpClient('move-flow');
+    const capabilities = client.capabilities();
+    const failure = expect(capabilities).rejects.toThrow("move-flow 'tools/list' timed out");
+    await vi.advanceTimersByTimeAsync(30_000);
+    await failure;
+
+    expect(proc.kill).toHaveBeenCalledOnce();
+    expect((client as any).capsPromise).toBeNull();
+    expect((client as any).proc).toBeNull();
     await client.shutdown();
   });
 

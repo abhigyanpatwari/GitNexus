@@ -1,27 +1,37 @@
-import { createHash, randomUUID } from 'node:crypto';
+import { createHash } from 'node:crypto';
 import { execFile } from 'node:child_process';
-import { createReadStream, createWriteStream, type Dirent, type Stats } from 'node:fs';
+import { constants as fsConstants, type Dirent } from 'node:fs';
 import {
+  access,
   chmod,
   copyFile,
-  type FileHandle,
+  lstat,
   mkdir,
   mkdtemp,
-  open,
   readFile,
   readdir,
   rename,
   rm,
-  stat,
-  utimes,
   writeFile,
 } from 'node:fs/promises';
-import type { ClientRequest, IncomingMessage } from 'node:http';
-import { get as httpsGet, type RequestOptions } from 'node:https';
+import { get as httpsGet } from 'node:https';
 import os from 'node:os';
 import path from 'node:path';
-import { pipeline } from 'node:stream/promises';
-import { MOVE_FLOW_RELEASE } from './release.js';
+import {
+  downloadToFile,
+  MAX_ARCHIVE_BYTES,
+  sha256File,
+  verifyArchiveChecksum,
+} from './artifact-download.js';
+import { acquireInstallLock, moveFlowInstallLockWaitMs } from './install-lock.js';
+import type { MoveFlowReleaseSelection } from './constants.js';
+import { isCompatibleMoveFlowVersion, MOVE_FLOW_RELEASE } from './release.js';
+
+export interface VerifiedMoveFlowBinary {
+  binaryPath: string;
+  version: string;
+  fingerprint: string;
+}
 
 export type MoveFlowInstallStatus =
   | 'available'
@@ -32,8 +42,9 @@ export type MoveFlowInstallStatus =
 
 export interface MoveFlowInstallResult {
   status: MoveFlowInstallStatus;
-  binaryPath?: string;
   message?: string;
+  /** Verified runtime descriptor, set on 'available' and 'installed'. */
+  binary?: VerifiedMoveFlowBinary;
 }
 
 export interface MoveFlowInstallConfig {
@@ -52,6 +63,7 @@ export interface MoveFlowInstallConfig {
 }
 
 interface MoveFlowCacheMetadata {
+  schemaVersion: 1;
   version: string;
   repository: string;
   tag: string;
@@ -60,63 +72,27 @@ interface MoveFlowCacheMetadata {
   binarySha256: string;
 }
 
-export interface LockOptions {
-  waitTimeoutMs?: number;
-  leaseMs?: number;
-  heartbeatMs?: number;
-  retryMs?: number;
-}
-
-export interface InstallLockIo {
-  openLock(lockPath: string): Promise<FileHandle>;
-  removeLock(lockPath: string): Promise<void>;
-}
-
 interface PowerShellInvocation {
   args: string[];
   env: NodeJS.ProcessEnv;
 }
 
-type HttpsGet = (
-  url: string | URL,
-  options: RequestOptions,
-  callback: (response: IncomingMessage) => void,
-) => ClientRequest;
-
 const DEFAULT_HTTP_TIMEOUT_MS = 30_000;
-const DEFAULT_LOCK_WAIT_MS = 60_000;
-const INSTALL_COMPLETION_GRACE_MS = 60_000;
-const DEFAULT_LOCK_LEASE_MS = 60_000;
-const DEFAULT_HEARTBEAT_MS = 5_000;
-const DEFAULT_LOCK_RETRY_MS = 100;
-
-const defaultLockIo: InstallLockIo = {
-  openLock: (lockPath) => open(lockPath, 'wx'),
-  removeLock: async (lockPath) => {
-    await rm(lockPath, { force: true });
-  },
-};
-
-const wait = (ms: number): Promise<void> =>
-  new Promise((resolve) => {
-    setTimeout(resolve, ms);
-  });
+const MAX_CHECKSUM_BYTES = 1024 * 1024;
+const MAX_BINARY_BYTES = 128 * 1024 * 1024;
+const MAX_METADATA_BYTES = 64 * 1024;
 
 const parsePositiveInteger = (value: string | undefined, fallback: number): number => {
   const parsed = Number(value);
   return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : fallback;
 };
 
-/**
- * A waiter must outlive a healthy cold install: two sequential downloads plus
- * checksum, extraction, copy, and the executable version probe.
- */
-export const moveFlowInstallLockWaitMs = (httpTimeoutMs: number): number =>
-  Math.max(DEFAULT_LOCK_WAIT_MS, httpTimeoutMs * 2 + INSTALL_COMPLETION_GRACE_MS);
-
 const validateReleaseCoordinates = (version: string, repository: string, tag: string): void => {
   if (!/^\d+\.\d+\.\d+$/.test(version)) {
     throw new Error(`invalid move-flow version '${version}'; expected X.Y.Z`);
+  }
+  if (!isCompatibleMoveFlowVersion(version)) {
+    throw new Error(`unsupported move-flow major version '${version}'`);
   }
   if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repository)) {
     throw new Error(`invalid move-flow repository '${repository}'; expected owner/name`);
@@ -156,10 +132,9 @@ const execFileOutput = (
     );
   });
 
-const linuxNeedsCompatBuild = async (env: NodeJS.ProcessEnv): Promise<boolean> => {
-  if (process.platform !== 'linux') return false;
-  if (env.GITNEXUS_MOVE_FLOW_COMPAT === '1') return true;
+let detectedLinuxCompatibility: Promise<boolean> | undefined;
 
+const detectLinuxCompatibility = async (): Promise<boolean> => {
   if (process.arch === 'x64') {
     try {
       const cpuinfo = await readFile('/proc/cpuinfo', 'utf8');
@@ -172,13 +147,20 @@ const linuxNeedsCompatBuild = async (env: NodeJS.ProcessEnv): Promise<boolean> =
   try {
     const output = await execFileOutput('ldd', ['--version'], { timeout: 3_000 });
     const match = /(\d+)\.(\d+)/.exec(output.split('\n')[0] ?? '');
-    if (!match) return false;
+    if (!match) return true;
     const major = Number(match[1]);
     const minor = Number(match[2]);
     return major < 2 || (major === 2 && minor < 34);
   } catch {
-    return false;
+    return true;
   }
+};
+
+const linuxNeedsCompatBuild = (env: NodeJS.ProcessEnv): Promise<boolean> => {
+  if (process.platform !== 'linux') return Promise.resolve(false);
+  if (env.GITNEXUS_MOVE_FLOW_COMPAT === '1') return Promise.resolve(true);
+  detectedLinuxCompatibility ??= detectLinuxCompatibility();
+  return detectedLinuxCompatibility;
 };
 
 const releaseTargetForPlatform = async (
@@ -249,41 +231,20 @@ export async function getMoveFlowInstallConfig(
   };
 }
 
-export const sha256File = async (file: string): Promise<string> => {
-  const hash = createHash('sha256');
-  for await (const chunk of createReadStream(file)) hash.update(chunk);
-  return hash.digest('hex');
-};
-
-export const expectedSha = (sumsText: string, assetName: string): string | null => {
-  for (const raw of sumsText.split('\n')) {
-    const line = raw.trim();
-    if (!line) continue;
-    const standard = /^([0-9a-f]{64})[ \t*]+(\S.*)$/i.exec(line);
-    if (standard && standard[2] === assetName) return standard[1].toLowerCase();
-    const bsd = /^SHA256\s*\((.*)\)\s*=\s*([0-9a-f]{64})$/i.exec(line);
-    if (bsd && bsd[1] === assetName) return bsd[2].toLowerCase();
-  }
-  return null;
-};
-
-export type ChecksumVerification =
-  | { status: 'match'; expected: string; actual: string }
-  | { status: 'mismatch'; expected: string; actual: string }
-  | { status: 'missing' };
-
-export const verifyArchiveChecksum = async (
-  sumsText: string,
-  assetName: string,
-  archivePath: string,
-): Promise<ChecksumVerification> => {
-  const expected = expectedSha(sumsText, assetName);
-  if (!expected) return { status: 'missing' };
-  const actual = await sha256File(archivePath);
-  return actual === expected
-    ? { status: 'match', expected, actual }
-    : { status: 'mismatch', expected, actual };
-};
+/** Resolve the configured release without downloading or starting move-flow. */
+export async function getMoveFlowReleaseSelection(
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<MoveFlowReleaseSelection | undefined> {
+  const config = await getMoveFlowInstallConfig(env);
+  return config
+    ? {
+        version: config.version,
+        repository: config.repository,
+        tag: config.tag,
+        assetName: config.assetName,
+      }
+    : undefined;
+}
 
 export const powershellExpandArchiveInvocation = (
   archive: string,
@@ -306,159 +267,6 @@ export const powershellExpandArchiveInvocation = (
   };
 };
 
-export const downloadToFile = async (
-  url: string,
-  destination: string,
-  timeoutMs: number,
-  get: HttpsGet = httpsGet,
-): Promise<void> => {
-  const partial = `${destination}.partial`;
-  const deadline = Date.now() + timeoutMs;
-
-  const request = (target: string, redirects: number): Promise<void> =>
-    new Promise((resolve, reject) => {
-      if (redirects > 5) {
-        reject(new Error('too many redirects'));
-        return;
-      }
-
-      const req = get(target, {}, (response) => {
-        const status = response.statusCode ?? 0;
-        if (status >= 300 && status < 400 && response.headers.location) {
-          response.once('error', reject);
-          response.resume();
-          request(new URL(response.headers.location, target).toString(), redirects + 1).then(
-            resolve,
-            reject,
-          );
-          return;
-        }
-        if (status !== 200) {
-          response.once('error', reject);
-          response.resume();
-          reject(new Error(`HTTP ${status} for ${target}`));
-          return;
-        }
-
-        pipeline(response, createWriteStream(partial))
-          .then(() => rename(partial, destination))
-          .then(resolve, reject);
-      });
-      const timeout = setTimeout(
-        () => req.destroy(new Error('download timed out')),
-        Math.max(1, deadline - Date.now()),
-      );
-      req.once('close', () => clearTimeout(timeout));
-      req.on('error', reject);
-    });
-
-  try {
-    await request(url, 0);
-  } catch (error) {
-    await rm(partial, { force: true });
-    throw error;
-  }
-};
-
-const readLock = async (lockPath: string): Promise<string | null> => {
-  try {
-    const parsed = JSON.parse(await readFile(lockPath, 'utf8')) as { token?: unknown };
-    return typeof parsed.token === 'string' ? parsed.token : null;
-  } catch {
-    return null;
-  }
-};
-
-const statOrNull = async (file: string): Promise<Stats | null> => {
-  try {
-    return await stat(file);
-  } catch {
-    return null;
-  }
-};
-
-const removeStaleLock = async (lockPath: string, leaseMs: number): Promise<void> => {
-  const first = await statOrNull(lockPath);
-  if (!first || Date.now() - first.mtimeMs <= leaseMs) return;
-  const token = await readLock(lockPath);
-
-  await wait(25);
-  const second = await statOrNull(lockPath);
-  if (
-    !second ||
-    second.mtimeMs !== first.mtimeMs ||
-    Date.now() - second.mtimeMs <= leaseMs ||
-    (await readLock(lockPath)) !== token
-  ) {
-    return;
-  }
-  await rm(lockPath, { force: true });
-};
-
-export async function acquireInstallLock(
-  lockPath: string,
-  options: LockOptions = {},
-  io: InstallLockIo = defaultLockIo,
-): Promise<() => Promise<void>> {
-  const waitTimeoutMs = options.waitTimeoutMs ?? DEFAULT_LOCK_WAIT_MS;
-  const leaseMs = options.leaseMs ?? DEFAULT_LOCK_LEASE_MS;
-  const heartbeatMs = options.heartbeatMs ?? DEFAULT_HEARTBEAT_MS;
-  const retryMs = options.retryMs ?? DEFAULT_LOCK_RETRY_MS;
-  const deadline = Date.now() + waitTimeoutMs;
-  const token = randomUUID();
-
-  await mkdir(path.dirname(lockPath), { recursive: true });
-  while (Date.now() < deadline) {
-    let created = false;
-    try {
-      const handle = await io.openLock(lockPath);
-      created = true;
-      try {
-        await handle.writeFile(JSON.stringify({ token, pid: process.pid }));
-      } finally {
-        await handle.close();
-      }
-
-      let heartbeatRunning = false;
-      const heartbeat = setInterval(() => {
-        if (heartbeatRunning) return;
-        heartbeatRunning = true;
-        void (async () => {
-          if ((await readLock(lockPath)) !== token) return;
-          const now = new Date();
-          await utimes(lockPath, now, now);
-        })()
-          .catch(() => {})
-          .finally(() => {
-            heartbeatRunning = false;
-          });
-      }, heartbeatMs);
-      heartbeat.unref();
-
-      return async () => {
-        clearInterval(heartbeat);
-        if ((await readLock(lockPath)) === token) await rm(lockPath, { force: true });
-      };
-    } catch (error) {
-      if (created) {
-        await io.removeLock(lockPath).catch(() => {});
-      }
-      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
-      await removeStaleLock(lockPath, leaseMs);
-      await wait(retryMs);
-    }
-  }
-
-  throw new Error('timed out waiting for another move-flow installation');
-}
-
-export async function settleMoveFlowCleanup(
-  ...tasks: Array<(() => Promise<unknown>) | undefined>
-): Promise<void> {
-  const active = tasks.filter((task): task is () => Promise<unknown> => task !== undefined);
-  await Promise.allSettled(active.map((task) => Promise.resolve().then(task)));
-}
-
 export const reportedMoveFlowVersion = (output: string): string | null =>
   /(?:^|\s)v?(\d+\.\d+\.\d+)(?:\s|$)/.exec(output)?.[1] ?? null;
 
@@ -480,33 +288,69 @@ const expectedMetadata = (
   assetName: config.assetName,
 });
 
-const validCachedInstall = async (config: MoveFlowInstallConfig): Promise<boolean> => {
+const verifiedBinary = (
+  config: MoveFlowInstallConfig,
+  metadata: MoveFlowCacheMetadata,
+): VerifiedMoveFlowBinary => ({
+  binaryPath: config.binaryPath,
+  version: metadata.version,
+  fingerprint: createHash('sha256')
+    .update(
+      `${metadata.repository}\0${metadata.tag}\0${metadata.assetName}\0${metadata.binarySha256}`,
+    )
+    .digest('hex'),
+});
+
+const validCachedInstall = async (
+  config: MoveFlowInstallConfig,
+): Promise<VerifiedMoveFlowBinary | null> => {
   try {
+    const metadataStat = await lstat(config.metadataPath);
+    if (
+      !metadataStat.isFile() ||
+      metadataStat.size <= 0 ||
+      metadataStat.size > MAX_METADATA_BYTES
+    ) {
+      return null;
+    }
     const metadata = JSON.parse(
       await readFile(config.metadataPath, 'utf8'),
     ) as MoveFlowCacheMetadata;
     const expected = expectedMetadata(config);
+    const binaryStat = await lstat(config.binaryPath);
+    if (!binaryStat.isFile() || binaryStat.size <= 0 || binaryStat.size > MAX_BINARY_BYTES) {
+      return null;
+    }
+    await access(
+      config.binaryPath,
+      process.platform === 'win32' ? fsConstants.F_OK : fsConstants.X_OK,
+    );
     if (
+      metadata.schemaVersion !== 1 ||
       metadata.version !== expected.version ||
       metadata.repository !== expected.repository ||
       metadata.tag !== expected.tag ||
       metadata.assetName !== expected.assetName ||
       metadata.binarySha256 !== (await sha256File(config.binaryPath))
     ) {
-      return false;
+      return null;
     }
-    return exactVersionMatches(config.binaryPath, config.version);
+    if (!(await exactVersionMatches(config.binaryPath, config.version))) {
+      return null;
+    }
+    return verifiedBinary(config, metadata);
   } catch {
-    return false;
+    return null;
   }
 };
 
-export async function findCachedMoveFlow(
+export async function findCachedMoveFlowBinary(
   env: NodeJS.ProcessEnv = process.env,
-): Promise<string | null> {
+): Promise<VerifiedMoveFlowBinary | null> {
   try {
     const config = await getMoveFlowInstallConfig(env);
-    return config && (await validCachedInstall(config)) ? config.binaryPath : null;
+    if (!config) return null;
+    return validCachedInstall(config);
   } catch {
     return null;
   }
@@ -533,6 +377,7 @@ const extractZip = async (archive: string, destination: string): Promise<void> =
 const findExtractedBinary = async (root: string, binaryName: string): Promise<string | null> => {
   const stack = [root];
   const names = new Set([binaryName, 'move-flow']);
+  const candidates: string[] = [];
   while (stack.length > 0) {
     const current = stack.pop();
     if (!current) break;
@@ -540,10 +385,15 @@ const findExtractedBinary = async (root: string, binaryName: string): Promise<st
     for (const entry of entries) {
       const full = path.join(current, entry.name);
       if (entry.isDirectory()) stack.push(full);
-      else if (names.has(entry.name)) return full;
+      else if (entry.isFile() && names.has(entry.name)) candidates.push(full);
     }
   }
-  return null;
+  if (candidates.length !== 1) return null;
+  const candidate = candidates[0];
+  const binaryStat = await lstat(candidate);
+  return binaryStat.isFile() && binaryStat.size > 0 && binaryStat.size <= MAX_BINARY_BYTES
+    ? candidate
+    : null;
 };
 
 export async function installMoveFlow(
@@ -572,8 +422,9 @@ export async function installMoveFlow(
       message: `unsupported platform ${process.platform}-${process.arch}; set MOVE_FLOW to provide a binary`,
     };
   }
-  if (await validCachedInstall(config)) {
-    return { status: 'available', binaryPath: config.binaryPath };
+  const cached = await validCachedInstall(config);
+  if (cached) {
+    return { status: 'available', binary: cached };
   }
 
   let releaseLock: (() => Promise<void>) | undefined;
@@ -583,19 +434,28 @@ export async function installMoveFlow(
     releaseLock = await acquireInstallLock(config.lockPath, {
       waitTimeoutMs: moveFlowInstallLockWaitMs(config.httpTimeoutMs),
     });
-    if (await validCachedInstall(config)) {
-      return { status: 'available', binaryPath: config.binaryPath };
+    const published = await validCachedInstall(config);
+    if (published) {
+      return { status: 'available', binary: published };
     }
 
     tempDir = await mkdtemp(path.join(os.tmpdir(), 'move-flow-'));
     const archivePath = path.join(tempDir, config.assetName);
     const sumsPath = path.join(tempDir, 'SHA256SUMS');
     const extractDir = path.join(tempDir, 'extract');
-    await downloadToFile(`${config.releaseBase}/SHA256SUMS`, sumsPath, config.httpTimeoutMs);
+    await downloadToFile(
+      `${config.releaseBase}/SHA256SUMS`,
+      sumsPath,
+      config.httpTimeoutMs,
+      httpsGet,
+      MAX_CHECKSUM_BYTES,
+    );
     await downloadToFile(
       `${config.releaseBase}/${config.assetName}`,
       archivePath,
       config.httpTimeoutMs,
+      httpsGet,
+      MAX_ARCHIVE_BYTES,
     );
 
     const verification = await verifyArchiveChecksum(
@@ -638,6 +498,7 @@ export async function installMoveFlow(
     }
 
     const metadata: MoveFlowCacheMetadata = {
+      schemaVersion: 1,
       ...expectedMetadata(config),
       archiveSha256: verification.actual,
       binarySha256: await sha256File(stagedBinary),
@@ -647,17 +508,17 @@ export async function installMoveFlow(
     await rm(config.installDir, { recursive: true, force: true });
     await rename(stagedDir, config.installDir);
     stagedDir = undefined;
-    return { status: 'installed', binaryPath: config.binaryPath };
+    return { status: 'installed', binary: verifiedBinary(config, metadata) };
   } catch (error) {
     return {
       status: 'failed',
       message: `installation failed: ${error instanceof Error ? error.message : String(error)}`,
     };
   } finally {
-    await settleMoveFlowCleanup(
-      tempDir ? () => rm(tempDir, { recursive: true, force: true }) : undefined,
-      stagedDir ? () => rm(stagedDir, { recursive: true, force: true }) : undefined,
-      releaseLock,
-    );
+    await Promise.allSettled([
+      tempDir && rm(tempDir, { recursive: true, force: true }),
+      stagedDir && rm(stagedDir, { recursive: true, force: true }),
+      releaseLock?.(),
+    ]);
   }
 }

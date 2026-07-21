@@ -1,88 +1,152 @@
-import { MoveFlowMcpClient, tryCreateMoveFlowClient } from './mcp-client.js';
-import { findCachedMoveFlow, installMoveFlow, type MoveFlowInstallResult } from './install.js';
-import { MOVE_FLOW_RELEASE } from './release.js';
+import { createHash } from 'node:crypto';
+import type { MoveCompilerIdentity } from './constants.js';
+import {
+  createMoveFlowClient,
+  tryResolveMoveFlowClient,
+  type MoveFlowMcpClient,
+  type ResolvedMoveFlowClient,
+} from './mcp-client.js';
+import {
+  findCachedMoveFlowBinary,
+  installMoveFlow,
+  type MoveFlowInstallResult,
+  type VerifiedMoveFlowBinary,
+} from './install.js';
+import { isCompatibleMoveFlowVersion, MOVE_FLOW_RELEASE } from './release.js';
 
-// One install attempt per dependency set per process: concurrent callers share
-// the in-flight promise, and a settled failure is not retried until restart
-// (an explicit MOVE_FLOW or a PATH/cache binary is still re-probed every call).
 const installAttempts = new WeakMap<
   MoveFlowProvisionDependencies,
   Promise<MoveFlowInstallResult>
 >();
 
+export interface ProvisionedMoveFlow {
+  client: MoveFlowMcpClient;
+  identity: MoveCompilerIdentity;
+}
+
 export interface MoveFlowProvisionOptions {
   onLog?: (message: string) => void;
+  install?: boolean;
 }
 
 export interface MoveFlowProvisionDependencies {
-  resolveClient: (binaryPath?: string) => MoveFlowMcpClient | null;
-  findCached: () => Promise<string | null>;
+  resolveClient: (binaryPath?: string) => ResolvedMoveFlowClient | null;
+  createClient: (binaryPath: string) => MoveFlowMcpClient;
+  findCached: () => Promise<VerifiedMoveFlowBinary | null>;
   install: () => Promise<MoveFlowInstallResult>;
 }
 
 const defaultDependencies: MoveFlowProvisionDependencies = {
-  resolveClient: tryCreateMoveFlowClient,
-  findCached: findCachedMoveFlow,
+  resolveClient: tryResolveMoveFlowClient,
+  createClient: createMoveFlowClient,
+  findCached: findCachedMoveFlowBinary,
   install: installMoveFlow,
 };
 
-/**
- * Resolve move-flow, provisioning the pinned release only when a caller has
- * already detected Move code. Explicit MOVE_FLOW overrides remain authoritative:
- * an invalid override is reported instead of silently replaced.
- */
-export async function ensureMoveFlowClient(
+const localIdentity = (
+  source: 'explicit' | 'path',
+  locator: string,
+  version: string,
+): MoveCompilerIdentity => ({
+  version,
+  source,
+  fingerprint: createHash('sha256').update(`${source}\0${locator}\0${version}`).digest('hex'),
+});
+
+const verifiedRuntime = (
+  binary: VerifiedMoveFlowBinary,
+  dependencies: MoveFlowProvisionDependencies,
+): ProvisionedMoveFlow | null =>
+  isCompatibleMoveFlowVersion(binary.version)
+    ? {
+        client: dependencies.createClient(binary.binaryPath),
+        identity: {
+          version: binary.version,
+          source: 'release',
+          fingerprint: binary.fingerprint,
+        },
+      }
+    : null;
+
+const getInstallAttempt = (
+  dependencies: MoveFlowProvisionDependencies,
+): Promise<MoveFlowInstallResult> => {
+  const active = installAttempts.get(dependencies);
+  if (active) return active;
+
+  const created = Promise.resolve().then(dependencies.install);
+  installAttempts.set(dependencies, created);
+  const clear = (): void => {
+    if (installAttempts.get(dependencies) === created) installAttempts.delete(dependencies);
+  };
+  void created.then(clear, clear);
+  return created;
+};
+
+/** Resolve move-flow after the caller has already detected Move code. */
+export async function ensureMoveFlowRuntime(
   options: MoveFlowProvisionOptions = {},
   dependencies: MoveFlowProvisionDependencies = defaultDependencies,
-): Promise<MoveFlowMcpClient | null> {
-  if (process.env.MOVE_FLOW) {
-    const explicit = dependencies.resolveClient(process.env.MOVE_FLOW);
-    if (explicit) return explicit;
+): Promise<ProvisionedMoveFlow | null> {
+  const explicitPath = process.env.MOVE_FLOW;
+  if (explicitPath) {
+    const resolved = dependencies.resolveClient(explicitPath);
+    if (resolved) {
+      return {
+        client: resolved.client,
+        identity: localIdentity('explicit', explicitPath, resolved.version),
+      };
+    }
     options.onLog?.(
-      `MOVE_FLOW points to an unavailable binary (${process.env.MOVE_FLOW}); automatic installation was skipped.`,
+      `MOVE_FLOW points to an unavailable binary (${explicitPath}); automatic installation was skipped.`,
     );
     return null;
   }
 
-  const cachedPath = await dependencies.findCached();
-  if (cachedPath) {
-    const cached = dependencies.resolveClient(cachedPath);
-    if (cached) return cached;
+  const cached = await dependencies.findCached();
+  if (cached) {
+    const runtime = verifiedRuntime(cached, dependencies);
+    if (runtime) return runtime;
   }
 
   const existing = dependencies.resolveClient();
-  if (existing) return existing;
-
-  let attempt = installAttempts.get(dependencies);
-  if (!attempt) {
-    options.onLog?.(
-      `Move code detected; ensuring move-flow ${MOVE_FLOW_RELEASE.version} is available.`,
-    );
-    attempt = dependencies.install();
-    installAttempts.set(dependencies, attempt);
+  if (existing) {
+    // The locator must be stable across shells: $PATH itself differs between
+    // terminals/CI steps, and a fingerprint churn forces a full re-index.
+    return {
+      client: existing.client,
+      identity: localIdentity('path', 'move-flow', existing.version),
+    };
   }
 
+  if (options.install === false) return null;
+
+  options.onLog?.(
+    `Move code detected; ensuring move-flow ${MOVE_FLOW_RELEASE.version} is available.`,
+  );
   let result: MoveFlowInstallResult;
   try {
-    result = await attempt;
+    result = await getInstallAttempt(dependencies);
   } catch (err) {
     options.onLog?.(
       `move-flow installation failed: ${err instanceof Error ? err.message : String(err)}; ` +
-        '.move files will not be indexed (not retried in this process).',
+        '.move files will not be indexed.',
     );
     return null;
   }
 
-  if (!result.binaryPath) {
+  if (!result.binary) {
     options.onLog?.(
-      `move-flow is unavailable${result.message ? `: ${result.message}` : ''}; .move files will not be indexed.`,
+      `move-flow is unavailable${result.message ? `: ${result.message}` : ''}; ` +
+        '.move files will not be indexed.',
     );
     return null;
   }
-
-  const installed = dependencies.resolveClient(result.binaryPath);
-  if (installed) return installed;
-
-  options.onLog?.(`Installed move-flow failed its runtime probe at ${result.binaryPath}.`);
-  return null;
+  const runtime = verifiedRuntime(result.binary, dependencies);
+  if (!runtime) {
+    options.onLog?.(
+      `move-flow ${result.binary.version} is protocol-incompatible; .move files will not be indexed.`,
+    );
+  }
+  return runtime;
 }

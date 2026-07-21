@@ -1,9 +1,13 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { MoveFlowMcpClient } from '../../../src/core/move/mcp-client.js';
+import type {
+  MoveFlowMcpClient,
+  ResolvedMoveFlowClient,
+} from '../../../src/core/move/mcp-client.js';
 import {
-  ensureMoveFlowClient,
+  ensureMoveFlowRuntime,
   type MoveFlowProvisionDependencies,
 } from '../../../src/core/move/provision.js';
+import type { VerifiedMoveFlowBinary } from '../../../src/core/move/install.js';
 
 const originalMoveFlow = process.env.MOVE_FLOW;
 
@@ -13,95 +17,146 @@ afterEach(() => {
 });
 
 const client = {} as MoveFlowMcpClient;
+const resolved: ResolvedMoveFlowClient = { client, version: '2.0.0' };
+const cached: VerifiedMoveFlowBinary = {
+  binaryPath: '/cache/move-flow',
+  version: '2.0.0',
+  fingerprint: 'release-fingerprint',
+};
 
-describe('ensureMoveFlowClient', () => {
+const dependencies = (
+  overrides: Partial<MoveFlowProvisionDependencies> = {},
+): MoveFlowProvisionDependencies => ({
+  resolveClient: vi.fn(() => null),
+  createClient: vi.fn(() => client),
+  findCached: vi.fn(async () => null),
+  install: vi.fn(async () => ({ status: 'failed', message: 'offline' })),
+  ...overrides,
+});
+
+describe('ensureMoveFlowRuntime', () => {
   it('does not install when an explicit or PATH binary already resolves', async () => {
-    const dependencies: MoveFlowProvisionDependencies = {
-      resolveClient: vi.fn(() => client),
-      findCached: vi.fn(async () => null),
-      install: vi.fn(),
-    };
+    const deps = dependencies({ resolveClient: vi.fn(() => resolved) });
 
-    await expect(ensureMoveFlowClient({}, dependencies)).resolves.toBe(client);
-    expect(dependencies.install).not.toHaveBeenCalled();
+    await expect(ensureMoveFlowRuntime({}, deps)).resolves.toMatchObject({ client });
+    expect(deps.install).not.toHaveBeenCalled();
   });
 
   it('keeps an invalid explicit MOVE_FLOW authoritative', async () => {
     process.env.MOVE_FLOW = '/missing/move-flow';
-    const dependencies: MoveFlowProvisionDependencies = {
-      resolveClient: vi.fn(() => null),
-      findCached: vi.fn(async () => null),
-      install: vi.fn(),
-    };
+    const deps = dependencies();
 
-    await expect(ensureMoveFlowClient({}, dependencies)).resolves.toBeNull();
-    expect(dependencies.install).not.toHaveBeenCalled();
+    await expect(ensureMoveFlowRuntime({}, deps)).resolves.toBeNull();
+    expect(deps.install).not.toHaveBeenCalled();
     expect(process.env.MOVE_FLOW).toBe('/missing/move-flow');
   });
 
-  it('installs once, publishes the cache path to the resolver, and returns a client', async () => {
+  it('supports local-only resolution without starting installation', async () => {
     delete process.env.MOVE_FLOW;
-    const resolveClient = vi
-      .fn<(binaryPath?: string) => MoveFlowMcpClient | null>()
-      .mockReturnValueOnce(null)
-      .mockReturnValueOnce(client);
-    const install = vi.fn(async () => ({
-      status: 'installed' as const,
-      binaryPath: '/cache/move-flow',
-    }));
+    const deps = dependencies();
 
-    await expect(
-      ensureMoveFlowClient({}, { resolveClient, findCached: async () => null, install }),
-    ).resolves.toBe(client);
-    expect(install).toHaveBeenCalledOnce();
-    expect(resolveClient).toHaveBeenLastCalledWith('/cache/move-flow');
-    expect(process.env.MOVE_FLOW).toBeUndefined();
+    await expect(ensureMoveFlowRuntime({ install: false }, deps)).resolves.toBeNull();
+    expect(deps.install).not.toHaveBeenCalled();
   });
 
-  it('soft-fails when installation rejects', async () => {
+  it('installs once and returns the verified release identity', async () => {
     delete process.env.MOVE_FLOW;
-    const onLog = vi.fn();
-    const dependencies: MoveFlowProvisionDependencies = {
-      resolveClient: vi.fn(() => null),
-      findCached: vi.fn(async () => null),
-      install: vi.fn(async () => {
-        throw new Error('offline');
-      }),
-    };
+    const deps = dependencies({
+      install: vi.fn(async () => ({ status: 'installed' as const, binary: cached })),
+    });
 
-    await expect(ensureMoveFlowClient({ onLog }, dependencies)).resolves.toBeNull();
-    expect(onLog).toHaveBeenCalledWith(expect.stringContaining('offline'));
+    await expect(ensureMoveFlowRuntime({}, deps)).resolves.toEqual({
+      client,
+      identity: {
+        version: '2.0.0',
+        source: 'release',
+        fingerprint: 'release-fingerprint',
+      },
+    });
+    expect(deps.install).toHaveBeenCalledOnce();
+    expect(deps.createClient).toHaveBeenCalledWith('/cache/move-flow');
+    expect(deps.resolveClient).toHaveBeenCalledTimes(1);
   });
 
-  it('does not retry a failed installation within the same process', async () => {
+  it('retries after a rejected installation', async () => {
     delete process.env.MOVE_FLOW;
-    const dependencies: MoveFlowProvisionDependencies = {
-      resolveClient: vi.fn(() => null),
-      findCached: vi.fn(async () => null),
-      install: vi.fn(async () => {
-        throw new Error('offline');
-      }),
-    };
+    const install = vi
+      .fn<MoveFlowProvisionDependencies['install']>()
+      .mockRejectedValueOnce(new Error('offline'))
+      .mockResolvedValueOnce({ status: 'installed', binary: cached });
+    const deps = dependencies({ install });
 
-    await expect(ensureMoveFlowClient({}, dependencies)).resolves.toBeNull();
-    await expect(ensureMoveFlowClient({}, dependencies)).resolves.toBeNull();
-    expect(dependencies.install).toHaveBeenCalledOnce();
+    await expect(ensureMoveFlowRuntime({}, deps)).resolves.toBeNull();
+    await expect(ensureMoveFlowRuntime({}, deps)).resolves.toMatchObject({ client });
+    expect(install).toHaveBeenCalledTimes(2);
   });
 
-  it('uses the verified user cache before PATH candidates', async () => {
+  it('retries after a soft installation failure', async () => {
     delete process.env.MOVE_FLOW;
-    const resolveClient = vi.fn((binaryPath?: string) =>
-      binaryPath === '/cache/move-flow' ? client : null,
+    const install = vi
+      .fn<MoveFlowProvisionDependencies['install']>()
+      .mockResolvedValueOnce({ status: 'failed', message: 'checksum service unavailable' })
+      .mockResolvedValueOnce({ status: 'installed', binary: cached });
+    const deps = dependencies({ install });
+
+    await expect(ensureMoveFlowRuntime({}, deps)).resolves.toBeNull();
+    await expect(ensureMoveFlowRuntime({}, deps)).resolves.toMatchObject({ client });
+    expect(install).toHaveBeenCalledTimes(2);
+  });
+
+  it('shares only an in-flight install attempt', async () => {
+    delete process.env.MOVE_FLOW;
+    let finish!: (value: { status: 'installed'; binary: VerifiedMoveFlowBinary }) => void;
+    const pending = new Promise<{ status: 'installed'; binary: VerifiedMoveFlowBinary }>(
+      (resolve) => {
+        finish = resolve;
+      },
     );
-    const dependencies: MoveFlowProvisionDependencies = {
-      resolveClient,
-      findCached: vi.fn(async () => '/cache/move-flow'),
-      install: vi.fn(),
-    };
+    const install = vi.fn(() => pending);
+    const deps = dependencies({ install });
 
-    await expect(ensureMoveFlowClient({}, dependencies)).resolves.toBe(client);
-    expect(resolveClient).toHaveBeenCalledTimes(1);
-    expect(resolveClient).toHaveBeenCalledWith('/cache/move-flow');
-    expect(dependencies.install).not.toHaveBeenCalled();
+    const first = ensureMoveFlowRuntime({}, deps);
+    const second = ensureMoveFlowRuntime({}, deps);
+    await vi.waitFor(() => expect(install).toHaveBeenCalledOnce());
+    finish({ status: 'installed', binary: cached });
+
+    await expect(Promise.all([first, second])).resolves.toHaveLength(2);
+    expect(deps.createClient).toHaveBeenCalledTimes(2);
+  });
+
+  it('uses the verified cache without another version probe', async () => {
+    delete process.env.MOVE_FLOW;
+    const deps = dependencies({ findCached: vi.fn(async () => cached) });
+
+    await expect(ensureMoveFlowRuntime({}, deps)).resolves.toMatchObject({
+      client,
+      identity: { source: 'release', fingerprint: 'release-fingerprint' },
+    });
+    expect(deps.resolveClient).not.toHaveBeenCalled();
+    expect(deps.createClient).toHaveBeenCalledWith('/cache/move-flow');
+    expect(deps.install).not.toHaveBeenCalled();
+  });
+
+  it('rejects an incompatible verified cache without constructing a client', async () => {
+    delete process.env.MOVE_FLOW;
+    const deps = dependencies({
+      findCached: vi.fn(async () => ({ ...cached, version: '3.0.0' })),
+    });
+
+    await expect(ensureMoveFlowRuntime({}, deps)).resolves.toBeNull();
+    expect(deps.createClient).not.toHaveBeenCalled();
+  });
+
+  it('rejects an incompatible installed result without constructing a client', async () => {
+    delete process.env.MOVE_FLOW;
+    const deps = dependencies({
+      install: vi.fn(async () => ({
+        status: 'installed' as const,
+        binary: { ...cached, version: '3.0.0' },
+      })),
+    });
+
+    await expect(ensureMoveFlowRuntime({}, deps)).resolves.toBeNull();
+    expect(deps.createClient).not.toHaveBeenCalled();
   });
 });

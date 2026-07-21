@@ -191,6 +191,52 @@ describe('runFullAnalysis — incremental orchestration', () => {
     }
   }, 300_000);
 
+  it('leaves a compiler-backed Move index untouched when move-flow is unavailable', async () => {
+    const repo = await setupMiniRepo();
+    try {
+      // An explicit MOVE_FLOW override that fails its probe is authoritative
+      // and skips auto-install — deterministic "compiler unavailable" offline.
+      vi.stubEnv('MOVE_FLOW', path.join(repo.dbPath, 'nonexistent-move-flow'));
+      await writeFile(
+        path.join(repo.dbPath, 'Move.toml'),
+        '[package]\nname = "mini"\nversion = "1.0.0"\n',
+      );
+      gitCommitAll(repo.dbPath, 'add move package');
+
+      const { runFullAnalysis } = await import('../../src/core/run-analyze.js');
+      await runFullAnalysis(repo.dbPath, { skipAgentsMd: true }, { onProgress: () => {} });
+
+      const { storagePath } = getStoragePaths(repo.dbPath);
+      const first = await loadMeta(storagePath);
+      expect(first?.moveIngestAvailable).toBe(false);
+      if (!first) throw new Error('expected metadata after initial analysis');
+
+      // Simulate an index whose Move facts were built by a since-vanished
+      // compiler (e.g. the release cache was wiped between runs).
+      const identity = { version: '2.0.0', source: 'release', fingerprint: 'fp' } as const;
+      const compilerBackedMeta: RepoMeta = {
+        ...first,
+        moveIngestAvailable: true,
+        moveCompilerIdentity: identity,
+      };
+      await saveMeta(storagePath, compilerBackedMeta);
+
+      const target = path.join(repo.dbPath, 'src', 'logger.ts');
+      await writeFile(target, (await readFile(target, 'utf-8')) + '\n// touched by test\n');
+      await expect(
+        runFullAnalysis(repo.dbPath, { skipAgentsMd: true }, { onProgress: () => {} }),
+      ).rejects.toThrow('move-flow is unavailable; the existing Move graph was left unchanged');
+
+      expect(await loadMeta(storagePath)).toEqual(compilerBackedMeta);
+      await expect(
+        runFullAnalysis(repo.dbPath, { skipAgentsMd: true, force: true }, { onProgress: () => {} }),
+      ).rejects.toThrow('existing Move graph was left unchanged');
+      expect(await loadMeta(storagePath)).toEqual(compilerBackedMeta);
+    } finally {
+      await repo.cleanup();
+    }
+  }, 300_000);
+
   it('incremental output is byte-equivalent to a full rebuild (incremental ≡ --force on the same repo state)', async () => {
     // The central correctness contract of this PR: an incremental run
     // and a full rebuild from the same repo state must produce identical

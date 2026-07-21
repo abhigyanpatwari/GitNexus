@@ -13,15 +13,19 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { runPipelineFromRepo } from '../../src/core/ingestion/pipeline.js';
-import { tryCreateMoveFlowClient } from '../../src/core/move/mcp-client.js';
+import { tryResolveMoveFlowClient } from '../../src/core/move/mcp-client.js';
 import { createMoveIngestPhase } from '../../src/core/move/move-ingest.js';
-import { ensureMoveFlowClient } from '../../src/core/move/provision.js';
+import { ensureMoveFlowRuntime } from '../../src/core/move/provision.js';
 import { runMoveIngestPhase } from '../helpers/move-ingest-harness.js';
 
 const requireMoveFlow = process.env.GITNEXUS_REQUIRE_MOVE_FLOW === '1';
 const client = requireMoveFlow
-  ? await ensureMoveFlowClient({ onLog: (message) => console.info(`[move-live] ${message}`) })
-  : tryCreateMoveFlowClient();
+  ? (
+      await ensureMoveFlowRuntime({
+        onLog: (message) => console.info(`[move-live] ${message}`),
+      })
+    )?.client
+  : tryResolveMoveFlowClient()?.client;
 if (requireMoveFlow && !client) {
   throw new Error('GITNEXUS_REQUIRE_MOVE_FLOW=1 but MoveFlow provisioning failed');
 }

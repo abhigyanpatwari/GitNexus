@@ -13,10 +13,16 @@ import path from 'path';
 import fs from 'fs/promises';
 import { execFileSync } from 'child_process';
 import { runPipelineFromRepo } from './ingestion/pipeline.js';
-import { isMoveCompilerInputPath, moveAvailabilityRequiresFullRebuild } from './move/constants.js';
+import {
+  isMoveCompilerInputPath,
+  moveCompilerRequiresFullRebuild,
+  persistedMoveGraphRequiresCompiler,
+  shouldProvisionMoveFlowBeforeFastPath,
+} from './move/constants.js';
 import { createMoveIngestPhase } from './move/move-ingest.js';
 import { repoHasMove } from './move/discovery.js';
-import { ensureMoveFlowClient } from './move/provision.js';
+import { getMoveFlowReleaseSelection } from './move/install.js';
+import { ensureMoveFlowRuntime } from './move/provision.js';
 import { resetDegradedParseCounter } from './tree-sitter/safe-parse.js';
 import {
   initLbug,
@@ -941,22 +947,52 @@ export async function runFullAnalysis(
     options = { ...options, force: true };
   }
 
-  // Probe before the same-commit fast path: an index built while move-flow was
-  // unavailable must be backfilled once the compiler becomes available.
+  // Resolve local runtimes before the same-commit fast path. Managed
+  // provisioning is needed for a degraded/legacy graph and whenever the
+  // configured dynamic release differs from the one that built the index.
   const hasMovePackages = await repoHasMove(repoPath);
-  const moveFlowClient = hasMovePackages ? await ensureMoveFlowClient({ onLog: log }) : null;
-  const moveIngestAvailable = hasMovePackages ? moveFlowClient !== null : undefined;
-  if (
-    existingMeta &&
-    moveAvailabilityRequiresFullRebuild(
-      hasMovePackages,
-      moveFlowClient !== null,
-      existingMeta.moveIngestAvailable,
-    )
-  ) {
-    log('Move compiler became available; forcing a full rebuild to backfill Move symbols.');
+  const desiredMoveFlowRelease = hasMovePackages ? await getMoveFlowReleaseSelection() : undefined;
+  const persistedMoveCompilerRequired = persistedMoveGraphRequiresCompiler(
+    existingMeta?.moveIngestAvailable,
+    existingMeta?.fileHashes,
+  );
+  const provisionBeforeFastPath = shouldProvisionMoveFlowBeforeFastPath(
+    hasMovePackages,
+    persistedMoveCompilerRequired,
+    existingMeta?.moveCompilerIdentity,
+    existingMeta?.moveFlowReleaseSelection,
+    desiredMoveFlowRelease,
+  );
+  let moveFlow = hasMovePackages
+    ? await ensureMoveFlowRuntime({
+        onLog: log,
+        install: provisionBeforeFastPath,
+      })
+    : null;
+  let moveCompilerRebuildApplied = false;
+  const applyMoveCompilerRebuildPolicy = (): void => {
+    if (
+      !existingMeta ||
+      !moveCompilerRequiresFullRebuild(
+        hasMovePackages,
+        moveFlow?.identity,
+        existingMeta.moveIngestAvailable,
+        existingMeta.moveCompilerIdentity,
+      )
+    ) {
+      return;
+    }
+    if (!moveCompilerRebuildApplied) {
+      log(
+        existingMeta.moveIngestAvailable === true
+          ? 'Move compiler changed; forcing a full rebuild so persisted facts match it.'
+          : 'Move compiler became available; forcing a full rebuild to backfill Move symbols.',
+      );
+    }
+    moveCompilerRebuildApplied = true;
     options = { ...options, force: true };
-  }
+  };
+  applyMoveCompilerRebuildPolicy();
 
   // ── Early-return: already up to date ──────────────────────────────
   if (
@@ -1058,7 +1094,7 @@ export async function runFullAnalysis(
           }
         }
         await ensureGitNexusIgnored(repoPath);
-        await moveFlowClient?.shutdown();
+        await moveFlow?.client.shutdown();
         return {
           // `resolveRepoIdentityRoot` collapses worktree roots to the
           // canonical repo basename (#1259) but leaves arbitrary subdirs
@@ -1075,6 +1111,23 @@ export async function runFullAnalysis(
       }
     }
   }
+
+  // From this point onward analysis may write or derive graph data. Never run
+  // that plan without the compiler that produced an existing Move graph: a
+  // partial rebuild would silently erase Move rows or degrade global clusters.
+  if (hasMovePackages && !moveFlow) {
+    moveFlow = await ensureMoveFlowRuntime({ onLog: log });
+    if (persistedMoveCompilerRequired && !moveFlow) {
+      throw new Error(
+        'move-flow is unavailable; the existing Move graph was left unchanged. ' +
+          'Restore move-flow or set MOVE_FLOW, then retry analysis.',
+      );
+    }
+  }
+  const moveFlowClient = moveFlow?.client ?? null;
+  const moveIngestAvailable = hasMovePackages ? moveFlow !== null : undefined;
+
+  applyMoveCompilerRebuildPolicy();
 
   // ── Cache embeddings from existing index before rebuild ────────────
   // Four modes:
@@ -2050,6 +2103,13 @@ export async function runFullAnalysis(
     const newFileHashesRecord: Record<string, string> = {};
     for (const [k, v] of newFileHashes) newFileHashesRecord[k] = v;
 
+    // Incremental runs never rewrite Move facts (changed Move compiler inputs
+    // force a full rebuild), so when the compiler is transiently unavailable
+    // the previous record still describes the persisted facts. Stamping
+    // false/undefined here would force a needless full rebuild the moment the
+    // compiler returns.
+    const preserveMoveMeta = hasMovePackages && !moveFlow && isIncremental;
+
     // Annotated so the capabilities stamp below is compile-checked against
     // RepoMeta's status unions (tri-review 4669518496 P1/U3) — an unannotated
     // literal widens the vectorSearch.status ternary to `string` and the
@@ -2108,7 +2168,17 @@ export async function runFullAnalysis(
       // absence, so this is never conditionally omitted.
       cjkSegmentation: getSearchFTSCjkSegmentation(),
       fileHashes: hasGitDir(repoPath) ? newFileHashesRecord : undefined,
-      moveIngestAvailable,
+      moveIngestAvailable: preserveMoveMeta
+        ? existingMeta?.moveIngestAvailable
+        : moveIngestAvailable,
+      moveCompilerIdentity: preserveMoveMeta
+        ? existingMeta?.moveCompilerIdentity
+        : moveFlow?.identity,
+      moveFlowReleaseSelection: preserveMoveMeta
+        ? existingMeta?.moveFlowReleaseSelection
+        : moveFlow?.identity.source === 'release'
+          ? desiredMoveFlowRelease
+          : undefined,
       // This branch's full live chunk-key set (#2106 R6). `usedKeys` is every
       // chunk hash touched in this scan — cache HITS included (see parse-impl
       // usedKeys.add) — so it's complete even on an incremental run. Persisted
