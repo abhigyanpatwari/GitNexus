@@ -11,6 +11,7 @@
 
 import path from 'path';
 import fs from 'fs/promises';
+import { retryRename } from '../storage/fs-atomic.js';
 import { runPipelineFromRepo } from './ingestion/pipeline.js';
 import type { KnowledgeGraph } from './graph/types.js';
 import { resetDegradedParseCounter } from './tree-sitter/safe-parse.js';
@@ -1329,6 +1330,22 @@ export async function runFullAnalysis(
     ? diffFileHashes(newFileHashes, existingMeta!.fileHashes)
     : undefined;
 
+  // #2 atomic index publish: on a full rebuild, build the fresh DB at a temp
+  // path and swap it over the live index in one rename at the very end, so a
+  // concurrent MCP reader opening mid-build only ever sees the previous
+  // complete index (never a wiped/half-built file) and a crash leaves the old
+  // index intact. The whole build flows through the singleton connection, so
+  // only initLbug/wipeLbugDbFiles below take the temp target.
+  //
+  // POSIX only: the common CLI/serve-worker analyze paths skip the native close
+  // (closeLbugBeforeExit, #2264) and leave the build handle open at swap time.
+  // POSIX renames an open file cleanly; a same-process open handle blocks the
+  // rename on Windows. Windows keeps the current in-place behavior
+  // (buildPath === lbugPath, no swap) until that is resolved (see §12/follow-up).
+  const isFullRebuild = !(isIncremental && hashDiff);
+  const useAtomicSwap = isFullRebuild && process.platform !== 'win32';
+  const buildPath = useAtomicSwap ? `${lbugPath}.new` : lbugPath;
+
   if (isIncremental && hashDiff) {
     log(
       `Incremental: changed=${hashDiff.changed.length}, ` +
@@ -1380,7 +1397,12 @@ export async function runFullAnalysis(
     // valve below can never drift. Failures now throw a typed LbugWipeError
     // (ENOENT-verified removal) instead of silently letting initLbug reopen
     // a still-populated DB this run believes it wiped.
-    await wipeLbugDbFiles(lbugPath);
+    //
+    // With the atomic swap (POSIX), this wipes the TEMP build target
+    // (`buildPath` = `<lbugPath>.new`, clearing any stragglers from a crashed
+    // run) and leaves the live index untouched until the end-of-run swap. On
+    // Windows buildPath === lbugPath, so this is the original in-place wipe.
+    await wipeLbugDbFiles(buildPath);
   }
 
   // Size the buffer pool to the graph just built by the pipeline (a page cache
@@ -1393,7 +1415,9 @@ export async function runFullAnalysis(
     estimateBufferPool(pipelineResult.graph.nodeCount + pipelineResult.graph.relationshipCount),
   );
 
-  await initLbug(lbugPath);
+  // Full rebuild (POSIX) builds into the temp `buildPath`; incremental and
+  // Windows use `buildPath === lbugPath` in place.
+  await initLbug(buildPath);
 
   // Manual WAL checkpoint driver (#1741): periodically drain the WAL
   // from JS so the un-retriable native auto-checkpoint almost never
@@ -2396,6 +2420,25 @@ export async function runFullAnalysis(
     // CHECKPOINTs for durability then leaves the handles for process exit to
     // reclaim (#2264). Long-lived callers close for real.
     await (options.skipNativeCloseOnExit ? closeLbugBeforeExit() : closeLbug());
+
+    // #2 atomic publish (POSIX): the fresh full-rebuild index was built at
+    // buildPath. Swap it over the live lbugPath in one rename so an MCP reader
+    // that opened mid-build only ever saw the previous complete index — never a
+    // wiped/half-built file. The close above checkpoint-consolidated buildPath
+    // to a single file (no .wal), so the rename publishes a complete index; a
+    // reader holding the old inode keeps a consistent stale snapshot until the
+    // pool re-opens onto the new one (the pool staleness invalidation). Runs
+    // only on success — a thrown error skips this, leaving the live index
+    // intact and the temp build to be cleared by the next run's wipe.
+    if (useAtomicSwap) {
+      await retryRename(buildPath, lbugPath);
+      // Clear any sidecars orphaned beside the replaced file. A cleanly-closed
+      // prior index has none; a crashed one could, and it would be replay
+      // poison next to the freshly published index. Best-effort.
+      for (const suffix of ['.wal', '.shadow', '.wal.checkpoint'] as const) {
+        await fs.rm(`${lbugPath}${suffix}`, { force: true }).catch(() => {});
+      }
+    }
 
     progress('done', 100, 'Done');
 
