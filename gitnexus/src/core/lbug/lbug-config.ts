@@ -479,6 +479,21 @@ export const isLbugCheckpointIoError = (err: unknown): boolean => {
   return LBUG_CHECKPOINT_PERMISSIVE_RE.test(msg);
 };
 
+/**
+ * True when a checkpoint IO error (#1741/#1772) also carries a busy/lock
+ * signal — i.e. it looks like another process (typically a live
+ * `gitnexus mcp` server) holds the store's WAL file open, rather than a
+ * genuine disk/threshold problem (#2599). Deliberately reuses
+ * `isDbBusyError`'s already-tested keyword set instead of a new regex: its
+ * own fixtures prove LadybugDB phrases a cross-process conflict as
+ * "already in use by another process" on the sibling open-time lock path
+ * (`lbug-lock-retry.test.ts`), and reusing it means an unmatched message
+ * degrades safely to the existing generic checkpoint hint rather than a
+ * confident-but-wrong new one.
+ */
+export const isLbugCheckpointBusyError = (err: unknown): boolean =>
+  isLbugCheckpointIoError(err) && isDbBusyError(err);
+
 // ─── Ladybug non-4K page-size frame-release matcher (#1231) ─────────────────
 //
 // LadybugDB <= 0.17.x hardcoded a 4 KiB OS-page assumption in its buffer

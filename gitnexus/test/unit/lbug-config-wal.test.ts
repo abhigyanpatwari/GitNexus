@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   createLbugDatabase,
   estimateBufferPool,
+  isLbugCheckpointBusyError,
   isLbugCheckpointIoError,
   isWalCorruptionError,
   setBufferPoolSizeHint,
@@ -371,5 +372,39 @@ describe('isLbugCheckpointIoError', () => {
     // case above, even though bumping the checkpoint threshold will never
     // resolve a handle another process is holding open.
     expect(isLbugCheckpointIoError(heldOpenByAnotherProcess)).toBe(true);
+    // Fix: isLbugCheckpointBusyError narrows this exact case out, so
+    // analyze.ts can render a message naming the real cause instead.
+    const heldOpenAlreadyInUse =
+      'Runtime exception: IO exception: Error renaming file /repo/.gitnexus/lbug.wal to ' +
+      '/repo/.gitnexus/lbug.wal.checkpoint. Error Message: file already in use by another process';
+    expect(isLbugCheckpointBusyError(heldOpenAlreadyInUse)).toBe(true);
+  });
+});
+
+describe('isLbugCheckpointBusyError', () => {
+  it('true when a checkpoint-IO message also carries a busy/lock/in-use signal', () => {
+    const msg =
+      'Runtime exception: IO exception: Error renaming file /repo/.gitnexus/lbug.wal to ' +
+      '/repo/.gitnexus/lbug.wal.checkpoint. Error Message: file already in use by another process';
+    expect(isLbugCheckpointBusyError(msg)).toBe(true);
+    expect(isLbugCheckpointBusyError(new Error(msg))).toBe(true);
+  });
+
+  it('false for the existing genuine disk/permission checkpoint fixtures (no busy/lock signal)', () => {
+    expect(
+      isLbugCheckpointBusyError(
+        'Runtime exception: IO exception: Error renaming file /repo/.gitnexus/lbug.wal to /repo/.gitnexus/lbug.wal.checkpoint. ErrorMessage: Permission denied',
+      ),
+    ).toBe(false);
+    expect(
+      isLbugCheckpointBusyError(
+        'Runtime exception: IO exception: Error removing directory or file /repo/.gitnexus/lbug.wal.checkpoint.  Error Message: Permission denied',
+      ),
+    ).toBe(false);
+  });
+
+  it('false for a busy/lock message that is not checkpoint-IO-shaped (the checkpoint gate still applies)', () => {
+    expect(isLbugCheckpointBusyError('database is locked')).toBe(false);
+    expect(isLbugCheckpointBusyError('file already in use by another process')).toBe(false);
   });
 });
