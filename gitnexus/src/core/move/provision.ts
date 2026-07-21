@@ -76,10 +76,14 @@ const getInstallAttempt = (
 
   const created = Promise.resolve().then(dependencies.install);
   installAttempts.set(dependencies, created);
-  const clear = (): void => {
-    if (installAttempts.get(dependencies) === created) installAttempts.delete(dependencies);
-  };
-  void created.then(clear, clear);
+  void created.then(
+    (result) => {
+      if (result.binary && installAttempts.get(dependencies) === created) {
+        installAttempts.delete(dependencies);
+      }
+    },
+    () => {},
+  );
   return created;
 };
 

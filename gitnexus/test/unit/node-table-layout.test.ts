@@ -75,4 +75,24 @@ describe('shared node-table persistence layouts', () => {
       expect(copyColumns(getCopyQuery(table, '/tmp/fixture.csv'))).toEqual(columns);
     },
   );
+
+  it('rejects an unknown CSV column encoding instead of emitting an empty cell', () => {
+    const column = NODE_TABLE_LAYOUTS.Function.columns[0];
+    const mutableColumn = column as { csvEncoding: string };
+    const originalEncoding = column.csvEncoding;
+    const node = {
+      id: 'Function:fixture',
+      label: 'Function',
+      properties: { name: 'fixture', filePath: 'src/fixture.ts' },
+    } as GraphNode;
+
+    try {
+      mutableColumn.csvEncoding = 'future-encoding';
+      expect(() => buildLayoutNodeRow('Function', node, 'fixture content')).toThrow(
+        'Unsupported CSV column encoding: future-encoding',
+      );
+    } finally {
+      mutableColumn.csvEncoding = originalEncoding;
+    }
+  });
 });

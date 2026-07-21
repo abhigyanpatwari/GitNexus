@@ -44,7 +44,7 @@ jobs:
       # (metadata + binary sha256 + version probe) before use. Keep the key
       # tied to MOVE_FLOW_RELEASE.version in gitnexus/src/core/move/release.ts.
       - name: Cache move-flow binary
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v5
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.gitnexus/tools/move-flow
           key: ${{ runner.os }}-move-flow-v2.0.0
@@ -58,7 +58,7 @@ jobs:
       # resolves the extension at module load and can't self-install, so sharding
       # could otherwise drop it into a shard with no installer sibling.
       - name: Cache LadybugDB FTS extension
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v5
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.lbdb/extension
           key: lbug-fts-${{ runner.os }}-${{ hashFiles('gitnexus/package-lock.json') }}
@@ -246,7 +246,7 @@ jobs:
       # never a correctness dependency. Keyed by lockfile hash so a LadybugDB
       # version bump re-installs; per-OS because the extension is a native binary.
       - name: Cache LadybugDB FTS extension
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v5
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.lbdb/extension
           key: lbug-fts-${{ runner.os }}-${{ hashFiles('gitnexus/package-lock.json') }}

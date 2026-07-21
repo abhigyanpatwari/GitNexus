@@ -275,6 +275,10 @@ export const buildLayoutNodeRow = (
           return escapeCSVField(formatFtsDescription(String(value ?? '')));
         case 'string':
           return escapeCSVField(String(value ?? ''));
+        default: {
+          const _exhaustive: never = spec.csvEncoding;
+          throw new Error(`Unsupported CSV column encoding: ${String(_exhaustive)}`);
+        }
       }
     })
     .join(',');

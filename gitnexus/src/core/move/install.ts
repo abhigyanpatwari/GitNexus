@@ -17,6 +17,7 @@ import {
 import { get as httpsGet } from 'node:https';
 import os from 'node:os';
 import path from 'node:path';
+import { promisify } from 'node:util';
 import {
   downloadToFile,
   MAX_ARCHIVE_BYTES,
@@ -81,6 +82,7 @@ const DEFAULT_HTTP_TIMEOUT_MS = 30_000;
 const MAX_CHECKSUM_BYTES = 1024 * 1024;
 const MAX_BINARY_BYTES = 128 * 1024 * 1024;
 const MAX_METADATA_BYTES = 64 * 1024;
+const execFileAsync = promisify(execFile);
 
 const parsePositiveInteger = (value: string | undefined, fallback: number): number => {
   const parsed = Number(value);
@@ -116,21 +118,11 @@ const execFileOutput = (
   args: string[],
   options: { timeout: number; env?: NodeJS.ProcessEnv; encoding?: BufferEncoding },
 ): Promise<string> =>
-  new Promise((resolve, reject) => {
-    execFile(
-      file,
-      args,
-      {
-        timeout: options.timeout,
-        env: options.env,
-        encoding: options.encoding ?? 'utf8',
-      },
-      (error, stdout) => {
-        if (error) reject(error);
-        else resolve(String(stdout));
-      },
-    );
-  });
+  execFileAsync(file, args, {
+    timeout: options.timeout,
+    env: options.env,
+    encoding: options.encoding ?? 'utf8',
+  }).then(({ stdout }) => String(stdout));
 
 let detectedLinuxCompatibility: Promise<boolean> | undefined;
 

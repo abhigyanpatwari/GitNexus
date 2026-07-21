@@ -72,7 +72,7 @@ That's it. `analyze` indexes the codebase, installs agent skills, registers Clau
 
 > **Fastest MCP startup:** install globally (`npm i -g gitnexus`) before running `gitnexus setup` — this writes an absolute-path MCP config that bypasses `npx` entirely. On a cold cache, an `npx`-based MCP install can exceed Claude Code's `MCP_TIMEOUT` default (~30s).
 
-> **No C++ toolchain?** Set `GITNEXUS_SKIP_OPTIONAL_GRAMMARS=1` before `npm install -g gitnexus` to skip the vendored grammar materialize/build for `tree-sitter-dart`, `tree-sitter-proto`, `tree-sitter-swift`, and `tree-sitter-kotlin` — those four languages won't be parsed, but install completes in seconds without `python3`/`make`/`g++`. Strict `=1` only — any other value falls through to the rebuild.
+> **No C++ toolchain?** Set `GITNEXUS_SKIP_OPTIONAL_GRAMMARS=1` before `npm install -g gitnexus` to skip the vendored grammar materialize/build for `tree-sitter-dart`, `tree-sitter-proto`, `tree-sitter-swift`, and `tree-sitter-kotlin` — those four languages won't be parsed, but install completes in seconds without `python3`/`make`/`g++`. At analyze time, strict `=1` also disables automatic `move-flow` downloads; an explicit `MOVE_FLOW`, verified cache entry, or compatible binary on `PATH` can still provide Move support.
 
 > **Behind an HTTP proxy / regional firewall?** `onnxruntime-node`'s postinstall downloads optional CUDA binaries from `api.nuget.org` and ignores `HTTP_PROXY`/`HTTPS_PROXY` ([#2370](https://github.com/abhigyanpatwari/GitNexus/issues/2370)). The embedding stack is an optional dependency, so a failed download no longer breaks the install — and it self-heals: the first `gitnexus analyze --embeddings` (or `gitnexus embeddings install`) fetches the stack through your npm registry config (mirrors/proxies apply, no NuGet) into `~/.gitnexus/embedding-runtime` (override with `GITNEXUS_EMBEDDING_RUNTIME_DIR`). The on-demand prefix needs Node with `module.registerHooks` (≥ 22.15 on 22.x, ≥ 23.5 on 23.x); on older Node, keep the stack in the install itself with `ONNXRUNTIME_NODE_INSTALL=skip npm install -g gitnexus` (works on every supported Node).
 
@@ -90,7 +90,7 @@ That's it. `analyze` indexes the codebase, installs agent skills, registers Clau
 | **Install** | `npm install -g gitnexus`                                                          | No install — [gitnexus.vercel.app](https://gitnexus.vercel.app)      |
 | **Storage** | LadybugDB native (fast, persistent)                                                | LadybugDB WASM (in-memory, per session)                              |
 | **Parsing** | Tree-sitter native bindings                                                        | Tree-sitter WASM                                                     |
-| **Privacy** | Everything local, no network                                                       | Everything in-browser, no server                                     |
+| **Privacy** | Source stays local; optional runtimes may be downloaded                            | Everything in-browser, no server                                     |
 
 > **Bridge mode:** `gitnexus serve` connects the two — the web UI auto-detects the local server and can browse all your CLI-indexed repos without re-uploading or re-indexing.
 
@@ -467,6 +467,29 @@ Notes:
 </details>
 
 <details>
+<summary><strong>Move compiler runtime</strong></summary>
+
+Repositories containing `Move.toml` use the compiler-backed `move-flow` runtime. `gitnexus analyze` resolves it in this order:
+
+1. the explicit `MOVE_FLOW` path;
+2. a checksum- and version-verified cache under `~/.gitnexus/tools/move-flow`;
+3. a compatible `move-flow` on `PATH`;
+4. the pinned GitHub release, downloaded over HTTPS and verified against its `SHA256SUMS`.
+
+The managed install is serialized across processes and published atomically. For air-gapped hosts, install a compatible binary ahead of time and set `MOVE_FLOW`, or pre-seed the managed cache; set `GITNEXUS_SKIP_MOVE_FLOW=1` to disable automatic downloads. An invalid explicit `MOVE_FLOW` remains authoritative and does not fall back to a network install.
+
+GitNexus records the compiler identity that produced Move facts. A compiler change forces a full rebuild; if a previously compiler-backed graph needs updating while `move-flow` is unavailable, analysis fails before mutating the existing graph. Managed identities include the verified binary hash; after replacing an explicit or `PATH` binary with a different same-version build, run `gitnexus analyze --force`. Rolling back this behavior only requires reverting the GitNexus change; removing the managed cache is optional, and reanalysis is needed only when restoring desired compiler-derived facts.
+
+Move runtime controls:
+
+- `MOVE_FLOW` selects an authoritative executable; `GITNEXUS_SKIP_MOVE_FLOW=1` disables automatic downloads.
+- `GITNEXUS_MOVE_FLOW_DIR` changes the cache root; `GITNEXUS_MOVE_FLOW_HTTP_TIMEOUT_MS` changes the 30-second per-download deadline.
+- `GITNEXUS_MOVE_FLOW_TIMEOUT_MS` changes the five-minute compiler-tool timeout; `GITNEXUS_MOVE_FLOW_COMPAT=1` forces the Linux compatibility build.
+- `GITNEXUS_MOVE_FLOW_VERSION`, `GITNEXUS_MOVE_FLOW_REPO`, and `GITNEXUS_MOVE_FLOW_TAG` override trusted release coordinates for advanced testing.
+
+</details>
+
+<details>
 <summary><strong>Environment variables</strong></summary>
 
 Most `analyze` knobs are also CLI flags (`--workers`, `--worker-timeout`, `--max-file-size`, `--verbose`). Use the env-var form when you'd otherwise repeat the same flag every run, or when invoking GitNexus from a long-running host (MCP server, eval-server, CI shell) that already manages its own environment. CLI flags take precedence over env vars; env vars take precedence over built-in defaults.
@@ -492,7 +515,7 @@ Most `analyze` knobs are also CLI flags (`--workers`, `--worker-timeout`, `--max
 | `GITNEXUS_CPP_CAPTURE_BUDGET_MS`                | `20000`                   | Per-file wall-clock budget for C++ capture extraction. On breach the file keeps the captures accumulated so far and logs a warning — the worker returns to JS instead of stalling in native-heavy loops (#2432). `0` expires immediately.                                                                   | Pathological generated C++ that still exceeds the budget after the indexed lookups; raise for completeness, lower to fail-fast.                                                       |
 | `GITNEXUS_CHUNK_BYTE_BUDGET`                    | `2097152` (2 MB)          | Chunk boundary used for cache-key composition and dispatch. Smaller = finer-grained cache hits but more dispatch overhead.                                                                                                                                                                                  | Tuning incremental-analyze cache behavior on monorepos.                                                                                                                               |
 | `GITNEXUS_NO_GITIGNORE`                         | unset                     | When set, skips `.gitignore` parsing. `.gitnexusignore` is still honored.                                                                                                                                                                                                                                   | Indexing a repo whose `.gitignore` excludes files you actually want indexed (e.g., generated code committed for cross-repo lookup).                                                   |
-| `GITNEXUS_SKIP_OPTIONAL_GRAMMARS`               | unset                     | When `=1` strictly, skips the vendored grammar materialize for `tree-sitter-dart`, `tree-sitter-proto`, `tree-sitter-swift`, and `tree-sitter-kotlin` at install time (and the Dart/Proto source builds). Those four won't be parsed; the install still succeeds.                                           | Installing on a host without a C++ toolchain or where the vendored prebuilds don't match; willing to skip Dart/Proto/Swift/Kotlin parsing.                                            |
+| `GITNEXUS_SKIP_OPTIONAL_GRAMMARS`               | unset                     | When `=1` strictly, skips optional grammar materialization at install time, disables those grammars at runtime, and disables automatic `move-flow` downloads. Existing verified/cache/PATH Move runtimes remain usable.                                                                                     | Running without optional native runtimes and accepting that affected languages may not be indexed.                                                                                    |
 | `GITNEXUS_MCP_READ_ONLY`                        | unset                     | Set to `1` to expose only proven single-repository read tools and resources; `0` disables the policy and any other value fails startup.                                                                                                                                                                     | The MCP server runs in an environment where graph mutation, raw Cypher, and cross-repository group routing must be unavailable.                                                       |
 | `GITNEXUS_MCP_ALLOWED_REPOS`                    | unset                     | Comma-separated allowlist of canonical indexed repository names or absolute paths. Invalid, ambiguous, or blank entries fail startup.                                                                                                                                                                       | One MCP process must expose only a bounded subset of the repositories in the global registry.                                                                                         |
 | `GITNEXUS_MCP_DEFAULT_REPO`                     | unset                     | Canonical indexed repository name or absolute path used when a tool or resource omits its repository. Must belong to the allowlist when one is set.                                                                                                                                                         | Several repositories are available but unqualified MCP calls should resolve deterministically.                                                                                        |

@@ -5,6 +5,7 @@ import type { ClientRequest, IncomingMessage } from 'node:http';
 import { get as httpsGet, type RequestOptions } from 'node:https';
 import { Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
+import { setTimeout as wait } from 'node:timers/promises';
 
 export type HttpsGet = (
   url: string | URL,
@@ -44,11 +45,6 @@ const parseRetryAfter = (value: string | string[] | undefined): number => {
   const date = Date.parse(raw);
   return Number.isFinite(date) ? Math.max(0, date - Date.now()) : 0;
 };
-
-const wait = (ms: number): Promise<void> =>
-  new Promise((resolve) => {
-    setTimeout(resolve, ms);
-  });
 
 const safeRequestLabel = (target: string): string => {
   const parsed = new URL(target);

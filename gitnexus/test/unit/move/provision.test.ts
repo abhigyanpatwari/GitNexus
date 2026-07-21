@@ -78,30 +78,28 @@ describe('ensureMoveFlowRuntime', () => {
     expect(deps.resolveClient).toHaveBeenCalledTimes(1);
   });
 
-  it('retries after a rejected installation', async () => {
+  it('does not retry a rejected installation within the same process', async () => {
     delete process.env.MOVE_FLOW;
     const install = vi
       .fn<MoveFlowProvisionDependencies['install']>()
-      .mockRejectedValueOnce(new Error('offline'))
-      .mockResolvedValueOnce({ status: 'installed', binary: cached });
+      .mockRejectedValue(new Error('offline'));
     const deps = dependencies({ install });
 
     await expect(ensureMoveFlowRuntime({}, deps)).resolves.toBeNull();
-    await expect(ensureMoveFlowRuntime({}, deps)).resolves.toMatchObject({ client });
-    expect(install).toHaveBeenCalledTimes(2);
+    await expect(ensureMoveFlowRuntime({}, deps)).resolves.toBeNull();
+    expect(install).toHaveBeenCalledOnce();
   });
 
-  it('retries after a soft installation failure', async () => {
+  it('does not retry a soft installation failure within the same process', async () => {
     delete process.env.MOVE_FLOW;
     const install = vi
       .fn<MoveFlowProvisionDependencies['install']>()
-      .mockResolvedValueOnce({ status: 'failed', message: 'checksum service unavailable' })
-      .mockResolvedValueOnce({ status: 'installed', binary: cached });
+      .mockResolvedValue({ status: 'failed', message: 'checksum service unavailable' });
     const deps = dependencies({ install });
 
     await expect(ensureMoveFlowRuntime({}, deps)).resolves.toBeNull();
-    await expect(ensureMoveFlowRuntime({}, deps)).resolves.toMatchObject({ client });
-    expect(install).toHaveBeenCalledTimes(2);
+    await expect(ensureMoveFlowRuntime({}, deps)).resolves.toBeNull();
+    expect(install).toHaveBeenCalledOnce();
   });
 
   it('shares only an in-flight install attempt', async () => {
@@ -122,6 +120,16 @@ describe('ensureMoveFlowRuntime', () => {
 
     await expect(Promise.all([first, second])).resolves.toHaveLength(2);
     expect(deps.createClient).toHaveBeenCalledTimes(2);
+  });
+
+  it('clears a successful install attempt so a later cache miss can reinstall', async () => {
+    delete process.env.MOVE_FLOW;
+    const install = vi.fn(async () => ({ status: 'installed' as const, binary: cached }));
+    const deps = dependencies({ install });
+
+    await expect(ensureMoveFlowRuntime({}, deps)).resolves.toMatchObject({ client });
+    await expect(ensureMoveFlowRuntime({}, deps)).resolves.toMatchObject({ client });
+    expect(install).toHaveBeenCalledTimes(2);
   });
 
   it('uses the verified cache without another version probe', async () => {

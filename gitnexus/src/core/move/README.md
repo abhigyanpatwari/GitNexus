@@ -10,6 +10,33 @@ Cold compiler builds for large packages may take several minutes. Tool calls
 default to a five-minute timeout; override it in milliseconds with
 `GITNEXUS_MOVE_FLOW_TIMEOUT_MS` when a repository needs a larger budget.
 
+## Runtime provisioning
+
+When `analyze` finds a `Move.toml`, it resolves `move-flow` from the authoritative
+`MOVE_FLOW` path, the verified managed cache, `PATH`, or finally the pinned
+release in `release.ts`. Managed releases live under
+`~/.gitnexus/tools/move-flow` by default, are downloaded over HTTPS, checked
+against `SHA256SUMS`, version-probed, and atomically published while a
+heartbeat lease serializes concurrent installers.
+
+Set `GITNEXUS_SKIP_MOVE_FLOW=1` to disable automatic downloads. The umbrella
+`GITNEXUS_SKIP_OPTIONAL_GRAMMARS=1` does the same while also disabling optional
+grammars. Air-gapped hosts should set `MOVE_FLOW` to a preinstalled compatible
+binary or pre-seed the managed cache. Advanced trusted-release overrides are
+`GITNEXUS_MOVE_FLOW_DIR`, `GITNEXUS_MOVE_FLOW_VERSION`,
+`GITNEXUS_MOVE_FLOW_REPO`, `GITNEXUS_MOVE_FLOW_TAG`,
+`GITNEXUS_MOVE_FLOW_COMPAT`, and `GITNEXUS_MOVE_FLOW_HTTP_TIMEOUT_MS`.
+
+The repository metadata records the compiler identity used for Move facts.
+Changing that identity forces a full rebuild. If an existing compiler-backed
+graph needs updating while the compiler is unavailable, analysis fails before
+mutating the graph; restore `move-flow` or set `MOVE_FLOW` and retry.
+Managed identities include the verified binary hash; explicit and `PATH`
+identities use their locator and reported version, so replace a same-version
+local build with `gitnexus analyze --force`.
+Filesystem errors while discovering `Move.toml` are also surfaced instead of
+silently treating the repository as non-Move.
+
 ```text
 Move package
   -> move-flow MCP

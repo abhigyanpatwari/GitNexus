@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import type { Stats } from 'node:fs';
 import { type FileHandle, mkdir, open, readFile, rm, stat, utimes } from 'node:fs/promises';
 import path from 'node:path';
+import { setTimeout as wait } from 'node:timers/promises';
 
 export interface LockOptions {
   waitTimeoutMs?: number;
@@ -27,11 +28,6 @@ const defaultLockIo: InstallLockIo = {
     await rm(lockPath, { force: true });
   },
 };
-
-const wait = (ms: number): Promise<void> =>
-  new Promise((resolve) => {
-    setTimeout(resolve, ms);
-  });
 
 /** Allow for the artifact download, extraction, publication, and version probe. */
 export const moveFlowInstallLockWaitMs = (httpTimeoutMs: number): number =>
