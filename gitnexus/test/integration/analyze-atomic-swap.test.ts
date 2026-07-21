@@ -33,6 +33,11 @@ vi.mock('../../src/core/lbug/lbug-adapter.js', async (importOriginal) => {
 
 import { runFullAnalysis } from '../../src/core/run-analyze.js';
 import { getStoragePaths } from '../../src/storage/repo-manager.js';
+import {
+  initLbug as poolInit,
+  executeQuery as poolQuery,
+  closeLbug as poolClose,
+} from '../../src/core/lbug/pool-adapter.js';
 import { createTempDir } from '../helpers/test-db.js';
 
 const isWin = process.platform === 'win32';
@@ -116,6 +121,41 @@ describe.skipIf(isWin)('atomic full-rebuild swap (#2)', () => {
       // published it, so the live index is byte-for-byte untouched.
       expect(await identity(lbugPath)).toBe(before);
     } finally {
+      await cleanup();
+    }
+  }, 180_000);
+
+  it('the read pool serves the freshly-swapped index after a rebuild (#1 + #2 end-to-end)', async () => {
+    const { repo, cleanup } = await makeRepo();
+    const repoId = 'atomic-swap-e2e';
+    const names = async (): Promise<string[]> =>
+      (await poolQuery(repoId, 'MATCH (f:Function) RETURN f.name AS n')).flatMap((r) =>
+        Object.values(r as Record<string, unknown>).map(String),
+      );
+    try {
+      await runFullAnalysis(repo, {}, { onProgress: () => {} }); // v1: greet
+      const { lbugPath } = getStoragePaths(repo);
+
+      await poolInit(repoId, lbugPath);
+      expect(await names()).toContain('greet');
+
+      // Rebuild with a renamed function so v1 and v2 differ observably.
+      await fs.writeFile(
+        path.join(repo, 'a.ts'),
+        'export function renamedGreet(n: string) { return `hi ${n}`; }\nexport function caller() { return renamedGreet("x"); }\n',
+      );
+      execSync('git commit -am rename', { cwd: repo, stdio: 'pipe' });
+      await runFullAnalysis(repo, { force: true }, { onProgress: () => {} }); // v2 → atomic swap
+
+      // Same repoId: initLbug detects the swapped inode and re-opens the pool
+      // onto the new index instead of serving the stale (unlinked) one.
+      await poolInit(repoId, lbugPath);
+      const v2 = await names();
+      expect(v2).toContain('renamedGreet');
+      // Proves the pool actually re-opened — a stale handle would still see v1.
+      expect(v2).not.toContain('greet');
+    } finally {
+      await poolClose(repoId);
       await cleanup();
     }
   }, 180_000);
