@@ -53,8 +53,42 @@ interface PoolEntry {
   }>;
   lastUsed: number;
   dbPath: string;
+  /** Filesystem identity of the on-disk DB at open time. When `analyze`
+   *  rebuilds or mutates the index, this diverges from the current file and
+   *  initLbug re-opens the pool onto the new file instead of serving the
+   *  stale open inode. Null for injected/external databases (initLbugWithDb),
+   *  which are never invalidated this way. */
+  dbIdentity: DbIdentity | null;
   /** Set to true when the pool entry is closed — checkin will close orphaned connections */
   closed: boolean;
+}
+
+/** Filesystem identity used to detect an index rebuilt/mutated under a live
+ *  read pool. `ino` catches a full-rebuild unlink+recreate or an atomic-rename
+ *  swap; `mtimeMs`+`size` catch an in-place incremental writeback. */
+interface DbIdentity {
+  ino: number;
+  mtimeMs: number;
+  size: number;
+}
+
+export async function statDbIdentity(dbPath: string): Promise<DbIdentity | null> {
+  try {
+    const s = await fs.stat(dbPath);
+    return { ino: s.ino, mtimeMs: s.mtimeMs, size: s.size };
+  } catch {
+    return null;
+  }
+}
+
+/** True only when both identities are known AND differ. A stat failure
+ *  (ENOENT during the brief unlink window of a full rebuild) yields false, so
+ *  the reader keeps serving its still-valid open inode until the NEW file
+ *  appears with a different identity — avoiding a churn into a failed reopen
+ *  mid-rebuild. */
+export function dbIdentityChanged(prev: DbIdentity | null, next: DbIdentity | null): boolean {
+  if (!prev || !next) return false;
+  return prev.ino !== next.ino || prev.mtimeMs !== next.mtimeMs || prev.size !== next.size;
 }
 
 const pool = new Map<string, PoolEntry>();
@@ -597,7 +631,18 @@ export const initLbug = async (repoId: string, dbPath: string): Promise<void> =>
   const existing = pool.get(repoId);
   if (existing) {
     existing.lastUsed = Date.now();
-    return;
+    // Detect an index that `analyze` rebuilt or mutated under this live read
+    // pool. Without this, the pool keeps serving the old (POSIX:
+    // unlinked-but-open) inode until LRU/idle eviction — a stale-read window
+    // of up to IDLE_TIMEOUT_MS after analyze finishes.
+    const current = await statDbIdentity(dbPath);
+    if (!dbIdentityChanged(existing.dbIdentity, current)) return; // unchanged → reuse
+    // A query is in flight on this entry; closing its connection mid-use is a
+    // native use-after-free (closeOne only closes idle connections). Serve the
+    // current handle for this dispatch — a later idle initLbug reopens, since
+    // the identity stays divergent until then.
+    if (existing.checkedOut > 0) return;
+    closeOne(repoId); // idle & changed → evict, then fall through to reopen the new file
   }
 
   // Deduplicate concurrent init calls for the same repoId —
@@ -715,6 +760,9 @@ async function doInitLbug(repoId: string, dbPath: string): Promise<void> {
   // Register pool entry only after all connections are pre-warmed and FTS is
   // loaded.  Concurrent executeQuery calls see either "not initialized"
   // (and throw cleanly) or a fully ready pool — never a half-built one.
+  // Record the on-disk identity so a later initLbug can detect an analyze
+  // rebuild/mutation and re-open onto the new file (pool staleness invalidation).
+  const dbIdentity = await statDbIdentity(dbPath);
   pool.set(repoId, {
     db,
     available,
@@ -722,6 +770,7 @@ async function doInitLbug(repoId: string, dbPath: string): Promise<void> {
     waiters: [],
     lastUsed: Date.now(),
     dbPath,
+    dbIdentity,
     closed: false,
   });
   ensureIdleTimer();
@@ -785,6 +834,8 @@ export async function initLbugWithDb(
     waiters: [],
     lastUsed: Date.now(),
     dbPath,
+    // Injected/external DB (tests) — not tracked for rebuild invalidation.
+    dbIdentity: null,
     closed: false,
   });
   ensureIdleTimer();
