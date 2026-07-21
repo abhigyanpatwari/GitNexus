@@ -24,8 +24,6 @@ import {
   isWalCorruptionError,
   toNativeSafePath,
   WAL_RECOVERY_SUGGESTION,
-  POOL_OPEN_LOCK_RETRY_ATTEMPTS,
-  POOL_OPEN_LOCK_RETRY_DELAY_MS,
 } from './lbug-config.js';
 import {
   guardWalQuarantine,
@@ -428,8 +426,12 @@ function createConnection(db: lbug.Database): lbug.Connection {
     const conn = new lbug.Connection(db);
     // Bound a single query at the engine level so a pathological query cannot
     // hang a pooled connection past the JS-side Promise.race guard (which frees
-    // the waiter but not the native call). Matches QUERY_TIMEOUT_MS.
-    conn.setQueryTimeout(QUERY_TIMEOUT_MS);
+    // the waiter but not the native call). Matches QUERY_TIMEOUT_MS. Guarded so
+    // test doubles that don't model the engine method don't break connection
+    // creation.
+    if (typeof conn.setQueryTimeout === 'function') {
+      conn.setQueryTimeout(QUERY_TIMEOUT_MS);
+    }
     return conn;
   } finally {
     restoreStdout();
@@ -441,10 +443,10 @@ const QUERY_TIMEOUT_MS = 30_000;
 /** Waiter queue timeout in milliseconds */
 const WAITER_TIMEOUT_MS = 15_000;
 
-// Read-only open retry while `gitnexus analyze` writes — budget owned by the
-// lbug-config retry registry (retry-budget consolidation).
-const LOCK_RETRY_ATTEMPTS = POOL_OPEN_LOCK_RETRY_ATTEMPTS;
-const LOCK_RETRY_DELAY_MS = POOL_OPEN_LOCK_RETRY_DELAY_MS;
+// Read-only open retry while `gitnexus analyze` writes. Catalogued as entry 4
+// of the lbug-config retry-budget registry.
+const LOCK_RETRY_ATTEMPTS = 3;
+const LOCK_RETRY_DELAY_MS = 2000;
 const SHADOW_REPLAY_PROBE_QUERY = 'MATCH (n) RETURN n LIMIT 1';
 
 const poolSidecarLogger = {

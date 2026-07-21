@@ -8,9 +8,6 @@ import { BRIDGE_SCHEMA_QUERIES, BRIDGE_SCHEMA_VERSION } from './bridge-schema.js
 import {
   closeLbugConnection,
   openLbugConnection,
-  BRIDGE_OPEN_RETRY_ATTEMPTS,
-  BRIDGE_OPEN_RETRY_BASE_MS,
-  BRIDGE_OPEN_RETRY_MAX_MS,
   type LbugConnectionHandle,
 } from '../lbug/lbug-config.js';
 import { dedupeContracts, dedupeCrossLinks } from './normalization.js';
@@ -1034,11 +1031,12 @@ const LBUG_OPEN_RETRY_PATTERNS = [
   'lock held by another process',
 ];
 
-// Cross-repo bridge RO open retry — budget owned by the lbug-config retry
-// registry (retry-budget consolidation); caps back-off so total wait ~3s.
-const LBUG_OPEN_RETRY_ATTEMPTS = BRIDGE_OPEN_RETRY_ATTEMPTS;
-const LBUG_OPEN_RETRY_BASE_MS = BRIDGE_OPEN_RETRY_BASE_MS;
-const LBUG_OPEN_RETRY_MAX_MS = BRIDGE_OPEN_RETRY_MAX_MS;
+// Cross-repo bridge RO open retry. Catalogued as entry 5 of the lbug-config
+// retry-budget registry; caps back-off so total wait ~3s.
+const LBUG_OPEN_RETRY_ATTEMPTS = 10;
+const LBUG_OPEN_RETRY_BASE_MS = 100;
+/** Cap individual back-off delays so the total wait is bounded (~3s). */
+const LBUG_OPEN_RETRY_MAX_MS = 500;
 
 function isTransientLockError(err: unknown): boolean {
   const msg = (err instanceof Error ? err.message : String(err)).toLowerCase();

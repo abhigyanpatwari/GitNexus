@@ -2461,7 +2461,16 @@ export async function runFullAnalysis(
     // re-opens onto the new one (the pool staleness invalidation). Runs only on
     // success — a thrown error skips this, leaving the live index intact and the
     // temp build to be cleared by the next run's wipe.
-    if (useAtomicSwap) {
+    // Only publish if the build actually produced a DB at buildPath. A
+    // degenerate run (empty repo, or a mocked pipeline that never opened the
+    // store) leaves nothing to swap — skip rather than throw ENOENT.
+    const builtDbExists = useAtomicSwap
+      ? await fs.stat(buildPath).then(
+          () => true,
+          () => false,
+        )
+      : false;
+    if (useAtomicSwap && builtDbExists) {
       await retryRename(buildPath, lbugPath);
       // Clear any sidecars orphaned beside the replaced file. A cleanly-closed
       // prior index has none; a crashed one could, and it would be replay
