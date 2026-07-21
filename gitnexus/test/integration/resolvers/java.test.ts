@@ -1175,6 +1175,75 @@ describe('Java chained method call resolution', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Chained call on a new-expression receiver: new Local().inner()
+// The receiver of inner() is an object_creation_expression, not a variable.
+// Regression test for #2564: without treating `new Local()` as a typed
+// receiver, the call falls back to name-only resolution and can pick an
+// unrelated same-named method (Other.inner) instead of Local.inner.
+// ---------------------------------------------------------------------------
+
+describe('Java chained call on a new-expression receiver (#2564)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'java-new-expr-chain-call'), () => {});
+  }, 60000);
+
+  it('detects LocalChain and Other classes', () => {
+    const classes = getNodesByLabel(result, 'Class');
+    expect(classes).toContain('LocalChain');
+    expect(classes).toContain('Other');
+  });
+
+  it('resolves new Local().inner() to the local Local#inner, NOT Other#inner', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const localInner = calls.find(
+      (c) =>
+        c.target === 'inner' && c.source === 'm' && c.targetFilePath.includes('LocalChain.java'),
+    );
+    const otherInner = calls.find(
+      (c) => c.target === 'inner' && c.source === 'm' && c.targetFilePath.includes('Other.java'),
+    );
+    expect(localInner).toBeDefined();
+    expect(otherInner).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Java record: container node + HAS_METHOD edges
+// Regression test for #2564: JAVA_QUERIES previously had no @definition.record
+// capture, so a record never got a Class/Record graph node — its methods
+// existed as ownerless orphans with no HAS_METHOD edge.
+// ---------------------------------------------------------------------------
+
+describe('Java record method resolution (#2564)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'java-record-methods'), () => {});
+  }, 60000);
+
+  it('detects a Record node for Point', () => {
+    const records = getNodesByLabel(result, 'Record');
+    expect(records).toContain('Point');
+  });
+
+  it('emits HAS_METHOD edges linking sum and scaled to Point', () => {
+    const hasMethod = getRelationships(result, 'HAS_METHOD');
+    const sumEdge = hasMethod.find((e) => e.source === 'Point' && e.target === 'sum');
+    const scaledEdge = hasMethod.find((e) => e.source === 'Point' && e.target === 'scaled');
+    expect(sumEdge).toBeDefined();
+    expect(scaledEdge).toBeDefined();
+  });
+
+  it('resolves scaled() calling sum() via a CALLS edge', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const sumCall = calls.find((c) => c.target === 'sum' && c.source === 'scaled');
+    expect(sumCall).toBeDefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Java 16+ instanceof pattern variable: `if (obj instanceof User user)`
 // Phase 5.2: extractPatternBinding on instanceof_expression binds user → User.
 // Disambiguation: User.save vs Repo.save — only User.save should be called.
@@ -2985,4 +3054,44 @@ describe('Java enum constant bodies (#2555)', () => {
     );
     expect(misattributed).toBeUndefined();
   }, 60000);
+});
+
+// ---------------------------------------------------------------------------
+// #2561: E.CONST.method() emits no CALLS edge — the receiver-side follow-up
+// to #2555. A bodied constant's receiver must resolve to its synthesized
+// E$N class; a body-less constant's receiver must resolve to the host enum
+// itself.
+// ---------------------------------------------------------------------------
+
+describe('Java enum-constant receiver dispatch (#2561)', () => {
+  let result: PipelineResult;
+
+  beforeAll(async () => {
+    result = await runPipelineFromRepo(path.join(FIXTURES, 'java-enum-constant-body'), () => {});
+  }, 60000);
+
+  it('resolves EnumConst.A.hook() to the bodied constant override (EnumConst$1.hook#0)', () => {
+    const calls = getRelationships(result, 'CALLS');
+    const dispatch = calls.find((c) => c.source === 'dispatchToConstant' && c.target === 'hook');
+    expect(dispatch).toBeDefined();
+    expect(dispatch!.rel.targetId).toBe('Method:src/EnumConst.java:EnumConst$1.hook#0');
+  });
+
+  it("resolves EnumConst.A.log() to the host enum's inherited method via E$N's MRO (EnumConst.log#0)", () => {
+    // A's body overrides hook() but NOT log(); log() lives only on the enum.
+    // The bodied constant's receiver binds to EnumConst$1, whose MRO includes
+    // EnumConst (via @reference.inherits), so the qualified call reaches the
+    // host enum's own method — the inherited-dispatch capability the fix enables.
+    const calls = getRelationships(result, 'CALLS');
+    const dispatch = calls.find((c) => c.source === 'dispatchInherited' && c.target === 'log');
+    expect(dispatch).toBeDefined();
+    expect(dispatch!.rel.targetId).toBe('Method:src/EnumConst.java:EnumConst.log#0');
+  });
+
+  it("resolves Plain.A.m() to the body-less constant's inherited enum method (Plain.m#0)", () => {
+    const calls = getRelationships(result, 'CALLS');
+    const dispatch = calls.find((c) => c.source === 'callPlain' && c.target === 'm');
+    expect(dispatch).toBeDefined();
+    expect(dispatch!.rel.targetId).toBe('Method:src/Plain.java:Plain.m#0');
+  });
 });

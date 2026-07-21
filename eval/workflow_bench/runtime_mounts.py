@@ -217,6 +217,12 @@ def trusted_gitnexus_runtime_mounts() -> tuple[ReadOnlyMount, ...]:
             f"{SANDBOX_GITNEXUS_SHARED}/package.json",
             directory=False,
         ),
+        _validated_runtime_component(
+            runtime,
+            "hooks/claude",
+            f"{SANDBOX_GITNEXUS}/hooks/claude",
+            directory=True,
+        ),
     )
 
     entrypoint = mounts[0].source / "cli" / "index.js"

@@ -2,8 +2,9 @@ import { describe, it, expect, vi, afterEach } from 'vitest';
 
 /**
  * Tests for the #2372 `node:module` compat seam. `module.registerHooks` was
- * added in Node 22.15 / 23.5, but the engines floor is >=22.0.0, so on
- * 22.0–22.14 and 23.0–23.4 the export is absent. `getRegisterHooks()` must
+ * added in Node 22.15 / 23.5. The engines floor is ^22.18.0 || >=24.11.0 (all
+ * >=22.15), but engines is advisory, so a below-floor 22.0–22.14 / 23.0–23.4
+ * runtime can still run, where the export is absent. `getRegisterHooks()` must
  * hand back the real function when present and `undefined` when not — the value
  * the resolver guards degrade on. `isPrefixRuntimeLoadable()` (exported from
  * runtime-install.ts so CLI code never imports the compat module) is the

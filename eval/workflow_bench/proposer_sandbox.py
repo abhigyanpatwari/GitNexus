@@ -26,6 +26,8 @@ SANDBOX_HOME = "/home/agent"
 SANDBOX_TMP = "/tmp"
 SANDBOX_CLAUDE = "/opt/claude/claude"
 SANDBOX_SHELL_PREFIX = "/opt/claude/shell-prefix"
+SANDBOX_PYTHON3 = "/opt/claude/python3"
+SANDBOX_NODE = "/opt/claude/node"
 SANDBOX_PATH = "/opt/claude:/usr/local/bin:/usr/bin:/bin"
 SANDBOX_GITNEXUS = "/opt/gitnexus"
 SANDBOX_GITNEXUS_SHARED = "/opt/gitnexus-shared"
@@ -329,7 +331,14 @@ def build_claude_settings() -> str:
             },
         },
         "permissions": {
-            "defaultMode": "dontAsk",
+            # CLAUDE_CODE_SUBPROCESS_ENV_SCRUB forces permission mode to
+            # "default" (allowed_non_write_users hardening), so requesting a
+            # non-default mode only emits a warning and never takes effect.
+            # Under "default" a tool runs without a prompt only if it matches an
+            # allow rule, so pre-approve the proposer's exact tool surface. Bash
+            # is the only writable tool under --bare (it writes the candidate
+            # overlay) and stays sandbox-confined by the sandbox.* policy above.
+            "allow": ["Read", "Grep", "Glob", "Bash"],
             "disableBypassPermissionsMode": "disable",
         },
         "env": {
@@ -346,6 +355,20 @@ def _runtime_mount_args() -> list[str]:
         path = Path(raw)
         if path.exists():
             args += ["--ro-bind", raw, raw]
+    # sanitized_graph.py and runner_sessions.py invoke the sandboxed graph
+    # CLI via SANDBOX_NODE. Bind whatever `node` actually resolves to on PATH
+    # there -- true node location varies by host (GitHub-hosted runner images
+    # happen to have one under /usr/local/bin; a self-hosted runner's
+    # actions/setup-node installs into its own tool-cache directory instead).
+    # Target must be a fresh path like /opt/claude/... rather than anywhere
+    # under /usr, /bin, /lib, or /lib64: those are already read-only bound
+    # above, and bwrap can't create a new mount-point file inside an
+    # already-read-only tree when the real path doesn't already exist there
+    # (the exact case a self-hosted runner hits, and the reason this bind
+    # exists at all).
+    node_bin = shutil.which("node")
+    if node_bin:
+        args += ["--ro-bind", node_bin, SANDBOX_NODE]
     for raw in (
         "/etc/ssl",
         "/etc/hosts",
@@ -373,6 +396,24 @@ def _create_shell_prefix_wrapper(private_root: Path) -> Path:
         f"PATH={SANDBOX_PATH} LANG=C.UTF-8 LC_ALL=C.UTF-8 TERM=dumb "
         '/bin/bash -c "$1"\n'
     )
+    wrapper.chmod(0o500)
+    return wrapper
+
+
+def _create_python3_wrapper(private_root: Path) -> Path:
+    """A trusted, self-owned Python 3 launcher for evidence-provenance.mjs's atomic mover.
+
+    /usr/bin/python3 is a real system binary, but it's root-owned on the host.
+    Inside this --unshare-user sandbox only the calling uid is mapped (root is
+    not), so root-owned files surface as the kernel's overflow uid — which
+    evidence-provenance.mjs's PATH-scan correctly refuses to trust. This
+    wrapper is freshly created by the same host process that owns
+    home/temp/shell-prefix, so it maps to the sandbox's own trusted uid
+    instead, and simply execs the real interpreter through to do the work.
+    """
+
+    wrapper = private_root / "python3"
+    wrapper.write_text('#!/bin/bash\nset -eu\nexec /usr/bin/python3 "$@"\n')
     wrapper.chmod(0o500)
     return wrapper
 
@@ -634,6 +675,7 @@ def prepare_sandbox(
         directory.mkdir(mode=0o700)
         directory.chmod(0o700)
     shell_prefix = _create_shell_prefix_wrapper(private_root)
+    python3_wrapper = _create_python3_wrapper(private_root)
     # Claude may discover user-level skills below HOME.  Keep the rest of HOME
     # writable for normal CLI state, but overlay an immutable empty skills root
     # so a model cannot shadow the evaluated repository/plugin skill by name.
@@ -644,6 +686,7 @@ def prepare_sandbox(
         *read_only_mounts,
         ReadOnlyMount(source=user_skills, target=SANDBOX_USER_SKILLS),
         ReadOnlyMount(source=shell_prefix, target=SANDBOX_SHELL_PREFIX),
+        ReadOnlyMount(source=python3_wrapper, target=SANDBOX_PYTHON3),
     )
     primary: BaseException | None = None
     try:

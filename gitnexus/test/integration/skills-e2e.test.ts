@@ -2371,7 +2371,13 @@ export function createEntry(level: string, msg: string) {
     });
     result1 = runSkillsCli(tmpDir);
     result2 = runSkillsCli(tmpDir);
-  }, 90000);
+    // 120s to match the other describe hooks in this file. This hook runs
+    // runSkillsCli TWICE, each capped at 45s, so a 90s budget has no headroom
+    // over two worst-case analyzes plus fixture setup and git init — it times
+    // out the *hook* on slow Windows runners (the test below already tolerates
+    // an individual analyze hitting its own 45s timeout via status === null,
+    // but a hook timeout fails before that tolerance can apply).
+  }, 120000);
 
   afterAll(() => {
     fs.rmSync(tmpDir, { recursive: true, force: true });

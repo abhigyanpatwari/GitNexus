@@ -501,7 +501,10 @@ def run_proposer(
                         auth_token=args.auth_token,
                         base_url=args.base_url,
                     ),
-                    permission_mode="dontAsk",
+                    # No permission_mode: CLAUDE_CODE_SUBPROCESS_ENV_SCRUB
+                    # forces "default", so requesting dontAsk only warns. Tools
+                    # are pre-approved via settings permissions.allow
+                    # (proposer_sandbox.build_claude_settings).
                     command_prefix=sandbox.command_prefix,
                     require_pid_namespace=True,
                     bare=True,

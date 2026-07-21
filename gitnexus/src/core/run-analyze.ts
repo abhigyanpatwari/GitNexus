@@ -34,10 +34,12 @@ import {
   LbugWipeError,
   DELETE_FILES_CHUNK_SIZE,
 } from './lbug/lbug-adapter.js';
+import { estimateBufferPool, setBufferPoolSizeHint } from './lbug/lbug-config.js';
 import { escapeCypherString } from './lbug/cypher-escape.js';
 import {
   buildSearchIndexesOrDegrade,
   createSearchFTSIndexes,
+  dropSearchFTSIndexes,
   initialiseSearchFTSStemmer,
   verifySearchFTSIndexes,
 } from './search/fts-indexes.js';
@@ -123,6 +125,7 @@ import { EMBEDDING_TABLE_NAME } from './lbug/schema.js';
 import { STALE_HASH_SENTINEL } from './lbug/schema.js';
 import { isSpringBeanCandidateSourceFile } from './ingestion/frameworks/spring/bean-catalog.js';
 import { SPRING_BEAN_INVENTORY_FEATURE } from './ingestion/frameworks/spring/analysis-features.js';
+import { SPRING_CONFIG_BINDINGS_FEATURE } from './ingestion/languages/java/analysis-features.js';
 import {
   CLASS_FRAMEWORK_ANNOTATIONS_FEATURE,
   findAnalysisFeatureMismatches,
@@ -137,6 +140,7 @@ import {
 const ANALYSIS_FEATURES = [
   CLASS_FRAMEWORK_ANNOTATIONS_FEATURE,
   SPRING_BEAN_INVENTORY_FEATURE,
+  SPRING_CONFIG_BINDINGS_FEATURE,
 ] as const;
 
 interface PersistedFrameworkAnnotationRow {
@@ -644,6 +648,11 @@ export async function runFullAnalysis(
   // (parse-cache, parsedfile-store) and the kuzu-migration cleanup live there
   // and are shared across branches (#2106 KTD7).
   const { storagePath } = getStoragePaths(repoPath);
+
+  // Start each analyze with a clean buffer-pool hint: any pre-pipeline DB open
+  // (e.g. the embeddings-cache open) falls back to the default until the hint is
+  // set from the built graph below, so a prior run's size can't leak in.
+  setBufferPoolSizeHint(undefined);
 
   // Clean up stale KuzuDB files from before the LadybugDB migration.
   const kuzuResult = await cleanupOldKuzuFiles(storagePath);
@@ -1374,6 +1383,16 @@ export async function runFullAnalysis(
     await wipeLbugDbFiles(lbugPath);
   }
 
+  // Size the buffer pool to the graph just built by the pipeline (a page cache
+  // over the on-disk index, which scales with node/edge count) instead of the
+  // fixed 2 GiB default, whose eager commit dominates large-repo analyze. The
+  // size is clamped to [COPY-safety floor, default], so it only ever shrinks
+  // the pool; env override / no-hint paths are unchanged. See
+  // resolveBufferManagerSize / estimateBufferPool.
+  setBufferPoolSizeHint(
+    estimateBufferPool(pipelineResult.graph.nodeCount + pipelineResult.graph.relationshipCount),
+  );
+
   await initLbug(lbugPath);
 
   // Manual WAL checkpoint driver (#1741): periodically drain the WAL
@@ -1645,7 +1664,20 @@ export async function runFullAnalysis(
           progress('lbug', pct, msg);
         });
       } else {
-        // 1a. Remove the write set's existing rows — batched (#2409): one
+        // 1a. Drop every FTS index before touching a single row (#2589).
+        //     `deleteNodesForFiles` below DETACH DELETEs rows out of tables
+        //     that otherwise still carry the FTS index built at the end of
+        //     the PREVIOUS analyze run — Phase 3 doesn't drop+rebuild it
+        //     until well after this delete completes. LadybugDB's FTS
+        //     extension is not proven to survive DML against an indexed
+        //     table (its own docs never demonstrate it), and that ordering
+        //     is exactly what produced "FTS index 'file_fts' is
+        //     inconsistent: term is missing during delete". Dropping first
+        //     removes the hazard outright; Phase 3's createSearchFTSIndexes
+        //     rebuilds every index from the final row set regardless, so
+        //     this is a no-op on its own drop step there.
+        await dropSearchFTSIndexes();
+        // 1b. Remove the write set's existing rows — batched (#2409): one
         //     DETACH DELETE per table per 200-file chunk. The former per-file
         //     loop issued a count + delete per table per FILE — ~13k
         //     single-row write transactions on a ~700-file write set — which

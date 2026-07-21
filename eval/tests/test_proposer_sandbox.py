@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import stat
 import subprocess
 import sys
@@ -19,10 +20,13 @@ from workflow_bench.process_control import ManagedProcessResult, run_managed
 from workflow_bench.proposer_sandbox import (
     MAX_BUNDLE_BYTES,
     MAX_EVIDENCE_FILE_BYTES,
+    SANDBOX_NODE,
+    SANDBOX_PYTHON3,
     SANDBOX_SHELL_PREFIX,
     SANDBOX_USER_SKILLS,
     ReadOnlyMount,
     SandboxError,
+    _runtime_mount_args,
     build_claude_settings,
     build_sandbox_environment,
     prepare_sandbox,
@@ -58,6 +62,11 @@ def test_environment_is_allowlisted_and_shell_children_are_credential_free(monke
     assert settings["sandbox"]["failIfUnavailable"] is True
     assert settings["sandbox"]["allowUnsandboxedCommands"] is False
     assert settings["sandbox"]["network"]["deniedDomains"] == ["*"]
+    # ENV_SCRUB forces "default" mode; the proposer's tools (Bash writes the
+    # overlay) run headless only because they are explicitly pre-approved.
+    # Requesting a non-default defaultMode would merely warn, so it must be gone.
+    assert settings["permissions"]["allow"] == ["Read", "Grep", "Glob", "Bash"]
+    assert "defaultMode" not in settings["permissions"]
 
 
 @pytest.mark.parametrize(
@@ -157,11 +166,62 @@ def test_sandbox_command_has_minimal_mounts_and_no_host_root_bind(tmp_path: Path
         )
         assert probe.returncode == 0, probe.stderr
         assert probe.stdout == "/home/agent|/opt/claude:/usr/local/bin:/usr/bin:/bin"
+
+        # The evidence-provenance.mjs plan-writer's PATH-scan trusts a Python 3
+        # candidate only if it (and its directory) is owned by root or by the
+        # current process — real /usr/bin/python3 is root-owned on the host,
+        # which surfaces as the kernel's overflow uid inside this
+        # --unshare-user sandbox (root itself is never mapped in). This wrapper
+        # is freshly created by the host process instead, so it's trusted, and
+        # it must still exec through to a real, working Python 3.
+        python3_index = argv.index(SANDBOX_PYTHON3)
+        assert argv[python3_index - 2] == "--ro-bind"
+        python3_wrapper = Path(argv[python3_index - 1])
+        assert stat.S_IMODE(python3_wrapper.stat().st_mode) == 0o500
+        version = subprocess.run(
+            [str(python3_wrapper), "-I", "-S", "-c", "import sys; print(sys.version_info[0])"],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        assert version.returncode == 0, version.stderr
+        assert version.stdout.strip() == "3"
+
         assert SANDBOX_USER_SKILLS in argv
         user_skills_index = argv.index(SANDBOX_USER_SKILLS)
         assert argv[user_skills_index - 2] == "--ro-bind"
         private_root = sandbox.private_root
     assert not private_root.exists()
+
+
+def test_runtime_mounts_bind_the_resolved_node_to_a_fresh_sandbox_path(monkeypatch) -> None:
+    # sanitized_graph.py and runner_sessions.py invoke the sandboxed graph CLI
+    # via SANDBOX_NODE. node's real host location varies (GitHub-hosted
+    # runner images happen to have one under /usr/local/bin; a self-hosted
+    # runner's actions/setup-node installs into its own tool-cache directory
+    # instead), so this must bind to a FRESH sandbox path like /opt/claude/...
+    # rather than anywhere under /usr, /bin, /lib, or /lib64: those are
+    # already read-only bound by this same function, and bwrap can't create
+    # a new mount-point file inside an already-read-only tree when the real
+    # path doesn't already exist there on the host (observed empirically:
+    # "bwrap: Can't create file at /usr/local/bin/node: Read-only file
+    # system" when this bind first targeted that path on a self-hosted
+    # runner where node isn't really there).
+    monkeypatch.setattr(
+        "workflow_bench.proposer_sandbox.shutil.which",
+        lambda name: "/opt/hostedtoolcache/node/22.18.0/x64/bin/node" if name == "node" else None,
+    )
+    args = _runtime_mount_args()
+    node_index = args.index("/opt/hostedtoolcache/node/22.18.0/x64/bin/node")
+    assert args[node_index - 1] == "--ro-bind"
+    assert args[node_index + 1] == SANDBOX_NODE
+    assert not any(SANDBOX_NODE.startswith(bound + "/") for bound in ("/usr", "/bin", "/lib", "/lib64"))
+
+
+def test_runtime_mounts_skip_the_node_bind_when_node_is_unresolvable(monkeypatch) -> None:
+    monkeypatch.setattr("workflow_bench.proposer_sandbox.shutil.which", lambda name: None)
+    args = _runtime_mount_args()
+    assert SANDBOX_NODE not in args
 
 
 def test_stricter_prefix_freezes_evaluated_skills_and_can_unshare_network(tmp_path: Path) -> None:
@@ -190,6 +250,43 @@ def test_stricter_prefix_freezes_evaluated_skills_and_can_unshare_network(tmp_pa
     assert prefix[target_index - 2 : target_index + 1] == ["--ro-bind", str(skill), skill_target]
     user_index = prefix.index(SANDBOX_USER_SKILLS)
     assert prefix[user_index - 2] == "--ro-bind"
+
+
+@pytest.mark.skipif(
+    os.environ.get("GITNEXUS_REQUIRE_BWRAP_CANARY") != "1",
+    reason="real Bubblewrap canary is mandatory in the named Ubuntu CI job",
+)
+def test_real_bubblewrap_runs_node_from_outside_the_bound_trees(tmp_path: Path, monkeypatch) -> None:
+    # Reproduces the self-hosted-runner failure directly: node resolved from
+    # a path outside /usr, /bin, /lib, /lib64 (actions/setup-node's own
+    # tool-cache convention) must still be reachable inside the sandbox at
+    # SANDBOX_NODE. A real node copied to a fresh, non-system location stands
+    # in for the tool-cache install; argv-construction tests alone can't
+    # catch a bwrap-level "Can't create file ...: Read-only file system"
+    # (the actual error this fix resolves), only a real bwrap invocation can.
+    real_node = shutil.which("node")
+    if not real_node:
+        pytest.skip("no node on PATH to relocate for this canary")
+    toolcache = tmp_path / "toolcache"
+    toolcache.mkdir()
+    relocated_node = toolcache / "node"
+    shutil.copy2(real_node, relocated_node)
+    relocated_node.chmod(0o755)
+    # Only fake "node"'s resolution -- prepare_sandbox's own bwrap/claude
+    # lookups (_resolve_executable) also go through shutil.which, and must
+    # keep resolving for real or preflight fails before the sandbox is even
+    # built.
+    real_which = shutil.which
+    monkeypatch.setattr(
+        "workflow_bench.proposer_sandbox.shutil.which",
+        lambda name: str(relocated_node) if name == "node" else real_which(name),
+    )
+
+    clone = tmp_path / "clone"
+    clone.mkdir()
+    with prepare_sandbox(clone=clone, claude_bin=Path(sys.executable), preflight=True) as sandbox:
+        result = sandbox.run([SANDBOX_NODE, "--version"], timeout=10)
+    assert result.ok, result.stderr_tail
 
 
 @pytest.mark.skipif(
@@ -716,8 +813,10 @@ for line in sys.stdin:
                     "--strict-mcp-config",
                     "--mcp-config",
                     mcp_config,
-                    "--permission-mode",
-                    "dontAsk",
+                    # No --permission-mode: mirrors production (run_proposer).
+                    # ENV_SCRUB forces "default"; Bash runs only because
+                    # settings permissions.allow pre-approves it. This is the
+                    # authoritative empirical gate for that behavior.
                     "--model",
                     "claude-canary-20260718",
                     "--allowedTools",
@@ -743,4 +842,3 @@ for line in sys.stdin:
     assert bash_result.get("is_error") is not True, bash_result
     assert (clone / "bash-called").read_text() == "canary"
     assert (clone / "mcp-called").read_text() == "ok"
-

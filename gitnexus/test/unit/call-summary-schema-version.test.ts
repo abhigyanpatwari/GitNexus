@@ -73,8 +73,8 @@ describe('CALL_SUMMARY relation-type exclusion (U-C1)', () => {
 });
 
 describe('CALL_SUMMARY incremental reuse gate (U-C5)', () => {
-  it('INCREMENTAL_SCHEMA_VERSION is bumped to 9 (Java enum-constant-body + JLS-naming re-index window)', () => {
-    expect(INCREMENTAL_SCHEMA_VERSION).toBe(9);
+  it('INCREMENTAL_SCHEMA_VERSION is bumped to 11 (Rust dyn-trait-object dispatch re-index window, #2604)', () => {
+    expect(INCREMENTAL_SCHEMA_VERSION).toBe(11);
   });
 
   it('a pre-current stamp fails the `=== INCREMENTAL_SCHEMA_VERSION` reuse gate → forces full re-analyze', () => {
@@ -108,7 +108,15 @@ describe('CALL_SUMMARY incremental reuse gate (U-C5)', () => {
     // topmost-anchored `EnumWrap$1`-style ids would be stranded alongside
     // the re-keyed ones on unchanged files → must NOT reuse.
     expect(passesReuseGate(8)).toBe(false);
+    // A pre-v10 (v9) index predates the Java record container-node fix
+    // (#2564) — a record's methods would keep being ownerless Method nodes
+    // with no HAS_METHOD edge on unchanged files → must NOT reuse.
+    expect(passesReuseGate(9)).toBe(false);
+    // A pre-v11 (v10) index predates the Rust dyn-trait-object dispatch fix
+    // (#2604) — abstract trait methods would keep being uncaptured (no
+    // ownerId/CALLS resolution) on unchanged Rust trait files → must NOT reuse.
+    expect(passesReuseGate(10)).toBe(false);
     // A current-version stamp passes the gate (incremental top-up eligible).
-    expect(passesReuseGate(9)).toBe(true);
+    expect(passesReuseGate(11)).toBe(true);
   });
 });

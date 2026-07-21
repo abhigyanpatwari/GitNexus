@@ -18,6 +18,7 @@ from .proposer_sandbox import (
     SANDBOX_GITNEXUS,
     SANDBOX_GITNEXUS_REGISTRY,
     SANDBOX_HOME,
+    SANDBOX_NODE,
     SANDBOX_TMP,
     SANDBOX_WORKSPACE,
     SandboxError,
@@ -50,6 +51,8 @@ def measured_cost(raw: Any) -> float | None:
     if not math.isfinite(raw) or raw < 0:
         return None
     return float(raw)
+
+
 SANDBOX_GITNEXUS_ENTRYPOINT = f"{SANDBOX_GITNEXUS}/dist/cli/index.js"
 SENSITIVE_EVENT_KEYS = frozenset(
     {
@@ -113,7 +116,7 @@ def sandbox_mcp_config() -> str:
                     "PATH=/usr/local/bin:/usr/bin:/bin",
                     "LANG=C.UTF-8",
                     "GIT_TERMINAL_PROMPT=0",
-                    "/usr/local/bin/node",
+                    SANDBOX_NODE,
                     SANDBOX_GITNEXUS_ENTRYPOINT,
                     "mcp",
                 ],
@@ -377,6 +380,13 @@ def run_claude(
     if strict_mcp_config:
         cmd += ["--strict-mcp-config", "--mcp-config", mcp_config_json or '{"mcpServers":{}}']
     if allowed_tools:
+        # --bare's own hard-coded Bash/Edit/Read ceiling already scopes bare
+        # sessions; outside --bare the built-in toolset defaults to
+        # everything (subagents, WebFetch, Task, ...), so --tools is needed
+        # to actually restrict it — --allowedTools only pre-approves within
+        # whatever set is available, it does not narrow that set.
+        if not bare:
+            cmd += ["--tools", *allowed_tools]
         cmd += ["--allowedTools", *allowed_tools]
     if disable_slash_commands:
         cmd.append("--disable-slash-commands")
@@ -434,6 +444,14 @@ def run_claude(
                 "returncode": proc.returncode,
                 "process_state": proc.state,
                 "stderr_tail": proc.stderr_tail[-2000:],
+                # A session can exit non-zero with an empty stderr (e.g. a
+                # pre-flight sandbox failure before any model turn): the tail
+                # of raw stdout is the only place the actual event stream
+                # (permission_denials, tool_use/tool_result, is_error) shows
+                # up, so surface it here rather than leaving the failure
+                # opaque. Callers already redact this record before it is
+                # written to disk or an uploaded artifact.
+                "stdout_tail": proc.stdout_tail[-2000:],
                 "process_detail": proc.detail,
                 "event_stream_error": event_stream_error,
             }
