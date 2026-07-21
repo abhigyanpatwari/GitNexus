@@ -69,6 +69,9 @@ const PLATFORM_LOGIC = [
   // array form. Runs on every platform (the ubuntu suite covers Linux; this
   // registration adds windows + macos).
   'test/unit/embedding-install-arg-delivery.test.ts',
+  // Lazy MoveFlow install coordinates, PowerShell invocation data, archive
+  // streaming, and filesystem leases all vary across operating systems.
+  'test/unit/move/install-move-flow.test.ts',
   // Structural FTS-extension classifier against REAL binaries (#2374): on this
   // matrix `process.execPath` / `lbugjs.node` are a real PE (windows) and Mach-O
   // (macos), so the header parsing is proven on genuine binaries, not synthetic
@@ -95,6 +98,9 @@ const LBUG_NATIVE = [
   'test/integration/lbug-orphan-sidecar-recovery.test.ts',
   'test/integration/lbug-readonly-init.test.ts',
   'test/integration/lbug-non-ascii-path.test.ts',
+  // Shared Move/non-Move rows must retain their schema defaults through the
+  // real native database on every supported desktop platform.
+  'test/integration/move-mixed-language-roundtrip.test.ts',
   // Cross-repo trace e2e: builds two real lbug indexes + a real bridge and
   // opens them through the pool adapter (native addon + bridge file locking).
   // Windows is skipped in-file (describeReopen) due to the bridge reopen lock.

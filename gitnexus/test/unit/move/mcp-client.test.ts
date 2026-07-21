@@ -8,13 +8,6 @@ vi.mock('node:child_process', () => ({
   execFileSync: vi.fn(),
 }));
 
-// Keep PATH-resolution tests independent of a developer or CI cache that may
-// already contain vendor/move-flow/<platform>/move-flow.
-vi.mock('node:fs', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('node:fs')>();
-  return { ...actual, existsSync: vi.fn(() => false) };
-});
-
 import {
   MoveFlowMcpClient,
   MoveFlowToolCallError,
@@ -43,13 +36,13 @@ describe('tryCreateMoveFlowClient', () => {
   });
 
   it('returns MoveFlowMcpClient when binary is found', () => {
-    mockExecFileSync.mockReturnValue(Buffer.from(''));
+    mockExecFileSync.mockReturnValue('move-flow 2.0.0');
     const client = tryCreateMoveFlowClient();
     expect(client).toBeInstanceOf(MoveFlowMcpClient);
     expect(mockExecFileSync).toHaveBeenCalledWith(
       'move-flow',
       ['--version'],
-      expect.objectContaining({ stdio: 'ignore' }),
+      expect.objectContaining({ encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }),
     );
   });
 
@@ -66,14 +59,31 @@ describe('tryCreateMoveFlowClient', () => {
     'move-flow;literal-name',
   ])('passes an explicit binary path directly to execFileSync: %s', (binary) => {
     process.env.MOVE_FLOW = binary;
-    mockExecFileSync.mockReturnValue(Buffer.from(''));
+    mockExecFileSync.mockReturnValue('move-flow 2.0.0');
     const client = tryCreateMoveFlowClient();
     expect(client).toBeInstanceOf(MoveFlowMcpClient);
     expect(mockExecFileSync).toHaveBeenCalledWith(binary, ['--version'], {
-      stdio: 'ignore',
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
       timeout: 5000,
     });
   });
+
+  it.each(['move-flow 1.9.9', 'move-flow 3.0.0', 'unknown build'])(
+    'rejects an incompatible version response: %s',
+    (versionOutput) => {
+      mockExecFileSync.mockReturnValue(versionOutput);
+      expect(tryCreateMoveFlowClient('/custom/move-flow')).toBeNull();
+    },
+  );
+
+  it.each(['move-flow 2.0.0', 'move-flow 2.1.0-rc1', 'move-flow v2.3.4'])(
+    'accepts a compatible-major version response: %s',
+    (versionOutput) => {
+      mockExecFileSync.mockReturnValue(versionOutput);
+      expect(tryCreateMoveFlowClient('/custom/move-flow')).toBeInstanceOf(MoveFlowMcpClient);
+    },
+  );
 });
 
 describe('MoveFlowMcpClient', () => {

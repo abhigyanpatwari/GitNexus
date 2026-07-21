@@ -24,13 +24,12 @@ import { SYMBOL_NODE_LABELS } from '../ingestion/utils/symbol-labels.js';
 import { applyCjkSegmentationIfEnabled } from '../search/cjk-segmentation.js';
 import {
   CODE_ELEMENT_COLUMNS,
-  MOVE_CONST_COLUMNS,
-  MOVE_ENUM_VARIANT_COLUMNS,
-  MOVE_FUNCTION_COLUMNS,
-  MOVE_MODULE_COLUMNS,
-  MOVE_STRUCT_LIKE_COLUMNS,
+  getNodeTableCsvHeader,
+  getNodeTableLayout,
+  hasNodeTableLayout,
   MULTI_LANG_BASE_COLUMNS,
-} from './move-columns.js';
+  type LayoutTableName,
+} from './node-table-layout.js';
 
 /**
  * Deterministic output ordering — optional (out-of-core / windowed-resolve
@@ -141,8 +140,10 @@ export const escapeCSVStringArray = (value: unknown): string => {
   return escapeCSVField(`[${encoded.join(',')}]`);
 };
 
+// Truthy coercion, matching the incremental CREATE path (`!!properties.isExported`
+// in lbug-adapter) so bulk and incremental loads classify the same values alike.
 export const escapeCSVBoolean = (value: unknown): string => {
-  return value === true ? 'true' : 'false';
+  return value ? 'true' : 'false';
 };
 
 // ============================================================================
@@ -240,6 +241,44 @@ export const normalizeFtsText = (text: string): string => text.replace(/[\r\n\t]
 /** Composes both FTS-text transforms for the `description` column — one place for the six emission sites below to call, instead of repeating the composition. */
 const formatFtsDescription = (description: string): string =>
   normalizeFtsText(applyCjkSegmentationIfEnabled(description));
+
+/**
+ * Encode a row from the same ordered layout that owns its DDL, CSV header,
+ * and COPY column list. These tables are shared across languages, so missing
+ * optional properties deliberately serialize to typed defaults.
+ */
+export const buildLayoutNodeRow = (
+  table: LayoutTableName,
+  node: GraphNode,
+  content: string,
+): string => {
+  const layout = getNodeTableLayout(table);
+
+  return layout.columns
+    .map((spec) => {
+      const value = node.properties[spec.name] ?? spec.defaultValue;
+      switch (spec.csvEncoding) {
+        case 'node-id':
+          return escapeCSVField(node.id);
+        case 'number':
+          return escapeCSVNumber(
+            typeof value === 'number' ? value : undefined,
+            typeof spec.defaultValue === 'number' ? spec.defaultValue : -1,
+          );
+        case 'boolean':
+          return escapeCSVBoolean(value);
+        case 'string-array':
+          return escapeCSVStringArray(value);
+        case 'content':
+          return escapeCSVField(content);
+        case 'description':
+          return escapeCSVField(formatFtsDescription(String(value ?? '')));
+        case 'string':
+          return escapeCSVField(String(value ?? ''));
+      }
+    })
+    .join(',');
+};
 
 // Labels that get exact source-span content (no ±2 window). Single source of
 // truth in `symbol-labels.ts` — see there for why the exactness depends on the
@@ -454,7 +493,7 @@ export const streamAllCSVsToDisk = async (
     const codeElementHeader = CODE_ELEMENT_COLUMNS.join(',');
     const functionWriter = new BufferedCSVWriter(
       path.join(csvDir, 'function.csv'),
-      MOVE_FUNCTION_COLUMNS.join(','),
+      getNodeTableCsvHeader('Function'),
     );
     const classWriter = new BufferedCSVWriter(path.join(csvDir, 'class.csv'), codeElementHeader);
     const interfaceWriter = new BufferedCSVWriter(
@@ -504,10 +543,6 @@ export const streamAllCSVsToDisk = async (
 
     // Multi-language node types share the same CSV shape (no isExported column)
     const multiLangHeader = MULTI_LANG_BASE_COLUMNS.join(',');
-    const moveStructLikeHeader = MOVE_STRUCT_LIKE_COLUMNS.join(',');
-    const moveConstHeader = MOVE_CONST_COLUMNS.join(',');
-    const moveEnumVariantHeader = MOVE_ENUM_VARIANT_COLUMNS.join(',');
-    const moveModuleHeader = MOVE_MODULE_COLUMNS.join(',');
     const MULTI_LANG_TYPES = [
       'Struct',
       'Enum',
@@ -539,15 +574,9 @@ export const streamAllCSVsToDisk = async (
           path.join(csvDir, `${t.toLowerCase()}.csv`),
           t === 'Property'
             ? propertyHeader
-            : t === 'Struct' || t === 'Enum'
-              ? moveStructLikeHeader
-              : t === 'EnumVariant'
-                ? moveEnumVariantHeader
-                : t === 'Const'
-                  ? moveConstHeader
-                  : t === 'Module'
-                    ? moveModuleHeader
-                    : multiLangHeader,
+            : hasNodeTableLayout(t)
+              ? getNodeTableCsvHeader(t)
+              : multiLangHeader,
         ),
       );
     }
@@ -704,119 +733,39 @@ export const streamAllCSVsToDisk = async (
           const writer = codeWriterMap[node.label];
           if (writer) {
             const content = await extractContent(node, contentCache);
-            const baseFields = [
-              escapeCSVField(node.id),
-              escapeCSVField(node.properties.name || ''),
-              escapeCSVField(node.properties.filePath || ''),
-              escapeCSVNumber(node.properties.startLine, -1),
-              escapeCSVNumber(node.properties.endLine, -1),
-              node.properties.isExported ? 'true' : 'false',
-              escapeCSVField(content),
-              escapeCSVField(formatFtsDescription(node.properties.description || '')),
-            ];
             if (node.label === 'Function') {
+              pending = writer.addRow(buildLayoutNodeRow('Function', node, content));
+            } else {
               pending = writer.addRow(
                 [
-                  ...baseFields,
-                  escapeCSVField(node.properties.language || ''),
-                  escapeCSVField(node.properties.qualifiedName || ''),
-                  escapeCSVField(node.properties.moduleQualifiedName || ''),
-                  escapeCSVField(node.properties.visibility || ''),
-                  escapeCSVField(node.properties.visibilityModifier || ''),
-                  escapeCSVBoolean(node.properties.isEntry),
-                  escapeCSVBoolean(node.properties.isView),
-                  escapeCSVBoolean(node.properties.isInline),
-                  escapeCSVBoolean(node.properties.isNative),
-                  escapeCSVNumber(node.properties.parameterCount, 0),
-                  escapeCSVField(node.properties.returnType || ''),
-                  escapeCSVStringArray(node.properties.acquires),
-                  escapeCSVStringArray(node.properties.usedTypes),
-                  escapeCSVStringArray(node.properties.attributes),
-                  escapeCSVField(String(node.properties.attributesJson ?? '')),
-                  escapeCSVField(String(node.properties.typeParamsJson ?? '')),
-                  escapeCSVField(String(node.properties.locationFidelity ?? '')),
+                  escapeCSVField(node.id),
+                  escapeCSVField(node.properties.name || ''),
+                  escapeCSVField(node.properties.filePath || ''),
+                  escapeCSVNumber(node.properties.startLine, -1),
+                  escapeCSVNumber(node.properties.endLine, -1),
+                  node.properties.isExported ? 'true' : 'false',
+                  escapeCSVField(content),
+                  escapeCSVField(formatFtsDescription(node.properties.description || '')),
                 ].join(','),
               );
-            } else {
-              pending = writer.addRow(baseFields.join(','));
             }
           } else {
             // Multi-language node types (Struct, Impl, Trait, Macro, etc.)
             const mlWriter = multiLangWriters.get(node.label);
             if (mlWriter) {
               const content = await extractContent(node, contentCache);
-              const baseFields = [
-                escapeCSVField(node.id),
-                escapeCSVField(node.properties.name || ''),
-                escapeCSVField(node.properties.filePath || ''),
-                escapeCSVNumber(node.properties.startLine, -1),
-                escapeCSVNumber(node.properties.endLine, -1),
-                escapeCSVField(content),
-                escapeCSVField(formatFtsDescription(node.properties.description || '')),
-              ];
-              if (node.label === 'Struct' || node.label === 'Enum') {
-                pending = mlWriter.addRow(
-                  [
-                    ...baseFields,
-                    escapeCSVField(node.properties.language || ''),
-                    escapeCSVField(node.properties.qualifiedName || ''),
-                    escapeCSVField(node.properties.moduleQualifiedName || ''),
-                    escapeCSVField(node.properties.moduleAddress || ''),
-                    escapeCSVStringArray(node.properties.abilities),
-                    escapeCSVBoolean(node.properties.isResource),
-                    escapeCSVBoolean(node.properties.isEvent),
-                    escapeCSVStringArray(node.properties.fieldList),
-                    escapeCSVStringArray(node.properties.attributes),
-                    escapeCSVField(String(node.properties.attributesJson ?? '')),
-                    escapeCSVField(String(node.properties.typeParamsJson ?? '')),
-                    escapeCSVField(node.properties.moveDeclarationKind || ''),
-                    escapeCSVField(String(node.properties.locationFidelity ?? '')),
-                  ].join(','),
-                );
-              } else if (node.label === 'EnumVariant') {
-                pending = mlWriter.addRow(
-                  [
-                    ...baseFields,
-                    escapeCSVField(node.properties.language || ''),
-                    escapeCSVField(node.properties.qualifiedName || ''),
-                    escapeCSVField(String(node.properties.parentEnum || '')),
-                    escapeCSVField(String(node.properties.moduleQualifiedName || '')),
-                    escapeCSVField(String(node.properties.variantKind || '')),
-                    escapeCSVField(String(node.properties.fieldsJson ?? '')),
-                    escapeCSVStringArray(node.properties.attributes),
-                    escapeCSVField(String(node.properties.attributesJson ?? '')),
-                    escapeCSVField(String(node.properties.locationFidelity ?? '')),
-                  ].join(','),
-                );
-              } else if (node.label === 'Const') {
-                pending = mlWriter.addRow(
-                  [
-                    ...baseFields,
-                    escapeCSVField(node.properties.language || ''),
-                    escapeCSVField(node.properties.qualifiedName || ''),
-                    escapeCSVField(node.properties.moduleQualifiedName || ''),
-                    escapeCSVField(String(node.properties.constType ?? '')),
-                    escapeCSVField(String(node.properties.constValue ?? '')),
-                    escapeCSVBoolean(node.properties.isErrorCode),
-                    escapeCSVField(String(node.properties.locationFidelity ?? '')),
-                  ].join(','),
-                );
-              } else if (node.label === 'Module') {
-                pending = mlWriter.addRow(
-                  [
-                    ...baseFields,
-                    escapeCSVField(node.properties.language || ''),
-                    escapeCSVField(node.properties.qualifiedName || ''),
-                    escapeCSVField(node.properties.moduleAddress || ''),
-                    escapeCSVStringArray(node.properties.attributes),
-                    escapeCSVField(String(node.properties.attributesJson ?? '')),
-                    escapeCSVField(String(node.properties.locationFidelity ?? '')),
-                  ].join(','),
-                );
+              if (hasNodeTableLayout(node.label)) {
+                pending = mlWriter.addRow(buildLayoutNodeRow(node.label, node, content));
               } else {
                 pending = mlWriter.addRow(
                   [
-                    ...baseFields,
+                    escapeCSVField(node.id),
+                    escapeCSVField(node.properties.name || ''),
+                    escapeCSVField(node.properties.filePath || ''),
+                    escapeCSVNumber(node.properties.startLine, -1),
+                    escapeCSVNumber(node.properties.endLine, -1),
+                    escapeCSVField(content),
+                    escapeCSVField(formatFtsDescription(node.properties.description || '')),
                     ...(node.label === 'Property'
                       ? [escapeCSVField(node.properties.declaredType || '')]
                       : []),

@@ -26,6 +26,9 @@ jobs:
     # FTS-dependent lbug integration suites are guaranteed to run in CI.
     env:
       GITNEXUS_REQUIRE_FTS: '1'
+      # The live Move suite provisions the pinned release on the shard that
+      # owns it and fails loudly if the compiler path is unavailable.
+      GITNEXUS_REQUIRE_MOVE_FLOW: '1'
     steps:
       # persist-credentials: false — runs tests + uploads a blob artifact; the
       # default-persisted token must not be capturable through it (zizmor
@@ -34,17 +37,16 @@ jobs:
         with:
           persist-credentials: false
 
-      # Cache the move-flow binary the postinstall probe downloads into
-      # vendor/move-flow/<platform>/. On cache hit, the probe is idempotent
-      # (skips the download); on miss, it downloads + verifies a pinned
-      # aptos-labs/aptos-ai release and soft-fails if anything goes wrong (the suite stays green;
-      # the live Move test simply skips when the binary is absent). Keep the
-      # cache key tied to the MOVE_FLOW_VERSION constant in
-      # gitnexus/scripts/install-move-flow.cjs.
+      # Cache the on-demand move-flow install so the shard owning the live Move
+      # suite (GITNEXUS_REQUIRE_MOVE_FLOW=1 hard-fails on provisioning errors)
+      # doesn't re-download the release every run and doesn't hard-fail on a
+      # transient GitHub Releases outage. A restored cache is still verified
+      # (metadata + binary sha256 + version probe) before use. Keep the key
+      # tied to MOVE_FLOW_RELEASE.version in gitnexus/src/core/move/release.ts.
       - name: Cache move-flow binary
-        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v5
         with:
-          path: gitnexus/vendor/move-flow
+          path: ~/.gitnexus/tools/move-flow
           key: ${{ runner.os }}-move-flow-v2.0.0
 
       - uses: ./.github/actions/setup-gitnexus
@@ -209,8 +211,8 @@ jobs:
     timeout-minutes: 25
     # Same guarantee on the platform-sensitive runners: FTS-dependent suites in
     # the cross-platform subset must run, not silently skip. Move ingestion isn't
-    # exercised by this subset either, so GITNEXUS_SKIP_MOVE_FLOW below drops the
-    # postinstall move-flow probe as pure wasted bandwidth here.
+    # exercised by this subset either, so GITNEXUS_SKIP_MOVE_FLOW prevents any
+    # fixture-driven analyze smoke from provisioning it as wasted bandwidth here.
     #
     # GITNEXUS_E2E_CLI=dist: the e2e suites spawn the CLI ~50 times; each spawn via
     # `node --import tsx src/cli/index.ts` re-transpiles the whole CLI, and Windows

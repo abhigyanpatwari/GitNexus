@@ -15,8 +15,8 @@ import { execFileSync } from 'child_process';
 import { runPipelineFromRepo } from './ingestion/pipeline.js';
 import { isMoveCompilerInputPath, moveAvailabilityRequiresFullRebuild } from './move/constants.js';
 import { createMoveIngestPhase } from './move/move-ingest.js';
-import { tryCreateMoveFlowClient } from './move/mcp-client.js';
 import { repoHasMove } from './move/discovery.js';
+import { ensureMoveFlowClient } from './move/provision.js';
 import { resetDegradedParseCounter } from './tree-sitter/safe-parse.js';
 import {
   initLbug,
@@ -944,7 +944,7 @@ export async function runFullAnalysis(
   // Probe before the same-commit fast path: an index built while move-flow was
   // unavailable must be backfilled once the compiler becomes available.
   const hasMovePackages = await repoHasMove(repoPath);
-  const moveFlowClient = hasMovePackages ? tryCreateMoveFlowClient() : null;
+  const moveFlowClient = hasMovePackages ? await ensureMoveFlowClient({ onLog: log }) : null;
   const moveIngestAvailable = hasMovePackages ? moveFlowClient !== null : undefined;
   if (
     existingMeta &&

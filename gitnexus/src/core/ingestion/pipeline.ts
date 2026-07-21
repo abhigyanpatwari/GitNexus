@@ -261,11 +261,12 @@ export interface PipelineOptions {
  * options combination.
  */
 export function buildPhaseList(options?: PipelineOptions): PipelinePhase[] {
+  const { standaloneIngestPhase = emptyStandaloneIngestPhase } = options ?? {};
   return (
     new PhaseRegistry<PipelineOptions>()
       .register(scanPhase)
       .register(structurePhase)
-      .register(options?.standaloneIngestPhase ?? emptyStandaloneIngestPhase)
+      .register(standaloneIngestPhase)
       .register(markdownPhase)
       .register(cobolPhase)
       .register(parsePhase)

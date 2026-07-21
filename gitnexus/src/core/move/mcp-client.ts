@@ -8,10 +8,8 @@
 
 import { spawn, execFileSync, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { createInterface } from 'node:readline';
-import { existsSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
-import * as path from 'node:path';
 import type { MoveFactsMap, CallGraphMap } from './compiler-facts.js';
+import { MOVE_FLOW_RELEASE } from './release.js';
 
 interface JsonRpcResponse {
   jsonrpc: '2.0';
@@ -550,47 +548,39 @@ export class MoveFlowMcpClient implements MoveFlowClient {
 
 /**
  * Try to create a MoveFlowMcpClient. Returns null if move-flow binary
- * is not found on the system.
+ * is not found on the system. When `binaryPath` is provided, only that
+ * provisioned path is probed; the normal resolution order is bypassed.
  *
  * Resolution order:
  *   1. `$MOVE_FLOW` (explicit override for power users / CI).
- *   2. Bundled `vendor/move-flow/<platform>/move-flow[.exe]` (the postinstall
- *      probe installs here — see `scripts/install-move-flow.cjs`).
- *   3. `move-flow` on `$PATH` (host install).
+ *   2. `move-flow` on `$PATH` (host install).
  */
-function bundledMoveFlowPath(): string | null {
-  const { platform, arch } = process;
-  let key: string | null = null;
-  if (platform === 'linux' && arch === 'x64') key = 'linux-x64';
-  else if (platform === 'linux' && arch === 'arm64') key = 'linux-arm64';
-  else if (platform === 'darwin' && arch === 'arm64') key = 'darwin-arm64';
-  else if (platform === 'darwin' && arch === 'x64') key = 'darwin-x64';
-  else if (platform === 'win32' && arch === 'x64') key = 'win32-x64';
-  if (!key) return null;
-  const name = platform === 'win32' ? 'move-flow.exe' : 'move-flow';
-  // mcp-client.ts lives at gitnexus/src/core/move/; vendor/ is two levels above src/.
-  const here = path.dirname(fileURLToPath(import.meta.url));
-  return path.resolve(here, '..', '..', '..', 'vendor', 'move-flow', key, name);
-}
+const MOVE_FLOW_COMPATIBLE_MAJOR = Number(MOVE_FLOW_RELEASE.version.split('.')[0]);
 
 function probeBinary(binary: string): boolean {
   try {
-    execFileSync(binary, ['--version'], { stdio: 'ignore', timeout: 5000 });
-    return true;
+    const output = execFileSync(binary, ['--version'], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+      timeout: 5000,
+    });
+    // Prerelease/build suffixes ("2.1.0-rc1") are accepted; only the major
+    // version gates protocol compatibility, and it follows the release pin.
+    const version = /(?:^|\s)v?(\d+)\.(\d+)\.(\d+)(?:[-+][0-9A-Za-z.-]+)?(?:\s|$)/.exec(output);
+    return version !== null && Number(version[1]) === MOVE_FLOW_COMPATIBLE_MAJOR;
   } catch {
     return false;
   }
 }
 
-export function tryCreateMoveFlowClient(): MoveFlowMcpClient | null {
+export function tryCreateMoveFlowClient(binaryPath?: string): MoveFlowMcpClient | null {
+  if (binaryPath) {
+    return probeBinary(binaryPath) ? new MoveFlowMcpClient(binaryPath) : null;
+  }
+
   const explicit = process.env.MOVE_FLOW;
   if (explicit) {
     return probeBinary(explicit) ? new MoveFlowMcpClient(explicit) : null;
-  }
-
-  const bundled = bundledMoveFlowPath();
-  if (bundled && existsSync(bundled) && probeBinary(bundled)) {
-    return new MoveFlowMcpClient(bundled);
   }
 
   const onPath = 'move-flow';
