@@ -191,4 +191,24 @@ describe.skipIf(isWin)('atomic full-rebuild swap (#2)', () => {
       await cleanup();
     }
   }, 180_000);
+
+  it('publishes cleanly on the production close path (skipNativeCloseOnExit) (#2614 F5)', async () => {
+    const { repo, cleanup } = await makeRepo();
+    try {
+      // The CLI and serve-worker set skipNativeCloseOnExit (dodges #2264), so the
+      // build handle is still open at swap time — the path production actually
+      // ships, distinct from the default real-close the other tests exercise.
+      // Prove the POSIX swap still publishes a single consolidated file with no
+      // .new temp and no orphan sidecar.
+      await runFullAnalysis(repo, { skipNativeCloseOnExit: true }, { onProgress: () => {} });
+      const { lbugPath } = getStoragePaths(repo);
+      await expect(fs.stat(lbugPath)).resolves.toBeTruthy();
+      expect(await lingeringTemp(lbugPath)).toEqual([]);
+      for (const s of ['.wal', '.shadow', '.wal.checkpoint'] as const) {
+        await expect(fs.stat(`${lbugPath}${s}`)).rejects.toThrow(); // no orphan sidecar
+      }
+    } finally {
+      await cleanup();
+    }
+  }, 180_000);
 });
