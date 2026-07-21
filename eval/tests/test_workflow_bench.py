@@ -367,6 +367,20 @@ def test_broken_incumbent_arms_ignores_a_merely_underperforming_candidate():
     assert broken_incumbent_arms(results, {"workflow"}) == []
 
 
+def test_broken_incumbent_arms_flags_an_incumbent_with_zero_valid_runs():
+    # Every run excluded via an excluded-but-non-systemic error_kind
+    # ("evidence-unverified"): valid_runs == 0 for every task, which the old
+    # `valid_runs > 0` guard let sail through silently, and which the outage
+    # streak breaker also doesn't catch (it resets rather than accumulates
+    # on this exact error_kind -- see test_systemic_outage_streak_resets_on_non_outage).
+    results = {
+        "t1": {"workflow": aggregate([record(resolved=False, error_kind="evidence-unverified")])},
+        "t2": {"workflow": aggregate([record(resolved=False, error_kind="evidence-unverified")])},
+    }
+    assert results["t1"]["workflow"]["valid_runs"] == 0
+    assert broken_incumbent_arms(results, {"workflow"}) == ["workflow"]
+
+
 def test_broken_incumbent_arms_ignores_partial_incumbent_failure():
     # Resolved in at least one task — struggling, not broken.
     results = {

@@ -679,7 +679,9 @@ def aggregate(records: list[dict[str, Any]]) -> dict[str, Any]:
     # unmeasured run makes the whole median unavailable so the gate won't rank
     # a candidate on a cost that was never actually captured.
     valid_costs = [r.get("cost_usd") for r in valid]
-    out["cost_usd"] = None if (not valid or any(cost is None for cost in valid_costs)) else statistics.median(valid_costs)
+    out["cost_usd"] = (
+        None if (not valid or any(cost is None for cost in valid_costs)) else statistics.median(valid_costs)
+    )
     out["resolved"] = sum(1 for r in records if r["resolved"])
     out["runs"] = len(records)
     out["valid_runs"] = len(valid)
@@ -720,17 +722,19 @@ def broken_incumbent_arms(
     sandbox misconfiguration), not a skill regression. A candidate merely
     underperforming is a normal, expected outcome and must not trip this —
     only checking incumbents keeps that distinction.
+
+    Deliberately does NOT require valid_runs > 0 per task: an incumbent that
+    fails every run with an excluded-but-non-systemic error_kind (e.g.
+    "evidence-unverified", which the outage-streak breaker explicitly resets
+    on rather than accumulates) would otherwise never accumulate a single
+    valid run and sail through silently — the exact "quiet no-promotion"
+    outcome this guard exists to catch, and arguably worse than the
+    some-runs-resolved-zero case since here nothing completed at all.
+    aggregate() never marks an excluded/unverifiable row resolved=True, so
+    resolved == 0 alone already covers both cases.
     """
     present = incumbent_arms & {arm for arms in results.values() for arm in arms}
-    return sorted(
-        arm
-        for arm in present
-        if all(
-            arms[arm]["valid_runs"] > 0 and arms[arm]["resolved"] == 0
-            for arms in results.values()
-            if arm in arms
-        )
-    )
+    return sorted(arm for arm in present if all(arms[arm]["resolved"] == 0 for arms in results.values() if arm in arms))
 
 
 def _na(value: Any) -> Any:
