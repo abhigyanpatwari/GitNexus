@@ -1,3 +1,7 @@
+# Bundled byte-identical into every hook adapter directory — each one installs
+# standalone and cannot import across packages. Drift guards in
+# gitnexus/test/unit/hooks.test.ts and test/unit/factory-plugin.test.ts fail if the
+# copies diverge; fix them together.
 $ErrorActionPreference = 'Stop'
 $target = $env:GITNEXUS_HOOK_RM_TARGET
 if ([string]::IsNullOrWhiteSpace($target)) { Write-Output '[]'; exit 0 }
