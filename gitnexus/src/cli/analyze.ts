@@ -18,6 +18,7 @@ import { boundedCheckpointBeforeExit } from '../core/lbug/shutdown-helpers.js';
 import {
   getOsPageSize,
   isLbugCheckpointIoError,
+  isLbugCheckpointBusyError,
   isLbugPageSizeFrameError,
   isPageSizeAwareLadybug,
   isWalCorruptionError,
@@ -1624,8 +1625,16 @@ const analyzeCommandImpl = async (
     }
 
     if (isLbugCheckpointIoError(err)) {
+      // #2599: when the checkpoint IO error also looks busy/locked, another
+      // handle holds the store open — name that actionable cause alongside the
+      // threshold hint (the original error is preserved so the hint still fires).
+      const heldOpen = isLbugCheckpointBusyError(err)
+        ? `  Another process may hold the store open (a running \`gitnexus mcp\` server, or a\n` +
+          `  stale reader) — close other GitNexus processes on this repo, then retry.\n`
+        : '';
       cliError(
         `  LadybugDB failed while rotating/removing WAL checkpoint files.\n` +
+          heldOpen +
           `  This can happen when auto-checkpoint runs at the default threshold (~16MB).\n` +
           `  Retry with a larger checkpoint threshold to reduce checkpoint frequency:\n` +
           `    gitnexus analyze --wal-checkpoint-threshold ${RECOMMENDED_WAL_CHECKPOINT_THRESHOLD}\n` +

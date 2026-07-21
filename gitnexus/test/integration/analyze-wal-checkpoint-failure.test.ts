@@ -82,9 +82,15 @@ describe('analyze WAL auto-checkpoint rename failure (real lbug, no mocks)', () 
     // a `GITNEXUS_WAL_CHECKPOINT_THRESHOLD=1` setting forces.
     const storageDir = path.join(repoPath, '.gitnexus');
     fs.mkdirSync(storageDir, { recursive: true });
-    const blockerDir = path.join(storageDir, 'lbug.wal.checkpoint');
-    fs.mkdirSync(blockerDir, { recursive: true });
-    fs.writeFileSync(path.join(blockerDir, 'blocker'), 'cannot-be-renamed-over');
+    // A full rebuild now builds into `lbug.new` and swaps atomically (POSIX), so
+    // its auto-checkpoint targets `lbug.new.wal.checkpoint`; on the in-place /
+    // Windows path it targets `lbug.wal.checkpoint`. Block BOTH so the planted
+    // rename blocker trips the first checkpoint whichever path analyze takes.
+    for (const name of ['lbug.wal.checkpoint', 'lbug.new.wal.checkpoint']) {
+      const blockerDir = path.join(storageDir, name);
+      fs.mkdirSync(blockerDir, { recursive: true });
+      fs.writeFileSync(path.join(blockerDir, 'blocker'), 'cannot-be-renamed-over');
+    }
 
     const result = spawnSync(process.execPath, [...CLI_SPAWN_PREFIX, 'analyze', '--skip-skills'], {
       cwd: repoPath,

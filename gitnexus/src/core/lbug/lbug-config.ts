@@ -628,6 +628,29 @@ export const isDbBusyError = (err: unknown): boolean => {
   );
 };
 
+/**
+ * True when a WAL-checkpoint IO error ALSO carries a busy/lock signal — the
+ * rotation failed because another handle (a `gitnexus mcp` server, or this
+ * process's own reader) holds the store's WAL open, rather than a permanent
+ * disk error. Reuses `isDbBusyError`'s already-tested keyword set instead of a
+ * fresh regex, so an unmatched message degrades to "IO error" rather than
+ * silently claiming a held-open cause. (#2599)
+ */
+export const isLbugCheckpointBusyError = (err: unknown): boolean => {
+  if (!isLbugCheckpointIoError(err)) return false;
+  // Anchor to real held-open wording rather than isDbBusyError's broad
+  // `.includes('lock')`, which matches the DB PATH embedded in the checkpoint
+  // error message (e.g. a repo under `blockchain-app`) and would misclassify a
+  // pure disk fault as held-open (#2614 LOW).
+  const msg = (err instanceof Error ? err.message : String(err)).toLowerCase();
+  return (
+    msg.includes('could not set lock') ||
+    msg.includes('lock is held') ||
+    msg.includes('being used by another process') ||
+    msg.includes('is busy')
+  );
+};
+
 /** See {@link classifyDeleteAllError}. */
 export type DeleteAllErrorClass = 'benign-missing-table' | 'rethrow';
 
@@ -714,6 +737,19 @@ const OPEN_LOCK_RETRY_DELAY_MS = 100;
 export const HANDLE_RELEASE_PROBE_ATTEMPTS = 5;
 export const HANDLE_RELEASE_PROBE_DELAY_MS = 50;
 const HANDLE_RELEASE_LOCK_CODES = new Set(['EBUSY', 'EPERM', 'EACCES']);
+
+// Retry-budget registry, part 2 (retry-budget consolidation): the remaining
+// open-time lock retries live next to their call sites but are catalogued here
+// so all lbug retry budgets surface in one grep. They retry the same lock class
+// as 1–3 ("Could not set lock" while a writer rebuilds the index):
+//   4. LOCK_RETRY_ATTEMPTS / LOCK_RETRY_DELAY_MS  (pool-adapter.ts)
+//      → read pool's read-only open while `gitnexus analyze` is writing
+//        (3 attempts, linear 2s·n back-off ≈ 6s total)
+//   5. LBUG_OPEN_RETRY_ATTEMPTS / _BASE_MS / _MAX_MS  (group/bridge-db.ts)
+//      → cross-repo bridge RO open race (10 attempts, linear 100ms·n capped
+//        at 500ms ≈ 3.5s total)
+// Kept in-file (not moved here) so explicit `lbug-config` test mocks don't have
+// to enumerate them; change a budget in its call site and update this catalogue.
 
 /**
  * Test-fixture directory prefixes recognized by `isTestFixturePath`.

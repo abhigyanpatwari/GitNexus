@@ -53,8 +53,42 @@ interface PoolEntry {
   }>;
   lastUsed: number;
   dbPath: string;
+  /** Filesystem identity of the on-disk DB at open time. When `analyze`
+   *  rebuilds or mutates the index, this diverges from the current file and
+   *  initLbug re-opens the pool onto the new file instead of serving the
+   *  stale open inode. Null for injected/external databases (initLbugWithDb),
+   *  which are never invalidated this way. */
+  dbIdentity: DbIdentity | null;
   /** Set to true when the pool entry is closed — checkin will close orphaned connections */
   closed: boolean;
+}
+
+/** Filesystem identity used to detect an index rebuilt/mutated under a live
+ *  read pool. `ino` catches a full-rebuild unlink+recreate or an atomic-rename
+ *  swap; `mtimeMs`+`size` catch an in-place incremental writeback. */
+interface DbIdentity {
+  ino: number;
+  mtimeMs: number;
+  size: number;
+}
+
+export async function statDbIdentity(dbPath: string): Promise<DbIdentity | null> {
+  try {
+    const s = await fs.stat(dbPath);
+    return { ino: s.ino, mtimeMs: s.mtimeMs, size: s.size };
+  } catch {
+    return null;
+  }
+}
+
+/** True only when both identities are known AND differ. A stat failure
+ *  (ENOENT during the brief unlink window of a full rebuild) yields false, so
+ *  the reader keeps serving its still-valid open inode until the NEW file
+ *  appears with a different identity — avoiding a churn into a failed reopen
+ *  mid-rebuild. */
+export function dbIdentityChanged(prev: DbIdentity | null, next: DbIdentity | null): boolean {
+  if (!prev || !next) return false;
+  return prev.ino !== next.ino || prev.mtimeMs !== next.mtimeMs || prev.size !== next.size;
 }
 
 const pool = new Map<string, PoolEntry>();
@@ -92,6 +126,10 @@ interface SharedDB {
   db: lbug.Database;
   refCount: number;
   ftsLoaded: boolean;
+  /** File identity at open — used to detect reuse of a shared read-only handle
+   *  whose on-disk index was rebuilt/swapped since it opened (only reachable
+   *  when a second pool consumer shares this dbPath; #2614 F2). */
+  dbIdentity?: DbIdentity | null;
   /** When true, closeOne skips db.close() — the Database is owned externally. */
   external?: boolean;
 }
@@ -389,7 +427,16 @@ setInterval(() => {
 function createConnection(db: lbug.Database): lbug.Connection {
   silenceStdout();
   try {
-    return new lbug.Connection(db);
+    const conn = new lbug.Connection(db);
+    // Bound a single query at the engine level so a pathological query cannot
+    // hang a pooled connection past the JS-side Promise.race guard (which frees
+    // the waiter but not the native call). Matches QUERY_TIMEOUT_MS. Guarded so
+    // test doubles that don't model the engine method don't break connection
+    // creation.
+    if (typeof conn.setQueryTimeout === 'function') {
+      conn.setQueryTimeout(QUERY_TIMEOUT_MS);
+    }
+    return conn;
   } finally {
     restoreStdout();
   }
@@ -400,6 +447,8 @@ const QUERY_TIMEOUT_MS = 30_000;
 /** Waiter queue timeout in milliseconds */
 const WAITER_TIMEOUT_MS = 15_000;
 
+// Read-only open retry while `gitnexus analyze` writes. Catalogued as entry 4
+// of the lbug-config retry-budget registry.
 const LOCK_RETRY_ATTEMPTS = 3;
 const LOCK_RETRY_DELAY_MS = 2000;
 const SHADOW_REPLAY_PROBE_QUERY = 'MATCH (n) RETURN n LIMIT 1';
@@ -593,18 +642,45 @@ const initPromises = new Map<string, Promise<void>>();
  * Concurrent calls for the same repoId are deduplicated — the second caller
  * awaits the first's in-progress init rather than starting a redundant one.
  */
-export const initLbug = async (repoId: string, dbPath: string): Promise<void> => {
+/**
+ * Returns `true` when this call (re)opened a fresh handle onto the current
+ * on-disk file, `false` when it reused/served the existing handle (unchanged,
+ * or changed-but-a-query-is-in-flight). Callers that gate their own freshness
+ * bookkeeping on "did the pool actually roll over" (LocalBackend) use the
+ * return value; callers that only need the pool ready can ignore it.
+ */
+export const initLbug = async (repoId: string, dbPath: string): Promise<boolean> => {
   const existing = pool.get(repoId);
   if (existing) {
     existing.lastUsed = Date.now();
-    return;
+    // Detect an index that `analyze` rebuilt or mutated under this live read
+    // pool. Without this, the pool keeps serving the old (POSIX:
+    // unlinked-but-open) inode until LRU/idle eviction — a stale-read window
+    // of up to IDLE_TIMEOUT_MS after analyze finishes.
+    const current = await statDbIdentity(dbPath);
+    if (!dbIdentityChanged(existing.dbIdentity, current)) return false; // unchanged → reuse
+    // A query is in flight on this entry; closing its connection (and the
+    // shared Database at refCount 0) mid-use is a native use-after-free. Serve
+    // the current handle for this dispatch — the next initLbug that finds the
+    // entry idle (checkedOut === 0) reopens, since the identity stays divergent
+    // until then. Under sustained overlapping queries `checkedOut` may never
+    // reach 0 and `lastUsed` keeps the idle timer from evicting, so this window
+    // is bounded by the load, not IDLE_TIMEOUT_MS — the data stays consistent
+    // (a complete older snapshot), just not the newest. Callers that route
+    // freshness THROUGH initLbug (rather than calling closeLbug directly) get
+    // this guard for free; that is why LocalBackend delegates here (#2614).
+    if (existing.checkedOut > 0) return false;
+    closeOne(repoId); // idle & changed → evict, then fall through to reopen the new file
   }
 
   // Deduplicate concurrent init calls for the same repoId —
   // prevents double-init race when multiple parallel tool calls
   // trigger initialization for the same repo simultaneously.
   const pending = initPromises.get(repoId);
-  if (pending) return pending;
+  if (pending) {
+    await pending;
+    return true;
+  }
 
   const promise = doInitLbug(repoId, dbPath);
   initPromises.set(repoId, promise);
@@ -613,6 +689,7 @@ export const initLbug = async (repoId: string, dbPath: string): Promise<void> =>
   } finally {
     initPromises.delete(repoId);
   }
+  return true;
 };
 
 /**
@@ -633,6 +710,23 @@ async function doInitLbug(repoId: string, dbPath: string): Promise<void> {
   // Reuse an existing native Database if another repoId already opened this path.
   // This prevents buffer manager exhaustion from multiple mmap regions on the same file.
   let shared = dbCache.get(dbPath);
+  if (shared && !shared.external && shared.dbIdentity) {
+    // #2614 F2: a cached read-only Database is keyed by dbPath and shared across
+    // pool consumers. If the on-disk index was rebuilt/swapped (new inode) while
+    // ANOTHER consumer still holds this handle (refCount kept it alive), reusing
+    // it serves a superseded index. Unreachable via the MCP backend (one
+    // consumer per lbugPath ⇒ refCount hits 0 ⇒ closeOne reopens fresh); a
+    // complete fix needs per-inode handles rather than a dbPath-keyed cache.
+    // Surface it so the corner is observable instead of silently stale.
+    const current = await statDbIdentity(dbPath);
+    if (dbIdentityChanged(shared.dbIdentity, current)) {
+      realStderrWrite(
+        `GitNexus: reusing a shared read-only handle for ${dbPath} whose on-disk ` +
+          `index was rebuilt while another consumer holds it — results may be stale ` +
+          `until that consumer releases it.\n`,
+      );
+    }
+  }
   if (!shared) {
     // Open in read-only mode — MCP server never writes to the database.
     // This allows multiple MCP server instances to read concurrently, and
@@ -641,7 +735,7 @@ async function doInitLbug(repoId: string, dbPath: string): Promise<void> {
     for (let attempt = 1; attempt <= LOCK_RETRY_ATTEMPTS; attempt++) {
       try {
         const db = await openReadOnlyDatabase(dbPath);
-        shared = { db, refCount: 0, ftsLoaded: false };
+        shared = { db, refCount: 0, ftsLoaded: false, dbIdentity: await statDbIdentity(dbPath) };
         dbCache.set(dbPath, shared);
         break;
       } catch (err: any) {
@@ -650,7 +744,12 @@ async function doInitLbug(repoId: string, dbPath: string): Promise<void> {
         if (isWalCorruptionError(lastError)) {
           try {
             const db = await tryQuarantineAndReopen(dbPath, repoId);
-            shared = { db, refCount: 0, ftsLoaded: false };
+            shared = {
+              db,
+              refCount: 0,
+              ftsLoaded: false,
+              dbIdentity: await statDbIdentity(dbPath),
+            };
             dbCache.set(dbPath, shared);
             break;
           } catch (retryErr) {
@@ -715,6 +814,9 @@ async function doInitLbug(repoId: string, dbPath: string): Promise<void> {
   // Register pool entry only after all connections are pre-warmed and FTS is
   // loaded.  Concurrent executeQuery calls see either "not initialized"
   // (and throw cleanly) or a fully ready pool — never a half-built one.
+  // Record the on-disk identity so a later initLbug can detect an analyze
+  // rebuild/mutation and re-open onto the new file (pool staleness invalidation).
+  const dbIdentity = await statDbIdentity(dbPath);
   pool.set(repoId, {
     db,
     available,
@@ -722,6 +824,7 @@ async function doInitLbug(repoId: string, dbPath: string): Promise<void> {
     waiters: [],
     lastUsed: Date.now(),
     dbPath,
+    dbIdentity,
     closed: false,
   });
   ensureIdleTimer();
@@ -785,6 +888,8 @@ export async function initLbugWithDb(
     waiters: [],
     lastUsed: Date.now(),
     dbPath,
+    // Injected/external DB (tests) — not tracked for rebuild invalidation.
+    dbIdentity: null,
     closed: false,
   });
   ensureIdleTimer();
