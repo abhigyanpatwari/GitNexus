@@ -20,6 +20,7 @@ export {
   scopeResolutionPhase,
   type ScopeResolutionOutput,
 } from '../scope-resolution/pipeline/phase.js';
+export { springConfigPhase, type SpringConfigOutput } from './spring-config.js';
 export { pruneLocalSymbolsPhase, type PruneLocalSymbolsOutput } from './prune-local-symbols.js';
 export { taintSummariesPhase, type TaintSummariesOutput } from './taint-summaries.js';
 export { callSummariesPhase, type CallSummariesOutput } from './call-summaries.js';

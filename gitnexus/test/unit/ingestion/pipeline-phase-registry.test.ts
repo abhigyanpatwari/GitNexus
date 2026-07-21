@@ -66,6 +66,7 @@ describe('PhaseRegistry', () => {
 const FULL_ORDER = [
   'scan',
   'structure',
+  'springConfig',
   'markdown',
   'cobol',
   'parse',

@@ -73,8 +73,8 @@ describe('CALL_SUMMARY relation-type exclusion (U-C1)', () => {
 });
 
 describe('CALL_SUMMARY incremental reuse gate (U-C5)', () => {
-  it('INCREMENTAL_SCHEMA_VERSION is bumped to 9 (Java enum-constant-body + JLS-naming re-index window)', () => {
-    expect(INCREMENTAL_SCHEMA_VERSION).toBe(9);
+  it('INCREMENTAL_SCHEMA_VERSION is bumped to 10 (Java record container-node re-index window)', () => {
+    expect(INCREMENTAL_SCHEMA_VERSION).toBe(10);
   });
 
   it('a pre-current stamp fails the `=== INCREMENTAL_SCHEMA_VERSION` reuse gate → forces full re-analyze', () => {
@@ -108,7 +108,11 @@ describe('CALL_SUMMARY incremental reuse gate (U-C5)', () => {
     // topmost-anchored `EnumWrap$1`-style ids would be stranded alongside
     // the re-keyed ones on unchanged files → must NOT reuse.
     expect(passesReuseGate(8)).toBe(false);
+    // A pre-v10 (v9) index predates the Java record container-node fix
+    // (#2564) — a record's methods would keep being ownerless Method nodes
+    // with no HAS_METHOD edge on unchanged files → must NOT reuse.
+    expect(passesReuseGate(9)).toBe(false);
     // A current-version stamp passes the gate (incremental top-up eligible).
-    expect(passesReuseGate(9)).toBe(true);
+    expect(passesReuseGate(10)).toBe(true);
   });
 });

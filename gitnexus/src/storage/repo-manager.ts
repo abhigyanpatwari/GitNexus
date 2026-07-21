@@ -429,8 +429,16 @@ export interface RepoMeta {
  * `E.hook` to `E$1.hook`, and nested-host anonymous names re-key
  * (`EnumWrap$1` → `EnumWrap$Mode$1`). Same contract as v8: identities move
  * on unchanged files; force a full re-analyze.
+ * v10: Java `record_declaration` now emits a first-class `Record` graph node
+ * (#2564): a record's container node was previously never created (JAVA_QUERIES
+ * had no capture for it), so its methods existed as ownerless Method nodes
+ * with no `HAS_METHOD` edge. The incremental write set only covers changed
+ * files — a top-up against a pre-v10 index would keep silently omitting the
+ * `Record` node and its `HAS_METHOD` edges for every unchanged record file
+ * (same v7 contract: new nodes/edges the incremental path would otherwise
+ * never backfill); force a full re-analyze instead.
  */
-export const INCREMENTAL_SCHEMA_VERSION = 9;
+export const INCREMENTAL_SCHEMA_VERSION = 10;
 
 export interface IndexedRepo {
   repoPath: string;

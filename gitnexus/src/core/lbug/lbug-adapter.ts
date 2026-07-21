@@ -2904,7 +2904,30 @@ export const queryFTS = async (
 };
 
 /**
- * Drop an FTS index
+ * True for the two benign "nothing to drop" `DROP_FTS_INDEX` failures —
+ * both catalog/binder exceptions, LadybugDB's classes for "this name isn't
+ * bound to anything right now" (probe-verified end-to-end through
+ * `dropFTSIndex`'s real `conn.query()` path against @ladybugdb/core
+ * 0.18.x): the named index was never created (`Binder exception: Table <T>
+ * doesn't have an index with name <name>.`), or the FTS extension/function
+ * isn't registered at all (`Catalog exception: function DROP_FTS_INDEX is
+ * not defined...`). A real engine failure — e.g. the `Runtime exception:
+ * FTS index '<name>' is inconsistent: ...` class from #2589 — is a
+ * DIFFERENT exception class (an execution-time failure, not a catalog/bind
+ * lookup miss), so this returns false for it. Anchored to the START of the
+ * message (not a bare substring search): every probed LadybugDB error leads
+ * with its exception class, and anchoring means a future message that merely
+ * mentions "Binder exception" or "Catalog exception" further in in the body
+ * of an otherwise-genuine failure can't be misclassified as benign. Pure
+ * string logic so it is unit-testable without a native LadybugDB connection.
+ */
+export const isBenignDropFtsIndexError = (message: string): boolean =>
+  message.startsWith('Binder exception:') || message.startsWith('Catalog exception:');
+
+/**
+ * Drop an FTS index. Tolerates only {@link isBenignDropFtsIndexError} —
+ * anything else rethrows instead of being silently masked, which previously
+ * let a corrupted index persist across analyze runs undetected.
  */
 export const dropFTSIndex = async (tableName: string, indexName: string): Promise<void> => {
   if (!conn) {
@@ -2913,8 +2936,11 @@ export const dropFTSIndex = async (tableName: string, indexName: string): Promis
 
   try {
     await queryAndDrain(conn, `CALL DROP_FTS_INDEX('${tableName}', '${indexName}')`);
-  } catch {
-    // Index may not exist
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e);
+    if (!isBenignDropFtsIndexError(msg)) {
+      throw e;
+    }
   } finally {
     ensuredFTSIndexes.delete(ftsIndexKey(tableName, indexName));
   }

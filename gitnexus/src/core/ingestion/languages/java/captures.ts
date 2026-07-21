@@ -32,9 +32,13 @@ import { getJavaParser, getJavaScopeQuery } from './query.js';
 import { recordCacheHit, recordCacheMiss } from './cache-stats.js';
 import { getTreeSitterBufferSize } from '../../constants.js';
 import { parseSourceSafe } from '../../../tree-sitter/safe-parse.js';
-import { setJavaClassAnnotationFacts } from './capture-side-channel.js';
+import {
+  setJavaClassAnnotationFacts,
+  setJavaSpringConfigConsumerFacts,
+} from './capture-side-channel.js';
 import { captureJavaPackageFact } from './package-facts.js';
 import { synthesizeCallableFlowCaptures } from '../../utils/callable-flow-captures.js';
+import { captureJavaSpringConfigConsumerFacts } from './spring-config-bindings.js';
 
 /** Declaration anchors that carry function-like arity metadata. */
 const FUNCTION_DECL_TAGS = ['@declaration.method', '@declaration.constructor'] as const;
@@ -150,6 +154,29 @@ export function emitJavaScopeCaptures(
       continue;
     }
 
+    // Normalize a `new`-expression receiver to its constructed type's simple
+    // name: `new Local().inner()` binds the WHOLE `object_creation_expression`
+    // as `@reference.receiver`, so its raw text is `"new Local()"` — a string
+    // that can never match a scope binding, so the compound-receiver resolver
+    // silently falls through to name-only fallback resolution and picks the
+    // wrong same-named method on a collision (#2564). Rewriting the text to
+    // just `Local` lets Case 2 (class-name / static receiver) in
+    // receiver-bound-calls.ts resolve it via its normal MRO walk. Mirrors the
+    // established `normalizePhpReceiver` precedent (php/captures.ts) — a
+    // language-local capture rewrite, no shared-pipeline change.
+    if (grouped['@reference.receiver'] !== undefined) {
+      const receiverNode = nodeIfType(nodeMap['@reference.receiver'], 'object_creation_expression');
+      const typeNode = receiverNode?.childForFieldName('type');
+      const simpleName = typeNode ? javaBaseSimpleNameOf(typeNode) : undefined;
+      if (simpleName !== undefined) {
+        grouped['@reference.receiver'] = syntheticCapture(
+          '@reference.receiver',
+          receiverNode!,
+          simpleName,
+        );
+      }
+    }
+
     // Filter read.member when it's a child of method_invocation or assignment.
     // `@reference.read.member` is captured directly on the `field_access` node.
     if (grouped['@reference.read.member'] !== undefined) {
@@ -257,6 +284,10 @@ export function emitJavaScopeCaptures(
   }
 
   setJavaClassAnnotationFacts(filePath, materializeClassAnnotationFacts(classAnnotations));
+  setJavaSpringConfigConsumerFacts(
+    filePath,
+    captureJavaSpringConfigConsumerFacts(tree.rootNode, filePath),
+  );
 
   return [
     ...resolveVarTypeBindings(out),
