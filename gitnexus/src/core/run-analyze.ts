@@ -2303,7 +2303,11 @@ export async function runFullAnalysis(
     // inside the resolver, and a mismatch leaves the dirty flag intact so the
     // next run takes the established full-recovery path.
     meta.runnerIdentity = finalizeAnalyzerRunnerIdentity(import.meta.url, runnerIdentity);
-    await saveMeta(metaDir, meta);
+    // #2614 F1: the freshness stamp (saveMeta) is written AFTER the atomic swap
+    // below — never here — so a concurrent MCP reader can't observe
+    // meta.indexedAt = T_new while lbugPath still resolves to the pre-swap
+    // inode (which latched the reader on the stale index permanently). The meta
+    // object is fully computed at this point; only its write is deferred.
 
     // Persist the incremental parse cache for the next run. Wraps in
     // try/catch so a cache-write failure never breaks an otherwise
@@ -2479,6 +2483,14 @@ export async function runFullAnalysis(
         await fs.rm(`${lbugPath}${suffix}`, { force: true }).catch(() => {});
       }
     }
+
+    // #2614 F1: stamp the freshness metadata now that the index is published.
+    // When meta.indexedAt becomes visible, lbugPath already resolves to the new
+    // inode, so a reader reiniting on the stamp opens the fresh graph rather
+    // than latching on the old one. Leaving the dirty flag set across the swap
+    // is a crash-safety improvement: a failed swap leaves the previous index
+    // live and the next run recovers via the full-rebuild path.
+    await saveMeta(metaDir, meta);
 
     progress('done', 100, 'Done');
 

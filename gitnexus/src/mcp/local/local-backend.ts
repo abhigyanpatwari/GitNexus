@@ -15,6 +15,8 @@ import {
   executeParameterized,
   closeLbug,
   isLbugReady,
+  statDbIdentity,
+  dbIdentityChanged,
 } from '../../core/lbug/pool-adapter.js';
 import { queryClassBeanMetadata } from './bean-metadata.js';
 import { isValidQueryParams } from '../../core/lbug/query-params.js';
@@ -725,6 +727,12 @@ export class LocalBackend {
   // not persist across calls and the staleness check would reinit forever
   // (#2106).
   private lastObservedIndexedAt: Map<string, string> = new Map();
+  // #2614 F1: file identity of the lbug the pool last opened. An atomic swap or
+  // an in-place incremental changes the inode; reiniting on that reinit-covers
+  // the window where meta.indexedAt hasn't caught up (and the incremental case),
+  // so a rebuilt index is never served stale even when the stamp looks current.
+  private lastObservedDbIdentity: Map<string, Awaited<ReturnType<typeof statDbIdentity>>> =
+    new Map();
   private groupToolSvc: GroupService | null = null;
   /**
    * One-shot stderr warnings for sibling-clone drift, keyed by
@@ -1463,21 +1471,31 @@ export class LocalBackend {
         // Reading the flat meta for a branch handle would compare the branch
         // index's indexedAt against the primary's and thrash the pool (#2106).
         const meta = await loadMeta(path.dirname(repo.lbugPath));
-        if (!meta) return;
         // Compare against the last indexedAt OBSERVED for this pool (keyed by
         // lbugPath), not the handle's — branch handles are fresh spreads so a
         // handle mutation would not persist and would reinit on every check.
         const observed = this.lastObservedIndexedAt.get(poolKey) ?? repo.indexedAt;
-        if (meta.indexedAt && meta.indexedAt !== observed) {
-          // Index was rebuilt — close stale connection and re-init.
+        const stampChanged = !!meta?.indexedAt && meta.indexedAt !== observed;
+        // #2614 F1: also reinit on a file-identity change. An atomic swap (or an
+        // in-place incremental) changes the lbug inode; keying only on
+        // meta.indexedAt let a reader that reinited inside the pre-swap window
+        // latch on the old inode forever (its stamp already == meta.indexedAt).
+        const currentIdentity = await statDbIdentity(repo.lbugPath);
+        const identityChanged = dbIdentityChanged(
+          this.lastObservedDbIdentity.get(poolKey) ?? null,
+          currentIdentity,
+        );
+        if (stampChanged || identityChanged) {
+          // Index was rebuilt/swapped — close stale connection and re-init.
           // Wrap in reinitPromises to prevent TOCTOU race where concurrent
           // callers both detect staleness and double-close the pool.
           const reinit = (async () => {
             try {
               await closeLbug(poolKey);
               this.initializedRepos.delete(poolKey);
-              this.lastObservedIndexedAt.set(poolKey, meta.indexedAt);
+              if (meta?.indexedAt) this.lastObservedIndexedAt.set(poolKey, meta.indexedAt);
               await initLbug(poolKey, repo.lbugPath);
+              this.lastObservedDbIdentity.set(poolKey, await statDbIdentity(repo.lbugPath));
               this.initializedRepos.add(poolKey);
             } finally {
               this.reinitPromises.delete(poolKey);
@@ -1497,6 +1515,7 @@ export class LocalBackend {
       await initLbug(poolKey, repo.lbugPath);
       this.initializedRepos.add(poolKey);
       this.lastObservedIndexedAt.set(poolKey, repo.indexedAt);
+      this.lastObservedDbIdentity.set(poolKey, await statDbIdentity(repo.lbugPath));
     } catch (err: any) {
       // If lock error, mark as not initialized so next call retries
       this.initializedRepos.delete(poolKey);
