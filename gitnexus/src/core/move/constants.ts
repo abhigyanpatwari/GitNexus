@@ -5,6 +5,8 @@
  * with no compile error, so they live here.
  */
 
+import path from 'node:path';
+
 /** `NodeProperties.language` tag for every Move symbol. */
 export const MOVE_LANGUAGE = 'move';
 
@@ -104,9 +106,10 @@ export function moveAvailabilityRequiresFullRebuild(
  */
 export function moveRepoRelativePath(absPath: string, repoPath?: string): string {
   if (!repoPath) return absPath;
-  if (absPath.startsWith(repoPath)) {
-    const rel = absPath.slice(repoPath.length);
-    return rel.startsWith('/') ? rel.slice(1) : rel;
+  const relative = path.relative(repoPath, absPath);
+  if (relative === '') return relative;
+  if (relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
+    return absPath;
   }
-  return absPath;
+  return relative.replaceAll(path.sep, '/');
 }

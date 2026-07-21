@@ -47,6 +47,16 @@ function isMcpListToolResult(v: unknown): v is McpListToolResult {
  *  (and some builds route package build failures through it). */
 const JSON_RPC_INVALID_PARAMS = -32602;
 
+/** Real Aptos packages may need several minutes for a cold compiler build. */
+const DEFAULT_MOVE_FLOW_TOOL_TIMEOUT_MS = 300_000;
+
+function resolveMoveFlowToolTimeoutMs(): number {
+  const configured = Number(process.env.GITNEXUS_MOVE_FLOW_TIMEOUT_MS);
+  return Number.isSafeInteger(configured) && configured > 0
+    ? configured
+    : DEFAULT_MOVE_FLOW_TOOL_TIMEOUT_MS;
+}
+
 /**
  * A move-flow tool call that failed in user space: the package could not be
  * built (an `isError: true` tool result whose content text carries the
@@ -390,6 +400,7 @@ export class MoveFlowMcpClient implements MoveFlowClient {
 
     return new Promise<unknown>((resolve, reject) => {
       const id = ++this.requestId;
+      const timeoutMs = resolveMoveFlowToolTimeoutMs();
       const timeout = setTimeout(() => {
         this.pending.delete(id);
         try {
@@ -397,8 +408,13 @@ export class MoveFlowMcpClient implements MoveFlowClient {
         } catch {
           /* process may already be dead */
         }
-        reject(new Error(`move-flow '${toolName}' timed out after 120s`));
-      }, 120000);
+        reject(
+          new Error(
+            `move-flow '${toolName}' timed out after ${timeoutMs}ms ` +
+              '(raise GITNEXUS_MOVE_FLOW_TIMEOUT_MS for large packages)',
+          ),
+        );
+      }, timeoutMs);
 
       this.pending.set(id, {
         resolve: (result) => {
