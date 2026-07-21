@@ -172,7 +172,7 @@ def test_eval_ci_uses_locked_uv_and_blocking_native_containment_jobs():
     }
     assert containment["timeout-minutes"] == 20
     assert containment_node_setup["with"] == {
-        "node-version": "22.16.0",
+        "node-version": "22.18.0",
         "cache": "npm",
         "cache-dependency-path": "gitnexus/package-lock.json\ngitnexus-shared/package-lock.json\n",
     }

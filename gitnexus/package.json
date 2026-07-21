@@ -107,7 +107,6 @@
     "@types/express": "^5.0.6",
     "@types/js-yaml": "^4.0.9",
     "@types/node": "^26.0.0",
-    "@types/uuid": "^11.0.0",
     "@vitest/coverage-v8": "^4.0.18",
     "gitnexus-shared": "file:../gitnexus-shared",
     "tsx": "^4.0.0",
@@ -120,6 +119,6 @@
     }
   },
   "engines": {
-    "node": ">=22.0.0"
+    "node": "^22.18.0 || >=24.11.0"
   }
 }

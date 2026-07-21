@@ -191,7 +191,7 @@ export const ensureEmbeddingStackResolvable = (): void => {
   hookAttempted = true;
 
   try {
-    // Node < 22.15 / < 23.5 (engines floor is >= 22.0.0): no synchronous hooks
+    // Node < 22.15 / < 23.5 (below the engines floor of ^22.18.0 || >=24.11.0): no synchronous hooks
     // API. Degrade gracefully — normally-installed stacks still resolve; only
     // the runtime-prefix fallback is unavailable. Reachable now that the import
     // is a namespace access (see node-module-compat.ts) rather than a static

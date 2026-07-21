@@ -3,8 +3,10 @@
  *
  * `module.registerHooks` — the synchronous ESM/CJS resolution-hook API the
  * embedding-stack resolvers rely on — was added in Node 22.15.0 (and 23.5.0 on
- * the 23.x line). The gitnexus engines floor is `>=22.0.0`, which admits Node
- * 22.0–22.14 AND 23.0–23.4, where the export is absent.
+ * the 23.x line). The gitnexus engines floor is `^22.18.0 || >=24.11.0`, so
+ * every supported runtime exposes it — but `engines` is advisory (not
+ * engine-strict), so a below-floor Node (22.0–22.14, or the unsupported
+ * 23.0–23.4 line) can still run, where the export is absent.
  *
  * In this `"type": "module"` package, a *static named* import of a missing
  * builtin export (`import { registerHooks } from 'node:module'`) is a
