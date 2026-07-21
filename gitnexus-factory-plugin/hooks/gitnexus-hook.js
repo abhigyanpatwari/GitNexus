@@ -91,6 +91,12 @@ function extractPattern(toolName, toolInput) {
     const cmd = toolInput.command || '';
     if (!/\brg\b|\bgrep\b/.test(cmd)) return null;
 
+    // NOTE: split(/\s+/) cannot handle shell quoting, same as the Cursor
+    // integration. `rg "User Service" src/` yields "User" (first token after
+    // rg/grep, quotes stripped) rather than the full phrase — BM25 is already
+    // token-tolerant, so the multi-word pattern is deliberately not
+    // reconstructed. Worst case is augment context for a narrower term than
+    // the agent searched. Quoted single tokens (`rg "validateUser"`) are exact.
     const tokens = cmd.split(/\s+/);
     let foundCmd = false;
     let skipNext = false;
