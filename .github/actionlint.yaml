@@ -1,0 +1,5 @@
+# Custom self-hosted runner labels actionlint can't discover on its own.
+# gitnexus-evolution: the skill-evolution EC2 runner (infra/gitnexus-evolution/).
+self-hosted-runner:
+  labels:
+    - gitnexus-evolution
