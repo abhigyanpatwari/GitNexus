@@ -27,6 +27,7 @@ SANDBOX_TMP = "/tmp"
 SANDBOX_CLAUDE = "/opt/claude/claude"
 SANDBOX_SHELL_PREFIX = "/opt/claude/shell-prefix"
 SANDBOX_PYTHON3 = "/opt/claude/python3"
+SANDBOX_NODE = "/opt/claude/node"
 SANDBOX_PATH = "/opt/claude:/usr/local/bin:/usr/bin:/bin"
 SANDBOX_GITNEXUS = "/opt/gitnexus"
 SANDBOX_GITNEXUS_SHARED = "/opt/gitnexus-shared"
@@ -355,16 +356,19 @@ def _runtime_mount_args() -> list[str]:
         if path.exists():
             args += ["--ro-bind", raw, raw]
     # sanitized_graph.py and runner_sessions.py invoke the sandboxed graph
-    # CLI at the fixed path /usr/local/bin/node. That's only covered by the
-    # /usr bind above when node happens to live under /usr/local/bin on the
-    # host -- true on GitHub-hosted runner images, but not on a self-hosted
-    # runner where actions/setup-node installs into its own tool-cache
-    # directory instead. Bind whatever `node` actually resolves to on PATH
-    # to that same fixed sandbox path so both call sites keep working
-    # regardless of where the host actually put it.
+    # CLI via SANDBOX_NODE. Bind whatever `node` actually resolves to on PATH
+    # there -- true node location varies by host (GitHub-hosted runner images
+    # happen to have one under /usr/local/bin; a self-hosted runner's
+    # actions/setup-node installs into its own tool-cache directory instead).
+    # Target must be a fresh path like /opt/claude/... rather than anywhere
+    # under /usr, /bin, /lib, or /lib64: those are already read-only bound
+    # above, and bwrap can't create a new mount-point file inside an
+    # already-read-only tree when the real path doesn't already exist there
+    # (the exact case a self-hosted runner hits, and the reason this bind
+    # exists at all).
     node_bin = shutil.which("node")
     if node_bin:
-        args += ["--ro-bind", node_bin, "/usr/local/bin/node"]
+        args += ["--ro-bind", node_bin, SANDBOX_NODE]
     for raw in (
         "/etc/ssl",
         "/etc/hosts",
