@@ -75,7 +75,7 @@ on:
         type: boolean
         default: true
   pull_request:
-    branches: [main]
+    branches: [main, main-aptos]
     paths:
       # Any build-affecting change under a vendored grammar triggers a rebuild —
       # not just a version bump — so editing the vendored source (parser.c,
