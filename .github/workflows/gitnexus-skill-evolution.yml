@@ -18,7 +18,6 @@
 #     workflow (and eval/workflow_bench/evolve.py) from the *dispatched ref*,
 #     so this server-side rule — not a code-side guard the branch could edit
 #     away — is what stops a non-main branch from running with the secrets.
-#     Codified in infra/gitnexus-evolution/github.tf.
 # [x] Register a self-hosted runner labeled `gitnexus-evolution` (a dedicated
 #     EC2 box works well). GitHub-hosted runners hard-cap job execution at 6
 #     hours, non-configurable — too short once a benchmark session actually
@@ -28,8 +27,9 @@
 #     doesn't apply — still keep the box dedicated to this workflow, with
 #     outbound-only network access, and prefer on-demand over Spot (a Spot
 #     reclaim mid-run loses the same way a 6-hour timeout does). Instance,
-#     security group, and IAM codified in infra/gitnexus-evolution/; run
-#     register-runner.sh there to (re-)register.
+#     security group, and IAM setup are documented privately, not in this
+#     repo — publishing the exact topology of a real, live AWS account
+#     isn't safe to do in a public repo even without literal secrets.
 #     Accepted tradeoff: the box is stopped between runs (an EventBridge
 #     schedule starts it ~15min before the Saturday cron and stops it 24h
 #     later) but is not destroyed/recreated per run, so it isn't fully
