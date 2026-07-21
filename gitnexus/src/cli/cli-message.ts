@@ -46,6 +46,7 @@ import { t, type CliMessageKey, type CliMessageVars } from './i18n/index.js';
 export type RecoveryHint =
   | 'wal-corruption'
   | 'wal-checkpoint-threshold'
+  | 'wal-checkpoint-held-open'
   | 'lbug-wipe-failed'
   | 'lbug-page-size'
   | 'heap-oom-respawn'
