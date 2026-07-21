@@ -56,7 +56,10 @@ import {
   checkpointOnce,
   type WalCheckpointDriver,
 } from './lbug/wal-checkpoint-driver.js';
-import { quarantineSidecarsForDirtyRecovery } from './lbug/sidecar-recovery.js';
+import {
+  quarantineSidecarsForDirtyRecovery,
+  inspectLbugSidecars,
+} from './lbug/sidecar-recovery.js';
 import type { EmbeddingIdentity } from './embeddings/embedding-identity.js';
 import {
   getStoragePaths,
@@ -1350,13 +1353,31 @@ export async function runFullAnalysis(
   //    handle before the rename — i.e. NOT a --pdg run (the #2264 destructor
   //    crash). Unverified on Windows CI; falls back to in-place otherwise.
   const posixSwap = process.platform !== 'win32';
-  const windowsSwapOk = process.platform === 'win32' && options.pdg !== true;
+  // #2614 Windows: the forced real-close before the rename re-bets that #2264 is
+  // --pdg-only, which is unproven (the CLI/worker skip the native close
+  // UNCONDITIONALLY) and unverifiable without a Windows runner. Keep it opt-in
+  // (GITNEXUS_ATOMIC_WINDOWS_SWAP=1) so the default Windows analyze stays on the
+  // proven in-place path; enable it only to test the Windows swap.
+  const windowsSwapOk =
+    process.platform === 'win32' &&
+    options.pdg !== true &&
+    process.env.GITNEXUS_ATOMIC_WINDOWS_SWAP === '1';
   // Incremental atomicity copies the whole index into the temp before mutating
   // it, which negates incremental's speed premise — so it is opt-in
   // (GITNEXUS_ATOMIC_INCREMENTAL=1) pending a benchmark. Full rebuilds always
   // swap where the platform allows.
-  const atomicIncremental =
+  const wantAtomicIncremental =
     isIncremental && !!hashDiff && process.env.GITNEXUS_ATOMIC_INCREMENTAL === '1';
+  // #2614 F3: the copy-then-swap stages ONLY the main lbug file, so a live index
+  // carrying an orphan .wal/.shadow (a silently-failed prior checkpoint) would
+  // be copied incompletely and lose that delta. Only take the atomic path when
+  // the live index is a consolidated single file; otherwise fall back to the
+  // in-place writeback, which the next open replays correctly.
+  const atomicIncremental =
+    wantAtomicIncremental && (await inspectLbugSidecars(lbugPath)).kind === 'clean';
+  if (wantAtomicIncremental && !atomicIncremental) {
+    log('atomic-incremental: live index carries orphan sidecars — using in-place writeback');
+  }
   const useAtomicSwap = (isFullRebuild || atomicIncremental) && (posixSwap || windowsSwapOk);
   const buildPath = useAtomicSwap ? `${lbugPath}.new` : lbugPath;
 
@@ -2481,6 +2502,13 @@ export async function runFullAnalysis(
       // poison next to the freshly published index. Best-effort.
       for (const suffix of ['.wal', '.shadow', '.wal.checkpoint'] as const) {
         await fs.rm(`${lbugPath}${suffix}`, { force: true }).catch(() => {});
+      }
+      // #2614 F4: if the final checkpoint silently failed, the build may still
+      // carry a residual .wal/.shadow under the temp name. MOVE it beside the
+      // published index (not orphan/delete it) so the next open replays the
+      // delta, rather than leaving it under a name LadybugDB never reconciles.
+      for (const suffix of ['.wal', '.shadow'] as const) {
+        await fs.rename(`${buildPath}${suffix}`, `${lbugPath}${suffix}`).catch(() => {});
       }
     }
 

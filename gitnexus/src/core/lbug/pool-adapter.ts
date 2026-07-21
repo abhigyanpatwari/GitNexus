@@ -126,6 +126,10 @@ interface SharedDB {
   db: lbug.Database;
   refCount: number;
   ftsLoaded: boolean;
+  /** File identity at open — used to detect reuse of a shared read-only handle
+   *  whose on-disk index was rebuilt/swapped since it opened (only reachable
+   *  when a second pool consumer shares this dbPath; #2614 F2). */
+  dbIdentity?: DbIdentity | null;
   /** When true, closeOne skips db.close() — the Database is owned externally. */
   external?: boolean;
 }
@@ -650,8 +654,12 @@ export const initLbug = async (repoId: string, dbPath: string): Promise<void> =>
     if (!dbIdentityChanged(existing.dbIdentity, current)) return; // unchanged → reuse
     // A query is in flight on this entry; closing its connection mid-use is a
     // native use-after-free (closeOne only closes idle connections). Serve the
-    // current handle for this dispatch — a later idle initLbug reopens, since
-    // the identity stays divergent until then.
+    // current handle for this dispatch — the next initLbug that finds the entry
+    // idle (checkedOut === 0) reopens, since the identity stays divergent until
+    // then. Under sustained overlapping queries `checkedOut` may never reach 0
+    // and `lastUsed` keeps the idle timer from evicting, so this window is
+    // bounded by the load, not IDLE_TIMEOUT_MS — the data stays consistent
+    // (a complete older snapshot), just not the newest.
     if (existing.checkedOut > 0) return;
     closeOne(repoId); // idle & changed → evict, then fall through to reopen the new file
   }
@@ -689,6 +697,23 @@ async function doInitLbug(repoId: string, dbPath: string): Promise<void> {
   // Reuse an existing native Database if another repoId already opened this path.
   // This prevents buffer manager exhaustion from multiple mmap regions on the same file.
   let shared = dbCache.get(dbPath);
+  if (shared && !shared.external && shared.dbIdentity) {
+    // #2614 F2: a cached read-only Database is keyed by dbPath and shared across
+    // pool consumers. If the on-disk index was rebuilt/swapped (new inode) while
+    // ANOTHER consumer still holds this handle (refCount kept it alive), reusing
+    // it serves a superseded index. Unreachable via the MCP backend (one
+    // consumer per lbugPath ⇒ refCount hits 0 ⇒ closeOne reopens fresh); a
+    // complete fix needs per-inode handles rather than a dbPath-keyed cache.
+    // Surface it so the corner is observable instead of silently stale.
+    const current = await statDbIdentity(dbPath);
+    if (dbIdentityChanged(shared.dbIdentity, current)) {
+      realStderrWrite(
+        `GitNexus: reusing a shared read-only handle for ${dbPath} whose on-disk ` +
+          `index was rebuilt while another consumer holds it — results may be stale ` +
+          `until that consumer releases it.\n`,
+      );
+    }
+  }
   if (!shared) {
     // Open in read-only mode — MCP server never writes to the database.
     // This allows multiple MCP server instances to read concurrently, and
@@ -697,7 +722,7 @@ async function doInitLbug(repoId: string, dbPath: string): Promise<void> {
     for (let attempt = 1; attempt <= LOCK_RETRY_ATTEMPTS; attempt++) {
       try {
         const db = await openReadOnlyDatabase(dbPath);
-        shared = { db, refCount: 0, ftsLoaded: false };
+        shared = { db, refCount: 0, ftsLoaded: false, dbIdentity: await statDbIdentity(dbPath) };
         dbCache.set(dbPath, shared);
         break;
       } catch (err: any) {
@@ -706,7 +731,12 @@ async function doInitLbug(repoId: string, dbPath: string): Promise<void> {
         if (isWalCorruptionError(lastError)) {
           try {
             const db = await tryQuarantineAndReopen(dbPath, repoId);
-            shared = { db, refCount: 0, ftsLoaded: false };
+            shared = {
+              db,
+              refCount: 0,
+              ftsLoaded: false,
+              dbIdentity: await statDbIdentity(dbPath),
+            };
             dbCache.set(dbPath, shared);
             break;
           } catch (retryErr) {
