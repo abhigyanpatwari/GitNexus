@@ -15,7 +15,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { createRequire } from 'node:module';
-import type { EventType as YamlEventType, State as YamlState } from 'js-yaml';
+import type { Event as YamlEvent } from 'js-yaml';
 import { SPRING_CONFIG_DESCRIPTION } from '../frameworks/spring/config-bindings.js';
 import { generateId } from '../../../lib/utils.js';
 import type { PipelineContext, PipelinePhase, PhaseResult } from './types.js';
@@ -24,6 +24,9 @@ import type { StructureOutput } from './structure.js';
 
 const require = createRequire(import.meta.url);
 const yaml = require('js-yaml') as typeof import('js-yaml');
+// js-yaml 5 dropped DEFAULT_SCHEMA; CORE scalar resolution plus the merge (`<<`)
+// tag reproduces the Spring-relevant v4 behaviour (typed scalars + merge keys).
+const SPRING_YAML_SCHEMA = yaml.CORE_SCHEMA.withTags(yaml.mergeTag);
 const MAX_CONFIG_FILE_BYTES = 2 * 1024 * 1024;
 const MAX_YAML_TRAVERSAL_DEPTH = 128;
 const MAX_YAML_TRAVERSAL_NODES = 100_000;
@@ -134,9 +137,9 @@ export function parseSpringProperties(
 
 interface YamlParseEvent {
   readonly startLine: number;
-  kind: string | null;
-  result: unknown;
-  tag: string | null;
+  readonly kind: 'scalar' | 'sequence' | 'mapping' | 'alias' | null;
+  readonly result: unknown;
+  readonly aliasOf: YamlParseEvent | undefined;
   readonly children: YamlParseEvent[];
 }
 
@@ -164,12 +167,10 @@ function isObjectValue(value: unknown): value is object {
   return value !== null && typeof value === 'object';
 }
 
-function resolveYamlAliasEvent(
-  event: YamlParseEvent | undefined,
-  objectEvents: WeakMap<object, YamlParseEvent>,
-): YamlParseEvent | undefined {
-  if (event?.kind !== null || !isObjectValue(event.result)) return event;
-  return objectEvents.get(event.result) ?? event;
+// Aliases are resolved to their anchor event by name while the tree is built,
+// so following one here is a single pointer hop.
+function resolveYamlAliasEvent(event: YamlParseEvent | undefined): YamlParseEvent | undefined {
+  return event?.aliasOf ?? event;
 }
 
 function yamlMappingPairs(event: YamlParseEvent): Array<{
@@ -190,26 +191,18 @@ function yamlMappingPairs(event: YamlParseEvent): Array<{
 function findYamlMappingLocation(
   event: YamlParseEvent | undefined,
   key: string,
-  objectEvents: WeakMap<object, YamlParseEvent>,
   traversal: YamlTraversalState,
   visited = new Set<YamlParseEvent>(),
   depth = 0,
 ): YamlMappingLocation | undefined {
   consumeYamlTraversalBudget(traversal, depth);
-  const resolved = resolveYamlAliasEvent(event, objectEvents);
+  const resolved = resolveYamlAliasEvent(event);
   if (resolved === undefined || visited.has(resolved)) return undefined;
   visited.add(resolved);
 
   if (resolved.kind === 'sequence') {
     for (const child of resolved.children) {
-      const found = findYamlMappingLocation(
-        child,
-        key,
-        objectEvents,
-        traversal,
-        visited,
-        depth + 1,
-      );
+      const found = findYamlMappingLocation(child, key, traversal, visited, depth + 1);
       if (found !== undefined) return found;
     }
     return undefined;
@@ -222,14 +215,7 @@ function findYamlMappingLocation(
     return { valueEvent: direct.valueEvent, line: direct.keyEvent.startLine };
   }
   for (const merge of pairs.filter((pair) => pair.key === '<<')) {
-    const found = findYamlMappingLocation(
-      merge.valueEvent,
-      key,
-      objectEvents,
-      traversal,
-      visited,
-      depth + 1,
-    );
+    const found = findYamlMappingLocation(merge.valueEvent, key, traversal, visited, depth + 1);
     if (found !== undefined) return found;
   }
   return undefined;
@@ -240,13 +226,12 @@ function flattenYamlValue(
   event: YamlParseEvent | undefined,
   prefix: string,
   out: Map<string, number>,
-  objectEvents: WeakMap<object, YamlParseEvent>,
   traversal: YamlTraversalState,
   sourceLine = event?.startLine ?? 1,
   depth = 0,
 ): void {
   consumeYamlTraversalBudget(traversal, depth);
-  const resolvedEvent = resolveYamlAliasEvent(event, objectEvents);
+  const resolvedEvent = resolveYamlAliasEvent(event);
   const trackedObject = isObjectValue(value) ? value : undefined;
   if (trackedObject !== undefined && traversal.activeObjects.has(trackedObject)) return;
   if (trackedObject !== undefined) traversal.activeObjects.add(trackedObject);
@@ -259,7 +244,6 @@ function flattenYamlValue(
           resolvedEvent?.children[index],
           `${prefix}[${index}]`,
           out,
-          objectEvents,
           traversal,
           sourceLine,
           depth + 1,
@@ -277,13 +261,12 @@ function flattenYamlValue(
         out.set(prefix, sourceLine);
       for (const [key, nested] of entries) {
         const next = prefix.length === 0 ? key : `${prefix}.${key}`;
-        const location = findYamlMappingLocation(resolvedEvent, key, objectEvents, traversal);
+        const location = findYamlMappingLocation(resolvedEvent, key, traversal);
         flattenYamlValue(
           nested,
           location?.valueEvent,
           next,
           out,
-          objectEvents,
           traversal,
           location?.line ?? sourceLine,
           depth + 1,
@@ -297,6 +280,107 @@ function flattenYamlValue(
   }
 }
 
+// js-yaml 5 reports node positions as source offsets; map them to 1-based lines.
+function makeLineResolver(source: string): (offset: number) => number {
+  const lineStarts = [0];
+  for (let index = 0; index < source.length; index++) {
+    if (source[index] === '\n') lineStarts.push(index + 1);
+  }
+  return (offset: number): number => {
+    let low = 0;
+    let high = lineStarts.length - 1;
+    let line = 0;
+    while (low <= high) {
+      const mid = (low + high) >> 1;
+      if (lineStarts[mid] <= offset) {
+        line = mid;
+        low = mid + 1;
+      } else {
+        high = mid - 1;
+      }
+    }
+    return line + 1;
+  };
+}
+
+/**
+ * Rebuild the parse tree from js-yaml 5's event stream (v4's `listener` option
+ * was removed). Returns each document's root event, with aliases already
+ * resolved to their anchor event so merged/aliased keys keep the line where
+ * they were declared.
+ */
+function buildYamlEventTree(
+  events: readonly YamlEvent[],
+  source: string,
+): Array<YamlParseEvent | undefined> {
+  const lineOf = makeLineResolver(source);
+  const anchors = new Map<string, YamlParseEvent>();
+  const stack: YamlParseEvent[] = [];
+  const documentRoots: Array<YamlParseEvent | undefined> = [];
+
+  const anchorName = (start: number, end: number): string | null =>
+    start >= 0 && end > start ? source.slice(start, end) : null;
+  const attach = (node: YamlParseEvent): void => {
+    stack[stack.length - 1]?.children.push(node);
+  };
+  const register = (name: string | null, node: YamlParseEvent): void => {
+    if (name !== null) anchors.set(name, node);
+  };
+
+  for (const event of events) {
+    switch (event.type) {
+      case yaml.EVENT_DOCUMENT:
+        stack.push({
+          startLine: 1,
+          kind: null,
+          result: undefined,
+          aliasOf: undefined,
+          children: [],
+        });
+        break;
+      case yaml.EVENT_MAPPING:
+      case yaml.EVENT_SEQUENCE: {
+        const node: YamlParseEvent = {
+          startLine: lineOf(event.start),
+          kind: event.type === yaml.EVENT_MAPPING ? 'mapping' : 'sequence',
+          result: undefined,
+          aliasOf: undefined,
+          children: [],
+        };
+        register(anchorName(event.anchorStart, event.anchorEnd), node);
+        attach(node);
+        stack.push(node);
+        break;
+      }
+      case yaml.EVENT_SCALAR: {
+        const node: YamlParseEvent = {
+          startLine: lineOf(event.valueStart),
+          kind: 'scalar',
+          result: yaml.getScalarValue(source, event),
+          aliasOf: undefined,
+          children: [],
+        };
+        register(anchorName(event.anchorStart, event.anchorEnd), node);
+        attach(node);
+        break;
+      }
+      case yaml.EVENT_ALIAS: {
+        const target = anchors.get(anchorName(event.anchorStart, event.anchorEnd) ?? '');
+        attach({ startLine: 1, kind: 'alias', result: undefined, aliasOf: target, children: [] });
+        break;
+      }
+      case yaml.EVENT_POP: {
+        const done = stack.pop();
+        // Documents are the only top-level containers, so a pop that empties the
+        // stack closes a document; its single child is the document's root value.
+        if (done !== undefined && stack.length === 0) documentRoots.push(done.children[0]);
+        break;
+      }
+    }
+  }
+  return documentRoots;
+}
+
 /** Parse and flatten YAML leaves without retaining their values. */
 export function parseSpringYaml(
   content: string,
@@ -304,46 +388,21 @@ export function parseSpringYaml(
   profile?: string,
 ): SpringConfigKey[] {
   const flattened = new Map<string, number>();
-  const eventStack: YamlParseEvent[] = [];
-  const documentEvents: YamlParseEvent[] = [];
-  const objectEvents = new WeakMap<object, YamlParseEvent>();
-  const documents: unknown[] = [];
   const traversal: YamlTraversalState = {
     remainingNodes: MAX_YAML_TRAVERSAL_NODES,
     activeObjects: new Set<object>(),
   };
 
-  yaml.loadAll(content, (document) => documents.push(document), {
-    schema: yaml.DEFAULT_SCHEMA,
+  const events = yaml.parseEvents(content, { maxDepth: MAX_YAML_TRAVERSAL_DEPTH });
+  const documents = yaml.constructFromEvents(events, {
+    source: content,
+    schema: SPRING_YAML_SCHEMA,
     json: true,
-    listener: (eventType: YamlEventType, state: YamlState) => {
-      if (eventType === 'open') {
-        eventStack.push({
-          startLine: state.line + 1,
-          kind: null,
-          result: undefined,
-          tag: null,
-          children: [],
-        });
-        return;
-      }
-
-      const event = eventStack.pop();
-      if (event === undefined) return;
-      event.kind = state.kind ?? null;
-      event.result = state.result;
-      event.tag = (state as YamlState & { tag?: string | null }).tag ?? null;
-      if (isObjectValue(event.result) && event.kind !== null) {
-        objectEvents.set(event.result, event);
-      }
-      const parent = eventStack[eventStack.length - 1];
-      if (parent === undefined) documentEvents.push(event);
-      else parent.children.push(event);
-    },
   });
+  const documentEvents = buildYamlEventTree(events, content);
 
   documents.forEach((document, index) =>
-    flattenYamlValue(document, documentEvents[index], '', flattened, objectEvents, traversal),
+    flattenYamlValue(document, documentEvents[index], '', flattened, traversal),
   );
   return [...flattened.entries()]
     .sort(([left], [right]) => left.localeCompare(right))
