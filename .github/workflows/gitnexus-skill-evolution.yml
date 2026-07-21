@@ -18,6 +18,15 @@
 #     workflow (and eval/workflow_bench/evolve.py) from the *dispatched ref*,
 #     so this server-side rule — not a code-side guard the branch could edit
 #     away — is what stops a non-main branch from running with the secrets.
+# [ ] Register a self-hosted runner labeled `gitnexus-evolution` (a dedicated
+#     EC2 box works well). GitHub-hosted runners hard-cap job execution at 6
+#     hours, non-configurable — too short once a benchmark session actually
+#     invokes Skill/MCP tools for real. Self-hosted runners cap at 5 days
+#     instead. This job only ever runs on schedule/workflow_dispatch, never
+#     on fork-PR content, so the usual public-repo self-hosted-runner risk
+#     doesn't apply — still keep the box dedicated to this workflow, with
+#     outbound-only network access, and prefer on-demand over Spot (a Spot
+#     reclaim mid-run loses the same way a 6-hour timeout does).
 # [ ] Run workflow_dispatch once and confirm: containment preflight passes,
 #     the benchmark completes inside the job timeout, the results artifact
 #     uploads, and a promotion (if any) opens a well-formed PR.
@@ -77,13 +86,13 @@ jobs:
         github.event_name == 'workflow_dispatch' ||
         vars.GITNEXUS_EVOLUTION_ENABLED == 'true'
       )
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, x64, gitnexus-evolution]
     # Gate promotion runs on a protected Environment. An admin must attach a
     # deployment-branch rule (main only) and ideally scope the three secrets to
     # it — server-side enforcement a dispatched non-main ref cannot bypass by
     # editing its own workflow copy. See the activation checklist above.
     environment: gitnexus-evolution
-    timeout-minutes: 355 # ceiling just under GitHub's 360-minute hard cap
+    timeout-minutes: 1440 # self-hosted ceiling is 5 days (7200min); 24h is a generous margin over a single-generation serial run
     permissions:
       contents: read # The promotion PR uses a short-lived App token minted below.
     env:

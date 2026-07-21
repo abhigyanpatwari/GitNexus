@@ -26,6 +26,7 @@ SANDBOX_HOME = "/home/agent"
 SANDBOX_TMP = "/tmp"
 SANDBOX_CLAUDE = "/opt/claude/claude"
 SANDBOX_SHELL_PREFIX = "/opt/claude/shell-prefix"
+SANDBOX_PYTHON3 = "/opt/claude/python3"
 SANDBOX_PATH = "/opt/claude:/usr/local/bin:/usr/bin:/bin"
 SANDBOX_GITNEXUS = "/opt/gitnexus"
 SANDBOX_GITNEXUS_SHARED = "/opt/gitnexus-shared"
@@ -384,6 +385,24 @@ def _create_shell_prefix_wrapper(private_root: Path) -> Path:
     return wrapper
 
 
+def _create_python3_wrapper(private_root: Path) -> Path:
+    """A trusted, self-owned Python 3 launcher for evidence-provenance.mjs's atomic mover.
+
+    /usr/bin/python3 is a real system binary, but it's root-owned on the host.
+    Inside this --unshare-user sandbox only the calling uid is mapped (root is
+    not), so root-owned files surface as the kernel's overflow uid — which
+    evidence-provenance.mjs's PATH-scan correctly refuses to trust. This
+    wrapper is freshly created by the same host process that owns
+    home/temp/shell-prefix, so it maps to the sandbox's own trusted uid
+    instead, and simply execs the real interpreter through to do the work.
+    """
+
+    wrapper = private_root / "python3"
+    wrapper.write_text("#!/bin/bash\nset -eu\nexec /usr/bin/python3 \"$@\"\n")
+    wrapper.chmod(0o500)
+    return wrapper
+
+
 def _resolve_executable(executable: Path | str | None, default: str) -> Path:
     raw = os.fspath(executable) if executable is not None else shutil.which(default)
     if not raw:
@@ -641,6 +660,7 @@ def prepare_sandbox(
         directory.mkdir(mode=0o700)
         directory.chmod(0o700)
     shell_prefix = _create_shell_prefix_wrapper(private_root)
+    python3_wrapper = _create_python3_wrapper(private_root)
     # Claude may discover user-level skills below HOME.  Keep the rest of HOME
     # writable for normal CLI state, but overlay an immutable empty skills root
     # so a model cannot shadow the evaluated repository/plugin skill by name.
@@ -651,6 +671,7 @@ def prepare_sandbox(
         *read_only_mounts,
         ReadOnlyMount(source=user_skills, target=SANDBOX_USER_SKILLS),
         ReadOnlyMount(source=shell_prefix, target=SANDBOX_SHELL_PREFIX),
+        ReadOnlyMount(source=python3_wrapper, target=SANDBOX_PYTHON3),
     )
     primary: BaseException | None = None
     try:

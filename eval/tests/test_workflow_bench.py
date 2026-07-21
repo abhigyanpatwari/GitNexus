@@ -10,6 +10,7 @@ import yaml
 
 from workflow_bench.runner import (
     aggregate,
+    broken_incumbent_arms,
     build_parser,
     infra_error_record,
     normalized_model_identifier,
@@ -64,6 +65,7 @@ def test_aggregate_takes_medians_and_counts_resolved():
         "valid_runs": 3,
         "excluded_runs": 0,
         "transcripts_missing": 0,
+        "error_kinds": {},
     }
 
 
@@ -331,6 +333,47 @@ def test_render_report_surfaces_excluded_and_unverified_runs():
     assert "| t | demo | workflow | 1/1 (1 excluded) |" in report
     assert "session/infra errors" in report
     assert "no locatable session transcript" in report
+
+
+def test_render_report_surfaces_why_each_row_failed():
+    results = {
+        "t": {
+            "workflow": aggregate(
+                [record(resolved=False, error_kind="plan-evidence-invalid")],
+            ),
+        }
+    }
+    report = render_report(results)
+    assert "plan-evidence-invalid×1" in report
+
+
+def test_broken_incumbent_arms_flags_an_incumbent_that_resolved_nothing():
+    results = {
+        "t1": {"workflow": aggregate([record(resolved=False, error_kind="plan-evidence-invalid")])},
+        "t2": {"workflow": aggregate([record(resolved=False, error_kind="plan-evidence-invalid")])},
+    }
+    assert broken_incumbent_arms(results, {"workflow"}) == ["workflow"]
+
+
+def test_broken_incumbent_arms_ignores_a_merely_underperforming_candidate():
+    # The incumbent works fine; only the candidate arm fails. That's a normal,
+    # expected "bad candidate" outcome and must not read as a broken harness.
+    results = {
+        "t1": {
+            "workflow": aggregate([record(resolved=True)]),
+            "candidate_workflow": aggregate([record(resolved=False, error_kind="verify-failed")]),
+        },
+    }
+    assert broken_incumbent_arms(results, {"workflow"}) == []
+
+
+def test_broken_incumbent_arms_ignores_partial_incumbent_failure():
+    # Resolved in at least one task — struggling, not broken.
+    results = {
+        "t1": {"workflow": aggregate([record(resolved=False, error_kind="verify-failed")])},
+        "t2": {"workflow": aggregate([record(resolved=True)])},
+    }
+    assert broken_incumbent_arms(results, {"workflow"}) == []
 
 
 def test_infra_error_record_captures_the_failure_and_is_excluded():

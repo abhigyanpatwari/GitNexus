@@ -19,6 +19,7 @@ from workflow_bench.process_control import ManagedProcessResult, run_managed
 from workflow_bench.proposer_sandbox import (
     MAX_BUNDLE_BYTES,
     MAX_EVIDENCE_FILE_BYTES,
+    SANDBOX_PYTHON3,
     SANDBOX_SHELL_PREFIX,
     SANDBOX_USER_SKILLS,
     ReadOnlyMount,
@@ -162,6 +163,27 @@ def test_sandbox_command_has_minimal_mounts_and_no_host_root_bind(tmp_path: Path
         )
         assert probe.returncode == 0, probe.stderr
         assert probe.stdout == "/home/agent|/opt/claude:/usr/local/bin:/usr/bin:/bin"
+
+        # The evidence-provenance.mjs plan-writer's PATH-scan trusts a Python 3
+        # candidate only if it (and its directory) is owned by root or by the
+        # current process — real /usr/bin/python3 is root-owned on the host,
+        # which surfaces as the kernel's overflow uid inside this
+        # --unshare-user sandbox (root itself is never mapped in). This wrapper
+        # is freshly created by the host process instead, so it's trusted, and
+        # it must still exec through to a real, working Python 3.
+        python3_index = argv.index(SANDBOX_PYTHON3)
+        assert argv[python3_index - 2] == "--ro-bind"
+        python3_wrapper = Path(argv[python3_index - 1])
+        assert stat.S_IMODE(python3_wrapper.stat().st_mode) == 0o500
+        version = subprocess.run(
+            [str(python3_wrapper), "-I", "-S", "-c", "import sys; print(sys.version_info[0])"],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        assert version.returncode == 0, version.stderr
+        assert version.stdout.strip() == "3"
+
         assert SANDBOX_USER_SKILLS in argv
         user_skills_index = argv.index(SANDBOX_USER_SKILLS)
         assert argv[user_skills_index - 2] == "--ro-bind"
