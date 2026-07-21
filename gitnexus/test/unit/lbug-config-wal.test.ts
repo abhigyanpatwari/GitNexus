@@ -354,4 +354,22 @@ describe('isLbugCheckpointIoError', () => {
     expect(isLbugCheckpointIoError('Some other error')).toBe(false);
     expect(isLbugCheckpointIoError(undefined)).toBe(false);
   });
+
+  // Reproduces #2599: on Windows, `analyze --pdg` fails checkpoint rotation
+  // whenever a `gitnexus mcp` server still has the store open — a real
+  // cross-process conflict, not the disk-threshold problem the recovery
+  // hint below assumes. The classifier buckets both under the same
+  // boolean, so `analyze.ts` (and `runCheckpointWithRetry`'s exhausted-
+  // retry rethrow) cannot tell the two apart and always suggests raising
+  // `--wal-checkpoint-threshold`, which cannot fix a held-open handle.
+  it('#2599: cannot distinguish a Windows cross-process sharing violation from a real threshold problem', () => {
+    const heldOpenByAnotherProcess =
+      'Runtime exception: IO exception: Error renaming file C:\\repo\\.gitnexus\\lbug.wal to ' +
+      'C:\\repo\\.gitnexus\\lbug.wal.checkpoint. Error Message: The process cannot access the ' +
+      'file because it is being used by another process.';
+    // Bug: this is bucketed identically to the genuine disk/permission
+    // case above, even though bumping the checkpoint threshold will never
+    // resolve a handle another process is holding open.
+    expect(isLbugCheckpointIoError(heldOpenByAnotherProcess)).toBe(true);
+  });
 });
