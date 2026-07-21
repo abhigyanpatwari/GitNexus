@@ -19,6 +19,7 @@ import {
 } from '../../src/server/analyze-worker-core.js';
 import type { AnalyzeResult } from '../../src/core/run-analyze.js';
 import type { WorkerMessage } from '../../src/server/analyze-worker.js';
+import type { AnalyzerRunnerIdentity } from '../../src/storage/repo-manager.js';
 
 const baseResult: AnalyzeResult = {
   repoName: 'repo',
@@ -75,6 +76,26 @@ describe('runWorkerAnalysis — finalize guard (#2264 P2)', () => {
 
     const completes = send.mock.calls.filter((c) => c[0].type === 'complete');
     expect(completes).toHaveLength(1);
+  });
+
+  it('threads the pre-import runner receipt into runFullAnalysis', async () => {
+    const send = vi.fn<(msg: WorkerMessage) => void>();
+    const run = vi.fn<WorkerAnalysisDeps['runFullAnalysis']>(async () => baseResult);
+    const receipt = { schemaVersion: 4 } as AnalyzerRunnerIdentity;
+
+    await runWorkerAnalysis(
+      '/repo',
+      {},
+      {
+        runFullAnalysis: run,
+        assertAnalysisFinalized: okFinalize,
+        send,
+        claimTerminal: alwaysClaim,
+      },
+      receipt,
+    );
+
+    expect(run.mock.calls[0]?.[3]).toBe(receipt);
   });
 
   it('reports error when finalization passes but the analysis itself throws', async () => {

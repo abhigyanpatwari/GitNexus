@@ -2,6 +2,7 @@
 
 import { SupportedLanguages } from 'gitnexus-shared';
 import type { ClassExtractionConfig } from '../../class-types.js';
+import { synthesizeJavaAnonymousClassName } from '../../utils/ast-helpers.js';
 
 // ---------------------------------------------------------------------------
 // Java
@@ -14,6 +15,15 @@ export const javaClassConfig: ClassExtractionConfig = {
     'interface_declaration',
     'enum_declaration',
     'record_declaration',
+    // Anonymous class bodies (`new Runnable() { ... }`) — the matching
+    // JAVA_QUERIES pattern only captures `object_creation_expression`
+    // WITH a `class_body`, and `extractName` below returns undefined for
+    // any other shape, so plain `new Foo()` constructor calls never
+    // produce a Class node (#2550).
+    'object_creation_expression',
+    // Enum constant bodies (`enum E { A { ... } }`) — javac's other
+    // anonymous shape, named E$N by the same authority (#2555).
+    'enum_constant',
   ],
   fileScopeNodeTypes: ['package_declaration'],
   ancestorScopeNodeTypes: [
@@ -22,6 +32,27 @@ export const javaClassConfig: ClassExtractionConfig = {
     'enum_declaration',
     'record_declaration',
   ],
+  extractName(node) {
+    if (node.type === 'object_creation_expression' || node.type === 'enum_constant') {
+      return synthesizeJavaAnonymousClassName(node);
+    }
+    return undefined;
+  },
+  // An anonymous body whose name CANNOT be synthesized must not become a
+  // Class node at all. Without this skip, `extract()`'s
+  // `extractTypeNameFromNode` fallback fabricates a name — the CONSTRUCTED
+  // type for `new Runnable() { ... }` (phantom `Class:...:Runnable`,
+  // empirically caught in review) or the constant's own identifier for an
+  // `enum_constant` (`Class:...:A`).
+  shouldSkipClassCapture({ definitionNode }) {
+    return (
+      definitionNode !== null &&
+      definitionNode !== undefined &&
+      (definitionNode.type === 'object_creation_expression' ||
+        definitionNode.type === 'enum_constant') &&
+      synthesizeJavaAnonymousClassName(definitionNode) === undefined
+    );
+  },
 };
 
 // ---------------------------------------------------------------------------

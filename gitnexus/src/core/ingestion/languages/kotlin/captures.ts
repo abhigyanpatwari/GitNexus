@@ -1,4 +1,8 @@
-import { makeScopeId, type Capture, type CaptureMatch } from 'gitnexus-shared';
+import { makeScopeId, type Capture, type CaptureMatch, type ScopeId } from 'gitnexus-shared';
+import {
+  materializeClassAnnotationFacts,
+  recordClassAnnotationCapture,
+} from '../../frameworks/spring/bean-candidates.js';
 import {
   nodeIfType,
   nodeToCapture,
@@ -14,6 +18,8 @@ import { normalizeKotlinType } from './interpret.js';
 import { synthesizeKotlinReceiverBinding } from './receiver-binding.js';
 import { getKotlinParser, getKotlinScopeQuery } from './query.js';
 import { markCompanionScope } from './companion-scopes.js';
+import { setKotlinClassAnnotationFacts } from './capture-side-channel.js';
+import { captureKotlinPackageFact } from './package-facts.js';
 import { synthesizeCallableFlowCaptures } from '../../utils/callable-flow-captures.js';
 
 const FUNCTION_DECL_TAGS = ['@declaration.function'] as const;
@@ -73,8 +79,10 @@ export function emitKotlinScopeCaptures(
   } else {
     recordKotlinCacheHit();
   }
+  captureKotlinPackageFact(filePath, tree.rootNode);
 
   const out: CaptureMatch[] = [];
+  const classAnnotations = new Map<ScopeId, Set<string>>();
   const returnTypes = collectKotlinReturnTypeTexts(tree.rootNode);
   out.push(...synthesizeKotlinLocalAssignmentBindings(tree.rootNode, returnTypes));
   out.push(...synthesizeKotlinLoopBindings(tree.rootNode, returnTypes));
@@ -97,6 +105,21 @@ export function emitKotlinScopeCaptures(
       groupedNodes[tag] = capture.node;
     }
     if (Object.keys(grouped).length === 0) continue;
+
+    const annotatedClass = grouped['@class-annotation.class'];
+    const annotationName = grouped['@class-annotation.name'];
+    if (annotatedClass !== undefined && annotationName !== undefined) {
+      const classNode = nodeIfType(groupedNodes['@class-annotation.class'], 'class_declaration');
+      if (classNode !== null && isKotlinBeanCandidateClass(classNode)) {
+        recordClassAnnotationCapture(
+          classAnnotations,
+          filePath,
+          annotatedClass,
+          annotationName.text,
+        );
+      }
+      continue;
+    }
 
     // Companion-object marker (#1756 / U4). The `@scope.companion`
     // capture is a side-channel marker — it shares its range with the
@@ -264,9 +287,19 @@ export function emitKotlinScopeCaptures(
     if (extensionFallback !== null) out.push(extensionFallback);
   }
 
+  setKotlinClassAnnotationFacts(filePath, materializeClassAnnotationFacts(classAnnotations));
   out.push(...synthesizeCallableFlowCaptures(tree.rootNode, KOTLIN_CALLABLE_CAPTURE_OPTIONS));
-
   return out;
+}
+
+function isKotlinBeanCandidateClass(classNode: SyntaxNode): boolean {
+  if (classNode.children.some((child) => child.type === 'interface' || child.type === 'enum')) {
+    return false;
+  }
+  const modifiers = classNode.namedChildren.find((child) => child.type === 'modifiers');
+  return !modifiers?.namedChildren.some(
+    (child) => child.type === 'class_modifier' && child.text.trim() === 'annotation',
+  );
 }
 
 /**

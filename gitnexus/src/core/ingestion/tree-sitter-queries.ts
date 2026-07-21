@@ -749,6 +749,14 @@ export const JAVA_QUERIES = `
 (enum_declaration name: (identifier) @name) @definition.enum
 (annotation_type_declaration name: (identifier) @name) @definition.annotation
 
+; Anonymous class bodies: new Runnable() { ... } — no @name capture; the
+; class extractor synthesizes the javac-style Worker$N name (#2550)
+(object_creation_expression (class_body)) @definition.class
+
+; Enum constant bodies: enum E { A { ... } } — javac's other anonymous
+; shape, synthesized as E$N by the same naming authority (#2555)
+(enum_constant body: (class_body)) @definition.class
+
 ; Methods & Constructors
 (method_declaration name: (identifier) @name) @definition.method
 (constructor_declaration name: (identifier) @name) @definition.constructor

@@ -5,7 +5,11 @@
 
 import { Command } from 'commander';
 import { createRequire } from 'node:module';
-import { createLazyAction, createLbugLazyAction } from './lazy-action.js';
+import {
+  createAnalyzerLbugLazyAction,
+  createLazyAction,
+  createLbugLazyAction,
+} from './lazy-action.js';
 import { EMBEDDING_DIMS_ERROR, normalizeEmbeddingDims } from './embedding-dims.js';
 import { registerGroupCommands } from './group.js';
 import { localizeCliHelp } from './help-i18n.js';
@@ -188,7 +192,14 @@ program
       process.env.GITNEXUS_EMBEDDING_DIMS = dimsEnvBaseline;
     }
   })
-  .action(createLbugLazyAction(() => import('./analyze.js'), 'analyzeCommand'));
+  .action(
+    createAnalyzerLbugLazyAction(
+      () => import('../core/analyzer-identity.js'),
+      () => import('./analyze.js'),
+      'analyzeCommandWithRunnerIdentity',
+      import.meta.url,
+    ),
+  );
 
 program
   .command('index [path...]')
@@ -233,6 +244,8 @@ program
 program
   .command('status')
   .description('Show index status for current repo')
+  .option('--json', 'Emit machine-readable index and analyzer provenance')
+  .addHelpText('after', () => t('help.identityCache.environment'))
   .action(createLazyAction(() => import('./status.js'), 'statusCommand'));
 
 program

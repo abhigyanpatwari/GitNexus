@@ -7,7 +7,8 @@ export type ResolutionSuppressionReason =
   | 'member-lookup-ambiguous'
   | 'selected-callable-deleted'
   | 'overload-ambiguous'
-  | 'overload-ambiguous-normalization';
+  | 'overload-ambiguous-normalization'
+  | 'free-call-instance-ownership';
 
 export type ResolutionOutcome =
   | {

@@ -376,10 +376,6 @@ describe('windowsHide regression', () => {
       path.resolve(__dirname, '..', '..', 'src', 'core', 'lbug', 'extension-loader.ts'),
     ],
     [
-      'gitnexus/src/core/run-analyze.ts',
-      path.resolve(__dirname, '..', '..', 'src', 'core', 'run-analyze.ts'),
-    ],
-    [
       'gitnexus/src/core/wiki/cursor-client.ts',
       path.resolve(__dirname, '..', '..', 'src', 'core', 'wiki', 'cursor-client.ts'),
     ],

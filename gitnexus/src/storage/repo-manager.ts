@@ -96,10 +96,61 @@ export const registryPathEquals = (a: string, b: string): boolean =>
 export const cloneDirBelongsToEntry = (cloneDir: string, entryPath: string): boolean =>
   registryPathEquals(canonicalizePath(cloneDir), canonicalizePath(entryPath));
 
+/**
+ * Versioned receipt for the analyzer process that produced an index.
+ *
+ * Paths identify the resolved runtime and invoked GitNexus entry artifact on
+ * this machine. The entry artifact is diagnostic (CLI and server-worker entry
+ * files differ); semantic freshness compares the runtime/build/dependency
+ * fields. SHA-256 digests make the receipt independently reproducible:
+ * `invokedArtifact.digest` covers the entry file, `build.digest` covers the
+ * complete source or distribution tree, and `dependencyRuntime.digest` covers
+ * the applicable lockfile, resolved runtime package metadata, and every
+ * content-addressed package payload (including JS/JSON/native/Wasm inputs)
+ * using the canonicalizations defined in `core/analyzer-identity.ts`.
+ */
+export interface AnalyzerRunnerIdentity {
+  schemaVersion: 4;
+  runtime: {
+    executablePath: string;
+    version: string;
+    platform: string;
+    architecture: string;
+    modulesAbi: string;
+    libc: string;
+  };
+  cliVersion: string;
+  invokedArtifact: {
+    path: string;
+    digest: string;
+  };
+  build: {
+    kind: 'source' | 'distribution';
+    rootPath: string;
+    canonicalization: 'gitnexus-analyzer-build-v2';
+    digest: string;
+  };
+  dependencyRuntime: {
+    manifestPath: string;
+    lockfilePath: string | null;
+    canonicalization: 'gitnexus-analyzer-dependency-runtime-v4';
+    packageCount: number;
+    artifactCount: number;
+    digest: string;
+  };
+}
+
 export interface RepoMeta {
   repoPath: string;
   lastCommit: string;
   indexedAt: string;
+  /**
+   * Analyzer/runtime receipt for the successful run represented by this
+   * metadata. Optional so indexes written by older GitNexus releases remain
+   * readable; a missing value means provenance is unknown, never that it
+   * matches the currently invoked analyzer.
+   */
+  runnerIdentity?: AnalyzerRunnerIdentity;
   /**
    * Canonical `origin` remote URL captured at index time. Used to
    * fingerprint the same logical repo across multiple on-disk clones
@@ -144,6 +195,12 @@ export interface RepoMeta {
    * full rebuild rather than risk an inconsistent incremental update.
    */
   schemaVersion?: number;
+  /**
+   * Exact versions of independently-gated analysis capabilities produced by
+   * the successful run. Unlike schemaVersion, these may apply only to repos
+   * containing relevant source files.
+   */
+  analysisFeatures?: Record<string, number>;
   /**
    * The resolved GITNEXUS_FTS_CJK_SEGMENTATION mode ('none' | 'bigram') the
    * existing index's content/description columns were last written under
@@ -360,8 +417,20 @@ export interface RepoMeta {
  * only covers changed files (`computeEffectiveWriteSet`), so a top-up against a
  * pre-v7 index would silently omit the new edges for every unchanged file pair;
  * force a full re-analyze instead (same contract as v2–v6).
+ * v8: Java anonymous class bodies became first-class Class nodes (#2550):
+ * `new Runnable() { run(){} }` now emits `Class:...:Worker$1` and its methods
+ * re-keyed from `Worker.run` to `Worker$1.run`. Node identities move on
+ * unchanged files — a top-up against a pre-v8 index would strand the old
+ * `Worker.run`-keyed Method nodes alongside the new ones (the v5 Route
+ * precedent); force a full re-analyze instead.
+ * v9: Java enum constant bodies joined the instance model and anonymous
+ * naming switched to JLS 13.1 immediately-enclosing-type chains (#2555): `enum E { A {
+ * hook(){} } }` now emits `Class:...:E$1` with methods re-keyed from
+ * `E.hook` to `E$1.hook`, and nested-host anonymous names re-key
+ * (`EnumWrap$1` → `EnumWrap$Mode$1`). Same contract as v8: identities move
+ * on unchanged files; force a full re-analyze.
  */
-export const INCREMENTAL_SCHEMA_VERSION = 7;
+export const INCREMENTAL_SCHEMA_VERSION = 9;
 
 export interface IndexedRepo {
   repoPath: string;
