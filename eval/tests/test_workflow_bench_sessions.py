@@ -167,6 +167,56 @@ def test_run_claude_forwards_the_named_model_to_every_session(monkeypatch, tmp_p
     assert captured[captured.index("--model") + 1] == "claude-sonnet-4-20250514"
 
 
+def test_run_claude_restricts_tools_via_tools_flag_outside_bare(monkeypatch, tmp_path):
+    # Outside --bare, the built-in toolset defaults to everything (subagents,
+    # WebFetch, Task, ...) and --allowedTools only pre-approves within that —
+    # it does not narrow it. --tools is what actually restricts the set, so a
+    # non-bare arm session must pass it or it silently gets a far wider
+    # toolset than intended.
+    captured: list[str] = []
+
+    def fake_run(command, **kwargs):
+        captured.extend(command)
+        return fake_cli_result(VALID_REPORT)
+
+    monkeypatch.setattr(runner_sessions, "run_managed", fake_run)
+    runner.run_claude(
+        "task",
+        tmp_path,
+        claude_bin="claude",
+        timeout=5,
+        bare=False,
+        allowed_tools=["Read", "Edit", "Bash", "Skill"],
+    )
+    tools_idx = captured.index("--tools")
+    assert captured[tools_idx + 1 : tools_idx + 5] == ["Read", "Edit", "Bash", "Skill"]
+    allowed_idx = captured.index("--allowedTools")
+    assert captured[allowed_idx + 1 : allowed_idx + 5] == ["Read", "Edit", "Bash", "Skill"]
+
+
+def test_run_claude_omits_tools_flag_under_bare(monkeypatch, tmp_path):
+    # --bare already hard-restricts to Bash/Edit/Read on its own (a Claude
+    # Code design choice, not something --tools/--allowedTools can widen or
+    # narrow further), so bare sessions must not also pass --tools.
+    captured: list[str] = []
+
+    def fake_run(command, **kwargs):
+        captured.extend(command)
+        return fake_cli_result(VALID_REPORT)
+
+    monkeypatch.setattr(runner_sessions, "run_managed", fake_run)
+    runner.run_claude(
+        "task",
+        tmp_path,
+        claude_bin="claude",
+        timeout=5,
+        bare=True,
+        allowed_tools=["Read", "Edit", "Bash", "Skill"],
+    )
+    assert "--tools" not in captured
+    assert "--allowedTools" in captured
+
+
 @pytest.mark.parametrize(
     ("proc", "expected_kind"),
     [
@@ -281,6 +331,15 @@ def test_agent_tool_grants_are_exact_and_nomcp_has_no_graph_tools(monkeypatch, t
     assert captured[3]["allowed_tools"] == list(runner.BUILTIN_AGENT_TOOLS)
     assert captured[3]["mcp_config_json"] == '{"mcpServers":{}}'
     assert captured[3]["disallowed_tools"] == ["Skill", "mcp__gitnexus"]
+
+    # --bare hard-disables the Skill tool and every mcp__* tool regardless of
+    # --allowedTools (a Claude Code design choice, not something the harness
+    # can override) -- every arm here except baseline_nomcp needs Skill
+    # and/or MCP tools, so only baseline_nomcp may still run under --bare.
+    assert captured[0]["bare"] is False  # workflow: planning session
+    assert captured[1]["bare"] is False  # review
+    assert captured[2]["bare"] is False  # workflow_direct
+    assert captured[3]["bare"] is True  # baseline_nomcp
 
 
 def test_mcp_config_uses_only_the_minimal_pinned_harness_runtime(monkeypatch, tmp_path):

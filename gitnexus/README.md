@@ -284,12 +284,22 @@ Set these env vars to use a remote OpenAI-compatible `/v1/embeddings` endpoint i
 export GITNEXUS_EMBEDDING_URL=http://your-server:8080/v1
 export GITNEXUS_EMBEDDING_MODEL=BAAI/bge-large-en-v1.5
 export GITNEXUS_EMBEDDING_DIMS=1024          # optional, default 384
+export GITNEXUS_EMBEDDING_REQUEST_DIMS=omit  # optional: omit "dimensions", or an integer to override it
 export GITNEXUS_EMBEDDING_API_KEY=your-key   # optional, default: "unused"
 export GITNEXUS_EMBEDDING_MAX_ATTEMPTS=3     # optional, total attempts (1-20)
 export GITNEXUS_EMBEDDING_RETRY_CAP_MS=5000  # optional, maximum retry delay
 export GITNEXUS_EMBEDDING_MIN_INTERVAL_MS=0  # optional, minimum request spacing
 gitnexus analyze . --embeddings
 ```
+
+`GITNEXUS_EMBEDDING_REQUEST_DIMS` controls only the `dimensions` field sent in
+the request body, independently of `GITNEXUS_EMBEDDING_DIMS` (which still
+validates the returned vector's length):
+
+- `omit` (or `none`, `off`, `false`, `0`) — do not send `dimensions` at all, for
+  strict backends that return the right vector size but reject the field.
+- a positive integer — send that value instead of `GITNEXUS_EMBEDDING_DIMS`.
+- unset — send `GITNEXUS_EMBEDDING_DIMS` (the previous behavior).
 
 Works with Infinity, vLLM, TEI, llama.cpp, Ollama, LM Studio, or OpenAI. Retry and pacing settings are provider-neutral; provider-specific limits should be supplied through configuration. When unset, local embeddings are used unchanged.
 
