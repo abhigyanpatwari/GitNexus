@@ -137,12 +137,18 @@ function extractPattern(toolName, toolInput) {
  * fd level, making it unusable in subprocess contexts). Tries a PATH-installed
  * binary first, then falls back to npx.
  *
+ * Honors GITNEXUS_HOOK_CLI_PATH first, same as the Claude adapter: it runs the
+ * CLI as `node <path>`, which is the only branch that works on Windows, where
+ * Node refuses to spawn the `.cmd` launcher shims below without a shell
+ * (CVE-2024-27980). Falls back to a PATH binary, then npx.
+ *
  * SECURITY: `pattern` is passed after the `--` end-of-options marker and never
  * through a shell — the Windows npx fallback invokes `npx.cmd` directly rather
  * than `shell: true`, so a pattern like `-rf` or `$(...)` is inert.
  */
 function runAugment(pattern, cwd) {
   const isWin = process.platform === 'win32';
+  const args = ['augment', '--', pattern];
   const spawnOpts = {
     encoding: 'utf-8',
     timeout: 8000,
@@ -151,12 +157,21 @@ function runAugment(pattern, cwd) {
     windowsHide: true,
   };
 
+  const hookCli = process.env.GITNEXUS_HOOK_CLI_PATH;
+  if (hookCli && String(hookCli).trim() && fs.existsSync(String(hookCli))) {
+    try {
+      const child = spawnSync(process.execPath, [String(hookCli), ...args], spawnOpts);
+      if (!child.error && child.status === 0 && child.stderr && child.stderr.trim()) {
+        return child.stderr;
+      }
+    } catch {
+      /* graceful failure */
+    }
+    return '';
+  }
+
   try {
-    const child = spawnSync(
-      isWin ? 'gitnexus.cmd' : 'gitnexus',
-      ['augment', '--', pattern],
-      spawnOpts,
-    );
+    const child = spawnSync(isWin ? 'gitnexus.cmd' : 'gitnexus', args, spawnOpts);
     if (!child.error && child.status === 0 && child.stderr && child.stderr.trim()) {
       return child.stderr;
     }
@@ -165,11 +180,7 @@ function runAugment(pattern, cwd) {
   }
 
   try {
-    const child = spawnSync(
-      isWin ? 'npx.cmd' : 'npx',
-      ['-y', 'gitnexus', 'augment', '--', pattern],
-      spawnOpts,
-    );
+    const child = spawnSync(isWin ? 'npx.cmd' : 'npx', ['-y', 'gitnexus', ...args], spawnOpts);
     if (!child.error && child.status === 0 && child.stderr && child.stderr.trim()) {
       return child.stderr;
     }

@@ -155,6 +155,14 @@ describe('Factory hook source regressions', () => {
     expect(source).toContain('npx.cmd');
   });
 
+  // Windows regression: Node refuses to spawn the .cmd launcher shims without a
+  // shell (CVE-2024-27980), so `node <cliPath>` is the only branch that runs
+  // there. Same escape hatch the Claude adapter honors.
+  it('prefers GITNEXUS_HOOK_CLI_PATH via process.execPath', () => {
+    expect(source).toContain('GITNEXUS_HOOK_CLI_PATH');
+    expect(source).toMatch(/spawnSync\(\s*process\.execPath/);
+  });
+
   it('passes the pattern after the -- end-of-options marker', () => {
     expect(source).toMatch(/'augment',\s*'--',\s*pattern/);
   });
