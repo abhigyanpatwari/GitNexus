@@ -1,0 +1,16 @@
+# Local plugin cache, not portable across machines/OSes.
+.terraform/
+
+# State can contain sensitive values (IAM policy documents, ARNs) and is
+# machine-specific in this local-backend setup -- never commit it.
+*.tfstate
+*.tfstate.*
+
+# Local variable overrides (may contain tokens if someone ignores the
+# GITHUB_TOKEN-env-var guidance in the README).
+*.tfvars
+*.tfvars.json
+
+.terraform.tfstate.lock.info
+crash.log
+crash.*.log
