@@ -1068,6 +1068,7 @@ export class LocalBackend {
       this.initializedRepos.delete(key);
       this.lastStalenessCheck.delete(key);
       this.lastObservedIndexedAt.delete(key);
+      this.lastObservedDbIdentity.delete(key);
       this.reinitPromises.delete(key);
       closeLbug(key).catch(() => {});
     }
@@ -1486,17 +1487,25 @@ export class LocalBackend {
           currentIdentity,
         );
         if (stampChanged || identityChanged) {
-          // Index was rebuilt/swapped — close stale connection and re-init.
-          // Wrap in reinitPromises to prevent TOCTOU race where concurrent
-          // callers both detect staleness and double-close the pool.
+          // Index was rebuilt/swapped — DELEGATE the close/reopen to the pool's
+          // initLbug, which refuses to evict (and close the shared Database)
+          // while a query is in flight (its checkedOut>0 guard). Calling
+          // closeLbug directly here bypassed that guard and could close a
+          // Database mid-query — a native use-after-free (#2614). Wrap in
+          // reinitPromises to serialize concurrent detectors.
           const reinit = (async () => {
             try {
-              await closeLbug(poolKey);
-              this.initializedRepos.delete(poolKey);
+              // Advance the observed stamp regardless: a stamp change with an
+              // unchanged file must not re-trigger on every check.
               if (meta?.indexedAt) this.lastObservedIndexedAt.set(poolKey, meta.indexedAt);
-              await initLbug(poolKey, repo.lbugPath);
-              this.lastObservedDbIdentity.set(poolKey, await statDbIdentity(repo.lbugPath));
-              this.initializedRepos.add(poolKey);
+              const reopened = await initLbug(poolKey, repo.lbugPath);
+              // Advance the observed IDENTITY only when the pool actually rolled
+              // over. If a query was in flight, initLbug served the current
+              // handle and returned false; leaving the identity divergent
+              // re-triggers the reopen on a later idle check instead of latching.
+              if (reopened) {
+                this.lastObservedDbIdentity.set(poolKey, await statDbIdentity(repo.lbugPath));
+              }
             } finally {
               this.reinitPromises.delete(poolKey);
             }

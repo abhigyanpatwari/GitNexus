@@ -642,7 +642,14 @@ const initPromises = new Map<string, Promise<void>>();
  * Concurrent calls for the same repoId are deduplicated — the second caller
  * awaits the first's in-progress init rather than starting a redundant one.
  */
-export const initLbug = async (repoId: string, dbPath: string): Promise<void> => {
+/**
+ * Returns `true` when this call (re)opened a fresh handle onto the current
+ * on-disk file, `false` when it reused/served the existing handle (unchanged,
+ * or changed-but-a-query-is-in-flight). Callers that gate their own freshness
+ * bookkeeping on "did the pool actually roll over" (LocalBackend) use the
+ * return value; callers that only need the pool ready can ignore it.
+ */
+export const initLbug = async (repoId: string, dbPath: string): Promise<boolean> => {
   const existing = pool.get(repoId);
   if (existing) {
     existing.lastUsed = Date.now();
@@ -651,16 +658,18 @@ export const initLbug = async (repoId: string, dbPath: string): Promise<void> =>
     // unlinked-but-open) inode until LRU/idle eviction — a stale-read window
     // of up to IDLE_TIMEOUT_MS after analyze finishes.
     const current = await statDbIdentity(dbPath);
-    if (!dbIdentityChanged(existing.dbIdentity, current)) return; // unchanged → reuse
-    // A query is in flight on this entry; closing its connection mid-use is a
-    // native use-after-free (closeOne only closes idle connections). Serve the
-    // current handle for this dispatch — the next initLbug that finds the entry
-    // idle (checkedOut === 0) reopens, since the identity stays divergent until
-    // then. Under sustained overlapping queries `checkedOut` may never reach 0
-    // and `lastUsed` keeps the idle timer from evicting, so this window is
-    // bounded by the load, not IDLE_TIMEOUT_MS — the data stays consistent
-    // (a complete older snapshot), just not the newest.
-    if (existing.checkedOut > 0) return;
+    if (!dbIdentityChanged(existing.dbIdentity, current)) return false; // unchanged → reuse
+    // A query is in flight on this entry; closing its connection (and the
+    // shared Database at refCount 0) mid-use is a native use-after-free. Serve
+    // the current handle for this dispatch — the next initLbug that finds the
+    // entry idle (checkedOut === 0) reopens, since the identity stays divergent
+    // until then. Under sustained overlapping queries `checkedOut` may never
+    // reach 0 and `lastUsed` keeps the idle timer from evicting, so this window
+    // is bounded by the load, not IDLE_TIMEOUT_MS — the data stays consistent
+    // (a complete older snapshot), just not the newest. Callers that route
+    // freshness THROUGH initLbug (rather than calling closeLbug directly) get
+    // this guard for free; that is why LocalBackend delegates here (#2614).
+    if (existing.checkedOut > 0) return false;
     closeOne(repoId); // idle & changed → evict, then fall through to reopen the new file
   }
 
@@ -668,7 +677,10 @@ export const initLbug = async (repoId: string, dbPath: string): Promise<void> =>
   // prevents double-init race when multiple parallel tool calls
   // trigger initialization for the same repo simultaneously.
   const pending = initPromises.get(repoId);
-  if (pending) return pending;
+  if (pending) {
+    await pending;
+    return true;
+  }
 
   const promise = doInitLbug(repoId, dbPath);
   initPromises.set(repoId, promise);
@@ -677,6 +689,7 @@ export const initLbug = async (repoId: string, dbPath: string): Promise<void> =>
   } finally {
     initPromises.delete(repoId);
   }
+  return true;
 };
 
 /**
