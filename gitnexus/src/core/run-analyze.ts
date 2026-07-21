@@ -1343,7 +1343,21 @@ export async function runFullAnalysis(
   // rename on Windows. Windows keeps the current in-place behavior
   // (buildPath === lbugPath, no swap) until that is resolved (see §12/follow-up).
   const isFullRebuild = !(isIncremental && hashDiff);
-  const useAtomicSwap = isFullRebuild && process.platform !== 'win32';
+  // Where the swap is allowed:
+  //  - POSIX renames an open file, so the usual skip-native-close (#2264) is
+  //    fine and the swap always applies.
+  //  - Windows can swap only when a real close is safe to release the build
+  //    handle before the rename — i.e. NOT a --pdg run (the #2264 destructor
+  //    crash). Unverified on Windows CI; falls back to in-place otherwise.
+  const posixSwap = process.platform !== 'win32';
+  const windowsSwapOk = process.platform === 'win32' && options.pdg !== true;
+  // Incremental atomicity copies the whole index into the temp before mutating
+  // it, which negates incremental's speed premise — so it is opt-in
+  // (GITNEXUS_ATOMIC_INCREMENTAL=1) pending a benchmark. Full rebuilds always
+  // swap where the platform allows.
+  const atomicIncremental =
+    isIncremental && !!hashDiff && process.env.GITNEXUS_ATOMIC_INCREMENTAL === '1';
+  const useAtomicSwap = (isFullRebuild || atomicIncremental) && (posixSwap || windowsSwapOk);
   const buildPath = useAtomicSwap ? `${lbugPath}.new` : lbugPath;
 
   if (isIncremental && hashDiff) {
@@ -1368,6 +1382,14 @@ export async function runFullAnalysis(
         directWriteCount: hashDiff.toWrite.length,
       },
     });
+    if (atomicIncremental) {
+      // Stage the live index into the temp so the in-place delete/writeback
+      // below mutates the COPY, and the end-of-run swap publishes it atomically.
+      // Clear any stale temp first (a crashed run), then copy the (consolidated,
+      // single-file) live index. Whole-file copy — hence opt-in.
+      await wipeLbugDbFiles(buildPath);
+      await fs.copyFile(lbugPath, buildPath);
+    }
   } else {
     // Full rebuild path: wipe DB files first.
     // Set the dirty flag BEFORE the wipe whenever a prior meta exists,
@@ -1679,8 +1701,8 @@ export async function runFullAnalysis(
         // to replace wholesale.
         await walCheckpointDriver.stop();
         await closeLbug();
-        await wipeLbugDbFiles(lbugPath);
-        await initLbug(lbugPath);
+        await wipeLbugDbFiles(buildPath);
+        await initLbug(buildPath);
         walCheckpointDriver = startWalCheckpointDriver();
         await loadGraphToLbug(pipelineResult.graph, pipelineResult.repoPath, storagePath, (msg) => {
           lbugMsgCount++;
@@ -2419,17 +2441,26 @@ export async function runFullAnalysis(
     // LadybugDB destructor double-free after --pdg writes — closeLbugBeforeExit
     // CHECKPOINTs for durability then leaves the handles for process exit to
     // reclaim (#2264). Long-lived callers close for real.
-    await (options.skipNativeCloseOnExit ? closeLbugBeforeExit() : closeLbug());
+    //
+    // On Windows a swap must release the build handle before the rename (a
+    // same-process open file can't be renamed), so it forces a real close —
+    // safe because windowsSwapOk excludes --pdg (the #2264 case). POSIX renames
+    // an open file, so it keeps the skip-native-close there.
+    const forceRealCloseForSwap = useAtomicSwap && process.platform === 'win32';
+    await (options.skipNativeCloseOnExit && !forceRealCloseForSwap
+      ? closeLbugBeforeExit()
+      : closeLbug());
 
-    // #2 atomic publish (POSIX): the fresh full-rebuild index was built at
-    // buildPath. Swap it over the live lbugPath in one rename so an MCP reader
-    // that opened mid-build only ever saw the previous complete index — never a
-    // wiped/half-built file. The close above checkpoint-consolidated buildPath
-    // to a single file (no .wal), so the rename publishes a complete index; a
-    // reader holding the old inode keeps a consistent stale snapshot until the
-    // pool re-opens onto the new one (the pool staleness invalidation). Runs
-    // only on success — a thrown error skips this, leaving the live index
-    // intact and the temp build to be cleared by the next run's wipe.
+    // #2 atomic publish: the fresh index was built at buildPath (a full rebuild,
+    // or an opt-in atomic incremental that copied the live index in first). Swap
+    // it over the live lbugPath in one rename so an MCP reader that opened
+    // mid-build only ever saw the previous complete index — never a wiped/
+    // half-built file. The close above checkpoint-consolidated buildPath to a
+    // single file (no .wal), so the rename publishes a complete index; a reader
+    // holding the old inode keeps a consistent stale snapshot until the pool
+    // re-opens onto the new one (the pool staleness invalidation). Runs only on
+    // success — a thrown error skips this, leaving the live index intact and the
+    // temp build to be cleared by the next run's wipe.
     if (useAtomicSwap) {
       await retryRename(buildPath, lbugPath);
       // Clear any sidecars orphaned beside the replaced file. A cleanly-closed

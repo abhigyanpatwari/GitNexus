@@ -159,4 +159,36 @@ describe.skipIf(isWin)('atomic full-rebuild swap (#2)', () => {
       await cleanup();
     }
   }, 180_000);
+
+  it('opt-in atomic incremental copies then swaps, no temp leak, change reflected', async () => {
+    const { repo, cleanup } = await makeRepo();
+    const prev = process.env.GITNEXUS_ATOMIC_INCREMENTAL;
+    process.env.GITNEXUS_ATOMIC_INCREMENTAL = '1';
+    const repoId = 'atomic-incr-e2e';
+    try {
+      await runFullAnalysis(repo, {}, { onProgress: () => {} }); // v1
+      const { lbugPath } = getStoragePaths(repo);
+
+      // Change a single file so the next run is incremental, adding a function.
+      await fs.writeFile(
+        path.join(repo, 'a.ts'),
+        'export function greet(n: string) { return `hi ${n}`; }\nexport function caller() { return greet("x"); }\nexport function addedFn() { return 1; }\n',
+      );
+      execSync('git commit -am change', { cwd: repo, stdio: 'pipe' });
+
+      await runFullAnalysis(repo, {}, { onProgress: () => {} }); // incremental + atomic swap
+      expect(await lingeringTemp(lbugPath)).toEqual([]);
+
+      await poolInit(repoId, lbugPath);
+      const names = (await poolQuery(repoId, 'MATCH (f:Function) RETURN f.name AS n')).flatMap(
+        (r) => Object.values(r as Record<string, unknown>).map(String),
+      );
+      expect(names).toContain('addedFn'); // the incremental change landed via the swap
+    } finally {
+      if (prev === undefined) delete process.env.GITNEXUS_ATOMIC_INCREMENTAL;
+      else process.env.GITNEXUS_ATOMIC_INCREMENTAL = prev;
+      await poolClose(repoId);
+      await cleanup();
+    }
+  }, 180_000);
 });
