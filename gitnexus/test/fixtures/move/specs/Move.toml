@@ -1,0 +1,6 @@
+[package]
+name = "spec_demo"
+version = "0.0.1"
+
+[addresses]
+spec_demo = "0xA"

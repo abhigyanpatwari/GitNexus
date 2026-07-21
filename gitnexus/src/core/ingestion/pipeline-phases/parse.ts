@@ -19,6 +19,7 @@
 import type { PipelinePhase, PipelineContext, PhaseResult } from './types.js';
 import { getPhaseOutput } from './types.js';
 import type { StructureOutput } from './structure.js';
+import type { StandaloneIngestOutput } from './standalone-ingest.js';
 import type { BindingAccumulator } from '../binding-accumulator.js';
 import type { ParsedFile } from 'gitnexus-shared';
 import type {
@@ -60,8 +61,6 @@ export interface ParseOutput {
   model: MutableSemanticModel;
   /** Pass-through: all file paths for downstream phases. */
   readonly allPaths: readonly string[];
-  /** Pass-through: shared `allPathSet` from structure (built once, not per-phase). */
-  readonly allPathSet: ReadonlySet<string>;
   /** Pass-through: total file count for progress reporting. */
   totalFiles: number;
   /**
@@ -84,16 +83,24 @@ export interface ParseOutput {
 
 export const parsePhase: PipelinePhase<ParseOutput> = {
   name: 'parse',
-  deps: ['structure', 'markdown', 'cobol'],
+  deps: ['structure', 'standaloneIngest', 'markdown', 'cobol'],
 
   async execute(
     ctx: PipelineContext,
     deps: ReadonlyMap<string, PhaseResult<unknown>>,
   ): Promise<ParseOutput> {
-    const { scannedFiles, allPaths, allPathSet, totalFiles } = getPhaseOutput<StructureOutput>(
-      deps,
-      'structure',
-    );
+    const structure = getPhaseOutput<StructureOutput>(deps, 'structure');
+    const { totalFiles } = structure;
+
+    // Files claimed by a standalone ingester must not be parsed a second time.
+    const standaloneIngest = getPhaseOutput<StandaloneIngestOutput>(deps, 'standaloneIngest');
+    const ingested = standaloneIngest.ingestedFiles;
+    const scannedFiles = ingested.size
+      ? structure.scannedFiles.filter((f) => !ingested.has(f.path))
+      : structure.scannedFiles;
+    const allPaths = ingested.size
+      ? structure.allPaths.filter((p) => !ingested.has(p))
+      : structure.allPaths;
 
     const result = await runChunkedParseAndResolve(
       ctx.graph,
@@ -109,7 +116,6 @@ export const parsePhase: PipelinePhase<ParseOutput> = {
     return {
       ...result,
       allPaths,
-      allPathSet,
       totalFiles,
     };
   },

@@ -40,6 +40,7 @@ export const LanguageClassifications: Readonly<Record<SupportedLanguages, Langua
     [SupportedLanguages.Swift]: 'production',
     [SupportedLanguages.Dart]: 'production',
     [SupportedLanguages.Vue]: 'experimental',
+    [SupportedLanguages.Move]: 'experimental',
     [SupportedLanguages.Cobol]: 'experimental',
   };
 

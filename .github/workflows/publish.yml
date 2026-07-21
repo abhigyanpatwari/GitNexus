@@ -5,7 +5,7 @@ name: Publish
 # images. Replaces the former two-workflow design — see issue #1609 for the
 # double-publish race this unification closes.
 #
-# Two release modes, both routed through this file:
+# Three release modes, all routed through this file:
 #   • Release candidate (rc)  — triggered by push to `main` or workflow_dispatch.
 #       The RC path computes the next rc version, applies it in-CI, pushes a
 #       detached release commit with v<X.Y.Z>-rc.<N> + rc/<SHA> marker
@@ -14,6 +14,10 @@ name: Publish
 #   • Stable                  — triggered by push of a v<X.Y.Z> tag (no -rc.*
 #       suffix). Verifies package.json matches the tag, publishes to npm with
 #       --tag latest, creates a stable GitHub Release. No docker (RC-only).
+#   • Aptos                   — triggered by push of a v<X.Y.Z>-aptos[.<N>]
+#       tag. Verifies package.json matches the tag and that the tagged commit is
+#       contained in main-aptos, publishes to npm with --tag aptos, and creates
+#       a GitHub prerelease. No docker (RC-only).
 #
 # ⚠️  SELF-TRIGGER INVARIANT — DO NOT WEAKEN ⚠️
 # The `tags:` filter below uses a negative glob `'!v*-rc.*'` to prevent the
@@ -123,13 +127,16 @@ jobs:
                   ;;
                 refs/tags/v*)
                   # The trigger filter already excluded v*-rc.* tags. Anything
-                  # reaching here is either a stable semver or a malformed v*.
+                  # reaching here is a stable semver, an Aptos release, or a
+                  # malformed v* tag.
                   TAG="${GH_REF#refs/tags/}"
                   if [[ "${TAG}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
                     MODE="stable"
+                  elif [[ "${TAG}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-aptos(\.[0-9]+)?$ ]]; then
+                    MODE="aptos"
                   else
                     echo "::error::malformed v* tag rejected: ${REF_NAME_SAFE}"
-                    echo "::error::stable tags must match ^v[0-9]+\\.[0-9]+\\.[0-9]+\$"
+                    echo "::error::accepted tags are vX.Y.Z or vX.Y.Z-aptos[.N]"
                     exit 1
                   fi
                   ;;
@@ -255,17 +262,32 @@ jobs:
           fi
 
   # ── Phase 3: reusable CI gate ──────────────────────────────────────────────
-  # Runs for both rc (when guard says go) and stable. No `secrets:` passed —
+  # Runs for rc (when guard says go), stable, and Aptos. No `secrets:` passed —
   # ci.yml and its entire reusable-workflow chain (ci-quality, ci-tests,
   # ci-e2e, ci-report) reference zero `secrets.*` values;
   # passing any would be unused surface. GITHUB_TOKEN is implicit.
   ci:
     needs: [route, rc-guard]
-    if: ${{ always() && (needs.route.outputs.mode == 'stable' || needs.rc-guard.outputs.should_run == 'true') }}
+    if: ${{ always() && (needs.route.outputs.mode == 'stable' || needs.route.outputs.mode == 'aptos' || needs.rc-guard.outputs.should_run == 'true') }}
     uses: ./.github/workflows/ci.yml
     permissions:
       contents: read
       actions: read
+
+  # Aptos releases are maintained on a separate branch and npm dist-tag.
+  # Require an explicit maintainer approval after CI before publishing them.
+  aptos-release-gate:
+    name: Approve Aptos npm release
+    needs: [route, ci]
+    if: ${{ always() && needs.route.outputs.mode == 'aptos' && needs.ci.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment:
+      name: aptos-release
+    permissions: {}
+    steps:
+      - name: Approval recorded
+        run: echo "Aptos release approved."
 
   # ── Phase 4: publish to npm + push refs (RC path) ──────────────────────────
   # INVARIANT: `timeout-minutes` MUST stay below the App-token TTL (~60 min
@@ -276,8 +298,8 @@ jobs:
   # `Create and push rc tags` step instead.
   publish:
     name: Publish to npm
-    needs: [route, rc-guard, ci]
-    if: ${{ always() && needs.ci.result == 'success' && (needs.route.outputs.mode == 'stable' || needs.rc-guard.outputs.should_run == 'true') }}
+    needs: [route, rc-guard, ci, aptos-release-gate]
+    if: ${{ always() && needs.ci.result == 'success' && (needs.route.outputs.mode == 'stable' || needs.rc-guard.outputs.should_run == 'true' || (needs.route.outputs.mode == 'aptos' && needs.aptos-release-gate.result == 'success')) }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
@@ -322,6 +344,9 @@ jobs:
           # which the action resolves correctly.
           client-id: ${{ secrets.RELEASE_APP_ID }}
           private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          permission-contents: write
+          permission-workflows: write
+          permission-metadata: read
 
       # ── Separate checkout steps per mode ─────────────────────────────────
       # Conditional `token:` expressions are footguns: empty string passed to
@@ -347,13 +372,14 @@ jobs:
           # `Create and push rc tags` step below.
           persist-credentials: false
 
-      - name: Checkout (stable)
-        if: needs.route.outputs.mode == 'stable'
+      - name: Checkout (tagged release)
+        if: needs.route.outputs.mode == 'stable' || needs.route.outputs.mode == 'aptos'
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-        # No `token:` — actions/checkout uses GITHUB_TOKEN by default. Stable
-        # path performs no git pushes; the default scope is sufficient.
+        # No `token:` — actions/checkout uses GITHUB_TOKEN by default. Tagged
+        # release paths perform no git pushes; the default scope is sufficient.
         with:
-          # No git pushes from the stable path either. Skip credential
+          fetch-depth: 0
+          # No git pushes from tagged release paths. Skip credential
           # persistence (artipacked audit).
           persist-credentials: false
 
@@ -404,28 +430,48 @@ jobs:
         run: npm ci
         working-directory: gitnexus
 
-      # ── Stable-only: verify the tag and package.json agree ───────────────
-      - name: Verify version consistency (stable)
-        if: needs.route.outputs.mode == 'stable'
+      # ── Tagged releases: verify tag, source branch, and package version ──
+      - name: Verify version consistency (tagged release)
+        if: needs.route.outputs.mode == 'stable' || needs.route.outputs.mode == 'aptos'
         shell: bash
         working-directory: gitnexus
+        env:
+          RELEASE_MODE: ${{ needs.route.outputs.mode }}
         run: |
           set -euo pipefail
           TAG_VERSION="${GITHUB_REF#refs/tags/v}"
-          # Stable mode REJECTS prerelease suffixes — those are filtered at
-          # trigger by the negative-glob filter, but defend at the bash layer too.
-          if ! [[ "$TAG_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "::error::Stable tag must be ^v[0-9]+.[0-9]+.[0-9]+$ — got v$TAG_VERSION"
-            exit 1
-          fi
+          case "$RELEASE_MODE" in
+            stable)
+              if ! [[ "$TAG_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+                echo "::error::Stable tag must be vX.Y.Z — got v$TAG_VERSION"
+                exit 1
+              fi
+              ;;
+            aptos)
+              if ! [[ "$TAG_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+-aptos(\.[0-9]+)?$ ]]; then
+                echo "::error::Aptos tag must be vX.Y.Z-aptos[.N] — got v$TAG_VERSION"
+                exit 1
+              fi
+              # Aptos releases must come from the maintained main-aptos line,
+              # not from an arbitrary commit carrying a syntactically valid tag.
+              git fetch --no-tags origin main-aptos:refs/remotes/origin/main-aptos
+              if ! git merge-base --is-ancestor "$GITHUB_SHA" refs/remotes/origin/main-aptos; then
+                echo "::error::Aptos tag v$TAG_VERSION is not contained in origin/main-aptos."
+                exit 1
+              fi
+              ;;
+            *)
+              echo "::error::Unexpected tagged release mode: $RELEASE_MODE"
+              exit 1
+              ;;
+          esac
           PKG_VERSION=$(node -p "require('./package.json').version")
           if [ "$TAG_VERSION" != "$PKG_VERSION" ]; then
             echo "::error::Tag version (v$TAG_VERSION) does not match package.json version ($PKG_VERSION)"
             exit 1
           fi
-          # Stable releases carry their version bump on main via the release
-          # PR, so the manifest surfaces must already be in sync — refuse to
-          # publish a stable whose manifests drifted (#2445).
+          # Tagged releases carry their version in the tagged tree, so all
+          # manifest surfaces must already be in sync (#2445).
           node scripts/sync-plugin-manifests.mjs --check
           echo "Version verified: $PKG_VERSION"
 
@@ -608,7 +654,7 @@ jobs:
         shell: bash
         working-directory: gitnexus
         env:
-          NPM_TAG: ${{ needs.route.outputs.mode == 'rc' && 'rc' || 'latest' }}
+          NPM_TAG: ${{ needs.route.outputs.mode == 'rc' && 'rc' || needs.route.outputs.mode == 'aptos' && 'aptos' || 'latest' }}
         run: npm publish --dry-run --tag "$NPM_TAG"
 
       # ── Acquire the "rc lock" BEFORE publishing (idempotency anchor) ─────
@@ -725,9 +771,9 @@ jobs:
             echo "release_sha=$RELEASE_SHA"
           } >> "$GITHUB_OUTPUT"
 
-      - name: Set vtag (stable)
+      - name: Set vtag (tagged release)
         id: stable-vtag
-        if: needs.route.outputs.mode == 'stable'
+        if: needs.route.outputs.mode == 'stable' || needs.route.outputs.mode == 'aptos'
         shell: bash
         # github.ref_name flows in via env to avoid templating into the
         # shell source (template-injection audit). Even though refs are
@@ -770,6 +816,12 @@ jobs:
                 exit 1
               fi
               ;;
+            aptos)
+              if ! [[ "$VTAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-aptos(\.[0-9]+)?$ ]]; then
+                echo "::error::vtag '${VTAG}' does not match Aptos shape ^vX.Y.Z-aptos[.N]$"
+                exit 1
+              fi
+              ;;
             *)
               echo "::error::unknown mode '${MODE}' at vtag integrity gate."
               exit 1
@@ -778,6 +830,7 @@ jobs:
 
           echo "vtag verified: ${VTAG} (mode=${MODE})"
           echo "vtag=${VTAG}" >> "$GITHUB_OUTPUT"
+          echo "version=${VTAG#v}" >> "$GITHUB_OUTPUT"
 
       # npm Trusted Publishing (GA'd 2025-07-31). OIDC authentication only
       # engages when no npm credential is configured anywhere — the absence
@@ -808,7 +861,7 @@ jobs:
         shell: bash
         working-directory: gitnexus
         env:
-          NPM_TAG: ${{ needs.route.outputs.mode == 'rc' && 'rc' || 'latest' }}
+          NPM_TAG: ${{ needs.route.outputs.mode == 'rc' && 'rc' || needs.route.outputs.mode == 'aptos' && 'aptos' || 'latest' }}
         run: npm publish --access public --tag "$NPM_TAG"
 
       # ── Stable-only: pull CHANGELOG body if present ──────────────────────
@@ -834,8 +887,10 @@ jobs:
           name: >-
             ${{ needs.route.outputs.mode == 'rc'
                 && format('Release Candidate {0}', steps.vtag-gate.outputs.vtag)
+                || needs.route.outputs.mode == 'aptos'
+                && format('Aptos {0}', steps.vtag-gate.outputs.vtag)
                 || steps.vtag-gate.outputs.vtag }}
-          prerelease: ${{ needs.route.outputs.mode == 'rc' }}
+          prerelease: ${{ needs.route.outputs.mode == 'rc' || needs.route.outputs.mode == 'aptos' }}
           make_latest: ${{ needs.route.outputs.mode == 'stable' && 'true' || 'false' }}
           # Stable: prefer CHANGELOG body, fall back to auto-generated.
           # RC: always auto-generated + the prerelease body block below.
@@ -844,9 +899,14 @@ jobs:
                 && '/tmp/release-notes.md' || '' }}
           generate_release_notes: >-
             ${{ needs.route.outputs.mode == 'rc'
+                || needs.route.outputs.mode == 'aptos'
                 || steps.changelog.outputs.fallback == 'true' }}
           body: >-
-            ${{ needs.route.outputs.mode == 'rc' && format(
+            ${{ needs.route.outputs.mode == 'aptos' && format(
+              'Aptos-specific GitNexus distribution from `main-aptos`.{0}{0}**npm:** `npm install gitnexus@{1}`{0}**npm channel:** `npm install gitnexus@aptos`{0}{0}This release includes the compiler-backed Move integration and is maintained separately from the compilerless core release.',
+              '\n',
+              steps.vtag-gate.outputs.version
+            ) || needs.route.outputs.mode == 'rc' && format(
               'Automated release candidate build from `main`.{0}{0}**npm:** `npm install gitnexus@rc`{0}**Version:** `{1}`{0}**Target base:** `{2}` (rc #{3}){0}**Source commit (main):** {4}{0}**Release commit (versioned tree):** {5}{0}{0}Release candidates are pre-stable builds intended for early testing. Stable releases remain on the `latest` dist-tag.',
               '\n',
               steps.rc-version.outputs.rc_version,

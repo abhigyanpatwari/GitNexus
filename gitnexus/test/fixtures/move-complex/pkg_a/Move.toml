@@ -1,0 +1,11 @@
+[package]
+name = "pkg_a"
+version = "1.0.0"
+
+[addresses]
+app = "0xA"
+oracle = "0xBEEF"
+std = "0x1"
+
+[dependencies]
+pkg_b = { local = "../pkg_b" }

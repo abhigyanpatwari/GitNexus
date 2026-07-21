@@ -33,6 +33,20 @@ jobs:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false
+
+      # Cache the move-flow binary the postinstall probe downloads into
+      # vendor/move-flow/<platform>/. On cache hit, the probe is idempotent
+      # (skips the download); on miss, it downloads + verifies a pinned
+      # aptos-labs/aptos-ai release and soft-fails if anything goes wrong (the suite stays green;
+      # the live Move test simply skips when the binary is absent). Keep the
+      # cache key tied to the MOVE_FLOW_VERSION constant in
+      # gitnexus/scripts/install-move-flow.cjs.
+      - name: Cache move-flow binary
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5
+        with:
+          path: gitnexus/vendor/move-flow
+          key: ${{ runner.os }}-move-flow-v2.0.0
+
       - uses: ./.github/actions/setup-gitnexus
         with:
           build: 'true'
@@ -194,7 +208,9 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 25
     # Same guarantee on the platform-sensitive runners: FTS-dependent suites in
-    # the cross-platform subset must run, not silently skip.
+    # the cross-platform subset must run, not silently skip. Move ingestion isn't
+    # exercised by this subset either, so GITNEXUS_SKIP_MOVE_FLOW below drops the
+    # postinstall move-flow probe as pure wasted bandwidth here.
     #
     # GITNEXUS_E2E_CLI=dist: the e2e suites spawn the CLI ~50 times; each spawn via
     # `node --import tsx src/cli/index.ts` re-transpiles the whole CLI, and Windows
@@ -204,6 +220,7 @@ jobs:
     # THIS job: the Ubuntu coverage job leaves it unset, so it keeps exercising the
     # tsx-on-source path in CI (both entry points stay covered).
     env:
+      GITNEXUS_SKIP_MOVE_FLOW: '1'
       GITNEXUS_REQUIRE_FTS: '1'
       GITNEXUS_E2E_CLI: dist
       # #2449: hosted Windows runners intermittently push the busiest shard past
@@ -260,6 +277,9 @@ jobs:
         os: [ubuntu-latest, windows-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
+    # ABI assert only exercises tree-sitter grammars; move-flow isn't needed.
+    env:
+      GITNEXUS_SKIP_MOVE_FLOW: '1'
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
@@ -290,6 +310,10 @@ jobs:
         os: [windows-latest, ubuntu-latest]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 15
+    # Packaging smoke doesn't run the Move ingestion path; skip the probe so
+    # the global `npm install -g` doesn't depend on a release-asset fetch.
+    env:
+      GITNEXUS_SKIP_MOVE_FLOW: '1'
     steps:
       # persist-credentials: false — this job runs npm pack + npm install -g
       # from a tarball and never pushes back; the token in .git/config would

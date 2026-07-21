@@ -23,6 +23,7 @@ import {
   getPhaseOutput,
   scanPhase,
   structurePhase,
+  emptyStandaloneIngestPhase,
   markdownPhase,
   cobolPhase,
   parsePhase,
@@ -40,6 +41,7 @@ import {
   processesPhase,
   PhaseRegistry,
   type ScopeResolutionOutput,
+  type StandaloneIngestOutput,
   type PipelinePhase,
   type CommunitiesOutput,
   type ProcessesOutput,
@@ -224,6 +226,8 @@ export interface PipelineOptions {
    * `process.env` state across invocations. When undefined, the env var decides.
    */
   keepLocalValueSymbols?: boolean;
+  /** Optional compiler-backed or otherwise standalone ingester. */
+  standaloneIngestPhase?: PipelinePhase<StandaloneIngestOutput>;
   /**
    * Extra fetch-wrapper function names to treat as HTTP consumers, threaded
    * from `.gitnexusrc` `fetchWrappers` via `AnalyzeOptions` (#1589/#1852
@@ -261,6 +265,7 @@ export function buildPhaseList(options?: PipelineOptions): PipelinePhase[] {
     new PhaseRegistry<PipelineOptions>()
       .register(scanPhase)
       .register(structurePhase)
+      .register(options?.standaloneIngestPhase ?? emptyStandaloneIngestPhase)
       .register(markdownPhase)
       .register(cobolPhase)
       .register(parsePhase)

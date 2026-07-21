@@ -1,0 +1,7 @@
+[package]
+name = "pkg_b"
+version = "1.0.0"
+
+[addresses]
+oracle = "0xBEEF"
+app = "0xA"

@@ -23,6 +23,13 @@ import { streamAllCSVsToDisk, type StreamedCSVResult } from './csv-generator.js'
 import type { PdgEmitManifest } from './pdg-emit-sink.js';
 import { getNodeLabel as deriveNodeLabel, type WriteStreamFactory } from './rel-pair-routing.js';
 import { EMBEDDABLE_LABELS, type CachedEmbedding } from '../embeddings/types.js';
+import {
+  MOVE_CONST_COLUMNS,
+  MOVE_ENUM_VARIANT_COLUMNS,
+  MOVE_FUNCTION_COLUMNS,
+  MOVE_MODULE_COLUMNS,
+  MOVE_STRUCT_LIKE_COLUMNS,
+} from './move-columns.js';
 import { extensionManager, type ExtensionEnsureOptions } from './extension-loader.js';
 import {
   classifyDeleteAllError,
@@ -1346,6 +1353,8 @@ const TABLES_WITH_EXPORTED = new Set<string>([
   'CodeElement',
 ]);
 
+const copyColumns = (columns: readonly string[]): string => columns.join(', ');
+
 export const getCopyQuery = (table: NodeTableName, filePath: string): string => {
   const t = escapeTableName(table);
   if (table === 'File') {
@@ -1380,6 +1389,21 @@ export const getCopyQuery = (table: NodeTableName, filePath: string): string => 
   }
   if (table === 'Property') {
     return `COPY ${t}(id, name, filePath, startLine, endLine, content, description, declaredType) FROM "${filePath}" ${COPY_CSV_OPTS}`;
+  }
+  if (table === 'Function') {
+    return `COPY ${t}(${copyColumns(MOVE_FUNCTION_COLUMNS)}) FROM "${filePath}" ${COPY_CSV_OPTS}`;
+  }
+  if (table === 'Struct' || table === 'Enum') {
+    return `COPY ${t}(${copyColumns(MOVE_STRUCT_LIKE_COLUMNS)}) FROM "${filePath}" ${COPY_CSV_OPTS}`;
+  }
+  if (table === 'EnumVariant') {
+    return `COPY ${t}(${copyColumns(MOVE_ENUM_VARIANT_COLUMNS)}) FROM "${filePath}" ${COPY_CSV_OPTS}`;
+  }
+  if (table === 'Const') {
+    return `COPY ${t}(${copyColumns(MOVE_CONST_COLUMNS)}) FROM "${filePath}" ${COPY_CSV_OPTS}`;
+  }
+  if (table === 'Module') {
+    return `COPY ${t}(${copyColumns(MOVE_MODULE_COLUMNS)}) FROM "${filePath}" ${COPY_CSV_OPTS}`;
   }
   // TypeScript/JS code element tables have isExported; multi-language tables do not
   if (TABLES_WITH_EXPORTED.has(table)) {

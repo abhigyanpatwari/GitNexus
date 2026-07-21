@@ -46,6 +46,7 @@ describe('LadybugDB Schema', () => {
       const multiLang = [
         'Struct',
         'Enum',
+        'EnumVariant',
         'Macro',
         'Typedef',
         'Union',
@@ -74,8 +75,8 @@ describe('LadybugDB Schema', () => {
     });
 
     it('has expected total count', () => {
-      // 9 core + 19 multi-language + Route + Tool + BasicBlock = 32
-      expect(NODE_TABLES).toHaveLength(32);
+      // 9 core + 20 multi-language/Move + Route + Tool + BasicBlock = 33
+      expect(NODE_TABLES).toHaveLength(33);
     });
   });
 
@@ -90,6 +91,12 @@ describe('LadybugDB Schema', () => {
         'IMPLEMENTS',
         'MEMBER_OF',
         'STEP_IN_PROCESS',
+        'FRIEND_OF',
+        'READS_RESOURCE',
+        'WRITES_RESOURCE',
+        'ACQUIRES',
+        'USES_TYPE',
+        'EMITS',
       ];
       for (const t of expected) {
         expect(REL_TYPES).toContain(t);
@@ -246,8 +253,8 @@ describe('LadybugDB Schema', () => {
 
   describe('schema query ordering', () => {
     it('NODE_SCHEMA_QUERIES has correct count', () => {
-      // 31 + BasicBlock = 32
-      expect(NODE_SCHEMA_QUERIES).toHaveLength(32);
+      // 31 + EnumVariant + BasicBlock = 33
+      expect(NODE_SCHEMA_QUERIES).toHaveLength(33);
     });
 
     it('REL_SCHEMA_QUERIES has one relation table', () => {
@@ -255,8 +262,8 @@ describe('LadybugDB Schema', () => {
     });
 
     it('SCHEMA_QUERIES includes all node + rel + embedding schemas', () => {
-      // 32 node + 1 rel + 1 embedding = 34
-      expect(SCHEMA_QUERIES).toHaveLength(34);
+      // 33 node + 1 rel + 1 embedding = 35
+      expect(SCHEMA_QUERIES).toHaveLength(35);
     });
 
     it('node schemas come before relation schemas in SCHEMA_QUERIES', () => {

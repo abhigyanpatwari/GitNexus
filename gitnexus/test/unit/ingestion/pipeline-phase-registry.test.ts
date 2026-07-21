@@ -1,4 +1,6 @@
 import { describe, it, expect } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { PhaseRegistry } from '../../../src/core/ingestion/pipeline-phases/registry.js';
 import type { PipelinePhase } from '../../../src/core/ingestion/pipeline-phases/types.js';
 import { buildPhaseList } from '../../../src/core/ingestion/pipeline.js';
@@ -66,6 +68,7 @@ describe('PhaseRegistry', () => {
 const FULL_ORDER = [
   'scan',
   'structure',
+  'standaloneIngest',
   'markdown',
   'cobol',
   'parse',
@@ -99,6 +102,23 @@ describe('buildPhaseList parity (registry refactor, #2080)', () => {
     expect(buildPhaseList({ skipGraphPhases: true }).map((p) => p.name)).toEqual(
       WITHOUT_GRAPH_PHASES,
     );
+  });
+});
+
+describe('shared ingestion architecture', () => {
+  it('keeps language-specific standalone ingestion outside the shared pipeline', () => {
+    const sources = [
+      '../../../src/core/ingestion/pipeline.ts',
+      '../../../src/core/ingestion/pipeline-phases/parse.ts',
+    ].map((relativePath) =>
+      readFileSync(fileURLToPath(new URL(relativePath, import.meta.url)), 'utf8'),
+    );
+
+    for (const source of sources) {
+      expect(source).not.toMatch(
+        /\b(?:MoveFlowClient|MoveIngestOutput|createMoveIngestPhase|moveFlowClient|moveIngest)\b/,
+      );
+    }
   });
 });
 

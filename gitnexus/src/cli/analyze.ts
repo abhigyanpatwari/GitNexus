@@ -40,9 +40,11 @@ import {
   GitNexusRcError,
 } from './analyze-config.js';
 import { runFullAnalysis } from '../core/run-analyze.js';
+import { repoHasMove } from '../core/move/discovery.js';
 import { getRuntimeFingerprint } from '../core/platform/capabilities.js';
 import { getMaxFileSizeBannerMessage } from '../core/ingestion/utils/max-file-size.js';
 import { warnMissingOptionalGrammars, getOptionalGrammarExtensions } from './optional-grammars.js';
+import { warnIfMoveUnavailable } from './move-availability.js';
 import { glob } from 'glob';
 import fs from 'fs/promises';
 import { cliError } from './cli-message.js';
@@ -81,6 +83,16 @@ const realStderrWrite = process.stderr.write.bind(process.stderr);
 const realStdoutWrite = process.stdout.write.bind(process.stdout);
 
 const writeFatalToStderr = (label: string, err: unknown): void => {
+  // Walk to the innermost error tagged `userActionable` (set on errors whose
+  // remediation is an operator action — missing/old external tool, stale
+  // config). Render those as a single line; stack/cause are noise for them.
+  for (let cur: unknown = err, depth = 0; cur instanceof Error && depth < 5; depth++) {
+    if ((cur as { userActionable?: boolean }).userActionable) {
+      realStderrWrite(`\n  ${label}: ${cur.message}\n`);
+      return;
+    }
+    cur = (cur as { cause?: unknown }).cause;
+  }
   const isErr = err instanceof Error;
   const message = isErr ? err.message : String(err);
   realStderrWrite(`\n  ${label}: ${message}\n`);
@@ -1208,6 +1220,17 @@ const analyzeCommandImpl = async (
     }
   } catch {
     // Best-effort warning \u2014 never block analyze on the precheck.
+  }
+
+  // Move ingestion is compiler-first via move-flow; warn once if the repo
+  // has Move sources but no usable binary is reachable. Uses the shared
+  // `repoHasMove` helper so the precheck keys off the same Move.toml signal
+  // that the ingestion phase actually uses (a repo with loose `.move` files
+  // but no Move.toml would warn but ingest nothing).
+  try {
+    warnIfMoveUnavailable({ context: 'analyze', repoHasMove: await repoHasMove(repoPath) });
+  } catch {
+    // Best-effort \u2014 never block analyze on the precheck.
   }
 
   // KuzuDB migration cleanup is handled by runFullAnalysis internally.

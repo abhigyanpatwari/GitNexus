@@ -46,6 +46,23 @@ CREATE NODE TABLE Function (
   isExported BOOLEAN,
   content STRING,
   description STRING,
+  language STRING,
+  qualifiedName STRING,
+  moduleQualifiedName STRING,
+  visibility STRING,
+  visibilityModifier STRING,
+  isEntry BOOLEAN,
+  isView BOOLEAN,
+  isInline BOOLEAN,
+  isNative BOOLEAN,
+  parameterCount INT32,
+  returnType STRING,
+  acquires STRING[],
+  usedTypes STRING[],
+  attributes STRING[],
+  attributesJson STRING,
+  typeParamsJson STRING,
+  locationFidelity STRING,
   PRIMARY KEY (id)
 )`;
 
@@ -155,8 +172,93 @@ CREATE NODE TABLE \`${name}\` (
   PRIMARY KEY (id)
 )`;
 
-export const STRUCT_SCHEMA = CODE_ELEMENT_BASE('Struct');
-export const ENUM_SCHEMA = CODE_ELEMENT_BASE('Enum');
+// Move struct/enum carry compiler-sourced abilities/resource/event/field facts.
+const MOVE_STRUCT_LIKE_SCHEMA = (name: string) => `
+CREATE NODE TABLE \`${name}\` (
+  id STRING,
+  name STRING,
+  filePath STRING,
+  startLine INT64,
+  endLine INT64,
+  content STRING,
+  description STRING,
+  language STRING,
+  qualifiedName STRING,
+  moduleQualifiedName STRING,
+  moduleAddress STRING,
+  abilities STRING[],
+  isResource BOOLEAN,
+  isEvent BOOLEAN,
+  fieldList STRING[],
+  attributes STRING[],
+  attributesJson STRING,
+  typeParamsJson STRING,
+  moveDeclarationKind STRING,
+  locationFidelity STRING,
+  PRIMARY KEY (id)
+)`;
+
+const MOVE_ENUM_VARIANT_SCHEMA = `
+CREATE NODE TABLE \`EnumVariant\` (
+  id STRING,
+  name STRING,
+  filePath STRING,
+  startLine INT64,
+  endLine INT64,
+  content STRING,
+  description STRING,
+  language STRING,
+  qualifiedName STRING,
+  parentEnum STRING,
+  moduleQualifiedName STRING,
+  variantKind STRING,
+  fieldsJson STRING,
+  attributes STRING[],
+  attributesJson STRING,
+  locationFidelity STRING,
+  PRIMARY KEY (id)
+)`;
+
+const MOVE_MODULE_SCHEMA = `
+CREATE NODE TABLE \`Module\` (
+  id STRING,
+  name STRING,
+  filePath STRING,
+  startLine INT64,
+  endLine INT64,
+  content STRING,
+  description STRING,
+  language STRING,
+  qualifiedName STRING,
+  moduleAddress STRING,
+  attributes STRING[],
+  attributesJson STRING,
+  locationFidelity STRING,
+  PRIMARY KEY (id)
+)`;
+
+const MOVE_CONST_SCHEMA = `
+CREATE NODE TABLE \`Const\` (
+  id STRING,
+  name STRING,
+  filePath STRING,
+  startLine INT64,
+  endLine INT64,
+  content STRING,
+  description STRING,
+  language STRING,
+  qualifiedName STRING,
+  moduleQualifiedName STRING,
+  constType STRING,
+  constValue STRING,
+  isErrorCode BOOLEAN,
+  locationFidelity STRING,
+  PRIMARY KEY (id)
+)`;
+
+export const STRUCT_SCHEMA = MOVE_STRUCT_LIKE_SCHEMA('Struct');
+export const ENUM_SCHEMA = MOVE_STRUCT_LIKE_SCHEMA('Enum');
+export const ENUM_VARIANT_SCHEMA = MOVE_ENUM_VARIANT_SCHEMA;
 export const MACRO_SCHEMA = CODE_ELEMENT_BASE('Macro');
 export const TYPEDEF_SCHEMA = CODE_ELEMENT_BASE('Typedef');
 export const UNION_SCHEMA = CODE_ELEMENT_BASE('Union');
@@ -164,7 +266,7 @@ export const NAMESPACE_SCHEMA = CODE_ELEMENT_BASE('Namespace');
 export const TRAIT_SCHEMA = CODE_ELEMENT_BASE('Trait');
 export const IMPL_SCHEMA = CODE_ELEMENT_BASE('Impl');
 export const TYPE_ALIAS_SCHEMA = CODE_ELEMENT_BASE('TypeAlias');
-export const CONST_SCHEMA = CODE_ELEMENT_BASE('Const');
+export const CONST_SCHEMA = MOVE_CONST_SCHEMA;
 export const STATIC_SCHEMA = CODE_ELEMENT_BASE('Static');
 export const VARIABLE_SCHEMA = CODE_ELEMENT_BASE('Variable');
 export const PROPERTY_SCHEMA = `
@@ -184,7 +286,7 @@ export const DELEGATE_SCHEMA = CODE_ELEMENT_BASE('Delegate');
 export const ANNOTATION_SCHEMA = CODE_ELEMENT_BASE('Annotation');
 export const CONSTRUCTOR_SCHEMA = CODE_ELEMENT_BASE('Constructor');
 export const TEMPLATE_SCHEMA = CODE_ELEMENT_BASE('Template');
-export const MODULE_SCHEMA = CODE_ELEMENT_BASE('Module');
+export const MODULE_SCHEMA = MOVE_MODULE_SCHEMA;
 // API route endpoints (Next.js, Express, etc.)
 export const ROUTE_SCHEMA = `
 CREATE NODE TABLE Route (
@@ -379,6 +481,12 @@ CREATE REL TABLE ${REL_TABLE_NAME} (
   FROM \`Macro\` TO Method,
   FROM \`Module\` TO Function,
   FROM \`Module\` TO Method,
+  // Move/Aptos: module defines structs/enums/consts; enums contain variants.
+  FROM \`Module\` TO \`Struct\`,
+  FROM \`Module\` TO \`Enum\`,
+  FROM \`Module\` TO \`Const\`,
+  FROM \`Enum\` TO \`EnumVariant\`,
+  FROM \`Module\` TO \`EnumVariant\`,
   FROM \`Typedef\` TO Community,
   FROM \`Union\` TO Community,
   FROM \`Namespace\` TO Community,
@@ -520,6 +628,7 @@ export const NODE_SCHEMA_QUERIES = [
   // Multi-language support
   STRUCT_SCHEMA,
   ENUM_SCHEMA,
+  ENUM_VARIANT_SCHEMA,
   MACRO_SCHEMA,
   TYPEDEF_SCHEMA,
   UNION_SCHEMA,

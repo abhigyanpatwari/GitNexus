@@ -290,6 +290,10 @@ export const VALID_RELATION_TYPES = new Set([
   // (WRAPS/FETCHES precedent): the 0.5 unknown-type floor applies there,
   // and the edges carry their own confidence (0.8) in the graph.
   'INJECTS',
+  'ACQUIRES',
+  'READS_RESOURCE',
+  'WRITES_RESOURCE',
+  'USES_TYPE',
 ]);
 
 /**
@@ -709,6 +713,39 @@ export function parseListReposPagination(
   }
 
   return { limit, offset };
+}
+
+interface MoveEntryRow {
+  name: unknown;
+  qualifiedName: unknown;
+  filePath: unknown;
+  isEntry: unknown;
+  isView: unknown;
+  isInline: unknown;
+  isNative: unknown;
+  visibility: unknown;
+  acquires: unknown;
+  attributes: unknown;
+  returnType: unknown;
+}
+
+interface MoveResourceAccessor {
+  caller?: unknown;
+  reason?: unknown;
+  isEntry?: unknown;
+  isView?: unknown;
+}
+
+interface MoveResourceAccessorRow extends MoveResourceAccessor {
+  resourceQualifiedName: unknown;
+}
+
+interface MoveResourceRow {
+  name: unknown;
+  qualifiedName: unknown;
+  filePath: unknown;
+  abilities: unknown;
+  fieldList: unknown;
 }
 
 export class LocalBackend {
@@ -1783,6 +1820,18 @@ export class LocalBackend {
         return this.toolMap(repo, p);
       case 'api_impact':
         return this.apiImpact(repo, p);
+      // Move/Aptos tools (graph-property/Cypher only — no move-flow shell-out).
+      case 'move_entries':
+        return this.moveEntries(repo, p);
+      case 'move_resources':
+        return this.moveResources(repo, p);
+      case 'move_impact':
+        return this.moveImpact(repo, {
+          target: typeof p.target === 'string' ? p.target : '',
+          direction:
+            p.direction === 'upstream' || p.direction === 'downstream' ? p.direction : undefined,
+          maxDepth: typeof p.maxDepth === 'number' ? p.maxDepth : undefined,
+        });
       case 'trace':
         return this.trace(repo, p);
       default:
@@ -4529,6 +4578,129 @@ export class LocalBackend {
       applied: !dry_run,
       ...(failedFiles.length > 0 && { failed_files: failedFiles }),
     };
+  }
+
+  private async moveEntries(
+    repo: RepoHandle,
+    params: {
+      module?: string;
+      kind?: 'entry' | 'view' | 'inline' | 'native';
+      attribute?: string;
+    },
+  ): Promise<{ entries: MoveEntryRow[]; count: number } | { error: string }> {
+    await this.ensureInitialized(repo);
+    if (!isLbugReady(repo.lbugPath))
+      return { error: 'LadybugDB not ready. Index may be corrupted.' };
+    const clauses: string[] = ["f.language = 'move'"];
+    switch (params?.kind) {
+      case 'entry':
+        clauses.push('f.isEntry = true');
+        break;
+      case 'view':
+        clauses.push('f.isView = true');
+        break;
+      case 'inline':
+        clauses.push('f.isInline = true');
+        break;
+      case 'native':
+        clauses.push('f.isNative = true');
+        break;
+      default:
+        clauses.push('(f.isEntry = true OR f.isView = true)');
+    }
+    const qp: Record<string, unknown> = {};
+    if (typeof params?.module === 'string' && params.module) {
+      clauses.push('f.moduleQualifiedName = $module');
+      qp.module = params.module;
+    }
+    const rows = (await executeParameterized(
+      repo.lbugPath,
+      `MATCH (f:Function) WHERE ${clauses.join(' AND ')}
+       RETURN f.name AS name, f.qualifiedName AS qualifiedName, f.filePath AS filePath,
+              f.isEntry AS isEntry, f.isView AS isView,
+              f.isInline AS isInline, f.isNative AS isNative, f.visibility AS visibility,
+              f.acquires AS acquires, f.attributes AS attributes, f.returnType AS returnType
+       ORDER BY f.filePath, f.name`,
+      qp,
+    )) as MoveEntryRow[];
+    const attribute = params?.attribute;
+    const filtered =
+      typeof attribute === 'string' && attribute
+        ? rows.filter((r) => Array.isArray(r.attributes) && r.attributes.includes(attribute))
+        : rows;
+    return { entries: filtered, count: filtered.length };
+  }
+
+  private async moveResources(
+    repo: RepoHandle,
+    params: { module?: string },
+  ): Promise<
+    | { resources: Array<MoveResourceRow & { accessors: MoveResourceAccessor[] }>; count: number }
+    | { error: string }
+  > {
+    await this.ensureInitialized(repo);
+    if (!isLbugReady(repo.lbugPath))
+      return { error: 'LadybugDB not ready. Index may be corrupted.' };
+    const qp: Record<string, unknown> = {};
+    let moduleFilter = '';
+    if (typeof params?.module === 'string' && params.module) {
+      moduleFilter = ' AND s.moduleQualifiedName = $module';
+      qp.module = params.module;
+    }
+    const resourceQuery = (label: 'Struct' | 'Enum') => `
+       MATCH (s:\`${label}\`) WHERE s.language = 'move' AND s.isResource = true${moduleFilter}
+       RETURN s.name AS name, s.qualifiedName AS qualifiedName, s.filePath AS filePath,
+              s.abilities AS abilities, s.fieldList AS fieldList
+       ORDER BY s.qualifiedName`;
+    const accessorQuery = (label: 'Struct' | 'Enum') => `
+       MATCH (f:Function)-[r:CodeRelation]->(s:\`${label}\`)
+       WHERE s.language = 'move' AND s.isResource = true${moduleFilter}
+         AND (r.type = 'READS_RESOURCE' OR r.type = 'WRITES_RESOURCE' OR r.type = 'ACQUIRES')
+       RETURN s.qualifiedName AS resourceQualifiedName, f.qualifiedName AS caller,
+              r.type AS reason, f.isEntry AS isEntry, f.isView AS isView`;
+    const [structs, enums, structAccessors, enumAccessors] = await Promise.all([
+      executeParameterized(repo.lbugPath, resourceQuery('Struct'), qp),
+      executeParameterized(repo.lbugPath, resourceQuery('Enum'), qp),
+      executeParameterized(repo.lbugPath, accessorQuery('Struct'), qp),
+      executeParameterized(repo.lbugPath, accessorQuery('Enum'), qp),
+    ]);
+    const rows = [...structs, ...enums].sort((a: MoveResourceRow, b: MoveResourceRow) =>
+      String(a.qualifiedName).localeCompare(String(b.qualifiedName)),
+    ) as MoveResourceRow[];
+    const accessorsByResource = new Map<string, MoveResourceAccessor[]>();
+    for (const row of [...structAccessors, ...enumAccessors] as MoveResourceAccessorRow[]) {
+      const resourceQualifiedName = String(row.resourceQualifiedName ?? '');
+      if (!resourceQualifiedName || !row.caller) continue;
+      const accessors = accessorsByResource.get(resourceQualifiedName) ?? [];
+      accessors.push({
+        caller: row.caller,
+        reason: row.reason,
+        isEntry: row.isEntry,
+        isView: row.isView,
+      });
+      accessorsByResource.set(resourceQualifiedName, accessors);
+    }
+    const resources = rows.map((r) => ({
+      ...r,
+      fieldList: Array.isArray(r.fieldList)
+        ? r.fieldList.map((v: unknown) => String(v).replace(/^['"]|['"]$/g, ''))
+        : r.fieldList,
+      accessors: accessorsByResource.get(String(r.qualifiedName)) ?? [],
+    }));
+    return { resources, count: resources.length };
+  }
+
+  private async moveImpact(
+    repo: RepoHandle,
+    params: { target: string; direction?: 'upstream' | 'downstream'; maxDepth?: number },
+  ): Promise<unknown> {
+    const impactParams: ImpactParams = {
+      target: params.target,
+      direction: params.direction ?? 'upstream',
+      maxDepth: params.maxDepth,
+      relationTypes: ['CALLS', 'READS_RESOURCE', 'WRITES_RESOURCE', 'ACQUIRES', 'USES_TYPE'],
+    };
+    return this.impact(repo, impactParams);
   }
 
   private async trace(repo: RepoHandle, params: TraceParams): Promise<any> {

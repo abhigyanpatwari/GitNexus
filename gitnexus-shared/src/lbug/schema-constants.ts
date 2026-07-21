@@ -21,6 +21,7 @@ export const NODE_TABLES = [
   'Section',
   'Struct',
   'Enum',
+  'EnumVariant',
   'Macro',
   'Typedef',
   'Union',
@@ -70,6 +71,13 @@ export const REL_TYPES = [
   'WRAPS',
   'QUERIES',
   'INJECTS',
+  // Move/Aptos edges (compiler-first via move-flow `facts` query)
+  'FRIEND_OF',
+  'READS_RESOURCE',
+  'WRITES_RESOURCE',
+  'ACQUIRES',
+  'USES_TYPE',
+  'EMITS',
   // Taint/PDG substrate (issue #2080) — reserved edge types, emitted by no
   // phase yet (CFG → M1, REACHING_DEF → M2, TAINTED/SANITIZES/TAINT_PATH →
   // M3/M4). REACHING_DEF's variable name rides the relation's `reason` column.

@@ -6,6 +6,7 @@ export type PipelinePhase =
   | 'idle'
   | 'extracting'
   | 'structure'
+  | 'moveIngest'
   | 'parsing'
   | 'imports'
   | 'calls'

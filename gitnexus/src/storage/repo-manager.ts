@@ -162,6 +162,11 @@ export interface RepoMeta {
    */
   fileHashes?: Record<string, string>;
   /**
+   * Whether compiler-backed Move ingestion was available for this index.
+   * Absent on legacy metadata and non-Move repositories.
+   */
+  moveIngestAvailable?: boolean;
+  /**
    * Crash-recovery dirty flag — a generic marker written to the metadata
    * file (gitnexus.json + its meta.json mirror) BEFORE any destructive DB
    * mutation by BOTH writeback branches (incremental since its introduction;
@@ -366,8 +371,12 @@ export interface RepoMeta {
  * unchanged files — a top-up against a pre-v8 index would strand the old
  * `Worker.run`-keyed Method nodes alongside the new ones (the v5 Route
  * precedent); force a full re-analyze instead.
+ * v9: `attributesJson` column added to the Move node tables (Function, Struct,
+ * Enum, EnumVariant, Module) — full attribute payloads (nested args/values). A
+ * pre-v9 index lacks the column, so the bulk COPY referencing it would fail on
+ * an incremental top-up; force a full re-analyze (same contract as v3).
  */
-export const INCREMENTAL_SCHEMA_VERSION = 8;
+export const INCREMENTAL_SCHEMA_VERSION = 9;
 
 export interface IndexedRepo {
   repoPath: string;

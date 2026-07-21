@@ -39,6 +39,12 @@ describe('VALID_RELATION_TYPES', () => {
     'WRAPS',
     // Spring DI @Autowired collection injection (#2200)
     'INJECTS',
+    // Move/Aptos impact edges (compiler-first via move-flow `facts`) added to
+    // the allowlist alongside the Move graph integration.
+    'ACQUIRES',
+    'READS_RESOURCE',
+    'WRITES_RESOURCE',
+    'USES_TYPE',
   ] as const;
 
   it('contains all expected relation types', () => {
