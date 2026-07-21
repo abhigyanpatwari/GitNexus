@@ -244,11 +244,20 @@ function expectedSha(sumsText, assetName) {
     if (!line) continue;
     // Format: "<sha256>  <filename>" (BSD-style "SHA256 (file) = <hex>" also tolerated).
     const m = /^([0-9a-f]{64})[ \t*]+(\S.*)$/i.exec(line);
-    if (m && m[2].endsWith(assetName)) return m[1].toLowerCase();
+    if (m && m[2] === assetName) return m[1].toLowerCase();
     const bsd = /^SHA256\s*\((.*)\)\s*=\s*([0-9a-f]{64})$/i.exec(line);
-    if (bsd && bsd[1].endsWith(assetName)) return bsd[2].toLowerCase();
+    if (bsd && bsd[1] === assetName) return bsd[2].toLowerCase();
   }
   return null;
+}
+
+function verifyArchiveChecksum(sumsText, assetName, archive) {
+  const expected = expectedSha(sumsText, assetName);
+  if (!expected) return { status: 'missing' };
+
+  const actual = sha256(archive);
+  if (actual !== expected) return { status: 'mismatch', expected, actual };
+  return { status: 'match', expected, actual };
 }
 
 async function main() {
@@ -288,9 +297,12 @@ async function main() {
     await downloadToFile(`${RELEASE_BASE}/${sumsName}`, tmpSums);
     await downloadToFile(`${RELEASE_BASE}/${assetName}`, tmpArchive);
 
-    const sums = fs.readFileSync(tmpSums, 'utf8');
-    const expected = expectedSha(sums, assetName);
-    if (!expected) {
+    const verification = verifyArchiveChecksum(
+      fs.readFileSync(tmpSums, 'utf8'),
+      assetName,
+      tmpArchive,
+    );
+    if (verification.status === 'missing') {
       console.warn(
         `[move-flow] ${sumsName} does not list ${assetName} — refusing to install. ` +
           'Move ingestion will be unavailable. Non-Move functionality is unaffected.',
@@ -298,10 +310,9 @@ async function main() {
       process.exit(0);
     }
 
-    const actual = sha256(tmpArchive);
-    if (actual !== expected) {
+    if (verification.status === 'mismatch') {
       console.warn(
-        `[move-flow] Checksum mismatch for ${assetName} (expected ${expected}, got ${actual}) — refusing to install. ` +
+        `[move-flow] Checksum mismatch for ${assetName} (expected ${verification.expected}, got ${verification.actual}) — refusing to install. ` +
           'Move ingestion will be unavailable. Non-Move functionality is unaffected.',
       );
       process.exit(0);
@@ -343,7 +354,13 @@ async function main() {
   }
 }
 
-module.exports = { downloadToFile, powershellExpandArchiveInvocation };
+module.exports = {
+  downloadToFile,
+  expectedSha,
+  sha256,
+  verifyArchiveChecksum,
+  powershellExpandArchiveInvocation,
+};
 
 if (require.main === module) {
   main().catch((err) => {
