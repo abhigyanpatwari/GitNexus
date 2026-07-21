@@ -4835,13 +4835,53 @@ export class LocalBackend {
         repo.lbugPath,
         `
         MATCH (n {id: $symId})-[r:CodeRelation {type: 'STEP_IN_PROCESS'}]->(p:Process)
-        RETURN p.id AS pid, p.heuristicLabel AS label, MIN(r.step) AS step, p.stepCount AS stepCount
+        RETURN p.id AS pid, p.heuristicLabel AS label, MIN(r.step) AS step, p.stepCount AS stepCount, p.entryPointId AS entryPointId
         ORDER BY pid
       `,
         { symId },
       );
     } catch (e) {
       logQueryError('context:process-participation', e);
+    }
+
+    // #trpc-fork: ENTRY_POINT_OF lookup — find the HTTP route(s) this symbol
+    // handles, and whether it's the entry point of any process. Makes context()
+    // self-sufficient: an agent learns the symbol's route + entry-point status
+    // in the same call it already runs before every edit (AGENTS.md mandates
+    // context() pre-edit), avoiding a separate query()/route_map() round-trip.
+    // A symbol is considered its process's entry point when the process's
+    // entryPointId matches symId. Routes are attributed only from processes
+    // where this symbol is the entry point (a middle-step symbol does not
+    // "own" the process's route) OR from a direct Route-[ENTRY_POINT_OF]->symId
+    // edge (tRPC handler resolution in call-processor.ts emits these for
+    // procedures that never made it into a Process).
+    const isEntryPoint = processRows.some((r: any) => (r.entryPointId ?? r[4]) === symId);
+    const entryPids = processRows
+      .filter((r: any) => (r.entryPointId ?? r[4]) === symId)
+      .map((r: any) => r.pid || r[0]);
+    const routes: Array<{ url: string; method?: string }> = [];
+    try {
+      const routeRows = await executeParameterized(
+        repo.lbugPath,
+        `
+        MATCH (route:Route)-[r:CodeRelation {type: 'ENTRY_POINT_OF'}]->(target)
+        WHERE target.id = $symId OR target.id IN $entryPids
+        RETURN route.name AS url, route.method AS method
+      `,
+        { symId, entryPids: entryPids.length > 0 ? entryPids : ['__none__'] },
+      );
+      const seenUrls = new Set<string>();
+      for (const r of routeRows) {
+        const url = r.url ?? r[0];
+        if (url && !seenUrls.has(url)) {
+          seenUrls.add(url);
+          const method = r.method ?? r[1];
+          routes.push(method ? { url, method } : { url });
+        }
+      }
+    } catch (e) {
+      // Best-effort enrichment — never fail the context call.
+      logQueryError('context:route-lookup', e);
     }
 
     // Helper to categorize refs
@@ -5023,6 +5063,8 @@ export class LocalBackend {
             })),
           }
         : {}),
+      ...(isEntryPoint ? { is_entry_point: true } : {}),
+      ...(routes.length > 0 ? { routes } : {}),
       processes: processRows.map((r: any) => ({
         id: r.pid || r[0],
         name: r.label || r[1],
