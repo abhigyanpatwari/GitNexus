@@ -8,8 +8,11 @@
  * (with the compiler diagnostics), status unavailable -> error (old behavior).
  */
 import { describe, it, expect } from 'vitest';
+import path from 'node:path';
 import type { MoveFlowClient } from '../../../src/core/move/mcp-client.js';
 import { runMoveIngestPhase } from '../../helpers/move-ingest-harness.js';
+
+const REPO_ROOT = path.resolve('/repo');
 
 function makeClient(overrides: Partial<MoveFlowClient> = {}): MoveFlowClient {
   return {
@@ -24,7 +27,7 @@ function makeClient(overrides: Partial<MoveFlowClient> = {}): MoveFlowClient {
 
 /** Run the phase against a fake repo with one package holding one .move file. */
 async function runPhase(client: MoveFlowClient) {
-  return runMoveIngestPhase(client, '/repo', ['pkg/Move.toml', 'pkg/sources/t.move']);
+  return runMoveIngestPhase(client, REPO_ROOT, ['pkg/Move.toml', 'pkg/sources/t.move']);
 }
 
 function emptyFactsIssues(output: Awaited<ReturnType<typeof runPhase>>) {
@@ -93,7 +96,7 @@ describe('moveIngest empty-facts discrimination', () => {
       makeClient({
         facts: async () => ({
           '0xa::t': {
-            file: '/repo/pkg/sources/t.move',
+            file: path.join(REPO_ROOT, 'pkg', 'sources', 't.move'),
             span: [1, 3] as [number, number],
             friends: [],
             attributes: [],

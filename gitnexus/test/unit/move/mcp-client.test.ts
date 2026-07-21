@@ -79,10 +79,12 @@ describe('tryCreateMoveFlowClient', () => {
 describe('MoveFlowMcpClient', () => {
   beforeEach(() => {
     mockSpawn.mockReset();
+    delete process.env.GITNEXUS_MOVE_FLOW_TIMEOUT_MS;
   });
 
   afterEach(() => {
     vi.useRealTimers();
+    delete process.env.GITNEXUS_MOVE_FLOW_TIMEOUT_MS;
   });
 
   it('shutdown clears all state', async () => {
@@ -156,6 +158,34 @@ describe('MoveFlowMcpClient', () => {
     await expect(client.facts('/retry')).resolves.toEqual({ retry: 'ok' });
     expect(mockSpawn).toHaveBeenCalledTimes(2);
 
+    await client.shutdown();
+  });
+
+  it('honours the Move tool timeout override for large or test packages', async () => {
+    vi.useFakeTimers();
+    process.env.GITNEXUS_MOVE_FLOW_TIMEOUT_MS = '25';
+    const proc = createMockProc();
+    mockSpawn.mockReturnValue(proc as any);
+
+    proc.stdin.on('data', (chunk: Buffer) => {
+      for (const line of chunk.toString().split('\n')) {
+        if (!line.trim()) continue;
+        const msg = JSON.parse(line);
+        if (msg.method === 'initialize') {
+          proc.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: msg.id, result: {} }) + '\n');
+        }
+      }
+    });
+
+    const client = new MoveFlowMcpClient('move-flow');
+    const request = client.facts('/slow');
+    const failure = expect(request).rejects.toThrow(
+      "move-flow 'move_package_query' timed out after 25ms",
+    );
+
+    await vi.advanceTimersByTimeAsync(25);
+    await failure;
+    expect(proc.kill).toHaveBeenCalledOnce();
     await client.shutdown();
   });
 

@@ -5,8 +5,11 @@
  * bare startsWith('/repo/pkg_a') would claim '/repo/pkg_ab/sources/x.move'.
  */
 import { describe, it, expect } from 'vitest';
+import path from 'node:path';
 import type { MoveFlowClient } from '../../../src/core/move/mcp-client.js';
 import { runMoveIngestPhase } from '../../helpers/move-ingest-harness.js';
+
+const REPO_ROOT = path.resolve('/repo');
 
 /** Client returning empty facts for every package, without a status tool. */
 function emptyFactsClient(): MoveFlowClient {
@@ -21,7 +24,7 @@ function emptyFactsClient(): MoveFlowClient {
 
 describe('moveIngest package-ownership attribution', () => {
   it('attributes each file to its own package across sibling packages pkg_a / pkg_ab', async () => {
-    const output = await runMoveIngestPhase(emptyFactsClient(), '/repo', [
+    const output = await runMoveIngestPhase(emptyFactsClient(), REPO_ROOT, [
       'pkg_a/Move.toml',
       'pkg_a/sources/a.move',
       'pkg_ab/Move.toml',
@@ -30,8 +33,8 @@ describe('moveIngest package-ownership attribution', () => {
 
     const issues = output.consistencyIssues.filter((i) => i.code === 'empty-package-facts');
     expect(issues.map((i) => i.details?.packageRoot).sort()).toEqual([
-      '/repo/pkg_a',
-      '/repo/pkg_ab',
+      path.join(REPO_ROOT, 'pkg_a'),
+      path.join(REPO_ROOT, 'pkg_ab'),
     ]);
     // Exactly one owned .move file each - no prefix bleed between siblings.
     expect(issues.map((i) => i.details?.moveFileCount)).toEqual([1, 1]);
@@ -41,7 +44,7 @@ describe('moveIngest package-ownership attribution', () => {
     // pkg_ab has no Move.toml, so its file belongs to NO package. With a bare
     // startsWith ownership test it would count towards pkg_a's empty-facts
     // diagnostics (moveFileCount 2 instead of 1).
-    const output = await runMoveIngestPhase(emptyFactsClient(), '/repo', [
+    const output = await runMoveIngestPhase(emptyFactsClient(), REPO_ROOT, [
       'pkg_a/Move.toml',
       'pkg_a/sources/a.move',
       'pkg_ab/sources/x.move',
@@ -49,7 +52,7 @@ describe('moveIngest package-ownership attribution', () => {
 
     const issues = output.consistencyIssues.filter((i) => i.code === 'empty-package-facts');
     expect(issues).toHaveLength(1);
-    expect(issues[0].details?.packageRoot).toBe('/repo/pkg_a');
+    expect(issues[0].details?.packageRoot).toBe(path.join(REPO_ROOT, 'pkg_a'));
     expect(issues[0].details?.moveFileCount).toBe(1);
   });
 });

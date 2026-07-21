@@ -6,6 +6,10 @@ MCP, and projects compiler facts into the standard GitNexus knowledge graph.
 Declaration and semantic data come from the compiler-backed `facts` and
 `call_graph` queries rather than raw-source parsing.
 
+Cold compiler builds for large packages may take several minutes. Tool calls
+default to a five-minute timeout; override it in milliseconds with
+`GITNEXUS_MOVE_FLOW_TIMEOUT_MS` when a repository needs a larger budget.
+
 ```text
 Move package
   -> move-flow MCP
