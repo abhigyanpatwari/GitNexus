@@ -354,6 +354,17 @@ def _runtime_mount_args() -> list[str]:
         path = Path(raw)
         if path.exists():
             args += ["--ro-bind", raw, raw]
+    # sanitized_graph.py and runner_sessions.py invoke the sandboxed graph
+    # CLI at the fixed path /usr/local/bin/node. That's only covered by the
+    # /usr bind above when node happens to live under /usr/local/bin on the
+    # host -- true on GitHub-hosted runner images, but not on a self-hosted
+    # runner where actions/setup-node installs into its own tool-cache
+    # directory instead. Bind whatever `node` actually resolves to on PATH
+    # to that same fixed sandbox path so both call sites keep working
+    # regardless of where the host actually put it.
+    node_bin = shutil.which("node")
+    if node_bin:
+        args += ["--ro-bind", node_bin, "/usr/local/bin/node"]
     for raw in (
         "/etc/ssl",
         "/etc/hosts",
@@ -398,7 +409,7 @@ def _create_python3_wrapper(private_root: Path) -> Path:
     """
 
     wrapper = private_root / "python3"
-    wrapper.write_text("#!/bin/bash\nset -eu\nexec /usr/bin/python3 \"$@\"\n")
+    wrapper.write_text('#!/bin/bash\nset -eu\nexec /usr/bin/python3 "$@"\n')
     wrapper.chmod(0o500)
     return wrapper
 

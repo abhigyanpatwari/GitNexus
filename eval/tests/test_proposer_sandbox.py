@@ -24,6 +24,7 @@ from workflow_bench.proposer_sandbox import (
     SANDBOX_USER_SKILLS,
     ReadOnlyMount,
     SandboxError,
+    _runtime_mount_args,
     build_claude_settings,
     build_sandbox_environment,
     prepare_sandbox,
@@ -189,6 +190,30 @@ def test_sandbox_command_has_minimal_mounts_and_no_host_root_bind(tmp_path: Path
         assert argv[user_skills_index - 2] == "--ro-bind"
         private_root = sandbox.private_root
     assert not private_root.exists()
+
+
+def test_runtime_mounts_bind_the_resolved_node_wherever_path_puts_it(monkeypatch) -> None:
+    # sanitized_graph.py and runner_sessions.py invoke the sandboxed graph CLI
+    # at the fixed path /usr/local/bin/node. That's only covered by the /usr
+    # bind when node happens to live under /usr/local/bin on the host -- true
+    # on GitHub-hosted runner images, but not on a self-hosted runner where
+    # actions/setup-node installs into its own tool-cache directory instead
+    # (observed empirically: "bwrap: execvp /usr/local/bin/node: No such file
+    # or directory" on a fresh self-hosted runner).
+    monkeypatch.setattr(
+        "workflow_bench.proposer_sandbox.shutil.which",
+        lambda name: "/opt/hostedtoolcache/node/22.18.0/x64/bin/node" if name == "node" else None,
+    )
+    args = _runtime_mount_args()
+    node_index = args.index("/opt/hostedtoolcache/node/22.18.0/x64/bin/node")
+    assert args[node_index - 1] == "--ro-bind"
+    assert args[node_index + 1] == "/usr/local/bin/node"
+
+
+def test_runtime_mounts_skip_the_node_bind_when_node_is_unresolvable(monkeypatch) -> None:
+    monkeypatch.setattr("workflow_bench.proposer_sandbox.shutil.which", lambda name: None)
+    args = _runtime_mount_args()
+    assert "/usr/local/bin/node" not in args
 
 
 def test_stricter_prefix_freezes_evaluated_skills_and_can_unshare_network(tmp_path: Path) -> None:
@@ -772,4 +797,3 @@ for line in sys.stdin:
     assert bash_result.get("is_error") is not True, bash_result
     assert (clone / "bash-called").read_text() == "canary"
     assert (clone / "mcp-called").read_text() == "ok"
-
