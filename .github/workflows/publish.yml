@@ -274,6 +274,21 @@ jobs:
       contents: read
       actions: read
 
+  # Aptos releases are maintained on a separate branch and npm dist-tag.
+  # Require an explicit maintainer approval after CI before publishing them.
+  aptos-release-gate:
+    name: Approve Aptos npm release
+    needs: [route, ci]
+    if: ${{ always() && needs.route.outputs.mode == 'aptos' && needs.ci.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment:
+      name: aptos-release
+    permissions: {}
+    steps:
+      - name: Approval recorded
+        run: echo "Aptos release approved."
+
   # ── Phase 4: publish to npm + push refs (RC path) ──────────────────────────
   # INVARIANT: `timeout-minutes` MUST stay below the App-token TTL (~60 min
   # for actions/create-github-app-token installation tokens). The atomic
@@ -283,8 +298,8 @@ jobs:
   # `Create and push rc tags` step instead.
   publish:
     name: Publish to npm
-    needs: [route, rc-guard, ci]
-    if: ${{ always() && needs.ci.result == 'success' && (needs.route.outputs.mode == 'stable' || needs.route.outputs.mode == 'aptos' || needs.rc-guard.outputs.should_run == 'true') }}
+    needs: [route, rc-guard, ci, aptos-release-gate]
+    if: ${{ always() && needs.ci.result == 'success' && (needs.route.outputs.mode == 'stable' || needs.rc-guard.outputs.should_run == 'true' || (needs.route.outputs.mode == 'aptos' && needs.aptos-release-gate.result == 'success')) }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
