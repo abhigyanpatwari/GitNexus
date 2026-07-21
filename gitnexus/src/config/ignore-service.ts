@@ -3,6 +3,7 @@ import fs from 'fs/promises';
 import nodePath from 'path';
 import type { Path } from 'path-scurry';
 import { logger } from '../core/logger.js';
+import { getCoreExcludesFilePath, getGitInfoExcludePath } from '../storage/git.js';
 
 const DEFAULT_IGNORE_LIST = new Set([
   // Version Control
@@ -350,6 +351,8 @@ export const isHardcodedIgnoredDirectory = (name: string): boolean => {
 export interface IgnoreOptions {
   /** Skip .gitignore parsing, only read .gitnexusignore. Defaults to GITNEXUS_NO_GITIGNORE env var. */
   noGitignore?: boolean;
+  /** Skip core.excludesFile and $GIT_COMMON_DIR/info/exclude. Defaults to GITNEXUS_NO_GLOBAL_IGNORE env var. */
+  noGlobalIgnore?: boolean;
 }
 
 export const loadIgnoreRules = async (
@@ -358,6 +361,32 @@ export const loadIgnoreRules = async (
 ): Promise<Ignore | null> => {
   const ig = ignore();
   let hasRules = false;
+
+  // Mirror git's own precedence for ignore sources (gitignore(5)): patterns
+  // from core.excludesFile are consulted first (lowest precedence — git's
+  // real global, all-repos file), then $GIT_COMMON_DIR/info/exclude
+  // (per-repo, untracked — no write access to the repo needed), then
+  // .gitignore/.gitnexusignore below. Later ig.add() calls win on
+  // conflicting patterns, matching git's own last-match-wins semantics (#2606).
+  const skipGlobalIgnore = options?.noGlobalIgnore ?? !!process.env.GITNEXUS_NO_GLOBAL_IGNORE;
+  if (!skipGlobalIgnore) {
+    const globalSources = [
+      getCoreExcludesFilePath(repoPath),
+      getGitInfoExcludePath(repoPath),
+    ].filter((candidate): candidate is string => candidate !== null);
+    for (const sourcePath of globalSources) {
+      try {
+        const content = await fs.readFile(sourcePath, 'utf-8');
+        ig.add(content);
+        hasRules = true;
+      } catch (err: unknown) {
+        const code = (err as NodeJS.ErrnoException).code;
+        if (code !== 'ENOENT') {
+          logger.warn(`  Warning: could not read ${sourcePath}: ${(err as Error).message}`);
+        }
+      }
+    }
+  }
 
   // Allow users to bypass .gitignore parsing (e.g. when .gitignore accidentally excludes source files)
   const skipGitignore = options?.noGitignore ?? !!process.env.GITNEXUS_NO_GITIGNORE;

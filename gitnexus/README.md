@@ -511,9 +511,19 @@ For very large repositories:
 # Increase Node.js heap size
 NODE_OPTIONS="--max-old-space-size=16384" npx gitnexus analyze
 
-# Exclude large directories
+# Exclude large directories (this repo only)
 echo "vendor/" >> .gitnexusignore
 echo "dist/" >> .gitnexusignore
+
+# Exclude a directory across every repo you index, without touching each
+# repo's own .gitnexusignore or needing push/commit access to it. GitNexus
+# reads the same sources `git` itself does: core.excludesFile (all repos)
+# and $GIT_DIR/info/exclude (this repo only, untracked). A repo's own
+# .gitignore/.gitnexusignore can still override either with a `!pattern`
+# negation. Skip both entirely with GITNEXUS_NO_GLOBAL_IGNORE=1.
+git config --global core.excludesFile ~/.gitignore_global   # applies to every repo
+echo "docs/" >> ~/.gitignore_global
+echo "build/" >> .git/info/exclude                          # this repo only, untracked
 ```
 
 ### Large files are being skipped
