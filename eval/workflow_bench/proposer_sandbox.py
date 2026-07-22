@@ -29,6 +29,14 @@ SANDBOX_SHELL_PREFIX = "/opt/claude/shell-prefix"
 SANDBOX_PYTHON3 = "/opt/claude/python3"
 SANDBOX_NODE = "/opt/claude/node"
 SANDBOX_NODE_PREFIX = "/opt/claude/nodejs"
+# Vite transpiles a TypeScript config into <node_modules>/.vite-temp before it
+# loads anything, so a read-only dependency mount makes `vitest` die with EROFS
+# before a single test runs -- and every task verify command and every hidden
+# oracle ends in `npx vitest run <test>`. bwrap cannot create a mount point
+# inside an already-read-only bind, so the directory is captured into the
+# dependency snapshot (task_assets.py) and a tmpfs is overlaid on it here.
+VITE_TEMP_DIR = ".vite-temp"
+DEPENDENCY_MOUNT_BASENAME = "node_modules"
 SANDBOX_PATH = f"/opt/claude:{SANDBOX_NODE_PREFIX}/bin:/usr/local/bin:/usr/bin:/bin"
 SANDBOX_GITNEXUS = "/opt/gitnexus"
 SANDBOX_GITNEXUS_SHARED = "/opt/gitnexus-shared"
@@ -678,6 +686,20 @@ def _sandbox_command_prefix(
     ]
     for mount in mounts:
         args += ["--ro-bind", str(mount.source), mount.target]
+        # Overlay an empty writable tmpfs on the one path vite must write.
+        # Everything else in the mount, and the whole workspace, stays
+        # read-only, and the overlay lives only inside the sandbox -- it never
+        # reaches the host clone the credited patch is captured from.
+        #
+        # Gate on the mount SOURCE actually containing the directory, not on
+        # the target name: bwrap cannot create a mount point inside an
+        # already-read-only bind, so a tmpfs can only be overlaid where the
+        # directory already exists in the bound bytes. task_assets.py captures
+        # it into dependency-snapshot node_modules; other node_modules mounts
+        # (e.g. the trusted GitNexus runtime at /opt/gitnexus/node_modules) do
+        # not carry it, and overlaying them would fail with EROFS.
+        if PurePosixPath(mount.target).name == DEPENDENCY_MOUNT_BASENAME and (mount.source / VITE_TEMP_DIR).is_dir():
+            args += ["--tmpfs", f"{mount.target}/{VITE_TEMP_DIR}"]
     args += ["--chdir", SANDBOX_WORKSPACE, "--"]
     return args
 
