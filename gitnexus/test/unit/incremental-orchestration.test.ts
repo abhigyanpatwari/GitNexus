@@ -931,8 +931,9 @@ describe('runFullAnalysis — incremental orchestration', () => {
  * and boot a real embedder in CI. This run stays preserve-only (no force).
  *
  * Skip-gated on VECTOR availability (the lbug-vector-extension.test.ts
- * pattern): hard-false on win32; statically linked on linux-x64, so the
- * assertions genuinely run in CI — and on win32 the honest stamp is
+ * pattern): skipped only where the extension genuinely cannot load —
+ * no platform is categorically excluded any more (#2623 follow-up) — and
+ * where it cannot, the honest stamp is
  * 'exact-scan', which the unit-level wiring pin in
  * run-analyze-fts-repair.test.ts covers platform-independently.
  */

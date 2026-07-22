@@ -2112,8 +2112,8 @@ export async function runFullAnalysis(
     //     the case a naive gate would leave index-less again.
     // buildVectorIndex carries its own extension-policy gate and
     // warn-on-failure; the boolean feeds semanticMode so the finalize stamp
-    // reflects the DB's ACTUAL state even when recreation fails (win32 /
-    // extension unavailable → 'exact-scan').
+    // reflects the DB's ACTUAL state even when recreation fails (extension
+    // unavailable → 'exact-scan').
     const dbWasWiped = !isIncremental || escalatedFullWrite;
     if (restoredEmbeddingCount > 0 && dbWasWiped && embeddingSkipped) {
       // Re-import at the seam rather than thread a mutable capture from

@@ -55,7 +55,6 @@ import {
   renameFailureMessage,
   shadowSidecarRecoveryMessage,
 } from './sidecar-recovery.js';
-import { isVectorExtensionSupportedByPlatform } from '../platform/capabilities.js';
 
 import { logger } from '../logger.js';
 // ---------------------------------------------------------------------------
@@ -2700,14 +2699,16 @@ export const loadVectorExtension = async (
 ): Promise<boolean> => {
   const useModuleState = targetConn === undefined;
   if (useModuleState && vectorExtensionLoaded) return true;
-  // INSTALL VECTOR crashes with SIGSEGV on Windows: the KuzuDB native extension
-  // installer has an unhandled error path on Windows that raises a fatal signal
-  // that JS try/catch cannot intercept. Skip loading — vector/embedding search
-  // is unavailable but all graph index queries still work. Do NOT set
-  // vectorExtensionLoaded here: the flag means "successfully loaded", and a
-  // subsequent call would otherwise short-circuit to `return true` at the top.
-  if (process.platform === 'win32') return false;
-  if (!isVectorExtensionSupportedByPlatform()) return false;
+  // No platform gate. Windows was hard-refused here for years on the strength
+  // of an early-era report that in-process INSTALL VECTOR could SIGSEGV
+  // (#1365) — but the extension server ships win_amd64 VECTOR artifacts for
+  // every 0.18.x extension version (probed live: v0.18.0 and v0.18.1 both
+  // serve a real PE32+ DLL; the pinned 0.18.2 core resolves its extension
+  // directory to 0.18.1, strace-verified), and INSTALL now runs in a spawned
+  // child process (installDuckDbExtensionOutOfProcess), so even a crashing
+  // installer kills only the child and degrades to `false` here. LOAD of a
+  // present extension file is an ordinary in-process load whose failures
+  // surface as catchable errors, exactly like FTS.
 
   const c: lbug.Connection | null = targetConn ?? conn;
   if (!c) {
