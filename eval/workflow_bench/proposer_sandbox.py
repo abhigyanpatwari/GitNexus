@@ -28,7 +28,8 @@ SANDBOX_CLAUDE = "/opt/claude/claude"
 SANDBOX_SHELL_PREFIX = "/opt/claude/shell-prefix"
 SANDBOX_PYTHON3 = "/opt/claude/python3"
 SANDBOX_NODE = "/opt/claude/node"
-SANDBOX_PATH = "/opt/claude:/usr/local/bin:/usr/bin:/bin"
+SANDBOX_NODE_PREFIX = "/opt/claude/nodejs"
+SANDBOX_PATH = f"/opt/claude:{SANDBOX_NODE_PREFIX}/bin:/usr/local/bin:/usr/bin:/bin"
 SANDBOX_GITNEXUS = "/opt/gitnexus"
 SANDBOX_GITNEXUS_SHARED = "/opt/gitnexus-shared"
 SANDBOX_GITNEXUS_REGISTRY = "/opt/gitnexus-registry"
@@ -351,7 +352,8 @@ def build_claude_settings() -> str:
 
 def _runtime_mount_args() -> list[str]:
     args: list[str] = []
-    for raw in ("/usr", "/bin", "/lib", "/lib64"):
+    system_trees = ("/usr", "/bin", "/lib", "/lib64")
+    for raw in system_trees:
         path = Path(raw)
         if path.exists():
             args += ["--ro-bind", raw, raw]
@@ -369,6 +371,39 @@ def _runtime_mount_args() -> list[str]:
     node_bin = shutil.which("node")
     if node_bin:
         args += ["--ro-bind", node_bin, SANDBOX_NODE]
+        # The single-binary bind above gives SANDBOX_NODE but NOT npm or npx:
+        # those are symlinks into ../lib/node_modules/npm/bin/*-cli.js, so the
+        # install prefix carrying both bin/ and lib/node_modules has to be
+        # mounted for them to resolve at all. When node really lives under a
+        # system tree (/usr/local/bin on GitHub-hosted images) the prefix is
+        # already inside the wholesale read-only binds above and npm/npx came
+        # along for free -- which is exactly why this gap stayed invisible
+        # until a self-hosted runner put node in actions/setup-node's tool
+        # cache, outside /usr, and every task verify command
+        # ("cd gitnexus && npx tsc ... && npx vitest ...") died with
+        # "/bin/sh: 1: npx: not found". Skip the redundant bind in the
+        # already-covered case so the mount surface stays minimal.
+        #
+        # The prefix is only ever derived from a real <prefix>/bin/node layout
+        # that actually carries npm. Deriving it as parent.parent unconditionally
+        # would mount an unrelated ancestor whenever node sits somewhere else:
+        # /opt/bin/node would bind all of /opt (every tool cache on a hosted
+        # runner) and a bare <dir>/node would bind <dir>'s parent. This function
+        # exists to keep the sandbox surface minimal, so an unrecognized layout
+        # binds nothing extra and simply leaves npx unavailable, exactly as
+        # before.
+        node_bin_dir = Path(node_bin).resolve().parent
+        node_prefix = node_bin_dir.parent
+        # Test the property actually needed -- a working npx next to node in a
+        # real bin/ directory -- rather than a proxy like lib/node_modules/npm.
+        # .exists() follows the symlink, so a dangling npx correctly fails: it
+        # would not survive the mount either. Requiring the "bin" name keeps
+        # the parent.parent derivation honest; an npx sitting directly beside
+        # node in a flat directory would make that derivation name the wrong
+        # prefix.
+        provides_npx = node_bin_dir.name == "bin" and (node_bin_dir / "npx").exists()
+        if provides_npx and not any(node_prefix.is_relative_to(tree) for tree in system_trees):
+            args += ["--ro-bind", str(node_prefix), SANDBOX_NODE_PREFIX]
     for raw in (
         "/etc/ssl",
         "/etc/hosts",
