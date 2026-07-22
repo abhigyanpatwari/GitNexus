@@ -421,13 +421,30 @@ describe('page-size-scaled buffer pool sizing (#2631)', () => {
     }
   });
 
-  it('the default pool passed to the Database ctor scales on 64 KiB hosts, bounded by RAM', () => {
+  it('the hintless default passed to the Database ctor stays at the unscaled #2557 cap on 64 KiB hosts', () => {
+    // The guard for the #2557 OOM protection: MCP serve / doctor / any open
+    // without a per-run hint must NOT inherit the page-size-scaled budget —
+    // the pool is an eager allocation at DB open.
     const totalmemSpy = vi.spyOn(os, 'totalmem').mockReturnValue(32 * GiB);
     try {
       _setOsPageSizeForTests(65536);
       const Database = vi.fn(function (this: any) {});
       createLbugDatabase({ Database } as any, '/tmp/lbug-pool-64k');
-      expect(bufferPoolArg(Database)).toBe(Math.floor(0.8 * 32 * GiB));
+      expect(bufferPoolArg(Database)).toBe(2 * GiB);
+    } finally {
+      totalmemSpy.mockRestore();
+    }
+  });
+
+  it('the analyze hint path DOES scale on 64 KiB hosts (scaled floor, bounded by 80% RAM)', () => {
+    const totalmemSpy = vi.spyOn(os, 'totalmem').mockReturnValue(32 * GiB);
+    try {
+      _setOsPageSizeForTests(65536);
+      setBufferPoolSizeHint(estimateBufferPool(41));
+      const Database = vi.fn(function (this: any) {});
+      createLbugDatabase({ Database } as any, '/tmp/lbug-pool-64k-hint');
+      // 41 elements → below the scaled COPY floor → 16 × 256 MiB = 4 GiB
+      expect(bufferPoolArg(Database)).toBe(16 * 256 * MiB);
     } finally {
       totalmemSpy.mockRestore();
     }
@@ -471,5 +488,17 @@ describe('bufferPoolExhaustionRemedy (#2631)', () => {
     expect(
       bufferPoolExhaustionRemedy('Binder exception: Table CodeEmbedding does not exist.'),
     ).toBeUndefined();
+  });
+
+  it('labels the 0 sentinel as the native default instead of "0 MiB"', () => {
+    _setOsPageSizeForTests(4096);
+    vi.stubEnv('GITNEXUS_LBUG_BUFFER_POOL_SIZE', '0');
+    try {
+      const remedy = bufferPoolExhaustionRemedy(EXHAUSTION);
+      expect(remedy).toContain('native 80%-of-RAM default');
+      expect(remedy).not.toContain('(0 MiB)');
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 });

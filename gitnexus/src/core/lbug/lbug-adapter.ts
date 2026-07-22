@@ -1132,6 +1132,7 @@ export const loadGraphToLbug = async (
 
   const insertedRels = totalValidRels;
   const warnings: string[] = [];
+  let poolRemedyIssued = false;
   if (insertedRels > 0) {
     log(`Loading edges: ${insertedRels.toLocaleString()} across ${relsByPair.size} types`);
 
@@ -1159,10 +1160,15 @@ export const loadGraphToLbug = async (
         const retryMsg = retryErr instanceof Error ? retryErr.message : String(retryErr);
         warnings.push(`${fromLabel}->${toLabel} (${rows} edges): ${retryMsg.slice(0, 80)}`);
         // One remedy per bulk load, not per pair (#2631): pool exhaustion
-        // repeats for every remaining pair once it starts.
-        const remedy = bufferPoolExhaustionRemedy(retryMsg);
-        if (remedy && !warnings.some((w) => w.startsWith('The LadybugDB buffer pool'))) {
+        // repeats for every remaining pair once it starts. logger.warn, not
+        // just warnings.push — the returned warnings array has no consumer at
+        // any call site, so a push alone would leave the remedy invisible
+        // while the row-by-row fallback quietly degrades the load.
+        const remedy = poolRemedyIssued ? undefined : bufferPoolExhaustionRemedy(retryMsg);
+        if (remedy) {
+          poolRemedyIssued = true;
           warnings.push(remedy);
+          logger.warn(remedy);
         }
         failedPairEdges += rows;
         failedPairCsvPaths.add(pairCsvPath);

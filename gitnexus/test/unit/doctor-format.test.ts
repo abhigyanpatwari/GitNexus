@@ -5,6 +5,7 @@ import {
   localEmbeddingDoctorStatus,
   padDisplayEnd,
   pageSizeDoctorLines,
+  poolSizeDoctorLine,
 } from '../../src/cli/doctor.js';
 
 describe('doctor output formatting', () => {
@@ -161,6 +162,28 @@ describe('doctor page-size lines (#1231, #2424 review)', () => {
     expect(lines[1]).toContain('an unknown @ladybugdb/core version (may predate 0.18.0)');
     expect(lines[1]).not.toContain('with @ladybugdb/core < 0.18.0');
     expect(lines[1]).toContain('npm install -g gitnexus@latest');
+  });
+});
+
+describe('doctor pool-size line (#2631)', () => {
+  const MiB = 1024 * 1024;
+
+  it('prints the hintless pool in MiB with no env note when the env var is unset', () => {
+    expect(poolSizeDoctorLine(2048 * MiB, undefined)).toBe(
+      `  ${padDisplayEnd('pool size', 10)}2048 MiB`,
+    );
+  });
+
+  it('marks an operator-supplied absolute value as an env override, with no scaling suffix', () => {
+    expect(poolSizeDoctorLine(4096 * MiB, String(4096 * MiB))).toBe(
+      `  ${padDisplayEnd('pool size', 10)}4096 MiB (env override)`,
+    );
+  });
+
+  it('labels the 0 sentinel as the native default instead of "0 MiB"', () => {
+    expect(poolSizeDoctorLine(0, '0')).toBe(
+      `  ${padDisplayEnd('pool size', 10)}native 80% of RAM (env override)`,
+    );
   });
 });
 
