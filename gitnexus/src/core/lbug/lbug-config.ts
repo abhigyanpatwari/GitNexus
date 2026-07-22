@@ -340,18 +340,84 @@ const parseBufferPoolSize = (raw: string | undefined): number | undefined => {
   return Math.floor(parsed);
 };
 
+/**
+ * The buffer-manager frame size compiled into every shipped `@ladybugdb/core`
+ * binary (`LBUG_PAGE_SIZE_LOG2 = 12` in the engine's CMake) — frames are 4 KiB
+ * on every platform, independent of the OS page size.
+ */
+const LBUG_ASSUMED_FRAME_SIZE = 4096;
+
+/**
+ * How much the OS page size amplifies buffer-pool consumption (#2631).
+ *
+ * LadybugDB's VM region charges pool budget per DISCARD GRANULE, not per
+ * frame: `discardGranuleSize = max(frameSize, osPageSize)` (vm_region.cpp),
+ * `claimFrame` bills the whole granule when its first 4 KiB frame becomes
+ * resident, and `releaseFrame` refunds only when the granule's LAST frame
+ * leaves. On a 64 KiB-page kernel (aarch64 openEuler — Ascend hosts) that is
+ * 16 frames per granule: scattered access is billed up to 16× its real bytes,
+ * and whole eviction passes can evict frames yet refund nothing — which is
+ * exactly the engine's "buffer pool is full and no memory could be freed"
+ * throw. Apple Silicon macOS (16 KiB pages) is the same mechanism at 4×.
+ *
+ * So the ANALYZE-path pool sizes (the per-element estimate, the COPY-safety
+ * floor, and the cap the hint is clamped against) are scaled by this ratio:
+ * the budget must cover worst-case granule charging or COPY dies on non-4K
+ * hosts with a pool that would be ample on x86. The hintless default
+ * (defaultBufferPoolSize — MCP serve, doctor, native-check) is deliberately
+ * NOT scaled: the pool is a native eager allocation committed at DB open
+ * (measured — see POOL_BYTES_PER_ELEMENT below), so scaling the global
+ * default would revert the #2557 OOM cap on every 16 KiB/64 KiB host. If the
+ * engine ever charges per-frame (or ships page-size-matched frames), this
+ * collapses back to 1 and the scaling disappears.
+ *
+ * Fail-safe: an undetectable page size (win32 — where the granule mechanism
+ * is absent anyway — or a failed `getconf`) means ratio 1, i.e. today's
+ * behavior.
+ */
+export const granuleRatio = (pageSize: number | undefined = getOsPageSize()): number => {
+  if (pageSize === undefined || !Number.isFinite(pageSize)) return 1;
+  return Math.max(1, Math.floor(pageSize / LBUG_ASSUMED_FRAME_SIZE));
+};
+
+/**
+ * Hintless pool default — MCP serve, doctor, native-check, any open without a
+ * per-run hint. Deliberately UNSCALED (#2557): the pool is an eager native
+ * allocation at DB open, so a page-size-scaled default would hand a
+ * long-lived `gitnexus mcp` on a 16 KiB/64 KiB host up to 80% of RAM — the
+ * exact OOM exposure the 2 GiB cap was added to remove.
+ */
 const defaultBufferPoolSize = (): number =>
   Math.min(DEFAULT_BUFFER_POOL_CAP, Math.max(BUFFER_POOL_FLOOR, Math.floor(os.totalmem() * 0.8)));
 
 /**
- * Clamp an adaptive pool request to [ADAPTIVE_POOL_FLOOR, default]. The lower
- * bound keeps LadybugDB's COPY viable; the upper bound (defaultBufferPoolSize)
- * means the hint can only shrink the pool from today's default and can never
- * exceed the 2 GiB / 80%-RAM cap — and on a machine whose default is below the
- * COPY floor, the default wins, so the pool is never over-committed.
+ * Upper bound for the ANALYZE-path (hinted) pool: the #2557 cap scaled by the
+ * granule ratio, still bounded by 80% of RAM. Scaling only this bound — and
+ * not defaultBufferPoolSize — is what lets the #2631 fix take effect during
+ * the bulk COPY without touching hintless opens: with an unscaled cap the
+ * min() below would clamp the scaled COPY floor straight back to 2 GiB.
  */
-const clampBufferPool = (bytes: number): number =>
-  Math.min(defaultBufferPoolSize(), Math.max(ADAPTIVE_POOL_FLOOR, Math.floor(bytes)));
+const scaledAnalyzePoolCap = (pageSize: number | undefined): number =>
+  Math.min(
+    DEFAULT_BUFFER_POOL_CAP * granuleRatio(pageSize),
+    Math.max(BUFFER_POOL_FLOOR, Math.floor(os.totalmem() * 0.8)),
+  );
+
+/**
+ * Clamp an adaptive pool request to [ADAPTIVE_POOL_FLOOR × granuleRatio,
+ * scaledAnalyzePoolCap]. The lower bound keeps LadybugDB's COPY viable
+ * (scaled because the granule accounting inflates consumption on non-4K
+ * hosts, see granuleRatio); the upper bound means the hint can never exceed
+ * the page-size-scaled #2557 cap or 80% of RAM — and on a machine whose cap
+ * is below the COPY floor, the cap wins, so the pool is never over-committed.
+ * On 4 KiB hosts (ratio 1) this is byte-identical to clamping against the
+ * hintless default.
+ */
+const clampBufferPool = (bytes: number, pageSize: number | undefined = getOsPageSize()): number =>
+  Math.min(
+    scaledAnalyzePoolCap(pageSize),
+    Math.max(ADAPTIVE_POOL_FLOOR * granuleRatio(pageSize), Math.floor(bytes)),
+  );
 
 /**
  * Buffer-pool bytes to provision per graph element (node + relationship).
@@ -372,13 +438,22 @@ const POOL_BYTES_PER_ELEMENT = 4 * 1024;
 
 /**
  * Size the buffer pool to an estimated graph size (node + relationship count),
- * clamped to [ADAPTIVE_POOL_FLOOR, defaultBufferPoolSize()]. The estimate can
- * only *shrink* the pool from the default — never above the 2 GiB / 80%-RAM cap,
- * never below the COPY-safety floor — so no repo is under-sized or gets more
- * than the default it would have today.
+ * clamped to [ADAPTIVE_POOL_FLOOR, scaledAnalyzePoolCap], with every term
+ * scaled by granuleRatio (#2631): on non-4K hosts the engine bills pool
+ * budget per OS-page-sized granule, so the same graph consumes up to
+ * pageSize/4096 × the budget it needs on x86. On 4 KiB hosts the ratio is 1
+ * and this is byte-identical to the pre-#2631 behavior. The estimate is never
+ * above the page-size-scaled #2557 cap bounded by 80% of RAM, never below the
+ * scaled COPY-safety floor; the hintless default stays unscaled.
+ *
+ * `pageSize` is a test seam (the pageSizeDoctorLines convention); production
+ * callers omit it and get the memoized real OS page size.
  */
-export const estimateBufferPool = (graphElementCount: number): number =>
-  clampBufferPool(graphElementCount * POOL_BYTES_PER_ELEMENT);
+export const estimateBufferPool = (
+  graphElementCount: number,
+  pageSize: number | undefined = getOsPageSize(),
+): number =>
+  clampBufferPool(graphElementCount * POOL_BYTES_PER_ELEMENT * granuleRatio(pageSize), pageSize);
 
 /**
  * Optional per-run buffer-pool size hint (bytes). The analyze orchestrator sets
@@ -417,10 +492,62 @@ const resolveBufferManagerSize = (): number => {
   if (raw.trim().length > 0) {
     logger.warn(
       { rawValue: raw, fallback: defaultBufferPoolSize() },
-      `Ignoring invalid GITNEXUS_LBUG_BUFFER_POOL_SIZE=${raw}; expected integer >= 0 (bytes; 0 restores the native 80%-of-RAM default); falling back to min(2 GiB, 80% of RAM).`,
+      `Ignoring invalid GITNEXUS_LBUG_BUFFER_POOL_SIZE=${raw}; expected integer >= 0 (bytes; 0 restores the native 80%-of-RAM default); falling back to the platform default pool size.`,
     );
   }
   return defaultBufferPoolSize();
+};
+
+/**
+ * Doctor-facing view of the pool size the next Database open would get
+ * (#2631): env override > clamped hint > unscaled hintless default. Read-only;
+ * doctor prints it next to the page-size lines so support triage sees the
+ * sizing inputs at a glance. `0` is the pass-through sentinel for LadybugDB's
+ * native 80%-of-RAM default — callers must label it, not print "0 MiB".
+ */
+export const getEffectiveBufferPoolSize = (): number => resolveBufferManagerSize();
+
+/**
+ * Matches the engine's buffer-pool exhaustion throw (buffer_manager.cpp:
+ * "Unable to allocate memory! The buffer pool is full and no memory could be
+ * freed!"). Distinct from isLbugPageSizeFrameError above, which matches the
+ * madvise/frame-release failure class.
+ */
+const BUFFER_POOL_EXHAUSTION_RE = /buffer pool is full|unable to allocate memory/i;
+
+const formatMiB = (bytes: number): string => `${Math.round(bytes / (1024 * 1024))} MiB`;
+
+/**
+ * Actionable remedy for a buffer-pool exhaustion error (#2631), or undefined
+ * when `message` is not that class. Cause → consequence → remedy, the
+ * diagnoseExtensionLoad convention: names the effective pool, the override
+ * knob, and — on non-4K hosts — the granule amplification that makes the
+ * budget exhaust early (the reporter's Ascend/aarch64 64 KiB kernel billed a
+ * pool up to 16× faster than the same analyze on x86).
+ */
+export const bufferPoolExhaustionRemedy = (
+  message: string,
+  pageSize: number | undefined = getOsPageSize(),
+): string | undefined => {
+  if (!BUFFER_POOL_EXHAUSTION_RE.test(message)) return undefined;
+  const ratio = granuleRatio(pageSize);
+  const pool = resolveBufferManagerSize();
+  // 0 is the pass-through sentinel (GITNEXUS_LBUG_BUFFER_POOL_SIZE=0 →
+  // LadybugDB's native 80%-of-RAM default) — "0 MiB" would be nonsense in the
+  // very triage text this remedy exists to provide.
+  const poolLabel = pool === 0 ? "LadybugDB's native 80%-of-RAM default" : formatMiB(pool);
+  const pageNote =
+    ratio > 1
+      ? ` This host's ${(pageSize ?? 0) / 1024} KiB OS page size makes the engine bill pool ` +
+        `memory in ${(pageSize ?? 0) / 1024} KiB granules — up to ${ratio}× faster budget use ` +
+        `than a 4 KiB-page host running the same analyze.`
+      : '';
+  return (
+    `The LadybugDB buffer pool (${poolLabel}) was exhausted during the bulk COPY.` +
+    pageNote +
+    ` Set GITNEXUS_LBUG_BUFFER_POOL_SIZE=<bytes> to raise it (e.g. ${4 * 1024 * 1024 * 1024}` +
+    ` for 4 GiB); 0 restores LadybugDB's native 80%-of-RAM default.`
+  );
 };
 
 /** Matches WAL corruption errors from the LadybugDB engine. */
@@ -509,8 +636,12 @@ const LBUG_PAGE_COMBO_RE = /unsupported page size combination/i;
  * True when `err` looks like the LadybugDB buffer manager failing to release
  * frame memory — the failure mode of a 4 KiB page-size assumption on a
  * 16 KiB/64 KiB-page kernel (#1231). Deliberately does NOT match the
- * generic "buffer pool is full" exhaustion error, which is a sizing
- * problem, not a page-size one.
+ * generic "buffer pool is full" exhaustion error: that one is handled as a
+ * SIZING problem — though since #2631 we know page size drives sizing too
+ * (the engine bills pool budget per OS-page-sized discard granule, so non-4K
+ * hosts exhaust the same budget up to pageSize/4096× earlier; see
+ * granuleRatio, which scales the pool accordingly, and
+ * bufferPoolExhaustionRemedy, which explains it to the operator).
  */
 export const isLbugPageSizeFrameError = (err: unknown): boolean => {
   if (!err) return false;
@@ -536,6 +667,16 @@ export const isPageSizeAwareLadybug = (version: string | undefined): boolean => 
 // `undefined` = not probed yet; `null` = probed and unavailable. Cached
 // because analyze error paths and doctor may both ask, and getconf forks.
 let cachedOsPageSize: number | null | undefined;
+
+/**
+ * Test seam (the `_captureLogger` convention): pin the memoized OS page size
+ * so sizing tests are host-independent — without this they would silently
+ * drift on 16 KiB-page Apple Silicon runners. `number` pins a value, `null`
+ * pins "undetectable", `undefined` clears the memo so the next call re-probes.
+ */
+export const _setOsPageSizeForTests = (pageSize: number | null | undefined): void => {
+  cachedOsPageSize = pageSize;
+};
 
 /**
  * OS memory page size in bytes, or `undefined` when it cannot be determined
@@ -573,11 +714,6 @@ export const getOsPageSize = (): number | undefined => {
     cachedOsPageSize = null;
   }
   return cachedOsPageSize ?? undefined;
-};
-
-/** Exported only for unit tests — clears the getconf probe cache. */
-export const _resetOsPageSizeCacheForTest = (): void => {
-  cachedOsPageSize = undefined;
 };
 
 type LbugModule = typeof lbug;

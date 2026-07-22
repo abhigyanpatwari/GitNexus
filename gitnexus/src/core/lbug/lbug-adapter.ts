@@ -36,6 +36,7 @@ import {
   isDbBusyError,
   isOpenRetryExhausted,
   isWalCorruptionError,
+  bufferPoolExhaustionRemedy,
   openLbugConnection,
   sleep,
   toNativeSafePath,
@@ -978,7 +979,14 @@ const copyNodeCSVs = async (
     const copyQuery = getCopyQuery(table, normalizeCopyPath(csvPath));
     await copyCsvWithRetry(targetConn, copyQuery, (retryErr) => {
       const retryMsg = retryErr instanceof Error ? retryErr.message : String(retryErr);
-      throw new Error(`COPY failed for ${table}: ${retryMsg.slice(0, 200)}`);
+      // Pool exhaustion gets a remedy (#2631): the raw binder text gives the
+      // operator nothing to act on, and on non-4K-page hosts (Ascend aarch64,
+      // Apple Silicon) the pool bills up to pageSize/4KiB x faster than the
+      // sizing was calibrated for — name the knob and the mechanism.
+      const remedy = bufferPoolExhaustionRemedy(retryMsg);
+      throw new Error(
+        `COPY failed for ${table}: ${retryMsg.slice(0, 200)}${remedy ? ` ${remedy}` : ''}`,
+      );
     });
   }
 };
@@ -1150,6 +1158,7 @@ export const loadGraphToLbug = async (
 
   const insertedRels = totalValidRels;
   const warnings: string[] = [];
+  let poolRemedyIssued = false;
   if (insertedRels > 0) {
     log(`Loading edges: ${insertedRels.toLocaleString()} across ${relsByPair.size} types`);
 
@@ -1176,6 +1185,17 @@ export const loadGraphToLbug = async (
       await copyCsvWithRetry(writeConn, copyQuery, (retryErr) => {
         const retryMsg = retryErr instanceof Error ? retryErr.message : String(retryErr);
         warnings.push(`${fromLabel}->${toLabel} (${rows} edges): ${retryMsg.slice(0, 80)}`);
+        // One remedy per bulk load, not per pair (#2631): pool exhaustion
+        // repeats for every remaining pair once it starts. logger.warn, not
+        // just warnings.push — the returned warnings array has no consumer at
+        // any call site, so a push alone would leave the remedy invisible
+        // while the row-by-row fallback quietly degrades the load.
+        const remedy = poolRemedyIssued ? undefined : bufferPoolExhaustionRemedy(retryMsg);
+        if (remedy) {
+          poolRemedyIssued = true;
+          warnings.push(remedy);
+          logger.warn(remedy);
+        }
         failedPairEdges += rows;
         failedPairCsvPaths.add(pairCsvPath);
       });
