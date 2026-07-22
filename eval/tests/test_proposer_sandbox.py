@@ -21,6 +21,8 @@ from workflow_bench.proposer_sandbox import (
     MAX_BUNDLE_BYTES,
     MAX_EVIDENCE_FILE_BYTES,
     SANDBOX_NODE,
+    SANDBOX_NODE_PREFIX,
+    SANDBOX_PATH,
     SANDBOX_PYTHON3,
     SANDBOX_SHELL_PREFIX,
     SANDBOX_USER_SKILLS,
@@ -165,7 +167,7 @@ def test_sandbox_command_has_minimal_mounts_and_no_host_root_bind(tmp_path: Path
             check=False,
         )
         assert probe.returncode == 0, probe.stderr
-        assert probe.stdout == "/home/agent|/opt/claude:/usr/local/bin:/usr/bin:/bin"
+        assert probe.stdout == f"/home/agent|{SANDBOX_PATH}"
 
         # The evidence-provenance.mjs plan-writer's PATH-scan trusts a Python 3
         # candidate only if it (and its directory) is owned by root or by the
@@ -216,6 +218,45 @@ def test_runtime_mounts_bind_the_resolved_node_to_a_fresh_sandbox_path(monkeypat
     assert args[node_index - 1] == "--ro-bind"
     assert args[node_index + 1] == SANDBOX_NODE
     assert not any(SANDBOX_NODE.startswith(bound + "/") for bound in ("/usr", "/bin", "/lib", "/lib64"))
+
+
+def test_runtime_mounts_bind_the_node_prefix_so_npx_and_npm_resolve(monkeypatch) -> None:
+    # npx and npm are not standalone binaries -- they are symlinks into
+    # ../lib/node_modules/npm/bin/*-cli.js -- so binding the sibling files is
+    # not enough; the install prefix carrying both bin/ and lib/node_modules
+    # has to be mounted. Without this, a self-hosted runner (where
+    # actions/setup-node installs into its own tool cache, outside /usr) gets
+    # a sandbox with node but no npx, and every task verify command dies with
+    # "/bin/sh: 1: npx: not found" -- all 18 runs of skill-evolution run
+    # 29861768554 did exactly that.
+    monkeypatch.setattr(
+        "workflow_bench.proposer_sandbox.shutil.which",
+        lambda name: "/opt/hostedtoolcache/node/22.18.0/x64/bin/node" if name == "node" else None,
+    )
+    args = _runtime_mount_args()
+    prefix_index = args.index("/opt/hostedtoolcache/node/22.18.0/x64")
+    assert args[prefix_index - 1] == "--ro-bind"
+    assert args[prefix_index + 1] == SANDBOX_NODE_PREFIX
+    # the single-binary bind stays: sanitized_graph.py and runner_sessions.py
+    # invoke SANDBOX_NODE directly.
+    node_index = args.index("/opt/hostedtoolcache/node/22.18.0/x64/bin/node")
+    assert args[node_index + 1] == SANDBOX_NODE
+    # and the prefix's bin/ must actually be on PATH for npx to resolve.
+    assert f"{SANDBOX_NODE_PREFIX}/bin" in SANDBOX_PATH.split(":")
+
+
+def test_runtime_mounts_skip_the_prefix_bind_when_it_is_already_bound(monkeypatch) -> None:
+    # On an image where node genuinely lives in /usr/local/bin, the prefix is
+    # /usr/local -- already inside the wholesale /usr read-only bind. Binding
+    # it again would be redundant and would needlessly widen the argv, so the
+    # containment surface stays minimal.
+    monkeypatch.setattr(
+        "workflow_bench.proposer_sandbox.shutil.which",
+        lambda name: "/usr/local/bin/node" if name == "node" else None,
+    )
+    args = _runtime_mount_args()
+    assert SANDBOX_NODE_PREFIX not in args
+    assert args[args.index("/usr/local/bin/node") + 1] == SANDBOX_NODE
 
 
 def test_runtime_mounts_skip_the_node_bind_when_node_is_unresolvable(monkeypatch) -> None:
@@ -286,6 +327,41 @@ def test_real_bubblewrap_runs_node_from_outside_the_bound_trees(tmp_path: Path, 
     clone.mkdir()
     with prepare_sandbox(clone=clone, claude_bin=Path(sys.executable), preflight=True) as sandbox:
         result = sandbox.run([SANDBOX_NODE, "--version"], timeout=10)
+    assert result.ok, result.stderr_tail
+
+
+@pytest.mark.skipif(
+    os.environ.get("GITNEXUS_REQUIRE_BWRAP_CANARY") != "1",
+    reason="real Bubblewrap canary is mandatory in the named Ubuntu CI job",
+)
+def test_real_bubblewrap_runs_npx_from_outside_the_bound_trees(tmp_path: Path, monkeypatch) -> None:
+    # The npx half of the self-hosted-runner failure. Relocating a real node
+    # INSTALL (bin/ + lib/node_modules, not just the binary) to a fresh path
+    # outside /usr, /bin, /lib and /lib64 reproduces actions/setup-node's
+    # tool-cache convention. Every task verify command is
+    # "cd gitnexus && npx tsc ... && npx vitest ...", so npx must resolve
+    # inside the sandbox; argv assertions cannot prove a bwrap-level mount
+    # actually works, only a real invocation can.
+    real_node = shutil.which("node")
+    if not real_node:
+        pytest.skip("no node on PATH to relocate for this canary")
+    real_prefix = Path(real_node).resolve().parent.parent
+    if not (real_prefix / "lib" / "node_modules" / "npm").is_dir():
+        pytest.skip(f"node at {real_node} has no npm under its install prefix")
+    toolcache = tmp_path / "toolcache" / "node" / "22.18.0" / "x64"
+    shutil.copytree(real_prefix, toolcache, symlinks=True)
+    relocated_node = toolcache / "bin" / "node"
+    assert relocated_node.exists()
+    real_which = shutil.which
+    monkeypatch.setattr(
+        "workflow_bench.proposer_sandbox.shutil.which",
+        lambda name: str(relocated_node) if name == "node" else real_which(name),
+    )
+
+    clone = tmp_path / "clone"
+    clone.mkdir()
+    with prepare_sandbox(clone=clone, claude_bin=Path(sys.executable), preflight=True) as sandbox:
+        result = sandbox.run(["/bin/sh", "-c", "command -v npx && npx --version"], timeout=60)
     assert result.ok, result.stderr_tail
 
 
