@@ -18,7 +18,7 @@
  *     the delete joins `e.nodeId = n.id` through the still-present nodes —
  *     deleted/quoted files' rows go, survivors' rows stay.
  */
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import path from 'path';
 import { withTestLbugDB } from '../helpers/test-indexed-db.js';
 import { buildTestGraph, type TestNodeInput, type TestRelInput } from '../helpers/test-graph.js';
@@ -412,6 +412,43 @@ withTestLbugDB('embedding-row-dml-vector-gate', (handle) => {
       expect(
         indexes.some((r) => r.table_name === EMBEDDING_TABLE_NAME && r.index_type === 'HNSW'),
       ).toBe(true);
+    }, 120_000);
+
+    it('catalog read fails → falls back to attempting the extension load (fail-safe)', async () => {
+      // The one branch where the gate cannot cheaply prove safety: SHOW_INDEXES
+      // itself errors. It must fall through to loadVectorExtension — in this
+      // environment the extension IS loadable, so the verdict is still `true`
+      // and DML proceeds safely despite the unreadable catalog.
+      await seedTwoFilesWithEmbeddings();
+      // Reopen so the module-level "already loaded" latch cannot let
+      // loadVectorExtension return true without issuing a LOAD statement.
+      await reopenWithPolicy('load-only');
+      const { ensureEmbeddingRowDmlSafe } = await import('../../src/core/lbug/lbug-adapter.js');
+      const { default: lbug } = await import('@ladybugdb/core');
+
+      const originalQuery = lbug.Connection.prototype.query;
+      const seen: string[] = [];
+      const spy = vi.spyOn(lbug.Connection.prototype, 'query').mockImplementation(function (
+        this: unknown,
+        sql: string,
+        ...rest: unknown[]
+      ) {
+        seen.push(sql);
+        if (sql.includes('SHOW_INDEXES')) {
+          return Promise.reject(new Error('Catalog exception: forced by test'));
+        }
+        return originalQuery.call(this, sql, ...rest);
+      });
+
+      try {
+        await expect(ensureEmbeddingRowDmlSafe()).resolves.toBe(true);
+        // The catalog read was attempted and failed…
+        expect(seen.some((s) => s.includes('SHOW_INDEXES'))).toBe(true);
+        // …and the fallback really attempted the LOAD instead of guessing.
+        expect(seen.some((s) => s.toUpperCase().includes('LOAD'))).toBe(true);
+      } finally {
+        spy.mockRestore();
+      }
     }, 120_000);
   });
 });
