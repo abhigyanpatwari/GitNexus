@@ -1,21 +1,34 @@
 /**
  * Live end-to-end Move ingestion against the real move-flow binary.
  *
- * Gated on move-flow being installed (skipped in CI without the binary). Proves
- * the full compiler-first chain: capability probe → facts query → thin
- * facts→graph mapper → pipeline graph, with full fidelity (resource/friend
- * edges, resource structs, precise locations).
+ * Locally this suite skips when move-flow is unavailable. CI sets
+ * GITNEXUS_REQUIRE_MOVE_FLOW=1, which exercises on-demand provisioning and
+ * makes an unavailable release a hard failure. Proves the full compiler-first
+ * chain: capability probe → facts query → thin facts→graph mapper →
+ * pipeline graph, with full fidelity (resource/friend edges, resource structs,
+ * precise locations).
  */
 import { describe, it, expect, afterAll } from 'vitest';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { runPipelineFromRepo } from '../../src/core/ingestion/pipeline.js';
-import { tryCreateMoveFlowClient } from '../../src/core/move/mcp-client.js';
+import { tryResolveMoveFlowClient } from '../../src/core/move/mcp-client.js';
 import { createMoveIngestPhase } from '../../src/core/move/move-ingest.js';
+import { ensureMoveFlowRuntime } from '../../src/core/move/provision.js';
 import { runMoveIngestPhase } from '../helpers/move-ingest-harness.js';
 
-const client = tryCreateMoveFlowClient();
+const requireMoveFlow = process.env.GITNEXUS_REQUIRE_MOVE_FLOW === '1';
+const client = requireMoveFlow
+  ? (
+      await ensureMoveFlowRuntime({
+        onLog: (message) => console.info(`[move-live] ${message}`),
+      })
+    )?.client
+  : tryResolveMoveFlowClient()?.client;
+if (requireMoveFlow && !client) {
+  throw new Error('GITNEXUS_REQUIRE_MOVE_FLOW=1 but MoveFlow provisioning failed');
+}
 const coinFixture = path.resolve(process.cwd(), 'test/fixtures/move/aptos-framework/coin');
 
 function writePackage(root: string, name: string, addr: string, source: string): void {

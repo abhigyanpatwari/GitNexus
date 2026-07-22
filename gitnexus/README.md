@@ -436,7 +436,7 @@ gitnexus serve
 
 ### Installation fails with native module errors
 
-Some optional language grammars (Dart, Proto, Swift, Kotlin) require native compilation. If they fail, GitNexus still works — those languages will be skipped. To skip them intentionally (no C++ toolchain needed), set `GITNEXUS_SKIP_OPTIONAL_GRAMMARS=1` before installing.
+Some optional language grammars (Dart, Proto, Swift, Kotlin) require native compilation. If they fail, GitNexus still works — those languages will be skipped. To skip them intentionally (no C++ toolchain needed), set `GITNEXUS_SKIP_OPTIONAL_GRAMMARS=1` before installing. Strict `=1` also disables automatic `move-flow` downloads during analysis; a verified cache entry, explicit `MOVE_FLOW`, or compatible binary on `PATH` remains usable.
 
 If `npm install -g gitnexus` fails on native modules:
 
@@ -448,6 +448,24 @@ If `npm install -g gitnexus` fails on native modules:
 # Retry installation
 npm install -g gitnexus
 ```
+
+### Move compiler provisioning
+
+When a repository contains `Move.toml`, `gitnexus analyze` resolves `move-flow`
+from the authoritative `MOVE_FLOW` path, a verified cache under
+`~/.gitnexus/tools/move-flow`, `PATH`, or the pinned GitHub release. Managed
+downloads use HTTPS, checksum and version verification, a cross-process lock,
+and atomic publication.
+
+For air-gapped hosts, set `MOVE_FLOW` to a preinstalled compatible binary or
+pre-seed the managed cache. Set `GITNEXUS_SKIP_MOVE_FLOW=1` to disable automatic
+downloads. The cache root and network/compiler timeouts can be configured with
+`GITNEXUS_MOVE_FLOW_DIR`, `GITNEXUS_MOVE_FLOW_HTTP_TIMEOUT_MS`, and
+`GITNEXUS_MOVE_FLOW_TIMEOUT_MS`.
+
+GitNexus records the compiler identity that produced Move facts. A compiler
+change forces a full rebuild; if an existing compiler-backed graph needs an
+update while `move-flow` is unavailable, analysis fails before mutating it.
 
 ### Installation fails behind an HTTP proxy (`onnxruntime-node` postinstall)
 

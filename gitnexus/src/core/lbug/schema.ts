@@ -11,6 +11,7 @@
 
 // Import from shared package (single source of truth) — used in DDL templates below
 import { NODE_TABLES, REL_TABLE_NAME, REL_TYPES, EMBEDDING_TABLE_NAME } from 'gitnexus-shared';
+import { buildNodeTableSchema } from './node-table-layout.js';
 // Re-export so downstream consumers keep the same import path
 export { NODE_TABLES, REL_TABLE_NAME, REL_TYPES, EMBEDDING_TABLE_NAME };
 export type { NodeTableName, RelType } from 'gitnexus-shared';
@@ -36,35 +37,7 @@ CREATE NODE TABLE Folder (
   PRIMARY KEY (id)
 )`;
 
-export const FUNCTION_SCHEMA = `
-CREATE NODE TABLE Function (
-  id STRING,
-  name STRING,
-  filePath STRING,
-  startLine INT64,
-  endLine INT64,
-  isExported BOOLEAN,
-  content STRING,
-  description STRING,
-  language STRING,
-  qualifiedName STRING,
-  moduleQualifiedName STRING,
-  visibility STRING,
-  visibilityModifier STRING,
-  isEntry BOOLEAN,
-  isView BOOLEAN,
-  isInline BOOLEAN,
-  isNative BOOLEAN,
-  parameterCount INT32,
-  returnType STRING,
-  acquires STRING[],
-  usedTypes STRING[],
-  attributes STRING[],
-  attributesJson STRING,
-  typeParamsJson STRING,
-  locationFidelity STRING,
-  PRIMARY KEY (id)
-)`;
+export const FUNCTION_SCHEMA = buildNodeTableSchema('Function');
 
 export const CLASS_SCHEMA = `
 CREATE NODE TABLE Class (
@@ -173,93 +146,9 @@ CREATE NODE TABLE \`${name}\` (
   PRIMARY KEY (id)
 )`;
 
-// Move struct/enum carry compiler-sourced abilities/resource/event/field facts.
-const MOVE_STRUCT_LIKE_SCHEMA = (name: string) => `
-CREATE NODE TABLE \`${name}\` (
-  id STRING,
-  name STRING,
-  filePath STRING,
-  startLine INT64,
-  endLine INT64,
-  content STRING,
-  description STRING,
-  language STRING,
-  qualifiedName STRING,
-  moduleQualifiedName STRING,
-  moduleAddress STRING,
-  abilities STRING[],
-  isResource BOOLEAN,
-  isEvent BOOLEAN,
-  fieldList STRING[],
-  attributes STRING[],
-  attributesJson STRING,
-  typeParamsJson STRING,
-  moveDeclarationKind STRING,
-  locationFidelity STRING,
-  PRIMARY KEY (id)
-)`;
-
-const MOVE_ENUM_VARIANT_SCHEMA = `
-CREATE NODE TABLE \`EnumVariant\` (
-  id STRING,
-  name STRING,
-  filePath STRING,
-  startLine INT64,
-  endLine INT64,
-  content STRING,
-  description STRING,
-  language STRING,
-  qualifiedName STRING,
-  parentEnum STRING,
-  moduleQualifiedName STRING,
-  variantKind STRING,
-  fieldsJson STRING,
-  attributes STRING[],
-  attributesJson STRING,
-  locationFidelity STRING,
-  PRIMARY KEY (id)
-)`;
-
-const MOVE_MODULE_SCHEMA = `
-CREATE NODE TABLE \`Module\` (
-  id STRING,
-  name STRING,
-  filePath STRING,
-  startLine INT64,
-  endLine INT64,
-  content STRING,
-  description STRING,
-  language STRING,
-  qualifiedName STRING,
-  moduleAddress STRING,
-  attributes STRING[],
-  attributesJson STRING,
-  locationFidelity STRING,
-  PRIMARY KEY (id)
-)`;
-
-const MOVE_CONST_SCHEMA = `
-CREATE NODE TABLE \`Const\` (
-  id STRING,
-  name STRING,
-  filePath STRING,
-  startLine INT64,
-  endLine INT64,
-  content STRING,
-  description STRING,
-  language STRING,
-  qualifiedName STRING,
-  moduleQualifiedName STRING,
-  constType STRING,
-  constValue STRING,
-  isErrorCode BOOLEAN,
-  locationFidelity STRING,
-  PRIMARY KEY (id)
-)`;
-
-export const STRUCT_SCHEMA = MOVE_STRUCT_LIKE_SCHEMA('Struct');
-export const ENUM_SCHEMA = MOVE_STRUCT_LIKE_SCHEMA('Enum');
-export const ENUM_VARIANT_SCHEMA = MOVE_ENUM_VARIANT_SCHEMA;
+export const STRUCT_SCHEMA = buildNodeTableSchema('Struct');
+export const ENUM_SCHEMA = buildNodeTableSchema('Enum');
+export const ENUM_VARIANT_SCHEMA = buildNodeTableSchema('EnumVariant');
 export const MACRO_SCHEMA = CODE_ELEMENT_BASE('Macro');
 export const TYPEDEF_SCHEMA = CODE_ELEMENT_BASE('Typedef');
 export const UNION_SCHEMA = CODE_ELEMENT_BASE('Union');
@@ -267,7 +156,7 @@ export const NAMESPACE_SCHEMA = CODE_ELEMENT_BASE('Namespace');
 export const TRAIT_SCHEMA = CODE_ELEMENT_BASE('Trait');
 export const IMPL_SCHEMA = CODE_ELEMENT_BASE('Impl');
 export const TYPE_ALIAS_SCHEMA = CODE_ELEMENT_BASE('TypeAlias');
-export const CONST_SCHEMA = MOVE_CONST_SCHEMA;
+export const CONST_SCHEMA = buildNodeTableSchema('Const');
 export const STATIC_SCHEMA = CODE_ELEMENT_BASE('Static');
 export const VARIABLE_SCHEMA = CODE_ELEMENT_BASE('Variable');
 export const PROPERTY_SCHEMA = `
@@ -287,7 +176,7 @@ export const DELEGATE_SCHEMA = CODE_ELEMENT_BASE('Delegate');
 export const ANNOTATION_SCHEMA = CODE_ELEMENT_BASE('Annotation');
 export const CONSTRUCTOR_SCHEMA = CODE_ELEMENT_BASE('Constructor');
 export const TEMPLATE_SCHEMA = CODE_ELEMENT_BASE('Template');
-export const MODULE_SCHEMA = MOVE_MODULE_SCHEMA;
+export const MODULE_SCHEMA = buildNodeTableSchema('Module');
 // API route endpoints (Next.js, Express, etc.)
 export const ROUTE_SCHEMA = `
 CREATE NODE TABLE Route (

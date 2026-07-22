@@ -117,10 +117,11 @@ describe('CLI commands', () => {
           'vendor/tree-sitter-swift',
         ]),
       );
-      // move-flow is downloaded per-platform and must never leak from a local
-      // install/cache into the cross-platform npm tarball.
+      // The package must never ship a blanket vendor/ entry — grammars are
+      // enumerated individually, and per-platform artifacts (e.g. the managed
+      // move-flow binary, now cached under ~/.gitnexus/tools) stay out of the
+      // cross-platform npm tarball.
       expect(pkg.default.files).not.toContain('vendor');
-      expect(pkg.default.files).not.toContain('vendor/move-flow');
     });
 
     it('declares node-gyp-build/node-addon-api as regular dependencies (runtime-load contract)', async () => {

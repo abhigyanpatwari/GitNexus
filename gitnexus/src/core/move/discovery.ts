@@ -5,22 +5,20 @@
  * POSIX-only `find` command, so this works on native Windows.
  */
 
-import { glob } from 'glob';
+import { globIterate } from 'glob';
 
 /**
  * Returns true when the repo contains at least one Move.toml.
  */
 export async function repoHasMove(repoPath: string): Promise<boolean> {
-  try {
-    const matches = await glob(['**/Move.toml'], {
-      cwd: repoPath,
-      ignore: ['**/node_modules/**', '**/.git/**', '**/dist/**', '**/build/**'],
-      nodir: true,
-      absolute: false,
-      dot: false,
-    });
-    return matches.length > 0;
-  } catch {
-    return false;
+  for await (const _match of globIterate(['**/Move.toml'], {
+    cwd: repoPath,
+    ignore: ['**/node_modules/**', '**/.git/**', '**/dist/**', '**/build/**'],
+    nodir: true,
+    absolute: false,
+    dot: false,
+  })) {
+    return true;
   }
+  return false;
 }

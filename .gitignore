@@ -87,8 +87,9 @@ GitNexus.sln
 gitnexus/vendor/**/build/
 gitnexus/vendor/**/node_modules/
 
-# move-flow binary is downloaded at install time into vendor/move-flow/
-# (postinstall probe), never committed. See gitnexus/scripts/install-move-flow.cjs.
+# Legacy pre-#2622 postinstall artifact — the managed MoveFlow binary now
+# lives under ~/.gitnexus/tools/move-flow and this path is never used, but
+# old checkouts may still carry a downloaded binary here. Never commit it.
 gitnexus/vendor/move-flow/
 
 /github/scripts/triage/__pycache__/

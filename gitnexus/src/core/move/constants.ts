@@ -91,13 +91,73 @@ export function isMoveCompilerInputPath(filePath: string): boolean {
   return normalized.endsWith('.move') || basename === 'Move.toml' || basename === 'Move.lock';
 }
 
-/** An available compiler must backfill indexes created while it was absent. */
-export function moveAvailabilityRequiresFullRebuild(
-  hasMovePackages: boolean,
-  compilerAvailable: boolean,
-  indexedWithCompiler: boolean | undefined,
+export interface MoveCompilerIdentity {
+  version: string;
+  source: 'release' | 'explicit' | 'path';
+  fingerprint: string;
+}
+
+/** Dynamic release coordinates used to produce a managed move-flow runtime. */
+export interface MoveFlowReleaseSelection {
+  version: string;
+  repository: string;
+  tag: string;
+  assetName: string;
+}
+
+function sameMoveFlowReleaseSelection(
+  left: MoveFlowReleaseSelection | undefined,
+  right: MoveFlowReleaseSelection | undefined,
 ): boolean {
-  return hasMovePackages && compilerAvailable && indexedWithCompiler !== true;
+  return (
+    left !== undefined &&
+    right !== undefined &&
+    left.version === right.version &&
+    left.repository === right.repository &&
+    left.tag === right.tag &&
+    left.assetName === right.assetName
+  );
+}
+
+/** Legacy metadata with recorded Move inputs is treated conservatively. */
+export function persistedMoveGraphRequiresCompiler(
+  moveIngestAvailable: boolean | undefined,
+  fileHashes: Record<string, string> | undefined,
+): boolean {
+  if (moveIngestAvailable !== undefined) return moveIngestAvailable;
+  return Object.keys(fileHashes ?? {}).some(isMoveCompilerInputPath);
+}
+
+/** Decide whether managed provisioning must run before the clean-repo fast path. */
+export function shouldProvisionMoveFlowBeforeFastPath(
+  hasMovePackages: boolean,
+  persistedGraphRequiresCompiler: boolean,
+  indexedCompiler: MoveCompilerIdentity | undefined,
+  indexedRelease: MoveFlowReleaseSelection | undefined,
+  desiredRelease: MoveFlowReleaseSelection | undefined,
+): boolean {
+  if (!hasMovePackages) return false;
+  if (!persistedGraphRequiresCompiler) return true;
+  if (!indexedCompiler) return true;
+  if (indexedCompiler.source !== 'release') return false;
+  return !sameMoveFlowReleaseSelection(indexedRelease, desiredRelease);
+}
+
+/** Compiler-backed facts must be rebuilt when their producer changes. */
+export function moveCompilerRequiresFullRebuild(
+  hasMovePackages: boolean,
+  compiler: MoveCompilerIdentity | undefined,
+  indexedWithCompiler: boolean | undefined,
+  indexedCompiler: MoveCompilerIdentity | undefined,
+): boolean {
+  if (!hasMovePackages || !compiler) return false;
+  return (
+    indexedWithCompiler !== true ||
+    !indexedCompiler ||
+    indexedCompiler.version !== compiler.version ||
+    indexedCompiler.source !== compiler.source ||
+    indexedCompiler.fingerprint !== compiler.fingerprint
+  );
 }
 
 /**
