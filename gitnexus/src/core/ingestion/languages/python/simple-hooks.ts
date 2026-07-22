@@ -36,15 +36,23 @@ export function pythonFunctionDefinitionLabel(
 // ─── bindingScopeFor ──────────────────────────────────────────────────────
 
 /** Python has no block scope, so the central extractor's "innermost
- *  enclosing scope" default is already correct: `for x in …` creates
- *  `x` in the enclosing function/module scope (because we never emit a
- *  `@scope.block` for the for-loop body), comprehension variables stay
- *  in their expression context, etc. Returns `null` to delegate. */
+ *  enclosing scope" default is already correct for ordinary bindings.
+ *  Constructor-injected instance fields are the exception: their marker is
+ *  anchored inside `__init__`, but compound receiver resolution needs the
+ *  field type on the enclosing Class scope. */
 export function pythonBindingScopeFor(
-  _decl: CaptureMatch,
-  _innermost: Scope,
-  _tree: ScopeTree,
+  decl: CaptureMatch,
+  innermost: Scope,
+  tree: ScopeTree,
 ): ScopeId | null {
+  if (decl['@type-binding.instance-field'] !== undefined) {
+    let current: Scope | undefined = innermost;
+    while (current !== undefined) {
+      if (current.kind === 'Class') return current.id;
+      if (current.parent === null) break;
+      current = tree.getScope(current.parent);
+    }
+  }
   return null;
 }
 
