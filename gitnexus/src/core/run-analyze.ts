@@ -1703,6 +1703,26 @@ export async function runFullAnalysis(
       // impossible: fall through to the escalation valve's wipe-and-COPY plan,
       // which rebuilds the DB files outright and needs no embedding-row DML.
       const embeddingRowDmlSafe = await ensureEmbeddingRowDmlSafe();
+      if (!embeddingRowDmlSafe && cachedEmbeddings.length === 0) {
+        // The escalation below WIPES the DB files, and Phase 3.5 restores
+        // embedding rows from `cachedEmbeddings` — which is only populated when
+        // `deriveEmbeddingMode` saw `meta.stats.embeddings > 0`. A DB whose meta
+        // under-reports its embeddings (meta restored from an older run, or a
+        // count that never got stamped) would therefore have every vector
+        // silently destroyed by a rebuild it did not ask for. Read them now,
+        // while the DB is still intact — a plain MATCH, which needs no VECTOR
+        // extension. Rows whose owning node is gone are dropped by Phase 3.5's
+        // live-graph filter, exactly as on any other wiped path.
+        const rescued = await loadCachedEmbeddings();
+        if (rescued.embeddings.length > 0) {
+          cachedEmbeddings = rescued.embeddings;
+          cachedEmbeddingNodeIds = rescued.embeddingNodeIds;
+          log(
+            `Preserving ${rescued.embeddings.length} embedding row(s) across the forced rebuild ` +
+              `(the index metadata did not account for them).`,
+          );
+        }
+      }
       if (
         !embeddingRowDmlSafe ||
         shouldEscalateIncrementalWrite(

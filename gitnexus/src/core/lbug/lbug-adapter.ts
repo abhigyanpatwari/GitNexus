@@ -2841,45 +2841,51 @@ export const createVectorIndex = async (): Promise<boolean> => {
  * escalating to the wipe-and-rebuild write plan instead of failing
  * mid-writeback.
  *
- * Cheap by construction: the happy path is one memoized `loadVectorExtension`
- * and never reads the catalog. `SHOW_INDEXES` is consulted only after a
- * failed load — it is readable WITHOUT the extension, so no error-string
- * sniffing is needed — and goes through the unprepared `conn.query()` path
- * like every other `CALL` procedure here (#2114).
+ * Cheap by construction: one local `SHOW_INDEXES` read settles the common
+ * "this repo never built an embedding index" case without touching the
+ * extension machinery at all, so a VECTOR-less machine is not charged a
+ * bounded INSTALL attempt on every incremental analyze. `SHOW_INDEXES` is
+ * readable WITHOUT the extension and reports `extension_loaded` per index, so
+ * no error-string sniffing is needed; it runs through the unprepared
+ * `conn.query()` path like every other `CALL` procedure here (#2114).
  */
 export const ensureEmbeddingRowDmlSafe = async (): Promise<boolean> => {
-  if (!conn) {
+  const targetConn = conn;
+  if (!targetConn) {
     throw new Error('LadybugDB not initialized. Call initLbug first.');
   }
-  if (await loadVectorExtension(undefined, { policy: resolveAnalyzeInstallPolicy() })) {
-    return true;
-  }
-  const targetConn = conn;
-  const runShowIndexes = async (): Promise<any[]> =>
-    readQueryRows(await targetConn.query('CALL SHOW_INDEXES() RETURN *'));
-  let rows: any[];
+  // Catalog FIRST. The overwhelmingly common case on a repo that never enabled
+  // embeddings is "no index at all", and that is provable with one local read
+  // — no extension needed. Loading first would make every incremental analyze
+  // on a VECTOR-less machine pay a bounded out-of-process INSTALL attempt (the
+  // `auto` policy) plus an "extension unavailable" warning, for a repo that
+  // can never hit this hazard.
+  let indexRows: any[] | undefined;
   try {
-    rows = isSharedSingletonConn(targetConn)
-      ? await withConnLock(runShowIndexes)
-      : await runShowIndexes();
+    indexRows = await withConnLock(async () =>
+      readQueryRows(await targetConn.query('CALL SHOW_INDEXES() RETURN *')),
+    );
   } catch (err) {
-    // Cannot prove the index is absent. Assume the hazard: a needlessly
-    // escalated run costs one rebuild, walking into it corrupts a writeback.
+    // Fall through to the load attempt: unable to prove the index is absent,
+    // so the extension is the only thing that can make DML safe.
     logger.warn(
       { err },
       `Could not read the index catalog to check for a ${EMBEDDING_TABLE_NAME} vector index; ` +
-        'assuming it exists and that embedding-row writes are unsafe.',
+        'falling back to loading the VECTOR extension.',
     );
-    return false;
   }
   // Any non-HASH index on the embedding table gates DML. Keyed on index TYPE,
   // not name, so an index built under a different name still counts; the
   // implicit primary-key HASH index is engine-internal and never gates.
-  return !rows.some((row) => {
-    const table = row?.table_name ?? row?.[0];
-    if (table !== EMBEDDING_TABLE_NAME) return false;
-    return (row?.index_type ?? row?.[2]) !== 'HASH';
-  });
+  const indexGatesDml =
+    indexRows === undefined ||
+    indexRows.some((row) => {
+      const table = row?.table_name ?? row?.[0];
+      if (table !== EMBEDDING_TABLE_NAME) return false;
+      return (row?.index_type ?? row?.[2]) !== 'HASH';
+    });
+  if (!indexGatesDml) return true;
+  return await loadVectorExtension(undefined, { policy: resolveAnalyzeInstallPolicy() });
 };
 
 /**

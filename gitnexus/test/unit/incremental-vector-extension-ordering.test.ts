@@ -198,7 +198,13 @@ describe('runFullAnalysis incremental writeback — VECTOR loaded before embeddi
     try {
       await runFullAnalysis(repo.dbPath, { skipAgentsMd: true }, { onProgress: () => {} });
       const seeded = await seedEmbeddingsForFiles(repo.dbPath, [path.join('src', 'handler.ts')], 2);
-      expect((seeded.get(path.join('src', 'handler.ts')) ?? []).length).toBeGreaterThan(0);
+      const seededIds = seeded.get(path.join('src', 'handler.ts')) ?? [];
+      expect(seededIds.length).toBeGreaterThan(0);
+      // Deliberately NOT stampEmbeddingCount: this pins the case where the DB
+      // holds embedding rows that meta does not account for. The escalation
+      // wipes the DB, so without an explicit rescue read those rows would be
+      // destroyed silently — the run would still "succeed" and the loss would
+      // be invisible.
 
       const { lbugPath } = getStoragePaths(repo.dbPath);
       await lbugAdapter.initLbug(lbugPath);
@@ -229,6 +235,23 @@ describe('runFullAnalysis incremental writeback — VECTOR loaded before embeddi
 
       expect(logs.some((m) => m.includes('full DB write'))).toBe(true);
       expect(logs.some((m) => m.includes('VECTOR'))).toBe(true);
+
+      // The forced rebuild must NOT eat the embeddings it never asked to touch.
+      await lbugAdapter.initLbug(lbugPath);
+      try {
+        const surviving = (await lbugAdapter.executeQuery(
+          `MATCH (e:${EMBEDDING_TABLE_NAME}) RETURN e.nodeId AS nodeId`,
+        )) as Array<{ nodeId: string }>;
+        const survivingIds = new Set(surviving.map((r) => String(r.nodeId)));
+        for (const id of seededIds) {
+          expect(survivingIds.has(id)).toBe(true);
+        }
+        // …and exactly once each — the restore must not double-insert.
+        expect(surviving.length).toBe(survivingIds.size);
+      } finally {
+        await lbugAdapter.closeLbug();
+      }
+      expect(logs.some((m) => m.includes('Preserving'))).toBe(true);
     } finally {
       if (previousPolicy === undefined) delete process.env.GITNEXUS_LBUG_EXTENSION_INSTALL;
       else process.env.GITNEXUS_LBUG_EXTENSION_INSTALL = previousPolicy;
