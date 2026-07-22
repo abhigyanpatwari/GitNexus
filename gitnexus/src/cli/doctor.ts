@@ -20,6 +20,7 @@ import {
 import {
   getEffectiveBufferPoolSize,
   getOsPageSize,
+  granuleRatio,
   isPageSizeAwareLadybug,
 } from '../core/lbug/lbug-config.js';
 import { diagnoseExtensionLoad } from '../core/lbug/extension-load-error.js';
@@ -177,11 +178,8 @@ export const doctorCommand = async () => {
   // size line above (no i18n key).
   {
     const pool = getEffectiveBufferPoolSize();
-    const pageSize = getOsPageSize();
-    const scaleNote =
-      pageSize !== undefined && pageSize > 4096
-        ? ` (×${Math.floor(pageSize / 4096)} page-size scaling)`
-        : '';
+    const ratio = granuleRatio();
+    const scaleNote = ratio > 1 ? ` (×${ratio} page-size scaling)` : '';
     console.log(
       `  ${padDisplayEnd('pool size', 10)}${Math.round(pool / (1024 * 1024))} MiB${scaleNote}`,
     );

@@ -371,7 +371,7 @@ const LBUG_ASSUMED_FRAME_SIZE = 4096;
  * is absent anyway — or a failed `getconf`) means ratio 1, i.e. today's
  * behavior.
  */
-const granuleRatio = (pageSize: number | undefined = getOsPageSize()): number => {
+export const granuleRatio = (pageSize: number | undefined = getOsPageSize()): number => {
   if (pageSize === undefined || !Number.isFinite(pageSize)) return 1;
   return Math.max(1, Math.floor(pageSize / LBUG_ASSUMED_FRAME_SIZE));
 };
@@ -456,14 +456,6 @@ export const setBufferPoolSizeHint = (bytes: number | undefined): void => {
  * default. Resolved at call time (not module load) so tests can stub the env
  * var, the hint, and `os.totalmem`.
  */
-/**
- * Doctor-facing view of the pool size the next Database open would get
- * (#2631): env override > clamped hint > page-size-scaled default. Read-only;
- * doctor prints it next to the page-size lines so support triage sees the
- * sizing inputs at a glance.
- */
-export const getEffectiveBufferPoolSize = (): number => resolveBufferManagerSize();
-
 const resolveBufferManagerSize = (): number => {
   const raw = process.env.GITNEXUS_LBUG_BUFFER_POOL_SIZE;
   if (raw === undefined) {
@@ -483,6 +475,14 @@ const resolveBufferManagerSize = (): number => {
   }
   return defaultBufferPoolSize();
 };
+
+/**
+ * Doctor-facing view of the pool size the next Database open would get
+ * (#2631): env override > clamped hint > page-size-scaled default. Read-only;
+ * doctor prints it next to the page-size lines so support triage sees the
+ * sizing inputs at a glance.
+ */
+export const getEffectiveBufferPoolSize = (): number => resolveBufferManagerSize();
 
 /**
  * Matches the engine's buffer-pool exhaustion throw (buffer_manager.cpp:
