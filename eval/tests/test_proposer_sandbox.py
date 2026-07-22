@@ -338,6 +338,9 @@ def test_node_modules_mounts_get_a_writable_vite_temp_overlay(tmp_path: Path) ->
     clone.mkdir()
     deps = tmp_path / "deps"
     deps.mkdir()
+    # task_assets.py captures this directory into the dependency snapshot; the
+    # overlay is gated on the mount source actually carrying it.
+    (deps / VITE_TEMP_DIR).mkdir()
     executable = tmp_path / "executable"
     executable.write_text("#!/bin/sh\nexit 0\n")
     executable.chmod(0o755)
@@ -358,6 +361,34 @@ def test_node_modules_mounts_get_a_writable_vite_temp_overlay(tmp_path: Path) ->
     assert argv[overlay_index - 1] == "--tmpfs"
     # the overlay must come AFTER the read-only bind, or the bind would mask it
     assert overlay_index > bind_index
+
+
+def test_node_modules_mount_without_a_captured_vite_temp_gets_no_overlay(tmp_path: Path) -> None:
+    # The trusted GitNexus runtime mounts /opt/gitnexus/node_modules, whose
+    # source is the built runtime and does NOT carry a .vite-temp. bwrap cannot
+    # mkdir a mount point inside a read-only bind, so overlaying it would fail
+    # with "Can't mkdir .../node_modules/.vite-temp: Read-only file system".
+    # Regression for that CI failure: the overlay must fire only where the
+    # source actually contains the directory, not for every node_modules mount.
+    clone = tmp_path / "clone"
+    clone.mkdir()
+    runtime = tmp_path / "runtime-node-modules"
+    runtime.mkdir()  # deliberately no .vite-temp
+    executable = tmp_path / "executable"
+    executable.write_text("#!/bin/sh\nexit 0\n")
+    executable.chmod(0o755)
+
+    with prepare_sandbox(
+        clone=clone,
+        claude_bin=executable,
+        bwrap_bin=executable,
+        preflight=False,
+        read_only_mounts=(ReadOnlyMount(source=runtime, target="/opt/gitnexus/node_modules"),),
+    ) as sandbox:
+        argv = sandbox.command_prefix
+
+    assert "/opt/gitnexus/node_modules" in argv
+    assert not any(str(item).endswith(f"/{VITE_TEMP_DIR}") for item in argv)
 
 
 def test_non_node_modules_mounts_get_no_vite_temp_overlay(tmp_path: Path) -> None:

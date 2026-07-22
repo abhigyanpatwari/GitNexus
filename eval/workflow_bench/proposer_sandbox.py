@@ -687,12 +687,18 @@ def _sandbox_command_prefix(
     for mount in mounts:
         args += ["--ro-bind", str(mount.source), mount.target]
         # Overlay an empty writable tmpfs on the one path vite must write.
-        # Everything else in the dependency mount, and the whole workspace,
-        # stays read-only, and the overlay lives only inside the sandbox -- it
-        # never reaches the host clone the credited patch is captured from.
-        # The mount point itself is captured into the snapshot; see
-        # VITE_TEMP_DIR.
-        if PurePosixPath(mount.target).name == DEPENDENCY_MOUNT_BASENAME:
+        # Everything else in the mount, and the whole workspace, stays
+        # read-only, and the overlay lives only inside the sandbox -- it never
+        # reaches the host clone the credited patch is captured from.
+        #
+        # Gate on the mount SOURCE actually containing the directory, not on
+        # the target name: bwrap cannot create a mount point inside an
+        # already-read-only bind, so a tmpfs can only be overlaid where the
+        # directory already exists in the bound bytes. task_assets.py captures
+        # it into dependency-snapshot node_modules; other node_modules mounts
+        # (e.g. the trusted GitNexus runtime at /opt/gitnexus/node_modules) do
+        # not carry it, and overlaying them would fail with EROFS.
+        if PurePosixPath(mount.target).name == DEPENDENCY_MOUNT_BASENAME and (mount.source / VITE_TEMP_DIR).is_dir():
             args += ["--tmpfs", f"{mount.target}/{VITE_TEMP_DIR}"]
     args += ["--chdir", SANDBOX_WORKSPACE, "--"]
     return args
