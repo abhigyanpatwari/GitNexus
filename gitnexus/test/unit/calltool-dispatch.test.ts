@@ -17,16 +17,13 @@ import path from 'path';
 // local-backend.ts imports from core/lbug/pool-adapter.js; the mcp/core/lbug-adapter.js
 // re-exports from the same module, so we mock the canonical source.
 // vi.hoisted runs before vi.mock hoisting, making the fns available to both factories.
-const { lbugMocks, platformMocks } = vi.hoisted(() => ({
+const { lbugMocks } = vi.hoisted(() => ({
   lbugMocks: {
     initLbug: vi.fn().mockResolvedValue(undefined),
     executeQuery: vi.fn().mockResolvedValue([]),
     executeParameterized: vi.fn().mockResolvedValue([]),
     closeLbug: vi.fn().mockResolvedValue(undefined),
     isLbugReady: vi.fn().mockReturnValue(true),
-  },
-  platformMocks: {
-    isVectorExtensionSupportedByPlatform: vi.fn().mockReturnValue(true),
   },
 }));
 
@@ -73,14 +70,6 @@ vi.mock('../../src/storage/git.js', async (importOriginal) => {
   return {
     ...actual,
     getGitRoot: vi.fn().mockReturnValue(null),
-  };
-});
-
-vi.mock('../../src/core/platform/capabilities.js', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../../src/core/platform/capabilities.js')>();
-  return {
-    ...actual,
-    isVectorExtensionSupportedByPlatform: platformMocks.isVectorExtensionSupportedByPlatform,
   };
 });
 
@@ -300,7 +289,6 @@ describe('LocalBackend.callTool', () => {
 
   beforeEach(async () => {
     vi.clearAllMocks();
-    platformMocks.isVectorExtensionSupportedByPlatform.mockReturnValue(true);
     backend = new LocalBackend();
     setupSingleRepo();
     await backend.init();
@@ -549,11 +537,18 @@ describe('LocalBackend.callTool', () => {
     }
   });
 
-  it('skips vector index query when VECTOR is unsupported by the platform', async () => {
+  it('falls back to the exact scan with a once-per-backend warning when the vector index query fails', async () => {
+    // The platform gate is gone (#2623 follow-up): the vector lane is always
+    // ATTEMPTED, and a runtime failure (extension unloadable, index absent) is
+    // what routes semantic search onto the exact scan.
     const cap = _captureLogger();
-    platformMocks.isVectorExtensionSupportedByPlatform.mockReturnValue(false);
     (executeQuery as any).mockImplementation(async (_repoId: string, cypher: string) => {
       if (cypher.includes('COUNT(*) AS cnt')) return [{ cnt: 1 }];
+      if (cypher.includes('QUERY_VECTOR_INDEX')) {
+        throw new Error(
+          'Binder exception: Trying to read from an index on table CodeEmbedding but its extension is not loaded.',
+        );
+      }
       if (cypher.includes('MATCH (e:CodeEmbedding)')) return [];
       return [];
     });
@@ -565,7 +560,9 @@ describe('LocalBackend.callTool', () => {
       const queries = (executeQuery as any).mock.calls.map(
         ([, cypher]: [string, string]) => cypher,
       );
-      expect(queries.some((cypher: string) => cypher.includes('QUERY_VECTOR_INDEX'))).toBe(false);
+      // The vector lane was attempted…
+      expect(queries.some((cypher: string) => cypher.includes('QUERY_VECTOR_INDEX'))).toBe(true);
+      // …and its failure routed the query onto the exact scan.
       expect(
         queries.some(
           (cypher: string) =>
@@ -578,7 +575,7 @@ describe('LocalBackend.callTool', () => {
           .records()
           .some((r) =>
             String(r.msg ?? '').includes(
-              'GitNexus [query:vector]: VECTOR extension not supported on this platform',
+              'GitNexus [query:vector]: vector index query failed; using exact scan fallback',
             ),
           ),
       ).toBe(true);
@@ -588,7 +585,6 @@ describe('LocalBackend.callTool', () => {
   });
 
   it('issues vector index query when VECTOR is supported by the platform', async () => {
-    platformMocks.isVectorExtensionSupportedByPlatform.mockReturnValue(true);
     (executeQuery as any).mockImplementation(async (_repoId: string, cypher: string) => {
       if (cypher.includes('COUNT(*) AS cnt')) return [{ cnt: 1 }];
       return [];
@@ -605,7 +601,6 @@ describe('LocalBackend.callTool', () => {
   });
 
   it('threads GITNEXUS_VECTOR_MAX_DISTANCE into the vector index WHERE clause', async () => {
-    platformMocks.isVectorExtensionSupportedByPlatform.mockReturnValue(true);
     vi.mocked(executeQuery).mockImplementation(async (_repoId: string, cypher: string) => {
       if (cypher.includes('COUNT(*) AS cnt')) return [{ cnt: 1 }];
       return [];
@@ -1924,7 +1919,6 @@ describe('LocalBackend impact mode (KTD1/KTD5/KTD12)', () => {
 
   beforeEach(async () => {
     vi.clearAllMocks();
-    platformMocks.isVectorExtensionSupportedByPlatform.mockReturnValue(true);
     // U2: stamp a READY PDG layer (both caps) so the layer-presence probe in
     // `_impactImpl` falls THROUGH to the mode-dispatch surface these tests pin
     // (the `_runImpactPDG` delegate / the ambiguous fan-out under `mode:'pdg'`).
@@ -3338,7 +3332,6 @@ describe('LocalBackend.listReposPage / callTool list_repos pagination (#2119)', 
 
   beforeEach(async () => {
     vi.clearAllMocks();
-    platformMocks.isVectorExtensionSupportedByPlatform.mockReturnValue(true);
     backend = new LocalBackend();
   });
 

@@ -14,8 +14,9 @@ import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 // repo resident through deferred manifest/workspace resolution. Pinning makes
 // that resident set survive automatic (LRU + idle) eviction.
 
-const { loadFTSExtensionMock } = vi.hoisted(() => ({
+const { loadFTSExtensionMock, loadVectorExtensionMock } = vi.hoisted(() => ({
   loadFTSExtensionMock: vi.fn(),
+  loadVectorExtensionMock: vi.fn().mockResolvedValue(false),
 }));
 
 vi.mock('@ladybugdb/core', () => ({
@@ -36,6 +37,7 @@ vi.mock('@ladybugdb/core', () => ({
 vi.mock('../../src/core/lbug/lbug-adapter.js', () => ({
   isReadOnlyDbError: vi.fn(() => false),
   loadFTSExtension: loadFTSExtensionMock,
+  loadVectorExtension: loadVectorExtensionMock,
 }));
 
 vi.mock('../../src/core/lbug/lbug-config.js', () => ({

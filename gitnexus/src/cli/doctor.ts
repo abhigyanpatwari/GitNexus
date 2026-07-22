@@ -12,7 +12,11 @@ import {
   type EmbeddingRuntimeResolution,
 } from '../core/embeddings/runtime-install.js';
 import { cudaRedirectDoctorStatus } from '../core/embeddings/onnxruntime-node-resolver.js';
-import { checkLbugNative, probeFtsExtensionLoad } from '../core/lbug/native-check.js';
+import {
+  checkLbugNative,
+  probeFtsExtensionLoad,
+  probeVectorExtensionLoad,
+} from '../core/lbug/native-check.js';
 import { getOsPageSize, isPageSizeAwareLadybug } from '../core/lbug/lbug-config.js';
 import { diagnoseExtensionLoad } from '../core/lbug/extension-load-error.js';
 import { getExtensionInstallPolicy } from '../core/lbug/extension-loader.js';
@@ -195,8 +199,32 @@ export const doctorCommand = async () => {
       console.log(`  ${padDisplayEnd('', 18)}${remedy}`);
     }
   }
-  console.log(`  ${label('doctor.labels.vectorIndex', 18)}${capabilities.vector}`);
-  console.log(`  ${label('doctor.labels.semanticMode', 18)}${capabilities.semanticMode}`);
+  // Live LOAD probe for VECTOR too (#2623). The static capability is just
+  // `platform !== 'win32'`, so it printed "available" on the very machines
+  // where analyze was failing to load the extension — the same contradiction
+  // #2374 fixed for FTS above, and exactly what #2623's reporter saw while
+  // every incremental analyze died on an unloaded VECTOR extension.
+  const vectorProbe = nativeCheck.ok
+    ? await probeVectorExtensionLoad()
+    : { loaded: false, reason: 'LadybugDB native module (lbugjs.node) failed to load' };
+  console.log(
+    `  ${label('doctor.labels.vectorIndex', 18)}${vectorProbe.loaded ? 'available' : 'unavailable'}`,
+  );
+  if (!vectorProbe.loaded && vectorProbe.reason) {
+    console.log(`  ${padDisplayEnd('', 18)}${vectorProbe.reason}`);
+    const { kind, remedy } = diagnoseExtensionLoad(vectorProbe.reason, 'VECTOR');
+    if (kind !== 'unknown') {
+      console.log(`  ${padDisplayEnd('', 18)}${remedy}`);
+    }
+  }
+  // Semantic mode follows the probe, not the platform: without a loadable
+  // VECTOR extension the index can be neither built nor queried, so search is
+  // really on exact scan no matter what the platform would allow.
+  console.log(
+    `  ${label('doctor.labels.semanticMode', 18)}${
+      vectorProbe.loaded ? capabilities.semanticMode : 'exact-scan'
+    }`,
+  );
   // Surface the optional-extension install policy so offline users can see
   // whether analyze/query will reach the network (extension.ladybugdb.com).
   // Literal label (like the 'native' line) to avoid adding i18n keys.

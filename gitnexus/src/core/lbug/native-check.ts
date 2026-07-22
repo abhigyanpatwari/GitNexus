@@ -96,6 +96,9 @@ export interface FtsProbeResult {
   reason?: string;
 }
 
+/** Same shape for every optional extension; `FtsProbeResult` is the legacy name. */
+export type ExtensionProbeResult = FtsProbeResult;
+
 const DEFAULT_FTS_PROBE_TIMEOUT_MS = 10_000;
 
 /** A LadybugDB query result exposes a synchronous `close()`. */
@@ -136,8 +139,39 @@ const closeProbeResults = (result: unknown): void => {
 export async function probeFtsExtensionLoad(
   timeoutMs: number = DEFAULT_FTS_PROBE_TIMEOUT_MS,
 ): Promise<FtsProbeResult> {
+  return await probeExtensionLoad('fts', timeoutMs);
+}
+
+/**
+ * Live-probe `LOAD EXTENSION vector`, the VECTOR counterpart of the FTS probe.
+ *
+ * Needed for the same reason #2374 needed the FTS one, and reported the same
+ * way: #2623's reporter saw `doctor` print `VECTOR index: available` while
+ * every incremental `analyze` was dying because the extension had not loaded.
+ * `doctor` derived that line from a static platform capability, so it read
+ * "available" no matter what the extension file was doing.
+ *
+ * Probes for real on every platform, Windows included: the extension server
+ * ships win_amd64 VECTOR artifacts for every 0.18.x extension version (the
+ * old blanket Windows refusal was stale, #1365-era). LOAD never touches the
+ * network and never invokes the installer, so this probe is exactly as safe
+ * as the FTS one above.
+ */
+export async function probeVectorExtensionLoad(
+  timeoutMs: number = DEFAULT_FTS_PROBE_TIMEOUT_MS,
+): Promise<ExtensionProbeResult> {
+  return await probeExtensionLoad('vector', timeoutMs);
+}
+
+/**
+ * Shared LOAD probe. `extension` is a fixed internal literal, never user input.
+ */
+async function probeExtensionLoad(
+  extension: 'fts' | 'vector',
+  timeoutMs: number,
+): Promise<ExtensionProbeResult> {
   let timer: ReturnType<typeof setTimeout> | undefined;
-  const timeout = new Promise<FtsProbeResult>((resolve) => {
+  const timeout = new Promise<ExtensionProbeResult>((resolve) => {
     timer = setTimeout(
       () =>
         resolve({
@@ -148,7 +182,7 @@ export async function probeFtsExtensionLoad(
     );
   });
 
-  const probe = (async (): Promise<FtsProbeResult> => {
+  const probe = (async (): Promise<ExtensionProbeResult> => {
     try {
       const { default: lbug } = await import('@ladybugdb/core');
       const db = new lbug.Database(':memory:');
@@ -156,7 +190,7 @@ export async function probeFtsExtensionLoad(
       try {
         const conn = new lbug.Connection(db);
         try {
-          const result = await conn.query('LOAD EXTENSION fts');
+          const result = await conn.query(`LOAD EXTENSION ${extension}`);
           closeProbeResults(result);
           return { loaded: true };
         } finally {

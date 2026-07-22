@@ -61,10 +61,7 @@ import {
   type ExactEmbeddingRow,
 } from '../../core/embeddings/exact-search.js';
 import { EMBEDDING_TABLE_NAME, EMBEDDING_INDEX_NAME } from '../../core/lbug/schema.js';
-import {
-  getExactScanLimit,
-  isVectorExtensionSupportedByPlatform,
-} from '../../core/platform/capabilities.js';
+import { getExactScanLimit } from '../../core/platform/capabilities.js';
 import { PhaseTimer } from '../../core/search/phase-timer.js';
 import { ftsDegradedWarning } from '../../core/search/fts-indexes.js';
 import {
@@ -2419,10 +2416,16 @@ export class LocalBackend {
         string,
         { distance: number; chunkIndex: number; startLine: number; endLine: number }
       >();
-      if (isVectorExtensionSupportedByPlatform()) {
-        try {
-          bestChunks = await collectBestChunks(limit, async (fetchLimit) => {
-            const vectorQuery = `
+      // Always TRY the vector lane — no platform gate. LadybugDB ships the
+      // VECTOR extension for every supported platform, Windows included
+      // (#2623 follow-up; the old `platform !== 'win32'` gate was stale), so
+      // whether the index is queryable is a per-machine runtime fact. The
+      // catch below is the fallback: any failure (extension unloadable, index
+      // absent, older DB) degrades to the exact scan with a once-per-backend
+      // diagnostic instead of being silently swallowed.
+      try {
+        bestChunks = await collectBestChunks(limit, async (fetchLimit) => {
+          const vectorQuery = `
             CALL QUERY_VECTOR_INDEX('${EMBEDDING_TABLE_NAME}', '${EMBEDDING_INDEX_NAME}',
               CAST(${queryVecStr} AS FLOAT[${dims}]), ${fetchLimit})
             YIELD node AS emb, distance
@@ -2433,27 +2436,27 @@ export class LocalBackend {
             ORDER BY distance
           `;
 
-            const embResults = await executeQuery(repo.lbugPath, vectorQuery);
-            return embResults.map((row) => ({
-              nodeId: row.nodeId ?? row[0],
-              chunkIndex: row.chunkIndex ?? row[1] ?? 0,
-              startLine: row.startLine ?? row[2] ?? 0,
-              endLine: row.endLine ?? row[3] ?? 0,
-              distance: row.distance ?? row[4],
-            }));
-          });
-        } catch {
-          bestChunks = new Map();
+          const embResults = await executeQuery(repo.lbugPath, vectorQuery);
+          return embResults.map((row) => ({
+            nodeId: row.nodeId ?? row[0],
+            chunkIndex: row.chunkIndex ?? row[1] ?? 0,
+            startLine: row.startLine ?? row[2] ?? 0,
+            endLine: row.endLine ?? row[3] ?? 0,
+            distance: row.distance ?? row[4],
+          }));
+        });
+      } catch (err) {
+        bestChunks = new Map();
+        if (!this.warnedVectorUnsupported) {
+          // Rare diagnostic: surface why semantic search fell back to the
+          // exact scan. Emitted once per `LocalBackend` instance lifetime to
+          // avoid noisy stderr on hot semantic-search paths (DoD §2.8).
+          this.warnedVectorUnsupported = true;
+          logger.warn(
+            { err },
+            'GitNexus [query:vector]: vector index query failed; using exact scan fallback',
+          );
         }
-      } else if (!this.warnedVectorUnsupported) {
-        // Rare diagnostic: surface why we fell back to the exact scan path so
-        // operators can see at a glance that VECTOR is disabled by platform
-        // policy. Emitted once per `LocalBackend` instance lifetime to avoid
-        // noisy stderr on hot semantic-search paths (DoD §2.8).
-        this.warnedVectorUnsupported = true;
-        logger.warn(
-          'GitNexus [query:vector]: VECTOR extension not supported on this platform; using exact scan fallback',
-        );
       }
 
       if (bestChunks.size === 0) {
