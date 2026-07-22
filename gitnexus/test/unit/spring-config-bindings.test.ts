@@ -118,17 +118,69 @@ describe('Spring configuration parsing', () => {
 
     // js-yaml 5's CORE schema alone rejects these tags; the file-level catch would
     // then drop every key in the file, so the schema must keep carrying them.
+    // `!!set` constructs a native Set in v5 (a plain object in v4), so its members
+    // are only reachable by enumerating the Set itself.
     const tagged = parseSpringYaml(
       [
         'when: !!timestamp 2001-12-14',
         'blob: !!binary "R0lGODlh"',
-        'flags: !!set\n  ? a',
+        'flags: !!set\n  ? a\n  ? b',
         'ordered: !!omap\n  - first: 1',
+        'listed: !!pairs\n  - dup: 1\n  - dup: 2',
       ].join('\n'),
       'application.yml',
     );
-    expect(tagged.map((entry) => entry.key)).toEqual(['blob', 'flags', 'ordered[0].first', 'when']);
+    expect(tagged.map((entry) => [entry.key, entry.line])).toEqual([
+      ['blob', 2],
+      ['flags.a', 4],
+      ['flags.b', 5],
+      // `!!pairs` keeps both `dup` entries instead of collapsing them, which is the
+      // point of the tag. Nested sequence items inherit their parent's line here,
+      // as they did under v4 — the mapping lookup that refines a line has no
+      // equivalent for a bare array index.
+      ['listed[0][0]', 8],
+      ['listed[0][1]', 8],
+      ['listed[1][0]', 8],
+      ['listed[1][1]', 8],
+      ['ordered[0].first', 7],
+      ['when', 1],
+    ]);
     expect(JSON.stringify(tagged)).not.toContain('R0lGODlh');
+  });
+
+  it('resolves an alias to the nearest preceding anchor when a name is reused', () => {
+    // v4 keyed aliases on constructed-object identity; v5 keys them by anchor
+    // name, so redeclaring a name is a case the old scheme could not express.
+    expect(
+      parseSpringYaml(
+        'first: &shared\n  a: 1\nsecond: &shared\n  b: 2\nthird: *shared\n',
+        'application.yml',
+      ).map((entry) => [entry.key, entry.line]),
+    ).toEqual([
+      ['first.a', 2],
+      ['second.b', 4],
+      ['third.b', 4],
+    ]);
+  });
+
+  it('keeps document and event streams aligned across marker-only documents', () => {
+    // The value tree and the line tree are built from the same DOCUMENT events but
+    // zipped by index, so a leading empty document must consume a slot in both.
+    expect(
+      parseSpringYaml('---\n---\nfoo: 1\n', 'application.yml').map((entry) => [
+        entry.key,
+        entry.line,
+      ]),
+    ).toEqual([['foo', 3]]);
+    expect(
+      parseSpringYaml('a: 1\n---\n---\nb: 2\n', 'application.yml').map((entry) => [
+        entry.key,
+        entry.line,
+      ]),
+    ).toEqual([
+      ['a', 1],
+      ['b', 4],
+    ]);
   });
 
   it('terminates cyclic YAML aliases and bounds deeply nested expansion', () => {
