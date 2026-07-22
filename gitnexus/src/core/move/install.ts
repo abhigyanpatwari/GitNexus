@@ -300,13 +300,17 @@ const validCachedInstall = async (
 ): Promise<VerifiedMoveFlowBinary | null> => {
   let metadataHandle: FileHandle | undefined;
   try {
-    // Symlinked metadata is rejected up front; every subsequent check reads
-    // through one open handle so the size gate and the JSON read cannot race
-    // a concurrent swap of the file (CodeQL js/file-system-race).
-    if (!(await lstat(config.metadataPath)).isFile()) {
-      return null;
-    }
-    metadataHandle = await open(config.metadataPath, 'r');
+    // Single open, then every check reads through the handle, so the type/size
+    // gates and the JSON read cannot race a concurrent swap of the file
+    // (CodeQL js/file-system-race). O_NOFOLLOW makes the kernel reject a
+    // symlinked final component atomically on POSIX; Windows has no such flag
+    // (0 fallback) — there the fstat isFile() gate plus the downstream
+    // metadata/binary-hash validation carry the (home-dir, local-writer)
+    // threat model.
+    metadataHandle = await open(
+      config.metadataPath,
+      fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0),
+    );
     const metadataStat = await metadataHandle.stat();
     if (
       !metadataStat.isFile() ||
