@@ -145,6 +145,17 @@ export const escapeCSVBoolean = (value: unknown): string => {
   return value === true ? 'true' : 'false';
 };
 
+const formatCSVStringArray = (value: unknown): string => {
+  const items = Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === 'string')
+    : [];
+  const unsafe = items.find((item) => /[,\[\]'"\n\r]/.test(item));
+  if (unsafe !== undefined) {
+    throw new Error(`Cannot safely encode CSV string-list item: ${JSON.stringify(unsafe)}`);
+  }
+  return `[${items.join(',')}]`;
+};
+
 // ============================================================================
 // CONTENT EXTRACTION (lazy — reads from disk on demand)
 // ============================================================================
@@ -456,7 +467,10 @@ export const streamAllCSVsToDisk = async (
       path.join(csvDir, 'function.csv'),
       MOVE_FUNCTION_COLUMNS.join(','),
     );
-    const classWriter = new BufferedCSVWriter(path.join(csvDir, 'class.csv'), codeElementHeader);
+    const classWriter = new BufferedCSVWriter(
+      path.join(csvDir, 'class.csv'),
+      `${codeElementHeader},frameworkAnnotations`,
+    );
     const interfaceWriter = new BufferedCSVWriter(
       path.join(csvDir, 'interface.csv'),
       codeElementHeader,
@@ -735,6 +749,13 @@ export const streamAllCSVsToDisk = async (
                   escapeCSVField(String(node.properties.attributesJson ?? '')),
                   escapeCSVField(String(node.properties.typeParamsJson ?? '')),
                   escapeCSVField(String(node.properties.locationFidelity ?? '')),
+                ].join(','),
+              );
+            } else if (node.label === 'Class') {
+              pending = writer.addRow(
+                [
+                  ...baseFields,
+                  escapeCSVField(formatCSVStringArray(node.properties.frameworkAnnotations)),
                 ].join(','),
               );
             } else {

@@ -18,16 +18,13 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-const { lbugMocks, platformMocks } = vi.hoisted(() => ({
+const { lbugMocks } = vi.hoisted(() => ({
   lbugMocks: {
     initLbug: vi.fn().mockResolvedValue(undefined),
     executeQuery: vi.fn().mockResolvedValue([]),
     executeParameterized: vi.fn().mockResolvedValue([]),
     closeLbug: vi.fn().mockResolvedValue(undefined),
     isLbugReady: vi.fn().mockReturnValue(true),
-  },
-  platformMocks: {
-    isVectorExtensionSupportedByPlatform: vi.fn().mockReturnValue(true),
   },
 }));
 
@@ -63,14 +60,6 @@ vi.mock('../../src/storage/git.js', async (importOriginal) => {
   return {
     ...actual,
     getGitRoot: vi.fn().mockReturnValue(null),
-  };
-});
-
-vi.mock('../../src/core/platform/capabilities.js', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../../src/core/platform/capabilities.js')>();
-  return {
-    ...actual,
-    isVectorExtensionSupportedByPlatform: platformMocks.isVectorExtensionSupportedByPlatform,
   };
 });
 
@@ -145,7 +134,6 @@ describe('LocalBackend PDG impact — resolved-callee-id bridge (U6)', () => {
 
   beforeEach(async () => {
     vi.clearAllMocks();
-    platformMocks.isVectorExtensionSupportedByPlatform.mockReturnValue(true);
     // READY PDG layer so the dispatch reaches the mode-dispatch / bridge surface.
     vi.mocked(loadMeta).mockResolvedValue({
       pdg: { maxCdgEdgesPerFunction: 0, maxReachingDefEdgesPerFunction: 0 },

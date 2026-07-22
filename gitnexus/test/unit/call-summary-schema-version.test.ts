@@ -73,8 +73,8 @@ describe('CALL_SUMMARY relation-type exclusion (U-C1)', () => {
 });
 
 describe('CALL_SUMMARY incremental reuse gate (U-C5)', () => {
-  it('INCREMENTAL_SCHEMA_VERSION is bumped to 9 (Move attributesJson column re-index window)', () => {
-    expect(INCREMENTAL_SCHEMA_VERSION).toBe(9);
+  it('INCREMENTAL_SCHEMA_VERSION is bumped to 12 (main-aptos merge: Move attributesJson past main v9–v11)', () => {
+    expect(INCREMENTAL_SCHEMA_VERSION).toBe(12);
   });
 
   it('a pre-current stamp fails the `=== INCREMENTAL_SCHEMA_VERSION` reuse gate → forces full re-analyze', () => {
@@ -103,10 +103,25 @@ describe('CALL_SUMMARY incremental reuse gate (U-C5)', () => {
     // (#2550) — `Worker.run`-keyed Method nodes would be stranded alongside
     // the re-keyed `Worker$N.run` ones on unchanged files → must NOT reuse.
     expect(passesReuseGate(7)).toBe(false);
-    // A pre-v9 (v8) index lacks the Move `attributesJson` node-table column, so
-    // the bulk COPY referencing it would fail on a top-up → must NOT reuse.
+    // A pre-v9 (v8) index predates enum constant bodies + JLS 13.1
+    // immediate-host naming (#2555) — `E.hook`-keyed Method nodes and
+    // topmost-anchored `EnumWrap$1`-style ids would be stranded alongside
+    // the re-keyed ones on unchanged files → must NOT reuse.
     expect(passesReuseGate(8)).toBe(false);
+    // A pre-v10 (v9) index predates the Java record container-node fix
+    // (#2564) — a record's methods would keep being ownerless Method nodes
+    // with no HAS_METHOD edge on unchanged files → must NOT reuse. A stamp of
+    // 9 is also ambiguous with the pre-merge Move lineage's v9 (attributesJson).
+    expect(passesReuseGate(9)).toBe(false);
+    // A pre-v11 (v10) index predates the Rust dyn-trait-object dispatch fix
+    // (#2604) — abstract trait methods would keep being uncaptured (no
+    // ownerId/CALLS resolution) on unchanged Rust trait files → must NOT reuse.
+    expect(passesReuseGate(10)).toBe(false);
+    // A pre-v12 (v11) index predates the main-aptos merge — it lacks the Move
+    // `attributesJson` node-table column, so the bulk COPY referencing it
+    // would fail on a top-up → must NOT reuse.
+    expect(passesReuseGate(11)).toBe(false);
     // A current-version stamp passes the gate (incremental top-up eligible).
-    expect(passesReuseGate(9)).toBe(true);
+    expect(passesReuseGate(12)).toBe(true);
   });
 });

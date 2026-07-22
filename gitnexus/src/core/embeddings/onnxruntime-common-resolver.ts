@@ -52,8 +52,8 @@
  * per-resolution cost is a single string comparison.
  *
  * `module.registerHooks` is marked `@experimental` and requires Node >= 22.15
- * (the gitnexus engines floor is >= 22.0.0). On older runtimes it is absent and
- * this is a graceful no-op: embeddings then resolve onnxruntime-common exactly
+ * (below the gitnexus engines floor of `^22.18.0 || >=24.11.0`). On below-floor
+ * runtimes it is absent and this is a graceful no-op: embeddings then resolve onnxruntime-common exactly
  * as before — fine on hoisted layouts. Any failure during installation is
  * swallowed.
  */
@@ -100,9 +100,9 @@ export const ensureOnnxRuntimeCommonResolvable = (): void => {
   attempted = true;
 
   try {
-    // Node < 22.15 / < 23.5 (the gitnexus engines floor is >= 22.0.0): no
-    // synchronous hooks API. Degrade gracefully — the import still works on
-    // hoisted layouts.
+    // Node < 22.15 / < 23.5 (below the gitnexus engines floor of
+    // ^22.18.0 || >=24.11.0): no synchronous hooks API. Degrade gracefully —
+    // the import still works on hoisted layouts.
     const registerHooks = getRegisterHooks();
     if (typeof registerHooks !== 'function') return;
 

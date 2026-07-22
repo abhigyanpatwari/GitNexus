@@ -60,7 +60,7 @@ jobs:
         with:
           path: ~/.lbdb/extension
           key: lbug-fts-${{ runner.os }}-${{ hashFiles('gitnexus/package-lock.json') }}
-      - name: Ensure FTS extension installed
+      - name: Ensure FTS + VECTOR extensions installed
         run: npx tsx scripts/ensure-fts.ts
         working-directory: gitnexus
       - name: Run sharded tests with coverage (blob)
@@ -222,6 +222,10 @@ jobs:
     env:
       GITNEXUS_SKIP_MOVE_FLOW: '1'
       GITNEXUS_REQUIRE_FTS: '1'
+      # #2623: the win32 VECTOR gate is gone, so the vector suites genuinely
+      # run here — require the extension so an unavailable VECTOR is a loud
+      # failure, never a silent skip (same contract as GITNEXUS_REQUIRE_FTS).
+      GITNEXUS_REQUIRE_VECTOR: '1'
       GITNEXUS_E2E_CLI: dist
       # #2449: hosted Windows runners intermittently push the busiest shard past
       # the default 15-minute watchdog. 20 minutes restores real headroom while
@@ -236,19 +240,21 @@ jobs:
       - uses: ./.github/actions/setup-gitnexus
         with:
           build: 'true'
-      # Warm-cache the installed LadybugDB FTS extension (~/.lbdb/extension) per
-      # OS + lockfile so a warm run skips the network install entirely, and the
-      # parallel shards share one download across runs. Pure reliability/speed:
-      # on a cache miss the tests self-install FTS on demand (see
-      # test/helpers/fts-availability.ts), so a miss just falls back to install —
-      # never a correctness dependency. Keyed by lockfile hash so a LadybugDB
-      # version bump re-installs; per-OS because the extension is a native binary.
+      # Warm-cache the installed LadybugDB FTS + VECTOR extensions
+      # (~/.lbdb/extension) per OS + lockfile so a warm run skips the network
+      # install entirely, and the parallel shards share one download across
+      # runs. Pure reliability/speed: on a cache miss the tests self-install on
+      # demand (see test/helpers/fts-availability.ts), so a miss just falls
+      # back to install — never a correctness dependency. Keyed by lockfile
+      # hash so a LadybugDB version bump re-installs; per-OS because the
+      # extensions are native binaries. (Key name kept as lbug-fts for cache
+      # continuity — the path covers every extension in the shared home.)
       - name: Cache LadybugDB FTS extension
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v5
         with:
           path: ~/.lbdb/extension
           key: lbug-fts-${{ runner.os }}-${{ hashFiles('gitnexus/package-lock.json') }}
-      - name: Ensure FTS extension installed
+      - name: Ensure FTS + VECTOR extensions installed
         run: npx tsx scripts/ensure-fts.ts
         working-directory: gitnexus
       - name: Run platform-sensitive tests
@@ -402,15 +408,16 @@ jobs:
             "$PREFIX/bin/gitnexus" --version
           fi
 
-  # Node engines-floor gate (#2372). The embedding resolvers statically named
-  # `module.registerHooks`, which only exists on Node >= 22.15 / >= 23.5, so on
-  # the supported floor (engines: >=22.0.0) those ESM modules failed to LINK —
-  # a class vitest/tsx transforms structurally mask, and the default
-  # `node-version: 22` (resolves to latest) never hits. Build the dist on 22.x,
-  # then import-link every module R1 names as a load surface on a pinned 22.14
-  # so a regression fails here instead of shipping to users on that Node range.
+  # Node engines-floor gate (#2372). A module that statically names an API
+  # newer than the supported floor (e.g. `module.registerHooks`, added in
+  # 22.15) fails to LINK on the floor — a class vitest/tsx transforms
+  # structurally mask, and the default `node-version: 22` (resolves to latest)
+  # never hits. Build the dist on 22.x, then import-link every module R1 names
+  # as a load surface on the pinned engines floor (22.18.0, per package.json
+  # `engines: ^22.18.0 || >=24.11.0`) so a regression fails here instead of
+  # shipping to users on the minimum supported Node.
   node-floor-compat:
-    name: node floor compat (22.14)
+    name: node floor compat (22.18)
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -425,7 +432,7 @@ jobs:
           cache: npm
           cache-dependency-path: gitnexus/package-lock.json
       - name: Build gitnexus-shared
-        run: npm install && npm run build
+        run: npm ci && npm run build
         working-directory: gitnexus-shared
       - name: Install and build gitnexus
         shell: bash
@@ -439,14 +446,14 @@ jobs:
       # (so no package-manager cache is needed).
       - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
-          node-version: '22.14.0'
+          node-version: '22.18.0'
           package-manager-cache: false
-      - name: Import-link the built dist on Node 22.14
+      - name: Import-link the built dist on Node 22.18
         shell: bash
         run: |
           set -euo pipefail
           node --version
-          node --version | grep -q '^v22\.14\.' || { echo "expected Node 22.14.x" >&2; exit 1; }
+          node --version | grep -q '^v22\.18\.' || { echo "expected Node 22.18.x" >&2; exit 1; }
           for m in \
             core/embeddings/runtime-install \
             core/embeddings/onnxruntime-node-resolver \
@@ -544,3 +551,119 @@ jobs:
           test/integration/php-pipeline-benchmark.test.ts
           test/integration/ruby-pipeline-benchmark.test.ts
         working-directory: gitnexus
+
+  # Locked eval suite. setup-uv and uv itself are immutable so CI exercises
+  # exactly the dependency graph developers run from eval/uv.lock.
+  eval-tests:
+    name: eval / locked pytest
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      # persist-credentials: false — runs tests only, never pushes.
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+        with:
+          version: '0.11.23'
+          python-version: '3.13'
+          enable-cache: true
+          cache-dependency-glob: eval/uv.lock
+      - run: uv run --locked --extra dev python -m pytest tests -q
+        working-directory: eval
+
+  # Native Linux ownership and Bubblewrap boundary. The environment flag makes
+  # the real namespace test mandatory; a missing/blocked bwrap is a failure.
+  eval-containment-linux:
+    name: eval / containment (ubuntu)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      GITNEXUS_REQUIRE_BWRAP_CANARY: '1'
+      GITNEXUS_REQUIRE_CLAUDE_CANARY: '1'
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: '22.18.0'
+          cache: npm
+          cache-dependency-path: |
+            gitnexus/package-lock.json
+            gitnexus-shared/package-lock.json
+      - uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+        with:
+          version: '0.11.23'
+          python-version: '3.13'
+          enable-cache: true
+          cache-dependency-glob: eval/uv.lock
+      - name: Install sandbox runtime and pinned Claude CLI
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends bubblewrap socat
+          apparmor_userns=/proc/sys/kernel/apparmor_restrict_unprivileged_userns
+          if [[ -r "${apparmor_userns}" ]] && [[ "$(<"${apparmor_userns}")" == '1' ]]; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+          canary_runtime="${RUNNER_TEMP}/claude-canary"
+          install -d -m 0700 "${canary_runtime}"
+          install -m 0600 \
+            .github/claude-canary-runtime/package.json \
+            "${canary_runtime}/package.json"
+          install -m 0600 \
+            .github/claude-canary-runtime/package-lock.json \
+            "${canary_runtime}/package-lock.json"
+          npm ci \
+            --prefix "${canary_runtime}" \
+            --ignore-scripts=false \
+            --audit=false \
+            --fund=false
+          node -e \
+            "const p=require(process.argv[1]); if(p.version!=='2.1.214') process.exit(1)" \
+            "${canary_runtime}/node_modules/@anthropic-ai/claude-code/package.json"
+          test "$("${canary_runtime}/node_modules/@anthropic-ai/claude-code-linux-x64/claude" --version)" = \
+            '2.1.214 (Claude Code)'
+      - name: Build pinned shared runtime
+        run: |
+          npm ci
+          npm run build
+        working-directory: gitnexus-shared
+      - name: Install and build pinned GitNexus runtime
+        run: |
+          npm ci
+          npm run build
+        working-directory: gitnexus
+      - name: Prove process-tree and sandbox containment
+        env:
+          CLAUDE_CANARY_BIN: ${{ runner.temp }}/claude-canary/node_modules/@anthropic-ai/claude-code-linux-x64/claude
+        run: >-
+          uv run --locked --extra dev python -m pytest
+          tests/test_process_control.py
+          tests/test_proposer_sandbox.py
+          tests/test_workflow_bench_sessions.py
+          tests/test_ce_plugin_runtime.py -q
+        working-directory: eval
+
+  # Native Windows Job Object canary. POSIX-only tests skip by platform, while
+  # the grandchild delayed-write test must execute and pass on this runner.
+  eval-containment-windows:
+    name: eval / containment (windows)
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+        with:
+          version: '0.11.23'
+          python-version: '3.13'
+          enable-cache: true
+          cache-dependency-glob: eval/uv.lock
+      - name: Prove Windows process-tree ownership
+        run: >-
+          uv run --locked --extra dev python -m pytest
+          tests/test_process_control.py -q
+        working-directory: eval

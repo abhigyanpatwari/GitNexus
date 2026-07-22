@@ -14,6 +14,9 @@ const execFileMock = vi.fn((...args: any[]) => {
 
 vi.mock('child_process', () => ({
   execFile: execFileMock,
+  // uninstall.ts imports setup.ts (for LEGACY_SKILL_DIR_NAMES), which also
+  // imports execFileSync — the mock must export it or the import throws.
+  execFileSync: vi.fn(),
 }));
 
 describe('uninstallCommand', () => {
@@ -151,6 +154,24 @@ describe('uninstallCommand', () => {
 
     await expect(fs.access(path.join(skillsDir, 'gitnexus-exploring'))).rejects.toThrow();
     await expect(fs.access(path.join(skillsDir, 'gitnexus-cli'))).rejects.toThrow();
+    await expect(fs.access(path.join(skillsDir, 'my-skill'))).resolves.toBeUndefined();
+  });
+
+  // ── renamed skills: the legacy dir name must still be uninstalled ──
+  it('removes a legacy renamed skill dir (gitnexus-pr-review) absent from the bundled source', async () => {
+    const skillsDir = path.join(tempHome, '.claude', 'skills');
+    // A pre-rename install left the old name behind; the fixture skillsRoot
+    // (post-rename bundled source) does not contain it.
+    await fs.mkdir(path.join(skillsDir, 'gitnexus-pr-review'), { recursive: true });
+    await fs.writeFile(path.join(skillsDir, 'gitnexus-pr-review', 'SKILL.md'), '# old', 'utf-8');
+    // A user's own skill that must survive.
+    await fs.mkdir(path.join(skillsDir, 'my-skill'), { recursive: true });
+    await fs.writeFile(path.join(skillsDir, 'my-skill', 'SKILL.md'), '# mine', 'utf-8');
+
+    const uninstallCommand = await importUninstall();
+    await uninstallCommand({ force: true });
+
+    await expect(fs.access(path.join(skillsDir, 'gitnexus-pr-review'))).rejects.toThrow();
     await expect(fs.access(path.join(skillsDir, 'my-skill'))).resolves.toBeUndefined();
   });
 

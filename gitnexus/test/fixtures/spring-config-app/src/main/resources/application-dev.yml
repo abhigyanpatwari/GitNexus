@@ -1,0 +1,6 @@
+defaults: &defaults
+  retry:
+    max-attempts: 3
+service:
+  <<: *defaults
+  endpoint: https://service.example.test

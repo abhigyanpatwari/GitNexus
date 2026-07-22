@@ -8,6 +8,8 @@
 import type { LocalBackend } from './local/local-backend.js';
 import { checkStaleness } from './staleness.js';
 import { loadMeta } from '../storage/repo-manager.js';
+import { ANALYZER_RUNNER_IDENTITY_SCHEMA_VERSION } from '../core/analyzer-identity.js';
+import { getIndexIncompleteReasons } from '../core/index-freshness.js';
 
 export interface ResourceDefinition {
   uri: string;
@@ -318,6 +320,7 @@ async function getContextResource(backend: LocalBackend, repoName?: string): Pro
   // refreshes on registry misses, so its lastCommit/stats can lag behind the
   // on-disk state (#2438). Mirrors the ensureInitialized hot-swap pattern.
   const freshMeta = await loadMeta(repo.storagePath).catch(() => null);
+  const incompleteReasons = getIndexIncompleteReasons(freshMeta);
 
   // Check staleness using the current on-disk lastCommit (not the cached handle)
   const repoPath = repo.repoPath;
@@ -332,6 +335,25 @@ async function getContextResource(backend: LocalBackend, repoName?: string): Pro
     lines.push('');
     lines.push(`staleness: "${staleness.hint}"`);
   }
+
+  // A JSON object is also a valid YAML flow mapping. Keeping the versioned
+  // receipt intact lets agents compare every identity field without parsing a
+  // lossy human rendering; null explicitly means legacy/unknown provenance.
+  lines.push('');
+  lines.push('index:');
+  lines.push(`  commit: ${JSON.stringify(lastCommit)}`);
+  lines.push(`  indexed_at: ${JSON.stringify(freshMeta?.indexedAt ?? null)}`);
+  lines.push(`  runner_identity: ${JSON.stringify(freshMeta?.runnerIdentity ?? null)}`);
+  lines.push(`  incomplete_reasons: ${JSON.stringify(incompleteReasons)}`);
+  const indexedRunnerSchema = (freshMeta?.runnerIdentity as { schemaVersion?: unknown } | undefined)
+    ?.schemaVersion;
+  lines.push(
+    `  runner_identity_schema_status: ${JSON.stringify(
+      indexedRunnerSchema === ANALYZER_RUNNER_IDENTITY_SCHEMA_VERSION
+        ? 'current'
+        : 'legacy-or-unknown',
+    )}`,
+  );
 
   // Use fresh stats from disk meta when available; fall back to cached context
   const freshStats = freshMeta?.stats;

@@ -10,6 +10,7 @@ const RUST_SCOPE_QUERY = `
 (enum_item) @scope.class
 (union_item) @scope.class
 (function_item) @scope.function
+(function_signature_item) @scope.function
 (closure_expression) @scope.function
 (block) @scope.block
 (if_expression) @scope.block
@@ -53,6 +54,14 @@ const RUST_SCOPE_QUERY = `
 
 ;; Declarations — function (top-level or inside mod)
 (function_item
+  name: (identifier) @declaration.name) @declaration.function
+
+;; Declarations — trait method signature (required method, no body,
+;; e.g. fn foo(self) -> T; inside a trait body). Without this, an abstract
+;; trait method is invisible to scope resolution — never owned by its
+;; trait's Class scope, so a dyn Trait receiver can never dispatch to
+;; it (#2604).
+(function_signature_item
   name: (identifier) @declaration.name) @declaration.function
 
 ;; Declarations — struct fields

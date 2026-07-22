@@ -118,6 +118,9 @@ export const runCheckpointWithRetry = async (
     { attempts: CHECKPOINT_RETRY_ATTEMPTS },
     'GitNexus: manual WAL checkpoint exhausted retry budget — surfacing IO error to caller',
   );
+  // The held-open cause (#2599) is named at the CLI layer (analyze.ts) where the
+  // --wal-checkpoint-threshold recovery hint already renders, so the original IO
+  // error is preserved intact for that classifier rather than re-wrapped here.
   throw lastError;
 };
 

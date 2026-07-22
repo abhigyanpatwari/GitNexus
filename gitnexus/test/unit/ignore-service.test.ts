@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, beforeEach, afterAll, afterEach } from 'vitest';
+import { describe, it, expect, beforeAll, beforeEach, afterAll, afterEach, vi } from 'vitest';
 import fs from 'fs/promises';
 import path from 'path';
 import os from 'os';
@@ -9,6 +9,30 @@ import {
   createIgnoreFilter,
 } from '../../src/config/ignore-service.js';
 import { _captureLogger } from '../../src/core/logger.js';
+import * as git from '../../src/storage/git.js';
+
+// Only the two functions loadIgnoreRules calls are mocked (#2606) — real git
+// repos/config are exercised separately in git.test.ts; here the goal is
+// hermetic coverage of loadIgnoreRules' precedence wiring.
+vi.mock('../../src/storage/git.js', () => ({
+  getCoreExcludesFilePath: vi.fn(),
+  getGitInfoExcludePath: vi.fn(),
+}));
+
+// Every other describe block in this file calls loadIgnoreRules/
+// createIgnoreFilter without expecting a global-ignore layer — default both
+// mocks to "nothing there" (a path that can't exist, and null respectively)
+// so pre-existing scenarios stay unaffected. The #2606 block below overrides
+// per test.
+const NONEXISTENT_CORE_EXCLUDES_PATH = path.join(
+  os.tmpdir(),
+  'gn-ignore-service-test-nonexistent-core-excludes-file',
+);
+
+beforeEach(() => {
+  vi.mocked(git.getCoreExcludesFilePath).mockReturnValue(NONEXISTENT_CORE_EXCLUDES_PATH);
+  vi.mocked(git.getGitInfoExcludePath).mockReturnValue(null);
+});
 
 describe('shouldIgnorePath', () => {
   describe('version control directories', () => {
@@ -657,4 +681,152 @@ describe('loadIgnoreRules — GITNEXUS_NO_GITIGNORE env var', () => {
       await fs.unlink(path.join(tmpDir, '.gitnexusignore'));
     }
   });
+});
+
+// ─── Git-native global ignore sources (#2606) ─────────────────────────
+//
+// IgnoreService previously read only per-repo .gitignore/.gitnexusignore.
+// #2606 asked for something that applies across every indexed repo without
+// repeating it per repo. Rather than inventing a new file location,
+// loadIgnoreRules now reads the same two sources real `git` itself
+// consults for exactly this purpose: `core.excludesFile` (git's own
+// all-repos global file) and `$GIT_COMMON_DIR/info/exclude` (per-repo,
+// untracked — no push/commit access to the repo needed).
+//
+// Precedence mirrors gitignore(5) exactly: core.excludesFile (lowest) is
+// added first, then info/exclude, then .gitignore/.gitnexusignore below —
+// each later ig.add() can negate an earlier one, matching git's own
+// last-match-wins semantics and the #771 tests above one layer up.
+//
+// getCoreExcludesFilePath/getGitInfoExcludePath are mocked here (see the
+// vi.mock + file-wide beforeEach above) — their own real-git behavior is
+// covered in git.test.ts. This block only proves loadIgnoreRules wires
+// them into the ignore instance with the right precedence and bypasses.
+describe('loadIgnoreRules — git-native global ignore sources (#2606)', () => {
+  let repoDir: string;
+  let coreExcludesPath: string;
+  let infoExcludePath: string;
+  let originalNoGlobalIgnore: string | undefined;
+
+  beforeEach(async () => {
+    repoDir = await fs.mkdtemp(path.join(os.tmpdir(), 'gn-global-ignore-repo-'));
+    coreExcludesPath = path.join(
+      await fs.mkdtemp(path.join(os.tmpdir(), 'gn-core-excludes-')),
+      'ignore',
+    );
+    infoExcludePath = path.join(
+      await fs.mkdtemp(path.join(os.tmpdir(), 'gn-info-exclude-')),
+      'exclude',
+    );
+    vi.mocked(git.getCoreExcludesFilePath).mockReturnValue(coreExcludesPath);
+    vi.mocked(git.getGitInfoExcludePath).mockReturnValue(infoExcludePath);
+    originalNoGlobalIgnore = process.env.GITNEXUS_NO_GLOBAL_IGNORE;
+  });
+
+  afterEach(async () => {
+    if (originalNoGlobalIgnore === undefined) {
+      delete process.env.GITNEXUS_NO_GLOBAL_IGNORE;
+    } else {
+      process.env.GITNEXUS_NO_GLOBAL_IGNORE = originalNoGlobalIgnore;
+    }
+    await fs.rm(repoDir, { recursive: true, force: true });
+    await fs.rm(path.dirname(coreExcludesPath), { recursive: true, force: true });
+    await fs.rm(path.dirname(infoExcludePath), { recursive: true, force: true });
+  });
+
+  it('honours rules from core.excludesFile when no per-repo files exist', async () => {
+    await fs.writeFile(coreExcludesPath, 'docs/\n');
+    const ig = await loadIgnoreRules(repoDir);
+    expect(ig).not.toBeNull();
+    expect(ig!.ignores('docs/guide.md')).toBe(true);
+    expect(ig!.ignores('src/index.ts')).toBe(false);
+  });
+
+  it('honours rules from $GIT_COMMON_DIR/info/exclude when no per-repo files exist', async () => {
+    await fs.writeFile(infoExcludePath, 'build/\n');
+    const ig = await loadIgnoreRules(repoDir);
+    expect(ig).not.toBeNull();
+    expect(ig!.ignores('build/out.js')).toBe(true);
+    expect(ig!.ignores('src/index.ts')).toBe(false);
+  });
+
+  it('info/exclude can negate a core.excludesFile rule (matches git precedence)', async () => {
+    await fs.writeFile(coreExcludesPath, 'docs/\n');
+    await fs.writeFile(infoExcludePath, '!docs/\n');
+    const ig = await loadIgnoreRules(repoDir);
+    expect(ig).not.toBeNull();
+    expect(ig!.ignores('docs/guide.md')).toBe(false);
+  });
+
+  it('per-repo .gitnexusignore can negate rules from both global sources', async () => {
+    await fs.writeFile(coreExcludesPath, 'docs/\n');
+    await fs.writeFile(infoExcludePath, 'build/\n');
+    await fs.writeFile(path.join(repoDir, '.gitnexusignore'), '!docs/\n!build/\n');
+    const ig = await loadIgnoreRules(repoDir);
+    expect(ig).not.toBeNull();
+    expect(ig!.ignores('docs/guide.md')).toBe(false);
+    expect(ig!.ignores('build/out.js')).toBe(false);
+  });
+
+  it('gracefully skips info/exclude when getGitInfoExcludePath returns null (not a git repo)', async () => {
+    vi.mocked(git.getGitInfoExcludePath).mockReturnValue(null);
+    await fs.writeFile(coreExcludesPath, 'docs/\n');
+    const ig = await loadIgnoreRules(repoDir);
+    expect(ig).not.toBeNull();
+    expect(ig!.ignores('docs/guide.md')).toBe(true);
+  });
+
+  it('GITNEXUS_NO_GLOBAL_IGNORE skips both global sources entirely', async () => {
+    await fs.writeFile(coreExcludesPath, 'docs/\n');
+    await fs.writeFile(infoExcludePath, 'build/\n');
+    process.env.GITNEXUS_NO_GLOBAL_IGNORE = '1';
+    const ig = await loadIgnoreRules(repoDir);
+    expect(ig).toBeNull();
+  });
+
+  it('noGlobalIgnore option skips both global sources entirely', async () => {
+    await fs.writeFile(coreExcludesPath, 'docs/\n');
+    await fs.writeFile(infoExcludePath, 'build/\n');
+    const ig = await loadIgnoreRules(repoDir, { noGlobalIgnore: true });
+    expect(ig).toBeNull();
+  });
+
+  it('missing files at both global source paths is a no-op (byte-identical to pre-#2606 behaviour)', async () => {
+    // coreExcludesPath/infoExcludePath point at real (empty) temp dirs, but
+    // neither file has been written, and no per-repo files exist either.
+    const ig = await loadIgnoreRules(repoDir);
+    expect(ig).toBeNull();
+  });
+
+  it('combines core.excludesFile, info/exclude, .gitignore, and .gitnexusignore together', async () => {
+    await fs.writeFile(coreExcludesPath, 'docs/\n');
+    await fs.writeFile(infoExcludePath, 'build/\n');
+    await fs.writeFile(path.join(repoDir, '.gitignore'), 'data/\n');
+    await fs.writeFile(path.join(repoDir, '.gitnexusignore'), 'vendor/\n');
+    const ig = await loadIgnoreRules(repoDir);
+    expect(ig).not.toBeNull();
+    expect(ig!.ignores('docs/guide.md')).toBe(true);
+    expect(ig!.ignores('build/out.js')).toBe(true);
+    expect(ig!.ignores('data/file.txt')).toBe(true);
+    expect(ig!.ignores('vendor/lib.js')).toBe(true);
+    expect(ig!.ignores('src/index.ts')).toBe(false);
+  });
+
+  // Root bypasses POSIX read-permission checks (see the analogous EACCES
+  // test above for .gitignore), so this can't reproduce under uid=0.
+  it.skipIf(process.platform === 'win32' || process.getuid?.() === 0)(
+    'warns on an unreadable global source file but does not throw',
+    async () => {
+      await fs.writeFile(coreExcludesPath, 'docs/\n');
+      await fs.chmod(coreExcludesPath, 0o000);
+
+      const cap = _captureLogger();
+      const ig = await loadIgnoreRules(repoDir);
+      expect(ig).toBeNull();
+      expect(cap.records().some((r) => String(r.msg ?? '').includes(coreExcludesPath))).toBe(true);
+
+      cap.restore();
+      await fs.chmod(coreExcludesPath, 0o644);
+    },
+  );
 });

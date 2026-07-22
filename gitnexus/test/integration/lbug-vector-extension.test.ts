@@ -88,9 +88,11 @@ withTestLbugDB('vector-extension', (handle) => {
  * LadybugDB so a revert to the prepared path fails loudly.
  */
 withTestLbugDB('vector-index-creation', () => {
-  // VECTOR is platform-sensitive (skipped on win32 / unsupported platforms,
-  // and when it cannot be installed offline). Probe once, skip the suite if
-  // unavailable — mirrors the FTS-skip convention in withTestLbugDB.
+  // VECTOR is environment-sensitive (skipped when the extension cannot be
+  // loaded or installed — offline machines without a pre-installed file).
+  // Probe once, skip the suite if unavailable — mirrors the FTS-skip
+  // convention in withTestLbugDB. No platform is categorically excluded:
+  // win_amd64 artifacts ship for every 0.18.x extension version (#2623).
   let vectorAvailable = false;
   let skipWarned = false;
   beforeAll(async () => {

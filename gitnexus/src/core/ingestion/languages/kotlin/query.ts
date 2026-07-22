@@ -98,6 +98,19 @@ const KOTLIN_SCOPE_QUERY = `
 (type_alias
   (type_identifier) @declaration.name) @declaration.type_alias
 
+;; Class annotation syntax is carried to post-resolution enrichment. Keeping
+;; this in the existing scope query avoids a second AST traversal. Eligibility
+;; filtering (class vs interface/enum/annotation class) happens in captures.ts.
+(class_declaration
+  (modifiers
+    [
+      (annotation
+        (user_type) @class-annotation.name)
+      (annotation
+        (constructor_invocation
+          (user_type) @class-annotation.name))
+    ])) @class-annotation.class
+
 ;; Declarations — functions / methods / properties
 (function_declaration
   (simple_identifier) @declaration.name) @declaration.function

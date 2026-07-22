@@ -15,7 +15,10 @@ import {
   executeParameterized,
   closeLbug,
   isLbugReady,
+  statDbIdentity,
+  dbIdentityChanged,
 } from '../../core/lbug/pool-adapter.js';
+import { queryClassBeanMetadata } from './bean-metadata.js';
 import { isValidQueryParams } from '../../core/lbug/query-params.js';
 import { toDisplayLine } from './line-display.js';
 import { isWalCorruptionError, WAL_RECOVERY_SUGGESTION } from '../../core/lbug/lbug-config.js';
@@ -58,10 +61,7 @@ import {
   type ExactEmbeddingRow,
 } from '../../core/embeddings/exact-search.js';
 import { EMBEDDING_TABLE_NAME, EMBEDDING_INDEX_NAME } from '../../core/lbug/schema.js';
-import {
-  getExactScanLimit,
-  isVectorExtensionSupportedByPlatform,
-} from '../../core/platform/capabilities.js';
+import { getExactScanLimit } from '../../core/platform/capabilities.js';
 import { PhaseTimer } from '../../core/search/phase-timer.js';
 import { ftsDegradedWarning } from '../../core/search/fts-indexes.js';
 import {
@@ -204,7 +204,8 @@ function normalizeToolParams(
  * Quick test-file detection for filtering impact results.
  * Matches common test file patterns across all supported languages.
  */
-export function isTestFilePath(filePath: string): boolean {
+export function isTestFilePath(filePath: string | null | undefined): boolean {
+  if (!filePath) return false;
   const p = filePath.toLowerCase().replace(/\\/g, '/');
   return (
     p.includes('.test.') ||
@@ -760,6 +761,12 @@ export class LocalBackend {
   // not persist across calls and the staleness check would reinit forever
   // (#2106).
   private lastObservedIndexedAt: Map<string, string> = new Map();
+  // #2614 F1: file identity of the lbug the pool last opened. An atomic swap or
+  // an in-place incremental changes the inode; reiniting on that reinit-covers
+  // the window where meta.indexedAt hasn't caught up (and the incremental case),
+  // so a rebuilt index is never served stale even when the stamp looks current.
+  private lastObservedDbIdentity: Map<string, Awaited<ReturnType<typeof statDbIdentity>>> =
+    new Map();
   private groupToolSvc: GroupService | null = null;
   /**
    * One-shot stderr warnings for sibling-clone drift, keyed by
@@ -1095,6 +1102,7 @@ export class LocalBackend {
       this.initializedRepos.delete(key);
       this.lastStalenessCheck.delete(key);
       this.lastObservedIndexedAt.delete(key);
+      this.lastObservedDbIdentity.delete(key);
       this.reinitPromises.delete(key);
       closeLbug(key).catch(() => {});
     }
@@ -1498,22 +1506,40 @@ export class LocalBackend {
         // Reading the flat meta for a branch handle would compare the branch
         // index's indexedAt against the primary's and thrash the pool (#2106).
         const meta = await loadMeta(path.dirname(repo.lbugPath));
-        if (!meta) return;
         // Compare against the last indexedAt OBSERVED for this pool (keyed by
         // lbugPath), not the handle's — branch handles are fresh spreads so a
         // handle mutation would not persist and would reinit on every check.
         const observed = this.lastObservedIndexedAt.get(poolKey) ?? repo.indexedAt;
-        if (meta.indexedAt && meta.indexedAt !== observed) {
-          // Index was rebuilt — close stale connection and re-init.
-          // Wrap in reinitPromises to prevent TOCTOU race where concurrent
-          // callers both detect staleness and double-close the pool.
+        const stampChanged = !!meta?.indexedAt && meta.indexedAt !== observed;
+        // #2614 F1: also reinit on a file-identity change. An atomic swap (or an
+        // in-place incremental) changes the lbug inode; keying only on
+        // meta.indexedAt let a reader that reinited inside the pre-swap window
+        // latch on the old inode forever (its stamp already == meta.indexedAt).
+        const currentIdentity = await statDbIdentity(repo.lbugPath);
+        const identityChanged = dbIdentityChanged(
+          this.lastObservedDbIdentity.get(poolKey) ?? null,
+          currentIdentity,
+        );
+        if (stampChanged || identityChanged) {
+          // Index was rebuilt/swapped — DELEGATE the close/reopen to the pool's
+          // initLbug, which refuses to evict (and close the shared Database)
+          // while a query is in flight (its checkedOut>0 guard). Calling
+          // closeLbug directly here bypassed that guard and could close a
+          // Database mid-query — a native use-after-free (#2614). Wrap in
+          // reinitPromises to serialize concurrent detectors.
           const reinit = (async () => {
             try {
-              await closeLbug(poolKey);
-              this.initializedRepos.delete(poolKey);
-              this.lastObservedIndexedAt.set(poolKey, meta.indexedAt);
-              await initLbug(poolKey, repo.lbugPath);
-              this.initializedRepos.add(poolKey);
+              // Advance the observed stamp regardless: a stamp change with an
+              // unchanged file must not re-trigger on every check.
+              if (meta?.indexedAt) this.lastObservedIndexedAt.set(poolKey, meta.indexedAt);
+              const reopened = await initLbug(poolKey, repo.lbugPath);
+              // Advance the observed IDENTITY only when the pool actually rolled
+              // over. If a query was in flight, initLbug served the current
+              // handle and returned false; leaving the identity divergent
+              // re-triggers the reopen on a later idle check instead of latching.
+              if (reopened) {
+                this.lastObservedDbIdentity.set(poolKey, await statDbIdentity(repo.lbugPath));
+              }
             } finally {
               this.reinitPromises.delete(poolKey);
             }
@@ -1532,6 +1558,7 @@ export class LocalBackend {
       await initLbug(poolKey, repo.lbugPath);
       this.initializedRepos.add(poolKey);
       this.lastObservedIndexedAt.set(poolKey, repo.indexedAt);
+      this.lastObservedDbIdentity.set(poolKey, await statDbIdentity(repo.lbugPath));
     } catch (err: any) {
       // If lock error, mark as not initialized so next call retries
       this.initializedRepos.delete(poolKey);
@@ -2438,10 +2465,16 @@ export class LocalBackend {
         string,
         { distance: number; chunkIndex: number; startLine: number; endLine: number }
       >();
-      if (isVectorExtensionSupportedByPlatform()) {
-        try {
-          bestChunks = await collectBestChunks(limit, async (fetchLimit) => {
-            const vectorQuery = `
+      // Always TRY the vector lane — no platform gate. LadybugDB ships the
+      // VECTOR extension for every supported platform, Windows included
+      // (#2623 follow-up; the old `platform !== 'win32'` gate was stale), so
+      // whether the index is queryable is a per-machine runtime fact. The
+      // catch below is the fallback: any failure (extension unloadable, index
+      // absent, older DB) degrades to the exact scan with a once-per-backend
+      // diagnostic instead of being silently swallowed.
+      try {
+        bestChunks = await collectBestChunks(limit, async (fetchLimit) => {
+          const vectorQuery = `
             CALL QUERY_VECTOR_INDEX('${EMBEDDING_TABLE_NAME}', '${EMBEDDING_INDEX_NAME}',
               CAST(${queryVecStr} AS FLOAT[${dims}]), ${fetchLimit})
             YIELD node AS emb, distance
@@ -2452,27 +2485,27 @@ export class LocalBackend {
             ORDER BY distance
           `;
 
-            const embResults = await executeQuery(repo.lbugPath, vectorQuery);
-            return embResults.map((row) => ({
-              nodeId: row.nodeId ?? row[0],
-              chunkIndex: row.chunkIndex ?? row[1] ?? 0,
-              startLine: row.startLine ?? row[2] ?? 0,
-              endLine: row.endLine ?? row[3] ?? 0,
-              distance: row.distance ?? row[4],
-            }));
-          });
-        } catch {
-          bestChunks = new Map();
+          const embResults = await executeQuery(repo.lbugPath, vectorQuery);
+          return embResults.map((row) => ({
+            nodeId: row.nodeId ?? row[0],
+            chunkIndex: row.chunkIndex ?? row[1] ?? 0,
+            startLine: row.startLine ?? row[2] ?? 0,
+            endLine: row.endLine ?? row[3] ?? 0,
+            distance: row.distance ?? row[4],
+          }));
+        });
+      } catch (err) {
+        bestChunks = new Map();
+        if (!this.warnedVectorUnsupported) {
+          // Rare diagnostic: surface why semantic search fell back to the
+          // exact scan. Emitted once per `LocalBackend` instance lifetime to
+          // avoid noisy stderr on hot semantic-search paths (DoD §2.8).
+          this.warnedVectorUnsupported = true;
+          logger.warn(
+            { err },
+            'GitNexus [query:vector]: vector index query failed; using exact scan fallback',
+          );
         }
-      } else if (!this.warnedVectorUnsupported) {
-        // Rare diagnostic: surface why we fell back to the exact scan path so
-        // operators can see at a glance that VECTOR is disabled by platform
-        // policy. Emitted once per `LocalBackend` instance lifetime to avoid
-        // noisy stderr on hot semantic-search paths (DoD §2.8).
-        this.warnedVectorUnsupported = true;
-        logger.warn(
-          'GitNexus [query:vector]: VECTOR extension not supported on this platform; using exact scan fallback',
-        );
       }
 
       if (bestChunks.size === 0) {
@@ -3332,6 +3365,7 @@ export class LocalBackend {
       epistemicSymType,
       (sym.name || sym[1]) as string,
     );
+    const beanMetadataPromise = queryClassBeanMetadata(repo.lbugPath, symId, epistemicSymType);
 
     let methodMetadata: Record<string, unknown> | undefined;
     if (isMethodLike) {
@@ -3370,7 +3404,7 @@ export class LocalBackend {
     // dynamic dispatch are not reflected in `incoming`, so the view is a lower
     // bound. Additive; never suppresses a field. Resolved from the probe started
     // above (concurrent with methodMetadata).
-    const epistemic = await epistemicPromise;
+    const [epistemic, beanMetadata] = await Promise.all([epistemicPromise, beanMetadataPromise]);
 
     return {
       status: 'found',
@@ -3383,6 +3417,7 @@ export class LocalBackend {
         endLine: toDisplayLine(sym.endLine ?? sym[5]),
         ...(include_content && (sym.content || sym[6]) ? { content: sym.content || sym[6] } : {}),
         ...(methodMetadata ? { methodMetadata } : {}),
+        ...(beanMetadata ? { bean: beanMetadata } : {}),
       },
       ...epistemic,
       incoming: categorize(incomingRows),
@@ -4376,7 +4411,10 @@ export class LocalBackend {
     /** Guard: ensure a file path resolves within the repo root (prevents path traversal) */
     const assertSafePath = (filePath: string): string => {
       const full = path.resolve(repo.repoPath, filePath);
-      if (!full.startsWith(repo.repoPath + path.sep) && full !== repo.repoPath) {
+      const safePrefix = repo.repoPath.endsWith(path.sep)
+        ? repo.repoPath
+        : repo.repoPath + path.sep;
+      if (!full.startsWith(safePrefix) && full !== repo.repoPath) {
         throw new Error(`Path traversal blocked: ${filePath}`);
       }
       return full;
@@ -4403,44 +4441,31 @@ export class LocalBackend {
       return { error: 'New name is the same as the current name.' };
     }
 
-    // Step 2: Collect edits from graph (high confidence)
-    const changes = new Map<string, { file_path: string; edits: any[] }>();
-
-    const addEdit = (
-      filePath: string,
-      line: number,
-      oldText: string,
-      newText: string,
-      confidence: string,
-    ) => {
-      if (!changes.has(filePath)) {
-        changes.set(filePath, { file_path: filePath, edits: [] });
-      }
-      changes.get(filePath)!.edits.push({ line, old_text: oldText, new_text: newText, confidence });
+    // Steps 2+3: Determine the set of files the apply step will rewrite, then
+    // enumerate every occurrence in each. The apply step (Step 4) does a
+    // whole-file `\boldName\b` global replace on every file in `changes`, so the
+    // reported edit list MUST enumerate every matching line in every such file —
+    // otherwise the preview under-reports what lands, and the same partial list
+    // comes back after apply (#2605). Building `changes` from one file set makes
+    // the preview enumerate exactly the files the apply loop rewrites, using the
+    // same word-boundary regex. (This is per-call consistency; the apply loop
+    // still re-reads each file, so an external write landing between preview and
+    // apply is a pre-existing gap this method does not lock against.)
+    type RenameEdit = {
+      line: number;
+      old_text: string;
+      new_text: string;
+      confidence: 'graph' | 'text_search';
     };
+    const escapedOldName = oldName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
-    // The definition itself
-    if (sym.filePath && sym.startLine) {
-      try {
-        const content = await fs.readFile(assertSafePath(sym.filePath), 'utf-8');
-        const lines = content.split('\n');
-        const lineIdx = sym.startLine - 1;
-        if (lineIdx >= 0 && lineIdx < lines.length && lines[lineIdx].includes(oldName)) {
-          const defRegex = new RegExp(
-            `\\b${oldName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`,
-            'g',
-          );
-          addEdit(
-            sym.filePath,
-            sym.startLine,
-            lines[lineIdx].trim(),
-            lines[lineIdx].replace(defRegex, new_name).trim(),
-            'graph',
-          );
-        }
-      } catch (e) {
-        logQueryError('rename:read-definition', e);
-      }
+    // Classify each file to rewrite by how it was discovered. Definition and
+    // graph-ref files carry graph confidence; files found only by text search
+    // carry text_search confidence. A graph-classified file is never downgraded.
+    const fileConfidence = new Map<string, 'graph' | 'text_search'>();
+
+    if (sym.filePath) {
+      fileConfidence.set(sym.filePath, 'graph');
     }
 
     // All incoming refs from graph (callers, importers, etc.)
@@ -4450,44 +4475,13 @@ export class LocalBackend {
       ...(lookupResult.incoming.extends || []),
       ...(lookupResult.incoming.implements || []),
     ];
-
-    let graphEdits = changes.size > 0 ? 1 : 0; // count definition edit
-
     for (const ref of allIncoming) {
-      if (!ref.filePath) continue;
-      try {
-        const content = await fs.readFile(assertSafePath(ref.filePath), 'utf-8');
-        const lines = content.split('\n');
-        for (let i = 0; i < lines.length; i++) {
-          if (lines[i].includes(oldName)) {
-            addEdit(
-              ref.filePath,
-              i + 1,
-              lines[i].trim(),
-              lines[i]
-                .replace(
-                  new RegExp(`\\b${oldName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'g'),
-                  new_name,
-                )
-                .trim(),
-              'graph',
-            );
-            graphEdits++;
-            break; // one edit per file from graph refs
-          }
-        }
-      } catch (e) {
-        logQueryError('rename:read-ref', e);
+      if (ref.filePath) {
+        fileConfidence.set(ref.filePath, 'graph');
       }
     }
 
-    // Step 3: Text search for refs the graph might have missed
-    let astSearchEdits = 0;
-    const graphFiles = new Set(
-      [sym.filePath, ...allIncoming.map((r) => r.filePath)].filter(Boolean),
-    );
-
-    // Simple text search across the repo for the old name (in files not already covered by graph)
+    // Text search for files the graph might have missed entirely.
     try {
       const { execFileSync } = await import('child_process');
       const rgArgs = [
@@ -4514,54 +4508,85 @@ export class LocalBackend {
 
       for (const file of files) {
         const normalizedFile = file.replace(/\\/g, '/').replace(/^\.\//, '');
-        if (graphFiles.has(normalizedFile)) continue; // already covered by graph
-
-        try {
-          const content = await fs.readFile(assertSafePath(normalizedFile), 'utf-8');
-          const lines = content.split('\n');
-          const regex = new RegExp(`\\b${oldName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'g');
-          for (let i = 0; i < lines.length; i++) {
-            regex.lastIndex = 0;
-            if (regex.test(lines[i])) {
-              regex.lastIndex = 0;
-              addEdit(
-                normalizedFile,
-                i + 1,
-                lines[i].trim(),
-                lines[i].replace(regex, new_name).trim(),
-                'text_search',
-              );
-              astSearchEdits++;
-            }
-          }
-        } catch (e) {
-          logQueryError('rename:text-search-read', e);
+        // Never downgrade a graph-classified file to text_search.
+        if (!fileConfidence.has(normalizedFile)) {
+          fileConfidence.set(normalizedFile, 'text_search');
         }
       }
     } catch (e) {
       logQueryError('rename:ripgrep', e);
     }
 
-    // Step 4: Apply or preview
-    const allChanges = Array.from(changes.values());
-    const totalEdits = allChanges.reduce((sum, c) => sum + c.edits.length, 0);
+    // Enumerate every `\boldName\b` line in each file to rewrite, so the previewed
+    // file set is exactly the set the apply loop below rewrites. A file with no
+    // matching line is dropped (apply would write nothing to it). `wordTest`
+    // (non-global) probes each line; `wordReplace` (global) rewrites it and is
+    // reused by the apply loop — compiled once each rather than once per line,
+    // and one escaping formula serves both passes.
+    const wordTest = new RegExp(`\\b${escapedOldName}\\b`);
+    const wordReplace = new RegExp(`\\b${escapedOldName}\\b`, 'g');
+    const changes = new Map<string, { file_path: string; edits: RenameEdit[] }>();
 
+    for (const [filePath, confidence] of fileConfidence) {
+      try {
+        const content = await fs.readFile(assertSafePath(filePath), 'utf-8');
+        const lines = content.split('\n');
+        const edits: RenameEdit[] = [];
+        for (let i = 0; i < lines.length; i++) {
+          if (!wordTest.test(lines[i])) {
+            continue;
+          }
+          edits.push({
+            line: i + 1,
+            old_text: lines[i].trim(),
+            new_text: lines[i].replace(wordReplace, new_name).trim(),
+            confidence,
+          });
+        }
+        if (edits.length > 0) {
+          changes.set(filePath, { file_path: filePath, edits });
+        }
+      } catch (e) {
+        logQueryError('rename:enumerate', e);
+      }
+    }
+
+    // Step 4: Apply or preview.
     const failedFiles: string[] = [];
     if (!dry_run) {
-      // Apply edits to files
-      for (const change of allChanges) {
+      for (const change of changes.values()) {
         try {
           const fullPath = assertSafePath(change.file_path);
-          let content = await fs.readFile(fullPath, 'utf-8');
-          const regex = new RegExp(`\\b${oldName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'g');
-          content = content.replace(regex, new_name);
-          await fs.writeFile(fullPath, content, 'utf-8');
+          const content = await fs.readFile(fullPath, 'utf-8');
+          await fs.writeFile(fullPath, content.replace(wordReplace, new_name), 'utf-8');
         } catch (e) {
-          // A swallowed write failure must not be reported as a full success
-          // (#2283): record the file so the result can degrade to 'partial'
-          // with the unwritten files listed, rather than masquerading as done.
+          // A swallowed write failure must not be reported as success (#2283):
+          // record the file so the result degrades to 'partial'.
           logQueryError('rename:apply-edit', e);
           failedFiles.push(change.file_path);
+        }
+      }
+      // A file whose write threw did not land, so drop its edits from the
+      // reported result — total_edits/changes must describe what actually
+      // reached disk, not what was attempted (#2605: the report matches reality
+      // even on partial failure). failed_files still names every dropped file.
+      for (const f of failedFiles) {
+        changes.delete(f);
+      }
+    }
+
+    // Counts derive from the reported set (dry-run: every enumerated file;
+    // apply: only files that landed), so the graph/text_search split always
+    // sums to total_edits and never overstates a partial apply.
+    const reported = Array.from(changes.values());
+    let graphEdits = 0;
+    let astSearchEdits = 0;
+    for (const change of reported) {
+      for (const edit of change.edits) {
+        if (edit.confidence === 'graph') {
+          graphEdits++;
+        } else {
+          astSearchEdits++;
         }
       }
     }
@@ -4570,11 +4595,11 @@ export class LocalBackend {
       status: failedFiles.length > 0 ? 'partial' : 'success',
       old_name: oldName,
       new_name,
-      files_affected: allChanges.length,
-      total_edits: totalEdits,
+      files_affected: reported.length,
+      total_edits: graphEdits + astSearchEdits,
       graph_edits: graphEdits,
       text_search_edits: astSearchEdits,
-      changes: allChanges,
+      changes: reported,
       applied: !dry_run,
       ...(failedFiles.length > 0 && { failed_files: failedFiles }),
     };
@@ -5758,6 +5783,10 @@ export class LocalBackend {
     }> = opts.skipEpistemic
       ? Promise.resolve({})
       : this.computeEpistemicBoundary(repo, symId, symType, (sym.name || sym[1]) as string);
+    const beanMetadataPromise =
+      opts.skipEpistemic || summaryOnly
+        ? Promise.resolve(undefined)
+        : queryClassBeanMetadata(repo.lbugPath, symId, symType);
 
     const impacted: any[] = [];
     const visited = new Set<string>([symId]);
@@ -6240,7 +6269,7 @@ export class LocalBackend {
 
     // #1858 — await the epistemic boundary probe kicked off alongside the BFS
     // above. Additive: leaves impactedCount and every existing field untouched.
-    const epistemic = await epistemicPromise;
+    const [epistemic, beanMetadata] = await Promise.all([epistemicPromise, beanMetadataPromise]);
 
     const base = {
       target: {
@@ -6248,6 +6277,7 @@ export class LocalBackend {
         name: sym.name || sym[1],
         type: symType,
         filePath: sym.filePath || sym[2],
+        ...(beanMetadata ? { bean: beanMetadata } : {}),
       },
       direction,
       impactedCount: impacted.length,

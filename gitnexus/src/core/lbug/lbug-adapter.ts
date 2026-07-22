@@ -30,7 +30,11 @@ import {
   MOVE_MODULE_COLUMNS,
   MOVE_STRUCT_LIKE_COLUMNS,
 } from './move-columns.js';
-import { extensionManager, type ExtensionEnsureOptions } from './extension-loader.js';
+import {
+  extensionManager,
+  resolveAnalyzeInstallPolicy,
+  type ExtensionEnsureOptions,
+} from './extension-loader.js';
 import {
   classifyDeleteAllError,
   closeLbugConnection,
@@ -58,7 +62,6 @@ import {
   renameFailureMessage,
   shadowSidecarRecoveryMessage,
 } from './sidecar-recovery.js';
-import { isVectorExtensionSupportedByPlatform } from '../platform/capabilities.js';
 
 import { logger } from '../logger.js';
 // ---------------------------------------------------------------------------
@@ -800,7 +803,8 @@ const doInitLbug = async (dbPath: string, readOnly: boolean = false) => {
         const realPath = await fs.realpath(dbPath);
         const parentDir = path.dirname(dbPath);
         const realParent = await fs.realpath(parentDir);
-        if (!realPath.startsWith(realParent + path.sep) && realPath !== realParent) {
+        const safePrefix = realParent.endsWith(path.sep) ? realParent : realParent + path.sep;
+        if (!realPath.startsWith(safePrefix) && realPath !== realParent) {
           throw new Error(
             `Refusing to delete ${dbPath}: resolved path ${realPath} is outside storage directory`,
           );
@@ -1293,6 +1297,13 @@ const formatCypherValue = (v: unknown): string => {
   return `'${escapeCypherString(String(v))}'`;
 };
 
+const formatCypherStringArray = (value: unknown): string => {
+  const items = Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === 'string')
+    : [];
+  return `[${items.map(formatCypherValue).join(', ')}]`;
+};
+
 /**
  * Fallback: insert relationships one-by-one if COPY fails.
  *
@@ -1384,6 +1395,9 @@ export const getCopyQuery = (table: NodeTableName, filePath: string): string => 
     // `calleeIds` is its SOUND parallel (space-joined resolved callee ids, #2227).
     return `COPY ${t}(id, filePath, startLine, endLine, text, callees, calleeIds) FROM "${filePath}" ${COPY_CSV_OPTS}`;
   }
+  if (table === 'Class') {
+    return `COPY ${t}(id, name, filePath, startLine, endLine, isExported, content, description, frameworkAnnotations) FROM "${filePath}" ${COPY_CSV_OPTS}`;
+  }
   if (table === 'Method') {
     return `COPY ${t}(id, name, filePath, startLine, endLine, isExported, content, description, parameterCount, returnType) FROM "${filePath}" ${COPY_CSV_OPTS}`;
   }
@@ -1452,6 +1466,11 @@ export const insertNodeToLbug = async (
       // Taint/PDG substrate (issue #2080) — no name column. `calleeIds` (#2227)
       // is the sound resolved-id parallel to the leaf-name `callees` set.
       query = `CREATE (n:BasicBlock {id: ${formatCypherValue(properties.id)}, filePath: ${formatCypherValue(properties.filePath)}, startLine: ${properties.startLine || 0}, endLine: ${properties.endLine || 0}, text: ${formatCypherValue(properties.text || '')}, callees: ${formatCypherValue(properties.callees || '')}, calleeIds: ${formatCypherValue(properties.calleeIds || '')}})`;
+    } else if (label === 'Class') {
+      const descPart = properties.description
+        ? `, description: ${formatCypherValue(properties.description)}`
+        : '';
+      query = `CREATE (n:Class {id: ${formatCypherValue(properties.id)}, name: ${formatCypherValue(properties.name)}, filePath: ${formatCypherValue(properties.filePath)}, startLine: ${properties.startLine || 0}, endLine: ${properties.endLine || 0}, isExported: ${!!properties.isExported}, content: ${formatCypherValue(properties.content || '')}${descPart}, frameworkAnnotations: ${formatCypherStringArray(properties.frameworkAnnotations)}})`;
     } else if (TABLES_WITH_EXPORTED.has(label)) {
       const descPart = properties.description
         ? `, description: ${formatCypherValue(properties.description)}`
@@ -1537,6 +1556,11 @@ export const batchInsertNodesToLbug = async (
           // Taint/PDG substrate (issue #2080) — no name column. `calleeIds`
           // (#2227) is the sound resolved-id parallel to the `callees` set.
           query = `MERGE (n:BasicBlock {id: ${formatCypherValue(properties.id)}}) SET n.filePath = ${formatCypherValue(properties.filePath)}, n.startLine = ${properties.startLine || 0}, n.endLine = ${properties.endLine || 0}, n.text = ${formatCypherValue(properties.text || '')}, n.callees = ${formatCypherValue(properties.callees || '')}, n.calleeIds = ${formatCypherValue(properties.calleeIds || '')}`;
+        } else if (label === 'Class') {
+          const descPart = properties.description
+            ? `, n.description = ${formatCypherValue(properties.description)}`
+            : '';
+          query = `MERGE (n:Class {id: ${formatCypherValue(properties.id)}}) SET n.name = ${formatCypherValue(properties.name)}, n.filePath = ${formatCypherValue(properties.filePath)}, n.startLine = ${properties.startLine || 0}, n.endLine = ${properties.endLine || 0}, n.isExported = ${!!properties.isExported}, n.content = ${formatCypherValue(properties.content || '')}${descPart}, n.frameworkAnnotations = ${formatCypherStringArray(properties.frameworkAnnotations)}`;
         } else if (TABLES_WITH_EXPORTED.has(label)) {
           const descPart = properties.description
             ? `, n.description = ${formatCypherValue(properties.description)}`
@@ -2699,14 +2723,16 @@ export const loadVectorExtension = async (
 ): Promise<boolean> => {
   const useModuleState = targetConn === undefined;
   if (useModuleState && vectorExtensionLoaded) return true;
-  // INSTALL VECTOR crashes with SIGSEGV on Windows: the KuzuDB native extension
-  // installer has an unhandled error path on Windows that raises a fatal signal
-  // that JS try/catch cannot intercept. Skip loading — vector/embedding search
-  // is unavailable but all graph index queries still work. Do NOT set
-  // vectorExtensionLoaded here: the flag means "successfully loaded", and a
-  // subsequent call would otherwise short-circuit to `return true` at the top.
-  if (process.platform === 'win32') return false;
-  if (!isVectorExtensionSupportedByPlatform()) return false;
+  // No platform gate. Windows was hard-refused here for years on the strength
+  // of an early-era report that in-process INSTALL VECTOR could SIGSEGV
+  // (#1365) — but the extension server ships win_amd64 VECTOR artifacts for
+  // every 0.18.x extension version (probed live: v0.18.0 and v0.18.1 both
+  // serve a real PE32+ DLL; the pinned 0.18.2 core resolves its extension
+  // directory to 0.18.1, strace-verified), and INSTALL now runs in a spawned
+  // child process (installDuckDbExtensionOutOfProcess), so even a crashing
+  // installer kills only the child and degrades to `false` here. LOAD of a
+  // present extension file is an ordinary in-process load whose failures
+  // surface as catchable errors, exactly like FTS.
 
   const c: lbug.Connection | null = targetConn ?? conn;
   if (!c) {
@@ -2816,6 +2842,78 @@ export const createVectorIndex = async (): Promise<boolean> => {
 };
 
 /**
+ * Make DML against {@link EMBEDDING_TABLE_NAME} legal on the writable
+ * connection when it can be, and report whether it is.
+ *
+ * LadybugDB refuses EVERY mutation of a table carrying an HNSW index while
+ * the VECTOR extension is not loaded on that connection: `DELETE` fails with
+ * "Trying to delete from an index on table CodeEmbedding but its extension is
+ * not loaded", `CREATE` with the matching "insert into an index" variant,
+ * `DROP TABLE` is refused while the index references it, and `SET` — even on
+ * a NON-indexed property — segfaults the process outright. Probed against
+ * @ladybugdb/core 0.18.2 (the lockfile-pinned version) and 0.18.0 — every
+ * result identical on both (#2623).
+ *
+ * Dropping the index is NOT an available recovery: `CALL DROP_VECTOR_INDEX`
+ * is itself a VECTOR-extension function and resolves to "Catalog exception:
+ * function DROP_VECTOR_INDEX is not defined" in exactly the state it would
+ * need to rescue. Loading the extension is the only in-place repair, which is
+ * why this returns a verdict instead of attempting a fixup.
+ *
+ * `true` = embedding-row DML is safe: either VECTOR is now loaded, or the
+ * table carries no index to trip over. `false` = genuinely blocked (index
+ * present, extension unloadable); the analyze orchestrator answers that by
+ * escalating to the wipe-and-rebuild write plan instead of failing
+ * mid-writeback.
+ *
+ * Cheap by construction: one local `SHOW_INDEXES` read settles the common
+ * "this repo never built an embedding index" case without touching the
+ * extension machinery at all, so a VECTOR-less machine is not charged a
+ * bounded INSTALL attempt on every incremental analyze. `SHOW_INDEXES` is
+ * readable WITHOUT the extension and reports `extension_loaded` per index, so
+ * no error-string sniffing is needed; it runs through the unprepared
+ * `conn.query()` path like every other `CALL` procedure here (#2114).
+ */
+export const ensureEmbeddingRowDmlSafe = async (): Promise<boolean> => {
+  const targetConn = conn;
+  if (!targetConn) {
+    throw new Error('LadybugDB not initialized. Call initLbug first.');
+  }
+  // Catalog FIRST. The overwhelmingly common case on a repo that never enabled
+  // embeddings is "no index at all", and that is provable with one local read
+  // — no extension needed. Loading first would make every incremental analyze
+  // on a VECTOR-less machine pay a bounded out-of-process INSTALL attempt (the
+  // `auto` policy) plus an "extension unavailable" warning, for a repo that
+  // can never hit this hazard.
+  let indexRows: any[] | undefined;
+  try {
+    indexRows = await withConnLock(async () =>
+      readQueryRows(await targetConn.query('CALL SHOW_INDEXES() RETURN *')),
+    );
+  } catch (err) {
+    // Fall through to the load attempt: unable to prove the index is absent,
+    // so the extension is the only thing that can make DML safe.
+    logger.warn(
+      { err },
+      `Could not read the index catalog to check for a ${EMBEDDING_TABLE_NAME} vector index; ` +
+        'falling back to loading the VECTOR extension.',
+    );
+  }
+  // Any non-HASH index on the embedding table gates DML. Keyed on index TYPE,
+  // not name, so an index built under a different name still counts; the
+  // implicit primary-key HASH index is engine-internal and never gates.
+  const indexGatesDml =
+    indexRows === undefined ||
+    indexRows.some((row) => {
+      const table = row?.table_name ?? row?.[0];
+      if (table !== EMBEDDING_TABLE_NAME) return false;
+      return (row?.index_type ?? row?.[2]) !== 'HASH';
+    });
+  if (!indexGatesDml) return true;
+  return await loadVectorExtension(undefined, { policy: resolveAnalyzeInstallPolicy() });
+};
+
+/**
  * Lazy-create an FTS index, caching the fact in-process.
  *
  * Kept for writable maintenance paths that need to lazily materialize an
@@ -2907,7 +3005,30 @@ export const queryFTS = async (
 };
 
 /**
- * Drop an FTS index
+ * True for the two benign "nothing to drop" `DROP_FTS_INDEX` failures —
+ * both catalog/binder exceptions, LadybugDB's classes for "this name isn't
+ * bound to anything right now" (probe-verified end-to-end through
+ * `dropFTSIndex`'s real `conn.query()` path against @ladybugdb/core
+ * 0.18.x): the named index was never created (`Binder exception: Table <T>
+ * doesn't have an index with name <name>.`), or the FTS extension/function
+ * isn't registered at all (`Catalog exception: function DROP_FTS_INDEX is
+ * not defined...`). A real engine failure — e.g. the `Runtime exception:
+ * FTS index '<name>' is inconsistent: ...` class from #2589 — is a
+ * DIFFERENT exception class (an execution-time failure, not a catalog/bind
+ * lookup miss), so this returns false for it. Anchored to the START of the
+ * message (not a bare substring search): every probed LadybugDB error leads
+ * with its exception class, and anchoring means a future message that merely
+ * mentions "Binder exception" or "Catalog exception" further in in the body
+ * of an otherwise-genuine failure can't be misclassified as benign. Pure
+ * string logic so it is unit-testable without a native LadybugDB connection.
+ */
+export const isBenignDropFtsIndexError = (message: string): boolean =>
+  message.startsWith('Binder exception:') || message.startsWith('Catalog exception:');
+
+/**
+ * Drop an FTS index. Tolerates only {@link isBenignDropFtsIndexError} —
+ * anything else rethrows instead of being silently masked, which previously
+ * let a corrupted index persist across analyze runs undetected.
  */
 export const dropFTSIndex = async (tableName: string, indexName: string): Promise<void> => {
   if (!conn) {
@@ -2916,8 +3037,11 @@ export const dropFTSIndex = async (tableName: string, indexName: string): Promis
 
   try {
     await queryAndDrain(conn, `CALL DROP_FTS_INDEX('${tableName}', '${indexName}')`);
-  } catch {
-    // Index may not exist
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : String(e);
+    if (!isBenignDropFtsIndexError(msg)) {
+      throw e;
+    }
   } finally {
     ensuredFTSIndexes.delete(ftsIndexKey(tableName, indexName));
   }

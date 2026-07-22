@@ -36,8 +36,8 @@
  * So CUDA-12 hosts, Windows (DirectML), macOS, and CPU-only hosts are
  * untouched. Idempotent; any failure is swallowed and leaves the default
  * resolution exactly as before. `module.registerHooks` requires Node >= 22.15
- * (the gitnexus engines floor is >= 22.0.0); on older runtimes the redirect is
- * a no-op, but the default copy's CUDA major is still probed so an
+ * (below the gitnexus engines floor of `^22.18.0 || >=24.11.0`); on below-floor
+ * runtimes the redirect is a no-op, but the default copy's CUDA major is still probed so an
  * already-matching host (e.g. CUDA 12 + transformers' CUDA-12 build) keeps
  * auto-selecting the GPU.
  * `npm link` / symlinked local-dev checkouts are a known caveat: `resolveOurOrtNodeDir`/

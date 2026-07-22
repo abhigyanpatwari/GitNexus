@@ -1,3 +1,46 @@
+import { existsSync, readdirSync, statSync } from 'node:fs';
+import { join } from 'node:path';
+
+/** A valid `libfts.lbug_extension` is ~2.2MB; anything smaller is truncated/corrupt. */
+const MIN_VALID_FTS_EXTENSION_BYTES = 1024 * 1024;
+
+/**
+ * Find the installed FTS extension file under a `.lbdb/extension` root,
+ * discovering the version directory instead of assuming it equals the npm
+ * `@ladybugdb/core` package version. LadybugDB's native INSTALL/LOAD resolves
+ * its own extension-ABI version directory, which does not always track the
+ * npm package version — e.g. #2587: bumping the package from 0.18.1 to 0.18.2
+ * still installs into a `0.18.1` directory, because the underlying
+ * extension-ABI build did not change with that patch release.
+ *
+ * Scans every version subdirectory for a `<platform>/fts/libfts.lbug_extension`
+ * file and returns the most recently modified one (the one an install/load
+ * actually just resolved), or null when nothing is installed.
+ */
+export const findInstalledFtsExtension = (extensionRoot: string): string | null => {
+  // Fail closed on any FS error (permission quirks, AV file locks on Windows,
+  // a directory vanishing mid-scan) — same contract as the callers this
+  // replaces: "not found" is a valid outcome, a thrown exception is not.
+  try {
+    if (!existsSync(extensionRoot)) return null;
+    let best: { path: string; mtimeMs: number } | null = null;
+    for (const versionEntry of readdirSync(extensionRoot)) {
+      const versionDir = join(extensionRoot, versionEntry);
+      if (!statSync(versionDir).isDirectory()) continue;
+      for (const platformEntry of readdirSync(versionDir)) {
+        const candidate = join(versionDir, platformEntry, 'fts', 'libfts.lbug_extension');
+        if (!existsSync(candidate)) continue;
+        const stat = statSync(candidate);
+        if (stat.size < MIN_VALID_FTS_EXTENSION_BYTES) continue;
+        if (!best || stat.mtimeMs > best.mtimeMs) best = { path: candidate, mtimeMs: stat.mtimeMs };
+      }
+    }
+    return best?.path ?? null;
+  } catch {
+    return null;
+  }
+};
+
 export const FTS_UNAVAILABLE_NOTE =
   'FTS extension unavailable (load-only policy; LOAD failed on this machine)';
 

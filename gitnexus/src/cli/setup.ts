@@ -33,8 +33,10 @@ const execFileAsync = promisify(execFile);
 // a config that persists in the user's editor and is invoked on every MCP
 // connect. Pinning to the installed version means subsequent invocations
 // skip the npm-registry metadata roundtrip (and stay reproducible until
-// the user upgrades). Static configs and READMEs intentionally use
-// `gitnexus@latest` since they're quickstart docs, not persisted state.
+// the user upgrades). The plugin skill mcp.json are likewise pinned and
+// re-stamped every release by scripts/sync-plugin-manifests.mjs (#2445),
+// since they too execute `gitnexus@<version>` on connect. Only the READMEs
+// stay on `gitnexus@latest` — they're quickstart docs, not executed state.
 const _require = createRequire(import.meta.url);
 const _pkg = _require('../../package.json') as { version?: unknown };
 if (typeof _pkg.version !== 'string' || !_pkg.version) {
@@ -1017,6 +1019,18 @@ async function setupCodex(result: SetupResult): Promise<void> {
 
 // ─── Skill Installation ───────────────────────────────────────────
 
+export const RENAMED_SKILL_DIRS: Readonly<Record<string, readonly string[]>> = {
+  'gitnexus-review': ['gitnexus-pr-review'],
+};
+
+/**
+ * Every legacy directory name superseded by a shipped rename. These no longer
+ * exist in the bundled skills/ source, but a pre-rename install left them
+ * behind in every editor target. Setup only warns about them (it cannot prove
+ * it owns the contents); uninstall's ownership-by-name contract removes them.
+ */
+export const LEGACY_SKILL_DIR_NAMES: readonly string[] = Object.values(RENAMED_SKILL_DIRS).flat();
+
 /**
  * Install GitNexus skills to a target directory.
  * Each skill is installed as {targetDir}/gitnexus-{skillName}/SKILL.md
@@ -1078,14 +1092,27 @@ async function installSkillsTo(targetDir: string): Promise<string[]> {
       if (source.isDirectory) {
         const dirSource = path.join(skillsRoot, skillName);
         await copyDirRecursive(dirSource, skillDir);
-        installed.push(skillName);
       } else {
         const flatSource = path.join(skillsRoot, `${skillName}.md`);
         const content = await fs.readFile(flatSource, 'utf-8');
         await fs.mkdir(skillDir, { recursive: true });
         await fs.writeFile(path.join(skillDir, 'SKILL.md'), content, 'utf-8');
-        installed.push(skillName);
       }
+
+      // A directory superseded by a shipped rename is warned about, never
+      // deleted: the installer cannot prove it owns the contents (users
+      // customize installed skills or hand-write their own under these
+      // names), so an upgrade must not destroy data.
+      for (const oldName of RENAMED_SKILL_DIRS[skillName] ?? []) {
+        const legacyDir = path.join(targetDir, oldName);
+        if (await dirExists(legacyDir)) {
+          console.log(
+            `[gitnexus] skill "${oldName}" was renamed to "${skillName}"; ` +
+              `left ${legacyDir} in place — delete it manually if you have not customized it.`,
+          );
+        }
+      }
+      installed.push(skillName);
     } catch {
       // Source skill not found — skip
     }

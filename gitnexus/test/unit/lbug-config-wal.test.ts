@@ -1,8 +1,11 @@
-import { describe, expect, it, vi } from 'vitest';
+import os from 'os';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   createLbugDatabase,
+  estimateBufferPool,
   isLbugCheckpointIoError,
   isWalCorruptionError,
+  setBufferPoolSizeHint,
 } from '../../src/core/lbug/lbug-config.js';
 import { _captureLogger } from '../../src/core/logger.js';
 
@@ -50,7 +53,7 @@ describe('createLbugDatabase WAL replay option', () => {
 
     expect(Database).toHaveBeenCalledWith(
       '/tmp/lbug-default',
-      0,
+      expect.any(Number),
       false,
       false,
       expect.any(Number),
@@ -77,7 +80,7 @@ describe('createLbugDatabase WAL replay option', () => {
 
       expect(Database).toHaveBeenCalledWith(
         '/tmp/lbug-env',
-        0,
+        expect.any(Number),
         false,
         false,
         expect.any(Number),
@@ -148,7 +151,7 @@ describe('createLbugDatabase WAL replay option', () => {
 
     expect(Database).toHaveBeenCalledWith(
       '/tmp/lbug',
-      0,
+      expect.any(Number),
       false,
       true,
       expect.any(Number),
@@ -157,6 +160,165 @@ describe('createLbugDatabase WAL replay option', () => {
       false,
       true,
     );
+  });
+});
+
+describe('createLbugDatabase buffer pool size (#2557)', () => {
+  const GiB = 1024 * 1024 * 1024;
+
+  const bufferPoolArg = (Database: ReturnType<typeof vi.fn>): unknown => Database.mock.calls[0][1];
+
+  it.each([
+    ['32 GiB machine caps at 2 GiB', 32 * GiB, 2 * GiB],
+    ['1 GiB machine keeps the native-equivalent 80% bound', GiB, Math.floor(0.8 * GiB)],
+    ['64 MiB container clamps up to the floor', 64 * 1024 * 1024, 64 * 1024 * 1024],
+  ])('defaults to min(2 GiB, max(64 MiB, 0.8 * totalmem)): %s', (_label, totalmem, expected) => {
+    const totalmemSpy = vi.spyOn(os, 'totalmem').mockReturnValue(totalmem);
+    try {
+      const Database = vi.fn(function (this: any) {});
+      const lbugModule = { Database } as any;
+
+      createLbugDatabase(lbugModule, '/tmp/lbug-pool');
+
+      expect(bufferPoolArg(Database)).toBe(expected);
+    } finally {
+      totalmemSpy.mockRestore();
+    }
+  });
+
+  it.each([
+    ['1073741824', 1073741824],
+    ['0', 0],
+    ['1536.9', 1536],
+  ])('respects GITNEXUS_LBUG_BUFFER_POOL_SIZE=%s', (raw, expected) => {
+    try {
+      vi.stubEnv('GITNEXUS_LBUG_BUFFER_POOL_SIZE', raw);
+      const Database = vi.fn(function (this: any) {});
+      const lbugModule = { Database } as any;
+
+      createLbugDatabase(lbugModule, '/tmp/lbug-pool-env');
+
+      expect(bufferPoolArg(Database)).toBe(expected);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it.each([['abc'], ['-5']])('warns and falls back to the default for invalid value %s', (raw) => {
+    const cap = _captureLogger();
+    const totalmemSpy = vi.spyOn(os, 'totalmem').mockReturnValue(32 * GiB);
+    try {
+      vi.stubEnv('GITNEXUS_LBUG_BUFFER_POOL_SIZE', raw);
+      const Database = vi.fn(function (this: any) {});
+      const lbugModule = { Database } as any;
+
+      createLbugDatabase(lbugModule, '/tmp/lbug-pool-invalid');
+
+      expect(bufferPoolArg(Database)).toBe(2 * GiB);
+      const warn = cap
+        .records()
+        .find(
+          (r) =>
+            typeof r.msg === 'string' &&
+            r.msg.includes('Ignoring invalid GITNEXUS_LBUG_BUFFER_POOL_SIZE'),
+        );
+      expect(warn).toBeDefined();
+    } finally {
+      vi.unstubAllEnvs();
+      totalmemSpy.mockRestore();
+      cap.restore();
+    }
+  });
+
+  it('does NOT warn when GITNEXUS_LBUG_BUFFER_POOL_SIZE is empty (treated as unset)', () => {
+    const cap = _captureLogger();
+    try {
+      vi.stubEnv('GITNEXUS_LBUG_BUFFER_POOL_SIZE', '');
+      const Database = vi.fn(function (this: any) {});
+      const lbugModule = { Database } as any;
+
+      createLbugDatabase(lbugModule, '/tmp/lbug-pool-empty');
+
+      const warn = cap
+        .records()
+        .find(
+          (r) =>
+            typeof r.msg === 'string' &&
+            r.msg.includes('Ignoring invalid GITNEXUS_LBUG_BUFFER_POOL_SIZE'),
+        );
+      expect(warn).toBeUndefined();
+    } finally {
+      vi.unstubAllEnvs();
+      cap.restore();
+    }
+  });
+});
+
+describe('adaptive buffer pool hint', () => {
+  const GiB = 1024 * 1024 * 1024;
+  const MiB = 1024 * 1024;
+  const bufferPoolArg = (Database: ReturnType<typeof vi.fn>): unknown => Database.mock.calls[0][1];
+
+  afterEach(() => setBufferPoolSizeHint(undefined));
+
+  describe('estimateBufferPool', () => {
+    it.each([
+      ['tiny graph clamps up to the 512 MiB COPY-safety floor', 41, 512 * MiB],
+      ['a graph under the floor still clamps up to 512 MiB', 40_000, 512 * MiB],
+      ['mid graph scales linearly (200k elements * 4 KiB = 800 MiB)', 200_000, 200_000 * 4 * 1024],
+      ['huge graph caps at the 2 GiB / 80%-RAM default', 10_000_000, 2 * GiB],
+    ])('%s', (_label, elements, expected) => {
+      const totalmemSpy = vi.spyOn(os, 'totalmem').mockReturnValue(32 * GiB);
+      try {
+        expect(estimateBufferPool(elements)).toBe(expected);
+      } finally {
+        totalmemSpy.mockRestore();
+      }
+    });
+  });
+
+  it.each([
+    ['a hint within range passes through', 1024 * MiB, 1024 * MiB],
+    ['a hint below the COPY-safety floor clamps up to 512 MiB', 100 * MiB, 512 * MiB],
+    ['a hint above the default clamps down to the 2 GiB cap', 8 * GiB, 2 * GiB],
+  ])(
+    'createLbugDatabase uses the clamped hint when no env override is set: %s',
+    (_label, hint, expected) => {
+      const totalmemSpy = vi.spyOn(os, 'totalmem').mockReturnValue(32 * GiB);
+      try {
+        setBufferPoolSizeHint(hint);
+        const Database = vi.fn(function (this: any) {});
+        createLbugDatabase({ Database } as any, '/tmp/lbug-hint');
+        expect(bufferPoolArg(Database)).toBe(expected);
+      } finally {
+        totalmemSpy.mockRestore();
+      }
+    },
+  );
+
+  it('env override wins over the hint (including 0 = native default)', () => {
+    try {
+      setBufferPoolSizeHint(128 * MiB);
+      vi.stubEnv('GITNEXUS_LBUG_BUFFER_POOL_SIZE', '0');
+      const Database = vi.fn(function (this: any) {});
+      createLbugDatabase({ Database } as any, '/tmp/lbug-hint-env');
+      expect(bufferPoolArg(Database)).toBe(0);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it('falls back to the default when the hint is cleared', () => {
+    const totalmemSpy = vi.spyOn(os, 'totalmem').mockReturnValue(32 * GiB);
+    try {
+      setBufferPoolSizeHint(128 * MiB);
+      setBufferPoolSizeHint(undefined);
+      const Database = vi.fn(function (this: any) {});
+      createLbugDatabase({ Database } as any, '/tmp/lbug-hint-cleared');
+      expect(bufferPoolArg(Database)).toBe(2 * GiB);
+    } finally {
+      totalmemSpy.mockRestore();
+    }
   });
 });
 

@@ -10,6 +10,7 @@ import fs from 'fs/promises';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { type GeneratedSkillInfo } from './skill-gen.js';
+import { STANDARD_SKILL_CATALOG } from './standard-skills.js';
 import { logger } from '../core/logger.js';
 
 // ESM equivalent of __dirname
@@ -167,12 +168,9 @@ export function generateGitNexusContent(
   // are independent of --skip-skills, so they remain when present.
   const standardSkillsRows = skipSkills
     ? ''
-    : `| Understand architecture / "How does X work?" | \`.claude/skills/gitnexus-exploring/SKILL.md\` |
-| Blast radius / "What breaks if I change X?" | \`.claude/skills/gitnexus-impact-analysis/SKILL.md\` |
-| Trace bugs / "Why is X failing?" | \`.claude/skills/gitnexus-debugging/SKILL.md\` |
-| Rename / extract / split / refactor | \`.claude/skills/gitnexus-refactoring/SKILL.md\` |
-| Tools, resources, schema reference | \`.claude/skills/gitnexus-guide/SKILL.md\` |
-| Index, status, clean, wiki CLI commands | \`.claude/skills/gitnexus-cli/SKILL.md\` |`;
+    : STANDARD_SKILL_CATALOG.filter((skill) => skill.distributions.project)
+        .map((skill) => `| ${skill.agentTableTask} | \`.claude/skills/${skill.name}/SKILL.md\` |`)
+        .join('\n');
 
   const tableBody = [standardSkillsRows, generatedRows].filter(Boolean).join('\n');
   const skillsTable = tableBody
@@ -372,41 +370,9 @@ async function installSkills(repoPath: string): Promise<string[]> {
   const legacySkillsDir = path.join(skillsDir, 'gitnexus');
   const installedSkills: string[] = [];
 
-  // Skill definitions bundled with the package
-  const skills = [
-    {
-      name: 'gitnexus-exploring',
-      description:
-        'Use when the user asks how code works, wants to understand architecture, trace execution flows, or explore unfamiliar parts of the codebase. Examples: "How does X work?", "What calls this function?", "Show me the auth flow"',
-    },
-    {
-      name: 'gitnexus-debugging',
-      description:
-        'Use when the user is debugging a bug, tracing an error, or asking why something fails. Examples: "Why is X failing?", "Where does this error come from?", "Trace this bug"',
-    },
-    {
-      name: 'gitnexus-impact-analysis',
-      description:
-        'Use when the user wants to know what will break if they change something, or needs safety analysis before editing code. Examples: "Is it safe to change X?", "What depends on this?", "What will break?"',
-    },
-    {
-      name: 'gitnexus-refactoring',
-      description:
-        'Use when the user wants to rename, extract, split, move, or restructure code safely. Examples: "Rename this function", "Extract this into a module", "Refactor this class", "Move this to a separate file"',
-    },
-    {
-      name: 'gitnexus-guide',
-      description:
-        'Use when the user asks about GitNexus itself — available tools, how to query the knowledge graph, MCP resources, graph schema, or workflow reference. Examples: "What GitNexus tools are available?", "How do I use GitNexus?"',
-    },
-    {
-      name: 'gitnexus-cli',
-      description:
-        'Use when the user needs to run GitNexus CLI commands like analyze/index a repo, check status, clean the index, generate a wiki, or list indexed repos. Examples: "Index this repo", "Reanalyze the codebase", "Generate a wiki"',
-    },
-  ];
-
-  for (const skill of skills) {
+  for (const skill of STANDARD_SKILL_CATALOG.filter(
+    (entry) => entry.distributions.project && entry.distributions.npm,
+  )) {
     const skillDir = path.join(skillsDir, skill.name);
     const skillPath = path.join(skillDir, 'SKILL.md');
 
@@ -424,12 +390,12 @@ async function installSkills(repoPath: string): Promise<string[]> {
         // Fallback: generate minimal skill content
         skillContent = `---
 name: ${skill.name}
-description: ${skill.description}
+description: ${skill.fallbackDescription}
 ---
 
 # ${skill.name.charAt(0).toUpperCase() + skill.name.slice(1)}
 
-${skill.description}
+${skill.fallbackDescription}
 
 Use GitNexus tools to accomplish this task.
 `;

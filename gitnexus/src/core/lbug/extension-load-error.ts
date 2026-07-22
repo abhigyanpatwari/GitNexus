@@ -101,18 +101,24 @@ const POSIX_MISSING_DEPENDENCY_SIGNATURES: readonly RegExp[] = [
  * display language — the only localized part is the OS-error tail after it. So
  * it is the language-independent fallback signal once the specific tails miss: a
  * French/German/Japanese Windows 126 has a localized tail we cannot enumerate,
- * but it still carries this wrapper. See HEDGED_LOAD_FAILURE_REMEDY.
+ * but it still carries this wrapper. See hedgedLoadFailureRemedy.
  */
 const LOAD_FAILURE_WRAPPER = /failed to load library/i;
 
-const MISSING_FILE_REMEDY =
-  'The FTS extension is not installed. Re-run with network access and ' +
-  'GITNEXUS_LBUG_EXTENSION_INSTALL=auto (or `gitnexus analyze --repair-fts`) to download it.';
+// Remedies are label-parameterized (#2623 follow-up): doctor now live-probes
+// VECTOR through the same classifier, and FTS-specific advice (`--repair-fts`
+// repairs FTS indexes only) must not be dispensed for other extensions.
+const repairFtsHint = (label: string, lead: string): string =>
+  label === 'FTS' ? ` (${lead}\`gitnexus analyze --repair-fts\`)` : '';
 
-const CORRUPT_FILE_REMEDY =
-  'The FTS extension file is present but unreadable (corrupt, truncated, or built for another ' +
-  'platform). Re-download it with network access and GITNEXUS_LBUG_EXTENSION_INSTALL=auto ' +
-  '(`gitnexus analyze --repair-fts`).';
+const missingFileRemedy = (label: string): string =>
+  `The ${label} extension is not installed. Re-run with network access and ` +
+  `GITNEXUS_LBUG_EXTENSION_INSTALL=auto${repairFtsHint(label, 'or ')} to download it.`;
+
+const corruptFileRemedy = (label: string): string =>
+  `The ${label} extension file is present but unreadable (corrupt, truncated, or built for another ` +
+  `platform). Re-download it with network access and ` +
+  `GITNEXUS_LBUG_EXTENSION_INSTALL=auto${repairFtsHint(label, '')}.`;
 
 // Single source of truth for the VC++ runtime-install pointer, shared by the
 // Windows-126 and structural missing-dependency remedies so the name/URL cannot
@@ -122,15 +128,15 @@ const VC_REDIST_INSTALL_HINT =
   'https://aka.ms/vs/17/release/vc_redist.x64.exe';
 
 // MSVC-first per DuckDB's canonical answer for this exact error; OpenSSL second.
-const WINDOWS_MISSING_DEPENDENCY_REMEDY =
-  'The FTS extension is present but a required runtime library is missing (Windows error 126). ' +
+const windowsMissingDependencyRemedy = (label: string): string =>
+  `The ${label} extension is present but a required runtime library is missing (Windows error 126). ` +
   'Reinstalling the extension will NOT help. Install ' +
   VC_REDIST_INSTALL_HINT +
   '; if the error persists, the extension also needs OpenSSL 3 ' +
   '(libcrypto-3-x64.dll / libssl-3-x64.dll) on the DLL search path.';
 
-const POSIX_MISSING_DEPENDENCY_REMEDY =
-  'The FTS extension is present but a shared library it depends on could not be loaded (named in ' +
+const posixMissingDependencyRemedy = (label: string): string =>
+  `The ${label} extension is present but a shared library it depends on could not be loaded (named in ` +
   'the error above). Reinstalling the extension will NOT help — install that library or add it to ' +
   'your loader search path.';
 
@@ -140,16 +146,18 @@ const POSIX_MISSING_DEPENDENCY_REMEDY =
 // branches — rather than confidently prescribing the wrong single fix. The clean
 // long-term fix is upstream: have LadybugDB include the numeric GetLastError/errno
 // in the message (as it already does elsewhere), so this becomes a code match.
-const HEDGED_LOAD_FAILURE_REMEDY =
-  'The FTS extension file was found but could not be loaded — see the "Error:" text above (shown ' +
+const hedgedLoadFailureRemedy = (label: string): string =>
+  `The ${label} extension file was found but could not be loaded — see the "Error:" text above (shown ` +
   "in your system's language). Reinstalling usually will not help. If it names a missing module or " +
   'library, install the required runtime (on Windows: the Microsoft Visual C++ 2015-2022 ' +
-  'Redistributable x64 and OpenSSL 3); if it names a corrupt or invalid file, run ' +
-  '`gitnexus analyze --repair-fts` to re-download.';
+  'Redistributable x64 and OpenSSL 3); if it names a corrupt or invalid file, ' +
+  (label === 'FTS'
+    ? 'run `gitnexus analyze --repair-fts` to re-download.'
+    : 're-run analyze with network access and GITNEXUS_LBUG_EXTENSION_INSTALL=auto to re-download.');
 
-const UNKNOWN_REMEDY =
-  'The FTS extension failed to load for an unrecognized reason. Run `gitnexus doctor` for live ' +
-  'FTS status and verify the extension file and platform.';
+const unknownRemedy = (label: string): string =>
+  `The ${label} extension failed to load for an unrecognized reason. Run \`gitnexus doctor\` for live ` +
+  `${label} status and verify the extension file and platform.`;
 
 const matchesAny = (reason: string, signatures: readonly RegExp[]): boolean =>
   signatures.some((re) => re.test(reason));
@@ -162,19 +170,20 @@ const matchesAny = (reason: string, signatures: readonly RegExp[]): boolean =>
  */
 export function classifyExtensionLoadError(
   reason: string | undefined | null,
+  label: string = 'FTS',
 ): ExtensionLoadDiagnosis {
   const text = reason ?? '';
   if (matchesAny(text, MISSING_FILE_SIGNATURES)) {
-    return { kind: 'missing_file', remedy: MISSING_FILE_REMEDY };
+    return { kind: 'missing_file', remedy: missingFileRemedy(label) };
   }
   if (matchesAny(text, FILE_CORRUPTION_SIGNATURES)) {
-    return { kind: 'corrupt_file', remedy: CORRUPT_FILE_REMEDY };
+    return { kind: 'corrupt_file', remedy: corruptFileRemedy(label) };
   }
   if (matchesAny(text, WINDOWS_MISSING_DEPENDENCY_SIGNATURES)) {
-    return { kind: 'missing_dependency', remedy: WINDOWS_MISSING_DEPENDENCY_REMEDY };
+    return { kind: 'missing_dependency', remedy: windowsMissingDependencyRemedy(label) };
   }
   if (matchesAny(text, POSIX_MISSING_DEPENDENCY_SIGNATURES)) {
-    return { kind: 'missing_dependency', remedy: POSIX_MISSING_DEPENDENCY_REMEDY };
+    return { kind: 'missing_dependency', remedy: posixMissingDependencyRemedy(label) };
   }
   // Language-independent fallback: the extension demonstrably failed to load
   // (lbug's English wrapper is present) but the localized OS tail matched no
@@ -182,9 +191,9 @@ export function classifyExtensionLoadError(
   // remedy — strictly better than the generic `unknown` for non-English hosts,
   // and it never prescribes the wrong fix.
   if (LOAD_FAILURE_WRAPPER.test(text)) {
-    return { kind: 'missing_dependency', remedy: HEDGED_LOAD_FAILURE_REMEDY };
+    return { kind: 'missing_dependency', remedy: hedgedLoadFailureRemedy(label) };
   }
-  return { kind: 'unknown', remedy: UNKNOWN_REMEDY };
+  return { kind: 'unknown', remedy: unknownRemedy(label) };
 }
 
 // ── Language-independent structural layer ────────────────────────────────────
@@ -192,8 +201,8 @@ export function classifyExtensionLoadError(
 /** Well-formedness of the extension binary for the host platform + arch. */
 export type ExtensionBinaryState = 'absent' | 'corrupt' | 'valid' | 'indeterminate';
 
-const STRUCTURAL_MISSING_DEPENDENCY_REMEDY =
-  'The FTS extension file is valid, so the failure is a missing or incompatible runtime dependency, ' +
+const structuralMissingDependencyRemedy = (label: string): string =>
+  `The ${label} extension file is valid, so the failure is a missing or incompatible runtime dependency, ` +
   'not the extension itself — reinstalling will NOT help. On Windows, install ' +
   VC_REDIST_INSTALL_HINT +
   ' and ensure OpenSSL 3 is available; on Linux/macOS install the shared library named in the error above.';
@@ -332,13 +341,16 @@ export function inspectExtensionBinary(
  * classifier (which still carries the language-independent hedged fallback). This
  * is the entry point every surface should call.
  */
-export function diagnoseExtensionLoad(reason: string | undefined | null): ExtensionLoadDiagnosis {
+export function diagnoseExtensionLoad(
+  reason: string | undefined | null,
+  label: string = 'FTS',
+): ExtensionLoadDiagnosis {
   const text = reason ?? '';
-  const stringResult = classifyExtensionLoadError(text);
+  const stringResult = classifyExtensionLoadError(text, label);
   const fileState = inspectExtensionBinary(extractExtensionPath(text));
 
   if (fileState === 'corrupt') {
-    return { kind: 'corrupt_file', remedy: CORRUPT_FILE_REMEDY };
+    return { kind: 'corrupt_file', remedy: corruptFileRemedy(label) };
   }
   if (fileState === 'valid') {
     // The structural probe only inspects the first BINARY_HEADER_BYTES, so a file
@@ -357,7 +369,7 @@ export function diagnoseExtensionLoad(reason: string | undefined | null): Extens
     const remedy =
       stringResult.kind === 'missing_dependency'
         ? stringResult.remedy
-        : STRUCTURAL_MISSING_DEPENDENCY_REMEDY;
+        : structuralMissingDependencyRemedy(label);
     return { kind: 'missing_dependency', remedy };
   }
   // 'absent' or 'indeterminate' → no positive structural evidence, so defer to the

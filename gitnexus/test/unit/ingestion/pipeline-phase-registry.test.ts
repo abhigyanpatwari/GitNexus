@@ -69,6 +69,7 @@ const FULL_ORDER = [
   'scan',
   'structure',
   'standaloneIngest',
+  'springConfig',
   'markdown',
   'cobol',
   'parse',

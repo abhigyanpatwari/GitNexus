@@ -121,6 +121,20 @@ export function getSearchFTSStemmer(): string {
   return resolvedStemmer ?? resolveFTSStemmer();
 }
 
+/**
+ * Drop every configured FTS index (no-op per index when absent or unloadable
+ * — `dropFTSIndex` tolerates both). Callable ahead of any DML that mutates an
+ * FTS-indexed table's rows: LadybugDB's FTS extension is not proven to
+ * survive a DETACH DELETE against a table that still carries a live index
+ * from a prior run (#2589) — dropping first removes that hazard entirely,
+ * regardless of whether it also fixed a specific native inconsistency.
+ */
+export async function dropSearchFTSIndexes(): Promise<void> {
+  for (const { table, indexName } of FTS_INDEXES) {
+    await dropFTSIndex(table, indexName);
+  }
+}
+
 export async function createSearchFTSIndexes(
   options?: CreateSearchFTSIndexesOptions,
 ): Promise<void> {

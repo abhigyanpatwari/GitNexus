@@ -68,8 +68,8 @@ gitnexus-web/test-results/
 eval/.coverage
 eval/.hypothesis/
 
-# Local docs
-docs/
+# Local docs — planning output (gitnexus-plan / gitnexus-work) stays local, not tracked
+docs/*
 
 gitnexus/test/fixtures/mini-repo/*.md
 gitnexus/test/fixtures/mini-repo/.claude
@@ -108,6 +108,10 @@ gitnexus/vendor/move-flow/
 !.claude/skills/gitnexus-impact-analysis/
 !.claude/skills/gitnexus-refactoring/
 !.claude/skills/gitnexus-pr-swarm-review/
+!.claude/skills/gitnexus-review/
+!.claude/skills/gitnexus-plan/
+!.claude/skills/gitnexus-work/
+!.claude/skills/gitnexus-lfg/
 
 .history/
 
@@ -125,3 +129,6 @@ local_docs/
 !.agents/plugins/marketplace.json
 .context/
 gitnexus/web/
+
+# Machine-local skill-evolution evidence (consumed by eval/workflow_bench/evolve.py)
+eval/workflow_bench/learnings.jsonl

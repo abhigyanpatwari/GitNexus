@@ -284,12 +284,22 @@ Set these env vars to use a remote OpenAI-compatible `/v1/embeddings` endpoint i
 export GITNEXUS_EMBEDDING_URL=http://your-server:8080/v1
 export GITNEXUS_EMBEDDING_MODEL=BAAI/bge-large-en-v1.5
 export GITNEXUS_EMBEDDING_DIMS=1024          # optional, default 384
+export GITNEXUS_EMBEDDING_REQUEST_DIMS=omit  # optional: omit "dimensions", or an integer to override it
 export GITNEXUS_EMBEDDING_API_KEY=your-key   # optional, default: "unused"
 export GITNEXUS_EMBEDDING_MAX_ATTEMPTS=3     # optional, total attempts (1-20)
 export GITNEXUS_EMBEDDING_RETRY_CAP_MS=5000  # optional, maximum retry delay
 export GITNEXUS_EMBEDDING_MIN_INTERVAL_MS=0  # optional, minimum request spacing
 gitnexus analyze . --embeddings
 ```
+
+`GITNEXUS_EMBEDDING_REQUEST_DIMS` controls only the `dimensions` field sent in
+the request body, independently of `GITNEXUS_EMBEDDING_DIMS` (which still
+validates the returned vector's length):
+
+- `omit` (or `none`, `off`, `false`, `0`) — do not send `dimensions` at all, for
+  strict backends that return the right vector size but reject the field.
+- a positive integer — send that value instead of `GITNEXUS_EMBEDDING_DIMS`.
+- unset — send `GITNEXUS_EMBEDDING_DIMS` (the previous behavior).
 
 Works with Infinity, vLLM, TEI, llama.cpp, Ollama, LM Studio, or OpenAI. Retry and pacing settings are provider-neutral; provider-specific limits should be supplied through configuration. When unset, local embeddings are used unchanged.
 
@@ -332,6 +342,9 @@ GitNexus ships with skill files that teach AI agents how to use the tools effect
 - **Refactoring** — Plan safe refactors using dependency mapping
 - **Guide** — GitNexus tool/resource/schema reference for the agent
 - **CLI** — Run analyze/status/clean/wiki commands on request
+- **PDG Query** — Statement-level control/data dependence queries (`--pdg` index)
+- **Taint Analysis** — Source→sink data-flow findings (`--pdg` index)
+- **Plan / Work / Review / LFG** — The engineering family: implementation-ready plans, gated plan execution, graph-backed change review with taint + expert lenses, and the end-to-end pipeline
 
 Installed automatically by both `gitnexus analyze` (per-repo) and `gitnexus setup` (global). Run `gitnexus analyze --skills` to additionally generate each detected functional area as a direct project skill under `.claude/skills/gitnexus-area-<name>/`.
 
@@ -471,6 +484,8 @@ Configure the behavior with these environment variables:
 | `GITNEXUS_FTS_CJK_SEGMENTATION`              | `none`, `bigram`               | `none`              | `bigram` inserts overlapping character-bigram boundaries into Chinese/Japanese Han-ideograph spans in `content`/`description` before FTS indexing, so LadybugDB's space-only tokenizer can see sub-phrase word boundaries. Scoped to CJK Unified Ideographs only — Japanese Hiragana/Katakana and Korean Hangul are not currently segmented. Unlike `GITNEXUS_FTS_STEMMER`, this rewrites stored text — enabling it on an already-indexed repo requires a full `gitnexus analyze --force`; neither `--repair-fts` nor a plain incremental `analyze` applies it to previously-indexed files. Set the same value wherever `analyze` and search-serving processes (CLI query, MCP server, web server) run. |
 | `GITNEXUS_COMMUNITY_ENGINE`                  | `graphology`, `icebug`, `auto` | `graphology`        | Community-detection engine used during analyze. `graphology` uses the bundled default path. `icebug` and `auto` currently behave identically: both try the experimental Icebug CSR path and fall back to Graphology if the optional native module is unavailable or incompatible.                                                                                                                                                                                                                                                                                                                                                                                                                       |
 | `GITNEXUS_WAL_CHECKPOINT_THRESHOLD`          | integer `>= -1`                | `67108864` (64 MiB) | LadybugDB WAL auto-checkpoint threshold during analyze (bytes). Auto-checkpoint remains enabled; `-1` keeps Ladybug's stock ~16 MiB. Larger thresholds reduce checkpoint frequency but increase the WAL size at rotation time — choose a smaller value on disk-constrained environments.                                                                                                                                                                                                                                                                                                                                                                                                                |
+| `GITNEXUS_LBUG_BUFFER_POOL_SIZE`             | integer `>= 0` (bytes)         | min(2 GiB, 80% RAM) | LadybugDB buffer-pool ceiling for every GitNexus database (analyze, MCP server, serve, group bridges). Bounded so a long-lived `gitnexus mcp` process or a large incremental `analyze` cannot grow toward LadybugDB's native 80%-of-RAM default and OOM the host (#2557). `0` restores that native unbounded default; invalid values warn and fall back to the default.                                                                                                                                                                                                                                                                                                                                  |
+| `GITNEXUS_LBUG_MAX_DB_SIZE`                  | positive integer (bytes)       | `17179869184` (16 GiB) | Upper bound for a single LadybugDB database file. This is an mmap/disk-address-space ceiling, not a memory limit — it does not constrain the buffer pool (use `GITNEXUS_LBUG_BUFFER_POOL_SIZE` for that). Raise it when indexing genuinely huge monorepos; invalid values silently fall back to the default.                                                                                                                                                                                                                                                                                                                                                                                             |
 
 ```bash
 # Offline/airgapped: never reach the network for extensions
@@ -496,9 +511,19 @@ For very large repositories:
 # Increase Node.js heap size
 NODE_OPTIONS="--max-old-space-size=16384" npx gitnexus analyze
 
-# Exclude large directories
+# Exclude large directories (this repo only)
 echo "vendor/" >> .gitnexusignore
 echo "dist/" >> .gitnexusignore
+
+# Exclude a directory across every repo you index, without touching each
+# repo's own .gitnexusignore or needing push/commit access to it. GitNexus
+# reads the same sources `git` itself does: core.excludesFile (all repos)
+# and $GIT_DIR/info/exclude (this repo only, untracked). A repo's own
+# .gitignore/.gitnexusignore can still override either with a `!pattern`
+# negation. Skip both entirely with GITNEXUS_NO_GLOBAL_IGNORE=1.
+git config --global core.excludesFile ~/.gitignore_global   # applies to every repo
+echo "docs/" >> ~/.gitignore_global
+echo "build/" >> .git/info/exclude                          # this repo only, untracked
 ```
 
 ### Large files are being skipped
@@ -533,7 +558,7 @@ For repositories with very large source files, `GITNEXUS_WORKER_SUB_BATCH_MAX_BY
 
 ### Worker pool resilience tuning
 
-Three env vars expose the pool's resilience layers (respawn budget, cumulative-timeout cap, circuit breaker). Defaults are tuned for typical repos; bump them when an analyze legitimately needs more retries, or lower them to fail-fast on a known-bad shape.
+Four env vars expose the pool's resilience layers (respawn budget, cumulative-timeout cap, circuit breaker, startup handshake). Defaults are tuned for typical repos; bump them when an analyze legitimately needs more retries, or lower them to fail-fast on a known-bad shape.
 
 | Variable                                        | Default                 | Effect                                                                                                                                                                                           |
 | ----------------------------------------------- | ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
@@ -541,6 +566,7 @@ Three env vars expose the pool's resilience layers (respawn budget, cumulative-t
 | `GITNEXUS_WORKER_MAX_CUMULATIVE_TIMEOUT_MS`     | `5 × subBatchTimeoutMs` | Total retry wall-time budget per job before quarantining. Bounds exponentially-growing retry waits.                                                                                              |
 | `GITNEXUS_WORKER_CONSECUTIVE_FAILURE_THRESHOLD` | `max(3, poolSize)`      | Per-slot consecutive deaths before the pool's circuit breaker trips. After tripping, dispatches require a fresh pool.                                                                            |
 | `GITNEXUS_WORKER_SHUTDOWN_DRAIN_MS`             | `30000`                 | Max wait at pool shutdown for a retired worker still inside native code — terminated at its next JS-safe point instead of mid-native-call, which would abort the process (`Napi::Error`, #2432). |
+| `GITNEXUS_WORKER_READY_TIMEOUT_MS`              | `5000`                  | Startup budget for a parse worker to load its grammar bindings and report `{type:'ready'}`. Slots that miss it are treated as startup crashes. Raise it on a slow or heavily loaded host where a full pool cold-starting concurrently needs more than 5s. |
 | `GITNEXUS_CPP_CAPTURE_BUDGET_MS`                | `20000`                 | Per-file wall-clock budget for C++ capture extraction; on breach the file keeps partial captures with a warning (#2432). `0` expires immediately.                                                |
 
 ### Graph cleanup tuning

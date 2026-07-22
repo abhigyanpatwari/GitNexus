@@ -3,6 +3,7 @@ import {
   processProcesses,
   type ProcessDetectionConfig,
 } from '../../src/core/ingestion/process-processor.js';
+import { computeDynamicMaxProcesses } from '../../src/core/ingestion/pipeline-phases/processes.js';
 import { createKnowledgeGraph } from '../../src/core/graph/graph.js';
 import type { CommunityMembership } from '../../src/core/ingestion/community-processor.js';
 
@@ -521,5 +522,41 @@ describe('processProcesses', () => {
 
     expect(result.processes.length).toBeLessThanOrEqual(3);
     expect(result.stats.totalProcesses).toBeLessThanOrEqual(3);
+  });
+
+  // Regression for #2198: the processesPhase dynamic sizing used to cap at
+  // Math.min(300, symbolCount/10). On large repos (>3000 symbols) that silently
+  // truncated the process index. The cap was removed by extracting
+  // computeDynamicMaxProcesses() — this test exercises the helper directly
+  // so it fails if someone reintroduces the 300 ceiling.
+  describe('computeDynamicMaxProcesses (#2198)', () => {
+    it('returns at least the floor of 20 for tiny repos', () => {
+      expect(computeDynamicMaxProcesses(0)).toBe(20);
+      expect(computeDynamicMaxProcesses(50)).toBe(20); // 50/10 = 5, floored to 20
+      expect(computeDynamicMaxProcesses(199)).toBe(20); // 199/10 ≈ 20
+    });
+
+    it('scales linearly within the old 0–3000 range', () => {
+      expect(computeDynamicMaxProcesses(500)).toBe(50);
+      expect(computeDynamicMaxProcesses(1000)).toBe(100);
+      expect(computeDynamicMaxProcesses(2999)).toBe(300);
+    });
+
+    it('grows past 300 for large repos — the regression that #2198 fixes', () => {
+      // 3001 symbols → 300 (just at the boundary)
+      expect(computeDynamicMaxProcesses(3001)).toBe(300);
+      // 3100 symbols → 310 — would have been capped to 300 before the fix
+      expect(computeDynamicMaxProcesses(3100)).toBe(310);
+      // 5000 symbols → 500
+      expect(computeDynamicMaxProcesses(5000)).toBe(500);
+      // 28000 symbols (real-world large repo) → 2800
+      expect(computeDynamicMaxProcesses(28000)).toBe(2800);
+    });
+
+    it('does NOT cap at 300 — fails if Math.min(300, ...) is reintroduced', () => {
+      const largeRepo = computeDynamicMaxProcesses(10000);
+      expect(largeRepo).toBe(1000);
+      expect(largeRepo).toBeGreaterThan(300);
+    });
   });
 });

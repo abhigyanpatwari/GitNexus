@@ -117,6 +117,12 @@ const LBUG_NATIVE = [
   // to a live native DB, rm-then-rename over an existing parked copy) before
   // any open — rename semantics are exactly what differs on Windows.
   'test/unit/incremental-dirty-recovery.test.ts',
+  // #2623: the incremental writeback must load VECTOR before the CodeEmbedding
+  // join-delete, and the blocked path must escalate instead of crashing. The
+  // win32 VECTOR gate was removed in the same PR, so this ordering must be
+  // proven on the windows-latest native addon, not just Ubuntu. Budget: ~25s
+  // on Linux → expect ~2min on the slowest Windows shard.
+  'test/unit/incremental-vector-extension-ordering.test.ts',
 ];
 
 // Process spawning and CLI tests — exercise child_process with real

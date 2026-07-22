@@ -76,6 +76,7 @@ CREATE NODE TABLE Class (
   isExported BOOLEAN,
   content STRING,
   description STRING,
+  frameworkAnnotations STRING[],
   PRIMARY KEY (id)
 )`;
 
@@ -509,6 +510,7 @@ CREATE REL TABLE ${REL_TABLE_NAME} (
   FROM \`Static\` TO Community,
   FROM \`Variable\` TO Community,
   FROM \`Property\` TO Community,
+  FROM \`Property\` TO \`Property\`,
   FROM \`Record\` TO Method,
   FROM \`Record\` TO \`Constructor\`,
   FROM \`Record\` TO \`Property\`,

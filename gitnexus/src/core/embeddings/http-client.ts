@@ -29,6 +29,7 @@ interface HttpConfig {
   maxAttempts: number;
   retryCapMs: number;
   minIntervalMs: number;
+  requestDimensions?: number;
 }
 
 export interface EmbeddingRequestOptions {
@@ -106,20 +107,26 @@ const paceHttpRequest = async (minIntervalMs: number, signal?: AbortSignal): Pro
 };
 
 /**
- * Stable lead of the {@link readConfig} malformed-`GITNEXUS_EMBEDDING_DIMS`
- * error. `readConfig` throws a plain `Error` (not an {@link HttpEmbeddingError})
- * because this is a *config* mistake, not an endpoint failure — so the CLI
- * recognizes it by this lead ({@link isHttpEmbeddingDimsError}) and prints a
- * clean config message instead of a raw stack dump. See #2385.
+ * Stable lead of a {@link readConfig} malformed dims-env error. `readConfig`
+ * throws a plain `Error` (not an {@link HttpEmbeddingError}) for a malformed
+ * `GITNEXUS_EMBEDDING_DIMS` or `GITNEXUS_EMBEDDING_REQUEST_DIMS` because it's a
+ * *config* mistake, not an endpoint failure — so the CLI recognizes it by this
+ * lead ({@link isHttpEmbeddingDimsError}) and prints a clean config message
+ * instead of a raw stack dump. Each var names itself so the message points the
+ * operator at the variable they actually set, not a sibling. See #2385.
  */
-const EMBEDDING_DIMS_ENV_ERROR_LEAD = 'GITNEXUS_EMBEDDING_DIMS must be a positive integer';
+const dimsEnvErrorLead = (name: string): string => `${name} must be a positive integer`;
+const EMBEDDING_DIMS_ENV_ERROR_LEAD = dimsEnvErrorLead('GITNEXUS_EMBEDDING_DIMS');
+const EMBEDDING_REQUEST_DIMS_ENV_ERROR_LEAD = dimsEnvErrorLead('GITNEXUS_EMBEDDING_REQUEST_DIMS');
 
 /**
- * @internal Exported for the CLI analyze error handler. True when `message` is
- * the {@link readConfig} malformed-DIMS config error (a plain `Error`).
+ * @internal Exported for the CLI analyze error handler. True when `message` is a
+ * {@link readConfig} malformed dims-env config error (a plain `Error`) — for
+ * either `GITNEXUS_EMBEDDING_DIMS` or `GITNEXUS_EMBEDDING_REQUEST_DIMS`.
  */
 export const isHttpEmbeddingDimsError = (message: string): boolean =>
-  message.includes(EMBEDDING_DIMS_ENV_ERROR_LEAD);
+  message.includes(EMBEDDING_DIMS_ENV_ERROR_LEAD) ||
+  message.includes(EMBEDDING_REQUEST_DIMS_ENV_ERROR_LEAD);
 
 /**
  * Build config from the current process.env snapshot.
@@ -147,6 +154,23 @@ const readConfig = (): HttpConfig | null => {
     dimensions = parsed;
   }
 
+  const rawRequestDims = process.env.GITNEXUS_EMBEDDING_REQUEST_DIMS?.trim();
+  let requestDimensions = dimensions;
+  if (rawRequestDims) {
+    if (/^(omit|none|off|false|0)$/i.test(rawRequestDims)) {
+      requestDimensions = undefined;
+    } else {
+      if (!/^\d+$/.test(rawRequestDims)) {
+        throw new Error(`${EMBEDDING_REQUEST_DIMS_ENV_ERROR_LEAD}, got "${rawRequestDims}"`);
+      }
+      const parsed = parseInt(rawRequestDims, 10);
+      if (parsed <= 0) {
+        throw new Error(`${EMBEDDING_REQUEST_DIMS_ENV_ERROR_LEAD}, got "${rawRequestDims}"`);
+      }
+      requestDimensions = parsed;
+    }
+  }
+
   return {
     baseUrl: baseUrl.replace(/\/+$/, ''),
     model,
@@ -163,6 +187,7 @@ const readConfig = (): HttpConfig | null => {
       300_000,
     ),
     minIntervalMs: parseNonNegativeIntegerEnv('GITNEXUS_EMBEDDING_MIN_INTERVAL_MS', 0, 300_000),
+    requestDimensions,
   };
 };
 
@@ -283,9 +308,9 @@ const isEmbeddingItem = (item: unknown): item is EmbeddingItem =>
  *   the `dimensions` field in the request body. Endpoints that implement
  *   Matryoshka truncation (OpenAI text-embedding-3-*, Cohere embed-v3,
  *   Voyage) return a truncated vector at that size; endpoints that do not
- *   recognise the field may ignore it or return 400. Leave
- *   `GITNEXUS_EMBEDDING_DIMS` unset for strict backends that reject
- *   unknown fields.
+ *   recognise the field may ignore it or return 400. Set
+ *   `GITNEXUS_EMBEDDING_REQUEST_DIMS=omit` for strict backends while keeping
+ *   `GITNEXUS_EMBEDDING_DIMS` set to the returned vector size.
  */
 const httpEmbedBatch = async (
   url: string,
@@ -434,7 +459,7 @@ export const httpEmbed = async (
       config.model,
       config.apiKey,
       batchIndex,
-      config.dimensions,
+      config.requestDimensions,
       requestOptions,
       config.maxAttempts,
       config.retryCapMs,
@@ -491,7 +516,7 @@ export const httpEmbedQuery = async (
     config.model,
     config.apiKey,
     0,
-    config.dimensions,
+    config.requestDimensions,
     requestOptions,
     config.maxAttempts,
     config.retryCapMs,

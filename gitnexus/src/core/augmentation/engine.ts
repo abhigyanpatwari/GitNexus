@@ -50,10 +50,14 @@ async function findRepoForCwd(cwd: string): Promise<{
       let matched = false;
       if (normalizedCwd === normalizedRepo) {
         matched = true;
-      } else if (normalizedCwd.startsWith(normalizedRepo + sep)) {
-        matched = true;
-      } else if (normalizedRepo.startsWith(normalizedCwd + sep)) {
-        matched = true;
+      } else {
+        const repoPrefix = normalizedRepo.endsWith(sep) ? normalizedRepo : normalizedRepo + sep;
+        const cwdPrefix = normalizedCwd.endsWith(sep) ? normalizedCwd : normalizedCwd + sep;
+        if (normalizedCwd.startsWith(repoPrefix)) {
+          matched = true;
+        } else if (normalizedRepo.startsWith(cwdPrefix)) {
+          matched = true;
+        }
       }
 
       if (matched && normalizedRepo.length > bestLen) {
