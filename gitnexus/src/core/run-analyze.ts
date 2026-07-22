@@ -1715,18 +1715,18 @@ export async function runFullAnalysis(
         log(
           !embeddingRowDmlSafe
             ? `Incremental: the ${EMBEDDING_TABLE_NAME} vector index exists but the VECTOR ` +
-              `extension could not be loaded, so embedding rows cannot be rewritten in place — ` +
-              `switching to a full DB write (wipe + bulk COPY) for this run. Semantic search ` +
-              `falls back to exact scan until VECTOR is available; run \`gitnexus doctor\` for ` +
-              `live extension status, or set GITNEXUS_LBUG_EXTENSION_INSTALL=auto to allow one ` +
-              `bounded install attempt.`
+                `extension could not be loaded, so embedding rows cannot be rewritten in place — ` +
+                `switching to a full DB write (wipe + bulk COPY) for this run. Semantic search ` +
+                `falls back to exact scan until VECTOR is available; run \`gitnexus doctor\` for ` +
+                `live extension status, or set GITNEXUS_LBUG_EXTENSION_INSTALL=auto to allow one ` +
+                `bounded install attempt.`
             : `Incremental: effective write set covers ${effectiveWriteSet.size}/${allFilePaths.length} ` +
-              // Display clamp only (predicate unchanged): BFS-found deleted
-              // importers can push the numerator past the CURRENT file list, so
-              // the raw fraction can exceed 1 — see the population-mismatch note
-              // on shouldEscalateIncrementalWrite (tri-review 4669518496).
-              `files (${Math.min(100, Math.round(writeFraction * 100))}%) — switching to a full DB write ` +
-              `(wipe + bulk COPY) for this run; file-level incremental bookkeeping is unaffected.`,
+                // Display clamp only (predicate unchanged): BFS-found deleted
+                // importers can push the numerator past the CURRENT file list, so
+                // the raw fraction can exceed 1 — see the population-mismatch note
+                // on shouldEscalateIncrementalWrite (tri-review 4669518496).
+                `files (${Math.min(100, Math.round(writeFraction * 100))}%) — switching to a full DB write ` +
+                `(wipe + bulk COPY) for this run; file-level incremental bookkeeping is unaffected.`,
         );
         // toWriteCount: 0 is the established full-path dirty-flag sentinel;
         // the real counters ride along for crash diagnostics.
