@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from workflow_bench.proposer_sandbox import SandboxError
+from workflow_bench.proposer_sandbox import VITE_TEMP_DIR, SandboxError
 from workflow_bench.oracle_assets import TaskOracleSnapshot
 from workflow_bench.runner_tasks import resolve_task_bindings
 from workflow_bench.task_assets import TaskAssetCache, stage_task_assets
@@ -410,3 +410,36 @@ def test_resolved_task_binding_carries_dependency_digests_and_rejects_live_drift
     (repo / "dependency" / "package.json").write_bytes(b'{"version":2}')
     with pytest.raises(ValueError, match="definition drifted"):
         resolve_task_bindings([task], [binding], oracle_snapshots=[oracle])
+
+
+def test_node_modules_dependency_snapshot_captures_the_vite_temp_mount_point(tmp_path: Path) -> None:
+    # bwrap cannot mkdir a mount point inside an already-read-only bind, so the
+    # directory vite needs must exist in the captured dependency bytes. It is
+    # recorded during capture, which puts it inside the manifest and both
+    # dependency digests rather than leaving it an untracked mutation of a
+    # digest-bound snapshot.
+    repo, _ = _repo_and_task(tmp_path, {"dependency/package.json": b'{"version":1}'})
+    task = {
+        "sandbox_copy": [],
+        "sandbox_dependencies": [{"source": "dependency", "target": "gitnexus/node_modules"}],
+    }
+    with TaskAssetCache(tmp_path / "cache") as cache:
+        snapshot = cache.prepare(task, repo=repo, resolved_sha=SHA)
+        captured = {entry.path.as_posix() for entry in snapshot.dependencies[0].entries}
+        assert f"payload/{VITE_TEMP_DIR}" in captured
+        vite_temp = next((snapshot.root / "dependencies").glob(f"*/payload/{VITE_TEMP_DIR}"))
+        assert vite_temp.is_dir()
+
+
+def test_non_node_modules_dependency_snapshot_has_no_vite_temp(tmp_path: Path) -> None:
+    # The capture is scoped to dependency mounts whose target is node_modules;
+    # an unrelated vendored dependency is captured byte-for-byte as declared.
+    repo, _ = _repo_and_task(tmp_path, {"dependency/package.json": b'{"version":1}'})
+    task = {
+        "sandbox_copy": [],
+        "sandbox_dependencies": [{"source": "dependency", "target": "vendor/dependency"}],
+    }
+    with TaskAssetCache(tmp_path / "cache") as cache:
+        snapshot = cache.prepare(task, repo=repo, resolved_sha=SHA)
+        captured = {entry.path.as_posix() for entry in snapshot.dependencies[0].entries}
+        assert not any(path.endswith(VITE_TEMP_DIR) for path in captured)

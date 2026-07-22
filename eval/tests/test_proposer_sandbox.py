@@ -22,6 +22,7 @@ from workflow_bench.proposer_sandbox import (
     MAX_EVIDENCE_FILE_BYTES,
     SANDBOX_NODE,
     SANDBOX_NODE_PREFIX,
+    VITE_TEMP_DIR,
     SANDBOX_PATH,
     SANDBOX_PYTHON3,
     SANDBOX_SHELL_PREFIX,
@@ -324,6 +325,93 @@ def test_runtime_mounts_skip_the_node_bind_when_node_is_unresolvable(monkeypatch
     monkeypatch.setattr("workflow_bench.proposer_sandbox.shutil.which", lambda name: None)
     args = _runtime_mount_args()
     assert SANDBOX_NODE not in args
+
+
+def test_node_modules_mounts_get_a_writable_vite_temp_overlay(tmp_path: Path) -> None:
+    # vite writes <node_modules>/.vite-temp/<config>.timestamp-*.mjs before
+    # loading a TypeScript config, so a read-only dependency mount makes vitest
+    # fail with EROFS before any test runs -- and every task verify command and
+    # every hidden oracle ends in "npx vitest run <test>". Reproduced on the
+    # self-hosted runner with npx bypassed entirely, proving it is independent
+    # of the node-prefix mount.
+    clone = tmp_path / "clone"
+    clone.mkdir()
+    deps = tmp_path / "deps"
+    deps.mkdir()
+    # task_assets.py captures this directory into the dependency snapshot; the
+    # overlay is gated on the mount source actually carrying it.
+    (deps / VITE_TEMP_DIR).mkdir()
+    executable = tmp_path / "executable"
+    executable.write_text("#!/bin/sh\nexit 0\n")
+    executable.chmod(0o755)
+
+    with prepare_sandbox(
+        clone=clone,
+        claude_bin=executable,
+        bwrap_bin=executable,
+        preflight=False,
+        read_only_mounts=(ReadOnlyMount(source=deps, target="/workspace/gitnexus/node_modules"),),
+    ) as sandbox:
+        argv = sandbox.command_prefix
+
+    bind_index = argv.index("/workspace/gitnexus/node_modules")
+    assert argv[bind_index - 2 : bind_index + 1] == ["--ro-bind", str(deps), "/workspace/gitnexus/node_modules"]
+    overlay = f"/workspace/gitnexus/node_modules/{VITE_TEMP_DIR}"
+    overlay_index = argv.index(overlay)
+    assert argv[overlay_index - 1] == "--tmpfs"
+    # the overlay must come AFTER the read-only bind, or the bind would mask it
+    assert overlay_index > bind_index
+
+
+def test_node_modules_mount_without_a_captured_vite_temp_gets_no_overlay(tmp_path: Path) -> None:
+    # The trusted GitNexus runtime mounts /opt/gitnexus/node_modules, whose
+    # source is the built runtime and does NOT carry a .vite-temp. bwrap cannot
+    # mkdir a mount point inside a read-only bind, so overlaying it would fail
+    # with "Can't mkdir .../node_modules/.vite-temp: Read-only file system".
+    # Regression for that CI failure: the overlay must fire only where the
+    # source actually contains the directory, not for every node_modules mount.
+    clone = tmp_path / "clone"
+    clone.mkdir()
+    runtime = tmp_path / "runtime-node-modules"
+    runtime.mkdir()  # deliberately no .vite-temp
+    executable = tmp_path / "executable"
+    executable.write_text("#!/bin/sh\nexit 0\n")
+    executable.chmod(0o755)
+
+    with prepare_sandbox(
+        clone=clone,
+        claude_bin=executable,
+        bwrap_bin=executable,
+        preflight=False,
+        read_only_mounts=(ReadOnlyMount(source=runtime, target="/opt/gitnexus/node_modules"),),
+    ) as sandbox:
+        argv = sandbox.command_prefix
+
+    assert "/opt/gitnexus/node_modules" in argv
+    assert not any(str(item).endswith(f"/{VITE_TEMP_DIR}") for item in argv)
+
+
+def test_non_node_modules_mounts_get_no_vite_temp_overlay(tmp_path: Path) -> None:
+    # Scoped to dependency mounts: a hidden-oracle or skill mount stays wholly
+    # read-only, with no writable island inside it.
+    clone = tmp_path / "clone"
+    clone.mkdir()
+    other = tmp_path / "oracle"
+    other.mkdir()
+    executable = tmp_path / "executable"
+    executable.write_text("#!/bin/sh\nexit 0\n")
+    executable.chmod(0o755)
+
+    with prepare_sandbox(
+        clone=clone,
+        claude_bin=executable,
+        bwrap_bin=executable,
+        preflight=False,
+        read_only_mounts=(ReadOnlyMount(source=other, target="/workspace/.wfbench-oracle-abc"),),
+    ) as sandbox:
+        argv = sandbox.command_prefix
+
+    assert not any(str(item).endswith(f"/{VITE_TEMP_DIR}") for item in argv)
 
 
 def test_stricter_prefix_freezes_evaluated_skills_and_can_unshare_network(tmp_path: Path) -> None:
