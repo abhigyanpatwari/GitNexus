@@ -23,7 +23,11 @@ import { streamAllCSVsToDisk, type StreamedCSVResult } from './csv-generator.js'
 import type { PdgEmitManifest } from './pdg-emit-sink.js';
 import { getNodeLabel as deriveNodeLabel, type WriteStreamFactory } from './rel-pair-routing.js';
 import { EMBEDDABLE_LABELS, type CachedEmbedding } from '../embeddings/types.js';
-import { extensionManager, type ExtensionEnsureOptions } from './extension-loader.js';
+import {
+  extensionManager,
+  resolveAnalyzeInstallPolicy,
+  type ExtensionEnsureOptions,
+} from './extension-loader.js';
 import {
   classifyDeleteAllError,
   closeLbugConnection,
@@ -2810,6 +2814,71 @@ export const createVectorIndex = async (): Promise<boolean> => {
     if (isReadOnlyDbError(e)) return false;
     throw e;
   }
+};
+
+/**
+ * Make DML against {@link EMBEDDING_TABLE_NAME} legal on the writable
+ * connection when it can be, and report whether it is.
+ *
+ * LadybugDB refuses EVERY mutation of a table carrying an HNSW index while
+ * the VECTOR extension is not loaded on that connection: `DELETE` fails with
+ * "Trying to delete from an index on table CodeEmbedding but its extension is
+ * not loaded", `CREATE` with the matching "insert into an index" variant,
+ * `DROP TABLE` is refused while the index references it, and `SET` — even on
+ * a NON-indexed property — segfaults the process outright. Probed against
+ * @ladybugdb/core 0.18.0 (#2623).
+ *
+ * Dropping the index is NOT an available recovery: `CALL DROP_VECTOR_INDEX`
+ * is itself a VECTOR-extension function and resolves to "Catalog exception:
+ * function DROP_VECTOR_INDEX is not defined" in exactly the state it would
+ * need to rescue. Loading the extension is the only in-place repair, which is
+ * why this returns a verdict instead of attempting a fixup.
+ *
+ * `true` = embedding-row DML is safe: either VECTOR is now loaded, or the
+ * table carries no index to trip over. `false` = genuinely blocked (index
+ * present, extension unloadable); the analyze orchestrator answers that by
+ * escalating to the wipe-and-rebuild write plan instead of failing
+ * mid-writeback.
+ *
+ * Cheap by construction: the happy path is one memoized `loadVectorExtension`
+ * and never reads the catalog. `SHOW_INDEXES` is consulted only after a
+ * failed load — it is readable WITHOUT the extension, so no error-string
+ * sniffing is needed — and goes through the unprepared `conn.query()` path
+ * like every other `CALL` procedure here (#2114).
+ */
+export const ensureEmbeddingRowDmlSafe = async (): Promise<boolean> => {
+  if (!conn) {
+    throw new Error('LadybugDB not initialized. Call initLbug first.');
+  }
+  if (await loadVectorExtension(undefined, { policy: resolveAnalyzeInstallPolicy() })) {
+    return true;
+  }
+  const targetConn = conn;
+  const runShowIndexes = async (): Promise<any[]> =>
+    readQueryRows(await targetConn.query('CALL SHOW_INDEXES() RETURN *'));
+  let rows: any[];
+  try {
+    rows = isSharedSingletonConn(targetConn)
+      ? await withConnLock(runShowIndexes)
+      : await runShowIndexes();
+  } catch (err) {
+    // Cannot prove the index is absent. Assume the hazard: a needlessly
+    // escalated run costs one rebuild, walking into it corrupts a writeback.
+    logger.warn(
+      { err },
+      `Could not read the index catalog to check for a ${EMBEDDING_TABLE_NAME} vector index; ` +
+        'assuming it exists and that embedding-row writes are unsafe.',
+    );
+    return false;
+  }
+  // Any non-HASH index on the embedding table gates DML. Keyed on index TYPE,
+  // not name, so an index built under a different name still counts; the
+  // implicit primary-key HASH index is engine-internal and never gates.
+  return !rows.some((row) => {
+    const table = row?.table_name ?? row?.[0];
+    if (table !== EMBEDDING_TABLE_NAME) return false;
+    return (row?.index_type ?? row?.[2]) !== 'HASH';
+  });
 };
 
 /**
