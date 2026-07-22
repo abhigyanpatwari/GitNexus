@@ -2826,7 +2826,8 @@ export const createVectorIndex = async (): Promise<boolean> => {
  * not loaded", `CREATE` with the matching "insert into an index" variant,
  * `DROP TABLE` is refused while the index references it, and `SET` — even on
  * a NON-indexed property — segfaults the process outright. Probed against
- * @ladybugdb/core 0.18.0 (#2623).
+ * @ladybugdb/core 0.18.2 (the lockfile-pinned version) and 0.18.0 — every
+ * result identical on both (#2623).
  *
  * Dropping the index is NOT an available recovery: `CALL DROP_VECTOR_INDEX`
  * is itself a VECTOR-extension function and resolves to "Catalog exception:
